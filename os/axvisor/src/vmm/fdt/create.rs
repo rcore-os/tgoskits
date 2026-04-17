@@ -16,17 +16,20 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+#[cfg(target_arch = "aarch64")]
 use core::ptr::NonNull;
 
 use super::vm_fdt::{FdtWriter, FdtWriterNode};
+#[cfg(target_arch = "aarch64")]
 use ax_memory_addr::MemoryAddr;
+#[cfg(any(target_arch = "aarch64", test))]
 use axaddrspace::GuestPhysAddr;
-use axvm::{
-    VMMemoryRegion,
-    config::{AxVMCrateConfig, VmMemMappingType},
-};
+#[cfg(any(target_arch = "aarch64", test))]
+use axvm::VMMemoryRegion;
+use axvm::config::AxVMCrateConfig;
 use fdt_parser::{Fdt, Node};
 
+#[cfg(target_arch = "aarch64")]
 use crate::vmm::{VMRef, images::load_vm_image_from_memory};
 
 // use crate::vmm::fdt::print::{print_fdt, print_guest_fdt};
@@ -68,14 +71,14 @@ pub fn crate_guest_fdt(
 
     for (index, node) in all_nodes.iter().enumerate() {
         let node_path = &all_paths[index];
-        let node_action = determine_node_action(node, &node_path, passthrough_device_names);
+        let node_action = determine_node_action(node, node_path, passthrough_device_names);
 
         match node_action {
             NodeAction::RootNode => {
                 node_stack.push(fdt_writer.begin_node("").unwrap());
             }
             NodeAction::CpuNode => {
-                let need = need_cpu_node(&phys_cpu_ids, node, &node_path);
+                let need = need_cpu_node(&phys_cpu_ids, node, node_path);
                 if need {
                     handle_node_level_change(
                         &mut fdt_writer,
@@ -272,6 +275,7 @@ fn need_cpu_node(phys_cpu_ids: &[usize], node: &Node, node_path: &str) -> bool {
 }
 
 /// Add memory node
+#[cfg(any(target_arch = "aarch64", test))]
 fn add_memory_node(
     new_memory: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
@@ -295,7 +299,7 @@ fn add_memory_node(
     }
 
     let mut new_value: Vec<u32> = Vec::new();
-    for (mem, cfg) in new_memory.iter().take(configured_region_count).zip(
+    for (mem, _cfg) in new_memory.iter().take(configured_region_count).zip(
         crate_config
             .kernel
             .memory_regions
@@ -316,6 +320,7 @@ fn add_memory_node(
     new_fdt.property_string("device_type", "memory").unwrap();
 }
 
+#[cfg(any(target_arch = "aarch64", test))]
 fn initrd_range_from_image_config(
     ramdisk: Option<&axvm::config::RamdiskInfo>,
 ) -> Option<(u64, u64)> {
@@ -325,6 +330,7 @@ fn initrd_range_from_image_config(
     Some((start, start + size))
 }
 
+#[cfg(target_arch = "aarch64")]
 fn sanitize_bootargs(bootargs: &str) -> String {
     const RAMDISK_BOOTARGS: [&str; 3] = ["root=/dev/ram0", "rdinit=/init", "rootwait"];
 
@@ -346,6 +352,7 @@ fn sanitize_bootargs(bootargs: &str) -> String {
     sanitized.join(" ")
 }
 
+#[cfg(target_arch = "aarch64")]
 pub fn update_fdt(
     fdt_src: NonNull<u8>,
     dtb_size: usize,
@@ -494,6 +501,7 @@ mod tests {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
     const MB: usize = 1024 * 1024;
 
@@ -524,6 +532,7 @@ fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
     })
 }
 
+#[cfg(target_arch = "aarch64")]
 pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig) -> Vec<u8> {
     let mut new_fdt = FdtWriter::new().unwrap();
     let mut previous_node_level = 0;

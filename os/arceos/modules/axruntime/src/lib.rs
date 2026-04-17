@@ -358,6 +358,9 @@ fn init_interrupt() {
         ax_hal::time::set_oneshot_timer(deadline);
     }
 
+    #[cfg(target_arch = "loongarch64")]
+    ax_hal::irq::init_common_irq_handler();
+
     ax_hal::irq::register(ax_hal::time::irq_num(), || {
         update_timer();
         #[cfg(feature = "multitask")]

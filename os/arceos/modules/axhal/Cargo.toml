@@ -68,7 +68,7 @@ ax-kernel-guard.workspace = true
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-page-table-multiarch = { workspace = true, optional = true }
-ax-percpu.workspace = true
+ax-percpu = { workspace = true, features = ["non-zero-vma"] }
 spin.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

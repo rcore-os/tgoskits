@@ -62,7 +62,7 @@ fn loongarch64_trap_handler(tf: &mut TrapFrame) {
         },
         Trap::Interrupt(_) => {
             let irq_num: usize = estat.is().trailing_zeros() as usize;
-            crate::trap::irq_handler(irq_num);
+            crate::trap::dispatch_irq(irq_num);
         }
         trap => {
             panic!(

@@ -20,10 +20,12 @@ ax-arm-pl011
 ax-arm-pl031
 ax-cap-access
 ax-config
+ax-cpu
 ax-cpumask
 ax-display
 ax-dma
 ax-errno
+ax-hal
 ax-fs-devfs
 ax-fs-ng
 ax-fs-vfs
@@ -35,9 +37,10 @@ ax-input
 ax-int-ratio
 ax-io
 ax-ipi
-ax-kernel-guard
 ax-kspin
+ax-kernel-guard
 ax-lazyinit
+axaddrspace
 ax-linked-list-r4l
 ax-log
 ax-mm
@@ -52,8 +55,10 @@ axhvc
 axklib
 axpoll
 axplat-x86-qemu-q35
+axvm
 axvmconfig
 bitmap-allocator
+loongarch_vcpu
 range-alloc-arceos
 riscv64-qemu-virt-hv
 riscv-h
@@ -63,3 +68,4 @@ starry-process
 starry-vm
 tg-xtask
 tgmath
+x86_vcpu

@@ -17,13 +17,13 @@
 use alloc::{string::ToString, vec::Vec};
 use ax_hal::{dtb, mem};
 use axaddrspace::MappingFlags;
-use axvm::config::{
-    AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType,
-};
+#[cfg(target_arch = "aarch64")]
+use axvm::config::PassThroughDeviceConfig;
+use axvm::config::{AxVMConfig, AxVMCrateConfig, VmMemConfig, VmMemMappingType};
 use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
 
 use crate::vmm::fdt::crate_guest_fdt_with_cache;
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(target_arch = "aarch64")]
 use crate::vmm::fdt::create::update_cpu_node;
 
 const PAGE_SIZE_4K: usize = 0x1000;
@@ -74,12 +74,6 @@ fn overlaps_memory_region(lhs_gpa: usize, lhs_size: usize, rhs: &VmMemConfig) ->
     let lhs_end = lhs_gpa.saturating_add(lhs_size);
     let rhs_end = rhs.gpa.saturating_add(rhs.size);
     lhs_gpa < rhs_end && rhs.gpa < lhs_end
-}
-
-fn is_covered_by_memory_region(gpa: usize, size: usize, region: &VmMemConfig) -> bool {
-    let end = gpa.saturating_add(size);
-    let region_end = region.gpa.saturating_add(region.size);
-    region.gpa <= gpa && region_end >= end
 }
 
 fn align_down_4k(value: usize) -> usize {
@@ -227,7 +221,7 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
     let mut added_count = 0usize;
     for (index, node) in all_nodes.iter().enumerate() {
         let node_path = &all_paths[index];
-        if !is_reserved_memory_path(&node_path) {
+        if !is_reserved_memory_path(node_path) {
             continue;
         }
 
@@ -571,12 +565,12 @@ pub fn parse_passthrough_devices_address(
             // Skip root node
             if node.name() == "/"
                 || node.name().starts_with("memory")
-                || is_reserved_memory_path(&node_path)
+                || is_reserved_memory_path(node_path)
             {
                 continue;
             }
 
-            if is_partition_like_node(node, &node_path) {
+            if is_partition_like_node(node, node_path) {
                 debug!(
                     "Skipping partition-like node {} from passthrough parsing",
                     node_path
@@ -584,7 +578,7 @@ pub fn parse_passthrough_devices_address(
                 continue;
             }
 
-            if should_skip_passthrough_node(node, &node_path, &reserved_regions) {
+            if should_skip_passthrough_node(node, node_path, &reserved_regions) {
                 continue;
             }
 
@@ -649,6 +643,7 @@ pub fn parse_passthrough_devices_address(
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
     const GIC_PHANDLE: usize = 1;
     let fdt = Fdt::from_bytes(dtb)
@@ -733,13 +728,13 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
 }
 
 pub fn update_provided_fdt(provided_dtb: &[u8], host_dtb: &[u8], crate_config: &AxVMCrateConfig) {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
     {
         let _ = host_dtb;
         crate_guest_fdt_with_cache(provided_dtb.to_vec(), crate_config);
     }
 
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "aarch64")]
     {
         let provided_fdt = Fdt::from_bytes(provided_dtb)
             .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");

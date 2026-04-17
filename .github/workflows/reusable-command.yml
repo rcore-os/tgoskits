@@ -88,6 +88,59 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Ensure qemu user emulators
+        shell: bash
+        run: |
+          set -eux
+
+          missing=0
+          for emulator in \
+            qemu-aarch64-static \
+            qemu-riscv64-static \
+            qemu-loongarch64-static \
+            qemu-x86_64-static
+          do
+            if ! command -v "${emulator}" >/dev/null 2>&1; then
+              missing=1
+              break
+            fi
+          done
+
+          if [ "${missing}" -eq 1 ]; then
+            apt-get update
+            apt-get install -y --no-install-recommends qemu-user-static
+          fi
+
+      - name: Ensure musl cross toolchains
+        shell: bash
+        run: |
+          set -eux
+
+          for arch in aarch64 riscv64 x86_64 loongarch64; do
+            compiler="${arch}-linux-musl-cc"
+            if command -v "${compiler}" >/dev/null 2>&1; then
+              continue
+            fi
+
+            file="${arch}-linux-musl-cross.tgz"
+            tmpdir="$(mktemp -d)"
+            trap 'rm -rf "${tmpdir}"' EXIT
+
+            if ! wget -q "https://github.com/arceos-org/setup-musl/releases/download/prebuilt/${file}" -O "${tmpdir}/${file}"; then
+              if [ "${arch}" = "loongarch64" ]; then
+                wget -q "https://github.com/LoongsonLab/oscomp-toolchains-for-oskernel/releases/download/loongarch64-linux-musl-cross-gcc-13.2.0/${file}" -O "${tmpdir}/${file}"
+              else
+                wget -q "https://musl.cc/${file}" -O "${tmpdir}/${file}"
+              fi
+            fi
+
+            tar -xzf "${tmpdir}/${file}" -C /opt
+            install_dir="/opt/${arch}-linux-musl-cross/bin"
+            echo "${install_dir}" >> "${GITHUB_PATH}"
+            rm -rf "${tmpdir}"
+            trap - EXIT
+          done
+
       - name: Restore Rust cache
         if: inputs.cache_key != ''
         uses: Swatinem/rust-cache@v2

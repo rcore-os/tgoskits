@@ -91,7 +91,10 @@ pub mod power {
 pub mod trap {
     #[cfg(target_arch = "x86_64")]
     pub use ax_cpu::trap::debug_handler;
-    pub use ax_cpu::trap::{PageFaultFlags, breakpoint_handler, irq_handler, page_fault_handler};
+    pub use ax_cpu::trap::{
+        PageFaultFlags, breakpoint_handler, dispatch_irq, dispatch_page_fault, irq_handler,
+        page_fault_handler, set_irq_handler, set_page_fault_handler,
+    };
 }
 
 /// CPU register states for context switching.

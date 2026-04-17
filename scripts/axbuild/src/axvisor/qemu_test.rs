@@ -269,7 +269,7 @@ fn absolute_path(workspace_root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-pub(crate) fn qemu_test_build_args(arch: &str, vmconfig: PathBuf) -> AxvisorCliArgs {
+pub(crate) fn qemu_test_build_args(arch: &str, vmconfigs: Vec<PathBuf>) -> AxvisorCliArgs {
     AxvisorCliArgs {
         config: None,
         arch: Some(arch.to_string()),
@@ -277,7 +277,7 @@ pub(crate) fn qemu_test_build_args(arch: &str, vmconfig: PathBuf) -> AxvisorCliA
         plat_dyn: None,
         smp: None,
         debug: false,
-        vmconfigs: vec![vmconfig],
+        vmconfigs,
     }
 }
 
@@ -422,6 +422,15 @@ ramdisk_path = "old.ramdisk"
             Some("pwd && echo 'test pass!'")
         );
         assert_eq!(qemu.success_regex, vec!["^test pass!$".to_string()]);
+        assert_eq!(qemu.fail_regex, vec!["(?i)panic".to_string()]);
+    }
+
+    #[test]
+    fn qemu_test_build_args_allows_empty_vmconfigs() {
+        let args = qemu_test_build_args("loongarch64", vec![]);
+
+        assert_eq!(args.arch.as_deref(), Some("loongarch64"));
+        assert!(args.vmconfigs.is_empty());
     }
 
     #[test]

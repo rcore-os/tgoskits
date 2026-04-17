@@ -80,7 +80,7 @@ cargo xtask axvisor qemu --arch aarch64
 cargo axvisor qemu --arch aarch64
 ```
 
-Axvisor 不能只靠 `build/qemu` 两条命令直接跑起来，因为运行前仍需要 Guest 镜像、VM 配置和 rootfs。推荐先用 `os/axvisor/scripts/setup_qemu.sh` 自动准备这些运行时资源，再执行 `cargo xtask axvisor qemu --arch <arch>`。完整说明见 [docs/axvisor-guide.md](docs/axvisor-guide.md)。
+Axvisor 不能只靠 `build/qemu` 两条命令直接跑起来，因为运行前仍需要 Guest 镜像、VM 配置和 rootfs。对于 AArch64、RISC-V64、x86_64 这些 Guest 启动链路，推荐先用 `os/axvisor/scripts/setup_qemu.sh` 自动准备运行时资源，再执行 `cargo xtask axvisor qemu --arch <arch>`。LoongArch64 的 AxVisor shell smoke 不走 Guest 镜像链路，直接使用 `os/axvisor/scripts/quick-start.sh qemu-loongarch64 start`。完整说明见 [docs/axvisor-guide.md](docs/axvisor-guide.md)。
 
 ## 4. 快速开发
 
@@ -105,6 +105,9 @@ cargo xtask starry test qemu --stress -t riscv64 -c stress-ng-0
 (cd os/axvisor && ./scripts/setup_qemu.sh arceos)
 cargo xtask axvisor qemu --arch aarch64
 cargo xtask axvisor test qemu --target aarch64
+
+# Axvisor LoongArch64：直接走 shell smoke quick-start
+(cd os/axvisor && ./scripts/quick-start.sh qemu-loongarch64 start)
 ```
 
 修改组件后的验证策略见 [docs/components.md](docs/components.md)。

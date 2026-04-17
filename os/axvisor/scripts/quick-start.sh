@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # AxVisor Environment Setup and Launch Script
-# Supported platforms: qemu-aarch64, qemu-riscv64, qemu-x86_64, phytiumpi, roc-rk3568-pc, rdk-s100, rdk-s100p
+# Supported platforms: qemu-aarch64, qemu-riscv64, qemu-loongarch64, qemu-x86_64, phytiumpi, roc-rk3568-pc, rdk-s100, rdk-s100p
 # Documentation: https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart
 #
 
@@ -69,6 +69,7 @@ AxVisor Environment Setup and Launch Script
 Platforms:
     qemu-aarch64       QEMU AArch64 (ArceOS/Linux)
     qemu-riscv64       QEMU RISC-V64 (ArceOS)
+    qemu-loongarch64   QEMU LoongArch64 (AxVisor shell smoke)
     qemu-x86_64        QEMU x86_64 (NimbOS)
     phytiumpi          Phytium Pi Board (ArceOS/Linux)
     roc-rk3568-pc      ROC-RK3568-PC Board (ArceOS/Linux)
@@ -92,6 +93,8 @@ Launch Options (for run/start commands):
         -m, --multi         Launch multiple guests (ArceOS+Linux)
     QEMU RISC-V64:
         -a, --arceos        Launch single ArceOS guest (default)
+    QEMU LoongArch64:
+        --axvisor           Launch AxVisor shell smoke (default)
     QEMU x86_64:
         -n, --nimbos        Launch single NimbOS guest (default)
     Phytium Pi:
@@ -116,6 +119,10 @@ Examples:
 
     # QEMU RISC-V64
     $0 qemu-riscv64 start --arceos                  # One-step: prepare + launch ArceOS
+
+    # QEMU LoongArch64
+    $0 qemu-loongarch64 start --axvisor             # One-step: prepare + launch AxVisor shell
+    $0 qemu-loongarch64 start                       # Same as above (default axvisor)
 
     # QEMU x86_64
     $0 qemu-x86_64 start --nimbos                   # One-step: prepare + launch NimbOS
@@ -267,6 +274,43 @@ run_qemu_riscv64_arceos() {
         --config "$(pwd)/tmp/configs/qemu-riscv64.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-riscv64-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/arceos-riscv64-qemu-smp1.toml"
+}
+
+# ============================================================================
+# QEMU x86_64 Architecture Setup
+# ============================================================================
+
+setup_qemu_loongarch64() {
+    info "=== QEMU LoongArch64 Preparation ==="
+
+    run_cmd mkdir -p tmp/configs
+
+    info "Preparing board config file..."
+    run_cmd cp configs/board/qemu-loongarch64.toml tmp/configs/
+
+    info "Preparing QEMU config file..."
+    run_cmd cp scripts/ostool/qemu-loongarch64.toml tmp/configs/qemu-loongarch64-runtime.toml
+
+    if [[ -n "${AXBUILD_QEMU_SYSTEM_LOONGARCH64:-}" ]]; then
+        info "Using explicit LoongArch QEMU override: ${AXBUILD_QEMU_SYSTEM_LOONGARCH64}"
+    elif [[ -x "$HOME/QEMU-LVZ/build/qemu-system-loongarch64" ]]; then
+        info "Detected QEMU-LVZ at $HOME/QEMU-LVZ/build/qemu-system-loongarch64"
+    elif [[ -x "$HOME/qemu-lvz/build/qemu-system-loongarch64" ]]; then
+        info "Detected QEMU-LVZ at $HOME/qemu-lvz/build/qemu-system-loongarch64"
+    elif command -v qemu-system-loongarch64 &> /dev/null; then
+        warn "Using qemu-system-loongarch64 from PATH. Stock QEMU usually lacks LoongArch virtualization extensions; prefer QEMU-LVZ."
+    else
+        warn "No LoongArch QEMU binary detected. Set AXBUILD_QEMU_SYSTEM_LOONGARCH64 or install QEMU-LVZ before running."
+    fi
+
+    info "=== QEMU LoongArch64 Preparation Complete ==="
+}
+
+run_qemu_loongarch64_axvisor() {
+    info "=== Launching QEMU LoongArch64 AxVisor Shell ==="
+    run_axvisor_qemu \
+        --config "$(pwd)/tmp/configs/qemu-loongarch64.toml" \
+        --qemu-config "$(pwd)/tmp/configs/qemu-loongarch64-runtime.toml"
 }
 
 # ============================================================================
@@ -790,6 +834,81 @@ cmd_start_qemu_riscv64() {
 }
 
 # ============================================================================
+# QEMU LoongArch64 Command Handling
+# ============================================================================
+
+cmd_setup_qemu_loongarch64() {
+    setup_qemu_loongarch64
+}
+
+cmd_run_qemu_loongarch64() {
+    local mode="$1"
+
+    case "$mode" in
+        --axvisor|"")
+            run_qemu_loongarch64_axvisor
+            ;;
+        -l|--linux)
+            error "Unsupported combination: QEMU LoongArch64 quick start does not launch a Linux guest yet"
+            echo ""
+            echo "QEMU LoongArch64 quick start currently supports the following mode:"
+            echo "  - AxVisor shell smoke (use --axvisor)"
+            echo ""
+            echo "To launch a Linux guest, please use:"
+            echo "  $0 qemu-aarch64 start --linux"
+            exit 1
+            ;;
+        -a|--arceos)
+            error "Unsupported combination: QEMU LoongArch64 quick start does not launch an ArceOS guest yet"
+            echo ""
+            echo "QEMU LoongArch64 quick start currently supports the following mode:"
+            echo "  - AxVisor shell smoke (use --axvisor)"
+            echo ""
+            echo "To launch an ArceOS guest, please use:"
+            echo "  $0 qemu-aarch64 start --arceos"
+            echo "  $0 qemu-riscv64 start --arceos"
+            exit 1
+            ;;
+        -m|--multi)
+            error "Unsupported combination: QEMU LoongArch64 does not support multi-guest quick start yet"
+            echo ""
+            echo "QEMU LoongArch64 quick start currently supports the following mode:"
+            echo "  - AxVisor shell smoke (use --axvisor)"
+            exit 1
+            ;;
+        -n|--nimbos)
+            error "Unsupported combination: QEMU LoongArch64 does not support NimbOS"
+            echo ""
+            echo "To run NimbOS, please use QEMU x86_64 platform:"
+            echo "  $0 qemu-x86_64 start --nimbos"
+            exit 1
+            ;;
+        *)
+            error "Unknown option: $mode"
+            echo ""
+            echo "QEMU LoongArch64 platform supports the following options:"
+            echo "  --axvisor       Launch AxVisor shell smoke"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_start_qemu_loongarch64() {
+    local mode="$1"
+    case "$mode" in
+        --axvisor|"")
+            ;;
+        *)
+            cmd_run_qemu_loongarch64 "$mode"
+            return
+            ;;
+    esac
+    setup_qemu_loongarch64
+    echo ""
+    cmd_run_qemu_loongarch64 "$mode"
+}
+
+# ============================================================================
 # QEMU x86_64 Command Handling
 # ============================================================================
 
@@ -1169,6 +1288,30 @@ case "$PLATFORM" in
                 ;;
             start)
                 cmd_start_qemu_riscv64 "$@"
+                ;;
+            *)
+                error "Unknown command: $CMD"
+                show_help
+                exit 1
+                ;;
+        esac
+        ;;
+    qemu-loongarch64)
+        if [ $# -eq 0 ]; then
+            show_help
+            exit 0
+        fi
+        CMD="$1"
+        shift
+        case "$CMD" in
+            setup)
+                cmd_setup_qemu_loongarch64
+                ;;
+            run)
+                cmd_run_qemu_loongarch64 "$@"
+                ;;
+            start)
+                cmd_start_qemu_loongarch64 "$@"
                 ;;
             *)
                 error "Unknown command: $CMD"
