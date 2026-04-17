@@ -149,7 +149,7 @@ impl ExceptionInfo {
     /// Returns a generalized kind of this exception.
     pub fn kind(&self) -> ExceptionKind {
         match self.esr.read_as_enum(ESR_EL1::EC) {
-            Some(ESR_EL1::EC::Value::Brk64 | ESR_EL1::EC::Value::Bkpt32) => {
+            Some(ESR_EL1::EC::Value::Brk64) | Some(ESR_EL1::EC::Value::Bkpt32) => {
                 ExceptionKind::Breakpoint
             }
             Some(ESR_EL1::EC::Value::IllegalExecutionState) => ExceptionKind::IllegalInstruction,
