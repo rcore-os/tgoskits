@@ -124,16 +124,31 @@ pub fn sys_fallocate(
 
 pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fsync <= {fd}");
-    let f = File::from_fd(fd)?;
-    f.inner().sync(false)?;
-    Ok(0)
+    match File::from_fd(fd) {
+        Ok(f) => {
+            f.inner().sync(false)?;
+            Ok(0)
+        }
+        Err(AxError::IsADirectory) => {
+            // Linux allows fsync() on directory fds to flush directory
+            // metadata. We don't have directory-level sync, but returning
+            // Ok matches Linux behavior for applications like PostgreSQL.
+            Ok(0)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fdatasync <= {fd}");
-    let f = File::from_fd(fd)?;
-    f.inner().sync(true)?;
-    Ok(0)
+    match File::from_fd(fd) {
+        Ok(f) => {
+            f.inner().sync(true)?;
+            Ok(0)
+        }
+        Err(AxError::IsADirectory) => Ok(0),
+        Err(e) => Err(e),
+    }
 }
 
 pub fn sys_fadvise64(
