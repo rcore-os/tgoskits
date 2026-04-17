@@ -292,12 +292,22 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             }
             dup_fd_with_minfd(fd, arg as usize, true)
         }
-        F_SETLK | F_SETLKW => Ok(0),
-        F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
-        F_GETLK | F_OFD_GETLK => {
+        F_SETLK | F_OFD_SETLK => {
+            let file = get_file_like(fd)?;
             let arg = UserPtr::<flock64>::from(arg);
-            arg.get_as_mut()?.l_type = F_UNLCK as _;
-            Ok(0)
+            let flk = *arg.get_as_mut()?;
+            super::lock::fcntl_setlk(&file, &flk, false)
+        }
+        F_SETLKW | F_OFD_SETLKW => {
+            let file = get_file_like(fd)?;
+            let arg = UserPtr::<flock64>::from(arg);
+            let flk = *arg.get_as_mut()?;
+            super::lock::fcntl_setlk(&file, &flk, true)
+        }
+        F_GETLK | F_OFD_GETLK => {
+            let file = get_file_like(fd)?;
+            let arg = UserPtr::<flock64>::from(arg);
+            super::lock::fcntl_getlk(&file, arg.get_as_mut()?)
         }
         F_SETFL => {
             let f = get_file_like(fd)?;
@@ -375,6 +385,6 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
 
 pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
     debug!("flock <= fd: {fd}, operation: {operation}");
-    // TODO: flock
-    Ok(0)
+    let f = get_file_like(fd)?;
+    super::lock::flock_op(&f, operation)
 }
