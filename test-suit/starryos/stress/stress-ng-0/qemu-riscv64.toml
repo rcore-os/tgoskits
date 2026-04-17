@@ -13,7 +13,7 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "starry:~#"
+shell_prefix = "root@starry:"
 shell_init_cmd = '''
 apk update && \
 apk add stress-ng && \
