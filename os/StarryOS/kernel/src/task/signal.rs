@@ -33,7 +33,7 @@ pub fn check_signals(
         SignalOSAction::Continue => {
             // TODO: implement continue
         }
-        SignalOSAction::Handler => {
+        SignalOSAction::NoFurtherAction => {
             // do nothing
         }
     }

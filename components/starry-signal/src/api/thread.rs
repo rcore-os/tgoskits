@@ -174,7 +174,7 @@ impl ThreadSignalManager {
         uctx.set_ra(prepared.restorer);
 
         *self.blocked.lock() |= prepared.add_blocked;
-        SignalOSAction::Handler
+        SignalOSAction::NoFurtherAction
     }
 
     #[cold]
@@ -207,9 +207,9 @@ impl ThreadSignalManager {
         }
     }
 
-    /// Checks pending signals and handle them.
+    /// Checks pending signals and delivers one if possible.
     ///
-    /// Returns the signal number and the action the OS should take, if any.
+    /// Returns the delivered signal and its delivery result, if any.
     pub fn check_signals(
         &self,
         uctx: &mut UserContext,

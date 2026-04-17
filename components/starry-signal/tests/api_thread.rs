@@ -36,7 +36,7 @@ fn handle_signal() {
     assert!(thr.send_signal(sig.clone()));
     let (_si, result) = thr.check_signals(&mut uctx, None).unwrap();
 
-    assert_eq!(result, SignalOSAction::Handler);
+    assert_eq!(result, SignalOSAction::NoFurtherAction);
     assert_eq!(uctx.ip(), test_handler as *const () as usize);
     assert!(uctx.sp() < initial.sp());
     assert_eq!(uctx.arg0(), signo as usize);
@@ -107,7 +107,7 @@ fn restore() {
     let mut uctx = initial;
     assert!(thr.send_signal(sig.clone()));
     let (_si, action) = thr.check_signals(&mut uctx, None).unwrap();
-    assert_eq!(action, SignalOSAction::Handler);
+    assert_eq!(action, SignalOSAction::NoFurtherAction);
 
     let new_sp = uctx.sp() + 8;
     uctx.set_sp(new_sp);
