@@ -12,14 +12,15 @@ use rockchip_pm::*;
 #[bare_test::tests]
 mod tests {
 
+    use alloc::vec::Vec;
     use core::ptr::NonNull;
 
-    use super::*;
-    use alloc::vec::Vec;
     use bare_test::{
         globals::{PlatformInfoKind, global_val},
         mem::{iomap, page_size},
     };
+
+    use super::*;
     // RK3588 NPU 相关电源域 ID
 
     /// NPU 主电源域 (dt-binding 索引 8)

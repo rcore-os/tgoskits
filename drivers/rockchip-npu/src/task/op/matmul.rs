@@ -1,6 +1,6 @@
-use super::super::def::*;
-use dma_api::{DVec, Direction};
+use dma_api::{DArray, DeviceDma, DmaDirection};
 
+use super::super::def::*;
 use crate::{
     cna::{NpuCnaDesc, NpuCoreDesc},
     dpu::NpuDpuDesc,
@@ -11,38 +11,38 @@ pub struct MatMul<T: Sized + Copy, O: Sized + Copy> {
     m: u16,
     k: u16,
     n: u16,
-    input: DVec<T>,
-    weight: DVec<T>,
-    output: DVec<O>,
+    input: DArray<T>,
+    weight: DArray<T>,
+    output: DArray<O>,
 }
 
 impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
-    pub fn new(m: usize, k: usize, n: usize) -> Self {
+    pub fn new(dma: &DeviceDma, m: usize, k: usize, n: usize) -> Self {
         Self {
             m: m as _,
             k: k as _,
             n: n as _,
-            input: DVec::zeros(
-                u32::MAX as _,
-                m * k * size_of::<T>(),
-                0x1000,
-                Direction::Bidirectional,
-            )
-            .unwrap(),
-            weight: DVec::zeros(
-                u32::MAX as _,
-                k * n * size_of::<T>(),
-                0x1000,
-                Direction::Bidirectional,
-            )
-            .unwrap(),
-            output: DVec::zeros(
-                u32::MAX as _,
-                m * n * size_of::<O>(),
-                0x1000,
-                Direction::Bidirectional,
-            )
-            .unwrap(),
+            input: dma
+                .array_zero_with_align::<T>(
+                    m * k * size_of::<T>(),
+                    0x1000,
+                    DmaDirection::Bidirectional,
+                )
+                .unwrap(),
+            weight: dma
+                .array_zero_with_align::<T>(
+                    k * n * size_of::<T>(),
+                    0x1000,
+                    DmaDirection::Bidirectional,
+                )
+                .unwrap(),
+            output: dma
+                .array_zero_with_align::<O>(
+                    m * n * size_of::<O>(),
+                    0x1000,
+                    DmaDirection::Bidirectional,
+                )
+                .unwrap(),
         }
     }
 
@@ -266,9 +266,12 @@ impl OperationTrait for MatMul<i8, i32> {
             "Generating matmul task: M={}, K={}, N={}",
             self.m, self.k, self.n
         );
-        debug!("Input feature address: {:#x}", self.input.bus_addr());
-        debug!("Weight address: {:#x}", self.weight.bus_addr());
-        debug!("Output address: {:#x}", self.output.bus_addr());
+        debug!(
+            "Input feature address: {:#x}",
+            self.input.dma_addr().as_u64()
+        );
+        debug!("Weight address: {:#x}", self.weight.dma_addr().as_u64());
+        debug!("Output address: {:#x}", self.output.dma_addr().as_u64());
 
         cna_desc.conv_mode = DIRECT_CONVOLUTION;
         cna_desc.in_precision = Precision::Int8 as u8;
@@ -338,7 +341,7 @@ impl OperationTrait for MatMul<i8, i32> {
         cna_desc.data_offset = 0x0;
         cna_desc.pad_left = 0;
         cna_desc.pad_top = 0;
-        cna_desc.feature_base_addr = self.input.bus_addr() as u32;
+        cna_desc.feature_base_addr = self.input.dma_addr().as_u64() as u32;
         cna_desc.weight_offset = 0;
         cna_desc.weight_burst_len = 0xf;
         cna_desc.data_burst_len = 0xf;
@@ -354,7 +357,7 @@ impl OperationTrait for MatMul<i8, i32> {
         cna_desc.dma_width = cna_desc.datain_width;
         cna_desc.dma_height = cna_desc.datain_height;
         cna_desc.dma_channel = cna_desc.datain_channel;
-        cna_desc.decompress_addr0 = self.weight.bus_addr() as _;
+        cna_desc.decompress_addr0 = self.weight.dma_addr().as_u64() as _;
 
         core_desc.proc_precision = Precision::Int8 as u8;
         core_desc.qd_en = 0;
@@ -369,7 +372,7 @@ impl OperationTrait for MatMul<i8, i32> {
         dpu_desc.out_precision = Precision::Int32 as u8;
         dpu_desc.in_precision = Precision::Int8 as u8;
         dpu_desc.proc_precision = Precision::Int8 as u8;
-        dpu_desc.dst_base_addr = self.output.bus_addr() as _;
+        dpu_desc.dst_base_addr = self.output.dma_addr().as_u64() as _;
         dpu_desc.dst_surf_stride = cna_desc.dataout_height as u32 * cna_desc.dataout_width as u32;
         dpu_desc.width = core_desc.dataout_width;
         dpu_desc.height = core_desc.dataout_height;
@@ -403,8 +406,8 @@ impl OperationTrait for MatMul<i8, i32> {
 }
 
 impl MatMul<i8, i32> {
-    pub fn new_i8(m: usize, k: usize, n: usize) -> Operation {
-        Operation::MatMulu8(MatMul::new(m, k, n))
+    pub fn new_i8(dma: &DeviceDma, m: usize, k: usize, n: usize) -> Operation {
+        Operation::MatMulu8(MatMul::<i8, i32>::new(dma, m, k, n))
     }
 
     pub fn set_b(&mut self, b: &[i8]) {
@@ -423,12 +426,13 @@ impl MatMul<i8, i32> {
 
     pub fn get_output(&self, m: usize, n: usize) -> i32 {
         self.output
-            .get(feature_data(self.n as _, self.m as _, 1, 4, n as _, m as _, 1) as usize)
+            .read(feature_data(self.n as _, self.m as _, 1, 4, n as _, m as _, 1) as usize)
             .unwrap()
     }
 
     pub fn output_buffer(&self) -> &[i32] {
-        self.output.as_ref()
+        self.output.prepare_read_all();
+        unsafe { core::slice::from_raw_parts(self.output.as_ptr().as_ptr(), self.output.len()) }
     }
 }
 

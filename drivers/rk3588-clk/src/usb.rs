@@ -7,9 +7,10 @@
 #![allow(clippy::identity_op)]
 #![allow(clippy::result_unit_err)]
 
-use crate::{OSC_HZ, Rk3588Cru, constant::*};
 use log::{debug, info};
 use tock_registers::interfaces::{Readable, Writeable};
+
+use crate::{OSC_HZ, Rk3588Cru, constant::*};
 
 /// Clock MUX parent configuration
 ///

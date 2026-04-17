@@ -61,7 +61,7 @@ bitflags::bitflags! {
     /// Internal job submission flags.
     #[repr(C)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct  JobMode: u32 {
+    pub struct JobMode: u32 {
         const SLAVE =  0;
         const PC = 1 << 0;
         const BLOCK = 0 << 1;

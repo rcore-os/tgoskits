@@ -47,7 +47,6 @@
 //! // Enable NPU clock gates
 //! cru.npu_gate_enable(ACLK_NPU0)?;
 //! ```
-//!
 #![no_std]
 // Allow Clippy warnings for specific patterns
 #![allow(clippy::manual_is_multiple_of)]
@@ -62,16 +61,19 @@ pub mod tools;
 pub mod usb;
 
 use core::ptr::NonNull;
+
 use log::debug;
 use tock_registers::interfaces::{Readable, Writeable};
 
 use crate::{
     constant::*,
-    registers::autocs::ModeRegisters,
-    registers::clksel::ClkSelRegisters,
-    registers::gate::GateRegisters,
-    registers::pll::{AupllRegisters, CpllRegisters, GpllRegisters, NpllRegisters, V0pllRegisters},
-    registers::softrst::SoftRstRegisters,
+    registers::{
+        autocs::ModeRegisters,
+        clksel::ClkSelRegisters,
+        gate::GateRegisters,
+        pll::{AupllRegisters, CpllRegisters, GpllRegisters, NpllRegisters, V0pllRegisters},
+        softrst::SoftRstRegisters,
+    },
     tools::{div_round_up, div_to_rate},
 };
 

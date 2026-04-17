@@ -233,9 +233,18 @@ impl ElfLoader {
         };
 
         let elf = map_elf(uspace, crate::config::USER_SPACE_BASE, elf)?;
-        let ldso = ldso
-            .map(|elf| map_elf(uspace, crate::config::USER_INTERP_BASE, elf))
-            .transpose()?;
+        let ldso = if ldso.is_some() {
+            let max_end = uspace
+                .areas()
+                .map(|area| area.end().as_usize())
+                .max()
+                .unwrap_or(crate::config::USER_SPACE_BASE);
+            let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
+            ldso.map(|elf| map_elf(uspace, interp_base, elf))
+                .transpose()?
+        } else {
+            None
+        };
 
         let entry = VirtAddr::from_usize(
             ldso.as_ref()

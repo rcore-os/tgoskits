@@ -12,6 +12,8 @@ extern crate alloc;
 #[bare_test::tests]
 mod tests {
     use alloc::{boxed::Box, vec::Vec};
+    use core::ptr::NonNull;
+
     use bare_test::{
         globals::{PlatformInfoKind, global_val},
         mem::{iomap, page_size},
@@ -20,16 +22,15 @@ mod tests {
     };
     use log::{info, warn};
     use rk3588_clk::{Rk3588Cru, constant::*};
-    use rockchip_pm::PowerDomain;
-    use sdmmc::emmc::EMmcHost;
+    use rockchip_pm::{PowerDomain, RkBoard, RockchipPM};
     use sdmmc::{
         Kernel,
-        emmc::clock::{Clk, ClkError, init_global_clk},
+        emmc::{
+            EMmcHost,
+            clock::{Clk, ClkError, init_global_clk},
+        },
         set_impl,
     };
-
-    use core::ptr::NonNull;
-    use rockchip_pm::{RkBoard, RockchipPM};
 
     /// NPU 主电源域 (dt-binding 索引 8)
     pub const NPU: PowerDomain = PowerDomain(8);
@@ -214,11 +215,13 @@ mod tests {
 
                                 if data_match {
                                     println!(
-                                        "Data verification successful: written and read data match perfectly!"
+                                        "Data verification successful: written and read data \
+                                         match perfectly!"
                                     );
                                 } else {
                                     println!(
-                                        "Data verification failed: written and read data do not match!"
+                                        "Data verification failed: written and read data do not \
+                                         match!"
                                     );
                                 }
                             }

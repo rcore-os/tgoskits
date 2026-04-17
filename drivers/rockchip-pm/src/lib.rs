@@ -14,8 +14,9 @@
 //! # Example
 //!
 //! ```no_run
-//! use rockchip_pm::{RockchipPM, RkBoard, PowerDomain};
 //! use core::ptr::NonNull;
+//!
+//! use rockchip_pm::{PowerDomain, RkBoard, RockchipPM};
 //!
 //! // Create driver instance with base address and board type
 //! let base = unsafe { NonNull::new_unchecked(0xfd5d8000 as *mut u8) };
@@ -30,11 +31,12 @@
 
 extern crate alloc;
 
+use core::ptr::NonNull;
+
 use mbarrier::mb;
 use rdif_base::DriverGeneric;
 
 use crate::{registers::PmuRegs, variants::RockchipPmuInfo};
-use core::ptr::NonNull;
 
 mod registers;
 mod variants;
@@ -85,8 +87,9 @@ impl RockchipPM {
     /// # Example
     ///
     /// ```no_run
-    /// use rockchip_pm::{RockchipPM, RkBoard};
     /// use core::ptr::NonNull;
+    ///
+    /// use rockchip_pm::{RkBoard, RockchipPM};
     ///
     /// let base = unsafe { NonNull::new_unchecked(0xfd5d8000 as *mut u8) };
     /// let pm = RockchipPM::new(base, RkBoard::Rk3588);
@@ -113,8 +116,9 @@ impl RockchipPM {
     /// # Example
     ///
     /// ```no_run
-    /// use rockchip_pm::RockchipPM;
     /// use core::ptr::NonNull;
+    ///
+    /// use rockchip_pm::RockchipPM;
     ///
     /// let base = unsafe { NonNull::new_unchecked(0xfd5d8000 as *mut u8) };
     /// let pm = RockchipPM::new_with_compatible(base, "rockchip,rk3588-power-controller");
@@ -371,11 +375,7 @@ impl RockchipPM {
 }
 
 impl DriverGeneric for RockchipPM {
-    fn open(&mut self) -> Result<(), rdif_base::KError> {
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<(), rdif_base::KError> {
-        Ok(())
+    fn name(&self) -> &str {
+        "Rockchip-PM"
     }
 }

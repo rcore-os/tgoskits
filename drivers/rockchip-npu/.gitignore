@@ -3,3 +3,7 @@ Cargo.lock
 .bare-test.toml
 .spec-workflow
 *-schema.json
+
+.uboot*
+.board*
+.build*

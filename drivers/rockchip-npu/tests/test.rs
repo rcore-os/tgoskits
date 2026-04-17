@@ -10,43 +10,43 @@ extern crate bare_test;
 
 #[bare_test::tests]
 mod tests {
-    use core::{ptr::NonNull, sync::atomic::AtomicU32, time::Duration};
-
     use alloc::vec::Vec;
+    use core::{hint::spin_loop, ptr::NonNull, sync::atomic::AtomicU32, time::Duration};
+
     use arm_scmi::{Scmi, Shmem, Smc};
     use bare_test::{
-        GetIrqConfig,
-        globals::{PlatformInfoKind, global_val},
-        irq::{IrqHandleResult, IrqParam, Phandle},
-        mem::{iomap, page_size},
-        time::spin_delay,
-    };
-    use num_align::NumAlign;
-    use rk3588_clk::{
-        Rk3588Cru,
-        constant::{
-            ACLK_NPU0, ACLK_NPU1, ACLK_NPU2, CLK_CORE_NPU_PVTM, CLK_NPU_CM0_RTC, CLK_NPU_DSU0,
-            CLK_NPU_PVTM, CLK_NPUTIMER_ROOT, CLK_NPUTIMER0, CLK_NPUTIMER1, FCLK_NPU_CM0_CORE,
-            HCLK_NPU_CM0_ROOT, HCLK_NPU_ROOT, HCLK_NPU0, HCLK_NPU1, HCLK_NPU2, PCLK_NPU_GRF,
-            PCLK_NPU_PVTM, PCLK_NPU_ROOT, PCLK_NPU_TIMER, PCLK_NPU_WDT, TCLK_NPU_WDT,
+        hal::al::IrqId,
+        os::{
+            irq::register_handler,
+            mem::{dma::kernel_dma_op, mmio::ioremap, page_size},
+            platform::{PlatformDescriptor, get_platform_descriptor},
+            time::since_boot,
         },
     };
+    use dma_api::DeviceDma;
+    use fdt_edit::{Fdt, Phandle};
+    use num_align::NumAlign;
+    use rk3588_clk::Rk3588Cru;
     use rknpu::{
         Rknpu, RknpuConfig, RknpuType, Submit,
         op::{self, Operation},
     };
-    use rockchip_pm::{PD, RkBoard, RockchipPM};
+    use rockchip_pm::{PowerDomain, RkBoard, RockchipPM};
 
     /// NPU 主电源域
-    pub const NPU: PD = PD(8);
+    pub const NPU: PowerDomain = PowerDomain(8);
     /// NPU TOP 电源域  
-    pub const NPUTOP: PD = PD(9);
+    pub const NPUTOP: PowerDomain = PowerDomain(9);
     /// NPU1 电源域
-    pub const NPU1: PD = PD(10);
+    pub const NPU1: PowerDomain = PowerDomain(10);
     /// NPU2 电源域
-    pub const NPU2: PD = PD(11);
+    pub const NPU2: PowerDomain = PowerDomain(11);
 
     static IRQ_STATUS: AtomicU32 = AtomicU32::new(0);
+
+    fn dma_device() -> DeviceDma {
+        DeviceDma::new(u32::MAX as u64, kernel_dma_op())
+    }
 
     #[test]
     fn it_works() {
@@ -74,17 +74,16 @@ mod tests {
     }
 
     fn find_rknpu() -> Rknpu {
-        let PlatformInfoKind::DeviceTree(fdt) = &global_val().platform_info;
-        let fdt = fdt.get();
-
+        let fdt = platform_fdt();
         let node = fdt
             .find_compatible(&["rockchip,rk3588-rknpu"])
+            .into_iter()
             .next()
             .unwrap();
 
         info!("Found node: {}", node.name());
         let mut config = None;
-        for c in node.compatibles() {
+        for c in node.as_node().compatibles() {
             if c == "rockchip,rk3588-rknpu" {
                 config = Some(RknpuConfig {
                     rknpu_type: RknpuType::Rk3588,
@@ -105,60 +104,57 @@ mod tests {
 
         let config = config.expect("Unsupported RKNPU compatible");
 
-        let regs = node.reg().unwrap();
-
         let mut base_regs = Vec::new();
 
-        for reg in regs {
+        for reg in node.regs() {
             let start_raw = reg.address as usize;
-            let end = start_raw + reg.size.unwrap_or(page_size());
+            let size = reg.size.unwrap_or(page_size() as u64) as usize;
+            let end = start_raw + size;
 
             let start = start_raw & !(page_size() - 1);
             let offset = start_raw - start;
             let end = (end + page_size() - 1) & !(page_size() - 1);
             let size = end - start;
 
-            base_regs.push(unsafe { iomap(start.into(), size).add(offset) });
+            let mapping = ioremap(start.into(), size).unwrap();
+            base_regs.push(unsafe { NonNull::new_unchecked(mapping.as_ptr().add(offset)) });
         }
-        let rknpu = Rknpu::new(&base_regs, config);
+        let rknpu = Rknpu::new(&base_regs, config, dma_device());
 
         let irq_handler0 = rknpu.new_irq_handler(0);
 
-        let irq_info = node.irq_info().unwrap();
-
-        IrqParam {
-            intc: irq_info.irq_parent,
-            cfg: irq_info.cfgs[0].clone(),
-        }
-        .register_builder(move |_| {
+        let irq_ref = node.interrupts().into_iter().next().unwrap();
+        let irq_id = IrqId::from(gic_irq_id(&irq_ref.specifier));
+        register_handler(irq_id, move || {
             let status = irq_handler0.handle();
             IRQ_STATUS.store(status, core::sync::atomic::Ordering::SeqCst);
-            IrqHandleResult::Handled
-        })
-        .register();
+        });
 
         rknpu
     }
 
     fn get_syscon_addr() -> NonNull<u8> {
-        let PlatformInfoKind::DeviceTree(fdt) = &global_val().platform_info;
-        let fdt = fdt.get();
+        let fdt = platform_fdt();
 
-        let node = fdt
-            .find_compatible(&["syscon"])
-            .find(|n| n.name().contains("power-manage"))
-            .expect("Failed to find syscon node");
+        let mut node = None;
+        for candidate in fdt.find_compatible(&["syscon"]) {
+            if candidate.name().contains("power-manage") {
+                node = Some(candidate);
+                break;
+            }
+        }
+        let node = node.expect("Failed to find syscon node");
 
         info!("Found node: {}", node.name());
 
-        let regs = node.reg().unwrap().collect::<Vec<_>>();
+        let regs = node.regs();
         let start = regs[0].address as usize;
-        let end = start + regs[0].size.unwrap_or(0);
+        let end = start + regs[0].size.unwrap_or(0) as usize;
         info!("Syscon address range: 0x{:x} - 0x{:x}", start, end);
         let start = start & !(page_size() - 1);
         let end = (end + page_size() - 1) & !(page_size() - 1);
         info!("Aligned Syscon address range: 0x{:x} - 0x{:x}", start, end);
-        iomap(start.into(), end - start)
+        ioremap(start.into(), end - start).unwrap().as_nonnull_ptr()
     }
 
     fn configure_npu_clocks() -> Rk3588Cru {
@@ -200,29 +196,27 @@ mod tests {
     }
 
     fn get_cru_addr() -> NonNull<u8> {
-        let PlatformInfoKind::DeviceTree(fdt) = &global_val().platform_info;
-        let fdt = fdt.get();
+        let fdt = platform_fdt();
 
         let node = fdt
             .find_compatible(&["rockchip,rk3588-cru"])
+            .into_iter()
             .next()
             .expect("Failed to find CRU node");
 
         info!("Found node: {}", node.name());
 
-        let reg = node
-            .reg()
-            .and_then(|mut regs| regs.next())
-            .expect("CRU node missing reg range");
+        let regs = node.regs();
+        let reg = regs.first().copied().expect("CRU node missing reg range");
 
         let start_raw = reg.address as usize;
-        let size = reg.size.unwrap_or(page_size());
+        let size = reg.size.unwrap_or(page_size() as u64) as usize;
 
         let start = start_raw & !(page_size() - 1);
         let end = (start_raw + size + page_size() - 1) & !(page_size() - 1);
         let offset = start_raw - start;
 
-        let mapping = iomap(start.into(), end - start);
+        let mapping = ioremap(start.into(), end - start).unwrap();
         let ptr = unsafe { mapping.as_ptr().add(offset) };
 
         // SAFETY: iomap guarantees a valid mapping; offset is within bounds.
@@ -230,49 +224,55 @@ mod tests {
     }
 
     fn set_up_scmi() {
-        let PlatformInfoKind::DeviceTree(fdt) = &global_val().platform_info;
-        let fdt = fdt.get();
+        let fdt = platform_fdt();
         let node = fdt
             .find_compatible(&["arm,scmi-smc"])
+            .into_iter()
             .next()
             .expect("scmi not found");
 
         info!("found scmi node: {:?}", node.name());
 
         let shmem_ph: Phandle = node
-            .find_property("shmem")
+            .as_node()
+            .get_property("shmem")
             .expect("shmem property not found")
-            .u32()
+            .get_u32()
+            .expect("invalid shmem phandle")
             .into();
 
-        let shmem_node = fdt
-            .get_node_by_phandle(shmem_ph)
-            .expect("shmem node not found");
+        let shmem_node = fdt.get_by_phandle(shmem_ph).expect("shmem node not found");
 
         info!("found shmem node: {:?}", shmem_node.name());
 
-        let shmem_reg = shmem_node.reg().unwrap().collect::<Vec<_>>();
+        let shmem_reg = shmem_node.regs();
         assert_eq!(shmem_reg.len(), 1);
         let shmem_reg = shmem_reg[0];
-        let shmem_addr = iomap(
+        let shmem_addr = ioremap(
             (shmem_reg.address as usize).into(),
-            shmem_reg.size.unwrap().align_up(0x1000),
-        );
+            shmem_reg.size.unwrap().align_up(0x1000) as usize,
+        )
+        .unwrap();
 
         let func_id = node
-            .find_property("arm,smc-id")
+            .as_node()
+            .get_property("arm,smc-id")
             .expect("function-id property not found")
-            .u32();
+            .get_u32()
+            .expect("invalid function-id");
 
         info!("shmem reg: {:?}", shmem_reg);
         info!("func_id: {:#x}", func_id);
 
-        let irq_num = node.find_property("a2p").map(|irq_prop| irq_prop.u32());
+        let irq_num = node
+            .as_node()
+            .get_property("a2p")
+            .and_then(|irq_prop| irq_prop.get_u32());
 
         let shmem = Shmem {
-            address: shmem_addr,
+            address: shmem_addr.as_nonnull_ptr(),
             bus_address: shmem_reg.child_bus_address as usize,
-            size: shmem_reg.size.unwrap(),
+            size: shmem_reg.size.unwrap() as usize,
         };
         let kind = Smc::new(func_id, irq_num);
         let scmi = Scmi::new(kind, shmem);
@@ -306,13 +306,13 @@ mod tests {
 
         matmul_int(m, k, n, &a_data, &b_data, &mut want);
 
-        let mut npu_matmul = op::matmul::MatMul::<i8, i32>::new(m, k, n);
+        let mut npu_matmul = op::matmul::MatMul::<i8, i32>::new(npu.dma(), m, k, n);
 
         npu_matmul.set_a(&a_data);
 
         npu_matmul.set_b(&b_data);
 
-        let mut job = Submit::new(vec![Operation::MatMulu8(npu_matmul)]);
+        let mut job = Submit::new(npu.dma(), vec![Operation::MatMulu8(npu_matmul)]);
 
         let bstatus = npu.handle_interrupt0();
 
@@ -358,6 +358,33 @@ mod tests {
                 }
                 dst[i * n + j] = sum;
             }
+        }
+    }
+
+    fn platform_fdt() -> Fdt {
+        match get_platform_descriptor() {
+            PlatformDescriptor::DeviceTree(dtb) => {
+                Fdt::from_bytes(dtb.as_slice()).expect("failed to parse live device tree")
+            }
+            PlatformDescriptor::Acpi => panic!("ACPI platform is not supported"),
+            PlatformDescriptor::None => panic!("device tree is unavailable"),
+        }
+    }
+
+    fn gic_irq_id(specifier: &[u32]) -> usize {
+        match specifier {
+            [id] => *id as usize,
+            [0, num, ..] => *num as usize + 32,
+            [1, num, ..] => *num as usize + 16,
+            [kind, ..] => panic!("unsupported GIC interrupt specifier type: {kind}"),
+            [] => panic!("empty interrupt specifier"),
+        }
+    }
+
+    fn spin_delay(duration: Duration) {
+        let deadline = since_boot() + duration;
+        while since_boot() < deadline {
+            spin_loop();
         }
     }
 }

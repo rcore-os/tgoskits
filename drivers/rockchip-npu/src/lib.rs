@@ -28,7 +28,9 @@ mod registers;
 mod task;
 
 use alloc::vec::Vec;
+
 pub use config::*;
+use dma_api::DeviceDma;
 pub use err::*;
 pub use gem::*;
 pub use job::*;
@@ -52,32 +54,32 @@ const fn version(major: u32, minor: u32, patch: u32) -> u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum RknpuAction {
-    GetHwVersion = 0,
-    GetDrvVersion = 1,
-    GetFreq = 2,
-    SetFreq = 3,
-    GetVolt = 4,
-    SetVolt = 5,
-    ActReset = 6,
-    GetBwPriority = 7,
-    SetBwPriority = 8,
-    GetBwExpect = 9,
-    SetBwExpect = 10,
-    GetBwTw = 11,
-    SetBwTw = 12,
+    GetHwVersion        = 0,
+    GetDrvVersion       = 1,
+    GetFreq             = 2,
+    SetFreq             = 3,
+    GetVolt             = 4,
+    SetVolt             = 5,
+    ActReset            = 6,
+    GetBwPriority       = 7,
+    SetBwPriority       = 8,
+    GetBwExpect         = 9,
+    SetBwExpect         = 10,
+    GetBwTw             = 11,
+    SetBwTw             = 12,
     ActClrTotalRwAmount = 13,
-    GetDtWrAmount = 14,
-    GetDtRdAmount = 15,
-    GetWtRdAmount = 16,
-    GetTotalRwAmount = 17,
-    GetIommuEn = 18,
-    SetProcNice = 19,
-    PowerOn = 20,
-    PowerOff = 21,
-    GetTotalSramSize = 22,
-    GetFreeSramSize = 23,
-    GetIommuDomainId = 24,
-    SetIommuDomainId = 25,
+    GetDtWrAmount       = 14,
+    GetDtRdAmount       = 15,
+    GetWtRdAmount       = 16,
+    GetTotalRwAmount    = 17,
+    GetIommuEn          = 18,
+    SetProcNice         = 19,
+    PowerOn             = 20,
+    PowerOff            = 21,
+    GetTotalSramSize    = 22,
+    GetFreeSramSize     = 23,
+    GetIommuDomainId    = 24,
+    SetIommuDomainId    = 25,
 }
 
 pub struct Rknpu {
@@ -85,6 +87,7 @@ pub struct Rknpu {
     #[allow(dead_code)]
     config: RknpuConfig,
     data: RknpuData,
+    dma: DeviceDma,
     iommu_enabled: bool,
     pub(crate) gem: GemPool,
 }
@@ -97,7 +100,7 @@ impl Rknpu {
     /// The caller must ensure that `base_addr` is the correctly mapped and
     /// aligned physical address of the RKNPU register file and that it remains
     /// valid for the lifetime of the returned structure.
-    pub fn new(base_addrs: &[NonNull<u8>], config: RknpuConfig) -> Self {
+    pub fn new(base_addrs: &[NonNull<u8>], config: RknpuConfig, dma: DeviceDma) -> Self {
         let data = RknpuData::new(config.rknpu_type);
 
         Self {
@@ -107,9 +110,14 @@ impl Rknpu {
                 .collect(),
             data,
             config,
+            dma: dma.clone(),
             iommu_enabled: false,
-            gem: GemPool::new(),
+            gem: GemPool::new(dma),
         }
+    }
+
+    pub fn dma(&self) -> &DeviceDma {
+        &self.dma
     }
 
     pub fn open(&mut self) -> Result<(), RknpuError> {
@@ -355,12 +363,8 @@ impl RknpuIrqHandler {
 }
 
 impl DriverGeneric for Rknpu {
-    fn open(&mut self) -> Result<(), rdif_base::KError> {
-        Self::open(self).map_err(|_| rdif_base::KError::Unknown("open fail"))
-    }
-
-    fn close(&mut self) -> Result<(), rdif_base::KError> {
-        Ok(())
+    fn name(&self) -> &str {
+        "rockchip-npu"
     }
 }
 

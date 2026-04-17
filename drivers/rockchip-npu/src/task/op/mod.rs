@@ -6,9 +6,9 @@ pub mod matmul;
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
 enum Precision {
-    Int8 = 0x0,
+    Int8    = 0x0,
     Float16 = 0x2,
-    Int32 = 0x4,
+    Int32   = 0x4,
     Float32 = 0x5,
 }
 

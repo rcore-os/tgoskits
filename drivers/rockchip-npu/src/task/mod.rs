@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
-use dma_api::{DVec, Direction};
+
+use dma_api::{DArray, DeviceDma, DmaDirection};
 
 use crate::{JobMode, op::Operation};
 
@@ -27,12 +28,12 @@ pub struct SubmitRef {
 
 pub struct Submit {
     pub base: SubmitBase,
-    pub regcmd_all: DVec<u64>,
+    pub regcmd_all: DArray<u64>,
     pub tasks: Vec<Operation>,
 }
 
 impl Submit {
-    pub fn new(tasks: Vec<Operation>) -> Self {
+    pub fn new(dma: &DeviceDma, tasks: Vec<Operation>) -> Self {
         let base = SubmitBase {
             flags: JobMode::PC | JobMode::BLOCK | JobMode::PINGPONG,
             task_base_addr: 0,
@@ -42,23 +43,26 @@ impl Submit {
             regcfg_amount: tasks[0].reg_amount(),
         };
 
-        let regcmd_all: DVec<u64> = DVec::zeros(
-            u32::MAX as _,
-            base.regcfg_amount as usize * tasks.len(),
-            0x1000,
-            Direction::Bidirectional,
-        )
-        .unwrap();
+        let regcmd_all = dma
+            .array_zero_with_align::<u64>(
+                base.regcfg_amount as usize * tasks.len(),
+                0x1000,
+                DmaDirection::Bidirectional,
+            )
+            .unwrap();
 
         assert!(
-            regcmd_all.bus_addr() <= u32::MAX as u64,
+            regcmd_all.dma_addr().as_u64() <= u32::MAX as u64,
             "regcmd base address exceeds u32"
         );
 
         let amount = base.regcfg_amount as usize;
         for (i, task) in tasks.iter().enumerate() {
             let regcmd = unsafe {
-                core::slice::from_raw_parts_mut(regcmd_all.as_ptr().add(i * amount), amount)
+                core::slice::from_raw_parts_mut(
+                    regcmd_all.as_ptr().as_ptr().add(i * amount),
+                    amount,
+                )
             };
             task.fill_regcmd(regcmd);
         }
@@ -75,7 +79,7 @@ impl Submit {
         SubmitRef {
             base: self.base.clone(),
             task_number: self.tasks.len(),
-            regcmd_base_addr: self.regcmd_all.bus_addr() as _,
+            regcmd_base_addr: self.regcmd_all.dma_addr().as_u64() as _,
         }
     }
 }

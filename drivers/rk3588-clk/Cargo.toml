@@ -17,7 +17,7 @@ tock-registers = "0.10"
 
 [dev-dependencies]
 bare-test = "0.7"
-sdmmc = { git = "https://github.com/YanQD/sdmmc.git" }
+sdmmc = "0.1"
 rockchip-pm = "0.4"
 
 [build-dependencies]

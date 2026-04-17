@@ -27,6 +27,7 @@ qemu = [
 ]
 smp = ["ax-feat/smp", "axplat-dyn?/smp", "axplat-riscv64-visionfive2?/smp"]
 
+rknpu = ["starry-kernel/rknpu", "axplat-dyn?/rknpu"]
 vf2 = ["dep:axplat-riscv64-visionfive2", "ax-feat/driver-sdmmc"]
 
 [[bin]]

@@ -229,13 +229,26 @@ impl Rknpu {
                 regcmd_base_addr: submit_tasks[0].regcmd_addr as _,
             };
             debug!("Submit {task_number} jobs: {job:#x?}");
+            let mut clear_count: u64 = 0;
             while self.base[idx].handle_interrupt() != 0 {
+                clear_count += 1;
+                if clear_count % 1_000_000 == 0 {
+                    warn!(
+                        "rknpu submit_one: stuck clearing interrupts, cleared {} times",
+                        clear_count
+                    );
+                }
                 spin_loop();
             }
-            debug!("Submitting PC job...");
+            debug!("Pending interrupts cleared, submitting PC job...");
             self.base[idx].submit_pc(&self.data, &job).unwrap();
+            debug!(
+                "PC job submitted, waiting for completion (int_mask={:#x})...",
+                job.base.int_mask
+            );
             let int_status;
             // Wait for completion
+            let mut wait_count: u64 = 0;
             loop {
                 let status = self.base[idx].pc().interrupt_status.get();
                 let status = rknpu_fuzz_status(status);
@@ -245,8 +258,18 @@ impl Rknpu {
                     break;
                 }
                 if status != 0 {
-                    debug!("Interrupt status changed: {:#x}", status);
+                    warn!(
+                        "Unexpected interrupt status: {:#x}, int_mask={:#x}",
+                        status, job.base.int_mask
+                    );
                     return Err(RknpuError::TaskError);
+                }
+                wait_count += 1;
+                if wait_count % 1_000_000 == 0 {
+                    warn!(
+                        "rknpu submit_one: still waiting, int_status=0x{:x}, polled {} times",
+                        status, wait_count
+                    );
                 }
             }
             self.base[idx].pc().clean_interrupts();

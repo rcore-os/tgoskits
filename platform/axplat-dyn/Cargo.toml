@@ -25,6 +25,7 @@ serial = ["dep:some-serial"]
 net = ["dep:ax-driver-net", "dep:rd-net"]
 intel-net = ["net", "dep:eth-intel", "dep:pcie"]
 virtio-net-pci = ["net"]
+rknpu = ["dep:rockchip-npu", "rockchip-pm", "rk3588-clk"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
@@ -51,8 +52,9 @@ rd-net = { version = "0.1", optional = true }
 rdif-clk = "0.5"
 rdrive = "0.20"
 rk3568_clk = { version = "0.1", optional = true }
-rk3588-clk = { version = "0.1", optional = true }
-rockchip-pm = { version = "0.4", optional = true }
+rk3588-clk = { workspace = true, optional = true }
+rockchip-npu = { workspace = true, optional = true }
+rockchip-pm = { workspace = true, optional = true }
 phytium-mci = { version = "0.1", default-features = false, features = ["pio"], optional = true }
 sdmmc = { version = "0.1", default-features = false, features = ["pio"], optional = true }
 somehal = "0.6"

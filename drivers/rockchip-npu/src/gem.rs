@@ -1,5 +1,6 @@
 use alloc::collections::btree_map::BTreeMap;
-use dma_api::{DVec, Direction};
+
+use dma_api::{DArray, DeviceDma, DmaDirection};
 
 use crate::{
     RknpuError,
@@ -7,34 +8,33 @@ use crate::{
 };
 
 pub struct GemPool {
-    pool: BTreeMap<u32, DVec<u8>>,
+    dma: DeviceDma,
+    pool: BTreeMap<u32, DArray<u8>>,
     handle_counter: u32,
 }
 
 impl GemPool {
-    pub const fn new() -> Self {
+    pub fn new(dma: DeviceDma) -> Self {
         GemPool {
+            dma,
             pool: BTreeMap::new(),
             handle_counter: 1,
         }
     }
 
     pub fn create(&mut self, args: &mut RknpuMemCreate) -> Result<(), RknpuError> {
-        let data = DVec::zeros(
-            u32::MAX as _,
-            args.size as _,
-            0x1000,
-            Direction::Bidirectional,
-        )
-        .unwrap();
+        let data = self
+            .dma
+            .array_zero_with_align::<u8>(args.size as _, 0x1000, DmaDirection::Bidirectional)
+            .map_err(|_| RknpuError::DmaError)?;
 
         let handle = self.handle_counter;
         self.handle_counter = self.handle_counter.wrapping_add(1);
 
         args.handle = handle;
         args.sram_size = data.len() as _;
-        args.dma_addr = data.bus_addr();
-        args.obj_addr = data.as_ptr() as _;
+        args.dma_addr = data.dma_addr().as_u64();
+        args.obj_addr = data.as_ptr().as_ptr() as _;
         self.pool.insert(args.handle, data);
         Ok(())
     }
@@ -43,7 +43,14 @@ impl GemPool {
     pub fn get_phys_addr_and_size(&self, handle: u32) -> Option<(u64, usize)> {
         self.pool
             .get(&handle)
-            .map(|dvec| (dvec.bus_addr(), dvec.len()))
+            .map(|data| (data.dma_addr().as_u64(), data.len()))
+    }
+
+    /// Get the CPU-visible virtual address and size of the memory object.
+    pub fn get_obj_addr_and_size(&self, handle: u32) -> Option<(usize, usize)> {
+        self.pool
+            .get(&handle)
+            .map(|data| (data.as_ptr().as_ptr() as usize, data.len()))
     }
 
     pub fn sync(&mut self, _args: &mut RknpuMemSync) {}
@@ -64,11 +71,5 @@ impl GemPool {
             data.prepare_read_all();
         }
         Ok(())
-    }
-}
-
-impl Default for GemPool {
-    fn default() -> Self {
-        Self::new()
     }
 }

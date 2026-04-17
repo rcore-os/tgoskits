@@ -1,5 +1,0 @@
-[qemu]
-machine = "virt"
-cpu = "cortex-a53"
-graphic = false
-args = ""

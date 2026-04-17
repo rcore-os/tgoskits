@@ -9,7 +9,7 @@ use linux_raw_sys::general::*;
 use starry_vm::{vm_load, vm_write_slice};
 
 use crate::{
-    file::{File, FileLike},
+    file::get_file_like,
     mm::{Backend, SharedPages},
     pseudofs::{Device, DeviceMmap},
     task::AsThread,
@@ -48,6 +48,10 @@ impl From<MmapProt> for MappingFlags {
         }
         flags
     }
+}
+
+fn capped_device_map_len(request_len: usize, available_len: usize, page_size: PageSize) -> usize {
+    request_len.min(available_len.align_up(page_size))
 }
 
 bitflags::bitflags! {
@@ -173,23 +177,41 @@ pub fn sys_mmap(
     };
 
     let file = if fd > 0 {
-        Some(File::from_fd(fd)?)
+        Some(get_file_like(fd)?)
     } else {
         None
     };
 
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
-            if let Some(file) = file {
-                let file = file.inner();
-                let backend = file.backend()?.clone();
-                match file.backend()?.clone() {
+            if let Some(ref file) = file {
+                // Try device mmap first (ExportedGemBuffer, etc.)
+                if let Ok(device_mmap) = file.device_mmap(offset as u64) {
+                    match device_mmap {
+                        DeviceMmap::Physical(mut range) => {
+                            range.start += offset;
+                            if range.is_empty() {
+                                return Err(AxError::InvalidInput);
+                            }
+                            length = length.min(range.size().align_down(page_size));
+                            Backend::new_linear(
+                                start.as_usize() as isize - range.start.as_usize() as isize,
+                            );
+                        }
+                        DeviceMmap::None => return Err(AxError::NoSuchDevice),
+                        _ => return Err(AxError::InvalidInput),
+                    }
+                }
+
+                // Fall through to file-backed mmap
+                let (backend, flags) = file.file_mmap()?;
+                match backend.clone() {
                     FileBackend::Cached(cache) => {
                         // TODO(mivik): file mmap page size
                         Backend::new_file(
                             start,
                             cache,
-                            file.flags(),
+                            flags,
                             offset,
                             &curr.as_thread().proc_data.aspace,
                         )
@@ -200,19 +222,18 @@ pub fn sys_mmap(
                             .downcast::<Device>()
                             .map_err(|_| AxError::NoSuchDevice)?;
 
-                        match device.mmap() {
+                        match device.mmap(offset as u64) {
                             DeviceMmap::None => {
                                 return Err(AxError::NoSuchDevice);
                             }
                             DeviceMmap::ReadOnly => {
                                 Backend::new_cow(start, page_size, backend, offset as u64, None)
                             }
-                            DeviceMmap::Physical(mut range) => {
-                                range.start += offset;
+                            DeviceMmap::Physical(range) => {
                                 if range.is_empty() {
                                     return Err(AxError::InvalidInput);
                                 }
-                                length = length.min(range.size().align_down(page_size));
+                                length = capped_device_map_len(length, range.size(), page_size);
                                 Backend::new_linear(
                                     start.as_usize() as isize - range.start.as_usize() as isize,
                                 )
@@ -220,7 +241,7 @@ pub fn sys_mmap(
                             DeviceMmap::Cache(cache) => Backend::new_file(
                                 start,
                                 cache,
-                                file.flags(),
+                                flags,
                                 offset,
                                 &curr.as_thread().proc_data.aspace,
                             ),
@@ -232,9 +253,9 @@ pub fn sys_mmap(
             }
         }
         MmapFlags::PRIVATE => {
-            if let Some(file) = file {
-                // Private mapping from a file
-                let backend = file.inner().backend()?.clone();
+            if let Some(ref file) = file {
+                // Private file-backed mmap
+                let (backend, _) = file.file_mmap()?;
                 Backend::new_cow(start, page_size, backend, offset as u64, None)
             } else {
                 Backend::new_alloc(start, page_size)
