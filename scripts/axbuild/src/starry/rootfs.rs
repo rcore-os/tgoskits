@@ -422,6 +422,7 @@ fn prepare_c_case_assets_sync(
     if prebuild_script.is_file() {
         let apk_region = apk_region_from_env()?;
         rewrite_apk_repositories_for_region(&layout.staging_root, apk_region)?;
+        log_apk_prebuild_context(&layout.staging_root, apk_region)?;
         let prebuild_env = prepare_guest_prebuild_env(arch, case, layout, apk_region)?;
         let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
         command.exec().context("failed to run case prebuild.sh")?;
@@ -590,6 +591,21 @@ fn rewrite_apk_repository_line(line: &str, region: ApkRegion) -> String {
         suffix,
         trailing
     )
+}
+
+fn log_apk_prebuild_context(staging_root: &Path, region: ApkRegion) -> anyhow::Result<()> {
+    let repositories_path = staging_root.join("etc/apk/repositories");
+    let repositories = fs::read_to_string(&repositories_path)
+        .with_context(|| format!("failed to read {}", repositories_path.display()))?;
+
+    println!("STARRY_APK_REGION={}", region.canonical_name());
+    println!("apk repositories:");
+    print!("{repositories}");
+    if !repositories.ends_with('\n') {
+        println!();
+    }
+
+    Ok(())
 }
 
 fn prepare_guest_prebuild_env(
