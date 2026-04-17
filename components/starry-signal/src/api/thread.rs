@@ -13,13 +13,29 @@ use starry_vm::{VmMutPtr, VmPtr};
 use super::ProcessSignalManager;
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
-    SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo, api::SignalActions, arch::UContext,
+    SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo, arch::UContext,
 };
 
 struct SignalFrame {
     ucontext: UContext,
     siginfo: SignalInfo,
     uctx: UserContext,
+}
+
+enum PreparedSignal {
+    Ignore,
+    Action(SignalOSAction),
+    Handler(PreparedSignalHandler),
+}
+
+struct PreparedSignalHandler {
+    signo: Signo,
+    siginfo: SignalInfo,
+    restore_blocked: SignalSet,
+    handler: usize,
+    restorer: usize,
+    add_blocked: SignalSet,
+    aligned_sp: usize,
 }
 
 /// Thread-level signal manager.
@@ -65,25 +81,32 @@ impl ThreadSignalManager {
         &self.proc
     }
 
-    pub fn handle_signal(
+    fn prepare_signal(
         &self,
-        uctx: &mut UserContext,
+        uctx: &UserContext,
         restore_blocked: SignalSet,
         sig: &SignalInfo,
-        action: &SignalAction,
-        actions: &mut SignalActions,
-    ) -> Option<SignalOSAction> {
+    ) -> PreparedSignal {
         let signo = sig.signo();
         debug!("Handle signal: {signo:?}");
+        let action = {
+            let mut actions = self.proc.actions.lock();
+            let action = actions[signo].clone();
+            if action.flags.contains(SignalActionFlags::RESETHAND) {
+                actions[signo] = SignalAction::default();
+            }
+            action
+        };
+
         match action.disposition {
             SignalDisposition::Default => match signo.default_action() {
-                DefaultSignalAction::Terminate => Some(SignalOSAction::Terminate),
-                DefaultSignalAction::CoreDump => Some(SignalOSAction::CoreDump),
-                DefaultSignalAction::Stop => Some(SignalOSAction::Stop),
-                DefaultSignalAction::Ignore => None,
-                DefaultSignalAction::Continue => Some(SignalOSAction::Continue),
+                DefaultSignalAction::Terminate => PreparedSignal::Action(SignalOSAction::Terminate),
+                DefaultSignalAction::CoreDump => PreparedSignal::Action(SignalOSAction::CoreDump),
+                DefaultSignalAction::Stop => PreparedSignal::Action(SignalOSAction::Stop),
+                DefaultSignalAction::Ignore => PreparedSignal::Ignore,
+                DefaultSignalAction::Continue => PreparedSignal::Action(SignalOSAction::Continue),
             },
-            SignalDisposition::Ignore => None,
+            SignalDisposition::Ignore => PreparedSignal::Ignore,
             SignalDisposition::Handler(handler) => {
                 let layout = Layout::new::<SignalFrame>();
                 let stack = self.stack.lock();
@@ -95,51 +118,63 @@ impl ThreadSignalManager {
                 drop(stack);
 
                 let aligned_sp = (sp - layout.size()) & !(layout.align() - 1);
-
-                let frame_ptr = aligned_sp as *mut SignalFrame;
-                if frame_ptr
-                    .vm_write(SignalFrame {
-                        ucontext: UContext::new(uctx, restore_blocked),
-                        siginfo: sig.clone(),
-                        uctx: *uctx,
-                    })
-                    .is_err()
-                {
-                    return Some(SignalOSAction::CoreDump);
-                }
-
-                uctx.set_ip(handler as usize);
-                uctx.set_sp(aligned_sp);
-                uctx.set_arg0(signo as _);
-                uctx.set_arg1(aligned_sp + offset_of!(SignalFrame, siginfo));
-                uctx.set_arg2(aligned_sp + offset_of!(SignalFrame, ucontext));
-
                 let restorer = action
                     .restorer
                     .map_or(self.proc.default_restorer, |f| f as _);
-                #[cfg(target_arch = "x86_64")]
-                {
-                    let new_sp = uctx.sp() - 8;
-                    if (new_sp as *mut usize).vm_write(restorer).is_err() {
-                        return Some(SignalOSAction::CoreDump);
-                    }
-                    uctx.set_sp(new_sp);
-                }
-                #[cfg(not(target_arch = "x86_64"))]
-                uctx.set_ra(restorer);
-
                 let mut add_blocked = action.mask;
                 if !action.flags.contains(SignalActionFlags::NODEFER) {
                     add_blocked.add(signo);
                 }
 
-                if action.flags.contains(SignalActionFlags::RESETHAND) {
-                    actions[signo] = SignalAction::default();
-                }
-                *self.blocked.lock() |= add_blocked;
-                Some(SignalOSAction::Handler)
+                PreparedSignal::Handler(PreparedSignalHandler {
+                    signo,
+                    siginfo: sig.clone(),
+                    restore_blocked,
+                    handler: handler as usize,
+                    restorer,
+                    add_blocked,
+                    aligned_sp,
+                })
             }
         }
+    }
+
+    fn install_signal_handler(
+        &self,
+        uctx: &mut UserContext,
+        prepared: PreparedSignalHandler,
+    ) -> SignalOSAction {
+        let frame_ptr = prepared.aligned_sp as *mut SignalFrame;
+        if frame_ptr
+            .vm_write(SignalFrame {
+                ucontext: UContext::new(uctx, prepared.restore_blocked),
+                siginfo: prepared.siginfo,
+                uctx: *uctx,
+            })
+            .is_err()
+        {
+            return SignalOSAction::CoreDump;
+        }
+
+        uctx.set_ip(prepared.handler);
+        uctx.set_sp(prepared.aligned_sp);
+        uctx.set_arg0(prepared.signo as _);
+        uctx.set_arg1(prepared.aligned_sp + offset_of!(SignalFrame, siginfo));
+        uctx.set_arg2(prepared.aligned_sp + offset_of!(SignalFrame, ucontext));
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            let new_sp = uctx.sp() - 8;
+            if (new_sp as *mut usize).vm_write(prepared.restorer).is_err() {
+                return SignalOSAction::CoreDump;
+            }
+            uctx.set_sp(new_sp);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        uctx.set_ra(prepared.restorer);
+
+        *self.blocked.lock() |= prepared.add_blocked;
+        SignalOSAction::Handler
     }
 
     #[cold]
@@ -147,7 +182,6 @@ impl ThreadSignalManager {
         &self,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
-        actions: &mut SignalActions,
     ) -> Option<(SignalInfo, SignalOSAction)> {
         let blocked = self.blocked.lock();
         let mask = !*blocked;
@@ -162,12 +196,13 @@ impl ThreadSignalManager {
                     self.proc.dequeue_signal(&mask)
                 }
             }?;
-            let action = actions[sig.signo()].clone();
-
-            if let Some(os_action) =
-                self.handle_signal(uctx, restore_blocked, &sig, &action, actions)
-            {
-                break Some((sig, os_action));
+            match self.prepare_signal(uctx, restore_blocked, &sig) {
+                PreparedSignal::Ignore => continue,
+                PreparedSignal::Action(os_action) => break Some((sig, os_action)),
+                PreparedSignal::Handler(prepared) => {
+                    let os_action = self.install_signal_handler(uctx, prepared);
+                    break Some((sig, os_action));
+                }
             }
         }
     }
@@ -180,16 +215,13 @@ impl ThreadSignalManager {
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
     ) -> Option<(SignalInfo, SignalOSAction)> {
-        // Lock by `actions`
-        let mut actions = self.proc.actions.lock();
-
         // Fast path
         if !self.possibly_has_signal.load(Ordering::Acquire)
             && !self.proc.possibly_has_signal.load(Ordering::Acquire)
         {
             return None;
         }
-        self.check_signals_slow(uctx, restore_blocked, &mut actions)
+        self.check_signals_slow(uctx, restore_blocked)
     }
 
     /// Restores the signal frame. Called by `sigreturn`.
