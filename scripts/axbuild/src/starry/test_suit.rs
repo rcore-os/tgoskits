@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, bail};
@@ -30,7 +31,28 @@ impl StarryTestGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StarryQemuCase {
     pub(crate) name: String,
+    pub(crate) case_dir: PathBuf,
     pub(crate) qemu_config_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StarryQemuCaseOutcome {
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StarryQemuCaseReport {
+    pub(crate) name: String,
+    pub(crate) outcome: StarryQemuCaseOutcome,
+    pub(crate) duration: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StarryQemuRunReport {
+    pub(crate) group: StarryTestGroup,
+    pub(crate) cases: Vec<StarryQemuCaseReport>,
+    pub(crate) total_duration: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +141,7 @@ pub(crate) fn discover_qemu_cases(
 
         return Ok(vec![StarryQemuCase {
             name: case_name.to_string(),
+            case_dir,
             qemu_config_path,
         }]);
     }
@@ -137,6 +160,7 @@ pub(crate) fn discover_qemu_cases(
             if qemu_config_path.is_file() {
                 Some(StarryQemuCase {
                     name,
+                    case_dir: path,
                     qemu_config_path,
                 })
             } else {
@@ -157,17 +181,22 @@ pub(crate) fn discover_qemu_cases(
     Ok(cases)
 }
 
-pub(crate) fn finalize_qemu_case_run(
-    failed: &[String],
-    group: StarryTestGroup,
-) -> anyhow::Result<()> {
+pub(crate) fn finalize_qemu_case_run(report: &StarryQemuRunReport) -> anyhow::Result<()> {
+    println!("{}", render_qemu_case_summary(report));
+
+    let failed = report
+        .cases
+        .iter()
+        .filter(|case| case.outcome == StarryQemuCaseOutcome::Failed)
+        .map(|case| case.name.clone())
+        .collect::<Vec<_>>();
+
     if failed.is_empty() {
-        println!("all starry {} qemu test cases passed", group.as_str());
         Ok(())
     } else {
         bail!(
             "starry {} qemu tests failed for {} case(s): {}",
-            group.as_str(),
+            report.group.as_str(),
             failed.len(),
             failed.join(", ")
         )
@@ -228,6 +257,50 @@ fn test_suite_dir(workspace_root: &Path, group: StarryTestGroup) -> PathBuf {
 
 fn qemu_config_name(arch: &str) -> String {
     format!("qemu-{arch}.toml")
+}
+
+fn render_qemu_case_summary(report: &StarryQemuRunReport) -> String {
+    let passed = report
+        .cases
+        .iter()
+        .filter(|case| case.outcome == StarryQemuCaseOutcome::Passed)
+        .collect::<Vec<_>>();
+    let failed = report
+        .cases
+        .iter()
+        .filter(|case| case.outcome == StarryQemuCaseOutcome::Failed)
+        .collect::<Vec<_>>();
+
+    let mut lines = Vec::new();
+    lines.push(format!("starry {} qemu summary:", report.group.as_str()));
+    lines.push(format!("passed ({}):", passed.len()));
+    if passed.is_empty() {
+        lines.push("  <none>".to_string());
+    } else {
+        lines.extend(
+            passed
+                .iter()
+                .map(|case| format!("  {} ({})", case.name, format_duration(case.duration))),
+        );
+    }
+
+    lines.push(format!("failed ({}):", failed.len()));
+    if failed.is_empty() {
+        lines.push("  <none>".to_string());
+    } else {
+        lines.extend(
+            failed
+                .iter()
+                .map(|case| format!("  {} ({})", case.name, format_duration(case.duration))),
+        );
+    }
+
+    lines.push(format!("total: {}", format_duration(report.total_duration)));
+    lines.join("\n")
+}
+
+fn format_duration(duration: Duration) -> String {
+    format!("{:.2}s", duration.as_secs_f64())
 }
 
 fn collect_board_test_groups(
@@ -309,7 +382,7 @@ fn supported_board_test_group_names(workspace_root: &Path) -> anyhow::Result<Str
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, time::Duration};
 
     use tempfile::tempdir;
 
@@ -402,5 +475,72 @@ mod tests {
 
         assert!(err.contains("smoke-orangepi-5-plus"));
         assert!(err.contains("os/StarryOS/configs/board/orangepi-5-plus.toml"));
+    }
+
+    fn write_qemu_test_config(root: &Path, group: StarryTestGroup, case_name: &str, arch: &str) {
+        let path = root
+            .join("test-suit/starryos")
+            .join(group.as_str())
+            .join(case_name)
+            .join(format!("qemu-{arch}.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "timeout = 1\n").unwrap();
+    }
+
+    #[test]
+    fn discovers_only_cases_with_matching_qemu_config() {
+        let root = tempdir().unwrap();
+        write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "x86_64");
+        fs::create_dir_all(root.path().join("test-suit/starryos/normal/usb")).unwrap();
+
+        let cases =
+            discover_qemu_cases(root.path(), "x86_64", None, StarryTestGroup::Normal).unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "smoke");
+        assert_eq!(
+            cases[0].case_dir,
+            root.path().join("test-suit/starryos/normal/smoke")
+        );
+    }
+
+    #[test]
+    fn selected_case_requires_matching_qemu_config() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("test-suit/starryos/normal/usb")).unwrap();
+
+        let err = discover_qemu_cases(root.path(), "x86_64", Some("usb"), StarryTestGroup::Normal)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("does not provide"));
+        assert!(err.contains("qemu-x86_64.toml"));
+    }
+
+    #[test]
+    fn qemu_summary_lists_passed_and_failed_cases() {
+        let report = StarryQemuRunReport {
+            group: StarryTestGroup::Normal,
+            cases: vec![
+                StarryQemuCaseReport {
+                    name: "smoke".to_string(),
+                    outcome: StarryQemuCaseOutcome::Passed,
+                    duration: Duration::from_millis(500),
+                },
+                StarryQemuCaseReport {
+                    name: "usb".to_string(),
+                    outcome: StarryQemuCaseOutcome::Failed,
+                    duration: Duration::from_secs(2),
+                },
+            ],
+            total_duration: Duration::from_secs(3),
+        };
+
+        let summary = render_qemu_case_summary(&report);
+
+        assert!(summary.contains("starry normal qemu summary:"));
+        assert!(summary.contains("smoke (0.50s)"));
+        assert!(summary.contains("usb (2.00s)"));
+        assert!(summary.contains("total: 3.00s"));
     }
 }
