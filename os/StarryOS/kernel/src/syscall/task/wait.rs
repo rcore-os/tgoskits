@@ -13,7 +13,7 @@ use linux_raw_sys::general::{
 use starry_process::{Pid, Process};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::AsThread;
+use crate::task::{AsThread, get_process_data};
 
 bitflags! {
     #[derive(Debug)]
@@ -90,6 +90,33 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     }
 
     let check_children = || {
+        // First check for a pending stopped/continued notification from any
+        // child whose status the caller asked for. WUNTRACED surfaces stopped
+        // children, WCONTINUED surfaces continued children.
+        for child in &children {
+            let Ok(child_data) = get_process_data(child.pid()) else {
+                continue;
+            };
+            let status = child_data.peek_stop_status();
+            if status == 0 {
+                continue;
+            }
+            let is_stopped = (status & 0xFF) == 0x7F;
+            let is_continued = status == 0xFFFF;
+            let report = (is_stopped && options.contains(WaitOptions::WUNTRACED))
+                || (is_continued && options.contains(WaitOptions::WCONTINUED));
+            if !report {
+                continue;
+            }
+            if !options.contains(WaitOptions::WNOWAIT) {
+                child_data.take_stop_status();
+            }
+            if let Some(exit_code) = exit_code.nullable() {
+                exit_code.vm_write(status)?;
+            }
+            return Ok(Some(child.pid() as _));
+        }
+
         if let Some(child) = children.iter().find(|child| child.is_zombie()) {
             if !options.contains(WaitOptions::WNOWAIT) {
                 child.free();

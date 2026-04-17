@@ -1,12 +1,25 @@
-use core::sync::atomic::Ordering;
+use core::{future::poll_fn, sync::atomic::Ordering, task::Poll};
 
 use ax_errno::{AxError, AxResult};
 use ax_hal::uspace::UserContext;
-use ax_task::{TaskInner, current};
+use ax_task::{
+    TaskInner, current,
+    future::{block_on, interruptible},
+};
 use starry_process::Pid;
-use starry_signal::{SignalInfo, SignalOSAction, SignalSet};
+use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
 
 use super::{AsThread, Thread, do_exit, get_process_data, get_process_group, get_task};
+
+/// Notify the parent (via `child_exit_event`) that a child of theirs changed
+/// state (stopped or continued). Used by wait4 with WUNTRACED/WCONTINUED.
+fn notify_parent_state_change(thr: &Thread) {
+    if let Some(parent) = thr.proc_data.proc.parent()
+        && let Ok(parent_data) = get_process_data(parent.pid())
+    {
+        parent_data.child_exit_event.wake();
+    }
+}
 
 pub fn check_signals(
     thr: &Thread,
@@ -27,11 +40,32 @@ pub fn check_signals(
             do_exit(128 + signo as i32, true);
         }
         SignalOSAction::Stop => {
-            // TODO: implement stop
-            do_exit(1, true);
+            // Encode WIFSTOPPED status: (stop_signal << 8) | 0x7F.
+            let status = ((signo as u32 as i32) << 8) | 0x7F;
+            thr.proc_data.set_stop_status(status);
+            notify_parent_state_change(thr);
+
+            // Block until SIGCONT or a fatal signal (SIGKILL) becomes pending.
+            // SIGCONT always resumes a stopped process, even if it is in the
+            // thread's blocked mask — `send_signal_to_process` falls back to
+            // waking any blocked thread so we still see it in the pending set.
+            let mut wake_mask = SignalSet::default();
+            wake_mask.add(Signo::SIGCONT);
+            wake_mask.add(Signo::SIGKILL);
+            loop {
+                if !(thr.signal.pending() & wake_mask).is_empty() {
+                    break;
+                }
+                // `interruptible` resolves with `Err(Interrupted)` whenever
+                // `task.interrupt()` is called — signal delivery always does
+                // this, so any incoming signal wakes us to re-check.
+                let _ = block_on(interruptible(poll_fn::<(), _>(|_cx| Poll::Pending)));
+            }
         }
         SignalOSAction::Continue => {
-            // TODO: implement continue
+            // Encode WIFCONTINUED status: magic value 0xFFFF.
+            thr.proc_data.set_stop_status(0xFFFF);
+            notify_parent_state_change(thr);
         }
         SignalOSAction::Handler => {
             // do nothing
@@ -98,10 +132,26 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
     if let Some(sig) = sig {
         let signo = sig.signo();
         info!("Send signal {signo:?} to process {pid}");
+
+        // Pre-compute whether the signal is ignored so we can decide after
+        // `send_signal` whether to fall back to waking blocked threads.
+        let ignored = proc_data.signal.actions.lock()[signo].is_ignore(signo);
+
         if let Some(tid) = proc_data.signal.send_signal(sig)
             && let Ok(task) = get_task(tid)
         {
             task.interrupt();
+        } else if !ignored {
+            // The signal is queued but no thread is eligible for immediate
+            // delivery (all threads block it). Interrupt every thread so any
+            // task blocked in-kernel (e.g. a stopped task waiting on SIGCONT
+            // while musl's `raise` has all app signals masked) can re-check
+            // its pending set.
+            for t in proc_data.proc.threads() {
+                if let Ok(task) = get_task(t) {
+                    task.interrupt();
+                }
+            }
         }
     }
 

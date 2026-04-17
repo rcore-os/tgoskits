@@ -214,6 +214,14 @@ pub struct ProcessData {
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
 
+    /// Pending stopped/continued status reported to the parent via wait4.
+    ///
+    /// Encoding follows the Linux W* macros:
+    /// `0` = no pending notification;
+    /// `(sig << 8) | 0x7F` = stopped by signal `sig` (WIFSTOPPED);
+    /// `0xFFFF` = continued from a job-control stop (WIFCONTINUED).
+    stop_status: AtomicI32,
+
     /// The process signal manager
     pub signal: Arc<ProcessSignalManager>,
 
@@ -247,6 +255,8 @@ impl ProcessData {
             child_exit_event: Arc::default(),
             exit_event: Arc::default(),
             exit_signal,
+
+            stop_status: AtomicI32::new(0),
 
             signal: Arc::new(ProcessSignalManager::new(
                 signal_actions,
@@ -288,5 +298,20 @@ impl ProcessData {
     /// Set the umask and return the old value.
     pub fn replace_umask(&self, umask: u32) -> u32 {
         self.umask.swap(umask, Ordering::SeqCst)
+    }
+
+    /// Record a pending stopped/continued notification for wait4.
+    pub fn set_stop_status(&self, status: i32) {
+        self.stop_status.store(status, Ordering::Release);
+    }
+
+    /// Returns the pending stopped/continued status without clearing it.
+    pub fn peek_stop_status(&self) -> i32 {
+        self.stop_status.load(Ordering::Acquire)
+    }
+
+    /// Consumes the pending stopped/continued status, returning its value.
+    pub fn take_stop_status(&self) -> i32 {
+        self.stop_status.swap(0, Ordering::AcqRel)
     }
 }
