@@ -1,6 +1,7 @@
 ARG BASE_IMAGE=ghcr.io/rcore-os/tgoskits-container:latest
 FROM ${BASE_IMAGE}
 
+# Pin the external source revision so container rebuilds stay reproducible.
 ARG QEMU_LVZ_REPO=https://github.com/numpy1314/QEMU-LVZ
 ARG QEMU_LVZ_REF=f82f6aee0da1cd1ee86e455a799f07057f477dee
 ARG QEMU_TARGET_LIST=loongarch64-softmmu
