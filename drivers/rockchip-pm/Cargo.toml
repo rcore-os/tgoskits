@@ -1,0 +1,33 @@
+[package]
+edition = "2024"
+name = "rockchip-pm"
+version = "0.4.1"
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["embedded", "no-std"]
+description = "Driver for Rockchip Power Management Unit (PMU) supporting RK3588 and similar SoCs."
+keywords = ["os", "rockchip", "power", "driver"]
+license = "MIT"
+readme = "README.md"
+documentation = "https://docs.rs/rockchip-pm"
+repository = "https://github.com/drivercraft/rockchip-pm"
+
+exclude = [
+  "dtb/*",
+]
+
+[dependencies]
+dma-api = {version = "0.5", features = ["alloc"]}
+log = "0.4"
+mbarrier = "0.1"
+rdif-base = "0.7"
+tock-registers = "0.10"
+
+[dev-dependencies]
+bare-test = "0.7"
+
+[build-dependencies]
+bare-test-macros = "0.2"
+
+[[test]]
+harness = false
+name = "test"
