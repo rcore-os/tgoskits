@@ -32,6 +32,7 @@ const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_C_DIR_NAME: &str = "c";
 const CASE_PREBUILD_SCRIPT_NAME: &str = "prebuild.sh";
 const CASE_CMAKE_FILE_NAME: &str = "CMakeLists.txt";
+const STARRY_APK_REGION_VAR: &str = "STARRY_APK_REGION";
 const STARRY_STAGING_ROOT_VAR: &str = "STARRY_STAGING_ROOT";
 const STARRY_CASE_DIR_VAR: &str = "STARRY_CASE_DIR";
 const STARRY_CASE_C_DIR_VAR: &str = "STARRY_CASE_C_DIR";
@@ -41,6 +42,8 @@ const STARRY_CASE_OVERLAY_DIR_VAR: &str = "STARRY_CASE_OVERLAY_DIR";
 const HOST_RESOLV_CONF_PATH: &str = "/etc/resolv.conf";
 const HOST_RESOLVED_CONF_PATH: &str = "/run/systemd/resolve/resolv.conf";
 const DEFAULT_DNS_SERVERS: &[&str] = &["1.1.1.1", "8.8.8.8"];
+const CHINA_ALPINE_MIRROR: &str = "https://mirrors.cernet.edu.cn/alpine";
+const US_ALPINE_MIRROR: &str = "https://dl-cdn.alpinelinux.org/alpine";
 const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
 const USB_STICK_IMAGE_SIZE: u64 = 16 * 1024 * 1024;
 
@@ -77,6 +80,28 @@ struct GuestBuildEnv {
 struct GuestPrebuildEnv {
     qemu_runner: PathBuf,
     script_envs: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApkRegion {
+    China,
+    Us,
+}
+
+impl ApkRegion {
+    fn canonical_name(self) -> &'static str {
+        match self {
+            Self::China => "china",
+            Self::Us => "us",
+        }
+    }
+
+    fn mirror_base(self) -> &'static str {
+        match self {
+            Self::China => CHINA_ALPINE_MIRROR,
+            Self::Us => US_ALPINE_MIRROR,
+        }
+    }
 }
 
 pub(crate) fn rootfs_image_name(arch: &str) -> anyhow::Result<String> {
@@ -393,14 +418,16 @@ fn prepare_c_case_assets_sync(
 
     populate_staging_root(case_rootfs, &layout.staging_root)?;
     write_host_resolver_config(&layout.staging_root)?;
-    let prebuild_env = prepare_guest_prebuild_env(arch, case, layout)?;
-
     let prebuild_script = case_prebuild_script_path(case);
     if prebuild_script.is_file() {
+        let apk_region = apk_region_from_env()?;
+        rewrite_apk_repositories_for_region(&layout.staging_root, apk_region)?;
+        let prebuild_env = prepare_guest_prebuild_env(arch, case, layout, apk_region)?;
         let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
         command.exec().context("failed to run case prebuild.sh")?;
     }
-    let build_env = prepare_guest_build_env(layout, &prebuild_env.qemu_runner)?;
+    let qemu_runner = find_host_binary(qemu_user_binary_name(arch)?)?;
+    let build_env = prepare_guest_build_env(layout, &qemu_runner)?;
 
     let mut configure = build_cmake_configure_command(case, layout, &build_env);
     configure
@@ -495,17 +522,94 @@ fn parse_nameserver_line(line: &str) -> Option<IpAddr> {
     }
 }
 
+fn apk_region_from_env() -> anyhow::Result<ApkRegion> {
+    let value = std::env::var(STARRY_APK_REGION_VAR).ok();
+    parse_apk_region(value.as_deref())
+}
+
+fn parse_apk_region(value: Option<&str>) -> anyhow::Result<ApkRegion> {
+    match value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+    {
+        None => Ok(ApkRegion::China),
+        Some(value) if matches!(value.as_str(), "china" | "cn") => Ok(ApkRegion::China),
+        Some(value) if matches!(value.as_str(), "us" | "usa") => Ok(ApkRegion::Us),
+        Some(value) => bail!(
+            "unsupported {STARRY_APK_REGION_VAR} `{value}`; supported values are: china, cn, us, \
+             usa"
+        ),
+    }
+}
+
+fn rewrite_apk_repositories_for_region(
+    staging_root: &Path,
+    region: ApkRegion,
+) -> anyhow::Result<()> {
+    let path = staging_root.join("etc/apk/repositories");
+    let original =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let ends_with_newline = original.ends_with('\n');
+    let rewritten = original
+        .lines()
+        .map(|line| rewrite_apk_repository_line(line, region))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut output = rewritten;
+    if ends_with_newline {
+        output.push('\n');
+    }
+
+    fs::write(&path, output).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn rewrite_apk_repository_line(line: &str, region: ApkRegion) -> String {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return line.to_string();
+    }
+
+    let Some((_, suffix)) = trimmed.split_once("/alpine/") else {
+        return line.to_string();
+    };
+
+    let leading_len = line.len() - line.trim_start().len();
+    let trailing_len = line.len() - line.trim_end().len();
+    let trailing = if trailing_len == 0 {
+        ""
+    } else {
+        &line[line.len() - trailing_len..]
+    };
+
+    format!(
+        "{}{}/{}{}",
+        &line[..leading_len],
+        region.mirror_base(),
+        suffix,
+        trailing
+    )
+}
+
 fn prepare_guest_prebuild_env(
     arch: &str,
     case: &StarryQemuCase,
     layout: &CaseAssetLayout,
+    apk_region: ApkRegion,
 ) -> anyhow::Result<GuestPrebuildEnv> {
     let qemu_runner = find_host_binary(qemu_user_binary_name(arch)?)?;
     write_guest_command_wrappers(layout, &qemu_runner)?;
 
+    let mut script_envs = case_script_envs(case, layout);
+    script_envs.push((
+        STARRY_APK_REGION_VAR.to_string(),
+        apk_region.canonical_name().to_string(),
+    ));
+
     Ok(GuestPrebuildEnv {
         qemu_runner,
-        script_envs: case_script_envs(case, layout),
+        script_envs,
     })
 }
 
@@ -1270,9 +1374,14 @@ mod tests {
             case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
         fs::create_dir_all(layout.staging_root.join("bin")).unwrap();
         fs::write(layout.staging_root.join("bin/sh"), b"").unwrap();
+        fs::write(layout.staging_root.join("bin/busybox"), b"").unwrap();
         let prebuild_env = GuestPrebuildEnv {
             qemu_runner: PathBuf::from("/usr/bin/qemu-aarch64-static"),
-            script_envs: case_script_envs(&case, &layout),
+            script_envs: {
+                let mut envs = case_script_envs(&case, &layout);
+                envs.push((STARRY_APK_REGION_VAR.to_string(), "us".to_string()));
+                envs
+            },
         };
         let prebuild_script = case_c_source_dir(&case).join("prebuild.sh");
 
@@ -1288,7 +1397,12 @@ mod tests {
             vec![
                 "-L".to_string(),
                 layout.staging_root.display().to_string(),
-                layout.staging_root.join("bin/sh").display().to_string(),
+                layout
+                    .staging_root
+                    .join("bin/busybox")
+                    .display()
+                    .to_string(),
+                "sh".to_string(),
                 "-eu".to_string(),
                 prebuild_script.display().to_string(),
             ]
@@ -1300,6 +1414,10 @@ mod tests {
         assert_eq!(
             command_env(&command, STARRY_CASE_OVERLAY_DIR_VAR),
             Some(layout.overlay_dir.display().to_string())
+        );
+        assert_eq!(
+            command_env(&command, STARRY_APK_REGION_VAR),
+            Some("us".to_string())
         );
     }
 
@@ -1379,6 +1497,76 @@ mod tests {
             STARRY_CASE_BUILD_DIR_VAR.to_string(),
             layout.build_dir.display().to_string()
         )));
+    }
+
+    #[test]
+    fn parse_apk_region_defaults_to_china() {
+        assert_eq!(parse_apk_region(None).unwrap(), ApkRegion::China);
+        assert_eq!(parse_apk_region(Some("")).unwrap(), ApkRegion::China);
+    }
+
+    #[test]
+    fn parse_apk_region_accepts_supported_aliases() {
+        assert_eq!(parse_apk_region(Some("china")).unwrap(), ApkRegion::China);
+        assert_eq!(parse_apk_region(Some("cn")).unwrap(), ApkRegion::China);
+        assert_eq!(parse_apk_region(Some("us")).unwrap(), ApkRegion::Us);
+        assert_eq!(parse_apk_region(Some("usa")).unwrap(), ApkRegion::Us);
+    }
+
+    #[test]
+    fn parse_apk_region_rejects_unknown_value() {
+        let err = parse_apk_region(Some("europe")).unwrap_err().to_string();
+        assert!(err.contains(STARRY_APK_REGION_VAR));
+        assert!(err.contains("china, cn, us, usa"));
+    }
+
+    #[test]
+    fn rewrite_apk_repositories_switches_to_us_mirror() {
+        let input = "https://mirrors.cernet.edu.cn/alpine/v3.23/main\nhttps://mirrors.cernet.edu.cn/alpine/v3.23/community\n";
+        let output = input
+            .lines()
+            .map(|line| rewrite_apk_repository_line(line, ApkRegion::Us))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(
+            output,
+            "https://dl-cdn.alpinelinux.org/alpine/v3.23/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.23/community"
+        );
+    }
+
+    #[test]
+    fn rewrite_apk_repositories_switches_to_china_mirror() {
+        let input = "https://dl-cdn.alpinelinux.org/alpine/v3.23/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.23/community\n";
+        let output = input
+            .lines()
+            .map(|line| rewrite_apk_repository_line(line, ApkRegion::China))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(
+            output,
+            "https://mirrors.cernet.edu.cn/alpine/v3.23/main\nhttps://mirrors.cernet.edu.cn/alpine/v3.23/community"
+        );
+    }
+
+    #[test]
+    fn rewrite_apk_repositories_for_region_updates_file() {
+        let root = tempdir().unwrap();
+        let repositories = root.path().join("etc/apk/repositories");
+        fs::create_dir_all(repositories.parent().unwrap()).unwrap();
+        fs::write(
+            &repositories,
+            "https://mirrors.cernet.edu.cn/alpine/v3.23/main\nhttps://mirrors.cernet.edu.cn/alpine/v3.23/community\n",
+        )
+        .unwrap();
+
+        rewrite_apk_repositories_for_region(root.path(), ApkRegion::Us).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&repositories).unwrap(),
+            "https://dl-cdn.alpinelinux.org/alpine/v3.23/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.23/community\n"
+        );
     }
 
     #[test]
