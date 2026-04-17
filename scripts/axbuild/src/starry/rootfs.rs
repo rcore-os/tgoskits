@@ -646,10 +646,12 @@ fn prepare_guest_build_env(
     ensure_guest_tool_exists(staging_root, "usr/bin/ranlib")?;
     ensure_guest_tool_exists(staging_root, "usr/bin/strip")?;
 
-    write_guest_exec_wrapper(
+    wrap_guest_gcc_libexec_tools(staging_root, qemu_runner)?;
+    write_guest_cc_wrapper(
         &gcc_wrapper,
         qemu_runner,
         staging_root,
+        &layout.command_wrapper_dir,
         "usr/bin/gcc",
         Some(format!("--sysroot {}", shell_single_quote(staging_root))),
     )?;
@@ -906,6 +908,30 @@ fn qemu_user_binary_name(arch: &str) -> anyhow::Result<&'static str> {
     }
 }
 
+fn write_guest_cc_wrapper(
+    path: &Path,
+    qemu_runner: &Path,
+    staging_root: &Path,
+    command_wrapper_dir: &Path,
+    guest_relative_path: &str,
+    extra_args: Option<String>,
+) -> anyhow::Result<()> {
+    let mut body = format!(
+        "export QEMU_LD_PREFIX={root}\nexport PATH={wrapper}:$PATH\nexec {qemu} -L {root} {guest}",
+        root = shell_single_quote(staging_root),
+        wrapper = shell_single_quote(command_wrapper_dir),
+        qemu = shell_single_quote(qemu_runner),
+        guest = shell_single_quote(staging_root.join(guest_relative_path)),
+    );
+    if let Some(extra_args) = extra_args {
+        body.push(' ');
+        body.push_str(&extra_args);
+    }
+    body.push_str(" \"$@\"\n");
+
+    write_wrapper_script(path, &body)
+}
+
 fn write_guest_exec_wrapper(
     path: &Path,
     qemu_runner: &Path,
@@ -926,6 +952,87 @@ fn write_guest_exec_wrapper(
     body.push_str(" \"$@\"\n");
 
     write_wrapper_script(path, &body)
+}
+
+fn wrap_guest_gcc_libexec_tools(staging_root: &Path, qemu_runner: &Path) -> anyhow::Result<()> {
+    let libexec_root = staging_root.join("usr/libexec/gcc");
+    if !libexec_root.is_dir() {
+        return Ok(());
+    }
+
+    for path in collect_regular_files(&libexec_root)? {
+        if path.extension().is_some_and(|ext| ext == "so") {
+            continue;
+        }
+        wrap_guest_executable_in_place(&path, qemu_runner, staging_root)?;
+    }
+
+    Ok(())
+}
+
+fn collect_regular_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if file_type.is_dir() {
+            files.extend(collect_regular_files(&path)?);
+        } else if file_type.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+fn wrap_guest_executable_in_place(
+    path: &Path,
+    qemu_runner: &Path,
+    staging_root: &Path,
+) -> anyhow::Result<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Ok(());
+    }
+    if !is_elf_binary(path)? {
+        return Ok(());
+    }
+
+    let wrapped_path = path.with_extension("guest-real");
+    if wrapped_path.exists() {
+        return Ok(());
+    }
+
+    fs::rename(path, &wrapped_path).with_context(|| {
+        format!(
+            "failed to move guest executable {} to {}",
+            path.display(),
+            wrapped_path.display()
+        )
+    })?;
+    write_wrapper_script(
+        path,
+        &format!(
+            "export QEMU_LD_PREFIX={root}\nexec {qemu} -L {root} {guest} \"$@\"\n",
+            root = shell_single_quote(staging_root),
+            qemu = shell_single_quote(qemu_runner),
+            guest = shell_single_quote(&wrapped_path),
+        ),
+    )?;
+    Ok(())
+}
+
+fn is_elf_binary(path: &Path) -> anyhow::Result<bool> {
+    let mut header = [0u8; 4];
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let read = file
+        .read(&mut header)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(read == 4 && header == [0x7f, b'E', b'L', b'F'])
 }
 
 fn write_apk_wrapper_script(
