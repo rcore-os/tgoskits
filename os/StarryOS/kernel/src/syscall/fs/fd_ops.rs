@@ -210,8 +210,9 @@ fn dup_fd(old_fd: c_int, cloexec: bool) -> AxResult<isize> {
 
 /// Duplicate `old_fd` to the first available descriptor >= `minfd` (F_DUPFD/F_DUPFD_CLOEXEC).
 fn dup_fd_with_minfd(old_fd: c_int, minfd: usize, cloexec: bool) -> AxResult<isize> {
-    use crate::{file::FileDescriptor, task::AX_FILE_LIMIT};
     use linux_raw_sys::general::RLIMIT_NOFILE;
+
+    use crate::{file::FileDescriptor, task::AX_FILE_LIMIT};
     let f = get_file_like(old_fd)?;
     let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     let mut table = FD_TABLE.write();
