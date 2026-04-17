@@ -937,7 +937,7 @@ fn write_apk_wrapper_script(
     let body = format!(
         "export QEMU_LD_PREFIX={root}\nexec {qemu} -L {root} {apk} --root {root} \
          --repositories-file {repositories} --keys-dir {keys} --cache-dir {cache} --update-cache \
-         --timeout 60 --no-interactive --force-no-chroot \"$@\"\n",
+         --timeout 60 --no-interactive --force-no-chroot --scripts=no \"$@\"\n",
         root = shell_single_quote(staging_root),
         qemu = shell_single_quote(qemu_runner),
         apk = shell_single_quote(staging_root.join("sbin/apk")),
