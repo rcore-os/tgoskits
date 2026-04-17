@@ -1,41 +1,41 @@
-# Adding StarryOS QEMU Test Cases
+# 添加 StarryOS QEMU 测试用例
 
-This guide explains how to add new test cases to `test-suit/starryos/`.
+本文档说明如何在 `test-suit/starryos/` 下添加新的测试用例。
 
-## Directory Layout
+## 目录结构
 
 ```
 test-suit/starryos/
-  normal/                     # Standard test cases (run on every push)
-    smoke/                    # Case: basic boot check
-      qemu-<arch>.toml        # One TOML per architecture
-    usb/                      # Case: USB device test (with C source)
+  normal/                     # 常规测试（每次 push 均运行）
+    smoke/                    # 基础启动测试
+      qemu-<arch>.toml        # 每个架构一个 TOML 文件
+    usb/                      # USB 设备测试（含 C 源码）
       c/
         CMakeLists.txt
-        prebuild.sh           # Optional: runs apk add inside rootfs
+        prebuild.sh           # 可选：在 rootfs 内安装依赖包
         src/
           main.c
       qemu-<arch>.toml
-    helloworld/               # Case: simple C program (no prebuild needed)
+    helloworld/               # 简单 C 程序（无需 prebuild）
       c/
         CMakeLists.txt
         src/
           main.c
       qemu-<arch>.toml
-  stress/                     # Stress test cases (run on PRs to main)
+  stress/                     # 压力测试（PR 合入 main 时运行）
     stress-ng-0/
       qemu-<arch>.toml
 ```
 
-## Quick Start: Pure Shell Test
+## 快速开始：纯 Shell 测试
 
-If your test only needs the shell (no compiled binaries), create:
+如果测试只需要 shell 命令（不需要编译二进制），只需创建：
 
 ```
-test-suit/starryos/normal/<case>/qemu-<arch>.toml
+test-suit/starryos/normal/<用例名>/qemu-<arch>.toml
 ```
 
-Example (`smoke/qemu-riscv64.toml`):
+示例（`smoke/qemu-riscv64.toml`）：
 
 ```toml
 args = [
@@ -54,23 +54,22 @@ fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 15
 ```
 
-## C Test Cases
+## C 测试用例
 
-### 1. Create the directory structure
+### 1. 创建目录结构
 
 ```
-test-suit/starryos/normal/<case>/
+test-suit/starryos/normal/<用例名>/
   c/
-    CMakeLists.txt     # Required: build definition
-    prebuild.sh         # Optional: install packages into rootfs
-    src/                # Your source files
-  qemu-<arch>.toml     # One per supported architecture
+    CMakeLists.txt     # 必需：构建定义
+    prebuild.sh         # 可选：向 rootfs 安装依赖包
+    src/                # 源码目录
+  qemu-<arch>.toml     # 每个支持的架构一个文件
 ```
 
-### 2. Write `CMakeLists.txt`
+### 2. 编写 `CMakeLists.txt`
 
-The build system uses clang cross-compilation with the rootfs as sysroot.
-Your executable will be installed into `/usr/bin/` inside the guest.
+构建系统使用 clang 交叉编译，以 rootfs 作为 sysroot。编译出的可执行文件会被安装到客户机的 `/usr/bin/` 目录。
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
@@ -86,70 +85,72 @@ target_compile_options(mytest PRIVATE -Wall -Wextra -Werror)
 install(TARGETS mytest RUNTIME DESTINATION usr/bin)
 ```
 
-### 3. Optional: `prebuild.sh`
+### 3. 可选：`prebuild.sh`
 
-If your test needs packages installed in the rootfs (e.g., libraries):
+如果测试需要安装额外的依赖包（如库文件）：
 
 ```sh
 #!/bin/sh
 set -eu
 
-apk add gcc musl-dev libusb-dev   # or whatever you need
+apk add gcc musl-dev libusb-dev   # 按需添加
 ```
 
-This runs inside the rootfs via qemu-user, so you can use `apk add` normally.
+该脚本通过 qemu-user 在 rootfs 内执行，可以直接使用 `apk add`。
 
-### 4. Write `qemu-<arch>.toml`
+> **注意**：如果使用了 C 标准库头文件（如 `stdio.h`），需要安装 `gcc musl-dev`。
 
-Set `shell_init_cmd` to the installed binary path:
+### 4. 编写 `qemu-<arch>.toml`
+
+将 `shell_init_cmd` 设为安装后的二进制路径：
 
 ```toml
 shell_init_cmd = "/usr/bin/mytest"
 ```
 
-Copy the QEMU args from an existing case (e.g., `smoke/qemu-<arch>.toml`) and adjust if needed.
+QEMU 参数可以从已有用例复制（如 `smoke/qemu-<arch>.toml`），按需调整。
 
-### 5. Supported architectures
+### 5. 支持的架构
 
-| Arch       | Target                              | QEMU CPU    |
-|------------|-------------------------------------|-------------|
-| x86_64     | x86_64-unknown-none                 | (default)   |
-| aarch64    | aarch64-unknown-none-softfloat      | cortex-a53  |
-| riscv64    | riscv64gc-unknown-none-elf          | rv64        |
-| loongarch64| loongarch64-unknown-none-softfloat  | la464       |
+| 架构         | Target                              | QEMU CPU  |
+|-------------|-------------------------------------|-----------|
+| x86_64      | x86_64-unknown-none                 | (默认)     |
+| aarch64     | aarch64-unknown-none-softfloat      | cortex-a53 |
+| riscv64     | riscv64gc-unknown-none-elf          | rv64      |
+| loongarch64 | loongarch64-unknown-none-softfloat  | la464     |
 
-Only create `qemu-<arch>.toml` for architectures where the test is verified to pass.
+只为**实际验证通过的架构**创建 `qemu-<arch>.toml`。
 
-## TOML Reference
+## TOML 字段说明
 
-| Field           | Type            | Description |
-|-----------------|-----------------|-------------|
-| `args`          | `[string]`      | QEMU command-line arguments. `${workspace}` is expanded to the repo root. |
-| `uefi`          | `bool`          | Use UEFI boot (false for most cases) |
-| `to_bin`        | `bool`          | Convert ELF to raw binary with objcopy |
-| `shell_prefix`  | `string`        | Prompt pattern to wait for before sending commands |
-| `shell_init_cmd`| `string`        | Command sent to the guest shell |
-| `success_regex` | `[string]`      | All must match for PASS (multiline regex) |
-| `fail_regex`    | `[string]`      | If any matches, test fails immediately |
-| `timeout`       | `integer`       | Seconds before the test is marked as failed |
+| 字段              | 类型            | 说明 |
+|------------------|-----------------|------|
+| `args`           | `[string]`      | QEMU 命令行参数。`${workspace}` 会被替换为仓库根目录。 |
+| `uefi`           | `bool`          | 是否使用 UEFI 启动（大多数用例为 false） |
+| `to_bin`         | `bool`          | 是否用 objcopy 将 ELF 转为裸二进制 |
+| `shell_prefix`   | `string`        | shell 提示符匹配模式，等待该模式出现后再发送命令 |
+| `shell_init_cmd` | `string`        | 发送到客户机 shell 的测试命令 |
+| `success_regex`  | `[string]`      | 所有正则均匹配则判定为 PASS（支持多行正则） |
+| `fail_regex`     | `[string]`      | 任一正则匹配则立即判定为 FAIL |
+| `timeout`        | `integer`       | 超时秒数，超时则判定为失败 |
 
-## Running Tests
+## 运行测试
 
 ```bash
-# Run all normal tests for an architecture
+# 运行某架构的所有常规测试
 cargo starry test qemu -t riscv64
 
-# Run a specific test case
+# 运行指定测试用例
 cargo starry test qemu -t riscv64 -c helloworld
 
-# Run stress tests
+# 运行压力测试
 cargo starry test qemu --stress -t riscv64
 ```
 
-## Tips
+## 注意事项
 
-- Keep `fail_regex` narrow. Avoid patterns that match benign output like `failed: 0`.
-- Use `success_regex` from a stable, unique success line in your output.
-- For slow tests, increase `timeout` only after confirming the command still makes progress.
-- Binary dependencies installed via `prebuild.sh` are cross-compiled from the staging rootfs, so standard Alpine packages work.
-- Do not run multiple `cargo starry test qemu` commands in parallel in one workspace.
+- `fail_regex` 要尽量精准，避免匹配到正常输出如 `failed: 0`。
+- `success_regex` 应选择输出中**稳定且唯一**的成功标志行。
+- 对于较慢的测试，先确认命令仍在正常执行，再酌情增加 `timeout`。
+- 通过 `prebuild.sh` 安装的二进制依赖会在 staging rootfs 中交叉编译，标准 Alpine 包均可使用。
+- 不要在同一个工作区中并行运行多个 `cargo starry test qemu` 命令。
