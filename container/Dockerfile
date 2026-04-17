@@ -10,22 +10,27 @@ ENV TZ=Etc/UTC \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        bzip2 \
         ca-certificates \
         build-essential \
         clang \
         cmake \
         curl \
         dosfstools \
+        e2fsprogs \
         git \
         libglib2.0-dev \
+        libclang-19-dev \
         libpixman-1-dev \
         libslirp-dev \
         libudev-dev \
         make \
+        meson \
         ninja-build \
         pkg-config \
         python3 \
         python3-venv \
+        qemu-user-static \
         wget \
         xz-utils \
         zlib1g-dev \

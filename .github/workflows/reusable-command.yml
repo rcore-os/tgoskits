@@ -1,0 +1,95 @@
+name: Reusable Command
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: JSON-encoded runner labels for runs-on.
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      use_container:
+        description: Whether to execute the command inside the CI container.
+        required: false
+        type: boolean
+        default: false
+      command:
+        description: Shell command to execute.
+        required: true
+        type: string
+      cache_key:
+        description: Shared cache key for rust-cache. Leave empty to disable cache.
+        required: false
+        type: string
+        default: ""
+      container_image:
+        description: Container image used for the job when use_container is true.
+        required: false
+        type: string
+        default: ""
+      required_repository_owner:
+        description: Only run when the repository owner matches this value. Leave empty to run everywhere.
+        required: false
+        type: string
+        default: ""
+      main_pr_only:
+        description: Only run for pull requests targeting the main branch.
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  run_host:
+    if: >-
+      ${{
+        !inputs.use_container
+        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
+      }}
+    runs-on: ${{ fromJson(inputs.runs_on) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Restore Rust cache
+        if: inputs.cache_key != ''
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ inputs.cache_key }}
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Show Rust version
+        run: rustc --version
+
+      - name: Run command
+        run: ${{ inputs.command }}
+
+  run_container:
+    if: >-
+      ${{
+        inputs.use_container
+        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
+      }}
+    runs-on: ${{ fromJson(inputs.runs_on) }}
+    container:
+      image: ${{ inputs.container_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Restore Rust cache
+        if: inputs.cache_key != ''
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ inputs.cache_key }}
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Show Rust version
+        run: rustc --version
+
+      - name: Run command
+        run: ${{ inputs.command }}
