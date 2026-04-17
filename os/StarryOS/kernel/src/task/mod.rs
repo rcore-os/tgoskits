@@ -81,9 +81,11 @@ pub struct Thread {
     /// Self exit event
     pub exit_event: Arc<PollSet>,
 
-    /// The registered rseq area pointer (user address) for restartable
-    /// sequences.
+    /// The registered rseq area pointer (user address) for restartable sequences.
     rseq_area: AtomicUsize,
+
+    /// The signal to send to this thread when its parent dies (PR_SET_PDEATHSIG).
+    pdeathsig: AtomicU32,
 }
 
 impl Thread {
@@ -100,6 +102,7 @@ impl Thread {
             accessing_user_memory: AtomicBool::new(false),
             exit_event: Arc::default(),
             rseq_area: AtomicUsize::new(0),
+            pdeathsig: AtomicU32::new(0),
         })
     }
 
@@ -154,6 +157,16 @@ impl Thread {
     pub fn set_accessing_user_memory(&self, accessing: bool) {
         self.accessing_user_memory
             .store(accessing, Ordering::Release);
+    }
+
+    /// Get the pdeathsig value (signal sent to this thread when parent exits).
+    pub fn pdeathsig(&self) -> u32 {
+        self.pdeathsig.load(Ordering::Relaxed)
+    }
+
+    /// Set the pdeathsig value.
+    pub fn set_pdeathsig(&self, sig: u32) {
+        self.pdeathsig.store(sig, Ordering::Relaxed);
     }
 
     /// Get the registered rseq area pointer.

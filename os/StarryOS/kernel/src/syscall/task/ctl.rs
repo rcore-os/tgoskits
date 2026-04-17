@@ -107,6 +107,17 @@ pub fn sys_prctl(
             buf[..len].copy_from_slice(&name.as_bytes()[..len]);
             vm_write_slice(arg2 as _, &buf)?;
         }
+        PR_SET_PDEATHSIG => {
+            let sig = arg2 as u32;
+            if sig > 64 {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().set_pdeathsig(sig);
+        }
+        PR_GET_PDEATHSIG => {
+            let sig = current().as_thread().pdeathsig() as i32;
+            (arg2 as *mut i32).vm_write(sig)?;
+        }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}
         PR_SET_MM => {
