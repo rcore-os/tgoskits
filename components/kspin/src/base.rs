@@ -143,7 +143,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
                 }
                 acquired
             } else {
-                let _ = lockdep;
+                let _ = _lockdep;
                 self.lock
                     .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok()
@@ -166,7 +166,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
                 }
                 acquired
             } else {
-                let _ = lockdep;
+                let _ = _lockdep;
                 self.lock
                     .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok()
