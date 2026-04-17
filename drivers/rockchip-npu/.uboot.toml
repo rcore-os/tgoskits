@@ -1,0 +1,5 @@
+serial = "/dev/ttyUSB0"
+baud_rate = "1500000"
+dtb_file = "/home/zhourui/orangepi5plus.dtb"
+success_regex = ["All tests passed"]
+fail_regex = []

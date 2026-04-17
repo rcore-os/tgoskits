@@ -1,0 +1,29 @@
+[package]
+edition = "2024"
+name = "rknpu"
+version = "0.1.0"
+
+[dependencies]
+aarch64-cpu-ext = "0.1"
+dma-api = {version = "0.5.2", features = ["alloc"]}
+log = "0.4"
+mbarrier = "0.1"
+num-align = "0.1"
+rdif-base = {version = "0.7"}
+spin = "0.10"
+thiserror = {version = "2.0", default-features = false}
+tock-registers = "0.10"
+bitflags = "2"
+
+[dev-dependencies]
+arm-scmi = {git = "https://github.com/drivercraft/arm-scmi"}
+bare-test = "0.7"
+rk3588-clk = {git = "https://github.com/drivercraft/rk3588-clk"}
+rockchip-pm = {git = "https://github.com/drivercraft/rockchip-pm"}
+
+[build-dependencies]
+bare-test-macros = "0.2"
+
+[[test]]
+harness = false
+name = "test"
