@@ -74,7 +74,6 @@ jobs:
             command: cargo xtask clippy
             cache_key: clippy
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: false
             required_repository_owner: ""
             main_pr_only: false
           - name: Test with std
@@ -83,7 +82,6 @@ jobs:
             command: cargo xtask test
             cache_key: test-std
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: false
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor aarch64 qemu
@@ -92,7 +90,6 @@ jobs:
             command: cargo xtask axvisor test qemu --target aarch64
             cache_key: test-axvisor-aarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
@@ -101,7 +98,6 @@ jobs:
             command: cargo xtask starry test qemu --target riscv64
             cache_key: test-starry-riscv64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry aarch64 qemu
@@ -110,7 +106,6 @@ jobs:
             command: cargo xtask starry test qemu --target aarch64
             cache_key: test-starry-aarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry loongarch64 qemu
@@ -119,7 +114,6 @@ jobs:
             command: cargo xtask starry test qemu --target loongarch64
             cache_key: test-starry-loongarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry x86_64 qemu
@@ -128,7 +122,6 @@ jobs:
             command: cargo xtask starry test qemu --target x86_64
             cache_key: test-starry-x86_64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos x86_64 qemu
@@ -137,7 +130,6 @@ jobs:
             command: cargo xtask arceos test qemu --target x86_64
             cache_key: test-arceos-x86_64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos riscv64 qemu
@@ -146,7 +138,6 @@ jobs:
             command: cargo xtask arceos test qemu --target riscv64
             cache_key: test-arceos-riscv64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos aarch64 qemu
@@ -155,7 +146,6 @@ jobs:
             command: cargo xtask arceos test qemu --target aarch64
             cache_key: test-arceos-aarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos loongarch64 qemu
@@ -164,7 +154,6 @@ jobs:
             command: cargo xtask arceos test qemu --target loongarch64
             cache_key: test-arceos-loongarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: false
           - name: Stress starry aarch64
@@ -173,7 +162,6 @@ jobs:
             command: echo "TODO!"
             cache_key: test-starry-stress-aarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: true
           - name: Stress starry riscv64
@@ -182,7 +170,6 @@ jobs:
             command: echo "TODO!"
             cache_key: test-starry-stress-riscv64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: true
           - name: Stress starry loongarch64
@@ -191,7 +178,6 @@ jobs:
             command: echo "TODO!"
             cache_key: test-starry-stress-loongarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: true
           - name: Stress starry x86_64
@@ -200,7 +186,6 @@ jobs:
             command: echo "TODO!"
             cache_key: test-starry-stress-x86_64
             container_image: ghcr.io/${{ github.repository }}-container:latest
-            install_fat_tools: true
             required_repository_owner: ""
             main_pr_only: true
           - name: Test axvisor self-hosted x86_64
@@ -209,7 +194,6 @@ jobs:
             command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test qemu --target x86_64
             cache_key: ""
             container_image: ""
-            install_fat_tools: false
             required_repository_owner: rcore-os
             main_pr_only: false
           - name: Test axvisor self-hosted orangepi-5-plus-linux
@@ -218,7 +202,6 @@ jobs:
             command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t orangepi-5-plus-linux
             cache_key: ""
             container_image: ""
-            install_fat_tools: false
             required_repository_owner: rcore-os
             main_pr_only: false
           - name: Test axvisor self-hosted roc-rk3568-pc-linux
@@ -227,7 +210,6 @@ jobs:
             command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t roc-rk3568-pc-linux
             cache_key: ""
             container_image: ""
-            install_fat_tools: false
             required_repository_owner: rcore-os
             main_pr_only: false
           - name: Test starry self-hosted smoke-orangepi-5-plus
@@ -236,7 +218,6 @@ jobs:
             command: cargo xtask starry test board -t smoke-orangepi-5-plus
             cache_key: ""
             container_image: ""
-            install_fat_tools: false
             required_repository_owner: rcore-os
             main_pr_only: false
         # - name: Test axvisor self-hosted rdk-s100-linux
@@ -245,7 +226,6 @@ jobs:
         #   command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t rdk-s100-linux
         #   cache_key: ""
         #   container_image: ""
-        #   install_fat_tools: false
         #   required_repository_owner: rcore-os
         #   main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
@@ -255,7 +235,6 @@ jobs:
       command: ${{ matrix.command }}
       cache_key: ${{ matrix.cache_key }}
       container_image: ${{ matrix.container_image }}
-      install_fat_tools: ${{ matrix.install_fat_tools }}
       required_repository_owner: ${{ matrix.required_repository_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
 

@@ -27,11 +27,6 @@ on:
         required: false
         type: string
         default: ""
-      install_fat_tools:
-        description: Whether to install dosfstools before running the command.
-        required: false
-        type: boolean
-        default: false
       required_repository_owner:
         description: Only run when the repository owner matches this value. Leave empty to run everywhere.
         required: false
@@ -85,12 +80,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-
-      - name: Install FAT image tools
-        if: inputs.install_fat_tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends dosfstools
 
       - name: Restore Rust cache
         if: inputs.cache_key != ''
