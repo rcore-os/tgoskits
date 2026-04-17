@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{Read, Write},
     net::IpAddr,
@@ -43,6 +43,10 @@ const STARRY_CASE_OVERLAY_DIR_VAR: &str = "STARRY_CASE_OVERLAY_DIR";
 const HOST_RESOLV_CONF_PATH: &str = "/etc/resolv.conf";
 const HOST_RESOLVED_CONF_PATH: &str = "/run/systemd/resolve/resolv.conf";
 const DEFAULT_DNS_SERVERS: &[&str] = &["1.1.1.1", "8.8.8.8"];
+const CROSS_BINUTILS: &[&str] = &[
+    "ld", "as", "ar", "ranlib", "strip", "nm", "objcopy", "objdump", "readelf",
+];
+const RUNTIME_LIBRARY_DIRS: &[&str] = &["lib", "usr/lib", "usr/local/lib"];
 const CHINA_ALPINE_MIRROR: &str = "https://mirrors.cernet.edu.cn/alpine";
 const US_ALPINE_MIRROR: &str = "https://dl-cdn.alpinelinux.org/alpine";
 const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
@@ -716,9 +720,7 @@ fn write_cross_bin_wrappers(
 ) -> anyhow::Result<()> {
     fs::create_dir_all(&layout.cross_bin_dir)
         .with_context(|| format!("failed to create {}", layout.cross_bin_dir.display()))?;
-    for tool in [
-        "ld", "as", "ar", "ranlib", "strip", "nm", "objcopy", "objdump", "readelf",
-    ] {
+    for tool in CROSS_BINUTILS {
         let guest_relative_path = format!("{}/{tool}", spec.guest_tool_dir);
         ensure_guest_tool_exists(&layout.staging_root, &guest_relative_path)?;
         write_guest_exec_wrapper(
@@ -766,49 +768,49 @@ fn write_cmake_toolchain_file(
             "@CMAKE_SYSTEM_PROCESSOR@",
             spec.cmake_system_processor.to_string(),
         ),
-        ("@CMAKE_SYSROOT@", cmake_literal(sysroot)),
-        ("@CMAKE_FIND_ROOT_PATH@", cmake_literal(sysroot)),
-        ("@CMAKE_C_COMPILER@", cmake_literal(clang)),
+        ("@CMAKE_SYSROOT@", cmake_value(sysroot)),
+        ("@CMAKE_FIND_ROOT_PATH@", cmake_value(sysroot)),
+        ("@CMAKE_C_COMPILER@", cmake_value(clang)),
         ("@CMAKE_C_COMPILER_TARGET@", spec.llvm_target.to_string()),
-        ("@CMAKE_ASM_COMPILER@", cmake_literal(clang)),
+        ("@CMAKE_ASM_COMPILER@", cmake_value(clang)),
         ("@CMAKE_ASM_COMPILER_TARGET@", spec.llvm_target.to_string()),
-        ("@CMAKE_AR@", cmake_literal(layout.cross_bin_dir.join("ar"))),
+        ("@CMAKE_AR@", cmake_value(layout.cross_bin_dir.join("ar"))),
         (
             "@CMAKE_RANLIB@",
-            cmake_literal(layout.cross_bin_dir.join("ranlib")),
+            cmake_value(layout.cross_bin_dir.join("ranlib")),
         ),
         (
             "@CMAKE_STRIP@",
-            cmake_literal(layout.cross_bin_dir.join("strip")),
+            cmake_value(layout.cross_bin_dir.join("strip")),
         ),
         (
             "@CMAKE_LINKER@",
-            cmake_literal(layout.cross_bin_dir.join("ld")),
+            cmake_value(layout.cross_bin_dir.join("ld")),
         ),
-        ("@CMAKE_NM@", cmake_literal(layout.cross_bin_dir.join("nm"))),
+        ("@CMAKE_NM@", cmake_value(layout.cross_bin_dir.join("nm"))),
         (
             "@CMAKE_OBJCOPY@",
-            cmake_literal(layout.cross_bin_dir.join("objcopy")),
+            cmake_value(layout.cross_bin_dir.join("objcopy")),
         ),
         (
             "@CMAKE_OBJDUMP@",
-            cmake_literal(layout.cross_bin_dir.join("objdump")),
+            cmake_value(layout.cross_bin_dir.join("objdump")),
         ),
         (
             "@CMAKE_READELF@",
-            cmake_literal(layout.cross_bin_dir.join("readelf")),
+            cmake_value(layout.cross_bin_dir.join("readelf")),
         ),
         (
             "@CMAKE_C_COMPILER_AR@",
-            cmake_literal(layout.cross_bin_dir.join("ar")),
+            cmake_value(layout.cross_bin_dir.join("ar")),
         ),
         (
             "@CMAKE_C_COMPILER_RANLIB@",
-            cmake_literal(layout.cross_bin_dir.join("ranlib")),
+            cmake_value(layout.cross_bin_dir.join("ranlib")),
         ),
-        ("@CMAKE_C_FLAGS_INIT@", cmake_literal(&common_flags)),
-        ("@CMAKE_ASM_FLAGS_INIT@", cmake_literal(&common_flags)),
-        ("@CMAKE_LINKER_FLAGS_INIT@", cmake_literal(&common_flags)),
+        ("@CMAKE_C_FLAGS_INIT@", cmake_value(&common_flags)),
+        ("@CMAKE_ASM_FLAGS_INIT@", cmake_value(&common_flags)),
+        ("@CMAKE_LINKER_FLAGS_INIT@", cmake_value(&common_flags)),
     ] {
         content = content.replace(needle, &value);
     }
@@ -817,8 +819,8 @@ fn write_cmake_toolchain_file(
         .with_context(|| format!("failed to write {}", layout.cmake_toolchain_file.display()))
 }
 
-fn cmake_literal(value: impl AsRef<Path>) -> String {
-    value.as_ref().display().to_string().replace('\\', "/")
+fn cmake_value(value: impl AsRef<std::ffi::OsStr>) -> String {
+    value.as_ref().to_string_lossy().replace('\\', "/")
 }
 
 fn build_prebuild_command(
@@ -1122,13 +1124,13 @@ fn overlay_has_entries(overlay_dir: &Path) -> anyhow::Result<bool> {
 fn sync_runtime_dependencies(staging_root: &Path, overlay_dir: &Path) -> anyhow::Result<()> {
     let readelf = find_host_binary_candidates(&["readelf"])?;
     let mut pending = collect_regular_files(overlay_dir)?;
-    let mut processed = BTreeMap::new();
+    let mut processed = BTreeSet::new();
 
     while let Some(path) = pending.pop() {
-        if processed.contains_key(&path) || !is_elf_binary(&path)? {
+        if processed.contains(&path) || !is_elf_binary(&path)? {
             continue;
         }
-        processed.insert(path.clone(), ());
+        processed.insert(path.clone());
 
         let needed = read_needed_shared_libraries(&readelf, &path)?;
         for library in needed {
@@ -1239,7 +1241,7 @@ fn find_runtime_library_in_staging_root(
     staging_root: &Path,
     library: &str,
 ) -> anyhow::Result<Option<PathBuf>> {
-    for relative_dir in ["lib", "usr/lib", "usr/local/lib"] {
+    for relative_dir in RUNTIME_LIBRARY_DIRS {
         let candidate = staging_root.join(relative_dir).join(library);
         if candidate.exists() {
             return Ok(Some(candidate));
