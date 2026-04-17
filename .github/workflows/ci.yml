@@ -68,6 +68,7 @@ jobs:
               - ".github/workflows/ci.yml"
               - ".github/workflows/container-publish.yml"
               - "container/Dockerfile"
+              - "container/Dockerfile.axvisor-lvz"
               - "rust-toolchain.toml"
 
   fmt:
