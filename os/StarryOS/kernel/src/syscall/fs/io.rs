@@ -151,6 +151,23 @@ pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     }
 }
 
+pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, _flags: u32) -> AxResult<isize> {
+    debug!("sys_sync_file_range <= fd: {fd}");
+    // sync_file_range(2) is an advisory hint to initiate writeback for a
+    // byte range. The kernel is free to ignore it entirely (the man page
+    // notes it provides no data integrity guarantees). We delegate to the
+    // file's datasync, which is the closest available primitive. For
+    // in-memory filesystems this is a no-op; for block-backed filesystems
+    // it flushes data to the device.
+    match File::from_fd(fd) {
+        Ok(f) => {
+            let _ = f.inner().sync(true);
+            Ok(0)
+        }
+        Err(_) => Ok(0),
+    }
+}
+
 pub fn sys_fadvise64(
     fd: c_int,
     offset: __kernel_off_t,

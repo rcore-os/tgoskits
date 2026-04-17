@@ -156,12 +156,12 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         Sysno::fsync => sys_fsync(uctx.arg0() as _),
         Sysno::fdatasync => sys_fdatasync(uctx.arg0() as _),
-        Sysno::sync_file_range => {
-            // Advisory optimization: hint to flush file data to disk.
-            // Returning Ok(0) is always correct — the kernel may choose
-            // not to act on the hint. PostgreSQL uses this for WAL writes.
-            Ok(0)
-        }
+        Sysno::sync_file_range => sys_sync_file_range(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
         Sysno::fadvise64 => sys_fadvise64(
             uctx.arg0() as _,
             uctx.arg1() as _,
