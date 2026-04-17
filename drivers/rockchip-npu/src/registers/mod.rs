@@ -22,7 +22,6 @@ pub mod ppu_rdma;
 pub mod sdma;
 
 use consts::*;
-
 use mbarrier::mb;
 use tock_registers::interfaces::{Readable, Writeable};
 

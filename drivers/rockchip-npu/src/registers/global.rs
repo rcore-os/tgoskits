@@ -1,5 +1,4 @@
-use tock_registers::register_structs;
-use tock_registers::registers::ReadWrite;
+use tock_registers::{register_structs, registers::ReadWrite};
 
 register_structs! {
     pub GlobalRegs {

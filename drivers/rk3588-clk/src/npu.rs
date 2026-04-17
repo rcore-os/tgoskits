@@ -8,9 +8,10 @@
 #![allow(clippy::identity_op)]
 #![allow(clippy::result_unit_err)]
 
-use crate::{Rk3588Cru, constant::*};
 use log::{debug, info};
 use tock_registers::interfaces::{Readable, Writeable};
+
+use crate::{Rk3588Cru, constant::*};
 
 impl Rk3588Cru {
     /// Get the current clock frequency for a NPU clock ID

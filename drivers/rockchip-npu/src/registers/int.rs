@@ -1,5 +1,4 @@
-use tock_registers::register_structs;
-use tock_registers::registers::*;
+use tock_registers::{register_structs, registers::*};
 
 register_structs! {
     /// Int register block starting at offset 0 relative to the int group base.
