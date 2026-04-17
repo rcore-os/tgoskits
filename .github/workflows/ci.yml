@@ -255,6 +255,20 @@ jobs:
       command: ${{ matrix.command }}
       cache_key: ${{ matrix.cache_key }}
       container_image: ${{ matrix.container_image }}
+      apk_region: >-
+        ${{
+          (
+            matrix.use_container
+            && (
+              startsWith(matrix.command, 'cargo xtask starry test qemu --target')
+              || startsWith(matrix.command, 'cargo xtask axvisor test qemu --target')
+              || startsWith(matrix.command, 'cargo xtask arceos test qemu --target')
+              || startsWith(matrix.name, 'Stress starry ')
+            )
+          )
+          && 'us'
+          || 'china'
+        }}
       required_repository_owner: ${{ matrix.required_repository_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
 

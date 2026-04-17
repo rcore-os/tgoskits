@@ -27,6 +27,11 @@ on:
         required: false
         type: string
         default: ""
+      apk_region:
+        description: APK mirror region passed through to Starry prebuild flows.
+        required: false
+        type: string
+        default: china
       required_repository_owner:
         description: Only run when the repository owner matches this value. Leave empty to run everywhere.
         required: false
@@ -62,6 +67,8 @@ jobs:
         run: rustc --version
 
       - name: Run command
+        env:
+          STARRY_APK_REGION: ${{ inputs.apk_region }}
         run: ${{ inputs.command }}
 
   run_container:
