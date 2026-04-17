@@ -17,7 +17,7 @@ license.workspace = true
 dev-log = []
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
-rknpu = ["dep:rockchip-npu", "dep:rdrive"]
+rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
 vsock = ["ax-feat/vsock"]
 
 [dependencies]
@@ -49,6 +49,7 @@ ax-input = { workspace = true, optional = true }
 ax-log.workspace = true
 ax-mm.workspace = true
 axnet = { version = "0.5", package = "ax-net-ng" }
+axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
@@ -105,8 +106,6 @@ uluru = "3.1.0"
 weak-map = "0.1.1"
 xmas-elf = "0.9"
 zerocopy = { version = "0.8", features = ["derive"] }
-rockchip-npu = { workspace = true, optional = true }
-rdrive = { version = "0.20", optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

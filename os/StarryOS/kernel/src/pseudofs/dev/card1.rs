@@ -11,12 +11,9 @@ use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::PhysAddrRange;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
+use axplat_dyn::rknpu::{self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuSubmit};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
-use rockchip_npu::{
-    RknpuAction,
-    ioctrl::{RknpuMemCreate, RknpuMemMap, RknpuSubmit},
-};
 
 use super::{
     card0::{RknpuCmd, copy_from_user, copy_to_user},
@@ -239,33 +236,21 @@ fn map_handle_from_offset(offset: u64) -> Option<u32> {
 }
 
 fn exported_gem_buffer(handle: u32) -> AxResult<ExportedGemBuffer> {
-    let (obj_addr, size) = with_npu(|rknpu_dev| {
-        rknpu_dev
-            .get_obj_addr_and_size(handle)
-            .ok_or(VfsError::NotFound)
-    })
-    .map_err(|_| AxError::NotFound)?;
+    let (obj_addr, size) = rknpu::obj_addr_and_size(handle)
+        .map_err(map_rknpu_err)
+        .map_err(|_| AxError::NotFound)?;
     let paddr = virt_to_phys(obj_addr.into());
     Ok(ExportedGemBuffer::new(PhysAddrRange::from_start_size(
         paddr, size,
     )))
 }
 
-/// Gets a reference to the NPU device
-pub fn npu() -> Result<rdrive::DeviceGuard<::rockchip_npu::Rknpu>, VfsError> {
-    rdrive::get_one()
-        .ok_or(VfsError::NotFound)?
-        .try_lock()
-        .map_err(|_| VfsError::AlreadyExists)
-}
-
-/// Executes a function with the NPU device
-pub fn with_npu<F, R>(f: F) -> Result<R, VfsError>
-where
-    F: FnOnce(&mut ::rockchip_npu::Rknpu) -> Result<R, VfsError>,
-{
-    let mut npu = npu()?;
-    f(&mut npu)
+fn map_rknpu_err(err: rknpu::Error) -> VfsError {
+    match err {
+        rknpu::Error::NotFound => VfsError::NotFound,
+        rknpu::Error::Busy => VfsError::AlreadyExists,
+        rknpu::Error::InvalidData => VfsError::InvalidData,
+    }
 }
 
 /// Handles RKNPU action ioctl commands
@@ -281,11 +266,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
             )?;
             info!("rknpu submit ioctl {submit_args:#x?}");
 
-            if let Err(e) = with_npu(|rknpu_dev| {
-                rknpu_dev
-                    .submit_ioctrl(&mut submit_args)
-                    .map_err(|_| VfsError::InvalidData)
-            }) {
+            if let Err(e) = rknpu::submit(&mut submit_args).map_err(map_rknpu_err) {
                 warn!("rknpu submit ioctl failed: {:?}", e);
             }
             debug!("rknpu submit ioctl result: {:#x?}", submit_args);
@@ -306,11 +287,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 mem::size_of::<RknpuMemCreate>(),
             )?;
 
-            if let Err(e) = with_npu(|rknpu_dev| {
-                rknpu_dev
-                    .create(&mut mem_create_args)
-                    .map_err(|_| VfsError::InvalidData)
-            }) {
+            if let Err(e) = rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err) {
                 warn!("rknpu mem_create ioctl failed: {:?}", e);
             }
 
@@ -329,22 +306,19 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 mem::size_of::<RknpuMemMap>(),
             )?;
 
-            if let Err(e) = with_npu(|rknpu_dev| {
-                if rknpu_dev.get_phys_addr_and_size(mem_map.handle).is_some() {
-                    mem_map.offset = (mem_map.handle as u64) << PAGE_SHIFT;
-
+            match rknpu::mem_map_offset(mem_map.handle).map_err(map_rknpu_err) {
+                Ok(offset) => {
+                    mem_map.offset = offset;
                     info!(
                         "mem_map: handle={} -> offset=0x{:x}",
                         mem_map.handle, mem_map.offset
                     );
-                    Ok(())
-                } else {
-                    warn!("mem_map: invalid handle={}", mem_map.handle);
-                    Err(VfsError::InvalidData)
                 }
-            }) {
-                warn!("rknpu mem_map ioctl failed: {:?}", e);
-                return Err(e);
+                Err(e) => {
+                    warn!("mem_map: invalid handle={}", mem_map.handle);
+                    warn!("rknpu mem_map ioctl failed: {:?}", e);
+                    return Err(e);
+                }
             }
 
             copy_to_user(
@@ -373,14 +347,11 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 action.flags, action.value
             );
 
-            if let Err(e) = with_npu(|rknpu_dev| {
-                let val = rknpu_dev
-                    .action(action.flags)
-                    .map_err(|_| VfsError::InvalidData)?;
-                action.value = val;
-                Ok(())
-            }) {
-                warn!("rknpu action ioctl failed: {:?}", e);
+            match rknpu::action(action.flags).map_err(map_rknpu_err) {
+                Ok(val) => action.value = val,
+                Err(e) => {
+                    warn!("rknpu action ioctl failed: {:?}", e);
+                }
             }
 
             copy_to_user(
@@ -403,11 +374,7 @@ pub fn rknpu_submit_ioctl(arg: usize) -> VfsResult<usize> {
         mem::size_of::<RknpuSubmit>(),
     )?;
 
-    if let Err(e) = with_npu(|rknpu_dev| {
-        rknpu_dev
-            .submit_ioctrl(&mut submit_args)
-            .map_err(|_| VfsError::InvalidData)
-    }) {
+    if let Err(e) = rknpu::submit(&mut submit_args).map_err(map_rknpu_err) {
         warn!("rknpu submit ioctl failed: {:?}", e);
     }
 
@@ -429,11 +396,7 @@ pub fn rknpu_mem_create_ioctl(arg: usize) -> VfsResult<usize> {
         mem::size_of::<RknpuMemCreate>(),
     )?;
 
-    if let Err(e) = with_npu(|rknpu_dev| {
-        rknpu_dev
-            .create(&mut mem_create_args)
-            .map_err(|_| VfsError::InvalidData)
-    }) {
+    if let Err(e) = rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err) {
         warn!("rknpu mem_create ioctl failed: {:?}", e);
     }
 
