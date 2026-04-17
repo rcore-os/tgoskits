@@ -35,6 +35,8 @@ pub(crate) fn call_page_fault_handler_with_parent_irqs(
         crate::asm::disable_irqs();
     }
     handled
+}
+
 /// Breakpoint handler.
 ///
 /// The handler is invoked with a mutable reference to the trapped [`TrapFrame`]
