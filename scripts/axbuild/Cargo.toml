@@ -6,7 +6,7 @@ keywords.workspace = true
 license.workspace = true
 name = "axbuild"
 repository.workspace = true
-version = "0.4.4"
+version = "0.4.5"
 description = "An OS build lib toolkit used by arceos"
 
 [dependencies]
