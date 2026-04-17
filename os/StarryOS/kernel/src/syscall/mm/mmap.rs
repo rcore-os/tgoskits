@@ -307,42 +307,156 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> AxResult<isize> {
+pub fn sys_mremap(
+    addr: usize,
+    old_size: usize,
+    new_size: usize,
+    flags: u32,
+    new_addr: usize,
+) -> AxResult<isize> {
+    const MREMAP_MAYMOVE: u32 = 1;
+    const MREMAP_FIXED: u32 = 2;
+    const MREMAP_DONTUNMAP: u32 = 4;
+    const MREMAP_VALID: u32 = MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP;
+
     debug!(
         "sys_mremap <= addr: {addr:#x}, old_size: {old_size:x}, new_size: {new_size:x}, flags: \
-         {flags:#x}"
+         {flags:#x}, new_addr: {new_addr:#x}"
     );
 
-    // TODO: full implementation
-
-    if !addr.is_multiple_of(PageSize::Size4K as usize) {
+    if flags & !MREMAP_VALID != 0 {
         return Err(AxError::InvalidInput);
     }
-    let addr = VirtAddr::from(addr);
+    let may_move = flags & MREMAP_MAYMOVE != 0;
+    let fixed = flags & MREMAP_FIXED != 0;
+    let dontunmap = flags & MREMAP_DONTUNMAP != 0;
+    if fixed && !may_move {
+        return Err(AxError::InvalidInput);
+    }
+    if dontunmap && !may_move {
+        return Err(AxError::InvalidInput);
+    }
+    if dontunmap && old_size != new_size {
+        return Err(AxError::InvalidInput);
+    }
+
+    let page = PageSize::Size4K as usize;
+    if !addr.is_multiple_of(page) {
+        return Err(AxError::InvalidInput);
+    }
+    if new_size == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    // `old_size == 0` is only valid for shared mappings (to create an extra
+    // alias). We don't support that case; reject it with EINVAL.
+    if old_size == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if fixed && !new_addr.is_multiple_of(page) {
+        return Err(AxError::InvalidInput);
+    }
+
+    let old_size_up = align_up_4k(old_size);
+    let new_size_up = align_up_4k(new_size);
+
+    if fixed {
+        // Old and new ranges must not overlap.
+        let o_end = addr.checked_add(old_size_up).ok_or(AxError::InvalidInput)?;
+        let n_end = new_addr
+            .checked_add(new_size_up)
+            .ok_or(AxError::InvalidInput)?;
+        if addr < n_end && new_addr < o_end {
+            return Err(AxError::InvalidInput);
+        }
+    }
 
     let curr = current();
-    let aspace = curr.as_thread().proc_data.aspace.lock();
-    let old_size = align_up_4k(old_size);
-    let new_size = align_up_4k(new_size);
+    let mapping_flags = {
+        let aspace = curr.as_thread().proc_data.aspace.lock();
+        let vma = aspace
+            .find_area(VirtAddr::from(addr))
+            .ok_or(AxError::BadAddress)?;
+        if VirtAddr::from(addr + old_size_up) > vma.end() {
+            return Err(AxError::BadAddress);
+        }
+        vma.flags()
+    };
+    let prot = mapping_flags.bits() as u32;
 
-    let flags = aspace.find_area(addr).ok_or(AxError::NoMemory)?.flags();
-    drop(aspace);
-    let new_addr = sys_mmap(
-        addr.as_usize(),
-        new_size,
-        flags.bits() as _,
-        MmapFlags::PRIVATE.bits(),
-        -1,
-        0,
-    )? as usize;
+    // No-op: same size, no relocation requested.
+    if !fixed && !dontunmap && old_size_up == new_size_up {
+        return Ok(addr as isize);
+    }
 
-    let copy_len = new_size.min(old_size);
-    let data = vm_load(addr.as_ptr(), copy_len)?;
-    vm_write_slice(new_addr as *mut u8, &data)?;
+    // Shrink in place.
+    if !fixed && !dontunmap && new_size_up < old_size_up {
+        sys_munmap(addr + new_size_up, old_size_up - new_size_up)?;
+        return Ok(addr as isize);
+    }
 
-    sys_munmap(addr.as_usize(), old_size)?;
+    // Grow request.
+    //
+    // Without MREMAP_MAYMOVE / MREMAP_FIXED / MREMAP_DONTUNMAP the expansion
+    // must happen in place: we look for a free gap immediately after the
+    // existing VMA and map it with the same protection.
+    if !may_move && !fixed && !dontunmap {
+        let extra = new_size_up - old_size_up;
+        let extra_start = VirtAddr::from(addr + old_size_up);
+        let free = {
+            let aspace = curr.as_thread().proc_data.aspace.lock();
+            aspace.find_free_area(
+                extra_start,
+                extra,
+                VirtAddrRange::new(aspace.base(), aspace.end()),
+                page,
+            )
+        };
+        if free == Some(extra_start) {
+            sys_mmap(
+                extra_start.as_usize(),
+                extra,
+                prot,
+                (MmapFlags::PRIVATE | MmapFlags::ANONYMOUS | MmapFlags::FIXED).bits(),
+                -1,
+                0,
+            )?;
+            return Ok(addr as isize);
+        }
+        return Err(AxError::NoMemory);
+    }
 
-    Ok(new_addr as isize)
+    // MREMAP_MAYMOVE (optionally with MREMAP_FIXED / MREMAP_DONTUNMAP): move
+    // the mapping by allocating a fresh anonymous region, copying data, then
+    // (unless DONTUNMAP) unmapping the original.
+    let target = if fixed {
+        sys_mmap(
+            new_addr,
+            new_size_up,
+            prot,
+            (MmapFlags::PRIVATE | MmapFlags::ANONYMOUS | MmapFlags::FIXED).bits(),
+            -1,
+            0,
+        )? as usize
+    } else {
+        sys_mmap(
+            0,
+            new_size_up,
+            prot,
+            (MmapFlags::PRIVATE | MmapFlags::ANONYMOUS).bits(),
+            -1,
+            0,
+        )? as usize
+    };
+
+    let copy_len = old_size_up.min(new_size_up);
+    let data = vm_load(addr as *const u8, copy_len)?;
+    vm_write_slice(target as *mut u8, &data)?;
+
+    if !dontunmap {
+        sys_munmap(addr, old_size_up)?;
+    }
+
+    Ok(target as isize)
 }
 
 pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
