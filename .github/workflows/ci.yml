@@ -117,7 +117,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask axvisor test qemu --target loongarch64
             cache_key: test-axvisor-loongarch64
-            container_image: ghcr.io/numpy1314/qemu-lvz:latest
+            container_image: ghcr.io/${{ github.repository }}-container-axvisor-lvz:latest
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
