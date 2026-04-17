@@ -99,4 +99,6 @@ jobs:
         run: rustc --version
 
       - name: Run command
+        env:
+          STARRY_APK_REGION: ${{ inputs.apk_region }}
         run: ${{ inputs.command }}
