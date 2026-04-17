@@ -41,7 +41,11 @@ pub struct Rlimits([Rlimit; RLIM_NLIMITS as usize]);
 impl Default for Rlimits {
     fn default() -> Self {
         let mut result = Self(Default::default());
-        result[RLIMIT_STACK] = (crate::config::USER_STACK_SIZE as u64).into();
+        // Linux default is 8 MiB. USER_STACK_SIZE is the initial mapping
+        // (512 KiB) but the limit advertised via getrlimit should match
+        // Linux conventions so applications like PostgreSQL can calculate
+        // safe max_stack_depth values.
+        result[RLIMIT_STACK] = (8 * 1024 * 1024u64).into();
         result[RLIMIT_NOFILE] = (AX_FILE_LIMIT as u64).into();
         result
     }
