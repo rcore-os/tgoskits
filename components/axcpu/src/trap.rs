@@ -19,6 +19,24 @@ pub fn page_fault_handler(addr: VirtAddr, flags: PageFaultFlags) -> bool {
     false
 }
 
+/// Invoke the page-fault slow path with the IRQ state restored to the
+/// faulting context.
+#[inline]
+pub(crate) fn call_page_fault_handler_with_parent_irqs(
+    addr: VirtAddr,
+    flags: PageFaultFlags,
+    parent_irqs_enabled: bool,
+) -> bool {
+    if parent_irqs_enabled {
+        crate::asm::enable_irqs();
+    }
+    let handled = page_fault_handler(addr, flags);
+    if parent_irqs_enabled {
+        crate::asm::disable_irqs();
+    }
+    handled
+}
+
 /// Breakpoint handler.
 ///
 /// The handler is invoked with a mutable reference to the trapped [`TrapFrame`]

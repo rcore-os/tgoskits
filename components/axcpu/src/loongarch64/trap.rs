@@ -22,7 +22,11 @@ fn handle_breakpoint(tf: &mut TrapFrame) {
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(badv::read().vaddr());
-    if crate::trap::page_fault_handler(vaddr, access_flags) {
+    if crate::trap::call_page_fault_handler_with_parent_irqs(
+        vaddr,
+        access_flags,
+        tf.prmd & (1 << 2) != 0,
+    ) {
         return;
     }
     #[cfg(feature = "uspace")]

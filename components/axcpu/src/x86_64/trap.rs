@@ -1,5 +1,5 @@
 use x86::{controlregs::cr2, irq::*};
-use x86_64::structures::idt::PageFaultErrorCode;
+use x86_64::{registers::rflags::RFlags, structures::idt::PageFaultErrorCode};
 
 use super::{TrapFrame, gdt};
 use crate::trap::PageFaultFlags;
@@ -20,7 +20,11 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     let access_flags = err_code_to_flags(tf.error_code)
         .unwrap_or_else(|e| panic!("Invalid #PF error code: {:#x}", e));
     let vaddr = va!(unsafe { cr2() });
-    if crate::trap::page_fault_handler(vaddr, access_flags) {
+    if crate::trap::call_page_fault_handler_with_parent_irqs(
+        vaddr,
+        access_flags,
+        RFlags::from_bits_truncate(tf.rflags).contains(RFlags::INTERRUPT_FLAG),
+    ) {
         return;
     }
     #[cfg(feature = "uspace")]
