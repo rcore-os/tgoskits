@@ -240,6 +240,14 @@ jobs:
             container_image: ""
             required_repository_owner: rcore-os
             main_pr_only: false
+          - name: Test starry self-hosted smoke-orangepi-5-plus-npu
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask starry test board -t smoke-orangepi-5-plus-npu
+            cache_key: ""
+            container_image: ""
+            required_repository_owner: rcore-os
+            main_pr_only: false
         # - name: Test axvisor self-hosted rdk-s100-linux
         #   use_container: false
         #   runs_on: '["self-hosted","linux","board"]'
