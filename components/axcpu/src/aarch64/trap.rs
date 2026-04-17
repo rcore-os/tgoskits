@@ -72,7 +72,11 @@ fn esr_value() -> u64 {
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(fault_addr());
-    if crate::trap::page_fault_handler(vaddr, access_flags) {
+    if crate::trap::call_page_fault_handler_with_parent_irqs(
+        vaddr,
+        access_flags,
+        tf.spsr & (1 << 7) == 0,
+    ) {
         return;
     }
     #[cfg(feature = "uspace")]
