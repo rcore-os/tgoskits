@@ -42,7 +42,7 @@ RUN set -eux; \
     cd "/tmp/qemu-${QEMU_VERSION}"; \
     ./configure \
       --prefix="/opt/qemu-${QEMU_VERSION}" \
-      --target-list=loongarch64-softmmu,riscv64-softmmu,aarch64-softmmu,x86_64-softmmu \
+      --target-list=loongarch64-softmmu,loongarch64-linux-user,riscv64-softmmu,riscv64-linux-user,aarch64-softmmu,aarch64-linux-user,x86_64-softmmu,x86_64-linux-user \
       --enable-slirp \
       --disable-docs \
       --disable-gtk \

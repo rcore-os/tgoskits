@@ -67,13 +67,14 @@ struct CaseAssetLayout {
 
 #[derive(Debug, Clone)]
 struct GuestBuildEnv {
+    cmake: PathBuf,
     cc: PathBuf,
     ar: PathBuf,
     ranlib: PathBuf,
     strip: PathBuf,
     pkg_config: PathBuf,
     make_program: PathBuf,
-    configure_envs: Vec<(String, String)>,
+    command_envs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -427,7 +428,7 @@ fn prepare_c_case_assets_sync(
         let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
         command.exec().context("failed to run case prebuild.sh")?;
     }
-    let qemu_runner = find_host_binary(qemu_user_binary_name(arch)?)?;
+    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
     let build_env = prepare_guest_build_env(layout, &qemu_runner)?;
 
     let mut configure = build_cmake_configure_command(case, layout, &build_env);
@@ -614,7 +615,7 @@ fn prepare_guest_prebuild_env(
     layout: &CaseAssetLayout,
     apk_region: ApkRegion,
 ) -> anyhow::Result<GuestPrebuildEnv> {
-    let qemu_runner = find_host_binary(qemu_user_binary_name(arch)?)?;
+    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
     write_guest_command_wrappers(layout, &qemu_runner)?;
 
     let mut script_envs = case_script_envs(case, layout);
@@ -634,8 +635,12 @@ fn prepare_guest_build_env(
     qemu_runner: &Path,
 ) -> anyhow::Result<GuestBuildEnv> {
     let staging_root = &layout.staging_root;
-    let pkg_config = find_host_binary("pkg-config")?;
-    let make_program = find_host_binary("make")?;
+    write_guest_command_wrappers(layout, qemu_runner)?;
+
+    let cmake = find_guest_tool_path(staging_root, &["usr/bin/cmake"])?;
+    let pkg_config =
+        find_guest_tool_path(staging_root, &["usr/bin/pkg-config", "usr/bin/pkgconf"])?;
+    let make_program = find_guest_tool_path(staging_root, &["usr/bin/make", "usr/bin/gmake"])?;
     let gcc_wrapper = layout.toolchain_dir.join("cc");
     let ar_wrapper = layout.toolchain_dir.join("ar");
     let ranlib_wrapper = layout.toolchain_dir.join("ranlib");
@@ -646,7 +651,10 @@ fn prepare_guest_build_env(
     ensure_guest_tool_exists(staging_root, "usr/bin/ranlib")?;
     ensure_guest_tool_exists(staging_root, "usr/bin/strip")?;
 
-    wrap_guest_gcc_libexec_tools(staging_root, qemu_runner)?;
+    wrap_guest_executable_in_place(&cmake, qemu_runner, staging_root)?;
+    wrap_guest_executable_in_place(&pkg_config, qemu_runner, staging_root)?;
+    wrap_guest_executable_in_place(&make_program, qemu_runner, staging_root)?;
+    wrap_guest_gcc_toolchain_helpers(staging_root, qemu_runner)?;
     write_guest_cc_wrapper(
         &gcc_wrapper,
         qemu_runner,
@@ -676,23 +684,72 @@ fn prepare_guest_build_env(
         staging_root.join("usr/lib/pkgconfig").display(),
         staging_root.join("usr/share/pkgconfig").display()
     );
+    let mut command_envs = vec![
+        (
+            "PATH".to_string(),
+            join_guest_wrapper_path(&layout.command_wrapper_dir)?,
+        ),
+        (
+            "QEMU_LD_PREFIX".to_string(),
+            staging_root.display().to_string(),
+        ),
+        ("PKG_CONFIG_LIBDIR".to_string(), pkgconfig_libdir),
+        (
+            "PKG_CONFIG_SYSROOT_DIR".to_string(),
+            staging_root.display().to_string(),
+        ),
+        ("PKG_CONFIG_PATH".to_string(), String::new()),
+    ];
+    if let Some(shell) = find_optional_guest_command_wrapper(layout, &["sh"]) {
+        let shell = shell.display().to_string();
+        command_envs.push(("SHELL".to_string(), shell.clone()));
+        command_envs.push(("CONFIG_SHELL".to_string(), shell));
+    }
 
     Ok(GuestBuildEnv {
+        cmake,
         cc: gcc_wrapper,
         ar: ar_wrapper,
         ranlib: ranlib_wrapper,
         strip: strip_wrapper,
         pkg_config,
         make_program,
-        configure_envs: vec![
-            ("PKG_CONFIG_LIBDIR".to_string(), pkgconfig_libdir),
-            (
-                "PKG_CONFIG_SYSROOT_DIR".to_string(),
-                staging_root.display().to_string(),
-            ),
-            ("PKG_CONFIG_PATH".to_string(), String::new()),
-        ],
+        command_envs,
     })
+}
+
+fn find_optional_guest_command_wrapper(
+    layout: &CaseAssetLayout,
+    candidates: &[&str],
+) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .map(|candidate| layout.command_wrapper_dir.join(candidate))
+        .find(|candidate| candidate.is_file())
+}
+
+fn join_guest_wrapper_path(wrapper_dir: &Path) -> anyhow::Result<String> {
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = Vec::new();
+    path_entries.push(wrapper_dir.to_path_buf());
+    path_entries.extend(std::env::split_paths(&host_path));
+    let joined = std::env::join_paths(path_entries).context("failed to join PATH entries")?;
+    joined
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("guest wrapper PATH contains non-utf8 data"))
+}
+
+fn find_guest_tool_path(staging_root: &Path, candidates: &[&str]) -> anyhow::Result<PathBuf> {
+    candidates
+        .iter()
+        .map(|candidate| staging_root.join(candidate))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "staging root is missing required guest tool `{}`; install it in prebuild.sh",
+                candidates.join("` or `")
+            )
+        })
 }
 
 fn build_prebuild_command(
@@ -728,7 +785,7 @@ fn build_cmake_configure_command(
     layout: &CaseAssetLayout,
     build_env: &GuestBuildEnv,
 ) -> Command {
-    let mut command = Command::new("cmake");
+    let mut command = Command::new(&build_env.cmake);
     command
         .arg("-S")
         .arg(case_c_source_dir(case))
@@ -757,7 +814,7 @@ fn build_cmake_configure_command(
             layout.staging_root.display()
         ));
 
-    for (key, value) in &build_env.configure_envs {
+    for (key, value) in &build_env.command_envs {
         command.env(key, value);
     }
 
@@ -765,13 +822,13 @@ fn build_cmake_configure_command(
 }
 
 fn build_cmake_build_command(layout: &CaseAssetLayout, build_env: &GuestBuildEnv) -> Command {
-    let mut command = Command::new("cmake");
+    let mut command = Command::new(&build_env.cmake);
     command
         .arg("--build")
         .arg(&layout.build_dir)
         .arg("--parallel");
 
-    for (key, value) in &build_env.configure_envs {
+    for (key, value) in &build_env.command_envs {
         command.env(key, value);
     }
 
@@ -779,11 +836,11 @@ fn build_cmake_build_command(layout: &CaseAssetLayout, build_env: &GuestBuildEnv
 }
 
 fn build_cmake_install_command(layout: &CaseAssetLayout, build_env: &GuestBuildEnv) -> Command {
-    let mut command = Command::new("cmake");
+    let mut command = Command::new(&build_env.cmake);
     command.arg("--install").arg(&layout.build_dir);
     command.env("DESTDIR", &layout.overlay_dir);
 
-    for (key, value) in &build_env.configure_envs {
+    for (key, value) in &build_env.command_envs {
         command.env(key, value);
     }
 
@@ -901,10 +958,16 @@ fn ensure_guest_tool_exists(staging_root: &Path, relative_path: &str) -> anyhow:
     Ok(())
 }
 
-fn qemu_user_binary_name(arch: &str) -> anyhow::Result<&'static str> {
+fn qemu_user_binary_names(arch: &str) -> anyhow::Result<&'static [&'static str]> {
     match arch {
-        "aarch64" => Ok("qemu-aarch64-static"),
-        _ => bail!("Starry C test cases are currently only supported on aarch64, but got `{arch}`"),
+        "aarch64" => Ok(&["qemu-aarch64-static", "qemu-aarch64"]),
+        "riscv64" => Ok(&["qemu-riscv64-static", "qemu-riscv64"]),
+        "x86_64" => Ok(&["qemu-x86_64-static", "qemu-x86_64"]),
+        "loongarch64" => Ok(&["qemu-loongarch64-static", "qemu-loongarch64"]),
+        _ => bail!(
+            "Starry C test cases are only supported on aarch64, riscv64, x86_64, and loongarch64, \
+             but got `{arch}`"
+        ),
     }
 }
 
@@ -916,12 +979,14 @@ fn write_guest_cc_wrapper(
     guest_relative_path: &str,
     extra_args: Option<String>,
 ) -> anyhow::Result<()> {
+    let guest_path = staging_root.join(guest_relative_path);
     let mut body = format!(
-        "export QEMU_LD_PREFIX={root}\nexport PATH={wrapper}:$PATH\nexec {qemu} -L {root} {guest}",
+        "export QEMU_LD_PREFIX={root}\nexport PATH={wrapper}:$PATH\nexec {qemu} -0 {guest} -L \
+         {root} {guest}",
         root = shell_single_quote(staging_root),
         wrapper = shell_single_quote(command_wrapper_dir),
         qemu = shell_single_quote(qemu_runner),
-        guest = shell_single_quote(staging_root.join(guest_relative_path)),
+        guest = shell_single_quote(&guest_path),
     );
     if let Some(extra_args) = extra_args {
         body.push(' ');
@@ -939,11 +1004,12 @@ fn write_guest_exec_wrapper(
     guest_relative_path: &str,
     extra_args: Option<String>,
 ) -> anyhow::Result<()> {
+    let guest_path = staging_root.join(guest_relative_path);
     let mut body = format!(
-        "export QEMU_LD_PREFIX={root}\nexec {qemu} -L {root} {guest}",
+        "export QEMU_LD_PREFIX={root}\nexec {qemu} -0 {guest} -L {root} {guest}",
         root = shell_single_quote(staging_root),
         qemu = shell_single_quote(qemu_runner),
-        guest = shell_single_quote(staging_root.join(guest_relative_path)),
+        guest = shell_single_quote(&guest_path),
     );
     if let Some(extra_args) = extra_args {
         body.push(' ');
@@ -954,23 +1020,63 @@ fn write_guest_exec_wrapper(
     write_wrapper_script(path, &body)
 }
 
-fn wrap_guest_gcc_libexec_tools(staging_root: &Path, qemu_runner: &Path) -> anyhow::Result<()> {
-    let libexec_root = staging_root.join("usr/libexec/gcc");
-    if !libexec_root.is_dir() {
-        return Ok(());
-    }
-
-    for path in collect_regular_files(&libexec_root)? {
-        if path.extension().is_some_and(|ext| ext == "so") {
-            continue;
+fn wrap_guest_gcc_toolchain_helpers(staging_root: &Path, qemu_runner: &Path) -> anyhow::Result<()> {
+    for root in guest_gcc_helper_roots(staging_root)? {
+        for path in collect_wrappable_files(&root)? {
+            if path.extension().is_some_and(|ext| ext == "so") {
+                continue;
+            }
+            wrap_guest_executable_in_place(&path, qemu_runner, staging_root)?;
         }
-        wrap_guest_executable_in_place(&path, qemu_runner, staging_root)?;
     }
 
     Ok(())
 }
 
-fn collect_regular_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+fn guest_gcc_helper_roots(staging_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    for candidate in ["usr/libexec/gcc", "usr/lib/gcc"] {
+        let root = staging_root.join(candidate);
+        if root.is_dir() {
+            roots.push(root);
+        }
+    }
+
+    let usr_root = staging_root.join("usr");
+    if usr_root.is_dir() {
+        let mut entries = fs::read_dir(&usr_root)
+            .with_context(|| format!("failed to read {}", usr_root.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .with_context(|| format!("failed to read {}", usr_root.display()))?;
+        entries.sort_by_key(|left| left.file_name());
+
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to inspect {}", path.display()))?;
+            if !file_type.is_dir() {
+                continue;
+            }
+
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !(name.contains("-linux-") && name.ends_with("musl")) {
+                continue;
+            }
+
+            let bin_dir = path.join("bin");
+            if bin_dir.is_dir() {
+                roots.push(bin_dir);
+            }
+        }
+    }
+
+    Ok(roots)
+}
+
+fn collect_wrappable_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
         let entry = entry?;
@@ -979,8 +1085,8 @@ fn collect_regular_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
             .file_type()
             .with_context(|| format!("failed to inspect {}", path.display()))?;
         if file_type.is_dir() {
-            files.extend(collect_regular_files(&path)?);
-        } else if file_type.is_file() {
+            files.extend(collect_wrappable_files(&path)?);
+        } else if file_type.is_file() || file_type.is_symlink() {
             files.push(path);
         }
     }
@@ -994,6 +1100,9 @@ fn wrap_guest_executable_in_place(
 ) -> anyhow::Result<()> {
     let metadata =
         fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    if metadata.is_dir() {
+        return Ok(());
+    }
     if metadata.permissions().mode() & 0o111 == 0 {
         return Ok(());
     }
@@ -1016,9 +1125,10 @@ fn wrap_guest_executable_in_place(
     write_wrapper_script(
         path,
         &format!(
-            "export QEMU_LD_PREFIX={root}\nexec {qemu} -L {root} {guest} \"$@\"\n",
+            "export QEMU_LD_PREFIX={root}\nexec {qemu} -0 {argv0} -L {root} {guest} \"$@\"\n",
             root = shell_single_quote(staging_root),
             qemu = shell_single_quote(qemu_runner),
+            argv0 = shell_single_quote(path),
             guest = shell_single_quote(&wrapped_path),
         ),
     )?;
@@ -1181,9 +1291,16 @@ fn run_debugfs_script(
     }
 }
 
-fn find_host_binary(name: &str) -> anyhow::Result<PathBuf> {
-    find_optional_host_binary(name)
-        .ok_or_else(|| anyhow::anyhow!("required host binary `{name}` was not found in PATH"))
+fn find_host_binary_candidates(candidates: &[&str]) -> anyhow::Result<PathBuf> {
+    candidates
+        .iter()
+        .find_map(|candidate| find_optional_host_binary(candidate))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "required host binary was not found in PATH; tried: {}",
+                candidates.join(", ")
+            )
+        })
 }
 
 fn find_optional_host_binary(name: &str) -> Option<PathBuf> {
@@ -1551,18 +1668,27 @@ mod tests {
         let layout =
             case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
         let build_env = GuestBuildEnv {
+            cmake: PathBuf::from("/guest-bin/cmake"),
             cc: PathBuf::from("/toolchain/cc"),
             ar: PathBuf::from("/toolchain/ar"),
             ranlib: PathBuf::from("/toolchain/ranlib"),
             strip: PathBuf::from("/toolchain/strip"),
-            pkg_config: PathBuf::from("/usr/bin/pkg-config"),
-            make_program: PathBuf::from("/usr/bin/make"),
-            configure_envs: vec![("PKG_CONFIG_LIBDIR".to_string(), "/sysroot".to_string())],
+            pkg_config: PathBuf::from("/guest-bin/pkg-config"),
+            make_program: PathBuf::from("/guest-bin/make"),
+            command_envs: vec![
+                ("PATH".to_string(), "/guest-bin:/usr/bin".to_string()),
+                ("QEMU_LD_PREFIX".to_string(), "/sysroot".to_string()),
+                ("PKG_CONFIG_LIBDIR".to_string(), "/sysroot".to_string()),
+            ],
         };
 
         let command = build_cmake_configure_command(&case, &layout, &build_env);
         let args = command_args(&command);
 
+        assert_eq!(
+            command.get_program(),
+            std::ffi::OsStr::new("/guest-bin/cmake")
+        );
         assert!(args.contains(&format!(
             "-D{STARRY_STAGING_ROOT_VAR}={}",
             layout.staging_root.display()
@@ -1570,6 +1696,49 @@ mod tests {
         assert_eq!(
             command_env(&command, "PKG_CONFIG_LIBDIR"),
             Some("/sysroot".to_string())
+        );
+        assert_eq!(
+            command_env(&command, "PATH"),
+            Some("/guest-bin:/usr/bin".to_string())
+        );
+        assert_eq!(
+            command_env(&command, "QEMU_LD_PREFIX"),
+            Some("/sysroot".to_string())
+        );
+    }
+
+    #[test]
+    fn guest_gcc_helper_roots_include_triplet_bin_directory() {
+        let root = tempdir().unwrap();
+        let staging_root = root.path().join("staging-root");
+        fs::create_dir_all(staging_root.join("usr/libexec/gcc")).unwrap();
+        fs::create_dir_all(staging_root.join("usr/lib/gcc")).unwrap();
+        fs::create_dir_all(staging_root.join("usr/aarch64-alpine-linux-musl/bin")).unwrap();
+
+        let roots = guest_gcc_helper_roots(&staging_root).unwrap();
+
+        assert!(roots.contains(&staging_root.join("usr/libexec/gcc")));
+        assert!(roots.contains(&staging_root.join("usr/lib/gcc")));
+        assert!(roots.contains(&staging_root.join("usr/aarch64-alpine-linux-musl/bin")));
+    }
+
+    #[test]
+    fn qemu_user_binary_names_cover_supported_arches() {
+        assert_eq!(
+            qemu_user_binary_names("aarch64").unwrap(),
+            &["qemu-aarch64-static", "qemu-aarch64"]
+        );
+        assert_eq!(
+            qemu_user_binary_names("riscv64").unwrap(),
+            &["qemu-riscv64-static", "qemu-riscv64"]
+        );
+        assert_eq!(
+            qemu_user_binary_names("x86_64").unwrap(),
+            &["qemu-x86_64-static", "qemu-x86_64"]
+        );
+        assert_eq!(
+            qemu_user_binary_names("loongarch64").unwrap(),
+            &["qemu-loongarch64-static", "qemu-loongarch64"]
         );
     }
 
