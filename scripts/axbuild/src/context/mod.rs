@@ -196,8 +196,6 @@ fn configure_loongarch_qemu_path(workspace_root: &Path) -> anyhow::Result<()> {
     };
 
     prepend_dir_to_path(&qemu_dir)?;
-    let qemu_bin = qemu_dir.join("qemu-system-loongarch64");
-    println!("Using LoongArch QEMU binary: {}", qemu_bin.display());
     info!(
         "Using LoongArch QEMU from PATH-prepended directory: {}",
         qemu_dir.display()
