@@ -12,8 +12,12 @@ use super::{
 
 /// Information needed to restart a syscall if SA_RESTART applies.
 pub struct SyscallRestartInfo {
-    /// The original first argument (a0) before the syscall overwrote it.
+    /// First argument register value before the syscall overwrote it.
     pub saved_a0: usize,
+    /// Syscall number register value. On x86_64 rax holds both the
+    /// syscall number and the return value, so restarting requires
+    /// restoring it to the syscall number.
+    pub saved_sysno: usize,
 }
 
 pub fn check_signals(
@@ -34,21 +38,27 @@ pub fn check_signals(
     let mut actions = thr.signal.process().actions.lock();
     let action = actions[signo].clone();
 
-    if let Some(info) = restart_info {
-        let eintr = -(ax_errno::LinuxError::EINTR.code() as isize);
-        if (uctx.retval() as isize) == eintr {
-            if action.flags.contains(SignalActionFlags::RESTART) {
-                let new_ip = uctx.ip() - SYSCALL_INSN_LEN;
-                uctx.set_ip(new_ip);
-                uctx.set_arg0(info.saved_a0);
-                // On RISC-V (and ARM/MIPS), a0 is used for both the first
-                // argument and the return value. set_arg0 already wrote the
-                // correct value for the restart — do NOT call set_retval
-                // which would overwrite it.
-            } else {
-                uctx.set_retval(0);
-            }
-        }
+    // Apply the SA_RESTART decision once per interrupted syscall. Callers
+    // pass `Some(info)` only for the first signal delivered; for later
+    // iterations they pass `None` so a second signal cannot reapply the
+    // decision. When SA_RESTART is not set we leave retval at -EINTR so
+    // handle_signal captures it into the signal frame and sigreturn
+    // restores -EINTR to user space (non-restart semantics).
+    if let Some(info) = restart_info
+        && (uctx.retval() as isize) == -(ax_errno::LinuxError::EINTR.code() as isize)
+        && action.flags.contains(SignalActionFlags::RESTART)
+    {
+        uctx.set_ip(uctx.ip() - SYSCALL_INSN_LEN);
+        uctx.set_arg0(info.saved_a0);
+        // On x86_64, rax holds both the syscall number and the return
+        // value, so the syscall entry path clobbered sysno with -EINTR.
+        // Restore it before the syscall instruction re-executes. On
+        // RISC-V/AArch64/LoongArch64 sysno lives in a separate register
+        // (a7/x8/a7) that was not touched, so no restore is needed.
+        #[cfg(target_arch = "x86_64")]
+        uctx.set_sysno(info.saved_sysno);
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = info.saved_sysno;
     }
 
     let Some(os_action) =
