@@ -110,6 +110,10 @@ shell_init_cmd = "/usr/bin/mytest"
 
 QEMU 参数可以从已有用例复制（如 `smoke/qemu-<arch>.toml`），按需调整。
 
+如果某个用例需要多核环境，可以直接在 `qemu-<arch>.toml` 的 `args` 中加入
+`"-smp", "<N>"`。StarryOS 的测试运行器会自动用同样的 CPU 数重新配置内核构建，
+避免出现 QEMU 是多核而内核仍按单核模式编译的问题。
+
 ### 5. 支持的架构
 
 | 架构         | Target                              | QEMU CPU  |
