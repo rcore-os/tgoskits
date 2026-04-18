@@ -2,16 +2,32 @@ name: Reusable Container Publish
 
 on:
   workflow_call:
+    inputs:
+      image_name:
+        description: Full image name to publish.
+        required: true
+        type: string
+      dockerfile:
+        description: Dockerfile path relative to the repository root.
+        required: true
+        type: string
+      cache_scope:
+        description: GHA cache scope for docker build cache.
+        required: true
+        type: string
+      build_args:
+        description: Optional docker build args block.
+        required: false
+        default: ""
+        type: string
 
 jobs:
-  publish_base:
-    name: Publish base container image
+  publish:
+    name: Publish container image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    outputs:
-      image: ${{ steps.prep.outputs.image }}
 
     steps:
       - name: Checkout
@@ -20,7 +36,7 @@ jobs:
       - name: Prepare image name
         id: prep
         run: |
-          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-container" >> "$GITHUB_OUTPUT"
+          echo "image=${{ inputs.image_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -45,58 +61,10 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: container/Dockerfile
+          file: ${{ inputs.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=container
-          cache-to: type=gha,mode=max,scope=container
-
-  publish_axvisor_lvz:
-    name: Publish axvisor-lvz container image
-    needs: publish_base
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Prepare image name
-        id: prep
-        run: |
-          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-container-axvisor-lvz" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ steps.prep.outputs.image }}
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest
-
-      - name: Build and push container image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: container/Dockerfile.axvisor-lvz
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            BASE_IMAGE=${{ needs.publish_base.outputs.image }}:latest
-          cache-from: type=gha,scope=container-axvisor-lvz
-          cache-to: type=gha,mode=max,scope=container-axvisor-lvz
+          build-args: ${{ inputs.build_args }}
+          cache-from: type=gha,scope=${{ inputs.cache_scope }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.cache_scope }}
