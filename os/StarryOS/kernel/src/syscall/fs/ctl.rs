@@ -30,10 +30,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     debug!("sys_ioctl <= fd: {fd}, cmd: {cmd}, arg: {arg}");
     let f = get_file_like(fd)?;
     if cmd == FIONBIO {
-        let val = (arg as *const u8).vm_read()?;
-        if val != 0 && val != 1 {
-            return Err(AxError::InvalidInput);
-        }
+        let val: i32 = (arg as *const i32).vm_read()?;
         f.set_nonblocking(val != 0)?;
         return Ok(0);
     }
