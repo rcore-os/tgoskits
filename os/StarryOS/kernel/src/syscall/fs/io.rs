@@ -137,16 +137,45 @@ pub fn sys_fallocate(
 
 pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fsync <= {fd}");
-    let f = File::from_fd(fd)?;
-    f.inner().sync(false)?;
-    Ok(0)
+    match File::from_fd(fd) {
+        Ok(f) => {
+            f.inner().sync(false)?;
+            Ok(0)
+        }
+        Err(AxError::IsADirectory) => {
+            // Linux allows fsync() on directory fds to flush directory
+            // metadata. We don't have directory-level sync, but returning
+            // Ok matches Linux behavior for applications like PostgreSQL.
+            Ok(0)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fdatasync <= {fd}");
-    let f = File::from_fd(fd)?;
-    f.inner().sync(true)?;
-    Ok(0)
+    match File::from_fd(fd) {
+        Ok(f) => {
+            f.inner().sync(true)?;
+            Ok(0)
+        }
+        Err(AxError::IsADirectory) => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, _flags: u32) -> AxResult<isize> {
+    debug!("sys_sync_file_range <= fd: {fd}");
+    // sync_file_range(2) is an advisory hint to initiate writeback for a
+    // byte range. Until range-based writeback is implemented, keep this as
+    // a no-op after basic fd validation rather than turning it into a
+    // stronger whole-file fdatasync-style flush (matches the advisory
+    // nature documented in the man page). Invalid fds still surface the
+    // underlying error (EBADF). Directory fds are accepted to match fsync.
+    match File::from_fd(fd) {
+        Ok(_) | Err(AxError::IsADirectory) => Ok(0),
+        Err(e) => Err(e),
+    }
 }
 
 pub fn sys_fadvise64(

@@ -239,6 +239,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let process = &thr.proc_data.proc;
     if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
+        // Snapshot children BEFORE process.exit() reparents them to init
+        // via mem::take. Otherwise process.children() returns an empty
+        // list and pdeathsig never reaches the real children.
+        let children_snapshot = process.children();
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
@@ -248,6 +252,24 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 data.child_exit_event.wake();
             }
         }
+        // Send pdeathsig to child processes
+        for child in children_snapshot {
+            let child_pid = child.pid();
+            if let Ok(child_task) = get_task(child_pid) {
+                if let Some(child_thr) = child_task.try_as_thread() {
+                    let sig = child_thr.pdeathsig();
+                    if sig > 0 {
+                        if let Some(signo) = Signo::from_repr(sig as u8) {
+                            let _ = send_signal_to_process(
+                                child_pid,
+                                Some(SignalInfo::new_kernel(signo)),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         thr.proc_data.exit_event.wake();
 
         crate::syscall::SHM_MANAGER
