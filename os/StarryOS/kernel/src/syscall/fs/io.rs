@@ -180,6 +180,9 @@ pub fn sys_pwrite64(
     len: usize,
     offset: __kernel_off_t,
 ) -> AxResult<isize> {
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     if len == 0 {
         return Ok(0);
     }
@@ -214,6 +217,9 @@ pub fn sys_preadv2(
     _flags: u32,
 ) -> AxResult<isize> {
     debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     let f = file_or_espipe(fd)?;
     f.inner()
         .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
@@ -228,6 +234,9 @@ pub fn sys_pwritev2(
     _flags: u32,
 ) -> AxResult<isize> {
     debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     let f = file_or_espipe(fd)?;
     f.inner()
         .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
