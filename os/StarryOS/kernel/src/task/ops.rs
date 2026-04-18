@@ -194,6 +194,11 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
         ax_task::yield_now();
     }
 
+    // Process the pending entry that was skipped in the loop
+    if !pending.is_null() {
+        handle_futex_death(pending, offset)?;
+    }
+
     Ok(())
 }
 
