@@ -1,6 +1,6 @@
 use std::{io::Result, path::PathBuf};
 
-const AXVISOR_LINKER_SCRIPT_NAME: &str = "axvisor-linker.x";
+const LINKER_SCRIPT_NAME: &str = "linker.x";
 const LINKER_TEMPLATE_NAME: &str = "linker.lds.S";
 
 fn main() {
@@ -38,6 +38,6 @@ fn gen_axvisor_linker_script() -> Result<()> {
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     println!("cargo:rustc-link-search={}", out_dir.display());
-    std::fs::write(out_dir.join(AXVISOR_LINKER_SCRIPT_NAME), ld_content)?;
+    std::fs::write(out_dir.join(LINKER_SCRIPT_NAME), ld_content)?;
     Ok(())
 }
