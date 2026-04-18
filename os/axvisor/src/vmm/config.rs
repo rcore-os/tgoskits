@@ -182,7 +182,19 @@ pub fn init_guest_vms() {
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    ))]
     let mut vm_create_config =
+        AxVMCrateConfig::from_toml(raw_cfg).expect("Failed to resolve VM config");
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    )))]
+    let vm_create_config =
         AxVMCrateConfig::from_toml(raw_cfg).expect("Failed to resolve VM config");
 
     if let Some(linux) = super::images::get_image_header(&vm_create_config) {

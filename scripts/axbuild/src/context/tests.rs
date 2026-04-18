@@ -617,6 +617,61 @@ uboot_config = "configs/uboot-aarch64.toml"
 }
 
 #[test]
+fn prepare_axvisor_request_cli_arch_ignores_stale_snapshot_config_target() {
+    let root = tempdir().unwrap();
+    fs::write(
+        root.path().join(AXVISOR_SNAPSHOT_FILE),
+        r#"
+config = "os/axvisor/.build-loongarch64-unknown-none-softfloat.toml"
+arch = "loongarch64"
+target = "loongarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.path().join("os/axvisor")).unwrap();
+    fs::write(
+        root.path()
+            .join("os/axvisor/.build-loongarch64-unknown-none-softfloat.toml"),
+        r#"
+target = "loongarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+
+    let mut app = test_app_context(root.path());
+
+    let (request, snapshot) = app
+        .prepare_axvisor_request(
+            AxvisorCliArgs {
+                config: None,
+                arch: Some("x86_64".into()),
+                target: None,
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                vmconfigs: vec![],
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(request.arch, "x86_64");
+    assert_eq!(request.target, "x86_64-unknown-none");
+    assert_eq!(
+        request.build_info_path,
+        root.path()
+            .join("os/axvisor/.build-x86_64-unknown-none.toml")
+    );
+    assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from("os/axvisor/.build-x86_64-unknown-none.toml"))
+    );
+    assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
+    assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
+}
+
+#[test]
 fn prepare_axvisor_request_rewrites_stale_generated_snapshot_config_path() {
     let root = tempdir().unwrap();
     fs::write(

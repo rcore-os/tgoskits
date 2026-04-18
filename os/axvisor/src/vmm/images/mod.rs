@@ -179,7 +179,7 @@ impl ImageLoader {
         let load_gpa = self
             .vm
             .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
-            .ok_or_else(|| ax_err_type!(NotFound, "Ramdisk load addr is missed"))?;
+            .ok_or_else(|| ax_errno::ax_err_type!(NotFound, "Ramdisk load addr is missed"))?;
         let (_, ramdisk_size) = fs::open_image_file(ramdisk_path)?;
         self.vm.with_config(|config| {
             if let Some(ref mut rd) = config.image_config.ramdisk {
