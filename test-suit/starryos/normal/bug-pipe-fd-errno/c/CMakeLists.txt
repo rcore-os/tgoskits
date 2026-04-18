@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-pipe-fd-errno C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-pipe-fd-errno src/main.c)
+target_compile_options(bug-pipe-fd-errno PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-pipe-fd-errno RUNTIME DESTINATION usr/bin)
