@@ -217,11 +217,11 @@ impl Directory {
 
 impl FileLike for Directory {
     fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
-        Err(AxError::BadFileDescriptor)
+        Err(AxError::IsADirectory)
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
-        Err(AxError::BadFileDescriptor)
+        Err(AxError::IsADirectory)
     }
 
     fn stat(&self) -> AxResult<Kstat> {
