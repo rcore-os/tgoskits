@@ -23,9 +23,11 @@ use crate::{
 };
 
 pub(crate) fn check_sigset_size(size: usize) -> AxResult<()> {
-    // Accept both the kernel sigset size (8 bytes) and the libc sigset size
-    // (16 bytes for musl _NSIG/8=128/8). The kernel only uses the low 64 bits.
-    if size != size_of::<SignalSet>() && size != 0 && size != 16 {
+    // Accept the kernel sigset size and any larger libc/ABI sigset size,
+    // since the kernel only uses the low `size_of::<SignalSet>()` bytes
+    // (glibc uses 8, musl uses 16). Keep accepting 0 for callers that use
+    // it to mean "no mask".
+    if size != 0 && size < size_of::<SignalSet>() {
         return Err(AxError::InvalidInput);
     }
     Ok(())
