@@ -48,7 +48,8 @@ pub fn check_signals(
         && (uctx.retval() as isize) == -(ax_errno::LinuxError::EINTR.code() as isize)
         && action.flags.contains(SignalActionFlags::RESTART)
     {
-        uctx.set_ip(uctx.ip() - SYSCALL_INSN_LEN);
+        let new_ip = uctx.ip() - SYSCALL_INSN_LEN;
+        uctx.set_ip(new_ip);
         uctx.set_arg0(info.saved_a0);
         // On x86_64, rax holds both the syscall number and the return
         // value, so the syscall entry path clobbered sysno with -EINTR.
