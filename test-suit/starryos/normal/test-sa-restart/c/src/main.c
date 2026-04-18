@@ -65,15 +65,21 @@ int main(void)
               "SA_RESTART: read restarts after signal");
     }
 
-    /* Test 2: SA_RESTART flag preserved across fork */
+    /* Test 2: SA_RESTART flag preserved across fork.
+     * Install the handler in the parent so the child actually has
+     * something to inherit (Test 1's handler lived in Test 1's child,
+     * not in this process). */
     {
+        struct sigaction sa = {0};
+        sa.sa_handler = handler;
+        sa.sa_flags = SA_RESTART;
+        CHECK(sigaction(SIGUSR1, &sa, NULL) == 0, "install SA_RESTART handler");
+
         pid_t pid = fork();
         if (pid == 0) {
-            struct sigaction sa;
-            sigaction(SIGUSR1, NULL, &sa);
-            /* Child inherits signal dispositions from parent.
-             * Verify the SA_RESTART flag set in test 1 is visible. */
-            _exit((sa.sa_flags & SA_RESTART) ? 0 : 1);
+            struct sigaction got;
+            sigaction(SIGUSR1, NULL, &got);
+            _exit((got.sa_flags & SA_RESTART) ? 0 : 1);
         }
         int status;
         waitpid(pid, &status, 0);
