@@ -192,7 +192,7 @@ int main(void)
 
         /* 验证数据 */
         const char *expected = "parent_data";
-        _exit(total == strlen(expected) &&
+        _exit((size_t)total == strlen(expected) &&
               memcmp(child_buf, expected, total) == 0 ? 0 : 1);
     }
 
@@ -265,6 +265,8 @@ int main(void)
         }
         total_written += w;
     }
+    /* total_written 表示管道填满前写入的总字节数 */
+    (void)total_written;
 
     close(fds[0]);
     close(fds[1]);
