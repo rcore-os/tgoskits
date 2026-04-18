@@ -318,13 +318,20 @@ pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> 
     let old_size = align_up_4k(old_size);
     let new_size = align_up_4k(new_size);
 
-    let flags = aspace.find_area(addr).ok_or(AxError::NoMemory)?.flags();
+    let area = aspace.find_area(addr).ok_or(AxError::NoMemory)?;
+    let flags = area.flags();
+    // Determine the sharing type from the backend: Shared/File backends are
+    // MAP_SHARED, Cow/Linear backends are MAP_PRIVATE.
+    let mmap_flags = match area.backend() {
+        Backend::Shared(_) | Backend::File(_) => MmapFlags::SHARED | MmapFlags::ANONYMOUS,
+        Backend::Cow(_) | Backend::Linear(_) => MmapFlags::PRIVATE | MmapFlags::ANONYMOUS,
+    };
     drop(aspace);
     let new_addr = sys_mmap(
         addr.as_usize(),
         new_size,
         flags.bits() as _,
-        MmapFlags::PRIVATE.bits(),
+        mmap_flags.bits(),
         -1,
         0,
     )? as usize;
