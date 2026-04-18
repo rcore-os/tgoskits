@@ -218,3 +218,81 @@ Changed `AxError::BadFileDescriptor` to `AxError::IsADirectory` in both `Directo
 ### Verification
 - The test program should show ESPIPE for lseek on pipes
 - `cargo fmt` and `cargo clippy` should pass
+
+---
+
+## Test Setup and Execution
+
+### Test Location
+
+All bug fix tests are located in the test-suit directory following the StarryOS test infrastructure:
+
+```
+test-suit/starryos/normal/
+├── bug-pwrite64-negative-offset/
+├── bug-robust-mutex-owner-death/
+├── bug-fcntl-getfl/
+├── bug-shmat-invalid-shmid/
+├── bug-tiocspgrp/
+├── bug-mremap-shared/
+├── bug-directory-read-write/
+└── bug-lseek-pipe-espipe/
+```
+
+Each test directory contains:
+- `c/CMakeLists.txt` - Build configuration
+- `c/src/main.c` - Test source code
+- `qemu-<arch>.toml` - QEMU configuration for each architecture (riscv64, aarch64, x86_64, loongarch64)
+
+### Running Tests
+
+#### Using the Test Infrastructure
+
+The tests can be run using the StarryOS test infrastructure:
+
+```bash
+# Run all tests for a specific architecture
+cargo xtask starry test qemu --target riscv64
+
+# Run a specific test
+cargo xtask starry test qemu --target riscv64 --test bug-pwrite64-negative-offset
+```
+
+#### Manual Testing with QEMU
+
+For manual testing, build the kernel and run with QEMU:
+
+```bash
+# Build the kernel
+make ARCH=riscv64
+
+# Run QEMU with the test
+qemu-system-riscv64 -m 1G -smp 1 -machine virt \
+  -bios default \
+  -kernel StarryOS_riscv64-qemu-virt.bin \
+  -device virtio-blk-pci,drive=disk0 \
+  -drive id=disk0,if=none,format=raw,file=make/disk.img \
+  -nographic
+```
+
+Once the shell prompt appears, run the test binary:
+
+```bash
+/usr/bin/bug_pwrite64_negative_offset
+```
+
+### Expected Output
+
+Each test program outputs `PASS:` for successful test cases and `FAIL:` for failures. The test infrastructure uses regex patterns to detect success/failure:
+
+- **Success regex**: `(?m)^PASS:.*\\s*$`
+- **Failure regex**: `(?i)\bpanic(?:ked)?\b`
+
+### CI Integration
+
+These tests are integrated into the StarryOS CI pipeline and run automatically on:
+- Pull requests
+- Pushes to `dev` branch
+- Merges to `main` branch
+
+The tests run on all supported architectures: riscv64, aarch64, x86_64, and loongarch64.
