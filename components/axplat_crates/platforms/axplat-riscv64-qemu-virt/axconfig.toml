@@ -14,7 +14,7 @@ package = "ax-plat-riscv64-qemu-virt"            # str
 max-cpu-num = 1                     # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0x8000_0000      # uint
-# Fallback physical memory size, used only when DTB parsing fails. (128M)
+# Size of the whole physical memory. (128M)
 phys-memory-size = 0x800_0000       # uint
 # Base physical address of the kernel image.
 kernel-base-paddr = 0x8020_0000     # uint
