@@ -42,6 +42,7 @@ paging = ["dep:ax-alloc", "dep:ax-page-table-multiarch"]
 tls = ["ax-cpu/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
 hv = ["paging", "ax-cpu/arm-el2", "ax-percpu/arm-el2", "axplat-dyn?/hv"]
+axvisor-linker = []
 
 # Custom or default platforms
 myplat = []

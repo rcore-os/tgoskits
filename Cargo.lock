@@ -1297,7 +1297,6 @@ dependencies = [
 name = "ax-plat-loongarch64-qemu-virt"
 version = "0.5.7"
 dependencies = [
- "ax-config",
  "ax-config-macros",
  "ax-cpu",
  "ax-kspin",
