@@ -222,6 +222,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let process = &thr.proc_data.proc;
     if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
+        // Snapshot children BEFORE process.exit() reparents them to init
+        // via mem::take. Otherwise process.children() returns an empty
+        // list and pdeathsig never reaches the real children.
+        let children_snapshot = process.children();
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
@@ -232,7 +236,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             }
         }
         // Send pdeathsig to child processes
-        for child in process.children() {
+        for child in children_snapshot {
             let child_pid = child.pid();
             if let Ok(child_task) = get_task(child_pid) {
                 if let Some(child_thr) = child_task.try_as_thread() {

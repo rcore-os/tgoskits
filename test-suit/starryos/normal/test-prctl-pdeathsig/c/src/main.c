@@ -47,27 +47,32 @@ int main(void)
     /* Test 4: After clearing, PR_GET_PDEATHSIG returns 0 */
     {
         int sig = -1;
-        prctl(PR_GET_PDEATHSIG, (unsigned long)&sig, 0, 0, 0);
+        int rc = prctl(PR_GET_PDEATHSIG, (unsigned long)&sig, 0, 0, 0);
+        CHECK(rc == 0, "PR_GET_PDEATHSIG succeeds after clear");
         CHECK(sig == 0, "after clear, PR_GET_PDEATHSIG returns 0");
     }
 
-    /* Test 5: Invalid signal number rejected */
-    {
-        int rc = prctl(PR_SET_PDEATHSIG, 65, 0, 0, 0);
-        CHECK(rc == -1, "PR_SET_PDEATHSIG(65) rejected");
-    }
+    /* Test 5: Invalid signal number rejected with EINVAL */
+    CHECK_ERR(prctl(PR_SET_PDEATHSIG, 65, 0, 0, 0), EINVAL,
+              "PR_SET_PDEATHSIG(65) rejected");
 
-    /* Test 6: Child can set and fork inherits. */
+    /* Test 6: Child can set and get roundtrips. Assert fork/waitpid
+     * succeed so failures here are actionable rather than hanging. */
     {
         pid_t pid = fork();
+        CHECK(pid >= 0, "fork for child prctl test");
         if (pid == 0) {
             int rc = prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
             int sig = -1;
-            prctl(PR_GET_PDEATHSIG, (unsigned long)&sig, 0, 0, 0);
-            _exit((rc == 0 && sig == SIGKILL) ? 0 : 1);
+            int gc = prctl(PR_GET_PDEATHSIG, (unsigned long)&sig, 0, 0, 0);
+            _exit((rc == 0 && gc == 0 && sig == SIGKILL) ? 0 : 1);
         }
-        int status;
-        waitpid(pid, &status, 0);
+        int status = 0;
+        pid_t waited;
+        do {
+            waited = waitpid(pid, &status, 0);
+        } while (waited == -1 && errno == EINTR);
+        CHECK(waited == pid, "waitpid returned child pid");
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child set+get pdeathsig round trip");
     }
