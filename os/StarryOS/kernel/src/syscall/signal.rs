@@ -134,6 +134,7 @@ fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
         || sender.euid == target_cred.euid
         || sender.euid == target_cred.suid
         || sender.uid == target_cred.uid
+        || sender.uid == target_cred.euid
         || sender.uid == target_cred.suid
     {
         Ok(())

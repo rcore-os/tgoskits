@@ -19,12 +19,21 @@
 static int run_in_child(void (*func)(void))
 {
     pid_t pid = fork();
+    if (pid < 0) {
+        return 0;
+    }
     if (pid == 0) {
         func();
         _exit(__fail > 0 ? 1 : 0);
     }
-    int status;
-    waitpid(pid, &status, 0);
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited == -1 && errno == EINTR);
+    if (waited == -1) {
+        return 0;
+    }
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
