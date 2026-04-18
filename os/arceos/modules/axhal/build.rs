@@ -65,7 +65,7 @@ fn gen_linker_script(arch: &str, platform: &str, has_axvisor_linker: bool) -> Re
             if use_axvisor_loongarch_linker {
                 ": AT(ADDR(.text) - PHYS_VIRT_OFFSET)"
             } else {
-                ""
+                ":"
             },
         )
         .replace(
@@ -85,7 +85,7 @@ fn gen_linker_script(arch: &str, platform: &str, has_axvisor_linker: bool) -> Re
             if use_axvisor_loongarch_linker {
                 ": AT(ADDR(.rodata) - PHYS_VIRT_OFFSET)"
             } else {
-                ""
+                ":"
             },
         )
         .replace(
@@ -134,7 +134,7 @@ fn gen_linker_script(arch: &str, platform: &str, has_axvisor_linker: bool) -> Re
             if use_axvisor_loongarch_linker {
                 ": AT(ADDR(.data) - PHYS_VIRT_OFFSET)"
             } else {
-                ""
+                ":"
             },
         )
         .replace(
@@ -193,7 +193,7 @@ fn gen_linker_script(arch: &str, platform: &str, has_axvisor_linker: bool) -> Re
             if use_axvisor_loongarch_linker {
                 ": AT(ADDR(.tdata) - PHYS_VIRT_OFFSET)"
             } else {
-                ""
+                ":"
             },
         )
         .replace(
@@ -201,7 +201,7 @@ fn gen_linker_script(arch: &str, platform: &str, has_axvisor_linker: bool) -> Re
             if use_axvisor_loongarch_linker {
                 ": AT(ADDR(.tbss) - PHYS_VIRT_OFFSET)"
             } else {
-                ""
+                ":"
             },
         )
         .replace(
