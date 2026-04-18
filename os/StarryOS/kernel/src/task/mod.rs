@@ -78,6 +78,9 @@ pub struct Thread {
     /// Indicates whether the thread is currently accessing user memory.
     accessing_user_memory: AtomicBool,
 
+    /// Skip the next `check_signals` pass (per-thread; used around signal setup syscalls).
+    pub skip_next_signal_check: AtomicBool,
+
     /// Self exit event
     pub exit_event: Arc<PollSet>,
 
@@ -98,6 +101,7 @@ impl Thread {
             exit: Arc::new(AtomicBool::new(false)),
             oom_score_adj: AtomicI32::new(200),
             accessing_user_memory: AtomicBool::new(false),
+            skip_next_signal_check: AtomicBool::new(false),
             exit_event: Arc::default(),
             rseq_area: AtomicUsize::new(0),
         })

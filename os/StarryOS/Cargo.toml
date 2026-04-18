@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = ["starryos", "kernel"]
+exclude = ["arceos"]
+
+[workspace.package]
+version = "0.5.0"
+edition = "2024"
+description = "A Linux-compatible OS kernel built on ArceOS unikernel"
+
+authors = [
+    "Azure-stars <Azure_stars@126.com>",
+    "Yuekai Jia <equation618@gmail.com>",
+    "KylinSoft Co., Ltd. <https://www.kylinos.cn/>",
+    "朝倉水希 <asakuramizu111@gmail.com>",
+    "Mivik <mivikq@gmail.com>",
+]
+homepage = "https://github.com/Starry-OS"
+repository = "https://github.com/Starry-OS/StarryOS"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+ax-feat = { version = "0.5.0" }
+
+ax-alloc = { version = "0.5.0" }
+ax-config = { version = "0.5.0" }
+ax-display = { version = "0.5.0" }
+ax-driver = { version = "0.5.0" }
+ax-fs = { version = "0.5.0", package = "ax-fs-ng" }
+ax-hal = { version = "0.5.0" }
+ax-input = { version = "0.5.0" }
+ax-log = { version = "0.5.0" }
+ax-mm = { version = "0.5.0" }
+axnet = { version = "0.5.0", package = "ax-net-ng" }
+axplat-dyn = { version = "0.5.0", default-features = false }
+ax-runtime = { version = "0.5.0" }
+ax-sync = { version = "0.5.0" }
+ax-task = { version = "0.5.0" }
+
+starry-kernel = { path = "kernel", version = "0.5.0" }

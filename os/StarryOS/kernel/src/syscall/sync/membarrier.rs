@@ -1,4 +1,4 @@
-use core::sync::atomic::{Ordering, compiler_fence};
+use core::sync::atomic::{Ordering, fence};
 
 use ax_errno::{AxError, AxResult};
 
@@ -26,7 +26,7 @@ pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> AxResult<isize> {
     match cmd {
         MEMBARRIER_CMD_QUERY => Ok(SUPPORTED_COMMANDS as isize),
         _ => {
-            compiler_fence(Ordering::SeqCst);
+            fence(Ordering::SeqCst);
             Ok(0)
         }
     }

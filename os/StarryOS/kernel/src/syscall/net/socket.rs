@@ -125,7 +125,7 @@ pub fn sys_accept4(
         socket.set_nonblocking(true)?;
     }
 
-    let remote_addr = socket.local_addr()?;
+    let remote_addr = socket.peer_addr()?;
     let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
     debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
 
