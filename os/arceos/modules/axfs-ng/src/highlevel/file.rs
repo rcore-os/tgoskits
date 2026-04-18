@@ -198,9 +198,6 @@ impl OpenOptions {
         let flags = self.to_flags()?;
 
         if self.directory {
-            if flags.contains(FileFlags::WRITE) {
-                return Err(VfsError::IsADirectory);
-            }
             loc.check_is_dir()?;
         }
         if self.truncate {
@@ -208,6 +205,9 @@ impl OpenOptions {
         }
 
         Ok(if loc.is_dir() {
+            if flags.contains(FileFlags::WRITE) {
+                return Err(VfsError::IsADirectory);
+            }
             OpenResult::Dir(loc)
         } else {
             // TODO(mivik): is this correct?
