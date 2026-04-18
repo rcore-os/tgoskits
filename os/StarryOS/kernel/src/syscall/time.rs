@@ -62,13 +62,12 @@ pub struct Tms {
 
 pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
     let (utime, stime) = current().as_thread().time.borrow().output();
-    let utime = utime.as_micros() as usize;
-    let stime = stime.as_micros() as usize;
+    let (cutime, cstime) = current().as_thread().proc_data.children_cpu_time();
     tms.vm_write(Tms {
-        tms_utime: utime,
-        tms_stime: stime,
-        tms_cutime: utime,
-        tms_cstime: stime,
+        tms_utime: utime.as_micros() as usize,
+        tms_stime: stime.as_micros() as usize,
+        tms_cutime: cutime.as_micros() as usize,
+        tms_cstime: cstime.as_micros() as usize,
     })?;
     Ok(nanos_to_ticks(monotonic_time_nanos()) as _)
 }

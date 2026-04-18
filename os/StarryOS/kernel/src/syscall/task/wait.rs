@@ -2,6 +2,7 @@ use alloc::vec::Vec;
 use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_hal::time::TimeValue;
 use ax_task::{
     current,
     future::{block_on, interruptible},
@@ -13,7 +14,7 @@ use linux_raw_sys::general::{
 use starry_process::{Pid, Process};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::AsThread;
+use crate::task::{get_task, AsThread};
 
 bitflags! {
     #[derive(Debug)]
@@ -65,8 +66,8 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
     let curr = current();
-    let proc_data = &curr.as_thread().proc_data;
-    let proc = &proc_data.proc;
+    let proc = &curr.as_thread().proc_data.proc;
+    let proc_data = curr.as_thread().proc_data.clone();
 
     let pid = if pid == -1 {
         WaitPid::Any
@@ -89,9 +90,18 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         return Err(AxError::from(LinuxError::ECHILD));
     }
 
+    let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
         if let Some(child) = children.iter().find(|child| child.is_zombie()) {
             if !options.contains(WaitOptions::WNOWAIT) {
+                // Accumulate child's CPU time before freeing
+                for tid in child.threads() {
+                    if let Ok(task) = get_task(tid) {
+                        let thr = task.as_thread();
+                        let (utime, stime) = thr.time.borrow().output();
+                        proc_data.add_child_cpu_time(utime, stime);
+                    }
+                }
                 child.free();
             }
             if let Some(exit_code) = exit_code.nullable() {

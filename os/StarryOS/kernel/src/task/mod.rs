@@ -15,6 +15,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
 };
 
+use ax_hal::time::TimeValue;
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner};
 use axpoll::PollSet;
@@ -233,6 +234,10 @@ pub struct ProcessData {
 
     /// The default mask for file permissions.
     umask: AtomicU32,
+
+    /// Accumulated CPU time of waited children (utime + stime).
+    /// Updated when wait() reaps a child.
+    children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
 }
 
 impl ProcessData {
@@ -267,6 +272,8 @@ impl ProcessData {
             futex_table: Arc::new(FutexTable::new()),
 
             umask: AtomicU32::new(0o022),
+
+            children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
         })
     }
 
@@ -299,5 +306,17 @@ impl ProcessData {
     /// Set the umask and return the old value.
     pub fn replace_umask(&self, umask: u32) -> u32 {
         self.umask.swap(umask, Ordering::SeqCst)
+    }
+
+    /// Get the accumulated CPU time of waited children.
+    pub fn children_cpu_time(&self) -> (TimeValue, TimeValue) {
+        *self.children_cpu_time.lock()
+    }
+
+    /// Accumulate a child's CPU time when it is reaped by wait().
+    pub fn add_child_cpu_time(&self, utime: TimeValue, stime: TimeValue) {
+        let mut time = self.children_cpu_time.lock();
+        time.0 += utime;
+        time.1 += stime;
     }
 }
