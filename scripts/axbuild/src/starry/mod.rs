@@ -621,25 +621,35 @@ impl Starry {
         cargo: &Cargo,
         case: &test_suit::StarryQemuCase,
     ) -> anyhow::Result<()> {
+        let mut case_request = request.clone();
         let mut qemu = self
             .app
             .tool_mut()
             .read_qemu_config_from_path_for_cargo(cargo, &case.qemu_config_path)
             .await?;
 
+        if case_request.smp.is_none() {
+            case_request.smp = rootfs::smp_from_qemu_arg(&qemu);
+        }
+        let cargo = if case_request.smp != request.smp {
+            build::load_cargo_config(&case_request)?
+        } else {
+            cargo.clone()
+        };
+
         let case_assets = rootfs::prepare_case_assets(
             self.app.workspace_root(),
-            &request.arch,
-            &request.target,
+            &case_request.arch,
+            &case_request.target,
             case,
         )
         .await?;
         rootfs::apply_disk_image_qemu_args(&mut qemu, case_assets.rootfs_path);
         qemu.args.extend(case_assets.extra_qemu_args);
-        rootfs::apply_smp_qemu_arg(&mut qemu, request.smp);
+        rootfs::apply_smp_qemu_arg(&mut qemu, case_request.smp);
 
         self.app
-            .qemu(cargo.clone(), request.build_info_path.clone(), Some(qemu))
+            .qemu(cargo, case_request.build_info_path, Some(qemu))
             .await
     }
 

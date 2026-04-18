@@ -13,7 +13,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_task::{AxTaskRef, WeakAxTaskRef, current};
+use ax_task::{AxCpuMask, AxTaskRef, WeakAxTaskRef, current};
 use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
 use indoc::indoc;
 use starry_process::Process;
@@ -131,24 +131,119 @@ impl SimpleDirOps for ProcessTaskDir {
     }
 }
 
-#[rustfmt::skip]
 fn task_status(task: &AxTaskRef) -> String {
     let thread = task.as_thread();
     let cred = thread.cred();
-    format!(
-        "Tgid:\t{}\n\
-        Pid:\t{}\n\
-        Uid:\t{}\t{}\t{}\t{}\n\
-        Gid:\t{}\t{}\t{}\t{}\n\
-        Cpus_allowed:\t1\n\
-        Cpus_allowed_list:\t0\n\
-        Mems_allowed:\t1\n\
-        Mems_allowed_list:\t0",
+    render_task_status(
         thread.proc_data.proc.pid(),
         task.id().as_u64(),
+        &cred,
+        task.cpumask(),
+        ax_hal::cpu_num(),
+    )
+}
+
+fn render_task_status(
+    tgid: u32,
+    pid: u64,
+    cred: &crate::task::Cred,
+    cpumask: AxCpuMask,
+    cpu_num: usize,
+) -> String {
+    let cpus_allowed = format_cpumask_hex(cpumask, cpu_num);
+    let cpus_allowed_list = format_cpumask_list(cpumask, cpu_num);
+
+    render_task_status_fields(tgid, pid, cred, &cpus_allowed, &cpus_allowed_list)
+}
+
+#[rustfmt::skip]
+fn render_task_status_fields(
+    tgid: u32,
+    pid: u64,
+    cred: &crate::task::Cred,
+    cpus_allowed: &str,
+    cpus_allowed_list: &str,
+) -> String {
+    format!(
+        "Tgid:\t{tgid}\n\
+        Pid:\t{pid}\n\
+        Uid:\t{}\t{}\t{}\t{}\n\
+        Gid:\t{}\t{}\t{}\t{}\n\
+        Cpus_allowed:\t{cpus_allowed}\n\
+        Cpus_allowed_list:\t{cpus_allowed_list}\n\
+        Mems_allowed:\t1\n\
+        Mems_allowed_list:\t0",
         cred.uid, cred.euid, cred.suid, cred.fsuid,
         cred.gid, cred.egid, cred.sgid, cred.fsgid,
     )
+}
+
+fn format_cpumask_hex(cpumask: AxCpuMask, cpu_num: usize) -> String {
+    format_cpu_presence_hex(&collect_cpu_presence(&cpumask, cpu_num))
+}
+
+fn format_cpu_presence_hex(cpu_presence: &[bool]) -> String {
+    let word_count = cpu_presence.len().div_ceil(32).max(1);
+    let mut words = vec![0u32; word_count];
+
+    for (cpu, allowed) in cpu_presence.iter().copied().enumerate() {
+        if allowed {
+            words[cpu / 32] |= 1u32 << (cpu % 32);
+        }
+    }
+
+    words
+        .iter()
+        .rev()
+        .map(|word| format!("{word:08x}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn format_cpumask_list(cpumask: AxCpuMask, cpu_num: usize) -> String {
+    format_cpu_presence_list(&collect_cpu_presence(&cpumask, cpu_num))
+}
+
+fn format_cpu_presence_list(cpu_presence: &[bool]) -> String {
+    let mut ranges = Vec::new();
+    let mut cpu = 0;
+
+    while cpu < cpu_presence.len() {
+        if !cpu_presence[cpu] {
+            cpu += 1;
+            continue;
+        }
+
+        let start = cpu;
+        let mut end = cpu;
+        while end + 1 < cpu_presence.len() && cpu_presence[end + 1] {
+            end += 1;
+        }
+
+        ranges.push(if start == end {
+            start.to_string()
+        } else {
+            format!("{start}-{end}")
+        });
+        cpu = end + 1;
+    }
+
+    ranges.join(",")
+}
+
+fn collect_cpu_presence<I>(cpus: I, cpu_num: usize) -> Vec<bool>
+where
+    I: IntoIterator<Item = usize>,
+{
+    let mut cpu_presence = vec![false; cpu_num];
+
+    for cpu in cpus {
+        if cpu < cpu_num {
+            cpu_presence[cpu] = true;
+        }
+    }
+
+    cpu_presence
 }
 
 /// The /proc/[pid]/fd directory
@@ -426,4 +521,72 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     let proc_dir = ProcFsHandler(fs.clone());
     SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{format, string::String};
+
+    use super::{
+        collect_cpu_presence, format_cpu_presence_hex, format_cpu_presence_list,
+        render_task_status_fields,
+    };
+    use crate::task::Cred;
+
+    fn legacy_render_task_status(tgid: u32, pid: u64) -> String {
+        format!(
+            "Tgid:\t{}\nPid:\t{}\nUid:\t0 0 0 0\nGid:\t0 0 0 \
+             0\nCpus_allowed:\t1\nCpus_allowed_list:\t0\nMems_allowed:\t1\nMems_allowed_list:\t0",
+            tgid, pid
+        )
+    }
+
+    fn render_task_status_from_cpus(tgid: u32, pid: u64, cpus: &[usize], cpu_num: usize) -> String {
+        let cpu_presence = collect_cpu_presence(cpus.iter().copied(), cpu_num);
+        let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+        let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+
+        render_task_status_fields(tgid, pid, &Cred::root(), &cpus_allowed, &cpus_allowed_list)
+    }
+
+    #[test]
+    fn old_hardcoded_status_lies_about_non_cpu0_affinity() {
+        let legacy = legacy_render_task_status(42, 84);
+
+        assert!(legacy.contains("Cpus_allowed:\t1\n"));
+        assert!(legacy.contains("Cpus_allowed_list:\t0\n"));
+        assert!(!legacy.contains("Cpus_allowed:\t0000000a\n"));
+        assert!(!legacy.contains("Cpus_allowed_list:\t1,3\n"));
+    }
+
+    #[test]
+    fn cpus_allowed_hex_matches_actual_affinity_bits() {
+        let cpu_presence = collect_cpu_presence([1, 3], 4);
+
+        assert_eq!(format_cpu_presence_hex(&cpu_presence), "0000000a");
+    }
+
+    #[test]
+    fn cpus_allowed_hex_orders_32bit_words_from_high_to_low() {
+        let cpu_presence = collect_cpu_presence([0, 1, 32, 63], 64);
+
+        assert_eq!(format_cpu_presence_hex(&cpu_presence), "80000001,00000003");
+    }
+
+    #[test]
+    fn cpus_allowed_list_compacts_contiguous_ranges() {
+        let cpu_presence = collect_cpu_presence([0, 2, 3, 4, 7, 9, 10, 11], 12);
+
+        assert_eq!(format_cpu_presence_list(&cpu_presence), "0,2-4,7,9-11");
+    }
+
+    #[test]
+    fn task_status_reports_real_affinity_instead_of_cpu0_only() {
+        let status = render_task_status_from_cpus(42, 84, &[1, 3], 4);
+
+        assert!(status.contains("Tgid:\t42\n"));
+        assert!(status.contains("Pid:\t84\n"));
+        assert!(status.contains("Cpus_allowed:\t0000000a\n"));
+        assert!(status.contains("Cpus_allowed_list:\t1,3\n"));
+    }
 }

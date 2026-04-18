@@ -30,10 +30,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     debug!("sys_ioctl <= fd: {fd}, cmd: {cmd}, arg: {arg}");
     let f = get_file_like(fd)?;
     if cmd == FIONBIO {
-        let val = (arg as *const u8).vm_read()?;
-        if val != 0 && val != 1 {
-            return Err(AxError::InvalidInput);
-        }
+        let val: i32 = (arg as *const i32).vm_read()?;
         f.set_nonblocking(val != 0)?;
         return Ok(0);
     }
@@ -273,8 +270,15 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
+    // Linux kernel (fs/namei.c) rejects any flag bit other than AT_REMOVEDIR
+    // with EINVAL. Silently ignoring unknown bits would mask caller bugs and
+    // diverge from POSIX semantics (see man 2 unlinkat).
+    if flags & !(AT_REMOVEDIR as usize) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     with_fs(dirfd, |fs| {
-        if flags == AT_REMOVEDIR as _ {
+        if flags & AT_REMOVEDIR as usize != 0 {
             fs.remove_dir(path)?;
         } else {
             fs.remove_file(path)?;
