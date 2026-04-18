@@ -14,7 +14,7 @@ use linux_raw_sys::general::{
 use starry_process::{Pid, Process};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::{get_task, AsThread};
+use crate::task::{AsThread, get_task};
 
 bitflags! {
     #[derive(Debug)]
