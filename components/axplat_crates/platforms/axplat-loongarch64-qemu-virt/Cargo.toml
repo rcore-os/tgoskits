@@ -10,6 +10,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
+axvisor-linker = []
 fp-simd = ["ax-cpu/fp-simd"]
 irq = ["ax-plat/irq"]
 rtc = ["dep:chrono"]
@@ -27,6 +28,9 @@ uart_16550 = "0.5"
 ax-config-macros = "0.4"
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
+
+[build-dependencies]
+ax-config = "0.5"
 
 [package.metadata.docs.rs]
 targets = ["loongarch64-unknown-none"]

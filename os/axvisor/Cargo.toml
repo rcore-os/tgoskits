@@ -112,7 +112,7 @@ aarch64-cpu-ext = "0.1"
 arm-gic-driver = {version = "0.17", features = ["rdif"]}
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
-ax-plat-loongarch64-qemu-virt = { version = "0.5", default-features = false, features = ["irq", "smp"] }
+ax-plat-loongarch64-qemu-virt = { version = "0.5", default-features = false, features = ["irq", "smp", "axvisor-linker"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv64-qemu-virt-hv = { version = "0.5", path = "platform/riscv64-qemu-virt" }

@@ -9,14 +9,13 @@ use serde::{Deserialize, Serialize};
 use crate::{
     arceos::build::ArceosBuildInfo,
     axvisor::board,
-    context::{ResolvedAxvisorRequest, arch_for_target_checked, workspace_root_path},
+    context::{ResolvedAxvisorRequest, arch_for_target_checked},
 };
 
 pub type AxvisorBuildInfo = crate::arceos::build::ArceosBuildInfo;
 pub use crate::arceos::build::LogLevel;
 
 pub const AXVISOR_PACKAGE: &str = "axvisor";
-const LOONGARCH_QEMU_LINKER_SCRIPT: &str = "scripts/link_loongarch64_qemu.x";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct AxvisorBoardConfig {
@@ -140,7 +139,6 @@ fn patch_axvisor_cargo_config(
         );
     }
 
-    patch_loongarch_qemu_rustflags(cargo, request)?;
     normalize_axvisor_platform_features(&mut cargo.features);
     cargo.features.sort();
     cargo.features.dedup();
@@ -158,49 +156,6 @@ fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
 
     args.push("--bin".to_string());
     args.push(AXVISOR_PACKAGE.to_string());
-}
-
-fn patch_loongarch_qemu_rustflags(
-    cargo: &mut Cargo,
-    request: &ResolvedAxvisorRequest,
-) -> anyhow::Result<()> {
-    if request.arch != "loongarch64" {
-        return Ok(());
-    }
-
-    let linker_script = workspace_root_path()?.join(LOONGARCH_QEMU_LINKER_SCRIPT);
-    if !linker_script.is_file() {
-        return Err(anyhow!(
-            "missing LoongArch AxVisor linker script {}",
-            linker_script.display()
-        ));
-    }
-
-    set_target_rustflags_arg(
-        &mut cargo.args,
-        &request.target,
-        loongarch_qemu_rustflags_arg(&request.target, &linker_script),
-    );
-    Ok(())
-}
-
-fn loongarch_qemu_rustflags_arg(target: &str, linker_script: &Path) -> String {
-    format!(
-        "target.{target}.rustflags=[\"-Clink-arg=-T{}\",\"-Clink-arg=-no-pie\",\"\
-         -Clink-arg=-znostart-stop-gc\"]",
-        linker_script.display()
-    )
-}
-
-fn set_target_rustflags_arg(args: &mut Vec<String>, target: &str, value: String) {
-    let prefix = format!("target.{target}.rustflags=");
-    if let Some(existing) = args.iter_mut().find(|arg| arg.starts_with(&prefix)) {
-        *existing = value;
-        return;
-    }
-
-    args.push("--config".to_string());
-    args.push(value);
 }
 
 fn normalize_axvisor_platform_features(features: &mut Vec<String>) {
@@ -616,6 +571,7 @@ log = "Info"
             arch: "loongarch64".to_string(),
             target: "loongarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
+            smp: None,
             debug: false,
             build_info_path: config_path,
             qemu_config: None,
@@ -625,11 +581,6 @@ log = "Info"
         .unwrap();
 
         assert!(!cargo.to_bin);
-        assert!(
-            cargo
-                .args
-                .iter()
-                .any(|arg| arg.contains("scripts/link_loongarch64_qemu.x"))
-        );
+        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
     }
 }

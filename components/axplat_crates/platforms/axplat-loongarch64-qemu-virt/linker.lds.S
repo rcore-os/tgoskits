@@ -1,17 +1,9 @@
-/* LoongArch64 QEMU linker script for direct cargo builds. */
+OUTPUT_ARCH(%ARCH%)
 
-OUTPUT_ARCH(loongarch64)
-
-/*
- * Keep this aligned with axplat-loongarch64-qemu-virt's axconfig.toml:
- *   kernel-base-vaddr = 0xffff_8000_0020_0000
- *   kernel-base-paddr = 0x0000_0000_0020_0000
- *   max-cpu-num = 1
- */
-BASE_ADDRESS = 0xffff800000200000;
-PHYS_VIRT_OFFSET = 0xffff800000000000;
-PHYS_BASE_ADDRESS = 0x0000000000200000;
-CPU_NUM = 1;
+BASE_ADDRESS = %KERNEL_BASE_VADDR%;
+PHYS_VIRT_OFFSET = %PHYS_VIRT_OFFSET%;
+PHYS_BASE_ADDRESS = %KERNEL_BASE_PADDR%;
+CPU_NUM = %CPU_NUM%;
 
 EXTERN(_start)
 /*
@@ -19,7 +11,7 @@ EXTERN(_start)
  * at the low physical entry even though the linked VMA lives in the higher
  * half.
  */
-ENTRY(0x0000000000200040)
+ENTRY(%ENTRY_PADDR%)
 
 SECTIONS
 {
