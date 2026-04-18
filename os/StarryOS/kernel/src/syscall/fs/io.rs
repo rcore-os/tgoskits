@@ -154,17 +154,14 @@ pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
 pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, _flags: u32) -> AxResult<isize> {
     debug!("sys_sync_file_range <= fd: {fd}");
     // sync_file_range(2) is an advisory hint to initiate writeback for a
-    // byte range. The kernel is free to ignore it entirely (the man page
-    // notes it provides no data integrity guarantees). We delegate to the
-    // file's datasync, which is the closest available primitive. For
-    // in-memory filesystems this is a no-op; for block-backed filesystems
-    // it flushes data to the device.
+    // byte range. Until range-based writeback is implemented, keep this as
+    // a no-op after basic fd validation rather than turning it into a
+    // stronger whole-file fdatasync-style flush (matches the advisory
+    // nature documented in the man page). Invalid fds still surface the
+    // underlying error (EBADF). Directory fds are accepted to match fsync.
     match File::from_fd(fd) {
-        Ok(f) => {
-            let _ = f.inner().sync(true);
-            Ok(0)
-        }
-        Err(_) => Ok(0),
+        Ok(_) | Err(AxError::IsADirectory) => Ok(0),
+        Err(e) => Err(e),
     }
 }
 
