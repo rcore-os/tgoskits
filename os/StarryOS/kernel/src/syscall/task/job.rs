@@ -2,7 +2,9 @@ use ax_errno::{AxError, AxResult};
 use ax_task::current;
 use starry_process::Pid;
 
-use crate::task::{AsThread, get_process_data, get_process_group, register_process_group, register_session};
+use crate::task::{
+    AsThread, get_process_data, get_process_group, register_process_group, register_session,
+};
 
 pub fn sys_getsid(pid: Pid) -> AxResult<isize> {
     Ok(get_process_data(pid)?.proc.group().session().sid() as _)

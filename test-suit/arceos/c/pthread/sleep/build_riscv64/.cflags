@@ -1,0 +1,1 @@
+-DAX_CONFIG_SMP -DAX_CONFIG_ALLOC -DAX_CONFIG_MULTITASK -DAX_CONFIG_IRQ -DAX_CONFIG_ALLOC -DAX_CONFIG_MULTITASK -DAX_CONFIG_IRQ -DAX_LOG_INFO -nostdinc -fno-builtin -ffreestanding -Wall -I/workspace/os/arceos/ulib/axlibc/include -O3 -march=rv64gc -mabi=lp64d -mcmodel=medany 
