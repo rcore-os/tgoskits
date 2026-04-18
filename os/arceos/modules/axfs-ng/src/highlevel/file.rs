@@ -288,12 +288,12 @@ impl OpenOptions {
 
     pub(crate) fn is_valid(&self) -> bool {
         if !self.read && !self.write && !self.append {
-            return true;
+            return false;
         }
         match (self.write, self.append) {
             (true, false) => {}
             (false, false) => {
-                if self.truncate || self.create || self.create_new {
+                if self.truncate {
                     return false;
                 }
             }
