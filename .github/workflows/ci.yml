@@ -58,15 +58,16 @@ jobs:
   fmt:
     name: Check formatting
     needs: detect_changes
-    uses: ./.github/workflows/reusable-host-command.yml
+    uses: ./.github/workflows/reusable-command.yml
     with:
       command: cargo fmt --all -- --check
 
   clippy:
     name: Run clippy
     needs: detect_changes
-    uses: ./.github/workflows/reusable-container-command.yml
+    uses: ./.github/workflows/reusable-command.yml
     with:
+      use_container: true
       command: cargo xtask clippy
       cache_key: clippy
       container_image: ghcr.io/${{ github.repository }}-container:latest
@@ -76,8 +77,9 @@ jobs:
     needs:
       - fmt
       - clippy
-    uses: ./.github/workflows/reusable-container-command.yml
+    uses: ./.github/workflows/reusable-command.yml
     with:
+      use_container: true
       command: cargo xtask test
       cache_key: test-std
       container_image: ghcr.io/${{ github.repository }}-container:latest
@@ -109,12 +111,12 @@ jobs:
             arch: aarch64
           - os: arceos
             arch: loongarch64
-    uses: ./.github/workflows/reusable-container-command.yml
+    uses: ./.github/workflows/reusable-command.yml
     with:
+      use_container: true
       command: cargo xtask ${{ matrix.os }} test qemu --target ${{ matrix.arch }}
       cache_key: test-${{ matrix.os }}-${{ matrix.arch }}
       container_image: ghcr.io/${{ github.repository }}-container:latest
-      install_fat_tools: true
 
   test_axvisor_self_hosted:
     name: Test axvisor ${{ matrix.label }}
@@ -135,7 +137,7 @@ jobs:
           - label: roc-rk3568-pc-linux
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask axvisor test board -t roc-rk3568-pc-linux
-    uses: ./.github/workflows/reusable-host-command.yml
+    uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: ${{ matrix.runs_on }}
       command: ${{ matrix.command }}
