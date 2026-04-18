@@ -255,7 +255,8 @@ impl CloneArgs {
 
         new_proc_data.proc.add_thread(tid);
 
-        let thr = Thread::new(tid, new_proc_data.clone());
+        let parent_cred = Some(curr.as_thread().cred());
+        let thr = Thread::new(tid, new_proc_data.clone(), parent_cred);
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }

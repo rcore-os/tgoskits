@@ -1,5 +1,6 @@
 //! User task management.
 
+mod cred;
 mod futex;
 mod ops;
 mod resources;
@@ -27,7 +28,7 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
-pub use self::{futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
+pub use self::{cred::*, futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
 use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.
@@ -90,16 +91,24 @@ pub struct Thread {
     /// Self exit event
     pub exit_event: Arc<PollSet>,
 
-    /// The registered rseq area pointer (user address) for restartable sequences.
+    /// The registered rseq area pointer (user address) for restartable
+    /// sequences (`rseq(2)`).
     rseq_area: AtomicUsize,
 
     /// The signal to send to this thread when its parent dies (PR_SET_PDEATHSIG).
     pdeathsig: AtomicU32,
+
+    /// Process credentials (uid, gid, etc.).
+    cred: SpinNoIrq<Arc<Cred>>,
 }
 
 impl Thread {
     /// Create a new [`Thread`].
-    pub fn new(tid: u32, proc_data: Arc<ProcessData>) -> Box<Self> {
+    ///
+    /// If `parent_cred` is `Some`, the thread inherits the parent's credentials;
+    /// otherwise it starts with root credentials (used for the init process).
+    pub fn new(tid: u32, proc_data: Arc<ProcessData>, parent_cred: Option<Arc<Cred>>) -> Box<Self> {
+        let cred = parent_cred.unwrap_or_else(|| Arc::new(Cred::root()));
         Box::new(Thread {
             signal: ThreadSignalManager::new(tid, proc_data.signal.clone()),
             proc_data,
@@ -112,6 +121,7 @@ impl Thread {
             exit_event: Arc::default(),
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
+            cred: SpinNoIrq::new(cred),
         })
     }
 
@@ -176,6 +186,44 @@ impl Thread {
     /// Set the pdeathsig value.
     pub fn set_pdeathsig(&self, sig: u32) {
         self.pdeathsig.store(sig, Ordering::Relaxed);
+    }
+
+    /// Get a snapshot of the current credentials (clones the `Arc`).
+    pub fn cred(&self) -> Arc<Cred> {
+        self.cred.lock().clone()
+    }
+
+    /// Replace the credentials with `new_cred` for this thread only.
+    /// Prefer `set_cred` for credential-changing syscalls.
+    fn set_cred_single(&self, new_cred: Arc<Cred>) {
+        *self.cred.lock() = new_cred;
+    }
+
+    /// Replace the credentials for ALL threads in the same process.
+    ///
+    /// POSIX requires that credential changes (setuid, setresuid, etc.)
+    /// affect all threads in a process. On Linux, the kernel stores
+    /// credentials per-thread and the C library synchronizes via signals.
+    /// musl's setxid synchronization does NOT work on StarryOS, so we
+    /// implement this at the kernel level instead.
+    ///
+    /// Lock ordering: threads are updated in ascending TID order to
+    /// prevent AB/BA deadlock when two threads call set_cred
+    /// concurrently on SMP.
+    pub fn set_cred(&self, new_cred: Cred) {
+        let new_arc = Arc::new(new_cred);
+
+        // Collect TIDs and sort to establish a consistent lock order.
+        let mut tids = self.proc_data.proc.threads();
+        tids.sort_unstable();
+
+        for tid in &tids {
+            if let Ok(task) = ops::get_task(*tid) {
+                if let Some(thr) = task.try_as_thread() {
+                    thr.set_cred_single(new_arc.clone());
+                }
+            }
+        }
     }
 
     /// Get the registered rseq area pointer.

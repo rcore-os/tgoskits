@@ -131,42 +131,50 @@ impl SimpleDirOps for ProcessTaskDir {
     }
 }
 
-#[rustfmt::skip]
 fn task_status(task: &AxTaskRef) -> String {
+    let thread = task.as_thread();
+    let cred = thread.cred();
     render_task_status(
-        task.as_thread().proc_data.proc.pid(),
+        thread.proc_data.proc.pid(),
         task.id().as_u64(),
+        &cred,
         task.cpumask(),
         ax_hal::cpu_num(),
     )
 }
 
-#[rustfmt::skip]
-fn render_task_status(tgid: u32, pid: u64, cpumask: AxCpuMask, cpu_num: usize) -> String {
+fn render_task_status(
+    tgid: u32,
+    pid: u64,
+    cred: &crate::task::Cred,
+    cpumask: AxCpuMask,
+    cpu_num: usize,
+) -> String {
     let cpus_allowed = format_cpumask_hex(cpumask, cpu_num);
     let cpus_allowed_list = format_cpumask_list(cpumask, cpu_num);
 
-    render_task_status_fields(tgid, pid, &cpus_allowed, &cpus_allowed_list)
+    render_task_status_fields(tgid, pid, cred, &cpus_allowed, &cpus_allowed_list)
 }
 
 #[rustfmt::skip]
 fn render_task_status_fields(
     tgid: u32,
     pid: u64,
+    cred: &crate::task::Cred,
     cpus_allowed: &str,
     cpus_allowed_list: &str,
 ) -> String {
     format!(
-        "Tgid:\t{}\n\
-        Pid:\t{}\n\
-        Uid:\t0 0 0 0\n\
-        Gid:\t0 0 0 0\n\
+        "Tgid:\t{tgid}\n\
+        Pid:\t{pid}\n\
+        Uid:\t{}\t{}\t{}\t{}\n\
+        Gid:\t{}\t{}\t{}\t{}\n\
         Cpus_allowed:\t{cpus_allowed}\n\
         Cpus_allowed_list:\t{cpus_allowed_list}\n\
         Mems_allowed:\t1\n\
         Mems_allowed_list:\t0",
-        tgid,
-        pid
+        cred.uid, cred.euid, cred.suid, cred.fsuid,
+        cred.gid, cred.egid, cred.sgid, cred.fsgid,
     )
 }
 
@@ -523,6 +531,7 @@ mod tests {
         collect_cpu_presence, format_cpu_presence_hex, format_cpu_presence_list,
         render_task_status_fields,
     };
+    use crate::task::Cred;
 
     fn legacy_render_task_status(tgid: u32, pid: u64) -> String {
         format!(
@@ -537,7 +546,7 @@ mod tests {
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
 
-        render_task_status_fields(tgid, pid, &cpus_allowed, &cpus_allowed_list)
+        render_task_status_fields(tgid, pid, &Cred::root(), &cpus_allowed, &cpus_allowed_list)
     }
 
     #[test]

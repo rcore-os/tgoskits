@@ -19,7 +19,6 @@ use crate::{
     },
     mm::{UserPtr, vm_load_string},
     pseudofs::{Device, dev::tty},
-    syscall::sys::{sys_getegid, sys_geteuid},
     task::AsThread,
 };
 
@@ -125,7 +124,8 @@ pub fn sys_openat(
 
     let mode = mode & !current().as_thread().proc_data.umask();
 
-    let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
+    let cred = current().as_thread().cred();
+    let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     with_fs(dirfd, |fs| options.open(fs, path))
         .and_then(|it| add_to_fd(it, flags as _))
         .map(|fd| fd as isize)
