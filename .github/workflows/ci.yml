@@ -38,7 +38,8 @@ jobs:
       pull-requests: read
     outputs:
       ci_checks: ${{ steps.filter.outputs.ci_checks }}
-      container_publish: ${{ steps.filter.outputs.container_publish }}
+      base_container_publish: ${{ steps.filter.outputs.base_container_publish }}
+      axvisor_lvz_container_publish: ${{ steps.filter.outputs.axvisor_lvz_container_publish }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -64,10 +65,15 @@ jobs:
               - "scripts/**"
               - "test-suit/**"
               - "xtask/**"
-            container_publish:
+            base_container_publish:
               - ".github/workflows/ci.yml"
               - ".github/workflows/container-publish.yml"
               - "container/Dockerfile"
+              - "container/Dockerfile.axvisor-lvz"
+              - "rust-toolchain.toml"
+            axvisor_lvz_container_publish:
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/container-publish.yml"
               - "container/Dockerfile.axvisor-lvz"
               - "rust-toolchain.toml"
 
@@ -293,17 +299,43 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Changed files do not match the test-relevant path set, so fmt and follow-up checks were skipped." >> "$GITHUB_STEP_SUMMARY"
 
-  container_publish:
-    name: Publish container image
+  publish_base_container:
+    name: Publish base container image
     if: >-
       ${{
         github.event_name == 'push'
         && (github.ref_name == 'main' || github.ref_name == 'dev')
-        && needs.detect_changes.outputs.container_publish == 'true'
+        && needs.detect_changes.outputs.base_container_publish == 'true'
       }}
     needs:
       - detect_changes
     uses: ./.github/workflows/container-publish.yml
+    with:
+      image_name: ghcr.io/${{ github.repository }}-container
+      dockerfile: container/Dockerfile
+      cache_scope: container
+    permissions:
+      contents: read
+      packages: write
+
+  publish_axvisor_lvz_container:
+    name: Publish axvisor-lvz container image
+    if: >-
+      ${{
+        github.event_name == 'push'
+        && (github.ref_name == 'main' || github.ref_name == 'dev')
+        && needs.detect_changes.outputs.axvisor_lvz_container_publish == 'true'
+      }}
+    needs:
+      - detect_changes
+      - publish_base_container
+    uses: ./.github/workflows/container-publish.yml
+    with:
+      image_name: ghcr.io/${{ github.repository }}-container-axvisor-lvz
+      dockerfile: container/Dockerfile.axvisor-lvz
+      cache_scope: container-axvisor-lvz
+      build_args: |
+        BASE_IMAGE=ghcr.io/${{ github.repository }}-container:latest
     permissions:
       contents: read
       packages: write
