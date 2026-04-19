@@ -1,6 +1,6 @@
 [package]
 name = "ax-runtime"
-version.workspace = true
+version = "0.5.11"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -53,6 +53,6 @@ ax-task = { workspace = true, optional = true }
 cfg-if = { workspace = true }
 chrono = { version = "0.4", default-features = false }
 ax-crate-interface = { workspace = true }
-ax-ctor-bare = "0.4.1"
+ax-ctor-bare = "0.4"
 indoc = "2"
 ax-percpu = { workspace = true, optional = true }

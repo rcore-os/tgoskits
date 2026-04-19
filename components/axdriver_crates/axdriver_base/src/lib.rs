@@ -15,6 +15,10 @@
 
 #![no_std]
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+
 /// All supported device types.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum DeviceType {
@@ -82,5 +86,19 @@ pub trait BaseDriverOps: Send + Sync {
     /// The IRQ number of the device, if applicable.
     fn irq_num(&self) -> Option<usize> {
         None
+    }
+}
+
+impl<T: BaseDriverOps + ?Sized> BaseDriverOps for Box<T> {
+    fn device_name(&self) -> &str {
+        (**self).device_name()
+    }
+
+    fn device_type(&self) -> DeviceType {
+        (**self).device_type()
+    }
+
+    fn irq_num(&self) -> Option<usize> {
+        (**self).irq_num()
     }
 }

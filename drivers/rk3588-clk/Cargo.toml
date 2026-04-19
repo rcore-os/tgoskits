@@ -1,0 +1,29 @@
+[package]
+name = "rk3588-clk"
+version = "0.1.3"
+edition = "2024"
+authors = ["Yang Jinquan <YJQ980314@Gmail.com>", "Bai Qiaosen<baiqiaosen@gmail.com>"]
+description = "Clock and Reset Unit (CRU) driver for RK3588 SoC"
+documentation = "https://docs.rs/rk3588_clk"
+repository = "https://github.com/drivercraft/rk3588-clk.git"
+readme = "README.md"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MIT"
+keywords = ["rk3588", "clock", "cru", "embedded", "aarch64"]
+categories = ["embedded", "hardware-support", "no-std"]
+
+[dependencies]
+log = "0.4"
+tock-registers = "0.10"
+
+[dev-dependencies]
+bare-test = "0.7"
+sdmmc = "0.1"
+rockchip-pm = "0.4"
+
+[build-dependencies]
+bare-test-macros = "0.2"
+
+[[test]]
+harness = false
+name = "test"
+    

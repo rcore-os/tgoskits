@@ -1,7 +1,7 @@
 [package]
 name = "ax-driver-net"
 edition.workspace = true
-version.workspace = true
+version = "0.3.11"
 repository.workspace = true
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -21,8 +21,8 @@ fxmac = ["dep:fxmac_rs"]
 ixgbe = ["dep:ixgbe-driver"]
 
 [dependencies]
-ax-driver-base = { version = "0.3.4" }
-fxmac_rs = { version = "0.4.1", optional = true }
+ax-driver-base = { version = "0.3" }
+fxmac_rs = { version = "0.4", optional = true }
 ixgbe-driver = { version = "0.1.1-preview.1", optional = true }
 log = { workspace = true }
 spin = "0.9"

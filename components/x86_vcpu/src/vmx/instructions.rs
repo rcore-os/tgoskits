@@ -13,8 +13,11 @@
 // limitations under the License.
 
 use core::arch::asm;
-use x86::bits64::rflags::{self, RFlags};
-use x86::vmx::{Result, VmFail};
+
+use x86::{
+    bits64::rflags::{self, RFlags},
+    vmx::{Result, VmFail},
+};
 
 /// Helper used to extract VMX-specific Result in accordance with
 /// conventions described in Intel SDM, Volume 3C, Section 30.2.
@@ -45,7 +48,7 @@ pub enum InvEptType {
     /// It may invalidate other mappings as well.
     SingleContext = 1,
     /// The logical processor invalidates mappings associated with all EPTPs.
-    Global = 2,
+    Global        = 2,
 }
 
 /// Invalidate Translations Derived from EPT. (SDM Vol. 3C, Section 30.3)

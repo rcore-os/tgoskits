@@ -4,7 +4,7 @@ resolver = "2"
 members = ["page_table_multiarch", "page_table_entry"]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.6"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 repository = "https://github.com/rcore-os/tgoskits"
@@ -14,5 +14,5 @@ rust-version = "1.85"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-ax-memory-addr = "0.6.1"
-ax-page-table-entry = { path = "page_table_entry", version = "0.8.1" }
+ax-memory-addr = "0.6"
+ax-page-table-entry = { path = "page_table_entry", version = "0.8" }

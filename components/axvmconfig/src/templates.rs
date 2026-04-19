@@ -81,6 +81,7 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> AxVMCrateConfig {
             cmdline: params.cmdline, // Optional kernel command line
             disk_path: None,         // No disk image by default
             memory_regions: vec![],  // Memory regions to be defined per architecture
+            configured_memory_region_count: 0,
         },
         // Device configuration - starts empty, can be customized
         devices: VMDevicesConfig {

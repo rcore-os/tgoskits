@@ -1,0 +1,5 @@
+env = {}
+features = ["vf2", "ax-feat/driver-sdmmc"]
+log = "Warn"
+plat_dyn = false
+target = "riscv64gc-unknown-none-elf"

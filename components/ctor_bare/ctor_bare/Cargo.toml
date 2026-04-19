@@ -2,7 +2,7 @@
 name = "ax-ctor-bare"
 edition.workspace = true
 description = "Register constructor functions for Rust at complie time under no_std."
-version.workspace = true
+version = "0.4.7"
 repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
@@ -11,4 +11,4 @@ readme = "README.md"
 license.workspace = true
 
 [dependencies]
-ax-ctor-bare-macros = { version = "0.4.1", path = "../ctor_bare_macros" }
+ax-ctor-bare-macros = { version = "0.4", path = "../ctor_bare_macros" }

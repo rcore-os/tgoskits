@@ -8,12 +8,12 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq;
+use linux_raw_sys::general::kernel_sigaction;
+use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::{
-    DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
-    SignalInfo, SignalSet, Signo, api::ThreadSignalManager,
-};
+use crate::{PendingSignals, SignalAction, SignalInfo, SignalSet, Signo, api::ThreadSignalManager};
 
 /// Signal actions for a process.
 #[derive(Clone)]
@@ -77,24 +77,6 @@ impl ProcessSignalManager {
         result
     }
 
-    /// Checks if a signal is ignored by the process.
-    pub fn signal_ignored(&self, signo: Signo) -> bool {
-        match &self.actions.lock()[signo].disposition {
-            SignalDisposition::Ignore => true,
-            SignalDisposition::Default => {
-                matches!(signo.default_action(), DefaultSignalAction::Ignore)
-            }
-            _ => false,
-        }
-    }
-
-    /// Checks if syscalls interrupted by the given signal can be restarted.
-    pub fn can_restart(&self, signo: Signo) -> bool {
-        self.actions.lock()[signo]
-            .flags
-            .contains(SignalActionFlags::RESTART)
-    }
-
     /// Sends a signal to the process.
     ///
     /// Returns `Some(tid)` if the signal wakes up a thread.
@@ -103,7 +85,10 @@ impl ProcessSignalManager {
     #[must_use]
     pub fn send_signal(&self, sig: SignalInfo) -> Option<u32> {
         let signo = sig.signo();
-        if self.signal_ignored(signo) {
+
+        // Lock by `actions`
+        let actions = self.actions.lock();
+        if actions[signo].is_ignore(signo) {
             return None;
         }
 
@@ -127,5 +112,29 @@ impl ProcessSignalManager {
     /// Gets currently pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set
+    }
+
+    /// Resets actions to empty.
+    pub fn reset_actions(&self) {
+        *self.actions.lock() = Default::default();
+    }
+
+    /// Registers a new action and returns the old one.
+    pub fn set_action(
+        &self,
+        signo: Signo,
+        act: *const kernel_sigaction,
+        oldact: *mut kernel_sigaction,
+    ) -> AxResult<isize> {
+        let mut actions = self.actions.lock();
+        if let Some(oldact) = oldact.nullable() {
+            oldact.vm_write(actions[signo].clone().into())?;
+        }
+        if let Some(act) = act.nullable() {
+            let act = unsafe { act.vm_read_uninit()?.assume_init() }.into();
+            debug!("sys_rt_sigaction <= signo: {signo:?}, act: {act:?}");
+            actions[signo] = act;
+        }
+        Ok(0)
     }
 }

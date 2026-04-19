@@ -104,6 +104,18 @@ pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
         .ok_or(AxError::NoSuchProcess)
 }
 
+/// Registers a process group in the global table.
+pub fn register_process_group(pg: &Arc<ProcessGroup>) {
+    let mut pg_table = PROCESS_GROUP_TABLE.write();
+    pg_table.insert(pg.pgid(), pg);
+}
+
+/// Registers a session in the global table.
+pub fn register_session(session: &Arc<Session>) {
+    let mut session_table = SESSION_TABLE.write();
+    session_table.insert(session.sid(), session);
+}
+
 /// Finds the session with the given SID.
 pub fn get_session(sid: Pid) -> AxResult<Arc<Session>> {
     SESSION_TABLE.read().get(&sid).ok_or(AxError::NoSuchProcess)
@@ -194,6 +206,11 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
         ax_task::yield_now();
     }
 
+    // Process the pending entry that was skipped in the loop
+    if !pending.is_null() {
+        handle_futex_death(pending, offset)?;
+    }
+
     Ok(())
 }
 
@@ -222,6 +239,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let process = &thr.proc_data.proc;
     if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
+        // Snapshot children BEFORE process.exit() reparents them to init
+        // via mem::take. Otherwise process.children() returns an empty
+        // list and pdeathsig never reaches the real children.
+        let children_snapshot = process.children();
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
@@ -231,6 +252,24 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 data.child_exit_event.wake();
             }
         }
+        // Send pdeathsig to child processes
+        for child in children_snapshot {
+            let child_pid = child.pid();
+            if let Ok(child_task) = get_task(child_pid) {
+                if let Some(child_thr) = child_task.try_as_thread() {
+                    let sig = child_thr.pdeathsig();
+                    if sig > 0 {
+                        if let Some(signo) = Signo::from_repr(sig as u8) {
+                            let _ = send_signal_to_process(
+                                child_pid,
+                                Some(SignalInfo::new_kernel(signo)),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         thr.proc_data.exit_event.wake();
 
         crate::syscall::SHM_MANAGER

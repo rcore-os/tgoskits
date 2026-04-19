@@ -13,12 +13,21 @@
 // limitations under the License.
 
 use alloc::collections::VecDeque;
-use bit_field::BitField;
 use core::{
     arch::naked_asm,
     fmt::{Debug, Formatter, Result},
     mem::size_of,
 };
+
+use ax_errno::{AxResult, ax_err, ax_err_type};
+use axaddrspace::{
+    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo,
+    device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
+};
+use axdevice_base::BaseDeviceOps;
+use axvcpu::{AxArchVCpu, AxVCpuExitReason};
+use axvisor_api::vmm::{VCpuId, VMId};
+use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
     bits64::vmx,
@@ -29,22 +38,14 @@ use x86::{
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 use x86_vlapic::EmulatedLocalApic;
 
-use axaddrspace::{
-    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo,
-    device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
-};
-use axdevice_base::BaseDeviceOps;
-use ax_errno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvisor_api::vmm::{VCpuId, VMId};
-
-use super::VmxExitInfo;
-use super::as_axerr;
-use super::definitions::VmxExitReason;
-use super::structs::{IOBitmap, MsrBitmap, VmxRegion};
-use super::vmcs::{
-    self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
-    VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
+use super::{
+    VmxExitInfo, as_axerr,
+    definitions::VmxExitReason,
+    structs::{IOBitmap, MsrBitmap, VmxRegion},
+    vmcs::{
+        self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
+        VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
+    },
 };
 use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
@@ -337,7 +338,8 @@ impl VmxVcpu {
             Some(result) => {
                 if result.is_err() {
                     panic!(
-                        "VmxVcpu failed to handle a VM-exit that should be handled by itself: {:?}, error {:?}, vcpu: {:#x?}",
+                        "VmxVcpu failed to handle a VM-exit that should be handled by itself: \
+                         {:?}, error {:?}, vcpu: {:#x?}",
                         exit_info.exit_reason,
                         result.unwrap_err(),
                         self
@@ -603,7 +605,7 @@ impl VmxVcpu {
         self.set_cr(4, 0);
 
         macro_rules! set_guest_segment {
-            ($seg: ident, $access_rights: expr) => {{
+            ($seg:ident, $access_rights:expr) => {{
                 use VmcsGuest16::*;
                 use VmcsGuest32::*;
                 use VmcsGuestNW::*;
@@ -654,8 +656,9 @@ impl VmxVcpu {
 
     fn setup_vmcs_control(&mut self, ept_root: HostPhysAddr, is_guest: bool) -> AxResult {
         // Intercept NMI and external interrupts.
-        use super::vmcs::controls::*;
         use PinbasedControls as PinCtrl;
+
+        use super::vmcs::controls::*;
         let raw_cpuid = CpuId::new();
 
         vmcs::set_control(
@@ -1040,11 +1043,9 @@ impl VmxVcpu {
     }
 
     fn handle_vmx_preemption_timer(&mut self) -> AxResult {
-        /*
-        The VMX-preemption timer counts down at rate proportional to that of the timestamp counter (TSC).
-        Specifically, the timer counts down by 1 every time bit X in the TSC changes due to a TSC increment.
-        The value of X is in the range 0–31 and can be determined by consulting the VMX capability MSR IA32_VMX_MISC (see Appendix A.6).
-         */
+        // The VMX-preemption timer counts down at rate proportional to that of the timestamp counter (TSC).
+        // Specifically, the timer counts down by 1 every time bit X in the TSC changes due to a TSC increment.
+        // The value of X is in the range 0–31 and can be determined by consulting the VMX capability MSR IA32_VMX_MISC (see Appendix A.6).
         VmcsGuest32::VMX_PREEMPTION_TIMER_VALUE.write(VMX_PREEMPTION_TIMER_SET_VALUE)?;
         Ok(())
     }
@@ -1059,7 +1060,7 @@ impl VmxVcpu {
         let cr = cr_access_info.cr_number;
 
         match cr_access_info.access_type {
-            /* move to cr */
+            // move to cr
             0 => {
                 let val = if reg == 4 {
                     self.stack_pointer() as u64
@@ -1068,7 +1069,7 @@ impl VmxVcpu {
                 };
                 if cr == 0 || cr == 4 {
                     self.advance_rip(VM_EXIT_INSTR_LEN_MV_TO_CR)?;
-                    /* TODO: check for #GP reasons */
+                    // TODO: check for #GP reasons
                     self.set_cr(cr as usize, val);
 
                     if cr == 0 && Cr0Flags::from_bits_truncate(val).contains(Cr0Flags::PAGING) {
@@ -1150,7 +1151,8 @@ impl VmxVcpu {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
                     warn!(
-                        "handle_cpuid: Failed to get TSC frequency by CPUID, default to {TIMER_FREQUENCY_MHZ} MHz"
+                        "handle_cpuid: Failed to get TSC frequency by CPUID, default to \
+                         {TIMER_FREQUENCY_MHZ} MHz"
                     );
                     res.eax = TIMER_FREQUENCY_MHZ;
                 }
@@ -1423,8 +1425,9 @@ impl AxArchVCpu for VmxVcpu {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::format;
+
+    use super::*;
 
     #[test]
     fn test_vm_cpu_mode_enum() {

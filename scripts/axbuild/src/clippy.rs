@@ -1,5 +1,6 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
+    fs,
     path::Path,
     process::Command,
 };
@@ -8,12 +9,15 @@ use anyhow::Context;
 use cargo_metadata::{Metadata, Package};
 use serde_json::Value;
 
-pub(crate) fn run_workspace_clippy_command() -> anyhow::Result<()> {
+const CLIPPY_CRATES_CSV: &str = "scripts/test/clippy_crates.csv";
+
+pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {
     let workspace_manifest = crate::context::workspace_manifest_path()?;
     let metadata = crate::context::workspace_metadata_root_manifest(&workspace_manifest)
         .context("failed to load cargo metadata")?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
-    let packages = workspace_packages(&metadata);
+    let all_packages = workspace_packages(&metadata);
+    let packages = resolve_requested_packages(args, &workspace_root, &all_packages)?;
     let checks = expand_clippy_checks(&packages);
 
     println!(
@@ -24,7 +28,19 @@ pub(crate) fn run_workspace_clippy_command() -> anyhow::Result<()> {
     );
 
     let mut runner = ProcessCargoRunner;
-    run_clippy_checks(&mut runner, &workspace_root, &checks)
+    let report = run_clippy_checks(&mut runner, &workspace_root, &checks)?;
+    print_report_summary(&report, args.all);
+
+    if report.failed_packages().is_empty() {
+        println!("all clippy checks passed");
+        return Ok(());
+    }
+
+    bail!(
+        "clippy failed for {} package(s): {}",
+        report.failed_packages().len(),
+        report.failed_packages().join(", ")
+    )
 }
 
 fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
@@ -37,6 +53,109 @@ fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
         .collect();
     packages.sort_by(|left, right| left.name.cmp(&right.name));
     packages
+}
+
+fn resolve_requested_packages(
+    args: &crate::ClippyArgs,
+    workspace_root: &Path,
+    all_packages: &[Package],
+) -> anyhow::Result<Vec<Package>> {
+    let package_lookup: HashMap<_, _> = all_packages
+        .iter()
+        .map(|pkg| (pkg.name.as_str(), pkg.clone()))
+        .collect();
+    let known_packages: HashSet<_> = all_packages.iter().map(|pkg| pkg.name.as_str()).collect();
+
+    let package_names = if !args.packages.is_empty() {
+        validate_requested_packages(&args.packages, &known_packages)?
+    } else if args.all {
+        all_packages
+            .iter()
+            .map(|pkg| pkg.name.to_string())
+            .collect()
+    } else {
+        let csv_path = workspace_root.join(CLIPPY_CRATES_CSV);
+        load_clippy_crates(&csv_path, &known_packages)?
+    };
+
+    package_names
+        .into_iter()
+        .map(|package| {
+            package_lookup
+                .get(package.as_str())
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))
+        })
+        .collect()
+}
+
+fn validate_requested_packages(
+    requested: &[String],
+    known_packages: &HashSet<&str>,
+) -> anyhow::Result<Vec<String>> {
+    let mut unique = HashSet::new();
+    let mut packages = Vec::new();
+
+    for package in requested {
+        if !known_packages.contains(package.as_str()) {
+            bail!("unknown workspace package `{package}` requested via --package");
+        }
+        if !unique.insert(package.as_str()) {
+            bail!("duplicate workspace package `{package}` requested via --package");
+        }
+        packages.push(package.clone());
+    }
+
+    Ok(packages)
+}
+
+fn load_clippy_crates(
+    csv_path: &Path,
+    known_packages: &HashSet<&str>,
+) -> anyhow::Result<Vec<String>> {
+    let contents = fs::read_to_string(csv_path)
+        .with_context(|| format!("failed to read {}", csv_path.display()))?;
+    parse_clippy_crates_csv(&contents, known_packages)
+}
+
+fn parse_clippy_crates_csv(
+    contents: &str,
+    known_packages: &HashSet<&str>,
+) -> anyhow::Result<Vec<String>> {
+    let mut lines = contents.lines().enumerate().filter_map(|(idx, raw)| {
+        let line = raw.trim();
+        (!line.is_empty()).then_some((idx + 1, line))
+    });
+
+    let Some((header_line, header)) = lines.next() else {
+        bail!("clippy crate csv is empty")
+    };
+    let header = header.trim_start_matches('\u{feff}');
+    if header != "package" {
+        bail!(
+            "invalid header at line {}: expected `package`, found `{}`",
+            header_line,
+            header
+        );
+    }
+
+    let mut packages = Vec::new();
+    let mut seen = HashSet::new();
+    for (line_no, package) in lines {
+        if !known_packages.contains(package) {
+            bail!(
+                "unknown workspace package `{}` at line {}",
+                package,
+                line_no
+            );
+        }
+        if !seen.insert(package.to_owned()) {
+            bail!("duplicate package `{}` at line {}", package, line_no);
+        }
+        packages.push(package.to_owned());
+    }
+
+    Ok(packages)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -141,26 +260,137 @@ fn expand_clippy_checks(packages: &[Package]) -> Vec<ClippyCheck> {
     checks
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageRunReport {
+    package: String,
+    total_checks: usize,
+    failed_checks: Vec<String>,
+}
+
+impl PackageRunReport {
+    fn new(package: String) -> Self {
+        Self {
+            package,
+            total_checks: 0,
+            failed_checks: Vec::new(),
+        }
+    }
+
+    fn passed(&self) -> bool {
+        self.failed_checks.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClippyRunReport {
+    total_checks: usize,
+    passed_checks: usize,
+    packages: Vec<PackageRunReport>,
+}
+
+impl ClippyRunReport {
+    fn passed_packages(&self) -> Vec<String> {
+        self.packages
+            .iter()
+            .filter(|package| package.passed())
+            .map(|package| package.package.clone())
+            .collect()
+    }
+
+    fn failed_packages(&self) -> Vec<String> {
+        self.packages
+            .iter()
+            .filter(|package| !package.passed())
+            .map(|package| package.package.clone())
+            .collect()
+    }
+
+    fn passing_packages_csv(&self) -> String {
+        let mut csv = String::from("package\n");
+        for package in self.passed_packages() {
+            csv.push_str(&package);
+            csv.push('\n');
+        }
+        csv
+    }
+}
+
 fn run_clippy_checks<R: CargoRunner>(
     runner: &mut R,
     workspace_root: &Path,
     checks: &[ClippyCheck],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ClippyRunReport> {
+    let mut packages = Vec::new();
+    let mut package_indexes = HashMap::new();
+
+    for check in checks {
+        if package_indexes.contains_key(check.package.as_str()) {
+            continue;
+        }
+        let index = packages.len();
+        packages.push(PackageRunReport::new(check.package.clone()));
+        package_indexes.insert(check.package.clone(), index);
+    }
+
+    let mut passed_checks = 0;
+
     for (index, check) in checks.iter().enumerate() {
         let args = check.cargo_args();
         println!("[{}/{}] {}", index + 1, checks.len(), check.label());
         println!("          cargo {}", args.join(" "));
 
-        if runner.run_clippy(workspace_root, check)? {
-            println!("ok: {}", check.label());
-            continue;
-        }
+        let success = runner.run_clippy(workspace_root, check)?;
+        let package_index = package_indexes[check.package.as_str()];
+        let package_report = &mut packages[package_index];
+        package_report.total_checks += 1;
 
-        bail!("clippy failed for {}", check.label());
+        if success {
+            passed_checks += 1;
+            println!("ok: {}", check.label());
+        } else {
+            eprintln!("failed: {}", check.label());
+            package_report.failed_checks.push(check.label());
+        }
     }
 
-    println!("all clippy checks passed");
-    Ok(())
+    Ok(ClippyRunReport {
+        total_checks: checks.len(),
+        passed_checks,
+        packages,
+    })
+}
+
+fn print_report_summary(report: &ClippyRunReport, print_csv: bool) {
+    println!(
+        "clippy summary: {} package(s), {} check(s), {} package(s) passed, {} package(s) failed",
+        report.packages.len(),
+        report.total_checks,
+        report.passed_packages().len(),
+        report.failed_packages().len()
+    );
+    println!(
+        "passed checks: {}, failed checks: {}",
+        report.passed_checks,
+        report.total_checks.saturating_sub(report.passed_checks)
+    );
+
+    let failed_packages = report.failed_packages();
+    if !failed_packages.is_empty() {
+        eprintln!("failed packages: {}", failed_packages.join(", "));
+        for package in report.packages.iter().filter(|package| !package.passed()) {
+            eprintln!(
+                "  {} failed {} check(s): {}",
+                package.package,
+                package.failed_checks.len(),
+                package.failed_checks.join(", ")
+            );
+        }
+    }
+
+    if print_csv {
+        println!("passing packages csv:");
+        print!("{}", report.passing_packages_csv());
+    }
 }
 
 trait CargoRunner {
@@ -255,6 +485,20 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
+    fn known_packages() -> HashSet<&'static str> {
+        HashSet::from(["alpha", "beta", "gamma"])
+    }
+
+    fn args(all: bool, packages: &[&str]) -> crate::ClippyArgs {
+        crate::ClippyArgs {
+            all,
+            packages: packages
+                .iter()
+                .map(|package| (*package).to_string())
+                .collect(),
+        }
+    }
+
     struct FakeCargoRunner {
         results: HashMap<ClippyCheck, bool>,
         invocations: Vec<(PathBuf, ClippyCheck)>,
@@ -303,6 +547,103 @@ mod tests {
                 .map(|pkg| pkg.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["alpha", "beta"]
+        );
+    }
+
+    #[test]
+    fn parses_valid_clippy_csv() {
+        let packages =
+            parse_clippy_crates_csv("package\nalpha\nbeta\n", &known_packages()).unwrap();
+
+        assert_eq!(packages, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn parses_clippy_csv_with_blank_lines() {
+        let packages =
+            parse_clippy_crates_csv("\npackage\n\nalpha\n\nbeta\n", &known_packages()).unwrap();
+
+        assert_eq!(packages, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn rejects_empty_clippy_csv() {
+        let err = parse_clippy_crates_csv("", &known_packages()).unwrap_err();
+
+        assert!(err.to_string().contains("clippy crate csv is empty"));
+    }
+
+    #[test]
+    fn rejects_invalid_clippy_csv_header() {
+        let err = parse_clippy_crates_csv("crate\nalpha\n", &known_packages()).unwrap_err();
+
+        assert!(err.to_string().contains("invalid header"));
+    }
+
+    #[test]
+    fn rejects_unknown_clippy_csv_package() {
+        let err = parse_clippy_crates_csv("package\nunknown\n", &known_packages()).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unknown workspace package `unknown`")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_clippy_csv_package() {
+        let err =
+            parse_clippy_crates_csv("package\nalpha\nalpha\n", &known_packages()).unwrap_err();
+
+        assert!(err.to_string().contains("duplicate package `alpha`"));
+    }
+
+    #[test]
+    fn all_mode_selects_every_workspace_package() {
+        let packages = vec![
+            pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+            pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
+        ];
+        let resolved =
+            resolve_requested_packages(&args(true, &[]), Path::new("/tmp/ws"), &packages).unwrap();
+
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|pkg| pkg.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+    }
+
+    #[test]
+    fn package_selection_overrides_whitelist_file() {
+        let packages = vec![
+            pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+            pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
+        ];
+        let resolved =
+            resolve_requested_packages(&args(false, &["beta"]), Path::new("/tmp/ws"), &packages)
+                .unwrap();
+
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|pkg| pkg.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["beta"]
+        );
+    }
+
+    #[test]
+    fn duplicate_explicit_packages_are_rejected() {
+        let known = known_packages();
+        let err =
+            validate_requested_packages(&["alpha".into(), "alpha".into()], &known).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("duplicate workspace package `alpha`")
         );
     }
 
@@ -525,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn fail_fast_runner_stops_after_first_failed_invocation() {
+    fn package_failures_keep_the_package_out_of_the_pass_list() {
         let root = PathBuf::from("/tmp/workspace");
         let checks = vec![
             ClippyCheck {
@@ -550,12 +891,50 @@ mod tests {
             (checks[2].clone(), true),
         ]);
 
-        let err = run_clippy_checks(&mut runner, &root, &checks).unwrap_err();
+        let report = run_clippy_checks(&mut runner, &root, &checks).unwrap();
 
-        assert!(err.to_string().contains("alpha (feature: feat-a)"));
+        assert_eq!(report.passed_packages(), vec!["beta"]);
+        assert_eq!(report.failed_packages(), vec!["alpha"]);
+        assert_eq!(
+            report
+                .packages
+                .iter()
+                .find(|package| package.package == "alpha")
+                .unwrap()
+                .failed_checks,
+            vec!["alpha (feature: feat-a)".to_string()]
+        );
         assert_eq!(
             runner.invocations,
-            vec![(root.clone(), checks[0].clone()), (root, checks[1].clone()),]
+            vec![
+                (root.clone(), checks[0].clone()),
+                (root.clone(), checks[1].clone()),
+                (root, checks[2].clone()),
+            ]
         );
+    }
+
+    #[test]
+    fn report_exposes_csv_ready_passing_packages_for_mixed_runs() {
+        let report = ClippyRunReport {
+            total_checks: 3,
+            passed_checks: 2,
+            packages: vec![
+                PackageRunReport {
+                    package: "alpha".into(),
+                    total_checks: 2,
+                    failed_checks: vec!["alpha (feature: feat-a)".into()],
+                },
+                PackageRunReport {
+                    package: "beta".into(),
+                    total_checks: 1,
+                    failed_checks: Vec::new(),
+                },
+            ],
+        };
+
+        assert_eq!(report.failed_packages(), vec!["alpha"]);
+        assert_eq!(report.passed_packages(), vec!["beta"]);
+        assert_eq!(report.passing_packages_csv(), "package\nbeta\n");
     }
 }

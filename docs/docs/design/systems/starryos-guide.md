@@ -11,7 +11,7 @@
 | `components/starry-*` | Starry 专用复用组件 | `starry-process`、`starry-signal`、`starry-vm` 等 |
 | `components/axpoll`、`components/rsext4` 等 | Starry 常用共享组件 | I/O 多路复用、文件系统等 |
 | `os/arceos/modules/*` | StarryOS 复用的底层能力 | HAL、任务、驱动、网络、内存 |
-| `test-suit/starryos/` | 系统测试入口 | 回归测试 |
+| `test-suit/starryos/` | 系统测试数据目录 | 维护 `normal` / `stress` 两组 StarryOS 回归测例与运行判据 |
 
 ## 2. 最短运行路径
 
@@ -136,9 +136,27 @@ cargo starry qemu --arch riscv64
 
 ```bash
 cargo starry test qemu --target riscv64
+cargo starry test qemu --stress -t riscv64
+cargo starry test qemu --stress -t riscv64 -c stress-ng-0
+cargo starry test board -t smoke-orangepi-5-plus --server <ip> --port <port>
 ```
 
-根测试入口跑的其实是 `test-suit/starryos` 下的 `starryos-test` 包，而不是普通的 `starryos` 包。
+这里直接构建并运行的是 `starryos` 包本体；`test-suit/starryos/normal/<case>/` 和 `test-suit/starryos/stress/<case>/` 负责提供 Starry 测试配置。
+
+- QEMU 测试使用 `qemu-<arch>.toml`
+- 远程板测使用 `board-<name>.toml`
+- `board-<name>.toml` 只保存板测运行判据，实际构建配置仍映射到 `os/StarryOS/configs/board/<name>.toml`
+
+默认 `test qemu` 只跑 `normal` 组，传 `--stress` 后只跑 `stress` 组，`-c/--test-case` 只在当前组内按目录名精确筛选单个 case。批量模式会扫描当前组下所有一级子目录，只执行存在 `qemu-<arch>.toml` 的 case；没有当前架构 QEMU 配置的目录会被直接跳过。`test board` 当前只发现 `normal` 组里的 `board-*.toml`，并把 group 名生成为 `<case>-<board>`，例如 `smoke-orangepi-5-plus`。
+
+Starry QEMU case 还支持可选的 `c/` 子目录约定：
+
+- `test-suit/starryos/<group>/<case>/c/CMakeLists.txt`：必需，作为该 case 的 CMake 项目入口
+- `test-suit/starryos/<group>/<case>/c/prebuild.sh`：可选，若存在则会在 CMake 配置前通过 guest `/bin/sh` 执行
+- `prebuild.sh` 只负责准备 staging rootfs 内的构建环境，不会自动把副作用同步回最终 rootfs
+- 需要进入 guest rootfs 的文件，必须通过 `install()` 输出，并由 `axbuild` 通过 `cmake --install` 生成 overlay 后回写到 case rootfs
+
+QEMU 测试会先自动准备共享 rootfs，再为每个 case 复制出独立的 per-case rootfs；如果 case 下存在 `c/`，还会按顺序执行 `prebuild.sh`、`cmake --build`、`cmake --install`，然后把 overlay 写回该 case 的 rootfs，最后再把对应 case 的 `qemu-<arch>.toml` 交给 `ostool` 处理。每轮批量执行结束后都会统一打印成功列表、失败列表以及每个 case 的运行时间。板测则直接把对应 `board-<name>.toml` 作为 `ostool` 的 board run config。
 
 ### 本地 Makefile 路径
 

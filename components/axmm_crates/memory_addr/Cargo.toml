@@ -3,7 +3,7 @@ name = "ax-memory-addr"
 description = "Wrappers and helper functions for physical and virtual addresses"
 keywords = ["arceos", "address", "virtual-memory"]
 
-version.workspace = true
+version = "0.6.7"
 repository.workspace = true
 edition.workspace = true
 authors.workspace = true

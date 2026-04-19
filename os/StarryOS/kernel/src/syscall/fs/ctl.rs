@@ -9,7 +9,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FsContext};
 use ax_hal::time::wall_time;
 use ax_task::current;
-use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
+use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
     ioctl::{FIONBIO, TIOCGWINSZ},
@@ -19,6 +19,7 @@ use starry_vm::{VmPtr, vm_write_slice};
 use crate::{
     file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
+    pseudofs::Device,
     task::AsThread,
     time::TimeValueLike,
 };
@@ -29,10 +30,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     debug!("sys_ioctl <= fd: {fd}, cmd: {cmd}, arg: {arg}");
     let f = get_file_like(fd)?;
     if cmd == FIONBIO {
-        let val = (arg as *const u8).vm_read()?;
-        if val != 0 && val != 1 {
-            return Err(AxError::InvalidInput);
-        }
+        let val: i32 = (arg as *const i32).vm_read()?;
         f.set_nonblocking(val != 0)?;
         return Ok(0);
     }
@@ -97,6 +95,50 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
         fs.create_dir(path, mode)?;
         Ok(0)
     })
+}
+
+pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
+    let path = vm_load_string(path)?;
+    debug!(
+        "sys_mknodat <= dirfd: {}, path: {:?}, mode: {}, dev: {}",
+        dirfd, path, mode, dev
+    );
+
+    // Split type and permission bits
+    let ftype = mode & S_IFMT;
+    let mut perm = mode & !S_IFMT;
+    // apply umask like mkdir
+    perm &= !current().as_thread().proc_data.umask();
+
+    let node_type = match ftype {
+        S_IFREG => NodeType::RegularFile,
+        S_IFCHR => NodeType::CharacterDevice,
+        S_IFBLK => NodeType::BlockDevice,
+        S_IFIFO => NodeType::Fifo,
+        S_IFSOCK => NodeType::Socket,
+        _ => return Err(AxError::InvalidInput),
+    };
+
+    let res = with_fs(dirfd, |fs| {
+        let (dir, name) = fs.resolve_nonexistent(Path::new(&path))?;
+        let loc = dir.create(
+            name,
+            node_type,
+            NodePermission::from_bits_truncate(perm as u16),
+        )?;
+
+        // If device node, set rdev
+        if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
+            if let Ok(dev_node) = loc.entry().downcast::<Device>() {
+                dev_node.set_device_id(DeviceId(dev));
+            } else {
+                warn!("not a device node, cannot set rdev");
+            }
+        }
+
+        Ok(0)
+    })?;
+    Ok(res)
 }
 
 // Directory buffer for getdents64 syscall
@@ -228,8 +270,15 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<i
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
+    // Linux kernel (fs/namei.c) rejects any flag bit other than AT_REMOVEDIR
+    // with EINVAL. Silently ignoring unknown bits would mask caller bugs and
+    // diverge from POSIX semantics (see man 2 unlinkat).
+    if flags & !(AT_REMOVEDIR as usize) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     with_fs(dirfd, |fs| {
-        if flags == AT_REMOVEDIR as _ {
+        if flags & AT_REMOVEDIR as usize != 0 {
             fs.remove_dir(path)?;
         } else {
             fs.remove_file(path)?;
@@ -341,6 +390,30 @@ pub fn sys_fchownat(
         .ok_or(AxError::BadFileDescriptor)?;
     let meta = loc.metadata()?;
 
+    let cred = current().as_thread().cred();
+
+    // Permission checks following Linux semantics:
+    // - Changing the file owner (uid) requires CAP_CHOWN.
+    // - Changing the file group (gid) without CAP_CHOWN is allowed only if
+    //   the caller owns the file and the target group is one the caller
+    //   belongs to.
+    let changing_owner = uid != -1 && uid as u32 != meta.uid;
+    let changing_group = gid != -1 && gid as u32 != meta.gid;
+
+    if changing_owner && !cred.has_cap_chown() {
+        return Err(AxError::OperationNotPermitted);
+    }
+
+    if changing_group && !cred.has_cap_chown() {
+        // Non-root: must own the file and target group must be in our groups.
+        if cred.fsuid != meta.uid {
+            return Err(AxError::OperationNotPermitted);
+        }
+        if !cred.in_group(gid as u32) {
+            return Err(AxError::OperationNotPermitted);
+        }
+    }
+
     let mut mode = meta.mode;
     // chown always clears the setuid bits
     mode.remove(NodePermission::SET_UID);
@@ -370,13 +443,23 @@ pub fn sys_fchmod(fd: i32, mode: u32) -> AxResult<isize> {
 
 pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
-    resolve_at(dirfd, path.as_deref(), flags)?
+    let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
-        .ok_or(AxError::BadFileDescriptor)?
-        .update_metadata(MetadataUpdate {
-            mode: Some(NodePermission::from_bits_truncate(mode as u16)),
-            ..Default::default()
-        })?;
+        .ok_or(AxError::BadFileDescriptor)?;
+
+    // Only the file owner or a process with CAP_FOWNER may change mode bits.
+    let cred = current().as_thread().cred();
+    if !cred.has_cap_fowner() {
+        let meta = loc.metadata()?;
+        if cred.fsuid != meta.uid {
+            return Err(AxError::OperationNotPermitted);
+        }
+    }
+
+    loc.update_metadata(MetadataUpdate {
+        mode: Some(NodePermission::from_bits_truncate(mode as u16)),
+        ..Default::default()
+    })?;
     Ok(0)
 }
 

@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg(all(target_arch = "riscv64", target_os = "none"))]
 
 #[macro_use]
 extern crate log;

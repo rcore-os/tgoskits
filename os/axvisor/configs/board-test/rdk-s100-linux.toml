@@ -1,0 +1,14 @@
+board_type = "RDK-S100"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+]
+uboot_cmd = [
+  "run ab_select_cmd",
+  "run avb_boot",
+]
+success_regex = [
+  "ubuntu login:",
+]

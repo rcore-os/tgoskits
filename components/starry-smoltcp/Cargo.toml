@@ -1,6 +1,6 @@
 [package]
 name = "smoltcp"
-version = "0.14.0"
+version = "0.14.2"
 edition = "2021"
 rust-version = "1.81"
 authors = ["whitequark <whitequark@whitequark.org>"]
@@ -15,6 +15,7 @@ categories = ["embedded", "network-programming"]
 # ensure that the correct features are enabled.
 autoexamples = false
 license = "Apache-2.0"
+publish = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

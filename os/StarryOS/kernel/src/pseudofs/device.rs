@@ -13,6 +13,7 @@ use inherit_methods_macro::inherit_methods;
 use super::{SimpleFs, SimpleFsNode};
 
 /// Mmap behavior for devices.
+#[derive(Clone)]
 pub enum DeviceMmap {
     /// The device is not mappable.
     None,
@@ -43,8 +44,8 @@ pub trait DeviceOps: Send + Sync {
         None
     }
 
-    /// Returns the memory mapping behavior of the device.
-    fn mmap(&self) -> DeviceMmap {
+    /// Returns the memory mapping behavior of the device for the given offset.
+    fn mmap(&self, _offset: u64) -> DeviceMmap {
         DeviceMmap::None
     }
 
@@ -83,9 +84,9 @@ impl Device {
         self.node.metadata.lock().rdev = device_id;
     }
 
-    /// Returns the memory mapping behavior of the device.
-    pub fn mmap(&self) -> DeviceMmap {
-        self.ops.mmap()
+    /// Returns the memory mapping behavior of the device for the given offset.
+    pub fn mmap(&self, offset: u64) -> DeviceMmap {
+        self.ops.mmap(offset)
     }
 }
 

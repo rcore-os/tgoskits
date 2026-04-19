@@ -1,6 +1,6 @@
 [package]
 name = "ax-int-ratio"
-version = "0.3.2"
+version = "0.3.6"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]

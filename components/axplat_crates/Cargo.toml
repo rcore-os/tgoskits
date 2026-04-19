@@ -33,7 +33,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.5.6"
 edition = "2024"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -47,8 +47,8 @@ repository = "https://github.com/rcore-os/tgoskits"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-ax-cpu = "0.5.0"
-ax-plat = { version = "0.5.1", path = "./axplat" }
-ax-plat-macros = { version = "0.3.0", path = "./axplat-macros" }
-ax-plat-aarch64-peripherals = { version = "0.5.1", path = "platforms/axplat-aarch64-peripherals" }
-ax-percpu = "0.4.3"
+ax-cpu = "0.5"
+ax-plat = { version = "0.5", path = "./axplat" }
+ax-plat-macros = { version = "0.3", path = "./axplat-macros" }
+ax-plat-aarch64-peripherals = { version = "0.5", path = "platforms/axplat-aarch64-peripherals" }
+ax-percpu = "0.4"

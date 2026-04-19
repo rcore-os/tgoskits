@@ -1,6 +1,6 @@
 [package]
 name = "axplat-dyn"
-version.workspace = true
+version = "0.5.11"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories.workspace = true
 description = "A dynamic platform module for ArceOS, providing runtime platform detection and configuration"
@@ -25,11 +25,12 @@ serial = ["dep:some-serial"]
 net = ["dep:ax-driver-net", "dep:rd-net"]
 intel-net = ["net", "dep:eth-intel", "dep:pcie"]
 virtio-net-pci = ["net"]
+rknpu = ["dep:rockchip-npu", "rockchip-pm", "rk3588-clk"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
-ax-alloc = { version = "0.5.0", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
-ax-config-macros = "0.4.1"
+ax-alloc = { version = "0.5", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
+ax-config-macros = "0.4"
 ax-cpu.workspace = true
 ax-driver-base.workspace = true
 ax-driver-block.workspace = true
@@ -51,8 +52,9 @@ rd-net = { version = "0.1", optional = true }
 rdif-clk = "0.5"
 rdrive = "0.20"
 rk3568_clk = { version = "0.1", optional = true }
-rk3588-clk = { version = "0.1", optional = true }
-rockchip-pm = { version = "0.4", optional = true }
+rk3588-clk = { workspace = true, optional = true }
+rockchip-npu = { workspace = true, optional = true }
+rockchip-pm = { workspace = true, optional = true }
 phytium-mci = { version = "0.1", default-features = false, features = ["pio"], optional = true }
 sdmmc = { version = "0.1", default-features = false, features = ["pio"], optional = true }
 somehal = "0.6"

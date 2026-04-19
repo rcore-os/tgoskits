@@ -1,6 +1,6 @@
 [package]
 name = "ax-arm-pl011"
-version = "0.3.0"
+version = "0.3.6"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Shiping Yuan <robert_yuan@pku.edu.com>", "Yuekai Jia <equation618@gmail.com>"]

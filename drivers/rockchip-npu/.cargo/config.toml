@@ -1,0 +1,12 @@
+[target.'cfg(target_os = "none")']
+runner = "cargo osrun"
+
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+rustflags = [
+    "-C", "relocation-model=pic",
+    "-Clink-args=-pie",
+    "-Clink-args=-znostart-stop-gc",
+]

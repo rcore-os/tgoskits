@@ -1,6 +1,6 @@
 [package]
 name = "ax-allocator"
-version = "0.4.0"
+version = "0.4.4"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = [
@@ -31,14 +31,14 @@ page-alloc-256m = []
 ax-errno = ["dep:ax-errno"]
 
 [dependencies]
-ax-errno = { version = "0.4.2", optional = true }
+ax-errno = { version = "0.4", optional = true }
 cfg-if = "1.0"
 rlsf = { version = "0.2", optional = true }
 buddy_system_allocator = { version = "0.10", default-features = false, optional = true }
 ax_slab_allocator = { version = "0.4", optional = true }
-bitmap-allocator = { version = "0.4.1", optional = true }
+bitmap-allocator = { version = "0.4", optional = true }
 
-[dev-dependencies]
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-allocator = { path = ".", features = ["full"] }
 rand = { version = "0.8", features = ["small_rng"] }
 criterion = { version = "0.5", features = ["html_reports"] }

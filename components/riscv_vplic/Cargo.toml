@@ -1,6 +1,6 @@
 [package]
 name = "riscv_vplic"
-version = "0.4.2"
+version = "0.4.7"
 edition = "2021"
 authors = ["Jingyu liu <liujingyu24s@ict.ac.cn>"]
 description = "RISCV Virtual PLIC implementation."
@@ -15,16 +15,16 @@ license = "Apache-2.0"
 default = []
 
 [dependencies]
-axaddrspace = "0.5.0"
-axdevice_base = "0.4.2"
-axvisor_api = "0.5.0"
+axaddrspace = "0.5"
+axdevice_base = "0.4"
+axvisor_api = "0.5"
 
-ax-errno = "0.4.2"
+ax-errno = "0.4"
 bitmaps = { version = "3.2", default-features = false }
 log = "0.4"
 spin = "0.10"
 
-riscv-h = "0.4.0"
+riscv-h = "0.4"
 
 [package.metadata.docs.rs]
 default-target = ["riscv64gc-unknown-none-elf"]

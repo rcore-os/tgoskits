@@ -14,36 +14,40 @@
 
 use core::ptr::NonNull;
 
-use axvisor_api::vmm::{VCpuId, VMId};
+use ax_errno::{AxError, AxResult, ax_err_type};
+use axaddrspace::{HostPhysAddr, device::AccessWidth};
+use axvisor_api::{
+    memory::PhysFrame,
+    vmm,
+    vmm::{VCpuId, VMId},
+};
 use bit::BitIndex;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
-use axaddrspace::{HostPhysAddr, device::AccessWidth};
-use ax_errno::{AxError, AxResult, ax_err_type};
-use axvisor_api::{memory::PhysFrame, vmm};
-
-use crate::consts::{
-    APIC_LVT_DS, APIC_LVT_M, APIC_LVT_VECTOR, ApicRegOffset, LAPIC_TRIG_EDGE,
-    RESET_SPURIOUS_INTERRUPT_VECTOR,
-};
-use crate::regs::{
-    APIC_BASE, ApicBaseRegisterMsr,
-    DESTINATION_FORMAT::{self, Model::Value as APICDestinationFormat},
-    ERROR_STATUS, ErrorStatusRegisterLocal, ErrorStatusRegisterValue, INTERRUPT_COMMAND_HIGH,
-    INTERRUPT_COMMAND_LOW::{
-        self, DeliveryMode::Value as APICDeliveryMode,
-        DestinationShorthand::Value as APICDestination,
-    },
-    InterruptCommandRegisterLowLocal, LocalAPICRegs, SPURIOUS_INTERRUPT_VECTOR,
-    SpuriousInterruptVectorRegisterLocal,
-    lvt::{
-        LVT_CMCI, LVT_ERROR, LVT_LINT0, LVT_LINT1, LVT_PERFORMANCE_COUNTER, LVT_THERMAL_MONITOR,
-        LVT_TIMER, LocalVectorTable,
-    },
-};
-use crate::{timer::ApicTimer, utils::fls32};
-
 pub use crate::regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode;
+use crate::{
+    consts::{
+        APIC_LVT_DS, APIC_LVT_M, APIC_LVT_VECTOR, ApicRegOffset, LAPIC_TRIG_EDGE,
+        RESET_SPURIOUS_INTERRUPT_VECTOR,
+    },
+    regs::{
+        APIC_BASE, ApicBaseRegisterMsr,
+        DESTINATION_FORMAT::{self, Model::Value as APICDestinationFormat},
+        ERROR_STATUS, ErrorStatusRegisterLocal, ErrorStatusRegisterValue, INTERRUPT_COMMAND_HIGH,
+        INTERRUPT_COMMAND_LOW::{
+            self, DeliveryMode::Value as APICDeliveryMode,
+            DestinationShorthand::Value as APICDestination,
+        },
+        InterruptCommandRegisterLowLocal, LocalAPICRegs, SPURIOUS_INTERRUPT_VECTOR,
+        SpuriousInterruptVectorRegisterLocal,
+        lvt::{
+            LVT_CMCI, LVT_ERROR, LVT_LINT0, LVT_LINT1, LVT_PERFORMANCE_COUNTER,
+            LVT_THERMAL_MONITOR, LVT_TIMER, LocalVectorTable,
+        },
+    },
+    timer::ApicTimer,
+    utils::fls32,
+};
 
 /// Virtual-APIC Registers.
 pub struct VirtualApicRegs {
@@ -139,7 +143,7 @@ impl VirtualApicRegs {
     /// FI;
     fn find_isrv(&self) -> u32 {
         let mut isrv = 0;
-        /* i ranges effectively from 7 to 1 */
+        // i ranges effectively from 7 to 1
         for i in (1..8).rev() {
             let val = self.regs().ISR[i].get() as u32;
             if val != 0 {
@@ -199,12 +203,10 @@ impl VirtualApicRegs {
         // (see 11.8.4 Interrupt Acceptance for Fixed Interrupts)
         if (self.regs().TMR[idx].get() as u32).bit(bitpos) {
             // Send EOI to all I/O APICs
-            /*
-             * Per Intel SDM 10.8.5, Software can inhibit the broadcast of
-             * EOI by setting bit 12 of the Spurious Interrupt Vector
-             * Register of the LAPIC.
-             * TODO: Check if the bit 12 "Suppress EOI Broadcasts" is set.
-             */
+            // Per Intel SDM 10.8.5, Software can inhibit the broadcast of
+            // EOI by setting bit 12 of the Spurious Interrupt Vector
+            // Register of the LAPIC.
+            // TODO: Check if the bit 12 "Suppress EOI Broadcasts" is set.
             unimplemented!("vioapic_broadcast_eoi(vlapic2vcpu(vlapic)->vm, vector);")
         }
 
@@ -249,10 +251,8 @@ impl VirtualApicRegs {
                 .ok_or(AxError::InvalidData)?
             {
                 APICDestinationFormat::Flat => {
-                    /*
-                     * In the "Flat Model" the MDA is interpreted as an 8-bit wide
-                     * bitmask. This model is available in the xAPIC mode only.
-                     */
+                    // In the "Flat Model" the MDA is interpreted as an 8-bit wide
+                    // bitmask. This model is available in the xAPIC mode only.
                     let logical_id = ldr >> 24;
                     let dest_logical_id = dest & 0xff;
                     if logical_id & dest_logical_id != 0 {
@@ -260,10 +260,8 @@ impl VirtualApicRegs {
                     }
                 }
                 APICDestinationFormat::Cluster => {
-                    /*
-                     * In the "Cluster Model" the MDA is used to identify a
-                     * specific cluster and a set of APICs in that cluster.
-                     */
+                    // In the "Cluster Model" the MDA is used to identify a
+                    // specific cluster and a set of APICs in that cluster.
                     let logical_id = (ldr >> 24) & 0xf;
                     let cluster_id = ldr >> 28;
                     let dest_logical_id = dest & 0xf;
@@ -739,7 +737,8 @@ impl VirtualApicRegs {
                     debug!("[VLAPIC] read ICR register: {value:#018X}");
                 } else if self.is_x2apic_enabled() ^ (width == AccessWidth::Qword) {
                     warn!(
-                        "[VLAPIC] Illegal read attempt of ICR register at width {:?} with X2APIC {}",
+                        "[VLAPIC] Illegal read attempt of ICR register at width {:?} with X2APIC \
+                         {}",
                         width,
                         if self.is_x2apic_enabled() {
                             "enabled"
@@ -782,7 +781,7 @@ impl VirtualApicRegs {
                         value = self.regs().ICR_TIMER.get() as _;
                     }
                     Ok(TimerMode::TSCDeadline) => {
-                        /* if TSCDEADLINE mode always return 0*/
+                        // if TSCDEADLINE mode always return 0
                         value = 0;
                     }
                     _ => {
@@ -843,7 +842,8 @@ impl VirtualApicRegs {
                     self.regs().ICR_HI.set((val >> 32) as u32);
                 } else if self.is_x2apic_enabled() ^ (width == AccessWidth::Qword) {
                     warn!(
-                        "[VLAPIC] Illegal read attempt of ICR register at width {:?} with X2APIC {}",
+                        "[VLAPIC] Illegal read attempt of ICR register at width {:?} with X2APIC \
+                         {}",
                         width,
                         if self.is_x2apic_enabled() {
                             "enabled"
@@ -890,7 +890,8 @@ impl VirtualApicRegs {
                 // if TSCDEADLINE mode ignore icr_timer
                 if self.timer_mode()? == TimerMode::TSCDeadline {
                     warn!(
-                        "[VLAPIC] write TimerInitCount register: ignore icr_timer in TSCDEADLINE mode"
+                        "[VLAPIC] write TimerInitCount register: ignore icr_timer in TSCDEADLINE \
+                         mode"
                     );
                     return Ok(());
                 }

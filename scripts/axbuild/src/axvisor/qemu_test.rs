@@ -4,15 +4,15 @@ use std::{
 };
 
 use anyhow::Context;
-use ostool::build::CargoQemuOverrideArgs;
+use ostool::run::qemu::QemuConfig;
 
 use crate::{
     axvisor::{
         context::AxvisorContext,
         image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
-        qemu::{default_qemu_config_template_path, qemu_override_args_from_template},
     },
-    context::{AxvisorCliArgs, ResolvedAxvisorRequest},
+    context::AxvisorCliArgs,
+    test_qemu::AxvisorBoardTestGroup,
 };
 
 pub const LINUX_AARCH64_IMAGE_SPEC: &str = "qemu_aarch64_linux";
@@ -24,6 +24,13 @@ pub const LINUX_AARCH64_GENERATED_VMCONFIG: &str =
 pub const NIMBOS_X86_64_IMAGE_SPEC: &str = "qemu_x86_64_nimbos";
 pub const NIMBOS_X86_64_VMCONFIG: &str = "os/axvisor/configs/vms/nimbos-x86_64-qemu-smp1.toml";
 pub const AXVISOR_ROOTFS_IMAGE: &str = "os/axvisor/tmp/rootfs.img";
+const RDK_S100_LINUX_GROUP_NAME: &str = "rdk-s100-linux";
+const RDK_S100_LINUX_VMCONFIG_TEMPLATE: &str =
+    "os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml";
+const RDK_S100_LINUX_GENERATED_VMCONFIG: &str =
+    "os/axvisor/tmp/vmconfigs/linux-aarch64-s100-ci.generated.toml";
+const RDK_S100_LINUX_IMAGE_SPEC: &str = "rdk-s100p_linux";
+const RDK_S100_LINUX_KERNEL_IN_IMAGE: &str = "rdk-s100p";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedLinuxGuestAssets {
@@ -109,17 +116,37 @@ pub(crate) async fn prepare_nimbos_x86_64_guest_vmconfig(
     Ok(ctx.workspace_root().join(NIMBOS_X86_64_VMCONFIG))
 }
 
-pub(crate) fn shell_autoinit_qemu_override_args(
-    request: &ResolvedAxvisorRequest,
-    shell: &ShellAutoInitConfig,
-) -> anyhow::Result<CargoQemuOverrideArgs> {
-    let template_path = default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
-    let mut overrides = qemu_override_args_from_template(&template_path, request)?;
-    overrides.success_regex = Some(shell.success_regex.clone());
-    overrides.fail_regex = Some(shell.fail_regex.clone());
-    overrides.shell_prefix = Some(shell.shell_prefix.clone());
-    overrides.shell_init_cmd = Some(shell.shell_init_cmd.clone());
-    Ok(overrides)
+pub(crate) async fn prepare_board_test_vmconfigs(
+    ctx: &AxvisorContext,
+    group: &AxvisorBoardTestGroup,
+) -> anyhow::Result<Vec<PathBuf>> {
+    if group.name != RDK_S100_LINUX_GROUP_NAME {
+        return Ok(group.vmconfigs.iter().map(PathBuf::from).collect());
+    }
+
+    let image_dir = pull_guest_image(ctx, RDK_S100_LINUX_IMAGE_SPEC).await?;
+    let kernel_path = image_dir.join(RDK_S100_LINUX_KERNEL_IN_IMAGE);
+    ensure_guest_kernel_exists(&kernel_path, group.name)?;
+
+    let workspace_root = ctx.workspace_root();
+    let generated_vmconfig = workspace_root.join(RDK_S100_LINUX_GENERATED_VMCONFIG);
+    generate_vmconfig_with_guest_assets(
+        &workspace_root.join(RDK_S100_LINUX_VMCONFIG_TEMPLATE),
+        &generated_vmconfig,
+        &kernel_path,
+        None,
+        None,
+        None,
+    )?;
+
+    Ok(vec![generated_vmconfig])
+}
+
+pub(crate) fn apply_shell_autoinit_config(config: &mut QemuConfig, shell: &ShellAutoInitConfig) {
+    config.success_regex = shell.success_regex.clone();
+    config.fail_regex = shell.fail_regex.clone();
+    config.shell_prefix = Some(shell.shell_prefix.clone());
+    config.shell_init_cmd = Some(shell.shell_init_cmd.clone());
 }
 
 fn generate_linux_vmconfig(
@@ -127,19 +154,51 @@ fn generate_linux_vmconfig(
     output_path: &Path,
     kernel_path: &Path,
 ) -> anyhow::Result<()> {
+    generate_vmconfig_with_guest_assets(template_path, output_path, kernel_path, None, None, None)
+}
+
+fn generate_vmconfig_with_guest_assets(
+    template_path: &Path,
+    output_path: &Path,
+    kernel_path: &Path,
+    dtb_path: Option<&Path>,
+    bios_path: Option<&Path>,
+    ramdisk_path: Option<&Path>,
+) -> anyhow::Result<()> {
     let mut value = read_toml(template_path)?;
-    value
+    let kernel = value
         .get_mut("kernel")
         .and_then(toml::Value::as_table_mut)
         .ok_or_else(|| {
             anyhow::anyhow!("missing `[kernel]` section in {}", template_path.display())
-        })?
-        .insert(
-            "kernel_path".to_string(),
-            toml::Value::String(kernel_path.display().to_string()),
-        );
+        })?;
+    kernel.insert(
+        "kernel_path".to_string(),
+        toml::Value::String(kernel_path.display().to_string()),
+    );
+    update_optional_guest_path(kernel, "dtb_path", dtb_path);
+    update_optional_guest_path(kernel, "bios_path", bios_path);
+    update_optional_guest_path(kernel, "ramdisk_path", ramdisk_path);
 
     write_toml(output_path, &value)
+}
+
+fn update_optional_guest_path(
+    kernel: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    path: Option<&Path>,
+) {
+    match path {
+        Some(path) => {
+            kernel.insert(
+                key.to_string(),
+                toml::Value::String(path.display().to_string()),
+            );
+        }
+        None => {
+            kernel.remove(key);
+        }
+    }
 }
 
 fn copy_rootfs(rootfs_src: &Path, rootfs_dst: &Path) -> anyhow::Result<()> {
@@ -216,6 +275,7 @@ pub(crate) fn qemu_test_build_args(arch: &str, vmconfig: PathBuf) -> AxvisorCliA
         arch: Some(arch.to_string()),
         target: None,
         plat_dyn: None,
+        smp: None,
         debug: false,
         vmconfigs: vec![vmconfig],
     }
@@ -227,21 +287,24 @@ pub(crate) fn uboot_test_build_args(build_config: &str, vmconfig: &str) -> Axvis
         arch: None,
         target: None,
         plat_dyn: None,
+        smp: None,
         debug: false,
         vmconfigs: vec![PathBuf::from(vmconfig)],
     }
 }
 
 pub(crate) fn board_test_build_args(
-    group: &crate::test_qemu::AxvisorBoardTestGroup,
+    group: &AxvisorBoardTestGroup,
+    vmconfigs: Vec<PathBuf>,
 ) -> AxvisorCliArgs {
     AxvisorCliArgs {
         config: Some(PathBuf::from(group.build_config)),
         arch: None,
         target: None,
         plat_dyn: None,
+        smp: None,
         debug: false,
-        vmconfigs: group.vmconfigs.iter().map(PathBuf::from).collect(),
+        vmconfigs,
     }
 }
 
@@ -293,56 +356,72 @@ entry_point = 1
     }
 
     #[test]
-    fn shell_autoinit_qemu_override_args_preserves_existing_args() {
+    fn generate_vmconfig_with_guest_assets_updates_optional_paths() {
         let dir = tempdir().unwrap();
-        let qemu_config = dir
-            .path()
-            .join("os/axvisor/scripts/ostool/qemu-aarch64.toml");
-        fs::create_dir_all(qemu_config.parent().unwrap()).unwrap();
+        let template = dir.path().join("linux.toml");
+        let output = dir.path().join("out/generated.toml");
         fs::write(
-            &qemu_config,
+            &template,
             r#"
-args = ["-nographic"]
-success_regex = []
-fail_regex = []
-to_bin = true
-uefi = false
+[base]
+id = 2
+
+[kernel]
+kernel_path = "old"
+dtb_path = "old.dtb"
+bios_path = "old.bios"
+ramdisk_path = "old.ramdisk"
 "#,
         )
         .unwrap();
 
-        let overrides = shell_autoinit_qemu_override_args(
-            &ResolvedAxvisorRequest {
-                package: "axvisor".to_string(),
-                axvisor_dir: dir.path().join("os/axvisor"),
-                arch: "aarch64".to_string(),
-                target: "aarch64-unknown-none-softfloat".to_string(),
-                plat_dyn: None,
-                debug: false,
-                build_info_path: dir.path().join(".build.toml"),
-                qemu_config: None,
-                uboot_config: None,
-                vmconfigs: vec![],
-            },
+        generate_vmconfig_with_guest_assets(
+            &template,
+            &output,
+            Path::new("/tmp/kernel.bin"),
+            Some(Path::new("/tmp/guest.dtb")),
+            None,
+            Some(Path::new("/tmp/initrd.img")),
+        )
+        .unwrap();
+
+        let value: toml::Value = toml::from_str(&fs::read_to_string(&output).unwrap()).unwrap();
+        assert_eq!(
+            value["kernel"]["kernel_path"].as_str(),
+            Some("/tmp/kernel.bin")
+        );
+        assert_eq!(value["kernel"]["dtb_path"].as_str(), Some("/tmp/guest.dtb"));
+        assert!(value["kernel"].get("bios_path").is_none());
+        assert_eq!(
+            value["kernel"]["ramdisk_path"].as_str(),
+            Some("/tmp/initrd.img")
+        );
+    }
+
+    #[test]
+    fn apply_shell_autoinit_config_preserves_existing_args() {
+        let mut qemu = QemuConfig {
+            args: vec!["-nographic".to_string()],
+            ..Default::default()
+        };
+
+        apply_shell_autoinit_config(
+            &mut qemu,
             &ShellAutoInitConfig {
                 shell_prefix: "~ #".to_string(),
                 shell_init_cmd: "pwd && echo 'test pass!'".to_string(),
                 success_regex: vec!["^test pass!$".to_string()],
                 fail_regex: vec!["(?i)panic".to_string()],
             },
-        )
-        .unwrap();
+        );
 
-        assert_eq!(overrides.args.unwrap(), vec!["-nographic".to_string()]);
-        assert_eq!(overrides.shell_prefix.as_deref(), Some("~ #"));
+        assert_eq!(qemu.args, vec!["-nographic".to_string()]);
+        assert_eq!(qemu.shell_prefix.as_deref(), Some("~ #"));
         assert_eq!(
-            overrides.shell_init_cmd.as_deref(),
+            qemu.shell_init_cmd.as_deref(),
             Some("pwd && echo 'test pass!'")
         );
-        assert_eq!(
-            overrides.success_regex.unwrap(),
-            vec!["^test pass!$".to_string()]
-        );
+        assert_eq!(qemu.success_regex, vec!["^test pass!$".to_string()]);
     }
 
     #[test]

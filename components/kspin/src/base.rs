@@ -82,9 +82,9 @@ impl LockdepAcquire {
         self.state.map(|(id, _)| id)
     }
 
+    #[cfg(feature = "lockdep")]
     #[inline(always)]
     fn finish(self) {
-        #[cfg(feature = "lockdep")]
         crate::lockdep::finish_acquire(self.state, self.addr);
     }
 }
@@ -122,8 +122,12 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[cfg(not(feature = "smp"))]
     fn finish_lockdep_with_irqsave(lockdep: LockdepAcquire) {
         #[cfg(feature = "lockdep")]
-        let _lockdep_irq_guard = IrqSave::new();
-        lockdep.finish();
+        {
+            let _lockdep_irq_guard = IrqSave::new();
+            lockdep.finish();
+        }
+        #[cfg(not(feature = "lockdep"))]
+        let _ = lockdep;
     }
 
     #[inline(always)]
@@ -141,6 +145,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
                 }
                 acquired
             } else {
+                let _ = lockdep;
                 self.lock
                     .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok()
@@ -163,6 +168,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
                 }
                 acquired
             } else {
+                let _ = lockdep;
                 self.lock
                     .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok()

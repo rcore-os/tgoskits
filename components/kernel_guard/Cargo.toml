@@ -1,6 +1,6 @@
 [package]
 name = "ax-kernel-guard"
-version = "0.3.3"
+version = "0.3.7"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -15,4 +15,4 @@ default = []
 
 [dependencies]
 cfg-if = "1.0"
-ax-crate-interface = "0.5.0"
+ax-crate-interface = "0.5"

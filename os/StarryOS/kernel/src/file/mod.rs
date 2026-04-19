@@ -10,14 +10,14 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, OpenOptions};
+use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
 use ax_task::current;
 use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
-use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
+use linux_raw_sys::general::{O_RDONLY, O_WRONLY, RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
 
 pub use self::{
@@ -26,7 +26,10 @@ pub use self::{
     pidfd::PidFd,
     pipe::Pipe,
 };
-use crate::task::{AX_FILE_LIMIT, AsThread};
+use crate::{
+    pseudofs::DeviceMmap,
+    task::{AX_FILE_LIMIT, AsThread},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kstat {
@@ -149,8 +152,20 @@ pub trait FileLike: Pollable + DowncastSync {
 
     fn path(&self) -> Cow<'_, str>;
 
+    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+        Err(AxError::BadFileDescriptor)
+    }
+
+    fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {
+        Err(AxError::BadFileDescriptor)
+    }
+
     fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
         Err(AxError::NotATty)
+    }
+
+    fn open_flags(&self) -> u32 {
+        0
     }
 
     fn nonblocking(&self) -> bool {
@@ -223,14 +238,15 @@ pub fn close_file_like(fd: c_int) -> AxResult {
 pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
     assert_eq!(fd_table.count(), 0);
     let cx = FS_CONTEXT.lock();
-    let open = |options: &mut OpenOptions| {
+    let open = |options: &mut OpenOptions, flags| {
         AxResult::Ok(Arc::new(File::new(
             options.open(&cx, "/dev/console")?.into_file()?,
+            flags,
         )))
     };
 
-    let tty_in = open(OpenOptions::new().read(true).write(false))?;
-    let tty_out = open(OpenOptions::new().read(false).write(true))?;
+    let tty_in = open(OpenOptions::new().read(true).write(false), O_RDONLY as _)?;
+    let tty_out = open(OpenOptions::new().read(false).write(true), O_WRONLY as _)?;
     fd_table
         .add(FileDescriptor {
             inner: tty_in,

@@ -28,7 +28,6 @@
 //! [cargo test]: https://doc.rust-lang.org/cargo/guide/tests.html
 
 #![no_std]
-#![feature(doc_cfg)]
 
 #[allow(unused_imports)]
 #[macro_use]
@@ -90,7 +89,9 @@ pub mod power {
 
 /// Trap handling.
 pub mod trap {
-    pub use ax_cpu::trap::{PageFaultFlags, irq_handler, page_fault_handler};
+    #[cfg(target_arch = "x86_64")]
+    pub use ax_cpu::trap::debug_handler;
+    pub use ax_cpu::trap::{PageFaultFlags, breakpoint_handler, irq_handler, page_fault_handler};
 }
 
 /// CPU register states for context switching.

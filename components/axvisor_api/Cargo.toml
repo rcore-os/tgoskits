@@ -10,7 +10,7 @@ license = "Apache-2.0"
 
 [package]
 name = "axvisor_api"
-version = "0.5.0"
+version = "0.5.6"
 description = "Basic API for components of the Hypervisor on ArceOS"
 documentation = "https://docs.rs/axvisor_api"
 readme = "README.md"
@@ -24,17 +24,17 @@ license.workspace = true
 [dependencies]
 # === Core Components ===
 # Procedural macro definitions
-axvisor_api_proc = { path = "axvisor_api_proc", version = "0.5.0"}
+axvisor_api_proc = { path = "axvisor_api_proc", version = "0.5"}
 
 # === Third-party Libraries ===
 # Address space abstraction
-axaddrspace = "0.5.0"
+axaddrspace = "0.5"
 # Interface definition tools
-ax-crate-interface = "0.5.0"
+ax-crate-interface = "0.5"
 # Physical/virtual address types
-ax-memory-addr = "0.6.1"
+ax-memory-addr = "0.6"
 # CPU mask
-ax-cpumask = "0.3.0"
+ax-cpumask = "0.3"
 
 
 [package.metadata.docs.rs]

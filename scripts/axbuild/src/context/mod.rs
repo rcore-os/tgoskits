@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use ostool::{
     Tool, ToolConfig,
-    board::RunBoardArgs,
+    board::{RunBoardOptions, config::BoardRunConfig},
     build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
+    run::{qemu::QemuConfig, uboot::UbootConfig},
 };
 
 mod arch;
@@ -25,8 +26,8 @@ pub use types::{
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
     AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_ARCH, DEFAULT_ARCEOS_TARGET,
     DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET,
-    QemuRunConfig, ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest,
-    STARRY_PACKAGE, STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
+    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
+    STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
@@ -63,6 +64,10 @@ impl AppContext {
         &self.root
     }
 
+    pub(crate) fn tool_mut(&mut self) -> &mut Tool {
+        &mut self.tool
+    }
+
     pub(crate) fn axvisor_dir(&mut self) -> anyhow::Result<&Path> {
         if self.axvisor_dir.is_none() {
             let axvisor_dir = workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)?;
@@ -89,20 +94,17 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        mut qemu: QemuRunConfig,
+        qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
-        qemu.default_args.to_bin.get_or_insert(cargo.to_bin);
         self.tool
             .cargo_run(
                 &cargo,
                 &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
-                    qemu_config: qemu.qemu_config,
+                    qemu,
                     debug: self.debug,
                     dtb_dump: false,
-                    default_args: qemu.default_args,
-                    append_args: qemu.append_args,
-                    override_args: qemu.override_args,
+                    show_output: true,
                 })),
             )
             .await
@@ -112,13 +114,16 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        uboot_config: Option<PathBuf>,
+        uboot: Option<UbootConfig>,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         self.tool
             .cargo_run(
                 &cargo,
-                &CargoRunnerKind::Uboot(CargoUbootRunnerArgs { uboot_config }),
+                &CargoRunnerKind::Uboot(Box::new(CargoUbootRunnerArgs {
+                    uboot,
+                    show_output: true,
+                })),
             )
             .await
     }
@@ -127,10 +132,13 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        board_args: RunBoardArgs,
+        board_config: BoardRunConfig,
+        options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
-        self.tool.cargo_run_board(&cargo, board_args).await
+        self.tool
+            .cargo_run_board(&cargo, &board_config, options)
+            .await
     }
 
     pub(crate) fn set_debug_mode(&mut self, debug: bool) -> anyhow::Result<()> {
@@ -144,16 +152,15 @@ impl AppContext {
         })?;
         self.debug = debug;
 
-        if let Some(path) = self.build_config_path.clone() {
-            self.tool.ctx_mut().build_config_path = Some(path);
-        }
+        self.tool
+            .set_build_config_path(self.build_config_path.clone());
 
         Ok(())
     }
 
     fn set_build_config_path(&mut self, path: PathBuf) {
         self.build_config_path = Some(path.clone());
-        self.tool.ctx_mut().build_config_path = Some(path);
+        self.tool.set_build_config_path(Some(path));
     }
 }
 

@@ -1,12 +1,12 @@
 [package]
 name = "fxmac_rs"
-version = "0.4.1"
+version = "0.4.8"
 edition = "2021"
 authors = ["xiaoluoyuan@163.com"]
 description = "FXMAC Ethernet driver in Rust for PhytiumPi (Phytium Pi) board, supporting DMA-based packet transmission and reception."
 documentation = "https://docs.rs/fxmac_rs"
-repository = "https://github.com/elliott10/fxmac_rs"
-homepage = "https://github.com/elliott10/fxmac_rs"
+repository = "https://github.com/Starry-OS/fxmac_rs"
+homepage = "https://github.com/Starry-OS/fxmac_rs"
 readme = "README.md"
 keywords = ["ethernet", "driver", "phytium", "aarch64", "no_std"]
 categories = ["embedded", "hardware-support", "no-std"]
@@ -17,7 +17,7 @@ debug = []
 
 [dependencies]
 log = "0.4"
-ax-crate-interface = "0.5.0"
+ax-crate-interface = "0.5"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "10"

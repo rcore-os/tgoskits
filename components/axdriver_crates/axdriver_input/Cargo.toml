@@ -1,7 +1,7 @@
 [package]
 name = "ax-driver-input"
 edition.workspace = true
-version.workspace = true
+version = "0.3.11"
 repository.workspace = true
 authors.workspace = true
 description = "Common traits and types for input device drivers"
@@ -11,5 +11,5 @@ readme = "README.md"
 license.workspace = true
 
 [dependencies]
-ax-driver-base = { version = "0.3.4" }
+ax-driver-base = { version = "0.3" }
 strum = { version = "0.27.2", default-features = false, features = ["derive"] }

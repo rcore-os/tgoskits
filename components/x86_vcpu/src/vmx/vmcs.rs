@@ -17,21 +17,22 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::upper_case_acronyms)]
 
+use ax_errno::{AxResult, ax_err};
+use ax_page_table_entry::MappingFlags;
+use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
 use bit_field::BitField;
 use x86::bits64::vmx;
 
-use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
-use ax_errno::{AxResult, ax_err};
-use ax_page_table_entry::MappingFlags;
-
-use super::as_axerr;
-use super::definitions::{VmxExitReason, VmxInstructionError, VmxInterruptionType};
+use super::{
+    as_axerr,
+    definitions::{VmxExitReason, VmxInstructionError, VmxInterruptionType},
+};
 use crate::msr::Msr;
 
 // HYGIENE: These macros are only used in this file, so we can use `as_axerr` directly.
 
 macro_rules! vmcs_read {
-    ($field_enum: ident, u64) => {
+    ($field_enum:ident,u64) => {
         impl $field_enum {
             pub fn read(self) -> AxResult<u64> {
                 #[cfg(target_pointer_width = "64")]
@@ -47,7 +48,7 @@ macro_rules! vmcs_read {
             }
         }
     };
-    ($field_enum: ident, $ux: ty) => {
+    ($field_enum:ident, $ux:ty) => {
         impl $field_enum {
             pub fn read(self) -> AxResult<$ux> {
                 unsafe { vmx::vmread(self as u32).map(|v| v as $ux).map_err(as_axerr) }
@@ -57,7 +58,7 @@ macro_rules! vmcs_read {
 }
 
 macro_rules! vmcs_write {
-    ($field_enum: ident, u64) => {
+    ($field_enum:ident,u64) => {
         impl $field_enum {
             pub fn write(self, value: u64) -> AxResult {
                 #[cfg(target_pointer_width = "64")]
@@ -74,7 +75,7 @@ macro_rules! vmcs_write {
             }
         }
     };
-    ($field_enum: ident, $ux: ty) => {
+    ($field_enum:ident, $ux:ty) => {
         impl $field_enum {
             pub fn write(self, value: $ux) -> AxResult {
                 unsafe { vmx::vmwrite(self as u32, value as u64).map_err(as_axerr) }
@@ -100,7 +101,7 @@ macro_rules! define_vmcs_fields_rw {
 #[derive(Clone, Copy, Debug)]
 pub enum VmcsControl16 {
     /// Virtual-processor identifier (VPID).
-    VPID = 0x0,
+    VPID       = 0x0,
     /// Posted-interrupt notification vector.
     POSTED_INTERRUPT_NOTIFICATION_VECTOR = 0x2,
     /// EPTP index.
@@ -112,11 +113,11 @@ define_vmcs_fields_rw!(VmcsControl16, u16);
 #[derive(Clone, Copy, Debug)]
 pub enum VmcsControl64 {
     /// Address of I/O bitmap A (full).
-    IO_BITMAP_A_ADDR = 0x2000,
+    IO_BITMAP_A_ADDR     = 0x2000,
     /// Address of I/O bitmap B (full).
-    IO_BITMAP_B_ADDR = 0x2002,
+    IO_BITMAP_B_ADDR     = 0x2002,
     /// Address of MSR bitmaps (full).
-    MSR_BITMAPS_ADDR = 0x2004,
+    MSR_BITMAPS_ADDR     = 0x2004,
     /// VM-exit MSR-store address (full).
     VMEXIT_MSR_STORE_ADDR = 0x2006,
     /// VM-exit MSR-load address (full).
@@ -124,45 +125,45 @@ pub enum VmcsControl64 {
     /// VM-entry MSR-load address (full).
     VMENTRY_MSR_LOAD_ADDR = 0x200A,
     /// Executive-VMCS pointer (full).
-    EXECUTIVE_VMCS_PTR = 0x200C,
+    EXECUTIVE_VMCS_PTR   = 0x200C,
     /// PML address (full).
-    PML_ADDR = 0x200E,
+    PML_ADDR             = 0x200E,
     /// TSC offset (full).
-    TSC_OFFSET = 0x2010,
+    TSC_OFFSET           = 0x2010,
     /// Virtual-APIC address (full).
-    VIRT_APIC_ADDR = 0x2012,
+    VIRT_APIC_ADDR       = 0x2012,
     /// APIC-access address (full).
-    APIC_ACCESS_ADDR = 0x2014,
+    APIC_ACCESS_ADDR     = 0x2014,
     /// Posted-interrupt descriptor address (full).
     POSTED_INTERRUPT_DESC_ADDR = 0x2016,
     /// VM-function controls (full).
     VM_FUNCTION_CONTROLS = 0x2018,
     /// EPT pointer (full).
-    EPTP = 0x201A,
+    EPTP                 = 0x201A,
     /// EOI-exit bitmap 0 (full).
-    EOI_EXIT0 = 0x201C,
+    EOI_EXIT0            = 0x201C,
     /// EOI-exit bitmap 1 (full).
-    EOI_EXIT1 = 0x201E,
+    EOI_EXIT1            = 0x201E,
     /// EOI-exit bitmap 2 (full).
-    EOI_EXIT2 = 0x2020,
+    EOI_EXIT2            = 0x2020,
     /// EOI-exit bitmap 3 (full).
-    EOI_EXIT3 = 0x2022,
+    EOI_EXIT3            = 0x2022,
     /// EPTP-list address (full).
-    EPTP_LIST_ADDR = 0x2024,
+    EPTP_LIST_ADDR       = 0x2024,
     /// VMREAD-bitmap address (full).
-    VMREAD_BITMAP_ADDR = 0x2026,
+    VMREAD_BITMAP_ADDR   = 0x2026,
     /// VMWRITE-bitmap address (full).
-    VMWRITE_BITMAP_ADDR = 0x2028,
+    VMWRITE_BITMAP_ADDR  = 0x2028,
     /// Virtualization-exception information address (full).
     VIRT_EXCEPTION_INFO_ADDR = 0x202A,
     /// XSS-exiting bitmap (full).
-    XSS_EXITING_BITMAP = 0x202C,
+    XSS_EXITING_BITMAP   = 0x202C,
     /// ENCLS-exiting bitmap (full).
     ENCLS_EXITING_BITMAP = 0x202E,
     /// Sub-page-permission-table pointer (full).
     SUBPAGE_PERM_TABLE_PTR = 0x2030,
     /// TSC multiplier (full).
-    TSC_MULTIPLIER = 0x2032,
+    TSC_MULTIPLIER       = 0x2032,
 }
 define_vmcs_fields_rw!(VmcsControl64, u64);
 
@@ -182,7 +183,7 @@ pub enum VmcsControl32 {
     /// CR3-target count.
     CR3_TARGET_COUNT = 0x400A,
     /// VM-exit controls.
-    VMEXIT_CONTROLS = 0x400C,
+    VMEXIT_CONTROLS  = 0x400C,
     /// VM-exit MSR-store count.
     VMEXIT_MSR_STORE_COUNT = 0x400E,
     /// VM-exit MSR-load count.
@@ -198,13 +199,13 @@ pub enum VmcsControl32 {
     /// VM-entry instruction length.
     VMENTRY_INSTRUCTION_LEN = 0x401A,
     /// TPR threshold.
-    TPR_THRESHOLD = 0x401C,
+    TPR_THRESHOLD    = 0x401C,
     /// Secondary processor-based VM-execution controls.
     SECONDARY_PROCBASED_EXEC_CONTROLS = 0x401E,
     /// PLE_Gap.
-    PLE_GAP = 0x4020,
+    PLE_GAP          = 0x4020,
     /// PLE_Window.
-    PLE_WINDOW = 0x4022,
+    PLE_WINDOW       = 0x4022,
 }
 define_vmcs_fields_rw!(VmcsControl32, u32);
 
@@ -216,42 +217,42 @@ pub enum VmcsControlNW {
     /// CR4 guest/host mask.
     CR4_GUEST_HOST_MASK = 0x6002,
     /// CR0 read shadow.
-    CR0_READ_SHADOW = 0x6004,
+    CR0_READ_SHADOW     = 0x6004,
     /// CR4 read shadow.
-    CR4_READ_SHADOW = 0x6006,
+    CR4_READ_SHADOW     = 0x6006,
     /// CR3-target value 0.
-    CR3_TARGET_VALUE0 = 0x6008,
+    CR3_TARGET_VALUE0   = 0x6008,
     /// CR3-target value 1.
-    CR3_TARGET_VALUE1 = 0x600A,
+    CR3_TARGET_VALUE1   = 0x600A,
     /// CR3-target value 2.
-    CR3_TARGET_VALUE2 = 0x600C,
+    CR3_TARGET_VALUE2   = 0x600C,
     /// CR3-target value 3.
-    CR3_TARGET_VALUE3 = 0x600E,
+    CR3_TARGET_VALUE3   = 0x600E,
 }
 define_vmcs_fields_rw!(VmcsControlNW, usize);
 
 /// 16-Bit Guest-State Fields. (SDM Vol. 3D, Appendix B.1.2)
 pub enum VmcsGuest16 {
     /// Guest ES selector.
-    ES_SELECTOR = 0x800,
+    ES_SELECTOR      = 0x800,
     /// Guest CS selector.
-    CS_SELECTOR = 0x802,
+    CS_SELECTOR      = 0x802,
     /// Guest SS selector.
-    SS_SELECTOR = 0x804,
+    SS_SELECTOR      = 0x804,
     /// Guest DS selector.
-    DS_SELECTOR = 0x806,
+    DS_SELECTOR      = 0x806,
     /// Guest FS selector.
-    FS_SELECTOR = 0x808,
+    FS_SELECTOR      = 0x808,
     /// Guest GS selector.
-    GS_SELECTOR = 0x80a,
+    GS_SELECTOR      = 0x80a,
     /// Guest LDTR selector.
-    LDTR_SELECTOR = 0x80c,
+    LDTR_SELECTOR    = 0x80c,
     /// Guest TR selector.
-    TR_SELECTOR = 0x80e,
+    TR_SELECTOR      = 0x80e,
     /// Guest interrupt status.
     INTERRUPT_STATUS = 0x810,
     /// PML index.
-    PML_INDEX = 0x812,
+    PML_INDEX        = 0x812,
 }
 define_vmcs_fields_rw!(VmcsGuest16, u16);
 
@@ -259,25 +260,25 @@ define_vmcs_fields_rw!(VmcsGuest16, u16);
 #[derive(Clone, Copy, Debug)]
 pub enum VmcsGuest64 {
     /// VMCS link pointer (full).
-    LINK_PTR = 0x2800,
+    LINK_PTR      = 0x2800,
     /// Guest IA32_DEBUGCTL (full).
     IA32_DEBUGCTL = 0x2802,
     /// Guest IA32_PAT (full).
-    IA32_PAT = 0x2804,
+    IA32_PAT      = 0x2804,
     /// Guest IA32_EFER (full).
-    IA32_EFER = 0x2806,
+    IA32_EFER     = 0x2806,
     /// Guest IA32_PERF_GLOBAL_CTRL (full).
     IA32_PERF_GLOBAL_CTRL = 0x2808,
     /// Guest PDPTE0 (full).
-    PDPTE0 = 0x280A,
+    PDPTE0        = 0x280A,
     /// Guest PDPTE1 (full).
-    PDPTE1 = 0x280C,
+    PDPTE1        = 0x280C,
     /// Guest PDPTE2 (full).
-    PDPTE2 = 0x280E,
+    PDPTE2        = 0x280E,
     /// Guest PDPTE3 (full).
-    PDPTE3 = 0x2810,
+    PDPTE3        = 0x2810,
     /// Guest IA32_BNDCFGS (full).
-    IA32_BNDCFGS = 0x2812,
+    IA32_BNDCFGS  = 0x2812,
     /// Guest IA32_RTIT_CTL (full).
     IA32_RTIT_CTL = 0x2814,
 }
@@ -287,49 +288,49 @@ define_vmcs_fields_rw!(VmcsGuest64, u64);
 #[derive(Clone, Copy, Debug)]
 pub enum VmcsGuest32 {
     /// Guest ES limit.
-    ES_LIMIT = 0x4800,
+    ES_LIMIT           = 0x4800,
     /// Guest CS limit.
-    CS_LIMIT = 0x4802,
+    CS_LIMIT           = 0x4802,
     /// Guest SS limit.
-    SS_LIMIT = 0x4804,
+    SS_LIMIT           = 0x4804,
     /// Guest DS limit.
-    DS_LIMIT = 0x4806,
+    DS_LIMIT           = 0x4806,
     /// Guest FS limit.
-    FS_LIMIT = 0x4808,
+    FS_LIMIT           = 0x4808,
     /// Guest GS limit.
-    GS_LIMIT = 0x480A,
+    GS_LIMIT           = 0x480A,
     /// Guest LDTR limit.
-    LDTR_LIMIT = 0x480C,
+    LDTR_LIMIT         = 0x480C,
     /// Guest TR limit.
-    TR_LIMIT = 0x480E,
+    TR_LIMIT           = 0x480E,
     /// Guest GDTR limit.
-    GDTR_LIMIT = 0x4810,
+    GDTR_LIMIT         = 0x4810,
     /// Guest IDTR limit.
-    IDTR_LIMIT = 0x4812,
+    IDTR_LIMIT         = 0x4812,
     /// Guest ES access rights.
-    ES_ACCESS_RIGHTS = 0x4814,
+    ES_ACCESS_RIGHTS   = 0x4814,
     /// Guest CS access rights.
-    CS_ACCESS_RIGHTS = 0x4816,
+    CS_ACCESS_RIGHTS   = 0x4816,
     /// Guest SS access rights.
-    SS_ACCESS_RIGHTS = 0x4818,
+    SS_ACCESS_RIGHTS   = 0x4818,
     /// Guest DS access rights.
-    DS_ACCESS_RIGHTS = 0x481A,
+    DS_ACCESS_RIGHTS   = 0x481A,
     /// Guest FS access rights.
-    FS_ACCESS_RIGHTS = 0x481C,
+    FS_ACCESS_RIGHTS   = 0x481C,
     /// Guest GS access rights.
-    GS_ACCESS_RIGHTS = 0x481E,
+    GS_ACCESS_RIGHTS   = 0x481E,
     /// Guest LDTR access rights.
     LDTR_ACCESS_RIGHTS = 0x4820,
     /// Guest TR access rights.
-    TR_ACCESS_RIGHTS = 0x4822,
+    TR_ACCESS_RIGHTS   = 0x4822,
     /// Guest interruptibility state.
     INTERRUPTIBILITY_STATE = 0x4824,
     /// Guest activity state.
-    ACTIVITY_STATE = 0x4826,
+    ACTIVITY_STATE     = 0x4826,
     /// Guest SMBASE.
-    SMBASE = 0x4828,
+    SMBASE             = 0x4828,
     /// Guest IA32_SYSENTER_CS.
-    IA32_SYSENTER_CS = 0x482A,
+    IA32_SYSENTER_CS   = 0x482A,
     /// VMX-preemption timer value.
     VMX_PREEMPTION_TIMER_VALUE = 0x482E,
 }
@@ -339,39 +340,39 @@ define_vmcs_fields_rw!(VmcsGuest32, u32);
 #[derive(Clone, Copy, Debug)]
 pub enum VmcsGuestNW {
     /// Guest CR0.
-    CR0 = 0x6800,
+    CR0               = 0x6800,
     /// Guest CR3.
-    CR3 = 0x6802,
+    CR3               = 0x6802,
     /// Guest CR4.
-    CR4 = 0x6804,
+    CR4               = 0x6804,
     /// Guest ES base.
-    ES_BASE = 0x6806,
+    ES_BASE           = 0x6806,
     /// Guest CS base.
-    CS_BASE = 0x6808,
+    CS_BASE           = 0x6808,
     /// Guest SS base.
-    SS_BASE = 0x680A,
+    SS_BASE           = 0x680A,
     /// Guest DS base.
-    DS_BASE = 0x680C,
+    DS_BASE           = 0x680C,
     /// Guest FS base.
-    FS_BASE = 0x680E,
+    FS_BASE           = 0x680E,
     /// Guest GS base.
-    GS_BASE = 0x6810,
+    GS_BASE           = 0x6810,
     /// Guest LDTR base.
-    LDTR_BASE = 0x6812,
+    LDTR_BASE         = 0x6812,
     /// Guest TR base.
-    TR_BASE = 0x6814,
+    TR_BASE           = 0x6814,
     /// Guest GDTR base.
-    GDTR_BASE = 0x6816,
+    GDTR_BASE         = 0x6816,
     /// Guest IDTR base.
-    IDTR_BASE = 0x6818,
+    IDTR_BASE         = 0x6818,
     /// Guest DR7.
-    DR7 = 0x681A,
+    DR7               = 0x681A,
     /// Guest RSP.
-    RSP = 0x681C,
+    RSP               = 0x681C,
     /// Guest RIP.
-    RIP = 0x681E,
+    RIP               = 0x681E,
     /// Guest RFLAGS.
-    RFLAGS = 0x6820,
+    RFLAGS            = 0x6820,
     /// Guest pending debug exceptions.
     PENDING_DBG_EXCEPTIONS = 0x6822,
     /// Guest IA32_SYSENTER_ESP.
@@ -405,7 +406,7 @@ define_vmcs_fields_rw!(VmcsHost16, u16);
 #[derive(Clone, Copy, Debug)]
 pub enum VmcsHost64 {
     /// Host IA32_PAT (full).
-    IA32_PAT = 0x2C00,
+    IA32_PAT  = 0x2C00,
     /// Host IA32_EFER (full).
     IA32_EFER = 0x2C02,
     /// Host IA32_PERF_GLOBAL_CTRL (full).
@@ -425,29 +426,29 @@ define_vmcs_fields_rw!(VmcsHost32, u32);
 #[derive(Clone, Copy, Debug)]
 pub enum VmcsHostNW {
     /// Host CR0.
-    CR0 = 0x6C00,
+    CR0               = 0x6C00,
     /// Host CR3.
-    CR3 = 0x6C02,
+    CR3               = 0x6C02,
     /// Host CR4.
-    CR4 = 0x6C04,
+    CR4               = 0x6C04,
     /// Host FS base.
-    FS_BASE = 0x6C06,
+    FS_BASE           = 0x6C06,
     /// Host GS base.
-    GS_BASE = 0x6C08,
+    GS_BASE           = 0x6C08,
     /// Host TR base.
-    TR_BASE = 0x6C0A,
+    TR_BASE           = 0x6C0A,
     /// Host GDTR base.
-    GDTR_BASE = 0x6C0C,
+    GDTR_BASE         = 0x6C0C,
     /// Host IDTR base.
-    IDTR_BASE = 0x6C0E,
+    IDTR_BASE         = 0x6C0E,
     /// Host IA32_SYSENTER_ESP.
     IA32_SYSENTER_ESP = 0x6C10,
     /// Host IA32_SYSENTER_EIP.
     IA32_SYSENTER_EIP = 0x6C12,
     /// Host RSP.
-    RSP = 0x6C14,
+    RSP               = 0x6C14,
     /// Host RIP.
-    RIP = 0x6C16,
+    RIP               = 0x6C16,
 }
 define_vmcs_fields_rw!(VmcsHostNW, usize);
 
@@ -465,13 +466,13 @@ pub enum VmcsReadOnly32 {
     /// VM-instruction error.
     VM_INSTRUCTION_ERROR = 0x4400,
     /// Exit reason.
-    EXIT_REASON = 0x4402,
+    EXIT_REASON          = 0x4402,
     /// VM-exit interruption information.
     VMEXIT_INTERRUPTION_INFO = 0x4404,
     /// VM-exit interruption error code.
     VMEXIT_INTERRUPTION_ERR_CODE = 0x4406,
     /// IDT-vectoring information field.
-    IDT_VECTORING_INFO = 0x4408,
+    IDT_VECTORING_INFO   = 0x4408,
     /// IDT-vectoring error code.
     IDT_VECTORING_ERR_CODE = 0x440A,
     /// VM-exit instruction length.
@@ -487,15 +488,15 @@ pub enum VmcsReadOnlyNW {
     /// Exit qualification.
     EXIT_QUALIFICATION = 0x6400,
     /// I/O RCX.
-    IO_RCX = 0x6402,
+    IO_RCX             = 0x6402,
     /// I/O RSI.
-    IO_RSI = 0x6404,
+    IO_RSI             = 0x6404,
     /// I/O RDI.
-    IO_RDI = 0x6406,
+    IO_RDI             = 0x6406,
     /// I/O RIP.
-    IO_RIP = 0x6408,
+    IO_RIP             = 0x6408,
     /// Guest-linear address.
-    GUEST_LINEAR_ADDR = 0x640A,
+    GUEST_LINEAR_ADDR  = 0x640A,
 }
 define_vmcs_fields_ro!(VmcsReadOnlyNW, usize);
 
@@ -599,15 +600,15 @@ pub struct CrAccessInfo {
 #[derive(Debug)]
 pub enum ApicAccessExitType {
     /// Linear access for data read.
-    LinearDataRead = 0,
+    LinearDataRead      = 0,
     /// Linear access for data write.
-    LinearDataWrite = 1,
+    LinearDataWrite     = 1,
     /// Linear access for instruction fetch.
     LinearInstructionFetch = 2,
     /// Linear access for event delivery.
     LinearEventDelivery = 3,
     /// Linear access for monitoring.
-    LinearMonitoring = 4,
+    LinearMonitoring    = 4,
     /// Guest-physical access for event delivery.
     GuestPhysicalEventDelivery = 10,
     /// Guest-physical access for monitoring.
@@ -646,8 +647,9 @@ pub struct ApicAccessExitInfo {
 }
 
 pub mod controls {
-    pub use x86::vmx::vmcs::control::{EntryControls, ExitControls};
-    pub use x86::vmx::vmcs::control::{PinbasedControls, PrimaryControls, SecondaryControls};
+    pub use x86::vmx::vmcs::control::{
+        EntryControls, ExitControls, PinbasedControls, PrimaryControls, SecondaryControls,
+    };
 }
 
 pub fn set_control(

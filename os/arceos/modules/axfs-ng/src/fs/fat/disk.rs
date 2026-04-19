@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec};
 use core::mem;
 
-use ax_driver::prelude::*;
+use ax_driver::{AxBlockDevice, PartitionBlockDevice, PartitionRegion, prelude::*};
 
 fn take<'a>(buf: &mut &'a [u8], cnt: usize) -> &'a [u8] {
     let (first, rem) = buf.split_at(cnt);
@@ -18,7 +18,7 @@ fn take_mut<'a>(buf: &mut &'a mut [u8], cnt: usize) -> &'a mut [u8] {
 
 /// A disk device with a cursor.
 pub struct SeekableDisk {
-    dev: AxBlockDevice,
+    dev: PartitionBlockDevice<AxBlockDevice>,
 
     block_id: u64,
     offset: usize,
@@ -33,14 +33,14 @@ pub struct SeekableDisk {
 }
 
 impl SeekableDisk {
-    /// Create a new disk.
-    pub fn new(dev: AxBlockDevice) -> Self {
+    pub fn new(dev: AxBlockDevice, region: PartitionRegion) -> Self {
         assert!(dev.block_size().is_power_of_two());
-        let block_size_log2 = dev.block_size().trailing_zeros() as u8;
-        let read_buffer = vec![0u8; dev.block_size()].into_boxed_slice();
-        let write_buffer = vec![0u8; dev.block_size()].into_boxed_slice();
+        let block_size = dev.block_size();
+        let block_size_log2 = block_size.trailing_zeros() as u8;
+        let read_buffer = vec![0u8; block_size].into_boxed_slice();
+        let write_buffer = vec![0u8; block_size].into_boxed_slice();
         Self {
-            dev,
+            dev: PartitionBlockDevice::new(dev, region),
             block_id: 0,
             offset: 0,
             block_size_log2,
@@ -112,7 +112,10 @@ impl SeekableDisk {
                 .read_block(self.block_id, take_mut(&mut buf, length))?;
             read += length;
 
-            self.block_id += blocks as u64;
+            self.block_id = self
+                .block_id
+                .checked_add(blocks as u64)
+                .ok_or(DevError::BadState)?;
         }
         if !buf.is_empty() {
             read += self.read_partial(&mut buf)?;
@@ -154,7 +157,10 @@ impl SeekableDisk {
                 .write_block(self.block_id, take(&mut buf, length))?;
             written += length;
 
-            self.block_id += blocks as u64;
+            self.block_id = self
+                .block_id
+                .checked_add(blocks as u64)
+                .ok_or(DevError::BadState)?;
         }
         if !buf.is_empty() {
             written += self.write_partial(&mut buf)?;

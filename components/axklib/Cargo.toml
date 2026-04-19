@@ -1,6 +1,6 @@
 [package]
 name = "axklib"
-version = "0.5.0"
+version = "0.5.6"
 edition = "2024"
 authors = ["周睿 <zrufo747@outlook.com>"]
 description = "Small kernel-helper abstractions used across the microkernel"
@@ -12,6 +12,6 @@ documentation = "https://arceos-hypervisor.github.io/axklib"
 license = "Apache-2.0"
 
 [dependencies]
-ax-errno = "0.4.2"
-ax-memory-addr = "0.6.1"
+ax-errno = "0.4"
+ax-memory-addr = "0.6"
 trait-ffi = "0.2"

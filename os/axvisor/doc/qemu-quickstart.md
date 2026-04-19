@@ -31,7 +31,7 @@ Install additional Cargo tools:
 
 ```bash
 cargo install cargo-binutils
-cargo +stable install ostool --version '^0.8'
+cargo +stable install ostool --version '^0.15'
 ```
 
 - `cargo-binutils`: provides `rust-objcopy`, `rust-objdump`, etc.
@@ -151,12 +151,12 @@ QEMU is not installed. Run the `apt install` command from Step 1.
 
 ### `Auto syncing from registry ... timed out`
 
-This usually indicates unstable access to GitHub Raw endpoints. `cargo axvisor image pull` now handles registry bootstrap internally: it prefers the default registry, follows the included registry when present, and falls back to the built-in fallback registry (`v0.0.22.toml`) when the default endpoint is unavailable.
+This usually indicates unstable access to GitHub Raw endpoints. `cargo axvisor image pull` now handles registry bootstrap internally: it prefers the default registry, follows the included registry when present, and falls back to the built-in fallback registry (`v0.0.25.toml`) when the default endpoint is unavailable.
 
 If your network is unstable for specific registry URLs, you can override the fallback registry:
 
 ```bash
-export AXVISOR_REGISTRY_FALLBACK_URL="https://raw.githubusercontent.com/arceos-hypervisor/axvisor-guest/refs/heads/main/registry/v0.0.22.toml"
+export AXVISOR_REGISTRY_FALLBACK_URL="https://raw.githubusercontent.com/arceos-hypervisor/axvisor-guest/refs/heads/main/registry/v0.0.25.toml"
 ./scripts/setup_qemu.sh arceos
 ```
 

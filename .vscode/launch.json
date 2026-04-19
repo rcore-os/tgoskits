@@ -18,7 +18,7 @@
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
-        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/arceos/examples/helloworld/src/main.rs --line 8",
+        "breakpoint set --file ${workspaceFolder}/os/arceos/examples/helloworld/src/main.rs --line 8",
         "continue"
       ],
       "sourceLanguages": [
@@ -42,10 +42,10 @@
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
-        // "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/components/axplat_crates/platforms/axplat-aarch64-qemu-virt/src/boot.rs --line 76",
+        // "breakpoint set --file ${workspaceFolder}/components/axplat_crates/platforms/axplat-aarch64-qemu-virt/src/boot.rs --line 76",
         "breakpoint set --name ax_plat::call_main",
-        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/arceos/modules/axruntime/src/lib.rs --line 141",
-        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/arceos/examples/helloworld/src/main.rs --line 8"
+        "breakpoint set --file ${workspaceFolder}/os/arceos/modules/axruntime/src/lib.rs --line 141",
+        "breakpoint set --file ${workspaceFolder}/os/arceos/examples/helloworld/src/main.rs --line 8"
       ],
       "sourceLanguages": [
         "rust"
@@ -69,7 +69,7 @@
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
-        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/axvisor/src/main.rs --line 42",
+        "breakpoint set --file ${workspaceFolder}/os/axvisor/src/main.rs --line 42",
         "continue"
       ],
       "sourceLanguages": [
@@ -94,8 +94,8 @@
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
-        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/platform/axplat-dyn/src/boot.rs --line 8",
-        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/axvisor/src/main.rs --line 42"
+        "breakpoint set --file ${workspaceFolder}/platform/axplat-dyn/src/boot.rs --line 8",
+        "breakpoint set --file ${workspaceFolder}/os/axvisor/src/main.rs --line 42"
       ],
       "sourceLanguages": [
         "rust"
@@ -118,7 +118,7 @@
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
-        "breakpoint set --hardware true --file /home/zcs/WORKSPACE/tgoskits/os/StarryOS/starryos/src/main.rs --line 12",
+        "breakpoint set --hardware true --file ${workspaceFolder}/os/StarryOS/starryos/src/main.rs --line 12",
         "continue"
       ],
       "sourceLanguages": [
@@ -142,11 +142,11 @@
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
-        // "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/components/axplat_crates/platforms/axplat-aarch64-qemu-virt/src/boot.rs --line 76",
+        // "breakpoint set --file ${workspaceFolder}/components/axplat_crates/platforms/axplat-aarch64-qemu-virt/src/boot.rs --line 76",
         "breakpoint set --name ax_plat::call_main",
-        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/arceos/modules/axruntime/src/lib.rs --line 141",
+        "breakpoint set --file ${workspaceFolder}/os/arceos/modules/axruntime/src/lib.rs --line 141",
         "breakpoint set --name starry_kernel::entry::init",
-        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/StarryOS/starryos/src/main.rs --line 12"
+        "breakpoint set --file ${workspaceFolder}/os/StarryOS/starryos/src/main.rs --line 12"
       ],
       "sourceLanguages": [
         "rust"

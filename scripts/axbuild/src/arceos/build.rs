@@ -343,6 +343,10 @@ pub(crate) fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<
         })?;
     }
 
+    if let Some(smp) = request.smp {
+        build_info.max_cpu_num = Some(smp);
+    }
+
     Ok(build_info)
 }
 
@@ -778,6 +782,7 @@ mod tests {
             },
             target: target.to_string(),
             plat_dyn,
+            smp: None,
             debug: false,
             build_info_path,
             qemu_config: None,
@@ -1287,7 +1292,7 @@ AX_GW = "10.0.2.2"
     #[test]
     fn resolve_platform_package_ignores_unselected_axplat_dependency() {
         let package = resolve_platform_package(
-            "starryos-test",
+            "starryos",
             "riscv64gc-unknown-none-elf",
             &["qemu".to_string()],
         )

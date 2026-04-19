@@ -1,7 +1,7 @@
 [package]
 name = "ax-percpu"
 description = "Define and access per-CPU data structures"
-version.workspace = true
+version = "0.4.9"
 repository.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -33,8 +33,8 @@ custom-base = ["ax-percpu-macros/custom-base"]
 
 [dependencies]
 cfg-if = "1.0"
-ax-kernel-guard = { version = "0.3.3", optional = true }
-ax-percpu-macros = { path = "../percpu_macros", version = "0.4.3" }
+ax-kernel-guard = { version = "0.3", optional = true }
+ax-percpu-macros = { path = "../percpu_macros", version = "0.4" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

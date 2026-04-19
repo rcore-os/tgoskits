@@ -1,6 +1,6 @@
 [package]
 name = "rsext4"
-version = "0.3.0"
+version = "0.3.6"
 edition = "2024"
 description = "A lightweight ext4 file system."
 authors = ["Dirinkbottle <2909128143@qq.com>"]

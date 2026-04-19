@@ -8,7 +8,7 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use ax_task::current;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -19,7 +19,6 @@ use crate::{
     },
     mm::{UserPtr, vm_load_string},
     pseudofs::{Device, dev::tty},
-    syscall::sys::{sys_getegid, sys_geteuid},
     task::AsThread,
 };
 
@@ -98,7 +97,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     file = ax_fs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
-            Arc::new(File::new(file))
+            Arc::new(File::new(file, flags))
         }
         OpenResult::Dir(dir) => Arc::new(Directory::new(dir)),
     };
@@ -125,7 +124,8 @@ pub fn sys_openat(
 
     let mode = mode & !current().as_thread().proc_data.umask();
 
-    let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
+    let cred = current().as_thread().cred();
+    let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     with_fs(dirfd, |fs| options.open(fs, path))
         .and_then(|it| add_to_fd(it, flags as _))
         .map(|fd| fd as isize)
@@ -256,18 +256,9 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         F_GETFL => {
             let f = get_file_like(fd)?;
 
-            let mut ret = 0;
+            let mut ret = f.open_flags();
             if f.nonblocking() {
-                ret |= O_NONBLOCK;
-            }
-
-            let perm = NodePermission::from_bits_truncate(f.stat()?.mode as _);
-            if perm.contains(NodePermission::OWNER_WRITE) {
-                if perm.contains(NodePermission::OWNER_READ) {
-                    ret |= O_RDWR;
-                } else {
-                    ret |= O_WRONLY;
-                }
+                ret |= O_NONBLOCK as u32;
             }
 
             Ok(ret as _)

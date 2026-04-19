@@ -1,53 +1,331 @@
-use alloc::vec;
-use core::ffi::c_char;
+use alloc::{sync::Arc, vec, vec::Vec};
+use core::{ffi::c_char, mem::MaybeUninit};
 
 use ax_config::ARCH;
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
+use ax_task::current;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
     system::{new_utsname, sysinfo},
 };
-use starry_vm::{VmMutPtr, vm_write_slice};
+use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
-use crate::task::processes;
+use crate::task::{AsThread, processes};
+
+/// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
+/// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).
+const NOCHG: u32 = u32::MAX;
 
 pub fn sys_getuid() -> AxResult<isize> {
-    Ok(0)
+    let cred = current().as_thread().cred();
+    Ok(cred.uid as isize)
 }
 
 pub fn sys_geteuid() -> AxResult<isize> {
-    Ok(0)
+    let cred = current().as_thread().cred();
+    Ok(cred.euid as isize)
 }
 
 pub fn sys_getgid() -> AxResult<isize> {
-    Ok(0)
+    let cred = current().as_thread().cred();
+    Ok(cred.gid as isize)
 }
 
 pub fn sys_getegid() -> AxResult<isize> {
+    let cred = current().as_thread().cred();
+    Ok(cred.egid as isize)
+}
+
+pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> AxResult<isize> {
+    let cred = current().as_thread().cred();
+    ruid.vm_write(cred.uid)?;
+    euid.vm_write(cred.euid)?;
+    suid.vm_write(cred.suid)?;
     Ok(0)
 }
 
-pub fn sys_setuid(_uid: u32) -> AxResult<isize> {
-    debug!("sys_setuid <= uid: {_uid}");
+pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> AxResult<isize> {
+    let cred = current().as_thread().cred();
+    rgid.vm_write(cred.gid)?;
+    egid.vm_write(cred.egid)?;
+    sgid.vm_write(cred.sgid)?;
     Ok(0)
 }
 
-pub fn sys_setgid(_gid: u32) -> AxResult<isize> {
-    debug!("sys_setgid <= gid: {_gid}");
+// ── setresuid / setresgid ────────────────────────────────────────────
+
+pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
+    debug!("sys_setresuid <= ruid: {ruid}, euid: {euid}, suid: {suid}");
+    let thread = current();
+    let thread = thread.as_thread();
+    let old = thread.cred();
+    let mut new = (*old).clone();
+
+    if old.has_cap_setuid() {
+        // Privileged: arbitrary values allowed.
+        if ruid != NOCHG {
+            new.uid = ruid;
+        }
+        if euid != NOCHG {
+            new.euid = euid;
+        }
+        if suid != NOCHG {
+            new.suid = suid;
+        }
+    } else {
+        // Unprivileged: each new value must be one of {uid, euid, suid}.
+        let allowed = [old.uid, old.euid, old.suid];
+        if ruid != NOCHG {
+            if !allowed.contains(&ruid) {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.uid = ruid;
+        }
+        if euid != NOCHG {
+            if !allowed.contains(&euid) {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.euid = euid;
+        }
+        if suid != NOCHG {
+            if !allowed.contains(&suid) {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.suid = suid;
+        }
+    }
+
+    // fsuid always tracks euid.
+    new.fsuid = new.euid;
+    thread.set_cred(new);
+    Ok(0)
+}
+
+pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
+    debug!("sys_setresgid <= rgid: {rgid}, egid: {egid}, sgid: {sgid}");
+    let thread = current();
+    let thread = thread.as_thread();
+    let old = thread.cred();
+    let mut new = (*old).clone();
+
+    if old.has_cap_setgid() {
+        if rgid != NOCHG {
+            new.gid = rgid;
+        }
+        if egid != NOCHG {
+            new.egid = egid;
+        }
+        if sgid != NOCHG {
+            new.sgid = sgid;
+        }
+    } else {
+        let allowed = [old.gid, old.egid, old.sgid];
+        if rgid != NOCHG {
+            if !allowed.contains(&rgid) {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.gid = rgid;
+        }
+        if egid != NOCHG {
+            if !allowed.contains(&egid) {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.egid = egid;
+        }
+        if sgid != NOCHG {
+            if !allowed.contains(&sgid) {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.sgid = sgid;
+        }
+    }
+
+    new.fsgid = new.egid;
+    thread.set_cred(new);
+    Ok(0)
+}
+
+// ── setuid / setgid ─────────────────────────────────────────────────
+
+pub fn sys_setuid(uid: u32) -> AxResult<isize> {
+    debug!("sys_setuid <= uid: {uid}");
+    let thread = current();
+    let thread = thread.as_thread();
+    let old = thread.cred();
+    let mut new = (*old).clone();
+
+    if old.has_cap_setuid() {
+        // Privileged: sets uid, euid, suid ALL (irreversible).
+        new.uid = uid;
+        new.euid = uid;
+        new.suid = uid;
+    } else {
+        // Unprivileged: only sets euid, and only if uid matches uid or suid.
+        if uid != old.uid && uid != old.suid {
+            return Err(AxError::OperationNotPermitted);
+        }
+        new.euid = uid;
+    }
+
+    new.fsuid = new.euid;
+    thread.set_cred(new);
+    Ok(0)
+}
+
+pub fn sys_setgid(gid: u32) -> AxResult<isize> {
+    debug!("sys_setgid <= gid: {gid}");
+    let thread = current();
+    let thread = thread.as_thread();
+    let old = thread.cred();
+    let mut new = (*old).clone();
+
+    if old.has_cap_setgid() {
+        new.gid = gid;
+        new.egid = gid;
+        new.sgid = gid;
+    } else {
+        if gid != old.gid && gid != old.sgid {
+            return Err(AxError::OperationNotPermitted);
+        }
+        new.egid = gid;
+    }
+
+    new.fsgid = new.egid;
+    thread.set_cred(new);
+    Ok(0)
+}
+
+// ── setreuid / setregid ─────────────────────────────────────────────
+
+pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
+    debug!("sys_setreuid <= ruid: {ruid}, euid: {euid}");
+    let thread = current();
+    let thread = thread.as_thread();
+    let old = thread.cred();
+    let mut new = (*old).clone();
+
+    if old.has_cap_setuid() {
+        if ruid != NOCHG {
+            new.uid = ruid;
+        }
+        if euid != NOCHG {
+            new.euid = euid;
+        }
+    } else {
+        // ruid can only be set to current uid or euid.
+        if ruid != NOCHG {
+            if ruid != old.uid && ruid != old.euid {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.uid = ruid;
+        }
+        // euid can be set to current uid, euid, or suid.
+        if euid != NOCHG {
+            if euid != old.uid && euid != old.euid && euid != old.suid {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.euid = euid;
+        }
+    }
+
+    // Per setreuid(2) man page: "If the real user ID is set (i.e.,
+    // ruid is not -1) or the effective user ID is set to a value not
+    // equal to the previous real user ID, the saved set-user-ID will
+    // be set to the new effective user ID."
+    if ruid != NOCHG || (euid != NOCHG && new.euid != old.uid) {
+        new.suid = new.euid;
+    }
+
+    new.fsuid = new.euid;
+    thread.set_cred(new);
+    Ok(0)
+}
+
+pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
+    debug!("sys_setregid <= rgid: {rgid}, egid: {egid}");
+    let thread = current();
+    let thread = thread.as_thread();
+    let old = thread.cred();
+    let mut new = (*old).clone();
+
+    if old.has_cap_setgid() {
+        if rgid != NOCHG {
+            new.gid = rgid;
+        }
+        if egid != NOCHG {
+            new.egid = egid;
+        }
+    } else {
+        if rgid != NOCHG {
+            if rgid != old.gid && rgid != old.egid {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.gid = rgid;
+        }
+        if egid != NOCHG {
+            if egid != old.gid && egid != old.egid && egid != old.sgid {
+                return Err(AxError::OperationNotPermitted);
+            }
+            new.egid = egid;
+        }
+    }
+
+    if rgid != NOCHG || (egid != NOCHG && new.egid != old.gid) {
+        new.sgid = new.egid;
+    }
+
+    new.fsgid = new.egid;
+    thread.set_cred(new);
     Ok(0)
 }
 
 pub fn sys_getgroups(size: usize, list: *mut u32) -> AxResult<isize> {
     debug!("sys_getgroups <= size: {size}");
-    if size < 1 {
+    let cred = current().as_thread().cred();
+    let ngroups = cred.groups.len();
+    if size == 0 {
+        return Ok(ngroups as isize);
+    }
+    if size < ngroups {
         return Err(AxError::InvalidInput);
     }
-    vm_write_slice(list, &[0])?;
-    Ok(1)
+    if ngroups > 0 {
+        vm_write_slice(list, &cred.groups)?;
+    }
+    Ok(ngroups as isize)
 }
 
-pub fn sys_setgroups(_size: usize, _list: *const u32) -> AxResult<isize> {
+/// Linux limits supplementary groups to 65536 (`NGROUPS_MAX`).
+const NGROUPS_MAX: usize = 65536;
+
+pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
+    debug!("sys_setgroups <= size: {size}");
+    let thread = current();
+    let thread = thread.as_thread();
+    let old = thread.cred();
+
+    if !old.has_cap_setgid() {
+        return Err(AxError::OperationNotPermitted);
+    }
+    if size > NGROUPS_MAX {
+        return Err(AxError::InvalidInput);
+    }
+
+    let groups = if size > 0 {
+        let mut buf: Vec<MaybeUninit<u32>> = vec![MaybeUninit::uninit(); size];
+        vm_read_slice(list, &mut buf)?;
+        // SAFETY: vm_read_slice filled all elements with data from user space.
+        buf.into_iter()
+            .map(|v| unsafe { v.assume_init() })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut new = (*old).clone();
+    new.groups = Arc::from(groups.into_boxed_slice());
+    thread.set_cred(new);
     Ok(0)
 }
 

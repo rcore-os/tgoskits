@@ -52,11 +52,22 @@ impl AppContext {
         });
         let (arch, target) = resolve_arceos_arch_and_target(effective_arch, effective_target)?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
+        let smp = cli.smp.or(snapshot.smp);
+        let inherit_snapshot_runtime =
+            cli.package.is_none() && cli.arch.is_none() && cli.target.is_none();
         let runtime_paths = self.resolve_runtime_paths(
             qemu_config,
-            snapshot.qemu.qemu_config.as_ref(),
+            if inherit_snapshot_runtime {
+                snapshot.qemu.qemu_config.as_ref()
+            } else {
+                None
+            },
             uboot_config,
-            snapshot.uboot.uboot_config.as_ref(),
+            if inherit_snapshot_runtime {
+                snapshot.uboot.uboot_config.as_ref()
+            } else {
+                None
+            },
         );
         let build_info_path =
             crate::arceos::build::resolve_build_info_path(&package, &target, cli.config.clone())?;
@@ -66,6 +77,7 @@ impl AppContext {
             arch: arch.clone(),
             target: target.clone(),
             plat_dyn,
+            smp,
             debug: cli.debug,
             build_info_path,
             qemu_config: runtime_paths.qemu_config.clone(),
@@ -77,6 +89,7 @@ impl AppContext {
             arch: Some(arch),
             target: Some(target),
             plat_dyn,
+            smp,
             qemu: ArceosQemuSnapshot {
                 qemu_config: runtime_paths
                     .qemu_config
@@ -92,17 +105,6 @@ impl AppContext {
         };
 
         Ok((request, snapshot))
-    }
-
-    pub fn prepare_and_store_arceos_request(
-        &self,
-        cli: BuildCliArgs,
-        qemu_config: Option<PathBuf>,
-        uboot_config: Option<PathBuf>,
-    ) -> anyhow::Result<ResolvedBuildRequest> {
-        let (request, snapshot) = self.prepare_arceos_request(cli, qemu_config, uboot_config)?;
-        self.store_arceos_snapshot(&snapshot)?;
-        Ok(request)
     }
 
     pub fn store_arceos_snapshot(
@@ -134,12 +136,21 @@ impl AppContext {
             }
         });
         let (arch, target) = resolve_starry_arch_and_target(effective_arch, effective_target)?;
-        let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
+        let smp = cli.smp.or(snapshot.smp);
+        let inherit_snapshot_runtime = cli.arch.is_none() && cli.target.is_none();
         let runtime_paths = self.resolve_runtime_paths(
             qemu_config,
-            snapshot.qemu.qemu_config.as_ref(),
+            if inherit_snapshot_runtime {
+                snapshot.qemu.qemu_config.as_ref()
+            } else {
+                None
+            },
             uboot_config,
-            snapshot.uboot.uboot_config.as_ref(),
+            if inherit_snapshot_runtime {
+                snapshot.uboot.uboot_config.as_ref()
+            } else {
+                None
+            },
         );
         let build_info_path =
             crate::starry::build::resolve_build_info_path(&self.root, &target, cli.config)?;
@@ -148,9 +159,11 @@ impl AppContext {
             package: STARRY_PACKAGE.to_string(),
             arch: arch.clone(),
             target: target.clone(),
-            plat_dyn,
+            plat_dyn: None,
+            smp,
             debug: cli.debug,
             build_info_path,
+            build_info_override: None,
             qemu_config: runtime_paths.qemu_config.clone(),
             uboot_config: runtime_paths.uboot_config.clone(),
         };
@@ -158,7 +171,7 @@ impl AppContext {
         let snapshot = StarryCommandSnapshot {
             arch: Some(arch),
             target: Some(target),
-            plat_dyn,
+            smp,
             qemu: StarryQemuSnapshot {
                 qemu_config: runtime_paths
                     .qemu_config
@@ -174,17 +187,6 @@ impl AppContext {
         };
 
         Ok((request, snapshot))
-    }
-
-    pub fn prepare_and_store_starry_request(
-        &self,
-        cli: StarryCliArgs,
-        qemu_config: Option<PathBuf>,
-        uboot_config: Option<PathBuf>,
-    ) -> anyhow::Result<ResolvedStarryRequest> {
-        let (request, snapshot) = self.prepare_starry_request(cli, qemu_config, uboot_config)?;
-        self.store_starry_snapshot(&snapshot)?;
-        Ok(request)
     }
 
     pub fn store_starry_snapshot(
@@ -233,13 +235,26 @@ impl AppContext {
             resolved_config,
         )?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
+        let smp = cli.smp.or(snapshot.smp);
         let build_info_path =
             crate::axvisor::build::resolve_build_info_path(&axvisor_dir, &target, explicit_config)?;
+        let inherit_snapshot_runtime = cli.arch.is_none()
+            && cli.target.is_none()
+            && cli.config.is_none()
+            && cli.vmconfigs.is_empty();
         let runtime_paths = self.resolve_runtime_paths(
             qemu_config,
-            snapshot.qemu.qemu_config.as_ref(),
+            if inherit_snapshot_runtime {
+                snapshot.qemu.qemu_config.as_ref()
+            } else {
+                None
+            },
             uboot_config,
-            snapshot.uboot.uboot_config.as_ref(),
+            if inherit_snapshot_runtime {
+                snapshot.uboot.uboot_config.as_ref()
+            } else {
+                None
+            },
         );
         let vmconfigs = if cli.vmconfigs.is_empty() {
             self.resolve_workspace_paths(snapshot.vmconfigs.iter())
@@ -253,6 +268,7 @@ impl AppContext {
             arch: arch.clone(),
             target: target.clone(),
             plat_dyn,
+            smp,
             debug: cli.debug,
             build_info_path: build_info_path.clone(),
             qemu_config: runtime_paths.qemu_config.clone(),
@@ -264,6 +280,7 @@ impl AppContext {
             arch: Some(arch),
             target: Some(target),
             plat_dyn,
+            smp,
             config: Some(snapshot_path_value(&self.root, &build_info_path)),
             vmconfigs: vmconfigs
                 .iter()
@@ -284,17 +301,6 @@ impl AppContext {
         };
 
         Ok((request, snapshot))
-    }
-
-    pub fn prepare_and_store_axvisor_request(
-        &mut self,
-        cli: AxvisorCliArgs,
-        qemu_config: Option<PathBuf>,
-        uboot_config: Option<PathBuf>,
-    ) -> anyhow::Result<ResolvedAxvisorRequest> {
-        let (request, snapshot) = self.prepare_axvisor_request(cli, qemu_config, uboot_config)?;
-        self.store_axvisor_snapshot(&snapshot)?;
-        Ok(request)
     }
 
     pub fn store_axvisor_snapshot(

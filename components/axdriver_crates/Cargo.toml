@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.4"
+version = "0.3.10"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -25,14 +25,14 @@ categories = ["os", "no-std", "hardware-support"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-ax-driver-base = { path = "axdriver_base", version = "0.3.4" }
-ax-driver-block = { path = "axdriver_block", version = "0.3.4" }
-ax-driver-display = { path = "axdriver_display", version = "0.3.4" }
-ax-driver-input = { path = "axdriver_input", version = "0.3.4" }
-ax-driver-net = { path = "axdriver_net", version = "0.3.4" }
-ax-driver-pci = { path = "axdriver_pci", version = "0.3.4" }
-ax-driver-virtio = { path = "axdriver_virtio", version = "0.3.4" }
-ax-driver-vsock = { path = "axdriver_vsock", version = "0.3.4" }
+ax-driver-base = { path = "axdriver_base", version = "0.3" }
+ax-driver-block = { path = "axdriver_block", version = "0.3" }
+ax-driver-display = { path = "axdriver_display", version = "0.3" }
+ax-driver-input = { path = "axdriver_input", version = "0.3" }
+ax-driver-net = { path = "axdriver_net", version = "0.3" }
+ax-driver-pci = { path = "axdriver_pci", version = "0.3" }
+ax-driver-virtio = { path = "axdriver_virtio", version = "0.3" }
+ax-driver-vsock = { path = "axdriver_vsock", version = "0.3" }
 log = "0.4"
 
 # For local dev and dry-run: use local crates until published to crates.io

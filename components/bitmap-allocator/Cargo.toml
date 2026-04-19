@@ -1,6 +1,6 @@
 [package]
 name = "bitmap-allocator"
-version = "0.4.1"
+version = "0.4.4"
 authors = ["WangRunji <wangrunji0408@163.com>"]
 edition = "2021"
 readme = "README.md"

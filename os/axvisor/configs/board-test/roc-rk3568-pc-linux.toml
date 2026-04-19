@@ -5,3 +5,4 @@ shell_prefix = "root@firefly:~#"
 success_regex = [
   "(?m)^test pass\\s*$",
 ]
+timeout = 300

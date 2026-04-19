@@ -1,6 +1,6 @@
 [package]
 name = "ax-io"
-version = "0.5.0"
+version = "0.5.4"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -14,7 +14,7 @@ alloc = []
 default = []
 
 [dependencies]
-ax-errno = "0.4.2"
+ax-errno = "0.4"
 heapless = "0.9"
 memchr = { version = "2", default-features = false }
 

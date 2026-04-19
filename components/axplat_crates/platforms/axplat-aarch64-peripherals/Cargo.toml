@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-aarch64-peripherals"
-version.workspace = true
+version = "0.5.7"
 repository.workspace = true
 description = "ARM64 common peripheral drivers with `axplat` compatibility"
 keywords = ["arceos", "os", "hal", "peripheral", "aarch64"]
@@ -13,15 +13,15 @@ license.workspace = true
 irq = ["ax-plat/irq"]
 
 [dependencies]
-ax-kspin = "0.3.1"
+ax-kspin = "0.3"
 log = "0.4"
 spin = "0.10"
-ax-int-ratio = "0.3.2"
-ax-lazyinit = "0.4.2"
+ax-int-ratio = "0.3"
+ax-lazyinit = "0.4"
 aarch64-cpu = "11.0"
-ax-arm-pl011 = "0.3.0"
+ax-arm-pl011 = "0.3"
 arm-gic-driver = "0.16"
-ax-arm-pl031 = "0.4.1"
+ax-arm-pl031 = "0.4"
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
 

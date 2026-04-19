@@ -1,6 +1,6 @@
 [package]
 name = "ax-mm"
-version.workspace = true
+version = "0.5.11"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -18,5 +18,5 @@ ax-kspin.workspace = true
 ax-lazyinit.workspace = true
 log.workspace = true
 ax-memory-addr.workspace = true
-ax-memory-set = { version = "0.6.1", features = ["ax-errno"] }
+ax-memory-set = { version = "0.6", features = ["ax-errno"] }
 ax-page-table-multiarch = { workspace = true, optional = true }

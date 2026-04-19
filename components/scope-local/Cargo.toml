@@ -1,6 +1,6 @@
 [package]
 name = "scope-local"
-version = "0.3.2"
+version = "0.3.6"
 edition = "2024"
 description = "Scope local storage"
 authors = ["朝倉水希 <asakuramizu111@gmail.com>"]
@@ -9,9 +9,9 @@ repository = "https://github.com/Starry-OS/scope-local"
 license = "Apache-2.0"
 
 [dependencies]
-ax-percpu = "0.4.3"
+ax-percpu = "0.4"
 spin = { version = "0.10", default-features = false, features = ["lazy"] }
 
 [dev-dependencies]
 ctor = "0.6"
-ax-percpu = { version = "0.4.3", features = ["non-zero-vma"] }
+ax-percpu = { version = "0.4", features = ["non-zero-vma"] }

@@ -12,8 +12,8 @@ const NET_BUF_LEN: usize = 1526;
 ///
 /// `QS` is the VirtIO queue size.
 pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
-    rx_buffers: [Option<NetBufBox>; QS],
-    tx_buffers: [Option<NetBufBox>; QS],
+    rx_buffers: Vec<Option<NetBufBox>>,
+    tx_buffers: Vec<Option<NetBufBox>>,
     free_tx_bufs: Vec<NetBufBox>,
     buf_pool: Arc<NetBufPool>,
     inner: InnerDev<H, T, QS>,
@@ -27,11 +27,12 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
     /// Creates a new driver instance and initializes the device, or returns
     /// an error if any step fails.
     pub fn try_new(transport: T, irq: Option<usize>) -> DevResult<Self> {
-        // 0. Create a new driver instance.
-        const NONE_BUF: Option<NetBufBox> = None;
+        // Keep queue bookkeeping on the heap to avoid very large debug stack frames.
         let inner = InnerDev::new(transport).map_err(as_dev_err)?;
-        let rx_buffers = [NONE_BUF; QS];
-        let tx_buffers = [NONE_BUF; QS];
+        let mut rx_buffers = Vec::with_capacity(QS);
+        rx_buffers.resize_with(QS, || None);
+        let mut tx_buffers = Vec::with_capacity(QS);
+        tx_buffers.resize_with(QS, || None);
         let buf_pool = NetBufPool::new(2 * QS, NET_BUF_LEN)?;
         let free_tx_bufs = Vec::with_capacity(QS);
 

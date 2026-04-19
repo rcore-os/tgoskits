@@ -1,0 +1,10 @@
+[package]
+name = "arceos-ipi"
+version = "0.3.0"
+edition.workspace = true
+authors = ["Open Source Contributors"]
+description = "An ArceOS IPI callback delivery regression test"
+publish = false
+
+[dependencies]
+ax-std = { workspace = true, features = ["alloc", "multitask", "irq", "ipi"], optional = true }

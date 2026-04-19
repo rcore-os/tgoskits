@@ -1,8 +1,11 @@
 [package]
 edition = "2024"
-name = "ax-plat-riscv64-qemu-virt"
-version = "0.5.0"
+name = "riscv64-qemu-virt-hv"
+version = "0.5.4"
+description = "Hardware platform implementation for the RISC-V64 QEMU virt machine used by AxVisor"
 repository = "https://github.com/rcore-os/tgoskits"
+keywords = ["axvisor", "riscv64", "qemu", "virt", "hypervisor"]
+categories = ["embedded", "hardware-support", "no-std", "os"]
 license = "Apache-2.0"
 
 [features]
@@ -15,20 +18,20 @@ irq = ["ax-plat/irq"]
 rtc = ["riscv_goldfish"]
 smp = ["ax-plat/smp"]
 
-[dependencies]
-ax-kspin = "0.3.1"
-ax-lazyinit = "0.4.2"
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+ax-kspin = "0.3"
+ax-lazyinit = "0.4"
 log = "0.4"
 riscv = "0.14.0"
 riscv_goldfish = { version = "0.1", optional = true }
-ax-riscv-plic = "0.4.0"
+ax-riscv-plic = "0.4"
 sbi-rt = { version = "0.0.3", features = ["legacy"] }
 uart_16550 = "0.4.0"
 
-ax-config-macros = "0.4.1"
+ax-config-macros = "0.4"
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
-axvisor_api = "0.5.0"
+axvisor_api = "0.5"
 ax-crate-interface = { workspace = true }
 
 [package.metadata.docs.rs]

@@ -1,64 +1,64 @@
 [package]
-name = "ax-task"
-version.workspace = true
-repository = "https://github.com/rcore-os/tgoskits"
-edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "ArceOS task management module"
+edition.workspace = true
 license.workspace = true
+name = "ax-task"
+repository = "https://github.com/rcore-os/tgoskits"
+version = "0.5.11"
 
 [features]
 default = []
 
-multitask = [
-    "dep:ax-config",
-    "dep:axpoll",
-    "dep:ax-sched",
-    "dep:ax-cpumask",
-    "dep:ax-crate-interface",
-    "dep:futures-util",
-    "dep:ax-kernel-guard",
-    "dep:ax-kspin",
-    "dep:ax-lazyinit",
-    "dep:ax-memory-addr",
-    "dep:ax-percpu",
-    "dep:spin",
-]
-task-ext = ["dep:extern-trait"]
 irq = ["ax-hal/irq", "dep:ax-timer-list"]
-tls = ["ax-hal/tls"]
+multitask = [
+  "dep:ax-config",
+  "dep:axpoll",
+  "dep:ax-sched",
+  "dep:ax-cpumask",
+  "dep:ax-crate-interface",
+  "dep:futures-util",
+  "dep:ax-kernel-guard",
+  "dep:ax-kspin",
+  "dep:ax-lazyinit",
+  "dep:ax-memory-addr",
+  "dep:ax-percpu",
+  "dep:spin",
+]
 preempt = ["irq", "ax-percpu?/preempt", "ax-kernel-guard/preempt"]
 smp = ["ax-kspin/smp"]
+task-ext = ["dep:extern-trait"]
+tls = ["ax-hal/tls"]
 
+sched-cfs = ["multitask", "preempt"]
 sched-fifo = ["multitask"]
 sched-rr = ["multitask", "preempt"]
-sched-cfs = ["multitask", "preempt"]
 
 test = ["ax-percpu?/sp-naive"]
 
 [dependencies]
-ax-config = { workspace = true, optional = true }
+ax-config = {workspace = true, optional = true}
+ax-cpumask = {version = "0.3", optional = true}
+ax-crate-interface = {workspace = true, optional = true}
 ax-errno.workspace = true
 ax-hal.workspace = true
-axpoll = { workspace = true, optional = true }
-ax-sched = { version = "0.5.1", optional = true }
+ax-kernel-guard = {workspace = true, optional = true}
+ax-kspin = {workspace = true, optional = true}
+ax-lazyinit = {workspace = true, optional = true}
+ax-memory-addr = {workspace = true, optional = true}
+ax-percpu = {workspace = true, optional = true}
+ax-sched = {version = "0.5", optional = true}
+ax-timer-list = {workspace = true, optional = true}
+axpoll = {workspace = true, optional = true}
 cfg-if.workspace = true
-ax-cpumask = { version = "0.3.0", optional = true }
-ax-crate-interface = { workspace = true, optional = true }
-extern-trait = { version = "0.4", optional = true }
-futures-util = { version = "0.3", default-features = false, optional = true, features = [
-    "alloc",
-    "async-await-macro",
-] }
-ax-kernel-guard = { workspace = true, optional = true }
-ax-kspin = { workspace = true, optional = true }
-ax-lazyinit = { workspace = true, optional = true }
+extern-trait = {version = "0.4", optional = true}
+futures-util = {version = "0.3", default-features = false, optional = true, features = [
+  "alloc",
+  "async-await-macro",
+]}
 log.workspace = true
-ax-memory-addr = { workspace = true, optional = true }
-ax-percpu = { workspace = true, optional = true }
-spin = { workspace = true, optional = true }
-ax-timer-list = { workspace = true, optional = true }
+spin = {workspace = true, optional = true}
 
-[dev-dependencies]
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-hal = { workspace = true, features = ["fp-simd"] }
 ax-task = { path = ".", package = "ax-task", features = ["test", "multitask"] }

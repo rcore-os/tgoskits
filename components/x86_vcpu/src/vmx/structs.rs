@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_errno::AxResult;
+use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
+use axaddrspace::HostPhysAddr;
+use axvisor_api::memory::PhysFrame;
 use bit_field::BitField;
 use bitflags::bitflags;
-
-use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-
-use axaddrspace::HostPhysAddr;
-use ax_errno::AxResult;
-use axvisor_api::memory::PhysFrame;
 
 use crate::msr::{Msr, MsrReadWrite};
 
@@ -286,9 +284,10 @@ impl EPTPointer {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+
     use super::*;
     use crate::test_utils::mock::MockMmHal;
-    use alloc::format;
 
     #[test]
     fn test_vmx_region_uninit() {

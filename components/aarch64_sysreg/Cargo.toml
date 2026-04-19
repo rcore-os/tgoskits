@@ -1,6 +1,6 @@
 [package]
 name = "aarch64_sysreg"
-version = "0.3.1"
+version = "0.3.6"
 edition = "2021"
 authors = ["Debin <luodeb@outlook.com>"]
 description = "Address translation of system registers"

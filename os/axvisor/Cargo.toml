@@ -2,7 +2,7 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition = "2024"
-version = "0.5.0"
+version = "0.5.4"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
 homepage = "https://github.com/arceos-hypervisor/axvisor"
@@ -51,18 +51,18 @@ serial = ["dep:axplat-dyn", "axplat-dyn/serial"]
 [target.'cfg(not(any(windows, unix)))'.dependencies]
 bitflags = "2.2"
 cfg-if = "1.0"
-ax-cpumask = "0.3.0"
-ax-kernel-guard = "0.3.3"
-ax-kspin = "0.3.1"
+ax-cpumask = "0.3"
+ax-kernel-guard = "0.3"
+ax-kspin = "0.3"
 lazy_static = {version = "1.5", default-features = false, features = ["spin_no_std"]}
-ax-lazyinit = "0.4.2"
+ax-lazyinit = "0.4"
 log = "0.4"
 spin = "0.10"
-ax-timer-list = "0.3.0"
+ax-timer-list = "0.3"
 hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
-ax-std = { version = "0.5.0", features = [
+ax-std = { version = "0.5", features = [
   "paging",
   "irq",
   "multitask",
@@ -70,61 +70,61 @@ ax-std = { version = "0.5.0", features = [
   "smp",
   "hv",
 ]}
-ax-hal = { version = "0.5.0", features = ["paging", "irq", "smp", "hv"] }
+ax-hal = { version = "0.5", features = ["paging", "irq", "smp", "hv"] }
 
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
-axaddrspace = "0.5.0"
-axhvc = "0.4.0"
+axaddrspace = "0.5"
+axhvc = "0.4"
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
-axvcpu = "0.5.0"
-axvm = "0.5.0"
-axdevice = "0.4.2"
-axdevice_base = "0.4.2"
-axvisor_api = "0.5.0"
+axvcpu = "0.5"
+axvm = "0.5"
+axdevice = "0.4"
+axdevice_base = "0.4"
+axvisor_api = "0.5"
 
 # System independent crates provided by ArceOS
-ax-errno = "0.4.2"
-axklib = "0.5.0"
+ax-errno = "0.4"
+axklib = "0.5"
 # ax-cpu = { version = "0.3.0-preview.8", features = ["arm-el2"] }
 byte-unit = {version = "5", default-features = false, features = ["byte"]}
-ax-crate-interface = "0.5.0"
+ax-crate-interface = "0.5"
 extern-trait = "0.4"
 fdt-parser = "0.4"
-ax-memory-addr = "0.6.1"
-ax-page-table-entry = { version = "0.8.1", features = ["arm-el2"] }
-ax-page-table-multiarch = "0.8.1"
-ax-percpu = { version = "0.4.3", features = ["arm-el2"] }
+ax-memory-addr = "0.6"
+ax-page-table-entry = { version = "0.8", features = ["arm-el2"] }
+ax-page-table-multiarch = "0.8"
+ax-percpu = { version = "0.4", features = ["arm-el2"] }
 
 rdif-intc = "0.14"
 rdrive = "0.20"
 axplat-dyn = { workspace = true, default-features = false, optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-axplat-x86-qemu-q35 = { version = "0.4.0", default-features = false, features = [
+axplat-x86-qemu-q35 = { version = "0.4", default-features = false, features = [
     "reboot-on-system-off",
     "irq",
     "smp",
 ] }
-ax-config = { version = "0.5.0", features = ["plat-dyn"] }
+ax-config = { version = "0.5", features = ["plat-dyn"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
 arm-gic-driver = {version = "0.17", features = ["rdif"]}
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-ax-plat-riscv64-qemu-virt = { path = "platform/riscv64-qemu-virt" }
-riscv_vcpu = "0.5.0"
-riscv_vplic = "0.4.2"
+riscv64-qemu-virt-hv = { version = "0.5", path = "platform/riscv64-qemu-virt" }
+riscv_vcpu = "0.5"
+riscv_vplic = "0.4"
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow.workspace = true
-axbuild = "0.4.0"
+axbuild = "0.4"
 clap = { version = "4.6", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
-ax-config = "0.5.0"
+ax-config = "0.5"
 prettyplease = "0.2"
 quote = "1.0"
 syn = "2.0"

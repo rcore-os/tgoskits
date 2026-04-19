@@ -1,6 +1,6 @@
 [package]
 name = "ax-riscv-plic"
-version = "0.4.0"
+version = "0.4.4"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2024"
 authors = ["Keyang Hu <keyang.hu@qq.com>"]

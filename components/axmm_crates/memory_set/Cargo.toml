@@ -3,7 +3,7 @@ name = "ax-memory-set"
 description = "Data structures and operations for managing memory mappings"
 keywords = ["arceos", "virtual-memory", "memory-area", "mmap"]
 
-version.workspace = true
+version = "0.6.7"
 repository.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -12,8 +12,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-ax-errno = { version = "0.4.2", optional = true }
-ax-memory-addr = { path = "../memory_addr", version = "0.6.1" }
+ax-errno = { version = "0.4", optional = true }
+ax-memory-addr = { path = "../memory_addr", version = "0.6" }
 
 [features]
 ax-errno = ["dep:ax-errno"]

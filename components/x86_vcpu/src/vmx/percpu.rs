@@ -12,16 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_errno::{AxResult, ax_err, ax_err_type};
+use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
+use axvcpu::AxArchPerCpu;
 use x86::bits64::vmx;
 use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 
-use ax_errno::{AxResult, ax_err, ax_err_type};
-use axvcpu::AxArchPerCpu;
-use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-
-use crate::msr::Msr;
-use crate::vmx::has_hardware_support;
-use crate::vmx::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion};
+use crate::{
+    msr::Msr,
+    vmx::{
+        has_hardware_support,
+        structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion},
+    },
+};
 
 /// Represents the per-CPU state for Virtual Machine Extensions (VMX).
 ///
@@ -80,7 +83,7 @@ impl AxArchPerCpu for VmxPerCpuState {
 
         // Check control registers are in a VMX-friendly state. (SDM Vol. 3C, Appendix A.7, A.8)
         macro_rules! cr_is_valid {
-            ($value: expr, $crx: ident) => {{
+            ($value:expr, $crx:ident) => {{
                 use Msr::*;
                 let value = $value;
                 paste::paste! {
@@ -158,10 +161,10 @@ impl AxArchPerCpu for VmxPerCpuState {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{format, vec::Vec};
+
     use super::*;
     use crate::test_utils::mock::MockMmHal;
-    use alloc::format;
-    use alloc::vec::Vec;
 
     #[test]
     fn test_vmx_per_cpu_state_new() {

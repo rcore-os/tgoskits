@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::GeneralRegisters;
 use alloc::format;
 use core::fmt::Debug;
+
+use super::GeneralRegisters;
 
 /// The comparison result of all general-purpose registers after a change.
 pub struct GeneralRegistersDiff {

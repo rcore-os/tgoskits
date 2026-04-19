@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use tock_registers::LocalRegisterCopy;
-use tock_registers::register_bitfields;
-use tock_registers::registers::ReadWrite;
+use tock_registers::{LocalRegisterCopy, register_bitfields, registers::ReadWrite};
 
 register_bitfields! {
     u32,

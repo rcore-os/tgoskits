@@ -7,7 +7,7 @@ exclude = ["test_crates"]
 license = "Apache-2.0"
 [package]
 name = "ax-crate-interface"
-version = "0.5.0"
+version = "0.5.5"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>", "Su Mingxian <aarkegz@gmail.com>"]

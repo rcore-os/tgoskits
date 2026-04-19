@@ -1,13 +1,14 @@
 # Build-time config template for StarryOS on Orange Pi 5 Plus.
+target = "aarch64-unknown-none-softfloat"
 # Runtime U-Boot settings live in `orangepi-5-plus-uboot.toml`.
 env = {}
-log = "Info"
 features = [
-  "common",
   "ax-feat/bus-mmio",
   "ax-feat/driver-sdmmc",
   "axplat-dyn/rk3588-clk",
   "axplat-dyn/sdmmc",
+  "rknpu",
 ]
+log = "Info"
 max_cpu_num = 8
 plat_dyn = true

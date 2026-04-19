@@ -1,0 +1,17 @@
+args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "rv64",
+    "-m",
+    "128M",
+    "-smp",
+    "4",
+    "-nographic",
+    "-serial",
+    "mon:stdio",
+]
+uefi = false
+to_bin = true
+success_regex = ["All tests passed!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

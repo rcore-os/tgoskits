@@ -1,6 +1,6 @@
 [package]
 name = "axplat-x86-qemu-q35"
-version = "0.4.0"
+version = "0.4.4"
 edition = "2024"
 authors = ["The Axvisor Team"]
 description = "Hardware platform implementation for x86_64 QEMU Q35 chipset, supporting multiboot boot protocol"
@@ -23,15 +23,15 @@ reboot-on-system-off = []
 rtc = ["dep:x86_rtc"]
 smp = ["ax-plat/smp", "ax-kspin/smp"]
 
-[dependencies]
-ax-config-macros = "0.4.1"
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+ax-config-macros = "0.4"
 ax-cpu = { workspace = true, features = ["arm-el2"] }
 ax-plat.workspace = true
 bitflags = "2.6"
 heapless = "0.9"
-ax-int-ratio = "0.3.2"
-ax-kspin = "0.3.1"
-ax-lazyinit = "0.4.2"
+ax-int-ratio = "0.3"
+ax-kspin = "0.3"
+ax-lazyinit = "0.4"
 log = "0.4"
 ax-percpu.workspace = true
 

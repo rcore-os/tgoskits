@@ -3,17 +3,15 @@
 //! This module handles DMA-based packet transmission and reception,
 //! including buffer descriptor ring management.
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use core::cmp::min;
-use core::mem::size_of;
-use core::ptr::{null, null_mut};
-use core::slice::from_raw_parts_mut;
+use alloc::{boxed::Box, vec::Vec};
+use core::{
+    cmp::min,
+    mem::size_of,
+    ptr::{null, null_mut},
+    slice::from_raw_parts_mut,
+};
 
-use crate::fxmac::*;
-use crate::fxmac_const::*;
-use crate::fxmac_phy::*;
-use crate::utils::*;
+use crate::{fxmac::*, fxmac_const::*, fxmac_phy::*, utils::*};
 
 // fxmac_lwip_port.h
 pub const FXMAX_RX_BDSPACE_LENGTH: usize = FXMAX_RX_PBUFS_LENGTH * 64; // 0x20000, default set 128KB
@@ -24,14 +22,14 @@ pub const FXMAX_TX_PBUFS_LENGTH: usize = 128;
 
 pub const FXMAX_MAX_HARDWARE_ADDRESS_LENGTH: usize = 6;
 
-/* configuration */
+// configuration
 pub const FXMAC_LWIP_PORT_CONFIG_JUMBO: u32 = BIT(0);
 pub const FXMAC_LWIP_PORT_CONFIG_MULTICAST_ADDRESS_FILITER: u32 = BIT(1); /* Allow multicast address filtering  */
 pub const FXMAC_LWIP_PORT_CONFIG_COPY_ALL_FRAMES: u32 = BIT(2); /* enable copy all frames */
 pub const FXMAC_LWIP_PORT_CONFIG_CLOSE_FCS_CHECK: u32 = BIT(3); /* close fcs check */
 pub const FXMAC_LWIP_PORT_CONFIG_UNICAST_ADDRESS_FILITER: u32 = BIT(5); /* Allow unicast address filtering  */
 
-/* Phy */
+// Phy
 pub const FXMAC_PHY_SPEED_10M: u32 = 10;
 pub const FXMAC_PHY_SPEED_100M: u32 = 100;
 pub const FXMAC_PHY_SPEED_1000M: u32 = 1000;
@@ -42,7 +40,7 @@ pub const FXMAC_PHY_FULL_DUPLEX: u32 = 1;
 
 pub const FXMAC_RECV_MAX_COUNT: u32 = 10;
 
-/*  frame queue */
+// frame queue
 pub const PQ_QUEUE_SIZE: u32 = 4096;
 
 /// Transmit buffer descriptor status words offset
@@ -94,7 +92,7 @@ pub type FXmacBd = [u32; FXMAC_BD_NUM_WORDS];
 pub type uintptr = u64;
 
 // Enable tail Register
-//pub const FXMAC_TAIL_ENABLE: u32 = 0xe7c;
+// pub const FXMAC_TAIL_ENABLE: u32 = 0xe7c;
 
 /// send direction
 pub const FXMAC_SEND: u32 = 1;
@@ -167,7 +165,7 @@ impl Default for FXmacNetifBuffer {
         let (mut tx_vaddr, mut tx_dma) =
             ax_crate_interface::call_interface!(crate::KernelFunc::dma_alloc_coherent(alloc_pages));
 
-        //let rx_buf = unsafe { from_raw_parts_mut(vaddr as *mut u8, FXMAX_RX_BDSPACE_LENGTH) };
+        // let rx_buf = unsafe { from_raw_parts_mut(vaddr as *mut u8, FXMAX_RX_BDSPACE_LENGTH) };
 
         Self {
             rx_bdspace: rx_vaddr,
@@ -304,8 +302,7 @@ fn FXMAC_RING_SEEKAHEAD(ring_ptr: &mut FXmacBdRing, bdptr: &mut (*mut FXmacBd), 
 
     trace!(
         "FXMAC_RING_SEEKAHEAD, bdptr: {:#x}, addr: {:#x}",
-        *bdptr as u64,
-        addr
+        *bdptr as u64, addr
     );
 }
 
@@ -334,11 +331,11 @@ pub fn FXmacAllocDmaPbufs(instance_p: &mut FXmac) -> u32 {
 
         let rxringptr: &mut FXmacBdRing = &mut instance_p.rx_bd_queue.bdring;
         let mut rxbd: *mut FXmacBd = null_mut();
-        //let my_speed: Box<i32> = Box::new(88);
-        //rxbd = Box::into_raw(my_speed);
+        // let my_speed: Box<i32> = Box::new(88);
+        // rxbd = Box::into_raw(my_speed);
         // OR
-        //let mut my_speed: i32 = 88;
-        //rxbd = &mut my_speed;
+        // let mut my_speed: i32 = 88;
+        // rxbd = &mut my_speed;
 
         // 在BD list中预留待设置的BD
         status = FXmacBdRingAlloc(rxringptr, 1, &mut rxbd);
@@ -412,7 +409,7 @@ pub fn FXmacAllocDmaPbufs(instance_p: &mut FXmac) -> u32 {
 }
 
 pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
-    //let mut rxbd: FXmacBd = [0; FXMAC_BD_NUM_WORDS];
+    // let mut rxbd: FXmacBd = [0; FXMAC_BD_NUM_WORDS];
 
     let rxringptr: &mut FXmacBdRing = &mut instance_p.rx_bd_queue.bdring;
     let txringptr: &mut FXmacBdRing = &mut instance_p.tx_bd_queue.bdring;
@@ -429,7 +426,7 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
 
     // Setup RxBD space.
     // 对BD域清零
-    //let mut bdtemplate: FXmacBd = unsafe { core::mem::zeroed() };
+    // let mut bdtemplate: FXmacBd = unsafe { core::mem::zeroed() };
 
     // FXmacBd: The FXMAC_Bd is the type for buffer descriptors (BDs).
     let mut bdtemplate: FXmacBd = [0; FXMAC_BD_NUM_WORDS];
@@ -447,12 +444,12 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
     // 将给定的BD, 克隆到list中的每个BD上
     status = FXmacBdRingClone(rxringptr, &bdtemplate, FXMAC_RECV);
 
-    /*let bdtem = macb_dma_desc {
-        addr: 0,
-        ctrl: FXMAC_TXBUF_USED_MASK,
-        addrh: 0,
-        resvd: 0,
-    };*/
+    // let bdtem = macb_dma_desc {
+    // addr: 0,
+    // ctrl: FXMAC_TXBUF_USED_MASK,
+    // addrh: 0,
+    // resvd: 0,
+    // };
     bdtemplate.fill(0);
     // FXMAC_BD_SET_STATUS(), 注：这里先设置TXBUF_USED位，对于发包很重要！
     // Set the BD's Status field (word 1).
@@ -463,7 +460,7 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
             | (FXMAC_TXBUF_USED_MASK),
     );
 
-    /* Create the TxBD ring */
+    // Create the TxBD ring
     status = FXmacBdRingCreate(
         txringptr,
         instance_p.lwipport.buffer.tx_bdspace as u64,
@@ -472,7 +469,7 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
         FXMAX_TX_PBUFS_LENGTH as u32,
     );
 
-    /* We reuse the bd template, as the same one will work for both rx and tx. */
+    // We reuse the bd template, as the same one will work for both rx and tx.
     status = FXmacBdRingClone(txringptr, &bdtemplate, FXMAC_SEND);
 
     // 创建收发网络包的DMA内存
@@ -517,10 +514,10 @@ pub fn FXmacBdRingCreate(
     // uintptr: u64
 
     // alignment=128, bd_count=128
-    //let alignment = BD_ALIGNMENT;
-    //let bd_count = FXMAX_RX_PBUFS_LENGTH;
+    // let alignment = BD_ALIGNMENT;
+    // let bd_count = FXMAX_RX_PBUFS_LENGTH;
 
-    //let virt_addr_loc = instance_p.buffer.rx_bdspace;
+    // let virt_addr_loc = instance_p.buffer.rx_bdspace;
     let virt_addr_loc: u64 = virt_addr;
 
     ring_ptr.all_cnt = 0;
@@ -612,10 +609,8 @@ pub fn FXmacBdRingAlloc(
     num_bd: u32,
     bd_set_ptr: &mut (*mut FXmacBd),
 ) -> u32 {
-    /*
-    let num_bd = 1;
-    let bd_set_ptr = &rxbd;
-    */
+    // let num_bd = 1;
+    // let bd_set_ptr = &rxbd;
 
     if ring_ptr.free_cnt < num_bd {
         error!("No Enough free BDs available for the request: {}", num_bd);
@@ -680,11 +675,10 @@ pub fn FXmacBdRingFromHwRx(
 
         status = 0;
     } else {
-        /* Starting at hw_head, keep moving forward in the list until:
-         *  - A BD is encountered with its new/used bit set which means hardware has completed processing of that BD.
-         *  - ring_ptr->hw_tail is reached and ring_ptr->hw_cnt is reached.
-         *  - The number of requested BDs has been processed
-         */
+        // Starting at hw_head, keep moving forward in the list until:
+        //  - A BD is encountered with its new/used bit set which means hardware has completed processing of that BD.
+        //  - ring_ptr->hw_tail is reached and ring_ptr->hw_cnt is reached.
+        //  - The number of requested BDs has been processed
         while (bd_count as usize) < bd_limit {
             // Read the status
 
@@ -696,14 +690,13 @@ pub fn FXmacBdRingFromHwRx(
             if bd_rx_new == 0 {
                 break;
             }
-            //debug!("FXMAC_RXBUF_NEW_MASK got {:#x}", bd_rx_new);
+            // debug!("FXMAC_RXBUF_NEW_MASK got {:#x}", bd_rx_new);
 
             bd_count += 1;
 
-            /* hardware has processed this BD so check the "last" bit. If
-             * it is clear, then there are more BDs for the current packet.
-             * Keep a count of these partial packet BDs.
-             */
+            // hardware has processed this BD so check the "last" bit. If
+            // it is clear, then there are more BDs for the current packet.
+            // Keep a count of these partial packet BDs.
             if (bd_str & FXMAC_RXBUF_EOF_MASK) != 0 {
                 bd_partial_count = 0;
             } else {
@@ -717,9 +710,8 @@ pub fn FXmacBdRingFromHwRx(
         // 减去找到的任何partial packet BDs
         bd_count -= bd_partial_count;
 
-        /* If bd_count is non-zero then BDs were found to return. Set return
-         * parameters, update pointers and counters, return success
-         */
+        // If bd_count is non-zero then BDs were found to return. Set return
+        // parameters, update pointers and counters, return success
         if bd_count > 0 {
             *bd_set_ptr = ring_ptr.hw_head;
 
@@ -733,7 +725,7 @@ pub fn FXmacBdRingFromHwRx(
             info!("FXmacBdRingFromHwRx, Found BD={}", bd_count);
             status = bd_count;
         } else {
-            //warn!("FXmacBdRingFromHwRx, no found BD={}", bd_count);
+            // warn!("FXmacBdRingFromHwRx, no found BD={}", bd_count);
 
             *bd_set_ptr = null_mut();
             status = 0;
@@ -760,7 +752,7 @@ pub fn FXmacBdRingFromHwTx(
     let mut bd_limitLoc: u32 = bd_limit as u32;
     let mut cur_bd_ptr: *mut FXmacBd = ring_ptr.hw_head;
 
-    /* If no BDs in work group, then there's nothing to search */
+    // If no BDs in work group, then there's nothing to search
     if ring_ptr.hw_cnt == 0 {
         debug!("No BDs in TX work group, then there's nothing to search");
         *bd_set_ptr = null_mut();
@@ -769,12 +761,11 @@ pub fn FXmacBdRingFromHwTx(
         if bd_limitLoc > ring_ptr.hw_cnt {
             bd_limitLoc = ring_ptr.hw_cnt;
         }
-        /* Starting at hw_head, keep moving forward in the list until:
-         *  - A BD is encountered with its new/used bit set which means
-         *    hardware has not completed processing of that BD.
-         *  - ring_ptr->hw_tail is reached and ring_ptr->hw_cnt is reached.
-         *  - The number of requested BDs has been processed
-         */
+        // Starting at hw_head, keep moving forward in the list until:
+        //  - A BD is encountered with its new/used bit set which means
+        //    hardware has not completed processing of that BD.
+        //  - ring_ptr->hw_tail is reached and ring_ptr->hw_cnt is reached.
+        //  - The number of requested BDs has been processed
         while bd_count < bd_limitLoc {
             // Read the status
             bd_str = fxmac_bd_read(cur_bd_ptr as u64, FXMAC_BD_STAT_OFFSET);
@@ -787,24 +778,22 @@ pub fn FXmacBdRingFromHwTx(
                 bd_partial_count += 1;
             }
 
-            /* hardware has processed this BD so check the "last" bit.
-             * If it is clear, then there are more BDs for the current
-             * packet. Keep a count of these partial packet BDs.
-             */
+            // hardware has processed this BD so check the "last" bit.
+            // If it is clear, then there are more BDs for the current
+            // packet. Keep a count of these partial packet BDs.
             if (bd_str & FXMAC_TXBUF_LAST_MASK) != 0 {
                 bd_partial_count = 0;
             }
 
-            /* Move on to next BD in work group */
+            // Move on to next BD in work group
             cur_bd_ptr = FXMAC_BD_RING_NEXT(ring_ptr, cur_bd_ptr);
         }
 
         info!("FXmacBdRingFromHwTx, Subtract off any partial packet BDs found");
         bd_count -= bd_partial_count;
 
-        /* If bd_count is non-zero then BDs were found to return. Set return
-         * parameters, update pointers and counters, return success
-         */
+        // If bd_count is non-zero then BDs were found to return. Set return
+        // parameters, update pointers and counters, return success
         if bd_count > 0 {
             *bd_set_ptr = ring_ptr.hw_head;
 
@@ -862,7 +851,7 @@ pub fn FXmacSgsend(instance_p: &mut FXmac, p: Vec<Vec<u8>>) -> u32 {
     let n_pbufs: u32 = p.len() as u32;
 
     debug!("Sending packets: {}", n_pbufs);
-    /* obtain as many BD's */
+    // obtain as many BD's
     status = FXmacBdRingAlloc(txring, n_pbufs, &mut txbdset);
     assert!(!txbdset.is_null());
 
@@ -870,10 +859,10 @@ pub fn FXmacSgsend(instance_p: &mut FXmac, p: Vec<Vec<u8>>) -> u32 {
     for q in &p {
         bdindex = FXMAC_BD_TO_INDEX(txring, txbd as u64);
 
-        /* if (instance_p.lwipport.buffer.tx_pbufs_storage[bdindex as usize] != 0)
-        {
-            panic!("PBUFS not available");
-        }*/
+        // if (instance_p.lwipport.buffer.tx_pbufs_storage[bdindex as usize] != 0)
+        // {
+        // panic!("PBUFS not available");
+        // }
 
         if (instance_p.lwipport.feature & FXMAC_LWIP_PORT_CONFIG_JUMBO) != 0 {
             max_fr_size = FXMAC_MAX_FRAME_SIZE_JUMBO;
@@ -893,7 +882,7 @@ pub fn FXmacSgsend(instance_p: &mut FXmac, p: Vec<Vec<u8>>) -> u32 {
 
         debug!(">>>>>>>>> {:x?}", pbuf);
 
-        //fxmac_bd_set_address_tx(txbd as u64, (pbufs_virt & 0xffff_ffff) as u64);
+        // fxmac_bd_set_address_tx(txbd as u64, (pbufs_virt & 0xffff_ffff) as u64);
         send_len += pbufs_len as u32;
 
         if q.len() > max_fr_size as usize {
@@ -915,14 +904,14 @@ pub fn FXmacSgsend(instance_p: &mut FXmac, p: Vec<Vec<u8>>) -> u32 {
             );
         }
 
-        //instance_p.lwipport.buffer.tx_pbufs_storage[bdindex as usize] = q.as_ptr() as u64;
+        // instance_p.lwipport.buffer.tx_pbufs_storage[bdindex as usize] = q.as_ptr() as u64;
 
         // 增加该pbuf的引用计数。
-        //pbuf_ref(q);
+        // pbuf_ref(q);
         last_txbd = txbd;
 
         // 告诉DMA当前包不是以该BD结束
-        //FXMAC_BD_CLEAR_LAST(txbd);
+        // FXMAC_BD_CLEAR_LAST(txbd);
         let t_txbd = txbd as u64;
         fxmac_bd_write(
             t_txbd,
@@ -933,7 +922,7 @@ pub fn FXmacSgsend(instance_p: &mut FXmac, p: Vec<Vec<u8>>) -> u32 {
         txbd = FXMAC_BD_RING_NEXT(txring, txbd);
     }
     // 告诉DMA 该BD标志着当前数据包的结束
-    //FXMAC_BD_SET_LAST(last_txbd);
+    // FXMAC_BD_SET_LAST(last_txbd);
     let t_txbd = last_txbd as u64;
     fxmac_bd_write(
         t_txbd,
@@ -943,7 +932,7 @@ pub fn FXmacSgsend(instance_p: &mut FXmac, p: Vec<Vec<u8>>) -> u32 {
 
     /////////
 
-    /* The bdindex always points to the first free_head in tx_bdrings */
+    // The bdindex always points to the first free_head in tx_bdrings
     if (instance_p.config.caps & FXMAC_CAPS_TAILPTR) != 0 {
         bdindex = FXMAC_BD_TO_INDEX(txring, txbd as u64);
     }
@@ -1021,10 +1010,10 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
     let mut recv_packets = Vec::new();
 
     let mut rxbdset: *mut FXmacBd = null_mut();
-    //let rxring: &mut FXmacBdRing = &mut (instance_p.rx_bd_queue.bdring);
+    // let rxring: &mut FXmacBdRing = &mut (instance_p.rx_bd_queue.bdring);
 
-    /* If Reception done interrupt is asserted, call RX call back function
-    to handle the processed BDs and then raise the according flag.*/
+    // If Reception done interrupt is asserted, call RX call back function
+    // to handle the processed BDs and then raise the according flag.
     let regval: u32 = read_reg((instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *const u32);
     write_reg(
         (instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *mut u32,
@@ -1051,11 +1040,11 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
             // Adjust the buffer size to the actual number of bytes received.
             let rx_bytes: u32 = if (instance_p.lwipport.feature & FXMAC_LWIP_PORT_CONFIG_JUMBO) != 0
             {
-                //FXMAC_GET_RX_FRAME_SIZE(curbdptr)
+                // FXMAC_GET_RX_FRAME_SIZE(curbdptr)
                 fxmac_bd_read(curbdptr as u64, FXMAC_BD_STAT_OFFSET) & 0x00003FFF
             } else {
                 debug!("FXMAC_RXBUF_LEN_MASK={:#x}", FXMAC_RXBUF_LEN_MASK);
-                //FXMAC_BD_GET_LENGTH(curbdptr)
+                // FXMAC_BD_GET_LENGTH(curbdptr)
                 fxmac_bd_read(curbdptr as u64, FXMAC_BD_STAT_OFFSET) & FXMAC_RXBUF_LEN_MASK
             };
 
@@ -1072,13 +1061,11 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
             // Copy mbuf into a new Vec
             recv_packets.push(mbuf.to_vec());
 
-            /*
-             The value of hash_match indicates the hash result of the received packet
-                0: No hash match
-                1: Unicast hash match
-                2: Multicast hash match
-                3: Reserved, the value is not legal
-            */
+            // The value of hash_match indicates the hash result of the received packet
+            // 0: No hash match
+            // 1: Unicast hash match
+            // 2: Multicast hash match
+            // 3: Reserved, the value is not legal
             // FXMAC_BD_GET_HASH_MATCH(bd_ptr)
             let mut hash_match: u32 = (fxmac_bd_read(curbdptr as u64, FXMAC_BD_STAT_OFFSET)
                 & FXMAC_RXBUF_HASH_MASK)
@@ -1092,12 +1079,11 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
                 rx_bytes as u64,
             );
 
-            /* store it in the receive queue,
-             * where it'll be processed by a different handler
-             */
-            //if (FXmacPqEnqueue(&instance_p->recv_q, (void *)p) < 0)
+            // store it in the receive queue,
+            // where it'll be processed by a different handler
+            // if (FXmacPqEnqueue(&instance_p->recv_q, (void *)p) < 0)
 
-            //instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] = 0;
+            // instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] = 0;
 
             // Just clear 64 bits header
             mbuf[..min(64, rx_bytes as usize)].fill(0);
@@ -1144,8 +1130,8 @@ pub fn SetupRxBds(instance_p: &mut FXmac) {
         status = FXmacBdRingToHw(rxring, 1, rxbd);
 
         // 继续使用前面申请过的dma pbufs, 不再清理并重新申请
-        //let (mut rx_mbufs_vaddr, mut rx_mbufs_dma) = crate::utils::dma_alloc_coherent(alloc_rx_buffer_pages);
-        //crate::utils::FCacheDCacheInvalidateRange(rx_mbufs_vaddr as u64, max_frame_size as u64);
+        // let (mut rx_mbufs_vaddr, mut rx_mbufs_dma) = crate::utils::dma_alloc_coherent(alloc_rx_buffer_pages);
+        // crate::utils::FCacheDCacheInvalidateRange(rx_mbufs_vaddr as u64, max_frame_size as u64);
 
         let bdindex: u32 = FXMAC_BD_TO_INDEX(rxring, rxbd as u64);
 
@@ -1166,10 +1152,10 @@ pub fn SetupRxBds(instance_p: &mut FXmac) {
         crate::utils::DSB();
 
         // 设置BD的地址字段(word 0)
-        //fxmac_bd_set_address_rx(rxbd as u64, rx_mbufs_dma as u64);
+        // fxmac_bd_set_address_rx(rxbd as u64, rx_mbufs_dma as u64);
 
         assert!(instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] != 0);
-        //instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] = rx_mbufs_vaddr as u64;
+        // instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] = rx_mbufs_vaddr as u64;
     }
 }
 
@@ -1179,7 +1165,7 @@ pub fn FXmacBdRingFree(ring_ptr: &mut FXmacBdRing, num_bd: u32) -> u32 {
     if 0 == num_bd {
         0
     } else {
-        /* Update pointers and counters */
+        // Update pointers and counters
         ring_ptr.free_cnt += num_bd;
         ring_ptr.post_cnt -= num_bd;
 
@@ -1214,20 +1200,18 @@ pub fn ResetDma(instance_p: &mut FXmac) {
 /// Handle DMA interrupt error
 pub fn FXmacHandleDmaTxError(instance_p: &mut FXmac) {
     panic!("Failed to handle DMA interrupt error");
-    /*
-    FreeTxRxPbufs(instance_p);
-    FXmacCfgInitialize(&instance_p->instance, &instance_p->instance.config); // -> FXmacReset()
-
-    /* initialize the mac */
-    FXmacInitOnError(instance_p); /* need to set mac filter address */
-    let mut dmacrreg: u32 = read_reg((instance_p.config.base_address + FXMAC_DMACR_OFFSET) as *const u32);
-    dmacrreg = dmacrreg | FXMAC_DMACR_ORCE_DISCARD_ON_ERR_MASK; /* force_discard_on_err */
-    write_reg((instance_p.config.base_address + FXMAC_DMACR_OFFSET) as *mut u32, dmacrreg);
-    FXmacSetupIsr(instance_p);
-    FXmacInitDma(instance_p);
-
-    FXmacStart(&instance_p->instance);
-    */
+    // FreeTxRxPbufs(instance_p);
+    // FXmacCfgInitialize(&instance_p->instance, &instance_p->instance.config); // -> FXmacReset()
+    //
+    // initialize the mac */
+    // FXmacInitOnError(instance_p); /* need to set mac filter address */
+    // let mut dmacrreg: u32 = read_reg((instance_p.config.base_address + FXMAC_DMACR_OFFSET) as *const u32);
+    // dmacrreg = dmacrreg | FXMAC_DMACR_ORCE_DISCARD_ON_ERR_MASK; /* force_discard_on_err */
+    // write_reg((instance_p.config.base_address + FXMAC_DMACR_OFFSET) as *mut u32, dmacrreg);
+    // FXmacSetupIsr(instance_p);
+    // FXmacInitDma(instance_p);
+    //
+    // FXmacStart(&instance_p->instance);
 }
 
 pub fn FXmacHandleTxErrors(instance_p: &mut FXmac) {
@@ -1255,7 +1239,7 @@ fn CleanDmaTxdescs(instance_p: &mut FXmac) {
 
     let mut bdtemplate: FXmacBd = [0; FXMAC_BD_NUM_WORDS];
 
-    //FXMAC_BD_SET_STATUS(&bdtemplate, FXMAC_TXBUF_USED_MASK);
+    // FXMAC_BD_SET_STATUS(&bdtemplate, FXMAC_TXBUF_USED_MASK);
     fxmac_bd_write(
         (&mut bdtemplate as *mut _ as u64),
         FXMAC_BD_STAT_OFFSET,
@@ -1295,13 +1279,13 @@ pub fn FXmacProcessSentBds(instance_p: &mut FXmac) {
     let txring: &mut FXmacBdRing = &mut (instance_p.tx_bd_queue.bdring);
     let mut txbdset: *mut FXmacBd = null_mut();
     loop {
-        /* obtain processed BD's */
+        // obtain processed BD's
         let n_bds: u32 = FXmacBdRingFromHwTx(txring, FXMAX_TX_PBUFS_LENGTH, &mut txbdset);
         if n_bds == 0 {
             info!("FXmacProcessSentBds have not found BD");
             return;
         }
-        /* free the processed BD's */
+        // free the processed BD's
         let mut n_pbufs_freed: u32 = n_bds;
         let mut curbdpntr: *mut FXmacBd = txbdset;
         while n_pbufs_freed > 0 {
@@ -1349,7 +1333,7 @@ pub fn FXmacProcessSentBds(instance_p: &mut FXmac) {
 
 pub fn FXmacSendHandler(instance: &mut FXmac) {
     debug!("-> FXmacSendHandler");
-    //let txringptr: FXmacBdRing = instance.tx_bd_queue.bdring;
+    // let txringptr: FXmacBdRing = instance.tx_bd_queue.bdring;
     let regval: u32 = read_reg((instance.config.base_address + FXMAC_TXSR_OFFSET) as *const u32);
 
     // 清除中断状态位来停止中断
@@ -1400,16 +1384,14 @@ pub fn FXmacLinkChange(instance: &mut FXmac) {
     }
 }
 
-/* phy */
+// phy
 
-/**
- * @name: phy_link_detect
- * @msg:  获取当前link status
- * @note:
- * @param {FXmac} *fxmac_p
- * @param {u32} phy_addr
- * @return {*} 1 is link up , 0 is link down
- */
+/// @name: phy_link_detect
+/// @msg:  获取当前link status
+/// @note:
+/// @param {FXmac} *fxmac_p
+/// @param {u32} phy_addr
+/// @return {*} 1 is link up , 0 is link down
 pub fn phy_link_detect(xmac_p: &mut FXmac, phy_addr: u32) -> u32 {
     let mut status: u16 = 0;
 
@@ -1471,7 +1453,7 @@ pub fn FXmacLwipPortTx(instance: &mut FXmac, pbuf: Vec<Vec<u8>>) -> i32 {
     // check if space is available to send
     let freecnt = (instance.tx_bd_queue.bdring).free_cnt;
     if freecnt <= 4 {
-        //5
+        // 5
         info!("TX freecnt={}, let's process sent BDs", freecnt);
         FXmacProcessSentBds(instance);
     }
@@ -1501,12 +1483,12 @@ pub fn ethernetif_input_to_recv_packets(instance_p: &mut FXmac) {
         );
 
         // 若需要中断处理函数中来接收包，可以这里解注释
-        //FXmacRecvHandler(instance_p);
+        // FXmacRecvHandler(instance_p);
     }
 
     {
         // move received packet into a new pbuf
-        //p = low_level_input(netif);
+        // p = low_level_input(netif);
         // IP or ARP packet
         // full packet send to tcpip thread to process
     }

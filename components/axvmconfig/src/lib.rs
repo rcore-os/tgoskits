@@ -16,7 +16,7 @@
 //! [VM](https://github.com/arceos-hypervisor/axvm) config module.
 //! [`AxVMCrateConfig`]: the configuration structure for the VM.
 //! It is generated from toml file, and then converted to `AxVMConfig` for the VM creation.
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(all(feature = "std", any(windows, unix))), no_std)]
 
 extern crate alloc;
 #[macro_use]
@@ -29,7 +29,7 @@ use ax_errno::AxResult;
 use enumerable::Enumerable;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 /// A part of `AxVMConfig`, which represents guest VM type.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum VMType {
@@ -66,7 +66,7 @@ impl From<VMType> for usize {
 ///
 /// Defines how virtual machine memory regions are mapped to host physical memory.
 /// This affects memory allocation and management strategies in the hypervisor.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, serde_repr::Serialize_repr, serde_repr::Deserialize_repr)]
 #[repr(u8)]
 pub enum VmMemMappingType {
@@ -90,7 +90,7 @@ impl Default for VmMemMappingType {
 /// Represents a contiguous memory region within the guest's physical address space.
 /// Each region has specific properties including address, size, access permissions,
 /// and mapping type that determine how it's handled by the hypervisor.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VmMemConfig {
     /// The start address of the memory region in GPA (Guest Physical Address).
@@ -117,7 +117,7 @@ pub struct VmMemConfig {
 /// - 0x80 - 0xDF: Reserved for future use.
 /// - 0xE0 - 0xEF: Virtio devices.
 /// - 0xF0 - 0xFF: Reserved for future use.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(
     Debug, Default, Copy, Clone, PartialEq, Eq, Serialize_repr, Deserialize_repr, Enumerable,
 )]
@@ -238,7 +238,7 @@ impl EmulatedDeviceType {
 }
 
 /// A part of `AxVMConfig`, which represents the configuration of an emulated device for a virtual machine.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmulatedDeviceConfig {
     /// The name of the device.
@@ -256,7 +256,7 @@ pub struct EmulatedDeviceConfig {
 }
 
 /// A part of `AxVMConfig`, which represents the configuration of a pass-through device for a virtual machine.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PassThroughDeviceConfig {
     /// The name of the device.
@@ -276,7 +276,7 @@ pub struct PassThroughDeviceConfig {
 }
 
 /// A part of `AxVMConfig`, which represents the configuration of a pass-through address for a virtual machine.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PassThroughAddressConfig {
     /// The base GPA (Guest Physical Address).
@@ -288,7 +288,7 @@ pub struct PassThroughAddressConfig {
 }
 
 /// The configuration structure for the guest VM base info.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VMBaseConfig {
     /// VM ID.
@@ -321,7 +321,7 @@ pub struct VMBaseConfig {
 }
 
 /// The configuration structure for the guest VM kernel.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VMKernelConfig {
     /// The entry point of the kernel image.
@@ -350,10 +350,13 @@ pub struct VMKernelConfig {
     pub disk_path: Option<String>,
     /// Memory Information
     pub memory_regions: Vec<VmMemConfig>,
+    /// Number of memory_regions that came directly from the user-provided config.
+    #[serde(skip)]
+    pub configured_memory_region_count: usize,
 }
 
 /// Specifies how the VM should handle interrupts and interrupt controllers.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum VMInterruptMode {
     /// The VM will not handle interrupts, and the guest OS should not use interrupts.
@@ -369,7 +372,7 @@ pub enum VMInterruptMode {
 }
 
 /// The configuration structure for the guest VM devices.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VMDevicesConfig {
     /// Emu device Information
@@ -389,7 +392,7 @@ pub struct VMDevicesConfig {
 
 /// The configuration structure for the guest VM serialized from a toml file provided by user,
 /// and then converted to `AxVMConfig` for the VM creation.
-#[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AxVMCrateConfig {
     /// The base configuration for the VM.
@@ -403,10 +406,11 @@ pub struct AxVMCrateConfig {
 impl AxVMCrateConfig {
     /// Deserialize the toml string to `AxVMCrateConfig`.
     pub fn from_toml(raw_cfg_str: &str) -> AxResult<Self> {
-        let config: AxVMCrateConfig = toml::from_str(raw_cfg_str).map_err(|err| {
+        let mut config: AxVMCrateConfig = toml::from_str(raw_cfg_str).map_err(|err| {
             warn!("Config TOML parse error {:?}", err.message());
             ax_errno::ax_err_type!(InvalidInput, alloc::format!("Error details {err:?}"))
         })?;
+        config.kernel.configured_memory_region_count = config.kernel.memory_regions.len();
         Ok(config)
     }
 }

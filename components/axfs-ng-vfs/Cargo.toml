@@ -1,6 +1,6 @@
 [package]
 name = "axfs-ng-vfs"
-version = "0.3.1"
+version = "0.3.7"
 edition = "2024"
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Virtual filesystem layer for ArceOS"
@@ -9,8 +9,8 @@ repository = "https://github.com/Starry-OS/axfs-ng-vfs"
 license = "Apache-2.0"
 
 [dependencies]
-ax-errno = "0.4.2"
-axpoll = "0.3.2"
+ax-errno = "0.4"
+axpoll = "0.3"
 bitflags = "2.10"
 cfg-if = "1"
 hashbrown = "0.16"

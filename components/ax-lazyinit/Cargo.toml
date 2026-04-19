@@ -1,6 +1,6 @@
 [package]
 name = "ax-lazyinit"
-version = "0.4.2"
+version = "0.4.6"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]

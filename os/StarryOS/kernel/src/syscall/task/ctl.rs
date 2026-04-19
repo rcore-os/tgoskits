@@ -7,12 +7,13 @@ use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     mm::vm_load_string,
-    task::{AsThread, get_process_data},
+    task::{AsThread, Cred, get_process_data, get_task},
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
 
-fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<()> {
+/// Validate the cap header and return the target pid (0 means self).
+fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<u32> {
     // FIXME: AnyBitPattern
     let mut header = unsafe { header_ptr.vm_read_uninit()?.assume_init() };
     if header.version != CAPABILITY_VERSION_3 {
@@ -20,21 +21,47 @@ fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<()
         header_ptr.vm_write(header)?;
         return Err(AxError::InvalidInput);
     }
-    let _ = get_process_data(header.pid as u32)?;
-    Ok(())
+    let pid = header.pid as u32;
+    let _ = get_process_data(pid)?;
+    Ok(pid)
+}
+
+/// Read the credential set for the thread identified by TID (0 = self).
+///
+/// capget(2) operates on the thread identified by `header.pid`; on Linux
+/// threads in the same thread group share the same `struct cred` by default,
+/// so reading any thread's cred gives the same answer.
+fn cred_for_pid(pid: u32) -> AxResult<alloc::sync::Arc<Cred>> {
+    if pid == 0 {
+        return Ok(current().as_thread().cred());
+    }
+    let task = get_task(pid).map_err(|_| AxError::NoSuchProcess)?;
+    task.try_as_thread()
+        .map(|t| t.cred())
+        .ok_or(AxError::NoSuchProcess)
 }
 
 pub fn sys_capget(
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
 ) -> AxResult<isize> {
-    validate_cap_header(header)?;
+    let pid = validate_cap_header(header)?;
 
-    data.vm_write(__user_cap_data_struct {
-        effective: u32::MAX,
-        permitted: u32::MAX,
-        inheritable: u32::MAX,
-    })?;
+    let cred = cred_for_pid(pid)?;
+    let caps = if cred.euid == 0 { u32::MAX } else { 0 };
+    let data_struct = __user_cap_data_struct {
+        effective: caps,
+        permitted: caps,
+        inheritable: caps,
+    };
+    // Capability version 3 uses an array of TWO __user_cap_data_struct
+    // entries (low 32 bits and high 32 bits). Write both.
+    unsafe {
+        (data as *mut __user_cap_data_struct).vm_write(data_struct)?;
+        (data as *mut __user_cap_data_struct)
+            .add(1)
+            .vm_write(data_struct)?;
+    }
     Ok(0)
 }
 
@@ -42,8 +69,13 @@ pub fn sys_capset(
     header: *mut __user_cap_header_struct,
     _data: *mut __user_cap_data_struct,
 ) -> AxResult<isize> {
-    validate_cap_header(header)?;
+    let _ = validate_cap_header(header)?;
 
+    let cred = current().as_thread().cred();
+    if cred.euid != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+    // For now, accept and ignore the values (no real capability tracking).
     Ok(0)
 }
 
@@ -51,18 +83,6 @@ pub fn sys_umask(mask: u32) -> AxResult<isize> {
     let curr = current();
     let old = curr.as_thread().proc_data.replace_umask(mask);
     Ok(old as isize)
-}
-
-pub fn sys_setreuid(_ruid: u32, _euid: u32) -> AxResult<isize> {
-    Ok(0)
-}
-
-pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> AxResult<isize> {
-    Ok(0)
-}
-
-pub fn sys_setresgid(_rgid: u32, _egid: u32, _sgid: u32) -> AxResult<isize> {
-    Ok(0)
 }
 
 pub fn sys_get_mempolicy(
@@ -106,6 +126,17 @@ pub fn sys_prctl(
             let mut buf = [0; 16];
             buf[..len].copy_from_slice(&name.as_bytes()[..len]);
             vm_write_slice(arg2 as _, &buf)?;
+        }
+        PR_SET_PDEATHSIG => {
+            let sig = arg2 as u32;
+            if sig > 64 {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().set_pdeathsig(sig);
+        }
+        PR_GET_PDEATHSIG => {
+            let sig = current().as_thread().pdeathsig() as i32;
+            (arg2 as *mut i32).vm_write(sig)?;
         }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}

@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-x86-pc"
-version.workspace = true
+version = "0.5.7"
 repository.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine."
 keywords = ["arceos", "os", "hal", "x86"]
@@ -17,14 +17,14 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 reboot-on-system-off = []
 
 [dependencies]
-ax-kspin = "0.3.1"
+ax-kspin = "0.3"
 log = "0.4"
 bitflags = "2.6"
-ax-int-ratio = "0.3.2"
-ax-lazyinit = "0.4.2"
+ax-int-ratio = "0.3"
+ax-lazyinit = "0.4"
 ax-percpu.workspace = true
 heapless = "0.9"
-ax-config-macros = "0.4.1"
+ax-config-macros = "0.4"
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
 

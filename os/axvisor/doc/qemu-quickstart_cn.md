@@ -31,7 +31,7 @@ source "$HOME/.cargo/env"
 
 ```bash
 cargo install cargo-binutils
-cargo +stable install ostool --version '^0.8'
+cargo +stable install ostool --version '^0.15'
 ```
 
 - `cargo-binutils`：提供 `rust-objcopy`、`rust-objdump` 等工具
@@ -151,12 +151,12 @@ VM 配置中的 `kernel_path` 指向了不存在的文件。运行 `./scripts/se
 
 ### `Auto syncing from registry ... timed out`
 
-这通常是访问 GitHub Raw 不稳定导致的。`cargo axvisor image pull` 现在会在命令内部处理 registry 引导逻辑：优先使用默认 registry，若其中声明了 include 就继续跟随 include；若默认入口不可用，则自动回退到内建 fallback registry（当前指向 `v0.0.22.toml`）。
+这通常是访问 GitHub Raw 不稳定导致的。`cargo axvisor image pull` 现在会在命令内部处理 registry 引导逻辑：优先使用默认 registry，若其中声明了 include 就继续跟随 include；若默认入口不可用，则自动回退到内建 fallback registry（当前指向 `v0.0.25.toml`）。
 
 如果你所在网络环境对部分 URL 不稳定，可显式覆盖 fallback registry：
 
 ```bash
-export AXVISOR_REGISTRY_FALLBACK_URL="https://raw.githubusercontent.com/arceos-hypervisor/axvisor-guest/refs/heads/main/registry/v0.0.22.toml"
+export AXVISOR_REGISTRY_FALLBACK_URL="https://raw.githubusercontent.com/arceos-hypervisor/axvisor-guest/refs/heads/main/registry/v0.0.25.toml"
 ./scripts/setup_qemu.sh arceos
 ```
 

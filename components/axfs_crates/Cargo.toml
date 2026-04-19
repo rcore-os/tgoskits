@@ -3,12 +3,12 @@ resolver = "2"
 
 members = [
     "axfs_vfs",
-    "ax-fs-devfs",
-    "ax-fs-ramfs",
+    "axfs_devfs",
+    "axfs_ramfs",
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.3.7"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 repository = "https://github.com/rcore-os/tgoskits"
@@ -16,4 +16,4 @@ categories = ["os", "no-std", "filesystem"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-ax-fs-vfs = { path = "axfs_vfs", version = "0.3.2" }
+ax-fs-vfs = { path = "axfs_vfs", version = "0.3" }

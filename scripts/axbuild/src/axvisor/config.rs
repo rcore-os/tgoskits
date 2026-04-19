@@ -89,6 +89,7 @@ vm_configs = []
             arch: Some(DEFAULT_AXVISOR_ARCH.to_string()),
             target: Some(DEFAULT_AXVISOR_TARGET.to_string()),
             plat_dyn: Some(false),
+            smp: None,
             config: Some(PathBuf::from("os/axvisor/.build-aarch64.toml")),
             vmconfigs: vec![PathBuf::from("tmp/vm1.toml")],
             qemu: AxvisorQemuSnapshot {

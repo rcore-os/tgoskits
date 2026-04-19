@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version.workspace = true
+version = "0.5.11"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]

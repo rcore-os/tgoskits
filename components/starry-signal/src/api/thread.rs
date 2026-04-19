@@ -6,13 +6,14 @@ use core::{
 };
 
 use ax_cpu::uspace::UserContext;
+use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq;
-use starry_vm::VmMutPtr;
+use starry_vm::{VmMutPtr, VmPtr};
 
 use super::ProcessSignalManager;
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
-    SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo, arch::UContext,
+    SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo, api::SignalActions, arch::UContext,
 };
 
 struct SignalFrame {
@@ -70,6 +71,7 @@ impl ThreadSignalManager {
         restore_blocked: SignalSet,
         sig: &SignalInfo,
         action: &SignalAction,
+        actions: &mut SignalActions,
     ) -> Option<SignalOSAction> {
         let signo = sig.signo();
         debug!("Handle signal: {signo:?}");
@@ -132,7 +134,7 @@ impl ThreadSignalManager {
                 }
 
                 if action.flags.contains(SignalActionFlags::RESETHAND) {
-                    self.proc.actions.lock()[signo] = SignalAction::default();
+                    actions[signo] = SignalAction::default();
                 }
                 *self.blocked.lock() |= add_blocked;
                 Some(SignalOSAction::Handler)
@@ -145,6 +147,7 @@ impl ThreadSignalManager {
         &self,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
+        actions: &mut SignalActions,
     ) -> Option<(SignalInfo, SignalOSAction)> {
         let blocked = self.blocked.lock();
         let mask = !*blocked;
@@ -159,9 +162,11 @@ impl ThreadSignalManager {
                     self.proc.dequeue_signal(&mask)
                 }
             }?;
-            let action = self.proc.actions.lock()[sig.signo()].clone();
+            let action = actions[sig.signo()].clone();
 
-            if let Some(os_action) = self.handle_signal(uctx, restore_blocked, &sig, &action) {
+            if let Some(os_action) =
+                self.handle_signal(uctx, restore_blocked, &sig, &action, actions)
+            {
                 break Some((sig, os_action));
             }
         }
@@ -175,26 +180,30 @@ impl ThreadSignalManager {
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
     ) -> Option<(SignalInfo, SignalOSAction)> {
+        // Lock by `actions`
+        let mut actions = self.proc.actions.lock();
+
         // Fast path
         if !self.possibly_has_signal.load(Ordering::Acquire)
             && !self.proc.possibly_has_signal.load(Ordering::Acquire)
         {
             return None;
         }
-        self.check_signals_slow(uctx, restore_blocked)
+        self.check_signals_slow(uctx, restore_blocked, &mut actions)
     }
 
     /// Restores the signal frame. Called by `sigreturn`.
-    pub fn restore(&self, uctx: &mut UserContext) {
+    pub fn restore(&self, uctx: &mut UserContext) -> AxResult<isize> {
         let frame_ptr = uctx.sp() as *const SignalFrame;
-        // FIXME: remove this `unsafe`
-        let frame = unsafe { &*frame_ptr };
+        // copy the saved frame back from uspace
+        let frame: SignalFrame = unsafe { frame_ptr.vm_read_uninit()?.assume_init() };
 
         *uctx = frame.uctx;
         frame.ucontext.mcontext.restore(uctx);
 
         *self.blocked.lock() = frame.ucontext.sigmask;
         self.possibly_has_signal.store(true, Ordering::Release);
+        Ok(0)
     }
 
     /// Sends a signal to the thread.
@@ -206,7 +215,11 @@ impl ThreadSignalManager {
     #[must_use]
     pub fn send_signal(&self, sig: SignalInfo) -> bool {
         let signo = sig.signo();
-        if self.proc.signal_ignored(signo) {
+
+        // Lock by `actions`
+        let actions = self.proc.actions.lock();
+        debug!("signal: {signo:?}");
+        if actions[signo].is_ignore(signo) {
             return false;
         }
 
@@ -223,6 +236,9 @@ impl ThreadSignalManager {
 
     /// Sets the blocked signals. Return the old value.
     pub fn set_blocked(&self, mut set: SignalSet) -> SignalSet {
+        // Lock by `actions`
+        let _actions = self.proc.actions.lock();
+
         set.remove(Signo::SIGKILL);
         set.remove(Signo::SIGSTOP);
         self.possibly_has_signal.store(true, Ordering::Release);

@@ -1,6 +1,6 @@
 [package]
 name = "axbacktrace"
-version = "0.3.2"
+version = "0.3.8"
 description = "Backtrace for ArceOS"
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 repository = "https://github.com/Starry-OS/axbacktrace"

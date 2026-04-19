@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "Net": {
+      "properties": {
+        "board_ip": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gatewayip": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interface": {
+          "type": "string"
+        },
+        "netmask": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tftp_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "interface"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "baud_rate": {
+      "type": "string"
+    },
+    "board_power_off_cmd": {
+      "description": "Board power off command\nshell command to power off the board",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "board_reset_cmd": {
+      "description": "Board reset command\nshell command to reset the board",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "dtb_file": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fail_regex": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "kernel_load_addr": {
+      "description": "Kernel load address\nif not specified, use U-Boot env variable 'loadaddr'",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "net": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Net"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "TFTP boot configuration"
+    },
+    "serial": {
+      "description": "Serial console device\ne.g., /dev/ttyUSB0 on linux, COM3 on Windows",
+      "type": "string"
+    },
+    "success_regex": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "uboot_cmd": {
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "serial",
+    "baud_rate",
+    "success_regex",
+    "fail_regex"
+  ],
+  "title": "UbootConfig",
+  "type": "object"
+}

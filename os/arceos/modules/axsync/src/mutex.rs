@@ -114,7 +114,7 @@ pub type Mutex<T> = lock_api::Mutex<RawMutex, T>;
 /// An alias of [`lock_api::MutexGuard`].
 pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use std::sync::Once;
 

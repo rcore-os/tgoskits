@@ -468,10 +468,10 @@ impl<'a, M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable32Cursor
                     if !entry.is_unused() {
                         entry.set_flags(flags, page_size.is_huge());
                         self.push(vaddr);
-                    }
-                    // ignore if not present
-
-                    page_size
+                        page_size
+                    } else {
+                        PageSize::Size4K
+                    } // ignore if unused
                 }
                 Err(PagingError::NotMapped) => PageSize::Size4K,
                 Err(e) => {

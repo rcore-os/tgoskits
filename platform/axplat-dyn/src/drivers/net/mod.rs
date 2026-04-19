@@ -23,11 +23,12 @@ const RX_PREFETCH_TARGET: usize = 1;
 pub struct PlatformNetDevice {
     name: &'static str,
     net: rd_net::Net,
+    irq_num: Option<usize>,
 }
 
 impl PlatformNetDevice {
-    fn new(name: &'static str, net: rd_net::Net) -> Self {
-        Self { name, net }
+    fn new(name: &'static str, net: rd_net::Net, irq_num: Option<usize>) -> Self {
+        Self { name, net, irq_num }
     }
 }
 
@@ -57,6 +58,7 @@ struct NetState {
 pub struct Net {
     name: &'static str,
     mac: [u8; 6],
+    irq_num: Option<usize>,
     buf_pool: Arc<NetBufPool>,
     state: Mutex<NetState>,
 }
@@ -68,6 +70,7 @@ impl TryFrom<Device<PlatformNetDevice>> for Net {
         let mut dev = device.lock().map_err(map_device_err_to_dev_err)?;
         let name = dev.name;
         let mac = dev.net.mac_address();
+        let irq_num = dev.irq_num;
         let tx_queue = dev.net.create_tx_queue().map_err(map_net_err_to_dev_err)?;
         let rx_queue = dev.net.create_rx_queue().map_err(map_net_err_to_dev_err)?;
         drop(dev);
@@ -75,6 +78,7 @@ impl TryFrom<Device<PlatformNetDevice>> for Net {
         Ok(Self {
             name,
             mac,
+            irq_num,
             buf_pool: NetBufPool::new(NET_BUF_POOL_CAPACITY, NET_BUF_LEN)?,
             state: Mutex::new(NetState {
                 tx_queue,
@@ -121,6 +125,20 @@ impl Net {
     }
 }
 
+pub(super) fn pci_legacy_irq_for_address(address: rdrive::probe::pci::PciAddress) -> usize {
+    const PCI_IRQ_BASE: usize = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "riscv64") {
+        0x20
+    } else if cfg!(target_arch = "loongarch64") {
+        0x10
+    } else if cfg!(target_arch = "aarch64") {
+        0x23
+    } else {
+        0
+    };
+
+    PCI_IRQ_BASE + (usize::from(address.device()) & 3)
+}
+
 impl BaseDriverOps for Net {
     fn device_name(&self) -> &str {
         self.name
@@ -131,7 +149,7 @@ impl BaseDriverOps for Net {
     }
 
     fn irq_num(&self) -> Option<usize> {
-        None
+        self.irq_num
     }
 }
 
@@ -216,18 +234,18 @@ impl NetDriverOps for Net {
 }
 
 pub trait PlatformDeviceNet {
-    fn register_net<T>(self, name: &'static str, dev: T)
+    fn register_net<T>(self, name: &'static str, dev: T, irq_num: Option<usize>)
     where
         T: Interface + 'static;
 }
 
 impl PlatformDeviceNet for rdrive::PlatformDevice {
-    fn register_net<T>(self, name: &'static str, dev: T)
+    fn register_net<T>(self, name: &'static str, dev: T, irq_num: Option<usize>)
     where
         T: Interface + 'static,
     {
         let net = rd_net::Net::new(dev, &DmaImpl);
-        self.register(PlatformNetDevice::new(name, net));
+        self.register(PlatformNetDevice::new(name, net, irq_num));
     }
 }
 

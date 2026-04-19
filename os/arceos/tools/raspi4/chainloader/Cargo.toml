@@ -1,9 +1,10 @@
 [package]
 name = "mingo"
-version = "0.8.0"
+version = "0.8.3"
 authors = ["Andre Richter <andre.o.richter@gmail.com>"]
 edition = "2024"
 license.workspace = true
+publish = false
 
 [profile.release]
 lto = true

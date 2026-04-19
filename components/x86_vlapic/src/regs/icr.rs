@@ -16,9 +16,7 @@
 //! The interrupt command register (ICR) is a 64-bit1 local APIC register (see Figure 11-12)
 //! that allows software running on the processor to specify and send interprocessor interrupts (IPIs) to other processors in the system.
 
-use tock_registers::LocalRegisterCopy;
-use tock_registers::register_bitfields;
-use tock_registers::registers::ReadWrite;
+use tock_registers::{LocalRegisterCopy, register_bitfields, registers::ReadWrite};
 
 register_bitfields! {
     u32,

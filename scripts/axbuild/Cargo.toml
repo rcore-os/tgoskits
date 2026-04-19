@@ -6,41 +6,43 @@ keywords.workspace = true
 license.workspace = true
 name = "axbuild"
 repository.workspace = true
-version = "0.4.0"
+version = "0.4.4"
 description = "An OS build lib toolkit used by arceos"
 
-[dependencies]
-anyhow = {workspace = true}
-axvmconfig = {version = "0.4.2", features = ["std"]}
+[target.'cfg(any(windows, unix))'.dependencies]
+anyhow = { workspace = true }
+axvmconfig = { version = "0.4", features = ["std"] }
 cargo_metadata = "0.23"
-chrono = {version = "0.4", features = ["serde"]}
-clap = {version = "4.6", features = ["derive"], optional = true}
-colored = {version = "3"}
-env_logger = {workspace = true}
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.6", features = ["derive"], optional = true }
+colored = { version = "3" }
+env_logger = { workspace = true }
 futures-util = "0.3"
-flate2 = {version = "1.0"}
+flate2 = { version = "1.0" }
 indicatif = "0.18"
-jkconfig = {version = "0.1"}
+jkconfig = { version = "0.1" }
 log = "0.4"
 object = "0.38"
-ostool = {workspace = true}
-regex = {version = "1.12"}
-reqwest = {version = "0.13", features = ["stream"]}
-schemars = {workspace = true, features = ["derive"]}
-serde = {version = "1.0", features = ["derive"]}
-serde_json = {version = "1"}
-sha2 = {version = "0.10"}
-tar = {version = "0.4"}
-tokio = {version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread"], optional = true}
+ostool = { workspace = true }
+regex = { version = "1.12" }
+reqwest = { version = "0.13", features = ["stream"] }
+schemars = { workspace = true, features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1" }
+sha2 = { version = "0.10" }
+tar = { version = "0.4" }
+tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread"], optional = true }
 toml.workspace = true
 tracing = "0.1"
 tracing-log = "0.2"
-tracing-subscriber = {version = "0.3", features = ["fmt", "std", "time"]}
+tracing-subscriber = { version = "0.3", features = ["fmt", "std", "time"] }
 xz2 = "0.1"
 
 [features]
-cli = ["clap", "tokio"]
+clap = ["dep:clap", "dep:tokio"]
+cli = ["clap"]
 default = ["cli"]
+tokio = ["dep:tokio", "dep:clap"]
 
 [dev-dependencies]
 tempfile = "3"

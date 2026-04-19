@@ -1,6 +1,6 @@
 [package]
 name = "axvisor_api_proc"
-version = "0.5.0"
+version = "0.5.6"
 description = "Procedural macros for the `axvisor_api` crate"
 documentation = "https://docs.rs/axvisor_api_proc"
 readme = "README.md"

@@ -27,6 +27,8 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         return Err(OnProbeError::NotMatch);
     }
 
+    let address = endpoint.address();
+    let irq = super::pci_legacy_irq_for_address(address);
     let Some(bar) = endpoint.bar_mmio(0) else {
         return Err(OnProbeError::other("E1000 BAR0 MMIO region missing"));
     };
@@ -39,10 +41,10 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
     let dev = E1000::new(bar.start as u64, bar.count(), u64::MAX, &DmaImpl, &Kernel)
         .map_err(|err| OnProbeError::other(alloc::format!("failed to create e1000: {err:?}")))?;
 
-    plat_dev.register_net(DRIVER_NAME, dev);
+    plat_dev.register_net(DRIVER_NAME, dev, Some(irq));
     debug!(
-        "intel e1000 PCI device registered successfully at {}",
-        endpoint.address()
+        "intel e1000 PCI device registered successfully at {} with irq {:#x}",
+        address, irq
     );
     Ok(())
 }

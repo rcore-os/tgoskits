@@ -1,6 +1,6 @@
 [package]
 name = "ax-sched"
-version = "0.5.1"
+version = "0.5.5"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = [
@@ -12,4 +12,4 @@ rust-version = "1.76"
 license = "Apache-2.0"
 
 [dependencies]
-ax-linked-list-r4l = "0.5.0"
+ax-linked-list-r4l = "0.5"

@@ -94,6 +94,12 @@ pub struct RawList<G: GetLinks> {
     head: Option<NonNull<G::EntryType>>,
 }
 
+impl<G: GetLinks> Default for RawList<G> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<G: GetLinks> RawList<G> {
     /// Constructs a new empty RawList.
     pub const fn new() -> Self {
@@ -189,6 +195,11 @@ impl<G: GetLinks> RawList<G> {
     /// Rawlist will save the reference as node ptr.
     /// The caller must ensure the validity of the reference while it is on
     /// the linked list.
+    ///
+    /// # Safety
+    ///
+    /// `new` must point to a valid entry whose storage remains alive for as long as it is linked
+    /// in the list.
     pub unsafe fn push_back(&mut self, new: NonNull<G::EntryType>) -> bool {
         self.push_back_internal(new, false)
     }
@@ -198,6 +209,11 @@ impl<G: GetLinks> RawList<G> {
     /// Rawlist will save the reference as node ptr.
     /// The caller must ensure the validity of the reference while it is on
     /// the linked list.
+    ///
+    /// # Safety
+    ///
+    /// `new` must point to a valid entry whose storage remains alive for as long as it is linked
+    /// in the list.
     pub unsafe fn push_front(&mut self, new: NonNull<G::EntryType>) -> bool {
         self.push_back_internal(new, true)
     }
@@ -410,6 +426,12 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         }
     }
 
+    /// Returns a mutable reference to the element the cursor is currently positioned on.
+    ///
+    /// # Safety
+    ///
+    /// Callers must guarantee they have unique access to the pointee for the duration of the
+    /// returned mutable reference.
     pub unsafe fn current_mut(&mut self) -> Option<&mut G::EntryType> {
         let cur = self.cursor.cur?;
         // SAFETY: Objects must be kept alive while on the list.

@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-loongarch64-qemu-virt"
-version.workspace = true
+version = "0.5.7"
 repository.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for QEMU LoongArch virtual machine."
 keywords = ["arceos", "os", "hal", "embedded", "loongarch"]
@@ -17,14 +17,14 @@ smp = ["ax-plat/smp", "ax-kspin/smp", "irq"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, optional = true }
-ax-kspin = "0.3.1"
-ax-lazyinit = "0.4.2"
+ax-kspin = "0.3"
+ax-lazyinit = "0.4"
 log = "0.4"
 loongArch64 = "0.2.4"
-ax-page-table-entry = "0.8.1"
+ax-page-table-entry = "0.8"
 uart_16550 = "0.5"
 
-ax-config-macros = "0.4.1"
+ax-config-macros = "0.4"
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
 

@@ -67,7 +67,7 @@ pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<S
         }
     }
 
-    info!(
+    debug!(
         "Phase 1 completed: Found {} new descendant device names",
         additional_device_names.len()
     );
@@ -111,7 +111,7 @@ pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<S
         }
     }
 
-    info!(
+    debug!(
         "Phase 2 completed: Found {} new dependency device names",
         dependency_device_names.len()
     );
@@ -176,7 +176,7 @@ pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<S
     all_device_names.retain(|device_name| device_name != "/");
 
     let final_device_count = all_device_names.len();
-    info!(
+    debug!(
         "Passthrough devices analysis completed. Total devices: {} (added: {})",
         final_device_count,
         final_device_count - initial_device_count
@@ -193,9 +193,18 @@ pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<S
 /// Build the full path of a node based on node level relationships
 /// Build the path by traversing all nodes and constructing paths based on level relationships to avoid path conflicts for nodes with the same name
 pub fn build_node_path(all_nodes: &[Node], target_index: usize) -> String {
-    let mut path_stack: Vec<String> = Vec::new();
+    build_all_node_paths(all_nodes)
+        .get(target_index)
+        .cloned()
+        .unwrap_or_else(|| "/".to_string())
+}
 
-    for node in all_nodes.iter().take(target_index + 1) {
+/// Build all node paths in one linear pass and return them in index order.
+pub fn build_all_node_paths(all_nodes: &[Node]) -> Vec<String> {
+    let mut path_stack: Vec<String> = Vec::new();
+    let mut paths = Vec::with_capacity(all_nodes.len());
+
+    for node in all_nodes {
         let level = node.level;
 
         if level == 1 {
@@ -209,14 +218,16 @@ pub fn build_node_path(all_nodes: &[Node], target_index: usize) -> String {
             }
             path_stack.push(node.name().to_string());
         }
+
+        let path = if path_stack.is_empty() || (path_stack.len() == 1 && path_stack[0] == "/") {
+            "/".to_string()
+        } else {
+            "/".to_string() + &path_stack.join("/")
+        };
+        paths.push(path);
     }
 
-    // Build the full path of the current node
-    if path_stack.is_empty() || (path_stack.len() == 1 && path_stack[0] == "/") {
-        "/".to_string()
-    } else {
-        "/".to_string() + &path_stack.join("/")
-    }
+    paths
 }
 
 /// Build a simplified node cache table, traverse all nodes once and group by full path
@@ -225,9 +236,10 @@ pub fn build_optimized_node_cache<'a>(fdt: &'a Fdt) -> BTreeMap<String, Vec<Node
     let mut node_cache: BTreeMap<String, Vec<Node<'a>>> = BTreeMap::new();
 
     let all_nodes: Vec<Node> = fdt.all_nodes().collect();
+    let all_paths = build_all_node_paths(&all_nodes);
 
     for (index, node) in all_nodes.iter().enumerate() {
-        let node_path = build_node_path(&all_nodes, index);
+        let node_path = all_paths[index].clone();
         if let Some(existing_nodes) = node_cache.get(&node_path)
             && !existing_nodes.is_empty()
         {
@@ -261,9 +273,10 @@ fn build_phandle_map(fdt: &Fdt) -> BTreeMap<u32, (String, BTreeMap<String, u32>)
     let mut phandle_map = BTreeMap::new();
 
     let all_nodes: Vec<Node> = fdt.all_nodes().collect();
+    let all_paths = build_all_node_paths(&all_nodes);
 
     for (index, node) in all_nodes.iter().enumerate() {
-        let node_path = build_node_path(&all_nodes, index);
+        let node_path = all_paths[index].clone();
 
         // Collect node properties
         let mut phandle = None;

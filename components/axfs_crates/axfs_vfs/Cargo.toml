@@ -3,7 +3,7 @@ name = "ax-fs-vfs"
 description = "Virtual filesystem interfaces used by ArceOS"
 keywords = ["arceos", "filesystem", "vfs"]
 edition.workspace = true
-version = "0.3.2"
+version = "0.3.8"
 repository.workspace = true
 authors.workspace = true
 categories.workspace = true
@@ -15,4 +15,4 @@ default = []
 [dependencies]
 log = "0.4"
 bitflags = "2.6"
-ax-errno = "0.4.2"
+ax-errno = "0.4"

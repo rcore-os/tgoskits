@@ -92,7 +92,7 @@ fn discover_patch_paths(
     let root_patch_paths = root_patch_paths(workspace_root)?;
     let repo_local_packages = discover_repo_local_packages(workspace_root)?;
     let registry_dependency_names =
-        registry_dependency_names_in_workspace(&arceos_dir.join("Cargo.toml"))?;
+        registry_dependency_names_in_workspace(workspace_root, arceos_dir)?;
     let mut patches = BTreeMap::new();
 
     for (crate_name, package_dir) in &root_patch_paths {
@@ -218,22 +218,25 @@ fn manifest_package_name(manifest_path: &Path) -> anyhow::Result<Option<String>>
 }
 
 fn registry_dependency_names_in_workspace(
-    arceos_manifest: &Path,
+    workspace_root: &Path,
+    arceos_dir: &Path,
 ) -> anyhow::Result<BTreeSet<String>> {
+    let workspace_manifest = workspace_root.join("Cargo.toml");
     let metadata = MetadataCommand::new()
         .no_deps()
-        .manifest_path(arceos_manifest)
+        .manifest_path(&workspace_manifest)
         .exec()
         .with_context(|| {
             format!(
                 "failed to get cargo metadata for {}",
-                arceos_manifest.display()
+                workspace_manifest.display()
             )
         })?;
 
     Ok(metadata
         .packages
         .into_iter()
+        .filter(|package| package.manifest_path.as_std_path().starts_with(arceos_dir))
         .flat_map(|package| package.dependencies.into_iter())
         .filter_map(|dependency| {
             dependency

@@ -1,6 +1,6 @@
 [package]
 name = "ax-errno"
-version = "0.4.2"
+version = "0.4.7"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]

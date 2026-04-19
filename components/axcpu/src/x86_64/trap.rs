@@ -38,11 +38,31 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     );
 }
 
+fn handle_breakpoint(tf: &mut TrapFrame) {
+    debug!("#BP @ {:#x} ", tf.rip);
+    let _ = crate::trap::breakpoint_handler(tf);
+}
+
+fn handle_debug(tf: &mut TrapFrame) {
+    debug!("#DB @ {:#x} ", tf.rip);
+    if crate::trap::debug_handler(tf) {
+        return;
+    }
+    panic!(
+        "Unhandled #DB @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",
+        tf.rip,
+        tf.error_code,
+        tf,
+        tf.backtrace()
+    );
+}
+
 #[unsafe(no_mangle)]
 fn x86_trap_handler(tf: &mut TrapFrame) {
     match tf.vector as u8 {
         PAGE_FAULT_VECTOR => handle_page_fault(tf),
-        BREAKPOINT_VECTOR => debug!("#BP @ {:#x} ", tf.rip),
+        BREAKPOINT_VECTOR => handle_breakpoint(tf),
+        DEBUG_VECTOR => handle_debug(tf),
         GENERAL_PROTECTION_FAULT_VECTOR => {
             panic!(
                 "#GP @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",

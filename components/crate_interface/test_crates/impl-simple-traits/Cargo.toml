@@ -1,6 +1,6 @@
 [package]
 name = "impl-simple-traits"
-version.workspace = true
+version = "0.3.4"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true

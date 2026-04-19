@@ -3,8 +3,7 @@
 //! This module provides functions for PHY initialization, configuration,
 //! and management through the MDIO interface.
 
-use crate::fxmac::*;
-use crate::fxmac_const::*;
+use crate::{fxmac::*, fxmac_const::*};
 
 /// PHY Control Register offset (MII register 0).
 pub const PHY_CONTROL_REG_OFFSET: u32 = 0;
@@ -34,7 +33,7 @@ pub const PHY_AUTOADVERTISE_ASYMMETRIC_PAUSE_MASK: u16 = 0x0800;
 pub const PHY_AUTOADVERTISE_PAUSE_MASK: u16 = 0x0400;
 pub const PHY_AUTOADVERTISE_AUTONEG_ERROR_MASK: u16 = 0x8000;
 
-/* Advertisement control register. */
+// Advertisement control register.
 pub const PHY_AUTOADVERTISE_10HALF: u16 = 0x0020; /* Try for 10mbps half-duplex  */
 pub const PHY_AUTOADVERTISE_1000XFULL: u16 = 0x0020; /* Try for 1000BASE-X full-duplex */
 pub const PHY_AUTOADVERTISE_10FULL: u16 = 0x0040; /* Try for 10mbps full-duplex  */
@@ -102,7 +101,7 @@ pub fn FXmacPhyWrite(
         phy_address, register_num, phy_data
     );
 
-    /* Make sure no other PHY operation is currently in progress */
+    // Make sure no other PHY operation is currently in progress
     if (read_reg((instance_p.config.base_address + FXMAC_NWSR_OFFSET) as *const u32)
         & FXMAC_NWSR_MDIOIDLE_MASK)
         == 0
@@ -110,14 +109,14 @@ pub fn FXmacPhyWrite(
         status = 6; // FXMAC_ERR_PHY_BUSY;
         error!("FXmacPhyRead error: PHY busy!");
     } else {
-        /* Construct mgtcr mask for the operation */
+        // Construct mgtcr mask for the operation
         mgtcr = FXMAC_PHYMNTNC_OP_MASK
             | FXMAC_PHYMNTNC_OP_W_MASK
             | (phy_address << FXMAC_PHYMNTNC_PHAD_SHFT_MSK)
             | (register_num << FXMAC_PHYMNTNC_PREG_SHFT_MSK)
             | phy_data as u32;
 
-        /* Write mgtcr and wait for completion */
+        // Write mgtcr and wait for completion
         write_reg(
             (instance_p.config.base_address + FXMAC_PHYMNTNC_OFFSET) as *mut u32,
             mgtcr,
@@ -165,7 +164,7 @@ pub fn FXmacPhyRead(
     let mut IpReadTemp: u32 = 0;
     let mut status: u32 = 0;
 
-    /* Make sure no other PHY operation is currently in progress */
+    // Make sure no other PHY operation is currently in progress
     if (read_reg((instance_p.config.base_address + FXMAC_NWSR_OFFSET) as *const u32)
         & FXMAC_NWSR_MDIOIDLE_MASK)
         == 0
@@ -173,13 +172,13 @@ pub fn FXmacPhyRead(
         status = 6;
         error!("FXmacPhyRead error: PHY busy!");
     } else {
-        /* Construct mgtcr mask for the operation */
+        // Construct mgtcr mask for the operation
         mgtcr = FXMAC_PHYMNTNC_OP_MASK
             | FXMAC_PHYMNTNC_OP_R_MASK
             | (phy_address << FXMAC_PHYMNTNC_PHAD_SHFT_MSK)
             | (register_num << FXMAC_PHYMNTNC_PREG_SHFT_MSK);
 
-        /* Write mgtcr and wait for completion */
+        // Write mgtcr and wait for completion
         write_reg(
             (instance_p.config.base_address + FXMAC_PHYMNTNC_OFFSET) as *mut u32,
             mgtcr,
@@ -303,7 +302,7 @@ pub fn FXmacDetect(instance_p: &mut FXmac, phy_addr_p: &mut u32) -> u32 {
                 && (phy_id1_reg != 0xffff))
             {
                 *phy_addr_p = phy_addr;
-                //phy_addr_b = phy_addr;
+                // phy_addr_b = phy_addr;
                 info!("Phy addr is {:#x}", phy_addr);
                 return FT_SUCCESS;
             }
@@ -487,7 +486,7 @@ pub fn FXmacConfigureIeeePhySpeed(
         control &= !PHY_CONTROL_FULL_DUPLEX_MASK;
     }
 
-    /* disable auto-negotiation */
+    // disable auto-negotiation
     control &= !PHY_CONTROL_AUTONEGOTIATE_ENABLE;
     control &= !PHY_CONTROL_AUTONEGOTIATE_RESTART;
 
@@ -497,7 +496,7 @@ pub fn FXmacConfigureIeeePhySpeed(
         return ret;
     }
 
-    //FDriverMdelay(1500);
+    // FDriverMdelay(1500);
     crate::utils::msdelay(1500);
 
     info!("Manual selection completed.");

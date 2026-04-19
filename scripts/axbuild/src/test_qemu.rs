@@ -1,12 +1,13 @@
 use crate::{
     axvisor::qemu_test::ShellAutoInitConfig,
-    context::{arch_for_target_checked, starry_target_for_arch_checked, target_for_arch_checked},
+    context::{arch_for_target_checked, target_for_arch_checked},
 };
 
 pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
     "arceos-memtest",
     "arceos-exception",
     "arceos-affinity",
+    "arceos-ipi",
     "arceos-net-echoserver",
     "arceos-net-httpclient",
     "arceos-net-httpserver",
@@ -29,8 +30,6 @@ const ARCEOS_TEST_TARGETS: &[&str] = &[
 ];
 const ARCEOS_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 
-pub(crate) const STARRY_TEST_PACKAGE: &str = "starryos-test";
-const STARRY_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "x86_64"];
 const AXVISOR_AARCH64_TEST_SHELL_PREFIX: &str = "~ #";
 const AXVISOR_AARCH64_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
@@ -48,6 +47,7 @@ const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AxvisorUbootBoardConfig {
     pub(crate) board: &'static str,
+    pub(crate) guest: &'static str,
     pub(crate) build_config: &'static str,
     pub(crate) vmconfig: &'static str,
 }
@@ -63,16 +63,19 @@ pub(crate) struct AxvisorBoardTestGroup {
 const AXVISOR_UBOOT_BOARD_CONFIGS: &[AxvisorUbootBoardConfig] = &[
     AxvisorUbootBoardConfig {
         board: "orangepi-5-plus",
+        guest: "linux",
         build_config: "os/axvisor/configs/board/orangepi-5-plus.toml",
         vmconfig: "os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml",
     },
     AxvisorUbootBoardConfig {
         board: "phytiumpi",
+        guest: "linux",
         build_config: "os/axvisor/configs/board/phytiumpi.toml",
         vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
     },
     AxvisorUbootBoardConfig {
         board: "roc-rk3568-pc",
+        guest: "linux",
         build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
         vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
     },
@@ -84,6 +87,7 @@ const ORANGEPI_5_PLUS_LINUX_VMCONFIGS: &[&str] =
     &["os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml"];
 const ROC_RK3568_PC_LINUX_VMCONFIGS: &[&str] =
     &["os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml"];
+const RDK_S100_LINUX_VMCONFIGS: &[&str] = &["os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml"];
 
 const AXVISOR_BOARD_TEST_GROUPS: &[AxvisorBoardTestGroup] = &[
     AxvisorBoardTestGroup {
@@ -104,6 +108,12 @@ const AXVISOR_BOARD_TEST_GROUPS: &[AxvisorBoardTestGroup] = &[
         vmconfigs: ROC_RK3568_PC_LINUX_VMCONFIGS,
         board_test_config: "os/axvisor/configs/board-test/roc-rk3568-pc-linux.toml",
     },
+    AxvisorBoardTestGroup {
+        name: "rdk-s100-linux",
+        build_config: "os/axvisor/configs/board/rdk-s100.toml",
+        vmconfigs: RDK_S100_LINUX_VMCONFIGS,
+        board_test_config: "os/axvisor/configs/board-test/rdk-s100-linux.toml",
+    },
 ];
 
 pub(crate) fn parse_arceos_test_target(target: &str) -> anyhow::Result<(&str, &str)> {
@@ -113,22 +123,6 @@ pub(crate) fn parse_arceos_test_target(target: &str) -> anyhow::Result<(&str, &s
         ARCEOS_TEST_ARCHES,
         ARCEOS_TEST_TARGETS,
         target_for_arch_checked,
-        arch_for_target_checked,
-    )
-}
-
-pub(crate) fn parse_starry_test_target(target: &str) -> anyhow::Result<(&str, &str)> {
-    parse_arch_or_target(
-        target,
-        "starry qemu tests",
-        STARRY_TEST_ARCHES,
-        &[
-            "x86_64-unknown-none",
-            "riscv64gc-unknown-none-elf",
-            "aarch64-unknown-none-softfloat",
-            "loongarch64-unknown-none-softfloat",
-        ],
-        starry_target_for_arch_checked,
         arch_for_target_checked,
     )
 }
@@ -144,16 +138,21 @@ pub(crate) fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &
     )
 }
 
-pub(crate) fn axvisor_uboot_board_config(board: &str) -> anyhow::Result<AxvisorUbootBoardConfig> {
+pub(crate) fn axvisor_uboot_board_config(
+    board: &str,
+    guest: &str,
+) -> anyhow::Result<AxvisorUbootBoardConfig> {
     AXVISOR_UBOOT_BOARD_CONFIGS
         .iter()
         .copied()
-        .find(|config| config.board == board)
+        .find(|config| config.board == board && config.guest == guest)
         .ok_or_else(|| {
             anyhow!(
-                "unsupported board `{}` for axvisor uboot tests. Supported boards are: {}",
+                "unsupported axvisor uboot test target board=`{}` guest=`{}`. Supported \
+                 board/guest pairs are: {}",
                 board,
-                supported_board_names()
+                guest,
+                supported_board_guest_pairs()
             )
         })
 }
@@ -207,7 +206,7 @@ pub(crate) fn axvisor_test_shell_config(arch: &str) -> anyhow::Result<ShellAutoI
     }
 }
 
-fn validate_supported_target(
+pub(crate) fn validate_supported_target(
     target: &str,
     suite_name: &str,
     supported_kind: &str,
@@ -255,10 +254,10 @@ fn parse_arch_or_target<'a>(
     }
 }
 
-fn supported_board_names() -> String {
+fn supported_board_guest_pairs() -> String {
     AXVISOR_UBOOT_BOARD_CONFIGS
         .iter()
-        .map(|config| config.board)
+        .map(|config| format!("{}/{}", config.board, config.guest))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -351,26 +350,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_supported_starry_arch_aliases() {
-        assert_eq!(
-            parse_starry_test_target("x86_64").unwrap(),
-            ("x86_64", "x86_64-unknown-none")
-        );
-        assert_eq!(
-            parse_starry_test_target("aarch64").unwrap(),
-            ("aarch64", "aarch64-unknown-none-softfloat")
-        );
-    }
-
-    #[test]
-    fn accepts_starry_full_target_triples() {
-        assert_eq!(
-            parse_starry_test_target("x86_64-unknown-none").unwrap(),
-            ("x86_64", "x86_64-unknown-none")
-        );
-    }
-
-    #[test]
     fn parses_supported_axvisor_arch_aliases() {
         assert_eq!(
             parse_axvisor_test_target("aarch64").unwrap(),
@@ -403,25 +382,28 @@ mod tests {
     #[test]
     fn parses_axvisor_uboot_board_config_for_linux_smoke() {
         assert_eq!(
-            axvisor_uboot_board_config("orangepi-5-plus").unwrap(),
+            axvisor_uboot_board_config("orangepi-5-plus", "linux").unwrap(),
             AxvisorUbootBoardConfig {
                 board: "orangepi-5-plus",
+                guest: "linux",
                 build_config: "os/axvisor/configs/board/orangepi-5-plus.toml",
                 vmconfig: "os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml",
             }
         );
         assert_eq!(
-            axvisor_uboot_board_config("phytiumpi").unwrap(),
+            axvisor_uboot_board_config("phytiumpi", "linux").unwrap(),
             AxvisorUbootBoardConfig {
                 board: "phytiumpi",
+                guest: "linux",
                 build_config: "os/axvisor/configs/board/phytiumpi.toml",
                 vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
             }
         );
         assert_eq!(
-            axvisor_uboot_board_config("roc-rk3568-pc").unwrap(),
+            axvisor_uboot_board_config("roc-rk3568-pc", "linux").unwrap(),
             AxvisorUbootBoardConfig {
                 board: "roc-rk3568-pc",
+                guest: "linux",
                 build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
                 vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
             }
@@ -430,15 +412,15 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_axvisor_uboot_board() {
-        let err = axvisor_uboot_board_config("unknown-board").unwrap_err();
+        let err = axvisor_uboot_board_config("unknown-board", "linux").unwrap_err();
 
         assert!(
             err.to_string()
-                .contains("unsupported board `unknown-board`")
+                .contains("unsupported axvisor uboot test target board=`unknown-board`")
         );
-        assert!(err.to_string().contains("orangepi-5-plus"));
-        assert!(err.to_string().contains("phytiumpi"));
-        assert!(err.to_string().contains("roc-rk3568-pc"));
+        assert!(err.to_string().contains("orangepi-5-plus/linux"));
+        assert!(err.to_string().contains("phytiumpi/linux"));
+        assert!(err.to_string().contains("roc-rk3568-pc/linux"));
     }
 
     #[test]
@@ -450,7 +432,8 @@ mod tests {
             vec![
                 "phytiumpi-linux",
                 "orangepi-5-plus-linux",
-                "roc-rk3568-pc-linux"
+                "roc-rk3568-pc-linux",
+                "rdk-s100-linux"
             ]
         );
     }
@@ -478,6 +461,7 @@ mod tests {
         assert!(err.to_string().contains("phytiumpi-linux"));
         assert!(err.to_string().contains("orangepi-5-plus-linux"));
         assert!(err.to_string().contains("roc-rk3568-pc-linux"));
+        assert!(err.to_string().contains("rdk-s100-linux"));
     }
 
     #[test]

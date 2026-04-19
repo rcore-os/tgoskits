@@ -113,7 +113,7 @@ fn concurrent_check_signals() {
 
     let new_sp = uctx.sp() + 8;
     uctx.set_sp(new_sp);
-    thr.restore(&mut uctx);
+    thr.restore(&mut uctx).unwrap();
 
     assert!(!thr.signal_blocked(Signo::SIGTERM));
 

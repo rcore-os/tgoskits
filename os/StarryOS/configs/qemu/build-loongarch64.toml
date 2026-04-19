@@ -1,0 +1,7 @@
+# Build-time config template for StarryOS QEMU LoongArch64.
+features = ["qemu"]
+log = "Warn"
+
+[env]
+AX_IP = "10.0.2.15"
+AX_GW = "10.0.2.2"

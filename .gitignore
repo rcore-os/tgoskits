@@ -25,7 +25,10 @@
 
 # IDEs
 /.idea/
-/.vscode/
+/.vscode/*
+!/.vscode/launch.json
+!/.vscode/session.py
+!/.vscode/tasks.json
 /.zed/
 
 # Python cache

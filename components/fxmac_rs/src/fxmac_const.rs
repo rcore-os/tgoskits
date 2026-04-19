@@ -12,7 +12,7 @@ pub(crate) const FXMAC_MAX_TXBD: u32 = 128; /* Size of TX buffer descriptor queu
 
 pub(crate) const FXMAC_MAX_HASH_BITS: u32 = 64; /* Maximum value for hash bits. 2**6 */
 
-/************************** Constant Definitions *****************************/
+/// ************************ Constant Definitions ****************************
 
 pub(crate) const FXMAC_MAX_MAC_ADDR: u32 = 4; /* Maxmum number of mac address supported */
 pub(crate) const FXMAC_MAX_TYPE_ID: u32 = 4; /* Maxmum number of type id supported */
@@ -20,8 +20,9 @@ pub(crate) const FXMAC_MAX_TYPE_ID: u32 = 4; /* Maxmum number of type id support
 /// for aarch64
 pub(crate) const FXMAC_BD_ALIGNMENT: u32 = 64; /* Minimum buffer descriptor alignment on the local bus */
 
-pub(crate) const FXMAC_RX_BUF_ALIGNMENT: u32 = 4; /* Minimum buffer alignment when using options that impose
-                                                  alignment  restrictions on the buffer data on the local bus */
+/// Minimum buffer alignment when using options that impose alignment
+/// restrictions on the buffer data on the local bus.
+pub(crate) const FXMAC_RX_BUF_ALIGNMENT: u32 = 4;
 
 pub(crate) const FXMAC_NWCTRL_OFFSET: u64 = 0x00000000; /* Network Control reg */
 pub(crate) const FXMAC_NWCFG_OFFSET: u64 = 0x00000004; /* Network Config reg */
@@ -200,12 +201,10 @@ pub(crate) const FXMAC_LOOPBACK_SEL_OFFSET: u64 = 0xDC04;
 pub(crate) const FXMAC_TAIL_ENABLE: u64 = 0xe7c; /*Enable tail Register*/
 // FXMAC_TAIL_QUEUE(queue)		(0x0e80 + ((queue) << 2))
 
-/**
- * @name interrupts bit definitions
- * Bits definitions are same in FXMAC_ISR_OFFSET,
- * FXMAC_IER_OFFSET, FXMAC_IDR_OFFSET, and FXMAC_IMR_OFFSET
- * @{
- */
+/// @name interrupts bit definitions
+/// Bits definitions are same in FXMAC_ISR_OFFSET,
+/// FXMAC_IER_OFFSET, FXMAC_IDR_OFFSET, and FXMAC_IMR_OFFSET
+/// @{
 pub(crate) const FXMAC_IXR_PTPPSTX_MASK: u32 = BIT(25); /* PTP Pdelay_resp TXed */
 pub(crate) const FXMAC_IXR_PTPPDRTX_MASK: u32 = BIT(24); /* PTP Pdelay_req TXed */
 pub(crate) const FXMAC_IXR_PTPPSRX_MASK: u32 = BIT(23); /* PTP Pdelay_resp RXed */
@@ -244,9 +243,8 @@ pub(crate) const FXMAC_INTR_MASK: u32 = (FXMAC_IXR_LINKCHANGE_MASK
     | FXMAC_IXR_RXCOMPL_MASK
     | FXMAC_IXR_TXCOMPL_MASK);
 
-/** @name network control register bit definitions
- * @{
- */
+/// @name network control register bit definitions
+/// @{
 pub(crate) const FXMAC_NWCTRL_ENABLE_HS_MAC_MASK: u32 = BIT(31);
 
 pub(crate) const FXMAC_NWCTRL_TWO_PT_FIVE_GIG_MASK: u32 = BIT(29); /* 2.5G operation selected */
@@ -265,9 +263,8 @@ pub(crate) const FXMAC_NWCTRL_TXEN_MASK: u32 = BIT(3); /* Enable transmit */
 pub(crate) const FXMAC_NWCTRL_RXEN_MASK: u32 = BIT(2); /* Enable receive */
 pub(crate) const FXMAC_NWCTRL_LOOPBACK_LOCAL_MASK: u32 = BIT(1); /* Loopback local */
 
-/** @name network configuration register bit definitions FXMAC_NWCFG_OFFSET
- * @{
- */
+/// @name network configuration register bit definitions FXMAC_NWCFG_OFFSET
+/// @{
 pub(crate) const FXMAC_NWCFG_BADPREAMBEN_MASK: u32 = BIT(29); /* disable rejection of non-standard preamble */
 pub(crate) const FXMAC_NWCFG_IPDSTRETCH_MASK: u32 = BIT(28); /* enable transmit IPG */
 pub(crate) const FXMAC_NWCFG_SGMII_MODE_ENABLE_MASK: u32 = BIT(27); /* SGMII mode enable */
@@ -311,24 +308,23 @@ pub(crate) const FXMAC_NWCFG_NVLANDISC_MASK: u32 = BIT(2); /* Receive only VLAN 
 pub(crate) const FXMAC_NWCFG_FDEN_MASK: u32 = BIT(1); /* full duplex */
 pub(crate) const FXMAC_NWCFG_100_MASK: u32 = BIT(0); /* 100 Mbps */
 
-/* Receive buffer descriptor status words bit positions.
- * Receive buffer descriptor consists of two 32-bit registers,
- * the first - word0 contains a 32-bit word aligned address pointing to the
- * address of the buffer. The lower two bits make up the wrap bit indicating
- * the last descriptor and the ownership bit to indicate it has been used by
- * the xmac.
- * The following register - word1, contains status information regarding why
- * the frame was received (the filter match condition) as well as other
- * useful info.
- * @{
- */
+// Receive buffer descriptor status words bit positions.
+// Receive buffer descriptor consists of two 32-bit registers,
+// the first - word0 contains a 32-bit word aligned address pointing to the
+// address of the buffer. The lower two bits make up the wrap bit indicating
+// the last descriptor and the ownership bit to indicate it has been used by
+// the xmac.
+// The following register - word1, contains status information regarding why
+// the frame was received (the filter match condition) as well as other
+// useful info.
+// @{
 pub(crate) const FXMAC_RXBUF_BCAST_MASK: u32 = BIT(31); /* Broadcast frame */
 pub(crate) const FXMAC_RXBUF_HASH_MASK: u32 = GENMASK(30, 29);
 pub(crate) const FXMAC_RXBUF_MULTIHASH_MASK: u32 = BIT(30); /* Multicast hashed frame */
 pub(crate) const FXMAC_RXBUF_UNIHASH_MASK: u32 = BIT(29); /* Unicast hashed frame */
 pub(crate) const FXMAC_RXBUF_EXH_MASK: u32 = BIT(27); /* buffer exhausted */
-pub(crate) const FXMAC_RXBUF_AMATCH_MASK: u32 = GENMASK(26, 25); /* Specific address \
-                                                                 matched */
+/// Specific address matched.
+pub(crate) const FXMAC_RXBUF_AMATCH_MASK: u32 = GENMASK(26, 25);
 pub(crate) const FXMAC_RXBUF_IDFOUND_MASK: u32 = BIT(24); /* Type ID matched */
 pub(crate) const FXMAC_RXBUF_IDMATCH_MASK: u32 = GENMASK(23, 22); /* ID matched mask */
 pub(crate) const FXMAC_RXBUF_VLAN_MASK: u32 = BIT(21); /* VLAN tagged */
@@ -345,19 +341,16 @@ pub(crate) const FXMAC_RXBUF_WRAP_MASK: u32 = BIT(1); /* Wrap bit, last BD */
 pub(crate) const FXMAC_RXBUF_NEW_MASK: u32 = BIT(0); /* Used bit.. */
 pub(crate) const FXMAC_RXBUF_ADD_MASK: u32 = GENMASK(31, 2); /* Mask for address */
 
-/*
- * @}
- */
+// @}
 
-/* Transmit buffer descriptor status words bit positions.
- * Transmit buffer descriptor consists of two 32-bit registers,
- * the first - word0 contains a 32-bit address pointing to the location of
- * the transmit data.
- * The following register - word1, consists of various information to control
- * the xmac transmit process.  After transmit, this is updated with status
- * information, whether the frame was transmitted OK or why it had failed.
- * @{
- */
+// Transmit buffer descriptor status words bit positions.
+// Transmit buffer descriptor consists of two 32-bit registers,
+// the first - word0 contains a 32-bit address pointing to the location of
+// the transmit data.
+// The following register - word1, consists of various information to control
+// the xmac transmit process.  After transmit, this is updated with status
+// information, whether the frame was transmitted OK or why it had failed.
+// @{
 pub(crate) const FXMAC_TXBUF_USED_MASK: u32 = BIT(31); /* Used bit. */
 pub(crate) const FXMAC_TXBUF_WRAP_MASK: u32 = BIT(30); /* Wrap bit, last descriptor */
 pub(crate) const FXMAC_TXBUF_RETRY_MASK: u32 = BIT(29); /* Retry limit exceeded */
@@ -367,14 +360,10 @@ pub(crate) const FXMAC_TXBUF_TCP_MASK: u32 = BIT(26); /* Late collision. */
 pub(crate) const FXMAC_TXBUF_NOCRC_MASK: u32 = BIT(16); /* No CRC */
 pub(crate) const FXMAC_TXBUF_LAST_MASK: u32 = BIT(15); /* Last buffer */
 pub(crate) const FXMAC_TXBUF_LEN_MASK: u32 = GENMASK(13, 0); /* Mask for length field */
-/*
- * @}
- */
+// @}
 
-/**
- * @name receive status register bit definitions
- * @{
- */
+/// @name receive status register bit definitions
+/// @{
 pub(crate) const FXMAC_RXSR_HRESPNOK_MASK: u32 = BIT(3); /* Receive hresp not OK */
 pub(crate) const FXMAC_RXSR_RXOVR_MASK: u32 = BIT(2); /* Receive overrun */
 pub(crate) const FXMAC_RXSR_FRAMERX_MASK: u32 = BIT(1); /* Frame received OK */
@@ -385,9 +374,8 @@ pub(crate) const FXMAC_RXSR_ERROR_MASK: u32 =
 
 pub(crate) const FXMAC_SR_ALL_MASK: u32 = GENMASK(31, 0); /* Mask for full register */
 
-/** @name DMA control register bit definitions
- * @{
- */
+/// @name DMA control register bit definitions
+/// @{
 pub(crate) const FXMAC_DMACR_ADDR_WIDTH_64: u32 = BIT(30); /* 64 bit address bus */
 pub(crate) const FXMAC_DMACR_TXEXTEND_MASK: u32 = BIT(29); /* Tx Extended desc mode */
 pub(crate) const FXMAC_DMACR_RXEXTEND_MASK: u32 = BIT(28); /* Rx Extended desc mode */
@@ -405,22 +393,20 @@ pub(crate) const FXMAC_DMACR_INCR4_AHB_AXI_BURST: u32 = BIT(2); /* 4 bytes AHB_A
 pub(crate) const FXMAC_DMACR_INCR8_AHB_AXI_BURST: u32 = BIT(3); /* 8 bytes AHB_AXI bursts */
 pub(crate) const FXMAC_DMACR_INCR16_AHB_AXI_BURST: u32 = BIT(4); /* 16 bytes AHB_AXI bursts */
 
-/* This register indicates module identification number and module revision. */
+// This register indicates module identification number and module revision.
 
 pub(crate) const FXMAC_REVISION_MODULE_MASK: u32 = GENMASK(15, 0); /* Module revision */
 pub(crate) const FXMAC_IDENTIFICATION_MASK: u32 = GENMASK(27, 16); /* Module identification number */
 pub(crate) const FXMAC_FIX_NUM_MASK: u32 = GENMASK(31, 28); /*  Fix number - incremented for fix releases */
 
-/** @name network status register bit definitaions
- * @{
- */
+/// @name network status register bit definitaions
+/// @{
 pub(crate) const FXMAC_NWSR_MDIOIDLE_MASK: u32 = BIT(2); /* PHY management idle */
 pub(crate) const FXMAC_NWSR_MDIO_MASK: u32 = BIT(1); /* Status of mdio_in */
 pub(crate) const FXMAC_NWSR_PCS_LINK_STATE_MASK: u32 = BIT(0);
 
-/** @name PHY Maintenance bit definitions
- * @{
- */
+/// @name PHY Maintenance bit definitions
+/// @{
 pub(crate) const FXMAC_PHYMNTNC_OP_MASK: u32 = (BIT(17) | BIT(30)); /* operation mask bits */
 pub(crate) const FXMAC_PHYMNTNC_OP_R_MASK: u32 = BIT(29); /* read operation */
 pub(crate) const FXMAC_PHYMNTNC_OP_W_MASK: u32 = BIT(28); /* write operation */
@@ -430,9 +416,8 @@ pub(crate) const FXMAC_PHYMNTNC_DATA_MASK: u32 = GENMASK(11, 0); /* data bits */
 pub(crate) const FXMAC_PHYMNTNC_PHAD_SHFT_MSK: u32 = 23; /* Shift bits for PHYAD */
 pub(crate) const FXMAC_PHYMNTNC_PREG_SHFT_MSK: u32 = 18; /* Shift bits for PHREG */
 
-/** @name transmit status register bit definitions
- * @{
- */
+/// @name transmit status register bit definitions
+/// @{
 pub(crate) const FXMAC_TXSR_HRESPNOK_MASK: u32 = BIT(8); /* Transmit hresp not OK */
 pub(crate) const FXMAC_TXSR_URUN_MASK: u32 = BIT(6); /* Transmit underrun */
 pub(crate) const FXMAC_TXSR_TXCOMPL_MASK: u32 = BIT(5); /* Transmit completed OK */
@@ -448,24 +433,19 @@ pub(crate) const FXMAC_TXSR_ERROR_MASK: u32 = (FXMAC_TXSR_HRESPNOK_MASK
     | FXMAC_TXSR_RXOVR_MASK
     | FXMAC_TXSR_FRAMERX_MASK
     | FXMAC_TXSR_USEDREAD_MASK);
-/** @name transmit SRAM segment allocation by queue 0 to 7  register bit definitions
- * @{
- */
+/// @name transmit SRAM segment allocation by queue 0 to 7  register bit definitions
+/// @{
 pub(crate) const FXMAC_TXQSEGALLOC_QLOWER_JUMBO_MASK: u32 = BIT(2); /* 16 segments are distributed to queue 0*/
-/**
- * @name Interrupt Q1 status register bit definitions
- * @{
- */
+/// @name Interrupt Q1 status register bit definitions
+/// @{
 pub(crate) const FXMAC_INTQ1SR_TXCOMPL_MASK: u32 = BIT(7); /* Transmit completed OK */
 pub(crate) const FXMAC_INTQ1SR_TXERR_MASK: u32 = BIT(6); /* Transmit AMBA Error */
 
 pub(crate) const FXMAC_INTQ1_IXR_ALL_MASK: u32 =
     (FXMAC_INTQ1SR_TXCOMPL_MASK | FXMAC_INTQ1SR_TXERR_MASK);
 
-/**
- * @name Interrupt QUEUE status register bit definitions
- * @{
- */
+/// @name Interrupt QUEUE status register bit definitions
+/// @{
 pub(crate) const FXMAC_INTQUESR_TXCOMPL_MASK: u32 = BIT(7); /* Transmit completed OK */
 pub(crate) const FXMAC_INTQUESR_TXERR_MASK: u32 = BIT(6); /* Transmit AMBA Error */
 pub(crate) const FXMAC_INTQUESR_RCOMP_MASK: u32 = BIT(1);
@@ -478,29 +458,27 @@ pub const fn FXMAC_QUEUE_REGISTER_OFFSET(base_addr: u64, queue_id: u32) -> u64 {
     base_addr + (queue_id as u64 - 1) * 4
 }
 
-/* Design Configuration Register 1 - The GEM has many parameterisation options to configure the IP during compilation stage. */
+// Design Configuration Register 1 - The GEM has many parameterisation options to configure the IP during compilation stage.
 
 pub(crate) const FXMAC_DESIGNCFG_DEBUG1_BUS_WIDTH_MASK: u32 = GENMASK(27, 25);
 pub(crate) const FXMAC_DESIGNCFG_DEBUG1_BUS_IRQCOR_MASK: u32 = BIT(23);
 
-/*GEM hs mac config register bitfields*/
+// GEM hs mac config register bitfields
 pub(crate) const FXMAC_GEM_HSMACSPEED_OFFSET: u64 = 0;
 pub(crate) const FXMAC_GEM_HSMACSPEED_SIZE: u32 = 3;
 pub(crate) const FXMAC_GEM_HSMACSPEED_MASK: u32 = 0x7;
 
-/* Transmit buffer descriptor status words offset
- * @{
- */
+// Transmit buffer descriptor status words offset
+// @{
 pub(crate) const FXMAC_BD_ADDR_OFFSET: u64 = 0x00000000; /* word 0/addr of BDs */
 pub(crate) const FXMAC_BD_STAT_OFFSET: u64 = 4; /* word 1/status of BDs, 4 bytes */
 pub(crate) const FXMAC_BD_ADDR_HI_OFFSET: u32 = BIT(3); /* word 2/addr of BDs */
 
-/** @name MAC address register word 1 mask
- * @{
- */
+/// @name MAC address register word 1 mask
+/// @{
 pub(crate) const FXMAC_GEM_SAB_MASK: u32 = GENMASK(15, 0); /* Address bits[47:32] bit[31:0] are in BOTTOM */
 
-/* USXGMII control register FXMAC_GEM_USX_CONTROL_OFFSET */
+// USXGMII control register FXMAC_GEM_USX_CONTROL_OFFSET
 pub(crate) const FXMAC_GEM_USX_HS_MAC_SPEED_100M: u32 = (0x0 << 14); /* 100M operation */
 pub(crate) const FXMAC_GEM_USX_HS_MAC_SPEED_1G: u32 = (0x1 << 14); /* 1G operation */
 pub(crate) const FXMAC_GEM_USX_HS_MAC_SPEED_2_5G: u32 = (0x2 << 14); /* 2.5G operation */
@@ -514,14 +492,14 @@ pub(crate) const FXMAC_GEM_USX_RX_SYNC_RESET: u32 = BIT(2); /* RX Reset. Set hig
 pub(crate) const FXMAC_GEM_USX_TX_DATAPATH_EN: u32 = BIT(1); /* TX Datapath Enable. */
 pub(crate) const FXMAC_GEM_USX_SIGNAL_OK: u32 = BIT(0); /* Enable the USXGMII/BASE-R receive PCS. */
 
-/*  All PCS registers */
+// All PCS registers
 pub(crate) const FXMAC_PCS_CONTROL_ENABLE_AUTO_NEG: u32 = BIT(12); /* Enable auto-negotiation - when set active high, autonegotiation operation is enabled.  */
 
-/* FXMAC_PCS_STATUS_OFFSET */
+// FXMAC_PCS_STATUS_OFFSET
 pub(crate) const FXMAC_PCS_STATUS_LINK_STATUS_OFFSET: u32 = 2;
 pub(crate) const FXMAC_PCS_STATUS_LINK_STATUS: u32 = BIT(FXMAC_PCS_STATUS_LINK_STATUS_OFFSET); /* Link status - indicates the status of the physical connection to the link partner. When set to logic 1 the link is up, and when set to logic 0, the link is down. */
 
-/* FXMAC_PCS_AN_LP_OFFSET */
+// FXMAC_PCS_AN_LP_OFFSET
 pub(crate) const FXMAC_PCS_AN_LP_SPEED_OFFSET: u64 = 10;
 pub(crate) const FXMAC_PCS_AN_LP_SPEED: u32 = (0x3 << FXMAC_PCS_AN_LP_SPEED_OFFSET); /* SGMII 11 : Reserved 10 : 1000 Mbps 01 : 100Mbps 00 : 10 Mbps */
 pub(crate) const FXMAC_PCS_AN_LP_DUPLEX_OFFSET: u64 = 12;
@@ -529,7 +507,7 @@ pub(crate) const FXMAC_PCS_AN_LP_DUPLEX: u32 = (0x3 << FXMAC_PCS_AN_LP_DUPLEX_OF
 pub(crate) const FXMAC_PCS_LINK_PARTNER_NEXT_PAGE_STATUS: u32 = (1 << 15); /* In sgmii mode, 0 is link down . 1 is link up */
 pub(crate) const FXMAC_PCS_LINK_PARTNER_NEXT_PAGE_OFFSET: u64 = 15;
 
-/* USXGMII Status Register */
+// USXGMII Status Register
 pub(crate) const FXMAC_GEM_USX_STATUS_BLOCK_LOCK: u32 = BIT(0); /* Block Lock. A value of one indicates that the PCS has achieved block synchronization. */
 
 // aarch64
@@ -546,62 +524,62 @@ pub const fn GENMASK(h: u32, l: u32) -> u32 {
 // fxmac.h
 
 pub(crate) const FXMAC_PROMISC_OPTION: u32 = 0x00000001;
-/* Accept all incoming packets.
- *   This option defaults to disabled (cleared) */
+// Accept all incoming packets.
+//   This option defaults to disabled (cleared)
 
 pub(crate) const FXMAC_FRAME1536_OPTION: u32 = 0x00000002;
-/* Frame larger than 1516 support for Tx & Rx.x
- *   This option defaults to disabled (cleared) */
+// Frame larger than 1516 support for Tx & Rx.x
+//   This option defaults to disabled (cleared)
 
 pub(crate) const FXMAC_VLAN_OPTION: u32 = 0x00000004;
-/* VLAN Rx & Tx frame support.
- *   This option defaults to disabled (cleared) */
+// VLAN Rx & Tx frame support.
+//   This option defaults to disabled (cleared)
 
 pub(crate) const FXMAC_FLOW_CONTROL_OPTION: u32 = 0x00000010;
-/* Enable recognition of flow control frames on Rx
- *   This option defaults to enabled (set) */
+// Enable recognition of flow control frames on Rx
+//   This option defaults to enabled (set)
 
 pub(crate) const FXMAC_FCS_STRIP_OPTION: u32 = 0x00000020;
-/* Strip FCS and PAD from incoming frames. Note: PAD from VLAN frames is not
- *   stripped.
- *   This option defaults to enabled (set) */
+// Strip FCS and PAD from incoming frames. Note: PAD from VLAN frames is not
+//   stripped.
+//   This option defaults to enabled (set)
 
 pub(crate) const FXMAC_FCS_INSERT_OPTION: u32 = 0x00000040;
-/* Generate FCS field and add PAD automatically for outgoing frames.
- *   This option defaults to disabled (cleared) */
+// Generate FCS field and add PAD automatically for outgoing frames.
+//   This option defaults to disabled (cleared)
 
 pub(crate) const FXMAC_LENTYPE_ERR_OPTION: u32 = 0x00000080;
-/* Enable Length/Type error checking for incoming frames. When this option is
- *   set, the MAC will filter frames that have a mismatched type/length field
- *   and if FXMAC_REPORT_RXERR_OPTION is set, the user is notified when these
- *   types of frames are encountered. When this option is cleared, the MAC will
- *   allow these types of frames to be received.
- *
- *   This option defaults to disabled (cleared) */
+// Enable Length/Type error checking for incoming frames. When this option is
+//   set, the MAC will filter frames that have a mismatched type/length field
+//   and if FXMAC_REPORT_RXERR_OPTION is set, the user is notified when these
+//   types of frames are encountered. When this option is cleared, the MAC will
+//   allow these types of frames to be received.
+//
+//   This option defaults to disabled (cleared)
 
 pub(crate) const FXMAC_TRANSMITTER_ENABLE_OPTION: u32 = 0x00000100;
-/* Enable the transmitter.
- *   This option defaults to enabled (set) */
+// Enable the transmitter.
+//   This option defaults to enabled (set)
 
 pub(crate) const FXMAC_RECEIVER_ENABLE_OPTION: u32 = 0x00000200;
-/* Enable the receiver
- *   This option defaults to enabled (set) */
+// Enable the receiver
+//   This option defaults to enabled (set)
 
 pub(crate) const FXMAC_BROADCAST_OPTION: u32 = 0x00000400;
-/* Allow reception of the broadcast address
- *   This option defaults to enabled (set) */
+// Allow reception of the broadcast address
+//   This option defaults to enabled (set)
 
 pub(crate) const FXMAC_MULTICAST_OPTION: u32 = 0x00000800;
-/* Allows reception of multicast addresses programmed into hash
- *   This option defaults to disabled (clear) */
+// Allows reception of multicast addresses programmed into hash
+//   This option defaults to disabled (clear)
 
 pub(crate) const FXMAC_RX_CHKSUM_ENABLE_OPTION: u32 = 0x00001000;
-/* Enable the RX checksum offload
- *   This option defaults to enabled (set) */
+// Enable the RX checksum offload
+//   This option defaults to enabled (set)
 
 pub(crate) const FXMAC_TX_CHKSUM_ENABLE_OPTION: u32 = 0x00002000;
-/* Enable the TX checksum offload
- *   This option defaults to enabled (set) */
+// Enable the TX checksum offload
+//   This option defaults to enabled (set)
 
 pub(crate) const FXMAC_JUMBO_ENABLE_OPTION: u32 = 0x00004000;
 pub(crate) const FXMAC_SGMII_ENABLE_OPTION: u32 = 0x00008000;
@@ -623,9 +601,8 @@ pub(crate) const FXMAC_DEFAULT_OPTIONS: u32 = (FXMAC_FLOW_CONTROL_OPTION
     | FXMAC_RX_CHKSUM_ENABLE_OPTION
     | FXMAC_TX_CHKSUM_ENABLE_OPTION);
 
-/* The next few constants help upper layers determine the size of memory
- * pools used for Ethernet buffers and descriptor lists.
- */
+// The next few constants help upper layers determine the size of memory
+// pools used for Ethernet buffers and descriptor lists.
 pub(crate) const FXMAC_MAC_ADDR_SIZE: u32 = 6; /* size of Ethernet header */
 
 pub(crate) const FXMAC_MTU: u32 = 1500; /* max MTU size of Ethernet frame */
@@ -643,17 +620,16 @@ pub(crate) const FXMAC_MAX_VLAN_FRAME_SIZE: u32 =
 pub(crate) const FXMAC_MAX_VLAN_FRAME_SIZE_JUMBO: u32 =
     (FXMAC_MTU_JUMBO + FXMAC_HDR_SIZE + FXMAC_HDR_VLAN_SIZE + FXMAC_TRL_SIZE);
 
-/** @name Callback identifiers
- *
- * These constants are used as parameters to FXMAC_SetHandler()
- * @{
- */
+/// @name Callback identifiers
+///
+/// These constants are used as parameters to FXMAC_SetHandler()
+/// @{
 pub(crate) const FXMAC_HANDLER_DMASEND: u32 = 1; /* 发送中断 */
 pub(crate) const FXMAC_HANDLER_DMARECV: u32 = 2; /* 接收中断 */
 pub(crate) const FXMAC_HANDLER_ERROR: u32 = 3; /* 异常中断 */
 pub(crate) const FXMAC_HANDLER_LINKCHANGE: u32 = 4; /* 连接状态 */
 pub(crate) const FXMAC_HANDLER_RESTART: u32 = 5; /* 发送描述符队列发生异常 */
-/*@}*/
+// @}
 
 pub(crate) const FXMAC_DMA_SG_IS_STARTED: u32 = 0;
 pub(crate) const FXMAC_DMA_SG_IS_STOPED: u32 = 1;
@@ -666,20 +642,18 @@ pub(crate) const FXMAC_SPEED_5000: u32 = 5000;
 pub(crate) const FXMAC_SPEED_10000: u32 = 10000;
 pub(crate) const FXMAC_SPEED_25000: u32 = 25000;
 
-/*  Capability mask bits */
+// Capability mask bits
 pub(crate) const FXMAC_CAPS_ISR_CLEAR_ON_WRITE: u32 = 0x00000001; /* irq status parameters need to be written to clear after they have been read */
 pub(crate) const FXMAC_CAPS_TAILPTR: u32 = 0x00000002; /* use tail ptr */
 
-/*
-Direction identifiers
-These are used by several functions and callbacks that need
-to specify whether an operation specifies a send or receive channel.
-
-pub(crate) const FXMAC_PHY_INTERFACE_MODE_2500BASEX: u32 = 6;
-pub(crate) const FXMAC_PHY_INTERFACE_MODE_5GBASER: u32 = 5;
-pub(crate) const FXMAC_PHY_INTERFACE_MODE_USXGMII: u32 = 4;
-pub(crate) const FXMAC_PHY_INTERFACE_MODE_XGMII: u32 = 3;
-pub(crate) const FXMAC_PHY_INTERFACE_MODE_RGMII: u32 = 2;
-pub(crate) const FXMAC_PHY_INTERFACE_MODE_RMII: u32 = 1;
-pub(crate) const FXMAC_PHY_INTERFACE_MODE_SGMII: u32 = 0;
-*/
+// Direction identifiers
+// These are used by several functions and callbacks that need
+// to specify whether an operation specifies a send or receive channel.
+//
+// pub(crate) const FXMAC_PHY_INTERFACE_MODE_2500BASEX: u32 = 6;
+// pub(crate) const FXMAC_PHY_INTERFACE_MODE_5GBASER: u32 = 5;
+// pub(crate) const FXMAC_PHY_INTERFACE_MODE_USXGMII: u32 = 4;
+// pub(crate) const FXMAC_PHY_INTERFACE_MODE_XGMII: u32 = 3;
+// pub(crate) const FXMAC_PHY_INTERFACE_MODE_RGMII: u32 = 2;
+// pub(crate) const FXMAC_PHY_INTERFACE_MODE_RMII: u32 = 1;
+// pub(crate) const FXMAC_PHY_INTERFACE_MODE_SGMII: u32 = 0;

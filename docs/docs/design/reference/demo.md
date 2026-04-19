@@ -566,6 +566,12 @@ base: dev  ←  compare: feat/add-tgmath-component
 
 PR 标题同样遵循 Conventional Commits 格式：
 
+```text
+<type>(<scope>): <subject>
+```
+
+其中 `scope` 默认优先写本次改动的主要影响 crate 名；如果改动没有单一主 crate，而是偏向仓库级、文档或 CI，则也可以使用更宽的 scope，比如 `ci`、`repo`、`docs`。
+
 **场景 A：**
 
 ```
@@ -576,6 +582,12 @@ feat(tgmath): add tgmath utility crate to examples
 
 ```
 feat(tgmath): add lcm function to examples/tgmath
+```
+
+**场景 C：**
+
+```
+chore(ci): split Starry self-hosted board matrix
 ```
 
 PR 描述模板：

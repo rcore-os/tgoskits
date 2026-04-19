@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs"
-version.workspace = true
+version = "0.5.11"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -16,14 +16,14 @@ use-ramdisk = [] # TODO: init ramdisk
 ax-driver = { workspace = true, features = ["block"] }
 ax-errno = { workspace = true }
 ax-hal = { workspace = true }
-ax-fs-devfs = { version = "0.3.2" }
-ax-fs-ramfs = { version = "0.3.2" }
-ax-fs-vfs = "0.3.2"
+ax-fs-devfs = { version = "0.3" }
+ax-fs-ramfs = { version = "0.3" }
+ax-fs-vfs = "0.3"
 ax-io = { workspace = true, features = ["alloc"] }
-ax-cap-access = "0.3.0"
-ax-lazyinit = "0.4.2"
+ax-cap-access = "0.3"
+ax-lazyinit = "0.4"
 log = { workspace = true }
-rsext4 = "0.3.0"
+rsext4 = "0.3"
 spin = { workspace = true }
 
 [dependencies.axfatfs]

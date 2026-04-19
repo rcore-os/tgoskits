@@ -1,6 +1,6 @@
 [package]
 name = "range-alloc-arceos"
-version = "0.3.4"
+version = "0.3.8"
 description = "Generic range allocator"
 homepage = "https://github.com/arceos-hypervisor/range-alloc-arceos"
 repository = "https://github.com/arceos-hypervisor/range-alloc-arceos"

@@ -54,7 +54,7 @@ passthrough_devices = [
 # Passthrough addresses.
 # Base-GPA  Length.
 passthrough_addresses = [
-    #[0x28041000, 0x100_0000]
+    #[0x0, 0x10_f000]
 ]
 
 # Devices that are not desired to be passed through to the guest

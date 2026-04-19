@@ -16,10 +16,9 @@
 //! 11.5.3 Error Handling
 //! The local APIC records errors detected during interrupt handling in the error status register (ESR).
 
-use tock_registers::LocalRegisterCopy;
-use tock_registers::fields::FieldValue;
-use tock_registers::register_bitfields;
-use tock_registers::registers::ReadWrite;
+use tock_registers::{
+    LocalRegisterCopy, fields::FieldValue, register_bitfields, registers::ReadWrite,
+};
 
 register_bitfields! {
     u32,

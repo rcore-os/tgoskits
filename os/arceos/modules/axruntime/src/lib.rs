@@ -227,6 +227,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "multitask")]
     ax_task::init_scheduler();
 
+    #[cfg(feature = "ipi")]
+    ax_ipi::init();
+
     #[cfg(feature = "ax-driver")]
     {
         #[allow(unused_variables)]
@@ -234,7 +237,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
         cfg_if::cfg_if! {
             if #[cfg(feature = "fs-ng")] {
-                ax_fs_ng::init_filesystems(all_devices.block);
+                ax_fs_ng::init_filesystems(all_devices.block, ax_hal::dtb::get_chosen_bootargs());
             } else
             if #[cfg(feature = "fs")] {
                 ax_fs::init_filesystems(all_devices.block, ax_hal::dtb::get_chosen_bootargs());

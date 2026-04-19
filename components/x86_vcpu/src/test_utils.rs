@@ -14,8 +14,8 @@
 
 #[cfg(test)]
 pub mod mock {
-    use axvisor_api::{api_impl, memory::MemoryIf};
     use ax_memory_addr::{PhysAddr, VirtAddr};
+    use axvisor_api::{api_impl, memory::MemoryIf};
     use spin::Mutex;
 
     static GLOBAL_LOCK: Mutex<MockMmHalState> = Mutex::new(MockMmHalState::new());
@@ -156,8 +156,9 @@ pub mod mock {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::mock::MockMmHal;
     use axvisor_api::memory::MemoryIf;
+
+    use crate::test_utils::mock::MockMmHal;
 
     #[test]
     fn test_mock_allocator() {

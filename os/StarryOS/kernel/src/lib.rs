@@ -22,3 +22,4 @@ mod pseudofs;
 mod syscall;
 mod task;
 mod time;
+mod trap;

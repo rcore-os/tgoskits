@@ -1,7 +1,7 @@
 [package]
 name = "ax-driver-virtio"
 edition.workspace = true
-version.workspace = true
+version = "0.3.11"
 repository.workspace = true
 authors.workspace = true
 description = "Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `ax-driver-base` series crates"
@@ -19,11 +19,11 @@ net = ["alloc", "ax-driver-net"]
 socket = ["alloc", "ax-driver-vsock"]
 
 [dependencies]
-ax-driver-base = { version = "0.3.4" }
-ax-driver-block = { version = "0.3.4", optional = true }
-ax-driver-display = { version = "0.3.4", optional = true }
-ax-driver-input = { version = "0.3.4", optional = true }
-ax-driver-net = { version = "0.3.4", optional = true }
-ax-driver-vsock = { version = "0.3.4", optional = true }
+ax-driver-base = { version = "0.3" }
+ax-driver-block = { version = "0.3", optional = true }
+ax-driver-display = { version = "0.3", optional = true }
+ax-driver-input = { version = "0.3", optional = true }
+ax-driver-net = { version = "0.3", optional = true }
+ax-driver-vsock = { version = "0.3", optional = true }
 log = { workspace = true }
 virtio-drivers = { version = "0.13.0", default-features = false }

@@ -10,22 +10,27 @@ ENV TZ=Etc/UTC \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        bzip2 \
         ca-certificates \
         build-essential \
         clang \
         cmake \
         curl \
         dosfstools \
+        e2fsprogs \
         git \
         libglib2.0-dev \
+        libclang-19-dev \
         libpixman-1-dev \
         libslirp-dev \
         libudev-dev \
         make \
+        meson \
         ninja-build \
         pkg-config \
         python3 \
         python3-venv \
+        qemu-user-static \
         wget \
         xz-utils \
         zlib1g-dev \
@@ -37,7 +42,7 @@ RUN set -eux; \
     cd "/tmp/qemu-${QEMU_VERSION}"; \
     ./configure \
       --prefix="/opt/qemu-${QEMU_VERSION}" \
-      --target-list=loongarch64-softmmu,riscv64-softmmu,aarch64-softmmu,x86_64-softmmu \
+      --target-list=loongarch64-softmmu,loongarch64-linux-user,riscv64-softmmu,riscv64-linux-user,aarch64-softmmu,aarch64-linux-user,x86_64-softmmu,x86_64-linux-user \
       --enable-slirp \
       --disable-docs \
       --disable-gtk \

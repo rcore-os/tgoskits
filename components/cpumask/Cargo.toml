@@ -1,6 +1,6 @@
 [package]
 name = "ax-cpumask"
-version = "0.3.0"
+version = "0.3.4"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["keyang.hu@qq.com"]

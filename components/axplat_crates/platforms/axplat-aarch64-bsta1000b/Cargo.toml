@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-aarch64-bsta1000b"
-version.workspace = true
+version = "0.5.7"
 repository.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for Black Sesame Technology A1000b SoC."
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
@@ -17,11 +17,11 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 
 [dependencies]
 log = "0.4"
-ax-kspin = "0.3.1"
-ax-page-table-entry = "0.8.1"
+ax-kspin = "0.3"
+ax-page-table-entry = "0.8"
 dw_apb_uart = "0.1"
 
-ax-config-macros = "0.4.1"
+ax-config-macros = "0.4"
 ax-plat-aarch64-peripherals = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }

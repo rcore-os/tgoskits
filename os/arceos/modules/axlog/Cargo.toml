@@ -1,6 +1,6 @@
 [package]
 name = "ax-log"
-version.workspace = true
+version = "0.5.11"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -18,5 +18,6 @@ ax-crate-interface.workspace = true
 ax-kspin.workspace = true
 log.workspace = true
 
-[dev-dependencies]
+# [dev-dependencies]
+[target.'cfg(not(target_os="none"))'.dev-dependencies]
 ax-log = { path = ".", features = ["std"] }
