@@ -3,7 +3,7 @@ sidebar_position: 1
 sidebar_label: "测试环境"
 ---
 
-# 测试环境
+# 测试基础设施与环境
 
 TGOSKits 的测试环境设计重点，不是把依赖分散安装到每台 runner 或每个开发机上，而是把大部分可复用的构建与运行依赖收敛进统一的 container 镜像里，再由 GitHub Actions 和本地开发流程共同消费。
 
@@ -13,7 +13,7 @@ TGOSKits 的测试环境设计重点，不是把依赖分散安装到每台 runn
 - 把 QEMU、交叉编译器、Rust 工具链等重依赖固化到镜像，减少 CI 漂移
 - 通过 GitHub Container Registry 统一发布镜像，让工作流和开发者都能直接复用
 
-## 1. 测试环境的整体分层
+## 1. 架构概览
 
 当前仓库里的测试环境可以理解为三层：
 
@@ -25,7 +25,7 @@ TGOSKits 的测试环境设计重点，不是把依赖分散安装到每台 runn
 
 其中最核心的是 container 层。CI 里的多数测试 job 并不在裸 `ubuntu-latest` 上临时安装环境，而是直接运行在预构建的 GHCR 镜像中。
 
-## 2. 为什么用 container
+## 2. 容器化设计动机
 
 如果把所有依赖都放到 workflow 运行时临时安装，会遇到几个问题：
 
@@ -40,11 +40,11 @@ TGOSKits 的测试环境设计重点，不是把依赖分散安装到每台 runn
 - 再由 CI job 通过 `container:` 直接消费 `ghcr.io/...` 镜像
 - 对 Axvisor LoongArch LVZ 特殊场景，再基于基础镜像扩展 `container/Dockerfile.axvisor-lvz`
 
-## 3. 基础 container 镜像
+## 3. 基础容器镜像
 
 基础镜像定义在 `container/Dockerfile`，以 `ubuntu:24.04` 为底，核心职责是一次性准备 TGOSKits 主要 QEMU 测试路径所需的公共依赖。
 
-### 3.1 镜像包含的核心内容
+### 3.1 镜像内容组成
 
 | 类别 | 内容 |
 |------|------|
@@ -89,7 +89,7 @@ cargo xtask arceos test qemu --target x86_64
 
 这层的作用很明确：把 Axvisor 的 LoongArch LVZ 特殊运行时需求，从基础测试镜像中分离出来，避免所有普通测试都背上额外维护成本。
 
-## 5. CI 如何消费 container 镜像
+## 5. CI 集成方式
 
 `.github/workflows/reusable-command.yml` 提供了统一执行入口。它把命令执行分成两条路径：
 
@@ -108,7 +108,7 @@ cargo xtask arceos test qemu --target x86_64
 
 这意味着 CI 里的“测试环境”不是 workflow 脚本里一堆 `apt install`，而是外部已发布镜像 + 仓库代码的组合。
 
-## 6. CI 中哪些测试运行在 container 里
+## 6. 容器化测试覆盖范围
 
 `.github/workflows/ci.yml` 里，`post_fmt_checks` 的大部分矩阵项都显式设置了：
 
@@ -133,7 +133,7 @@ cargo xtask arceos test qemu --target x86_64
 
 原因也很直接：这些测试依赖物理板、特定 runner 标签，或者需要 runner 上已有的板级连接环境，无法只靠普通容器完成。
 
-## 7. container 镜像的发布实现
+## 7. 镜像发布流程
 
 镜像发布逻辑集中在 `.github/workflows/container-publish.yml`。这是一个可复用 workflow，由上层 CI 调用，并通过参数传入：
 
@@ -142,7 +142,7 @@ cargo xtask arceos test qemu --target x86_64
 - `cache_scope`
 - `build_args`
 
-### 7.1 发布流程
+### 7.1 发布步骤
 
 发布 workflow 的主流程是：
 
@@ -152,7 +152,7 @@ cargo xtask arceos test qemu --target x86_64
 4. `docker/metadata-action` 生成镜像 tag 和 label
 5. `docker/build-push-action` 构建并推送镜像
 
-### 7.2 Tag 策略
+### 7.2 版本标签策略
 
 当前 `docker/metadata-action` 配置了两类 tag：
 
@@ -166,7 +166,7 @@ type=raw,value=latest
 - 仓库打 Git tag 时，会生成对应 tag 镜像
 - 每次发布都会额外推送 `latest`
 
-### 7.3 缓存策略
+### 7.3 构建缓存策略
 
 镜像构建使用 GitHub Actions cache：
 
@@ -175,7 +175,7 @@ type=raw,value=latest
 
 不同镜像通过不同 `cache_scope` 隔离缓存，减少互相污染。
 
-## 8. 哪些变更会触发镜像发布
+## 8. 镜像发布触发条件
 
 `.github/workflows/ci.yml` 里的 `detect_changes` 先通过 `dorny/paths-filter` 判断是否需要发布镜像。
 
@@ -188,7 +188,7 @@ type=raw,value=latest
 - `container/Dockerfile`
 - `rust-toolchain.toml`
 
-### 8.2 Axvisor LVZ 镜像触发条件
+### 8.2 LVZ 扩展镜像触发条件
 
 以下文件变更会命中 `axvisor_lvz_container_publish`：
 
@@ -197,7 +197,7 @@ type=raw,value=latest
 - `container/Dockerfile.axvisor-lvz`
 - `rust-toolchain.toml`
 
-### 8.3 真正执行发布的分支条件
+### 8.3 发布分支策略
 
 即使命中上述路径过滤，真正发布还要求：
 

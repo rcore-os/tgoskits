@@ -3,11 +3,11 @@ sidebar_position: 4
 sidebar_label: "Test-Suit 总览"
 ---
 
-# test-suit 测试用例设计总览
+# 测试套件体系总览
 
 `test-suit/` 是所有 OS 测试用例的统一入口，按操作系统划分为独立目录。每个目录由对应的 `cargo xtask <os>` 子命令负责发现、构建和运行测试。
 
-## 顶层目录结构
+## 目录结构总览
 
 ```text
 test-suit/
@@ -16,7 +16,7 @@ test-suit/
 └── arceos/          # ArceOS 测试用例
 ```
 
-## 文档拆分说明
+## 文档组织说明
 
 原始设计文档已按系统边界和配置主题拆分，内容不删减，仅重组结构：
 
@@ -27,7 +27,7 @@ test-suit/
 | ArceOS test-suit | [ArceOS test-suit 设计](/docs/design/test/arceos) | C/Rust 测试结构、发现机制、构建运行流程、构建配置与新增方式 |
 | 配置与命名规范 | [test-suit 配置与命名规范](/docs/design/test/config) | QEMU/板级/构建配置格式汇总，以及目录、文件、架构命名规范 |
 
-## 阅读建议
+## 阅读指引
 
 - 关注 StarryOS 测试编排时，优先阅读 [StarryOS test-suit 设计](/docs/design/test/starryos)
 - 关注 Axvisor 测试注册和板级映射时，优先阅读 [Axvisor test-suit 设计](/docs/design/test/axvisor)

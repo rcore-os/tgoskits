@@ -3,7 +3,7 @@ sidebar_position: 8
 sidebar_label: "配置与命名规范"
 ---
 
-# test-suit 配置与命名规范
+# 配置文件规范与命名约定
 
 测试用例通过 TOML 配置文件控制构建和运行行为。按用途分为三类：QEMU 运行配置、板级测试配置和构建配置。
 
@@ -66,16 +66,16 @@ sidebar_label: "配置与命名规范"
 | `max_cpu_num` | `u32` | 否 | 最大 CPU 数量 |
 | `[env]` | Table | 否 | 构建时环境变量 |
 
-## 4. 命名规范
+## 4. 命名约定
 
 统一目录和配置文件的命名规则，确保跨 OS 一致性。
 
-### 4.1 目录命名
+### 4.1 目录命名规则
 
 - 使用小写字母、数字、连字符和下划线
 - 测试用例目录名应简短且有描述性：`smoke`、`stress-ng-0`、`helloworld`
 
-### 4.2 配置文件命名
+### 4.2 配置文件命名规则
 
 | 文件 | 格式 | 示例 |
 |------|------|------|
@@ -83,7 +83,7 @@ sidebar_label: "配置与命名规范"
 | 板级配置 | `board-{board_name}.toml` | `board-orangepi-5-plus.toml` |
 | 构建配置 | `build-{target}.toml` | `build-x86_64-unknown-none.toml`、`build-aarch64-unknown-none-softfloat.toml` |
 
-### 4.3 支持的架构
+### 4.3 支持的目标架构
 
 | 架构缩写 | 完整 Target | QEMU 参数 | 说明 |
 |----------|-------------|-----------|------|
