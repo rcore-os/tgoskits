@@ -1,117 +1,128 @@
-# TGOSKits
+<h1 align="center">TGOSKits</h1>
 
-[![Build & Test](https://github.com/rcore-os/tgoskits/actions/workflows/test.yml/badge.svg)](https://github.com/rcore-os/tgoskits/actions/workflows/test.yml)
+<p align="center">An integrated repository for operating system and virtualization development</p>
 
-TGOSKits 是一个面向操作系统与虚拟化开发的集成仓库。它使用 Git Subtree 管理 60 多个独立组件仓库，将 ArceOS、StarryOS、Axvisor 以及相关平台 crate 整合在同一工作区中，支持组件级开发、跨系统联调和统一测试。
+<div align="center">
 
-## 1. 快速导航
+[![Build & Test](https://github.com/rcore-os/tgoskits/actions/workflows/ci.yml/badge.svg)](https://github.com/rcore-os/tgoskits/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-当前仓库包含多个系统和几十个独立组件，不同开发目标对应不同的文档和命令入口。下面的表格帮助你根据当前任务快速定位到最合适的文档和最短可用命令。
+</div>
 
-| 你的目标 | 建议先看 | 最短命令 |
+English | [中文](README_CN.md)
+
+TGOSKits is an integrated repository for operating system and virtualization development. It uses Git Subtree to manage more than 60 standalone component repositories, bringing ArceOS, StarryOS, Axvisor, and related platform crates into a single workspace for component-level development, cross-system integration, and unified testing.
+
+## 1. Quick Navigation
+
+This repository contains multiple systems and dozens of standalone components. Different development goals map to different documents and command entry points. The table below helps you quickly find the most relevant document and the shortest useful command for your current task.
+
+| Your Goal | Recommended First Reading | Shortest Command |
 | --- | --- | --- |
-| 第一次跑起来 | [docs/quick-start.md](docs/quick-start.md) | `cargo xtask arceos qemu --package ax-helloworld --arch riscv64` |
-| 完整开发示例 | [docs/demo.md](docs/demo.md) | 从零新增一个组件或者修改组件的完整开发流程示例 |
-| 组件开发说明 | [docs/components.md](docs/components.md) | 从 `components/` 或 `os/arceos/modules/` 开始 |
-| 开发 ArceOS | [docs/arceos-guide.md](docs/arceos-guide.md) | `cargo xtask arceos qemu --package ax-helloworld --arch riscv64` |
-| 开发 StarryOS | [docs/starryos-guide.md](docs/starryos-guide.md) | `cargo xtask starry qemu --arch riscv64` |
-| 开发 Axvisor | [docs/axvisor-guide.md](docs/axvisor-guide.md) | `cargo xtask axvisor test qemu --target aarch64` |
-| 理解命令构建和测试矩阵 | [docs/build-system.md](docs/build-system.md) | `cargo xtask test` |
-| 理解仓库如何组织众多独立组件 | [docs/repo.md](docs/repo.md) | `python3 scripts/repo/repo.py list` |
+| First successful run | [docs/docs/quickstart/overview.md](docs/docs/quickstart/overview.md) | `cargo xtask arceos qemu --package ax-helloworld --arch aarch64` |
+| ArceOS quick start | [docs/docs/quickstart/arceos.md](docs/docs/quickstart/arceos.md) | `cargo xtask arceos qemu --package ax-helloworld --arch aarch64` |
+| StarryOS quick start | [docs/docs/quickstart/starryos.md](docs/docs/quickstart/starryos.md) | `cargo xtask starry qemu --arch aarch64` |
+| Axvisor quick start | [docs/docs/quickstart/axvisor.md](docs/docs/quickstart/axvisor.md) | `cargo xtask axvisor qemu --arch aarch64` |
+| Full development example | [docs/docs/design/reference/demo.md](docs/docs/design/reference/demo.md) | A complete example for creating or modifying a component from scratch |
+| Component development guide | [docs/docs/design/reference/components.md](docs/docs/design/reference/components.md) | Start from `components/` or `os/arceos/modules/` |
+| Develop ArceOS | [docs/docs/design/systems/arceos-guide.md](docs/docs/design/systems/arceos-guide.md) | `cargo xtask arceos qemu --package ax-helloworld --arch aarch64` |
+| Develop StarryOS | [docs/docs/design/systems/starryos-guide.md](docs/docs/design/systems/starryos-guide.md) | `cargo xtask starry qemu --arch aarch64` |
+| Develop Axvisor | [docs/docs/design/systems/axvisor-guide.md](docs/docs/design/systems/axvisor-guide.md) | `cargo xtask axvisor qemu --arch aarch64` |
+| Understand the build and test matrix | [docs/docs/design/build/flow.md](docs/docs/design/build/flow.md) | `cargo xtask test` |
+| Understand how the repository organizes many standalone components | [docs/docs/design/reference/repo.md](docs/docs/design/reference/repo.md) | `python3 scripts/repo/repo.py list` |
 
-## 2. 仓库结构
+## 2. Repository Layout
 
-仓库按职责将代码划分为顶层目录：`components/` 存放独立的可复用组件，`os/` 存放三个目标系统的源码，`platform/` 存放平台相关 crate，`docs/` 集中管理开发者文档。`scripts/repo/` 提供 subtree 管理工具。
+The repository is organized by responsibility: `components/` stores reusable standalone components, `os/` stores the source code of the three target systems, `platform/` stores platform-related crates, and `docs/` centralizes developer documentation. `scripts/repo/` provides subtree management tools.
 
 ```text
 tgoskits/
-├── components/                # subtree 管理的独立组件 crate
+├── components/                # standalone component crates managed by subtree
 ├── os/
 │   ├── arceos/                # ArceOS: modules / api / ulib / examples
 │   ├── StarryOS/              # StarryOS: kernel / starryos / make
 │   └── axvisor/               # Axvisor: src / configs / local xtask
-├── platform/                  # 平台相关 crate
-├── test-suit/                 # ArceOS / StarryOS 系统测试
-├── xtask/                     # 根目录 tg-xtask
+├── platform/                  # platform-related crates
+├── test-suit/                 # ArceOS / StarryOS system tests
+├── xtask/                     # root tg-xtask
 ├── scripts/
-│   └── repo/                  # subtree 管理脚本与 repos.csv
-└── docs/                      # 开发者文档
+│   └── repo/                  # subtree management scripts and repos.csv
+└── docs/                      # developer documentation
 ```
 
-仓库采用 `main` / `dev` / 功能分支三层策略。`main` 作为稳定基线，`dev` 作为集成分支汇聚开发和 CI 验证，开发者基于 `dev` 创建功能分支并通过 PR 合入（禁止直发 `main`）。
+The repository follows a three-layer branch strategy: `main`, `dev`, and feature branches. `main` serves as the stable baseline, `dev` serves as the integration branch for development and CI validation, and developers create feature branches from `dev` and merge back via PRs. Direct pushes to `main` are forbidden.
 
-| 分支 | 职责 | 规则 |
+| Branch | Responsibility | Rule |
 | --- | --- | --- |
-| `main` | 稳定发布分支，每周从 `dev` 合并 | 禁止直接 push |
-| `dev` | 集成分支，汇聚开发功能，执行 CI | 通过 PR 合并 |
-| 功能分支 | 开发者个人开发 | 完成后向 `dev` 提交 PR（禁止直发 `main`） |
+| `main` | Stable release branch, regularly merged from `dev` | No direct push |
+| `dev` | Integration branch for development and CI | Merge through PR |
+| Feature branches | Individual development branches | Submit PRs to `dev` when ready |
 
 ```text
 feature/* ──PR──► dev
                    │
-                定期合并
+                regular merge
                    ▼
                  main
 ```
 
-与组件仓库之间如需同步，请由维护者显式执行 `scripts/repo/repo.py pull/push`。详见 [docs/repo.md](docs/repo.md)。
+If you need to synchronize with component repositories, maintainers should explicitly run `scripts/repo/repo.py pull/push`. See [docs/docs/design/reference/repo.md](docs/docs/design/reference/repo.md) for details.
 
-## 3. 快速体验
+## 3. Quick Experience
 
-以下命令提供了三个系统的最小运行路径，帮助你快速验证环境是否就绪。三套系统统一使用 `cargo xtask <os> <subcommand>` 入口；`cargo arceos`、`cargo starry`、`cargo axvisor` 只是等价别名。ArceOS 可直接运行，StarryOS 需要先准备 rootfs，Axvisor 需要先使用 setup 脚本准备 Guest 镜像和配置。
+The following commands provide the shortest runnable path for the three systems, helping you verify that your environment is ready. All three systems use the unified `cargo xtask <os> <subcommand>` entry point; `cargo arceos`, `cargo starry`, and `cargo axvisor` are only equivalent aliases. ArceOS can run directly, StarryOS requires a prepared rootfs, and Axvisor requires guest images and configuration prepared beforehand.
 
 ```bash
 git clone https://github.com/rcore-os/tgoskits.git
 cd tgoskits
 
-# ArceOS: 最快的 Hello World 路径
-cargo xtask arceos qemu --package ax-helloworld --arch riscv64
-# 如下命令等效
-cargo arceos qemu --package ax-helloworld --arch riscv64
+# ArceOS: fastest Hello World path
+cargo xtask arceos qemu --package ax-helloworld --arch aarch64
+# Equivalent alias
+cargo arceos qemu --package ax-helloworld --arch aarch64
 
-# StarryOS: 首次运行前先准备 rootfs
-cargo xtask starry qemu --arch riscv64
-# 如下命令等效
-cargo starry qemu --arch riscv64
+# StarryOS: prepare rootfs before the first run
+cargo xtask starry qemu --arch aarch64
+# Equivalent alias
+cargo starry qemu --arch aarch64
 
-# Axvisor: 推荐使用官方 setup 脚本准备 Guest 和 rootfs
+# Axvisor: recommended to use the official setup script for guest and rootfs
 cargo xtask axvisor qemu --arch aarch64
-# 如下命令等效
+# Equivalent alias
 cargo axvisor qemu --arch aarch64
 ```
 
-Axvisor 不能只靠 `build/qemu` 两条命令直接跑起来，因为运行前仍需要 Guest 镜像、VM 配置和 rootfs。对于 AArch64、RISC-V64、x86_64 这些 Guest 启动链路，推荐先用 `os/axvisor/scripts/setup_qemu.sh` 自动准备运行时资源，再执行 `cargo xtask axvisor qemu --arch <arch>`。LoongArch64 的 AxVisor shell smoke 不走 Guest 镜像链路，直接使用 `os/axvisor/scripts/quick-start.sh qemu-loongarch64 start`。完整说明见 [docs/axvisor-guide.md](docs/axvisor-guide.md)。
+Axvisor cannot be started only with `build/qemu`, because guest images, VM configuration, and rootfs are still required before runtime. It is recommended to use `os/axvisor/scripts/setup_qemu.sh` to prepare those runtime resources first, then run `cargo xtask axvisor qemu --arch <arch>`. See [docs/docs/manual/deploy/qemu.md](docs/docs/manual/deploy/qemu.md) and [docs/docs/design/systems/axvisor-guide.md](docs/docs/design/systems/axvisor-guide.md) for the full workflow.
 
-## 4. 快速开发
+## 4. Quick Development
 
-对于开发来说，首先在 `components/`、`os/arceos/modules/`、`os/StarryOS/kernel/` 或 `os/axvisor/src/` 里找到你要修改的入口。调试时先跑最小 `qemu` 消费者确认功能，回归时再运行对应的 `test qemu` 命令。改动稳定后，再补 host / std 测试。
+The repository includes built-in `.vscode/launch.json` and `.vscode/tasks.json`. After opening the workspace in VS Code, press `F5` to start debugging in one click — it automatically performs a debug build, launches QEMU (with GDB stub), attaches LLDB, and hits a breakpoint. Each system provides **Main** (stops at the main application entry) and **Boot** (sets multiple breakpoints at platform boot / runtime initialization) entry types, covering different debugging needs from early boot to business logic.
+
+![VS Code debug target selection](docs/docs/design/debug/images/debug_target.png)
+
+Before first use, ensure the [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) extension is installed, `rustup target add aarch64-unknown-none-softfloat` has been executed, and `qemu-system-aarch64` is on the system `PATH`. See the [debug design docs](docs/docs/design/debug/overview.md) for full details.
+
+For quick runs without debugging, use the terminal commands below; run regression tests after stabilizing changes:
 
 ```bash
-# host / std crate
-cargo xtask test
+# ArceOS (no extra preparation needed)
+cargo xtask arceos qemu --package ax-helloworld --arch aarch64
 
-# ArceOS：先跑最小应用，再跑统一 QEMU 测试
-cargo xtask arceos qemu --package ax-helloworld --arch riscv64
-cargo xtask arceos test qemu --target riscv64
+# StarryOS (rootfs required on first run)
+cargo xtask starry rootfs --arch aarch64    # only needed once
+cargo xtask starry qemu --arch aarch64
 
-# StarryOS：先准备 rootfs，跑最小启动，再跑统一 QEMU 测试
-cargo xtask starry rootfs --arch riscv64
-cargo xtask starry qemu --arch riscv64
-cargo xtask starry test qemu --target riscv64
-cargo xtask starry test qemu --stress -t riscv64
-cargo xtask starry test qemu --stress -t riscv64 -c stress-ng-0
-
-# Axvisor：先准备 Guest 和 rootfs，跑最小启动，再跑统一 QEMU 测试
-(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
+# Axvisor (setup script checks guest images automatically)
 cargo xtask axvisor qemu --arch aarch64
-cargo xtask axvisor test qemu --target aarch64
 
-# Axvisor LoongArch64：直接走 shell smoke quick-start
-(cd os/axvisor && ./scripts/quick-start.sh qemu-loongarch64 start)
+# Regression tests
+cargo xtask arceos test qemu --target aarch64      # ArceOS
+cargo xtask starry test qemu --target aarch64       # StarryOS
+cargo xtask axvisor test qemu --target aarch64      # Axvisor
+cargo xtask test                                    # full regression
 ```
 
-修改组件后的验证策略见 [docs/components.md](docs/components.md)。
+## 5. License
 
-## 5. 许可证
-
-仓库整体采用 `Apache-2.0` 许可证。各组件可能带有自己的 LICENSE 文件，具体以各组件目录下的为准。
+The repository as a whole is licensed under `Apache-2.0`. Individual components may also include their own LICENSE files; when in doubt, use the files in each component directory as the source of truth.
