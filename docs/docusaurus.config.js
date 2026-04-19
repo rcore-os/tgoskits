@@ -99,7 +99,7 @@ const config = {
           type: 'docSidebar',
           sidebarId: 'docs',
           position: 'left',
-          label: '文档',
+          label: 'Document',
         },
         {
           to: '/blog',
@@ -127,7 +127,7 @@ const config = {
           title: '文档',
           items: [
             {label: '项目概览', to: '/docs/introduction/overview'},
-            {label: '快速开始', to: '/docs/quickstart/arceos-qemu'},
+            {label: '快速开始', to: '/docs/quickstart/overview'},
             {label: '架构设计', to: '/docs/design/architecture/arch'},
             {label: '使用手册', to: '/docs/manual/deploy/qemu'},
           ],

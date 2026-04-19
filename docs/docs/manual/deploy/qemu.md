@@ -45,7 +45,7 @@ cargo xtask axvisor qemu --arch aarch64
 
 ## 相关文档
 
-- [ArceOS 在 QEMU 上启动](/docs/quickstart/arceos-qemu)
+- [ArceOS 快速上手](/docs/quickstart/arceos)
 - [Axvisor 开发指南](/docs/design/systems/axvisor-guide)
 - [AxVisor 内部机制](/docs/design/architecture/axvisor-internals)
 - [Guest 管理入口](../guest/cmd)

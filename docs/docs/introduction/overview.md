@@ -168,7 +168,7 @@ flowchart TD
 
 | 目标 | 路径 |
 |------|------|
-| 第一次进入仓库 | [快速开始](/docs/quickstart/arceos-qemu) → **本文** → [环境与平台](./hardware) |
+| 第一次进入仓库 | [环境准备](/docs/quickstart/overview) → **本文** → [环境与平台](./hardware) |
 | 理解三套系统的关系与边界 | **本文**（§核心系统 + §依赖关系） |
 | 理解命令体系 | [构建流程](../design/build/flow) → [命令总览](../design/build/cmd) |
 | 改某个系统 | **本文**（§影响评估） → 对应系统指南 (`design/systems/`) |

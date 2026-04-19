@@ -1,9 +1,11 @@
 {
   "label": "设计与实现",
+  "collapsed": false,
   "position": 3,
   "link": {
     "type": "generated-index",
     "title": "设计与实现",
+    "slug": "/design",
     "description": "统一收纳架构、构建、测试、参考资料与系统开发指南，帮助理解当前仓库的实现方式。"
   }
 }

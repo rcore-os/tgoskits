@@ -6,6 +6,6 @@
     "type": "generated-index",
     "title": "快速开始",
     "slug": "/quickstart",
-    "description": "按系统分类，在不同 QEMU 平台上跑通 ArceOS、StarryOS 与 Axvisor。"
+    "description": "环境准备与 QEMU 配置，以及各系统在不同架构下的快速上手指南。"
   }
 }
