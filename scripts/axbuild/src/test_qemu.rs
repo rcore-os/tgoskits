@@ -30,13 +30,17 @@ const ARCEOS_TEST_TARGETS: &[&str] = &[
 ];
 const ARCEOS_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 
-const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "x86_64"];
+const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "x86_64", "loongarch64"];
 const AXVISOR_AARCH64_TEST_SHELL_PREFIX: &str = "~ #";
 const AXVISOR_AARCH64_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
 const AXVISOR_AARCH64_TEST_SUCCESS_REGEX: &[&str] = &["(?m)^guest test pass!\\s*$"];
 const AXVISOR_X86_64_TEST_SHELL_PREFIX: &str = ">>";
 const AXVISOR_X86_64_TEST_SHELL_INIT_CMD: &str = "hello_world";
 const AXVISOR_X86_64_TEST_SUCCESS_REGEX: &[&str] = &["Hello world from user mode program!"];
+const AXVISOR_LOONGARCH64_TEST_SHELL_PREFIX: &str = "axvisor:$";
+const AXVISOR_LOONGARCH64_TEST_SHELL_INIT_CMD: &str = "";
+const AXVISOR_LOONGARCH64_TEST_SUCCESS_REGEX: &[&str] =
+    &["Welcome to AxVisor Shell!", r"axvisor:\$"];
 const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)kernel panic",
@@ -132,7 +136,11 @@ pub(crate) fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &
         target,
         "axvisor qemu tests",
         AXVISOR_TEST_ARCHES,
-        &["aarch64-unknown-none-softfloat", "x86_64-unknown-none"],
+        &[
+            "aarch64-unknown-none-softfloat",
+            "x86_64-unknown-none",
+            "loongarch64-unknown-none-softfloat",
+        ],
         target_for_arch_checked,
         arch_for_target_checked,
     )
@@ -197,6 +205,12 @@ pub(crate) fn axvisor_test_shell_config(arch: &str) -> anyhow::Result<ShellAutoI
             shell_prefix: AXVISOR_X86_64_TEST_SHELL_PREFIX.to_string(),
             shell_init_cmd: AXVISOR_X86_64_TEST_SHELL_INIT_CMD.to_string(),
             success_regex: owned_patterns(AXVISOR_X86_64_TEST_SUCCESS_REGEX),
+            fail_regex: default_axvisor_test_fail_regex(),
+        }),
+        "loongarch64" => Ok(ShellAutoInitConfig {
+            shell_prefix: AXVISOR_LOONGARCH64_TEST_SHELL_PREFIX.to_string(),
+            shell_init_cmd: AXVISOR_LOONGARCH64_TEST_SHELL_INIT_CMD.to_string(),
+            success_regex: owned_patterns(AXVISOR_LOONGARCH64_TEST_SUCCESS_REGEX),
             fail_regex: default_axvisor_test_fail_regex(),
         }),
         _ => bail!(
@@ -359,6 +373,10 @@ mod tests {
             parse_axvisor_test_target("x86_64").unwrap(),
             ("x86_64", "x86_64-unknown-none")
         );
+        assert_eq!(
+            parse_axvisor_test_target("loongarch64").unwrap(),
+            ("loongarch64", "loongarch64-unknown-none-softfloat")
+        );
     }
 
     #[test]
@@ -366,6 +384,29 @@ mod tests {
         assert_eq!(
             parse_axvisor_test_target("aarch64-unknown-none-softfloat").unwrap(),
             ("aarch64", "aarch64-unknown-none-softfloat")
+        );
+        assert_eq!(
+            parse_axvisor_test_target("loongarch64-unknown-none-softfloat").unwrap(),
+            ("loongarch64", "loongarch64-unknown-none-softfloat")
+        );
+    }
+
+    #[test]
+    fn returns_loongarch_axvisor_shell_config() {
+        assert_eq!(
+            axvisor_test_shell_config("loongarch64").unwrap(),
+            ShellAutoInitConfig {
+                shell_prefix: "axvisor:$".to_string(),
+                shell_init_cmd: String::new(),
+                success_regex: vec![
+                    "Welcome to AxVisor Shell!".to_string(),
+                    r"axvisor:\$".to_string(),
+                ],
+                fail_regex: AXVISOR_TEST_FAIL_REGEX
+                    .iter()
+                    .map(|pattern| pattern.to_string())
+                    .collect(),
+            }
         );
     }
 

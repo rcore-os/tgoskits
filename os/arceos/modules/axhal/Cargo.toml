@@ -42,6 +42,7 @@ paging = ["dep:ax-alloc", "dep:ax-page-table-multiarch"]
 tls = ["ax-cpu/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
 hv = ["paging", "ax-cpu/arm-el2", "ax-percpu/arm-el2", "axplat-dyn?/hv"]
+axvisor-linker = []
 
 # Custom or default platforms
 myplat = []
@@ -68,7 +69,7 @@ ax-kernel-guard.workspace = true
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-page-table-multiarch = { workspace = true, optional = true }
-ax-percpu.workspace = true
+ax-percpu = { workspace = true, features = ["non-zero-vma"] }
 spin.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

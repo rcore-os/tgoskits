@@ -142,18 +142,19 @@ impl Axvisor {
             arch, target
         );
 
-        let vmconfig = match arch {
-            "aarch64" => {
+        let vmconfigs = match arch {
+            "aarch64" => vec![
                 qemu_test::prepare_linux_aarch64_guest_assets(&self.ctx)
                     .await?
-                    .generated_vmconfig
-            }
-            "x86_64" => qemu_test::prepare_nimbos_x86_64_guest_vmconfig(&self.ctx).await?,
+                    .generated_vmconfig,
+            ],
+            "x86_64" => vec![qemu_test::prepare_nimbos_x86_64_guest_vmconfig(&self.ctx).await?],
+            "loongarch64" => vec![],
             _ => unreachable!(),
         };
 
         let request = self.prepare_request(
-            qemu_test::qemu_test_build_args(arch, vmconfig),
+            qemu_test::qemu_test_build_args(arch, vmconfigs),
             None,
             None,
             SnapshotPersistence::Discard,

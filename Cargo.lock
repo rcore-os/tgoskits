@@ -1891,6 +1891,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-page-table-multiarch",
  "ax-percpu",
+ "ax-plat-loongarch64-qemu-virt",
  "ax-std",
  "ax-timer-list",
  "axaddrspace",
@@ -1967,6 +1968,7 @@ dependencies = [
  "axvmconfig",
  "cfg-if",
  "log",
+ "loongarch_vcpu",
  "riscv_vcpu",
  "spin 0.10.0",
  "x86_vcpu",
@@ -5160,6 +5162,18 @@ checksum = "236e72a07bb26b68662f7cc9dcb58cea50cf5e3d8b698e1b51ff7c36d633dd92"
 dependencies = [
  "bit_field",
  "bitflags 2.11.1",
+]
+
+[[package]]
+name = "loongarch_vcpu"
+version = "0.5.0"
+dependencies = [
+ "ax-errno",
+ "ax-percpu",
+ "axaddrspace",
+ "axvcpu",
+ "log",
+ "spin 0.10.0",
 ]
 
 [[package]]

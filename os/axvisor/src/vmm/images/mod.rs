@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::{AxResult, ax_err_type};
+use ax_errno::AxResult;
 use axaddrspace::GuestPhysAddr;
 
 use axvm::VMMemoryRegion;
@@ -128,11 +128,11 @@ impl ImageLoader {
                 self.vm.clone(),
                 &self.config,
             );
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
             load_vm_image_from_memory(_dtb_slice, self.dtb_load_gpa.unwrap(), self.vm.clone())
                 .expect("Failed to load DTB images");
         } else {
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
             if let Some(buffer) = vm_imags.dtb {
                 load_vm_image_from_memory(buffer, self.dtb_load_gpa.unwrap(), self.vm.clone())
                     .expect("Failed to load DTB images");
@@ -179,7 +179,7 @@ impl ImageLoader {
         let load_gpa = self
             .vm
             .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
-            .ok_or_else(|| ax_err_type!(NotFound, "Ramdisk load addr is missed"))?;
+            .ok_or_else(|| ax_errno::ax_err_type!(NotFound, "Ramdisk load addr is missed"))?;
         let (_, ramdisk_size) = fs::open_image_file(ramdisk_path)?;
         self.vm.with_config(|config| {
             if let Some(ref mut rd) = config.image_config.ramdisk {
@@ -315,7 +315,7 @@ pub mod fs {
                 loader.vm.clone(),
                 &loader.config,
             );
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
             load_vm_image_from_memory(_dtb_slice, loader.dtb_load_gpa.unwrap(), loader.vm.clone())
                 .expect("Failed to load DTB images");
         }

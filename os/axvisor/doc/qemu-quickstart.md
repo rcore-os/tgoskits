@@ -69,6 +69,8 @@ id  # output should include "kvm"
 
 This branch provides a one-click setup script `scripts/setup_qemu.sh` that automatically downloads guest images, patches configuration paths, and prepares the rootfs.
 
+LoongArch64 AxVisor shell smoke is a separate path: it does not need guest images, but it does require a virtualization-capable LoongArch QEMU build such as QEMU-LVZ. It also does not use `scripts/setup_qemu.sh`; if you try `./scripts/setup_qemu.sh loongarch64`, the script will point you back to `./scripts/quick-start.sh qemu-loongarch64 start`.
+
 ### ArceOS (AArch64)
 
 ```bash
@@ -125,9 +127,21 @@ Success indicator: `Hello, world!` appears in the output.
 
 `qemu-riscv64` currently supports the RISC-V ArceOS guest path. Cross-ISA boot such as `riscv64 AxVisor -> aarch64 ArceOS` is not wired up in the current hypervisor stack.
 
+### AxVisor Shell (LoongArch64, requires QEMU-LVZ)
+
+```bash
+./scripts/quick-start.sh qemu-loongarch64 start
+```
+
+This command launches AxVisor directly and enters the built-in shell instead of booting a guest image.
+
+Success indicator: `Welcome to AxVisor Shell!` appears in the output.
+
+> **Note**: Stock `qemu-system-loongarch64` usually does not expose LoongArch virtualization extensions. Use `QEMU-LVZ`, or set `AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64` to a validated virtualization-capable binary.
+
 ## 5. What Does setup_qemu.sh Do?
 
-The script automates three steps, eliminating manual work:
+For guest-image flows, the script automates three steps, eliminating manual work:
 
 1. **Download images**: calls `cargo axvisor image pull` to fetch and extract guest images to `/tmp/.axvisor-images/`
 2. **Generate temp configs**: copies VM config templates to `tmp/vmconfigs/*.generated.toml`, then uses `sed` to update `kernel_path` (and `bios_path` for NimbOS) to actual image paths without modifying tracked files in `configs/vms/*.toml`
@@ -148,6 +162,10 @@ Your user is not in the `kvm` group. See the "KVM Setup" section above.
 ### `qemu-system-aarch64: command not found`
 
 QEMU is not installed. Run the `apt install` command from Step 1.
+
+### `Hardware support: false` followed by a panic on LoongArch64
+
+AxVisor was launched with a LoongArch QEMU binary that does not provide virtualization extensions. Switch to `QEMU-LVZ`, or export `AXBUILD_QEMU_SYSTEM_LOONGARCH64` to point at a validated `qemu-system-loongarch64` binary before running `./scripts/quick-start.sh qemu-loongarch64 start`.
 
 ### `Auto syncing from registry ... timed out`
 

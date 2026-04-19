@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    env,
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use ostool::{
     Tool, ToolConfig,
@@ -40,6 +44,7 @@ pub struct AppContext {
     build_config_path: Option<PathBuf>,
     root: PathBuf,
     axvisor_dir: Option<PathBuf>,
+    original_path: OsString,
     debug: bool,
 }
 
@@ -56,6 +61,7 @@ impl AppContext {
             build_config_path: None,
             root: workspace_root,
             axvisor_dir: None,
+            original_path: env::var_os("PATH").unwrap_or_default(),
             debug: false,
         })
     }
@@ -96,6 +102,10 @@ impl AppContext {
         build_config_path: PathBuf,
         qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
+        self.restore_original_path();
+        if should_use_loongarch_lvz_for(&cargo.package, &cargo.target) {
+            configure_loongarch_qemu_path(&self.root)?;
+        }
         self.set_build_config_path(build_config_path);
         self.tool
             .cargo_run(
@@ -162,10 +172,93 @@ impl AppContext {
         self.build_config_path = Some(path.clone());
         self.tool.set_build_config_path(Some(path));
     }
+
+    fn restore_original_path(&self) {
+        unsafe {
+            env::set_var("PATH", &self.original_path);
+        }
+    }
 }
 
 impl Default for AppContext {
     fn default() -> Self {
         Self::new().expect("failed to initialize AppContext")
     }
+}
+
+fn should_use_loongarch_lvz_for(package: &str, target: &str) -> bool {
+    package == crate::axvisor::build::AXVISOR_PACKAGE && target.contains("loongarch64")
+}
+
+fn configure_loongarch_qemu_path(workspace_root: &Path) -> anyhow::Result<()> {
+    let Some(qemu_dir) = find_loongarch_qemu_dir(workspace_root) else {
+        return Ok(());
+    };
+
+    prepend_dir_to_path(&qemu_dir)?;
+    info!(
+        "Using LoongArch QEMU from PATH-prepended directory: {}",
+        qemu_dir.display()
+    );
+    Ok(())
+}
+
+fn find_loongarch_qemu_dir(workspace_root: &Path) -> Option<PathBuf> {
+    let env_executable = env::var_os("AXBUILD_QEMU_SYSTEM_LOONGARCH64")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    if let Some(dir) = env_executable.filter(|dir| is_loongarch_qemu_dir(dir)) {
+        return Some(dir);
+    }
+
+    let env_dir = env::var_os("AXBUILD_QEMU_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| is_loongarch_qemu_dir(dir));
+    if let Some(dir) = env_dir {
+        return Some(dir);
+    }
+
+    loongarch_qemu_dir_candidates(workspace_root)
+        .into_iter()
+        .find(|dir| is_loongarch_qemu_dir(dir))
+}
+
+fn loongarch_qemu_dir_candidates(workspace_root: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        for suffix in ["QEMU-LVZ/build", "qemu-lvz/build"] {
+            candidates.push(home.join(suffix));
+        }
+    }
+
+    for ancestor in workspace_root.ancestors() {
+        for suffix in ["QEMU-LVZ/build", "qemu-lvz/build"] {
+            candidates.push(ancestor.join(suffix));
+        }
+    }
+
+    candidates
+}
+
+fn is_loongarch_qemu_dir(dir: &Path) -> bool {
+    dir.join("qemu-system-loongarch64").exists()
+}
+
+fn prepend_dir_to_path(dir: &Path) -> anyhow::Result<()> {
+    let current = env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<PathBuf> = env::split_paths(&current).collect();
+    if paths.iter().any(|path| path == dir) {
+        return Ok(());
+    }
+
+    paths.insert(0, dir.to_path_buf());
+    let joined = env::join_paths(paths.iter())
+        .map_err(|err| anyhow::anyhow!("failed to update PATH with {}: {err}", dir.display()))?;
+
+    unsafe {
+        env::set_var("PATH", joined);
+    }
+    Ok(())
 }

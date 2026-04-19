@@ -35,6 +35,12 @@ cfg_if::cfg_if! {
 
         /// AArch64 Level 4 nested page table type alias.
         pub type NestedPageTableL4<H> = ax_page_table_multiarch::PageTable64<arch::A64HVPagingMetaDataL4, arch::A64PTEHV, H>;
+    } else if #[cfg(target_arch = "loongarch64")] {
+        /// LoongArch Level 3 nested page table type alias.
+        pub type NestedPageTableL3<H> = ax_page_table_multiarch::PageTable64<arch::LoongArchPagingMetaDataL3, arch::LoongArchPTE, H>;
+
+        /// LoongArch Level 4 nested page table type alias.
+        pub type NestedPageTableL4<H> = ax_page_table_multiarch::PageTable64<arch::LoongArchPagingMetaDataL4, arch::LoongArchPTE, H>;
     }
 }
 

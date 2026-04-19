@@ -1,6 +1,9 @@
 use std::{
+    env,
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
 };
 
 use ostool::{Tool, ToolConfig};
@@ -14,7 +17,46 @@ fn test_app_context(root: &Path) -> AppContext {
         build_config_path: None,
         root: root.to_path_buf(),
         axvisor_dir: Some(root.join("os/axvisor")),
+        original_path: env::var_os("PATH").unwrap_or_default(),
         debug: false,
+    }
+}
+
+static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+struct TempEnvVar {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl TempEnvVar {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = env::var_os(key);
+        unsafe {
+            env::set_var(key, value);
+        }
+        Self { key, original }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let original = env::var_os(key);
+        unsafe {
+            env::remove_var(key);
+        }
+        Self { key, original }
+    }
+}
+
+impl Drop for TempEnvVar {
+    fn drop(&mut self) {
+        match self.original.as_ref() {
+            Some(value) => unsafe {
+                env::set_var(self.key, value);
+            },
+            None => unsafe {
+                env::remove_var(self.key);
+            },
+        }
     }
 }
 
@@ -233,6 +275,69 @@ fn prepare_request_resolves_arceos_target_from_arch() {
     assert_eq!(request.target, "x86_64-unknown-none");
     assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
     assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
+}
+
+#[test]
+fn should_use_loongarch_lvz_only_for_axvisor_loongarch() {
+    assert!(should_use_loongarch_lvz_for(
+        crate::axvisor::build::AXVISOR_PACKAGE,
+        "loongarch64-unknown-none-softfloat"
+    ));
+    assert!(!should_use_loongarch_lvz_for(
+        crate::axvisor::build::AXVISOR_PACKAGE,
+        "riscv64gc-unknown-none-elf"
+    ));
+    assert!(!should_use_loongarch_lvz_for(
+        STARRY_PACKAGE,
+        "loongarch64-unknown-none-softfloat"
+    ));
+}
+
+#[test]
+fn find_loongarch_qemu_dir_prefers_explicit_env_override() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let root = tempdir().unwrap();
+    let qemu_bin_dir = tempdir().unwrap();
+    let fallback_dir = tempdir().unwrap();
+    fs::write(qemu_bin_dir.path().join("qemu-system-loongarch64"), "").unwrap();
+    fs::write(fallback_dir.path().join("qemu-system-loongarch64"), "").unwrap();
+
+    let _qemu_dir = TempEnvVar::set("AXBUILD_QEMU_DIR", fallback_dir.path());
+    let _qemu_bin = TempEnvVar::set(
+        "AXBUILD_QEMU_SYSTEM_LOONGARCH64",
+        qemu_bin_dir.path().join("qemu-system-loongarch64"),
+    );
+    let _home = TempEnvVar::unset("HOME");
+
+    assert_eq!(
+        find_loongarch_qemu_dir(root.path()),
+        Some(qemu_bin_dir.path().to_path_buf())
+    );
+}
+
+#[test]
+fn find_loongarch_qemu_dir_checks_home_before_workspace_ancestors() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let home = tempdir().unwrap();
+    let workspace_parent = tempdir().unwrap();
+    let workspace_root = workspace_parent.path().join("workspace/repo");
+    let home_qemu_dir = home.path().join("QEMU-LVZ/build");
+    let ancestor_qemu_dir = workspace_parent.path().join("qemu-lvz/build");
+
+    fs::create_dir_all(&workspace_root).unwrap();
+    fs::create_dir_all(&home_qemu_dir).unwrap();
+    fs::create_dir_all(&ancestor_qemu_dir).unwrap();
+    fs::write(home_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+    fs::write(ancestor_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+
+    let _qemu_dir = TempEnvVar::unset("AXBUILD_QEMU_DIR");
+    let _qemu_bin = TempEnvVar::unset("AXBUILD_QEMU_SYSTEM_LOONGARCH64");
+    let _home = TempEnvVar::set("HOME", home.path());
+
+    assert_eq!(
+        find_loongarch_qemu_dir(&workspace_root),
+        Some(home_qemu_dir)
+    );
 }
 
 #[test]
@@ -509,6 +614,61 @@ uboot_config = "configs/uboot-aarch64.toml"
     assert_eq!(request.uboot_config, None);
     assert_eq!(snapshot.qemu.qemu_config, None);
     assert_eq!(snapshot.uboot.uboot_config, None);
+}
+
+#[test]
+fn prepare_axvisor_request_cli_arch_ignores_stale_snapshot_config_target() {
+    let root = tempdir().unwrap();
+    fs::write(
+        root.path().join(AXVISOR_SNAPSHOT_FILE),
+        r#"
+config = "os/axvisor/.build-loongarch64-unknown-none-softfloat.toml"
+arch = "loongarch64"
+target = "loongarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.path().join("os/axvisor")).unwrap();
+    fs::write(
+        root.path()
+            .join("os/axvisor/.build-loongarch64-unknown-none-softfloat.toml"),
+        r#"
+target = "loongarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+
+    let mut app = test_app_context(root.path());
+
+    let (request, snapshot) = app
+        .prepare_axvisor_request(
+            AxvisorCliArgs {
+                config: None,
+                arch: Some("x86_64".into()),
+                target: None,
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                vmconfigs: vec![],
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(request.arch, "x86_64");
+    assert_eq!(request.target, "x86_64-unknown-none");
+    assert_eq!(
+        request.build_info_path,
+        root.path()
+            .join("os/axvisor/.build-x86_64-unknown-none.toml")
+    );
+    assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from("os/axvisor/.build-x86_64-unknown-none.toml"))
+    );
+    assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
+    assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
 }
 
 #[test]

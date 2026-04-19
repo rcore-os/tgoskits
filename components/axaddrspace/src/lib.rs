@@ -15,8 +15,6 @@
 //! [ArceOS-Hypervisor](https://github.com/arceos-hypervisor/) guest VM address space management module.
 
 #![no_std]
-#![feature(const_trait_impl)]
-
 #[macro_use]
 extern crate log;
 extern crate alloc;

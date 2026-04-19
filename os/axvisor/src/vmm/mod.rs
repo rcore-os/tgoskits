@@ -21,7 +21,11 @@ pub mod timer;
 pub mod vcpus;
 pub mod vm_list;
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "riscv64"
+))]
 pub mod fdt;
 
 use core::sync::atomic::{AtomicUsize, Ordering};

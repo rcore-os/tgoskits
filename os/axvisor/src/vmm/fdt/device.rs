@@ -192,6 +192,7 @@ pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<S
 
 /// Build the full path of a node based on node level relationships
 /// Build the path by traversing all nodes and constructing paths based on level relationships to avoid path conflicts for nodes with the same name
+#[cfg(any(target_arch = "aarch64", test))]
 pub fn build_node_path(all_nodes: &[Node], target_index: usize) -> String {
     build_all_node_paths(all_nodes)
         .get(target_index)

@@ -69,6 +69,7 @@ jobs:
               - ".github/workflows/ci.yml"
               - ".github/workflows/container-publish.yml"
               - "container/Dockerfile"
+              - "container/Dockerfile.axvisor-lvz"
               - "rust-toolchain.toml"
             axvisor_lvz_container_publish:
               - ".github/workflows/ci.yml"
@@ -124,6 +125,14 @@ jobs:
             command: cargo xtask axvisor test qemu --target aarch64
             cache_key: test-axvisor-aarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
+            required_repository_owner: ""
+            main_pr_only: false
+          - name: Test axvisor loongarch64 qemu
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo xtask axvisor test qemu --target loongarch64
+            cache_key: test-axvisor-loongarch64
+            container_image: ghcr.io/${{ github.repository }}-container-axvisor-lvz:latest
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
@@ -327,6 +336,7 @@ jobs:
       }}
     needs:
       - detect_changes
+      - publish_base_container
     uses: ./.github/workflows/container-publish.yml
     with:
       image_name: ghcr.io/${{ github.repository }}-container-axvisor-lvz

@@ -204,8 +204,14 @@ impl AppContext {
     ) -> anyhow::Result<(ResolvedAxvisorRequest, AxvisorCommandSnapshot)> {
         let axvisor_dir = self.axvisor_dir()?.to_path_buf();
         let snapshot = AxvisorCommandSnapshot::load(&self.root)?;
-        let resolved_config =
-            self.resolve_command_path(cli.config.clone(), snapshot.config.as_ref());
+        let inherit_snapshot_config =
+            cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
+        let resolved_config = self.resolve_command_path(
+            cli.config.clone(),
+            inherit_snapshot_config
+                .then_some(snapshot.config.as_ref())
+                .flatten(),
+        );
         let config_target = resolved_config
             .as_ref()
             .filter(|path| path.exists())

@@ -47,6 +47,7 @@ members = [
     "components/kspin",
     "components/ax-lazyinit",
     "components/linked_list_r4l",
+    "components/loongarch_vcpu",
     "components/range-alloc-arceos",
     "components/riscv-h",
     "components/riscv_plic",
@@ -275,6 +276,7 @@ x86_vlapic = { path = "components/x86_vlapic" }
 arm_vcpu = { path = "components/arm_vcpu" }
 arm_vgic = { path = "components/arm_vgic" }
 aarch64_sysreg = { path = "components/aarch64_sysreg" }
+loongarch_vcpu = { path = "components/loongarch_vcpu" }
 riscv_vcpu = { path = "components/riscv_vcpu" }
 riscv_vplic = { path = "components/riscv_vplic" }
 riscv-h = { path = "components/riscv-h" }
@@ -349,6 +351,7 @@ axpoll = { path = "components/axpoll", version = "0.3" }
 ax-timer-list = { path = "components/timer_list", version = "0.3" }
 ax-sched = { path = "components/axsched", version = "0.5" }
 axvcpu = { path = "components/axvcpu", version = "0.5" }
+loongarch_vcpu = { path = "components/loongarch_vcpu", version = "0.5" }
 axvm = { path = "components/axvm", version = "0.5" }
 axvmconfig = { path = "components/axvmconfig", version = "0.4" }
 ax-fs-vfs = { path = "components/axfs_crates/axfs_vfs", version = "0.3" }

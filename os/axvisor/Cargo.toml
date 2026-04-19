@@ -70,7 +70,7 @@ ax-std = { version = "0.5", features = [
   "smp",
   "hv",
 ]}
-ax-hal = { version = "0.5", features = ["paging", "irq", "smp", "hv"] }
+ax-hal = { version = "0.5", features = ["paging", "irq", "smp", "hv", "axvisor-linker"] }
 
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 axaddrspace = "0.5"
@@ -93,7 +93,7 @@ fdt-parser = "0.4"
 ax-memory-addr = "0.6"
 ax-page-table-entry = { version = "0.8", features = ["arm-el2"] }
 ax-page-table-multiarch = "0.8"
-ax-percpu = { version = "0.4", features = ["arm-el2"] }
+ax-percpu = { version = "0.4", features = ["arm-el2", "non-zero-vma"] }
 
 rdif-intc = "0.14"
 rdrive = "0.20"
@@ -110,6 +110,9 @@ ax-config = { version = "0.5", features = ["plat-dyn"] }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
 arm-gic-driver = {version = "0.17", features = ["rdif"]}
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+ax-plat-loongarch64-qemu-virt = { version = "0.5", default-features = false, features = ["irq", "smp"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv64-qemu-virt-hv = { version = "0.5", path = "platform/riscv64-qemu-virt" }

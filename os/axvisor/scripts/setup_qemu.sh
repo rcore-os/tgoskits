@@ -9,6 +9,7 @@ set -euo pipefail
 #   ./scripts/setup_qemu.sh nimbos
 #
 # Supported guests: arceos, arceos-riscv64, linux, nimbos
+# LoongArch64 AxVisor shell smoke uses quick-start.sh instead of this script.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_STORAGE_ROOT="/tmp/.axvisor-images"
@@ -71,10 +72,28 @@ usage() {
   echo "  linux           - aarch64 Linux guest"
   echo "  nimbos          - x86_64 NimbOS guest (requires VT-x/KVM)"
   echo ""
+  echo "LoongArch64 AxVisor shell smoke is a separate quick-start flow:"
+  echo "  ./scripts/quick-start.sh qemu-loongarch64 start"
+  echo ""
   echo "Examples:"
   echo "  $0 arceos"
   echo "  $0 --guest arceos-riscv64"
   echo "  $0 --guest linux"
+  exit 1
+}
+
+show_loongarch_quick_start_hint() {
+  cat <<'EOF'
+LoongArch64 AxVisor shell smoke does not use setup_qemu.sh.
+
+Use:
+  ./scripts/quick-start.sh qemu-loongarch64 start
+
+This path launches AxVisor directly and requires a virtualization-capable
+LoongArch QEMU build such as QEMU-LVZ. If needed, export
+AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64 before
+running quick-start.sh.
+EOF
   exit 1
 }
 
@@ -84,6 +103,11 @@ while [[ $# -gt 0 ]]; do
     --guest)
       shift
       [[ $# -gt 0 ]] || usage
+      case "$1" in
+        loongarch64|axvisor-loongarch64|loongarch64-axvisor)
+          show_loongarch_quick_start_hint
+          ;;
+      esac
       GUEST="$1"
       shift
       break
@@ -92,6 +116,9 @@ while [[ $# -gt 0 ]]; do
       GUEST="$1"
       shift
       break
+      ;;
+    loongarch64|axvisor-loongarch64|loongarch64-axvisor)
+      show_loongarch_quick_start_hint
       ;;
     -h|--help)
       usage
