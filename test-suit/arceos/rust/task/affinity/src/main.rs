@@ -84,11 +84,11 @@ fn main() {
                     thread::yield_now();
                 }
             }
-            let _ = FINISHED_TASKS.fetch_add(1, Ordering::Relaxed);
+            let _ = FINISHED_TASKS.fetch_add(1, Ordering::Release);
         });
     }
 
-    while FINISHED_TASKS.load(Ordering::Relaxed) < NUM_TASKS {
+    while FINISHED_TASKS.load(Ordering::Acquire) < NUM_TASKS {
         thread::yield_now();
     }
     println!("All tests passed!");

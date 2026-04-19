@@ -102,6 +102,14 @@ jobs:
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
             main_pr_only: false
+          - name: Run sync-lint
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo xtask sync-lint
+            cache_key: sync-lint
+            container_image: ghcr.io/${{ github.repository }}-container:latest
+            required_repository_owner: ""
+            main_pr_only: false
           - name: Test with std
             use_container: true
             runs_on: '["ubuntu-latest"]'

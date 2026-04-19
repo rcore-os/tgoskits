@@ -1546,12 +1546,14 @@ dependencies = [
  "log",
  "object 0.38.1",
  "ostool",
+ "proc-macro2",
  "regex",
  "reqwest 0.13.2",
  "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "syn 2.0.117",
  "tar",
  "tempfile",
  "tokio",
@@ -1559,6 +1561,7 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "walkdir",
  "xz2",
 ]
 

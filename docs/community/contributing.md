@@ -48,6 +48,7 @@ sidebar_label: "贡献指南"
 - 遵循 [Rust 官方代码风格](https://rust-lang.github.io/api-guidelines/)
 - 使用 `cargo fmt` 格式化代码
 - 使用 `cargo clippy` 检查代码质量
+- 提交前建议额外运行 `cargo xtask sync-lint`，检查可疑的原子同步内存序用法；如果被该检查阻止，可参考[同步内存序检查](/community/sync-lint)
 - 对系统构建、运行和测试，优先使用 `cargo xtask` 提供的统一入口
 - 为公共 API 编写文档注释
 - 为新功能添加测试

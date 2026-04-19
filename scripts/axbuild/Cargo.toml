@@ -37,6 +37,9 @@ tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "std", "time"] }
 xz2 = "0.1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", features = ["full", "visit"] }
+walkdir = "2"
 
 [features]
 clap = ["dep:clap", "dep:tokio"]

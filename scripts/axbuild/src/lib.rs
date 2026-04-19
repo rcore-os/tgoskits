@@ -21,6 +21,7 @@ mod download;
 mod logging;
 pub mod process;
 pub mod starry;
+mod sync_lint;
 mod test_qemu;
 mod test_std;
 
@@ -46,6 +47,8 @@ enum Commands {
     Test,
     /// Run clippy for the maintained whitelist by default
     Clippy(ClippyArgs),
+    /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
+    SyncLint,
     /// Remote board management via ostool-server
     Board {
         #[command(subcommand)]
@@ -77,6 +80,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Test => test_std::run_std_test_command(),
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
+        Commands::SyncLint => sync_lint::run_sync_lint_command(),
         Commands::Board { command } => board::execute(command).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
