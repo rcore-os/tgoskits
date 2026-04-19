@@ -4,7 +4,7 @@ use ax_errno::{AxError, AxResult};
 use ax_hal::uspace::UserContext;
 use ax_task::{TaskInner, current};
 use starry_process::Pid;
-use starry_signal::{SignalActionFlags, SignalInfo, SignalOSAction, SignalSet};
+use starry_signal::{SignalInfo, SignalOSAction, SignalSet};
 
 use super::{
     AsThread, SYSCALL_INSN_LEN, Thread, do_exit, get_process_data, get_process_group, get_task,
@@ -26,48 +26,36 @@ pub fn check_signals(
     restore_blocked: Option<SignalSet>,
     restart_info: Option<&SyscallRestartInfo>,
 ) -> bool {
-    let blocked = thr.signal.blocked();
-    let mask = !blocked;
-    let restore_blocked = restore_blocked.unwrap_or(blocked);
-
-    let Some(sig) = thr.signal.dequeue_signal(&mask) else {
+    let Some((sig, os_action)) =
+        thr.signal
+            .check_signals_with(uctx, restore_blocked, |uctx, _sig, restartable| {
+                // Apply the SA_RESTART decision once per interrupted syscall.
+                // Callers pass `Some(info)` only for the first delivered signal;
+                // later iterations pass `None`, so the restart adjustment remains
+                // single-shot.
+                if let Some(info) = restart_info
+                    && (uctx.retval() as isize) == -(ax_errno::LinuxError::EINTR.code() as isize)
+                    && restartable
+                {
+                    let new_ip = uctx.ip() - SYSCALL_INSN_LEN;
+                    uctx.set_ip(new_ip);
+                    uctx.set_arg0(info.saved_a0);
+                    // On x86_64, rax holds both the syscall number and the return
+                    // value, so the syscall entry path clobbered sysno with -EINTR.
+                    // Restore it before the syscall instruction re-executes. On
+                    // RISC-V/AArch64/LoongArch64 sysno lives in a separate register
+                    // (a7/x8/a7) that was not touched, so no restore is needed.
+                    #[cfg(target_arch = "x86_64")]
+                    uctx.set_sysno(info.saved_sysno);
+                    #[cfg(not(target_arch = "x86_64"))]
+                    let _ = info.saved_sysno;
+                }
+            })
+    else {
         return false;
     };
 
     let signo = sig.signo();
-    let mut actions = thr.signal.process().actions.lock();
-    let action = actions[signo].clone();
-
-    // Apply the SA_RESTART decision once per interrupted syscall. Callers
-    // pass `Some(info)` only for the first signal delivered; for later
-    // iterations they pass `None` so a second signal cannot reapply the
-    // decision. When SA_RESTART is not set we leave retval at -EINTR so
-    // handle_signal captures it into the signal frame and sigreturn
-    // restores -EINTR to user space (non-restart semantics).
-    if let Some(info) = restart_info
-        && (uctx.retval() as isize) == -(ax_errno::LinuxError::EINTR.code() as isize)
-        && action.flags.contains(SignalActionFlags::RESTART)
-    {
-        let new_ip = uctx.ip() - SYSCALL_INSN_LEN;
-        uctx.set_ip(new_ip);
-        uctx.set_arg0(info.saved_a0);
-        // On x86_64, rax holds both the syscall number and the return
-        // value, so the syscall entry path clobbered sysno with -EINTR.
-        // Restore it before the syscall instruction re-executes. On
-        // RISC-V/AArch64/LoongArch64 sysno lives in a separate register
-        // (a7/x8/a7) that was not touched, so no restore is needed.
-        #[cfg(target_arch = "x86_64")]
-        uctx.set_sysno(info.saved_sysno);
-        #[cfg(not(target_arch = "x86_64"))]
-        let _ = info.saved_sysno;
-    }
-
-    let Some(os_action) =
-        thr.signal
-            .handle_signal(uctx, restore_blocked, &sig, &action, &mut actions)
-    else {
-        return true;
-    };
 
     match os_action {
         SignalOSAction::Terminate => do_exit(signo as i32, true),

@@ -35,7 +35,7 @@ struct PreparedSignalHandler {
     handler: usize,
     restorer: usize,
     add_blocked: SignalSet,
-    aligned_sp: usize,
+    use_sigaltstack: bool,
 }
 
 /// Thread-level signal manager.
@@ -83,10 +83,9 @@ impl ThreadSignalManager {
 
     fn prepare_signal(
         &self,
-        uctx: &UserContext,
         restore_blocked: SignalSet,
         sig: &SignalInfo,
-    ) -> PreparedSignal {
+    ) -> (bool, PreparedSignal) {
         let signo = sig.signo();
         debug!("Handle signal: {signo:?}");
         let action = {
@@ -97,27 +96,27 @@ impl ThreadSignalManager {
             }
             action
         };
+        let restartable = action.is_restartable();
 
         match action.disposition {
-            SignalDisposition::Default => match signo.default_action() {
-                DefaultSignalAction::Terminate => PreparedSignal::Action(SignalOSAction::Terminate),
-                DefaultSignalAction::CoreDump => PreparedSignal::Action(SignalOSAction::CoreDump),
-                DefaultSignalAction::Stop => PreparedSignal::Action(SignalOSAction::Stop),
-                DefaultSignalAction::Ignore => PreparedSignal::Ignore,
-                DefaultSignalAction::Continue => PreparedSignal::Action(SignalOSAction::Continue),
-            },
-            SignalDisposition::Ignore => PreparedSignal::Ignore,
+            SignalDisposition::Default => (
+                restartable,
+                match signo.default_action() {
+                    DefaultSignalAction::Terminate => {
+                        PreparedSignal::Action(SignalOSAction::Terminate)
+                    }
+                    DefaultSignalAction::CoreDump => {
+                        PreparedSignal::Action(SignalOSAction::CoreDump)
+                    }
+                    DefaultSignalAction::Stop => PreparedSignal::Action(SignalOSAction::Stop),
+                    DefaultSignalAction::Ignore => PreparedSignal::Ignore,
+                    DefaultSignalAction::Continue => {
+                        PreparedSignal::Action(SignalOSAction::Continue)
+                    }
+                },
+            ),
+            SignalDisposition::Ignore => (restartable, PreparedSignal::Ignore),
             SignalDisposition::Handler(handler) => {
-                let layout = Layout::new::<SignalFrame>();
-                let stack = self.stack.lock();
-                let sp = if stack.disabled() || !action.flags.contains(SignalActionFlags::ONSTACK) {
-                    uctx.sp()
-                } else {
-                    stack.sp + stack.size
-                };
-                drop(stack);
-
-                let aligned_sp = (sp - layout.size()) & !(layout.align() - 1);
                 let restorer = action
                     .restorer
                     .map_or(self.proc.default_restorer, |f| f as _);
@@ -126,15 +125,18 @@ impl ThreadSignalManager {
                     add_blocked.add(signo);
                 }
 
-                PreparedSignal::Handler(PreparedSignalHandler {
-                    signo,
-                    siginfo: sig.clone(),
-                    restore_blocked,
-                    handler: handler as usize,
-                    restorer,
-                    add_blocked,
-                    aligned_sp,
-                })
+                (
+                    restartable,
+                    PreparedSignal::Handler(PreparedSignalHandler {
+                        signo,
+                        siginfo: sig.clone(),
+                        restore_blocked,
+                        handler: handler as usize,
+                        restorer,
+                        add_blocked,
+                        use_sigaltstack: action.flags.contains(SignalActionFlags::ONSTACK),
+                    }),
+                )
             }
         }
     }
@@ -144,7 +146,19 @@ impl ThreadSignalManager {
         uctx: &mut UserContext,
         prepared: PreparedSignalHandler,
     ) -> SignalOSAction {
-        let frame_ptr = prepared.aligned_sp as *mut SignalFrame;
+        let layout = Layout::new::<SignalFrame>();
+        let sp = if prepared.use_sigaltstack {
+            let stack = self.stack.lock();
+            if stack.disabled() {
+                uctx.sp()
+            } else {
+                stack.sp + stack.size
+            }
+        } else {
+            uctx.sp()
+        };
+        let aligned_sp = (sp - layout.size()) & !(layout.align() - 1);
+        let frame_ptr = aligned_sp as *mut SignalFrame;
         if frame_ptr
             .vm_write(SignalFrame {
                 ucontext: UContext::new(uctx, prepared.restore_blocked),
@@ -157,10 +171,10 @@ impl ThreadSignalManager {
         }
 
         uctx.set_ip(prepared.handler);
-        uctx.set_sp(prepared.aligned_sp);
+        uctx.set_sp(aligned_sp);
         uctx.set_arg0(prepared.signo as _);
-        uctx.set_arg1(prepared.aligned_sp + offset_of!(SignalFrame, siginfo));
-        uctx.set_arg2(prepared.aligned_sp + offset_of!(SignalFrame, ucontext));
+        uctx.set_arg1(aligned_sp + offset_of!(SignalFrame, siginfo));
+        uctx.set_arg2(aligned_sp + offset_of!(SignalFrame, ucontext));
 
         #[cfg(target_arch = "x86_64")]
         {
@@ -178,11 +192,15 @@ impl ThreadSignalManager {
     }
 
     #[cold]
-    fn check_signals_slow(
+    fn check_signals_slow_with<F>(
         &self,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
-    ) -> Option<(SignalInfo, SignalOSAction)> {
+        before_deliver: &mut F,
+    ) -> Option<(SignalInfo, SignalOSAction)>
+    where
+        F: FnMut(&mut UserContext, &SignalInfo, bool),
+    {
         let blocked = self.blocked.lock();
         let mask = !*blocked;
         let restore_blocked = restore_blocked.unwrap_or_else(|| *blocked);
@@ -196,15 +214,43 @@ impl ThreadSignalManager {
                     self.proc.dequeue_signal(&mask)
                 }
             }?;
-            match self.prepare_signal(uctx, restore_blocked, &sig) {
+            let (restartable, prepared) = self.prepare_signal(restore_blocked, &sig);
+            match prepared {
                 PreparedSignal::Ignore => continue,
-                PreparedSignal::Action(os_action) => break Some((sig, os_action)),
+                PreparedSignal::Action(os_action) => {
+                    before_deliver(uctx, &sig, restartable);
+                    break Some((sig, os_action));
+                }
                 PreparedSignal::Handler(prepared) => {
+                    before_deliver(uctx, &sig, restartable);
                     let os_action = self.install_signal_handler(uctx, prepared);
                     break Some((sig, os_action));
                 }
             }
         }
+    }
+
+    /// Checks pending signals and delivers one if possible.
+    ///
+    /// Calls `before_deliver` immediately before the selected signal is
+    /// delivered. The callback receives the user context, the delivered signal,
+    /// and whether its disposition is restartable.
+    pub fn check_signals_with<F>(
+        &self,
+        uctx: &mut UserContext,
+        restore_blocked: Option<SignalSet>,
+        mut before_deliver: F,
+    ) -> Option<(SignalInfo, SignalOSAction)>
+    where
+        F: FnMut(&mut UserContext, &SignalInfo, bool),
+    {
+        // Fast path
+        if !self.possibly_has_signal.load(Ordering::Acquire)
+            && !self.proc.possibly_has_signal.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        self.check_signals_slow_with(uctx, restore_blocked, &mut before_deliver)
     }
 
     /// Checks pending signals and delivers one if possible.
@@ -215,13 +261,7 @@ impl ThreadSignalManager {
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
     ) -> Option<(SignalInfo, SignalOSAction)> {
-        // Fast path
-        if !self.possibly_has_signal.load(Ordering::Acquire)
-            && !self.proc.possibly_has_signal.load(Ordering::Acquire)
-        {
-            return None;
-        }
-        self.check_signals_slow(uctx, restore_blocked)
+        self.check_signals_with(uctx, restore_blocked, |_, _, _| {})
     }
 
     /// Restores the signal frame. Called by `sigreturn`.

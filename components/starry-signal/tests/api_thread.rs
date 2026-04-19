@@ -1,5 +1,7 @@
 use ax_cpu::uspace::UserContext;
-use starry_signal::{SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo};
+use starry_signal::{
+    SignalActionFlags, SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo,
+};
 
 mod common;
 use common::*;
@@ -78,7 +80,7 @@ fn block_ignore_send_signal() {
 fn check_signals() {
     let (proc, thr) = new_test_env();
 
-    let mut uctx = UserContext::new(0, 0.into(), 0);
+    let mut uctx = UserContext::new(0, initial_sp().into(), 0);
 
     let signo = Signo::SIGTERM;
     let sig = SignalInfo::new_user(signo, 0, 1);
@@ -90,6 +92,34 @@ fn check_signals() {
     assert!(thr.send_signal(sig.clone()));
     let (si, _os_action) = thr.check_signals(&mut uctx, None).unwrap();
     assert_eq!(si.signo(), signo);
+}
+
+#[test]
+fn check_signals_with_reports_restartable_delivery() {
+    let (proc, thr) = new_test_env();
+
+    let mut uctx = UserContext::new(0, initial_sp().into(), 0);
+    let signo = Signo::SIGTERM;
+    let sig = SignalInfo::new_user(signo, 0, 1);
+    unsafe extern "C" fn test_handler(_: i32) {}
+
+    {
+        let mut actions = proc.actions.lock();
+        actions[signo].disposition = SignalDisposition::Handler(test_handler);
+        actions[signo].flags = SignalActionFlags::RESTART;
+    }
+
+    assert!(thr.send_signal(sig));
+    let mut observed = None;
+    let (si, os_action) = thr
+        .check_signals_with(&mut uctx, None, |_, delivered, restartable| {
+            observed = Some((delivered.signo(), restartable));
+        })
+        .unwrap();
+
+    assert_eq!(si.signo(), signo);
+    assert_eq!(os_action, SignalOSAction::NoFurtherAction);
+    assert_eq!(observed, Some((signo, true)));
 }
 
 #[test]
