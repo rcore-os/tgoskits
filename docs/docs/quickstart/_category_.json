@@ -1,9 +1,11 @@
 {
   "label": "快速开始",
   "position": 2,
+  "collapsed": false,
   "link": {
     "type": "generated-index",
     "title": "快速开始",
+    "slug": "/quickstart",
     "description": "按系统分类，在不同 QEMU 平台上跑通 ArceOS、StarryOS 与 Axvisor。"
   }
 }

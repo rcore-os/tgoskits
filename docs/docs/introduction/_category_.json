@@ -1,9 +1,11 @@
 {
   "label": "项目介绍",
   "position": 1,
+  "collapsed": false,
   "link": {
     "type": "generated-index",
     "title": "项目介绍",
+    "slug": "/introduction",
     "description": "从仓库定位、支持范围和三套系统关系入手，快速理解 TGOSKits。"
   }
 }
