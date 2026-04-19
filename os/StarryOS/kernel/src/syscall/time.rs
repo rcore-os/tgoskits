@@ -24,9 +24,7 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxR
             utime + stime
         }
         _ => {
-            warn!("Called sys_clock_gettime for unsupported clock {clock_id}");
-            wall_time()
-            // return Err(AxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
     };
     ts.vm_write(timespec::from_time_value(now))?;
