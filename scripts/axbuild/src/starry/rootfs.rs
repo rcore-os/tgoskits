@@ -1508,7 +1508,11 @@ fn debugfs_write(rootfs_img: &Path, host_path: &Path, image_path: &Path) -> anyh
     let output = Command::new("debugfs")
         .arg("-w")
         .arg("-R")
-        .arg(format!("write {} {}", host_path.display(), image_path.display()))
+        .arg(format!(
+            "write {} {}",
+            host_path.display(),
+            image_path.display()
+        ))
         .arg(rootfs_img)
         .output()
         .with_context(|| format!("failed to invoke debugfs for {}", rootfs_img.display()))?;
