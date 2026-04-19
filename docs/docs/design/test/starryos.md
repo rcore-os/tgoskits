@@ -1,6 +1,6 @@
 ---
-sidebar_position: 5
-sidebar_label: "StarryOS Test-Suit"
+sidebar_position: 4
+sidebar_label: "StarryOS 测试套件"
 ---
 
 # StarryOS 测试套件设计
@@ -45,6 +45,36 @@ test-suit/starryos/
 | normal | `test-suit/starryos/normal/` | 普通功能测试 | `cargo xtask starry test qemu --target <arch>` |
 | stress | `test-suit/starryos/stress/` | 压力/负载测试 | `cargo xtask starry test qemu --target <arch> --stress` |
 
+### 1.2 现有普通测试用例清单
+
+以下为 `normal/` 目录下当前已注册的全部测试用例：
+
+| 用例名 | 类型 | 说明 | 特殊说明 |
+|--------|------|------|----------|
+| `smoke` | 无源码 | 冒烟测试：启动后执行 Shell 命令验证系统基本可用 | 含板级配置 `board-orangepi-5-plus.toml` |
+| `helloworld` | C | 基础 Hello World 程序 | — |
+| `bug-open-dir-wronly` | C | 以 O_WRONLY 打开目录应返回 EISDIR 而非成功 | — |
+| `bug-pipe-fd-errno` | C | pipe fd 的 errno 行为回归测试 | — |
+| `bug-proc-status-affinity` | C | `/proc/status` 中 affinity 掩码显示正确性 | — |
+| `bug-unlinkat-einval` | C | unlinkat 对无效路径返回 EINVAL | — |
+| `test-credentials` | C | 进程凭证（uid/gid）系统调用测试 | — |
+| `test-epoll-pwait-sigsetsize` | C | epoll_pwait sigsetsize 参数边界测试 | — |
+| `test-fsync-dir` | C | fsync/fdatasync 对目录的操作行为 | — |
+| `test-prctl-pdeathsig` | C | prctl SET_PDEATHSIG 信号传递测试 | — |
+| `test-rlimit-stack` | C | RLIMIT_STACK 资源限制设置与验证 | — |
+| `test-sa-restart` | C | SA_RESTART 标志对信号中断系统调用的影响 | — |
+| `test_ioctl_fionbio_int` | C | ioctl FIONBIO 非阻塞 I/O 设置测试 | — |
+| `times` | C | times() 系统调用测试 | **仅支持 riscv64 架构**（仅有 `qemu-riscv64.toml`） |
+| `usb` | USB 设备驱动测试 | USB 子系统功能验证 | 使用 `prebuild.sh` 预构建脚本和 `include/` 头文件目录 |
+
+### 1.3 现有压力测试用例清单
+
+| 用例名 | 类型 | 说明 |
+|--------|------|------|
+| `stress-ng-0` | 无源码 | 通过 apk 安装 stress-ng 执行 CPU/内存/信号压力测试 |
+
+> **注**：StarryOS 当前暂无 Rust 测试用例。Rust 测试的目录结构模板（§3）保留供后续扩展使用。
+
 ## 2. C 语言测试用例
 
 ### 2.1 目录结构
@@ -69,6 +99,23 @@ test-suit/starryos/normal/
 | `c/CMakeLists.txt` | 是 | CMake 构建脚本，定义目标架构的交叉编译规则 |
 | `c/main.c` | 是 | C 入口文件，包含 `main()` 函数 |
 | `c/*.c` | 是 | 其他 C 源文件 |
+
+### 2.2.1 扩展文件（可选）
+
+部分测试用例可能包含以下额外文件：
+
+| 文件/目录 | 说明 | 示例用例 |
+|-----------|------|----------|
+| `c/prebuild.sh` | 构建前执行的预处理脚本，用于生成代码或准备依赖 | `usb` |
+| `c/include/` | 额外的头文件目录，供 C 源码 `#include` 引用 | `usb` |
+
+### 2.2.2 部分架构支持
+
+默认情况下，每个测试用例应为所有支持的目标架构提供对应的 `qemu-{arch}.toml`。若某用例仅适用于特定架构，则只需提供该架构的配置文件，xtask 扫描时将自动跳过不匹配的架构。当前示例：
+
+| 用例名 | 支持架构 | 原因 |
+|--------|---------|------|
+| `times` | 仅 riscv64 | 该测试验证 riscv64 特定的 times 系统调用行为 |
 
 ### 2.3 QEMU 测试配置
 

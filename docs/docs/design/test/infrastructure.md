@@ -1,5 +1,5 @@
 ---
-sidebar_position: 1
+sidebar_position: 2
 sidebar_label: "测试环境"
 ---
 
@@ -124,7 +124,7 @@ cargo xtask arceos test qemu --target x86_64
 - `cargo xtask arceos test qemu --target x86_64/riscv64/aarch64/loongarch64`
 
 这些命令正是仓库的主要自动化验证路径，所以基础 container 实际上就是“标准测试环境”的实现载体。
-
+> **压力测试当前状态**：StarryOS 的 `--stress` 压力测试（`stress-ng-0` 等用例）在 CI 中目前为占位实现（`echo TODO!`），配置了 `main_pr_only: true` 条件，尚未接入正式执行流程。
 与之相对，以下场景仍保留 host / self-hosted 路径：
 
 - Axvisor 的部分 self-hosted QEMU 测试

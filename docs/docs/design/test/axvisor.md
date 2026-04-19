@@ -1,6 +1,6 @@
 ---
-sidebar_position: 6
-sidebar_label: "Axvisor Test-Suit"
+sidebar_position: 5
+sidebar_label: "Axvisor 测试套件"
 ---
 
 # Axvisor 测试套件设计
