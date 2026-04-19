@@ -387,7 +387,7 @@ function WorkflowSection() {
     {
       index: '01',
       title: '建立仓库心智模型',
-      desc: '先阅读 overview、guest、repo 等文档，明确系统层、组件层和平台层之间的关系。',
+      desc: '先阅读 overview、repo 等文档，明确系统层、组件层和平台层之间的关系。',
       to: '/docs/introduction/overview',
     },
     {
@@ -457,7 +457,6 @@ function DocsSection() {
       desc: '先理解仓库目标、系统关系、硬件支持和读者入口。',
       links: [
         { label: '概览', to: '/docs/introduction/overview' },
-        { label: '系统关系', to: '/docs/introduction/guest' },
         { label: '环境与平台', to: '/docs/introduction/hardware' },
       ],
     },
