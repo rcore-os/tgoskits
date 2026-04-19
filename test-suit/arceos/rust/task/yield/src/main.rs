@@ -36,7 +36,7 @@ fn main() {
             #[cfg(all(not(feature = "sched-rr"), not(feature = "sched-cfs")))]
             thread::yield_now();
 
-            let _order = FINISHED_TASKS.fetch_add(1, Ordering::Relaxed);
+            let _order = FINISHED_TASKS.fetch_add(1, Ordering::Release);
             #[cfg(feature = "ax-std")]
             if cfg!(not(feature = "sched-cfs"))
                 && thread::available_parallelism().unwrap().get() == 1
@@ -46,7 +46,7 @@ fn main() {
         });
     }
     println!("Hello, main task!");
-    while FINISHED_TASKS.load(Ordering::Relaxed) < NUM_TASKS {
+    while FINISHED_TASKS.load(Ordering::Acquire) < NUM_TASKS {
         #[cfg(all(not(feature = "sched-rr"), not(feature = "sched-cfs")))]
         thread::yield_now();
     }

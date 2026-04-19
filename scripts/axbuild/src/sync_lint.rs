@@ -8,7 +8,8 @@ use anyhow::Context;
 use cargo_metadata::{Metadata, Package};
 use proc_macro2::Span;
 use syn::{
-    Block, Expr, ExprCall, ExprClosure, ExprMethodCall, ExprPath, ExprWhile, File, Ident, Stmt,
+    Block, Expr, ExprCall, ExprClosure, ExprMethodCall, ExprPath, ExprWhile, File, Ident,
+    ItemMacro, Stmt,
     spanned::Spanned,
     visit::{self, Visit},
 };
@@ -225,6 +226,20 @@ impl<'a> Analyzer<'a> {
 }
 
 impl Visit<'_> for Analyzer<'_> {
+    fn visit_item_macro(&mut self, node: &ItemMacro) {
+        if node
+            .mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "app")
+            && let Ok(file) = syn::parse2::<File>(node.mac.tokens.clone())
+        {
+            self.visit_file(&file);
+        }
+        visit::visit_item_macro(self, node);
+    }
+
     fn visit_expr_call(&mut self, node: &ExprCall) {
         if is_wait_function(node) {
             for arg in &node.args {

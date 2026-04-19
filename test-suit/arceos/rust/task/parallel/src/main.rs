@@ -34,10 +34,10 @@ fn barrier() {
     static BARRIER_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
     static BARRIER_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    BARRIER_COUNT.fetch_add(1, Ordering::Relaxed);
+    BARRIER_COUNT.fetch_add(1, Ordering::Release);
     api::ax_wait_queue_wait_until(
         &BARRIER_WQ,
-        || BARRIER_COUNT.load(Ordering::Relaxed) == NUM_TASKS,
+        || BARRIER_COUNT.load(Ordering::Acquire) == NUM_TASKS,
         None,
     );
     api::ax_wait_queue_wake(&BARRIER_WQ, u32::MAX); // wakeup all

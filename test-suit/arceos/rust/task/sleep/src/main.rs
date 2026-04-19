@@ -56,11 +56,11 @@ fn main() {
                 let elapsed = now.elapsed();
                 println!("task {} actual sleep {:?} seconds ({}).", i, elapsed, j);
             }
-            FINISHED_TASKS.fetch_add(1, Ordering::Relaxed);
+            FINISHED_TASKS.fetch_add(1, Ordering::Release);
         });
     }
 
-    while FINISHED_TASKS.load(Ordering::Relaxed) < NUM_TASKS {
+    while FINISHED_TASKS.load(Ordering::Acquire) < NUM_TASKS {
         thread::sleep(Duration::from_millis(10));
     }
     println!("All tests passed!");
