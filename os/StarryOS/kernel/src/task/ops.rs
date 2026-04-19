@@ -238,6 +238,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             .clear_proc_shm(process.pid());
     }
     thr.exit_event.wake();
+    thr.proc_data.thread_exit_event.wake();
 
     if group_exit && !process.is_group_exited() {
         process.group_exit();

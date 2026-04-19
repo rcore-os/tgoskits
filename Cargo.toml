@@ -12,6 +12,7 @@ lto = true
 
 [workspace]
 resolver = "3"
+default-members = ["os/StarryOS/starryos"]
 members = [
     "xtask",
 
