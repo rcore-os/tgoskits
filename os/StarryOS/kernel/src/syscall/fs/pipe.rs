@@ -1,6 +1,6 @@
 use core::ffi::c_int;
 
-use ax_errno::AxResult;
+use ax_errno::{AxError, AxResult};
 use bitflags::bitflags;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use starry_vm::VmMutPtr;
@@ -19,13 +19,10 @@ bitflags! {
 }
 
 pub fn sys_pipe2(fds: *mut [c_int; 2], flags: u32) -> AxResult<isize> {
-    let flags = {
-        let new_flags = PipeFlags::from_bits_truncate(flags);
-        if new_flags.bits() != flags {
-            warn!("sys_pipe2 <= unrecognized flags: {flags}");
-        }
-        new_flags
-    };
+    let flags = PipeFlags::from_bits(flags).ok_or_else(|| {
+        warn!("sys_pipe2 <= unrecognized flags: {flags}");
+        AxError::InvalidInput
+    })?;
 
     let cloexec = flags.contains(PipeFlags::CLOEXEC);
     let (read_end, write_end) = Pipe::new();

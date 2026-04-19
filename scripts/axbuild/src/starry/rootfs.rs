@@ -4,7 +4,7 @@ use std::{
     io::{Read, Write},
     net::IpAddr,
     os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -207,7 +207,19 @@ pub(crate) async fn prepare_case_assets(
     target: &str,
     case: &StarryQemuCase,
 ) -> anyhow::Result<StarryCaseAssets> {
+    run_case_build_script(&case.case_dir, workspace_root, arch, target).await?;
+
     let case_rootfs = prepare_per_case_rootfs(workspace_root, arch, target, &case.name).await?;
+    let rootfs_files_dir = case.case_dir.join("rootfs-files");
+    if rootfs_files_dir.is_dir() {
+        let case_rootfs_for_task = case_rootfs.clone();
+        tokio::task::spawn_blocking(move || {
+            inject_rootfs_tree(&case_rootfs_for_task, &rootfs_files_dir)
+        })
+        .await
+        .context("rootfs injection task failed")??;
+    }
+
     let needs_assets = case_uses_c_pipeline(case) || case_uses_usb_qemu_assets(arch, case);
 
     if !needs_assets {
@@ -1427,6 +1439,114 @@ async fn decompress_xz_file(input_path: &Path, output_path: &Path) -> anyhow::Re
     Ok(())
 }
 
+async fn run_case_build_script(
+    case_dir: &Path,
+    workspace_root: &Path,
+    arch: &str,
+    target: &str,
+) -> anyhow::Result<()> {
+    let build_script = case_dir.join("build.sh");
+    if !build_script.is_file() {
+        return Ok(());
+    }
+
+    let output = tokio::process::Command::new("bash")
+        .arg("./build.sh")
+        .current_dir(case_dir)
+        .env("STARRY_CASE_DIR", case_dir)
+        .env("STARRY_WORKSPACE_ROOT", workspace_root)
+        .env("STARRY_ARCH", arch)
+        .env("STARRY_TARGET", target)
+        .output()
+        .await
+        .with_context(|| format!("failed to execute {}", build_script.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    bail!(
+        "case build script {} failed with status {}:\nstdout:\n{}\nstderr:\n{}",
+        build_script.display(),
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn inject_rootfs_tree(rootfs_img: &Path, rootfs_files_dir: &Path) -> anyhow::Result<()> {
+    inject_rootfs_dir(rootfs_img, rootfs_files_dir, Path::new("/"))
+}
+
+fn inject_rootfs_dir(rootfs_img: &Path, host_dir: &Path, image_dir: &Path) -> anyhow::Result<()> {
+    ensure_dir_in_rootfs(rootfs_img, image_dir);
+
+    let mut entries = fs::read_dir(host_dir)
+        .with_context(|| format!("failed to read {}", host_dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", host_dir.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let host_path = entry.path();
+        let image_path = image_dir.join(entry.file_name());
+        if host_path.is_dir() {
+            inject_rootfs_dir(rootfs_img, &host_path, &image_path)?;
+            continue;
+        }
+        if !host_path.is_file() {
+            continue;
+        }
+
+        if let Some(parent) = image_path.parent() {
+            ensure_dir_in_rootfs(rootfs_img, parent);
+        }
+        debugfs_write(rootfs_img, &host_path, &image_path)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_dir_in_rootfs(rootfs_img: &Path, image_dir: &Path) {
+    let mut current = PathBuf::from("/");
+    for component in image_dir.components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        current.push(part);
+        let _ = Command::new("debugfs")
+            .arg("-w")
+            .arg("-R")
+            .arg(format!("mkdir {}", current.display()))
+            .arg(rootfs_img)
+            .output();
+    }
+}
+
+fn debugfs_write(rootfs_img: &Path, host_path: &Path, image_path: &Path) -> anyhow::Result<()> {
+    let output = Command::new("debugfs")
+        .arg("-w")
+        .arg("-R")
+        .arg(format!(
+            "write {} {}",
+            host_path.display(),
+            image_path.display()
+        ))
+        .arg(rootfs_img)
+        .output()
+        .with_context(|| format!("failed to invoke debugfs for {}", rootfs_img.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    bail!(
+        "failed to inject {} into {} at {}:\nstdout:\n{}\nstderr:\n{}",
+        host_path.display(),
+        rootfs_img.display(),
+        image_path.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
 #[cfg(test)]
 mod tests {
     use std::{ffi::OsStr, fs, path::PathBuf, time::Duration};
