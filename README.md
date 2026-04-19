@@ -97,32 +97,30 @@ Axvisor cannot be started only with `build/qemu`, because guest images, VM confi
 
 ## 4. Quick Development
 
-The shortest daily development loop in this repository is now:
+The repository includes built-in `.vscode/launch.json` and `.vscode/tasks.json`. After opening the workspace in VS Code, press `F5` to start debugging in one click — it automatically performs a debug build, launches QEMU (with GDB stub), attaches LLDB, and hits a breakpoint. Each system provides **Main** (stops at the main application entry) and **Boot** (sets multiple breakpoints at platform boot / runtime initialization) entry types, covering different debugging needs from early boot to business logic.
 
-1. edit code
-2. start a built-in VS Code debug target
-3. confirm the behavior in QEMU
-4. run the smallest matching regression command
+![VS Code debug target selection](docs/docs/design/debug/images/debug_target.png)
 
-The repository already includes `.vscode/launch.json` and `.vscode/tasks.json`, so after opening the workspace in VS Code you can directly choose a prepared debug target from `Run and Debug`.
+Before first use, ensure the [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) extension is installed, `rustup target add aarch64-unknown-none-softfloat` has been executed, and `qemu-system-aarch64` is on the system `PATH`. See the [debug design docs](docs/docs/design/debug/overview.md) for full details.
 
-![VS Code debug target selection](docs/docs/design/debug/images/entry_rust.png)
-
-This section is only a compact summary. The full design and startup sequence are documented in [docs/docs/design/debug/flow.md](docs/docs/design/debug/flow.md).
+For quick runs without debugging, use the terminal commands below; run regression tests after stabilizing changes:
 
 ```bash
-# ArceOS
-cargo xtask arceos test qemu --target aarch64
+# ArceOS (no extra preparation needed)
+cargo xtask arceos qemu --package ax-helloworld --arch aarch64
 
-# StarryOS
-cargo xtask starry rootfs --arch aarch64
-cargo xtask starry test qemu --target aarch64
+# StarryOS (rootfs required on first run)
+cargo xtask starry rootfs --arch aarch64    # only needed once
+cargo xtask starry qemu --arch aarch64
 
-# Axvisor
-cargo xtask axvisor test qemu --target aarch64
+# Axvisor (setup script checks guest images automatically)
+cargo xtask axvisor qemu --arch aarch64
 
-# broader host/std regression
-cargo xtask test
+# Regression tests
+cargo xtask arceos test qemu --target aarch64      # ArceOS
+cargo xtask starry test qemu --target aarch64       # StarryOS
+cargo xtask axvisor test qemu --target aarch64      # Axvisor
+cargo xtask test                                    # full regression
 ```
 
 ## 5. License
