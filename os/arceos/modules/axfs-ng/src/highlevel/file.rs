@@ -198,9 +198,6 @@ impl OpenOptions {
         let flags = self.to_flags()?;
 
         if self.directory {
-            if flags.contains(FileFlags::WRITE) {
-                return Err(VfsError::IsADirectory);
-            }
             loc.check_is_dir()?;
         }
         if self.truncate {
@@ -208,6 +205,9 @@ impl OpenOptions {
         }
 
         Ok(if loc.is_dir() {
+            if flags.contains(FileFlags::WRITE) {
+                return Err(VfsError::IsADirectory);
+            }
             OpenResult::Dir(loc)
         } else {
             // TODO(mivik): is this correct?
@@ -288,12 +288,12 @@ impl OpenOptions {
 
     pub(crate) fn is_valid(&self) -> bool {
         if !self.read && !self.write && !self.append {
-            return true;
+            return false;
         }
         match (self.write, self.append) {
             (true, false) => {}
             (false, false) => {
-                if self.truncate || self.create || self.create_new {
+                if self.truncate {
                     return false;
                 }
             }

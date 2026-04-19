@@ -99,13 +99,15 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
 /// File wrapper for `ax_fs::fops::File`.
 pub struct File {
     inner: ax_fs::File,
+    open_flags: u32,
     nonblock: AtomicBool,
 }
 
 impl File {
-    pub fn new(inner: ax_fs::File) -> Self {
+    pub fn new(inner: ax_fs::File, open_flags: u32) -> Self {
         Self {
             inner,
+            open_flags,
             nonblock: AtomicBool::new(false),
         }
     }
@@ -168,6 +170,10 @@ impl FileLike for File {
         self.nonblock.load(Ordering::Acquire)
     }
 
+    fn open_flags(&self) -> u32 {
+        self.open_flags
+    }
+
     fn path(&self) -> Cow<'_, str> {
         path_for(self.inner.location())
     }
@@ -180,7 +186,7 @@ impl FileLike for File {
             if any.is::<Directory>() {
                 AxError::IsADirectory
             } else {
-                AxError::BrokenPipe
+                AxError::InvalidInput
             }
         })
     }
@@ -217,11 +223,11 @@ impl Directory {
 
 impl FileLike for Directory {
     fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
-        Err(AxError::BadFileDescriptor)
+        Err(AxError::IsADirectory)
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
-        Err(AxError::BadFileDescriptor)
+        Err(AxError::IsADirectory)
     }
 
     fn stat(&self) -> AxResult<Kstat> {

@@ -53,14 +53,21 @@ pub struct ShmidDs {
 }
 
 impl ShmidDs {
-    fn new(key: i32, size: usize, mode: __kernel_mode_t, pid: __kernel_pid_t) -> Self {
+    fn new(
+        key: i32,
+        size: usize,
+        mode: __kernel_mode_t,
+        pid: __kernel_pid_t,
+        uid: u32,
+        gid: u32,
+    ) -> Self {
         Self {
             shm_perm: IpcPerm {
                 key,
-                uid: 0,
-                gid: 0,
-                cuid: 0,
-                cgid: 0,
+                uid,
+                gid,
+                cuid: uid,
+                cgid: gid,
                 mode,
                 seq: 0,
                 pad: 0,
@@ -97,7 +104,15 @@ pub struct ShmInner {
 
 impl ShmInner {
     /// Creates a new [`ShmInner`].
-    pub fn new(key: i32, shmid: i32, size: usize, mapping_flags: MappingFlags, pid: Pid) -> Self {
+    pub fn new(
+        key: i32,
+        shmid: i32,
+        size: usize,
+        mapping_flags: MappingFlags,
+        pid: Pid,
+        uid: u32,
+        gid: u32,
+    ) -> Self {
         ShmInner {
             shmid,
             page_num: ax_memory_addr::align_up_4k(size) / PAGE_SIZE_4K,
@@ -110,6 +125,8 @@ impl ShmInner {
                 size,
                 mapping_flags.bits() as __kernel_mode_t,
                 pid as __kernel_pid_t,
+                uid,
+                gid,
             ),
         }
     }
@@ -388,7 +405,10 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
         mapping_flags.insert(MappingFlags::EXECUTE);
     }
 
-    let cur_pid = current().as_thread().proc_data.proc.pid();
+    let curr = current();
+    let thread = curr.as_thread();
+    let cur_pid = thread.proc_data.proc.pid();
+    let cred = thread.cred();
     let mut shm_manager = SHM_MANAGER.lock();
 
     if key != IPC_PRIVATE {
@@ -410,6 +430,8 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
         size,
         mapping_flags,
         cur_pid,
+        cred.euid,
+        cred.egid,
     )));
     shm_manager.insert_key_shmid(key, shmid);
     shm_manager.insert_shmid_inner(shmid, shm_inner);
@@ -420,7 +442,9 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
 pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     let shm_inner = {
         let shm_manager = SHM_MANAGER.lock();
-        shm_manager.get_inner_by_shmid(shmid).unwrap()
+        shm_manager
+            .get_inner_by_shmid(shmid)
+            .ok_or(AxError::InvalidInput)?
     };
     let mut shm_inner = shm_inner.lock();
     let mut mapping_flags = shm_inner.mapping_flags;

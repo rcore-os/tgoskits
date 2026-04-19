@@ -1,5 +1,6 @@
 //! User task management.
 
+mod cred;
 mod futex;
 mod ops;
 mod resources;
@@ -15,6 +16,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
 };
 
+use ax_hal::time::TimeValue;
 use ax_sync::{Mutex, spin::SpinNoIrq};
 use ax_task::{TaskExt, TaskInner};
 use axpoll::PollSet;
@@ -27,8 +29,17 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
-pub use self::{futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
+pub use self::{cred::*, futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
 use crate::mm::AddrSpace;
+
+/// Size of the syscall instruction for the current architecture.
+/// Used by SA_RESTART to back up the program counter.
+#[cfg(target_arch = "x86_64")]
+pub const SYSCALL_INSN_LEN: usize = 2;
+/// Size of the syscall instruction for the current architecture.
+/// Used by SA_RESTART to back up the program counter.
+#[cfg(not(target_arch = "x86_64"))]
+pub const SYSCALL_INSN_LEN: usize = 4;
 
 ///  A wrapper type that assumes the inner type is `Sync`.
 #[repr(transparent)]
@@ -82,13 +93,23 @@ pub struct Thread {
     pub exit_event: Arc<PollSet>,
 
     /// The registered rseq area pointer (user address) for restartable
-    /// sequences.
+    /// sequences (`rseq(2)`).
     rseq_area: AtomicUsize,
+
+    /// The signal to send to this thread when its parent dies (PR_SET_PDEATHSIG).
+    pdeathsig: AtomicU32,
+
+    /// Process credentials (uid, gid, etc.).
+    cred: SpinNoIrq<Arc<Cred>>,
 }
 
 impl Thread {
     /// Create a new [`Thread`].
-    pub fn new(tid: u32, proc_data: Arc<ProcessData>) -> Box<Self> {
+    ///
+    /// If `parent_cred` is `Some`, the thread inherits the parent's credentials;
+    /// otherwise it starts with root credentials (used for the init process).
+    pub fn new(tid: u32, proc_data: Arc<ProcessData>, parent_cred: Option<Arc<Cred>>) -> Box<Self> {
+        let cred = parent_cred.unwrap_or_else(|| Arc::new(Cred::root()));
         Box::new(Thread {
             signal: ThreadSignalManager::new(tid, proc_data.signal.clone()),
             proc_data,
@@ -100,6 +121,8 @@ impl Thread {
             accessing_user_memory: AtomicBool::new(false),
             exit_event: Arc::default(),
             rseq_area: AtomicUsize::new(0),
+            pdeathsig: AtomicU32::new(0),
+            cred: SpinNoIrq::new(cred),
         })
     }
 
@@ -154,6 +177,54 @@ impl Thread {
     pub fn set_accessing_user_memory(&self, accessing: bool) {
         self.accessing_user_memory
             .store(accessing, Ordering::Release);
+    }
+
+    /// Get the pdeathsig value (signal sent to this thread when parent exits).
+    pub fn pdeathsig(&self) -> u32 {
+        self.pdeathsig.load(Ordering::Relaxed)
+    }
+
+    /// Set the pdeathsig value.
+    pub fn set_pdeathsig(&self, sig: u32) {
+        self.pdeathsig.store(sig, Ordering::Relaxed);
+    }
+
+    /// Get a snapshot of the current credentials (clones the `Arc`).
+    pub fn cred(&self) -> Arc<Cred> {
+        self.cred.lock().clone()
+    }
+
+    /// Replace the credentials with `new_cred` for this thread only.
+    /// Prefer `set_cred` for credential-changing syscalls.
+    fn set_cred_single(&self, new_cred: Arc<Cred>) {
+        *self.cred.lock() = new_cred;
+    }
+
+    /// Replace the credentials for ALL threads in the same process.
+    ///
+    /// POSIX requires that credential changes (setuid, setresuid, etc.)
+    /// affect all threads in a process. On Linux, the kernel stores
+    /// credentials per-thread and the C library synchronizes via signals.
+    /// musl's setxid synchronization does NOT work on StarryOS, so we
+    /// implement this at the kernel level instead.
+    ///
+    /// Lock ordering: threads are updated in ascending TID order to
+    /// prevent AB/BA deadlock when two threads call set_cred
+    /// concurrently on SMP.
+    pub fn set_cred(&self, new_cred: Cred) {
+        let new_arc = Arc::new(new_cred);
+
+        // Collect TIDs and sort to establish a consistent lock order.
+        let mut tids = self.proc_data.proc.threads();
+        tids.sort_unstable();
+
+        for tid in &tids {
+            if let Ok(task) = ops::get_task(*tid) {
+                if let Some(thr) = task.try_as_thread() {
+                    thr.set_cred_single(new_arc.clone());
+                }
+            }
+        }
     }
 
     /// Get the registered rseq area pointer.
@@ -233,6 +304,10 @@ pub struct ProcessData {
 
     /// The default mask for file permissions.
     umask: AtomicU32,
+
+    /// Accumulated CPU time of waited children (utime + stime).
+    /// Updated when wait() reaps a child.
+    children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
 }
 
 impl ProcessData {
@@ -267,6 +342,8 @@ impl ProcessData {
             futex_table: Arc::new(FutexTable::new()),
 
             umask: AtomicU32::new(0o022),
+
+            children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
         })
     }
 
@@ -299,5 +376,17 @@ impl ProcessData {
     /// Set the umask and return the old value.
     pub fn replace_umask(&self, umask: u32) -> u32 {
         self.umask.swap(umask, Ordering::SeqCst)
+    }
+
+    /// Get the accumulated CPU time of waited children.
+    pub fn children_cpu_time(&self) -> (TimeValue, TimeValue) {
+        *self.children_cpu_time.lock()
+    }
+
+    /// Accumulate a child's CPU time when it is reaped by wait().
+    pub fn add_child_cpu_time(&self, utime: TimeValue, stime: TimeValue) {
+        let mut time = self.children_cpu_time.lock();
+        time.0 += utime;
+        time.1 += stime;
     }
 }

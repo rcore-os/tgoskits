@@ -1,0 +1,14 @@
+args = [
+    "-nographic",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/x86_64-unknown-none/rootfs-x86_64.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/test-credentials"
+success_regex = ["(?m)DONE: \\d+ pass, 0 fail"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)FAIL']
+timeout = 60

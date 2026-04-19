@@ -2,6 +2,7 @@ use core::ffi::{c_char, c_int};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
+use ax_task::current;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EMPTY_PATH, R_OK, W_OK, X_OK, stat, statfs, statx,
@@ -11,6 +12,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{File, FileLike, resolve_at},
     mm::vm_load_string,
+    task::AsThread,
 };
 
 /// Get the file metadata by `path` and write into `statbuf`.
@@ -105,6 +107,9 @@ pub fn sys_access(path: *const c_char, mode: u32) -> AxResult<isize> {
     sys_faccessat2(AT_FDCWD, path, mode, 0)
 }
 
+// Note: AT_EACCESS is not explicitly handled. This is functionally correct
+// because fsuid/fsgid track euid/egid by default in our credential model,
+// so the real-ID vs effective-ID distinction AT_EACCESS controls is a no-op.
 pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
     debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
@@ -114,18 +119,45 @@ pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) 
     if mode == 0 {
         return Ok(0);
     }
-    let mut required_mode = NodePermission::empty();
-    if mode & R_OK != 0 {
-        required_mode |= NodePermission::OWNER_READ;
+
+    let cred = current().as_thread().cred();
+
+    // Root (fsuid == 0) bypasses R_OK and W_OK checks.
+    // For X_OK, at least one execute bit must be set (owner, group, or other).
+    if cred.fsuid == 0 {
+        if mode & X_OK != 0 {
+            let perm_bits = file.stat()?.mode as u16;
+            let any_exec = NodePermission::OWNER_EXEC.bits()
+                | NodePermission::GROUP_EXEC.bits()
+                | NodePermission::OTHER_EXEC.bits();
+            if perm_bits & any_exec == 0 {
+                return Err(AxError::PermissionDenied);
+            }
+        }
+        return Ok(0);
     }
-    if mode & W_OK != 0 {
-        required_mode |= NodePermission::OWNER_WRITE;
+
+    let kstat = file.stat()?;
+    let file_uid = kstat.uid;
+    let file_gid = kstat.gid;
+    let file_mode = kstat.mode;
+
+    // Select effective permission bits based on owner/group/other matching.
+    let effective_bits = if cred.fsuid == file_uid {
+        (file_mode >> 6) & 0o7
+    } else if cred.fsgid == file_gid || cred.groups.contains(&file_gid) {
+        (file_mode >> 3) & 0o7
+    } else {
+        file_mode & 0o7
+    };
+
+    if (mode & R_OK != 0) && (effective_bits & 4 == 0) {
+        return Err(AxError::PermissionDenied);
     }
-    if mode & X_OK != 0 {
-        required_mode |= NodePermission::OWNER_EXEC;
+    if (mode & W_OK != 0) && (effective_bits & 2 == 0) {
+        return Err(AxError::PermissionDenied);
     }
-    let required_mode = required_mode.bits();
-    if (file.stat()?.mode as u16 & required_mode) != required_mode {
+    if (mode & X_OK != 0) && (effective_bits & 1 == 0) {
         return Err(AxError::PermissionDenied);
     }
 

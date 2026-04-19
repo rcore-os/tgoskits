@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-riscv64-qemu-virt"
-version = "0.5.7"
+version.workspace = true
 repository.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for QEMU RISC-V virt board."
 keywords = ["arceos", "os", "hal", "embedded", "riscv"]
@@ -16,16 +16,16 @@ rtc = ["dep:riscv_goldfish"]
 smp = ["ax-plat/smp"]
 
 [dependencies]
-ax-kspin = "0.3"
-ax-lazyinit = "0.4"
+ax-kspin = "0.3.1"
+ax-lazyinit = "0.4.2"
 log = "0.4"
 riscv = "0.16"
 riscv_goldfish = { version = "0.1", optional = true }
-ax-riscv-plic = { version = "0.4", optional = true }
+ax-riscv-plic = { version = "0.4.0", optional = true }
 sbi-rt = { version = "0.0.3", features = ["legacy"] }
 uart_16550 = "0.5.0"
 
-ax-config-macros = "0.4"
+ax-config-macros = "0.4.1"
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
 

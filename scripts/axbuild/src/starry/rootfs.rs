@@ -267,6 +267,24 @@ pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
     qemu.args.push(cpu_num.to_string());
 }
 
+pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {
+    let index = qemu.args.iter().position(|arg| arg == "-smp")?;
+    let value = qemu.args.get(index + 1)?;
+    parse_smp_qemu_value(value)
+}
+
+fn parse_smp_qemu_value(value: &str) -> Option<usize> {
+    let first = value.split(',').next()?;
+    if let Ok(cpu_num) = first.parse() {
+        return Some(cpu_num);
+    }
+
+    value.split(',').find_map(|part| {
+        let cpu_num = part.strip_prefix("cpus=")?;
+        cpu_num.parse().ok()
+    })
+}
+
 pub(crate) fn apply_disk_image_qemu_args(qemu: &mut QemuConfig, disk_img: PathBuf) {
     let disk_value = format!("id=disk0,if=none,format=raw,file={}", disk_img.display());
     let args = &mut qemu.args;
@@ -1605,6 +1623,46 @@ mod tests {
                 "4".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn smp_from_qemu_arg_reads_plain_cpu_count() {
+        let qemu = QemuConfig {
+            args: vec![
+                "-machine".to_string(),
+                "virt".to_string(),
+                "-smp".to_string(),
+                "4".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(smp_from_qemu_arg(&qemu), Some(4));
+    }
+
+    #[test]
+    fn smp_from_qemu_arg_reads_cpus_key_value_syntax() {
+        let qemu = QemuConfig {
+            args: vec![
+                "-machine".to_string(),
+                "q35".to_string(),
+                "-smp".to_string(),
+                "cpus=3,sockets=1,cores=3,threads=1".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(smp_from_qemu_arg(&qemu), Some(3));
+    }
+
+    #[test]
+    fn smp_from_qemu_arg_returns_none_when_missing() {
+        let qemu = QemuConfig {
+            args: vec!["-machine".to_string(), "q35".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(smp_from_qemu_arg(&qemu), None);
     }
 
     #[tokio::test]
