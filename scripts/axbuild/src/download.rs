@@ -37,14 +37,15 @@ pub(crate) fn unified_rootfs_dir(workspace_root: &Path) -> PathBuf {
 
 /// Resolves a `--rootfs` CLI argument to an absolute path.
 ///
-/// **Short keywords** (`alpine`, `busybox`, `debian`, …) are expanded to the
+/// **Short keywords** (`alpine`, `busybox`, `debian`) are expanded to the
 /// matching `rootfs-<arch>-<distro>.img` file inside
 /// `<workspace_root>/target/rootfs/`:
 ///
-/// | keyword           | image name template              |
-/// |-------------------|----------------------------------|
-/// | `alpine`/`busybox`| `rootfs-<arch>-busybox.img`      |
-/// | `debian`          | `rootfs-<arch>-debian.img`       |
+/// | keyword   | image name template               |
+/// |-----------|-----------------------------------|
+/// | `alpine`  | `rootfs-<arch>-alpine.img`        |
+/// | `busybox` | `rootfs-<arch>-busybox.img`       |
+/// | `debian`  | `rootfs-<arch>-debian.img`        |
 ///
 /// A **bare filename** (no directory component, not a known keyword) is placed
 /// directly inside `target/rootfs/`.

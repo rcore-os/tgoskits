@@ -7,9 +7,6 @@ use ostool::run::qemu::QemuConfig;
 
 use crate::context::ResolvedAxvisorRequest;
 
-const LEGACY_DEFAULT_ROOTFS: &str = "${workspaceFolder}/tmp/rootfs.img";
-const AXVISOR_DEFAULT_ROOTFS: &str = "${workspaceFolder}/os/axvisor/tmp/rootfs.img";
-
 pub(crate) fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {
     axvisor_dir.join(format!("scripts/ostool/qemu-{arch}.toml"))
 }
@@ -84,14 +81,6 @@ fn ensure_rootfs_drive_arg(args: &mut Vec<String>, rootfs_path: &Path) {
     let mut replaced = false;
 
     for arg in args.iter_mut() {
-        if arg.contains(LEGACY_DEFAULT_ROOTFS) {
-            *arg = arg.replace(LEGACY_DEFAULT_ROOTFS, &rootfs_path);
-            replaced = true;
-        }
-        if arg.contains(AXVISOR_DEFAULT_ROOTFS) {
-            *arg = arg.replace(AXVISOR_DEFAULT_ROOTFS, &rootfs_path);
-            replaced = true;
-        }
         if arg.starts_with("id=disk0,if=none,format=raw,file=") {
             *arg = replacement.clone();
             replaced = true;
@@ -166,9 +155,7 @@ kernel_path = "{}"
         .unwrap();
 
         let mut qemu = QemuConfig {
-            args: vec![format!(
-                "id=disk0,if=none,format=raw,file={AXVISOR_DEFAULT_ROOTFS}"
-            )],
+            args: vec!["id=disk0,if=none,format=raw,file=/old/tmp/rootfs.img".to_string()],
             ..Default::default()
         };
         apply_rootfs_path(
@@ -204,9 +191,7 @@ kernel_path = "{}"
         let root = tempdir().unwrap();
         let axvisor_dir = root.path().join("os/axvisor");
         let mut qemu = QemuConfig {
-            args: vec![format!(
-                "id=disk0,if=none,format=raw,file={AXVISOR_DEFAULT_ROOTFS}"
-            )],
+            args: vec!["id=disk0,if=none,format=raw,file=/old/tmp/rootfs.img".to_string()],
             ..Default::default()
         };
 

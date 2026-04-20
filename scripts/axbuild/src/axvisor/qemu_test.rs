@@ -12,7 +12,7 @@ use crate::{
         image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
     },
     context::AxvisorCliArgs,
-    download::{extract_unified_rootfs_for_arch, unified_rootfs_image_in_tarball},
+    download::extract_unified_rootfs_for_arch,
     test_qemu::AxvisorBoardTestGroup,
 };
 
@@ -24,7 +24,6 @@ pub const LINUX_AARCH64_GENERATED_VMCONFIG: &str =
     "os/axvisor/tmp/vmconfigs/linux-aarch64-qemu-smp1.generated.toml";
 pub const NIMBOS_X86_64_IMAGE_SPEC: &str = "qemu_x86_64_nimbos";
 pub const NIMBOS_X86_64_VMCONFIG: &str = "os/axvisor/configs/vms/nimbos-x86_64-qemu-smp1.toml";
-pub const AXVISOR_ROOTFS_IMAGE: &str = "os/axvisor/tmp/rootfs.img";
 const RDK_S100_LINUX_GROUP_NAME: &str = "rdk-s100-linux";
 const RDK_S100_LINUX_VMCONFIG_TEMPLATE: &str =
     "os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml";
@@ -63,9 +62,7 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
         &kernel_path,
     )?;
 
-    let rootfs_src = extract_unified_rootfs_for_arch(workspace_root, "aarch64").await?;
-    let rootfs_path = workspace_root.join(AXVISOR_ROOTFS_IMAGE);
-    copy_rootfs(&rootfs_src, &rootfs_path)?;
+    let rootfs_path = extract_unified_rootfs_for_arch(workspace_root, "aarch64").await?;
 
     Ok(PreparedLinuxGuestAssets {
         image_dir,
@@ -78,32 +75,7 @@ pub(crate) async fn prepare_default_rootfs_for_arch(
     ctx: &AxvisorContext,
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
-    let rootfs_dst = ctx.workspace_root().join(AXVISOR_ROOTFS_IMAGE);
-
-    if unified_rootfs_image_in_tarball(arch).is_some() {
-        let rootfs_src = extract_unified_rootfs_for_arch(ctx.workspace_root(), arch).await?;
-        copy_rootfs(&rootfs_src, &rootfs_dst)?;
-        return Ok(rootfs_dst);
-    }
-
-    // Fallback: pull rootfs from the architecture-specific image spec.
-    let image_spec = match arch {
-        "riscv64" => ARCEOS_RISCV64_IMAGE_SPEC,
-        "x86_64" => NIMBOS_X86_64_IMAGE_SPEC,
-        _ => return Ok(rootfs_dst),
-    };
-    let guest_name = match arch {
-        "riscv64" => "riscv64 arceos guest",
-        "x86_64" => "nimbos guest",
-        _ => unreachable!(),
-    };
-
-    let image_dir = pull_guest_image(ctx, image_spec).await?;
-    let rootfs_src = guest_rootfs_path(&image_dir);
-    ensure_guest_rootfs_exists(&rootfs_src, guest_name)?;
-
-    copy_rootfs(&rootfs_src, &rootfs_dst)?;
-    Ok(rootfs_dst)
+    extract_unified_rootfs_for_arch(ctx.workspace_root(), arch).await
 }
 
 pub(crate) async fn prepare_nimbos_x86_64_guest_vmconfig(
@@ -205,21 +177,6 @@ fn update_optional_guest_path(
             kernel.remove(key);
         }
     }
-}
-
-fn copy_rootfs(rootfs_src: &Path, rootfs_dst: &Path) -> anyhow::Result<()> {
-    if let Some(parent) = rootfs_dst.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    fs::copy(rootfs_src, rootfs_dst).with_context(|| {
-        format!(
-            "failed to copy rootfs {} to {}",
-            rootfs_src.display(),
-            rootfs_dst.display()
-        )
-    })?;
-    Ok(())
 }
 
 async fn pull_guest_image(ctx: &AxvisorContext, image_spec: &str) -> anyhow::Result<PathBuf> {
@@ -347,18 +304,6 @@ entry_point = 1
         );
         assert_eq!(value["kernel"]["entry_point"].as_integer(), Some(1));
         assert_eq!(value["base"]["id"].as_integer(), Some(1));
-    }
-
-    #[test]
-    fn copy_rootfs_places_image_at_requested_path() {
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("rootfs.img");
-        let dst = dir.path().join("tmp/rootfs.img");
-        fs::write(&src, b"rootfs").unwrap();
-
-        copy_rootfs(&src, &dst).unwrap();
-
-        assert_eq!(fs::read(&dst).unwrap(), b"rootfs");
     }
 
     #[test]
