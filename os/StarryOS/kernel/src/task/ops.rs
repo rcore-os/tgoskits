@@ -271,7 +271,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         }
 
         thr.proc_data.exit_event.wake();
-
         crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace);
     }
     thr.exit_event.wake();
