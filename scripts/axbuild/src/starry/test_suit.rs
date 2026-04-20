@@ -33,6 +33,7 @@ pub(crate) struct StarryQemuCase {
     pub(crate) name: String,
     pub(crate) case_dir: PathBuf,
     pub(crate) qemu_config_path: PathBuf,
+    pub(crate) build_config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +115,7 @@ pub(crate) fn parse_test_target(
 pub(crate) fn discover_qemu_cases(
     workspace_root: &Path,
     arch: &str,
+    target: &str,
     selected_case: Option<&str>,
     group: StarryTestGroup,
 ) -> anyhow::Result<Vec<StarryQemuCase>> {
@@ -139,10 +141,12 @@ pub(crate) fn discover_qemu_cases(
             );
         }
 
+        let build_config_path = resolve_case_build_config_path(&case_dir, arch, target);
         return Ok(vec![StarryQemuCase {
             name: case_name.to_string(),
             case_dir,
             qemu_config_path,
+            build_config_path,
         }]);
     }
 
@@ -160,6 +164,7 @@ pub(crate) fn discover_qemu_cases(
             if qemu_config_path.is_file() {
                 Some(StarryQemuCase {
                     name,
+                    build_config_path: resolve_case_build_config_path(&path, arch, target),
                     case_dir: path,
                     qemu_config_path,
                 })
@@ -259,6 +264,34 @@ fn qemu_config_name(arch: &str) -> String {
     format!("qemu-{arch}.toml")
 }
 
+pub(crate) fn resolve_case_build_config_path(
+    case_dir: &Path,
+    arch: &str,
+    target: &str,
+) -> Option<PathBuf> {
+    let bare_target = case_dir.join(format!("build-{target}.toml"));
+    if bare_target.is_file() {
+        return Some(bare_target);
+    }
+
+    let dotted_target = case_dir.join(format!(".build-{target}.toml"));
+    if dotted_target.is_file() {
+        return Some(dotted_target);
+    }
+
+    let bare_arch = case_dir.join(format!("build-{arch}.toml"));
+    if bare_arch.is_file() {
+        return Some(bare_arch);
+    }
+
+    let dotted_arch = case_dir.join(format!(".build-{arch}.toml"));
+    if dotted_arch.is_file() {
+        return Some(dotted_arch);
+    }
+
+    None
+}
+
 fn render_qemu_case_summary(report: &StarryQemuRunReport) -> String {
     let passed = report
         .cases
@@ -338,24 +371,31 @@ fn collect_board_test_groups(
                 continue;
             };
 
-            let build_config_path = workspace_root
+            let default_build_config_path = workspace_root
                 .join("os/StarryOS/configs/board")
                 .join(format!("{board_name}.toml"));
-            if !build_config_path.is_file() {
+            if !default_build_config_path.is_file() {
                 bail!(
                     "Starry board test group `{}-{board_name}` maps to missing build config `{}`",
                     case_name,
-                    build_config_path.display()
+                    default_build_config_path.display()
                 );
             }
 
-            let board_file = board::load_board_file(&build_config_path).with_context(|| {
-                format!(
-                    "failed to load mapped Starry build config for board test group \
-                     `{}-{board_name}`",
-                    case_name
-                )
-            })?;
+            let board_file =
+                board::load_board_file(&default_build_config_path).with_context(|| {
+                    format!(
+                        "failed to load mapped Starry build config for board test group \
+                         `{}-{board_name}`",
+                        case_name
+                    )
+                })?;
+            let build_config_path = resolve_case_build_config_path(
+                &case_dir,
+                arch_for_target_checked(&board_file.target)?,
+                &board_file.target,
+            )
+            .unwrap_or(default_build_config_path);
             groups.push(StarryBoardTestGroup {
                 name: format!("{case_name}-{board_name}"),
                 board_name: board_name.to_string(),
@@ -487,17 +527,31 @@ mod tests {
         fs::write(path, "timeout = 1\n").unwrap();
     }
 
+    fn write_case_build_config(root: &Path, relative_dir: &str, name: &str) -> PathBuf {
+        let path = root.join(relative_dir).join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "features = [\"qemu\"]\nlog = \"Info\"\n").unwrap();
+        path
+    }
+
     #[test]
     fn discovers_only_cases_with_matching_qemu_config() {
         let root = tempdir().unwrap();
         write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "x86_64");
         fs::create_dir_all(root.path().join("test-suit/starryos/normal/usb")).unwrap();
 
-        let cases =
-            discover_qemu_cases(root.path(), "x86_64", None, StarryTestGroup::Normal).unwrap();
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            StarryTestGroup::Normal,
+        )
+        .unwrap();
 
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name, "smoke");
+        assert_eq!(cases[0].build_config_path, None);
         assert_eq!(
             cases[0].case_dir,
             root.path().join("test-suit/starryos/normal/smoke")
@@ -509,12 +563,150 @@ mod tests {
         let root = tempdir().unwrap();
         fs::create_dir_all(root.path().join("test-suit/starryos/normal/usb")).unwrap();
 
-        let err = discover_qemu_cases(root.path(), "x86_64", Some("usb"), StarryTestGroup::Normal)
-            .unwrap_err()
-            .to_string();
+        let err = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("usb"),
+            StarryTestGroup::Normal,
+        )
+        .unwrap_err()
+        .to_string();
 
         assert!(err.contains("does not provide"));
         assert!(err.contains("qemu-x86_64.toml"));
+    }
+
+    #[test]
+    fn qemu_case_prefers_target_build_config() {
+        let root = tempdir().unwrap();
+        write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "aarch64");
+        let build = write_case_build_config(
+            root.path(),
+            "test-suit/starryos/normal/smoke",
+            "build-aarch64-unknown-none-softfloat.toml",
+        );
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            None,
+            StarryTestGroup::Normal,
+        )
+        .unwrap();
+
+        assert_eq!(cases[0].build_config_path, Some(build));
+    }
+
+    #[test]
+    fn qemu_case_uses_dotted_target_build_config_when_bare_missing() {
+        let root = tempdir().unwrap();
+        write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "aarch64");
+        let build = write_case_build_config(
+            root.path(),
+            "test-suit/starryos/normal/smoke",
+            ".build-aarch64-unknown-none-softfloat.toml",
+        );
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            None,
+            StarryTestGroup::Normal,
+        )
+        .unwrap();
+
+        assert_eq!(cases[0].build_config_path, Some(build));
+    }
+
+    #[test]
+    fn qemu_case_falls_back_to_arch_build_config() {
+        let root = tempdir().unwrap();
+        write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "aarch64");
+        let build = write_case_build_config(
+            root.path(),
+            "test-suit/starryos/normal/smoke",
+            "build-aarch64.toml",
+        );
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            None,
+            StarryTestGroup::Normal,
+        )
+        .unwrap();
+
+        assert_eq!(cases[0].build_config_path, Some(build));
+    }
+
+    #[test]
+    fn qemu_case_prefers_target_build_config_over_arch_build_config() {
+        let root = tempdir().unwrap();
+        write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "aarch64");
+        let target_build = write_case_build_config(
+            root.path(),
+            "test-suit/starryos/normal/smoke",
+            "build-aarch64-unknown-none-softfloat.toml",
+        );
+        write_case_build_config(
+            root.path(),
+            "test-suit/starryos/normal/smoke",
+            "build-aarch64.toml",
+        );
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            None,
+            StarryTestGroup::Normal,
+        )
+        .unwrap();
+
+        assert_eq!(cases[0].build_config_path, Some(target_build));
+    }
+
+    #[test]
+    fn board_test_group_prefers_case_target_build_config() {
+        let root = tempdir().unwrap();
+        write_board_build_config(
+            root.path(),
+            "orangepi-5-plus",
+            "aarch64-unknown-none-softfloat",
+        );
+        write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
+        let build = write_case_build_config(
+            root.path(),
+            "test-suit/starryos/normal/smoke",
+            "build-aarch64-unknown-none-softfloat.toml",
+        );
+
+        let groups = discover_board_test_groups(root.path(), None).unwrap();
+
+        assert_eq!(groups[0].build_config_path, build);
+    }
+
+    #[test]
+    fn board_test_group_falls_back_to_mapped_board_build_config() {
+        let root = tempdir().unwrap();
+        write_board_build_config(
+            root.path(),
+            "orangepi-5-plus",
+            "aarch64-unknown-none-softfloat",
+        );
+        write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
+
+        let groups = discover_board_test_groups(root.path(), None).unwrap();
+
+        assert_eq!(
+            groups[0].build_config_path,
+            root.path()
+                .join("os/StarryOS/configs/board/orangepi-5-plus.toml")
+        );
     }
 
     #[test]

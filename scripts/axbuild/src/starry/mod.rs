@@ -372,6 +372,7 @@ impl Starry {
         let cases = test_suit::discover_qemu_cases(
             self.app.workspace_root(),
             &arch,
+            &target,
             args.test_case.as_deref(),
             test_group,
         )?;
@@ -385,28 +386,7 @@ impl Starry {
             target
         );
 
-        let default_board = board::default_board_for_target(self.app.workspace_root(), &target)?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "missing Starry qemu defconfig for target `{target}` in tests; expected a \
-                     default qemu board config under os/StarryOS/configs/board"
-                )
-            })?;
-        let mut request = self.prepare_request(
-            Self::test_build_args(&arch),
-            None,
-            None,
-            SnapshotPersistence::Discard,
-        )?;
-        request.plat_dyn = Some(default_board.build_info.plat_dyn);
-        request.build_info_override = Some(default_board.build_info.clone());
-        rootfs::ensure_rootfs_in_target_dir(
-            self.app.workspace_root(),
-            &request.arch,
-            &request.target,
-        )
-        .await?;
-        let cargo = build::load_cargo_config(&request)?;
+        let default_board = board::default_board_for_target(self.app.workspace_root(), &target)?;
 
         let total = cases.len();
         let suite_started = Instant::now();
@@ -415,6 +395,29 @@ impl Starry {
             println!("[{}/{}] starry qemu {}", index + 1, total, case.name);
 
             let case_started = Instant::now();
+            let mut request = self.prepare_request(
+                Self::test_build_args(&target, case.build_config_path.clone()),
+                None,
+                None,
+                SnapshotPersistence::Discard,
+            )?;
+            if case.build_config_path.is_none() {
+                let default_board = default_board.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "missing Starry qemu defconfig for target `{target}` in tests; expected a \
+                         default qemu board config under os/StarryOS/configs/board"
+                    )
+                })?;
+                request.plat_dyn = Some(default_board.build_info.plat_dyn);
+                request.build_info_override = Some(default_board.build_info);
+            }
+            rootfs::ensure_rootfs_in_target_dir(
+                self.app.workspace_root(),
+                &request.arch,
+                &request.target,
+            )
+            .await?;
+            let cargo = build::load_cargo_config(&request)?;
             match self
                 .run_qemu_case(&request, &cargo, case)
                 .await
@@ -547,11 +550,11 @@ impl Starry {
         Ok(request)
     }
 
-    fn test_build_args(arch: &str) -> StarryCliArgs {
+    fn test_build_args(target: &str, config: Option<PathBuf>) -> StarryCliArgs {
         StarryCliArgs {
-            config: None,
-            arch: Some(arch.to_string()),
-            target: None,
+            config,
+            arch: None,
+            target: Some(target.to_string()),
             smp: None,
             debug: false,
         }

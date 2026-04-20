@@ -1344,6 +1344,7 @@ mod tests {
             name: name.to_string(),
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
+            build_config_path: None,
         }
     }
 
