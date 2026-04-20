@@ -24,7 +24,6 @@ ax-cpu
 ax-cpumask
 ax-display
 ax-dma
-ax-driver-net
 ax-errno
 ax-hal
 ax-fs-devfs
@@ -56,7 +55,6 @@ axfs-ng-vfs
 axhvc
 axklib
 axpoll
-ax-plat
 axplat-x86-qemu-q35
 axvm
 axvmconfig
