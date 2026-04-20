@@ -117,11 +117,13 @@ pub fn sys_mmap(
             MmapFlags::from_bits_truncate(flags)
         }
     };
+    // Exactly one of MAP_PRIVATE or MAP_SHARED must be set. `MAP_PRIVATE|MAP_SHARED`
+    // shares the bit pattern 0x03 with `MAP_SHARED_VALIDATE`; Linux rejects this
+    // ambiguous combo with EINVAL, and StarryOS does not implement `SHARED_VALIDATE`
+    // semantics separately, so we reject 0x03 here too.
     let map_type = map_flags & MmapFlags::TYPE;
-    if !matches!(
-        map_type,
-        MmapFlags::PRIVATE | MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE
-    ) {
+    let type_bits = map_type.bits();
+    if type_bits != MAP_PRIVATE && type_bits != MAP_SHARED {
         return Err(AxError::InvalidInput);
     }
     if map_flags.contains(MmapFlags::ANONYMOUS) != (fd <= 0) {
@@ -271,6 +273,10 @@ pub fn sys_mmap(
 }
 
 pub fn sys_munmap(addr: usize, length: usize) -> AxResult<isize> {
+    // man 2 munmap: "length was 0" → EINVAL (since Linux 2.6.12).
+    if length == 0 {
+        return Err(AxError::InvalidInput);
+    }
     debug!("sys_munmap <= addr: {addr:#x}, length: {length:x}");
     let curr = current();
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
@@ -291,10 +297,23 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
+    // man 2 mprotect: addr is not a multiple of page size → EINVAL.
+    if !PageSize::Size4K.is_aligned(addr) {
+        return Err(AxError::InvalidInput);
+    }
+    // length=0 is a no-op success on Linux.
+    if length == 0 {
+        return Ok(0);
+    }
+
     let curr = current();
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
+    // man 2 mprotect: addresses without a mapping → ENOMEM.
+    if aspace.find_area(start_addr).is_none() {
+        return Err(AxError::NoMemory);
+    }
     aspace.protect(start_addr, length, permission_flags.into())?;
 
     Ok(0)
