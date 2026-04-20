@@ -74,13 +74,8 @@ pub fn init(args: &[String], envs: &[String]) {
     // TODO: wait for all processes to finish
     let exit_code = task.join();
     info!("Init process exited with code: {exit_code:?}");
-
-    let cx = FS_CONTEXT.lock();
-    cx.root_dir()
-        .unmount_all()
-        .expect("Failed to unmount all filesystems");
-    cx.root_dir()
-        .filesystem()
-        .flush()
-        .expect("Failed to flush rootfs");
+    // `task.join()` resumes on the exit wakeup path, where IRQs and preemption
+    // are still disabled for the current kernel task. Avoid taking blocking
+    // mutexes such as `FS_CONTEXT.lock()` here and shut down directly.
+    ax_hal::power::system_off();
 }
