@@ -18,10 +18,12 @@ default = []
 qemu = [
   "ax-feat/defplat",
   "ax-feat/irq",
+  "ax-feat/rtc",
   "ax-feat/bus-pci",
   "ax-feat/display",
   "starry-kernel/input",
   "starry-kernel/vsock", # auxilary features
+  "axplat-dyn?/rtc",
   "axplat-dyn?/intel-net",
   "axplat-dyn?/virtio-net-pci",
 ]
