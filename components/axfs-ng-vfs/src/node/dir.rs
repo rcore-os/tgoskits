@@ -320,13 +320,23 @@ impl DirNode {
 
         self.ops.rename(src_name, dst_dir, dst_name).inspect(|_| {
             let (mut src_children, mut dst_children) = self.lock_both_cache(dst_dir);
-            Self::forget_entry(&mut src_children, src_name);
-            Self::forget_entry(
-                dst_children
-                    .as_mut()
-                    .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut),
-                dst_name,
-            );
+            // Move the source DirEntry over to dst_name instead of forgetting
+            // it. The DirEntry's user_data holds per-file caches (notably the
+            // tmpfs page cache keyed by DirEntry); forgetting and re-looking
+            // up would allocate a fresh cache and silently drop any unflushed
+            // writes, which PostgreSQL's durable_rename tripped over.
+            let src_entry = src_children.remove(src_name);
+            let dst_children_ref = dst_children
+                .as_mut()
+                .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut);
+            if let Some(prev) = dst_children_ref.remove(dst_name)
+                && let Ok(dir) = prev.as_dir()
+            {
+                dir.forget();
+            }
+            if let Some(entry) = src_entry {
+                dst_children_ref.insert(dst_name.to_owned(), entry);
+            }
         })
     }
 
