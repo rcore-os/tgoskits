@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::{
     future::{Future, IntoFuture},
     pin::pin,
@@ -9,7 +9,9 @@ use core::{
 };
 
 use crab_usb::{Device, DeviceInfo, Event, EventHandler, USBHost, err::USBError};
+use fdt_edit::{Fdt, NodeType};
 use rdrive::DriverGeneric;
+use spin::{Mutex, Once};
 
 mod xhci_mmio;
 mod xhci_pci;
@@ -23,6 +25,7 @@ impl crab_usb::KernelOp for DmaImpl {
 }
 
 pub(crate) static USB_KERNEL: DmaImpl = DmaImpl;
+static USB_IRQ_REGISTRY: Once<Mutex<BTreeMap<usize, usize>>> = Once::new();
 
 pub struct PlatformUsbHost {
     name: &'static str,
@@ -87,23 +90,18 @@ pub trait PlatformDeviceUsbHost {
 
 impl PlatformDeviceUsbHost for rdrive::PlatformDevice {
     fn register_usb_host(self, name: &'static str, mut host: USBHost, irq_num: Option<usize>) {
+        let device_id = self.descriptor.device_id();
         let event_handler = host.create_event_handler();
         self.register(PlatformUsbHost::new(name, host, event_handler, irq_num));
+
+        #[cfg(feature = "irq")]
+        if let Some(irq_num) = irq_num {
+            let device = rdrive::get::<PlatformUsbHost>(device_id)
+                .expect("registered USB host should be retrievable from rdrive");
+            let host_ptr = unsafe { device.force_use() };
+            register_usb_irq_handler(irq_num, host_ptr);
+        }
     }
-}
-
-fn pci_legacy_irq_for_address(address: rdrive::probe::pci::PciAddress) -> usize {
-    const PCI_IRQ_BASE: usize = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "riscv64") {
-        0x20
-    } else if cfg!(target_arch = "loongarch64") {
-        0x10
-    } else if cfg!(target_arch = "aarch64") {
-        0x23
-    } else {
-        0
-    };
-
-    PCI_IRQ_BASE + (usize::from(address.device()) & 3)
 }
 
 fn align_up_4k(size: usize) -> usize {
@@ -113,7 +111,11 @@ fn align_up_4k(size: usize) -> usize {
 
 fn decode_fdt_irq(interrupts: &[rdrive::probe::fdt::InterruptRef]) -> Option<usize> {
     let interrupt = interrupts.first()?;
-    match interrupt.specifier.as_slice() {
+    decode_irq_cells(&interrupt.specifier)
+}
+
+fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
+    match specifier {
         [irq] => Some(*irq as usize),
         [kind, irq, ..] => match *kind {
             0 => Some(*irq as usize + 32),
@@ -122,6 +124,117 @@ fn decode_fdt_irq(interrupts: &[rdrive::probe::fdt::InterruptRef]) -> Option<usi
         },
         _ => None,
     }
+}
+
+pub(super) fn resolve_pci_irq_from_fdt(
+    endpoint: &rdrive::probe::pci::EndpointRc,
+) -> Result<usize, USBError> {
+    let fdt_addr = somehal::fdt_addr()
+        .unwrap_or_else(|| panic!("PCI USB IRQ mapping requires FDT; ACPI is not supported"));
+    let fdt = unsafe { Fdt::from_ptr(fdt_addr) }
+        .map_err(|err| USBError::Other(anyhow::anyhow!("failed to parse live FDT: {err:?}")))?;
+
+    let bus = endpoint.address().bus();
+    let pin = endpoint.interrupt_pin();
+    if pin == 0 {
+        return Err(USBError::Other(anyhow::anyhow!(
+            "PCI USB endpoint {} has no interrupt pin",
+            endpoint.address()
+        )));
+    }
+
+    let mut candidates = Vec::new();
+    let mut exact_range_matches = Vec::new();
+    for node in fdt.all_nodes() {
+        let NodeType::Pci(pci) = node else {
+            continue;
+        };
+
+        match pci.bus_range() {
+            Some(range) if range.contains(&(bus as u32)) => {
+                exact_range_matches.push(pci);
+                candidates.push(pci);
+            }
+            Some(_) => {}
+            None => candidates.push(pci),
+        }
+    }
+
+    let pci_host = if exact_range_matches.len() == 1 {
+        exact_range_matches[0]
+    } else if exact_range_matches.len() > 1 {
+        exact_range_matches[0]
+    } else if candidates.len() == 1 {
+        candidates[0]
+    } else if candidates.is_empty() {
+        return Err(USBError::Other(anyhow::anyhow!(
+            "no PCI host node in live FDT matches USB endpoint {}",
+            endpoint.address()
+        )));
+    } else {
+        return Err(USBError::Other(anyhow::anyhow!(
+            "multiple PCI host nodes in live FDT match USB endpoint {} without a unique bus-range \
+             match",
+            endpoint.address()
+        )));
+    };
+
+    let irq = pci_host
+        .child_interrupts(
+            endpoint.address().bus(),
+            endpoint.address().device(),
+            endpoint.address().function(),
+            pin,
+        )
+        .map_err(|err| {
+            USBError::Other(anyhow::anyhow!(
+                "failed to resolve PCI interrupt-map entry for USB endpoint {}: {err:?}",
+                endpoint.address()
+            ))
+        })?;
+
+    decode_irq_cells(&irq.irqs).ok_or_else(|| {
+        USBError::Other(anyhow::anyhow!(
+            "unsupported PCI interrupt specifier {:?} for USB endpoint {}",
+            irq.irqs,
+            endpoint.address()
+        ))
+    })
+}
+
+fn usb_irq_registry() -> &'static Mutex<BTreeMap<usize, usize>> {
+    USB_IRQ_REGISTRY.call_once(|| Mutex::new(BTreeMap::new()))
+}
+
+#[cfg(feature = "irq")]
+fn register_usb_irq_handler(irq_num: usize, host_ptr: *mut PlatformUsbHost) {
+    {
+        let mut registry = usb_irq_registry().lock();
+        registry.insert(irq_num, host_ptr as usize);
+    }
+
+    if !ax_plat::irq::register(irq_num, usb_irq_handler) {
+        warn!("failed to register USB IRQ handler for IRQ {}", irq_num);
+    }
+}
+
+#[cfg(feature = "irq")]
+fn usb_irq_handler() {
+    let irq_num = somehal::irq::irq_handler_raw().raw();
+    let host_ptr = {
+        let registry = usb_irq_registry().lock();
+        registry.get(&irq_num).copied()
+    };
+
+    let Some(host_ptr) = host_ptr else {
+        warn!("USB IRQ {} fired without a registered USB host", irq_num);
+        return;
+    };
+
+    // SAFETY: IRQ handlers must not block on the rdrive device lock.
+    let host = unsafe { &*(host_ptr as *const PlatformUsbHost) };
+    let event = host.handle_irq();
+    trace!("USB IRQ {} handled with event {:?}", irq_num, event);
 }
 
 fn block_on_usb<F: IntoFuture>(future: F) -> F::Output {
