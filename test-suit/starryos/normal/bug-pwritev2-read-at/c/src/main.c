@@ -14,8 +14,19 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-#ifndef SYS_pwritev2
-#define SYS_pwritev2 69
+/*
+ * pwritev2 syscall numbers by architecture (from Linux kernel):
+ *   x86_64:       328
+ *   aarch64:      287
+ *   riscv64:      287
+ *   loongarch64:  287
+ */
+#if defined(__x86_64__)
+#define SYS_pwritev2 328
+#elif defined(__aarch64__) || defined(__riscv) || defined(__loongarch__)
+#define SYS_pwritev2 287
+#else
+#error "pwritev2 syscall number not defined for this architecture"
 #endif
 
 int main(void)
@@ -55,8 +66,9 @@ int main(void)
             char read_buf[32] = {0};
             ssize_t n = read(fd, read_buf, sizeof(read_buf) - 1);
             close(fd);
-            if (n > 0 && strncmp(read_buf, "Hello, World!", 12) == 0) {
-                printf("PASS: pwritev2 wrote correct data: \"%s\"\n", read_buf);
+            size_t expected_len = iov[0].iov_len + iov[1].iov_len; // 13 bytes
+            if (n == (ssize_t)expected_len && memcmp(read_buf, "Hello, World!", expected_len) == 0) {
+                printf("PASS: pwritev2 wrote correct data: \"%s\" (%zd bytes)\n", read_buf, n);
                 printf("TEST PASSED\n");
                 unlink(test_file);
                 return 0;
