@@ -79,12 +79,8 @@ pub struct Ext4DirEntryTail {
     pub det_checksum: u32,
 }
 
-impl Ext4DirEntryTail {
-    pub const RESERVED_FT: u8 = 0xDE;
-    pub const TAIL_LEN: u16 = 12;
-
-    /// Creates a directory entry tail for a checksummed directory block.
-    pub fn new() -> Self {
+impl Default for Ext4DirEntryTail {
+    fn default() -> Self {
         Self {
             det_reserved_zero1: 0,
             det_rec_len: Self::TAIL_LEN,
@@ -92,6 +88,15 @@ impl Ext4DirEntryTail {
             det_reserved_ft: Self::RESERVED_FT,
             det_checksum: 0,
         }
+    }
+}
+
+impl Ext4DirEntryTail {
+    pub const RESERVED_FT: u8 = 0xDE;
+    pub const TAIL_LEN: u16 = 12;
+
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 

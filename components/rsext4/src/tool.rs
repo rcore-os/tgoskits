@@ -69,7 +69,7 @@ pub fn is_numbers_power(number: usize, base: usize) -> bool {
     if tmp_number == 1 {
         return true;
     }
-    while tmp_number % base == 0 {
+    while tmp_number.is_multiple_of(base) {
         tmp_number /= base;
     }
     tmp_number == 1

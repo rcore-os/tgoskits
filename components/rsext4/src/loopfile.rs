@@ -74,7 +74,7 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
         if (raw_len & 0x8000) != 0 {
             return;
         }
-        let mut len = raw_len;
+        let len = raw_len;
         if len == 0 {
             return;
         }

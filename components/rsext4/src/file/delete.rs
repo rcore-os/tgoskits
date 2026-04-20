@@ -275,10 +275,7 @@ pub fn delete_dir<B: BlockDevice>(
         if frame.stage == 0 {
             let block_bytes = BLOCK_SIZE;
 
-            let dir_blocks = match resolve_inode_block_allextend(fs, block_dev, &mut frame.inode) {
-                Ok(v) => v,
-                Err(e) => return Err(e),
-            };
+            let dir_blocks = resolve_inode_block_allextend(fs, block_dev, &mut frame.inode)?;
 
             let mut to_descend: Vec<(
                 alloc::string::String,
@@ -293,10 +290,7 @@ pub fn delete_dir<B: BlockDevice>(
                 // `fs` while the data-block cache entry is live.
                 let mut child_entries: Vec<(InodeNumber, alloc::string::String)> = Vec::new();
                 {
-                    let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
-                        Ok(v) => v,
-                        Err(e) => return Err(e),
-                    };
+                    let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
                     let data = &cached.data[..block_bytes];
                     let iter = DirEntryIterator::new(data);
                     for (entry, _) in iter {
@@ -326,10 +320,7 @@ pub fn delete_dir<B: BlockDevice>(
 
                     debug!("scan entry path={child_path}");
 
-                    let child_inode = match fs.get_inode_by_num(block_dev, child_ino) {
-                        Ok(v) => v,
-                        Err(e) => return Err(e),
-                    };
+                    let child_inode = fs.get_inode_by_num(block_dev, child_ino)?;
 
                     // Delete non-directory children immediately. Directories are
                     // deferred to the DFS stack.
@@ -376,10 +367,7 @@ pub fn delete_dir<B: BlockDevice>(
 
         // Stage 1 runs after all children are removed, so the directory should
         // now contain only `.` and `..`.
-        let mut cur_inode = match fs.get_inode_by_num(block_dev, frame.ino_num) {
-            Ok(v) => v,
-            Err(e) => return Err(e),
-        };
+        let mut cur_inode = fs.get_inode_by_num(block_dev, frame.ino_num)?;
 
         // A fully drained directory should have exactly the `.` and `..` links
         // left. Warn if the count disagrees, but keep deleting.
