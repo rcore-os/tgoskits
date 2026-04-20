@@ -1,7 +1,8 @@
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
     "ax-std/bus-mmio",
-    "ept-level-4"
+    "ept-level-4",
+    "fs"
 ]
 log = "Info"
 target = "loongarch64-unknown-none-softfloat"
