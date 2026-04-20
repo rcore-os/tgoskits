@@ -177,10 +177,7 @@ impl JBD2DEVSYSTEM {
 
         // Checkpoint: write metadata back to home blocks before marking journal clean.
         for update in self.commit_queue.iter() {
-            debug!(
-                "[JBD2 checkpoint] tid={} home_phys_block={}",
-                tid, update.0
-            );
+            debug!("[JBD2 checkpoint] tid={} home_phys_block={}", tid, update.0);
             block_dev.write(&update.1[..], update.0, 1)?;
         }
         block_dev.flush()?;

@@ -922,6 +922,7 @@ dependencies = [
  "log",
  "lru",
  "lwext4_rust",
+ "rsext4",
  "scope-local",
  "slab",
  "spin 0.10.0",

@@ -34,7 +34,12 @@ impl Inode {
         this: Option<WeakDirEntry>,
         path: Option<String>,
     ) -> Arc<Self> {
-        Arc::new(Self { fs, ino, this, path })
+        Arc::new(Self {
+            fs,
+            ino,
+            this,
+            path,
+        })
     }
 
     fn create_entry(
@@ -233,7 +238,10 @@ impl FileNodeOps for Inode {
             if let Some(phys) = rsext4::loopfile::resolve_inode_block(dev, &mut inode, lbn as u32)
                 .map_err(into_vfs_err)?
             {
-                let cached = fs.datablock_cache.get_or_load(dev, phys).map_err(into_vfs_err)?;
+                let cached = fs
+                    .datablock_cache
+                    .get_or_load(dev, phys)
+                    .map_err(into_vfs_err)?;
                 let data = &cached.data[..block_bytes as usize];
                 buf[written..written + copy_len as usize]
                     .copy_from_slice(&data[copy_start as usize..(copy_start + copy_len) as usize]);
@@ -256,8 +264,14 @@ impl FileNodeOps for Inode {
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
-            rsext4::write_file(dev, fs, &self.path.clone().ok_or(VfsError::InvalidInput)?, offset, buf)
-                .map_err(into_vfs_err)?;
+            rsext4::write_file(
+                dev,
+                fs,
+                &self.path.clone().ok_or(VfsError::InvalidInput)?,
+                offset,
+                buf,
+            )
+            .map_err(into_vfs_err)?;
         }
         self.fs.sync_to_disk()?;
         Ok(buf.len())
@@ -287,8 +301,13 @@ impl FileNodeOps for Inode {
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
-            rsext4::truncate(dev, fs, &self.path.clone().ok_or(VfsError::InvalidInput)?, len)
-                .map_err(into_vfs_err)?;
+            rsext4::truncate(
+                dev,
+                fs,
+                &self.path.clone().ok_or(VfsError::InvalidInput)?,
+                len,
+            )
+            .map_err(into_vfs_err)?;
         }
         self.fs.sync_to_disk()
     }
@@ -307,7 +326,8 @@ impl FileNodeOps for Inode {
                 return Err(VfsError::InvalidInput);
             }
 
-            if let Ok(blocks) = rsext4::loopfile::resolve_inode_block_allextend(fs, dev, &mut inode) {
+            if let Ok(blocks) = rsext4::loopfile::resolve_inode_block_allextend(fs, dev, &mut inode)
+            {
                 for blk in blocks.values() {
                     let _ = fs.free_block(dev, *blk);
                 }
@@ -395,7 +415,10 @@ impl DirNodeOps for Inode {
         let mut idx = 0u64;
         let mut count = 0usize;
         for &phys in blocks.values() {
-            let cached = fs.datablock_cache.get_or_load(dev, phys).map_err(into_vfs_err)?;
+            let cached = fs
+                .datablock_cache
+                .get_or_load(dev, phys)
+                .map_err(into_vfs_err)?;
             let data = &cached.data[..BLOCK_SIZE];
             let iter = rsext4::entries::DirEntryIterator::new(data);
             for (entry, _) in iter {

@@ -34,20 +34,22 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         raw_dev: &mut B,
         update: Jbd2Update,
     ) -> Ext4Result<()> {
-        if let Some(existing) = systeam.commit_queue.iter_mut().find(|queued| queued.0 == update.0) {
+        if let Some(existing) = systeam
+            .commit_queue
+            .iter_mut()
+            .find(|queued| queued.0 == update.0)
+        {
             *existing = update;
             return Ok(());
         }
 
         if systeam.commit_queue.len() >= JBD2_BUFFER_MAX {
-            systeam
-                .commit_transaction(raw_dev)?;
+            systeam.commit_transaction(raw_dev)?;
         }
 
         systeam.commit_queue.push(update);
         Ok(())
     }
-
 
     /// Creates a new JBD2 block device proxy.
     pub fn initial_jbd2dev(_mode: u8, block_dev: B, use_journal: bool) -> Self {

@@ -355,6 +355,7 @@ loongarch_vcpu = { path = "components/loongarch_vcpu", version = "0.5" }
 axvm = { path = "components/axvm", version = "0.5" }
 axvmconfig = { path = "components/axvmconfig", version = "0.4" }
 ax-fs-vfs = { path = "components/axfs_crates/axfs_vfs", version = "0.3" }
+rsext4 = { path = "components/rsext4" }
 
 axbuild = { path = "scripts/axbuild", version = "0.4" }
 
