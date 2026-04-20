@@ -174,6 +174,7 @@ kernel_path = "{}"
                 vmconfigs: vec![vmconfig],
             },
             root.path(),
+            None,
         )
         .unwrap();
 
@@ -211,6 +212,7 @@ kernel_path = "{}"
                 vmconfigs: vec![],
             },
             root.path(),
+            None,
         )
         .unwrap();
 
@@ -255,6 +257,7 @@ kernel_path = "{}"
                 vmconfigs: vec![],
             },
             root.path(),
+            None,
         )
         .unwrap();
 
