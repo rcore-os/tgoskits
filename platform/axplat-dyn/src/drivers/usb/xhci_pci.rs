@@ -40,7 +40,7 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         cmd
     });
 
-    let mmio = iomap((bar.start as usize).into(), align_up_4k(bar.count().max(1)))?;
+    let mmio = iomap(bar.start.into(), align_up_4k(bar.count().max(1)))?;
     let irq_num = Some(
         resolve_pci_irq_from_fdt(endpoint)
             .map_err(|err| OnProbeError::other(alloc::format!("{err}")))?,

@@ -1,17 +1,11 @@
 extern crate alloc;
 
-use alloc::{collections::BTreeMap, vec::Vec};
-use core::{
-    future::{Future, IntoFuture},
-    pin::pin,
-    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
-    time::Duration,
-};
+use alloc::vec::Vec;
+use core::time::Duration;
 
-use crab_usb::{Device, DeviceInfo, Event, EventHandler, USBHost, err::USBError};
+use crab_usb::{USBHost, err::USBError};
 use fdt_edit::{Fdt, NodeType};
 use rdrive::DriverGeneric;
-use spin::{Mutex, Once};
 
 mod xhci_mmio;
 mod xhci_pci;
@@ -25,52 +19,28 @@ impl crab_usb::KernelOp for DmaImpl {
 }
 
 pub(crate) static USB_KERNEL: DmaImpl = DmaImpl;
-static USB_IRQ_REGISTRY: Once<Mutex<BTreeMap<usize, usize>>> = Once::new();
 
 pub struct PlatformUsbHost {
     name: &'static str,
     irq_num: Option<usize>,
     host: USBHost,
-    event_handler: EventHandler,
-    initialized: bool,
 }
 
 impl PlatformUsbHost {
-    fn new(
-        name: &'static str,
-        host: USBHost,
-        event_handler: EventHandler,
-        irq_num: Option<usize>,
-    ) -> Self {
+    fn new(name: &'static str, host: USBHost, irq_num: Option<usize>) -> Self {
         Self {
             name,
             irq_num,
             host,
-            event_handler,
-            initialized: false,
         }
     }
 
-    pub fn init_blocking(&mut self) -> Result<(), USBError> {
-        if self.initialized {
-            return Ok(());
-        }
-
-        block_on_usb(self.host.init())?;
-        self.initialized = true;
-        Ok(())
+    pub fn host(&self) -> &USBHost {
+        &self.host
     }
 
-    pub fn probe_devices_blocking(&mut self) -> Result<Vec<DeviceInfo>, USBError> {
-        block_on_usb(self.host.probe_devices())
-    }
-
-    pub fn open_device_blocking(&mut self, info: &DeviceInfo) -> Result<Device, USBError> {
-        block_on_usb(self.host.open_device(info))
-    }
-
-    pub fn handle_irq(&self) -> Event {
-        self.event_handler.handle_event()
+    pub fn host_mut(&mut self) -> &mut USBHost {
+        &mut self.host
     }
 
     pub fn irq_num(&self) -> Option<usize> {
@@ -89,18 +59,8 @@ pub trait PlatformDeviceUsbHost {
 }
 
 impl PlatformDeviceUsbHost for rdrive::PlatformDevice {
-    fn register_usb_host(self, name: &'static str, mut host: USBHost, irq_num: Option<usize>) {
-        let device_id = self.descriptor.device_id();
-        let event_handler = host.create_event_handler();
-        self.register(PlatformUsbHost::new(name, host, event_handler, irq_num));
-
-        #[cfg(feature = "irq")]
-        if let Some(irq_num) = irq_num {
-            let device = rdrive::get::<PlatformUsbHost>(device_id)
-                .expect("registered USB host should be retrievable from rdrive");
-            let host_ptr = unsafe { device.force_use() };
-            register_usb_irq_handler(irq_num, host_ptr);
-        }
+    fn register_usb_host(self, name: &'static str, host: USBHost, irq_num: Option<usize>) {
+        self.register(PlatformUsbHost::new(name, host, irq_num));
     }
 }
 
@@ -201,62 +161,3 @@ pub(super) fn resolve_pci_irq_from_fdt(
         ))
     })
 }
-
-fn usb_irq_registry() -> &'static Mutex<BTreeMap<usize, usize>> {
-    USB_IRQ_REGISTRY.call_once(|| Mutex::new(BTreeMap::new()))
-}
-
-#[cfg(feature = "irq")]
-fn register_usb_irq_handler(irq_num: usize, host_ptr: *mut PlatformUsbHost) {
-    {
-        let mut registry = usb_irq_registry().lock();
-        registry.insert(irq_num, host_ptr as usize);
-    }
-
-    if !ax_plat::irq::register(irq_num, usb_irq_handler) {
-        warn!("failed to register USB IRQ handler for IRQ {}", irq_num);
-    }
-}
-
-#[cfg(feature = "irq")]
-fn usb_irq_handler() {
-    let irq_num = somehal::irq::irq_handler_raw().raw();
-    let host_ptr = {
-        let registry = usb_irq_registry().lock();
-        registry.get(&irq_num).copied()
-    };
-
-    let Some(host_ptr) = host_ptr else {
-        warn!("USB IRQ {} fired without a registered USB host", irq_num);
-        return;
-    };
-
-    // SAFETY: IRQ handlers must not block on the rdrive device lock.
-    let host = unsafe { &*(host_ptr as *const PlatformUsbHost) };
-    let event = host.handle_irq();
-    trace!("USB IRQ {} handled with event {:?}", irq_num, event);
-}
-
-fn block_on_usb<F: IntoFuture>(future: F) -> F::Output {
-    let mut future = pin!(future.into_future());
-    let waker = noop_waker();
-    let mut context = Context::from_waker(&waker);
-
-    loop {
-        match Future::poll(future.as_mut(), &mut context) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => core::hint::spin_loop(),
-        }
-    }
-}
-
-fn noop_waker() -> Waker {
-    unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &NOOP_WAKER_VTABLE)) }
-}
-
-const NOOP_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
-    |_| RawWaker::new(core::ptr::null(), &NOOP_WAKER_VTABLE),
-    |_| {},
-    |_| {},
-    |_| {},
-);
