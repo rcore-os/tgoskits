@@ -559,13 +559,17 @@ impl DirNodeOps for Inode {
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
-            if rsext4::dir::get_inode_with_num(fs, dev, &path)
-                .map_err(into_vfs_err)?
-                .is_none()
-            {
+            let inode_info = rsext4::dir::get_inode_with_num(fs, dev, &path)
+                .map_err(into_vfs_err)?;
+            if inode_info.is_none() {
                 return Err(VfsError::NotFound);
             }
-            rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
+            let (_, inode) = inode_info.unwrap();
+            if inode.is_dir() {
+                rsext4::delete_dir(fs, dev, &path).map_err(into_vfs_err)?;
+            } else {
+                rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
+            }
         }
         self.fs.sync_to_disk()
     }
