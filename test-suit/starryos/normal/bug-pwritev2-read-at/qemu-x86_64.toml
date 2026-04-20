@@ -1,7 +1,5 @@
 args = [
     "-nographic",
-    "-cpu",
-    "qemu64",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
@@ -12,7 +10,7 @@ args = [
     "user,id=net0",
 ]
 uefi = false
-to_bin = true
+to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/bug-pwritev2-read-at"
 success_regex = ["(?m)^TEST PASSED\\s*$"]
