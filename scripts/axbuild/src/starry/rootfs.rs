@@ -9,7 +9,6 @@ use std::{
 
 use anyhow::{Context, bail, ensure};
 use ostool::run::qemu::QemuConfig;
-use tokio::fs as tokio_fs;
 
 use super::test_suit::StarryQemuCase;
 use crate::{
@@ -140,59 +139,18 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
     extract_unified_rootfs_for_arch(workspace_root, arch).await
 }
 
-fn per_case_rootfs_path(
-    workspace_root: &Path,
-    arch: &str,
-    target: &str,
-    case_name: &str,
-) -> anyhow::Result<PathBuf> {
-    let target_dir = resolve_target_dir(workspace_root, target)?;
-    Ok(target_dir.join(format!("rootfs-{arch}-{case_name}.img")))
-}
-
-pub(crate) async fn prepare_per_case_rootfs(
-    workspace_root: &Path,
-    arch: &str,
-    target: &str,
-    case_name: &str,
-) -> anyhow::Result<PathBuf> {
-    let base = rootfs_image_path(workspace_root, arch, target)?;
-    let case_rootfs = per_case_rootfs_path(workspace_root, arch, target, case_name)?;
-
-    if case_rootfs.exists() {
-        tokio_fs::remove_file(&case_rootfs).await.with_context(|| {
-            format!(
-                "failed to remove old per-case rootfs {}",
-                case_rootfs.display()
-            )
-        })?;
-    }
-
-    let src = base.clone();
-    let dst = case_rootfs.clone();
-    tokio::task::spawn_blocking(move || {
-        std::fs::copy(&src, &dst)
-            .with_context(|| format!("failed to copy {} to {}", src.display(), dst.display()))?;
-        Ok::<(), anyhow::Error>(())
-    })
-    .await
-    .context("rootfs copy task failed")??;
-
-    Ok(case_rootfs)
-}
-
 pub(crate) async fn prepare_case_assets(
     workspace_root: &Path,
     arch: &str,
     target: &str,
     case: &StarryQemuCase,
 ) -> anyhow::Result<StarryCaseAssets> {
-    let case_rootfs = prepare_per_case_rootfs(workspace_root, arch, target, &case.name).await?;
+    let rootfs_path = rootfs_image_path(workspace_root, arch, target)?;
     let needs_assets = case_uses_c_pipeline(case) || case_uses_usb_qemu_assets(arch, case);
 
     if !needs_assets {
         return Ok(StarryCaseAssets {
-            rootfs_path: case_rootfs,
+            rootfs_path,
             extra_qemu_args: Vec::new(),
         });
     }
@@ -200,7 +158,7 @@ pub(crate) async fn prepare_case_assets(
     let workspace_root = workspace_root.to_path_buf();
     let arch = arch.to_string();
     let target = target.to_string();
-    let case_rootfs_for_task = case_rootfs.clone();
+    let rootfs_path_for_task = rootfs_path.clone();
     let case = case.clone();
     let extra_qemu_args = tokio::task::spawn_blocking(move || {
         prepare_case_assets_sync(
@@ -208,14 +166,14 @@ pub(crate) async fn prepare_case_assets(
             &arch,
             &target,
             &case,
-            &case_rootfs_for_task,
+            &rootfs_path_for_task,
         )
     })
     .await
     .context("starry case asset task failed")??;
 
     Ok(StarryCaseAssets {
-        rootfs_path: case_rootfs,
+        rootfs_path,
         extra_qemu_args,
     })
 }
@@ -1621,10 +1579,11 @@ mod tests {
 
         assert_eq!(
             assets.rootfs_path,
-            target_dir.join("rootfs-x86_64-smoke.img")
+            rootfs_dir.join("rootfs-x86_64-alpine.img")
         );
         assert!(assets.extra_qemu_args.is_empty());
         assert_eq!(fs::read(&assets.rootfs_path).unwrap(), b"rootfs");
+        assert!(!target_dir.join("rootfs-x86_64-smoke.img").exists());
     }
 
     #[test]
