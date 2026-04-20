@@ -24,6 +24,7 @@ ax-cpu
 ax-cpumask
 ax-display
 ax-dma
+ax-driver-net
 ax-errno
 ax-hal
 ax-fs-devfs

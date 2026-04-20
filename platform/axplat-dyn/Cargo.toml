@@ -37,6 +37,7 @@ ax-driver-block.workspace = true
 ax-driver-net = { workspace = true, optional = true }
 ax-driver-virtio = { workspace = true, features = ["block", "net"] }
 ax-errno.workspace = true
+ax-kspin.workspace = true
 axklib.workspace = true
 ax-plat.workspace = true
 dma-api.workspace = true

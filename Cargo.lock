@@ -809,6 +809,7 @@ name = "ax-driver-net"
 version = "0.3.11"
 dependencies = [
  "ax-driver-base",
+ "bitflags 2.11.1",
  "fxmac_rs",
  "ixgbe-driver",
  "log",
@@ -1722,6 +1723,7 @@ dependencies = [
  "ax-driver-net",
  "ax-driver-virtio",
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat",

@@ -76,7 +76,6 @@ impl<H: Hal, T: Transport> InputDriverOps for VirtIoInputDev<H, T> {
     }
 
     fn read_event(&mut self) -> DevResult<Event> {
-        self.inner.ack_interrupt();
         self.inner
             .pop_pending_event()
             .map(|e| Event {
