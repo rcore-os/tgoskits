@@ -91,6 +91,17 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
 
                 set_timer_state(&curr, TimerState::User);
                 curr.clear_interrupt();
+                // Close the race window: a signal may have been posted
+                // between the final check_signals call and clear_interrupt.
+                // That signal's interrupt() would have set the flag we just
+                // cleared. Re-observe pending signals; if any unblocked
+                // signal is queued, re-arm the interrupt flag so the next
+                // blocking syscall returns EINTR and check_signals runs.
+                let pending = thr.signal.pending();
+                let blocked = thr.signal.blocked();
+                if !(pending & !blocked).is_empty() {
+                    curr.interrupt();
+                }
             }
         },
         name.into(),
