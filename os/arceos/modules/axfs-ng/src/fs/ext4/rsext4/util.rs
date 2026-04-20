@@ -1,7 +1,7 @@
 use axfs_ng_vfs::{NodeType, VfsError};
-use rsext4::{Ext4Error, bmalloc::AbsoluteBN, entries::Ext4DirEntry2};
+use rsext4::{Ext4Error, entries::Ext4DirEntry2};
 
-pub fn into_vfs_err(err: Ext4Error) -> VfsError {
+pub fn into_vfs_err(_err: Ext4Error) -> VfsError {
     VfsError::from(ax_errno::LinuxError::EIO).canonicalize()
 }
 

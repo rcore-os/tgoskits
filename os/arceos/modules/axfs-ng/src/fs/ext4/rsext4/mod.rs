@@ -24,10 +24,10 @@ impl Ext4Disk {
 impl BlockDevice for Ext4Disk {
     fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
         let dev_block = self.0.block_size();
-        if !BLOCK_SIZE.is_multiple_of(dev_block as usize) {
+        if !BLOCK_SIZE.is_multiple_of(dev_block) {
             return Err(Ext4Error::invalid_input());
         }
-        let factor = (BLOCK_SIZE / dev_block as usize) as u64;
+        let factor = (BLOCK_SIZE / dev_block) as u64;
         let required_size = BLOCK_SIZE * count as usize;
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
@@ -40,10 +40,10 @@ impl BlockDevice for Ext4Disk {
 
     fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
         let dev_block = self.0.block_size();
-        if !BLOCK_SIZE.is_multiple_of(dev_block as usize) {
+        if !BLOCK_SIZE.is_multiple_of(dev_block) {
             return Err(Ext4Error::invalid_input());
         }
-        let factor = (BLOCK_SIZE / dev_block as usize) as u64;
+        let factor = (BLOCK_SIZE / dev_block) as u64;
         let required_size = BLOCK_SIZE * count as usize;
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));

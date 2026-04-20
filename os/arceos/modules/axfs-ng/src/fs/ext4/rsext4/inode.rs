@@ -3,9 +3,8 @@ use alloc::{
     format,
     string::{String, ToString},
     sync::Arc,
-    vec::Vec,
 };
-use core::{any::Any, task::Context};
+use core::any::Any;
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, FilesystemOps,
@@ -13,7 +12,7 @@ use axfs_ng_vfs::{
     VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
-use rsext4::BLOCK_SIZE;
+use rsext4::{BLOCK_SIZE, bmalloc::InodeNumber};
 
 use super::{
     Ext4Filesystem,
@@ -22,7 +21,7 @@ use super::{
 
 pub struct Inode {
     fs: Arc<Ext4Filesystem>,
-    ino: u32,
+    ino: InodeNumber,
     this: Option<WeakDirEntry>,
     path: Option<String>,
 }
@@ -30,7 +29,7 @@ pub struct Inode {
 impl Inode {
     pub(crate) fn new(
         fs: Arc<Ext4Filesystem>,
-        ino: u32,
+        ino: InodeNumber,
         this: Option<WeakDirEntry>,
         path: Option<String>,
     ) -> Arc<Self> {
@@ -44,7 +43,7 @@ impl Inode {
 
     fn create_entry(
         &self,
-        ino: u32,
+        ino: InodeNumber,
         inode: &rsext4::disknode::Ext4Inode,
         name: impl Into<String>,
     ) -> DirEntry {
@@ -88,7 +87,7 @@ impl Inode {
     fn update_ctime_with(
         fs: &mut rsext4::Ext4FileSystem,
         dev: &mut rsext4::Jbd2Dev<super::Ext4Disk>,
-        ino: u32,
+        ino: InodeNumber,
     ) -> VfsResult<()> {
         fs.modify_inode(dev, ino, |inode| {
             if cfg!(feature = "times") {
@@ -101,7 +100,7 @@ impl Inode {
 
 impl NodeOps for Inode {
     fn inode(&self) -> u64 {
-        self.ino as _
+        self.ino.as_u64()
     }
 
     fn metadata(&self) -> VfsResult<Metadata> {
@@ -109,7 +108,7 @@ impl NodeOps for Inode {
         let (fs, dev) = state.split();
         let inode = fs.get_inode_by_num(dev, self.ino).map_err(into_vfs_err)?;
         Ok(Metadata {
-            inode: self.ino as _,
+            inode: self.ino.as_u64(),
             device: 0,
             nlink: inode.i_links_count as _,
             mode: NodePermission::from_bits_truncate(inode.i_mode & 0o777),
@@ -366,13 +365,15 @@ impl FileNodeOps for Inode {
                 while remaining > 0 {
                     let blk = fs.alloc_block(dev).map_err(into_vfs_err)?;
                     let write_len = core::cmp::min(remaining, BLOCK_SIZE);
-                    fs.datablock_cache.modify_new(dev, blk, |data| {
-                        for b in data.iter_mut() {
-                            *b = 0;
-                        }
-                        let end = src_off + write_len;
-                        data[..write_len].copy_from_slice(&target_bytes[src_off..end]);
-                    })?;
+                    fs.datablock_cache
+                        .modify_new(dev, blk, |data| {
+                            for b in data.iter_mut() {
+                                *b = 0;
+                            }
+                            let end = src_off + write_len;
+                            data[..write_len].copy_from_slice(&target_bytes[src_off..end]);
+                        })
+                        .map_err(into_vfs_err)?;
                     data_blocks.push(blk);
                     remaining -= write_len;
                     src_off += write_len;
@@ -400,7 +401,7 @@ impl Pollable for Inode {
         IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    fn register(&self, _context: &mut core::task::Context<'_>, _events: IoEvents) {}
 }
 
 impl DirNodeOps for Inode {
@@ -544,8 +545,9 @@ impl DirNodeOps for Inode {
                 return Err(VfsError::AlreadyExists);
             }
 
-            rsext4::link(fs, dev, &link_path, &target_path);
-            Self::update_ctime_with(fs, dev, node.inode() as u32)?;
+            rsext4::link(fs, dev, &link_path, &target_path).map_err(into_vfs_err)?;
+            let target_ino = InodeNumber::new(node.inode() as u32).map_err(into_vfs_err)?;
+            Self::update_ctime_with(fs, dev, target_ino)?;
         }
         self.fs.sync_to_disk()?;
         self.lookup_locked(name)
@@ -563,7 +565,7 @@ impl DirNodeOps for Inode {
             {
                 return Err(VfsError::NotFound);
             }
-            rsext4::unlink(fs, dev, &path);
+            rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
         }
         self.fs.sync_to_disk()
     }

@@ -6,7 +6,7 @@ use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
-use rsext4::Jbd2Dev;
+use rsext4::{Jbd2Dev, bmalloc::InodeNumber};
 
 use super::{Ext4Disk, Inode, util::into_vfs_err};
 
@@ -43,7 +43,7 @@ impl Ext4Filesystem {
             |this| {
                 DirNode::new(Inode::new(
                     fs.clone(),
-                    EXT4_ROOT_INO,
+                    InodeNumber::new(EXT4_ROOT_INO).unwrap(),
                     Some(this),
                     Some("/".into()),
                 ))
