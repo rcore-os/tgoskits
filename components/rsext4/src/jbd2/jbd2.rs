@@ -20,6 +20,18 @@ use crate::{
 };
 
 impl JBD2DEVSYSTEM {
+    fn write_journal_superblock<B: BlockDevice>(&self, block_dev: &mut B) {
+        let sb_block = self.start_block;
+        let mut sb_data = [0u8; BLOCK_SIZE];
+        block_dev
+            .read(&mut sb_data, sb_block, 1)
+            .expect("Read journal superblock failed");
+        self.jbd2_super_block.to_disk_bytes(&mut sb_data[0..1024]);
+        block_dev
+            .write(&sb_data, sb_block, 1)
+            .expect("Write journal superblock failed");
+    }
+
     /// Returns the next writable journal block, handling wrap-around.
     pub fn set_next_log_block<B: BlockDevice>(
         &mut self,
@@ -28,10 +40,7 @@ impl JBD2DEVSYSTEM {
         // The first commit initializes `s_start` in the journal superblock.
         if self.jbd2_super_block.s_start == 0 {
             self.jbd2_super_block.s_start = self.jbd2_super_block.s_first;
-            let mut sb_data = [0u8; BLOCK_SIZE];
-            block_dev.read(&mut sb_data, self.start_block, 1)?;
-            self.jbd2_super_block.to_disk_bytes(&mut sb_data);
-            block_dev.write(&sb_data, self.start_block, 1)?;
+            self.write_journal_superblock(block_dev);
             self.head += 1;
             let rel = self
                 .jbd2_super_block
@@ -96,7 +105,8 @@ impl JBD2DEVSYSTEM {
         };
         new_jbd_header.to_disk_bytes(&mut desc_buffer[0..JournalHeaderS::disk_size()]);
 
-        let mut current_offset = 12;
+        let mut current_offset = JBD2_DESCRIPTOR_HEADER_SIZE;
+        let mut first_tag = true;
         // Emit one tag per metadata block queued for this transaction.
         for (idx, update) in self.commit_queue.iter().enumerate() {
             // Metadata blocks that begin with the journal magic must be escaped
@@ -115,12 +125,24 @@ impl JBD2DEVSYSTEM {
             if idx == self.commit_queue.len() - 1 {
                 tag.t_flags |= JBD2_FLAG_LAST_TAG;
             }
+
+            if !first_tag {
+                tag.t_flags |= JBD2_FLAG_SAME_UUID;
+            }
+
             debug!(
                 "[JBD2 commit] tid={} tag_idx={} t_blocknr={} t_flags=0x{:x}",
                 tid, idx, tag.t_blocknr, tag.t_flags,
             );
-            tag.to_disk_bytes(&mut desc_buffer[current_offset..current_offset + 8]);
-            current_offset += 8;
+            tag.to_disk_bytes(&mut desc_buffer[current_offset..current_offset + JBD2_TAG_SIZE]);
+            current_offset += JBD2_TAG_SIZE;
+
+            if first_tag {
+                desc_buffer[current_offset..current_offset + JBD2_UUID_SIZE]
+                    .copy_from_slice(&self.jbd2_super_block.s_uuid);
+                current_offset += JBD2_UUID_SIZE;
+                first_tag = false;
+            }
         }
 
         // Persist the descriptor first.
@@ -153,6 +175,16 @@ impl JBD2DEVSYSTEM {
 
         block_dev.flush()?;
 
+        // Checkpoint: write metadata back to home blocks before marking journal clean.
+        for update in self.commit_queue.iter() {
+            debug!(
+                "[JBD2 checkpoint] tid={} home_phys_block={}",
+                tid, update.0
+            );
+            block_dev.write(&update.1[..], update.0, 1)?;
+        }
+        block_dev.flush()?;
+
         self.commit_queue.clear();
         debug!("[JBD2 BUFFER] BUFFER ALREADY CLEA");
 
@@ -178,6 +210,12 @@ impl JBD2DEVSYSTEM {
         block_dev.write(&commit_buffer, commit_block_id, 1)?;
         block_dev.flush()?;
         self.sequence += 1;
+
+        self.jbd2_super_block.s_sequence = self.sequence;
+        self.jbd2_super_block.s_start = 0;
+        self.head = 0;
+        self.write_journal_superblock(block_dev);
+        block_dev.flush()?;
         debug!(
             "[JBD2 commit] end: tid={} new_sequence={}",
             tid, self.sequence
@@ -233,7 +271,7 @@ impl JBD2DEVSYSTEM {
                 break;
             }
 
-            let hdr = JournalHeaderS::from_disk_bytes(&desc_buf[0..12]);
+            let hdr = JournalHeaderS::from_disk_bytes(&desc_buf[0..JBD2_DESCRIPTOR_HEADER_SIZE]);
             debug!(
                 "[JBD2 replay] descriptor: phys_block={} h_magic=0x{:x} h_blocktype={} \
                  h_sequence={} expect_seq={}",
@@ -248,17 +286,17 @@ impl JBD2DEVSYSTEM {
 
             // 2. Parse tags out of the descriptor block.
             let mut tags: Vec<JournalBlockTagS> = Vec::new();
-            let mut off = 12usize;
+            let mut off = JBD2_DESCRIPTOR_HEADER_SIZE;
             let mut tag_idx = 0usize;
-            while off + 8 <= BLOCK_SIZE {
-                let tag = JournalBlockTagS::from_disk_bytes(&desc_buf[off..off + 8]);
+            while off + JBD2_TAG_SIZE <= BLOCK_SIZE {
+                let tag = JournalBlockTagS::from_disk_bytes(&desc_buf[off..off + JBD2_TAG_SIZE]);
 
                 // `t_blocknr == 0` is valid for metadata, so only treat an all-zero
                 // tag plus all-zero trailing padding as end-of-descriptor.
                 if tag.t_blocknr == 0
                     && tag.t_checksum == 0
                     && tag.t_flags == 0
-                    && desc_buf[off + 8..].iter().all(|b| *b == 0)
+                    && desc_buf[off + JBD2_TAG_SIZE..].iter().all(|b| *b == 0)
                 {
                     break;
                 }
@@ -269,8 +307,19 @@ impl JBD2DEVSYSTEM {
                 );
 
                 let last = (tag.t_flags & JBD2_FLAG_LAST_TAG) != 0;
+                let same_uuid = (tag.t_flags & JBD2_FLAG_SAME_UUID) != 0;
                 tags.push(tag);
-                off += 8;
+                off += JBD2_TAG_SIZE;
+                if !same_uuid {
+                    if off + JBD2_UUID_SIZE > BLOCK_SIZE {
+                        debug!(
+                            "[JBD2 replay] descriptor uuid truncated: tid={} tag_idx={}",
+                            expect_seq, tag_idx
+                        );
+                        return;
+                    }
+                    off += JBD2_UUID_SIZE;
+                }
                 tag_idx += 1;
 
                 if last {
@@ -478,6 +527,7 @@ pub fn create_journal_entry<B: BlockDevice>(
     jbd2_sb.s_blocksize = BLOCK_SIZE_U32;
     jbd2_sb.s_sequence = 1;
     jbd2_sb.s_first = 1;
+    jbd2_sb.s_uuid = fs.superblock.s_uuid;
 
     fs.datablock_cache
         .modify_new(block_dev, free_block[0], |data| {

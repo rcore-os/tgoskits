@@ -9,7 +9,9 @@ license.workspace = true
 
 [features]
 fat = ["dep:fatfs"]
-ext4 = ["dep:lwext4_rust"]
+ext4-lwext4 = ["dep:lwext4_rust"]
+ext4-rsext4 = ["dep:rsext4"]
+ext4 = ["ext4-rsext4"]
 times = []
 std = ["lwext4_rust?/std"]
 
@@ -36,6 +38,10 @@ spin = { workspace = true }
 [dependencies.lwext4_rust]
 version = "0.2"
 default-features = false
+optional = true
+
+[dependencies.rsext4]
+workspace = true
 optional = true
 
 [dependencies.fatfs]

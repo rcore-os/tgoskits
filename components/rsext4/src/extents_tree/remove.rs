@@ -561,7 +561,7 @@ impl<'a> ExtentTree<'a> {
                     hdr.eh_magic = Ext4ExtentHeader::EXT4_EXT_MAGIC;
                     hdr.eh_depth = 0;
                     hdr.eh_entries = 0;
-                    hdr.eh_max = (15usize * 4usize.saturating_sub(Ext4ExtentHeader::disk_size())
+                    hdr.eh_max = ((15usize * 4usize).saturating_sub(Ext4ExtentHeader::disk_size())
                         / Ext4Extent::disk_size()) as u16;
                     let empty_root = ExtentNode::Leaf {
                         header: hdr,

@@ -404,40 +404,31 @@ fn write_inode_data<B: BlockDevice>(
         return Err(Ext4Error::unsupported());
     }
 
-    let mut blocks_map = if inode.have_extend_header_and_use_extend() {
-        Some(resolve_inode_block_allextend(fs, device, &mut inode)?)
-    } else {
-        None
-    };
-
     for lbn in start_lbn..=end_lbn {
         let phys = if inode.have_extend_header_and_use_extend() {
-            let map = blocks_map.as_mut().ok_or(Ext4Error::corrupted())?;
-            if let Some(&b) = map.get(&(lbn as u32)) {
-                b
-            } else {
-                // Materialize sparse holes on demand by allocating a fresh block
-                // and inserting a one-block extent.
-                let new_phys = fs.alloc_block(device)?;
-                fs.datablock_cache.modify_new(device, new_phys, |blk| {
-                    for b in blk.iter_mut() {
-                        *b = 0;
+            match resolve_inode_block(device, &mut inode, lbn as u32)? {
+                Some(b) => b,
+                None => {
+                    let new_phys = fs.alloc_block(device)?;
+                    fs.datablock_cache.modify_new(device, new_phys, |blk| {
+                        for b in blk.iter_mut() {
+                            *b = 0;
+                        }
+                    })?;
+                    {
+                        let mut tree = ExtentTree::new(&mut inode);
+                        let ext = Ext4Extent::new(lbn as u32, new_phys.raw(), 1);
+                        tree.insert_extent(fs, ext, device)?;
                     }
-                })?;
-                {
-                    let mut tree = ExtentTree::new(&mut inode);
-                    let ext = Ext4Extent::new(lbn as u32, new_phys.raw(), 1);
-                    tree.insert_extent(fs, ext, device)?;
+
+                    let add_iblocks = (BLOCK_SIZE / 512) as u32;
+                    inode.i_blocks_lo = inode.i_blocks_lo.saturating_add(add_iblocks);
+                    inode.l_i_blocks_high = inode
+                        .l_i_blocks_high
+                        .saturating_add(((add_iblocks as u64) >> 32) as u16);
+
+                    new_phys
                 }
-                map.insert(lbn as u32, new_phys);
-
-                let add_iblocks = (BLOCK_SIZE / 512) as u32;
-                inode.i_blocks_lo = inode.i_blocks_lo.saturating_add(add_iblocks);
-                inode.l_i_blocks_high = inode
-                    .l_i_blocks_high
-                    .saturating_add(((add_iblocks as u64) >> 32) as u16);
-
-                new_phys
             }
         } else {
             match resolve_inode_block(device, &mut inode, lbn as u32)? {

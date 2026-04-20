@@ -102,7 +102,7 @@ impl Ext4FileSystem {
                 let ino = fs.superblock.s_lpf_ino;
                 debug!("Lost+found inode recorded in superblock: {ino}");
             } else {
-                warn!("s_lpf_ino is 0, lost+found not recorded in superblock");
+                debug!("s_lpf_ino is 0, lost+found inode hint missing in superblock");
             }
 
             match find_file(&mut fs, block_dev, "/lost+found") {
@@ -111,7 +111,9 @@ impl Ext4FileSystem {
                 }
                 Err(err) if err.code == Errno::ENOENT => {
                     info!("/lost+found not found by path scan;will create!");
-                    create_lost_found_directory(&mut fs, block_dev).ok();
+                    if create_lost_found_directory(&mut fs, block_dev).is_err() {
+                        warn!("/lost+found missing and create failed");
+                    }
                 }
                 Err(err) => return Err(err),
             }
@@ -139,7 +141,7 @@ impl Ext4FileSystem {
                     create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
                 }
             }
-            if block_dev.is_use_journal() {
+            if block_dev.is_use_journal() && fs.superblock.has_journal() {
                 // By this point the journal inode must exist, so resolve its
                 // first data block and hand the loaded journal superblock to
                 // `Jbd2Dev`.

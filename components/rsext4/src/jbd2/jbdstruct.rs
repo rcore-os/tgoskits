@@ -9,7 +9,11 @@ pub const JOURNAL_FILE_INODE: u64 = 8;
 pub const JBD2_MAGIC: u32 = 0xC03B_3998u32; // jbd2 magic number (on-disk big-endian)
 pub const JOURNAL_BLOCK_COUNT: u32 = 32 * 1024 * 1024 / BLOCK_SIZE_U32;
 pub const JOURANL_ESCAPE: u16 = 0x1;
+pub const JBD2_FLAG_SAME_UUID: u16 = 0x2;
 pub const JBD2_FLAG_LAST_TAG: u16 = 0x8;
+pub const JBD2_DESCRIPTOR_HEADER_SIZE: usize = 12;
+pub const JBD2_TAG_SIZE: usize = 8;
+pub const JBD2_UUID_SIZE: usize = 16;
 pub const JBD2_CRC32C_CHKSUM: u8 = 4; // JBD2 checksum type for CRC32C
 #[repr(C)]
 /// One journaled metadata update: `(target physical block, serialized block)`.

@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use log::{debug, error, info};
+use log::{debug, error};
 
 use crate::{
     blockdev::*,
@@ -26,7 +26,9 @@ pub fn resolve_inode_block<B: BlockDevice>(
     if inode.have_extend_header_and_use_extend() {
         let mut tree = ExtentTree::new(inode);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
-            let mut len = ext.ee_len as u32;
+            let raw_len = ext.ee_len as u32;
+            let is_unwritten = (raw_len & 0x8000) != 0;
+            let mut len = raw_len;
             if (len & 0x8000) != 0 {
                 len &= 0x7FFF;
             }
@@ -39,12 +41,15 @@ pub fn resolve_inode_block<B: BlockDevice>(
                 return Ok(None);
             }
 
+            if is_unwritten {
+                return Ok(None);
+            }
+
             let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
             let phys = base + (logical_block - start_lbn) as u64;
             return Ok(Some(AbsoluteBN::new(phys)));
         }
-        error!("Can't find proper extend for this logical block");
-        Err(Ext4Error::io())
+        Ok(None)
     } else {
         error!("Only Support Extend mode!");
         Err(Ext4Error::unsupported())
@@ -65,10 +70,11 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
     }
 
     fn push_extent_blocks(out: &mut Vec<(u32, AbsoluteBN)>, ext: &Ext4Extent) {
-        let mut len = ext.ee_len as u32;
-        if (len & 0x8000) != 0 {
-            len &= 0x7FFF;
+        let raw_len = ext.ee_len as u32;
+        if (raw_len & 0x8000) != 0 {
+            return;
         }
+        let mut len = raw_len;
         if len == 0 {
             return;
         }
@@ -178,14 +184,14 @@ pub fn get_file_inode<B: BlockDevice>(
                 let total_size = current_inode.size() as usize;
                 let block_bytes = BLOCK_SIZE;
                 let blocks = resolve_inode_block_allextend(fs, block_dev, &mut current_inode)?;
-                info!(
+                debug!(
                     "Directory inode size: {} bytes, blocks used: {}",
                     &total_size,
                     &blocks.len()
                 );
 
                 for (idx, phys) in blocks.iter().enumerate() {
-                    info!("Scan dir block idx {} phys {}", &idx, phys.1);
+                    debug!("Scan dir block idx {} phys {}", &idx, phys.1);
                     let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
                     let block_data = &cached_block.data[..block_bytes];
 

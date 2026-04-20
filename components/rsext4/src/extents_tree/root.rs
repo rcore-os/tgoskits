@@ -102,20 +102,20 @@ impl<'a> ExtentTree<'a> {
         dev: &mut Jbd2Dev<B>,
         block_id: AbsoluteBN,
         node: &ExtentNode,
-        eh_max: u16,
+        _eh_max: u16,
     ) -> Ext4Result<()> {
         let hdr_size = Ext4ExtentHeader::disk_size();
+        let block_eh_max = Self::calc_block_eh_max();
         // Load the target block before overwriting the node payload.
         dev.read_block(block_id)?;
         let buf = dev.buffer_mut();
+        buf.fill(0);
 
         match node {
             ExtentNode::Leaf { header, entries } => {
                 let et_size = Ext4Extent::disk_size();
-                // Nodes copied from the inode root carry the inline capacity.
-                // Rebuild `eh_max` for full block storage.
                 let mut disk_header = *header;
-                disk_header.eh_max = eh_max;
+                disk_header.eh_max = block_eh_max;
                 disk_header.to_disk_bytes(&mut buf[0..hdr_size]);
                 for (i, e) in entries.iter().enumerate() {
                     let off = hdr_size + i * et_size;
@@ -128,7 +128,7 @@ impl<'a> ExtentTree<'a> {
             ExtentNode::Index { header, entries } => {
                 let idx_size = Ext4ExtentIdx::disk_size();
                 let mut disk_header = *header;
-                disk_header.eh_max = eh_max;
+                disk_header.eh_max = block_eh_max;
 
                 disk_header.to_disk_bytes(&mut buf[0..hdr_size]);
                 for (i, idx) in entries.iter().enumerate() {

@@ -80,6 +80,6 @@ impl Ext4Extent {
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.ee_len <= Self::EXT_INIT_MAX_LEN
+        (self.ee_len & 0x8000) == 0
     }
 }

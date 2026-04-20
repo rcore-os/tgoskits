@@ -368,6 +368,15 @@ impl<'a> ExtentTree<'a> {
                     Some(child_phy_block),
                 )?;
 
+                let new_child_key = Self::get_node_start_block(&child_node);
+                if entries[idx_pos].ei_block != new_child_key {
+                    debug!(
+                        "insert_recursive: updating child index key from {} to {}",
+                        entries[idx_pos].ei_block, new_child_key
+                    );
+                    entries[idx_pos].ei_block = new_child_key;
+                }
+
                 if let Some(split_info) = child_split_res {
                     debug!("Child split bubbled up, inserting index to current node.");
                     // Insert the promoted child pointer in sorted order.

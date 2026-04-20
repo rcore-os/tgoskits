@@ -29,6 +29,26 @@ pub struct Jbd2Dev<B: BlockDevice> {
 }
 
 impl<B: BlockDevice> Jbd2Dev<B> {
+    fn enqueue_journal_update(
+        systeam: &mut JBD2DEVSYSTEM,
+        raw_dev: &mut B,
+        update: Jbd2Update,
+    ) -> Ext4Result<()> {
+        if let Some(existing) = systeam.commit_queue.iter_mut().find(|queued| queued.0 == update.0) {
+            *existing = update;
+            return Ok(());
+        }
+
+        if systeam.commit_queue.len() >= JBD2_BUFFER_MAX {
+            systeam
+                .commit_transaction(raw_dev)?;
+        }
+
+        systeam.commit_queue.push(update);
+        Ok(())
+    }
+
+
     /// Creates a new JBD2 block device proxy.
     pub fn initial_jbd2dev(_mode: u8, block_dev: B, use_journal: bool) -> Self {
         let block_dev = BlockDev::new(block_dev);
@@ -44,6 +64,11 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     /// Returns whether journal support is enabled.
     pub fn is_use_journal(&self) -> bool {
         self.journal_use
+    }
+
+    /// Returns the current journal transaction sequence if journal is active.
+    pub fn journal_sequence(&self) -> Option<u32> {
+        self.systeam.as_ref().map(|s| s.sequence)
     }
 
     /// Replays the journal if the proxy is configured to use it.
@@ -84,15 +109,17 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
     /// Commits all buffered journal transactions during unmount.
     pub fn umount_commit(&mut self) {
-        if self.journal_use {
-            let dev = self.inner.device_mut();
-            self.systeam
-                .as_mut()
-                .unwrap()
-                .commit_transaction(dev)
+        if !self.journal_use {
+            trace!("Journal disabled, skip commit");
+            return;
+        }
+
+        if let Some(system) = self.systeam.as_mut() {
+            system
+                .commit_transaction(self.inner.device_mut())
                 .expect("Translation commit failed!!!");
         } else {
-            warn!("Jouranl not use , no thing to commit")
+            trace!("Journal enabled but system uninitialized, skip commit");
         }
     }
 
@@ -117,18 +144,8 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         let systeam = self.systeam.as_mut().unwrap();
         let raw_dev = self.inner.device_mut();
 
-        if systeam.commit_queue.len() > JBD2_BUFFER_MAX {
-            systeam.commit_transaction(raw_dev)?;
-            systeam.commit_queue.push(updates);
-            trace!("[JBD2 BUFFER] BUFFER IS FULL ,FLUSHED!");
-        } else {
-            systeam.commit_queue.push(updates);
-        }
-
-        if self._mode == 0 {
-            self.inner.write_block(block_id)?;
-        }
-
+        Self::enqueue_journal_update(systeam, raw_dev, updates)?;
+        trace!("[JBD2 BUFFER] queued metadata block {block_id}");
         Ok(())
     }
 
@@ -185,13 +202,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            if systeam.commit_queue.len() > JBD2_BUFFER_MAX {
-                systeam.commit_transaction(raw_dev)?;
-                systeam.commit_queue.push(updates);
-                trace!("[JBD2 BUFFER] BUFFER IS FULL ,FLUSHED!");
-            } else {
-                systeam.commit_queue.push(updates);
-            }
+            Self::enqueue_journal_update(systeam, raw_dev, updates)?;
         }
 
         Ok(())
