@@ -23,7 +23,7 @@ rockchip-pm = ["dep:rockchip-pm"]
 phytium-blk = ["dep:phytium-mci"]
 serial = ["dep:some-serial"]
 net = ["dep:ax-driver-net", "dep:rd-net"]
-intel-net = ["net", "dep:eth-intel", "dep:pcie"]
+intel-net = ["net", "dep:eth-intel"]
 virtio-net-pci = ["net"]
 rknpu = ["dep:rockchip-npu", "rockchip-pm", "rockchip-soc"]
 
@@ -46,7 +46,8 @@ heapless = "0.9"
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
-pcie = { version = "0.6", optional = true }
+crab-usb = { path = "/home/zhourui/opensource/proj_usb/CrabUSB/usb-host" }
+pcie = { version = "0.6" }
 rd-block = "0.1"
 rd-net = { version = "0.1", optional = true }
 rdif-clk = "0.5"

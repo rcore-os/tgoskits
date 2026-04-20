@@ -24,6 +24,7 @@ mod virtio;
 pub mod blk;
 #[cfg(feature = "net")]
 pub mod net;
+pub mod usb;
 
 const MAX_BLOCK_DEVICES: usize = 16;
 #[cfg(feature = "net")]
