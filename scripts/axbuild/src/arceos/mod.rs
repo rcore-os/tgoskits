@@ -383,6 +383,10 @@ pub struct ArgsQemu {
 
     #[arg(long)]
     pub qemu_config: Option<PathBuf>,
+
+    /// Override the rootfs disk image path (skips auto-download).
+    #[arg(long, value_name = "IMAGE")]
+    pub rootfs: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -484,7 +488,31 @@ impl ArceOS {
             SnapshotPersistence::Store,
         )?;
         ensure_package_runtime_assets(&request.package)?;
-        self.run_qemu_request(request).await
+        if let Some(rootfs) = args.rootfs {
+            let rootfs = crate::download::resolve_rootfs_arg(
+                self.app.workspace_root(),
+                &request.arch,
+                rootfs,
+            );
+            crate::download::ensure_unified_rootfs_if_managed(
+                self.app.workspace_root(),
+                &request.arch,
+                &rootfs,
+            )
+            .await?;
+            self.app.set_debug_mode(request.debug)?;
+            let cargo = build::load_cargo_config(&request)?;
+            let mut qemu = self
+                .load_qemu_config(&request, &cargo)
+                .await?
+                .unwrap_or_default();
+            crate::starry::rootfs::apply_disk_image_qemu_args(&mut qemu, rootfs);
+            self.app
+                .qemu(cargo, request.build_info_path, Some(qemu))
+                .await
+        } else {
+            self.run_qemu_request(request).await
+        }
     }
 
     async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {

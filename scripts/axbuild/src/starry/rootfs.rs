@@ -16,11 +16,16 @@ use xz2::read::XzDecoder;
 use super::test_suit::StarryQemuCase;
 use crate::{
     context::{ResolvedStarryRequest, starry_target_for_arch_checked},
-    download::download_to_path_with_progress,
+    download::{
+        download_to_path_with_progress, extract_unified_rootfs_for_arch, unified_rootfs_dir,
+        unified_rootfs_image_in_tarball,
+    },
     process::ProcessExt,
 };
 
-const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
+/// Fallback URL for architectures not covered by the unified tarball
+/// (e.g., loongarch64).
+const LEGACY_ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
 const CASE_WORK_ROOT_NAME: &str = "starry-cases";
 const CASE_STAGING_DIR_NAME: &str = "staging-root";
 const CASE_BUILD_DIR_NAME: &str = "build";
@@ -126,6 +131,9 @@ pub(crate) fn resolve_target_dir(workspace_root: &Path, target: &str) -> anyhow:
 }
 
 fn rootfs_image_path(workspace_root: &Path, arch: &str, target: &str) -> anyhow::Result<PathBuf> {
+    if let Some(tarball_name) = unified_rootfs_image_in_tarball(arch) {
+        return Ok(unified_rootfs_dir(workspace_root).join(tarball_name));
+    }
     let target_dir = resolve_target_dir(workspace_root, target)?;
     Ok(target_dir.join(rootfs_image_name(arch)?))
 }
@@ -140,6 +148,12 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
         bail!("Starry arch `{arch}` maps to target `{expected_target}`, but got `{target}`");
     }
 
+    if unified_rootfs_image_in_tarball(arch).is_some() {
+        return extract_unified_rootfs_for_arch(workspace_root, arch).await;
+    }
+
+    // Fallback: legacy per-arch XZ download for architectures not in the
+    // unified tarball (e.g., loongarch64).
     let target_dir = resolve_target_dir(workspace_root, target)?;
     tokio_fs::create_dir_all(&target_dir)
         .await
@@ -147,11 +161,11 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
 
     let rootfs_name = rootfs_image_name(arch)?;
     let rootfs_img = rootfs_image_path(workspace_root, arch, target)?;
-    let rootfs_xz = target_dir.join(format!("{rootfs_name}.xz"));
 
     if !rootfs_img.exists() {
-        println!("image not found, downloading {}...", rootfs_name);
-        let url = format!("{ROOTFS_URL}/{rootfs_name}.xz");
+        println!("image not found, downloading {} (legacy)...", rootfs_name);
+        let rootfs_xz = target_dir.join(format!("{rootfs_name}.xz"));
+        let url = format!("{LEGACY_ROOTFS_URL}/{rootfs_name}.xz");
         download_with_progress(&url, &rootfs_xz).await?;
         decompress_xz_file(&rootfs_xz, &rootfs_img).await?;
     }
@@ -1484,9 +1498,9 @@ mod tests {
     #[tokio::test]
     async fn apply_default_qemu_args_includes_rootfs_and_network_defaults() {
         let root = tempdir().unwrap();
-        let target_dir = root.path().join("target/x86_64-unknown-none");
-        fs::create_dir_all(&target_dir).unwrap();
-        fs::write(target_dir.join("rootfs-x86_64.img"), b"rootfs").unwrap();
+        let rootfs_dir = root.path().join("target/rootfs");
+        fs::create_dir_all(&rootfs_dir).unwrap();
+        fs::write(rootfs_dir.join("rootfs-x86_64-debian.img"), b"rootfs").unwrap();
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),
@@ -1515,7 +1529,7 @@ mod tests {
                 format!(
                     "id=disk0,if=none,format=raw,file={}",
                     root.path()
-                        .join("target/x86_64-unknown-none/rootfs-x86_64.img")
+                        .join("target/rootfs/rootfs-x86_64-debian.img")
                         .display()
                 ),
                 "-device".to_string(),
@@ -1537,9 +1551,9 @@ mod tests {
     #[tokio::test]
     async fn apply_default_qemu_args_preserves_existing_base_args() {
         let root = tempdir().unwrap();
-        let target_dir = root.path().join("target/riscv64gc-unknown-none-elf");
-        fs::create_dir_all(&target_dir).unwrap();
-        fs::write(target_dir.join("rootfs-riscv64.img"), b"rootfs").unwrap();
+        let rootfs_dir = root.path().join("target/rootfs");
+        fs::create_dir_all(&rootfs_dir).unwrap();
+        fs::write(rootfs_dir.join("rootfs-riscv64-busybox.img"), b"rootfs").unwrap();
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),
@@ -1582,7 +1596,7 @@ mod tests {
                 format!(
                     "id=disk0,if=none,format=raw,file={}",
                     root.path()
-                        .join("target/riscv64gc-unknown-none-elf/rootfs-riscv64.img")
+                        .join("target/rootfs/rootfs-riscv64-busybox.img")
                         .display()
                 ),
                 "-device".to_string(),

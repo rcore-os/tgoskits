@@ -65,10 +65,28 @@ impl Axvisor {
             None,
             SnapshotPersistence::Store,
         )?;
-        if qemu::infer_rootfs_path(&request.vmconfigs)?.is_none() {
+        if args.rootfs.is_none() && qemu::infer_rootfs_path(&request.vmconfigs)?.is_none() {
             qemu_test::prepare_default_rootfs_for_arch(&self.ctx, &request.arch).await?;
         }
-        self.run_qemu_request(request).await
+        self.app.set_debug_mode(request.debug)?;
+        let cargo = build::load_cargo_config(&request)?;
+        let explicit_rootfs = args.rootfs.map(|r| {
+            crate::download::resolve_rootfs_arg(self.app.workspace_root(), &request.arch, r)
+        });
+        if let Some(ref r) = explicit_rootfs {
+            crate::download::ensure_unified_rootfs_if_managed(
+                self.app.workspace_root(),
+                &request.arch,
+                r,
+            )
+            .await?;
+        }
+        let qemu = self
+            .load_qemu_config(&request, &cargo, explicit_rootfs.as_deref())
+            .await?;
+        self.app
+            .qemu(cargo, request.build_info_path, Some(qemu))
+            .await
     }
 
     async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {
@@ -161,7 +179,7 @@ impl Axvisor {
         )?;
         let shell = test_qemu::axvisor_test_shell_config(arch)?;
         let cargo = build::load_cargo_config(&request)?;
-        let mut qemu_config = self.load_qemu_config(&request, &cargo).await?;
+        let mut qemu_config = self.load_qemu_config(&request, &cargo, None).await?;
         qemu_test::apply_shell_autoinit_config(&mut qemu_config, &shell);
 
         self.app
@@ -324,6 +342,7 @@ impl Axvisor {
         &mut self,
         request: &ResolvedAxvisorRequest,
         cargo: &Cargo,
+        explicit_rootfs: Option<&Path>,
     ) -> anyhow::Result<ostool::run::qemu::QemuConfig> {
         let config_path = request.qemu_config.clone().unwrap_or_else(|| {
             qemu::default_qemu_config_template_path(&request.axvisor_dir, &request.arch)
@@ -333,7 +352,12 @@ impl Axvisor {
             .tool_mut()
             .read_qemu_config_from_path_for_cargo(cargo, &config_path)
             .await?;
-        qemu::apply_rootfs_path(&mut qemu, request)?;
+        qemu::apply_rootfs_path(
+            &mut qemu,
+            request,
+            self.app.workspace_root(),
+            explicit_rootfs,
+        )?;
         Ok(qemu)
     }
 
@@ -373,15 +397,6 @@ impl Axvisor {
                     .await
             }
         }
-    }
-
-    async fn run_qemu_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
-        self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
-        let qemu = self.load_qemu_config(&request, &cargo).await?;
-        self.app
-            .qemu(cargo, request.build_info_path, Some(qemu))
-            .await
     }
 
     async fn run_build_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {

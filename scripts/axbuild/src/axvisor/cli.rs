@@ -56,6 +56,10 @@ pub struct ArgsQemu {
 
     #[arg(long)]
     pub qemu_config: Option<PathBuf>,
+
+    /// Override the rootfs disk image path (skips auto-download).
+    #[arg(long, value_name = "IMAGE")]
+    pub rootfs: Option<PathBuf>,
 }
 
 #[derive(Args)]

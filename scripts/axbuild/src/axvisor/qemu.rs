@@ -17,15 +17,24 @@ pub(crate) fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) 
 pub(crate) fn apply_rootfs_path(
     config: &mut QemuConfig,
     request: &ResolvedAxvisorRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let rootfs_path = infer_rootfs_path(&request.vmconfigs)?
-        .unwrap_or_else(|| default_rootfs_path(&request.axvisor_dir));
+    let rootfs_path = if let Some(explicit) = explicit_rootfs {
+        explicit.to_path_buf()
+    } else {
+        infer_rootfs_path(&request.vmconfigs)?
+            .unwrap_or_else(|| default_rootfs_path(workspace_root, &request.arch))
+    };
     ensure_rootfs_drive_arg(&mut config.args, &rootfs_path);
     Ok(())
 }
 
-fn default_rootfs_path(axvisor_dir: &Path) -> PathBuf {
-    axvisor_dir.join("tmp/rootfs.img")
+fn default_rootfs_path(workspace_root: &Path, arch: &str) -> PathBuf {
+    if let Some(img) = crate::download::unified_rootfs_image_in_tarball(arch) {
+        return crate::download::unified_rootfs_dir(workspace_root).join(img);
+    }
+    workspace_root.join("os/axvisor/tmp/rootfs.img")
 }
 
 pub(crate) fn infer_rootfs_path(vmconfigs: &[PathBuf]) -> anyhow::Result<Option<PathBuf>> {
@@ -177,6 +186,7 @@ kernel_path = "{}"
                 uboot_config: None,
                 vmconfigs: vec![vmconfig],
             },
+            root.path(),
         )
         .unwrap();
 
@@ -190,7 +200,7 @@ kernel_path = "{}"
     }
 
     #[test]
-    fn apply_rootfs_path_uses_axvisor_tmp_rootfs_by_default() {
+    fn apply_rootfs_path_uses_unified_rootfs_by_default() {
         let root = tempdir().unwrap();
         let axvisor_dir = root.path().join("os/axvisor");
         let mut qemu = QemuConfig {
@@ -215,6 +225,7 @@ kernel_path = "{}"
                 uboot_config: None,
                 vmconfigs: vec![],
             },
+            root.path(),
         )
         .unwrap();
 
@@ -222,7 +233,9 @@ kernel_path = "{}"
             qemu.args,
             vec![format!(
                 "id=disk0,if=none,format=raw,file={}",
-                axvisor_dir.join("tmp/rootfs.img").display()
+                root.path()
+                    .join("target/rootfs/rootfs-aarch64-alpine.img")
+                    .display()
             )]
         );
     }
@@ -256,6 +269,7 @@ kernel_path = "{}"
                 uboot_config: None,
                 vmconfigs: vec![],
             },
+            root.path(),
         )
         .unwrap();
 
@@ -267,7 +281,9 @@ kernel_path = "{}"
                 "-drive".to_string(),
                 format!(
                     "id=disk0,if=none,format=raw,file={}",
-                    axvisor_dir.join("tmp/rootfs.img").display()
+                    root.path()
+                        .join("target/rootfs/rootfs-aarch64-alpine.img")
+                        .display()
                 ),
                 "-append".to_string(),
                 "root=/dev/vda rw init=/init".to_string(),

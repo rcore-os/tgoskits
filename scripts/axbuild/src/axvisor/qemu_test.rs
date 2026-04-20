@@ -12,6 +12,7 @@ use crate::{
         image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
     },
     context::AxvisorCliArgs,
+    download::{extract_unified_rootfs_for_arch, unified_rootfs_image_in_tarball},
     test_qemu::AxvisorBoardTestGroup,
 };
 
@@ -52,9 +53,7 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
 ) -> anyhow::Result<PreparedLinuxGuestAssets> {
     let image_dir = pull_guest_image(ctx, LINUX_AARCH64_IMAGE_SPEC).await?;
     let kernel_path = image_dir.join("qemu-aarch64");
-    let rootfs_src = guest_rootfs_path(&image_dir);
     ensure_guest_kernel_exists(&kernel_path, "linux guest")?;
-    ensure_guest_rootfs_exists(&rootfs_src, "linux guest")?;
 
     let workspace_root = ctx.workspace_root();
     let generated_vmconfig = workspace_root.join(LINUX_AARCH64_GENERATED_VMCONFIG);
@@ -64,6 +63,7 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
         &kernel_path,
     )?;
 
+    let rootfs_src = extract_unified_rootfs_for_arch(workspace_root, "aarch64").await?;
     let rootfs_path = workspace_root.join(AXVISOR_ROOTFS_IMAGE);
     copy_rootfs(&rootfs_src, &rootfs_path)?;
 
@@ -78,14 +78,21 @@ pub(crate) async fn prepare_default_rootfs_for_arch(
     ctx: &AxvisorContext,
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
+    let rootfs_dst = ctx.workspace_root().join(AXVISOR_ROOTFS_IMAGE);
+
+    if unified_rootfs_image_in_tarball(arch).is_some() {
+        let rootfs_src = extract_unified_rootfs_for_arch(ctx.workspace_root(), arch).await?;
+        copy_rootfs(&rootfs_src, &rootfs_dst)?;
+        return Ok(rootfs_dst);
+    }
+
+    // Fallback: pull rootfs from the architecture-specific image spec.
     let image_spec = match arch {
-        "aarch64" => LINUX_AARCH64_IMAGE_SPEC,
         "riscv64" => ARCEOS_RISCV64_IMAGE_SPEC,
         "x86_64" => NIMBOS_X86_64_IMAGE_SPEC,
-        _ => return Ok(ctx.workspace_root().join(AXVISOR_ROOTFS_IMAGE)),
+        _ => return Ok(rootfs_dst),
     };
     let guest_name = match arch {
-        "aarch64" => "linux guest",
         "riscv64" => "riscv64 arceos guest",
         "x86_64" => "nimbos guest",
         _ => unreachable!(),
@@ -95,7 +102,6 @@ pub(crate) async fn prepare_default_rootfs_for_arch(
     let rootfs_src = guest_rootfs_path(&image_dir);
     ensure_guest_rootfs_exists(&rootfs_src, guest_name)?;
 
-    let rootfs_dst = ctx.workspace_root().join(AXVISOR_ROOTFS_IMAGE);
     copy_rootfs(&rootfs_src, &rootfs_dst)?;
     Ok(rootfs_dst)
 }
