@@ -1,4 +1,5 @@
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_fs::FS_CONTEXT;
 use ax_task::current;
 #[cfg(feature = "vsock")]
 use axnet::vsock::{VsockSocket, VsockStreamTransport};
@@ -6,7 +7,7 @@ use axnet::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     tcp::TcpSocket,
     udp::UdpSocket,
-    unix::{DgramTransport, StreamTransport, UnixSocket},
+    unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
 };
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
@@ -69,7 +70,28 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
 
+    // Record a pathname AF_UNIX target so we can chown the created socket
+    // file to the binding credentials after bind() returns. The axnet-ng
+    // bind path opens the file without credential context, leaving it
+    // owned by uid 0, which blocks the binding process from later
+    // chmod-ing its own socket (PostgreSQL's `postgres -D ...` exits with
+    // FATAL "could not set permissions of file" on startup otherwise).
+    let unix_path = match &addr {
+        SocketAddrEx::Unix(UnixSocketAddr::Path(p)) => Some(p.clone()),
+        _ => None,
+    };
+
     Socket::from_fd(fd)?.bind(addr)?;
+
+    if let Some(path) = unix_path {
+        let cred = current().as_thread().cred();
+        if let Ok(loc) = FS_CONTEXT.lock().resolve(path.as_ref()) {
+            let _ = loc.update_metadata(axfs_ng_vfs::MetadataUpdate {
+                owner: Some((cred.fsuid, cred.fsgid)),
+                ..Default::default()
+            });
+        }
+    }
 
     Ok(0)
 }
