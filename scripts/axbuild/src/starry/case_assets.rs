@@ -30,7 +30,7 @@ const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
 const GROUPED_CASE_RUNNER_NAME: &str = "starry-run-case-tests";
 const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
-const USB_STICK_IMAGE_SIZE: u64 = 16 * 1024 * 1024;
+const USB_STICK_IMAGE_SIZE: u64 = 10 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StarryCaseAssets {
@@ -129,8 +129,7 @@ pub(crate) fn case_uses_python_pipeline(case: &StarryQemuCase) -> bool {
 /// Returns whether a Starry test case needs extra USB-backed QEMU assets.
 pub(crate) fn case_uses_usb_qemu_assets(arch: &str, case: &StarryQemuCase) -> bool {
     let _ = arch;
-    let _ = case;
-    false
+    case.name == "usb"
 }
 
 /// Builds the working directory layout used for a Starry case asset run.
