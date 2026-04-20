@@ -1716,6 +1716,7 @@ version = "0.5.11"
 dependencies = [
  "anyhow",
  "ax-alloc",
+ "ax-arm-pl031",
  "ax-config-macros",
  "ax-cpu",
  "ax-driver-base",

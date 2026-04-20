@@ -37,6 +37,7 @@ rtc = [
     "ax-plat-aarch64-qemu-virt?/rtc",
     "ax-plat-riscv64-qemu-virt?/rtc",
     "ax-plat-loongarch64-qemu-virt?/rtc",
+    "axplat-dyn?/rtc",
 ]
 paging = ["dep:ax-alloc", "dep:ax-page-table-multiarch"]
 tls = ["ax-cpu/tls"]
