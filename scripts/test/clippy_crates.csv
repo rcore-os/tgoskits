@@ -28,7 +28,6 @@ ax-crate-interface-lite
 ax-display
 ax-dma
 ax-driver-display
-ax-driver-net
 ax-errno
 ax-fs
 ax-hal
@@ -64,7 +63,6 @@ axfs-ng-vfs
 axhvc
 axklib
 axpoll
-ax-plat
 axplat-x86-qemu-q35
 axvm
 axvmconfig
