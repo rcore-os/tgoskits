@@ -79,6 +79,7 @@ rockchip-npu
 rockchip-soc
 rsext4
 scope-local
+starry-kernel
 starry-process
 starry-vm
 tg-xtask

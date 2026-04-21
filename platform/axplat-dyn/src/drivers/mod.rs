@@ -34,8 +34,6 @@ pub type DynBlockDevice = Box<dyn BlockDriverOps>;
 #[cfg(feature = "net")]
 pub type DynNetDevice = Box<dyn NetDriverOps>;
 
-
-
 static BLOCK_DEVICES: Mutex<Vec<DynBlockDevice, MAX_BLOCK_DEVICES>> = Mutex::new(Vec::new());
 #[cfg(feature = "net")]
 static NET_DEVICES: Mutex<Vec<DynNetDevice, MAX_NET_DEVICES>> = Mutex::new(Vec::new());
