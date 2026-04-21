@@ -71,13 +71,6 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
     })
 }
 
-pub(crate) async fn prepare_default_rootfs_for_arch(
-    ctx: &AxvisorContext,
-    arch: &str,
-) -> anyhow::Result<PathBuf> {
-    extract_unified_rootfs_for_arch(ctx.workspace_root(), arch).await
-}
-
 pub(crate) async fn prepare_nimbos_x86_64_guest_vmconfig(
     ctx: &AxvisorContext,
 ) -> anyhow::Result<PathBuf> {

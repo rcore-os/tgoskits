@@ -65,22 +65,13 @@ impl Axvisor {
             None,
             SnapshotPersistence::Store,
         )?;
-        if args.rootfs.is_none() && qemu::infer_rootfs_path(&request.vmconfigs)?.is_none() {
-            qemu_test::prepare_default_rootfs_for_arch(&self.ctx, &request.arch).await?;
-        }
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
         let explicit_rootfs = args.rootfs.map(|r| {
             crate::download::resolve_rootfs_arg(self.app.workspace_root(), &request.arch, r)
         });
-        if let Some(ref r) = explicit_rootfs {
-            crate::download::ensure_unified_rootfs_if_managed(
-                self.app.workspace_root(),
-                &request.arch,
-                r,
-            )
+        self.ensure_qemu_rootfs_ready(&request, explicit_rootfs.as_deref())
             .await?;
-        }
         let qemu = self
             .load_qemu_config(&request, &cargo, explicit_rootfs.as_deref())
             .await?;
@@ -177,6 +168,7 @@ impl Axvisor {
             None,
             SnapshotPersistence::Discard,
         )?;
+        self.ensure_qemu_rootfs_ready(&request, None).await?;
         let shell = test_qemu::axvisor_test_shell_config(arch)?;
         let cargo = build::load_cargo_config(&request)?;
         let mut qemu_config = self.load_qemu_config(&request, &cargo, None).await?;
@@ -336,6 +328,25 @@ impl Axvisor {
             self.app.store_axvisor_snapshot(&snapshot)?;
         }
         Ok(request)
+    }
+
+    async fn ensure_qemu_rootfs_ready(
+        &self,
+        request: &ResolvedAxvisorRequest,
+        explicit_rootfs: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        let Some(rootfs_path) =
+            qemu::managed_rootfs_path(request, self.app.workspace_root(), explicit_rootfs)?
+        else {
+            return Ok(());
+        };
+
+        crate::download::ensure_unified_rootfs_if_managed(
+            self.app.workspace_root(),
+            &request.arch,
+            &rootfs_path,
+        )
+        .await
     }
 
     async fn load_qemu_config(

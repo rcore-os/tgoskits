@@ -27,6 +27,25 @@ pub(crate) fn apply_rootfs_path(
     Ok(())
 }
 
+pub(crate) fn managed_rootfs_path(
+    request: &ResolvedAxvisorRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<Option<PathBuf>> {
+    if let Some(explicit_rootfs) = explicit_rootfs {
+        if explicit_rootfs.starts_with(crate::download::unified_rootfs_dir(workspace_root)) {
+            return Ok(Some(explicit_rootfs.to_path_buf()));
+        }
+        return Ok(None);
+    }
+
+    if infer_rootfs_path(&request.vmconfigs)?.is_none() {
+        return Ok(Some(default_rootfs_path(workspace_root, &request.arch)));
+    }
+
+    Ok(None)
+}
+
 fn default_rootfs_path(workspace_root: &Path, arch: &str) -> PathBuf {
     if let Some(img) = crate::download::unified_rootfs_image_in_tarball(arch) {
         return crate::download::unified_rootfs_dir(workspace_root).join(img);
@@ -276,6 +295,94 @@ kernel_path = "{}"
                 "-append".to_string(),
                 "root=/dev/vda rw init=/init".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn managed_rootfs_path_uses_default_unified_rootfs_when_vmconfig_has_no_rootfs() {
+        let root = tempdir().unwrap();
+        let request = ResolvedAxvisorRequest {
+            package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "loongarch64".to_string(),
+            target: "loongarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: root.path().join(".build.toml"),
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        };
+
+        assert_eq!(
+            managed_rootfs_path(&request, root.path(), None).unwrap(),
+            Some(
+                root.path()
+                    .join("target/rootfs/rootfs-loongarch64-alpine.img")
+            )
+        );
+    }
+
+    #[test]
+    fn managed_rootfs_path_skips_when_vmconfig_provides_kernel_sibling_rootfs() {
+        let root = tempdir().unwrap();
+        let image_dir = root.path().join("image");
+        fs::create_dir_all(&image_dir).unwrap();
+        fs::write(image_dir.join("rootfs.img"), b"rootfs").unwrap();
+        let vmconfig = root.path().join("vm.toml");
+        fs::write(
+            &vmconfig,
+            format!(
+                r#"
+[kernel]
+kernel_path = "{}"
+"#,
+                image_dir.join("qemu-aarch64").display()
+            ),
+        )
+        .unwrap();
+        let request = ResolvedAxvisorRequest {
+            package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: root.path().join(".build.toml"),
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![vmconfig],
+        };
+
+        assert_eq!(
+            managed_rootfs_path(&request, root.path(), None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn managed_rootfs_path_keeps_explicit_managed_rootfs() {
+        let root = tempdir().unwrap();
+        let explicit = root.path().join("target/rootfs/rootfs-aarch64-alpine.img");
+        let request = ResolvedAxvisorRequest {
+            package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: root.path().join(".build.toml"),
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        };
+
+        assert_eq!(
+            managed_rootfs_path(&request, root.path(), Some(explicit.as_path())).unwrap(),
+            Some(explicit)
         );
     }
 
