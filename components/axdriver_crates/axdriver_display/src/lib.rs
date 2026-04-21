@@ -49,11 +49,19 @@ pub trait DisplayDriverOps: BaseDriverOps {
     fn info(&self) -> DisplayInfo;
 
     /// Get the framebuffer.
+    ///
+    /// The returned framebuffer references memory owned/mapped by the driver.
+    /// Callers should treat it as valid for immediate drawing operations and
+    /// avoid holding it across driver re-initialization.
     fn fb(&self) -> FrameBuffer<'_>;
 
-    /// Whether need to flush the framebuffer to the screen.
+    /// Whether software rendering must call [`Self::flush`] to make updates
+    /// visible on screen.
     fn need_flush(&self) -> bool;
 
-    /// Flush framebuffer to the screen.
+    /// Flush framebuffer contents to the display device.
+    ///
+    /// Drivers may return an error when the underlying transport/device is not
+    /// ready, and callers should propagate or retry according to policy.
     fn flush(&mut self) -> DevResult;
 }

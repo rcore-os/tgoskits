@@ -17,19 +17,27 @@ impl<H: Hal, T: Transport> VirtIoGpuDev<H, T> {
     /// Creates a new driver instance and initializes the device, or returns
     /// an error if any step fails.
     pub fn try_new(transport: T) -> DevResult<Self> {
-        let mut virtio = InnerDev::new(transport).unwrap();
+        let mut virtio = InnerDev::new(transport).map_err(as_dev_err)?;
 
-        // get framebuffer
-        let fbuffer = virtio.setup_framebuffer().unwrap();
+        // Get framebuffer memory and display geometry from device configuration.
+        let fbuffer = virtio.setup_framebuffer().map_err(as_dev_err)?;
         let fb_base_vaddr = fbuffer.as_mut_ptr() as usize;
         let fb_size = fbuffer.len();
-        let (width, height) = virtio.resolution().unwrap();
+        let (width, height) = virtio.resolution().map_err(as_dev_err)?;
         let info = DisplayInfo {
             width,
             height,
             fb_base_vaddr,
             fb_size,
         };
+
+        log::debug!(
+            "virtio-gpu initialized: {}x{}, fb_base={:#x}, fb_size={} bytes",
+            width,
+            height,
+            fb_base_vaddr,
+            fb_size,
+        );
 
         Ok(Self {
             inner: virtio,
