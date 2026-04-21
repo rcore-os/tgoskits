@@ -225,6 +225,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // io mpx
         #[cfg(target_arch = "x86_64")]
+        Sysno::pause => sys_ppoll(0usize.into(), 0, 0usize.into(), 0usize.into(), 0),
+        #[cfg(target_arch = "x86_64")]
         Sysno::poll => sys_poll(uctx.arg0().into(), uctx.arg1() as _, uctx.arg2() as _),
         Sysno::ppoll => sys_ppoll(
             uctx.arg0().into(),
