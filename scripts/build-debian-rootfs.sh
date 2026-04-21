@@ -86,6 +86,44 @@ check_docker() {
     fi
 }
 
+check_cross_arch() {
+    local host_arch
+    host_arch="$(uname -m)"
+    # Map host arch to Debian arch naming
+    local host_deb_arch
+    case "$host_arch" in
+        x86_64)  host_deb_arch="amd64" ;;
+        aarch64) host_deb_arch="arm64" ;;
+        riscv64) host_deb_arch="riscv64" ;;
+        *)       host_deb_arch="$host_arch" ;;
+    esac
+
+    # Only need binfmt when target != host
+    if [[ "$DEB_ARCH" == "$host_deb_arch" ]]; then
+        return 0
+    fi
+
+    # Verify cross-arch emulation actually works by running a tiny container
+    echo "    Checking cross-arch emulation ($host_arch -> $DEB_ARCH)..."
+    if docker run --rm --platform "linux/$DEB_ARCH" \
+        "${DOCKER_ARCH}/debian:${DEBIAN_SUITE}" echo ok &>/dev/null; then
+        return 0
+    fi
+
+    echo "Error: Cross-architecture build ($DEB_ARCH) on $host_arch requires QEMU binfmt emulation."
+    echo ""
+    echo "  To fix, run:"
+    echo "    docker run --rm --privileged multiarch/qemu-user-static --reset -p yes"
+    echo ""
+    echo "  Or build for the native architecture instead:"
+    case "$host_arch" in
+        x86_64)  echo "    $0 --init $INIT_SYSTEM --arch x86_64" ;;
+        aarch64) echo "    $0 --init $INIT_SYSTEM --arch aarch64" ;;
+        riscv64) echo "    $0 --init $INIT_SYSTEM --arch riscv64" ;;
+    esac
+    exit 1
+}
+
 build_rootfs() {
     local vol_name="starry-rootfs-build-$$"
 
@@ -98,7 +136,7 @@ build_rootfs() {
     docker volume create "$vol_name" >/dev/null
 
     cleanup_volume() {
-        docker volume rm "$vol_name" >/dev/null 2>&1 || true
+        docker volume rm "${vol_name:-}" >/dev/null 2>&1 || true
     }
     trap cleanup_volume EXIT
 
@@ -382,6 +420,7 @@ main() {
     parse_args "$@"
     resolve_target_and_output
     check_docker
+    check_cross_arch
 
     # systemd needs more space
     if [[ "$INIT_SYSTEM" == "systemd" && "$IMAGE_SIZE" == "2G" ]]; then
