@@ -352,6 +352,8 @@ pub enum Command {
     Qemu(ArgsQemu),
     /// Run ArceOS test suites
     Test(ArgsTest),
+    /// Run ArceOS stress suites
+    Stress(ArgsStress),
     /// Build and run ArceOS application with U-Boot
     Uboot(ArgsUboot),
 }
@@ -404,12 +406,24 @@ pub struct ArgsTest {
     pub command: TestCommand,
 }
 
+#[derive(Args)]
+pub struct ArgsStress {
+    #[command(subcommand)]
+    pub command: StressCommand,
+}
+
 #[derive(Subcommand)]
 pub enum TestCommand {
     /// Run ArceOS QEMU test suites (Rust + C by default)
     Qemu(ArgsTestQemu),
     /// Reserved ArceOS U-Boot test suite entrypoint
     Uboot(ArgsTestUboot),
+}
+
+#[derive(Subcommand)]
+pub enum StressCommand {
+    /// Run ArceOS QEMU stress suites
+    Qemu(ArgsStressQemu),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -425,6 +439,12 @@ pub struct ArgsTestQemu {
     /// Only run C tests
     #[arg(long, conflicts_with = "only_rust")]
     pub only_c: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsStressQemu {
+    #[arg(long, alias = "arch", value_name = "ARCH_OR_TARGET")]
+    pub target: String,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -470,6 +490,7 @@ impl ArceOS {
             Command::Qemu(args) => self.qemu(args).await,
             Command::Uboot(args) => self.uboot(args).await,
             Command::Test(args) => self.test(args).await,
+            Command::Stress(args) => self.stress(args).await,
         }
     }
 
@@ -543,43 +564,25 @@ impl ArceOS {
         }
     }
 
+    async fn stress(&mut self, args: ArgsStress) -> anyhow::Result<()> {
+        match args.command {
+            StressCommand::Qemu(args) => self.stress_qemu(args).await,
+        }
+    }
+
     // ---- Rust QEMU tests ----
 
     async fn test_rust_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         let (_arch, target) = test_qemu::parse_arceos_test_target(&args.target)?;
         let packages = select_arceos_test_packages(&args.package)?;
-        let mut failed = Vec::new();
+        self.run_rust_qemu_packages(target, &packages, "tests")
+            .await
+    }
 
-        println!(
-            "running arceos qemu tests for {} package(s) on target: {}",
-            packages.len(),
-            target
-        );
-
-        for (index, package) in packages.iter().enumerate() {
-            println!("[{}/{}] arceos qemu {}", index + 1, packages.len(), package);
-            ensure_package_runtime_assets(package)?;
-            let qemu_config = Some(Self::resolve_test_qemu_config(package, target)?);
-            let request = self.prepare_request(
-                Self::test_build_args(package, target),
-                qemu_config,
-                None,
-                SnapshotPersistence::Discard,
-            )?;
-            match self
-                .run_qemu_request(request)
-                .await
-                .with_context(|| format!("arceos qemu test failed for package `{package}`"))
-            {
-                Ok(()) => println!("ok: {}", package),
-                Err(err) => {
-                    eprintln!("failed: {}: {:#}", package, err);
-                    failed.push((*package).to_string());
-                }
-            }
-        }
-
-        test_qemu::finalize_qemu_test_run("arceos", &failed)
+    async fn stress_qemu(&mut self, args: ArgsStressQemu) -> anyhow::Result<()> {
+        let (_arch, target) = test_qemu::parse_arceos_test_target(&args.target)?;
+        self.run_rust_qemu_packages(target, test_qemu::ARCEOS_STRESS_PACKAGES, "stress tests")
+            .await
     }
 
     // ---- C QEMU tests ----
@@ -627,6 +630,45 @@ impl ArceOS {
             smp: None,
             debug: false,
         }
+    }
+
+    async fn run_rust_qemu_packages(
+        &mut self,
+        target: &str,
+        packages: &[&'static str],
+        suite_label: &str,
+    ) -> anyhow::Result<()> {
+        let mut failed = Vec::new();
+
+        println!(
+            "running arceos qemu {} for {} package(s) on target: {}",
+            suite_label,
+            packages.len(),
+            target
+        );
+
+        for (index, package) in packages.iter().enumerate() {
+            println!("[{}/{}] arceos qemu {}", index + 1, packages.len(), package);
+            ensure_package_runtime_assets(package)?;
+            let qemu_config = Some(Self::resolve_test_qemu_config(package, target)?);
+            let request = self.prepare_request(
+                Self::test_build_args(package, target),
+                qemu_config,
+                None,
+                SnapshotPersistence::Discard,
+            )?;
+            match self.run_qemu_request(request).await.with_context(|| {
+                format!("arceos qemu {suite_label} failed for package `{package}`")
+            }) {
+                Ok(()) => println!("ok: {}", package),
+                Err(err) => {
+                    eprintln!("failed: {}: {:#}", package, err);
+                    failed.push((*package).to_string());
+                }
+            }
+        }
+
+        test_qemu::finalize_qemu_test_run("arceos", &failed)
     }
 
     fn resolve_test_qemu_config(package: &str, target: &str) -> anyhow::Result<PathBuf> {
@@ -1011,6 +1053,33 @@ mod tests {
                 _ => panic!("expected qemu test command"),
             },
             _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_stress_qemu() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "arceos",
+            "stress",
+            "qemu",
+            "--target",
+            "aarch64-unknown-none-softfloat",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Stress(args) => match args.command {
+                StressCommand::Qemu(args) => {
+                    assert_eq!(args.target, "aarch64-unknown-none-softfloat");
+                }
+            },
+            _ => panic!("expected stress command"),
         }
     }
 

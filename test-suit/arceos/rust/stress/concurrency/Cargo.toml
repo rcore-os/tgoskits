@@ -1,0 +1,9 @@
+[package]
+name = "arceos-concurrency"
+version = "0.1.0"
+edition.workspace = true
+authors = ["Qiaosen Bai <baiqiaosen@gmail.com>"]
+description = "A combined SMP concurrency test for ArceOS tasking primitives"
+
+[dependencies]
+ax-std = { workspace = true, features = ["alloc", "multitask", "irq", "sched-rr"], optional = true }

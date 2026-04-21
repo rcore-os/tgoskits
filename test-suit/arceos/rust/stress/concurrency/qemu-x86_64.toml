@@ -1,0 +1,17 @@
+args = [
+    "-machine",
+    "q35",
+    "-cpu",
+    "max",
+    "-m",
+    "256M",
+    "-smp",
+    "8",
+    "-nographic",
+    "-serial",
+    "mon:stdio",
+]
+uefi = false
+to_bin = false
+success_regex = ["All tests passed!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

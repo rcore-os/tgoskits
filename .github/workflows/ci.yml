@@ -247,6 +247,38 @@ jobs:
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
             main_pr_only: false
+          - name: Stress arceos x86_64
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo xtask arceos stress qemu --target x86_64
+            cache_key: test-arceos-concurrency-x86_64
+            container_image: ghcr.io/${{ github.repository }}-container:latest
+            required_repository_owner: ""
+            main_pr_only: false
+          - name: Stress arceos riscv64
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo xtask arceos stress qemu --target riscv64
+            cache_key: test-arceos-concurrency-riscv64
+            container_image: ghcr.io/${{ github.repository }}-container:latest
+            required_repository_owner: ""
+            main_pr_only: false
+          - name: Stress arceos aarch64
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo xtask arceos stress qemu --target aarch64
+            cache_key: test-arceos-concurrency-aarch64
+            container_image: ghcr.io/${{ github.repository }}-container:latest
+            required_repository_owner: ""
+            main_pr_only: false
+          - name: Stress arceos loongarch64
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: cargo xtask arceos stress qemu --target loongarch64
+            cache_key: test-arceos-concurrency-loongarch64
+            container_image: ghcr.io/${{ github.repository }}-container:latest
+            required_repository_owner: ""
+            main_pr_only: false
           - name: Stress starry aarch64
             use_container: true
             runs_on: '["ubuntu-latest"]'

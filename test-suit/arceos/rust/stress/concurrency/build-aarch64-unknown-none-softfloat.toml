@@ -1,0 +1,8 @@
+features = ["ax-std"]
+log = "Warn"
+max_cpu_num = 8
+plat_dyn = true
+
+[env]
+AX_GW = "10.0.2.2"
+AX_IP = "10.0.2.15"

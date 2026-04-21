@@ -1,6 +1,7 @@
 package
 aarch64_sysreg
 arceos-affinity
+arceos-concurrency
 arceos-display
 arceos-exception
 arceos-ipi

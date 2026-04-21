@@ -22,6 +22,8 @@ pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
     "arceos-yield",
 ];
 
+pub(crate) const ARCEOS_STRESS_PACKAGES: &[&str] = &["arceos-concurrency"];
+
 const ARCEOS_TEST_TARGETS: &[&str] = &[
     "x86_64-unknown-none",
     "riscv64gc-unknown-none-elf",
