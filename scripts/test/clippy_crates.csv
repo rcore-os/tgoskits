@@ -61,7 +61,7 @@ axvmconfig
 bitmap-allocator
 loongarch_vcpu
 range-alloc-arceos
-riscv64-qemu-virt-hv
+axplat-riscv64-qemu-virt-hv
 riscv-h
 riscv_vcpu
 scope-local

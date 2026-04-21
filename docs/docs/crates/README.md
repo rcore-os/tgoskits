@@ -103,7 +103,7 @@
 | `ax-plat-loongarch64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-loongarch64-qemu-virt` | 6 | 5 | [查看](./ax-plat-loongarch64-qemu-virt.md) |
 | `ax-plat-macros` | 组件层 | `components/axplat_crates/axplat-macros` | 1 | 1 | [查看](./ax-plat-macros.md) |
 | `ax-plat-riscv64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-riscv64-qemu-virt` | 6 | 6 | [查看](./ax-plat-riscv64-qemu-virt.md) |
-| `ax-plat-riscv64-qemu-virt` | Axvisor 层 | `os/axvisor/platform/riscv64-qemu-virt` | 8 | 6 | [查看](./ax-plat-riscv64-qemu-virt.md) |
+| `axplat-riscv64-qemu-virt-hv` | Axvisor 层 | `platform/riscv64-qemu-virt` | 8 | 6 | [查看](./ax-plat-riscv64-qemu-virt.md) |
 | `ax-plat-x86-pc` | 组件层 | `components/axplat_crates/platforms/axplat-x86-pc` | 7 | 5 | [查看](./ax-plat-x86-pc.md) |
 | `ax-posix-api` | ArceOS 层 | `os/arceos/api/arceos_posix_api` | 13 | 1 | [查看](./ax-posix-api.md) |
 | `ax-runtime` | ArceOS 层 | `os/arceos/modules/axruntime` | 20 | 4 | [查看](./ax-runtime.md) |

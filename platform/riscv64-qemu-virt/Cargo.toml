@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name = "riscv64-qemu-virt-hv"
+name = "axplat-riscv64-qemu-virt-hv"
 version = "0.5.4"
 description = "Hardware platform implementation for the RISC-V64 QEMU virt machine used by AxVisor"
 repository = "https://github.com/rcore-os/tgoskits"

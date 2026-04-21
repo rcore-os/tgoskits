@@ -1757,6 +1757,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "axplat-riscv64-qemu-virt-hv"
+version = "0.5.4"
+dependencies = [
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-crate-interface",
+ "ax-kspin",
+ "ax-lazyinit",
+ "ax-plat",
+ "ax-riscv-plic",
+ "axvisor_api",
+ "log",
+ "riscv 0.14.0",
+ "riscv_goldfish",
+ "sbi-rt",
+ "uart_16550 0.4.0",
+]
+
+[[package]]
 name = "axplat-riscv64-visionfive2"
 version = "0.1.0-pre.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1901,6 +1920,7 @@ dependencies = [
  "axhvc",
  "axklib",
  "axplat-dyn",
+ "axplat-riscv64-qemu-virt-hv",
  "axplat-x86-qemu-q35",
  "axvcpu",
  "axvisor_api",
@@ -1918,7 +1938,6 @@ dependencies = [
  "quote",
  "rdif-intc 0.14.0",
  "rdrive 0.20.0",
- "riscv64-qemu-virt-hv",
  "riscv_vcpu",
  "riscv_vplic",
  "spin 0.10.0",
@@ -2586,7 +2605,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3608,7 +3627,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4706,7 +4725,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7141,25 +7160,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3f2ad9f15a07f4a0e1677124f9120ce7e83ab7e1ca7186af0ca9da529b62e80"
 
 [[package]]
-name = "riscv64-qemu-virt-hv"
-version = "0.5.4"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-crate-interface",
- "ax-kspin",
- "ax-lazyinit",
- "ax-plat",
- "ax-riscv-plic",
- "axvisor_api",
- "log",
- "riscv 0.14.0",
- "riscv_goldfish",
- "sbi-rt",
- "uart_16550 0.4.0",
-]
-
-[[package]]
 name = "riscv_goldfish"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7410,7 +7410,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7478,7 +7478,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8715,7 +8715,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9952,7 +9952,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

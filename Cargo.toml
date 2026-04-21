@@ -120,6 +120,7 @@ members = [
 
     # platform
     "platform/axplat-dyn",
+    "platform/riscv64-qemu-virt",
     "platform/x86-qemu-q35",
 
     # drivers
@@ -304,7 +305,7 @@ impl-simple-traits = { path = "components/crate_interface/test_crates/impl-simpl
 impl-weak-partial = { path = "components/crate_interface/test_crates/impl-weak-partial" }
 impl-weak-traits = { path = "components/crate_interface/test_crates/impl-weak-traits" }
 
-riscv64-qemu-virt-hv = { path = "os/axvisor/platform/riscv64-qemu-virt" }
+axplat-riscv64-qemu-virt-hv = { path = "platform/riscv64-qemu-virt" }
 [workspace.dependencies]
 # === os/arceos crates (0.3.0-preview.3) ===
 # ulib

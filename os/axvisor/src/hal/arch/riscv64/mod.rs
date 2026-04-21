@@ -3,8 +3,8 @@ pub mod cache;
 
 use crate::vmm::vm_list::get_vm_by_id;
 use axaddrspace::{GuestPhysAddr, device::AccessWidth};
+use axplat_riscv64_qemu_virt_hv::config::devices::PLIC_PADDR;
 use axvisor_api::vmm::current_vm_id;
-use riscv64_qemu_virt_hv::config::devices::PLIC_PADDR;
 
 pub fn hardware_check() {
     // TODO: implement hardware checks for RISC-V64
