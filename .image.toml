@@ -1,4 +1,0 @@
-local_storage = "/tmp/.axvisor-images"
-registry = "https://raw.githubusercontent.com/arceos-hypervisor/axvisor-guest/refs/heads/main/registry/default.toml"
-auto_sync = true
-auto_sync_threshold = 604800
