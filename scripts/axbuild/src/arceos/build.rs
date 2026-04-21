@@ -552,8 +552,11 @@ fn resolve_platform_package(
             return Ok(dep.name.clone());
         }
 
-        if package == crate::axvisor::build::AXVISOR_PACKAGE && arch == "riscv64" {
-            return Ok("riscv64-qemu-virt-hv".to_string());
+        if package == crate::axvisor::build::AXVISOR_PACKAGE
+            && let Some(platform_package) =
+                crate::axvisor::build::myplat_platform_package_for_arch(arch)
+        {
+            return Ok(platform_package.to_string());
         }
     }
 
@@ -1317,5 +1320,17 @@ AX_GW = "10.0.2.2"
         .unwrap();
 
         assert_eq!(package, "riscv64-qemu-virt-hv");
+    }
+
+    #[test]
+    fn resolve_platform_package_prefers_x86_axvisor_myplat_mapping() {
+        let package = resolve_platform_package(
+            "axvisor",
+            "x86_64-unknown-none",
+            &["ax-std/myplat".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(package, "axplat-x86-qemu-q35");
     }
 }

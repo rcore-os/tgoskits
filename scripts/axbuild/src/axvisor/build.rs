@@ -17,6 +17,14 @@ pub use crate::arceos::build::LogLevel;
 
 pub const AXVISOR_PACKAGE: &str = "axvisor";
 
+pub(crate) fn myplat_platform_package_for_arch(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" => Some("axplat-x86-qemu-q35"),
+        "riscv64" => Some("riscv64-qemu-virt-hv"),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct AxvisorBoardConfig {
     #[serde(flatten, default)]
