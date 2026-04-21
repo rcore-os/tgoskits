@@ -336,12 +336,27 @@ impl Epoll {
         let mut guard = self.inner.interests.lock();
         let old = guard.get_mut(&key).ok_or(AxError::NotFound)?;
 
-        // update new interest if old already in ready queue
-        if old.is_in_queue() {
+        // Preserve ready-queue membership across the swap. The ready_queue
+        // only holds Weak<EpollInterest> pointing at the old Arc, so
+        // dropping that Arc below turns those Weaks into dangling handles
+        // that upgrade() can't resolve. poll_events() would then silently
+        // skip the stale entry and the fd's pending event would be lost —
+        // which is how PostgreSQL's EPOLL_CTL_MOD after the first query
+        // ended up never waking the backend for the next client packet.
+        // Push a fresh Weak for the replacement interest so poll_events()
+        // still finds something to consume.
+        let was_in_queue = old.is_in_queue();
+        if was_in_queue {
             interest.in_ready_queue.store(true, Ordering::Release);
         }
         *old = Arc::clone(&interest);
         drop(guard);
+        if was_in_queue {
+            self.inner
+                .ready_queue
+                .lock()
+                .push_back(Arc::downgrade(&interest));
+        }
         trace!(
             "Epoll: modify fd={}, events={:?}",
             fd, interest.event.events
