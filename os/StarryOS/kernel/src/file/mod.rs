@@ -153,7 +153,11 @@ pub trait FileLike: Pollable + DowncastSync {
     fn path(&self) -> Cow<'_, str>;
 
     fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
-        Err(AxError::BadFileDescriptor)
+        // man 2 mmap ENODEV: "The underlying filesystem of the specified file
+        // does not support memory mapping." This is the right errno for fd
+        // kinds that do not back onto a mappable file (directory, pipe,
+        // socket, epoll, eventfd, etc.).
+        Err(AxError::NoSuchDevice)
     }
 
     fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {

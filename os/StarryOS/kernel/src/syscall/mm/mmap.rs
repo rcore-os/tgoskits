@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::FileBackend;
+use ax_fs::{FileBackend, FileFlags};
 use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_task::current;
@@ -207,6 +207,15 @@ pub fn sys_mmap(
 
                 // Fall through to file-backed mmap
                 let (backend, flags) = file.file_mmap()?;
+                // man 2 mmap EACCES: a file mapping requires the fd to be
+                // open for reading, and MAP_SHARED+PROT_WRITE additionally
+                // requires the fd to be open for writing.
+                if !flags.contains(FileFlags::READ) {
+                    return Err(AxError::PermissionDenied);
+                }
+                if permission_flags.contains(MmapProt::WRITE) && !flags.contains(FileFlags::WRITE) {
+                    return Err(AxError::PermissionDenied);
+                }
                 match backend.clone() {
                     FileBackend::Cached(cache) => {
                         // TODO(mivik): file mmap page size
@@ -257,7 +266,13 @@ pub fn sys_mmap(
         MmapFlags::PRIVATE => {
             if let Some(ref file) = file {
                 // Private file-backed mmap
-                let (backend, _) = file.file_mmap()?;
+                let (backend, file_flags) = file.file_mmap()?;
+                // man 2 mmap EACCES: a file mapping requires the fd to be
+                // open for reading (MAP_PRIVATE still page-faults from file
+                // on initial access even when later writes are CoW).
+                if !file_flags.contains(FileFlags::READ) {
+                    return Err(AxError::PermissionDenied);
+                }
                 Backend::new_cow(start, page_size, backend, offset as u64, None)
             } else {
                 Backend::new_alloc(start, page_size)
