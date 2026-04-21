@@ -559,8 +559,8 @@ impl DirNodeOps for Inode {
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
-            let inode_info = rsext4::dir::get_inode_with_num(fs, dev, &path)
-                .map_err(into_vfs_err)?;
+            let inode_info =
+                rsext4::dir::get_inode_with_num(fs, dev, &path).map_err(into_vfs_err)?;
             if inode_info.is_none() {
                 return Err(VfsError::NotFound);
             }

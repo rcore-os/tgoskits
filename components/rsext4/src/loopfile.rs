@@ -27,7 +27,7 @@ pub fn resolve_inode_block<B: BlockDevice>(
         let mut tree = ExtentTree::new(inode);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
             let raw_len = ext.ee_len as u32;
-            let is_unwritten = (raw_len & 0x8000) != 0;
+            let is_unwritten = raw_len > 0x8000;
             let mut len = raw_len;
             if (len & 0x8000) != 0 {
                 len &= 0x7FFF;
