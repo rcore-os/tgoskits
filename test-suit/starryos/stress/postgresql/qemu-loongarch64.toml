@@ -1,0 +1,38 @@
+args = [
+    "-machine", "virt",
+    "-cpu", "la464",
+    "-nographic",
+    "-m", "512M",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/loongarch64-unknown-none-softfloat/rootfs-loongarch64.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+apk update >/dev/null 2>&1; apk add postgresql17 >/dev/null 2>&1; \
+mkdir /tmp/pgdata /tmp/pgrun; chmod 0700 /tmp/pgdata /tmp/pgrun; chown postgres:postgres /tmp/pgdata /tmp/pgrun; \
+PG=/usr/libexec/postgresql17; \
+su -s /bin/sh postgres -c "$PG/initdb -D /tmp/pgdata --no-locale --username=postgres" 2>&1 && \
+echo "INITDB_OK" && \
+su -s /bin/sh postgres -c "$PG/pg_ctl -D /tmp/pgdata -l /tmp/pg.log start -w -t 600 -o '-c max_connections=10 -c shared_buffers=16MB -c unix_socket_directories=/tmp/pgrun -c fsync=off'" 2>&1 && \
+echo "PGCTL_START_OK" && \
+RESULT=$(su -s /bin/sh postgres -c "$PG/psql -h /tmp/pgrun -d postgres -t -A -c 'SELECT 1'" 2>&1) && \
+echo "SELECT_RESULT=[$RESULT]" && \
+test "$RESULT" = "1" && \
+su -s /bin/sh postgres -c "$PG/psql -h /tmp/pgrun -d postgres -c 'CREATE TABLE t (id int); INSERT INTO t VALUES (1),(2),(3); SELECT count(*) FROM t'" 2>&1 && \
+echo "QUERIES_DONE" && \
+echo "POSTMASTER_PID=$(cat /tmp/pgdata/postmaster.pid | head -1)" && \
+PM_PID=$(cat /tmp/pgdata/postmaster.pid 2>/dev/null | head -1); \
+echo "KILLING_POSTMASTER=$PM_PID"; \
+kill -9 "$PM_PID" 2>&1; sleep 1; \
+pkill -9 postgres 2>&1; sleep 1; \
+echo "KILL_DONE"; \
+echo "=== pg.log tail ==="; tail -30 /tmp/pg.log 2>&1; echo "=== end ==="; \
+echo "PG_TEST_DONE=$(date +%s)"
+'''
+success_regex = ["(?m)^PG_TEST_DONE=\\d+\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b']
+timeout = 5400
