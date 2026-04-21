@@ -1,9 +1,9 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
-use ax_kspin::SpinNoIrq;
 use crab_usb::EventHandler;
 use event_listener::{Event as NotifyEvent, listener};
 use rdrive::DeviceId as RDriveDeviceId;
+use spin::Mutex;
 
 use super::{
     descriptor::{UsbDeviceSnapshot, snapshot_device_info},
@@ -26,14 +26,14 @@ struct UsbFsState {
 }
 
 pub(super) struct UsbFsManager {
-    state: SpinNoIrq<UsbFsState>,
+    state: Mutex<UsbFsState>,
     pub(super) refresh_event: NotifyEvent,
 }
 
 impl UsbFsManager {
     pub(super) fn new(hosts: Vec<UsbHostState>) -> Self {
         Self {
-            state: SpinNoIrq::new(UsbFsState {
+            state: Mutex::new(UsbFsState {
                 hosts,
                 devices: BTreeMap::new(),
             }),
@@ -209,8 +209,51 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
                 continue;
             }
 
+            let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
+                Ok(devices) => devices,
+                Err(err) => {
+                    warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
+                    failed_device_ids.push((device_id, irq_num));
+                    continue;
+                }
+            };
+
             info!("usbfs: host on bus {} initialized", bus_num);
             initialized += 1;
+
+            if let Some(irq_num) = irq_num {
+                irq::bootstrap_irq(irq_num);
+            }
+
+            {
+                let mut state = manager.state.lock();
+                let Some(host_index) = state
+                    .hosts
+                    .iter()
+                    .position(|host| host.device_id == device_id)
+                else {
+                    continue;
+                };
+                let snapshots = {
+                    let host_state = &mut state.hosts[host_index];
+                    devices
+                        .into_iter()
+                        .map(|info| {
+                            snapshot_device_info(
+                                bus_num,
+                                &mut host_state.next_device_num,
+                                &mut host_state.stable_id_to_device_num,
+                                &info,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                for snapshot in snapshots {
+                    state
+                        .devices
+                        .insert((snapshot.bus_num, snapshot.device_num), snapshot);
+                }
+            }
         }
 
         if !failed_device_ids.is_empty() {

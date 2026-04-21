@@ -3,7 +3,7 @@ use axnet::options::{Configurable, GetSocketOption, SetSocketOption};
 use linux_raw_sys::net::socklen_t;
 
 use crate::{
-    file::{FileLike, Socket},
+    file::{FileLike, Socket, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
 };
 
@@ -168,6 +168,27 @@ pub fn sys_setsockopt(
         optval.address(),
         optlen
     );
+
+    if let Ok(socket) = NetlinkSocket::from_fd(fd) {
+        use linux_raw_sys::net::{SO_PASSCRED, SO_RCVBUF, SO_RCVBUFFORCE, SOL_SOCKET};
+
+        let value = if optlen as usize >= size_of::<i32>() {
+            *optval.cast::<i32>().get_as_ref()?
+        } else {
+            0
+        };
+        match (level, optname) {
+            (SOL_SOCKET, SO_RCVBUF | SO_RCVBUFFORCE) => {
+                socket.set_receive_buffer_size(value.max(0) as usize);
+                return Ok(0);
+            }
+            (SOL_SOCKET, SO_PASSCRED) => {
+                socket.set_passcred(value != 0);
+                return Ok(0);
+            }
+            _ => return Err(AxError::from(LinuxError::ENOPROTOOPT)),
+        }
+    }
 
     fn get<'a, T: 'static>(val: UserConstPtr<u8>, len: socklen_t) -> AxResult<&'a T> {
         if len as usize != size_of::<T>() {

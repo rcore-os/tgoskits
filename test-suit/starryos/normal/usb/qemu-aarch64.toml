@@ -16,5 +16,8 @@ to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/usb-transfer-test"
 success_regex = ["(?m)^USB enumeration tests passed!\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    "USB test failed",
+]
 timeout = 10

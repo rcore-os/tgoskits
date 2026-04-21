@@ -85,6 +85,7 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
     "net",
+    "netlink",
     "prctl",
     "system",
     "ioctl",
