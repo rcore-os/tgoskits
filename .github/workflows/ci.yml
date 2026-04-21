@@ -170,7 +170,7 @@ jobs:
           - name: Test axvisor aarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask axvisor test qemu --target aarch64
+            command: cargo xtask axvisor test qemu --arch aarch64
             cache_key: test-axvisor-aarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
@@ -178,7 +178,7 @@ jobs:
           - name: Test axvisor loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask axvisor test qemu --target loongarch64
+            command: cargo xtask axvisor test qemu --arch loongarch64
             cache_key: test-axvisor-loongarch64
             container_image: ghcr.io/${{ github.repository }}-container-axvisor-lvz:latest
             required_repository_owner: ""
@@ -186,7 +186,7 @@ jobs:
           - name: Test starry riscv64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --target riscv64
+            command: cargo xtask starry test qemu --arch riscv64
             cache_key: test-starry-riscv64
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
@@ -194,7 +194,7 @@ jobs:
           - name: Test starry aarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --target aarch64
+            command: cargo xtask starry test qemu --arch aarch64
             cache_key: test-starry-aarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
@@ -202,7 +202,7 @@ jobs:
           - name: Test starry loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --target loongarch64
+            command: cargo xtask starry test qemu --arch loongarch64
             cache_key: test-starry-loongarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
@@ -210,7 +210,7 @@ jobs:
           - name: Test starry x86_64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask starry test qemu --target x86_64
+            command: cargo xtask starry test qemu --arch x86_64
             cache_key: test-starry-x86_64
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
@@ -218,7 +218,7 @@ jobs:
           - name: Test arceos x86_64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask arceos test qemu --target x86_64
+            command: cargo xtask arceos test qemu --arch x86_64
             cache_key: test-arceos-x86_64
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
@@ -226,7 +226,7 @@ jobs:
           - name: Test arceos riscv64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask arceos test qemu --target riscv64
+            command: cargo xtask arceos test qemu --arch riscv64
             cache_key: test-arceos-riscv64
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
@@ -234,7 +234,7 @@ jobs:
           - name: Test arceos aarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask arceos test qemu --target aarch64
+            command: cargo xtask arceos test qemu --arch aarch64
             cache_key: test-arceos-aarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
@@ -242,7 +242,7 @@ jobs:
           - name: Test arceos loongarch64 qemu
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask arceos test qemu --target loongarch64
+            command: cargo xtask arceos test qemu --arch loongarch64
             cache_key: test-arceos-loongarch64
             container_image: ghcr.io/${{ github.repository }}-container:latest
             required_repository_owner: ""
@@ -282,7 +282,7 @@ jobs:
           - name: Test axvisor self-hosted x86_64
             use_container: false
             runs_on: '["self-hosted","linux","intel"]'
-            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test qemu --target x86_64
+            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test qemu --arch x86_64
             cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
@@ -331,9 +331,9 @@ jobs:
           (
             matrix.use_container
             && (
-              startsWith(matrix.command, 'cargo xtask starry test qemu --target')
-              || startsWith(matrix.command, 'cargo xtask axvisor test qemu --target')
-              || startsWith(matrix.command, 'cargo xtask arceos test qemu --target')
+              startsWith(matrix.command, 'cargo xtask starry test qemu --arch')
+              || startsWith(matrix.command, 'cargo xtask axvisor test qemu --arch')
+              || startsWith(matrix.command, 'cargo xtask arceos test qemu --arch')
               || startsWith(matrix.name, 'Stress starry ')
             )
           )

@@ -1,6 +1,8 @@
 use crate::{
     axvisor::qemu_test::ShellAutoInitConfig,
-    context::{arch_for_target_checked, target_for_arch_checked},
+    context::{
+        resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target, validate_supported_target,
+    },
 };
 
 pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
@@ -47,6 +49,8 @@ const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
     "(?i)login incorrect",
     "(?i)permission denied",
 ];
+
+type ResolveArchAndTarget = fn(Option<String>, Option<String>) -> anyhow::Result<(String, String)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AxvisorUbootBoardConfig {
@@ -120,19 +124,26 @@ const AXVISOR_BOARD_TEST_GROUPS: &[AxvisorBoardTestGroup] = &[
     },
 ];
 
-pub(crate) fn parse_arceos_test_target(target: &str) -> anyhow::Result<(&str, &str)> {
-    parse_arch_or_target(
+pub(crate) fn parse_arceos_test_target(
+    arch: &Option<String>,
+    target: &Option<String>,
+) -> anyhow::Result<(String, String)> {
+    parse_test_target(
+        arch,
         target,
         "arceos qemu tests",
         ARCEOS_TEST_ARCHES,
         ARCEOS_TEST_TARGETS,
-        target_for_arch_checked,
-        arch_for_target_checked,
+        resolve_arceos_arch_and_target,
     )
 }
 
-pub(crate) fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &str)> {
-    parse_arch_or_target(
+pub(crate) fn parse_axvisor_test_target(
+    arch: &Option<String>,
+    target: &Option<String>,
+) -> anyhow::Result<(String, String)> {
+    parse_test_target(
+        arch,
         target,
         "axvisor qemu tests",
         AXVISOR_TEST_ARCHES,
@@ -141,8 +152,7 @@ pub(crate) fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &
             "x86_64-unknown-none",
             "loongarch64-unknown-none-softfloat",
         ],
-        target_for_arch_checked,
-        arch_for_target_checked,
+        resolve_axvisor_arch_and_target,
     )
 }
 
@@ -220,52 +230,18 @@ pub(crate) fn axvisor_test_shell_config(arch: &str) -> anyhow::Result<ShellAutoI
     }
 }
 
-pub(crate) fn validate_supported_target(
-    target: &str,
-    suite_name: &str,
-    supported_kind: &str,
-    supported: &[&str],
-) -> anyhow::Result<()> {
-    if supported.contains(&target) {
-        Ok(())
-    } else {
-        bail!(
-            "unsupported target `{}` for {}. Supported {} are: {}",
-            target,
-            suite_name,
-            supported_kind,
-            supported.join(", ")
-        )
-    }
-}
-
-fn validate_supported_arch_or_target(
-    value: &str,
+fn parse_test_target(
+    arch: &Option<String>,
+    target: &Option<String>,
     suite_name: &str,
     supported_arches: &[&str],
     supported_targets: &[&str],
-) -> anyhow::Result<()> {
-    if value.contains('-') {
-        validate_supported_target(value, suite_name, "targets", supported_targets)
-    } else {
-        validate_supported_target(value, suite_name, "arch values", supported_arches)
-    }
-}
-
-fn parse_arch_or_target<'a>(
-    value: &'a str,
-    suite_name: &str,
-    supported_arches: &[&str],
-    supported_targets: &[&str],
-    resolve_target: fn(&str) -> anyhow::Result<&'static str>,
-    resolve_arch: fn(&str) -> anyhow::Result<&'static str>,
-) -> anyhow::Result<(&'a str, &'a str)> {
-    validate_supported_arch_or_target(value, suite_name, supported_arches, supported_targets)?;
-    if value.contains('-') {
-        Ok((resolve_arch(value)?, value))
-    } else {
-        Ok((value, resolve_target(value)?))
-    }
+    resolve_arch_and_target: ResolveArchAndTarget,
+) -> anyhow::Result<(String, String)> {
+    let (arch, target) = resolve_arch_and_target(arch.clone(), target.clone())?;
+    validate_supported_target(&arch, suite_name, "arch values", supported_arches)?;
+    validate_supported_target(&target, suite_name, "targets", supported_targets)?;
+    Ok((arch, target))
 }
 
 fn supported_board_guest_pairs() -> String {
@@ -332,30 +308,38 @@ mod tests {
     #[test]
     fn accepts_supported_arceos_targets() {
         assert_eq!(
-            parse_arceos_test_target("x86_64-unknown-none").unwrap(),
-            ("x86_64", "x86_64-unknown-none")
+            parse_arceos_test_target(&None, &Some("x86_64-unknown-none".to_string())).unwrap(),
+            ("x86_64".to_string(), "x86_64-unknown-none".to_string())
         );
         assert_eq!(
-            parse_arceos_test_target("aarch64-unknown-none-softfloat").unwrap(),
-            ("aarch64", "aarch64-unknown-none-softfloat")
+            parse_arceos_test_target(&None, &Some("aarch64-unknown-none-softfloat".to_string()))
+                .unwrap(),
+            (
+                "aarch64".to_string(),
+                "aarch64-unknown-none-softfloat".to_string()
+            )
         );
     }
 
     #[test]
     fn accepts_supported_arceos_arch_aliases() {
         assert_eq!(
-            parse_arceos_test_target("x86_64").unwrap(),
-            ("x86_64", "x86_64-unknown-none")
+            parse_arceos_test_target(&Some("x86_64".to_string()), &None).unwrap(),
+            ("x86_64".to_string(), "x86_64-unknown-none".to_string())
         );
         assert_eq!(
-            parse_arceos_test_target("aarch64").unwrap(),
-            ("aarch64", "aarch64-unknown-none-softfloat")
+            parse_arceos_test_target(&Some("aarch64".to_string()), &None).unwrap(),
+            (
+                "aarch64".to_string(),
+                "aarch64-unknown-none-softfloat".to_string()
+            )
         );
     }
 
     #[test]
     fn rejects_unsupported_arceos_targets() {
-        let err = parse_arceos_test_target("mips64-unknown-none").unwrap_err();
+        let err =
+            parse_arceos_test_target(&None, &Some("mips64-unknown-none".to_string())).unwrap_err();
 
         assert!(
             err.to_string()
@@ -366,28 +350,45 @@ mod tests {
     #[test]
     fn parses_supported_axvisor_arch_aliases() {
         assert_eq!(
-            parse_axvisor_test_target("aarch64").unwrap(),
-            ("aarch64", "aarch64-unknown-none-softfloat")
+            parse_axvisor_test_target(&Some("aarch64".to_string()), &None).unwrap(),
+            (
+                "aarch64".to_string(),
+                "aarch64-unknown-none-softfloat".to_string()
+            )
         );
         assert_eq!(
-            parse_axvisor_test_target("x86_64").unwrap(),
-            ("x86_64", "x86_64-unknown-none")
+            parse_axvisor_test_target(&Some("x86_64".to_string()), &None).unwrap(),
+            ("x86_64".to_string(), "x86_64-unknown-none".to_string())
         );
         assert_eq!(
-            parse_axvisor_test_target("loongarch64").unwrap(),
-            ("loongarch64", "loongarch64-unknown-none-softfloat")
+            parse_axvisor_test_target(&Some("loongarch64".to_string()), &None).unwrap(),
+            (
+                "loongarch64".to_string(),
+                "loongarch64-unknown-none-softfloat".to_string()
+            )
         );
     }
 
     #[test]
     fn accepts_axvisor_full_target_triples() {
         assert_eq!(
-            parse_axvisor_test_target("aarch64-unknown-none-softfloat").unwrap(),
-            ("aarch64", "aarch64-unknown-none-softfloat")
+            parse_axvisor_test_target(&None, &Some("aarch64-unknown-none-softfloat".to_string()))
+                .unwrap(),
+            (
+                "aarch64".to_string(),
+                "aarch64-unknown-none-softfloat".to_string()
+            )
         );
         assert_eq!(
-            parse_axvisor_test_target("loongarch64-unknown-none-softfloat").unwrap(),
-            ("loongarch64", "loongarch64-unknown-none-softfloat")
+            parse_axvisor_test_target(
+                &None,
+                &Some("loongarch64-unknown-none-softfloat".to_string())
+            )
+            .unwrap(),
+            (
+                "loongarch64".to_string(),
+                "loongarch64-unknown-none-softfloat".to_string()
+            )
         );
     }
 
@@ -412,7 +413,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_axvisor_arches() {
-        let err = parse_axvisor_test_target("riscv64").unwrap_err();
+        let err = parse_axvisor_test_target(&Some("riscv64".to_string()), &None).unwrap_err();
 
         assert!(
             err.to_string()

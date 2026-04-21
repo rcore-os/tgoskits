@@ -414,8 +414,21 @@ pub enum TestCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsTestQemu {
-    #[arg(long, alias = "arch", value_name = "ARCH_OR_TARGET")]
-    pub target: String,
+    #[arg(
+        long,
+        value_name = "ARCH",
+        required_unless_present = "target",
+        help = "ArceOS architecture to test"
+    )]
+    pub arch: Option<String>,
+    #[arg(
+        short = 't',
+        long,
+        value_name = "TARGET",
+        required_unless_present = "arch",
+        help = "ArceOS target triple to test"
+    )]
+    pub target: Option<String>,
     /// Only run the specified Rust test package(s)
     #[arg(short, long, value_name = "PACKAGE", conflicts_with = "only_c")]
     pub package: Vec<String>,
@@ -546,7 +559,7 @@ impl ArceOS {
     // ---- Rust QEMU tests ----
 
     async fn test_rust_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
-        let (_arch, target) = test_qemu::parse_arceos_test_target(&args.target)?;
+        let (_arch, target) = test_qemu::parse_arceos_test_target(&args.arch, &args.target)?;
         let packages = select_arceos_test_packages(&args.package)?;
         let mut failed = Vec::new();
 
@@ -559,9 +572,9 @@ impl ArceOS {
         for (index, package) in packages.iter().enumerate() {
             println!("[{}/{}] arceos qemu {}", index + 1, packages.len(), package);
             ensure_package_runtime_assets(package)?;
-            let qemu_config = Some(Self::resolve_test_qemu_config(package, target)?);
+            let qemu_config = Some(Self::resolve_test_qemu_config(package, &target)?);
             let request = self.prepare_request(
-                Self::test_build_args(package, target),
+                Self::test_build_args(package, &target),
                 qemu_config,
                 None,
                 SnapshotPersistence::Discard,
@@ -585,9 +598,10 @@ impl ArceOS {
     // ---- C QEMU tests ----
 
     async fn test_c_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
+        let (_arch, target) = test_qemu::parse_arceos_test_target(&args.arch, &args.target)?;
         run_c_qemu_tests_with_hooks(
             self.app.workspace_root(),
-            &args.target,
+            &target,
             c_test_cargo_config::prepare_c_test_cargo_config,
             run_single_c_qemu_test,
         )
@@ -744,7 +758,6 @@ where
     PrepareConfig: FnMut(&Path) -> anyhow::Result<PathBuf>,
     RunTest: FnMut(&Path, &Path, &str, &[String], &CTestInvocation) -> anyhow::Result<()>,
 {
-    let (_arch, target) = test_qemu::parse_arceos_test_target(target)?;
     let arch = arch_from_target(target);
     let arceos_dir = workspace_root.join("os/arceos");
     let c_test_root = workspace_root.join("test-suit/arceos/c");
@@ -886,7 +899,8 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
-                    assert_eq!(args.target, "x86_64-unknown-none");
+                    assert_eq!(args.arch, None);
+                    assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
                     assert!(args.package.is_empty());
                     assert!(!args.only_rust);
                     assert!(!args.only_c);
@@ -918,7 +932,8 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
-                    assert_eq!(args.target, "x86_64-unknown-none");
+                    assert_eq!(args.arch, None);
+                    assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
                     assert!(args.package.is_empty());
                     assert!(args.only_rust);
                     assert!(!args.only_c);
@@ -950,7 +965,8 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
-                    assert_eq!(args.target, "x86_64-unknown-none");
+                    assert_eq!(args.arch, None);
+                    assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
                     assert!(args.package.is_empty());
                     assert!(!args.only_rust);
                     assert!(args.only_c);
@@ -1003,7 +1019,8 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
-                    assert_eq!(args.target, "riscv64gc-unknown-none-elf");
+                    assert_eq!(args.arch, None);
+                    assert_eq!(args.target.as_deref(), Some("riscv64gc-unknown-none-elf"));
                     assert_eq!(args.package, vec!["arceos-ipi".to_string()]);
                     assert!(!args.only_rust);
                     assert!(!args.only_c);
@@ -1139,7 +1156,8 @@ mod tests {
     #[test]
     fn planned_qemu_test_flows_default_runs_rust_then_c() {
         let flows = planned_qemu_test_flows(&ArgsTestQemu {
-            target: "x86_64-unknown-none".to_string(),
+            arch: None,
+            target: Some("x86_64-unknown-none".to_string()),
             package: Vec::new(),
             only_rust: false,
             only_c: false,
@@ -1151,7 +1169,8 @@ mod tests {
     #[test]
     fn planned_qemu_test_flows_only_rust_skips_c() {
         let flows = planned_qemu_test_flows(&ArgsTestQemu {
-            target: "x86_64-unknown-none".to_string(),
+            arch: None,
+            target: Some("x86_64-unknown-none".to_string()),
             package: Vec::new(),
             only_rust: true,
             only_c: false,
@@ -1163,7 +1182,8 @@ mod tests {
     #[test]
     fn planned_qemu_test_flows_only_c_skips_rust() {
         let flows = planned_qemu_test_flows(&ArgsTestQemu {
-            target: "x86_64-unknown-none".to_string(),
+            arch: None,
+            target: Some("x86_64-unknown-none".to_string()),
             package: Vec::new(),
             only_rust: false,
             only_c: true,
@@ -1175,7 +1195,8 @@ mod tests {
     #[test]
     fn planned_qemu_test_flows_package_filter_runs_only_rust() {
         let flows = planned_qemu_test_flows(&ArgsTestQemu {
-            target: "x86_64-unknown-none".to_string(),
+            arch: None,
+            target: Some("x86_64-unknown-none".to_string()),
             package: vec!["arceos-ipi".to_string()],
             only_rust: false,
             only_c: false,

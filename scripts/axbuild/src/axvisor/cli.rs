@@ -118,8 +118,21 @@ pub enum TestCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsTestQemu {
-    #[arg(long, alias = "arch", value_name = "ARCH")]
-    pub target: String,
+    #[arg(
+        long,
+        value_name = "ARCH",
+        required_unless_present = "target",
+        help = "Axvisor architecture to test"
+    )]
+    pub arch: Option<String>,
+    #[arg(
+        short = 't',
+        long,
+        value_name = "TARGET",
+        required_unless_present = "arch",
+        help = "Axvisor target triple to test"
+    )]
+    pub target: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -259,7 +272,34 @@ mod tests {
 
         match cli.command {
             Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => assert_eq!(args.target, "aarch64"),
+                TestCommand::Qemu(args) => {
+                    assert_eq!(args.arch.as_deref(), Some("aarch64"));
+                    assert_eq!(args.target, None);
+                }
+                _ => panic!("expected qemu test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_qemu_target() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli =
+            Cli::try_parse_from(["axvisor", "test", "qemu", "--target", "x86_64-unknown-none"])
+                .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Qemu(args) => {
+                    assert_eq!(args.arch, None);
+                    assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
+                }
                 _ => panic!("expected qemu test command"),
             },
             _ => panic!("expected test command"),

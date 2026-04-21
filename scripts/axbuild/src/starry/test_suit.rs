@@ -8,9 +8,8 @@ use std::{
 use anyhow::{Context, bail};
 
 use super::board;
-use crate::{
-    context::{arch_for_target_checked, starry_target_for_arch_checked},
-    test_qemu::validate_supported_target,
+use crate::context::{
+    arch_for_target_checked, resolve_starry_arch_and_target, validate_supported_target,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +67,8 @@ pub(crate) struct StarryBoardTestGroup {
 
 pub(crate) fn parse_test_target(
     workspace_root: &Path,
-    target: &str,
+    arch: &Option<String>,
+    target: &Option<String>,
 ) -> anyhow::Result<(String, String)> {
     let supported_targets = board::board_default_list(workspace_root)?
         .into_iter()
@@ -87,29 +87,15 @@ pub(crate) fn parse_test_target(
         .into_iter()
         .collect::<Vec<_>>();
 
-    if target.contains('-') {
-        validate_supported_target(
-            target,
-            "starry qemu tests",
-            "targets",
-            &supported_target_refs,
-        )?;
-        Ok((
-            arch_for_target_checked(target)?.to_string(),
-            target.to_string(),
-        ))
-    } else {
-        validate_supported_target(
-            target,
-            "starry qemu tests",
-            "arch values",
-            &supported_arches,
-        )?;
-        Ok((
-            target.to_string(),
-            starry_target_for_arch_checked(target)?.to_string(),
-        ))
-    }
+    let (arch, target) = resolve_starry_arch_and_target(arch.clone(), target.clone())?;
+    validate_supported_target(&arch, "starry qemu tests", "arch values", &supported_arches)?;
+    validate_supported_target(
+        &target,
+        "starry qemu tests",
+        "targets",
+        &supported_target_refs,
+    )?;
+    Ok((arch, target))
 }
 
 pub(crate) fn discover_qemu_cases(

@@ -147,8 +147,21 @@ pub enum ConfigCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsTestQemu {
-    #[arg(short = 't', long, alias = "arch", value_name = "ARCH")]
-    pub target: String,
+    #[arg(
+        long,
+        value_name = "ARCH",
+        required_unless_present = "target",
+        help = "StarryOS architecture to test"
+    )]
+    pub arch: Option<String>,
+    #[arg(
+        short = 't',
+        long,
+        value_name = "TARGET",
+        required_unless_present = "arch",
+        help = "StarryOS target triple to test"
+    )]
+    pub target: Option<String>,
     #[arg(short = 'c', long, value_name = "CASE")]
     pub test_case: Option<String>,
     #[arg(long, help = "Run stress StarryOS qemu test cases")]
@@ -363,7 +376,8 @@ impl Starry {
     }
 
     async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
-        let (arch, target) = test_suit::parse_test_target(self.app.workspace_root(), &args.target)?;
+        let (arch, target) =
+            test_suit::parse_test_target(self.app.workspace_root(), &args.arch, &args.target)?;
         let test_group = if args.stress {
             test_suit::StarryTestGroup::Stress
         } else {
@@ -960,16 +974,41 @@ mod tests {
         }
 
         let cli = Cli::try_parse_from([
-            "starry", "test", "qemu", "-t", "x86_64", "-c", "smoke", "--stress",
+            "starry", "test", "qemu", "--arch", "x86_64", "-c", "smoke", "--stress",
         ])
         .unwrap();
 
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
-                    assert_eq!(args.target, "x86_64");
+                    assert_eq!(args.arch.as_deref(), Some("x86_64"));
+                    assert_eq!(args.target, None);
                     assert_eq!(args.test_case, Some("smoke".to_string()));
                     assert!(args.stress);
+                }
+                _ => panic!("expected qemu test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_qemu_with_target() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli =
+            Cli::try_parse_from(["starry", "test", "qemu", "--target", "x86_64-unknown-none"])
+                .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Qemu(args) => {
+                    assert_eq!(args.arch, None);
+                    assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
                 }
                 _ => panic!("expected qemu test command"),
             },

@@ -144,14 +144,14 @@ impl Axvisor {
     }
 
     async fn test_qemu(&mut self, args: cli::ArgsTestQemu) -> anyhow::Result<()> {
-        let (arch, target) = test_qemu::parse_axvisor_test_target(&args.target)?;
+        let (arch, target) = test_qemu::parse_axvisor_test_target(&args.arch, &args.target)?;
 
         println!(
             "running axvisor qemu tests for arch: {} (target: {})",
             arch, target
         );
 
-        let vmconfigs = match arch {
+        let vmconfigs = match arch.as_str() {
             "aarch64" => vec![
                 qemu_test::prepare_linux_aarch64_guest_assets(&self.ctx)
                     .await?
@@ -163,13 +163,13 @@ impl Axvisor {
         };
 
         let request = self.prepare_request(
-            qemu_test::qemu_test_build_args(arch, vmconfigs),
+            qemu_test::qemu_test_build_args(&arch, vmconfigs),
             None,
             None,
             SnapshotPersistence::Discard,
         )?;
         self.ensure_qemu_rootfs_ready(&request, None).await?;
-        let shell = test_qemu::axvisor_test_shell_config(arch)?;
+        let shell = test_qemu::axvisor_test_shell_config(&arch)?;
         let cargo = build::load_cargo_config(&request)?;
         let mut qemu_config = self.load_qemu_config(&request, &cargo, None).await?;
         qemu_test::apply_shell_autoinit_config(&mut qemu_config, &shell);
