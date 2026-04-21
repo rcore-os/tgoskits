@@ -12,7 +12,7 @@ use crate::{
         image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
     },
     context::AxvisorCliArgs,
-    download::extract_unified_rootfs_for_arch,
+    download::ensure_rootfs_for_arch,
     test_qemu::AxvisorBoardTestGroup,
 };
 
@@ -62,7 +62,7 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
         &kernel_path,
     )?;
 
-    let rootfs_path = extract_unified_rootfs_for_arch(workspace_root, "aarch64").await?;
+    let rootfs_path = ensure_rootfs_for_arch(workspace_root, "aarch64").await?;
 
     Ok(PreparedLinuxGuestAssets {
         image_dir,

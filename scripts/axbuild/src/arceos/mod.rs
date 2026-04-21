@@ -489,12 +489,12 @@ impl ArceOS {
         )?;
         ensure_package_runtime_assets(&request.package)?;
         if let Some(rootfs) = args.rootfs {
-            let rootfs = crate::download::resolve_rootfs_arg(
+            let rootfs = crate::download::resolve_rootfs_path(
                 self.app.workspace_root(),
                 &request.arch,
                 rootfs,
             );
-            crate::download::ensure_unified_rootfs_if_managed(
+            crate::download::ensure_managed_rootfs(
                 self.app.workspace_root(),
                 &request.arch,
                 &rootfs,

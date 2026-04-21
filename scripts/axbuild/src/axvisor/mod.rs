@@ -68,7 +68,7 @@ impl Axvisor {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
         let explicit_rootfs = args.rootfs.map(|r| {
-            crate::download::resolve_rootfs_arg(self.app.workspace_root(), &request.arch, r)
+            crate::download::resolve_rootfs_path(self.app.workspace_root(), &request.arch, r)
         });
         self.ensure_qemu_rootfs_ready(&request, explicit_rootfs.as_deref())
             .await?;
@@ -341,7 +341,7 @@ impl Axvisor {
             return Ok(());
         };
 
-        crate::download::ensure_unified_rootfs_if_managed(
+        crate::download::ensure_managed_rootfs(
             self.app.workspace_root(),
             &request.arch,
             &rootfs_path,

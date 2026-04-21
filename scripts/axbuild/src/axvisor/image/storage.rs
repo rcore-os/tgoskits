@@ -16,7 +16,7 @@ use super::{
     registry::{ImageEntry, ImageRegistry},
     spec::ImageSpecRef,
 };
-use crate::download::{download_to_path_with_progress, http_client};
+use crate::download::{download_file, http_client};
 
 pub const REGISTRY_FILENAME: &str = "images.toml";
 const LAST_SYNC_FILENAME: &str = ".last_sync";
@@ -190,7 +190,7 @@ impl Storage {
         }
 
         let client = http_client()?;
-        let download_result = download_to_path_with_progress(&client, &image.url, &part_path).await;
+        let download_result = download_file(&client, &image.url, &part_path).await;
         if let Err(err) = download_result {
             let _ = fs::remove_file(&part_path);
             return Err(err);

@@ -13,9 +13,7 @@ use ostool::run::qemu::QemuConfig;
 use super::test_suit::StarryQemuCase;
 use crate::{
     context::{ResolvedStarryRequest, starry_target_for_arch_checked},
-    download::{
-        extract_unified_rootfs_for_arch, unified_rootfs_dir, unified_rootfs_image_in_tarball,
-    },
+    download::{default_rootfs_image, ensure_rootfs_for_arch, rootfs_dir},
     process::ProcessExt,
 };
 
@@ -121,9 +119,9 @@ pub(crate) fn resolve_target_dir(workspace_root: &Path, target: &str) -> anyhow:
 fn rootfs_image_path(workspace_root: &Path, arch: &str, target: &str) -> anyhow::Result<PathBuf> {
     let _ = starry_target_for_arch_checked(arch)?;
     let _ = resolve_target_dir(workspace_root, target)?;
-    let image_name = unified_rootfs_image_in_tarball(arch)
+    let image_name = default_rootfs_image(arch)
         .ok_or_else(|| anyhow::anyhow!("no unified rootfs image available for arch `{arch}`"))?;
-    Ok(unified_rootfs_dir(workspace_root).join(image_name))
+    Ok(rootfs_dir(workspace_root).join(image_name))
 }
 
 pub(crate) async fn ensure_rootfs_in_target_dir(
@@ -136,7 +134,7 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
         bail!("Starry arch `{arch}` maps to target `{expected_target}`, but got `{target}`");
     }
 
-    extract_unified_rootfs_for_arch(workspace_root, arch).await
+    ensure_rootfs_for_arch(workspace_root, arch).await
 }
 
 pub(crate) async fn prepare_case_assets(

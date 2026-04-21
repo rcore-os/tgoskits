@@ -33,7 +33,7 @@ pub(crate) fn managed_rootfs_path(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<Option<PathBuf>> {
     if let Some(explicit_rootfs) = explicit_rootfs {
-        if explicit_rootfs.starts_with(crate::download::unified_rootfs_dir(workspace_root)) {
+        if explicit_rootfs.starts_with(crate::download::rootfs_dir(workspace_root)) {
             return Ok(Some(explicit_rootfs.to_path_buf()));
         }
         return Ok(None);
@@ -47,8 +47,8 @@ pub(crate) fn managed_rootfs_path(
 }
 
 fn default_rootfs_path(workspace_root: &Path, arch: &str) -> PathBuf {
-    if let Some(img) = crate::download::unified_rootfs_image_in_tarball(arch) {
-        return crate::download::unified_rootfs_dir(workspace_root).join(img);
+    if let Some(img) = crate::download::default_rootfs_image(arch) {
+        return crate::download::rootfs_dir(workspace_root).join(img);
     }
     workspace_root.join("os/axvisor/tmp/rootfs.img")
 }

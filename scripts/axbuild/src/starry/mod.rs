@@ -238,14 +238,14 @@ impl Starry {
         }
         if let Some(rootfs) = args.rootfs {
             // Explicit rootfs provided: skip auto-download, apply directly.
-            let rootfs = crate::download::resolve_rootfs_arg(
+            let rootfs = crate::download::resolve_rootfs_path(
                 self.app.workspace_root(),
                 &request.arch,
                 rootfs,
             );
             // If the path resolves into the unified rootfs dir, ensure the
             // tarball has been extracted (keyword paths need this).
-            crate::download::ensure_unified_rootfs_if_managed(
+            crate::download::ensure_managed_rootfs(
                 self.app.workspace_root(),
                 &request.arch,
                 &rootfs,
