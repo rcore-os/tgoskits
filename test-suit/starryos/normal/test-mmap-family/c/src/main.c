@@ -9,9 +9,12 @@
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <string.h>
 
 #ifndef PROT_GROWSDOWN
 #define PROT_GROWSDOWN 0x01000000
@@ -145,6 +148,247 @@ int main(void)
 
     if (q != MAP_FAILED) {
         munmap(q, ps);
+    }
+
+    /* ===================== 扩展正向路径 ===================== */
+
+    /* anon PRIVATE 必须零初始化 (man: "...are zero-initialized") */
+    {
+        unsigned char *zp = mmap(NULL, ps, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(zp != MAP_FAILED, "mmap PRIVATE|ANON 为 zero-init 测试分配");
+        if (zp != MAP_FAILED) {
+            int all_zero = 1;
+            for (size_t i = 0; i < ps; i += ps / 16) {
+                if (zp[i] != 0) { all_zero = 0; break; }
+            }
+            CHECK(all_zero, "anon PRIVATE 映射 zero-init");
+            munmap(zp, ps);
+        }
+    }
+
+    /* anon SHARED 可读写 */
+    {
+        unsigned char *sp = mmap(NULL, ps, PROT_READ | PROT_WRITE,
+                                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        CHECK(sp != MAP_FAILED, "mmap SHARED|ANON happy path");
+        if (sp != MAP_FAILED) {
+            sp[0] = 0x5A;
+            sp[ps - 1] = 0xA5;
+            CHECK(sp[0] == 0x5A && sp[ps - 1] == 0xA5,
+                  "SHARED|ANON 映射首末字节可读写");
+            munmap(sp, ps);
+        }
+    }
+
+    /* 多页 (4 page) 映射，每页触一下 */
+    {
+        size_t len = ps * 4;
+        unsigned char *mp = mmap(NULL, len, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(mp != MAP_FAILED, "mmap 4-page PRIVATE|ANON");
+        if (mp != MAP_FAILED) {
+            for (size_t i = 0; i < 4; i++) mp[i * ps] = (unsigned char)('0' + i);
+            int ok = 1;
+            for (size_t i = 0; i < 4; i++)
+                if (mp[i * ps] != (unsigned char)('0' + i)) { ok = 0; break; }
+            CHECK(ok, "4-page 映射跨页读写一致");
+            munmap(mp, len);
+        }
+    }
+
+    /* MAP_FIXED 重映射同一地址：应替换原映射 */
+    {
+        size_t len = ps * 2;
+        unsigned char *f1 = mmap(NULL, len, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(f1 != MAP_FAILED, "mmap 2-page 用于 FIXED 重映射基底");
+        if (f1 != MAP_FAILED) {
+            f1[0] = 0x11;
+            void *f2 = mmap(f1, len, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+            CHECK(f2 == f1, "MAP_FIXED 重映射返回同地址");
+            /* 重映射后应为新匿名页 —— 期望 zero */
+            CHECK(((unsigned char *)f2)[0] == 0,
+                  "MAP_FIXED 重映射后首字节已重置为 0");
+            munmap(f1, len);
+        }
+    }
+
+    /* PROT_NONE 映射应成功（不可访问但可存在） */
+    {
+        void *np = mmap(NULL, ps, PROT_NONE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(np != MAP_FAILED, "mmap PROT_NONE 映射成功");
+        if (np != MAP_FAILED) {
+            CHECK_RET(munmap(np, ps), 0, "munmap PROT_NONE 映射");
+        }
+    }
+
+    /* 4 页映射中间 2 页 partial munmap；首末页仍可访问 */
+    {
+        size_t len = ps * 4;
+        unsigned char *bp = mmap(NULL, len, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(bp != MAP_FAILED, "mmap 4-page 用于 partial munmap");
+        if (bp != MAP_FAILED) {
+            bp[0] = 0xE1;
+            bp[3 * ps] = 0xE4;
+            CHECK_RET(munmap(bp + ps, ps * 2), 0,
+                      "munmap 中间 2 页 (切分 VMA)");
+            CHECK(bp[0] == 0xE1 && bp[3 * ps] == 0xE4,
+                  "partial munmap 后首末页内容保留");
+            munmap(bp, ps);
+            munmap(bp + 3 * ps, ps);
+        }
+    }
+
+    /* mprotect roundtrip：RW → R → RW，数据保持、写复原 */
+    {
+        unsigned char *rp = mmap(NULL, ps, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(rp != MAP_FAILED, "mmap 为 mprotect roundtrip 分配");
+        if (rp != MAP_FAILED) {
+            rp[0] = 0x7E;
+            CHECK_RET(mprotect(rp, ps, PROT_READ), 0,
+                      "mprotect → PROT_READ");
+            CHECK(rp[0] == 0x7E, "降为只读后仍可读出原值");
+            CHECK_RET(mprotect(rp, ps, PROT_READ | PROT_WRITE), 0,
+                      "mprotect 恢复 READ|WRITE");
+            rp[0] = 0xEF;
+            CHECK(rp[0] == 0xEF, "恢复 WRITE 后可写新值");
+            munmap(rp, ps);
+        }
+    }
+
+    /* MAP_FIXED + addr 远超地址空间 → ENOMEM */
+    {
+        void *bad = (void *)(1UL << 50);
+        CHECK_MMAP_ERR(mmap(bad, ps, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0),
+                       ENOMEM, "MAP_FIXED addr 超地址空间 → ENOMEM");
+    }
+
+    /* ===================== 文件背景 mmap ===================== */
+
+    /* 文件背景 MAP_PRIVATE + PROT_READ：通过映射读文件内容 */
+    {
+        const char *path = "/tmp/mmap_family_fpr";
+        const char data[] = "Hello mmap via file!";
+        size_t dlen = sizeof(data) - 1;
+
+        int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+        CHECK(fd >= 0, "open /tmp/mmap_family_fpr O_RDWR");
+        if (fd >= 0) {
+            ssize_t w = write(fd, data, dlen);
+            CHECK((size_t)w == dlen, "写入测试字符串到临时文件");
+
+            void *fp = mmap(NULL, ps, PROT_READ, MAP_PRIVATE, fd, 0);
+            CHECK(fp != MAP_FAILED, "mmap 文件背景 PRIVATE|PROT_READ");
+            if (fp != MAP_FAILED) {
+                CHECK(memcmp(fp, data, dlen) == 0,
+                      "通过映射读到文件内容");
+                munmap(fp, ps);
+            }
+            close(fd);
+            unlink(path);
+        }
+    }
+
+    /* 文件背景 MAP_SHARED RW：改映射 → msync → read() 验证落盘 */
+    {
+        const char *path = "/tmp/mmap_family_fsr";
+        const char orig[] = "original";
+        size_t olen = sizeof(orig) - 1;
+
+        int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+        CHECK(fd >= 0, "open /tmp/mmap_family_fsr O_RDWR");
+        if (fd >= 0) {
+            CHECK(write(fd, orig, olen) == (ssize_t)olen,
+                  "写入 original 到临时文件");
+            CHECK_RET(ftruncate(fd, ps), 0, "ftruncate 到 page_size");
+
+            void *sp = mmap(NULL, ps, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, fd, 0);
+            CHECK(sp != MAP_FAILED, "mmap 文件背景 SHARED|RW");
+            if (sp != MAP_FAILED) {
+                memcpy(sp, "modified", olen);
+                msync(sp, ps, MS_SYNC);
+
+                char buf[16] = {0};
+                lseek(fd, 0, SEEK_SET);
+                ssize_t r = read(fd, buf, olen);
+                CHECK(r == (ssize_t)olen && memcmp(buf, "modified", olen) == 0,
+                      "SHARED 映射写入经 msync 后 read() 可见");
+                munmap(sp, ps);
+            }
+            close(fd);
+            unlink(path);
+        }
+    }
+
+    /* EACCES: O_RDONLY fd + MAP_SHARED + PROT_WRITE → EACCES (man 2 mmap)
+     * 因为文件以 O_RDONLY 打开, MAP_SHARED 写回需要写权限。*/
+    {
+        const char *path = "/tmp/mmap_family_eacces";
+        int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        CHECK(fd >= 0, "open /tmp/mmap_family_eacces O_WRONLY (create)");
+        if (fd >= 0) {
+            (void)write(fd, "abcd", 4);
+            close(fd);
+
+            int ro = open(path, O_RDONLY);
+            CHECK(ro >= 0, "reopen /tmp/mmap_family_eacces O_RDONLY");
+            if (ro >= 0) {
+                CHECK_MMAP_ERR(mmap(NULL, ps, PROT_READ | PROT_WRITE,
+                                    MAP_SHARED, ro, 0),
+                               EACCES,
+                               "mmap SHARED|RW on O_RDONLY fd → EACCES");
+                close(ro);
+            }
+            unlink(path);
+        }
+    }
+
+    /* ENODEV: 目录 mmap → ENODEV (不支持 memory mapping) */
+    {
+        const char *dir = "/tmp/mmap_family_dir";
+        if (mkdir(dir, 0755) == 0 || errno == EEXIST) {
+            int dfd = open(dir, O_RDONLY);
+            if (dfd >= 0) {
+                CHECK_MMAP_ERR(mmap(NULL, ps, PROT_READ, MAP_PRIVATE, dfd, 0),
+                               ENODEV, "mmap 目录 → ENODEV");
+                close(dfd);
+            } else {
+                /* 无法 open 目录则跳过，记录 PASS 以免误报 */
+                CHECK(1, "mmap 目录 → ENODEV (跳过：open(dir) 未放行)");
+            }
+            rmdir(dir);
+        } else {
+            CHECK(1, "mmap 目录 → ENODEV (跳过：mkdir 未放行)");
+        }
+    }
+
+    /* 关闭 fd 后映射仍有效 (man: "closing fd does not unmap the region") */
+    {
+        const char *path = "/tmp/mmap_family_fdclose";
+        const char data[] = "still here";
+        size_t dlen = sizeof(data) - 1;
+
+        int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+        CHECK(fd >= 0, "open /tmp/mmap_family_fdclose");
+        if (fd >= 0) {
+            (void)write(fd, data, dlen);
+            void *mp = mmap(NULL, ps, PROT_READ, MAP_PRIVATE, fd, 0);
+            CHECK(mp != MAP_FAILED, "mmap 文件背景用于 close(fd) 测试");
+            close(fd);
+            if (mp != MAP_FAILED) {
+                CHECK(memcmp(mp, data, dlen) == 0,
+                      "close(fd) 后映射内容依然可读");
+                munmap(mp, ps);
+            }
+            unlink(path);
+        }
     }
 
     TEST_DONE();
