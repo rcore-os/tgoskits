@@ -5,10 +5,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 
-#define MAX_TUR_RETRIES 5
+#define USB_MSC_CLASS 0x08
+#define USB_MSC_SUBCLASS_SCSI 0x06
+#define USB_MSC_PROTOCOL_BULK_ONLY 0x50
+#define MAX_ENUM_RETRIES 5
 
 static int failf(const char *format, ...) {
     va_list args;
@@ -20,167 +22,114 @@ static int failf(const char *format, ...) {
     return 1;
 }
 
-static void trim_right(char *text) {
-    size_t len = strlen(text);
-    while (len > 0 && text[len - 1] == ' ') {
-        text[len - 1] = '\0';
-        len--;
-    }
-}
-
-static void fill_pattern(uint8_t *buffer, size_t length) {
-    for (size_t index = 0; index < length; index++) {
-        buffer[index] = (uint8_t)((index * 37u + 11u) & 0xffu);
-    }
-}
-
-static int wait_until_ready(usb_msc_device_t *device) {
-    for (int attempt = 1; attempt <= MAX_TUR_RETRIES; attempt++) {
-        int result = usb_msc_test_unit_ready(device);
-        if (result == 0) {
-            return 0;
-        }
-
-        uint8_t sense_key = 0;
-        uint8_t asc = 0;
-        uint8_t ascq = 0;
-        if (usb_msc_request_sense(device, &sense_key, &asc, &ascq) == 0) {
-            printf(
-                "test unit ready retry %d/%d: sense=%02x asc=%02x ascq=%02x\n",
-                attempt,
-                MAX_TUR_RETRIES,
-                sense_key,
-                asc,
-                ascq
-            );
-        } else {
-            printf("test unit ready retry %d/%d: no sense data\n", attempt, MAX_TUR_RETRIES);
-        }
-
-        sleep(1);
-    }
-
-    return -1;
-}
-
 int main(void) {
-    puts("todo usb test");
-    return 0;
-
-    usb_msc_device_t device;
-    uint32_t last_lba = 0;
-    uint32_t block_size = 0;
-    uint32_t total_blocks = 0;
-    uint32_t test_lba = 0;
-    uint8_t *write_buffer = NULL;
-    uint8_t *read_buffer = NULL;
+    libusb_context *ctx = NULL;
+    libusb_device **device_list = NULL;
+    ssize_t count = 0;
     int exit_code = 1;
+    bool found = false;
 
-    int result = usb_msc_find_and_open(&device);
+    int result = libusb_init(&ctx);
     if (result != 0) {
-        return failf(
-            "no USB mass-storage bulk-only device found (%d, %s)",
-            result,
-            libusb_error_name(result)
-        );
+        return failf("libusb init failed (%d, %s)", result, libusb_error_name(result));
     }
 
-    char vendor[9];
-    char product[17];
-    result = usb_msc_inquiry(&device, vendor, product);
-    if (result != 0) {
-        usb_msc_close(&device);
-        return failf("INQUIRY command failed (%d, %s)", result, libusb_error_name(result));
+    for (int attempt = 1; attempt <= MAX_ENUM_RETRIES && !found; attempt++) {
+        count = libusb_get_device_list(ctx, &device_list);
+        if (count < 0) {
+            libusb_exit(ctx);
+            return failf(
+                "libusb_get_device_list failed (%zd, %s)",
+                count,
+                libusb_error_name((int)count)
+            );
+        }
+
+        printf("usb device count (attempt %d/%d): %zd\n", attempt, MAX_ENUM_RETRIES, count);
+
+        for (ssize_t dev_index = 0; dev_index < count && !found; dev_index++) {
+            libusb_device *device = device_list[dev_index];
+            struct libusb_device_descriptor descriptor;
+
+            result = libusb_get_device_descriptor(device, &descriptor);
+            if (result != 0) {
+                continue;
+            }
+
+            printf(
+                "usb device: bus=%u addr=%u vid=%04x pid=%04x configs=%u\n",
+                libusb_get_bus_number(device),
+                libusb_get_device_address(device),
+                descriptor.idVendor,
+                descriptor.idProduct,
+                descriptor.bNumConfigurations
+            );
+
+            for (uint8_t config_index = 0;
+                 config_index < descriptor.bNumConfigurations && !found;
+                 config_index++) {
+                struct libusb_config_descriptor *config = NULL;
+                result = libusb_get_config_descriptor(device, config_index, &config);
+                if (result != 0 || config == NULL) {
+                    libusb_free_device_list(device_list, 1);
+                    libusb_exit(ctx);
+                    return failf(
+                        "libusb_get_config_descriptor failed (%d, %s)",
+                        result,
+                        libusb_error_name(result)
+                    );
+                }
+
+                printf(
+                    "usb config: value=%u interfaces=%u\n",
+                    config->bConfigurationValue,
+                    config->bNumInterfaces
+                );
+
+                for (int interface_index = 0;
+                     interface_index < config->bNumInterfaces && !found;
+                     interface_index++) {
+                    const struct libusb_interface *interface = &config->interface[interface_index];
+                    for (int alt_index = 0;
+                         alt_index < interface->num_altsetting && !found;
+                         alt_index++) {
+                        const struct libusb_interface_descriptor *if_desc =
+                            &interface->altsetting[alt_index];
+                        printf(
+                            "usb interface: num=%u alt=%u class=%02x subclass=%02x protocol=%02x eps=%u\n",
+                            if_desc->bInterfaceNumber,
+                            if_desc->bAlternateSetting,
+                            if_desc->bInterfaceClass,
+                            if_desc->bInterfaceSubClass,
+                            if_desc->bInterfaceProtocol,
+                            if_desc->bNumEndpoints
+                        );
+                        if (if_desc->bInterfaceClass == USB_MSC_CLASS &&
+                            if_desc->bInterfaceSubClass == USB_MSC_SUBCLASS_SCSI &&
+                            if_desc->bInterfaceProtocol == USB_MSC_PROTOCOL_BULK_ONLY) {
+                            found = true;
+                        }
+                    }
+                }
+
+                libusb_free_config_descriptor(config);
+            }
+        }
+
+        libusb_free_device_list(device_list, 1);
+        device_list = NULL;
+        if (!found) {
+            sleep(1);
+        }
     }
 
-    trim_right(vendor);
-    trim_right(product);
-    printf("usb inquiry: vendor='%s' product='%s'\n", vendor, product);
-
-    if (wait_until_ready(&device) != 0) {
-        usb_msc_close(&device);
-        return failf("device never became ready");
+    if (!found) {
+        libusb_exit(ctx);
+        return failf("no USB mass-storage bulk-only interface found during enumeration");
     }
 
-    result = usb_msc_read_capacity10(&device, &last_lba, &block_size);
-    if (result != 0) {
-        usb_msc_close(&device);
-        return failf(
-            "READ CAPACITY(10) failed (%d, %s)",
-            result,
-            libusb_error_name(result)
-        );
-    }
-
-    total_blocks = last_lba + 1;
-    printf(
-        "usb capacity: last_lba=%u blocks=%u block_size=%u\n",
-        last_lba,
-        total_blocks,
-        block_size
-    );
-    if (block_size == 0 || total_blocks < 2) {
-        usb_msc_close(&device);
-        return failf("invalid capacity response");
-    }
-
-    test_lba = total_blocks > 64 ? 32u : 1u;
-    if (test_lba >= total_blocks) {
-        test_lba = total_blocks - 1;
-    }
-
-    write_buffer = malloc(block_size);
-    read_buffer = malloc(block_size);
-    if (write_buffer == NULL || read_buffer == NULL) {
-        free(write_buffer);
-        free(read_buffer);
-        usb_msc_close(&device);
-        return failf("failed to allocate transfer buffers");
-    }
-
-    fill_pattern(write_buffer, block_size);
-    memset(read_buffer, 0, block_size);
-
-    result = usb_msc_write10(&device, test_lba, 1, write_buffer, block_size);
-    if (result != 0) {
-        free(write_buffer);
-        free(read_buffer);
-        usb_msc_close(&device);
-        return failf(
-            "WRITE(10) failed at lba=%u (%d, %s)",
-            test_lba,
-            result,
-            libusb_error_name(result)
-        );
-    }
-    printf("usb write test completed at lba=%u\n", test_lba);
-
-    result = usb_msc_read10(&device, test_lba, 1, read_buffer, block_size);
-    if (result != 0) {
-        free(write_buffer);
-        free(read_buffer);
-        usb_msc_close(&device);
-        return failf(
-            "READ(10) failed at lba=%u (%d, %s)",
-            test_lba,
-            result,
-            libusb_error_name(result)
-        );
-    }
-    printf("usb readback completed at lba=%u\n", test_lba);
-
-    if (memcmp(write_buffer, read_buffer, block_size) != 0) {
-        free(write_buffer);
-        free(read_buffer);
-        usb_msc_close(&device);
-        return failf("readback data mismatch");
-    }
-
-    puts("USB transfer tests passed!");
+    libusb_exit(ctx);
+    puts("USB enumeration tests passed!");
     exit_code = 0;
-
-    free(write_buffer);
-    free(read_buffer);
-    usb_msc_close(&device);
     return exit_code;
 }

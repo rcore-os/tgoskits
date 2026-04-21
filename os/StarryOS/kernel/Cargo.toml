@@ -17,7 +17,7 @@ license.workspace = true
 dev-log = []
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
-rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
+rknpu = ["axplat-dyn/rknpu"]
 vsock = ["ax-feat/vsock"]
 
 [dependencies]
@@ -53,6 +53,8 @@ axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
+crab-usb = { path = "/home/zhourui/opensource/proj_usb/CrabUSB/usb-host" }
+rdrive = "0.20"
 
 axbacktrace = { workspace = true }
 ax-errno = { workspace = true }
