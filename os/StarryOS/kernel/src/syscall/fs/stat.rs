@@ -5,7 +5,8 @@ use ax_fs::FS_CONTEXT;
 use ax_task::current;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
-    __kernel_fsid_t, AT_EMPTY_PATH, R_OK, W_OK, X_OK, stat, statfs, statx,
+    __kernel_fsid_t, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE, AT_SYMLINK_NOFOLLOW, R_OK,
+    STATX__RESERVED, W_OK, X_OK, stat, statfs, statx,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -48,6 +49,13 @@ pub fn sys_fstatat(
     statbuf: *mut stat,
     flags: u32,
 ) -> AxResult<isize> {
+    // man 2 fstatat: flags may contain AT_EMPTY_PATH, AT_NO_AUTOMOUNT,
+    // AT_SYMLINK_NOFOLLOW. Any other bit is EINVAL.
+    const FSTATAT_VALID: u32 = AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW;
+    if flags & !FSTATAT_VALID != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
 
     debug!("sys_fstatat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
@@ -62,9 +70,23 @@ pub fn sys_statx(
     dirfd: c_int,
     path: *const c_char,
     flags: u32,
-    _mask: u32,
+    mask: u32,
     statxbuf: *mut statx,
 ) -> AxResult<isize> {
+    // man 2 statx: reject reserved mask bits and the invalid sync-type
+    // combination FORCE_SYNC|DONT_SYNC. flags must fit within AT_* and the
+    // sync-type field.
+    if mask & STATX__RESERVED != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE {
+        return Err(AxError::InvalidInput);
+    }
+    const STATX_VALID_FLAGS: u32 =
+        AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW | AT_STATX_SYNC_TYPE;
+    if flags & !STATX_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
     // `statx()` uses pathname, dirfd, and flags to identify the target
     // file in one of the following ways:
 
