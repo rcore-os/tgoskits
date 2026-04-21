@@ -106,6 +106,10 @@ fn to_cargo_config(
     request: &ResolvedAxvisorRequest,
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
+    let plat_dyn = config
+        .build_info
+        .effective_plat_dyn(&config.target, request.plat_dyn);
+    normalize_axvisor_platform_features(&mut config.build_info.features, plat_dyn);
     let mut cargo = config.build_info.into_prepared_base_cargo_config(
         &request.package,
         &config.target,
@@ -139,7 +143,8 @@ fn patch_axvisor_cargo_config(
         );
     }
 
-    normalize_axvisor_platform_features(&mut cargo.features);
+    let cargo_uses_plat_dyn = cargo.features.iter().any(|f| f == "ax-std/plat-dyn");
+    normalize_axvisor_platform_features(&mut cargo.features, cargo_uses_plat_dyn);
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
@@ -158,9 +163,10 @@ fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
     args.push(AXVISOR_PACKAGE.to_string());
 }
 
-fn normalize_axvisor_platform_features(features: &mut Vec<String>) {
+fn normalize_axvisor_platform_features(features: &mut Vec<String>, plat_dyn: bool) {
     let has_axstd_defplat = features.iter().any(|feature| feature == "ax-std/defplat");
     let has_axstd_myplat = features.iter().any(|feature| feature == "ax-std/myplat");
+    let has_axstd_plat_dyn = features.iter().any(|feature| feature == "ax-std/plat-dyn");
 
     if has_axstd_defplat && !has_axstd_myplat {
         for feature in features.iter_mut() {
@@ -170,6 +176,13 @@ fn normalize_axvisor_platform_features(features: &mut Vec<String>) {
         }
     } else {
         features.retain(|feature| feature != "ax-std/defplat");
+    }
+
+    if !plat_dyn
+        && !has_axstd_plat_dyn
+        && !features.iter().any(|feature| feature == "ax-std/myplat")
+    {
+        features.push("ax-std/myplat".to_string());
     }
 }
 
