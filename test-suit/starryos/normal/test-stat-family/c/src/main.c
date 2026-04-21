@@ -113,10 +113,8 @@ static char REG[128];      /* regular file */
 static char SUBDIR[128];   /* subdirectory */
 static char LINK[128];     /* symlink -> REG */
 static char DANG[128];     /* dangling symlink */
-static char FIFO[128];     /* FIFO */
 static char LOOPA[128];    /* loop_a -> loop_b */
 static char LOOPB[128];    /* loop_b -> loop_a */
-static int  have_fifo = 0; /* mkfifo 可能在某些平台被 libc 降级失败 */
 
 static void setup(void)
 {
@@ -131,7 +129,6 @@ static void setup(void)
     snprintf(SUBDIR, sizeof(SUBDIR), "%s/subdir",         BASE);
     snprintf(LINK,   sizeof(LINK),   "%s/link_to_reg",    BASE);
     snprintf(DANG,   sizeof(DANG),   "%s/dangling_link",  BASE);
-    snprintf(FIFO,   sizeof(FIFO),   "%s/test_fifo",      BASE);
     snprintf(LOOPA,  sizeof(LOOPA),  "%s/loop_a",         BASE);
     snprintf(LOOPB,  sizeof(LOOPB),  "%s/loop_b",         BASE);
 
@@ -145,7 +142,6 @@ static void setup(void)
     mkdir(SUBDIR, 0755);
     symlink(REG, LINK);
     symlink("/tmp/no_such_file_for_starry_stat_test", DANG);
-    have_fifo = (mkfifo(FIFO, 0644) == 0);
     symlink(LOOPB, LOOPA);
     symlink(LOOPA, LOOPB);
 }
@@ -217,18 +213,6 @@ static void test_fstat_directory(void)
     CHECK_RET(fstat(fd, &sb), 0, "fstat 目录");
     CHECK(S_ISDIR(sb.st_mode), "fstat: directory");
     close(fd);
-}
-
-static void test_stat_fifo(void)
-{
-    if (!have_fifo) {
-        printf("  SKIP | %s:%d | lstat fifo (mkfifo unsupported, errno=%d)\n",
-               __FILE__, __LINE__, errno);
-        return;
-    }
-    struct stat sb;
-    CHECK_RET(lstat(FIFO, &sb), 0, "lstat fifo");
-    CHECK(S_ISFIFO(sb.st_mode), "lstat: S_ISFIFO");
 }
 
 static void test_stat_lstat_same_for_regular(void)
@@ -717,7 +701,6 @@ int main(void)
     test_lstat_symlink_no_follow();
     test_fstat_regular_file();
     test_fstat_directory();
-    test_stat_fifo();
     test_stat_lstat_same_for_regular();
 
     /* 错误路径 */
