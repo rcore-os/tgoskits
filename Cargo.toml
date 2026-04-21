@@ -120,6 +120,7 @@ members = [
 
     # platform
     "platform/axplat-dyn",
+    "platform/riscv64-qemu-virt",
     "platform/x86-qemu-q35",
 
     # drivers
