@@ -77,6 +77,8 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
             .inner
             .recv(peer_addr, src_port, buf)
             .map_err(as_dev_err);
+        // Best-effort credit update after each receive attempt to keep peer-side
+        // flow control progressing.
         let _ = self.inner.update_credit(peer_addr, src_port);
         res
     }
@@ -120,6 +122,8 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
 }
 
 fn convert_vsock_event(event: VsockEvent) -> DevResult<VsockDriverEvent> {
+    // Keep unknown events as non-fatal values so upper layers can remain
+    // forward-compatible with new virtio-vsock event kinds.
     let cid = VsockConnId {
         peer_addr: ax_driver_vsock::VsockAddr {
             cid: event.source.cid as _,
@@ -137,3 +141,4 @@ fn convert_vsock_event(event: VsockEvent) -> DevResult<VsockDriverEvent> {
         _ => Ok(VsockDriverEvent::Unknown),
     }
 }
+
