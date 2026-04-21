@@ -248,29 +248,35 @@ impl UsbFsManager {
                 };
                 drop(guard);
 
-            let mut state = self.state.lock();
-            let Some(host_index) = state.hosts.iter().position(|host| host.device_id == device_id) else {
-                continue;
-            };
-            loop {
-                match state.hosts[host_index].event_handler.handle_event() {
-                    Event::PortChange { .. } | Event::Stopped => {}
-                    Event::Nothing => break,
+                let mut state = self.state.lock();
+                let Some(host_index) = state
+                    .hosts
+                    .iter()
+                    .position(|host| host.device_id == device_id)
+                else {
+                    continue;
+                };
+                loop {
+                    match state.hosts[host_index].event_handler.handle_event() {
+                        Event::PortChange { .. } | Event::Stopped => {}
+                        Event::Nothing => break,
+                    }
                 }
-            }
-            let mut new_snapshots = Vec::new();
-            for info in devices {
-                if let Some(snapshot) = snapshot_device_info(bus_num, &mut state.hosts[host_index], &info) {
-                    new_snapshots.push(snapshot);
+                let mut new_snapshots = Vec::new();
+                for info in devices {
+                    if let Some(snapshot) =
+                        snapshot_device_info(bus_num, &mut state.hosts[host_index], &info)
+                    {
+                        new_snapshots.push(snapshot);
+                    }
                 }
-            }
-            for snapshot in new_snapshots {
-                state
-                    .devices
-                    .insert((snapshot.bus_num, snapshot.device_num), snapshot);
+                for snapshot in new_snapshots {
+                    state
+                        .devices
+                        .insert((snapshot.bus_num, snapshot.device_num), snapshot);
+                }
             }
         }
-    }
     }
 
     fn bus_numbers(&self) -> Vec<u8> {
