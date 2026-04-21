@@ -5,7 +5,7 @@ args = [
   "la464",
   "-nographic",
   "-m",
-  "128M",
+  "512M",
   "-device",
   "virtio-blk-pci,drive=disk0",
   "-drive",
