@@ -115,7 +115,7 @@ arm-gic-driver = {version = "0.17", features = ["rdif"]}
 ax-plat-loongarch64-qemu-virt = { version = "0.5", default-features = false, features = ["irq", "smp"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-riscv64-qemu-virt-hv = { version = "0.5", path = "platform/riscv64-qemu-virt" }
+riscv64-qemu-virt-hv = "0.5"
 riscv_vcpu = "0.5"
 riscv_vplic = "0.4"
 

@@ -543,12 +543,18 @@ fn resolve_platform_package(
             feature.as_str(),
             "myplat" | "ax-std/myplat" | "ax-feat/myplat"
         )
-    }) && let Some(dep) = package_info
-        .dependencies
-        .iter()
-        .find(|dep| dep.name.starts_with(&format!("axplat-{arch}")))
-    {
-        return Ok(dep.name.clone());
+    }) {
+        if let Some(dep) = package_info
+            .dependencies
+            .iter()
+            .find(|dep| dep.name.starts_with(&format!("axplat-{arch}")))
+        {
+            return Ok(dep.name.clone());
+        }
+
+        if package == crate::axvisor::build::AXVISOR_PACKAGE && arch == "riscv64" {
+            return Ok("riscv64-qemu-virt-hv".to_string());
+        }
     }
 
     Ok(default_platform_package(arch).to_string())
@@ -1299,5 +1305,17 @@ AX_GW = "10.0.2.2"
         .unwrap();
 
         assert_eq!(package, "ax-plat-riscv64-qemu-virt");
+    }
+
+    #[test]
+    fn resolve_platform_package_prefers_workspace_myplat_dependency_for_axvisor() {
+        let package = resolve_platform_package(
+            "axvisor",
+            "riscv64gc-unknown-none-elf",
+            &["ax-std/myplat".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(package, "riscv64-qemu-virt-hv");
     }
 }

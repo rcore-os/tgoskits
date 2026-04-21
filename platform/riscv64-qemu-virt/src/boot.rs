@@ -1,5 +1,6 @@
-use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
 use ax_plat::mem::{Aligned4K, pa};
+
+use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
 
 #[unsafe(link_section = ".bss.stack")]
 static mut BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];
@@ -76,7 +77,7 @@ unsafe fn relocate_dtb(dtb_paddr: usize) -> usize {
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot")]
-unsafe extern fn _start() -> ! {
+unsafe extern "C" fn _start() -> ! {
     // PC = 0x8020_0000
     // a0 = hartid
     // a1 = dtb
@@ -116,7 +117,7 @@ unsafe extern fn _start() -> ! {
 /// The earliest entry point for secondary CPUs.
 #[cfg(feature = "smp")]
 #[unsafe(naked)]
-pub(crate) unsafe extern fn _start_secondary() -> ! {
+pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
     // a0 = hartid
     // a1 = SP
     core::arch::naked_asm!("
