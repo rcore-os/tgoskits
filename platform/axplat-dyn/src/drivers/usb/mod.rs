@@ -5,7 +5,7 @@ use core::time::Duration;
 
 use crab_usb::{USBHost, err::USBError};
 use fdt_edit::{Fdt, NodeType};
-use rdrive::{Device, DriverGeneric};
+use rdrive::DriverGeneric;
 
 mod xhci_mmio;
 mod xhci_pci;

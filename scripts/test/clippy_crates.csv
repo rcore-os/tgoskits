@@ -66,6 +66,7 @@ axplat-riscv64-qemu-virt-hv
 riscv-h
 riscv_vcpu
 scope-local
+starry-kernel
 starry-process
 starry-vm
 tg-xtask

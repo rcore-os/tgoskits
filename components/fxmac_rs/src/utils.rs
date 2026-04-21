@@ -254,7 +254,7 @@ pub(crate) fn dma_free_coherent(vaddr: usize, pages: usize) {
 /// 请求分配irq
 #[linkage = "weak"]
 #[unsafe(export_name = "dma_request_irq_fxmac")]
-pub(crate) fn dma_request_irq(irq: usize, handler: fn()) {
+pub(crate) fn dma_request_irq(irq: usize, handler: fn(usize)) {
     warn!("dma_request_irq_fxmac unimplemented");
     // unimplemented!()
 }

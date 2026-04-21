@@ -5,8 +5,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The type of an event handler.
 ///
-/// Currently no arguments and return values are supported.
-pub type Handler = fn();
+/// The handler receives the event index that triggered it.
+pub type Handler = fn(usize);
 
 /// A lock-free table of event handlers.
 ///
@@ -45,7 +45,7 @@ impl<const N: usize> HandlerTable<N> {
         }
         let handler = self.handlers[idx].swap(0, Ordering::Acquire);
         if handler != 0 {
-            Some(unsafe { core::mem::transmute::<usize, fn()>(handler) })
+            Some(unsafe { core::mem::transmute::<usize, Handler>(handler) })
         } else {
             None
         }
@@ -62,7 +62,7 @@ impl<const N: usize> HandlerTable<N> {
         let handler = self.handlers[idx].load(Ordering::Acquire);
         if handler != 0 {
             let handler: Handler = unsafe { core::mem::transmute(handler) };
-            handler();
+            handler(idx);
             true
         } else {
             false

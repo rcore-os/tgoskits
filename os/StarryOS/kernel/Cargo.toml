@@ -18,7 +18,7 @@ dev-log = []
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["axplat-dyn/rknpu"]
-plat-dyn = ["dep:axplat-dyn"]
+plat-dyn = ["dep:axplat-dyn", "dep:crab-usb", "dep:rdrive"]
 vsock = ["ax-feat/vsock"]
 
 [dependencies]
@@ -47,6 +47,7 @@ ax-driver.workspace = true
 ax-fs = { version = "0.5", package = "ax-fs-ng" }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
+ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
 axnet = { version = "0.5", package = "ax-net-ng" }
@@ -54,8 +55,8 @@ axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
-crab-usb = { path = "/home/zhourui/opensource/proj_usb/CrabUSB/usb-host" }
-rdrive = "0.20"
+crab-usb = { path = "/home/zhourui/opensource/proj_usb/CrabUSB/usb-host", optional = true }
+rdrive = { version = "0.20", optional = true }
 
 axbacktrace = "0.3"
 ax-errno = "0.4"
