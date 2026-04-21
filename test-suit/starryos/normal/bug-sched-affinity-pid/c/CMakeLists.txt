@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-sched-affinity-pid C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-sched-affinity-pid src/main.c)
+target_compile_options(bug-sched-affinity-pid PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-sched-affinity-pid RUNTIME DESTINATION usr/bin)
