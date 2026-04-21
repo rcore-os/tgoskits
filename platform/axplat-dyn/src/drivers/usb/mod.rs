@@ -5,12 +5,15 @@ use core::time::Duration;
 
 use crab_usb::{USBHost, err::USBError};
 use fdt_edit::{Fdt, NodeType};
-use rdrive::DriverGeneric;
+use rdrive::{Device, DriverGeneric};
 
 mod xhci_mmio;
 mod xhci_pci;
 
 use super::DmaImpl;
+
+pub type UsbHostDevice = rdrive::Device<PlatformUsbHost>;
+pub type UsbHostDeviceGuard = rdrive::DeviceGuard<PlatformUsbHost>;
 
 impl crab_usb::KernelOp for DmaImpl {
     fn delay(&self, duration: Duration) {
@@ -160,4 +163,8 @@ pub(super) fn resolve_pci_irq_from_fdt(
             endpoint.address()
         ))
     })
+}
+
+pub fn usb_host_device() -> Option<UsbHostDevice> {
+    rdrive::get_one()
 }

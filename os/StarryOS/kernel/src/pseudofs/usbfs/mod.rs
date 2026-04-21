@@ -28,6 +28,8 @@ use crate::{
     pseudofs::{Device, DeviceOps, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFs},
 };
 
+mod manager;
+
 const USBFS_MAGIC: u32 = 0x9fa2;
 const USB_MAJOR: u32 = 189;
 const USBDEVFS_CAP_BULK_CONTINUATION: u32 = 0x02;

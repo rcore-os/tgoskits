@@ -18,6 +18,7 @@ dev-log = []
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["axplat-dyn/rknpu"]
+plat-dyn = ["dep:axplat-dyn"]
 vsock = ["ax-feat/vsock"]
 
 [dependencies]
