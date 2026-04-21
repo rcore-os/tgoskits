@@ -659,17 +659,35 @@ fn resolve_platform_config_path(app_dir: &Path, platform_package: &str) -> anyho
 }
 
 fn find_local_platform_config_path(platform_package: &str) -> anyhow::Result<Option<PathBuf>> {
+    let workspace_manifest = workspace_manifest_path()?;
+    let metadata = workspace_metadata_root_manifest(&workspace_manifest)?;
+
+    if let Some(pkg) = metadata
+        .packages
+        .iter()
+        .find(|pkg| metadata.workspace_members.contains(&pkg.id) && pkg.name == platform_package)
+    {
+        let candidate = Path::new(pkg.manifest_path.as_std_path())
+            .parent()
+            .map(|dir| dir.join("axconfig.toml"));
+        if let Some(candidate) = candidate
+            && candidate.exists()
+        {
+            return Ok(Some(candidate));
+        }
+    }
+
     let workspace_root = workspace_root_path()?;
     let platform_dir_name = platform_package
         .strip_prefix("ax-plat-")
         .map(|suffix| format!("axplat-{suffix}"))
         .unwrap_or_else(|| platform_package.to_string());
-    let candidate = workspace_root
+    let component_candidate = workspace_root
         .join("components/axplat_crates/platforms")
         .join(platform_dir_name)
         .join("axconfig.toml");
 
-    Ok(candidate.exists().then_some(candidate))
+    Ok(component_candidate.exists().then_some(component_candidate))
 }
 
 fn ensure_arceos_tooling_installed() -> anyhow::Result<()> {
@@ -1216,6 +1234,15 @@ AX_IP = "10.0.2.15"
         assert!(path.ends_with(
             "components/axplat_crates/platforms/axplat-aarch64-qemu-virt/axconfig.toml"
         ));
+    }
+
+    #[test]
+    fn find_local_platform_config_path_resolves_workspace_platform_dir() {
+        let path = find_local_platform_config_path("axplat-riscv64-qemu-virt-hv")
+            .unwrap()
+            .expect("workspace platform config should exist");
+
+        assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
     }
 
     #[test]
