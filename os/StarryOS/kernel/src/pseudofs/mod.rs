@@ -7,6 +7,7 @@ mod file;
 mod fs;
 mod proc;
 mod tmp;
+mod usbfs;
 
 use alloc::sync::Arc;
 
@@ -63,6 +64,7 @@ pub fn mount_all() -> LinuxResult<()> {
 
     let fs = FS_CONTEXT.lock();
     mount_at(&fs, "/dev", dev::new_devfs())?;
+    mount_at(&fs, "/dev/bus/usb", usbfs::new_usbfs()?)?;
     mount_at(&fs, "/dev/shm", tmp::MemoryFs::new())?;
     mount_at(&fs, "/tmp", tmp::MemoryFs::new())?;
     mount_at(&fs, "/proc", proc::new_procfs())?;
