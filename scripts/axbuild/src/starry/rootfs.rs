@@ -26,6 +26,7 @@ const CASE_CROSS_BIN_DIR_NAME: &str = "cross-bin";
 const CASE_CMAKE_TOOLCHAIN_FILE_NAME: &str = "cmake-toolchain.cmake";
 const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_C_DIR_NAME: &str = "c";
+const CASE_SH_DIR_NAME: &str = "sh";
 const CASE_PREBUILD_SCRIPT_NAME: &str = "prebuild.sh";
 const CASE_CMAKE_FILE_NAME: &str = "CMakeLists.txt";
 const STARRY_APK_REGION_VAR: &str = "STARRY_APK_REGION";
@@ -144,7 +145,9 @@ pub(crate) async fn prepare_case_assets(
     case: &StarryQemuCase,
 ) -> anyhow::Result<StarryCaseAssets> {
     let rootfs_path = rootfs_image_path(workspace_root, arch, target)?;
-    let needs_assets = case_uses_c_pipeline(case) || case_uses_usb_qemu_assets(arch, case);
+    let needs_assets = case_uses_c_pipeline(case)
+        || case_uses_sh_pipeline(case)
+        || case_uses_usb_qemu_assets(arch, case);
 
     if !needs_assets {
         return Ok(StarryCaseAssets {
@@ -283,6 +286,14 @@ fn case_uses_c_pipeline(case: &StarryQemuCase) -> bool {
     case_c_source_dir(case).is_dir()
 }
 
+fn case_sh_source_dir(case: &StarryQemuCase) -> PathBuf {
+    case.case_dir.join(CASE_SH_DIR_NAME)
+}
+
+fn case_uses_sh_pipeline(case: &StarryQemuCase) -> bool {
+    case_sh_source_dir(case).is_dir()
+}
+
 fn case_uses_usb_qemu_assets(arch: &str, case: &StarryQemuCase) -> bool {
     let _ = arch;
     let _ = case;
@@ -345,6 +356,8 @@ fn prepare_case_assets_sync(
 
     if case_uses_c_pipeline(case) {
         prepare_c_case_assets_sync(arch, case, case_rootfs, &layout)?;
+    } else if case_uses_sh_pipeline(case) {
+        prepare_sh_case_assets_sync(case, case_rootfs, &layout)?;
     }
 
     let mut extra_qemu_args = Vec::new();
@@ -404,6 +417,53 @@ fn prepare_c_case_assets_sync(
     install.exec().context("failed to install case C project")?;
 
     sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
+    inject_overlay_tree(case_rootfs, &layout.overlay_dir)
+}
+
+fn prepare_sh_case_assets_sync(
+    case: &StarryQemuCase,
+    case_rootfs: &Path,
+    layout: &CaseAssetLayout,
+) -> anyhow::Result<()> {
+    let sh_dir = case_sh_source_dir(case);
+    ensure!(
+        sh_dir.is_dir(),
+        "sh directory not found at `{}`",
+        sh_dir.display()
+    );
+
+    reset_dir(&layout.overlay_dir)?;
+
+    let dest_dir = layout.overlay_dir.join("usr/bin");
+    fs::create_dir_all(&dest_dir)
+        .with_context(|| format!("failed to create {}", dest_dir.display()))?;
+
+    let mut entries = fs::read_dir(&sh_dir)
+        .with_context(|| format!("failed to read {}", sh_dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to read {}", sh_dir.display()))?;
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let dest = dest_dir.join(entry.file_name());
+        fs::copy(&path, &dest)
+            .with_context(|| format!("failed to copy {} to {}", path.display(), dest.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&dest)
+                .with_context(|| format!("failed to stat {}", dest.display()))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest, perms)
+                .with_context(|| format!("failed to chmod {}", dest.display()))?;
+        }
+    }
+
     inject_overlay_tree(case_rootfs, &layout.overlay_dir)
 }
 
