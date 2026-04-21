@@ -41,7 +41,7 @@ test-suit/starryos/normal/<用例名>/qemu-<arch>.toml
 args = [
     "-nographic", "-cpu", "rv64",
     "-device", "virtio-blk-pci,drive=disk0",
-    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/riscv64gc-unknown-none-elf/rootfs-riscv64.img",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-riscv64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
 ]
