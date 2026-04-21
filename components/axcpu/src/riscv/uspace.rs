@@ -42,6 +42,16 @@ impl UserContext {
         })
     }
 
+    /// Normalizes a cloned user context so it can safely return to user mode.
+    pub fn prepare_clone_child_return_state(&mut self) {
+        self.0.sstatus.set_spie(true);
+        self.0.sstatus.set_sum(true);
+        #[cfg(feature = "fp-simd")]
+        if matches!(self.0.sstatus.fs(), FS::Off) {
+            self.0.sstatus.set_fs(FS::Initial);
+        }
+    }
+
     /// Enter user space.
     ///
     /// It restores the user registers and jumps to the user entry point

@@ -107,6 +107,10 @@ pub(super) fn take_dirty(irq_num: usize) -> bool {
         .unwrap_or(false)
 }
 
+pub(super) fn bootstrap_irq(irq_num: usize) {
+    usbfs_irq_handler(irq_num);
+}
+
 fn usbfs_irq_handler(irq_num: usize) {
     let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
         return;

@@ -298,6 +298,14 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // event
         Sysno::eventfd2 => sys_eventfd2(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::timerfd_create => sys_timerfd_create(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::timerfd_settime => sys_timerfd_settime(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::timerfd_gettime => sys_timerfd_gettime(uctx.arg0() as _, uctx.arg1() as _),
 
         // pidfd
         Sysno::pidfd_open => sys_pidfd_open(uctx.arg0() as _, uctx.arg1() as _),
@@ -638,10 +646,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
 
         // dummy fds
-        Sysno::timerfd_create
-        | Sysno::fanotify_init
-        | Sysno::inotify_init1
-        | Sysno::userfaultfd
+        Sysno::userfaultfd
         | Sysno::perf_event_open
         | Sysno::io_uring_setup
         | Sysno::bpf
@@ -649,6 +654,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         | Sysno::fspick
         | Sysno::open_tree
         | Sysno::memfd_secret => sys_dummy_fd(sysno),
+
+        Sysno::fanotify_init | Sysno::inotify_init1 => Err(AxError::Unsupported),
 
         Sysno::timer_create | Sysno::timer_gettime | Sysno::timer_settime => Ok(0),
 

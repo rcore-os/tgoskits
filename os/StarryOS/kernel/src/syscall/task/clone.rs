@@ -161,6 +161,7 @@ impl CloneArgs {
         };
 
         let mut new_uctx = *uctx;
+        new_uctx.prepare_clone_child_return_state();
         if stack != 0 {
             new_uctx.set_sp(stack);
         }

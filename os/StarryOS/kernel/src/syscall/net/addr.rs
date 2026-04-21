@@ -11,7 +11,7 @@ use ax_errno::{AxError, AxResult, LinuxError};
 #[cfg(feature = "vsock")]
 use axnet::vsock::VsockAddr;
 use axnet::{SocketAddrEx, unix::UnixSocketAddr};
-use linux_raw_sys::net::*;
+use linux_raw_sys::{net::*, netlink::sockaddr_nl};
 
 use crate::mm::{UserConstPtr, UserPtr};
 
@@ -48,6 +48,20 @@ fn fill_addr(addr: UserPtr<sockaddr>, addrlen: &mut socklen_t, data: &[u8]) -> A
         .copy_from_slice(&data[..len]);
     *addrlen = data.len() as _;
     Ok(())
+}
+
+pub fn read_netlink_addr(
+    addr: UserConstPtr<sockaddr>,
+    addrlen: socklen_t,
+) -> AxResult<sockaddr_nl> {
+    if addrlen != size_of::<sockaddr_nl>() as socklen_t {
+        return Err(AxError::InvalidInput);
+    }
+    let addr_nl = addr.cast::<sockaddr_nl>().get_as_ref()?;
+    if addr_nl.nl_family as u32 != AF_NETLINK {
+        return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+    }
+    Ok(*addr_nl)
 }
 
 impl SocketAddrExt for SocketAddr {

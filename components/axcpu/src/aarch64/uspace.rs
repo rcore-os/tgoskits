@@ -46,6 +46,24 @@ impl UserContext {
         }
     }
 
+    /// Normalizes a cloned user context so it can safely return to EL0.
+    pub fn prepare_clone_child_return_state(&mut self) {
+        use aarch64_cpu::registers::SPSR_EL1;
+
+        self.tf.spsr = (self.tf.spsr
+            & !(SPSR_EL1::M.mask
+                | SPSR_EL1::D.mask
+                | SPSR_EL1::A.mask
+                | SPSR_EL1::I.mask
+                | SPSR_EL1::F.mask))
+            | (SPSR_EL1::M::EL0t
+                + SPSR_EL1::D::Masked
+                + SPSR_EL1::A::Masked
+                + SPSR_EL1::I::Unmasked
+                + SPSR_EL1::F::Masked)
+                .value;
+    }
+
     /// Gets the stack pointer.
     pub const fn sp(&self) -> usize {
         self.sp as _
