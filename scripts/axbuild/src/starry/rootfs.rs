@@ -1243,6 +1243,7 @@ fn collect_overlay_debugfs_commands(
             "unsupported overlay entry `{}`; only regular files and directories are supported",
             entry.path().display()
         );
+        commands.push(format!("rm /{}", relative_path.display()));
         commands.push(format!(
             "write {} /{}",
             entry.path().display(),
