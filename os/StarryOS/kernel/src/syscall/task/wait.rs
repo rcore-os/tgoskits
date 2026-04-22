@@ -116,15 +116,15 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     };
 
     block_on(interruptible(poll_fn(|cx| {
-        // Register the waker BEFORE checking the condition. Under preemptive
-        // scheduling (sched-rr), a timer IRQ between check and register could
-        // schedule the child task, which would then exit and call wake() on an
-        // empty PollSet (no waker yet) — the wake is lost and the parent
-        // parks forever. Registering first guarantees the wake is observed.
-        proc_data.child_exit_event.register(cx.waker());
         match check_children().transpose() {
             Some(res) => Poll::Ready(res),
-            None => Poll::Pending,
+            None => {
+                proc_data.child_exit_event.register(cx.waker());
+                match check_children().transpose() {
+                    Some(res) => Poll::Ready(res),
+                    None => Poll::Pending,
+                }
+            }
         }
     })))?
 }
