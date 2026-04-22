@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-lseek-negative-einval C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-lseek-negative-einval src/main.c)
+target_compile_options(bug-lseek-negative-einval PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-lseek-negative-einval RUNTIME DESTINATION usr/bin)
