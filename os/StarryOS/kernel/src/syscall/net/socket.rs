@@ -1,6 +1,7 @@
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FS_CONTEXT;
 use ax_task::current;
+use axfs_ng_vfs::{MetadataUpdate, NodeType};
 #[cfg(feature = "vsock")]
 use axnet::vsock::{VsockSocket, VsockStreamTransport};
 use axnet::{
@@ -85,12 +86,14 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
 
     if let Some(path) = unix_path {
         let cred = current().as_thread().cred();
-        if let Ok(loc) = FS_CONTEXT.lock().resolve(path.as_ref()) {
-            let _ = loc.update_metadata(axfs_ng_vfs::MetadataUpdate {
-                owner: Some((cred.fsuid, cred.fsgid)),
-                ..Default::default()
-            });
+        let loc = FS_CONTEXT.lock().resolve_no_follow(path.as_ref())?;
+        if loc.metadata()?.node_type != NodeType::Socket {
+            return Err(AxError::InvalidInput);
         }
+        loc.update_metadata(MetadataUpdate {
+            owner: Some((cred.fsuid, cred.fsgid)),
+            ..Default::default()
+        })?;
     }
 
     Ok(0)
