@@ -14,10 +14,18 @@ use super::{AddrSpace, Backend, BackendOps};
 /// address `vaddr` is mapped to the physical address `vaddr - pa_va_offset`.
 #[derive(Clone)]
 pub struct LinearBackend {
+    start: VirtAddr,
     offset: isize,
 }
 
 impl LinearBackend {
+    pub fn with_start(&self, new_start: VirtAddr) -> Self {
+        Self {
+            start: new_start,
+            offset: self.offset + (new_start.as_usize() as isize - self.start.as_usize() as isize),
+        }
+    }
+
     fn pa(&self, va: VirtAddr) -> PhysAddr {
         PhysAddr::from((va.as_usize() as isize - self.offset) as usize)
     }
@@ -55,7 +63,7 @@ impl BackendOps for LinearBackend {
 }
 
 impl Backend {
-    pub fn new_linear(offset: isize) -> Self {
-        Self::Linear(LinearBackend { offset })
+    pub fn new_linear(start: VirtAddr, offset: isize) -> Self {
+        Self::Linear(LinearBackend { start, offset })
     }
 }

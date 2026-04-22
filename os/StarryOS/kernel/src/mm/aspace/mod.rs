@@ -122,7 +122,12 @@ impl AddrSpace {
         }
 
         let offset = start_vaddr.as_usize() as isize - start_paddr.as_usize() as isize;
-        let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
+        let area = MemoryArea::new(
+            start_vaddr,
+            size,
+            flags,
+            Backend::new_linear(start_vaddr, offset),
+        );
         self.areas.map(area, &mut self.pt, false)?;
         Ok(())
     }
@@ -190,27 +195,32 @@ impl AddrSpace {
     /// Relocates page table entries from `[src, src+size)` to `[dst, dst+size)`.
     /// Pages already mapped at `dst` (shared backends) are skipped.
     /// Individual failures are skipped to keep the source consistent.
-    pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) {
+    pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> AxResult {
         let mut cursor = self.pt.cursor();
+        let mut mapped_pages = alloc::vec::Vec::new();
         let mut offset = 0;
         while offset < size {
             let src_va = src + offset;
-            let dst_va = dst + offset;
             match cursor.query(src_va) {
                 Ok((paddr, flags, page_size)) => {
-                    if cursor.query(dst_va).is_err() {
-                        if cursor.map(dst_va, paddr, page_size, flags).is_ok() {
-                            let _ = cursor.unmap(src_va);
-                        }
-                        // map failed; page will fault in at dst later
-                    }
+                    mapped_pages.push((src_va, dst + offset, paddr, flags, page_size));
                     offset += page_size as usize;
                 }
-                Err(_) => {
-                    offset += PAGE_SIZE_4K;
-                }
+                Err(_) => offset += PAGE_SIZE_4K,
             }
         }
+
+        for &(_src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
+            if cursor.query(dst_va).is_err() {
+                cursor.map(dst_va, paddr, page_size, flags)?;
+            }
+        }
+
+        for &(src_va, ..) in &mapped_pages {
+            cursor.unmap(src_va)?;
+        }
+
+        Ok(())
     }
 
     /// Grows the mapping containing `addr` by `additional_size` at its end.

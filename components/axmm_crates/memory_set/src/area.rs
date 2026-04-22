@@ -171,7 +171,11 @@ impl<B: MappingBackend> MemoryArea<B> {
         {
             return Err(MappingError::BadState);
         }
-        self.va_range.end = self.va_range.end.wrapping_add(additional_size);
+        self.va_range.end = self
+            .va_range
+            .end
+            .checked_add(additional_size)
+            .ok_or(MappingError::BadState)?;
         Ok(())
     }
 

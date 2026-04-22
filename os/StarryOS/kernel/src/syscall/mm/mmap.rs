@@ -194,6 +194,7 @@ pub fn sys_mmap(
                             }
                             length = length.min(range.size().align_down(page_size));
                             Backend::new_linear(
+                                start,
                                 start.as_usize() as isize - range.start.as_usize() as isize,
                             );
                         }
@@ -234,6 +235,7 @@ pub fn sys_mmap(
                                 }
                                 length = capped_device_map_len(length, range.size(), page_size);
                                 Backend::new_linear(
+                                    start,
                                     start.as_usize() as isize - range.start.as_usize() as isize,
                                 )
                             }
@@ -301,9 +303,13 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
 
 const MREMAP_VALID_FLAGS: u32 = MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP;
 
-fn find_free(aspace: &crate::mm::AddrSpace, hint: VirtAddr, size: usize) -> AxResult<VirtAddr> {
+fn find_free(
+    aspace: &crate::mm::AddrSpace,
+    hint: VirtAddr,
+    size: usize,
+    align: usize,
+) -> AxResult<VirtAddr> {
     let limit = VirtAddrRange::new(aspace.base(), aspace.end());
-    let align = PageSize::Size4K as usize;
     aspace
         .find_free_area(hint, size, limit, align)
         .or_else(|| aspace.find_free_area(aspace.base(), size, limit, align))
@@ -326,7 +332,10 @@ fn mremap_move(
     aspace.map(target, target_size, flags, false, backend)?;
 
     let move_size = src_size.min(target_size);
-    aspace.move_pages(src, target, move_size);
+    if let Err(e) = aspace.move_pages(src, target, move_size) {
+        let _ = aspace.unmap(target, target_size);
+        return Err(e);
+    }
 
     if let Err(e) = aspace.unmap(src, src_size) {
         let _ = aspace.unmap(target, target_size);
@@ -334,7 +343,7 @@ fn mremap_move(
     }
 
     if dontunmap {
-        let empty = Backend::new_alloc(src, PageSize::Size4K);
+        let empty = Backend::new_alloc(src, src_backend.page_size());
         if let Err(e) = aspace.map(src, src_size, flags, false, empty) {
             let _ = aspace.unmap(target, target_size);
             return Err(e);
@@ -359,16 +368,11 @@ pub fn sys_mremap(
     if new_size == 0 {
         return Err(AxError::InvalidInput);
     }
-    if !addr.is_multiple_of(PageSize::Size4K as usize) {
-        return Err(AxError::InvalidInput);
-    }
     if flags & !MREMAP_VALID_FLAGS != 0 {
         return Err(AxError::InvalidInput);
     }
 
     let addr = VirtAddr::from(addr);
-    let old_size = align_up_4k(old_size);
-    let new_size = align_up_4k(new_size);
     let may_move = flags & MREMAP_MAYMOVE != 0;
     let fixed = flags & MREMAP_FIXED != 0;
     let dontunmap = flags & MREMAP_DONTUNMAP != 0;
@@ -399,7 +403,7 @@ pub fn sys_mremap(
     let aspace_ref = &curr.as_thread().proc_data.aspace;
     let mut aspace = aspace_ref.lock();
 
-    let (vma_start, vma_end, vma_flags, src_backend, shared_pages) = {
+    let (vma_start, vma_end, vma_flags, src_backend, shared_pages, page_size) = {
         let area = aspace.find_area(addr).ok_or(AxError::BadAddress)?;
         let shared_pages = match area.backend() {
             Backend::Shared(sb) => Some(sb.pages().clone()),
@@ -411,12 +415,23 @@ pub fn sys_mremap(
             area.flags(),
             area.backend().clone(),
             shared_pages,
+            area.backend().page_size(),
         )
     };
+    if !page_size.is_aligned(addr.as_usize()) {
+        return Err(AxError::InvalidInput);
+    }
+    let old_size = old_size.align_up(page_size);
+    let new_size = new_size.align_up(page_size);
 
     // DONTUNMAP only for Cow and Shared (Linux 5.13+ relaxed this from
     // private-anonymous-only to exclude VM_DONTEXPAND/VM_MIXEDMAP).
-    if dontunmap && !matches!(src_backend, Backend::Cow(_) | Backend::Shared(_)) {
+    if dontunmap
+        && !matches!(
+            src_backend,
+            Backend::Cow(_) | Backend::Shared(_) | Backend::File(_)
+        )
+    {
         return Err(AxError::InvalidInput);
     }
 
@@ -430,10 +445,13 @@ pub fn sys_mremap(
         let dup_size = new_size.min(shared_size);
 
         let target = if fixed {
+            if !page_size.is_aligned(new_addr) {
+                return Err(AxError::InvalidInput);
+            }
             aspace.unmap(VirtAddr::from(new_addr), new_size)?;
             VirtAddr::from(new_addr)
         } else {
-            find_free(&aspace, addr, dup_size)?
+            find_free(&aspace, addr, dup_size, page_size as usize)?
         };
         let backend = Backend::new_shared(target, pages);
         aspace.map(target, dup_size, vma_flags, false, backend)?;
@@ -450,6 +468,9 @@ pub fn sys_mremap(
     let src_offset = addr - vma_start;
 
     if fixed {
+        if !page_size.is_aligned(new_addr) {
+            return Err(AxError::InvalidInput);
+        }
         let target = VirtAddr::from(new_addr);
         aspace.unmap(target, new_size)?;
 
@@ -470,11 +491,11 @@ pub fn sys_mremap(
 
                 let backend = frag_backend.relocated(frag_target, frag_src_offset, aspace_ref);
                 aspace.map(frag_target, *frag_size, *frag_flags, false, backend)?;
-                aspace.move_pages(*frag_start, frag_target, *frag_size);
+                aspace.move_pages(*frag_start, frag_target, *frag_size)?;
             }
             aspace.unmap(addr, old_size)?;
             if dontunmap {
-                let empty = Backend::new_alloc(addr, PageSize::Size4K);
+                let empty = Backend::new_alloc(addr, page_size);
                 aspace.map(addr, old_size, vma_flags, false, empty)?;
             }
             return Ok(target.as_usize() as isize);
@@ -505,7 +526,7 @@ pub fn sys_mremap(
     }
 
     if dontunmap {
-        let target = find_free(&aspace, addr + old_size, new_size)?;
+        let target = find_free(&aspace, addr + old_size, new_size, page_size as usize)?;
         mremap_move(
             &mut aspace,
             aspace_ref,
@@ -535,7 +556,7 @@ pub fn sys_mremap(
         return Err(AxError::NoMemory);
     }
 
-    let target = find_free(&aspace, addr + old_size, new_size)?;
+    let target = find_free(&aspace, addr + old_size, new_size, page_size as usize)?;
     mremap_move(
         &mut aspace,
         aspace_ref,

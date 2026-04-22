@@ -130,7 +130,7 @@ impl Backend {
         match self {
             Self::Cow(cb) => Self::Cow(cb.with_start(adjusted)),
             Self::Shared(sb) => Self::Shared(sb.with_start(adjusted)),
-            Self::Linear(lb) => Self::Linear(lb.clone()),
+            Self::Linear(lb) => Self::Linear(lb.with_start(adjusted)),
             Self::File(fb) => Self::File(fb.with_start(adjusted, aspace)),
         }
     }
