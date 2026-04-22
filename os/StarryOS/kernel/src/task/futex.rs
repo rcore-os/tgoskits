@@ -6,6 +6,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
+    cmp::Ordering,
     future::poll_fn,
     ops::Deref,
     sync::atomic::AtomicBool,
@@ -75,18 +76,16 @@ impl WaitQueue {
     pub fn wake(&self, count: usize, mask: u32) -> usize {
         let wakers = {
             let mut queue = self.queue.lock();
-            let mut retained = VecDeque::with_capacity(queue.len());
             let mut wakers = Vec::new();
 
-            while let Some((waker, bitset)) = queue.pop_front() {
+            queue.retain(|(waker, bitset)| {
                 if wakers.len() >= count || (bitset & mask) == 0 {
-                    retained.push_back((waker, bitset));
+                    true
                 } else {
-                    wakers.push(waker);
+                    wakers.push(waker.clone());
+                    false
                 }
-            }
-
-            *queue = retained;
+            });
             wakers
         };
 
@@ -114,18 +113,21 @@ impl WaitQueue {
                               dst: &mut VecDeque<(Waker, u32)>,
                               count: &mut usize| {
             *count = (*count).min(src.len());
-            let tasks: Vec<_> = src.drain(..*count).collect();
-            dst.extend(tasks);
+            dst.extend(src.drain(..*count));
         };
 
-        if self_addr < target_addr {
-            let mut src = self.queue.lock();
-            let mut dst = target.queue.lock();
-            requeue_locked(&mut src, &mut dst, &mut count);
-        } else {
-            let mut dst = target.queue.lock();
-            let mut src = self.queue.lock();
-            requeue_locked(&mut src, &mut dst, &mut count);
+        match self_addr.cmp(&target_addr) {
+            Ordering::Less => {
+                let mut src = self.queue.lock();
+                let mut dst = target.queue.lock();
+                requeue_locked(&mut src, &mut dst, &mut count);
+            }
+            Ordering::Greater => {
+                let mut dst = target.queue.lock();
+                let mut src = self.queue.lock();
+                requeue_locked(&mut src, &mut dst, &mut count);
+            }
+            Ordering::Equal => return 0,
         }
 
         count
