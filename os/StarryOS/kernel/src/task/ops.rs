@@ -239,6 +239,11 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let process = &thr.proc_data.proc;
     if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
+        // Close all file descriptors before marking the process as exited.
+        // This ensures pipe write ends and other resources are properly released,
+        // so parent processes blocking on pipe reads will receive EOF.
+        crate::file::close_all_fds();
+
         // Snapshot children BEFORE process.exit() reparents them to init
         // via mem::take. Otherwise process.children() returns an empty
         // list and pdeathsig never reaches the real children.
