@@ -125,14 +125,14 @@ impl Backend {
         new_start: VirtAddr,
         src_offset: usize,
         aspace: &Arc<Mutex<AddrSpace>>,
-    ) -> Self {
+    ) -> AxResult<Self> {
         let adjusted = new_start - src_offset;
-        match self {
+        Ok(match self {
             Self::Cow(cb) => Self::Cow(cb.with_start(adjusted)),
             Self::Shared(sb) => Self::Shared(sb.with_start(adjusted)),
-            Self::Linear(lb) => Self::Linear(lb.with_start(adjusted)),
+            Self::Linear(_) => return Err(AxError::OperationNotSupported),
             Self::File(fb) => Self::File(fb.with_start(adjusted, aspace)),
-        }
+        })
     }
 }
 

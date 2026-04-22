@@ -194,7 +194,7 @@ impl AddrSpace {
 
     /// Relocates page table entries from `[src, src+size)` to `[dst, dst+size)`.
     /// Pages already mapped at `dst` (shared backends) are skipped.
-    /// Individual failures are skipped to keep the source consistent.
+    /// Returns an error if any page-table update fails.
     pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> AxResult {
         let mut cursor = self.pt.cursor();
         let mut mapped_pages = alloc::vec::Vec::new();

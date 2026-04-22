@@ -328,7 +328,7 @@ fn mremap_move(
     dontunmap: bool,
     src_offset: usize,
 ) -> AxResult {
-    let backend = src_backend.relocated(target, src_offset, aspace_ref);
+    let backend = src_backend.relocated(target, src_offset, aspace_ref)?;
     aspace.map(target, target_size, flags, false, backend)?;
 
     let move_size = src_size.min(target_size);
@@ -418,20 +418,18 @@ pub fn sys_mremap(
             area.backend().page_size(),
         )
     };
+    if addr != vma_start {
+        return Err(AxError::InvalidInput);
+    }
     if !page_size.is_aligned(addr.as_usize()) {
         return Err(AxError::InvalidInput);
     }
     let old_size = old_size.align_up(page_size);
     let new_size = new_size.align_up(page_size);
 
-    // DONTUNMAP only for Cow and Shared (Linux 5.13+ relaxed this from
-    // private-anonymous-only to exclude VM_DONTEXPAND/VM_MIXEDMAP).
-    if dontunmap
-        && !matches!(
-            src_backend,
-            Backend::Cow(_) | Backend::Shared(_) | Backend::File(_)
-        )
-    {
+    let dontunmap_allowed = matches!(&src_backend, Backend::Cow(cow) if cow.is_anonymous())
+        || matches!(src_backend, Backend::Shared(_));
+    if dontunmap && !dontunmap_allowed {
         return Err(AxError::InvalidInput);
     }
 
@@ -489,7 +487,7 @@ pub fn sys_mremap(
                     .start();
                 let frag_src_offset = *frag_start - frag_vma_start;
 
-                let backend = frag_backend.relocated(frag_target, frag_src_offset, aspace_ref);
+                let backend = frag_backend.relocated(frag_target, frag_src_offset, aspace_ref)?;
                 aspace.map(frag_target, *frag_size, *frag_flags, false, backend)?;
                 aspace.move_pages(*frag_start, frag_target, *frag_size)?;
             }
