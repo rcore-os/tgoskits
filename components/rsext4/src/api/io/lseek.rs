@@ -138,6 +138,9 @@ pub fn lseek<B: BlockDevice>(
     offset: i64,
     whence: SeekWhence,
 ) -> Ext4Result<u64> {
+    // TODO(linux-lseek-authoritative-inode): 这里使用 `OpenFile` 缓存 inode 计算
+    // i_size/maxbytes。若同 inode 被其他句柄更新，可能与 Linux 当下 inode 状态偏离。
+    // 目标语义：在 SEEK_END/SEEK_DATA/SEEK_HOLE 路径使用 authoritative inode 视图。
     let file_size = file.inode.size();
     let maxbytes = ext4_get_maxbytes(&fs.superblock, &file.inode);
     let block_bytes = fs.superblock.block_size() as u64;
@@ -173,10 +176,14 @@ pub fn lseek<B: BlockDevice>(
 
             if !(fs.superblock.has_extents() && file.inode.have_extend_header_and_use_extend()) {
                 // Traditional block pointers are not implemented yet.
+                // TODO(linux-lseek-indirect): 补齐非 extent inode 的 SEEK_DATA/SEEK_HOLE 语义，
+                // 避免直接 `EOPNOTSUPP`。
                 return Err(Ext4Error::unsupported());
             }
 
-            let extent_map = resolve_inode_block_allextend(fs, dev, &mut file.inode)?;
+            // TODO(linux-lseek-iomap-details): 当前是简化 extent-map 语义，
+            // 未完整对齐 Linux iomap 对 unwritten/page-cache 的处理。
+            let extent_map = resolve_inode_block_allextend(dev, &mut file.inode)?;
             let found = seek_data_in_extents(&extent_map, start, file_size, block_bytes)
                 .ok_or_else(|| Ext4Error::from(Errno::ENXIO))?;
             validate_new_pos(i128::from(found), maxbytes)?
@@ -192,10 +199,14 @@ pub fn lseek<B: BlockDevice>(
             }
 
             if !(fs.superblock.has_extents() && file.inode.have_extend_header_and_use_extend()) {
+                // TODO(linux-lseek-indirect): 补齐非 extent inode 的 SEEK_DATA/SEEK_HOLE 语义，
+                // 避免直接 `EOPNOTSUPP`。
                 return Err(Ext4Error::unsupported());
             }
 
-            let extent_map = resolve_inode_block_allextend(fs, dev, &mut file.inode)?;
+            // TODO(linux-lseek-iomap-details): 当前是简化 extent-map 语义，
+            // 未完整对齐 Linux iomap 对 unwritten/page-cache 的处理。
+            let extent_map = resolve_inode_block_allextend(dev, &mut file.inode)?;
             let found = seek_hole_in_extents(&extent_map, start, file_size, block_bytes)
                 .ok_or_else(|| Ext4Error::from(Errno::ENXIO))?;
             validate_new_pos(i128::from(found), maxbytes)?
@@ -205,8 +216,3 @@ pub fn lseek<B: BlockDevice>(
     file.offset = new_off;
     Ok(new_off)
 }
-
-
-
-
-
