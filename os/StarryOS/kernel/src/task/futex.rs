@@ -9,6 +9,7 @@ use core::{
     cmp::Ordering,
     future::poll_fn,
     ops::Deref,
+    ptr::addr_of,
     sync::atomic::AtomicBool,
     task::{Poll, Waker},
     time::Duration,
@@ -102,35 +103,27 @@ impl WaitQueue {
     }
 
     /// Requeue at most `count` tasks to the target wait queue.
-    pub fn requeue(&self, mut count: usize, target: &WaitQueue) -> usize {
-        let self_addr = self as *const Self as usize;
-        let target_addr = target as *const Self as usize;
-        if self_addr == target_addr {
-            return 0;
-        }
+    pub fn requeue(&self, count: usize, target: &WaitQueue) -> usize {
+        let requeue_locked =
+            |src: &mut VecDeque<(Waker, u32)>, dst: &mut VecDeque<(Waker, u32)>, count: usize| {
+                let count = count.min(src.len());
+                dst.extend(src.drain(..*count));
+                count
+            };
 
-        let requeue_locked = |src: &mut VecDeque<(Waker, u32)>,
-                              dst: &mut VecDeque<(Waker, u32)>,
-                              count: &mut usize| {
-            *count = (*count).min(src.len());
-            dst.extend(src.drain(..*count));
-        };
-
-        match self_addr.cmp(&target_addr) {
+        match addr_of!(self).cmp(&addr_of!(target)) {
             Ordering::Less => {
                 let mut src = self.queue.lock();
                 let mut dst = target.queue.lock();
-                requeue_locked(&mut src, &mut dst, &mut count);
+                requeue_locked(&mut src, &mut dst, count)
             }
             Ordering::Greater => {
                 let mut dst = target.queue.lock();
                 let mut src = self.queue.lock();
-                requeue_locked(&mut src, &mut dst, &mut count);
+                requeue_locked(&mut src, &mut dst, count)
             }
-            Ordering::Equal => return 0,
+            Ordering::Equal => 0,
         }
-
-        count
     }
 }
 
