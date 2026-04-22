@@ -362,8 +362,53 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_syslog(_type: i32, _buf: *mut c_char, _len: usize) -> AxResult<isize> {
-    Ok(0)
+pub fn sys_syslog(type_: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
+    const SYSLOG_ACTION_READ: i32 = 2;
+    const SYSLOG_ACTION_READ_ALL: i32 = 3;
+    const SYSLOG_ACTION_READ_CLEAR: i32 = 4;
+    const SYSLOG_ACTION_CONSOLE_LEVEL: i32 = 8;
+    const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
+    const KLOG_BUF_SIZE: isize = 16384;
+
+    match type_ {
+        // CLOSE(0), OPEN(1): NOP
+        0 | 1 => Ok(0),
+
+        // READ(2), READ_ALL(3), READ_CLEAR(4): need buf != NULL and len >= 0
+        SYSLOG_ACTION_READ | SYSLOG_ACTION_READ_ALL | SYSLOG_ACTION_READ_CLEAR => {
+            if buf.is_null() {
+                return Err(AxError::from(LinuxError::EINVAL));
+            }
+            if (len as isize) < 0 {
+                return Err(AxError::from(LinuxError::EINVAL));
+            }
+            Ok(0)
+        }
+
+        // CLEAR(5): NOP
+        5 => Ok(0),
+
+        // CONSOLE_OFF(6), CONSOLE_ON(7): NOP
+        6 | 7 => Ok(0),
+
+        // CONSOLE_LEVEL(8): level must be 1..=8
+        SYSLOG_ACTION_CONSOLE_LEVEL => {
+            let level = len as i32;
+            if level < 1 || level > 8 {
+                return Err(AxError::from(LinuxError::EINVAL));
+            }
+            Ok(0)
+        }
+
+        // SIZE_UNREAD(9): no unread data
+        9 => Ok(0),
+
+        // SIZE_BUFFER(10): return total buffer size
+        SYSLOG_ACTION_SIZE_BUFFER => Ok(KLOG_BUF_SIZE),
+
+        // Any other type: invalid
+        _ => Err(AxError::from(LinuxError::EINVAL)),
+    }
 }
 
 bitflags::bitflags! {
