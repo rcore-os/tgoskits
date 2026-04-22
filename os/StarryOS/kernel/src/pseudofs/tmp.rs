@@ -150,7 +150,9 @@ impl Inode {
             uid: 0,
             gid: 0,
             size: 0,
-            block_size: 0,
+            // Linux's tmpfs reports PAGE_SIZE so userspace sees a nonzero
+            // st_blksize; several libcs rely on this being > 0.
+            block_size: 4096,
             blocks: 0,
             rdev: DeviceId::default(),
             atime: Duration::default(),
