@@ -2,6 +2,7 @@ use super::*;
 
 /// Builds block mappings and enables checksums for external extent nodes.
 pub fn build_file_block_mapping_with_inode_num<B: BlockDevice>(
+use crate::bmalloc::LogicalBN;
     fs: &mut Ext4FileSystem,
     inode: &mut Ext4Inode,
     inode_num: InodeNumber,
@@ -44,7 +45,8 @@ pub fn build_file_block_mapping_with_inode_num<B: BlockDevice>(
                 run_len = run_len.saturating_add(1);
             } else {
                 // Finish the current physical run and emit one extent.
-                let ext = Ext4Extent::new(run_start_lbn, run_start_pblk, run_len as u16);
+                let ext =
+                    Ext4Extent::new(LogicalBN::new(run_start_lbn), run_start_pblk, run_len as u16);
                 exts_vec.push(ext);
 
                 run_start_lbn = lbn;
@@ -53,7 +55,7 @@ pub fn build_file_block_mapping_with_inode_num<B: BlockDevice>(
             }
         }
 
-        let ext = Ext4Extent::new(run_start_lbn, run_start_pblk, run_len as u16);
+        let ext = Ext4Extent::new(LogicalBN::new(run_start_lbn), run_start_pblk, run_len as u16);
         exts_vec.push(ext);
 
         // Insert the computed extents through `ExtentTree` so the inode root
