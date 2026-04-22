@@ -51,70 +51,84 @@ int main(void) {
     /* 3. 降低 soft limit */
     {
         struct rlimit old, new_lim, check;
-        my_prlimit(0, RLIMIT_NOFILE, NULL, &old);
+        CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &old), 0,
+                  "read original NOFILE before lowering soft");
         if (old.rlim_cur > 1) {
             new_lim.rlim_cur = old.rlim_cur - 1;
             new_lim.rlim_max = old.rlim_max;
             CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, &new_lim, NULL), 0,
                       "lower soft limit");
-            my_prlimit(0, RLIMIT_NOFILE, NULL, &check);
+            CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &check), 0,
+                      "re-read NOFILE after lowering soft");
             CHECK(check.rlim_cur == old.rlim_cur - 1, "soft actually lowered");
             CHECK(check.rlim_max == old.rlim_max, "hard unchanged");
-            my_prlimit(0, RLIMIT_NOFILE, &old, NULL); /* restore */
+            CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, &old, NULL), 0,
+                      "restore NOFILE after lowering soft");
         }
     }
 
     /* 4. 降低 hard limit */
     {
         struct rlimit old, new_lim, check;
-        my_prlimit(0, RLIMIT_NOFILE, NULL, &old);
+        CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &old), 0,
+                  "read original NOFILE before lowering hard");
         if (old.rlim_max > 2) {
             new_lim.rlim_cur = old.rlim_max - 1;
             new_lim.rlim_max = old.rlim_max - 1;
             CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, &new_lim, NULL), 0,
                       "lower hard limit");
-            my_prlimit(0, RLIMIT_NOFILE, NULL, &check);
+            CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &check), 0,
+                      "re-read NOFILE after lowering hard");
             CHECK(check.rlim_max == old.rlim_max - 1, "hard actually lowered");
-            my_prlimit(0, RLIMIT_NOFILE, &old, NULL); /* restore */
+            CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, &old, NULL), 0,
+                      "restore NOFILE after lowering hard");
         }
     }
 
     /* 5. 提高 hard limit: 不能静默不生效 (核心测试) */
     {
         struct rlimit old, new_lim;
-        my_prlimit(0, RLIMIT_NOFILE, NULL, &old);
-        new_lim.rlim_cur = old.rlim_cur;
-        new_lim.rlim_max = old.rlim_max + 100;
-        errno = 0;
-        int ret = my_prlimit(0, RLIMIT_NOFILE, &new_lim, NULL);
-        if (ret == 0) {
-            struct rlimit check;
-            my_prlimit(0, RLIMIT_NOFILE, NULL, &check);
-            CHECK(check.rlim_max == old.rlim_max + 100,
-                  "raise hard: success must take effect");
-            my_prlimit(0, RLIMIT_NOFILE, &old, NULL); /* restore */
-        } else {
-            CHECK(errno == EPERM, "raise hard: fail must be EPERM");
+        CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &old), 0,
+                  "read original NOFILE before raising hard");
+        if (old.rlim_max <= RLIM_INFINITY - 100) {
+            new_lim.rlim_cur = old.rlim_cur;
+            new_lim.rlim_max = old.rlim_max + 100;
+            errno = 0;
+            int ret = my_prlimit(0, RLIMIT_NOFILE, &new_lim, NULL);
+            if (ret == 0) {
+                struct rlimit check;
+                CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &check), 0,
+                          "re-read NOFILE after raising hard");
+                CHECK(check.rlim_max == old.rlim_max + 100,
+                      "raise hard: success must take effect");
+                CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, &old, NULL), 0,
+                          "restore NOFILE after raising hard");
+            } else {
+                CHECK(errno == EPERM, "raise hard: fail must be EPERM");
+            }
         }
     }
 
     /* 6. 同时提高 soft + hard */
     {
         struct rlimit old, new_lim;
-        my_prlimit(0, RLIMIT_NOFILE, NULL, &old);
-        if (old.rlim_max < RLIM_INFINITY) {
+        CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &old), 0,
+                  "read original NOFILE before raising both");
+        if (old.rlim_max <= RLIM_INFINITY - 2) {
             new_lim.rlim_cur = old.rlim_max + 1;
             new_lim.rlim_max = old.rlim_max + 2;
             errno = 0;
             int ret = my_prlimit(0, RLIMIT_NOFILE, &new_lim, NULL);
             if (ret == 0) {
                 struct rlimit check;
-                my_prlimit(0, RLIMIT_NOFILE, NULL, &check);
+                CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &check), 0,
+                          "re-read NOFILE after raising both");
                 CHECK(check.rlim_cur == old.rlim_max + 1,
                       "raise both: soft takes effect");
                 CHECK(check.rlim_max == old.rlim_max + 2,
                       "raise both: hard takes effect");
-                my_prlimit(0, RLIMIT_NOFILE, &old, NULL);
+                CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, &old, NULL), 0,
+                          "restore NOFILE after raising both");
             } else {
                 CHECK(errno == EPERM, "raise both: fail must be EPERM");
             }
@@ -124,7 +138,8 @@ int main(void) {
     /* 7. old_limit 应先于 new_limit 生效 */
     {
         struct rlimit saved, old, new_lim;
-        my_prlimit(0, RLIMIT_NOFILE, NULL, &saved);
+        CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &saved), 0,
+                  "read original NOFILE before set+get");
         if (saved.rlim_cur > 1) {
             new_lim.rlim_cur = saved.rlim_cur - 1;
             new_lim.rlim_max = saved.rlim_max;
@@ -132,18 +147,22 @@ int main(void) {
                       "set+get atomically");
             CHECK(old.rlim_cur == saved.rlim_cur, "old has original soft");
             CHECK(old.rlim_max == saved.rlim_max, "old has original hard");
-            my_prlimit(0, RLIMIT_NOFILE, &saved, NULL);
+            CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, &saved, NULL), 0,
+                      "restore NOFILE after set+get");
         }
     }
 
     /* 8. soft > hard 应返回 EINVAL */
     {
         struct rlimit old, new_lim;
-        my_prlimit(0, RLIMIT_NOFILE, NULL, &old);
-        new_lim.rlim_cur = old.rlim_max + 1;
-        new_lim.rlim_max = old.rlim_max;
-        CHECK_ERR(my_prlimit(0, RLIMIT_NOFILE, &new_lim, NULL), EINVAL,
-                  "soft > hard rejected");
+        CHECK_RET(my_prlimit(0, RLIMIT_NOFILE, NULL, &old), 0,
+                  "read original NOFILE before invalid soft>hard");
+        if (old.rlim_max < RLIM_INFINITY) {
+            new_lim.rlim_cur = old.rlim_max + 1;
+            new_lim.rlim_max = old.rlim_max;
+            CHECK_ERR(my_prlimit(0, RLIMIT_NOFILE, &new_lim, NULL), EINVAL,
+                      "soft > hard rejected");
+        }
     }
 
     /* 9. 无效 resource 应返回 EINVAL */
