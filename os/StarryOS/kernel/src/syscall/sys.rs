@@ -2,8 +2,9 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
 use ax_config::ARCH;
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FS_CONTEXT;
+use ax_hal::{mem::total_ram_size, time::monotonic_time};
 use ax_task::current;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
@@ -356,6 +357,8 @@ pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
 pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     // FIXME: Zeroable
     let mut kinfo: sysinfo = unsafe { core::mem::zeroed() };
+    kinfo.uptime = monotonic_time().as_secs() as _;
+    kinfo.totalram = total_ram_size() as _;
     kinfo.procs = processes().len() as _;
     kinfo.mem_unit = 1;
     info.vm_write(kinfo)?;
