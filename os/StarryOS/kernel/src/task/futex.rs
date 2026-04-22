@@ -9,7 +9,6 @@ use core::{
     cmp::Ordering,
     future::poll_fn,
     ops::Deref,
-    ptr::addr_of,
     sync::atomic::AtomicBool,
     task::{Poll, Waker},
     time::Duration,
@@ -114,7 +113,7 @@ impl WaitQueue {
             count
         }
 
-        match addr_of!(self).cmp(&addr_of!(target)) {
+        match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
             Ordering::Less => {
                 let mut src = self.queue.lock();
                 let mut dst = target.queue.lock();
