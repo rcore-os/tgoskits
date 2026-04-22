@@ -62,23 +62,17 @@ impl Service {
     }
 
     pub fn register_waker(&mut self, mask: u32, waker: &Waker) {
-        // Always arm a fallback timer so the task re-polls periodically even
-        // if the device IRQ waker is lost (observed on x86_64/loongarch64
-        // under TCG where virtio-net PCI INTx delivery races with the
-        // scheduler). smoltcp's poll_at may also return None when nothing is
-        // scheduled, which would otherwise leave the task waiting only on
-        // IRQ.
+        // Also arm a short fallback timer so the task eventually re-polls even
+        // when no device wake arrives. smoltcp may return no poll deadline, so
+        // relying on IRQ-only wakeups can leave the task parked indefinitely.
         const FALLBACK_POLL_MS: u64 = 50;
-        let smoltcp_next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
         let fallback =
             ax_hal::time::wall_time() + core::time::Duration::from_millis(FALLBACK_POLL_MS);
-        let deadline = match smoltcp_next {
-            Some(t) => {
-                let smol_deadline = TimeValue::from_micros(t.total_micros() as _);
-                smol_deadline.min(fallback)
-            }
-            None => fallback,
-        };
+        let deadline = self
+            .iface
+            .poll_at(now(), &SOCKET_SET.inner.lock())
+            .map(|t| TimeValue::from_micros(t.total_micros() as _).min(fallback))
+            .unwrap_or(fallback);
 
         // drop old timeout future
         self.timeout = None;
@@ -88,9 +82,9 @@ impl Service {
 
         if fut.as_mut().poll(&mut cx).is_ready() {
             waker.wake_by_ref();
-        } else {
-            self.timeout = Some(fut);
+            return;
         }
+        self.timeout = Some(fut);
 
         for (i, device) in self.router.devices.iter().enumerate() {
             if mask & (1 << i) != 0 {
