@@ -8,6 +8,7 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
 use ax_io::{Seek, SeekFrom};
 use ax_task::current;
+use axfs_ng_vfs::NodeType;
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::__kernel_off_t;
 use starry_vm::{VmMutPtr, VmPtr};
@@ -388,19 +389,33 @@ pub fn sys_copy_file_range(
     }
 
     let remap = |e| match e {
-        AxError::BadFileDescriptor => e,
+        AxError::BadFileDescriptor | AxError::IsADirectory => e,
         _ => AxError::InvalidInput,
     };
     let file_in = File::from_fd(fd_in).map_err(remap)?;
     let file_out = File::from_fd(fd_out).map_err(remap)?;
+    let meta_in = file_in.inner().location().metadata()?;
+    let meta_out = file_out.inner().location().metadata()?;
 
-    if !off_in.is_null() && !off_out.is_null() && len > 0 {
-        let meta_in = file_in.inner().location().metadata()?;
-        let meta_out = file_out.inner().location().metadata()?;
-        if meta_in.device == meta_out.device && meta_in.inode == meta_out.inode {
-            let pos_in = off_in.vm_read()? as usize;
-            let pos_out = off_out.vm_read()? as usize;
-            let copy_end = len - 1;
+    if meta_in.node_type != NodeType::RegularFile || meta_out.node_type != NodeType::RegularFile {
+        return Err(AxError::InvalidInput);
+    }
+    if file_out.inner().access(FileFlags::APPEND).is_ok() {
+        return Err(AxError::BadFileDescriptor);
+    }
+
+    if len > 0 && meta_in.device == meta_out.device && meta_in.inode == meta_out.inode {
+        let pos_in = if off_in.is_null() {
+            file_in.inner().seek(SeekFrom::Current(0))?
+        } else {
+            off_in.vm_read()?
+        };
+        let pos_out = if off_out.is_null() {
+            file_out.inner().seek(SeekFrom::Current(0))?
+        } else {
+            off_out.vm_read()?
+        };
+        if let Some(copy_end) = (len as u64).checked_sub(1) {
             let in_end = pos_in.checked_add(copy_end).ok_or(AxError::InvalidInput)?;
             let out_end = pos_out.checked_add(copy_end).ok_or(AxError::InvalidInput)?;
             if in_end >= pos_out && pos_in <= out_end {
