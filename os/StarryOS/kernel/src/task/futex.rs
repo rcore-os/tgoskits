@@ -14,7 +14,6 @@ use core::{
 };
 
 use ax_errno::AxResult;
-use ax_kspin::SpinNoIrq;
 use ax_memory_addr::VirtAddr;
 use ax_sync::Mutex;
 use ax_task::{
@@ -31,7 +30,10 @@ use crate::{
 /// Wait queue used by futex.
 #[derive(Default)]
 pub struct WaitQueue {
-    queue: SpinNoIrq<VecDeque<(Waker, u32)>>,
+    // Futex waits must re-check the user value while serializing with wakeups.
+    // That re-check may fault and sleep, so this queue cannot use a no-IRQ
+    // spinlock.
+    queue: Mutex<VecDeque<(Waker, u32)>>,
 }
 impl WaitQueue {
     /// Creates a new `WaitQueue`.
@@ -71,16 +73,27 @@ impl WaitQueue {
     /// Wakes up at most `count` tasks whose bitset intersects with the given
     /// bitmask.
     pub fn wake(&self, count: usize, mask: u32) -> usize {
-        let mut woke = 0;
-        self.queue.lock().retain(|(waker, bitset)| {
-            if woke >= count || (bitset & mask) == 0 {
-                true
-            } else {
-                waker.wake_by_ref();
-                woke += 1;
-                false
+        let wakers = {
+            let mut queue = self.queue.lock();
+            let mut retained = VecDeque::with_capacity(queue.len());
+            let mut wakers = Vec::new();
+
+            while let Some((waker, bitset)) = queue.pop_front() {
+                if wakers.len() >= count || (bitset & mask) == 0 {
+                    retained.push_back((waker, bitset));
+                } else {
+                    wakers.push(waker);
+                }
             }
-        });
+
+            *queue = retained;
+            wakers
+        };
+
+        let woke = wakers.len();
+        for waker in wakers {
+            waker.wake();
+        }
         woke
     }
 
@@ -91,15 +104,30 @@ impl WaitQueue {
 
     /// Requeue at most `count` tasks to the target wait queue.
     pub fn requeue(&self, mut count: usize, target: &WaitQueue) -> usize {
-        let tasks: Vec<_> = {
-            let mut wq = self.queue.lock();
-            count = count.min(wq.len());
-            wq.drain(..count).collect()
-        };
-        if !tasks.is_empty() {
-            let mut wq = target.queue.lock();
-            wq.extend(tasks);
+        let self_addr = self as *const Self as usize;
+        let target_addr = target as *const Self as usize;
+        if self_addr == target_addr {
+            return 0;
         }
+
+        let requeue_locked = |src: &mut VecDeque<(Waker, u32)>,
+                              dst: &mut VecDeque<(Waker, u32)>,
+                              count: &mut usize| {
+            *count = (*count).min(src.len());
+            let tasks: Vec<_> = src.drain(..*count).collect();
+            dst.extend(tasks);
+        };
+
+        if self_addr < target_addr {
+            let mut src = self.queue.lock();
+            let mut dst = target.queue.lock();
+            requeue_locked(&mut src, &mut dst, &mut count);
+        } else {
+            let mut dst = target.queue.lock();
+            let mut src = self.queue.lock();
+            requeue_locked(&mut src, &mut dst, &mut count);
+        }
+
         count
     }
 }
