@@ -356,6 +356,7 @@ impl Epoll {
                 .ready_queue
                 .lock()
                 .push_back(Arc::downgrade(&interest));
+            self.inner.poll_ready.wake();
         }
         trace!(
             "Epoll: modify fd={}, events={:?}",
