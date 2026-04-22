@@ -16,7 +16,7 @@ use crate::{
     ext4::Ext4FileSystem,
     loopfile::{resolve_inode_block, resolve_inode_block_allextend},
 };
-
+use crate::bmalloc::LogicalBN;
 pub(super) fn lookup<B: BlockDevice>(
     manager: &HashTreeManager,
     fs: &mut Ext4FileSystem,
@@ -211,7 +211,7 @@ impl HashTreeManager {
             };
 
             for lbn in 0..total_blocks {
-                let phys = match blocks_map.get(&(lbn as u32)) {
+                let phys = match blocks_map.get(&(LogicalBN::new(lbn as u32))) {
                     Some(block) => *block,
                     None => continue,
                 };

@@ -76,6 +76,73 @@ impl fmt::Display for BGIndex {
 /// Absolute physical block number in the filesystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AbsoluteBN(u64);
+/// Logical block number in the file, i.e. the block offset from the start of the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LogicalBN(u32);
+
+impl LogicalBN {
+    /// Creates a new logical block number.
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the underlying raw value.
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Converts this logical block number into `usize`.
+    pub fn as_usize(self) -> Ext4Result<usize> {
+        usize::try_from(self.0).map_err(|_| overflow_error())
+    }
+
+    /// Converts this logical block number into `u64`.
+    pub const fn as_u64(self) -> u64 {
+        self.0 as u64
+    }
+
+    /// Returns a logical block number offset by `delta` blocks.
+    pub fn checked_add(self, delta: u32) -> Ext4Result<Self> {
+        self.0
+            .checked_add(delta)
+            .map(Self)
+            .ok_or_else(overflow_error)
+    }
+
+    /// Returns a logical block number offset by `delta` blocks.
+    pub fn checked_add_usize(self, delta: usize) -> Ext4Result<Self> {
+        let delta = u32::try_from(delta).map_err(|_| overflow_error())?;
+        self.checked_add(delta)
+    }
+
+    /// Returns a logical block number decreased by `delta` blocks.
+    pub fn checked_sub(self, delta: u32) -> Ext4Result<Self> {
+        self.0
+            .checked_sub(delta)
+            .map(Self)
+            .ok_or_else(overflow_error)
+    }
+}
+
+impl From<u32> for LogicalBN {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl TryFrom<u64> for LogicalBN {
+    type Error = Ext4Error;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self).map_err(|_| overflow_error())
+    }
+}
+
+impl fmt::Display for LogicalBN {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 impl AbsoluteBN {
     /// Creates a new absolute block number.

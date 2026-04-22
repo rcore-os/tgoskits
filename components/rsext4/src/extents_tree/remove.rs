@@ -605,7 +605,7 @@ mod tests {
     use super::*;
     use crate::{
         blockdev::{BlockDevice, Jbd2Dev},
-        bmalloc::AbsoluteBN,
+        bmalloc::{AbsoluteBN, LogicalBN},
         cache::bitmap::CacheKey,
         error::{Ext4Error, Ext4Result},
         ext4::{mkfs, mount},
@@ -744,7 +744,7 @@ mod tests {
         for lbn in 0..n {
             let phys = alloc_data_block(fs, dev);
             let _gap = alloc_data_block(fs, dev);
-            let ext = Ext4Extent::new(lbn, phys.raw(), 1);
+            let ext = Ext4Extent::new(LogicalBN::new(lbn), phys.raw(), 1);
             tree.insert_extent(fs, ext, dev).unwrap();
             out.push(ext);
         }
@@ -912,7 +912,7 @@ mod tests {
         let phys = alloc_data_block(&mut fs, &mut dev);
         assert!(bitmap_block_is_allocated(&mut fs, &mut dev, phys));
 
-        let ext = Ext4Extent::new(0, phys.raw(), 1);
+        let ext = Ext4Extent::new(LogicalBN::new(0), phys.raw(), 1);
         {
             let mut tree = ExtentTree::new(&mut inode);
             tree.insert_extent(&mut fs, ext, &mut dev).unwrap();
@@ -932,13 +932,13 @@ mod tests {
         let mut inode = new_extent_inode();
 
         let base = alloc_contiguous(&mut fs, &mut dev, 4);
-        let ext = Ext4Extent::new(0, base.raw(), 4);
+        let ext = Ext4Extent::new(LogicalBN::new(0), base.raw(), 4);
         {
             let mut tree = ExtentTree::new(&mut inode);
             tree.insert_extent(&mut fs, ext, &mut dev).unwrap();
         }
 
-        let del = Ext4Extent::new(1, 0, 2);
+        let del = Ext4Extent::new(LogicalBN::new(1), 0, 2);
         {
             let mut tree = ExtentTree::new(&mut inode);
             tree.remove_extend(&mut fs, del, &mut dev).unwrap();
@@ -983,13 +983,13 @@ mod tests {
         let mut inode = new_extent_inode();
 
         let base = alloc_contiguous(&mut fs, &mut dev, 2);
-        let ext = Ext4Extent::new(0, base.raw(), 2);
+        let ext = Ext4Extent::new(LogicalBN::new(0), base.raw(), 2);
         {
             let mut tree = ExtentTree::new(&mut inode);
             tree.insert_extent(&mut fs, ext, &mut dev).unwrap();
         }
 
-        let del = Ext4Extent::new(0, 0, 2);
+        let del = Ext4Extent::new(LogicalBN::new(0), 0, 2);
         {
             let mut tree = ExtentTree::new(&mut inode);
             tree.remove_extend(&mut fs, del, &mut dev).unwrap();
@@ -1017,16 +1017,16 @@ mod tests {
 
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.insert_extent(&mut fs, Ext4Extent::new(0, base1.raw(), 2), &mut dev)
+            tree.insert_extent(&mut fs, Ext4Extent::new(LogicalBN::new(0), base1.raw(), 2), &mut dev)
                 .unwrap();
-            tree.insert_extent(&mut fs, Ext4Extent::new(4, base2.raw(), 2), &mut dev)
+            tree.insert_extent(&mut fs, Ext4Extent::new(LogicalBN::new(4), base2.raw(), 2), &mut dev)
                 .unwrap();
         }
 
         // delete 3 allocated blocks starting at lbn=1: deletes lbn=1, then skips hole [2..4), then deletes lbn=4 and lbn=5
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, Ext4Extent::new(1, 0, 3), &mut dev)
+            tree.remove_extend(&mut fs, Ext4Extent::new(LogicalBN::new(1), 0, 3), &mut dev)
                 .unwrap();
         }
 
@@ -1062,9 +1062,9 @@ mod tests {
         let base2 = alloc_contiguous(&mut fs, &mut dev, 1);
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.insert_extent(&mut fs, Ext4Extent::new(0, base1.raw(), 2), &mut dev)
+            tree.insert_extent(&mut fs, Ext4Extent::new(LogicalBN::new(0), base1.raw(), 2), &mut dev)
                 .unwrap();
-            tree.insert_extent(&mut fs, Ext4Extent::new(10, base2.raw(), 1), &mut dev)
+            tree.insert_extent(&mut fs, Ext4Extent::new(LogicalBN::new(10), base2.raw(), 1), &mut dev)
                 .unwrap();
         }
 
@@ -1079,7 +1079,7 @@ mod tests {
 
         let res = {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, Ext4Extent::new(0, 0, 10), &mut dev)
+            tree.remove_extend(&mut fs, Ext4Extent::new(LogicalBN::new(0), 0, 10), &mut dev)
         };
         assert!(res.is_err());
 

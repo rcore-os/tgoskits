@@ -1,5 +1,5 @@
 use super::*;
-
+use crate::bmalloc::LogicalBN;
 pub fn truncate<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -66,7 +66,7 @@ fn truncate_inode<B: BlockDevice>(
                 let del_len = if truncate_size == 0 {
                     blocks_map.len() as u32
                 } else {
-                    blocks_map.range(del_start_lbn..).count() as u32
+                    blocks_map.range(LogicalBN::new(del_start_lbn)..).count() as u32
                 };
 
                 if del_len == 0 {
@@ -81,7 +81,7 @@ fn truncate_inode<B: BlockDevice>(
                     };
                     first_lbn
                 } else {
-                    del_start_lbn
+                    LogicalBN::new(del_start_lbn)
                 };
 
                 let chunk = core::cmp::min(del_len, Ext4Extent::EXT_INIT_MAX_LEN as u32);
@@ -93,7 +93,7 @@ fn truncate_inode<B: BlockDevice>(
         }
 
         if new_blocks > old_blocks {
-            let mut new_blocks_map: Vec<(u32, AbsoluteBN)> = Vec::new();
+            let mut new_blocks_map: Vec<(LogicalBN, AbsoluteBN)> = Vec::new();
             for lbn in old_blocks as u32..new_blocks as u32 {
                 let phys = fs.alloc_block(device)?;
                 fs.datablock_cache.modify_new(device, phys, |data| {
@@ -101,7 +101,7 @@ fn truncate_inode<B: BlockDevice>(
                         *b = 0;
                     }
                 })?;
-                new_blocks_map.push((lbn, phys));
+                new_blocks_map.push((LogicalBN::new(lbn), phys));
             }
 
             let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
@@ -115,7 +115,7 @@ fn truncate_inode<B: BlockDevice>(
                     idx += 1;
                     while idx < new_blocks_map.len() {
                         let (cur_lbn, cur_phys) = new_blocks_map[idx];
-                        if cur_lbn == last_lbn + 1
+                        if cur_lbn == last_lbn.checked_add(1).unwrap_or(LogicalBN::new(0))
                             && last_phys.checked_add(1).ok() == Some(cur_phys)
                         {
                             run_len = run_len.saturating_add(1);
@@ -427,7 +427,7 @@ fn write_inode_data<B: BlockDevice>(
                     {
                         let mut tree =
                             ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
-                        let ext = Ext4Extent::new(lbn as u32, new_phys.raw(), 1);
+                        let ext = Ext4Extent::new(LogicalBN::new(lbn as u32), new_phys.raw(), 1);
                         tree.insert_extent(fs, ext, device)?;
                     }
 

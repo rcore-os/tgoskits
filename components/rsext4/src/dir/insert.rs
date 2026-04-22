@@ -3,7 +3,7 @@
 use log::error;
 
 use crate::{
-    blockdev::*, bmalloc::InodeNumber, checksum::update_ext4_dirblock_csum32, config::*,
+    blockdev::*, bmalloc::{InodeNumber, LogicalBN}, checksum::update_ext4_dirblock_csum32, config::*,
     crc32c::ext4_superblock_has_metadata_csum, disknode::*, endian::DiskFormat, entries::*,
     error::*, ext4::*, extents_tree::*, loopfile::*, metadata::Ext4InodeMetadataUpdate,
 };
@@ -50,7 +50,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
             break;
         }
 
-        let phys = match blocks.get(&(lbn as u32)) {
+        let phys = match blocks.get(&LogicalBN::new(lbn as u32)) {
             Some(&b) => b,
             None => {
                 error!(
@@ -163,7 +163,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     let new_lbn = old_blocks as u32;
 
     if fs.superblock.has_extents() && parent_inode.have_extend_header_and_use_extend() {
-        let new_ext = Ext4Extent::new(new_lbn, new_block.raw(), 1);
+        let new_ext = Ext4Extent::new(LogicalBN::new(new_lbn), new_block.raw(), 1);
         let mut tree = ExtentTree::with_checksum(parent_inode, &fs.superblock, parent_ino_num);
         tree.insert_extent(fs, new_ext, device)?;
     } else {

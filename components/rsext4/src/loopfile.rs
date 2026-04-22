@@ -6,8 +6,8 @@ use log::{debug, error};
 
 use crate::{
     blockdev::*,
-    bmalloc::{AbsoluteBN, InodeNumber},
-    checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
+    bmalloc::{AbsoluteBN, InodeNumber, LogicalBN},
+    checksum::verify_ext4_dirblock_checksum,
     config::*,
     disknode::*,
     entries::*,
@@ -59,12 +59,12 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
     _fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
-) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
+) -> Ext4Result<BTreeMap<LogicalBN, AbsoluteBN>> {
     if !inode.have_extend_header_and_use_extend() {
         return Ok(BTreeMap::new());
     }
 
-    fn push_extent_blocks(out: &mut Vec<(u32, AbsoluteBN)>, ext: &Ext4Extent) {
+    fn push_extent_blocks(out: &mut Vec<(LogicalBN, AbsoluteBN)>, ext: &Ext4Extent) {
         if ext.is_unwritten() {
             return;
         }
@@ -74,7 +74,7 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
         }
         let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
         for i in 0..len {
-            let lbn = ext.ee_block.saturating_add(i);
+            let lbn = LogicalBN::new(ext.ee_block.saturating_add(i));
             out.push((lbn, AbsoluteBN::new(base + i as u64)));
         }
     }
@@ -82,7 +82,7 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
     fn walk_node<B: BlockDevice>(
         dev: &mut Jbd2Dev<B>,
         node: &ExtentNode,
-        out: &mut Vec<(u32, AbsoluteBN)>,
+        out: &mut Vec<(LogicalBN, AbsoluteBN)>,
     ) -> Ext4Result<()> {
         match node {
             ExtentNode::Leaf { entries, .. } => {
@@ -111,7 +111,7 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
         None => return Ok(BTreeMap::new()),
     };
 
-    let mut blocks: Vec<(u32, AbsoluteBN)> = Vec::new();
+    let mut blocks: Vec<(LogicalBN, AbsoluteBN)> = Vec::new();
     walk_node(block_dev, &root, &mut blocks)?;
     blocks.sort_unstable_by_key(|(lbn, _)| *lbn);
     blocks.dedup_by_key(|(lbn, _)| *lbn);

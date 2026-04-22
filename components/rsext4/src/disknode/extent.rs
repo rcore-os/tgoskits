@@ -1,3 +1,4 @@
+use crate::bmalloc::LogicalBN;
 /// Extent tree header.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -65,11 +66,11 @@ impl Ext4Extent {
     pub const EXT_UNINIT_MAX_LEN: u16 = 32767;
     pub const EXT_UNWRITTEN_FLAG: u16 = 0x8000;
 
-    pub fn new(logic_start: u32, start_phy_block: u64, len: u16) -> Self {
+    pub fn new(logic_start: LogicalBN, start_phy_block: u64, len: u16) -> Self {
         let high = (start_phy_block >> 32) as u16;
         let low = (start_phy_block & 0xffff_ffff) as u32;
         Self {
-            ee_block: logic_start,
+            ee_block: logic_start.raw(),
             ee_len: len,
             ee_start_hi: high,
             ee_start_lo: low,
