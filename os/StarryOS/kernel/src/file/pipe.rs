@@ -216,8 +216,12 @@ impl Pollable for Pipe {
         let mut events = IoEvents::empty();
         let buf = self.shared.buffer.lock();
         if self.read_side {
-            events.set(IoEvents::IN, buf.occupied_len() > 0);
-            events.set(IoEvents::HUP, self.closed());
+            let closed = self.closed();
+            // Report IN when there is data to read OR when write end is closed
+            // (read will return 0 = EOF). This matches Linux behavior where
+            // select() reports a pipe as readable when the write end closes.
+            events.set(IoEvents::IN, buf.occupied_len() > 0 || closed);
+            events.set(IoEvents::HUP, closed);
         } else {
             events.set(IoEvents::OUT, buf.vacant_len() > 0);
         }
