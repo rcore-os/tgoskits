@@ -330,12 +330,32 @@ fn initrd_range_from_image_config(
     Some((start, start + size))
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", test))]
 fn sanitize_bootargs(bootargs: &str) -> String {
     const RAMDISK_BOOTARGS: [&str; 3] = ["root=/dev/ram0", "rdinit=/init", "rootwait"];
+    const FSCK_REPAIR_BOOTARG: &str = "fsck.repair=yes";
 
     let rewritten = bootargs.replace(" ro ", " rw ");
     let tokens = rewritten.split_whitespace().collect::<Vec<_>>();
+    let has_fsck_policy = tokens.iter().any(|token| {
+        matches!(
+            *token,
+            "fastboot"
+                | "fsck.mode=skip"
+                | "forcefsck"
+                | "fsck.mode=force"
+                | "fsckfix"
+                | "fsck.repair=yes"
+                | "fsck.repair=no"
+        )
+    });
+    let has_block_root = tokens.iter().any(|token| {
+        token.starts_with("root=/dev/")
+            || token.starts_with("root=PARTLABEL=")
+            || token.starts_with("root=LABEL=")
+            || token.starts_with("root=UUID=")
+            || token.starts_with("root=PARTUUID=")
+    });
     let mut sanitized = Vec::with_capacity(tokens.len());
     let mut index = 0;
 
@@ -347,6 +367,10 @@ fn sanitize_bootargs(bootargs: &str) -> String {
 
         sanitized.push(tokens[index]);
         index += 1;
+    }
+
+    if has_block_root && !has_fsck_policy {
+        sanitized.push(FSCK_REPAIR_BOOTARG);
     }
 
     sanitized.join(" ")
@@ -478,7 +502,7 @@ pub fn update_fdt(
 
 #[cfg(test)]
 mod tests {
-    use super::initrd_range_from_image_config;
+    use super::{initrd_range_from_image_config, sanitize_bootargs};
     use axaddrspace::GuestPhysAddr;
     use axvm::config::RamdiskInfo;
 
@@ -497,6 +521,28 @@ mod tests {
                 size: Some(0x1234),
             })),
             Some((0xa000_0000, 0xa000_1234))
+        );
+    }
+
+    #[test]
+    fn sanitize_bootargs_enables_auto_repair_for_block_roots() {
+        let bootargs = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 rootwait rootfstype=ext4";
+
+        assert_eq!(
+            sanitize_bootargs(bootargs),
+            "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 rootwait rootfstype=ext4 \
+             fsck.repair=yes"
+        );
+    }
+
+    #[test]
+    fn sanitize_bootargs_preserves_existing_fsck_policy() {
+        let bootargs =
+            "root=/dev/mmcblk0p2 ro rootwait rootfstype=ext4 fsckfix rdinit=/init root=/dev/ram0";
+
+        assert_eq!(
+            sanitize_bootargs(bootargs),
+            "root=/dev/mmcblk0p2 rw rootwait rootfstype=ext4 fsckfix"
         );
     }
 }
