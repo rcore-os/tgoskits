@@ -102,6 +102,44 @@ impl<B: MappingBackend> MemorySet<B> {
         }
     }
 
+    /// Grows the area containing `addr` by `additional_size` at its end.
+    pub fn extend_area(
+        &mut self,
+        addr: B::Addr,
+        additional_size: usize,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        if additional_size == 0 {
+            return Ok(());
+        }
+
+        // Find the area containing addr.
+        let area_start = self
+            .areas
+            .range(..=addr)
+            .last()
+            .filter(|(_, a)| a.va_range().contains(addr))
+            .map(|(&start, _)| start)
+            .ok_or(MappingError::InvalidParam)?;
+
+        // Only the next area can conflict with a rightward extension.
+        let area_end = self.areas[&area_start].end();
+        let new_end = area_end
+            .checked_add(additional_size)
+            .ok_or(MappingError::InvalidParam)?;
+        if let Some((_, next)) = self.areas.range(area_end..).next() {
+            if new_end > next.start() {
+                return Err(MappingError::AlreadyExists);
+            }
+        }
+
+        self.areas
+            .get_mut(&area_start)
+            .unwrap()
+            .grow_right(additional_size, page_table)?;
+        Ok(())
+    }
+
     /// Add a new memory mapping.
     ///
     /// The mapping is represented by a [`MemoryArea`].

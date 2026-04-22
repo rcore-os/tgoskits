@@ -101,6 +101,20 @@ impl FileBackend {
         Ok(())
     }
 
+    /// Clone with a different start address and a fresh evict listener.
+    pub fn with_start(&self, new_start: VirtAddr, aspace: &Arc<Mutex<AddrSpace>>) -> Self {
+        let inner = Arc::new(FileBackendInner {
+            start: new_start,
+            cache: self.0.cache.clone(),
+            flags: self.0.flags,
+            offset_page: self.0.offset_page,
+            handle: AtomicUsize::new(0),
+            futex_handle: self.0.futex_handle.clone(),
+        });
+        inner.register_listener(aspace);
+        Self(inner)
+    }
+
     pub fn futex_handle(&self) -> Weak<()> {
         Arc::downgrade(&self.0.futex_handle)
     }
@@ -217,16 +231,7 @@ impl BackendOps for FileBackend {
         _new_pt: &mut PageTableCursor,
         new_aspace: &Arc<Mutex<AddrSpace>>,
     ) -> AxResult<Backend> {
-        let inner = Arc::new(FileBackendInner {
-            start: self.0.start,
-            cache: self.0.cache.clone(),
-            flags: self.0.flags,
-            offset_page: self.0.offset_page,
-            handle: AtomicUsize::new(0),
-            futex_handle: self.0.futex_handle.clone(),
-        });
-        inner.register_listener(new_aspace);
-        Ok(Backend::File(FileBackend(inner)))
+        Ok(Backend::File(self.with_start(self.0.start, new_aspace)))
     }
 }
 
