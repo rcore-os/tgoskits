@@ -115,6 +115,9 @@ impl Configurable for GeneralOptions {
             O::ReceiveTimeout(timeout) => {
                 **timeout = Duration::from_nanos(self.recv_timeout_nanos.load(Ordering::Relaxed));
             }
+            O::RecvErr(val) => {
+                **val = false;
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -140,6 +143,9 @@ impl Configurable for GeneralOptions {
             }
             O::SendBuffer(_) | O::ReceiveBuffer(_) => {
                 // TODO(mivik): implement buffer size options
+            }
+            O::RecvErr(_) => {
+                // TODO: Retrieve ICMP errors via errqueue
             }
             _ => return Ok(false),
         }
