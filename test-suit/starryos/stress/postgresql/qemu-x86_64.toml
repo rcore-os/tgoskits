@@ -10,12 +10,12 @@ uefi = false
 to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-apk update >/dev/null 2>&1; apk add postgresql17 >/dev/null 2>&1; \
-mkdir /tmp/pgdata /tmp/pgrun; chmod 0700 /tmp/pgdata /tmp/pgrun; chown postgres:postgres /tmp/pgdata /tmp/pgrun; \
+apk update >/dev/null 2>&1 && apk add postgresql17 2>&1 && \
+mkdir /tmp/pgdata /tmp/pgrun && chmod 0700 /tmp/pgdata /tmp/pgrun && chown postgres:postgres /tmp/pgdata /tmp/pgrun && \
 PG=/usr/libexec/postgresql17; \
 su -s /bin/sh postgres -c "$PG/initdb -D /tmp/pgdata --no-locale --username=postgres" 2>&1 && \
 echo "INITDB_OK" && \
-su -s /bin/sh postgres -c "$PG/pg_ctl -D /tmp/pgdata -l /tmp/pg.log start -w -t 3600 -o '-c max_connections=10 -c shared_buffers=16MB -c unix_socket_directories=/tmp/pgrun -c fsync=off'" 2>&1 && \
+su -s /bin/sh postgres -c "$PG/pg_ctl -D /tmp/pgdata -l /tmp/pg.log start -w -t 60 -o '-c max_connections=10 -c shared_buffers=16MB -c unix_socket_directories=/tmp/pgrun -c fsync=off'" 2>&1 && \
 echo "PGCTL_START_OK" && \
 RESULT=$(su -s /bin/sh postgres -c "$PG/psql -h /tmp/pgrun -d postgres -t -A -c 'SELECT 1'" 2>&1) && \
 echo "SELECT_RESULT=[$RESULT]" && \

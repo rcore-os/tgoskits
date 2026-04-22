@@ -1,6 +1,6 @@
 args = [
     "-nographic", "-machine", "virt,gic-version=2",
-    "-cpu", "cortex-a72",
+    "-cpu", "cortex-a53",
     "-m", "512M",
     "-device", "virtio-blk-pci,drive=disk0",
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/aarch64-unknown-none-softfloat/rootfs-aarch64.img",
@@ -11,8 +11,8 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-apk update >/dev/null 2>&1; apk add postgresql17 >/dev/null 2>&1; \
-mkdir /tmp/pgdata /tmp/pgrun; chmod 0700 /tmp/pgdata /tmp/pgrun; chown postgres:postgres /tmp/pgdata /tmp/pgrun; \
+apk update >/dev/null 2>&1 && apk add postgresql17 2>&1 && \
+mkdir /tmp/pgdata /tmp/pgrun && chmod 0700 /tmp/pgdata /tmp/pgrun && chown postgres:postgres /tmp/pgdata /tmp/pgrun && \
 PG=/usr/libexec/postgresql17; \
 su -s /bin/sh postgres -c "$PG/initdb -D /tmp/pgdata --no-locale --username=postgres" 2>&1 && \
 echo "INITDB_OK" && \

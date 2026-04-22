@@ -12,8 +12,8 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-apk update >/dev/null 2>&1; apk add postgresql17 >/dev/null 2>&1; \
-mkdir /tmp/pgdata /tmp/pgrun; chmod 0700 /tmp/pgdata /tmp/pgrun; chown postgres:postgres /tmp/pgdata /tmp/pgrun; \
+apk update >/dev/null 2>&1 && apk add postgresql17 2>&1 && \
+mkdir /tmp/pgdata /tmp/pgrun && chmod 0700 /tmp/pgdata /tmp/pgrun && chown postgres:postgres /tmp/pgdata /tmp/pgrun && \
 PG=/usr/libexec/postgresql17; \
 su -s /bin/sh postgres -c "$PG/initdb -D /tmp/pgdata --no-locale --username=postgres" 2>&1 && \
 echo "INITDB_OK" && \
