@@ -6,6 +6,7 @@
 use std::cell::Cell;
 
 use rsext4::{
+    api::{DEFAULT_CREATE_MODE, OpenAccessMode, OpenFlags, OpenHow, ResolveFlags, SeekWhence},
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},
     *,
@@ -17,6 +18,15 @@ struct TestBlockDevice {
     block_size: u32,
     is_open: bool,
     now: Cell<i64>,
+}
+
+fn open_rw_create() -> OpenHow {
+    OpenHow {
+        access: OpenAccessMode::ReadWrite,
+        flags: OpenFlags::CREAT,
+        mode: DEFAULT_CREATE_MODE,
+        resolve: ResolveFlags::empty(),
+    }
 }
 
 impl TestBlockDevice {
@@ -145,10 +155,11 @@ fn test_file_operations() {
 
     // Then switch to the descriptor-style API and validate that open/write/read
     // observe the same backing state.
-    let mut file = open(&mut jbd2_dev, &mut fs, "/filetest/api.txt", true).expect("open failed");
+    let mut file = open(&mut jbd2_dev, &mut fs, "/filetest/api.txt", open_rw_create())
+        .expect("open failed");
 
     write_at(&mut jbd2_dev, &mut fs, &mut file, b"API test").expect("write_at failed");
-    lseek(&mut file, 0).expect("lseek failed");
+    lseek(&mut jbd2_dev, &mut fs, &mut file, 0, SeekWhence::Set).expect("lseek failed");
 
     let bytes_read = read_at(&mut jbd2_dev, &mut fs, &mut file, 8).expect("read_at failed");
     assert_eq!(bytes_read, b"API test");
