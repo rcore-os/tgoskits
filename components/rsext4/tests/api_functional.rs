@@ -6,6 +6,7 @@
 use std::cell::Cell;
 
 use rsext4::{
+    api::{DEFAULT_CREATE_MODE, OpenAccessMode, OpenFlags, OpenHow, ResolveFlags, SeekWhence},
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},
     *,
@@ -82,6 +83,24 @@ impl BlockDevice for MockBlockDevice {
 mod api_functional_tests {
     use super::*;
 
+    fn open_readonly() -> OpenHow {
+        OpenHow {
+            access: OpenAccessMode::ReadOnly,
+            flags: OpenFlags::empty(),
+            mode: 0,
+            resolve: ResolveFlags::empty(),
+        }
+    }
+
+    fn open_rw_create() -> OpenHow {
+        OpenHow {
+            access: OpenAccessMode::ReadWrite,
+            flags: OpenFlags::CREAT,
+            mode: DEFAULT_CREATE_MODE,
+            resolve: ResolveFlags::empty(),
+        }
+    }
+
     /// Verifies that opening an existing file and reading through the file-handle
     /// API returns the exact bytes that were written during setup.
     #[test]
@@ -104,7 +123,7 @@ mod api_functional_tests {
         .expect("mkfile failed");
 
         let mut file =
-            open(&mut jbd2_dev, &mut fs, "/apitest/data.txt", false).expect("open failed");
+            open(&mut jbd2_dev, &mut fs, "/apitest/data.txt", open_readonly()).expect("open failed");
 
         let read_data =
             read_at(&mut jbd2_dev, &mut fs, &mut file, test_data.len()).expect("read_at failed");
@@ -128,13 +147,13 @@ mod api_functional_tests {
         mkfile(&mut jbd2_dev, &mut fs, "/write_test/empty.txt", None, None).expect("mkfile failed");
 
         let mut file =
-            open(&mut jbd2_dev, &mut fs, "/write_test/empty.txt", true).expect("open failed");
+            open(&mut jbd2_dev, &mut fs, "/write_test/empty.txt", open_rw_create()).expect("open failed");
 
         // Write once, rewind, and read back the exact payload.
         let write_data = b"This is test data for write_at function";
         write_at(&mut jbd2_dev, &mut fs, &mut file, write_data).expect("write_at failed");
 
-        lseek(&mut file, 0).expect("lseek failed");
+        lseek(&mut jbd2_dev, &mut fs, &mut file, 0, SeekWhence::Set).expect("lseek failed");
         let read_data =
             read_at(&mut jbd2_dev, &mut fs, &mut file, write_data.len()).expect("read_at failed");
         assert_eq!(read_data, write_data);
@@ -162,20 +181,27 @@ mod api_functional_tests {
         )
         .expect("mkfile failed");
 
-        let mut file = open(&mut jbd2_dev, &mut fs, "/seek_test.txt", false).expect("open failed");
+        let mut file = open(&mut jbd2_dev, &mut fs, "/seek_test.txt", open_readonly()).expect("open failed");
 
         // Read from the start.
-        lseek(&mut file, 0).expect("lseek failed");
+        lseek(&mut jbd2_dev, &mut fs, &mut file, 0, SeekWhence::Set).expect("lseek failed");
         let data = read_at(&mut jbd2_dev, &mut fs, &mut file, 5).expect("read_at failed");
         assert_eq!(data, b"01234");
 
         // Read from the middle.
-        lseek(&mut file, 10).expect("lseek failed");
+        lseek(&mut jbd2_dev, &mut fs, &mut file, 10, SeekWhence::Set).expect("lseek failed");
         let data = read_at(&mut jbd2_dev, &mut fs, &mut file, 5).expect("read_at failed");
         assert_eq!(data, b"ABCDE");
 
         // Reading at EOF should return no bytes.
-        lseek(&mut file, test_data.len() as u64).expect("lseek failed");
+        lseek(
+            &mut jbd2_dev,
+            &mut fs,
+            &mut file,
+            test_data.len() as i64,
+            SeekWhence::Set,
+        )
+        .expect("lseek failed");
         let data = read_at(&mut jbd2_dev, &mut fs, &mut file, 1).expect("read_at failed");
         assert_eq!(data, b"");
 
@@ -207,19 +233,33 @@ mod api_functional_tests {
         )
         .expect("mkfile failed");
 
-        let mut file = open(&mut jbd2_dev, &mut fs, "/random_test.dat", true).expect("open failed");
+        let mut file = open(&mut jbd2_dev, &mut fs, "/random_test.dat", open_rw_create()).expect("open failed");
 
         // Overwrite a few fixed offsets and later validate each patched span.
         let write_positions = [100, 250, 500, 750];
         let write_data = b"DATA";
 
         for &pos in &write_positions {
-            lseek(&mut file, pos).expect("lseek failed");
+            lseek(
+                &mut jbd2_dev,
+                &mut fs,
+                &mut file,
+                pos as i64,
+                SeekWhence::Set,
+            )
+            .expect("lseek failed");
             write_at(&mut jbd2_dev, &mut fs, &mut file, write_data).expect("write_at failed");
         }
 
         for &pos in &write_positions {
-            lseek(&mut file, pos).expect("lseek failed");
+            lseek(
+                &mut jbd2_dev,
+                &mut fs,
+                &mut file,
+                pos as i64,
+                SeekWhence::Set,
+            )
+            .expect("lseek failed");
             let data = read_at(&mut jbd2_dev, &mut fs, &mut file, write_data.len())
                 .expect("read_at failed");
             assert_eq!(data, write_data);
@@ -244,7 +284,7 @@ mod api_functional_tests {
 
         mkfile(&mut jbd2_dev, &mut fs, "/large_file.dat", None, None).expect("mkfile failed");
 
-        let mut file = open(&mut jbd2_dev, &mut fs, "/large_file.dat", true).expect("open failed");
+        let mut file = open(&mut jbd2_dev, &mut fs, "/large_file.dat", open_rw_create()).expect("open failed");
 
         // Append fixed-size chunks to exercise repeated buffered writes.
         for _ in 0..chunks_to_write {
@@ -252,7 +292,7 @@ mod api_functional_tests {
         }
 
         // Read the whole file back once and validate structure and contents.
-        lseek(&mut file, 0).expect("lseek failed");
+        lseek(&mut jbd2_dev, &mut fs, &mut file, 0, SeekWhence::Set).expect("lseek failed");
         let data =
             read_at(&mut jbd2_dev, &mut fs, &mut file, expected_size).expect("read_at failed");
         assert_eq!(data.len(), expected_size);
@@ -293,7 +333,7 @@ mod api_functional_tests {
         for i in 1..=5 {
             let filename = format!("/concurrent/file{}.txt", i);
 
-            let mut file = open(&mut jbd2_dev, &mut fs, &filename, false).expect("open failed");
+            let mut file = open(&mut jbd2_dev, &mut fs, &filename, open_readonly()).expect("open failed");
 
             // Each file should expose the same stable prefix when read from offset 0.
             let data = read_at(&mut jbd2_dev, &mut fs, &mut file, 10).expect("read_at failed");
@@ -316,11 +356,11 @@ mod api_functional_tests {
         let mut fs = mount(&mut jbd2_dev).expect("mount failed");
 
         // Opening a missing file without create should fail.
-        let result = open(&mut jbd2_dev, &mut fs, "/nonexistent.txt", false);
+        let result = open(&mut jbd2_dev, &mut fs, "/nonexistent.txt", open_readonly());
         assert!(result.is_err());
 
         // Opening with create should materialize the file.
-        let mut file = open(&mut jbd2_dev, &mut fs, "/new.txt", true).expect("open failed");
+        let mut file = open(&mut jbd2_dev, &mut fs, "/new.txt", open_rw_create()).expect("open failed");
 
         // Empty files should read back as an empty buffer.
         let data = read_at(&mut jbd2_dev, &mut fs, &mut file, 10).expect("read_at failed");
@@ -328,11 +368,11 @@ mod api_functional_tests {
 
         // Record the behavior for an extreme seek. The current implementation
         // may accept large offsets to support future file growth.
-        let seek_result = lseek(&mut file, u64::MAX);
-        println!("lseek(u64::MAX) result: {:?}", seek_result);
+        let seek_result = lseek(&mut jbd2_dev, &mut fs, &mut file, i64::MAX, SeekWhence::Set);
+        assert!(seek_result.is_err());
 
         // Skip writes at the extreme offset to avoid overflow in the test harness.
-        lseek(&mut file, 0).expect("lseek failed");
+        lseek(&mut jbd2_dev, &mut fs, &mut file, 0, SeekWhence::Set).expect("lseek failed");
 
         // A large write should still succeed on a freshly created file.
         let large_data = vec![b'X'; 1024 * 1024]; // 1MB
@@ -360,21 +400,21 @@ mod api_functional_tests {
         )
         .expect("mkfile failed");
 
-        let mut file = open(&mut jbd2_dev, &mut fs, "/boundary.txt", true).expect("open failed");
+        let mut file = open(&mut jbd2_dev, &mut fs, "/boundary.txt", open_rw_create()).expect("open failed");
 
         // Zero-length writes should be accepted as a no-op.
         write_at(&mut jbd2_dev, &mut fs, &mut file, b"").expect("write_at failed");
 
         // Zero-length reads should also return an empty buffer.
-        lseek(&mut file, 0).expect("lseek failed");
+        lseek(&mut jbd2_dev, &mut fs, &mut file, 0, SeekWhence::Set).expect("lseek failed");
         let data = read_at(&mut jbd2_dev, &mut fs, &mut file, 0).expect("read_at failed");
         assert_eq!(data, b"");
 
         // Appending exactly at EOF should preserve the original prefix.
-        lseek(&mut file, 8).expect("lseek failed"); // Length of "Boundary".
+        lseek(&mut jbd2_dev, &mut fs, &mut file, 8, SeekWhence::Set).expect("lseek failed"); // Length of "Boundary".
         write_at(&mut jbd2_dev, &mut fs, &mut file, b" test").expect("write_at failed");
 
-        lseek(&mut file, 8).expect("lseek failed");
+        lseek(&mut jbd2_dev, &mut fs, &mut file, 8, SeekWhence::Set).expect("lseek failed");
         let data = read_at(&mut jbd2_dev, &mut fs, &mut file, 5).expect("read_at failed");
         assert_eq!(data, b" test");
 
