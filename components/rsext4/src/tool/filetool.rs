@@ -1,10 +1,13 @@
-//! Small utility helpers shared across the filesystem implementation.
+//! mkfs/layout helpers and small filesystem utilities.
 
 use alloc::{vec, vec::*};
 
 use log::debug;
 
-use crate::{ext4::*, superblock::*};
+use crate::{
+    ext4::{BlcokGroupLayout, Ext4FileSystem},
+    superblock::{Ext4Superblock, UUID},
+};
 
 /// Generates a deterministic UUID-like value as four `u32` words.
 pub fn generate_uuid() -> UUID {
@@ -63,13 +66,14 @@ pub fn need_redundant_backup(gid: u32) -> bool {
     }
     false
 }
+
 /// Returns whether `number` is an exact power of `base`.
 pub fn is_numbers_power(number: usize, base: usize) -> bool {
     let mut tmp_number = number;
     if tmp_number == 1 {
         return true;
     }
-    while tmp_number.is_multiple_of(base) {
+    while tmp_number % base == 0 {
         tmp_number /= base;
     }
     tmp_number == 1
