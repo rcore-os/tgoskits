@@ -1,10 +1,6 @@
 use super::*;
 
-/// Set the current file offset.
-pub fn lseek(file: &mut OpenFile, location: u64) -> Ext4Result<()> {
-    file.offset = location;
-    Ok(())
-}
+use crate::bmalloc::LogicalBN;
 
 fn refresh_open_file_inode<B: BlockDevice>(
     dev: &mut Jbd2Dev<B>,
@@ -17,44 +13,6 @@ fn refresh_open_file_inode<B: BlockDevice>(
     file.inode_num = ino;
     file.inode = inode;
     Ok(())
-}
-
-/// Open a file by path.
-pub fn open<B: BlockDevice>(
-    dev: &mut Jbd2Dev<B>,
-    fs: &mut Ext4FileSystem,
-    path: &str,
-    create: bool,
-) -> Ext4Result<OpenFile> {
-    let norm_path = split_paren_child_and_tranlatevalid(path);
-
-    if let Ok(Some(inode)) = get_file_inode(fs, dev, &norm_path) {
-        let real_inode = inode.1;
-        return Ok(OpenFile {
-            inode_num: inode.0,
-            path: norm_path,
-            inode: real_inode,
-            offset: 0,
-        });
-    }
-
-    if !create {
-        return Err(Ext4Error::not_found());
-    }
-
-    mkfile(dev, fs, &norm_path, None, None)?;
-
-    let inode = match get_file_inode(fs, dev, &norm_path)? {
-        Some(ino) => ino,
-        None => return Err(Ext4Error::corrupted()),
-    };
-
-    Ok(OpenFile {
-        inode_num: inode.0,
-        path: norm_path,
-        inode: inode.1,
-        offset: 0,
-    })
 }
 
 /// Writes data at the current file offset.
@@ -133,6 +91,9 @@ pub fn read_at<B: BlockDevice>(
     let start_lbn = start_off / block_bytes;
     let end_lbn = (end_off - 1) / block_bytes;
 
+    // Snapshot the current extent map once, then copy each intersecting logical block.
+    let extent_map = resolve_inode_block_allextend(fs, dev, &mut file.inode)?;
+
     let mut out = Vec::with_capacity(to_read as usize);
     for lbn in start_lbn..=end_lbn {
         let lbn_start = lbn * block_bytes;
@@ -145,7 +106,7 @@ pub fn read_at<B: BlockDevice>(
             continue;
         }
 
-        if let Some(phys) = resolve_inode_block(dev, &mut file.inode, lbn as u32)? {
+        if let Some(&phys) = extent_map.get(&LogicalBN::new(lbn as u32)) {
             let cached = fs.datablock_cache.get_or_load(dev, phys)?;
             let data = &cached.data[..block_bytes as usize];
             out.extend_from_slice(&data[copy_start as usize..(copy_start + copy_len) as usize]);
