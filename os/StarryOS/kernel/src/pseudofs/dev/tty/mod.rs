@@ -116,15 +116,19 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             }
             TCSETS | TCSETSF | TCSETSW => {
                 // TODO: drain output?
-                *self.terminal.termios.lock() =
-                    Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
+                // Note: vm_read() must complete before acquiring the SpinNoPreempt lock.
+                // Faultable user memory access inside an atomic context (preemption
+                // disabled) will call might_sleep() in handle_page_fault and panic.
+                let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
+                *self.terminal.termios.lock() = termios;
                 if cmd == TCSETSF {
                     self.ldisc.lock().drain_input();
                 }
             }
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
                 // TODO: drain output?
-                *self.terminal.termios.lock() = Arc::new((arg as *const Termios2).vm_read()?);
+                let termios = Arc::new((arg as *const Termios2).vm_read()?);
+                *self.terminal.termios.lock() = termios;
                 if cmd == TCSETSF2 {
                     self.ldisc.lock().drain_input();
                 }
