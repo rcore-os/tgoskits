@@ -104,12 +104,15 @@ impl WaitQueue {
 
     /// Requeue at most `count` tasks to the target wait queue.
     pub fn requeue(&self, count: usize, target: &WaitQueue) -> usize {
-        let requeue_locked =
-            |src: &mut VecDeque<(Waker, u32)>, dst: &mut VecDeque<(Waker, u32)>, count: usize| {
-                let count = count.min(src.len());
-                dst.extend(src.drain(..*count));
-                count
-            };
+        fn requeue_locked(
+            src: &mut VecDeque<(Waker, u32)>,
+            dst: &mut VecDeque<(Waker, u32)>,
+            count: usize,
+        ) -> usize {
+            let count = count.min(src.len());
+            dst.extend(src.drain(..count));
+            count
+        }
 
         match addr_of!(self).cmp(&addr_of!(target)) {
             Ordering::Less => {
