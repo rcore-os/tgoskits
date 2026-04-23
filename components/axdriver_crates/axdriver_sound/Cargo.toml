@@ -1,0 +1,17 @@
+[package]
+name = "ax-driver-sound"
+edition.workspace = true
+version = "0.3.11"
+repository.workspace = true
+authors.workspace = true
+description = "Common traits and types for sound device drivers"
+keywords = ["arceos", "driver", "sound"]
+categories.workspace = true
+readme = "README.md"
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+ax-driver-base = { version = "0.3" }
