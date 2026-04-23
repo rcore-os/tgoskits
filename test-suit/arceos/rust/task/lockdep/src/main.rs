@@ -37,7 +37,7 @@ fn lockdep_case() -> &'static str {
         Some(case) => case,
         None => panic!(
             "LOCKDEP_CASE is required; choose one of: mutex-single, mutex-two-task, spin-single, \
-             spin-two-task"
+             spin-two-task, mixed-single, mixed-two-task"
         ),
     }
 }
@@ -128,12 +128,54 @@ fn spin_two_task_abba() {
 }
 
 #[cfg(feature = "ax-std")]
+fn mixed_single_task_abba() {
+    let lock_a = SpinRaw::new(0usize);
+    let lock_b = Mutex::new(0usize);
+
+    {
+        let _guard_a = lock_a.lock();
+        let _guard_b = lock_b.lock();
+        println!("mixed-single: recorded spin A -> mutex B");
+    }
+
+    let _guard_b = lock_b.lock();
+    let _guard_a = lock_a.lock();
+}
+
+#[cfg(feature = "ax-std")]
+fn mixed_two_task_abba() {
+    let lock_a = Arc::new(SpinRaw::new(0usize));
+    let lock_b = Arc::new(Mutex::new(0usize));
+    let stage = Arc::new(AtomicUsize::new(0));
+
+    let thread_lock_a = lock_a.clone();
+    let thread_lock_b = lock_b.clone();
+    let thread_stage = stage.clone();
+
+    let handle = thread::spawn(move || {
+        {
+            let _guard_a = thread_lock_a.lock();
+            let _guard_b = thread_lock_b.lock();
+            println!("mixed-two-task: thread AB recorded spin A -> mutex B");
+        }
+        thread_stage.store(1, Ordering::Release);
+    });
+
+    wait_until(&stage, 1);
+    let _guard_b = lock_b.lock();
+    let _guard_a = lock_a.lock();
+    handle.join().unwrap();
+}
+
+#[cfg(feature = "ax-std")]
 fn run_case(case: &str) {
     match case {
         "mutex-single" => mutex_single_task_abba(),
         "mutex-two-task" => mutex_two_task_abba(),
         "spin-single" => spin_single_task_abba(),
         "spin-two-task" => spin_two_task_abba(),
+        "mixed-single" => mixed_single_task_abba(),
+        "mixed-two-task" => mixed_two_task_abba(),
         other => panic!("unsupported LOCKDEP_CASE: {other}"),
     }
 }
