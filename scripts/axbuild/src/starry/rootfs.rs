@@ -678,7 +678,10 @@ fn prepare_host_cross_build_env(
             layout.staging_root.display().to_string(),
         ),
         ("PKG_CONFIG_PATH".to_string(), String::new()),
-    ];
+    ]
+    .into_iter()
+    .chain(guest_runtime_envs(&layout.staging_root))
+    .collect();
 
     Ok(HostCrossBuildEnv {
         cmake,
@@ -937,7 +940,9 @@ fn apply_case_script_envs(
     path_entries.extend(std::env::split_paths(&host_path));
 
     command.env("PATH", std::env::join_paths(path_entries).unwrap());
-    command.env("QEMU_LD_PREFIX", &layout.staging_root);
+    for (key, value) in guest_runtime_envs(&layout.staging_root) {
+        command.env(key, value);
+    }
 
     for (key, value) in script_envs {
         command.env(key, value);
@@ -1059,7 +1064,7 @@ fn write_guest_exec_wrapper(
 ) -> anyhow::Result<()> {
     let guest_path = staging_root.join(guest_relative_path);
     let mut body = format!(
-        "export QEMU_LD_PREFIX={root}\nexec {qemu} -0 {guest} -L {root} {guest}",
+        "exec {qemu} -0 {guest} -L {root} {guest}",
         root = shell_single_quote(staging_root),
         qemu = shell_single_quote(qemu_runner),
         guest = shell_single_quote(&guest_path),
@@ -1080,9 +1085,9 @@ fn write_apk_wrapper_script(
     layout: &CaseAssetLayout,
 ) -> anyhow::Result<()> {
     let body = format!(
-        "export QEMU_LD_PREFIX={root}\nexec {qemu} -L {root} {apk} --root {root} \
-         --repositories-file {repositories} --keys-dir {keys} --cache-dir {cache} --update-cache \
-         --timeout 60 --no-interactive --force-no-chroot --scripts=no \"$@\"\n",
+        "exec {qemu} -L {root} {apk} --root {root} --repositories-file {repositories} --keys-dir \
+         {keys} --cache-dir {cache} --timeout 60 --no-interactive --force-no-chroot --scripts=no \
+         \"$@\"\n",
         root = shell_single_quote(staging_root),
         qemu = shell_single_quote(qemu_runner),
         apk = shell_single_quote(staging_root.join("sbin/apk")),
@@ -1091,6 +1096,28 @@ fn write_apk_wrapper_script(
         cache = shell_single_quote(&layout.apk_cache_dir),
     );
     write_wrapper_script(path, &body)
+}
+
+fn guest_ld_library_path(staging_root: &Path) -> String {
+    ["/lib", "/usr/lib", "/usr/local/lib"]
+        .into_iter()
+        .map(|path| staging_root.join(path.trim_start_matches('/')))
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+fn guest_runtime_envs(staging_root: &Path) -> Vec<(String, String)> {
+    vec![
+        (
+            "QEMU_LD_PREFIX".to_string(),
+            staging_root.display().to_string(),
+        ),
+        (
+            "LD_LIBRARY_PATH".to_string(),
+            guest_ld_library_path(staging_root),
+        ),
+    ]
 }
 
 fn write_wrapper_script(path: &Path, body: &str) -> anyhow::Result<()> {
@@ -1726,6 +1753,14 @@ mod tests {
             command_env(&command, STARRY_APK_REGION_VAR),
             Some("us".to_string())
         );
+        assert_eq!(
+            command_env(&command, "QEMU_LD_PREFIX"),
+            Some(layout.staging_root.display().to_string())
+        );
+        assert_eq!(
+            command_env(&command, "LD_LIBRARY_PATH"),
+            Some(guest_ld_library_path(&layout.staging_root))
+        );
     }
 
     #[test]
@@ -1739,7 +1774,17 @@ mod tests {
             pkg_config: PathBuf::from("/usr/bin/pkg-config"),
             make_program: PathBuf::from("/usr/bin/make"),
             cmake_toolchain_file: PathBuf::from("/tmp/cmake-toolchain.cmake"),
-            command_envs: vec![("PKG_CONFIG_LIBDIR".to_string(), "/sysroot".to_string())],
+            command_envs: vec![
+                ("PKG_CONFIG_LIBDIR".to_string(), "/sysroot".to_string()),
+                (
+                    "QEMU_LD_PREFIX".to_string(),
+                    layout.staging_root.display().to_string(),
+                ),
+                (
+                    "LD_LIBRARY_PATH".to_string(),
+                    guest_ld_library_path(&layout.staging_root),
+                ),
+            ],
         };
 
         let command = build_cmake_configure_command(&case, &layout, &build_env);
@@ -1760,6 +1805,14 @@ mod tests {
         assert_eq!(
             command_env(&command, "PKG_CONFIG_LIBDIR"),
             Some("/sysroot".to_string())
+        );
+        assert_eq!(
+            command_env(&command, "QEMU_LD_PREFIX"),
+            Some(layout.staging_root.display().to_string())
+        );
+        assert_eq!(
+            command_env(&command, "LD_LIBRARY_PATH"),
+            Some(guest_ld_library_path(&layout.staging_root))
         );
     }
 
@@ -1897,6 +1950,22 @@ mod tests {
             .map(|addr| format!("nameserver {addr}"))
             .collect::<Vec<_>>();
         assert_eq!(usable, vec!["nameserver 8.8.8.8".to_string()]);
+    }
+
+    #[test]
+    fn guest_ld_library_path_prefers_guest_library_directories() {
+        let root = tempdir().unwrap();
+        let staging_root = root.path().join("staging-root");
+
+        assert_eq!(
+            guest_ld_library_path(&staging_root),
+            format!(
+                "{}:{}:{}",
+                staging_root.join("lib").display(),
+                staging_root.join("usr/lib").display(),
+                staging_root.join("usr/local/lib").display()
+            )
+        );
     }
 
     #[test]
