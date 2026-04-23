@@ -1,0 +1,14 @@
+[package]
+name = "arceos-lockdep"
+version = "0.3.1"
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+description = "A regression test for ArceOS lockdep lock-order detection"
+publish = false
+
+[features]
+lockdep = ["dep:ax-sync", "ax-sync/lockdep"]
+
+[dependencies]
+ax-std = { workspace = true, features = ["alloc", "multitask"], optional = true }
+ax-sync = { workspace = true, optional = true }
