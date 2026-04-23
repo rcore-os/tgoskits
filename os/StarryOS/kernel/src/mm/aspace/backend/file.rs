@@ -1,5 +1,6 @@
 use alloc::{
     boxed::Box,
+    string::{String, ToString},
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -10,18 +11,26 @@ use ax_fs::{CachedFile, FileFlags};
 use ax_hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_sync::Mutex;
+use weak_map::StrongRef;
 
 use super::{AddrSpace, Backend, BackendOps, PopulateCallback, pages_in};
 
 #[doc(hidden)]
 pub struct FileBackendInner {
-    start: VirtAddr,
+    shared: bool,
+    file_data: Mutex<FileBackendInnerData>,
     cache: CachedFile,
     flags: FileFlags,
-    offset_page: u32,
     handle: AtomicUsize,
     futex_handle: Arc<()>,
 }
+
+#[derive(Clone)]
+struct FileBackendInnerData {
+    start: VirtAddr,
+    offset_page: u32,
+}
+
 impl Drop for FileBackendInner {
     fn drop(&mut self) {
         let handle = self.handle.load(Ordering::Acquire);
@@ -61,10 +70,11 @@ impl FileBackendInner {
     }
 
     fn on_evict(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) {
-        let Some(pn) = pn.checked_sub(self.offset_page) else {
+        let file_data = self.file_data.lock();
+        let Some(pn) = pn.checked_sub(file_data.offset_page) else {
             return;
         };
-        let vaddr = self.start + pn as usize * PageSize::Size4K as usize;
+        let vaddr = file_data.start + pn as usize * PageSize::Size4K as usize;
         if !aspace.find_area(vaddr).is_some_and(
             |it| matches!(it.backend(), Backend::File(file) if Arc::ptr_eq(&file.0, self)),
         ) {
@@ -84,7 +94,7 @@ impl FileBackendInner {
 
 /// File-backed mapping backend.
 #[derive(Clone)]
-pub struct FileBackend(Arc<FileBackendInner>);
+pub struct FileBackend(Arc<FileBackendInner>, Weak<Mutex<AddrSpace>>);
 impl FileBackend {
     fn check_flags(&self, flags: MappingFlags) -> AxResult {
         let mut required_flags = FileFlags::empty();
@@ -103,6 +113,14 @@ impl FileBackend {
 
     pub fn futex_handle(&self) -> Weak<()> {
         Arc::downgrade(&self.0.futex_handle)
+    }
+
+    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, bool)> {
+        let loc = self.0.cache.location();
+        let name = loc.absolute_path().map(|pb| pb.to_string())?;
+        let offset = (self.0.file_data.lock().offset_page as u64) * PAGE_SIZE_4K as u64;
+        let inode = loc.inode();
+        Ok((name, Some(offset), Some(inode), self.0.shared))
     }
 }
 
@@ -151,7 +169,9 @@ impl BackendOps for FileBackend {
     ) -> AxResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
         let mut to_be_evicted = Vec::new();
-        let start_page = ((range.start - self.0.start) / PAGE_SIZE_4K) as u32 + self.0.offset_page;
+        let file_data = self.0.file_data.lock();
+        let start_page =
+            ((range.start - file_data.start) / PAGE_SIZE_4K) as u32 + file_data.offset_page;
         for (i, addr) in pages_in(range, PageSize::Size4K)?.enumerate() {
             let pn = start_page + i as u32;
             match pt.query(addr) {
@@ -218,15 +238,53 @@ impl BackendOps for FileBackend {
         new_aspace: &Arc<Mutex<AddrSpace>>,
     ) -> AxResult<Backend> {
         let inner = Arc::new(FileBackendInner {
-            start: self.0.start,
+            shared: self.0.shared,
+            file_data: Mutex::new(self.0.file_data.lock().clone()),
             cache: self.0.cache.clone(),
             flags: self.0.flags,
-            offset_page: self.0.offset_page,
             handle: AtomicUsize::new(0),
             futex_handle: self.0.futex_handle.clone(),
         });
         inner.register_listener(new_aspace);
-        Ok(Backend::File(FileBackend(inner)))
+        Ok(Backend::File(FileBackend(inner, new_aspace.downgrade())))
+    }
+
+    fn split(&mut self, align_diff: usize) -> Option<Backend> {
+        assert!(align_diff.is_multiple_of(PAGE_SIZE_4K));
+        if align_diff == 0 {
+            return None;
+        }
+        let file_data = self.0.file_data.lock();
+        let inner = Arc::new(FileBackendInner {
+            shared: self.0.shared,
+            file_data: Mutex::new(FileBackendInnerData {
+                start: file_data.start + align_diff,
+                offset_page: file_data.offset_page + (align_diff / PAGE_SIZE_4K) as u32,
+            }),
+            cache: self.0.cache.clone(),
+            flags: self.0.flags,
+            handle: AtomicUsize::new(0),
+            futex_handle: self.0.futex_handle.clone(),
+        });
+
+        if let Some(aspace) = self.1.upgrade() {
+            inner.register_listener(&aspace);
+        } else {
+            return None;
+        }
+        Some(Backend::File(FileBackend(inner, self.1.clone())))
+    }
+
+    fn shrink_left(&mut self, shrink_size: usize) {
+        assert!(shrink_size.is_multiple_of(PAGE_SIZE_4K));
+
+        let mut file_data = self.0.file_data.lock();
+        file_data.start += shrink_size;
+        file_data.offset_page += (shrink_size / PAGE_SIZE_4K) as u32;
+    }
+
+    fn shrink_right(&mut self, _shrink_size: usize) {
+        // shrinking right does not require any action since the file backend does not have any state
     }
 }
 
@@ -237,17 +295,18 @@ impl Backend {
         flags: FileFlags,
         offset: usize,
         aspace: &Arc<Mutex<AddrSpace>>,
+        shared: bool,
     ) -> Self {
         let offset_page = (offset / PAGE_SIZE_4K) as u32;
         let inner = Arc::new(FileBackendInner {
-            start,
+            shared,
+            file_data: Mutex::new(FileBackendInnerData { start, offset_page }),
             cache,
             flags,
-            offset_page,
             handle: AtomicUsize::new(0),
             futex_handle: Arc::new(()),
         });
         inner.register_listener(aspace);
-        Self::File(FileBackend(inner))
+        Self::File(FileBackend(inner, aspace.downgrade()))
     }
 }

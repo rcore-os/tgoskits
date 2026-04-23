@@ -115,6 +115,7 @@ fn map_elf<'a>(
             FileBackend::Cached(cache.clone()),
             ph.offset,
             Some(ph.offset + ph.file_size),
+            false,
         );
         uspace.map(
             seg_start.align_down_4k(),
@@ -327,7 +328,7 @@ pub fn load_user_app(
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         false,
-        Backend::new_alloc(ustack_start, PageSize::Size4K),
+        Backend::new_alloc(ustack_start, PageSize::Size4K, "[stack]"),
     )?;
 
     let stack_data = app_stack_region(args, envs, &auxv, ustack_top.into());
@@ -347,7 +348,7 @@ pub fn load_user_app(
         heap_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
-        Backend::new_alloc(heap_start, PageSize::Size4K),
+        Backend::new_alloc(heap_start, PageSize::Size4K, "[heap]"),
     )?;
 
     Ok((entry, user_sp))
