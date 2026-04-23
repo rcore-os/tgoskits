@@ -6,7 +6,7 @@ extern crate std;
 
 mod base;
 #[cfg(feature = "lockdep")]
-mod lockdep;
+pub mod lockdep;
 
 use ax_kernel_guard::{NoOp, NoPreempt, NoPreemptIrqSave};
 
