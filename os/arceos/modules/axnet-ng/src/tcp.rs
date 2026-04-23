@@ -1,6 +1,6 @@
 use alloc::{vec, vec::Vec};
 use core::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, Ordering},
     task::Context,
 };
@@ -14,7 +14,7 @@ use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,
     time::Duration,
-    wire::{IpEndpoint, IpListenEndpoint},
+    wire::{IpAddress, IpEndpoint, IpListenEndpoint},
 };
 use spin::Lazy;
 
@@ -68,7 +68,7 @@ impl TcpSocket {
     }
 
     /// Creates a new TCP socket that is already connected.
-    fn new_connected(handle: SocketHandle) -> Self {
+    fn new_connected(handle: SocketHandle, is_ipv6: bool) -> Self {
         let result = Self {
             state: StateLock::new(State::Connected),
             handle,
@@ -80,6 +80,7 @@ impl TcpSocket {
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
         };
+        result.general.set_is_ipv6(is_ipv6);
         let endpoint = result.with_smol_socket(|socket| socket_bound_endpoint(socket));
         *result.bound_endpoint.lock() = endpoint;
         result
@@ -135,13 +136,49 @@ impl TcpSocket {
             .map_or(AxError::ConnectionRefused, AxError::from)
     }
 
+    fn unspecified_addr(&self) -> IpAddr {
+        if self.general.is_ipv6() {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        }
+    }
+
+    fn normalize_socket_addr(&self, addr: SocketAddr) -> AxResult<SocketAddr> {
+        match (self.general.is_ipv6(), addr) {
+            (false, SocketAddr::V4(_)) => Ok(addr),
+            (true, SocketAddr::V6(addr)) => {
+                if let Some(v4) = addr.ip().to_ipv4_mapped() {
+                    if self.general.v6only() {
+                        Err(AxError::from(LinuxError::EAFNOSUPPORT))
+                    } else {
+                        Ok(SocketAddr::new(IpAddr::V4(v4), addr.port()))
+                    }
+                } else {
+                    Ok(SocketAddr::V6(addr))
+                }
+            }
+            _ => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
+        }
+    }
+
+    fn ip_addr_for_user(&self, addr: Option<IpAddress>) -> IpAddr {
+        match addr {
+            Some(IpAddress::Ipv4(v4)) if self.general.is_ipv6() => IpAddr::V6(v4.to_ipv6_mapped()),
+            Some(addr) => addr.into(),
+            None => self.unspecified_addr(),
+        }
+    }
+
     fn poll_connect(&self) -> IoEvents {
         let mut events = IoEvents::empty();
         self.with_smol_socket(|socket| match socket.state() {
             smol::State::SynSent | smol::State::SynReceived => {
                 // wait for connection
             }
-            smol::State::Established => {
+            smol::State::Established | smol::State::CloseWait => {
+                // CloseWait: server accepted then immediately sent FIN.
+                // connect() should still succeed because the 3-way handshake completed.
                 self.clear_pending_error();
                 self.state.set(State::Connected); // connected
                 debug!(
@@ -254,7 +291,7 @@ impl Configurable for TcpSocket {
 }
 impl SocketOps for TcpSocket {
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
-        let mut local_addr = local_addr.into_ip()?;
+        let mut local_addr = self.normalize_socket_addr(local_addr.into_ip()?)?;
         self.state
             .lock(State::Idle)
             .map_err(|_| ax_err_type!(InvalidInput, "already bound"))?
@@ -291,7 +328,7 @@ impl SocketOps for TcpSocket {
     }
 
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
-        let remote_addr = remote_addr.into_ip()?;
+        let remote_addr = self.normalize_socket_addr(remote_addr.into_ip()?)?;
         self.state
             .lock(State::Idle)
             .map_err(|state| {
@@ -384,7 +421,12 @@ impl SocketOps for TcpSocket {
                 if register_bound {
                     register_tcp_bound(bound_endpoint)?;
                 }
-                if let Err(err) = LISTEN_TABLE.listen(bound_endpoint, backlog) {
+                if let Err(err) = LISTEN_TABLE.listen(
+                    bound_endpoint,
+                    backlog,
+                    self.general.is_ipv6(),
+                    self.general.v6only(),
+                ) {
                     if register_bound {
                         unregister_tcp_bound(bound_endpoint);
                     }
@@ -413,12 +455,12 @@ impl SocketOps for TcpSocket {
         let bound_port = self.bound_endpoint()?.port;
         self.general.recv_poller(self, || {
             poll_interfaces();
-            let handle = {
+            let (handle, is_ipv6) = {
                 let sockets = SOCKET_SET.inner.lock();
                 LISTEN_TABLE.accept(bound_port, &sockets)?
             };
             Ok({
-                let socket = TcpSocket::new_connected(handle);
+                let socket = TcpSocket::new_connected(handle, is_ipv6);
                 debug!(
                     "accepted connection from {}, {}",
                     handle,
@@ -493,21 +535,32 @@ impl SocketOps for TcpSocket {
                 .unwrap_or_else(|| *self.bound_endpoint.lock())
         });
         Ok(SocketAddrEx::Ip(SocketAddr::new(
-            endpoint
-                .addr
-                .map_or_else(|| Ipv4Addr::UNSPECIFIED.into(), Into::into),
+            self.ip_addr_for_user(endpoint.addr),
             endpoint.port,
         )))
     }
 
     fn peer_addr(&self) -> AxResult<SocketAddrEx> {
+        let is_ipv6 = self.general.is_ipv6();
         self.with_smol_socket(|socket| {
-            Ok(SocketAddrEx::Ip(
-                socket
-                    .remote_endpoint()
-                    .ok_or(AxError::NotConnected)?
+            let endpoint = socket.remote_endpoint().ok_or(AxError::NotConnected)?;
+            if is_ipv6 {
+                // For an IPv6 socket with an IPv4 peer, present the address as
+                // IPv4-mapped (::ffff:a.b.c.d) so that userspace sees AF_INET6.
+                let mapped_addr = match endpoint.addr {
+                    IpAddress::Ipv4(v4) => IpAddress::Ipv6(v4.to_ipv6_mapped()),
+                    other => other,
+                };
+                Ok(SocketAddrEx::Ip(
+                    IpEndpoint {
+                        addr: mapped_addr,
+                        port: endpoint.port,
+                    }
                     .into(),
-            ))
+                ))
+            } else {
+                Ok(SocketAddrEx::Ip(endpoint.into()))
+            }
         })
     }
 

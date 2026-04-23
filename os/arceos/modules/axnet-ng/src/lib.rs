@@ -48,7 +48,7 @@ use core::{
 
 use ax_driver::{AxDeviceContainer, prelude::*};
 use ax_sync::Mutex;
-use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
+use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr};
 use spin::{Lazy, Once};
 
 pub use self::socket::*;
@@ -91,6 +91,14 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
         None,
         lo_dev,
         lo_ip.address().into(),
+    ));
+
+    let lo_ip6 = Ipv6Cidr::new(Ipv6Address::new(0, 0, 0, 0, 0, 0, 0, 1), 128);
+    router.add_rule(Rule::new(
+        lo_ip6.into(),
+        None,
+        lo_dev,
+        lo_ip6.address().into(),
     ));
 
     let static_network = !IP.is_empty() && !GATEWAY.is_empty();
@@ -142,6 +150,7 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
     let mut service = Service::new(router);
     service.iface.update_ip_addrs(|ip_addrs| {
         ip_addrs.push(lo_ip.into()).unwrap();
+        ip_addrs.push(lo_ip6.into()).unwrap();
         if let Some(eth0_ip) = eth0_ip {
             ip_addrs.push(eth0_ip.into()).unwrap();
         }

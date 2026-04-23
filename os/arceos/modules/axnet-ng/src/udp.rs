@@ -1,10 +1,10 @@
 use alloc::vec;
 use core::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
+use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
 use ax_io::prelude::*;
 use ax_sync::Mutex;
 use axpoll::{IoEvents, Pollable};
@@ -69,6 +69,40 @@ impl UdpSocket {
             None => Err(AxError::NotConnected),
         }
     }
+
+    fn normalize_socket_addr(&self, addr: SocketAddr) -> AxResult<SocketAddr> {
+        match (self.general.is_ipv6(), addr) {
+            (false, SocketAddr::V4(_)) => Ok(addr),
+            (true, SocketAddr::V6(addr)) => {
+                if let Some(v4) = addr.ip().to_ipv4_mapped() {
+                    if self.general.v6only() {
+                        Err(AxError::from(LinuxError::EAFNOSUPPORT))
+                    } else {
+                        Ok(SocketAddr::new(IpAddr::V4(v4), addr.port()))
+                    }
+                } else {
+                    Ok(SocketAddr::V6(addr))
+                }
+            }
+            _ => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
+        }
+    }
+
+    fn unspecified_addr(&self) -> IpAddr {
+        if self.general.is_ipv6() {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        }
+    }
+
+    fn ip_endpoint_for_user(&self, endpoint: IpEndpoint) -> SocketAddr {
+        let addr = match endpoint.addr {
+            IpAddress::Ipv4(v4) if self.general.is_ipv6() => IpAddr::V6(v4.to_ipv6_mapped()),
+            addr => addr.into(),
+        };
+        SocketAddr::new(addr, endpoint.port)
+    }
 }
 
 impl Configurable for UdpSocket {
@@ -114,7 +148,7 @@ impl Configurable for UdpSocket {
 }
 impl SocketOps for UdpSocket {
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
-        let mut local_addr = local_addr.into_ip()?;
+        let mut local_addr = self.normalize_socket_addr(local_addr.into_ip()?)?;
         let mut guard = self.local_addr.write();
 
         if local_addr.port() == 0 {
@@ -150,11 +184,11 @@ impl SocketOps for UdpSocket {
     }
 
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
-        let remote_addr = remote_addr.into_ip()?;
+        let remote_addr = self.normalize_socket_addr(remote_addr.into_ip()?)?;
         let mut guard = self.peer_addr.write();
         if self.local_addr.read().is_none() {
             self.bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                self.unspecified_addr(),
                 0,
             )))?;
         }
@@ -169,7 +203,7 @@ impl SocketOps for UdpSocket {
     fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
         let (remote_addr, source_addr) = match options.to {
             Some(addr) => {
-                let addr = IpEndpoint::from(addr.into_ip()?);
+                let addr = IpEndpoint::from(self.normalize_socket_addr(addr.into_ip()?)?);
                 let src = get_service().get_source_address(&addr.addr);
                 (addr, src)
             }
@@ -181,7 +215,7 @@ impl SocketOps for UdpSocket {
 
         if self.local_addr.read().is_none() {
             self.bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                self.unspecified_addr(),
                 0,
             )))?;
         }
@@ -249,7 +283,8 @@ impl SocketOps for UdpSocket {
                         Ok((src, meta)) => {
                             match &mut expected_remote {
                                 ExpectedRemote::Any(remote_addr) => {
-                                    **remote_addr = SocketAddrEx::Ip(meta.endpoint.into());
+                                    **remote_addr =
+                                        SocketAddrEx::Ip(self.ip_endpoint_for_user(meta.endpoint));
                                 }
                                 ExpectedRemote::Expecting(expected) => {
                                     if (!expected.addr.is_unspecified()
@@ -286,7 +321,7 @@ impl SocketOps for UdpSocket {
     fn local_addr(&self) -> AxResult<SocketAddrEx> {
         match self.local_addr.try_read() {
             Some(addr) => addr
-                .map(Into::into)
+                .map(|addr| self.ip_endpoint_for_user(addr))
                 .map(SocketAddrEx::Ip)
                 .ok_or(AxError::NotConnected),
             None => Err(AxError::NotConnected),
@@ -295,7 +330,7 @@ impl SocketOps for UdpSocket {
 
     fn peer_addr(&self) -> AxResult<SocketAddrEx> {
         self.remote_endpoint()
-            .map(|it| it.0.into())
+            .map(|it| self.ip_endpoint_for_user(it.0))
             .map(SocketAddrEx::Ip)
     }
 

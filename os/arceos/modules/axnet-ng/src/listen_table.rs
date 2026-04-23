@@ -6,7 +6,7 @@ use ax_sync::Mutex;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp::{self, SocketBuffer, State},
-    wire::{IpEndpoint, IpListenEndpoint},
+    wire::{IpAddress, IpEndpoint, IpListenEndpoint},
 };
 
 use crate::{
@@ -20,20 +20,35 @@ struct ListenTableEntryInner {
     listen_endpoint: IpListenEndpoint,
     backlog: usize,
     syn_queue: VecDeque<SocketHandle>,
+    is_ipv6: bool,
+    v6only: bool,
 }
 
 impl ListenTableEntryInner {
-    pub fn new(listen_endpoint: IpListenEndpoint, backlog: usize) -> Self {
+    pub fn new(
+        listen_endpoint: IpListenEndpoint,
+        backlog: usize,
+        is_ipv6: bool,
+        v6only: bool,
+    ) -> Self {
         let backlog = backlog.clamp(1, LISTEN_QUEUE_SIZE);
         Self {
             listen_endpoint,
             backlog,
             syn_queue: VecDeque::with_capacity(backlog),
+            is_ipv6,
+            v6only,
         }
     }
 
     fn can_accept_endpoint(&self, dst: IpEndpoint) -> bool {
         if self.listen_endpoint.port != dst.port {
+            return false;
+        }
+        if !self.is_ipv6 && matches!(dst.addr, IpAddress::Ipv6(_)) {
+            return false;
+        }
+        if self.is_ipv6 && self.v6only && matches!(dst.addr, IpAddress::Ipv4(_)) {
             return false;
         }
         match self.listen_endpoint.addr {
@@ -69,7 +84,13 @@ impl ListenTable {
         self.tcp[port as usize].lock().is_none()
     }
 
-    pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
+    pub fn listen(
+        &self,
+        listen_endpoint: IpListenEndpoint,
+        backlog: usize,
+        is_ipv6: bool,
+        v6only: bool,
+    ) -> AxResult {
         let port = listen_endpoint.port;
         assert_ne!(port, 0);
         let mut entry = self.tcp[port as usize].lock();
@@ -77,6 +98,8 @@ impl ListenTable {
             *entry = Some(Box::new(ListenTableEntryInner::new(
                 listen_endpoint,
                 backlog,
+                is_ipv6,
+                v6only,
             )));
             Ok(())
         } else {
@@ -115,7 +138,7 @@ impl ListenTable {
         }
     }
 
-    pub fn accept(&self, port: u16, sockets: &SocketSet<'_>) -> AxResult<SocketHandle> {
+    pub fn accept(&self, port: u16, sockets: &SocketSet<'_>) -> AxResult<(SocketHandle, bool)> {
         let entry = self.listen_entry(port);
         let mut table = entry.lock();
         let Some(entry) = table.deref_mut() else {
@@ -123,6 +146,7 @@ impl ListenTable {
             return Err(AxError::InvalidInput);
         };
 
+        let is_ipv6 = entry.is_ipv6;
         let syn_queue: &mut VecDeque<SocketHandle> = &mut entry.syn_queue;
         let idx = syn_queue
             .iter()
@@ -143,7 +167,7 @@ impl ListenTable {
             warn!("accept failed: connection reset");
             Err(AxError::ConnectionReset)
         } else {
-            Ok(handle)
+            Ok((handle, is_ipv6))
         }
     }
 
@@ -168,7 +192,7 @@ impl ListenTable {
                 SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
             );
             if let Err(err) = socket.listen(IpListenEndpoint {
-                addr: None,
+                addr: entry.listen_endpoint.addr,
                 port: dst.port,
             }) {
                 warn!("Failed to listen on {}: {:?}", entry.listen_endpoint, err);

@@ -73,8 +73,12 @@ define_options! {
     Ttl(u8),
     RecvErr(bool),
 
+    // ---- IPv6 level options (IPV6_*) ----
+    V6Only(bool),
+
     // ---- Extra options ----
     NonBlocking(bool),
+    IsIpv6(bool),
 }
 
 /// Trait for configurable socket-like objects.
