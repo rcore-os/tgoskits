@@ -109,22 +109,28 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         use linux_raw_sys::ioctl::*;
         match cmd {
             TCGETS => {
-                (arg as *mut Termios).vm_write(*self.terminal.termios.lock().as_ref().deref())?;
+                let termios = *self.terminal.termios.lock().as_ref().deref();
+                (arg as *mut Termios).vm_write(termios)?;
             }
             TCGETS2 => {
-                (arg as *mut Termios2).vm_write(*self.terminal.termios.lock().as_ref())?;
+                let termios = *self.terminal.termios.lock().as_ref();
+                (arg as *mut Termios2).vm_write(termios)?;
             }
             TCSETS | TCSETSF | TCSETSW => {
                 // TODO: drain output?
-                *self.terminal.termios.lock() =
-                    Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
+                // Note: vm_read() must complete before acquiring the SpinNoPreempt lock.
+                // Faultable user memory access inside an atomic context (preemption
+                // disabled) will call might_sleep() in handle_page_fault and panic.
+                let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
+                *self.terminal.termios.lock() = termios;
                 if cmd == TCSETSF {
                     self.ldisc.lock().drain_input();
                 }
             }
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
                 // TODO: drain output?
-                *self.terminal.termios.lock() = Arc::new((arg as *const Termios2).vm_read()?);
+                let termios = Arc::new((arg as *const Termios2).vm_read()?);
+                *self.terminal.termios.lock() = termios;
                 if cmd == TCSETSF2 {
                     self.ldisc.lock().drain_input();
                 }
@@ -143,10 +149,12 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 self.terminal.job_control.set_foreground(&pg)?;
             }
             TIOCGWINSZ => {
-                (arg as *mut WindowSize).vm_write(*self.terminal.window_size.lock())?;
+                let window_size = *self.terminal.window_size.lock();
+                (arg as *mut WindowSize).vm_write(window_size)?;
             }
             TIOCSWINSZ => {
-                *self.terminal.window_size.lock() = (arg as *const WindowSize).vm_read()?;
+                let window_size = (arg as *const WindowSize).vm_read()?;
+                *self.terminal.window_size.lock() = window_size;
             }
             TIOCSPTLCK => {}
             TIOCGPTN => {
