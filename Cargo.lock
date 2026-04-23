@@ -302,6 +302,7 @@ dependencies = [
 name = "arceos-lockdep"
 version = "0.3.1"
 dependencies = [
+ "ax-kspin",
  "ax-std",
 ]
 

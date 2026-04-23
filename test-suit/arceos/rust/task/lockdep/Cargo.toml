@@ -11,3 +11,4 @@ lockdep = ["ax-std/lockdep"]
 
 [dependencies]
 ax-std = { workspace = true, features = ["alloc", "multitask"], optional = true }
+ax-kspin.workspace = true
