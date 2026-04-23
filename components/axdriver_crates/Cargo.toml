@@ -10,6 +10,7 @@ members = [
     "axdriver_virtio",
     "axdriver_input",
     "axdriver_vsock",
+    "axdriver_sound",
 ]
 
 [workspace.package]
@@ -33,6 +34,7 @@ ax-driver-net = { path = "axdriver_net", version = "0.3" }
 ax-driver-pci = { path = "axdriver_pci", version = "0.3" }
 ax-driver-virtio = { path = "axdriver_virtio", version = "0.3" }
 ax-driver-vsock = { path = "axdriver_vsock", version = "0.3" }
+ax-driver-sound = { path = "axdriver_sound", version = "0.3" }
 log = "0.4"
 
 # For local dev and dry-run: use local crates until published to crates.io
@@ -44,3 +46,4 @@ ax-driver-net = { path = "axdriver_net" }
 ax-driver-virtio = { path = "axdriver_virtio" }
 ax-driver-input = { path = "axdriver_input" }
 ax-driver-vsock = { path = "axdriver_vsock" }
+ax-driver-sound = { path = "axdriver_sound" }
