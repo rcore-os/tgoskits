@@ -194,18 +194,37 @@ fn build_c_test_make_args(
     base_features: &[String],
     invocation: &CTestInvocation,
 ) -> Vec<String> {
+    let makefile_features = build::makefile_features_from_env();
+    build_c_test_make_args_with_makefile_features(
+        app_path,
+        arch,
+        base_features,
+        invocation,
+        &makefile_features,
+    )
+}
+
+fn build_c_test_make_args_with_makefile_features(
+    app_path: &Path,
+    arch: &str,
+    base_features: &[String],
+    invocation: &CTestInvocation,
+    makefile_features: &[String],
+) -> Vec<String> {
     let mut features = base_features.to_vec();
     let mut extra_vars = Vec::<(String, String)>::new();
 
+    for feature in makefile_features {
+        if !features.iter().any(|existing| existing == feature) {
+            features.push(feature.clone());
+        }
+    }
+
     for (key, value) in &invocation.make_vars {
         if key == "FEATURES" {
-            for feature in value
-                .split(',')
-                .map(str::trim)
-                .filter(|feature| !feature.is_empty())
-            {
-                if !features.iter().any(|existing| existing == feature) {
-                    features.push(feature.to_string());
+            for feature in build::parse_makefile_features(value) {
+                if !features.iter().any(|existing| existing == &feature) {
+                    features.push(feature);
                 }
             }
             continue;
@@ -1125,6 +1144,28 @@ mod tests {
             invocations[0].expect_output,
             Some(PathBuf::from("expect.out"))
         );
+    }
+
+    #[test]
+    fn build_c_test_make_args_merges_makefile_features_from_env_and_invocation() {
+        let invocation = CTestInvocation {
+            make_vars: vec![
+                ("FEATURES".to_string(), "sched-rr".to_string()),
+                ("LOG".to_string(), "info".to_string()),
+            ],
+            expect_output: None,
+        };
+
+        let args = build_c_test_make_args_with_makefile_features(
+            Path::new("/tmp/case"),
+            "x86_64",
+            &[String::from("net")],
+            &invocation,
+            &[String::from("lockdep"), String::from("net")],
+        );
+
+        assert!(args.contains(&"FEATURES=net,lockdep,sched-rr".to_string()));
+        assert!(args.contains(&"LOG=info".to_string()));
     }
 
     #[test]

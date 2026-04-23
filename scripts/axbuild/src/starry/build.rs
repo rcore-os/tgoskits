@@ -35,6 +35,14 @@ pub(crate) fn resolve_build_info_path(
 }
 
 pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
+    let makefile_features = crate::arceos::build::makefile_features_from_env();
+    load_build_info_with_makefile_features(request, &makefile_features)
+}
+
+fn load_build_info_with_makefile_features(
+    request: &ResolvedStarryRequest,
+    makefile_features: &[String],
+) -> anyhow::Result<StarryBuildInfo> {
     let mut build_info = if let Some(build_info) = &request.build_info_override {
         build_info.clone()
     } else {
@@ -46,6 +54,12 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
     }
+
+    crate::arceos::build::apply_makefile_features(
+        &mut build_info,
+        &request.package,
+        makefile_features,
+    );
 
     Ok(build_info)
 }
@@ -324,6 +338,19 @@ HELLO = "world"
         assert_eq!(build_info.log, LogLevel::Info);
         assert_eq!(build_info.features, vec!["net".to_string()]);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn load_build_info_with_makefile_features_adds_axfeat_prefixed_features() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        let request = request(path, "aarch64", "aarch64-unknown-none-softfloat");
+
+        let build_info =
+            load_build_info_with_makefile_features(&request, &[String::from("lockdep")]).unwrap();
+
+        assert!(build_info.features.contains(&"qemu".to_string()));
+        assert!(build_info.features.contains(&"ax-feat/lockdep".to_string()));
     }
 
     #[test]
