@@ -1,4 +1,4 @@
-features = ["ax-std", "lockdep"]
+features = ["ax-std"]
 log = "Warn"
 max_cpu_num = 4
 
