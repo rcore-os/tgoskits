@@ -3,7 +3,8 @@ use core::{
     cell::UnsafeCell,
     fmt,
     panic::Location,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    ptr,
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
 #[cfg(any(test, doctest))]
 use std::cell::RefCell;
@@ -20,6 +21,7 @@ const WORDS_PER_ROW: usize = MAX_LOCKS.div_ceil(64);
 #[derive(Clone, Copy)]
 pub struct HeldLock {
     pub id: u32,
+    pub class_id: u32,
     pub addr: usize,
     pub caller: &'static Location<'static>,
 }
@@ -28,6 +30,7 @@ impl fmt::Debug for HeldLock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HeldLock")
             .field("id", &self.id)
+            .field("class_id", &self.class_id)
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("caller", &self.caller)
             .finish()
@@ -180,18 +183,38 @@ pub trait KspinLockdepIf {
 }
 
 pub struct LockdepMap {
-    id: AtomicU32,
+    instance_id: AtomicU32,
+    class_id: AtomicU32,
+    class_key: AtomicPtr<Location<'static>>,
 }
 
 impl LockdepMap {
+    #[track_caller]
     pub const fn new() -> Self {
+        Self::new_with_class_key(Location::caller() as *const Location<'static>)
+    }
+
+    pub const fn new_dynamic() -> Self {
+        Self::new_with_class_key(ptr::null())
+    }
+
+    const fn new_with_class_key(class_key: *const Location<'static>) -> Self {
         Self {
-            id: AtomicU32::new(0),
+            instance_id: AtomicU32::new(0),
+            class_id: AtomicU32::new(0),
+            class_key: AtomicPtr::new(class_key as *mut Location<'static>),
         }
     }
 
     pub fn lock_id(&self) -> Option<u32> {
-        match self.id.load(Ordering::Acquire) {
+        match self.instance_id.load(Ordering::Acquire) {
+            0 => None,
+            id => Some(id),
+        }
+    }
+
+    pub fn class_id(&self) -> Option<u32> {
+        match self.class_id.load(Ordering::Acquire) {
             0 => None,
             id => Some(id),
         }
@@ -204,7 +227,12 @@ impl Default for LockdepMap {
     }
 }
 
-pub type LockdepState = (u32, &'static Location<'static>);
+#[derive(Clone, Copy)]
+pub struct LockdepState {
+    instance_id: u32,
+    class_id: u32,
+    caller: &'static Location<'static>,
+}
 
 #[derive(Clone, Copy)]
 enum TrackingTarget {
@@ -221,7 +249,42 @@ pub struct PreparedAcquire {
 
 impl PreparedAcquire {
     pub fn lock_id(self) -> u32 {
-        self.state.0
+        self.state.instance_id
+    }
+
+    pub fn class_id(self) -> u32 {
+        self.state.class_id
+    }
+}
+
+struct ClassRegistry {
+    keys: [usize; MAX_LOCKS],
+}
+
+impl ClassRegistry {
+    const fn new() -> Self {
+        Self {
+            keys: [0; MAX_LOCKS],
+        }
+    }
+
+    fn find_or_register(&mut self, key: usize) -> u32 {
+        let max_id = NEXT_CLASS_ID.load(Ordering::Acquire).min(MAX_LOCKS as u32);
+
+        for class_id in 1..max_id {
+            if self.keys[class_id as usize] == key {
+                return class_id;
+            }
+        }
+
+        let new_id = NEXT_CLASS_ID.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            (new_id as usize) < MAX_LOCKS,
+            "lockdep: exceeded maximum tracked lock classes ({MAX_LOCKS})"
+        );
+
+        self.keys[new_id as usize] = key;
+        new_id
     }
 }
 
@@ -265,15 +328,16 @@ impl LockGraph {
         &self,
         held_locks: &HeldLockSnapshot,
         lock_kind: &str,
-        lock_id: u32,
+        instance_id: u32,
+        class_id: u32,
         addr: usize,
         caller: &'static Location<'static>,
     ) {
         assert!(
-            !held_locks.contains(lock_id),
+            !held_locks.contains(instance_id),
             "lockdep: recursive {lock_kind} acquisition detected for id={} addr={:#x} at {} with \
              held stack {:?}",
-            lock_id,
+            instance_id,
             addr,
             caller,
             held_locks
@@ -281,10 +345,10 @@ impl LockGraph {
 
         for held in held_locks.iter() {
             assert!(
-                !self.reaches(lock_id, held.id),
+                !self.reaches(class_id, held.class_id),
                 "lockdep: lock order inversion detected while acquiring id={} addr={:#x} at {}; \
                  held lock {:?}; stack {:?}",
-                lock_id,
+                instance_id,
                 addr,
                 caller,
                 held,
@@ -297,23 +361,23 @@ impl LockGraph {
         &mut self,
         held_before: &HeldLockSnapshot,
         held_locks: &mut HeldLockStack,
-        lock_id: u32,
+        state: LockdepState,
         addr: usize,
-        caller: &'static Location<'static>,
     ) {
-        self.record_edges(held_before, lock_id);
+        self.record_edges(held_before, state.class_id);
         held_locks.push(HeldLock {
-            id: lock_id,
+            id: state.instance_id,
+            class_id: state.class_id,
             addr,
-            caller,
+            caller: state.caller,
         });
     }
 
-    fn record_edges(&mut self, held_before: &HeldLockSnapshot, lock_id: u32) {
-        let max_id = NEXT_LOCK_ID.load(Ordering::Acquire).min(MAX_LOCKS as u32);
+    fn record_edges(&mut self, held_before: &HeldLockSnapshot, class_id: u32) {
+        let max_id = NEXT_CLASS_ID.load(Ordering::Acquire).min(MAX_LOCKS as u32);
 
         for held in held_before.iter() {
-            self.add_order(held.id, lock_id, max_id);
+            self.add_order(held.class_id, class_id, max_id);
         }
     }
 }
@@ -321,6 +385,7 @@ impl LockGraph {
 struct GraphState {
     lock: AtomicBool,
     graph: UnsafeCell<LockGraph>,
+    classes: UnsafeCell<ClassRegistry>,
 }
 
 unsafe impl Sync for GraphState {}
@@ -348,11 +413,13 @@ impl Drop for GraphGuard {
     }
 }
 
-static NEXT_LOCK_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_INSTANCE_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(1);
 
 static GRAPH_STATE: GraphState = GraphState {
     lock: AtomicBool::new(false),
     graph: UnsafeCell::new(LockGraph::new()),
+    classes: UnsafeCell::new(ClassRegistry::new()),
 };
 
 fn with_graph<R>(f: impl FnOnce(&mut LockGraph) -> R) -> R {
@@ -368,27 +435,48 @@ fn with_tracking_context<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-fn ensure_lock_id(map: &LockdepMap) -> u32 {
-    let existing = map.id.load(Ordering::Acquire);
-    if existing != 0 {
-        return existing;
+fn ensure_ids(map: &LockdepMap, class_key: *const Location<'static>) -> (u32, u32) {
+    let existing_instance = map.instance_id.load(Ordering::Acquire);
+    let existing_class = map.class_id.load(Ordering::Acquire);
+    if existing_instance != 0 && existing_class != 0 {
+        return (existing_instance, existing_class);
     }
 
     let _guard = GraphGuard::acquire();
 
-    let existing = map.id.load(Ordering::Acquire);
-    if existing != 0 {
-        return existing;
-    }
+    let instance_id = match map.instance_id.load(Ordering::Acquire) {
+        0 => {
+            let new_id = NEXT_INSTANCE_ID.fetch_add(1, Ordering::AcqRel);
+            assert!(
+                (new_id as usize) < MAX_LOCKS,
+                "lockdep: exceeded maximum tracked lock instances ({MAX_LOCKS})"
+            );
+            map.instance_id.store(new_id, Ordering::Release);
+            new_id
+        }
+        id => id,
+    };
 
-    let new_id = NEXT_LOCK_ID.fetch_add(1, Ordering::AcqRel);
-    assert!(
-        (new_id as usize) < MAX_LOCKS,
-        "lockdep: exceeded maximum tracked lock instances ({MAX_LOCKS})"
-    );
+    let class_id = match map.class_id.load(Ordering::Acquire) {
+        0 => {
+            let key = match map.class_key.load(Ordering::Acquire) {
+                ptr if ptr.is_null() => {
+                    map.class_key
+                        .store(class_key as *mut Location<'static>, Ordering::Release);
+                    class_key
+                }
+                ptr => ptr as *const Location<'static>,
+            };
+            // SAFETY: protected by the global graph spinlock above.
+            let classes = unsafe { &mut *GRAPH_STATE.classes.get() };
+            let id = classes.find_or_register(key as usize);
+            map.class_id.store(id, Ordering::Release);
+            id
+        }
+        id => id,
+    };
 
-    map.id.store(new_id, Ordering::Release);
-    new_id
+    (instance_id, class_id)
 }
 
 fn with_current_cpu_held_locks<R>(f: impl FnOnce(&HeldLockStack) -> R) -> R {
@@ -498,12 +586,17 @@ fn prepare_acquire_with_target_snapshot(
     held_before: HeldLockSnapshot,
     target: TrackingTarget,
 ) -> PreparedAcquire {
-    let lock_id = ensure_lock_id(map);
+    let class_key = caller as *const Location<'static>;
+    let (instance_id, class_id) = ensure_ids(map, class_key);
     with_graph(|graph| {
-        graph.assert_can_acquire(&held_before, lock_kind, lock_id, addr, caller);
+        graph.assert_can_acquire(&held_before, lock_kind, instance_id, class_id, addr, caller);
     });
     PreparedAcquire {
-        state: (lock_id, caller),
+        state: LockdepState {
+            instance_id,
+            class_id,
+            caller,
+        },
         held_before,
         target,
     }
@@ -538,9 +631,8 @@ pub fn finish_acquire_with_stack(
     addr: usize,
     held_locks: &mut HeldLockStack,
 ) {
-    let (lock_id, caller) = prepared.state;
     with_graph(|graph| {
-        graph.record_acquire(&prepared.held_before, held_locks, lock_id, addr, caller)
+        graph.record_acquire(&prepared.held_before, held_locks, prepared.state, addr)
     });
 }
 
@@ -556,12 +648,12 @@ pub fn finish_acquire(prepared: Option<PreparedAcquire>, addr: usize) {
             });
         }),
         TrackingTarget::Task => {
-            let (lock_id, caller) = prepared.state;
-            with_graph(|graph| graph.record_edges(&prepared.held_before, lock_id));
+            with_graph(|graph| graph.record_edges(&prepared.held_before, prepared.state.class_id));
             push_current_task_held_lock(HeldLock {
-                id: lock_id,
+                id: prepared.state.instance_id,
+                class_id: prepared.state.class_id,
                 addr,
-                caller,
+                caller: prepared.state.caller,
             });
         }
     }

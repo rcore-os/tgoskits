@@ -97,6 +97,7 @@ unsafe impl<G: BaseGuard, T: ?Sized + Send> Send for BaseSpinLock<G, T> {}
 impl<G: BaseGuard, T> BaseSpinLock<G, T> {
     /// Creates a new [`BaseSpinLock`] wrapping the supplied data.
     #[inline(always)]
+    #[track_caller]
     pub const fn new(data: T) -> Self {
         Self {
             _phantom: PhantomData,
@@ -413,7 +414,7 @@ mod tests {
 
         #[cfg(feature = "lockdep")]
         {
-            assert_eq!(size_of::<SpinMutex<String>>(), 32);
+            assert_eq!(size_of::<SpinMutex<String>>(), 40);
         }
     }
 
@@ -650,6 +651,33 @@ mod tests {
 
         let _guard_b = lock_b.lock();
         let _guard_a = lock_a.lock();
+    }
+
+    #[cfg(feature = "lockdep")]
+    #[test]
+    #[should_panic(expected = "lock order inversion detected")]
+    fn lockdep_rejects_order_inversion_across_same_class_instances() {
+        fn class_a() -> TestSpinIrq<usize> {
+            TestSpinIrq::new(0)
+        }
+
+        fn class_b() -> TestSpinIrq<usize> {
+            TestSpinIrq::new(0)
+        }
+
+        let lock_a1 = class_a();
+        let lock_b1 = class_b();
+
+        {
+            let _guard_a = lock_a1.lock();
+            let _guard_b = lock_b1.lock();
+        }
+
+        let lock_a2 = class_a();
+        let lock_b2 = class_b();
+
+        let _guard_b = lock_b2.lock();
+        let _guard_a = lock_a2.lock();
     }
 
     #[cfg(all(feature = "lockdep", feature = "smp"))]

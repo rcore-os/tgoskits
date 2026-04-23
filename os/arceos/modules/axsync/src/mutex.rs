@@ -20,6 +20,7 @@ pub struct RawMutex {
 impl RawMutex {
     /// Creates a [`RawMutex`].
     #[inline(always)]
+    #[track_caller]
     pub const fn new() -> Self {
         Self {
             wq: WaitQueue::new(),
@@ -50,9 +51,15 @@ unsafe impl lock_api::RawMutex for RawMutex {
     /// value to downstream static items. Can hopefully be replaced with
     /// `const fn new() -> Self` at some point.
     #[allow(clippy::declare_interior_mutable_const)]
-    const INIT: Self = RawMutex::new();
+    const INIT: Self = RawMutex {
+        wq: WaitQueue::new(),
+        owner_id: AtomicU64::new(0),
+        #[cfg(feature = "lockdep")]
+        lockdep: crate::lockdep::LockdepMap::new_dynamic(),
+    };
 
     #[inline(always)]
+    #[track_caller]
     fn lock(&self) {
         might_sleep();
         let current_id = current().id().as_u64();
@@ -90,6 +97,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn try_lock(&self) -> bool {
         might_sleep();
         let current_id = current().id().as_u64();
@@ -174,7 +182,7 @@ mod tests {
 
         #[cfg(feature = "lockdep")]
         {
-            assert_eq!(size_of::<RawMutex>(), 56);
+            assert_eq!(size_of::<RawMutex>(), 72);
         }
     }
 
@@ -249,6 +257,18 @@ mod tests {
 
         type LocalSpin<T> = BaseSpinLock<LocalGuard, T>;
 
+        fn lock_class_a_mutex(lock: &Mutex<usize>) -> crate::MutexGuard<'_, usize> {
+            lock.lock()
+        }
+
+        fn lock_class_b_mutex(lock: &Mutex<usize>) -> crate::MutexGuard<'_, usize> {
+            lock.lock()
+        }
+
+        fn lock_class_a_raw_spin(lock: &SpinRaw<usize>) -> ax_kspin::SpinRawGuard<'_, usize> {
+            lock.lock()
+        }
+
         fn reset_lockdep_stack() {
             thread::with_current_lockdep_stack(|stack| *stack = thread::HeldLockStack::new());
         }
@@ -293,6 +313,36 @@ mod tests {
                 let guard_b = ManuallyDrop::new(lock_b.lock());
                 assert_lockdep_failure(|| {
                     let _guard_a = lock_a.lock();
+                });
+                core::mem::forget(guard_b);
+            });
+        }
+
+        #[test]
+        fn rejects_order_inversion_across_same_class_mutex_instances() {
+            fn class_a() -> Mutex<usize> {
+                Mutex::new(0)
+            }
+
+            fn class_b() -> Mutex<usize> {
+                Mutex::new(0)
+            }
+
+            with_lockdep_test(|| {
+                let lock_a1 = class_a();
+                let lock_b1 = class_b();
+
+                {
+                    let _guard_a = lock_class_a_mutex(&lock_a1);
+                    let _guard_b = lock_class_b_mutex(&lock_b1);
+                }
+
+                let lock_a2 = class_a();
+                let lock_b2 = class_b();
+
+                let guard_b = ManuallyDrop::new(lock_class_b_mutex(&lock_b2));
+                assert_lockdep_failure(|| {
+                    let _guard_a = lock_class_a_mutex(&lock_a2);
                 });
                 core::mem::forget(guard_b);
             });
@@ -380,6 +430,35 @@ mod tests {
                 assert_lockdep_failure(|| {
                     let _guard_mutex = mutex.lock();
                     let _guard_spin = spin.lock();
+                });
+            });
+        }
+
+        #[test]
+        fn rejects_order_inversion_across_same_class_mixed_instances() {
+            fn class_a_spin() -> SpinRaw<usize> {
+                SpinRaw::new(0)
+            }
+
+            fn class_b_mutex() -> Mutex<usize> {
+                Mutex::new(0)
+            }
+
+            with_lockdep_test(|| {
+                let spin_a1 = class_a_spin();
+                let mutex_b1 = class_b_mutex();
+
+                {
+                    let _guard_spin = spin_a1.lock();
+                    let _guard_mutex = lock_class_b_mutex(&mutex_b1);
+                }
+
+                let spin_a2 = class_a_spin();
+                let mutex_b2 = class_b_mutex();
+
+                assert_lockdep_failure(|| {
+                    let _guard_mutex = lock_class_b_mutex(&mutex_b2);
+                    let _guard_spin = lock_class_a_raw_spin(&spin_a2);
                 });
             });
         }

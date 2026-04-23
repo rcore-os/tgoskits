@@ -173,6 +173,7 @@ impl WaitQueue {
     pub fn notify_one(&self, resched: bool) -> bool {
         let mut wq = self.queue.lock();
         if let Some(task) = wq.pop_front() {
+            drop(wq);
             unblock_one_task(task, resched);
             true
         } else {
@@ -197,6 +198,7 @@ impl WaitQueue {
         let mut wq = self.queue.lock();
         if let Some(task) = wq.pop_front() {
             func(task.id().as_u64());
+            drop(wq);
             unblock_one_task(task, resched);
             true
         } else {
