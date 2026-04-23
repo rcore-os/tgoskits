@@ -52,8 +52,13 @@ int main(void)
     iov[1].iov_base = buf2;
     iov[1].iov_len = sizeof(buf2) - 1;
 
+    /* pwritev2 kernel ABI: fd, iov, iovcnt, pos_l, pos_h, flags
+     * On 64-bit, pos_h is always 0 but the slot must still be passed. */
     errno = 0;
-    ssize_t ret = syscall(SYS_pwritev2, fd, iov, 2, 0, 0);
+    ssize_t ret = syscall(SYS_pwritev2, fd, iov, 2,
+                          (unsigned long)0,  /* pos_l */
+                          (unsigned long)0,  /* pos_h */
+                          0);                /* flags */
 
     printf("pwritev2 returned: %zd\n", ret);
     printf("Expected: %zu (total bytes written)\n\n", iov[0].iov_len + iov[1].iov_len);
