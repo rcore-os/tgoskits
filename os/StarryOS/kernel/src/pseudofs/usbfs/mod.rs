@@ -8,7 +8,7 @@ mod tree;
 use alloc::{borrow::ToOwned, collections::VecDeque, sync::Arc};
 use core::{any::Any, task::Context};
 
-use ax_errno::{AxResult, LinuxResult};
+use ax_errno::{AxError, AxResult, LinuxResult};
 use axfs_ng_vfs::Filesystem;
 use axpoll::{IoEvents, Pollable};
 use spin::Mutex;
@@ -70,12 +70,17 @@ pub(crate) fn open_usbfs_file(
         .downcast_ref::<tree::UsbDeviceOps>()
         .ok_or(ax_errno::AxError::InvalidInput)?;
     let manager = manager().ok_or(ax_errno::AxError::NoSuchDevice)?;
+    let snapshot = manager
+        .device_snapshot(ops.bus_num, ops.device_num)
+        .ok_or(ax_errno::AxError::NoSuchDevice)?;
     Ok(Arc::new(UsbDeviceFile {
         base: KernelFile::new(file, open_flags),
         manager,
         bus_num: ops.bus_num,
         device_num: ops.device_num,
+        snapshot,
         lease: Mutex::new(None),
+        claimed_interfaces: Mutex::new(Default::default()),
         pending_urbs: Mutex::new(VecDeque::new()),
     }))
 }
@@ -85,7 +90,9 @@ struct UsbDeviceFile {
     manager: Arc<UsbFsManager>,
     bus_num: u8,
     device_num: u8,
+    snapshot: descriptor::UsbDeviceSnapshot,
     lease: Mutex<Option<manager::UsbDeviceLease>>,
+    claimed_interfaces: Mutex<alloc::collections::BTreeMap<u8, u8>>,
     pending_urbs: Mutex<VecDeque<PendingUrb>>,
 }
 
@@ -103,6 +110,59 @@ impl UsbDeviceFile {
             *lease = Some(self.manager.acquire_device(self.bus_num, self.device_num)?);
         }
         f(lease.as_ref().unwrap())
+    }
+
+    fn claim_interface(&self, interface: u8, alternate: u8) -> AxResult<usize> {
+        if !snapshot_has_interface(&self.snapshot, interface, alternate) {
+            return Err(AxError::NotFound);
+        }
+        self.with_live_lease(|lease| lease.claim_interface(interface, alternate))?;
+        self.claimed_interfaces.lock().insert(interface, alternate);
+        Ok(0)
+    }
+
+    fn release_interface(&self, interface: u8) -> AxResult<usize> {
+        self.claimed_interfaces.lock().remove(&interface);
+        Ok(0)
+    }
+
+    fn claimed_bulk_endpoint(&self, endpoint: u8) -> AxResult<(u8, u8)> {
+        let claimed = self.claimed_interfaces.lock();
+        snapshot_claimed_bulk_endpoint(&self.snapshot, endpoint, &claimed)
+            .ok_or(AxError::OperationNotPermitted)
+    }
+
+    fn run_bulk_transfer(&self, endpoint: u8, data: *mut u8, len: usize) -> AxResult<usize> {
+        let (interface, alternate) = self.claimed_bulk_endpoint(endpoint)?;
+        self.with_live_lease(|lease| {
+            lease.claim_interface(interface, alternate)?;
+            if endpoint & 0x80 != 0 {
+                let mut buffer = alloc::vec![0; len];
+                let actual = lease.bulk_in(endpoint, &mut buffer)?;
+                if actual > len {
+                    return Err(AxError::InvalidData);
+                }
+                if actual > 0 {
+                    crate::mm::UserPtr::<u8>::from(data)
+                        .get_as_mut_slice(actual)?
+                        .copy_from_slice(&buffer[..actual]);
+                }
+                Ok(actual)
+            } else {
+                let buffer = crate::mm::UserConstPtr::<u8>::from(data as *const u8)
+                    .get_as_slice(len)?
+                    .to_vec();
+                lease.bulk_out(endpoint, &buffer)
+            }
+        })
+    }
+
+    fn bulk_ioctl(&self, arg: usize) -> AxResult<usize> {
+        let bulk = descriptor::read_usbdevfs_bulktransfer(arg)?;
+        if bulk.ep > u8::MAX as u32 {
+            return Err(AxError::InvalidInput);
+        }
+        self.run_bulk_transfer(bulk.ep as u8, bulk.data, bulk.len as usize)
     }
 
     fn submit_control_urb(&self, arg: usize) -> AxResult<usize> {
@@ -140,6 +200,36 @@ impl UsbDeviceFile {
             .lock()
             .push_back(PendingUrb { user_urb_ptr: arg });
         Ok(0)
+    }
+
+    fn submit_bulk_urb(&self, arg: usize) -> AxResult<usize> {
+        let urb = crate::mm::UserPtr::<descriptor::UsbdevfsUrb>::from(arg).get_as_mut()?;
+        if urb.type_ != descriptor::USBDEVFS_URB_TYPE_BULK {
+            return Err(ax_errno::AxError::Unsupported);
+        }
+        if urb.buffer_length < 0 {
+            return Err(ax_errno::AxError::InvalidInput);
+        }
+
+        let actual =
+            self.run_bulk_transfer(urb.endpoint, urb.buffer, urb.buffer_length as usize)?;
+        urb.status = 0;
+        urb.actual_length = actual as i32;
+        self.pending_urbs
+            .lock()
+            .push_back(PendingUrb { user_urb_ptr: arg });
+        Ok(0)
+    }
+
+    fn submit_urb(&self, arg: usize) -> AxResult<usize> {
+        let type_ = crate::mm::UserPtr::<descriptor::UsbdevfsUrb>::from(arg)
+            .get_as_mut()?
+            .type_;
+        match type_ {
+            descriptor::USBDEVFS_URB_TYPE_CONTROL => self.submit_control_urb(arg),
+            descriptor::USBDEVFS_URB_TYPE_BULK => self.submit_bulk_urb(arg),
+            _ => Err(ax_errno::AxError::Unsupported),
+        }
     }
 
     fn reap_urb(&self, arg: usize) -> AxResult<usize> {
@@ -183,7 +273,29 @@ impl FileLike for UsbDeviceFile {
                 self.manager
                     .snapshot_device_ioctl(self.bus_num, self.device_num, cmd, arg)
             }
-            descriptor::USBDEVFS_SUBMITURB => self.submit_control_urb(arg),
+            descriptor::USBDEVFS_CLAIMINTERFACE => {
+                let interface = descriptor::read_usbdevfs_u32(arg)?;
+                if interface > u8::MAX as u32 {
+                    return Err(AxError::InvalidInput);
+                }
+                self.claim_interface(interface as u8, 0)
+            }
+            descriptor::USBDEVFS_RELEASEINTERFACE => {
+                let interface = descriptor::read_usbdevfs_u32(arg)?;
+                if interface > u8::MAX as u32 {
+                    return Err(AxError::InvalidInput);
+                }
+                self.release_interface(interface as u8)
+            }
+            descriptor::USBDEVFS_SETINTERFACE => {
+                let set = descriptor::read_usbdevfs_setinterface(arg)?;
+                if set.interface > u8::MAX as u32 || set.altsetting > u8::MAX as u32 {
+                    return Err(AxError::InvalidInput);
+                }
+                self.claim_interface(set.interface as u8, set.altsetting as u8)
+            }
+            descriptor::USBDEVFS_BULK => self.bulk_ioctl(arg),
+            descriptor::USBDEVFS_SUBMITURB => self.submit_urb(arg),
             descriptor::USBDEVFS_REAPURB | descriptor::USBDEVFS_REAPURBNDELAY => self.reap_urb(arg),
             descriptor::USBDEVFS_CONNECTINFO | descriptor::USBDEVFS_GET_CAPABILITIES => {
                 self.with_live_lease(|lease| lease.ioctl(cmd, arg))
@@ -215,4 +327,62 @@ impl Pollable for UsbDeviceFile {
     }
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+}
+
+fn snapshot_has_interface(
+    snapshot: &descriptor::UsbDeviceSnapshot,
+    interface_number: u8,
+    alternate_setting: u8,
+) -> bool {
+    let mut cursor = 18usize;
+    while cursor + 2 <= snapshot.descriptor_blob.len() {
+        let length = snapshot.descriptor_blob[cursor] as usize;
+        if length < 2 || cursor + length > snapshot.descriptor_blob.len() {
+            return false;
+        }
+        if snapshot.descriptor_blob[cursor + 1] == 0x04
+            && length >= 9
+            && snapshot.descriptor_blob[cursor + 2] == interface_number
+            && snapshot.descriptor_blob[cursor + 3] == alternate_setting
+        {
+            return true;
+        }
+        cursor += length;
+    }
+    false
+}
+
+fn snapshot_claimed_bulk_endpoint(
+    snapshot: &descriptor::UsbDeviceSnapshot,
+    endpoint: u8,
+    claimed_interfaces: &alloc::collections::BTreeMap<u8, u8>,
+) -> Option<(u8, u8)> {
+    let mut cursor = 18usize;
+    let mut current_interface = None;
+    let mut current_alternate = 0u8;
+
+    while cursor + 2 <= snapshot.descriptor_blob.len() {
+        let length = snapshot.descriptor_blob[cursor] as usize;
+        if length < 2 || cursor + length > snapshot.descriptor_blob.len() {
+            return None;
+        }
+
+        match snapshot.descriptor_blob[cursor + 1] {
+            0x04 if length >= 9 => {
+                current_interface = Some(snapshot.descriptor_blob[cursor + 2]);
+                current_alternate = snapshot.descriptor_blob[cursor + 3];
+            }
+            0x05 if length >= 7 && snapshot.descriptor_blob[cursor + 2] == endpoint => {
+                let interface = current_interface?;
+                if claimed_interfaces.get(&interface).copied() == Some(current_alternate) {
+                    return Some((interface, current_alternate));
+                }
+            }
+            _ => {}
+        }
+
+        cursor += length;
+    }
+
+    None
 }

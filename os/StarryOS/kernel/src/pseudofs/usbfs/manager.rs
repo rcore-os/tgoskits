@@ -7,7 +7,7 @@ use alloc::{
 
 use ax_errno::{AxError, AxResult};
 use crab_usb::{
-    Device, DeviceInfo, EventHandler,
+    Device, DeviceInfo, EndpointKind, EventHandler,
     usb_if::{
         err::{TransferError, USBError},
         host::ControlSetup,
@@ -88,6 +88,19 @@ impl UsbDeviceLease {
             w_index,
             data,
         )
+    }
+
+    pub(super) fn claim_interface(&self, interface: u8, alternate: u8) -> AxResult<()> {
+        self.manager
+            .live_claim_interface(self.stable_id, interface, alternate)
+    }
+
+    pub(super) fn bulk_in(&self, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
+        self.manager.live_bulk_in(self.stable_id, endpoint, data)
+    }
+
+    pub(super) fn bulk_out(&self, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+        self.manager.live_bulk_out(self.stable_id, endpoint, data)
     }
 }
 
@@ -514,6 +527,51 @@ impl UsbFsManager {
                 .map_err(map_transfer_error),
             Direction::Out => ax_task::future::block_on(device.control_out(setup, data))
                 .map_err(map_transfer_error),
+        }
+    }
+
+    fn live_claim_interface(&self, stable_id: usize, interface: u8, alternate: u8) -> AxResult<()> {
+        let device = self.live_device_by_id(stable_id)?;
+        let mut device = device.lock();
+        if ax_task::future::block_on(device.current_configuration_descriptor()).is_err() {
+            let configuration_value = device
+                .configurations()
+                .first()
+                .map(|config| config.configuration_value)
+                .ok_or(AxError::NotFound)?;
+            ax_task::future::block_on(device.set_configuration(configuration_value))
+                .map_err(map_usb_error)?;
+        }
+        ax_task::future::block_on(device.claim_interface(interface, alternate))
+            .map_err(map_usb_error)
+    }
+
+    fn live_bulk_in(&self, stable_id: usize, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
+        let device = self.live_device_by_id(stable_id)?;
+        let mut device = device.lock();
+        let endpoint =
+            ax_task::future::block_on(device.get_endpoint(endpoint)).map_err(map_usb_error)?;
+        match endpoint {
+            EndpointKind::BulkIn(mut endpoint) => {
+                ax_task::future::block_on(endpoint.submit_and_wait(data))
+                    .map_err(map_transfer_error)
+            }
+            _ => Err(AxError::InvalidInput),
+        }
+    }
+
+    fn live_bulk_out(&self, stable_id: usize, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+        let device = self.live_device_by_id(stable_id)?;
+        let mut device = device.lock();
+        let endpoint =
+            ax_task::future::block_on(device.get_endpoint(endpoint)).map_err(map_usb_error)?;
+        match endpoint {
+            EndpointKind::BulkOut(mut endpoint) => {
+                ax_task::future::block_on(endpoint.submit_and_wait(data))
+                    .map_err(map_transfer_error)?;
+                Ok(data.len())
+            }
+            _ => Err(AxError::InvalidInput),
         }
     }
 
