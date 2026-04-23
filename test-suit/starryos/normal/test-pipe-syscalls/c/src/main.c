@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <string.h>
 #include <signal.h>
+#include <stdint.h>
 
 /* helper: 获取 fd 的 FD_CLOEXEC 标志 */
 static int get_cloexec(int fd)
@@ -161,7 +162,10 @@ static void test_pipe2(void)
     }
 
     /* 无效 fds 指针 → EFAULT */
-    CHECK_ERR(pipe2((int *)1, 0), EFAULT, "pipe2 无效 fds 指针 → EFAULT");
+    {
+        int *bad_ptr = (int *)(uintptr_t)0x1;
+        CHECK_ERR(pipe2(bad_ptr, 0), EFAULT, "pipe2 无效 fds 指针 → EFAULT");
+    }
 }
 
 /* ==================== main ==================== */
