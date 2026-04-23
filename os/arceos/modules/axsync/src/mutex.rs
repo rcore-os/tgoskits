@@ -124,12 +124,12 @@ unsafe impl lock_api::RawMutex for RawMutex {
             owner_id, current_id,
             "Thread({current_id}) tried to release mutex it doesn't own",
         );
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::release(self);
         // wake up one waiting thread.
         self.wq.notify_one_with(true, |id: u64| {
             self.owner_id.swap(id, Ordering::Release);
         });
-        #[cfg(feature = "lockdep")]
-        crate::lockdep::release(self);
     }
 
     #[inline(always)]

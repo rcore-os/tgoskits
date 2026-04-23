@@ -257,6 +257,12 @@ impl PreparedAcquire {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockdepCheckError {
+    Recursive,
+    OrderInversion,
+}
+
 struct ClassRegistry {
     keys: [usize; MAX_LOCKS],
 }
@@ -324,37 +330,22 @@ impl LockGraph {
         }
     }
 
-    fn assert_can_acquire(
+    fn check_can_acquire(
         &self,
         held_locks: &HeldLockSnapshot,
-        lock_kind: &str,
         instance_id: u32,
         class_id: u32,
-        addr: usize,
-        caller: &'static Location<'static>,
-    ) {
-        assert!(
-            !held_locks.contains(instance_id),
-            "lockdep: recursive {lock_kind} acquisition detected for id={} addr={:#x} at {} with \
-             held stack {:?}",
-            instance_id,
-            addr,
-            caller,
-            held_locks
-        );
+    ) -> Result<(), LockdepCheckError> {
+        if held_locks.contains(instance_id) {
+            return Err(LockdepCheckError::Recursive);
+        }
 
         for held in held_locks.iter() {
-            assert!(
-                !self.reaches(class_id, held.class_id),
-                "lockdep: lock order inversion detected while acquiring id={} addr={:#x} at {}; \
-                 held lock {:?}; stack {:?}",
-                instance_id,
-                addr,
-                caller,
-                held,
-                held_locks
-            );
+            if self.reaches(class_id, held.class_id) {
+                return Err(LockdepCheckError::OrderInversion);
+            }
         }
+        Ok(())
     }
 
     fn record_acquire(
@@ -568,7 +559,7 @@ pub fn prepare_acquire_with_snapshot(
     caller: &'static Location<'static>,
     held_before: HeldLockSnapshot,
 ) -> PreparedAcquire {
-    prepare_acquire_with_target_snapshot(
+    prepare_acquire_with_target_snapshot_checked(
         map,
         lock_kind,
         addr,
@@ -576,6 +567,46 @@ pub fn prepare_acquire_with_snapshot(
         held_before,
         TrackingTarget::Task,
     )
+    .unwrap_or_else(|err| panic_on_lockdep_error(err, lock_kind, map, addr, caller, &held_before))
+}
+
+pub fn prepare_acquire_with_snapshot_checked(
+    map: &LockdepMap,
+    lock_kind: &'static str,
+    addr: usize,
+    caller: &'static Location<'static>,
+    held_before: HeldLockSnapshot,
+) -> Result<PreparedAcquire, LockdepCheckError> {
+    prepare_acquire_with_target_snapshot_checked(
+        map,
+        lock_kind,
+        addr,
+        caller,
+        held_before,
+        TrackingTarget::Task,
+    )
+}
+
+fn prepare_acquire_with_target_snapshot_checked(
+    map: &LockdepMap,
+    _lock_kind: &'static str,
+    _addr: usize,
+    caller: &'static Location<'static>,
+    held_before: HeldLockSnapshot,
+    target: TrackingTarget,
+) -> Result<PreparedAcquire, LockdepCheckError> {
+    let class_key = caller as *const Location<'static>;
+    let (instance_id, class_id) = ensure_ids(map, class_key);
+    with_graph(|graph| graph.check_can_acquire(&held_before, instance_id, class_id))?;
+    Ok(PreparedAcquire {
+        state: LockdepState {
+            instance_id,
+            class_id,
+            caller,
+        },
+        held_before,
+        target,
+    })
 }
 
 fn prepare_acquire_with_target_snapshot(
@@ -586,20 +617,10 @@ fn prepare_acquire_with_target_snapshot(
     held_before: HeldLockSnapshot,
     target: TrackingTarget,
 ) -> PreparedAcquire {
-    let class_key = caller as *const Location<'static>;
-    let (instance_id, class_id) = ensure_ids(map, class_key);
-    with_graph(|graph| {
-        graph.assert_can_acquire(&held_before, lock_kind, instance_id, class_id, addr, caller);
-    });
-    PreparedAcquire {
-        state: LockdepState {
-            instance_id,
-            class_id,
-            caller,
-        },
-        held_before,
-        target,
-    }
+    prepare_acquire_with_target_snapshot_checked(map, lock_kind, addr, caller, held_before, target)
+        .unwrap_or_else(|err| {
+            panic_on_lockdep_error(err, lock_kind, map, addr, caller, &held_before)
+        })
 }
 
 pub fn prepare_acquire<G: BaseGuard>(
@@ -624,6 +645,43 @@ pub fn prepare_acquire<G: BaseGuard>(
             TrackingTarget::Cpu
         },
     ))
+}
+
+fn panic_on_lockdep_error(
+    err: LockdepCheckError,
+    lock_kind: &str,
+    map: &LockdepMap,
+    addr: usize,
+    caller: &'static Location<'static>,
+    held_before: &HeldLockSnapshot,
+) -> ! {
+    match err {
+        LockdepCheckError::Recursive => panic!(
+            "lockdep: recursive {lock_kind} acquisition detected for id={} addr={:#x} at {} with \
+             held stack {:?}",
+            map.lock_id().unwrap_or(0),
+            addr,
+            caller,
+            held_before
+        ),
+        LockdepCheckError::OrderInversion => {
+            let class_id = map.class_id().unwrap_or(0);
+            let held = held_before
+                .iter()
+                .find(|held| with_graph(|graph| graph.reaches(class_id, held.class_id)))
+                .or_else(|| held_before.iter().next())
+                .expect("held lock snapshot unexpectedly empty");
+            panic!(
+                "lockdep: lock order inversion detected while acquiring id={} addr={:#x} at {}; \
+                 held lock {:?}; stack {:?}",
+                map.lock_id().unwrap_or(0),
+                addr,
+                caller,
+                held,
+                held_before
+            );
+        }
+    }
 }
 
 pub fn finish_acquire_with_stack(
