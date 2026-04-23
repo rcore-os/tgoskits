@@ -1548,6 +1548,7 @@ dependencies = [
  "object 0.38.1",
  "ostool",
  "proc-macro2",
+ "quote",
  "regex",
  "reqwest 0.13.2",
  "schemars",
