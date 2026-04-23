@@ -693,7 +693,7 @@ fn emit_lockdep_marker(s: &str) {
 
 #[cfg(any(test, doctest))]
 fn emit_lockdep_marker(s: &str) {
-    eprint!("{s}");
+    std::eprint!("{s}");
 }
 
 pub fn finish_acquire_with_stack(
