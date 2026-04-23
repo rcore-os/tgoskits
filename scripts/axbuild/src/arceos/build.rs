@@ -322,6 +322,14 @@ pub(crate) fn resolve_build_info_path(
 }
 
 pub(crate) fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosBuildInfo> {
+    let makefile_features = makefile_features_from_env();
+    load_build_info_with_makefile_features(request, &makefile_features)
+}
+
+pub(crate) fn load_build_info_with_makefile_features(
+    request: &ResolvedBuildRequest,
+    makefile_features: &[String],
+) -> anyhow::Result<ArceosBuildInfo> {
     let mut build_info = load_or_create_build_info(&request.build_info_path, || {
         ArceosBuildInfo::default_for_target(&request.target)
     })?;
@@ -342,6 +350,8 @@ pub(crate) fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<
             )
         })?;
     }
+
+    apply_makefile_features(&mut build_info, &request.package, makefile_features);
 
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
@@ -401,7 +411,7 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-fn normalize_legacy_feature_alias(feature: &str) -> String {
+pub(crate) fn normalize_legacy_feature_alias(feature: &str) -> String {
     if feature == "axstd" {
         "ax-std".to_string()
     } else if let Some(rest) = feature.strip_prefix("axstd/") {
@@ -412,6 +422,63 @@ fn normalize_legacy_feature_alias(feature: &str) -> String {
         format!("ax-feat/{rest}")
     } else {
         feature.to_string()
+    }
+}
+
+pub(crate) fn parse_makefile_features(input: &str) -> Vec<String> {
+    let mut features = Vec::new();
+    for feature in input.split(|ch: char| ch == ',' || ch.is_whitespace()) {
+        let feature = feature.trim();
+        if !feature.is_empty() && !features.iter().any(|existing| existing == feature) {
+            features.push(feature.to_string());
+        }
+    }
+    features
+}
+
+pub(crate) fn makefile_features_from_env() -> Vec<String> {
+    std::env::var("FEATURES")
+        .ok()
+        .map(|value| parse_makefile_features(&value))
+        .unwrap_or_default()
+}
+
+pub(crate) fn apply_makefile_features(
+    build_info: &mut ArceosBuildInfo,
+    package: &str,
+    makefile_features: &[String],
+) {
+    apply_makefile_features_with_manifest_path(build_info, package, makefile_features, None);
+}
+
+fn apply_makefile_features_with_manifest_path(
+    build_info: &mut ArceosBuildInfo,
+    package: &str,
+    makefile_features: &[String],
+    manifest_path: Option<&Path>,
+) {
+    if makefile_features.is_empty() {
+        return;
+    }
+
+    let prefix_family = build_info.resolve_ax_feature_prefix_family(package, manifest_path);
+
+    for feature in makefile_features {
+        let normalized = normalize_legacy_feature_alias(feature);
+        let mapped =
+            if normalized.contains('/') || matches!(normalized.as_str(), "ax-std" | "ax-feat") {
+                normalized
+            } else {
+                format!("{}{}", prefix_family.prefix(), normalized)
+            };
+
+        if !build_info
+            .features
+            .iter()
+            .any(|existing| existing == &mapped)
+        {
+            build_info.features.push(mapped);
+        }
     }
 }
 
@@ -1298,6 +1365,51 @@ AX_GW = "10.0.2.2"
         if !existed && generated_config.exists() {
             fs::remove_file(generated_config).unwrap();
         }
+    }
+
+    #[test]
+    fn parse_makefile_features_splits_commas_whitespace_and_dedups() {
+        assert_eq!(
+            parse_makefile_features(" lockdep, sched-rr  lockdep\taxfeat/net "),
+            vec![
+                "lockdep".to_string(),
+                "sched-rr".to_string(),
+                "axfeat/net".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn load_build_info_with_makefile_features_adds_axstd_prefixed_features() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        let request = request("ax-helloworld", "target", None, path);
+
+        let build_info =
+            load_build_info_with_makefile_features(&request, &[String::from("lockdep")]).unwrap();
+
+        assert!(build_info.features.contains(&"ax-std".to_string()));
+        assert!(build_info.features.contains(&"ax-std/lockdep".to_string()));
+    }
+
+    #[test]
+    fn apply_makefile_features_uses_axfeat_prefix_for_axfeat_packages() {
+        let workspace = temp_workspace("ax-feat-app", "ax-feat = \"0.1.0\"\n").unwrap();
+        let manifest_path = workspace.join("Cargo.toml");
+        let mut build_info = ArceosBuildInfo {
+            features: Vec::new(),
+            ..ArceosBuildInfo::default()
+        };
+
+        apply_makefile_features_with_manifest_path(
+            &mut build_info,
+            "ax-feat-app",
+            &[String::from("lockdep")],
+            Some(&manifest_path),
+        );
+
+        assert!(build_info.features.contains(&"ax-feat/lockdep".to_string()));
+        assert!(!build_info.features.contains(&"ax-std/lockdep".to_string()));
     }
 
     #[test]

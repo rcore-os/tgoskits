@@ -1,7 +1,12 @@
-use std::{collections::HashSet, fs, path::Path, process::Command};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::Path,
+    process::Command,
+};
 
 use anyhow::Context;
-use cargo_metadata::Metadata;
+use cargo_metadata::{Metadata, Package};
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 
@@ -13,15 +18,23 @@ pub(crate) fn run_std_test_command() -> anyhow::Result<()> {
     let known_packages = workspace_package_names(&metadata);
     let csv_path = workspace_root.join(STD_CRATES_CSV);
     let packages = load_std_crates(&csv_path, &known_packages)?;
+    let requested_features = crate::arceos::build::makefile_features_from_env();
+    let invocations = build_std_test_invocations(&metadata, &packages, &requested_features)?;
 
     println!(
         "running std tests for {} package(s) from {}",
-        packages.len(),
+        invocations.len(),
         csv_path.display()
     );
+    if !requested_features.is_empty() {
+        println!(
+            "requested Makefile features for std tests: {}",
+            requested_features.join(",")
+        );
+    }
 
     let mut runner = ProcessCargoRunner;
-    let failed = run_std_tests(&mut runner, &workspace_root, &packages)?;
+    let failed = run_std_tests(&mut runner, &workspace_root, &invocations)?;
 
     if failed.is_empty() {
         println!("all std tests passed");
@@ -94,29 +107,108 @@ fn parse_std_crates_csv(
     Ok(packages)
 }
 
-fn cargo_test_args(package: &str) -> Vec<String> {
-    vec!["test".into(), "-p".into(), package.into()]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StdTestInvocation {
+    package: String,
+    features: Vec<String>,
+}
+
+fn build_std_test_invocations(
+    metadata: &Metadata,
+    packages: &[String],
+    requested_features: &[String],
+) -> anyhow::Result<Vec<StdTestInvocation>> {
+    let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
+    let package_lookup: HashMap<_, _> = metadata
+        .packages
+        .iter()
+        .filter(|pkg| workspace_members.contains(&pkg.id))
+        .map(|pkg| (pkg.name.as_str(), pkg))
+        .collect();
+
+    packages
+        .iter()
+        .map(|package| {
+            let package_info = package_lookup
+                .get(package.as_str())
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))?;
+
+            Ok(StdTestInvocation {
+                package: package.clone(),
+                features: resolve_std_test_features(package_info, requested_features),
+            })
+        })
+        .collect()
+}
+
+fn resolve_std_test_features(package: &Package, requested_features: &[String]) -> Vec<String> {
+    let mut resolved = Vec::new();
+    let has_axstd = package_dep_matches(package, "ax-std");
+    let has_axfeat = package_dep_matches(package, "ax-feat");
+    let has_axlibc = package_dep_matches(package, "ax-libc");
+
+    for feature in requested_features {
+        let normalized = crate::arceos::build::normalize_legacy_feature_alias(feature);
+        let mapped = if normalized.contains('/')
+            || matches!(normalized.as_str(), "ax-std" | "ax-feat" | "ax-libc")
+            || package.features.contains_key(&normalized)
+        {
+            normalized
+        } else if has_axstd {
+            format!("ax-std/{normalized}")
+        } else if has_axfeat {
+            format!("ax-feat/{normalized}")
+        } else if has_axlibc {
+            format!("ax-libc/{normalized}")
+        } else {
+            continue;
+        };
+
+        if !resolved.iter().any(|existing| existing == &mapped) {
+            resolved.push(mapped);
+        }
+    }
+
+    resolved
+}
+
+fn package_dep_matches(package: &Package, dep_name: &str) -> bool {
+    package
+        .dependencies
+        .iter()
+        .any(|dep| dep.name == dep_name || dep.rename.as_deref() == Some(dep_name))
+}
+
+fn cargo_test_args(invocation: &StdTestInvocation) -> Vec<String> {
+    let mut args = vec!["test".into(), "-p".into(), invocation.package.clone()];
+    if !invocation.features.is_empty() {
+        args.push("--features".into());
+        args.push(invocation.features.join(","));
+    }
+    args
 }
 
 fn run_std_tests<R: CargoRunner>(
     runner: &mut R,
     workspace_root: &Path,
-    packages: &[String],
+    invocations: &[StdTestInvocation],
 ) -> anyhow::Result<Vec<String>> {
     let mut failed = Vec::new();
 
-    for (index, package) in packages.iter().enumerate() {
+    for (index, invocation) in invocations.iter().enumerate() {
+        let args = cargo_test_args(invocation);
         println!(
             "[{}/{}] cargo {}",
             index + 1,
-            packages.len(),
-            cargo_test_args(package).join(" ")
+            invocations.len(),
+            args.join(" ")
         );
-        if runner.run_test(workspace_root, package)? {
-            println!("ok: {}", package);
+        if runner.run_test(workspace_root, invocation)? {
+            println!("ok: {}", invocation.package);
         } else {
-            eprintln!("failed: {}", package);
-            failed.push(package.clone());
+            eprintln!("failed: {}", invocation.package);
+            failed.push(invocation.package.clone());
         }
     }
 
@@ -124,14 +216,22 @@ fn run_std_tests<R: CargoRunner>(
 }
 
 trait CargoRunner {
-    fn run_test(&mut self, workspace_root: &Path, package: &str) -> anyhow::Result<bool>;
+    fn run_test(
+        &mut self,
+        workspace_root: &Path,
+        invocation: &StdTestInvocation,
+    ) -> anyhow::Result<bool>;
 }
 
 struct ProcessCargoRunner;
 
 impl CargoRunner for ProcessCargoRunner {
-    fn run_test(&mut self, workspace_root: &Path, package: &str) -> anyhow::Result<bool> {
-        let args = cargo_test_args(package);
+    fn run_test(
+        &mut self,
+        workspace_root: &Path,
+        invocation: &StdTestInvocation,
+    ) -> anyhow::Result<bool> {
+        let args = cargo_test_args(invocation);
         let status = Command::new("cargo")
             .current_dir(workspace_root)
             .args(&args)
@@ -157,7 +257,7 @@ mod tests {
 
     struct FakeCargoRunner {
         results: HashMap<String, bool>,
-        invocations: Vec<(PathBuf, String)>,
+        invocations: Vec<(PathBuf, StdTestInvocation)>,
     }
 
     impl FakeCargoRunner {
@@ -173,10 +273,14 @@ mod tests {
     }
 
     impl CargoRunner for FakeCargoRunner {
-        fn run_test(&mut self, workspace_root: &Path, package: &str) -> anyhow::Result<bool> {
+        fn run_test(
+            &mut self,
+            workspace_root: &Path,
+            invocation: &StdTestInvocation,
+        ) -> anyhow::Result<bool> {
             self.invocations
-                .push((workspace_root.to_path_buf(), package.to_string()));
-            Ok(*self.results.get(package).unwrap_or(&true))
+                .push((workspace_root.to_path_buf(), invocation.clone()));
+            Ok(*self.results.get(&invocation.package).unwrap_or(&true))
         }
     }
 
@@ -241,12 +345,63 @@ mod tests {
     }
 
     #[test]
+    fn resolve_std_test_features_prefers_local_feature_when_present() {
+        let metadata = cargo_metadata::MetadataCommand::new().exec().unwrap();
+        let package = metadata
+            .packages
+            .iter()
+            .find(|pkg| pkg.name == "ax-feat")
+            .unwrap();
+
+        assert_eq!(
+            resolve_std_test_features(package, &[String::from("lockdep")]),
+            vec![String::from("lockdep")]
+        );
+    }
+
+    #[test]
+    fn resolve_std_test_features_maps_to_axfeat_dependency_feature() {
+        let metadata = cargo_metadata::MetadataCommand::new().exec().unwrap();
+        let package = metadata
+            .packages
+            .iter()
+            .find(|pkg| pkg.name == "ax-api")
+            .unwrap();
+
+        assert_eq!(
+            resolve_std_test_features(package, &[String::from("lockdep")]),
+            vec![String::from("ax-feat/lockdep")]
+        );
+    }
+
+    #[test]
+    fn resolve_std_test_features_skips_unsupported_feature_requests() {
+        let metadata = cargo_metadata::MetadataCommand::new().exec().unwrap();
+        let package = metadata
+            .packages
+            .iter()
+            .find(|pkg| pkg.name == "ax-hal")
+            .unwrap();
+
+        assert!(resolve_std_test_features(package, &[String::from("lockdep")]).is_empty());
+    }
+
+    #[test]
     fn std_test_runner_collects_all_failures() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec![
-            "ax-feat".to_string(),
-            "ax-hal".to_string(),
-            "starry-process".to_string(),
+        let invocations = vec![
+            StdTestInvocation {
+                package: "ax-feat".to_string(),
+                features: vec![String::from("lockdep")],
+            },
+            StdTestInvocation {
+                package: "ax-hal".to_string(),
+                features: Vec::new(),
+            },
+            StdTestInvocation {
+                package: "starry-process".to_string(),
+                features: vec![String::from("ax-feat/lockdep")],
+            },
         ];
         let mut runner = FakeCargoRunner::new(&[
             ("ax-feat", true),
@@ -254,7 +409,7 @@ mod tests {
             ("starry-process", false),
         ]);
 
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+        let failed = run_std_tests(&mut runner, &root, &invocations).unwrap();
 
         assert_eq!(
             failed,
@@ -263,9 +418,9 @@ mod tests {
         assert_eq!(
             runner.invocations,
             vec![
-                (root.clone(), "ax-feat".to_string()),
-                (root.clone(), "ax-hal".to_string()),
-                (root, "starry-process".to_string()),
+                (root.clone(), invocations[0].clone()),
+                (root.clone(), invocations[1].clone()),
+                (root, invocations[2].clone()),
             ]
         );
     }
@@ -273,10 +428,19 @@ mod tests {
     #[test]
     fn std_test_runner_returns_empty_failures_when_all_pass() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-feat".to_string(), "ax-hal".to_string()];
+        let invocations = vec![
+            StdTestInvocation {
+                package: "ax-feat".to_string(),
+                features: vec![String::from("lockdep")],
+            },
+            StdTestInvocation {
+                package: "ax-hal".to_string(),
+                features: Vec::new(),
+            },
+        ];
         let mut runner = FakeCargoRunner::new(&[("ax-feat", true), ("ax-hal", true)]);
 
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+        let failed = run_std_tests(&mut runner, &root, &invocations).unwrap();
 
         assert!(failed.is_empty());
     }
