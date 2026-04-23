@@ -303,7 +303,6 @@ name = "arceos-lockdep"
 version = "0.3.1"
 dependencies = [
  "ax-std",
- "ax-sync",
 ]
 
 [[package]]

@@ -16,6 +16,7 @@ license.workspace = true
 [features]
 dev-log = []
 input = ["dep:ax-input", "ax-feat/input"]
+lockdep = ["ax-feat/lockdep"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
 vsock = ["ax-feat/vsock"]
