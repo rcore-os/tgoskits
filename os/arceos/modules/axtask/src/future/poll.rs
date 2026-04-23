@@ -42,8 +42,8 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 /// Registers a waker for the given IRQ number.
 ///
 /// This is a generic transition helper for IRQ-driven async wakeups. New
-/// console/TTY and Starry NIC code should prefer platform-specific IRQ
-/// handlers over this bridge.
+/// Starry NIC code should prefer platform-specific IRQ handlers over this
+/// bridge.
 pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     use alloc::collections::BTreeMap;
 
