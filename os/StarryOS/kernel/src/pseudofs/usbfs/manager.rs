@@ -1,14 +1,36 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    vec,
+    vec::Vec,
+};
 
-use crab_usb::EventHandler;
+use ax_errno::{AxError, AxResult};
+use crab_usb::{
+    Device, DeviceInfo, EventHandler,
+    usb_if::{
+        err::{TransferError, USBError},
+        host::ControlSetup,
+        transfer::{Direction, Recipient, Request, RequestType},
+    },
+};
 use event_listener::{Event as NotifyEvent, listener};
 use rdrive::DeviceId as RDriveDeviceId;
 use spin::Mutex;
+use starry_vm::VmMutPtr;
 
 use super::{
-    descriptor::{UsbDeviceSnapshot, snapshot_device_info},
+    descriptor::{
+        USBDEVFS_BULK, USBDEVFS_CAP_BULK_CONTINUATION, USBDEVFS_CLAIMINTERFACE,
+        USBDEVFS_CLEAR_HALT, USBDEVFS_CONNECTINFO, USBDEVFS_CONTROL, USBDEVFS_GET_CAPABILITIES,
+        USBDEVFS_RELEASEINTERFACE, USBDEVFS_RESET, USBDEVFS_SETCONFIGURATION,
+        USBDEVFS_SETINTERFACE, UsbDeviceSnapshot, UsbdevfsConnectInfo, read_usbdevfs_bulktransfer,
+        read_usbdevfs_ctrltransfer, read_usbdevfs_setinterface, read_usbdevfs_u32,
+        snapshot_device_info,
+    },
     irq::{self, PendingUsbIrqSlot},
 };
+use crate::mm::{UserConstPtr, UserPtr};
 
 pub(super) struct UsbHostState {
     pub(super) device_id: RDriveDeviceId,
@@ -22,12 +44,57 @@ pub(super) struct UsbHostState {
 #[derive(Default)]
 struct UsbFsState {
     hosts: Vec<UsbHostState>,
-    devices: BTreeMap<(u8, u8), UsbDeviceSnapshot>,
+    devices: BTreeMap<usize, UsbDeviceRecord>,
+}
+
+struct UsbDeviceRecord {
+    host_device_id: RDriveDeviceId,
+    snapshot: UsbDeviceSnapshot,
+    present: bool,
+    unopened_info: Option<DeviceInfo>,
+    live_device: Option<Arc<Mutex<Device>>>,
+    open_count: usize,
 }
 
 pub(super) struct UsbFsManager {
     state: Mutex<UsbFsState>,
+    open_lock: Mutex<()>,
     pub(super) refresh_event: NotifyEvent,
+}
+
+pub(super) struct UsbDeviceLease {
+    manager: Arc<UsbFsManager>,
+    stable_id: usize,
+}
+
+impl UsbDeviceLease {
+    pub(super) fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+        self.manager.opened_device_ioctl(self.stable_id, cmd, arg)
+    }
+
+    pub(super) fn control_transfer(
+        &self,
+        b_request_type: u8,
+        b_request: u8,
+        w_value: u16,
+        w_index: u16,
+        data: &mut [u8],
+    ) -> AxResult<usize> {
+        self.manager.live_control_transfer(
+            self.stable_id,
+            b_request_type,
+            b_request,
+            w_value,
+            w_index,
+            data,
+        )
+    }
+}
+
+impl Drop for UsbDeviceLease {
+    fn drop(&mut self) {
+        self.manager.release_device(self.stable_id);
+    }
 }
 
 impl UsbFsManager {
@@ -37,6 +104,7 @@ impl UsbFsManager {
                 hosts,
                 devices: BTreeMap::new(),
             }),
+            open_lock: Mutex::new(()),
             refresh_event: NotifyEvent::new(),
         }
     }
@@ -88,39 +156,7 @@ impl UsbFsManager {
                     }
                 };
                 drop(guard);
-
-                let mut state = self.state.lock();
-                let Some(host_index) = state
-                    .hosts
-                    .iter()
-                    .position(|host| host.device_id == device_id)
-                else {
-                    continue;
-                };
-
-                state
-                    .devices
-                    .retain(|(snapshot_bus_num, _), _| *snapshot_bus_num != bus_num);
-
-                let snapshots = {
-                    let host_state = &mut state.hosts[host_index];
-                    devices
-                        .into_iter()
-                        .map(|info| {
-                            snapshot_device_info(
-                                bus_num,
-                                &mut host_state.next_device_num,
-                                &mut host_state.stable_id_to_device_num,
-                                &info,
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                };
-                for snapshot in snapshots {
-                    state
-                        .devices
-                        .insert((snapshot.bus_num, snapshot.device_num), snapshot);
-                }
+                self.apply_probe_results(device_id, bus_num, devices);
             }
         }
     }
@@ -135,18 +171,461 @@ impl UsbFsManager {
         state
             .devices
             .values()
-            .filter(|snapshot| snapshot.bus_num == bus_num)
-            .map(|snapshot| snapshot.device_num)
+            .filter(|record| record.present && record.snapshot.bus_num == bus_num)
+            .map(|record| record.snapshot.device_num)
             .collect()
     }
 
     pub(super) fn device_snapshot(&self, bus_num: u8, device_num: u8) -> Option<UsbDeviceSnapshot> {
+        self.state.lock().devices.values().find_map(|record| {
+            (record.present
+                && record.snapshot.bus_num == bus_num
+                && record.snapshot.device_num == device_num)
+                .then(|| record.snapshot.clone())
+        })
+    }
+
+    pub(super) fn acquire_device(
+        self: &Arc<Self>,
+        bus_num: u8,
+        device_num: u8,
+    ) -> AxResult<UsbDeviceLease> {
+        let _open_guard = self.open_lock.lock();
+        let stable_id = {
+            let state = self.state.lock();
+            state
+                .devices
+                .iter()
+                .find_map(|(stable_id, record)| {
+                    (record.present
+                        && record.snapshot.bus_num == bus_num
+                        && record.snapshot.device_num == device_num)
+                        .then_some(*stable_id)
+                })
+                .ok_or(AxError::NotFound)?
+        };
+
+        self.ensure_live_device(stable_id)?;
+
+        let mut state = self.state.lock();
+        let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
+        record.open_count = record.open_count.saturating_add(1);
+        Ok(UsbDeviceLease {
+            manager: self.clone(),
+            stable_id,
+        })
+    }
+
+    pub(super) fn opened_device_ioctl(
+        &self,
+        stable_id: usize,
+        cmd: u32,
+        arg: usize,
+    ) -> AxResult<usize> {
+        let result = match cmd {
+            USBDEVFS_CONTROL => self.handle_control(stable_id, arg),
+            USBDEVFS_CONNECTINFO => {
+                let snapshot = self.snapshot_by_id(stable_id)?;
+                (arg as *mut UsbdevfsConnectInfo).vm_write(UsbdevfsConnectInfo {
+                    devnum: snapshot.device_num as u32,
+                    slow: 0,
+                    _padding: [0; 3],
+                })?;
+                Ok(0)
+            }
+            USBDEVFS_GET_CAPABILITIES => {
+                (arg as *mut u32).vm_write(USBDEVFS_CAP_BULK_CONTINUATION)?;
+                Ok(0)
+            }
+            USBDEVFS_CLAIMINTERFACE | USBDEVFS_RELEASEINTERFACE => {
+                let _ = read_usbdevfs_u32(arg)?;
+                Err(AxError::Unsupported)
+            }
+            USBDEVFS_SETINTERFACE => {
+                let _ = read_usbdevfs_setinterface(arg)?;
+                Err(AxError::Unsupported)
+            }
+            USBDEVFS_BULK => {
+                let bulk = read_usbdevfs_bulktransfer(arg)?;
+                let len = bulk.len as usize;
+                if len > 0 {
+                    if bulk.ep & 0x80 != 0 {
+                        let _ = UserPtr::<u8>::from(bulk.data).get_as_mut_slice(len)?;
+                    } else {
+                        let _ =
+                            UserConstPtr::<u8>::from(bulk.data as *const u8).get_as_slice(len)?;
+                    }
+                }
+                Err(AxError::Unsupported)
+            }
+            USBDEVFS_SETCONFIGURATION | USBDEVFS_CLEAR_HALT => {
+                let _ = read_usbdevfs_u32(arg)?;
+                Err(AxError::Unsupported)
+            }
+            USBDEVFS_RESET => Err(AxError::Unsupported),
+            _ => Err(AxError::Unsupported),
+        };
+        result
+    }
+
+    pub(super) fn snapshot_device_ioctl(
+        &self,
+        bus_num: u8,
+        device_num: u8,
+        cmd: u32,
+        arg: usize,
+    ) -> AxResult<usize> {
+        let snapshot = self
+            .device_snapshot(bus_num, device_num)
+            .ok_or(AxError::NotFound)?;
+        match cmd {
+            USBDEVFS_CONTROL => {
+                let ctrl = read_usbdevfs_ctrltransfer(arg)?;
+                match (ctrl.b_request_type, ctrl.b_request, ctrl.w_value >> 8) {
+                    (0x80, 0x06, 0x01) => {
+                        let len = snapshot
+                            .descriptor_blob
+                            .len()
+                            .min(18)
+                            .min(ctrl.w_length as usize);
+                        UserPtr::<u8>::from(ctrl.data)
+                            .get_as_mut_slice(len)?
+                            .copy_from_slice(&snapshot.descriptor_blob[..len]);
+                        Ok(len)
+                    }
+                    (0x80, 0x06, 0x02) => {
+                        let config_index = (ctrl.w_value & 0xff) as usize;
+                        let config = snapshot_config_blob(&snapshot, config_index)
+                            .ok_or(AxError::Unsupported)?;
+                        let len = config.len().min(ctrl.w_length as usize);
+                        UserPtr::<u8>::from(ctrl.data)
+                            .get_as_mut_slice(len)?
+                            .copy_from_slice(&config[..len]);
+                        Ok(len)
+                    }
+                    (0x80, 0x08, _) if ctrl.w_length >= 1 => {
+                        ctrl.data
+                            .vm_write(snapshot_active_configuration(&snapshot))?;
+                        Ok(1)
+                    }
+                    _ => Err(AxError::Unsupported),
+                }
+            }
+            USBDEVFS_CONNECTINFO => {
+                (arg as *mut UsbdevfsConnectInfo).vm_write(UsbdevfsConnectInfo {
+                    devnum: snapshot.device_num as u32,
+                    slow: 0,
+                    _padding: [0; 3],
+                })?;
+                Ok(0)
+            }
+            USBDEVFS_GET_CAPABILITIES => {
+                (arg as *mut u32).vm_write(USBDEVFS_CAP_BULK_CONTINUATION)?;
+                Ok(0)
+            }
+            _ => Err(AxError::Unsupported),
+        }
+    }
+
+    fn apply_probe_results(
+        &self,
+        device_id: RDriveDeviceId,
+        bus_num: u8,
+        devices: Vec<DeviceInfo>,
+    ) {
+        let mut state = self.state.lock();
+        let Some(host_index) = state
+            .hosts
+            .iter()
+            .position(|host| host.device_id == device_id)
+        else {
+            return;
+        };
+
+        let mut seen = BTreeSet::new();
+        let updates = {
+            let host_state = &mut state.hosts[host_index];
+            let mut updates = Vec::new();
+            for info in devices {
+                let stable_id = info.id();
+                seen.insert(stable_id);
+                let snapshot = snapshot_device_info(
+                    bus_num,
+                    &mut host_state.next_device_num,
+                    &mut host_state.stable_id_to_device_num,
+                    &info,
+                );
+                updates.push((stable_id, snapshot, info));
+            }
+            updates
+        };
+
+        for (stable_id, snapshot, info) in updates {
+            let record = state
+                .devices
+                .entry(stable_id)
+                .or_insert_with(|| UsbDeviceRecord {
+                    host_device_id: device_id,
+                    snapshot: snapshot.clone(),
+                    present: true,
+                    unopened_info: None,
+                    live_device: None,
+                    open_count: 0,
+                });
+            record.host_device_id = device_id;
+            record.snapshot = snapshot;
+            record.present = true;
+            record.unopened_info = Some(info);
+        }
+
+        state.devices.retain(|stable_id, record| {
+            if record.snapshot.bus_num != bus_num {
+                return true;
+            }
+            if seen.contains(stable_id) {
+                return true;
+            }
+            record.present = false;
+            record.unopened_info = None;
+            record.open_count > 0 || record.live_device.is_some()
+        });
+    }
+
+    fn ensure_live_device(&self, stable_id: usize) -> AxResult<()> {
+        loop {
+            enum OpenAction {
+                Ready,
+                Open {
+                    host_device_id: RDriveDeviceId,
+                    info: DeviceInfo,
+                },
+                Refresh {
+                    host_device_id: RDriveDeviceId,
+                    bus_num: u8,
+                },
+            }
+
+            let action = {
+                let mut state = self.state.lock();
+                let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
+                if record.live_device.is_some() {
+                    OpenAction::Ready
+                } else if let Some(info) = record.unopened_info.take() {
+                    OpenAction::Open {
+                        host_device_id: record.host_device_id,
+                        info,
+                    }
+                } else if record.present {
+                    OpenAction::Refresh {
+                        host_device_id: record.host_device_id,
+                        bus_num: record.snapshot.bus_num,
+                    }
+                } else {
+                    return Err(AxError::NoSuchDevice);
+                }
+            };
+
+            match action {
+                OpenAction::Ready => return Ok(()),
+                OpenAction::Open {
+                    host_device_id,
+                    info,
+                } => {
+                    let live_device = self.open_device(host_device_id, &info)?;
+                    let mut state = self.state.lock();
+                    let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
+                    record.live_device = Some(Arc::new(Mutex::new(live_device)));
+                    return Ok(());
+                }
+                OpenAction::Refresh {
+                    host_device_id,
+                    bus_num,
+                } => {
+                    self.refresh_host(host_device_id, bus_num)?;
+                }
+            }
+        }
+    }
+
+    fn open_device(&self, host_device_id: RDriveDeviceId, info: &DeviceInfo) -> AxResult<Device> {
+        let host = rdrive::get::<axplat_dyn::drivers::usb::PlatformUsbHost>(host_device_id)
+            .map_err(|_| AxError::NoSuchDevice)?;
+        let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
+        ax_task::future::block_on(guard.host_mut().open_device(info)).map_err(|err| {
+            warn!(
+                "usbfs: failed to open live device on host {:?} for stable id {}: {:?}",
+                host_device_id,
+                info.id(),
+                err
+            );
+            map_usb_error(err)
+        })
+    }
+
+    fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> AxResult<()> {
+        let host = rdrive::get::<axplat_dyn::drivers::usb::PlatformUsbHost>(host_device_id)
+            .map_err(|_| AxError::NoSuchDevice)?;
+        let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
+        let devices =
+            ax_task::future::block_on(guard.host_mut().probe_devices()).map_err(map_usb_error)?;
+        drop(guard);
+        self.apply_probe_results(host_device_id, bus_num, devices);
+        Ok(())
+    }
+
+    fn snapshot_by_id(&self, stable_id: usize) -> AxResult<UsbDeviceSnapshot> {
         self.state
             .lock()
             .devices
-            .get(&(bus_num, device_num))
-            .cloned()
+            .get(&stable_id)
+            .map(|record| record.snapshot.clone())
+            .ok_or(AxError::NotFound)
     }
+
+    fn live_device_by_id(&self, stable_id: usize) -> AxResult<Arc<Mutex<Device>>> {
+        self.state
+            .lock()
+            .devices
+            .get(&stable_id)
+            .and_then(|record| record.live_device.as_ref().cloned())
+            .ok_or(AxError::NoSuchDevice)
+    }
+
+    fn live_control_transfer(
+        &self,
+        stable_id: usize,
+        b_request_type: u8,
+        b_request: u8,
+        w_value: u16,
+        w_index: u16,
+        data: &mut [u8],
+    ) -> AxResult<usize> {
+        let setup = ControlSetup {
+            request_type: request_type_from_raw(b_request_type),
+            recipient: recipient_from_raw(b_request_type),
+            request: Request::Other(b_request),
+            value: w_value,
+            index: w_index,
+        };
+        let device = self.live_device_by_id(stable_id)?;
+        let mut device = device.lock();
+        match direction_from_raw(b_request_type) {
+            Direction::In => ax_task::future::block_on(device.control_in(setup, data))
+                .map_err(map_transfer_error),
+            Direction::Out => ax_task::future::block_on(device.control_out(setup, data))
+                .map_err(map_transfer_error),
+        }
+    }
+
+    fn handle_control(&self, stable_id: usize, arg: usize) -> AxResult<usize> {
+        let ctrl = read_usbdevfs_ctrltransfer(arg)?;
+        match direction_from_raw(ctrl.b_request_type) {
+            Direction::In => {
+                let mut data = vec![0; ctrl.w_length as usize];
+                let actual = self.live_control_transfer(
+                    stable_id,
+                    ctrl.b_request_type,
+                    ctrl.b_request,
+                    ctrl.w_value,
+                    ctrl.w_index,
+                    &mut data,
+                )?;
+                UserPtr::<u8>::from(ctrl.data)
+                    .get_as_mut_slice(actual)?
+                    .copy_from_slice(&data[..actual]);
+                Ok(actual)
+            }
+            Direction::Out => {
+                let mut data = UserConstPtr::<u8>::from(ctrl.data as *const u8)
+                    .get_as_slice(ctrl.w_length as usize)?
+                    .to_vec();
+                self.live_control_transfer(
+                    stable_id,
+                    ctrl.b_request_type,
+                    ctrl.b_request,
+                    ctrl.w_value,
+                    ctrl.w_index,
+                    &mut data,
+                )
+            }
+        }
+    }
+
+    fn release_device(&self, stable_id: usize) {
+        let _open_guard = self.open_lock.lock();
+        let mut refresh = None;
+        {
+            let mut state = self.state.lock();
+            let Some(record) = state.devices.get_mut(&stable_id) else {
+                return;
+            };
+            if record.open_count > 0 {
+                record.open_count -= 1;
+            }
+            if record.open_count != 0 {
+                return;
+            }
+
+            record.live_device = None;
+            if !record.present {
+                state.devices.remove(&stable_id);
+                return;
+            }
+            if record.unopened_info.is_none() {
+                refresh = Some((record.host_device_id, record.snapshot.bus_num));
+            }
+        }
+
+        if let Some((host_device_id, bus_num)) = refresh {
+            if let Err(err) = self.refresh_host(host_device_id, bus_num) {
+                warn!(
+                    "usbfs: failed to refresh bus {} after close: {:?}",
+                    bus_num, err
+                );
+            }
+        }
+    }
+}
+
+fn snapshot_active_configuration(snapshot: &UsbDeviceSnapshot) -> u8 {
+    if snapshot.descriptor_blob.len() > 23
+        && snapshot.descriptor_blob[18] == 9
+        && snapshot.descriptor_blob[19] == 0x02
+    {
+        snapshot.descriptor_blob[23]
+    } else {
+        0
+    }
+}
+
+fn snapshot_config_blob(snapshot: &UsbDeviceSnapshot, index: usize) -> Option<&[u8]> {
+    let mut cursor = 18usize;
+    let mut current_index = 0usize;
+    while cursor + 9 <= snapshot.descriptor_blob.len() {
+        let length = snapshot.descriptor_blob[cursor] as usize;
+        let desc_type = snapshot.descriptor_blob[cursor + 1];
+        if length == 0 {
+            return None;
+        }
+        if desc_type != 0x02 {
+            cursor = cursor.checked_add(length)?;
+            continue;
+        }
+        let total_length = u16::from_le_bytes([
+            snapshot.descriptor_blob[cursor + 2],
+            snapshot.descriptor_blob[cursor + 3],
+        ]) as usize;
+        let end = cursor.checked_add(total_length)?;
+        if end > snapshot.descriptor_blob.len() {
+            return None;
+        }
+        if current_index == index {
+            return Some(&snapshot.descriptor_blob[cursor..end]);
+        }
+        current_index += 1;
+        cursor = end;
+    }
+    None
 }
 
 pub(super) async fn usbfs_refresh_task(manager: Arc<UsbFsManager>) {
@@ -224,36 +703,7 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
             if let Some(irq_num) = irq_num {
                 irq::bootstrap_irq(irq_num);
             }
-
-            {
-                let mut state = manager.state.lock();
-                let Some(host_index) = state
-                    .hosts
-                    .iter()
-                    .position(|host| host.device_id == device_id)
-                else {
-                    continue;
-                };
-                let snapshots = {
-                    let host_state = &mut state.hosts[host_index];
-                    devices
-                        .into_iter()
-                        .map(|info| {
-                            snapshot_device_info(
-                                bus_num,
-                                &mut host_state.next_device_num,
-                                &mut host_state.stable_id_to_device_num,
-                                &info,
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                };
-                for snapshot in snapshots {
-                    state
-                        .devices
-                        .insert((snapshot.bus_num, snapshot.device_num), snapshot);
-                }
-            }
+            manager.apply_probe_results(device_id, bus_num, devices);
         }
 
         if !failed_device_ids.is_empty() {
@@ -273,6 +723,56 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
 
         info!("usbfs: {} host(s) ready", initialized);
         initialized
+    }
+}
+
+fn map_transfer_error(err: TransferError) -> AxError {
+    match err {
+        TransferError::Timeout => AxError::TimedOut,
+        TransferError::Cancelled => AxError::Interrupted,
+        TransferError::Stall => AxError::BrokenPipe,
+        TransferError::RequestQueueFull => AxError::ResourceBusy,
+        TransferError::Other(_) => AxError::Io,
+    }
+}
+
+fn map_usb_error(err: USBError) -> AxError {
+    match err {
+        USBError::Timeout => AxError::TimedOut,
+        USBError::NoMemory => AxError::NoMemory,
+        USBError::TransferError(err) => map_transfer_error(err),
+        USBError::NotInitialized | USBError::ConfigurationNotSet => AxError::BadState,
+        USBError::NotFound => AxError::NoSuchDevice,
+        USBError::InvalidParameter => AxError::InvalidInput,
+        USBError::SlotLimitReached => AxError::ResourceBusy,
+        USBError::NotSupported => AxError::Unsupported,
+        USBError::Other(_) => AxError::Io,
+    }
+}
+
+fn direction_from_raw(raw: u8) -> Direction {
+    if raw & 0x80 != 0 {
+        Direction::In
+    } else {
+        Direction::Out
+    }
+}
+
+fn request_type_from_raw(raw: u8) -> RequestType {
+    match (raw >> 5) & 0x03 {
+        0 => RequestType::Standard,
+        1 => RequestType::Class,
+        2 => RequestType::Vendor,
+        _ => RequestType::Reserved,
+    }
+}
+
+fn recipient_from_raw(raw: u8) -> Recipient {
+    match raw & 0x1f {
+        0 => Recipient::Device,
+        1 => Recipient::Interface,
+        2 => Recipient::Endpoint,
+        _ => Recipient::Other,
     }
 }
 

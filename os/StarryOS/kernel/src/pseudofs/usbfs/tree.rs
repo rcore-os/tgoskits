@@ -8,10 +8,8 @@ use starry_vm::VmMutPtr;
 
 use super::{
     descriptor::{
-        USB_REQ_GET_CONFIGURATION, USB_REQTYPE_DEVICE_TO_HOST_STANDARD_DEVICE,
-        USBDEVFS_CAP_BULK_CONTINUATION, USBDEVFS_CONNECTINFO, USBDEVFS_CONTROL,
-        USBDEVFS_GET_CAPABILITIES, UsbdevfsConnectInfo, bus_name, device_name,
-        parse_numeric_component, read_usbdevfs_ctrltransfer, usb_device_id,
+        USBDEVFS_CAP_BULK_CONTINUATION, USBDEVFS_CONNECTINFO, USBDEVFS_GET_CAPABILITIES,
+        UsbdevfsConnectInfo, bus_name, device_name, parse_numeric_component, usb_device_id,
     },
     manager::UsbFsManager,
 };
@@ -106,10 +104,10 @@ impl SimpleDirOps for UsbBusDir {
     }
 }
 
-struct UsbDeviceOps {
-    manager: Arc<UsbFsManager>,
-    bus_num: u8,
-    device_num: u8,
+pub(super) struct UsbDeviceOps {
+    pub(super) manager: Arc<UsbFsManager>,
+    pub(super) bus_num: u8,
+    pub(super) device_num: u8,
 }
 
 impl DeviceOps for UsbDeviceOps {
@@ -138,18 +136,6 @@ impl DeviceOps for UsbDeviceOps {
             .device_snapshot(self.bus_num, self.device_num)
             .ok_or(AxError::NotFound)?;
         match cmd {
-            USBDEVFS_CONTROL => {
-                let ctrl = read_usbdevfs_ctrltransfer(arg)?;
-                if ctrl.b_request_type == USB_REQTYPE_DEVICE_TO_HOST_STANDARD_DEVICE
-                    && ctrl.b_request == USB_REQ_GET_CONFIGURATION
-                    && ctrl.w_length >= 1
-                {
-                    ctrl.data.vm_write(snapshot.active_configuration)?;
-                    Ok(1)
-                } else {
-                    Err(AxError::Unsupported)
-                }
-            }
             USBDEVFS_CONNECTINFO => {
                 (arg as *mut UsbdevfsConnectInfo).vm_write(UsbdevfsConnectInfo {
                     devnum: snapshot.device_num as u32,

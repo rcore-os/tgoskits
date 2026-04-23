@@ -12,8 +12,6 @@ use crate::mm::UserConstPtr;
 pub(super) const USBFS_MAGIC: u32 = 0x9fa2;
 const USB_MAJOR: u32 = 189;
 pub(super) const USBDEVFS_CAP_BULK_CONTINUATION: u32 = 0x02;
-pub(super) const USB_REQ_GET_CONFIGURATION: u8 = 0x08;
-pub(super) const USB_REQTYPE_DEVICE_TO_HOST_STANDARD_DEVICE: u8 = 0x80;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -35,6 +33,39 @@ pub(super) struct UsbdevfsConnectInfo {
     pub(super) _padding: [u8; 3],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct UsbdevfsBulkTransfer {
+    pub(super) ep: u32,
+    pub(super) len: u32,
+    pub(super) timeout: u32,
+    pub(super) data: *mut u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct UsbdevfsSetInterface {
+    pub(super) interface: u32,
+    pub(super) altsetting: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct UsbdevfsUrb {
+    pub(super) type_: u8,
+    pub(super) endpoint: u8,
+    pub(super) status: i32,
+    pub(super) flags: u32,
+    pub(super) buffer: *mut u8,
+    pub(super) buffer_length: i32,
+    pub(super) actual_length: i32,
+    pub(super) start_frame: i32,
+    pub(super) number_of_packets: i32,
+    pub(super) error_count: i32,
+    pub(super) signr: u32,
+    pub(super) usercontext: *mut u8,
+}
+
 const fn ioc(dir: u32, ty: u8, nr: u8, size: usize) -> u32 {
     (dir << _IOC_DIRSHIFT)
         | ((ty as u32) << _IOC_TYPESHIFT)
@@ -46,69 +77,56 @@ const fn ior<T>(ty: u8, nr: u8) -> u32 {
     ioc(_IOC_READ, ty, nr, size_of::<T>())
 }
 
+const fn iow<T>(ty: u8, nr: u8) -> u32 {
+    ioc(_IOC_WRITE, ty, nr, size_of::<T>())
+}
+
 const fn iowr<T>(ty: u8, nr: u8) -> u32 {
     ioc(_IOC_READ | _IOC_WRITE, ty, nr, size_of::<T>())
 }
 
 pub(super) const USBDEVFS_CONTROL: u32 = iowr::<UsbdevfsCtrlTransfer>(b'U', 0);
+pub(super) const USBDEVFS_BULK: u32 = iowr::<UsbdevfsBulkTransfer>(b'U', 2);
+pub(super) const USBDEVFS_SETINTERFACE: u32 = ior::<UsbdevfsSetInterface>(b'U', 4);
+pub(super) const USBDEVFS_SETCONFIGURATION: u32 = ior::<u32>(b'U', 5);
+pub(super) const USBDEVFS_SUBMITURB: u32 = ior::<UsbdevfsUrb>(b'U', 10);
+pub(super) const USBDEVFS_REAPURB: u32 = iow::<usize>(b'U', 12);
+pub(super) const USBDEVFS_REAPURBNDELAY: u32 = iow::<usize>(b'U', 13);
+pub(super) const USBDEVFS_CLAIMINTERFACE: u32 = ior::<u32>(b'U', 15);
+pub(super) const USBDEVFS_RELEASEINTERFACE: u32 = ior::<u32>(b'U', 16);
 pub(super) const USBDEVFS_CONNECTINFO: u32 = ior::<UsbdevfsConnectInfo>(b'U', 17);
+pub(super) const USBDEVFS_RESET: u32 = ioc(0, b'U', 20, 0);
+pub(super) const USBDEVFS_CLEAR_HALT: u32 = ior::<u32>(b'U', 21);
 pub(super) const USBDEVFS_GET_CAPABILITIES: u32 = ior::<u32>(b'U', 26);
+pub(super) const USBDEVFS_URB_TYPE_CONTROL: u8 = 2;
 
 #[derive(Clone)]
 pub(super) struct UsbDeviceSnapshot {
     pub(super) bus_num: u8,
     pub(super) device_num: u8,
-    pub(super) active_configuration: u8,
     pub(super) descriptor_blob: Vec<u8>,
 }
 
 pub(super) fn read_usbdevfs_ctrltransfer(arg: usize) -> VfsResult<UsbdevfsCtrlTransfer> {
-    let bytes = UserConstPtr::<u8>::from(arg).get_as_slice(size_of::<UsbdevfsCtrlTransfer>())?;
-    let mut index = 0usize;
-    let read_u8 = |bytes: &[u8], index: &mut usize| {
-        let value = bytes[*index];
-        *index += 1;
-        value
-    };
-    let read_u16 = |bytes: &[u8], index: &mut usize| {
-        let value = u16::from_le_bytes([bytes[*index], bytes[*index + 1]]);
-        *index += 2;
-        value
-    };
-    let read_u32 = |bytes: &[u8], index: &mut usize| {
-        let value = u32::from_le_bytes([
-            bytes[*index],
-            bytes[*index + 1],
-            bytes[*index + 2],
-            bytes[*index + 3],
-        ]);
-        *index += 4;
-        value
-    };
-    let read_usize = |bytes: &[u8], index: &mut usize| {
-        let mut raw = [0u8; size_of::<usize>()];
-        raw.copy_from_slice(&bytes[*index..*index + size_of::<usize>()]);
-        *index += size_of::<usize>();
-        usize::from_le_bytes(raw)
-    };
+    UserConstPtr::<UsbdevfsCtrlTransfer>::from(arg)
+        .get_as_ref()
+        .copied()
+}
 
-    let b_request_type = read_u8(bytes, &mut index);
-    let b_request = read_u8(bytes, &mut index);
-    let w_value = read_u16(bytes, &mut index);
-    let w_index = read_u16(bytes, &mut index);
-    let w_length = read_u16(bytes, &mut index);
-    let timeout = read_u32(bytes, &mut index);
-    let data = read_usize(bytes, &mut index) as *mut u8;
+pub(super) fn read_usbdevfs_bulktransfer(arg: usize) -> VfsResult<UsbdevfsBulkTransfer> {
+    UserConstPtr::<UsbdevfsBulkTransfer>::from(arg)
+        .get_as_ref()
+        .copied()
+}
 
-    Ok(UsbdevfsCtrlTransfer {
-        b_request_type,
-        b_request,
-        w_value,
-        w_index,
-        w_length,
-        timeout,
-        data,
-    })
+pub(super) fn read_usbdevfs_setinterface(arg: usize) -> VfsResult<UsbdevfsSetInterface> {
+    UserConstPtr::<UsbdevfsSetInterface>::from(arg)
+        .get_as_ref()
+        .copied()
+}
+
+pub(super) fn read_usbdevfs_u32(arg: usize) -> VfsResult<u32> {
+    UserConstPtr::<u32>::from(arg).get_as_ref().copied()
 }
 
 pub(super) fn snapshot_device_info(
@@ -131,11 +149,6 @@ pub(super) fn snapshot_device_info(
     UsbDeviceSnapshot {
         bus_num,
         device_num,
-        active_configuration: info
-            .configurations()
-            .first()
-            .map(|config| config.configuration_value)
-            .unwrap_or(0),
         descriptor_blob: serialize_descriptor_blob(info),
     }
 }

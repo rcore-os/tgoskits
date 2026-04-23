@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #define USB_MSC_CLASS 0x08
@@ -28,6 +29,7 @@ int main(void) {
     ssize_t count = 0;
     int exit_code = 1;
     bool found = false;
+    bool opened = false;
 
     int result = libusb_init(&ctx);
     if (result != 0) {
@@ -46,6 +48,7 @@ int main(void) {
         }
 
         printf("usb device count (attempt %d/%d): %zd\n", attempt, MAX_ENUM_RETRIES, count);
+        fflush(stdout);
 
         for (ssize_t dev_index = 0; dev_index < count && !found; dev_index++) {
             libusb_device *device = device_list[dev_index];
@@ -64,6 +67,7 @@ int main(void) {
                 descriptor.idProduct,
                 descriptor.bNumConfigurations
             );
+            fflush(stdout);
 
             for (uint8_t config_index = 0;
                  config_index < descriptor.bNumConfigurations && !found;
@@ -85,6 +89,7 @@ int main(void) {
                     config->bConfigurationValue,
                     config->bNumInterfaces
                 );
+                fflush(stdout);
 
                 for (int interface_index = 0;
                      interface_index < config->bNumInterfaces && !found;
@@ -104,9 +109,66 @@ int main(void) {
                             if_desc->bInterfaceProtocol,
                             if_desc->bNumEndpoints
                         );
+                        fflush(stdout);
                         if (if_desc->bInterfaceClass == USB_MSC_CLASS &&
                             if_desc->bInterfaceSubClass == USB_MSC_SUBCLASS_SCSI &&
                             if_desc->bInterfaceProtocol == USB_MSC_PROTOCOL_BULK_ONLY) {
+                            libusb_device_handle *handle = NULL;
+                            unsigned char ctrl_desc[LIBUSB_DT_DEVICE_SIZE];
+
+                            result = libusb_open(device, &handle);
+                            if (result != 0 || handle == NULL) {
+                                libusb_free_config_descriptor(config);
+                                libusb_free_device_list(device_list, 1);
+                                libusb_exit(ctx);
+                                return failf(
+                                    "libusb_open failed (%d, %s)",
+                                    result,
+                                    libusb_error_name(result)
+                                );
+                            }
+
+                            result = libusb_control_transfer(
+                                handle,
+                                LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_STANDARD |
+                                    LIBUSB_RECIPIENT_DEVICE,
+                                LIBUSB_REQUEST_GET_DESCRIPTOR,
+                                (uint16_t)(LIBUSB_DT_DEVICE << 8),
+                                0,
+                                ctrl_desc,
+                                (uint16_t)sizeof(ctrl_desc),
+                                1000
+                            );
+                            if (result != (int)sizeof(ctrl_desc)) {
+                                libusb_close(handle);
+                                libusb_free_config_descriptor(config);
+                                libusb_free_device_list(device_list, 1);
+                                libusb_exit(ctx);
+                                return failf(
+                                    "libusb_control_transfer returned %d instead of %zu",
+                                    result,
+                                    sizeof(ctrl_desc)
+                                );
+                            }
+
+                            if (memcmp(ctrl_desc + 8, &descriptor.idVendor, sizeof(descriptor.idVendor)) != 0 ||
+                                memcmp(ctrl_desc + 10, &descriptor.idProduct, sizeof(descriptor.idProduct)) != 0 ||
+                                ctrl_desc[17] != descriptor.bNumConfigurations) {
+                                libusb_close(handle);
+                                libusb_free_config_descriptor(config);
+                                libusb_free_device_list(device_list, 1);
+                                libusb_exit(ctx);
+                                return failf("device descriptor from control transfer did not match enumeration");
+                            }
+
+                            printf(
+                                "usb control descriptor ok: vid=%04x pid=%04x configs=%u\n",
+                                descriptor.idVendor,
+                                descriptor.idProduct,
+                                descriptor.bNumConfigurations
+                            );
+                            libusb_close(handle);
+                            opened = true;
                             found = true;
                         }
                     }
@@ -127,9 +189,13 @@ int main(void) {
         libusb_exit(ctx);
         return failf("no USB mass-storage bulk-only interface found during enumeration");
     }
+    if (!opened) {
+        libusb_exit(ctx);
+        return failf("mass-storage device was found but open/control validation did not run");
+    }
 
     libusb_exit(ctx);
-    puts("USB enumeration tests passed!");
+    puts("USB open/control tests passed!");
     exit_code = 0;
     return exit_code;
 }

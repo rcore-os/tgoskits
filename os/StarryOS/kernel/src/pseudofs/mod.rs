@@ -8,7 +8,7 @@ mod fs;
 mod proc;
 mod tmp;
 #[cfg(feature = "plat-dyn")]
-mod usbfs;
+pub(crate) mod usbfs;
 
 use alloc::sync::Arc;
 
