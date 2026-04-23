@@ -52,6 +52,7 @@ multitask = [
     "ax-sync/multitask",
     "ax-runtime/multitask",
 ]
+lockdep = ["multitask", "ax-task/lockdep", "ax-sync/lockdep", "ax-kspin/lockdep"]
 task-ext = ["ax-task/task-ext"]
 sched-fifo = ["ax-task/sched-fifo"]
 sched-rr = ["ax-task/sched-rr", "irq"]
