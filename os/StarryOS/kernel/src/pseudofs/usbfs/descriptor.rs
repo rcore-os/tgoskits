@@ -51,6 +51,14 @@ pub(super) struct UsbdevfsSetInterface {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
+pub(super) struct UsbdevfsIsoPacketDesc {
+    pub(super) length: u32,
+    pub(super) actual_length: u32,
+    pub(super) status: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(super) struct UsbdevfsUrb {
     pub(super) type_: u8,
     pub(super) endpoint: u8,
@@ -98,8 +106,12 @@ pub(super) const USBDEVFS_CONNECTINFO: u32 = ior::<UsbdevfsConnectInfo>(b'U', 17
 pub(super) const USBDEVFS_RESET: u32 = ioc(0, b'U', 20, 0);
 pub(super) const USBDEVFS_CLEAR_HALT: u32 = ior::<u32>(b'U', 21);
 pub(super) const USBDEVFS_GET_CAPABILITIES: u32 = ior::<u32>(b'U', 26);
+pub(super) const USBDEVFS_URB_SHORT_NOT_OK: u32 = 0x01;
+pub(super) const USBDEVFS_URB_ISO_ASAP: u32 = 0x02;
 pub(super) const USBDEVFS_URB_TYPE_CONTROL: u8 = 2;
+pub(super) const USBDEVFS_URB_TYPE_INTERRUPT: u8 = 1;
 pub(super) const USBDEVFS_URB_TYPE_BULK: u8 = 3;
+pub(super) const USBDEVFS_URB_TYPE_ISO: u8 = 0;
 
 #[derive(Clone)]
 pub(super) struct UsbDeviceSnapshot {

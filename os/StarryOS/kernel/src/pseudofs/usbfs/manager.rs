@@ -102,6 +102,36 @@ impl UsbDeviceLease {
     pub(super) fn bulk_out(&self, endpoint: u8, data: &[u8]) -> AxResult<usize> {
         self.manager.live_bulk_out(self.stable_id, endpoint, data)
     }
+
+    pub(super) fn interrupt_in(&self, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
+        self.manager
+            .live_interrupt_in(self.stable_id, endpoint, data)
+    }
+
+    pub(super) fn interrupt_out(&self, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+        self.manager
+            .live_interrupt_out(self.stable_id, endpoint, data)
+    }
+
+    pub(super) fn iso_in(
+        &self,
+        endpoint: u8,
+        data: &mut [u8],
+        packet_lengths: &[usize],
+    ) -> AxResult<usize> {
+        self.manager
+            .live_iso_in(self.stable_id, endpoint, data, packet_lengths)
+    }
+
+    pub(super) fn iso_out(
+        &self,
+        endpoint: u8,
+        data: &[u8],
+        packet_lengths: &[usize],
+    ) -> AxResult<usize> {
+        self.manager
+            .live_iso_out(self.stable_id, endpoint, data, packet_lengths)
+    }
 }
 
 impl Drop for UsbDeviceLease {
@@ -569,6 +599,83 @@ impl UsbFsManager {
             EndpointKind::BulkOut(mut endpoint) => {
                 ax_task::future::block_on(endpoint.submit_and_wait(data))
                     .map_err(map_transfer_error)?;
+                Ok(data.len())
+            }
+            _ => Err(AxError::InvalidInput),
+        }
+    }
+
+    fn live_interrupt_in(
+        &self,
+        stable_id: usize,
+        endpoint: u8,
+        data: &mut [u8],
+    ) -> AxResult<usize> {
+        let device = self.live_device_by_id(stable_id)?;
+        let mut device = device.lock();
+        let endpoint =
+            ax_task::future::block_on(device.get_endpoint(endpoint)).map_err(map_usb_error)?;
+        match endpoint {
+            EndpointKind::InterruptIn(mut endpoint) => {
+                ax_task::future::block_on(endpoint.submit_and_wait(data))
+                    .map_err(map_transfer_error)
+            }
+            _ => Err(AxError::InvalidInput),
+        }
+    }
+
+    fn live_interrupt_out(&self, stable_id: usize, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+        let device = self.live_device_by_id(stable_id)?;
+        let mut device = device.lock();
+        let endpoint =
+            ax_task::future::block_on(device.get_endpoint(endpoint)).map_err(map_usb_error)?;
+        match endpoint {
+            EndpointKind::InterruptOut(mut endpoint) => {
+                ax_task::future::block_on(endpoint.submit_and_wait(data))
+                    .map_err(map_transfer_error)?;
+                Ok(data.len())
+            }
+            _ => Err(AxError::InvalidInput),
+        }
+    }
+
+    fn live_iso_in(
+        &self,
+        stable_id: usize,
+        endpoint: u8,
+        data: &mut [u8],
+        packet_lengths: &[usize],
+    ) -> AxResult<usize> {
+        let device = self.live_device_by_id(stable_id)?;
+        let mut device = device.lock();
+        let endpoint =
+            ax_task::future::block_on(device.get_endpoint(endpoint)).map_err(map_usb_error)?;
+        match endpoint {
+            EndpointKind::IsochronousIn(mut endpoint) => ax_task::future::block_on(
+                endpoint.submit_and_wait_with_packet_lengths(data, packet_lengths),
+            )
+            .map_err(map_transfer_error),
+            _ => Err(AxError::InvalidInput),
+        }
+    }
+
+    fn live_iso_out(
+        &self,
+        stable_id: usize,
+        endpoint: u8,
+        data: &[u8],
+        packet_lengths: &[usize],
+    ) -> AxResult<usize> {
+        let device = self.live_device_by_id(stable_id)?;
+        let mut device = device.lock();
+        let endpoint =
+            ax_task::future::block_on(device.get_endpoint(endpoint)).map_err(map_usb_error)?;
+        match endpoint {
+            EndpointKind::IsochronousOut(mut endpoint) => {
+                ax_task::future::block_on(
+                    endpoint.submit_and_wait_with_packet_lengths(data, packet_lengths),
+                )
+                .map_err(map_transfer_error)?;
                 Ok(data.len())
             }
             _ => Err(AxError::InvalidInput),
