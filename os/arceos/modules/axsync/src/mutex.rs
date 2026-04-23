@@ -213,7 +213,26 @@ mod tests {
         use core::mem::ManuallyDrop;
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
+        use ax_kernel_guard::BaseGuard;
+        use ax_kspin::{BaseSpinLock, SpinRaw};
+
         use super::*;
+
+        struct LocalGuard;
+
+        impl BaseGuard for LocalGuard {
+            type State = ();
+
+            fn acquire() -> Self::State {}
+
+            fn release(_: Self::State) {}
+
+            fn lockdep_enabled() -> bool {
+                true
+            }
+        }
+
+        type LocalSpin<T> = BaseSpinLock<LocalGuard, T>;
 
         fn reset_lockdep_stack() {
             thread::with_current_lockdep_stack(|stack| *stack = thread::HeldLockStack::new());
@@ -275,6 +294,78 @@ mod tests {
 
                 assert_lockdep_failure(|| drop(guard_a));
                 core::mem::forget(guard_b);
+            });
+        }
+
+        #[test]
+        fn rejects_mutex_then_cpu_spin_order_inversion() {
+            with_lockdep_test(|| {
+                let spin = LocalSpin::new(0usize);
+                let mutex = Mutex::new(0usize);
+
+                {
+                    let _guard_mutex = mutex.lock();
+                    let _guard_spin = spin.lock();
+                }
+
+                assert_lockdep_failure(|| {
+                    let _guard_spin = spin.lock();
+                    let _guard_mutex = mutex.lock();
+                });
+            });
+        }
+
+        #[test]
+        fn rejects_cpu_spin_then_mutex_order_inversion() {
+            with_lockdep_test(|| {
+                let spin = LocalSpin::new(0usize);
+                let mutex = Mutex::new(0usize);
+
+                {
+                    let _guard_spin = spin.lock();
+                    let _guard_mutex = mutex.lock();
+                }
+
+                assert_lockdep_failure(|| {
+                    let _guard_mutex = mutex.lock();
+                    let _guard_spin = spin.lock();
+                });
+            });
+        }
+
+        #[test]
+        fn rejects_mutex_then_raw_spin_order_inversion() {
+            with_lockdep_test(|| {
+                let spin = SpinRaw::new(0usize);
+                let mutex = Mutex::new(0usize);
+
+                {
+                    let _guard_mutex = mutex.lock();
+                    let _guard_spin = spin.lock();
+                }
+
+                assert_lockdep_failure(|| {
+                    let _guard_spin = spin.lock();
+                    let _guard_mutex = mutex.lock();
+                });
+            });
+        }
+
+        #[test]
+        fn rejects_raw_spin_then_mutex_order_inversion() {
+            with_lockdep_test(|| {
+                let spin = SpinRaw::new(0usize);
+                let mutex = Mutex::new(0usize);
+
+                {
+                    let _guard_spin = spin.lock();
+                    let _guard_mutex = mutex.lock();
+                }
+
+                assert_lockdep_failure(|| {
+                    let _guard_mutex = mutex.lock();
+                    let _guard_spin = spin.lock();
+                });
             });
         }
     }

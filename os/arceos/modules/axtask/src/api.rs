@@ -65,6 +65,31 @@ impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
     }
 }
 
+#[cfg(feature = "lockdep")]
+struct KspinLockdepIfImpl;
+
+#[cfg(feature = "lockdep")]
+#[ax_crate_interface::impl_interface]
+impl ax_kspin::lockdep::KspinLockdepIf for KspinLockdepIfImpl {
+    fn collect_current_task_held_locks(snapshot: &mut ax_kspin::lockdep::HeldLockSnapshot) {
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| snapshot.extend(stack));
+        }
+    }
+
+    fn push_current_task_held_lock(held: ax_kspin::lockdep::HeldLock) {
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| stack.push(held));
+        }
+    }
+
+    fn pop_current_task_held_lock(lock_id: u32) {
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| stack.pop_checked(lock_id));
+        }
+    }
+}
+
 /// Gets the current task, or returns [`None`] if the current task is not
 /// initialized.
 pub fn current_may_uninit() -> Option<CurrentTask> {

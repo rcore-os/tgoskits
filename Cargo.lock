@@ -1067,6 +1067,7 @@ dependencies = [
 name = "ax-kspin"
 version = "0.3.6"
 dependencies = [
+ "ax-crate-interface",
  "ax-kernel-guard",
  "ax-percpu",
  "cfg-if",
@@ -1458,6 +1459,7 @@ dependencies = [
 name = "ax-sync"
 version = "0.5.11"
 dependencies = [
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-sync",
  "ax-task",
