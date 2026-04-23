@@ -705,12 +705,14 @@ impl Starry {
             &case_assets.rootfs_path,
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
-        qemu.args.extend(case_assets.extra_qemu_args);
+        qemu.args
+            .extend(case_assets.extra_qemu_args.iter().cloned());
         rootfs::apply_smp_qemu_arg(&mut qemu, case_request.smp);
 
         self.app
             .qemu(cargo, case_request.build_info_path, Some(qemu))
-            .await
+            .await?;
+        case_assets::validate_case_host_outputs(case, &case_assets)
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
