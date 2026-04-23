@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -7,6 +7,7 @@ use std::{
 use anyhow::Context;
 use cargo_metadata::{Metadata, Package};
 use proc_macro2::Span;
+use quote::ToTokens;
 use syn::{
     Block, Expr, ExprCall, ExprClosure, ExprMethodCall, ExprPath, ExprWhile, File, Ident,
     ItemMacro, Stmt,
@@ -116,24 +117,44 @@ fn file_findings(path: &Path) -> anyhow::Result<Vec<Finding>> {
 fn analyze_file(path: &Path, source: &str, syntax: &File) -> Vec<Finding> {
     let mut analyzer = Analyzer::new(path, source);
     analyzer.visit_file(syntax);
+    analyzer.finish();
     analyzer.findings
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Rule {
-    SuspiciousRelaxedWaitCondition,
-    SuspiciousRelaxedPublishBeforeNotify,
+    WaitCondition,
+    PublishBeforeNotify,
+    MixedOrdering,
 }
 
 impl Rule {
     fn label(self) -> &'static str {
         match self {
-            Self::SuspiciousRelaxedWaitCondition => "suspicious_relaxed_wait_condition",
-            Self::SuspiciousRelaxedPublishBeforeNotify => {
-                "suspicious_relaxed_publish_before_notify"
-            }
+            Self::WaitCondition => "suspicious_relaxed_wait_condition",
+            Self::PublishBeforeNotify => "suspicious_relaxed_publish_before_notify",
+            Self::MixedOrdering => "suspicious_relaxed_mixed_ordering",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessOrdering {
+    Relaxed,
+    Strong,
+}
+
+#[derive(Debug, Clone)]
+struct AtomicAccess {
+    key: String,
+    span: Span,
+    ordering: AccessOrdering,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct AccessSummary {
+    has_relaxed: bool,
+    has_strong: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +169,8 @@ struct Finding {
 struct Analyzer<'a> {
     path: &'a Path,
     lines: Vec<&'a str>,
+    accesses: Vec<AtomicAccess>,
+    sync_intent_keys: HashSet<String>,
     findings: Vec<Finding>,
 }
 
@@ -156,7 +179,42 @@ impl<'a> Analyzer<'a> {
         Self {
             path,
             lines: source.lines().collect(),
+            accesses: Vec::new(),
+            sync_intent_keys: HashSet::new(),
             findings: Vec::new(),
+        }
+    }
+
+    fn finish(&mut self) {
+        let mut summaries: HashMap<String, AccessSummary> = HashMap::new();
+        for access in &self.accesses {
+            let summary = summaries.entry(access.key.clone()).or_default();
+            match access.ordering {
+                AccessOrdering::Relaxed => summary.has_relaxed = true,
+                AccessOrdering::Strong => summary.has_strong = true,
+            }
+        }
+
+        let spans = self
+            .accesses
+            .iter()
+            .filter(|access| access.ordering == AccessOrdering::Relaxed)
+            .filter(|access| self.sync_intent_keys.contains(&access.key))
+            .filter(|access| {
+                summaries
+                    .get(&access.key)
+                    .is_some_and(|summary| summary.has_relaxed && summary.has_strong)
+            })
+            .map(|access| access.span)
+            .collect::<Vec<_>>();
+
+        for span in spans {
+            self.report(
+                span,
+                Rule::MixedOrdering,
+                "Relaxed atomic access is mixed with stronger orderings on the same \
+                 synchronization variable",
+            );
         }
     }
 
@@ -192,11 +250,18 @@ impl<'a> Analyzer<'a> {
         })
     }
 
+    fn mark_sync_intent_expr(&mut self, expr: &Expr) {
+        for access in atomic_accesses_in_expr(expr) {
+            self.sync_intent_keys.insert(access.key);
+        }
+    }
+
     fn check_wait_closure(&mut self, closure: &ExprClosure) {
+        self.mark_sync_intent_expr(&closure.body);
         if let Some(span) = first_relaxed_load(&closure.body) {
             self.report(
                 span,
-                Rule::SuspiciousRelaxedWaitCondition,
+                Rule::WaitCondition,
                 "Relaxed atomic load is used in a wait condition",
             );
         }
@@ -212,14 +277,17 @@ impl<'a> Analyzer<'a> {
             let [first, second] = pair else {
                 continue;
             };
-            if let Some(span) = relaxed_write_span(first)
+            if let Some(access) = atomic_write_access(first)
                 && is_notify_expr(second)
             {
-                self.report(
-                    span,
-                    Rule::SuspiciousRelaxedPublishBeforeNotify,
-                    "Relaxed atomic write is immediately followed by a wake/notify operation",
-                );
+                self.sync_intent_keys.insert(access.key);
+                if access.ordering == AccessOrdering::Relaxed {
+                    self.report(
+                        access.span,
+                        Rule::PublishBeforeNotify,
+                        "Relaxed atomic write is immediately followed by a wake/notify operation",
+                    );
+                }
             }
         }
     }
@@ -252,6 +320,9 @@ impl Visit<'_> for Analyzer<'_> {
     }
 
     fn visit_expr_method_call(&mut self, node: &ExprMethodCall) {
+        if let Some(access) = atomic_access_from_method_call(node) {
+            self.accesses.push(access);
+        }
         if is_wait_method(node.method.clone()) {
             for arg in &node.args {
                 if let Expr::Closure(closure) = arg {
@@ -266,11 +337,14 @@ impl Visit<'_> for Analyzer<'_> {
         if let Some(span) = first_relaxed_load(&node.cond)
             && block_contains_blocking_call(&node.body)
         {
+            self.mark_sync_intent_expr(&node.cond);
             self.report(
                 span,
-                Rule::SuspiciousRelaxedWaitCondition,
+                Rule::WaitCondition,
                 "Relaxed atomic load is used in a blocking loop condition",
             );
+        } else if block_contains_blocking_call(&node.body) {
+            self.mark_sync_intent_expr(&node.cond);
         }
         visit::visit_expr_while(self, node);
     }
@@ -335,7 +409,7 @@ fn is_notify_expr(expr: &Expr) -> bool {
     }
 }
 
-fn relaxed_write_span(expr: &Expr) -> Option<Span> {
+fn atomic_write_access(expr: &Expr) -> Option<AtomicAccess> {
     let Expr::MethodCall(method) = expr else {
         return None;
     };
@@ -353,11 +427,7 @@ fn relaxed_write_span(expr: &Expr) -> Option<Span> {
     ) {
         return None;
     }
-    method
-        .args
-        .last()
-        .filter(|ordering| is_relaxed_ordering(ordering))
-        .map(|_| method.span())
+    atomic_access_from_method_call(method)
 }
 
 fn first_relaxed_load(expr: &Expr) -> Option<Span> {
@@ -384,14 +454,69 @@ impl Visit<'_> for RelaxedLoadFinder {
     }
 }
 
-fn is_relaxed_ordering(expr: &Expr) -> bool {
-    let Expr::Path(path) = expr else {
-        return false;
+fn atomic_accesses_in_expr(expr: &Expr) -> Vec<AtomicAccess> {
+    let mut finder = AtomicAccessFinder {
+        accesses: Vec::new(),
     };
-    path.path
-        .segments
-        .last()
-        .is_some_and(|segment| segment.ident == "Relaxed")
+    finder.visit_expr(expr);
+    finder.accesses
+}
+
+struct AtomicAccessFinder {
+    accesses: Vec<AtomicAccess>,
+}
+
+impl Visit<'_> for AtomicAccessFinder {
+    fn visit_expr_method_call(&mut self, node: &ExprMethodCall) {
+        if let Some(access) = atomic_access_from_method_call(node) {
+            self.accesses.push(access);
+        }
+        visit::visit_expr_method_call(self, node);
+    }
+}
+
+fn atomic_access_from_method_call(node: &ExprMethodCall) -> Option<AtomicAccess> {
+    let ordering = match node.method.to_string().as_str() {
+        "load" if node.args.len() == 1 => atomic_ordering(&node.args[0])?,
+        "store" if node.args.len() == 2 => atomic_ordering(&node.args[1])?,
+        "swap" | "fetch_add" | "fetch_sub" | "fetch_or" | "fetch_and" | "fetch_xor"
+        | "fetch_max" | "fetch_min"
+            if !node.args.is_empty() =>
+        {
+            atomic_ordering(node.args.last()?)?
+        }
+        "compare_exchange" | "compare_exchange_weak" if node.args.len() == 4 => {
+            atomic_ordering(&node.args[2])?
+        }
+        "fetch_update" if node.args.len() == 3 => atomic_ordering(&node.args[0])?,
+        _ => return None,
+    };
+
+    Some(AtomicAccess {
+        key: receiver_key(&node.receiver),
+        span: node.span(),
+        ordering,
+    })
+}
+
+fn receiver_key(expr: &Expr) -> String {
+    expr.to_token_stream().to_string()
+}
+
+fn atomic_ordering(expr: &Expr) -> Option<AccessOrdering> {
+    let Expr::Path(path) = expr else {
+        return None;
+    };
+
+    match path.path.segments.last()?.ident.to_string().as_str() {
+        "Relaxed" => Some(AccessOrdering::Relaxed),
+        "Acquire" | "Release" | "AcqRel" | "SeqCst" => Some(AccessOrdering::Strong),
+        _ => None,
+    }
+}
+
+fn is_relaxed_ordering(expr: &Expr) -> bool {
+    atomic_ordering(expr).is_some_and(|ordering| ordering == AccessOrdering::Relaxed)
 }
 
 fn block_contains_blocking_call(block: &Block) -> bool {
@@ -460,7 +585,7 @@ fn demo(wq: WaitQueue, counter: &AtomicUsize) {
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.rule == Rule::SuspiciousRelaxedWaitCondition)
+                .any(|finding| finding.rule == Rule::WaitCondition)
         );
     }
 
@@ -481,7 +606,7 @@ fn demo(flag: &AtomicBool) {
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.rule == Rule::SuspiciousRelaxedWaitCondition)
+                .any(|finding| finding.rule == Rule::WaitCondition)
         );
     }
 
@@ -501,7 +626,7 @@ fn demo(flag: &AtomicBool, wq: WaitQueue) {
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.rule == Rule::SuspiciousRelaxedPublishBeforeNotify)
+                .any(|finding| finding.rule == Rule::PublishBeforeNotify)
         );
     }
 
@@ -529,6 +654,91 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 fn demo(wq: WaitQueue, counter: &AtomicUsize) {
     // sync-lint: ignore suspicious_relaxed_wait_condition
     wq.wait_until(|| counter.load(Ordering::Relaxed) == 1);
+}
+"#,
+        );
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn reports_relaxed_mixed_ordering_for_sync_wait_variable() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, wq: WaitQueue) {
+    flag.store(true, Ordering::Relaxed);
+    wq.wait_until(|| flag.load(Ordering::Acquire));
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::MixedOrdering)
+        );
+    }
+
+    #[test]
+    fn reports_relaxed_mixed_ordering_after_publish_notify() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool, wq: WaitQueue) {
+    flag.store(true, Ordering::Release);
+    wq.notify_all(true);
+    let _ = flag.load(Ordering::Relaxed);
+}
+"#,
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == Rule::MixedOrdering)
+        );
+    }
+
+    #[test]
+    fn ignores_mixed_ordering_without_sync_intent() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicU64, Ordering};
+
+struct PollFrequencyController {
+    consecutive_idle: AtomicU64,
+}
+
+impl PollFrequencyController {
+    fn current_interval(&self) -> u64 {
+        self.consecutive_idle.load(Ordering::Relaxed)
+    }
+
+    fn on_event(&self) {
+        self.consecutive_idle.store(0, Ordering::Release);
+    }
+}
+"#,
+        );
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn ignores_compare_exchange_failure_ordering() {
+        let findings = findings(
+            r#"
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn demo(flag: &AtomicBool) {
+    while flag.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+
+    let _ = flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed);
 }
 "#,
         );
