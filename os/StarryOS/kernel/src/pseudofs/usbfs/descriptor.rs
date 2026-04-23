@@ -99,6 +99,7 @@ pub(super) const USBDEVFS_RESET: u32 = ioc(0, b'U', 20, 0);
 pub(super) const USBDEVFS_CLEAR_HALT: u32 = ior::<u32>(b'U', 21);
 pub(super) const USBDEVFS_GET_CAPABILITIES: u32 = ior::<u32>(b'U', 26);
 pub(super) const USBDEVFS_URB_TYPE_CONTROL: u8 = 2;
+pub(super) const USBDEVFS_URB_TYPE_BULK: u8 = 3;
 
 #[derive(Clone)]
 pub(super) struct UsbDeviceSnapshot {

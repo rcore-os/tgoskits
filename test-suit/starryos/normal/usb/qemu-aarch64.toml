@@ -15,9 +15,9 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/usb-transfer-test"
-success_regex = ["(?m)^USB open/control tests passed!\\s*$"]
+success_regex = ["(?m)^USB open/control/bulk tests passed!\\s*$"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     "USB test failed",
 ]
-timeout = 10
+timeout = 20

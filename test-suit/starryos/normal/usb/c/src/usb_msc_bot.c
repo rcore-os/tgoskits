@@ -64,6 +64,8 @@ static int prepare_bulk_only_device(
 ) {
     int result = libusb_open(usb_device, &device->handle);
     if (result != 0) {
+        printf("usb_msc: libusb_open failed (%d, %s)\n", result, libusb_error_name(result));
+        fflush(stdout);
         return result;
     }
 
@@ -74,24 +76,22 @@ static int prepare_bulk_only_device(
         &device->endpoint_out
     );
     if (result != 0) {
+        printf("usb_msc: missing bulk endpoints (%d)\n", result);
+        fflush(stdout);
         libusb_close(device->handle);
         device->handle = NULL;
         return LIBUSB_ERROR_NOT_FOUND;
     }
 
-    (void)libusb_set_auto_detach_kernel_driver(device->handle, 1);
-    if (libusb_kernel_driver_active(device->handle, device->interface_number) == 1) {
-        result = libusb_detach_kernel_driver(device->handle, device->interface_number);
-        if (result != 0 && result != LIBUSB_ERROR_NOT_FOUND &&
-            result != LIBUSB_ERROR_NOT_SUPPORTED) {
-            libusb_close(device->handle);
-            device->handle = NULL;
-            return result;
-        }
-    }
-
     result = libusb_claim_interface(device->handle, device->interface_number);
     if (result != 0) {
+        printf(
+            "usb_msc: libusb_claim_interface(%u) failed (%d, %s)\n",
+            device->interface_number,
+            result,
+            libusb_error_name(result)
+        );
+        fflush(stdout);
         libusb_close(device->handle);
         device->handle = NULL;
         return result;
@@ -108,11 +108,19 @@ int usb_msc_find_and_open(usb_msc_device_t *device) {
     memset(device, 0, sizeof(*device));
     int result = libusb_init(&device->ctx);
     if (result != 0) {
+        printf("usb_msc: libusb_init failed (%d, %s)\n", result, libusb_error_name(result));
+        fflush(stdout);
         return result;
     }
 
     count = libusb_get_device_list(device->ctx, &device_list);
     if (count < 0) {
+        printf(
+            "usb_msc: libusb_get_device_list failed (%zd, %s)\n",
+            count,
+            libusb_error_name((int)count)
+        );
+        fflush(stdout);
         libusb_exit(device->ctx);
         device->ctx = NULL;
         return (int)count;
@@ -124,6 +132,12 @@ int usb_msc_find_and_open(usb_msc_device_t *device) {
 
         result = libusb_get_device_descriptor(usb_device, &descriptor);
         if (result != 0) {
+            printf(
+                "usb_msc: libusb_get_device_descriptor failed (%d, %s)\n",
+                result,
+                libusb_error_name(result)
+            );
+            fflush(stdout);
             continue;
         }
 
@@ -142,6 +156,12 @@ int usb_msc_find_and_open(usb_msc_device_t *device) {
             result = libusb_get_config_descriptor(usb_device, 0, &config);
         }
         if (result != 0 || config == NULL) {
+            printf(
+                "usb_msc: config descriptor lookup failed (%d, %s)\n",
+                result,
+                libusb_error_name(result)
+            );
+            fflush(stdout);
             continue;
         }
 
@@ -164,6 +184,13 @@ int usb_msc_find_and_open(usb_msc_device_t *device) {
                 result = prepare_bulk_only_device(usb_device, if_desc, device);
                 if (result == 0) {
                     found = true;
+                } else {
+                    printf(
+                        "usb_msc: prepare device failed (%d, %s)\n",
+                        result,
+                        libusb_error_name(result)
+                    );
+                    fflush(stdout);
                 }
             }
         }
@@ -222,6 +249,13 @@ static int transfer_command(
         USB_MSC_TIMEOUT_MS
     );
     if (result != 0 || transferred != (int)sizeof(cbw)) {
+        printf(
+            "usb_msc: CBW OUT failed result=%d transferred=%d expected=%zu\n",
+            result,
+            transferred,
+            sizeof(cbw)
+        );
+        fflush(stdout);
         return result != 0 ? result : LIBUSB_ERROR_IO;
     }
 
@@ -237,6 +271,14 @@ static int transfer_command(
             USB_MSC_TIMEOUT_MS
         );
         if (result != 0 || transferred != (int)transfer_length) {
+            printf(
+                "usb_msc: DATA %s failed result=%d transferred=%d expected=%u\n",
+                direction_in == LIBUSB_ENDPOINT_IN ? "IN" : "OUT",
+                result,
+                transferred,
+                transfer_length
+            );
+            fflush(stdout);
             return result != 0 ? result : LIBUSB_ERROR_IO;
         }
     }
@@ -250,13 +292,30 @@ static int transfer_command(
         USB_MSC_TIMEOUT_MS
     );
     if (result != 0 || transferred != (int)sizeof(csw)) {
+        printf(
+            "usb_msc: CSW IN failed result=%d transferred=%d expected=%zu\n",
+            result,
+            transferred,
+            sizeof(csw)
+        );
+        fflush(stdout);
         return result != 0 ? result : LIBUSB_ERROR_IO;
     }
 
     if (csw.signature != CSW_SIGNATURE || csw.tag != cbw.tag) {
+        printf(
+            "usb_msc: CSW signature/tag mismatch sig=%08x tag=%08x expected_sig=%08x expected_tag=%08x\n",
+            csw.signature,
+            csw.tag,
+            CSW_SIGNATURE,
+            cbw.tag
+        );
+        fflush(stdout);
         return LIBUSB_ERROR_IO;
     }
     if (csw.status != 0) {
+        printf("usb_msc: CSW status=%u residue=%u\n", csw.status, csw.residue);
+        fflush(stdout);
         return LIBUSB_ERROR_IO;
     }
 
