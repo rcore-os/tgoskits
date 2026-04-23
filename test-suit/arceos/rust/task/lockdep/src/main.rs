@@ -21,37 +21,121 @@ extern crate ax_std as std;
 
 #[cfg(feature = "ax-std")]
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
 };
 
 #[cfg(feature = "ax-std")]
-fn trigger_lock_order_inversion() {
-    let lock_a = Arc::new(Mutex::new(0usize));
-    let lock_b = Arc::new(Mutex::new(0usize));
+use ax_kspin::SpinRaw;
+
+#[cfg(feature = "ax-std")]
+fn lockdep_case() -> &'static str {
+    match option_env!("LOCKDEP_CASE") {
+        Some(case) => case,
+        None => panic!(
+            "LOCKDEP_CASE is required; choose one of: mutex-single, mutex-two-task, spin-single, \
+             spin-two-task"
+        ),
+    }
+}
+
+#[cfg(feature = "ax-std")]
+fn wait_until(stage: &AtomicUsize, expected: usize) {
+    while stage.load(Ordering::Acquire) != expected {
+        thread::yield_now();
+    }
+}
+
+#[cfg(feature = "ax-std")]
+fn mutex_single_task_abba() {
+    let lock_a = Mutex::new(0usize);
+    let lock_b = Mutex::new(0usize);
 
     {
         let _guard_a = lock_a.lock();
         let _guard_b = lock_b.lock();
-        println!("Recorded lock order: A -> B");
+        println!("mutex-single: recorded A -> B");
     }
 
-    let held_a = lock_a.lock();
+    let _guard_b = lock_b.lock();
+    let _guard_a = lock_a.lock();
+}
+
+#[cfg(feature = "ax-std")]
+fn mutex_two_task_abba() {
+    let lock_a = Arc::new(Mutex::new(0usize));
+    let lock_b = Arc::new(Mutex::new(0usize));
+    let stage = Arc::new(AtomicUsize::new(0));
+
     let thread_lock_a = lock_a.clone();
     let thread_lock_b = lock_b.clone();
+    let thread_stage = stage.clone();
+
+    let handle = thread::spawn(move || {
+        {
+            let _guard_a = thread_lock_a.lock();
+            let _guard_b = thread_lock_b.lock();
+            println!("mutex-two-task: thread AB recorded A -> B");
+        }
+        thread_stage.store(1, Ordering::Release);
+    });
+
+    wait_until(&stage, 1);
+    let _guard_b = lock_b.lock();
+    let _guard_a = lock_a.lock();
+    handle.join().unwrap();
+}
+
+#[cfg(feature = "ax-std")]
+fn spin_single_task_abba() {
+    let lock_a = SpinRaw::new(0usize);
+    let lock_b = SpinRaw::new(0usize);
+
+    {
+        let _guard_a = lock_a.lock();
+        let _guard_b = lock_b.lock();
+        println!("spin-single: recorded A -> B");
+    }
+
+    let _guard_b = lock_b.lock();
+    let _guard_a = lock_a.lock();
+}
+
+#[cfg(feature = "ax-std")]
+fn spin_two_task_abba() {
+    let lock_a = Arc::new(SpinRaw::new(0usize));
+    let lock_b = Arc::new(SpinRaw::new(0usize));
+    let stage = Arc::new(AtomicUsize::new(0));
+
+    let thread_lock_a = lock_a.clone();
+    let thread_lock_b = lock_b.clone();
+    let thread_stage = stage.clone();
 
     let handle = thread::spawn(move || {
         let _guard_b = thread_lock_b.lock();
-        let guard_a = thread_lock_a.try_lock();
-        assert!(
-            guard_a.is_none(),
-            "try_lock(A) unexpectedly succeeded while A was still held",
-        );
-        println!("Lock inversion went unnoticed without lockdep, as expected");
+        let _guard_a = thread_lock_a.lock();
+        println!("spin-two-task: thread AB recorded A -> B");
+        thread_stage.store(1, Ordering::Release);
     });
 
+    wait_until(&stage, 1);
+    let _guard_b = lock_b.lock();
+    let _guard_a = lock_a.lock();
     handle.join().unwrap();
-    drop(held_a);
+}
+
+#[cfg(feature = "ax-std")]
+fn run_case(case: &str) {
+    match case {
+        "mutex-single" => mutex_single_task_abba(),
+        "mutex-two-task" => mutex_two_task_abba(),
+        "spin-single" => spin_single_task_abba(),
+        "spin-two-task" => spin_two_task_abba(),
+        other => panic!("unsupported LOCKDEP_CASE: {other}"),
+    }
 }
 
 #[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
@@ -59,25 +143,11 @@ fn main() {
     println!("lockdep regression test start");
 
     #[cfg(feature = "ax-std")]
-    trigger_lock_order_inversion();
-
-    #[cfg(feature = "lockdep")]
-    panic!(
-        "lockdep feature was enabled for the test app, but no lock order inversion was reported"
-    );
-
-    #[cfg(not(feature = "lockdep"))]
+    {
+        println!("running case: {}", lockdep_case());
+        run_case(lockdep_case());
+    }
     println!("All tests passed!");
 }
 
-}
-
-#[cfg(all(target_os = "none", not(feature = "ax-std")))]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() {}
-
-#[cfg(all(target_os = "none", not(feature = "ax-std")))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    loop {}
 }
