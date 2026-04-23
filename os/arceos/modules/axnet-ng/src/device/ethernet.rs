@@ -17,7 +17,6 @@ use smoltcp::{
         EthernetRepr, IpAddress, Ipv4Cidr,
     },
 };
-use spin::Mutex;
 
 use crate::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
@@ -25,7 +24,7 @@ use crate::{
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
-static IRQ_SOURCE: Mutex<Option<Weak<EthernetIrqState>>> = Mutex::new(None);
+static IRQ_SOURCE: SpinNoIrq<Option<Weak<EthernetIrqState>>> = SpinNoIrq::new(None);
 
 struct Neighbor {
     hardware_address: EthernetAddress,
@@ -178,10 +177,10 @@ impl EthernetDevice {
         false
     }
 
-    fn request_arp(&mut self, target_ip: IpAddress) {
+    fn request_arp(&mut self, target_ip: IpAddress) -> bool {
         let IpAddress::Ipv4(target_ipv4) = target_ip else {
             warn!("IPv6 address ARP is not supported: {}", target_ip);
-            return;
+            return false;
         };
         debug!("Requesting ARP for {}", target_ipv4);
 
@@ -203,6 +202,7 @@ impl EthernetDevice {
         );
 
         self.neighbors.insert(target_ip, None);
+        true
     }
 
     fn process_arp(&mut self, payload: &[u8], now: Instant) {
@@ -284,7 +284,7 @@ impl EthernetDevice {
                     };
                     if neighbor.expires_at <= now {
                         // Neighbor is expired, we need to request ARP again
-                        self.request_arp(next_hop);
+                        let _ = self.request_arp(next_hop);
                         break;
                     }
 
@@ -350,51 +350,24 @@ impl Device for EthernetDevice {
         }
 
         let need_request = match self.neighbors.get(&next_hop) {
-            Some(Some(neighbor)) => {
-                if neighbor.expires_at > timestamp {
-                    let mut inner = self.inner.driver.lock();
-                    Self::send_to(
-                        &mut inner,
-                        neighbor.hardware_address,
-                        packet.len(),
-                        |buf| buf.copy_from_slice(packet),
-                        EthernetProtocol::Ipv4,
-                    );
-                    return false;
-                } else {
-                    true
-                }
+            Some(Some(neighbor)) if neighbor.expires_at > timestamp => {
+                let mut inner = self.inner.driver.lock();
+                Self::send_to(
+                    &mut inner,
+                    neighbor.hardware_address,
+                    packet.len(),
+                    |buf| buf.copy_from_slice(packet),
+                    EthernetProtocol::Ipv4,
+                );
+                return false;
             }
             // Request already sent
             Some(None) => false,
-            None => true,
+            Some(Some(_)) | None => true,
         };
         // Only send ARP request if we haven't already requested it
-        if need_request {
-            let IpAddress::Ipv4(target_ipv4) = next_hop else {
-                warn!("IPv6 address ARP is not supported: {}", next_hop);
-                return false;
-            };
-            debug!("Requesting ARP for {}", target_ipv4);
-
-            let arp_repr = ArpRepr::EthernetIpv4 {
-                operation: ArpOperation::Request,
-                source_hardware_addr: self.hardware_address(),
-                source_protocol_addr: self.ip.address(),
-                target_hardware_addr: EthernetAddress::BROADCAST,
-                target_protocol_addr: target_ipv4,
-            };
-
-            let mut inner = self.inner.driver.lock();
-            Self::send_to(
-                &mut inner,
-                EthernetAddress::BROADCAST,
-                arp_repr.buffer_len(),
-                |buf| arp_repr.emit(&mut ArpPacket::new_unchecked(buf)),
-                EthernetProtocol::Arp,
-            );
-
-            self.neighbors.insert(next_hop, None);
+        if need_request && !self.request_arp(next_hop) {
+            return false;
         }
         if self.pending_packets.is_full() {
             warn!("Pending packets buffer is full, dropping packet");
