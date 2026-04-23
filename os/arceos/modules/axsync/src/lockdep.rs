@@ -1,10 +1,9 @@
 use core::panic::Location;
 
+pub(crate) use ax_kspin::lockdep::LockdepMap;
 use ax_kspin::lockdep::{self as common, HeldLockSnapshot, PreparedAcquire};
 
 use crate::mutex::RawMutex;
-
-pub(crate) use ax_kspin::lockdep::LockdepMap;
 
 fn current_held_locks() -> HeldLockSnapshot {
     let mut snapshot = common::current_cpu_held_lock_snapshot();

@@ -137,11 +137,12 @@ pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    use core::mem::size_of;
     use std::sync::{Mutex as StdMutex, Once, OnceLock};
 
     use ax_task as thread;
 
-    use crate::Mutex;
+    use crate::{Mutex, RawMutex};
 
     static INIT: Once = Once::new();
     static TEST_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
@@ -161,6 +162,20 @@ mod tests {
         let _test_guard = lock_test_context();
         init_test_scheduler();
         f()
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn raw_mutex_layout_matches_expected_without_lockdep_overhead() {
+        #[cfg(not(feature = "lockdep"))]
+        {
+            assert_eq!(size_of::<RawMutex>(), 40);
+        }
+
+        #[cfg(feature = "lockdep")]
+        {
+            assert_eq!(size_of::<RawMutex>(), 56);
+        }
     }
 
     fn may_interrupt() {

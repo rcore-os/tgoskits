@@ -360,6 +360,7 @@ impl<G: BaseGuard, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
 
 #[cfg(test)]
 mod tests {
+    use core::mem::size_of;
     use std::{
         sync::{
             Arc,
@@ -401,6 +402,20 @@ mod tests {
     #[cfg(feature = "lockdep")]
     type TestSpinIrq<T> = BaseSpinLock<TestGuardIrq, T>;
     type SpinMutex<T> = crate::SpinRaw<T>;
+
+    #[cfg(all(not(feature = "smp"), target_pointer_width = "64"))]
+    #[test]
+    fn layout_matches_expected_without_lockdep_overhead() {
+        #[cfg(not(feature = "lockdep"))]
+        {
+            assert_eq!(size_of::<SpinMutex<String>>(), 24);
+        }
+
+        #[cfg(feature = "lockdep")]
+        {
+            assert_eq!(size_of::<SpinMutex<String>>(), 32);
+        }
+    }
 
     #[derive(Eq, PartialEq, Debug)]
     struct NonCopy(i32);
