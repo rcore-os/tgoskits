@@ -180,6 +180,7 @@ pub trait KspinLockdepIf {
     fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot);
     fn push_current_task_held_lock(held: HeldLock);
     fn pop_current_task_held_lock(lock_id: u32);
+    fn console_write_str(s: &str);
 }
 
 pub struct LockdepMap {
@@ -665,6 +666,7 @@ fn panic_on_lockdep_error(
             held_before
         ),
         LockdepCheckError::OrderInversion => {
+            emit_lockdep_marker("lockdep: lock order inversion detected\n");
             let class_id = map.class_id().unwrap_or(0);
             let held = held_before
                 .iter()
@@ -682,6 +684,16 @@ fn panic_on_lockdep_error(
             );
         }
     }
+}
+
+#[cfg(not(any(test, doctest)))]
+fn emit_lockdep_marker(s: &str) {
+    call_interface!(KspinLockdepIf::console_write_str, s);
+}
+
+#[cfg(any(test, doctest))]
+fn emit_lockdep_marker(s: &str) {
+    eprint!("{s}");
 }
 
 pub fn finish_acquire_with_stack(
