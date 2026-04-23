@@ -109,8 +109,6 @@ enum EndpointTransferType {
 
 #[derive(Clone, Copy)]
 struct ClaimedEndpoint {
-    interface: u8,
-    alternate: u8,
     transfer_type: EndpointTransferType,
 }
 
@@ -159,7 +157,6 @@ impl UsbDeviceFile {
             return Err(AxError::InvalidInput);
         }
         self.with_live_lease(|lease| {
-            lease.claim_interface(claimed_endpoint.interface, claimed_endpoint.alternate)?;
             if endpoint & 0x80 != 0 {
                 let mut buffer = alloc::vec![0; len];
                 let actual = match transfer_type {
@@ -527,11 +524,7 @@ fn snapshot_claimed_endpoint(
                         3 => EndpointTransferType::Interrupt,
                         _ => return None,
                     };
-                    return Some(ClaimedEndpoint {
-                        interface,
-                        alternate: current_alternate,
-                        transfer_type,
-                    });
+                    return Some(ClaimedEndpoint { transfer_type });
                 }
             }
             _ => {}

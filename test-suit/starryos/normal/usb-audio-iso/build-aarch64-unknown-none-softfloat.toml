@@ -1,0 +1,8 @@
+target = "aarch64-unknown-none-softfloat"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+features = [
+  "qemu",
+  "starry-kernel/plat-dyn"
+]
+log = "Info"
+plat_dyn = true

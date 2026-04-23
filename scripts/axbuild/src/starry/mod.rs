@@ -690,13 +690,14 @@ impl Starry {
             case,
         )
         .await?;
-        rootfs::apply_disk_image_qemu_args(&mut qemu, case_assets.rootfs_path);
-        qemu.args.extend(case_assets.extra_qemu_args);
+        rootfs::apply_disk_image_qemu_args(&mut qemu, case_assets.rootfs_path.clone());
+        qemu.args.extend(case_assets.extra_qemu_args.clone());
         rootfs::apply_smp_qemu_arg(&mut qemu, case_request.smp);
 
         self.app
             .qemu(cargo, case_request.build_info_path, Some(qemu))
-            .await
+            .await?;
+        rootfs::validate_case_host_outputs(case, &case_assets)
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
@@ -843,7 +844,7 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
-                    assert_eq!(args.target, "x86_64");
+                    assert_eq!(args.target.as_deref(), Some("x86_64"));
                     assert!(!args.stress);
                 }
                 _ => panic!("expected qemu test command"),
