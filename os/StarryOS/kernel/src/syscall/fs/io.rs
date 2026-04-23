@@ -226,6 +226,10 @@ pub fn sys_preadv(
     iovcnt: usize,
     offset: __kernel_off_t,
 ) -> AxResult<isize> {
+    // preadv (unlike preadv2) does not accept offset=-1; reject negative offsets.
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     sys_preadv2(fd, iov, iovcnt, offset, 0)
 }
 
@@ -235,6 +239,10 @@ pub fn sys_pwritev(
     iovcnt: usize,
     offset: __kernel_off_t,
 ) -> AxResult<isize> {
+    // pwritev (unlike pwritev2) does not accept offset=-1; reject negative offsets.
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     sys_pwritev2(fd, iov, iovcnt, offset, 0)
 }
 
