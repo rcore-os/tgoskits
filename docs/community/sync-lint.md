@@ -64,9 +64,44 @@ WQ.notify_all(true);
 
 如果发布动作还是 `Relaxed`，等待者就可能虽然被唤醒了，但看不到你刚刚写入的最新状态。
 
+### 3. 同一个同步原子混用了强序和 `Relaxed`
+
+如果某个原子已经被检查器认定为“同步变量”，比如：
+
+- 它出现在等待条件里
+- 它承担了“写状态后唤醒别人”的职责
+
+那么检查器还会继续看这个原子在同一文件里的其他访问。
+
+如果它一边用了：
+
+- `Acquire`
+- `Release`
+- `AcqRel`
+- `SeqCst`
+
+另一边又用了：
+
+- `Relaxed`
+
+那么这些 `Relaxed` 访问也会被报告。
+
+例如：
+
+```rust
+READY.store(true, Ordering::Release);
+WQ.notify_all(true);
+
+if READY.load(Ordering::Relaxed) {
+    do_work();
+}
+```
+
+这类情况通常说明：这个原子已经明显承担同步语义，但仍然有一部分访问保留在 `Relaxed`，需要重新确认是否真的足够。
+
 ## 当前不检查什么
 
-为了避免误报，第一阶段刻意没有做“大而全”的规则。
+为了避免误报，当前实现依然刻意没有做“大而全”的规则。
 
 目前不会主动检查这些情况：
 
@@ -74,6 +109,7 @@ WQ.notify_all(true);
 - `Acquire` / `Release` 是否成对匹配
 - `AcqRel` 或 `SeqCst` 是否过强
 - 更复杂的跨函数发布模式
+- 基于任意控制流和任意数据结构的通用 dataflow 推理
 - lock-free 算法内部的状态机细节
 
 也就是说，当前规则是一个**保守版、低误报**检查器。
@@ -100,6 +136,14 @@ Relaxed atomic write is immediately followed by a wake/notify operation
 test-suit/arceos/rust/task/parallel/src/main.rs:40:12:
 Relaxed atomic load is used in a wait condition
 [suspicious_relaxed_wait_condition]
+```
+
+也可能看到：
+
+```text
+some/path.rs:27:8:
+Relaxed atomic access is mixed with stronger orderings on the same synchronization variable
+[suspicious_relaxed_mixed_ordering]
 ```
 
 ## 这些提示分别是什么意思
@@ -131,6 +175,20 @@ Relaxed atomic load is used in a wait condition
 这类写一般应考虑改成：
 
 - `Ordering::Release`
+
+### `suspicious_relaxed_mixed_ordering`
+
+意思是：
+
+- 同一个原子在同一文件里既出现了强序访问，也出现了 `Relaxed` 访问
+- 并且这个原子已经有足够证据表明自己是同步变量，而不是纯统计值
+
+这类提示通常不是单独成立的“文本匹配”，而是结合了前面的等待/唤醒语义一起判断出来的。
+
+一般应先回头看这个原子的职责，再决定是否把相关 `Relaxed` 访问也统一成：
+
+- 读侧 `Ordering::Acquire`
+- 写侧 `Ordering::Release`
 
 ## 一般怎么修
 
@@ -216,6 +274,49 @@ WQ1.wait_until(|| COUNTER.load(Ordering::Acquire) == NUM_TASKS);
 ```rust
 // sync-lint: ignore suspicious_relaxed_publish_before_notify
 ```
+
+或者：
+
+```rust
+// sync-lint: ignore suspicious_relaxed_mixed_ordering
+```
+
+也可以写成通用忽略：
+
+```rust
+// sync-lint: ignore
+```
+
+当前实现的匹配规则要点是：
+
+- 注释里必须至少包含 `sync-lint: ignore`
+- 如果后面再带具体规则名，就只忽略那一条规则
+- 如果不带具体规则名，就会把当前 `sync-lint` 的规则都忽略掉
+- 只写 `// sync-lint:` 这种前缀并不会生效
+- 忽略注释必须位于被报告代码上方的 1 到 3 行内
+
+例如：
+
+```rust
+// sync-lint: ignore suspicious_relaxed_wait_condition
+wq.wait_until(|| counter.load(Ordering::Relaxed) == 1);
+```
+
+表示只忽略 `suspicious_relaxed_wait_condition`。
+
+```rust
+// sync-lint: ignore
+wq.wait_until(|| counter.load(Ordering::Relaxed) == 1);
+```
+
+表示通用忽略。
+
+```rust
+// sync-lint:
+wq.wait_until(|| counter.load(Ordering::Relaxed) == 1);
+```
+
+这不会被识别成忽略注释。
 
 如果你确实要忽略，建议把理由写清楚，例如：
 

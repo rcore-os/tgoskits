@@ -38,6 +38,7 @@ tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "std", "time"] }
 xz2 = "0.1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 syn = { version = "2", features = ["full", "visit"] }
 walkdir = "2"
 
