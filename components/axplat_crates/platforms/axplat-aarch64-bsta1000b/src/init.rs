@@ -43,9 +43,6 @@ impl InitIf for InitIfImpl {
             );
             ax_plat_aarch64_peripherals::gic::init_gicc();
             ax_plat_aarch64_peripherals::generic_timer::enable_irqs(TIMER_IRQ);
-
-            // enable UART IRQs
-            crate::dw_apb_uart::init_irq();
         }
     }
 
