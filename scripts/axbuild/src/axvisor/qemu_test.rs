@@ -12,7 +12,6 @@ use crate::{
         image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
     },
     context::AxvisorCliArgs,
-    download::ensure_rootfs_for_arch,
     test_qemu::AxvisorBoardTestGroup,
 };
 
@@ -36,7 +35,6 @@ const RDK_S100_LINUX_KERNEL_IN_IMAGE: &str = "rdk-s100p";
 pub struct PreparedLinuxGuestAssets {
     pub image_dir: PathBuf,
     pub generated_vmconfig: PathBuf,
-    pub rootfs_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,12 +60,9 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
         &kernel_path,
     )?;
 
-    let rootfs_path = ensure_rootfs_for_arch(workspace_root, "aarch64").await?;
-
     Ok(PreparedLinuxGuestAssets {
         image_dir,
         generated_vmconfig,
-        rootfs_path,
     })
 }
 

@@ -19,8 +19,8 @@ pub mod cli;
 pub mod config;
 pub mod context;
 pub mod image;
-pub mod qemu;
 pub mod qemu_test;
+pub mod rootfs;
 
 pub use cli::{
     ArgsBoard, ArgsBuild, ArgsConfig, ArgsDefconfig, ArgsQemu, ArgsTest, ArgsUboot, Command,
@@ -67,11 +67,15 @@ impl Axvisor {
         )?;
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
-        let explicit_rootfs = args.rootfs.map(|r| {
-            crate::download::resolve_rootfs_path(self.app.workspace_root(), &request.arch, r)
-        });
-        self.ensure_qemu_rootfs_ready(&request, explicit_rootfs.as_deref())
-            .await?;
+        let explicit_rootfs = args
+            .rootfs
+            .map(|r| rootfs::resolve_explicit_rootfs(self.app.workspace_root(), &request.arch, r));
+        rootfs::ensure_qemu_rootfs_ready(
+            &request,
+            self.app.workspace_root(),
+            explicit_rootfs.as_deref(),
+        )
+        .await?;
         let qemu = self
             .load_qemu_config(&request, &cargo, explicit_rootfs.as_deref())
             .await?;
@@ -168,7 +172,7 @@ impl Axvisor {
             None,
             SnapshotPersistence::Discard,
         )?;
-        self.ensure_qemu_rootfs_ready(&request, None).await?;
+        rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), None).await?;
         let shell = test_qemu::axvisor_test_shell_config(&arch)?;
         let cargo = build::load_cargo_config(&request)?;
         let mut qemu_config = self.load_qemu_config(&request, &cargo, None).await?;
@@ -330,25 +334,6 @@ impl Axvisor {
         Ok(request)
     }
 
-    async fn ensure_qemu_rootfs_ready(
-        &self,
-        request: &ResolvedAxvisorRequest,
-        explicit_rootfs: Option<&Path>,
-    ) -> anyhow::Result<()> {
-        let Some(rootfs_path) =
-            qemu::managed_rootfs_path(request, self.app.workspace_root(), explicit_rootfs)?
-        else {
-            return Ok(());
-        };
-
-        crate::download::ensure_managed_rootfs(
-            self.app.workspace_root(),
-            &request.arch,
-            &rootfs_path,
-        )
-        .await
-    }
-
     async fn load_qemu_config(
         &mut self,
         request: &ResolvedAxvisorRequest,
@@ -356,14 +341,14 @@ impl Axvisor {
         explicit_rootfs: Option<&Path>,
     ) -> anyhow::Result<ostool::run::qemu::QemuConfig> {
         let config_path = request.qemu_config.clone().unwrap_or_else(|| {
-            qemu::default_qemu_config_template_path(&request.axvisor_dir, &request.arch)
+            default_qemu_config_template_path(&request.axvisor_dir, &request.arch)
         });
         let mut qemu = self
             .app
             .tool_mut()
             .read_qemu_config_from_path_for_cargo(cargo, &config_path)
             .await?;
-        qemu::apply_rootfs_path(
+        rootfs::patch_qemu_rootfs(
             &mut qemu,
             request,
             self.app.workspace_root(),
@@ -450,11 +435,15 @@ mod tests {
 
     #[test]
     fn default_qemu_template_path_uses_axvisor_script_location() {
-        let path = qemu::default_qemu_config_template_path(Path::new("os/axvisor"), "aarch64");
+        let path = default_qemu_config_template_path(Path::new("os/axvisor"), "aarch64");
 
         assert_eq!(
             path,
             PathBuf::from("os/axvisor/scripts/ostool/qemu-aarch64.toml")
         );
     }
+}
+
+fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {
+    axvisor_dir.join(format!("scripts/ostool/qemu-{arch}.toml"))
 }

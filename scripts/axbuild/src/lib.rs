@@ -20,6 +20,7 @@ pub mod context;
 mod download;
 mod logging;
 pub mod process;
+mod rootfs;
 pub mod starry;
 mod sync_lint;
 mod test_qemu;

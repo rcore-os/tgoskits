@@ -16,11 +16,14 @@ use crate::{
         AppContext, DEFAULT_STARRY_ARCH, ResolvedStarryRequest, StarryCliArgs,
         starry_target_for_arch_checked,
     },
+    rootfs::store as rootfs_store,
     test_qemu,
 };
 
 pub mod board;
 pub mod build;
+pub mod case_assets;
+pub mod case_build;
 pub mod config;
 pub mod quick_start;
 pub mod rootfs;
@@ -251,23 +254,20 @@ impl Starry {
         }
         if let Some(rootfs) = args.rootfs {
             // Explicit rootfs provided: skip auto-download, apply directly.
-            let rootfs = crate::download::resolve_rootfs_path(
-                self.app.workspace_root(),
-                &request.arch,
-                rootfs,
-            );
+            let rootfs =
+                rootfs_store::resolve_rootfs_path(self.app.workspace_root(), &request.arch, rootfs);
             // If the path resolves into the unified rootfs dir, ensure the
             // tarball has been extracted (keyword paths need this).
-            crate::download::ensure_managed_rootfs(
-                self.app.workspace_root(),
-                &request.arch,
-                &rootfs,
-            )
-            .await?;
+            rootfs_store::ensure_managed_rootfs(self.app.workspace_root(), &request.arch, &rootfs)
+                .await?;
             self.app.set_debug_mode(request.debug)?;
             let cargo = build::load_cargo_config(&request)?;
             let mut qemu = self.load_qemu_config(&request, &cargo, false).await?;
-            rootfs::apply_disk_image_qemu_args(&mut qemu, rootfs);
+            rootfs::patch_rootfs(
+                &mut qemu,
+                &rootfs,
+                rootfs::RootfsPatchMode::EnsureDiskBootNet,
+            );
             rootfs::apply_smp_qemu_arg(&mut qemu, request.smp);
             self.app
                 .qemu(cargo, request.build_info_path, Some(qemu))
@@ -683,14 +683,24 @@ impl Starry {
             cargo.clone()
         };
 
-        let case_assets = rootfs::prepare_case_assets(
+        let case_assets = case_assets::prepare_case_assets(
             self.app.workspace_root(),
             &case_request.arch,
             &case_request.target,
             case,
+            rootfs::ensure_rootfs_in_target_dir(
+                self.app.workspace_root(),
+                &case_request.arch,
+                &case_request.target,
+            )
+            .await?,
         )
         .await?;
-        rootfs::apply_disk_image_qemu_args(&mut qemu, case_assets.rootfs_path);
+        rootfs::patch_rootfs(
+            &mut qemu,
+            &case_assets.rootfs_path,
+            rootfs::RootfsPatchMode::EnsureDiskBootNet,
+        );
         qemu.args.extend(case_assets.extra_qemu_args);
         rootfs::apply_smp_qemu_arg(&mut qemu, case_request.smp);
 
