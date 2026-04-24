@@ -65,8 +65,8 @@ int main(void)
     iov[0].iov_len = 4;
     errno = 0;
     n = my_preadv2(fd, iov, 1, 0, bad_flags);
-    CHECK(n == -1 && (errno == EOPNOTSUPP || errno == EINVAL),
-          "preadv2 invalid flags => EOPNOTSUPP or EINVAL");
+    CHECK(n == -1 && (errno == EOPNOTSUPP),
+          "preadv2 invalid flags => EOPNOTSUPP");
 
     /* pwritev2 with invalid flags => EOPNOTSUPP */
     char wdata[] = "XXXX";
@@ -74,8 +74,8 @@ int main(void)
     iov[0].iov_len = 4;
     errno = 0;
     n = my_pwritev2(fd, iov, 1, 0, bad_flags);
-    CHECK(n == -1 && (errno == EOPNOTSUPP || errno == EINVAL),
-          "pwritev2 invalid flags => EOPNOTSUPP or EINVAL");
+    CHECK(n == -1 && (errno == EOPNOTSUPP),
+          "pwritev2 invalid flags => EOPNOTSUPP");
 
     close(fd);
     unlink(TMPFILE);
