@@ -223,6 +223,8 @@ ax-driver-pci = { path = "components/axdriver_crates/axdriver_pci" }
 ax-driver-virtio = { path = "components/axdriver_crates/axdriver_virtio" }
 ax-driver-input = { path = "components/axdriver_crates/axdriver_input" }
 ax-driver-vsock = { path = "components/axdriver_crates/axdriver_vsock" }
+ax-driver-sound = { path = "components/axdriver_crates/axdriver_sound" }
+
 
 # === ax-percpu ===
 ax-percpu = { path = "components/percpu/percpu" }
@@ -378,6 +380,7 @@ ax-driver-net = { version = "0.3", path = "components/axdriver_crates/axdriver_n
 ax-driver-pci = { version = "0.3", path = "components/axdriver_crates/axdriver_pci" }
 ax-driver-virtio = { version = "0.3", path = "components/axdriver_crates/axdriver_virtio" }
 ax-driver-vsock = { version = "0.3", path = "components/axdriver_crates/axdriver_vsock" }
+ax-driver-sound = { version = "0.3", path = "components/axdriver_crates/axdriver_sound" }
 ax-crate-interface = {version = "0.5", path = "components/crate_interface" }
 
 # === Other external crates ===

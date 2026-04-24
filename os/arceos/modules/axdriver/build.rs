@@ -3,6 +3,7 @@ const BLOCK_DEV_FEATURES: &[&str] = &["ramdisk", "sdmmc", "bcm2835-sdhci", "virt
 const DISPLAY_DEV_FEATURES: &[&str] = &["virtio-gpu"];
 const INPUT_DEV_FEATURES: &[&str] = &["virtio-input"];
 const VSOCK_DEV_FEATURES: &[&str] = &["virtio-socket"];
+const SOUND_DEV_FEATURES: &[&str] = &["virtio-sound"];
 
 fn make_cfg_values(str_list: &[&str]) -> String {
     str_list
@@ -40,6 +41,7 @@ fn main() {
         ("display", DISPLAY_DEV_FEATURES),
         ("input", INPUT_DEV_FEATURES),
         ("vsock", VSOCK_DEV_FEATURES),
+        ("sound", SOUND_DEV_FEATURES),
     ] {
         if !has_feature(dev_kind) {
             continue;
@@ -83,5 +85,9 @@ fn main() {
     println!(
         "cargo::rustc-check-cfg=cfg(vsock_dev, values({}, \"dummy\"))",
         make_cfg_values(VSOCK_DEV_FEATURES)
+    );
+    println!(
+        "cargo::rustc-check-cfg=cfg(sound_dev, values({}, \"dummy\"))",
+        make_cfg_values(SOUND_DEV_FEATURES)
     );
 }

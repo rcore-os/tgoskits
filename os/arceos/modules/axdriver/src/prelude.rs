@@ -27,6 +27,11 @@ pub use {
     crate::structs::AxNetDevice,
     ax_driver_net::{NetBufPtr, NetDriverOps},
 };
+#[cfg(feature = "sound")]
+pub use {
+    crate::structs::AxSoundDevice,
+    ax_driver_sound::{SoundCaps, SoundDirection, SoundDriverOps, SoundParams, SoundStreamState},
+};
 #[cfg(feature = "vsock")]
 pub use {
     crate::structs::AxVsockDevice,
