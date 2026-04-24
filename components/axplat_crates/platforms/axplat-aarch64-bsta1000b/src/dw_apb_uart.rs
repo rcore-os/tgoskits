@@ -1,8 +1,10 @@
 //! snps,dw-apb-uart serial driver
 
+use core::ptr::read_volatile;
+
 use ax_kspin::SpinNoIrq;
 use ax_plat::{
-    console::ConsoleIf,
+    console::{ConsoleIf, ConsoleIrqEvent},
     mem::{PhysAddr, pa},
 };
 use dw_apb_uart::DW8250;
@@ -12,6 +14,8 @@ use crate::mem::phys_to_virt;
 const UART_BASE: PhysAddr = pa!(crate::config::devices::UART_PADDR);
 
 static UART: SpinNoIrq<DW8250> = SpinNoIrq::new(DW8250::new(phys_to_virt(UART_BASE).as_usize()));
+
+const UART_LSR_OFFSET: usize = 0x14;
 
 /// Writes a byte to the console.
 #[allow(dead_code)]
@@ -34,12 +38,6 @@ fn getchar() -> Option<u8> {
 /// UART simply initialize
 pub fn init_early() {
     UART.lock().init();
-}
-
-/// Set UART IRQ Enable
-#[cfg(feature = "irq")]
-pub fn init_irq() {
-    UART.lock().set_ier(true);
 }
 
 struct ConsoleIfImpl;
@@ -74,5 +72,35 @@ impl ConsoleIf for ConsoleIfImpl {
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
         Some(crate::config::devices::UART_IRQ)
+    }
+
+    #[cfg(feature = "irq")]
+    fn set_input_irq_enabled(enabled: bool) {
+        UART.lock().set_ier(enabled);
+    }
+
+    #[cfg(feature = "irq")]
+    fn handle_irq() -> ConsoleIrqEvent {
+        let _guard = UART.lock();
+        let lsr = unsafe {
+            read_volatile((phys_to_virt(UART_BASE).as_usize() + UART_LSR_OFFSET) as *const u32)
+        };
+
+        let mut events = ConsoleIrqEvent::empty();
+        if lsr & 0b1 != 0 {
+            events |= ConsoleIrqEvent::RX_READY;
+        }
+        if lsr & (1 << 1) != 0 {
+            events |= ConsoleIrqEvent::OVERRUN;
+        }
+        if lsr & ((1 << 2) | (1 << 3) | (1 << 4) | (1 << 7)) != 0 {
+            events |= ConsoleIrqEvent::RX_ERROR;
+        }
+
+        if events.is_empty() {
+            ConsoleIrqEvent::SPURIOUS
+        } else {
+            events
+        }
     }
 }

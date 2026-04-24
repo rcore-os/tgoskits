@@ -2,6 +2,23 @@
 
 use core::fmt::{Arguments, Result, Write};
 
+use bitflags::bitflags;
+
+bitflags! {
+    /// Console input IRQ events returned by the platform.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct ConsoleIrqEvent: u32 {
+        /// Console input is ready to be drained.
+        const RX_READY = 1 << 0;
+        /// A receive-side error was reported.
+        const RX_ERROR = 1 << 1;
+        /// An overrun was reported.
+        const OVERRUN = 1 << 2;
+        /// The IRQ was not relevant to console input.
+        const SPURIOUS = 1 << 31;
+    }
+}
+
 /// Console input and output interface.
 #[def_plat_interface]
 pub trait ConsoleIf {
@@ -18,6 +35,15 @@ pub trait ConsoleIf {
     /// Returns `None` if input interrupt is not supported.
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize>;
+
+    /// Enables or disables device-side console input interrupts.
+    #[cfg(feature = "irq")]
+    fn set_input_irq_enabled(enabled: bool);
+
+    /// Handles a console input IRQ in interrupt context and returns the
+    /// corresponding device events.
+    #[cfg(feature = "irq")]
+    fn handle_irq() -> ConsoleIrqEvent;
 }
 
 struct EarlyConsole;
