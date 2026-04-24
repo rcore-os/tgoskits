@@ -14,8 +14,8 @@ package = "ax-plat-aarch64-qemu-virt"            # str
 max-cpu-num = 1                     # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0x4000_0000      # uint
-# Size of the whole physical memory. (128M)
-phys-memory-size = 0x800_0000       # uint
+# Size of the whole physical memory. (512M)
+phys-memory-size = 0x2_0000_0000    # uint
 # Base physical address of the kernel image.
 kernel-base-paddr = 0x4020_0000     # uint
 # Base virtual address of the kernel image.
