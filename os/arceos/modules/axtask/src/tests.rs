@@ -45,13 +45,13 @@ fn test_sched_fifo() {
         for i in 0..NUM_TASKS {
             ax_task::spawn_raw(
                 move || {
-                    println!("sched-fifo: Hello, task {}! ({})", i, current().id_name());
+                    println!("sched-fifo: Hello, task {}! ({:?})", i, current().id());
                     ax_task::yield_now();
                     let order = FINISHED_TASKS.fetch_add(1, Ordering::Release);
                     assert_eq!(order, i); // FIFO scheduler
                 },
                 format!("T{i}"),
-                0x1000,
+                ax_config::TASK_STACK_SIZE,
             );
         }
 
@@ -141,12 +141,12 @@ fn test_task_join() {
         for i in 0..NUM_TASKS {
             tasks.push(ax_task::spawn_raw(
                 move || {
-                    println!("task_join: task {}! ({})", i, current().id_name());
+                    println!("task_join: task {}! ({:?})", i, current().id());
                     ax_task::yield_now();
                     ax_task::exit(i as _);
                 },
                 format!("T{i}"),
-                0x1000,
+                ax_config::TASK_STACK_SIZE,
             ));
         }
 

@@ -5,6 +5,7 @@ arceos-display
 arceos-exception
 arceos-ipi
 arceos-irq
+arceos-lockdep
 arceos-memtest
 arceos-net-echoserver
 arceos-net-httpclient

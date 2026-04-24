@@ -299,6 +299,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-lockdep"
+version = "0.3.1"
+dependencies = [
+ "ax-kspin",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-memtest"
 version = "0.3.1"
 dependencies = [
@@ -1059,6 +1067,7 @@ dependencies = [
 name = "ax-kspin"
 version = "0.3.6"
 dependencies = [
+ "ax-crate-interface",
  "ax-kernel-guard",
  "ax-percpu",
  "cfg-if",
@@ -1450,6 +1459,7 @@ dependencies = [
 name = "ax-sync"
 version = "0.5.11"
 dependencies = [
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-sync",
  "ax-task",

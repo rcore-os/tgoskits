@@ -15,6 +15,7 @@ version = "0.5.8"
 
 [features]
 default = []
+lockdep = ["starry-kernel/lockdep"]
 qemu = [
   "ax-feat/defplat",
   "ax-feat/irq",

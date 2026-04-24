@@ -56,7 +56,7 @@ struct LockdepAcquire {
     #[cfg(feature = "lockdep")]
     addr: usize,
     #[cfg(feature = "lockdep")]
-    state: Option<(u32, &'static Location<'static>)>,
+    prepared: Option<crate::lockdep::PreparedAcquire>,
 }
 
 impl LockdepAcquire {
@@ -65,8 +65,9 @@ impl LockdepAcquire {
     #[track_caller]
     fn prepare<G: BaseGuard, T: ?Sized>(lock: &BaseSpinLock<G, T>) -> Self {
         let addr = lock as *const _ as *const () as usize;
-        let state = crate::lockdep::prepare_acquire::<G>(&lock.lockdep, addr, Location::caller());
-        Self { addr, state }
+        let prepared =
+            crate::lockdep::prepare_acquire::<G>(&lock.lockdep, addr, Location::caller());
+        Self { addr, prepared }
     }
 
     #[cfg(not(feature = "lockdep"))]
@@ -79,13 +80,13 @@ impl LockdepAcquire {
     #[cfg(feature = "lockdep")]
     #[inline(always)]
     fn id(self) -> Option<u32> {
-        self.state.map(|(id, _)| id)
+        self.prepared.map(|prepared| prepared.lock_id())
     }
 
     #[cfg(feature = "lockdep")]
     #[inline(always)]
     fn finish(self) {
-        crate::lockdep::finish_acquire(self.state, self.addr);
+        crate::lockdep::finish_acquire(self.prepared, self.addr);
     }
 }
 
@@ -96,6 +97,7 @@ unsafe impl<G: BaseGuard, T: ?Sized + Send> Send for BaseSpinLock<G, T> {}
 impl<G: BaseGuard, T> BaseSpinLock<G, T> {
     /// Creates a new [`BaseSpinLock`] wrapping the supplied data.
     #[inline(always)]
+    #[track_caller]
     pub const fn new(data: T) -> Self {
         Self {
             _phantom: PhantomData,
@@ -349,7 +351,7 @@ impl<G: BaseGuard, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
             let _lockdep_irq_guard = IrqSave::new();
             #[cfg(feature = "smp")]
             self.lock.store(false, Ordering::Release);
-            crate::lockdep::release(self.lock_id);
+            crate::lockdep::release::<G>(self.lock_id);
         }
         #[cfg(all(feature = "smp", not(feature = "lockdep")))]
         self.lock.store(false, Ordering::Release);
@@ -359,6 +361,7 @@ impl<G: BaseGuard, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
 
 #[cfg(test)]
 mod tests {
+    use core::mem::size_of;
     use std::{
         sync::{
             Arc,
@@ -400,6 +403,20 @@ mod tests {
     #[cfg(feature = "lockdep")]
     type TestSpinIrq<T> = BaseSpinLock<TestGuardIrq, T>;
     type SpinMutex<T> = crate::SpinRaw<T>;
+
+    #[cfg(all(not(feature = "smp"), target_pointer_width = "64"))]
+    #[test]
+    fn layout_matches_expected_without_lockdep_overhead() {
+        #[cfg(not(feature = "lockdep"))]
+        {
+            assert_eq!(size_of::<SpinMutex<String>>(), 24);
+        }
+
+        #[cfg(feature = "lockdep")]
+        {
+            assert_eq!(size_of::<SpinMutex<String>>(), 40);
+        }
+    }
 
     #[derive(Eq, PartialEq, Debug)]
     struct NonCopy(i32);
@@ -634,6 +651,33 @@ mod tests {
 
         let _guard_b = lock_b.lock();
         let _guard_a = lock_a.lock();
+    }
+
+    #[cfg(feature = "lockdep")]
+    #[test]
+    #[should_panic(expected = "lock order inversion detected")]
+    fn lockdep_rejects_order_inversion_across_same_class_instances() {
+        fn class_a() -> TestSpinIrq<usize> {
+            TestSpinIrq::new(0)
+        }
+
+        fn class_b() -> TestSpinIrq<usize> {
+            TestSpinIrq::new(0)
+        }
+
+        let lock_a1 = class_a();
+        let lock_b1 = class_b();
+
+        {
+            let _guard_a = lock_a1.lock();
+            let _guard_b = lock_b1.lock();
+        }
+
+        let lock_a2 = class_a();
+        let lock_b2 = class_b();
+
+        let _guard_b = lock_b2.lock();
+        let _guard_a = lock_a2.lock();
     }
 
     #[cfg(all(feature = "lockdep", feature = "smp"))]

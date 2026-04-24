@@ -20,6 +20,7 @@ pub struct RawMutex {
 impl RawMutex {
     /// Creates a [`RawMutex`].
     #[inline(always)]
+    #[track_caller]
     pub const fn new() -> Self {
         Self {
             wq: WaitQueue::new(),
@@ -50,9 +51,15 @@ unsafe impl lock_api::RawMutex for RawMutex {
     /// value to downstream static items. Can hopefully be replaced with
     /// `const fn new() -> Self` at some point.
     #[allow(clippy::declare_interior_mutable_const)]
-    const INIT: Self = RawMutex::new();
+    const INIT: Self = RawMutex {
+        wq: WaitQueue::new(),
+        owner_id: AtomicU64::new(0),
+        #[cfg(feature = "lockdep")]
+        lockdep: crate::lockdep::LockdepMap::new_dynamic(),
+    };
 
     #[inline(always)]
+    #[track_caller]
     fn lock(&self) {
         might_sleep();
         let current_id = current().id().as_u64();
@@ -90,6 +97,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn try_lock(&self) -> bool {
         might_sleep();
         let current_id = current().id().as_u64();
@@ -116,12 +124,12 @@ unsafe impl lock_api::RawMutex for RawMutex {
             owner_id, current_id,
             "Thread({current_id}) tried to release mutex it doesn't own",
         );
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::release(self);
         // wake up one waiting thread.
         self.wq.notify_one_with(true, |id: u64| {
             self.owner_id.swap(id, Ordering::Release);
         });
-        #[cfg(feature = "lockdep")]
-        crate::lockdep::release(self);
     }
 
     #[inline(always)]
@@ -137,11 +145,12 @@ pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    use core::mem::size_of;
     use std::sync::{Mutex as StdMutex, Once, OnceLock};
 
     use ax_task as thread;
 
-    use crate::Mutex;
+    use crate::{Mutex, RawMutex};
 
     static INIT: Once = Once::new();
     static TEST_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
@@ -161,6 +170,20 @@ mod tests {
         let _test_guard = lock_test_context();
         init_test_scheduler();
         f()
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn raw_mutex_layout_matches_expected_without_lockdep_overhead() {
+        #[cfg(not(feature = "lockdep"))]
+        {
+            assert_eq!(size_of::<RawMutex>(), 40);
+        }
+
+        #[cfg(feature = "lockdep")]
+        {
+            assert_eq!(size_of::<RawMutex>(), 72);
+        }
     }
 
     fn may_interrupt() {
@@ -213,7 +236,38 @@ mod tests {
         use core::mem::ManuallyDrop;
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
+        use ax_kernel_guard::BaseGuard;
+        use ax_kspin::{BaseSpinLock, SpinRaw};
+
         use super::*;
+
+        struct LocalGuard;
+
+        impl BaseGuard for LocalGuard {
+            type State = ();
+
+            fn acquire() -> Self::State {}
+
+            fn release(_: Self::State) {}
+
+            fn lockdep_enabled() -> bool {
+                true
+            }
+        }
+
+        type LocalSpin<T> = BaseSpinLock<LocalGuard, T>;
+
+        fn lock_class_a_mutex(lock: &Mutex<usize>) -> crate::MutexGuard<'_, usize> {
+            lock.lock()
+        }
+
+        fn lock_class_b_mutex(lock: &Mutex<usize>) -> crate::MutexGuard<'_, usize> {
+            lock.lock()
+        }
+
+        fn lock_class_a_raw_spin(lock: &SpinRaw<usize>) -> ax_kspin::SpinRawGuard<'_, usize> {
+            lock.lock()
+        }
 
         fn reset_lockdep_stack() {
             thread::with_current_lockdep_stack(|stack| *stack = thread::HeldLockStack::new());
@@ -265,6 +319,36 @@ mod tests {
         }
 
         #[test]
+        fn rejects_order_inversion_across_same_class_mutex_instances() {
+            fn class_a() -> Mutex<usize> {
+                Mutex::new(0)
+            }
+
+            fn class_b() -> Mutex<usize> {
+                Mutex::new(0)
+            }
+
+            with_lockdep_test(|| {
+                let lock_a1 = class_a();
+                let lock_b1 = class_b();
+
+                {
+                    let _guard_a = lock_class_a_mutex(&lock_a1);
+                    let _guard_b = lock_class_b_mutex(&lock_b1);
+                }
+
+                let lock_a2 = class_a();
+                let lock_b2 = class_b();
+
+                let guard_b = ManuallyDrop::new(lock_class_b_mutex(&lock_b2));
+                assert_lockdep_failure(|| {
+                    let _guard_a = lock_class_a_mutex(&lock_a2);
+                });
+                core::mem::forget(guard_b);
+            });
+        }
+
+        #[test]
         fn rejects_out_of_order_unlock() {
             with_lockdep_test(|| {
                 let lock_a = Mutex::new(0usize);
@@ -275,6 +359,107 @@ mod tests {
 
                 assert_lockdep_failure(|| drop(guard_a));
                 core::mem::forget(guard_b);
+            });
+        }
+
+        #[test]
+        fn rejects_mutex_then_cpu_spin_order_inversion() {
+            with_lockdep_test(|| {
+                let spin = LocalSpin::new(0usize);
+                let mutex = Mutex::new(0usize);
+
+                {
+                    let _guard_mutex = mutex.lock();
+                    let _guard_spin = spin.lock();
+                }
+
+                assert_lockdep_failure(|| {
+                    let _guard_spin = spin.lock();
+                    let _guard_mutex = mutex.lock();
+                });
+            });
+        }
+
+        #[test]
+        fn rejects_cpu_spin_then_mutex_order_inversion() {
+            with_lockdep_test(|| {
+                let spin = LocalSpin::new(0usize);
+                let mutex = Mutex::new(0usize);
+
+                {
+                    let _guard_spin = spin.lock();
+                    let _guard_mutex = mutex.lock();
+                }
+
+                assert_lockdep_failure(|| {
+                    let _guard_mutex = mutex.lock();
+                    let _guard_spin = spin.lock();
+                });
+            });
+        }
+
+        #[test]
+        fn rejects_mutex_then_raw_spin_order_inversion() {
+            with_lockdep_test(|| {
+                let spin = SpinRaw::new(0usize);
+                let mutex = Mutex::new(0usize);
+
+                {
+                    let _guard_mutex = mutex.lock();
+                    let _guard_spin = spin.lock();
+                }
+
+                assert_lockdep_failure(|| {
+                    let _guard_spin = spin.lock();
+                    let _guard_mutex = mutex.lock();
+                });
+            });
+        }
+
+        #[test]
+        fn rejects_raw_spin_then_mutex_order_inversion() {
+            with_lockdep_test(|| {
+                let spin = SpinRaw::new(0usize);
+                let mutex = Mutex::new(0usize);
+
+                {
+                    let _guard_spin = spin.lock();
+                    let _guard_mutex = mutex.lock();
+                }
+
+                assert_lockdep_failure(|| {
+                    let _guard_mutex = mutex.lock();
+                    let _guard_spin = spin.lock();
+                });
+            });
+        }
+
+        #[test]
+        fn rejects_order_inversion_across_same_class_mixed_instances() {
+            fn class_a_spin() -> SpinRaw<usize> {
+                SpinRaw::new(0)
+            }
+
+            fn class_b_mutex() -> Mutex<usize> {
+                Mutex::new(0)
+            }
+
+            with_lockdep_test(|| {
+                let spin_a1 = class_a_spin();
+                let mutex_b1 = class_b_mutex();
+
+                {
+                    let _guard_spin = spin_a1.lock();
+                    let _guard_mutex = lock_class_b_mutex(&mutex_b1);
+                }
+
+                let spin_a2 = class_a_spin();
+                let mutex_b2 = class_b_mutex();
+
+                assert_lockdep_failure(|| {
+                    let _guard_mutex = lock_class_b_mutex(&mutex_b2);
+                    let _guard_spin = lock_class_a_raw_spin(&spin_a2);
+                });
             });
         }
     }

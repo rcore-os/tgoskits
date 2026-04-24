@@ -1,0 +1,8 @@
+features = ["ax-std", "lockdep"]
+log = "Warn"
+max_cpu_num = 4
+
+[env]
+AX_GW = "10.0.2.2"
+AX_IP = "10.0.2.15"
+LOCKDEP_CASE = "mutex-two-task"
