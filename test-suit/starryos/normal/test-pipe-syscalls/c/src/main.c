@@ -1,15 +1,3 @@
-/*
- * test_pipe_syscalls.c -- pipe/pipe2 syscall 综合测试
- *
- * 测试内容：
- *   1. pipe: 基本 pipe 创建, fd[0] < fd[1], 读写数据, 关闭写端读返回 0
- *   2. pipe2:
- *      - flags=0 与 pipe 行为一致
- *      - O_NONBLOCK: 读空 pipe 返回 EAGAIN
- *      - O_CLOEXEC: 验证 FD_CLOEXEC 标志
- *      - 无效 fds 指针 → EFAULT
- */
-
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <unistd.h>
@@ -19,7 +7,6 @@
 #include <signal.h>
 #include <stdint.h>
 
-/* helper: 获取 fd 的 FD_CLOEXEC 标志 */
 static int get_cloexec(int fd)
 {
     int flags = fcntl(fd, F_GETFD);
@@ -27,34 +14,27 @@ static int get_cloexec(int fd)
     return !!(flags & FD_CLOEXEC);
 }
 
-/* ==================== pipe ==================== */
 static void test_pipe(void)
 {
     printf("--- pipe ---\n");
 
-    /* 基本 pipe 创建 */
     {
         int fds[2];
         CHECK_RET(pipe(fds), 0, "pipe 创建成功");
         CHECK(fds[0] >= 0, "pipe fd[0] >= 0");
         CHECK(fds[1] >= 0, "pipe fd[1] >= 0");
         CHECK(fds[0] != fds[1], "pipe fd[0] != fd[1]");
-
-        /* 写入数据再读出 */
         const char *msg = "hello pipe";
         ssize_t wlen = write(fds[1], msg, strlen(msg));
         CHECK(wlen == (ssize_t)strlen(msg), "pipe write 数据完整");
-
         char buf[64] = {0};
         ssize_t rlen = read(fds[0], buf, sizeof(buf) - 1);
         CHECK(rlen == (ssize_t)strlen(msg), "pipe read 数据完整");
         CHECK(strcmp(buf, msg) == 0, "pipe read 内容正确");
-
         close(fds[0]);
         close(fds[1]);
     }
 
-    /* 关闭写端后 read 返回 0 (EOF) */
     {
         int fds[2];
         pipe(fds);
@@ -65,7 +45,6 @@ static void test_pipe(void)
         close(fds[0]);
     }
 
-    /* 关闭读端后 write 返回 -1 且 errno == EPIPE */
     {
         int fds[2];
         pipe(fds);
@@ -78,7 +57,6 @@ static void test_pipe(void)
         close(fds[1]);
     }
 
-    /* 默认 pipe fd 不是 close-on-exec */
     {
         int fds[2];
         pipe(fds);
@@ -87,19 +65,31 @@ static void test_pipe(void)
         close(fds[0]);
         close(fds[1]);
     }
+
+    {
+        int fds[2];
+        pipe(fds);
+        const char *msg = "leftover";
+        write(fds[1], msg, strlen(msg));
+        close(fds[1]);
+        char buf[64] = {0};
+        ssize_t r1 = read(fds[0], buf, sizeof(buf) - 1);
+        CHECK(r1 == (ssize_t)strlen(msg), "关闭写端后读取残留数据完整");
+        CHECK(strcmp(buf, msg) == 0, "残留数据内容正确");
+        ssize_t r2 = read(fds[0], buf, sizeof(buf));
+        CHECK(r2 == 0, "残留数据读完后再次 read 返回 0 (EOF)");
+        close(fds[0]);
+    }
 }
 
-/* ==================== pipe2 ==================== */
 static void test_pipe2(void)
 {
     printf("--- pipe2 ---\n");
 
-    /* flags=0 等价于 pipe */
     {
         int fds[2];
         CHECK_RET(pipe2(fds, 0), 0, "pipe2 flags=0 成功");
         CHECK(fds[0] >= 0 && fds[1] >= 0, "pipe2 flags=0 fd 有效");
-
         const char *msg = "pipe2";
         write(fds[1], msg, strlen(msg));
         char buf[16] = {0};
@@ -109,7 +99,14 @@ static void test_pipe2(void)
         close(fds[1]);
     }
 
-    /* O_NONBLOCK: 读空 pipe 返回 EAGAIN */
+    {
+        int fds[2];
+        CHECK_RET(pipe2(fds, 0), 0, "pipe2 fd 排序准备");
+        CHECK(fds[0] < fds[1], "pipe2 fd[0] < fd[1]");
+        close(fds[0]);
+        close(fds[1]);
+    }
+
     {
         int fds[2];
         CHECK_RET(pipe2(fds, O_NONBLOCK), 0, "pipe2 O_NONBLOCK 成功");
@@ -121,7 +118,6 @@ static void test_pipe2(void)
         close(fds[1]);
     }
 
-    /* O_CLOEXEC: fd 带有 FD_CLOEXEC 标志 */
     {
         int fds[2];
         CHECK_RET(pipe2(fds, O_CLOEXEC), 0, "pipe2 O_CLOEXEC 成功");
@@ -131,7 +127,6 @@ static void test_pipe2(void)
         close(fds[1]);
     }
 
-    /* O_NONBLOCK | O_CLOEXEC 组合 */
     {
         int fds[2];
         CHECK_RET(pipe2(fds, O_NONBLOCK | O_CLOEXEC), 0, "pipe2 O_NONBLOCK|O_CLOEXEC 成功");
@@ -144,7 +139,6 @@ static void test_pipe2(void)
         close(fds[1]);
     }
 
-    /* O_NONBLOCK 写端: pipe 满时返回 EAGAIN */
     {
         int fds[2];
         pipe2(fds, O_NONBLOCK);
@@ -161,20 +155,16 @@ static void test_pipe2(void)
         close(fds[1]);
     }
 
-    /* 无效 fds 指针 → EFAULT */
     {
         int *bad_ptr = (int *)(uintptr_t)0x1;
-        CHECK_ERR(pipe2(bad_ptr, 0), EFAULT, "pipe2 无效 fds 指针 → EFAULT");
+        CHECK_ERR(pipe2(bad_ptr, 0), EFAULT, "pipe2 无效 fds 指针 -> EFAULT");
     }
 }
 
-/* ==================== main ==================== */
 int main(void)
 {
     TEST_START("pipe-syscalls");
-
     test_pipe();
     test_pipe2();
-
     TEST_DONE();
 }
