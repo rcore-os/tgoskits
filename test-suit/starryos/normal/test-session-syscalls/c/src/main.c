@@ -1,17 +1,3 @@
-/*
- * test_session_syscalls.c -- setsid/getsid/setpgid/getpgid 综合测试
- *
- * 测试内容：
- *   1. getsid(0): 返回当前进程的 session ID
- *   2. getpgid(0): 返回当前进程的 group ID
- *   3. setpgid(0, 0): 创建新进程组, pgid == pid
- *   4. setpgid 子进程: 父进程修改子进程 pgid
- *   5. setsid: 创建新 session, 返回新 sid
- *   6. setsid 重复调用 → EPERM
- *   7. 跨 session setpgid → EPERM
- *   8. getsid/getpgid 不存在 PID → ESRCH
- */
-
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <unistd.h>
@@ -19,31 +5,26 @@
 #include <errno.h>
 #include <signal.h>
 
-/* ==================== getsid / getpgid 基础 ==================== */
 static void test_getsid_getpgid_basic(void)
 {
     printf("--- getsid/getpgid 基础 ---\n");
 
-    /* getsid(0) 返回当前 session ID */
     {
         pid_t sid = getsid(0);
         CHECK(sid > 0, "getsid(0) 返回正值");
     }
 
-    /* getpgid(0) 返回当前 process group ID */
     {
         pid_t pgid = getpgid(0);
         CHECK(pgid > 0, "getpgid(0) 返回正值");
     }
 
-    /* getsid(getpid()) == getsid(0) */
     {
         pid_t sid0 = getsid(0);
         pid_t sid_self = getsid(getpid());
         CHECK(sid0 == sid_self, "getsid(0) == getsid(getpid())");
     }
 
-    /* getpgid(getpid()) == getpgid(0) */
     {
         pid_t pgid0 = getpgid(0);
         pid_t pgid_self = getpgid(getpid());
@@ -51,30 +32,25 @@ static void test_getsid_getpgid_basic(void)
     }
 }
 
-/* ==================== setpgid ==================== */
 static void test_setpgid(void)
 {
     printf("--- setpgid ---\n");
 
-    /* setpgid(0, 0): 创建新进程组, pgid 应等于 pid */
     {
         pid_t orig_pgid = getpgid(0);
         CHECK_RET(setpgid(0, 0), 0, "setpgid(0, 0) 成功");
         pid_t new_pgid = getpgid(0);
         CHECK(new_pgid == getpid(), "setpgid(0,0) 后 pgid == pid");
-
         if (orig_pgid != getpid()) {
             setpgid(0, orig_pgid);
         }
     }
 
-    /* setpgid(getpid(), getpid()) 效果同 setpgid(0, 0) */
     {
         CHECK_RET(setpgid(getpid(), getpid()), 0, "setpgid(pid, pid) 成功");
         CHECK(getpgid(0) == getpid(), "setpgid(pid,pid) 后 pgid == pid");
     }
 
-    /* setpgid 在子进程中: 父进程修改子进程的 pgid */
     {
         pid_t pid = fork();
         if (pid == 0) {
@@ -86,19 +62,35 @@ static void test_setpgid(void)
         waitpid(pid, NULL, 0);
     }
 
-    /* setpgid 不存在的 PID → ESRCH */
-    CHECK_ERR(setpgid(999999, 0), ESRCH, "setpgid 不存在 PID → ESRCH");
+    CHECK_ERR(setpgid(999999, 0), ESRCH, "setpgid 不存在 PID -> ESRCH");
+    CHECK_ERR(setpgid(0, 999999), ESRCH, "setpgid 不存在 pgid -> ESRCH");
 
-    /* setpgid 不存在的 pgid → ESRCH */
-    CHECK_ERR(setpgid(0, 999999), ESRCH, "setpgid 不存在 pgid → ESRCH");
+    /* setpgid 将子进程移入已有进程组 */
+    {
+        pid_t child1 = fork();
+        if (child1 == 0) {
+            usleep(200000);
+            _exit(0);
+        }
+        pid_t child2 = fork();
+        if (child2 == 0) {
+            usleep(200000);
+            _exit(0);
+        }
+        /* child1 创建自己的组 */
+        setpgid(child1, child1);
+        /* child2 移入 child1 的组 */
+        CHECK_RET(setpgid(child2, child1), 0, "setpgid 将进程移入已有组成功");
+        CHECK(getpgid(child2) == child1, "移入后 pgid == child1 的 pgid");
+        waitpid(child1, NULL, 0);
+        waitpid(child2, NULL, 0);
+    }
 }
 
-/* ==================== setsid ==================== */
 static void test_setsid(void)
 {
     printf("--- setsid ---\n");
 
-    /* setsid 在子进程中创建新 session */
     {
         pid_t pid = fork();
         if (pid == 0) {
@@ -132,7 +124,6 @@ static void test_setsid(void)
               "setsid 子进程全部检查通过");
     }
 
-    /* setsid 再次调用 → EPERM (已经是 group leader) */
     {
         pid_t pid = fork();
         if (pid == 0) {
@@ -147,11 +138,17 @@ static void test_setsid(void)
         int status;
         waitpid(pid, &status, 0);
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-              "setsid 重复调用 → EPERM");
+              "setsid 重复调用 -> EPERM");
+    }
+
+    /* init 进程(进程组组长)调用 setsid -> EPERM */
+    {
+        errno = 0;
+        pid_t r = setsid();
+        CHECK(r == -1 && errno == EPERM, "进程组组长 setsid -> EPERM");
     }
 }
 
-/* ==================== 跨 session setpgid → EPERM ==================== */
 static void test_cross_session(void)
 {
     printf("--- 跨 session 操作 ---\n");
@@ -166,18 +163,14 @@ static void test_cross_session(void)
         usleep(50000);
         errno = 0;
         int r = setpgid(pid, getpgid(0));
-        CHECK(r == -1 && errno == EPERM, "跨 session setpgid → EPERM");
+        CHECK(r == -1 && errno == EPERM, "跨 session setpgid -> EPERM");
         waitpid(pid, NULL, 0);
     }
 
-    /* getsid 不存在的 PID → ESRCH */
-    CHECK_ERR(getsid(999999), ESRCH, "getsid 不存在 PID → ESRCH");
-
-    /* getpgid 不存在的 PID → ESRCH */
-    CHECK_ERR(getpgid(999999), ESRCH, "getpgid 不存在 PID → ESRCH");
+    CHECK_ERR(getsid(999999), ESRCH, "getsid 不存在 PID -> ESRCH");
+    CHECK_ERR(getpgid(999999), ESRCH, "getpgid 不存在 PID -> ESRCH");
 }
 
-/* ==================== main ==================== */
 int main(void)
 {
     TEST_START("session-syscalls");
