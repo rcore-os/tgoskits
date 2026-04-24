@@ -4,7 +4,7 @@ args = [
     "-cpu",
     "cortex-a72",
     "-m",
-    "128M",
+    "512M",
     "-smp",
     "4",
     "-nographic",
