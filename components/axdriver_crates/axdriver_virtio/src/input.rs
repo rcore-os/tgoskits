@@ -24,7 +24,7 @@ impl<H: Hal, T: Transport> VirtIoInputDev<H, T> {
     /// Creates a new driver instance and initializes the device, or returns
     /// an error if any step fails.
     pub fn try_new(transport: T) -> DevResult<Self> {
-        let mut virtio = InnerDev::new(transport).unwrap();
+        let mut virtio = InnerDev::new(transport).map_err(as_dev_err)?;
         let name = virtio.name().unwrap_or_else(|_| "<unknown>".to_owned());
         let device_id = virtio.ids().map_err(as_dev_err)?;
         let device_id = InputDeviceId {
