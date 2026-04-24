@@ -272,6 +272,11 @@ impl TransportOps for StreamTransport {
             if count > 0 {
                 chan.poll_update.wake();
                 Ok(count)
+            } else if !chan.rx.write_is_held() {
+                // Peer dropped its sender end and the ring is empty: EOF.
+                // Returning WouldBlock here would park the caller forever
+                // waiting for data that will never arrive.
+                Ok(0)
             } else {
                 Err(AxError::WouldBlock)
             }
