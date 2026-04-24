@@ -1,5 +1,7 @@
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time};
+use ax_hal::time::{
+    NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
+};
 use ax_task::current;
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE,
@@ -121,8 +123,8 @@ pub fn sys_setitimer(
 // ---- POSIX timer syscalls ----
 
 use linux_raw_sys::general::{
-    __kernel_itimerspec, __kernel_timer_t, sigevent, SIGEV_NONE, SIGEV_SIGNAL, TIMER_ABSTIME,
-    __kernel_timespec,
+    __kernel_itimerspec, __kernel_timer_t, __kernel_timespec, SIGEV_NONE, SIGEV_SIGNAL,
+    TIMER_ABSTIME, sigevent,
 };
 
 use crate::task::posix_timer::PosixTimerTable;
