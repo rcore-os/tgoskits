@@ -130,9 +130,12 @@ pub fn poll_timer(task: &TaskInner) {
         // reentrant borrow, likely IRQ
         return;
     };
-    time.poll(|signo| {
+    let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    });
+    };
+    time.poll(&emitter);
+    // Also poll POSIX timers
+    thr.posix_timers.poll_expired(&emitter);
 }
 
 /// Sets the timer state.

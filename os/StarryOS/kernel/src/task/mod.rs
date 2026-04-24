@@ -3,6 +3,7 @@
 mod cred;
 mod futex;
 mod ops;
+pub mod posix_timer;
 mod resources;
 mod signal;
 mod stat;
@@ -30,6 +31,7 @@ use starry_signal::{
 };
 
 pub use self::{cred::*, futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
+pub use self::posix_timer::PosixTimerTable;
 use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.
@@ -101,6 +103,9 @@ pub struct Thread {
 
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
+
+    /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
+    pub posix_timers: Arc<PosixTimerTable>,
 }
 
 impl Thread {
@@ -123,6 +128,7 @@ impl Thread {
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
             cred: SpinNoIrq::new(cred),
+            posix_timers: Arc::new(PosixTimerTable::default()),
         })
     }
 
