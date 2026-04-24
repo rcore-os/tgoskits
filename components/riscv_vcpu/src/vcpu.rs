@@ -21,14 +21,14 @@ use riscv_decode::{
     types::{IType, SType},
 };
 use riscv_h::register::{
-    hstatus, htimedelta, hvip,
+    hgeie, hie, hstatus, htimedelta, hvip,
     vsatp::{self, Vsatp},
     vscause::{self, Vscause},
     vsepc,
     vsie::{self, Vsie},
     vsscratch,
     vsstatus::{self, Vsstatus},
-    vstval,
+    vstimecmp, vstval,
     vstvec::{self, Vstvec},
 };
 use rustsbi::{Forward, RustSBI};
@@ -46,6 +46,8 @@ const TINST_PSEUDO_STORE: u32 = 0x3020;
 const TINST_PSEUDO_LOAD: u32 = 0x3000;
 const EID_TIME: usize = 0x5449_4D45;
 const FID_SET_TIMER: usize = 0;
+const SYSTEM_OPCODE: u32 = 0x73;
+const CSR_STIMECMP: u16 = 0x14d;
 
 #[inline]
 fn instr_is_pseudo(ins: u32) -> bool {
@@ -118,6 +120,14 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             hstatus.write();
         }
         self.regs.guest_regs.hstatus = hstatus.bits();
+
+        let mut hie = hie::Hie::from_bits(0);
+        hie.set_vssie(true);
+        hie.set_vstie(true);
+        hie.set_vseie(true);
+        self.regs.virtual_hs_csrs.hie = hie.bits();
+        self.regs.virtual_hs_csrs.hgeie = 0;
+
         Ok(())
     }
 
@@ -175,6 +185,10 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             vsstatus.write();
             let vsie = Vsie::from_bits(self.regs.vs_csrs.vsie);
             vsie.write();
+            vstimecmp::write(self.regs.vs_csrs.vstimecmp);
+            let hie = hie::Hie::from_bits(self.regs.virtual_hs_csrs.hie);
+            hie.write();
+            hgeie::write(self.regs.virtual_hs_csrs.hgeie);
             core::arch::asm!(
                 "csrw hgatp, {hgatp}",
                 hgatp = in(reg) self.regs.virtual_hs_csrs.hgatp,
@@ -196,10 +210,16 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             self.regs.vs_csrs.vsscratch = vsscratch::read();
             self.regs.vs_csrs.vsstatus = vsstatus::read().bits();
             self.regs.vs_csrs.vsie = vsie::read().bits();
+            self.regs.vs_csrs.vstimecmp = vstimecmp::read();
+            self.regs.virtual_hs_csrs.hie = hie::read().bits();
+            self.regs.virtual_hs_csrs.hgeie = hgeie::read();
             core::arch::asm!(
                 "csrr {hgatp}, hgatp",
                 hgatp = out(reg) self.regs.virtual_hs_csrs.hgatp,
             );
+            hie::Hie::from_bits(0).write();
+            hgeie::write(0);
+            vstimecmp::write(usize::MAX);
             core::arch::asm!("csrw hgatp, x0");
             core::arch::riscv64::hfence_gvma_all();
         }
@@ -480,6 +500,7 @@ impl RISCVVCpu {
                 self.advance_pc(4);
                 Ok(AxVCpuExitReason::Nothing)
             }
+            Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
             Trap::Interrupt(Interrupt::SupervisorTimer) => {
                 // Enable guest timer interrupt
                 unsafe {
@@ -528,6 +549,106 @@ impl RISCVVCpu {
         self.set_gpr_from_gpr_index(GprIndex::A0, a0);
         self.set_gpr_from_gpr_index(GprIndex::A1, a1);
         self.advance_pc(4);
+    }
+
+    fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
+        let instr = self.read_virtual_instruction()?;
+        let csr = ((instr >> 20) & 0xfff) as u16;
+
+        if csr != CSR_STIMECMP {
+            panic!(
+                "Unhandled virtual instruction csr={csr:#x}, sepc: {:#x}, stval: {:#x}, htval: \
+                 {:#x}, htinst: {:#x}",
+                self.regs.guest_regs.sepc,
+                self.regs.trap_csrs.stval,
+                self.regs.trap_csrs.htval,
+                self.regs.trap_csrs.htinst,
+            );
+        }
+
+        let funct3 = ((instr >> 12) & 0x7) as u8;
+        let rd = ((instr >> 7) & 0x1f) as u8;
+        let rs1 = ((instr >> 15) & 0x1f) as u8;
+        let old_value = self.regs.vs_csrs.vstimecmp;
+        let rs1_value = self.read_gpr_raw(rs1);
+        let zimm = rs1 as usize;
+
+        let new_value = match funct3 {
+            0b001 => Some(rs1_value),
+            0b010 => {
+                if rs1 == 0 {
+                    None
+                } else {
+                    Some(old_value | rs1_value)
+                }
+            }
+            0b011 => {
+                if rs1 == 0 {
+                    None
+                } else {
+                    Some(old_value & !rs1_value)
+                }
+            }
+            0b101 => Some(zimm),
+            0b110 => {
+                if zimm == 0 {
+                    None
+                } else {
+                    Some(old_value | zimm)
+                }
+            }
+            0b111 => {
+                if zimm == 0 {
+                    None
+                } else {
+                    Some(old_value & !zimm)
+                }
+            }
+            _ => {
+                panic!(
+                    "Unhandled virtual instruction funct3={funct3:#x} for csr={csr:#x}, sepc: \
+                     {:#x}",
+                    self.regs.guest_regs.sepc,
+                );
+            }
+        };
+
+        if rd != 0 {
+            self.write_gpr_raw(rd, old_value);
+        }
+
+        if let Some(new_value) = new_value {
+            self.regs.vs_csrs.vstimecmp = new_value;
+            unsafe {
+                hvip::clear_vstip();
+                vstimecmp::write(new_value);
+            }
+        }
+
+        self.advance_pc(4);
+        Ok(AxVCpuExitReason::Nothing)
+    }
+
+    fn read_virtual_instruction(&self) -> AxResult<u32> {
+        let instr = self.regs.trap_csrs.stval as u32;
+        if instr & 0x7f == SYSTEM_OPCODE {
+            return Ok(instr);
+        }
+
+        let guest_pc = GuestVirtAddr::from(self.regs.guest_regs.sepc);
+        Ok(guest_mem::fetch_guest_instruction(guest_pc) as u32)
+    }
+
+    fn read_gpr_raw(&self, index: u8) -> usize {
+        GprIndex::from_raw(index as u32)
+            .map(|gpr| self.get_gpr(gpr))
+            .unwrap_or(0)
+    }
+
+    fn write_gpr_raw(&mut self, index: u8, value: usize) {
+        if let Some(gpr) = GprIndex::from_raw(index as u32) {
+            self.set_gpr_from_gpr_index(gpr, value);
+        }
     }
 
     /// Decode the instruction at the given virtual address. Return the decoded instruction and its

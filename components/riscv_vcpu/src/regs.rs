@@ -185,7 +185,8 @@ impl GuestVsCsrs {
         self.vscause = vscause::read().bits();
         self.vstval = vstval::read();
         self.vsatp = vsatp::read().bits();
-        // vstimecmp is not a CSR but a memory-mapped register.
+        // vstimecmp is handled separately because older hypervisor codepaths may
+        // choose not to restore it during every VM bind.
     }
 }
 
