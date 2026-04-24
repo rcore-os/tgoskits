@@ -184,8 +184,7 @@ pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
         d.inner().sync(false)?;
     }
-    // For other non-file fds (socket/pipe/etc.), fsync is a no-op.
-    Ok(0)
+    Err(AxError::from(LinuxError::EINVAL))
 }
 
 pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
@@ -196,8 +195,7 @@ pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
         d.inner().sync(true)?;
     }
-    // For other non-file fds (socket/pipe/etc.), fdatasync is a no-op.
-    Ok(0)
+    Err(AxError::from(LinuxError::EINVAL))
 }
 
 pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, _flags: u32) -> AxResult<isize> {

@@ -26,7 +26,7 @@ ax-feat = { workspace = true, features = [
     "irq",
     "uspace",
 
-    "page-alloc-4g",
+    "page-alloc-64g",
     "alloc-slab",
 
     "multitask",

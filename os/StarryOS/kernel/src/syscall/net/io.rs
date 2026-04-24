@@ -2,11 +2,14 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{net::Ipv4Addr, time::Duration};
 
 use ax_errno::{AxError, AxResult};
+use ax_hal::time::wall_time;
 use ax_io::prelude::*;
+use ax_task::future::{self, block_on, poll_io};
 use axnet::{
     CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
-    options::{Configurable, GetSocketOption, SetSocketOption},
+    options::Configurable,
 };
+use axpoll::IoEvents;
 use linux_raw_sys::{
     general::timespec,
     net::{
@@ -252,19 +255,14 @@ pub fn sys_recvmmsg(
     }
 
     let timeout = parse_recvmmsg_timeout(timeout)?;
+    let deadline = timeout.map(|t| wall_time() + t);
     let socket = Socket::from_fd(fd)?;
-    let mut old_timeout = Duration::from_nanos(0);
-    socket.get_option(GetSocketOption::ReceiveTimeout(&mut old_timeout))?;
-
-    if let Some(timeout) = timeout {
-        socket.set_option(SetSocketOption::ReceiveTimeout(&timeout))?;
-    }
 
     let msgvec = msgvec.get_as_mut_slice(vlen as usize)?;
     let mut received = 0;
-    let result = (|| {
-        for msg in msgvec.iter_mut() {
-            match recv_impl(
+    for msg in msgvec.iter_mut() {
+        let recv_once = poll_io(socket.as_ref(), IoEvents::IN, false, || {
+            recv_impl(
                 fd,
                 IoVectorBuf::new(msg.msg_hdr.msg_iov as *mut IoVec, msg.msg_hdr.msg_iovlen)?
                     .into_io(),
@@ -277,25 +275,44 @@ pub fn sys_recvmmsg(
                         &mut msg.msg_hdr.msg_controllen,
                     )
                 }),
-            ) {
-                Ok(n) => {
-                    msg.msg_len = n as u32;
-                    received += 1;
+            )
+        });
+
+        let recv = if let Some(deadline) = deadline {
+            let now = wall_time();
+            if now >= deadline {
+                if received == 0 {
+                    return Err(AxError::WouldBlock);
                 }
-                Err(e) => {
+                break;
+            }
+
+            match block_on(future::timeout(Some(deadline - now), recv_once)) {
+                Ok(ret) => ret,
+                Err(_) => {
                     if received == 0 {
-                        return Err(e);
+                        return Err(AxError::WouldBlock);
                     }
                     break;
                 }
             }
-        }
-        Ok(received)
-    })();
+        } else {
+            block_on(recv_once)
+        };
 
-    if timeout.is_some() {
-        socket.set_option(SetSocketOption::ReceiveTimeout(&old_timeout))?;
+        match recv {
+            Ok(n) => {
+                msg.msg_len = n as u32;
+                received += 1;
+            }
+            Err(e) => {
+                if received == 0 {
+                    return Err(e);
+                }
+                break;
+            }
+        }
     }
 
-    result
+    Ok(received)
 }

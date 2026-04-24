@@ -13,7 +13,10 @@ use ax_task::{
     future::{block_on, poll_io},
 };
 use axpoll::{IoEvents, PollSet, Pollable};
-use linux_raw_sys::{general::S_IFIFO, ioctl::FIONREAD};
+use linux_raw_sys::{
+    general::{O_RDONLY, O_WRONLY, S_IFIFO},
+    ioctl::FIONREAD,
+};
 use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer},
@@ -189,6 +192,10 @@ impl FileLike for Pipe {
 
     fn path(&self) -> Cow<'_, str> {
         format!("pipe:[{}]", self as *const _ as usize).into()
+    }
+
+    fn open_flags(&self) -> u32 {
+        if self.is_read() { O_RDONLY } else { O_WRONLY }
     }
 
     fn set_nonblocking(&self, nonblocking: bool) -> AxResult {
