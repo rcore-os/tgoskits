@@ -251,10 +251,14 @@ impl TaskInner {
     /// Polls whether the task has been interrupted.
     #[inline]
     pub fn poll_interrupt(&self, cx: &Context) -> Poll<()> {
+        // Register the waker BEFORE rechecking the flag. Under preemptive
+        // scheduling a timer IRQ between an initial swap and register could
+        // allow `interrupt()` to run and call `wake()` on an empty waker
+        // slot — the wake is lost. Registering first closes the window.
+        self.interrupt_waker.register(cx.waker());
         if self.interrupted.swap(false, Ordering::AcqRel) {
             Poll::Ready(())
         } else {
-            self.interrupt_waker.register(cx.waker());
             Poll::Pending
         }
     }
