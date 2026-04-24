@@ -4,10 +4,10 @@
  * 测试内容：
  *   1. clock_gettime: CLOCK_REALTIME/COARSE, CLOCK_MONOTONIC/RAW/COARSE/BOOTTIME,
  *      CLOCK_PROCESS/THREAD_CPUTIME_ID, 非法 clock_id -> EINVAL, 无效指针 -> EFAULT
- *   2. gettimeofday: 正常返回, tv_usec 范围, 交叉校验
- *   3. nanosleep: 短睡眠, NULL rem, 0 值睡眠, 经过时间
+ *   2. gettimeofday: 正常返回, tv_usec 范围, 交叉校验, 无效指针 -> EFAULT
+ *   3. nanosleep: 短睡眠, NULL rem, 0 值睡眠, 经过时间, 负 tv_nsec -> EINVAL
  *   4. clock_nanosleep: CLOCK_REALTIME/MONOTONIC, TIMER_ABSTIME, 过去时间,
- *      不支持 clock -> EINVAL
+ *      不支持 clock -> EINVAL, 负 tv_nsec -> EINVAL
  */
 
 #define _GNU_SOURCE
@@ -116,6 +116,9 @@ static void test_gettimeofday(void)
         long long diff = ts.tv_sec - tv.tv_sec;
         CHECK(diff >= 0 && diff <= 2, "gettimeofday 与 CLOCK_REALTIME 差值 <= 2s");
     }
+
+    CHECK_ERR(gettimeofday((struct timeval *)(uintptr_t)0x1, NULL), EFAULT,
+              "gettimeofday 无效指针 -> EFAULT");
 }
 
 static void test_nanosleep(void)
@@ -144,6 +147,12 @@ static void test_nanosleep(void)
         clock_gettime(CLOCK_MONOTONIC, &after);
         long long elapsed = ts_to_ns(&after) - ts_to_ns(&before);
         CHECK(elapsed >= 9000000LL, "nanosleep 至少经过 ~9ms");
+    }
+
+    {
+        struct timespec req = {0, -1L};
+        CHECK_ERR(nanosleep(&req, NULL), EINVAL,
+                  "nanosleep 负 tv_nsec -> EINVAL");
     }
 }
 
@@ -186,6 +195,12 @@ static void test_clock_nanosleep(void)
         struct timespec past = {0, 0};
         CHECK_RET(clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &past, NULL), 0,
                   "clock_nanosleep 过去绝对时间 -> 立即返回");
+    }
+
+    {
+        struct timespec req = {0, -1L};
+        int ret = clock_nanosleep(CLOCK_MONOTONIC, 0, &req, NULL);
+        CHECK(ret == EINVAL, "clock_nanosleep 负 tv_nsec -> EINVAL");
     }
 }
 
