@@ -4,7 +4,7 @@
  * 测试内容：
  *   1. clock_gettime: CLOCK_REALTIME/COARSE, CLOCK_MONOTONIC/RAW/COARSE/BOOTTIME,
  *      CLOCK_PROCESS/THREAD_CPUTIME_ID, 非法 clock_id -> EINVAL, 无效指针 -> EFAULT
- *   2. gettimeofday: 正常返回, tv_usec 范围, 交叉校验, 无效指针 -> EFAULT
+ *   2. gettimeofday: 正常返回, tv_usec 范围, 交叉校验
  *   3. nanosleep: 短睡眠, NULL rem, 0 值睡眠, 经过时间, 负 tv_nsec -> EINVAL
  *   4. clock_nanosleep: CLOCK_REALTIME/MONOTONIC, TIMER_ABSTIME, 过去时间,
  *      不支持 clock -> EINVAL, 负 tv_nsec -> EINVAL
@@ -13,6 +13,7 @@
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <time.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <errno.h>
 #include <unistd.h>
@@ -117,8 +118,14 @@ static void test_gettimeofday(void)
         CHECK(diff >= 0 && diff <= 2, "gettimeofday 与 CLOCK_REALTIME 差值 <= 2s");
     }
 
-    CHECK_ERR(gettimeofday((struct timeval *)(uintptr_t)0x1, NULL), EFAULT,
-              "gettimeofday 无效指针 -> EFAULT");
+    {
+        /* Use direct syscall: musl's gettimeofday wrapper internally calls
+         * clock_gettime then writes to user pointer in userspace, so an
+         * invalid pointer causes SIGSEGV instead of EFAULT.  Directly
+         * invoking SYS_gettimeofday tests the kernel's vm_write error path. */
+        CHECK_ERR(syscall(SYS_gettimeofday, (struct timeval *)(uintptr_t)0x1, NULL), EFAULT,
+                  "SYS_gettimeofday 无效指针 -> EFAULT");
+    }
 }
 
 static void test_nanosleep(void)
