@@ -30,8 +30,10 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
-pub use self::{cred::*, futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
-pub use self::posix_timer::PosixTimerTable;
+pub use self::{
+    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
+    timer::*, user::*,
+};
 use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.

@@ -1,8 +1,10 @@
 //! POSIX per-process interval timers (timer_create, timer_settime, etc.)
 
 use alloc::collections::BTreeMap;
-use core::sync::atomic::{AtomicI32, Ordering};
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicI32, Ordering},
+    time::Duration,
+};
 
 use ax_hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use linux_raw_sys::general::{
@@ -134,10 +136,8 @@ impl PosixTimerTable {
         };
 
         // Compute new values
-        let new_value_ns =
-            value_sec as u64 * NANOS_PER_SEC + value_nsec as u64;
-        let new_interval_ns =
-            interval_sec as u64 * NANOS_PER_SEC + interval_nsec as u64;
+        let new_value_ns = value_sec as u64 * NANOS_PER_SEC + value_nsec as u64;
+        let new_interval_ns = interval_sec as u64 * NANOS_PER_SEC + interval_nsec as u64;
 
         timer.interval_ns = new_interval_ns;
 
@@ -161,11 +161,11 @@ impl PosixTimerTable {
             }
             // Register with the alarm system so poll_timer fires
             if timer.deadline_ns > 0 {
-                let remaining = timer.deadline_ns.saturating_sub(clock_now_ns(timer.clock_id));
+                let remaining = timer
+                    .deadline_ns
+                    .saturating_sub(clock_now_ns(timer.clock_id));
                 if remaining > 0 {
-                    register_alarm(
-                        wall_time() + Duration::from_nanos(remaining),
-                    );
+                    register_alarm(wall_time() + Duration::from_nanos(remaining));
                 }
             }
         }
