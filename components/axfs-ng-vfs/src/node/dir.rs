@@ -320,13 +320,22 @@ impl DirNode {
 
         self.ops.rename(src_name, dst_dir, dst_name).inspect(|_| {
             let (mut src_children, mut dst_children) = self.lock_both_cache(dst_dir);
-            Self::forget_entry(&mut src_children, src_name);
-            Self::forget_entry(
-                dst_children
-                    .as_mut()
-                    .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut),
-                dst_name,
-            );
+            // Remove the source entry from its parent cache
+            let src_entry = src_children.remove(src_name);
+            // Remove the old destination entry (if cached) and recursively forget it
+            let dst_children_map = dst_children
+                .as_mut()
+                .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut);
+            if let Some(dst) = dst_children_map.remove(dst_name) {
+                if let Ok(dir) = dst.as_dir() {
+                    dir.forget();
+                }
+            }
+            // Re-insert the source DirEntry under the destination name so that its
+            // page cache (stored in DirEntry user_data) survives the rename.
+            if let Some(entry) = src_entry {
+                dst_children_map.insert(dst_name.to_owned(), entry);
+            }
         })
     }
 
