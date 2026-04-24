@@ -65,7 +65,7 @@ pub fn probe_mmio_device(
 
     use virtio_drivers::transport::mmio::VirtIOHeader;
 
-    let header = NonNull::new(reg_base as *mut VirtIOHeader).unwrap();
+    let header = NonNull::new(reg_base as *mut VirtIOHeader)?;
     let transport = unsafe { MmioTransport::new(header, reg_size) }.ok()?;
     let dev_type = as_dev_type(transport.device_type())?;
     Some((dev_type, transport))
@@ -132,5 +132,33 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
             InsufficientBufferSpaceInPeer => DevError::Again,
             RecycledWrongBuffer => DevError::BadState,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ax_driver_base::DeviceType;
+    use virtio_drivers::transport::DeviceType as VirtIoDevType;
+
+    use super::{as_dev_type, probe_mmio_device};
+
+    #[test]
+    fn as_dev_type_maps_supported_devices() {
+        assert_eq!(as_dev_type(VirtIoDevType::Block), Some(DeviceType::Block));
+        assert_eq!(as_dev_type(VirtIoDevType::Network), Some(DeviceType::Net));
+        assert_eq!(as_dev_type(VirtIoDevType::GPU), Some(DeviceType::Display));
+        assert_eq!(as_dev_type(VirtIoDevType::Input), Some(DeviceType::Input));
+        assert_eq!(as_dev_type(VirtIoDevType::Socket), Some(DeviceType::Vsock));
+    }
+
+    #[test]
+    fn as_dev_type_rejects_unsupported_devices() {
+        assert_eq!(as_dev_type(VirtIoDevType::Console), None);
+        assert_eq!(as_dev_type(VirtIoDevType::EntropySource), None);
+    }
+
+    #[test]
+    fn probe_mmio_device_returns_none_for_null_base() {
+        assert!(probe_mmio_device(core::ptr::null_mut(), 0x1000).is_none());
     }
 }
