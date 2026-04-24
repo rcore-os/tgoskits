@@ -165,6 +165,13 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
 
 pub struct VirtIoHalImpl;
 
+#[inline]
+fn nonnull_from_addr(addr: usize, context: &str) -> NonNull<u8> {
+    assert_ne!(addr, 0, "{context} returned a null address");
+    // SAFETY: The assertion above guarantees the pointer is non-null.
+    unsafe { NonNull::new_unchecked(addr as *mut u8) }
+}
+
 unsafe impl VirtIoHal for VirtIoHalImpl {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
         let vaddr = if let Ok(vaddr) = global_allocator().alloc_pages(pages, 0x1000, UsageKind::Dma)
@@ -174,7 +181,7 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
             return (0, NonNull::dangling());
         };
         let paddr = virt_to_phys(vaddr.into());
-        let ptr = NonNull::new(vaddr as _).unwrap();
+        let ptr = nonnull_from_addr(vaddr, "dma_alloc");
         (paddr.as_usize() as PhysAddr, ptr)
     }
 
@@ -185,7 +192,8 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
 
     #[inline]
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
-        NonNull::new(phys_to_virt((paddr as usize).into()).as_mut_ptr()).unwrap()
+        let vaddr = phys_to_virt((paddr as usize).into()).as_mut_ptr() as usize;
+        nonnull_from_addr(vaddr, "mmio_phys_to_virt")
     }
 
     #[inline]
