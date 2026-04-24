@@ -46,16 +46,10 @@ mmio-ranges = [
     [0x4000_0000, 0x4000_0000],     # PCI memory ranges (ranges 1: 32-bit MMIO space)
     [0x2_7fe0_0000, 0x1000_0000]
 ]                                   # [(uint, uint)]
-# VirtIO MMIO ranges with format (`base_paddr`, `size`).
+# Host-side VirtIO MMIO ranges. Keep only the slot used by AxVisor's own
+# rootfs so later slots remain free for guest passthrough ownership.
 virtio-mmio-ranges = [
     [0x1000_1000, 0x1000],
-    [0x1000_2000, 0x1000],
-    [0x1000_3000, 0x1000],
-    [0x1000_4000, 0x1000],
-    [0x1000_5000, 0x1000],
-    [0x1000_6000, 0x1000],
-    [0x1000_7000, 0x1000],
-    [0x1000_8000, 0x1000],
 ] # [(uint, uint)]
 # Base physical address of the PCIe ECAM space.
 pci-ecam-base = 0x3000_0000 # uint

@@ -75,9 +75,14 @@ impl VMMemoryRegion {
         self.layout.size()
     }
 
-    /// Returns `true` if the guest physical address is identical to the host virtual address.
+    /// Returns the host physical address backing this guest memory region.
+    pub fn host_paddr(&self) -> HostPhysAddr {
+        axvisor_api::memory::virt_to_phys(self.hva)
+    }
+
+    /// Returns `true` if the guest physical address is identical to the host physical address.
     pub fn is_identical(&self) -> bool {
-        self.gpa.as_usize() == self.hva.as_usize()
+        self.gpa.as_usize() == self.host_paddr().as_usize()
     }
 }
 

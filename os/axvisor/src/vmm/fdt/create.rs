@@ -20,16 +20,16 @@ use alloc::{
 use core::ptr::NonNull;
 
 use super::vm_fdt::{FdtWriter, FdtWriterNode};
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_memory_addr::MemoryAddr;
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 use axaddrspace::GuestPhysAddr;
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 use axvm::VMMemoryRegion;
 use axvm::config::AxVMCrateConfig;
 use fdt_parser::{Fdt, Node};
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::vmm::{VMRef, images::load_vm_image_from_memory};
 
 // use crate::vmm::fdt::print::{print_fdt, print_guest_fdt};
@@ -275,7 +275,7 @@ fn need_cpu_node(phys_cpu_ids: &[usize], node: &Node, node_path: &str) -> bool {
 }
 
 /// Add memory node
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 fn add_memory_node(
     new_memory: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
@@ -547,8 +547,8 @@ mod tests {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
     const MB: usize = 1024 * 1024;
 
     // Get main memory from VM memory regions outside the closure
@@ -559,13 +559,24 @@ fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
         .expect("VM must have at least one memory region");
 
     vm.with_config(|config| {
-        let dtb_addr = if let Some(addr) = config.image_config.dtb_load_gpa
-            && !main_memory.is_identical()
-        {
-            // If dtb_load_gpa is already set, use the original value
-            addr
+        let current = config.image_config.dtb_load_gpa;
+        let mut keep_current = current.is_some() && !main_memory.is_identical();
+        #[cfg(target_arch = "riscv64")]
+        if keep_current {
+            // RISC-V may relocate guest RAM to the runtime-allocated identical
+            // host physical range, so a statically configured DTB GPA is only
+            // reusable if it still falls within the finalized main memory.
+            let main_start = main_memory.gpa.as_usize();
+            let main_end = main_start + main_memory.size();
+            keep_current = current.is_some_and(|addr| {
+                let addr = addr.as_usize();
+                addr >= main_start && addr.saturating_add(fdt_size) <= main_end
+            });
+        }
+
+        let dtb_addr = if keep_current {
+            current.unwrap()
         } else {
-            // If dtb_load_gpa is None, calculate based on memory size and FDT size
             let main_memory_size = main_memory.size().min(512 * MB);
             let addr = (main_memory.gpa + main_memory_size - fdt_size).align_down(2 * MB);
             if fdt_size > main_memory_size {
@@ -576,6 +587,63 @@ fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
         config.image_config.dtb_load_gpa = Some(dtb_addr);
         dtb_addr
     })
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub fn rewrite_guest_memory_nodes(fdt: &Fdt, memory_regions: &[VMMemoryRegion]) -> Vec<u8> {
+    let mut new_fdt = FdtWriter::new().unwrap();
+    let mut previous_node_level = 0usize;
+    let mut node_stack: Vec<FdtWriterNode> = Vec::new();
+
+    for node in fdt.all_nodes() {
+        if node.name().starts_with("memory") {
+            continue;
+        }
+
+        if node.name() == "/" {
+            node_stack.push(new_fdt.begin_node("").unwrap());
+        } else {
+            handle_node_level_change(
+                &mut new_fdt,
+                &mut node_stack,
+                node.level,
+                previous_node_level,
+            );
+            node_stack.push(new_fdt.begin_node(node.name()).unwrap());
+        }
+        previous_node_level = node.level;
+
+        for prop in node.propertys() {
+            new_fdt.property(prop.name, prop.raw_value()).unwrap();
+        }
+    }
+
+    while node_stack.len() > 1 {
+        let node = node_stack.pop().unwrap();
+        new_fdt.end_node(node).unwrap();
+    }
+
+    if node_stack.len() == 1 {
+        let mut reg: Vec<u32> = Vec::with_capacity(memory_regions.len() * 4);
+        for mem in memory_regions {
+            let gpa = mem.gpa.as_usize() as u64;
+            let size = mem.size() as u64;
+            reg.push((gpa >> 32) as u32);
+            reg.push((gpa & 0xffff_ffff) as u32);
+            reg.push((size >> 32) as u32);
+            reg.push((size & 0xffff_ffff) as u32);
+        }
+        let memory_node = new_fdt.begin_node("memory").unwrap();
+        new_fdt.property_array_u32("reg", &reg).unwrap();
+        new_fdt.property_string("device_type", "memory").unwrap();
+        new_fdt.end_node(memory_node).unwrap();
+    }
+
+    while let Some(node) = node_stack.pop() {
+        new_fdt.end_node(node).unwrap();
+    }
+
+    new_fdt.finish().unwrap()
 }
 
 #[cfg(target_arch = "aarch64")]
