@@ -24,6 +24,83 @@ unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, Q
 unsafe impl<H: Hal, T: Transport, const QS: usize> Sync for VirtIoNetDev<H, T, QS> {}
 
 impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
+    fn fill_rx_buffers(&mut self) -> DevResult {
+        for expected_token in 0..QS {
+            let mut rx_buf = self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
+            // Safe because the buffer lives as long as the queue.
+            let token = unsafe {
+                self.inner
+                    .receive_begin(rx_buf.raw_buf_mut())
+                    .map_err(as_dev_err)?
+            };
+            self.validate_rx_token(token, expected_token)?;
+            self.insert_rx_buffer(token as usize, rx_buf)?;
+        }
+        Ok(())
+    }
+
+    fn fill_tx_buffers(&mut self) -> DevResult {
+        for _ in 0..QS {
+            let mut tx_buf = self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
+            let hdr_len = self
+                .inner
+                .fill_buffer_header(tx_buf.raw_buf_mut())
+                .map_err(as_dev_err)?;
+            tx_buf.set_header_len(hdr_len);
+            self.free_tx_bufs.push(tx_buf);
+        }
+        Ok(())
+    }
+
+    fn validate_rx_token(&self, token: u16, expected_token: usize) -> DevResult {
+        let token = token as usize;
+        if token >= QS {
+            return Err(DevError::BadState);
+        }
+        if token != expected_token {
+            return Err(DevError::BadState);
+        }
+        Ok(())
+    }
+
+    fn rx_slot_mut(&mut self, token: usize) -> DevResult<&mut Option<NetBufBox>> {
+        self.rx_buffers.get_mut(token).ok_or(DevError::BadState)
+    }
+
+    fn tx_slot_mut(&mut self, token: usize) -> DevResult<&mut Option<NetBufBox>> {
+        self.tx_buffers.get_mut(token).ok_or(DevError::BadState)
+    }
+
+    fn insert_rx_buffer(&mut self, token: usize, rx_buf: NetBufBox) -> DevResult {
+        let slot = self.rx_slot_mut(token)?;
+        if slot.is_some() {
+            return Err(DevError::BadState);
+        }
+        *slot = Some(rx_buf);
+        Ok(())
+    }
+
+    fn take_rx_buffer(&mut self, token: u16) -> DevResult<NetBufBox> {
+        self.rx_slot_mut(token as usize)?
+            .take()
+            .ok_or(DevError::BadState)
+    }
+
+    fn insert_tx_buffer(&mut self, token: u16, tx_buf: NetBufBox) -> DevResult {
+        let slot = self.tx_slot_mut(token as usize)?;
+        if slot.is_some() {
+            return Err(DevError::BadState);
+        }
+        *slot = Some(tx_buf);
+        Ok(())
+    }
+
+    fn take_tx_buffer(&mut self, token: u16) -> DevResult<NetBufBox> {
+        self.tx_slot_mut(token as usize)?
+            .take()
+            .ok_or(DevError::BadState)
+    }
+
     /// Creates a new driver instance and initializes the device, or returns
     /// an error if any step fails.
     pub fn try_new(transport: T, irq: Option<usize>) -> DevResult<Self> {
@@ -46,29 +123,10 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         };
 
         // 1. Fill all rx buffers.
-        for (i, rx_buf_place) in dev.rx_buffers.iter_mut().enumerate() {
-            let mut rx_buf = dev.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
-            // Safe because the buffer lives as long as the queue.
-            let token = unsafe {
-                dev.inner
-                    .receive_begin(rx_buf.raw_buf_mut())
-                    .map_err(as_dev_err)?
-            };
-            assert_eq!(token, i as u16);
-            *rx_buf_place = Some(rx_buf);
-        }
+        dev.fill_rx_buffers()?;
 
         // 2. Allocate all tx buffers.
-        for _ in 0..QS {
-            let mut tx_buf = dev.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
-            // Fill header
-            let hdr_len = dev
-                .inner
-                .fill_buffer_header(tx_buf.raw_buf_mut())
-                .or(Err(DevError::InvalidParam))?;
-            tx_buf.set_header_len(hdr_len);
-            dev.free_tx_bufs.push(tx_buf);
-        }
+        dev.fill_tx_buffers()?;
 
         // 3. Return the driver instance.
         Ok(dev)
@@ -124,20 +182,12 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
                 .receive_begin(rx_buf.raw_buf_mut())
                 .map_err(as_dev_err)?
         };
-        // `rx_buffers[new_token]` is expected to be `None` since it was taken
-        // away at `Self::receive()` and has not been added back.
-        if self.rx_buffers[new_token as usize].is_some() {
-            return Err(DevError::BadState);
-        }
-        self.rx_buffers[new_token as usize] = Some(rx_buf);
-        Ok(())
+        self.insert_rx_buffer(new_token as usize, rx_buf)
     }
 
     fn recycle_tx_buffers(&mut self) -> DevResult {
         while let Some(token) = self.inner.poll_transmit() {
-            let tx_buf = self.tx_buffers[token as usize]
-                .take()
-                .ok_or(DevError::BadState)?;
+            let tx_buf = self.take_tx_buffer(token)?;
             unsafe {
                 self.inner
                     .transmit_complete(token, tx_buf.packet_with_header())
@@ -158,16 +208,13 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
                 .transmit_begin(tx_buf.packet_with_header())
                 .map_err(as_dev_err)?
         };
-        self.tx_buffers[token as usize] = Some(tx_buf);
-        Ok(())
+        self.insert_tx_buffer(token, tx_buf)
     }
 
     fn receive(&mut self) -> DevResult<NetBufPtr> {
         self.inner.ack_interrupt();
         if let Some(token) = self.inner.poll_receive() {
-            let mut rx_buf = self.rx_buffers[token as usize]
-                .take()
-                .ok_or(DevError::BadState)?;
+            let mut rx_buf = self.take_rx_buffer(token)?;
             // Safe because the buffer lives as long as the queue.
             let (hdr_len, pkt_len) = unsafe {
                 self.inner
