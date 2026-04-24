@@ -137,10 +137,11 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
 
 #[cfg(test)]
 mod tests {
-    use ax_driver_base::DeviceType;
+    use ax_driver_base::{DevError, DeviceType};
     use virtio_drivers::transport::DeviceType as VirtIoDevType;
+    use virtio_drivers::{Error, device::socket::SocketError};
 
-    use super::{as_dev_type, probe_mmio_device};
+    use super::{as_dev_err, as_dev_type, probe_mmio_device};
 
     #[test]
     fn as_dev_type_maps_supported_devices() {
@@ -160,5 +161,46 @@ mod tests {
     #[test]
     fn probe_mmio_device_returns_none_for_null_base() {
         assert!(probe_mmio_device(core::ptr::null_mut(), 0x1000).is_none());
+    }
+
+    #[test]
+    fn as_dev_err_maps_common_errors() {
+        assert!(matches!(as_dev_err(Error::QueueFull), DevError::BadState));
+        assert!(matches!(
+            as_dev_err(Error::InvalidParam),
+            DevError::InvalidParam
+        ));
+        assert!(matches!(as_dev_err(Error::DmaError), DevError::NoMemory));
+        assert!(matches!(as_dev_err(Error::IoError), DevError::Io));
+        assert!(matches!(
+            as_dev_err(Error::Unsupported),
+            DevError::Unsupported
+        ));
+    }
+
+    #[test]
+    fn as_dev_err_maps_socket_errors() {
+        assert!(matches!(
+            as_dev_err(Error::SocketDeviceError(SocketError::ConnectionExists)),
+            DevError::AlreadyExists
+        ));
+        assert!(matches!(
+            as_dev_err(Error::SocketDeviceError(SocketError::NotConnected)),
+            DevError::BadState
+        ));
+        assert!(matches!(
+            as_dev_err(Error::SocketDeviceError(SocketError::InvalidNumber)),
+            DevError::InvalidParam
+        ));
+        assert!(matches!(
+            as_dev_err(Error::SocketDeviceError(
+                SocketError::InsufficientBufferSpaceInPeer
+            )),
+            DevError::Again
+        ));
+        assert!(matches!(
+            as_dev_err(Error::SocketDeviceError(SocketError::PeerSocketShutdown)),
+            DevError::Io
+        ));
     }
 }
