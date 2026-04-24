@@ -105,17 +105,23 @@ impl ITimer {
     pub fn renew_timer(&self) {
         if self.remained_ns > 0 {
             let deadline = wall_time() + Duration::from_nanos(self.remained_ns as u64);
-            let mut guard = ALARM_LIST.lock();
-            let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
-            guard.push(Entry {
-                deadline,
-                task: Arc::downgrade(&current()),
-            });
-            drop(guard);
-            if should_wake {
-                EVENT_NEW_TIMER.notify(1);
-            }
+            register_alarm(deadline);
         }
+    }
+}
+
+/// Register an alarm at the given wall-clock deadline for the current task.
+/// Used by both ITimer and POSIX timers.
+pub fn register_alarm(deadline: Duration) {
+    let mut guard = ALARM_LIST.lock();
+    let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
+    guard.push(Entry {
+        deadline,
+        task: Arc::downgrade(&current()),
+    });
+    drop(guard);
+    if should_wake {
+        EVENT_NEW_TIMER.notify(1);
     }
 }
 
