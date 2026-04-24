@@ -227,7 +227,10 @@ impl FileLike for Directory {
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
-        Err(AxError::IsADirectory)
+        // Directories cannot be opened for writing, so any write attempt
+        // means the fd is not open for writing → EBADF.
+        // Linux VFS checks FMODE_WRITE before reaching the filesystem layer.
+        Err(AxError::BadFileDescriptor)
     }
 
     fn stat(&self) -> AxResult<Kstat> {
