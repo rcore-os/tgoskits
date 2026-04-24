@@ -8,6 +8,36 @@ use crate::as_dev_err;
 
 const NET_BUF_LEN: usize = 1526;
 
+fn validate_queue_token(token: u16, expected_token: usize, queue_size: usize) -> DevResult {
+    let token = token as usize;
+    if token >= queue_size {
+        return Err(DevError::BadState);
+    }
+    if token != expected_token {
+        return Err(DevError::BadState);
+    }
+    Ok(())
+}
+
+fn slot_mut<T>(slots: &mut [Option<T>], token: usize) -> DevResult<&mut Option<T>> {
+    slots.get_mut(token).ok_or(DevError::BadState)
+}
+
+fn insert_buffer<T>(slots: &mut [Option<T>], token: usize, buf: T) -> DevResult {
+    let slot = slot_mut(slots, token)?;
+    if slot.is_some() {
+        return Err(DevError::BadState);
+    }
+    *slot = Some(buf);
+    Ok(())
+}
+
+fn take_buffer<T>(slots: &mut [Option<T>], token: u16) -> DevResult<T> {
+    slot_mut(slots, token as usize)?
+        .take()
+        .ok_or(DevError::BadState)
+}
+
 /// The VirtIO network device driver.
 ///
 /// `QS` is the VirtIO queue size.
@@ -53,52 +83,23 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
     }
 
     fn validate_rx_token(&self, token: u16, expected_token: usize) -> DevResult {
-        let token = token as usize;
-        if token >= QS {
-            return Err(DevError::BadState);
-        }
-        if token != expected_token {
-            return Err(DevError::BadState);
-        }
-        Ok(())
-    }
-
-    fn rx_slot_mut(&mut self, token: usize) -> DevResult<&mut Option<NetBufBox>> {
-        self.rx_buffers.get_mut(token).ok_or(DevError::BadState)
-    }
-
-    fn tx_slot_mut(&mut self, token: usize) -> DevResult<&mut Option<NetBufBox>> {
-        self.tx_buffers.get_mut(token).ok_or(DevError::BadState)
+        validate_queue_token(token, expected_token, QS)
     }
 
     fn insert_rx_buffer(&mut self, token: usize, rx_buf: NetBufBox) -> DevResult {
-        let slot = self.rx_slot_mut(token)?;
-        if slot.is_some() {
-            return Err(DevError::BadState);
-        }
-        *slot = Some(rx_buf);
-        Ok(())
+        insert_buffer(&mut self.rx_buffers, token, rx_buf)
     }
 
     fn take_rx_buffer(&mut self, token: u16) -> DevResult<NetBufBox> {
-        self.rx_slot_mut(token as usize)?
-            .take()
-            .ok_or(DevError::BadState)
+        take_buffer(&mut self.rx_buffers, token)
     }
 
     fn insert_tx_buffer(&mut self, token: u16, tx_buf: NetBufBox) -> DevResult {
-        let slot = self.tx_slot_mut(token as usize)?;
-        if slot.is_some() {
-            return Err(DevError::BadState);
-        }
-        *slot = Some(tx_buf);
-        Ok(())
+        insert_buffer(&mut self.tx_buffers, token as usize, tx_buf)
     }
 
     fn take_tx_buffer(&mut self, token: u16) -> DevResult<NetBufBox> {
-        self.tx_slot_mut(token as usize)?
-            .take()
-            .ok_or(DevError::BadState)
+        take_buffer(&mut self.tx_buffers, token)
     }
 
     /// Creates a new driver instance and initializes the device, or returns
@@ -244,5 +245,59 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
 
         // 2. Return the buffer.
         Ok(net_buf.into_buf_ptr())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use ax_driver_base::DevError;
+
+    use super::{insert_buffer, take_buffer, validate_queue_token};
+
+    #[test]
+    fn validate_queue_token_accepts_expected_token() {
+        assert!(validate_queue_token(2, 2, 4).is_ok());
+    }
+
+    #[test]
+    fn validate_queue_token_rejects_out_of_range_token() {
+        assert!(matches!(
+            validate_queue_token(4, 4, 4),
+            Err(DevError::BadState)
+        ));
+    }
+
+    #[test]
+    fn validate_queue_token_rejects_unexpected_token() {
+        assert!(matches!(
+            validate_queue_token(1, 2, 4),
+            Err(DevError::BadState)
+        ));
+    }
+
+    #[test]
+    fn insert_buffer_rejects_duplicate_slot() {
+        let mut slots = vec![Some(1u8), None];
+        assert!(matches!(
+            insert_buffer(&mut slots, 0, 2u8),
+            Err(DevError::BadState)
+        ));
+    }
+
+    #[test]
+    fn take_buffer_rejects_empty_slot() {
+        let mut slots = vec![None::<u8>, Some(2u8)];
+        assert!(matches!(take_buffer(&mut slots, 0), Err(DevError::BadState)));
+    }
+
+    #[test]
+    fn insert_and_take_buffer_round_trip() {
+        let mut slots = vec![None::<u8>, None];
+        insert_buffer(&mut slots, 1, 7u8).unwrap();
+        let value = take_buffer(&mut slots, 1).unwrap();
+        assert_eq!(value, 7);
+        assert!(slots[1].is_none());
     }
 }
