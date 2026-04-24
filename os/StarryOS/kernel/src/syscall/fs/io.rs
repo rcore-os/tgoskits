@@ -89,7 +89,12 @@ pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
     debug!("sys_lseek <= {fd} {offset} {whence}");
     let pos = match whence {
-        0 => SeekFrom::Start(offset as _),
+        0 => {
+            if offset < 0 {
+                return Err(AxError::InvalidInput);
+            }
+            SeekFrom::Start(offset as _)
+        }
         1 => SeekFrom::Current(offset as _),
         2 => SeekFrom::End(offset as _),
         _ => return Err(AxError::InvalidInput),
