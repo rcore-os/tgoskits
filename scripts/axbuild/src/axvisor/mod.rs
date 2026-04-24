@@ -149,6 +149,7 @@ impl Axvisor {
 
     async fn test_qemu(&mut self, args: cli::ArgsTestQemu) -> anyhow::Result<()> {
         let (arch, target) = test_qemu::parse_axvisor_test_target(&args.arch, &args.target)?;
+        let mut riscv64_guest_rootfs = None;
 
         println!(
             "running axvisor qemu tests for arch: {} (target: {})",
@@ -161,11 +162,11 @@ impl Axvisor {
                     .await?
                     .generated_vmconfig,
             ],
-            "riscv64" => vec![
-                qemu_test::prepare_linux_riscv64_guest_assets(&self.ctx)
-                    .await?
-                    .generated_vmconfig,
-            ],
+            "riscv64" => {
+                let assets = qemu_test::prepare_linux_riscv64_guest_assets(&self.ctx).await?;
+                riscv64_guest_rootfs = Some(assets.rootfs_path.clone());
+                vec![assets.generated_vmconfig]
+            }
             "x86_64" => vec![qemu_test::prepare_nimbos_x86_64_guest_vmconfig(&self.ctx).await?],
             "loongarch64" => vec![],
             _ => unreachable!(),
@@ -181,6 +182,13 @@ impl Axvisor {
         let shell = test_qemu::axvisor_test_shell_config(&arch)?;
         let cargo = build::load_cargo_config(&request)?;
         let mut qemu_config = self.load_qemu_config(&request, &cargo, None).await?;
+        if let Some(guest_rootfs) = riscv64_guest_rootfs.as_deref() {
+            qemu_test::configure_linux_riscv64_guest_disk(
+                &mut qemu_config,
+                self.app.workspace_root(),
+                guest_rootfs,
+            )?;
+        }
         qemu_test::apply_shell_autoinit_config(&mut qemu_config, &shell);
 
         self.app

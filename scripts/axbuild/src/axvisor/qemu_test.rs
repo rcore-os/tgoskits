@@ -53,6 +53,36 @@ pub struct ShellAutoInitConfig {
     pub fail_regex: Vec<String>,
 }
 
+pub(crate) fn configure_linux_riscv64_guest_disk(
+    config: &mut QemuConfig,
+    workspace_root: &Path,
+    source_rootfs: &Path,
+) -> anyhow::Result<PathBuf> {
+    let guest_rootfs = workspace_root.join("os/axvisor/tmp/qemu-riscv64-guest-rootfs.img");
+    if let Some(parent) = guest_rootfs.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(source_rootfs, &guest_rootfs).with_context(|| {
+        format!(
+            "failed to clone guest rootfs from {} to {}",
+            source_rootfs.display(),
+            guest_rootfs.display()
+        )
+    })?;
+
+    config.args.push("-device".to_string());
+    config
+        .args
+        .push("virtio-blk-device,drive=guestdisk0".to_string());
+    config.args.push("-drive".to_string());
+    config.args.push(format!(
+        "id=guestdisk0,if=none,format=raw,file={}",
+        guest_rootfs.display()
+    ));
+
+    Ok(guest_rootfs)
+}
+
 pub(crate) async fn prepare_linux_aarch64_guest_assets(
     ctx: &AxvisorContext,
 ) -> anyhow::Result<PreparedLinuxGuestAssets> {
