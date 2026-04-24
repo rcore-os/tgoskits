@@ -2,3 +2,4 @@ paging
 alloc
 multitask
 pipe
+page-alloc-64g
