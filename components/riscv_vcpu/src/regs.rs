@@ -196,6 +196,9 @@ impl GuestVsCsrs {
 #[repr(C)]
 pub struct GuestVirtualHsCsrs {
     pub hie: usize,
+    // hvip lives at HS level, but its pending bits directly determine which
+    // virtual interrupts the guest will observe after the next VM entry.
+    pub hvip: usize,
     pub hgeie: usize,
     pub hgatp: usize,
 }
@@ -203,9 +206,10 @@ pub struct GuestVirtualHsCsrs {
 impl GuestVirtualHsCsrs {
     /// Load the virtualized HS-level CSRs from hardware into this structure.
     pub fn load_from_hw(&mut self) {
-        use riscv_h::register::{hgatp, hgeie, hie};
+        use riscv_h::register::{hgatp, hgeie, hie, hvip};
 
         self.hie = hie::read().bits();
+        self.hvip = hvip::read().bits();
         self.hgeie = hgeie::read();
         self.hgatp = hgatp::read().bits();
     }

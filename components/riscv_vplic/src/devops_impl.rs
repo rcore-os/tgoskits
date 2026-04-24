@@ -2,10 +2,89 @@
 //!
 //! Implements the `BaseDeviceOps` trait for MMIO read/write handling.
 
+use ax_errno::AxResult;
 use axaddrspace::{GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 
 use crate::{consts::*, utils::*, vplic::VPlicGlobal};
+
+impl VPlicGlobal {
+    fn irq_priority(&self, irq_id: usize) -> AxResult<u32> {
+        let addr = HostPhysAddr::from_usize(
+            self.host_plic_addr.as_usize() + PLIC_PRIORITY_OFFSET + irq_id * 4,
+        );
+        Ok(perform_mmio_read(addr, AccessWidth::Dword)? as u32)
+    }
+
+    fn context_threshold(&self, context_id: usize) -> AxResult<u32> {
+        let addr = HostPhysAddr::from_usize(
+            self.host_plic_addr.as_usize()
+                + PLIC_CONTEXT_CTRL_OFFSET
+                + context_id * PLIC_CONTEXT_STRIDE
+                + PLIC_CONTEXT_THRESHOLD_OFFSET,
+        );
+        Ok(perform_mmio_read(addr, AccessWidth::Dword)? as u32)
+    }
+
+    fn context_irq_enabled(&self, context_id: usize, irq_id: usize) -> AxResult<bool> {
+        let reg_index = irq_id / 32;
+        let bit_index = irq_id % 32;
+        let addr = HostPhysAddr::from_usize(
+            self.host_plic_addr.as_usize()
+                + PLIC_ENABLE_OFFSET
+                + context_id * PLIC_ENABLE_STRIDE
+                + reg_index * 4,
+        );
+        let enabled_mask = perform_mmio_read(addr, AccessWidth::Dword)? as u32;
+        Ok((enabled_mask & (1 << bit_index)) != 0)
+    }
+
+    fn next_claimable_irq(&self, context_id: usize) -> AxResult<Option<usize>> {
+        let threshold = self.context_threshold(context_id)?;
+        let pending_irqs = self.pending_irqs.lock();
+        let active_irqs = self.active_irqs.lock();
+        let mut best_irq = None;
+        let mut best_priority = 0;
+
+        // Follow the PLIC delivery rules instead of returning the first pending
+        // bit: the IRQ must be pending, inactive, enabled for this context,
+        // and above the context threshold.
+        for irq_id in 1..PLIC_NUM_SOURCES {
+            if !pending_irqs.get(irq_id) || active_irqs.get(irq_id) {
+                continue;
+            }
+            if !self.context_irq_enabled(context_id, irq_id)? {
+                continue;
+            }
+
+            let priority = self.irq_priority(irq_id)?;
+            if priority <= threshold {
+                continue;
+            }
+            if priority > best_priority {
+                best_priority = priority;
+                best_irq = Some(irq_id);
+            }
+        }
+
+        Ok(best_irq)
+    }
+
+    fn sync_vseip(&self, context_id: usize) -> AxResult<()> {
+        // VSEIP should track whether this context still has a deliverable
+        // external interrupt, not merely whether some pending bit is set.
+        if self.next_claimable_irq(context_id)?.is_some() {
+            unsafe {
+                riscv_h::register::hvip::set_vseip();
+            }
+        } else {
+            unsafe {
+                riscv_h::register::hvip::clear_vseip();
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Implementation of device emulation operations for virtual PLIC.
 impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
@@ -36,7 +115,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
             PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => perform_mmio_read(host_addr, width),
             // pending
             PLIC_PENDING_OFFSET..PLIC_ENABLE_OFFSET => {
-                let reg_index = reg - PLIC_PENDING_OFFSET / 4;
+                let reg_index = (reg - PLIC_PENDING_OFFSET) / 4;
                 let bit_index_start = reg_index * 32;
                 let mut val: u32 = 0;
                 let mut bit_mask: u32 = 1;
@@ -71,18 +150,19 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                     context_id < self.contexts_num,
                     "Invalid context id {context_id}"
                 );
-                let mut pending_irqs = self.pending_irqs.lock();
-                let irq_id = match pending_irqs.first_index() {
-                    Some(id) => id,
-                    None => return Ok(0),
+                let Some(irq_id) = self.next_claimable_irq(context_id)? else {
+                    self.sync_vseip(context_id)?;
+                    return Ok(0);
                 };
 
-                // Check if the IRQ is belong to this context_id, check if is enabled, etc.
-                // TODO: check enable bit and priority, threshold.
-
-                // Clear the pending bit and set the active bit, means the IRQ is being handling.
-                pending_irqs.set(irq_id, false);
+                {
+                    let mut pending_irqs = self.pending_irqs.lock();
+                    // Claim moves the IRQ from pending to active until the guest
+                    // writes it back to the complete register.
+                    pending_irqs.set(irq_id, false);
+                }
                 self.active_irqs.lock().set(irq_id, true);
+                self.sync_vseip(context_id)?;
                 Ok(irq_id)
             }
             _ => {
@@ -109,7 +189,13 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
         // info!("vPlicGlobal write reg {reg:#x} width {width:?} val {val:#x}");
         match reg {
             // priority
-            PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => perform_mmio_write(host_addr, width, val),
+            PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
+                perform_mmio_write(host_addr, width, val)?;
+                for context_id in (1..self.contexts_num).step_by(2) {
+                    self.sync_vseip(context_id)?;
+                }
+                Ok(())
+            }
             // pending (Here is uesd for hyperivosr to inject pending IRQs, later should move it to a separate interface)
             PLIC_PENDING_OFFSET..PLIC_ENABLE_OFFSET => {
                 // Note: here append, not overwrite.
@@ -122,30 +208,41 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                         let irq_id = reg_index * 32 + i;
                         // Set the pending bit.
                         pending_irqs.set(irq_id, true);
-                        // info!("vPlicGlobal: IRQ {} set to pending", irq_id);
                     }
                     bit_mask <<= 1;
                 }
 
-                // Inject the interrupt to the hart by setting the VSEIP bit in HVIP register.
-                if !pending_irqs.is_empty() {
-                    unsafe {
-                        riscv_h::register::hvip::set_vseip();
-                    }
+                drop(pending_irqs);
+                for context_id in (1..self.contexts_num).step_by(2) {
+                    self.sync_vseip(context_id)?;
                 }
 
                 Ok(())
             }
             // enable
             PLIC_ENABLE_OFFSET..PLIC_CONTEXT_CTRL_OFFSET => {
-                perform_mmio_write(host_addr, width, val)
+                perform_mmio_write(host_addr, width, val)?;
+                let context_id = (reg - PLIC_ENABLE_OFFSET) / PLIC_ENABLE_STRIDE;
+                assert!(
+                    context_id < self.contexts_num,
+                    "Invalid context id {context_id}"
+                );
+                // A mask update can instantly expose or hide already-pending IRQs.
+                self.sync_vseip(context_id)
             }
             // threshold
             offset
                 if offset >= PLIC_CONTEXT_CTRL_OFFSET
                     && (offset - PLIC_CONTEXT_CTRL_OFFSET).is_multiple_of(PLIC_CONTEXT_STRIDE) =>
             {
-                perform_mmio_write(host_addr, width, val)
+                let context_id = (offset - PLIC_CONTEXT_CTRL_OFFSET) / PLIC_CONTEXT_STRIDE;
+                assert!(
+                    context_id < self.contexts_num,
+                    "Invalid context id {context_id}"
+                );
+                perform_mmio_write(host_addr, width, val)?;
+                // Threshold changes must be reflected on the hart line immediately.
+                self.sync_vseip(context_id)
             }
             // claim/complete
             offset
@@ -163,18 +260,12 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 );
                 let irq_id = val;
 
-                // There is no irq to handle.
-                if self.pending_irqs.lock().is_empty() {
-                    unsafe {
-                        riscv_h::register::hvip::clear_vseip();
-                    }
-                }
-
                 // Clear the active bit, means the IRQ handling is complete.
                 self.active_irqs.lock().set(irq_id, false);
 
                 // Write host PLIC.
-                perform_mmio_write(host_addr, width, irq_id)
+                perform_mmio_write(host_addr, width, irq_id)?;
+                self.sync_vseip(context_id)
             }
             _ => {
                 unimplemented!("Unsupported vPlicGlobal read for reg {reg:#x}")

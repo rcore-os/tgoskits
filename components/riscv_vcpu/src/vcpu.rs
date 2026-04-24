@@ -126,6 +126,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         hie.set_vstie(true);
         hie.set_vseie(true);
         self.regs.virtual_hs_csrs.hie = hie.bits();
+        self.regs.virtual_hs_csrs.hvip = 0;
         self.regs.virtual_hs_csrs.hgeie = 0;
 
         Ok(())
@@ -188,6 +189,10 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             vstimecmp::write(self.regs.vs_csrs.vstimecmp);
             let hie = hie::Hie::from_bits(self.regs.virtual_hs_csrs.hie);
             hie.write();
+            // Restore latched virtual pending interrupts as part of the vCPU
+            // context so VM exits do not silently drop timer or external IRQs.
+            let hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
+            hvip.write();
             hgeie::write(self.regs.virtual_hs_csrs.hgeie);
             core::arch::asm!(
                 "csrw hgatp, {hgatp}",
@@ -212,12 +217,16 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             self.regs.vs_csrs.vsie = vsie::read().bits();
             self.regs.vs_csrs.vstimecmp = vstimecmp::read();
             self.regs.virtual_hs_csrs.hie = hie::read().bits();
+            self.regs.virtual_hs_csrs.hvip = hvip::read().bits();
             self.regs.virtual_hs_csrs.hgeie = hgeie::read();
             core::arch::asm!(
                 "csrr {hgatp}, hgatp",
                 hgatp = out(reg) self.regs.virtual_hs_csrs.hgatp,
             );
             hie::Hie::from_bits(0).write();
+            // Clear host-side pending state after saving it to avoid leaking a
+            // previous guest's virtual IRQs into later host/guest execution.
+            hvip::Hvip::from_bits(0).write();
             hgeie::write(0);
             vstimecmp::write(usize::MAX);
             core::arch::asm!("csrw hgatp, x0");
@@ -251,6 +260,15 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
 
     fn set_return_value(&mut self, val: usize) {
         self.set_gpr_from_gpr_index(GprIndex::A0, val);
+    }
+}
+
+impl RISCVVCpu {
+    /// Capture any virtual pending interrupt bits that were raised after the
+    /// last `unbind()` so the next `bind()` does not overwrite them with stale
+    /// saved state.
+    pub fn latch_hvip_from_hw(&mut self) {
+        self.regs.virtual_hs_csrs.hvip = hvip::read().bits();
     }
 }
 
