@@ -8,6 +8,7 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
 use ax_io::{Seek, SeekFrom};
 use ax_task::current;
+use axfs_ng_vfs::NodeType;
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::__kernel_off_t;
 use starry_vm::{VmMutPtr, VmPtr};
@@ -27,6 +28,18 @@ fn file_or_espipe(fd: c_int) -> AxResult<Arc<File>> {
             e
         } else {
             AxError::from(LinuxError::ESPIPE)
+        }
+    })
+}
+
+/// Like `file_or_espipe`, but for write operations: converts IsADirectory
+/// to BadFileDescriptor because directories cannot be opened for writing.
+fn file_or_espipe_write(fd: c_int) -> AxResult<Arc<File>> {
+    file_or_espipe(fd).map_err(|e| {
+        if e == AxError::IsADirectory {
+            AxError::BadFileDescriptor
+        } else {
+            e
         }
     })
 }
@@ -88,7 +101,12 @@ pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
     debug!("sys_lseek <= {fd} {offset} {whence}");
     let pos = match whence {
-        0 => SeekFrom::Start(offset as _),
+        0 => {
+            if offset < 0 {
+                return Err(AxError::InvalidInput);
+            }
+            SeekFrom::Start(offset as _)
+        }
         1 => SeekFrom::Current(offset as _),
         2 => SeekFrom::End(offset as _),
         _ => return Err(AxError::InvalidInput),
@@ -215,7 +233,7 @@ pub fn sys_pwrite64(
     if len == 0 {
         return Ok(0);
     }
-    let f = file_or_espipe(fd)?;
+    let f = file_or_espipe_write(fd)?;
     let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
     Ok(write as _)
 }
@@ -400,7 +418,7 @@ pub fn sys_copy_file_range(
     fd_out: c_int,
     off_out: *mut u64,
     len: usize,
-    _flags: u32,
+    flags: u32,
 ) -> AxResult<isize> {
     debug!(
         "sys_copy_file_range <= fd_in: {}, off_in: {}, fd_out: {}, off_out: {}, len: {}, flags: {}",
@@ -409,23 +427,59 @@ pub fn sys_copy_file_range(
         fd_out,
         !off_out.is_null(),
         len,
-        _flags
+        flags
     );
 
-    // TODO: check flags
-    // TODO: check both regular files
-    // TODO: check same file and overlap
+    if flags != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let remap = |e| match e {
+        AxError::BadFileDescriptor | AxError::IsADirectory => e,
+        _ => AxError::InvalidInput,
+    };
+    let file_in = File::from_fd(fd_in).map_err(remap)?;
+    let file_out = File::from_fd(fd_out).map_err(remap)?;
+    let meta_in = file_in.inner().location().metadata()?;
+    let meta_out = file_out.inner().location().metadata()?;
+
+    if meta_in.node_type != NodeType::RegularFile || meta_out.node_type != NodeType::RegularFile {
+        return Err(AxError::InvalidInput);
+    }
+    if file_out.inner().access(FileFlags::APPEND).is_ok() {
+        return Err(AxError::BadFileDescriptor);
+    }
+
+    if len > 0 && meta_in.device == meta_out.device && meta_in.inode == meta_out.inode {
+        let pos_in = if off_in.is_null() {
+            file_in.inner().seek(SeekFrom::Current(0))?
+        } else {
+            off_in.vm_read()?
+        };
+        let pos_out = if off_out.is_null() {
+            file_out.inner().seek(SeekFrom::Current(0))?
+        } else {
+            off_out.vm_read()?
+        };
+        if let Some(copy_end) = (len as u64).checked_sub(1) {
+            let in_end = pos_in.checked_add(copy_end).ok_or(AxError::InvalidInput)?;
+            let out_end = pos_out.checked_add(copy_end).ok_or(AxError::InvalidInput)?;
+            if in_end >= pos_out && pos_in <= out_end {
+                return Err(AxError::InvalidInput);
+            }
+        }
+    }
 
     let src = if !off_in.is_null() {
-        SendFile::Offset(File::from_fd(fd_in)?, off_in)
+        SendFile::Offset(file_in, off_in)
     } else {
-        SendFile::Direct(get_file_like(fd_in)?)
+        SendFile::Direct(file_in)
     };
 
     let dst = if !off_out.is_null() {
-        SendFile::Offset(File::from_fd(fd_out)?, off_out)
+        SendFile::Offset(file_out, off_out)
     } else {
-        SendFile::Direct(get_file_like(fd_out)?)
+        SendFile::Direct(file_out)
     };
 
     do_send(src, dst, len).map(|n| n as _)
