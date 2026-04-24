@@ -1,4 +1,4 @@
-features = ["ax-std"]
+features = ["ax-std", "ax-std/page-alloc-64g"]
 log = "Warn"
 max_cpu_num = 4
 plat_dyn = false
