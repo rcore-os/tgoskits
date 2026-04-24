@@ -29,6 +29,9 @@ pub enum AxDeviceEnum {
     /// Vsock device.
     #[cfg(feature = "vsock")]
     Vsock(AxVsockDevice),
+    /// Sound device.
+    #[cfg(feature = "sound")]
+    Sound(AxSoundDevice),
 }
 
 impl BaseDriverOps for AxDeviceEnum {
@@ -46,6 +49,8 @@ impl BaseDriverOps for AxDeviceEnum {
             Self::Input(_) => DeviceType::Input,
             #[cfg(feature = "vsock")]
             Self::Vsock(_) => DeviceType::Vsock,
+            #[cfg(feature = "sound")]
+            Self::Sound(_) => DeviceType::Char,
             _ => unreachable!(),
         }
     }
@@ -64,6 +69,8 @@ impl BaseDriverOps for AxDeviceEnum {
             Self::Input(dev) => dev.device_name(),
             #[cfg(feature = "vsock")]
             Self::Vsock(dev) => dev.device_name(),
+            #[cfg(feature = "sound")]
+            Self::Sound(dev) => dev.device_name(),
             _ => unreachable!(),
         }
     }

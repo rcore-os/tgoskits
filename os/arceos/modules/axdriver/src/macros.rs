@@ -42,6 +42,14 @@ macro_rules! register_vsock_driver {
     };
 }
 
+macro_rules! register_sound_driver {
+    ($driver_type:ty, $device_type:ty) => {
+        /// The unified type of the sound devices.
+        #[cfg(not(feature = "dyn"))]
+        pub type AxSoundDevice = $device_type;
+    };
+}
+
 macro_rules! for_each_drivers {
     (type $drv_type:ident, $code:block) => {{
         #[allow(unused_imports)]
@@ -73,6 +81,11 @@ macro_rules! for_each_drivers {
         #[cfg(vsock_dev = "virtio-socket")]
         {
             type $drv_type = <virtio::VirtIoSocket as VirtIoDevMeta>::Driver;
+            $code
+        }
+        #[cfg(sound_dev = "virtio-sound")]
+        {
+            type $drv_type = <virtio::VirtIoSound as VirtIoDevMeta>::Driver;
             $code
         }
         #[cfg(block_dev = "ramdisk")]

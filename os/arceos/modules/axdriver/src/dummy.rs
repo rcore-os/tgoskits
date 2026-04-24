@@ -183,3 +183,41 @@ cfg_if! {
         }
     }
 }
+
+cfg_if! {
+    if #[cfg(sound_dev = "dummy")] {
+        pub struct DummySoundDev;
+        pub struct DummySoundDriver;
+        register_sound_driver!(DummySoundDriver, DummySoundDev);
+
+        impl BaseDriverOps for DummySoundDev {
+            fn device_type(&self) -> DeviceType {
+                DeviceType::Char
+            }
+            fn device_name(&self) -> &str {
+                "dummy-sound"
+            }
+        }
+
+        impl SoundDriverOps for DummySoundDev {
+            fn query_caps(&self) -> DevResult<SoundCaps> {
+                Err(DevError::Unsupported)
+            }
+            fn set_params(&mut self, _params: SoundParams) -> DevResult {
+                Err(DevError::Unsupported)
+            }
+            fn stream_state(&self, _direction: SoundDirection) -> DevResult<SoundStreamState> {
+                Err(DevError::Unsupported)
+            }
+            fn start(&mut self, _direction: SoundDirection) -> DevResult {
+                Err(DevError::Unsupported)
+            }
+            fn stop(&mut self, _direction: SoundDirection) -> DevResult {
+                Err(DevError::Unsupported)
+            }
+            fn write_frames(&mut self, _data: &[u8]) -> DevResult<usize> {
+                Err(DevError::Unsupported)
+            }
+        }
+    }
+}

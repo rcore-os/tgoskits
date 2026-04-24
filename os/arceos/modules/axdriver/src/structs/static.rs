@@ -6,6 +6,8 @@ pub use crate::drivers::AxDisplayDevice;
 pub use crate::drivers::AxInputDevice;
 #[cfg(feature = "net")]
 pub use crate::drivers::AxNetDevice;
+#[cfg(feature = "sound")]
+pub use crate::drivers::AxSoundDevice;
 #[cfg(feature = "vsock")]
 pub use crate::drivers::AxVsockDevice;
 
@@ -38,5 +40,11 @@ impl super::AxDeviceEnum {
     #[cfg(feature = "vsock")]
     pub const fn from_vsock(dev: AxVsockDevice) -> Self {
         Self::Vsock(dev)
+    }
+
+    /// Constructs a sound device.
+    #[cfg(feature = "sound")]
+    pub const fn from_sound(dev: AxSoundDevice) -> Self {
+        Self::Sound(dev)
     }
 }

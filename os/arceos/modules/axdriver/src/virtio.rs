@@ -102,6 +102,21 @@ cfg_if! {
     }
 }
 
+cfg_if! {
+    if #[cfg(sound_dev = "virtio-sound")] {
+        pub struct VirtIoSound;
+
+        impl VirtIoDevMeta for VirtIoSound {
+            const DEVICE_TYPE: DeviceType = DeviceType::Char;
+            type Device = ax_driver_virtio::VirtIoSndDev<VirtIoHalImpl, VirtIoTransport>;
+
+            fn try_new(transport: VirtIoTransport, _irq: Option<usize>) -> DevResult<AxDeviceEnum> {
+                Ok(AxDeviceEnum::from_sound(Self::Device::try_new(transport)?))
+            }
+        }
+    }
+}
+
 /// A common driver for all VirtIO devices that implements [`DriverProbe`].
 pub struct VirtIoDriver<D: VirtIoDevMeta + ?Sized>(PhantomData<D>);
 
@@ -144,6 +159,7 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
             (DeviceType::Input, 0x1052) => {}
             (DeviceType::Display, 0x1050) => {}
             (DeviceType::Vsock, 0x1053) => {}
+            (DeviceType::Char, 0x1054) => {}
             _ => return None,
         }
 

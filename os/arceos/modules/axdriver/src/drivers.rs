@@ -61,6 +61,12 @@ register_vsock_driver!(
     <virtio::VirtIoSocket as VirtIoDevMeta>::Device
 );
 
+#[cfg(sound_dev = "virtio-sound")]
+register_sound_driver!(
+    <virtio::VirtIoSound as VirtIoDevMeta>::Driver,
+    <virtio::VirtIoSound as VirtIoDevMeta>::Device
+);
+
 cfg_if::cfg_if! {
     if #[cfg(block_dev = "ramdisk")] {
         pub struct RamDiskDriver;

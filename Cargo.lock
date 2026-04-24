@@ -763,6 +763,7 @@ dependencies = [
  "ax-driver-input",
  "ax-driver-net",
  "ax-driver-pci",
+ "ax-driver-sound",
  "ax-driver-virtio",
  "ax-driver-vsock",
  "ax-errno",
@@ -823,6 +824,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-driver-sound"
+version = "0.3.11"
+dependencies = [
+ "ax-driver-base",
+]
+
+[[package]]
 name = "ax-driver-virtio"
 version = "0.3.11"
 dependencies = [
@@ -831,6 +839,7 @@ dependencies = [
  "ax-driver-display",
  "ax-driver-input",
  "ax-driver-net",
+ "ax-driver-sound",
  "ax-driver-vsock",
  "log",
  "virtio-drivers",
