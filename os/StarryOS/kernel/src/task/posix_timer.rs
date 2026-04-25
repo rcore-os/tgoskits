@@ -122,6 +122,9 @@ impl PosixTimerTable {
         if value_sec < 0 {
             return Err(());
         }
+        if interval_sec < 0 {
+            return Err(());
+        }
 
         let mut timers = self.timers.lock();
         let timer = timers.get_mut(&id).ok_or(())?;

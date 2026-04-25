@@ -635,6 +635,30 @@ static void test_timer_settime_negative_tv_sec(void) {
     timer_delete(tid);
 }
 
+static void test_timer_settime_negative_interval_sec(void) {
+    timer_t tid;
+    struct itimerspec its;
+    int ret;
+
+    ret = timer_create(CLOCK_REALTIME, NULL, &tid);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | timer_create failed | errno=%d (%s)\n",
+               __FILE__, __LINE__, errno, strerror(errno));
+        __fail++;
+        return;
+    }
+
+    /* Negative it_interval.tv_sec should fail with EINVAL */
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_sec = 1;
+    its.it_interval.tv_sec = -1;
+    its.it_interval.tv_nsec = 0;
+    CHECK_ERR(timer_settime(tid, 0, &its, NULL), EINVAL,
+              "timer_settime with interval tv_sec=-1 should fail EINVAL");
+
+    timer_delete(tid);
+}
+
 /* ============================================================
  * Signal delivery test (setitimer fires SIGALRM)
  * ============================================================ */
@@ -997,6 +1021,7 @@ int main(void) {
     test_timer_gettime_invalid_timerid();
     test_timer_settime_negative_nsec();
     test_timer_settime_negative_tv_sec();
+    test_timer_settime_negative_interval_sec();
 
     printf("\n--- timer_settime/timer_gettime normal behavior ---\n");
     test_timer_settime_arm_disarm();
