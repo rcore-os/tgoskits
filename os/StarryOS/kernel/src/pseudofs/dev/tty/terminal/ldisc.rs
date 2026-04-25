@@ -3,12 +3,12 @@ use core::{
     future::poll_fn,
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
-    task::{Context, Poll, Waker},
+    task::{Poll, Waker},
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_task::future::{block_on, poll_io};
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_task::future::block_on;
+use axpoll::PollSet;
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
@@ -215,21 +215,6 @@ pub struct LineDiscipline<R, W> {
     processor: Processor<R, W>,
 }
 
-struct WaitPollable<'a>(Option<&'a Arc<PollSet>>);
-impl Pollable for WaitPollable<'_> {
-    fn poll(&self) -> IoEvents {
-        unreachable!()
-    }
-
-    fn register(&self, context: &mut Context<'_>, _events: IoEvents) {
-        if let Some(set) = self.0 {
-            set.register(context.waker());
-        } else {
-            context.waker().wake_by_ref();
-        }
-    }
-}
-
 impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     pub fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Self {
         let (buf_tx, buf_rx) = ReadBuf::default().split();
@@ -311,7 +296,16 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             Processor::None(reader, _) => reader.poll(),
             _ => {}
         }
-        !self.buf_rx.is_empty()
+        if self.buf_rx.is_empty() {
+            return false;
+        }
+        let term = self.terminal.termios.lock().clone();
+        let vmin = if term.canonical() {
+            1
+        } else {
+            term.special_char(VMIN) as usize
+        };
+        vmin == 0 || self.buf_rx.occupied_len() >= vmin
     }
 
     pub fn register_rx_waker(&self, waker: &Waker) {
@@ -365,18 +359,13 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             }
         }
 
-        let set = match &self.processor {
-            Processor::Manual(_) => None,
-            Processor::External(set) => Some(set),
-            _ => unreachable!(),
-        };
-        let pollable = WaitPollable(set);
-        block_on(poll_io(&pollable, IoEvents::IN, false, || {
-            total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
-            self.poll_tx.wake();
-            (total_read >= vmin)
-                .then_some(total_read)
-                .ok_or(AxError::WouldBlock)
-        }))
+        let available = self.buf_rx.occupied_len();
+        if available == 0 || (vmin > 0 && available < vmin) {
+            return Err(AxError::WouldBlock);
+        }
+
+        let read = self.buf_rx.pop_slice(buf);
+        self.poll_tx.wake();
+        Ok(read)
     }
 }

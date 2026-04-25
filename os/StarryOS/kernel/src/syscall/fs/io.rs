@@ -15,7 +15,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
-    file::{File, FileLike, Pipe, get_file_like},
+    file::{Directory, File, FileLike, Pipe, get_file_like},
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut},
 };
 
@@ -111,8 +111,31 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
         2 => SeekFrom::End(offset as _),
         _ => return Err(AxError::InvalidInput),
     };
-    let off = file_or_espipe(fd)?.inner().seek(pos)?;
-    Ok(off as _)
+    let any_file = get_file_like(fd)?;
+
+    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+        let off = f.inner().seek(pos)?;
+        return Ok(off as _);
+    }
+
+    if let Ok(d) = any_file.downcast_arc::<Directory>() {
+        let mut off = d.offset.lock();
+        let new_pos = match pos {
+            SeekFrom::Start(pos) => pos,
+            SeekFrom::End(delta) => d
+                .inner()
+                .len()?
+                .checked_add_signed(delta)
+                .ok_or(AxError::InvalidInput)?,
+            SeekFrom::Current(delta) => {
+                off.checked_add_signed(delta).ok_or(AxError::InvalidInput)?
+            }
+        };
+        *off = new_pos;
+        return Ok(new_pos as _);
+    }
+
+    Err(AxError::from(LinuxError::ESPIPE))
 }
 
 pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
@@ -155,31 +178,24 @@ pub fn sys_fallocate(
 
 pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fsync <= {fd}");
-    match File::from_fd(fd) {
-        Ok(f) => {
-            f.inner().sync(false)?;
-            Ok(0)
-        }
-        Err(AxError::IsADirectory) => {
-            // Linux allows fsync() on directory fds to flush directory
-            // metadata. We don't have directory-level sync, but returning
-            // Ok matches Linux behavior for applications like PostgreSQL.
-            Ok(0)
-        }
-        Err(e) => Err(e),
+    let any_file = get_file_like(fd)?;
+    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+        f.inner().sync(false)?;
+    } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
+        d.inner().sync(false)?;
     }
+    Err(AxError::from(LinuxError::EINVAL))
 }
 
 pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fdatasync <= {fd}");
-    match File::from_fd(fd) {
-        Ok(f) => {
-            f.inner().sync(true)?;
-            Ok(0)
-        }
-        Err(AxError::IsADirectory) => Ok(0),
-        Err(e) => Err(e),
+    let any_file = get_file_like(fd)?;
+    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+        f.inner().sync(true)?;
+    } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
+        d.inner().sync(true)?;
     }
+    Err(AxError::from(LinuxError::EINVAL))
 }
 
 pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, _flags: u32) -> AxResult<isize> {
