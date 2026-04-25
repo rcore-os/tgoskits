@@ -32,10 +32,13 @@ const ARCEOS_TEST_TARGETS: &[&str] = &[
 ];
 const ARCEOS_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 
-const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "x86_64", "loongarch64"];
+const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "riscv64", "x86_64", "loongarch64"];
 const AXVISOR_AARCH64_TEST_SHELL_PREFIX: &str = "~ #";
 const AXVISOR_AARCH64_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
 const AXVISOR_AARCH64_TEST_SUCCESS_REGEX: &[&str] = &["(?m)^guest test pass!\\s*$"];
+const AXVISOR_RISCV64_TEST_SHELL_PREFIX: &str = "~ #";
+const AXVISOR_RISCV64_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
+const AXVISOR_RISCV64_TEST_SUCCESS_REGEX: &[&str] = &["(?m)^guest test pass!\\s*$"];
 const AXVISOR_X86_64_TEST_SHELL_PREFIX: &str = ">>";
 const AXVISOR_X86_64_TEST_SHELL_INIT_CMD: &str = "hello_world";
 const AXVISOR_X86_64_TEST_SUCCESS_REGEX: &[&str] = &["Hello world from user mode program!"];
@@ -149,6 +152,7 @@ pub(crate) fn parse_axvisor_test_target(
         AXVISOR_TEST_ARCHES,
         &[
             "aarch64-unknown-none-softfloat",
+            "riscv64gc-unknown-none-elf",
             "x86_64-unknown-none",
             "loongarch64-unknown-none-softfloat",
         ],
@@ -209,6 +213,12 @@ pub(crate) fn axvisor_test_shell_config(arch: &str) -> anyhow::Result<ShellAutoI
             shell_prefix: AXVISOR_AARCH64_TEST_SHELL_PREFIX.to_string(),
             shell_init_cmd: AXVISOR_AARCH64_TEST_SHELL_INIT_CMD.to_string(),
             success_regex: default_axvisor_test_success_regex(),
+            fail_regex: default_axvisor_test_fail_regex(),
+        }),
+        "riscv64" => Ok(ShellAutoInitConfig {
+            shell_prefix: AXVISOR_RISCV64_TEST_SHELL_PREFIX.to_string(),
+            shell_init_cmd: AXVISOR_RISCV64_TEST_SHELL_INIT_CMD.to_string(),
+            success_regex: owned_patterns(AXVISOR_RISCV64_TEST_SUCCESS_REGEX),
             fail_regex: default_axvisor_test_fail_regex(),
         }),
         "x86_64" => Ok(ShellAutoInitConfig {
@@ -338,13 +348,9 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_arceos_targets() {
-        let err =
-            parse_arceos_test_target(&None, &Some("mips64-unknown-none".to_string())).unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("unsupported target `mips64-unknown-none`")
-        );
+        let rejected_target = "mips64-unknown-none".to_string();
+        let err = parse_arceos_test_target(&None, &Some(rejected_target.clone())).unwrap_err();
+        assert!(err.to_string().contains(&rejected_target));
     }
 
     #[test]
@@ -367,6 +373,13 @@ mod tests {
                 "loongarch64-unknown-none-softfloat".to_string()
             )
         );
+        assert_eq!(
+            parse_axvisor_test_target(&Some("riscv64".to_string()), &None).unwrap(),
+            (
+                "riscv64".to_string(),
+                "riscv64gc-unknown-none-elf".to_string()
+            )
+        );
     }
 
     #[test]
@@ -380,6 +393,14 @@ mod tests {
             )
         );
         assert_eq!(
+            parse_axvisor_test_target(&None, &Some("riscv64gc-unknown-none-elf".to_string()))
+                .unwrap(),
+            (
+                "riscv64".to_string(),
+                "riscv64gc-unknown-none-elf".to_string()
+            )
+        );
+        assert_eq!(
             parse_axvisor_test_target(
                 &None,
                 &Some("loongarch64-unknown-none-softfloat".to_string())
@@ -389,6 +410,22 @@ mod tests {
                 "loongarch64".to_string(),
                 "loongarch64-unknown-none-softfloat".to_string()
             )
+        );
+    }
+
+    #[test]
+    fn returns_riscv_axvisor_linux_shell_config() {
+        assert_eq!(
+            axvisor_test_shell_config("riscv64").unwrap(),
+            ShellAutoInitConfig {
+                shell_prefix: "~ #".to_string(),
+                shell_init_cmd: "pwd && echo 'guest test pass!'".to_string(),
+                success_regex: vec![r"(?m)^guest test pass!\s*$".to_string()],
+                fail_regex: AXVISOR_TEST_FAIL_REGEX
+                    .iter()
+                    .map(|pattern| pattern.to_string())
+                    .collect(),
+            }
         );
     }
 
@@ -413,12 +450,14 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_axvisor_arches() {
-        let err = parse_axvisor_test_target(&Some("riscv64".to_string()), &None).unwrap_err();
+        let err = parse_axvisor_test_target(&Some("mips64".to_string()), &None).unwrap_err();
+        let err = err.to_string();
 
-        assert!(
-            err.to_string()
-                .contains("Supported arch values are: aarch64")
-        );
+        assert!(err.contains("mips64"));
+        assert!(err.contains("aarch64"));
+        assert!(err.contains("loongarch64"));
+        assert!(err.contains("riscv64"));
+        assert!(err.contains("x86_64"));
     }
 
     #[test]

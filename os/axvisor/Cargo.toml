@@ -40,6 +40,7 @@ path = "xtask/src/main.rs"
 default = []
 ept-level-4 = []
 fs = ["ax-std/fs"]
+sstc = ["riscv_vcpu/sstc"]
 dyn-plat = ["ax-std/plat-dyn", "dep:axplat-dyn"]
 rk3588-clk = ["dep:axplat-dyn", "axplat-dyn/rk3588-clk"]
 rk3568-clk = ["dep:axplat-dyn", "axplat-dyn/rk3568-clk"]

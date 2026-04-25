@@ -16,11 +16,15 @@ use crate::{
 };
 
 pub const LINUX_AARCH64_IMAGE_SPEC: &str = "qemu_aarch64_linux";
-pub const ARCEOS_RISCV64_IMAGE_SPEC: &str = "qemu_riscv64_arceos";
+pub const LINUX_RISCV64_IMAGE_SPEC: &str = "qemu_riscv64_linux";
 pub const LINUX_AARCH64_VMCONFIG_TEMPLATE: &str =
     "os/axvisor/configs/vms/linux-aarch64-qemu-smp1.toml";
 pub const LINUX_AARCH64_GENERATED_VMCONFIG: &str =
     "os/axvisor/tmp/vmconfigs/linux-aarch64-qemu-smp1.generated.toml";
+pub const LINUX_RISCV64_VMCONFIG_TEMPLATE: &str =
+    "os/axvisor/configs/vms/linux-riscv64-qemu-smp1.toml";
+pub const LINUX_RISCV64_GENERATED_VMCONFIG: &str =
+    "os/axvisor/tmp/vmconfigs/linux-riscv64-qemu-smp1.generated.toml";
 pub const NIMBOS_X86_64_IMAGE_SPEC: &str = "qemu_x86_64_nimbos";
 pub const NIMBOS_X86_64_VMCONFIG: &str = "os/axvisor/configs/vms/nimbos-x86_64-qemu-smp1.toml";
 const RDK_S100_LINUX_GROUP_NAME: &str = "rdk-s100-linux";
@@ -56,6 +60,29 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
     let generated_vmconfig = workspace_root.join(LINUX_AARCH64_GENERATED_VMCONFIG);
     generate_linux_vmconfig(
         &workspace_root.join(LINUX_AARCH64_VMCONFIG_TEMPLATE),
+        &generated_vmconfig,
+        &kernel_path,
+    )?;
+
+    Ok(PreparedLinuxGuestAssets {
+        image_dir,
+        generated_vmconfig,
+    })
+}
+
+pub(crate) async fn prepare_linux_riscv64_guest_assets(
+    ctx: &AxvisorContext,
+) -> anyhow::Result<PreparedLinuxGuestAssets> {
+    let image_dir = pull_guest_image(ctx, LINUX_RISCV64_IMAGE_SPEC).await?;
+    let kernel_path = image_dir.join("qemu-riscv64");
+    let rootfs_path = guest_rootfs_path(&image_dir);
+    ensure_guest_kernel_exists(&kernel_path, "linux guest")?;
+    ensure_guest_rootfs_exists(&rootfs_path, "linux guest")?;
+
+    let workspace_root = ctx.workspace_root();
+    let generated_vmconfig = workspace_root.join(LINUX_RISCV64_GENERATED_VMCONFIG);
+    generate_linux_vmconfig(
+        &workspace_root.join(LINUX_RISCV64_VMCONFIG_TEMPLATE),
         &generated_vmconfig,
         &kernel_path,
     )?;

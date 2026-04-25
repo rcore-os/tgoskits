@@ -20,8 +20,10 @@ use riscv_decode::{
     Instruction,
     types::{IType, SType},
 };
+#[cfg(feature = "sstc")]
+use riscv_h::register::vstimecmp;
 use riscv_h::register::{
-    hstatus, htimedelta, hvip,
+    hgeie, hie, hstatus, htimedelta, hvip,
     vsatp::{self, Vsatp},
     vscause::{self, Vscause},
     vsepc,
@@ -46,6 +48,10 @@ const TINST_PSEUDO_STORE: u32 = 0x3020;
 const TINST_PSEUDO_LOAD: u32 = 0x3000;
 const EID_TIME: usize = 0x5449_4D45;
 const FID_SET_TIMER: usize = 0;
+#[cfg(feature = "sstc")]
+const SYSTEM_OPCODE: u32 = 0x73;
+#[cfg(feature = "sstc")]
+const CSR_STIMECMP: u16 = 0x14d;
 
 #[inline]
 fn instr_is_pseudo(ins: u32) -> bool {
@@ -118,6 +124,22 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             hstatus.write();
         }
         self.regs.guest_regs.hstatus = hstatus.bits();
+
+        let mut hie = hie::Hie::from_bits(0);
+        hie.set_vssie(true);
+        hie.set_vstie(true);
+        hie.set_vseie(true);
+        #[cfg(feature = "sstc")]
+        {
+            // Start with no guest timer deadline armed; a zeroed vstimecmp
+            // would be observed as already expired and inject a spurious timer
+            // interrupt before Linux programs its first clockevent.
+            self.regs.vs_csrs.vstimecmp = usize::MAX;
+        }
+        self.regs.virtual_hs_csrs.hie = hie.bits();
+        self.regs.virtual_hs_csrs.hvip = 0;
+        self.regs.virtual_hs_csrs.hgeie = 0;
+
         Ok(())
     }
 
@@ -138,7 +160,10 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             sstatus::clear_sie();
             sie::set_sext();
             sie::set_ssoft();
-            sie::set_stimer();
+            // Keep the current HS timer enable state instead of forcing it on
+            // for every VM entry. Guest timer re-arming and host timer users
+            // must manage `stimer` explicitly, otherwise a pending HS timer can
+            // preempt the guest on every re-entry and starve VS interrupt work.
         }
         unsafe {
             // Safe to run the guest as it only touches memory assigned to it by being owned
@@ -148,7 +173,6 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         unsafe {
             sie::clear_sext();
             sie::clear_ssoft();
-            sie::clear_stimer();
             sstatus::set_sie();
         }
         self.vmexit_handler()
@@ -175,6 +199,15 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             vsstatus.write();
             let vsie = Vsie::from_bits(self.regs.vs_csrs.vsie);
             vsie.write();
+            #[cfg(feature = "sstc")]
+            vstimecmp::write(self.regs.vs_csrs.vstimecmp);
+            let hie = hie::Hie::from_bits(self.regs.virtual_hs_csrs.hie);
+            hie.write();
+            // Restore latched virtual pending interrupts as part of the vCPU
+            // context so VM exits do not silently drop timer or external IRQs.
+            let hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
+            hvip.write();
+            hgeie::write(self.regs.virtual_hs_csrs.hgeie);
             core::arch::asm!(
                 "csrw hgatp, {hgatp}",
                 hgatp = in(reg) self.regs.virtual_hs_csrs.hgatp,
@@ -196,10 +229,24 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             self.regs.vs_csrs.vsscratch = vsscratch::read();
             self.regs.vs_csrs.vsstatus = vsstatus::read().bits();
             self.regs.vs_csrs.vsie = vsie::read().bits();
+            #[cfg(feature = "sstc")]
+            {
+                self.regs.vs_csrs.vstimecmp = vstimecmp::read();
+            }
+            self.regs.virtual_hs_csrs.hie = hie::read().bits();
+            self.regs.virtual_hs_csrs.hvip = hvip::read().bits();
+            self.regs.virtual_hs_csrs.hgeie = hgeie::read();
             core::arch::asm!(
                 "csrr {hgatp}, hgatp",
                 hgatp = out(reg) self.regs.virtual_hs_csrs.hgatp,
             );
+            hie::Hie::from_bits(0).write();
+            // Clear host-side pending state after saving it to avoid leaking a
+            // previous guest's virtual IRQs into later host/guest execution.
+            hvip::Hvip::from_bits(0).write();
+            hgeie::write(0);
+            #[cfg(feature = "sstc")]
+            vstimecmp::write(usize::MAX);
             core::arch::asm!("csrw hgatp, x0");
             core::arch::riscv64::hfence_gvma_all();
         }
@@ -235,6 +282,33 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
 }
 
 impl RISCVVCpu {
+    /// Capture any virtual pending interrupt bits that were raised after the
+    /// last `unbind()` so the next `bind()` does not overwrite them with stale
+    /// saved state.
+    pub fn latch_hvip_from_hw(&mut self) {
+        self.regs.virtual_hs_csrs.hvip = hvip::read().bits();
+    }
+}
+
+impl RISCVVCpu {
+    #[inline]
+    fn program_guest_timer(&mut self, deadline: usize) {
+        #[cfg(feature = "sstc")]
+        {
+            self.regs.vs_csrs.vstimecmp = deadline;
+        }
+        sbi_rt::set_timer(deadline as u64);
+        unsafe {
+            // The guest has consumed the current VS timer event and programmed
+            // a new deadline, so clear the injected VS timer pending bit and
+            // re-arm HS timer delivery for the next expiration.
+            hvip::clear_vstip();
+            #[cfg(feature = "sstc")]
+            vstimecmp::write(deadline);
+            sie::set_stimer();
+        }
+    }
+
     /// Gets one of the vCPU's general purpose registers.
     pub fn get_gpr(&self, index: GprIndex) -> usize {
         self.regs.guest_regs.gprs.reg(index)
@@ -297,11 +371,7 @@ impl RISCVVCpu {
                     legacy::LEGACY_SET_TIMER..=legacy::LEGACY_SHUTDOWN => match extension_id {
                         legacy::LEGACY_SET_TIMER => {
                             // info!("set timer: {}", param[0]);
-                            sbi_rt::set_timer((param[0]) as u64);
-                            unsafe {
-                                // Clear guest timer interrupt
-                                hvip::clear_vstip();
-                            }
+                            self.program_guest_timer(param[0]);
 
                             self.set_gpr_from_gpr_index(GprIndex::A0, 0);
                         }
@@ -325,10 +395,7 @@ impl RISCVVCpu {
                     },
                     EID_TIME => match function_id {
                         FID_SET_TIMER => {
-                            sbi_rt::set_timer(param[0] as u64);
-                            unsafe {
-                                hvip::clear_vstip();
-                            }
+                            self.program_guest_timer(param[0]);
                             self.sbi_return(RET_SUCCESS, 0);
                             return Ok(AxVCpuExitReason::Nothing);
                         }
@@ -480,11 +547,13 @@ impl RISCVVCpu {
                 self.advance_pc(4);
                 Ok(AxVCpuExitReason::Nothing)
             }
+            Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
             Trap::Interrupt(Interrupt::SupervisorTimer) => {
-                // Enable guest timer interrupt
+                // Forward the elapsed timer to VS and stop taking the same HS
+                // timer interrupt repeatedly until software programs a new one.
                 unsafe {
                     hvip::set_vstip();
-                    sie::set_stimer();
+                    sie::clear_stimer();
                 }
 
                 Ok(AxVCpuExitReason::Nothing)
@@ -528,6 +597,129 @@ impl RISCVVCpu {
         self.set_gpr_from_gpr_index(GprIndex::A0, a0);
         self.set_gpr_from_gpr_index(GprIndex::A1, a1);
         self.advance_pc(4);
+    }
+
+    #[cfg(feature = "sstc")]
+    fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
+        let instr = self.read_virtual_instruction()?;
+        let csr = ((instr >> 20) & 0xfff) as u16;
+
+        if csr != CSR_STIMECMP {
+            return Err(ax_errno::ax_err_type!(
+                Unsupported,
+                alloc::format!(
+                    "Unhandled virtual instruction csr={csr:#x}, sepc: {:#x}, stval: {:#x}, \
+                     htval: {:#x}, htinst: {:#x}",
+                    self.regs.guest_regs.sepc,
+                    self.regs.trap_csrs.stval,
+                    self.regs.trap_csrs.htval,
+                    self.regs.trap_csrs.htinst,
+                )
+            ));
+        }
+
+        let funct3 = ((instr >> 12) & 0x7) as u8;
+        let rd = ((instr >> 7) & 0x1f) as u8;
+        let rs1 = ((instr >> 15) & 0x1f) as u8;
+        let old_value = self.regs.vs_csrs.vstimecmp;
+        let rs1_value = self.read_gpr_raw(rs1);
+        let zimm = rs1 as usize;
+
+        let new_value = match funct3 {
+            0b001 => Some(rs1_value),
+            0b010 => {
+                if rs1 == 0 {
+                    None
+                } else {
+                    Some(old_value | rs1_value)
+                }
+            }
+            0b011 => {
+                if rs1 == 0 {
+                    None
+                } else {
+                    Some(old_value & !rs1_value)
+                }
+            }
+            0b101 => Some(zimm),
+            0b110 => {
+                if zimm == 0 {
+                    None
+                } else {
+                    Some(old_value | zimm)
+                }
+            }
+            0b111 => {
+                if zimm == 0 {
+                    None
+                } else {
+                    Some(old_value & !zimm)
+                }
+            }
+            _ => {
+                return Err(ax_errno::ax_err_type!(
+                    Unsupported,
+                    alloc::format!(
+                        "Unhandled virtual instruction funct3={funct3:#x} for csr={csr:#x}, sepc: \
+                         {:#x}",
+                        self.regs.guest_regs.sepc,
+                    )
+                ));
+            }
+        };
+
+        if rd != 0 {
+            self.write_gpr_raw(rd, old_value);
+        }
+
+        if let Some(new_value) = new_value {
+            // Linux is using the advertised `sstc` path (`csrw stimecmp,...`).
+            // We currently emulate that CSR access rather than exposing direct
+            // hardware STCE, so this path must also program the underlying HS
+            // timer instead of only updating saved VS state.
+            self.program_guest_timer(new_value);
+        }
+
+        self.advance_pc(4);
+        Ok(AxVCpuExitReason::Nothing)
+    }
+
+    #[cfg(not(feature = "sstc"))]
+    fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
+        Err(ax_errno::ax_err_type!(
+            Unsupported,
+            alloc::format!(
+                "Unhandled virtual instruction without `sstc` feature, sepc: {:#x}, stval: {:#x}, \
+                 htval: {:#x}, htinst: {:#x}",
+                self.regs.guest_regs.sepc,
+                self.regs.trap_csrs.stval,
+                self.regs.trap_csrs.htval,
+                self.regs.trap_csrs.htinst,
+            )
+        ))
+    }
+
+    #[cfg(feature = "sstc")]
+    fn read_virtual_instruction(&self) -> AxResult<u32> {
+        let instr = self.regs.trap_csrs.stval as u32;
+        if instr & 0x7f == SYSTEM_OPCODE {
+            return Ok(instr);
+        }
+
+        let guest_pc = GuestVirtAddr::from(self.regs.guest_regs.sepc);
+        Ok(guest_mem::fetch_guest_instruction(guest_pc) as u32)
+    }
+
+    fn read_gpr_raw(&self, index: u8) -> usize {
+        GprIndex::from_raw(index as u32)
+            .map(|gpr| self.get_gpr(gpr))
+            .unwrap_or(0)
+    }
+
+    fn write_gpr_raw(&mut self, index: u8, value: usize) {
+        if let Some(gpr) = GprIndex::from_raw(index as u32) {
+            self.set_gpr_from_gpr_index(gpr, value);
+        }
     }
 
     /// Decode the instruction at the given virtual address. Return the decoded instruction and its
