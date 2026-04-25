@@ -18,6 +18,7 @@ block = ["dep:ax-driver-block"]
 display = ["dep:ax-driver-display"]
 input = ["dep:ax-driver-input"]
 vsock = ["ax-driver-vsock"]
+sound = ["dep:ax-driver-sound"]
 
 # Enabled by features `virtio-*`
 virtio = ["dep:ax-driver-virtio", "dep:ax-alloc", "dep:ax-hal", "dep:ax-config"]
@@ -28,6 +29,7 @@ virtio-net = ["net", "virtio", "ax-driver-virtio/net"]
 virtio-gpu = ["display", "virtio", "ax-driver-virtio/gpu"]
 virtio-input = ["input", "virtio", "ax-driver-virtio/input"]
 virtio-socket = ["vsock", "virtio", "ax-driver-virtio/socket"]
+virtio-sound = ["sound", "virtio", "ax-driver-virtio/sound"]
 ramdisk = ["block", "ax-driver-block/ramdisk"]
 bcm2835-sdhci = ["block", "ax-driver-block/bcm2835-sdhci"]
 sdmmc = ["block", "ax-driver-block/sdmmc", "dep:ax-hal", "dep:ax-config"]
@@ -53,6 +55,7 @@ ax-driver-net = { workspace = true, optional = true }
 ax-driver-pci = { workspace = true, optional = true }
 ax-driver-virtio = { workspace = true, optional = true }
 ax-driver-vsock = { workspace = true, optional = true }
+ax-driver-sound = { workspace = true, optional = true }
 ax-errno = { workspace = true, optional = true }
 ax-hal = { workspace = true, optional = true }
 cfg-if.workspace = true

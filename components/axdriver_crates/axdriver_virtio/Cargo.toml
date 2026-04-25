@@ -17,6 +17,7 @@ gpu = ["alloc", "ax-driver-display"]
 input = ["alloc", "ax-driver-input"]
 net = ["alloc", "ax-driver-net"]
 socket = ["alloc", "ax-driver-vsock"]
+sound = ["alloc", "ax-driver-sound"]
 
 [dependencies]
 ax-driver-base = { version = "0.3" }
@@ -25,5 +26,6 @@ ax-driver-display = { version = "0.3", optional = true }
 ax-driver-input = { version = "0.3", optional = true }
 ax-driver-net = { version = "0.3", optional = true }
 ax-driver-vsock = { version = "0.3", optional = true }
+ax-driver-sound = { version = "0.3", optional = true }
 log = { workspace = true }
 virtio-drivers = { version = "0.13.0", default-features = false }

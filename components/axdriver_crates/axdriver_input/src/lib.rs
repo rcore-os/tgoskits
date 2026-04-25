@@ -90,12 +90,13 @@ pub trait InputDriverOps: BaseDriverOps {
     /// Fetches the bitmap of supported event codes for the specified event
     /// type.
     ///
-    /// Returns true if the event type is supported and the bitmap is written to
-    /// `out`.
+    /// Returns `Ok(true)` if the event type is supported and the bitmap is
+    /// written to `out`; returns `Ok(false)` if the event type is unsupported.
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> DevResult<bool>;
 
-    /// Reads an input event from the device.
+    /// Reads one input event from the device.
     ///
-    /// If no events are available, `Err(DevError::Again)` is returned.
+    /// Returns `Err(DevError::Again)` when there is currently no event to read.
+    /// This indicates a transient empty queue rather than a device failure.
     fn read_event(&mut self) -> DevResult<Event>;
 }

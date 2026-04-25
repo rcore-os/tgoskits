@@ -1,4 +1,4 @@
-//! Common traits and types for socket communite device drivers (i.e. disk).
+//! Common traits and types for vsock (virtio socket) device drivers.
 
 #![no_std]
 #![cfg_attr(doc, feature(doc_cfg))]
@@ -51,35 +51,38 @@ pub enum VsockDriverEvent {
     Unknown,
 }
 
-/// Operations that require a block storage device driver to implement.
+/// Operations that require a vsock device driver to implement.
 pub trait VsockDriverOps: BaseDriverOps {
-    /// guest cid
+    /// Returns the guest CID.
     fn guest_cid(&self) -> u64;
 
-    /// Listen on a specific port.
+    /// Starts listening on a local port.
     fn listen(&mut self, src_port: u32);
 
-    /// Connect to a peer socket.
+    /// Initiates a connection to a peer socket.
     fn connect(&mut self, cid: VsockConnId) -> DevResult<()>;
 
-    /// Send data to the connected peer socket. need addr for DGRAM mode
+    /// Sends data to the peer socket.
     fn send(&mut self, cid: VsockConnId, buf: &[u8]) -> DevResult<usize>;
 
-    /// Receive data from the connected peer socket.
+    /// Receives data from the peer socket.
+    ///
+    /// Implementations may return `Err(DevError::Again)` if no data is
+    /// available yet.
     fn recv(&mut self, cid: VsockConnId, buf: &mut [u8]) -> DevResult<usize>;
 
-    /// Returns the number of bytes in the receive buffer available to be read by recv.
+    /// Returns bytes currently available for `recv`.
     fn recv_avail(&mut self, cid: VsockConnId) -> DevResult<usize>;
 
-    /// Disconnect from the connected peer socket.
-    ///
-    /// Requests to shut down the connection cleanly, telling the peer that we won't send or receive
-    /// any more data.
+    /// Requests a graceful shutdown of the connection.
     fn disconnect(&mut self, cid: VsockConnId) -> DevResult<()>;
 
     /// Forcibly closes the connection without waiting for the peer.
     fn abort(&mut self, cid: VsockConnId) -> DevResult<()>;
 
-    /// poll event from driver
+    /// Polls one driver event.
+    ///
+    /// Unknown/proprietary events should be surfaced as
+    /// `VsockDriverEvent::Unknown` instead of being treated as fatal errors.
     fn poll_event(&mut self) -> DevResult<Option<VsockDriverEvent>>;
 }

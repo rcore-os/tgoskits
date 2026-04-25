@@ -38,6 +38,8 @@ pub use self::net::VirtIoNetDev;
 
 #[cfg(feature = "socket")]
 mod socket;
+#[cfg(feature = "sound")]
+mod snd;
 use ax_driver_base::{DevError, DeviceType};
 use virtio_drivers::transport::DeviceType as VirtIoDevType;
 pub use virtio_drivers::{
@@ -52,6 +54,8 @@ pub type MmioTransport = virtio_drivers::transport::mmio::MmioTransport<'static>
 use self::pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
 #[cfg(feature = "socket")]
 pub use self::socket::VirtIoSocketDev;
+#[cfg(feature = "sound")]
+pub use self::snd::VirtIoSndDev;
 
 /// Try to probe a VirtIO MMIO device from the given memory region.
 ///
