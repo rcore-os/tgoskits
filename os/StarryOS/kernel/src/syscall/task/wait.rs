@@ -120,7 +120,10 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             Some(res) => Poll::Ready(res),
             None => {
                 proc_data.child_exit_event.register(cx.waker());
-                Poll::Pending
+                match check_children().transpose() {
+                    Some(res) => Poll::Ready(res),
+                    None => Poll::Pending,
+                }
             }
         }
     })))?
