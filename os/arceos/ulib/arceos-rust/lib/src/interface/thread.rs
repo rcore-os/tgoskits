@@ -1,9 +1,11 @@
-use alloc::collections::BTreeMap;
-use alloc::format;
-use ax_api::modules::ax_sync::Mutex;
-use ax_api::task::{ax_spawn, ax_wait_for_exit, ax_yield_now, AxTaskHandle};
-use ax_posix_api::ctypes::Tid;
+use alloc::{collections::BTreeMap, format};
 use core::sync::atomic::{AtomicU64, Ordering};
+
+use ax_api::{
+    modules::ax_sync::Mutex,
+    task::{AxTaskHandle, ax_spawn, ax_wait_for_exit, ax_yield_now},
+};
+use ax_posix_api::ctypes::Tid;
 use log::{info, warn};
 
 const DEFAULT_STACK_SIZE: usize = arceos_api::config::TASK_STACK_SIZE;

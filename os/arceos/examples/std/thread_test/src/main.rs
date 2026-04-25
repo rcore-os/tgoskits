@@ -1,11 +1,15 @@
+use std::{
+    sync::{
+        Arc, Barrier, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
+
 #[cfg(target_os = "hermit")]
 use arceos_rust as _;
-
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
-use std::time::Duration;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Barrier;
 
 fn main() {
     println!("=== Rust 线程功能测试程序 ===\n");
@@ -18,16 +22,16 @@ fn main() {
 
     // 3. 使用通道进行线程间通信
     test_channel_communication();
-    
+
     // 4. 使用Mutex进行线程安全的数据共享
     test_mutex_shared_data();
-    
+
     // 5. 原子操作
     test_atomic_operations();
-    
+
     // 6. 屏障同步
     test_barrier_synchronization();
-    
+
     // 7. 线程恐慌处理
     test_thread_panic();
 

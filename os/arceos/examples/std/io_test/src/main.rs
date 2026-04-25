@@ -1,11 +1,13 @@
+use std::{
+    fs,
+    fs::{File, OpenOptions},
+    io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    path::Path,
+    time::SystemTime,
+};
+
 #[cfg(target_os = "hermit")]
 use arceos_rust as _;
-
-use std::fs;
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write, Seek, SeekFrom, BufReader, BufWriter, BufRead};
-use std::path::Path;
-use std::time::SystemTime;
 
 fn main() -> io::Result<()> {
     println!("=== Rust 文件读写功能测试 ===\n");
@@ -90,10 +92,7 @@ fn append_to_file() -> io::Result<()> {
     fs::write(filename, "Initial content\n")?;
 
     // 追加写入
-    let mut file = OpenOptions::new()
-        .write(true)
-        .append(true)
-        .open(filename)?;
+    let mut file = OpenOptions::new().write(true).append(true).open(filename)?;
 
     file.write_all(b"First appended line\n")?;
     file.write_all(b"Second appended line\n")?;
@@ -129,7 +128,8 @@ fn buffered_io() -> io::Result<()> {
     let reader = BufReader::new(file);
 
     for (i, line) in reader.lines().enumerate() {
-        if i < 3 { // 只显示前3行
+        if i < 3 {
+            // 只显示前3行
             println!("  Line {}: {}", i, line?.trim());
         }
     }
@@ -153,24 +153,30 @@ fn file_seeking() -> io::Result<()> {
 
     let mut buffer = [0; 5];
     file.read_exact(&mut buffer)?;
-    println!("  Read 5 bytes from position 5: {}",
-             String::from_utf8_lossy(&buffer));
+    println!(
+        "  Read 5 bytes from position 5: {}",
+        String::from_utf8_lossy(&buffer)
+    );
 
     // 从当前位置向前移动3字节
     file.seek(SeekFrom::Current(3))?;
 
     let mut buffer = vec![0; 4];
     file.read_exact(&mut buffer)?;
-    println!("  Read 4 bytes from current position: {}",
-             String::from_utf8_lossy(&buffer));
+    println!(
+        "  Read 4 bytes from current position: {}",
+        String::from_utf8_lossy(&buffer)
+    );
 
     // 从文件末尾向前移动8字节
     file.seek(SeekFrom::End(-8))?;
 
     let mut buffer = vec![0; 3];
     file.read_exact(&mut buffer)?;
-    println!("  Read 3 bytes from 8 bytes before end: {}",
-             String::from_utf8_lossy(&buffer));
+    println!(
+        "  Read 3 bytes from 8 bytes before end: {}",
+        String::from_utf8_lossy(&buffer)
+    );
 
     Ok(())
 }
@@ -189,16 +195,17 @@ fn file_metadata() -> io::Result<()> {
         let since_epoch = modified
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default();
-        println!("  Last modified: {} seconds since epoch",
-                 since_epoch.as_secs());
+        println!(
+            "  Last modified: {} seconds since epoch",
+            since_epoch.as_secs()
+        );
     }
 
     if let Ok(created) = metadata.created() {
         let since_epoch = created
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default();
-        println!("  Created: {} seconds since epoch",
-                 since_epoch.as_secs());
+        println!("  Created: {} seconds since epoch", since_epoch.as_secs());
     }
 
     // 权限信息
@@ -235,7 +242,7 @@ fn error_handling() -> io::Result<()> {
     // 创建文件但避免截断已存在的文件
     let file = OpenOptions::new()
         .write(true)
-        .create_new(true)  // 仅当文件不存在时创建
+        .create_new(true) // 仅当文件不存在时创建
         .open("unique_file.txt");
 
     match file {
@@ -286,10 +293,12 @@ fn read_directory() -> io::Result<()> {
                     "other"
                 };
 
-                println!("    {} ({}，{} bytes)",
-                         file_name_str,
-                         type_str,
-                         metadata.len());
+                println!(
+                    "    {} ({}，{} bytes)",
+                    file_name_str,
+                    type_str,
+                    metadata.len()
+                );
 
                 test_file_count += 1;
             }

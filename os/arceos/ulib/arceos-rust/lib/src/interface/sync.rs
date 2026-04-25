@@ -1,12 +1,12 @@
-use crate::err;
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
-use ax_api::modules::ax_sync::Mutex;
-use ax_api::modules::ax_task::WaitQueue;
-use ax_posix_api::ctypes::timespec;
-use ax_errno::LinuxError;
+use alloc::{collections::BTreeMap, sync::Arc};
 use core::time::Duration;
+
+use ax_api::modules::{ax_sync::Mutex, ax_task::WaitQueue};
+use ax_errno::LinuxError;
+use ax_posix_api::ctypes::timespec;
 use log::{info, trace};
+
+use crate::err;
 
 static FUTEX_TABLE: Mutex<BTreeMap<usize, Arc<WaitQueue>>> = Mutex::new(BTreeMap::new());
 

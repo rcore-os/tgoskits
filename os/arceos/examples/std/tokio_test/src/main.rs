@@ -1,10 +1,14 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 #[cfg(target_os = "hermit")]
 use arceos_rust as _;
-
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{mpsc, Mutex, Barrier};
-use tokio::time::{Duration, sleep};
+use tokio::{
+    sync::{Barrier, Mutex, mpsc},
+    time::{Duration, sleep},
+};
 
 fn main() {
     println!("=== Tokio 异步运行时测试程序 ===\n");

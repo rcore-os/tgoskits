@@ -6,16 +6,19 @@
 //! ab -n 5000 -c 20 http://X.X.X.X:5555/
 //! ```
 
+use std::{
+    io::{self, prelude::*},
+    net::{TcpListener, TcpStream},
+    thread,
+};
+
 #[cfg(target_os = "hermit")]
 use arceos_rust as _;
-
-use std::io::{self, prelude::*};
-use std::net::{TcpListener, TcpStream};
-use std::thread;
 
 const LOCAL_IP: &str = "0.0.0.0";
 const LOCAL_PORT: u16 = 5555;
 
+#[rustfmt::skip]
 macro_rules! header {
     () => {
         "\

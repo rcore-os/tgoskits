@@ -1,9 +1,9 @@
+use core::time::Duration;
+
 use ax_api::modules::ax_hal::time::wall_time_nanos;
 use ax_posix_api::ctypes::{clockid_t, timespec};
-use core::time::Duration;
 use log::info;
-use rand::prelude::SmallRng;
-use rand::{RngCore, SeedableRng};
+use rand::{RngCore, SeedableRng, prelude::SmallRng};
 
 /// Fill `len` bytes in `buf` with cryptographically secure random data.
 ///

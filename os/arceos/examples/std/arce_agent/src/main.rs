@@ -9,7 +9,6 @@
 // Uses minreq for HTTP (no TLS — requires a local HTTP proxy).
 // Compiles identically on Linux (for development) and ArceOS (for deployment).
 
-
 #[cfg(target_os = "hermit")]
 use arceos_rust as _;
 
@@ -20,7 +19,6 @@ mod lineedit;
 mod llm;
 mod memory;
 mod tools;
-
 
 use context::ContextManager;
 use hal::HalInterface;

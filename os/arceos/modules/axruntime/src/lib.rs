@@ -298,7 +298,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
 #[cfg(feature = "alloc")]
 fn init_allocator() {
-    use ax_hal::mem::{memory_regions, phys_to_virt, MemRegionFlags};
+    use ax_hal::mem::{MemRegionFlags, memory_regions, phys_to_virt};
 
     info!("Initialize global memory allocator...");
     info!("  use {} allocator.", ax_alloc::global_allocator().name());
