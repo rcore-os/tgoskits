@@ -52,7 +52,7 @@ pub struct Tty<R, W> {
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
     fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
         let writer = config.writer.clone();
-        let is_ptm = matches!(&config.process_mode, ProcessMode::None(_));
+        let is_ptm = matches!(&config.process_mode, ProcessMode::Passive(_));
         let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));
         Arc::new_cyclic(|this| Self {
             this: this.clone(),

@@ -43,6 +43,14 @@ impl ConsoleIf for ConsoleIfImpl {
     /// Returns the IRQ number for the console, if applicable.
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
-        Some(crate::config::devices::UART_IRQ)
+        None
+    }
+
+    #[cfg(feature = "irq")]
+    fn set_input_irq_enabled(_enabled: bool) {}
+
+    #[cfg(feature = "irq")]
+    fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
+        ax_plat::console::ConsoleIrqEvent::SPURIOUS
     }
 }
