@@ -15,7 +15,7 @@ use starry_vm::vm_load_until_nul;
 use crate::{
     config::USER_HEAP_BASE,
     file::FD_TABLE,
-    mm::{load_user_app, vm_load_string},
+    mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
     task::{AsThread, send_signal_to_thread},
 };
 
@@ -56,6 +56,21 @@ pub fn sys_execve(
     // Serialize execve across the process. A concurrent execve from a sibling
     // would race on aspace teardown and signal-action reset.
     let _exec_guard = proc_data.exec_lock.try_lock().ok_or(AxError::Interrupted)?;
+
+    // POSIX requires execve failures to leave the process unchanged, but the
+    // sibling-thread teardown below is irreversible. So run every fallible
+    // step first against a throwaway address space: a bad path, malformed
+    // ELF, missing interpreter, or up-front OOM surfaces here while the
+    // siblings are still alive and our own aspace is untouched, and the
+    // caller sees a clean execve failure.
+    let loc = FS_CONTEXT.lock().resolve(&path)?;
+    let exe_path = loc.absolute_path()?.to_string();
+    let exe_name = loc.name();
+    {
+        let mut probe = new_user_aspace_empty()?;
+        copy_from_kernel(&mut probe)?;
+        load_user_app(&mut probe, Some(path.as_str()), &args, &envs)?;
+    }
 
     // Kill every sibling thread and wait until they are reaped so we are the
     // sole owner of the address space before reloading the ELF.
@@ -117,15 +132,18 @@ pub fn sys_execve(
         })))??;
     }
 
+    // The probe load above proved every fallible step works; if the second
+    // mapping pass still hits a fresh OOM, the siblings are already gone and
+    // the process can no longer return to userspace meaningfully — the
+    // page-fault path will tear it down, matching Linux's post-de_thread
+    // behavior.
     let mut aspace = proc_data.aspace.lock();
     let (entry_point, user_stack_base) =
         load_user_app(&mut aspace, Some(path.as_str()), &args, &envs)?;
     drop(aspace);
 
-    let loc = FS_CONTEXT.lock().resolve(&path)?;
-    curr.set_name(loc.name());
-
-    *proc_data.exe_path.write() = loc.absolute_path()?.to_string();
+    curr.set_name(exe_name);
+    *proc_data.exe_path.write() = exe_path;
     *proc_data.cmdline.write() = Arc::new(args);
 
     proc_data.set_heap_top(USER_HEAP_BASE);
