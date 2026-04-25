@@ -26,15 +26,13 @@ mod vm_fdt;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use ax_lazyinit::LazyInit;
-#[cfg(target_arch = "riscv64")]
-use axvm::AxVMRef;
 use axvm::config::{AxVMConfig, AxVMCrateConfig};
 use fdt_parser::Fdt;
 use spin::Mutex;
 
 pub use parser::*;
 // pub use print::print_fdt;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use create::update_fdt;
 pub use device::build_all_node_paths;
 #[cfg(any(target_arch = "aarch64", test))]
@@ -62,26 +60,6 @@ pub fn crate_guest_fdt_with_cache(dtb_data: Vec<u8>, crate_config: &AxVMCrateCon
     // Store data in global cache
     let mut cache_lock = dtb_cache().lock();
     cache_lock.insert(crate_config.base.id, dtb_data);
-}
-
-/// Rewrite the cached guest DTB using the VM's actual memory layout and
-/// refresh the DTB load address if needed.
-#[cfg(target_arch = "riscv64")]
-pub fn finalize_guest_fdt(vm: &AxVMRef, crate_config: &AxVMCrateConfig) {
-    let dtb_data = {
-        let cache_lock = dtb_cache().lock();
-        cache_lock.get(&crate_config.base.id).cloned()
-    };
-    let Some(dtb_data) = dtb_data else {
-        return;
-    };
-
-    let fdt = Fdt::from_bytes(&dtb_data)
-        .map_err(|e| format!("Failed to parse cached guest FDT: {e:#?}"))
-        .expect("Failed to parse cached guest FDT");
-    let finalized = create::rewrite_guest_memory_nodes(&fdt, &vm.memory_regions());
-    create::calculate_dtb_load_addr(vm.clone(), finalized.len());
-    crate_guest_fdt_with_cache(finalized, crate_config);
 }
 
 /// Handle all FDT-related operations for guest architectures that boot with DTB.

@@ -244,9 +244,6 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
 
     config_guest_address(&vm, &main_mem);
 
-    #[cfg(target_arch = "riscv64")]
-    finalize_guest_fdt(&vm, &vm_create_config);
-
     // Load corresponding images for VM.
     info!("VM[{}] created success, loading images...", vm.id());
 

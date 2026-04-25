@@ -61,9 +61,7 @@ impl VPlicGlobal {
             pending_irqs: Mutex::new(Bitmap::new()),
             active_irqs: Mutex::new(Bitmap::new()),
             contexts_num,
-            // Current qemu-virt wiring assumes the guest-visible vPLIC aperture
-            // overlays the same physical PLIC register block on the host.
-            host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()),
+            host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()), /* Currently we assume host_plic_addr = guest_vplic_addr */
         }
     }
 

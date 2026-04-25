@@ -1,7 +1,6 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::Context;
@@ -26,9 +25,6 @@ pub const LINUX_RISCV64_VMCONFIG_TEMPLATE: &str =
     "os/axvisor/configs/vms/linux-riscv64-qemu-smp1.toml";
 pub const LINUX_RISCV64_GENERATED_VMCONFIG: &str =
     "os/axvisor/tmp/vmconfigs/linux-riscv64-qemu-smp1.generated.toml";
-pub const LINUX_RISCV64_DTS_TEMPLATE: &str = "os/axvisor/configs/vms/linux-riscv64-qemu-smp1.dts";
-pub const LINUX_RISCV64_GENERATED_DTB: &str =
-    "os/axvisor/tmp/vmconfigs/linux-riscv64-qemu-smp1.generated.dtb";
 pub const NIMBOS_X86_64_IMAGE_SPEC: &str = "qemu_x86_64_nimbos";
 pub const NIMBOS_X86_64_VMCONFIG: &str = "os/axvisor/configs/vms/nimbos-x86_64-qemu-smp1.toml";
 const RDK_S100_LINUX_GROUP_NAME: &str = "rdk-s100-linux";
@@ -84,20 +80,11 @@ pub(crate) async fn prepare_linux_riscv64_guest_assets(
     ensure_guest_rootfs_exists(&rootfs_path, "linux guest")?;
 
     let workspace_root = ctx.workspace_root();
-    let generated_dtb = workspace_root.join(LINUX_RISCV64_GENERATED_DTB);
-    compile_dts_to_dtb(
-        &workspace_root.join(LINUX_RISCV64_DTS_TEMPLATE),
-        &generated_dtb,
-    )?;
-
     let generated_vmconfig = workspace_root.join(LINUX_RISCV64_GENERATED_VMCONFIG);
-    generate_vmconfig_with_guest_assets(
+    generate_linux_vmconfig(
         &workspace_root.join(LINUX_RISCV64_VMCONFIG_TEMPLATE),
         &generated_vmconfig,
         &kernel_path,
-        Some(&generated_dtb),
-        None,
-        None,
     )?;
 
     Ok(PreparedLinuxGuestAssets {
@@ -205,35 +192,6 @@ fn update_optional_guest_path(
             kernel.remove(key);
         }
     }
-}
-
-fn compile_dts_to_dtb(dts_path: &Path, dtb_path: &Path) -> anyhow::Result<()> {
-    if let Some(parent) = dtb_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let output = Command::new("dtc")
-        .args(["-I", "dts", "-O", "dtb", "-o"])
-        .arg(dtb_path)
-        .arg(dts_path)
-        .output()
-        .with_context(|| {
-            format!(
-                "failed to execute dtc for guest DTB generation from {}",
-                dts_path.display()
-            )
-        })?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "failed to compile guest DTS {} to {}: {}",
-            dts_path.display(),
-            dtb_path.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    Ok(())
 }
 
 async fn pull_guest_image(ctx: &AxvisorContext, image_spec: &str) -> anyhow::Result<PathBuf> {

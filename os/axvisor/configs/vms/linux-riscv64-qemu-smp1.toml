@@ -29,7 +29,7 @@ kernel_load_addr = 0x9020_0000
 # The file path of the device tree blob (DTB).
 # dtb_path = "/path/tmp/configs/linux-riscv64-qemu-smp1.dtb"
 # The load address of the device tree blob (DTB).
-dtb_load_addr = 0x92f0_0000
+dtb_load_addr = 0x9300_0000
 
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
@@ -44,7 +44,15 @@ memory_regions = [
 # Pass-through devices.
 # Name Base-Ipa Base-Pa Length Alloc-Irq.
 passthrough_devices = [
-    # ["/soc/serial@10000000", 0x1000_0000, 0x1000_0000, 0x1000, 33],
+    ["/soc/serial@10000000"],
+    ["/soc/virtio_mmio@10001000"],
+    ["/soc/virtio_mmio@10002000"],
+    ["/soc/virtio_mmio@10003000"],
+    ["/soc/virtio_mmio@10004000"],
+    ["/soc/virtio_mmio@10005000"],
+    ["/soc/virtio_mmio@10006000"],
+    ["/soc/virtio_mmio@10007000"],
+    ["/soc/virtio_mmio@10008000"],
 ]
 
 # Passthrough addresses.
