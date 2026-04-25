@@ -14,5 +14,5 @@ to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test-timer-family"
 success_regex = ['(?m)^TEST PASSED\s*$']
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
+fail_regex = ['(?m)^TEST FAILED\s*$', '(?i)\bpanic(?:ked)?\b']
 timeout = 30
