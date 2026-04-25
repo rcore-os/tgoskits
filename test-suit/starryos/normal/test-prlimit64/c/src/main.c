@@ -11,6 +11,18 @@
  *   4. old_limit 先读后写顺序
  *   5. 错误路径 (soft > hard, 无效 resource)
  *   6. getrusage 基本功能
+ *   7. getrlimit/setrlimit libc 接口路径
+ *
+ * getrlimit/setrlimit 测试逻辑:
+ *   - 通过 getrlimit 读取 RLIMIT_NOFILE/RLIMIT_STACK, 确认 soft <= hard。
+ *   - raw prlimit64 的坏用户指针必须返回 EFAULT。
+ *   - 无效 resource 和 cur > max 必须返回 EINVAL。
+ *   - getrlimit/setrlimit 的 NULL libc wrapper 路径按当前 Linux 行为作为 no-op。
+ *   - 降低 soft limit 后, 再用 getrlimit 确认 soft 生效、hard 不变。
+ *   - 降低 hard limit、设置 cur == max、再恢复原 hard limit, 确认成功返回不会静默丢弃修改。
+ *
+ * 在 riscv64/musl 上, getrlimit/setrlimit 会走 prlimit64 syscall,
+ * 因此这里覆盖的是应用常用 libc API 到 StarryOS prlimit64 实现的路径。
  */
 
 #include "test_framework.h"
@@ -172,7 +184,101 @@ int main(void) {
                   "invalid resource rejected");
     }
 
-    /* 10. getrusage RUSAGE_SELF 基本功能 */
+    /* 10. raw prlimit64 用户地址错误路径 */
+    {
+        CHECK_ERR(my_prlimit(0, RLIMIT_NOFILE, NULL, (struct rlimit *)1), EFAULT,
+                  "bad old_limit pointer rejected");
+        CHECK_ERR(my_prlimit(0, RLIMIT_NOFILE, (const struct rlimit *)1, NULL), EFAULT,
+                  "bad new_limit pointer rejected");
+    }
+
+    /* 11. getrlimit/setrlimit libc 接口路径 */
+    {
+        struct rlimit saved, stack, check;
+        struct rlimit *null_limit = NULL;
+        CHECK_RET(getrlimit(RLIMIT_NOFILE, &saved), 0,
+                  "getrlimit reads original NOFILE");
+        CHECK(saved.rlim_cur <= saved.rlim_max,
+              "getrlimit reports soft <= hard");
+        CHECK_RET(getrlimit(RLIMIT_STACK, &stack), 0,
+                  "getrlimit reads STACK");
+        CHECK(stack.rlim_cur <= stack.rlim_max,
+              "getrlimit STACK reports soft <= hard");
+
+        CHECK_ERR(getrlimit(-1, &check), EINVAL,
+                  "getrlimit invalid resource rejected");
+        CHECK_RET(getrlimit(RLIMIT_NOFILE, null_limit), 0,
+                  "getrlimit NULL wrapper path is a no-op");
+
+        struct rlimit invalid = {
+            .rlim_cur = 2,
+            .rlim_max = 1,
+        };
+        CHECK_ERR(setrlimit(RLIMIT_NOFILE, &invalid), EINVAL,
+                  "setrlimit rejects soft > hard");
+        CHECK_ERR(setrlimit(-1, &saved), EINVAL,
+                  "setrlimit invalid resource rejected");
+        CHECK_RET(setrlimit(RLIMIT_NOFILE, null_limit), 0,
+                  "setrlimit NULL wrapper path is a no-op");
+        CHECK_RET(getrlimit(RLIMIT_NOFILE, &check), 0,
+                  "getrlimit after setrlimit NULL no-op");
+        CHECK(check.rlim_cur == saved.rlim_cur && check.rlim_max == saved.rlim_max,
+              "setrlimit NULL leaves limits unchanged");
+
+        if (saved.rlim_cur > 1) {
+            struct rlimit lowered_soft = {
+                .rlim_cur = saved.rlim_cur - 1,
+                .rlim_max = saved.rlim_max,
+            };
+            CHECK_RET(setrlimit(RLIMIT_NOFILE, &lowered_soft), 0,
+                      "setrlimit lowers soft limit");
+            CHECK_RET(getrlimit(RLIMIT_NOFILE, &check), 0,
+                      "getrlimit after lowering soft");
+            CHECK(check.rlim_cur == lowered_soft.rlim_cur,
+                  "getrlimit observes lowered soft");
+            CHECK(check.rlim_max == saved.rlim_max,
+                  "lowering soft keeps hard unchanged");
+            CHECK_RET(setrlimit(RLIMIT_NOFILE, &saved), 0,
+                      "restore after lowering soft");
+        }
+
+        if (saved.rlim_max > 2 && saved.rlim_max < RLIM_INFINITY) {
+            struct rlimit equal_limits = {
+                .rlim_cur = saved.rlim_max - 1,
+                .rlim_max = saved.rlim_max - 1,
+            };
+            struct rlimit lowered_hard = {
+                .rlim_cur = saved.rlim_max - 2,
+                .rlim_max = saved.rlim_max - 1,
+            };
+            CHECK_RET(setrlimit(RLIMIT_NOFILE, &equal_limits), 0,
+                      "setrlimit accepts soft == hard");
+            CHECK_RET(getrlimit(RLIMIT_NOFILE, &check), 0,
+                      "getrlimit after setting soft == hard");
+            CHECK(check.rlim_cur == equal_limits.rlim_cur,
+                  "getrlimit observes soft == hard soft value");
+            CHECK(check.rlim_max == equal_limits.rlim_max,
+                  "getrlimit observes soft == hard max value");
+            CHECK_RET(setrlimit(RLIMIT_NOFILE, &lowered_hard), 0,
+                      "setrlimit lowers hard limit");
+            CHECK_RET(getrlimit(RLIMIT_NOFILE, &check), 0,
+                      "getrlimit after lowering hard");
+            CHECK(check.rlim_cur == lowered_hard.rlim_cur,
+                  "getrlimit observes lowered soft with hard");
+            CHECK(check.rlim_max == lowered_hard.rlim_max,
+                  "getrlimit observes lowered hard");
+            CHECK_RET(setrlimit(RLIMIT_NOFILE, &saved), 0,
+                      "restore hard limit after lowering");
+            CHECK_RET(getrlimit(RLIMIT_NOFILE, &check), 0,
+                      "getrlimit after restoring hard");
+            CHECK(check.rlim_cur == saved.rlim_cur,
+                  "restored soft limit is visible");
+            CHECK(check.rlim_max == saved.rlim_max,
+                  "restored hard limit is visible");
+        }
+    }
+
+    /* 12. getrusage RUSAGE_SELF 基本功能 */
     {
         struct rusage usage;
         CHECK_RET(getrusage(RUSAGE_SELF, &usage), 0,
@@ -181,7 +287,7 @@ int main(void) {
         CHECK(usage.ru_stime.tv_sec >= 0, "stime >= 0");
     }
 
-    /* 11. getrusage 无效 who 应返回 EINVAL */
+    /* 13. getrusage 无效 who 应返回 EINVAL */
     {
         struct rusage usage;
         CHECK_ERR(getrusage(42, &usage), EINVAL,
