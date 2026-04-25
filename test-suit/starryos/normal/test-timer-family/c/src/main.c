@@ -14,6 +14,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 static int __pass = 0;
 static int __fail = 0;
@@ -786,6 +787,114 @@ static void test_timer_delete_armed(void) {
 }
 
 /* ============================================================
+ * POSIX timer thread-sharing test
+ *
+ * POSIX timers are per-process resources. All threads in a process
+ * must share the same timer ID namespace. This test creates a timer
+ * in the main thread, then verifies that a sibling thread (created
+ * via pthread_create / CLONE_THREAD) can see and manipulate that
+ * timer via timer_gettime() and timer_settime().
+ *
+ * Bug: if the timer table is per-thread (as it currently is in
+ * StarryOS), the child thread gets EINVAL because it has its own
+ * empty PosixTimerTable.
+ * ============================================================ */
+
+static timer_t thread_share_timer;
+static int thread_share_result = -1;
+
+static void *timer_thread_fn(void *arg) {
+    (void)arg;
+    struct itimerspec its;
+
+    /* Try to query the timer created by the main thread */
+    errno = 0;
+    int ret = timer_gettime(thread_share_timer, &its);
+    if (ret != 0) {
+        printf("  child thread: timer_gettime failed: %s (errno=%d)\n",
+               strerror(errno), errno);
+        thread_share_result = 1;
+        return NULL;
+    }
+
+    /* Try to re-arm the timer from the child thread */
+    struct itimerspec new_its = {
+        .it_value    = { .tv_sec = 5, .tv_nsec = 0 },
+        .it_interval = { .tv_sec = 0, .tv_nsec = 0 },
+    };
+    errno = 0;
+    ret = timer_settime(thread_share_timer, 0, &new_its, NULL);
+    if (ret != 0) {
+        printf("  child thread: timer_settime failed: %s (errno=%d)\n",
+               strerror(errno), errno);
+        thread_share_result = 2;
+        return NULL;
+    }
+
+    /* Query again to confirm the arm took effect */
+    errno = 0;
+    ret = timer_gettime(thread_share_timer, &its);
+    if (ret != 0) {
+        printf("  child thread: second timer_gettime failed: %s (errno=%d)\n",
+               strerror(errno), errno);
+        thread_share_result = 3;
+        return NULL;
+    }
+    if (its.it_value.tv_sec == 0 && its.it_value.tv_nsec == 0) {
+        printf("  child thread: timer appears disarmed after settime\n");
+        thread_share_result = 4;
+        return NULL;
+    }
+
+    thread_share_result = 0;
+    return NULL;
+}
+
+static void test_posix_timer_thread_sharing(void) {
+    struct sigevent sev = { .sigev_notify = SIGEV_NONE };
+    int ret;
+
+    errno = 0;
+    ret = timer_create(CLOCK_MONOTONIC, &sev, &thread_share_timer);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | timer_create: %s\n",
+               __FILE__, __LINE__, strerror(errno));
+        __fail++;
+        return;
+    }
+
+    /* Arm with 10s one-shot so child can see it armed */
+    struct itimerspec its = {
+        .it_value    = { .tv_sec = 10, .tv_nsec = 0 },
+        .it_interval = { .tv_sec = 0,  .tv_nsec = 0 },
+    };
+    ret = timer_settime(thread_share_timer, 0, &its, NULL);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | timer_settime: %s\n",
+               __FILE__, __LINE__, strerror(errno));
+        __fail++;
+        timer_delete(thread_share_timer);
+        return;
+    }
+
+    pthread_t thr;
+    ret = pthread_create(&thr, NULL, timer_thread_fn, NULL);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | pthread_create: %s\n",
+               __FILE__, __LINE__, strerror(ret));
+        __fail++;
+        timer_delete(thread_share_timer);
+        return;
+    }
+
+    pthread_join(thr, NULL);
+    timer_delete(thread_share_timer);
+
+    CHECK(thread_share_result == 0,
+          "sibling thread should see and modify timer created by main thread");
+}
+
+/* ============================================================
  * main
  * ============================================================ */
 
@@ -833,6 +942,9 @@ int main(void) {
     test_timer_delete_then_gettime();
     test_timer_delete_invalid();
     test_timer_delete_armed();
+
+    printf("\n--- timer thread-sharing tests ---\n");
+    test_posix_timer_thread_sharing();
 
     printf("------------------------------------------------\n");
     printf("  DONE: %d pass, %d fail\n", __pass, __fail);

@@ -135,7 +135,7 @@ pub fn poll_timer(task: &TaskInner) {
     };
     time.poll(&emitter);
     // Also poll POSIX timers
-    thr.posix_timers.poll_expired(&emitter);
+    thr.proc_data.posix_timers.poll_expired(&emitter);
 }
 
 /// Sets the timer state.

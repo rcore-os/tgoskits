@@ -147,6 +147,7 @@ pub fn sys_timer_create(
     };
 
     let id = thr
+        .proc_data
         .posix_timers
         .create(clock_id, notify, signo)
         .map_err(|_| AxError::InvalidInput)?;
@@ -167,6 +168,7 @@ pub fn sys_timer_settime(
     let new = unsafe { new_value.vm_read_uninit()?.assume_init() };
 
     let (old_interval, old_remaining) = thr
+        .proc_data
         .posix_timers
         .settime(
             timerid,
@@ -206,6 +208,7 @@ pub fn sys_timer_gettime(
     let thr = curr.as_thread();
 
     let (interval, remaining) = thr
+        .proc_data
         .posix_timers
         .gettime(timerid)
         .map_err(|_| AxError::InvalidInput)?;
@@ -233,7 +236,7 @@ pub fn sys_timer_delete(timerid: __kernel_timer_t) -> AxResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
 
-    if thr.posix_timers.delete(timerid) {
+    if thr.proc_data.posix_timers.delete(timerid) {
         Ok(0)
     } else {
         Err(AxError::InvalidInput)
