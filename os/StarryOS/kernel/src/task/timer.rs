@@ -122,10 +122,7 @@ pub fn register_alarm(deadline: Duration) {
 pub fn register_alarm_for(deadline: Duration, task: WeakAxTaskRef) {
     let mut guard = ALARM_LIST.lock();
     let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
-    guard.push(Entry {
-        deadline,
-        task,
-    });
+    guard.push(Entry { deadline, task });
     drop(guard);
     if should_wake {
         EVENT_NEW_TIMER.notify(1);

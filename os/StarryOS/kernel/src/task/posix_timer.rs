@@ -209,11 +209,10 @@ impl PosixTimerTable {
                     // Periodic: advance deadline by interval (avoids drift)
                     // and register the next alarm for the user task.
                     timer.deadline_ns += timer.interval_ns;
-                    let remaining = timer.deadline_ns.saturating_sub(clock_now_ns(timer.clock_id));
-                    register_alarm_for(
-                        wall_time() + Duration::from_nanos(remaining),
-                        task.clone(),
-                    );
+                    let remaining = timer
+                        .deadline_ns
+                        .saturating_sub(clock_now_ns(timer.clock_id));
+                    register_alarm_for(wall_time() + Duration::from_nanos(remaining), task.clone());
                 } else {
                     // One-shot: disarm
                     timer.deadline_ns = 0;
