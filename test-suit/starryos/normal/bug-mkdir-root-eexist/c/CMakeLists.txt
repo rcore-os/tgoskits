@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-mkdir-root-eexist C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-mkdir-root-eexist src/main.c)
+target_compile_options(bug-mkdir-root-eexist PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-mkdir-root-eexist RUNTIME DESTINATION usr/bin)

@@ -88,6 +88,13 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
     let path = vm_load_string(path)?;
     debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
 
+    if path.is_empty() {
+        return Err(AxError::NotFound);
+    }
+    if Path::new(&path).file_name().is_none() {
+        return Err(AxError::AlreadyExists);
+    }
+
     let mode = mode & !current().as_thread().proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
 
