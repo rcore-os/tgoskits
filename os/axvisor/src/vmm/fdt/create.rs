@@ -559,24 +559,13 @@ pub fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
         .expect("VM must have at least one memory region");
 
     vm.with_config(|config| {
-        let current = config.image_config.dtb_load_gpa;
-        let mut keep_current = current.is_some() && !main_memory.is_identical();
-        #[cfg(target_arch = "riscv64")]
-        if keep_current {
-            // RISC-V may relocate guest RAM to the runtime-allocated identical
-            // host physical range, so a statically configured DTB GPA is only
-            // reusable if it still falls within the finalized main memory.
-            let main_start = main_memory.gpa.as_usize();
-            let main_end = main_start + main_memory.size();
-            keep_current = current.is_some_and(|addr| {
-                let addr = addr.as_usize();
-                addr >= main_start && addr.saturating_add(fdt_size) <= main_end
-            });
-        }
-
-        let dtb_addr = if keep_current {
-            current.unwrap()
+        let dtb_addr = if let Some(addr) = config.image_config.dtb_load_gpa
+            && !main_memory.is_identical()
+        {
+            // If dtb_load_gpa is already set, use the original value
+            addr
         } else {
+            // If dtb_load_gpa is None, calculate based on memory size and FDT size
             let main_memory_size = main_memory.size().min(512 * MB);
             let addr = (main_memory.gpa + main_memory_size - fdt_size).align_down(2 * MB);
             if fdt_size > main_memory_size {

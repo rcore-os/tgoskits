@@ -51,7 +51,7 @@ passthrough_devices = [
 # Base-GPA  Length.
 passthrough_addresses = [
     [0x1000_0000, 0x1000],     # uart
-    [0x1000_8000, 0x1000],     # guest-only virtio-mmio slot
+    [0x1000_1000, 0x8000],     # virtio-mmio
 ]
 
 # Devices that are not desired to be passed through to the guest

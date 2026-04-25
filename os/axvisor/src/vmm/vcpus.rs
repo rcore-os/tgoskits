@@ -446,11 +446,6 @@ fn vcpu_run() {
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
     wait_for(vm_id, || vm.running());
 
-    #[cfg(target_arch = "riscv64")]
-    // Delay passthrough IRQ bootstrap until the VM is runnable; otherwise host
-    // device IRQs can arrive before we are in a guest vCPU task context.
-    crate::hal::arch::bootstrap_passthrough_interrupts(vm_id);
-
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     mark_vcpu_running(vm_id);
 

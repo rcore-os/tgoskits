@@ -6,20 +6,6 @@
 	compatible = "riscv-virtio";
 	model = "riscv-virtio,qemu";
 
-	poweroff {
-		value = <0x5555>;
-		offset = <0x00>;
-		regmap = <0x04>;
-		compatible = "syscon-poweroff";
-	};
-
-	reboot {
-		value = <0x7777>;
-		offset = <0x00>;
-		regmap = <0x04>;
-		compatible = "syscon-reboot";
-	};
-
 	memory@90000000 {
 		device_type = "memory";
 		reg = <0x00 0x90000000 0x00 0x04000000>;
@@ -58,7 +44,7 @@
 	};
 
 	chosen {
-		bootargs = "earlycon=sbi console=ttyS0,115200 init=/init root=/dev/vda rw ignore_loglevel loglevel=8 initcall_debug";
+		bootargs = "earlycon=sbi console=ttyS0,115200 init=/init root=/dev/vda rw";
 		stdout-path = "/soc/serial@10000000";
 	};
 
@@ -68,25 +54,12 @@
 		compatible = "simple-bus";
 		ranges;
 
-		rtc@101000 {
-			interrupts = <0x0b>;
-			interrupt-parent = <0x09>;
-			reg = <0x00 0x101000 0x00 0x1000>;
-			compatible = "google,goldfish-rtc";
-		};
-
 		serial@10000000 {
 			interrupts = <0x0a>;
 			interrupt-parent = <0x09>;
 			clock-frequency = <0x384000>;
 			reg = <0x00 0x10000000 0x00 0x100>;
 			compatible = "ns16550a";
-		};
-
-		test@100000 {
-			phandle = <0x04>;
-			reg = <0x00 0x100000 0x00 0x1000>;
-			compatible = "sifive,test1\0sifive,test0\0syscon";
 		};
 
 		plic@c000000 {
@@ -104,6 +77,55 @@
 			interrupts = <0x08>;
 			interrupt-parent = <0x09>;
 			reg = <0x00 0x10008000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10007000 {
+			interrupts = <0x07>;
+			interrupt-parent = <0x09>;
+			reg = <0x00 0x10007000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10006000 {
+			interrupts = <0x06>;
+			interrupt-parent = <0x09>;
+			reg = <0x00 0x10006000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10005000 {
+			interrupts = <0x05>;
+			interrupt-parent = <0x09>;
+			reg = <0x00 0x10005000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10004000 {
+			interrupts = <0x04>;
+			interrupt-parent = <0x09>;
+			reg = <0x00 0x10004000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10003000 {
+			interrupts = <0x03>;
+			interrupt-parent = <0x09>;
+			reg = <0x00 0x10003000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10002000 {
+			interrupts = <0x02>;
+			interrupt-parent = <0x09>;
+			reg = <0x00 0x10002000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10001000 {
+			interrupts = <0x01>;
+			interrupt-parent = <0x09>;
+			reg = <0x00 0x10001000 0x00 0x1000>;
 			compatible = "virtio,mmio";
 		};
 	};
