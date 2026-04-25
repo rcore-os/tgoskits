@@ -59,6 +59,7 @@ fn ensure_fat32_image(path: &str, size: &str, msg: &str) -> anyhow::Result<()> {
 
 pub mod build;
 mod c_test_cargo_config;
+pub mod rootfs;
 
 // ---------------------------------------------------------------------------
 // C test definitions
@@ -502,24 +503,16 @@ impl ArceOS {
         )?;
         ensure_package_runtime_assets(&request.package)?;
         if let Some(rootfs) = args.rootfs {
-            let rootfs = crate::download::resolve_rootfs_path(
-                self.app.workspace_root(),
-                &request.arch,
-                rootfs,
-            );
-            crate::download::ensure_managed_rootfs(
-                self.app.workspace_root(),
-                &request.arch,
-                &rootfs,
-            )
-            .await?;
+            let rootfs =
+                rootfs::resolve_explicit_rootfs(self.app.workspace_root(), &request.arch, rootfs);
+            rootfs::ensure_rootfs_ready(self.app.workspace_root(), &request.arch, &rootfs).await?;
             self.app.set_debug_mode(request.debug)?;
             let cargo = build::load_cargo_config(&request)?;
             let mut qemu = self
                 .load_qemu_config(&request, &cargo)
                 .await?
                 .unwrap_or_default();
-            crate::starry::rootfs::apply_disk_image_qemu_args(&mut qemu, rootfs);
+            rootfs::patch_qemu_rootfs(&mut qemu, &rootfs);
             self.app
                 .qemu(cargo, request.build_info_path, Some(qemu))
                 .await

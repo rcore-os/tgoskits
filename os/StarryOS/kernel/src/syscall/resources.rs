@@ -37,14 +37,9 @@ pub fn sys_prlimit64(
         }
 
         let limit = &mut proc_data.rlim.write()[resource];
-        if new_limit.rlim_max <= limit.max {
-            limit.max = new_limit.rlim_max;
-        } else {
-            // TODO: patch resources
-            // return Err(AxError::OperationNotPermitted);
-            return Ok(0);
-        }
-
+        // TODO: when a capability system is added, check CAP_SYS_RESOURCE
+        // before allowing new_limit.rlim_max > limit.max (return EPERM).
+        limit.max = new_limit.rlim_max;
         limit.current = new_limit.rlim_cur;
     }
 

@@ -1,6 +1,7 @@
 use alloc::{string::String, sync::Arc};
 use core::{any::Any, time::Duration};
 
+use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeOps,
@@ -88,7 +89,10 @@ impl FilesystemOps for SimpleFs {
 pub struct SimpleFsNode {
     fs: Arc<SimpleFs>,
     ino: u64,
-    pub(crate) metadata: Mutex<Metadata>,
+    // SpinNoIrq instead of Mutex: metadata may be read/updated on paths that
+    // are already in atomic context (IRQs disabled), so a blocking mutex would
+    // trigger a might_sleep() panic.
+    pub(crate) metadata: SpinNoIrq<Metadata>,
 }
 
 impl SimpleFsNode {
@@ -114,7 +118,7 @@ impl SimpleFsNode {
         Self {
             fs,
             ino,
-            metadata: Mutex::new(metadata),
+            metadata: SpinNoIrq::new(metadata),
         }
     }
 }

@@ -89,6 +89,7 @@ int main(void)
     n = my_preadv2(fd, iov, 1, -1, 0);
     CHECK_RET(n, 4, "preadv2 offset=-1 on file reads from pos 4");
     CHECK(memcmp(buf, "EFGH", 4) == 0, "preadv2 offset=-1 data = EFGH");
+    CHECK_RET(lseek(fd, 0, SEEK_CUR), 8, "preadv2 offset=-1 advances pos to 8");
 
     /* 2. pwritev2 offset=-1 on regular file: writes at current position */
     lseek(fd, 2, SEEK_SET);
@@ -97,6 +98,7 @@ int main(void)
     iov[0].iov_len = 2;
     n = my_pwritev2(fd, iov, 1, -1, 0);
     CHECK_RET(n, 2, "pwritev2 offset=-1 on file writes at pos 2");
+    CHECK_RET(lseek(fd, 0, SEEK_CUR), 4, "pwritev2 offset=-1 advances pos to 4");
 
     memset(buf, 0, sizeof(buf));
     pread(fd, buf, 8, 0);
