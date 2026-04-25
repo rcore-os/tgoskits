@@ -92,7 +92,7 @@ static int create_tmp(const char *content, size_t len)
     int fd = open(TMPFILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return -1;
     if (content && len > 0) {
-        write(fd, content, len);
+        ssize_t _wr __attribute__((unused)) = write(fd, content, len);
         lseek(fd, 0, SEEK_SET);
     }
     return fd;
@@ -212,7 +212,7 @@ int main(void)
     n = my_pwritev2(fd, iov, 1, -1, 0);
     CHECK_RET(n, 2, "1.7 pwritev2 offset=-1 writes at current pos");
     memset(buf1, 0, sizeof(buf1));
-    pread(fd, buf1, 8, 0);
+    ssize_t _ign __attribute__((unused)) = pread(fd, buf1, 8, 0);
     CHECK(memcmp(buf1, "00QQ0000", 8) == 0, "1.7 pwritev2 offset=-1 data correct");
     close(fd);
 
@@ -263,18 +263,22 @@ int main(void)
     n = writev(fd, iov, 0);
     CHECK_RET(n, 0, "3.2 writev iovcnt=0 => 0");
 
-    /* 3.3 readv with iovcnt=-1 => EINVAL */
-    CHECK_ERR(readv(fd, iov, -1), EINVAL, "3.3 readv iovcnt=-1 => EINVAL");
+    /* 3.3 readv with iovcnt=-1 => EINVAL
+     * Use raw syscall to avoid GCC -Werror diagnostics on negative iovcnt
+     * passed through the libc wrapper's __access_attr. */
+    CHECK_ERR(syscall(SYS_readv, fd, iov, -1), EINVAL, "3.3 readv iovcnt=-1 => EINVAL");
 
     /* 3.4 writev with iovcnt=-1 => EINVAL */
     iov[0].iov_base = dummy; iov[0].iov_len = 4;
-    CHECK_ERR(writev(fd, iov, -1), EINVAL, "3.4 writev iovcnt=-1 => EINVAL");
+    CHECK_ERR(syscall(SYS_writev, fd, iov, -1), EINVAL, "3.4 writev iovcnt=-1 => EINVAL");
 
-    /* 3.5 readv with iovcnt > IOV_MAX => EINVAL */
-    CHECK_ERR(readv(fd, iov, IOV_MAX + 1), EINVAL, "3.5 readv iovcnt>IOV_MAX => EINVAL");
+    /* 3.5 readv with iovcnt > IOV_MAX => EINVAL
+     * Use raw syscall to avoid GCC out-of-bounds diagnostics when
+     * iovcnt exceeds the actual iov array size. */
+    CHECK_ERR(syscall(SYS_readv, fd, iov, IOV_MAX + 1), EINVAL, "3.5 readv iovcnt>IOV_MAX => EINVAL");
 
     /* 3.6 writev with iovcnt > IOV_MAX => EINVAL */
-    CHECK_ERR(writev(fd, iov, IOV_MAX + 1), EINVAL, "3.6 writev iovcnt>IOV_MAX => EINVAL");
+    CHECK_ERR(syscall(SYS_writev, fd, iov, IOV_MAX + 1), EINVAL, "3.6 writev iovcnt>IOV_MAX => EINVAL");
 
     close(fd);
 
@@ -339,7 +343,7 @@ int main(void)
         CHECK_ERR(my_pwritev2(pipefd[1], iov, 1, 0, 0), ESPIPE, "5.6 pwritev2 on pipe offset=0 => ESPIPE");
 
         /* 5.7 preadv2 on pipe with offset=-1 => OK (uses current pos, like readv) */
-        write(pipefd[1], "PIPE", 4);
+        ssize_t _ign2 __attribute__((unused)) = write(pipefd[1], "PIPE", 4);
         memset(buf1, 0, sizeof(buf1));
         iov[0].iov_base = buf1; iov[0].iov_len = 4;
         n = my_preadv2(pipefd[0], iov, 1, -1, 0);
