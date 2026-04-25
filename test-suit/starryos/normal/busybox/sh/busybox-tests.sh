@@ -1,6 +1,7 @@
 #!/bin/sh
 # Auto-generated from ChenLongTest by scripts/convert_busybox_tests.py
 PASS=0; FAIL=0; SKIP=0
+export PATH="${PATH:-/bin:/usr/bin:/sbin:/usr/sbin}"
 
 _t=$({ timeout 10 sh -c "busybox adjtimex 2>&1"; } 2>&1)
 if [ -n "$_t" ]; then echo "PASS: busybox_adjtimex"; PASS=$((PASS+1)); else echo "FAIL: busybox_adjtimex (empty)"; FAIL=$((FAIL+1)); fi
@@ -779,6 +780,43 @@ if echo "$_t" | grep -qF "Usage: zcip"; then echo "PASS: busybox_zcip"; PASS=$((
 
 _t=$({ timeout 10 sh -c "ls /"; } 2>&1)
 if echo "$_t" | grep -qF "bin"; then echo "PASS: ls_root"; PASS=$((PASS+1)); else echo "FAIL: ls_root"; FAIL=$((FAIL+1)); fi
+
+# Restored batch one: PostgreSQL foundation applets from linux-compatible-testsuit#13.
+_t=$({ timeout 10 sh -c "busybox sh -c 'U=\$(busybox id -u); G=\$(busybox id -g); busybox echo c > /tmp/bb_chown_t && busybox chown \"\$U:\$G\" /tmp/bb_chown_t && [ \"\$(busybox stat -c \"%u:%g\" /tmp/bb_chown_t)\" = \"\$U:\$G\" ] && busybox echo chown_ok' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "chown_ok"; then echo "PASS: busybox_chown"; PASS=$((PASS+1)); else echo "FAIL: busybox_chown"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -f /tmp/bb_cpio.arc; busybox rm -rf /tmp/bb_cpio_src /tmp/bb_cpio_out; busybox mkdir -p /tmp/bb_cpio_src /tmp/bb_cpio_out && busybox echo cpio_payload > /tmp/bb_cpio_src/in && cd /tmp/bb_cpio_src && busybox echo in | busybox cpio -o -H newc > /tmp/bb_cpio.arc && cd /tmp/bb_cpio_out && busybox cpio -i < /tmp/bb_cpio.arc && busybox cat in && busybox echo cpio_ok' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "cpio_ok"; then echo "PASS: busybox_cpio"; PASS=$((PASS+1)); else echo "FAIL: busybox_cpio"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox printf \"a\\r\\nb\\r\\n\" > /tmp/bb_d2u && busybox dos2unix /tmp/bb_d2u && busybox od -An -tx1 /tmp/bb_d2u' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "0a"; then echo "PASS: busybox_dos2unix"; PASS=$((PASS+1)); else echo "FAIL: busybox_dos2unix"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox env 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "PATH="; then echo "PASS: busybox_env"; PASS=$((PASS+1)); else echo "FAIL: busybox_env"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox echo hi > /tmp/bb_link_a && busybox rm -f /tmp/bb_link_b && busybox link /tmp/bb_link_a /tmp/bb_link_b && busybox cat /tmp/bb_link_b 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "hi"; then echo "PASS: busybox_link"; PASS=$((PASS+1)); else echo "FAIL: busybox_link"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox rm -rf /tmp/bb_mkd_one && busybox mkdir -p /tmp/bb_mkd_one && busybox ls -d /tmp/bb_mkd_one 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "bb_mkd_one"; then echo "PASS: busybox_mkdir"; PASS=$((PASS+1)); else echo "FAIL: busybox_mkdir"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox echo mv_ok > /tmp/bb_mv_from && busybox rm -f /tmp/bb_mv_to && busybox mv /tmp/bb_mv_from /tmp/bb_mv_to && busybox cat /tmp/bb_mv_to 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "mv_ok"; then echo "PASS: busybox_mv"; PASS=$((PASS+1)); else echo "FAIL: busybox_mv"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox mkdir -p /tmp/bb_rmd && busybox rmdir /tmp/bb_rmd && busybox echo rmdir_ok 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "rmdir_ok"; then echo "PASS: busybox_rmdir"; PASS=$((PASS+1)); else echo "FAIL: busybox_rmdir"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -rf /tmp/bb_spl && busybox mkdir -p /tmp/bb_spl && busybox printf abcdef > /tmp/bb_spl/in && busybox split -b2 /tmp/bb_spl/in /tmp/bb_spl/o && busybox cat /tmp/bb_spl/oaa' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "ab"; then echo "PASS: busybox_split"; PASS=$((PASS+1)); else echo "FAIL: busybox_split"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox printf \"first\\nroot:\\n\" > /tmp/bb_tail_t && busybox tail -n 1 /tmp/bb_tail_t' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "root:"; then echo "PASS: busybox_tail"; PASS=$((PASS+1)); else echo "FAIL: busybox_tail"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -rf /tmp/bb_tar && busybox mkdir -p /tmp/bb_tar && busybox echo one > /tmp/bb_tar/one && busybox tar -cf /tmp/bb_tar.tar -C /tmp/bb_tar one && busybox tar -tf /tmp/bb_tar.tar' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "one"; then echo "PASS: busybox_tar"; PASS=$((PASS+1)); else echo "FAIL: busybox_tar"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox printf 'Hi' | busybox xxd 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "4869"; then echo "PASS: busybox_xxd"; PASS=$((PASS+1)); else echo "FAIL: busybox_xxd"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 # Custom test: addgroup
 _t=$({ timeout 10 sh -c "G=\$(date +%s); busybox delgroup \"gg_\$G\" 2>/dev/null; busybox addgroup \"gg_\$G\" 2>&1 && busybox grep -F \"gg_\$G:\" /etc/group 2>&1; busybox delgroup \"gg_\$G\" 2>/dev/null"; } 2>&1)
