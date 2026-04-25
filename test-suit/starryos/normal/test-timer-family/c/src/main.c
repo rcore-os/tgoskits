@@ -15,6 +15,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/wait.h>
 
 static int __pass = 0;
 static int __fail = 0;
@@ -895,6 +896,75 @@ static void test_posix_timer_thread_sharing(void) {
 }
 
 /* ============================================================
+ * POSIX timer fork-not-inherited test
+ *
+ * POSIX (timer_create(2)): "The child of a fork(2) does not inherit
+ * the timers created by its parent."  After fork, the child should
+ * get EINVAL when trying to use a timer ID that was valid in the
+ * parent.
+ * ============================================================ */
+
+static void test_posix_timer_fork_not_inherited(void) {
+    timer_t tid;
+    struct sigevent sev = { .sigev_notify = SIGEV_NONE };
+    int ret;
+
+    /* Create and arm a timer in the parent */
+    errno = 0;
+    ret = timer_create(CLOCK_MONOTONIC, &sev, &tid);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | timer_create: %s\n",
+               __FILE__, __LINE__, strerror(errno));
+        __fail++;
+        return;
+    }
+
+    struct itimerspec its = {
+        .it_value    = { .tv_sec = 60, .tv_nsec = 0 },
+        .it_interval = { .tv_sec = 0,  .tv_nsec = 0 },
+    };
+    ret = timer_settime(tid, 0, &its, NULL);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | timer_settime: %s\n",
+               __FILE__, __LINE__, strerror(errno));
+        __fail++;
+        timer_delete(tid);
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        printf("  FAIL | %s:%d | fork: %s\n",
+               __FILE__, __LINE__, strerror(errno));
+        __fail++;
+        timer_delete(tid);
+        return;
+    }
+
+    if (pid == 0) {
+        /* Child: the timer should NOT be inherited.
+         * timer_gettime on the parent's timer ID should fail. */
+        struct itimerspec child_its;
+        errno = 0;
+        int r = timer_gettime(tid, &child_its);
+        if (r == -1 && errno == EINVAL) {
+            /* Correct: timer not inherited */
+            _exit(0);
+        }
+        /* Wrong: timer was inherited or unexpected error */
+        _exit(1);
+    }
+
+    /* Parent: wait for child */
+    int status = 0;
+    pid_t w = waitpid(pid, &status, 0);
+    timer_delete(tid);
+
+    CHECK(w == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "fork child should NOT inherit parent's POSIX timers (EINVAL expected)");
+}
+
+/* ============================================================
  * main
  * ============================================================ */
 
@@ -945,6 +1015,9 @@ int main(void) {
 
     printf("\n--- timer thread-sharing tests ---\n");
     test_posix_timer_thread_sharing();
+
+    printf("\n--- timer fork-not-inherited tests ---\n");
+    test_posix_timer_fork_not_inherited();
 
     printf("------------------------------------------------\n");
     printf("  DONE: %d pass, %d fail\n", __pass, __fail);
