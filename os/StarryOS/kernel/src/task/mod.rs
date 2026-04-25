@@ -293,6 +293,13 @@ pub struct ProcessData {
     pub child_exit_event: Arc<PollSet>,
     /// Self exit event
     pub exit_event: Arc<PollSet>,
+    /// Woken every time a thread in this process exits. Used by a thread
+    /// performing `execve` to wait for its siblings to be reaped.
+    pub thread_exit_event: Arc<PollSet>,
+    /// Serializes `execve` within the process. Only one thread can be tearing
+    /// down the thread group at a time; concurrent attempts from other threads
+    /// return `EINTR` (they are about to be killed by SIGKILL anyway).
+    pub exec_lock: Mutex<()>,
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
 
@@ -332,6 +339,8 @@ impl ProcessData {
 
             child_exit_event: Arc::default(),
             exit_event: Arc::default(),
+            thread_exit_event: Arc::default(),
+            exec_lock: Mutex::new(()),
             exit_signal,
 
             signal: Arc::new(ProcessSignalManager::new(
