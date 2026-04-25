@@ -192,19 +192,21 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
+        // Kernel ABI: SYSCALL_DEFINE6(preadv2, fd, vec, vlen, pos_l, pos_h, flags)
+        // arg4 is pos_h (high 32 bits of offset, always 0 on 64-bit); flags is arg5.
         Sysno::preadv2 => sys_preadv2(
-            uctx.arg0() as _,
-            uctx.arg1() as _,
-            uctx.arg2() as _,
-            uctx.arg3() as _,
-            uctx.arg4() as _,
+            uctx.arg0() as _, // fd
+            uctx.arg1() as _, // iov
+            uctx.arg2() as _, // iovcnt
+            uctx.arg3() as _, // offset (pos_l)
+            uctx.arg5() as _, // flags (arg4=pos_h is skipped)
         ),
         Sysno::pwritev2 => sys_pwritev2(
-            uctx.arg0() as _,
-            uctx.arg1() as _,
-            uctx.arg2() as _,
-            uctx.arg3() as _,
-            uctx.arg4() as _,
+            uctx.arg0() as _, // fd
+            uctx.arg1() as _, // iov
+            uctx.arg2() as _, // iovcnt
+            uctx.arg3() as _, // offset (pos_l)
+            uctx.arg5() as _, // flags (arg4=pos_h is skipped)
         ),
         Sysno::sendfile => sys_sendfile(
             uctx.arg0() as _,
