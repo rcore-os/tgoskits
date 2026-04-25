@@ -122,7 +122,7 @@ pub fn get_session(sid: Pid) -> AxResult<Arc<Session>> {
 }
 
 /// Poll the timer
-pub fn poll_timer(task: &TaskInner) {
+pub fn poll_timer(task: &TaskInner, weak_task: WeakAxTaskRef) {
     let Some(thr) = task.try_as_thread() else {
         return;
     };
@@ -134,8 +134,9 @@ pub fn poll_timer(task: &TaskInner) {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
     };
     time.poll(&emitter);
-    // Also poll POSIX timers
-    thr.proc_data.posix_timers.poll_expired(&emitter);
+    // Also poll POSIX timers (pass weak_task so periodic timers can
+    // re-register alarms for the correct user task, not alarm_task).
+    thr.proc_data.posix_timers.poll_expired(&emitter, weak_task);
 }
 
 /// Sets the timer state.

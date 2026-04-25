@@ -7,6 +7,7 @@ use core::{
 };
 
 use ax_hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
+use ax_task::WeakAxTaskRef;
 use linux_raw_sys::general::{
     CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
     CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
@@ -15,7 +16,7 @@ use linux_raw_sys::general::{
 use spin::Mutex;
 use starry_signal::Signo;
 
-use super::timer::register_alarm;
+use super::timer::{register_alarm, register_alarm_for};
 
 /// Kernel-side representation of a POSIX timer.
 struct PosixTimer {
@@ -189,8 +190,10 @@ impl PosixTimerTable {
     }
 
     /// Check all timers for expiry and return signals to deliver.
-    /// Called from the timer poll path.
-    pub fn poll_expired(&self, emitter: &impl Fn(Signo)) {
+    /// Called from the alarm_task via poll_timer.
+    /// `task` is the user task that owns these timers (needed to
+    /// re-register alarms for periodic timers).
+    pub fn poll_expired(&self, emitter: &impl Fn(Signo), task: WeakAxTaskRef) {
         let mut timers = self.timers.lock();
         for timer in timers.values_mut() {
             if timer.deadline_ns == 0 {
@@ -203,8 +206,14 @@ impl PosixTimerTable {
                     emitter(signo);
                 }
                 if timer.interval_ns > 0 {
-                    // Periodic: reload
-                    timer.deadline_ns = now + timer.interval_ns;
+                    // Periodic: advance deadline by interval (avoids drift)
+                    // and register the next alarm for the user task.
+                    timer.deadline_ns += timer.interval_ns;
+                    let remaining = timer.deadline_ns.saturating_sub(clock_now_ns(timer.clock_id));
+                    register_alarm_for(
+                        wall_time() + Duration::from_nanos(remaining),
+                        task.clone(),
+                    );
                 } else {
                     // One-shot: disarm
                     timer.deadline_ns = 0;

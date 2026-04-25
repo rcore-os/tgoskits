@@ -113,11 +113,18 @@ impl ITimer {
 /// Register an alarm at the given wall-clock deadline for the current task.
 /// Used by both ITimer and POSIX timers.
 pub fn register_alarm(deadline: Duration) {
+    register_alarm_for(deadline, Arc::downgrade(&current()));
+}
+
+/// Register an alarm at the given wall-clock deadline for a specific task.
+/// Used when re-arming periodic POSIX timers from the alarm_task context,
+/// where `current()` is the alarm_task, not the user task.
+pub fn register_alarm_for(deadline: Duration, task: WeakAxTaskRef) {
     let mut guard = ALARM_LIST.lock();
     let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
     guard.push(Entry {
         deadline,
-        task: Arc::downgrade(&current()),
+        task,
     });
     drop(guard);
     if should_wake {
@@ -248,9 +255,10 @@ async fn alarm_task() {
         let now = wall_time();
         if entry.deadline <= now {
             let entry_deadline = entry.deadline;
+            let weak_task = entry.task.clone();
             if let Some(task) = entry.task.upgrade() {
                 drop(guard);
-                poll_timer(&task);
+                poll_timer(&task, weak_task);
             } else {
                 drop(guard);
             }

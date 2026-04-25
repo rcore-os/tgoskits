@@ -659,6 +659,57 @@ static void test_timer_abstime_past_signal_delivery(void) {
     sigaction(SIGALRM, &old_sa, NULL);
 }
 
+static void test_posix_timer_periodic_signal(void) {
+    timer_t tid;
+    struct sigevent sev;
+    struct sigaction sa, old_sa;
+    struct itimerspec its;
+    int ret;
+
+    /* Install SIGALRM handler */
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigalrm_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGALRM, &sa, &old_sa);
+
+    sig_count = 0;
+
+    /* Create timer with SIGEV_SIGNAL / SIGALRM */
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGALRM;
+    errno = 0;
+    ret = timer_create(CLOCK_MONOTONIC, &sev, &tid);
+    CHECK(ret == 0, "timer_create for periodic signal test should succeed");
+    if (ret != 0) {
+        sigaction(SIGALRM, &old_sa, NULL);
+        return;
+    }
+
+    /* Arm with 50ms initial + 50ms interval (periodic) */
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_sec = 0;
+    its.it_value.tv_nsec = 50000000;    /* 50ms */
+    its.it_interval.tv_sec = 0;
+    its.it_interval.tv_nsec = 50000000; /* 50ms */
+    errno = 0;
+    ret = timer_settime(tid, 0, &its, NULL);
+    CHECK(ret == 0, "timer_settime periodic 50ms should succeed");
+
+    /* Wait ~300ms. usleep may return early due to EINTR from SIGALRM,
+     * so call it in a loop. */
+    for (int i = 0; i < 300; i++)
+        usleep(1000);
+
+    printf("  info: periodic timer delivered %d signals in ~300ms\n", sig_count);
+    CHECK(sig_count >= 3,
+          "periodic timer should fire at least 3 times in 300ms (50ms interval)");
+
+    timer_delete(tid);
+    sigaction(SIGALRM, &old_sa, NULL);
+}
+
 static void test_timer_settime_negative_tv_sec(void) {
     timer_t tid;
     struct itimerspec its;
@@ -1080,6 +1131,7 @@ int main(void) {
     test_setitimer_signal_delivery();
     test_posix_timer_signal_delivery();
     test_timer_abstime_past_signal_delivery();
+    test_posix_timer_periodic_signal();
 
     printf("\n--- timer lifecycle tests ---\n");
     test_timer_delete_then_gettime();
