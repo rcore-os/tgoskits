@@ -62,24 +62,29 @@ impl Service {
     }
 
     pub fn register_waker(&mut self, mask: u32, waker: &Waker) {
-        let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
+        // Also arm a short fallback timer so the task eventually re-polls even
+        // when no device wake arrives. smoltcp may return no poll deadline, so
+        // relying on IRQ-only wakeups can leave the task parked indefinitely.
+        const FALLBACK_POLL_MS: u64 = 50;
+        let fallback =
+            ax_hal::time::wall_time() + core::time::Duration::from_millis(FALLBACK_POLL_MS);
+        let deadline = self
+            .iface
+            .poll_at(now(), &SOCKET_SET.inner.lock())
+            .map(|t| TimeValue::from_micros(t.total_micros() as _).min(fallback))
+            .unwrap_or(fallback);
 
-        if let Some(t) = next {
-            let next = TimeValue::from_micros(t.total_micros() as _);
+        // drop old timeout future
+        self.timeout = None;
 
-            // drop old timeout future
-            self.timeout = None;
+        let mut fut = Box::pin(sleep_until(deadline));
+        let mut cx = Context::from_waker(waker);
 
-            let mut fut = Box::pin(sleep_until(next));
-            let mut cx = Context::from_waker(waker);
-
-            if fut.as_mut().poll(&mut cx).is_ready() {
-                waker.wake_by_ref();
-                return;
-            } else {
-                self.timeout = Some(fut);
-            }
+        if fut.as_mut().poll(&mut cx).is_ready() {
+            waker.wake_by_ref();
+            return;
         }
+        self.timeout = Some(fut);
 
         for (i, device) in self.router.devices.iter().enumerate() {
             if mask & (1 << i) != 0 {
