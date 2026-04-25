@@ -217,6 +217,7 @@ impl DirNode {
         verify_entry_name(name)?;
 
         self.ops.link(name, node).inspect(|entry| {
+            entry.inherit_user_data_from(node);
             self.cache.lock().insert(name.to_owned(), entry.clone());
         })
     }

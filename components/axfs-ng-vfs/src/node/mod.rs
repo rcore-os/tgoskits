@@ -182,6 +182,15 @@ impl TypeMap {
             self.get::<T>().unwrap()
         }
     }
+
+    pub fn inherit_from(&mut self, other: &Self) {
+        for (id, value) in &other.0 {
+            if self.0.iter().any(|(existing, _)| existing == id) {
+                continue;
+            }
+            self.0.push((*id, value.clone()));
+        }
+    }
 }
 
 struct Inner {
@@ -382,6 +391,15 @@ impl DirEntry {
 
     pub fn user_data(&self) -> MutexGuard<'_, TypeMap> {
         self.0.user_data.lock()
+    }
+
+    pub fn inherit_user_data_from(&self, other: &Self) {
+        if self.ptr_eq(other) {
+            return;
+        }
+        let other_data = other.user_data();
+        let mut self_data = self.user_data();
+        self_data.inherit_from(&other_data);
     }
 }
 
