@@ -2,7 +2,8 @@ env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
     "ax-std/bus-mmio",
     "ept-level-4",
-    "fs"
+    "fs",
+    "sstc"
 ]
 log = "Info"
 target = "riscv64gc-unknown-none-elf"

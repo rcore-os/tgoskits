@@ -20,6 +20,8 @@ use riscv_decode::{
     Instruction,
     types::{IType, SType},
 };
+#[cfg(feature = "sstc")]
+use riscv_h::register::vstimecmp;
 use riscv_h::register::{
     hgeie, hie, hstatus, htimedelta, hvip,
     vsatp::{self, Vsatp},
@@ -28,7 +30,7 @@ use riscv_h::register::{
     vsie::{self, Vsie},
     vsscratch,
     vsstatus::{self, Vsstatus},
-    vstimecmp, vstval,
+    vstval,
     vstvec::{self, Vstvec},
 };
 use rustsbi::{Forward, RustSBI};
@@ -46,7 +48,9 @@ const TINST_PSEUDO_STORE: u32 = 0x3020;
 const TINST_PSEUDO_LOAD: u32 = 0x3000;
 const EID_TIME: usize = 0x5449_4D45;
 const FID_SET_TIMER: usize = 0;
+#[cfg(feature = "sstc")]
 const SYSTEM_OPCODE: u32 = 0x73;
+#[cfg(feature = "sstc")]
 const CSR_STIMECMP: u16 = 0x14d;
 
 #[inline]
@@ -125,10 +129,13 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         hie.set_vssie(true);
         hie.set_vstie(true);
         hie.set_vseie(true);
-        // Start with no guest timer deadline armed; a zeroed vstimecmp would be
-        // observed as already expired and inject a spurious timer interrupt
-        // before Linux programs its first clockevent.
-        self.regs.vs_csrs.vstimecmp = usize::MAX;
+        #[cfg(feature = "sstc")]
+        {
+            // Start with no guest timer deadline armed; a zeroed vstimecmp
+            // would be observed as already expired and inject a spurious timer
+            // interrupt before Linux programs its first clockevent.
+            self.regs.vs_csrs.vstimecmp = usize::MAX;
+        }
         self.regs.virtual_hs_csrs.hie = hie.bits();
         self.regs.virtual_hs_csrs.hvip = 0;
         self.regs.virtual_hs_csrs.hgeie = 0;
@@ -192,6 +199,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             vsstatus.write();
             let vsie = Vsie::from_bits(self.regs.vs_csrs.vsie);
             vsie.write();
+            #[cfg(feature = "sstc")]
             vstimecmp::write(self.regs.vs_csrs.vstimecmp);
             let hie = hie::Hie::from_bits(self.regs.virtual_hs_csrs.hie);
             hie.write();
@@ -221,7 +229,10 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             self.regs.vs_csrs.vsscratch = vsscratch::read();
             self.regs.vs_csrs.vsstatus = vsstatus::read().bits();
             self.regs.vs_csrs.vsie = vsie::read().bits();
-            self.regs.vs_csrs.vstimecmp = vstimecmp::read();
+            #[cfg(feature = "sstc")]
+            {
+                self.regs.vs_csrs.vstimecmp = vstimecmp::read();
+            }
             self.regs.virtual_hs_csrs.hie = hie::read().bits();
             self.regs.virtual_hs_csrs.hvip = hvip::read().bits();
             self.regs.virtual_hs_csrs.hgeie = hgeie::read();
@@ -234,6 +245,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             // previous guest's virtual IRQs into later host/guest execution.
             hvip::Hvip::from_bits(0).write();
             hgeie::write(0);
+            #[cfg(feature = "sstc")]
             vstimecmp::write(usize::MAX);
             core::arch::asm!("csrw hgatp, x0");
             core::arch::riscv64::hfence_gvma_all();
@@ -281,13 +293,17 @@ impl RISCVVCpu {
 impl RISCVVCpu {
     #[inline]
     fn program_guest_timer(&mut self, deadline: usize) {
-        self.regs.vs_csrs.vstimecmp = deadline;
+        #[cfg(feature = "sstc")]
+        {
+            self.regs.vs_csrs.vstimecmp = deadline;
+        }
         sbi_rt::set_timer(deadline as u64);
         unsafe {
             // The guest has consumed the current VS timer event and programmed
             // a new deadline, so clear the injected VS timer pending bit and
             // re-arm HS timer delivery for the next expiration.
             hvip::clear_vstip();
+            #[cfg(feature = "sstc")]
             vstimecmp::write(deadline);
             sie::set_stimer();
         }
@@ -583,6 +599,7 @@ impl RISCVVCpu {
         self.advance_pc(4);
     }
 
+    #[cfg(feature = "sstc")]
     fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
         let instr = self.read_virtual_instruction()?;
         let csr = ((instr >> 20) & 0xfff) as u16;
@@ -661,6 +678,19 @@ impl RISCVVCpu {
         Ok(AxVCpuExitReason::Nothing)
     }
 
+    #[cfg(not(feature = "sstc"))]
+    fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
+        panic!(
+            "Unhandled virtual instruction without `sstc` feature, sepc: {:#x}, stval: {:#x}, \
+             htval: {:#x}, htinst: {:#x}",
+            self.regs.guest_regs.sepc,
+            self.regs.trap_csrs.stval,
+            self.regs.trap_csrs.htval,
+            self.regs.trap_csrs.htinst,
+        );
+    }
+
+    #[cfg(feature = "sstc")]
     fn read_virtual_instruction(&self) -> AxResult<u32> {
         let instr = self.regs.trap_csrs.stval as u32;
         if instr & 0x7f == SYSTEM_OPCODE {
