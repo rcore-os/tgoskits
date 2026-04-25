@@ -50,6 +50,7 @@ features = [
   "socket-udp",
   "socket-tcp",
   "socket-dns",
+  "iface-max-addr-count-5",
   # "fragmentation-buffer-size-65536", "proto-ipv4-fragmentation",
   # "reassembly-buffer-size-65536", "reassembly-buffer-count-32",
   # "assembler-max-segment-count-32",

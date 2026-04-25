@@ -19,6 +19,10 @@ pub(crate) struct GeneralOptions {
     nonblock: AtomicBool,
     /// Whether the socket should reuse the address.
     reuse_address: AtomicBool,
+    /// IPV6_V6ONLY: if true, AF_INET6 socket only accepts IPv6 connections.
+    v6only: AtomicBool,
+    /// Whether this socket was created as AF_INET6.
+    is_ipv6: AtomicBool,
 
     send_timeout_nanos: AtomicU64,
     recv_timeout_nanos: AtomicU64,
@@ -35,6 +39,8 @@ impl GeneralOptions {
         Self {
             nonblock: AtomicBool::new(false),
             reuse_address: AtomicBool::new(false),
+            v6only: AtomicBool::new(false),
+            is_ipv6: AtomicBool::new(false),
 
             send_timeout_nanos: AtomicU64::new(0),
             recv_timeout_nanos: AtomicU64::new(0),
@@ -49,6 +55,18 @@ impl GeneralOptions {
 
     pub fn reuse_address(&self) -> bool {
         self.reuse_address.load(Ordering::Relaxed)
+    }
+
+    pub fn v6only(&self) -> bool {
+        self.v6only.load(Ordering::Relaxed)
+    }
+
+    pub fn is_ipv6(&self) -> bool {
+        self.is_ipv6.load(Ordering::Relaxed)
+    }
+
+    pub fn set_is_ipv6(&self, val: bool) {
+        self.is_ipv6.store(val, Ordering::Relaxed);
     }
 
     pub fn send_timeout(&self) -> Option<Duration> {
@@ -109,6 +127,12 @@ impl Configurable for GeneralOptions {
             O::ReuseAddress(reuse) => {
                 **reuse = self.reuse_address();
             }
+            O::V6Only(v6only) => {
+                **v6only = self.v6only.load(Ordering::Relaxed);
+            }
+            O::IsIpv6(is_ipv6) => {
+                **is_ipv6 = self.is_ipv6.load(Ordering::Relaxed);
+            }
             O::SendTimeout(timeout) => {
                 **timeout = Duration::from_nanos(self.send_timeout_nanos.load(Ordering::Relaxed));
             }
@@ -129,6 +153,12 @@ impl Configurable for GeneralOptions {
             }
             O::ReuseAddress(reuse) => {
                 self.reuse_address.store(*reuse, Ordering::Relaxed);
+            }
+            O::V6Only(v6only) => {
+                self.v6only.store(*v6only, Ordering::Relaxed);
+            }
+            O::IsIpv6(is_ipv6) => {
+                self.is_ipv6.store(*is_ipv6, Ordering::Relaxed);
             }
             O::SendTimeout(timeout) => {
                 self.send_timeout_nanos

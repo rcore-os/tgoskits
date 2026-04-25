@@ -13,7 +13,7 @@ use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,
     time::Duration,
-    wire::{IpEndpoint, IpListenEndpoint},
+    wire::{IpAddress, IpEndpoint, IpListenEndpoint},
 };
 
 use crate::{
@@ -60,7 +60,7 @@ impl TcpSocket {
     }
 
     /// Creates a new TCP socket that is already connected.
-    fn new_connected(handle: SocketHandle) -> Self {
+    fn new_connected(handle: SocketHandle, is_ipv6: bool) -> Self {
         let result = Self {
             state: StateLock::new(State::Connected),
             handle,
@@ -69,6 +69,7 @@ impl TcpSocket {
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
         };
+        result.general.set_is_ipv6(is_ipv6);
         result.with_smol_socket(|socket| {
             result
                 .general
@@ -111,8 +112,10 @@ impl TcpSocket {
         let mut events = IoEvents::empty();
         let writable = self.with_smol_socket(|socket| match socket.state() {
             smol::State::SynSent => false, // wait for connection
-            smol::State::Established => {
-                self.state.set(State::Connected); // connected
+            smol::State::Established | smol::State::CloseWait => {
+                // CloseWait: server accepted then immediately sent FIN.
+                // connect() should still succeed — the 3-way handshake completed.
+                self.state.set(State::Connected);
                 debug!(
                     "TCP socket {}: connected to {}",
                     self.handle,
@@ -320,7 +323,11 @@ impl SocketOps for TcpSocket {
         if let Ok(guard) = self.state.lock(State::Idle) {
             guard.transit(State::Listening, || {
                 let bound_endpoint = self.with_smol_socket(|socket| socket.get_bound_endpoint());
-                LISTEN_TABLE.listen(bound_endpoint)?;
+                LISTEN_TABLE.listen(
+                    bound_endpoint,
+                    self.general.is_ipv6(),
+                    self.general.v6only(),
+                )?;
                 debug!("listening on {}", bound_endpoint);
                 Ok(())
             })?;
@@ -338,8 +345,8 @@ impl SocketOps for TcpSocket {
         let bound_port = self.bound_endpoint()?.port;
         self.general.recv_poller(self, || {
             poll_interfaces();
-            LISTEN_TABLE.accept(bound_port).map(|handle| {
-                let socket = TcpSocket::new_connected(handle);
+            LISTEN_TABLE.accept(bound_port).map(|(handle, is_ipv6)| {
+                let socket = TcpSocket::new_connected(handle, is_ipv6);
                 debug!(
                     "accepted connection from {}, {}",
                     handle,
@@ -419,13 +426,26 @@ impl SocketOps for TcpSocket {
     }
 
     fn peer_addr(&self) -> AxResult<SocketAddrEx> {
+        let is_ipv6 = self.general.is_ipv6();
         self.with_smol_socket(|socket| {
-            Ok(SocketAddrEx::Ip(
-                socket
-                    .remote_endpoint()
-                    .ok_or(AxError::NotConnected)?
+            let endpoint = socket.remote_endpoint().ok_or(AxError::NotConnected)?;
+            if is_ipv6 {
+                // For an IPv6 socket with an IPv4 peer, present the address as
+                // IPv4-mapped (::ffff:a.b.c.d) so that userspace sees AF_INET6.
+                let mapped_addr = match endpoint.addr {
+                    IpAddress::Ipv4(v4) => IpAddress::Ipv6(v4.to_ipv6_mapped()),
+                    other => other,
+                };
+                Ok(SocketAddrEx::Ip(
+                    IpEndpoint {
+                        addr: mapped_addr,
+                        port: endpoint.port,
+                    }
                     .into(),
-            ))
+                ))
+            } else {
+                Ok(SocketAddrEx::Ip(endpoint.into()))
+            }
         })
     }
 
