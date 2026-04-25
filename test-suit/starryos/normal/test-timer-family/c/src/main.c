@@ -612,6 +612,53 @@ static void test_timer_settime_abstime_past(void) {
     timer_delete(tid);
 }
 
+static void test_timer_abstime_past_signal_delivery(void) {
+    timer_t tid;
+    struct sigevent sev;
+    struct sigaction sa, old_sa;
+    struct itimerspec its;
+    int ret;
+
+    /* Install SIGALRM handler */
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigalrm_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGALRM, &sa, &old_sa);
+
+    sig_received = 0;
+
+    /* Create timer with SIGEV_SIGNAL / SIGALRM */
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGALRM;
+    errno = 0;
+    ret = timer_create(CLOCK_REALTIME, &sev, &tid);
+    CHECK(ret == 0, "timer_create for abstime-past signal test should succeed");
+    if (ret != 0) {
+        sigaction(SIGALRM, &old_sa, NULL);
+        return;
+    }
+
+    /* Set absolute time far in the past — timer should expire immediately
+     * and deliver SIGALRM per POSIX. */
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_sec = 1; /* 1970-01-01 00:00:01 */
+    its.it_value.tv_nsec = 0;
+    errno = 0;
+    ret = timer_settime(tid, TIMER_ABSTIME, &its, NULL);
+    CHECK(ret == 0, "timer_settime TIMER_ABSTIME past should succeed");
+
+    /* Wait a bit for the signal to be delivered */
+    usleep(200000); /* 200ms */
+
+    CHECK(sig_received == 1,
+          "SIGALRM should be delivered when TIMER_ABSTIME time is in the past");
+
+    timer_delete(tid);
+    sigaction(SIGALRM, &old_sa, NULL);
+}
+
 static void test_timer_settime_negative_tv_sec(void) {
     timer_t tid;
     struct itimerspec its;
@@ -1032,6 +1079,7 @@ int main(void) {
     printf("\n--- signal delivery tests ---\n");
     test_setitimer_signal_delivery();
     test_posix_timer_signal_delivery();
+    test_timer_abstime_past_signal_delivery();
 
     printf("\n--- timer lifecycle tests ---\n");
     test_timer_delete_then_gettime();

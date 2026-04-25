@@ -151,13 +151,10 @@ impl PosixTimerTable {
             let now = clock_now_ns(timer.clock_id);
             let abs_flag = flags & 1; // TIMER_ABSTIME = 1
             if abs_flag != 0 {
-                // Absolute time
-                if new_value_ns <= now {
-                    // Already expired
-                    timer.deadline_ns = 0;
-                } else {
-                    timer.deadline_ns = new_value_ns;
-                }
+                // Absolute time: use the requested time directly.
+                // If it's already in the past, poll_expired will fire
+                // immediately (now >= deadline) per POSIX.
+                timer.deadline_ns = new_value_ns;
             } else {
                 // Relative time
                 timer.deadline_ns = now + new_value_ns;
@@ -167,9 +164,9 @@ impl PosixTimerTable {
                 let remaining = timer
                     .deadline_ns
                     .saturating_sub(clock_now_ns(timer.clock_id));
-                if remaining > 0 {
-                    register_alarm(wall_time() + Duration::from_nanos(remaining));
-                }
+                // Register alarm even if remaining == 0 (already expired)
+                // so that poll_expired runs on the next tick.
+                register_alarm(wall_time() + Duration::from_nanos(remaining));
             }
         }
 
