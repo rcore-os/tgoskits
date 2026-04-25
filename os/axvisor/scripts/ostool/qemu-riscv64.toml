@@ -9,7 +9,7 @@ args = [
   "-smp",
   "4",
   "-device",
-  "virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0",
+  "virtio-blk-device,drive=disk0",
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-riscv64-alpine.img",
   "-append",

@@ -43,7 +43,6 @@ const RDK_S100_LINUX_KERNEL_IN_IMAGE: &str = "rdk-s100p";
 pub struct PreparedLinuxGuestAssets {
     pub image_dir: PathBuf,
     pub generated_vmconfig: PathBuf,
-    pub rootfs_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,38 +51,6 @@ pub struct ShellAutoInitConfig {
     pub shell_init_cmd: String,
     pub success_regex: Vec<String>,
     pub fail_regex: Vec<String>,
-}
-
-pub(crate) fn configure_linux_riscv64_guest_disk(
-    config: &mut QemuConfig,
-    workspace_root: &Path,
-    source_rootfs: &Path,
-) -> anyhow::Result<PathBuf> {
-    let guest_rootfs = workspace_root.join("os/axvisor/tmp/qemu-riscv64-guest-rootfs.img");
-    if let Some(parent) = guest_rootfs.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(source_rootfs, &guest_rootfs).with_context(|| {
-        format!(
-            "failed to clone guest rootfs from {} to {}",
-            source_rootfs.display(),
-            guest_rootfs.display()
-        )
-    })?;
-
-    // Keep the guest test disk isolated from the top-level QEMU rootfs so the
-    // VM always sees the intended guest image contents on its passthrough disk.
-    config.args.push("-device".to_string());
-    config
-        .args
-        .push("virtio-blk-device,drive=guestdisk0".to_string());
-    config.args.push("-drive".to_string());
-    config.args.push(format!(
-        "id=guestdisk0,if=none,format=raw,file={}",
-        guest_rootfs.display()
-    ));
-
-    Ok(guest_rootfs)
 }
 
 pub(crate) async fn prepare_linux_aarch64_guest_assets(
@@ -104,7 +71,6 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
     Ok(PreparedLinuxGuestAssets {
         image_dir,
         generated_vmconfig,
-        rootfs_path: None,
     })
 }
 
@@ -137,7 +103,6 @@ pub(crate) async fn prepare_linux_riscv64_guest_assets(
     Ok(PreparedLinuxGuestAssets {
         image_dir,
         generated_vmconfig,
-        rootfs_path: Some(rootfs_path),
     })
 }
 
