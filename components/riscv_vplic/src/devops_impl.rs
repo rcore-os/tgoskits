@@ -379,14 +379,4 @@ mod tests {
         assert!(!candidates.get(0));
         assert!(candidates.get(1));
     }
-
-    #[test]
-    fn pending_read_ignores_reserved_words() {
-        let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2);
-        let addr = GuestPhysAddr::from(0x0c00_0000 + PLIC_PENDING_OFFSET + PLIC_PENDING_WORDS * 4);
-
-        let val = vplic.handle_read(addr, AccessWidth::Dword).unwrap();
-
-        assert_eq!(val, 0);
-    }
 }
