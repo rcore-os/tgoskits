@@ -125,6 +125,10 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         hie.set_vssie(true);
         hie.set_vstie(true);
         hie.set_vseie(true);
+        // Start with no guest timer deadline armed; a zeroed vstimecmp would be
+        // observed as already expired and inject a spurious timer interrupt
+        // before Linux programs its first clockevent.
+        self.regs.vs_csrs.vstimecmp = usize::MAX;
         self.regs.virtual_hs_csrs.hie = hie.bits();
         self.regs.virtual_hs_csrs.hvip = 0;
         self.regs.virtual_hs_csrs.hgeie = 0;
@@ -149,7 +153,10 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             sstatus::clear_sie();
             sie::set_sext();
             sie::set_ssoft();
-            sie::set_stimer();
+            // Keep the current HS timer enable state instead of forcing it on
+            // for every VM entry. Guest timer re-arming and host timer users
+            // must manage `stimer` explicitly, otherwise a pending HS timer can
+            // preempt the guest on every re-entry and starve VS interrupt work.
         }
         unsafe {
             // Safe to run the guest as it only touches memory assigned to it by being owned
@@ -159,7 +166,6 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         unsafe {
             sie::clear_sext();
             sie::clear_ssoft();
-            sie::clear_stimer();
             sstatus::set_sie();
         }
         self.vmexit_handler()
@@ -273,6 +279,20 @@ impl RISCVVCpu {
 }
 
 impl RISCVVCpu {
+    #[inline]
+    fn program_guest_timer(&mut self, deadline: usize) {
+        self.regs.vs_csrs.vstimecmp = deadline;
+        sbi_rt::set_timer(deadline as u64);
+        unsafe {
+            // The guest has consumed the current VS timer event and programmed
+            // a new deadline, so clear the injected VS timer pending bit and
+            // re-arm HS timer delivery for the next expiration.
+            hvip::clear_vstip();
+            vstimecmp::write(deadline);
+            sie::set_stimer();
+        }
+    }
+
     /// Gets one of the vCPU's general purpose registers.
     pub fn get_gpr(&self, index: GprIndex) -> usize {
         self.regs.guest_regs.gprs.reg(index)
@@ -335,11 +355,7 @@ impl RISCVVCpu {
                     legacy::LEGACY_SET_TIMER..=legacy::LEGACY_SHUTDOWN => match extension_id {
                         legacy::LEGACY_SET_TIMER => {
                             // info!("set timer: {}", param[0]);
-                            sbi_rt::set_timer((param[0]) as u64);
-                            unsafe {
-                                // Clear guest timer interrupt
-                                hvip::clear_vstip();
-                            }
+                            self.program_guest_timer(param[0]);
 
                             self.set_gpr_from_gpr_index(GprIndex::A0, 0);
                         }
@@ -363,10 +379,7 @@ impl RISCVVCpu {
                     },
                     EID_TIME => match function_id {
                         FID_SET_TIMER => {
-                            sbi_rt::set_timer(param[0] as u64);
-                            unsafe {
-                                hvip::clear_vstip();
-                            }
+                            self.program_guest_timer(param[0]);
                             self.sbi_return(RET_SUCCESS, 0);
                             return Ok(AxVCpuExitReason::Nothing);
                         }
@@ -520,10 +533,11 @@ impl RISCVVCpu {
             }
             Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
             Trap::Interrupt(Interrupt::SupervisorTimer) => {
-                // Enable guest timer interrupt
+                // Forward the elapsed timer to VS and stop taking the same HS
+                // timer interrupt repeatedly until software programs a new one.
                 unsafe {
                     hvip::set_vstip();
-                    sie::set_stimer();
+                    sie::clear_stimer();
                 }
 
                 Ok(AxVCpuExitReason::Nothing)
@@ -636,11 +650,11 @@ impl RISCVVCpu {
         }
 
         if let Some(new_value) = new_value {
-            self.regs.vs_csrs.vstimecmp = new_value;
-            unsafe {
-                hvip::clear_vstip();
-                vstimecmp::write(new_value);
-            }
+            // Linux is using the advertised `sstc` path (`csrw stimecmp,...`).
+            // We currently emulate that CSR access rather than exposing direct
+            // hardware STCE, so this path must also program the underlying HS
+            // timer instead of only updating saved VS state.
+            self.program_guest_timer(new_value);
         }
 
         self.advance_pc(4);

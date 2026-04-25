@@ -43,6 +43,7 @@ const RDK_S100_LINUX_KERNEL_IN_IMAGE: &str = "rdk-s100p";
 pub struct PreparedLinuxGuestAssets {
     pub image_dir: PathBuf,
     pub generated_vmconfig: PathBuf,
+    pub rootfs_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +71,8 @@ pub(crate) fn configure_linux_riscv64_guest_disk(
         )
     })?;
 
+    // Keep the guest test disk isolated from the top-level QEMU rootfs so the
+    // VM always sees the intended guest image contents on its passthrough disk.
     config.args.push("-device".to_string());
     config
         .args
@@ -101,6 +104,7 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
     Ok(PreparedLinuxGuestAssets {
         image_dir,
         generated_vmconfig,
+        rootfs_path: None,
     })
 }
 
@@ -109,7 +113,9 @@ pub(crate) async fn prepare_linux_riscv64_guest_assets(
 ) -> anyhow::Result<PreparedLinuxGuestAssets> {
     let image_dir = pull_guest_image(ctx, LINUX_RISCV64_IMAGE_SPEC).await?;
     let kernel_path = image_dir.join("qemu-riscv64");
+    let rootfs_path = guest_rootfs_path(&image_dir);
     ensure_guest_kernel_exists(&kernel_path, "linux guest")?;
+    ensure_guest_rootfs_exists(&rootfs_path, "linux guest")?;
 
     let workspace_root = ctx.workspace_root();
     let generated_dtb = workspace_root.join(LINUX_RISCV64_GENERATED_DTB);
@@ -128,12 +134,10 @@ pub(crate) async fn prepare_linux_riscv64_guest_assets(
         None,
     )?;
 
-    let rootfs_path = ensure_rootfs_for_arch(workspace_root, "riscv64").await?;
-
     Ok(PreparedLinuxGuestAssets {
         image_dir,
         generated_vmconfig,
-        rootfs_path,
+        rootfs_path: Some(rootfs_path),
     })
 }
 

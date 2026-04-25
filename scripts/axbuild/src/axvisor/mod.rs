@@ -164,7 +164,7 @@ impl Axvisor {
             ],
             "riscv64" => {
                 let assets = qemu_test::prepare_linux_riscv64_guest_assets(&self.ctx).await?;
-                riscv64_guest_rootfs = Some(assets.rootfs_path.clone());
+                riscv64_guest_rootfs = assets.rootfs_path.clone();
                 vec![assets.generated_vmconfig]
             }
             "x86_64" => vec![qemu_test::prepare_nimbos_x86_64_guest_vmconfig(&self.ctx).await?],

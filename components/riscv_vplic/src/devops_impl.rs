@@ -8,6 +8,9 @@ use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 
 use crate::{consts::*, utils::*, vplic::VPlicGlobal};
 
+const VCAUSE_INTERRUPT_BIT: usize = 1usize << (usize::BITS - 1);
+const VCAUSE_VS_TIMER: usize = VCAUSE_INTERRUPT_BIT | 5;
+
 impl VPlicGlobal {
     fn irq_priority(&self, irq_id: usize) -> AxResult<u32> {
         let addr = HostPhysAddr::from_usize(
@@ -75,6 +78,13 @@ impl VPlicGlobal {
         // external interrupt, not merely whether some pending bit is set.
         if self.next_claimable_irq(context_id)?.is_some() {
             unsafe {
+                // If the guest is already executing a VS timer interrupt handler,
+                // the corresponding tick is "in service" from the guest's point of
+                // view. Clearing VSTIP here avoids needlessly keeping a timer
+                // interrupt pending while we queue the external interrupt.
+                if riscv_h::register::vscause::read().bits() == VCAUSE_VS_TIMER {
+                    riscv_h::register::hvip::clear_vstip();
+                }
                 riscv_h::register::hvip::set_vseip();
             }
         } else {
@@ -106,7 +116,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
         addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
         width: axaddrspace::device::AccessWidth,
     ) -> ax_errno::AxResult<usize> {
-        assert_eq!(width, AccessWidth::Dword);
+        assert!(matches!(width, AccessWidth::Dword | AccessWidth::Qword));
         let reg = addr - self.addr;
         let host_addr = HostPhysAddr::from_usize(reg + self.host_plic_addr.as_usize());
         // info!("vPlicGlobal read reg {reg:#x} width {width:?}");
@@ -183,7 +193,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
         width: axaddrspace::device::AccessWidth,
         val: usize,
     ) -> ax_errno::AxResult {
-        assert_eq!(width, AccessWidth::Dword);
+        assert!(matches!(width, AccessWidth::Dword | AccessWidth::Qword));
         let reg = addr - self.addr;
         let host_addr = HostPhysAddr::from_usize(reg + self.host_plic_addr.as_usize());
         // info!("vPlicGlobal write reg {reg:#x} width {width:?} val {val:#x}");
