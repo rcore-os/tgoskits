@@ -116,7 +116,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
         addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
         width: axaddrspace::device::AccessWidth,
     ) -> ax_errno::AxResult<usize> {
-        assert!(matches!(width, AccessWidth::Dword | AccessWidth::Qword));
+        assert_eq!(width, AccessWidth::Dword);
         let reg = addr - self.addr;
         let host_addr = HostPhysAddr::from_usize(reg + self.host_plic_addr.as_usize());
         // info!("vPlicGlobal read reg {reg:#x} width {width:?}");
@@ -193,7 +193,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
         width: axaddrspace::device::AccessWidth,
         val: usize,
     ) -> ax_errno::AxResult {
-        assert!(matches!(width, AccessWidth::Dword | AccessWidth::Qword));
+        assert_eq!(width, AccessWidth::Dword);
         let reg = addr - self.addr;
         let host_addr = HostPhysAddr::from_usize(reg + self.host_plic_addr.as_usize());
         // info!("vPlicGlobal write reg {reg:#x} width {width:?} val {val:#x}");

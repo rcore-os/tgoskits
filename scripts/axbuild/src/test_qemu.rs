@@ -348,7 +348,9 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_arceos_targets() {
-        assert!(parse_arceos_test_target(&None, &Some("mips64-unknown-none".to_string())).is_err());
+        let rejected_target = "mips64-unknown-none".to_string();
+        let err = parse_arceos_test_target(&None, &Some(rejected_target.clone())).unwrap_err();
+        assert!(err.to_string().contains(&rejected_target));
     }
 
     #[test]
@@ -448,7 +450,14 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_axvisor_arches() {
-        assert!(parse_axvisor_test_target(&Some("mips64".to_string()), &None).is_err());
+        let err = parse_axvisor_test_target(&Some("mips64".to_string()), &None).unwrap_err();
+        let err = err.to_string();
+
+        assert!(err.contains("mips64"));
+        assert!(err.contains("aarch64"));
+        assert!(err.contains("loongarch64"));
+        assert!(err.contains("riscv64"));
+        assert!(err.contains("x86_64"));
     }
 
     #[test]

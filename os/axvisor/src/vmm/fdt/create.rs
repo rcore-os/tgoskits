@@ -284,7 +284,7 @@ fn need_cpu_node(phys_cpu_ids: &[usize], node: &Node, node_path: &str) -> bool {
 }
 
 /// Add memory node
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 fn add_memory_node(
     new_memory: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
@@ -514,7 +514,7 @@ pub fn update_fdt(
     fdt_src: NonNull<u8>,
     dtb_size: usize,
     vm: VMRef,
-    _crate_config: &AxVMCrateConfig,
+    crate_config: &AxVMCrateConfig,
 ) {
     // Fix up the cached DTB against the runtime layout before boot.
     let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
@@ -525,7 +525,8 @@ pub fn update_fdt(
     let host_fdt = Fdt::from_bytes(super::get_host_fdt())
         .map_err(|e| format!("Failed to parse host FDT while updating guest FDT: {e:#?}"))
         .expect("Failed to parse host FDT while updating guest FDT");
-    let new_fdt_bytes = patch_guest_fdt_for_runtime(&fdt, &vm.memory_regions(), &host_fdt);
+    let new_fdt_bytes =
+        patch_guest_fdt_for_runtime(&fdt, &vm.memory_regions(), crate_config, &host_fdt);
     // Recompute the DTB load address from the runtime memory layout.
     let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len());
 
@@ -614,6 +615,7 @@ pub(crate) fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAd
 pub(crate) fn patch_guest_fdt_for_runtime(
     fdt: &Fdt,
     memory_regions: &[VMMemoryRegion],
+    crate_config: &AxVMCrateConfig,
     host_fdt: &Fdt,
 ) -> Vec<u8> {
     let mut new_fdt = FdtWriter::new().unwrap();
@@ -666,19 +668,10 @@ pub(crate) fn patch_guest_fdt_for_runtime(
         new_fdt.end_node(chosen).unwrap();
     }
 
-    // Rebuild /memory from the VM's runtime-visible memory regions.
-    let mut reg: Vec<u32> = Vec::with_capacity(memory_regions.len() * 4);
-    for mem in memory_regions {
-        let gpa = mem.gpa.as_usize() as u64;
-        let size = mem.size() as u64;
-        reg.push((gpa >> 32) as u32);
-        reg.push((gpa & 0xffff_ffff) as u32);
-        reg.push((size >> 32) as u32);
-        reg.push((size & 0xffff_ffff) as u32);
-    }
+    // Rebuild /memory from the runtime-visible regions that correspond to the
+    // user-configured memory layout.
     let memory_node = new_fdt.begin_node("memory").unwrap();
-    new_fdt.property_array_u32("reg", &reg).unwrap();
-    new_fdt.property_string("device_type", "memory").unwrap();
+    add_memory_node(memory_regions, crate_config, &mut new_fdt);
     new_fdt.end_node(memory_node).unwrap();
 
     let root = node_stack.pop().unwrap();

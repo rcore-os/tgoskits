@@ -605,14 +605,17 @@ impl RISCVVCpu {
         let csr = ((instr >> 20) & 0xfff) as u16;
 
         if csr != CSR_STIMECMP {
-            panic!(
-                "Unhandled virtual instruction csr={csr:#x}, sepc: {:#x}, stval: {:#x}, htval: \
-                 {:#x}, htinst: {:#x}",
-                self.regs.guest_regs.sepc,
-                self.regs.trap_csrs.stval,
-                self.regs.trap_csrs.htval,
-                self.regs.trap_csrs.htinst,
-            );
+            return Err(ax_errno::ax_err_type!(
+                Unsupported,
+                alloc::format!(
+                    "Unhandled virtual instruction csr={csr:#x}, sepc: {:#x}, stval: {:#x}, \
+                     htval: {:#x}, htinst: {:#x}",
+                    self.regs.guest_regs.sepc,
+                    self.regs.trap_csrs.stval,
+                    self.regs.trap_csrs.htval,
+                    self.regs.trap_csrs.htinst,
+                )
+            ));
         }
 
         let funct3 = ((instr >> 12) & 0x7) as u8;
@@ -654,11 +657,14 @@ impl RISCVVCpu {
                 }
             }
             _ => {
-                panic!(
-                    "Unhandled virtual instruction funct3={funct3:#x} for csr={csr:#x}, sepc: \
-                     {:#x}",
-                    self.regs.guest_regs.sepc,
-                );
+                return Err(ax_errno::ax_err_type!(
+                    Unsupported,
+                    alloc::format!(
+                        "Unhandled virtual instruction funct3={funct3:#x} for csr={csr:#x}, sepc: \
+                         {:#x}",
+                        self.regs.guest_regs.sepc,
+                    )
+                ));
             }
         };
 
@@ -680,14 +686,17 @@ impl RISCVVCpu {
 
     #[cfg(not(feature = "sstc"))]
     fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
-        panic!(
-            "Unhandled virtual instruction without `sstc` feature, sepc: {:#x}, stval: {:#x}, \
-             htval: {:#x}, htinst: {:#x}",
-            self.regs.guest_regs.sepc,
-            self.regs.trap_csrs.stval,
-            self.regs.trap_csrs.htval,
-            self.regs.trap_csrs.htinst,
-        );
+        Err(ax_errno::ax_err_type!(
+            Unsupported,
+            alloc::format!(
+                "Unhandled virtual instruction without `sstc` feature, sepc: {:#x}, stval: {:#x}, \
+                 htval: {:#x}, htinst: {:#x}",
+                self.regs.guest_regs.sepc,
+                self.regs.trap_csrs.stval,
+                self.regs.trap_csrs.htval,
+                self.regs.trap_csrs.htinst,
+            )
+        ))
     }
 
     #[cfg(feature = "sstc")]
