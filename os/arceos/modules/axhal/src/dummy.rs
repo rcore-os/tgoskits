@@ -46,6 +46,14 @@ impl ConsoleIf for DummyConsole {
     fn irq_num() -> Option<usize> {
         None
     }
+
+    #[cfg(feature = "irq")]
+    fn set_input_irq_enabled(_enabled: bool) {}
+
+    #[cfg(feature = "irq")]
+    fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
+        ax_plat::console::ConsoleIrqEvent::SPURIOUS
+    }
 }
 
 #[impl_plat_interface]

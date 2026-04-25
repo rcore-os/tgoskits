@@ -341,6 +341,7 @@ ax-task = { path = "os/arceos/modules/axtask", version = "0.5" }
 axaddrspace = { path = "components/axaddrspace", version = "0.5" }
 ax-allocator = { path = "components/axallocator", version = "0.4" }
 axbacktrace = { path = "components/axbacktrace", version = "0.3" }
+ax-arm-pl031 = { path = "components/arm_pl031", version = "0.4" }
 axdevice = { path = "components/axdevice", version = "0.4" }
 axdevice_base = { path = "components/axdevice_base", version = "0.4" }
 ax-errno = { path = "components/axerrno", version = "0.4" }

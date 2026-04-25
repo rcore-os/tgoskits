@@ -5,6 +5,8 @@
 
 extern crate alloc;
 
+use bitflags::bitflags;
+
 #[cfg(feature = "fxmac")]
 /// fxmac driver for PhytiumPi
 pub mod fxmac;
@@ -20,6 +22,21 @@ pub use self::net_buf::{NetBuf, NetBufBox, NetBufPool, NetBufPtr};
 
 /// The ethernet address of the NIC (MAC address).
 pub struct EthernetAddress(pub [u8; 6]);
+
+bitflags! {
+    /// Network IRQ events reported by NIC drivers.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct NetIrqEvent: u32 {
+        /// The device has receive data ready.
+        const RX_READY = 1 << 0;
+        /// The device completed one or more transmit operations.
+        const TX_DONE = 1 << 1;
+        /// The device reported a receive-side error.
+        const RX_ERROR = 1 << 2;
+        /// The interrupt was not relevant to this NIC.
+        const SPURIOUS = 1 << 31;
+    }
+}
 
 /// Operations that require a network device (NIC) driver to implement.
 pub trait NetDriverOps: BaseDriverOps {
@@ -65,4 +82,9 @@ pub trait NetDriverOps: BaseDriverOps {
     /// Allocate a memory buffer of a specified size for network transmission,
     /// returns [`DevResult`]
     fn alloc_tx_buffer(&mut self, size: usize) -> DevResult<NetBufPtr>;
+
+    /// Handles a NIC interrupt and returns the device events it observed.
+    fn handle_irq(&mut self) -> NetIrqEvent {
+        NetIrqEvent::SPURIOUS
+    }
 }

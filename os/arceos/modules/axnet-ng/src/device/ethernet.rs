@@ -1,8 +1,13 @@
-use alloc::{string::String, vec};
+use alloc::{
+    string::String,
+    sync::{Arc, Weak},
+    vec,
+};
 use core::task::Waker;
 
 use ax_driver::prelude::*;
-use ax_task::future::register_irq_waker;
+use ax_sync::spin::SpinNoIrq;
+use axpoll::PollSet;
 use hashbrown::HashMap;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
@@ -19,24 +24,62 @@ use crate::{
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
+static IRQ_SOURCE: SpinNoIrq<Option<Weak<EthernetIrqState>>> = SpinNoIrq::new(None);
 
 struct Neighbor {
     hardware_address: EthernetAddress,
     expires_at: Instant,
 }
 
+struct EthernetIrqState {
+    irq_num: Option<usize>,
+    driver: SpinNoIrq<AxNetDevice>,
+    poll_ready: PollSet,
+}
+
+impl EthernetIrqState {
+    fn handle_irq(&self) -> NetIrqEvent {
+        self.driver.lock().handle_irq()
+    }
+}
+
 pub struct EthernetDevice {
     name: String,
-    inner: AxNetDevice,
+    inner: Arc<EthernetIrqState>,
     neighbors: HashMap<IpAddress, Option<Neighbor>>,
     ip: Ipv4Cidr,
 
     pending_packets: PacketBuffer<'static, IpAddress>,
 }
+
+fn handle_ethernet_irq() {
+    let Some(state) = IRQ_SOURCE.lock().as_ref().and_then(Weak::upgrade) else {
+        return;
+    };
+
+    let events = state.handle_irq();
+    if events.intersects(NetIrqEvent::RX_READY | NetIrqEvent::RX_ERROR) {
+        state.poll_ready.wake();
+    }
+}
+
 impl EthernetDevice {
     const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
 
     pub fn new(name: String, inner: AxNetDevice, ip: Ipv4Cidr) -> Self {
+        let irq_num = inner.irq_num();
+        let inner = Arc::new(EthernetIrqState {
+            irq_num,
+            driver: SpinNoIrq::new(inner),
+            poll_ready: PollSet::new(),
+        });
+        if let Some(irq) = inner.irq_num {
+            *IRQ_SOURCE.lock() = Some(Arc::downgrade(&inner));
+            if !ax_hal::irq::register(irq, handle_ethernet_irq) {
+                warn!("failed to register ethernet irq handler for irq {irq}");
+            }
+        }
+
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
             vec![
@@ -57,7 +100,7 @@ impl EthernetDevice {
 
     #[inline]
     fn hardware_address(&self) -> EthernetAddress {
-        EthernetAddress(self.inner.mac_address().0)
+        EthernetAddress(self.inner.driver.lock().mac_address().0)
     }
 
     fn send_to<F>(
@@ -134,10 +177,10 @@ impl EthernetDevice {
         false
     }
 
-    fn request_arp(&mut self, target_ip: IpAddress) {
+    fn request_arp(&mut self, target_ip: IpAddress) -> bool {
         let IpAddress::Ipv4(target_ipv4) = target_ip else {
             warn!("IPv6 address ARP is not supported: {}", target_ip);
-            return;
+            return false;
         };
         debug!("Requesting ARP for {}", target_ipv4);
 
@@ -149,8 +192,9 @@ impl EthernetDevice {
             target_protocol_addr: target_ipv4,
         };
 
+        let mut inner = self.inner.driver.lock();
         Self::send_to(
-            &mut self.inner,
+            &mut inner,
             EthernetAddress::BROADCAST,
             arp_repr.buffer_len(),
             |buf| arp_repr.emit(&mut ArpPacket::new_unchecked(buf)),
@@ -158,6 +202,7 @@ impl EthernetDevice {
         );
 
         self.neighbors.insert(target_ip, None);
+        true
     }
 
     fn process_arp(&mut self, payload: &[u8], now: Instant) {
@@ -215,8 +260,9 @@ impl EthernetDevice {
                     target_protocol_addr: source_protocol_addr,
                 };
 
+                let mut inner = self.inner.driver.lock();
                 Self::send_to(
-                    &mut self.inner,
+                    &mut inner,
                     source_hardware_addr,
                     response.buffer_len(),
                     |buf| response.emit(&mut ArpPacket::new_unchecked(buf)),
@@ -238,12 +284,13 @@ impl EthernetDevice {
                     };
                     if neighbor.expires_at <= now {
                         // Neighbor is expired, we need to request ARP again
-                        self.request_arp(next_hop);
+                        let _ = self.request_arp(next_hop);
                         break;
                     }
 
+                    let mut inner = self.inner.driver.lock();
                     Self::send_to(
-                        &mut self.inner,
+                        &mut inner,
                         neighbor.hardware_address,
                         buf.len(),
                         |b| b.copy_from_slice(buf),
@@ -263,13 +310,16 @@ impl Device for EthernetDevice {
 
     fn recv(&mut self, buffer: &mut PacketBuffer<()>, timestamp: Instant) -> bool {
         loop {
-            let rx_buf = match self.inner.receive() {
-                Ok(buf) => buf,
-                Err(err) => {
-                    if !matches!(err, DevError::Again) {
-                        warn!("receive failed: {:?}", err);
+            let rx_buf = {
+                let mut inner = self.inner.driver.lock();
+                match inner.receive() {
+                    Ok(buf) => buf,
+                    Err(err) => {
+                        if !matches!(err, DevError::Again) {
+                            warn!("receive failed: {:?}", err);
+                        }
+                        return false;
                     }
-                    return false;
                 }
             };
             trace!(
@@ -279,7 +329,7 @@ impl Device for EthernetDevice {
             );
 
             let result = self.handle_frame(rx_buf.packet(), buffer, timestamp);
-            self.inner.recycle_rx_buffer(rx_buf).unwrap();
+            self.inner.driver.lock().recycle_rx_buffer(rx_buf).unwrap();
             if result {
                 return true;
             }
@@ -288,8 +338,9 @@ impl Device for EthernetDevice {
 
     fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> bool {
         if next_hop.is_broadcast() || self.ip.broadcast().map(IpAddress::Ipv4) == Some(next_hop) {
+            let mut inner = self.inner.driver.lock();
             Self::send_to(
-                &mut self.inner,
+                &mut inner,
                 EthernetAddress::BROADCAST,
                 packet.len(),
                 |buf| buf.copy_from_slice(packet),
@@ -299,27 +350,24 @@ impl Device for EthernetDevice {
         }
 
         let need_request = match self.neighbors.get(&next_hop) {
-            Some(Some(neighbor)) => {
-                if neighbor.expires_at > timestamp {
-                    Self::send_to(
-                        &mut self.inner,
-                        neighbor.hardware_address,
-                        packet.len(),
-                        |buf| buf.copy_from_slice(packet),
-                        EthernetProtocol::Ipv4,
-                    );
-                    return false;
-                } else {
-                    true
-                }
+            Some(Some(neighbor)) if neighbor.expires_at > timestamp => {
+                let mut inner = self.inner.driver.lock();
+                Self::send_to(
+                    &mut inner,
+                    neighbor.hardware_address,
+                    packet.len(),
+                    |buf| buf.copy_from_slice(packet),
+                    EthernetProtocol::Ipv4,
+                );
+                return false;
             }
             // Request already sent
             Some(None) => false,
-            None => true,
+            Some(Some(_)) | None => true,
         };
         // Only send ARP request if we haven't already requested it
-        if need_request {
-            self.request_arp(next_hop);
+        if need_request && !self.request_arp(next_hop) {
+            return false;
         }
         if self.pending_packets.is_full() {
             warn!("Pending packets buffer is full, dropping packet");
@@ -334,8 +382,8 @@ impl Device for EthernetDevice {
     }
 
     fn register_waker(&self, waker: &Waker) {
-        if let Some(irq) = self.inner.irq_num() {
-            register_irq_waker(irq, waker);
+        if self.inner.irq_num.is_some() {
+            self.inner.poll_ready.register(waker);
         }
     }
 }

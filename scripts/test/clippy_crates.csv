@@ -44,6 +44,7 @@ axaddrspace
 ax-linked-list-r4l
 ax-log
 ax-mm
+ax-net-ng
 ax-riscv-plic
 ax-sched
 ax-sync

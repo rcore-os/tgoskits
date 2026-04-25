@@ -3,10 +3,12 @@ extern crate alloc;
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
-use ax_driver_net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps};
+use ax_driver_net::{
+    EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps, NetIrqEvent,
+};
+use ax_kspin::SpinNoIrq;
 use rd_net::{Interface, NetError};
 use rdrive::{Device, DriverGeneric};
-use spin::Mutex;
 
 use super::DmaImpl;
 
@@ -60,7 +62,8 @@ pub struct Net {
     mac: [u8; 6],
     irq_num: Option<usize>,
     buf_pool: Arc<NetBufPool>,
-    state: Mutex<NetState>,
+    irq_handler: Option<rd_net::IrqHandler>,
+    state: SpinNoIrq<NetState>,
 }
 
 impl TryFrom<Device<PlatformNetDevice>> for Net {
@@ -73,6 +76,7 @@ impl TryFrom<Device<PlatformNetDevice>> for Net {
         let irq_num = dev.irq_num;
         let tx_queue = dev.net.create_tx_queue().map_err(map_net_err_to_dev_err)?;
         let rx_queue = dev.net.create_rx_queue().map_err(map_net_err_to_dev_err)?;
+        let irq_handler = irq_num.map(|_| dev.net.irq_handler());
         drop(dev);
 
         Ok(Self {
@@ -80,7 +84,8 @@ impl TryFrom<Device<PlatformNetDevice>> for Net {
             mac,
             irq_num,
             buf_pool: NetBufPool::new(NET_BUF_POOL_CAPACITY, NET_BUF_LEN)?,
-            state: Mutex::new(NetState {
+            irq_handler,
+            state: SpinNoIrq::new(NetState {
                 tx_queue,
                 rx_queue,
                 pending_rx: VecDeque::with_capacity(RX_PREFETCH_TARGET),
@@ -230,6 +235,33 @@ impl NetDriverOps for Net {
         net_buf.set_header_len(0);
         net_buf.set_packet_len(size);
         Ok(net_buf.into_buf_ptr())
+    }
+
+    fn handle_irq(&mut self) -> NetIrqEvent {
+        let Some(handler) = &self.irq_handler else {
+            return NetIrqEvent::SPURIOUS;
+        };
+
+        handler.handle();
+
+        let mut events = NetIrqEvent::empty();
+        let mut state = self.state.lock();
+        if let Err(err) = self.prefetch_rx_packets(&mut state, RX_PREFETCH_TARGET) {
+            warn!(
+                "failed to prefetch rx packets for {} during irq: {err:?}",
+                self.name
+            );
+            events |= NetIrqEvent::RX_ERROR;
+        }
+        if !state.pending_rx.is_empty() {
+            events |= NetIrqEvent::RX_READY;
+        }
+
+        if events.is_empty() {
+            NetIrqEvent::SPURIOUS
+        } else {
+            events
+        }
     }
 }
 

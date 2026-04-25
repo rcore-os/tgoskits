@@ -2,7 +2,6 @@ use alloc::{string::String, sync::Arc};
 use core::{any::Any, time::Duration};
 
 use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeOps,
     NodePermission, NodeType, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
@@ -33,8 +32,8 @@ pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
 pub struct SimpleFs {
     name: String,
     fs_type: u32,
-    inodes: Mutex<Slab<()>>,
-    root: Mutex<Option<DirEntry>>,
+    inodes: SpinNoIrq<Slab<()>>,
+    root: SpinNoIrq<Option<DirEntry>>,
 }
 
 impl SimpleFs {
@@ -47,8 +46,8 @@ impl SimpleFs {
         let fs = Arc::new(Self {
             name,
             fs_type,
-            inodes: Mutex::new(Slab::new()),
-            root: Mutex::new(None),
+            inodes: SpinNoIrq::new(Slab::new()),
+            root: SpinNoIrq::new(None),
         });
         let root = root(fs.clone());
         fs.set_root(DirEntry::new_dir(

@@ -13,6 +13,7 @@ repository.workspace = true
 default = ["smp", "irq" ]
 smp = ["ax-plat/smp"]
 irq = ["ax-plat/irq"]
+rtc = ["dep:ax-arm-pl031"]
 fp-simd = ["ax-cpu/fp-simd"]
 uspace = ["somehal/uspace"]
 hv = ["somehal/hv", "ax-cpu/arm-el2"]
@@ -36,7 +37,9 @@ ax-driver-base.workspace = true
 ax-driver-block.workspace = true
 ax-driver-net = { workspace = true, optional = true }
 ax-driver-virtio = { workspace = true, features = ["block", "net"] }
+ax-arm-pl031 = { workspace = true, optional = true }
 ax-errno.workspace = true
+ax-kspin.workspace = true
 axklib.workspace = true
 ax-plat.workspace = true
 dma-api.workspace = true
