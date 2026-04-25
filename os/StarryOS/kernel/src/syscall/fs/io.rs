@@ -244,6 +244,10 @@ pub fn sys_preadv(
     iovcnt: usize,
     offset: __kernel_off_t,
 ) -> AxResult<isize> {
+    // preadv (unlike preadv2) does not accept offset=-1; reject negative offsets.
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     sys_preadv2(fd, iov, iovcnt, offset, 0)
 }
 
@@ -253,7 +257,20 @@ pub fn sys_pwritev(
     iovcnt: usize,
     offset: __kernel_off_t,
 ) -> AxResult<isize> {
+    // pwritev (unlike pwritev2) does not accept offset=-1; reject negative offsets.
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     sys_pwritev2(fd, iov, iovcnt, offset, 0)
+}
+
+/// Validate preadv2/pwritev2 flags.
+/// Currently no RWF_* flags are supported; any non-zero value is rejected.
+fn validate_rwf_flags(flags: u32) -> AxResult<()> {
+    if flags != 0 {
+        return Err(AxError::OperationNotSupported);
+    }
+    Ok(())
 }
 
 pub fn sys_preadv2(
@@ -261,16 +278,22 @@ pub fn sys_preadv2(
     iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
-    _flags: u32,
+    flags: u32,
 ) -> AxResult<isize> {
-    debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
-    if offset < 0 {
+    debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {flags}");
+    validate_rwf_flags(flags)?;
+    if offset < -1 {
         return Err(AxError::InvalidInput);
     }
-    let f = file_or_espipe(fd)?;
-    f.inner()
-        .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
-        .map(|n| n as _)
+    let mut io_buf = IoVectorBuf::new(iov, iovcnt)?.into_io();
+    if offset == -1 {
+        // offset == -1: use current file position (like readv)
+        let f = get_file_like(fd)?;
+        f.read(&mut io_buf).map(|n| n as _)
+    } else {
+        let f = file_or_espipe(fd)?;
+        f.inner().read_at(io_buf, offset as _).map(|n| n as _)
+    }
 }
 
 pub fn sys_pwritev2(
@@ -278,16 +301,22 @@ pub fn sys_pwritev2(
     iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
-    _flags: u32,
+    flags: u32,
 ) -> AxResult<isize> {
-    debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
-    if offset < 0 {
+    debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {flags}");
+    validate_rwf_flags(flags)?;
+    if offset < -1 {
         return Err(AxError::InvalidInput);
     }
-    let f = file_or_espipe_write(fd)?;
-    f.inner()
-        .write_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
-        .map(|n| n as _)
+    let mut io_buf = IoVectorBuf::new(iov, iovcnt)?.into_io();
+    if offset == -1 {
+        // offset == -1: use current file position (like writev)
+        let f = get_file_like(fd)?;
+        f.write(&mut io_buf).map(|n| n as _)
+    } else {
+        let f = file_or_espipe(fd)?;
+        f.inner().write_at(io_buf, offset as _).map(|n| n as _)
+    }
 }
 
 enum SendFile {
