@@ -314,7 +314,7 @@ pub fn sys_pwritev2(
         let f = get_file_like(fd)?;
         f.write(&mut io_buf).map(|n| n as _)
     } else {
-        let f = file_or_espipe(fd)?;
+        let f = file_or_espipe_write(fd)?;
         f.inner().write_at(io_buf, offset as _).map(|n| n as _)
     }
 }
