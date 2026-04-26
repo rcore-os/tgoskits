@@ -366,6 +366,52 @@ pub struct CommitHeader {
     pub h_commit_nsec: u32,       // 0x38 __be32: commit time nanoseconds
 }
 
+impl DiskFormat for CommitHeader {
+    fn from_disk_bytes(bytes: &[u8]) -> Self {
+        let h_header = JournalHeaderS::from_disk_bytes(&bytes[0..12]);
+        let h_chksum_type = bytes[12];
+        let h_chksum_size = bytes[13];
+        let mut h_padding = [0u8; 2];
+        h_padding.copy_from_slice(&bytes[14..16]);
+
+        let mut h_chksum = [0u32; 8];
+        let mut off = 16usize;
+        for elem in &mut h_chksum {
+            *elem = u32::from_be_bytes(bytes[off..off + 4].try_into().unwrap());
+            off += 4;
+        }
+
+        let h_commit_sec = u64::from_be_bytes(bytes[48..56].try_into().unwrap());
+        let h_commit_nsec = u32::from_be_bytes(bytes[56..60].try_into().unwrap());
+
+        CommitHeader {
+            h_header,
+            h_chksum_type,
+            h_chksum_size,
+            h_padding,
+            h_chksum,
+            h_commit_sec,
+            h_commit_nsec,
+        }
+    }
+
+    fn to_disk_bytes(&self, bytes: &mut [u8]) {
+        self.h_header.to_disk_bytes(&mut bytes[0..12]);
+        bytes[12] = self.h_chksum_type;
+        bytes[13] = self.h_chksum_size;
+        bytes[14..16].copy_from_slice(&self.h_padding);
+
+        let mut off = 16usize;
+        for i in 0..8 {
+            bytes[off..off + 4].copy_from_slice(&self.h_chksum[i].to_be_bytes());
+            off += 4;
+        }
+
+        bytes[48..56].copy_from_slice(&self.h_commit_sec.to_be_bytes());
+        bytes[56..60].copy_from_slice(&self.h_commit_nsec.to_be_bytes());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use DiskFormat;
@@ -539,51 +585,5 @@ mod tests {
         assert_eq!(parsed.h_chksum, commit.h_chksum);
         assert_eq!(parsed.h_commit_sec, commit.h_commit_sec);
         assert_eq!(parsed.h_commit_nsec, commit.h_commit_nsec);
-    }
-}
-
-impl DiskFormat for CommitHeader {
-    fn from_disk_bytes(bytes: &[u8]) -> Self {
-        let h_header = JournalHeaderS::from_disk_bytes(&bytes[0..12]);
-        let h_chksum_type = bytes[12];
-        let h_chksum_size = bytes[13];
-        let mut h_padding = [0u8; 2];
-        h_padding.copy_from_slice(&bytes[14..16]);
-
-        let mut h_chksum = [0u32; 8];
-        let mut off = 16usize;
-        for elem in &mut h_chksum {
-            *elem = u32::from_be_bytes(bytes[off..off + 4].try_into().unwrap());
-            off += 4;
-        }
-
-        let h_commit_sec = u64::from_be_bytes(bytes[48..56].try_into().unwrap());
-        let h_commit_nsec = u32::from_be_bytes(bytes[56..60].try_into().unwrap());
-
-        CommitHeader {
-            h_header,
-            h_chksum_type,
-            h_chksum_size,
-            h_padding,
-            h_chksum,
-            h_commit_sec,
-            h_commit_nsec,
-        }
-    }
-
-    fn to_disk_bytes(&self, bytes: &mut [u8]) {
-        self.h_header.to_disk_bytes(&mut bytes[0..12]);
-        bytes[12] = self.h_chksum_type;
-        bytes[13] = self.h_chksum_size;
-        bytes[14..16].copy_from_slice(&self.h_padding);
-
-        let mut off = 16usize;
-        for i in 0..8 {
-            bytes[off..off + 4].copy_from_slice(&self.h_chksum[i].to_be_bytes());
-            off += 4;
-        }
-
-        bytes[48..56].copy_from_slice(&self.h_commit_sec.to_be_bytes());
-        bytes[56..60].copy_from_slice(&self.h_commit_nsec.to_be_bytes());
     }
 }
