@@ -3,6 +3,7 @@
 mod cred;
 mod futex;
 mod ops;
+pub mod posix_timer;
 mod resources;
 mod signal;
 mod stat;
@@ -29,7 +30,10 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
-pub use self::{cred::*, futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
+pub use self::{
+    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
+    timer::*, user::*,
+};
 use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.
@@ -308,6 +312,9 @@ pub struct ProcessData {
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
+
+    /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
+    pub posix_timers: Arc<PosixTimerTable>,
 }
 
 impl ProcessData {
@@ -344,6 +351,8 @@ impl ProcessData {
             umask: AtomicU32::new(0o022),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
+
+            posix_timers: Arc::new(PosixTimerTable::default()),
         })
     }
 
