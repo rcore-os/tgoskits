@@ -328,15 +328,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 );
                 let irq_id = val;
 
-                // The PLIC ignores completion IDs that do not correspond to an
-                // enabled source for this context.
                 if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
-                    return self.sync_vseip(context_id);
-                }
-                if !self
-                    .context_enable_mask(context_id, irq_id / 32)
-                    .map(|mask| (mask & (1 << (irq_id % 32))) != 0)?
-                {
                     return self.sync_vseip(context_id);
                 }
                 let mut active_irqs = self.active_irqs.lock();

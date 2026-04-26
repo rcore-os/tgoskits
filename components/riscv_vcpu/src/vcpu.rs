@@ -286,7 +286,7 @@ impl RISCVVCpu {
     /// last `unbind()` so the next `bind()` does not overwrite them with stale
     /// saved state.
     pub fn latch_hvip_from_hw(&mut self) {
-        self.regs.virtual_hs_csrs.hvip = hvip::read().bits();
+        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits();
     }
 }
 
