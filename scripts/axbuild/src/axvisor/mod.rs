@@ -161,6 +161,11 @@ impl Axvisor {
                     .await?
                     .generated_vmconfig,
             ],
+            "riscv64" => vec![
+                qemu_test::prepare_linux_riscv64_guest_assets(&self.ctx)
+                    .await?
+                    .generated_vmconfig,
+            ],
             "x86_64" => vec![qemu_test::prepare_nimbos_x86_64_guest_vmconfig(&self.ctx).await?],
             "loongarch64" => vec![],
             _ => unreachable!(),
