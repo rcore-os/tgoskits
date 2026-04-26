@@ -113,7 +113,7 @@ fn slab_pool() -> &'static dyn SlabPoolTrait {
 
 #[virt_to_phys_impl]
 fn virt_to_phys(vaddr: usize) -> usize {
-    crate::eii::virt_to_phys(vaddr)
+    ax_plat::mem::virt_to_phys(vaddr.into()).as_usize()
 }
 
 /// The global allocator used by ArceOS when `buddy-slab` is enabled.

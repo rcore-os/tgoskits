@@ -418,6 +418,10 @@ impl Default for Axvisor {
     }
 }
 
+fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {
+    axvisor_dir.join(format!("scripts/ostool/qemu-{arch}.toml"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,8 +451,4 @@ mod tests {
             PathBuf::from("os/axvisor/scripts/ostool/qemu-aarch64.toml")
         );
     }
-}
-
-fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {
-    axvisor_dir.join(format!("scripts/ostool/qemu-{arch}.toml"))
 }

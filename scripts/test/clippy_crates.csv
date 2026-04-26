@@ -65,6 +65,7 @@ axplat-riscv64-qemu-virt-hv
 riscv-h
 riscv_vcpu
 rockchip-npu
+rsext4
 scope-local
 starry-process
 starry-vm

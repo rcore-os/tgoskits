@@ -5,20 +5,22 @@ use crate::{
 };
 
 fn metadata_csum_superblock() -> Ext4Superblock {
-    let mut sb = Ext4Superblock::default();
-    sb.s_magic = Ext4Superblock::EXT4_SUPER_MAGIC;
-    sb.s_feature_ro_compat |= Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM;
-    sb.s_inode_size = Ext4Inode::LARGE_INODE_SIZE;
-    sb.s_clusters_per_group = 8192;
-    sb.s_inodes_per_group = 2048;
-    sb.s_blocks_count_lo = 1024;
-    sb.s_free_blocks_count_lo = 900;
-    sb.s_free_inodes_count = 2000;
-    sb.s_uuid = [
-        0x5A, 0xC3, 0x11, 0x7E, 0x90, 0xAB, 0x4D, 0x2F, 0x10, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-        0x88,
-    ];
-    sb
+    Ext4Superblock {
+        s_magic: Ext4Superblock::EXT4_SUPER_MAGIC,
+        s_inode_size: Ext4Inode::LARGE_INODE_SIZE,
+        s_clusters_per_group: 8192,
+        s_inodes_per_group: 2048,
+        s_blocks_count_lo: 1024,
+        s_free_blocks_count_lo: 900,
+        s_free_inodes_count: 2000,
+        s_feature_ro_compat: Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE
+            | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM,
+        s_uuid: [
+            0x5A, 0xC3, 0x11, 0x7E, 0x90, 0xAB, 0x4D, 0x2F, 0x10, 0x22, 0x33, 0x44, 0x55, 0x66,
+            0x77, 0x88,
+        ],
+        ..Default::default()
+    }
 }
 
 fn sample_inode() -> Ext4Inode {

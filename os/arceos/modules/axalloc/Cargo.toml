@@ -9,7 +9,7 @@ license.workspace = true
 
 [features]
 default = ["tlsf", "ax-allocator/page-alloc-256m"]
-buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu"]
+buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu", "dep:ax-plat"]
 buddy = ["dep:ax-allocator", "ax-allocator/buddy"]
 slab = ["dep:ax-allocator", "ax-allocator/slab"]
 tlsf = ["dep:ax-allocator", "ax-allocator/tlsf"]
@@ -29,12 +29,13 @@ rustdoc-args = ["--cfg", "doc_cfg"]
 
 [dependencies]
 ax-allocator = { workspace = true, features = ["bitmap"], optional = true }
-axbacktrace = { workspace = true, optional = true }
 ax-errno.workspace = true
-buddy-slab-allocator = { workspace = true, optional = true }
-cfg-if.workspace = true
 ax-kspin.workspace = true
-log.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, optional = true }
+ax-plat = { workspace = true, optional = true }
+axbacktrace = { workspace = true, optional = true }
+buddy-slab-allocator = { workspace = true, optional = true }
+cfg-if.workspace = true
+log.workspace = true
 strum = { version = "0.27.2", default-features = false, features = ["derive"] }

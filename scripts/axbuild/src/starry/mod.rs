@@ -853,7 +853,7 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
-                    assert_eq!(args.target, "x86_64");
+                    assert_eq!(args.target.as_deref(), Some("x86_64"));
                     assert!(!args.stress);
                 }
                 _ => panic!("expected qemu test command"),

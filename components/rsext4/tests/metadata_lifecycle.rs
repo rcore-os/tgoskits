@@ -13,7 +13,7 @@ use rsext4::{
     *,
 };
 
-const INODE_SIZE: u16 = DEFAULT_INODE_SIZE as u16;
+const INODE_SIZE: u16 = DEFAULT_INODE_SIZE;
 
 /// In-memory block device with a monotonically increasing clock.
 struct TimedBlockDevice {

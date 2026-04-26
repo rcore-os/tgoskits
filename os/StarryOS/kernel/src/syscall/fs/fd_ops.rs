@@ -258,7 +258,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
 
             let mut ret = f.open_flags();
             if f.nonblocking() {
-                ret |= O_NONBLOCK as u32;
+                ret |= O_NONBLOCK;
             }
 
             Ok(ret as _)

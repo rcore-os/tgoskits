@@ -299,23 +299,19 @@ impl Device for EthernetDevice {
         }
 
         let need_request = match self.neighbors.get(&next_hop) {
-            Some(Some(neighbor)) => {
-                if neighbor.expires_at > timestamp {
-                    Self::send_to(
-                        &mut self.inner,
-                        neighbor.hardware_address,
-                        packet.len(),
-                        |buf| buf.copy_from_slice(packet),
-                        EthernetProtocol::Ipv4,
-                    );
-                    return false;
-                } else {
-                    true
-                }
+            Some(Some(neighbor)) if neighbor.expires_at > timestamp => {
+                Self::send_to(
+                    &mut self.inner,
+                    neighbor.hardware_address,
+                    packet.len(),
+                    |buf| buf.copy_from_slice(packet),
+                    EthernetProtocol::Ipv4,
+                );
+                return false;
             }
             // Request already sent
             Some(None) => false,
-            None => true,
+            _ => true,
         };
         // Only send ARP request if we haven't already requested it
         if need_request {

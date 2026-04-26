@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn validate_rseq_addr_rejects_nonnull_addr_with_zero_len() {
         assert_eq!(
-            validate_rseq_addr(1usize as *mut u8, 0).unwrap_err(),
+            validate_rseq_addr(core::ptr::dangling_mut::<u8>(), 0).unwrap_err(),
             AxError::InvalidInput
         );
     }
