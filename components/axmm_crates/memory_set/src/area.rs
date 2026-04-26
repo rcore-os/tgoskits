@@ -100,8 +100,10 @@ impl<B: MappingBackend> MemoryArea<B> {
 
     /// Shrinks the memory area at the left side.
     ///
-    /// The start address of the memory area is increased by `new_size`. The
-    /// shrunk part is unmapped.
+    /// The memory area is shrunk to `new_size`, and the left-side part is
+    /// unmapped.
+    ///
+    /// The start address is increased by `old_size - new_size`.
     ///
     /// `new_size` must be greater than 0 and less than the current size.
     pub(crate) fn shrink_left(
@@ -121,13 +123,16 @@ impl<B: MappingBackend> MemoryArea<B> {
         // Safety: `unmap_size` is less than the current size, so it will never
         // overflow.
         self.va_range.start = self.va_range.start.wrapping_add(unmap_size);
+        self.backend.shrink_left(unmap_size);
         Ok(())
     }
 
     /// Shrinks the memory area at the right side.
     ///
-    /// The end address of the memory area is decreased by `new_size`. The
-    /// shrunk part is unmapped.
+    /// The memory area is shrunk to `new_size`, and the right-side part is
+    /// unmapped.
+    ///
+    /// The end address is decreased by `old_size - new_size`.
     ///
     /// `new_size` must be greater than 0 and less than the current size.
     pub(crate) fn shrink_right(
@@ -149,6 +154,7 @@ impl<B: MappingBackend> MemoryArea<B> {
 
         // Use wrapping_sub to avoid overflow check, same as above.
         self.va_range.end = self.va_range.end.wrapping_sub(unmap_size);
+        self.backend.shrink_right(unmap_size);
         Ok(())
     }
 
@@ -161,13 +167,20 @@ impl<B: MappingBackend> MemoryArea<B> {
     /// of the parts is empty after splitting.
     pub(crate) fn split(&mut self, pos: B::Addr) -> Option<Self> {
         if self.start() < pos && pos < self.end() {
+            let align_diff = pos.sub_addr(self.start());
+
+            let right = self
+                .backend
+                .split(align_diff)
+                .expect("backend should be splittable");
+
             let new_area = Self::new(
                 pos,
                 // Use wrapping_sub_addr to avoid overflow check. It is safe because
                 // `pos` is within the memory area.
                 self.end().wrapping_sub_addr(pos),
                 self.flags,
-                self.backend.clone(),
+                right,
             );
             self.va_range.end = pos;
             Some(new_area)

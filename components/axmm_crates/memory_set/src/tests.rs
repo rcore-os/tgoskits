@@ -52,6 +52,14 @@ impl MappingBackend for MockBackend {
         }
         true
     }
+
+    fn split(&mut self, _align_diff: usize) -> Option<Self> {
+        Some(self.clone())
+    }
+
+    fn shrink_left(&mut self, _shrink_size: usize) {}
+
+    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 macro_rules! assert_ok {

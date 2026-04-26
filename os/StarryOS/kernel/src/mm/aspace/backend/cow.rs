@@ -1,4 +1,8 @@
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+    sync::Arc,
+};
 use core::slice;
 
 use ax_errno::{AxError, AxResult};
@@ -8,7 +12,7 @@ use ax_hal::{
     paging::{MappingFlags, PageSize, PageTableCursor, PagingError},
 };
 use ax_kspin::SpinNoIrq;
-use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
 use ax_sync::Mutex;
 
 use super::{
@@ -81,6 +85,8 @@ pub struct CowBackend {
     start: VirtAddr,
     size: PageSize,
     file: Option<(FileBackend, u64, Option<u64>)>,
+    name: Option<String>,
+    shared: bool,
 }
 
 impl CowBackend {
@@ -155,6 +161,23 @@ impl CowBackend {
         }
 
         Ok(())
+    }
+
+    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, bool)> {
+        let loc = self
+            .file
+            .as_ref()
+            .map(|(file, offset, ..)| (file.location(), *offset));
+        if let Some((loc, offset)) = loc {
+            let path = loc.absolute_path().map(|pb| pb.to_string())?;
+            let inode = loc.inode();
+            let offset = align_down_4k(offset as usize) as u64;
+            return Ok((path, Some(offset), Some(inode), self.shared));
+        }
+        if let Some(name) = &self.name {
+            return Ok((name.clone(), None, None, self.shared));
+        }
+        Err(AxError::InvalidInput)
     }
 }
 
@@ -264,6 +287,31 @@ impl BackendOps for CowBackend {
 
         Ok(Backend::Cow(self.clone()))
     }
+
+    fn split(&mut self, align_diff: usize) -> Option<Backend> {
+        assert!(align_diff.is_multiple_of(PAGE_SIZE_4K));
+        if align_diff == 0 {
+            return None;
+        }
+        let mut right = self.clone();
+        right.start = self.start + align_diff;
+
+        if let Some((_, file_start, _)) = right.file.as_mut() {
+            *file_start += align_diff as u64;
+        }
+        Some(Backend::Cow(right))
+    }
+
+    fn shrink_left(&mut self, shrink_size: usize) {
+        assert!(shrink_size.is_multiple_of(PAGE_SIZE_4K));
+        self.start += shrink_size;
+        self.file.as_mut().map(|(_, file_start, _)| {
+            *file_start += shrink_size as u64;
+            Some(())
+        });
+    }
+
+    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 impl Backend {
@@ -273,19 +321,24 @@ impl Backend {
         file: FileBackend,
         file_start: u64,
         file_end: Option<u64>,
+        shared: bool,
     ) -> Self {
         Self::Cow(CowBackend {
             start,
             size,
             file: Some((file, file_start, file_end)),
+            name: None,
+            shared,
         })
     }
 
-    pub fn new_alloc(start: VirtAddr, size: PageSize) -> Self {
+    pub fn new_alloc(start: VirtAddr, size: PageSize, name: &str) -> Self {
         Self::Cow(CowBackend {
             start,
             size,
             file: None,
+            name: Some(name.to_string()),
+            shared: false,
         })
     }
 }

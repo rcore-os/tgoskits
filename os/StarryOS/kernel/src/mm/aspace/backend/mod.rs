@@ -1,5 +1,9 @@
 //! Memory mapping backends.
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
+};
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult};
@@ -104,6 +108,20 @@ pub trait BackendOps {
         new_pt: &mut PageTableCursor,
         new_aspace: &Arc<Mutex<AddrSpace>>,
     ) -> AxResult<Backend>;
+
+    /// Splits the backend into two at the given position, and returns the backend for the upper part.
+    ///
+    /// The original backend is shrunk to the lower part.
+    ///
+    /// Returns `None` if the given position is not in the memory area, or one
+    /// of the parts is empty after splitting.
+    fn split(&mut self, align_diff: usize) -> Option<Backend>;
+
+    /// Shrinks the backend from the left by the given size.
+    fn shrink_left(&mut self, _shrink_size: usize);
+
+    /// Shrinks the backend from the right by the given size.
+    fn shrink_right(&mut self, _shrink_size: usize);
 }
 
 /// A unified enum type for different memory mapping backends.
@@ -114,6 +132,20 @@ pub enum Backend {
     Cow(cow::CowBackend),
     Shared(shared::SharedBackend),
     File(file::FileBackend),
+}
+
+impl Backend {
+    /// Returns the file information if this is a file-backed mapping, or `None` otherwise.
+    ///
+    /// The returned tuple contains the file name, offset, inode and whether the mapping is shared.
+    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, bool)> {
+        match self {
+            Backend::Cow(b) => b.file_info(),
+            Backend::Linear(b) => Ok(("".to_string(), None, None, b.is_shared())),
+            Backend::Shared(_) => Ok(("".to_string(), None, None, true)),
+            Backend::File(b) => b.file_info(),
+        }
+    }
 }
 
 impl MappingBackend for Backend {
@@ -155,5 +187,17 @@ impl MappingBackend for Backend {
             return false;
         }
         cursor.protect_region(start, size, new_flags).is_ok()
+    }
+
+    fn split(&mut self, align_diff: usize) -> Option<Self> {
+        BackendOps::split(self, align_diff)
+    }
+
+    fn shrink_left(&mut self, shrink_size: usize) {
+        BackendOps::shrink_left(self, shrink_size)
+    }
+
+    fn shrink_right(&mut self, shrink_size: usize) {
+        BackendOps::shrink_right(self, shrink_size)
     }
 }

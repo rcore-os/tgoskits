@@ -394,6 +394,12 @@ impl TryFrom<i32> for AxError {
     }
 }
 
+impl From<core::fmt::Error> for AxError {
+    fn from(_: core::fmt::Error) -> Self {
+        AxError::new_ax(AxErrorKind::InvalidInput)
+    }
+}
+
 impl fmt::Debug for AxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.data() {

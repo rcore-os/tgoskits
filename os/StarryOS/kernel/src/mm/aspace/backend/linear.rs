@@ -15,11 +15,16 @@ use super::{AddrSpace, Backend, BackendOps};
 #[derive(Clone)]
 pub struct LinearBackend {
     offset: isize,
+    shared: bool,
 }
 
 impl LinearBackend {
     fn pa(&self, va: VirtAddr) -> PhysAddr {
         PhysAddr::from((va.as_usize() as isize - self.offset) as usize)
+    }
+
+    pub const fn is_shared(&self) -> bool {
+        self.shared
     }
 }
 
@@ -52,10 +57,23 @@ impl BackendOps for LinearBackend {
     ) -> AxResult<Backend> {
         Ok(Backend::Linear(self.clone()))
     }
+
+    fn split(&mut self, _align_diff: usize) -> Option<Backend> {
+        // linear backend can be trivially split since it does not have any state.
+        Some(Backend::Linear(self.clone()))
+    }
+
+    fn shrink_left(&mut self, _shrink_size: usize) {
+        // linear backend can be trivially shrunk since it does not have any state.
+    }
+
+    fn shrink_right(&mut self, _shrink_size: usize) {
+        // linear backend can be trivially shrunk since it does not have any state.
+    }
 }
 
 impl Backend {
-    pub fn new_linear(offset: isize) -> Self {
-        Self::Linear(LinearBackend { offset })
+    pub fn new_linear(offset: isize, shared: bool) -> Self {
+        Self::Linear(LinearBackend { offset, shared })
     }
 }

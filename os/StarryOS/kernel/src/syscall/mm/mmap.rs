@@ -198,6 +198,7 @@ pub fn sys_mmap(
                             length = length.min(range.size().align_down(page_size));
                             Backend::new_linear(
                                 start.as_usize() as isize - range.start.as_usize() as isize,
+                                true,
                             );
                         }
                         DeviceMmap::None => return Err(AxError::NoSuchDevice),
@@ -225,6 +226,7 @@ pub fn sys_mmap(
                             flags,
                             offset,
                             &curr.as_thread().proc_data.aspace,
+                            true,
                         )
                     }
                     FileBackend::Direct(loc) => {
@@ -237,9 +239,14 @@ pub fn sys_mmap(
                             DeviceMmap::None => {
                                 return Err(AxError::NoSuchDevice);
                             }
-                            DeviceMmap::ReadOnly => {
-                                Backend::new_cow(start, page_size, backend, offset as u64, None)
-                            }
+                            DeviceMmap::ReadOnly => Backend::new_cow(
+                                start,
+                                page_size,
+                                backend,
+                                offset as u64,
+                                None,
+                                true,
+                            ),
                             DeviceMmap::Physical(range) => {
                                 if range.is_empty() {
                                     return Err(AxError::InvalidInput);
@@ -247,6 +254,7 @@ pub fn sys_mmap(
                                 length = capped_device_map_len(length, range.size(), page_size);
                                 Backend::new_linear(
                                     start.as_usize() as isize - range.start.as_usize() as isize,
+                                    true,
                                 )
                             }
                             DeviceMmap::Cache(cache) => Backend::new_file(
@@ -255,6 +263,7 @@ pub fn sys_mmap(
                                 flags,
                                 offset,
                                 &curr.as_thread().proc_data.aspace,
+                                true,
                             ),
                         }
                     }
@@ -273,9 +282,9 @@ pub fn sys_mmap(
                 if !file_flags.contains(FileFlags::READ) {
                     return Err(AxError::PermissionDenied);
                 }
-                Backend::new_cow(start, page_size, backend, offset as u64, None)
+                Backend::new_cow(start, page_size, backend, offset as u64, None, false)
             } else {
-                Backend::new_alloc(start, page_size)
+                Backend::new_alloc(start, page_size, "[anon]")
             }
         }
         _ => return Err(AxError::InvalidInput),
