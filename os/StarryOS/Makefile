@@ -12,7 +12,7 @@ export MEM := 1G
 export ICOUNT := n
 
 # Generated Options
-export A := $(PWD)
+export A := $(CURDIR)/starryos
 export NO_AXSTD := y
 export AX_LIB := ax-feat
 export APP_FEATURES := qemu

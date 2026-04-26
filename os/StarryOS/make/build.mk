@@ -5,7 +5,7 @@ include cargo.mk
 ifeq ($(APP_TYPE), c)
   include build_c.mk
 else
-  rust_package := $(shell cat $(APP)/starryos/Cargo.toml | sed -n 's/^name = "\([a-z0-9A-Z_\-]*\)"/\1/p' | head -1)
+  rust_package := $(shell cat $(APP)/Cargo.toml | sed -n 's/^name = "\([a-z0-9A-Z_\-]*\)"/\1/p' | head -1)
   rust_elf := $(TARGET_DIR)/$(TARGET)/$(MODE)/$(rust_package)
 endif
 
