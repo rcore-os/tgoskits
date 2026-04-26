@@ -1029,7 +1029,6 @@ version = "0.3.6"
 name = "ax-io"
 version = "0.5.4"
 dependencies = [
- "autocfg",
  "ax-errno",
  "heapless 0.9.2",
  "memchr",
