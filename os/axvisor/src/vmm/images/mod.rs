@@ -121,14 +121,14 @@ impl ImageLoader {
 
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             crate::vmm::fdt::update_fdt(
                 core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
                 _dtb_slice.len(),
                 self.vm.clone(),
                 &self.config,
             );
-            #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
+            #[cfg(target_arch = "loongarch64")]
             load_vm_image_from_memory(_dtb_slice, self.dtb_load_gpa.unwrap(), self.vm.clone())
                 .expect("Failed to load DTB images");
         } else {
@@ -308,14 +308,14 @@ pub mod fs {
         let vm_config = axvm::config::AxVMConfig::from(loader.config.clone());
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             crate::vmm::fdt::update_fdt(
                 core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
                 _dtb_slice.len(),
                 loader.vm.clone(),
                 &loader.config,
             );
-            #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
+            #[cfg(target_arch = "loongarch64")]
             load_vm_image_from_memory(_dtb_slice, loader.dtb_load_gpa.unwrap(), loader.vm.clone())
                 .expect("Failed to load DTB images");
         }

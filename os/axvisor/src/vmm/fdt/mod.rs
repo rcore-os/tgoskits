@@ -32,7 +32,7 @@ use spin::Mutex;
 
 pub use parser::*;
 // pub use print::print_fdt;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use create::update_fdt;
 pub use device::build_all_node_paths;
 #[cfg(any(target_arch = "aarch64", test))]
