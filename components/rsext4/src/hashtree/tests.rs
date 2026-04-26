@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use core::cell::Cell;
 
 use super::*;
@@ -19,8 +19,7 @@ struct MockBlockDevice {
 
 impl MockBlockDevice {
     fn new(size: usize) -> Self {
-        let mut data = Vec::new();
-        data.resize(size, 0);
+        let data = vec![0; size];
         Self {
             data,
             is_open: false,
@@ -98,9 +97,11 @@ fn create_test_fs() -> Ext4FileSystem {
         superblock::Ext4Superblock,
     };
 
-    let mut superblock = Ext4Superblock::default();
-    superblock.s_hash_seed = [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA];
-    superblock.s_def_hash_version = 0x8;
+    let superblock = Ext4Superblock {
+        s_hash_seed: [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA],
+        s_def_hash_version: 0x8,
+        ..Default::default()
+    };
 
     let inode_size = match superblock.s_inode_size {
         0 => DEFAULT_INODE_SIZE as usize,
@@ -211,8 +212,7 @@ fn test_dx_entry_parsing() {
     let fs = create_test_fs();
     let manager = create_hash_tree_manager(&fs);
 
-    let mut test_data = Vec::new();
-    test_data.resize(16, 0);
+    let mut test_data = vec![0; 16];
     test_data[0..4].copy_from_slice(&0x12345678u32.to_le_bytes());
     test_data[4..8].copy_from_slice(&1u32.to_le_bytes());
     test_data[8..12].copy_from_slice(&0x87654321u32.to_le_bytes());

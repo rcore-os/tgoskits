@@ -5,6 +5,7 @@ mod default;
 mod disk;
 mod features;
 mod geometry;
+#[cfg(test)]
 mod tests;
 mod types;
 

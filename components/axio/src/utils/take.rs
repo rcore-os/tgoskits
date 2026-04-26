@@ -97,39 +97,39 @@ impl<T: Read> Read for Take<T> {
             // The condition above guarantees that `self.limit` fits in `usize`.
             let limit = self.limit as usize;
 
-            #[cfg(borrowedbuf_init)]
-            let extra_init = cmp::min(limit, buf.init_mut().len());
+            let is_init = buf.is_init();
 
             // SAFETY: no uninit data is written to ibuf
             let ibuf = unsafe { &mut buf.as_mut()[..limit] };
 
             let mut sliced_buf: BorrowedBuf<'_> = ibuf.into();
 
-            #[cfg(borrowedbuf_init)]
             // SAFETY: extra_init bytes of ibuf are known to be initialized
-            unsafe {
-                sliced_buf.set_init(extra_init);
+            if is_init {
+                unsafe { sliced_buf.set_init() };
             }
 
             let mut cursor = sliced_buf.unfilled();
             let result = self.inner.read_buf(cursor.reborrow());
 
-            #[cfg(borrowedbuf_init)]
-            let new_init = cursor.init_mut().len();
+            let should_init = cursor.is_init();
             let filled = sliced_buf.len();
 
             // cursor / sliced_buf / ibuf must drop here
 
-            #[cfg(borrowedbuf_init)]
+            // Avoid accidentally quadratic behaviour by initializing the whole
+            // cursor if only part of it was initialized.
+            if should_init {
+                // SAFETY: no uninit data is written
+                let uninit = unsafe { &mut buf.as_mut()[limit..] };
+                uninit.write_filled(0);
+                // SAFETY: all bytes that were not initialized by `T::read_buf`
+                // have just been written to.
+                unsafe { buf.set_init() };
+            }
+
             unsafe {
                 // SAFETY: filled bytes have been filled and therefore initialized
-                buf.advance_unchecked(filled);
-                // SAFETY: new_init bytes of buf's unfilled buffer have been initialized
-                buf.set_init(new_init);
-            }
-            #[cfg(not(borrowedbuf_init))]
-            // SAFETY: filled bytes have been filled and therefore initialized
-            unsafe {
                 buf.advance(filled);
             }
 
