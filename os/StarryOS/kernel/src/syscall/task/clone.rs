@@ -320,3 +320,9 @@ pub fn sys_clone(
 pub fn sys_fork(uctx: &UserContext) -> AxResult<isize> {
     sys_clone(uctx, SIGCHLD, 0, 0, 0, 0)
 }
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
+    let flags = (CloneFlags::VFORK | CloneFlags::VM).bits() as u32 | SIGCHLD;
+    sys_clone(uctx, flags, 0, 0, 0, 0)
+}
