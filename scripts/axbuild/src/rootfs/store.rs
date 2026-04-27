@@ -228,6 +228,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::download::test_support;
 
     #[tokio::test]
     async fn ensure_rootfs_for_arch_redownloads_invalid_cached_archive() {
@@ -354,71 +355,22 @@ mod tests {
     }
 
     struct TestServer {
-        addr: std::net::SocketAddr,
-        requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+        handle: test_support::MockHandle,
     }
 
     impl TestServer {
         async fn start(body: Vec<u8>) -> Self {
-            use tokio::{
-                io::{AsyncReadExt, AsyncWriteExt},
-                net::TcpListener,
-            };
-
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let request_counter = requests.clone();
-            let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
-
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = &mut shutdown_rx => break,
-                        accepted = listener.accept() => {
-                            let Ok((mut socket, _)) = accepted else {
-                                break;
-                            };
-                            let body = body.clone();
-                            let request_counter = request_counter.clone();
-                            tokio::spawn(async move {
-                                let mut buf = [0u8; 4096];
-                                let _ = socket.read(&mut buf).await;
-                                request_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                let header = format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                    body.len()
-                                );
-                                let _ = socket.write_all(header.as_bytes()).await;
-                                let _ = socket.write_all(&body).await;
-                            });
-                        }
-                    }
-                }
-            });
-
             Self {
-                addr,
-                requests,
-                shutdown: Some(shutdown_tx),
+                handle: test_support::register_bytes("rootfs.img.tar.gz", body),
             }
         }
 
         fn url(&self) -> String {
-            format!("http://{}/rootfs.img.tar.gz", self.addr)
+            self.handle.url().to_string()
         }
 
         fn request_count(&self) -> usize {
-            self.requests.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    impl Drop for TestServer {
-        fn drop(&mut self) {
-            if let Some(shutdown) = self.shutdown.take() {
-                let _ = shutdown.send(());
-            }
+            self.handle.request_count()
         }
     }
 }

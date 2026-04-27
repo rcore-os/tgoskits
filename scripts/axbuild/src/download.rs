@@ -71,14 +71,12 @@ async fn download_file_inner(
     if let Some(response) = test_support::download_response(url, resume_from) {
         let response = response?;
         let status = response.status;
-        if retry_on_invalid_range
-            && resume_from > 0
-            && status == StatusCode::RANGE_NOT_SATISFIABLE
+        if retry_on_invalid_range && resume_from > 0 && status == StatusCode::RANGE_NOT_SATISFIABLE
         {
             drop(_lock);
-            tokio_fs::remove_file(&part_path)
-                .await
-                .with_context(|| format!("failed to remove invalid partial {}", part_path.display()))?;
+            tokio_fs::remove_file(&part_path).await.with_context(|| {
+                format!("failed to remove invalid partial {}", part_path.display())
+            })?;
             return Box::pin(download_file_inner(client, url, path, false)).await;
         }
 

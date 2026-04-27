@@ -402,8 +402,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::axvisor::image::registry::RegistrySource;
-    use crate::download::test_support;
+    use crate::{axvisor::image::registry::RegistrySource, download::test_support};
 
     fn sample_registry() -> &'static str {
         r#"
