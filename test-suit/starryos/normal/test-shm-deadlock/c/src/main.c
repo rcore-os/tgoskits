@@ -22,6 +22,7 @@
 #include <sys/wait.h>
 #include <sched.h>
 #include <unistd.h>
+#include <errno.h>
 
 /* Shared state between threads */
 static volatile int g_running = 1;
@@ -41,6 +42,32 @@ static volatile int g_shmat_started = 0;
 #define SHM_RACE_USEC 1000000
 #define SHM_ALARM_SEC 3
 #endif
+
+static int wait_clone_exit_with_timeout(int tid, const char *name) {
+    int waited_us = 0;
+    int status;
+
+    while (waited_us < SHM_ALARM_SEC * 1000000) {
+        int ret = waitpid(tid, &status, __WALL | WNOHANG);
+        if (ret == tid) {
+            return 0;
+        }
+        if (ret < 0) {
+            printf("  FAIL | test_shm_deadlock.c | waitpid %s"
+                   " (errno=%d)\n",
+                   name, errno);
+            return -1;
+        }
+
+        usleep(10000);
+        waited_us += 10000;
+    }
+
+    printf("  FAIL | test_shm_deadlock.c | waitpid %s"
+           " (TIMEOUT after %ds - probable deadlock in SHM lock ordering)\n",
+           name, SHM_ALARM_SEC);
+    return -1;
+}
 
 /*
  * Thread 1: repeatedly call shmget with the same key.
@@ -85,23 +112,6 @@ static int shmat_thread(void *arg) {
     return 0;
 }
 
-static int watchdog_thread(void *arg) {
-    (void)arg;
-
-    for (int i = 0; i < SHM_ALARM_SEC * 10; i++) {
-        usleep(100000);
-        if (!g_running) {
-            return 0;
-        }
-    }
-
-    g_deadlock_detected = 1;
-    printf("  FAIL | test_shm_deadlock.c | concurrent_shmget_shmat"
-           " (TIMEOUT after %ds - probable deadlock in SHM lock ordering)\n",
-           SHM_ALARM_SEC);
-    _exit(1);
-}
-
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -119,22 +129,14 @@ int main(void)
                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             void *stack2 = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            void *stack3 = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
-                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
             CHECK(stack1 != MAP_FAILED, "stack1 mmap");
             CHECK(stack2 != MAP_FAILED, "stack2 mmap");
-            CHECK(stack3 != MAP_FAILED, "stack3 mmap");
 
-            if (stack1 != MAP_FAILED && stack2 != MAP_FAILED &&
-                stack3 != MAP_FAILED) {
+            if (stack1 != MAP_FAILED && stack2 != MAP_FAILED) {
                 int flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
 
                 /* clone() takes top of stack (stack grows down) */
-                int tid3 = clone(watchdog_thread, (char *)stack3 + STACK_SIZE,
-                                 flags, NULL);
-                CHECK(tid3 >= 0, "clone watchdog_thread");
-
                 int tid2 = clone(shmat_thread, (char *)stack2 + STACK_SIZE,
                                  flags, NULL);
                 CHECK(tid2 >= 0, "clone shmat_thread");
@@ -147,19 +149,19 @@ int main(void)
                                  flags, NULL);
                 CHECK(tid1 >= 0, "clone shmget_thread");
 
-                if (tid1 >= 0 && tid2 >= 0 && tid3 >= 0) {
+                if (tid1 >= 0 && tid2 >= 0) {
                     /*
                      * Let the threads race. If a deadlock occurs,
-                     * the watchdog worker will print FAIL.
+                     * timeout-aware waitpid below will print FAIL.
                      */
                     usleep(SHM_RACE_USEC);
                     g_running = 0;
 
-                    /* Wait for threads to finish */
-                    int status;
-                    waitpid(tid1, &status, __WALL);
-                    waitpid(tid2, &status, __WALL);
-                    waitpid(tid3, &status, __WALL);
+                    if (wait_clone_exit_with_timeout(tid1, "shmget_thread") < 0 ||
+                        wait_clone_exit_with_timeout(tid2, "shmat_thread") < 0) {
+                        g_deadlock_detected = 1;
+                        _exit(1);
+                    }
 
                     CHECK(!g_deadlock_detected, "no deadlock detected");
                 } else {
@@ -169,7 +171,6 @@ int main(void)
                 /* Cleanup */
                 if (stack1 != MAP_FAILED) munmap(stack1, STACK_SIZE);
                 if (stack2 != MAP_FAILED) munmap(stack2, STACK_SIZE);
-                if (stack3 != MAP_FAILED) munmap(stack3, STACK_SIZE);
             }
 
             /* Remove the shared memory segment */
