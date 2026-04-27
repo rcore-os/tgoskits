@@ -308,12 +308,7 @@ impl OperationTrait for MatMul<i8, i32> {
         } else {
             fd_banks + 1
         };
-        let mut weight_banks = cna_desc.weight_bytes / NPU_CBUF_BANK_SIZE as u32;
-        weight_banks = if (cna_desc.weight_bytes % NPU_CBUF_BANK_SIZE as u32) == 0 {
-            weight_banks
-        } else {
-            weight_banks + 1
-        };
+        let weight_banks;
         if (fd_banks) > NPU_CBUF_BANKS - 1 {
             panic!("Input feature data size exceed cbuf size");
         } else if cna_desc.weight_bytes_per_kernel <= NPU_CBUF_BANK_SIZE as u32 {

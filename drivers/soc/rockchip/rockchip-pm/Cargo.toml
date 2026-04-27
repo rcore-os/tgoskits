@@ -1,7 +1,7 @@
 [package]
 edition = "2024"
 name = "rockchip-pm"
-version = "0.4.1"
+version = "0.4.2"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "no-std"]
 description = "Driver for Rockchip Power Management Unit (PMU) supporting RK3588 and similar SoCs."

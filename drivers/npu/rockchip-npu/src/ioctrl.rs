@@ -1,6 +1,5 @@
 use core::hint::spin_loop;
 
-use mbarrier::mb;
 use tock_registers::interfaces::Readable;
 
 use crate::{
@@ -232,7 +231,7 @@ impl Rknpu {
             let mut clear_count: u64 = 0;
             while self.base[idx].handle_interrupt() != 0 {
                 clear_count += 1;
-                if clear_count % 1_000_000 == 0 {
+                if clear_count.is_multiple_of(1_000_000) {
                     warn!(
                         "rknpu submit_one: stuck clearing interrupts, cleared {} times",
                         clear_count
@@ -265,7 +264,7 @@ impl Rknpu {
                     return Err(RknpuError::TaskError);
                 }
                 wait_count += 1;
-                if wait_count % 1_000_000 == 0 {
+                if wait_count.is_multiple_of(1_000_000) {
                     warn!(
                         "rknpu submit_one: still waiting, int_status=0x{:x}, polled {} times",
                         status, wait_count

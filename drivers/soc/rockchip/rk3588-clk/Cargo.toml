@@ -1,6 +1,6 @@
 [package]
 name = "rk3588-clk"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 authors = ["Yang Jinquan <YJQ980314@Gmail.com>", "Bai Qiaosen<baiqiaosen@gmail.com>"]
 description = "Clock and Reset Unit (CRU) driver for RK3588 SoC"
