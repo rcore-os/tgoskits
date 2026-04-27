@@ -38,6 +38,26 @@ fn take_buffer<T>(slots: &mut [Option<T>], token: u16) -> DevResult<T> {
         .ok_or(DevError::BadState)
 }
 
+fn count_populated_slots<T>(slots: &[Option<T>]) -> usize {
+    slots.iter().filter(|slot| slot.is_some()).count()
+}
+
+fn validate_slot_accounting<T>(slots: &[Option<T>], queue_size: usize) -> DevResult<usize> {
+    let occupied = count_populated_slots(slots);
+    if occupied > queue_size {
+        return Err(DevError::BadState);
+    }
+    Ok(occupied)
+}
+
+fn validate_tx_accounting<T>(slots: &[Option<T>], free_buffers: usize, queue_size: usize) -> DevResult {
+    let in_flight = validate_slot_accounting(slots, queue_size)?;
+    if in_flight + free_buffers != queue_size {
+        return Err(DevError::BadState);
+    }
+    Ok(())
+}
+
 fn validate_packet_layout(header_len: usize, packet_len: usize, capacity: usize) -> DevResult {
     if header_len > capacity {
         return Err(DevError::BadState);
@@ -64,6 +84,14 @@ unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, Q
 unsafe impl<H: Hal, T: Transport, const QS: usize> Sync for VirtIoNetDev<H, T, QS> {}
 
 impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
+    fn queued_rx_buffers(&self) -> usize {
+        count_populated_slots(&self.rx_buffers)
+    }
+
+    fn in_flight_tx_buffers(&self) -> usize {
+        count_populated_slots(&self.tx_buffers)
+    }
+
     fn has_free_tx_buffer(&self) -> bool {
         !self.free_tx_bufs.is_empty()
     }
@@ -131,6 +159,20 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         take_buffer(&mut self.tx_buffers, token)
     }
 
+    fn validate_runtime_state(&self) -> DevResult {
+        let queued_rx = self.queued_rx_buffers();
+        if queued_rx > QS {
+            return Err(DevError::BadState);
+        }
+        let in_flight_tx = self.in_flight_tx_buffers();
+        if in_flight_tx > QS {
+            return Err(DevError::BadState);
+        }
+        validate_slot_accounting(&self.rx_buffers, QS)?;
+        validate_tx_accounting(&self.tx_buffers, self.free_tx_bufs.len(), QS)?;
+        Ok(())
+    }
+
     /// Creates a new driver instance and initializes the device, or returns
     /// an error if any step fails.
     pub fn try_new(transport: T, irq: Option<usize>) -> DevResult<Self> {
@@ -158,7 +200,10 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         // 2. Allocate all tx buffers.
         dev.fill_tx_buffers()?;
 
-        // 3. Return the driver instance.
+        // 3. Validate queue bookkeeping before exposing the device.
+        dev.validate_runtime_state()?;
+
+        // 4. Return the driver instance.
         Ok(dev)
     }
 }
@@ -204,6 +249,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
     }
 
     fn recycle_rx_buffer(&mut self, rx_buf: NetBufPtr) -> DevResult {
+        self.validate_runtime_state()?;
         let mut rx_buf = unsafe { NetBuf::from_buf_ptr(rx_buf) };
         // Safe because we take the ownership of `rx_buf` back to `rx_buffers`,
         // it lives as long as the queue.
@@ -212,10 +258,12 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
                 .receive_begin(rx_buf.raw_buf_mut())
                 .map_err(as_dev_err)?
         };
-        self.insert_rx_buffer(new_token as usize, rx_buf)
+        self.insert_rx_buffer(new_token as usize, rx_buf)?;
+        self.validate_runtime_state()
     }
 
     fn recycle_tx_buffers(&mut self) -> DevResult {
+        self.validate_runtime_state()?;
         while let Some(token) = self.inner.poll_transmit() {
             let tx_buf = self.take_tx_buffer(token)?;
             unsafe {
@@ -226,10 +274,11 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
             // Recycle the buffer.
             self.recycle_tx_buffer_box(tx_buf);
         }
-        Ok(())
+        self.validate_runtime_state()
     }
 
     fn transmit(&mut self, tx_buf: NetBufPtr) -> DevResult {
+        self.validate_runtime_state()?;
         // 0. prepare tx buffer.
         let tx_buf = unsafe { NetBuf::from_buf_ptr(tx_buf) };
         // 1. transmit packet.
@@ -238,10 +287,12 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
                 .transmit_begin(tx_buf.packet_with_header())
                 .map_err(as_dev_err)?
         };
-        self.insert_tx_buffer(token, tx_buf)
+        self.insert_tx_buffer(token, tx_buf)?;
+        self.validate_runtime_state()
     }
 
     fn receive(&mut self) -> DevResult<NetBufPtr> {
+        self.validate_runtime_state()?;
         self.inner.ack_interrupt();
         if let Some(token) = self.inner.poll_receive() {
             let mut rx_buf = self.take_rx_buffer(token)?;
@@ -254,6 +305,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
             rx_buf.set_header_len(hdr_len);
             rx_buf.set_packet_len(pkt_len);
 
+            self.validate_runtime_state()?;
             Ok(rx_buf.into_buf_ptr())
         } else {
             Err(DevError::Again)
@@ -261,6 +313,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
     }
 
     fn alloc_tx_buffer(&mut self, size: usize) -> DevResult<NetBufPtr> {
+        self.validate_runtime_state()?;
         // 0. Allocate a buffer from the queue.
         let mut net_buf = self.alloc_tx_buffer_box()?;
 
@@ -268,6 +321,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
         self.prepare_tx_buffer(&mut net_buf, size)?;
 
         // 2. Return the buffer.
+        self.validate_runtime_state()?;
         Ok(net_buf.into_buf_ptr())
     }
 }
@@ -279,7 +333,8 @@ mod tests {
     use ax_driver_base::DevError;
 
     use super::{
-        insert_buffer, take_buffer, validate_packet_layout, validate_queue_token,
+        count_populated_slots, insert_buffer, take_buffer, validate_packet_layout,
+        validate_queue_token, validate_slot_accounting, validate_tx_accounting,
     };
 
     #[test]
@@ -344,6 +399,33 @@ mod tests {
     fn validate_packet_layout_rejects_invalid_header_len() {
         assert!(matches!(
             validate_packet_layout(1600, 8, 1526),
+            Err(DevError::BadState)
+        ));
+    }
+
+    #[test]
+    fn count_populated_slots_counts_present_entries() {
+        let slots = vec![Some(1u8), None, Some(3u8)];
+        assert_eq!(count_populated_slots(&slots), 2);
+    }
+
+    #[test]
+    fn validate_slot_accounting_accepts_valid_occupancy() {
+        let slots = vec![Some(1u8), None, Some(3u8)];
+        assert_eq!(validate_slot_accounting(&slots, 3).unwrap(), 2);
+    }
+
+    #[test]
+    fn validate_tx_accounting_accepts_balanced_state() {
+        let slots = vec![Some(1u8), None, Some(3u8), None];
+        assert!(validate_tx_accounting(&slots, 2, 4).is_ok());
+    }
+
+    #[test]
+    fn validate_tx_accounting_rejects_unbalanced_state() {
+        let slots = vec![Some(1u8), None, Some(3u8), None];
+        assert!(matches!(
+            validate_tx_accounting(&slots, 1, 4),
             Err(DevError::BadState)
         ));
     }
