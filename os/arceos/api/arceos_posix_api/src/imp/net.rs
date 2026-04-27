@@ -607,8 +607,8 @@ pub unsafe fn sys_setsockopt(
             return Err(LinuxError::EFAULT);
         }
         let _socket = Socket::from_fd(socket_fd)?;
-        if level == ctypes::SOL_SOCKET {
-            match optname {
+        if level == ctypes::SOL_SOCKET as _ {
+            match optname as _ {
                 ctypes::SO_REUSEADDR => {
                     if optlen < size_of::<c_int>() as u32 {
                         return Err(LinuxError::EINVAL);
@@ -624,7 +624,7 @@ pub unsafe fn sys_setsockopt(
                 ctypes::SO_RCVTIMEO | ctypes::SO_SNDTIMEO => {
                     debug!(
                         "sys_setsockopt: ignoring SO_{}TIMEO for fd {}",
-                        if optname == ctypes::SO_RCVTIMEO {
+                        if optname == ctypes::SO_RCVTIMEO as _ {
                             "RCV"
                         } else {
                             "SND"
@@ -648,8 +648,8 @@ pub unsafe fn sys_setsockopt(
                     Err(LinuxError::ENOPROTOOPT)
                 }
             }
-        } else if level == ctypes::IPPROTO_TCP as i32 {
-            match optname {
+        } else if level == ctypes::IPPROTO_TCP as _ {
+            match optname as _ {
                 ctypes::TCP_NODELAY => {
                     // Accept silently — smoltcp's Nagle is controlled
                     // through TcpSocket::set_nagle_enabled, but we don't
