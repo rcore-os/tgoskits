@@ -437,8 +437,24 @@ fn copy_dir_recursive(src: &Path, dst: &Path, allowed_root: &Path) -> anyhow::Re
             let link_target = fs::read_link(&src_path)
                 .with_context(|| format!("failed to read symlink {}", src_path.display()))?;
 
-            // Try to resolve the symlink to its real path.
-            match fs::canonicalize(&src_path) {
+            // Resolve the symlink target within the guest rootfs, not the host.
+            // Absolute guest symlinks (e.g. /bin/busybox) must be rebased onto
+            // canonical_root before canonicalization; otherwise fs::canonicalize
+            // would follow them through the host's "/" and produce a path that
+            // trivially escapes the staging root.
+            let host_target = if link_target.is_absolute() {
+                // Strip the leading "/" so Path::join doesn't discard canonical_root.
+                let rel = link_target.strip_prefix("/").unwrap_or(&link_target);
+                canonical_root.join(rel)
+            } else {
+                // Relative symlink: resolve from the directory that contains it.
+                src_path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(&link_target)
+            };
+
+            match fs::canonicalize(&host_target) {
                 Ok(resolved) => {
                     // Symlink resolves — verify it stays within the staging root.
                     ensure!(
@@ -478,9 +494,8 @@ fn copy_dir_recursive(src: &Path, dst: &Path, allowed_root: &Path) -> anyhow::Re
                     continue;
                 }
                 Err(_) => {
-                    // Dangling absolute symlink — could be a broken package or a
-                    // link to something outside the rootfs. Skip it; if the guest
-                    // needs it, the base rootfs should already provide the target.
+                    // Dangling absolute symlink (rebased under staging root but still
+                    // unresolvable) — skip it; the base rootfs should provide the target.
                     continue;
                 }
             }
