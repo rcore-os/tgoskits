@@ -527,7 +527,7 @@ pub fn FXmacBdRingCreate(
     ring_ptr.post_cnt = 0;
 
     // 该地址必须对齐alignment=128
-    assert!((virt_addr_loc % alignment) == 0);
+    assert!(virt_addr_loc.is_multiple_of(alignment));
     assert!(bd_count > 0);
 
     // 相邻BD之间隔多少bytes
@@ -628,7 +628,7 @@ pub fn FXmacBdRingAlloc(
             "free_head {:#x} seekahead to {:#x}",
             b as usize, ring_ptr.free_head as usize
         );
-        assert!(b as usize != ring_ptr.free_head as usize);
+        assert!(!core::ptr::eq(b, ring_ptr.free_head as *const _));
 
         ring_ptr.free_cnt -= num_bd;
         ring_ptr.pre_cnt += num_bd;
@@ -1321,7 +1321,7 @@ pub fn FXmacProcessSentBds(instance_p: &mut FXmac) {
 
             let b = curbdpntr;
             curbdpntr = FXMAC_BD_RING_NEXT(txring, curbdpntr);
-            assert!(curbdpntr as usize != b as usize);
+            assert!(!core::ptr::eq(curbdpntr, b));
 
             n_pbufs_freed -= 1;
             crate::utils::DSB();

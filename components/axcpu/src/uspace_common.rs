@@ -53,7 +53,7 @@ impl ExceptionTableEntry {
         #[cfg(target_arch = "aarch64")]
         {
             let base = (&self.from as *const i32) as isize;
-            return (base + self.from as isize) as usize;
+            (base + self.from as isize) as usize
         }
 
         #[cfg(not(target_arch = "aarch64"))]
@@ -67,7 +67,7 @@ impl ExceptionTableEntry {
         #[cfg(target_arch = "aarch64")]
         {
             let base = (&self.to as *const i32) as isize;
-            return (base + self.to as isize) as usize;
+            (base + self.to as isize) as usize
         }
 
         #[cfg(not(target_arch = "aarch64"))]

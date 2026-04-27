@@ -15,6 +15,7 @@ arceos-priority
 arceos-sleep
 arceos-tls
 arceos-wait-queue
+arm_vcpu
 ax-allocator
 ax-arm-pl011
 ax-arm-pl031
@@ -25,6 +26,7 @@ ax-cpumask
 ax-display
 ax-dma
 ax-errno
+ax-fs
 ax-hal
 ax-fs-devfs
 ax-fs-ng
@@ -59,6 +61,7 @@ axplat-x86-qemu-q35
 axvm
 axvmconfig
 bitmap-allocator
+fxmac_rs
 loongarch_vcpu
 range-alloc-arceos
 axplat-riscv64-qemu-virt-hv
