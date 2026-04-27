@@ -46,7 +46,7 @@ heapless = "0.9"
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
-crab-usb = { path = "/home/zhourui/opensource/proj_usb/CrabUSB/usb-host" }
+crab-usb = "0.6.3"
 pcie = { version = "0.6" }
 rd-block = "0.1"
 rd-net = { version = "0.1", optional = true }

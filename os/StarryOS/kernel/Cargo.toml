@@ -55,7 +55,7 @@ axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
-crab-usb = { path = "/home/zhourui/opensource/proj_usb/CrabUSB/usb-host", optional = true }
+crab-usb = { version = "0.6.3", optional = true }
 rdrive = { version = "0.20", optional = true }
 
 axbacktrace = { workspace = true }
