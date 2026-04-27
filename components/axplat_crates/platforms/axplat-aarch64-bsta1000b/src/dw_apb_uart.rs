@@ -97,10 +97,6 @@ impl ConsoleIf for ConsoleIfImpl {
             events |= ConsoleIrqEvent::RX_ERROR;
         }
 
-        if events.is_empty() {
-            ConsoleIrqEvent::SPURIOUS
-        } else {
-            events
-        }
+        events
     }
 }

@@ -14,8 +14,6 @@ bitflags! {
         const RX_ERROR = 1 << 1;
         /// An overrun was reported.
         const OVERRUN = 1 << 2;
-        /// The IRQ was not relevant to console input.
-        const SPURIOUS = 1 << 31;
     }
 }
 

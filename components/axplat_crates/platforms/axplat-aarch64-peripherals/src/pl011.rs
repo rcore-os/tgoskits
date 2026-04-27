@@ -117,11 +117,7 @@ pub fn handle_irq() -> ConsoleIrqEvent {
         events |= ConsoleIrqEvent::RX_ERROR;
     }
 
-    if events.is_empty() {
-        ConsoleIrqEvent::SPURIOUS
-    } else {
-        events
-    }
+    events
 }
 
 /// Default implementation of [`ax_plat::console::ConsoleIf`] using the

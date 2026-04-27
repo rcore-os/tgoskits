@@ -51,6 +51,6 @@ impl ConsoleIf for ConsoleIfImpl {
 
     #[cfg(feature = "irq")]
     fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
-        ax_plat::console::ConsoleIrqEvent::SPURIOUS
+        ax_plat::console::ConsoleIrqEvent::empty()
     }
 }
