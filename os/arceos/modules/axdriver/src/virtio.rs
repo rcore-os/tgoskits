@@ -165,11 +165,56 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
 
 pub struct VirtIoHalImpl;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HalAddress {
+    addr: usize,
+}
+
+impl HalAddress {
+    const fn new(addr: usize) -> Self {
+        Self { addr }
+    }
+
+    const fn addr(self) -> usize {
+        self.addr
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProbeMatch {
+    device_type: DeviceType,
+}
+
+impl ProbeMatch {
+    const fn new(device_type: DeviceType) -> Self {
+        Self { device_type }
+    }
+
+    const fn matches(self, expected: DeviceType) -> bool {
+        self.device_type == expected
+    }
+}
+
 #[inline]
 fn nonnull_from_addr(addr: usize, context: &str) -> NonNull<u8> {
     assert_ne!(addr, 0, "{context} returned a null address");
     // SAFETY: The assertion above guarantees the pointer is non-null.
     unsafe { NonNull::new_unchecked(addr as *mut u8) }
+}
+
+#[inline]
+fn nonnull_from_hal_address(addr: HalAddress, context: &str) -> NonNull<u8> {
+    nonnull_from_addr(addr.addr(), context)
+}
+
+#[inline]
+fn hal_phys_to_virt_addr(paddr: PhysAddr) -> HalAddress {
+    HalAddress::new(phys_to_virt((paddr as usize).into()).as_mut_ptr() as usize)
+}
+
+#[inline]
+fn hal_virt_to_phys_addr(vaddr: usize) -> PhysAddr {
+    virt_to_phys(vaddr.into()).as_usize() as PhysAddr
 }
 
 unsafe impl VirtIoHal for VirtIoHalImpl {
@@ -180,9 +225,9 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
         } else {
             return (0, NonNull::dangling());
         };
-        let paddr = virt_to_phys(vaddr.into());
-        let ptr = nonnull_from_addr(vaddr, "dma_alloc");
-        (paddr.as_usize() as PhysAddr, ptr)
+        let paddr = hal_virt_to_phys_addr(vaddr);
+        let ptr = nonnull_from_hal_address(HalAddress::new(vaddr), "dma_alloc");
+        (paddr, ptr)
     }
 
     unsafe fn dma_dealloc(_paddr: PhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
@@ -192,14 +237,14 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
 
     #[inline]
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
-        let vaddr = phys_to_virt((paddr as usize).into()).as_mut_ptr() as usize;
-        nonnull_from_addr(vaddr, "mmio_phys_to_virt")
+        let vaddr = hal_phys_to_virt_addr(paddr);
+        nonnull_from_hal_address(vaddr, "mmio_phys_to_virt")
     }
 
     #[inline]
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
         let vaddr = buffer.as_ptr() as *mut u8 as usize;
-        virt_to_phys(vaddr.into()).as_usize() as PhysAddr
+        hal_virt_to_phys_addr(vaddr)
     }
 
     #[inline]

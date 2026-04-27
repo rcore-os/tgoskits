@@ -53,6 +53,126 @@ use self::pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot
 #[cfg(feature = "socket")]
 pub use self::socket::VirtIoSocketDev;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MmioProbeRegion {
+    base: *mut u8,
+    size: usize,
+}
+
+impl MmioProbeRegion {
+    const fn new(base: *mut u8, size: usize) -> Self {
+        Self { base, size }
+    }
+
+    const fn base(self) -> *mut u8 {
+        self.base
+    }
+
+    const fn size(self) -> usize {
+        self.size
+    }
+
+    const fn is_non_empty(self) -> bool {
+        self.size != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PciProbeMetadata {
+    device_type: DeviceType,
+    irq: usize,
+}
+
+impl PciProbeMetadata {
+    const fn new(device_type: DeviceType, irq: usize) -> Self {
+        Self { device_type, irq }
+    }
+
+    const fn device_type(self) -> DeviceType {
+        self.device_type
+    }
+
+    const fn irq(self) -> usize {
+        self.irq
+    }
+}
+
+fn validate_mmio_probe_region(region: MmioProbeRegion) -> Option<MmioProbeRegion> {
+    if region.base().is_null() || !region.is_non_empty() {
+        return None;
+    }
+    Some(region)
+}
+
+fn probe_mmio_header(
+    region: MmioProbeRegion,
+) -> Option<core::ptr::NonNull<virtio_drivers::transport::mmio::VirtIOHeader>> {
+    use core::ptr::NonNull;
+    use virtio_drivers::transport::mmio::VirtIOHeader;
+
+    NonNull::new(region.base() as *mut VirtIOHeader)
+}
+
+fn probe_mmio_transport(region: MmioProbeRegion) -> Option<MmioTransport> {
+    let header = probe_mmio_header(region)?;
+    unsafe { MmioTransport::new(header, region.size()) }.ok()
+}
+
+const fn is_supported_dev_type(t: VirtIoDevType) -> bool {
+    matches!(
+        t,
+        VirtIoDevType::Block
+            | VirtIoDevType::Network
+            | VirtIoDevType::GPU
+            | VirtIoDevType::Input
+            | VirtIoDevType::Socket
+    )
+}
+
+const fn pci_irq_base() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        0x10
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        0x23
+    }
+}
+
+const fn pci_irq_for_bdf(bdf: DeviceFunction) -> usize {
+    pci_irq_base() + (bdf.device & 3) as usize
+}
+
+fn probe_pci_metadata(dev_info: &DeviceFunctionInfo, bdf: DeviceFunction) -> Option<PciProbeMetadata> {
+    use virtio_drivers::transport::pci::virtio_device_type;
+
+    let device_type = virtio_device_type(dev_info).and_then(as_dev_type)?;
+    Some(PciProbeMetadata::new(device_type, pci_irq_for_bdf(bdf)))
+}
+
+const fn as_socket_dev_err(e: virtio_drivers::device::socket::SocketError) -> DevError {
+    use virtio_drivers::device::socket::SocketError::*;
+
+    match e {
+        ConnectionExists => DevError::AlreadyExists,
+        NotConnected => DevError::BadState,
+        InvalidOperation | InvalidNumber | UnknownOperation(_) => DevError::InvalidParam,
+        OutputBufferTooShort(_) | BufferTooShort | BufferTooLong(..) => DevError::InvalidParam,
+        UnexpectedDataInPacket | PeerSocketShutdown => DevError::Io,
+        InsufficientBufferSpaceInPeer => DevError::Again,
+        RecycledWrongBuffer => DevError::BadState,
+    }
+}
+
 /// Try to probe a VirtIO MMIO device from the given memory region.
 ///
 /// If the device is recognized, returns the device type and a transport object
@@ -61,12 +181,8 @@ pub fn probe_mmio_device(
     reg_base: *mut u8,
     reg_size: usize,
 ) -> Option<(DeviceType, MmioTransport)> {
-    use core::ptr::NonNull;
-
-    use virtio_drivers::transport::mmio::VirtIOHeader;
-
-    let header = NonNull::new(reg_base as *mut VirtIOHeader)?;
-    let transport = unsafe { MmioTransport::new(header, reg_size) }.ok()?;
+    let region = validate_mmio_probe_region(MmioProbeRegion::new(reg_base, reg_size))?;
+    let transport = probe_mmio_transport(region)?;
     let dev_type = as_dev_type(transport.device_type())?;
     Some((dev_type, transport))
 }
@@ -80,24 +196,15 @@ pub fn probe_pci_device<H: VirtIoHal, C: ConfigurationAccess>(
     bdf: DeviceFunction,
     dev_info: &DeviceFunctionInfo,
 ) -> Option<(DeviceType, PciTransport, usize)> {
-    use virtio_drivers::transport::pci::virtio_device_type;
-
-    #[cfg(target_arch = "x86_64")]
-    const PCI_IRQ_BASE: usize = 0x20;
-    #[cfg(target_arch = "riscv64")]
-    const PCI_IRQ_BASE: usize = 0x20;
-    #[cfg(target_arch = "loongarch64")]
-    const PCI_IRQ_BASE: usize = 0x10;
-    #[cfg(target_arch = "aarch64")]
-    const PCI_IRQ_BASE: usize = 0x23;
-
-    let dev_type = virtio_device_type(dev_info).and_then(as_dev_type)?;
+    let metadata = probe_pci_metadata(dev_info, bdf)?;
     let transport = PciTransport::new::<H, C>(root, bdf).ok()?;
-    let irq = PCI_IRQ_BASE + (bdf.device & 3) as usize;
-    Some((dev_type, transport, irq))
+    Some((metadata.device_type(), transport, metadata.irq()))
 }
 
 const fn as_dev_type(t: VirtIoDevType) -> Option<DeviceType> {
+    if !is_supported_dev_type(t) {
+        return None;
+    }
     use VirtIoDevType::*;
     match t {
         Block => Some(DeviceType::Block),
@@ -111,7 +218,7 @@ const fn as_dev_type(t: VirtIoDevType) -> Option<DeviceType> {
 
 #[allow(dead_code)]
 const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
-    use virtio_drivers::{Error::*, device::socket::SocketError::*};
+    use virtio_drivers::Error::*;
     match e {
         QueueFull => DevError::BadState,
         NotReady => DevError::Again,
@@ -123,15 +230,7 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
         Unsupported => DevError::Unsupported,
         ConfigSpaceTooSmall => DevError::BadState,
         ConfigSpaceMissing => DevError::BadState,
-        SocketDeviceError(e) => match e {
-            ConnectionExists => DevError::AlreadyExists,
-            NotConnected => DevError::BadState,
-            InvalidOperation | InvalidNumber | UnknownOperation(_) => DevError::InvalidParam,
-            OutputBufferTooShort(_) | BufferTooShort | BufferTooLong(..) => DevError::InvalidParam,
-            UnexpectedDataInPacket | PeerSocketShutdown => DevError::Io,
-            InsufficientBufferSpaceInPeer => DevError::Again,
-            RecycledWrongBuffer => DevError::BadState,
-        },
+        SocketDeviceError(e) => as_socket_dev_err(e),
     }
 }
 
