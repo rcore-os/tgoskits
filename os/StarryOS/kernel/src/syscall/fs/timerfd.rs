@@ -9,6 +9,7 @@ pub fn sys_timerfd_create(clock_id: __kernel_clockid_t, flags: u32) -> AxResult<
     if flags & !(TFD_CLOEXEC | TFD_NONBLOCK) != 0 {
         return Err(AxError::InvalidInput);
     }
+    TimerFd::validate_clock_id(clock_id)?;
 
     let timerfd = TimerFd::new(clock_id);
     timerfd.set_nonblocking(flags & TFD_NONBLOCK != 0)?;

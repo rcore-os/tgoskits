@@ -172,11 +172,10 @@ pub fn sys_setsockopt(
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         use linux_raw_sys::net::{SO_PASSCRED, SO_RCVBUF, SO_RCVBUFFORCE, SOL_SOCKET};
 
-        let value = if optlen as usize >= size_of::<i32>() {
-            *optval.cast::<i32>().get_as_ref()?
-        } else {
-            0
-        };
+        if (optlen as usize) < size_of::<i32>() {
+            return Err(AxError::InvalidInput);
+        }
+        let value = *optval.cast::<i32>().get_as_ref()?;
         match (level, optname) {
             (SOL_SOCKET, SO_RCVBUF | SO_RCVBUFFORCE) => {
                 socket.set_receive_buffer_size(value.max(0) as usize);

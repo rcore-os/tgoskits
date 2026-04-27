@@ -48,6 +48,10 @@ impl TimerFd {
         })
     }
 
+    pub fn validate_clock_id(clock_id: __kernel_clockid_t) -> AxResult<()> {
+        Self::now_for_clock(clock_id).map(|_| ())
+    }
+
     fn now_for_clock(clock_id: __kernel_clockid_t) -> AxResult<TimeValue> {
         match clock_id as u32 {
             CLOCK_REALTIME => Ok(wall_time()),
@@ -74,6 +78,12 @@ impl TimerFd {
     }
 
     pub fn set_time(self: &Arc<Self>, flags: u32, new_value: itimerspec) -> AxResult<itimerspec> {
+        let supported_flags = linux_raw_sys::general::TFD_TIMER_ABSTIME
+            | linux_raw_sys::general::TFD_TIMER_CANCEL_ON_SET;
+        if flags & !supported_flags != 0 {
+            return Err(AxError::InvalidInput);
+        }
+
         let interval = new_value.it_interval.try_into_time_value()?;
         let value = new_value.it_value.try_into_time_value()?;
         let clock_id;

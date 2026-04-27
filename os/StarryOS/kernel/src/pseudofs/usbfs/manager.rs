@@ -44,7 +44,13 @@ pub(super) struct UsbHostState {
 #[derive(Default)]
 struct UsbFsState {
     hosts: Vec<UsbHostState>,
-    devices: BTreeMap<usize, UsbDeviceRecord>,
+    devices: BTreeMap<UsbStableId, UsbDeviceRecord>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct UsbStableId {
+    host_device_id: RDriveDeviceId,
+    device_id: usize,
 }
 
 struct UsbDeviceRecord {
@@ -69,7 +75,7 @@ pub(super) struct UsbFsManager {
 
 pub(super) struct UsbDeviceLease {
     manager: Arc<UsbFsManager>,
-    stable_id: usize,
+    stable_id: UsbStableId,
 }
 
 impl UsbDeviceLease {
@@ -264,13 +270,8 @@ impl UsbFsManager {
         })
     }
 
-    pub(super) fn opened_device_ioctl(
-        &self,
-        stable_id: usize,
-        cmd: u32,
-        arg: usize,
-    ) -> AxResult<usize> {
-        let result = match cmd {
+    fn opened_device_ioctl(&self, stable_id: UsbStableId, cmd: u32, arg: usize) -> AxResult<usize> {
+        match cmd {
             USBDEVFS_CONTROL => self.handle_control(stable_id, arg),
             USBDEVFS_CONNECTINFO => {
                 let snapshot = self.snapshot_by_id(stable_id)?;
@@ -312,8 +313,7 @@ impl UsbFsManager {
             }
             USBDEVFS_RESET => Err(AxError::Unsupported),
             _ => Err(AxError::Unsupported),
-        };
-        result
+        }
     }
 
     pub(super) fn snapshot_device_ioctl(
@@ -395,7 +395,10 @@ impl UsbFsManager {
             let host_state = &mut state.hosts[host_index];
             let mut updates = Vec::new();
             for info in devices {
-                let stable_id = info.id();
+                let stable_id = UsbStableId {
+                    host_device_id: device_id,
+                    device_id: info.id(),
+                };
                 seen.insert(stable_id);
                 let snapshot = snapshot_device_info(
                     bus_num,
@@ -439,7 +442,7 @@ impl UsbFsManager {
         });
     }
 
-    fn ensure_live_device(&self, stable_id: usize) -> AxResult<()> {
+    fn ensure_live_device(&self, stable_id: UsbStableId) -> AxResult<()> {
         loop {
             enum OpenAction {
                 Ready,
@@ -498,13 +501,14 @@ impl UsbFsManager {
         }
     }
 
+    #[cfg(target_os = "none")]
     fn open_device(&self, host_device_id: RDriveDeviceId, info: &DeviceInfo) -> AxResult<Device> {
         let host = rdrive::get::<axplat_dyn::drivers::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
         let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
         ax_task::future::block_on(guard.host_mut().open_device(info)).map_err(|err| {
             warn!(
-                "usbfs: failed to open live device on host {:?} for stable id {}: {:?}",
+                "usbfs: failed to open live device on host {:?} for USB device id {}: {:?}",
                 host_device_id,
                 info.id(),
                 err
@@ -513,6 +517,13 @@ impl UsbFsManager {
         })
     }
 
+    #[cfg(not(target_os = "none"))]
+    fn open_device(&self, host_device_id: RDriveDeviceId, info: &DeviceInfo) -> AxResult<Device> {
+        let _ = (host_device_id, info);
+        Err(AxError::Unsupported)
+    }
+
+    #[cfg(target_os = "none")]
     fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> AxResult<()> {
         let host = rdrive::get::<axplat_dyn::drivers::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
@@ -524,7 +535,13 @@ impl UsbFsManager {
         Ok(())
     }
 
-    fn snapshot_by_id(&self, stable_id: usize) -> AxResult<UsbDeviceSnapshot> {
+    #[cfg(not(target_os = "none"))]
+    fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> AxResult<()> {
+        let _ = (host_device_id, bus_num);
+        Err(AxError::Unsupported)
+    }
+
+    fn snapshot_by_id(&self, stable_id: UsbStableId) -> AxResult<UsbDeviceSnapshot> {
         self.state
             .lock()
             .devices
@@ -533,7 +550,7 @@ impl UsbFsManager {
             .ok_or(AxError::NotFound)
     }
 
-    fn live_device_by_id(&self, stable_id: usize) -> AxResult<Arc<Mutex<LiveDeviceState>>> {
+    fn live_device_by_id(&self, stable_id: UsbStableId) -> AxResult<Arc<Mutex<LiveDeviceState>>> {
         self.state
             .lock()
             .devices
@@ -544,7 +561,7 @@ impl UsbFsManager {
 
     fn with_live_endpoint<R>(
         &self,
-        stable_id: usize,
+        stable_id: UsbStableId,
         endpoint: u8,
         f: impl FnOnce(&mut EndpointKind) -> AxResult<R>,
     ) -> AxResult<R> {
@@ -562,7 +579,7 @@ impl UsbFsManager {
 
     fn live_control_transfer(
         &self,
-        stable_id: usize,
+        stable_id: UsbStableId,
         b_request_type: u8,
         b_request: u8,
         w_value: u16,
@@ -586,7 +603,12 @@ impl UsbFsManager {
         }
     }
 
-    fn live_claim_interface(&self, stable_id: usize, interface: u8, alternate: u8) -> AxResult<()> {
+    fn live_claim_interface(
+        &self,
+        stable_id: UsbStableId,
+        interface: u8,
+        alternate: u8,
+    ) -> AxResult<()> {
         let device = self.live_device_by_id(stable_id)?;
         let mut device = device.lock();
         if ax_task::future::block_on(device.device.current_configuration_descriptor()).is_err() {
@@ -605,7 +627,12 @@ impl UsbFsManager {
         Ok(())
     }
 
-    fn live_bulk_in(&self, stable_id: usize, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
+    fn live_bulk_in(
+        &self,
+        stable_id: UsbStableId,
+        endpoint: u8,
+        data: &mut [u8],
+    ) -> AxResult<usize> {
         self.with_live_endpoint(stable_id, endpoint, |endpoint| match endpoint {
             EndpointKind::BulkIn(endpoint) => {
                 ax_task::future::block_on(endpoint.submit_and_wait(data))
@@ -615,7 +642,7 @@ impl UsbFsManager {
         })
     }
 
-    fn live_bulk_out(&self, stable_id: usize, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+    fn live_bulk_out(&self, stable_id: UsbStableId, endpoint: u8, data: &[u8]) -> AxResult<usize> {
         self.with_live_endpoint(stable_id, endpoint, |endpoint| match endpoint {
             EndpointKind::BulkOut(endpoint) => {
                 ax_task::future::block_on(endpoint.submit_and_wait(data))
@@ -628,7 +655,7 @@ impl UsbFsManager {
 
     fn live_interrupt_in(
         &self,
-        stable_id: usize,
+        stable_id: UsbStableId,
         endpoint: u8,
         data: &mut [u8],
     ) -> AxResult<usize> {
@@ -641,7 +668,12 @@ impl UsbFsManager {
         })
     }
 
-    fn live_interrupt_out(&self, stable_id: usize, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+    fn live_interrupt_out(
+        &self,
+        stable_id: UsbStableId,
+        endpoint: u8,
+        data: &[u8],
+    ) -> AxResult<usize> {
         self.with_live_endpoint(stable_id, endpoint, |endpoint| match endpoint {
             EndpointKind::InterruptOut(endpoint) => {
                 ax_task::future::block_on(endpoint.submit_and_wait(data))
@@ -654,7 +686,7 @@ impl UsbFsManager {
 
     fn live_iso_in(
         &self,
-        stable_id: usize,
+        stable_id: UsbStableId,
         endpoint: u8,
         data: &mut [u8],
         packet_lengths: &[usize],
@@ -670,7 +702,7 @@ impl UsbFsManager {
 
     fn live_iso_out(
         &self,
-        stable_id: usize,
+        stable_id: UsbStableId,
         endpoint: u8,
         data: &[u8],
         packet_lengths: &[usize],
@@ -687,7 +719,7 @@ impl UsbFsManager {
         })
     }
 
-    fn handle_control(&self, stable_id: usize, arg: usize) -> AxResult<usize> {
+    fn handle_control(&self, stable_id: UsbStableId, arg: usize) -> AxResult<usize> {
         let ctrl = read_usbdevfs_ctrltransfer(arg)?;
         match direction_from_raw(ctrl.b_request_type) {
             Direction::In => {
@@ -721,7 +753,7 @@ impl UsbFsManager {
         }
     }
 
-    fn release_device(&self, stable_id: usize) {
+    fn release_device(&self, stable_id: UsbStableId) {
         let _open_guard = self.open_lock.lock();
         let mut refresh = None;
         {
@@ -746,13 +778,13 @@ impl UsbFsManager {
             }
         }
 
-        if let Some((host_device_id, bus_num)) = refresh {
-            if let Err(err) = self.refresh_host(host_device_id, bus_num) {
-                warn!(
-                    "usbfs: failed to refresh bus {} after close: {:?}",
-                    bus_num, err
-                );
-            }
+        if let Some((host_device_id, bus_num)) = refresh
+            && let Err(err) = self.refresh_host(host_device_id, bus_num)
+        {
+            warn!(
+                "usbfs: failed to refresh bus {} after close: {:?}",
+                bus_num, err
+            );
         }
     }
 }

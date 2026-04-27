@@ -92,8 +92,11 @@ fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
 pub(super) fn resolve_pci_irq_from_fdt(
     endpoint: &rdrive::probe::pci::EndpointRc,
 ) -> Result<usize, USBError> {
-    let fdt_addr = somehal::fdt_addr()
-        .unwrap_or_else(|| panic!("PCI USB IRQ mapping requires FDT; ACPI is not supported"));
+    let fdt_addr = somehal::fdt_addr().ok_or_else(|| {
+        USBError::Other(anyhow::anyhow!(
+            "PCI USB IRQ mapping requires FDT; ACPI is not supported"
+        ))
+    })?;
     let fdt = unsafe { Fdt::from_ptr(fdt_addr) }
         .map_err(|err| USBError::Other(anyhow::anyhow!("failed to parse live FDT: {err:?}")))?;
 
