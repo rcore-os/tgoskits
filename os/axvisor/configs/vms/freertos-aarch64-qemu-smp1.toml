@@ -23,9 +23,9 @@ entry_point = 0x4000_1000
 image_location = "memory"
 # The load address of the kernel image.
 kernel_load_addr = 0x4000_0000
-## The file path of the kernel image.
+# The file path of the kernel image.
 kernel_path = "/path/to/freertos.bin"
-## The load address of the device tree blob (DTB).
+# The load address of the device tree blob (DTB).
 dtb_load_addr = 0x47e0_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.

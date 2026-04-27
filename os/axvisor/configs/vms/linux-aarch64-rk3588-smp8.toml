@@ -32,13 +32,6 @@ kernel_path = "/path/to/kernel"
 # The file path of the device tree blob (DTB).
 dtb_path = "/path/to/dtb"
 
-# load from file system.
-# image_location = "fs".
-## The file path of the kernel image.
-# kernel_path = "linux-arceos-aarch64.bin"
-## The file path of the device tree blob (DTB).
-# dtb_path = "linux-rk3588.dtb"
-
 ## The file path of the ramdisk image.
 # ramdisk_path = ""
 ## The load address of the ramdisk image.

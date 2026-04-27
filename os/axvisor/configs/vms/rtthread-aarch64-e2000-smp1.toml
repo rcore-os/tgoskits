@@ -23,9 +23,9 @@ entry_point = 0x8008_0000
 image_location = "fs"
 # The load address of the kernel image.
 kernel_load_addr = 0x8008_0000
-## The file path of the kernel image.
+# The file path of the kernel image.
 kernel_path = "/guest/rtthread/phytiumpi"
-## The file path of the device tree blob (DTB).
+# The file path of the device tree blob (DTB).
 # dtb_load_addr = 0x8000_0000
 #dtb_path = "/path/to/linux-aarch64-tac_e400-smp1.dtb"
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
