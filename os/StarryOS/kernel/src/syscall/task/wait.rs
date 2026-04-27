@@ -2,7 +2,6 @@ use alloc::vec::Vec;
 use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_hal::time::TimeValue;
 use ax_task::{
     current,
     future::{block_on, interruptible},
@@ -67,7 +66,6 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
 
     let curr = current();
     let proc = &curr.as_thread().proc_data.proc;
-    let proc_data = curr.as_thread().proc_data.clone();
 
     let pid = if pid == -1 {
         WaitPid::Any
@@ -120,7 +118,13 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             Some(res) => Poll::Ready(res),
             None => {
                 proc_data.child_exit_event.register(cx.waker());
-                Poll::Pending
+                // A child may exit between the check above and waker
+                // registration. Recheck after registering so that wakeup is
+                // not lost in that race window.
+                match check_children().transpose() {
+                    Some(res) => Poll::Ready(res),
+                    None => Poll::Pending,
+                }
             }
         }
     })))?
