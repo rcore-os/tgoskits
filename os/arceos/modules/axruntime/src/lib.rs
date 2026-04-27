@@ -137,7 +137,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     };
     ax_hal::percpu::init_primary(cpu_id);
     #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
-    ax_alloc::init_precpu_slab(cpu_id);
+    ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
 

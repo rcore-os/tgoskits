@@ -25,16 +25,16 @@ pub type DefaultByteAllocator = buddy_slab_allocator::SlabAllocator<PAGE_SIZE>;
 const PAGE_SIZE: usize = 0x1000;
 
 #[ax_percpu::def_percpu]
-static PRECPU_SLAB: PrecpuSlab<PAGE_SIZE> = PrecpuSlab::new_uninit();
+static PERCPU_SLAB: PercpuSlab<PAGE_SIZE> = PercpuSlab::new_uninit();
 
 static SLAB_POOL: SlabPool = SlabPool;
 
-struct PrecpuSlab<const PAGE_SIZE: usize = 0x1000> {
+struct PercpuSlab<const PAGE_SIZE: usize = 0x1000> {
     cpu_id: Option<u16>,
     inner: SpinNoIrq<SlabAllocator<PAGE_SIZE>>,
 }
 
-impl<const PAGE_SIZE: usize> PrecpuSlab<PAGE_SIZE> {
+impl<const PAGE_SIZE: usize> PercpuSlab<PAGE_SIZE> {
     const fn new_uninit() -> Self {
         Self {
             cpu_id: None,
@@ -58,7 +58,7 @@ impl<const PAGE_SIZE: usize> PrecpuSlab<PAGE_SIZE> {
     }
 }
 
-impl<const PAGE_SIZE: usize> SlabTrait for PrecpuSlab<PAGE_SIZE> {
+impl<const PAGE_SIZE: usize> SlabTrait for PercpuSlab<PAGE_SIZE> {
     fn cpu_id(&self) -> usize {
         self.cpu_id_checked() as usize
     }
@@ -82,27 +82,27 @@ impl<const PAGE_SIZE: usize> SlabTrait for PrecpuSlab<PAGE_SIZE> {
     }
 }
 
-fn current_precpu_slab() -> &'static PrecpuSlab<PAGE_SIZE> {
+fn current_percpu_slab() -> &'static PercpuSlab<PAGE_SIZE> {
     // Safety: the outer allocator lock disables local IRQs/preemption before
     // upstream buddy-slab-allocator calls this hook.
-    unsafe { PRECPU_SLAB.current_ref_raw() }
+    unsafe { PERCPU_SLAB.current_ref_raw() }
 }
 
-fn remote_precpu_slab(cpu_idx: usize) -> &'static PrecpuSlab<PAGE_SIZE> {
+fn remote_percpu_slab(cpu_idx: usize) -> &'static PercpuSlab<PAGE_SIZE> {
     // Safety: the owner CPU id comes from slab metadata and references a valid
     // per-CPU slab that was initialized during CPU bring-up.
-    unsafe { PRECPU_SLAB.remote_ref_raw(cpu_idx) }
+    unsafe { PERCPU_SLAB.remote_ref_raw(cpu_idx) }
 }
 
 struct SlabPool;
 
 impl SlabPoolTrait for SlabPool {
     fn current_slab(&self) -> &dyn SlabTrait {
-        current_precpu_slab()
+        current_percpu_slab()
     }
 
     fn owner_slab(&self, cpu_idx: usize) -> &dyn SlabTrait {
-        remote_precpu_slab(cpu_idx)
+        remote_percpu_slab(cpu_idx)
     }
 }
 
@@ -346,8 +346,8 @@ pub fn global_allocator() -> &'static GlobalAllocator {
 }
 
 /// Initializes the per-CPU slab for the current CPU.
-pub fn init_precpu_slab(cpu_id: usize) {
-    PRECPU_SLAB.with_current(|slab| slab.init(cpu_id));
+pub fn init_percpu_slab(cpu_id: usize) {
+    PERCPU_SLAB.with_current(|slab| slab.init(cpu_id));
 }
 
 /// Initializes the global allocator with the given memory region.
