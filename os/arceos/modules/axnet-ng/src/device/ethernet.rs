@@ -24,7 +24,9 @@ use crate::{
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
-static IRQ_SOURCE: SpinNoIrq<Option<Weak<EthernetIrqState>>> = SpinNoIrq::new(None);
+const ETHERNET_IRQ_SLOTS: usize = 16;
+static IRQ_SOURCES: [SpinNoIrq<Option<Weak<EthernetIrqState>>>; ETHERNET_IRQ_SLOTS] =
+    [const { SpinNoIrq::new(None) }; ETHERNET_IRQ_SLOTS];
 
 struct Neighbor {
     hardware_address: EthernetAddress,
@@ -52,14 +54,60 @@ pub struct EthernetDevice {
     pending_packets: PacketBuffer<'static, IpAddress>,
 }
 
-fn handle_ethernet_irq() {
-    let Some(state) = IRQ_SOURCE.lock().as_ref().and_then(Weak::upgrade) else {
+fn handle_ethernet_irq(slot: usize) {
+    let Some(state) = IRQ_SOURCES[slot].lock().as_ref().and_then(Weak::upgrade) else {
         return;
     };
 
     let events = state.handle_irq();
     if events.intersects(NetIrqEvent::RX_READY | NetIrqEvent::RX_ERROR) {
         state.poll_ready.wake();
+    }
+}
+
+fn handle_ethernet_irq_slot<const SLOT: usize>() {
+    handle_ethernet_irq(SLOT);
+}
+
+const ETHERNET_IRQ_HANDLERS: [fn(); ETHERNET_IRQ_SLOTS] = [
+    handle_ethernet_irq_slot::<0>,
+    handle_ethernet_irq_slot::<1>,
+    handle_ethernet_irq_slot::<2>,
+    handle_ethernet_irq_slot::<3>,
+    handle_ethernet_irq_slot::<4>,
+    handle_ethernet_irq_slot::<5>,
+    handle_ethernet_irq_slot::<6>,
+    handle_ethernet_irq_slot::<7>,
+    handle_ethernet_irq_slot::<8>,
+    handle_ethernet_irq_slot::<9>,
+    handle_ethernet_irq_slot::<10>,
+    handle_ethernet_irq_slot::<11>,
+    handle_ethernet_irq_slot::<12>,
+    handle_ethernet_irq_slot::<13>,
+    handle_ethernet_irq_slot::<14>,
+    handle_ethernet_irq_slot::<15>,
+];
+
+fn reserve_ethernet_irq_slot(state: &Arc<EthernetIrqState>) -> Option<usize> {
+    for (slot, source) in IRQ_SOURCES.iter().enumerate() {
+        let mut source = source.lock();
+        if source.as_ref().and_then(Weak::upgrade).is_none() {
+            *source = Some(Arc::downgrade(state));
+            return Some(slot);
+        }
+    }
+
+    None
+}
+
+fn release_ethernet_irq_slot(slot: usize, state: &Arc<EthernetIrqState>) {
+    let mut source = IRQ_SOURCES[slot].lock();
+    if source
+        .as_ref()
+        .and_then(Weak::upgrade)
+        .is_some_and(|registered| Arc::ptr_eq(&registered, state))
+    {
+        *source = None;
     }
 }
 
@@ -73,13 +121,6 @@ impl EthernetDevice {
             driver: SpinNoIrq::new(inner),
             poll_ready: PollSet::new(),
         });
-        if let Some(irq) = inner.irq_num {
-            *IRQ_SOURCE.lock() = Some(Arc::downgrade(&inner));
-            if !ax_hal::irq::register(irq, handle_ethernet_irq) {
-                warn!("failed to register ethernet irq handler for irq {irq}");
-            }
-        }
-
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
             vec![
@@ -88,6 +129,24 @@ impl EthernetDevice {
                     * ETHERNET_MAX_PENDING_PACKETS
             ],
         );
+        if let Some(irq) = inner.irq_num {
+            let Some(slot) = reserve_ethernet_irq_slot(&inner) else {
+                warn!("no free ethernet irq source slot for irq {irq}");
+                return Self {
+                    name,
+                    inner,
+                    neighbors: HashMap::new(),
+                    ip,
+                    pending_packets,
+                };
+            };
+
+            if !ax_hal::irq::register(irq, ETHERNET_IRQ_HANDLERS[slot]) {
+                release_ethernet_irq_slot(slot, &inner);
+                warn!("failed to register ethernet irq handler for irq {irq}");
+            }
+        }
+
         Self {
             name,
             inner,

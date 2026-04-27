@@ -1728,6 +1728,7 @@ dependencies = [
 name = "axpoll"
 version = "0.3.8"
 dependencies = [
+ "ax-kspin",
  "bitflags 2.11.1",
  "futures",
  "linux-raw-sys 0.12.1",

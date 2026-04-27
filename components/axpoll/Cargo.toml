@@ -13,6 +13,7 @@ alloc = []          # Deprecated
 default = ["alloc"]
 
 [dependencies]
+ax-kspin = { workspace = true }
 bitflags = { version = "2.10", default-features = false }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
