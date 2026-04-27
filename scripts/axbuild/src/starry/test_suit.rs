@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use serde::Deserialize;
 
 use super::board;
 use crate::context::{
@@ -33,6 +34,34 @@ pub(crate) struct StarryQemuCase {
     pub(crate) case_dir: PathBuf,
     pub(crate) qemu_config_path: PathBuf,
     pub(crate) build_config_path: Option<PathBuf>,
+    pub(crate) test_commands: Vec<String>,
+    pub(crate) subcases: Vec<StarryQemuSubcase>,
+}
+
+impl StarryQemuCase {
+    pub(crate) fn is_grouped(&self) -> bool {
+        !self.test_commands.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StarryQemuSubcaseKind {
+    C,
+    Rust,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StarryQemuSubcase {
+    pub(crate) name: String,
+    pub(crate) case_dir: PathBuf,
+    pub(crate) kind: StarryQemuSubcaseKind,
+}
+
+#[derive(Debug, Deserialize)]
+struct StarryQemuCaseConfig {
+    shell_init_cmd: Option<String>,
+    #[serde(default)]
+    test_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,38 +156,33 @@ pub(crate) fn discover_qemu_cases(
             );
         }
 
-        let build_config_path = resolve_case_build_config_path(&case_dir, arch, target);
-        return Ok(vec![StarryQemuCase {
-            name: case_name.to_string(),
+        return Ok(vec![load_qemu_case(
+            case_name.to_string(),
             case_dir,
             qemu_config_path,
-            build_config_path,
-        }]);
+            arch,
+            target,
+        )?]);
     }
 
-    let mut cases = fs::read_dir(&test_suite_dir)
+    let mut cases = Vec::new();
+    for entry in fs::read_dir(&test_suite_dir)
         .with_context(|| format!("failed to read {}", test_suite_dir.display()))?
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !path.is_dir() {
-                return None;
-            }
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
 
-            let name = entry.file_name().into_string().ok()?;
-            let qemu_config_path = path.join(&config_name);
-            if qemu_config_path.is_file() {
-                Some(StarryQemuCase {
-                    name,
-                    build_config_path: resolve_case_build_config_path(&path, arch, target),
-                    case_dir: path,
-                    qemu_config_path,
-                })
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let qemu_config_path = path.join(&config_name);
+        if qemu_config_path.is_file() {
+            cases.push(load_qemu_case(name, path, qemu_config_path, arch, target)?);
+        }
+    }
     cases.sort_by(|left, right| left.name.cmp(&right.name));
 
     if cases.is_empty() {
@@ -170,6 +194,97 @@ pub(crate) fn discover_qemu_cases(
     }
 
     Ok(cases)
+}
+
+fn load_qemu_case(
+    name: String,
+    case_dir: PathBuf,
+    qemu_config_path: PathBuf,
+    arch: &str,
+    target: &str,
+) -> anyhow::Result<StarryQemuCase> {
+    let test_commands = load_qemu_case_test_commands(&qemu_config_path)?;
+    let subcases = if test_commands.is_empty() {
+        Vec::new()
+    } else {
+        discover_qemu_subcases(&case_dir)?
+    };
+
+    Ok(StarryQemuCase {
+        name,
+        build_config_path: resolve_case_build_config_path(&case_dir, arch, target),
+        case_dir,
+        qemu_config_path,
+        test_commands,
+        subcases,
+    })
+}
+
+fn load_qemu_case_test_commands(qemu_config_path: &Path) -> anyhow::Result<Vec<String>> {
+    let content = fs::read_to_string(qemu_config_path)
+        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
+    let config: StarryQemuCaseConfig = toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
+    let shell_init_cmd = config
+        .shell_init_cmd
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let mut test_commands = Vec::with_capacity(config.test_commands.len());
+    for command in config.test_commands {
+        let command = command.trim().to_string();
+        if command.is_empty() {
+            bail!(
+                "Starry grouped qemu case `{}` contains an empty test command",
+                qemu_config_path.display()
+            );
+        }
+        test_commands.push(command);
+    }
+
+    if shell_init_cmd.is_some() && !test_commands.is_empty() {
+        bail!(
+            "Starry grouped qemu case `{}` cannot define both `shell_init_cmd` and `test_commands`",
+            qemu_config_path.display()
+        );
+    }
+
+    Ok(test_commands)
+}
+
+fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<StarryQemuSubcase>> {
+    let mut subcases = Vec::new();
+    for entry in
+        fs::read_dir(case_dir).with_context(|| format!("failed to read {}", case_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let kind = if path.join("c").is_dir() {
+            Some(StarryQemuSubcaseKind::C)
+        } else if path.join("rust").is_dir() {
+            Some(StarryQemuSubcaseKind::Rust)
+        } else {
+            None
+        };
+
+        if let Some(kind) = kind {
+            subcases.push(StarryQemuSubcase {
+                name,
+                case_dir: path,
+                kind,
+            });
+        }
+    }
+    subcases.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(subcases)
 }
 
 pub(crate) fn finalize_qemu_case_run(report: &StarryQemuRunReport) -> anyhow::Result<()> {
@@ -513,6 +628,26 @@ mod tests {
         fs::write(path, "timeout = 1\n").unwrap();
     }
 
+    fn write_grouped_qemu_test_config(
+        root: &Path,
+        group: StarryTestGroup,
+        case_name: &str,
+        arch: &str,
+    ) {
+        let path = root
+            .join("test-suit/starryos")
+            .join(group.as_str())
+            .join(case_name)
+            .join(format!("qemu-{arch}.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            "shell_prefix = \"root@starry:\"\ntest_commands = [\"/usr/bin/beta\", \
+             \"/usr/bin/alpha\"]\ntimeout = 1\n",
+        )
+        .unwrap();
+    }
+
     fn write_case_build_config(root: &Path, relative_dir: &str, name: &str) -> PathBuf {
         let path = root.join(relative_dir).join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -538,10 +673,99 @@ mod tests {
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name, "smoke");
         assert_eq!(cases[0].build_config_path, None);
+        assert!(cases[0].test_commands.is_empty());
+        assert!(cases[0].subcases.is_empty());
         assert_eq!(
             cases[0].case_dir,
             root.path().join("test-suit/starryos/normal/smoke")
         );
+    }
+
+    #[test]
+    fn discovers_grouped_case_commands_and_sorted_subcases() {
+        let root = tempdir().unwrap();
+        write_grouped_qemu_test_config(root.path(), StarryTestGroup::Normal, "bugfix", "x86_64");
+        fs::create_dir_all(root.path().join("test-suit/starryos/normal/bugfix/beta/c")).unwrap();
+        fs::create_dir_all(root.path().join("test-suit/starryos/normal/bugfix/alpha/c")).unwrap();
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            None,
+            StarryTestGroup::Normal,
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "bugfix");
+        assert_eq!(
+            cases[0].test_commands,
+            vec!["/usr/bin/beta".to_string(), "/usr/bin/alpha".to_string()]
+        );
+        assert_eq!(
+            cases[0]
+                .subcases
+                .iter()
+                .map(|subcase| subcase.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+        assert!(
+            cases[0]
+                .subcases
+                .iter()
+                .all(|subcase| subcase.kind == StarryQemuSubcaseKind::C)
+        );
+    }
+
+    #[test]
+    fn grouped_case_rejects_shell_init_cmd_conflict() {
+        let root = tempdir().unwrap();
+        let path = root
+            .path()
+            .join("test-suit/starryos/normal/bugfix/qemu-x86_64.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "shell_prefix = \"root@starry:\"\nshell_init_cmd = \"/usr/bin/old\"\ntest_commands = \
+             [\"/usr/bin/new\"]\n",
+        )
+        .unwrap();
+
+        let err = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("bugfix"),
+            StarryTestGroup::Normal,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("cannot define both `shell_init_cmd` and `test_commands`"));
+    }
+
+    #[test]
+    fn grouped_case_rejects_empty_test_command() {
+        let root = tempdir().unwrap();
+        let path = root
+            .path()
+            .join("test-suit/starryos/normal/bugfix/qemu-x86_64.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "test_commands = [\"/usr/bin/ok\", \"  \"]\n").unwrap();
+
+        let err = discover_qemu_cases(
+            root.path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("bugfix"),
+            StarryTestGroup::Normal,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("contains an empty test command"));
     }
 
     #[test]

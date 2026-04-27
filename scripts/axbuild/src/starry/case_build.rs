@@ -16,7 +16,10 @@ use std::{
 
 use anyhow::{Context, bail, ensure};
 
-use super::{case_assets, test_suit::StarryQemuCase};
+use super::{
+    case_assets,
+    test_suit::{StarryQemuCase, StarryQemuSubcase, StarryQemuSubcaseKind},
+};
 use crate::process::ProcessExt;
 
 const CASE_C_DIR_NAME: &str = "c";
@@ -143,6 +146,153 @@ pub(crate) fn prepare_c_case_assets_sync(
 
     crate::rootfs::runtime::sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+/// Prepares assets for a grouped Starry case containing multiple guest tests.
+pub(crate) fn prepare_grouped_case_assets_sync(
+    arch: &str,
+    case: &StarryQemuCase,
+    case_rootfs: &Path,
+    layout: &case_assets::CaseAssetLayout,
+) -> anyhow::Result<()> {
+    ensure!(
+        case.is_grouped(),
+        "case `{}` is not a grouped qemu case",
+        case.name
+    );
+
+    let rust_subcases = case
+        .subcases
+        .iter()
+        .filter(|subcase| subcase.kind == StarryQemuSubcaseKind::Rust)
+        .map(|subcase| subcase.name.as_str())
+        .collect::<Vec<_>>();
+    ensure!(
+        rust_subcases.is_empty(),
+        "Starry grouped Rust test subcases are not supported yet: {}",
+        rust_subcases.join(", ")
+    );
+
+    case_assets::reset_dir(&layout.staging_root)?;
+    case_assets::reset_dir(&layout.build_dir)?;
+    case_assets::reset_dir(&layout.overlay_dir)?;
+    case_assets::reset_dir(&layout.command_wrapper_dir)?;
+    case_assets::reset_dir(&layout.cross_bin_dir)?;
+    fs::create_dir_all(&layout.apk_cache_dir)
+        .with_context(|| format!("failed to create {}", layout.apk_cache_dir.display()))?;
+
+    crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
+    write_host_resolver_config(&layout.staging_root)?;
+
+    let c_subcases = case
+        .subcases
+        .iter()
+        .filter(|subcase| subcase.kind == StarryQemuSubcaseKind::C)
+        .collect::<Vec<_>>();
+
+    if !c_subcases.is_empty() {
+        prepare_grouped_c_subcases_sync(arch, case, &c_subcases, layout)?;
+    }
+
+    case_assets::write_grouped_case_runner_script(&layout.overlay_dir, &case.test_commands)?;
+    crate::rootfs::runtime::sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
+    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+fn prepare_grouped_c_subcases_sync(
+    arch: &str,
+    case: &StarryQemuCase,
+    subcases: &[&StarryQemuSubcase],
+    layout: &case_assets::CaseAssetLayout,
+) -> anyhow::Result<()> {
+    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
+
+    if subcases
+        .iter()
+        .any(|subcase| case_prebuild_script_path(&subcase_as_case(case, subcase)).is_file())
+    {
+        let apk_region = apk_region_from_env()?;
+        rewrite_apk_repositories_for_region(&layout.staging_root, apk_region)?;
+        log_apk_prebuild_context(&layout.staging_root, apk_region)?;
+
+        for subcase in subcases {
+            let subcase_case = subcase_as_case(case, subcase);
+            let subcase_layout = subcase_layout(layout, subcase.name.as_str());
+            let prebuild_script = case_prebuild_script_path(&subcase_case);
+            if prebuild_script.is_file() {
+                let prebuild_env =
+                    prepare_guest_prebuild_env(arch, &subcase_case, &subcase_layout, apk_region)?;
+                let mut command = build_prebuild_command(
+                    &subcase_case,
+                    &prebuild_script,
+                    &subcase_layout,
+                    &prebuild_env,
+                )?;
+                command.exec().with_context(|| {
+                    format!("failed to run {} prebuild.sh", subcase.name.as_str())
+                })?;
+            }
+        }
+    }
+
+    let build_env = prepare_host_cross_build_env(arch, layout, &qemu_runner)?;
+    for subcase in subcases {
+        let subcase_case = subcase_as_case(case, subcase);
+        let subcase_layout = subcase_layout(layout, subcase.name.as_str());
+        let cmake_lists = case_c_source_dir(&subcase_case).join(CASE_CMAKE_FILE_NAME);
+        ensure!(
+            cmake_lists.is_file(),
+            "missing grouped case CMake project entry `{}`",
+            cmake_lists.display()
+        );
+
+        let mut configure =
+            build_cmake_configure_command(&subcase_case, &subcase_layout, &build_env);
+        configure.exec().with_context(|| {
+            format!(
+                "failed to configure grouped C subcase `{}`",
+                subcase.name.as_str()
+            )
+        })?;
+
+        let mut build = build_cmake_build_command(&subcase_layout, &build_env);
+        build.exec().with_context(|| {
+            format!(
+                "failed to build grouped C subcase `{}`",
+                subcase.name.as_str()
+            )
+        })?;
+
+        let mut install = build_cmake_install_command(&subcase_layout, &build_env);
+        install.exec().with_context(|| {
+            format!(
+                "failed to install grouped C subcase `{}`",
+                subcase.name.as_str()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn subcase_layout(
+    layout: &case_assets::CaseAssetLayout,
+    subcase_name: &str,
+) -> case_assets::CaseAssetLayout {
+    let mut layout = layout.clone();
+    layout.build_dir = layout.build_dir.join(subcase_name);
+    layout
+}
+
+fn subcase_as_case(case: &StarryQemuCase, subcase: &StarryQemuSubcase) -> StarryQemuCase {
+    StarryQemuCase {
+        name: format!("{}/{}", case.name, subcase.name.as_str()),
+        case_dir: subcase.case_dir.clone(),
+        qemu_config_path: case.qemu_config_path.clone(),
+        build_config_path: None,
+        test_commands: Vec::new(),
+        subcases: Vec::new(),
+    }
 }
 
 fn write_host_resolver_config(staging_root: &Path) -> anyhow::Result<()> {
@@ -815,6 +965,8 @@ mod tests {
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             build_config_path: None,
+            test_commands: Vec::new(),
+            subcases: Vec::new(),
         }
     }
 

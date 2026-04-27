@@ -673,12 +673,16 @@ impl Starry {
             .tool_mut()
             .read_qemu_config_from_path_for_cargo(cargo, &case.qemu_config_path)
             .await?;
+        case_assets::apply_grouped_qemu_config(&mut qemu, case);
 
         if case_request.smp.is_none() {
             case_request.smp = rootfs::smp_from_qemu_arg(&qemu);
         }
-        let cargo = if case_request.smp != request.smp {
-            build::load_cargo_config(&case_request)?
+        let axconfig_overrides = rootfs::phys_memory_size_override_from_qemu_arg(&qemu)?
+            .into_iter()
+            .collect::<Vec<_>>();
+        let cargo = if case_request.smp != request.smp || !axconfig_overrides.is_empty() {
+            build::load_cargo_config_with_axconfig_overrides(&case_request, axconfig_overrides)?
         } else {
             cargo.clone()
         };

@@ -1,13 +1,13 @@
 ---
 name: starry-test-suit
-description: Add, adapt, regroup, or validate StarryOS test-suit cases in this repository. Use this skill whenever the user wants to create or modify `test-suit/starryos` cases, update `qemu-*.toml` runtime configs, move cases between `normal` and `stress`, tune `success_regex`/`fail_regex`/`shell_init_cmd`, or wire Starry test-suit changes into `cargo starry test qemu` and CI.
+description: Add, adapt, regroup, or validate StarryOS test-suit cases in this repository. Use this skill whenever the user wants to create or modify `test-suit/starryos` cases, update `qemu-*.toml` runtime configs, move cases between `normal` and `stress`, tune `success_regex`/`fail_regex`/`shell_init_cmd`, or wire Starry test-suit changes into `cargo xtask starry test qemu` and CI.
 ---
 
 # Starry Test Suit
 
 ## Overview
 
-This skill captures the repo-specific way to maintain StarryOS system tests. Starry test-suit is data-driven: cases live under `test-suit/starryos`, `cargo starry test qemu` builds `starryos` itself, and xtask discovers per-arch runtime configs from case directories.
+This skill captures the repo-specific way to maintain StarryOS system tests. Starry test-suit is data-driven: cases live under `test-suit/starryos`, `cargo xtask starry test qemu` builds `starryos` itself, and xtask discovers per-arch runtime configs from case directories.
 
 ## Workflow
 
@@ -21,10 +21,13 @@ This skill captures the repo-specific way to maintain StarryOS system tests. Sta
 
 - `normal` cases live at `test-suit/starryos/normal/<case>/qemu-<arch>.toml`.
 - `stress` cases live at `test-suit/starryos/stress/<case>/qemu-<arch>.toml`.
-- `cargo starry test qemu -t <arch>` only runs `normal`.
-- `cargo starry test qemu --stress -t <arch>` only runs `stress`.
+- `cargo xtask starry test qemu --arch <arch>` only runs `normal`.
+- `cargo xtask starry test qemu --stress --arch <arch>` only runs `stress`.
 - `-c/--test-case` only searches inside the current group.
-- Keep case directories one level below `normal/` or `stress/`; do not add extra nesting.
+- Case directories stay one level below `normal/` or `stress/`.
+- Grouped cases may add test subdirectories under a case directory, such as
+  `normal/bugfix/<subcase>/c`, when the case-level `qemu-<arch>.toml` uses
+  `test_commands`.
 - Batch QEMU runs skip case directories that do not contain `qemu-<arch>.toml`; explicit `-c` still requires the directory and matching config to exist.
 - Cases may optionally provide `c/CMakeLists.txt` and `c/prebuild.sh`; anything that must land in the guest rootfs should be installed via CMake `install()`, not left as a prebuild side effect.
 
@@ -36,6 +39,7 @@ Each `qemu-<arch>.toml` should define runtime behavior, not build config:
 - `to_bin` / `uefi`
 - `shell_prefix`
 - `shell_init_cmd`
+- `test_commands` for grouped cases; do not combine it with `shell_init_cmd`
 - `success_regex`
 - `fail_regex`
 - `timeout`
@@ -56,9 +60,9 @@ Prefer multi-line TOML strings for longer shell scripts. Keep `shell_init_cmd` s
 Use xtask commands, not raw cargo runs:
 
 ```bash
-cargo xtask starry test qemu -t riscv64
-cargo xtask starry test qemu -t aarch64 -c smoke
-cargo xtask starry test qemu --stress -t riscv64 -c stress-ng-0
+cargo xtask starry test qemu --arch riscv64
+cargo xtask starry test qemu --arch aarch64 -c smoke
+cargo xtask starry test qemu --stress --arch riscv64 -c stress-ng-0
 ```
 
 When changing logic or xtask behavior, also run:
@@ -70,7 +74,7 @@ cargo clippy -p axbuild --all-targets --all-features
 
 ## Common Pitfalls
 
-- Do not run multiple `cargo starry test qemu` commands in parallel in one workspace checkout; Starry build artifacts and generated config files can interfere with each other.
+- Do not run multiple `cargo xtask starry test qemu` commands in parallel in one workspace checkout; Starry build artifacts and generated config files can interfere with each other.
 - `test-suit/starryos` is not a Cargo crate. Do not add `Cargo.toml` or `src/` back there.
 - `normal/apk/qemu-x86_64.toml` is intentionally absent because the x86_64 apk path was not stable enough; treat that as a deliberate omission unless you have a verified fix.
 - `stress` cases are allowed to be slower or flaky during bring-up; `normal` cases should be kept reliable.

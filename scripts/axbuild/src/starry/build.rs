@@ -54,6 +54,15 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     to_cargo_config(load_build_info(request)?, request)
 }
 
+pub(crate) fn load_cargo_config_with_axconfig_overrides(
+    request: &ResolvedStarryRequest,
+    axconfig_overrides: Vec<String>,
+) -> anyhow::Result<Cargo> {
+    let mut build_info = load_build_info(request)?;
+    build_info.axconfig_overrides.extend(axconfig_overrides);
+    to_cargo_config(build_info, request)
+}
+
 pub(crate) fn to_cargo_config(
     build_info: StarryBuildInfo,
     request: &ResolvedStarryRequest,
@@ -338,6 +347,7 @@ HELLO = "world"
             features: vec!["net".to_string()],
             log: LogLevel::Info,
             max_cpu_num: None,
+            axconfig_overrides: Vec::new(),
             plat_dyn: false,
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
@@ -413,6 +423,7 @@ HELLO = "world"
             ],
             log: LogLevel::Info,
             max_cpu_num: Some(8),
+            axconfig_overrides: Vec::new(),
             plat_dyn: true,
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(

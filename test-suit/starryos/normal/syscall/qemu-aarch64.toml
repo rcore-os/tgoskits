@@ -1,0 +1,39 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+test_commands = [
+    "/usr/bin/helloworld",
+    "/usr/bin/test-clock-gettime",
+    "/usr/bin/test-copy-file-range",
+    "/usr/bin/test-credentials",
+    "/usr/bin/test-epoll-pwait-sigsetsize",
+    "/usr/bin/test-fsync-dir",
+    "/usr/bin/test-getgroups",
+    "/usr/bin/test-getrandom",
+    "/usr/bin/test-madvise",
+    "/usr/bin/test-mmap-family",
+    "/usr/bin/test-prctl-pdeathsig",
+    "/usr/bin/test-rlimit-stack",
+    "/usr/bin/test_sa_restart",
+    "/usr/bin/test-sigaltstack",
+    "/usr/bin/test-stat-family",
+    "/usr/bin/test_ioctl_fionbio_int",
+]
+success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 300
