@@ -126,7 +126,10 @@ pub(super) fn resolve_pci_irq_from_fdt(
     let pci_host = if exact_range_matches.len() == 1 {
         exact_range_matches[0]
     } else if exact_range_matches.len() > 1 {
-        exact_range_matches[0]
+        return Err(USBError::Other(anyhow::anyhow!(
+            "multiple PCI host nodes in live FDT match USB endpoint {} with the same bus-range",
+            endpoint.address()
+        )));
     } else if candidates.len() == 1 {
         candidates[0]
     } else if candidates.is_empty() {

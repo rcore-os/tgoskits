@@ -29,6 +29,7 @@ pub trait VirtIoDevMeta {
 
 cfg_if! {
     if #[cfg(net_dev = "virtio-net")] {
+        #[allow(dead_code)]
         pub struct VirtIoNet;
 
         impl VirtIoDevMeta for VirtIoNet {
@@ -44,6 +45,7 @@ cfg_if! {
 
 cfg_if! {
     if #[cfg(block_dev = "virtio-blk")] {
+        #[allow(dead_code)]
         pub struct VirtIoBlk;
 
         impl VirtIoDevMeta for VirtIoBlk {
