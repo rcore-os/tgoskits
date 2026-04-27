@@ -94,6 +94,9 @@ typedef struct {{
             "RLIMIT_.*",
             "EAI_.*",
             "MAXADDRS",
+            "SO_.*",
+            "SOL_.*",
+            "TCP_.*",
         ];
 
         #[derive(Debug)]
