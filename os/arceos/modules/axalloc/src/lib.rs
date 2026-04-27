@@ -195,7 +195,7 @@ mod default_impl;
 #[cfg(not(feature = "buddy-slab"))]
 use default_impl as imp;
 #[cfg(feature = "buddy-slab")]
-pub use imp::init_precpu_slab;
+pub use imp::init_percpu_slab;
 pub use imp::{DefaultByteAllocator, GlobalAllocator, global_add_memory, global_init};
 
 /// Returns the reference to the global allocator.
