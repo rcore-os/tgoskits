@@ -49,6 +49,16 @@ fn map_conn_id(cid: VsockConnId) -> (VsockAddr, u32) {
     )
 }
 
+fn map_event_cid(event: &VsockEvent) -> VsockConnId {
+    VsockConnId {
+        peer_addr: ax_driver_vsock::VsockAddr {
+            cid: event.source.cid as _,
+            port: event.source.port as _,
+        },
+        local_port: event.destination.port,
+    }
+}
+
 impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
     fn guest_cid(&self) -> u64 {
         self.inner.guest_cid()
@@ -120,13 +130,7 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
 }
 
 fn convert_vsock_event(event: VsockEvent) -> DevResult<VsockDriverEvent> {
-    let cid = VsockConnId {
-        peer_addr: ax_driver_vsock::VsockAddr {
-            cid: event.source.cid as _,
-            port: event.source.port as _,
-        },
-        local_port: event.destination.port,
-    };
+    let cid = map_event_cid(&event);
 
     match event.event_type {
         VsockEventType::ConnectionRequest => Ok(VsockDriverEvent::ConnectionRequest(cid)),
@@ -135,5 +139,90 @@ fn convert_vsock_event(event: VsockEvent) -> DevResult<VsockDriverEvent> {
         VsockEventType::Disconnected { reason: _ } => Ok(VsockDriverEvent::Disconnected(cid)),
         VsockEventType::CreditUpdate => Ok(VsockDriverEvent::CreditUpdate(cid)),
         _ => Ok(VsockDriverEvent::Unknown),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ax_driver_vsock::{VsockAddr as DriverVsockAddr, VsockConnId, VsockDriverEvent};
+    use virtio_drivers::device::socket::{DisconnectReason, VsockAddr, VsockEvent, VsockEventType};
+
+    use super::{convert_vsock_event, map_conn_id, map_event_cid};
+
+    fn sample_conn_id() -> VsockConnId {
+        VsockConnId {
+            peer_addr: DriverVsockAddr { cid: 52, port: 2048 },
+            local_port: 4096,
+        }
+    }
+
+    fn sample_event(event_type: VsockEventType) -> VsockEvent {
+        let mut event: VsockEvent = unsafe { core::mem::zeroed() };
+        event.source = VsockAddr { cid: 33, port: 1025 };
+        event.destination = VsockAddr { cid: 44, port: 2049 };
+        event.event_type = event_type;
+        event
+    }
+
+    #[test]
+    fn map_conn_id_preserves_peer_and_local_port() {
+        let conn_id = sample_conn_id();
+        let (peer_addr, local_port) = map_conn_id(conn_id);
+        assert_eq!(peer_addr.cid, conn_id.peer_addr.cid as _);
+        assert_eq!(peer_addr.port, conn_id.peer_addr.port);
+        assert_eq!(local_port, conn_id.local_port);
+    }
+
+    #[test]
+    fn map_event_cid_uses_event_endpoints() {
+        let event = sample_event(VsockEventType::Connected);
+        let conn_id = map_event_cid(&event);
+        assert_eq!(conn_id.peer_addr.cid, event.source.cid as _);
+        assert_eq!(conn_id.peer_addr.port, event.source.port);
+        assert_eq!(conn_id.local_port, event.destination.port);
+    }
+
+    #[test]
+    fn convert_vsock_event_maps_connection_request() {
+        let event = sample_event(VsockEventType::ConnectionRequest);
+        let mapped = convert_vsock_event(event).unwrap();
+        assert!(matches!(mapped, VsockDriverEvent::ConnectionRequest(_)));
+    }
+
+    #[test]
+    fn convert_vsock_event_maps_connected() {
+        let event = sample_event(VsockEventType::Connected);
+        let mapped = convert_vsock_event(event).unwrap();
+        assert!(matches!(mapped, VsockDriverEvent::Connected(_)));
+    }
+
+    #[test]
+    fn convert_vsock_event_maps_received_length() {
+        let event = sample_event(VsockEventType::Received { length: 128 });
+        let mapped = convert_vsock_event(event).unwrap();
+        assert!(matches!(mapped, VsockDriverEvent::Received(_, 128)));
+    }
+
+    #[test]
+    fn convert_vsock_event_maps_disconnected() {
+        let event = sample_event(VsockEventType::Disconnected {
+            reason: DisconnectReason::Shutdown,
+        });
+        let mapped = convert_vsock_event(event).unwrap();
+        assert!(matches!(mapped, VsockDriverEvent::Disconnected(_)));
+    }
+
+    #[test]
+    fn convert_vsock_event_maps_credit_update() {
+        let event = sample_event(VsockEventType::CreditUpdate);
+        let mapped = convert_vsock_event(event).unwrap();
+        assert!(matches!(mapped, VsockDriverEvent::CreditUpdate(_)));
+    }
+
+    #[test]
+    fn convert_vsock_event_maps_credit_request_to_unknown() {
+        let event = sample_event(VsockEventType::CreditRequest);
+        let mapped = convert_vsock_event(event).unwrap();
+        assert!(matches!(mapped, VsockDriverEvent::Unknown));
     }
 }
