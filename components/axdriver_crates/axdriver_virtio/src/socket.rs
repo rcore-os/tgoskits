@@ -1,14 +1,89 @@
-use ax_driver_base::{BaseDriverOps, DevResult, DeviceType};
+use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use ax_driver_vsock::{VsockConnId, VsockDriverEvent, VsockDriverOps};
 use virtio_drivers::{
     Hal,
     device::socket::{
-        VirtIOSocket, VsockAddr, VsockConnectionManager as InnerDev, VsockEvent, VsockEventType,
+        DisconnectReason, VirtIOSocket, VsockAddr, VsockConnectionManager as InnerDev,
+        VsockEvent, VsockEventType,
     },
     transport::Transport,
 };
 
 use crate::as_dev_err;
+
+const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MappedConnId {
+    peer_addr: VsockAddr,
+    local_port: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TranslatedEventKind {
+    ConnectionRequest,
+    Connected,
+    Received(usize),
+    Disconnected,
+    CreditUpdate,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TranslatedEvent {
+    conn_id: VsockConnId,
+    kind: TranslatedEventKind,
+}
+
+fn validate_port(port: u32) -> DevResult<()> {
+    if port == 0 {
+        return Err(DevError::InvalidParam);
+    }
+    Ok(())
+}
+
+fn validate_peer_addr(addr: &ax_driver_vsock::VsockAddr) -> DevResult<()> {
+    if addr.cid == 0 {
+        return Err(DevError::InvalidParam);
+    }
+    validate_port(addr.port)
+}
+
+fn validate_conn_id(cid: VsockConnId) -> DevResult<VsockConnId> {
+    validate_peer_addr(&cid.peer_addr)?;
+    validate_port(cid.local_port)?;
+    Ok(cid)
+}
+
+fn map_peer_addr(addr: ax_driver_vsock::VsockAddr) -> VsockAddr {
+    VsockAddr {
+        cid: addr.cid,
+        port: addr.port,
+    }
+}
+
+fn map_conn_id_checked(cid: VsockConnId) -> DevResult<MappedConnId> {
+    let cid = validate_conn_id(cid)?;
+    Ok(MappedConnId {
+        peer_addr: map_peer_addr(cid.peer_addr),
+        local_port: cid.local_port,
+    })
+}
+
+fn map_disconnect_reason(_reason: DisconnectReason) -> TranslatedEventKind {
+    TranslatedEventKind::Disconnected
+}
+
+fn translate_event_kind(event_type: VsockEventType) -> TranslatedEventKind {
+    match event_type {
+        VsockEventType::ConnectionRequest => TranslatedEventKind::ConnectionRequest,
+        VsockEventType::Connected => TranslatedEventKind::Connected,
+        VsockEventType::Received { length } => TranslatedEventKind::Received(length),
+        VsockEventType::Disconnected { reason } => map_disconnect_reason(reason),
+        VsockEventType::CreditUpdate => TranslatedEventKind::CreditUpdate,
+        _ => TranslatedEventKind::Unknown,
+    }
+}
 
 /// The VirtIO socket device driver.
 pub struct VirtIoSocketDev<H: Hal, T: Transport> {
@@ -24,9 +99,58 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
     pub fn try_new(transport: T) -> DevResult<Self> {
         let virtio_socket = VirtIOSocket::<H, _>::new(transport).map_err(as_dev_err)?;
         Ok(Self {
-            inner: InnerDev::new_with_capacity(virtio_socket, 32 * 1024), // 32KB buffer
+            inner: InnerDev::new_with_capacity(virtio_socket, DEFAULT_RX_BUFFER_CAPACITY),
         })
     }
+
+    fn connect_mapped(&mut self, conn: MappedConnId) -> DevResult<()> {
+        self.inner
+            .connect(conn.peer_addr, conn.local_port)
+            .map_err(as_dev_err)
+    }
+
+    fn send_on_mapped(&mut self, conn: MappedConnId, buf: &[u8]) -> DevResult<usize> {
+        match self.inner.send(conn.peer_addr, conn.local_port, buf) {
+            Ok(()) => Ok(buf.len()),
+            Err(e) => Err(as_dev_err(e)),
+        }
+    }
+
+    fn recv_on_mapped(&mut self, conn: MappedConnId, buf: &mut [u8]) -> DevResult<usize> {
+        let res = self
+            .inner
+            .recv(conn.peer_addr, conn.local_port, buf)
+            .map_err(as_dev_err);
+        self.update_peer_credit(conn);
+        res
+    }
+
+    fn recv_available_on_mapped(&mut self, conn: MappedConnId) -> DevResult<usize> {
+        self.inner
+            .recv_buffer_available_bytes(conn.peer_addr, conn.local_port)
+            .map_err(as_dev_err)
+    }
+
+    fn shutdown_mapped(&mut self, conn: MappedConnId) -> DevResult<()> {
+        self.inner
+            .shutdown(conn.peer_addr, conn.local_port)
+            .map_err(as_dev_err)
+    }
+
+    fn abort_mapped(&mut self, conn: MappedConnId) -> DevResult<()> {
+        self.inner
+            .force_close(conn.peer_addr, conn.local_port)
+            .map_err(as_dev_err)
+    }
+
+    fn update_peer_credit(&mut self, conn: MappedConnId) {
+        let _ = self.inner.update_credit(conn.peer_addr, conn.local_port);
+    }
+
+    fn poll_raw_event(&mut self) -> DevResult<Option<VsockEvent>> {
+        self.inner.poll().map_err(as_dev_err)
+    }
+
 }
 
 impl<H: Hal, T: Transport> BaseDriverOps for VirtIoSocketDev<H, T> {
@@ -39,14 +163,10 @@ impl<H: Hal, T: Transport> BaseDriverOps for VirtIoSocketDev<H, T> {
     }
 }
 
+#[cfg(test)]
 fn map_conn_id(cid: VsockConnId) -> (VsockAddr, u32) {
-    (
-        VsockAddr {
-            cid: cid.peer_addr.cid as _,
-            port: cid.peer_addr.port as _,
-        },
-        cid.local_port,
-    )
+    let mapped = map_conn_id_checked(cid).expect("vsock connection id should be valid");
+    (mapped.peer_addr, mapped.local_port)
 }
 
 fn map_event_cid(event: &VsockEvent) -> VsockConnId {
@@ -56,6 +176,17 @@ fn map_event_cid(event: &VsockEvent) -> VsockConnId {
             port: event.source.port as _,
         },
         local_port: event.destination.port,
+    }
+}
+
+fn map_driver_event(event: TranslatedEvent) -> VsockDriverEvent {
+    match event.kind {
+        TranslatedEventKind::ConnectionRequest => VsockDriverEvent::ConnectionRequest(event.conn_id),
+        TranslatedEventKind::Connected => VsockDriverEvent::Connected(event.conn_id),
+        TranslatedEventKind::Received(length) => VsockDriverEvent::Received(event.conn_id, length),
+        TranslatedEventKind::Disconnected => VsockDriverEvent::Disconnected(event.conn_id),
+        TranslatedEventKind::CreditUpdate => VsockDriverEvent::CreditUpdate(event.conn_id),
+        TranslatedEventKind::Unknown => VsockDriverEvent::Unknown,
     }
 }
 
@@ -69,77 +200,49 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
     }
 
     fn connect(&mut self, cid: VsockConnId) -> DevResult<()> {
-        let (peer_addr, src_port) = map_conn_id(cid);
-        self.inner.connect(peer_addr, src_port).map_err(as_dev_err)
+        let conn = map_conn_id_checked(cid)?;
+        self.connect_mapped(conn)
     }
 
     fn send(&mut self, cid: VsockConnId, buf: &[u8]) -> DevResult<usize> {
-        let (peer_addr, src_port) = map_conn_id(cid);
-        match self.inner.send(peer_addr, src_port, buf) {
-            Ok(()) => Ok(buf.len()),
-            Err(e) => Err(as_dev_err(e)),
-        }
+        let conn = map_conn_id_checked(cid)?;
+        self.send_on_mapped(conn, buf)
     }
 
     fn recv(&mut self, cid: VsockConnId, buf: &mut [u8]) -> DevResult<usize> {
-        let (peer_addr, src_port) = map_conn_id(cid);
-        let res = self
-            .inner
-            .recv(peer_addr, src_port, buf)
-            .map_err(as_dev_err);
-        let _ = self.inner.update_credit(peer_addr, src_port);
-        res
+        let conn = map_conn_id_checked(cid)?;
+        self.recv_on_mapped(conn, buf)
     }
 
     fn recv_avail(&mut self, cid: VsockConnId) -> DevResult<usize> {
-        let (peer_addr, src_port) = map_conn_id(cid);
-        self.inner
-            .recv_buffer_available_bytes(peer_addr, src_port)
-            .map_err(as_dev_err)
+        let conn = map_conn_id_checked(cid)?;
+        self.recv_available_on_mapped(conn)
     }
 
     fn disconnect(&mut self, cid: VsockConnId) -> DevResult<()> {
-        let (peer_addr, src_port) = map_conn_id(cid);
-        self.inner.shutdown(peer_addr, src_port).map_err(as_dev_err)
+        let conn = map_conn_id_checked(cid)?;
+        self.shutdown_mapped(conn)
     }
 
     fn abort(&mut self, cid: VsockConnId) -> DevResult<()> {
-        let (peer_addr, src_port) = map_conn_id(cid);
-        self.inner
-            .force_close(peer_addr, src_port)
-            .map_err(as_dev_err)
+        let conn = map_conn_id_checked(cid)?;
+        self.abort_mapped(conn)
     }
 
     fn poll_event(&mut self) -> DevResult<Option<VsockDriverEvent>> {
-        match self.inner.poll() {
-            Ok(None) => {
-                // no event
-                Ok(None)
-            }
-            Ok(Some(event)) => {
-                // translate event
-                let result = convert_vsock_event(event)?;
-                Ok(Some(result))
-            }
-            Err(e) => {
-                // error
-                Err(as_dev_err(e))
-            }
+        match self.poll_raw_event()? {
+            None => Ok(None),
+            Some(event) => Ok(Some(convert_vsock_event(event)?)),
         }
     }
 }
 
 fn convert_vsock_event(event: VsockEvent) -> DevResult<VsockDriverEvent> {
-    let cid = map_event_cid(&event);
-
-    match event.event_type {
-        VsockEventType::ConnectionRequest => Ok(VsockDriverEvent::ConnectionRequest(cid)),
-        VsockEventType::Connected => Ok(VsockDriverEvent::Connected(cid)),
-        VsockEventType::Received { length } => Ok(VsockDriverEvent::Received(cid, length)),
-        VsockEventType::Disconnected { reason: _ } => Ok(VsockDriverEvent::Disconnected(cid)),
-        VsockEventType::CreditUpdate => Ok(VsockDriverEvent::CreditUpdate(cid)),
-        _ => Ok(VsockDriverEvent::Unknown),
-    }
+    let translated = TranslatedEvent {
+        conn_id: map_event_cid(&event),
+        kind: translate_event_kind(event.event_type),
+    };
+    Ok(map_driver_event(translated))
 }
 
 #[cfg(test)]
