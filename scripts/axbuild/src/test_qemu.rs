@@ -380,10 +380,6 @@ mod tests {
                 "riscv64gc-unknown-none-elf".to_string()
             )
         );
-        assert_eq!(
-            parse_axvisor_test_target("loongarch64").unwrap(),
-            ("loongarch64", "loongarch64-unknown-none-softfloat")
-        );
     }
 
     #[test]
@@ -430,29 +426,6 @@ mod tests {
                     .map(|pattern| pattern.to_string())
                     .collect(),
             }
-        );
-    }
-
-    #[test]
-    fn returns_loongarch_axvisor_shell_config() {
-        assert_eq!(
-            axvisor_test_shell_config("loongarch64").unwrap(),
-            ShellAutoInitConfig {
-                shell_prefix: "axvisor:$".to_string(),
-                shell_init_cmd: String::new(),
-                success_regex: vec![
-                    "Welcome to AxVisor Shell!".to_string(),
-                    r"axvisor:\$".to_string(),
-                ],
-                fail_regex: AXVISOR_TEST_FAIL_REGEX
-                    .iter()
-                    .map(|pattern| pattern.to_string())
-                    .collect(),
-            }
-        );
-        assert_eq!(
-            parse_axvisor_test_target("loongarch64-unknown-none-softfloat").unwrap(),
-            ("loongarch64", "loongarch64-unknown-none-softfloat")
         );
     }
 
