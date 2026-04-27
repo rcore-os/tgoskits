@@ -217,6 +217,15 @@ impl DirNode {
         verify_entry_name(name)?;
 
         self.ops.link(name, node).inspect(|entry| {
+            // Hard links must share the same page cache (user_data) as the
+            // source node.  Without this, in-memory filesystems like tmpfs
+            // would create a new empty page cache for the link, losing the
+            // file content.
+            {
+                let src = node.user_data();
+                let mut dst = entry.user_data();
+                *dst = src.clone();
+            }
             self.cache.lock().insert(name.to_owned(), entry.clone());
         })
     }
