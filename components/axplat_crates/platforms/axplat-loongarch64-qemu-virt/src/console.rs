@@ -7,7 +7,7 @@ use ax_plat::console::ConsoleIf;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
 use some_serial::{
-    InterfaceRaw, InterruptMask, TReciever, TSender,
+    InterfaceRaw, InterruptMask, Reciever as Receiver, Sender, TReciever as TReceiver, TSender,
     ns16550::{Mmio, Ns16550, Ns16550IrqHandler},
 };
 #[cfg(feature = "irq")]
@@ -20,8 +20,8 @@ const UART_REG_WIDTH: usize = 1;
 
 struct ConsoleUart {
     _uart: Ns16550<Mmio>,
-    tx: some_serial::Sender,
-    rx: some_serial::Reciever,
+    tx: Sender,
+    rx: Receiver,
 }
 
 impl ConsoleUart {
