@@ -78,6 +78,60 @@ impl ConnectionOperation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OperationRequest {
+    conn: MappedConnId,
+    operation: ConnectionOperation,
+}
+
+impl OperationRequest {
+    const fn new(conn: MappedConnId, operation: ConnectionOperation) -> Self {
+        Self { conn, operation }
+    }
+
+    const fn conn(self) -> MappedConnId {
+        self.conn
+    }
+
+    const fn operation(self) -> ConnectionOperation {
+        self.operation
+    }
+}
+
+fn normalize_operation_request(request: OperationRequest) -> DevResult<OperationRequest> {
+    let conn = validate_mapped_conn(request.conn(), request.operation())?;
+    Ok(OperationRequest::new(conn, request.operation()))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ListenRequest {
+    src_port: u32,
+}
+
+impl ListenRequest {
+    const fn new(src_port: u32) -> Self {
+        Self { src_port }
+    }
+
+    const fn src_port(self) -> u32 {
+        self.src_port
+    }
+
+    const fn is_valid(self) -> bool {
+        self.src_port != 0
+    }
+}
+
+fn normalize_listen_request(request: ListenRequest) -> Option<ListenRequest> {
+    validate_port(request.src_port())
+        .ok()
+        .map(|_| request)
+}
+
+fn should_listen_on_port(request: ListenRequest) -> bool {
+    request.is_valid()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TranslatedEventKind {
     ConnectionRequest,
     Connected,
@@ -125,6 +179,68 @@ impl TranslatedEvent {
 
     const fn should_surface_to_driver(self) -> bool {
         self.kind.should_surface_to_driver()
+    }
+}
+
+#[derive(Debug)]
+enum PollOutcome {
+    NoEvent,
+    DriverEvent(VsockDriverEvent),
+}
+
+impl PollOutcome {
+    const fn into_option(self) -> Option<VsockDriverEvent> {
+        match self {
+            Self::NoEvent => None,
+            Self::DriverEvent(event) => Some(event),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CreditRefreshPolicy {
+    Never,
+    AfterReceive,
+    AfterQuery,
+}
+
+impl CreditRefreshPolicy {
+    const fn should_refresh_after_recv(self, bytes_read: usize) -> bool {
+        matches!(self, Self::AfterReceive) && bytes_read != 0
+    }
+
+    const fn should_refresh_after_query(self) -> bool {
+        matches!(self, Self::AfterQuery)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EventRoutingDecision {
+    translated: Option<TranslatedEvent>,
+    refresh_credit: bool,
+}
+
+impl EventRoutingDecision {
+    const fn ignore() -> Self {
+        Self {
+            translated: None,
+            refresh_credit: false,
+        }
+    }
+
+    const fn surface(translated: TranslatedEvent) -> Self {
+        Self {
+            translated: Some(translated),
+            refresh_credit: false,
+        }
+    }
+
+    const fn translated(self) -> Option<TranslatedEvent> {
+        self.translated
+    }
+
+    const fn should_refresh_credit(self) -> bool {
+        self.refresh_credit
     }
 }
 
@@ -266,8 +382,53 @@ fn validate_connect_request(cid: VsockConnId) -> DevResult<MappedConnId> {
     map_conn_id_checked(cid, ConnectionOperation::Connect)
 }
 
-fn prepare_listen_port(src_port: u32) -> Option<u32> {
-    validate_port(src_port).ok().map(|_| src_port)
+fn build_operation_request(
+    cid: VsockConnId,
+    operation: ConnectionOperation,
+) -> DevResult<OperationRequest> {
+    let conn = match operation {
+        ConnectionOperation::Connect => validate_connect_request(cid)?,
+        ConnectionOperation::ReceiveAvailable => validate_credit_query(cid)?,
+        ConnectionOperation::Disconnect => validate_disconnect_request(cid)?,
+        ConnectionOperation::Abort => validate_abort_request(cid)?,
+        ConnectionOperation::Send | ConnectionOperation::Receive => {
+            return Err(DevError::InvalidParam);
+        }
+    };
+    Ok(OperationRequest::new(conn, operation))
+}
+
+fn build_buffered_operation_request(
+    cid: VsockConnId,
+    operation: ConnectionOperation,
+    buf_len: usize,
+) -> DevResult<OperationRequest> {
+    let conn = match operation {
+        ConnectionOperation::Send => validate_send_request(cid, buf_len)?,
+        ConnectionOperation::Receive => validate_recv_request(cid, buf_len)?,
+        ConnectionOperation::Connect
+        | ConnectionOperation::ReceiveAvailable
+        | ConnectionOperation::Disconnect
+        | ConnectionOperation::Abort => return Err(DevError::InvalidParam),
+    };
+    Ok(OperationRequest::new(conn, operation))
+}
+
+fn prepare_listen_request(src_port: u32) -> Option<ListenRequest> {
+    validate_port(src_port)
+        .ok()
+        .map(|_| ListenRequest::new(src_port))
+}
+
+fn credit_refresh_policy_for_operation(operation: ConnectionOperation) -> CreditRefreshPolicy {
+    match operation {
+        ConnectionOperation::Receive => CreditRefreshPolicy::AfterReceive,
+        ConnectionOperation::ReceiveAvailable => CreditRefreshPolicy::AfterQuery,
+        ConnectionOperation::Connect
+        | ConnectionOperation::Send
+        | ConnectionOperation::Disconnect
+        | ConnectionOperation::Abort => CreditRefreshPolicy::Never,
+    }
 }
 
 fn map_disconnect_reason(_reason: DisconnectReason) -> TranslatedEventKind {
@@ -309,23 +470,23 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
         })
     }
 
-    fn connect_mapped(&mut self, conn: MappedConnId) -> DevResult<()> {
-        let conn = validate_mapped_conn(conn, ConnectionOperation::Connect)?;
+    fn connect_mapped(&mut self, request: OperationRequest) -> DevResult<()> {
+        let conn = normalize_operation_request(request)?.conn();
         self.inner
             .connect(conn.peer_addr(), conn.local_port())
             .map_err(as_dev_err)
     }
 
-    fn send_on_mapped(&mut self, conn: MappedConnId, buf: &[u8]) -> DevResult<usize> {
-        let conn = validate_mapped_conn(conn, ConnectionOperation::Send)?;
+    fn send_on_mapped(&mut self, request: OperationRequest, buf: &[u8]) -> DevResult<usize> {
+        let conn = normalize_operation_request(request)?.conn();
         match self.inner.send(conn.peer_addr(), conn.local_port(), buf) {
             Ok(()) => Ok(buf.len()),
             Err(e) => Err(as_dev_err(e)),
         }
     }
 
-    fn recv_on_mapped(&mut self, conn: MappedConnId, buf: &mut [u8]) -> DevResult<usize> {
-        let conn = validate_mapped_conn(conn, ConnectionOperation::Receive)?;
+    fn recv_on_mapped(&mut self, request: OperationRequest, buf: &mut [u8]) -> DevResult<usize> {
+        let conn = normalize_operation_request(request)?.conn();
         let res = self
             .inner
             .recv(conn.peer_addr(), conn.local_port(), buf)
@@ -334,22 +495,22 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
         res
     }
 
-    fn recv_available_on_mapped(&mut self, conn: MappedConnId) -> DevResult<usize> {
-        let conn = validate_mapped_conn(conn, ConnectionOperation::ReceiveAvailable)?;
+    fn recv_available_on_mapped(&mut self, request: OperationRequest) -> DevResult<usize> {
+        let conn = normalize_operation_request(request)?.conn();
         self.inner
             .recv_buffer_available_bytes(conn.peer_addr(), conn.local_port())
             .map_err(as_dev_err)
     }
 
-    fn shutdown_mapped(&mut self, conn: MappedConnId) -> DevResult<()> {
-        let conn = validate_mapped_conn(conn, ConnectionOperation::Disconnect)?;
+    fn shutdown_mapped(&mut self, request: OperationRequest) -> DevResult<()> {
+        let conn = normalize_operation_request(request)?.conn();
         self.inner
             .shutdown(conn.peer_addr(), conn.local_port())
             .map_err(as_dev_err)
     }
 
-    fn abort_mapped(&mut self, conn: MappedConnId) -> DevResult<()> {
-        let conn = validate_mapped_conn(conn, ConnectionOperation::Abort)?;
+    fn abort_mapped(&mut self, request: OperationRequest) -> DevResult<()> {
+        let conn = normalize_operation_request(request)?.conn();
         self.inner
             .force_close(conn.peer_addr(), conn.local_port())
             .map_err(as_dev_err)
@@ -364,27 +525,31 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
         conn: MappedConnId,
         recv_result: &DevResult<usize>,
     ) {
-        if matches!(recv_result, Ok(bytes_read) if *bytes_read != 0) {
+        let policy = credit_refresh_policy_for_operation(ConnectionOperation::Receive);
+        if matches!(recv_result, Ok(bytes_read) if policy.should_refresh_after_recv(*bytes_read)) {
             self.update_peer_credit(conn);
         }
     }
 
     fn refresh_peer_credit_for_query(&mut self, conn: MappedConnId) {
-        self.update_peer_credit(conn);
+        let policy = credit_refresh_policy_for_operation(ConnectionOperation::ReceiveAvailable);
+        if policy.should_refresh_after_query() {
+            self.update_peer_credit(conn);
+        }
     }
 
     fn poll_raw_event(&mut self) -> DevResult<Option<VsockEvent>> {
         self.inner.poll().map_err(as_dev_err)
     }
 
-    fn listen_on_port(&mut self, src_port: u32) {
-        self.inner.listen(src_port)
+    fn listen_on_port(&mut self, request: ListenRequest) {
+        self.inner.listen(request.src_port())
     }
 
-    fn poll_driver_event_once(&mut self) -> DevResult<Option<VsockDriverEvent>> {
+    fn poll_driver_event_once(&mut self) -> DevResult<PollOutcome> {
         match self.poll_raw_event()? {
-            None => Ok(None),
-            Some(event) => Ok(Some(convert_vsock_event(event)?)),
+            None => Ok(PollOutcome::NoEvent),
+            Some(event) => Ok(PollOutcome::DriverEvent(convert_vsock_event(event)?)),
         }
     }
 
@@ -461,12 +626,16 @@ fn validate_mapped_conn(
     Ok(conn)
 }
 
-fn normalize_polled_event(event: VsockEvent) -> DevResult<Option<TranslatedEvent>> {
-    let translated = validate_translated_event(translate_vsock_event(event))?;
+fn route_translated_event(translated: TranslatedEvent) -> EventRoutingDecision {
     if should_surface_translated_event(translated) {
-        return Ok(Some(translated));
+        return EventRoutingDecision::surface(translated);
     }
-    Ok(None)
+    EventRoutingDecision::ignore()
+}
+
+fn normalize_polled_event(event: VsockEvent) -> DevResult<EventRoutingDecision> {
+    let translated = validate_translated_event(translate_vsock_event(event))?;
+    Ok(route_translated_event(translated))
 }
 
 impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
@@ -475,50 +644,58 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
     }
 
     fn listen(&mut self, src_port: u32) {
-        if let Some(src_port) = prepare_listen_port(src_port) {
-            self.listen_on_port(src_port);
+        if let Some(request) = prepare_listen_request(src_port) {
+            if should_listen_on_port(request) {
+                if let Some(request) = normalize_listen_request(request) {
+                self.listen_on_port(request);
+                }
+            }
         }
     }
 
     fn connect(&mut self, cid: VsockConnId) -> DevResult<()> {
-        let conn = validate_connect_request(cid)?;
-        self.connect_mapped(conn)
+        let request = build_operation_request(cid, ConnectionOperation::Connect)?;
+        self.connect_mapped(request)
     }
 
     fn send(&mut self, cid: VsockConnId, buf: &[u8]) -> DevResult<usize> {
-        let conn = validate_send_request(cid, buf.len())?;
-        self.send_on_mapped(conn, buf)
+        let request = build_buffered_operation_request(cid, ConnectionOperation::Send, buf.len())?;
+        self.send_on_mapped(request, buf)
     }
 
     fn recv(&mut self, cid: VsockConnId, buf: &mut [u8]) -> DevResult<usize> {
-        let conn = validate_recv_request(cid, buf.len())?;
-        self.recv_on_mapped(conn, buf)
+        let request =
+            build_buffered_operation_request(cid, ConnectionOperation::Receive, buf.len())?;
+        self.recv_on_mapped(request, buf)
     }
 
     fn recv_avail(&mut self, cid: VsockConnId) -> DevResult<usize> {
-        let conn = validate_credit_query(cid)?;
-        let available = self.recv_available_on_mapped(conn)?;
+        let request = build_operation_request(cid, ConnectionOperation::ReceiveAvailable)?;
+        let conn = request.conn();
+        let available = self.recv_available_on_mapped(request)?;
         self.refresh_peer_credit_for_query(conn);
         Ok(available)
     }
 
     fn disconnect(&mut self, cid: VsockConnId) -> DevResult<()> {
-        let conn = validate_disconnect_request(cid)?;
-        self.shutdown_mapped(conn)
+        let request = build_operation_request(cid, ConnectionOperation::Disconnect)?;
+        self.shutdown_mapped(request)
     }
 
     fn abort(&mut self, cid: VsockConnId) -> DevResult<()> {
-        let conn = validate_abort_request(cid)?;
-        self.abort_mapped(conn)
+        let request = build_operation_request(cid, ConnectionOperation::Abort)?;
+        self.abort_mapped(request)
     }
 
     fn poll_event(&mut self) -> DevResult<Option<VsockDriverEvent>> {
-        self.poll_driver_event_once()
+        Ok(self.poll_driver_event_once()?.into_option())
     }
 }
 
 fn convert_vsock_event(event: VsockEvent) -> DevResult<VsockDriverEvent> {
-    if let Some(translated) = normalize_polled_event(event)? {
+    let decision = normalize_polled_event(event)?;
+    let _ = decision.should_refresh_credit();
+    if let Some(translated) = decision.translated() {
         return Ok(map_driver_event(translated));
     }
     Ok(VsockDriverEvent::Unknown)
