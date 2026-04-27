@@ -16,10 +16,4 @@ echo
 
 cd "$HOME" || cd /
 export PS1='${USER}@${HOSTNAME}:${PWD} # '
-
-# Use bash if available, otherwise fall back to sh
-if [ -x /bin/bash ]; then
-    exec /bin/bash -l
-else
-    exec /bin/sh -i
-fi
+exec /bin/sh -i
