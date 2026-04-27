@@ -786,6 +786,11 @@ if echo "$_t" | grep -qF "gg_"; then echo "PASS: addgroup"; PASS=$((PASS+1)); el
 # Custom test: adduser
 _t=$({ timeout 10 sh -c "U=\$(date +%s); busybox deluser \"uu_\$U\" 2>/dev/null; busybox adduser -D -H \"uu_\$U\" 2>&1 && busybox grep -F \"uu_\$U:\" /etc/passwd 2>&1; busybox deluser \"uu_\$U\" 2>/dev/null"; } 2>&1)
 if echo "$_t" | grep -qF "uu_"; then echo "PASS: adduser"; PASS=$((PASS+1)); else echo "FAIL: adduser"; FAIL=$((FAIL+1)); fi
+
+# busybox_link — create hard link on tmpfs and verify content is shared
+_t=$({ timeout 10 sh -c 'busybox rm -f /tmp/bb_link_a /tmp/bb_link_b; busybox echo link_data > /tmp/bb_link_a && busybox link /tmp/bb_link_a /tmp/bb_link_b && busybox cat /tmp/bb_link_b'; } 2>&1)
+if echo "$_t" | grep -qF "link_data"; then echo "PASS: busybox_link"; PASS=$((PASS+1)); else echo "FAIL: busybox_link"; FAIL=$((FAIL+1)); fi
+
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
 _m1="Test"; _m2="run"; _m3="completed"; echo "$_m1 $_m2 $_m3"
