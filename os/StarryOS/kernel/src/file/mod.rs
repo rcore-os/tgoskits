@@ -250,6 +250,13 @@ pub fn close_file_like(fd: c_int) -> AxResult {
 /// resources are properly released. Without this, parent processes blocking on
 /// pipe reads will never receive EOF.
 pub fn close_all_fds() {
+    // CLONE_FILES may share the same fd table across multiple tasks/processes.
+    // In that case, an exiting sharer must not clear the whole table, or other
+    // live sharers (including the parent) will lose stdout/stderr unexpectedly.
+    if Arc::strong_count(&FD_TABLE) > 1 {
+        return;
+    }
+
     let mut table = FD_TABLE.write();
     let ids: alloc::vec::Vec<usize> = table.ids().collect();
     let mut removed = alloc::vec::Vec::with_capacity(ids.len());
