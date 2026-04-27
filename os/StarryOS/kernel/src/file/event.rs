@@ -62,7 +62,7 @@ impl FileLike for EventFd {
     }
 
     fn write(&self, src: &mut IoSrc) -> ax_io::Result<usize> {
-        if src.remaining() < size_of::<u64>() {
+        if src.remaining() != size_of::<u64>() {
             return Err(AxError::InvalidInput);
         }
 
