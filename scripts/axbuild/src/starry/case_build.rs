@@ -207,10 +207,7 @@ pub(crate) fn prepare_python_case_assets_sync(
         );
         prebuild_cmd.arg(&guest_shell);
     }
-    prebuild_cmd
-        .arg("-eu")
-        .arg("-c")
-        .arg("apk add python3");
+    prebuild_cmd.arg("-eu").arg("-c").arg("apk add python3");
 
     // Apply environment (PATH with wrappers, QEMU_LD_PREFIX)
     let host_path = std::env::var_os("PATH").unwrap_or_default();
@@ -225,11 +222,7 @@ pub(crate) fn prepare_python_case_assets_sync(
         .context("failed to install python3 via apk in staging rootfs")?;
 
     // Build overlay: copy Python installation from staging into overlay
-    let python_dirs_to_copy: &[&str] = &[
-        "usr/bin",
-        "usr/lib",
-        "lib",
-    ];
+    let python_dirs_to_copy: &[&str] = &["usr/bin", "usr/lib", "lib"];
 
     for rel_dir in python_dirs_to_copy {
         let src = layout.staging_root.join(rel_dir);
@@ -273,23 +266,26 @@ pub(crate) fn prepare_python_case_assets_sync(
 
 /// Recursively copies a directory tree, preserving file permissions.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(dst)
-        .with_context(|| format!("failed to create {}", dst.display()))?;
-    for entry in fs::read_dir(src)
-        .with_context(|| format!("failed to read {}", src.display()))?
-    {
+    fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
+    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        let file_type = entry.file_type()
+        let file_type = entry
+            .file_type()
             .with_context(|| format!("failed to inspect {}", src_path.display()))?;
         if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else if file_type.is_file() || file_type.is_symlink() {
             let resolved = fs::canonicalize(&src_path).unwrap_or_else(|_| src_path.clone());
             if resolved.is_file() {
-                fs::copy(&resolved, &dst_path)
-                    .with_context(|| format!("failed to copy {} to {}", resolved.display(), dst_path.display()))?;
+                fs::copy(&resolved, &dst_path).with_context(|| {
+                    format!(
+                        "failed to copy {} to {}",
+                        resolved.display(),
+                        dst_path.display()
+                    )
+                })?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -305,7 +301,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
     }
     Ok(())
 }
-
 
 fn write_host_resolver_config(staging_root: &Path) -> anyhow::Result<()> {
     let resolv_conf = preferred_host_resolver_config()?;
