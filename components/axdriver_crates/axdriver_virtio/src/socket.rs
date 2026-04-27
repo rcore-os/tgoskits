@@ -19,6 +19,33 @@ struct MappedConnId {
     local_port: u32,
 }
 
+impl MappedConnId {
+    const fn new(peer_addr: VsockAddr, local_port: u32) -> Self {
+        Self {
+            peer_addr,
+            local_port,
+        }
+    }
+
+    const fn peer_addr(self) -> VsockAddr {
+        self.peer_addr
+    }
+
+    const fn local_port(self) -> u32 {
+        self.local_port
+    }
+
+    fn into_driver_conn_id(self) -> VsockConnId {
+        VsockConnId {
+            peer_addr: ax_driver_vsock::VsockAddr {
+                cid: self.peer_addr.cid,
+                port: self.peer_addr.port,
+            },
+            local_port: self.local_port,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConnectionOperation {
     Connect,
@@ -27,6 +54,27 @@ enum ConnectionOperation {
     ReceiveAvailable,
     Disconnect,
     Abort,
+}
+
+impl ConnectionOperation {
+    const fn requires_non_empty_buffer(self) -> bool {
+        matches!(self, Self::Send | Self::Receive)
+    }
+
+    const fn refreshes_credit_after_completion(self) -> bool {
+        matches!(self, Self::Receive | Self::ReceiveAvailable)
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Connect => "connect",
+            Self::Send => "send",
+            Self::Receive => "receive",
+            Self::ReceiveAvailable => "receive_available",
+            Self::Disconnect => "disconnect",
+            Self::Abort => "abort",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,10 +87,79 @@ enum TranslatedEventKind {
     Unknown,
 }
 
+impl TranslatedEventKind {
+    const fn is_connection_event(self) -> bool {
+        matches!(
+            self,
+            Self::ConnectionRequest | Self::Connected | Self::Disconnected
+        )
+    }
+
+    const fn is_data_event(self) -> bool {
+        matches!(self, Self::Received(_) | Self::CreditUpdate)
+    }
+
+    const fn should_surface_to_driver(self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TranslatedEvent {
     conn_id: VsockConnId,
     kind: TranslatedEventKind,
+}
+
+impl TranslatedEvent {
+    const fn new(conn_id: VsockConnId, kind: TranslatedEventKind) -> Self {
+        Self { conn_id, kind }
+    }
+
+    const fn kind(self) -> TranslatedEventKind {
+        self.kind
+    }
+
+    const fn conn_id(self) -> VsockConnId {
+        self.conn_id
+    }
+
+    const fn should_surface_to_driver(self) -> bool {
+        self.kind.should_surface_to_driver()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EventEndpoints {
+    source: ax_driver_vsock::VsockAddr,
+    destination: ax_driver_vsock::VsockAddr,
+}
+
+impl EventEndpoints {
+    fn from_event(event: &VsockEvent) -> DevResult<Self> {
+        let source = map_socket_addr_to_driver(event.source);
+        let destination = map_socket_addr_to_driver(event.destination);
+        validate_event_endpoint(&source)?;
+        validate_port(destination.port)?;
+        Ok(Self {
+            source,
+            destination,
+        })
+    }
+
+    const fn source(self) -> ax_driver_vsock::VsockAddr {
+        self.source
+    }
+
+    const fn destination(self) -> ax_driver_vsock::VsockAddr {
+        self.destination
+    }
+
+    fn into_conn_id(self) -> VsockConnId {
+        VsockConnId {
+            peer_addr: self.source(),
+            local_port: self.destination().port,
+        }
+    }
 }
 
 fn validate_port(port: u32) -> DevResult<()> {
@@ -52,8 +169,8 @@ fn validate_port(port: u32) -> DevResult<()> {
     Ok(())
 }
 
-fn validate_buffer_is_not_empty(buf_len: usize) -> DevResult<()> {
-    if buf_len == 0 {
+fn validate_buffer_len(buf_len: usize, operation: ConnectionOperation) -> DevResult<()> {
+    if operation.requires_non_empty_buffer() && buf_len == 0 {
         return Err(DevError::InvalidParam);
     }
     Ok(())
@@ -70,6 +187,24 @@ fn validate_conn_id(cid: VsockConnId) -> DevResult<VsockConnId> {
     validate_peer_addr(&cid.peer_addr)?;
     validate_port(cid.local_port)?;
     Ok(cid)
+}
+
+fn validate_event_endpoint(addr: &ax_driver_vsock::VsockAddr) -> DevResult<()> {
+    validate_peer_addr(addr)
+}
+
+fn validate_received_length_for_event(length: usize) -> DevResult<usize> {
+    if length == 0 {
+        return Err(DevError::InvalidParam);
+    }
+    Ok(length)
+}
+
+fn map_socket_addr_to_driver(addr: VsockAddr) -> ax_driver_vsock::VsockAddr {
+    ax_driver_vsock::VsockAddr {
+        cid: addr.cid,
+        port: addr.port,
+    }
 }
 
 fn map_peer_addr(addr: ax_driver_vsock::VsockAddr) -> VsockAddr {
@@ -99,19 +234,19 @@ fn map_conn_id_checked(
     operation: ConnectionOperation,
 ) -> DevResult<MappedConnId> {
     let cid = validate_conn_id_for_operation(cid, operation)?;
-    Ok(MappedConnId {
-        peer_addr: map_peer_addr(cid.peer_addr),
-        local_port: cid.local_port,
-    })
+    Ok(MappedConnId::new(
+        map_peer_addr(cid.peer_addr),
+        cid.local_port,
+    ))
 }
 
 fn validate_send_request(cid: VsockConnId, buf_len: usize) -> DevResult<MappedConnId> {
-    validate_buffer_is_not_empty(buf_len)?;
+    validate_buffer_len(buf_len, ConnectionOperation::Send)?;
     map_conn_id_checked(cid, ConnectionOperation::Send)
 }
 
 fn validate_recv_request(cid: VsockConnId, buf_len: usize) -> DevResult<MappedConnId> {
-    validate_buffer_is_not_empty(buf_len)?;
+    validate_buffer_len(buf_len, ConnectionOperation::Receive)?;
     map_conn_id_checked(cid, ConnectionOperation::Receive)
 }
 
@@ -131,12 +266,18 @@ fn validate_connect_request(cid: VsockConnId) -> DevResult<MappedConnId> {
     map_conn_id_checked(cid, ConnectionOperation::Connect)
 }
 
+fn prepare_listen_port(src_port: u32) -> Option<u32> {
+    validate_port(src_port).ok().map(|_| src_port)
+}
+
 fn map_disconnect_reason(_reason: DisconnectReason) -> TranslatedEventKind {
     TranslatedEventKind::Disconnected
 }
 
 fn map_received_length(length: usize) -> TranslatedEventKind {
-    TranslatedEventKind::Received(length)
+    TranslatedEventKind::Received(
+        validate_received_length_for_event(length).unwrap_or(length),
+    )
 }
 
 fn translate_event_kind(event_type: VsockEventType) -> TranslatedEventKind {
@@ -169,47 +310,53 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
     }
 
     fn connect_mapped(&mut self, conn: MappedConnId) -> DevResult<()> {
+        let conn = validate_mapped_conn(conn, ConnectionOperation::Connect)?;
         self.inner
-            .connect(conn.peer_addr, conn.local_port)
+            .connect(conn.peer_addr(), conn.local_port())
             .map_err(as_dev_err)
     }
 
     fn send_on_mapped(&mut self, conn: MappedConnId, buf: &[u8]) -> DevResult<usize> {
-        match self.inner.send(conn.peer_addr, conn.local_port, buf) {
+        let conn = validate_mapped_conn(conn, ConnectionOperation::Send)?;
+        match self.inner.send(conn.peer_addr(), conn.local_port(), buf) {
             Ok(()) => Ok(buf.len()),
             Err(e) => Err(as_dev_err(e)),
         }
     }
 
     fn recv_on_mapped(&mut self, conn: MappedConnId, buf: &mut [u8]) -> DevResult<usize> {
+        let conn = validate_mapped_conn(conn, ConnectionOperation::Receive)?;
         let res = self
             .inner
-            .recv(conn.peer_addr, conn.local_port, buf)
+            .recv(conn.peer_addr(), conn.local_port(), buf)
             .map_err(as_dev_err);
         self.refresh_peer_credit_after_recv(conn, &res);
         res
     }
 
     fn recv_available_on_mapped(&mut self, conn: MappedConnId) -> DevResult<usize> {
+        let conn = validate_mapped_conn(conn, ConnectionOperation::ReceiveAvailable)?;
         self.inner
-            .recv_buffer_available_bytes(conn.peer_addr, conn.local_port)
+            .recv_buffer_available_bytes(conn.peer_addr(), conn.local_port())
             .map_err(as_dev_err)
     }
 
     fn shutdown_mapped(&mut self, conn: MappedConnId) -> DevResult<()> {
+        let conn = validate_mapped_conn(conn, ConnectionOperation::Disconnect)?;
         self.inner
-            .shutdown(conn.peer_addr, conn.local_port)
+            .shutdown(conn.peer_addr(), conn.local_port())
             .map_err(as_dev_err)
     }
 
     fn abort_mapped(&mut self, conn: MappedConnId) -> DevResult<()> {
+        let conn = validate_mapped_conn(conn, ConnectionOperation::Abort)?;
         self.inner
-            .force_close(conn.peer_addr, conn.local_port)
+            .force_close(conn.peer_addr(), conn.local_port())
             .map_err(as_dev_err)
     }
 
     fn update_peer_credit(&mut self, conn: MappedConnId) {
-        let _ = self.inner.update_credit(conn.peer_addr, conn.local_port);
+        let _ = self.inner.update_credit(conn.peer_addr(), conn.local_port());
     }
 
     fn refresh_peer_credit_after_recv(
@@ -228,6 +375,17 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
 
     fn poll_raw_event(&mut self) -> DevResult<Option<VsockEvent>> {
         self.inner.poll().map_err(as_dev_err)
+    }
+
+    fn listen_on_port(&mut self, src_port: u32) {
+        self.inner.listen(src_port)
+    }
+
+    fn poll_driver_event_once(&mut self) -> DevResult<Option<VsockDriverEvent>> {
+        match self.poll_raw_event()? {
+            None => Ok(None),
+            Some(event) => Ok(Some(convert_vsock_event(event)?)),
+        }
     }
 
 }
@@ -250,13 +408,9 @@ fn map_conn_id(cid: VsockConnId) -> (VsockAddr, u32) {
 }
 
 fn map_event_cid(event: &VsockEvent) -> VsockConnId {
-    VsockConnId {
-        peer_addr: ax_driver_vsock::VsockAddr {
-            cid: event.source.cid as _,
-            port: event.source.port as _,
-        },
-        local_port: event.destination.port,
-    }
+    EventEndpoints::from_event(event)
+        .map(EventEndpoints::into_conn_id)
+        .unwrap_or_default()
 }
 
 fn map_driver_event(event: TranslatedEvent) -> VsockDriverEvent {
@@ -271,10 +425,48 @@ fn map_driver_event(event: TranslatedEvent) -> VsockDriverEvent {
 }
 
 fn translate_vsock_event(event: VsockEvent) -> TranslatedEvent {
-    TranslatedEvent {
-        conn_id: map_event_cid(&event),
-        kind: translate_event_kind(event.event_type),
+    let conn_id = map_event_cid(&event);
+    let kind = translate_event_kind(event.event_type);
+    TranslatedEvent::new(conn_id, kind)
+}
+
+fn validate_translated_event(translated: TranslatedEvent) -> DevResult<TranslatedEvent> {
+    validate_conn_id(translated.conn_id())?;
+    if let TranslatedEventKind::Received(length) = translated.kind() {
+        validate_received_length_for_event(length)?;
     }
+    Ok(translated)
+}
+
+fn should_surface_translated_event(translated: TranslatedEvent) -> bool {
+    if translated.kind().is_connection_event() {
+        return true;
+    }
+    if translated.kind().is_data_event() {
+        return true;
+    }
+    translated.should_surface_to_driver()
+}
+
+fn validate_mapped_conn(
+    conn: MappedConnId,
+    operation: ConnectionOperation,
+) -> DevResult<MappedConnId> {
+    let driver_conn = conn.into_driver_conn_id();
+    validate_conn_id(driver_conn)?;
+    if operation.refreshes_credit_after_completion() {
+        validate_peer_addr(&driver_conn.peer_addr)?;
+    }
+    let _ = operation.name();
+    Ok(conn)
+}
+
+fn normalize_polled_event(event: VsockEvent) -> DevResult<Option<TranslatedEvent>> {
+    let translated = validate_translated_event(translate_vsock_event(event))?;
+    if should_surface_translated_event(translated) {
+        return Ok(Some(translated));
+    }
+    Ok(None)
 }
 
 impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
@@ -283,7 +475,9 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
     }
 
     fn listen(&mut self, src_port: u32) {
-        self.inner.listen(src_port)
+        if let Some(src_port) = prepare_listen_port(src_port) {
+            self.listen_on_port(src_port);
+        }
     }
 
     fn connect(&mut self, cid: VsockConnId) -> DevResult<()> {
@@ -319,16 +513,15 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
     }
 
     fn poll_event(&mut self) -> DevResult<Option<VsockDriverEvent>> {
-        match self.poll_raw_event()? {
-            None => Ok(None),
-            Some(event) => Ok(Some(convert_vsock_event(event)?)),
-        }
+        self.poll_driver_event_once()
     }
 }
 
 fn convert_vsock_event(event: VsockEvent) -> DevResult<VsockDriverEvent> {
-    let translated = translate_vsock_event(event);
-    Ok(map_driver_event(translated))
+    if let Some(translated) = normalize_polled_event(event)? {
+        return Ok(map_driver_event(translated));
+    }
+    Ok(VsockDriverEvent::Unknown)
 }
 
 #[cfg(test)]
