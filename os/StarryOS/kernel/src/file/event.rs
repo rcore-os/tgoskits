@@ -51,7 +51,8 @@ impl FileLike for EventFd {
                 });
             match result {
                 Ok(count) => {
-                    dst.write(&count.to_ne_bytes())?;
+                    let value = if self.semaphore { 1 } else { count };
+                    dst.write(&value.to_ne_bytes())?;
                     self.poll_tx.wake();
                     Ok(size_of::<u64>())
                 }
