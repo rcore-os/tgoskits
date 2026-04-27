@@ -25,9 +25,8 @@ image_location = "memory"
 kernel_load_addr = 0x4000_0000
 # The file path of the kernel image.
 kernel_path = "/path/to/zephyr.bin"
-
 # The file path of the device tree blob (DTB)
-#dtb_path = "/code/rtos/tgoskits/os/axvisor/configs/vms/zephyr-aarch64-e2000-smp1.dtb"
+# dtb_path = "/path/to/dtb"
 # The load address of the device tree blob (DTB).
 dtb_load_addr = 0x6000_0000
 

@@ -26,7 +26,7 @@ kernel_path = "path/arceos-aarch64-dyn-smp1.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x8020_0000
 # The file path of the device tree blob (DTB).
-#dtb_path = "path/aarch64-qemu-gicv3.dtb"
+# dtb_path = "path/aarch64-qemu-gicv3.dtb"
 # The load address of the device tree blob (DTB).
 dtb_load_addr = 0x8000_0000
 
