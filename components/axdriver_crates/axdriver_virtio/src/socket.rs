@@ -20,6 +20,16 @@ struct MappedConnId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConnectionOperation {
+    Connect,
+    Send,
+    Receive,
+    ReceiveAvailable,
+    Disconnect,
+    Abort,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TranslatedEventKind {
     ConnectionRequest,
     Connected,
@@ -37,6 +47,13 @@ struct TranslatedEvent {
 
 fn validate_port(port: u32) -> DevResult<()> {
     if port == 0 {
+        return Err(DevError::InvalidParam);
+    }
+    Ok(())
+}
+
+fn validate_buffer_is_not_empty(buf_len: usize) -> DevResult<()> {
+    if buf_len == 0 {
         return Err(DevError::InvalidParam);
     }
     Ok(())
@@ -62,23 +79,71 @@ fn map_peer_addr(addr: ax_driver_vsock::VsockAddr) -> VsockAddr {
     }
 }
 
-fn map_conn_id_checked(cid: VsockConnId) -> DevResult<MappedConnId> {
+fn validate_conn_id_for_operation(
+    cid: VsockConnId,
+    operation: ConnectionOperation,
+) -> DevResult<VsockConnId> {
     let cid = validate_conn_id(cid)?;
+    match operation {
+        ConnectionOperation::Connect
+        | ConnectionOperation::Send
+        | ConnectionOperation::Receive
+        | ConnectionOperation::ReceiveAvailable
+        | ConnectionOperation::Disconnect
+        | ConnectionOperation::Abort => Ok(cid),
+    }
+}
+
+fn map_conn_id_checked(
+    cid: VsockConnId,
+    operation: ConnectionOperation,
+) -> DevResult<MappedConnId> {
+    let cid = validate_conn_id_for_operation(cid, operation)?;
     Ok(MappedConnId {
         peer_addr: map_peer_addr(cid.peer_addr),
         local_port: cid.local_port,
     })
 }
 
+fn validate_send_request(cid: VsockConnId, buf_len: usize) -> DevResult<MappedConnId> {
+    validate_buffer_is_not_empty(buf_len)?;
+    map_conn_id_checked(cid, ConnectionOperation::Send)
+}
+
+fn validate_recv_request(cid: VsockConnId, buf_len: usize) -> DevResult<MappedConnId> {
+    validate_buffer_is_not_empty(buf_len)?;
+    map_conn_id_checked(cid, ConnectionOperation::Receive)
+}
+
+fn validate_credit_query(cid: VsockConnId) -> DevResult<MappedConnId> {
+    map_conn_id_checked(cid, ConnectionOperation::ReceiveAvailable)
+}
+
+fn validate_disconnect_request(cid: VsockConnId) -> DevResult<MappedConnId> {
+    map_conn_id_checked(cid, ConnectionOperation::Disconnect)
+}
+
+fn validate_abort_request(cid: VsockConnId) -> DevResult<MappedConnId> {
+    map_conn_id_checked(cid, ConnectionOperation::Abort)
+}
+
+fn validate_connect_request(cid: VsockConnId) -> DevResult<MappedConnId> {
+    map_conn_id_checked(cid, ConnectionOperation::Connect)
+}
+
 fn map_disconnect_reason(_reason: DisconnectReason) -> TranslatedEventKind {
     TranslatedEventKind::Disconnected
+}
+
+fn map_received_length(length: usize) -> TranslatedEventKind {
+    TranslatedEventKind::Received(length)
 }
 
 fn translate_event_kind(event_type: VsockEventType) -> TranslatedEventKind {
     match event_type {
         VsockEventType::ConnectionRequest => TranslatedEventKind::ConnectionRequest,
         VsockEventType::Connected => TranslatedEventKind::Connected,
-        VsockEventType::Received { length } => TranslatedEventKind::Received(length),
+        VsockEventType::Received { length } => map_received_length(length),
         VsockEventType::Disconnected { reason } => map_disconnect_reason(reason),
         VsockEventType::CreditUpdate => TranslatedEventKind::CreditUpdate,
         _ => TranslatedEventKind::Unknown,
@@ -121,7 +186,7 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
             .inner
             .recv(conn.peer_addr, conn.local_port, buf)
             .map_err(as_dev_err);
-        self.update_peer_credit(conn);
+        self.refresh_peer_credit_after_recv(conn, &res);
         res
     }
 
@@ -147,6 +212,20 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
         let _ = self.inner.update_credit(conn.peer_addr, conn.local_port);
     }
 
+    fn refresh_peer_credit_after_recv(
+        &mut self,
+        conn: MappedConnId,
+        recv_result: &DevResult<usize>,
+    ) {
+        if matches!(recv_result, Ok(bytes_read) if *bytes_read != 0) {
+            self.update_peer_credit(conn);
+        }
+    }
+
+    fn refresh_peer_credit_for_query(&mut self, conn: MappedConnId) {
+        self.update_peer_credit(conn);
+    }
+
     fn poll_raw_event(&mut self) -> DevResult<Option<VsockEvent>> {
         self.inner.poll().map_err(as_dev_err)
     }
@@ -165,7 +244,8 @@ impl<H: Hal, T: Transport> BaseDriverOps for VirtIoSocketDev<H, T> {
 
 #[cfg(test)]
 fn map_conn_id(cid: VsockConnId) -> (VsockAddr, u32) {
-    let mapped = map_conn_id_checked(cid).expect("vsock connection id should be valid");
+    let mapped =
+        map_conn_id_checked(cid, ConnectionOperation::Connect).expect("vsock connection id should be valid");
     (mapped.peer_addr, mapped.local_port)
 }
 
@@ -190,6 +270,13 @@ fn map_driver_event(event: TranslatedEvent) -> VsockDriverEvent {
     }
 }
 
+fn translate_vsock_event(event: VsockEvent) -> TranslatedEvent {
+    TranslatedEvent {
+        conn_id: map_event_cid(&event),
+        kind: translate_event_kind(event.event_type),
+    }
+}
+
 impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
     fn guest_cid(&self) -> u64 {
         self.inner.guest_cid()
@@ -200,32 +287,34 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
     }
 
     fn connect(&mut self, cid: VsockConnId) -> DevResult<()> {
-        let conn = map_conn_id_checked(cid)?;
+        let conn = validate_connect_request(cid)?;
         self.connect_mapped(conn)
     }
 
     fn send(&mut self, cid: VsockConnId, buf: &[u8]) -> DevResult<usize> {
-        let conn = map_conn_id_checked(cid)?;
+        let conn = validate_send_request(cid, buf.len())?;
         self.send_on_mapped(conn, buf)
     }
 
     fn recv(&mut self, cid: VsockConnId, buf: &mut [u8]) -> DevResult<usize> {
-        let conn = map_conn_id_checked(cid)?;
+        let conn = validate_recv_request(cid, buf.len())?;
         self.recv_on_mapped(conn, buf)
     }
 
     fn recv_avail(&mut self, cid: VsockConnId) -> DevResult<usize> {
-        let conn = map_conn_id_checked(cid)?;
-        self.recv_available_on_mapped(conn)
+        let conn = validate_credit_query(cid)?;
+        let available = self.recv_available_on_mapped(conn)?;
+        self.refresh_peer_credit_for_query(conn);
+        Ok(available)
     }
 
     fn disconnect(&mut self, cid: VsockConnId) -> DevResult<()> {
-        let conn = map_conn_id_checked(cid)?;
+        let conn = validate_disconnect_request(cid)?;
         self.shutdown_mapped(conn)
     }
 
     fn abort(&mut self, cid: VsockConnId) -> DevResult<()> {
-        let conn = map_conn_id_checked(cid)?;
+        let conn = validate_abort_request(cid)?;
         self.abort_mapped(conn)
     }
 
@@ -238,10 +327,7 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
 }
 
 fn convert_vsock_event(event: VsockEvent) -> DevResult<VsockDriverEvent> {
-    let translated = TranslatedEvent {
-        conn_id: map_event_cid(&event),
-        kind: translate_event_kind(event.event_type),
-    };
+    let translated = translate_vsock_event(event);
     Ok(map_driver_event(translated))
 }
 
