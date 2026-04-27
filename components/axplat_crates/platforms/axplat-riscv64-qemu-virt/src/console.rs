@@ -1,17 +1,16 @@
-use core::hint::spin_loop;
-use core::ptr::NonNull;
+use core::{hint::spin_loop, ptr::NonNull};
 
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_plat::console::ConsoleIf;
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
+#[cfg(feature = "irq")]
+use some_serial::TIrqHandler;
 use some_serial::{
     InterfaceRaw, InterruptMask, Reciever as Receiver, Sender, TReciever as TReceiver, TSender,
     ns16550::{Mmio, Ns16550, Ns16550IrqHandler},
 };
-#[cfg(feature = "irq")]
-use some_serial::TIrqHandler;
 
 use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
 
