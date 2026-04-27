@@ -6,7 +6,7 @@ edition = "2024"
 keywords = ["rk3588", "npu", "rknn"]
 license = "Apache-2.0"
 name = "rockchip-npu"
-version = "0.1.0"
+version = "0.1.1"
 
 [dependencies]
 aarch64-cpu-ext = "0.1"

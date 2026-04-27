@@ -317,7 +317,7 @@ ax-posix-api = { path = "os/arceos/api/arceos_posix_api", version = "0.5" }
 ax-feat = { path = "os/arceos/api/axfeat", version = "0.5" }
 
 # modules
-ax-alloc = { path = "os/arceos/modules/axalloc", version = "0.5" }
+ax-alloc = { path = "os/arceos/modules/axalloc", version = "0.6" }
 ax-config = { path = "os/arceos/modules/axconfig", version = "0.5" }
 ax-display = { path = "os/arceos/modules/axdisplay", version = "0.5" }
 ax-dma = { path = "os/arceos/modules/axdma", version = "0.5" }
@@ -361,7 +361,7 @@ axbuild = { path = "scripts/axbuild", version = "0.4" }
 
 starry-kernel = { path = "os/StarryOS/kernel", version = "0.5" }
 
-ax-cpu = { version = "0.5", path = "components/axcpu" }
+ax-cpu = { version = "0.6", path = "components/axcpu" }
 ax-plat = { version = "0.5", path = "components/axplat_crates/axplat" }
 ax-plat-aarch64-bsta1000b = { version = "0.5", path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
 ax-plat-aarch64-peripherals = { version = "0.5", path = "components/axplat_crates/platforms/axplat-aarch64-peripherals" }
@@ -399,7 +399,7 @@ dma-api = { version = "0.7.2" }
 
 # === starry-* ===
 starry-process = { version = "0.4", path = "components/starry-process" }
-starry-signal = { version = "0.5", path = "components/starry-signal" }
+starry-signal = { version = "0.6", path = "components/starry-signal" }
 starry-vm = { version = "0.5", path = "components/starry-vm" }
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }

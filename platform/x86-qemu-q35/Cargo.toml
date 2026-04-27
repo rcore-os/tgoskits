@@ -1,6 +1,6 @@
 [package]
 name = "axplat-x86-qemu-q35"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 authors = ["The Axvisor Team"]
 description = "Hardware platform implementation for x86_64 QEMU Q35 chipset, supporting multiboot boot protocol"

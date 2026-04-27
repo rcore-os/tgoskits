@@ -1,6 +1,6 @@
 [package]
 name = "axplat-dyn"
-version = "0.5.11"
+version = "0.5.12"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories.workspace = true
 description = "A dynamic platform module for ArceOS, providing runtime platform detection and configuration"
@@ -29,7 +29,7 @@ rknpu = ["dep:rockchip-npu", "rockchip-pm", "rk3588-clk"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
-ax-alloc = { version = "0.5", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
+ax-alloc = { version = "0.6", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
 ax-config-macros = "0.4"
 ax-cpu.workspace = true
 ax-driver-base.workspace = true
