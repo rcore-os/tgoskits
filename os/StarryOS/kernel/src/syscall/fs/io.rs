@@ -181,8 +181,10 @@ pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     let any_file = get_file_like(fd)?;
     if let Ok(f) = any_file.clone().downcast_arc::<File>() {
         f.inner().sync(false)?;
+        return Ok(0);
     } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
         d.inner().sync(false)?;
+        return Ok(0);
     }
     Err(AxError::from(LinuxError::EINVAL))
 }
@@ -192,8 +194,10 @@ pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     let any_file = get_file_like(fd)?;
     if let Ok(f) = any_file.clone().downcast_arc::<File>() {
         f.inner().sync(true)?;
+        return Ok(0);
     } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
         d.inner().sync(true)?;
+        return Ok(0);
     }
     Err(AxError::from(LinuxError::EINVAL))
 }
