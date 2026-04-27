@@ -29,6 +29,7 @@ const CASE_CMAKE_TOOLCHAIN_FILE_NAME: &str = "cmake-toolchain.cmake";
 const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
 const GROUPED_CASE_RUNNER_NAME: &str = "starry-run-case-tests";
+const CASE_ROOTFS_IMAGE_NAME: &str = "rootfs.img";
 const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
 const USB_STICK_IMAGE_SIZE: u64 = 10 * 1024 * 1024;
 const USB_AUDIO_OUTPUT_PCAP_NAME: &str = "usb-audio-iso.pcap";
@@ -51,6 +52,7 @@ pub(crate) struct CaseAssetLayout {
     pub(crate) cross_bin_dir: PathBuf,
     pub(crate) cmake_toolchain_file: PathBuf,
     pub(crate) apk_cache_dir: PathBuf,
+    pub(crate) rootfs_path: PathBuf,
     pub(crate) usb_stick_path: PathBuf,
     pub(crate) usb_audio_output_pcap_path: PathBuf,
 }
@@ -109,7 +111,7 @@ pub(crate) async fn prepare_case_assets(
     let target = target.to_string();
     let rootfs_path_for_task = rootfs_path.clone();
     let case = case.clone();
-    let (extra_qemu_args, host_post_check) = tokio::task::spawn_blocking(move || {
+    let (rootfs_path, extra_qemu_args, host_post_check) = tokio::task::spawn_blocking(move || {
         prepare_case_assets_sync(
             &workspace_root,
             &arch,
@@ -184,6 +186,7 @@ pub(crate) fn case_asset_layout(
         cross_bin_dir: work_dir.join(CASE_CROSS_BIN_DIR_NAME),
         cmake_toolchain_file: work_dir.join(CASE_CMAKE_TOOLCHAIN_FILE_NAME),
         apk_cache_dir: work_dir.join(CASE_APK_CACHE_DIR_NAME),
+        rootfs_path: work_dir.join(CASE_ROOTFS_IMAGE_NAME),
         usb_stick_path: work_dir.join(USB_STICK_IMAGE_NAME),
         usb_audio_output_pcap_path: work_dir.join(USB_AUDIO_OUTPUT_PCAP_NAME),
         work_dir,
@@ -196,20 +199,25 @@ fn prepare_case_assets_sync(
     arch: &str,
     target: &str,
     case: &StarryQemuCase,
-    case_rootfs: &Path,
-) -> anyhow::Result<(Vec<String>, Option<CaseHostPostCheck>)> {
+    base_rootfs: &Path,
+) -> anyhow::Result<(PathBuf, Vec<String>, Option<CaseHostPostCheck>)> {
     let layout = case_asset_layout(workspace_root, target, &case.name)?;
     fs::create_dir_all(&layout.work_dir)
         .with_context(|| format!("failed to create {}", layout.work_dir.display()))?;
 
+    let mut case_rootfs = base_rootfs.to_path_buf();
     if case.is_grouped() {
-        case_build::prepare_grouped_case_assets_sync(arch, case, case_rootfs, &layout)?;
+        case_rootfs = prepare_case_rootfs(base_rootfs, &layout)?;
+        case_build::prepare_grouped_case_assets_sync(arch, case, &case_rootfs, &layout)?;
     } else if case_uses_c_pipeline(case) {
-        case_build::prepare_c_case_assets_sync(arch, case, case_rootfs, &layout)?;
+        case_rootfs = prepare_case_rootfs(base_rootfs, &layout)?;
+        case_build::prepare_c_case_assets_sync(arch, case, &case_rootfs, &layout)?;
     } else if case_uses_sh_pipeline(case) {
-        prepare_sh_case_assets_sync(case, case_rootfs, &layout)?;
+        case_rootfs = prepare_case_rootfs(base_rootfs, &layout)?;
+        prepare_sh_case_assets_sync(case, &case_rootfs, &layout)?;
     } else if case_uses_python_pipeline(case) {
-        case_build::prepare_python_case_assets_sync(arch, case, case_rootfs, &layout)?;
+        case_rootfs = prepare_case_rootfs(base_rootfs, &layout)?;
+        case_build::prepare_python_case_assets_sync(arch, case, &case_rootfs, &layout)?;
     }
 
     let (extra_qemu_args, host_post_check) = match case_usb_qemu_profile(arch, case) {
@@ -236,7 +244,24 @@ fn prepare_case_assets_sync(
         None => (Vec::new(), None),
     };
 
-    Ok((extra_qemu_args, host_post_check))
+    Ok((case_rootfs, extra_qemu_args, host_post_check))
+}
+
+/// Copies the base managed rootfs into the case work directory before
+/// case-specific overlay injection mutates it.
+fn prepare_case_rootfs(base_rootfs: &Path, layout: &CaseAssetLayout) -> anyhow::Result<PathBuf> {
+    if layout.rootfs_path.exists() {
+        fs::remove_file(&layout.rootfs_path)
+            .with_context(|| format!("failed to remove {}", layout.rootfs_path.display()))?;
+    }
+    fs::copy(base_rootfs, &layout.rootfs_path).with_context(|| {
+        format!(
+            "failed to copy case rootfs from {} to {}",
+            base_rootfs.display(),
+            layout.rootfs_path.display()
+        )
+    })?;
+    Ok(layout.rootfs_path.clone())
 }
 
 pub(crate) fn apply_grouped_qemu_config(qemu: &mut QemuConfig, case: &StarryQemuCase) {
@@ -680,6 +705,25 @@ mod tests {
         assert!(content.contains("STARRY_GROUPED_TEST_BEGIN: /usr/bin/alpha"));
         assert!(content.contains("STARRY_GROUPED_TEST_FAILED: /usr/bin/beta --flag"));
         assert!(content.contains("STARRY_GROUPED_TESTS_PASSED"));
+    }
+
+    #[test]
+    fn prepare_case_rootfs_copies_base_image_into_case_work_dir() {
+        let root = tempdir().unwrap();
+        let rootfs_dir = root.path().join("target/rootfs");
+        fs::create_dir_all(&rootfs_dir).unwrap();
+        let base_rootfs = rootfs_dir.join("rootfs-aarch64-alpine.img");
+        fs::write(&base_rootfs, b"base-rootfs").unwrap();
+        let layout =
+            case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
+        fs::create_dir_all(&layout.work_dir).unwrap();
+
+        let case_rootfs = prepare_case_rootfs(&base_rootfs, &layout).unwrap();
+
+        assert_eq!(case_rootfs, layout.rootfs_path);
+        assert_eq!(fs::read(&base_rootfs).unwrap(), b"base-rootfs");
+        assert_eq!(fs::read(&case_rootfs).unwrap(), b"base-rootfs");
+        assert_ne!(base_rootfs, case_rootfs);
     }
 
     #[test]
