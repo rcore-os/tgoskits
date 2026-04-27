@@ -4,6 +4,8 @@ args = [
     "virt",
     "-cpu",
     "la464",
+    "-m",
+    "512M",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
