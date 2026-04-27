@@ -228,7 +228,7 @@ pub(crate) fn prepare_python_case_assets_sync(
         let src = layout.staging_root.join(rel_dir);
         let dst = layout.overlay_dir.join(rel_dir);
         if src.is_dir() {
-            copy_dir_recursive(&src, &dst)
+            copy_dir_recursive(&src, &dst, &layout.staging_root)
                 .with_context(|| format!("failed to copy {} to overlay", src.display()))?;
         }
     }
@@ -265,7 +265,16 @@ pub(crate) fn prepare_python_case_assets_sync(
 }
 
 /// Recursively copies a directory tree, preserving file permissions.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+///
+/// `allowed_root` is the canonical boundary: any symlink that resolves outside
+/// this directory is rejected to prevent host filesystem leaks.
+fn copy_dir_recursive(src: &Path, dst: &Path, allowed_root: &Path) -> anyhow::Result<()> {
+    let canonical_root = fs::canonicalize(allowed_root).with_context(|| {
+        format!(
+            "failed to canonicalize allowed root {}",
+            allowed_root.display()
+        )
+    })?;
     fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
     for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
         let entry = entry?;
@@ -275,27 +284,76 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
             .file_type()
             .with_context(|| format!("failed to inspect {}", src_path.display()))?;
         if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if file_type.is_file() || file_type.is_symlink() {
-            let resolved = fs::canonicalize(&src_path).unwrap_or_else(|_| src_path.clone());
-            if resolved.is_file() {
-                fs::copy(&resolved, &dst_path).with_context(|| {
-                    format!(
-                        "failed to copy {} to {}",
+            copy_dir_recursive(&src_path, &dst_path, allowed_root)?;
+        } else if file_type.is_symlink() {
+            // For symlinks: read the link target to decide what to do.
+            let link_target = fs::read_link(&src_path)
+                .with_context(|| format!("failed to read symlink {}", src_path.display()))?;
+
+            // Try to resolve the symlink to its real path.
+            match fs::canonicalize(&src_path) {
+                Ok(resolved) => {
+                    // Symlink resolves — verify it stays within the staging root.
+                    ensure!(
+                        resolved.starts_with(&canonical_root),
+                        "symlink `{}` resolves to `{}` which escapes the staging root `{}`",
+                        src_path.display(),
                         resolved.display(),
-                        dst_path.display()
-                    )
-                })?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mode = fs::metadata(&resolved)
-                        .with_context(|| format!("failed to stat {}", resolved.display()))?
-                        .permissions()
-                        .mode();
-                    fs::set_permissions(&dst_path, fs::Permissions::from_mode(mode))
-                        .with_context(|| format!("failed to chmod {}", dst_path.display()))?;
+                        canonical_root.display()
+                    );
+                    if resolved.is_file() {
+                        fs::copy(&resolved, &dst_path).with_context(|| {
+                            format!(
+                                "failed to copy {} to {}",
+                                resolved.display(),
+                                dst_path.display()
+                            )
+                        })?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let mode = fs::metadata(&resolved)
+                                .with_context(|| format!("failed to stat {}", resolved.display()))?
+                                .permissions()
+                                .mode();
+                            fs::set_permissions(&dst_path, fs::Permissions::from_mode(mode))
+                                .with_context(|| {
+                                    format!("failed to chmod {}", dst_path.display())
+                                })?;
+                        }
+                    }
                 }
+                Err(_) if link_target.is_relative() => {
+                    // Dangling relative symlink — the target likely exists in the
+                    // base rootfs already (e.g. busybox applet links). Safe to skip
+                    // since the overlay only adds files; it doesn't need to duplicate
+                    // links whose targets are already present in the base image.
+                    continue;
+                }
+                Err(_) => {
+                    // Dangling absolute symlink — could be a broken package or a
+                    // link to something outside the rootfs. Skip it; if the guest
+                    // needs it, the base rootfs should already provide the target.
+                    continue;
+                }
+            }
+        } else if file_type.is_file() {
+            fs::copy(&src_path, &dst_path).with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(&src_path)
+                    .with_context(|| format!("failed to stat {}", src_path.display()))?
+                    .permissions()
+                    .mode();
+                fs::set_permissions(&dst_path, fs::Permissions::from_mode(mode))
+                    .with_context(|| format!("failed to chmod {}", dst_path.display()))?;
             }
         }
     }
