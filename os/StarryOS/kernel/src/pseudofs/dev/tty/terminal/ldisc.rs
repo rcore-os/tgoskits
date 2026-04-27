@@ -213,6 +213,22 @@ pub struct LineDiscipline<R, W> {
     processor: Processor<R, W>,
 }
 
+struct WakeSignal {
+    fired: Arc<AtomicBool>,
+    task: Waker,
+}
+
+impl Wake for WakeSignal {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.fired.store(true, Ordering::Release);
+        self.task.wake_by_ref();
+    }
+}
+
 impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     fn drive_input(reader: &mut InputReader<R, W>, input_ready: &PollSet) -> bool {
         let mut progressed = false;
@@ -400,7 +416,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
 
         let read = self.buf_rx.pop_slice(buf);
-        self.poll_tx.wake();
+        self.pump_retry.clone().wake();
         Ok(read)
     }
 }
