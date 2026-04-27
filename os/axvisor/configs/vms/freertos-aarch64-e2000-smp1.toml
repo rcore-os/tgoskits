@@ -34,6 +34,8 @@ memory_regions = [
     ]
 
 [devices]
+# The interrupt mode.
+interrupt_mode = "passthrough"
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 emu_devices = []
