@@ -148,152 +148,164 @@ pub(crate) fn prepare_c_case_assets_sync(
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
 }
 
-/// Prepares assets for a grouped Starry case containing multiple guest tests.
-pub(crate) fn prepare_grouped_case_assets_sync(
+/// Returns the Python source directory for a Starry test case.
+pub(crate) fn case_python_source_dir(case: &StarryQemuCase) -> PathBuf {
+    case.case_dir.join("python")
+}
+
+/// Prepares overlay assets for a Starry Python-based test case.
+///
+/// This pipeline reuses the same staging rootfs and prebuild infrastructure as
+/// the C pipeline, but instead of running CMake it:
+/// 1. Installs `python3` via `apk add` inside the staging rootfs
+/// 2. Copies `.py` files from the test's `python/` directory into `/usr/bin/`
+/// 3. Builds an overlay from the Python installation and test scripts
+/// 4. Injects the overlay into the rootfs image
+pub(crate) fn prepare_python_case_assets_sync(
     arch: &str,
     case: &StarryQemuCase,
     case_rootfs: &Path,
     layout: &case_assets::CaseAssetLayout,
 ) -> anyhow::Result<()> {
+    let python_dir = case_python_source_dir(case);
     ensure!(
-        case.is_grouped(),
-        "case `{}` is not a grouped qemu case",
-        case.name
-    );
-
-    let rust_subcases = case
-        .subcases
-        .iter()
-        .filter(|subcase| subcase.kind == StarryQemuSubcaseKind::Rust)
-        .map(|subcase| subcase.name.as_str())
-        .collect::<Vec<_>>();
-    ensure!(
-        rust_subcases.is_empty(),
-        "Starry grouped Rust test subcases are not supported yet: {}",
-        rust_subcases.join(", ")
+        python_dir.is_dir(),
+        "missing case Python source directory `{}`",
+        python_dir.display()
     );
 
     case_assets::reset_dir(&layout.staging_root)?;
-    case_assets::reset_dir(&layout.build_dir)?;
     case_assets::reset_dir(&layout.overlay_dir)?;
     case_assets::reset_dir(&layout.command_wrapper_dir)?;
-    case_assets::reset_dir(&layout.cross_bin_dir)?;
     fs::create_dir_all(&layout.apk_cache_dir)
         .with_context(|| format!("failed to create {}", layout.apk_cache_dir.display()))?;
 
+    // Extract rootfs into staging
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     write_host_resolver_config(&layout.staging_root)?;
 
-    let c_subcases = case
-        .subcases
-        .iter()
-        .filter(|subcase| subcase.kind == StarryQemuSubcaseKind::C)
-        .collect::<Vec<_>>();
+    // Prepare guest prebuild environment and install python3
+    let apk_region = apk_region_from_env()?;
+    rewrite_apk_repositories_for_region(&layout.staging_root, apk_region)?;
+    log_apk_prebuild_context(&layout.staging_root, apk_region)?;
 
-    if !c_subcases.is_empty() {
-        prepare_grouped_c_subcases_sync(arch, case, &c_subcases, layout)?;
-    }
-
-    case_assets::write_grouped_case_runner_script(&layout.overlay_dir, &case.test_commands)?;
-    crate::rootfs::runtime::sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
-    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
-}
-
-fn prepare_grouped_c_subcases_sync(
-    arch: &str,
-    case: &StarryQemuCase,
-    subcases: &[&StarryQemuSubcase],
-    layout: &case_assets::CaseAssetLayout,
-) -> anyhow::Result<()> {
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
+    write_guest_command_wrappers(layout, &qemu_runner)?;
 
-    if subcases
-        .iter()
-        .any(|subcase| case_prebuild_script_path(&subcase_as_case(case, subcase)).is_file())
-    {
-        let apk_region = apk_region_from_env()?;
-        rewrite_apk_repositories_for_region(&layout.staging_root, apk_region)?;
-        log_apk_prebuild_context(&layout.staging_root, apk_region)?;
+    // Build the prebuild command: run "apk add python3" inside the staging rootfs
+    let guest_busybox = layout.staging_root.join("bin/busybox");
+    let guest_shell = layout.staging_root.join("bin/sh");
+    let mut prebuild_cmd = Command::new(&qemu_runner);
+    prebuild_cmd.arg("-L").arg(&layout.staging_root);
+    if guest_busybox.is_file() {
+        prebuild_cmd.arg(&guest_busybox).arg("sh");
+    } else {
+        ensure!(
+            guest_shell.is_file(),
+            "staging root is missing guest shell `{}`",
+            guest_shell.display()
+        );
+        prebuild_cmd.arg(&guest_shell);
+    }
+    prebuild_cmd
+        .arg("-eu")
+        .arg("-c")
+        .arg("apk add python3");
 
-        for subcase in subcases {
-            let subcase_case = subcase_as_case(case, subcase);
-            let subcase_layout = subcase_layout(layout, subcase.name.as_str());
-            let prebuild_script = case_prebuild_script_path(&subcase_case);
-            if prebuild_script.is_file() {
-                let prebuild_env =
-                    prepare_guest_prebuild_env(arch, &subcase_case, &subcase_layout, apk_region)?;
-                let mut command = build_prebuild_command(
-                    &subcase_case,
-                    &prebuild_script,
-                    &subcase_layout,
-                    &prebuild_env,
-                )?;
-                command.exec().with_context(|| {
-                    format!("failed to run {} prebuild.sh", subcase.name.as_str())
-                })?;
-            }
+    // Apply environment (PATH with wrappers, QEMU_LD_PREFIX)
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = Vec::new();
+    path_entries.push(layout.command_wrapper_dir.clone());
+    path_entries.extend(std::env::split_paths(&host_path));
+    prebuild_cmd.env("PATH", std::env::join_paths(path_entries).unwrap());
+    prebuild_cmd.env("QEMU_LD_PREFIX", &layout.staging_root);
+
+    prebuild_cmd
+        .exec()
+        .context("failed to install python3 via apk in staging rootfs")?;
+
+    // Build overlay: copy Python installation from staging into overlay
+    let python_dirs_to_copy: &[&str] = &[
+        "usr/bin",
+        "usr/lib",
+        "lib",
+    ];
+
+    for rel_dir in python_dirs_to_copy {
+        let src = layout.staging_root.join(rel_dir);
+        let dst = layout.overlay_dir.join(rel_dir);
+        if src.is_dir() {
+            copy_dir_recursive(&src, &dst)
+                .with_context(|| format!("failed to copy {} to overlay", src.display()))?;
         }
     }
 
-    let build_env = prepare_host_cross_build_env(arch, layout, &qemu_runner)?;
-    for subcase in subcases {
-        let subcase_case = subcase_as_case(case, subcase);
-        let subcase_layout = subcase_layout(layout, subcase.name.as_str());
-        let cmake_lists = case_c_source_dir(&subcase_case).join(CASE_CMAKE_FILE_NAME);
-        ensure!(
-            cmake_lists.is_file(),
-            "missing grouped case CMake project entry `{}`",
-            cmake_lists.display()
-        );
+    // Copy .py test files into overlay at /usr/bin/
+    let dest_bin = layout.overlay_dir.join("usr/bin");
+    fs::create_dir_all(&dest_bin)
+        .with_context(|| format!("failed to create {}", dest_bin.display()))?;
 
-        let mut configure =
-            build_cmake_configure_command(&subcase_case, &subcase_layout, &build_env);
-        configure.exec().with_context(|| {
-            format!(
-                "failed to configure grouped C subcase `{}`",
-                subcase.name.as_str()
-            )
-        })?;
-
-        let mut build = build_cmake_build_command(&subcase_layout, &build_env);
-        build.exec().with_context(|| {
-            format!(
-                "failed to build grouped C subcase `{}`",
-                subcase.name.as_str()
-            )
-        })?;
-
-        let mut install = build_cmake_install_command(&subcase_layout, &build_env);
-        install.exec().with_context(|| {
-            format!(
-                "failed to install grouped C subcase `{}`",
-                subcase.name.as_str()
-            )
-        })?;
+    for entry in fs::read_dir(&python_dir)
+        .with_context(|| format!("failed to read {}", python_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let dest = dest_bin.join(entry.file_name());
+        fs::copy(&path, &dest)
+            .with_context(|| format!("failed to copy {} to {}", path.display(), dest.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&dest)
+                .with_context(|| format!("failed to stat {}", dest.display()))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest, perms)
+                .with_context(|| format!("failed to chmod {}", dest.display()))?;
+        }
     }
 
+    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+/// Recursively copies a directory tree, preserving file permissions.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(dst)
+        .with_context(|| format!("failed to create {}", dst.display()))?;
+    for entry in fs::read_dir(src)
+        .with_context(|| format!("failed to read {}", src.display()))?
+    {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry.file_type()
+            .with_context(|| format!("failed to inspect {}", src_path.display()))?;
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if file_type.is_file() || file_type.is_symlink() {
+            let resolved = fs::canonicalize(&src_path).unwrap_or_else(|_| src_path.clone());
+            if resolved.is_file() {
+                fs::copy(&resolved, &dst_path)
+                    .with_context(|| format!("failed to copy {} to {}", resolved.display(), dst_path.display()))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = fs::metadata(&resolved)
+                        .with_context(|| format!("failed to stat {}", resolved.display()))?
+                        .permissions()
+                        .mode();
+                    fs::set_permissions(&dst_path, fs::Permissions::from_mode(mode))
+                        .with_context(|| format!("failed to chmod {}", dst_path.display()))?;
+                }
+            }
+        }
+    }
     Ok(())
 }
 
-fn subcase_layout(
-    layout: &case_assets::CaseAssetLayout,
-    subcase_name: &str,
-) -> case_assets::CaseAssetLayout {
-    let mut layout = layout.clone();
-    layout.build_dir = layout.build_dir.join(subcase_name);
-    layout
-}
-
-fn subcase_as_case(case: &StarryQemuCase, subcase: &StarryQemuSubcase) -> StarryQemuCase {
-    StarryQemuCase {
-        name: format!("{}/{}", case.name, subcase.name.as_str()),
-        case_dir: subcase.case_dir.clone(),
-        qemu_config_path: case.qemu_config_path.clone(),
-        build_config_path: None,
-        test_commands: Vec::new(),
-        subcases: Vec::new(),
-    }
-}
 
 fn write_host_resolver_config(staging_root: &Path) -> anyhow::Result<()> {
     let resolv_conf = preferred_host_resolver_config()?;
