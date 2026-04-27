@@ -229,7 +229,7 @@ kernel_path = "{}"
                 "-device".to_string(),
                 "virtio-blk-device,drive=disk0".to_string(),
                 "-append".to_string(),
-                "root=/dev/vda rw init=/init".to_string(),
+                "root=/dev/vda rw init=/bin/sh".to_string(),
             ],
             ..Default::default()
         };
@@ -249,7 +249,7 @@ kernel_path = "{}"
                         .display()
                 ),
                 "-append".to_string(),
-                "root=/dev/vda rw init=/init".to_string(),
+                "root=/dev/vda rw init=/bin/sh".to_string(),
             ]
         );
     }
