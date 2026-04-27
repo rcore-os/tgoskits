@@ -20,8 +20,10 @@ pub struct RknpuAmountData {
     pub offset_wt_rd: u16,
 }
 
+type RknpuInitFn = fn(&mut dyn core::any::Any) -> Result<(), RknpuError>;
+
 #[derive(Debug, Clone)]
-pub(crate) struct RknpuData {
+pub struct RknpuData {
     pub bw_priority_addr: u32,
     pub bw_priority_length: u32,
     pub dma_mask: u64,
@@ -40,9 +42,9 @@ pub(crate) struct RknpuData {
     /// Pointer to per-core amount data (opaque).
     pub amount_core: Option<RknpuAmountData>,
     /// Platform-specific state initialization function
-    pub state_init: Option<fn(&mut dyn core::any::Any) -> Result<(), RknpuError>>,
+    pub state_init: Option<RknpuInitFn>,
     /// Cache scatter-gather table initialization
-    pub cache_sgt_init: Option<fn(&mut dyn core::any::Any) -> Result<(), RknpuError>>,
+    pub cache_sgt_init: Option<RknpuInitFn>,
 }
 
 impl RknpuData {

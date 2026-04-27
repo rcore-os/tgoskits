@@ -2,6 +2,8 @@
 edition = "2024"
 name = "rockchip-npu"
 version = "0.1.0"
+description = "Low-level device layer for Rockchip NPUs"
+license = "Apache-2.0"
 
 [dependencies]
 aarch64-cpu-ext = "0.1"

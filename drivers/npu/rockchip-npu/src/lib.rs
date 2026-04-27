@@ -19,12 +19,12 @@ use core::{
 };
 
 mod config;
-mod data;
+pub mod data;
 mod err;
 mod gem;
 mod job;
 mod osal;
-mod registers;
+pub mod registers;
 mod task;
 
 use alloc::vec::Vec;

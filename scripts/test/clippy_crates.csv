@@ -64,6 +64,7 @@ range-alloc-arceos
 axplat-riscv64-qemu-virt-hv
 riscv-h
 riscv_vcpu
+rockchip-npu
 scope-local
 starry-process
 starry-vm
