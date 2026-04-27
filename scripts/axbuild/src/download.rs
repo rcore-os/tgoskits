@@ -598,10 +598,7 @@ mod tests {
     }
 
     struct TestServer {
-        addr: std::net::SocketAddr,
-        requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        last_range_header: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-        shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+        handle: test_support::MockHandle,
     }
 
     impl TestServer {
@@ -619,127 +616,26 @@ mod tests {
         }
 
         async fn start_inner(body: Vec<u8>, range_mode: RangeMode) -> Self {
-            use tokio::{
-                io::{AsyncReadExt, AsyncWriteExt},
-                net::TcpListener,
+            let range_mode = match range_mode {
+                RangeMode::Ignore => test_support::MockRangeMode::Ignore,
+                RangeMode::Support => test_support::MockRangeMode::Support,
+                RangeMode::RejectInvalid => test_support::MockRangeMode::RejectInvalid,
             };
-
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let request_counter = requests.clone();
-            let last_range_header = std::sync::Arc::new(std::sync::Mutex::new(None));
-            let range_header_slot = last_range_header.clone();
-            let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
-
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = &mut shutdown_rx => break,
-                        accepted = listener.accept() => {
-                            let Ok((mut socket, _)) = accepted else {
-                                break;
-                            };
-                            let body = body.clone();
-                            let request_counter = request_counter.clone();
-                            let range_header_slot = range_header_slot.clone();
-                            tokio::spawn(async move {
-                                let mut buf = [0u8; 4096];
-                                let read = socket.read(&mut buf).await.unwrap_or(0);
-                                let request = String::from_utf8_lossy(&buf[..read]);
-                                let range_header = request
-                                    .lines()
-                                    .find_map(|line| line.strip_prefix("Range: "))
-                                    .map(str::trim)
-                                    .map(ToOwned::to_owned);
-                                *range_header_slot.lock().unwrap() = range_header.clone();
-                                request_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                let (status, response_body, extra_headers) = match (
-                                    range_mode,
-                                    range_header.as_deref(),
-                                ) {
-                                    (RangeMode::Support, Some(range_header)) => {
-                                        let offset = range_header
-                                            .strip_prefix("bytes=")
-                                            .and_then(|value| value.strip_suffix('-'))
-                                            .and_then(|value| value.parse::<usize>().ok())
-                                            .unwrap_or(0);
-                                        (
-                                            "206 Partial Content",
-                                            body[offset..].to_vec(),
-                                            format!(
-                                                "Content-Range: bytes {}-{}/{}\r\n",
-                                                offset,
-                                                body.len().saturating_sub(1),
-                                                body.len()
-                                            ),
-                                        )
-                                    }
-                                    (RangeMode::RejectInvalid, Some(range_header)) => {
-                                        let offset = range_header
-                                            .strip_prefix("bytes=")
-                                            .and_then(|value| value.strip_suffix('-'))
-                                            .and_then(|value| value.parse::<usize>().ok())
-                                            .unwrap_or(0);
-                                        if offset >= body.len() {
-                                            (
-                                                "416 Range Not Satisfiable",
-                                                Vec::new(),
-                                                format!("Content-Range: bytes */{}\r\n", body.len()),
-                                            )
-                                        } else {
-                                            (
-                                                "206 Partial Content",
-                                                body[offset..].to_vec(),
-                                                format!(
-                                                    "Content-Range: bytes {}-{}/{}\r\n",
-                                                    offset,
-                                                    body.len().saturating_sub(1),
-                                                    body.len()
-                                                ),
-                                            )
-                                        }
-                                    }
-                                    _ => ("200 OK", body.clone(), String::new()),
-                                };
-                                let header = format!(
-                                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n{extra_headers}Connection: close\r\n\r\n",
-                                    response_body.len()
-                                );
-                                let _ = socket.write_all(header.as_bytes()).await;
-                                let _ = socket.write_all(&response_body).await;
-                            });
-                        }
-                    }
-                }
-            });
-
             Self {
-                addr,
-                requests,
-                last_range_header,
-                shutdown: Some(shutdown_tx),
+                handle: test_support::register_download("rootfs.img.tar.gz", body, range_mode),
             }
         }
 
         fn url(&self) -> String {
-            format!("http://{}/rootfs.img.tar.gz", self.addr)
+            self.handle.url().to_string()
         }
 
         fn request_count(&self) -> usize {
-            self.requests.load(std::sync::atomic::Ordering::SeqCst)
+            self.handle.request_count()
         }
 
         fn last_range_header(&self) -> Option<String> {
-            self.last_range_header.lock().unwrap().clone()
-        }
-    }
-
-    impl Drop for TestServer {
-        fn drop(&mut self) {
-            if let Some(shutdown) = self.shutdown.take() {
-                let _ = shutdown.send(());
-            }
+            self.handle.last_range_header()
         }
     }
 
