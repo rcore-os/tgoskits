@@ -38,6 +38,16 @@ fn take_buffer<T>(slots: &mut [Option<T>], token: u16) -> DevResult<T> {
         .ok_or(DevError::BadState)
 }
 
+fn validate_packet_layout(header_len: usize, packet_len: usize, capacity: usize) -> DevResult {
+    if header_len > capacity {
+        return Err(DevError::BadState);
+    }
+    if header_len + packet_len > capacity {
+        return Err(DevError::InvalidParam);
+    }
+    Ok(())
+}
+
 /// The VirtIO network device driver.
 ///
 /// `QS` is the VirtIO queue size.
@@ -54,6 +64,25 @@ unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, Q
 unsafe impl<H: Hal, T: Transport, const QS: usize> Sync for VirtIoNetDev<H, T, QS> {}
 
 impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
+    fn has_free_tx_buffer(&self) -> bool {
+        !self.free_tx_bufs.is_empty()
+    }
+
+    fn recycle_tx_buffer_box(&mut self, tx_buf: NetBufBox) {
+        self.free_tx_bufs.push(tx_buf);
+    }
+
+    fn alloc_tx_buffer_box(&mut self) -> DevResult<NetBufBox> {
+        self.free_tx_bufs.pop().ok_or(DevError::NoMemory)
+    }
+
+    fn prepare_tx_buffer(&self, tx_buf: &mut NetBuf, packet_len: usize) -> DevResult {
+        let header_len = tx_buf.header_len();
+        validate_packet_layout(header_len, packet_len, tx_buf.capacity())?;
+        tx_buf.set_packet_len(packet_len);
+        Ok(())
+    }
+
     fn fill_rx_buffers(&mut self) -> DevResult {
         for expected_token in 0..QS {
             let mut rx_buf = self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
@@ -77,7 +106,7 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
                 .fill_buffer_header(tx_buf.raw_buf_mut())
                 .map_err(as_dev_err)?;
             tx_buf.set_header_len(hdr_len);
-            self.free_tx_bufs.push(tx_buf);
+            self.recycle_tx_buffer_box(tx_buf);
         }
         Ok(())
     }
@@ -156,7 +185,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
 
     #[inline]
     fn can_transmit(&self) -> bool {
-        !self.free_tx_bufs.is_empty() && self.inner.can_send()
+        self.has_free_tx_buffer() && self.inner.can_send()
     }
 
     #[inline]
@@ -195,7 +224,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
                     .map_err(as_dev_err)?;
             }
             // Recycle the buffer.
-            self.free_tx_bufs.push(tx_buf);
+            self.recycle_tx_buffer_box(tx_buf);
         }
         Ok(())
     }
@@ -233,15 +262,10 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
 
     fn alloc_tx_buffer(&mut self, size: usize) -> DevResult<NetBufPtr> {
         // 0. Allocate a buffer from the queue.
-        let mut net_buf = self.free_tx_bufs.pop().ok_or(DevError::NoMemory)?;
-        let pkt_len = size;
+        let mut net_buf = self.alloc_tx_buffer_box()?;
 
         // 1. Check if the buffer is large enough.
-        let hdr_len = net_buf.header_len();
-        if hdr_len + pkt_len > net_buf.capacity() {
-            return Err(DevError::InvalidParam);
-        }
-        net_buf.set_packet_len(pkt_len);
+        self.prepare_tx_buffer(&mut net_buf, size)?;
 
         // 2. Return the buffer.
         Ok(net_buf.into_buf_ptr())
@@ -254,7 +278,9 @@ mod tests {
 
     use ax_driver_base::DevError;
 
-    use super::{insert_buffer, take_buffer, validate_queue_token};
+    use super::{
+        insert_buffer, take_buffer, validate_packet_layout, validate_queue_token,
+    };
 
     #[test]
     fn validate_queue_token_accepts_expected_token() {
@@ -299,5 +325,26 @@ mod tests {
         let value = take_buffer(&mut slots, 1).unwrap();
         assert_eq!(value, 7);
         assert!(slots[1].is_none());
+    }
+
+    #[test]
+    fn validate_packet_layout_accepts_valid_lengths() {
+        assert!(validate_packet_layout(14, 128, 1526).is_ok());
+    }
+
+    #[test]
+    fn validate_packet_layout_rejects_oversized_packet() {
+        assert!(matches!(
+            validate_packet_layout(64, 1500, 1526),
+            Err(DevError::InvalidParam)
+        ));
+    }
+
+    #[test]
+    fn validate_packet_layout_rejects_invalid_header_len() {
+        assert!(matches!(
+            validate_packet_layout(1600, 8, 1526),
+            Err(DevError::BadState)
+        ));
     }
 }
