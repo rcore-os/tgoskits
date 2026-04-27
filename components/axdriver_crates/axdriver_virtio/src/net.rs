@@ -8,6 +8,55 @@ use crate::as_dev_err;
 
 const NET_BUF_LEN: usize = 1526;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QueueOccupancy {
+    occupied: usize,
+    capacity: usize,
+}
+
+impl QueueOccupancy {
+    const fn new(occupied: usize, capacity: usize) -> Self {
+        Self { occupied, capacity }
+    }
+
+    const fn vacant(self) -> usize {
+        self.capacity - self.occupied
+    }
+
+    const fn is_full(self) -> bool {
+        self.occupied == self.capacity
+    }
+
+    const fn has_capacity_for(self, needed: usize) -> bool {
+        self.vacant() >= needed
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RuntimeStateSnapshot {
+    rx: QueueOccupancy,
+    tx_in_flight: QueueOccupancy,
+    free_tx_buffers: usize,
+}
+
+impl RuntimeStateSnapshot {
+    const fn queue_size(self) -> usize {
+        self.rx.capacity
+    }
+
+    const fn all_tx_buffers_accounted_for(self) -> bool {
+        self.tx_in_flight.occupied + self.free_tx_buffers == self.tx_in_flight.capacity
+    }
+
+    const fn can_allocate_tx(self) -> bool {
+        self.free_tx_buffers != 0
+    }
+
+    const fn rx_queue_is_primed(self) -> bool {
+        self.rx.is_full()
+    }
+}
+
 fn validate_queue_token(token: u16, expected_token: usize, queue_size: usize) -> DevResult {
     let token = token as usize;
     if token >= queue_size {
@@ -68,6 +117,35 @@ fn validate_packet_layout(header_len: usize, packet_len: usize, capacity: usize)
     Ok(())
 }
 
+fn validate_received_packet_layout(
+    header_len: usize,
+    packet_len: usize,
+    capacity: usize,
+) -> DevResult {
+    if packet_len < header_len {
+        return Err(DevError::BadState);
+    }
+    validate_packet_layout(header_len, packet_len - header_len, capacity)
+}
+
+fn queue_occupancy<T>(slots: &[Option<T>], queue_size: usize) -> DevResult<QueueOccupancy> {
+    let occupied = validate_slot_accounting(slots, queue_size)?;
+    Ok(QueueOccupancy::new(occupied, queue_size))
+}
+
+fn validate_runtime_snapshot(snapshot: RuntimeStateSnapshot) -> DevResult {
+    if snapshot.rx.capacity != snapshot.tx_in_flight.capacity {
+        return Err(DevError::BadState);
+    }
+    if !snapshot.rx_queue_is_primed() {
+        return Err(DevError::BadState);
+    }
+    if !snapshot.all_tx_buffers_accounted_for() {
+        return Err(DevError::BadState);
+    }
+    Ok(())
+}
+
 /// The VirtIO network device driver.
 ///
 /// `QS` is the VirtIO queue size.
@@ -84,6 +162,10 @@ unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, Q
 unsafe impl<H: Hal, T: Transport, const QS: usize> Sync for VirtIoNetDev<H, T, QS> {}
 
 impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
+    fn queue_capacity(&self) -> usize {
+        QS
+    }
+
     fn queued_rx_buffers(&self) -> usize {
         count_populated_slots(&self.rx_buffers)
     }
@@ -92,8 +174,26 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         count_populated_slots(&self.tx_buffers)
     }
 
+    fn free_tx_buffer_count(&self) -> usize {
+        self.free_tx_bufs.len()
+    }
+
+    fn has_queued_rx_buffer(&self) -> bool {
+        self.runtime_state_snapshot()
+            .map(|snapshot| snapshot.rx.occupied != 0)
+            .unwrap_or(false)
+    }
+
+    fn has_in_flight_tx_buffer(&self) -> bool {
+        self.runtime_state_snapshot()
+            .map(|snapshot| snapshot.tx_in_flight.occupied != 0)
+            .unwrap_or(false)
+    }
+
     fn has_free_tx_buffer(&self) -> bool {
-        !self.free_tx_bufs.is_empty()
+        self.runtime_state_snapshot()
+            .map(|snapshot| snapshot.can_allocate_tx())
+            .unwrap_or(false)
     }
 
     fn recycle_tx_buffer_box(&mut self, tx_buf: NetBufBox) {
@@ -111,30 +211,116 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         Ok(())
     }
 
+    fn runtime_state_snapshot(&self) -> DevResult<RuntimeStateSnapshot> {
+        let rx = queue_occupancy(&self.rx_buffers, self.queue_capacity())?;
+        let tx_in_flight = queue_occupancy(&self.tx_buffers, self.queue_capacity())?;
+        Ok(RuntimeStateSnapshot {
+            rx,
+            tx_in_flight,
+            free_tx_buffers: self.free_tx_buffer_count(),
+        })
+    }
+
+    fn validate_tx_capacity(&self, needed: usize) -> DevResult {
+        let snapshot = self.runtime_state_snapshot()?;
+        if !snapshot.tx_in_flight.has_capacity_for(needed) {
+            return Err(DevError::BadState);
+        }
+        if snapshot.free_tx_buffers < needed {
+            return Err(DevError::NoMemory);
+        }
+        Ok(())
+    }
+
+    fn validate_rx_capacity(&self, needed: usize) -> DevResult {
+        let snapshot = self.runtime_state_snapshot()?;
+        if !snapshot.rx.has_capacity_for(needed) {
+            return Err(DevError::BadState);
+        }
+        Ok(())
+    }
+
+    fn validate_tx_completion_capacity(&self) -> DevResult {
+        let snapshot = self.runtime_state_snapshot()?;
+        if snapshot.tx_in_flight.occupied > snapshot.queue_size() {
+            return Err(DevError::BadState);
+        }
+        Ok(())
+    }
+
+    fn validate_before_rx_recycle(&self) -> DevResult {
+        let snapshot = self.runtime_state_snapshot()?;
+        if !snapshot.rx.has_capacity_for(1) {
+            return Err(DevError::BadState);
+        }
+        Ok(())
+    }
+
+    fn validate_before_tx_recycle(&self) -> DevResult {
+        if !self.has_in_flight_tx_buffer() {
+            return Ok(());
+        }
+        self.validate_tx_completion_capacity()
+    }
+
+    fn validate_before_transmit(&self) -> DevResult {
+        self.validate_tx_capacity(1)?;
+        let snapshot = self.runtime_state_snapshot()?;
+        if !snapshot.can_allocate_tx() {
+            return Err(DevError::NoMemory);
+        }
+        Ok(())
+    }
+
+    fn validate_before_receive(&self) -> DevResult {
+        let snapshot = self.runtime_state_snapshot()?;
+        if !snapshot.rx_queue_is_primed() {
+            return Err(DevError::BadState);
+        }
+        if !self.has_queued_rx_buffer() {
+            return Err(DevError::BadState);
+        }
+        Ok(())
+    }
+
+    fn allocate_pool_buffer(&self) -> DevResult<NetBufBox> {
+        self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)
+    }
+
+    fn prime_rx_buffer(&mut self, expected_token: usize) -> DevResult {
+        self.validate_rx_capacity(1)?;
+        let mut rx_buf = self.allocate_pool_buffer()?;
+        let token = unsafe {
+            self.inner
+                .receive_begin(rx_buf.raw_buf_mut())
+                .map_err(as_dev_err)?
+        };
+        self.validate_rx_token(token, expected_token)?;
+        self.insert_rx_buffer(token as usize, rx_buf)
+    }
+
     fn fill_rx_buffers(&mut self) -> DevResult {
         for expected_token in 0..QS {
-            let mut rx_buf = self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
-            // Safe because the buffer lives as long as the queue.
-            let token = unsafe {
-                self.inner
-                    .receive_begin(rx_buf.raw_buf_mut())
-                    .map_err(as_dev_err)?
-            };
-            self.validate_rx_token(token, expected_token)?;
-            self.insert_rx_buffer(token as usize, rx_buf)?;
+            self.prime_rx_buffer(expected_token)?;
         }
+        Ok(())
+    }
+
+    fn prepare_free_tx_buffer(&mut self) -> DevResult {
+        self.validate_tx_capacity(1)?;
+        let mut tx_buf = self.allocate_pool_buffer()?;
+        let hdr_len = self
+            .inner
+            .fill_buffer_header(tx_buf.raw_buf_mut())
+            .map_err(as_dev_err)?;
+        tx_buf.set_header_len(hdr_len);
+        self.recycle_tx_buffer_box(tx_buf);
         Ok(())
     }
 
     fn fill_tx_buffers(&mut self) -> DevResult {
         for _ in 0..QS {
-            let mut tx_buf = self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
-            let hdr_len = self
-                .inner
-                .fill_buffer_header(tx_buf.raw_buf_mut())
-                .map_err(as_dev_err)?;
-            tx_buf.set_header_len(hdr_len);
-            self.recycle_tx_buffer_box(tx_buf);
+            self.prepare_free_tx_buffer()?;
         }
         Ok(())
     }
@@ -159,17 +345,83 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         take_buffer(&mut self.tx_buffers, token)
     }
 
+    fn begin_recycled_rx_buffer(&mut self, rx_buf: &mut NetBuf) -> DevResult<u16> {
+        unsafe {
+            self.inner
+                .receive_begin(rx_buf.raw_buf_mut())
+                .map_err(as_dev_err)
+        }
+    }
+
+    fn submit_recycled_rx_buffer(&mut self, rx_buf: NetBufBox) -> DevResult {
+        self.validate_rx_capacity(1)?;
+        let mut rx_buf = rx_buf;
+        let token = self.begin_recycled_rx_buffer(&mut rx_buf)?;
+        self.insert_rx_buffer(token as usize, rx_buf)
+    }
+
+    fn poll_completed_tx_token(&mut self) -> Option<u16> {
+        self.inner.poll_transmit()
+    }
+
+    fn complete_tx_buffer(&mut self, token: u16) -> DevResult<NetBufBox> {
+        self.validate_tx_completion_capacity()?;
+        let tx_buf = self.take_tx_buffer(token)?;
+        unsafe {
+            self.inner
+                .transmit_complete(token, tx_buf.packet_with_header())
+                .map_err(as_dev_err)?;
+        }
+        Ok(tx_buf)
+    }
+
+    fn recycle_completed_transmissions(&mut self) -> DevResult<usize> {
+        let mut recycled = 0;
+        while let Some(token) = self.poll_completed_tx_token() {
+            let tx_buf = self.complete_tx_buffer(token)?;
+            self.recycle_tx_buffer_box(tx_buf);
+            recycled += 1;
+        }
+        Ok(recycled)
+    }
+
+    fn submit_tx_buffer(&mut self, tx_buf: NetBufBox) -> DevResult {
+        self.validate_tx_capacity(1)?;
+        let token = unsafe {
+            self.inner
+                .transmit_begin(tx_buf.packet_with_header())
+                .map_err(as_dev_err)?
+        };
+        self.insert_tx_buffer(token, tx_buf)
+    }
+
+    fn poll_received_token(&mut self) -> Option<u16> {
+        self.inner.poll_receive()
+    }
+
+    fn complete_received_buffer(&mut self, token: u16) -> DevResult<NetBufBox> {
+        let mut rx_buf = self.take_rx_buffer(token)?;
+        let (hdr_len, pkt_len) = unsafe {
+            self.inner
+                .receive_complete(token, rx_buf.raw_buf_mut())
+                .map_err(as_dev_err)?
+        };
+        validate_received_packet_layout(hdr_len, pkt_len, rx_buf.capacity())?;
+        rx_buf.set_header_len(hdr_len);
+        rx_buf.set_packet_len(pkt_len);
+        Ok(rx_buf)
+    }
+
     fn validate_runtime_state(&self) -> DevResult {
-        let queued_rx = self.queued_rx_buffers();
-        if queued_rx > QS {
+        let snapshot = self.runtime_state_snapshot()?;
+        if self.queued_rx_buffers() != snapshot.rx.occupied {
             return Err(DevError::BadState);
         }
-        let in_flight_tx = self.in_flight_tx_buffers();
-        if in_flight_tx > QS {
+        if self.in_flight_tx_buffers() != snapshot.tx_in_flight.occupied {
             return Err(DevError::BadState);
         }
-        validate_slot_accounting(&self.rx_buffers, QS)?;
-        validate_tx_accounting(&self.tx_buffers, self.free_tx_bufs.len(), QS)?;
+        validate_tx_accounting(&self.tx_buffers, self.free_tx_buffer_count(), QS)?;
+        validate_runtime_snapshot(snapshot)?;
         Ok(())
     }
 
@@ -250,61 +502,33 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
 
     fn recycle_rx_buffer(&mut self, rx_buf: NetBufPtr) -> DevResult {
         self.validate_runtime_state()?;
-        let mut rx_buf = unsafe { NetBuf::from_buf_ptr(rx_buf) };
-        // Safe because we take the ownership of `rx_buf` back to `rx_buffers`,
-        // it lives as long as the queue.
-        let new_token = unsafe {
-            self.inner
-                .receive_begin(rx_buf.raw_buf_mut())
-                .map_err(as_dev_err)?
-        };
-        self.insert_rx_buffer(new_token as usize, rx_buf)?;
+        self.validate_before_rx_recycle()?;
+        let rx_buf = unsafe { NetBuf::from_buf_ptr(rx_buf) };
+        self.submit_recycled_rx_buffer(rx_buf)?;
         self.validate_runtime_state()
     }
 
     fn recycle_tx_buffers(&mut self) -> DevResult {
         self.validate_runtime_state()?;
-        while let Some(token) = self.inner.poll_transmit() {
-            let tx_buf = self.take_tx_buffer(token)?;
-            unsafe {
-                self.inner
-                    .transmit_complete(token, tx_buf.packet_with_header())
-                    .map_err(as_dev_err)?;
-            }
-            // Recycle the buffer.
-            self.recycle_tx_buffer_box(tx_buf);
-        }
+        self.validate_before_tx_recycle()?;
+        let _ = self.recycle_completed_transmissions()?;
         self.validate_runtime_state()
     }
 
     fn transmit(&mut self, tx_buf: NetBufPtr) -> DevResult {
         self.validate_runtime_state()?;
-        // 0. prepare tx buffer.
+        self.validate_before_transmit()?;
         let tx_buf = unsafe { NetBuf::from_buf_ptr(tx_buf) };
-        // 1. transmit packet.
-        let token = unsafe {
-            self.inner
-                .transmit_begin(tx_buf.packet_with_header())
-                .map_err(as_dev_err)?
-        };
-        self.insert_tx_buffer(token, tx_buf)?;
+        self.submit_tx_buffer(tx_buf)?;
         self.validate_runtime_state()
     }
 
     fn receive(&mut self) -> DevResult<NetBufPtr> {
         self.validate_runtime_state()?;
+        self.validate_before_receive()?;
         self.inner.ack_interrupt();
-        if let Some(token) = self.inner.poll_receive() {
-            let mut rx_buf = self.take_rx_buffer(token)?;
-            // Safe because the buffer lives as long as the queue.
-            let (hdr_len, pkt_len) = unsafe {
-                self.inner
-                    .receive_complete(token, rx_buf.raw_buf_mut())
-                    .map_err(as_dev_err)?
-            };
-            rx_buf.set_header_len(hdr_len);
-            rx_buf.set_packet_len(pkt_len);
-
+        if let Some(token) = self.poll_received_token() {
+            let rx_buf = self.complete_received_buffer(token)?;
             self.validate_runtime_state()?;
             Ok(rx_buf.into_buf_ptr())
         } else {
