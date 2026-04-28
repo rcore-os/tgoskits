@@ -17,7 +17,7 @@ phys_cpu_ids = [0x00]
 #
 [kernel]
 # The entry point of the guest kernel image.
-entry_point = 0x20_2000_8dfc
+entry_point = 0x20_2000_7d6c
 # The location of image: "memory" | "fs".
 # Load from file system.
 image_location = "memory"

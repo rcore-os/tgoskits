@@ -17,7 +17,7 @@ phys_cpu_ids = [0x00]
 #
 [kernel]
 # The entry point of the kernel image.
-entry_point = 0x20_2000_1000
+entry_point = 0x20_2000_1040
 # The location of image: "memory" | "fs".
 # Load from file system.
 image_location = "memory"
