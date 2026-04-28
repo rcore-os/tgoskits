@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cross Kernel Driver"
+  short_description: "Create portable driver crates"
+  default_prompt: "Use $cross-kernel-driver to create or optimize a driver under drivers/ with mmio-api/dma-api capability boundaries."
