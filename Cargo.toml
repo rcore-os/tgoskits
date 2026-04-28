@@ -108,7 +108,6 @@ members = [
     "components/x86_vcpu",
     "components/x86_vlapic",
     "drivers/npu/rockchip-npu",
-    "drivers/soc/rockchip/rk3588-clk",
     "drivers/soc/rockchip/rockchip-pm",
     "drivers/soc/rockchip/rockchip-soc",
     "examples/tgmath",
@@ -304,7 +303,6 @@ range-alloc-arceos = { version = "0.3.8", path = "components/range-alloc-arceos"
 riscv-h = { version = "0.4.6", path = "components/riscv-h" }
 riscv_vcpu = { version = "0.5.6", path = "components/riscv_vcpu" }
 riscv_vplic = { version = "0.4.8", path = "components/riscv_vplic" }
-rk3588-clk = { version = "0.1.4", path = "drivers/soc/rockchip/rk3588-clk" }
 rockchip-npu = { version = "0.1.1", path = "drivers/npu/rockchip-npu" }
 rockchip-pm = { version = "0.4.2", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.1.1", path = "drivers/soc/rockchip/rockchip-soc" }

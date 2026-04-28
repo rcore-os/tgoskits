@@ -24,14 +24,14 @@ mod tests {
         },
     };
     use dma_api::DeviceDma;
-    use fdt_edit::{Fdt, Phandle};
+    use fdt_edit::{Fdt, NodeType, Phandle};
     use num_align::NumAlign;
-    use rk3588_clk::Rk3588Cru;
     use rknpu::{
         Rknpu, RknpuConfig, RknpuType, Submit,
         op::{self, Operation},
     };
     use rockchip_pm::{PowerDomain, RkBoard, RockchipPM};
+    use rockchip_soc::{Cru, SocType};
 
     /// NPU 主电源域
     pub const NPU: PowerDomain = PowerDomain(8);
@@ -91,16 +91,8 @@ mod tests {
                 break;
             }
         }
-        // let clk_ls = node.clocks().collect::<Vec<_>>();
-        // let mut clk_ctrl = configure_npu_clocks();
+        // let _clk_ctrl = configure_npu_clocks();
         // info!("Configured NPU clock tree");
-        // for clk in &clk_ls {
-        //     info!("Clock: {:?}", clk);
-        //     if clk.node.name().contains("protocol") {
-        //         continue;
-        //     }
-        //     clk_ctrl.npu_gate_enable(clk.select as _).unwrap();
-        // }
 
         let config = config.expect("Unsupported RKNPU compatible");
 
@@ -157,18 +149,19 @@ mod tests {
         ioremap(start.into(), end - start).unwrap().as_nonnull_ptr()
     }
 
-    fn configure_npu_clocks() -> Rk3588Cru {
+    fn configure_npu_clocks() -> Cru {
         let cru_addr = get_cru_addr();
-        Rk3588Cru::new(cru_addr)
-        // let cru = Rk3588Cru::new(cru_addr);
+        let grf_addr = get_cru_grf_addr();
+        Cru::new(SocType::Rk3588, cru_addr, grf_addr)
+        // let mut cru = Cru::new(SocType::Rk3588, cru_addr, grf_addr);
 
         // // Program the primary NPU clock tree to known-good defaults. Ignore failures for now.
-        // let _ = cru.npu_set_clk(HCLK_NPU_ROOT, 200_000_000);
-        // let _ = cru.npu_set_clk(CLK_NPU_DSU0, 800_000_000);
-        // let _ = cru.npu_set_clk(PCLK_NPU_ROOT, 100_000_000);
-        // let _ = cru.npu_set_clk(HCLK_NPU_CM0_ROOT, 200_000_000);
-        // let _ = cru.npu_set_clk(CLK_NPU_CM0_RTC, 24_000_000);
-        // let _ = cru.npu_set_clk(CLK_NPUTIMER_ROOT, 100_000_000);
+        // let _ = cru.clk_set_rate(HCLK_NPU_ROOT, 200_000_000);
+        // let _ = cru.clk_set_rate(CLK_NPU_DSU0, 800_000_000);
+        // let _ = cru.clk_set_rate(PCLK_NPU_ROOT, 100_000_000);
+        // let _ = cru.clk_set_rate(HCLK_NPU_CM0_ROOT, 200_000_000);
+        // let _ = cru.clk_set_rate(CLK_NPU_CM0_RTC, 24_000_000);
+        // let _ = cru.clk_set_rate(CLK_NPUTIMER_ROOT, 100_000_000);
 
         // // Ensure the essential gates are open.
         // for gate in [
@@ -189,7 +182,7 @@ mod tests {
         //     TCLK_NPU_WDT,
         //     FCLK_NPU_CM0_CORE,
         // ] {
-        //     if let Err(err) = cru.npu_gate_enable(gate) {
+        //     if let Err(err) = cru.clk_enable(gate) {
         //         warn!("Failed to enable gate {gate}: {err}");
         //     }
         // }
@@ -206,8 +199,36 @@ mod tests {
 
         info!("Found node: {}", node.name());
 
+        map_first_reg(node, "CRU")
+    }
+
+    fn get_cru_grf_addr() -> NonNull<u8> {
+        let fdt = platform_fdt();
+
+        let node = fdt
+            .find_compatible(&["rockchip,rk3588-cru"])
+            .into_iter()
+            .next()
+            .expect("Failed to find CRU node");
+        let grf_phandle = node
+            .as_node()
+            .get_property("rockchip,grf")
+            .expect("CRU node missing rockchip,grf")
+            .get_u32()
+            .expect("CRU rockchip,grf is not a phandle");
+        let grf_node = fdt
+            .get_by_phandle(Phandle::from(grf_phandle))
+            .expect("CRU rockchip,grf target not found");
+
+        map_first_reg(grf_node, "CRU GRF")
+    }
+
+    fn map_first_reg(node: NodeType<'_>, name: &str) -> NonNull<u8> {
         let regs = node.regs();
-        let reg = regs.first().copied().expect("CRU node missing reg range");
+        let reg = regs
+            .first()
+            .copied()
+            .unwrap_or_else(|| panic!("{name} node missing reg range"));
 
         let start_raw = reg.address as usize;
         let size = reg.size.unwrap_or(page_size() as u64) as usize;

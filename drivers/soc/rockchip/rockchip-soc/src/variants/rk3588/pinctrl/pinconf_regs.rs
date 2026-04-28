@@ -277,7 +277,6 @@ pub fn find_schmitt_entry(pin: PinId) -> Option<(usize, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BankId;
 
     #[test]
     fn test_find_drive_entry() {

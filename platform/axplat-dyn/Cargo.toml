@@ -16,7 +16,7 @@ irq = ["ax-plat/irq"]
 fp-simd = ["ax-cpu/fp-simd"]
 uspace = ["somehal/uspace"]
 hv = ["somehal/hv", "ax-cpu/arm-el2"]
-rk3588-clk = ["dep:rk3588-clk"]
+rockchip-soc = ["dep:rockchip-soc"]
 rk3568-clk = ["dep:rk3568_clk"]
 sdmmc = ["dep:sdmmc"]
 rockchip-pm = ["dep:rockchip-pm"]
@@ -25,7 +25,7 @@ serial = ["dep:some-serial"]
 net = ["dep:ax-driver-net", "dep:rd-net"]
 intel-net = ["net", "dep:eth-intel", "dep:pcie"]
 virtio-net-pci = ["net"]
-rknpu = ["dep:rockchip-npu", "rockchip-pm", "rk3588-clk"]
+rknpu = ["dep:rockchip-npu", "rockchip-pm", "rockchip-soc"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
@@ -52,7 +52,7 @@ rd-net = { version = "0.1", optional = true }
 rdif-clk = "0.5"
 rdrive = "0.20"
 rk3568_clk = { version = "0.1", optional = true }
-rk3588-clk = { workspace = true, optional = true }
+rockchip-soc = { workspace = true, optional = true }
 rockchip-npu = { workspace = true, optional = true }
 rockchip-pm = { workspace = true, optional = true }
 phytium-mci = { version = "0.1", default-features = false, features = ["pio"], optional = true }

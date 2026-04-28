@@ -13,11 +13,14 @@
 // limitations under the License.
 
 use rdrive::{
-    DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
+    DriverGeneric, KError, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
 };
-use rk3588_clk::Rk3588Cru;
+use rockchip_soc::{ClkId, Cru, CruOp, SocType};
 
 use crate::drivers::iomap;
+
+const RK3588_CRU_GRF_BASE: usize = 0xfd5b_0000;
+const RK3588_CRU_GRF_SIZE: usize = 0x1000;
 
 module_driver!(
     name: "Rockchip CRU",
@@ -42,31 +45,43 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
             info.node.name()
         )))?;
 
+    let grf_phandle = info
+        .node
+        .as_node()
+        .get_property("rockchip,grf")
+        .and_then(|prop| prop.get_u32())
+        .ok_or(OnProbeError::other(alloc::format!(
+            "[{}] has no rockchip,grf",
+            info.node.name()
+        )))?;
+
     info!(
-        "CRU reg: addr={:#x}, size={:#x}",
+        "RK3588 CRU reg: addr={:#x}, size={:#x}, rockchip,grf=<{:#x}>",
         base_reg.address as usize,
-        base_reg.size.unwrap_or(0)
+        base_reg.size.unwrap_or(0),
+        grf_phandle
     );
 
-    let mmio_size = base_reg.size.unwrap_or(0x1000) as usize;
+    let mmio_base = iomap(
+        (base_reg.address as usize).into(),
+        base_reg.size.unwrap_or(0x5c000) as usize,
+    )?;
+    let grf_base = iomap(RK3588_CRU_GRF_BASE.into(), RK3588_CRU_GRF_SIZE)?;
 
-    let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
-
-    let cru = Rk3588Cru::new(mmio_base);
+    let cru = Cru::new(SocType::Rk3588, mmio_base, grf_base);
     let clk = rdif_clk::Clk::new(ClkDrv::new(cru));
 
     plat_dev.register(clk);
-    info!("clk registered successfully");
+    info!("RK3588 CRU clock registered successfully");
     Ok(())
 }
 
 pub struct ClkDrv {
-    inner: Rk3588Cru,
+    inner: Cru,
 }
 
 impl ClkDrv {
-    pub fn new(cru: Rk3588Cru) -> Self {
-        cru.init();
+    pub const fn new(cru: Cru) -> Self {
         Self { inner: cru }
     }
 }
@@ -75,30 +90,28 @@ unsafe impl Send for ClkDrv {}
 
 impl DriverGeneric for ClkDrv {
     fn name(&self) -> &str {
-        "rk3588-clk"
+        "rk3588-cru"
     }
 }
 
 impl rdif_clk::Interface for ClkDrv {
-    fn perper_enable(&mut self) {
-        // self.inner.npu_gate_enable(gate_id)
-    }
+    fn perper_enable(&mut self) {}
 
-    fn get_rate(&self, id: rdif_clk::ClockId) -> Result<u64, rdrive::KError> {
-        let id: usize = id.into();
-        let rate = self
-            .inner
-            .mmc_get_clk(id as _)
-            .map_err(|_| rdrive::KError::InvalidArg { name: "id" })?;
-        Ok(rate as _)
-    }
-
-    fn set_rate(&mut self, id: rdif_clk::ClockId, rate: u64) -> Result<(), rdrive::KError> {
-        // todo!()
-        let id: usize = id.into();
+    fn get_rate(&self, id: rdif_clk::ClockId) -> Result<u64, KError> {
         self.inner
-            .mmc_set_clk(id as _, rate as _)
-            .map_err(|_| rdrive::KError::InvalidArg { name: "id" })?;
+            .clk_get_rate(clock_id(id))
+            .map_err(|_| KError::InvalidArg { name: "clock_id" })
+    }
+
+    fn set_rate(&mut self, id: rdif_clk::ClockId, rate: u64) -> Result<(), KError> {
+        self.inner
+            .clk_set_rate(clock_id(id), rate)
+            .map_err(|_| KError::InvalidArg { name: "clock_id" })?;
         Ok(())
     }
+}
+
+fn clock_id(id: rdif_clk::ClockId) -> ClkId {
+    let id: usize = id.into();
+    ClkId::from(id)
 }

@@ -24,8 +24,8 @@ tock-registers = "0.10"
 arm-scmi = {git = "https://github.com/drivercraft/arm-scmi"}
 bare-test = "0.8"
 fdt-edit = "0.2.3"
-rk3588-clk = { workspace = true }
 rockchip-pm = { workspace = true }
+rockchip-soc = { workspace = true }
 [build-dependencies]
 bare-test-macros = "0.3"
 

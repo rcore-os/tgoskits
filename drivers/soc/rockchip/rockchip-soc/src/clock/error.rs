@@ -180,21 +180,14 @@ mod tests {
         use crate::rk3588::cru::clock::CLK_I2C0;
 
         let err = ClockError::unsupported(CLK_I2C0);
-        assert_eq!(
-            format!("{}", err),
-            format!(
-                "unsupported clock ID: {} (value: {})",
-                CLK_I2C0.value(),
-                146
-            )
-        );
+        assert_eq!(format!("{}", err), format!("unsupported: {}", CLK_I2C0));
 
         let err = ClockError::invalid_rate(CLK_I2C0, 100_000_000);
         assert_eq!(
             format!("{}", err),
             format!(
                 "failed to set clock {} to 100000000 Hz: unsupported rate",
-                CLK_I2C0.value()
+                CLK_I2C0
             )
         );
 
@@ -203,7 +196,7 @@ mod tests {
             format!("{}", err),
             format!(
                 "failed to get clock {} rate: register read timeout",
-                CLK_I2C0.value()
+                CLK_I2C0
             )
         );
     }

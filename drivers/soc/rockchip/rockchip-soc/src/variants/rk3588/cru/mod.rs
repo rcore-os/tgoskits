@@ -398,12 +398,17 @@ impl Cru {
             return self.mmc_get_rate(id);
         }
 
-        // 8. USB 时钟
+        // 8. NPU 时钟
+        if is_npu_clk(id) {
+            return self.npu_get_rate(id);
+        }
+
+        // 9. USB 时钟
         if is_usb_clk(id) {
             return self.usb_get_rate(id);
         }
 
-        // 9. 根时钟
+        // 10. 根时钟
         if matches!(
             id,
             ACLK_BUS_ROOT
@@ -471,7 +476,12 @@ impl Cru {
             return self.mmc_set_rate(id, rate_hz);
         }
 
-        // 8. USB 时钟
+        // 8. NPU 时钟
+        if is_npu_clk(id) {
+            return self.npu_set_rate(id, rate_hz);
+        }
+
+        // 9. USB 时钟
         if is_usb_clk(id) {
             return self.usb_set_rate(id, rate_hz);
         }

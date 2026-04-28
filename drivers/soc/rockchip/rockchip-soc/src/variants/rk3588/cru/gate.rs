@@ -164,12 +164,39 @@ clk_gate_table!(
     PCLK_TSADC => (16, 6),
     CLK_TSADC => (16, 7),
     // ========================================================================
+    // NPU 时钟门控
+    // ========================================================================
+    ACLK_NPU1 => (27, 0),
+    HCLK_NPU1 => (27, 2),
+    ACLK_NPU2 => (28, 0),
+    HCLK_NPU2 => (28, 2),
+    HCLK_NPU_ROOT => (29, 0),
+    CLK_NPU_DSU0 => (29, 1),
+    PCLK_NPU_ROOT => (29, 4),
+    PCLK_NPU_TIMER => (29, 6),
+    CLK_NPUTIMER_ROOT => (29, 7),
+    CLK_NPUTIMER0 => (29, 8),
+    CLK_NPUTIMER1 => (29, 9),
+    PCLK_NPU_WDT => (29, 10),
+    TCLK_NPU_WDT => (29, 11),
+    PCLK_NPU_PVTM => (29, 12),
+    PCLK_NPU_GRF => (29, 13),
+    CLK_NPU_PVTM => (29, 14),
+    CLK_CORE_NPU_PVTM => (29, 15),
+    HCLK_NPU_CM0_ROOT => (30, 1),
+    FCLK_NPU_CM0_CORE => (30, 3),
+    CLK_NPU_CM0_RTC => (30, 5),
+    ACLK_NPU0 => (30, 6),
+    HCLK_NPU0 => (30, 8),
+    // ========================================================================
     // USB 时钟门控
     // ========================================================================
     // USB3 OTG2
     ACLK_USB3OTG2 => (35, 7),
     SUSPEND_CLK_USB3OTG2 => (35, 8),
     REF_CLK_USB3OTG2 => (35, 9),
+    CLK_PIPE_USBHOST3_0 => (38, 9),
+    PCLK_PHP_USBHOST3_0 => (32, 0),
     // USB 根时钟
     ACLK_USB_ROOT => (42, 0),
     HCLK_USB_ROOT => (42, 1),
@@ -191,6 +218,8 @@ clk_gate_table!(
     PCLK_USBDPPHY0 => (72, 2),
     PCLK_USBDPPHY1 => (72, 4),
 
+    ACLK_USB => (74, 0),
+    HCLK_USB => (74, 2),
 
 );
 
@@ -254,9 +283,10 @@ mod tests {
         // UART: 20 (UART1-9: 18, UART0: 2)
         // PWM: 12 (PWM1-3: 9, PMU1PWM: 3)
         // ADC: 4
-        // USB: 15
-        // 总计: 79
-        assert_eq!(CLK_GATE_TABLE.len(), 79);
+        // NPU: 22
+        // USB: 23
+        // 总计: 109
+        assert_eq!(CLK_GATE_TABLE.len(), 109);
     }
 
     #[test]

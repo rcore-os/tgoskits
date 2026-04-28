@@ -222,6 +222,35 @@ clk_id_group!(
 );
 
 // =============================================================================
+// NPU 时钟 ID
+// =============================================================================
+
+clk_id_group!(
+    ACLK_NPU1 = 290,
+    HCLK_NPU1 = 291,
+    ACLK_NPU2 = 292,
+    HCLK_NPU2 = 293,
+    HCLK_NPU_CM0_ROOT = 294,
+    FCLK_NPU_CM0_CORE = 295,
+    CLK_NPU_CM0_RTC = 296,
+    PCLK_NPU_PVTM = 297,
+    PCLK_NPU_GRF = 298,
+    CLK_NPU_PVTM = 299,
+    CLK_CORE_NPU_PVTM = 300,
+    ACLK_NPU0 = 301,
+    HCLK_NPU0 = 302,
+    HCLK_NPU_ROOT = 303,
+    CLK_NPU_DSU0 = 304,
+    PCLK_NPU_ROOT = 305,
+    PCLK_NPU_TIMER = 306,
+    CLK_NPUTIMER_ROOT = 307,
+    CLK_NPUTIMER0 = 308,
+    CLK_NPUTIMER1 = 309,
+    PCLK_NPU_WDT = 310,
+    TCLK_NPU_WDT = 311,
+);
+
+// =============================================================================
 // GMAC 时钟 ID
 // =============================================================================
 
@@ -237,10 +266,12 @@ clk_id_group!(
 // =============================================================================
 
 clk_id_group!(
+    PCLK_PHP_USBHOST3_0 = 358,
     ACLK_USB3OTG2 = 375,
     SUSPEND_CLK_USB3OTG2 = 376,
     REF_CLK_USB3OTG2 = 377,
     CLK_UTMI_OTG2 = 378,
+    CLK_PIPE_USBHOST3_0 = 385,
 );
 
 clk_id_group!(
@@ -261,13 +292,29 @@ clk_id_group!(
 );
 
 clk_id_group!(
+    ACLK_USB = 611,
+    HCLK_USB = 612,
     PCLK_USBDPPHY0 = 617,
     PCLK_USBDPPHY1 = 618,
     USBDP_PHY0_IMMORTAL = 639,
     USBDP_PHY1_IMMORTAL = 640,
 );
 
+clk_id_group!(CLK_USBPHY_480M = 693,);
 clk_id_group!(USBDPPHY_MIPIDCPPHY_REF = 694,);
+
+pub const CLK_REF_USB3OTG0: ClkId = REF_CLK_USB3OTG0;
+pub const CLK_SUSPEND_USB3OTG0: ClkId = SUSPEND_CLK_USB3OTG0;
+pub const CLK_REF_USB3OTG1: ClkId = REF_CLK_USB3OTG1;
+pub const CLK_SUSPEND_USB3OTG1: ClkId = SUSPEND_CLK_USB3OTG1;
+pub const ACLK_USBHOST3_0: ClkId = ACLK_USB3OTG2;
+pub const CLK_SUSPEND_USBHOST3_0: ClkId = SUSPEND_CLK_USB3OTG2;
+pub const CLK_REF_USBHOST3_0: ClkId = REF_CLK_USB3OTG2;
+pub const CLK_UTMI_USBHOST3_0: ClkId = CLK_UTMI_OTG2;
+pub const CLK_USBHOST0: ClkId = HCLK_HOST0;
+pub const CLK_USBHOST0_ARB: ClkId = HCLK_HOST_ARB0;
+pub const CLK_USBHOST1: ClkId = HCLK_HOST1;
+pub const CLK_USBHOST1_ARB: ClkId = HCLK_HOST_ARB1;
 
 // =============================================================================
 // 辅助函数：时钟类型判断和外设编号提取
@@ -315,14 +362,28 @@ pub fn is_mmc_clk(clk_id: ClkId) -> bool {
     matches!(clk_id, CCLK_EMMC | BCLK_EMMC | CCLK_SRC_SDIO | SCLK_SFC)
 }
 
+/// 判断时钟 ID 是否为 NPU
+pub fn is_npu_clk(clk_id: ClkId) -> bool {
+    (ACLK_NPU1..=TCLK_NPU_WDT).contains(&clk_id)
+}
+
 /// 判断时钟 ID 是否为 USB
 ///
 /// USB 时钟包括：
-/// - 可配置频率时钟：ACLK_USB_ROOT, HCLK_USB_ROOT, CLK_UTMI_OTG2
+/// - 可配置频率时钟：ACLK_USB_ROOT, HCLK_USB_ROOT, CLK_UTMI_OTG2, PCLK_PHP_USBHOST3_0, ACLK_USB, HCLK_USB
 /// - 固定频率门控时钟：其他所有 USB 时钟
 pub fn is_usb_clk(clk_id: ClkId) -> bool {
     // 可配置频率时钟
-    let configurable = matches!(clk_id, ACLK_USB_ROOT | HCLK_USB_ROOT | CLK_UTMI_OTG2);
+    let configurable = matches!(
+        clk_id,
+        ACLK_USB_ROOT
+            | HCLK_USB_ROOT
+            | CLK_UTMI_OTG2
+            | PCLK_PHP_USBHOST3_0
+            | CLK_USBPHY_480M
+            | ACLK_USB
+            | HCLK_USB
+    );
 
     // 固定频率门控时钟
     let gates = matches!(
@@ -340,6 +401,12 @@ pub fn is_usb_clk(clk_id: ClkId) -> bool {
             | HCLK_HOST_ARB0
             | HCLK_HOST1
             | HCLK_HOST_ARB1
+            | CLK_PIPE_USBHOST3_0
+            | PCLK_USBDPPHY0
+            | PCLK_USBDPPHY1
+            | USBDP_PHY0_IMMORTAL
+            | USBDP_PHY1_IMMORTAL
+            | USBDPPHY_MIPIDCPPHY_REF
     );
 
     configurable || gates
@@ -571,8 +638,6 @@ mod tests {
 
     #[test]
     fn test_get_uart_num_with_boundaries() {
-        use crate::clock::ClkId;
-
         // 测试每个 UART 的边界时钟
         // UART0 (PMU)
         assert_eq!(get_uart_num(CLK_UART0_SRC), Some(0));
@@ -617,8 +682,6 @@ mod tests {
 
     #[test]
     fn test_clkid_comparison() {
-        use crate::clock::ClkId;
-
         // 验证 ClkId 的比较运算符正常工作
         assert!(PCLK_UART1 < SCLK_UART1);
         assert!(CLK_UART2_SRC <= SCLK_UART2);

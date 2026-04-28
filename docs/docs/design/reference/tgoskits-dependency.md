@@ -1817,7 +1817,7 @@ flowchart TB
 | `riscv_goldfish` `0.1.1` | System Real Time Clock (RTC) Drivers for riscv based on goldfish. | `ax-plat-riscv64-qemu-virt` | — |
 | `riscv_plic` `0.2.0` | — | — | — |
 | `rk3568_clk` `0.1.0` | — | `axvisor` | — |
-| `rk3588-clk` `0.1.3` | — | `axvisor` | — |
+| `rockchip-soc` `0.1.1` | — | `axvisor` | — |
 | `rkyv` `0.7.46` | Zero-copy deserialization framework for Rust | — | — |
 | `rlsf` `0.2.2` | Real-time dynamic memory allocator based on the TLSF algorithm | `ax-allocator` | — |
 | `rockchip-pm` `0.4.1` | — | `axvisor` | — |

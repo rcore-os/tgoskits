@@ -1670,9 +1670,9 @@ dependencies = [
  "rdif-clk",
  "rdrive 0.20.0",
  "rk3568_clk",
- "rk3588-clk",
  "rockchip-npu",
  "rockchip-pm",
+ "rockchip-soc",
  "sdmmc 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "some-serial 0.3.1",
  "somehal 0.6.6",
@@ -7127,18 +7127,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rk3588-clk"
-version = "0.1.4"
-dependencies = [
- "bare-test 0.7.0",
- "bare-test-macros 0.2.0",
- "log",
- "rockchip-pm",
- "sdmmc 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "tock-registers 0.10.1",
-]
-
-[[package]]
 name = "rkyv"
 version = "0.7.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7195,8 +7183,8 @@ dependencies = [
  "mbarrier",
  "num-align",
  "rdif-base 0.8.0",
- "rk3588-clk",
  "rockchip-pm",
+ "rockchip-soc",
  "spin 0.10.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
