@@ -83,7 +83,8 @@ fn config_pci_device<C: ConfigurationAccess>(
     let (_status, cmd) = root.get_status_command(bdf);
     root.set_command(
         bdf,
-        cmd | Command::IO_SPACE | Command::MEMORY_SPACE | Command::BUS_MASTER,
+        (cmd | Command::IO_SPACE | Command::MEMORY_SPACE | Command::BUS_MASTER)
+            & !Command::INTERRUPT_DISABLE,
     );
     Ok(())
 }

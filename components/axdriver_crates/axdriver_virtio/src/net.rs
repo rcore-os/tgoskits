@@ -72,6 +72,10 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
             dev.free_tx_bufs.push(tx_buf);
         }
 
+        if irq.is_some() {
+            dev.inner.enable_interrupts();
+        }
+
         // 3. Return the driver instance.
         Ok(dev)
     }
