@@ -1,13 +1,13 @@
-# Orange Pi 5 Plus UVC Example
+# Orange Pi 5 Plus USB Enumeration Example
 
-This case boots StarryOS on Orange Pi 5 Plus and starts a preinstalled UVC frame
-rate reporter from the Starry shell.
+This case boots StarryOS on Orange Pi 5 Plus and runs `lsusb` from the Starry
+shell. It is intended to compare Starry USB enumeration with the Linux baseline,
+including root hub and attached USB camera visibility.
 
 The board rootfs must already contain:
 
-- `/usr/bin/uvc-fps`
-- `libuvc` and `libusb` runtime libraries
-- access to the UVC device through `/dev/bus/usb`
+- `lsusb`
+- access to USB devices through `/dev/bus/usb`
 
 Run the board example:
 
@@ -15,14 +15,12 @@ Run the board example:
 cargo starry example board -t orangepi-5-plus-uvc
 ```
 
-Build the sample user program separately when preparing the rootfs:
+The runner succeeds when the `lsusb` output contains a Linux Foundation root hub
+line, for example:
 
-```bash
-cargo build \
-  --manifest-path examples/starry/orangepi-5-plus-uvc/uvc-fps/Cargo.toml \
-  --release \
-  --target aarch64-unknown-linux-musl
+```text
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
 ```
 
-Install the resulting `uvc-fps` binary into `/usr/bin/uvc-fps` in the Starry
-rootfs together with the `libuvc` and `libusb` libraries it needs.
+The `uvc-fps/` Rust project remains in this case as a supplemental libuvc smoke
+program, but the automated example currently uses `lsusb` only.
