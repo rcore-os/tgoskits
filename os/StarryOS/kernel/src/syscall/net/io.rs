@@ -4,7 +4,7 @@ use core::{net::Ipv4Addr, time::Duration};
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::wall_time;
 use ax_io::prelude::*;
-use ax_task::future::{self, block_on, poll_io};
+use ax_task::future::{self, block_on};
 use axnet::{
     CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
     options::Configurable,
@@ -210,7 +210,10 @@ pub fn sys_recvmsg(fd: i32, msg: UserPtr<msghdr>, flags: u32) -> AxResult<isize>
 
 /// Send multiple datagrams in one syscall.
 pub fn sys_sendmmsg(fd: i32, msgvec: UserPtr<mmsghdr>, vlen: u32, flags: u32) -> AxResult<isize> {
-    if vlen == 0 || vlen > MMSG_MAX_VLEN {
+    if vlen == 0 {
+        return Ok(0);
+    }
+    if vlen > MMSG_MAX_VLEN {
         return Err(AxError::InvalidInput);
     }
 
@@ -250,55 +253,47 @@ pub fn sys_recvmmsg(
     flags: u32,
     timeout: UserConstPtr<timespec>,
 ) -> AxResult<isize> {
-    if vlen == 0 || vlen > MMSG_MAX_VLEN {
+    if vlen == 0 {
+        return Ok(0);
+    }
+    if vlen > MMSG_MAX_VLEN {
         return Err(AxError::InvalidInput);
     }
 
     let timeout = parse_recvmmsg_timeout(timeout)?;
+    // TODO: deadline is only checked between recv_impl calls. If a single
+    // recv_impl blocks waiting for data (socket has nothing to read), the
+    // deadline cannot interrupt it. Needs a non-blocking recv path or
+    // SO_RCVTIMEO support at the socket layer to fix.
     let deadline = timeout.map(|t| wall_time() + t);
     let socket = Socket::from_fd(fd)?;
 
     let msgvec = msgvec.get_as_mut_slice(vlen as usize)?;
     let mut received = 0;
     for msg in msgvec.iter_mut() {
-        let recv_once = poll_io(socket.as_ref(), IoEvents::IN, false, || {
-            recv_impl(
-                fd,
-                IoVectorBuf::new(msg.msg_hdr.msg_iov as *mut IoVec, msg.msg_hdr.msg_iovlen)?
-                    .into_io(),
-                flags,
-                UserPtr::from(msg.msg_hdr.msg_name as usize),
-                UserPtr::from(&mut msg.msg_hdr.msg_namelen as *mut _ as *mut socklen_t),
-                (!msg.msg_hdr.msg_control.is_null()).then(|| {
-                    CMsgBuilder::new(
-                        UserPtr::from(msg.msg_hdr.msg_control as *mut cmsghdr),
-                        &mut msg.msg_hdr.msg_controllen,
-                    )
-                }),
-            )
-        });
-
-        let recv = if let Some(deadline) = deadline {
-            let now = wall_time();
-            if now >= deadline {
+        if let Some(deadline) = deadline {
+            if wall_time() >= deadline {
                 if received == 0 {
                     return Err(AxError::WouldBlock);
                 }
                 break;
             }
+        }
 
-            match block_on(future::timeout(Some(deadline - now), recv_once)) {
-                Ok(ret) => ret,
-                Err(_) => {
-                    if received == 0 {
-                        return Err(AxError::WouldBlock);
-                    }
-                    break;
-                }
-            }
-        } else {
-            block_on(recv_once)
-        };
+        let recv = recv_impl(
+            fd,
+            IoVectorBuf::new(msg.msg_hdr.msg_iov as *mut IoVec, msg.msg_hdr.msg_iovlen)?
+                .into_io(),
+            flags,
+            UserPtr::from(msg.msg_hdr.msg_name as usize),
+            UserPtr::from(&mut msg.msg_hdr.msg_namelen as *mut _ as *mut socklen_t),
+            (!msg.msg_hdr.msg_control.is_null()).then(|| {
+                CMsgBuilder::new(
+                    UserPtr::from(msg.msg_hdr.msg_control as *mut cmsghdr),
+                    &mut msg.msg_hdr.msg_controllen,
+                )
+            }),
+        );
 
         match recv {
             Ok(n) => {

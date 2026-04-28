@@ -344,15 +344,11 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             Processor::Passive(reader, _) => reader.poll(),
             _ => {}
         }
-        if self.buf_rx.is_empty() {
-            return false;
-        }
         let term = self.terminal.termios.lock().clone();
-        let vmin = if term.canonical() {
-            1
-        } else {
-            term.special_char(VMIN) as usize
-        };
+        if term.canonical() {
+            return !self.buf_rx.is_empty();
+        }
+        let vmin = term.special_char(VMIN) as usize;
         vmin == 0 || self.buf_rx.occupied_len() >= vmin
     }
 
@@ -411,7 +407,13 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
 
         let available = self.buf_rx.occupied_len();
-        if available == 0 || (vmin > 0 && available < vmin) {
+        if available == 0 {
+            if vmin == 0 {
+                return Ok(0);
+            }
+            return Err(AxError::WouldBlock);
+        }
+        if vmin > 0 && available < vmin {
             return Err(AxError::WouldBlock);
         }
 
