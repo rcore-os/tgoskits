@@ -181,6 +181,44 @@ pub trait SocketOps: Configurable {
     fn shutdown(&self, how: Shutdown) -> AxResult;
 }
 
+impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
+    fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+        self.as_ref().bind(local_addr)
+    }
+
+    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
+        self.as_ref().connect(remote_addr)
+    }
+
+    fn listen(&self) -> AxResult {
+        self.as_ref().listen()
+    }
+
+    fn accept(&self) -> AxResult<Socket> {
+        self.as_ref().accept()
+    }
+
+    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+        self.as_ref().send(src, options)
+    }
+
+    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
+        self.as_ref().recv(dst, options)
+    }
+
+    fn local_addr(&self) -> AxResult<SocketAddrEx> {
+        self.as_ref().local_addr()
+    }
+
+    fn peer_addr(&self) -> AxResult<SocketAddrEx> {
+        self.as_ref().peer_addr()
+    }
+
+    fn shutdown(&self, how: Shutdown) -> AxResult {
+        self.as_ref().shutdown(how)
+    }
+}
+
 /// Network socket abstraction.
 #[enum_dispatch(Configurable, SocketOps)]
 pub enum Socket {
@@ -189,7 +227,7 @@ pub enum Socket {
     /// TCP socket.
     Tcp(TcpSocket),
     /// Unix domain socket.
-    Unix(UnixSocket),
+    Unix(Box<UnixSocket>),
     /// Virtio socket.
     #[cfg(feature = "vsock")]
     Vsock(VsockSocket),

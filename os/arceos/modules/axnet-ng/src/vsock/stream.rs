@@ -342,10 +342,8 @@ impl Pollable for VsockStreamTransport {
         if let Ok(conn) = self.get_connection() {
             let mut conn = conn.lock();
             match conn.state() {
-                ConnectionState::Listening => {
-                    if events.contains(IoEvents::IN) {
-                        conn.register_accept_poll(context);
-                    }
+                ConnectionState::Listening if events.contains(IoEvents::IN) => {
+                    conn.register_accept_poll(context);
                 }
                 ConnectionState::Connected => {
                     if events.contains(IoEvents::IN) {
@@ -357,10 +355,8 @@ impl Pollable for VsockStreamTransport {
                         );
                     }
                 }
-                ConnectionState::Connecting => {
-                    if events.contains(IoEvents::OUT) {
-                        conn.register_connect_poll(context);
-                    }
+                ConnectionState::Connecting if events.contains(IoEvents::OUT) => {
+                    conn.register_connect_poll(context);
                 }
                 _ => {}
             }

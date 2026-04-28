@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_task::current;
 #[cfg(feature = "vsock")]
@@ -42,8 +44,12 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             }
             SocketInner::Udp(UdpSocket::new())
         }
-        (AF_UNIX, SOCK_STREAM) => SocketInner::Unix(UnixSocket::new(StreamTransport::new(pid))),
-        (AF_UNIX, SOCK_DGRAM) => SocketInner::Unix(UnixSocket::new(DgramTransport::new(pid))),
+        (AF_UNIX, SOCK_STREAM) => {
+            SocketInner::Unix(Box::new(UnixSocket::new(StreamTransport::new(pid))))
+        }
+        (AF_UNIX, SOCK_DGRAM) => {
+            SocketInner::Unix(Box::new(UnixSocket::new(DgramTransport::new(pid))))
+        }
         (AF_NETLINK, SOCK_RAW) => {
             if proto != NETLINK_KOBJECT_UEVENT {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
@@ -196,8 +202,8 @@ pub fn sys_socketpair(
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
     };
-    let sock1 = Socket(SocketInner::Unix(sock1));
-    let sock2 = Socket(SocketInner::Unix(sock2));
+    let sock1 = Socket(SocketInner::Unix(Box::new(sock1)));
+    let sock2 = Socket(SocketInner::Unix(Box::new(sock2)));
 
     if raw_ty & O_NONBLOCK != 0 {
         sock1.set_nonblocking(true)?;
