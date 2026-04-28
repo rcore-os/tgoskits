@@ -797,12 +797,20 @@ pub(crate) fn write_cmake_toolchain_file(
     }
     let sysroot = &layout.staging_root;
     let gcc_toolchain_root = sysroot.join("usr");
-    let common_flags = format!(
-        "--sysroot={} --gcc-toolchain={} -B{}",
-        sysroot.display(),
-        gcc_toolchain_root.display(),
-        layout.cross_bin_dir.display()
-    );
+    let mut compile_flags = vec![
+        format!("--sysroot={}", sysroot.display()),
+        format!("--gcc-toolchain={}", gcc_toolchain_root.display()),
+        format!("-B{}", layout.cross_bin_dir.display()),
+    ];
+    let mut linker_flags = compile_flags.clone();
+    if let Some(gcc_runtime_dir) = detect_gcc_runtime_dir(sysroot, spec.guest_tool_dir) {
+        // Older host clang may miss Alpine GCC runtime dirs unless explicitly provided.
+        compile_flags.push(format!("-B{}", gcc_runtime_dir.display()));
+        linker_flags = compile_flags.clone();
+        linker_flags.push(format!("-L{}", gcc_runtime_dir.display()));
+    }
+    let compile_flags = compile_flags.join(" ");
+    let linker_flags = linker_flags.join(" ");
 
     let mut content = include_str!("cmake-toolchain.cmake.in").to_string();
     for (needle, value) in [
@@ -850,9 +858,9 @@ pub(crate) fn write_cmake_toolchain_file(
             "@CMAKE_C_COMPILER_RANLIB@",
             cmake_value(layout.cross_bin_dir.join("ranlib")),
         ),
-        ("@CMAKE_C_FLAGS_INIT@", cmake_value(&common_flags)),
-        ("@CMAKE_ASM_FLAGS_INIT@", cmake_value(&common_flags)),
-        ("@CMAKE_LINKER_FLAGS_INIT@", cmake_value(&common_flags)),
+        ("@CMAKE_C_FLAGS_INIT@", cmake_value(&compile_flags)),
+        ("@CMAKE_ASM_FLAGS_INIT@", cmake_value(&compile_flags)),
+        ("@CMAKE_LINKER_FLAGS_INIT@", cmake_value(&linker_flags)),
     ] {
         content = content.replace(needle, &value);
     }
@@ -863,6 +871,46 @@ pub(crate) fn write_cmake_toolchain_file(
 
 fn cmake_value(value: impl AsRef<std::ffi::OsStr>) -> String {
     value.as_ref().to_string_lossy().replace('\\', "/")
+}
+
+fn detect_gcc_runtime_dir(sysroot: &Path, guest_tool_dir: &str) -> Option<PathBuf> {
+    let triplet = Path::new(guest_tool_dir).parent()?.file_name()?;
+    let gcc_root = sysroot.join("usr/lib/gcc").join(triplet);
+    let entries = fs::read_dir(&gcc_root).ok()?;
+    let runtime_dirs = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+
+    runtime_dirs
+        .iter()
+        .filter_map(|path| {
+            let dir_name = path.file_name()?.to_str()?;
+            let version = parse_gcc_runtime_version(dir_name)?;
+            Some((version, path))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)))
+        .map(|(_, path)| path.clone())
+        .or_else(|| runtime_dirs.into_iter().max())
+}
+
+fn parse_gcc_runtime_version(dir_name: &str) -> Option<Vec<u64>> {
+    let mut version = Vec::new();
+    for segment in dir_name.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+        let digits = segment
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        if digits.is_empty() {
+            return None;
+        }
+        version.push(digits.parse().ok()?);
+    }
+    Some(version)
 }
 
 pub(crate) fn build_prebuild_command(
@@ -1371,6 +1419,12 @@ mod tests {
             case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb")
                 .unwrap();
         fs::create_dir_all(&layout.cross_bin_dir).unwrap();
+        fs::create_dir_all(
+            layout
+                .staging_root
+                .join("usr/lib/gcc/aarch64-alpine-linux-musl/15.2.0"),
+        )
+        .unwrap();
 
         write_cmake_toolchain_file(
             &layout,
@@ -1385,7 +1439,21 @@ mod tests {
         assert!(content.contains("set(CMAKE_C_COMPILER_TARGET \"aarch64-linux-musl\")"));
         assert!(content.contains("--gcc-toolchain="));
         assert!(content.contains("-B"));
+        assert!(content.contains("-L"));
         assert!(content.contains("CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER"));
+    }
+
+    #[test]
+    fn detect_gcc_runtime_dir_prefers_highest_version() {
+        let root = tempdir().unwrap();
+        let sysroot = root.path().join("sysroot");
+        let gcc_root = sysroot.join("usr/lib/gcc/aarch64-alpine-linux-musl");
+        fs::create_dir_all(gcc_root.join("9.5.0")).unwrap();
+        fs::create_dir_all(gcc_root.join("15.2.0")).unwrap();
+
+        let selected =
+            detect_gcc_runtime_dir(&sysroot, "usr/aarch64-alpine-linux-musl/bin").unwrap();
+        assert_eq!(selected, gcc_root.join("15.2.0"));
     }
 
     #[test]

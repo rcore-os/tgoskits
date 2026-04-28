@@ -6,6 +6,8 @@
 - Use `update-std-tests` when the user wants to audit or update `scripts/test/std_crates.csv`, compare workspace packages against the std test whitelist, or confirm which new std-test candidates should be added.
 - `starry-test-suit`: project-local skill at `.claude/skills/starry-test-suit/SKILL.md`
 - Use `starry-test-suit` when the user wants to add, regroup, adapt, or validate `test-suit/starryos` cases, including `qemu-*.toml`, `normal`/`stress` grouping, success/fail regexes, or Starry test-suit related CI behavior.
+- `cross-kernel-driver`: project-local skill at `.claude/skills/cross-kernel-driver/SKILL.md`
+- Use `cross-kernel-driver` when the user wants to create, refactor, review, or optimize portable Rust driver crates under `drivers/` by device type, separate Driver Core / Capability Boundary / OS Glue / Runtime layers, handle MMIO/iomap with `mmio-api`, handle DMA with `dma-api`, design IRQ event or queue contracts, or audit OS API coupling in driver code.
 
 ## Other Requirements
 
