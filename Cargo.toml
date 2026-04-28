@@ -110,7 +110,6 @@ members = [
     "drivers/npu/rockchip-npu",
     "drivers/soc/rockchip/rockchip-pm",
     "drivers/soc/rockchip/rockchip-soc",
-    "examples/tgmath",
     "os/StarryOS/kernel",
     "os/StarryOS/starryos",
     "os/arceos/api/arceos_api",
@@ -320,7 +319,6 @@ test-simple = { version = "0.3.4", path = "components/crate_interface/test_crate
 test-weak = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak" }
 test-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak-partial" }
 tg-xtask = { version = "0.5.11", path = "xtask" }
-tgmath = { version = "0.3.1", path = "examples/tgmath" }
 x86_vcpu = { version = "0.5.6", path = "components/x86_vcpu" }
 x86_vlapic = { version = "0.4.7", path = "components/x86_vlapic" }
 
