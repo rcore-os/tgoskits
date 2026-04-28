@@ -85,7 +85,10 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
 
 pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult<isize> {
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
-        let addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
+        let mut addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
+        if addr.nl_pid == 0 {
+            addr.nl_pid = current().as_thread().proc_data.proc.pid();
+        }
         debug!("sys_bind <= fd: {fd}, netlink_addr: {addr:?}");
         socket.bind(addr)?;
         return Ok(0);

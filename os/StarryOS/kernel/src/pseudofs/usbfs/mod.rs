@@ -3,6 +3,7 @@
 mod descriptor;
 mod irq;
 mod manager;
+mod sysfs;
 mod tree;
 
 use alloc::{borrow::ToOwned, collections::VecDeque, sync::Arc, vec::Vec};
@@ -55,6 +56,10 @@ pub(crate) fn new_usbfs() -> LinuxResult<Filesystem> {
     }
 
     Ok(create_filesystem(manager))
+}
+
+pub(crate) fn new_sysfs() -> Filesystem {
+    sysfs::new_sysfs()
 }
 
 pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
@@ -440,9 +445,9 @@ impl FileLike for UsbDeviceFile {
             descriptor::USBDEVFS_BULK => self.bulk_ioctl(arg),
             descriptor::USBDEVFS_SUBMITURB => self.submit_urb(arg),
             descriptor::USBDEVFS_REAPURB | descriptor::USBDEVFS_REAPURBNDELAY => self.reap_urb(arg),
-            descriptor::USBDEVFS_CONNECTINFO | descriptor::USBDEVFS_GET_CAPABILITIES => {
-                self.with_live_lease(|lease| lease.ioctl(cmd, arg))
-            }
+            descriptor::USBDEVFS_CONNECTINFO | descriptor::USBDEVFS_GET_CAPABILITIES => self
+                .manager
+                .snapshot_device_ioctl(self.bus_num, self.device_num, cmd, arg),
             _ => self.with_live_lease(|lease| lease.ioctl(cmd, arg)),
         }
     }

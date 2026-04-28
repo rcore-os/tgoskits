@@ -26,11 +26,13 @@ use super::{
         USBDEVFS_RELEASEINTERFACE, USBDEVFS_RESET, USBDEVFS_SETCONFIGURATION,
         USBDEVFS_SETINTERFACE, UsbDeviceSnapshot, UsbdevfsConnectInfo, read_usbdevfs_bulktransfer,
         read_usbdevfs_ctrltransfer, read_usbdevfs_setinterface, read_usbdevfs_u32,
-        snapshot_device_info,
+        root_hub_snapshot, snapshot_device_info,
     },
     irq::{self, PendingUsbIrqSlot},
 };
 use crate::mm::{UserConstPtr, UserPtr};
+
+const ROOT_HUB_STABLE_DEVICE_ID: usize = usize::MAX;
 
 pub(super) struct UsbHostState {
     pub(super) device_id: RDriveDeviceId,
@@ -60,6 +62,7 @@ struct UsbDeviceRecord {
     unopened_info: Option<DeviceInfo>,
     live_device: Option<Arc<Mutex<LiveDeviceState>>>,
     open_count: usize,
+    synthetic: bool,
 }
 
 struct LiveDeviceState {
@@ -153,11 +156,29 @@ impl Drop for UsbDeviceLease {
 
 impl UsbFsManager {
     pub(super) fn new(hosts: Vec<UsbHostState>) -> Self {
+        let mut hosts = hosts;
+        let mut devices = BTreeMap::new();
+        for host in &mut hosts {
+            host.next_device_num = host.next_device_num.max(2);
+            devices.insert(
+                UsbStableId {
+                    host_device_id: host.device_id,
+                    device_id: ROOT_HUB_STABLE_DEVICE_ID,
+                },
+                UsbDeviceRecord {
+                    host_device_id: host.device_id,
+                    snapshot: root_hub_snapshot(host.bus_num),
+                    present: true,
+                    unopened_info: None,
+                    live_device: None,
+                    open_count: 0,
+                    synthetic: true,
+                },
+            );
+        }
+
         Self {
-            state: Mutex::new(UsbFsState {
-                hosts,
-                devices: BTreeMap::new(),
-            }),
+            state: Mutex::new(UsbFsState { hosts, devices }),
             open_lock: Mutex::new(()),
             refresh_event: NotifyEvent::new(),
         }
@@ -221,6 +242,7 @@ impl UsbFsManager {
     }
 
     pub(super) fn device_numbers(&self, bus_num: u8) -> Vec<u8> {
+        self.refresh_dirty_hosts();
         let state = self.state.lock();
         state
             .devices
@@ -231,6 +253,7 @@ impl UsbFsManager {
     }
 
     pub(super) fn device_snapshot(&self, bus_num: u8, device_num: u8) -> Option<UsbDeviceSnapshot> {
+        self.refresh_dirty_hosts();
         self.state.lock().devices.values().find_map(|record| {
             (record.present
                 && record.snapshot.bus_num == bus_num
@@ -422,6 +445,7 @@ impl UsbFsManager {
                     unopened_info: None,
                     live_device: None,
                     open_count: 0,
+                    synthetic: false,
                 });
             record.host_device_id = device_id;
             record.snapshot = snapshot;
@@ -430,6 +454,9 @@ impl UsbFsManager {
         }
 
         state.devices.retain(|stable_id, record| {
+            if record.synthetic {
+                return true;
+            }
             if record.snapshot.bus_num != bus_num {
                 return true;
             }
@@ -466,6 +493,8 @@ impl UsbFsManager {
                         host_device_id: record.host_device_id,
                         info,
                     }
+                } else if record.synthetic {
+                    return Err(AxError::Unsupported);
                 } else if record.present {
                     OpenAction::Refresh {
                         host_device_id: record.host_device_id,

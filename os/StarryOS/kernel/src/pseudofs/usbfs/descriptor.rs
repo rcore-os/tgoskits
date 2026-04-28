@@ -120,6 +120,14 @@ pub(super) struct UsbDeviceSnapshot {
     pub(super) descriptor_blob: Vec<u8>,
 }
 
+pub(super) fn root_hub_snapshot(bus_num: u8) -> UsbDeviceSnapshot {
+    UsbDeviceSnapshot {
+        bus_num,
+        device_num: 1,
+        descriptor_blob: root_hub_descriptor_blob(),
+    }
+}
+
 pub(super) fn read_usbdevfs_ctrltransfer(arg: usize) -> VfsResult<UsbdevfsCtrlTransfer> {
     UserConstPtr::<UsbdevfsCtrlTransfer>::from(arg)
         .get_as_ref()
@@ -233,6 +241,17 @@ fn serialize_descriptor_blob(info: &DeviceInfo) -> Vec<u8> {
         out.extend_from_slice(&config_blob);
     }
 
+    out
+}
+
+fn root_hub_descriptor_blob() -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&[
+        18, 0x01, 0x00, 0x03, 0x09, 0x00, 0x03, 9, 0x6b, 0x1d, 0x03, 0x00, 0x00, 0x06, 0, 0, 0, 1,
+    ]);
+    out.extend_from_slice(&[9, 0x02, 25, 0, 1, 1, 0, 0xe0, 0]);
+    out.extend_from_slice(&[9, 0x04, 0, 0, 1, 0x09, 0, 0, 0]);
+    out.extend_from_slice(&[7, 0x05, 0x81, 0x03, 4, 0, 12]);
     out
 }
 

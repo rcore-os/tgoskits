@@ -1,0 +1,11 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "sleep 5; echo STARRY_LSUSB_BEGIN; lsusb"
+success_regex = ["(?m)^Bus [0-9]{3} Device [0-9]{3}: ID [0-9a-fA-F]{4}:[0-9a-fA-F]{4}"]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  "(?m)^unable to initialize libusb: .*$",
+  "(?i)(lsusb|sh): .*not found",
+  "(?m)^lsusb: .*",
+]
+timeout = 300

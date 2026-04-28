@@ -43,6 +43,15 @@ impl NetlinkSocket {
         Ok(())
     }
 
+    pub fn local_addr(&self) -> sockaddr_nl {
+        self.state.lock().addr.unwrap_or(sockaddr_nl {
+            nl_family: AF_NETLINK as _,
+            nl_pad: 0,
+            nl_pid: 0,
+            nl_groups: 0,
+        })
+    }
+
     pub fn set_receive_buffer_size(&self, size: usize) {
         self.state.lock().receive_buffer_size = size;
     }

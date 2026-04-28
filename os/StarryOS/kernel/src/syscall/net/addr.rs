@@ -64,6 +64,14 @@ pub fn read_netlink_addr(
     Ok(*addr_nl)
 }
 
+pub fn write_netlink_addr(
+    addr_nl: &sockaddr_nl,
+    addr: UserPtr<sockaddr>,
+    addrlen: &mut socklen_t,
+) -> AxResult<()> {
+    fill_addr(addr, addrlen, unsafe { cast_to_slice(addr_nl) })
+}
+
 impl SocketAddrExt for SocketAddr {
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> AxResult<Self> {
         match read_family(addr, addrlen)? as u32 {

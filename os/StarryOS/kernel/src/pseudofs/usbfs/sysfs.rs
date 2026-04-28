@@ -1,0 +1,401 @@
+use alloc::{borrow::Cow, boxed::Box, format, string::String, sync::Arc, vec::Vec};
+
+use axfs_ng_vfs::{Filesystem, NodeType, VfsResult};
+
+use super::{
+    descriptor::{UsbDeviceSnapshot, bus_name, device_name},
+    irq,
+    manager::UsbFsManager,
+};
+use crate::pseudofs::{NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs};
+
+const SYSFS_MAGIC: u32 = 0x6265_6572;
+
+pub(super) fn new_sysfs() -> Filesystem {
+    SimpleFs::new_with("sysfs".into(), SYSFS_MAGIC, |fs| {
+        SimpleDir::new_maker(
+            fs.clone(),
+            Arc::new(SysRootDir {
+                fs,
+                manager: irq::manager(),
+            }),
+        )
+    })
+}
+
+fn dir(fs: Arc<SimpleFs>, ops: impl SimpleDirOps) -> NodeOpsMux {
+    NodeOpsMux::Dir(SimpleDir::new_maker(fs, Arc::new(ops)))
+}
+
+fn text_file(fs: Arc<SimpleFs>, text: impl Into<Vec<u8>>) -> NodeOpsMux {
+    let text = text.into();
+    SimpleFile::new_regular(fs, move || -> VfsResult<Vec<u8>> { Ok(text.clone()) }).into()
+}
+
+fn symlink(fs: Arc<SimpleFs>, target: &'static str) -> NodeOpsMux {
+    SimpleFile::new(fs, NodeType::Symlink, move || -> VfsResult<Vec<u8>> {
+        Ok(target.as_bytes().to_vec())
+    })
+    .into()
+}
+
+struct SysRootDir {
+    fs: Arc<SimpleFs>,
+    manager: Option<Arc<UsbFsManager>>,
+}
+
+impl SimpleDirOps for SysRootDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["bus", "class"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "bus" => Ok(dir(
+                self.fs.clone(),
+                SysBusDir {
+                    fs: self.fs.clone(),
+                    manager: self.manager.clone(),
+                },
+            )),
+            "class" => Ok(dir(
+                self.fs.clone(),
+                SysClassDir {
+                    fs: self.fs.clone(),
+                },
+            )),
+            _ => Err(ax_errno::AxError::NotFound),
+        }
+    }
+}
+
+struct SysClassDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SysClassDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["graphics"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "graphics" => Ok(dir(
+                self.fs.clone(),
+                SysGraphicsDir {
+                    fs: self.fs.clone(),
+                },
+            )),
+            _ => Err(ax_errno::AxError::NotFound),
+        }
+    }
+}
+
+struct SysGraphicsDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SysGraphicsDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["fb0"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "fb0" => Ok(dir(
+                self.fs.clone(),
+                SysFb0Dir {
+                    fs: self.fs.clone(),
+                },
+            )),
+            _ => Err(ax_errno::AxError::NotFound),
+        }
+    }
+}
+
+struct SysFb0Dir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SysFb0Dir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["device"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "device" => Ok(dir(
+                self.fs.clone(),
+                SysFb0DeviceDir {
+                    fs: self.fs.clone(),
+                },
+            )),
+            _ => Err(ax_errno::AxError::NotFound),
+        }
+    }
+}
+
+struct SysFb0DeviceDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SysFb0DeviceDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["subsystem"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "subsystem" => Ok(symlink(self.fs.clone(), "whatever")),
+            _ => Err(ax_errno::AxError::NotFound),
+        }
+    }
+}
+
+struct SysBusDir {
+    fs: Arc<SimpleFs>,
+    manager: Option<Arc<UsbFsManager>>,
+}
+
+impl SimpleDirOps for SysBusDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["usb"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "usb" => Ok(dir(
+                self.fs.clone(),
+                SysUsbDir {
+                    fs: self.fs.clone(),
+                    manager: self.manager.clone(),
+                },
+            )),
+            _ => Err(ax_errno::AxError::NotFound),
+        }
+    }
+}
+
+struct SysUsbDir {
+    fs: Arc<SimpleFs>,
+    manager: Option<Arc<UsbFsManager>>,
+}
+
+impl SimpleDirOps for SysUsbDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["devices"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "devices" => Ok(dir(
+                self.fs.clone(),
+                SysUsbDevicesDir {
+                    fs: self.fs.clone(),
+                    manager: self.manager.clone(),
+                },
+            )),
+            _ => Err(ax_errno::AxError::NotFound),
+        }
+    }
+}
+
+struct SysUsbDevicesDir {
+    fs: Arc<SimpleFs>,
+    manager: Option<Arc<UsbFsManager>>,
+}
+
+impl SysUsbDevicesDir {
+    fn snapshots(&self) -> Vec<UsbDeviceSnapshot> {
+        let Some(manager) = &self.manager else {
+            return Vec::new();
+        };
+        let mut snapshots = Vec::new();
+        for bus_num in manager.bus_numbers() {
+            for device_num in manager.device_numbers(bus_num) {
+                if let Some(snapshot) = manager.device_snapshot(bus_num, device_num) {
+                    snapshots.push(snapshot);
+                }
+            }
+        }
+        snapshots.sort_by_key(|snapshot| (snapshot.bus_num, snapshot.device_num));
+        snapshots
+    }
+}
+
+impl SimpleDirOps for SysUsbDevicesDir {
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(
+            self.snapshots()
+                .into_iter()
+                .map(|snapshot| Cow::Owned(sysfs_device_name(&snapshot))),
+        )
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let snapshot = self
+            .snapshots()
+            .into_iter()
+            .find(|snapshot| sysfs_device_name(snapshot) == name)
+            .ok_or(ax_errno::AxError::NotFound)?;
+        Ok(dir(
+            self.fs.clone(),
+            SysUsbDeviceDir {
+                fs: self.fs.clone(),
+                snapshot,
+            },
+        ))
+    }
+}
+
+struct SysUsbDeviceDir {
+    fs: Arc<SimpleFs>,
+    snapshot: UsbDeviceSnapshot,
+}
+
+impl SimpleDirOps for SysUsbDeviceDir {
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(
+            [
+                "uevent",
+                "dev",
+                "busnum",
+                "devnum",
+                "speed",
+                "descriptors",
+                "idVendor",
+                "idProduct",
+                "bDeviceClass",
+                "bDeviceSubClass",
+                "bDeviceProtocol",
+                "subsystem",
+            ]
+            .into_iter()
+            .map(Cow::Borrowed),
+        )
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        match name {
+            "uevent" => Ok(text_file(self.fs.clone(), self.uevent())),
+            "dev" => Ok(text_file(self.fs.clone(), format!("{}\n", self.dev_id()))),
+            "busnum" => Ok(text_file(
+                self.fs.clone(),
+                format!("{}\n", self.snapshot.bus_num),
+            )),
+            "devnum" => Ok(text_file(
+                self.fs.clone(),
+                format!("{}\n", self.snapshot.device_num),
+            )),
+            "speed" => Ok(text_file(self.fs.clone(), "480\n")),
+            "descriptors" => Ok(text_file(
+                self.fs.clone(),
+                self.snapshot.descriptor_blob.clone(),
+            )),
+            "idVendor" => Ok(text_file(
+                self.fs.clone(),
+                format!("{:04x}\n", self.vendor_id()),
+            )),
+            "idProduct" => Ok(text_file(
+                self.fs.clone(),
+                format!("{:04x}\n", self.product_id()),
+            )),
+            "bDeviceClass" => Ok(text_file(
+                self.fs.clone(),
+                format!("{:02x}\n", self.device_class()),
+            )),
+            "bDeviceSubClass" => Ok(text_file(
+                self.fs.clone(),
+                format!("{:02x}\n", self.device_subclass()),
+            )),
+            "bDeviceProtocol" => Ok(text_file(
+                self.fs.clone(),
+                format!("{:02x}\n", self.device_protocol()),
+            )),
+            "subsystem" => Ok(symlink(self.fs.clone(), "../../usb")),
+            _ => Err(ax_errno::AxError::NotFound),
+        }
+    }
+}
+
+impl SysUsbDeviceDir {
+    fn minor(&self) -> u32 {
+        (self.snapshot.bus_num.saturating_sub(1) as u32) * 128
+            + self.snapshot.device_num.saturating_sub(1) as u32
+    }
+
+    fn dev_id(&self) -> String {
+        format!("189:{}", self.minor())
+    }
+
+    fn uevent(&self) -> Vec<u8> {
+        format!(
+            "MAJOR=189\nMINOR={}\nDEVNAME=bus/usb/{}/{}\nDEVTYPE=usb_device\nDRIVER=usb\\
+             nPRODUCT={:x}/{:x}/{:x}\nTYPE={}/{}/{}\nBUSNUM={}\nDEVNUM={}\n",
+            self.minor(),
+            bus_name(self.snapshot.bus_num),
+            device_name(self.snapshot.device_num),
+            self.vendor_id(),
+            self.product_id(),
+            self.device_version(),
+            self.device_class(),
+            self.device_subclass(),
+            self.device_protocol(),
+            bus_name(self.snapshot.bus_num),
+            device_name(self.snapshot.device_num),
+        )
+        .into_bytes()
+    }
+
+    fn descriptor_u8(&self, offset: usize) -> u8 {
+        self.snapshot
+            .descriptor_blob
+            .get(offset)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn descriptor_u16(&self, offset: usize) -> u16 {
+        u16::from_le_bytes([self.descriptor_u8(offset), self.descriptor_u8(offset + 1)])
+    }
+
+    fn vendor_id(&self) -> u16 {
+        self.descriptor_u16(8)
+    }
+
+    fn product_id(&self) -> u16 {
+        self.descriptor_u16(10)
+    }
+
+    fn device_version(&self) -> u16 {
+        self.descriptor_u16(12)
+    }
+
+    fn device_class(&self) -> u8 {
+        self.descriptor_u8(4)
+    }
+
+    fn device_subclass(&self) -> u8 {
+        self.descriptor_u8(5)
+    }
+
+    fn device_protocol(&self) -> u8 {
+        self.descriptor_u8(6)
+    }
+}
+
+fn sysfs_device_name(snapshot: &UsbDeviceSnapshot) -> String {
+    if snapshot.device_num == 1 {
+        format!("usb{}", snapshot.bus_num)
+    } else {
+        format!("{}-{}", snapshot.bus_num, snapshot.device_num)
+    }
+}
