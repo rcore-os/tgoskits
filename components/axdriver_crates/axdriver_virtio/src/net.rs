@@ -42,17 +42,24 @@ impl RuntimeStateSnapshot {
         self.rx.capacity
     }
 
+    const fn provisioned_tx_buffers(self) -> usize {
+        self.tx_in_flight.occupied + self.free_tx_buffers + self.checked_out_tx_buffers
+    }
+
     const fn all_rx_buffers_accounted_for(self) -> bool {
         self.rx.occupied + self.checked_out_rx_buffers == self.rx.capacity
     }
 
     const fn all_tx_buffers_accounted_for(self) -> bool {
-        self.tx_in_flight.occupied + self.free_tx_buffers + self.checked_out_tx_buffers
-            == self.tx_in_flight.capacity
+        self.provisioned_tx_buffers() == self.tx_in_flight.capacity
     }
 
     const fn can_allocate_tx(self) -> bool {
         self.free_tx_buffers != 0
+    }
+
+    const fn can_provision_tx(self, needed: usize) -> bool {
+        self.queue_size() - self.provisioned_tx_buffers() >= needed
     }
 }
 
@@ -273,11 +280,16 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
 
     fn validate_tx_capacity(&self, needed: usize) -> DevResult {
         let snapshot = self.runtime_state_snapshot()?;
-        if !snapshot.tx_in_flight.has_capacity_for(needed) {
-            return Err(DevError::BadState);
-        }
         if snapshot.free_tx_buffers < needed {
             return Err(DevError::NoMemory);
+        }
+        Ok(())
+    }
+
+    fn validate_tx_provision_capacity(&self, needed: usize) -> DevResult {
+        let snapshot = self.runtime_state_snapshot()?;
+        if !snapshot.can_provision_tx(needed) {
+            return Err(DevError::BadState);
         }
         Ok(())
     }
@@ -354,7 +366,7 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
     }
 
     fn prepare_free_tx_buffer(&mut self) -> DevResult {
-        self.validate_tx_capacity(1)?;
+        self.validate_tx_provision_capacity(1)?;
         let mut tx_buf = self.allocate_pool_buffer()?;
         let hdr_len = self
             .inner
@@ -594,6 +606,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
 
     fn alloc_tx_buffer(&mut self, size: usize) -> DevResult<NetBufPtr> {
         self.validate_runtime_state()?;
+        self.validate_tx_capacity(1)?;
         // 0. Allocate a buffer from the queue.
         let mut net_buf = self.alloc_tx_buffer_box()?;
         self.checkout_tx_buffer()?;
@@ -618,8 +631,9 @@ mod tests {
     use ax_driver_base::DevError;
 
     use super::{
-        count_populated_slots, insert_buffer, take_buffer, validate_packet_layout,
-        validate_queue_token, validate_slot_accounting, validate_tx_accounting,
+        QueueOccupancy, RuntimeStateSnapshot, count_populated_slots, insert_buffer, take_buffer,
+        validate_packet_layout, validate_queue_token, validate_slot_accounting,
+        validate_tx_accounting,
     };
 
     #[test]
@@ -716,5 +730,18 @@ mod tests {
             validate_tx_accounting(&slots, 1, 0, 4),
             Err(DevError::BadState)
         ));
+    }
+
+    #[test]
+    fn runtime_snapshot_accepts_tx_provisioning_before_free_list_is_filled() {
+        let snapshot = RuntimeStateSnapshot {
+            rx: QueueOccupancy::new(4, 4),
+            tx_in_flight: QueueOccupancy::new(0, 4),
+            free_tx_buffers: 0,
+            checked_out_rx_buffers: 0,
+            checked_out_tx_buffers: 0,
+        };
+        assert!(snapshot.can_provision_tx(1));
+        assert!(!snapshot.can_allocate_tx());
     }
 }
