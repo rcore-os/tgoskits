@@ -69,12 +69,57 @@ pub(crate) fn fallback_registry_url() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        ffi::{OsStr, OsString},
+        sync::{LazyLock, Mutex},
+    };
+
     use tempfile::tempdir;
 
     use super::*;
 
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct TempEnvVar {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl TempEnvVar {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for TempEnvVar {
+        fn drop(&mut self) {
+            match self.original.as_ref() {
+                Some(value) => unsafe {
+                    std::env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
     #[test]
     fn read_config_creates_default_when_missing() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = TempEnvVar::unset(LOCAL_STORAGE_ENV);
         let dir = tempdir().unwrap();
 
         let config = ImageConfig::read_config(dir.path()).unwrap();
@@ -85,18 +130,12 @@ mod tests {
 
     #[test]
     fn read_config_prefers_local_storage_env_override() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
         let override_path = dir.path().join("persistent-cache");
-
-        unsafe {
-            std::env::set_var(LOCAL_STORAGE_ENV, &override_path);
-        }
+        let _env = TempEnvVar::set(LOCAL_STORAGE_ENV, override_path.as_os_str());
 
         let config = ImageConfig::read_config(dir.path()).unwrap();
-
-        unsafe {
-            std::env::remove_var(LOCAL_STORAGE_ENV);
-        }
 
         assert_eq!(config.local_storage, override_path);
     }
