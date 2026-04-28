@@ -359,6 +359,14 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         Sysno::statfs => sys_statfs(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::fstatfs => sys_fstatfs(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::name_to_handle_at => sys_name_to_handle_at(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::open_by_handle_at => Err(AxError::OperationNotSupported),
 
         // mm
         Sysno::brk => sys_brk(uctx.arg0() as _),

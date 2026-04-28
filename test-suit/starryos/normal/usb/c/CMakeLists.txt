@@ -21,6 +21,16 @@ list(SORT LIBUSB_RUNTIME_CANDIDATES)
 list(REVERSE LIBUSB_RUNTIME_CANDIDATES)
 list(GET LIBUSB_RUNTIME_CANDIDATES 0 LIBUSB_RUNTIME)
 
+set(LSUSB_RUNTIME "${STARRY_STAGING_ROOT}/usr/bin/lsusb")
+if(NOT EXISTS "${LSUSB_RUNTIME}")
+    message(FATAL_ERROR "lsusb runtime is missing from ${STARRY_STAGING_ROOT}/usr/bin")
+endif()
+
+set(UDEV_HWDB "${STARRY_STAGING_ROOT}/usr/lib/udev/hwdb.bin")
+if(NOT EXISTS "${UDEV_HWDB}")
+    message(FATAL_ERROR "udev hardware database is missing from ${STARRY_STAGING_ROOT}/usr/lib/udev")
+endif()
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 
@@ -34,4 +44,10 @@ target_compile_options(usb-transfer-test PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(usb-transfer-test PRIVATE PkgConfig::LIBUSB)
 
 install(TARGETS usb-transfer-test RUNTIME DESTINATION usr/bin)
+install(PROGRAMS "${LSUSB_RUNTIME}" DESTINATION usr/bin)
 install(FILES "${LIBUSB_RUNTIME}" DESTINATION usr/lib RENAME libusb-1.0.so.0)
+
+if(EXISTS "${STARRY_STAGING_ROOT}/usr/share/hwdata/usb.ids")
+    install(FILES "${STARRY_STAGING_ROOT}/usr/share/hwdata/usb.ids" DESTINATION usr/share/hwdata)
+endif()
+install(FILES "${UDEV_HWDB}" DESTINATION usr/lib/udev)
