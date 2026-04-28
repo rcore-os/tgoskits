@@ -7,6 +7,8 @@ use crab_usb::{USBHost, err::USBError};
 use fdt_edit::{Fdt, NodeType};
 use rdrive::DriverGeneric;
 
+#[cfg(feature = "rockchip-dwc-xhci")]
+mod xhci_dwc;
 mod xhci_mmio;
 mod xhci_pci;
 
