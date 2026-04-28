@@ -418,7 +418,7 @@ HELLO = "world"
                 "ax-feat/bus-mmio".to_string(),
                 "ax-feat/driver-sdmmc".to_string(),
                 "ax-feat/plat-dyn".to_string(),
-                "axplat-dyn/rk3588-clk".to_string(),
+                "axplat-dyn/rockchip-soc".to_string(),
                 "axplat-dyn/sdmmc".to_string(),
             ],
             log: LogLevel::Info,
@@ -437,7 +437,7 @@ HELLO = "world"
         assert!(
             cargo
                 .features
-                .contains(&"axplat-dyn/rk3588-clk".to_string())
+                .contains(&"axplat-dyn/rockchip-soc".to_string())
         );
         assert!(cargo.features.contains(&"axplat-dyn/sdmmc".to_string()));
         assert!(!cargo.features.contains(&"qemu".to_string()));
