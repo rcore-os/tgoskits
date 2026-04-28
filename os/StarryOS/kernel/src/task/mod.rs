@@ -219,10 +219,10 @@ impl Thread {
         tids.sort_unstable();
 
         for tid in &tids {
-            if let Ok(task) = ops::get_task(*tid) {
-                if let Some(thr) = task.try_as_thread() {
-                    thr.set_cred_single(new_arc.clone());
-                }
+            if let Ok(task) = ops::get_task(*tid)
+                && let Some(thr) = task.try_as_thread()
+            {
+                thr.set_cred_single(new_arc.clone());
             }
         }
     }

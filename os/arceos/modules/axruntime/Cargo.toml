@@ -1,6 +1,6 @@
 [package]
 name = "ax-runtime"
-version = "0.5.11"
+version = "0.5.12"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

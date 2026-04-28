@@ -335,15 +335,11 @@ pub fn delete_dir<B: BlockDevice>(
             }
 
             if removed_child_dirs != 0 {
-                match fs.get_inode_by_num(block_dev, frame.ino_num) {
-                    Ok(current_inode) => {
-                        let new_links = current_inode
-                            .i_links_count
-                            .saturating_sub(removed_child_dirs);
-                        fs.set_inode_links_count(block_dev, frame.ino_num, new_links)?;
-                    }
-                    Err(e) => return Err(e),
-                }
+                let current_inode = fs.get_inode_by_num(block_dev, frame.ino_num)?;
+                let new_links = current_inode
+                    .i_links_count
+                    .saturating_sub(removed_child_dirs);
+                fs.set_inode_links_count(block_dev, frame.ino_num, new_links)?;
             }
 
             // Push children in reverse so traversal order remains stable.

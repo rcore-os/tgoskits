@@ -299,14 +299,14 @@ impl Visit<'_> for Analyzer<'_> {
     fn visit_item_fn(&mut self, node: &ItemFn) {
         self.bindings.push_scope();
         self.bindings.bind_fn_inputs(&node.sig.inputs);
-        visit::visit_block(self, &node.block);
+        self.visit_block(&node.block);
         self.bindings.pop_scope();
     }
 
     fn visit_impl_item_fn(&mut self, node: &ImplItemFn) {
         self.bindings.push_scope();
         self.bindings.bind_fn_inputs(&node.sig.inputs);
-        visit::visit_block(self, &node.block);
+        self.visit_block(&node.block);
         self.bindings.pop_scope();
     }
 

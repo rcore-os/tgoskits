@@ -260,9 +260,7 @@ impl File {
 
     /// Gets the file attributes.
     pub fn get_attr(&self) -> AxResult<FileAttr> {
-        self.access_node(Cap::empty())?
-            .get_attr()
-            .map_err(AxError::from)
+        self.access_node(Cap::empty())?.get_attr()
     }
 }
 

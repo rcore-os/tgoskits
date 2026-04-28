@@ -23,9 +23,9 @@ entry_point = 0x20_2000_1000
 image_location = "memory"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_2000_0000
-## The file path of the kernel image.
+# The file path of the kernel image.
 kernel_path = "/path/to/phytiumpi_freertos.bin"
-## The file path of the device tree blob (DTB).
+# The file path of the device tree blob (DTB).
 dtb_load_addr = 0x20_2000_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
@@ -34,6 +34,8 @@ memory_regions = [
     ]
 
 [devices]
+# The interrupt mode.
+interrupt_mode = "passthrough"
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 emu_devices = []

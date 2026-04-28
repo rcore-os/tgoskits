@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 
 use ax_kspin::SpinNoPreempt;
 use axpoll::PollSet;
@@ -67,7 +67,7 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
         TtyConfig {
             reader: PtyReader::new(slave_to_master.clone()),
             writer: PtyWriter::new(master_to_slave.clone(), poll_rx_slave.clone()),
-            process_mode: ProcessMode::None(poll_rx_master.clone()),
+            process_mode: ProcessMode::Passive(poll_rx_master.clone()),
         },
     );
 
@@ -76,9 +76,7 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
         TtyConfig {
             reader: PtyReader::new(master_to_slave),
             writer: PtyWriter::new(slave_to_master, poll_rx_master),
-            process_mode: ProcessMode::External(Box::new(move |waker| {
-                poll_rx_slave.register(&waker)
-            })),
+            process_mode: ProcessMode::InterruptDriven(poll_rx_slave),
         },
     );
 

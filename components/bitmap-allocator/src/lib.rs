@@ -320,27 +320,21 @@ fn find_contiguous(
 
     let mut base = 0;
     // First, we need to make sure that base is aligned.
-    if let Some(start) = ba.next(base) {
-        base = align_up_log2(start, align_log2);
-    } else {
-        return None;
-    }
+    let start = ba.next(base)?;
+    base = align_up_log2(start, align_log2);
 
     let mut offset = base;
 
     while offset < capacity {
-        if let Some(next) = ba.next(offset) {
-            if next != offset {
-                // it can be guarenteed that no bit in (offset..next) is free
-                // move to next aligned position after next-1
-                assert!(next > offset);
-                base = (((next - 1) >> align_log2) + 1) << align_log2;
-                assert_ne!(offset, next);
-                offset = base;
-                continue;
-            }
-        } else {
-            return None;
+        let next = ba.next(offset)?;
+        if next != offset {
+            // it can be guarenteed that no bit in (offset..next) is free
+            // move to next aligned position after next-1
+            assert!(next > offset);
+            base = (((next - 1) >> align_log2) + 1) << align_log2;
+            assert_ne!(offset, next);
+            offset = base;
+            continue;
         }
         offset += 1;
         if offset - base == size {

@@ -45,9 +45,6 @@ mod mp;
 #[cfg(feature = "paging")]
 mod klib;
 
-#[cfg(feature = "buddy-slab")]
-use ax_alloc::eii::ax_alloc_virt_to_phys_impl;
-
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 
@@ -65,12 +62,6 @@ d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
 unsafe extern "C" {
     /// Application's entry point.
     fn main();
-}
-
-#[cfg(feature = "buddy-slab")]
-#[ax_alloc_virt_to_phys_impl]
-fn ax_alloc_virt_to_phys(vaddr: usize) -> usize {
-    ax_hal::mem::virt_to_phys(vaddr.into()).as_usize()
 }
 
 struct LogIfImpl;

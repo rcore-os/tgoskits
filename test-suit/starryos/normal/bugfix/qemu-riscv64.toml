@@ -1,0 +1,34 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "rv64",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-riscv64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+test_commands = [
+    "/usr/bin/bug-futex-wait-wake",
+    "/usr/bin/bug-lseek-negative-einval",
+    "/usr/bin/bug-open-dir-wronly",
+    "/usr/bin/bug-pipe-fd-errno",
+    "/usr/bin/bug-preadv2-invalid-flags",
+    "/usr/bin/bug-preadv2-offset-neg1",
+    "/usr/bin/bug-pwritev2-read-at",
+    "/usr/bin/bug-signal-to-child",
+    "/usr/bin/bug-unlinkat-einval",
+    "/usr/bin/bug-writev-dir-ebadf",
+    "/usr/bin/clone3-badsize",
+]
+success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 180

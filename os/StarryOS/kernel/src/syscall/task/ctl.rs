@@ -57,10 +57,8 @@ pub fn sys_capget(
     // Capability version 3 uses an array of TWO __user_cap_data_struct
     // entries (low 32 bits and high 32 bits). Write both.
     unsafe {
-        (data as *mut __user_cap_data_struct).vm_write(data_struct)?;
-        (data as *mut __user_cap_data_struct)
-            .add(1)
-            .vm_write(data_struct)?;
+        data.vm_write(data_struct)?;
+        data.add(1).vm_write(data_struct)?;
     }
     Ok(0)
 }

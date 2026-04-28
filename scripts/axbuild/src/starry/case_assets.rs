@@ -11,8 +11,13 @@ use std::{
 };
 
 use anyhow::{Context, ensure};
+use ostool::run::qemu::QemuConfig;
 
 use super::{case_build, test_suit::StarryQemuCase};
+
+pub(crate) const GROUPED_CASE_RUNNER_PATH: &str = "/usr/bin/starry-run-case-tests";
+pub(crate) const GROUPED_CASE_SUCCESS_REGEX: &str = r"(?m)^STARRY_GROUPED_TESTS_PASSED\s*$";
+pub(crate) const GROUPED_CASE_FAIL_REGEX: &str = r"(?m)^STARRY_GROUPED_TEST_FAILED:";
 
 const CASE_WORK_ROOT_NAME: &str = "starry-cases";
 const CASE_STAGING_DIR_NAME: &str = "staging-root";
@@ -23,6 +28,7 @@ const CASE_CROSS_BIN_DIR_NAME: &str = "cross-bin";
 const CASE_CMAKE_TOOLCHAIN_FILE_NAME: &str = "cmake-toolchain.cmake";
 const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
+const GROUPED_CASE_RUNNER_NAME: &str = "starry-run-case-tests";
 const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
 const USB_STICK_IMAGE_SIZE: u64 = 16 * 1024 * 1024;
 
@@ -59,7 +65,8 @@ pub(crate) async fn prepare_case_assets(
     case: &StarryQemuCase,
     rootfs_path: PathBuf,
 ) -> anyhow::Result<StarryCaseAssets> {
-    let needs_assets = case_uses_c_pipeline(case)
+    let needs_assets = case.is_grouped()
+        || case_uses_c_pipeline(case)
         || case_uses_sh_pipeline(case)
         || case_uses_usb_qemu_assets(arch, case);
 
@@ -149,7 +156,9 @@ pub(crate) fn prepare_case_assets_sync(
     fs::create_dir_all(&layout.work_dir)
         .with_context(|| format!("failed to create {}", layout.work_dir.display()))?;
 
-    if case_uses_c_pipeline(case) {
+    if case.is_grouped() {
+        case_build::prepare_grouped_case_assets_sync(arch, case, case_rootfs, &layout)?;
+    } else if case_uses_c_pipeline(case) {
         case_build::prepare_c_case_assets_sync(arch, case, case_rootfs, &layout)?;
     } else if case_uses_sh_pipeline(case) {
         prepare_sh_case_assets_sync(case, case_rootfs, &layout)?;
@@ -162,6 +171,57 @@ pub(crate) fn prepare_case_assets_sync(
     }
 
     Ok(extra_qemu_args)
+}
+
+pub(crate) fn apply_grouped_qemu_config(qemu: &mut QemuConfig, case: &StarryQemuCase) {
+    if !case.is_grouped() {
+        return;
+    }
+
+    qemu.shell_init_cmd = Some(GROUPED_CASE_RUNNER_PATH.to_string());
+    qemu.success_regex = vec![GROUPED_CASE_SUCCESS_REGEX.to_string()];
+    if !qemu
+        .fail_regex
+        .iter()
+        .any(|regex| regex == GROUPED_CASE_FAIL_REGEX)
+    {
+        qemu.fail_regex.push(GROUPED_CASE_FAIL_REGEX.to_string());
+    }
+}
+
+pub(crate) fn write_grouped_case_runner_script(
+    overlay_dir: &Path,
+    test_commands: &[String],
+) -> anyhow::Result<()> {
+    ensure!(
+        !test_commands.is_empty(),
+        "grouped qemu case has no test commands"
+    );
+
+    let dest_dir = overlay_dir.join("usr/bin");
+    fs::create_dir_all(&dest_dir)
+        .with_context(|| format!("failed to create {}", dest_dir.display()))?;
+    let runner_path = dest_dir.join(GROUPED_CASE_RUNNER_NAME);
+
+    let mut body = String::new();
+    body.push_str("failed=0\n");
+    for command in test_commands {
+        let quoted = shell_single_quote(command);
+        let begin = shell_single_quote(&format!("STARRY_GROUPED_TEST_BEGIN: {command}"));
+        let passed = shell_single_quote(&format!("STARRY_GROUPED_TEST_PASSED: {command}"));
+        let failed = shell_single_quote(&format!("STARRY_GROUPED_TEST_FAILED: {command}"));
+        body.push_str(&format!(
+            "printf '%s\\n' {begin}\nif sh -c {quoted}; then\n\tprintf '%s\\n' \
+             {passed}\nelse\n\tstatus=$?\n\tprintf '%s status=%s\\n' {failed} \
+             \"$status\"\n\tfailed=1\nfi\n"
+        ));
+    }
+    body.push_str(
+        "if [ \"$failed\" -eq 0 ]; then\n\techo STARRY_GROUPED_TESTS_PASSED\n\texit 0\nfi\necho \
+         STARRY_GROUPED_TESTS_FAILED\nexit 1\n",
+    );
+
+    write_executable_script(&runner_path, &body)
 }
 
 /// Prepares overlay assets for a Starry shell-based test case.
@@ -197,16 +257,7 @@ pub(crate) fn prepare_sh_case_assets_sync(
         let dest = dest_dir.join(entry.file_name());
         fs::copy(&path, &dest)
             .with_context(|| format!("failed to copy {} to {}", path.display(), dest.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&dest)
-                .with_context(|| format!("failed to stat {}", dest.display()))?
-                .permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&dest, perms)
-                .with_context(|| format!("failed to chmod {}", dest.display()))?;
-        }
+        make_executable(&dest)?;
     }
 
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
@@ -243,6 +294,30 @@ pub(crate) fn reset_dir(path: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))
 }
 
+fn write_executable_script(path: &Path, body: &str) -> anyhow::Result<()> {
+    fs::write(path, format!("#!/bin/sh\nset -u\n{body}"))
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    make_executable(path)
+}
+
+fn make_executable(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)
+            .with_context(|| format!("failed to stat {}", path.display()))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms)
+            .with_context(|| format!("failed to chmod {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -259,6 +334,8 @@ mod tests {
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             build_config_path: None,
+            test_commands: Vec::new(),
+            subcases: Vec::new(),
         }
     }
 
@@ -324,5 +401,23 @@ mod tests {
                 "usb-storage,drive=usbstick0,bus=xhci.0".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn grouped_runner_script_runs_all_commands_and_reports_summary() {
+        let root = tempdir().unwrap();
+        let overlay = root.path().join("overlay");
+        let commands = vec![
+            "/usr/bin/alpha".to_string(),
+            "/usr/bin/beta --flag".to_string(),
+        ];
+
+        write_grouped_case_runner_script(&overlay, &commands).unwrap();
+
+        let runner = overlay.join("usr/bin/starry-run-case-tests");
+        let content = fs::read_to_string(&runner).unwrap();
+        assert!(content.contains("STARRY_GROUPED_TEST_BEGIN: /usr/bin/alpha"));
+        assert!(content.contains("STARRY_GROUPED_TEST_FAILED: /usr/bin/beta --flag"));
+        assert!(content.contains("STARRY_GROUPED_TESTS_PASSED"));
     }
 }

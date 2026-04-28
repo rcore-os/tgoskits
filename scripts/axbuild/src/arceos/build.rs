@@ -42,6 +42,9 @@ pub struct ArceosBuildInfo {
     /// Maximum number of CPUs to expose to the build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<usize>,
+    /// Additional `ax-config-gen -w` overrides applied when generating `.axconfig.toml`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub axconfig_overrides: Vec<String>,
     /// Whether to use the dynamic platform linker flow when supported.
     #[serde(default, skip_serializing_if = "is_false")]
     pub plat_dyn: bool,
@@ -250,6 +253,7 @@ impl ArceosBuildInfo {
             &platform_config,
             &out_config,
             self.validated_max_cpu_num()?,
+            &self.axconfig_overrides,
         )?;
 
         self.env.insert(
@@ -300,6 +304,7 @@ impl Default for ArceosBuildInfo {
             log: LogLevel::Warn,
             features: vec!["ax-std".to_string()],
             max_cpu_num: None,
+            axconfig_overrides: Vec::new(),
             plat_dyn: false,
         }
     }
@@ -761,6 +766,7 @@ fn generate_axconfig(
     platform_config: &Path,
     out_config: &Path,
     max_cpu_num: Option<usize>,
+    axconfig_overrides: &[String],
 ) -> anyhow::Result<()> {
     let defconfig = resolve_defconfig_path(workspace_root)?;
     let arch = target_arch_name(target)?;
@@ -776,6 +782,9 @@ fn generate_axconfig(
         command
             .arg("-w")
             .arg(format!("plat.max-cpu-num={max_cpu_num}"));
+    }
+    for override_value in axconfig_overrides {
+        command.arg("-w").arg(override_value);
     }
     command
         .arg("-o")

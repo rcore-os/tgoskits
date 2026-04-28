@@ -255,17 +255,14 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // Send pdeathsig to child processes
         for child in children_snapshot {
             let child_pid = child.pid();
-            if let Ok(child_task) = get_task(child_pid) {
-                if let Some(child_thr) = child_task.try_as_thread() {
-                    let sig = child_thr.pdeathsig();
-                    if sig > 0 {
-                        if let Some(signo) = Signo::from_repr(sig as u8) {
-                            let _ = send_signal_to_process(
-                                child_pid,
-                                Some(SignalInfo::new_kernel(signo)),
-                            );
-                        }
-                    }
+            if let Ok(child_task) = get_task(child_pid)
+                && let Some(child_thr) = child_task.try_as_thread()
+            {
+                let sig = child_thr.pdeathsig();
+                if sig > 0
+                    && let Some(signo) = Signo::from_repr(sig as u8)
+                {
+                    let _ = send_signal_to_process(child_pid, Some(SignalInfo::new_kernel(signo)));
                 }
             }
         }

@@ -1,6 +1,6 @@
 [package]
 name = "starry-signal"
-version = "0.5.7"
+version = "0.6.0"
 edition = "2024"
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Signal management library for Starry OS"
@@ -9,7 +9,7 @@ repository = "https://github.com/Starry-OS/starry-signal"
 license = "Apache-2.0"
 
 [dependencies]
-ax-cpu = { version = "0.5", features = ["uspace"] }
+ax-cpu = { version = "0.6", features = ["uspace"] }
 ax-errno = "0.4"
 bitflags = "2.6"
 cfg-if = "1"
