@@ -190,7 +190,7 @@ impl ProbeMatch {
         Self { device_type }
     }
 
-    const fn matches(self, expected: DeviceType) -> bool {
+    fn matches(self, expected: DeviceType) -> bool {
         self.device_type == expected
     }
 }
