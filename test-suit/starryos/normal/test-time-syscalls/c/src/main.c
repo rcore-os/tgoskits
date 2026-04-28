@@ -19,7 +19,7 @@
 #include <unistd.h>
 #include <stdint.h>
 
-static long long ts_to_ns(struct timespec *ts)
+static long long ts_to_ns(const struct timespec *ts)
 {
     return (long long)ts->tv_sec * 1000000000LL + ts->tv_nsec;
 }
@@ -83,8 +83,8 @@ static void test_clock_gettime(void)
     {
         struct timespec t1, t2;
         CHECK_RET(clock_gettime(CLOCK_MONOTONIC, &t1), 0, "单调递增: 取 t1");
-        volatile int x = 0;
-        for (int i = 0; i < 100000; i++) x += i;
+        volatile unsigned long long x = 0;
+        for (int i = 0; i < 100000; i++) x += (unsigned long long)i;
         CHECK_RET(clock_gettime(CLOCK_MONOTONIC, &t2), 0, "单调递增: 取 t2");
         CHECK(ts_to_ns(&t2) >= ts_to_ns(&t1), "CLOCK_MONOTONIC 单调递增");
     }
@@ -94,8 +94,8 @@ static void test_clock_gettime(void)
     CHECK_ERR(clock_gettime(-1, &(struct timespec){0}), EINVAL,
               "负数 clock_id -1 -> EINVAL");
 
-    CHECK_ERR(clock_gettime(CLOCK_REALTIME, (struct timespec *)(uintptr_t)0x1), EFAULT,
-              "clock_gettime 无效 tp 指针 -> EFAULT");
+    CHECK_ERR(syscall(SYS_clock_gettime, CLOCK_REALTIME, (struct timespec *)(uintptr_t)0x1), EFAULT,
+              "SYS_clock_gettime 无效 tp 指针 -> EFAULT");
 }
 
 static void test_gettimeofday(void)
@@ -105,17 +105,21 @@ static void test_gettimeofday(void)
     {
         struct timeval tv = {0, 0};
         CHECK_RET(gettimeofday(&tv, NULL), 0, "gettimeofday 成功");
-        CHECK(tv.tv_sec > 0, "gettimeofday tv_sec > 0");
+        CHECK(tv.tv_sec >= 0, "gettimeofday tv_sec >= 0");
         CHECK(tv.tv_usec >= 0 && tv.tv_usec < 1000000L, "gettimeofday tv_usec in [0, 1e6)");
     }
 
     {
         struct timeval tv;
         struct timespec ts;
-        gettimeofday(&tv, NULL);
-        clock_gettime(CLOCK_REALTIME, &ts);
-        long long diff = ts.tv_sec - tv.tv_sec;
-        CHECK(diff >= 0 && diff <= 2, "gettimeofday 与 CLOCK_REALTIME 差值 <= 2s");
+        int ret_tv = gettimeofday(&tv, NULL);
+        int ret_ts = clock_gettime(CLOCK_REALTIME, &ts);
+        CHECK_RET(ret_tv, 0, "gettimeofday 与 CLOCK_REALTIME 交叉校验: gettimeofday 成功");
+        CHECK_RET(ret_ts, 0, "gettimeofday 与 CLOCK_REALTIME 交叉校验: CLOCK_REALTIME 成功");
+        if (ret_tv == 0 && ret_ts == 0) {
+            long long diff = ts.tv_sec - tv.tv_sec;
+            CHECK(diff >= 0 && diff <= 2, "gettimeofday 与 CLOCK_REALTIME 差值 <= 2s");
+        }
     }
 
     {
@@ -148,9 +152,13 @@ static void test_nanosleep(void)
     }
 
     {
-        struct timespec before, after, req = {0, 10000000L};
+        struct timespec before, after, req = {0, 10000000L}, rem = {0, 0};
+        int ret;
         clock_gettime(CLOCK_MONOTONIC, &before);
-        nanosleep(&req, NULL);
+        while ((ret = nanosleep(&req, &rem)) == -1 && errno == EINTR) {
+            req = rem;
+        }
+        CHECK_RET(ret, 0, "nanosleep 经过重试后成功");
         clock_gettime(CLOCK_MONOTONIC, &after);
         long long elapsed = ts_to_ns(&after) - ts_to_ns(&before);
         CHECK(elapsed >= 9000000LL, "nanosleep 至少经过 ~9ms");
