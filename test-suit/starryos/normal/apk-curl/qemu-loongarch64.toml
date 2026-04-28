@@ -19,9 +19,6 @@ to_bin = true
 uefi = false
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-printf '%s\n' '120.194.101.75 mirror.nyist.edu.cn' '124.237.177.164 baidu.com' >> /etc/hosts && \
-sed -i 's|https://mirrors.cernet.edu.cn/alpine|https://mirror.nyist.edu.cn/alpine|g' /etc/apk/repositories && \
-sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirror.nyist.edu.cn/alpine|g' /etc/apk/repositories && \
 apk update && \
 apk add curl && \
 curl --version && \

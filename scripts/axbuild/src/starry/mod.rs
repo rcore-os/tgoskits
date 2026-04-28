@@ -20,12 +20,14 @@ use crate::{
     test_qemu,
 };
 
+pub(crate) mod apk;
 pub mod board;
 pub mod build;
 pub mod case_assets;
 pub mod case_build;
 pub mod config;
 pub mod quick_start;
+pub(crate) mod resolver;
 pub mod rootfs;
 pub mod test_suit;
 
@@ -257,8 +259,9 @@ impl Starry {
             let rootfs =
                 rootfs_store::resolve_rootfs_path(self.app.workspace_root(), &request.arch, rootfs);
             // If the path resolves into the unified rootfs dir, ensure the
-            // tarball has been extracted (keyword paths need this).
-            rootfs_store::ensure_managed_rootfs(self.app.workspace_root(), &request.arch, &rootfs)
+            // tarball has been extracted and the managed image uses the
+            // requested APK region (keyword paths need this).
+            rootfs::ensure_managed_rootfs(self.app.workspace_root(), &request.arch, &rootfs)
                 .await?;
             self.app.set_debug_mode(request.debug)?;
             let cargo = build::load_cargo_config(&request)?;
