@@ -4,6 +4,22 @@
 #include <sys/wait.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdint.h>
+
+/* Pipe-based synchronization: child writes 1 byte after reaching a
+ * synchronization point, parent blocks until it reads the byte.
+ * This eliminates usleep-based races under CI scheduling pressure. */
+static void sync_child_ready(int pipe_fd)
+{
+    char c = 1;
+    write(pipe_fd, &c, 1);
+}
+
+static void wait_child_ready(int pipe_fd)
+{
+    char c;
+    read(pipe_fd, &c, 1);
+}
 
 static void test_getsid_getpgid_basic(void)
 {
@@ -36,55 +52,88 @@ static void test_setpgid(void)
 {
     printf("--- setpgid ---\n");
 
+    /* Test setpgid(0, 0) success in a forked child — the child is
+     * guaranteed not to be a process group leader, so setpgid(0,0)
+     * will succeed (creates a new group with pgid == child's pid). */
     {
-        pid_t orig_pgid = getpgid(0);
-        CHECK_RET(setpgid(0, 0), 0, "setpgid(0, 0) 成功");
-        pid_t new_pgid = getpgid(0);
-        CHECK(new_pgid == getpid(), "setpgid(0,0) 后 pgid == pid");
-        if (orig_pgid != getpid()) {
-            setpgid(0, orig_pgid);
-        }
-    }
-
-    {
-        CHECK_RET(setpgid(getpid(), getpid()), 0, "setpgid(pid, pid) 成功");
-        CHECK(getpgid(0) == getpid(), "setpgid(pid,pid) 后 pgid == pid");
-    }
-
-    {
+        int sync_pipe[2];
+        pipe(sync_pipe);
         pid_t pid = fork();
         if (pid == 0) {
-            usleep(100000);
+            close(sync_pipe[0]);
+            int ret = setpgid(0, 0);
+            if (ret != 0) {
+                sync_child_ready(sync_pipe[1]);
+                _exit(1);
+            }
+            pid_t new_pgid = getpgid(0);
+            sync_child_ready(sync_pipe[1]);
+            _exit(new_pgid == getpid() ? 0 : 1);
+        }
+        close(sync_pipe[1]);
+        wait_child_ready(sync_pipe[0]);
+        close(sync_pipe[0]);
+        int status;
+        waitpid(pid, &status, 0);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "setpgid(0, 0) 在子进程成功，pgid == pid");
+    }
+
+    /* Test setpgid(pid, pid) from parent on a child */
+    {
+        int sync_pipe[2];
+        pipe(sync_pipe);
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(sync_pipe[0]);
+            sync_child_ready(sync_pipe[1]);
+            usleep(200000);
             _exit(0);
         }
+        close(sync_pipe[1]);
+        wait_child_ready(sync_pipe[0]);
         CHECK_RET(setpgid(pid, pid), 0, "父进程 setpgid(子pid, 子pid) 成功");
         CHECK(getpgid(pid) == pid, "子进程 pgid == 子进程 pid");
         waitpid(pid, NULL, 0);
+        close(sync_pipe[0]);
     }
 
-    CHECK_ERR(setpgid(999999, 0), ESRCH, "setpgid 不存在 PID -> ESRCH");
-    CHECK_ERR(setpgid(0, 999999), ESRCH, "setpgid 不存在 pgid -> ESRCH");
-
-    /* setpgid 将子进程移入已有进程组 */
+    /* Test setpgid moving child into existing group */
     {
+        int sync1[2], sync2[2];
+        pipe(sync1);
+        pipe(sync2);
         pid_t child1 = fork();
         if (child1 == 0) {
+            close(sync1[0]); close(sync2[0]);
+            sync_child_ready(sync1[1]);
             usleep(200000);
             _exit(0);
         }
         pid_t child2 = fork();
         if (child2 == 0) {
+            close(sync1[0]); close(sync2[0]);
+            sync_child_ready(sync2[1]);
             usleep(200000);
             _exit(0);
         }
-        /* child1 创建自己的组 */
+        close(sync1[1]); close(sync2[1]);
+        wait_child_ready(sync1[0]);
+        wait_child_ready(sync2[0]);
         setpgid(child1, child1);
-        /* child2 移入 child1 的组 */
         CHECK_RET(setpgid(child2, child1), 0, "setpgid 将进程移入已有组成功");
         CHECK(getpgid(child2) == child1, "移入后 pgid == child1 的 pgid");
         waitpid(child1, NULL, 0);
         waitpid(child2, NULL, 0);
+        close(sync1[0]); close(sync2[0]);
     }
+
+    CHECK_ERR(setpgid(999999, 0), ESRCH, "setpgid 不存在 PID -> ESRCH");
+
+    /* setpgid(0, pgid) where pgid doesn't correspond to an existing group:
+     * POSIX/Linux returns EPERM (pgid is not a valid group to join),
+     * not ESRCH (which is for non-existent pid arguments). */
+    CHECK_ERR(setpgid(0, 999999), EPERM, "setpgid 不存在 pgid -> EPERM");
 }
 
 static void test_setsid(void)
@@ -153,18 +202,26 @@ static void test_cross_session(void)
 {
     printf("--- 跨 session 操作 ---\n");
 
+    /* Use pipe sync instead of usleep to avoid race conditions:
+     * child writes after setsid(), parent blocks until child confirms. */
     {
+        int sync_pipe[2];
+        pipe(sync_pipe);
         pid_t pid = fork();
         if (pid == 0) {
+            close(sync_pipe[0]);
             setsid();
+            sync_child_ready(sync_pipe[1]);
             usleep(200000);
             _exit(0);
         }
-        usleep(50000);
+        close(sync_pipe[1]);
+        wait_child_ready(sync_pipe[0]);
         errno = 0;
         int r = setpgid(pid, getpgid(0));
         CHECK(r == -1 && errno == EPERM, "跨 session setpgid -> EPERM");
         waitpid(pid, NULL, 0);
+        close(sync_pipe[0]);
     }
 
     CHECK_ERR(getsid(999999), ESRCH, "getsid 不存在 PID -> ESRCH");
