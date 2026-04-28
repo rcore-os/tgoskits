@@ -65,7 +65,12 @@ fn do_poll(
                     if result.contains(IoEvents::OUT) {
                         result |= IoEvents::WRNORM;
                     }
+                    // POSIX: POLLHUP and POLLERR are always reported in revents,
+                    // even if not requested in events. They must NOT be masked out.
+                    let always_report =
+                        result & (IoEvents::HUP | IoEvents::ERR | IoEvents::RDHUP | IoEvents::NVAL);
                     result &= *events;
+                    result |= always_report;
 
                     **revents = result.bits() as _;
                     if **revents != 0 {
