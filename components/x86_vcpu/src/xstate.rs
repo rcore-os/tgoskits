@@ -1,95 +1,72 @@
-#![allow(dead_code)]
-
 use raw_cpuid::CpuId;
 use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
 use x86_64::registers::control::{Cr4, Cr4Flags};
 
 use crate::msr::Msr;
 
-/// Availability of extended processor state features.
-#[derive(Debug, Clone, Copy)]
-pub struct XAvailable {
-    pub xsave: bool,
-    pub xsaves: bool,
-}
-
-impl XAvailable {
-    pub fn new() -> Self {
-        let xsave = xsave_available();
-        let xsaves = xsave && xsaves_available();
-        Self { xsave, xsaves }
-    }
-}
-
-/// XCR0 and IA32_XSS values that need switching between host and guest.
-#[derive(Debug, Clone, Copy)]
-pub struct XRegs {
-    pub xcr0: u64,
-    pub xss: u64,
-}
-
-impl XRegs {
-    pub fn new(avail: XAvailable) -> Self {
-        let xcr0 = if avail.xsave {
-            unsafe { xcr0_read().bits() }
-        } else {
-            0
-        };
-        let xss = if avail.xsaves {
-            Msr::IA32_XSS.read()
-        } else {
-            0
-        };
-        Self { xcr0, xss }
-    }
-
-    pub fn load(&self, avail: XAvailable) {
-        unsafe {
-            if avail.xsave {
-                xcr0_write(Xcr0::from_bits_unchecked(self.xcr0));
-                if avail.xsaves {
-                    Msr::IA32_XSS.write(self.xss);
-                }
-            }
-        }
-    }
-
-    pub fn save(&mut self, avail: XAvailable) {
-        unsafe {
-            if avail.xsave {
-                self.xcr0 = xcr0_read().bits();
-                if avail.xsaves {
-                    self.xss = Msr::IA32_XSS.read();
-                }
-            }
-        }
-    }
-}
-
-/// Extended processor state switched around guest execution.
+/// Extended processor state switched between host and guest.
 #[derive(Debug)]
 pub struct XState {
-    pub host: XRegs,
-    pub guest: XRegs,
-    pub avail: XAvailable,
+    pub guest_xcr0: u64,
+
+    host_xcr0: u64,
+    host_xss: u64,
+    guest_xss: u64,
+    xsave_available: bool,
+    xsaves_available: bool,
 }
 
 impl XState {
     pub fn new() -> Self {
-        let avail = XAvailable::new();
-        let host = XRegs::new(avail);
-        let guest = host;
-        Self { host, guest, avail }
+        let xsave_available = xsave_available();
+        let xsaves_supported = xsave_available && xsaves_available();
+        let xcr0 = if xsave_available {
+            unsafe { xcr0_read().bits() }
+        } else {
+            0
+        };
+        let xss = if xsaves_supported {
+            Msr::IA32_XSS.read()
+        } else {
+            0
+        };
+
+        Self {
+            host_xcr0: xcr0,
+            guest_xcr0: xcr0,
+            host_xss: xss,
+            guest_xss: xss,
+            xsave_available,
+            xsaves_available: xsaves_supported,
+        }
     }
 
     pub fn switch_to_guest(&mut self) {
-        self.host.save(self.avail);
-        self.guest.load(self.avail);
+        unsafe {
+            if self.xsave_available {
+                self.host_xcr0 = xcr0_read().bits();
+                xcr0_write(Xcr0::from_bits_unchecked(self.guest_xcr0));
+
+                if self.xsaves_available {
+                    self.host_xss = Msr::IA32_XSS.read();
+                    Msr::IA32_XSS.write(self.guest_xss);
+                }
+            }
+        }
     }
 
     pub fn switch_to_host(&mut self) {
-        self.guest.save(self.avail);
-        self.host.load(self.avail);
+        unsafe {
+            if self.xsave_available {
+                self.guest_xcr0 = xcr0_read().bits();
+                xcr0_write(Xcr0::from_bits_unchecked(self.host_xcr0));
+
+                if self.xsaves_available {
+                    self.guest_xss = Msr::IA32_XSS.read();
+                    Msr::IA32_XSS.write(self.host_xss);
+                }
+            }
+        }
     }
 }
 

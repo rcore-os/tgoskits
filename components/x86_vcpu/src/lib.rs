@@ -36,7 +36,7 @@ pub(crate) mod regs;
 mod ept;
 #[cfg(not(feature = "vmx"))]
 pub(crate) mod regs;
-#[cfg(feature = "svm")]
+#[cfg(any(feature = "vmx", feature = "svm"))]
 pub(crate) mod xstate;
 
 cfg_if::cfg_if! {
