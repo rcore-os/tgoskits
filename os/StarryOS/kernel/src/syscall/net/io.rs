@@ -282,8 +282,7 @@ pub fn sys_recvmmsg(
 
         let recv = recv_impl(
             fd,
-            IoVectorBuf::new(msg.msg_hdr.msg_iov as *mut IoVec, msg.msg_hdr.msg_iovlen)?
-                .into_io(),
+            IoVectorBuf::new(msg.msg_hdr.msg_iov as *mut IoVec, msg.msg_hdr.msg_iovlen)?.into_io(),
             flags,
             UserPtr::from(msg.msg_hdr.msg_name as usize),
             UserPtr::from(&mut msg.msg_hdr.msg_namelen as *mut _ as *mut socklen_t),
