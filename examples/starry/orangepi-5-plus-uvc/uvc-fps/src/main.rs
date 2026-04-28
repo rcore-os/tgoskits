@@ -81,7 +81,7 @@ struct UvcStreamCtrl {
 }
 
 #[link(name = "uvc")]
-unsafe extern "C" {
+extern "C" {
     fn uvc_init(ctx: *mut *mut UvcContext, usb_ctx: *mut c_void) -> c_int;
     fn uvc_exit(ctx: *mut UvcContext);
     fn uvc_get_device_list(ctx: *mut UvcContext, list: *mut *mut *mut UvcDevice) -> c_int;
