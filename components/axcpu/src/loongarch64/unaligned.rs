@@ -555,7 +555,7 @@ impl TrapFrame {
         let mut value: u64 = 0;
 
         let badv = badv::read().vaddr() as u64;
-        let badi = core::ptr::read(self.era as *const u32);
+        let badi = unsafe { core::ptr::read(self.era as *const u32) };
         let rd = (badi & 0x1f) as usize;
 
         let regs = unsafe {
