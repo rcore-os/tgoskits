@@ -56,19 +56,11 @@ impl<H: Hal, T: Transport> VirtIoInputDev<H, T> {
     fn build_unique_id(device_id: InputDeviceId, name: &str) -> String {
         format!(
             "virtio-{:04x}-{:04x}-{:04x}-{:04x}-{}",
-            device_id.bus_type,
-            device_id.vendor,
-            device_id.product,
-            device_id.version,
-            name
+            device_id.bus_type, device_id.vendor, device_id.product, device_id.version, name
         )
     }
 
-    fn query_event_bits(
-        &mut self,
-        ty: EventType,
-        out: &mut [u8],
-    ) -> DevResult<usize> {
+    fn query_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> DevResult<usize> {
         self.inner
             .query_config_select(InputConfigSelect::EvBits, ty as u8, out)
             .map(|read| read as usize)

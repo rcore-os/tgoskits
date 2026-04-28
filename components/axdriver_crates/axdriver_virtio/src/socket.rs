@@ -3,8 +3,8 @@ use ax_driver_vsock::{VsockConnId, VsockDriverEvent, VsockDriverOps};
 use virtio_drivers::{
     Hal,
     device::socket::{
-        DisconnectReason, VirtIOSocket, VsockAddr, VsockConnectionManager as InnerDev,
-        VsockEvent, VsockEventType,
+        DisconnectReason, VirtIOSocket, VsockAddr, VsockConnectionManager as InnerDev, VsockEvent,
+        VsockEventType,
     },
     transport::Transport,
 };
@@ -122,9 +122,7 @@ impl ListenRequest {
 }
 
 fn normalize_listen_request(request: ListenRequest) -> Option<ListenRequest> {
-    validate_port(request.src_port())
-        .ok()
-        .map(|_| request)
+    validate_port(request.src_port()).ok().map(|_| request)
 }
 
 fn should_listen_on_port(request: ListenRequest) -> bool {
@@ -436,9 +434,7 @@ fn map_disconnect_reason(_reason: DisconnectReason) -> TranslatedEventKind {
 }
 
 fn map_received_length(length: usize) -> TranslatedEventKind {
-    TranslatedEventKind::Received(
-        validate_received_length_for_event(length).unwrap_or(length),
-    )
+    TranslatedEventKind::Received(validate_received_length_for_event(length).unwrap_or(length))
 }
 
 fn translate_event_kind(event_type: VsockEventType) -> TranslatedEventKind {
@@ -517,7 +513,9 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
     }
 
     fn update_peer_credit(&mut self, conn: MappedConnId) {
-        let _ = self.inner.update_credit(conn.peer_addr(), conn.local_port());
+        let _ = self
+            .inner
+            .update_credit(conn.peer_addr(), conn.local_port());
     }
 
     fn refresh_peer_credit_after_recv(
@@ -552,7 +550,6 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
             Some(event) => Ok(PollOutcome::DriverEvent(convert_vsock_event(event)?)),
         }
     }
-
 }
 
 impl<H: Hal, T: Transport> BaseDriverOps for VirtIoSocketDev<H, T> {
@@ -567,8 +564,8 @@ impl<H: Hal, T: Transport> BaseDriverOps for VirtIoSocketDev<H, T> {
 
 #[cfg(test)]
 fn map_conn_id(cid: VsockConnId) -> (VsockAddr, u32) {
-    let mapped =
-        map_conn_id_checked(cid, ConnectionOperation::Connect).expect("vsock connection id should be valid");
+    let mapped = map_conn_id_checked(cid, ConnectionOperation::Connect)
+        .expect("vsock connection id should be valid");
     (mapped.peer_addr, mapped.local_port)
 }
 
@@ -580,7 +577,9 @@ fn map_event_cid(event: &VsockEvent) -> VsockConnId {
 
 fn map_driver_event(event: TranslatedEvent) -> VsockDriverEvent {
     match event.kind {
-        TranslatedEventKind::ConnectionRequest => VsockDriverEvent::ConnectionRequest(event.conn_id),
+        TranslatedEventKind::ConnectionRequest => {
+            VsockDriverEvent::ConnectionRequest(event.conn_id)
+        }
         TranslatedEventKind::Connected => VsockDriverEvent::Connected(event.conn_id),
         TranslatedEventKind::Received(length) => VsockDriverEvent::Received(event.conn_id, length),
         TranslatedEventKind::Disconnected => VsockDriverEvent::Disconnected(event.conn_id),
@@ -647,7 +646,7 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
         if let Some(request) = prepare_listen_request(src_port) {
             if should_listen_on_port(request) {
                 if let Some(request) = normalize_listen_request(request) {
-                self.listen_on_port(request);
+                    self.listen_on_port(request);
                 }
             }
         }
@@ -710,15 +709,24 @@ mod tests {
 
     fn sample_conn_id() -> VsockConnId {
         VsockConnId {
-            peer_addr: DriverVsockAddr { cid: 52, port: 2048 },
+            peer_addr: DriverVsockAddr {
+                cid: 52,
+                port: 2048,
+            },
             local_port: 4096,
         }
     }
 
     fn sample_event(event_type: VsockEventType) -> VsockEvent {
         let mut event: VsockEvent = unsafe { core::mem::zeroed() };
-        event.source = VsockAddr { cid: 33, port: 1025 };
-        event.destination = VsockAddr { cid: 44, port: 2049 };
+        event.source = VsockAddr {
+            cid: 33,
+            port: 1025,
+        };
+        event.destination = VsockAddr {
+            cid: 44,
+            port: 2049,
+        };
         event.event_type = event_type;
         event
     }

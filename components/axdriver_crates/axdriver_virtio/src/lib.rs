@@ -108,6 +108,7 @@ fn probe_mmio_header(
     region: MmioProbeRegion,
 ) -> Option<core::ptr::NonNull<virtio_drivers::transport::mmio::VirtIOHeader>> {
     use core::ptr::NonNull;
+
     use virtio_drivers::transport::mmio::VirtIOHeader;
 
     NonNull::new(region.base() as *mut VirtIOHeader)
@@ -152,7 +153,10 @@ const fn pci_irq_for_bdf(bdf: DeviceFunction) -> usize {
     pci_irq_base() + (bdf.device & 3) as usize
 }
 
-fn probe_pci_metadata(dev_info: &DeviceFunctionInfo, bdf: DeviceFunction) -> Option<PciProbeMetadata> {
+fn probe_pci_metadata(
+    dev_info: &DeviceFunctionInfo,
+    bdf: DeviceFunction,
+) -> Option<PciProbeMetadata> {
     use virtio_drivers::transport::pci::virtio_device_type;
 
     let device_type = virtio_device_type(dev_info).and_then(as_dev_type)?;
@@ -237,8 +241,9 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
 #[cfg(test)]
 mod tests {
     use ax_driver_base::{DevError, DeviceType};
-    use virtio_drivers::transport::DeviceType as VirtIoDevType;
-    use virtio_drivers::{Error, device::socket::SocketError};
+    use virtio_drivers::{
+        Error, device::socket::SocketError, transport::DeviceType as VirtIoDevType,
+    };
 
     use super::{as_dev_err, as_dev_type, probe_mmio_device};
 

@@ -23,10 +23,6 @@ impl QueueOccupancy {
         self.capacity - self.occupied
     }
 
-    const fn is_full(self) -> bool {
-        self.occupied == self.capacity
-    }
-
     const fn has_capacity_for(self, needed: usize) -> bool {
         self.vacant() >= needed
     }
@@ -37,6 +33,8 @@ struct RuntimeStateSnapshot {
     rx: QueueOccupancy,
     tx_in_flight: QueueOccupancy,
     free_tx_buffers: usize,
+    checked_out_rx_buffers: usize,
+    checked_out_tx_buffers: usize,
 }
 
 impl RuntimeStateSnapshot {
@@ -44,16 +42,17 @@ impl RuntimeStateSnapshot {
         self.rx.capacity
     }
 
+    const fn all_rx_buffers_accounted_for(self) -> bool {
+        self.rx.occupied + self.checked_out_rx_buffers == self.rx.capacity
+    }
+
     const fn all_tx_buffers_accounted_for(self) -> bool {
-        self.tx_in_flight.occupied + self.free_tx_buffers == self.tx_in_flight.capacity
+        self.tx_in_flight.occupied + self.free_tx_buffers + self.checked_out_tx_buffers
+            == self.tx_in_flight.capacity
     }
 
     const fn can_allocate_tx(self) -> bool {
         self.free_tx_buffers != 0
-    }
-
-    const fn rx_queue_is_primed(self) -> bool {
-        self.rx.is_full()
     }
 }
 
@@ -99,9 +98,14 @@ fn validate_slot_accounting<T>(slots: &[Option<T>], queue_size: usize) -> DevRes
     Ok(occupied)
 }
 
-fn validate_tx_accounting<T>(slots: &[Option<T>], free_buffers: usize, queue_size: usize) -> DevResult {
+fn validate_tx_accounting<T>(
+    slots: &[Option<T>],
+    free_buffers: usize,
+    checked_out_buffers: usize,
+    queue_size: usize,
+) -> DevResult {
     let in_flight = validate_slot_accounting(slots, queue_size)?;
-    if in_flight + free_buffers != queue_size {
+    if in_flight + free_buffers + checked_out_buffers != queue_size {
         return Err(DevError::BadState);
     }
     Ok(())
@@ -137,7 +141,7 @@ fn validate_runtime_snapshot(snapshot: RuntimeStateSnapshot) -> DevResult {
     if snapshot.rx.capacity != snapshot.tx_in_flight.capacity {
         return Err(DevError::BadState);
     }
-    if !snapshot.rx_queue_is_primed() {
+    if !snapshot.all_rx_buffers_accounted_for() {
         return Err(DevError::BadState);
     }
     if !snapshot.all_tx_buffers_accounted_for() {
@@ -153,6 +157,8 @@ pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
     rx_buffers: Vec<Option<NetBufBox>>,
     tx_buffers: Vec<Option<NetBufBox>>,
     free_tx_bufs: Vec<NetBufBox>,
+    checked_out_rx_buffers: usize,
+    checked_out_tx_buffers: usize,
     buf_pool: Arc<NetBufPool>,
     inner: InnerDev<H, T, QS>,
     irq: Option<usize>,
@@ -178,6 +184,14 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         self.free_tx_bufs.len()
     }
 
+    fn checked_out_rx_buffer_count(&self) -> usize {
+        self.checked_out_rx_buffers
+    }
+
+    fn checked_out_tx_buffer_count(&self) -> usize {
+        self.checked_out_tx_buffers
+    }
+
     fn has_queued_rx_buffer(&self) -> bool {
         self.runtime_state_snapshot()
             .map(|snapshot| snapshot.rx.occupied != 0)
@@ -194,6 +208,40 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         self.runtime_state_snapshot()
             .map(|snapshot| snapshot.can_allocate_tx())
             .unwrap_or(false)
+    }
+
+    fn checkout_rx_buffer(&mut self) -> DevResult {
+        let checked_out = self.checked_out_rx_buffer_count();
+        if checked_out >= self.queue_capacity() {
+            return Err(DevError::BadState);
+        }
+        self.checked_out_rx_buffers += 1;
+        Ok(())
+    }
+
+    fn recycle_checked_out_rx_buffer(&mut self) -> DevResult {
+        if self.checked_out_rx_buffers == 0 {
+            return Err(DevError::BadState);
+        }
+        self.checked_out_rx_buffers -= 1;
+        Ok(())
+    }
+
+    fn checkout_tx_buffer(&mut self) -> DevResult {
+        let checked_out = self.checked_out_tx_buffer_count();
+        if checked_out >= self.queue_capacity() {
+            return Err(DevError::BadState);
+        }
+        self.checked_out_tx_buffers += 1;
+        Ok(())
+    }
+
+    fn submit_checked_out_tx_buffer(&mut self) -> DevResult {
+        if self.checked_out_tx_buffers == 0 {
+            return Err(DevError::BadState);
+        }
+        self.checked_out_tx_buffers -= 1;
+        Ok(())
     }
 
     fn recycle_tx_buffer_box(&mut self, tx_buf: NetBufBox) {
@@ -218,6 +266,8 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
             rx,
             tx_in_flight,
             free_tx_buffers: self.free_tx_buffer_count(),
+            checked_out_rx_buffers: self.checked_out_rx_buffer_count(),
+            checked_out_tx_buffers: self.checked_out_tx_buffer_count(),
         })
     }
 
@@ -253,6 +303,9 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         if !snapshot.rx.has_capacity_for(1) {
             return Err(DevError::BadState);
         }
+        if snapshot.checked_out_rx_buffers == 0 {
+            return Err(DevError::BadState);
+        }
         Ok(())
     }
 
@@ -264,19 +317,13 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
     }
 
     fn validate_before_transmit(&self) -> DevResult {
-        self.validate_tx_capacity(1)?;
-        let snapshot = self.runtime_state_snapshot()?;
-        if !snapshot.can_allocate_tx() {
-            return Err(DevError::NoMemory);
+        if self.checked_out_tx_buffer_count() == 0 {
+            return Err(DevError::BadState);
         }
         Ok(())
     }
 
     fn validate_before_receive(&self) -> DevResult {
-        let snapshot = self.runtime_state_snapshot()?;
-        if !snapshot.rx_queue_is_primed() {
-            return Err(DevError::BadState);
-        }
         if !self.has_queued_rx_buffer() {
             return Err(DevError::BadState);
         }
@@ -357,7 +404,8 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         self.validate_rx_capacity(1)?;
         let mut rx_buf = rx_buf;
         let token = self.begin_recycled_rx_buffer(&mut rx_buf)?;
-        self.insert_rx_buffer(token as usize, rx_buf)
+        self.insert_rx_buffer(token as usize, rx_buf)?;
+        self.recycle_checked_out_rx_buffer()
     }
 
     fn poll_completed_tx_token(&mut self) -> Option<u16> {
@@ -386,13 +434,13 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
     }
 
     fn submit_tx_buffer(&mut self, tx_buf: NetBufBox) -> DevResult {
-        self.validate_tx_capacity(1)?;
         let token = unsafe {
             self.inner
                 .transmit_begin(tx_buf.packet_with_header())
                 .map_err(as_dev_err)?
         };
-        self.insert_tx_buffer(token, tx_buf)
+        self.insert_tx_buffer(token, tx_buf)?;
+        self.submit_checked_out_tx_buffer()
     }
 
     fn poll_received_token(&mut self) -> Option<u16> {
@@ -420,7 +468,12 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         if self.in_flight_tx_buffers() != snapshot.tx_in_flight.occupied {
             return Err(DevError::BadState);
         }
-        validate_tx_accounting(&self.tx_buffers, self.free_tx_buffer_count(), QS)?;
+        validate_tx_accounting(
+            &self.tx_buffers,
+            self.free_tx_buffer_count(),
+            self.checked_out_tx_buffer_count(),
+            QS,
+        )?;
         validate_runtime_snapshot(snapshot)?;
         Ok(())
     }
@@ -442,6 +495,8 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
             inner,
             tx_buffers,
             free_tx_bufs,
+            checked_out_rx_buffers: 0,
+            checked_out_tx_buffers: 0,
             buf_pool,
             irq,
         };
@@ -529,6 +584,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
         self.inner.ack_interrupt();
         if let Some(token) = self.poll_received_token() {
             let rx_buf = self.complete_received_buffer(token)?;
+            self.checkout_rx_buffer()?;
             self.validate_runtime_state()?;
             Ok(rx_buf.into_buf_ptr())
         } else {
@@ -540,9 +596,14 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
         self.validate_runtime_state()?;
         // 0. Allocate a buffer from the queue.
         let mut net_buf = self.alloc_tx_buffer_box()?;
+        self.checkout_tx_buffer()?;
 
         // 1. Check if the buffer is large enough.
-        self.prepare_tx_buffer(&mut net_buf, size)?;
+        if let Err(err) = self.prepare_tx_buffer(&mut net_buf, size) {
+            self.recycle_tx_buffer_box(net_buf);
+            self.submit_checked_out_tx_buffer()?;
+            return Err(err);
+        }
 
         // 2. Return the buffer.
         self.validate_runtime_state()?;
@@ -594,7 +655,10 @@ mod tests {
     #[test]
     fn take_buffer_rejects_empty_slot() {
         let mut slots = vec![None::<u8>, Some(2u8)];
-        assert!(matches!(take_buffer(&mut slots, 0), Err(DevError::BadState)));
+        assert!(matches!(
+            take_buffer(&mut slots, 0),
+            Err(DevError::BadState)
+        ));
     }
 
     #[test]
@@ -642,14 +706,14 @@ mod tests {
     #[test]
     fn validate_tx_accounting_accepts_balanced_state() {
         let slots = vec![Some(1u8), None, Some(3u8), None];
-        assert!(validate_tx_accounting(&slots, 2, 4).is_ok());
+        assert!(validate_tx_accounting(&slots, 2, 0, 4).is_ok());
     }
 
     #[test]
     fn validate_tx_accounting_rejects_unbalanced_state() {
         let slots = vec![Some(1u8), None, Some(3u8), None];
         assert!(matches!(
-            validate_tx_accounting(&slots, 1, 4),
+            validate_tx_accounting(&slots, 1, 0, 4),
             Err(DevError::BadState)
         ));
     }

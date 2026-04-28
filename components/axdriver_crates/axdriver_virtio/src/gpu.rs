@@ -46,11 +46,7 @@ impl<H: Hal, T: Transport> VirtIoGpuDev<H, T> {
         virtio.resolution().map_err(as_dev_err)
     }
 
-    fn build_display_info(
-        framebuffer: FrameBufferState,
-        width: u32,
-        height: u32,
-    ) -> DisplayInfo {
+    fn build_display_info(framebuffer: FrameBufferState, width: u32, height: u32) -> DisplayInfo {
         DisplayInfo {
             width,
             height,
