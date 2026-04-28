@@ -99,10 +99,20 @@ static void test_pipe2(void)
         close(fds[1]);
     }
 
+    /* POSIX only guarantees fds[0] is the read end and fds[1] is the
+     * write end — not that their numeric values are ordered.
+     * Verify the role semantics instead. */
     {
         int fds[2];
-        CHECK_RET(pipe2(fds, 0), 0, "pipe2 fd 排序准备");
-        CHECK(fds[0] < fds[1], "pipe2 fd[0] < fd[1]");
+        CHECK_RET(pipe2(fds, 0), 0, "pipe2 读写端语义准备");
+        CHECK(fds[0] != fds[1], "pipe2 两端 fd 不同");
+        errno = 0;
+        CHECK(write(fds[0], "x", 1) == -1,
+              "fd[0] 是只读端，write 失败");
+        errno = 0;
+        char tmp[8];
+        CHECK(read(fds[1], tmp, sizeof(tmp)) == -1,
+              "fd[1] 是只写端，read 失败");
         close(fds[0]);
         close(fds[1]);
     }
