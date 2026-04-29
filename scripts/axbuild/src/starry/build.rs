@@ -104,6 +104,35 @@ fn patch_starry_cargo_config(
             .or_insert_with(|| platform.to_string());
     }
 
+    if cargo.env.get("UIMAGE").map(|v| v.as_str()) == Some("y") {
+        inject_uimage_post_build_cmd(cargo, &request.arch)?;
+    }
+
+    Ok(())
+}
+
+fn uimg_arch_for(arch: &str) -> String {
+    match arch {
+        "aarch64" => "arm64".to_string(),
+        "riscv64" => "riscv".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn inject_uimage_post_build_cmd(cargo: &mut Cargo, arch: &str) -> anyhow::Result<()> {
+    let uimg_arch = uimg_arch_for(arch);
+    let config_path = cargo
+        .env
+        .get("AX_CONFIG_PATH")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("AX_CONFIG_PATH is required for UIMAGE generation"))?;
+
+    let cmd = format!(
+        "paddr=$(ax-config-gen {config_path} -r plat.kernel-base-paddr | tr -d _) && \
+         bin=${{KERNEL_ELF%.elf}}.bin && mkimage -A {uimg_arch} -O linux -T kernel -C none -a \
+         \"$paddr\" -d \"$bin\" \"${{bin%.bin}}.uimg\""
+    );
+    cargo.post_build_cmds.push(cmd);
     Ok(())
 }
 
