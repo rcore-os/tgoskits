@@ -17,7 +17,7 @@ impl Ext4FileSystem {
         // 2. load group descriptors and allocator state,
         // 3. repair bootstrap directories if they are missing,
         // 4. initialize journal replay state when journaling is enabled.
-        let superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
+        let mut superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
 
         if superblock.s_magic != EXT4_SUPER_MAGIC {
             error!(
@@ -34,6 +34,13 @@ impl Ext4FileSystem {
         if superblock.s_state == Ext4Superblock::EXT4_ERROR_FS {
             warn!("Filesystem is in error state");
         }
+
+        // Mark the filesystem as "not cleanly unmounted" so that if the system
+        // crashes before a clean umount, Linux will detect the dirty state and
+        // run journal recovery / fsck instead of silently mounting a potentially
+        // inconsistent filesystem.
+        superblock.s_state = Ext4Superblock::EXT4_ERROR_FS;
+        superblock.s_mnt_count = superblock.s_mnt_count.saturating_add(1);
 
         let group_count = superblock.block_groups_count();
         debug!("Block group count: {group_count}");
@@ -277,6 +284,11 @@ impl Ext4FileSystem {
         fs.inodetable_cahce
             .flush_all(block_dev)
             .expect("flush failed!");
+
+        // Write the superblock with s_state = EXT4_ERROR_FS to disk so that if
+        // the system crashes before a clean umount, Linux will detect the dirty
+        // state and perform journal recovery / fsck.
+        fs.sync_superblock(block_dev)?;
 
         Ok(fs)
     }

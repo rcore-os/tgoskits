@@ -175,16 +175,9 @@ impl JBD2DEVSYSTEM {
 
         block_dev.flush()?;
 
-        // Checkpoint: write metadata back to home blocks before marking journal clean.
-        for update in self.commit_queue.iter() {
-            debug!("[JBD2 checkpoint] tid={} home_phys_block={}", tid, update.0);
-            block_dev.write(&update.1[..], update.0, 1)?;
-        }
-        block_dev.flush()?;
-
-        self.commit_queue.clear();
-        debug!("[JBD2 BUFFER] BUFFER ALREADY CLEA");
-
+        // Write the commit block BEFORE checkpointing so that a crash during
+        // checkpoint still leaves a valid committed transaction in the journal
+        // for replay on the next mount.
         let mut commit_buffer = [0_u8; BLOCK_SIZE];
 
         let commit_block = CommitHeader {
@@ -207,6 +200,18 @@ impl JBD2DEVSYSTEM {
         block_dev.write(&commit_buffer, commit_block_id, 1)?;
         block_dev.flush()?;
         self.sequence += 1;
+
+        // Checkpoint: write metadata back to home blocks now that the commit
+        // record is safely on disk. If the system crashes here the journal
+        // replay will redo these writes, so partial checkpoints are safe.
+        for update in self.commit_queue.iter() {
+            debug!("[JBD2 checkpoint] tid={} home_phys_block={}", tid, update.0);
+            block_dev.write(&update.1[..], update.0, 1)?;
+        }
+        block_dev.flush()?;
+
+        self.commit_queue.clear();
+        debug!("[JBD2 BUFFER] BUFFER ALREADY CLEA");
 
         self.jbd2_super_block.s_sequence = self.sequence;
         self.jbd2_super_block.s_start = 0;

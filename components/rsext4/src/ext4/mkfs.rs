@@ -399,7 +399,7 @@ pub(crate) fn write_superblock<B: BlockDevice>(
         sb.to_disk_bytes(&mut buffer[offset..end]);
         // Force the write out immediately so later mount-time reads never see a
         // stale primary superblock during crash recovery.
-        block_dev.write_block(AbsoluteBN::from(0u32), false)?;
+        block_dev.write_block(AbsoluteBN::from(0u32), true)?;
     }
 
     Ok(())
