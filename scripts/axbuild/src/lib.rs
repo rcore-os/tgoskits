@@ -23,8 +23,7 @@ pub mod process;
 mod rootfs;
 pub mod starry;
 mod sync_lint;
-mod test_qemu;
-mod test_std;
+mod test;
 
 #[derive(Parser)]
 struct Cli {
@@ -79,7 +78,7 @@ pub async fn run() -> anyhow::Result<()> {
 
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Commands::Test => test_std::run_std_test_command(),
+        Commands::Test => test::std::run_std_test_command(),
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
         Commands::SyncLint => sync_lint::run_sync_lint_command(),
         Commands::Board { command } => board::execute(command).await,

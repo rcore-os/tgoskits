@@ -101,7 +101,7 @@ cargo xtask starry test qemu --target loongarch64-unknown-none-softfloat
 如果需要板测：
 
 ```bash
-cargo xtask starry test board -t smoke-orangepi-5-plus --server <ip> --port <port>
+cargo xtask starry test board --board orangepi-5-plus --server <ip> --port <port>
 ```
 
 详细说明见：[StarryOS 测试套件设计](../design/test/starryos)

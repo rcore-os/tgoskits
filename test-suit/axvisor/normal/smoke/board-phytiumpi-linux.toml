@@ -1,3 +1,6 @@
+build_config = "os/axvisor/configs/board/phytiumpi.toml"
+vmconfigs = ["os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml"]
+
 board_type = "PhytiumPi"
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",

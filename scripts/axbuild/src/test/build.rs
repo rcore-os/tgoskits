@@ -1,4 +1,4 @@
-//! StarryOS C test case build orchestration.
+//! Shared C/Python QEMU test case build orchestration.
 //!
 //! Main responsibilities:
 //! - Prepare guest prebuild and host cross-build environments for C cases
@@ -16,10 +16,13 @@ use std::{
 use anyhow::{Context, bail, ensure};
 
 use super::{
-    apk, case_assets, resolver,
-    test_suit::{StarryQemuCase, StarryQemuSubcase, StarryQemuSubcaseKind},
+    case as case_assets,
+    case::{TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
 };
-use crate::process::ProcessExt;
+use crate::{
+    process::ProcessExt,
+    starry::{apk, resolver},
+};
 
 const CASE_C_DIR_NAME: &str = "c";
 const CASE_PREBUILD_SCRIPT_NAME: &str = "prebuild.sh";
@@ -57,20 +60,20 @@ pub(crate) struct GuestPrebuildEnv {
     script_envs: Vec<(String, String)>,
 }
 
-/// Returns the C source directory for a Starry test case.
-pub(crate) fn case_c_source_dir(case: &StarryQemuCase) -> PathBuf {
+/// Returns the C source directory for a QEMU test case.
+pub(crate) fn case_c_source_dir(case: &TestQemuCase) -> PathBuf {
     case.case_dir.join(CASE_C_DIR_NAME)
 }
 
-/// Returns the optional prebuild script path for a Starry C case.
-pub(crate) fn case_prebuild_script_path(case: &StarryQemuCase) -> PathBuf {
+/// Returns the optional prebuild script path for a C-based QEMU case.
+pub(crate) fn case_prebuild_script_path(case: &TestQemuCase) -> PathBuf {
     case_c_source_dir(case).join(CASE_PREBUILD_SCRIPT_NAME)
 }
 
-/// Prepares rootfs-backed assets for a Starry C-based test case.
+/// Prepares rootfs-backed assets for a C-based QEMU test case.
 pub(crate) fn prepare_c_case_assets_sync(
     arch: &str,
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     case_rootfs: &Path,
     layout: &case_assets::CaseAssetLayout,
 ) -> anyhow::Result<()> {
@@ -119,10 +122,10 @@ pub(crate) fn prepare_c_case_assets_sync(
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
 }
 
-/// Prepares assets for a grouped Starry case containing multiple guest tests.
+/// Prepares assets for a grouped QEMU case containing multiple guest tests.
 pub(crate) fn prepare_grouped_case_assets_sync(
     arch: &str,
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     case_rootfs: &Path,
     layout: &case_assets::CaseAssetLayout,
 ) -> anyhow::Result<()> {
@@ -135,12 +138,12 @@ pub(crate) fn prepare_grouped_case_assets_sync(
     let rust_subcases = case
         .subcases
         .iter()
-        .filter(|subcase| subcase.kind == StarryQemuSubcaseKind::Rust)
+        .filter(|subcase| subcase.kind == TestQemuSubcaseKind::Rust)
         .map(|subcase| subcase.name.as_str())
         .collect::<Vec<_>>();
     ensure!(
         rust_subcases.is_empty(),
-        "Starry grouped Rust test subcases are not supported yet: {}",
+        "grouped Rust test subcases are not supported yet: {}",
         rust_subcases.join(", ")
     );
 
@@ -158,7 +161,7 @@ pub(crate) fn prepare_grouped_case_assets_sync(
     let c_subcases = case
         .subcases
         .iter()
-        .filter(|subcase| subcase.kind == StarryQemuSubcaseKind::C)
+        .filter(|subcase| subcase.kind == TestQemuSubcaseKind::C)
         .collect::<Vec<_>>();
 
     if !c_subcases.is_empty() {
@@ -172,8 +175,8 @@ pub(crate) fn prepare_grouped_case_assets_sync(
 
 fn prepare_grouped_c_subcases_sync(
     arch: &str,
-    case: &StarryQemuCase,
-    subcases: &[&StarryQemuSubcase],
+    case: &TestQemuCase,
+    subcases: &[&TestQemuSubcase],
     layout: &case_assets::CaseAssetLayout,
 ) -> anyhow::Result<()> {
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
@@ -255,23 +258,22 @@ fn subcase_layout(
     layout
 }
 
-fn subcase_as_case(case: &StarryQemuCase, subcase: &StarryQemuSubcase) -> StarryQemuCase {
-    StarryQemuCase {
+fn subcase_as_case(case: &TestQemuCase, subcase: &TestQemuSubcase) -> TestQemuCase {
+    TestQemuCase {
         name: format!("{}/{}", case.name, subcase.name.as_str()),
         case_dir: subcase.case_dir.clone(),
         qemu_config_path: case.qemu_config_path.clone(),
-        build_config_path: None,
         test_commands: Vec::new(),
         subcases: Vec::new(),
     }
 }
 
-/// Returns the Python source directory for a Starry test case.
-pub(crate) fn case_python_source_dir(case: &StarryQemuCase) -> PathBuf {
+/// Returns the Python source directory for a QEMU test case.
+pub(crate) fn case_python_source_dir(case: &TestQemuCase) -> PathBuf {
     case.case_dir.join("python")
 }
 
-/// Prepares overlay assets for a Starry Python-based test case.
+/// Prepares overlay assets for a Python-based QEMU test case.
 ///
 /// This pipeline reuses the same staging rootfs and prebuild infrastructure as
 /// the C pipeline, but instead of running CMake it:
@@ -281,7 +283,7 @@ pub(crate) fn case_python_source_dir(case: &StarryQemuCase) -> PathBuf {
 /// 4. Injects the overlay into the rootfs image
 pub(crate) fn prepare_python_case_assets_sync(
     arch: &str,
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     case_rootfs: &Path,
     layout: &case_assets::CaseAssetLayout,
 ) -> anyhow::Result<()> {
@@ -393,6 +395,12 @@ fn copy_dir_recursive(src: &Path, dst: &Path, allowed_root: &Path) -> anyhow::Re
             allowed_root.display()
         )
     })?;
+    copy_dir_recursive_inner(src, dst, &canonical_root)
+}
+
+/// Inner recursive implementation that operates on an already-canonical root.
+/// This avoids re-canonicalizing `allowed_root` on every recursion level.
+fn copy_dir_recursive_inner(src: &Path, dst: &Path, canonical_root: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
     for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
         let entry = entry?;
@@ -402,7 +410,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path, allowed_root: &Path) -> anyhow::Re
             .file_type()
             .with_context(|| format!("failed to inspect {}", src_path.display()))?;
         if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path, allowed_root)?;
+            copy_dir_recursive_inner(&src_path, &dst_path, canonical_root)?;
         } else if file_type.is_symlink() {
             // For symlinks: read the link target to decide what to do.
             let link_target = fs::read_link(&src_path)
@@ -429,7 +437,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path, allowed_root: &Path) -> anyhow::Re
                 Ok(resolved) => {
                     // Symlink resolves — verify it stays within the staging root.
                     ensure!(
-                        resolved.starts_with(&canonical_root),
+                        resolved.starts_with(canonical_root),
                         "symlink `{}` resolves to `{}` which escapes the staging root `{}`",
                         src_path.display(),
                         resolved.display(),
@@ -510,7 +518,7 @@ fn log_apk_prebuild_context(staging_root: &Path, region: apk::ApkRegion) -> anyh
 
 fn prepare_guest_prebuild_env(
     arch: &str,
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     layout: &case_assets::CaseAssetLayout,
     apk_region: apk::ApkRegion,
 ) -> anyhow::Result<GuestPrebuildEnv> {
@@ -593,8 +601,8 @@ pub(crate) fn cross_compile_spec(arch: &str) -> anyhow::Result<CrossCompileSpec>
             gnu_tool_prefix: "loongarch64-linux-musl",
         }),
         _ => bail!(
-            "Starry C test cases are only supported on aarch64, riscv64, x86_64, and loongarch64, \
-             but got `{arch}`"
+            "C-based QEMU test cases are only supported on aarch64, riscv64, x86_64, and \
+             loongarch64, but got `{arch}`"
         ),
     }
 }
@@ -758,7 +766,7 @@ fn parse_gcc_runtime_version(dir_name: &str) -> Option<Vec<u64>> {
 }
 
 pub(crate) fn build_prebuild_command(
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     prebuild_script: &Path,
     layout: &case_assets::CaseAssetLayout,
     prebuild_env: &GuestPrebuildEnv,
@@ -786,7 +794,7 @@ pub(crate) fn build_prebuild_command(
 }
 
 pub(crate) fn build_cmake_configure_command(
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     layout: &case_assets::CaseAssetLayout,
     build_env: &HostCrossBuildEnv,
 ) -> Command {
@@ -876,7 +884,7 @@ fn apply_case_script_envs(
 }
 
 pub(crate) fn case_script_envs(
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     layout: &case_assets::CaseAssetLayout,
 ) -> Vec<(String, String)> {
     vec![
@@ -978,8 +986,8 @@ pub(crate) fn qemu_user_binary_names(arch: &str) -> anyhow::Result<&'static [&'s
         "x86_64" => Ok(&["qemu-x86_64-static", "qemu-x86_64"]),
         "loongarch64" => Ok(&["qemu-loongarch64-static", "qemu-loongarch64"]),
         _ => bail!(
-            "Starry C test cases are only supported on aarch64, riscv64, x86_64, and loongarch64, \
-             but got `{arch}`"
+            "C-based QEMU test cases are only supported on aarch64, riscv64, x86_64, and \
+             loongarch64, but got `{arch}`"
         ),
     }
 }
@@ -1076,14 +1084,13 @@ mod tests {
 
     use super::*;
 
-    fn fake_case(root: &Path, name: &str) -> StarryQemuCase {
+    fn fake_case(root: &Path, name: &str) -> TestQemuCase {
         let case_dir = root.join("test-suit/starryos/normal").join(name);
         fs::create_dir_all(&case_dir).unwrap();
-        StarryQemuCase {
+        TestQemuCase {
             name: name.to_string(),
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
-            build_config_path: None,
             test_commands: Vec::new(),
             subcases: Vec::new(),
         }

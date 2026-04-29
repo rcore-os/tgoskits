@@ -14,7 +14,6 @@ use crate::{
     command_flow::{self, SnapshotPersistence},
     context::{AppContext, BuildCliArgs, ResolvedBuildRequest},
     process::ProcessExt,
-    test_qemu,
 };
 
 /// Prepare any runtime assets (disk images, etc.) required by `package`.
@@ -60,6 +59,7 @@ fn ensure_fat32_image(path: &str, size: &str, msg: &str) -> anyhow::Result<()> {
 pub mod build;
 mod c_test_cargo_config;
 pub mod rootfs;
+pub mod test;
 
 // ---------------------------------------------------------------------------
 // C test definitions
@@ -552,7 +552,7 @@ impl ArceOS {
     // ---- Rust QEMU tests ----
 
     async fn test_rust_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
-        let (_arch, target) = test_qemu::parse_arceos_test_target(&args.arch, &args.target)?;
+        let (_arch, target) = test::parse_target(&args.arch, &args.target)?;
         let packages = select_arceos_test_packages(&args.package)?;
         let mut failed = Vec::new();
 
@@ -585,13 +585,13 @@ impl ArceOS {
             }
         }
 
-        test_qemu::finalize_qemu_test_run("arceos", &failed)
+        test::finalize_qemu_run(&failed)
     }
 
     // ---- C QEMU tests ----
 
     async fn test_c_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
-        let (_arch, target) = test_qemu::parse_arceos_test_target(&args.arch, &args.target)?;
+        let (_arch, target) = test::parse_target(&args.arch, &args.target)?;
         run_c_qemu_tests_with_hooks(
             self.app.workspace_root(),
             &target,
@@ -603,7 +603,7 @@ impl ArceOS {
     // ---- U-Boot tests (placeholder) ----
 
     async fn test_uboot(&mut self, _args: ArgsTestUboot) -> anyhow::Result<()> {
-        test_qemu::unsupported_uboot_test_command("arceos")
+        test::unsupported_uboot()
     }
 
     // ---- internal helpers ----
@@ -715,14 +715,14 @@ fn planned_qemu_test_flows(args: &ArgsTestQemu) -> &'static [QemuTestFlow] {
 
 fn select_arceos_test_packages(requested: &[String]) -> anyhow::Result<Vec<&'static str>> {
     if requested.is_empty() {
-        return Ok(test_qemu::ARCEOS_TEST_PACKAGES.to_vec());
+        return Ok(test::TEST_PACKAGES.to_vec());
     }
 
     let mut selected = Vec::with_capacity(requested.len());
     let mut seen = HashSet::new();
 
     for package in requested {
-        let resolved = test_qemu::ARCEOS_TEST_PACKAGES
+        let resolved = test::TEST_PACKAGES
             .iter()
             .copied()
             .find(|candidate| *candidate == package)
@@ -730,7 +730,7 @@ fn select_arceos_test_packages(requested: &[String]) -> anyhow::Result<Vec<&'sta
                 anyhow::anyhow!(
                     "unsupported arceos rust test package `{}`. Supported packages are: {}",
                     package,
-                    test_qemu::ARCEOS_TEST_PACKAGES.join(", ")
+                    test::TEST_PACKAGES.join(", ")
                 )
             })?;
         if seen.insert(resolved) {
@@ -822,7 +822,7 @@ where
         }
     }
 
-    test_qemu::finalize_qemu_test_run("arceos c", &failed)
+    test::finalize_c_qemu_run(&failed)
 }
 
 fn run_single_c_qemu_test(
@@ -1201,7 +1201,7 @@ mod tests {
     #[test]
     fn select_arceos_test_packages_defaults_to_all_packages() {
         let selected = select_arceos_test_packages(&[]).unwrap();
-        assert_eq!(selected, test_qemu::ARCEOS_TEST_PACKAGES);
+        assert_eq!(selected, test::TEST_PACKAGES);
     }
 
     #[test]

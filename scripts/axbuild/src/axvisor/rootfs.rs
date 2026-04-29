@@ -44,18 +44,33 @@ pub(crate) fn patch_qemu_rootfs(
     workspace_root: &Path,
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let rootfs_path = if let Some(explicit) = explicit_rootfs {
-        explicit.to_path_buf()
-    } else {
-        infer_rootfs_path(&request.vmconfigs)?
-            .unwrap_or(default_rootfs_path(workspace_root, &request.arch)?)
-    };
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    patch_qemu_rootfs_path(config, &rootfs_path);
+    Ok(())
+}
+
+/// Resolves the rootfs path selected for an AxVisor QEMU request.
+pub(crate) fn qemu_rootfs_path(
+    request: &ResolvedAxvisorRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    if let Some(explicit) = explicit_rootfs {
+        return Ok(explicit.to_path_buf());
+    }
+
+    infer_rootfs_path(&request.vmconfigs)?
+        .map(Ok)
+        .unwrap_or_else(|| default_rootfs_path(workspace_root, &request.arch))
+}
+
+/// Patches a QEMU config with a concrete AxVisor rootfs path.
+pub(crate) fn patch_qemu_rootfs_path(config: &mut QemuConfig, rootfs_path: &Path) {
     rootfs::qemu::patch_rootfs(
         config,
-        &rootfs_path,
+        rootfs_path,
         rootfs::qemu::RootfsPatchMode::ReplaceDriveOnly,
     );
-    Ok(())
 }
 
 /// Returns the managed rootfs path AxVisor should prepare, if any.

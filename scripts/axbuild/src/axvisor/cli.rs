@@ -133,6 +133,21 @@ pub struct ArgsTestQemu {
         help = "Axvisor target triple to test"
     )]
     pub target: Option<String>,
+    #[arg(
+        short = 'g',
+        long = "test-group",
+        default_value = "normal",
+        value_name = "GROUP",
+        help = "Run Axvisor QEMU test cases from one test group"
+    )]
+    pub test_group: String,
+    #[arg(
+        short = 'c',
+        long = "test-case",
+        value_name = "CASE",
+        help = "Run only one Axvisor QEMU test case"
+    )]
+    pub test_case: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -149,11 +164,29 @@ pub struct ArgsTestUboot {
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct ArgsTestBoard {
-    #[arg(short = 't', long = "test-group", value_name = "GROUP")]
-    pub test_group: Option<String>,
+    #[arg(
+        short = 'g',
+        long = "test-group",
+        default_value = "normal",
+        value_name = "GROUP",
+        help = "Run Axvisor board test cases from one test group"
+    )]
+    pub test_group: String,
 
-    #[arg(long = "board-test-config")]
-    pub board_test_config: Option<PathBuf>,
+    #[arg(
+        short = 'c',
+        long = "test-case",
+        value_name = "CASE",
+        help = "Run only one Axvisor board test case"
+    )]
+    pub test_case: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "BOARD",
+        help = "Run all Axvisor board test cases for one board"
+    )]
+    pub board: Option<String>,
 
     #[arg(short = 'b', long = "board-type", value_name = "BOARD_TYPE")]
     pub board_type: Option<String>,
@@ -275,6 +308,8 @@ mod tests {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.arch.as_deref(), Some("aarch64"));
                     assert_eq!(args.target, None);
+                    assert_eq!(args.test_group, "normal");
+                    assert_eq!(args.test_case, None);
                 }
                 _ => panic!("expected qemu test command"),
             },
@@ -299,6 +334,33 @@ mod tests {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.arch, None);
                     assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
+                    assert_eq!(args.test_group, "normal");
+                }
+                _ => panic!("expected qemu test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_qemu_case_filter() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor", "test", "qemu", "--arch", "aarch64", "-g", "normal", "-c", "smoke",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Qemu(args) => {
+                    assert_eq!(args.arch.as_deref(), Some("aarch64"));
+                    assert_eq!(args.test_group, "normal");
+                    assert_eq!(args.test_case.as_deref(), Some("smoke"));
                 }
                 _ => panic!("expected qemu test command"),
             },
@@ -371,12 +433,14 @@ mod tests {
             "axvisor",
             "test",
             "board",
-            "-t",
+            "-g",
+            "normal",
+            "-c",
+            "smoke",
+            "--board",
             "phytiumpi-linux",
             "-b",
             "Phytiumpi",
-            "--board-test-config",
-            "board-test.toml",
             "--server",
             "10.0.0.2",
             "--port",
@@ -387,12 +451,10 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Board(args) => {
-                    assert_eq!(args.test_group.as_deref(), Some("phytiumpi-linux"));
+                    assert_eq!(args.test_group, "normal");
+                    assert_eq!(args.test_case.as_deref(), Some("smoke"));
+                    assert_eq!(args.board.as_deref(), Some("phytiumpi-linux"));
                     assert_eq!(args.board_type.as_deref(), Some("Phytiumpi"));
-                    assert_eq!(
-                        args.board_test_config,
-                        Some(PathBuf::from("board-test.toml"))
-                    );
                     assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
                     assert_eq!(args.port, Some(9000));
                 }

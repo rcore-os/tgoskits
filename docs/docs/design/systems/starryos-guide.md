@@ -138,7 +138,7 @@ cargo starry qemu --arch riscv64
 cargo starry test qemu --target riscv64
 cargo starry test qemu --stress -t riscv64
 cargo starry test qemu --stress -t riscv64 -c stress-ng-0
-cargo starry test board -t smoke-orangepi-5-plus --server <ip> --port <port>
+cargo starry test board --board orangepi-5-plus --server <ip> --port <port>
 ```
 
 这里直接构建并运行的是 `starryos` 包本体；`test-suit/starryos/normal/<case>/` 和 `test-suit/starryos/stress/<case>/` 负责提供 Starry 测试配置。
@@ -147,7 +147,7 @@ cargo starry test board -t smoke-orangepi-5-plus --server <ip> --port <port>
 - 远程板测使用 `board-<name>.toml`
 - `board-<name>.toml` 只保存板测运行判据，实际构建配置仍映射到 `os/StarryOS/configs/board/<name>.toml`
 
-默认 `test qemu` 只跑 `normal` 组，传 `--stress` 后只跑 `stress` 组，`-c/--test-case` 只在当前组内按目录名精确筛选单个 case。批量模式会扫描当前组下所有一级子目录，只执行存在 `qemu-<arch>.toml` 的 case；没有当前架构 QEMU 配置的目录会被直接跳过。`test board` 当前只发现 `normal` 组里的 `board-*.toml`，并把 group 名生成为 `<case>-<board>`，例如 `smoke-orangepi-5-plus`。
+默认 `test qemu` 只跑 `normal` 组，传 `--stress` 后只跑 `stress` 组；`--stress` 等价于 `-g stress`。`-c/--test-case` 只在当前组内按目录名精确筛选单个 case。批量模式会扫描当前组下所有一级子目录，只执行存在 `qemu-<arch>.toml` 的 case；没有当前架构 QEMU 配置的目录会被直接跳过。`test board` 默认只跑 `normal` 组，`--board` 按板卡名筛选并运行该板卡的所有测例，`-c/--test-case` 仅按 case 目录名进一步过滤。
 
 Starry QEMU case 还支持可选的 `c/` 子目录约定：
 

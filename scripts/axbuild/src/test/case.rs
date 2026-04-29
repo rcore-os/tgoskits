@@ -1,9 +1,9 @@
-//! StarryOS test case asset orchestration.
+//! Shared QEMU test case asset orchestration.
 //!
 //! Main responsibilities:
 //! - Decide whether a test case needs extra build or injection work
 //! - Prepare case-scoped work directories, overlays, and auxiliary QEMU assets
-//! - Dispatch C and shell case flows before rootfs content injection
+//! - Dispatch C, shell, and Python case flows before rootfs content injection
 
 use std::{
     fs,
@@ -13,13 +13,13 @@ use std::{
 use anyhow::{Context, ensure};
 use ostool::run::qemu::QemuConfig;
 
-use super::{case_build, test_suit::StarryQemuCase};
+use super::build as case_builder;
 
 pub(crate) const GROUPED_CASE_RUNNER_PATH: &str = "/usr/bin/starry-run-case-tests";
 pub(crate) const GROUPED_CASE_SUCCESS_REGEX: &str = r"(?m)^STARRY_GROUPED_TESTS_PASSED\s*$";
 pub(crate) const GROUPED_CASE_FAIL_REGEX: &str = r"(?m)^STARRY_GROUPED_TEST_FAILED:";
 
-const CASE_WORK_ROOT_NAME: &str = "starry-cases";
+const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
 const CASE_STAGING_DIR_NAME: &str = "staging-root";
 const CASE_BUILD_DIR_NAME: &str = "build";
 const CASE_OVERLAY_DIR_NAME: &str = "overlay";
@@ -33,7 +33,35 @@ const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
 const USB_STICK_IMAGE_SIZE: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StarryCaseAssets {
+pub(crate) struct TestQemuCase {
+    pub(crate) name: String,
+    pub(crate) case_dir: PathBuf,
+    pub(crate) qemu_config_path: PathBuf,
+    pub(crate) test_commands: Vec<String>,
+    pub(crate) subcases: Vec<TestQemuSubcase>,
+}
+
+impl TestQemuCase {
+    pub(crate) fn is_grouped(&self) -> bool {
+        !self.test_commands.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TestQemuSubcaseKind {
+    C,
+    Rust,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TestQemuSubcase {
+    pub(crate) name: String,
+    pub(crate) case_dir: PathBuf,
+    pub(crate) kind: TestQemuSubcaseKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreparedCaseAssets {
     pub(crate) rootfs_path: PathBuf,
     pub(crate) extra_qemu_args: Vec<String>,
 }
@@ -51,20 +79,19 @@ pub(crate) struct CaseAssetLayout {
     pub(crate) usb_stick_path: PathBuf,
 }
 
-/// Resolves the workspace target directory used for a Starry build target.
+/// Resolves the workspace target directory used for a test build target.
 pub(crate) fn resolve_target_dir(workspace_root: &Path, target: &str) -> anyhow::Result<PathBuf> {
-    let _ = crate::context::starry_arch_for_target_checked(target)?;
     Ok(workspace_root.join("target").join(target))
 }
 
-/// Prepares any case-specific rootfs assets required by a Starry QEMU test.
+/// Prepares any case-specific rootfs assets required by a QEMU test.
 pub(crate) async fn prepare_case_assets(
     workspace_root: &Path,
     arch: &str,
     target: &str,
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     rootfs_path: PathBuf,
-) -> anyhow::Result<StarryCaseAssets> {
+) -> anyhow::Result<PreparedCaseAssets> {
     let needs_assets = case.is_grouped()
         || case_uses_c_pipeline(case)
         || case_uses_sh_pipeline(case)
@@ -72,7 +99,7 @@ pub(crate) async fn prepare_case_assets(
         || case_uses_usb_qemu_assets(arch, case);
 
     if !needs_assets {
-        return Ok(StarryCaseAssets {
+        return Ok(PreparedCaseAssets {
             rootfs_path,
             extra_qemu_args: Vec::new(),
         });
@@ -93,47 +120,47 @@ pub(crate) async fn prepare_case_assets(
         )
     })
     .await
-    .context("starry case asset task failed")??;
+    .context("qemu test case asset task failed")??;
 
-    Ok(StarryCaseAssets {
+    Ok(PreparedCaseAssets {
         rootfs_path,
         extra_qemu_args,
     })
 }
 
-/// Returns whether a Starry test case uses the C pipeline.
-pub(crate) fn case_uses_c_pipeline(case: &StarryQemuCase) -> bool {
-    case_build::case_c_source_dir(case).is_dir()
+/// Returns whether a QEMU test case uses the C pipeline.
+pub(crate) fn case_uses_c_pipeline(case: &TestQemuCase) -> bool {
+    case_builder::case_c_source_dir(case).is_dir()
 }
 
-/// Returns the shell-script source directory for a Starry test case.
-pub(crate) fn case_sh_source_dir(case: &StarryQemuCase) -> PathBuf {
+/// Returns the shell-script source directory for a QEMU test case.
+pub(crate) fn case_sh_source_dir(case: &TestQemuCase) -> PathBuf {
     case.case_dir.join(CASE_SH_DIR_NAME)
 }
 
-/// Returns whether a Starry test case uses the shell pipeline.
-pub(crate) fn case_uses_sh_pipeline(case: &StarryQemuCase) -> bool {
+/// Returns whether a QEMU test case uses the shell pipeline.
+pub(crate) fn case_uses_sh_pipeline(case: &TestQemuCase) -> bool {
     case_sh_source_dir(case).is_dir()
 }
 
-/// Returns the Python source directory for a Starry test case.
-pub(crate) fn case_python_source_dir(case: &StarryQemuCase) -> PathBuf {
-    case_build::case_python_source_dir(case)
+/// Returns the Python source directory for a QEMU test case.
+pub(crate) fn case_python_source_dir(case: &TestQemuCase) -> PathBuf {
+    case_builder::case_python_source_dir(case)
 }
 
-/// Returns whether a Starry test case uses the Python pipeline.
-pub(crate) fn case_uses_python_pipeline(case: &StarryQemuCase) -> bool {
+/// Returns whether a QEMU test case uses the Python pipeline.
+pub(crate) fn case_uses_python_pipeline(case: &TestQemuCase) -> bool {
     case_python_source_dir(case).is_dir()
 }
 
-/// Returns whether a Starry test case needs extra USB-backed QEMU assets.
-pub(crate) fn case_uses_usb_qemu_assets(arch: &str, case: &StarryQemuCase) -> bool {
+/// Returns whether a QEMU test case needs extra USB-backed assets.
+pub(crate) fn case_uses_usb_qemu_assets(arch: &str, case: &TestQemuCase) -> bool {
     let _ = arch;
     let _ = case;
     false
 }
 
-/// Builds the working directory layout used for a Starry case asset run.
+/// Builds the working directory layout used for a QEMU case asset run.
 pub(crate) fn case_asset_layout(
     workspace_root: &Path,
     target: &str,
@@ -155,12 +182,12 @@ pub(crate) fn case_asset_layout(
     })
 }
 
-/// Performs the synchronous part of Starry case asset preparation.
+/// Performs the synchronous part of QEMU case asset preparation.
 pub(crate) fn prepare_case_assets_sync(
     workspace_root: &Path,
     arch: &str,
     target: &str,
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     case_rootfs: &Path,
 ) -> anyhow::Result<Vec<String>> {
     let layout = case_asset_layout(workspace_root, target, &case.name)?;
@@ -168,13 +195,13 @@ pub(crate) fn prepare_case_assets_sync(
         .with_context(|| format!("failed to create {}", layout.work_dir.display()))?;
 
     if case.is_grouped() {
-        case_build::prepare_grouped_case_assets_sync(arch, case, case_rootfs, &layout)?;
+        case_builder::prepare_grouped_case_assets_sync(arch, case, case_rootfs, &layout)?;
     } else if case_uses_c_pipeline(case) {
-        case_build::prepare_c_case_assets_sync(arch, case, case_rootfs, &layout)?;
+        case_builder::prepare_c_case_assets_sync(arch, case, case_rootfs, &layout)?;
     } else if case_uses_sh_pipeline(case) {
         prepare_sh_case_assets_sync(case, case_rootfs, &layout)?;
     } else if case_uses_python_pipeline(case) {
-        case_build::prepare_python_case_assets_sync(arch, case, case_rootfs, &layout)?;
+        case_builder::prepare_python_case_assets_sync(arch, case, case_rootfs, &layout)?;
     }
 
     let mut extra_qemu_args = Vec::new();
@@ -186,7 +213,7 @@ pub(crate) fn prepare_case_assets_sync(
     Ok(extra_qemu_args)
 }
 
-pub(crate) fn apply_grouped_qemu_config(qemu: &mut QemuConfig, case: &StarryQemuCase) {
+pub(crate) fn apply_grouped_qemu_config(qemu: &mut QemuConfig, case: &TestQemuCase) {
     if !case.is_grouped() {
         return;
     }
@@ -237,9 +264,9 @@ pub(crate) fn write_grouped_case_runner_script(
     write_executable_script(&runner_path, &body)
 }
 
-/// Prepares overlay assets for a Starry shell-based test case.
+/// Prepares overlay assets for a shell-based QEMU test case.
 pub(crate) fn prepare_sh_case_assets_sync(
-    case: &StarryQemuCase,
+    case: &TestQemuCase,
     case_rootfs: &Path,
     layout: &CaseAssetLayout,
 ) -> anyhow::Result<()> {
@@ -339,14 +366,13 @@ mod tests {
 
     use super::*;
 
-    fn fake_case(root: &Path, name: &str) -> StarryQemuCase {
+    fn fake_case(root: &Path, name: &str) -> TestQemuCase {
         let case_dir = root.join("test-suit/starryos/normal").join(name);
         fs::create_dir_all(&case_dir).unwrap();
-        StarryQemuCase {
+        TestQemuCase {
             name: name.to_string(),
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
-            build_config_path: None,
             test_commands: Vec::new(),
             subcases: Vec::new(),
         }
@@ -398,7 +424,7 @@ mod tests {
         assert_eq!(
             layout.work_dir,
             root.path()
-                .join("target/aarch64-unknown-none-softfloat/starry-cases/usb")
+                .join("target/aarch64-unknown-none-softfloat/qemu-cases/usb")
         );
         assert_eq!(
             usb_qemu_args(&layout.usb_stick_path),

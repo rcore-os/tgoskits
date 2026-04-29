@@ -12,6 +12,10 @@ use super::board;
 use crate::context::{
     arch_for_target_checked, resolve_starry_arch_and_target, validate_supported_target,
 };
+pub(crate) use crate::test::case::{
+    TestQemuCase as StarryQemuCase, TestQemuSubcase as StarryQemuSubcase,
+    TestQemuSubcaseKind as StarryQemuSubcaseKind,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StarryTestGroup {
@@ -26,35 +30,35 @@ impl StarryTestGroup {
             Self::Stress => "stress",
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StarryQemuCase {
-    pub(crate) name: String,
-    pub(crate) case_dir: PathBuf,
-    pub(crate) qemu_config_path: PathBuf,
-    pub(crate) build_config_path: Option<PathBuf>,
-    pub(crate) test_commands: Vec<String>,
-    pub(crate) subcases: Vec<StarryQemuSubcase>,
-}
-
-impl StarryQemuCase {
-    pub(crate) fn is_grouped(&self) -> bool {
-        !self.test_commands.is_empty()
+    pub(crate) fn parse(name: &str) -> anyhow::Result<Self> {
+        match name {
+            "normal" => Ok(Self::Normal),
+            "stress" => Ok(Self::Stress),
+            _ => bail!(
+                "unsupported Starry test group `{name}`. Supported groups are: normal, stress"
+            ),
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StarryQemuSubcaseKind {
-    C,
-    Rust,
-}
+pub(crate) fn resolve_qemu_test_group(
+    selected_group: Option<&str>,
+    stress: bool,
+) -> anyhow::Result<StarryTestGroup> {
+    if stress {
+        if let Some(group) = selected_group
+            && group != StarryTestGroup::Stress.as_str()
+        {
+            bail!(
+                "`--stress` is equivalent to `--test-group stress` and cannot be combined with \
+                 `--test-group {group}`"
+            );
+        }
+        return Ok(StarryTestGroup::Stress);
+    }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StarryQemuSubcase {
-    pub(crate) name: String,
-    pub(crate) case_dir: PathBuf,
-    pub(crate) kind: StarryQemuSubcaseKind,
+    StarryTestGroup::parse(selected_group.unwrap_or(StarryTestGroup::Normal.as_str()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,7 +134,6 @@ pub(crate) fn parse_test_target(
 pub(crate) fn discover_qemu_cases(
     workspace_root: &Path,
     arch: &str,
-    target: &str,
     selected_case: Option<&str>,
     group: StarryTestGroup,
 ) -> anyhow::Result<Vec<StarryQemuCase>> {
@@ -160,8 +163,6 @@ pub(crate) fn discover_qemu_cases(
             case_name.to_string(),
             case_dir,
             qemu_config_path,
-            arch,
-            target,
         )?]);
     }
 
@@ -180,7 +181,7 @@ pub(crate) fn discover_qemu_cases(
         };
         let qemu_config_path = path.join(&config_name);
         if qemu_config_path.is_file() {
-            cases.push(load_qemu_case(name, path, qemu_config_path, arch, target)?);
+            cases.push(load_qemu_case(name, path, qemu_config_path)?);
         }
     }
     cases.sort_by(|left, right| left.name.cmp(&right.name));
@@ -200,8 +201,6 @@ fn load_qemu_case(
     name: String,
     case_dir: PathBuf,
     qemu_config_path: PathBuf,
-    arch: &str,
-    target: &str,
 ) -> anyhow::Result<StarryQemuCase> {
     let test_commands = load_qemu_case_test_commands(&qemu_config_path)?;
     let subcases = if test_commands.is_empty() {
@@ -212,7 +211,6 @@ fn load_qemu_case(
 
     Ok(StarryQemuCase {
         name,
-        build_config_path: resolve_case_build_config_path(&case_dir, arch, target),
         case_dir,
         qemu_config_path,
         test_commands,
@@ -311,24 +309,58 @@ pub(crate) fn finalize_qemu_case_run(report: &StarryQemuRunReport) -> anyhow::Re
 
 pub(crate) fn discover_board_test_groups(
     workspace_root: &Path,
-    selected_group: Option<&str>,
+    group: &str,
+    selected_case: Option<&str>,
+    selected_board: Option<&str>,
 ) -> anyhow::Result<Vec<StarryBoardTestGroup>> {
-    let test_suite_dir = test_suite_dir(workspace_root, StarryTestGroup::Normal);
+    let test_suite_dir = test_suite_dir(workspace_root, StarryTestGroup::parse(group)?);
     let mut groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
-    groups.sort_by(|left, right| left.name.cmp(&right.name));
+    groups.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.board_name.cmp(&right.board_name))
+    });
 
-    if let Some(group_name) = selected_group {
-        return groups
+    if let Some(case_name) = selected_case {
+        let available = groups
+            .iter()
+            .map(|group| group.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
-            .find(|group| group.name == group_name)
-            .map(|group| vec![group])
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unsupported Starry board test group `{group_name}`. Supported groups are: {}",
-                    supported_board_test_group_names(workspace_root)
-                        .unwrap_or_else(|_| "<none>".to_string())
-                )
-            });
+            .collect::<Vec<_>>()
+            .join(", ");
+        groups.retain(|group| group.name == case_name);
+        if groups.is_empty() {
+            return Err(anyhow::anyhow!(
+                "unsupported Starry board test case `{case_name}`. Supported cases are: {}",
+                if available.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    available
+                }
+            ));
+        }
+    }
+
+    if let Some(board_name) = selected_board {
+        let available = groups
+            .iter()
+            .map(|group| group.board_name.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(", ");
+        groups.retain(|group| group.board_name == board_name);
+        if groups.is_empty() {
+            return Err(anyhow::anyhow!(
+                "unsupported Starry board test board `{board_name}`. Supported boards are: {}",
+                if available.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    available
+                }
+            ));
+        }
     }
 
     if groups.is_empty() {
@@ -339,19 +371,6 @@ pub(crate) fn discover_board_test_groups(
     }
 
     Ok(groups)
-}
-
-pub(crate) fn finalize_board_test_run(failed: &[String]) -> anyhow::Result<()> {
-    if failed.is_empty() {
-        println!("all starry board test groups passed");
-        Ok(())
-    } else {
-        bail!(
-            "starry board tests failed for {} group(s): {}",
-            failed.len(),
-            failed.join(", ")
-        )
-    }
 }
 
 fn test_suite_dir(workspace_root: &Path, group: StarryTestGroup) -> PathBuf {
@@ -477,8 +496,8 @@ fn collect_board_test_groups(
                 .join(format!("{board_name}.toml"));
             if !default_build_config_path.is_file() {
                 bail!(
-                    "Starry board test group `{}-{board_name}` maps to missing build config `{}`",
-                    case_name,
+                    "Starry board test group `{case_name}/{board_name}` maps to missing build \
+                     config `{}`",
                     default_build_config_path.display()
                 );
             }
@@ -487,8 +506,7 @@ fn collect_board_test_groups(
                 board::load_board_file(&default_build_config_path).with_context(|| {
                     format!(
                         "failed to load mapped Starry build config for board test group \
-                         `{}-{board_name}`",
-                        case_name
+                         `{case_name}/{board_name}`"
                     )
                 })?;
             let build_config_path = resolve_case_build_config_path(
@@ -498,7 +516,7 @@ fn collect_board_test_groups(
             )
             .unwrap_or(default_build_config_path);
             groups.push(StarryBoardTestGroup {
-                name: format!("{case_name}-{board_name}"),
+                name: case_name.clone(),
                 board_name: board_name.to_string(),
                 arch: arch_for_target_checked(&board_file.target)?.to_string(),
                 target: board_file.target,
@@ -509,16 +527,6 @@ fn collect_board_test_groups(
     }
 
     Ok(groups)
-}
-
-fn supported_board_test_group_names(workspace_root: &Path) -> anyhow::Result<String> {
-    let test_suite_dir = test_suite_dir(workspace_root, StarryTestGroup::Normal);
-    let mut groups = collect_board_test_groups(workspace_root, &test_suite_dir)?
-        .into_iter()
-        .map(|group| group.name)
-        .collect::<Vec<_>>();
-    groups.sort();
-    Ok(groups.join(", "))
 }
 
 #[cfg(test)]
@@ -542,6 +550,13 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    fn write_case_build_config(root: &Path, relative_dir: &str, name: &str) -> PathBuf {
+        let path = root.join(relative_dir).join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "features = [\"qemu\"]\nlog = \"Info\"\n").unwrap();
+        path
     }
 
     fn write_board_test_config(root: &Path, case_name: &str, board_name: &str) -> PathBuf {
@@ -571,10 +586,10 @@ mod tests {
         );
         let board_test_config = write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
 
-        let groups = discover_board_test_groups(root.path(), None).unwrap();
+        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
 
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].name, "smoke-orangepi-5-plus");
+        assert_eq!(groups[0].name, "smoke");
         assert_eq!(groups[0].board_name, "orangepi-5-plus");
         assert_eq!(groups[0].arch, "aarch64");
         assert_eq!(groups[0].target, "aarch64-unknown-none-softfloat");
@@ -587,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_board_test_group_by_name() {
+    fn filters_board_test_group_by_case() {
         let root = tempdir().unwrap();
         write_board_build_config(
             root.path(),
@@ -599,10 +614,62 @@ mod tests {
         write_board_test_config(root.path(), "smoke", "vision-five2");
 
         let groups =
-            discover_board_test_groups(root.path(), Some("smoke-orangepi-5-plus")).unwrap();
+            discover_board_test_groups(root.path(), "normal", Some("smoke"), None).unwrap();
 
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].name, "smoke-orangepi-5-plus");
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| format!("{}/{}", group.name, group.board_name))
+                .collect::<Vec<_>>(),
+            vec!["smoke/orangepi-5-plus", "smoke/vision-five2"]
+        );
+    }
+
+    #[test]
+    fn filters_board_test_groups_by_board() {
+        let root = tempdir().unwrap();
+        write_board_build_config(
+            root.path(),
+            "orangepi-5-plus",
+            "aarch64-unknown-none-softfloat",
+        );
+        write_board_build_config(root.path(), "vision-five2", "riscv64gc-unknown-none-elf");
+        write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
+        write_board_test_config(root.path(), "syscall", "orangepi-5-plus");
+        write_board_test_config(root.path(), "smoke", "vision-five2");
+
+        let groups =
+            discover_board_test_groups(root.path(), "normal", None, Some("orangepi-5-plus"))
+                .unwrap();
+
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| format!("{}/{}", group.name, group.board_name))
+                .collect::<Vec<_>>(),
+            vec!["smoke/orangepi-5-plus", "syscall/orangepi-5-plus"]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_board_test_board() {
+        let root = tempdir().unwrap();
+        write_board_build_config(
+            root.path(),
+            "orangepi-5-plus",
+            "aarch64-unknown-none-softfloat",
+        );
+        write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
+
+        let err =
+            discover_board_test_groups(root.path(), "normal", None, Some("unknown")).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported Starry board test board `unknown`")
+        );
+        assert!(err.to_string().contains("orangepi-5-plus"));
     }
 
     #[test]
@@ -610,11 +677,11 @@ mod tests {
         let root = tempdir().unwrap();
         write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
 
-        let err = discover_board_test_groups(root.path(), None)
+        let err = discover_board_test_groups(root.path(), "normal", None, None)
             .unwrap_err()
             .to_string();
 
-        assert!(err.contains("smoke-orangepi-5-plus"));
+        assert!(err.contains("smoke/orangepi-5-plus"));
         assert!(err.contains("os/StarryOS/configs/board/orangepi-5-plus.toml"));
     }
 
@@ -648,31 +715,17 @@ mod tests {
         .unwrap();
     }
 
-    fn write_case_build_config(root: &Path, relative_dir: &str, name: &str) -> PathBuf {
-        let path = root.join(relative_dir).join(name);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "features = [\"qemu\"]\nlog = \"Info\"\n").unwrap();
-        path
-    }
-
     #[test]
     fn discovers_only_cases_with_matching_qemu_config() {
         let root = tempdir().unwrap();
         write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "x86_64");
         fs::create_dir_all(root.path().join("test-suit/starryos/normal/usb")).unwrap();
 
-        let cases = discover_qemu_cases(
-            root.path(),
-            "x86_64",
-            "x86_64-unknown-none",
-            None,
-            StarryTestGroup::Normal,
-        )
-        .unwrap();
+        let cases =
+            discover_qemu_cases(root.path(), "x86_64", None, StarryTestGroup::Normal).unwrap();
 
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name, "smoke");
-        assert_eq!(cases[0].build_config_path, None);
         assert!(cases[0].test_commands.is_empty());
         assert!(cases[0].subcases.is_empty());
         assert_eq!(
@@ -688,14 +741,8 @@ mod tests {
         fs::create_dir_all(root.path().join("test-suit/starryos/normal/bugfix/beta/c")).unwrap();
         fs::create_dir_all(root.path().join("test-suit/starryos/normal/bugfix/alpha/c")).unwrap();
 
-        let cases = discover_qemu_cases(
-            root.path(),
-            "x86_64",
-            "x86_64-unknown-none",
-            None,
-            StarryTestGroup::Normal,
-        )
-        .unwrap();
+        let cases =
+            discover_qemu_cases(root.path(), "x86_64", None, StarryTestGroup::Normal).unwrap();
 
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name, "bugfix");
@@ -736,7 +783,6 @@ mod tests {
         let err = discover_qemu_cases(
             root.path(),
             "x86_64",
-            "x86_64-unknown-none",
             Some("bugfix"),
             StarryTestGroup::Normal,
         )
@@ -758,7 +804,6 @@ mod tests {
         let err = discover_qemu_cases(
             root.path(),
             "x86_64",
-            "x86_64-unknown-none",
             Some("bugfix"),
             StarryTestGroup::Normal,
         )
@@ -773,111 +818,12 @@ mod tests {
         let root = tempdir().unwrap();
         fs::create_dir_all(root.path().join("test-suit/starryos/normal/usb")).unwrap();
 
-        let err = discover_qemu_cases(
-            root.path(),
-            "x86_64",
-            "x86_64-unknown-none",
-            Some("usb"),
-            StarryTestGroup::Normal,
-        )
-        .unwrap_err()
-        .to_string();
+        let err = discover_qemu_cases(root.path(), "x86_64", Some("usb"), StarryTestGroup::Normal)
+            .unwrap_err()
+            .to_string();
 
         assert!(err.contains("does not provide"));
         assert!(err.contains("qemu-x86_64.toml"));
-    }
-
-    #[test]
-    fn qemu_case_prefers_target_build_config() {
-        let root = tempdir().unwrap();
-        write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "aarch64");
-        let build = write_case_build_config(
-            root.path(),
-            "test-suit/starryos/normal/smoke",
-            "build-aarch64-unknown-none-softfloat.toml",
-        );
-
-        let cases = discover_qemu_cases(
-            root.path(),
-            "aarch64",
-            "aarch64-unknown-none-softfloat",
-            None,
-            StarryTestGroup::Normal,
-        )
-        .unwrap();
-
-        assert_eq!(cases[0].build_config_path, Some(build));
-    }
-
-    #[test]
-    fn qemu_case_uses_dotted_target_build_config_when_bare_missing() {
-        let root = tempdir().unwrap();
-        write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "aarch64");
-        let build = write_case_build_config(
-            root.path(),
-            "test-suit/starryos/normal/smoke",
-            ".build-aarch64-unknown-none-softfloat.toml",
-        );
-
-        let cases = discover_qemu_cases(
-            root.path(),
-            "aarch64",
-            "aarch64-unknown-none-softfloat",
-            None,
-            StarryTestGroup::Normal,
-        )
-        .unwrap();
-
-        assert_eq!(cases[0].build_config_path, Some(build));
-    }
-
-    #[test]
-    fn qemu_case_falls_back_to_arch_build_config() {
-        let root = tempdir().unwrap();
-        write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "aarch64");
-        let build = write_case_build_config(
-            root.path(),
-            "test-suit/starryos/normal/smoke",
-            "build-aarch64.toml",
-        );
-
-        let cases = discover_qemu_cases(
-            root.path(),
-            "aarch64",
-            "aarch64-unknown-none-softfloat",
-            None,
-            StarryTestGroup::Normal,
-        )
-        .unwrap();
-
-        assert_eq!(cases[0].build_config_path, Some(build));
-    }
-
-    #[test]
-    fn qemu_case_prefers_target_build_config_over_arch_build_config() {
-        let root = tempdir().unwrap();
-        write_qemu_test_config(root.path(), StarryTestGroup::Normal, "smoke", "aarch64");
-        let target_build = write_case_build_config(
-            root.path(),
-            "test-suit/starryos/normal/smoke",
-            "build-aarch64-unknown-none-softfloat.toml",
-        );
-        write_case_build_config(
-            root.path(),
-            "test-suit/starryos/normal/smoke",
-            "build-aarch64.toml",
-        );
-
-        let cases = discover_qemu_cases(
-            root.path(),
-            "aarch64",
-            "aarch64-unknown-none-softfloat",
-            None,
-            StarryTestGroup::Normal,
-        )
-        .unwrap();
-
-        assert_eq!(cases[0].build_config_path, Some(target_build));
     }
 
     #[test]
@@ -895,7 +841,7 @@ mod tests {
             "build-aarch64-unknown-none-softfloat.toml",
         );
 
-        let groups = discover_board_test_groups(root.path(), None).unwrap();
+        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
 
         assert_eq!(groups[0].build_config_path, build);
     }
@@ -910,7 +856,7 @@ mod tests {
         );
         write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
 
-        let groups = discover_board_test_groups(root.path(), None).unwrap();
+        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
 
         assert_eq!(
             groups[0].build_config_path,
@@ -944,5 +890,25 @@ mod tests {
         assert!(summary.contains("smoke (0.50s)"));
         assert!(summary.contains("usb (2.00s)"));
         assert!(summary.contains("total: 3.00s"));
+    }
+
+    #[test]
+    fn resolves_stress_alias_as_stress_group() {
+        assert_eq!(
+            resolve_qemu_test_group(None, true).unwrap(),
+            StarryTestGroup::Stress
+        );
+        assert_eq!(
+            resolve_qemu_test_group(Some("stress"), true).unwrap(),
+            StarryTestGroup::Stress
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_stress_alias_and_group() {
+        let err = resolve_qemu_test_group(Some("normal"), true).unwrap_err();
+
+        assert!(err.to_string().contains("`--stress` is equivalent"));
+        assert!(err.to_string().contains("`--test-group normal`"));
     }
 }

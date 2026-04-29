@@ -1,3 +1,6 @@
+build_config = "os/axvisor/configs/board/rdk-s100.toml"
+vmconfigs = ["os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml"]
+
 board_type = "RDK-S100"
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",

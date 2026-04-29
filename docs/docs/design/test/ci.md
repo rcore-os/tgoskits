@@ -199,10 +199,9 @@ strategy:
 
 以下测试仍运行在 self-hosted runner 上：
 
-- `AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test qemu --target x86_64`
-- `AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t orangepi-5-plus-linux`
-- `AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t roc-rk3568-pc-linux`
-- `cargo xtask starry test board -t smoke-orangepi-5-plus`
+- `cargo xtask axvisor test qemu --target x86_64`
+- `cargo xtask axvisor test board --board orangepi-5-plus-linux`
+- `cargo xtask starry test board --board orangepi-5-plus`
 
 原因通常是：
 

@@ -1,3 +1,6 @@
+build_config = "os/axvisor/configs/board/roc-rk3568-pc.toml"
+vmconfigs = ["os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml"]
+
 board_type = "ROC-RK3568-PC"
 fail_regex = []
 shell_init_cmd = "pwd && echo 'test pass'"

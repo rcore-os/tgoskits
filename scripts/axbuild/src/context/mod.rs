@@ -8,7 +8,10 @@ use ostool::{
     Tool, ToolConfig,
     board::{RunBoardOptions, config::BoardRunConfig},
     build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
-    run::{qemu::QemuConfig, uboot::UbootConfig},
+    run::{
+        qemu::{QemuConfig, RunQemuOptions},
+        uboot::UbootConfig,
+    },
 };
 
 mod arch;
@@ -116,6 +119,22 @@ impl AppContext {
                     dtb_dump: false,
                     show_output: true,
                 })),
+            )
+            .await
+    }
+
+    pub(crate) async fn run_qemu(&mut self, cargo: &Cargo, qemu: QemuConfig) -> anyhow::Result<()> {
+        self.restore_original_path();
+        if should_use_loongarch_lvz_for(&cargo.package, &cargo.target) {
+            configure_loongarch_qemu_path(&self.root)?;
+        }
+        self.tool
+            .run_qemu(
+                &qemu,
+                RunQemuOptions {
+                    dtb_dump: false,
+                    show_output: true,
+                },
             )
             .await
     }
