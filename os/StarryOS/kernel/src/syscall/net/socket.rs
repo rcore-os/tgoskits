@@ -16,9 +16,8 @@ use axnet::{
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
-        AF_INET, AF_INET6, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_ICMPV6, IPPROTO_TCP,
-        IPPROTO_UDP, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET,
-        SOCK_STREAM, sockaddr, socklen_t,
+        AF_INET, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR,
+        SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
     },
 };
 
@@ -57,16 +56,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             }
             SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
         }
-        (AF_INET6, SOCK_RAW) => {
-            if proto != IPPROTO_ICMPV6 {
-                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
-            }
-            SocketInner::Raw(Box::new(RawSocket::new(
-                IpVersion::Ipv6,
-                IpProtocol::Icmpv6,
-            )))
-        }
-        (AF_INET, _) | (AF_INET6, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
+        (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }

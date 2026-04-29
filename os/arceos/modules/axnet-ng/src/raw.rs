@@ -19,7 +19,7 @@ use smoltcp::{
     iface::SocketHandle,
     socket::raw as smol,
     storage::PacketMetadata,
-    wire::{IpAddress, IpListenEndpoint, Ipv4Packet, Ipv4Repr, Ipv6Packet, Ipv6Repr},
+    wire::{Icmpv6Packet, IpAddress, IpListenEndpoint, Ipv4Packet, Ipv4Repr, Ipv6Packet, Ipv6Repr},
 };
 use spin::RwLock;
 
@@ -114,7 +114,7 @@ impl RawSocket {
             IpVersion::Ipv6 => {
                 let packet = Ipv6Packet::new_checked(packet)
                     .map_err(|_| AxError::from(LinuxError::EINVAL))?;
-                Ok((IpAddress::Ipv6(packet.src_addr()), packet.into_inner()))
+                Ok((IpAddress::Ipv6(packet.src_addr()), packet.payload()))
             }
         }
     }
@@ -286,6 +286,14 @@ impl SocketOps for RawSocket {
                 }
 
                 let written = src.read(&mut buf[header_len..])?;
+                if next_header == IpProtocol::Icmpv6 {
+                    let (IpAddress::Ipv6(src_addr), IpAddress::Ipv6(dst_addr)) = (local, remote)
+                    else {
+                        unreachable!();
+                    };
+                    Icmpv6Packet::new_unchecked(&mut buf[header_len..])
+                        .fill_checksum(&src_addr, &dst_addr);
+                }
                 Ok(written)
             })
         })
