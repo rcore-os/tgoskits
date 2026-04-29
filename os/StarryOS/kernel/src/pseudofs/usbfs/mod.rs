@@ -7,11 +7,16 @@ mod sysfs;
 mod tree;
 
 use alloc::{borrow::ToOwned, collections::VecDeque, sync::Arc, vec::Vec};
-use core::{any::Any, mem::size_of, task::Context};
+use core::{
+    any::Any,
+    mem::size_of,
+    sync::atomic::{AtomicUsize, Ordering},
+    task::Context,
+};
 
-use ax_errno::{AxError, AxResult, LinuxResult};
+use ax_errno::{AxError, AxResult, LinuxError, LinuxResult};
 use axfs_ng_vfs::Filesystem;
-use axpoll::{IoEvents, Pollable};
+use axpoll::{IoEvents, PollSet, Pollable};
 use spin::Mutex;
 use starry_vm::VmMutPtr;
 
@@ -86,9 +91,12 @@ pub(crate) fn open_usbfs_file(
         snapshot,
         lease: Mutex::new(None),
         claimed_interfaces: Mutex::new(Default::default()),
-        pending_urbs: Mutex::new(VecDeque::new()),
+        pending_urbs: Arc::new(Mutex::new(VecDeque::new())),
+        poll_urbs: Arc::new(PollSet::new()),
     }))
 }
+
+static USBFS_URB_LOG_BUDGET: AtomicUsize = AtomicUsize::new(96);
 
 struct UsbDeviceFile {
     base: KernelFile,
@@ -98,14 +106,23 @@ struct UsbDeviceFile {
     snapshot: descriptor::UsbDeviceSnapshot,
     lease: Mutex<Option<manager::UsbDeviceLease>>,
     claimed_interfaces: Mutex<alloc::collections::BTreeMap<u8, u8>>,
-    pending_urbs: Mutex<VecDeque<PendingUrb>>,
+    pending_urbs: Arc<Mutex<VecDeque<CompletedUrb>>>,
+    poll_urbs: Arc<PollSet>,
 }
 
-struct PendingUrb {
+struct CompletedUrb {
     user_urb_ptr: usize,
+    result: AxResult<UrbTransferResult>,
+    log: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+struct UrbTransferResult {
+    data: Vec<u8>,
+    actual_length: usize,
+    packet_lengths: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EndpointTransferType {
     Bulk,
     Interrupt,
@@ -133,6 +150,11 @@ impl UsbDeviceFile {
         if !snapshot_has_interface(&self.snapshot, interface, alternate) {
             return Err(AxError::NotFound);
         }
+        if snapshot_is_uvc_control_interface(&self.snapshot, interface, alternate) {
+            self.with_live_lease(|lease| lease.ensure_configured())?;
+            self.claimed_interfaces.lock().insert(interface, alternate);
+            return Ok(0);
+        }
         self.with_live_lease(|lease| lease.claim_interface(interface, alternate))?;
         self.claimed_interfaces.lock().insert(interface, alternate);
         Ok(0)
@@ -141,6 +163,38 @@ impl UsbDeviceFile {
     fn release_interface(&self, interface: u8) -> AxResult<usize> {
         self.claimed_interfaces.lock().remove(&interface);
         Ok(0)
+    }
+
+    fn get_driver_ioctl(&self, arg: usize) -> AxResult<usize> {
+        let get_driver =
+            crate::mm::UserPtr::<descriptor::UsbdevfsGetDriver>::from(arg).get_as_mut()?;
+        if get_driver.interface > u8::MAX as u32 {
+            return Err(AxError::InvalidInput);
+        }
+
+        get_driver.driver.fill(0);
+        get_driver.driver[..5].copy_from_slice(b"usbfs");
+        Ok(0)
+    }
+
+    fn kernel_driver_ioctl(&self, arg: usize) -> AxResult<usize> {
+        let command = descriptor::read_usbdevfs_ioctl(arg)?;
+        if command.ifno < 0 || command.ifno > u8::MAX as i32 {
+            return Err(AxError::InvalidInput);
+        }
+
+        match command.ioctl_code as u32 {
+            descriptor::USBDEVFS_DISCONNECT | descriptor::USBDEVFS_CONNECT => Ok(0),
+            _ => Err(AxError::Unsupported),
+        }
+    }
+
+    fn disconnect_claim_ioctl(&self, arg: usize) -> AxResult<usize> {
+        let claim = descriptor::read_usbdevfs_disconnect_claim(arg)?;
+        if claim.interface > u8::MAX as u32 {
+            return Err(AxError::InvalidInput);
+        }
+        self.claim_interface(claim.interface as u8, 0)
     }
 
     fn claimed_endpoint(&self, endpoint: u8) -> AxResult<ClaimedEndpoint> {
@@ -240,6 +294,174 @@ impl UsbDeviceFile {
         Ok(())
     }
 
+    fn write_completed_urb(&self, completed: CompletedUrb) -> AxResult<()> {
+        let urb = crate::mm::UserPtr::<descriptor::UsbdevfsUrb>::from(completed.user_urb_ptr)
+            .get_as_mut()?;
+
+        match completed.result {
+            Ok(result) => {
+                if !result.data.is_empty() {
+                    let copy_len = result.data.len().min(urb.buffer_length.max(0) as usize);
+                    crate::mm::UserPtr::<u8>::from(urb.buffer)
+                        .get_as_mut_slice(copy_len)?
+                        .copy_from_slice(&result.data[..copy_len]);
+                }
+                if !result.packet_lengths.is_empty() {
+                    self.write_iso_packet_results(
+                        completed.user_urb_ptr,
+                        &result.packet_lengths,
+                        result.actual_length,
+                    )?;
+                }
+                urb.status = 0;
+                urb.actual_length = result.actual_length as i32;
+                urb.error_count = 0;
+                if completed.log {
+                    info!(
+                        "usbfs: reap urb ptr={:#x} status=0 actual={} packets={}",
+                        completed.user_urb_ptr,
+                        result.actual_length,
+                        result.packet_lengths.len()
+                    );
+                }
+            }
+            Err(err) => {
+                let status = -LinuxError::from(err).code();
+                urb.status = status;
+                urb.actual_length = 0;
+                urb.error_count = 1;
+                if completed.log {
+                    warn!(
+                        "usbfs: reap urb ptr={:#x} status={} err={:?}",
+                        completed.user_urb_ptr, status, err
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn submit_endpoint_urb_async(
+        &self,
+        arg: usize,
+        expected_urb_type: u8,
+        transfer_type: EndpointTransferType,
+        packet_lengths: Vec<usize>,
+        total_length: usize,
+    ) -> AxResult<usize> {
+        let urb = crate::mm::UserPtr::<descriptor::UsbdevfsUrb>::from(arg).get_as_mut()?;
+        if urb.type_ != expected_urb_type {
+            return Err(ax_errno::AxError::Unsupported);
+        }
+        if urb.buffer_length < 0 || total_length > urb.buffer_length as usize {
+            return Err(ax_errno::AxError::InvalidInput);
+        }
+
+        let endpoint = urb.endpoint;
+        let claimed_endpoint = self.claimed_endpoint(endpoint)?;
+        if claimed_endpoint.transfer_type != transfer_type {
+            return Err(AxError::InvalidInput);
+        }
+
+        let is_in = endpoint & 0x80 != 0;
+        let mut buffer = if is_in {
+            if total_length > 0 {
+                let _ =
+                    crate::mm::UserPtr::<u8>::from(urb.buffer).get_as_mut_slice(total_length)?;
+            }
+            alloc::vec![0; total_length]
+        } else {
+            crate::mm::UserConstPtr::<u8>::from(urb.buffer as *const u8)
+                .get_as_slice(total_length)?
+                .to_vec()
+        };
+
+        let pending_urbs = self.pending_urbs.clone();
+        let poll_urbs = self.poll_urbs.clone();
+        let manager = self.manager.clone();
+        let bus_num = self.bus_num;
+        let device_num = self.device_num;
+        let log = usbfs_should_log_urb();
+
+        if log {
+            info!(
+                "usbfs: submit urb ptr={:#x} type={:?} ep={:#04x} len={} packets={} dir={}",
+                arg,
+                transfer_type,
+                endpoint,
+                total_length,
+                packet_lengths.len(),
+                if is_in { "in" } else { "out" }
+            );
+        }
+
+        ax_task::spawn_with_name(
+            move || {
+                if log {
+                    info!(
+                        "usbfs: start urb ptr={:#x} type={:?} ep={:#04x}",
+                        arg, transfer_type, endpoint
+                    );
+                }
+
+                let result = manager
+                    .acquire_device(bus_num, device_num)
+                    .and_then(|lease| {
+                        let actual = match (transfer_type, is_in) {
+                            (EndpointTransferType::Bulk, true) => {
+                                lease.bulk_in(endpoint, &mut buffer)
+                            }
+                            (EndpointTransferType::Bulk, false) => {
+                                lease.bulk_out(endpoint, &buffer)
+                            }
+                            (EndpointTransferType::Interrupt, true) => {
+                                lease.interrupt_in(endpoint, &mut buffer)
+                            }
+                            (EndpointTransferType::Interrupt, false) => {
+                                lease.interrupt_out(endpoint, &buffer)
+                            }
+                            (EndpointTransferType::Isochronous, true) => {
+                                lease.iso_in(endpoint, &mut buffer, &packet_lengths)
+                            }
+                            (EndpointTransferType::Isochronous, false) => {
+                                lease.iso_out(endpoint, &buffer, &packet_lengths)
+                            }
+                        }?;
+                        Ok(UrbTransferResult {
+                            data: if is_in { buffer } else { Vec::new() },
+                            actual_length: actual,
+                            packet_lengths,
+                        })
+                    });
+
+                if log {
+                    match &result {
+                        Ok(result) => info!(
+                            "usbfs: complete urb ptr={:#x} actual={} packets={}",
+                            arg,
+                            result.actual_length,
+                            result.packet_lengths.len()
+                        ),
+                        Err(err) => warn!("usbfs: complete urb ptr={:#x} err={:?}", arg, err),
+                    }
+                }
+
+                complete_urb(
+                    &pending_urbs,
+                    &poll_urbs,
+                    CompletedUrb {
+                        user_urb_ptr: arg,
+                        result,
+                        log,
+                    },
+                );
+            },
+            "usbfs-urb".to_owned(),
+        );
+
+        Ok(0)
+    }
+
     fn submit_control_urb(&self, arg: usize) -> AxResult<usize> {
         let urb = crate::mm::UserPtr::<descriptor::UsbdevfsUrb>::from(arg).get_as_mut()?;
         if urb.type_ != descriptor::USBDEVFS_URB_TYPE_CONTROL {
@@ -260,6 +482,15 @@ impl UsbDeviceFile {
             return Err(ax_errno::AxError::InvalidInput);
         }
 
+        let log = usbfs_should_log_urb();
+        if log {
+            info!(
+                "usbfs: submit control urb ptr={:#x} req_type={:#04x} req={:#04x} value={:#06x} \
+                 index={:#06x} len={}",
+                arg, b_request_type, b_request, w_value, w_index, w_length
+            );
+        }
+
         let actual = self.with_live_lease(|lease| {
             lease.control_transfer(
                 b_request_type,
@@ -269,11 +500,27 @@ impl UsbDeviceFile {
                 &mut transfer[8..8 + w_length],
             )
         })?;
+        if log {
+            info!(
+                "usbfs: complete control urb ptr={:#x} actual={}",
+                arg, actual
+            );
+        }
         urb.status = 0;
         urb.actual_length = actual as i32;
-        self.pending_urbs
-            .lock()
-            .push_back(PendingUrb { user_urb_ptr: arg });
+        complete_urb(
+            &self.pending_urbs,
+            &self.poll_urbs,
+            CompletedUrb {
+                user_urb_ptr: arg,
+                result: Ok(UrbTransferResult {
+                    data: Vec::new(),
+                    actual_length: actual,
+                    packet_lengths: Vec::new(),
+                }),
+                log,
+            },
+        );
         Ok(0)
     }
 
@@ -286,19 +533,13 @@ impl UsbDeviceFile {
             return Err(ax_errno::AxError::InvalidInput);
         }
 
-        let actual = self.run_endpoint_transfer(
-            urb.endpoint,
+        self.submit_endpoint_urb_async(
+            arg,
+            descriptor::USBDEVFS_URB_TYPE_BULK,
             EndpointTransferType::Bulk,
-            urb.buffer,
+            Vec::new(),
             urb.buffer_length as usize,
-            &[],
-        )?;
-        urb.status = 0;
-        urb.actual_length = actual as i32;
-        self.pending_urbs
-            .lock()
-            .push_back(PendingUrb { user_urb_ptr: arg });
-        Ok(0)
+        )
     }
 
     fn submit_interrupt_urb(&self, arg: usize) -> AxResult<usize> {
@@ -309,20 +550,25 @@ impl UsbDeviceFile {
         if urb.buffer_length < 0 {
             return Err(ax_errno::AxError::InvalidInput);
         }
+        if snapshot_is_uvc_status_interrupt_endpoint(&self.snapshot, urb.endpoint) {
+            if usbfs_should_log_urb() {
+                info!(
+                    "usbfs: ignoring long-lived UVC status interrupt urb ptr={:#x} ep={:#04x}",
+                    arg, urb.endpoint
+                );
+            }
+            urb.status = 0;
+            urb.actual_length = 0;
+            return Ok(0);
+        }
 
-        let actual = self.run_endpoint_transfer(
-            urb.endpoint,
+        self.submit_endpoint_urb_async(
+            arg,
+            descriptor::USBDEVFS_URB_TYPE_INTERRUPT,
             EndpointTransferType::Interrupt,
-            urb.buffer,
+            Vec::new(),
             urb.buffer_length as usize,
-            &[],
-        )?;
-        urb.status = 0;
-        urb.actual_length = actual as i32;
-        self.pending_urbs
-            .lock()
-            .push_back(PendingUrb { user_urb_ptr: arg });
-        Ok(0)
+        )
     }
 
     fn submit_iso_urb(&self, arg: usize) -> AxResult<usize> {
@@ -350,21 +596,13 @@ impl UsbDeviceFile {
             return Err(AxError::InvalidInput);
         }
 
-        let actual = self.run_endpoint_transfer(
-            urb.endpoint,
+        self.submit_endpoint_urb_async(
+            arg,
+            descriptor::USBDEVFS_URB_TYPE_ISO,
             EndpointTransferType::Isochronous,
-            urb.buffer,
+            packet_lengths,
             total_length,
-            &packet_lengths,
-        )?;
-        self.write_iso_packet_results(arg, &packet_lengths, actual)?;
-        urb.status = 0;
-        urb.actual_length = actual as i32;
-        urb.error_count = 0;
-        self.pending_urbs
-            .lock()
-            .push_back(PendingUrb { user_urb_ptr: arg });
-        Ok(0)
+        )
     }
 
     fn submit_urb(&self, arg: usize) -> AxResult<usize> {
@@ -381,10 +619,12 @@ impl UsbDeviceFile {
     }
 
     fn reap_urb(&self, arg: usize) -> AxResult<usize> {
-        let Some(pending) = self.pending_urbs.lock().pop_front() else {
+        let Some(completed) = self.pending_urbs.lock().pop_front() else {
             return Err(ax_errno::AxError::WouldBlock);
         };
-        (arg as *mut usize).vm_write(pending.user_urb_ptr)?;
+        let user_urb_ptr = completed.user_urb_ptr;
+        self.write_completed_urb(completed)?;
+        (arg as *mut usize).vm_write(user_urb_ptr)?;
         Ok(0)
     }
 }
@@ -413,13 +653,34 @@ impl FileLike for UsbDeviceFile {
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         match cmd {
             descriptor::USBDEVFS_CONTROL => {
+                let log = usbfs_should_log_urb();
+                if log && let Ok(ctrl) = descriptor::read_usbdevfs_ctrltransfer(arg) {
+                    info!(
+                        "usbfs: control ioctl req_type={:#04x} req={:#04x} value={:#06x} \
+                         index={:#06x} len={}",
+                        ctrl.b_request_type,
+                        ctrl.b_request,
+                        ctrl.w_value,
+                        ctrl.w_index,
+                        ctrl.w_length
+                    );
+                }
                 let lease = self.lease.lock();
                 if let Some(lease) = lease.as_ref() {
-                    return lease.ioctl(cmd, arg);
+                    let result = lease.ioctl(cmd, arg);
+                    if log {
+                        info!("usbfs: control ioctl result={:?}", result);
+                    }
+                    return result;
                 }
                 drop(lease);
-                self.manager
-                    .snapshot_device_ioctl(self.bus_num, self.device_num, cmd, arg)
+                let result =
+                    self.manager
+                        .snapshot_device_ioctl(self.bus_num, self.device_num, cmd, arg);
+                if log {
+                    info!("usbfs: snapshot control ioctl result={:?}", result);
+                }
+                result
             }
             descriptor::USBDEVFS_CLAIMINTERFACE => {
                 let interface = descriptor::read_usbdevfs_u32(arg)?;
@@ -435,6 +696,7 @@ impl FileLike for UsbDeviceFile {
                 }
                 self.release_interface(interface as u8)
             }
+            descriptor::USBDEVFS_GETDRIVER => self.get_driver_ioctl(arg),
             descriptor::USBDEVFS_SETINTERFACE => {
                 let set = descriptor::read_usbdevfs_setinterface(arg)?;
                 if set.interface > u8::MAX as u32 || set.altsetting > u8::MAX as u32 {
@@ -442,6 +704,10 @@ impl FileLike for UsbDeviceFile {
                 }
                 self.claim_interface(set.interface as u8, set.altsetting as u8)
             }
+            descriptor::USBDEVFS_IOCTL => self.kernel_driver_ioctl(arg),
+            descriptor::USBDEVFS_DISCONNECT | descriptor::USBDEVFS_CONNECT => Ok(0),
+            descriptor::USBDEVFS_DISCONNECT_CLAIM => self.disconnect_claim_ioctl(arg),
+            descriptor::USBDEVFS_DISCARDURB => Ok(0),
             descriptor::USBDEVFS_BULK => self.bulk_ioctl(arg),
             descriptor::USBDEVFS_SUBMITURB => self.submit_urb(arg),
             descriptor::USBDEVFS_REAPURB | descriptor::USBDEVFS_REAPURBNDELAY => self.reap_urb(arg),
@@ -474,7 +740,28 @@ impl Pollable for UsbDeviceFile {
         events
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if events.contains(IoEvents::IN) {
+            self.poll_urbs.register(context.waker());
+        }
+    }
+}
+
+fn complete_urb(
+    pending_urbs: &Arc<Mutex<VecDeque<CompletedUrb>>>,
+    poll_urbs: &Arc<PollSet>,
+    completed: CompletedUrb,
+) {
+    pending_urbs.lock().push_back(completed);
+    poll_urbs.wake();
+}
+
+fn usbfs_should_log_urb() -> bool {
+    USBFS_URB_LOG_BUDGET
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |budget| {
+            budget.checked_sub(1)
+        })
+        .is_ok()
 }
 
 fn snapshot_has_interface(
@@ -494,6 +781,59 @@ fn snapshot_has_interface(
             && snapshot.descriptor_blob[cursor + 3] == alternate_setting
         {
             return true;
+        }
+        cursor += length;
+    }
+    false
+}
+
+fn snapshot_is_uvc_control_interface(
+    snapshot: &descriptor::UsbDeviceSnapshot,
+    interface_number: u8,
+    alternate_setting: u8,
+) -> bool {
+    let mut cursor = 18usize;
+    while cursor + 2 <= snapshot.descriptor_blob.len() {
+        let length = snapshot.descriptor_blob[cursor] as usize;
+        if length < 2 || cursor + length > snapshot.descriptor_blob.len() {
+            return false;
+        }
+        if snapshot.descriptor_blob[cursor + 1] == 0x04
+            && length >= 9
+            && snapshot.descriptor_blob[cursor + 2] == interface_number
+            && snapshot.descriptor_blob[cursor + 3] == alternate_setting
+        {
+            return snapshot.descriptor_blob[cursor + 5] == 0x0e
+                && snapshot.descriptor_blob[cursor + 6] == 0x01;
+        }
+        cursor += length;
+    }
+    false
+}
+
+fn snapshot_is_uvc_status_interrupt_endpoint(
+    snapshot: &descriptor::UsbDeviceSnapshot,
+    endpoint: u8,
+) -> bool {
+    let mut cursor = 18usize;
+    let mut is_uvc_control_interface = false;
+
+    while cursor + 2 <= snapshot.descriptor_blob.len() {
+        let length = snapshot.descriptor_blob[cursor] as usize;
+        if length < 2 || cursor + length > snapshot.descriptor_blob.len() {
+            return false;
+        }
+
+        match snapshot.descriptor_blob[cursor + 1] {
+            0x04 if length >= 9 => {
+                is_uvc_control_interface = snapshot.descriptor_blob[cursor + 5] == 0x0e
+                    && snapshot.descriptor_blob[cursor + 6] == 0x01;
+            }
+            0x05 if length >= 7 && snapshot.descriptor_blob[cursor + 2] == endpoint => {
+                return is_uvc_control_interface
+                    && (snapshot.descriptor_blob[cursor + 3] & 0x03) == 3;
+            }
+            _ => {}
         }
         cursor += length;
     }

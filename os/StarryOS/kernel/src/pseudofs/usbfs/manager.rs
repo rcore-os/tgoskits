@@ -105,6 +105,10 @@ impl UsbDeviceLease {
             .live_claim_interface(self.stable_id, interface, alternate)
     }
 
+    pub(super) fn ensure_configured(&self) -> AxResult<()> {
+        self.manager.live_ensure_configured(self.stable_id)
+    }
+
     pub(super) fn bulk_in(&self, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
         self.manager.live_bulk_in(self.stable_id, endpoint, data)
     }
@@ -188,9 +192,19 @@ impl UsbFsManager {
         {
             let pending_hosts = {
                 let mut state = self.state.lock();
+                let open_hosts = state
+                    .devices
+                    .values()
+                    .filter(|record| record.open_count > 0)
+                    .map(|record| record.host_device_id)
+                    .collect::<Vec<_>>();
                 let mut pending = Vec::new();
                 for host in &mut state.hosts {
                     let irq_dirty = host.irq_num.map(irq::take_dirty).unwrap_or(false);
+                    if open_hosts.contains(&host.device_id) {
+                        host.needs_probe |= irq_dirty;
+                        continue;
+                    }
                     if host.needs_probe || irq_dirty {
                         host.needs_probe = false;
                         pending.push((host.device_id, host.bus_num));
@@ -622,22 +636,30 @@ impl UsbFsManager {
         interface: u8,
         alternate: u8,
     ) -> AxResult<()> {
+        self.live_ensure_configured(stable_id)?;
         let device = self.live_device_by_id(stable_id)?;
         let mut device = device.lock();
-        if ax_task::future::block_on(device.device.current_configuration_descriptor()).is_err() {
-            let configuration_value = device
-                .device
-                .configurations()
-                .first()
-                .map(|config| config.configuration_value)
-                .ok_or(AxError::NotFound)?;
-            ax_task::future::block_on(device.device.set_configuration(configuration_value))
-                .map_err(map_usb_error)?;
-        }
         ax_task::future::block_on(device.device.claim_interface(interface, alternate))
             .map_err(map_usb_error)?;
         device.endpoints.clear();
         Ok(())
+    }
+
+    fn live_ensure_configured(&self, stable_id: UsbStableId) -> AxResult<()> {
+        let device = self.live_device_by_id(stable_id)?;
+        let mut device = device.lock();
+        if ax_task::future::block_on(device.device.current_configuration_descriptor()).is_ok() {
+            return Ok(());
+        }
+
+        let configuration_value = device
+            .device
+            .configurations()
+            .first()
+            .map(|config| config.configuration_value)
+            .ok_or(AxError::NotFound)?;
+        ax_task::future::block_on(device.device.set_configuration(configuration_value))
+            .map_err(map_usb_error)
     }
 
     fn live_bulk_in(

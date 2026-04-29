@@ -47,7 +47,7 @@ heapless = "0.9"
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
-crab-usb = "0.6.3"
+crab-usb = "0.7"
 pcie = { version = "0.6" }
 rd-block = "0.1"
 rd-net = { version = "0.1", optional = true }

@@ -56,6 +56,29 @@ pub(super) struct UsbdevfsSetInterface {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct UsbdevfsGetDriver {
+    pub(super) interface: u32,
+    pub(super) driver: [u8; 256],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct UsbdevfsIoctl {
+    pub(super) ifno: i32,
+    pub(super) ioctl_code: i32,
+    pub(super) data: *mut u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct UsbdevfsDisconnectClaim {
+    pub(super) interface: u32,
+    pub(super) flags: u32,
+    pub(super) driver: [u8; 256],
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct UsbdevfsIsoPacketDesc {
     pub(super) length: u32,
@@ -103,15 +126,21 @@ pub(super) const USBDEVFS_CONTROL: u32 = iowr::<UsbdevfsCtrlTransfer>(b'U', 0);
 pub(super) const USBDEVFS_BULK: u32 = iowr::<UsbdevfsBulkTransfer>(b'U', 2);
 pub(super) const USBDEVFS_SETINTERFACE: u32 = ior::<UsbdevfsSetInterface>(b'U', 4);
 pub(super) const USBDEVFS_SETCONFIGURATION: u32 = ior::<u32>(b'U', 5);
+pub(super) const USBDEVFS_GETDRIVER: u32 = iow::<UsbdevfsGetDriver>(b'U', 8);
 pub(super) const USBDEVFS_SUBMITURB: u32 = ior::<UsbdevfsUrb>(b'U', 10);
+pub(super) const USBDEVFS_DISCARDURB: u32 = ioc(0, b'U', 11, 0);
 pub(super) const USBDEVFS_REAPURB: u32 = iow::<usize>(b'U', 12);
 pub(super) const USBDEVFS_REAPURBNDELAY: u32 = iow::<usize>(b'U', 13);
 pub(super) const USBDEVFS_CLAIMINTERFACE: u32 = ior::<u32>(b'U', 15);
 pub(super) const USBDEVFS_RELEASEINTERFACE: u32 = ior::<u32>(b'U', 16);
 pub(super) const USBDEVFS_CONNECTINFO: u32 = ior::<UsbdevfsConnectInfo>(b'U', 17);
+pub(super) const USBDEVFS_IOCTL: u32 = iowr::<UsbdevfsIoctl>(b'U', 18);
 pub(super) const USBDEVFS_RESET: u32 = ioc(0, b'U', 20, 0);
 pub(super) const USBDEVFS_CLEAR_HALT: u32 = ior::<u32>(b'U', 21);
+pub(super) const USBDEVFS_DISCONNECT: u32 = ioc(0, b'U', 22, 0);
+pub(super) const USBDEVFS_CONNECT: u32 = ioc(0, b'U', 23, 0);
 pub(super) const USBDEVFS_GET_CAPABILITIES: u32 = ior::<u32>(b'U', 26);
+pub(super) const USBDEVFS_DISCONNECT_CLAIM: u32 = ior::<UsbdevfsDisconnectClaim>(b'U', 27);
 pub(super) const USBDEVFS_URB_SHORT_NOT_OK: u32 = 0x01;
 pub(super) const USBDEVFS_URB_ISO_ASAP: u32 = 0x02;
 pub(super) const USBDEVFS_URB_TYPE_CONTROL: u8 = 2;
@@ -148,6 +177,18 @@ pub(super) fn read_usbdevfs_bulktransfer(arg: usize) -> VfsResult<UsbdevfsBulkTr
 
 pub(super) fn read_usbdevfs_setinterface(arg: usize) -> VfsResult<UsbdevfsSetInterface> {
     UserConstPtr::<UsbdevfsSetInterface>::from(arg)
+        .get_as_ref()
+        .copied()
+}
+
+pub(super) fn read_usbdevfs_ioctl(arg: usize) -> VfsResult<UsbdevfsIoctl> {
+    UserConstPtr::<UsbdevfsIoctl>::from(arg)
+        .get_as_ref()
+        .copied()
+}
+
+pub(super) fn read_usbdevfs_disconnect_claim(arg: usize) -> VfsResult<UsbdevfsDisconnectClaim> {
+    UserConstPtr::<UsbdevfsDisconnectClaim>::from(arg)
         .get_as_ref()
         .copied()
 }
@@ -213,6 +254,11 @@ fn serialize_descriptor_blob(
     out.push(desc.num_configurations);
 
     for config in configurations {
+        if !config.raw.is_empty() {
+            out.extend_from_slice(&config.raw);
+            continue;
+        }
+
         let mut config_blob = Vec::new();
         for interface in &config.interfaces {
             for alt in &interface.alt_settings {

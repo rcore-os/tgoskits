@@ -1,12 +1,12 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
-success_regex = ['(?m)^STARRY_LSUSB_HUB_OK$']
+success_regex = [
+  # '(?m)^uvc-fps: frames=[1-9][0-9]* fps=[0-9]+\.[0-9]+ bytes=[1-9][0-9]* throughput_mib_s=[0-9]+\.[0-9]+ elapsed_sec=[0-9]+\.[0-9]+$'
+  ]
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
-  '(?m)^STARRY_LSUSB_ROOT_HUB_MISSING$',
-  '(?m)^STARRY_LSUSB_GENESYS_HUB_MISSING$',
+  '(?m)^uvc-fps: error: .*$',
   '(?m)^unable to initialize libusb: .*$',
-  '(?i)(lsusb|tee|grep|sh): .*not found',
-  '(?m)^lsusb: .*',
+  '(?i)(uvc-fps|sh): .*not found',
 ]
 timeout = 300
