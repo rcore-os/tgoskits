@@ -47,8 +47,8 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     }
 
     let curr = current();
-    let _aspace_arc = curr.as_thread().proc_data.aspace();
-    let mut aspace = _aspace_arc.lock();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
 
     if !aspace.can_access_range(start, layout.size(), access_flags) {
         return Err(AxError::BadAddress);
@@ -91,8 +91,8 @@ fn check_null_terminated<T: PartialEq + Default>(
                 // querying the page table since the page might has not been
                 // allocated yet.
                 let curr = current();
-                let _aspace_arc = curr.as_thread().proc_data.aspace();
-                let aspace = _aspace_arc.lock();
+                let aspace_arc = curr.as_thread().proc_data.aspace();
+                let aspace = aspace_arc.lock();
                 if !aspace.can_access_range(page, PAGE_SIZE_4K, access_flags) {
                     return Err(AxError::BadAddress);
                 }

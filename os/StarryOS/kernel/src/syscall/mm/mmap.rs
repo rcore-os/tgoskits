@@ -299,8 +299,8 @@ pub fn sys_munmap(addr: usize, length: usize) -> AxResult<isize> {
     }
     debug!("sys_munmap <= addr: {addr:#x}, length: {length:x}");
     let curr = current();
-    let _aspace_arc = curr.as_thread().proc_data.aspace();
-    let mut aspace = _aspace_arc.lock();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
     aspace.unmap(start_addr, length)?;
@@ -328,8 +328,8 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     }
 
     let curr = current();
-    let _aspace_arc = curr.as_thread().proc_data.aspace();
-    let mut aspace = _aspace_arc.lock();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
     // man 2 mprotect: addresses without a mapping → ENOMEM.
@@ -641,8 +641,8 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
 
     if length > 0 {
         let curr = current();
-        let _aspace_arc = curr.as_thread().proc_data.aspace();
-        let aspace = _aspace_arc.lock();
+        let aspace_arc = curr.as_thread().proc_data.aspace();
+        let aspace = aspace_arc.lock();
         if aspace.find_area(VirtAddr::from(addr)).is_none() {
             return Err(AxError::NoMemory);
         }

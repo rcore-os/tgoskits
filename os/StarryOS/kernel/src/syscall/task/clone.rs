@@ -196,8 +196,8 @@ impl CloneArgs {
             let aspace = if flags.contains(CloneFlags::VM) {
                 old_proc_data.aspace()
             } else {
-                let _aspace_arc = old_proc_data.aspace();
-                let mut aspace = _aspace_arc.lock();
+                let aspace_arc = old_proc_data.aspace();
+                let mut aspace = aspace_arc.lock();
                 let aspace = aspace.try_clone()?;
                 copy_from_kernel(&mut aspace.lock())?;
                 aspace
