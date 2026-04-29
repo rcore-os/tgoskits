@@ -10,7 +10,7 @@ const DEFAULT_PORT = 2999;
 const DEFAULT_BOOT_ARG = 'fsckfix';
 const DEFAULT_ENV_NAME = 'extraboardargs';
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
-const DEFAULT_LOGIN_REGEX = String.raw`(root@[^#\r\n]*#\s*$|[A-Za-z0-9_.-]+\s+login:\s*$)`;
+const DEFAULT_LOGIN_REGEX = String.raw`(root@[^#\r\n]*#\s*$|[A-Za-z0-9_.-]+\s+login:\s*$|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[^\r\n]*[#$]\s*$)`;
 
 function usage() {
   console.log(`Usage:

@@ -1,6 +1,6 @@
 ---
 name: board-uboot-fsck-repair
-description: Repair a remote physical board's Linux ext4 root filesystem by interrupting U-Boot through `ostool-server`, injecting one-shot `extraboardargs=fsckfix`, booting Linux, and confirming the login/root prompt. Use this skill when board Linux boot fails in initramfs fsck with ext4 journal/orphan/inode corruption, when StarryOS or ArceOS board tests may have damaged the OrangePi-5-Plus rootfs, when the user asks to recover a board through U-Boot fsck, or when validating that Linux can boot cleanly before or after Starry board filesystem tests.
+description: Repair a remote physical board's Linux ext4 root filesystem by interrupting U-Boot through `ostool-server`, injecting one-shot `extraboardargs=fsckfix`, booting Linux, and confirming the login/root/user shell prompt. Use this skill when board Linux boot fails in initramfs fsck with ext4 journal/orphan/inode corruption, when StarryOS or ArceOS board tests may have damaged the OrangePi-5-Plus rootfs, when the user asks to recover a board through U-Boot fsck, or when validating that Linux can boot cleanly before or after Starry board filesystem tests.
 ---
 
 # Board U-Boot Fsck Repair
@@ -29,7 +29,7 @@ Treat success as all of:
 
 - U-Boot prompt was reached.
 - `setenv extraboardargs fsckfix` and `boot` were sent.
-- Linux reached a login prompt or root shell.
+- Linux reached a login prompt, root shell, or auto-login user shell such as `orangepi@orangepi5plus:~$`.
 - The script printed a `RESULT ... linux_login=true ...` line and saved a serial log.
 
 ## Manual Workflow
@@ -59,7 +59,7 @@ Do not use `saveenv`; this is a one-shot recovery path. Prefer `extraboardargs=f
 
 4. Confirm initramfs runs the forcing repair path. Useful evidence includes `fsck.ext4 -y -C0 /dev/mmcblk0p2`, `FILE SYSTEM WAS MODIFIED`, fixed/cleared entries, or a later clean check.
 
-5. Continue only after Linux reaches a prompt such as `root@...#` or `<host> login:`. If fsck still says `UNEXPECTED INCONSISTENCY; RUN fsck MANUALLY`, collect the serial log and do not run Starry board tests on that rootfs yet.
+5. Continue only after Linux reaches a prompt such as `root@...#`, `<host> login:`, or `orangepi@orangepi5plus:~$`. If fsck still says `UNEXPECTED INCONSISTENCY; RUN fsck MANUALLY`, collect the serial log and do not run Starry board tests on that rootfs yet.
 
 ## Board-Test Usage
 
@@ -67,8 +67,15 @@ Use this repair before a destructive board validation and again after StarryOS w
 
 1. Repair and prove Linux boots with this skill.
 2. Run the Starry board workload, preferably through `cargo xtask starry test board ...`.
-3. Boot Linux normally, without `fsckfix`, to check whether initramfs fsck reports corruption.
-4. If Linux fails fsck, save the failing serial log, then run this repair again before returning the board to the pool.
+3. Boot Linux normally, without `fsckfix`, to check whether initramfs fsck reports corruption:
+
+```bash
+cargo xtask board connect -b OrangePi-5-Plus
+```
+
+4. Treat these normal-boot messages as evidence that StarryOS damaged the rootfs: `fsck.ext4 -a -C0 /dev/mmcblk0p2`, `recovering journal`, `directory corrupted`, `UNEXPECTED INCONSISTENCY; RUN fsck MANUALLY`, or `requires a manual fsck`.
+5. If Linux fails fsck, save the failing serial log, release the serial session, then run this repair again before returning the board to the pool.
+6. A Starry test may reach `root@starry:/root #` but still fail its command or time out; still perform the Linux normal-boot check before concluding the rootfs is safe.
 
 ## Failure Handling
 
