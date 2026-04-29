@@ -31,6 +31,7 @@ const CASE_SH_DIR_NAME: &str = "sh";
 const GROUPED_CASE_RUNNER_NAME: &str = "starry-run-case-tests";
 const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
 const USB_STICK_IMAGE_SIZE: u64 = 16 * 1024 * 1024;
+const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TestQemuCase {
@@ -77,6 +78,10 @@ pub(crate) struct CaseAssetLayout {
     pub(crate) cmake_toolchain_file: PathBuf,
     pub(crate) apk_cache_dir: PathBuf,
     pub(crate) usb_stick_path: PathBuf,
+    /// Per-case copy of the shared rootfs image. All inject and QEMU operations
+    /// use this copy so that concurrent or sequential runs cannot pollute each
+    /// other's state and QEMU guest writes stay isolated.
+    pub(crate) case_rootfs_copy: PathBuf,
 }
 
 /// Resolves the workspace target directory used for a test build target.
@@ -85,6 +90,10 @@ pub(crate) fn resolve_target_dir(workspace_root: &Path, target: &str) -> anyhow:
 }
 
 /// Prepares any case-specific rootfs assets required by a QEMU test.
+///
+/// Always produces a per-case rootfs copy regardless of whether the case needs
+/// additional pipeline assets, ensuring QEMU guest writes are isolated between
+/// runs and cases.
 pub(crate) async fn prepare_case_assets(
     workspace_root: &Path,
     arch: &str,
@@ -92,38 +101,18 @@ pub(crate) async fn prepare_case_assets(
     case: &TestQemuCase,
     rootfs_path: PathBuf,
 ) -> anyhow::Result<PreparedCaseAssets> {
-    let needs_assets = case.is_grouped()
-        || case_uses_c_pipeline(case)
-        || case_uses_sh_pipeline(case)
-        || case_uses_python_pipeline(case)
-        || case_uses_usb_qemu_assets(arch, case);
-
-    if !needs_assets {
-        return Ok(PreparedCaseAssets {
-            rootfs_path,
-            extra_qemu_args: Vec::new(),
-        });
-    }
-
     let workspace_root = workspace_root.to_path_buf();
     let arch = arch.to_string();
     let target = target.to_string();
-    let rootfs_path_for_task = rootfs_path.clone();
     let case = case.clone();
-    let extra_qemu_args = tokio::task::spawn_blocking(move || {
-        prepare_case_assets_sync(
-            &workspace_root,
-            &arch,
-            &target,
-            &case,
-            &rootfs_path_for_task,
-        )
+    let (extra_qemu_args, case_rootfs) = tokio::task::spawn_blocking(move || {
+        prepare_case_assets_sync(&workspace_root, &arch, &target, &case, &rootfs_path)
     })
     .await
     .context("qemu test case asset task failed")??;
 
     Ok(PreparedCaseAssets {
-        rootfs_path,
+        rootfs_path: case_rootfs,
         extra_qemu_args,
     })
 }
@@ -178,30 +167,73 @@ pub(crate) fn case_asset_layout(
         cmake_toolchain_file: work_dir.join(CASE_CMAKE_TOOLCHAIN_FILE_NAME),
         apk_cache_dir: work_dir.join(CASE_APK_CACHE_DIR_NAME),
         usb_stick_path: work_dir.join(USB_STICK_IMAGE_NAME),
+        case_rootfs_copy: work_dir.join(CASE_ROOTFS_COPY_NAME),
         work_dir,
     })
 }
 
+/// Copies the shared rootfs image to a per-case working path.
+///
+/// The copy is always refreshed from the shared source so that leftover QEMU
+/// guest writes from a previous run do not affect the current execution.
+pub(crate) fn copy_shared_rootfs_for_case(
+    shared_rootfs: &Path,
+    layout: &CaseAssetLayout,
+) -> anyhow::Result<()> {
+    fs::copy(shared_rootfs, &layout.case_rootfs_copy).with_context(|| {
+        format!(
+            "failed to copy rootfs {} to {}",
+            shared_rootfs.display(),
+            layout.case_rootfs_copy.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Removes the per-case rootfs copy after a test run completes.
+///
+/// The work directory (CMake build cache, APK cache, etc.) is intentionally
+/// kept; only the large rootfs image is removed.  Failures are logged as
+/// warnings so that a stale copy never masks an actual test failure.
+pub(crate) fn remove_case_rootfs_copy(path: &Path) {
+    if path.exists()
+        && let Err(e) = fs::remove_file(path)
+    {
+        eprintln!(
+            "warning: failed to remove case rootfs copy `{}`: {e}",
+            path.display()
+        );
+    }
+}
+
 /// Performs the synchronous part of QEMU case asset preparation.
+///
+/// Returns `(extra_qemu_args, case_rootfs_path)` where `case_rootfs_path` is
+/// the per-case rootfs copy that QEMU should boot from.
 pub(crate) fn prepare_case_assets_sync(
     workspace_root: &Path,
     arch: &str,
     target: &str,
     case: &TestQemuCase,
-    case_rootfs: &Path,
-) -> anyhow::Result<Vec<String>> {
+    shared_rootfs: &Path,
+) -> anyhow::Result<(Vec<String>, PathBuf)> {
     let layout = case_asset_layout(workspace_root, target, &case.name)?;
     fs::create_dir_all(&layout.work_dir)
         .with_context(|| format!("failed to create {}", layout.work_dir.display()))?;
 
+    // Always make a fresh per-case copy so that QEMU guest writes from a
+    // previous run (or another concurrently running case) cannot bleed through.
+    copy_shared_rootfs_for_case(shared_rootfs, &layout)?;
+    let case_rootfs = layout.case_rootfs_copy.clone();
+
     if case.is_grouped() {
-        case_builder::prepare_grouped_case_assets_sync(arch, case, case_rootfs, &layout)?;
+        case_builder::prepare_grouped_case_assets_sync(arch, case, &case_rootfs, &layout)?;
     } else if case_uses_c_pipeline(case) {
-        case_builder::prepare_c_case_assets_sync(arch, case, case_rootfs, &layout)?;
+        case_builder::prepare_c_case_assets_sync(arch, case, &case_rootfs, &layout)?;
     } else if case_uses_sh_pipeline(case) {
-        prepare_sh_case_assets_sync(case, case_rootfs, &layout)?;
+        prepare_sh_case_assets_sync(case, &case_rootfs, &layout)?;
     } else if case_uses_python_pipeline(case) {
-        case_builder::prepare_python_case_assets_sync(arch, case, case_rootfs, &layout)?;
+        case_builder::prepare_python_case_assets_sync(arch, case, &case_rootfs, &layout)?;
     }
 
     let mut extra_qemu_args = Vec::new();
@@ -210,7 +242,7 @@ pub(crate) fn prepare_case_assets_sync(
         extra_qemu_args.extend(usb_qemu_args(&layout.usb_stick_path));
     }
 
-    Ok(extra_qemu_args)
+    Ok((extra_qemu_args, case_rootfs))
 }
 
 pub(crate) fn apply_grouped_qemu_config(qemu: &mut QemuConfig, case: &TestQemuCase) {
@@ -387,7 +419,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_case_assets_keeps_default_cases_plain() {
+    async fn prepare_case_assets_creates_per_case_rootfs_copy() {
         let root = tempdir().unwrap();
         let target_dir = root.path().join("target/x86_64-unknown-none");
         let rootfs_dir = root.path().join("target/rootfs");
@@ -406,13 +438,19 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            assets.rootfs_path,
-            rootfs_dir.join("rootfs-x86_64-alpine.img")
-        );
+        // rootfs_path must point to the per-case copy, not the shared image
+        let expected_copy = root
+            .path()
+            .join("target/x86_64-unknown-none/qemu-cases/smoke/case-rootfs.img");
+        assert_eq!(assets.rootfs_path, expected_copy);
         assert!(assets.extra_qemu_args.is_empty());
+        // The copy must have the same contents as the shared image
         assert_eq!(fs::read(&assets.rootfs_path).unwrap(), b"rootfs");
-        assert!(!target_dir.join("rootfs-x86_64-smoke.img").exists());
+        // The shared image itself must not be modified
+        assert_eq!(
+            fs::read(rootfs_dir.join("rootfs-x86_64-alpine.img")).unwrap(),
+            b"rootfs"
+        );
     }
 
     #[test]

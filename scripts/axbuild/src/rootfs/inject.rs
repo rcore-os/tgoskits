@@ -10,9 +10,10 @@
 
 use std::{
     fs,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
 };
 
 use anyhow::{Context, bail, ensure};
@@ -196,6 +197,10 @@ fn collect_overlay_debugfs_commands(
 }
 
 /// Executes a generated `debugfs` script against a writable rootfs image.
+///
+/// Stderr lines that only report that a directory already exists are suppressed
+/// because `mkdir /usr/bin` is harmless when the directory is already present.
+/// All other stderr output is forwarded so genuine errors remain visible.
 fn run_debugfs_script(
     rootfs_img: &Path,
     commands: &[String],
@@ -207,7 +212,7 @@ fn run_debugfs_script(
         .arg(rootfs_img)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
 
@@ -219,7 +224,29 @@ fn run_debugfs_script(
         writeln!(stdin, "quit").context("failed to finalize debugfs script")?;
     }
 
+    // Forward stderr on a background thread, suppressing benign "File exists"
+    // lines that debugfs emits when `mkdir` is called on a pre-existing dir.
+    let stderr_handle = child
+        .stderr
+        .take()
+        .context("failed to open debugfs stderr")?;
+    let filter_handle = thread::spawn(move || {
+        let reader = BufReader::new(stderr_handle);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if line.contains("File exists") || line.contains("already exists") {
+                continue;
+            }
+            eprintln!("{line}");
+        }
+    });
+
     let status = child.wait().context("failed to wait for debugfs")?;
+    let _ = filter_handle.join();
+
     if status.success() {
         Ok(())
     } else {

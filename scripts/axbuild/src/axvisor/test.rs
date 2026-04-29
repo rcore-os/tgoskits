@@ -640,7 +640,7 @@ impl Axvisor {
         request: &ResolvedAxvisorRequest,
         cargo: &Cargo,
         case: &AxvisorQemuCase,
-    ) -> anyhow::Result<QemuConfig> {
+    ) -> anyhow::Result<(QemuConfig, PathBuf)> {
         let mut qemu = self
             .app
             .tool_mut()
@@ -661,7 +661,7 @@ impl Axvisor {
         .await?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
         qemu.args.extend(prepared_assets.extra_qemu_args);
-        Ok(qemu)
+        Ok((qemu, prepared_assets.rootfs_path))
     }
 
     async fn run_qemu_case(
@@ -670,8 +670,13 @@ impl Axvisor {
         cargo: &Cargo,
         case: &AxvisorQemuCase,
     ) -> anyhow::Result<()> {
-        let qemu = self.load_qemu_case_config(request, cargo, case).await?;
-        self.app.run_qemu(cargo, qemu).await
+        let (qemu, case_rootfs) = self.load_qemu_case_config(request, cargo, case).await?;
+        let result = self.app.run_qemu(cargo, qemu).await;
+        // Remove the per-case rootfs copy immediately after the run so disk
+        // usage stays bounded to ~1 active copy at a time rather than
+        // accumulating one copy per case.
+        test_case::remove_case_rootfs_copy(&case_rootfs);
+        result
     }
 }
 
@@ -714,10 +719,11 @@ fn qemu_test_build_config(cases: &[AxvisorQemuCase]) -> anyhow::Result<Option<Pa
 }
 
 fn qemu_test_vmconfigs(cases: &[AxvisorQemuCase]) -> Vec<PathBuf> {
+    let mut seen = std::collections::BTreeSet::new();
     let mut vmconfigs = Vec::new();
     for case in cases {
         for vmconfig in &case.vmconfigs {
-            if !vmconfigs.contains(vmconfig) {
+            if seen.insert(vmconfig) {
                 vmconfigs.push(vmconfig.clone());
             }
         }

@@ -67,9 +67,13 @@ pub(crate) fn resolve_qemu_test_group(
     StarryTestGroup::parse(selected_group.unwrap_or(StarryTestGroup::Normal.as_str()))
 }
 
+/// Starry-specific extra fields in a QEMU test case TOML.
+///
+/// Only the fields that are not part of `ostool`'s `QemuConfig` are read here.
+/// The remaining fields (including `shell_init_cmd`) are read as `QemuConfig`
+/// later in `prepare_qemu_cases` so we avoid parsing the same file twice.
 #[derive(Debug, Deserialize)]
 struct StarryQemuCaseConfig {
-    shell_init_cmd: Option<String>,
     #[serde(default)]
     test_commands: Vec<String>,
 }
@@ -236,16 +240,17 @@ fn load_qemu_case(
     })
 }
 
+/// Parses `test_commands` from a Starry QEMU case TOML.
+///
+/// Only the Starry-specific `test_commands` field is read here.  The
+/// mutual-exclusion check against `shell_init_cmd` is deferred to
+/// `prepare_qemu_cases` where the full `QemuConfig` (including
+/// `shell_init_cmd`) is already available, avoiding a second file read.
 fn load_qemu_case_test_commands(qemu_config_path: &Path) -> anyhow::Result<Vec<String>> {
     let content = fs::read_to_string(qemu_config_path)
         .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
     let config: StarryQemuCaseConfig = toml::from_str(&content)
         .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
-    let shell_init_cmd = config
-        .shell_init_cmd
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
 
     let mut test_commands = Vec::with_capacity(config.test_commands.len());
     for command in config.test_commands {
@@ -258,14 +263,6 @@ fn load_qemu_case_test_commands(qemu_config_path: &Path) -> anyhow::Result<Vec<S
         }
         test_commands.push(command);
     }
-
-    if shell_init_cmd.is_some() && !test_commands.is_empty() {
-        bail!(
-            "Starry grouped qemu case `{}` cannot define both `shell_init_cmd` and `test_commands`",
-            qemu_config_path.display()
-        );
-    }
-
     Ok(test_commands)
 }
 
@@ -590,7 +587,7 @@ impl Starry {
             &request.target,
         )
         .await?;
-        let mut cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request)?;
         let cases = self
             .prepare_qemu_cases(&cargo, cases)
             .await
@@ -600,14 +597,20 @@ impl Starry {
         if let Some(smp) = suite_qemu_requirements.smp {
             request.smp = Some(smp);
         }
-        if let Some(memory_size) = suite_qemu_requirements.memory_size {
-            cargo = build::load_cargo_config_with_axconfig_overrides(
+        // Rebuild the cargo config when any suite-wide requirement changes so
+        // that SMP and memory settings are always reflected in the single shared
+        // kernel image that all cases boot from.
+        let cargo = if let Some(memory_size) = suite_qemu_requirements.memory_size {
+            build::load_cargo_config_with_axconfig_overrides(
                 &request,
                 vec![format!("plat.phys-memory-size=0x{memory_size:x}")],
-            )?;
+            )?
         } else if suite_qemu_requirements.smp.is_some() {
-            cargo = build::load_cargo_config(&request)?;
-        }
+            // SMP was updated in `request`; reload to pick up the new value.
+            build::load_cargo_config(&request)?
+        } else {
+            cargo
+        };
         self.app.set_debug_mode(request.debug)?;
         self.app
             .build(cargo.clone(), request.build_info_path.clone())
@@ -771,6 +774,21 @@ impl Starry {
                 .with_context(|| {
                     format!("failed to read Starry qemu config for case `{}`", case.name)
                 })?;
+            // Validate that a case does not combine shell_init_cmd with
+            // test_commands.  This check is done here rather than during the
+            // initial TOML parse so we only read each case file once.
+            let shell_init_cmd_set = qemu
+                .shell_init_cmd
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|v| !v.is_empty());
+            if shell_init_cmd_set && !case.test_commands.is_empty() {
+                bail!(
+                    "Starry grouped qemu case `{}` cannot define both `shell_init_cmd` and \
+                     `test_commands`",
+                    case.qemu_config_path.display()
+                );
+            }
             prepared.push(PreparedStarryQemuCase { case, qemu });
         }
 
@@ -827,7 +845,12 @@ impl Starry {
         );
         qemu.args.extend(prepared_assets.extra_qemu_args);
 
-        self.app.run_qemu(cargo, qemu).await
+        let result = self.app.run_qemu(cargo, qemu).await;
+        // Remove the per-case rootfs copy immediately after the run so disk
+        // usage stays bounded to ~1 active copy at a time rather than
+        // accumulating one copy per case.
+        case::remove_case_rootfs_copy(&prepared_assets.rootfs_path);
+        result
     }
 }
 
@@ -1069,7 +1092,11 @@ mod tests {
     }
 
     #[test]
-    fn grouped_case_rejects_shell_init_cmd_conflict() {
+    fn grouped_case_loads_with_both_shell_init_cmd_and_test_commands_present() {
+        // The mutual-exclusion check has been moved from the initial TOML parse
+        // (discover_qemu_cases) to prepare_qemu_cases so we only read each
+        // file once.  Therefore, discovery itself should succeed here; the
+        // conflict is detected later when QemuConfig is available.
         let root = tempdir().unwrap();
         let path = root
             .path()
@@ -1082,16 +1109,17 @@ mod tests {
         )
         .unwrap();
 
-        let err = discover_qemu_cases(
+        // Discovery no longer validates the shell_init_cmd / test_commands
+        // conflict; it should succeed and leave a grouped case behind.
+        let cases = discover_qemu_cases(
             root.path(),
             "x86_64",
             Some("bugfix"),
             StarryTestGroup::Normal,
         )
-        .unwrap_err()
-        .to_string();
-
-        assert!(err.contains("cannot define both `shell_init_cmd` and `test_commands`"));
+        .unwrap();
+        assert_eq!(cases.len(), 1);
+        assert!(!cases[0].test_commands.is_empty());
     }
 
     #[test]
