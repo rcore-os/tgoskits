@@ -310,6 +310,14 @@ jobs:
             container_image: ""
             required_repository_owner: rcore-os
             main_pr_only: false
+          - name: Test axvisor self-hosted x86_64 svm
+            use_container: false
+            runs_on: '["self-hosted","linux","amd"]'
+            command: cargo xtask axvisor test qemu --arch x86_64 --test-group svm --test-case smoke
+            cache_key: ""
+            container_image: ""
+            required_repository_owner: rcore-os
+            main_pr_only: false
           - name: Test axvisor self-hosted board orangepi-5-plus-linux
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
