@@ -101,10 +101,7 @@ impl ResetControl for Rk3588GpioReset {
     }
 }
 
-fn probe_rk3588(
-    info: FdtInfo<'_>,
-    plat_dev: PlatformDevice,
-) -> Result<(), OnProbeError> {
+fn probe_rk3588(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     let node_name = info.node.as_node().name();
     let NodeType::Pci(node) = info.node else {
         return Err(OnProbeError::NotMatch);
