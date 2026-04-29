@@ -402,8 +402,32 @@ impl ProcessData {
     }
 
     /// Replace this process's address space with a new one.
+    ///
+    /// # Why `mem::replace` instead of `*guard = new_aspace`
+    ///
+    /// `self.aspace` is a `SpinNoIrq<Arc<Mutex<AddrSpace>>>`. Locking it
+    /// disables IRQs and increments `preempt_count`, putting us in atomic
+    /// context. A plain assignment (`*guard = new_aspace`) would drop the
+    /// **old** `Arc<Mutex<AddrSpace>>` while the `SpinNoIrq` guard is still
+    /// alive. If that was the last strong reference (e.g. after a
+    /// `CLONE_VM` + `execve`), the destructor chain would be:
+    ///
+    /// ```text
+    /// Arc::drop → Mutex<AddrSpace>::drop → AddrSpace::drop
+    ///   → self.clear() → areas.clear() → FileBackendInner::drop
+    ///     → cache.remove_evict_listener()
+    ///       → evict_listeners.lock()        ← sleeping Mutex
+    ///         → might_sleep()               ← PANIC (atomic context)
+    /// ```
+    ///
+    /// `mem::replace` moves the old Arc out of the guard so it is dropped
+    /// **after** the `SpinNoIrq` guard, in normal preemptible context.
     pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
-        *self.aspace.lock() = new_aspace;
+        let _old = {
+            let mut guard = self.aspace.lock();
+            core::mem::replace(&mut *guard, new_aspace)
+        };
+        // `_old` drops here — SpinNoIrq already released, IRQs re-enabled.
     }
 
     /// Set the vfork completion queue (called on the child after a vfork,
