@@ -15,9 +15,6 @@ use rk3588_pci::{
     Delay, HostConfig, MEM_ATU_FIRST_REGION, OutboundWindow, ResetControl, Rk3588PcieHost,
 };
 
-const RK3588_PCIE2L1_APB_BASE: u64 = 0xfe18_0000;
-const RK3588_PCIE2L2_APB_BASE: u64 = 0xfe19_0000;
-
 const RK3588_GPIO_BASES: [u64; 5] = [
     0xfd8a_0000,
     0xfec2_0000,
@@ -107,7 +104,6 @@ impl ResetControl for Rk3588GpioReset {
 fn probe_rk3588(
     info: FdtInfo<'_>,
     plat_dev: PlatformDevice,
-    expected_apb_base: u64,
 ) -> Result<(), OnProbeError> {
     let node_name = info.node.as_node().name();
     let NodeType::Pci(node) = info.node else {
@@ -118,9 +114,6 @@ fn probe_rk3588(
     let apb_reg = *regs
         .first()
         .ok_or_else(|| OnProbeError::other(format!("{node_name} has no APB register")))?;
-    if apb_reg.address != expected_apb_base {
-        return Err(OnProbeError::NotMatch);
-    }
     let dbi_reg = *regs
         .get(1)
         .ok_or_else(|| OnProbeError::other(format!("{node_name} has no DBI register")))?;
@@ -128,7 +121,7 @@ fn probe_rk3588(
     let ranges = node.ranges().unwrap_or_default();
     let (cfg_phys, cfg_size) = config_window(&regs, &ranges)?;
     let (bus_base, logical_bus_end) = bus_range_info(node.bus_range());
-    let mut reset = pcie_reset_gpio(&info, expected_apb_base);
+    let mut reset = pcie_reset_gpio(&info, apb_reg.address);
 
     let apb_size = apb_reg.size.unwrap_or(0x10000) as usize;
     let dbi_size = dbi_reg.size.unwrap_or(0x400000) as usize;
@@ -175,7 +168,7 @@ fn probe_rk3588(
     info!(
         "Rockchip RK3588 PCIe host {:#x}: registering config window {:#x}/{} bytes, DT buses \
          {:#x}..={:#x}, logical buses 0..={}",
-        expected_apb_base,
+        apb_reg.address,
         cfg_phys,
         cfg_size,
         bus_base,
@@ -232,12 +225,12 @@ struct Rk3588ResetPin {
 
 fn rk3588_pcie_reset_pin(apb_base: u64) -> Option<Rk3588ResetPin> {
     match apb_base {
-        RK3588_PCIE2L1_APB_BASE => Some(Rk3588ResetPin {
+        0xfe18_0000 => Some(Rk3588ResetPin {
             bank: 3,
             pin: 11,
             active_high: true,
         }),
-        RK3588_PCIE2L2_APB_BASE => Some(Rk3588ResetPin {
+        0xfe19_0000 => Some(Rk3588ResetPin {
             bank: 4,
             pin: 2,
             active_high: true,
@@ -372,7 +365,7 @@ mod rk3588_pcie_fe180000 {
     );
 
     fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-        probe_rk3588(info, plat_dev, RK3588_PCIE2L1_APB_BASE)
+        probe_rk3588(info, plat_dev)
     }
 }
 
@@ -392,6 +385,6 @@ mod rk3588_pcie_fe190000 {
     );
 
     fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-        probe_rk3588(info, plat_dev, RK3588_PCIE2L2_APB_BASE)
+        probe_rk3588(info, plat_dev)
     }
 }
