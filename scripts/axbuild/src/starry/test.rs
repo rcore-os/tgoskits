@@ -10,17 +10,17 @@ use ostool::{board::RunBoardOptions, build::config::Cargo, run::qemu::QemuConfig
 use serde::Deserialize;
 
 use super::{ArgsTestBoard, ArgsTestQemu, ArgsTestUboot, Starry, board, build, rootfs};
-pub(crate) use crate::test::case::{
-    TestQemuCase as StarryQemuCase, TestQemuSubcase as StarryQemuSubcase,
-    TestQemuSubcaseKind as StarryQemuSubcaseKind,
-};
 use crate::{
     command_flow::SnapshotPersistence,
     context::{
         ResolvedStarryRequest, StarryCliArgs, arch_for_target_checked,
         resolve_starry_arch_and_target, validate_supported_target,
     },
-    test::{board as board_test, case, qemu as qemu_test},
+    test::{
+        board as board_test, case,
+        case::{TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
+        qemu as qemu_test,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +116,7 @@ struct StarryQemuSuiteRequirements {
 
 #[derive(Debug, Clone)]
 struct PreparedStarryQemuCase {
-    case: StarryQemuCase,
+    case: TestQemuCase,
     qemu: QemuConfig,
 }
 
@@ -158,7 +158,7 @@ pub(crate) fn discover_qemu_cases(
     arch: &str,
     selected_case: Option<&str>,
     group: StarryTestGroup,
-) -> anyhow::Result<Vec<StarryQemuCase>> {
+) -> anyhow::Result<Vec<TestQemuCase>> {
     let test_suite_dir = test_suite_dir(workspace_root, group);
     let config_name = qemu_config_name(arch);
 
@@ -223,7 +223,7 @@ fn load_qemu_case(
     name: String,
     case_dir: PathBuf,
     qemu_config_path: PathBuf,
-) -> anyhow::Result<StarryQemuCase> {
+) -> anyhow::Result<TestQemuCase> {
     let test_commands = load_qemu_case_test_commands(&qemu_config_path)?;
     let subcases = if test_commands.is_empty() {
         Vec::new()
@@ -231,7 +231,7 @@ fn load_qemu_case(
         discover_qemu_subcases(&case_dir)?
     };
 
-    Ok(StarryQemuCase {
+    Ok(TestQemuCase {
         name,
         case_dir,
         qemu_config_path,
@@ -266,7 +266,7 @@ fn load_qemu_case_test_commands(qemu_config_path: &Path) -> anyhow::Result<Vec<S
     Ok(test_commands)
 }
 
-fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<StarryQemuSubcase>> {
+fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<TestQemuSubcase>> {
     let mut subcases = Vec::new();
     for entry in
         fs::read_dir(case_dir).with_context(|| format!("failed to read {}", case_dir.display()))?
@@ -281,15 +281,15 @@ fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<StarryQemuSubca
             continue;
         };
         let kind = if path.join("c").is_dir() {
-            Some(StarryQemuSubcaseKind::C)
+            Some(TestQemuSubcaseKind::C)
         } else if path.join("rust").is_dir() {
-            Some(StarryQemuSubcaseKind::Rust)
+            Some(TestQemuSubcaseKind::Rust)
         } else {
             None
         };
 
         if let Some(kind) = kind {
-            subcases.push(StarryQemuSubcase {
+            subcases.push(TestQemuSubcase {
                 name,
                 case_dir: path,
                 kind,
@@ -762,7 +762,7 @@ impl Starry {
     async fn prepare_qemu_cases(
         &mut self,
         cargo: &Cargo,
-        cases: Vec<StarryQemuCase>,
+        cases: Vec<TestQemuCase>,
     ) -> anyhow::Result<Vec<PreparedStarryQemuCase>> {
         let mut prepared = Vec::with_capacity(cases.len());
         for case in cases {
@@ -1108,7 +1108,7 @@ mod tests {
             cases[0]
                 .subcases
                 .iter()
-                .all(|subcase| subcase.kind == StarryQemuSubcaseKind::C)
+                .all(|subcase| subcase.kind == TestQemuSubcaseKind::C)
         );
     }
 

@@ -38,8 +38,6 @@ const CASE_CMAKE_TOOLCHAIN_FILE_NAME: &str = "cmake-toolchain.cmake";
 const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
 const GROUPED_CASE_RUNNER_NAME: &str = "starry-run-case-tests";
-const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
-const USB_STICK_IMAGE_SIZE: u64 = 16 * 1024 * 1024;
 const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
 /// QEMU global snapshot flag — all disk writes go to a temporary file and are
 /// never committed back to the image, keeping the source image pristine.
@@ -135,7 +133,6 @@ pub(crate) struct CaseAssetLayout {
     pub(crate) cross_bin_dir: PathBuf,
     pub(crate) cmake_toolchain_file: PathBuf,
     pub(crate) apk_cache_dir: PathBuf,
-    pub(crate) usb_stick_path: PathBuf,
     /// Per-case copy of the shared rootfs image, used only when the case needs
     /// pipeline injection (C / shell / Python / grouped).  For plain cases no
     /// copy is created and QEMU's `-snapshot` flag keeps the shared image clean.
@@ -181,36 +178,14 @@ pub(crate) async fn prepare_case_assets(
     })
 }
 
-/// Returns whether a QEMU test case uses the C pipeline.
-pub(crate) fn case_uses_c_pipeline(case: &TestQemuCase) -> bool {
-    case_builder::case_c_source_dir(case).is_dir()
-}
-
 /// Returns the shell-script source directory for a QEMU test case.
 pub(crate) fn case_sh_source_dir(case: &TestQemuCase) -> PathBuf {
     case.case_dir.join(CASE_SH_DIR_NAME)
 }
 
-/// Returns whether a QEMU test case uses the shell pipeline.
-pub(crate) fn case_uses_sh_pipeline(case: &TestQemuCase) -> bool {
-    case_sh_source_dir(case).is_dir()
-}
-
 /// Returns the Python source directory for a QEMU test case.
 pub(crate) fn case_python_source_dir(case: &TestQemuCase) -> PathBuf {
     case_builder::case_python_source_dir(case)
-}
-
-/// Returns whether a QEMU test case uses the Python pipeline.
-pub(crate) fn case_uses_python_pipeline(case: &TestQemuCase) -> bool {
-    case_python_source_dir(case).is_dir()
-}
-
-/// Returns whether a QEMU test case needs extra USB-backed assets.
-pub(crate) fn case_uses_usb_qemu_assets(arch: &str, case: &TestQemuCase) -> bool {
-    let _ = arch;
-    let _ = case;
-    false
 }
 
 /// Builds the working directory layout used for a QEMU case asset run.
@@ -233,7 +208,6 @@ pub(crate) fn case_asset_layout(
         cmake_toolchain_file: run_dir.join(CASE_CMAKE_TOOLCHAIN_FILE_NAME),
         apk_cache_dir: cache_dir.join(CASE_APK_CACHE_DIR_NAME),
         rootfs_cache_dir: cache_dir.join(CASE_ROOTFS_CACHE_DIR_NAME),
-        usb_stick_path: run_dir.join(USB_STICK_IMAGE_NAME),
         case_rootfs_copy: run_dir.join(CASE_ROOTFS_COPY_NAME),
         cache_dir,
         run_dir,
@@ -308,13 +282,10 @@ pub(crate) fn prepare_case_assets_sync(
 ) -> anyhow::Result<PreparedCaseAssetParts> {
     let pipeline = resolve_case_pipeline(case)?;
 
-    // Create the run-scoped layout exactly once.  Pipeline cases need it for
-    // the injection work; plain cases need it only when USB assets are required.
-    // Creating it here avoids calling case_asset_layout() twice (which would
-    // allocate two different run-dir IDs via the global sequence counter).
+    // Pipeline cases need per-case layout for injection work; plain cases boot
+    // directly from the shared image without any layout.
     let needs_injection = pipeline != CasePipeline::Plain;
-    let needs_usb = case_uses_usb_qemu_assets(arch, case);
-    let layout = if needs_injection || needs_usb {
+    let layout = if needs_injection {
         Some(case_asset_layout(workspace_root, target, &case.name)?)
     } else {
         None
@@ -383,15 +354,7 @@ pub(crate) fn prepare_case_assets_sync(
     // -snapshot is always passed: all QEMU guest writes go to a temporary file
     // that QEMU auto-deletes on exit, keeping both the shared image and any
     // injection copy pristine after the run.
-    let mut extra_qemu_args = vec![QEMU_SNAPSHOT_ARG.to_string()];
-    if needs_usb {
-        // Reuse the layout already allocated above rather than calling
-        // case_asset_layout() again (which would increment the run-dir
-        // sequence counter and create an orphaned directory).
-        let layout = layout.as_ref().expect("layout created above for USB");
-        create_usb_backing_image(&layout.usb_stick_path)?;
-        extra_qemu_args.extend(usb_qemu_args(&layout.usb_stick_path));
-    }
+    let extra_qemu_args = vec![QEMU_SNAPSHOT_ARG.to_string()];
 
     Ok(PreparedCaseAssetParts {
         extra_qemu_args,
@@ -408,13 +371,13 @@ pub(crate) fn resolve_case_pipeline(case: &TestQemuCase) -> anyhow::Result<CaseP
     if case.is_grouped() {
         pipelines.push(CasePipeline::Grouped);
     }
-    if case_uses_c_pipeline(case) {
+    if case_builder::case_c_source_dir(case).is_dir() {
         pipelines.push(CasePipeline::C);
     }
-    if case_uses_sh_pipeline(case) {
+    if case_sh_source_dir(case).is_dir() {
         pipelines.push(CasePipeline::Sh);
     }
-    if case_uses_python_pipeline(case) {
+    if case_python_source_dir(case).is_dir() {
         pipelines.push(CasePipeline::Python);
     }
 
@@ -676,29 +639,6 @@ pub(crate) fn prepare_sh_case_assets_sync(
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
 }
 
-/// Returns the extra QEMU arguments used for the synthetic USB backing image.
-pub(crate) fn usb_qemu_args(usb_stick_path: &Path) -> Vec<String> {
-    vec![
-        "-device".to_string(),
-        "qemu-xhci,id=xhci".to_string(),
-        "-drive".to_string(),
-        format!(
-            "if=none,format=raw,file={},id=usbstick0",
-            usb_stick_path.display()
-        ),
-        "-device".to_string(),
-        "usb-storage,drive=usbstick0,bus=xhci.0".to_string(),
-    ]
-}
-
-/// Creates the empty backing image used for USB-related QEMU test assets.
-pub(crate) fn create_usb_backing_image(path: &Path) -> anyhow::Result<()> {
-    let file =
-        fs::File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
-    file.set_len(USB_STICK_IMAGE_SIZE)
-        .with_context(|| format!("failed to size {}", path.display()))
-}
-
 /// Resets a directory to an empty existing state.
 pub(crate) fn reset_dir(path: &Path) -> anyhow::Result<()> {
     if path.exists() {
@@ -789,33 +729,6 @@ mod tests {
         assert!(assets.extra_qemu_args.contains(&"-snapshot".to_string()));
         // The shared image must be unmodified.
         assert_eq!(fs::read(&shared_img).unwrap(), b"rootfs");
-    }
-
-    #[test]
-    fn case_asset_layout_and_usb_qemu_args_use_stable_paths() {
-        let root = tempdir().unwrap();
-        let layout =
-            case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
-
-        assert_eq!(
-            layout.work_dir,
-            root.path()
-                .join("target/aarch64-unknown-none-softfloat/qemu-cases/usb")
-        );
-        assert_eq!(
-            usb_qemu_args(&layout.usb_stick_path),
-            vec![
-                "-device".to_string(),
-                "qemu-xhci,id=xhci".to_string(),
-                "-drive".to_string(),
-                format!(
-                    "if=none,format=raw,file={},id=usbstick0",
-                    layout.usb_stick_path.display()
-                ),
-                "-device".to_string(),
-                "usb-storage,drive=usbstick0,bus=xhci.0".to_string(),
-            ]
-        );
     }
 
     #[test]

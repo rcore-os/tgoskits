@@ -492,7 +492,7 @@ impl Axvisor {
         }
 
         println!("axvisor qemu total: {:.2?}", suite_started.elapsed());
-        test_qemu::finalize_qemu_test_run("axvisor", &failed)
+        test_qemu::finalize_qemu_test_run("axvisor", "case", &failed)
     }
 
     pub(super) async fn test_uboot(&mut self, args: cli::ArgsTestUboot) -> anyhow::Result<()> {

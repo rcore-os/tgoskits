@@ -173,15 +173,20 @@ pub(crate) fn parse_test_target(
     Ok((arch, target))
 }
 
-pub(crate) fn finalize_qemu_test_run(suite_name: &str, failed: &[String]) -> anyhow::Result<()> {
+pub(crate) fn finalize_qemu_test_run(
+    suite_name: &str,
+    unit: &str,
+    failed: &[String],
+) -> anyhow::Result<()> {
     if failed.is_empty() {
         println!("all {} qemu tests passed", suite_name);
         Ok(())
     } else {
         bail!(
-            "{} qemu tests failed for {} package(s): {}",
+            "{} qemu tests failed for {} {}(s): {}",
             suite_name,
             failed.len(),
+            unit,
             failed.join(", ")
         )
     }
@@ -200,8 +205,12 @@ mod tests {
 
     #[test]
     fn qemu_failure_summary_is_aggregated() {
-        let err = finalize_qemu_test_run("arceos", &["pkg-b".to_string(), "pkg-c".to_string()])
-            .unwrap_err();
+        let err = finalize_qemu_test_run(
+            "arceos",
+            "package",
+            &["pkg-b".to_string(), "pkg-c".to_string()],
+        )
+        .unwrap_err();
 
         assert!(
             err.to_string()

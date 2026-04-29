@@ -1,7 +1,5 @@
-use crate::{
-    context::resolve_arceos_arch_and_target,
-    test::qemu::{finalize_qemu_test_run, parse_test_target, unsupported_uboot_test_command},
-};
+#[cfg(test)]
+use crate::{context::resolve_arceos_arch_and_target, test::qemu::parse_test_target};
 
 pub(crate) const TEST_PACKAGES: &[&str] = &[
     "arceos-memtest",
@@ -22,14 +20,15 @@ pub(crate) const TEST_PACKAGES: &[&str] = &[
     "arceos-yield",
 ];
 
-const TEST_TARGETS: &[&str] = &[
+pub(crate) const TEST_TARGETS: &[&str] = &[
     "x86_64-unknown-none",
     "riscv64gc-unknown-none-elf",
     "aarch64-unknown-none-softfloat",
     "loongarch64-unknown-none-softfloat",
 ];
-const TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
+pub(crate) const TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 
+#[cfg(test)]
 pub(crate) fn parse_target(
     arch: &Option<String>,
     target: &Option<String>,
@@ -42,18 +41,6 @@ pub(crate) fn parse_target(
         TEST_TARGETS,
         resolve_arceos_arch_and_target,
     )
-}
-
-pub(crate) fn finalize_qemu_run(failed: &[String]) -> anyhow::Result<()> {
-    finalize_qemu_test_run("arceos", failed)
-}
-
-pub(crate) fn finalize_c_qemu_run(failed: &[String]) -> anyhow::Result<()> {
-    finalize_qemu_test_run("arceos c", failed)
-}
-
-pub(crate) fn unsupported_uboot() -> anyhow::Result<()> {
-    unsupported_uboot_test_command("arceos")
 }
 
 #[cfg(test)]
