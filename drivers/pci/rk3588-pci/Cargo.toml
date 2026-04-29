@@ -1,0 +1,16 @@
+[package]
+name = "rk3588-pci"
+version = "0.1.0"
+authors.workspace = true
+categories = ["embedded", "hardware-support", "no-std"]
+description = "Portable Rockchip RK3588 DesignWare PCIe host driver"
+edition.workspace = true
+keywords = ["rk3588", "pcie", "rockchip", "driver"]
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+log.workspace = true
+mmio-api.workspace = true
+rdif-pcie.workspace = true
+thiserror = { version = "2", default-features = false }
