@@ -23,15 +23,16 @@ impl Ext4FileSystem {
         }
 
         debug!("Unmounting Ext4 filesystem...");
+
+        // Mark clean in memory first so that sync_filesystem writes the
+        // superblock with s_state = EXT4_VALID_FS through the journal.
+        self.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
+
         self.sync_filesystem(block_dev)?;
 
-        // Commit the journal transaction so all queued metadata reaches the
-        // journal before we mark the filesystem clean.
+        // Commit the journal transaction so all queued metadata (including
+        // the superblock with s_state = VALID_FS) is checkpointed to disk.
         block_dev.umount_commit();
-
-        // Mark the filesystem as cleanly unmounted (s_state = EXT4_VALID_FS)
-        // so that Linux skips fsck on the next boot.
-        self.mark_clean(block_dev)?;
 
         self.mounted = false;
         info!("Filesystem unmounted cleanly");

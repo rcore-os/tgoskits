@@ -7,6 +7,7 @@ use log::{debug, info, warn};
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
+    checksum::jbd2_update_superblock_checksum,
     config::*,
     crc32c::crc32c::ext4_superblock_has_metadata_csum,
     disknode::*,
@@ -20,12 +21,13 @@ use crate::{
 };
 
 impl JBD2DEVSYSTEM {
-    fn write_journal_superblock<B: BlockDevice>(&self, block_dev: &mut B) {
+    fn write_journal_superblock<B: BlockDevice>(&mut self, block_dev: &mut B) {
         let sb_block = self.start_block;
         let mut sb_data = [0u8; BLOCK_SIZE];
         block_dev
             .read(&mut sb_data, sb_block, 1)
             .expect("Read journal superblock failed");
+        jbd2_update_superblock_checksum(&mut self.jbd2_super_block);
         self.jbd2_super_block.to_disk_bytes(&mut sb_data[0..1024]);
         block_dev
             .write(&sb_data, sb_block, 1)
@@ -438,16 +440,12 @@ impl JBD2DEVSYSTEM {
         // of the containing block.
         let sb_block = self.start_block;
         if sb_block.raw() != 0 {
-            let mut blk = [0u8; BLOCK_SIZE];
-            if block_dev.read(&mut blk, sb_block, 1).is_ok() {
-                self.jbd2_super_block.to_disk_bytes(&mut blk[0..1024]);
-                debug!(
-                    "[JBD2 replay] write journal superblock to block={} (sequence={} s_start={})",
-                    sb_block, self.jbd2_super_block.s_sequence, self.jbd2_super_block.s_start
-                );
-                let _ = block_dev.write(&blk, sb_block, 1);
-                let _ = block_dev.flush();
-            }
+            debug!(
+                "[JBD2 replay] write journal superblock to block={} (sequence={} s_start={})",
+                sb_block, self.jbd2_super_block.s_sequence, self.jbd2_super_block.s_start
+            );
+            self.write_journal_superblock(block_dev);
+            let _ = block_dev.flush();
         }
         debug!(
             "[JBD2 replay] end: final_sequence={} final_s_start={} ",
@@ -530,6 +528,7 @@ pub fn create_journal_entry<B: BlockDevice>(
     jbd2_sb.s_sequence = 1;
     jbd2_sb.s_first = 1;
     jbd2_sb.s_uuid = fs.superblock.s_uuid;
+    jbd2_update_superblock_checksum(&mut jbd2_sb);
 
     fs.datablock_cache
         .modify_new(block_dev, free_block[0], |data| {

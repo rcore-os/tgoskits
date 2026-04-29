@@ -66,7 +66,7 @@ impl Ext4Superblock {
     /// Returns the on-disk group descriptor size in bytes.
     pub fn get_desc_size(&self) -> u16 {
         if self.s_desc_size == 0 {
-            if self.has_feature_compat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT) {
+            if self.has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT) {
                 return GROUP_DESC_SIZE;
             } else {
                 return GROUP_DESC_SIZE_OLD;

@@ -15,6 +15,8 @@ pub const JBD2_DESCRIPTOR_HEADER_SIZE: usize = 12;
 pub const JBD2_TAG_SIZE: usize = 8;
 pub const JBD2_UUID_SIZE: usize = 16;
 pub const JBD2_CRC32C_CHKSUM: u8 = 4; // JBD2 checksum type for CRC32C
+pub const JBD2_FEATURE_INCOMPAT_64BIT: u32 = 0x0000_0002;
+pub const JBD2_FEATURE_INCOMPAT_CSUM_V3: u32 = 0x0000_0010;
 #[repr(C)]
 /// One journaled metadata update: `(target physical block, serialized block)`.
 pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8; BLOCK_SIZE]>);
