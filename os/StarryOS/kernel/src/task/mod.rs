@@ -405,7 +405,7 @@ impl ProcessData {
     pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
         *self.aspace.lock() = new_aspace;
     }
-    
+
     /// Set the vfork completion queue (called on the child after a vfork,
     /// before the child task is spawned).
     pub fn set_vfork_done(&self, wq: Arc<WaitQueue>) {
