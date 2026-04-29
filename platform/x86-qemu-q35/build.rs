@@ -31,6 +31,5 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let out_path = std::path::Path::new(&out_dir).join("linker.x");
     println!("cargo:rustc-link-search={out_dir}");
-    println!("cargo:rustc-link-arg=-Tlinker.x");
     std::fs::write(out_path, ld_content).unwrap();
 }

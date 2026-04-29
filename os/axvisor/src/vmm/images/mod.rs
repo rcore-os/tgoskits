@@ -150,8 +150,51 @@ impl ImageLoader {
         if let Some(buffer) = vm_imags.bios {
             load_vm_image_from_memory(buffer, self.bios_load_gpa.unwrap(), self.vm.clone())
                 .expect("Failed to load BIOS images");
+            self.load_x86_multiboot_info()?;
         }
 
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn load_x86_multiboot_info(&self) -> AxResult {
+        const MULTIBOOT_INFO_GPA: usize = 0x6000;
+        const MULTIBOOT_MMAP_GPA: usize = 0x6040;
+        const AXVM_BIOS_EBX_IMM_OFFSET: usize = 0x3c;
+        const MULTIBOOT_INFO_FLAGS: u32 = (1 << 0) | (1 << 6);
+        const MULTIBOOT_MEMORY_AVAILABLE: u32 = 1;
+
+        let mem_base = self.main_memory.gpa.as_usize() as u64;
+        let mem_size = self.main_memory.size() as u64;
+        let mem_upper_kb = mem_size.saturating_sub(0x100000) / 1024;
+
+        let mut mbi = [0u8; 52];
+        write_u32(&mut mbi, 0, MULTIBOOT_INFO_FLAGS);
+        write_u32(&mut mbi, 4, 639);
+        write_u32(&mut mbi, 8, mem_upper_kb as u32);
+        write_u32(&mut mbi, 44, 24);
+        write_u32(&mut mbi, 48, MULTIBOOT_MMAP_GPA as u32);
+
+        let mut mmap = [0u8; 24];
+        write_u32(&mut mmap, 0, 20);
+        write_u64(&mut mmap, 4, mem_base);
+        write_u64(&mut mmap, 12, mem_size);
+        write_u32(&mut mmap, 20, MULTIBOOT_MEMORY_AVAILABLE);
+
+        let mbi_gpa = (MULTIBOOT_INFO_GPA as u32).to_le_bytes();
+        let bios_load_gpa = self.bios_load_gpa.expect("BIOS load addr is missed");
+        load_vm_image_from_memory(&mbi, MULTIBOOT_INFO_GPA.into(), self.vm.clone())?;
+        load_vm_image_from_memory(&mmap, MULTIBOOT_MMAP_GPA.into(), self.vm.clone())?;
+        load_vm_image_from_memory(
+            &mbi_gpa,
+            (bios_load_gpa.as_usize() + AXVM_BIOS_EBX_IMM_OFFSET).into(),
+            self.vm.clone(),
+        )?;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn load_x86_multiboot_info(&self) -> AxResult {
         Ok(())
     }
 
@@ -296,6 +339,7 @@ pub mod fs {
         if let Some(bios_path) = &loader.config.kernel.bios_path {
             if let Some(bios_load_addr) = loader.bios_load_gpa {
                 load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
+                loader.load_x86_multiboot_info()?;
             } else {
                 return ax_err!(NotFound, "BIOS load addr is missed");
             }
@@ -376,4 +420,12 @@ pub mod fs {
             .size() as usize;
         Ok((file, file_size))
     }
+}
+
+fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
+    buffer[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
+    buffer[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
