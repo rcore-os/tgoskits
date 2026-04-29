@@ -26,7 +26,9 @@ pub(crate) const GROUPED_CASE_FAIL_REGEX: &str = r"(?m)^STARRY_GROUPED_TEST_FAIL
 const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
 const CASE_CACHE_DIR_NAME: &str = "cache";
 const CASE_RUNS_DIR_NAME: &str = "runs";
-const CASE_OVERLAY_CACHE_DIR_NAME: &str = "overlay";
+/// Sub-directory under `cache_dir` that holds pre-injected rootfs images.
+/// One image per cache key (`{sha256}.img`); present means ready to use.
+const CASE_ROOTFS_CACHE_DIR_NAME: &str = "rootfs";
 const CASE_STAGING_DIR_NAME: &str = "staging-root";
 const CASE_BUILD_DIR_NAME: &str = "build";
 const CASE_OVERLAY_DIR_NAME: &str = "overlay";
@@ -124,7 +126,8 @@ pub(crate) struct CaseAssetLayout {
     pub(crate) work_dir: PathBuf,
     pub(crate) run_dir: PathBuf,
     pub(crate) cache_dir: PathBuf,
-    pub(crate) overlay_cache_dir: PathBuf,
+    /// Directory holding pre-injected rootfs cache images (`{hash}.img`).
+    pub(crate) rootfs_cache_dir: PathBuf,
     pub(crate) staging_root: PathBuf,
     pub(crate) build_dir: PathBuf,
     pub(crate) overlay_dir: PathBuf,
@@ -229,7 +232,7 @@ pub(crate) fn case_asset_layout(
         cross_bin_dir: run_dir.join(CASE_CROSS_BIN_DIR_NAME),
         cmake_toolchain_file: run_dir.join(CASE_CMAKE_TOOLCHAIN_FILE_NAME),
         apk_cache_dir: cache_dir.join(CASE_APK_CACHE_DIR_NAME),
-        overlay_cache_dir: cache_dir.join(CASE_OVERLAY_CACHE_DIR_NAME),
+        rootfs_cache_dir: cache_dir.join(CASE_ROOTFS_CACHE_DIR_NAME),
         usb_stick_path: run_dir.join(USB_STICK_IMAGE_NAME),
         case_rootfs_copy: run_dir.join(CASE_ROOTFS_COPY_NAME),
         cache_dir,
@@ -319,45 +322,51 @@ pub(crate) fn prepare_case_assets_sync(
 
     let (case_rootfs, rootfs_copy_to_remove, run_dir_to_remove, cache_hit) = if needs_injection {
         let layout = layout.as_ref().expect("layout created above for injection");
-        // A fresh per-case copy is required so inject_overlay writes land on
-        // the copy rather than the shared image.  QEMU's -snapshot (below)
-        // then prevents even QEMU guest writes from reaching the copy.
+
+        // Compute the cache key once and derive the cached rootfs image path.
+        // The cached image is the post-injection rootfs — ready for QEMU to boot
+        // from directly.  On a cache hit we skip inject_overlay entirely, which
+        // is the dominant cost for Python/C pipeline cases.
+        let rootfs_cache_img =
+            rootfs_cache_image_path(layout, arch, target, pipeline, case, shared_rootfs)?;
+
         fs::create_dir_all(&layout.run_dir)
             .with_context(|| format!("failed to create {}", layout.run_dir.display()))?;
-        copy_shared_rootfs_for_case(shared_rootfs, layout)?;
-        let copy = layout.case_rootfs_copy.clone();
-        let overlay_cache = overlay_cache_path(layout, arch, target, case, shared_rootfs)?;
-        let overlay_cache_ready = overlay_cache_ready_path(&overlay_cache);
-        let cache_hit = if overlay_cache.is_dir() && overlay_cache_ready.is_file() {
-            reset_dir(&layout.overlay_dir)?;
-            copy_dir_recursive(&overlay_cache, &layout.overlay_dir)?;
-            crate::rootfs::inject::inject_overlay(&copy, &layout.overlay_dir)?;
+
+        let cache_hit = if is_valid_rootfs_cache_image(&rootfs_cache_img) {
+            // Cache HIT: copy/reflink the cached post-injection image.
+            // No need to copy shared_rootfs, build an overlay, or run inject_overlay.
+            copy_file_fast(&rootfs_cache_img, &layout.case_rootfs_copy)?;
             true
         } else {
+            // Cache MISS: full pipeline build, then save result to cache.
+            copy_shared_rootfs_for_case(shared_rootfs, layout)?;
+            let copy = &layout.case_rootfs_copy;
             match pipeline {
                 CasePipeline::Grouped => {
-                    case_builder::prepare_grouped_case_assets_sync(arch, case, &copy, layout)?
+                    case_builder::prepare_grouped_case_assets_sync(arch, case, copy, layout)?
                 }
                 CasePipeline::C => {
-                    case_builder::prepare_c_case_assets_sync(arch, case, &copy, layout)?
+                    case_builder::prepare_c_case_assets_sync(arch, case, copy, layout)?
                 }
-                CasePipeline::Sh => prepare_sh_case_assets_sync(case, &copy, layout)?,
+                CasePipeline::Sh => prepare_sh_case_assets_sync(case, copy, layout)?,
                 CasePipeline::Python => {
-                    case_builder::prepare_python_case_assets_sync(arch, case, &copy, layout)?
+                    case_builder::prepare_python_case_assets_sync(arch, case, copy, layout)?
                 }
                 CasePipeline::Plain => unreachable!("plain cases do not prepare injection assets"),
             }
-            if overlay_cache_ready.exists() {
-                fs::remove_file(&overlay_cache_ready).with_context(|| {
-                    format!("failed to remove {}", overlay_cache_ready.display())
+            // Save the post-injection rootfs to cache so future runs can skip
+            // the overlay build and inject_overlay steps entirely.
+            if let Some(parent) = rootfs_cache_img.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create rootfs cache dir {}", parent.display())
                 })?;
             }
-            reset_dir(&overlay_cache)?;
-            copy_dir_recursive(&layout.overlay_dir, &overlay_cache)?;
-            fs::write(&overlay_cache_ready, b"ok")
-                .with_context(|| format!("failed to write {}", overlay_cache_ready.display()))?;
+            copy_file_fast(&layout.case_rootfs_copy, &rootfs_cache_img)?;
             false
         };
+
+        let copy = layout.case_rootfs_copy.clone();
         (
             copy.clone(),
             Some(copy),
@@ -429,24 +438,68 @@ fn next_case_run_id() -> String {
     format!("{}-{sequence}", std::process::id())
 }
 
-fn overlay_cache_path(
+fn rootfs_cache_image_path(
     layout: &CaseAssetLayout,
     arch: &str,
     target: &str,
+    pipeline: CasePipeline,
     case: &TestQemuCase,
     shared_rootfs: &Path,
 ) -> anyhow::Result<PathBuf> {
-    let key = case_asset_cache_key(arch, target, case, shared_rootfs)?;
-    Ok(layout.overlay_cache_dir.join(key))
+    let key = case_asset_cache_key(arch, target, pipeline, case, shared_rootfs)?;
+    Ok(layout.rootfs_cache_dir.join(format!("{key}.img")))
 }
 
-fn overlay_cache_ready_path(overlay_cache: &Path) -> PathBuf {
-    overlay_cache.with_extension("ready")
+/// Returns `true` when a rootfs cache image file exists and has a plausible
+/// size.  Files smaller than 1 MiB are treated as corrupt/incomplete and will
+/// trigger a cache-miss rebuild.
+fn is_valid_rootfs_cache_image(path: &Path) -> bool {
+    const MIN_SIZE: u64 = 1024 * 1024;
+    path.is_file()
+        && path
+            .metadata()
+            .map(|m| m.len() >= MIN_SIZE)
+            .unwrap_or(false)
+}
+
+/// Copies `src` to `dst`, preferring a copy-on-write reflink when the
+/// filesystem supports it so that ~1 GiB rootfs images are duplicated in
+/// near-zero time on btrfs / XFS.
+///
+/// On Linux this delegates to `cp --reflink=auto` and falls back to a regular
+/// `fs::copy` if that fails (e.g. on ext4 or when `cp` is too old).  On other
+/// platforms only `fs::copy` is used.
+fn copy_file_fast(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // `cp --reflink=auto` tries FICLONE ioctl first; if the filesystem
+        // does not support it the command falls back to a regular copy, so
+        // this is always safe to try.
+        let status = std::process::Command::new("cp")
+            .arg("--reflink=auto")
+            .arg(src)
+            .arg(dst)
+            .status();
+        if let Ok(status) = status {
+            if status.success() {
+                return Ok(());
+            }
+            // cp reported an error — remove any partial destination file so
+            // the fs::copy fallback below starts with a clean slate.
+            let _ = fs::remove_file(dst);
+        }
+        // Fall through to regular copy on any failure (cp not available,
+        // unsupported flag, or a non-CoW error we cannot distinguish).
+    }
+    fs::copy(src, dst)
+        .with_context(|| format!("failed to copy {} to {}", src.display(), dst.display()))?;
+    Ok(())
 }
 
 fn case_asset_cache_key(
     arch: &str,
     target: &str,
+    pipeline: CasePipeline,
     case: &TestQemuCase,
     shared_rootfs: &Path,
 ) -> anyhow::Result<String> {
@@ -455,7 +508,7 @@ fn case_asset_cache_key(
     hash_token(&mut hasher, arch);
     hash_token(&mut hasher, target);
     hash_token(&mut hasher, case.name.as_str());
-    hash_token(&mut hasher, resolve_case_pipeline(case)?.as_str());
+    hash_token(&mut hasher, pipeline.as_str());
     hash_token(
         &mut hasher,
         std::env::var(crate::starry::apk::STARRY_APK_REGION_VAR)
@@ -465,7 +518,7 @@ fn case_asset_cache_key(
     // Only the C pipeline uses the CMake toolchain template; include it in the
     // key only when relevant so that changes to the template don't invalidate
     // caches for unrelated pipelines.
-    if resolve_case_pipeline(case)? == CasePipeline::C {
+    if pipeline == CasePipeline::C {
         hash_token(&mut hasher, include_str!("cmake-toolchain.cmake.in"));
     }
 
@@ -531,40 +584,6 @@ fn hash_file(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
 fn hash_token(hasher: &mut Sha256, value: &str) {
     hasher.update(value.len().to_le_bytes());
     hasher.update(value.as_bytes());
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
-    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", src_path.display()))?;
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if file_type.is_file() {
-            fs::copy(&src_path, &dst_path).with_context(|| {
-                format!(
-                    "failed to copy {} to {}",
-                    src_path.display(),
-                    dst_path.display()
-                )
-            })?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = fs::metadata(&src_path)
-                    .with_context(|| format!("failed to stat {}", src_path.display()))?
-                    .permissions()
-                    .mode();
-                fs::set_permissions(&dst_path, fs::Permissions::from_mode(mode))
-                    .with_context(|| format!("failed to chmod {}", dst_path.display()))?;
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn apply_grouped_qemu_config(qemu: &mut QemuConfig, case: &TestQemuCase) {
