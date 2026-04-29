@@ -1,9 +1,10 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
-success_regex = ['(?m)^STARRY_LSUSB_ROOT_HUB_OK$']
+success_regex = ['(?m)^STARRY_LSUSB_HUB_OK$']
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
   '(?m)^STARRY_LSUSB_ROOT_HUB_MISSING$',
+  '(?m)^STARRY_LSUSB_GENESYS_HUB_MISSING$',
   '(?m)^unable to initialize libusb: .*$',
   '(?i)(lsusb|tee|grep|sh): .*not found',
   '(?m)^lsusb: .*',

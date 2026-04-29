@@ -1,11 +1,13 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
-shell_init_cmd = "sleep 5; echo STARRY_LSUSB_BEGIN; lsusb"
-success_regex = ["(?m)^Bus [0-9]{3} Device [0-9]{3}: ID [0-9a-fA-F]{4}:[0-9a-fA-F]{4}"]
+shell_init_cmd = "sleep 5; echo STARRY_LSUSB_BEGIN; lsusb | tee /tmp/starry-lsusb.out; if ! grep -Eq 'ID 1d6b:000[23]' /tmp/starry-lsusb.out; then echo STARRY_LSUSB_ROOT_HUB_MISSING; elif ! grep -Eq 'ID 05e3:06(10|20)' /tmp/starry-lsusb.out; then echo STARRY_LSUSB_GENESYS_HUB_MISSING; else echo STARRY_LSUSB_HUB_OK; fi"
+success_regex = ["(?m)^STARRY_LSUSB_HUB_OK\\s*$"]
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
   "(?m)^unable to initialize libusb: .*$",
-  "(?i)(lsusb|sh): .*not found",
+  "(?i)(lsusb|tee|grep|sh): .*not found",
   "(?m)^lsusb: .*",
+  "(?m)^STARRY_LSUSB_ROOT_HUB_MISSING\\s*$",
+  "(?m)^STARRY_LSUSB_GENESYS_HUB_MISSING\\s*$",
 ]
 timeout = 300

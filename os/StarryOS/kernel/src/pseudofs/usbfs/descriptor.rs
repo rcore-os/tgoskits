@@ -2,7 +2,13 @@ use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use core::mem::size_of;
 
 use axfs_ng_vfs::{DeviceId, VfsResult};
-use crab_usb::{DeviceInfo, usb_if};
+use crab_usb::{
+    ProbedDevice,
+    usb_if::{
+        self,
+        descriptor::{ConfigurationDescriptor, DeviceDescriptor},
+    },
+};
 use linux_raw_sys::general::{
     _IOC_DIRSHIFT, _IOC_NRSHIFT, _IOC_READ, _IOC_SIZESHIFT, _IOC_TYPESHIFT, _IOC_WRITE,
 };
@@ -150,13 +156,13 @@ pub(super) fn read_usbdevfs_u32(arg: usize) -> VfsResult<u32> {
     UserConstPtr::<u32>::from(arg).get_as_ref().copied()
 }
 
-pub(super) fn snapshot_device_info(
+pub(super) fn snapshot_probed_device(
     bus_num: u8,
     next_device_num: &mut u8,
     stable_id_to_device_num: &mut BTreeMap<usize, u8>,
-    info: &DeviceInfo,
+    device: &ProbedDevice,
 ) -> UsbDeviceSnapshot {
-    let stable_id = info.id();
+    let stable_id = device.id();
     let device_num = match stable_id_to_device_num.get(&stable_id).copied() {
         Some(device_num) => device_num,
         None => {
@@ -170,13 +176,15 @@ pub(super) fn snapshot_device_info(
     UsbDeviceSnapshot {
         bus_num,
         device_num,
-        descriptor_blob: serialize_descriptor_blob(info),
+        descriptor_blob: serialize_descriptor_blob(device.descriptor(), device.configurations()),
     }
 }
 
-fn serialize_descriptor_blob(info: &DeviceInfo) -> Vec<u8> {
+fn serialize_descriptor_blob(
+    desc: &DeviceDescriptor,
+    configurations: &[ConfigurationDescriptor],
+) -> Vec<u8> {
     let mut out = Vec::new();
-    let desc = info.descriptor();
     out.push(18);
     out.push(0x01);
     out.extend_from_slice(&desc.usb_version.to_le_bytes());
@@ -204,7 +212,7 @@ fn serialize_descriptor_blob(info: &DeviceInfo) -> Vec<u8> {
     );
     out.push(desc.num_configurations);
 
-    for config in info.configurations() {
+    for config in configurations {
         let mut config_blob = Vec::new();
         for interface in &config.interfaces {
             for alt in &interface.alt_settings {

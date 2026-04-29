@@ -1,13 +1,8 @@
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    vec,
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
 use ax_errno::{AxError, AxResult};
 use crab_usb::{
-    Device, DeviceInfo, EndpointKind, EventHandler,
+    Device, DeviceInfo, EndpointKind, EventHandler, ProbedDevice,
     usb_if::{
         err::{TransferError, USBError},
         host::ControlSetup,
@@ -26,7 +21,7 @@ use super::{
         USBDEVFS_RELEASEINTERFACE, USBDEVFS_RESET, USBDEVFS_SETCONFIGURATION,
         USBDEVFS_SETINTERFACE, UsbDeviceSnapshot, UsbdevfsConnectInfo, read_usbdevfs_bulktransfer,
         read_usbdevfs_ctrltransfer, read_usbdevfs_setinterface, read_usbdevfs_u32,
-        root_hub_snapshot, snapshot_device_info,
+        root_hub_snapshot, snapshot_probed_device,
     },
     irq::{self, PendingUsbIrqSlot},
 };
@@ -62,6 +57,7 @@ struct UsbDeviceRecord {
     unopened_info: Option<DeviceInfo>,
     live_device: Option<Arc<Mutex<LiveDeviceState>>>,
     open_count: usize,
+    openable: bool,
     synthetic: bool,
 }
 
@@ -172,6 +168,7 @@ impl UsbFsManager {
                     unopened_info: None,
                     live_device: None,
                     open_count: 0,
+                    openable: false,
                     synthetic: true,
                 },
             );
@@ -402,7 +399,7 @@ impl UsbFsManager {
         &self,
         device_id: RDriveDeviceId,
         bus_num: u8,
-        devices: Vec<DeviceInfo>,
+        devices: Vec<ProbedDevice>,
     ) {
         let mut state = self.state.lock();
         let Some(host_index) = state
@@ -413,28 +410,28 @@ impl UsbFsManager {
             return;
         };
 
-        let mut seen = BTreeSet::new();
         let updates = {
             let host_state = &mut state.hosts[host_index];
             let mut updates = Vec::new();
-            for info in devices {
+            for device in devices {
                 let stable_id = UsbStableId {
                     host_device_id: device_id,
-                    device_id: info.id(),
+                    device_id: device.id(),
                 };
-                seen.insert(stable_id);
-                let snapshot = snapshot_device_info(
+                let snapshot = snapshot_probed_device(
                     bus_num,
                     &mut host_state.next_device_num,
                     &mut host_state.stable_id_to_device_num,
-                    &info,
+                    &device,
                 );
-                updates.push((stable_id, snapshot, info));
+                let unopened_info = device.into_device_info();
+                let openable = unopened_info.is_some();
+                updates.push((stable_id, snapshot, unopened_info, openable));
             }
             updates
         };
 
-        for (stable_id, snapshot, info) in updates {
+        for (stable_id, snapshot, unopened_info, openable) in updates {
             let record = state
                 .devices
                 .entry(stable_id)
@@ -445,28 +442,15 @@ impl UsbFsManager {
                     unopened_info: None,
                     live_device: None,
                     open_count: 0,
+                    openable,
                     synthetic: false,
                 });
             record.host_device_id = device_id;
             record.snapshot = snapshot;
             record.present = true;
-            record.unopened_info = Some(info);
+            record.openable = openable;
+            record.unopened_info = unopened_info;
         }
-
-        state.devices.retain(|stable_id, record| {
-            if record.synthetic {
-                return true;
-            }
-            if record.snapshot.bus_num != bus_num {
-                return true;
-            }
-            if seen.contains(stable_id) {
-                return true;
-            }
-            record.present = false;
-            record.unopened_info = None;
-            record.open_count > 0 || record.live_device.is_some()
-        });
     }
 
     fn ensure_live_device(&self, stable_id: UsbStableId) -> AxResult<()> {
@@ -493,7 +477,7 @@ impl UsbFsManager {
                         host_device_id: record.host_device_id,
                         info,
                     }
-                } else if record.synthetic {
+                } else if record.synthetic || !record.openable {
                     return Err(AxError::Unsupported);
                 } else if record.present {
                     OpenAction::Refresh {
@@ -802,7 +786,7 @@ impl UsbFsManager {
                 state.devices.remove(&stable_id);
                 return;
             }
-            if record.unopened_info.is_none() {
+            if record.openable && record.unopened_info.is_none() {
                 refresh = Some((record.host_device_id, record.snapshot.bus_num));
             }
         }

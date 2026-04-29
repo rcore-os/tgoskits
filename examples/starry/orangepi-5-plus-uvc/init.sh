@@ -1,1 +1,1 @@
-sh -c 'echo STARRY_LSUSB_BEGIN; lsusb | tee /tmp/starry-lsusb.out; grep -Eq "Linux Foundation .*root hub" /tmp/starry-lsusb.out && echo STARRY_LSUSB_ROOT_HUB_OK || { echo STARRY_LSUSB_ROOT_HUB_MISSING; exit 1; }'
+sleep 5; echo STARRY_LSUSB_BEGIN; lsusb | tee /tmp/starry-lsusb.out; if ! grep -Eq 'ID 1d6b:000[23]' /tmp/starry-lsusb.out; then echo STARRY_LSUSB_ROOT_HUB_MISSING; elif ! grep -Eq 'ID 05e3:06(10|20)' /tmp/starry-lsusb.out; then echo STARRY_LSUSB_GENESYS_HUB_MISSING; else echo STARRY_LSUSB_HUB_OK; fi
