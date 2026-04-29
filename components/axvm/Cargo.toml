@@ -2,7 +2,7 @@
 name = "axvm"
 authors = ["aarkegz <aarkegz@gmail.com>"]
 version = "0.5.6"
-edition = "2024"
+edition.workspace = true
 categories = ["virtualization", "no-std"]
 description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
 repository = "https://github.com/arceos-hypervisor/axvm"
@@ -20,31 +20,26 @@ cfg-if = "1.0"
 spin = "0.10"
 
 # System independent crates provided by ArceOS.
-ax-errno = "0.4"
-ax-cpumask = "0.3"
+ax-errno = { workspace = true }
+ax-cpumask = { workspace = true }
 # ax-kspin = "0.1.0"
-ax-memory-addr = "0.6"
-ax-page-table-entry = { version = "0.8", features = ["arm-el2"] }
-ax-page-table-multiarch = "0.8"
-ax-percpu = { version = "0.4", features = ["arm-el2"] }
-
+ax-memory-addr = { workspace = true }
+ax-page-table-entry = { workspace = true, features = ["arm-el2"] }
+ax-page-table-multiarch = { workspace = true }
+ax-percpu = { workspace = true, features = ["arm-el2"] }
 # System dependent modules provided by ArceOS-Hypervisor.
-axvcpu = "0.5"
-axaddrspace = "0.5"
-axvisor_api = "0.5"
-axdevice = "0.4"
-axdevice_base = "0.4"
-axvmconfig = { version = "0.4", default-features = false }
-
+axvcpu = { workspace = true }
+axaddrspace = { workspace = true }
+axvisor_api = { workspace = true }
+axdevice = { workspace = true }
+axdevice_base = { workspace = true }
+axvmconfig = { path = "../axvmconfig", default-features = false }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-x86_vcpu = "0.5"
-
+x86_vcpu = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-riscv_vcpu = "0.5"
-
+riscv_vcpu = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
-loongarch_vcpu = "0.5"
-
+loongarch_vcpu = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-arm_vcpu = "0.5"
-arm_vgic = { version = "0.4", features = ["vgicv3"] }
+arm_vcpu = { workspace = true }
+arm_vgic = { workspace = true, features = ["vgicv3"] }

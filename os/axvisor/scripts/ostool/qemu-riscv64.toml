@@ -13,7 +13,7 @@ args = [
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-riscv64-alpine.img",
   "-append",
-  "root=/dev/vda rw init=/init",
+  "root=/dev/vda rw init=/bin/sh",
   "-m",
   "4g",
 ]

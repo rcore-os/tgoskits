@@ -6,7 +6,7 @@ authors = [
 ]
 categories = ["embedded", "no-std"]
 description = "ArceOS-Hypervisor guest address space management module"
-edition = "2024"
+edition.workspace = true
 keywords = ["hypervisor", "address-space"]
 name = "axaddrspace"
 repository = "https://github.com/arceos-hypervisor/axaddrspace"
@@ -21,17 +21,16 @@ default = ["arm-el2"]
 bit_field = "0.10"
 bitflags = "2.9"
 cfg-if = "1.0"
-ax-lazyinit = "0.4"
+ax-lazyinit = { workspace = true }
 log = "0.4"
 numeric-enum-macro = "0.2"
 
 # Operating system independent modules provided by ArceOS.
-ax-errno = "0.4"
-ax-memory-addr = "0.6"
-ax-memory-set = "0.6"
-ax-page-table-entry = "0.8"
-ax-page-table-multiarch = "0.8"
-
+ax-errno = { workspace = true }
+ax-memory-addr = { workspace = true }
+ax-memory-set = { workspace = true }
+ax-page-table-entry = { workspace = true }
+ax-page-table-multiarch = { workspace = true }
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86 = "0.52"
 

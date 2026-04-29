@@ -3,12 +3,12 @@ name = "ax-ctor-bare"
 edition.workspace = true
 description = "Register constructor functions for Rust at complie time under no_std."
 version = "0.4.7"
-repository.workspace = true
-authors.workspace = true
-keywords.workspace = true
-categories.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
+authors = ["Youjie Zheng <Azure_stars@126.com>"]
+keywords = ["arceos", "constructor", "no_std"]
+categories = ["development-tools::procedural-macro-helpers", "no-std"]
 readme = "README.md"
-license.workspace = true
+license = "Apache-2.0"
 
 [dependencies]
-ax-ctor-bare-macros = { version = "0.4", path = "../ctor_bare_macros" }
+ax-ctor-bare-macros = { workspace = true }

@@ -23,8 +23,12 @@ ax-cap-access
 ax-config
 ax-cpu
 ax-cpumask
+ax-crate-interface
+ax-crate-interface-lite
 ax-display
 ax-dma
+ax-driver-display
+ax-driver-net
 ax-errno
 ax-fs
 ax-hal
@@ -42,6 +46,9 @@ ax-ipi
 ax-kspin
 ax-kernel-guard
 ax-lazyinit
+ax-memory-set
+ax-percpu
+ax-percpu-macros
 axaddrspace
 ax-linked-list-r4l
 ax-log
@@ -68,6 +75,7 @@ axplat-riscv64-qemu-virt-hv
 riscv-h
 riscv_vcpu
 rockchip-npu
+rockchip-soc
 rsext4
 scope-local
 starry-process

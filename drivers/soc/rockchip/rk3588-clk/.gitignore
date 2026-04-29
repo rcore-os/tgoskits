@@ -1,6 +1,0 @@
-/target
-Cargo.lock
-.bare-test.toml
-
-*.dtb
-.vscode-ctags

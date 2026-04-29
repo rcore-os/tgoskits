@@ -2,13 +2,12 @@
 name = "ax-page-table-entry"
 description = "Page table entry definition for various hardware architectures"
 version = "0.8.7"
-repository.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
-authors.workspace = true
-keywords.workspace = true
-categories.workspace = true
-rust-version.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+keywords = ["arceos", "paging", "page-table", "virtual-memory"]
+categories = ["os", "hardware-support", "memory-management", "no-std"]
+license = "Apache-2.0"
 
 [features]
 arm-el2 = []

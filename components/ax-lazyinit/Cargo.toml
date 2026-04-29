@@ -2,12 +2,11 @@
 name = "ax-lazyinit"
 version = "0.4.6"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Initialize a static value lazily."
 keywords = ["lazy", "initialization", "static"]
 categories = ["no-std", "rust-patterns"]
-rust-version = "1.56.1"
 license = "Apache-2.0"
 
 [dependencies]

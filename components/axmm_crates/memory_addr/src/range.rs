@@ -449,7 +449,7 @@ macro_rules! pa_range {
 
 #[cfg(test)]
 mod test {
-    use crate::{va, va_range, VirtAddrRange};
+    use crate::{VirtAddrRange, va, va_range};
 
     #[test]
     fn test_range_format() {

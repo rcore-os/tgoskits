@@ -295,6 +295,233 @@ fn subcase_as_case(case: &StarryQemuCase, subcase: &StarryQemuSubcase) -> Starry
     }
 }
 
+/// Returns the Python source directory for a Starry test case.
+pub(crate) fn case_python_source_dir(case: &StarryQemuCase) -> PathBuf {
+    case.case_dir.join("python")
+}
+
+/// Prepares overlay assets for a Starry Python-based test case.
+///
+/// This pipeline reuses the same staging rootfs and prebuild infrastructure as
+/// the C pipeline, but instead of running CMake it:
+/// 1. Installs `python3` via `apk add` inside the staging rootfs
+/// 2. Copies `.py` files from the test's `python/` directory into `/usr/bin/`
+/// 3. Builds an overlay from the Python installation and test scripts
+/// 4. Injects the overlay into the rootfs image
+pub(crate) fn prepare_python_case_assets_sync(
+    arch: &str,
+    case: &StarryQemuCase,
+    case_rootfs: &Path,
+    layout: &case_assets::CaseAssetLayout,
+) -> anyhow::Result<()> {
+    let python_dir = case_python_source_dir(case);
+    ensure!(
+        python_dir.is_dir(),
+        "missing case Python source directory `{}`",
+        python_dir.display()
+    );
+
+    case_assets::reset_dir(&layout.staging_root)?;
+    case_assets::reset_dir(&layout.overlay_dir)?;
+    case_assets::reset_dir(&layout.command_wrapper_dir)?;
+    fs::create_dir_all(&layout.apk_cache_dir)
+        .with_context(|| format!("failed to create {}", layout.apk_cache_dir.display()))?;
+
+    // Extract rootfs into staging
+    crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
+    write_host_resolver_config(&layout.staging_root)?;
+
+    // Prepare guest prebuild environment and install python3
+    let apk_region = apk_region_from_env()?;
+    rewrite_apk_repositories_for_region(&layout.staging_root, apk_region)?;
+    log_apk_prebuild_context(&layout.staging_root, apk_region)?;
+
+    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
+    write_guest_command_wrappers(layout, &qemu_runner)?;
+
+    // Build the prebuild command: run "apk add python3" inside the staging rootfs
+    let guest_busybox = layout.staging_root.join("bin/busybox");
+    let guest_shell = layout.staging_root.join("bin/sh");
+    let mut prebuild_cmd = Command::new(&qemu_runner);
+    prebuild_cmd.arg("-L").arg(&layout.staging_root);
+    if guest_busybox.is_file() {
+        prebuild_cmd.arg(&guest_busybox).arg("sh");
+    } else {
+        ensure!(
+            guest_shell.is_file(),
+            "staging root is missing guest shell `{}`",
+            guest_shell.display()
+        );
+        prebuild_cmd.arg(&guest_shell);
+    }
+    prebuild_cmd.arg("-eu").arg("-c").arg("apk add python3");
+
+    // Apply environment (PATH with wrappers, QEMU_LD_PREFIX)
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = Vec::new();
+    path_entries.push(layout.command_wrapper_dir.clone());
+    path_entries.extend(std::env::split_paths(&host_path));
+    prebuild_cmd.env("PATH", std::env::join_paths(path_entries).unwrap());
+    prebuild_cmd.env("QEMU_LD_PREFIX", &layout.staging_root);
+
+    prebuild_cmd
+        .exec()
+        .context("failed to install python3 via apk in staging rootfs")?;
+
+    // Build overlay: copy Python installation from staging into overlay
+    let python_dirs_to_copy: &[&str] = &["usr/bin", "usr/lib", "lib"];
+
+    for rel_dir in python_dirs_to_copy {
+        let src = layout.staging_root.join(rel_dir);
+        let dst = layout.overlay_dir.join(rel_dir);
+        if src.is_dir() {
+            copy_dir_recursive(&src, &dst, &layout.staging_root)
+                .with_context(|| format!("failed to copy {} to overlay", src.display()))?;
+        }
+    }
+
+    // Copy .py test files into overlay at /usr/bin/
+    let dest_bin = layout.overlay_dir.join("usr/bin");
+    fs::create_dir_all(&dest_bin)
+        .with_context(|| format!("failed to create {}", dest_bin.display()))?;
+
+    for entry in fs::read_dir(&python_dir)
+        .with_context(|| format!("failed to read {}", python_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let dest = dest_bin.join(entry.file_name());
+        fs::copy(&path, &dest)
+            .with_context(|| format!("failed to copy {} to {}", path.display(), dest.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&dest)
+                .with_context(|| format!("failed to stat {}", dest.display()))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest, perms)
+                .with_context(|| format!("failed to chmod {}", dest.display()))?;
+        }
+    }
+
+    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+/// Recursively copies a directory tree, preserving file permissions.
+///
+/// `allowed_root` is the canonical boundary: any symlink that resolves outside
+/// this directory is rejected to prevent host filesystem leaks.
+fn copy_dir_recursive(src: &Path, dst: &Path, allowed_root: &Path) -> anyhow::Result<()> {
+    let canonical_root = fs::canonicalize(allowed_root).with_context(|| {
+        format!(
+            "failed to canonicalize allowed root {}",
+            allowed_root.display()
+        )
+    })?;
+    fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
+    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", src_path.display()))?;
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path, allowed_root)?;
+        } else if file_type.is_symlink() {
+            // For symlinks: read the link target to decide what to do.
+            let link_target = fs::read_link(&src_path)
+                .with_context(|| format!("failed to read symlink {}", src_path.display()))?;
+
+            // Resolve the symlink target within the guest rootfs, not the host.
+            // Absolute guest symlinks (e.g. /bin/busybox) must be rebased onto
+            // canonical_root before canonicalization; otherwise fs::canonicalize
+            // would follow them through the host's "/" and produce a path that
+            // trivially escapes the staging root.
+            let host_target = if link_target.is_absolute() {
+                // Strip the leading "/" so Path::join doesn't discard canonical_root.
+                let rel = link_target.strip_prefix("/").unwrap_or(&link_target);
+                canonical_root.join(rel)
+            } else {
+                // Relative symlink: resolve from the directory that contains it.
+                src_path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(&link_target)
+            };
+
+            match fs::canonicalize(&host_target) {
+                Ok(resolved) => {
+                    // Symlink resolves — verify it stays within the staging root.
+                    ensure!(
+                        resolved.starts_with(&canonical_root),
+                        "symlink `{}` resolves to `{}` which escapes the staging root `{}`",
+                        src_path.display(),
+                        resolved.display(),
+                        canonical_root.display()
+                    );
+                    if resolved.is_file() {
+                        fs::copy(&resolved, &dst_path).with_context(|| {
+                            format!(
+                                "failed to copy {} to {}",
+                                resolved.display(),
+                                dst_path.display()
+                            )
+                        })?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let mode = fs::metadata(&resolved)
+                                .with_context(|| format!("failed to stat {}", resolved.display()))?
+                                .permissions()
+                                .mode();
+                            fs::set_permissions(&dst_path, fs::Permissions::from_mode(mode))
+                                .with_context(|| {
+                                    format!("failed to chmod {}", dst_path.display())
+                                })?;
+                        }
+                    }
+                }
+                Err(_) if link_target.is_relative() => {
+                    // Dangling relative symlink — the target likely exists in the
+                    // base rootfs already (e.g. busybox applet links). Safe to skip
+                    // since the overlay only adds files; it doesn't need to duplicate
+                    // links whose targets are already present in the base image.
+                    continue;
+                }
+                Err(_) => {
+                    // Dangling absolute symlink (rebased under staging root but still
+                    // unresolvable) — skip it; the base rootfs should provide the target.
+                    continue;
+                }
+            }
+        } else if file_type.is_file() {
+            fs::copy(&src_path, &dst_path).with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(&src_path)
+                    .with_context(|| format!("failed to stat {}", src_path.display()))?
+                    .permissions()
+                    .mode();
+                fs::set_permissions(&dst_path, fs::Permissions::from_mode(mode))
+                    .with_context(|| format!("failed to chmod {}", dst_path.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn write_host_resolver_config(staging_root: &Path) -> anyhow::Result<()> {
     let resolv_conf = preferred_host_resolver_config()?;
     let output_path = staging_root.join("etc/resolv.conf");
@@ -570,12 +797,20 @@ pub(crate) fn write_cmake_toolchain_file(
     }
     let sysroot = &layout.staging_root;
     let gcc_toolchain_root = sysroot.join("usr");
-    let common_flags = format!(
-        "--sysroot={} --gcc-toolchain={} -B{}",
-        sysroot.display(),
-        gcc_toolchain_root.display(),
-        layout.cross_bin_dir.display()
-    );
+    let mut compile_flags = vec![
+        format!("--sysroot={}", sysroot.display()),
+        format!("--gcc-toolchain={}", gcc_toolchain_root.display()),
+        format!("-B{}", layout.cross_bin_dir.display()),
+    ];
+    let mut linker_flags = compile_flags.clone();
+    if let Some(gcc_runtime_dir) = detect_gcc_runtime_dir(sysroot, spec.guest_tool_dir) {
+        // Older host clang may miss Alpine GCC runtime dirs unless explicitly provided.
+        compile_flags.push(format!("-B{}", gcc_runtime_dir.display()));
+        linker_flags = compile_flags.clone();
+        linker_flags.push(format!("-L{}", gcc_runtime_dir.display()));
+    }
+    let compile_flags = compile_flags.join(" ");
+    let linker_flags = linker_flags.join(" ");
 
     let mut content = include_str!("cmake-toolchain.cmake.in").to_string();
     for (needle, value) in [
@@ -623,9 +858,9 @@ pub(crate) fn write_cmake_toolchain_file(
             "@CMAKE_C_COMPILER_RANLIB@",
             cmake_value(layout.cross_bin_dir.join("ranlib")),
         ),
-        ("@CMAKE_C_FLAGS_INIT@", cmake_value(&common_flags)),
-        ("@CMAKE_ASM_FLAGS_INIT@", cmake_value(&common_flags)),
-        ("@CMAKE_LINKER_FLAGS_INIT@", cmake_value(&common_flags)),
+        ("@CMAKE_C_FLAGS_INIT@", cmake_value(&compile_flags)),
+        ("@CMAKE_ASM_FLAGS_INIT@", cmake_value(&compile_flags)),
+        ("@CMAKE_LINKER_FLAGS_INIT@", cmake_value(&linker_flags)),
     ] {
         content = content.replace(needle, &value);
     }
@@ -636,6 +871,46 @@ pub(crate) fn write_cmake_toolchain_file(
 
 fn cmake_value(value: impl AsRef<std::ffi::OsStr>) -> String {
     value.as_ref().to_string_lossy().replace('\\', "/")
+}
+
+fn detect_gcc_runtime_dir(sysroot: &Path, guest_tool_dir: &str) -> Option<PathBuf> {
+    let triplet = Path::new(guest_tool_dir).parent()?.file_name()?;
+    let gcc_root = sysroot.join("usr/lib/gcc").join(triplet);
+    let entries = fs::read_dir(&gcc_root).ok()?;
+    let runtime_dirs = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+
+    runtime_dirs
+        .iter()
+        .filter_map(|path| {
+            let dir_name = path.file_name()?.to_str()?;
+            let version = parse_gcc_runtime_version(dir_name)?;
+            Some((version, path))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)))
+        .map(|(_, path)| path.clone())
+        .or_else(|| runtime_dirs.into_iter().max())
+}
+
+fn parse_gcc_runtime_version(dir_name: &str) -> Option<Vec<u64>> {
+    let mut version = Vec::new();
+    for segment in dir_name.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+        let digits = segment
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        if digits.is_empty() {
+            return None;
+        }
+        version.push(digits.parse().ok()?);
+    }
+    Some(version)
 }
 
 pub(crate) fn build_prebuild_command(
@@ -1144,6 +1419,12 @@ mod tests {
             case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb")
                 .unwrap();
         fs::create_dir_all(&layout.cross_bin_dir).unwrap();
+        fs::create_dir_all(
+            layout
+                .staging_root
+                .join("usr/lib/gcc/aarch64-alpine-linux-musl/15.2.0"),
+        )
+        .unwrap();
 
         write_cmake_toolchain_file(
             &layout,
@@ -1158,7 +1439,21 @@ mod tests {
         assert!(content.contains("set(CMAKE_C_COMPILER_TARGET \"aarch64-linux-musl\")"));
         assert!(content.contains("--gcc-toolchain="));
         assert!(content.contains("-B"));
+        assert!(content.contains("-L"));
         assert!(content.contains("CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER"));
+    }
+
+    #[test]
+    fn detect_gcc_runtime_dir_prefers_highest_version() {
+        let root = tempdir().unwrap();
+        let sysroot = root.path().join("sysroot");
+        let gcc_root = sysroot.join("usr/lib/gcc/aarch64-alpine-linux-musl");
+        fs::create_dir_all(gcc_root.join("9.5.0")).unwrap();
+        fs::create_dir_all(gcc_root.join("15.2.0")).unwrap();
+
+        let selected =
+            detect_gcc_runtime_dir(&sysroot, "usr/aarch64-alpine-linux-musl/bin").unwrap();
+        assert_eq!(selected, gcc_root.join("15.2.0"));
     }
 
     #[test]

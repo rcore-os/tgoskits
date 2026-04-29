@@ -2,17 +2,17 @@
 name = "ax-driver-vsock"
 edition.workspace = true
 version = "0.3.11"
-repository.workspace = true
-authors.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
+authors = ["Yuekai Jia <equation618@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>", "Yu Chen <yuchen@tsinghua.edu.cn>"]
 description = "Common traits and types for vsock drivers"
 keywords = ["arceos", "driver", "vsock"]
-categories.workspace = true
+categories = ["os", "no-std", "hardware-support"]
 readme = "README.md"
-license.workspace = true
+license = "Apache-2.0"
 
 [features]
 default = []
 
 [dependencies]
-ax-driver-base = { version = "0.3" }
+ax-driver-base = { workspace = true }
 log = "0.4"

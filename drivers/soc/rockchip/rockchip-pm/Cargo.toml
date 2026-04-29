@@ -1,5 +1,5 @@
 [package]
-edition = "2024"
+edition.workspace = true
 name = "rockchip-pm"
 version = "0.4.2"
 authors = ["周睿 <zrufo747@outlook.com>"]

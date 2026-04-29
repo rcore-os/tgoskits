@@ -194,7 +194,7 @@ impl Interface {
             .multicast
             .groups
             .iter()
-            .find(|(_, &state)| state == GroupState::Joining)
+            .find(|&(_, &state)| state == GroupState::Joining)
         {
             match addr {
                 #[cfg(feature = "proto-ipv4")]
@@ -242,7 +242,7 @@ impl Interface {
             .multicast
             .groups
             .iter()
-            .find(|(_, &state)| state == GroupState::Leaving)
+            .find(|&(_, &state)| state == GroupState::Leaving)
         {
             match addr {
                 #[cfg(feature = "proto-ipv4")]

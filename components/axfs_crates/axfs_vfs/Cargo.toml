@@ -4,10 +4,10 @@ description = "Virtual filesystem interfaces used by ArceOS"
 keywords = ["arceos", "filesystem", "vfs"]
 edition.workspace = true
 version = "0.3.8"
-repository.workspace = true
-authors.workspace = true
-categories.workspace = true
-license.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+categories = ["os", "no-std", "filesystem"]
+license = "Apache-2.0"
 
 [features]
 default = []
@@ -15,4 +15,4 @@ default = []
 [dependencies]
 log = "0.4"
 bitflags = "2.6"
-ax-errno = "0.4"
+ax-errno = { workspace = true }

@@ -92,10 +92,10 @@ impl<E: TimerEvent> TimerList<E> {
     ///
     /// Returns `None` if no event is expired.
     pub fn expire_one(&mut self, now: TimeValue) -> Option<(TimeValue, E)> {
-        if let Some(e) = self.events.peek() {
-            if e.deadline <= now {
-                return self.events.pop().map(|e| (e.deadline, e.event));
-            }
+        if let Some(e) = self.events.peek()
+            && e.deadline <= now
+        {
+            return self.events.pop().map(|e| (e.deadline, e.event));
         }
         None
     }

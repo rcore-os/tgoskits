@@ -1,20 +1,28 @@
 #![no_main]
-use libfuzzer_sys::fuzz_target;
-use smoltcp::iface::{InterfaceBuilder, NeighborCache};
-use smoltcp::phy::{Loopback, Medium};
-use smoltcp::socket::tcp;
-use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::{EthernetAddress, EthernetFrame, EthernetProtocol};
-use smoltcp::wire::{IpAddress, IpCidr, Ipv4Packet, Ipv6Packet, TcpPacket};
 use std::cmp;
+
+use libfuzzer_sys::fuzz_target;
+use smoltcp::{
+    iface::{InterfaceBuilder, NeighborCache},
+    phy::{Loopback, Medium},
+    socket::tcp,
+    time::{Duration, Instant},
+    wire::{
+        EthernetAddress, EthernetFrame, EthernetProtocol, IpAddress, IpCidr, Ipv4Packet,
+        Ipv6Packet, TcpPacket,
+    },
+};
 
 #[path = "../utils.rs"]
 mod utils;
 
 mod mock {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use smoltcp::time::{Duration, Instant};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
 
     // should be AtomicU64 but that's unstable
     #[derive(Debug, Clone)]
@@ -49,7 +57,7 @@ impl TcpHeaderFuzzer {
     pub fn new(data: &[u8]) -> TcpHeaderFuzzer {
         let copy_len = cmp::min(
             data.len(),
-            56, /* max TCP header length without port numbers*/
+            56, // max TCP header length without port numbers
         );
 
         let mut fuzzer = TcpHeaderFuzzer([0; 56], copy_len);
@@ -122,7 +130,8 @@ fuzz_target!(|data: &[u8]| {
         let device = utils::parse_middleware_options(
             &mut matches,
             Loopback::new(Medium::Ethernet),
-            /*loopback=*/ true,
+            // loopback=
+            true,
         );
 
         smoltcp::phy::FuzzInjector::new(device, EmptyFuzzer(), TcpHeaderFuzzer::new(data))

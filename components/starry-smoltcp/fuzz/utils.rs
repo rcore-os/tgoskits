@@ -1,18 +1,21 @@
 // TODO: this is literally a copy of examples/utils.rs, but without an allow dead code attribute.
 // The include logic does not allow having attributes in included files.
 
-use getopts::{Matches, Options};
-use std::env;
-use std::fs::File;
-use std::io;
-use std::io::Write;
-use std::process;
-use std::str::{self, FromStr};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    env,
+    fs::File,
+    io,
+    io::Write,
+    process,
+    str::{self, FromStr},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use smoltcp::phy::{Device, FaultInjector, Tracer};
-use smoltcp::phy::{PcapMode, PcapWriter};
-use smoltcp::time::Duration;
+use getopts::{Matches, Options};
+use smoltcp::{
+    phy::{Device, FaultInjector, PcapMode, PcapWriter, Tracer},
+    time::Duration,
+};
 
 pub fn create_options() -> (Options, Vec<&'static str>) {
     let mut opts = Options::new();
@@ -68,15 +71,13 @@ pub fn add_middleware_options(opts: &mut Options, _free: &mut Vec<&str>) {
     opts.optopt(
         "",
         "tx-rate-limit",
-        "Drop packets after transmit rate exceeds given limit \
-                                      (packets per interval)",
+        "Drop packets after transmit rate exceeds given limit (packets per interval)",
         "RATE",
     );
     opts.optopt(
         "",
         "rx-rate-limit",
-        "Drop packets after transmit rate exceeds given limit \
-                                      (packets per interval)",
+        "Drop packets after transmit rate exceeds given limit (packets per interval)",
         "RATE",
     );
     opts.optopt(

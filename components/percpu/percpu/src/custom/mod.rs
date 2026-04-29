@@ -74,7 +74,7 @@ impl<T> PerCpuData<T> {
     /// Caller must ensure that preemption is disabled on the current CPU.
     #[inline]
     pub unsafe fn current_ref_raw(&self) -> &T {
-        &*self.current_ptr()
+        unsafe { &*self.current_ptr() }
     }
 
     /// Returns the mutable reference of the per-CPU static variable on the current CPU.
@@ -134,7 +134,7 @@ impl<T> PerCpuData<T> {
     /// - data races will not happen.
     #[inline]
     pub unsafe fn remote_ref_raw(&self, cpu_id: usize) -> &T {
-        &*self.remote_ptr(cpu_id)
+        unsafe { &*self.remote_ptr(cpu_id) }
     }
 
     /// Returns the mutable reference of the per-CPU static variable on the given CPU.
@@ -147,7 +147,7 @@ impl<T> PerCpuData<T> {
     #[inline]
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn remote_ref_mut_raw(&self, cpu_id: usize) -> &mut T {
-        &mut *self.remote_ptr(cpu_id)
+        unsafe { &mut *self.remote_ptr(cpu_id) }
     }
 }
 

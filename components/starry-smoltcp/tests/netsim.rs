@@ -212,7 +212,7 @@ impl PacketQueue {
     }
 
     pub fn push(&mut self, data: Vec<u8>, timestamp: Instant) {
-        if self.rng.gen::<f64>() < self.params.loss {
+        if self.rng.r#gen::<f64>() < self.params.loss {
             log::info!("PACKET LOST!");
             return;
         }

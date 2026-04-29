@@ -1,6 +1,6 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 
-use ax_task::future::register_irq_waker;
+use axpoll::PollSet;
 use lazy_static::lazy_static;
 
 use super::{
@@ -26,6 +26,18 @@ impl TtyWrite for Console {
 lazy_static! {
     /// The default TTY device.
     pub static ref N_TTY: Arc<NTtyDriver> = new_n_tty();
+    static ref CONSOLE_INPUT_SOURCE: Arc<PollSet> = Arc::new(PollSet::new());
+}
+
+fn handle_console_input_irq() {
+    let events = ax_hal::console::handle_irq();
+    if events.intersects(
+        ax_hal::console::ConsoleIrqEvent::RX_READY
+            | ax_hal::console::ConsoleIrqEvent::RX_ERROR
+            | ax_hal::console::ConsoleIrqEvent::OVERRUN,
+    ) {
+        CONSOLE_INPUT_SOURCE.wake();
+    }
 }
 
 fn new_n_tty() -> Arc<NTtyDriver> {
@@ -34,11 +46,18 @@ fn new_n_tty() -> Arc<NTtyDriver> {
         TtyConfig {
             reader: Console,
             writer: Console,
-            process_mode: if let Some(irq) = ax_hal::console::irq_num() {
-                ProcessMode::External(Box::new(move |waker| register_irq_waker(irq, &waker)) as _)
-            } else {
-                ProcessMode::Manual
-            },
+            process_mode: console_irq_mode().unwrap_or(ProcessMode::Manual),
         },
     )
+}
+
+fn console_irq_mode() -> Option<ProcessMode> {
+    let irq = ax_hal::console::irq_num()?;
+    if !ax_hal::irq::register(irq, handle_console_input_irq) {
+        warn!("Failed to register console IRQ handler for irq {irq}, falling back to manual mode");
+        return None;
+    }
+
+    ax_hal::console::set_input_irq_enabled(true);
+    Some(ProcessMode::InterruptDriven(CONSOLE_INPUT_SOURCE.clone()))
 }

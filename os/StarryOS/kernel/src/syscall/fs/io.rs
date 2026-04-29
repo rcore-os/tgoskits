@@ -15,7 +15,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
-    file::{File, FileLike, Pipe, get_file_like},
+    file::{Directory, File, FileLike, Pipe, get_file_like},
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut},
 };
 
@@ -34,14 +34,17 @@ fn file_or_espipe(fd: c_int) -> AxResult<Arc<File>> {
 
 /// Like `file_or_espipe`, but for write operations: converts IsADirectory
 /// to BadFileDescriptor because directories cannot be opened for writing.
+/// and verifies that the file descriptor is writable.
 fn file_or_espipe_write(fd: c_int) -> AxResult<Arc<File>> {
-    file_or_espipe(fd).map_err(|e| {
+    let f = file_or_espipe(fd).map_err(|e| {
         if e == AxError::IsADirectory {
             AxError::BadFileDescriptor
         } else {
             e
         }
-    })
+    })?;
+    let _ = f.inner().access(FileFlags::WRITE)?;
+    Ok(f)
 }
 
 struct DummyFd;
@@ -111,8 +114,31 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
         2 => SeekFrom::End(offset as _),
         _ => return Err(AxError::InvalidInput),
     };
-    let off = file_or_espipe(fd)?.inner().seek(pos)?;
-    Ok(off as _)
+    let any_file = get_file_like(fd)?;
+
+    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+        let off = f.inner().seek(pos)?;
+        return Ok(off as _);
+    }
+
+    if let Ok(d) = any_file.downcast_arc::<Directory>() {
+        let mut off = d.offset.lock();
+        let new_pos = match pos {
+            SeekFrom::Start(pos) => pos,
+            SeekFrom::End(delta) => d
+                .inner()
+                .len()?
+                .checked_add_signed(delta)
+                .ok_or(AxError::InvalidInput)?,
+            SeekFrom::Current(delta) => {
+                off.checked_add_signed(delta).ok_or(AxError::InvalidInput)?
+            }
+        };
+        *off = new_pos;
+        return Ok(new_pos as _);
+    }
+
+    Err(AxError::from(LinuxError::ESPIPE))
 }
 
 pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
@@ -155,31 +181,28 @@ pub fn sys_fallocate(
 
 pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fsync <= {fd}");
-    match File::from_fd(fd) {
-        Ok(f) => {
-            f.inner().sync(false)?;
-            Ok(0)
-        }
-        Err(AxError::IsADirectory) => {
-            // Linux allows fsync() on directory fds to flush directory
-            // metadata. We don't have directory-level sync, but returning
-            // Ok matches Linux behavior for applications like PostgreSQL.
-            Ok(0)
-        }
-        Err(e) => Err(e),
+    let any_file = get_file_like(fd)?;
+    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+        f.inner().sync(false)?;
+        return Ok(0);
+    } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
+        d.inner().sync(false)?;
+        return Ok(0);
     }
+    Err(AxError::from(LinuxError::EINVAL))
 }
 
 pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fdatasync <= {fd}");
-    match File::from_fd(fd) {
-        Ok(f) => {
-            f.inner().sync(true)?;
-            Ok(0)
-        }
-        Err(AxError::IsADirectory) => Ok(0),
-        Err(e) => Err(e),
+    let any_file = get_file_like(fd)?;
+    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+        f.inner().sync(true)?;
+        return Ok(0);
+    } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
+        d.inner().sync(true)?;
+        return Ok(0);
     }
+    Err(AxError::from(LinuxError::EINVAL))
 }
 
 pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, _flags: u32) -> AxResult<isize> {
@@ -230,10 +253,10 @@ pub fn sys_pwrite64(
     if offset < 0 {
         return Err(AxError::InvalidInput);
     }
+    let f = file_or_espipe_write(fd)?;
     if len == 0 {
         return Ok(0);
     }
-    let f = file_or_espipe_write(fd)?;
     let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
     Ok(write as _)
 }

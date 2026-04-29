@@ -1,7 +1,7 @@
 [package]
 name = "riscv_vcpu"
 version = "0.5.6"
-edition = "2024"
+edition.workspace = true
 authors = [
     "KeYang Hu <keyang.hu@qq.com>",
     "Mingxian Su <aarkegz@gmail.com>",
@@ -27,11 +27,9 @@ log = "0.4"
 cfg-if = "1.0"
 bitflags = "2.2"
 bit_field = "0.10"
-ax-crate-interface = "0.5"
-
+ax-crate-interface = { workspace = true }
 riscv = { version = "0.14.0", features = ["s-mode"] }
-riscv-h = "0.4"
-
+riscv-h = { workspace = true }
 riscv-decode = "0.2.3"
 rustsbi = { version = "0.4.0", features = ["forward"] }
 sbi-rt = { version = "0.0.3", features = ["integer-impls"] }
@@ -39,10 +37,9 @@ sbi-spec = { version = "0.0.7", features = ["legacy"] }
 tock-registers = "0.10"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 
-ax-errno = "0.4"
-ax-page-table-entry = "0.8"
-ax-memory-addr = "0.6"
-
-axaddrspace = "0.5"
-axvcpu = "0.5"
-axvisor_api = "0.5"
+ax-errno = { workspace = true }
+ax-page-table-entry = { workspace = true }
+ax-memory-addr = { workspace = true }
+axaddrspace = { workspace = true }
+axvcpu = { workspace = true }
+axvisor_api = { workspace = true }

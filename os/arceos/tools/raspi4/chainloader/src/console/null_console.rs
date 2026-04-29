@@ -4,8 +4,9 @@
 
 //! Null console.
 
-use super::interface;
 use core::fmt;
+
+use super::interface;
 
 //--------------------------------------------------------------------------------------------------
 // Public Definitions

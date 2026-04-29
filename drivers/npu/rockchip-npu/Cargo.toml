@@ -2,7 +2,7 @@
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "hardware-support", "no-std"]
 description = "Low-level device layer for Rockchip NPUs"
-edition = "2024"
+edition.workspace = true
 keywords = ["rk3588", "npu", "rknn"]
 license = "Apache-2.0"
 name = "rockchip-npu"
@@ -24,9 +24,8 @@ tock-registers = "0.10"
 arm-scmi = {git = "https://github.com/drivercraft/arm-scmi"}
 bare-test = "0.8"
 fdt-edit = "0.2.3"
-rk3588-clk = {version = "0.1.3"}
-rockchip-pm = {version = "0.4"}
-
+rockchip-pm = { workspace = true }
+rockchip-soc = { workspace = true }
 [build-dependencies]
 bare-test-macros = "0.3"
 

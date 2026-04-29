@@ -1,0 +1,34 @@
+[package]
+
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["embedded", "no-std"]
+description = "A rockchip soc driver, contains cru, power manager, pinctrl."
+edition = "2024"
+keywords = ["driver", "cru", "clock", "power"]
+license = "MIT"
+name = "rockchip-soc"
+repository = "https://github.com/drivercraft/rockchip-soc"
+version = "0.1.1"
+
+[dependencies]
+bitflags = "2"
+dma-api = { workspace = true }
+enum_dispatch = "0.3.13"
+fdt-edit = "0.2.3"
+log = "0.4"
+mbarrier = "0.1"
+thiserror = {version = "2", default-features = false}
+tock-registers = "0.10"
+
+[target.'cfg(not(any(windows, unix)))'.dev-dependencies]
+bare-test = "0.7"
+num-align = "0.1.0"
+sdmmc = {git = "https://github.com/YanQD/sdmmc.git"}
+spin = "0.10"
+
+[build-dependencies]
+bare-test-macros = "0.2"
+
+[[test]]
+harness = false
+name = "test"

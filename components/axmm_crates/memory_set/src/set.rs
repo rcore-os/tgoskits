@@ -37,15 +37,15 @@ impl<B: MappingBackend> MemorySet<B> {
 
     /// Returns whether the given address range overlaps with any existing area.
     pub fn overlaps(&self, range: AddrRange<B::Addr>) -> bool {
-        if let Some((_, before)) = self.areas.range(..range.start).last() {
-            if before.va_range().overlaps(range) {
-                return true;
-            }
+        if let Some((_, before)) = self.areas.range(..range.start).last()
+            && before.va_range().overlaps(range)
+        {
+            return true;
         }
-        if let Some((_, after)) = self.areas.range(range.start..).next() {
-            if after.va_range().overlaps(range) {
-                return true;
-            }
+        if let Some((_, after)) = self.areas.range(range.start..).next()
+            && after.va_range().overlaps(range)
+        {
+            return true;
         }
         false
     }
@@ -77,7 +77,7 @@ impl<B: MappingBackend> MemorySet<B> {
         limit: AddrRange<B::Addr>,
         align: usize,
     ) -> Option<B::Addr> {
-        if size % align != 0 {
+        if !size.is_multiple_of(align) {
             // size must be a multiple of align.
             return None;
         }

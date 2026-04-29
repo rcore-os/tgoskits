@@ -45,7 +45,7 @@ pub fn init_trap() {
     #[cfg(feature = "uspace")]
     crate::uspace_common::init_exception_table();
     unsafe {
-        extern "C" {
+        unsafe extern "C" {
             fn exception_entry_base();
         }
         core::arch::asm!(include_asm_macros!(), "csrwr $r0, KSAVE_KSP");

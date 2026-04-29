@@ -628,7 +628,7 @@ pub fn FXmacBdRingAlloc(
             "free_head {:#x} seekahead to {:#x}",
             b as usize, ring_ptr.free_head as usize
         );
-        assert!(!core::ptr::eq(b, ring_ptr.free_head as *const _));
+        assert!(!core::ptr::eq(b, ring_ptr.free_head));
 
         ring_ptr.free_cnt -= num_bd;
         ring_ptr.pre_cnt += num_bd;

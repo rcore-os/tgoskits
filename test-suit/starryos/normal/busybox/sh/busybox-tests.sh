@@ -798,6 +798,9 @@ if echo "$_t" | grep -qF "mv_ok"; then echo "PASS: busybox_mv"; PASS=$((PASS+1))
 # busybox_rmdir
 _t=$({ timeout 10 sh -c 'busybox mkdir -p /tmp/bb_rmd && busybox rmdir /tmp/bb_rmd && busybox echo rmdir_ok'; } 2>&1)
 if echo "$_t" | grep -qF "rmdir_ok"; then echo "PASS: busybox_rmdir"; PASS=$((PASS+1)); else echo "FAIL: busybox_rmdir"; FAIL=$((FAIL+1)); fi
+# busybox_link — create hard link on tmpfs and verify content is shared
+_t=$({ timeout 10 sh -c 'busybox rm -f /tmp/bb_link_a /tmp/bb_link_b; busybox echo link_data > /tmp/bb_link_a && busybox link /tmp/bb_link_a /tmp/bb_link_b && busybox cat /tmp/bb_link_b'; } 2>&1)
+if echo "$_t" | grep -qF "link_data"; then echo "PASS: busybox_link"; PASS=$((PASS+1)); else echo "FAIL: busybox_link"; FAIL=$((FAIL+1)); fi
 
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"

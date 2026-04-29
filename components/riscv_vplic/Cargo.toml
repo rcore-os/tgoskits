@@ -1,7 +1,7 @@
 [package]
 name = "riscv_vplic"
 version = "0.4.8"
-edition = "2021"
+edition.workspace = true
 authors = ["Jingyu liu <liujingyu24s@ict.ac.cn>"]
 description = "RISCV Virtual PLIC implementation."
 documentation = "https://arceos-hypervisor.github.io/riscv_vplic"
@@ -15,17 +15,15 @@ license = "Apache-2.0"
 default = []
 
 [dependencies]
-axaddrspace = "0.5"
-axdevice_base = "0.4"
-axvisor_api = "0.5"
-
-ax-errno = "0.4"
+axaddrspace = { workspace = true }
+axdevice_base = { workspace = true }
+axvisor_api = { workspace = true }
+ax-errno = { workspace = true }
 bitmaps = { version = "3.2", default-features = false }
 log = "0.4"
 spin = "0.10"
 
-riscv-h = "0.4"
-
+riscv-h = { workspace = true }
 [package.metadata.docs.rs]
 default-target = ["riscv64gc-unknown-none-elf"]
 targets = ["riscv64gc-unknown-none-elf"]

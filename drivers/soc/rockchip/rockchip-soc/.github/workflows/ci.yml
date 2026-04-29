@@ -1,0 +1,57 @@
+name: Test CI
+
+on: [push, pull_request]
+
+jobs:
+  clippy:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: nightly
+        components: rust-src, clippy, rustfmt
+        targets: aarch64-unknown-none-softfloat
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: cargo-bin-cache
+        cache-targets: false
+    - name: Check rust version
+      run: rustc --version --verbose
+    - name: Check code format
+      run: cargo fmt --all -- --check
+    - name: Clippy for the default target
+      run: cargo clippy
+
+  Test:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rust-toolchain: [nightly]
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust-toolchain }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust-toolchain }}
+        components: rust-src, llvm-tools
+        targets: aarch64-unknown-none-softfloat
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: cargo-bin-cache
+        cache-targets: false
+    - run: sudo apt update && sudo apt install -y libudev-dev
+    - run: cargo install cargo-binutils
+    - run: cargo install ostool@0.7.24 
+    - uses: arceos-org/setup-qemu@v1
+      with:
+        version: 9.2.4
+        arch_list: aarch64
+    - name: Run app tests
+      run: cargo test --test test -- tests --show-output

@@ -20,4 +20,4 @@ log.workspace = true
 
 # [dev-dependencies]
 [target.'cfg(not(target_os="none"))'.dev-dependencies]
-ax-log = { path = ".", features = ["std"] }
+ax-log = { workspace = true, features = ["std"] }

@@ -1,7 +1,7 @@
 [package]
 name = "scope-local"
 version = "0.3.6"
-edition = "2024"
+edition.workspace = true
 description = "Scope local storage"
 authors = ["朝倉水希 <asakuramizu111@gmail.com>"]
 keywords = ["arceos"]
@@ -9,9 +9,9 @@ repository = "https://github.com/Starry-OS/scope-local"
 license = "Apache-2.0"
 
 [dependencies]
-ax-percpu = "0.4"
+ax-percpu = { workspace = true, features = ["non-zero-vma"] }
 spin = { version = "0.10", default-features = false, features = ["lazy"] }
 
 [dev-dependencies]
 ctor = "0.6"
-ax-percpu = { version = "0.4", features = ["non-zero-vma"] }
+ax-percpu = { workspace = true, features = ["non-zero-vma"] }

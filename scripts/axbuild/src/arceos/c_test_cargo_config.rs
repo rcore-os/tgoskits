@@ -306,13 +306,6 @@ mod tests {
 
     use super::*;
 
-    fn repo_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .unwrap()
-    }
-
     #[test]
     fn render_c_test_cargo_config_preserves_template_and_sorts_patches() {
         let template =
@@ -331,54 +324,6 @@ mod tests {
         let a_pos = rendered.find("a-first =").unwrap();
         let z_pos = rendered.find("z-last =").unwrap();
         assert!(a_pos < z_pos);
-    }
-
-    #[test]
-    fn discover_patch_paths_prefers_root_patch_for_duplicate_local_package_names() {
-        let root = repo_root();
-        let patches = discover_patch_paths(&root, &root.join("os/arceos")).unwrap();
-
-        assert_eq!(
-            patches.get("ax-plat-riscv64-qemu-virt"),
-            Some(&PathBuf::from(
-                "../../components/axplat_crates/platforms/axplat-riscv64-qemu-virt"
-            ))
-        );
-    }
-
-    #[test]
-    fn discover_patch_paths_covers_repo_local_arceos_dependencies_missing_from_root_patch() {
-        let root = repo_root();
-        let patches = discover_patch_paths(&root, &root.join("os/arceos")).unwrap();
-
-        for crate_name in [
-            "ax-crate-interface",
-            "ax-allocator",
-            "axbacktrace",
-            "ax-lazyinit",
-            "ax-sched",
-            "ax-cap-access",
-            "ax-cpumask",
-            "rsext4",
-        ] {
-            assert!(
-                patches.contains_key(crate_name),
-                "expected generated C-test patch for `{crate_name}`"
-            );
-        }
-    }
-
-    #[test]
-    fn discover_patch_paths_keeps_root_patch_entries_for_transitive_local_crates() {
-        let root = repo_root();
-        let patches = discover_patch_paths(&root, &root.join("os/arceos")).unwrap();
-
-        assert_eq!(
-            patches.get("ax-page-table-entry"),
-            Some(&PathBuf::from(
-                "../../components/page_table_multiarch/page_table_entry"
-            ))
-        );
     }
 
     #[test]

@@ -70,7 +70,7 @@ pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
         let sumbol_vma_percpu_load_start = gen_symbol_vma(&format_ident!("_percpu_load_start"));
         quote! {
             {
-                extern "C" { fn _percpu_load_start(); }
+                unsafe extern "C" { fn _percpu_load_start(); }
                 (#symbol_vma) - (#sumbol_vma_percpu_load_start)
             }
         }

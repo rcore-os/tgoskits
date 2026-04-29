@@ -9,10 +9,7 @@ use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
-use ax_task::{
-    current,
-    future::{block_on, poll_io},
-};
+use ax_task::current;
 use axfs_ng_vfs::NodeFlags;
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
@@ -52,7 +49,7 @@ pub struct Tty<R, W> {
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
     fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
         let writer = config.writer.clone();
-        let is_ptm = matches!(&config.process_mode, ProcessMode::None(_));
+        let is_ptm = matches!(&config.process_mode, ProcessMode::Passive(_));
         let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));
         Arc::new_cyclic(|this| Self {
             this: this.clone(),
@@ -86,18 +83,11 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {
-        block_on(poll_io(
-            &self.terminal.job_control,
-            IoEvents::IN,
-            false,
-            || {
-                if self.is_ptm || self.terminal.job_control.current_in_foreground() {
-                    self.ldisc.lock().read(buf)
-                } else {
-                    Err(AxError::WouldBlock)
-                }
-            },
-        ))
+        if self.is_ptm || self.terminal.job_control.current_in_foreground() {
+            self.ldisc.lock().read(buf)
+        } else {
+            Err(AxError::WouldBlock)
+        }
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> AxResult<usize> {

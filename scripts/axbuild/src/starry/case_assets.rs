@@ -68,6 +68,7 @@ pub(crate) async fn prepare_case_assets(
     let needs_assets = case.is_grouped()
         || case_uses_c_pipeline(case)
         || case_uses_sh_pipeline(case)
+        || case_uses_python_pipeline(case)
         || case_uses_usb_qemu_assets(arch, case);
 
     if !needs_assets {
@@ -113,6 +114,16 @@ pub(crate) fn case_sh_source_dir(case: &StarryQemuCase) -> PathBuf {
 /// Returns whether a Starry test case uses the shell pipeline.
 pub(crate) fn case_uses_sh_pipeline(case: &StarryQemuCase) -> bool {
     case_sh_source_dir(case).is_dir()
+}
+
+/// Returns the Python source directory for a Starry test case.
+pub(crate) fn case_python_source_dir(case: &StarryQemuCase) -> PathBuf {
+    case_build::case_python_source_dir(case)
+}
+
+/// Returns whether a Starry test case uses the Python pipeline.
+pub(crate) fn case_uses_python_pipeline(case: &StarryQemuCase) -> bool {
+    case_python_source_dir(case).is_dir()
 }
 
 /// Returns whether a Starry test case needs extra USB-backed QEMU assets.
@@ -162,6 +173,8 @@ pub(crate) fn prepare_case_assets_sync(
         case_build::prepare_c_case_assets_sync(arch, case, case_rootfs, &layout)?;
     } else if case_uses_sh_pipeline(case) {
         prepare_sh_case_assets_sync(case, case_rootfs, &layout)?;
+    } else if case_uses_python_pipeline(case) {
+        case_build::prepare_python_case_assets_sync(arch, case, case_rootfs, &layout)?;
     }
 
     let mut extra_qemu_args = Vec::new();

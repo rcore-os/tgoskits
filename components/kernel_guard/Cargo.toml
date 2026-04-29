@@ -2,7 +2,7 @@
 name = "ax-kernel-guard"
 version = "0.3.8"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "RAII wrappers to create a critical section with local IRQs or preemption disabled"
 keywords = ["arceos", "synchronization", "preemption"]
@@ -15,4 +15,4 @@ default = []
 
 [dependencies]
 cfg-if = "1.0"
-ax-crate-interface = "0.5"
+ax-crate-interface = { workspace = true }

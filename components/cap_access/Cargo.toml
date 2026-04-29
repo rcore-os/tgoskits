@@ -2,7 +2,7 @@
 name = "ax-cap-access"
 version = "0.3.4"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Provide basic capability-based access control to objects"
 keywords = ["arceos", "capabilities", "permission", "access-control"]

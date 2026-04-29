@@ -4,11 +4,10 @@ description = "Wrappers and helper functions for physical and virtual addresses"
 keywords = ["arceos", "address", "virtual-memory"]
 
 version = "0.6.7"
-repository.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
-authors.workspace = true
-categories.workspace = true
-rust-version.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "aarkegz <aarkegz@gmail.com>"]
+categories = ["os", "memory-management", "no-std"]
+license = "Apache-2.0"
 
 [dependencies]

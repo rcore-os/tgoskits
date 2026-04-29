@@ -2,13 +2,13 @@
 name = "ax-driver-pci"
 edition.workspace = true
 version = "0.3.11"
-repository.workspace = true
-authors.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
+authors = ["Yuekai Jia <equation618@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>", "Yu Chen <yuchen@tsinghua.edu.cn>"]
 description = "Structures and functions for PCI bus operations"
 keywords = ["arceos", "driver", "pci"]
-categories.workspace = true
+categories = ["os", "no-std", "hardware-support"]
 readme = "README.md"
-license.workspace = true
+license = "Apache-2.0"
 
 [dependencies]
 virtio-drivers = { version = "0.13.0", default-features = false }

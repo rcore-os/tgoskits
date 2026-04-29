@@ -19,15 +19,15 @@ phys_cpu_sets = [1]
 # The entry point of the kernel image.
 entry_point = 0x8000
 # The location of image: "memory" | "fs".
-# Load kernel image into memory; path will be patched by CI script.
-image_location = "memory"
+# Load from file system.
+image_location = "fs"
 # The file path of the kernel image.
-kernel_path = "/tmp/.axvisor-images/qemu_x86_64_nimbos/qemu-x86_64"
+kernel_path = "/guest/nimbos/nimbos-qemu"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # The file path of the BIOS image.
-# NimbOS x86_64 needs axvm-bios at 0x8000 to bootstrap; path will be patched by setup script.
-bios_path = "/tmp/.axvisor-images/qemu_x86_64_nimbos/axvm-bios.bin"
+# NimbOS x86_64 needs axvm-bios at 0x8000 to bootstrap.
+bios_path = "/guest/nimbos/axvm-bios.bin"
 # The load address of the BIOS image.
 bios_load_addr = 0x8000
 

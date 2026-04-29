@@ -1,8 +1,7 @@
 [package]
 name = "smoltcp"
 version = "0.14.2"
-edition = "2021"
-rust-version = "1.81"
+edition.workspace = true
 authors = ["whitequark <whitequark@whitequark.org>"]
 description = "A TCP/IP stack designed for bare-metal, real-time systems without a heap."
 documentation = "https://docs.rs/smoltcp/"
@@ -38,7 +37,7 @@ url = "2.0"
 rstest = "0.17"
 insta = "1.41.1"
 rand_chacha = "0.3.1"
-idna = { version = "=1.0.1" }
+idna = { version = "=1.0.3" }
 
 [features]
 std = ["managed/std", "alloc"]

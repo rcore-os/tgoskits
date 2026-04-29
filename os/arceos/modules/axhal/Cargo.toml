@@ -38,7 +38,11 @@ rtc = [
     "ax-plat-riscv64-qemu-virt?/rtc",
     "ax-plat-loongarch64-qemu-virt?/rtc",
 ]
-paging = ["dep:ax-alloc", "dep:ax-page-table-multiarch"]
+paging = [
+    "dep:ax-alloc",
+    "dep:ax-page-table-multiarch",
+    "ax-page-table-multiarch/ax-errno",
+]
 tls = ["ax-cpu/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
 hv = ["paging", "ax-cpu/arm-el2", "ax-percpu/arm-el2", "axplat-dyn?/hv"]
@@ -76,7 +80,7 @@ spin.workspace = true
 ax-plat-x86-pc = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
-axplat-dyn = { workspace = true, optional = true }
+axplat-dyn = { workspace = true, default-features = false, optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 ax-plat-aarch64-qemu-virt = { workspace = true, optional = true }
@@ -89,3 +93,4 @@ ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }
 
 [build-dependencies]
 ax-config.workspace = true
+toml.workspace = true

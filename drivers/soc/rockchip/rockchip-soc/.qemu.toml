@@ -1,0 +1,9 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a53",
+]
+uefi = false
+to_bin = true
+success_regex = []
+fail_regex = []

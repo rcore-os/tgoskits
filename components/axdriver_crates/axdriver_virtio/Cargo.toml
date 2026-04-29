@@ -2,13 +2,13 @@
 name = "ax-driver-virtio"
 edition.workspace = true
 version = "0.3.11"
-repository.workspace = true
-authors.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
+authors = ["Yuekai Jia <equation618@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>", "Yu Chen <yuchen@tsinghua.edu.cn>"]
 description = "Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `ax-driver-base` series crates"
 keywords = ["arceos", "driver", "virtio"]
-categories.workspace = true
+categories = ["os", "no-std", "hardware-support"]
 readme = "README.md"
-license.workspace = true
+license = "Apache-2.0"
 
 [features]
 alloc = ["virtio-drivers/alloc"]
@@ -19,11 +19,11 @@ net = ["alloc", "ax-driver-net"]
 socket = ["alloc", "ax-driver-vsock"]
 
 [dependencies]
-ax-driver-base = { version = "0.3" }
-ax-driver-block = { version = "0.3", optional = true }
-ax-driver-display = { version = "0.3", optional = true }
-ax-driver-input = { version = "0.3", optional = true }
-ax-driver-net = { version = "0.3", optional = true }
-ax-driver-vsock = { version = "0.3", optional = true }
+ax-driver-base = { workspace = true }
+ax-driver-block = { workspace = true, optional = true }
+ax-driver-display = { workspace = true, optional = true }
+ax-driver-input = { workspace = true, optional = true }
+ax-driver-net = { workspace = true, optional = true }
+ax-driver-vsock = { workspace = true, optional = true }
 log = { workspace = true }
 virtio-drivers = { version = "0.13.0", default-features = false }

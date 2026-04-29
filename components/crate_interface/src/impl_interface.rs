@@ -52,7 +52,7 @@ pub fn impl_interface(
                 {
                     {
                         #[inline]
-                        #[export_name = #extern_fn_name]
+                        #[unsafe(export_name = #extern_fn_name)]
                         extern "Rust" #new_sig {
                             #call_impl
                         }

@@ -2,9 +2,9 @@
 name = "define-weak-traits"
 version = "0.3.4"
 edition.workspace = true
-publish.workspace = true
-license.workspace = true
+publish = false
+license = "Apache-2.0"
 
 [dependencies]
 # Don't use workspace dependency here because we want to test the weak_default feature
-ax-crate-interface = { path = "../..", features = ["weak_default"] }
+ax-crate-interface = { workspace = true, features = ["weak_default"] }

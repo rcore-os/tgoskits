@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-extern crate axvisor_api;
 extern crate ax_memory_addr;
+extern crate axvisor_api;
 use axvisor_api::__priv;
 
 pub mod some_demo {

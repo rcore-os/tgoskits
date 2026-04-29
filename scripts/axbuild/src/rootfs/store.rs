@@ -13,10 +13,10 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use flate2::read::GzDecoder;
 use tokio::fs as tokio_fs;
+use xz2::read::XzDecoder;
 
-const TGOSIMAGES_ROOTFS_RELEASE: &str = "v0.0.4";
+const TGOSIMAGES_ROOTFS_RELEASE: &str = "v0.0.5";
 
 /// Returns the default managed rootfs image filename for a given architecture.
 pub(crate) fn default_rootfs_image(arch: &str) -> Option<&'static str> {
@@ -108,7 +108,7 @@ fn archive_url(image_name: &str) -> String {
 
 /// Returns the managed archive filename for a rootfs image.
 fn archive_name(image_name: &str) -> String {
-    format!("{image_name}.tar.gz")
+    format!("{image_name}.tar.xz")
 }
 
 /// Returns the local cache path for a managed rootfs archive.
@@ -186,12 +186,12 @@ async fn extract_image(
         .context("rootfs extraction task failed")?
 }
 
-/// Unpacks the expected rootfs image file from a `.tar.gz` archive.
+/// Unpacks the expected rootfs image file from a `.tar.xz` archive.
 fn unpack_image(archive_path: &Path, image_name: &str, out_dir: &Path) -> anyhow::Result<()> {
     let file = fs::File::open(archive_path)
         .with_context(|| format!("failed to open {}", archive_path.display()))?;
-    let gz = GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
+    let xz = XzDecoder::new(file);
+    let mut archive = tar::Archive::new(xz);
 
     for entry in archive
         .entries()
@@ -232,13 +232,13 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_rootfs_for_arch_redownloads_invalid_cached_archive() {
-        let archive = make_tar_gz(&[("rootfs-loongarch64-alpine.img", b"rootfs")]);
+        let archive = make_tar_xz(&[("rootfs-loongarch64-alpine.img", b"rootfs")]);
         let server = TestServer::start(archive).await;
         let workspace = tempdir().unwrap();
         let rootfs_dir = rootfs_dir(workspace.path());
         fs::create_dir_all(&rootfs_dir).unwrap();
         fs::write(
-            rootfs_dir.join("rootfs-loongarch64-alpine.img.tar.gz"),
+            rootfs_dir.join("rootfs-loongarch64-alpine.img.tar.xz"),
             b"corrupt",
         )
         .unwrap();
@@ -254,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_managed_rootfs_uses_requested_image_name() {
-        let archive = make_tar_gz(&[("rootfs-aarch64-debian.img", b"debian")]);
+        let archive = make_tar_xz(&[("rootfs-aarch64-debian.img", b"debian")]);
         let server = TestServer::start(archive).await;
         let workspace = tempdir().unwrap();
         let rootfs_path = rootfs_dir(workspace.path()).join("rootfs-aarch64-debian.img");
@@ -337,11 +337,11 @@ mod tests {
         crate::download::download_file(client, url, archive_path).await
     }
 
-    fn make_tar_gz(files: &[(&str, &[u8])]) -> Vec<u8> {
-        use flate2::{Compression, write::GzEncoder};
+    fn make_tar_xz(files: &[(&str, &[u8])]) -> Vec<u8> {
         use tar::Builder;
+        use xz2::write::XzEncoder;
 
-        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let encoder = XzEncoder::new(Vec::new(), 6);
         let mut builder = Builder::new(encoder);
         for (name, contents) in files {
             let mut header = tar::Header::new_gnu();

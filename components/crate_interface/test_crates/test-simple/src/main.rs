@@ -9,7 +9,6 @@
 //! Exit code 0 means all tests passed.
 
 use ax_crate_interface::call_interface;
-
 // Import the implementation crate to link the implementations
 use impl_simple_traits::{AdvancedImpl, CallerImpl, NamespacedImpl, SimpleImpl};
 
@@ -39,7 +38,10 @@ fn test_simple_interface() {
 
 fn test_namespaced_interface() {
     assert_eq!(
-        call_interface!(namespace = SimpleNs, define_simple_traits::NamespacedIf::get_id),
+        call_interface!(
+            namespace = SimpleNs,
+            define_simple_traits::NamespacedIf::get_id
+        ),
         999
     );
     println!("  [PASS] test_namespaced_interface");
@@ -64,7 +66,11 @@ fn test_caller_interface() {
 
 fn test_advanced_interface() {
     assert_eq!(
-        call_interface!(namespace = AdvancedNs, define_simple_traits::AdvancedIf::process, 50),
+        call_interface!(
+            namespace = AdvancedNs,
+            define_simple_traits::AdvancedIf::process,
+            50
+        ),
         200 // 50 * 2 + 100 = 200
     );
 

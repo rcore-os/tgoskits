@@ -502,12 +502,12 @@ where
         }
 
         if let Some(index) = result {
-            if let Some(head) = self.head {
-                if head > index {
-                    self.head = Some(SIZE + 1);
-                    self.tail = None;
-                    return None;
-                }
+            if let Some(head) = self.head
+                && head > index
+            {
+                self.head = Some(SIZE + 1);
+                self.tail = None;
+                return None;
             }
 
             self.tail = Some(index);

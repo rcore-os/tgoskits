@@ -2,13 +2,13 @@
 name = "ax-driver-block"
 edition.workspace = true
 version = "0.3.11"
-repository.workspace = true
-authors.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
+authors = ["Yuekai Jia <equation618@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>", "Yu Chen <yuchen@tsinghua.edu.cn>"]
 description = "Common traits and types for block storage drivers"
 keywords = ["arceos", "driver", "blk"]
-categories.workspace = true
+categories = ["os", "no-std", "hardware-support"]
 readme = "README.md"
-license.workspace = true
+license = "Apache-2.0"
 
 [features]
 ramdisk = []
@@ -18,7 +18,7 @@ ahci = ["dep:simple-ahci"]
 bcm2835-sdhci = ["dep:bcm2835-sdhci"]
 
 [dependencies]
-ax-driver-base = { version = "0.3" }
+ax-driver-base = { workspace = true }
 gpt_disk_io = { version = "0.16.2", default-features = false }
 log = { workspace = true }
 simple-sdmmc = { version = "0.1", optional = true }

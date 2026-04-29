@@ -2,7 +2,7 @@
 name = "ax-errno"
 version = "0.4.7"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Generic error code representation."
 keywords = ["arceos", "errno"]

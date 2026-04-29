@@ -1,8 +1,5 @@
-use crate::{
-    axvisor::qemu_test::ShellAutoInitConfig,
-    context::{
-        resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target, validate_supported_target,
-    },
+use crate::context::{
+    resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target, validate_supported_target,
 };
 
 pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
@@ -33,6 +30,12 @@ const ARCEOS_TEST_TARGETS: &[&str] = &[
 const ARCEOS_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 
 const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "riscv64", "x86_64", "loongarch64"];
+pub(crate) const AXVISOR_LINUX_AARCH64_VMCONFIG: &str =
+    "os/axvisor/configs/vms/linux-aarch64-qemu-smp1.toml";
+pub(crate) const AXVISOR_LINUX_RISCV64_VMCONFIG: &str =
+    "os/axvisor/configs/vms/linux-riscv64-qemu-smp1.toml";
+pub(crate) const AXVISOR_NIMBOS_X86_64_VMCONFIG: &str =
+    "os/axvisor/configs/vms/nimbos-x86_64-qemu-smp1.toml";
 const AXVISOR_AARCH64_TEST_SHELL_PREFIX: &str = "~ #";
 const AXVISOR_AARCH64_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
 const AXVISOR_AARCH64_TEST_SUCCESS_REGEX: &[&str] = &["(?m)^guest test pass!\\s*$"];
@@ -54,6 +57,14 @@ const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
 ];
 
 type ResolveArchAndTarget = fn(Option<String>, Option<String>) -> anyhow::Result<(String, String)>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShellAutoInitConfig {
+    pub(crate) shell_prefix: String,
+    pub(crate) shell_init_cmd: String,
+    pub(crate) success_regex: Vec<String>,
+    pub(crate) fail_regex: Vec<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AxvisorUbootBoardConfig {

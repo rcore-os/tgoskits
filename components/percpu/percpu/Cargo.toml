@@ -2,13 +2,12 @@
 name = "ax-percpu"
 description = "Define and access per-CPU data structures"
 version = "0.4.9"
-repository.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
-authors.workspace = true
-keywords.workspace = true
-categories.workspace = true
-rust-version.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "hky1999 <976929993@qq.com>", "Su Mingxian <aarkegz@gmail.com>", "yufeng <321353225@qq.com>"]
+keywords = ["arceos", "percpu"]
+categories = ["development-tools::procedural-macro-helpers", "no-std"]
+license = "Apache-2.0"
 
 [features]
 default = []
@@ -33,9 +32,8 @@ custom-base = ["ax-percpu-macros/custom-base"]
 
 [dependencies]
 cfg-if = "1.0"
-ax-kernel-guard = { version = "0.3", optional = true }
-ax-percpu-macros = { path = "../percpu_macros", version = "0.4" }
-
+ax-kernel-guard = { workspace = true, optional = true }
+ax-percpu-macros = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
 

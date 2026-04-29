@@ -82,11 +82,11 @@ unsafe impl Sync for NetBuf {}
 
 impl NetBuf {
     const unsafe fn get_slice(&self, start: usize, len: usize) -> &[u8] {
-        core::slice::from_raw_parts(self.buf_ptr.as_ptr().add(start), len)
+        unsafe { core::slice::from_raw_parts(self.buf_ptr.as_ptr().add(start), len) }
     }
 
     const unsafe fn get_slice_mut(&mut self, start: usize, len: usize) -> &mut [u8] {
-        core::slice::from_raw_parts_mut(self.buf_ptr.as_ptr().add(start), len)
+        unsafe { core::slice::from_raw_parts_mut(self.buf_ptr.as_ptr().add(start), len) }
     }
 
     /// Returns the capacity of the buffer.
@@ -159,7 +159,7 @@ impl NetBuf {
     /// This function is unsafe because it may cause some memory issues,
     /// so we must ensure that it is called after calling `into_buf_ptr`.
     pub unsafe fn from_buf_ptr(ptr: NetBufPtr) -> Box<Self> {
-        Box::from_raw(ptr.raw_ptr::<Self>())
+        unsafe { Box::from_raw(ptr.raw_ptr::<Self>()) }
     }
 }
 

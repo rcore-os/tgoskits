@@ -182,7 +182,8 @@ fuzz_target!(|fuzz: SixlowpanPacketFuzzer| {
                                 if let Ok(frame) = Ipv6RoutingHeader::new_checked(payload) {
                                     if let Ok(repr) = Ipv6RoutingRepr::parse(&frame) {
                                         let mut buffer = vec![0; repr.buffer_len()];
-                                        let mut packet = Ipv6RoutingHeader::new_unchecked(&mut buffer[..]);
+                                        let mut packet =
+                                            Ipv6RoutingHeader::new_unchecked(&mut buffer[..]);
                                         repr.emit(&mut packet);
                                     }
                                 }

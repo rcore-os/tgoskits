@@ -5,7 +5,7 @@ env = {}
 features = [
   "ax-feat/bus-mmio",
   "ax-feat/driver-sdmmc",
-  "axplat-dyn/rk3588-clk",
+  "axplat-dyn/rockchip-soc",
   "axplat-dyn/sdmmc",
   "rknpu",
 ]

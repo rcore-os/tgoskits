@@ -2,7 +2,7 @@
 name = "ax-cpu"
 version = "0.6.0"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
     "Youjie Zheng <Azure_stars@126.com>",
@@ -18,7 +18,6 @@ authors = [
 description = "Privileged instruction and structure abstractions for various CPU architectures"
 keywords = ["arceos", "cpu", "architecture", "hal"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
-rust-version = "1.88.0"
 license = "Apache-2.0"
 
 [features]
@@ -29,15 +28,14 @@ uspace = []
 arm-el2 = ["ax-page-table-entry/arm-el2"]
 
 [dependencies]
-axbacktrace = "0.3"
+axbacktrace = { workspace = true }
 cfg-if = "1.0"
 log = "0.4"
-ax-memory-addr = "0.6"
-ax-page-table-entry = "0.8"
-
+ax-memory-addr = { workspace = true }
+ax-page-table-entry = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-ax-lazyinit = "0.4"
-ax-percpu = "0.4"
+ax-lazyinit = { workspace = true }
+ax-percpu = { workspace = true }
 x86 = "0.52"
 x86_64 = { version = "0.15", default-features = false, features = [
     "instructions",
@@ -52,8 +50,7 @@ riscv = "0.16"
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 loongArch64 = "0.2"
-ax-page-table-multiarch = "0.8"
-
+ax-page-table-multiarch = { workspace = true }
 [lints.clippy]
 new_without_default = "allow"
 

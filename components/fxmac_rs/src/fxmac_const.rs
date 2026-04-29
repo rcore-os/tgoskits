@@ -12,7 +12,7 @@ pub(crate) const FXMAC_MAX_TXBD: u32 = 128; /* Size of TX buffer descriptor queu
 
 pub(crate) const FXMAC_MAX_HASH_BITS: u32 = 64; /* Maximum value for hash bits. 2**6 */
 
-/// ************************ Constant Definitions ****************************
+// ************************ Constant Definitions ****************************
 pub(crate) const FXMAC_MAX_MAC_ADDR: u32 = 4; /* Maxmum number of mac address supported */
 pub(crate) const FXMAC_MAX_TYPE_ID: u32 = 4; /* Maxmum number of type id supported */
 

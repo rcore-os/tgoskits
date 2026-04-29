@@ -8,10 +8,10 @@ description = "Top-level feature selection for ArceOS"
 license.workspace = true
 
 [features]
-default = []
+default = ["alloc"]
 
 # Multicore
-smp = ["ax-hal/smp", "ax-runtime/smp", "ax-task?/smp", "ax-kspin/smp"]
+smp = ["alloc", "ax-hal/smp", "ax-runtime/smp", "ax-task?/smp", "ax-kspin/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
@@ -21,7 +21,7 @@ uspace = ["ax-hal/uspace"]
 hv = ["ax-hal/hv"]
 
 # Interrupts
-irq = ["ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
+irq = ["alloc", "ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi"]
 
 # Custom or default platforms

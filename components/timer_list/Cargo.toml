@@ -2,7 +2,7 @@
 name = "ax-timer-list"
 version = "0.3.4"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "A list of timed events that will be triggered sequentially when the timer expires"
 keywords = ["arceos", "timer", "events"]
