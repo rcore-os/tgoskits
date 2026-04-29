@@ -1,0 +1,4 @@
+interface:
+  display_name: "Board U-Boot Fsck Repair"
+  short_description: "Repair board ext4 via U-Boot fsckfix"
+  default_prompt: "Use $board-uboot-fsck-repair to repair an OrangePi-5-Plus rootfs through U-Boot and confirm Linux boots."
