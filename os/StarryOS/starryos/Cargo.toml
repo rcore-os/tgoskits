@@ -29,6 +29,8 @@ qemu = [
 ]
 smp = ["ax-feat/smp", "axplat-dyn?/smp", "axplat-riscv64-visionfive2?/smp"]
 
+sg2002 = ["dep:ax-plat-riscv64-sg2002"]
+
 rknpu = ["dep:axplat-dyn", "starry-kernel/rknpu", "axplat-dyn/rknpu"]
 vf2 = ["dep:axplat-riscv64-visionfive2", "ax-feat/driver-sdmmc"]
 
@@ -44,6 +46,12 @@ path = "xtask/main.rs"
 ax-feat = { workspace = true, features = ["fs-ng-times", "irq"] }
 axplat-dyn = { workspace = true, optional = true }
 starry-kernel = { workspace = true, features = ["dev-log"] }
+
+[dependencies.ax-plat-riscv64-sg2002]
+workspace = true
+features = ["fp-simd", "irq", "rtc"]
+version = "0.3.1"
+optional = true
 
 [target.'cfg(any(windows,unix))'.dependencies]
 anyhow = "1.0"

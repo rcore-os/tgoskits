@@ -59,6 +59,6 @@ vf2:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=vf2 MYPLAT=axplat-riscv64-visionfive2 BUS=mmio build
 
 sg2002:
-	$(MAKE) ARCH=riscv64 APP_FEATURES=sg2002 MYPLAT=axplat-riscv64-sg2002 BUS=mmio SMP=1 UIMAGE=y LOG=info build
+	$(MAKE) ARCH=riscv64 APP_FEATURES=sg2002 MYPLAT=ax-plat-riscv64-sg2002 BUS=mmio SMP=1 UIMAGE=y LOG=info build
 
 .PHONY: build run justrun debug disasm clean

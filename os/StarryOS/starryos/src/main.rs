@@ -19,3 +19,6 @@ fn main() {
 
     starry_kernel::entry::init(&args, &envs);
 }
+
+#[cfg(feature = "sg2002")]
+extern crate ax_plat_riscv64_sg2002;

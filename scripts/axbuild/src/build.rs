@@ -665,10 +665,15 @@ fn myplat_dependency_matches_arch(dep_name: &str, arch: &str) -> bool {
 
 fn myplat_dependency_prefixes_for_arch(arch: &str) -> &'static [&'static str] {
     match arch {
-        "x86_64" => &["axplat-x86-", "axplat-x86_64-"],
-        "aarch64" => &["axplat-aarch64-"],
-        "riscv64" => &["axplat-riscv64-"],
-        "loongarch64" => &["axplat-loongarch64-"],
+        "x86_64" => &[
+            "axplat-x86-",
+            "axplat-x86_64-",
+            "ax-plat-x86-",
+            "ax-plat-x86_64-",
+        ],
+        "aarch64" => &["axplat-aarch64-", "ax-plat-aarch64-"],
+        "riscv64" => &["axplat-riscv64-", "ax-plat-riscv64-"],
+        "loongarch64" => &["axplat-loongarch64-", "ax-plat-loongarch64-"],
         _ => &[],
     }
 }
