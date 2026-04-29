@@ -38,8 +38,8 @@ pub fn sys_setpgid(pid: Pid, pgid: Pid) -> AxResult<isize> {
             register_process_group(&pg);
         }
     } else {
-        /* POSIX: looking up a non-existent target pgid yields EPERM,
-         * not ESRCH (which is reserved for pid lookup failures). */
+        // POSIX: looking up a non-existent target pgid yields EPERM,
+        // not ESRCH (which is reserved for pid lookup failures).
         let group = get_process_group(pgid).map_err(|_| AxError::OperationNotPermitted)?;
         if !proc.move_to_group(&group) {
             return Err(AxError::OperationNotPermitted);
