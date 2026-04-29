@@ -108,9 +108,9 @@ pub(crate) struct StarryBoardTestGroup {
     pub(crate) board_test_config_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StarryQemuCaseRequirements {
-    smp: Option<usize>,
+    smp: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -796,7 +796,7 @@ impl Starry {
 
     fn qemu_case_requirements(qemu: &QemuConfig) -> anyhow::Result<StarryQemuCaseRequirements> {
         Ok(StarryQemuCaseRequirements {
-            smp: qemu_test::smp_from_qemu_arg(qemu),
+            smp: qemu_test::smp_from_qemu_arg(qemu).unwrap_or(1),
         })
     }
 
@@ -826,20 +826,14 @@ impl Starry {
         requirements: StarryQemuCaseRequirements,
     ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
         let mut request = request.clone();
-        request.smp = requirements.smp;
+        request.smp = Some(requirements.smp);
         let cargo = build::load_cargo_config(&request)?;
 
         Ok((request, cargo))
     }
 
     fn qemu_case_requirements_summary(requirements: StarryQemuCaseRequirements) -> String {
-        format!(
-            "requirements smp={}",
-            requirements
-                .smp
-                .map(|smp| smp.to_string())
-                .unwrap_or_else(|| "default".to_string())
-        )
+        format!("requirements smp={}", requirements.smp)
     }
 
     async fn run_qemu_case(
@@ -853,6 +847,7 @@ impl Starry {
         let mut qemu = prepared_case.qemu.clone();
         case::apply_grouped_qemu_config(&mut qemu, case);
 
+        qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
         qemu_test::apply_timeout_scale(&mut qemu);
 
         let prepare_started = Instant::now();
@@ -1231,15 +1226,24 @@ mod tests {
 
         let requirements = Starry::qemu_case_requirements(&qemu).unwrap();
 
-        assert_eq!(requirements, StarryQemuCaseRequirements { smp: Some(4) });
+        assert_eq!(requirements, StarryQemuCaseRequirements { smp: 4 });
+    }
+
+    #[test]
+    fn qemu_case_requirements_default_to_single_cpu() {
+        let qemu = QemuConfig::default();
+
+        let requirements = Starry::qemu_case_requirements(&qemu).unwrap();
+
+        assert_eq!(requirements, StarryQemuCaseRequirements { smp: 1 });
     }
 
     #[test]
     fn qemu_cases_are_grouped_by_exact_requirements() {
         let cases = vec![
-            prepared_qemu_case("smoke", StarryQemuCaseRequirements::default()),
-            prepared_qemu_case("affinity", StarryQemuCaseRequirements { smp: Some(4) }),
-            prepared_qemu_case("syscall", StarryQemuCaseRequirements::default()),
+            prepared_qemu_case("smoke", StarryQemuCaseRequirements { smp: 1 }),
+            prepared_qemu_case("affinity", StarryQemuCaseRequirements { smp: 4 }),
+            prepared_qemu_case("syscall", StarryQemuCaseRequirements { smp: 1 }),
         ];
 
         let groups = Starry::group_qemu_cases_by_requirements(&cases);
@@ -1247,7 +1251,7 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(
             groups[0].requirements,
-            StarryQemuCaseRequirements::default()
+            StarryQemuCaseRequirements { smp: 1 }
         );
         assert_eq!(
             groups[0]
@@ -1259,7 +1263,7 @@ mod tests {
         );
         assert_eq!(
             groups[1].requirements,
-            StarryQemuCaseRequirements { smp: Some(4) }
+            StarryQemuCaseRequirements { smp: 4 }
         );
         assert_eq!(
             groups[1]
