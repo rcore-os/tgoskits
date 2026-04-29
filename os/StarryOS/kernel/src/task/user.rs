@@ -1,4 +1,4 @@
-use ax_hal::uspace::{ExceptionKind, ReturnReason, UserContext};
+use ax_hal::uspace::{ExceptionInfo, ExceptionKind, ReturnReason, UserContext};
 use ax_task::TaskInner;
 use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
@@ -48,7 +48,19 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                     #[allow(unused_labels)]
                     ReturnReason::Exception(exc_info) => 'exc: {
                         // TODO: detailed handling
-                        let signo = match exc_info.kind() {
+                        let kind = exc_info.kind();
+                        warn!(
+                            "user exception: ip={:#x}, fault_addr={:#x}, kind={:?}, esr={:#x}, \
+                             ec={:#x}, iss={:#x}, info={:?}",
+                            uctx.ip(),
+                            exception_fault_addr(&exc_info),
+                            kind,
+                            exception_esr_value(&exc_info),
+                            exception_ec_value(&exc_info),
+                            exception_iss_value(&exc_info),
+                            exc_info
+                        );
+                        let signo = match kind {
                             ExceptionKind::Misaligned => {
                                 #[cfg(target_arch = "loongarch64")]
                                 if unsafe { uctx.emulate_unaligned() }.is_ok() {
@@ -96,4 +108,84 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
         name.into(),
         crate::config::KERNEL_STACK_SIZE,
     )
+}
+
+#[cfg(target_arch = "aarch64")]
+fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
+    exc_info.far
+}
+
+#[cfg(target_arch = "aarch64")]
+fn exception_esr_value(exc_info: &ExceptionInfo) -> u64 {
+    exc_info.esr_value()
+}
+
+#[cfg(target_arch = "aarch64")]
+fn exception_ec_value(exc_info: &ExceptionInfo) -> u64 {
+    exc_info.ec_value()
+}
+
+#[cfg(target_arch = "aarch64")]
+fn exception_iss_value(exc_info: &ExceptionInfo) -> u64 {
+    exc_info.iss_value()
+}
+
+#[cfg(target_arch = "riscv64")]
+fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
+    exc_info.stval
+}
+
+#[cfg(target_arch = "riscv64")]
+fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "riscv64")]
+fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "riscv64")]
+fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
+    exc_info.badv
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
+fn exception_fault_addr(exc_info: &ExceptionInfo) -> usize {
+    exc_info.cr2
+}
+
+#[cfg(target_arch = "x86_64")]
+fn exception_esr_value(_exc_info: &ExceptionInfo) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
+fn exception_ec_value(_exc_info: &ExceptionInfo) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
+fn exception_iss_value(_exc_info: &ExceptionInfo) -> u64 {
+    0
 }

@@ -14,6 +14,8 @@ use super::DmaImpl;
 
 #[cfg(feature = "intel-net")]
 mod intel;
+#[cfg(feature = "realtek-rtl8125")]
+mod realtek;
 #[cfg(feature = "virtio-net-pci")]
 mod virtio_pci;
 
@@ -21,6 +23,7 @@ const NET_BUF_LEN: usize = 2048;
 const NET_BUF_POOL_CAPACITY: usize = 512;
 const NET_QUEUE_SIZE: usize = 256;
 const RX_PREFETCH_TARGET: usize = 1;
+const ETH_ZLEN: usize = 60;
 
 pub struct PlatformNetDevice {
     name: &'static str,
@@ -207,12 +210,14 @@ impl NetDriverOps for Net {
     fn transmit(&mut self, tx_buf: NetBufPtr) -> DevResult {
         let tx_buf = unsafe { NetBuf::from_buf_ptr(tx_buf) };
         let packet = tx_buf.packet();
+        let tx_len = packet.len().max(ETH_ZLEN);
 
         let mut state = self.state.lock();
         let (_ret, mut pending) = state
             .tx_queue
-            .prepare_send(packet.len(), |buffer| {
+            .prepare_send(tx_len, |buffer| {
                 buffer[..packet.len()].copy_from_slice(packet);
+                buffer[packet.len()..tx_len].fill(0);
             })
             .map_err(map_net_err_to_dev_err)?;
         pending.try_submit().map_err(map_net_err_to_dev_err)?;

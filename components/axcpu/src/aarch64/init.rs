@@ -102,7 +102,11 @@ pub unsafe fn init_mmu(root_paddr: PhysAddr) {
 /// block low address access.
 pub fn init_trap() {
     #[cfg(feature = "uspace")]
-    crate::uspace_common::init_exception_table();
+    {
+        crate::uspace_common::init_exception_table();
+        CNTKCTL_EL1.modify(CNTKCTL_EL1::EL0VCTEN::TrappedNone + CNTKCTL_EL1::EL0PCTEN::TrappedNone);
+        barrier::isb(barrier::SY);
+    }
     unsafe extern "C" {
         fn exception_vector_base();
     }
