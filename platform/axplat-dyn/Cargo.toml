@@ -26,6 +26,7 @@ serial = ["dep:some-serial"]
 net = ["dep:ax-driver-net", "dep:rd-net"]
 intel-net = ["net", "dep:eth-intel", "dep:pcie"]
 virtio-net-pci = ["net"]
+pci-list-devices = []
 rknpu = ["dep:rockchip-npu", "rockchip-pm", "rockchip-soc"]
 
 [dependencies]
@@ -53,6 +54,7 @@ pcie = { version = "0.6", optional = true }
 rd-block = "0.1"
 rd-net = { version = "0.1", optional = true }
 rdif-clk = "0.5"
+rdif-pcie = "0.2"
 rdrive = "0.20"
 rk3568_clk = { version = "0.1", optional = true }
 rockchip-soc = { workspace = true, optional = true }

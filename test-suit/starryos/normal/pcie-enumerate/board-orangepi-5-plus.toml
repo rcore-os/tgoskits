@@ -1,0 +1,6 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "echo 'PCIE_ENUMERATE_TEST_PASSED'"
+success_regex = ["(?m)^PCIE_ENUMERATE_TEST_PASSED\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 300

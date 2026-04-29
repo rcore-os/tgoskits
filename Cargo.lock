@@ -1653,6 +1653,7 @@ dependencies = [
  "rd-block",
  "rd-net",
  "rdif-clk",
+ "rdif-pcie 0.2.0",
  "rdrive 0.20.0",
  "rk3568_clk",
  "rockchip-npu",
