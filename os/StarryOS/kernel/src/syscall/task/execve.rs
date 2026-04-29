@@ -84,5 +84,9 @@ pub fn sys_execve(
 
     uctx.set_ip(entry_point.as_usize());
     uctx.set_sp(user_stack_base.as_usize());
+
+    // Unblock a vfork parent waiting for this child to exec.
+    proc_data.notify_vfork_done();
+
     Ok(0)
 }

@@ -4,7 +4,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_hal::uspace::UserContext;
 use ax_kspin::SpinNoIrq;
-use ax_task::{AxTaskExt, current, spawn_task};
+use ax_task::{AxTaskExt, WaitQueue, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -144,11 +144,6 @@ impl CloneArgs {
             pidfd,
         } = self;
 
-        if flags.contains(CloneFlags::VFORK) {
-            debug!("do_clone: CLONE_VFORK slow path");
-            flags.remove(CloneFlags::VM);
-        }
-
         debug!(
             "do_clone <= flags: {:?}, exit_signal: {}, stack: {:#x}, tls: {:#x}",
             flags, exit_signal, stack, tls
@@ -274,8 +269,22 @@ impl CloneArgs {
         }
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
+        // CLONE_VFORK: wire a shared WaitQueue to the child so it can wake us.
+        let vfork_wq = if flags.contains(CloneFlags::VFORK) {
+            let wq = Arc::new(WaitQueue::new());
+            new_proc_data.set_vfork_done(wq.clone());
+            Some(wq)
+        } else {
+            None
+        };
+
         let task = spawn_task(new_task);
         add_task_to_table(&task);
+
+        // Block the parent until the child exec's or exits.
+        if let Some(wq) = vfork_wq {
+            wq.wait();
+        }
 
         Ok(tid as _)
     }

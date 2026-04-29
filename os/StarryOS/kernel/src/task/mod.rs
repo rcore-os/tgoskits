@@ -18,7 +18,7 @@ use core::{
 
 use ax_hal::time::TimeValue;
 use ax_sync::{Mutex, spin::SpinNoIrq};
-use ax_task::{TaskExt, TaskInner};
+use ax_task::{TaskExt, TaskInner, WaitQueue};
 use axpoll::PollSet;
 use extern_trait::extern_trait;
 use scope_local::{ActiveScope, Scope};
@@ -302,6 +302,10 @@ pub struct ProcessData {
     /// The futex table.
     futex_table: Arc<FutexTable>,
 
+    /// If this process was created by vfork, this points to the parent's wait
+    /// queue. Notified when the child exec's or exits, unblocking the parent.
+    vfork_done: SpinNoIrq<Option<Arc<WaitQueue>>>,
+
     /// The default mask for file permissions.
     umask: AtomicU32,
 
@@ -340,6 +344,8 @@ impl ProcessData {
             )),
 
             futex_table: Arc::new(FutexTable::new()),
+
+            vfork_done: SpinNoIrq::new(None),
 
             umask: AtomicU32::new(0o022),
 
@@ -388,5 +394,19 @@ impl ProcessData {
         let mut time = self.children_cpu_time.lock();
         time.0 += utime;
         time.1 += stime;
+    }
+
+    /// Set the vfork completion queue (called on the child after a vfork,
+    /// before the child task is spawned).
+    pub fn set_vfork_done(&self, wq: Arc<WaitQueue>) {
+        *self.vfork_done.lock() = Some(wq);
+    }
+
+    /// Notify the vfork parent that this child has exec'd or exited.
+    /// No-op if this process was not created by vfork.
+    pub fn notify_vfork_done(&self) {
+        if let Some(wq) = self.vfork_done.lock().take() {
+            wq.notify_one(true);
+        }
     }
 }
