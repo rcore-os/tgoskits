@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <string.h>
 #include <signal.h>
+#include <sys/syscall.h>
 #include <stdint.h>
 
 static int get_cloexec(int fd)
@@ -37,7 +38,7 @@ static void test_pipe(void)
 
     {
         int fds[2];
-        pipe(fds);
+        CHECK_RET(pipe(fds), 0, "EOF 测试: pipe 创建成功");
         close(fds[1]);
         char buf[8];
         ssize_t r = read(fds[0], buf, sizeof(buf));
@@ -47,7 +48,7 @@ static void test_pipe(void)
 
     {
         int fds[2];
-        pipe(fds);
+        CHECK_RET(pipe(fds), 0, "EPIPE 测试: pipe 创建成功");
         close(fds[0]);
         struct sigaction sa = {.sa_handler = SIG_IGN}, old;
         sigaction(SIGPIPE, &sa, &old);
@@ -59,7 +60,7 @@ static void test_pipe(void)
 
     {
         int fds[2];
-        pipe(fds);
+        CHECK_RET(pipe(fds), 0, "CLOEXEC 默认值测试: pipe 创建成功");
         CHECK(get_cloexec(fds[0]) == 0, "pipe fd[0] 默认非 CLOEXEC");
         CHECK(get_cloexec(fds[1]) == 0, "pipe fd[1] 默认非 CLOEXEC");
         close(fds[0]);
@@ -68,9 +69,10 @@ static void test_pipe(void)
 
     {
         int fds[2];
-        pipe(fds);
+        CHECK_RET(pipe(fds), 0, "残留数据测试: pipe 创建成功");
         const char *msg = "leftover";
-        write(fds[1], msg, strlen(msg));
+        ssize_t wlen = write(fds[1], msg, strlen(msg));
+        CHECK(wlen == (ssize_t)strlen(msg), "残留数据写入完整");
         close(fds[1]);
         char buf[64] = {0};
         ssize_t r1 = read(fds[0], buf, sizeof(buf) - 1);
@@ -91,9 +93,11 @@ static void test_pipe2(void)
         CHECK_RET(pipe2(fds, 0), 0, "pipe2 flags=0 成功");
         CHECK(fds[0] >= 0 && fds[1] >= 0, "pipe2 flags=0 fd 有效");
         const char *msg = "pipe2";
-        write(fds[1], msg, strlen(msg));
+        ssize_t wlen = write(fds[1], msg, strlen(msg));
+        CHECK(wlen == (ssize_t)strlen(msg), "pipe2 flags=0 写入完整");
         char buf[16] = {0};
-        read(fds[0], buf, sizeof(buf) - 1);
+        ssize_t rlen = read(fds[0], buf, sizeof(buf) - 1);
+        CHECK(rlen == (ssize_t)strlen(msg), "pipe2 flags=0 读取完整");
         CHECK(strcmp(buf, msg) == 0, "pipe2 flags=0 读写正确");
         close(fds[0]);
         close(fds[1]);
@@ -107,12 +111,12 @@ static void test_pipe2(void)
         CHECK_RET(pipe2(fds, 0), 0, "pipe2 读写端语义准备");
         CHECK(fds[0] != fds[1], "pipe2 两端 fd 不同");
         errno = 0;
-        CHECK(write(fds[0], "x", 1) == -1,
-              "fd[0] 是只读端，write 失败");
+        ssize_t wr = write(fds[0], "x", 1);
+        CHECK(wr == -1, "fd[0] 是只读端，write 失败");
         errno = 0;
         char tmp[8];
-        CHECK(read(fds[1], tmp, sizeof(tmp)) == -1,
-              "fd[1] 是只写端，read 失败");
+        ssize_t rd = read(fds[1], tmp, sizeof(tmp));
+        CHECK(rd == -1, "fd[1] 是只写端，read 失败");
         close(fds[0]);
         close(fds[1]);
     }
@@ -151,23 +155,28 @@ static void test_pipe2(void)
 
     {
         int fds[2];
-        pipe2(fds, O_NONBLOCK);
+        CHECK_RET(pipe2(fds, O_NONBLOCK), 0, "pipe2 写满测试准备");
         int count = 0;
         char buf[4096];
         memset(buf, 'x', sizeof(buf));
-        while (write(fds[1], buf, sizeof(buf)) > 0) {
+        ssize_t w;
+        while ((w = write(fds[1], buf, sizeof(buf))) > 0) {
             count++;
             if (count > 10000) break;
         }
-        CHECK(errno == EAGAIN || errno == EWOULDBLOCK,
+        CHECK(w == -1 && (errno == EAGAIN || errno == EWOULDBLOCK),
               "O_NONBLOCK 写满 pipe 返回 EAGAIN/EWOULDBLOCK");
         close(fds[0]);
         close(fds[1]);
     }
 
     {
-        int *bad_ptr = (int *)(uintptr_t)0x1;
-        CHECK_ERR(pipe2(bad_ptr, 0), EFAULT, "pipe2 无效 fds 指针 -> EFAULT");
+        /* Use direct syscall: glibc's pipe2 wrapper triggers
+         * -Werror=stringop-overflow when passed an invalid pointer.
+         * Directly invoking SYS_pipe2 tests the kernel's copy_to_user
+         * error path without triggering static analysis diagnostics. */
+        CHECK_ERR(syscall(SYS_pipe2, (int *)(uintptr_t)0x1, 0), EFAULT,
+                  "SYS_pipe2 无效 fds 指针 -> EFAULT");
     }
 }
 
