@@ -25,6 +25,7 @@ test_commands = [
     "/usr/bin/bug-pwritev2-read-at",
     "/usr/bin/bug-signal-to-child",
     "/usr/bin/bug-unlinkat-einval",
+    "/usr/bin/bug-vfork-sniff",
     "/usr/bin/bug-writev-dir-ebadf",
     "/usr/bin/clone3-badsize",
     "/usr/bin/bug-unaligned-cow-split",

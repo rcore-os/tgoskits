@@ -116,10 +116,10 @@ int main(void) {
 
     /* Return success only if both vfork tests pass */
     if (vfork_mem_pass > 0 && vfork_exec_pass > 0) {
-        printf("VFORK TEST: PASS");
+        printf("VFORK TEST: ALL TESTS PASSED\n");
         return 0;
     } else {
-        printf("VFORK TEST: FAIL");
+        printf("VFORK TEST: SOME TESTS FAILED\n");
         return 1;
     }
 }
