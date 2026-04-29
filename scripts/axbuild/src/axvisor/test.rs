@@ -640,7 +640,7 @@ impl Axvisor {
         request: &ResolvedAxvisorRequest,
         cargo: &Cargo,
         case: &AxvisorQemuCase,
-    ) -> anyhow::Result<(QemuConfig, PathBuf)> {
+    ) -> anyhow::Result<(QemuConfig, Option<PathBuf>)> {
         let mut qemu = self
             .app
             .tool_mut()
@@ -661,7 +661,7 @@ impl Axvisor {
         .await?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
         qemu.args.extend(prepared_assets.extra_qemu_args);
-        Ok((qemu, prepared_assets.rootfs_path))
+        Ok((qemu, prepared_assets.rootfs_copy_to_remove))
     }
 
     async fn run_qemu_case(
@@ -670,12 +670,12 @@ impl Axvisor {
         cargo: &Cargo,
         case: &AxvisorQemuCase,
     ) -> anyhow::Result<()> {
-        let (qemu, case_rootfs) = self.load_qemu_case_config(request, cargo, case).await?;
+        let (qemu, rootfs_copy) = self.load_qemu_case_config(request, cargo, case).await?;
         let result = self.app.run_qemu(cargo, qemu).await;
         // Remove the per-case rootfs copy immediately after the run so disk
         // usage stays bounded to ~1 active copy at a time rather than
         // accumulating one copy per case.
-        test_case::remove_case_rootfs_copy(&case_rootfs);
+        test_case::remove_case_rootfs_copy(rootfs_copy.as_deref());
         result
     }
 }

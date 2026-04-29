@@ -849,7 +849,7 @@ impl Starry {
         // Remove the per-case rootfs copy immediately after the run so disk
         // usage stays bounded to ~1 active copy at a time rather than
         // accumulating one copy per case.
-        case::remove_case_rootfs_copy(&prepared_assets.rootfs_path);
+        case::remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
         result
     }
 }
