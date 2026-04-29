@@ -228,7 +228,7 @@ endif
 
 clean: clean_c
 	rm -rf $(APP)/*.bin $(APP)/*.elf $(OUT_CONFIG)
-	cargo clean
+	cargo clean --target-dir $(TARGET_DIR)
 
 clean_c::
 	rm -rf ulib/axlibc/build_*
