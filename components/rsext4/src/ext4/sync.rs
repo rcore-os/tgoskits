@@ -126,10 +126,7 @@ impl Ext4FileSystem {
     ///
     /// Call this during a clean unmount so that Linux sees `s_state =
     /// EXT4_VALID_FS` and skips fsck on the next boot.
-    pub fn mark_clean<B: BlockDevice>(
-        &mut self,
-        block_dev: &mut Jbd2Dev<B>,
-    ) -> Ext4Result<()> {
+    pub fn mark_clean<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
         self.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
         self.sync_superblock(block_dev)
     }
