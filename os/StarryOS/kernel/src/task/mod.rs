@@ -280,7 +280,7 @@ pub struct ProcessData {
     pub cmdline: RwLock<Arc<Vec<String>>>,
     /// The virtual memory address space.
     // TODO: scopify
-    pub aspace: Arc<Mutex<AddrSpace>>,
+    aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
     /// The resource scope
     pub scope: RwLock<Scope>,
     /// The user heap top
@@ -328,7 +328,7 @@ impl ProcessData {
             proc,
             exe_path: RwLock::new(exe_path),
             cmdline: RwLock::new(cmdline),
-            aspace,
+            aspace: SpinNoIrq::new(aspace),
             scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
@@ -396,18 +396,14 @@ impl ProcessData {
         time.1 += stime;
     }
 
+    /// Returns a clone of the address space Arc.
+    pub fn aspace(&self) -> Arc<Mutex<AddrSpace>> {
+        self.aspace.lock().clone()
+    }
+
     /// Replace this process's address space with a new one.
-    ///
-    /// # Safety
-    /// The caller must be the only thread in this process and must immediately
-    /// switch the hardware page table to the new root after calling this.
-    pub unsafe fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
-        // SAFETY: guaranteed by caller — single-threaded process, no concurrent
-        // access to this field.
-        unsafe {
-            let ptr = self as *const Self as *mut Self;
-            (*ptr).aspace = new_aspace;
-        }
+    pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
+        *self.aspace.lock() = new_aspace;
     }
     
     /// Set the vfork completion queue (called on the child after a vfork,

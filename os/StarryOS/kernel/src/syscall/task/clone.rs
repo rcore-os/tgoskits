@@ -183,7 +183,7 @@ impl CloneArgs {
         let new_proc_data = if flags.contains(CloneFlags::THREAD) {
             new_task
                 .ctx_mut()
-                .set_page_table_root(old_proc_data.aspace.lock().page_table_root());
+                .set_page_table_root(old_proc_data.aspace().lock().page_table_root());
             old_proc_data.clone()
         } else {
             let proc = if flags.contains(CloneFlags::PARENT) {
@@ -194,9 +194,10 @@ impl CloneArgs {
             .fork(tid);
 
             let aspace = if flags.contains(CloneFlags::VM) {
-                old_proc_data.aspace.clone()
+                old_proc_data.aspace()
             } else {
-                let mut aspace = old_proc_data.aspace.lock();
+                let _aspace_arc = old_proc_data.aspace();
+                let mut aspace = _aspace_arc.lock();
                 let aspace = aspace.try_clone()?;
                 copy_from_kernel(&mut aspace.lock())?;
                 aspace

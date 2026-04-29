@@ -6,9 +6,7 @@ use ax_fs::FS_CONTEXT;
 use ax_hal::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::current;
-use starry_vm::vm_load_until_nul;
-
-use crate::{
+use starry_vm::vm_load_until_nul;use crate::{
     config::USER_HEAP_BASE,
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
@@ -92,8 +90,7 @@ pub fn sys_execve(
     // keeps pointing at the original still-live AddrSpace.
     let new_pt_root = new_aspace.page_table_root();
     let new_aspace_arc = Arc::new(Mutex::new(new_aspace));
-    // SAFETY: single-threaded process (checked above); no concurrent access.
-    unsafe { proc_data.replace_aspace(new_aspace_arc) };
+    proc_data.replace_aspace(new_aspace_arc);
 
     // Switch the hardware page table now that the new aspace is installed.
     curr.switch_page_table(new_pt_root);

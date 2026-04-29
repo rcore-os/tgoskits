@@ -273,7 +273,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // Unblock a vfork parent waiting for this child to exit.
         thr.proc_data.notify_vfork_done();
 
-        crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace);
+        crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
     }
     thr.exit_event.wake();
 
