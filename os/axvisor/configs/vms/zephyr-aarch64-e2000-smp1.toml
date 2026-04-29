@@ -17,7 +17,7 @@ phys_cpu_ids = [0x00]
 #
 [kernel]
 # The entry point of the guest kernel image.
-entry_point = 0x20_2000_8dfc
+entry_point = 0x20_2000_7d6c
 # The location of image: "memory" | "fs".
 # Load from file system.
 image_location = "memory"
@@ -32,7 +32,7 @@ dtb_load_addr = 0x20_2000_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
 memory_regions = [
-    [0x20_2000_0000, 0x2000_0000, 0x7, 1], # System RAM MAP_IDENTICAL
+    [0x20_2000_0000, 0x2000_0000, 0x7, 2], # System RAM MAP_IDENTICAL
 ]
 
 #

@@ -19,6 +19,8 @@ mod rknpu;
 #[cfg(feature = "serial")]
 mod serial;
 mod soc;
+#[cfg(feature = "rtc")]
+mod time;
 mod virtio;
 
 pub mod blk;

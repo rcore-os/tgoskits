@@ -22,6 +22,7 @@ ixgbe = ["dep:ixgbe-driver"]
 
 [dependencies]
 ax-driver-base = { workspace = true }
+bitflags = "2.9"
 fxmac_rs = { workspace = true, optional = true }
 ixgbe-driver = { version = "0.1.1-preview.1", optional = true }
 log = { workspace = true }

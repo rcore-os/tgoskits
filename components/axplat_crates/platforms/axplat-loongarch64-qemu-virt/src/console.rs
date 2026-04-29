@@ -12,13 +12,14 @@ use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
 static UART: LazyInit<SpinNoIrq<Uart16550<MmioBackend>>> = LazyInit::new();
 
 fn uart_config(input_irq_enabled: bool) -> Config {
-    let mut config = Config::default();
-    config.interrupts = if input_irq_enabled {
-        IER::DATA_READY | IER::RECEIVER_LINE_STATUS
-    } else {
-        IER::empty()
-    };
-    config
+    Config {
+        interrupts: if input_irq_enabled {
+            IER::DATA_READY | IER::RECEIVER_LINE_STATUS
+        } else {
+            IER::empty()
+        },
+        ..Default::default()
+    }
 }
 
 pub(crate) fn init_early() {

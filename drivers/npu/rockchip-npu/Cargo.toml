@@ -21,7 +21,6 @@ thiserror = {version = "2.0", default-features = false}
 tock-registers = "0.10"
 
 [dev-dependencies]
-arm-scmi = {git = "https://github.com/drivercraft/arm-scmi"}
 bare-test = "0.8"
 fdt-edit = "0.2.3"
 rockchip-pm = { workspace = true }

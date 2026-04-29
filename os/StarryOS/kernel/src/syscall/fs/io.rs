@@ -34,14 +34,17 @@ fn file_or_espipe(fd: c_int) -> AxResult<Arc<File>> {
 
 /// Like `file_or_espipe`, but for write operations: converts IsADirectory
 /// to BadFileDescriptor because directories cannot be opened for writing.
+/// and verifies that the file descriptor is writable.
 fn file_or_espipe_write(fd: c_int) -> AxResult<Arc<File>> {
-    file_or_espipe(fd).map_err(|e| {
+    let f = file_or_espipe(fd).map_err(|e| {
         if e == AxError::IsADirectory {
             AxError::BadFileDescriptor
         } else {
             e
         }
-    })
+    })?;
+    let _ = f.inner().access(FileFlags::WRITE)?;
+    Ok(f)
 }
 
 struct DummyFd;
@@ -250,10 +253,10 @@ pub fn sys_pwrite64(
     if offset < 0 {
         return Err(AxError::InvalidInput);
     }
+    let f = file_or_espipe_write(fd)?;
     if len == 0 {
         return Ok(0);
     }
-    let f = file_or_espipe_write(fd)?;
     let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
     Ok(write as _)
 }

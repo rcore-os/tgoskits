@@ -11,7 +11,7 @@ fn main() -> ! {
         args = fdt;
     }
 
-    ax_plat::call_main(0, args)
+    ax_plat::call_main(somehal::smp::cpu_idx(), args)
 }
 
 #[somehal::secondary_entry]

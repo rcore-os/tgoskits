@@ -17,6 +17,79 @@ use std::{
 
 use anyhow::{Context, bail, ensure};
 
+/// Reads a text file from a rootfs image with `debugfs`.
+///
+/// Returns `Ok(None)` when the image is readable but the guest path does not
+/// exist, allowing distro-specific files to be optional.
+pub(crate) fn read_text_file(
+    rootfs_img: &Path,
+    guest_path: &str,
+) -> anyhow::Result<Option<String>> {
+    ensure!(
+        guest_path.starts_with('/'),
+        "guest path must be absolute: `{guest_path}`"
+    );
+
+    let output = Command::new("debugfs")
+        .arg("-R")
+        .arg(format!("cat {guest_path}"))
+        .arg(rootfs_img)
+        .output()
+        .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        bail!(
+            "failed to read {guest_path} from {}: {}",
+            rootfs_img.display(),
+            stderr.trim()
+        );
+    }
+    if output.stdout.is_empty() && stderr.contains("File not found") {
+        return Ok(None);
+    }
+
+    String::from_utf8(output.stdout)
+        .map(Some)
+        .with_context(|| format!("{}:{guest_path} is not valid UTF-8", rootfs_img.display()))
+}
+
+/// Replaces one regular file inside a rootfs image with a host file.
+pub(crate) fn replace_file(
+    rootfs_img: &Path,
+    guest_path: &str,
+    source_path: &Path,
+) -> anyhow::Result<()> {
+    ensure!(
+        guest_path.starts_with('/'),
+        "guest path must be absolute: `{guest_path}`"
+    );
+
+    let mut commands = vec![
+        format!("rm {guest_path}"),
+        format!("write {} {guest_path}", source_path.display()),
+    ];
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(source_path)
+            .with_context(|| format!("failed to stat {}", source_path.display()))?
+            .permissions()
+            .mode();
+        commands.push(format!("sif {guest_path} mode 0{mode:o}"));
+    }
+
+    run_debugfs_script(
+        rootfs_img,
+        &commands,
+        &format!(
+            "failed to replace {guest_path} in {} with {}",
+            rootfs_img.display(),
+            source_path.display()
+        ),
+    )
+}
+
 /// Extracts the contents of a rootfs image into a host staging directory.
 pub(crate) fn extract_rootfs(rootfs_img: &Path, output_dir: &Path) -> anyhow::Result<()> {
     Command::new("debugfs")

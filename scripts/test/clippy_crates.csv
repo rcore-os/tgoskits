@@ -28,7 +28,7 @@ ax-crate-interface-lite
 ax-display
 ax-dma
 ax-driver-display
-ax-driver-net
+ax-driver-virtio
 ax-errno
 ax-fs
 ax-hal
@@ -47,6 +47,7 @@ ax-kspin
 ax-kernel-guard
 ax-lazyinit
 ax-memory-set
+ax-plat-x86-pc
 ax-percpu
 ax-percpu-macros
 axaddrspace

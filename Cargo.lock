@@ -447,24 +447,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arm-scmi"
-version = "0.1.0"
-source = "git+https://github.com/drivercraft/arm-scmi#9e9942d91da2be10666aff4002d213987fa39869"
-dependencies = [
- "aarch64-cpu-ext",
- "bare-test-macros 0.2.0",
- "bitflags 2.11.1",
- "dma-api 0.5.2",
- "log",
- "mbarrier",
- "nb",
- "smccc",
- "spin 0.10.0",
- "thiserror 2.0.18",
- "tock-registers 0.10.1",
-]
-
-[[package]]
 name = "arm-targets"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -838,6 +820,7 @@ name = "ax-driver-net"
 version = "0.3.11"
 dependencies = [
  "ax-driver-base",
+ "bitflags 2.11.1",
  "fxmac_rs",
  "ixgbe-driver",
  "log",
@@ -1746,6 +1729,7 @@ version = "0.5.12"
 dependencies = [
  "anyhow",
  "ax-alloc",
+ "ax-arm-pl031",
  "ax-config-macros",
  "ax-cpu",
  "ax-driver-base",
@@ -1753,6 +1737,7 @@ dependencies = [
  "ax-driver-net",
  "ax-driver-virtio",
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat",
@@ -1773,7 +1758,7 @@ dependencies = [
  "rockchip-npu",
  "rockchip-pm",
  "rockchip-soc",
- "sdmmc 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sdmmc",
  "some-serial 0.3.1",
  "somehal 0.6.6",
  "spin 0.10.0",
@@ -1855,6 +1840,7 @@ dependencies = [
 name = "axpoll"
 version = "0.3.8"
 dependencies = [
+ "ax-kspin",
  "bitflags 2.11.1",
  "futures",
  "linux-raw-sys 0.12.1",
@@ -7503,7 +7489,6 @@ name = "rockchip-npu"
 version = "0.1.1"
 dependencies = [
  "aarch64-cpu-ext",
- "arm-scmi",
  "bare-test 0.8.3",
  "bare-test-macros 0.3.3",
  "bitflags 2.11.1",
@@ -7545,7 +7530,6 @@ dependencies = [
  "log",
  "mbarrier",
  "num-align",
- "sdmmc 0.1.0 (git+https://github.com/YanQD/sdmmc.git)",
  "spin 0.10.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
@@ -7866,25 +7850,6 @@ name = "sdmmc"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd0dbda75ab3bc25f210eb7ad16f2bd1f877a05444e1aeea083c60221bf76f15"
-dependencies = [
- "aarch64-cpu 10.0.0",
- "arm_pl011",
- "bare-test-macros 0.2.0",
- "bitflags 2.11.1",
- "cfg-if",
- "dma-api 0.3.1",
- "fdt-parser",
- "kspin",
- "log",
- "paste",
- "smccc",
- "spin 0.10.0",
-]
-
-[[package]]
-name = "sdmmc"
-version = "0.1.0"
-source = "git+https://github.com/YanQD/sdmmc.git#2b8c7db74cd99101cfeb69421b5132e037bd9d45"
 dependencies = [
  "aarch64-cpu 10.0.0",
  "arm_pl011",
