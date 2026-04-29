@@ -2,19 +2,25 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, bail};
+use ostool::{board::RunBoardOptions, build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
 
-use super::board;
-use crate::context::{
-    arch_for_target_checked, resolve_starry_arch_and_target, validate_supported_target,
-};
+use super::{ArgsTestBoard, ArgsTestQemu, ArgsTestUboot, Starry, board, build, rootfs};
 pub(crate) use crate::test::case::{
     TestQemuCase as StarryQemuCase, TestQemuSubcase as StarryQemuSubcase,
     TestQemuSubcaseKind as StarryQemuSubcaseKind,
+};
+use crate::{
+    command_flow::SnapshotPersistence,
+    context::{
+        ResolvedStarryRequest, StarryCliArgs, arch_for_target_checked,
+        resolve_starry_arch_and_target, validate_supported_target,
+    },
+    test::{board as board_test, case, qemu as qemu_test},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +102,18 @@ pub(crate) struct StarryBoardTestGroup {
     pub(crate) target: String,
     pub(crate) build_config_path: PathBuf,
     pub(crate) board_test_config_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StarryQemuSuiteRequirements {
+    smp: Option<usize>,
+    memory_size: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedStarryQemuCase {
+    case: StarryQemuCase,
+    qemu: QemuConfig,
 }
 
 pub(crate) fn parse_test_target(
@@ -527,6 +545,290 @@ fn collect_board_test_groups(
     }
 
     Ok(groups)
+}
+
+impl Starry {
+    pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
+        let (arch, target) =
+            parse_test_target(self.app.workspace_root(), &args.arch, &args.target)?;
+        let test_group = resolve_qemu_test_group(args.test_group.as_deref(), args.stress)?;
+        let cases = discover_qemu_cases(
+            self.app.workspace_root(),
+            &arch,
+            args.test_case.as_deref(),
+            test_group,
+        )?;
+        let package = crate::context::STARRY_PACKAGE;
+
+        println!(
+            "running starry {} qemu tests for package {} on arch: {} (target: {})",
+            test_group.as_str(),
+            package,
+            arch,
+            target
+        );
+
+        let default_board = board::default_board_for_target(self.app.workspace_root(), &target)?;
+        let mut request = self.prepare_request(
+            Self::test_build_args(&target, None),
+            None,
+            None,
+            SnapshotPersistence::Discard,
+        )?;
+        if let Some(default_board) = default_board {
+            request.plat_dyn = Some(default_board.build_info.plat_dyn);
+            request.build_info_override = Some(default_board.build_info);
+        } else {
+            anyhow::bail!(
+                "missing Starry qemu defconfig for target `{target}` in tests; expected a default \
+                 qemu board config under os/StarryOS/configs/board"
+            );
+        }
+        let rootfs_path = rootfs::ensure_rootfs_in_target_dir(
+            self.app.workspace_root(),
+            &request.arch,
+            &request.target,
+        )
+        .await?;
+        let mut cargo = build::load_cargo_config(&request)?;
+        let cases = self
+            .prepare_qemu_cases(&cargo, cases)
+            .await
+            .context("failed to load Starry qemu test cases")?;
+        let suite_qemu_requirements = Self::suite_qemu_requirements(&cases)
+            .context("failed to prepare shared Starry qemu test build")?;
+        if let Some(smp) = suite_qemu_requirements.smp {
+            request.smp = Some(smp);
+        }
+        if let Some(memory_size) = suite_qemu_requirements.memory_size {
+            cargo = build::load_cargo_config_with_axconfig_overrides(
+                &request,
+                vec![format!("plat.phys-memory-size=0x{memory_size:x}")],
+            )?;
+        } else if suite_qemu_requirements.smp.is_some() {
+            cargo = build::load_cargo_config(&request)?;
+        }
+        self.app.set_debug_mode(request.debug)?;
+        self.app
+            .build(cargo.clone(), request.build_info_path.clone())
+            .await
+            .context("failed to build shared Starry qemu test artifact")?;
+
+        let total = cases.len();
+        let suite_started = Instant::now();
+        let mut reports = Vec::new();
+        for (index, case) in cases.iter().enumerate() {
+            let case_name = &case.case.name;
+            println!("[{}/{}] starry qemu {}", index + 1, total, case_name);
+
+            let case_started = Instant::now();
+            match self
+                .run_qemu_case(
+                    &request,
+                    &cargo,
+                    &suite_qemu_requirements,
+                    &rootfs_path,
+                    case,
+                )
+                .await
+                .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
+            {
+                Ok(()) => {
+                    println!("ok: {case_name}");
+                    reports.push(StarryQemuCaseReport {
+                        name: case_name.clone(),
+                        outcome: StarryQemuCaseOutcome::Passed,
+                        duration: case_started.elapsed(),
+                    });
+                }
+                Err(err) => {
+                    eprintln!("failed: {case_name}: {err:#}");
+                    reports.push(StarryQemuCaseReport {
+                        name: case_name.clone(),
+                        outcome: StarryQemuCaseOutcome::Failed,
+                        duration: case_started.elapsed(),
+                    });
+                }
+            }
+        }
+
+        finalize_qemu_case_run(&StarryQemuRunReport {
+            group: test_group,
+            cases: reports,
+            total_duration: suite_started.elapsed(),
+        })
+    }
+
+    pub(super) async fn test_uboot(&mut self, _args: ArgsTestUboot) -> anyhow::Result<()> {
+        qemu_test::unsupported_uboot_test_command("starry")
+    }
+
+    pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
+        let groups = discover_board_test_groups(
+            self.app.workspace_root(),
+            &args.test_group,
+            args.test_case.as_deref(),
+            args.board.as_deref(),
+        )?;
+        let total = groups.len();
+        let mut failed = Vec::new();
+
+        for (index, group) in groups.into_iter().enumerate() {
+            let group_label = format!("{}/{}", group.name, group.board_name);
+            let board_test_config = group.board_test_config_path.clone();
+            let board_test_config_summary = board_test_config.display().to_string();
+
+            if !board_test_config.exists() {
+                eprintln!(
+                    "failed: {}: missing board test config `{}`",
+                    group_label, board_test_config_summary
+                );
+                failed.push(group_label);
+                continue;
+            }
+
+            println!("[{}/{}] starry board {}", index + 1, total, group_label);
+
+            let result = async {
+                let request = self.prepare_request(
+                    Self::test_board_build_args(&group),
+                    None,
+                    None,
+                    SnapshotPersistence::Discard,
+                )?;
+                let cargo = build::load_cargo_config(&request)?;
+                let board_config = self
+                    .load_board_config(&cargo, Some(board_test_config.as_path()))
+                    .await?;
+                self.app
+                    .board(
+                        cargo,
+                        request.build_info_path,
+                        board_config,
+                        RunBoardOptions {
+                            board_type: args.board_type.clone(),
+                            server: args.server.clone(),
+                            port: args.port,
+                        },
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "starry board test failed for group `{}` (build_config={}, \
+                             board_test_config={})",
+                            group_label,
+                            group.build_config_path.display(),
+                            board_test_config_summary
+                        )
+                    })
+            }
+            .await;
+
+            match result {
+                Ok(()) => println!("ok: {}", group_label),
+                Err(err) => {
+                    eprintln!("failed: {}: {:#}", group_label, err);
+                    failed.push(group_label);
+                }
+            }
+        }
+
+        board_test::finalize_board_test_run("starry", &failed)
+    }
+
+    fn test_build_args(target: &str, config: Option<PathBuf>) -> StarryCliArgs {
+        StarryCliArgs {
+            config,
+            arch: None,
+            target: Some(target.to_string()),
+            smp: None,
+            debug: false,
+        }
+    }
+
+    fn test_board_build_args(group: &StarryBoardTestGroup) -> StarryCliArgs {
+        StarryCliArgs {
+            config: Some(group.build_config_path.clone()),
+            arch: None,
+            target: Some(group.target.clone()),
+            smp: None,
+            debug: false,
+        }
+    }
+
+    async fn prepare_qemu_cases(
+        &mut self,
+        cargo: &Cargo,
+        cases: Vec<StarryQemuCase>,
+    ) -> anyhow::Result<Vec<PreparedStarryQemuCase>> {
+        let mut prepared = Vec::with_capacity(cases.len());
+        for case in cases {
+            let qemu = self
+                .app
+                .tool_mut()
+                .read_qemu_config_from_path_for_cargo(cargo, &case.qemu_config_path)
+                .await
+                .with_context(|| {
+                    format!("failed to read Starry qemu config for case `{}`", case.name)
+                })?;
+            prepared.push(PreparedStarryQemuCase { case, qemu });
+        }
+
+        Ok(prepared)
+    }
+
+    fn suite_qemu_requirements(
+        cases: &[PreparedStarryQemuCase],
+    ) -> anyhow::Result<StarryQemuSuiteRequirements> {
+        let mut requirements = StarryQemuSuiteRequirements::default();
+        for case in cases {
+            requirements.smp = requirements
+                .smp
+                .max(qemu_test::smp_from_qemu_arg(&case.qemu));
+            requirements.memory_size = match (
+                requirements.memory_size,
+                qemu_test::memory_size_from_qemu_arg(&case.qemu)?,
+            ) {
+                (Some(current), Some(next)) => Some(current.max(next)),
+                (current, next) => current.or(next),
+            };
+        }
+
+        Ok(requirements)
+    }
+
+    async fn run_qemu_case(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: &Cargo,
+        suite_requirements: &StarryQemuSuiteRequirements,
+        rootfs_path: &Path,
+        prepared_case: &PreparedStarryQemuCase,
+    ) -> anyhow::Result<()> {
+        let case = &prepared_case.case;
+        let mut qemu = prepared_case.qemu.clone();
+        case::apply_grouped_qemu_config(&mut qemu, case);
+
+        qemu_test::apply_smp_qemu_arg(&mut qemu, suite_requirements.smp);
+        qemu_test::apply_memory_qemu_arg(&mut qemu, suite_requirements.memory_size);
+
+        let prepared_assets = case::prepare_case_assets(
+            self.app.workspace_root(),
+            &request.arch,
+            &request.target,
+            case,
+            rootfs_path.to_path_buf(),
+        )
+        .await?;
+        rootfs::patch_rootfs(
+            &mut qemu,
+            &prepared_assets.rootfs_path,
+            rootfs::RootfsPatchMode::EnsureDiskBootNet,
+        );
+        qemu.args.extend(prepared_assets.extra_qemu_args);
+
+        self.app.run_qemu(cargo, qemu).await
+    }
 }
 
 #[cfg(test)]
