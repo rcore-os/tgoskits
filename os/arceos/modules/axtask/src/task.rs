@@ -218,6 +218,7 @@ impl TaskInner {
     /// Updates the page table root stored in this task's context and switches
     /// the hardware page table immediately. Only safe to call on the current
     /// running task.
+    #[cfg(feature = "uspace")]
     pub fn switch_page_table(&self, root: ax_memory_addr::PhysAddr) {
         // SAFETY: we are the current task and no other thread touches our ctx.
         unsafe { (*self.ctx.get()).set_page_table_root(root) };

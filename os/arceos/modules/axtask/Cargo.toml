@@ -37,6 +37,7 @@ lockdep = [
 ]
 task-ext = ["dep:extern-trait"]
 tls = ["ax-hal/tls"]
+uspace = ["ax-hal/uspace"]
 
 sched-cfs = ["multitask", "preempt"]
 sched-fifo = ["multitask"]

@@ -17,7 +17,7 @@ smp = ["alloc", "ax-hal/smp", "ax-runtime/smp", "ax-task?/smp", "ax-kspin/smp"]
 fp-simd = ["ax-hal/fp-simd"]
 
 # User space support
-uspace = ["ax-hal/uspace"]
+uspace = ["ax-hal/uspace", "ax-task?/uspace"]
 hv = ["ax-hal/hv"]
 
 # Interrupts
