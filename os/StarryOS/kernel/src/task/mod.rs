@@ -396,6 +396,20 @@ impl ProcessData {
         time.1 += stime;
     }
 
+    /// Replace this process's address space with a new one.
+    ///
+    /// # Safety
+    /// The caller must be the only thread in this process and must immediately
+    /// switch the hardware page table to the new root after calling this.
+    pub unsafe fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
+        // SAFETY: guaranteed by caller — single-threaded process, no concurrent
+        // access to this field.
+        unsafe {
+            let ptr = self as *const Self as *mut Self;
+            (*ptr).aspace = new_aspace;
+        }
+    }
+    
     /// Set the vfork completion queue (called on the child after a vfork,
     /// before the child task is spawned).
     pub fn set_vfork_done(&self, wq: Arc<WaitQueue>) {
