@@ -1,4 +1,3 @@
-use anyhow::bail;
 use ostool::run::qemu::QemuConfig;
 
 use crate::context::validate_supported_target;
@@ -19,23 +18,6 @@ pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
 
     qemu.args.push("-smp".to_string());
     qemu.args.push(cpu_num.to_string());
-}
-
-pub(crate) fn apply_memory_qemu_arg(qemu: &mut QemuConfig, bytes: Option<u64>) {
-    let Some(bytes) = bytes else {
-        return;
-    };
-    let value = qemu_memory_size_arg(bytes);
-
-    if let Some(index) = qemu.args.iter().position(|arg| arg == "-m")
-        && let Some(existing) = qemu.args.get_mut(index + 1)
-    {
-        *existing = value;
-        return;
-    }
-
-    qemu.args.push("-m".to_string());
-    qemu.args.push(value);
 }
 
 pub(crate) fn apply_timeout_scale(qemu: &mut QemuConfig) {
@@ -77,16 +59,6 @@ pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {
     parse_smp_qemu_value(value)
 }
 
-pub(crate) fn memory_size_from_qemu_arg(qemu: &QemuConfig) -> anyhow::Result<Option<u64>> {
-    let Some(index) = qemu.args.iter().position(|arg| arg == "-m") else {
-        return Ok(None);
-    };
-    let Some(value) = qemu.args.get(index + 1) else {
-        bail!("QEMU `-m` argument is missing its memory size value");
-    };
-    parse_qemu_memory_size(value)
-}
-
 fn parse_smp_qemu_value(value: &str) -> Option<usize> {
     let first = value.split(',').next()?;
     if let Ok(cpu_num) = first.parse() {
@@ -97,63 +69,6 @@ fn parse_smp_qemu_value(value: &str) -> Option<usize> {
         let cpu_num = part.strip_prefix("cpus=")?;
         cpu_num.parse().ok()
     })
-}
-
-fn parse_qemu_memory_size(value: &str) -> anyhow::Result<Option<u64>> {
-    let Some(size) = qemu_memory_size_token(value) else {
-        return Ok(None);
-    };
-    let (digits, suffix) = split_qemu_memory_size(size);
-    if digits.is_empty() {
-        bail!("invalid QEMU memory size `{value}`");
-    }
-
-    let amount: u64 = digits
-        .parse()
-        .map_err(|_| anyhow::anyhow!("invalid QEMU memory size `{value}`"))?;
-    let multiplier = match suffix.to_ascii_lowercase().as_str() {
-        "" | "m" | "mb" => 1024_u64 * 1024,
-        "k" | "kb" => 1024,
-        "g" | "gb" => 1024_u64 * 1024 * 1024,
-        _ => bail!("unsupported QEMU memory size suffix in `{value}`"),
-    };
-
-    amount
-        .checked_mul(multiplier)
-        .map(Some)
-        .ok_or_else(|| anyhow::anyhow!("QEMU memory size `{value}` is too large"))
-}
-
-fn qemu_memory_size_token(value: &str) -> Option<&str> {
-    value.split(',').find_map(|part| {
-        let part = part.trim();
-        if part.is_empty() {
-            None
-        } else if let Some(size) = part.strip_prefix("size=") {
-            Some(size)
-        } else if part.contains('=') {
-            None
-        } else {
-            Some(part)
-        }
-    })
-}
-
-fn split_qemu_memory_size(value: &str) -> (&str, &str) {
-    let split = value
-        .char_indices()
-        .find_map(|(index, ch)| (!ch.is_ascii_digit()).then_some(index))
-        .unwrap_or(value.len());
-    value.split_at(split)
-}
-
-fn qemu_memory_size_arg(bytes: u64) -> String {
-    const MIB: u64 = 1024 * 1024;
-    if bytes.is_multiple_of(MIB) {
-        format!("{}M", bytes / MIB)
-    } else {
-        bytes.to_string()
-    }
 }
 
 pub(crate) fn parse_test_target(

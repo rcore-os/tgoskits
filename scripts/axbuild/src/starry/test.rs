@@ -108,16 +108,21 @@ pub(crate) struct StarryBoardTestGroup {
     pub(crate) board_test_config_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct StarryQemuSuiteRequirements {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StarryQemuCaseRequirements {
     smp: Option<usize>,
-    memory_size: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
 struct PreparedStarryQemuCase {
     case: TestQemuCase,
     qemu: QemuConfig,
+    requirements: StarryQemuCaseRequirements,
+}
+
+struct StarryQemuCaseGroup<'a> {
+    requirements: StarryQemuCaseRequirements,
+    cases: Vec<&'a PreparedStarryQemuCase>,
 }
 
 pub(crate) fn parse_test_target(
@@ -592,65 +597,53 @@ impl Starry {
             .prepare_qemu_cases(&cargo, cases)
             .await
             .context("failed to load Starry qemu test cases")?;
-        let suite_qemu_requirements = Self::suite_qemu_requirements(&cases)
-            .context("failed to prepare shared Starry qemu test build")?;
-        if let Some(smp) = suite_qemu_requirements.smp {
-            request.smp = Some(smp);
-        }
-        // Rebuild the cargo config when any suite-wide requirement changes so
-        // that SMP and memory settings are always reflected in the single shared
-        // kernel image that all cases boot from.
-        let cargo = if let Some(memory_size) = suite_qemu_requirements.memory_size {
-            build::load_cargo_config_with_axconfig_overrides(
-                &request,
-                vec![format!("plat.phys-memory-size=0x{memory_size:x}")],
-            )?
-        } else if suite_qemu_requirements.smp.is_some() {
-            // SMP was updated in `request`; reload to pick up the new value.
-            build::load_cargo_config(&request)?
-        } else {
-            cargo
-        };
         self.app.set_debug_mode(request.debug)?;
-        self.app
-            .build(cargo.clone(), request.build_info_path.clone())
-            .await
-            .context("failed to build shared Starry qemu test artifact")?;
 
         let total = cases.len();
         let suite_started = Instant::now();
         let mut reports = Vec::new();
-        for (index, case) in cases.iter().enumerate() {
-            let case_name = &case.case.name;
-            println!("[{}/{}] starry qemu {}", index + 1, total, case_name);
-
-            let case_started = Instant::now();
-            match self
-                .run_qemu_case(
-                    &request,
-                    &cargo,
-                    &suite_qemu_requirements,
-                    &rootfs_path,
-                    case,
-                )
+        let case_groups = Self::group_qemu_cases_by_requirements(&cases);
+        let mut completed = 0;
+        for group in case_groups {
+            let (group_request, group_cargo) =
+                Self::qemu_group_build_context(&request, group.requirements)?;
+            self.app
+                .build(group_cargo.clone(), group_request.build_info_path.clone())
                 .await
-                .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
-            {
-                Ok(()) => {
-                    println!("ok: {case_name}");
-                    reports.push(StarryQemuCaseReport {
-                        name: case_name.clone(),
-                        outcome: StarryQemuCaseOutcome::Passed,
-                        duration: case_started.elapsed(),
-                    });
-                }
-                Err(err) => {
-                    eprintln!("failed: {case_name}: {err:#}");
-                    reports.push(StarryQemuCaseReport {
-                        name: case_name.clone(),
-                        outcome: StarryQemuCaseOutcome::Failed,
-                        duration: case_started.elapsed(),
-                    });
+                .with_context(|| {
+                    format!(
+                        "failed to build Starry qemu test artifact for {}",
+                        Self::qemu_case_requirements_summary(group.requirements)
+                    )
+                })?;
+
+            for case in group.cases {
+                completed += 1;
+                let case_name = &case.case.name;
+                println!("[{completed}/{total}] starry qemu {case_name}");
+
+                let case_started = Instant::now();
+                match self
+                    .run_qemu_case(&group_request, &group_cargo, &rootfs_path, case)
+                    .await
+                    .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
+                {
+                    Ok(()) => {
+                        println!("ok: {case_name}");
+                        reports.push(StarryQemuCaseReport {
+                            name: case_name.clone(),
+                            outcome: StarryQemuCaseOutcome::Passed,
+                            duration: case_started.elapsed(),
+                        });
+                    }
+                    Err(err) => {
+                        eprintln!("failed: {case_name}: {err:#}");
+                        reports.push(StarryQemuCaseReport {
+                            name: case_name.clone(),
+                            outcome: StarryQemuCaseOutcome::Failed,
+                            duration: case_started.elapsed(),
+                        });
+                    }
                 }
             }
         }
@@ -789,37 +782,70 @@ impl Starry {
                     case.qemu_config_path.display()
                 );
             }
-            prepared.push(PreparedStarryQemuCase { case, qemu });
+            let requirements = Self::qemu_case_requirements(&qemu)
+                .with_context(|| format!("failed to read QEMU requirements for `{}`", case.name))?;
+            prepared.push(PreparedStarryQemuCase {
+                case,
+                qemu,
+                requirements,
+            });
         }
 
         Ok(prepared)
     }
 
-    fn suite_qemu_requirements(
+    fn qemu_case_requirements(qemu: &QemuConfig) -> anyhow::Result<StarryQemuCaseRequirements> {
+        Ok(StarryQemuCaseRequirements {
+            smp: qemu_test::smp_from_qemu_arg(qemu),
+        })
+    }
+
+    fn group_qemu_cases_by_requirements(
         cases: &[PreparedStarryQemuCase],
-    ) -> anyhow::Result<StarryQemuSuiteRequirements> {
-        let mut requirements = StarryQemuSuiteRequirements::default();
+    ) -> Vec<StarryQemuCaseGroup<'_>> {
+        let mut groups: Vec<StarryQemuCaseGroup<'_>> = Vec::new();
         for case in cases {
-            requirements.smp = requirements
-                .smp
-                .max(qemu_test::smp_from_qemu_arg(&case.qemu));
-            requirements.memory_size = match (
-                requirements.memory_size,
-                qemu_test::memory_size_from_qemu_arg(&case.qemu)?,
-            ) {
-                (Some(current), Some(next)) => Some(current.max(next)),
-                (current, next) => current.or(next),
-            };
+            if let Some(group) = groups
+                .iter_mut()
+                .find(|group| group.requirements == case.requirements)
+            {
+                group.cases.push(case);
+            } else {
+                groups.push(StarryQemuCaseGroup {
+                    requirements: case.requirements,
+                    cases: vec![case],
+                });
+            }
         }
 
-        Ok(requirements)
+        groups
+    }
+
+    fn qemu_group_build_context(
+        request: &ResolvedStarryRequest,
+        requirements: StarryQemuCaseRequirements,
+    ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
+        let mut request = request.clone();
+        request.smp = requirements.smp;
+        let cargo = build::load_cargo_config(&request)?;
+
+        Ok((request, cargo))
+    }
+
+    fn qemu_case_requirements_summary(requirements: StarryQemuCaseRequirements) -> String {
+        format!(
+            "requirements smp={}",
+            requirements
+                .smp
+                .map(|smp| smp.to_string())
+                .unwrap_or_else(|| "default".to_string())
+        )
     }
 
     async fn run_qemu_case(
         &mut self,
         request: &ResolvedStarryRequest,
         cargo: &Cargo,
-        suite_requirements: &StarryQemuSuiteRequirements,
         rootfs_path: &Path,
         prepared_case: &PreparedStarryQemuCase,
     ) -> anyhow::Result<()> {
@@ -827,8 +853,6 @@ impl Starry {
         let mut qemu = prepared_case.qemu.clone();
         case::apply_grouped_qemu_config(&mut qemu, case);
 
-        qemu_test::apply_smp_qemu_arg(&mut qemu, suite_requirements.smp);
-        qemu_test::apply_memory_qemu_arg(&mut qemu, suite_requirements.memory_size);
         qemu_test::apply_timeout_scale(&mut qemu);
 
         let prepare_started = Instant::now();
@@ -1061,6 +1085,23 @@ mod tests {
         .unwrap();
     }
 
+    fn prepared_qemu_case(
+        name: &str,
+        requirements: StarryQemuCaseRequirements,
+    ) -> PreparedStarryQemuCase {
+        PreparedStarryQemuCase {
+            case: TestQemuCase {
+                name: name.to_string(),
+                case_dir: PathBuf::from(format!("/tmp/{name}")),
+                qemu_config_path: PathBuf::from(format!("/tmp/{name}/qemu-x86_64.toml")),
+                test_commands: Vec::new(),
+                subcases: Vec::new(),
+            },
+            qemu: QemuConfig::default(),
+            requirements,
+        }
+    }
+
     #[test]
     fn discovers_only_cases_with_matching_qemu_config() {
         let root = tempdir().unwrap();
@@ -1175,6 +1216,59 @@ mod tests {
 
         assert!(err.contains("does not provide"));
         assert!(err.contains("qemu-x86_64.toml"));
+    }
+
+    #[test]
+    fn qemu_case_requirements_read_smp_from_case_config() {
+        let qemu = QemuConfig {
+            args: vec![
+                "-nographic".to_string(),
+                "-smp".to_string(),
+                "cpus=4".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let requirements = Starry::qemu_case_requirements(&qemu).unwrap();
+
+        assert_eq!(requirements, StarryQemuCaseRequirements { smp: Some(4) });
+    }
+
+    #[test]
+    fn qemu_cases_are_grouped_by_exact_requirements() {
+        let cases = vec![
+            prepared_qemu_case("smoke", StarryQemuCaseRequirements::default()),
+            prepared_qemu_case("affinity", StarryQemuCaseRequirements { smp: Some(4) }),
+            prepared_qemu_case("syscall", StarryQemuCaseRequirements::default()),
+        ];
+
+        let groups = Starry::group_qemu_cases_by_requirements(&cases);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0].requirements,
+            StarryQemuCaseRequirements::default()
+        );
+        assert_eq!(
+            groups[0]
+                .cases
+                .iter()
+                .map(|case| case.case.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["smoke", "syscall"]
+        );
+        assert_eq!(
+            groups[1].requirements,
+            StarryQemuCaseRequirements { smp: Some(4) }
+        );
+        assert_eq!(
+            groups[1]
+                .cases
+                .iter()
+                .map(|case| case.case.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["affinity"]
+        );
     }
 
     #[test]
