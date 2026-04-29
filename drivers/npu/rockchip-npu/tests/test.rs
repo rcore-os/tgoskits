@@ -13,7 +13,6 @@ mod tests {
     use alloc::vec::Vec;
     use core::{hint::spin_loop, ptr::NonNull, sync::atomic::AtomicU32, time::Duration};
 
-    use arm_scmi::{Scmi, Shmem, Smc};
     use bare_test::{
         hal::al::IrqId,
         os::{
@@ -242,78 +241,6 @@ mod tests {
 
         // SAFETY: iomap guarantees a valid mapping; offset is within bounds.
         unsafe { NonNull::new_unchecked(ptr) }
-    }
-
-    fn set_up_scmi() {
-        let fdt = platform_fdt();
-        let node = fdt
-            .find_compatible(&["arm,scmi-smc"])
-            .into_iter()
-            .next()
-            .expect("scmi not found");
-
-        info!("found scmi node: {:?}", node.name());
-
-        let shmem_ph: Phandle = node
-            .as_node()
-            .get_property("shmem")
-            .expect("shmem property not found")
-            .get_u32()
-            .expect("invalid shmem phandle")
-            .into();
-
-        let shmem_node = fdt.get_by_phandle(shmem_ph).expect("shmem node not found");
-
-        info!("found shmem node: {:?}", shmem_node.name());
-
-        let shmem_reg = shmem_node.regs();
-        assert_eq!(shmem_reg.len(), 1);
-        let shmem_reg = shmem_reg[0];
-        let shmem_addr = ioremap(
-            (shmem_reg.address as usize).into(),
-            shmem_reg.size.unwrap().align_up(0x1000) as usize,
-        )
-        .unwrap();
-
-        let func_id = node
-            .as_node()
-            .get_property("arm,smc-id")
-            .expect("function-id property not found")
-            .get_u32()
-            .expect("invalid function-id");
-
-        info!("shmem reg: {:?}", shmem_reg);
-        info!("func_id: {:#x}", func_id);
-
-        let irq_num = node
-            .as_node()
-            .get_property("a2p")
-            .and_then(|irq_prop| irq_prop.get_u32());
-
-        let shmem = Shmem {
-            address: shmem_addr.as_nonnull_ptr(),
-            bus_address: shmem_reg.child_bus_address as usize,
-            size: shmem_reg.size.unwrap() as usize,
-        };
-        let kind = Smc::new(func_id, irq_num);
-        let scmi = Scmi::new(kind, shmem);
-
-        let mut pclk = scmi.protocol_clk();
-
-        let ls = [
-            (0u32, "clk0", 0x30a32c00),
-            (2u32, "clk1", 0x30a32c00),
-            (3u32, "clk2", 0x30a32c00),
-            (6u32, "clk-npu", 0xbebc200),
-        ];
-        for (id, name, clk) in ls {
-            pclk.clk_enable(id).unwrap();
-            let rate = pclk.rate_get(id).unwrap();
-            info!("Clock {} (id={}): rate={} Mz", name, id, rate / 1000000);
-            pclk.rate_set(id, clk).unwrap();
-            let rate = pclk.rate_get(id).unwrap();
-            info!("Clock {} (id={}): new rate={} Mz", name, id, rate / 1000000);
-        }
     }
 
     fn matul_test(npu: &mut Rknpu) {

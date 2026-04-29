@@ -23,7 +23,6 @@ tock-registers = "0.10"
 [target.'cfg(not(any(windows, unix)))'.dev-dependencies]
 bare-test = "0.7"
 num-align = "0.1.0"
-sdmmc = {git = "https://github.com/YanQD/sdmmc.git"}
 spin = "0.10"
 
 [build-dependencies]
