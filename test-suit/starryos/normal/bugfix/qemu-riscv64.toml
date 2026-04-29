@@ -19,6 +19,7 @@ shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/bug-futex-wait-wake",
     "/usr/bin/bug-lseek-negative-einval",
+    "/usr/bin/bug-mkdir-empty-path",
     "/usr/bin/bug-open-dir-wronly",
     "/usr/bin/bug-pipe-fd-errno",
     "/usr/bin/bug-preadv2-invalid-flags",
