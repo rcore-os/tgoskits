@@ -7,11 +7,15 @@
 
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
-use anyhow::{Context, ensure};
+use anyhow::{Context, bail, ensure};
 use ostool::run::qemu::QemuConfig;
+use sha2::{Digest, Sha256};
+use walkdir::WalkDir;
 
 use super::build as case_builder;
 
@@ -20,6 +24,9 @@ pub(crate) const GROUPED_CASE_SUCCESS_REGEX: &str = r"(?m)^STARRY_GROUPED_TESTS_
 pub(crate) const GROUPED_CASE_FAIL_REGEX: &str = r"(?m)^STARRY_GROUPED_TEST_FAILED:";
 
 const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
+const CASE_CACHE_DIR_NAME: &str = "cache";
+const CASE_RUNS_DIR_NAME: &str = "runs";
+const CASE_OVERLAY_CACHE_DIR_NAME: &str = "overlay";
 const CASE_STAGING_DIR_NAME: &str = "staging-root";
 const CASE_BUILD_DIR_NAME: &str = "build";
 const CASE_OVERLAY_DIR_NAME: &str = "overlay";
@@ -35,6 +42,8 @@ const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
 /// QEMU global snapshot flag — all disk writes go to a temporary file and are
 /// never committed back to the image, keeping the source image pristine.
 const QEMU_SNAPSHOT_ARG: &str = "-snapshot";
+
+static CASE_RUN_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TestQemuCase {
@@ -74,11 +83,48 @@ pub(crate) struct PreparedCaseAssets {
     /// Path of the temporary per-case rootfs copy to remove after the QEMU run,
     /// or `None` when the shared image was used directly (no injection needed).
     pub(crate) rootfs_copy_to_remove: Option<PathBuf>,
+    pub(crate) run_dir_to_remove: Option<PathBuf>,
+    pub(crate) pipeline: CasePipeline,
+    pub(crate) cache_hit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreparedCaseAssetParts {
+    pub(crate) extra_qemu_args: Vec<String>,
+    pub(crate) rootfs_path: PathBuf,
+    pub(crate) rootfs_copy_to_remove: Option<PathBuf>,
+    pub(crate) run_dir_to_remove: Option<PathBuf>,
+    pub(crate) pipeline: CasePipeline,
+    pub(crate) cache_hit: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CasePipeline {
+    Plain,
+    Grouped,
+    C,
+    Sh,
+    Python,
+}
+
+impl CasePipeline {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Grouped => "grouped",
+            Self::C => "c",
+            Self::Sh => "sh",
+            Self::Python => "python",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CaseAssetLayout {
     pub(crate) work_dir: PathBuf,
+    pub(crate) run_dir: PathBuf,
+    pub(crate) cache_dir: PathBuf,
+    pub(crate) overlay_cache_dir: PathBuf,
     pub(crate) staging_root: PathBuf,
     pub(crate) build_dir: PathBuf,
     pub(crate) overlay_dir: PathBuf,
@@ -116,17 +162,19 @@ pub(crate) async fn prepare_case_assets(
     let arch = arch.to_string();
     let target = target.to_string();
     let case = case.clone();
-    let (extra_qemu_args, rootfs_path, rootfs_copy_to_remove) =
-        tokio::task::spawn_blocking(move || {
-            prepare_case_assets_sync(&workspace_root, &arch, &target, &case, &rootfs_path)
-        })
-        .await
-        .context("qemu test case asset task failed")??;
+    let parts = tokio::task::spawn_blocking(move || {
+        prepare_case_assets_sync(&workspace_root, &arch, &target, &case, &rootfs_path)
+    })
+    .await
+    .context("qemu test case asset task failed")??;
 
     Ok(PreparedCaseAssets {
-        rootfs_path,
-        extra_qemu_args,
-        rootfs_copy_to_remove,
+        rootfs_path: parts.rootfs_path,
+        extra_qemu_args: parts.extra_qemu_args,
+        rootfs_copy_to_remove: parts.rootfs_copy_to_remove,
+        run_dir_to_remove: parts.run_dir_to_remove,
+        pipeline: parts.pipeline,
+        cache_hit: parts.cache_hit,
     })
 }
 
@@ -170,17 +218,22 @@ pub(crate) fn case_asset_layout(
 ) -> anyhow::Result<CaseAssetLayout> {
     let target_dir = resolve_target_dir(workspace_root, target)?;
     let work_dir = target_dir.join(CASE_WORK_ROOT_NAME).join(case_name);
+    let run_dir = work_dir.join(CASE_RUNS_DIR_NAME).join(next_case_run_id());
+    let cache_dir = work_dir.join(CASE_CACHE_DIR_NAME);
 
     Ok(CaseAssetLayout {
-        staging_root: work_dir.join(CASE_STAGING_DIR_NAME),
-        build_dir: work_dir.join(CASE_BUILD_DIR_NAME),
-        overlay_dir: work_dir.join(CASE_OVERLAY_DIR_NAME),
-        command_wrapper_dir: work_dir.join(CASE_COMMAND_WRAPPER_DIR_NAME),
-        cross_bin_dir: work_dir.join(CASE_CROSS_BIN_DIR_NAME),
-        cmake_toolchain_file: work_dir.join(CASE_CMAKE_TOOLCHAIN_FILE_NAME),
-        apk_cache_dir: work_dir.join(CASE_APK_CACHE_DIR_NAME),
-        usb_stick_path: work_dir.join(USB_STICK_IMAGE_NAME),
-        case_rootfs_copy: work_dir.join(CASE_ROOTFS_COPY_NAME),
+        staging_root: run_dir.join(CASE_STAGING_DIR_NAME),
+        build_dir: run_dir.join(CASE_BUILD_DIR_NAME),
+        overlay_dir: run_dir.join(CASE_OVERLAY_DIR_NAME),
+        command_wrapper_dir: run_dir.join(CASE_COMMAND_WRAPPER_DIR_NAME),
+        cross_bin_dir: run_dir.join(CASE_CROSS_BIN_DIR_NAME),
+        cmake_toolchain_file: run_dir.join(CASE_CMAKE_TOOLCHAIN_FILE_NAME),
+        apk_cache_dir: cache_dir.join(CASE_APK_CACHE_DIR_NAME),
+        overlay_cache_dir: cache_dir.join(CASE_OVERLAY_CACHE_DIR_NAME),
+        usb_stick_path: run_dir.join(USB_STICK_IMAGE_NAME),
+        case_rootfs_copy: run_dir.join(CASE_ROOTFS_COPY_NAME),
+        cache_dir,
+        run_dir,
         work_dir,
     })
 }
@@ -222,6 +275,18 @@ pub(crate) fn remove_case_rootfs_copy(path: Option<&Path>) {
     }
 }
 
+pub(crate) fn remove_case_run_dir(path: Option<&Path>) {
+    let Some(path) = path else { return };
+    if path.exists()
+        && let Err(e) = fs::remove_dir_all(path)
+    {
+        eprintln!(
+            "warning: failed to remove case run directory `{}`: {e}",
+            path.display()
+        );
+    }
+}
+
 /// Performs the synchronous part of QEMU case asset preparation.
 ///
 /// Returns `(extra_qemu_args, rootfs_path, rootfs_copy_to_remove)` where:
@@ -237,50 +302,269 @@ pub(crate) fn prepare_case_assets_sync(
     target: &str,
     case: &TestQemuCase,
     shared_rootfs: &Path,
-) -> anyhow::Result<(Vec<String>, PathBuf, Option<PathBuf>)> {
-    let needs_injection = case.is_grouped()
-        || case_uses_c_pipeline(case)
-        || case_uses_sh_pipeline(case)
-        || case_uses_python_pipeline(case);
+) -> anyhow::Result<PreparedCaseAssetParts> {
+    let pipeline = resolve_case_pipeline(case)?;
 
-    let (case_rootfs, rootfs_copy_to_remove) = if needs_injection {
+    // Create the run-scoped layout exactly once.  Pipeline cases need it for
+    // the injection work; plain cases need it only when USB assets are required.
+    // Creating it here avoids calling case_asset_layout() twice (which would
+    // allocate two different run-dir IDs via the global sequence counter).
+    let needs_injection = pipeline != CasePipeline::Plain;
+    let needs_usb = case_uses_usb_qemu_assets(arch, case);
+    let layout = if needs_injection || needs_usb {
+        Some(case_asset_layout(workspace_root, target, &case.name)?)
+    } else {
+        None
+    };
+
+    let (case_rootfs, rootfs_copy_to_remove, run_dir_to_remove, cache_hit) = if needs_injection {
+        let layout = layout.as_ref().expect("layout created above for injection");
         // A fresh per-case copy is required so inject_overlay writes land on
         // the copy rather than the shared image.  QEMU's -snapshot (below)
         // then prevents even QEMU guest writes from reaching the copy.
-        let layout = case_asset_layout(workspace_root, target, &case.name)?;
-        fs::create_dir_all(&layout.work_dir)
-            .with_context(|| format!("failed to create {}", layout.work_dir.display()))?;
-        copy_shared_rootfs_for_case(shared_rootfs, &layout)?;
+        fs::create_dir_all(&layout.run_dir)
+            .with_context(|| format!("failed to create {}", layout.run_dir.display()))?;
+        copy_shared_rootfs_for_case(shared_rootfs, layout)?;
         let copy = layout.case_rootfs_copy.clone();
-
-        if case.is_grouped() {
-            case_builder::prepare_grouped_case_assets_sync(arch, case, &copy, &layout)?;
-        } else if case_uses_c_pipeline(case) {
-            case_builder::prepare_c_case_assets_sync(arch, case, &copy, &layout)?;
-        } else if case_uses_sh_pipeline(case) {
-            prepare_sh_case_assets_sync(case, &copy, &layout)?;
+        let overlay_cache = overlay_cache_path(layout, arch, target, case, shared_rootfs)?;
+        let overlay_cache_ready = overlay_cache_ready_path(&overlay_cache);
+        let cache_hit = if overlay_cache.is_dir() && overlay_cache_ready.is_file() {
+            reset_dir(&layout.overlay_dir)?;
+            copy_dir_recursive(&overlay_cache, &layout.overlay_dir)?;
+            crate::rootfs::inject::inject_overlay(&copy, &layout.overlay_dir)?;
+            true
         } else {
-            case_builder::prepare_python_case_assets_sync(arch, case, &copy, &layout)?;
-        }
-        (copy.clone(), Some(copy))
+            match pipeline {
+                CasePipeline::Grouped => {
+                    case_builder::prepare_grouped_case_assets_sync(arch, case, &copy, layout)?
+                }
+                CasePipeline::C => {
+                    case_builder::prepare_c_case_assets_sync(arch, case, &copy, layout)?
+                }
+                CasePipeline::Sh => prepare_sh_case_assets_sync(case, &copy, layout)?,
+                CasePipeline::Python => {
+                    case_builder::prepare_python_case_assets_sync(arch, case, &copy, layout)?
+                }
+                CasePipeline::Plain => unreachable!("plain cases do not prepare injection assets"),
+            }
+            if overlay_cache_ready.exists() {
+                fs::remove_file(&overlay_cache_ready).with_context(|| {
+                    format!("failed to remove {}", overlay_cache_ready.display())
+                })?;
+            }
+            reset_dir(&overlay_cache)?;
+            copy_dir_recursive(&layout.overlay_dir, &overlay_cache)?;
+            fs::write(&overlay_cache_ready, b"ok")
+                .with_context(|| format!("failed to write {}", overlay_cache_ready.display()))?;
+            false
+        };
+        (
+            copy.clone(),
+            Some(copy),
+            Some(layout.run_dir.clone()),
+            cache_hit,
+        )
     } else {
         // No injection needed — boot directly from the shared image.
         // QEMU's -snapshot (below) ensures the shared image is never modified
         // by guest writes, so no copy is required at all.
-        (shared_rootfs.to_path_buf(), None)
+        (shared_rootfs.to_path_buf(), None, None, false)
     };
 
     // -snapshot is always passed: all QEMU guest writes go to a temporary file
     // that QEMU auto-deletes on exit, keeping both the shared image and any
     // injection copy pristine after the run.
     let mut extra_qemu_args = vec![QEMU_SNAPSHOT_ARG.to_string()];
-    if case_uses_usb_qemu_assets(arch, case) {
-        let layout = case_asset_layout(workspace_root, target, &case.name)?;
+    if needs_usb {
+        // Reuse the layout already allocated above rather than calling
+        // case_asset_layout() again (which would increment the run-dir
+        // sequence counter and create an orphaned directory).
+        let layout = layout.as_ref().expect("layout created above for USB");
         create_usb_backing_image(&layout.usb_stick_path)?;
         extra_qemu_args.extend(usb_qemu_args(&layout.usb_stick_path));
     }
 
-    Ok((extra_qemu_args, case_rootfs, rootfs_copy_to_remove))
+    Ok(PreparedCaseAssetParts {
+        extra_qemu_args,
+        rootfs_path: case_rootfs,
+        rootfs_copy_to_remove,
+        run_dir_to_remove,
+        pipeline,
+        cache_hit,
+    })
+}
+
+pub(crate) fn resolve_case_pipeline(case: &TestQemuCase) -> anyhow::Result<CasePipeline> {
+    let mut pipelines = Vec::new();
+    if case.is_grouped() {
+        pipelines.push(CasePipeline::Grouped);
+    }
+    if case_uses_c_pipeline(case) {
+        pipelines.push(CasePipeline::C);
+    }
+    if case_uses_sh_pipeline(case) {
+        pipelines.push(CasePipeline::Sh);
+    }
+    if case_uses_python_pipeline(case) {
+        pipelines.push(CasePipeline::Python);
+    }
+
+    if pipelines.len() > 1 {
+        bail!(
+            "qemu case `{}` defines multiple asset pipelines: {}",
+            case.name,
+            pipelines
+                .iter()
+                .map(|pipeline| pipeline.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    Ok(pipelines.into_iter().next().unwrap_or(CasePipeline::Plain))
+}
+
+fn next_case_run_id() -> String {
+    let sequence = CASE_RUN_ID.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{sequence}", std::process::id())
+}
+
+fn overlay_cache_path(
+    layout: &CaseAssetLayout,
+    arch: &str,
+    target: &str,
+    case: &TestQemuCase,
+    shared_rootfs: &Path,
+) -> anyhow::Result<PathBuf> {
+    let key = case_asset_cache_key(arch, target, case, shared_rootfs)?;
+    Ok(layout.overlay_cache_dir.join(key))
+}
+
+fn overlay_cache_ready_path(overlay_cache: &Path) -> PathBuf {
+    overlay_cache.with_extension("ready")
+}
+
+fn case_asset_cache_key(
+    arch: &str,
+    target: &str,
+    case: &TestQemuCase,
+    shared_rootfs: &Path,
+) -> anyhow::Result<String> {
+    let mut hasher = Sha256::new();
+    hash_token(&mut hasher, "v2");
+    hash_token(&mut hasher, arch);
+    hash_token(&mut hasher, target);
+    hash_token(&mut hasher, case.name.as_str());
+    hash_token(&mut hasher, resolve_case_pipeline(case)?.as_str());
+    hash_token(
+        &mut hasher,
+        std::env::var(crate::starry::apk::STARRY_APK_REGION_VAR)
+            .unwrap_or_default()
+            .as_str(),
+    );
+    // Only the C pipeline uses the CMake toolchain template; include it in the
+    // key only when relevant so that changes to the template don't invalidate
+    // caches for unrelated pipelines.
+    if resolve_case_pipeline(case)? == CasePipeline::C {
+        hash_token(&mut hasher, include_str!("cmake-toolchain.cmake.in"));
+    }
+
+    hash_file_metadata(&mut hasher, shared_rootfs)?;
+    hash_tree(&mut hasher, &case.case_dir)?;
+    if !case.qemu_config_path.starts_with(&case.case_dir) && case.qemu_config_path.is_file() {
+        hash_file(&mut hasher, &case.qemu_config_path)?;
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn hash_tree(hasher: &mut Sha256, root: &Path) -> anyhow::Result<()> {
+    let mut files = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to walk {}", root.display()))?;
+    files.sort_by_key(|entry| entry.path().to_path_buf());
+
+    for entry in files {
+        let path = entry.path();
+        if path == root || !entry.file_type().is_file() {
+            continue;
+        }
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        hash_token(hasher, rel.to_string_lossy().as_ref());
+        hash_file(hasher, path)?;
+    }
+    Ok(())
+}
+
+fn hash_file_metadata(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    // Hash only the file size, not mtime.  mtime is unreliable in Docker
+    // volumes, NFS mounts, and many CI environments (files copied from a
+    // container or extracted from a tarball often have synthetic timestamps).
+    // The size alone is a sufficient signal that the rootfs has been replaced;
+    // a rootfs update that produces a same-size image would normally also
+    // change case source files (hashed via hash_tree) so false cache hits are
+    // very unlikely in practice.
+    hash_token(hasher, &metadata.len().to_string());
+    Ok(())
+}
+
+fn hash_file(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut buf = [0_u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buf)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(())
+}
+
+fn hash_token(hasher: &mut Sha256, value: &str) {
+    hasher.update(value.len().to_le_bytes());
+    hasher.update(value.as_bytes());
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
+    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", src_path.display()))?;
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&src_path, &dst_path).with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(&src_path)
+                    .with_context(|| format!("failed to stat {}", src_path.display()))?
+                    .permissions()
+                    .mode();
+                fs::set_permissions(&dst_path, fs::Permissions::from_mode(mode))
+                    .with_context(|| format!("failed to chmod {}", dst_path.display()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn apply_grouped_qemu_config(qemu: &mut QemuConfig, case: &TestQemuCase) {

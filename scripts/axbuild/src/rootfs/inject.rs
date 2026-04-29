@@ -216,16 +216,12 @@ fn run_debugfs_script(
         .spawn()
         .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
 
-    {
-        let mut stdin = child.stdin.take().context("failed to open debugfs stdin")?;
-        for command in commands {
-            writeln!(stdin, "{command}").context("failed to write debugfs command")?;
-        }
-        writeln!(stdin, "quit").context("failed to finalize debugfs script")?;
-    }
-
-    // Forward stderr on a background thread, suppressing benign "File exists"
-    // lines that debugfs emits when `mkdir` is called on a pre-existing dir.
+    // Start draining stderr on a background thread BEFORE writing stdin.
+    // Without this ordering, a classic pipe deadlock occurs: debugfs fills the
+    // stderr pipe while we are still writing stdin, which causes debugfs to
+    // block on its stderr write, which causes it to stop reading stdin, which
+    // causes our stdin write to block — a deadlock.  Draining stderr
+    // concurrently with stdin writes prevents the pipe from filling up.
     let stderr_handle = child
         .stderr
         .take()
@@ -243,6 +239,14 @@ fn run_debugfs_script(
             eprintln!("{line}");
         }
     });
+
+    {
+        let mut stdin = child.stdin.take().context("failed to open debugfs stdin")?;
+        for command in commands {
+            writeln!(stdin, "{command}").context("failed to write debugfs command")?;
+        }
+        writeln!(stdin, "quit").context("failed to finalize debugfs script")?;
+    }
 
     let status = child.wait().context("failed to wait for debugfs")?;
     let _ = filter_handle.join();

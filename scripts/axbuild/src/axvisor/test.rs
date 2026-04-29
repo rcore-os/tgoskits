@@ -74,7 +74,10 @@ const UBOOT_BOARD_CONFIGS: &[UbootBoardConfig] = &[
 #[derive(Debug, Deserialize)]
 struct AxvisorQemuCaseConfig {
     build_config: Option<PathBuf>,
-    shell_init_cmd: Option<String>,
+    // Note: shell_init_cmd is NOT duplicated here; it is read by ostool's
+    // QemuConfig during the run phase. Keeping it out avoids two independent
+    // sources of truth and makes the mutual-exclusion check with test_commands
+    // happen in one place (Axvisor::load_qemu_case_config).
     #[serde(default)]
     test_commands: Vec<String>,
     #[serde(default)]
@@ -197,12 +200,6 @@ fn qemu_case_test_commands(
     qemu_config_path: &Path,
     config: &AxvisorQemuCaseConfig,
 ) -> anyhow::Result<Vec<String>> {
-    let shell_init_cmd = config
-        .shell_init_cmd
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
     let mut test_commands = Vec::with_capacity(config.test_commands.len());
     for command in &config.test_commands {
         let command = command.trim().to_string();
@@ -214,15 +211,6 @@ fn qemu_case_test_commands(
         }
         test_commands.push(command);
     }
-
-    if shell_init_cmd.is_some() && !test_commands.is_empty() {
-        bail!(
-            "Axvisor grouped qemu case `{}` cannot define both `shell_init_cmd` and \
-             `test_commands`",
-            qemu_config_path.display()
-        );
-    }
-
     Ok(test_commands)
 }
 
@@ -640,13 +628,29 @@ impl Axvisor {
         request: &ResolvedAxvisorRequest,
         cargo: &Cargo,
         case: &AxvisorQemuCase,
-    ) -> anyhow::Result<(QemuConfig, Option<PathBuf>)> {
+    ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
         let mut qemu = self
             .app
             .tool_mut()
             .read_qemu_config_from_path_for_cargo(cargo, &case.case.qemu_config_path)
             .await?;
+        // Validate shell_init_cmd / test_commands mutual exclusion here, after
+        // ostool has already parsed the TOML once.  This mirrors the Starry
+        // approach and avoids parsing the file again with a separate deserializer.
+        let shell_init_cmd_set = qemu
+            .shell_init_cmd
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|v| !v.is_empty());
+        if shell_init_cmd_set && !case.case.test_commands.is_empty() {
+            bail!(
+                "Axvisor grouped qemu case `{}` cannot define both `shell_init_cmd` and \
+                 `test_commands`",
+                case.case.qemu_config_path.display()
+            );
+        }
         test_case::apply_grouped_qemu_config(&mut qemu, &case.case);
+        test_qemu::apply_timeout_scale(&mut qemu);
 
         let mut case_request = request.clone();
         case_request.vmconfigs = case.vmconfigs.clone();
@@ -660,8 +664,8 @@ impl Axvisor {
         )
         .await?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
-        qemu.args.extend(prepared_assets.extra_qemu_args);
-        Ok((qemu, prepared_assets.rootfs_copy_to_remove))
+        qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        Ok((qemu, prepared_assets))
     }
 
     async fn run_qemu_case(
@@ -670,12 +674,32 @@ impl Axvisor {
         cargo: &Cargo,
         case: &AxvisorQemuCase,
     ) -> anyhow::Result<()> {
-        let (qemu, rootfs_copy) = self.load_qemu_case_config(request, cargo, case).await?;
+        let prepare_started = Instant::now();
+        let (qemu, prepared_assets) = self.load_qemu_case_config(request, cargo, case).await?;
+        println!(
+            "  prepare assets: {:.2?} (pipeline={}, cache={})",
+            prepare_started.elapsed(),
+            prepared_assets.pipeline.as_str(),
+            if prepared_assets.cache_hit {
+                "hit"
+            } else {
+                "miss"
+            }
+        );
+        println!(
+            "  qemu config: {} (timeout={})",
+            case.case.qemu_config_path.display(),
+            test_qemu::qemu_timeout_summary(&qemu)
+        );
+        println!("  rootfs: {}", prepared_assets.rootfs_path.display());
+        let qemu_started = Instant::now();
         let result = self.app.run_qemu(cargo, qemu).await;
+        println!("  qemu run: {:.2?}", qemu_started.elapsed());
         // Remove the per-case rootfs copy immediately after the run so disk
         // usage stays bounded to ~1 active copy at a time rather than
         // accumulating one copy per case.
-        test_case::remove_case_rootfs_copy(rootfs_copy.as_deref());
+        test_case::remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
+        test_case::remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
         result
     }
 }

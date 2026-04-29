@@ -3,6 +3,8 @@ use ostool::run::qemu::QemuConfig;
 
 use crate::context::validate_supported_target;
 
+const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
+
 pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
     let Some(cpu_num) = smp else {
         return;
@@ -34,6 +36,39 @@ pub(crate) fn apply_memory_qemu_arg(qemu: &mut QemuConfig, bytes: Option<u64>) {
 
     qemu.args.push("-m".to_string());
     qemu.args.push(value);
+}
+
+pub(crate) fn apply_timeout_scale(qemu: &mut QemuConfig) {
+    let Some(timeout) = qemu.timeout else {
+        return;
+    };
+    if timeout == 0 {
+        return;
+    }
+
+    let scale = match std::env::var(TIMEOUT_SCALE_ENV) {
+        Ok(value) => match value.trim().parse::<u64>() {
+            Ok(scale) if scale > 1 => scale,
+            Ok(_) | Err(_) => {
+                eprintln!(
+                    "warning: ignoring invalid {TIMEOUT_SCALE_ENV} value `{}`; expected integer > \
+                     1",
+                    value.trim()
+                );
+                return;
+            }
+        },
+        Err(_) => return,
+    };
+
+    qemu.timeout = timeout.checked_mul(scale).or(Some(u64::MAX));
+}
+
+pub(crate) fn qemu_timeout_summary(qemu: &QemuConfig) -> String {
+    match qemu.timeout {
+        Some(0) | None => "disabled".to_string(),
+        Some(timeout) => format!("{timeout}s"),
+    }
 }
 
 pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {
