@@ -272,6 +272,10 @@ impl FsContext {
     /// Creates a new, empty directory at the provided path.
     pub fn create_dir(&self, path: impl AsRef<Path>, mode: NodePermission) -> VfsResult<Location> {
         let path = path.as_ref();
+        // Empty path should return NotFound, not InvalidInput
+        if path.as_str().is_empty() {
+            return Err(VfsError::NotFound);
+        }
         let (dir, name) = match self.resolve_nonexistent(path) {
             Ok(pair) => pair,
             Err(VfsError::InvalidInput) => {
