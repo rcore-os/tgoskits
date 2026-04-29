@@ -1,1 +1,1 @@
-sleep 5; /usr/bin/uvc-fps --device 0 --format mjpeg --interval-sec 1 --max-frames 60
+rm -rf /root/uvc-frames && mkdir -p /root/uvc-frames && sleep 5 && /usr/bin/uvc-fps --device 0 --format mjpeg --interval-sec 1 --max-frames 4 --save-dir /root/uvc-frames --save-every 1 --max-saved 4 && sync && ls -l /root/uvc-frames

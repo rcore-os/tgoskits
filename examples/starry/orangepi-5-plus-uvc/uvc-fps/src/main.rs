@@ -1,9 +1,11 @@
 use std::{
     env,
     ffi::{CStr, c_void},
+    fs,
     mem::MaybeUninit,
     os::raw::{c_char, c_int, c_long},
-    ptr,
+    path::PathBuf,
+    ptr, slice,
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
@@ -155,6 +157,7 @@ struct Options {
     fps: c_int,
     interval: Duration,
     max_frames: Option<u64>,
+    save: SaveOptions,
 }
 
 impl Default for Options {
@@ -167,14 +170,31 @@ impl Default for Options {
             fps: 30,
             interval: Duration::from_secs(1),
             max_frames: None,
+            save: SaveOptions::default(),
         }
     }
+}
+
+#[derive(Default)]
+struct SaveOptions {
+    dir: Option<PathBuf>,
+    every: u64,
+    max_saved: Option<u64>,
+}
+
+struct SaveConfig {
+    dir: PathBuf,
+    every: u64,
+    max_saved: Option<u64>,
 }
 
 #[derive(Default)]
 struct FrameCounters {
     frames: AtomicU64,
     bytes: AtomicU64,
+    saved: AtomicU64,
+    save_errors: AtomicU64,
+    save: Option<SaveConfig>,
 }
 
 fn main() {
@@ -195,6 +215,19 @@ fn run() -> Result<(), String> {
         options.fps,
         options.interval.as_secs()
     );
+    if let Some(save_dir) = &options.save.dir {
+        fs::create_dir_all(save_dir)
+            .map_err(|err| format!("failed to create save dir `{}`: {err}", save_dir.display()))?;
+        println!(
+            "uvc-fps: saving frames dir={} every={} max_saved={}",
+            save_dir.display(),
+            options.save.every.max(1),
+            options
+                .save
+                .max_saved
+                .map_or_else(|| "unlimited".to_string(), |value| value.to_string())
+        );
+    }
 
     let mut ctx = ptr::null_mut();
     check_uvc(unsafe { uvc_init(&mut ctx, ptr::null_mut()) }, "uvc_init")?;
@@ -219,7 +252,14 @@ fn run() -> Result<(), String> {
     )?;
     let mut ctrl = unsafe { ctrl.assume_init() };
 
-    let counters = FrameCounters::default();
+    let counters = FrameCounters {
+        save: options.save.dir.as_ref().map(|dir| SaveConfig {
+            dir: dir.clone(),
+            every: options.save.every.max(1),
+            max_saved: options.save.max_saved,
+        }),
+        ..FrameCounters::default()
+    };
     check_uvc(
         unsafe {
             uvc_start_streaming(
@@ -278,10 +318,71 @@ extern "C" fn frame_callback(frame: *mut UvcFrame, user_ptr: *mut c_void) {
 
     let counters = unsafe { &*(user_ptr as *const FrameCounters) };
     let frame = unsafe { &*frame };
-    counters.frames.fetch_add(1, Ordering::Relaxed);
+    let frame_id = counters.frames.fetch_add(1, Ordering::Relaxed) + 1;
     counters
         .bytes
         .fetch_add(frame.data_bytes as u64, Ordering::Relaxed);
+
+    if let Some(save) = &counters.save {
+        save_frame(counters, save, frame, frame_id);
+    }
+}
+
+fn save_frame(counters: &FrameCounters, save: &SaveConfig, frame: &UvcFrame, frame_id: u64) {
+    if !frame_id.is_multiple_of(save.every) {
+        return;
+    }
+    if save
+        .max_saved
+        .is_some_and(|max_saved| counters.saved.load(Ordering::Relaxed) >= max_saved)
+    {
+        return;
+    }
+    if frame.data.is_null() || frame.data_bytes == 0 {
+        return;
+    }
+
+    let Some(saved_id) = reserve_saved_id(counters, save.max_saved) else {
+        return;
+    };
+
+    let extension = match frame.frame_format {
+        UVC_FRAME_FORMAT_MJPEG => "jpg",
+        _ => "raw",
+    };
+    let path = save.dir.join(format!("frame-{saved_id:06}.{extension}"));
+    let bytes = unsafe { slice::from_raw_parts(frame.data.cast::<u8>(), frame.data_bytes) };
+
+    match fs::write(&path, bytes) {
+        Ok(()) => {
+            println!(
+                "uvc-fps: saved id={} path={} bytes={}",
+                saved_id,
+                path.display(),
+                frame.data_bytes
+            );
+        }
+        Err(err) => {
+            let error_count = counters.save_errors.fetch_add(1, Ordering::Relaxed) + 1;
+            if error_count <= 5 {
+                eprintln!("uvc-fps: save error: {}: {err}", path.display());
+            }
+        }
+    }
+}
+
+fn reserve_saved_id(counters: &FrameCounters, max_saved: Option<u64>) -> Option<u64> {
+    if let Some(max_saved) = max_saved {
+        counters
+            .saved
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                (current < max_saved).then_some(current + 1)
+            })
+            .ok()
+            .map(|previous| previous + 1)
+    } else {
+        Some(counters.saved.fetch_add(1, Ordering::Relaxed) + 1)
+    }
 }
 
 fn report_loop(options: &Options, counters: &FrameCounters) {
@@ -296,6 +397,8 @@ fn report_loop(options: &Options, counters: &FrameCounters) {
         let now = Instant::now();
         let frames = counters.frames.load(Ordering::Relaxed);
         let bytes = counters.bytes.load(Ordering::Relaxed);
+        let saved = counters.saved.load(Ordering::Relaxed);
+        let save_errors = counters.save_errors.load(Ordering::Relaxed);
         let elapsed = now.duration_since(started).as_secs_f64();
         let interval = now.duration_since(last).as_secs_f64();
         let frame_delta = frames.saturating_sub(last_frames);
@@ -304,8 +407,9 @@ fn report_loop(options: &Options, counters: &FrameCounters) {
         let throughput_mib_s = byte_delta as f64 / interval.max(f64::EPSILON) / 1024.0 / 1024.0;
 
         println!(
-            "uvc-fps: frames={} fps={:.2} bytes={} throughput_mib_s={:.2} elapsed_sec={:.1}",
-            frames, fps, bytes, throughput_mib_s, elapsed
+            "uvc-fps: frames={} fps={:.2} bytes={} saved={} save_errors={} throughput_mib_s={:.2} \
+             elapsed_sec={:.1}",
+            frames, fps, bytes, saved, save_errors, throughput_mib_s, elapsed
         );
 
         if options
@@ -370,8 +474,24 @@ fn parse_args() -> Result<Options, String> {
                 }
                 options.max_frames = Some(max_frames);
             }
+            "--save-dir" => {
+                options.save.dir = Some(PathBuf::from(parse_value(name, inline_value, &mut args)?));
+            }
+            "--save-every" => {
+                options.save.every = parse_positive_u64(name, inline_value, &mut args)?;
+            }
+            "--max-saved" => {
+                options.save.max_saved = Some(parse_positive_u64(name, inline_value, &mut args)?);
+            }
             _ => return Err(format!("unknown argument `{arg}`")),
         }
+    }
+
+    if options.save.every == 0 {
+        options.save.every = 1;
+    }
+    if options.save.max_saved.is_some() && options.save.dir.is_none() {
+        return Err("--max-saved requires --save-dir".to_string());
     }
 
     Ok(options)
@@ -417,6 +537,23 @@ where
     Ok(value)
 }
 
+fn parse_positive_u64<I>(
+    name: &str,
+    inline_value: Option<String>,
+    args: &mut std::iter::Peekable<I>,
+) -> Result<u64, String>
+where
+    I: Iterator<Item = String>,
+{
+    let value = parse_value(name, inline_value, args)?
+        .parse::<u64>()
+        .map_err(|err| format!("invalid value for {name}: {err}"))?;
+    if value == 0 {
+        return Err(format!("{name} must be greater than zero"));
+    }
+    Ok(value)
+}
+
 fn print_help() {
     println!(
         "uvc-fps\n\nUSAGE:\n  uvc-fps [OPTIONS]\n\nOPTIONS:\n  --device <INDEX>        Zero-based \
@@ -424,7 +561,10 @@ fn print_help() {
          mjpeg]\n  --width <PIXELS>        Frame width [default: 640]\n  --height <PIXELS>       \
          Frame height [default: 480]\n  --fps <FPS>             Requested frame rate [default: \
          30]\n  --interval-sec <SECS>   Reporting interval [default: 1]\n  --max-frames <N>        \
-         Stop after at least N frames\n  -h, --help              Print help"
+         Stop after at least N frames\n  --save-dir <DIR>        Save frames to DIR with \
+         incrementing file names\n  --save-every <N>        Save every Nth frame when --save-dir \
+         is set [default: 1]\n  --max-saved <N>        Stop saving after N saved frames\n  -h, \
+         --help              Print help"
     );
 }
 
