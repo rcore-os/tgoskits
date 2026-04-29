@@ -31,6 +31,8 @@ virtio-socket = ["vsock", "virtio", "ax-driver-virtio/socket"]
 ramdisk = ["block", "ax-driver-block/ramdisk"]
 bcm2835-sdhci = ["block", "ax-driver-block/bcm2835-sdhci"]
 sdmmc = ["block", "ax-driver-block/sdmmc", "dep:ax-hal", "dep:ax-config"]
+cvsd = ["block", "mbr", "ax-driver-block/cvsd", "dep:ax-hal", "dep:ax-config"]
+mbr = ["dep:gpt_disk_io"]
 ahci = ["block", "ax-driver-block/ahci", "dep:ax-hal", "dep:ax-config"]
 ixgbe = ["net", "ax-driver-net/ixgbe", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]
 fxmac = ["net", "ax-driver-net/fxmac", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]
@@ -60,3 +62,4 @@ ax-crate-interface.workspace = true
 log.workspace = true
 smallvec = { version = "1.15", features = ["const_generics", "union"] }
 axplat-dyn = { workspace = true, optional = true }
+gpt_disk_io = { version = "0.16.2", default-features = false, optional = true }

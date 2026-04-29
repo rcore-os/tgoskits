@@ -29,7 +29,7 @@ qemu = [
 ]
 smp = ["ax-feat/smp", "axplat-dyn?/smp"]
 
-sg2002 = ["dep:ax-plat-riscv64-sg2002"]
+sg2002 = ["dep:ax-plat-riscv64-sg2002", "ax-feat/driver-cvsd"]
 
 rknpu = ["dep:axplat-dyn", "starry-kernel/rknpu", "axplat-dyn/rknpu"]
 

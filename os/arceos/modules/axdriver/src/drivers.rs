@@ -96,6 +96,29 @@ cfg_if::cfg_if! {
 }
 
 cfg_if::cfg_if! {
+    if #[cfg(block_dev = "cvsd")] {
+        use ax_hal::mem::phys_to_virt;
+        use ax_driver_block::cvsd::CvsdDriver;
+        use super::mbr::MbrPartitionDev;
+
+        pub struct CvsdMmc;
+        register_block_driver!(CvsdMmc, MbrPartitionDev<CvsdDriver>);
+
+        impl DriverProbe for CvsdMmc {
+            fn probe_global() -> Option<AxDeviceEnum> {
+                info!("Probe CV SD Bootable Part @ {:#x}", ax_config::devices::CVSD_PADDR);
+
+                let sdmmc = CvsdDriver::new(
+                    phys_to_virt(ax_config::devices::CVSD_PADDR.into()).into(),
+                    phys_to_virt(ax_config::devices::SYSCON_PADDR.into()).into(),
+                    ).expect("CVSD init failed");
+                MbrPartitionDev::new(sdmmc).ok().map(AxDeviceEnum::from_block)
+            }
+        }
+    }
+}
+
+cfg_if::cfg_if! {
     if #[cfg(block_dev = "bcm2835-sdhci")]{
         pub struct BcmSdhciDriver;
         register_block_driver!(BcmSdhciDriver, ax_driver_block::bcm2835sdhci::SDHCIDriver);

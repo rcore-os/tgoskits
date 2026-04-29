@@ -1,5 +1,5 @@
 env = { UIMAGE = "y" }
-features = ["sg2002", "myplat", "ax-feat/bus-mmio"]
+features = ["sg2002", "myplat", "ax-feat/bus-mmio", "ax-feat/driver-cvsd"]
 log = "Info"
 plat_dyn = false
 target = "riscv64gc-unknown-none-elf"

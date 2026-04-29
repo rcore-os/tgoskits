@@ -102,6 +102,7 @@ bus-mmio = ["ax-driver?/bus-mmio"]
 bus-pci = ["ax-driver?/bus-pci"]
 driver-ramdisk = ["ax-driver?/ramdisk", "ax-fs?/use-ramdisk"]
 driver-sdmmc = ["ax-driver?/sdmmc"]
+driver-cvsd = ["ax-driver?/cvsd"]
 driver-ixgbe = ["ax-driver?/ixgbe"]
 driver-fxmac = ["ax-driver?/fxmac"]                          # fxmac ethernet driver for PhytiumPi
 driver-bcm2835-sdhci = ["ax-driver?/bcm2835-sdhci"]

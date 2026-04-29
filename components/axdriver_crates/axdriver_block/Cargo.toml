@@ -14,6 +14,7 @@ license = "Apache-2.0"
 ramdisk = []
 ramdisk-static = []
 sdmmc = ["dep:simple-sdmmc"]
+cvsd = ["dep:sg200x-bsp"]
 ahci = ["dep:simple-ahci"]
 bcm2835-sdhci = ["dep:bcm2835-sdhci"]
 
@@ -24,3 +25,4 @@ log = { workspace = true }
 simple-sdmmc = { workspace = true, optional = true }
 simple-ahci = { version = "0.1.1-preview.1", optional = true }
 bcm2835-sdhci = { version = "0.1.1-preview.1", optional = true }
+sg200x-bsp = { version = "0.4.0", optional = true }

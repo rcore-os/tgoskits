@@ -81,6 +81,9 @@ mod ixgbe;
 #[cfg(feature = "dyn")]
 mod dyn_drivers;
 
+#[cfg(feature = "mbr")]
+mod mbr;
+
 pub mod prelude;
 
 #[cfg(feature = "block")]
