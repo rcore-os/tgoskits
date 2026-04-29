@@ -9,14 +9,16 @@ mod tree;
 use alloc::{borrow::ToOwned, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     any::Any,
+    future::poll_fn,
     mem::size_of,
     sync::atomic::{AtomicUsize, Ordering},
-    task::Context,
+    task::{Context, Poll},
 };
 
 use ax_errno::{AxError, AxResult, LinuxError, LinuxResult};
 use axfs_ng_vfs::Filesystem;
 use axpoll::{IoEvents, PollSet, Pollable};
+use crab_usb::usb_if::queue::{TransferCompletion, TransferRequest};
 use spin::Mutex;
 use starry_vm::VmMutPtr;
 
@@ -91,6 +93,7 @@ pub(crate) fn open_usbfs_file(
         snapshot,
         lease: Mutex::new(None),
         claimed_interfaces: Mutex::new(Default::default()),
+        submitted_urbs: Arc::new(Mutex::new(VecDeque::new())),
         pending_urbs: Arc::new(Mutex::new(VecDeque::new())),
         poll_urbs: Arc::new(PollSet::new()),
     }))
@@ -106,8 +109,19 @@ struct UsbDeviceFile {
     snapshot: descriptor::UsbDeviceSnapshot,
     lease: Mutex<Option<manager::UsbDeviceLease>>,
     claimed_interfaces: Mutex<alloc::collections::BTreeMap<u8, u8>>,
+    submitted_urbs: Arc<Mutex<VecDeque<SubmittedUrb>>>,
     pending_urbs: Arc<Mutex<VecDeque<CompletedUrb>>>,
     poll_urbs: Arc<PollSet>,
+}
+
+struct SubmittedUrb {
+    user_urb_ptr: usize,
+    transfer: manager::SubmittedTransfer,
+    buffer: Vec<u8>,
+    is_in: bool,
+    data_offset: usize,
+    packet_lengths: Vec<usize>,
+    log: bool,
 }
 
 struct CompletedUrb {
@@ -118,8 +132,10 @@ struct CompletedUrb {
 
 struct UrbTransferResult {
     data: Vec<u8>,
+    data_offset: usize,
     actual_length: usize,
     packet_lengths: Vec<usize>,
+    packet_actual_lengths: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,7 +238,9 @@ impl UsbDeviceFile {
                     EndpointTransferType::Bulk => lease.bulk_in(endpoint, &mut buffer)?,
                     EndpointTransferType::Interrupt => lease.interrupt_in(endpoint, &mut buffer)?,
                     EndpointTransferType::Isochronous => {
-                        lease.iso_in(endpoint, &mut buffer, iso_packet_lengths)?
+                        lease
+                            .iso_in(endpoint, &mut buffer, iso_packet_lengths)?
+                            .actual_length
                     }
                 };
                 if actual > len {
@@ -282,8 +300,22 @@ impl UsbDeviceFile {
         urb_ptr: usize,
         packet_lengths: &[usize],
         actual_total: usize,
+        packet_actual_lengths: &[usize],
     ) -> AxResult<()> {
         let packet_descs = usbdevfs_iso_packet_descs_mut(urb_ptr, packet_lengths.len())?;
+        if !packet_actual_lengths.is_empty() {
+            if packet_actual_lengths.len() != packet_lengths.len() {
+                return Err(AxError::InvalidData);
+            }
+            for (packet_desc, packet_actual) in
+                packet_descs.iter_mut().zip(packet_actual_lengths.iter())
+            {
+                packet_desc.actual_length = (*packet_actual).min(u32::MAX as usize) as u32;
+                packet_desc.status = 0;
+            }
+            return Ok(());
+        }
+
         let mut remaining = actual_total;
         for (packet_desc, packet_length) in packet_descs.iter_mut().zip(packet_lengths.iter()) {
             let packet_actual = remaining.min(*packet_length);
@@ -302,7 +334,11 @@ impl UsbDeviceFile {
             Ok(result) => {
                 if !result.data.is_empty() {
                     let copy_len = result.data.len().min(urb.buffer_length.max(0) as usize);
-                    crate::mm::UserPtr::<u8>::from(urb.buffer)
+                    let buffer_ptr = (urb.buffer as usize)
+                        .checked_add(result.data_offset)
+                        .ok_or(AxError::InvalidInput)?
+                        as *mut u8;
+                    crate::mm::UserPtr::<u8>::from(buffer_ptr)
                         .get_as_mut_slice(copy_len)?
                         .copy_from_slice(&result.data[..copy_len]);
                 }
@@ -311,6 +347,7 @@ impl UsbDeviceFile {
                         completed.user_urb_ptr,
                         &result.packet_lengths,
                         result.actual_length,
+                        &result.packet_actual_lengths,
                     )?;
                 }
                 urb.status = 0;
@@ -339,6 +376,107 @@ impl UsbDeviceFile {
             }
         }
         Ok(())
+    }
+
+    fn transfer_completion_to_result(
+        mut submitted: SubmittedUrb,
+        completion: TransferCompletion,
+    ) -> UrbTransferResult {
+        let data = if submitted.is_in {
+            let actual = if submitted.packet_lengths.is_empty() {
+                completion.actual_length
+            } else {
+                iso_copy_len(&submitted.packet_lengths, &completion.iso_packets)
+            }
+            .min(submitted.buffer.len());
+            submitted.buffer.truncate(actual);
+            submitted.buffer
+        } else {
+            Vec::new()
+        };
+
+        UrbTransferResult {
+            data,
+            data_offset: submitted.data_offset,
+            actual_length: completion.actual_length,
+            packet_lengths: submitted.packet_lengths,
+            packet_actual_lengths: completion
+                .iso_packets
+                .iter()
+                .map(|packet| packet.actual_length)
+                .collect(),
+        }
+    }
+
+    fn complete_submitted_urb(
+        &self,
+        submitted: SubmittedUrb,
+        result: AxResult<TransferCompletion>,
+    ) {
+        if submitted.log {
+            match &result {
+                Ok(completion) => info!(
+                    "usbfs: complete urb ptr={:#x} actual={} packets={}",
+                    submitted.user_urb_ptr,
+                    completion.actual_length,
+                    completion.iso_packets.len()
+                ),
+                Err(err) => warn!(
+                    "usbfs: complete urb ptr={:#x} err={:?}",
+                    submitted.user_urb_ptr, err
+                ),
+            }
+        }
+
+        let user_urb_ptr = submitted.user_urb_ptr;
+        let log = submitted.log;
+        let result =
+            result.map(|completion| Self::transfer_completion_to_result(submitted, completion));
+        complete_urb(
+            &self.pending_urbs,
+            &self.poll_urbs,
+            CompletedUrb {
+                user_urb_ptr,
+                result,
+                log,
+            },
+        );
+    }
+
+    fn collect_submitted_urbs(&self, mut cx: Option<&mut Context<'_>>) -> bool {
+        let mut ready = Vec::new();
+        {
+            let mut submitted_urbs = self.submitted_urbs.lock();
+            let mut index = 0;
+            while index < submitted_urbs.len() {
+                let result = match cx.as_mut() {
+                    Some(cx) => match submitted_urbs[index].transfer.poll_reclaim(cx) {
+                        Poll::Ready(result) => Some(result),
+                        Poll::Pending => None,
+                    },
+                    None => match submitted_urbs[index].transfer.try_reclaim() {
+                        Ok(Some(completion)) => Some(Ok(completion)),
+                        Ok(None) => None,
+                        Err(err) => Some(Err(err)),
+                    },
+                };
+
+                if let Some(result) = result {
+                    let submitted = submitted_urbs
+                        .remove(index)
+                        .expect("pending submitted URB disappeared");
+                    ready.push((submitted, result));
+                } else {
+                    index += 1;
+                }
+            }
+        }
+
+        let found_ready = !ready.is_empty();
+        for (submitted, result) in ready {
+            self.complete_submitted_urb(submitted, result);
+        }
+        found_ready
     }
 
     fn submit_endpoint_urb_async(
@@ -376,11 +514,6 @@ impl UsbDeviceFile {
                 .to_vec()
         };
 
-        let pending_urbs = self.pending_urbs.clone();
-        let poll_urbs = self.poll_urbs.clone();
-        let manager = self.manager.clone();
-        let bus_num = self.bus_num;
-        let device_num = self.device_num;
         let log = usbfs_should_log_urb();
 
         if log {
@@ -395,69 +528,30 @@ impl UsbDeviceFile {
             );
         }
 
-        ax_task::spawn_with_name(
-            move || {
-                if log {
-                    info!(
-                        "usbfs: start urb ptr={:#x} type={:?} ep={:#04x}",
-                        arg, transfer_type, endpoint
-                    );
-                }
+        let request = match (transfer_type, is_in) {
+            (EndpointTransferType::Bulk, true) => TransferRequest::bulk_in(&mut buffer),
+            (EndpointTransferType::Bulk, false) => TransferRequest::bulk_out(&buffer),
+            (EndpointTransferType::Interrupt, true) => TransferRequest::interrupt_in(&mut buffer),
+            (EndpointTransferType::Interrupt, false) => TransferRequest::interrupt_out(&buffer),
+            (EndpointTransferType::Isochronous, true) => {
+                TransferRequest::iso_in(&mut buffer, &packet_lengths)
+            }
+            (EndpointTransferType::Isochronous, false) => {
+                TransferRequest::iso_out(&buffer, &packet_lengths)
+            }
+        };
 
-                let result = manager
-                    .acquire_device(bus_num, device_num)
-                    .and_then(|lease| {
-                        let actual = match (transfer_type, is_in) {
-                            (EndpointTransferType::Bulk, true) => {
-                                lease.bulk_in(endpoint, &mut buffer)
-                            }
-                            (EndpointTransferType::Bulk, false) => {
-                                lease.bulk_out(endpoint, &buffer)
-                            }
-                            (EndpointTransferType::Interrupt, true) => {
-                                lease.interrupt_in(endpoint, &mut buffer)
-                            }
-                            (EndpointTransferType::Interrupt, false) => {
-                                lease.interrupt_out(endpoint, &buffer)
-                            }
-                            (EndpointTransferType::Isochronous, true) => {
-                                lease.iso_in(endpoint, &mut buffer, &packet_lengths)
-                            }
-                            (EndpointTransferType::Isochronous, false) => {
-                                lease.iso_out(endpoint, &buffer, &packet_lengths)
-                            }
-                        }?;
-                        Ok(UrbTransferResult {
-                            data: if is_in { buffer } else { Vec::new() },
-                            actual_length: actual,
-                            packet_lengths,
-                        })
-                    });
-
-                if log {
-                    match &result {
-                        Ok(result) => info!(
-                            "usbfs: complete urb ptr={:#x} actual={} packets={}",
-                            arg,
-                            result.actual_length,
-                            result.packet_lengths.len()
-                        ),
-                        Err(err) => warn!("usbfs: complete urb ptr={:#x} err={:?}", arg, err),
-                    }
-                }
-
-                complete_urb(
-                    &pending_urbs,
-                    &poll_urbs,
-                    CompletedUrb {
-                        user_urb_ptr: arg,
-                        result,
-                        log,
-                    },
-                );
-            },
-            "usbfs-urb".to_owned(),
-        );
+        let transfer =
+            self.with_live_lease(|lease| lease.submit_endpoint_transfer(endpoint, request))?;
+        self.submitted_urbs.lock().push_back(SubmittedUrb {
+            user_urb_ptr: arg,
+            transfer,
+            buffer,
+            is_in,
+            data_offset: 0,
+            packet_lengths,
+            log,
+        });
 
         Ok(0)
     }
@@ -491,36 +585,28 @@ impl UsbDeviceFile {
             );
         }
 
-        let actual = self.with_live_lease(|lease| {
-            lease.control_transfer(
-                b_request_type,
-                b_request,
-                w_value,
-                w_index,
-                &mut transfer[8..8 + w_length],
-            )
-        })?;
-        if log {
-            info!(
-                "usbfs: complete control urb ptr={:#x} actual={}",
-                arg, actual
-            );
-        }
-        urb.status = 0;
-        urb.actual_length = actual as i32;
-        complete_urb(
-            &self.pending_urbs,
-            &self.poll_urbs,
-            CompletedUrb {
-                user_urb_ptr: arg,
-                result: Ok(UrbTransferResult {
-                    data: Vec::new(),
-                    actual_length: actual,
-                    packet_lengths: Vec::new(),
-                }),
-                log,
-            },
-        );
+        let is_in = b_request_type & 0x80 != 0;
+        let setup = manager::control_setup_from_raw(b_request_type, b_request, w_value, w_index);
+        let mut buffer = if is_in {
+            alloc::vec![0; w_length]
+        } else {
+            transfer[8..8 + w_length].to_vec()
+        };
+        let request = match is_in {
+            true => TransferRequest::control_in(setup, &mut buffer),
+            false => TransferRequest::control_out(setup, &buffer),
+        };
+
+        let transfer = self.with_live_lease(|lease| lease.submit_control_transfer(request))?;
+        self.submitted_urbs.lock().push_back(SubmittedUrb {
+            user_urb_ptr: arg,
+            transfer,
+            buffer,
+            is_in,
+            data_offset: 8,
+            packet_lengths: Vec::new(),
+            log,
+        });
         Ok(0)
     }
 
@@ -618,13 +704,36 @@ impl UsbDeviceFile {
         }
     }
 
-    fn reap_urb(&self, arg: usize) -> AxResult<usize> {
+    fn reap_urb(&self, arg: usize, nonblocking: bool) -> AxResult<usize> {
+        self.collect_submitted_urbs(None);
+        if !nonblocking && self.pending_urbs.lock().is_empty() {
+            ax_task::future::block_on(poll_fn(|cx| {
+                if self.collect_submitted_urbs(Some(cx)) || !self.pending_urbs.lock().is_empty() {
+                    Poll::Ready(())
+                } else {
+                    self.poll_urbs.register(cx.waker());
+                    Poll::Pending
+                }
+            }));
+        }
         let Some(completed) = self.pending_urbs.lock().pop_front() else {
             return Err(ax_errno::AxError::WouldBlock);
         };
         let user_urb_ptr = completed.user_urb_ptr;
         self.write_completed_urb(completed)?;
         (arg as *mut usize).vm_write(user_urb_ptr)?;
+        Ok(0)
+    }
+
+    fn discard_urb(&self, arg: usize) -> AxResult<usize> {
+        let submitted_urbs = self.submitted_urbs.lock();
+        let Some(submitted) = submitted_urbs
+            .iter()
+            .find(|submitted| submitted.user_urb_ptr == arg)
+        else {
+            return Err(AxError::NotFound);
+        };
+        submitted.transfer.cancel()?;
         Ok(0)
     }
 }
@@ -707,10 +816,11 @@ impl FileLike for UsbDeviceFile {
             descriptor::USBDEVFS_IOCTL => self.kernel_driver_ioctl(arg),
             descriptor::USBDEVFS_DISCONNECT | descriptor::USBDEVFS_CONNECT => Ok(0),
             descriptor::USBDEVFS_DISCONNECT_CLAIM => self.disconnect_claim_ioctl(arg),
-            descriptor::USBDEVFS_DISCARDURB => Ok(0),
+            descriptor::USBDEVFS_DISCARDURB => self.discard_urb(arg),
             descriptor::USBDEVFS_BULK => self.bulk_ioctl(arg),
             descriptor::USBDEVFS_SUBMITURB => self.submit_urb(arg),
-            descriptor::USBDEVFS_REAPURB | descriptor::USBDEVFS_REAPURBNDELAY => self.reap_urb(arg),
+            descriptor::USBDEVFS_REAPURB => self.reap_urb(arg, false),
+            descriptor::USBDEVFS_REAPURBNDELAY => self.reap_urb(arg, true),
             descriptor::USBDEVFS_CONNECTINFO | descriptor::USBDEVFS_GET_CAPABILITIES => self
                 .manager
                 .snapshot_device_ioctl(self.bus_num, self.device_num, cmd, arg),
@@ -734,6 +844,7 @@ impl FileLike for UsbDeviceFile {
 impl Pollable for UsbDeviceFile {
     fn poll(&self) -> IoEvents {
         let mut events = IoEvents::OUT;
+        self.collect_submitted_urbs(None);
         if !self.pending_urbs.lock().is_empty() {
             events |= IoEvents::IN;
         }
@@ -742,6 +853,9 @@ impl Pollable for UsbDeviceFile {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
+            if self.collect_submitted_urbs(Some(context)) {
+                context.waker().wake_by_ref();
+            }
             self.poll_urbs.register(context.waker());
         }
     }
@@ -879,6 +993,26 @@ fn snapshot_claimed_endpoint(
     }
 
     None
+}
+
+fn iso_copy_len(
+    packet_lengths: &[usize],
+    packet_results: &[crab_usb::usb_if::queue::IsoPacketResult],
+) -> usize {
+    if packet_results.len() != packet_lengths.len() {
+        return packet_lengths.iter().sum();
+    }
+
+    let mut offset = 0usize;
+    let mut copy_len = 0usize;
+    for (requested, packet) in packet_lengths.iter().copied().zip(packet_results.iter()) {
+        let actual = packet.actual_length.min(requested);
+        if actual > 0 {
+            copy_len = copy_len.max(offset.saturating_add(actual));
+        }
+        offset = offset.saturating_add(requested);
+    }
+    copy_len
 }
 
 fn usbdevfs_iso_packet_descs_mut(

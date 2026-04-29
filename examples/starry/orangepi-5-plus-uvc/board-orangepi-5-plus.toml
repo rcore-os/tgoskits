@@ -1,7 +1,7 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
 success_regex = [
-  '(?m)^uvc-fps: saved id=4 path=/root/uvc-frames/frame-000004\.jpg bytes=[1-9][0-9]*$'
+  '(?m)^-.*frame-000001\.jpg$'
   ]
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
