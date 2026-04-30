@@ -322,5 +322,32 @@ int main(void)
         }
     }
 
+    /* 21. 从 VMA 中间移动一个页 */
+    {
+        void *p = mmap(NULL, 3 * PAGE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(p != MAP_FAILED, "mmap for mid-VMA move");
+        if (p != MAP_FAILED) {
+            unsigned char *b = (unsigned char *)p;
+            memset(b, 0x11, PAGE);
+            memset(b + PAGE, 0x22, PAGE);
+            memset(b + 2 * PAGE, 0x33, PAGE);
+
+            void *r = mremap(b + PAGE, PAGE, 2 * PAGE, MREMAP_MAYMOVE);
+            CHECK(r != MAP_FAILED, "mid-VMA page can move and grow");
+            if (r != MAP_FAILED) {
+                CHECK(((unsigned char *)r)[0] == 0x22, "mid-VMA data moved");
+                CHECK(((unsigned char *)r)[PAGE] == 0, "mid-VMA grown page zeroed");
+                CHECK(b[0] == 0x11, "left fragment remains mapped");
+                CHECK(b[2 * PAGE] == 0x33, "right fragment remains mapped");
+                munmap(r, 2 * PAGE);
+                munmap(p, PAGE);
+                munmap(b + 2 * PAGE, PAGE);
+            } else {
+                munmap(p, 3 * PAGE);
+            }
+        }
+    }
+
     TEST_DONE();
 }

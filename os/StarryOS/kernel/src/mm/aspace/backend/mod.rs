@@ -176,7 +176,11 @@ impl Backend {
         src_offset: usize,
         aspace: &Arc<Mutex<AddrSpace>>,
     ) -> AxResult<Self> {
-        let adjusted = new_start - src_offset;
+        let adjusted = new_start
+            .as_usize()
+            .checked_sub(src_offset)
+            .map(VirtAddr::from)
+            .ok_or(AxError::InvalidInput)?;
         Ok(match self {
             Self::Cow(cb) => Self::Cow(cb.with_start(adjusted)),
             Self::Shared(sb) => Self::Shared(sb.with_start(adjusted)),

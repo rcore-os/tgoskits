@@ -455,18 +455,14 @@ pub fn sys_mremap(
             area.backend().page_size(),
         )
     };
-    if addr != vma_start {
-        return Err(AxError::InvalidInput);
-    }
     if !page_size.is_aligned(addr.as_usize()) {
         return Err(AxError::InvalidInput);
     }
     let old_size = old_size.align_up(page_size);
     let new_size = new_size.align_up(page_size);
+    let src_offset = addr - vma_start;
 
-    let dontunmap_allowed = matches!(&src_backend, Backend::Cow(cow) if cow.is_anonymous())
-        || matches!(src_backend, Backend::Shared(_));
-    if dontunmap && !dontunmap_allowed {
+    if dontunmap && !matches!(&src_backend, Backend::Cow(cow) if cow.is_anonymous()) {
         return Err(AxError::InvalidInput);
     }
 
@@ -477,7 +473,9 @@ pub fn sys_mremap(
         }
         let pages = shared_pages.unwrap();
         let shared_size = pages.len() * pages.size as usize;
-        let dup_size = new_size.min(shared_size);
+        if src_offset + new_size > shared_size {
+            return Err(AxError::InvalidInput);
+        }
 
         let target = if fixed {
             if !page_size.is_aligned(new_addr) {
@@ -486,21 +484,26 @@ pub fn sys_mremap(
             aspace.unmap(VirtAddr::from(new_addr), new_size)?;
             VirtAddr::from(new_addr)
         } else {
-            find_free(&aspace, addr, dup_size, page_size as usize)?
+            find_free(&aspace, addr, new_size, page_size as usize)?
         };
-        let backend = Backend::new_shared(target, pages);
-        aspace.map(target, dup_size, vma_flags, false, backend)?;
+        let backend_start = target
+            .as_usize()
+            .checked_sub(src_offset)
+            .map(VirtAddr::from)
+            .ok_or(AxError::InvalidInput)?;
+        let backend = Backend::new_shared(backend_start, pages);
+        aspace.map(target, new_size, vma_flags, false, backend)?;
         return Ok(target.as_usize() as isize);
     }
 
-    if addr + old_size > vma_end {
-        // Multi-VMA: only allowed for FIXED + same-size (Linux 6.17+).
-        if !fixed || old_size != new_size {
-            return Err(AxError::BadAddress);
-        }
+    let old_end = addr
+        .as_usize()
+        .checked_add(old_size)
+        .map(VirtAddr::from)
+        .ok_or(AxError::InvalidInput)?;
+    if old_end > vma_end {
+        return Err(AxError::BadAddress);
     }
-
-    let src_offset = addr - vma_start;
 
     if fixed {
         if !page_size.is_aligned(new_addr) {
@@ -508,33 +511,6 @@ pub fn sys_mremap(
         }
         let target = VirtAddr::from(new_addr);
         aspace.unmap(target, new_size)?;
-
-        if old_size == new_size && addr + old_size > vma_end {
-            // Multi-VMA move: collect all fragments in [addr, addr+old_size).
-            let fragments = aspace.areas_in_range(addr, old_size);
-            if fragments.is_empty() {
-                return Err(AxError::BadAddress);
-            }
-            for (frag_start, frag_size, frag_flags, frag_backend) in &fragments {
-                let offset_in_range = *frag_start - addr;
-                let frag_target = target + offset_in_range;
-                let frag_vma_start = aspace
-                    .find_area(*frag_start)
-                    .expect("fragment must belong to a VMA")
-                    .start();
-                let frag_src_offset = *frag_start - frag_vma_start;
-
-                let backend = frag_backend.relocated(frag_target, frag_src_offset, aspace_ref)?;
-                aspace.map(frag_target, *frag_size, *frag_flags, false, backend)?;
-                aspace.move_pages(*frag_start, frag_target, *frag_size)?;
-            }
-            aspace.unmap(addr, old_size)?;
-            if dontunmap {
-                let empty = Backend::new_alloc(addr, page_size, "");
-                aspace.map(addr, old_size, vma_flags, false, empty)?;
-            }
-            return Ok(target.as_usize() as isize);
-        }
 
         mremap_move(
             &mut aspace,
