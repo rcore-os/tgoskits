@@ -595,15 +595,16 @@ impl ArceOS {
         for (index, package) in packages.iter().enumerate() {
             println!("[{}/{}] arceos qemu {}", index + 1, packages.len(), package);
             ensure_package_runtime_assets(package)?;
-            let qemu_config = Some(Self::resolve_test_qemu_config(package, target)?);
-            let request = self.prepare_request(
+            let mut request = self.prepare_request(
                 Self::test_build_args(package, target),
-                qemu_config,
+                None,
                 None,
                 SnapshotPersistence::Discard,
             )?;
+            let cargo = build::load_cargo_config(&request)?;
+            request.qemu_config = Some(Self::resolve_test_qemu_config(package, target, &cargo)?);
             match self
-                .run_qemu_request(request)
+                .run_qemu_request_with_cargo(request, cargo)
                 .await
                 .with_context(|| format!("arceos qemu test failed for package `{package}`"))
             {
@@ -665,20 +666,20 @@ impl ArceOS {
         }
     }
 
-    fn resolve_test_qemu_config(package: &str, target: &str) -> anyhow::Result<PathBuf> {
+    fn resolve_test_qemu_config(
+        package: &str,
+        target: &str,
+        cargo: &Cargo,
+    ) -> anyhow::Result<PathBuf> {
         let manifest_path = build::resolve_package_manifest_path(package, None)?;
         let app_dir = manifest_path
             .parent()
             .context("package manifest path has no parent directory")?;
-        let qemu_config = app_dir.join(format!("qemu-{}.toml", arch_from_target(target)));
-        if qemu_config.exists() {
-            Ok(qemu_config)
-        } else {
-            bail!(
-                "missing qemu config for package `{package}` and target `{target}` at {}",
-                qemu_config.display()
-            )
-        }
+        let arch = arch_from_target(target);
+        let qemu_filename =
+            qemu_test::resolve_rust_qemu_config_filename(app_dir, arch, target, &cargo.features)?;
+
+        qemu_test::resolve_named_test_config_path(app_dir, &qemu_filename, "qemu")
     }
 
     async fn load_qemu_config(
@@ -714,8 +715,16 @@ impl ArceOS {
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
-        self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
+        self.run_qemu_request_with_cargo(request, cargo).await
+    }
+
+    async fn run_qemu_request_with_cargo(
+        &mut self,
+        request: ResolvedBuildRequest,
+        cargo: Cargo,
+    ) -> anyhow::Result<()> {
+        self.app.set_debug_mode(request.debug)?;
         let qemu = self.load_qemu_config(&request, &cargo).await?;
         self.app.qemu(cargo, request.build_info_path, qemu).await
     }

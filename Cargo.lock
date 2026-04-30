@@ -292,6 +292,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-lockdep"
+version = "0.3.1"
+dependencies = [
+ "ax-kspin",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-memtest"
 version = "0.3.1"
 dependencies = [
