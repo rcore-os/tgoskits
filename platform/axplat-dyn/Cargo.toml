@@ -53,7 +53,7 @@ log.workspace = true
 mmio-api.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
-crab-usb = "0.7"
+crab-usb = "0.8"
 pcie = { version = "0.6" }
 rd-block = "0.1"
 rd-net = { version = "0.1", optional = true }
