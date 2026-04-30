@@ -302,6 +302,11 @@ impl UsbDeviceLease {
         self.manager
             .live_submit_control_transfer(self.stable_id, request)
     }
+
+    pub(super) fn release_endpoints(&self, endpoints: &[u8]) -> AxResult<()> {
+        self.manager
+            .live_release_endpoints(self.stable_id, endpoints)
+    }
 }
 
 impl Drop for UsbDeviceLease {
@@ -921,6 +926,15 @@ impl UsbFsManager {
                 request_id,
             },
         })
+    }
+
+    fn live_release_endpoints(&self, stable_id: UsbStableId, endpoints: &[u8]) -> AxResult<()> {
+        let live_device = self.live_device_by_id(stable_id)?;
+        let mut live_endpoints = live_device.endpoints.write();
+        for endpoint in endpoints {
+            live_endpoints.remove(endpoint);
+        }
+        Ok(())
     }
 
     fn handle_control(&self, stable_id: UsbStableId, arg: usize) -> AxResult<usize> {
