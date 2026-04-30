@@ -1,28 +1,42 @@
 fn main() {
     use std::io::Write;
 
+    fn pthread_mutex_layout(
+        has_multitask: bool,
+        has_smp: bool,
+        has_lockdep: bool,
+    ) -> (usize, &'static str) {
+        if !has_multitask {
+            return (1, "{0}");
+        }
+
+        if has_lockdep {
+            if has_smp {
+                // `lockdep` expands the underlying mutex with lock maps in both
+                // `RawMutex` and the embedded wait-queue spinlock. Keep the C
+                // pthread mutex layout exactly aligned with the Rust side.
+                // Static initialization under lockdep uses a sentinel and is
+                // completed lazily in Rust on first use.
+                return (10, "{-1, 0, 0, 0, 0, 0, 0, 0, 0, 0}");
+            }
+            return (9, "{-1, 0, 0, 0, 0, 0, 0, 0, 0}");
+        }
+
+        if has_smp {
+            (6, "{0, 0, 8, 0, 0, 0}")
+        } else {
+            (5, "{0, 8, 0, 0, 0}")
+        }
+    }
+
     fn gen_pthread_mutex(out_file: &str) -> std::io::Result<()> {
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MULTITASK");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SMP");
+        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LOCKDEP");
         let has_multitask = std::env::var_os("CARGO_FEATURE_MULTITASK").is_some();
         let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some();
-        let (mutex_size, mutex_init) = if has_multitask {
-            if has_smp {
-                // Current 64-bit SMP targets keep an extra padding word in
-                // `ax_sync::Mutex<()>` for the pthread path.
-                //
-                // core::mem::transmute::<_, [usize; 6]>(ax_sync::Mutex::new(()))
-                (6, "{0, 0, 8, 0, 0, 0}")
-            } else {
-                // The non-SMP multitask path uses the compact 5-word mutex
-                // layout.
-                //
-                // core::mem::transmute::<_, [usize; 5]>(ax_sync::Mutex::new(()))
-                (5, "{0, 8, 0, 0, 0}")
-            }
-        } else {
-            (1, "{0}")
-        };
+        let has_lockdep = std::env::var_os("CARGO_FEATURE_LOCKDEP").is_some();
+        let (mutex_size, mutex_init) = pthread_mutex_layout(has_multitask, has_smp, has_lockdep);
 
         let mut output = Vec::new();
         writeln!(
