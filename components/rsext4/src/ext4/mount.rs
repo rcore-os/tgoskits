@@ -236,6 +236,13 @@ impl Ext4FileSystem {
                 // on-disk state.
                 fs.reload_after_journal_replay(block_dev)?;
             }
+            // If the filesystem was created without a journal (e.g. small images
+            // where mkfs.ext4 omits it), disable journal_use so that metadata
+            // writes bypass the journal path instead of hitting the
+            // "system uninitialized" guard on every write.
+            if !fs.superblock.has_journal() {
+                block_dev.set_journal_use(false);
+            }
         }
 
         // Emit a one-shot bitmap usage summary and verify bitmap checksums on
