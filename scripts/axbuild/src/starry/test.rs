@@ -292,38 +292,16 @@ fn discover_qemu_build_groups(
     arch: &str,
     target: &str,
 ) -> anyhow::Result<Vec<StarryQemuBuildGroup>> {
-    let mut groups = Vec::new();
-    for entry in fs::read_dir(test_suite_dir)
-        .with_context(|| format!("failed to read {}", test_suite_dir.display()))?
-    {
-        let entry = entry?;
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        let Some(build_config_path) = resolve_case_build_config_path(&dir, arch, target) else {
-            continue;
-        };
-        groups.push(StarryQemuBuildGroup {
-            name,
-            dir,
-            build_config_path,
-        });
-    }
-    groups.sort_by(|left, right| left.name.cmp(&right.name));
-
-    if groups.is_empty() {
-        bail!(
-            "no Starry qemu build groups for arch `{arch}` target `{target}` found under {}; \
-             expected build-{target}.toml or build-{arch}.toml in <build_group> directories",
-            test_suite_dir.display()
-        );
-    }
-
-    Ok(groups)
+    qemu_test::discover_build_groups(test_suite_dir, arch, target, "Starry", "qemu").map(|groups| {
+        groups
+            .into_iter()
+            .map(|group| StarryQemuBuildGroup {
+                name: group.name,
+                dir: group.dir,
+                build_config_path: group.build_config_path,
+            })
+            .collect()
+    })
 }
 
 /// Parses `test_commands` from a Starry QEMU case TOML.
@@ -425,27 +403,7 @@ pub(crate) fn resolve_case_build_config_path(
     arch: &str,
     target: &str,
 ) -> Option<PathBuf> {
-    let bare_target = case_dir.join(format!("build-{target}.toml"));
-    if bare_target.is_file() {
-        return Some(bare_target);
-    }
-
-    let dotted_target = case_dir.join(format!(".build-{target}.toml"));
-    if dotted_target.is_file() {
-        return Some(dotted_target);
-    }
-
-    let bare_arch = case_dir.join(format!("build-{arch}.toml"));
-    if bare_arch.is_file() {
-        return Some(bare_arch);
-    }
-
-    let dotted_arch = case_dir.join(format!(".build-{arch}.toml"));
-    if dotted_arch.is_file() {
-        return Some(dotted_arch);
-    }
-
-    None
+    qemu_test::resolve_build_config_path(case_dir, arch, target)
 }
 
 fn render_qemu_case_summary(report: &StarryQemuRunReport) -> String {
@@ -831,7 +789,6 @@ impl Starry {
     ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
-        request.smp = None;
         let cargo = build::load_cargo_config(&request)?;
 
         Ok((request, cargo))

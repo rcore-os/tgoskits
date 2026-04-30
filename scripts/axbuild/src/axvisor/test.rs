@@ -28,13 +28,6 @@ pub(crate) struct AxvisorQemuCase {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AxvisorQemuBuildGroup {
-    name: String,
-    dir: PathBuf,
-    build_config_path: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct PreparedAxvisorQemuCase {
     case: AxvisorQemuCase,
     qemu: QemuConfig,
@@ -67,7 +60,6 @@ pub(crate) struct BoardTestGroup {
     pub(crate) name: String,
     pub(crate) board_name: String,
     pub(crate) build_config: PathBuf,
-    pub(crate) vmconfigs: Vec<PathBuf>,
     pub(crate) board_test_config_path: PathBuf,
 }
 
@@ -110,12 +102,6 @@ struct AxvisorQemuCaseConfig {
     // happen in one place (Axvisor::load_qemu_case_config).
     #[serde(default)]
     test_commands: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AxvisorBoardCaseConfig {
-    build_config: PathBuf,
-    vmconfigs: Vec<PathBuf>,
 }
 
 pub(crate) fn parse_target(
@@ -211,7 +197,7 @@ pub(crate) fn discover_qemu_cases(
 }
 
 fn load_qemu_case(
-    build_group: &AxvisorQemuBuildGroup,
+    build_group: &test_qemu::TestBuildGroup,
     name: String,
     case_dir: PathBuf,
     qemu_config_path: PathBuf,
@@ -237,39 +223,8 @@ fn discover_qemu_build_groups(
     test_suite_dir: &Path,
     arch: &str,
     target: &str,
-) -> anyhow::Result<Vec<AxvisorQemuBuildGroup>> {
-    let mut groups = Vec::new();
-    for entry in fs::read_dir(test_suite_dir)
-        .with_context(|| format!("failed to read {}", test_suite_dir.display()))?
-    {
-        let entry = entry?;
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        let Some(build_config_path) = resolve_case_build_config_path(&dir, arch, target) else {
-            continue;
-        };
-        groups.push(AxvisorQemuBuildGroup {
-            name,
-            dir,
-            build_config_path,
-        });
-    }
-    groups.sort_by(|left, right| left.name.cmp(&right.name));
-
-    if groups.is_empty() {
-        bail!(
-            "no Axvisor qemu build groups for arch `{arch}` target `{target}` found under {}; \
-             expected build-{target}.toml or build-{arch}.toml in <build_group> directories",
-            test_suite_dir.display()
-        );
-    }
-
-    Ok(groups)
+) -> anyhow::Result<Vec<test_qemu::TestBuildGroup>> {
+    test_qemu::discover_build_groups(test_suite_dir, arch, target, "Axvisor", "qemu")
 }
 
 fn load_qemu_case_config(qemu_config_path: &Path) -> anyhow::Result<AxvisorQemuCaseConfig> {
@@ -339,6 +294,7 @@ fn collect_board_test_groups(
         if !build_group_dir.is_dir() {
             continue;
         }
+        let build_config = resolve_single_board_build_config(&build_group_dir)?;
 
         for case_entry in fs::read_dir(&build_group_dir)
             .with_context(|| format!("failed to read {}", build_group_dir.display()))?
@@ -370,39 +326,14 @@ fn collect_board_test_groups(
                     continue;
                 };
 
-                let config = load_board_case_config(&config_path)?;
-                let build_config = resolve_workspace_path(workspace_root, config.build_config);
-                ensure_file_exists(
-                    &build_config,
-                    &format!(
-                        "Axvisor board test group `{case_name}/{board_case_name}` build_config"
-                    ),
-                )?;
-
-                if config.vmconfigs.is_empty() {
-                    bail!(
-                        "Axvisor board test group `{case_name}/{board_case_name}` has no vmconfigs"
-                    );
-                }
-                let vmconfigs = config
-                    .vmconfigs
-                    .into_iter()
-                    .map(|path| resolve_workspace_path(workspace_root, path))
-                    .collect::<Vec<_>>();
-                for vmconfig in &vmconfigs {
-                    ensure_file_exists(
-                        vmconfig,
-                        &format!(
-                            "Axvisor board test group `{case_name}/{board_case_name}` vmconfig"
-                        ),
-                    )?;
-                }
+                ensure_board_run_config(&config_path)?;
+                let build_config = resolve_workspace_path(workspace_root, build_config.clone());
+                ensure_file_exists(&build_config, "Axvisor board build group config")?;
 
                 groups.push(BoardTestGroup {
                     name: case_name.clone(),
                     board_name: board_case_name.to_string(),
                     build_config,
-                    vmconfigs,
                     board_test_config_path: config_path,
                 });
             }
@@ -412,10 +343,45 @@ fn collect_board_test_groups(
     Ok(groups)
 }
 
-fn load_board_case_config(path: &Path) -> anyhow::Result<AxvisorBoardCaseConfig> {
+fn ensure_board_run_config(path: &Path) -> anyhow::Result<()> {
     let content =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))
+    toml::from_str::<ostool::board::config::BoardRunConfig>(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(())
+}
+
+fn resolve_single_board_build_config(build_group_dir: &Path) -> anyhow::Result<PathBuf> {
+    let mut build_configs = Vec::new();
+    for entry in fs::read_dir(build_group_dir)
+        .with_context(|| format!("failed to read {}", build_group_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with("build-") && name.ends_with(".toml") {
+            build_configs.push(path);
+        }
+    }
+    build_configs.sort();
+
+    match build_configs.as_slice() {
+        [build_config] => Ok(build_config.clone()),
+        [] => bail!(
+            "Axvisor board build group `{}` does not provide a build-*.toml config",
+            build_group_dir.display()
+        ),
+        _ => bail!(
+            "Axvisor board build group `{}` provides multiple build-*.toml configs; board tests \
+             require exactly one build config per board group",
+            build_group_dir.display()
+        ),
+    }
 }
 
 fn resolve_workspace_path(workspace_root: &Path, path: PathBuf) -> PathBuf {
@@ -424,34 +390,6 @@ fn resolve_workspace_path(workspace_root: &Path, path: PathBuf) -> PathBuf {
     } else {
         workspace_root.join(path)
     }
-}
-
-pub(crate) fn resolve_case_build_config_path(
-    case_dir: &Path,
-    arch: &str,
-    target: &str,
-) -> Option<PathBuf> {
-    let bare_target = case_dir.join(format!("build-{target}.toml"));
-    if bare_target.is_file() {
-        return Some(bare_target);
-    }
-
-    let dotted_target = case_dir.join(format!(".build-{target}.toml"));
-    if dotted_target.is_file() {
-        return Some(dotted_target);
-    }
-
-    let bare_arch = case_dir.join(format!("build-{arch}.toml"));
-    if bare_arch.is_file() {
-        return Some(bare_arch);
-    }
-
-    let dotted_arch = case_dir.join(format!(".build-{arch}.toml"));
-    if dotted_arch.is_file() {
-        return Some(dotted_arch);
-    }
-
-    None
 }
 
 fn ensure_file_exists(path: &Path, label: &str) -> anyhow::Result<()> {
@@ -647,9 +585,8 @@ impl Axvisor {
             println!("[{}/{}] axvisor board {}", index + 1, total, group_label);
 
             let result = async {
-                let prepared_vmconfigs = group.vmconfigs.clone();
                 let request = self.prepare_request(
-                    axvisor_board_test_build_args(&group, prepared_vmconfigs),
+                    axvisor_board_test_build_args(&group),
                     None,
                     None,
                     SnapshotPersistence::Discard,
@@ -673,16 +610,10 @@ impl Axvisor {
                     .with_context(|| {
                         format!(
                             "axvisor board test failed for group `{}` (build_config={}, \
-                             board_test_config={}, vmconfigs={})",
+                             board_test_config={})",
                             group_label,
                             group.build_config.display(),
-                            board_test_config_summary,
-                            group
-                                .vmconfigs
-                                .iter()
-                                .map(|path| path.display().to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
+                            board_test_config_summary
                         )
                     })
             }
@@ -756,7 +687,6 @@ impl Axvisor {
     ) -> anyhow::Result<(ResolvedAxvisorRequest, Cargo)> {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
-        request.smp = None;
         let cargo = build::load_cargo_config(&request)?;
         request.vmconfigs = qemu_group_vmconfigs(&request, &cargo)?;
 
@@ -874,10 +804,7 @@ fn axvisor_uboot_test_build_args(build_config: &str, vmconfig: &str) -> AxvisorC
     }
 }
 
-fn axvisor_board_test_build_args(
-    group: &BoardTestGroup,
-    vmconfigs: Vec<PathBuf>,
-) -> AxvisorCliArgs {
+fn axvisor_board_test_build_args(group: &BoardTestGroup) -> AxvisorCliArgs {
     AxvisorCliArgs {
         config: Some(group.build_config.clone()),
         arch: None,
@@ -885,7 +812,7 @@ fn axvisor_board_test_build_args(
         plat_dyn: None,
         smp: None,
         debug: false,
-        vmconfigs,
+        vmconfigs: Vec::new(),
     }
 }
 
@@ -935,6 +862,15 @@ mod tests {
         path
     }
 
+    fn write_board_build_config(root: &Path, build_group: &str) -> PathBuf {
+        write_qemu_build_config(
+            root,
+            "normal",
+            build_group,
+            "aarch64-unknown-none-softfloat",
+        )
+    }
+
     fn write_board_config(root: &Path, case: &str, name: &str, body: &str) -> PathBuf {
         write_board_config_in_group(root, "normal", "default", case, name, body)
     }
@@ -956,12 +892,6 @@ mod tests {
         let path = dir.join(format!("board-{name}.toml"));
         fs::write(&path, body).unwrap();
         path
-    }
-
-    fn write_file(root: &Path, path: &str) {
-        let path = root.join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "").unwrap();
     }
 
     fn axvisor_request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
@@ -1268,31 +1198,18 @@ mod tests {
     #[test]
     fn returns_all_board_test_groups_when_no_filter_is_given() {
         let root = tempdir().unwrap();
-        write_file(root.path(), "os/axvisor/configs/board/phytiumpi.toml");
-        write_file(root.path(), "os/axvisor/configs/board/orangepi-5-plus.toml");
-        write_file(
-            root.path(),
-            "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
-        );
-        write_file(
-            root.path(),
-            "os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml",
-        );
+        write_board_build_config(root.path(), "default");
         write_board_config(
             root.path(),
             "smoke",
             "phytiumpi-linux",
-            "build_config = \"os/axvisor/configs/board/phytiumpi.toml\"\nvmconfigs = \
-             [\"os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml\"]\nboard_type = \
-             \"PhytiumPi\"\n",
+            "board_type = \"PhytiumPi\"\n",
         );
         write_board_config(
             root.path(),
             "smoke",
             "orangepi-5-plus-linux",
-            "build_config = \"os/axvisor/configs/board/orangepi-5-plus.toml\"\nvmconfigs = \
-             [\"os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml\"]\nboard_type = \
-             \"OrangePi-5-Plus\"\n",
+            "board_type = \"OrangePi-5-Plus\"\n",
         );
 
         let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
@@ -1309,18 +1226,12 @@ mod tests {
     #[test]
     fn filters_board_test_group_by_case() {
         let root = tempdir().unwrap();
-        write_file(root.path(), "os/axvisor/configs/board/phytiumpi.toml");
-        write_file(
-            root.path(),
-            "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
-        );
+        let build_config = write_board_build_config(root.path(), "default");
         let board_test_config = write_board_config(
             root.path(),
             "smoke",
             "phytiumpi-linux",
-            "build_config = \"os/axvisor/configs/board/phytiumpi.toml\"\nvmconfigs = \
-             [\"os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml\"]\nboard_type = \
-             \"PhytiumPi\"\n",
+            "board_type = \"PhytiumPi\"\n",
         );
 
         let groups =
@@ -1329,52 +1240,31 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "smoke");
         assert_eq!(groups[0].board_name, "phytiumpi-linux");
-        assert_eq!(
-            groups[0].vmconfigs,
-            vec![
-                root.path()
-                    .join("os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml")
-            ]
-        );
+        assert_eq!(groups[0].build_config, build_config);
         assert_eq!(groups[0].board_test_config_path, board_test_config);
     }
 
     #[test]
     fn filters_board_test_groups_by_board() {
         let root = tempdir().unwrap();
-        write_file(root.path(), "os/axvisor/configs/board/phytiumpi.toml");
-        write_file(root.path(), "os/axvisor/configs/board/orangepi-5-plus.toml");
-        write_file(
-            root.path(),
-            "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
-        );
-        write_file(
-            root.path(),
-            "os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml",
-        );
+        write_board_build_config(root.path(), "default");
         write_board_config(
             root.path(),
             "smoke",
             "phytiumpi-linux",
-            "build_config = \"os/axvisor/configs/board/phytiumpi.toml\"\nvmconfigs = \
-             [\"os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml\"]\nboard_type = \
-             \"PhytiumPi\"\n",
+            "board_type = \"PhytiumPi\"\n",
         );
         write_board_config(
             root.path(),
             "syscall",
             "phytiumpi-linux",
-            "build_config = \"os/axvisor/configs/board/phytiumpi.toml\"\nvmconfigs = \
-             [\"os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml\"]\nboard_type = \
-             \"PhytiumPi\"\n",
+            "board_type = \"PhytiumPi\"\n",
         );
         write_board_config(
             root.path(),
             "smoke",
             "orangepi-5-plus-linux",
-            "build_config = \"os/axvisor/configs/board/orangepi-5-plus.toml\"\nvmconfigs = \
-             [\"os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml\"]\nboard_type = \
-             \"OrangePi-5-Plus\"\n",
+            "board_type = \"OrangePi-5-Plus\"\n",
         );
 
         let groups =
@@ -1393,18 +1283,12 @@ mod tests {
     #[test]
     fn rejects_unknown_board_test_board() {
         let root = tempdir().unwrap();
-        write_file(root.path(), "os/axvisor/configs/board/phytiumpi.toml");
-        write_file(
-            root.path(),
-            "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
-        );
+        write_board_build_config(root.path(), "default");
         write_board_config(
             root.path(),
             "smoke",
             "phytiumpi-linux",
-            "build_config = \"os/axvisor/configs/board/phytiumpi.toml\"\nvmconfigs = \
-             [\"os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml\"]\nboard_type = \
-             \"PhytiumPi\"\n",
+            "board_type = \"PhytiumPi\"\n",
         );
 
         let err =
@@ -1420,18 +1304,12 @@ mod tests {
     #[test]
     fn rejects_unknown_board_test_case() {
         let root = tempdir().unwrap();
-        write_file(root.path(), "os/axvisor/configs/board/phytiumpi.toml");
-        write_file(
-            root.path(),
-            "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
-        );
+        write_board_build_config(root.path(), "default");
         write_board_config(
             root.path(),
             "smoke",
             "phytiumpi-linux",
-            "build_config = \"os/axvisor/configs/board/phytiumpi.toml\"\nvmconfigs = \
-             [\"os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml\"]\nboard_type = \
-             \"PhytiumPi\"\n",
+            "board_type = \"PhytiumPi\"\n",
         );
 
         let err =
@@ -1447,10 +1325,8 @@ mod tests {
     #[test]
     fn board_case_config_is_also_valid_board_run_config() {
         let config: ostool::board::config::BoardRunConfig = toml::from_str(
-            "build_config = \"os/axvisor/configs/board/phytiumpi.toml\"\nvmconfigs = \
-             [\"os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml\"]\nboard_type = \
-             \"PhytiumPi\"\nshell_prefix = \"login:\"\nshell_init_cmd = \"root\"\nsuccess_regex = \
-             [\"(?m)^root@.*#\\\\s*$\"]\n",
+            "board_type = \"PhytiumPi\"\nshell_prefix = \"login:\"\nshell_init_cmd = \
+             \"root\"\nsuccess_regex = [\"(?m)^root@.*#\\\\s*$\"]\n",
         )
         .unwrap();
 

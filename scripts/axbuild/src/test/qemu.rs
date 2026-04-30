@@ -1,14 +1,90 @@
-use std::path::Path;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use ostool::run::qemu::QemuConfig;
 
 use crate::{context::validate_supported_target, test::case::TestQemuCase};
 
 const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TestBuildGroup {
+    pub(crate) name: String,
+    pub(crate) dir: PathBuf,
+    pub(crate) build_config_path: PathBuf,
+}
+
 pub(crate) fn qemu_config_name(arch: &str) -> String {
     format!("qemu-{arch}.toml")
+}
+
+pub(crate) fn resolve_build_config_path(dir: &Path, arch: &str, target: &str) -> Option<PathBuf> {
+    let bare_target = dir.join(format!("build-{target}.toml"));
+    if bare_target.is_file() {
+        return Some(bare_target);
+    }
+
+    let dotted_target = dir.join(format!(".build-{target}.toml"));
+    if dotted_target.is_file() {
+        return Some(dotted_target);
+    }
+
+    let bare_arch = dir.join(format!("build-{arch}.toml"));
+    if bare_arch.is_file() {
+        return Some(bare_arch);
+    }
+
+    let dotted_arch = dir.join(format!(".build-{arch}.toml"));
+    if dotted_arch.is_file() {
+        return Some(dotted_arch);
+    }
+
+    None
+}
+
+pub(crate) fn discover_build_groups(
+    test_suite_dir: &Path,
+    arch: &str,
+    target: &str,
+    suite_name: &str,
+    group_kind: &str,
+) -> anyhow::Result<Vec<TestBuildGroup>> {
+    let mut groups = Vec::new();
+    for entry in fs::read_dir(test_suite_dir)
+        .with_context(|| format!("failed to read {}", test_suite_dir.display()))?
+    {
+        let entry = entry?;
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(build_config_path) = resolve_build_config_path(&dir, arch, target) else {
+            continue;
+        };
+        groups.push(TestBuildGroup {
+            name,
+            dir,
+            build_config_path,
+        });
+    }
+    groups.sort_by(|left, right| left.name.cmp(&right.name));
+
+    if groups.is_empty() {
+        bail!(
+            "no {suite_name} {group_kind} build groups for arch `{arch}` target `{target}` found \
+             under {}; expected build-{target}.toml or build-{arch}.toml in <build_group> \
+             directories",
+            test_suite_dir.display()
+        );
+    }
+
+    Ok(groups)
 }
 
 pub(crate) fn normalize_qemu_test_commands<I, S>(
