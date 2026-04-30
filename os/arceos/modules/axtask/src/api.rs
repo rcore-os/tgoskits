@@ -7,8 +7,6 @@ use alloc::{
 
 use ax_kernel_guard::NoPreemptIrqSave;
 
-#[cfg(feature = "lockdep")]
-pub use crate::lockdep::{HeldLock, HeldLockStack};
 pub(crate) use crate::run_queue::{current_run_queue, select_run_queue};
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
@@ -78,11 +76,6 @@ pub fn current_may_uninit() -> Option<CurrentTask> {
 /// Panics if the current task is not initialized.
 pub fn current() -> CurrentTask {
     CurrentTask::get()
-}
-
-#[cfg(feature = "lockdep")]
-pub fn with_current_lockdep_stack<R>(f: impl FnOnce(&mut HeldLockStack) -> R) -> R {
-    current().with_held_locks(f)
 }
 
 /// Initializes the task scheduler (for the primary CPU).

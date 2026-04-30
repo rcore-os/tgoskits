@@ -1035,7 +1035,7 @@ name = "ax-kspin"
 version = "0.3.7"
 dependencies = [
  "ax-kernel-guard",
- "ax-percpu",
+ "ax-lockdep",
  "cfg-if",
 ]
 
@@ -1057,6 +1057,14 @@ dependencies = [
 [[package]]
 name = "ax-linked-list-r4l"
 version = "0.5.4"
+
+[[package]]
+name = "ax-lockdep"
+version = "0.1.0"
+dependencies = [
+ "ax-kernel-guard",
+ "sbi-rt",
+]
 
 [[package]]
 name = "ax-log"
@@ -1428,6 +1436,7 @@ name = "ax-sync"
 version = "0.5.12"
 dependencies = [
  "ax-kspin",
+ "ax-lockdep",
  "ax-sync",
  "ax-task",
  "fastrand",

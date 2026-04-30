@@ -5,8 +5,6 @@
 //!
 //! Based on [`spin::Mutex`](https://docs.rs/spin/latest/src/spin/mutex/spin.rs.html).
 
-#[cfg(feature = "lockdep")]
-use core::panic::Location;
 #[cfg(feature = "smp")]
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{
@@ -17,8 +15,6 @@ use core::{
 };
 
 use ax_kernel_guard::BaseGuard;
-#[cfg(feature = "lockdep")]
-use ax_kernel_guard::IrqSave;
 
 /// A [spin lock](https://en.m.wikipedia.org/wiki/Spinlock) providing mutually
 /// exclusive access to data.
@@ -33,8 +29,6 @@ pub struct BaseSpinLock<G: BaseGuard, T: ?Sized> {
     _phantom: PhantomData<G>,
     #[cfg(feature = "smp")]
     lock: AtomicBool,
-    #[cfg(feature = "lockdep")]
-    lockdep: crate::lockdep::LockdepMap,
     data: UnsafeCell<T>,
 }
 
@@ -45,48 +39,10 @@ pub struct BaseSpinLockGuard<'a, G: BaseGuard, T: ?Sized + 'a> {
     _phantom: &'a PhantomData<G>,
     irq_state: G::State,
     #[cfg(feature = "lockdep")]
-    lock_id: Option<u32>,
+    lock_addr: usize,
     data: *mut T,
     #[cfg(feature = "smp")]
     lock: &'a AtomicBool,
-}
-
-#[derive(Clone, Copy)]
-struct LockdepAcquire {
-    #[cfg(feature = "lockdep")]
-    addr: usize,
-    #[cfg(feature = "lockdep")]
-    state: Option<(u32, &'static Location<'static>)>,
-}
-
-impl LockdepAcquire {
-    #[cfg(feature = "lockdep")]
-    #[inline(always)]
-    #[track_caller]
-    fn prepare<G: BaseGuard, T: ?Sized>(lock: &BaseSpinLock<G, T>) -> Self {
-        let addr = lock as *const _ as *const () as usize;
-        let state = crate::lockdep::prepare_acquire::<G>(&lock.lockdep, addr, Location::caller());
-        Self { addr, state }
-    }
-
-    #[cfg(not(feature = "lockdep"))]
-    #[inline(always)]
-    #[track_caller]
-    fn prepare<G: BaseGuard, T: ?Sized>(_lock: &BaseSpinLock<G, T>) -> Self {
-        Self {}
-    }
-
-    #[cfg(feature = "lockdep")]
-    #[inline(always)]
-    fn id(self) -> Option<u32> {
-        self.state.map(|(id, _)| id)
-    }
-
-    #[cfg(feature = "lockdep")]
-    #[inline(always)]
-    fn finish(self) {
-        crate::lockdep::finish_acquire(self.state, self.addr);
-    }
 }
 
 // Same unsafe impls as `std::sync::Mutex`
@@ -102,8 +58,6 @@ impl<G: BaseGuard, T> BaseSpinLock<G, T> {
             data: UnsafeCell::new(data),
             #[cfg(feature = "smp")]
             lock: AtomicBool::new(false),
-            #[cfg(feature = "lockdep")]
-            lockdep: crate::lockdep::LockdepMap::new(),
         }
     }
 
@@ -119,88 +73,45 @@ impl<G: BaseGuard, T> BaseSpinLock<G, T> {
 
 impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[inline(always)]
-    #[cfg(not(feature = "smp"))]
-    fn finish_lockdep_with_irqsave(_lockdep: LockdepAcquire) {
-        #[cfg(feature = "lockdep")]
-        {
-            let _lockdep_irq_guard = IrqSave::new();
-            _lockdep.finish();
-        }
+    #[cfg(feature = "smp")]
+    fn acquire_once_weak(&self) -> bool {
+        self.lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
     }
 
     #[inline(always)]
     #[cfg(feature = "smp")]
-    fn acquire_once_weak(&self, _lockdep: LockdepAcquire) -> bool {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "lockdep")] {
-                let _lockdep_irq_guard = IrqSave::new();
-                let acquired = self
-                    .lock
-                    .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-                    .is_ok();
-                if acquired {
-                    _lockdep.finish();
-                }
-                acquired
-            } else {
-                let _ = _lockdep;
-                self.lock
-                    .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-                    .is_ok()
-            }
-        }
+    fn acquire_once_strong(&self) -> bool {
+        self.lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
     }
 
     #[inline(always)]
-    #[cfg(feature = "smp")]
-    fn acquire_once_strong(&self, _lockdep: LockdepAcquire) -> bool {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "lockdep")] {
-                let _lockdep_irq_guard = IrqSave::new();
-                let acquired = self
-                    .lock
-                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                    .is_ok();
-                if acquired {
-                    _lockdep.finish();
-                }
-                acquired
-            } else {
-                let _ = _lockdep;
-                self.lock
-                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                    .is_ok()
-            }
-        }
-    }
-
-    #[inline(always)]
-    fn blocking_acquire(&self, lockdep: LockdepAcquire) {
+    fn blocking_acquire(&self) {
         cfg_if::cfg_if! {
             if #[cfg(feature = "smp")] {
                 // Can fail to lock even if the spinlock is not locked. May be
                 // more efficient than `try_lock` when called in a loop.
-                while !self.acquire_once_weak(lockdep) {
+                while !self.acquire_once_weak() {
                     // Wait until the lock looks unlocked before retrying.
                     while self.is_locked() {
                         core::hint::spin_loop();
                     }
                 }
-            } else {
-                Self::finish_lockdep_with_irqsave(lockdep);
             }
         }
     }
 
     #[inline(always)]
-    fn try_acquire(&self, lockdep: LockdepAcquire) -> bool {
+    fn try_acquire(&self) -> bool {
         cfg_if::cfg_if! {
             if #[cfg(feature = "smp")] {
                 // The reason for using a strong compare_exchange is explained here:
                 // https://github.com/Amanieu/parking_lot/pull/207#issuecomment-575869107
-                self.acquire_once_strong(lockdep)
+                self.acquire_once_strong()
             } else {
-                Self::finish_lockdep_with_irqsave(lockdep);
                 true
             }
         }
@@ -213,14 +124,17 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[inline(always)]
     #[track_caller]
     pub fn lock(&self) -> BaseSpinLockGuard<'_, G, T> {
+        #[cfg(feature = "lockdep")]
+        let lockdep = crate::lockdep::Lockdep::prepare(self, false);
         let irq_state = G::acquire();
-        let lockdep = LockdepAcquire::prepare(self);
-        self.blocking_acquire(lockdep);
+        self.blocking_acquire();
+        #[cfg(feature = "lockdep")]
+        lockdep.finish(true);
         BaseSpinLockGuard {
             _phantom: &PhantomData,
             irq_state,
             #[cfg(feature = "lockdep")]
-            lock_id: lockdep.id(),
+            lock_addr: lockdep.lock_addr(),
             data: unsafe { &mut *self.data.get() },
             #[cfg(feature = "smp")]
             lock: &self.lock,
@@ -248,16 +162,19 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[inline(always)]
     #[track_caller]
     pub fn try_lock(&self) -> Option<BaseSpinLockGuard<'_, G, T>> {
+        #[cfg(feature = "lockdep")]
+        let lockdep = crate::lockdep::Lockdep::prepare(self, true);
         let irq_state = G::acquire();
-        let lockdep = LockdepAcquire::prepare(self);
-        let is_unlocked = self.try_acquire(lockdep);
+        let is_unlocked = self.try_acquire();
+        #[cfg(feature = "lockdep")]
+        lockdep.finish(is_unlocked);
 
         if is_unlocked {
             Some(BaseSpinLockGuard {
                 _phantom: &PhantomData,
                 irq_state,
                 #[cfg(feature = "lockdep")]
-                lock_id: lockdep.id(),
+                lock_addr: lockdep.lock_addr(),
                 data: unsafe { &mut *self.data.get() },
                 #[cfg(feature = "smp")]
                 lock: &self.lock,
@@ -278,11 +195,11 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[inline(always)]
     pub unsafe fn force_unlock(&self) {
         #[cfg(feature = "lockdep")]
-        let _lockdep_irq_guard = IrqSave::new();
+        let addr = self as *const _ as *const () as usize;
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::release::<G>(addr);
         #[cfg(feature = "smp")]
         self.lock.store(false, Ordering::Release);
-        #[cfg(feature = "lockdep")]
-        crate::lockdep::force_release::<G>(&self.lockdep);
     }
 
     /// Returns a mutable reference to the underlying data.
@@ -345,13 +262,8 @@ impl<G: BaseGuard, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
     #[inline(always)]
     fn drop(&mut self) {
         #[cfg(feature = "lockdep")]
-        {
-            let _lockdep_irq_guard = IrqSave::new();
-            #[cfg(feature = "smp")]
-            self.lock.store(false, Ordering::Release);
-            crate::lockdep::release(self.lock_id);
-        }
-        #[cfg(all(feature = "smp", not(feature = "lockdep")))]
+        crate::lockdep::release::<G>(self.lock_addr);
+        #[cfg(feature = "smp")]
         self.lock.store(false, Ordering::Release);
         G::release(self.irq_state);
     }
@@ -370,35 +282,6 @@ mod tests {
 
     use super::*;
 
-    #[cfg(feature = "lockdep")]
-    struct TestGuardIrq;
-
-    #[cfg(feature = "lockdep")]
-    static mut IRQ_CNT: u32 = 0;
-    #[cfg(feature = "lockdep")]
-    impl BaseGuard for TestGuardIrq {
-        type State = u32;
-        fn acquire() -> Self::State {
-            unsafe {
-                IRQ_CNT += 1;
-                IRQ_CNT
-            }
-        }
-
-        fn release(_: Self::State) {
-            unsafe {
-                IRQ_CNT -= 1;
-            }
-        }
-
-        #[cfg(feature = "lockdep")]
-        fn lockdep_enabled() -> bool {
-            true
-        }
-    }
-
-    #[cfg(feature = "lockdep")]
-    type TestSpinIrq<T> = BaseSpinLock<TestGuardIrq, T>;
     type SpinMutex<T> = crate::SpinRaw<T>;
 
     #[derive(Eq, PartialEq, Debug)]
@@ -609,89 +492,5 @@ mod tests {
             lock.force_unlock();
         }
         assert!(lock.try_lock().is_some());
-    }
-
-    #[cfg(feature = "lockdep")]
-    #[test]
-    #[should_panic(expected = "recursive spin lock acquisition")]
-    fn lockdep_rejects_recursive_acquire() {
-        let lock = TestSpinIrq::new(0usize);
-        let _guard = lock.lock();
-        let _guard2 = lock.lock();
-    }
-
-    #[cfg(feature = "lockdep")]
-    #[test]
-    #[should_panic(expected = "lock order inversion detected")]
-    fn lockdep_rejects_order_inversion() {
-        let lock_a = TestSpinIrq::new(0usize);
-        let lock_b = TestSpinIrq::new(0usize);
-
-        {
-            let _guard_a = lock_a.lock();
-            let _guard_b = lock_b.lock();
-        }
-
-        let _guard_b = lock_b.lock();
-        let _guard_a = lock_a.lock();
-    }
-
-    #[cfg(all(feature = "lockdep", feature = "smp"))]
-    #[test]
-    fn lockdep_rejects_order_inversion_before_try_lock_failure() {
-        struct LocalGuard;
-        static LOCAL_IRQ_CNT: AtomicU32 = AtomicU32::new(0);
-
-        impl BaseGuard for LocalGuard {
-            type State = u32;
-
-            fn acquire() -> Self::State {
-                LOCAL_IRQ_CNT.fetch_add(1, Ordering::SeqCst) + 1
-            }
-
-            fn release(_: Self::State) {
-                LOCAL_IRQ_CNT.fetch_sub(1, Ordering::SeqCst);
-            }
-
-            fn lockdep_enabled() -> bool {
-                true
-            }
-        }
-
-        type LocalSpin<T> = BaseSpinLock<LocalGuard, T>;
-
-        let lock_a = Arc::new(LocalSpin::new(0usize));
-        let lock_b = Arc::new(LocalSpin::new(0usize));
-
-        {
-            let _guard_a = lock_a.lock();
-            let _guard_b = lock_b.lock();
-        }
-
-        let held_a = lock_a.lock();
-        let thread_lock_a = lock_a.clone();
-        let thread_lock_b = lock_b.clone();
-
-        let result = thread::spawn(move || {
-            let _guard_b = thread_lock_b.lock();
-            let _guard_a = thread_lock_a.try_lock();
-        })
-        .join();
-
-        drop(held_a);
-
-        assert!(result.is_err());
-    }
-
-    #[cfg(feature = "lockdep")]
-    #[test]
-    #[should_panic(expected = "unlock order violation")]
-    fn lockdep_rejects_out_of_order_unlock() {
-        let lock_a = TestSpinIrq::new(0usize);
-        let lock_b = TestSpinIrq::new(0usize);
-
-        let guard_a = lock_a.lock();
-        let _guard_b = lock_b.lock();
-        drop(guard_a);
     }
 }

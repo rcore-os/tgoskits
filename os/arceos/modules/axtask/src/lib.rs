@@ -66,8 +66,6 @@ cfg_if::cfg_if! {
         mod run_queue;
         mod task;
         mod api;
-        #[cfg(feature = "lockdep")]
-        mod lockdep;
         mod wait_queue;
 
         #[cfg(feature = "irq")]

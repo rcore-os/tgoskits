@@ -19,8 +19,6 @@ use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{VirtAddr, align_up_4k};
 use futures_util::task::AtomicWaker;
 
-#[cfg(feature = "lockdep")]
-use crate::lockdep::HeldLockStack;
 use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
 
 /// A unique identifier for a thread.
@@ -96,8 +94,6 @@ pub struct TaskInner {
 
     kstack: Option<TaskStack>,
     ctx: UnsafeCell<TaskContext>,
-    #[cfg(feature = "lockdep")]
-    held_locks: UnsafeCell<HeldLockStack>,
 
     #[cfg(feature = "task-ext")]
     task_ext: Option<AxTaskExt>,
@@ -207,13 +203,6 @@ impl TaskInner {
         self.ctx.get_mut()
     }
 
-    #[cfg(feature = "lockdep")]
-    pub(crate) fn with_held_locks<R>(&self, f: impl FnOnce(&mut HeldLockStack) -> R) -> R {
-        // SAFETY: the held-lock stack belongs to the current task and is only
-        // mutated by the current task while lockdep tracking is active.
-        f(unsafe { &mut *self.held_locks.get() })
-    }
-
     /// Returns the top address of the kernel stack.
     #[inline]
     pub const fn kernel_stack_top(&self) -> Option<VirtAddr> {
@@ -305,8 +294,6 @@ impl TaskInner {
             wait_for_exit: WaitQueue::new(),
             kstack: None,
             ctx: UnsafeCell::new(TaskContext::new()),
-            #[cfg(feature = "lockdep")]
-            held_locks: UnsafeCell::new(HeldLockStack::new()),
             #[cfg(feature = "task-ext")]
             task_ext: None,
             #[cfg(feature = "tls")]

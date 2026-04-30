@@ -41,8 +41,7 @@ fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     }
 }
 
-#[cfg(feature = "multitask")]
-#[cfg(feature = "lockdep")]
+#[cfg(all(feature = "multitask", feature = "lockdep"))]
 mod lockdep;
 
 #[cfg(feature = "multitask")]

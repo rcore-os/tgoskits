@@ -75,12 +75,6 @@ pub trait BaseGuard {
 
     /// Something that must be done after leaving the critical section.
     fn release(state: Self::State);
-
-    /// Returns whether locks guarded by this type should participate in
-    /// lock dependency tracking.
-    fn lockdep_enabled() -> bool {
-        false
-    }
 }
 
 /// A no-op guard that does nothing around the critical section.
@@ -156,15 +150,6 @@ mod imp {
             // restore IRQ states
             super::arch::local_irq_restore(state);
         }
-
-        fn lockdep_enabled() -> bool {
-            // `ax-kspin` lockdep stores held-lock state in per-CPU data, which
-            // requires preemption to remain disabled while a tracked lock is
-            // held. `IrqSave` only disables local IRQs, so enabling lockdep
-            // here would let a task be preempted while its held-lock state is
-            // still recorded on the current CPU.
-            false
-        }
     }
 
     impl BaseGuard for NoPreempt {
@@ -178,10 +163,6 @@ mod imp {
             // enable preempt
             #[cfg(feature = "preempt")]
             ax_crate_interface::call_interface!(KernelGuardIf::enable_preempt);
-        }
-
-        fn lockdep_enabled() -> bool {
-            true
         }
     }
 
@@ -200,10 +181,6 @@ mod imp {
             // enable preempt
             #[cfg(feature = "preempt")]
             ax_crate_interface::call_interface!(KernelGuardIf::enable_preempt);
-        }
-
-        fn lockdep_enabled() -> bool {
-            true
         }
     }
 
