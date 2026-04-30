@@ -12,7 +12,6 @@ use crate::{
         AppContext, DEFAULT_STARRY_ARCH, ResolvedStarryRequest, StarryCliArgs,
         starry_target_for_arch_checked,
     },
-    rootfs::store as rootfs_store,
     test::qemu as qemu_test,
 };
 
@@ -279,22 +278,14 @@ impl Starry {
             );
         }
         if let Some(rootfs) = args.rootfs {
-            // Explicit rootfs provided: skip auto-download, apply directly.
             let rootfs =
-                rootfs_store::resolve_rootfs_path(self.app.workspace_root(), &request.arch, rootfs);
-            // If the path resolves into the unified rootfs dir, ensure the
-            // tarball has been extracted and the managed image uses the
-            // requested APK region (keyword paths need this).
-            rootfs::ensure_managed_rootfs(self.app.workspace_root(), &request.arch, &rootfs)
+                rootfs::resolve_explicit_rootfs(self.app.workspace_root(), &request.arch, rootfs);
+            rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), Some(&rootfs))
                 .await?;
             self.app.set_debug_mode(request.debug)?;
             let cargo = build::load_cargo_config(&request)?;
             let mut qemu = self.load_qemu_config(&request, &cargo, false).await?;
-            rootfs::patch_rootfs(
-                &mut qemu,
-                &rootfs,
-                rootfs::RootfsPatchMode::EnsureDiskBootNet,
-            );
+            rootfs::patch_qemu_rootfs_path(&mut qemu, &rootfs);
             qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
             self.app
                 .qemu(cargo, request.build_info_path, Some(qemu))
@@ -450,7 +441,7 @@ impl Starry {
         };
 
         if request.qemu_config.is_none() && apply_default_args {
-            rootfs::apply_default_qemu_args(self.app.workspace_root(), request, &mut qemu).await?;
+            rootfs::patch_qemu_rootfs(&mut qemu, request, self.app.workspace_root(), None)?;
         }
         qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
 
@@ -498,6 +489,7 @@ impl Starry {
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
+        rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), None).await?;
         let qemu = self.load_qemu_config(&request, &cargo, true).await?;
         self.app
             .qemu(cargo, request.build_info_path, Some(qemu))
