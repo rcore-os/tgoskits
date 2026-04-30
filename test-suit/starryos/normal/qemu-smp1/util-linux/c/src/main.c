@@ -424,13 +424,20 @@ int main(void)
 
     /* 33. pivot_root semantics: old root appears at put_old.
      *
-     *  We fork a child so the pivot only affects the child's namespace.
+     *  pivot_root(2) reorganises the global mount tree and, matching
+     *  Linux chroot_fs_refs(), updates root/cwd for every task whose
+     *  root or cwd pointed at the old root.  We fork a child so that
+     *  the child's _exit() does not terminate the test runner; the
+     *  mount tree change is global and propagates to the parent.
+     *
      *  Inside the child we:
-     *    1. mount -t tmpfs tmpfs /tmp/pivot-newroot
-     *    2. mkdir /tmp/pivot-newroot/oldroot   (put_old)
-     *    3. pivot_root /tmp/pivot-newroot /tmp/pivot-newroot/oldroot
-     *    4. stat /oldroot — must succeed (old root moved here)
-     *    5. stat /oldroot/tmp — must succeed (original root content)
+     *    1. pivot_root /tmp/pivot-newroot /tmp/pivot-newroot/oldroot
+     *    2. stat /oldroot — must succeed (old root moved here)
+     *    3. stat /oldroot/tmp — must succeed (original root content)
+     *
+     *  After the child exits, the parent also verifies that its own
+     *  root was switched to the new root (chroot_fs_refs semantic)
+     *  and can still reach the old filesystem through /oldroot.
      */
     {
         run("mkdir -p /tmp/pivot-newroot 2>&1");
@@ -457,23 +464,41 @@ int main(void)
                 waitpid(pid, &status, 0);
                 if (WIFEXITED(status)) {
                     int ec = WEXITSTATUS(status);
-                    check(ec == 0, "pivot_root: old root accessible at put_old");
+                    check(ec == 0, "pivot_root: child sees old root at put_old");
                 } else {
-                    check(0, "pivot_root: old root accessible at put_old");
+                    check(0, "pivot_root: child sees old root at put_old");
+                }
+
+                /* After pivot_root + chroot_fs_refs propagation the
+                 * parent's root has also been switched to the new root
+                 * (tmpfs).  Verify with a direct stat syscall — shell
+                 * commands are unavailable because /bin/sh is now under
+                 * /oldroot. */
+                {
+                    struct stat st;
+                    int parent_ok = (stat("/oldroot", &st) == 0 &&
+                                     S_ISDIR(st.st_mode));
+                    check(parent_ok,
+                          "pivot_root: parent root updated (chroot_fs_refs)");
                 }
             } else {
                 check(0, "pivot_root: fork failed");
             }
 
-            /* cleanup (parent still has the old root) */
-            run("umount /tmp/pivot-newroot 2>&1");
+            /* No umount cleanup: after pivot_root the mount tree is
+             * permanently rearranged.  The old mountpoint slot was
+             * cleared by pivot_mount, and the parent's root is now the
+             * tmpfs.  The QEMU VM is discarded after the test. */
         } else {
             check(0, "pivot_root: mount tmpfs for new root");
         }
     }
 
-    /* Cleanup */
+    /* Cleanup: after a successful pivot_root the old filesystem is at
+     * /oldroot; if pivot_root was not reached the original paths apply.
+     * One of these two calls will succeed, the other silently fails. */
     unlink("/tmp/ul-test.img");
+    unlink("/oldroot/tmp/ul-test.img");
 
     printf("=== total: %d passed, %d failed ===\n", pass, fail);
 

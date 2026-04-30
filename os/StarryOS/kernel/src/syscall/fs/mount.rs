@@ -130,8 +130,21 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
         return Err(AxError::InvalidInput);
     }
 
-    // Perform pivot: swap the root mount
+    // Capture the old root mountpoint BEFORE the pivot, so that we can
+    // propagate the change to every other task afterwards (Linux
+    // chroot_fs_refs semantics).
+    let old_root_mp = ctx.root_dir().mountpoint().clone();
+
+    // Perform pivot: swap the root mount (updates this task's FsContext).
     ctx.pivot_root(new_root_loc, put_old_loc)?;
+
+    let new_root_loc = ctx.root_dir().clone();
+    drop(ctx); // Release this task's lock before touching others.
+
+    // Propagate root / cwd to all other tasks whose root_dir or current_dir
+    // still points at the old root mountpoint — mirroring Linux
+    // chroot_fs_refs() in fs/namespace.c.
+    ax_fs::FsContext::propagate_pivot_root(&old_root_mp, &new_root_loc);
 
     Ok(0)
 }
