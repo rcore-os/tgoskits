@@ -190,6 +190,57 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
 }
 
 #[test]
+fn unclean_shutdown_mount_state_does_not_set_error_fs() {
+    // Test idea: a crash after mount should leave the filesystem unclean, but
+    // it must not be reported as EXT4_ERROR_FS on the next boot.
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    {
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        fs.sync_superblock(&mut jbd2_dev)
+            .expect("persist dirty mount state");
+    }
+
+    let dirty_sb = read_superblock(&device);
+    assert_eq!(dirty_sb.s_state & Ext4Superblock::EXT4_VALID_FS, 0);
+    assert_eq!(dirty_sb.s_state & Ext4Superblock::EXT4_ERROR_FS, 0);
+
+    let mut remount_dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut remount_dev).expect("mount after unclean shutdown failed");
+    assert_eq!(fs.superblock.s_state & Ext4Superblock::EXT4_ERROR_FS, 0);
+    umount(fs, &mut remount_dev).expect("umount failed");
+
+    let clean_sb = read_superblock(&device);
+    assert_eq!(clean_sb.s_state, Ext4Superblock::EXT4_VALID_FS);
+}
+
+#[test]
+fn clean_unmount_preserves_real_error_fs_state() {
+    // Test idea: EXT4_ERROR_FS is an independent state bit. A clean unmount may
+    // mark the filesystem clean, but must not erase a recorded error.
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut sb = read_superblock(&device);
+    sb.s_state = Ext4Superblock::EXT4_VALID_FS | Ext4Superblock::EXT4_ERROR_FS;
+    sb.s_error_count = 1;
+    sb.update_checksum();
+    write_superblock(&device, &sb);
+
+    let mut remount_dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut remount_dev).expect("mount with error state failed");
+    assert_ne!(fs.superblock.s_state & Ext4Superblock::EXT4_ERROR_FS, 0);
+    umount(fs, &mut remount_dev).expect("umount failed");
+
+    let clean_sb = read_superblock(&device);
+    assert_ne!(clean_sb.s_state & Ext4Superblock::EXT4_VALID_FS, 0);
+    assert_ne!(clean_sb.s_state & Ext4Superblock::EXT4_ERROR_FS, 0);
+}
+
+#[test]
 fn corrupted_superblock_checksum_is_reported_as_euclean_on_mount() {
     // Test idea: corrupt only the stored superblock CRC field and ensure mount
     // rejects the image with the checksum-specific EUCLEAN errno.

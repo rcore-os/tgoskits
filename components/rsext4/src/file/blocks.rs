@@ -1,7 +1,7 @@
 use super::*;
 
 /// Builds block mappings and enables checksums for external extent nodes.
-pub(crate) fn build_file_block_mapping_with_inode_num<B: BlockDevice>(
+pub fn build_file_block_mapping_with_inode_num<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     inode: &mut Ext4Inode,
     inode_num: InodeNumber,
