@@ -1,9 +1,6 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use ostool::run::qemu::QemuConfig;
 
 use crate::{context::validate_supported_target, test::case::TestQemuCase};
@@ -12,72 +9,6 @@ const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
 
 pub(crate) fn qemu_config_name(arch: &str) -> String {
     format!("qemu-{arch}.toml")
-}
-
-pub(crate) fn discover_qemu_cases<T>(
-    test_suite_dir: &Path,
-    arch: &str,
-    selected_case: Option<&str>,
-    suite_case_label: &str,
-    suite_collection_label: &str,
-    mut load_case: impl FnMut(String, PathBuf, PathBuf) -> anyhow::Result<T>,
-    case_name: impl Fn(&T) -> &str,
-) -> anyhow::Result<Vec<T>> {
-    let config_name = qemu_config_name(arch);
-
-    if let Some(case_name) = selected_case {
-        let case_dir = test_suite_dir.join(case_name);
-        if !case_dir.is_dir() {
-            bail!(
-                "unknown {suite_case_label} `{case_name}` in {}; available cases are discovered \
-                 from direct subdirectories",
-                test_suite_dir.display()
-            );
-        }
-
-        let qemu_config_path = case_dir.join(&config_name);
-        if !qemu_config_path.is_file() {
-            bail!(
-                "{suite_case_label} `{case_name}` does not provide `{}`",
-                qemu_config_path.display()
-            );
-        }
-
-        return Ok(vec![load_case(
-            case_name.to_string(),
-            case_dir,
-            qemu_config_path,
-        )?]);
-    }
-
-    let mut cases = Vec::new();
-    for entry in fs::read_dir(test_suite_dir)
-        .with_context(|| format!("failed to read {}", test_suite_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        let qemu_config_path = path.join(&config_name);
-        if qemu_config_path.is_file() {
-            cases.push(load_case(name, path, qemu_config_path)?);
-        }
-    }
-    cases.sort_by(|left, right| case_name(left).cmp(case_name(right)));
-
-    if cases.is_empty() {
-        bail!(
-            "no {suite_collection_label} for arch `{arch}` found under {}",
-            test_suite_dir.display()
-        );
-    }
-
-    Ok(cases)
 }
 
 pub(crate) fn normalize_qemu_test_commands<I, S>(

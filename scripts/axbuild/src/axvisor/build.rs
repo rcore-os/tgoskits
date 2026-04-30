@@ -29,6 +29,7 @@ pub struct AxvisorBoardConfig {
 struct LoadedAxvisorBuildConfig {
     build_info: AxvisorBuildInfo,
     target: String,
+    vm_configs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -62,6 +63,7 @@ impl AxvisorBoardConfig {
         LoadedAxvisorBuildConfig {
             build_info: self.arceos,
             target,
+            vm_configs: self.vm_configs,
         }
     }
 }
@@ -115,13 +117,14 @@ fn to_cargo_config(
         &config.target,
         request.plat_dyn,
     )?;
-    patch_axvisor_cargo_config(&mut cargo, request)?;
+    patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
     Ok(cargo)
 }
 
 fn patch_axvisor_cargo_config(
     cargo: &mut Cargo,
     request: &ResolvedAxvisorRequest,
+    config_vmconfigs: &[PathBuf],
 ) -> anyhow::Result<()> {
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
@@ -134,8 +137,16 @@ fn patch_axvisor_cargo_config(
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
 
-    if !request.vmconfigs.is_empty() {
-        let joined = std::env::join_paths(&request.vmconfigs)
+    let vmconfigs = if request.vmconfigs.is_empty() {
+        config_vmconfigs
+            .iter()
+            .map(|path| resolve_build_config_vmconfig_path(request, path))
+            .collect::<Vec<_>>()
+    } else {
+        request.vmconfigs.clone()
+    };
+    if !vmconfigs.is_empty() {
+        let joined = std::env::join_paths(&vmconfigs)
             .map_err(|e| anyhow!("failed to join vmconfig paths: {e}"))?;
         cargo.env.insert(
             "AXVISOR_VM_CONFIGS".to_string(),
@@ -148,6 +159,18 @@ fn patch_axvisor_cargo_config(
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
+}
+
+fn resolve_build_config_vmconfig_path(request: &ResolvedAxvisorRequest, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let workspace_root = request
+        .axvisor_dir
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(&request.axvisor_dir);
+    workspace_root.join(path)
 }
 
 fn default_axvisor_to_bin(arch: &str) -> bool {
@@ -239,6 +262,7 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
         let mut loaded = LoadedAxvisorBuildConfig {
             build_info: default_build_info,
             target: request.target.clone(),
+            vm_configs: Vec::new(),
         };
         if let Some(smp) = request.smp {
             loaded.build_info.max_cpu_num = Some(smp);
@@ -267,6 +291,7 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
                 let mut loaded = LoadedAxvisorBuildConfig {
                     build_info,
                     target: request.target.clone(),
+                    vm_configs: Vec::new(),
                 };
                 if let Some(smp) = request.smp {
                     loaded.build_info.max_cpu_num = Some(smp);
