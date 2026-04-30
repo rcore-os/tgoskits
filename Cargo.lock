@@ -6740,6 +6740,7 @@ dependencies = [
  "rdif-eth",
  "spin 0.10.0",
  "thiserror 2.0.18",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]

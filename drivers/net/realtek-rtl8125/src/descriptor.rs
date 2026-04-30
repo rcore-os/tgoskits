@@ -40,7 +40,7 @@ impl TxDesc {
         self.opts1 & DESC_OWN != 0
     }
 
-    pub fn packet_len(&self) -> usize {
+    pub fn len(&self) -> usize {
         (self.opts1 & RX_PACKET_LEN_MASK) as usize
     }
 }
