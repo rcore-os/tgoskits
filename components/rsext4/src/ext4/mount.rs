@@ -221,7 +221,7 @@ impl Ext4FileSystem {
 
                 let j_sb = JournalSuperBllockS::from_disk_bytes(&journal_data);
 
-                block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks);
+                block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks)?;
 
                 // Replay after reading the filesystem metadata. Superblock and
                 // descriptor writes are already forced to media to avoid stale

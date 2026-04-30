@@ -10,6 +10,7 @@ const DEFAULT_PORT = 2999;
 const DEFAULT_BOOT_ARG = 'fsckfix';
 const DEFAULT_ENV_NAME = 'extraboardargs';
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_LOGIN_REGEX_LENGTH = 512;
 const DEFAULT_LOGIN_REGEX = String.raw`(root@[^#\r\n]*#\s*$|[A-Za-z0-9_.-]+\s+login:\s*$|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[^\r\n]*[#$]\s*$)`;
 
 function usage() {
@@ -98,7 +99,14 @@ function parseArgs(argv) {
   if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs <= 0) {
     throw new Error(`invalid timeout: ${opts.timeoutMs}`);
   }
-  opts.loginPattern = new RegExp(opts.loginRegex, 'm');
+  if (opts.loginRegex.length > MAX_LOGIN_REGEX_LENGTH) {
+    throw new Error(`--login-regex is too long: ${opts.loginRegex.length} > ${MAX_LOGIN_REGEX_LENGTH}`);
+  }
+  try {
+    opts.loginPattern = new RegExp(opts.loginRegex, 'm');
+  } catch (err) {
+    throw new Error(`invalid --login-regex: ${err.message}`);
+  }
   return opts;
 }
 

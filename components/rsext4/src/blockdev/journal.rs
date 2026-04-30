@@ -55,10 +55,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         Ok(())
     }
 
-    fn journal_uninitialized_error() {
-        error!("journal is enabled but JBD2 state is not initialized; writing block directly");
-    }
-
     fn make_system(
         super_block: JournalSuperBllockS,
         journal_start_block: AbsoluteBN,
@@ -101,18 +97,24 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         let _ = self.journal_replay_checked();
     }
 
+    /// Replays the journal if JBD2 state is available.
+    ///
+    /// Returning `Incomplete` here is intentionally conservative: callers that
+    /// need recovery correctness should abort rather than continue with direct
+    /// writes when the filesystem advertises a journal but no journal state was
+    /// installed.
     pub(crate) fn journal_replay_checked(&mut self) -> ReplayStatus {
-        if self.journal_use {
-            let dev = self.inner.device_mut();
-            let jbd_sys = &mut self
-                .system
-                .as_mut()
-                .expect("JBD2 state must be initialized before journal replay");
-            jbd_sys.replay_with_mapping(dev, &self.journal_blocks)
-        } else {
+        if !self.journal_use {
             warn!("journal replay requested while journaling is disabled");
-            ReplayStatus::Complete
+            return ReplayStatus::Complete;
         }
+
+        let Some(jbd_sys) = self.system.as_mut() else {
+            error!("journal replay requested before JBD2 state was initialized");
+            return ReplayStatus::Incomplete;
+        };
+
+        jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks)
     }
 
     /// Enables or disables journal use at runtime.
@@ -134,14 +136,15 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         &mut self,
         super_block: JournalSuperBllockS,
         journal_blocks: Vec<AbsoluteBN>,
-    ) {
+    ) -> Ext4Result<()> {
         let Some(&journal_start_block) = journal_blocks.first() else {
             self.journal_blocks.clear();
             self.system = None;
-            return;
+            return Err(Ext4Error::corrupted());
         };
         self.journal_blocks = journal_blocks;
         self.system = Some(Self::make_system(super_block, journal_start_block));
+        Ok(())
     }
 
     /// Commits all buffered journal transactions during unmount.
@@ -172,7 +175,10 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         let updates = Jbd2Update(block_id, new_buf);
 
         let Some(system) = self.system.as_mut() else {
-            Self::journal_uninitialized_error();
+            error!(
+                "journal is enabled but JBD2 state is not initialized; writing block {block_id} \
+                 directly"
+            );
             return self.inner.write_block(block_id);
         };
         let raw_dev = self.inner.device_mut();
@@ -220,7 +226,10 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         }
 
         let Some(system) = self.system.as_mut() else {
-            Self::journal_uninitialized_error();
+            error!(
+                "journal is enabled but JBD2 state is not initialized; writing {count} block(s) \
+                 starting at {block_id} directly"
+            );
             return self.inner.write_blocks(buf, block_id, count);
         };
         let raw_dev = self.inner.device_mut();
