@@ -6,7 +6,7 @@ pub type Result<T = ()> = core::result::Result<T, ()>;
 #[inline(always)]
 pub unsafe fn vmrun(vmcb_pa: u64) -> ! {
     unsafe {
-        asm!("vmrun {0}", in(reg) vmcb_pa, options(noreturn, nostack));
+        asm!("vmrun rax", in("rax") vmcb_pa, options(noreturn, nostack));
     }
 }
 
@@ -14,7 +14,7 @@ pub unsafe fn vmrun(vmcb_pa: u64) -> ! {
 #[inline(always)]
 pub unsafe fn vmsave(vmcb_pa: u64) -> Result {
     unsafe {
-        asm!("vmsave {0}", in(reg) vmcb_pa, options(nostack, preserves_flags));
+        asm!("vmsave rax", in("rax") vmcb_pa, options(nostack, preserves_flags));
     }
     Ok(())
 }
@@ -23,7 +23,7 @@ pub unsafe fn vmsave(vmcb_pa: u64) -> Result {
 #[inline(always)]
 pub unsafe fn vmload(vmcb_pa: u64) -> Result {
     unsafe {
-        asm!("vmload {0}", in(reg) vmcb_pa, options(nostack, preserves_flags));
+        asm!("vmload rax", in("rax") vmcb_pa, options(nostack, preserves_flags));
     }
     Ok(())
 }
@@ -46,9 +46,9 @@ pub unsafe fn clgi() {
 pub unsafe fn invlpga(addr: u64, asid: u32) {
     unsafe {
         asm!(
-            "invlpga {0}, {1:e}",
-            in(reg) addr,
-            in(reg) asid,
+            "invlpga rax, ecx",
+            in("rax") addr,
+            in("ecx") asid,
             options(nostack, preserves_flags),
         );
     }

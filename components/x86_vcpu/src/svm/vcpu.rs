@@ -1,4 +1,3 @@
-use alloc::collections::VecDeque;
 use core::{
     arch::asm,
     fmt::{Debug, Formatter, Result as FmtResult},
@@ -133,13 +132,6 @@ impl VmLoadSaveStates {
         }
     }
 
-    pub fn save_all(&mut self) {
-        self.save_fs_gs();
-        self.save_sysenter();
-        self.save_syscall();
-        self.save_segs();
-    }
-
     pub fn load_fs_gs(&self) {
         unsafe {
             Msr::IA32_FS_BASE.write(self.fs_base);
@@ -175,13 +167,6 @@ impl VmLoadSaveStates {
             );
         }
     }
-
-    pub fn load_all(&self) {
-        self.load_fs_gs();
-        self.load_sysenter();
-        self.load_syscall();
-        self.load_segs();
-    }
 }
 
 /// AMD SVM vCPU implementation backed by a VMCB, I/O permission map and MSR
@@ -198,7 +183,6 @@ pub struct SvmVcpu {
     load_save_states: VmLoadSaveStates,
     iopm: IOPm,
     msrpm: MSRPm,
-    pending_events: VecDeque<(u8, Option<u32>)>,
     xstate: XState,
 }
 
@@ -214,7 +198,6 @@ impl SvmVcpu {
             load_save_states: VmLoadSaveStates::default(),
             iopm: IOPm::passthrough_all()?,
             msrpm: MSRPm::passthrough_all()?,
-            pending_events: VecDeque::with_capacity(8),
             xstate: XState::new(),
         };
         info!("[HV] created SvmVcpu(vmcb: {:#x})", vcpu.vmcb.phys_addr());
@@ -451,16 +434,6 @@ impl SvmVcpu {
                 .control
                 .tlb_control
                 .modify(VmcbTlbControl::CONTROL::FlushGuestTlb);
-        }
-    }
-
-    fn cr(&self, cr_idx: usize) -> usize {
-        let vmcb = unsafe { self.vmcb.as_vmcb() };
-        match cr_idx {
-            0 => vmcb.state.cr0.get() as usize,
-            3 => vmcb.state.cr3.get() as usize,
-            4 => vmcb.state.cr4.get() as usize,
-            _ => unreachable!(),
         }
     }
 

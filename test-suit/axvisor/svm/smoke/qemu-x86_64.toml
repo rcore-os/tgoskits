@@ -28,4 +28,3 @@ shell_prefix = ">>"
 shell_init_cmd = "hello_world"
 to_bin = false
 uefi = false
-
