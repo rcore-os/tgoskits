@@ -127,18 +127,18 @@ fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
 
 ### 4. 可选：`prebuild.sh`
 
-如果测试需要安装额外的依赖包（如库文件）：
+如果测试需要安装额外的依赖包（rootfs 未默认提供的包）：
 
 ```sh
 #!/bin/sh
 set -eu
 
-apk add gcc musl-dev libusb-dev   # 按需添加
+apk add zlib-dev   # 按需添加
 ```
 
 该脚本通过 qemu-user 在 rootfs 内执行，可以直接使用 `apk add`。
 
-> **注意**：如果使用了 C 标准库头文件（如 `stdio.h`），需要安装 `gcc musl-dev`。
+> **注意**：rootfs 已默认包含基础构建工具链与常用开发包，不要重复安装默认包。
 
 ### 5. 编写 `qemu-<arch>.toml`
 
