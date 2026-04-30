@@ -30,6 +30,7 @@ mod regs;
 mod sbi_console;
 mod trap;
 mod vcpu;
+mod vpmu;
 
 pub use detect::detect_h_extension as has_hardware_support;
 pub use regs::GprIndex;
