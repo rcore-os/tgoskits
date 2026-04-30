@@ -179,6 +179,34 @@ fn e2fsck_readonly_clean(image: &Path, context: &str) {
     );
 }
 
+fn create_ext4_test_image(prefix: &str, size: &str) -> (PathBuf, PathBuf) {
+    let temp_dir = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir).expect("remove stale temp dir");
+    }
+    fs::create_dir(&temp_dir).expect("create temp dir");
+    let image = temp_dir.join("fs.img");
+
+    run_command(
+        {
+            let mut command = Command::new("truncate");
+            command.args(["-s", size]).arg(&image);
+            command
+        },
+        "truncate test image",
+    );
+    run_command(
+        {
+            let mut command = Command::new("mkfs.ext4");
+            command.args(["-F", "-q", "-b", "4096"]).arg(&image);
+            command
+        },
+        "mkfs.ext4 test image",
+    );
+
+    (temp_dir, image)
+}
+
 fn assert_debugfs_path_exists(image: &Path, path: &str) {
     let output = debugfs_query(image, &format!("stat {path}"));
     assert!(
@@ -342,6 +370,110 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
     assert_debugfs_path_exists(&image, "/replay-repro/a");
     assert_debugfs_path_exists(&image, "/replay-repro/b");
     e2fsck_readonly_clean(&image, "rsext4 csum-v3 journal replay");
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn e2fsck_clean_after_sparse_extent_truncate_keeps_tree_blocks_counted() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-sparse-truncate-repro", "64M");
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount image");
+
+        let path = "/extent-truncate.bin";
+        mkfile(&mut dev, &mut fs, path, None, None).expect("create sparse file");
+        for lbn in [0u64, 2, 4, 6, 8] {
+            write_file(
+                &mut dev,
+                &mut fs,
+                path,
+                lbn * BLOCK_SIZE as u64,
+                &[lbn as u8],
+            )
+            .expect("sparse write");
+        }
+
+        truncate(&mut dev, &mut fs, path, 9 * BLOCK_SIZE as u64).expect("truncate sparse file");
+        umount(fs, &mut dev).expect("umount image");
+    }
+
+    e2fsck_readonly_clean(&image, "sparse extent truncate");
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn e2fsck_clean_after_deleting_split_extent_file_frees_tree_blocks() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-split-extent-delete-repro", "64M");
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount image");
+
+        let path = "/extent-delete.bin";
+        mkfile(&mut dev, &mut fs, path, None, None).expect("create sparse file");
+        for lbn in [0u64, 2, 4, 6, 8] {
+            write_file(
+                &mut dev,
+                &mut fs,
+                path,
+                lbn * BLOCK_SIZE as u64,
+                &[0x80 | lbn as u8],
+            )
+            .expect("sparse write");
+        }
+
+        delete_file(&mut fs, &mut dev, path).expect("delete sparse file");
+        umount(fs, &mut dev).expect("umount image");
+    }
+
+    e2fsck_readonly_clean(&image, "split extent delete");
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn e2fsck_clean_after_exact_32768_block_extent() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-32768-extent-repro", "192M");
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount image");
+
+        let path = "/extent-32768.bin";
+        mkfile(&mut dev, &mut fs, path, None, None).expect("create file");
+        let block = vec![0x5a; BLOCK_SIZE];
+        for lbn in 0..32768u64 {
+            write_file(&mut dev, &mut fs, path, lbn * BLOCK_SIZE as u64, &block)
+                .expect("write contiguous extent block");
+        }
+
+        let content = read_file(&mut dev, &mut fs, path).expect("read exact 32768-block file");
+        assert_eq!(content.len(), 32768 * BLOCK_SIZE);
+        assert_eq!(&content[..16], &[0x5a; 16]);
+        assert_eq!(
+            &content[32767 * BLOCK_SIZE..32767 * BLOCK_SIZE + 16],
+            &[0x5a; 16]
+        );
+
+        umount(fs, &mut dev).expect("umount image");
+    }
+
+    e2fsck_readonly_clean(&image, "exact 32768-block extent");
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }
 

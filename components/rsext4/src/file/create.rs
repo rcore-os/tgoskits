@@ -1,4 +1,4 @@
-use super::{blocks::build_file_block_mapping, *};
+use super::*;
 
 pub fn create_symbol_link<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
@@ -102,7 +102,7 @@ pub fn create_symbol_link<B: BlockDevice>(
         new_inode.i_blocks_lo = iblocks_used;
         new_inode.l_i_blocks_high = 0; // iblocks_used is u32, so high part is 0
 
-        build_file_block_mapping(fs, &mut new_inode, &data_blocks, device);
+        build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_ino, &data_blocks, device);
     }
 
     let mut create_update = Ext4InodeMetadataUpdate::create(symlink_mode);
@@ -257,7 +257,13 @@ pub fn mkfile<B: BlockDevice>(
         new_inode.i_blocks_lo = used_blocks_lo;
         new_inode.l_i_blocks_high = (iblocks_used >> 32) as u16;
 
-        build_file_block_mapping(fs, &mut new_inode, &data_blocks, device);
+        build_file_block_mapping_with_inode_num(
+            fs,
+            &mut new_inode,
+            new_file_ino,
+            &data_blocks,
+            device,
+        );
     } else {
         // Empty file starts with no data blocks.
         new_inode.i_size_lo = 0;
