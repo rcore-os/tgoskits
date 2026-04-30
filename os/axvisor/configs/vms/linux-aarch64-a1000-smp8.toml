@@ -33,17 +33,19 @@ dtb_path = "/path/to/dtb"
 # The load address of the device tree blob (DTB).
 dtb_load_addr = 0x1_cef0_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
-# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
   [0x1_ce80_0000, 0x2000_0000, 0x7, 1], # System RAM 1G MAP_IDENTICAL
   [0x8000_0000, 0x7000_0000, 0xf, 2],
 ]
+
 #
 # Device specifications
 #
 [devices]
 # The interrupt mode.
 interrupt_mode = "passthrough"
+
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 emu_devices = []
@@ -51,7 +53,7 @@ emu_devices = []
 # Pass-through devices.
 # Name Base-Ipa Base-Pa Length Alloc-Irq.
 passthrough_devices = [
-["most-devices", 0x0, 0x0, 0x8000_0000, 0x1],
+  ["most-devices", 0x0, 0x0, 0x8000_0000, 0x1],
 ]
 
 # Passthrough addresses.
@@ -60,6 +62,7 @@ passthrough_addresses = [
     #[0x28041000, 0x100_0000]
 ]
 
+# Devices that are not desired to be passed through to the guest
 excluded_devices = [
    # ["/gic-v3"],
 ]

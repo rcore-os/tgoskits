@@ -77,10 +77,12 @@ range-alloc-arceos
 axplat-riscv64-qemu-virt-hv
 riscv-h
 riscv_vcpu
+rk3588-pci
 rockchip-npu
 rockchip-soc
 rsext4
 scope-local
+simple-sdmmc
 starry-process
 starry-vm
 tg-xtask

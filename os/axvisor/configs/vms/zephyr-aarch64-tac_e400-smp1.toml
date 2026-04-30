@@ -30,7 +30,7 @@ kernel_path = "/path/to/zephyr-tac-e400.bin"
 # The load address of the device tree blob (DTB).
 dtb_load_addr = 0x20_2000_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
-# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
     [0x20_2000_0000, 0x2000_0000, 0x7, 2], # System RAM MAP_IDENTICAL
 ]

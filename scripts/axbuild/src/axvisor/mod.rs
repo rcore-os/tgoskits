@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use ostool::{
     board::{RunBoardOptions, config::BoardRunConfig},
     build::config::Cargo,
@@ -11,7 +10,6 @@ use crate::{
     axvisor::context::AxvisorContext,
     command_flow::{self, SnapshotPersistence},
     context::{AppContext, AxvisorCliArgs, ResolvedAxvisorRequest},
-    test_qemu,
 };
 
 pub mod board;
@@ -21,6 +19,7 @@ pub mod config;
 pub mod context;
 pub mod image;
 pub mod rootfs;
+pub mod test;
 
 pub use cli::{
     ArgsBoard, ArgsBuild, ArgsConfig, ArgsDefconfig, ArgsQemu, ArgsTest, ArgsUboot, Command,
@@ -147,173 +146,6 @@ impl Axvisor {
         }
     }
 
-    async fn test_qemu(&mut self, args: cli::ArgsTestQemu) -> anyhow::Result<()> {
-        let (arch, target) = test_qemu::parse_axvisor_test_target(&args.arch, &args.target)?;
-
-        println!(
-            "running axvisor qemu tests for arch: {} (target: {})",
-            arch, target
-        );
-
-        let vmconfigs = match arch.as_str() {
-            "aarch64" => vec![PathBuf::from(test_qemu::AXVISOR_LINUX_AARCH64_VMCONFIG)],
-            "riscv64" => vec![PathBuf::from(test_qemu::AXVISOR_LINUX_RISCV64_VMCONFIG)],
-            "x86_64" => vec![PathBuf::from(test_qemu::AXVISOR_NIMBOS_X86_64_VMCONFIG)],
-            "loongarch64" => vec![],
-            _ => unreachable!(),
-        };
-
-        let request = self.prepare_request(
-            axvisor_qemu_test_build_args(&arch, vmconfigs),
-            None,
-            None,
-            SnapshotPersistence::Discard,
-        )?;
-        rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), None).await?;
-        let shell = test_qemu::axvisor_test_shell_config(&arch)?;
-        let cargo = build::load_cargo_config(&request)?;
-        let mut qemu_config = self.load_qemu_config(&request, &cargo, None).await?;
-        apply_shell_autoinit_config(&mut qemu_config, &shell);
-
-        self.app
-            .qemu(cargo, request.build_info_path, Some(qemu_config))
-            .await
-            .with_context(|| "axvisor qemu test failed")
-    }
-
-    async fn test_uboot(&mut self, args: cli::ArgsTestUboot) -> anyhow::Result<()> {
-        let board = test_qemu::axvisor_uboot_board_config(&args.board, &args.guest)?;
-        let explicit_uboot_config = args.uboot_config.clone();
-        let uboot_config_summary = explicit_uboot_config
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "using ostool default search".to_string());
-
-        if let Some(path) = explicit_uboot_config.as_ref()
-            && !path.exists()
-        {
-            bail!(
-                "missing explicit U-Boot config `{}` for axvisor board tests",
-                path.display()
-            );
-        }
-
-        println!(
-            "running axvisor uboot test for board: {} guest: {} with vmconfig: {}",
-            board.board, board.guest, board.vmconfig
-        );
-
-        let mut request = self.prepare_request(
-            axvisor_uboot_test_build_args(board.build_config, board.vmconfig),
-            None,
-            explicit_uboot_config.clone(),
-            SnapshotPersistence::Discard,
-        )?;
-        request.uboot_config = explicit_uboot_config;
-
-        let cargo = build::load_cargo_config(&request)?;
-        let uboot = self.load_uboot_config(&request, &cargo).await?;
-        self.app
-            .uboot(cargo, request.build_info_path, uboot)
-            .await
-            .with_context(|| {
-                format!(
-                    "axvisor uboot test failed for board `{}` guest `{}` (build_config={}, \
-                     vmconfig={}, uboot_config={})",
-                    board.board,
-                    board.guest,
-                    board.build_config,
-                    board.vmconfig,
-                    uboot_config_summary
-                )
-            })
-    }
-
-    async fn test_board(&mut self, args: cli::ArgsTestBoard) -> anyhow::Result<()> {
-        if args.board_test_config.is_some() && args.test_group.is_none() {
-            bail!(
-                "`--board-test-config` requires `--test-group` because board test configs embed a \
-                 single board_type"
-            );
-        }
-
-        if let Some(path) = args.board_test_config.as_ref()
-            && !path.exists()
-        {
-            bail!("missing explicit board test config `{}`", path.display());
-        }
-
-        let groups = test_qemu::axvisor_board_test_groups(args.test_group.as_deref())?;
-        let total = groups.len();
-        let mut failed = Vec::new();
-
-        for (index, group) in groups.into_iter().enumerate() {
-            let board_test_config = args
-                .board_test_config
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(group.board_test_config));
-            let board_test_config_summary = board_test_config.display().to_string();
-
-            if !board_test_config.exists() {
-                eprintln!(
-                    "failed: {}: missing board test config `{}`",
-                    group.name, board_test_config_summary
-                );
-                failed.push(group.name.to_string());
-                continue;
-            }
-
-            println!("[{}/{}] axvisor board {}", index + 1, total, group.name);
-
-            let result = async {
-                let prepared_vmconfigs = group.vmconfigs.iter().map(PathBuf::from).collect();
-                let request = self.prepare_request(
-                    axvisor_board_test_build_args(&group, prepared_vmconfigs),
-                    None,
-                    None,
-                    SnapshotPersistence::Discard,
-                )?;
-                let cargo = build::load_cargo_config(&request)?;
-                let board_config = self
-                    .load_board_config(&cargo, Some(board_test_config.as_path()))
-                    .await?;
-                self.app
-                    .board(
-                        cargo,
-                        request.build_info_path,
-                        board_config,
-                        RunBoardOptions {
-                            board_type: args.board_type.clone(),
-                            server: args.server.clone(),
-                            port: args.port,
-                        },
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "axvisor board test failed for group `{}` (build_config={}, \
-                             board_test_config={}, vmconfigs={})",
-                            group.name,
-                            group.build_config,
-                            board_test_config_summary,
-                            group.vmconfigs.join(", ")
-                        )
-                    })
-            }
-            .await;
-
-            match result {
-                Ok(()) => println!("ok: {}", group.name),
-                Err(err) => {
-                    eprintln!("failed: {}: {:#}", group.name, err);
-                    failed.push(group.name.to_string());
-                }
-            }
-        }
-
-        test_qemu::finalize_board_test_run(&failed)
-    }
-
     fn prepare_request(
         &mut self,
         args: AxvisorCliArgs,
@@ -400,52 +232,6 @@ impl Axvisor {
         let cargo = build::load_cargo_config(&request)?;
         let uboot = self.load_uboot_config(&request, &cargo).await?;
         self.app.uboot(cargo, request.build_info_path, uboot).await
-    }
-}
-
-fn apply_shell_autoinit_config(config: &mut QemuConfig, shell: &test_qemu::ShellAutoInitConfig) {
-    config.success_regex = shell.success_regex.clone();
-    config.fail_regex = shell.fail_regex.clone();
-    config.shell_prefix = Some(shell.shell_prefix.clone());
-    config.shell_init_cmd = Some(shell.shell_init_cmd.clone());
-}
-
-fn axvisor_qemu_test_build_args(arch: &str, vmconfigs: Vec<PathBuf>) -> AxvisorCliArgs {
-    AxvisorCliArgs {
-        config: None,
-        arch: Some(arch.to_string()),
-        target: None,
-        plat_dyn: None,
-        smp: None,
-        debug: false,
-        vmconfigs,
-    }
-}
-
-fn axvisor_uboot_test_build_args(build_config: &str, vmconfig: &str) -> AxvisorCliArgs {
-    AxvisorCliArgs {
-        config: Some(PathBuf::from(build_config)),
-        arch: None,
-        target: None,
-        plat_dyn: None,
-        smp: None,
-        debug: false,
-        vmconfigs: vec![PathBuf::from(vmconfig)],
-    }
-}
-
-fn axvisor_board_test_build_args(
-    group: &test_qemu::AxvisorBoardTestGroup,
-    vmconfigs: Vec<PathBuf>,
-) -> AxvisorCliArgs {
-    AxvisorCliArgs {
-        config: Some(PathBuf::from(group.build_config)),
-        arch: None,
-        target: None,
-        plat_dyn: None,
-        smp: None,
-        debug: false,
-        vmconfigs,
     }
 }
 

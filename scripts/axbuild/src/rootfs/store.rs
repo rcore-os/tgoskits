@@ -116,16 +116,39 @@ fn archive_path(workspace_root: &Path, image_name: &str) -> PathBuf {
     rootfs_dir(workspace_root).join(archive_name(image_name))
 }
 
+/// Minimum acceptable size for a managed rootfs image.  Any file smaller than
+/// this is considered corrupt (e.g. an interrupted extraction) and will be
+/// removed and re-downloaded.
+const MIN_ROOTFS_IMAGE_SIZE: u64 = 1024 * 1024; // 1 MiB
+
 /// Ensures a named managed rootfs image exists in the workspace cache.
 ///
 /// This function downloads the corresponding archive on demand and retries once
-/// if extraction fails due to a corrupt cached archive.
+/// if extraction fails due to a corrupt cached archive.  It also treats
+/// images that are smaller than [`MIN_ROOTFS_IMAGE_SIZE`] as corrupt and
+/// triggers a fresh download, since a truncated file left by an interrupted
+/// extraction would otherwise cause a silent QEMU boot failure.
 async fn ensure_rootfs_image(workspace_root: &Path, image_name: &str) -> anyhow::Result<PathBuf> {
     let rootfs_dir = rootfs_dir(workspace_root);
     let image_path = rootfs_dir.join(image_name);
 
-    if image_path.exists() {
-        return Ok(image_path);
+    if let Ok(metadata) = tokio_fs::metadata(&image_path).await {
+        if metadata.len() >= MIN_ROOTFS_IMAGE_SIZE {
+            return Ok(image_path);
+        }
+        // File exists but is too small — likely a truncated or empty file from
+        // a previously interrupted download/extraction.  Remove it so that the
+        // download+extraction path below runs cleanly.
+        eprintln!(
+            "managed rootfs image `{}` is too small ({} bytes, expected >= {} bytes), removing \
+             and re-downloading",
+            image_path.display(),
+            metadata.len(),
+            MIN_ROOTFS_IMAGE_SIZE
+        );
+        tokio_fs::remove_file(&image_path)
+            .await
+            .with_context(|| format!("failed to remove corrupt image {}", image_path.display()))?;
     }
 
     tokio_fs::create_dir_all(&rootfs_dir)

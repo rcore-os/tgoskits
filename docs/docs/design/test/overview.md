@@ -13,7 +13,7 @@ sidebar_label: "总览"
 
 ## 2. 测试架构总图
 
-当前仓库的主流测试链路统一收敛到 `scripts/axbuild` 中的测试入口，再通过 `AppContext` 和 `ostool` 执行底层构建、QEMU、U-Boot 或板级运行。
+当前仓库的主流测试链路统一收敛到 `scripts/axbuild` 中的测试入口，再通过 `AppContext` 和 `ostool` 执行底层构建、QEMU、U-Boot 或板级运行。StarryOS 与 Axvisor 的 QEMU 测试现在采用基本一致的编排模型：先发现本轮要运行的全部 case，再准备共享构建请求和 rootfs，OS 本体只构建一次，随后逐 case 读取运行配置并启动 QEMU。
 
 ```mermaid
 flowchart TD
@@ -21,7 +21,9 @@ flowchart TD
     mod["scripts/axbuild/src/<os>/mod.rs"]
     parse["参数解析 / 目标架构归一化"]
     discover["用例发现 / 白名单筛选 / 测试组展开"]
-    assets["构建资产准备<br/>rootfs / guest image / disk.img / vmconfig"]
+    assets["共享资产准备<br/>rootfs / guest image / disk.img / vmconfig"]
+    buildonce["OS 构建一次<br/>共享 kernel / hypervisor 产物"]
+    caseassets["逐 case 资产处理<br/>overlay / C/Python/sh / grouped runner"]
     loadcfg["读取 qemu / board / uboot 配置"]
     app["AppContext::{qemu, board, uboot}"]
     runtime["ostool + 外部工具链 / QEMU / 串口交互"]
@@ -34,7 +36,9 @@ flowchart TD
     mod --> loadcfg
     parse --> app
     discover --> app
-    assets --> app
+    assets --> buildonce
+    buildonce --> caseassets
+    caseassets --> app
     loadcfg --> app
     app --> runtime
     runtime --> result
@@ -45,6 +49,7 @@ flowchart TD
 - 测试入口在什么代码路径
 - 用例是自动发现还是硬编码注册
 - 运行前会准备哪些资产
+- 哪些资产在 suite 级共享，哪些资产在 case 级注入
 - 成功/失败如何判定
 - 当前哪些能力是正式支持，哪些仍是占位或限制项
 
@@ -77,10 +82,10 @@ flowchart TD
 
 | 范围 | 主要实现入口 | 说明 |
 |------|--------------|------|
-| StarryOS 测试 | `scripts/axbuild/src/starry/mod.rs`、`scripts/axbuild/src/starry/test_suit.rs`、`scripts/axbuild/src/starry/rootfs.rs` | 负责 case 发现、rootfs 准备、case 资产注入和运行汇总 |
-| Axvisor 测试 | `scripts/axbuild/src/axvisor/mod.rs`、`scripts/axbuild/src/axvisor/qemu_test.rs` | 负责 QEMU/U-Boot/板测分发、guest 资产准备和硬编码测试组展开 |
-| ArceOS 测试 | `scripts/axbuild/src/arceos/mod.rs`、`scripts/axbuild/src/test_qemu.rs` | 负责 Rust/C 测试分流、包白名单、C 测试目录白名单和运行汇总 |
-| 主机端测试 | `scripts/axbuild/src/test_std.rs`、`cargo xtask clippy` 对应入口 | 负责白名单 std 测试和静态检查 |
+| StarryOS 测试 | `scripts/axbuild/src/starry/mod.rs`、`scripts/axbuild/src/starry/test.rs`、`scripts/axbuild/src/test/` | 负责 case 发现、共享 rootfs 准备、OS build-once、case 资产注入和运行汇总 |
+| Axvisor 测试 | `scripts/axbuild/src/axvisor/mod.rs`、`scripts/axbuild/src/axvisor/test.rs`、`scripts/axbuild/src/test/` | 负责 QEMU/U-Boot/板测分发、guest/rootfs 准备、OS build-once 和 test-suit 用例展开 |
+| ArceOS 测试 | `scripts/axbuild/src/arceos/mod.rs`、`scripts/axbuild/src/arceos/test.rs`、`scripts/axbuild/src/test/` | 负责 Rust/C 测试分流、包白名单、C 测试目录白名单和运行汇总 |
+| 主机端测试 | `scripts/axbuild/src/test/std.rs`、`cargo xtask clippy` 对应入口 | 负责白名单 std 测试和静态检查 |
 
 ## 5. 覆盖范围
 
@@ -108,7 +113,7 @@ flowchart TD
 | 命名规则与共享配置 | [命名规则与共享配置](/docs/design/test/naming) | 共享配置文件类型、目录/文件命名规则、架构命名、发现路径约定 |
 | 测试基础设施与环境 | [测试基础设施与环境](/docs/design/test/infrastructure) | Container 镜像设计、CI 集成方式、镜像发布流程与触发条件 |
 | StarryOS 测试套件 | [StarryOS 测试套件设计](/docs/design/test/starryos) | 分组、现有用例清单、C/Rust/无源码用例、QEMU 与板级测试流程、新增用例指南 |
-| Axvisor 测试套件 | [Axvisor 测试套件设计](/docs/design/test/axvisor) | QEMU、U-Boot、板级测试的硬编码测试组和新增指南 |
+| Axvisor 测试套件 | [Axvisor 测试套件设计](/docs/design/test/axvisor) | QEMU、U-Boot、板级测试的 test-suit 用例组织和新增指南 |
 | ArceOS 测试套件 | [ArceOS 测试套件设计](/docs/design/test/arceos) | C/Rust 测试结构、发现机制、构建运行流程、构建配置与新增指南 |
 
 ## 7. 相关文档

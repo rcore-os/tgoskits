@@ -66,16 +66,34 @@ Do not use `saveenv`; this is a one-shot recovery path. Prefer `extraboardargs=f
 Use this repair before a destructive board validation and again after StarryOS writes to the Linux rootfs:
 
 1. Repair and prove Linux boots with this skill.
-2. Run the Starry board workload, preferably through `cargo xtask starry test board ...`.
+2. Run the Starry board workload, preferably through `cargo xtask starry test board ...`. For a minimal rootfs safety check, create a temporary config outside the repository:
+
+```toml
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "echo STARRY_MINIMAL_BOOT_OK"
+success_regex = ["(?m)^STARRY_MINIMAL_BOOT_OK\\s*$"]
+fail_regex = ["(?i)(kernel panic|panicked at|fatal exception)"]
+timeout = 180
+```
+
+Then run:
+
+```bash
+cargo xtask starry test board -t smoke-orangepi-5-plus \
+  --board-test-config /tmp/starry-minimal-orangepi-5-plus.toml
+```
+
 3. Boot Linux normally, without `fsckfix`, to check whether initramfs fsck reports corruption:
 
 ```bash
 cargo xtask board connect -b OrangePi-5-Plus
 ```
 
-4. Treat these normal-boot messages as evidence that StarryOS damaged the rootfs: `fsck.ext4 -a -C0 /dev/mmcblk0p2`, `recovering journal`, `directory corrupted`, `UNEXPECTED INCONSISTENCY; RUN fsck MANUALLY`, or `requires a manual fsck`.
-5. If Linux fails fsck, save the failing serial log, release the serial session, then run this repair again before returning the board to the pool.
-6. A Starry test may reach `root@starry:/root #` but still fail its command or time out; still perform the Linux normal-boot check before concluding the rootfs is safe.
+4. Passing evidence: Starry reaches `root@starry:/root #` and prints the success marker; Linux normal boot reaches a login/user shell and does not print `directory corrupted`, `UNEXPECTED INCONSISTENCY`, or `requires a manual fsck`.
+5. A Linux normal boot may print `recovering journal`, run `fsck.ext4 -a`, and exit fsck with status code `1`; this means filesystem errors were corrected automatically. Treat it as acceptable only if boot continues to a prompt and no manual-fsck corruption message appears.
+6. If Linux fails fsck, save the failing serial log, release the serial session, then run this repair again before returning the board to the pool.
+7. A Starry test may reach `root@starry:/root #` but still fail its command or time out; still perform the Linux normal-boot check before concluding the rootfs is safe.
 
 ## Failure Handling
 

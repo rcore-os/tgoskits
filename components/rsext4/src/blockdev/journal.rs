@@ -9,8 +9,11 @@ use crate::{
     bmalloc::AbsoluteBN,
     config::{BLOCK_SIZE, JBD2_BUFFER_MAX},
     disknode::Ext4Timestamp,
-    error::Ext4Result,
-    jbd2::jbdstruct::{JBD2DEVSYSTEM, Jbd2Update, JournalSuperBllockS},
+    error::{Ext4Error, Ext4Result},
+    jbd2::{
+        jbd2::ReplayStatus,
+        jbdstruct::{JBD2DEVSYSTEM, Jbd2Update, JournalSuperBllockS},
+    },
 };
 
 /// Runtime state of the journal proxy.
@@ -25,16 +28,17 @@ pub struct Jbd2Dev<B: BlockDevice> {
     inner: BlockDev<B>,
     journal_use: bool,
     _state: Jbd2RunState,
-    systeam: Option<JBD2DEVSYSTEM>,
+    system: Option<JBD2DEVSYSTEM>,
+    journal_blocks: Vec<AbsoluteBN>,
 }
 
 impl<B: BlockDevice> Jbd2Dev<B> {
     fn enqueue_journal_update(
-        systeam: &mut JBD2DEVSYSTEM,
+        system: &mut JBD2DEVSYSTEM,
         raw_dev: &mut B,
         update: Jbd2Update,
     ) -> Ext4Result<()> {
-        if let Some(existing) = systeam
+        if let Some(existing) = system
             .commit_queue
             .iter_mut()
             .find(|queued| queued.0 == update.0)
@@ -43,12 +47,26 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return Ok(());
         }
 
-        if systeam.commit_queue.len() >= JBD2_BUFFER_MAX {
-            systeam.commit_transaction(raw_dev)?;
+        if system.commit_queue.len() >= JBD2_BUFFER_MAX {
+            system.commit_transaction(raw_dev)?;
         }
 
-        systeam.commit_queue.push(update);
+        system.commit_queue.push(update);
         Ok(())
+    }
+
+    fn make_system(
+        super_block: JournalSuperBllockS,
+        journal_start_block: AbsoluteBN,
+    ) -> JBD2DEVSYSTEM {
+        JBD2DEVSYSTEM {
+            start_block: journal_start_block,
+            max_len: super_block.s_maxlen,
+            head: 0,
+            sequence: super_block.s_sequence,
+            jbd2_super_block: super_block,
+            commit_queue: Vec::new(),
+        }
     }
 
     /// Creates a new JBD2 block device proxy.
@@ -59,7 +77,8 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             inner: block_dev,
             journal_use: use_journal,
             _state: Jbd2RunState::Commit,
-            systeam: None,
+            system: None,
+            journal_blocks: Vec::new(),
         }
     }
 
@@ -70,21 +89,32 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
     /// Returns the current journal transaction sequence if journal is active.
     pub fn journal_sequence(&self) -> Option<u32> {
-        self.systeam.as_ref().map(|s| s.sequence)
+        self.system.as_ref().map(|s| s.sequence)
     }
 
     /// Replays the journal if the proxy is configured to use it.
     pub fn journal_replay(&mut self) {
-        if self.journal_use {
-            let dev = self.inner.device_mut();
-            let jbd_sys = &mut self
-                .systeam
-                .as_mut()
-                .expect("jbd2dev are not initial,please initial the jbd2dev first!");
-            jbd_sys.replay(dev);
-        } else {
-            warn!("Jouranl function not turn ,please turn on this function and retry!");
+        let _ = self.journal_replay_checked();
+    }
+
+    /// Replays the journal if JBD2 state is available.
+    ///
+    /// Returning `Incomplete` here is intentionally conservative: callers that
+    /// need recovery correctness should abort rather than continue with direct
+    /// writes when the filesystem advertises a journal but no journal state was
+    /// installed.
+    pub(crate) fn journal_replay_checked(&mut self) -> ReplayStatus {
+        if !self.journal_use {
+            warn!("journal replay requested while journaling is disabled");
+            return ReplayStatus::Complete;
         }
+
+        let Some(jbd_sys) = self.system.as_mut() else {
+            error!("journal replay requested before JBD2 state was initialized");
+            return ReplayStatus::Incomplete;
+        };
+
+        jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks)
     }
 
     /// Enables or disables journal use at runtime.
@@ -96,17 +126,25 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     pub fn set_journal_superblock(
         &mut self,
         super_block: JournalSuperBllockS,
-        jouranl_start_block: AbsoluteBN,
+        journal_start_block: AbsoluteBN,
     ) {
-        let system = JBD2DEVSYSTEM {
-            start_block: jouranl_start_block,
-            max_len: super_block.s_maxlen,
-            head: 0,
-            sequence: super_block.s_sequence,
-            jbd2_super_block: super_block,
-            commit_queue: Vec::new(),
+        self.journal_blocks.clear();
+        self.system = Some(Self::make_system(super_block, journal_start_block));
+    }
+
+    pub(crate) fn set_journal_superblock_with_mapping(
+        &mut self,
+        super_block: JournalSuperBllockS,
+        journal_blocks: Vec<AbsoluteBN>,
+    ) -> Ext4Result<()> {
+        let Some(&journal_start_block) = journal_blocks.first() else {
+            self.journal_blocks.clear();
+            self.system = None;
+            return Err(Ext4Error::corrupted());
         };
-        self.systeam = Some(system);
+        self.journal_blocks = journal_blocks;
+        self.system = Some(Self::make_system(super_block, journal_start_block));
+        Ok(())
     }
 
     /// Commits all buffered journal transactions during unmount.
@@ -116,10 +154,10 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return;
         }
 
-        if let Some(system) = self.systeam.as_mut() {
+        if let Some(system) = self.system.as_mut() {
             system
-                .commit_transaction(self.inner.device_mut())
-                .expect("Translation commit failed!!!");
+                .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
+                .expect("journal transaction commit failed");
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");
         }
@@ -136,18 +174,17 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         new_buf[..].copy_from_slice(meta_vec);
         let updates = Jbd2Update(block_id, new_buf);
 
-        if self.systeam.is_none() {
+        let Some(system) = self.system.as_mut() else {
             error!(
-                "Journal systeam uninitial,but journal has turned，this sentence must be once!!!"
+                "journal is enabled but JBD2 state is not initialized; writing block {block_id} \
+                 directly"
             );
             return self.inner.write_block(block_id);
-        }
-
-        let systeam = self.systeam.as_mut().unwrap();
+        };
         let raw_dev = self.inner.device_mut();
 
-        Self::enqueue_journal_update(systeam, raw_dev, updates)?;
-        trace!("[JBD2 BUFFER] queued metadata block {block_id}");
+        Self::enqueue_journal_update(system, raw_dev, updates)?;
+        trace!("[JBD2 buffer] queued metadata block {block_id}");
         Ok(())
     }
 
@@ -188,15 +225,18 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return self.inner.write_blocks(buf, block_id, count);
         }
 
-        if self.systeam.is_none() {
+        let Some(system) = self.system.as_mut() else {
             error!(
-                "Journal systeam uninitial,but journal has turned，this sentence must be once!!!"
+                "journal is enabled but JBD2 state is not initialized; writing {count} block(s) \
+                 starting at {block_id} directly"
             );
             return self.inner.write_blocks(buf, block_id, count);
-        }
-
-        let systeam = self.systeam.as_mut().unwrap();
+        };
         let raw_dev = self.inner.device_mut();
+        let required = count as usize * BLOCK_SIZE;
+        if buf.len() < required {
+            return Err(Ext4Error::buffer_too_small(buf.len(), required));
+        }
 
         for i in 0..count {
             let off = (i as usize) * BLOCK_SIZE;
@@ -204,7 +244,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            Self::enqueue_journal_update(systeam, raw_dev, updates)?;
+            Self::enqueue_journal_update(system, raw_dev, updates)?;
         }
 
         Ok(())

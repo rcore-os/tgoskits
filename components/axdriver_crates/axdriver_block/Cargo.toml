@@ -21,6 +21,6 @@ bcm2835-sdhci = ["dep:bcm2835-sdhci"]
 ax-driver-base = { workspace = true }
 gpt_disk_io = { version = "0.16.2", default-features = false }
 log = { workspace = true }
-simple-sdmmc = { version = "0.1", optional = true }
+simple-sdmmc = { workspace = true, optional = true }
 simple-ahci = { version = "0.1.1-preview.1", optional = true }
 bcm2835-sdhci = { version = "0.1.1-preview.1", optional = true }

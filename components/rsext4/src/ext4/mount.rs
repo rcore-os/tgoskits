@@ -8,6 +8,63 @@ impl Ext4FileSystem {
         create_root_directory_entry(self, block_dev)
     }
 
+    fn dirty_for_mount(superblock: &mut Ext4Superblock) {
+        superblock.s_state = Ext4Superblock::EXT4_ERROR_FS;
+        superblock.s_mnt_count = superblock.s_mnt_count.saturating_add(1);
+    }
+
+    fn inode_cache_size(superblock: &Ext4Superblock) -> usize {
+        match superblock.s_inode_size {
+            0 => DEFAULT_INODE_SIZE as usize,
+            n => n as usize,
+        }
+    }
+
+    fn reset_runtime_from_superblock<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<()> {
+        self.group_count = self.superblock.block_groups_count();
+        self.group_descs =
+            Self::load_group_descriptors(block_dev, &self.superblock, self.group_count)?;
+        self.block_allocator = BlockAllocator::new(&self.superblock);
+        self.inode_allocator = InodeAllocator::new(&self.superblock);
+        self.bitmap_cache = BitmapCache::create_default();
+        self.inodetable_cahce =
+            InodeCache::new(INODE_CACHE_MAX, Self::inode_cache_size(&self.superblock));
+        self.datablock_cache = DataBlockCache::new(DATABLOCK_CACHE_MAX, BLOCK_SIZE);
+        Ok(())
+    }
+
+    fn reload_after_journal_replay<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<()> {
+        self.superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
+        self.superblock.verify_superblock()?;
+        Self::dirty_for_mount(&mut self.superblock);
+        self.reset_runtime_from_superblock(block_dev)
+    }
+
+    fn journal_blocks<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        journal_inode: &mut Ext4Inode,
+    ) -> Ext4Result<Vec<AbsoluteBN>> {
+        let journal_block_count = journal_inode.size().div_ceil(BLOCK_SIZE as u64);
+        let journal_block_map = resolve_inode_block_allextend(self, block_dev, journal_inode)?;
+        let mut journal_blocks = Vec::new();
+        for logical in 0..journal_block_count {
+            let logical = u32::try_from(logical).map_err(|_| Ext4Error::corrupted())?;
+            let phys = journal_block_map
+                .get(&logical)
+                .copied()
+                .ok_or_else(Ext4Error::corrupted)?;
+            journal_blocks.push(phys);
+        }
+        Ok(journal_blocks)
+    }
+
     /// Mounts an ext4 filesystem from the given block device.
     pub fn mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Result<Self, Ext4Error> {
         debug!("Start mounting Ext4 filesystem...");
@@ -17,7 +74,7 @@ impl Ext4FileSystem {
         // 2. load group descriptors and allocator state,
         // 3. repair bootstrap directories if they are missing,
         // 4. initialize journal replay state when journaling is enabled.
-        let superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
+        let mut superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
 
         if superblock.s_magic != EXT4_SUPER_MAGIC {
             error!(
@@ -35,6 +92,9 @@ impl Ext4FileSystem {
             warn!("Filesystem is in error state");
         }
 
+        // Mark the filesystem as "not cleanly unmounted" before any writes.
+        Self::dirty_for_mount(&mut superblock);
+
         let group_count = superblock.block_groups_count();
         debug!("Block group count: {group_count}");
 
@@ -51,11 +111,7 @@ impl Ext4FileSystem {
         // NOTE: inode size is a filesystem property (superblock.s_inode_size), not a fixed constant.
         // Using a wrong inode size will make inode table offsets incorrect and may read zeroed inodes
         // (e.g. /dev becomes mode=0, then VFS mount fails with ENOTDIR).
-        let inode_size = match superblock.s_inode_size {
-            0 => DEFAULT_INODE_SIZE as usize,
-            n => n as usize,
-        };
-        let inode_cache = InodeCache::new(INODE_CACHE_MAX, inode_size);
+        let inode_cache = InodeCache::new(INODE_CACHE_MAX, Self::inode_cache_size(&superblock));
         debug!("Inode cache initialized");
 
         let datablock_cache = DataBlockCache::new(DATABLOCK_CACHE_MAX, BLOCK_SIZE);
@@ -123,12 +179,12 @@ impl Ext4FileSystem {
         // then load its superblock and enable replay on the device wrapper.
         {
             if fs.superblock.has_journal() {
-                let mut jouranl_exist: bool = true;
+                let mut journal_exists = true;
                 fs.modify_inode(
                     block_dev,
                     InodeNumber::new(JOURNAL_FILE_INODE as u32)?,
                     |ji| {
-                        jouranl_exist = ji.i_mode != 0;
+                        journal_exists = ji.i_mode != 0;
                     },
                 )
                 .expect("file system error panic!");
@@ -136,7 +192,7 @@ impl Ext4FileSystem {
                 if fs
                     .superblock
                     .has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL)
-                    && !jouranl_exist
+                    && !journal_exists
                 {
                     create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
                 }
@@ -149,9 +205,11 @@ impl Ext4FileSystem {
                     .get_inode_by_num(block_dev, InodeNumber::new(JOURNAL_FILE_INODE as u32)?)
                     .expect("load journal inode failed");
 
-                let journal_first_block = resolve_inode_block(block_dev, &mut j_inode, 0)
-                    .and_then(|opt| opt.ok_or(Ext4Error::corrupted()))
-                    .expect("resolve journal first block failed");
+                let journal_blocks = fs.journal_blocks(block_dev, &mut j_inode)?;
+                let journal_first_block = journal_blocks
+                    .first()
+                    .copied()
+                    .ok_or_else(Ext4Error::corrupted)?;
 
                 fs.journal_sb_block_start = Some(journal_first_block);
                 let journal_data = fs
@@ -163,12 +221,20 @@ impl Ext4FileSystem {
 
                 let j_sb = JournalSuperBllockS::from_disk_bytes(&journal_data);
 
-                block_dev.set_journal_superblock(j_sb, fs.journal_sb_block_start.unwrap());
+                block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks)?;
 
                 // Replay after reading the filesystem metadata. Superblock and
                 // descriptor writes are already forced to media to avoid stale
                 // reads during fast recovery.
-                block_dev.journal_replay();
+                if block_dev.journal_replay_checked() != ReplayStatus::Complete {
+                    return Err(Ext4Error::corrupted());
+                }
+
+                // Journal replay can update the superblock, group descriptors,
+                // bitmaps, inode table, and directory blocks. Drop all metadata
+                // read before replay and continue mounting from the recovered
+                // on-disk state.
+                fs.reload_after_journal_replay(block_dev)?;
             }
         }
 
@@ -191,12 +257,12 @@ impl Ext4FileSystem {
                     inode_cache_key,
                     AbsoluteBN::new(inode_bitmap_blk),
                 )
-                .expect("Blcok Read Failed!")
+                .expect("block read failed")
                 .clone();
             let blockbitmap_data = fs
                 .bitmap_cache
                 .get_or_load(block_dev, data_cache_key, AbsoluteBN::new(data_bitmap_blk))
-                .expect("Blcok Read Failed!");
+                .expect("block read failed");
 
             if ext4_superblock_has_metadata_csum(&fs.superblock) {
                 if !g0.is_inode_bitmap_uninit() {
@@ -226,7 +292,7 @@ impl Ext4FileSystem {
                 }
             }
 
-            let mut indoe_count: u64 = 0;
+            let mut inode_count: u64 = 0;
             let mut datablock_count: u64 = 0;
             let inode_data_array = &inode_bitmap_data.data;
             let datablock_array = &blockbitmap_data.data;
@@ -238,7 +304,7 @@ impl Ext4FileSystem {
                         break;
                     }
                     if tmp & 0x1 == 0x1 {
-                        indoe_count += 1;
+                        inode_count += 1;
                     }
                     tmp >>= 1;
                 }
@@ -258,7 +324,7 @@ impl Ext4FileSystem {
             });
 
             debug!(
-                "Bitmap usage: inodes used = {indoe_count}, data blocks used = {datablock_count}"
+                "Bitmap usage: inodes used = {inode_count}, data blocks used = {datablock_count}"
             );
         }
 
@@ -277,6 +343,11 @@ impl Ext4FileSystem {
         fs.inodetable_cahce
             .flush_all(block_dev)
             .expect("flush failed!");
+
+        // Write the superblock with s_state = EXT4_ERROR_FS to disk so that if
+        // the system crashes before a clean umount, Linux will detect the dirty
+        // state and perform journal recovery / fsck.
+        fs.sync_superblock(block_dev)?;
 
         Ok(fs)
     }

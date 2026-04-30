@@ -23,8 +23,15 @@ impl Ext4FileSystem {
         }
 
         debug!("Unmounting Ext4 filesystem...");
+
+        // Mark clean in memory first so that sync_filesystem writes the
+        // superblock with s_state = EXT4_VALID_FS through the journal.
+        self.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
+
         self.sync_filesystem(block_dev)?;
 
+        // Commit the journal transaction so all queued metadata (including
+        // the superblock with s_state = VALID_FS) is checkpointed to disk.
         block_dev.umount_commit();
 
         self.mounted = false;
@@ -63,7 +70,7 @@ impl Ext4FileSystem {
                 if let Some(prev_block) = current_block
                     && Some(prev_block) == buffer_snapshot_block
                 {
-                    block_dev.write_block(prev_block, false)?;
+                    block_dev.write_block(prev_block, true)?;
                 }
 
                 block_dev.read_block(block_num)?;
@@ -114,6 +121,15 @@ impl Ext4FileSystem {
 
         self.superblock.update_checksum();
         write_superblock(block_dev, &self.superblock)
+    }
+
+    /// Marks the filesystem clean and writes the superblock.
+    ///
+    /// Call this during a clean unmount so that Linux sees `s_state =
+    /// EXT4_VALID_FS` and skips fsck on the next boot.
+    pub fn mark_clean<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
+        self.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
+        self.sync_superblock(block_dev)
     }
 }
 

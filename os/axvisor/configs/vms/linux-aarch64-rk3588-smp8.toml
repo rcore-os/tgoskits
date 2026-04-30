@@ -40,7 +40,7 @@ dtb_path = "/path/to/dtb"
 # disk_path = "disk.img"
 
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
-# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
     [0x940_0000, 0xd550_0000, 0x7, 1], # ram 3G MAP_IDENTICAL
     [0x920_0000, 0x2000, 0xf, 2]
@@ -51,12 +51,13 @@ memory_regions = [
 # Device specifications
 #
 [devices]
+# The interrupt mode.
+interrupt_mode = "passthrough"
+
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 emu_devices = []
 
-
-interrupt_mode = "passthrough"
 # Pass-through devices.
 # Name Base-Ipa Base-Pa Length Alloc-Irq.
 passthrough_devices = [

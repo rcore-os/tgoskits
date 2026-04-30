@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     BLOCK_SIZE, bmalloc::InodeNumber, disknode::Ext4Inode, endian::DiskFormat,
-    entries::Ext4DirEntryTail, error::Errno, superblock::Ext4Superblock,
+    entries::Ext4DirEntryTail, error::Errno, jbd2::jbdstruct::*, superblock::Ext4Superblock,
 };
 
 fn metadata_csum_superblock() -> Ext4Superblock {
@@ -127,4 +127,30 @@ fn dirblock_checksum_is_stored_and_detects_corruption() {
 
     block[0] ^= 0x80;
     assert!(!verify_ext4_dirblock_checksum(&sb, ino, generation, &block));
+}
+
+#[test]
+fn journal_superblock_checksum_uses_raw_crc_accumulator() {
+    // Test idea: JBD2 stores the raw ext2fs_crc32c_le(~0, superblock) accumulator, not
+    // the finalized CRC32C value. This keeps the value accepted by e2fsck.
+    let mut jsb = JournalSuperBllockS {
+        s_blocksize: BLOCK_SIZE as u32,
+        s_maxlen: 8192,
+        s_first: 1,
+        s_sequence: 5,
+        s_feature_incompat: JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3,
+        s_uuid: [
+            0xFE, 0x1C, 0xE6, 0xEF, 0x04, 0xBB, 0x44, 0x44, 0x8F, 0x6E, 0x8D, 0x12, 0xBE, 0xE0,
+            0x8A, 0xB7,
+        ],
+        s_nr_users: 1,
+        s_checksum_type: JBD2_CRC32C_CHKSUM,
+        ..Default::default()
+    };
+    jsb.s_padding[1] = 0x460;
+
+    assert_eq!(jbd2_superblock_csum32(&jsb), 1091070733);
+
+    jbd2_update_superblock_checksum(&mut jsb);
+    assert_eq!(jsb.s_checksum, 1091070733);
 }
