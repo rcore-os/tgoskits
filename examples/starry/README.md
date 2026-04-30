@@ -32,3 +32,24 @@ Example:
 ```bash
 cargo starry example board -t orangepi-5-plus-uvc
 ```
+
+## Orange Pi 5 Plus UVC
+
+The `orangepi-5-plus-uvc` case needs `/usr/bin/uvc-fps` to be installed in the
+board rootfs before StarryOS is booted. The usual preparation flow is:
+
+1. reserve the board with `cargo board connect --board-type OrangePi-5-Plus`
+   and leave that serial session open;
+2. boot into the board Linux shell and read the board IP from the login banner
+   or `ip -br addr`;
+3. use SSH from the host to copy `examples/starry/orangepi-5-plus-uvc/uvc-fps/`
+   into the board Linux system;
+4. build and install `uvc-fps` on the board Linux rootfs;
+5. close the `cargo board connect` session, then boot StarryOS with:
+
+```bash
+cargo starry example board -t orangepi-5-plus-uvc
+```
+
+See `orangepi-5-plus-uvc/README.md` for the complete copy, build, install, and
+test commands.

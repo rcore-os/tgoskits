@@ -465,7 +465,7 @@ fn save_last_frame(counters: &FrameCounters, save: &SaveConfig) -> Result<(), St
 }
 
 fn save_frame(counters: &FrameCounters, save: &SaveConfig, frame: &UvcFrame, frame_id: u64) {
-    if !frame_id.is_multiple_of(save.every) {
+    if frame_id.checked_rem(save.every) != Some(0) {
         return;
     }
     if save
