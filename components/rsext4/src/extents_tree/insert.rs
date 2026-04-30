@@ -11,7 +11,7 @@ impl<'a> ExtentTree<'a> {
         debug!(
             "ExtentTree::insert_extent: new_ext lbn={} len={} phys_start={}",
             new_ext.ee_block,
-            new_ext.ee_len & 0x7FFF,
+            new_ext.len(),
             new_ext.start_block()
         );
 
@@ -31,7 +31,7 @@ impl<'a> ExtentTree<'a> {
                     entries
                         .iter()
                         .take(4)
-                        .map(|e| (e.ee_block, e.ee_len & 0x7FFF, e.start_block()))
+                        .map(|e| (e.ee_block, e.len(), e.start_block()))
                         .collect::<Vec<_>>()
                 );
             }
@@ -77,10 +77,8 @@ impl<'a> ExtentTree<'a> {
                     new_left_block, split_info.start_block, split_info.phy_block
                 );
 
-                let block_eh_max = Self::calc_block_eh_max();
-
                 // Persist the old root contents into the new left child block.
-                Self::write_node_to_block(block_dev, new_left_block, &root, block_eh_max)?;
+                self.write_node_to_block(block_dev, new_left_block, &root)?;
 
                 // Rebuild the inline root as a two-entry index node.
                 let inline_bytes = self.inode.i_block.len() * 4;
@@ -140,7 +138,7 @@ impl<'a> ExtentTree<'a> {
                     header.eh_entries,
                     header.eh_max,
                     new_ext.ee_block,
-                    new_ext.ee_len & 0x7FFF,
+                    new_ext.len(),
                     new_ext.start_block(),
                     phy_block
                 );
@@ -148,17 +146,18 @@ impl<'a> ExtentTree<'a> {
                     .binary_search_by_key(&new_ext.ee_block, |e| e.ee_block)
                     .unwrap_or_else(|i| i);
 
-                const MAX_LEN: u32 = 32768;
-
                 if pos > 0 {
                     let prev = &mut entries[pos - 1];
 
                     let prev_logical = prev.ee_block;
-                    let prev_len = prev.ee_len as u32 & 0x7FFF;
+                    let prev_len = prev.len();
                     let new_logical = new_ext.ee_block;
-                    let new_len = new_ext.ee_len as u32 & 0x7FFF;
+                    let new_len = new_ext.len();
 
-                    if prev_len != 0 && new_len != 0 {
+                    if prev_len != 0
+                        && new_len != 0
+                        && prev.is_unwritten() == new_ext.is_unwritten()
+                    {
                         let prev_end = prev_logical.saturating_add(prev_len);
 
                         if new_logical == prev_end {
@@ -169,10 +168,15 @@ impl<'a> ExtentTree<'a> {
 
                             if new_phys_start == prev_phys_start + prev_len as u64 {
                                 let total = prev_len + new_len;
-                                let hi_flag = prev.ee_len & 0x8000;
+                                let max_len = if prev.is_unwritten() {
+                                    Ext4Extent::EXT_UNINIT_MAX_LEN as u32
+                                } else {
+                                    Ext4Extent::EXT_INIT_MAX_LEN as u32
+                                };
 
-                                if total <= MAX_LEN {
-                                    prev.ee_len = (total as u16 & 0x7FFF) | hi_flag;
+                                if total <= max_len {
+                                    prev.ee_len =
+                                        prev.build_len_like(total).ok_or(Ext4Error::corrupted())?;
                                     debug!(
                                         "insert_recursive: merged with previous extent -> \
                                          new_len={total} (no split yet)"
@@ -186,27 +190,27 @@ impl<'a> ExtentTree<'a> {
                                                 header: *header,
                                                 entries: entries.clone(),
                                             };
-                                            Self::write_node_to_block(
-                                                block_dev,
-                                                block_id,
-                                                &disk_node,
-                                                header.eh_max,
+                                            self.write_node_to_block(
+                                                block_dev, block_id, &disk_node,
                                             )?;
                                         }
                                         return Ok(None);
                                     }
                                 } else {
-                                    prev.ee_len = (MAX_LEN as u16 & 0x7FFF) | hi_flag;
+                                    prev.ee_len = prev
+                                        .build_len_like(max_len)
+                                        .ok_or(Ext4Error::corrupted())?;
 
-                                    let remain = total - MAX_LEN;
+                                    let remain = total - max_len;
                                     if remain > 0 {
-                                        let tail_logical = prev_logical + MAX_LEN;
-                                        let tail_phys = prev_phys_start + MAX_LEN as u64;
+                                        let tail_logical = prev_logical + max_len;
+                                        let tail_phys = prev_phys_start + max_len as u64;
 
                                         let tail = Ext4Extent {
                                             ee_block: tail_logical,
-                                            ee_len: (remain as u16 & 0x7FFF)
-                                                | (new_ext.ee_len & 0x8000),
+                                            ee_len: new_ext
+                                                .build_len_like(remain)
+                                                .ok_or(Ext4Error::corrupted())?,
                                             ee_start_hi: (tail_phys >> 32) as u16,
                                             ee_start_lo: (tail_phys & 0xFFFF_FFFF) as u32,
                                         };
@@ -219,7 +223,7 @@ impl<'a> ExtentTree<'a> {
                                              inserted tail extent (lbn={}, len={}, phys_start={}) \
                                              now entries_len={}",
                                             tail.ee_block,
-                                            tail.ee_len & 0x7FFF,
+                                            tail.len(),
                                             tail.start_block(),
                                             header.eh_entries
                                         );
@@ -230,11 +234,8 @@ impl<'a> ExtentTree<'a> {
                                                     header: *header,
                                                     entries: entries.clone(),
                                                 };
-                                                Self::write_node_to_block(
-                                                    block_dev,
-                                                    block_id,
-                                                    &disk_node,
-                                                    header.eh_max,
+                                                self.write_node_to_block(
+                                                    block_dev, block_id, &disk_node,
                                                 )?;
                                             }
                                             return Ok(None);
@@ -256,7 +257,7 @@ impl<'a> ExtentTree<'a> {
                     entries
                         .iter()
                         .take(4)
-                        .map(|e| (e.ee_block, e.ee_len & 0x7FFF, e.start_block()))
+                        .map(|e| (e.ee_block, e.len(), e.start_block()))
                         .collect::<Vec<_>>()
                 );
 
@@ -267,7 +268,7 @@ impl<'a> ExtentTree<'a> {
                             header: *header,
                             entries: entries.clone(),
                         };
-                        Self::write_node_to_block(block_dev, block_id, &disk_node, header.eh_max)?;
+                        self.write_node_to_block(block_dev, block_id, &disk_node)?;
                     }
                     return Ok(None);
                 }
@@ -302,12 +303,7 @@ impl<'a> ExtentTree<'a> {
                 };
 
                 // Persist the new right node first.
-                Self::write_node_to_block(
-                    block_dev,
-                    new_phy_block,
-                    &right_node,
-                    right_header.eh_max,
-                )?;
+                self.write_node_to_block(block_dev, new_phy_block, &right_node)?;
                 // Then persist the updated left node when it already lives in a
                 // real metadata block.
                 if let Some(block_id) = phy_block {
@@ -315,7 +311,7 @@ impl<'a> ExtentTree<'a> {
                         header: *header,
                         entries: entries.clone(),
                     };
-                    Self::write_node_to_block(block_dev, block_id, &disk_node, header.eh_max)?;
+                    self.write_node_to_block(block_dev, block_id, &disk_node)?;
                 }
 
                 // Bubble the right node's first logical block and physical block
@@ -339,7 +335,7 @@ impl<'a> ExtentTree<'a> {
                     header.eh_entries,
                     header.eh_max,
                     new_ext.ee_block,
-                    new_ext.ee_len & 0x7FFF,
+                    new_ext.len(),
                     new_ext.start_block(),
                     phy_block
                 );
@@ -400,12 +396,7 @@ impl<'a> ExtentTree<'a> {
                                 header: *header,
                                 entries: entries.clone(),
                             };
-                            Self::write_node_to_block(
-                                block_dev,
-                                block_id,
-                                &disk_node,
-                                header.eh_max,
-                            )?;
+                            self.write_node_to_block(block_dev, block_id, &disk_node)?;
                         }
                         return Ok(None);
                     }
@@ -444,18 +435,13 @@ impl<'a> ExtentTree<'a> {
                         entries: right_entries,
                     };
 
-                    Self::write_node_to_block(
-                        block_dev,
-                        new_phy_block,
-                        &right_node,
-                        right_header.eh_max,
-                    )?;
+                    self.write_node_to_block(block_dev, new_phy_block, &right_node)?;
                     if let Some(block_id) = phy_block {
                         let disk_node = ExtentNode::Index {
                             header: *header,
                             entries: entries.clone(),
                         };
-                        Self::write_node_to_block(block_dev, block_id, &disk_node, header.eh_max)?;
+                        self.write_node_to_block(block_dev, block_id, &disk_node)?;
                     }
 
                     // Bubble the new right child up to the parent.

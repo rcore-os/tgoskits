@@ -14,7 +14,7 @@ impl<'a> ExtentTree<'a> {
         block_dev: &mut Jbd2Dev<B>,
     ) -> Ext4Result<()> {
         let del_start = deleted_ext.ee_block;
-        let del_len = (deleted_ext.ee_len as u32) & 0x7FFF;
+        let del_len = deleted_ext.len();
         if del_len == 0 {
             return Ok(());
         }
@@ -36,15 +36,11 @@ impl<'a> ExtentTree<'a> {
                 next_lbn: u32,
             }
 
-            fn extent_len15(e: &Ext4Extent) -> u32 {
-                (e.ee_len as u32) & 0x7FFF
-            }
-
             // A leaf either contributes a deletable segment or points the walker at the next hole boundary.
             fn pre_leaf_step(entries: &[Ext4Extent], cur_lbn: u32) -> PreRes {
                 let mut best: Option<&Ext4Extent> = None;
                 for e in entries {
-                    let len = extent_len15(e);
+                    let len = e.len();
                     if len == 0 {
                         continue;
                     }
@@ -68,8 +64,8 @@ impl<'a> ExtentTree<'a> {
                     };
                 };
 
-                let len15 = extent_len15(e);
-                if len15 == 0 {
+                let len = e.len();
+                if len == 0 {
                     return PreRes {
                         kind: PreKind::NoMore,
                         can_take: 0,
@@ -77,7 +73,7 @@ impl<'a> ExtentTree<'a> {
                     };
                 }
                 let e_start = e.ee_block;
-                let e_end = e_start.saturating_add(len15);
+                let e_end = e_start.saturating_add(len);
 
                 if cur_lbn < e_start {
                     return PreRes {
@@ -88,7 +84,7 @@ impl<'a> ExtentTree<'a> {
                 }
 
                 let within_off = cur_lbn.saturating_sub(e_start);
-                let can_take = len15.saturating_sub(within_off);
+                let can_take = len.saturating_sub(within_off);
                 if can_take == 0 {
                     return PreRes {
                         kind: PreKind::HoleSkip,
@@ -201,19 +197,12 @@ impl<'a> ExtentTree<'a> {
             (inline_bytes.saturating_sub(hdr_size) / entry_size) as u16
         }
 
-        fn extent_len15(e: &Ext4Extent) -> u32 {
-            (e.ee_len as u32) & 0x7FFF
-        }
-
         fn extent_start_phys(e: &Ext4Extent) -> u64 {
             ((e.ee_start_hi as u64) << 32) | (e.ee_start_lo as u64)
         }
 
-        fn build_extent_len(orig_ee_len: u16, new_len15: u32) -> Ext4Result<u16> {
-            if new_len15 > 0x7FFF {
-                return Err(Ext4Error::corrupted());
-            }
-            Ok((orig_ee_len & 0x8000) | (new_len15 as u16))
+        fn build_extent_len(orig: &Ext4Extent, new_len: u32) -> Ext4Result<u16> {
+            orig.build_len_like(new_len).ok_or(Ext4Error::corrupted())
         }
 
         #[derive(Clone, Copy)]
@@ -266,7 +255,7 @@ impl<'a> ExtentTree<'a> {
 
             let mut best: Option<usize> = None;
             for (i, e) in entries.iter().enumerate() {
-                let len = extent_len15(e);
+                let len = e.len();
                 if len == 0 {
                     continue;
                 }
@@ -293,8 +282,8 @@ impl<'a> ExtentTree<'a> {
             };
 
             let e = entries[i];
-            let len15 = extent_len15(&e);
-            if len15 == 0 {
+            let len = e.len();
+            if len == 0 {
                 return Ok(StepRes {
                     kind: StepKind::NoMoreExtent,
                     deleted: 0,
@@ -304,7 +293,7 @@ impl<'a> ExtentTree<'a> {
                 });
             }
             let e_start = e.ee_block;
-            let e_end = e_start.saturating_add(len15);
+            let e_end = e_start.saturating_add(len);
 
             if cur_lbn < e_start {
                 return Ok(StepRes {
@@ -318,7 +307,7 @@ impl<'a> ExtentTree<'a> {
 
             let seg_start = cur_lbn;
             let within_off = seg_start.saturating_sub(e_start);
-            let can_take = len15.saturating_sub(within_off);
+            let can_take = len.saturating_sub(within_off);
             if can_take == 0 {
                 return Ok(StepRes {
                     kind: StepKind::HoleSkip,
@@ -346,31 +335,31 @@ impl<'a> ExtentTree<'a> {
                 entries.remove(i);
             } else if seg_start == e_start {
                 let delta = seg_end.saturating_sub(e_start);
-                let new_len15 = len15.saturating_sub(delta);
+                let new_len = len.saturating_sub(delta);
                 let new_start_phys = extent_start_phys(&e) + delta as u64;
                 let mut new_e = e;
                 new_e.ee_block = seg_end;
-                new_e.ee_len = build_extent_len(e.ee_len, new_len15)?;
+                new_e.ee_len = build_extent_len(&e, new_len)?;
                 new_e.ee_start_lo = (new_start_phys & 0xFFFF_FFFF) as u32;
                 new_e.ee_start_hi = (new_start_phys >> 32) as u16;
                 entries[i] = new_e;
             } else if seg_end == e_end {
-                let new_len15 = seg_start.saturating_sub(e_start);
+                let new_len = seg_start.saturating_sub(e_start);
                 let mut new_e = e;
-                new_e.ee_len = build_extent_len(e.ee_len, new_len15)?;
+                new_e.ee_len = build_extent_len(&e, new_len)?;
                 entries[i] = new_e;
             } else {
-                let left_len15 = seg_start.saturating_sub(e_start);
-                let right_len15 = e_end.saturating_sub(seg_end);
+                let left_len = seg_start.saturating_sub(e_start);
+                let right_len = e_end.saturating_sub(seg_end);
 
                 let mut left_e = e;
-                left_e.ee_len = build_extent_len(e.ee_len, left_len15)?;
+                left_e.ee_len = build_extent_len(&e, left_len)?;
 
                 let right_start_phys =
                     extent_start_phys(&e) + seg_end.saturating_sub(e_start) as u64;
                 let mut right_e = e;
                 right_e.ee_block = seg_end;
-                right_e.ee_len = build_extent_len(e.ee_len, right_len15)?;
+                right_e.ee_len = build_extent_len(&e, right_len)?;
                 right_e.ee_start_lo = (right_start_phys & 0xFFFF_FFFF) as u32;
                 right_e.ee_start_hi = (right_start_phys >> 32) as u16;
 
@@ -386,7 +375,7 @@ impl<'a> ExtentTree<'a> {
                     header: *header,
                     entries: entries.clone(),
                 };
-                ExtentTree::write_node_to_block(dev, block_id, &disk_node, header.eh_max)?;
+                tree.write_node_to_block(dev, block_id, &disk_node)?;
             }
 
             Ok(StepRes {
@@ -468,12 +457,7 @@ impl<'a> ExtentTree<'a> {
                                         header: *header,
                                         entries: entries.clone(),
                                     };
-                                    ExtentTree::write_node_to_block(
-                                        dev,
-                                        block_id,
-                                        &disk_node,
-                                        header.eh_max,
-                                    )?;
+                                    tree.write_node_to_block(dev, block_id, &disk_node)?;
                                 }
 
                                 return Ok(StepRes {
@@ -980,13 +964,13 @@ mod tests {
         let exts = collect_extents_from_inode(&mut inode, &mut dev);
         assert_eq!(exts.len(), 2);
         assert_eq!(exts[0].ee_block, 0);
-        assert_eq!((exts[0].ee_len as u32) & 0x7FFF, 1);
+        assert_eq!(exts[0].len(), 1);
         assert_eq!(
             ((exts[0].ee_start_hi as u64) << 32) | (exts[0].ee_start_lo as u64),
             base.raw()
         );
         assert_eq!(exts[1].ee_block, 3);
-        assert_eq!((exts[1].ee_len as u32) & 0x7FFF, 1);
+        assert_eq!(exts[1].len(), 1);
         assert_eq!(
             ((exts[1].ee_start_hi as u64) << 32) | (exts[1].ee_start_lo as u64),
             base.checked_add(3).unwrap().raw()
@@ -1062,7 +1046,7 @@ mod tests {
         let exts = collect_extents_from_inode(&mut inode, &mut dev);
         assert_eq!(exts.len(), 1);
         assert_eq!(exts[0].ee_block, 0);
-        assert_eq!((exts[0].ee_len as u32) & 0x7FFF, 1);
+        assert_eq!(exts[0].len(), 1);
         assert_eq!(
             ((exts[0].ee_start_hi as u64) << 32) | (exts[0].ee_start_lo as u64),
             base1.raw()

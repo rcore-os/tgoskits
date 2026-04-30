@@ -1,4 +1,29 @@
-use super::{blocks::build_file_block_mapping, *};
+use super::*;
+
+fn discard_unpublished_inode_blocks<B: BlockDevice>(
+    fs: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    data_blocks: &[AbsoluteBN],
+) {
+    for &blk in data_blocks {
+        fs.datablock_cache.invalidate(blk);
+        if let Err(e) = fs.free_block(device, blk) {
+            warn!("discard unpublished file block failed block={blk} err={e:?} ({e})");
+        }
+    }
+}
+
+fn discard_unpublished_inode<B: BlockDevice>(
+    fs: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
+    data_blocks: &[AbsoluteBN],
+) {
+    discard_unpublished_inode_blocks(fs, device, data_blocks);
+    if let Err(e) = fs.free_inode(device, inode_num) {
+        warn!("discard unpublished inode failed ino={inode_num} err={e:?} ({e})");
+    }
+}
 
 pub fn create_symbol_link<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
@@ -79,18 +104,29 @@ pub fn create_symbol_link<B: BlockDevice>(
 
         while remaining > 0 {
             if !fs.superblock.has_extents() && data_blocks.len() >= 12 {
+                discard_unpublished_inode(fs, device, new_ino, &data_blocks);
                 return Err(Ext4Error::unsupported());
             }
 
             let blk = fs.alloc_block(device)?;
             let write_len = core::cmp::min(remaining, BLOCK_SIZE);
-            fs.datablock_cache.modify_new(device, blk, |data| {
+            if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
                 for b in data.iter_mut() {
                     *b = 0;
                 }
                 let end = src_off + write_len;
                 data[..write_len].copy_from_slice(&target_bytes[src_off..end]);
-            })?;
+            }) {
+                fs.datablock_cache.invalidate(blk);
+                if let Err(free_err) = fs.free_block(device, blk) {
+                    warn!(
+                        "discard failed symlink block failed block={blk} err={free_err:?} \
+                         ({free_err})"
+                    );
+                }
+                discard_unpublished_inode(fs, device, new_ino, &data_blocks);
+                return Err(e);
+            }
 
             data_blocks.push(blk);
             remaining -= write_len;
@@ -102,7 +138,7 @@ pub fn create_symbol_link<B: BlockDevice>(
         new_inode.i_blocks_lo = iblocks_used;
         new_inode.l_i_blocks_high = 0; // iblocks_used is u32, so high part is 0
 
-        build_file_block_mapping(fs, &mut new_inode, &data_blocks, device);
+        build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_ino, &data_blocks, device);
     }
 
     let mut create_update = Ext4InodeMetadataUpdate::create(symlink_mode);
@@ -187,27 +223,39 @@ pub fn mkfile<B: BlockDevice>(
         while remaining > 0 {
             // Non-extent files only support the 12 direct pointers here.
             if !fs.superblock.has_extents() && data_blocks.len() >= 12 {
-                break;
+                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks);
+                return Err(Ext4Error::unsupported());
             }
 
             let blk = match fs.alloc_block(device) {
                 Ok(b) => b,
                 Err(e) => {
                     error!("mkfile alloc_block failed path={path} err={e:?} ({e})");
-                    break;
+                    discard_unpublished_inode(fs, device, new_file_ino, &data_blocks);
+                    return Err(e);
                 }
             };
 
             let write_len = core::cmp::min(remaining, BLOCK_SIZE);
 
             // Zero-fill each new block and copy the live payload prefix into it.
-            fs.datablock_cache.modify_new(device, blk, |data| {
+            if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
                 for b in data.iter_mut() {
                     *b = 0;
                 }
                 let end = src_off + write_len;
                 data[..write_len].copy_from_slice(&buf[src_off..end]);
-            })?;
+            }) {
+                fs.datablock_cache.invalidate(blk);
+                if let Err(free_err) = fs.free_block(device, blk) {
+                    warn!(
+                        "discard failed file block failed path={path} block={blk} \
+                         err={free_err:?} ({free_err})"
+                    );
+                }
+                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks);
+                return Err(e);
+            }
 
             data_blocks.push(blk);
             total_written += write_len;
@@ -257,7 +305,13 @@ pub fn mkfile<B: BlockDevice>(
         new_inode.i_blocks_lo = used_blocks_lo;
         new_inode.l_i_blocks_high = (iblocks_used >> 32) as u16;
 
-        build_file_block_mapping(fs, &mut new_inode, &data_blocks, device);
+        build_file_block_mapping_with_inode_num(
+            fs,
+            &mut new_inode,
+            new_file_ino,
+            &data_blocks,
+            device,
+        );
     } else {
         // Empty file starts with no data blocks.
         new_inode.i_size_lo = 0;

@@ -26,12 +26,7 @@ pub fn resolve_inode_block<B: BlockDevice>(
     if inode.have_extend_header_and_use_extend() {
         let mut tree = ExtentTree::new(inode);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
-            let raw_len = ext.ee_len as u32;
-            let is_unwritten = raw_len > 0x8000;
-            let mut len = raw_len;
-            if (len & 0x8000) != 0 {
-                len &= 0x7FFF;
-            }
+            let len = ext.len();
             if len == 0 {
                 return Ok(None);
             }
@@ -41,7 +36,7 @@ pub fn resolve_inode_block<B: BlockDevice>(
                 return Ok(None);
             }
 
-            if is_unwritten {
+            if ext.is_unwritten() {
                 return Ok(None);
             }
 
@@ -70,11 +65,10 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
     }
 
     fn push_extent_blocks(out: &mut Vec<(u32, AbsoluteBN)>, ext: &Ext4Extent) {
-        let raw_len = ext.ee_len as u32;
-        if (raw_len & 0x8000) != 0 {
+        if ext.is_unwritten() {
             return;
         }
-        let len = raw_len;
+        let len = ext.len();
         if len == 0 {
             return;
         }

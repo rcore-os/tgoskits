@@ -9,7 +9,7 @@ impl Ext4FileSystem {
     }
 
     fn dirty_for_mount(superblock: &mut Ext4Superblock) {
-        superblock.s_state = Ext4Superblock::EXT4_ERROR_FS;
+        superblock.s_state &= !Ext4Superblock::EXT4_VALID_FS;
         superblock.s_mnt_count = superblock.s_mnt_count.saturating_add(1);
     }
 
@@ -88,7 +88,7 @@ impl Ext4FileSystem {
 
         // Continue mounting even for an error-state filesystem so higher layers
         // can inspect or attempt repair.
-        if superblock.s_state == Ext4Superblock::EXT4_ERROR_FS {
+        if superblock.s_state & Ext4Superblock::EXT4_ERROR_FS != 0 {
             warn!("Filesystem is in error state");
         }
 
@@ -344,9 +344,8 @@ impl Ext4FileSystem {
             .flush_all(block_dev)
             .expect("flush failed!");
 
-        // Write the superblock with s_state = EXT4_ERROR_FS to disk so that if
-        // the system crashes before a clean umount, Linux will detect the dirty
-        // state and perform journal recovery / fsck.
+        // Write the superblock with EXT4_VALID_FS cleared so that a later mount
+        // can distinguish an unclean shutdown from a real EXT4_ERROR_FS state.
         fs.sync_superblock(block_dev)?;
 
         Ok(fs)

@@ -2,6 +2,8 @@ use super::*;
 
 /// Derived filesystem geometry used only during mkfs planning.
 pub struct FsLayoutInfo {
+    /// Total filesystem blocks.
+    total_blocks: u64,
     /// Logical block size in bytes.
     block_size: u32,
     /// Blocks per group.
@@ -112,6 +114,7 @@ pub fn compute_fs_layout(inode_size: u16, total_blocks: u64) -> FsLayoutInfo {
     let reserved_blocks: u64 = total_blocks / 20;
 
     FsLayoutInfo {
+        total_blocks,
         block_size,
         blocks_per_group,
         inodes_per_group,
@@ -129,6 +132,35 @@ pub fn compute_fs_layout(inode_size: u16, total_blocks: u64) -> FsLayoutInfo {
         group0_metadata_blocks,
         reserved_blocks,
     }
+}
+
+fn group_blocks_count(layout: &FsLayoutInfo, group_id: u32) -> u32 {
+    let group_start = u64::from(group_id) * u64::from(layout.blocks_per_group);
+    if group_start >= layout.total_blocks {
+        return 0;
+    }
+
+    let remaining = layout.total_blocks - group_start;
+    remaining.min(u64::from(layout.blocks_per_group)) as u32
+}
+
+fn group_free_blocks(layout: &FsLayoutInfo, group_id: u32, metadata_blocks: u32) -> u32 {
+    group_blocks_count(layout, group_id).saturating_sub(metadata_blocks)
+}
+
+fn mark_bitmap_range_allocated(bitmap: &mut [u8], start: u32, end: u32) {
+    let bits = (bitmap.len() * 8) as u32;
+    let end = end.min(bits);
+    for bit in start.min(bits)..end {
+        let byte_idx = (bit / 8) as usize;
+        let bit_idx = bit % 8;
+        bitmap[byte_idx] |= 1 << bit_idx;
+    }
+}
+
+fn mark_block_bitmap_padding(bitmap: &mut [u8], layout: &FsLayoutInfo, group_id: u32) {
+    let valid_blocks = group_blocks_count(layout, group_id);
+    mark_bitmap_range_allocated(bitmap, valid_blocks, layout.blocks_per_group);
 }
 
 pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
@@ -317,9 +349,10 @@ fn build_uninit_group_desc(
     desc.bg_inode_bitmap_lo = gl.group_inode_bitmap_startblocks as u32;
     desc.bg_inode_table_lo = gl.group_inode_table_startblocks as u32;
 
-    // Free-block count is the group's total capacity minus its metadata area.
-    let used_meta = gl.metadata_blocks_in_group;
-    let free_blocks = layout.blocks_per_group.saturating_sub(used_meta);
+    // Free-block count is based on the group's real capacity. The last block
+    // group is often partial, so blocks past s_blocks_count must never be
+    // reported as free.
+    let free_blocks = group_free_blocks(layout, group_id, gl.metadata_blocks_in_group);
 
     if group_id == 0 {
         // Group 0 consumes the reserved inode range immediately.
@@ -544,13 +577,10 @@ fn initialize_group_0<B: BlockDevice>(
     {
         let buffer = block_dev.buffer_mut();
         buffer.fill(0);
-        // Mark all group-0 metadata blocks allocated in the block bitmap.
-        let used_metadata_blocks = layout.group0_metadata_blocks as usize;
-        for i in 0..used_metadata_blocks {
-            let byte_idx = i / 8;
-            let bit_idx = i % 8;
-            buffer[byte_idx] |= 1 << bit_idx;
-        }
+        // Mark all group-0 metadata blocks and out-of-filesystem padding bits
+        // allocated in the block bitmap.
+        mark_bitmap_range_allocated(buffer, 0, layout.group0_metadata_blocks);
+        mark_block_bitmap_padding(buffer, layout, 0);
     }
     block_dev.write_block(block_bitmap_blk.into(), true)?;
 
@@ -586,9 +616,7 @@ fn initialize_group_0<B: BlockDevice>(
     // Persist the now-initialized descriptor for group 0.
     let mut desc = Ext4GroupDesc {
         bg_flags: Ext4GroupDesc::EXT4_BG_INODE_ZEROED,
-        bg_free_blocks_count_lo: layout
-            .blocks_per_group
-            .saturating_sub(layout.group0_metadata_blocks) as u16,
+        bg_free_blocks_count_lo: group_free_blocks(layout, 0, layout.group0_metadata_blocks) as u16,
         bg_free_inodes_count_lo: layout.inodes_per_group.saturating_sub(RESERVED_INODES) as u16,
         bg_itable_unused_lo: layout.inodes_per_group.saturating_sub(RESERVED_INODES) as u16,
         bg_block_bitmap_lo: block_bitmap_blk,
@@ -631,12 +659,8 @@ fn initialize_other_groups_bitmaps<B: BlockDevice>(
         {
             let buffer = block_dev.buffer_mut();
             buffer.fill(0);
-            let used_blocks = gl.metadata_blocks_in_group as usize;
-            for i in 0..used_blocks {
-                let byte_idx = i / 8;
-                let bit_idx = i % 8;
-                buffer[byte_idx] |= 1 << bit_idx;
-            }
+            mark_bitmap_range_allocated(buffer, 0, gl.metadata_blocks_in_group);
+            mark_block_bitmap_padding(buffer, layout, group_id);
         }
         block_dev.write_block(block_bitmap_blk.into(), true)?;
 

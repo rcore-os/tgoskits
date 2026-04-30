@@ -79,9 +79,9 @@ fn truncate_inode<B: BlockDevice>(
                     del_start_lbn
                 };
 
-                let chunk = core::cmp::min(del_len, 0x7FFF);
+                let chunk = core::cmp::min(del_len, Ext4Extent::EXT_INIT_MAX_LEN as u32);
                 {
-                    let mut tree = ExtentTree::new(&mut inode);
+                    let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
                     tree.remove_extend(fs, Ext4Extent::new(start_lbn, 0, chunk as u16), device)?;
                 }
             }
@@ -99,7 +99,7 @@ fn truncate_inode<B: BlockDevice>(
                 new_blocks_map.push((lbn, phys));
             }
 
-            let mut tree = ExtentTree::new(&mut inode);
+            let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
             if !new_blocks_map.is_empty() {
                 let mut idx = 0usize;
                 while idx < new_blocks_map.len() {
@@ -131,7 +131,11 @@ fn truncate_inode<B: BlockDevice>(
         inode.i_size_high = (truncate_size >> 32) as u32;
         // i_blocks reflects number of allocated blocks, not logical length. Recompute after edits.
         let alloc_blocks = resolve_inode_block_allextend(fs, device, &mut inode)?.len() as u64;
-        let iblocks_used = alloc_blocks.saturating_mul(BLOCK_SIZE as u64 / 512);
+        let extent_tree_blocks = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
+            .external_node_blocks(device)?
+            .len() as u64;
+        let iblocks_used =
+            alloc_blocks.saturating_add(extent_tree_blocks) * (BLOCK_SIZE as u64 / 512);
         inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
         inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
 
@@ -416,7 +420,8 @@ fn write_inode_data<B: BlockDevice>(
                         }
                     })?;
                     {
-                        let mut tree = ExtentTree::new(&mut inode);
+                        let mut tree =
+                            ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
                         let ext = Ext4Extent::new(lbn as u32, new_phys.raw(), 1);
                         tree.insert_extent(fs, ext, device)?;
                     }

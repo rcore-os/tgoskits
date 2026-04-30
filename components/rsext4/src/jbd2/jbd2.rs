@@ -761,7 +761,13 @@ pub fn create_journal_entry<B: BlockDevice>(
     jour_inode.i_blocks_lo = (inode_size / 512) as u32;
     jour_inode.l_i_blocks_high = 0;
     jour_inode.write_extend_header();
-    build_file_block_mapping(fs, &mut jour_inode, &free_block, block_dev);
+    build_file_block_mapping_with_inode_num(
+        fs,
+        &mut jour_inode,
+        InodeNumber::new(journal_inode_num as u32)?,
+        &free_block,
+        block_dev,
+    );
     debug!(
         "When creating journal inode: iblock={:?}",
         jour_inode.i_block

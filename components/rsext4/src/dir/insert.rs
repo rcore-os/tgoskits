@@ -164,7 +164,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
 
     if fs.superblock.has_extents() && parent_inode.have_extend_header_and_use_extend() {
         let new_ext = Ext4Extent::new(new_lbn, new_block.raw(), 1);
-        let mut tree = ExtentTree::new(parent_inode);
+        let mut tree = ExtentTree::with_checksum(parent_inode, &fs.superblock, parent_ino_num);
         tree.insert_extent(fs, new_ext, device)?;
     } else {
         if old_blocks >= 12 {
