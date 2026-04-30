@@ -17,6 +17,7 @@ arceos-tls
 arceos-wait-queue
 arm_vcpu
 ax-allocator
+ax-api
 ax-arm-pl011
 ax-arm-pl031
 ax-cap-access
@@ -47,15 +48,19 @@ ax-kspin
 ax-kernel-guard
 ax-lazyinit
 ax-memory-set
+ax-plat
+ax-plat-aarch64-peripherals
 ax-plat-x86-pc
 ax-percpu
 ax-percpu-macros
+ax-posix-api
 axaddrspace
 ax-linked-list-r4l
 ax-log
 ax-mm
 ax-net-ng
 ax-riscv-plic
+ax-runtime
 ax-sched
 ax-sync
 ax-task
@@ -66,6 +71,7 @@ axfs-ng-vfs
 axhvc
 axklib
 axpoll
+axplat-dyn
 axplat-x86-qemu-q35
 axvm
 axvmconfig

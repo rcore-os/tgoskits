@@ -10,7 +10,7 @@ use ax_errno::{AxError, AxResult};
 use ax_task::future::block_on;
 use axpoll::PollSet;
 use linux_raw_sys::general::{
-    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
+    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
 use ringbuf::{
     CachingCons, CachingProd,
@@ -55,6 +55,27 @@ pub trait TtyRead: Send + Sync + 'static {
 }
 pub trait TtyWrite: Send + Sync + 'static {
     fn write(&self, buf: &[u8]);
+}
+
+pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf: &[u8]) {
+    if !term.has_oflag(OPOST) || !term.has_oflag(ONLCR) {
+        writer.write(buf);
+        return;
+    }
+
+    let mut start = 0;
+    for (i, &byte) in buf.iter().enumerate() {
+        if byte == b'\n' {
+            if start < i {
+                writer.write(&buf[start..i]);
+            }
+            writer.write(b"\r\n");
+            start = i + 1;
+        }
+    }
+    if start < buf.len() {
+        writer.write(&buf[start..]);
+    }
 }
 
 struct InputReader<R, W> {
@@ -167,7 +188,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
 
     fn output_char(&self, term: &Termios2, ch: u8) {
         match ch {
-            b'\n' => self.writer.write(b"\n"),
+            b'\n' => write_output_bytes(&self.writer, term, b"\n"),
             b'\r' => self.writer.write(b"\r\n"),
             ch if ch == term.special_char(VERASE) => self.writer.write(b"\x08 \x08"),
             ch if ch == b' ' || ch.is_ascii_graphic() => self.writer.write(&[ch]),

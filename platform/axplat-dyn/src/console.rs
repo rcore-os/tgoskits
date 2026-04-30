@@ -6,20 +6,7 @@ struct ConsoleIfImpl;
 impl ConsoleIf for ConsoleIfImpl {
     /// Writes given bytes to the console.
     fn write_bytes(bytes: &[u8]) {
-        let s = core::str::from_utf8(bytes).unwrap_or_default();
-        let mut remaining = s;
-        while let Some(pos) = remaining.find('\n') {
-            // 打印 '\n' 之前的部分
-            somehal::console::_write_str(&remaining[..pos]);
-            // 打印 "\r\n"
-            somehal::console::_write_str("\r\n");
-            // 继续处理剩余部分
-            remaining = &remaining[pos + 1..];
-        }
-        // 打印最后剩余的部分（如果有的话）
-        if !remaining.is_empty() {
-            somehal::console::_write_str(remaining);
-        }
+        somehal::console::_write_bytes(bytes);
     }
 
     /// Reads bytes from the console into the given mutable slice.

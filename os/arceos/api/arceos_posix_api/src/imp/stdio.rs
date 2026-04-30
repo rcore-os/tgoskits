@@ -15,7 +15,7 @@ fn console_read_bytes(buf: &mut [u8]) -> AxResult<usize> {
 }
 
 fn console_write_bytes(buf: &[u8]) -> AxResult<usize> {
-    ax_hal::console::write_bytes(buf);
+    ax_hal::console::write_text_bytes(buf);
     Ok(buf.len())
 }
 
