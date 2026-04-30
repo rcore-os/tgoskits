@@ -17,11 +17,11 @@ fn test_any_ip_accept_arp(#[case] medium: Medium) {
             source_hardware_addr: EthernetAddress::from_bytes(&[
                 0x02, 0x02, 0x02, 0x02, 0x02, 0x03,
             ]),
-            source_protocol_addr: Ipv4Address::from_bytes(&[192, 168, 1, 2]),
+            source_protocol_addr: Ipv4Address::from_octets([192, 168, 1, 2]),
             target_hardware_addr: EthernetAddress::from_bytes(&[
                 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
             ]),
-            target_protocol_addr: Ipv4Address::from_bytes(&[192, 168, 1, 3]),
+            target_protocol_addr: Ipv4Address::from_octets([192, 168, 1, 3]),
         };
         let mut frame = EthernetFrame::new_unchecked(&mut buffer[..]);
         ethernet_repr.emit(&mut frame);
@@ -381,9 +381,9 @@ fn test_icmp_error_port_unreachable(#[case] medium: Medium) {
 
 #[rstest]
 #[case(Medium::Ip)]
-#[cfg(feature = "medium-ip")]
+#[cfg(all(feature = "medium-ip", feature = "auto-icmp-echo-reply"))]
 #[case(Medium::Ethernet)]
-#[cfg(feature = "medium-ethernet")]
+#[cfg(all(feature = "medium-ethernet", feature = "auto-icmp-echo-reply"))]
 fn test_handle_ipv4_broadcast(#[case] medium: Medium) {
     use crate::wire::{Icmpv4Packet, Icmpv4Repr};
 
@@ -626,9 +626,17 @@ fn test_arp_flush_after_update_ip(#[case] medium: Medium) {
 
 #[rstest]
 #[case(Medium::Ip)]
-#[cfg(all(feature = "socket-icmp", feature = "medium-ip"))]
+#[cfg(all(
+    feature = "socket-icmp",
+    feature = "medium-ip",
+    feature = "auto-icmp-echo-reply",
+))]
 #[case(Medium::Ethernet)]
-#[cfg(all(feature = "socket-icmp", feature = "medium-ethernet"))]
+#[cfg(all(
+    feature = "socket-icmp",
+    feature = "medium-ethernet",
+    feature = "auto-icmp-echo-reply",
+))]
 fn test_icmpv4_socket(#[case] medium: Medium) {
     use crate::wire::Icmpv4Packet;
 
@@ -871,14 +879,9 @@ fn test_packet_len(#[case] medium: Medium) {
     }
 }
 
-#[rstest]
-#[case(Medium::Ip)]
-#[cfg(all(feature = "socket-raw", feature = "medium-ip"))]
-#[case(Medium::Ethernet)]
-#[cfg(all(feature = "socket-raw", feature = "medium-ethernet"))]
-fn test_raw_socket_no_reply(#[case] medium: Medium) {
-    use crate::wire::{IpVersion, UdpPacket, UdpRepr};
-
+/// Check no reply is emitted when using a raw socket
+#[cfg(feature = "socket-raw")]
+fn check_no_reply_raw_socket(medium: Medium, frame: &crate::wire::ipv4::Packet<&[u8]>) {
     let (mut iface, mut sockets, _) = setup(medium);
 
     let packets = 1;
@@ -888,13 +891,29 @@ fn test_raw_socket_no_reply(#[case] medium: Medium) {
         vec![raw::PacketMetadata::EMPTY; packets],
         vec![0; 48 * packets],
     );
-    let raw_socket = raw::Socket::new(
-        Some(IpVersion::Ipv4),
-        Some(IpProtocol::Udp),
-        rx_buffer,
-        tx_buffer,
-    );
+    let raw_socket = raw::Socket::new(Some(IpVersion::Ipv4), None, rx_buffer, tx_buffer);
     sockets.add(raw_socket);
+
+    assert_eq!(
+        iface.inner.process_ipv4(
+            &mut sockets,
+            PacketMeta::default(),
+            HardwareAddress::default(),
+            frame,
+            &mut iface.fragments
+        ),
+        None
+    );
+}
+
+#[rstest]
+#[case(Medium::Ip)]
+#[cfg(all(feature = "socket-raw", feature = "medium-ip"))]
+#[case(Medium::Ethernet)]
+#[cfg(all(feature = "socket-raw", feature = "medium-ethernet"))]
+/// Test no reply to received UDP when using raw socket which accepts all protocols
+fn test_raw_socket_no_reply_udp(#[case] medium: Medium) {
+    use crate::wire::{UdpPacket, UdpRepr};
 
     let src_addr = Ipv4Address::new(127, 0, 0, 2);
     let dst_addr = Ipv4Address::new(127, 0, 0, 1);
@@ -905,16 +924,6 @@ fn test_raw_socket_no_reply(#[case] medium: Medium) {
         src_port: 67,
         dst_port: 68,
     };
-    let mut bytes = vec![0xff; udp_repr.header_len() + PAYLOAD_LEN];
-    let mut packet = UdpPacket::new_unchecked(&mut bytes[..]);
-    udp_repr.emit(
-        &mut packet,
-        &src_addr.into(),
-        &dst_addr.into(),
-        PAYLOAD_LEN,
-        |buf| fill_slice(buf, 0x2a),
-        &ChecksumCapabilities::default(),
-    );
     let ipv4_repr = Ipv4Repr {
         src_addr,
         dst_addr,
@@ -941,16 +950,63 @@ fn test_raw_socket_no_reply(#[case] medium: Medium) {
         Ipv4Packet::new_unchecked(&bytes[..])
     };
 
-    assert_eq!(
-        iface.inner.process_ipv4(
-            &mut sockets,
-            PacketMeta::default(),
-            HardwareAddress::default(),
-            &frame,
-            &mut iface.fragments
-        ),
-        None
-    );
+    check_no_reply_raw_socket(medium, &frame);
+}
+
+#[rstest]
+#[case(Medium::Ip)]
+#[cfg(all(feature = "socket-raw", feature = "medium-ip"))]
+#[case(Medium::Ethernet)]
+#[cfg(all(feature = "socket-raw", feature = "medium-ethernet"))]
+/// Test no reply to received TCP when using raw socket which accepts all protocols
+fn test_raw_socket_no_reply_tcp(#[case] medium: Medium) {
+    use crate::wire::{TcpPacket, TcpRepr};
+
+    let src_addr = Ipv4Address::new(127, 0, 0, 2);
+    let dst_addr = Ipv4Address::new(127, 0, 0, 1);
+
+    const PAYLOAD_LEN: usize = 10;
+    const PAYLOAD: [u8; PAYLOAD_LEN] = [0x2a; PAYLOAD_LEN];
+
+    let tcp_repr = TcpRepr {
+        src_port: 67,
+        dst_port: 68,
+        control: TcpControl::Syn,
+        seq_number: TcpSeqNumber(1),
+        ack_number: None,
+        window_len: 10,
+        window_scale: None,
+        max_seg_size: None,
+        sack_permitted: false,
+        sack_ranges: [None, None, None],
+        timestamp: None,
+        payload: &PAYLOAD,
+    };
+    let ipv4_repr = Ipv4Repr {
+        src_addr,
+        dst_addr,
+        next_header: IpProtocol::Tcp,
+        hop_limit: 64,
+        payload_len: tcp_repr.header_len() + PAYLOAD_LEN,
+    };
+
+    // Emit to frame
+    let mut bytes = vec![0u8; ipv4_repr.buffer_len() + tcp_repr.header_len() + PAYLOAD_LEN];
+    let frame = {
+        ipv4_repr.emit(
+            &mut Ipv4Packet::new_unchecked(&mut bytes),
+            &ChecksumCapabilities::default(),
+        );
+        tcp_repr.emit(
+            &mut TcpPacket::new_unchecked(&mut bytes[ipv4_repr.buffer_len()..]),
+            &src_addr.into(),
+            &dst_addr.into(),
+            &ChecksumCapabilities::default(),
+        );
+        Ipv4Packet::new_unchecked(&bytes[..])
+    };
+
+    check_no_reply_raw_socket(medium, &frame);
 }
 
 #[rstest]
@@ -1067,6 +1123,266 @@ fn test_raw_socket_with_udp_socket(#[case] medium: Medium) {
     );
 }
 
+#[cfg(feature = "proto-ipv4-fragmentation")]
+use crate::phy::IPV4_FRAGMENT_PAYLOAD_ALIGNMENT;
+#[rstest]
+#[case(Medium::Ip)]
+#[cfg(all(
+    feature = "socket-raw",
+    feature = "proto-ipv4-fragmentation",
+    feature = "medium-ip"
+))]
+#[case(Medium::Ethernet)]
+#[cfg(all(
+    feature = "socket-raw",
+    feature = "proto-ipv4-fragmentation",
+    feature = "medium-ethernet"
+))]
+fn test_raw_socket_tx_fragmentation(#[case] medium: Medium) {
+    use std::panic::AssertUnwindSafe;
+
+    let (mut iface, mut sockets, device) = setup(medium);
+    let mtu = device.capabilities().max_transmission_unit;
+    let unaligned_length = mtu - IPV4_HEADER_LEN;
+    // This check ensures a valid test in which we actually do adjust for alignment.
+    let mtu = if unaligned_length.is_multiple_of(IPV4_FRAGMENT_PAYLOAD_ALIGNMENT) {
+        mtu + IPV4_FRAGMENT_PAYLOAD_ALIGNMENT / 2
+    } else {
+        mtu
+    };
+
+    let packets = 5;
+    let rx_buffer = raw::PacketBuffer::new(
+        vec![raw::PacketMetadata::EMPTY; packets],
+        vec![0; mtu * packets],
+    );
+    let tx_buffer = raw::PacketBuffer::new(
+        vec![raw::PacketMetadata::EMPTY; packets],
+        vec![0; mtu * packets],
+    );
+    let socket = raw::Socket::new(
+        Some(IpVersion::Ipv4),
+        Some(IpProtocol::Udp),
+        rx_buffer,
+        tx_buffer,
+    );
+    let _handle = sockets.add(socket);
+
+    let tx_packet_sizes = vec![
+        mtu * 3 / 4, // Smaller than MTU
+        mtu * 5 / 4, // Larger than MTU, requires fragmentation
+        mtu * 9 / 4, // Much larger, requires two fragments
+    ];
+
+    // Define test token for capturing the fragments.
+    struct TestFragmentTxToken {}
+
+    impl TxToken for TestFragmentTxToken {
+        fn consume<R, F>(self, len: usize, f: F) -> R
+        where
+            F: FnOnce(&mut [u8]) -> R,
+        {
+            // Buffer is something arbitrarily large.
+            // We cannot capture the dynamic packet_size calculation here.
+            let mut buffer = [0; 2048];
+            let result = f(&mut buffer[..len]);
+            // Verify the payload size is aligned.
+            let payload_size = len - IPV4_HEADER_LEN;
+            assert!(payload_size.is_multiple_of(IPV4_FRAGMENT_PAYLOAD_ALIGNMENT));
+            result
+        }
+    }
+
+    for packet_size in tx_packet_sizes {
+        let payload_len = packet_size - IPV4_HEADER_LEN;
+        let payload = vec![0u8; payload_len];
+
+        let ip_repr = Ipv4Repr {
+            src_addr: Ipv4Address::new(192, 168, 1, 3),
+            dst_addr: Ipv4Address::BROADCAST,
+            next_header: IpProtocol::Unknown(92),
+            hop_limit: 64,
+            payload_len,
+        };
+        let ip_payload = IpPayload::Raw(&payload);
+        let packet = Packet::new_ipv4(ip_repr, ip_payload);
+
+        // This should not panic for any payload size
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            if packet_size > mtu && medium == Medium::Ip {
+                iface.inner.dispatch_ip(
+                    TestFragmentTxToken {},
+                    PacketMeta::default(),
+                    packet,
+                    &mut iface.fragmenter,
+                )
+            } else {
+                iface.inner.dispatch_ip(
+                    MockTxToken {},
+                    PacketMeta::default(),
+                    packet,
+                    &mut iface.fragmenter,
+                )
+            }
+        }));
+
+        // All transmissions should succeed without panicking
+        assert!(result.is_ok(), "Failed for packet size: {}", packet_size,);
+
+        // Perform payload size checks if fragmentation is required.
+        // It is sufficient to test only the simpler IP test case.
+        if packet_size <= mtu || medium != Medium::Ip {
+            continue;
+        }
+
+        // Verify that the fragment offset is correct.
+        let unaligned_length = mtu - IPV4_HEADER_LEN;
+        let remainder = unaligned_length % IPV4_FRAGMENT_PAYLOAD_ALIGNMENT;
+        let expected_fragment_offset = mtu - IPV4_HEADER_LEN - remainder;
+        let frag_offset = iface.fragmenter.ipv4.frag_offset;
+        assert_eq!(frag_offset as usize, expected_fragment_offset);
+
+        // Check subsequent fragment sizes if applicable.
+        if packet_size / mtu == 2 {
+            // Two fragments are left. The intermediate fragment must be aligned.
+            iface
+                .inner
+                .dispatch_ipv4_frag(TestFragmentTxToken {}, &mut iface.fragmenter);
+        }
+        // Process the final fragment. It is the remainder of the data and does not have to be aligned.
+        iface
+            .inner
+            .dispatch_ipv4_frag(MockTxToken {}, &mut iface.fragmenter);
+
+        // The fragment offset should be the complete payload length once transmission is complete.
+        let frag_offset = iface.fragmenter.ipv4.frag_offset;
+        assert_eq!(frag_offset as usize, payload_len);
+    }
+}
+
+#[rstest]
+#[case(Medium::Ip)]
+#[cfg(all(
+    feature = "socket-raw",
+    feature = "proto-ipv4-fragmentation",
+    feature = "medium-ip"
+))]
+#[case(Medium::Ethernet)]
+#[cfg(all(
+    feature = "socket-raw",
+    feature = "proto-ipv4-fragmentation",
+    feature = "medium-ethernet"
+))]
+fn test_raw_socket_rx_fragmentation(#[case] medium: Medium) {
+    use crate::wire::{IpProtocol, IpVersion, Ipv4Address, Ipv4Packet, Ipv4Repr};
+
+    let (mut iface, mut sockets, _device) = setup(medium);
+
+    // Raw socket bound to IPv4 and a custom protocol.
+    let packets = 1;
+    let rx_buffer = raw::PacketBuffer::new(vec![raw::PacketMetadata::EMPTY; packets], vec![0; 64]);
+    let tx_buffer = raw::PacketBuffer::new(vec![raw::PacketMetadata::EMPTY; packets], vec![0; 64]);
+    let raw_socket = raw::Socket::new(
+        Some(IpVersion::Ipv4),
+        Some(IpProtocol::Unknown(99)),
+        rx_buffer,
+        tx_buffer,
+    );
+    let handle = sockets.add(raw_socket);
+
+    // Build two IPv4 fragments that together form one packet.
+    let src_addr = Ipv4Address::new(127, 0, 0, 2);
+    let dst_addr = Ipv4Address::new(127, 0, 0, 1);
+    let proto = IpProtocol::Unknown(99);
+    let ident: u16 = 0x1234;
+
+    let total_payload_len = 30usize;
+    let first_payload_len = 24usize; // must be a multiple of 8
+    let last_payload_len = total_payload_len - first_payload_len;
+
+    // Helper to build one fragment as on-the-wire bytes
+    let build_fragment = |payload_len: usize,
+                          more_frags: bool,
+                          frag_offset_octets: u16,
+                          payload_byte: u8|
+     -> Vec<u8> {
+        let repr = Ipv4Repr {
+            src_addr,
+            dst_addr,
+            next_header: proto,
+            hop_limit: 64,
+            payload_len,
+        };
+        let header_len = repr.buffer_len();
+        let mut bytes = vec![0u8; header_len + payload_len];
+        {
+            let mut pkt = Ipv4Packet::new_unchecked(&mut bytes[..]);
+            repr.emit(&mut pkt, &ChecksumCapabilities::default());
+            pkt.set_ident(ident);
+            pkt.set_dont_frag(false);
+            pkt.set_more_frags(more_frags);
+            pkt.set_frag_offset(frag_offset_octets);
+            // Recompute checksum after changing fragmentation fields.
+            pkt.fill_checksum();
+        }
+        // Fill payload with a simple pattern for validation
+        for b in &mut bytes[header_len..] {
+            *b = payload_byte;
+        }
+        bytes
+    };
+
+    let frag1_bytes = build_fragment(first_payload_len, true, 0, 0xAA);
+    let frag2_bytes = build_fragment(last_payload_len, false, first_payload_len as u16, 0xBB);
+
+    let frag1 = Ipv4Packet::new_unchecked(&frag1_bytes[..]);
+    let frag2 = Ipv4Packet::new_unchecked(&frag2_bytes[..]);
+
+    // First fragment alone should not be delivered to the raw socket.
+    assert_eq!(
+        iface.inner.process_ipv4(
+            &mut sockets,
+            PacketMeta::default(),
+            HardwareAddress::default(),
+            &frag1,
+            &mut iface.fragments
+        ),
+        None
+    );
+    {
+        let socket = sockets.get_mut::<raw::Socket>(handle);
+        assert!(!socket.can_recv());
+    }
+
+    // After the last fragment, the reassembled packet should be delivered.
+    assert_eq!(
+        iface.inner.process_ipv4(
+            &mut sockets,
+            PacketMeta::default(),
+            HardwareAddress::default(),
+            &frag2,
+            &mut iface.fragments
+        ),
+        None
+    );
+
+    // Validate the raw socket received one defragmented packet with correct payload.
+    let socket = sockets.get_mut::<raw::Socket>(handle);
+    assert!(socket.can_recv());
+    let data = socket.recv().expect("raw socket should have a packet");
+    let packet = Ipv4Packet::new_unchecked(data);
+    let repr = Ipv4Repr::parse(&packet, &ChecksumCapabilities::default()).unwrap();
+    assert_eq!(repr.src_addr, src_addr);
+    assert_eq!(repr.dst_addr, dst_addr);
+    assert_eq!(repr.next_header, proto);
+    assert_eq!(repr.payload_len, total_payload_len);
+
+    let payload = packet.payload();
+    assert_eq!(payload.len(), total_payload_len);
+    assert!(payload[..first_payload_len].iter().all(|&b| b == 0xAA));
+    assert!(payload[first_payload_len..].iter().all(|&b| b == 0xBB));
+}
+
 #[rstest]
 #[case(Medium::Ip)]
 #[cfg(all(feature = "socket-udp", feature = "medium-ip"))]
@@ -1139,4 +1455,98 @@ fn test_icmp_reply_size(#[case] medium: Medium) {
             IpPayload::Icmpv4(expected_icmp_repr)
         ))
     );
+}
+
+#[rstest]
+#[case(Medium::Ip)]
+#[cfg(feature = "medium-ip")]
+#[case(Medium::Ethernet)]
+#[cfg(feature = "medium-ethernet")]
+fn get_source_address(#[case] medium: Medium) {
+    let (mut iface, ..) = setup(medium);
+
+    const OWN_UNIQUE_LOCAL_ADDR1: Ipv4Address = Ipv4Address::new(172, 18, 1, 2);
+    const OWN_UNIQUE_LOCAL_ADDR2: Ipv4Address = Ipv4Address::new(172, 24, 24, 14);
+
+    // List of addresses of the interface:
+    //   172.18.1.2/24
+    //   172.24.24.14/24
+    iface.update_ip_addrs(|addrs| {
+        addrs.clear();
+
+        addrs
+            .push(IpCidr::Ipv4(Ipv4Cidr::new(OWN_UNIQUE_LOCAL_ADDR1, 24)))
+            .unwrap();
+        addrs
+            .push(IpCidr::Ipv4(Ipv4Cidr::new(OWN_UNIQUE_LOCAL_ADDR2, 24)))
+            .unwrap();
+    });
+
+    // List of addresses we test:
+    //   172.18.1.254 -> 172.18.1.2
+    //   172.24.24.12 -> 172.24.24.14
+    //   172.24.23.254 -> 172.18.1.2
+    const UNIQUE_LOCAL_ADDR1: Ipv4Address = Ipv4Address::new(172, 18, 1, 254);
+    const UNIQUE_LOCAL_ADDR2: Ipv4Address = Ipv4Address::new(172, 24, 24, 12);
+    const UNIQUE_LOCAL_ADDR3: Ipv4Address = Ipv4Address::new(172, 24, 23, 254);
+
+    assert_eq!(
+        iface.inner.get_source_address_ipv4(&UNIQUE_LOCAL_ADDR1),
+        Some(OWN_UNIQUE_LOCAL_ADDR1)
+    );
+
+    assert_eq!(
+        iface.inner.get_source_address_ipv4(&UNIQUE_LOCAL_ADDR2),
+        Some(OWN_UNIQUE_LOCAL_ADDR2)
+    );
+    assert_eq!(
+        iface.inner.get_source_address_ipv4(&UNIQUE_LOCAL_ADDR3),
+        Some(OWN_UNIQUE_LOCAL_ADDR1)
+    );
+}
+
+#[rstest]
+#[case(Medium::Ip)]
+#[cfg(feature = "medium-ip")]
+#[case(Medium::Ethernet)]
+#[cfg(feature = "medium-ethernet")]
+fn get_source_address_empty_interface(#[case] medium: Medium) {
+    let (mut iface, ..) = setup(medium);
+
+    iface.update_ip_addrs(|ips| ips.clear());
+
+    // List of addresses we test:
+    //   172.18.1.254 -> None
+    //   172.24.24.12 -> None
+    //   172.24.23.254 -> None
+    const UNIQUE_LOCAL_ADDR1: Ipv4Address = Ipv4Address::new(172, 18, 1, 254);
+    const UNIQUE_LOCAL_ADDR2: Ipv4Address = Ipv4Address::new(172, 24, 24, 12);
+    const UNIQUE_LOCAL_ADDR3: Ipv4Address = Ipv4Address::new(172, 24, 23, 254);
+
+    assert_eq!(
+        iface.inner.get_source_address_ipv4(&UNIQUE_LOCAL_ADDR1),
+        None
+    );
+    assert_eq!(
+        iface.inner.get_source_address_ipv4(&UNIQUE_LOCAL_ADDR2),
+        None
+    );
+    assert_eq!(
+        iface.inner.get_source_address_ipv4(&UNIQUE_LOCAL_ADDR3),
+        None
+    );
+}
+
+use crate::wire::ipv4::HEADER_LEN;
+#[rstest]
+#[cfg(all(feature = "medium-ip", feature = "proto-ipv4-fragmentation",))]
+fn test_ipv4_fragment_size() {
+    let (_, _, device) = setup(Medium::Ip);
+    let caps = device.capabilities();
+    for i in 0..IPV4_FRAGMENT_PAYLOAD_ALIGNMENT {
+        assert!(
+            caps.max_ipv4_fragment_size(HEADER_LEN + i)
+                .is_multiple_of(IPV4_FRAGMENT_PAYLOAD_ALIGNMENT)
+        );
+    }
 }

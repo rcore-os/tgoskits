@@ -1,32 +1,32 @@
 use core::fmt;
 
 use super::{Error, Result};
-use crate::wire::{Ipv6Address as Address, Ipv6AddressExt};
+use crate::wire::Ipv6Address as Address;
 
 enum_with_unknown! {
     /// IPv6 Extension Routing Header Routing Type
     pub enum Type(u8) {
         /// Source Route (DEPRECATED)
         ///
-        /// See https://tools.ietf.org/html/rfc5095 for details.
+        /// See <https://tools.ietf.org/html/rfc5095> for details.
         Type0 = 0,
         /// Nimrod (DEPRECATED 2009-05-06)
         Nimrod = 1,
         /// Type 2 Routing Header for Mobile IPv6
         ///
-        /// See https://tools.ietf.org/html/rfc6275#section-6.4 for details.
+        /// See <https://tools.ietf.org/html/rfc6275#section-6.4> for details.
         Type2 = 2,
         /// RPL Source Routing Header
         ///
-        /// See https://tools.ietf.org/html/rfc6554 for details.
+        /// See <https://tools.ietf.org/html/rfc6554> for details.
         Rpl = 3,
         /// RFC3692-style Experiment 1
         ///
-        /// See https://tools.ietf.org/html/rfc4727 for details.
+        /// See <https://tools.ietf.org/html/rfc4727> for details.
         Experiment1 = 253,
         /// RFC3692-style Experiment 2
         ///
-        /// See https://tools.ietf.org/html/rfc4727 for details.
+        /// See <https://tools.ietf.org/html/rfc4727> for details.
         Experiment2 = 254,
         /// Reserved for future use
         Reserved = 252
@@ -191,7 +191,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     /// This function may panic if this header is not the Type2 Routing Header routing type.
     pub fn home_address(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(&data[field::HOME_ADDRESS])
+        Address::from_octets(data[field::HOME_ADDRESS].try_into().unwrap())
     }
 }
 
@@ -332,7 +332,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> fmt::Display for Header<&'a T> {
+impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Header<&T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match Repr::parse(self) {
             Ok(repr) => write!(f, "{repr}"),

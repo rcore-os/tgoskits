@@ -65,7 +65,7 @@
 //!
 //! # Minimum Supported Rust Version (MSRV)
 //!
-//! This crate is guaranteed to compile on stable Rust 1.81 and up with any valid set of features.
+//! This crate is guaranteed to compile on stable Rust 1.91 and up with any valid set of features.
 //! It *might* compile on older versions but that may change in any new patch release.
 //!
 //! The exception is when using the `defmt` feature, in which case `defmt`'s MSRV applies, which
@@ -130,6 +130,15 @@ compile_error!(
      medium-ip, medium-ethernet, medium-ieee802154"
 );
 
+#[cfg(all(
+    feature = "proto-ipv6-slaac",
+    not(any(feature = "medium-ethernet", feature = "medium-ieee802154",))
+))]
+compile_error!(
+    "If you enable the `proto-ipv6-slaac` feature, you must enable at least one of the following \
+     features: medium-ethernet, medium-ieee802154"
+);
+
 #[cfg(all(feature = "defmt", feature = "log"))]
 compile_error!("You must enable at most one of the following features: defmt, log");
 
@@ -149,6 +158,7 @@ pub mod config {
     pub const IFACE_MAX_ADDR_COUNT: usize = 8;
     pub const IFACE_MAX_MULTICAST_GROUP_COUNT: usize = 4;
     pub const IFACE_MAX_ROUTE_COUNT: usize = 4;
+    pub const IFACE_MAX_PREFIX_COUNT: usize = 1;
     pub const IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT: usize = 4;
     pub const IFACE_NEIGHBOR_CACHE_COUNT: usize = 3;
     pub const REASSEMBLY_BUFFER_COUNT: usize = 4;

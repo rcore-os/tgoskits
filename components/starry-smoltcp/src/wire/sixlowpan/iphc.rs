@@ -219,7 +219,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the Source Address.
-    pub fn src_addr(&self) -> Result<UnresolvedAddress> {
+    pub fn src_addr(&self) -> Result<UnresolvedAddress<'_>> {
         let start = (self.ip_fields_start()
             + self.traffic_class_size()
             + self.next_header_size()
@@ -276,7 +276,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the Destination Address.
-    pub fn dst_addr(&self) -> Result<UnresolvedAddress> {
+    pub fn dst_addr(&self) -> Result<UnresolvedAddress<'_>> {
         let start = (self.ip_fields_start()
             + self.traffic_class_size()
             + self.next_header_size()

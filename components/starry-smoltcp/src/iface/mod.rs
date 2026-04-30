@@ -10,6 +10,8 @@ mod neighbor;
 mod route;
 #[cfg(feature = "proto-rpl")]
 mod rpl;
+#[cfg(feature = "proto-ipv6-slaac")]
+mod slaac;
 mod socket_meta;
 mod socket_set;
 
@@ -17,6 +19,8 @@ mod packet;
 
 #[cfg(feature = "multicast")]
 pub use self::interface::multicast::MulticastError;
+#[cfg(feature = "proto-ipv6-slaac")]
+pub use self::slaac::Slaac;
 pub use self::{
     interface::{
         Config, Interface, InterfaceInner as Context, PollIngressSingleResult, PollResult,

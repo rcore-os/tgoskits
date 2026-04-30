@@ -6,7 +6,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 pub use super::IpProtocol as Protocol;
 use super::{Error, Result};
-use crate::wire::ip::pretty_print_ip_payload;
+use crate::wire::{HardwareAddress, ip::pretty_print_ip_payload};
 
 /// Minimum MTU required of all links supporting IPv6. See [RFC 8200 § 5].
 ///
@@ -77,11 +77,11 @@ impl From<u8> for MulticastScope {
 pub use core::net::Ipv6Addr as Address;
 
 pub(crate) trait AddressExt {
-    /// Construct an IPv6 address from a sequence of octets, in big-endian.
-    ///
-    /// # Panics
-    /// The function panics if `data` is not sixteen octets long.
-    fn from_bytes(data: &[u8]) -> Address;
+    /// Create an IPv6 address based on the provided prefix and hardware identifier.
+    fn from_link_prefix(
+        link_prefix: &Cidr,
+        interface_identifier: HardwareAddress,
+    ) -> Option<Address>;
 
     /// Query whether the IPv6 address is an [unicast address].
     ///
@@ -99,13 +99,6 @@ pub(crate) trait AddressExt {
     ///
     /// [link-local]: https://tools.ietf.org/html/rfc4291#section-2.5.6
     fn is_link_local(&self) -> bool;
-
-    /// Query whether the IPv6 address is a [Unique Local Address] (ULA).
-    ///
-    /// [Unique Local Address]: https://tools.ietf.org/html/rfc4193
-    ///
-    /// `x_` prefix is to avoid a collision with the still-unstable method in `core::ip`.
-    fn x_is_unique_local(&self) -> bool;
 
     /// Helper function used to mask an address given a prefix.
     ///
@@ -128,6 +121,7 @@ pub(crate) trait AddressExt {
     /// Query whether the IPv6 address is a [solicited-node multicast address].
     ///
     /// [Solicited-node multicast address]: https://datatracker.ietf.org/doc/html/rfc4291#section-2.7.1
+    #[cfg(feature = "multicast")]
     fn is_solicited_node_multicast(&self) -> bool;
 
     /// If `self` is a CIDR-compatible subnet mask, return `Some(prefix_len)`,
@@ -136,10 +130,21 @@ pub(crate) trait AddressExt {
 }
 
 impl AddressExt for Address {
-    fn from_bytes(data: &[u8]) -> Address {
-        let mut bytes = [0; ADDR_SIZE];
-        bytes.copy_from_slice(data);
-        Address::from(bytes)
+    fn from_link_prefix(
+        link_prefix: &Cidr,
+        interface_identifier: HardwareAddress,
+    ) -> Option<Address> {
+        if let Some(eui64) = interface_identifier.as_eui_64() {
+            if link_prefix.prefix_len() != 64 {
+                return None;
+            }
+            let mut bytes = [0; 16];
+            bytes[0..8].copy_from_slice(&link_prefix.address().octets()[0..8]);
+            bytes[8..16].copy_from_slice(&eui64);
+            Some(Address::from_octets(bytes))
+        } else {
+            None
+        }
     }
 
     fn x_is_unicast(&self) -> bool {
@@ -152,10 +157,6 @@ impl AddressExt for Address {
 
     fn is_link_local(&self) -> bool {
         self.octets()[0..8] == [0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-    }
-
-    fn x_is_unique_local(&self) -> bool {
-        (self.octets()[0] & 0b1111_1110) == 0xfc
     }
 
     fn mask(&self, mask: u8) -> [u8; ADDR_SIZE] {
@@ -189,7 +190,7 @@ impl AddressExt for Address {
 
         if self.is_link_local() {
             MulticastScope::LinkLocal
-        } else if self.x_is_unique_local() || self.is_global_unicast() {
+        } else if self.is_unique_local() || self.is_global_unicast() {
             // ULA are considered global scope
             // https://www.rfc-editor.org/rfc/rfc6724#section-3.1
             MulticastScope::Global
@@ -198,6 +199,7 @@ impl AddressExt for Address {
         }
     }
 
+    #[cfg(feature = "multicast")]
     fn is_solicited_node_multicast(&self) -> bool {
         self.octets()[0..13]
             == [
@@ -247,6 +249,12 @@ impl Cidr {
         prefix_len: 104,
     };
 
+    /// The link-local address prefix.
+    pub const LINK_LOCAL_PREFIX: Cidr = Cidr {
+        address: Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0),
+        prefix_len: 10,
+    };
+
     /// Create an IPv6 CIDR block from the given address and prefix length.
     ///
     /// # Panics
@@ -257,6 +265,15 @@ impl Cidr {
             address,
             prefix_len,
         }
+    }
+
+    /// Create an IPv6 CIDR based on the provided prefix and hardware identifier.
+    pub fn from_link_prefix(
+        link_prefix: &Cidr,
+        interface_identifier: HardwareAddress,
+    ) -> Option<Self> {
+        Address::from_link_prefix(link_prefix, interface_identifier)
+            .map(|address| Self::new(address, link_prefix.prefix_len()))
     }
 
     /// Return the address of this IPv6 CIDR block.
@@ -456,14 +473,14 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(&data[field::SRC_ADDR])
+        Address::from_octets(data[field::SRC_ADDR].try_into().unwrap())
     }
 
     /// Return the destination address field.
     #[inline]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(&data[field::DST_ADDR])
+        Address::from_octets(data[field::DST_ADDR].try_into().unwrap())
     }
 }
 
@@ -552,7 +569,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&'a T> {
+impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match Repr::parse(self) {
             Ok(repr) => write!(f, "{repr}"),
@@ -700,14 +717,14 @@ pub(crate) mod test {
         assert!(LINK_LOCAL_ALL_ROUTERS.is_multicast());
         assert!(!LINK_LOCAL_ALL_ROUTERS.is_link_local());
         assert!(!LINK_LOCAL_ALL_ROUTERS.is_loopback());
-        assert!(!LINK_LOCAL_ALL_ROUTERS.x_is_unique_local());
+        assert!(!LINK_LOCAL_ALL_ROUTERS.is_unique_local());
         assert!(!LINK_LOCAL_ALL_ROUTERS.is_global_unicast());
         assert!(!LINK_LOCAL_ALL_ROUTERS.is_solicited_node_multicast());
         assert!(!LINK_LOCAL_ALL_NODES.is_unspecified());
         assert!(LINK_LOCAL_ALL_NODES.is_multicast());
         assert!(!LINK_LOCAL_ALL_NODES.is_link_local());
         assert!(!LINK_LOCAL_ALL_NODES.is_loopback());
-        assert!(!LINK_LOCAL_ALL_NODES.x_is_unique_local());
+        assert!(!LINK_LOCAL_ALL_NODES.is_unique_local());
         assert!(!LINK_LOCAL_ALL_NODES.is_global_unicast());
         assert!(!LINK_LOCAL_ALL_NODES.is_solicited_node_multicast());
     }
@@ -718,7 +735,7 @@ pub(crate) mod test {
         assert!(!LINK_LOCAL_ADDR.is_multicast());
         assert!(LINK_LOCAL_ADDR.is_link_local());
         assert!(!LINK_LOCAL_ADDR.is_loopback());
-        assert!(!LINK_LOCAL_ADDR.x_is_unique_local());
+        assert!(!LINK_LOCAL_ADDR.is_unique_local());
         assert!(!LINK_LOCAL_ADDR.is_global_unicast());
         assert!(!LINK_LOCAL_ADDR.is_solicited_node_multicast());
     }
@@ -729,7 +746,7 @@ pub(crate) mod test {
         assert!(!Address::LOCALHOST.is_multicast());
         assert!(!Address::LOCALHOST.is_link_local());
         assert!(Address::LOCALHOST.is_loopback());
-        assert!(!Address::LOCALHOST.x_is_unique_local());
+        assert!(!Address::LOCALHOST.is_unique_local());
         assert!(!Address::LOCALHOST.is_global_unicast());
         assert!(!Address::LOCALHOST.is_solicited_node_multicast());
     }
@@ -740,7 +757,7 @@ pub(crate) mod test {
         assert!(!UNIQUE_LOCAL_ADDR.is_multicast());
         assert!(!UNIQUE_LOCAL_ADDR.is_link_local());
         assert!(!UNIQUE_LOCAL_ADDR.is_loopback());
-        assert!(UNIQUE_LOCAL_ADDR.x_is_unique_local());
+        assert!(UNIQUE_LOCAL_ADDR.is_unique_local());
         assert!(!UNIQUE_LOCAL_ADDR.is_global_unicast());
         assert!(!UNIQUE_LOCAL_ADDR.is_solicited_node_multicast());
     }
@@ -751,7 +768,7 @@ pub(crate) mod test {
         assert!(!GLOBAL_UNICAST_ADDR.is_multicast());
         assert!(!GLOBAL_UNICAST_ADDR.is_link_local());
         assert!(!GLOBAL_UNICAST_ADDR.is_loopback());
-        assert!(!GLOBAL_UNICAST_ADDR.x_is_unique_local());
+        assert!(!GLOBAL_UNICAST_ADDR.is_unique_local());
         assert!(GLOBAL_UNICAST_ADDR.is_global_unicast());
         assert!(!GLOBAL_UNICAST_ADDR.is_solicited_node_multicast());
     }
@@ -762,7 +779,7 @@ pub(crate) mod test {
         assert!(TEST_SOL_NODE_MCAST_ADDR.is_multicast());
         assert!(!TEST_SOL_NODE_MCAST_ADDR.is_link_local());
         assert!(!TEST_SOL_NODE_MCAST_ADDR.is_loopback());
-        assert!(!TEST_SOL_NODE_MCAST_ADDR.x_is_unique_local());
+        assert!(!TEST_SOL_NODE_MCAST_ADDR.is_unique_local());
         assert!(!TEST_SOL_NODE_MCAST_ADDR.is_global_unicast());
         assert!(TEST_SOL_NODE_MCAST_ADDR.is_solicited_node_multicast());
     }
@@ -911,11 +928,11 @@ pub(crate) mod test {
             ),
         ];
 
-        for addr in inside_subnet.iter().map(|a| Address::from_bytes(a)) {
+        for addr in inside_subnet.iter().map(|a| Address::from_octets(*a)) {
             assert!(cidr.contains_addr(&addr));
         }
 
-        for addr in outside_subnet.iter().map(|a| Address::from_bytes(a)) {
+        for addr in outside_subnet.iter().map(|a| Address::from_octets(*a)) {
             assert!(!cidr.contains_addr(&addr));
         }
 
@@ -935,9 +952,42 @@ pub(crate) mod test {
     }
 
     #[test]
-    #[should_panic(expected = "length")]
-    fn test_from_bytes_too_long() {
-        let _ = Address::from_bytes(&[0u8; 15]);
+    fn test_from_eui_64() {
+        #[cfg(feature = "medium-ethernet")]
+        use crate::wire::EthernetAddress;
+        #[cfg(feature = "medium-ieee802154")]
+        use crate::wire::Ieee802154Address;
+        let tests: std::vec::Vec<(HardwareAddress, Address)> = vec![
+            #[cfg(feature = "medium-ethernet")]
+            (
+                HardwareAddress::Ethernet(EthernetAddress::from_bytes(&[
+                    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+                ])),
+                Address::new(0x2001, 0xdb8, 0x3, 0x0, 0xa8bb, 0xccff, 0xfedd, 0xeeff),
+            ),
+            #[cfg(feature = "medium-ieee802154")]
+            (
+                HardwareAddress::Ieee802154(Ieee802154Address::from_bytes(&[
+                    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+                ])),
+                Address::new(0x2001, 0xdb8, 0x3, 0x0, 0x0211, 0x2233, 0x4455, 0x6677),
+            ),
+        ];
+
+        let prefix = Cidr::new(GLOBAL_UNICAST_ADDR.mask(64).into(), 64);
+        let wrong_prefix = Cidr::new(GLOBAL_UNICAST_ADDR.mask(72).into(), 72);
+
+        for (hardware, result) in tests {
+            let generated = Address::from_link_prefix(&prefix, hardware).unwrap();
+            assert!(prefix.contains_addr(&generated));
+            assert_eq!(generated, result);
+            assert!(Address::from_link_prefix(&wrong_prefix, hardware).is_none());
+
+            let generated = Cidr::from_link_prefix(&prefix, hardware).unwrap();
+            assert!(prefix.contains_subnet(&generated));
+            assert_eq!(generated.address(), result);
+            assert!(Cidr::from_link_prefix(&wrong_prefix, hardware).is_none());
+        }
     }
 
     #[test]

@@ -274,6 +274,7 @@ impl Repr {
     /// This never calculates the checksum, and is intended for internal-use only,
     /// not for packets that are going to be actually sent over the network. For
     /// example, when decompressing 6lowpan.
+    #[cfg(feature = "proto-sixlowpan")]
     pub(crate) fn emit_header<T>(&self, packet: &mut Packet<&mut T>, payload_len: usize)
     where
         T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
@@ -311,7 +312,7 @@ impl Repr {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&'a T> {
+impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Cannot use Repr::parse because we don't have the IP addresses.
         write!(

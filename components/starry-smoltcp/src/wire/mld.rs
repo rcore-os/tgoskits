@@ -8,7 +8,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{Error, Result};
 use crate::wire::{
-    Ipv6Address, Ipv6AddressExt,
+    Ipv6Address,
     icmpv6::{Message, Packet, field},
 };
 
@@ -51,7 +51,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn mcast_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
-        Ipv6Address::from_bytes(&data[field::QUERY_MCAST_ADDR])
+        Ipv6Address::from_octets(data[field::QUERY_MCAST_ADDR].try_into().unwrap())
     }
 
     /// Return the Suppress Router-Side Processing flag.
@@ -236,7 +236,7 @@ impl<T: AsRef<[u8]>> AddressRecord<T> {
     #[inline]
     pub fn mcast_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
-        Ipv6Address::from_bytes(&data[field::RECORD_MCAST_ADDR])
+        Ipv6Address::from_octets(data[field::RECORD_MCAST_ADDR].try_into().unwrap())
     }
 }
 
@@ -524,7 +524,7 @@ mod test {
         assert_eq!(packet.qqic(), 0x12);
         assert_eq!(packet.num_srcs(), 0x01);
         assert_eq!(
-            Ipv6Address::from_bytes(packet.payload()),
+            Ipv6Address::from_octets(packet.payload().try_into().unwrap()),
             IPV6_LINK_LOCAL_ALL_ROUTERS
         );
     }
@@ -562,7 +562,7 @@ mod test {
         assert_eq!(addr_rcrd.num_srcs(), 0x01);
         assert_eq!(addr_rcrd.mcast_addr(), IPV6_LINK_LOCAL_ALL_NODES);
         assert_eq!(
-            Ipv6Address::from_bytes(addr_rcrd.payload()),
+            Ipv6Address::from_octets(addr_rcrd.payload().try_into().unwrap()),
             IPV6_LINK_LOCAL_ALL_ROUTERS
         );
     }

@@ -97,7 +97,7 @@ impl<'p> Packet<'p> {
                     &caps.checksum,
                 )
             }
-            #[cfg(feature = "proto-ipv6")]
+            #[cfg(all(feature = "proto-ipv6", feature = "multicast"))]
             IpPayload::HopByHopIcmpv6(hbh_repr, icmpv6_repr) => {
                 let ipv6_repr = match _ip_repr {
                     #[cfg(feature = "proto-ipv4")]
@@ -129,7 +129,10 @@ impl<'p> Packet<'p> {
             }
 
             #[cfg(feature = "socket-raw")]
-            IpPayload::Raw(raw_packet) => payload.copy_from_slice(raw_packet),
+            IpPayload::Raw(raw_packet) => {
+                let len = raw_packet.len();
+                payload[..len].copy_from_slice(raw_packet)
+            }
             #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
             IpPayload::Udp(udp_repr, inner_payload) => udp_repr.emit(
                 &mut UdpPacket::new_unchecked(payload),
@@ -210,7 +213,7 @@ pub(crate) enum IpPayload<'p> {
     Igmp(IgmpRepr),
     #[cfg(feature = "proto-ipv6")]
     Icmpv6(Icmpv6Repr<'p>),
-    #[cfg(feature = "proto-ipv6")]
+    #[cfg(all(feature = "proto-ipv6", feature = "multicast"))]
     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
     #[cfg(feature = "socket-raw")]
     Raw(&'p [u8]),

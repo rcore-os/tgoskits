@@ -379,11 +379,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the DODAG id, which is an IPv6 address.
     #[inline]
     pub fn dio_dodag_id(&self) -> Address {
-        get!(
-            self.buffer,
-            into: Address,
-            fun: from_bytes,
-            field: field::DIO_DODAG_ID
+        Address::from_octets(
+            self.buffer.as_ref()[field::DIO_DODAG_ID]
+                .try_into()
+                .unwrap(),
         )
     }
 }
@@ -476,8 +475,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn dao_dodag_id(&self) -> Option<Address> {
         if self.dao_dodag_id_present() {
-            Some(Address::from_bytes(
-                &self.buffer.as_ref()[field::DAO_DODAG_ID],
+            Some(Address::from_octets(
+                self.buffer.as_ref()[field::DAO_DODAG_ID]
+                    .try_into()
+                    .unwrap(),
             ))
         } else {
             None
@@ -562,8 +563,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn dao_ack_dodag_id(&self) -> Option<Address> {
         if self.dao_ack_dodag_id_present() {
-            Some(Address::from_bytes(
-                &self.buffer.as_ref()[field::DAO_ACK_DODAG_ID],
+            Some(Address::from_octets(
+                self.buffer.as_ref()[field::DAO_ACK_DODAG_ID]
+                    .try_into()
+                    .unwrap(),
             ))
         } else {
             None
@@ -1435,8 +1438,10 @@ pub mod options {
         #[inline]
         pub fn parent_address(&self) -> Option<Address> {
             if self.option_length() > 5 {
-                Some(Address::from_bytes(
-                    &self.buffer.as_ref()[field::TRANSIT_INFO_PARENT_ADDRESS],
+                Some(Address::from_octets(
+                    self.buffer.as_ref()[field::TRANSIT_INFO_PARENT_ADDRESS]
+                        .try_into()
+                        .unwrap(),
                 ))
             } else {
                 None
@@ -1556,11 +1561,10 @@ pub mod options {
         /// Return the DODAG ID field.
         #[inline]
         pub fn dodag_id(&self) -> Address {
-            get!(
-                self.buffer,
-                into: Address,
-                fun: from_bytes,
-                field: field::SOLICITED_INFO_DODAG_ID
+            Address::from_octets(
+                self.buffer.as_ref()[field::SOLICITED_INFO_DODAG_ID]
+                    .try_into()
+                    .unwrap(),
             )
         }
 
@@ -2026,7 +2030,9 @@ pub mod options {
                 }),
                 OptionType::RplTarget => Ok(Repr::RplTarget {
                     prefix_length: packet.target_prefix_length(),
-                    prefix: crate::wire::Ipv6Address::from_bytes(packet.target_prefix()),
+                    prefix: crate::wire::Ipv6Address::from_octets(
+                        packet.target_prefix().try_into().unwrap(),
+                    ),
                 }),
                 OptionType::TransitInformation => Ok(Repr::TransitInformation {
                     external: packet.is_external(),
@@ -2433,7 +2439,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
 
-        let addr = Address::from_bytes(&[
+        let addr = Address::from_octets([
             0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00, 0x01, 0x00, 0x01,
             0x00, 0x01,
         ]);
@@ -2560,7 +2566,7 @@ mod tests {
             0x00, 0x02,
         ];
 
-        let parent_addr = Address::from_bytes(&[
+        let parent_addr = Address::from_octets([
             0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00, 0x01, 0x00, 0x01,
             0x00, 0x01,
         ]);

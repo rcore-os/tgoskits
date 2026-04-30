@@ -5,8 +5,8 @@ use super::{Error, Result};
 use crate::{
     time::Duration,
     wire::{
-        Ipv6Address, Ipv6AddressExt, NdiscOption, NdiscOptionRepr, NdiscPrefixInformation,
-        NdiscRedirectedHeader, RawHardwareAddress,
+        Ipv6Address, NdiscOption, NdiscOptionRepr, NdiscPrefixInformation, NdiscRedirectedHeader,
+        RawHardwareAddress,
         icmpv6::{Message, Packet, field},
     },
 };
@@ -80,7 +80,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn target_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
-        Ipv6Address::from_bytes(&data[field::TARGET_ADDR])
+        Ipv6Address::from_octets(data[field::TARGET_ADDR].try_into().unwrap())
     }
 }
 
@@ -106,7 +106,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn dest_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
-        Ipv6Address::from_bytes(&data[field::DEST_ADDR])
+        Ipv6Address::from_octets(data[field::DEST_ADDR].try_into().unwrap())
     }
 }
 

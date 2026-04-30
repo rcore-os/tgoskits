@@ -984,7 +984,7 @@ impl<'a> Repr<'a> {
         if sack_range_len > 0 {
             length += sack_range_len + 2;
         }
-        if length % 4 != 0 {
+        if !length.is_multiple_of(4) {
             length += 4 - length % 4;
         }
         length
@@ -1077,7 +1077,7 @@ impl<'a> Repr<'a> {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&'a T> {
+impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Cannot use Repr::parse because we don't have the IP addresses.
         write!(f, "TCP src={} dst={}", self.src_port(), self.dst_port())?;

@@ -19,11 +19,11 @@ impl Interface {
         }
 
         let pkt = &self.fragmenter;
-        if pkt.packet_len > pkt.sent_bytes {
-            if let Some(tx_token) = device.transmit(self.inner.now) {
-                self.inner
-                    .dispatch_ieee802154_frag(tx_token, &mut self.fragmenter);
-            }
+        if pkt.packet_len > pkt.sent_bytes
+            && let Some(tx_token) = device.transmit(self.inner.now)
+        {
+            self.inner
+                .dispatch_ieee802154_frag(tx_token, &mut self.fragmenter);
         }
     }
 
@@ -68,10 +68,7 @@ impl InterfaceInner {
             }
             #[cfg(feature = "proto-sixlowpan-fragmentation")]
             SixlowpanPacket::FragmentHeader => {
-                match self.process_sixlowpan_fragment(ieee802154_repr, payload, f) {
-                    Some(payload) => payload,
-                    None => return None,
-                }
+                self.process_sixlowpan_fragment(ieee802154_repr, payload, f)?
             }
             SixlowpanPacket::IphcHeader => {
                 match Self::sixlowpan_to_ipv6(
@@ -843,10 +840,10 @@ mod tests {
 
         let mut ip_packet = PacketV6 {
             header: Ipv6Repr {
-                src_addr: Ipv6Address::from_bytes(&[
+                src_addr: Ipv6Address::from_octets([
                     253, 0, 0, 0, 0, 0, 0, 0, 2, 3, 0, 3, 0, 3, 0, 3,
                 ]),
-                dst_addr: Ipv6Address::from_bytes(&[
+                dst_addr: Ipv6Address::from_octets([
                     253, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 1, 0, 1, 0, 1,
                 ]),
                 next_header: IpProtocol::Icmpv6,
@@ -863,7 +860,7 @@ mod tests {
                 rpl_instance_id: RplInstanceId::Global(30),
                 expect_ack: false,
                 sequence: 241,
-                dodag_id: Some(Ipv6Address::from_bytes(&[
+                dodag_id: Some(Ipv6Address::from_octets([
                     253, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 1, 0, 1, 0, 1,
                 ])),
                 options: &[],
@@ -909,9 +906,9 @@ mod tests {
             src_addr: Some(Ieee802154Address::Extended([0, 3, 0, 3, 0, 3, 0, 3])),
         };
 
-        let addr = Ipv6Address::from_bytes(&[253, 0, 0, 0, 0, 0, 0, 0, 2, 3, 0, 3, 0, 3, 0, 3]);
+        let addr = Ipv6Address::from_octets([253, 0, 0, 0, 0, 0, 0, 0, 2, 3, 0, 3, 0, 3, 0, 3]);
         let parent_address =
-            Ipv6Address::from_bytes(&[253, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 1, 0, 1, 0, 1]);
+            Ipv6Address::from_octets([253, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 1, 0, 1, 0, 1]);
 
         let mut hbh_options = heapless::Vec::new();
         hbh_options
@@ -944,7 +941,7 @@ mod tests {
                 rpl_instance_id: RplInstanceId::Global(30),
                 expect_ack: false,
                 sequence: 241,
-                dodag_id: Some(Ipv6Address::from_bytes(&[
+                dodag_id: Some(Ipv6Address::from_octets([
                     253, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 1, 0, 1, 0, 1,
                 ])),
                 options: &[

@@ -241,11 +241,11 @@ impl RttEstimator {
     }
 
     fn on_ack(&mut self, timestamp: Instant, seq: TcpSeqNumber) {
-        if let Some((sent_timestamp, sent_seq)) = self.timestamp {
-            if seq >= sent_seq {
-                self.sample((timestamp - sent_timestamp).total_millis() as u32);
-                self.timestamp = None;
-            }
+        if let Some((sent_timestamp, sent_seq)) = self.timestamp
+            && seq >= sent_seq
+        {
+            self.sample((timestamp - sent_timestamp).total_millis() as u32);
+            self.timestamp = None;
         }
     }
 
@@ -357,10 +357,10 @@ impl Timer {
     }
 
     fn set_keep_alive(&mut self) {
-        if let Timer::Idle { keep_alive_at } = self {
-            if keep_alive_at.is_none() {
-                *keep_alive_at = Some(Instant::from_millis(0))
-            }
+        if let Timer::Idle { keep_alive_at } = self
+            && keep_alive_at.is_none()
+        {
+            *keep_alive_at = Some(Instant::from_millis(0))
         }
     }
 
@@ -373,7 +373,7 @@ impl Timer {
     fn set_for_retransmit(&mut self, timestamp: Instant, delay: Duration) {
         match *self {
             Timer::Idle { .. }
-            | Timer::FastRetransmit { .. }
+            | Timer::FastRetransmit
             | Timer::Retransmit { .. }
             | Timer::ZeroWindowProbe { .. } => {
                 *self = Timer::Retransmit {
@@ -481,7 +481,7 @@ pub struct Socket<'a> {
     /// Address passed to listen(). Listen address is set when listen() is called and
     /// used every time the socket is reset back to the LISTEN state.
     listen_endpoint: IpListenEndpoint,
-    /// Address passed to bind(). Record the binding address of the socket.
+    /// Address passed to bind(). Records the binding address before connect/listen.
     bound_endpoint: IpListenEndpoint,
     /// Current 4-tuple (local and remote endpoints).
     tuple: Option<Tuple>,
@@ -546,6 +546,10 @@ pub struct Socket<'a> {
     rx_waker: WakerRegistration,
     #[cfg(feature = "async")]
     tx_waker: WakerRegistration,
+
+    /// If this is set, we will not send a SYN|ACK until this is unset.
+    #[cfg(feature = "socket-tcp-pause-synack")]
+    synack_paused: bool,
 }
 
 const DEFAULT_MSS: usize = 536;
@@ -610,6 +614,9 @@ impl<'a> Socket<'a> {
             rx_waker: WakerRegistration::new(),
             #[cfg(feature = "async")]
             tx_waker: WakerRegistration::new(),
+
+            #[cfg(feature = "socket-tcp-pause-synack")]
+            synack_paused: false,
         }
     }
 
@@ -726,6 +733,16 @@ impl<'a> Socket<'a> {
     /// See also the [set_nagle_enabled](#method.set_nagle_enabled) method.
     pub fn nagle_enabled(&self) -> bool {
         self.nagle
+    }
+
+    /// Pause sending of SYN|ACK packets.
+    ///
+    /// When this flag is set, the socket will get stuck in `SynReceived` state without sending
+    /// any SYN|ACK packets back, until this flag is unset. This is useful for certain niche TCP
+    /// proxy usecases.
+    #[cfg(feature = "socket-tcp-pause-synack")]
+    pub fn pause_synack(&mut self, pause: bool) {
+        self.synack_paused = pause;
     }
 
     /// Return the current window field value, including scaling according to RFC 1323.
@@ -866,13 +883,13 @@ impl<'a> Socket<'a> {
         Some(self.tuple?.remote)
     }
 
-    /// get bound endpoint.
+    /// Return the endpoint set by bind().
     #[inline]
     pub fn get_bound_endpoint(&self) -> IpListenEndpoint {
         self.bound_endpoint
     }
 
-    /// set bound endpoint.
+    /// Set the endpoint recorded by bind().
     #[inline]
     pub fn set_bound_endpoint(&mut self, bound_endpoint: IpListenEndpoint) {
         self.bound_endpoint = bound_endpoint
@@ -1186,7 +1203,7 @@ impl<'a> Socket<'a> {
             // we still can receive indefinitely.
             State::FinWait1 | State::FinWait2 => true,
             // If we have something in the receive buffer, we can receive that.
-            _ if !self.rx_buffer.is_empty() => true,
+            _ if self.can_recv() => true,
             _ => false,
         }
     }
@@ -1214,14 +1231,9 @@ impl<'a> Socket<'a> {
         self.tx_buffer.capacity()
     }
 
-    /// Check whether the receive half of the full-duplex connection buffer is open
-    /// (see [may_recv](#method.may_recv)), and the receive buffer is not empty.
+    /// Check whether the receive buffer is not empty.
     #[inline]
     pub fn can_recv(&self) -> bool {
-        if !self.may_recv() {
-            return false;
-        }
-
         !self.rx_buffer.is_empty()
     }
 
@@ -1481,12 +1493,15 @@ impl<'a> Socket<'a> {
             // Acknowledgment Number field in the header.
             reply_repr.sack_ranges[0] = None;
 
-            if let Some(last_seg_seq) = self.local_rx_last_seq.map(|s| s.0 as u32) {
+            let ack = reply_repr.ack_number.unwrap_or(TcpSeqNumber(0));
+
+            if let Some(last_seg_seq) = self.local_rx_last_seq {
                 reply_repr.sack_ranges[0] = self
                     .assembler
-                    .iter_data(reply_repr.ack_number.map(|s| s.0 as usize).unwrap_or(0))
-                    .map(|(left, right)| (left as u32, right as u32))
-                    .find(|(left, right)| *left <= last_seg_seq && *right >= last_seg_seq);
+                    .iter_data()
+                    .map(|(left, right)| (ack + left, ack + right))
+                    .find(|&(left, right)| left <= last_seg_seq && right >= last_seg_seq)
+                    .map(|(left, right)| (left.0 as u32, right.0 as u32));
             }
 
             if reply_repr.sack_ranges[0].is_none() {
@@ -1499,9 +1514,10 @@ impl<'a> Socket<'a> {
                 // most quickly advance the acknowledgement number.
                 reply_repr.sack_ranges[0] = self
                     .assembler
-                    .iter_data(reply_repr.ack_number.map(|s| s.0 as usize).unwrap_or(0))
-                    .map(|(left, right)| (left as u32, right as u32))
-                    .next();
+                    .iter_data()
+                    .map(|(left, right)| (ack + left, ack + right))
+                    .next()
+                    .map(|(left, right)| (left.0 as u32, right.0 as u32));
             }
         }
 
@@ -1678,7 +1694,11 @@ impl<'a> Socket<'a> {
         }
 
         let window_start = self.remote_seq_no + self.rx_buffer.len();
-        let window_end = self.remote_seq_no + self.rx_buffer.capacity();
+        let window_end = if let Some(last_ack) = self.remote_last_ack {
+            last_ack + ((self.remote_last_win as usize) << self.remote_win_shift)
+        } else {
+            window_start
+        };
         let segment_start = repr.seq_number;
         let segment_end = repr.seq_number + repr.payload.len();
 
@@ -1772,32 +1792,32 @@ impl<'a> Socket<'a> {
         let mut ack_len = 0;
         let mut ack_of_fin = false;
         let mut ack_all = false;
-        if repr.control != TcpControl::Rst {
-            if let Some(ack_number) = repr.ack_number {
-                // Sequence number corresponding to the first byte in `tx_buffer`.
-                // This normally equals `local_seq_no`, but is 1 higher if we have sent a SYN,
-                // as the SYN occupies 1 sequence number "before" the data.
-                let tx_buffer_start_seq = self.local_seq_no + (sent_syn as usize);
+        if repr.control != TcpControl::Rst
+            && let Some(ack_number) = repr.ack_number
+        {
+            // Sequence number corresponding to the first byte in `tx_buffer`.
+            // This normally equals `local_seq_no`, but is 1 higher if we have sent a SYN,
+            // as the SYN occupies 1 sequence number "before" the data.
+            let tx_buffer_start_seq = self.local_seq_no + (sent_syn as usize);
 
-                if ack_number >= tx_buffer_start_seq {
-                    ack_len = ack_number - tx_buffer_start_seq;
+            if ack_number >= tx_buffer_start_seq {
+                ack_len = ack_number - tx_buffer_start_seq;
 
-                    // We could've sent data before the FIN, so only remove FIN from the sequence
-                    // space if all of that data is acknowledged.
-                    if sent_fin && self.tx_buffer.len() + 1 == ack_len {
-                        ack_len -= 1;
-                        tcp_trace!("received ACK of FIN");
-                        ack_of_fin = true;
-                    }
-
-                    ack_all = self.remote_last_seq <= ack_number;
+                // We could've sent data before the FIN, so only remove FIN from the sequence
+                // space if all of that data is acknowledged.
+                if sent_fin && self.tx_buffer.len() + 1 == ack_len {
+                    ack_len -= 1;
+                    tcp_trace!("received ACK of FIN");
+                    ack_of_fin = true;
                 }
 
-                self.rtte.on_ack(cx.now(), ack_number);
-                self.congestion_controller
-                    .inner_mut()
-                    .on_ack(cx.now(), ack_len, &self.rtte);
+                ack_all = self.remote_last_seq <= ack_number;
             }
+
+            self.rtte.on_ack(cx.now(), ack_number);
+            self.congestion_controller
+                .inner_mut()
+                .on_ack(cx.now(), ack_len, &self.rtte);
         }
 
         // Disregard control flags we don't care about or shouldn't act on yet.
@@ -1985,7 +2005,12 @@ impl<'a> Socket<'a> {
                     // Clear the remote endpoint, or we'll send an RST there.
                     self.set_state(State::Closed);
                     self.tuple = None;
+                } else if ack_len == 0 {
+                    // Duplicate ACK; our FIN has not been acknowledged.
+                    // Per RFC 9293 (3.10.7.4), send a challenge ACK.
+                    return self.challenge_ack_reply(cx, ip_repr, repr);
                 }
+                // Partial ACK: fall through to advance SND.UNA normally.
             }
 
             _ => {
@@ -2177,27 +2202,27 @@ impl<'a> Socket<'a> {
         }
 
         // Handle delayed acks
-        if let Some(ack_delay) = self.ack_delay {
-            if self.ack_to_transmit() {
-                self.ack_delay_timer = match self.ack_delay_timer {
-                    AckDelayTimer::Idle => {
-                        tcp_trace!("starting delayed ack timer");
-                        AckDelayTimer::Waiting(cx.now() + ack_delay)
-                    }
-                    AckDelayTimer::Waiting(_) if self.immediate_ack_to_transmit() => {
-                        tcp_trace!("delayed ack timer already started, forcing expiry");
-                        AckDelayTimer::Immediate
-                    }
-                    timer @ AckDelayTimer::Waiting(_) => {
-                        tcp_trace!("waiting until delayed ack timer expires");
-                        timer
-                    }
-                    AckDelayTimer::Immediate => {
-                        tcp_trace!("delayed ack timer already force-expired");
-                        AckDelayTimer::Immediate
-                    }
-                };
-            }
+        if let Some(ack_delay) = self.ack_delay
+            && self.ack_to_transmit()
+        {
+            self.ack_delay_timer = match self.ack_delay_timer {
+                AckDelayTimer::Idle => {
+                    tcp_trace!("starting delayed ack timer");
+                    AckDelayTimer::Waiting(cx.now() + ack_delay)
+                }
+                AckDelayTimer::Waiting(_) if self.immediate_ack_to_transmit() => {
+                    tcp_trace!("delayed ack timer already started, forcing expiry");
+                    AckDelayTimer::Immediate
+                }
+                timer @ AckDelayTimer::Waiting(_) => {
+                    tcp_trace!("waiting until delayed ack timer expires");
+                    timer
+                }
+                AckDelayTimer::Immediate => {
+                    tcp_trace!("delayed ack timer already force-expired");
+                    AckDelayTimer::Immediate
+                }
+            };
         }
 
         // Per RFC 5681, we should send an immediate ACK when either:
@@ -2354,6 +2379,19 @@ impl<'a> Socket<'a> {
             return Ok(());
         }
 
+        // NOTE(unwrap): we check tuple is not None above.
+        let tuple = self.tuple.unwrap();
+
+        // Check if the interface still has our source IP address.
+        // If not (e.g. the interface's IP changed), reset the socket.
+        // We use reset() instead of set_state(Closed) to avoid sending
+        // an RST packet with the now-invalid source IP.
+        if !cx.has_ip_addr(tuple.local.addr) {
+            net_debug!("source IP address no longer available, closing socket");
+            self.reset();
+            return Ok(());
+        }
+
         if self.remote_last_ts.is_none() {
             // We get here in exactly two cases:
             //  1) This socket just transitioned into SYN-SENT.
@@ -2398,6 +2436,11 @@ impl<'a> Socket<'a> {
                 .on_retransmit(cx.now());
         }
 
+        #[cfg(feature = "socket-tcp-pause-synack")]
+        if matches!(self.state, State::SynReceived) && self.synack_paused {
+            return Ok(());
+        }
+
         // Decide whether we're sending a packet.
         if self.seq_to_transmit(cx) {
             // If we have data to transmit and it fits into partner's window, do it.
@@ -2424,9 +2467,6 @@ impl<'a> Socket<'a> {
         } else {
             return Ok(());
         }
-
-        // NOTE(unwrap): we check tuple is not None the first thing in this function.
-        let tuple = self.tuple.unwrap();
 
         // Construct the lowered IP representation.
         // We might need this to calculate the MSS, so do it early.
@@ -2729,7 +2769,10 @@ mod test {
     };
 
     use super::*;
-    use crate::wire::IpRepr;
+    use crate::{
+        config::IFACE_MAX_ADDR_COUNT,
+        wire::{IpCidr, IpRepr},
+    };
 
     // =========================================================================================//
     // Constants
@@ -3359,6 +3402,37 @@ mod test {
         );
         assert_eq!(s.state, State::Established);
         sanity!(s, socket_established());
+    }
+
+    #[cfg(feature = "socket-tcp-pause-synack")]
+    #[test]
+    fn test_syn_paused_ack() {
+        let mut s = socket_syn_received();
+
+        s.pause_synack(true);
+        recv_nothing!(s);
+        assert_eq!(s.state, State::SynReceived);
+
+        s.pause_synack(false);
+        recv!(
+            s,
+            [TcpRepr {
+                control: TcpControl::Syn,
+                seq_number: LOCAL_SEQ,
+                ack_number: Some(REMOTE_SEQ + 1),
+                max_seg_size: Some(BASE_MSS),
+                ..RECV_TEMPL
+            }]
+        );
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                ..SEND_TEMPL
+            }
+        );
+        assert_eq!(s.state, State::Established);
     }
 
     #[test]
@@ -4357,6 +4431,37 @@ mod test {
     }
 
     #[test]
+    fn test_established_sack_no_overflow_on_near_max_seqnumber() {
+        let mut s = socket_established();
+        s.remote_has_sack = true;
+        s.remote_seq_no = TcpSeqNumber(-4);
+        s.remote_last_ack = Some(TcpSeqNumber(-4));
+
+        // Send an out-of-order segment 10 bytes past the expected sequence,
+        // creating a 10-byte hole at the front of the assembler.
+        send!(
+            s,
+            TcpRepr {
+                seq_number: TcpSeqNumber(-4 + 10),
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &b"AAAAAAAAAA"[..],
+                ..SEND_TEMPL
+            },
+            Some(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(TcpSeqNumber(-4)),
+                window_len: 64,
+                sack_ranges: [
+                    Some(((-4_i32 + 10) as u32, (-4_i32 + 20) as u32,)),
+                    None,
+                    None,
+                ],
+                ..RECV_TEMPL
+            })
+        );
+    }
+
+    #[test]
     fn test_established_sliding_window_recv() {
         let mut s = socket_established();
         // Update our scaling parameters for a TCP with a scaled buffer.
@@ -5267,14 +5372,20 @@ mod test {
         );
         assert_eq!(s.state, State::LastAck);
 
-        // ACK received that doesn't ack the FIN: socket should stay in LastAck.
+        // A duplicate ACK (ack_number == SND.UNA, not the FIN ACK) must elicit a
+        // challenge ACK per RFC 9293 §3.10.7.4 and must keep the state in LAST-ACK.
         send!(
             s,
             TcpRepr {
                 seq_number: REMOTE_SEQ + 1 + 1,
                 ack_number: Some(LOCAL_SEQ + 1),
                 ..SEND_TEMPL
-            }
+            },
+            Some(TcpRepr {
+                seq_number: LOCAL_SEQ + 1 + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 1),
+                ..RECV_TEMPL
+            })
         );
         assert_eq!(s.state, State::LastAck);
 
@@ -5288,6 +5399,89 @@ mod test {
             }
         );
         assert_eq!(s.state, State::Closed);
+    }
+
+    // RFC 9293 §3.10.7.4: duplicate ACK in LAST-ACK must elicit a challenge ACK,
+    // not be silently dropped.
+    #[test]
+    fn test_last_ack_duplicate_ack_challenge_ack() {
+        let mut s = socket_last_ack();
+        // Trigger dispatch so our FIN is sent and remote_last_seq advances.
+        recv!(
+            s,
+            [TcpRepr {
+                control: TcpControl::Fin,
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 1),
+                ..RECV_TEMPL
+            }]
+        );
+        assert_eq!(s.state, State::LastAck);
+
+        // Remote re-sends an ACK for SND.UNA (not the FIN).  RFC 9293 requires a
+        // challenge ACK in response so the remote can learn the current state.
+        let challenge = send(
+            &mut s,
+            Instant::from_millis(0),
+            &TcpRepr {
+                seq_number: REMOTE_SEQ + 1 + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                ..SEND_TEMPL
+            },
+        );
+        assert_eq!(
+            challenge,
+            Some(TcpRepr {
+                seq_number: LOCAL_SEQ + 1 + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 1),
+                ..RECV_TEMPL
+            }),
+            "expected challenge ACK in response to duplicate ACK in LAST-ACK"
+        );
+        // State must remain LAST-ACK: we have not received the FIN ACK.
+        assert_eq!(s.state, State::LastAck);
+
+        // A second duplicate in the same second is rate-limited; the FIN ACK
+        // must still be correctly accepted regardless.
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1 + 1,
+                ack_number: Some(LOCAL_SEQ + 1 + 1),
+                ..SEND_TEMPL
+            }
+        );
+        assert_eq!(s.state, State::Closed);
+    }
+
+    // A partial ACK in LAST-ACK (ack_len > 0 but not FIN ACK) advances SND.UNA
+    // without a challenge ACK; the FIN will be retransmitted by the timer.
+    #[test]
+    fn test_last_ack_partial_ack_no_challenge_ack() {
+        // Build a LAST-ACK socket that has one byte of data still unacknowledged
+        // before the FIN.  We manually wire the state so we can send a partial ACK.
+        let mut s = socket_last_ack();
+        // Push one byte into the tx buffer to simulate data that preceded the FIN.
+        let _ = s.tx_buffer.enqueue_slice(b"x");
+        // Mark it as already sent (remote_last_seq is past the data byte and the FIN).
+        s.remote_last_seq = LOCAL_SEQ + 1 + 1 + 1; // data(1) + FIN(1)
+
+        // Remote ACKs just the data byte, not the FIN (partial ACK).
+        // ack_number = local_seq_no + 1  =>  ack_len = 1, ack_of_fin = false.
+        // Per RFC 9293, a valid partial ACK should advance SND.UNA normally;
+        // no challenge ACK should be emitted.
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1 + 1,
+                ack_number: Some(LOCAL_SEQ + 1 + 1), // acks the data byte, not FIN
+                ..SEND_TEMPL
+            }
+        );
+        // State remains LAST-ACK; FIN retransmission is handled by the timer.
+        assert_eq!(s.state, State::LastAck);
+        // SND.UNA has advanced to the partial ACK number.
+        assert_eq!(s.local_seq_no, LOCAL_SEQ + 1 + 1);
     }
 
     #[test]
@@ -6760,6 +6954,74 @@ mod test {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &[0; 1000][..],
+                ..RECV_TEMPL
+            })
+        );
+    }
+
+    #[test]
+    fn test_recv_out_of_recv_win() {
+        let mut s = socket_established();
+        s.set_ack_delay(Some(ACK_DELAY_DEFAULT));
+        s.remote_mss = 32;
+
+        // No ACKs are sent due to the ACK delay.
+        send!(
+            s,
+            TcpRepr {
+                control: TcpControl::Psh,
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &[0; 32],
+                ..SEND_TEMPL
+            }
+        );
+        recv_nothing!(s);
+
+        // RMSS+1 bytes of data has been received, so ACK is sent without delay.
+        send!(
+            s,
+            TcpRepr {
+                control: TcpControl::Psh,
+                seq_number: REMOTE_SEQ + 33,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &[0; 1],
+                ..SEND_TEMPL
+            }
+        );
+        recv!(
+            s,
+            Ok(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 34),
+                window_len: 31,
+                ..RECV_TEMPL
+            })
+        );
+
+        // This frees up a byte in the receive buffer. However, the remote shouldn't be aware of
+        // this since no ACKs are sent.
+        s.recv_slice(&mut [0; 1]).unwrap();
+        recv_nothing!(s);
+
+        // Now, if the remote wants to send one byte outside of the receive window that we
+        // previously advertised, it should not succeed.
+        send!(
+            s,
+            TcpRepr {
+                control: TcpControl::Psh,
+                seq_number: REMOTE_SEQ + 34,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &[0; 32],
+                ..SEND_TEMPL
+            }
+        );
+        recv!(
+            s,
+            Ok(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 65),
+                window_len: 1, // The last byte isn't accepted.
                 ..RECV_TEMPL
             })
         );
@@ -8729,5 +8991,39 @@ mod test {
                 ..RECV_TEMPL
             }]
         );
+    }
+
+    // =========================================================================================//
+    // Tests for source IP address change.
+    // =========================================================================================//
+
+    #[test]
+    fn test_established_close_on_src_ip_change() {
+        let mut s = socket_established();
+
+        // Verify socket is working normally
+        s.send_slice(b"abc").unwrap();
+        recv!(
+            s,
+            [TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1),
+                payload: &b"abc"[..],
+                ..RECV_TEMPL
+            }]
+        );
+
+        // Simulate interface IP change - remove the socket's source IP
+        // and add a different one.
+        let mut new_addrs = heapless::Vec::<IpCidr, IFACE_MAX_ADDR_COUNT>::new();
+        new_addrs.push(IpCidr::new(OTHER_ADDR.into(), 24)).unwrap();
+        s.cx.set_ip_addrs(new_addrs);
+
+        // The socket's source IP is no longer on the interface.
+        // When dispatch() runs, it should detect this and reset the socket
+        // silently (no RST sent, since that would use the invalid source IP).
+        s.send_slice(b"def").unwrap();
+        recv_nothing!(s);
+        assert_eq!(s.state, State::Closed);
     }
 }

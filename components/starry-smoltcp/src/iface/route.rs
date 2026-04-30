@@ -63,6 +63,18 @@ impl Route {
             expires_at: None,
         }
     }
+
+    /// Returns `true` if the route is a default route for IPv6.
+    #[cfg(feature = "proto-ipv6")]
+    pub fn is_ipv6_gateway(&self) -> bool {
+        self.cidr == IPV6_DEFAULT
+    }
+
+    /// Returns `true` if the route is a default route for IPv4.
+    #[cfg(feature = "proto-ipv4")]
+    pub fn is_ipv4_gateway(&self) -> bool {
+        self.cidr == IPV4_DEFAULT
+    }
 }
 
 /// A routing table.
@@ -114,6 +126,18 @@ impl Routes {
         Ok(old)
     }
 
+    /// Returns the ipv4 default route if there is one in the route table.
+    #[cfg(feature = "proto-ipv4")]
+    pub fn get_default_ipv4_route(&self) -> Option<Route> {
+        self.storage.iter().find(|r| r.is_ipv4_gateway()).copied()
+    }
+
+    /// Returns the ipv6 default route if there is one in the route table.
+    #[cfg(feature = "proto-ipv6")]
+    pub fn get_default_ipv6_route(&self) -> Option<Route> {
+        self.storage.iter().find(|r| r.is_ipv6_gateway()).copied()
+    }
+
     /// Remove the default ipv4 gateway
     ///
     /// On success, returns the previous default route, if any.
@@ -123,7 +147,7 @@ impl Routes {
             .storage
             .iter()
             .enumerate()
-            .find(|(_, r)| r.cidr == IPV4_DEFAULT)
+            .find(|(_, r)| r.is_ipv4_gateway())
         {
             Some(self.storage.remove(i))
         } else {
@@ -140,7 +164,7 @@ impl Routes {
             .storage
             .iter()
             .enumerate()
-            .find(|(_, r)| r.cidr == IPV6_DEFAULT)
+            .find(|(_, r)| r.is_ipv6_gateway())
         {
             Some(self.storage.remove(i))
         } else {
@@ -155,10 +179,10 @@ impl Routes {
             .iter()
             // Keep only matching routes
             .filter(|route| {
-                if let Some(expires_at) = route.expires_at {
-                    if timestamp > expires_at {
-                        return false;
-                    }
+                if let Some(expires_at) = route.expires_at
+                    && timestamp > expires_at
+                {
+                    return false;
                 }
                 route.cidr.contains_addr(addr)
             })

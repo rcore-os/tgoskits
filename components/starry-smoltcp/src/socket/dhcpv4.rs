@@ -11,8 +11,8 @@ use crate::{
     time::{Duration, Instant},
     wire::{
         DHCP_CLIENT_PORT, DHCP_MAX_DNS_SERVER_COUNT, DHCP_SERVER_PORT, DhcpMessageType, DhcpOption,
-        DhcpPacket, DhcpRepr, HardwareAddress, IpAddress, IpProtocol, Ipv4Address, Ipv4AddressExt,
-        Ipv4Cidr, Ipv4Repr, UDP_HEADER_LEN, UdpRepr, dhcpv4::field as dhcpv4_field,
+        DhcpPacket, DhcpRepr, EthernetAddress, HardwareAddress, IpAddress, IpProtocol, Ipv4Address,
+        Ipv4AddressExt, Ipv4Cidr, Ipv4Repr, UDP_HEADER_LEN, UdpRepr, dhcpv4::field as dhcpv4_field,
     },
 };
 
@@ -178,6 +178,7 @@ pub struct Socket<'a> {
     outgoing_options: &'a [DhcpOption<'a>],
     /// A buffer containing all requested parameters.
     parameter_request_list: Option<&'a [u8]>,
+    client_hardware_address: Option<EthernetAddress>,
 
     /// Incoming DHCP packets are copied into this buffer, overwriting the previous.
     receive_packet_buffer: Option<&'a mut [u8]>,
@@ -207,6 +208,7 @@ impl<'a> Socket<'a> {
             ignore_naks: false,
             outgoing_options: &[],
             parameter_request_list: None,
+            client_hardware_address: None,
             receive_packet_buffer: None,
             #[cfg(feature = "async")]
             waker: WakerRegistration::new(),
@@ -241,6 +243,14 @@ impl<'a> Socket<'a> {
     /// (`3`), and `OPT_DOMAIN_NAME_SERVER` (`6`).
     pub fn set_parameter_request_list(&mut self, parameter_request_list: &'a [u8]) {
         self.parameter_request_list = Some(parameter_request_list);
+    }
+
+    /// Set the Ethernet address used as the DHCP client hardware address.
+    ///
+    /// This is useful for IP-medium integrations that provide L2 framing outside
+    /// smoltcp while still using the DHCPv4 socket.
+    pub fn set_client_hardware_address(&mut self, address: EthernetAddress) {
+        self.client_hardware_address = Some(address);
     }
 
     /// Get the configured max lease duration.
@@ -328,9 +338,12 @@ impl<'a> Socket<'a> {
             }
         };
 
-        let HardwareAddress::Ethernet(ethernet_addr) = cx.hardware_addr() else {
-            panic!("using DHCPv4 socket with a non-ethernet hardware address.");
-        };
+        let ethernet_addr = self.client_hardware_address.unwrap_or_else(|| {
+            let HardwareAddress::Ethernet(ethernet_addr) = cx.hardware_addr() else {
+                panic!("using DHCPv4 socket with a non-ethernet hardware address.");
+            };
+            ethernet_addr
+        });
 
         if dhcp_repr.client_hardware_address != ethernet_addr {
             return;
@@ -357,10 +370,10 @@ impl<'a> Socket<'a> {
         );
 
         // Copy over the payload into the receive packet buffer.
-        if let Some(buffer) = self.receive_packet_buffer.as_mut() {
-            if let Some(buffer) = buffer.get_mut(..payload.len()) {
-                buffer.copy_from_slice(payload);
-            }
+        if let Some(buffer) = self.receive_packet_buffer.as_mut()
+            && let Some(buffer) = buffer.get_mut(..payload.len())
+        {
+            buffer.copy_from_slice(payload);
         }
 
         match (&mut self.state, dhcp_repr.message_type) {
@@ -563,23 +576,20 @@ impl<'a> Socket<'a> {
     where
         F: FnOnce(&mut Context, (Ipv4Repr, UdpRepr, DhcpRepr)) -> Result<(), E>,
     {
-        // note: Dhcpv4Socket is only usable in ethernet mediums, so the
-        // unwrap can never fail.
-        let HardwareAddress::Ethernet(ethernet_addr) = cx.hardware_addr() else {
-            panic!("using DHCPv4 socket with a non-ethernet hardware address.");
-        };
+        let ethernet_addr = self.client_hardware_address.unwrap_or_else(|| {
+            let HardwareAddress::Ethernet(ethernet_addr) = cx.hardware_addr() else {
+                panic!("using DHCPv4 socket with a non-ethernet hardware address.");
+            };
+            ethernet_addr
+        });
 
         // Worst case biggest IPv4 header length.
         // 0x0f * 4 = 60 bytes.
         const MAX_IPV4_HEADER_LEN: usize = 60;
 
-        // We don't directly modify self.transaction_id because sending the packet
-        // may fail. We only want to update state after successfully sending.
-        let next_transaction_id = Self::random_transaction_id(cx);
-
         let mut dhcp_repr = DhcpRepr {
             message_type: DhcpMessageType::Discover,
-            transaction_id: next_transaction_id,
+            transaction_id: self.transaction_id,
             secs: 0,
             client_hardware_address: ethernet_addr,
             client_ip: Ipv4Address::UNSPECIFIED,
@@ -623,6 +633,9 @@ impl<'a> Socket<'a> {
                     return Ok(());
                 }
 
+                let next_transaction_id = Self::random_transaction_id(cx);
+                dhcp_repr.transaction_id = next_transaction_id;
+
                 // send packet
                 net_debug!(
                     "DHCP send DISCOVER to {}: {:?}",
@@ -665,7 +678,6 @@ impl<'a> Socket<'a> {
                     + (self.retry_config.initial_request_timeout << (state.retry as u32 / 2));
                 state.retry += 1;
 
-                self.transaction_id = next_transaction_id;
                 Ok(())
             }
             ClientState::Renewing(state) => {
@@ -690,6 +702,9 @@ impl<'a> Socket<'a> {
                 }
                 dhcp_repr.message_type = DhcpMessageType::Request;
                 dhcp_repr.client_ip = state.config.address.address();
+
+                let next_transaction_id = Self::random_transaction_id(cx);
+                dhcp_repr.transaction_id = next_transaction_id;
 
                 net_debug!("DHCP send renew to {}: {:?}", ipv4_repr.dst_addr, dhcp_repr);
                 ipv4_repr.payload_len = udp_repr.header_len() + dhcp_repr.buffer_len();
@@ -741,7 +756,7 @@ impl<'a> Socket<'a> {
     ///
     /// The socket has an internal "configuration changed" flag. If
     /// set, this function returns the configuration and resets the flag.
-    pub fn poll(&mut self) -> Option<Event> {
+    pub fn poll(&mut self) -> Option<Event<'_>> {
         if !self.config_changed {
             None
         } else if let ClientState::Renewing(state) = &self.state {

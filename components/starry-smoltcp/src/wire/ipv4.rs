@@ -23,16 +23,15 @@ use crate::{
 // accept a packet of the following size.
 pub const MIN_MTU: usize = 576;
 
-/// Size of IPv4 adderess in octets.
-///
-/// [RFC 8200 § 2]: https://www.rfc-editor.org/rfc/rfc791#section-3.2
-pub const ADDR_SIZE: usize = 4;
-
 /// All multicast-capable nodes
 pub const MULTICAST_ALL_SYSTEMS: Address = Address::new(224, 0, 0, 1);
 
 /// All multicast-capable routers
 pub const MULTICAST_ALL_ROUTERS: Address = Address::new(224, 0, 0, 2);
+
+/// Minimum IHL length 5x32 bit words or 20 bytes
+/// [RFC 791 § 3.1]: https://tools.ietf.org/html/rfc791#section-3.1
+const MINIMUM_IHL_BYTES: u8 = 20;
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -46,12 +45,6 @@ pub struct Key {
 pub use core::net::Ipv4Addr as Address;
 
 pub(crate) trait AddressExt {
-    /// Construct an IPv4 address from a sequence of octets, in big-endian.
-    ///
-    /// # Panics
-    /// The function panics if `data` is not four octets long.
-    fn from_bytes(data: &[u8]) -> Self;
-
     /// Query whether the address is an unicast address.
     ///
     /// `x_` prefix is to avoid a collision with the still-unstable method in `core::ip`.
@@ -63,12 +56,6 @@ pub(crate) trait AddressExt {
 }
 
 impl AddressExt for Address {
-    fn from_bytes(data: &[u8]) -> Address {
-        let mut bytes = [0; ADDR_SIZE];
-        bytes.copy_from_slice(data);
-        Address::from_bits(u32::from_be_bytes(bytes))
-    }
-
     /// Query whether the address is an unicast address.
     fn x_is_unicast(&self) -> bool {
         !(self.is_broadcast() || self.is_multicast() || self.is_unspecified())
@@ -245,6 +232,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// Returns `Err(Error)` if the buffer is too short.
     /// Returns `Err(Error)` if the header length is greater
     /// than total length.
+    /// Returns `Err(Error)` if the header length is less than minimum allowed IHL
     ///
     /// The result of this check is invalidated by calling [set_header_len]
     /// and [set_total_len].
@@ -261,6 +249,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
         } else if self.header_len() as u16 > self.total_len() {
             Err(Error)
         } else if len < self.total_len() as usize {
+            Err(Error)
+        } else if self.header_len() < MINIMUM_IHL_BYTES {
             Err(Error)
         } else {
             Ok(())
@@ -358,14 +348,14 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(&data[field::SRC_ADDR])
+        Address::from_octets(data[field::SRC_ADDR].try_into().unwrap())
     }
 
     /// Return the destination address field.
     #[inline]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(&data[field::DST_ADDR])
+        Address::from_octets(data[field::DST_ADDR].try_into().unwrap())
     }
 
     /// Validate the header checksum.
@@ -624,7 +614,7 @@ impl Repr {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&'a T> {
+impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match Repr::parse(self, &ChecksumCapabilities::ignored()) {
             Ok(repr) => write!(f, "{repr}"),
@@ -814,7 +804,7 @@ pub(crate) mod test {
         0x14, 0x21, 0x22, 0x23, 0x24, 0xaa, 0x00, 0x00, 0xff,
     ];
 
-    static REPR_PAYLOAD_BYTES: [u8; ADDR_SIZE] = [0xaa, 0x00, 0x00, 0xff];
+    static REPR_PAYLOAD_BYTES: [u8; 4] = [0xaa, 0x00, 0x00, 0xff];
 
     const fn packet_repr() -> Repr {
         Repr {
@@ -851,6 +841,16 @@ pub(crate) mod test {
     fn test_parse_total_len_less_than_header_len() {
         let mut bytes = vec![0; 40];
         bytes[0] = 0x09;
+        assert_eq!(Packet::new_checked(&mut bytes), Err(Error));
+    }
+
+    #[test]
+    fn test_parse_small_ihl() {
+        let mut bytes = vec![0; 24];
+        bytes.copy_from_slice(&REPR_PACKET_BYTES[..]);
+        let mut packet = Packet::new_unchecked(&mut bytes);
+        packet.set_header_len(16);
+
         assert_eq!(Packet::new_checked(&mut bytes), Err(Error));
     }
 
@@ -917,11 +917,11 @@ pub(crate) mod test {
             ([192, 168, 0, 255], 32),
         ];
 
-        for addr in inside_subnet.iter().map(|a| Address::from_bytes(a)) {
+        for addr in inside_subnet.iter().map(|a| Address::from_octets(*a)) {
             assert!(cidr.contains_addr(&addr));
         }
 
-        for addr in outside_subnet.iter().map(|a| Address::from_bytes(a)) {
+        for addr in outside_subnet.iter().map(|a| Address::from_octets(*a)) {
             assert!(!cidr.contains_addr(&addr));
         }
 
