@@ -10,9 +10,10 @@
 
 use std::{
     fs,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
 };
 
 use anyhow::{Context, bail, ensure};
@@ -196,6 +197,10 @@ fn collect_overlay_debugfs_commands(
 }
 
 /// Executes a generated `debugfs` script against a writable rootfs image.
+///
+/// Stderr lines that only report that a directory already exists are suppressed
+/// because `mkdir /usr/bin` is harmless when the directory is already present.
+/// All other stderr output is forwarded so genuine errors remain visible.
 fn run_debugfs_script(
     rootfs_img: &Path,
     commands: &[String],
@@ -207,9 +212,33 @@ fn run_debugfs_script(
         .arg(rootfs_img)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
+
+    // Start draining stderr on a background thread BEFORE writing stdin.
+    // Without this ordering, a classic pipe deadlock occurs: debugfs fills the
+    // stderr pipe while we are still writing stdin, which causes debugfs to
+    // block on its stderr write, which causes it to stop reading stdin, which
+    // causes our stdin write to block — a deadlock.  Draining stderr
+    // concurrently with stdin writes prevents the pipe from filling up.
+    let stderr_handle = child
+        .stderr
+        .take()
+        .context("failed to open debugfs stderr")?;
+    let filter_handle = thread::spawn(move || {
+        let reader = BufReader::new(stderr_handle);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if line.contains("File exists") || line.contains("already exists") {
+                continue;
+            }
+            eprintln!("{line}");
+        }
+    });
 
     {
         let mut stdin = child.stdin.take().context("failed to open debugfs stdin")?;
@@ -220,6 +249,8 @@ fn run_debugfs_script(
     }
 
     let status = child.wait().context("failed to wait for debugfs")?;
+    let _ = filter_handle.join();
+
     if status.success() {
         Ok(())
     } else {

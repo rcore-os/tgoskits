@@ -131,6 +131,10 @@ impl Net {
 }
 
 pub(super) fn pci_legacy_irq_for_address(address: rdrive::probe::pci::PciAddress) -> usize {
+    if let Some(irq) = super::pci::legacy_irq_for_address(address) {
+        return irq;
+    }
+
     const PCI_IRQ_BASE: usize = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "riscv64") {
         0x20
     } else if cfg!(target_arch = "loongarch64") {

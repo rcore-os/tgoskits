@@ -76,6 +76,7 @@ range-alloc-arceos
 axplat-riscv64-qemu-virt-hv
 riscv-h
 riscv_vcpu
+rk3588-pci
 rockchip-npu
 rockchip-soc
 rsext4

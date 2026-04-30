@@ -26,6 +26,7 @@ serial = ["dep:some-serial"]
 net = ["dep:ax-driver-net", "dep:rd-net"]
 intel-net = ["net", "dep:eth-intel", "dep:pcie"]
 virtio-net-pci = ["net"]
+pci-list-devices = []
 rknpu = ["dep:rockchip-npu", "rockchip-pm", "rockchip-soc"]
 
 [dependencies]
@@ -47,13 +48,16 @@ eth-intel = { version = "0.1", optional = true }
 fdt-edit = "0.2"
 heapless = "0.9"
 log.workspace = true
+mmio-api.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
 pcie = { version = "0.6", optional = true }
 rd-block = "0.1"
 rd-net = { version = "0.1", optional = true }
 rdif-clk = "0.5"
+rdif-pcie.workspace = true
 rdrive = "0.20"
+rk3588-pci.workspace = true
 rk3568_clk = { version = "0.1", optional = true }
 rockchip-soc = { workspace = true, optional = true }
 rockchip-npu = { workspace = true, optional = true }

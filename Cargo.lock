@@ -1648,13 +1648,16 @@ dependencies = [
  "fdt-edit",
  "heapless 0.9.2",
  "log",
+ "mmio-api",
  "pcie 0.6.0",
  "phytium-mci",
  "rd-block",
  "rd-net",
  "rdif-clk",
+ "rdif-pcie 0.2.0",
  "rdrive 0.20.0",
  "rk3568_clk",
+ "rk3588-pci",
  "rockchip-npu",
  "rockchip-pm",
  "rockchip-soc",
@@ -7109,6 +7112,16 @@ dependencies = [
  "fdt-parser",
  "kspin",
  "log",
+]
+
+[[package]]
+name = "rk3588-pci"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "mmio-api",
+ "rdif-pcie 0.2.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

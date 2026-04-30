@@ -40,6 +40,9 @@ memory_regions = [
 # Device specifications
 #
 [devices]
+# The interrupt mode.
+interrupt_mode = "passthrough"
+
 # Pass-through devices.
 # Name Base-Ipa Base-Pa Length Alloc-Irq.
 passthrough_devices = [
@@ -70,5 +73,3 @@ excluded_devices = [
 emu_devices = [
     ["plic", 0x0c00_0000, 0x60_0000, 0, 0x30, [2]],     # [context_num]
 ]
-
-interrupt_mode = "passthrough"

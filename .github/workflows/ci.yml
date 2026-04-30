@@ -62,7 +62,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@v4
         with:
-          base: ${{ github.ref }}
+          base: ${{ github.event_name == 'push' && github.ref || '' }}
           filters: |
             ci_checks:
               - ".cargo/**"
@@ -291,43 +291,27 @@ jobs:
           - name: Test axvisor self-hosted x86_64
             use_container: false
             runs_on: '["self-hosted","linux","intel"]'
-            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test qemu --arch x86_64
+            command: cargo xtask axvisor test qemu --arch x86_64
             cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
             main_pr_only: false
-          - name: Test axvisor self-hosted orangepi-5-plus-linux
+          - name: Test axvisor self-hosted board orangepi-5-plus-linux
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
-            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t orangepi-5-plus-linux
+            command: cargo xtask axvisor test board --board orangepi-5-plus-linux
             cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
             main_pr_only: false
-          - name: Test axvisor self-hosted roc-rk3568-pc-linux
+          - name: Test starry self-hosted board orangepi-5-plus
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
-            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t roc-rk3568-pc-linux
+            command: cargo xtask starry test board --board orangepi-5-plus
             cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
             main_pr_only: false
-          - name: Test starry self-hosted smoke-orangepi-5-plus
-            use_container: false
-            runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask starry test board -t smoke-orangepi-5-plus
-            cache_key: ""
-            container_image: ""
-            required_repository_owner: rcore-os
-            main_pr_only: false
-        # - name: Test axvisor self-hosted rdk-s100-linux
-        #   use_container: false
-        #   runs_on: '["self-hosted","linux","board"]'
-        #   command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t rdk-s100-linux
-        #   cache_key: ""
-        #   container_image: ""
-        #   required_repository_owner: rcore-os
-        #   main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: ${{ matrix.runs_on }}

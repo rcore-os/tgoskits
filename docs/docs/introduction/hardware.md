@@ -120,12 +120,11 @@ cargo xtask starry test qemu --target x86_64
 cargo xtask axvisor test qemu --target aarch64
 
 # 板级测试（self-hosted runner）
-cargo xtask axvisor test board -t orangepi-5-plus-linux
-cargo xtask axvisor test board -t roc-rk3568-pc-linux
-cargo xtask starry test board -t smoke-orangepi-5-plus
+cargo xtask axvisor test board --board orangepi-5-plus-linux
+cargo xtask starry test board --board orangepi-5-plus
 ```
 
-> Stress 测试（`--stress`）当前为 CI 占位实现（`echo TODO!`），尚未接入正式执行流程。
+> Stress 测试（`--stress`，等价于 `-g stress`）当前为 CI 占位实现（`echo TODO!`），尚未接入正式执行流程。
 
 ## 板级支持
 

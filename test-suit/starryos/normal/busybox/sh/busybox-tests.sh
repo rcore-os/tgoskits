@@ -787,6 +787,17 @@ if echo "$_t" | grep -qF "gg_"; then echo "PASS: addgroup"; PASS=$((PASS+1)); el
 _t=$({ timeout 10 sh -c "U=\$(date +%s); busybox deluser \"uu_\$U\" 2>/dev/null; busybox adduser -D -H \"uu_\$U\" 2>&1 && busybox grep -F \"uu_\$U:\" /etc/passwd 2>&1; busybox deluser \"uu_\$U\" 2>/dev/null"; } 2>&1)
 if echo "$_t" | grep -qF "uu_"; then echo "PASS: adduser"; PASS=$((PASS+1)); else echo "FAIL: adduser"; FAIL=$((FAIL+1)); fi
 
+# busybox_mkdir (-p on a new path)
+_t=$({ timeout 10 sh -c 'busybox rm -rf /tmp/bb_mkd_one 2>/dev/null && busybox mkdir -p /tmp/bb_mkd_one && busybox ls -d /tmp/bb_mkd_one'; } 2>&1)
+if echo "$_t" | grep -qF "bb_mkd_one"; then echo "PASS: busybox_mkdir"; PASS=$((PASS+1)); else echo "FAIL: busybox_mkdir"; FAIL=$((FAIL+1)); fi
+
+# busybox_mv
+_t=$({ timeout 10 sh -c 'busybox echo mv_ok > /tmp/bb_mv_from && busybox mv /tmp/bb_mv_from /tmp/bb_mv_to && busybox cat /tmp/bb_mv_to'; } 2>&1)
+if echo "$_t" | grep -qF "mv_ok"; then echo "PASS: busybox_mv"; PASS=$((PASS+1)); else echo "FAIL: busybox_mv"; FAIL=$((FAIL+1)); fi
+
+# busybox_rmdir
+_t=$({ timeout 10 sh -c 'busybox mkdir -p /tmp/bb_rmd && busybox rmdir /tmp/bb_rmd && busybox echo rmdir_ok'; } 2>&1)
+if echo "$_t" | grep -qF "rmdir_ok"; then echo "PASS: busybox_rmdir"; PASS=$((PASS+1)); else echo "FAIL: busybox_rmdir"; FAIL=$((FAIL+1)); fi
 # busybox_link — create hard link on tmpfs and verify content is shared
 _t=$({ timeout 10 sh -c 'busybox rm -f /tmp/bb_link_a /tmp/bb_link_b; busybox echo link_data > /tmp/bb_link_a && busybox link /tmp/bb_link_a /tmp/bb_link_b && busybox cat /tmp/bb_link_b'; } 2>&1)
 if echo "$_t" | grep -qF "link_data"; then echo "PASS: busybox_link"; PASS=$((PASS+1)); else echo "FAIL: busybox_link"; FAIL=$((FAIL+1)); fi

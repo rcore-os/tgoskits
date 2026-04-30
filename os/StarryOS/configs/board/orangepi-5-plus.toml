@@ -4,7 +4,9 @@ target = "aarch64-unknown-none-softfloat"
 env = {}
 features = [
   "ax-feat/bus-mmio",
+  "ax-feat/bus-pci",
   "ax-feat/driver-sdmmc",
+  "axplat-dyn/pci-list-devices",
   "axplat-dyn/rockchip-soc",
   "axplat-dyn/sdmmc",
   "rknpu",
