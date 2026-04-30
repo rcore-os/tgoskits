@@ -54,6 +54,9 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             if proto != IPPROTO_ICMP as u32 {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
+            if !current().as_thread().cred().has_cap_net_raw() {
+                return Err(AxError::from(LinuxError::EPERM));
+            }
             SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
         }
         (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {

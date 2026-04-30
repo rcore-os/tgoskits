@@ -315,8 +315,7 @@ impl SocketOps for RawSocket {
                         if let Some(peer) = *self.peer_addr.read()
                             && source != peer
                         {
-                            let _ = socket.recv().map_err(|_| AxError::WouldBlock)?;
-                            continue;
+                            return Err(AxError::WouldBlock);
                         }
                         packet
                     } else {
