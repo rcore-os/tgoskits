@@ -23,7 +23,7 @@ register_bitfields![u32,
         WRITE_DR0 16, WRITE_DR7 23,
     ],
     pub InterceptExceptions [
-        DE 0, DB 1, BP 3, OF 4, DF 8, GP 13, PF 14, MC 18,
+        DE 0, DB 1, BP 3, OF 4, UD 6, DF 8, GP 13, PF 14, MC 18,
     ],
     pub InterceptVec3 [
         INTR 0, NMI 1, SMI 2, INIT 3, VINTR 4, CR0_SEL_WRITE 5,

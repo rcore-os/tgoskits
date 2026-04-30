@@ -6,21 +6,31 @@ use core::{
 };
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
-use axaddrspace::{GuestPhysAddr, HostPhysAddr};
+use axaddrspace::{
+    GuestPhysAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo,
+    device::{AccessWidth, Port, SysRegAddr},
+};
 use axvcpu::{AxArchVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::{VCpuId, VMId};
+use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86_64::registers::control::Cr0Flags;
 
 use super::{
-    definitions::SvmIntercept,
+    definitions::{SvmExitCode, SvmIntercept},
     structs::{IOPm, MSRPm, VmcbFrame},
-    vmcb::{NestedCtl, VmcbTlbControl, set_vmcb_segment},
+    vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
 };
 use crate::{msr::Msr, regs::GeneralRegisters, xstate::XState};
 
+const QEMU_EXIT_PORT: u16 = 0x604;
+const QEMU_EXIT_MAGIC: u64 = 0x2000;
+const QEMU_RESET_PORT: u16 = 0xcf9;
+
 const EFER_SVME: u64 = 1 << 12;
 const EFER_LMA: u64 = 1 << 10;
+const EFER_LME: u64 = 1 << 8;
+const CR0_PG: u64 = 1 << 31;
 const CR0_PE: u64 = 1 << 0;
 
 macro_rules! save_regs_no_rax {
@@ -174,11 +184,8 @@ impl VmLoadSaveStates {
     }
 }
 
-/// AMD SVM vCPU skeleton.
-///
-/// The structure owns the hardware backing objects migrated from the old SVM
-/// prototype, but `run()` is intentionally left unsupported until NPT and exit
-/// handling are adapted to the current AxVisor interfaces.
+/// AMD SVM vCPU implementation backed by a VMCB, I/O permission map and MSR
+/// permission map.
 #[repr(C)]
 pub struct SvmVcpu {
     guest_regs: GeneralRegisters,
@@ -215,6 +222,8 @@ impl SvmVcpu {
     }
 
     fn setup_vmcb(&mut self, entry: GuestPhysAddr, npt_root: HostPhysAddr) -> AxResult {
+        self.setup_io_bitmap()?;
+        self.setup_msr_bitmap()?;
         self.setup_vmcb_guest(entry)?;
         self.setup_vmcb_control(npt_root)
     }
@@ -269,10 +278,24 @@ impl SvmVcpu {
             .tlb_control
             .modify(VmcbTlbControl::CONTROL::FlushGuestTlb);
         control.int_control.set(1 << 24);
+        control.intercept_cr.modify(
+            InterceptCrRw::WRITE_CR0::SET
+                + InterceptCrRw::WRITE_CR3::SET
+                + InterceptCrRw::WRITE_CR4::SET,
+        );
+        // Match the VMX path: let the guest handle normal exceptions itself,
+        // while keeping #UD intercepted for unsupported instruction handling.
+        control
+            .intercept_exceptions
+            .modify(InterceptExceptions::UD::SET);
 
         for intercept in [
+            SvmIntercept::INTR,
             SvmIntercept::NMI,
             SvmIntercept::CPUID,
+            SvmIntercept::HLT,
+            SvmIntercept::IOIO_PROT,
+            SvmIntercept::MSR_PROT,
             SvmIntercept::SHUTDOWN,
             SvmIntercept::VMRUN,
             SvmIntercept::VMMCALL,
@@ -292,6 +315,24 @@ impl SvmVcpu {
             .msrpm_base_pa
             .set(self.msrpm.phys_addr().as_usize() as u64);
 
+        Ok(())
+    }
+
+    fn setup_msr_bitmap(&mut self) -> AxResult {
+        // Keep EFER under software control so the guest never observes or
+        // clears the host-required SVME bit stored in the VMCB.
+        self.msrpm.set_read_intercept(Msr::IA32_EFER as u32, true);
+        self.msrpm.set_write_intercept(Msr::IA32_EFER as u32, true);
+        Ok(())
+    }
+
+    fn setup_io_bitmap(&mut self) -> AxResult {
+        // These ports are part of the x86 QEMU test contract: 0x604 reports
+        // test completion and 0xcf9 requests reset/poweroff.
+        self.iopm
+            .set_intercept_of_range(QEMU_EXIT_PORT as _, 2, true);
+        self.iopm
+            .set_intercept_of_range(QEMU_RESET_PORT as _, 1, true);
         Ok(())
     }
 
@@ -326,6 +367,28 @@ impl SvmVcpu {
         unsafe { self.vmcb.as_vmcb().exit_info() }
     }
 
+    pub fn nested_page_fault_info(&self) -> AxResult<NestedPageFaultInfo> {
+        let info = self.exit_info()?;
+        // For SVM NPF exits, EXITINFO1 describes the fault access and
+        // EXITINFO2 carries the faulting guest physical address.
+        let is_write = info.exit_info_1.get_bit(1);
+        let is_execute = info.exit_info_1.get_bit(4);
+        let mut access_flags = MappingFlags::empty();
+        if !is_write && !is_execute {
+            access_flags |= MappingFlags::READ;
+        }
+        if is_write {
+            access_flags |= MappingFlags::WRITE;
+        }
+        if is_execute {
+            access_flags |= MappingFlags::EXECUTE;
+        }
+        Ok(NestedPageFaultInfo {
+            access_flags,
+            fault_guest_paddr: GuestPhysAddr::from(info.exit_info_2 as usize),
+        })
+    }
+
     pub fn regs(&self) -> &GeneralRegisters {
         &self.guest_regs
     }
@@ -342,15 +405,53 @@ impl SvmVcpu {
         unsafe { self.vmcb.as_vmcb().state.rsp.set(rsp as u64) };
     }
 
+    /// Advance the guest `RIP`; use SVM's decoded next-RIP when available.
+    pub fn advance_rip(&mut self, instr_len: u8) -> AxResult {
+        let vmcb = unsafe { self.vmcb.as_vmcb() };
+        let rip = vmcb.state.rip.get();
+        let next_rip = vmcb.control.next_rip.get();
+        if next_rip > rip {
+            vmcb.state.rip.set(next_rip);
+        } else {
+            vmcb.state.rip.set(rip + instr_len as u64);
+        }
+        Ok(())
+    }
+
+    fn set_rip(&mut self, rip: u64) {
+        unsafe { self.vmcb.as_vmcb().state.rip.set(rip) };
+    }
+
     pub fn set_cr(&mut self, cr_idx: usize, val: u64) -> AxResult {
         let vmcb = unsafe { self.vmcb.as_vmcb() };
         match cr_idx {
-            0 => vmcb.state.cr0.set(val),
-            3 => vmcb.state.cr3.set(val),
-            4 => vmcb.state.cr4.set(val),
+            0 => {
+                vmcb.state.cr0.set(val);
+                // CR0.PG can activate/deactivate long mode when EFER.LME is set.
+                self.sync_long_mode_active();
+                self.flush_guest_tlb();
+            }
+            3 => {
+                vmcb.state.cr3.set(val);
+                self.flush_guest_tlb();
+            }
+            4 => {
+                vmcb.state.cr4.set(val);
+                self.flush_guest_tlb();
+            }
             _ => return ax_err!(InvalidInput, format_args!("Unsupported CR{}", cr_idx)),
         }
         Ok(())
+    }
+
+    fn flush_guest_tlb(&mut self) {
+        unsafe {
+            self.vmcb
+                .as_vmcb()
+                .control
+                .tlb_control
+                .modify(VmcbTlbControl::CONTROL::FlushGuestTlb);
+        }
     }
 
     fn cr(&self, cr_idx: usize) -> usize {
@@ -369,6 +470,214 @@ impl SvmVcpu {
 
     fn load_host_xstate(&mut self) {
         self.xstate.switch_to_host();
+    }
+
+    fn inner_run(&mut self) -> AxResult<super::vmcb::SvmExitInfo> {
+        loop {
+            unsafe {
+                self.svm_run();
+            }
+            self.launched = true;
+
+            let exit_info = self.exit_info()?;
+
+            // Consume exits that are fully handled inside the architecture
+            // backend; only unresolved exits are forwarded to the VMM layer.
+            if let Some(result) = self.builtin_vmexit_handler(&exit_info) {
+                result?;
+                continue;
+            }
+
+            return Ok(exit_info);
+        }
+    }
+
+    fn builtin_vmexit_handler(&mut self, exit_info: &super::vmcb::SvmExitInfo) -> Option<AxResult> {
+        match exit_info.exit_code {
+            Ok(SvmExitCode::CPUID) => Some(self.handle_cpuid()),
+            Ok(SvmExitCode::CR_WRITE(cr @ (0 | 3 | 4))) => {
+                Some(self.handle_cr_write(cr as usize, exit_info))
+            }
+            Ok(SvmExitCode::MSR) if self.regs().rcx as u32 == Msr::IA32_EFER as u32 => {
+                Some(self.handle_efer_msr(exit_info))
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_cr_write(&mut self, cr_idx: usize, exit_info: &super::vmcb::SvmExitInfo) -> AxResult {
+        // SVM CR-write exits encode the source GPR in EXITINFO1[3:0].
+        let reg_idx = exit_info.exit_info_1.get_bits(0..4) as u8;
+        let value = self.gpr_for_cr_access(reg_idx)?;
+        self.set_cr(cr_idx, value)?;
+        self.advance_rip(3)
+    }
+
+    fn gpr_for_cr_access(&self, reg_idx: u8) -> AxResult<u64> {
+        // For SVM CR access exits, EXITINFO1[3:0] identifies the source GPR.
+        if reg_idx == 4 {
+            Ok(unsafe { self.vmcb.as_vmcb().state.rsp.get() })
+        } else if reg_idx < 16 {
+            Ok(self.regs().get_reg_of_index(reg_idx))
+        } else {
+            ax_err!(
+                InvalidData,
+                format_args!("invalid SVM CR access GPR index {reg_idx}")
+            )
+        }
+    }
+
+    fn handle_efer_msr(&mut self, exit_info: &super::vmcb::SvmExitInfo) -> AxResult {
+        const VM_EXIT_INSTR_LEN_MSR: u8 = 2;
+        let value = self.read_edx_eax();
+        if exit_info.exit_info_1 == 0 {
+            // EFER.SVME is required by SVM hardware but is not guest-visible.
+            let efer = self.guest_visible_efer();
+            self.regs_mut().rax = efer & 0xffff_ffff;
+            self.regs_mut().rdx = efer >> 32;
+        } else {
+            self.set_guest_efer(value);
+        }
+        self.advance_rip(VM_EXIT_INSTR_LEN_MSR)
+    }
+
+    fn guest_visible_efer(&self) -> u64 {
+        unsafe { self.vmcb.as_vmcb().state.efer.get() & !EFER_SVME }
+    }
+
+    fn set_guest_efer(&mut self, value: u64) {
+        unsafe {
+            // Preserve SVME in the VMCB even if the guest writes EFER without it.
+            self.vmcb.as_vmcb().state.efer.set(value | EFER_SVME);
+        }
+        self.sync_long_mode_active();
+    }
+
+    fn sync_long_mode_active(&mut self) {
+        let vmcb = unsafe { self.vmcb.as_vmcb() };
+        let cr0 = vmcb.state.cr0.get();
+        let mut efer = vmcb.state.efer.get() | EFER_SVME;
+        if cr0 & CR0_PG != 0 && efer & EFER_LME != 0 {
+            efer |= EFER_LMA;
+        } else {
+            efer &= !EFER_LMA;
+        }
+        vmcb.state.efer.set(efer);
+    }
+
+    fn handle_cpuid(&mut self) -> AxResult {
+        use raw_cpuid::{CpuIdResult, cpuid};
+
+        const VM_EXIT_INSTR_LEN_CPUID: u8 = 2;
+        const LEAF_FEATURE_INFO: u32 = 0x1;
+        const LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION: u32 = 0x7;
+        const LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION: u32 = 0xd;
+        const LEAF_EXTENDED_FEATURE_INFO: u32 = 0x8000_0001;
+        const LEAF_SVM_FEATURES: u32 = 0x8000_000a;
+        const EAX_FREQUENCY_INFO: u32 = 0x16;
+        const LEAF_HYPERVISOR_INFO: u32 = 0x4000_0000;
+        const LEAF_HYPERVISOR_FEATURE: u32 = 0x4000_0001;
+        const VENDOR_STR: &[u8; 12] = b"RVMRVMRVMRVM";
+        let vendor_regs = [
+            u32::from_le_bytes([VENDOR_STR[0], VENDOR_STR[1], VENDOR_STR[2], VENDOR_STR[3]]),
+            u32::from_le_bytes([VENDOR_STR[4], VENDOR_STR[5], VENDOR_STR[6], VENDOR_STR[7]]),
+            u32::from_le_bytes([VENDOR_STR[8], VENDOR_STR[9], VENDOR_STR[10], VENDOR_STR[11]]),
+        ];
+
+        let regs_clone = *self.regs();
+        let function = regs_clone.rax as u32;
+        let res = match function {
+            LEAF_FEATURE_INFO => {
+                const FEATURE_VMX: u32 = 1 << 5;
+                const FEATURE_HYPERVISOR: u32 = 1 << 31;
+                const FEATURE_MCE: u32 = 1 << 7;
+                let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
+                // Do not expose nested hardware virtualization to the guest.
+                res.ecx &= !FEATURE_VMX;
+                res.ecx |= FEATURE_HYPERVISOR;
+                res.edx &= !FEATURE_MCE;
+                res
+            }
+            LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION => {
+                let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
+                if regs_clone.rcx == 0 {
+                    res.ecx.set_bit(5, false);
+                    res.ecx.set_bit(16, false);
+                }
+                res
+            }
+            LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION => {
+                self.load_guest_xstate();
+                let res = cpuid!(regs_clone.rax, regs_clone.rcx);
+                self.load_host_xstate();
+                res
+            }
+            LEAF_EXTENDED_FEATURE_INFO => {
+                const FEATURE_SVM: u32 = 1 << 2;
+                let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
+                // Hide SVM support from the guest until nested SVM is implemented.
+                res.ecx &= !FEATURE_SVM;
+                res
+            }
+            LEAF_SVM_FEATURES => CpuIdResult {
+                eax: 0,
+                ebx: 0,
+                ecx: 0,
+                edx: 0,
+            },
+            LEAF_HYPERVISOR_INFO => CpuIdResult {
+                eax: LEAF_HYPERVISOR_FEATURE,
+                ebx: vendor_regs[0],
+                ecx: vendor_regs[1],
+                edx: vendor_regs[2],
+            },
+            LEAF_HYPERVISOR_FEATURE => CpuIdResult {
+                eax: 0,
+                ebx: 0,
+                ecx: 0,
+                edx: 0,
+            },
+            EAX_FREQUENCY_INFO => {
+                const TIMER_FREQUENCY_MHZ: u32 = 3_000;
+                let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
+                if res.eax == 0 {
+                    warn!(
+                        "handle_cpuid: Failed to get TSC frequency by CPUID, default to \
+                         {TIMER_FREQUENCY_MHZ} MHz"
+                    );
+                    res.eax = TIMER_FREQUENCY_MHZ;
+                }
+                res
+            }
+            _ => cpuid!(regs_clone.rax, regs_clone.rcx),
+        };
+
+        let regs = self.regs_mut();
+        regs.rax = res.eax as _;
+        regs.rbx = res.ebx as _;
+        regs.rcx = res.ecx as _;
+        regs.rdx = res.edx as _;
+        self.advance_rip(VM_EXIT_INSTR_LEN_CPUID)
+    }
+
+    fn svm_io_exit_info(
+        &self,
+        exit_info: &super::vmcb::SvmExitInfo,
+    ) -> AxResult<(bool, bool, bool, AccessWidth, Port)> {
+        let info = exit_info.exit_info_1;
+        // SVM packs IO direction, string/repeat attributes, width, and port
+        // into EXITINFO1 for IOIO exits.
+        let is_in = info.get_bit(0);
+        let is_string = info.get_bit(2);
+        let is_repeat = info.get_bit(3);
+        let width = AccessWidth::try_from(info.get_bits(4..7) as usize)
+            .map_err(|_| ax_err_type!(InvalidData, "invalid SVM IOIO access width"))?;
+        let port = Port(info.get_bits(16..32) as u16);
+        Ok((is_in, is_string, is_repeat, width, port))
+    }
+
+    fn read_edx_eax(&self) -> u64 {
+        ((self.regs().rdx & 0xffff_ffff) << 32) | (self.regs().rax & 0xffff_ffff)
     }
 
     fn before_vmrun(&mut self) {
@@ -400,6 +709,8 @@ impl SvmVcpu {
         self.load_guest_xstate();
         self.before_vmrun();
 
+        // Keep the register save/restore sequence adjacent to VMRUN; Rust calls
+        // in this window may clobber the guest registers prepared for entry.
         unsafe {
             asm!(
                 save_regs_no_rax!(),
@@ -462,7 +773,102 @@ impl AxArchVCpu for SvmVcpu {
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
-        ax_err!(Unsupported, "AMD SVM vCPU execution is not implemented yet")
+        {
+            let exit_info = self.inner_run()?;
+            let exit_code = match exit_info.exit_code {
+                Ok(code) => code,
+                Err(code) => {
+                    warn!("SVM unknown VM-exit code: {code:#x}, exit_info: {exit_info:#x?}");
+                    return Ok(AxVCpuExitReason::Halt);
+                }
+            };
+
+            Ok(match exit_code {
+                SvmExitCode::INVALID | SvmExitCode::BUSY => AxVCpuExitReason::FailEntry {
+                    hardware_entry_failure_reason: match exit_code {
+                        SvmExitCode::INVALID => u64::MAX,
+                        SvmExitCode::BUSY => u64::MAX - 1,
+                        _ => unreachable!(),
+                    },
+                },
+                SvmExitCode::VMMCALL => {
+                    self.advance_rip(3)?;
+                    AxVCpuExitReason::Hypercall {
+                        nr: self.regs().rax,
+                        args: [
+                            self.regs().rdi,
+                            self.regs().rsi,
+                            self.regs().rdx,
+                            self.regs().rcx,
+                            self.regs().r8,
+                            self.regs().r9,
+                        ],
+                    }
+                }
+                SvmExitCode::IOIO => {
+                    let (is_in, is_string, is_repeat, width, port) =
+                        self.svm_io_exit_info(&exit_info)?;
+                    // IOIO exits provide the decoded next RIP in EXITINFO2.
+                    self.set_rip(exit_info.exit_info_2);
+
+                    if is_string || is_repeat {
+                        warn!("SVM unsupported IOIO exit: {exit_info:#x?}");
+                        warn!("VCpu {self:#x?}");
+                        AxVCpuExitReason::Halt
+                    } else if is_in {
+                        AxVCpuExitReason::IoRead { port, width }
+                    } else if port == Port(QEMU_EXIT_PORT)
+                        && width == AccessWidth::Word
+                        && self.regs().rax == QEMU_EXIT_MAGIC
+                    {
+                        AxVCpuExitReason::SystemDown
+                    } else if port == Port(QEMU_RESET_PORT) {
+                        warn!(
+                            "SVM guest wrote QEMU reset port {port:#x} with data {:#x}",
+                            self.regs().rax.get_bits(width.bits_range())
+                        );
+                        AxVCpuExitReason::SystemDown
+                    } else {
+                        AxVCpuExitReason::IoWrite {
+                            port,
+                            width,
+                            data: self.regs().rax.get_bits(width.bits_range()),
+                        }
+                    }
+                }
+                SvmExitCode::MSR => {
+                    self.advance_rip(2)?;
+                    if exit_info.exit_info_1 == 0 {
+                        AxVCpuExitReason::SysRegRead {
+                            addr: SysRegAddr::new(self.regs().rcx as _),
+                            reg: 0,
+                        }
+                    } else {
+                        AxVCpuExitReason::SysRegWrite {
+                            addr: SysRegAddr::new(self.regs().rcx as _),
+                            value: self.read_edx_eax(),
+                        }
+                    }
+                }
+                SvmExitCode::NPF => {
+                    let info = self.nested_page_fault_info()?;
+                    AxVCpuExitReason::NestedPageFault {
+                        addr: info.fault_guest_paddr,
+                        access_flags: info.access_flags,
+                    }
+                }
+                // SVM INTR exits do not provide a usable vector here; return to
+                // the scheduler and let normal host interrupt handling proceed.
+                SvmExitCode::INTR => AxVCpuExitReason::Nothing,
+                SvmExitCode::HLT => AxVCpuExitReason::Halt,
+                SvmExitCode::SHUTDOWN => AxVCpuExitReason::SystemDown,
+                _ => {
+                    warn!("SVM unsupported VM-exit: {exit_info:#x?}");
+                    warn!("VCpu {self:#x?}");
+                    AxVCpuExitReason::Halt
+                }
+            })
+        }
     }
 
     fn bind(&mut self) -> AxResult {
@@ -470,7 +876,6 @@ impl AxArchVCpu for SvmVcpu {
     }
 
     fn unbind(&mut self) -> AxResult {
-        self.launched = false;
         self.unbind_from_current_processor()
     }
 
