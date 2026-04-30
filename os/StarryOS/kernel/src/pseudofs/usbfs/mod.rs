@@ -18,7 +18,7 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError, LinuxResult};
 use axfs_ng_vfs::Filesystem;
 use axpoll::{IoEvents, PollSet, Pollable};
-use crab_usb::usb_if::queue::{TransferCompletion, TransferRequest};
+use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
 use spin::Mutex;
 use starry_vm::VmMutPtr;
 
@@ -117,6 +117,7 @@ struct UsbDeviceFile {
 struct SubmittedUrb {
     user_urb_ptr: usize,
     transfer: manager::SubmittedTransfer,
+    interface: Option<u8>,
     buffer: Vec<u8>,
     is_in: bool,
     data_offset: usize,
@@ -148,6 +149,7 @@ enum EndpointTransferType {
 #[derive(Clone, Copy)]
 struct ClaimedEndpoint {
     transfer_type: EndpointTransferType,
+    interface: u8,
 }
 
 impl UsbDeviceFile {
@@ -166,6 +168,7 @@ impl UsbDeviceFile {
         if !snapshot_has_interface(&self.snapshot, interface, alternate) {
             return Err(AxError::NotFound);
         }
+        self.cancel_submitted_urbs_for_interface(interface)?;
         if snapshot_is_uvc_control_interface(&self.snapshot, interface, alternate) {
             self.with_live_lease(|lease| lease.ensure_configured())?;
             self.claimed_interfaces.lock().insert(interface, alternate);
@@ -177,8 +180,36 @@ impl UsbDeviceFile {
     }
 
     fn release_interface(&self, interface: u8) -> AxResult<usize> {
+        self.cancel_submitted_urbs_for_interface(interface)?;
         self.claimed_interfaces.lock().remove(&interface);
         Ok(0)
+    }
+
+    fn set_configuration_ioctl(&self, arg: usize) -> AxResult<usize> {
+        let configuration = descriptor::read_usbdevfs_u32(arg)?;
+        if configuration > u8::MAX as u32 {
+            return Err(AxError::InvalidInput);
+        }
+        if !self.claimed_interfaces.lock().is_empty() || !self.submitted_urbs.lock().is_empty() {
+            return Err(AxError::ResourceBusy);
+        }
+        self.with_live_lease(|lease| lease.set_configuration(configuration as u8))?;
+        Ok(0)
+    }
+
+    fn cancel_submitted_urbs_for_interface(&self, interface: u8) -> AxResult<()> {
+        let transfers = {
+            let submitted_urbs = self.submitted_urbs.lock();
+            submitted_urbs
+                .iter()
+                .filter(|submitted| submitted.interface == Some(interface))
+                .map(|submitted| submitted.transfer.clone())
+                .collect::<Vec<_>>()
+        };
+        for transfer in &transfers {
+            transfer.cancel()?;
+        }
+        Ok(())
     }
 
     fn get_driver_ioctl(&self, arg: usize) -> AxResult<usize> {
@@ -546,6 +577,7 @@ impl UsbDeviceFile {
         self.submitted_urbs.lock().push_back(SubmittedUrb {
             user_urb_ptr: arg,
             transfer,
+            interface: Some(claimed_endpoint.interface),
             buffer,
             is_in,
             data_offset: 0,
@@ -601,6 +633,7 @@ impl UsbDeviceFile {
         self.submitted_urbs.lock().push_back(SubmittedUrb {
             user_urb_ptr: arg,
             transfer,
+            interface: None,
             buffer,
             is_in,
             data_offset: 8,
@@ -726,14 +759,17 @@ impl UsbDeviceFile {
     }
 
     fn discard_urb(&self, arg: usize) -> AxResult<usize> {
-        let submitted_urbs = self.submitted_urbs.lock();
-        let Some(submitted) = submitted_urbs
-            .iter()
-            .find(|submitted| submitted.user_urb_ptr == arg)
-        else {
-            return Err(AxError::NotFound);
+        let transfer = {
+            let submitted_urbs = self.submitted_urbs.lock();
+            let Some(submitted) = submitted_urbs
+                .iter()
+                .find(|submitted| submitted.user_urb_ptr == arg)
+            else {
+                return Err(AxError::NotFound);
+            };
+            submitted.transfer.clone()
         };
-        submitted.transfer.cancel()?;
+        transfer.cancel()?;
         Ok(0)
     }
 }
@@ -813,6 +849,7 @@ impl FileLike for UsbDeviceFile {
                 }
                 self.claim_interface(set.interface as u8, set.altsetting as u8)
             }
+            descriptor::USBDEVFS_SETCONFIGURATION => self.set_configuration_ioctl(arg),
             descriptor::USBDEVFS_IOCTL => self.kernel_driver_ioctl(arg),
             descriptor::USBDEVFS_DISCONNECT | descriptor::USBDEVFS_CONNECT => Ok(0),
             descriptor::USBDEVFS_DISCONNECT_CLAIM => self.disconnect_claim_ioctl(arg),
@@ -983,7 +1020,10 @@ fn snapshot_claimed_endpoint(
                         3 => EndpointTransferType::Interrupt,
                         _ => return None,
                     };
-                    return Some(ClaimedEndpoint { transfer_type });
+                    return Some(ClaimedEndpoint {
+                        transfer_type,
+                        interface,
+                    });
                 }
             }
             _ => {}
@@ -997,7 +1037,7 @@ fn snapshot_claimed_endpoint(
 
 fn iso_copy_len(
     packet_lengths: &[usize],
-    packet_results: &[crab_usb::usb_if::queue::IsoPacketResult],
+    packet_results: &[crab_usb::usb_if::endpoint::IsoPacketResult],
 ) -> usize {
     if packet_results.len() != packet_lengths.len() {
         return packet_lengths.iter().sum();
