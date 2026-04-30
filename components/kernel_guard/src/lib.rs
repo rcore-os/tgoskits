@@ -158,6 +158,11 @@ mod imp {
         }
 
         fn lockdep_enabled() -> bool {
+            // Keep this disabled for now. The current task-only lockdep model
+            // no longer depends on per-CPU held-lock state, but the codebase
+            // does not currently expose any BaseSpinLock<IrqSave, _> aliases or
+            // real users, so there is no need to widen the tracked guard set
+            // until that use case is defined and tested.
             false
         }
     }

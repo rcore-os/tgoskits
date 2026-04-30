@@ -233,7 +233,7 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
         // the affinity. If not, we need to migrate the task to the correct CPU.
         #[cfg(feature = "smp")]
         if !cpumask.get(ax_hal::percpu::this_cpu_id()) {
-            const MIGRATION_TASK_STACK_SIZE: usize = 4096;
+            const MIGRATION_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
             // Spawn a new migration task for migrating.
             let migration_task = TaskInner::new(
                 move || crate::run_queue::migrate_entry(curr),
