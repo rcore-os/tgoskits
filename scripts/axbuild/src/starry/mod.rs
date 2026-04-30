@@ -278,8 +278,11 @@ impl Starry {
             );
         }
         if let Some(rootfs) = args.rootfs {
-            let rootfs =
-                rootfs::resolve_explicit_rootfs(self.app.workspace_root(), &request.arch, rootfs);
+            let rootfs = crate::rootfs::store::resolve_explicit_rootfs(
+                self.app.workspace_root(),
+                &request.arch,
+                rootfs,
+            );
             rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), Some(&rootfs))
                 .await?;
             self.app.set_debug_mode(request.debug)?;

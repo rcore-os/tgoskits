@@ -49,16 +49,7 @@ pub(crate) async fn ensure_qemu_rootfs_ready(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    store::ensure_managed_rootfs(workspace_root, &request.arch, &rootfs_path).await
-}
-
-/// Resolves an explicit Starry rootfs CLI value into a concrete path.
-pub(crate) fn resolve_explicit_rootfs(
-    workspace_root: &Path,
-    arch: &str,
-    rootfs: PathBuf,
-) -> PathBuf {
-    store::resolve_rootfs_path(workspace_root, arch, rootfs)
+    store::ensure_optional_managed_rootfs(workspace_root, &request.arch, Some(&rootfs_path)).await
 }
 
 fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
@@ -177,20 +168,12 @@ pub(crate) fn qemu_rootfs_path(
         return Ok(explicit.to_path_buf());
     }
 
-    default_rootfs_path(workspace_root, &request.arch)
+    store::default_rootfs_path(workspace_root, &request.arch)
 }
 
 /// Patches a QEMU config with a concrete Starry rootfs path.
 pub(crate) fn patch_qemu_rootfs_path(qemu: &mut QemuConfig, rootfs_path: &Path) {
     patch_rootfs(qemu, rootfs_path, RootfsPatchMode::EnsureDiskBootNet);
-}
-
-/// Returns Starry's default managed rootfs path for an architecture.
-fn default_rootfs_path(workspace_root: &Path, arch: &str) -> anyhow::Result<PathBuf> {
-    let image_name = store::default_rootfs_image(arch).ok_or_else(|| {
-        anyhow::anyhow!("no managed rootfs image available for starry arch `{arch}`")
-    })?;
-    Ok(store::rootfs_dir(workspace_root).join(image_name))
 }
 
 #[cfg(test)]

@@ -66,9 +66,13 @@ impl Axvisor {
         )?;
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
-        let explicit_rootfs = args
-            .rootfs
-            .map(|r| rootfs::resolve_explicit_rootfs(self.app.workspace_root(), &request.arch, r));
+        let explicit_rootfs = args.rootfs.map(|r| {
+            crate::rootfs::store::resolve_explicit_rootfs(
+                self.app.workspace_root(),
+                &request.arch,
+                r,
+            )
+        });
         rootfs::ensure_qemu_rootfs_ready(
             &request,
             self.app.workspace_root(),
