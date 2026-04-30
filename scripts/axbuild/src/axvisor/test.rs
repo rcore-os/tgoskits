@@ -294,7 +294,7 @@ fn collect_board_test_groups(
         if !build_group_dir.is_dir() {
             continue;
         }
-        let build_config = resolve_single_board_build_config(&build_group_dir)?;
+        let mut board_configs = Vec::new();
 
         for case_entry in fs::read_dir(&build_group_dir)
             .with_context(|| format!("failed to read {}", build_group_dir.display()))?
@@ -327,17 +327,26 @@ fn collect_board_test_groups(
                 };
 
                 ensure_board_run_config(&config_path)?;
-                let build_config = resolve_workspace_path(workspace_root, build_config.clone());
-                ensure_file_exists(&build_config, "Axvisor board build group config")?;
-
-                groups.push(BoardTestGroup {
-                    name: case_name.clone(),
-                    board_name: board_case_name.to_string(),
-                    build_config,
-                    board_test_config_path: config_path,
-                });
+                board_configs.push((case_name.clone(), board_case_name.to_string(), config_path));
             }
         }
+
+        if board_configs.is_empty() {
+            continue;
+        }
+
+        let build_config = resolve_single_board_build_config(&build_group_dir)?;
+        let build_config = resolve_workspace_path(workspace_root, build_config);
+        ensure_file_exists(&build_config, "Axvisor board build group config")?;
+
+        groups.extend(board_configs.into_iter().map(
+            |(name, board_name, board_test_config_path)| BoardTestGroup {
+                name,
+                board_name,
+                build_config: build_config.clone(),
+                board_test_config_path,
+            },
+        ));
     }
 
     Ok(groups)
@@ -1278,6 +1287,39 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["smoke/phytiumpi-linux", "syscall/phytiumpi-linux"]
         );
+    }
+
+    #[test]
+    fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(
+            root.path(),
+            "normal",
+            "qemu",
+            "aarch64-unknown-none-softfloat",
+        );
+        write_qemu_build_config(root.path(), "normal", "qemu", "x86_64-unknown-none");
+        write_qemu_config(
+            root.path(),
+            "smoke",
+            "aarch64",
+            "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = \
+             []\n",
+        );
+
+        write_board_build_config(root.path(), "default");
+        write_board_config(
+            root.path(),
+            "smoke",
+            "orangepi-5-plus-linux",
+            "board_type = \"OrangePi-5-Plus\"\n",
+        );
+
+        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "smoke");
+        assert_eq!(groups[0].board_name, "orangepi-5-plus-linux");
     }
 
     #[test]
