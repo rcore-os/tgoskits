@@ -101,8 +101,6 @@ members = [
     "components/scope-local",
     "components/starry-process",
     "components/starry-signal",
-    "components/starry-smoltcp",
-    "components/starry-smoltcp/fuzz",
     "components/starry-vm",
     "components/timer_list",
     "components/x86_vcpu",
