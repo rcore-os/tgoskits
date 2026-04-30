@@ -70,7 +70,6 @@ type EndpointHandle = Arc<Mutex<Endpoint>>;
 
 struct LiveDeviceState {
     device: Mutex<Device>,
-    control: EndpointHandle,
     endpoints: RwLock<BTreeMap<u8, EndpointHandle>>,
 }
 
@@ -78,32 +77,105 @@ pub(super) struct IsoTransferResult {
     pub(super) actual_length: usize,
 }
 
-#[derive(Clone)]
 pub(super) struct SubmittedTransfer {
-    endpoint: EndpointHandle,
-    request_id: RequestId,
+    inner: SubmittedTransferInner,
+}
+
+enum SubmittedTransferInner {
+    Endpoint {
+        endpoint: EndpointHandle,
+        request_id: RequestId,
+    },
+    Control {
+        live_device: Arc<LiveDeviceState>,
+        request_id: RequestId,
+    },
+}
+
+impl Clone for SubmittedTransfer {
+    fn clone(&self) -> Self {
+        let inner = match &self.inner {
+            SubmittedTransferInner::Endpoint {
+                endpoint,
+                request_id,
+            } => SubmittedTransferInner::Endpoint {
+                endpoint: endpoint.clone(),
+                request_id: *request_id,
+            },
+            SubmittedTransferInner::Control {
+                live_device,
+                request_id,
+            } => SubmittedTransferInner::Control {
+                live_device: live_device.clone(),
+                request_id: *request_id,
+            },
+        };
+        Self { inner }
+    }
 }
 
 impl SubmittedTransfer {
     pub(super) fn try_reclaim(&self) -> AxResult<Option<TransferCompletion>> {
-        self.endpoint
-            .lock()
-            .reclaim(self.request_id)
-            .map_err(map_transfer_error)
+        match &self.inner {
+            SubmittedTransferInner::Endpoint {
+                endpoint,
+                request_id,
+            } => endpoint
+                .lock()
+                .reclaim(*request_id)
+                .map_err(map_transfer_error),
+            SubmittedTransferInner::Control {
+                live_device,
+                request_id,
+            } => live_device
+                .device
+                .lock()
+                .ctrl_ep_mut()
+                .reclaim(*request_id)
+                .map_err(map_transfer_error),
+        }
     }
 
     pub(super) fn poll_reclaim(&self, cx: &mut Context<'_>) -> Poll<AxResult<TransferCompletion>> {
-        match self.endpoint.lock().poll_request(self.request_id, cx) {
+        let result = match &self.inner {
+            SubmittedTransferInner::Endpoint {
+                endpoint,
+                request_id,
+            } => endpoint.lock().poll_request(*request_id, cx),
+            SubmittedTransferInner::Control {
+                live_device,
+                request_id,
+            } => live_device
+                .device
+                .lock()
+                .ctrl_ep_mut()
+                .poll_request(*request_id, cx),
+        };
+        match result {
             Poll::Ready(result) => Poll::Ready(result.map_err(map_transfer_error)),
             Poll::Pending => Poll::Pending,
         }
     }
 
     pub(super) fn cancel(&self) -> AxResult<()> {
-        self.endpoint
-            .lock()
-            .cancel(self.request_id)
-            .map_err(map_transfer_error)
+        match &self.inner {
+            SubmittedTransferInner::Endpoint {
+                endpoint,
+                request_id,
+            } => endpoint
+                .lock()
+                .cancel(*request_id)
+                .map_err(map_transfer_error),
+            SubmittedTransferInner::Control {
+                live_device,
+                request_id,
+            } => live_device
+                .device
+                .lock()
+                .ctrl_ep_mut()
+                .cancel(*request_id)
+                .map_err(map_transfer_error),
+        }
     }
 }
 
@@ -117,6 +189,29 @@ fn wait_endpoint(
         .map_err(map_transfer_error)?;
     ax_task::future::block_on(poll_fn(|cx| {
         match endpoint.lock().poll_request(request_id, cx) {
+            Poll::Ready(result) => Poll::Ready(result.map_err(map_transfer_error)),
+            Poll::Pending => Poll::Pending,
+        }
+    }))
+}
+
+fn wait_control(
+    live_device: Arc<LiveDeviceState>,
+    request: TransferRequest,
+) -> AxResult<TransferCompletion> {
+    let request_id = live_device
+        .device
+        .lock()
+        .ctrl_ep_mut()
+        .submit(request)
+        .map_err(map_transfer_error)?;
+    ax_task::future::block_on(poll_fn(|cx| {
+        match live_device
+            .device
+            .lock()
+            .ctrl_ep_mut()
+            .poll_request(request_id, cx)
+        {
             Poll::Ready(result) => Poll::Ready(result.map_err(map_transfer_error)),
             Poll::Pending => Poll::Pending,
         }
@@ -570,15 +665,11 @@ impl UsbFsManager {
                     host_device_id,
                     info,
                 } => {
-                    let mut live_device = self.open_device(host_device_id, &info)?;
-                    let control = Arc::new(Mutex::new(
-                        live_device.take_control_endpoint().map_err(map_usb_error)?,
-                    ));
+                    let live_device = self.open_device(host_device_id, &info)?;
                     let mut state = self.state.lock();
                     let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
                     record.live_device = Some(Arc::new(LiveDeviceState {
                         device: Mutex::new(live_device),
-                        control,
                         endpoints: RwLock::new(BTreeMap::new()),
                     }));
                     return Ok(());
@@ -661,11 +752,6 @@ impl UsbFsManager {
             .ok_or(AxError::NotFound)
     }
 
-    fn live_control_endpoint(&self, stable_id: UsbStableId) -> AxResult<EndpointHandle> {
-        let live_device = self.live_device_by_id(stable_id)?;
-        Ok(live_device.control.clone())
-    }
-
     fn live_control_transfer(
         &self,
         stable_id: UsbStableId,
@@ -676,11 +762,11 @@ impl UsbFsManager {
         data: &mut [u8],
     ) -> AxResult<usize> {
         let setup = control_setup_from_raw(b_request_type, b_request, w_value, w_index);
-        let endpoint = self.live_control_endpoint(stable_id)?;
+        let live_device = self.live_device_by_id(stable_id)?;
         match direction_from_raw(b_request_type) {
-            Direction::In => wait_endpoint(endpoint, TransferRequest::control_in(setup, data))
+            Direction::In => wait_control(live_device, TransferRequest::control_in(setup, data))
                 .map(|completion| completion.actual_length),
-            Direction::Out => wait_endpoint(endpoint, TransferRequest::control_out(setup, data))
+            Direction::Out => wait_control(live_device, TransferRequest::control_out(setup, data))
                 .map(|completion| completion.actual_length),
         }
     }
@@ -695,12 +781,8 @@ impl UsbFsManager {
         let live_device = self.live_device_by_id(stable_id)?;
         {
             let mut device = live_device.device.lock();
-            let mut control_guard = live_device.control.lock();
-            let control = &mut *control_guard;
-            ax_task::future::block_on(
-                device.claim_interface_with_control(control, interface, alternate),
-            )
-            .map_err(map_usb_error)?;
+            ax_task::future::block_on(device.claim_interface(interface, alternate))
+                .map_err(map_usb_error)?;
             let endpoints = device.take_endpoints().map_err(map_usb_error)?;
             let endpoints = endpoints
                 .into_iter()
@@ -714,11 +796,7 @@ impl UsbFsManager {
     fn live_ensure_configured(&self, stable_id: UsbStableId) -> AxResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
         let mut device = live_device.device.lock();
-        let mut control_guard = live_device.control.lock();
-        let control = &mut *control_guard;
-        if ax_task::future::block_on(device.current_configuration_descriptor_with_control(control))
-            .is_ok()
-        {
+        if ax_task::future::block_on(device.current_configuration_descriptor()).is_ok() {
             return Ok(());
         }
 
@@ -727,18 +805,14 @@ impl UsbFsManager {
             .first()
             .map(|config| config.configuration_value)
             .ok_or(AxError::NotFound)?;
-        ax_task::future::block_on(
-            device.set_configuration_with_control(control, configuration_value),
-        )
-        .map_err(map_usb_error)
+        ax_task::future::block_on(device.set_configuration(configuration_value))
+            .map_err(map_usb_error)
     }
 
     fn live_set_configuration(&self, stable_id: UsbStableId, configuration: u8) -> AxResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
         let mut device = live_device.device.lock();
-        let mut control_guard = live_device.control.lock();
-        let control = &mut *control_guard;
-        ax_task::future::block_on(device.set_configuration_with_control(control, configuration))
+        ax_task::future::block_on(device.set_configuration(configuration))
             .map_err(map_usb_error)?;
         live_device.endpoints.write().clear();
         Ok(())
@@ -822,8 +896,10 @@ impl UsbFsManager {
             .submit(request)
             .map_err(map_transfer_error)?;
         Ok(SubmittedTransfer {
-            endpoint,
-            request_id,
+            inner: SubmittedTransferInner::Endpoint {
+                endpoint,
+                request_id,
+            },
         })
     }
 
@@ -832,14 +908,18 @@ impl UsbFsManager {
         stable_id: UsbStableId,
         request: TransferRequest,
     ) -> AxResult<SubmittedTransfer> {
-        let endpoint = self.live_control_endpoint(stable_id)?;
-        let request_id = endpoint
+        let live_device = self.live_device_by_id(stable_id)?;
+        let request_id = live_device
+            .device
             .lock()
+            .ctrl_ep_mut()
             .submit(request)
             .map_err(map_transfer_error)?;
         Ok(SubmittedTransfer {
-            endpoint,
-            request_id,
+            inner: SubmittedTransferInner::Control {
+                live_device,
+                request_id,
+            },
         })
     }
 
