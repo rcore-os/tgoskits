@@ -6,7 +6,10 @@ use std::{
     os::raw::{c_char, c_int, c_long},
     path::PathBuf,
     ptr, slice,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -156,6 +159,7 @@ struct Options {
     height: c_int,
     fps: c_int,
     interval: Duration,
+    duration: Option<Duration>,
     max_frames: Option<u64>,
     save: SaveOptions,
 }
@@ -169,6 +173,7 @@ impl Default for Options {
             height: 480,
             fps: 30,
             interval: Duration::from_secs(1),
+            duration: None,
             max_frames: None,
             save: SaveOptions::default(),
         }
@@ -180,21 +185,53 @@ struct SaveOptions {
     dir: Option<PathBuf>,
     every: u64,
     max_saved: Option<u64>,
+    last_only: bool,
 }
 
 struct SaveConfig {
     dir: PathBuf,
     every: u64,
     max_saved: Option<u64>,
+    last_only: bool,
 }
 
-#[derive(Default)]
 struct FrameCounters {
     frames: AtomicU64,
     bytes: AtomicU64,
     saved: AtomicU64,
     save_errors: AtomicU64,
     save: Option<SaveConfig>,
+    last_frame: Mutex<Option<LastFrame>>,
+}
+
+impl Default for FrameCounters {
+    fn default() -> Self {
+        Self {
+            frames: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            saved: AtomicU64::new(0),
+            save_errors: AtomicU64::new(0),
+            save: None,
+            last_frame: Mutex::new(None),
+        }
+    }
+}
+
+struct LastFrame {
+    frame_id: u64,
+    sequence: u32,
+    width: u32,
+    height: u32,
+    frame_format: c_int,
+    data: Vec<u8>,
+}
+
+struct RunSummary {
+    elapsed: Duration,
+    frames: u64,
+    bytes: u64,
+    avg_fps: f64,
+    avg_throughput_mib_s: f64,
 }
 
 fn main() {
@@ -227,6 +264,9 @@ fn run() -> Result<(), String> {
                 .max_saved
                 .map_or_else(|| "unlimited".to_string(), |value| value.to_string())
         );
+        if options.save.last_only {
+            println!("uvc-fps: save mode=last-frame");
+        }
     }
 
     let mut ctx = ptr::null_mut();
@@ -257,6 +297,7 @@ fn run() -> Result<(), String> {
             dir: dir.clone(),
             every: options.save.every.max(1),
             max_saved: options.save.max_saved,
+            last_only: options.save.last_only,
         }),
         ..FrameCounters::default()
     };
@@ -272,10 +313,29 @@ fn run() -> Result<(), String> {
         },
         "uvc_start_streaming",
     )?;
-    let _stream_guard = UvcStreamGuard(devh);
+    let stream_guard = UvcStreamGuard(devh);
 
     println!("uvc-fps: streaming started");
-    report_loop(&options, &counters);
+    let summary = report_loop(&options, &counters);
+    drop(stream_guard);
+
+    if let Some(save) = &counters.save {
+        if save.last_only {
+            save_last_frame(&counters, save)?;
+        }
+    }
+
+    println!(
+        "uvc-fps: done duration_sec={:.1} frames={} avg_fps={:.2} bytes={} saved={} \
+         save_errors={} avg_throughput_mib_s={:.2}",
+        summary.elapsed.as_secs_f64(),
+        summary.frames,
+        summary.avg_fps,
+        summary.bytes,
+        counters.saved.load(Ordering::Relaxed),
+        counters.save_errors.load(Ordering::Relaxed),
+        summary.avg_throughput_mib_s
+    );
     Ok(())
 }
 
@@ -324,8 +384,84 @@ extern "C" fn frame_callback(frame: *mut UvcFrame, user_ptr: *mut c_void) {
         .fetch_add(frame.data_bytes as u64, Ordering::Relaxed);
 
     if let Some(save) = &counters.save {
+        if save.last_only {
+            cache_last_frame(counters, frame, frame_id);
+            return;
+        }
         save_frame(counters, save, frame, frame_id);
     }
+}
+
+fn cache_last_frame(counters: &FrameCounters, frame: &UvcFrame, frame_id: u64) {
+    if frame.data.is_null() || frame.data_bytes == 0 {
+        return;
+    }
+
+    let bytes = unsafe { slice::from_raw_parts(frame.data.cast::<u8>(), frame.data_bytes) };
+    let Ok(mut last_frame) = counters.last_frame.lock() else {
+        counters.save_errors.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+
+    match last_frame.as_mut() {
+        Some(last_frame) => {
+            last_frame.frame_id = frame_id;
+            last_frame.sequence = frame.sequence;
+            last_frame.width = frame.width;
+            last_frame.height = frame.height;
+            last_frame.frame_format = frame.frame_format;
+            last_frame.data.clear();
+            last_frame.data.extend_from_slice(bytes);
+        }
+        None => {
+            *last_frame = Some(LastFrame {
+                frame_id,
+                sequence: frame.sequence,
+                width: frame.width,
+                height: frame.height,
+                frame_format: frame.frame_format,
+                data: bytes.to_vec(),
+            });
+        }
+    }
+}
+
+fn save_last_frame(counters: &FrameCounters, save: &SaveConfig) -> Result<(), String> {
+    let last_frame = counters
+        .last_frame
+        .lock()
+        .map_err(|_| "last-frame cache lock was poisoned".to_string())?
+        .take()
+        .ok_or_else(|| "no frame captured; cannot save final image".to_string())?;
+
+    let Some(saved_id) = reserve_saved_id(counters, save.max_saved) else {
+        return Ok(());
+    };
+
+    let extension = match last_frame.frame_format {
+        UVC_FRAME_FORMAT_MJPEG => "jpg",
+        _ => "raw",
+    };
+    let path = save.dir.join(format!("frame-{saved_id:06}.{extension}"));
+    let bytes = last_frame.data.len();
+    fs::write(&path, &last_frame.data)
+        .map_err(|err| format!("{}: {err}", path.display()))
+        .map_err(|err| {
+            counters.save_errors.fetch_add(1, Ordering::Relaxed);
+            format!("failed to save final frame: {err}")
+        })?;
+
+    println!(
+        "uvc-fps: final frame saved id={} path={} bytes={} frame_id={} sequence={} size={}x{}",
+        saved_id,
+        path.display(),
+        bytes,
+        last_frame.frame_id,
+        last_frame.sequence,
+        last_frame.width,
+        last_frame.height
+    );
+    Ok(())
 }
 
 fn save_frame(counters: &FrameCounters, save: &SaveConfig, frame: &UvcFrame, frame_id: u64) {
@@ -385,14 +521,25 @@ fn reserve_saved_id(counters: &FrameCounters, max_saved: Option<u64>) -> Option<
     }
 }
 
-fn report_loop(options: &Options, counters: &FrameCounters) {
+fn report_loop(options: &Options, counters: &FrameCounters) -> RunSummary {
     let started = Instant::now();
     let mut last = started;
     let mut last_frames = 0;
     let mut last_bytes = 0;
 
     loop {
-        thread::sleep(options.interval);
+        let next_sleep = options
+            .duration
+            .map(|duration| {
+                duration
+                    .saturating_sub(started.elapsed())
+                    .min(options.interval)
+            })
+            .unwrap_or(options.interval);
+        if next_sleep.is_zero() {
+            break;
+        }
+        thread::sleep(next_sleep);
 
         let now = Instant::now();
         let frames = counters.frames.load(Ordering::Relaxed);
@@ -415,6 +562,9 @@ fn report_loop(options: &Options, counters: &FrameCounters) {
         if options
             .max_frames
             .is_some_and(|max_frames| frames >= max_frames)
+            || options
+                .duration
+                .is_some_and(|duration| now.duration_since(started) >= duration)
         {
             break;
         }
@@ -422,6 +572,18 @@ fn report_loop(options: &Options, counters: &FrameCounters) {
         last = now;
         last_frames = frames;
         last_bytes = bytes;
+    }
+
+    let elapsed = started.elapsed();
+    let frames = counters.frames.load(Ordering::Relaxed);
+    let bytes = counters.bytes.load(Ordering::Relaxed);
+    let elapsed_secs = elapsed.as_secs_f64().max(f64::EPSILON);
+    RunSummary {
+        elapsed,
+        frames,
+        bytes,
+        avg_fps: frames as f64 / elapsed_secs,
+        avg_throughput_mib_s: bytes as f64 / elapsed_secs / 1024.0 / 1024.0,
     }
 }
 
@@ -465,6 +627,15 @@ fn parse_args() -> Result<Options, String> {
                 }
                 options.interval = Duration::from_secs(seconds);
             }
+            "--duration-sec" => {
+                let seconds = parse_value(name, inline_value, &mut args)?
+                    .parse::<u64>()
+                    .map_err(|err| format!("invalid value for {name}: {err}"))?;
+                if seconds == 0 {
+                    return Err(format!("{name} must be greater than zero"));
+                }
+                options.duration = Some(Duration::from_secs(seconds));
+            }
             "--max-frames" => {
                 let max_frames = parse_value(name, inline_value, &mut args)?
                     .parse::<u64>()
@@ -483,6 +654,12 @@ fn parse_args() -> Result<Options, String> {
             "--max-saved" => {
                 options.save.max_saved = Some(parse_positive_u64(name, inline_value, &mut args)?);
             }
+            "--save-last" => {
+                if inline_value.is_some() {
+                    return Err("--save-last does not take a value".to_string());
+                }
+                options.save.last_only = true;
+            }
             _ => return Err(format!("unknown argument `{arg}`")),
         }
     }
@@ -492,6 +669,9 @@ fn parse_args() -> Result<Options, String> {
     }
     if options.save.max_saved.is_some() && options.save.dir.is_none() {
         return Err("--max-saved requires --save-dir".to_string());
+    }
+    if options.save.last_only && options.save.dir.is_none() {
+        return Err("--save-last requires --save-dir".to_string());
     }
 
     Ok(options)
@@ -560,11 +740,12 @@ fn print_help() {
          UVC device index [default: 0]\n  --format <FORMAT>       any, mjpeg, or yuyv [default: \
          mjpeg]\n  --width <PIXELS>        Frame width [default: 640]\n  --height <PIXELS>       \
          Frame height [default: 480]\n  --fps <FPS>             Requested frame rate [default: \
-         30]\n  --interval-sec <SECS>   Reporting interval [default: 1]\n  --max-frames <N>        \
-         Stop after at least N frames\n  --save-dir <DIR>        Save frames to DIR with \
-         incrementing file names\n  --save-every <N>        Save every Nth frame when --save-dir \
-         is set [default: 1]\n  --max-saved <N>        Stop saving after N saved frames\n  -h, \
-         --help              Print help"
+         30]\n  --interval-sec <SECS>   Reporting interval [default: 1]\n  --duration-sec <SECS>   \
+         Stop after this many seconds\n  --max-frames <N>        Stop after at least N frames\n  \
+         --save-dir <DIR>        Save frames to DIR with incrementing file names\n  --save-last       \
+         Cache frames while streaming, then save only the final frame\n  --save-every <N>        Save \
+         every Nth frame when --save-dir is set [default: 1]\n  --max-saved <N>        Stop saving \
+         after N saved frames\n  -h, --help              Print help"
     );
 }
 

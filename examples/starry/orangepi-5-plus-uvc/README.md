@@ -3,9 +3,9 @@
 This case boots StarryOS on Orange Pi 5 Plus and runs a small Rust std program
 that uses libuvc through manual FFI. The program opens the first UVC camera,
 streams MJPEG frames, and prints frame-rate and throughput statistics once per
-reporting interval. The Starry example command also saves captured MJPEG frames
-to `/root/uvc-frames/frame-000001.jpg`, `/root/uvc-frames/frame-000002.jpg`,
-and so on, then runs `sync` before returning.
+reporting interval. The Starry example command streams for 10 seconds, saves
+only the final captured MJPEG frame to `/root/uvc-frames/frame-000001.jpg`, then
+runs `sync` before returning.
 
 The board rootfs must already contain:
 
@@ -23,8 +23,9 @@ The runner succeeds when `uvc-fps` reports at least one non-zero statistics line
 for example:
 
 ```text
-uvc-fps: saved id=1 path=/root/uvc-frames/frame-000001.jpg bytes=12389
-uvc-fps: frames=30 fps=30.00 bytes=1124960 saved=30 save_errors=0 throughput_mib_s=1.07 elapsed_sec=1.0
+uvc-fps: frames=30 fps=30.00 bytes=1124960 saved=0 save_errors=0 throughput_mib_s=1.07 elapsed_sec=1.0
+uvc-fps: final frame saved id=1 path=/root/uvc-frames/frame-000001.jpg bytes=12389 frame_id=300 sequence=300 size=320x240
+uvc-fps: done duration_sec=10.0 frames=300 avg_fps=30.00 bytes=11249600 saved=1 save_errors=0 avg_throughput_mib_s=1.07
 ```
 
 The `uvc-fps/` directory is a standalone Rust project with its own workspace.
