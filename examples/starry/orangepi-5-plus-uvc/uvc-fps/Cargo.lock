@@ -14,7 +14,3 @@ version = "0.1.0"
 dependencies = [
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "crab-usb"
-version = "0.7.1"
