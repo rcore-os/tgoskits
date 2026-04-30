@@ -1,8 +1,8 @@
 # tgoskits 组件层次依赖分析
 
-本文档覆盖 **137** 个 crate（与 `docs/crates/README.md` / `gen_crate_docs` 一致），按仓库内**直接**路径依赖自底向上分层。
+本文档覆盖 **137** 个 crate，按仓库内**直接**路径依赖自底向上分层。
 
-由 `scripts/analyze_tgoskits_deps.py` 生成。
+本文档为仓库依赖关系的静态参考。
 
 ## 1. 统计概览
 
@@ -1154,7 +1154,7 @@ flowchart TB
 | 16 | 22 | `arceos-affinity` `arceos-display` `arceos-exception` `arceos-fs-shell` `arceos-irq` `arceos-memtest` `arceos-net-echoserver` `arceos-net-httpclient` `arceos-net-httpserver` `arceos-net-udpserver` `arceos-parallel` `arceos-priority` `arceos-sleep` `arceos-tls` `arceos-wait-queue` `arceos-yield` `ax-helloworld` `ax-helloworld-myplat` `ax-httpclient` `ax-httpserver` `ax-shell` `axvisor` |
 ### 4.3 直接依赖 / 被直接依赖（仓库内组件）
 
-下列仅统计**本仓库 137 个 crate 之间**的直接边（与 `gen_crate_docs` 的路径/workspace 解析一致）。
+下列仅统计**本仓库 137 个 crate 之间**的直接边。
 **层级**与本文 §4.1 一致（自底向上编号，0 为仅依赖仓库外的底层）。简介优先 `Cargo.toml` 的 `description`，否则取 crate 文档摘要，否则为路径启发说明；**不超过 50 字**。
 列为空时记为 —。
 
