@@ -387,6 +387,23 @@ pub(crate) fn prepare_python_case_assets_sync(
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
 }
 
+/// Writes a musl loader search-path file into the staging root so that the
+/// guest dynamic linker (`ld-musl-{arch}.so.1`) finds libraries under `/usr/lib`
+/// and `/lib` at runtime.
+///
+/// The file is written to `/etc/ld-musl-{arch}.path` only when the
+/// corresponding loader binary is present under `lib/`; otherwise this is a
+/// no-op (the rootfs may not ship musl at all, or may use a different libc).
+///
+/// This is called from `prepare_c_case_assets_sync`,
+/// `prepare_python_case_assets_sync`, and `prepare_grouped_case_assets_sync`
+/// because those pipelines extract a staging rootfs, optionally run a
+/// `prebuild.sh`, and cross-build guest binaries that link against musl.
+///
+/// It is *not* called from `prepare_sh_case_assets_sync`: shell test cases do
+/// not extract a staging rootfs, do not cross-build C guest binaries, and do
+/// not have a `prebuild.sh` phase — they only copy scripts from the case's
+/// `sh/` source directory into the overlay and inject them directly.
 fn write_musl_loader_search_path(arch: &str, staging_root: &Path) -> anyhow::Result<()> {
     let loader_path = staging_root
         .join("lib")
