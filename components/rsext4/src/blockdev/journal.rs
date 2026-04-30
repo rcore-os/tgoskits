@@ -10,7 +10,10 @@ use crate::{
     config::{BLOCK_SIZE, JBD2_BUFFER_MAX},
     disknode::Ext4Timestamp,
     error::Ext4Result,
-    jbd2::jbdstruct::{JBD2DEVSYSTEM, Jbd2Update, JournalSuperBllockS},
+    jbd2::{
+        jbd2::ReplayStatus,
+        jbdstruct::{JBD2DEVSYSTEM, Jbd2Update, JournalSuperBllockS},
+    },
 };
 
 /// Runtime state of the journal proxy.
@@ -26,6 +29,7 @@ pub struct Jbd2Dev<B: BlockDevice> {
     journal_use: bool,
     _state: Jbd2RunState,
     systeam: Option<JBD2DEVSYSTEM>,
+    journal_blocks: Vec<AbsoluteBN>,
 }
 
 impl<B: BlockDevice> Jbd2Dev<B> {
@@ -60,6 +64,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             journal_use: use_journal,
             _state: Jbd2RunState::Commit,
             systeam: None,
+            journal_blocks: Vec::new(),
         }
     }
 
@@ -75,15 +80,20 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
     /// Replays the journal if the proxy is configured to use it.
     pub fn journal_replay(&mut self) {
+        let _ = self.journal_replay_checked();
+    }
+
+    pub(crate) fn journal_replay_checked(&mut self) -> ReplayStatus {
         if self.journal_use {
             let dev = self.inner.device_mut();
             let jbd_sys = &mut self
                 .systeam
                 .as_mut()
                 .expect("jbd2dev are not initial,please initial the jbd2dev first!");
-            jbd_sys.replay(dev);
+            jbd_sys.replay_with_mapping(dev, &self.journal_blocks)
         } else {
             warn!("Jouranl function not turn ,please turn on this function and retry!");
+            ReplayStatus::Complete
         }
     }
 
@@ -106,6 +116,29 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             jbd2_super_block: super_block,
             commit_queue: Vec::new(),
         };
+        self.journal_blocks.clear();
+        self.systeam = Some(system);
+    }
+
+    pub(crate) fn set_journal_superblock_with_mapping(
+        &mut self,
+        super_block: JournalSuperBllockS,
+        journal_blocks: Vec<AbsoluteBN>,
+    ) {
+        let Some(&journal_start_block) = journal_blocks.first() else {
+            self.journal_blocks.clear();
+            self.systeam = None;
+            return;
+        };
+        let system = JBD2DEVSYSTEM {
+            start_block: journal_start_block,
+            max_len: super_block.s_maxlen,
+            head: 0,
+            sequence: super_block.s_sequence,
+            jbd2_super_block: super_block,
+            commit_queue: Vec::new(),
+        };
+        self.journal_blocks = journal_blocks;
         self.systeam = Some(system);
     }
 
@@ -118,7 +151,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
         if let Some(system) = self.systeam.as_mut() {
             system
-                .commit_transaction(self.inner.device_mut())
+                .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
                 .expect("Translation commit failed!!!");
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");

@@ -156,9 +156,22 @@ impl Ext4FileSystem {
                     .get_inode_by_num(block_dev, InodeNumber::new(JOURNAL_FILE_INODE as u32)?)
                     .expect("load journal inode failed");
 
-                let journal_first_block = resolve_inode_block(block_dev, &mut j_inode, 0)
-                    .and_then(|opt| opt.ok_or(Ext4Error::corrupted()))
-                    .expect("resolve journal first block failed");
+                let journal_block_count = j_inode.size().div_ceil(BLOCK_SIZE as u64);
+                let journal_block_map =
+                    resolve_inode_block_allextend(&mut fs, block_dev, &mut j_inode)?;
+                let mut journal_blocks = Vec::new();
+                for logical in 0..journal_block_count {
+                    let logical = u32::try_from(logical).map_err(|_| Ext4Error::corrupted())?;
+                    let phys = journal_block_map
+                        .get(&logical)
+                        .copied()
+                        .ok_or_else(Ext4Error::corrupted)?;
+                    journal_blocks.push(phys);
+                }
+                let journal_first_block = journal_blocks
+                    .first()
+                    .copied()
+                    .ok_or_else(Ext4Error::corrupted)?;
 
                 fs.journal_sb_block_start = Some(journal_first_block);
                 let journal_data = fs
@@ -170,12 +183,36 @@ impl Ext4FileSystem {
 
                 let j_sb = JournalSuperBllockS::from_disk_bytes(&journal_data);
 
-                block_dev.set_journal_superblock(j_sb, fs.journal_sb_block_start.unwrap());
+                block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks);
 
                 // Replay after reading the filesystem metadata. Superblock and
                 // descriptor writes are already forced to media to avoid stale
                 // reads during fast recovery.
-                block_dev.journal_replay();
+                if block_dev.journal_replay_checked() != ReplayStatus::Complete {
+                    return Err(Ext4Error::corrupted());
+                }
+
+                // Journal replay can update the superblock, group descriptors,
+                // bitmaps, inode table, and directory blocks. Drop all metadata
+                // read before replay and continue mounting from the recovered
+                // on-disk state.
+                fs.superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
+                fs.superblock.verify_superblock()?;
+                fs.superblock.s_state = Ext4Superblock::EXT4_ERROR_FS;
+                fs.superblock.s_mnt_count = fs.superblock.s_mnt_count.saturating_add(1);
+                fs.group_count = fs.superblock.block_groups_count();
+                fs.group_descs =
+                    Self::load_group_descriptors(block_dev, &fs.superblock, fs.group_count)?;
+                fs.block_allocator = BlockAllocator::new(&fs.superblock);
+                fs.inode_allocator = InodeAllocator::new(&fs.superblock);
+                fs.bitmap_cache = BitmapCache::create_default();
+
+                let inode_size = match fs.superblock.s_inode_size {
+                    0 => DEFAULT_INODE_SIZE as usize,
+                    n => n as usize,
+                };
+                fs.inodetable_cahce = InodeCache::new(INODE_CACHE_MAX, inode_size);
+                fs.datablock_cache = DataBlockCache::new(DATABLOCK_CACHE_MAX, BLOCK_SIZE);
             }
         }
 
