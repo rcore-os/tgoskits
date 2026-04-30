@@ -603,6 +603,7 @@ impl Starry {
             None,
             SnapshotPersistence::Discard,
         )?;
+        let request = Self::qemu_test_request(request);
         let rootfs_path = rootfs::ensure_rootfs_in_target_dir(
             self.app.workspace_root(),
             &request.arch,
@@ -830,9 +831,15 @@ impl Starry {
     ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
+        request.smp = None;
         let cargo = build::load_cargo_config(&request)?;
 
         Ok((request, cargo))
+    }
+
+    fn qemu_test_request(mut request: ResolvedStarryRequest) -> ResolvedStarryRequest {
+        request.smp = None;
+        request
     }
 
     async fn run_qemu_case(
@@ -933,6 +940,21 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    fn starry_request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
+        ResolvedStarryRequest {
+            package: crate::context::STARRY_PACKAGE.to_string(),
+            arch: arch.to_string(),
+            target: target.to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: path,
+            build_info_override: None,
+            qemu_config: None,
+            uboot_config: None,
+        }
     }
 
     fn write_board_test_config(
@@ -1342,6 +1364,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["affinity"]
         );
+    }
+
+    #[test]
+    fn qemu_test_request_ignores_inherited_smp() {
+        let mut request = starry_request(
+            PathBuf::from("/tmp/build-riscv64gc-unknown-none-elf.toml"),
+            "riscv64",
+            "riscv64gc-unknown-none-elf",
+        );
+        request.smp = Some(1);
+
+        let request = Starry::qemu_test_request(request);
+
+        assert_eq!(request.smp, None);
     }
 
     #[test]

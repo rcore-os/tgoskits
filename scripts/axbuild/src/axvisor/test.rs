@@ -521,6 +521,7 @@ impl Axvisor {
             None,
             SnapshotPersistence::Discard,
         )?;
+        let request = Self::qemu_test_request(request);
         let cases = self
             .prepare_qemu_cases(&request, cases)
             .await
@@ -755,10 +756,16 @@ impl Axvisor {
     ) -> anyhow::Result<(ResolvedAxvisorRequest, Cargo)> {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
+        request.smp = None;
         let cargo = build::load_cargo_config(&request)?;
         request.vmconfigs = qemu_group_vmconfigs(&request, &cargo)?;
 
         Ok((request, cargo))
+    }
+
+    fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
+        request.smp = None;
+        request
     }
 
     async fn load_qemu_case_config(
@@ -957,6 +964,22 @@ mod tests {
         fs::write(path, "").unwrap();
     }
 
+    fn axvisor_request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
+        ResolvedAxvisorRequest {
+            package: build::AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: PathBuf::from("/tmp/os/axvisor"),
+            arch: arch.to_string(),
+            target: target.to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: Vec::new(),
+        }
+    }
+
     #[test]
     fn parses_supported_arch_aliases() {
         assert_eq!(
@@ -1025,6 +1048,20 @@ mod tests {
         assert!(err.contains("loongarch64"));
         assert!(err.contains("riscv64"));
         assert!(err.contains("x86_64"));
+    }
+
+    #[test]
+    fn qemu_test_request_ignores_inherited_smp() {
+        let mut request = axvisor_request(
+            PathBuf::from("/tmp/build-riscv64gc-unknown-none-elf.toml"),
+            "riscv64",
+            "riscv64gc-unknown-none-elf",
+        );
+        request.smp = Some(1);
+
+        let request = Axvisor::qemu_test_request(request);
+
+        assert_eq!(request.smp, None);
     }
 
     #[test]
