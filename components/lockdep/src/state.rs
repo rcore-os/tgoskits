@@ -494,7 +494,7 @@ fn with_current_task_held_locks_mut<R>(f: impl FnOnce(&mut HeldLockStack) -> R) 
     HELD_LOCKS.with(|held_locks| f(&mut held_locks.borrow_mut()))
 }
 
-#[cfg(feature = "task-context")]
+#[cfg(all(feature = "task-context", not(any(test, doctest))))]
 fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
     call_interface!(KspinLockdepIf::collect_current_task_held_locks, snapshot);
 }
@@ -508,7 +508,7 @@ fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
     with_current_task_held_locks(|stack| snapshot.extend(stack));
 }
 
-#[cfg(feature = "task-context")]
+#[cfg(all(feature = "task-context", not(any(test, doctest))))]
 fn push_current_task_held_lock(held: HeldLock) {
     call_interface!(KspinLockdepIf::push_current_task_held_lock, held);
 }
@@ -522,7 +522,7 @@ fn push_current_task_held_lock(held: HeldLock) {
     with_current_task_held_locks_mut(|stack| stack.push(held));
 }
 
-#[cfg(feature = "task-context")]
+#[cfg(all(feature = "task-context", not(any(test, doctest))))]
 fn pop_current_task_held_lock(lock_id: u32) {
     call_interface!(KspinLockdepIf::pop_current_task_held_lock, lock_id);
 }
@@ -612,7 +612,7 @@ fn panic_on_lockdep_error(
     }
 }
 
-#[cfg(feature = "task-context")]
+#[cfg(all(feature = "task-context", not(any(test, doctest))))]
 fn emit_lockdep_marker(s: &str) {
     call_interface!(KspinLockdepIf::console_write_str, s);
 }

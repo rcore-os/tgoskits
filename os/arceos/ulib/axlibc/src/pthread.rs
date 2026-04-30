@@ -21,7 +21,7 @@ pub unsafe extern "C" fn pthread_create(
     start_routine: extern "C" fn(arg: *mut c_void) -> *mut c_void,
     arg: *mut c_void,
 ) -> c_int {
-    e(api::sys_pthread_create(res, attr, start_routine, arg))
+    unsafe { e(api::sys_pthread_create(res, attr, start_routine, arg)) }
 }
 
 /// Exits the current thread. The value `retval` will be returned to the joiner.
@@ -36,7 +36,7 @@ pub unsafe extern "C" fn pthread_join(
     thread: ctypes::pthread_t,
     retval: *mut *mut c_void,
 ) -> c_int {
-    e(api::sys_pthread_join(thread, retval))
+    unsafe { e(api::sys_pthread_join(thread, retval)) }
 }
 
 /// Initialize a mutex.

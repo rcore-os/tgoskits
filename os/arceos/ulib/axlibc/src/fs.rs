@@ -30,7 +30,7 @@ pub unsafe extern "C" fn lseek(fd: c_int, offset: ctypes::off_t, whence: c_int) 
 /// Return 0 if success.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stat(path: *const c_char, buf: *mut ctypes::stat) -> c_int {
-    e(sys_stat(path, buf))
+    unsafe { e(sys_stat(path, buf)) }
 }
 
 /// Get file metadata by `fd` and write into `buf`.
@@ -38,7 +38,7 @@ pub unsafe extern "C" fn stat(path: *const c_char, buf: *mut ctypes::stat) -> c_
 /// Return 0 if success.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fstat(fd: c_int, buf: *mut ctypes::stat) -> c_int {
-    e(sys_fstat(fd, buf))
+    unsafe { e(sys_fstat(fd, buf)) }
 }
 
 /// Get the metadata of the symbolic link and write into `buf`.
@@ -46,7 +46,7 @@ pub unsafe extern "C" fn fstat(fd: c_int, buf: *mut ctypes::stat) -> c_int {
 /// Return 0 if success.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lstat(path: *const c_char, buf: *mut ctypes::stat) -> c_int {
-    e(sys_lstat(path, buf) as _)
+    unsafe { e(sys_lstat(path, buf) as _) }
 }
 
 /// Get the path of the current directory.

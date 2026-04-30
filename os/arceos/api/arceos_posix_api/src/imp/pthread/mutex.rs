@@ -1,7 +1,9 @@
+#[cfg(feature = "lockdep")]
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::{
     ffi::c_int,
     mem::{ManuallyDrop, size_of},
-    sync::atomic::{AtomicBool, Ordering},
+    ptr::NonNull,
 };
 
 use ax_errno::LinuxResult;
@@ -50,10 +52,10 @@ fn with_static_mutex_init_lock<R>(f: impl FnOnce() -> R) -> R {
 }
 
 #[cfg(feature = "lockdep")]
-unsafe fn ensure_mutex_initialized(mutex: *mut ctypes::pthread_mutex_t) {
+fn ensure_mutex_initialized(mutex: NonNull<ctypes::pthread_mutex_t>) {
     let words = unsafe {
         core::slice::from_raw_parts_mut(
-            mutex.cast::<i64>(),
+            mutex.as_ptr().cast::<i64>(),
             size_of::<ctypes::pthread_mutex_t>() / size_of::<i64>(),
         )
     };
@@ -64,10 +66,25 @@ unsafe fn ensure_mutex_initialized(mutex: *mut ctypes::pthread_mutex_t) {
     with_static_mutex_init_lock(|| {
         if words.first().copied() == Some(STATIC_MUTEX_SENTINEL) {
             unsafe {
-                mutex.cast::<PthreadMutex>().write(PthreadMutex::new());
+                mutex
+                    .cast::<PthreadMutex>()
+                    .as_ptr()
+                    .write(PthreadMutex::new());
             }
         }
     });
+}
+
+fn lock_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> LinuxResult {
+    #[cfg(feature = "lockdep")]
+    ensure_mutex_initialized(mutex);
+    unsafe { mutex.cast::<PthreadMutex>().as_ref().lock() }
+}
+
+fn unlock_mutex(mutex: NonNull<ctypes::pthread_mutex_t>) -> LinuxResult {
+    #[cfg(feature = "lockdep")]
+    ensure_mutex_initialized(mutex);
+    unsafe { mutex.cast::<PthreadMutex>().as_ref().unlock() }
 }
 
 /// Initialize a mutex.
@@ -90,11 +107,8 @@ pub fn sys_pthread_mutex_lock(mutex: *mut ctypes::pthread_mutex_t) -> c_int {
     debug!("sys_pthread_mutex_lock <= {:#x}", mutex as usize);
     syscall_body!(sys_pthread_mutex_lock, {
         check_null_mut_ptr(mutex)?;
-        unsafe {
-            #[cfg(feature = "lockdep")]
-            ensure_mutex_initialized(mutex);
-            (*mutex.cast::<PthreadMutex>()).lock()?;
-        }
+        let mutex = NonNull::new(mutex).expect("mutex pointer was checked for null");
+        lock_mutex(mutex)?;
         Ok(0)
     })
 }
@@ -104,11 +118,8 @@ pub fn sys_pthread_mutex_unlock(mutex: *mut ctypes::pthread_mutex_t) -> c_int {
     debug!("sys_pthread_mutex_unlock <= {:#x}", mutex as usize);
     syscall_body!(sys_pthread_mutex_unlock, {
         check_null_mut_ptr(mutex)?;
-        unsafe {
-            #[cfg(feature = "lockdep")]
-            ensure_mutex_initialized(mutex);
-            (*mutex.cast::<PthreadMutex>()).unlock()?;
-        }
+        let mutex = NonNull::new(mutex).expect("mutex pointer was checked for null");
+        unlock_mutex(mutex)?;
         Ok(0)
     })
 }
