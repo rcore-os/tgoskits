@@ -258,6 +258,14 @@ impl UsbDeviceFile {
         self.submitted_urbs.lock().drain(..).collect()
     }
 
+    fn drain_submitted_urb_by_ptr(&self, user_urb_ptr: usize) -> Option<SubmittedUrb> {
+        let mut submitted_urbs = self.submitted_urbs.lock();
+        let index = submitted_urbs
+            .iter()
+            .position(|submitted| submitted.user_urb_ptr == user_urb_ptr)?;
+        submitted_urbs.remove(index)
+    }
+
     fn release_endpoint_handles_for_interface(&self, interface: u8) -> AxResult<()> {
         let endpoints = claimed_interface_endpoints(&self.snapshot, interface);
         if endpoints.is_empty() {
@@ -453,15 +461,23 @@ impl UsbDeviceFile {
                 }
             }
             Err(err) => {
-                let status = -LinuxError::from(err).code();
+                let linux_error = LinuxError::from(err);
+                let status = -linux_error.code();
                 urb.status = status;
                 urb.actual_length = 0;
                 urb.error_count = 1;
                 if completed.log {
-                    warn!(
-                        "usbfs: reap urb ptr={:#x} status={} err={:?}",
-                        completed.user_urb_ptr, status, err
-                    );
+                    if matches!(linux_error, LinuxError::ECONNRESET | LinuxError::EINTR) {
+                        debug!(
+                            "usbfs: reap urb ptr={:#x} status={} err={:?}",
+                            completed.user_urb_ptr, status, err
+                        );
+                    } else {
+                        warn!(
+                            "usbfs: reap urb ptr={:#x} status={} err={:?}",
+                            completed.user_urb_ptr, status, err
+                        );
+                    }
                 }
             }
         }
@@ -819,17 +835,29 @@ impl UsbDeviceFile {
     }
 
     fn discard_urb(&self, arg: usize) -> AxResult<usize> {
-        let transfer = {
-            let submitted_urbs = self.submitted_urbs.lock();
-            let Some(submitted) = submitted_urbs
-                .iter()
-                .find(|submitted| submitted.user_urb_ptr == arg)
-            else {
-                return Err(AxError::NotFound);
-            };
-            submitted.transfer.clone()
+        let Some(submitted) = self.drain_submitted_urb_by_ptr(arg) else {
+            return Err(AxError::NotFound);
         };
-        transfer.cancel()?;
+        submitted.transfer.cancel()?;
+
+        complete_urb(
+            &self.pending_urbs,
+            &self.poll_urbs,
+            CompletedUrb {
+                user_urb_ptr: submitted.user_urb_ptr,
+                result: Err(AxError::from(LinuxError::ECONNRESET)),
+                log: submitted.log,
+            },
+        );
+
+        let lease = self.lease.lock().clone();
+        ax_task::spawn_with_name(
+            move || {
+                let _lease = lease;
+                cleanup_submitted_urbs(alloc::vec![submitted], None);
+            },
+            "usbfs-urb-discard".to_owned(),
+        );
         Ok(0)
     }
 }
