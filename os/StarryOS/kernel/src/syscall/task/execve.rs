@@ -59,7 +59,7 @@ pub fn sys_execve(
     drop(aspace);
 
     let loc = FS_CONTEXT.lock().resolve(&path)?;
-    curr.set_name(loc.name());
+    curr.set_name(&loc.name());
 
     *proc_data.exe_path.write() = loc.absolute_path()?.to_string();
     *proc_data.cmdline.write() = Arc::new(args);

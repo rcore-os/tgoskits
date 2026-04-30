@@ -182,7 +182,7 @@ impl FsContext {
         if let Some(name) = name {
             Ok((dir, Cow::Borrowed(name)))
         } else if let Some(parent) = dir.parent() {
-            Ok((parent, Cow::Owned(dir.name().to_owned())))
+            Ok((parent, dir.name().into_owned().into()))
         } else {
             Err(VfsError::InvalidInput)
         }
@@ -249,7 +249,7 @@ impl FsContext {
         entry
             .parent()
             .ok_or(VfsError::IsADirectory)?
-            .unlink(entry.name(), false)
+            .unlink(&entry.name(), false)
     }
 
     /// Removes a directory from the filesystem.
@@ -258,7 +258,7 @@ impl FsContext {
         entry
             .parent()
             .ok_or(VfsError::ResourceBusy)?
-            .unlink(entry.name(), true)
+            .unlink(&entry.name(), true)
     }
 
     /// Renames a file or directory to a new name, replacing the original file
@@ -324,6 +324,21 @@ impl FsContext {
     /// Returns the canonical, absolute form of a path.
     pub fn canonicalize(&self, path: impl AsRef<Path>) -> VfsResult<PathBuf> {
         self.resolve(path.as_ref())?.absolute_path()
+    }
+
+    /// Pivot the root filesystem to `new_root`, moving the old root to
+    /// `put_old` (which must be a directory under `new_root`).
+    ///
+    /// This follows Linux `pivot_root(2)` semantics: after the call the old
+    /// root filesystem is accessible at `put_old`, and can be unmounted from
+    /// there.
+    pub fn pivot_root(&mut self, new_root: Location, put_old: Location) -> VfsResult<()> {
+        let old_root_mp = self.root_dir.mountpoint().clone();
+        let new_root_mp = new_root.mountpoint().clone();
+        old_root_mp.pivot_mount(&new_root_mp, &put_old)?;
+        self.root_dir = new_root_mp.root_location();
+        self.current_dir = self.root_dir.clone();
+        Ok(())
     }
 }
 
