@@ -6,7 +6,15 @@ struct ConsoleIfImpl;
 impl ConsoleIf for ConsoleIfImpl {
     /// Writes given bytes to the console.
     fn write_bytes(bytes: &[u8]) {
-        somehal::console::_write_bytes(bytes);
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let written = somehal::console::_write_bytes(remaining);
+            if written == 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            remaining = &remaining[written..];
+        }
     }
 
     /// Reads bytes from the console into the given mutable slice.
