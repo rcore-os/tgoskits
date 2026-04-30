@@ -200,7 +200,7 @@ impl SocketOps for UnixSocket {
         Ok(())
     }
 
-    fn listen(&self) -> AxResult {
+    fn listen(&self, _backlog: usize) -> AxResult {
         Ok(())
     }
 

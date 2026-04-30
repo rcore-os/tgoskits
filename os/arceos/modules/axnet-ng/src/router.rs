@@ -126,10 +126,31 @@ impl Router {
         }
     }
 
-    pub fn poll(&mut self, timestamp: Instant) {
-        for dev in &mut self.devices {
-            while !self.rx_buffer.is_full() && dev.recv(&mut self.rx_buffer, timestamp) {}
+    pub fn poll(
+        &mut self,
+        timestamp: Instant,
+        sockets: &mut SocketSet<'_>,
+        mut snoop: impl FnMut(usize, &[u8]),
+    ) {
+        for (dev_idx, dev) in self.devices.iter_mut().enumerate() {
+            let mut packet_snoop = |packet: &[u8]| {
+                snoop_tcp_packet(packet, sockets);
+                snoop(dev_idx, packet);
+            };
+            while !self.rx_buffer.is_full()
+                && dev.recv(&mut self.rx_buffer, timestamp, &mut packet_snoop)
+            {}
         }
+    }
+
+    pub fn send_on_device(
+        &mut self,
+        dev: usize,
+        next_hop: IpAddress,
+        packet: &[u8],
+        timestamp: Instant,
+    ) -> bool {
+        self.devices[dev].send(next_hop, packet, timestamp)
     }
 
     pub fn dispatch(&mut self, timestamp: Instant) -> bool {
@@ -238,10 +259,6 @@ impl<'a> smoltcp::phy::RxToken for RxToken<'a> {
         F: FnOnce(&[u8]) -> R,
     {
         f(self.0)
-    }
-
-    fn preprocess(&self, sockets: &mut SocketSet) {
-        snoop_tcp_packet(self.0, sockets);
     }
 }
 

@@ -18,14 +18,26 @@ const PORT_NUM: usize = 65536;
 
 struct ListenTableEntryInner {
     listen_endpoint: IpListenEndpoint,
+    backlog: usize,
     syn_queue: VecDeque<SocketHandle>,
 }
 
 impl ListenTableEntryInner {
-    pub fn new(listen_endpoint: IpListenEndpoint) -> Self {
+    pub fn new(listen_endpoint: IpListenEndpoint, backlog: usize) -> Self {
         Self {
             listen_endpoint,
-            syn_queue: VecDeque::with_capacity(LISTEN_QUEUE_SIZE),
+            backlog: backlog.min(LISTEN_QUEUE_SIZE),
+            syn_queue: VecDeque::with_capacity(backlog.min(LISTEN_QUEUE_SIZE)),
+        }
+    }
+
+    fn can_accept_endpoint(&self, dst: IpEndpoint) -> bool {
+        if self.listen_endpoint.port != dst.port {
+            return false;
+        }
+        match self.listen_endpoint.addr {
+            Some(addr) => addr == dst.addr,
+            None => true,
         }
     }
 }
@@ -60,12 +72,15 @@ impl ListenTable {
         self.tcp[port as usize].lock().is_none()
     }
 
-    pub fn listen(&self, listen_endpoint: IpListenEndpoint) -> AxResult {
+    pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
         let port = listen_endpoint.port;
         assert_ne!(port, 0);
         let mut entry = self.tcp[port as usize].lock();
         if entry.is_none() {
-            *entry = Some(Box::new(ListenTableEntryInner::new(listen_endpoint)));
+            *entry = Some(Box::new(ListenTableEntryInner::new(
+                listen_endpoint,
+                backlog,
+            )));
             Ok(())
         } else {
             warn!("socket already listening on port {port}");
@@ -130,8 +145,10 @@ impl ListenTable {
         sockets: &mut SocketSet<'_>,
     ) {
         if let Some(entry) = self.listen_entry(dst.port).lock().deref_mut() {
-            // TODO(mivik): accept address check
-            if entry.syn_queue.len() >= LISTEN_QUEUE_SIZE {
+            if !entry.can_accept_endpoint(dst) {
+                return;
+            }
+            if entry.syn_queue.len() >= entry.backlog {
                 // SYN queue is full, drop the packet
                 warn!("SYN queue overflow!");
                 return;

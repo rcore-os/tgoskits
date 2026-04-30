@@ -19,7 +19,12 @@ pub use vsock::*;
 pub trait Device: Send + Sync {
     fn name(&self) -> &str;
 
-    fn recv(&mut self, buffer: &mut PacketBuffer<()>, timestamp: Instant) -> bool;
+    fn recv(
+        &mut self,
+        buffer: &mut PacketBuffer<()>,
+        timestamp: Instant,
+        snoop: &mut dyn FnMut(&[u8]),
+    ) -> bool;
     /// Sends a packet to the next hop.
     ///
     /// Returns `true` if this operation resulted in the readiness of receive

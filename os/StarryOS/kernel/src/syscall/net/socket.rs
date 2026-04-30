@@ -122,7 +122,7 @@ pub fn sys_listen(fd: i32, backlog: i32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
-    Socket::from_fd(fd)?.listen()?;
+    Socket::from_fd(fd)?.listen(backlog as usize)?;
 
     Ok(0)
 }
@@ -151,7 +151,7 @@ pub fn sys_accept4(
         socket.set_nonblocking(true)?;
     }
 
-    let remote_addr = socket.local_addr()?;
+    let remote_addr = socket.peer_addr()?;
     let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
     debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
 

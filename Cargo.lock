@@ -1110,8 +1110,8 @@ dependencies = [
  "ax-task",
  "cfg-if",
  "log",
+ "smoltcp 0.13.0",
  "spin 0.10.0",
- "starry-smoltcp",
 ]
 
 [[package]]
@@ -1138,8 +1138,8 @@ dependencies = [
  "lazy_static",
  "log",
  "ringbuf",
+ "smoltcp 0.13.0",
  "spin 0.10.0",
- "starry-smoltcp",
 ]
 
 [[package]]
@@ -4740,7 +4740,7 @@ dependencies = [
  "bit_field",
  "core_detect",
  "log",
- "smoltcp",
+ "smoltcp 0.12.0",
  "volatile 0.3.0",
 ]
 
@@ -7916,13 +7916,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "smoltcp"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac729b0a77bd092a3f06ddaddc59fe0d67f48ba0de45a9abe707c2842c7f8767"
+dependencies = [
+ "bitflags 1.3.2",
+ "byteorder",
+ "cfg-if",
+ "defmt 0.3.100",
+ "heapless 0.9.2",
+ "log",
+ "managed",
+]
+
+[[package]]
 name = "smoltcp-fuzz"
 version = "0.2.2"
 dependencies = [
  "arbitrary",
  "getopts",
  "libfuzzer-sys",
- "starry-smoltcp",
+ "smoltcp 0.13.0",
 ]
 
 [[package]]

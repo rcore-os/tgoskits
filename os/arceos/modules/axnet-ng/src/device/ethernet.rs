@@ -207,6 +207,7 @@ impl EthernetDevice {
         frame: &[u8],
         buffer: &mut PacketBuffer<()>,
         timestamp: Instant,
+        snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
         let frame = EthernetFrame::new_unchecked(frame);
         let Ok(repr) = EthernetRepr::parse(&frame) else {
@@ -223,6 +224,7 @@ impl EthernetDevice {
 
         match repr.ethertype {
             EthernetProtocol::Ipv4 => {
+                snoop(frame.payload());
                 buffer
                     .enqueue(frame.payload().len(), ())
                     .unwrap()
@@ -374,7 +376,12 @@ impl Device for EthernetDevice {
         &self.name
     }
 
-    fn recv(&mut self, buffer: &mut PacketBuffer<()>, timestamp: Instant) -> bool {
+    fn recv(
+        &mut self,
+        buffer: &mut PacketBuffer<()>,
+        timestamp: Instant,
+        snoop: &mut dyn FnMut(&[u8]),
+    ) -> bool {
         loop {
             let rx_buf = {
                 let mut inner = self.inner.driver.lock();
@@ -394,7 +401,7 @@ impl Device for EthernetDevice {
                 rx_buf.packet()
             );
 
-            let result = self.handle_frame(rx_buf.packet(), buffer, timestamp);
+            let result = self.handle_frame(rx_buf.packet(), buffer, timestamp, snoop);
             self.inner.driver.lock().recycle_rx_buffer(rx_buf).unwrap();
             if result {
                 return true;

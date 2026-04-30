@@ -55,6 +55,7 @@ struct SocketSetWrapper<'a>(Mutex<SocketSet<'a>>);
 
 struct DeviceWrapper {
     inner: RefCell<AxNetDevice>, /* use `RefCell` is enough since it's wrapped in `Mutex` in `InterfaceWrapper`. */
+    sockets_for_preprocess: Option<usize>,
 }
 
 struct InterfaceWrapper {
@@ -173,7 +174,9 @@ impl InterfaceWrapper {
         let mut iface = self.iface.lock();
         let mut sockets = sockets.lock();
         let timestamp = Self::current_time();
+        dev.set_sockets_for_preprocess(Some(&mut *sockets as *mut SocketSet<'_> as usize));
         iface.poll(timestamp, dev.deref_mut(), &mut sockets);
+        dev.set_sockets_for_preprocess(None);
     }
 }
 
@@ -181,7 +184,12 @@ impl DeviceWrapper {
     fn new(inner: AxNetDevice) -> Self {
         Self {
             inner: RefCell::new(inner),
+            sockets_for_preprocess: None,
         }
+    }
+
+    fn set_sockets_for_preprocess(&mut self, sockets: Option<usize>) {
+        self.sockets_for_preprocess = sockets;
     }
 }
 
@@ -214,7 +222,10 @@ impl Device for DeviceWrapper {
                 return None;
             }
         };
-        Some((AxNetRxToken(&self.inner, rx_buf), AxNetTxToken(&self.inner)))
+        Some((
+            AxNetRxToken(&self.inner, rx_buf, self.sockets_for_preprocess),
+            AxNetTxToken(&self.inner),
+        ))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
@@ -239,14 +250,10 @@ impl Device for DeviceWrapper {
     }
 }
 
-struct AxNetRxToken<'a>(&'a RefCell<AxNetDevice>, NetBufPtr);
+struct AxNetRxToken<'a>(&'a RefCell<AxNetDevice>, NetBufPtr, Option<usize>);
 struct AxNetTxToken<'a>(&'a RefCell<AxNetDevice>);
 
 impl RxToken for AxNetRxToken<'_> {
-    fn preprocess(&self, sockets: &mut SocketSet<'_>) {
-        snoop_tcp_packet(self.1.packet(), sockets).ok();
-    }
-
     fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&[u8]) -> R,
@@ -257,6 +264,14 @@ impl RxToken for AxNetRxToken<'_> {
             rx_buf.packet_len(),
             rx_buf.packet()
         );
+        if let Some(sockets) = self.2 {
+            // SAFETY: InterfaceWrapper::poll installs this pointer only for the
+            // duration of iface.poll(), and RxToken::consume is called
+            // synchronously before the packet is handed to smoltcp sockets.
+            unsafe {
+                snoop_tcp_packet(rx_buf.packet(), &mut *(sockets as *mut SocketSet<'_>)).ok();
+            }
+        }
         let result = f(rx_buf.packet());
         self.0.borrow_mut().recycle_rx_buffer(rx_buf).unwrap();
         result
