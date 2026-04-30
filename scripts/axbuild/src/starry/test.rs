@@ -11,9 +11,8 @@ use serde::Deserialize;
 
 use super::{ArgsTestBoard, ArgsTestQemu, ArgsTestUboot, Starry, board, build, rootfs};
 use crate::{
-    command_flow::SnapshotPersistence,
     context::{
-        ResolvedStarryRequest, StarryCliArgs, arch_for_target_checked,
+        ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs, arch_for_target_checked,
         resolve_starry_arch_and_target, validate_supported_target,
     },
     test::{
@@ -108,6 +107,16 @@ pub(crate) struct StarryBoardTestGroup {
     pub(crate) board_test_config_path: PathBuf,
 }
 
+impl board_test::BoardTestGroupInfo for StarryBoardTestGroup {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn board_name(&self) -> &str {
+        &self.board_name
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StarryQemuCaseRequirements {
     smp: usize,
@@ -165,63 +174,15 @@ pub(crate) fn discover_qemu_cases(
     group: StarryTestGroup,
 ) -> anyhow::Result<Vec<TestQemuCase>> {
     let test_suite_dir = test_suite_dir(workspace_root, group);
-    let config_name = qemu_config_name(arch);
-
-    if let Some(case_name) = selected_case {
-        let case_dir = test_suite_dir.join(case_name);
-        if !case_dir.is_dir() {
-            bail!(
-                "unknown Starry {} test case `{case_name}` in {}; available cases are discovered \
-                 from direct subdirectories",
-                group.as_str(),
-                test_suite_dir.display()
-            );
-        }
-
-        let qemu_config_path = case_dir.join(&config_name);
-        if !qemu_config_path.is_file() {
-            bail!(
-                "Starry test case `{case_name}` does not provide `{}`",
-                qemu_config_path.display()
-            );
-        }
-
-        return Ok(vec![load_qemu_case(
-            case_name.to_string(),
-            case_dir,
-            qemu_config_path,
-        )?]);
-    }
-
-    let mut cases = Vec::new();
-    for entry in fs::read_dir(&test_suite_dir)
-        .with_context(|| format!("failed to read {}", test_suite_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        let qemu_config_path = path.join(&config_name);
-        if qemu_config_path.is_file() {
-            cases.push(load_qemu_case(name, path, qemu_config_path)?);
-        }
-    }
-    cases.sort_by(|left, right| left.name.cmp(&right.name));
-
-    if cases.is_empty() {
-        bail!(
-            "no Starry {} qemu test cases for arch `{arch}` found under {}",
-            group.as_str(),
-            test_suite_dir.display()
-        );
-    }
-
-    Ok(cases)
+    qemu_test::discover_qemu_cases(
+        &test_suite_dir,
+        arch,
+        selected_case,
+        &format!("Starry {} test case", group.as_str()),
+        &format!("Starry {} qemu test cases", group.as_str()),
+        load_qemu_case,
+        |case| case.name.as_str(),
+    )
 }
 
 fn load_qemu_case(
@@ -257,18 +218,7 @@ fn load_qemu_case_test_commands(qemu_config_path: &Path) -> anyhow::Result<Vec<S
     let config: StarryQemuCaseConfig = toml::from_str(&content)
         .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
 
-    let mut test_commands = Vec::with_capacity(config.test_commands.len());
-    for command in config.test_commands {
-        let command = command.trim().to_string();
-        if command.is_empty() {
-            bail!(
-                "Starry grouped qemu case `{}` contains an empty test command",
-                qemu_config_path.display()
-            );
-        }
-        test_commands.push(command);
-    }
-    Ok(test_commands)
+    qemu_test::normalize_qemu_test_commands(qemu_config_path, config.test_commands, "Starry")
 }
 
 fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<TestQemuSubcase>> {
@@ -334,63 +284,13 @@ pub(crate) fn discover_board_test_groups(
     selected_board: Option<&str>,
 ) -> anyhow::Result<Vec<StarryBoardTestGroup>> {
     let test_suite_dir = test_suite_dir(workspace_root, StarryTestGroup::parse(group)?);
-    let mut groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
-    groups.sort_by(|left, right| {
-        left.name
-            .cmp(&right.name)
-            .then_with(|| left.board_name.cmp(&right.board_name))
-    });
-
-    if let Some(case_name) = selected_case {
-        let available = groups
-            .iter()
-            .map(|group| group.name.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join(", ");
-        groups.retain(|group| group.name == case_name);
-        if groups.is_empty() {
-            return Err(anyhow::anyhow!(
-                "unsupported Starry board test case `{case_name}`. Supported cases are: {}",
-                if available.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    available
-                }
-            ));
-        }
-    }
-
-    if let Some(board_name) = selected_board {
-        let available = groups
-            .iter()
-            .map(|group| group.board_name.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join(", ");
-        groups.retain(|group| group.board_name == board_name);
-        if groups.is_empty() {
-            return Err(anyhow::anyhow!(
-                "unsupported Starry board test board `{board_name}`. Supported boards are: {}",
-                if available.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    available
-                }
-            ));
-        }
-    }
-
-    if groups.is_empty() {
-        bail!(
+    let groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
+    board_test::filter_board_test_groups(groups, selected_case, selected_board, "Starry", || {
+        format!(
             "no Starry board test groups found under {}",
             test_suite_dir.display()
-        );
-    }
-
-    Ok(groups)
+        )
+    })
 }
 
 fn test_suite_dir(workspace_root: &Path, group: StarryTestGroup) -> PathBuf {
@@ -398,10 +298,6 @@ fn test_suite_dir(workspace_root: &Path, group: StarryTestGroup) -> PathBuf {
         .join("test-suit")
         .join("starryos")
         .join(group.as_str())
-}
-
-fn qemu_config_name(arch: &str) -> String {
-    format!("qemu-{arch}.toml")
 }
 
 pub(crate) fn resolve_case_build_config_path(
@@ -767,21 +663,7 @@ impl Starry {
                 .with_context(|| {
                     format!("failed to read Starry qemu config for case `{}`", case.name)
                 })?;
-            // Validate that a case does not combine shell_init_cmd with
-            // test_commands.  This check is done here rather than during the
-            // initial TOML parse so we only read each case file once.
-            let shell_init_cmd_set = qemu
-                .shell_init_cmd
-                .as_deref()
-                .map(str::trim)
-                .is_some_and(|v| !v.is_empty());
-            if shell_init_cmd_set && !case.test_commands.is_empty() {
-                bail!(
-                    "Starry grouped qemu case `{}` cannot define both `shell_init_cmd` and \
-                     `test_commands`",
-                    case.qemu_config_path.display()
-                );
-            }
+            qemu_test::validate_grouped_qemu_commands(&qemu, &case, "Starry")?;
             let requirements = Self::qemu_case_requirements(&qemu)
                 .with_context(|| format!("failed to read QEMU requirements for `{}`", case.name))?;
             prepared.push(PreparedStarryQemuCase {

@@ -10,8 +10,10 @@ use serde::Deserialize;
 
 use super::{Axvisor, build, cli, rootfs};
 use crate::{
-    command_flow::SnapshotPersistence,
-    context::{AxvisorCliArgs, ResolvedAxvisorRequest, resolve_axvisor_arch_and_target},
+    context::{
+        AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence,
+        resolve_axvisor_arch_and_target,
+    },
     test::{
         board as board_test, case as test_case, case::TestQemuCase, qemu as test_qemu,
         qemu::parse_test_target,
@@ -48,6 +50,16 @@ pub(crate) struct BoardTestGroup {
     pub(crate) build_config: PathBuf,
     pub(crate) vmconfigs: Vec<PathBuf>,
     pub(crate) board_test_config_path: PathBuf,
+}
+
+impl board_test::BoardTestGroupInfo for BoardTestGroup {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn board_name(&self) -> &str {
+        &self.board_name
+    }
 }
 
 const UBOOT_BOARD_CONFIGS: &[UbootBoardConfig] = &[
@@ -111,61 +123,15 @@ pub(crate) fn discover_qemu_cases(
     selected_case: Option<&str>,
 ) -> anyhow::Result<Vec<AxvisorQemuCase>> {
     let test_suite_dir = test_suite_dir(workspace_root, group)?;
-    let config_name = qemu_config_name(arch);
-
-    if let Some(case_name) = selected_case {
-        let case_dir = test_suite_dir.join(case_name);
-        if !case_dir.is_dir() {
-            bail!(
-                "unknown Axvisor qemu test case `{case_name}` in {}; available cases are \
-                 discovered from direct subdirectories",
-                test_suite_dir.display()
-            );
-        }
-
-        let qemu_config_path = case_dir.join(&config_name);
-        if !qemu_config_path.is_file() {
-            bail!(
-                "Axvisor test case `{case_name}` does not provide `{}`",
-                qemu_config_path.display()
-            );
-        }
-
-        return Ok(vec![load_qemu_case(
-            case_name.to_string(),
-            case_dir,
-            qemu_config_path,
-        )?]);
-    }
-
-    let mut cases = Vec::new();
-    for entry in fs::read_dir(&test_suite_dir)
-        .with_context(|| format!("failed to read {}", test_suite_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        let qemu_config_path = path.join(&config_name);
-        if qemu_config_path.is_file() {
-            cases.push(load_qemu_case(name, path, qemu_config_path)?);
-        }
-    }
-    cases.sort_by(|left, right| left.case.name.cmp(&right.case.name));
-
-    if cases.is_empty() {
-        bail!(
-            "no Axvisor qemu test cases for arch `{arch}` found under {}",
-            test_suite_dir.display()
-        );
-    }
-
-    Ok(cases)
+    test_qemu::discover_qemu_cases(
+        &test_suite_dir,
+        arch,
+        selected_case,
+        "Axvisor qemu test case",
+        "Axvisor qemu test cases",
+        load_qemu_case,
+        |case| case.case.name.as_str(),
+    )
 }
 
 fn load_qemu_case(
@@ -200,18 +166,7 @@ fn qemu_case_test_commands(
     qemu_config_path: &Path,
     config: &AxvisorQemuCaseConfig,
 ) -> anyhow::Result<Vec<String>> {
-    let mut test_commands = Vec::with_capacity(config.test_commands.len());
-    for command in &config.test_commands {
-        let command = command.trim().to_string();
-        if command.is_empty() {
-            bail!(
-                "Axvisor grouped qemu case `{}` contains an empty test command",
-                qemu_config_path.display()
-            );
-        }
-        test_commands.push(command);
-    }
-    Ok(test_commands)
+    test_qemu::normalize_qemu_test_commands(qemu_config_path, &config.test_commands, "Axvisor")
 }
 
 pub(crate) fn uboot_board_config(board: &str, guest: &str) -> anyhow::Result<UbootBoardConfig> {
@@ -237,65 +192,13 @@ pub(crate) fn discover_board_test_groups(
     board: Option<&str>,
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
     let test_suite_dir = test_suite_dir(workspace_root, group)?;
-    let mut groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
-    groups.sort_by(|left, right| {
-        left.name
-            .cmp(&right.name)
-            .then_with(|| left.board_name.cmp(&right.board_name))
-    });
-
-    if let Some(name) = selected_case {
-        let available = groups
-            .iter()
-            .map(|group| group.name.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join(", ");
-        groups.retain(|group| group.name == name);
-        if groups.is_empty() {
-            return Err(anyhow!(
-                "unsupported axvisor board test case `{}`. Supported cases are: {}",
-                name,
-                if available.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    available
-                }
-            ));
-        }
-    }
-
-    if let Some(board) = board {
-        let available = groups
-            .iter()
-            .map(|group| group.board_name.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join(", ");
-        groups.retain(|group| group.board_name == board);
-        if groups.is_empty() {
-            return Err(anyhow!(
-                "unsupported axvisor board test board `{}`. Supported boards are: {}",
-                board,
-                if available.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    available
-                }
-            ));
-        }
-    }
-
-    if groups.is_empty() {
-        bail!(
+    let groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
+    board_test::filter_board_test_groups(groups, selected_case, board, "axvisor", || {
+        format!(
             "no Axvisor board test groups found under {}",
             test_suite_dir.display()
-        );
-    }
-
-    Ok(groups)
+        )
+    })
 }
 
 fn supported_board_guest_pairs() -> String {
@@ -431,10 +334,6 @@ fn supported_test_groups(test_suite_root: &Path) -> anyhow::Result<String> {
     } else {
         groups.join(", ")
     })
-}
-
-fn qemu_config_name(arch: &str) -> String {
-    format!("qemu-{arch}.toml")
 }
 
 impl Axvisor {
@@ -634,21 +533,7 @@ impl Axvisor {
             .tool_mut()
             .read_qemu_config_from_path_for_cargo(cargo, &case.case.qemu_config_path)
             .await?;
-        // Validate shell_init_cmd / test_commands mutual exclusion here, after
-        // ostool has already parsed the TOML once.  This mirrors the Starry
-        // approach and avoids parsing the file again with a separate deserializer.
-        let shell_init_cmd_set = qemu
-            .shell_init_cmd
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|v| !v.is_empty());
-        if shell_init_cmd_set && !case.case.test_commands.is_empty() {
-            bail!(
-                "Axvisor grouped qemu case `{}` cannot define both `shell_init_cmd` and \
-                 `test_commands`",
-                case.case.qemu_config_path.display()
-            );
-        }
+        test_qemu::validate_grouped_qemu_commands(&qemu, &case.case, "Axvisor")?;
         test_case::apply_grouped_qemu_config(&mut qemu, &case.case);
         test_qemu::apply_timeout_scale(&mut qemu);
 

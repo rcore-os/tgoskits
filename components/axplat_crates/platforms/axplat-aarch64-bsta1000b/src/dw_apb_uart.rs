@@ -1,10 +1,13 @@
 //! snps,dw-apb-uart serial driver
 
+#[cfg(feature = "irq")]
 use core::ptr::read_volatile;
 
 use ax_kspin::SpinNoIrq;
+#[cfg(feature = "irq")]
+use ax_plat::console::ConsoleIrqEvent;
 use ax_plat::{
-    console::{ConsoleIf, ConsoleIrqEvent},
+    console::ConsoleIf,
     mem::{PhysAddr, pa},
 };
 use dw_apb_uart::DW8250;
@@ -15,19 +18,13 @@ const UART_BASE: PhysAddr = pa!(crate::config::devices::UART_PADDR);
 
 static UART: SpinNoIrq<DW8250> = SpinNoIrq::new(DW8250::new(phys_to_virt(UART_BASE).as_usize()));
 
+#[cfg(feature = "irq")]
 const UART_LSR_OFFSET: usize = 0x14;
 
 /// Writes a byte to the console.
 #[allow(dead_code)]
 pub fn putchar(c: u8) {
-    let mut uart = UART.lock();
-    match c {
-        b'\r' | b'\n' => {
-            uart.putchar(b'\r');
-            uart.putchar(b'\n');
-        }
-        c => uart.putchar(c),
-    }
+    UART.lock().putchar(c);
 }
 
 /// Reads a byte from the console, or returns [`None`] if no input is available.

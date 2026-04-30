@@ -6,7 +6,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::spec::ImageSpecRef;
-use crate::download::fetch_text;
+use crate::support::download::fetch_text;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {

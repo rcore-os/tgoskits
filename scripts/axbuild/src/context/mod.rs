@@ -42,6 +42,12 @@ pub(crate) use workspace::{
     workspace_metadata_root_manifest, workspace_root_path,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapshotPersistence {
+    Discard,
+    Store,
+}
+
 pub struct AppContext {
     tool: Tool,
     build_config_path: Option<PathBuf>,
@@ -54,7 +60,7 @@ pub struct AppContext {
 impl AppContext {
     pub(crate) fn new() -> anyhow::Result<Self> {
         let workspace_root = find_workspace_root();
-        crate::logging::init_logging(&workspace_root)?;
+        crate::support::logging::init_logging(&workspace_root)?;
 
         info!("Workspace root: {}", workspace_root.display());
 

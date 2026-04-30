@@ -10,7 +10,7 @@ use ax_errno::{AxError, AxResult};
 use ax_task::future::block_on;
 use axpoll::PollSet;
 use linux_raw_sys::general::{
-    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
+    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
 use ringbuf::{
     CachingCons, CachingProd,
@@ -57,6 +57,27 @@ pub trait TtyWrite: Send + Sync + 'static {
     fn write(&self, buf: &[u8]);
 }
 
+pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf: &[u8]) {
+    if !term.has_oflag(OPOST) || !term.has_oflag(ONLCR) {
+        writer.write(buf);
+        return;
+    }
+
+    let mut start = 0;
+    for (i, &byte) in buf.iter().enumerate() {
+        if byte == b'\n' {
+            if start < i {
+                writer.write(&buf[start..i]);
+            }
+            writer.write(b"\r\n");
+            start = i + 1;
+        }
+    }
+    if start < buf.len() {
+        writer.write(&buf[start..]);
+    }
+}
+
 struct InputReader<R, W> {
     terminal: Arc<Terminal>,
 
@@ -69,6 +90,7 @@ struct InputReader<R, W> {
 
     line_buf: Vec<u8>,
     line_read: Option<usize>,
+    eof_ready: Arc<AtomicBool>,
     clear_line_buf: Arc<AtomicBool>,
 }
 impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
@@ -111,10 +133,16 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
                 }
             }
 
-            self.check_send_signal(&term, ch);
+            let signaled = self.check_send_signal(&term, ch);
 
-            if term.echo() {
+            let eof = term.canonical() && ch == term.special_char(VEOF);
+            if term.echo() && !eof {
                 self.output_char(&term, ch);
+            }
+            if signaled {
+                self.line_buf.clear();
+                self.line_read = None;
+                continue;
             }
             if !term.canonical() {
                 self.buf_tx.try_push(ch).unwrap();
@@ -132,17 +160,23 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
                 continue;
             }
 
-            if term.is_eol(ch) || ch == term.special_char(VEOF) {
-                if ch != term.special_char(VEOF) {
-                    self.line_buf.push(ch);
-                }
-                if !self.line_buf.is_empty() {
+            if ch == term.special_char(VEOF) {
+                if self.line_buf.is_empty() {
+                    self.eof_ready.store(true, Ordering::Release);
+                    sent += 1;
+                } else {
                     self.line_read = Some(0);
                 }
                 continue;
             }
 
-            if ch == b' ' || ch.is_ascii_graphic() {
+            if term.is_eol(ch) {
+                self.line_buf.push(ch);
+                self.line_read = Some(0);
+                continue;
+            }
+
+            if ch == b'\t' || !ch.is_ascii_control() {
                 self.line_buf.push(ch);
                 continue;
             }
@@ -151,28 +185,37 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         sent > 0
     }
 
-    fn check_send_signal(&self, term: &Termios2, ch: u8) {
-        if !term.canonical() || !term.has_lflag(ISIG) {
-            return;
+    fn check_send_signal(&self, term: &Termios2, ch: u8) -> bool {
+        if !term.has_lflag(ISIG) {
+            return false;
         }
-        if let Some(signo) = term.signo_for(ch)
-            && let Some(pg) = self.terminal.job_control.foreground()
-        {
-            let sig = SignalInfo::new_kernel(signo);
-            if let Err(err) = send_signal_to_process_group(pg.pgid(), Some(sig)) {
-                warn!("Failed to send signal: {err:?}");
+        if let Some(signo) = term.signo_for(ch) {
+            if let Some(pg) = self.terminal.job_control.foreground() {
+                let sig = SignalInfo::new_kernel(signo);
+                if let Err(err) = send_signal_to_process_group(pg.pgid(), Some(sig)) {
+                    warn!("Failed to send signal: {err:?}");
+                }
             }
+            true
+        } else {
+            false
         }
     }
 
     fn output_char(&self, term: &Termios2, ch: u8) {
         match ch {
-            b'\n' => self.writer.write(b"\n"),
-            b'\r' => self.writer.write(b"\r\n"),
+            b'\n' => write_output_bytes(&self.writer, term, b"\n"),
+            b'\t' => self.writer.write(b"\t"),
             ch if ch == term.special_char(VERASE) => self.writer.write(b"\x08 \x08"),
-            ch if ch == b' ' || ch.is_ascii_graphic() => self.writer.write(&[ch]),
+            ch if ch == b' ' || ch.is_ascii_graphic() || !ch.is_ascii() => {
+                self.writer.write(&[ch]);
+            }
             ch if ch.is_ascii_control() && term.has_lflag(ECHOCTL) => {
-                self.writer.write(&[b'^', (ch + 0x40)]);
+                let escaped = if ch == b'\x7f' { b'?' } else { ch + 0x40 };
+                self.writer.write(&[b'^', escaped]);
+            }
+            ch if ch.is_ascii_control() => {
+                self.writer.write(&[ch]);
             }
             other => {
                 warn!("Ignored echo char: {other:#x}");
@@ -189,12 +232,7 @@ struct SimpleReader<R> {
 impl<R: TtyRead> SimpleReader<R> {
     pub fn poll(&mut self) {
         let read = self.reader.read(&mut self.read_buf);
-        for ch in &self.read_buf[..read] {
-            if *ch == b'\n' {
-                let _ = self.buf_tx.try_push(b'\r');
-            }
-            let _ = self.buf_tx.try_push(*ch);
-        }
+        let _ = self.buf_tx.push_slice(&self.read_buf[..read]);
     }
 }
 
@@ -209,6 +247,7 @@ pub struct LineDiscipline<R, W> {
     buf_rx: CachingCons<ReadBuf>,
     input_ready: Arc<PollSet>,
     pump_retry: Arc<PollSet>,
+    eof_ready: Arc<AtomicBool>,
     clear_line_buf: Arc<AtomicBool>,
     processor: Processor<R, W>,
 }
@@ -280,6 +319,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     pub fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Self {
         let (buf_tx, buf_rx) = ReadBuf::default().split();
 
+        let eof_ready = Arc::new(AtomicBool::new(false));
         let clear_line_buf = Arc::new(AtomicBool::new(false));
         let reader = InputReader {
             terminal: terminal.clone(),
@@ -293,6 +333,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
             line_buf: Vec::new(),
             line_read: None,
+            eof_ready: eof_ready.clone(),
             clear_line_buf: clear_line_buf.clone(),
         };
 
@@ -326,6 +367,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             buf_rx,
             input_ready,
             pump_retry,
+            eof_ready,
             clear_line_buf,
             processor,
         }
@@ -333,6 +375,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
     pub fn drain_input(&mut self) {
         self.buf_rx.clear();
+        self.eof_ready.store(false, Ordering::Release);
         self.clear_line_buf.store(true, Ordering::Relaxed);
     }
 
@@ -346,7 +389,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
         let term = self.terminal.termios.lock().clone();
         if term.canonical() {
-            return !self.buf_rx.is_empty();
+            return self.eof_ready.load(Ordering::Acquire) || !self.buf_rx.is_empty();
         }
         let vmin = term.special_char(VMIN) as usize;
         vmin == 0 || self.buf_rx.occupied_len() >= vmin
@@ -402,12 +445,18 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                 if total_read >= vmin {
                     return Ok(total_read);
                 }
+                if self.eof_ready.swap(false, Ordering::AcqRel) {
+                    return Ok(0);
+                }
                 ax_task::yield_now();
             }
         }
 
         let available = self.buf_rx.occupied_len();
         if available == 0 {
+            if term.canonical() && self.eof_ready.swap(false, Ordering::AcqRel) {
+                return Ok(0);
+            }
             if vmin == 0 {
                 return Ok(0);
             }

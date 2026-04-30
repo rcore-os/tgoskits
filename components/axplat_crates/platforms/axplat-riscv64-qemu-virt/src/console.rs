@@ -71,13 +71,7 @@ impl ConsoleIf for ConsoleIfImpl {
     fn write_bytes(bytes: &[u8]) {
         let mut uart = UART.lock();
         for &c in bytes {
-            match c {
-                b'\n' => {
-                    uart.write_byte(b'\r');
-                    uart.write_byte(b'\n');
-                }
-                c => uart.write_byte(c),
-            }
+            uart.write_byte(c);
         }
     }
 

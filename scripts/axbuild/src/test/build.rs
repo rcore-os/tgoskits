@@ -20,8 +20,8 @@ use super::{
     case::{TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
 };
 use crate::{
-    process::ProcessExt,
     starry::{apk, resolver},
+    support::process::ProcessExt,
 };
 
 const CASE_C_DIR_NAME: &str = "c";

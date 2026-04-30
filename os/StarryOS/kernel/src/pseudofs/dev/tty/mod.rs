@@ -17,7 +17,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use self::terminal::{
     Terminal, WindowSize,
-    ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite},
+    ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite, write_output_bytes},
     termios::{Termios, Termios2},
 };
 pub use self::{
@@ -91,7 +91,12 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> AxResult<usize> {
-        self.writer.write(buf);
+        if self.is_ptm {
+            self.writer.write(buf);
+        } else {
+            let term = self.terminal.load_termios();
+            write_output_bytes(&self.writer, term.as_ref(), buf);
+        }
         Ok(buf.len())
     }
 

@@ -15,26 +15,19 @@ use ostool::run::qemu::QemuConfig;
 
 use crate::{context::ResolvedAxvisorRequest, rootfs};
 
-/// Resolves an explicit AxVisor rootfs CLI value into a concrete path.
-pub(crate) fn resolve_explicit_rootfs(
-    workspace_root: &Path,
-    arch: &str,
-    rootfs: PathBuf,
-) -> PathBuf {
-    rootfs::store::resolve_rootfs_path(workspace_root, arch, rootfs)
-}
-
 /// Ensures the managed rootfs required by an AxVisor QEMU run is available.
 pub(crate) async fn ensure_qemu_rootfs_ready(
     request: &ResolvedAxvisorRequest,
     workspace_root: &Path,
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let Some(rootfs_path) = managed_rootfs_path(request, workspace_root, explicit_rootfs)? else {
-        return Ok(());
-    };
-
-    rootfs::store::ensure_managed_rootfs(workspace_root, &request.arch, &rootfs_path).await
+    let rootfs_path = managed_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    rootfs::store::ensure_optional_managed_rootfs(
+        workspace_root,
+        &request.arch,
+        rootfs_path.as_deref(),
+    )
+    .await
 }
 
 /// Patches a QEMU config with the rootfs selected for an AxVisor request.
@@ -61,7 +54,7 @@ pub(crate) fn qemu_rootfs_path(
 
     infer_rootfs_path(&request.vmconfigs)?
         .map(Ok)
-        .unwrap_or_else(|| default_rootfs_path(workspace_root, &request.arch))
+        .unwrap_or_else(|| rootfs::store::default_rootfs_path(workspace_root, &request.arch))
 }
 
 /// Patches a QEMU config with a concrete AxVisor rootfs path.
@@ -87,17 +80,13 @@ pub(crate) fn managed_rootfs_path(
     }
 
     if infer_rootfs_path(&request.vmconfigs)?.is_none() {
-        return Ok(Some(default_rootfs_path(workspace_root, &request.arch)?));
+        return Ok(Some(rootfs::store::default_rootfs_path(
+            workspace_root,
+            &request.arch,
+        )?));
     }
 
     Ok(None)
-}
-
-/// Returns AxVisor's default managed rootfs path for an architecture.
-fn default_rootfs_path(workspace_root: &Path, arch: &str) -> anyhow::Result<PathBuf> {
-    let image_name = rootfs::store::default_rootfs_image(arch)
-        .ok_or_else(|| anyhow!("no managed rootfs image available for axvisor arch `{arch}`"))?;
-    Ok(rootfs::store::rootfs_dir(workspace_root).join(image_name))
 }
 
 /// Infers a rootfs image path from VM config files by looking next to the

@@ -52,6 +52,17 @@ html {
   scroll-behavior: smooth;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 .home {
   background:
     radial-gradient(circle at top left, rgba(95, 107, 255, 0.08), transparent 28%),
@@ -90,6 +101,14 @@ html {
 .section-shell__inner {
   width: var(--home-max-width);
   margin: 0 auto;
+}
+
+/* shared max-width for wide viewports */
+@media (min-width: 1600px) {
+  .hero-content,
+  .section-shell__inner {
+    width: var(--home-max-width-wide);
+  }
 }
 
 .hero-content {
@@ -833,12 +852,7 @@ html {
 
 @media (min-width: 1600px) {
   .hero-content {
-    width: var(--home-max-width-wide);
     grid-template-columns: minmax(0, 1.22fr) minmax(500px, 0.78fr);
-  }
-
-  .section-shell__inner {
-    width: var(--home-max-width-wide);
   }
 
   .hero-terminal-container {
@@ -1020,11 +1034,6 @@ html {
     padding: 5rem 0 4rem;
   }
 
-  .hero-content,
-  .section-shell__inner {
-    width: min(100%, calc(100% - 2rem));
-  }
-
   .hero-copy h1 {
     font-size: 2.7rem;
   }
@@ -1035,10 +1044,6 @@ html {
     justify-content: center;
   }
 
-  .feature-grid,
-  .systems-grid,
-  .docs-grid,
-  .quality-grid,
   .metric-strip {
     grid-template-columns: 1fr;
   }
