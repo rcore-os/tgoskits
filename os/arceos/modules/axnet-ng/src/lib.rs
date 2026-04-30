@@ -95,6 +95,12 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
         )));
 
         router.add_rule(Rule::new(
+            eth0_ip.network().into(),
+            None,
+            eth0_dev,
+            eth0_ip.address().into(),
+        ));
+        router.add_rule(Rule::new(
             Ipv4Cidr::new(Ipv4Address::UNSPECIFIED, 0).into(),
             Some(GATEWAY.parse().expect("Invalid gateway address")),
             eth0_dev,

@@ -168,12 +168,13 @@ impl EthernetDevice {
         size: usize,
         f: F,
         proto: EthernetProtocol,
-    ) where
+    ) -> bool
+    where
         F: FnOnce(&mut [u8]),
     {
         if let Err(err) = inner.recycle_tx_buffers() {
             warn!("recycle_tx_buffers failed: {:?}", err);
-            return;
+            return false;
         }
 
         let repr = EthernetRepr {
@@ -186,7 +187,7 @@ impl EthernetDevice {
             Ok(buf) => buf,
             Err(err) => {
                 warn!("alloc_tx_buffer failed: {:?}", err);
-                return;
+                return false;
             }
         };
         let mut frame = EthernetFrame::new_unchecked(tx_buf.packet_mut());
@@ -198,7 +199,14 @@ impl EthernetDevice {
             tx_buf.packet()
         );
         if let Err(err) = inner.transmit(tx_buf) {
-            warn!("transmit failed: {:?}", err);
+            if matches!(err, DevError::Again) {
+                debug!("transmit not ready: {:?}", err);
+            } else {
+                warn!("transmit failed: {:?}", err);
+            }
+            false
+        } else {
+            true
         }
     }
 
@@ -252,7 +260,7 @@ impl EthernetDevice {
         };
 
         let mut inner = self.inner.driver.lock();
-        Self::send_to(
+        let submitted = Self::send_to(
             &mut inner,
             EthernetAddress::BROADCAST,
             arp_repr.buffer_len(),
@@ -260,8 +268,10 @@ impl EthernetDevice {
             EthernetProtocol::Arp,
         );
 
-        self.neighbors.insert(target_ip, None);
-        true
+        if submitted {
+            self.neighbors.insert(target_ip, None);
+        }
+        submitted
     }
 
     fn process_arp(&mut self, payload: &[u8], now: Instant) {

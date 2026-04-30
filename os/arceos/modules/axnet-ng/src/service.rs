@@ -8,7 +8,7 @@ use ax_hal::time::{NANOS_PER_MICROS, TimeValue, wall_time_nanos};
 use ax_task::future::sleep_until;
 use smoltcp::{
     iface::{Interface, SocketSet},
-    time::Instant,
+    time::{Duration, Instant},
     wire::{HardwareAddress, IpAddress, IpListenEndpoint},
 };
 
@@ -17,6 +17,8 @@ use crate::{SOCKET_SET, router::Router};
 fn now() -> Instant {
     Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)
 }
+
+const DEVICE_POLL_FALLBACK_INTERVAL: Duration = Duration::from_millis(10);
 
 pub struct Service {
     pub iface: Interface,
@@ -62,7 +64,15 @@ impl Service {
     }
 
     pub fn register_waker(&mut self, mask: u32, waker: &Waker) {
-        let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
+        let timestamp = now();
+        let next = self.iface.poll_at(timestamp, &SOCKET_SET.inner.lock());
+        let fallback = (mask != 0).then(|| timestamp + DEVICE_POLL_FALLBACK_INTERVAL);
+        let next = match (next, fallback) {
+            (Some(next), Some(fallback)) => Some(next.min(fallback)),
+            (Some(next), None) => Some(next),
+            (None, Some(fallback)) => Some(fallback),
+            (None, None) => None,
+        };
 
         if let Some(t) = next {
             let next = TimeValue::from_micros(t.total_micros() as _);
