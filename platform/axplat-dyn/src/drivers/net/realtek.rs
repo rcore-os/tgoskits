@@ -33,7 +33,7 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
 
     let address = endpoint.address();
     if REGISTERED_RTL8125.load(Ordering::Acquire) {
-        info!("RTL8125 at {address} left unused: first link-up port already registered");
+        info!("RTL8125 at {address} left unused: first port already registered");
         return Err(OnProbeError::NotMatch);
     }
 
@@ -61,15 +61,20 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
     )
     .map_err(|err| OnProbeError::other(alloc::format!("failed to create RTL8125: {err:?}")))?;
 
-    if !dev.poll_link() {
-        warn!("RTL8125 at {address} left unused: link is down");
-        return Err(OnProbeError::NotMatch);
+    let status = dev.status();
+    if status.link_up() {
+        info!("RTL8125 at {address}: link is up after init, status={status:?}");
+    } else {
+        warn!(
+            "RTL8125 at {address}: link is down after init; registering and checking link again \
+             on tx, status={status:?}"
+        );
     }
     if REGISTERED_RTL8125
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        info!("RTL8125 at {address} left unused: first link-up port already registered");
+        info!("RTL8125 at {address} left unused: first port already registered");
         return Err(OnProbeError::NotMatch);
     }
 

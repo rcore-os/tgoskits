@@ -19,8 +19,8 @@ pub struct TxDesc {
 }
 
 impl TxDesc {
-    pub fn new(addr: u64, len: usize, ring_end: bool) -> Self {
-        let mut opts1 = DESC_OWN | FIRST_FRAG | LAST_FRAG | len as u32;
+    pub fn new_cpu_owned(addr: u64, len: usize, ring_end: bool) -> Self {
+        let mut opts1 = FIRST_FRAG | LAST_FRAG | len as u32;
         if ring_end {
             opts1 |= RING_END;
         }
@@ -31,8 +31,17 @@ impl TxDesc {
         }
     }
 
+    pub fn release_to_hw(mut self) -> Self {
+        self.opts1 |= DESC_OWN;
+        self
+    }
+
     pub fn is_owned_by_hw(&self) -> bool {
         self.opts1 & DESC_OWN != 0
+    }
+
+    pub fn packet_len(&self) -> usize {
+        (self.opts1 & RX_PACKET_LEN_MASK) as usize
     }
 }
 
@@ -45,8 +54,8 @@ pub struct RxDesc {
 }
 
 impl RxDesc {
-    pub fn new(addr: u64, len: usize, ring_end: bool) -> Self {
-        let mut opts1 = DESC_OWN | len as u32;
+    pub fn new_cpu_owned(addr: u64, len: usize, ring_end: bool) -> Self {
+        let mut opts1 = len as u32;
         if ring_end {
             opts1 |= RING_END;
         }
@@ -55,6 +64,11 @@ impl RxDesc {
             opts2: 0,
             addr,
         }
+    }
+
+    pub fn release_to_hw(mut self) -> Self {
+        self.opts1 |= DESC_OWN;
+        self
     }
 
     pub fn is_owned_by_hw(&self) -> bool {

@@ -2,15 +2,19 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use core::mem::size_of;
+use alloc::{boxed::Box, sync::Arc};
+use core::{
+    mem::size_of,
+    sync::atomic::{Ordering as AtomicOrdering, fence},
+};
 
 use descriptor::{RING_END, RxDesc, TxDesc};
 use dma_api::{DArray, DeviceDma, DmaDirection, DmaOp};
-use log::info;
+use log::{info, warn};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use rdif_eth::{Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 use registers::*;
+use spin::Mutex;
 
 mod descriptor;
 mod registers;
@@ -18,16 +22,43 @@ mod registers;
 const DRIVER_NAME: &str = "realtek-rtl8125";
 const QUEUE_ID0: usize = 0;
 const QUEUE_SIZE: usize = 256;
+const RX_QUEUE_CONFIG_SIZE: usize = QUEUE_SIZE + 1;
+const RX_START_THRESHOLD: usize = QUEUE_SIZE;
 const MAX_PACKET: usize = 2048;
 const RX_BUF_SIZE: usize = 2048;
 const DMA_ALIGN: usize = 256;
-const RTL8125_REGS_SIZE: usize = 0x100;
+const RTL8125_REGS_SIZE: usize = EEE_TXIDLE_TIMER_8125 + size_of::<u16>();
+const OCP_STD_PHY_BASE: u32 = 0xa400;
+const EEE_TXIDLE_TIMER_VALUE: u16 = 1500 + 14 + 0x20;
+const LINK_DOWN_DROP_LOG_INTERVAL: u64 = 64;
+const EARLY_PACKET_LOG_COUNT: u64 = 8;
+const TX_SUBMIT_LOG_INTERVAL: u64 = 16;
+const TX_RECLAIM_LOG_INTERVAL: u64 = 64;
+const RX_RECLAIM_LOG_INTERVAL: u64 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipVersion {
     Rtl8125A,
     Rtl8125B,
     Unknown(u16),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Rtl8125Status {
+    pub phy_status: u8,
+    pub chip_cmd: u8,
+    pub mcu: u8,
+    pub intr_status: u32,
+    pub intr_mask: u32,
+    pub rx_config: u32,
+    pub tx_config: u32,
+    pub cplus_cmd: u16,
+}
+
+impl Rtl8125Status {
+    pub const fn link_up(&self) -> bool {
+        self.phy_status & LINK_STATUS != 0
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -50,11 +81,19 @@ pub struct Rtl8125 {
     dma: DeviceDma,
     mac: [u8; 6],
     chip: ChipVersion,
-    irq_enabled: bool,
     tx_created: bool,
     rx_created: bool,
-    tx_desc_base: Option<u64>,
-    rx_desc_base: Option<u64>,
+    phy_ocp_base: u32,
+    queue_start: QueueStart,
+}
+
+type QueueStart = Arc<Mutex<QueueStartState>>;
+
+#[derive(Default)]
+struct QueueStartState {
+    tx_base: Option<u64>,
+    rx_base: Option<u64>,
+    rx_ready: bool,
     started: bool,
 }
 
@@ -83,18 +122,24 @@ impl Rtl8125 {
             dma,
             mac: [0; 6],
             chip,
-            irq_enabled: false,
             tx_created: false,
             rx_created: false,
-            tx_desc_base: None,
-            rx_desc_base: None,
-            started: false,
+            phy_ocp_base: OCP_STD_PHY_BASE,
+            queue_start: Arc::new(Mutex::new(QueueStartState::default())),
         };
         dev.init()?;
         info!(
             "RTL8125 device initialized: chip={:?}, xid={:#x}, \
-             mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            dev.chip, xid, dev.mac[0], dev.mac[1], dev.mac[2], dev.mac[3], dev.mac[4], dev.mac[5]
+             mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, status={:?}",
+            dev.chip,
+            xid,
+            dev.mac[0],
+            dev.mac[1],
+            dev.mac[2],
+            dev.mac[3],
+            dev.mac[4],
+            dev.mac[5],
+            dev.status(),
         );
         Ok(dev)
     }
@@ -106,6 +151,7 @@ impl Rtl8125 {
         self.hw_init_8125();
 
         self.mac = self.read_mac_address()?;
+        self.set_mac_address(self.mac);
         let mut cp_cmd = (self.regs.read16(CPLUS_CMD) & CPCMD_MASK) | PCIMULRW;
         if self.dma.dma_mask() > u32::MAX as u64 {
             cp_cmd |= PCIDAC;
@@ -117,6 +163,7 @@ impl Rtl8125 {
         self.regs.write16(RX_MAX_SIZE, RX_BUF_SIZE as u16 + 1);
         self.regs.write16(INTR_MITIGATE, 0);
         self.hw_start_8125();
+        self.hw_phy_config();
         Ok(())
     }
 
@@ -129,7 +176,11 @@ impl Rtl8125 {
     }
 
     pub fn poll_link(&self) -> bool {
-        self.regs.read8(PHY_STATUS) & LINK_STATUS != 0
+        self.status().link_up()
+    }
+
+    pub fn status(&self) -> Rtl8125Status {
+        read_status(self.regs)
     }
 
     fn read_mac_address(&self) -> Result<[u8; 6]> {
@@ -146,6 +197,17 @@ impl Rtl8125 {
         Err(Error::InvalidMacAddress)
     }
 
+    fn set_mac_address(&self, mac: [u8; 6]) {
+        self.regs.write8(CFG9346, CFG9346_UNLOCK);
+        self.regs
+            .write16(MAC4, u16::from_le_bytes([mac[4], mac[5]]));
+        self.regs.commit();
+        self.regs
+            .write32(MAC0, u32::from_le_bytes([mac[0], mac[1], mac[2], mac[3]]));
+        self.regs.commit();
+        self.regs.write8(CFG9346, CFG9346_LOCK);
+    }
+
     fn reset(&self) {
         self.regs
             .write8(CHIP_CMD, self.regs.read8(CHIP_CMD) | CMD_RESET);
@@ -158,6 +220,7 @@ impl Rtl8125 {
     }
 
     fn hw_init_8125(&self) {
+        self.enable_rxdv_gate();
         self.regs.write8(
             CHIP_CMD,
             self.regs.read8(CHIP_CMD) & !(CMD_TX_ENB | CMD_RX_ENB),
@@ -173,11 +236,12 @@ impl Rtl8125 {
         self.wait_link_list_ready();
     }
 
-    fn hw_start_8125(&self) {
+    fn hw_start_8125(&mut self) {
         for offset in (0x0a00..0x0b00).step_by(4) {
             self.regs.write32(offset, 0);
         }
 
+        self.set_aspm_clkreq(false);
         match self.chip {
             ChipVersion::Rtl8125A => self.ephy_init(&RTL8125A_EPHY),
             ChipVersion::Rtl8125B | ChipVersion::Unknown(_) => self.ephy_init(&RTL8125B_EPHY),
@@ -187,6 +251,8 @@ impl Rtl8125 {
     }
 
     fn hw_start_8125_common(&self) {
+        self.regs
+            .write8(CONFIG3, self.regs.read8(CONFIG3) & !RDY_TO_L23);
         self.regs.write16(0x0382, 0x221b);
         self.regs.write8(0x4500, 0);
         self.regs.write16(0x4800, 0);
@@ -223,41 +289,71 @@ impl Rtl8125 {
         self.regs
             .write16(0x1880, self.regs.read16(0x1880) & !0x0030);
         self.mac_ocp_write(0xe098, 0xc302);
-        self.mac_ocp_modify(0xe040, 0, 0x0003);
+        self.wait_mac_ocp_e00e_low();
+        self.config_eee_mac();
+        self.disable_rxdv_gate();
     }
 
     fn maybe_start_queues(&mut self) {
-        if self.started {
-            return;
-        }
-        let (Some(tx_base), Some(rx_base)) = (self.tx_desc_base, self.rx_desc_base) else {
-            return;
-        };
-
-        self.regs.write8(CFG9346, CFG9346_UNLOCK);
-        self.regs
-            .write32(TX_DESC_START_ADDR_HIGH, (tx_base >> 32) as u32);
-        self.regs.write32(TX_DESC_START_ADDR_LOW, tx_base as u32);
-        self.regs.write32(RX_DESC_ADDR_HIGH, (rx_base >> 32) as u32);
-        self.regs.write32(RX_DESC_ADDR_LOW, rx_base as u32);
-        self.regs.write8(CFG9346, CFG9346_LOCK);
-
-        let dma_mask = self.dma.dma_mask();
-        info!("RTL8125 queue DMA bases: tx={tx_base:#x}, rx={rx_base:#x}, mask={dma_mask:#x}");
-        self.regs.write8(CHIP_CMD, CMD_TX_ENB | CMD_RX_ENB);
-        self.regs
-            .write32(RX_CONFIG, RX_FETCH_DFLT_8125 | RX_DMA_BURST);
-        self.regs.write32(TX_CONFIG, TX_DMA_BURST | INTER_FRAME_GAP);
-        self.set_rx_mode();
-        self.regs.commit();
-        self.started = true;
+        try_start_queues(self.regs, self.dma.dma_mask(), &self.queue_start);
     }
 
-    fn set_rx_mode(&self) {
-        let rx_mode = ACCEPT_BROADCAST | ACCEPT_MULTICAST | ACCEPT_MY_PHYS;
-        let rx_config = self.regs.read32(RX_CONFIG);
+    fn enable_rxdv_gate(&self) {
         self.regs
-            .write32(RX_CONFIG, (rx_config & !RX_CONFIG_ACCEPT_OK_MASK) | rx_mode);
+            .write32(MISC, self.regs.read32(MISC) | RXDV_GATED_EN);
+        spin_delay(2_000);
+        self.wait_rxtx_empty();
+    }
+
+    fn disable_rxdv_gate(&self) {
+        self.regs
+            .write32(MISC, self.regs.read32(MISC) & !RXDV_GATED_EN);
+    }
+
+    fn wait_rxtx_empty(&self) {
+        for _ in 0..4_200 {
+            if self.regs.read8(MCU) & RXTX_EMPTY == RXTX_EMPTY {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    fn wait_mac_ocp_e00e_low(&self) {
+        for _ in 0..10 {
+            if self.mac_ocp_read(0xe00e) & (1 << 13) == 0 {
+                break;
+            }
+            spin_delay(1_000);
+        }
+    }
+
+    fn set_aspm_clkreq(&self, enable: bool) {
+        if enable {
+            self.regs
+                .write8(CONFIG5, self.regs.read8(CONFIG5) | ASPM_EN);
+            self.regs
+                .write8(CONFIG2, self.regs.read8(CONFIG2) | CLK_REQ_EN);
+            self.mac_ocp_modify(0xe094, 0xff00, 0);
+            self.mac_ocp_modify(0xe092, 0x00ff, 1 << 2);
+        } else {
+            self.mac_ocp_modify(0xe092, 0x00ff, 0);
+            self.regs
+                .write8(CONFIG2, self.regs.read8(CONFIG2) & !CLK_REQ_EN);
+            self.regs
+                .write8(CONFIG5, self.regs.read8(CONFIG5) & !ASPM_EN);
+        }
+        spin_delay(100);
+    }
+
+    fn config_eee_mac(&self) {
+        if self.chip == ChipVersion::Rtl8125B {
+            self.regs
+                .write16(EEE_TXIDLE_TIMER_8125, EEE_TXIDLE_TIMER_VALUE);
+        } else {
+            self.mac_ocp_modify(0xeb62, 0, (1 << 2) | (1 << 1));
+        }
+        self.mac_ocp_modify(0xe040, 0, (1 << 1) | 1);
     }
 
     fn ack_events(&self, bits: u32) {
@@ -315,6 +411,178 @@ impl Rtl8125 {
         }
     }
 
+    fn phy_ocp_write(&self, reg: u32, data: u16) {
+        if reg & 0xffff_0001 != 0 {
+            return;
+        }
+        self.regs
+            .write32(GPHY_OCP, 0x8000_0000 | (reg << 15) | u32::from(data));
+        for _ in 0..1_000 {
+            if self.regs.read32(GPHY_OCP) & 0x8000_0000 == 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    fn phy_ocp_read(&self, reg: u32) -> u16 {
+        if reg & 0xffff_0001 != 0 {
+            return 0;
+        }
+        self.regs.write32(GPHY_OCP, reg << 15);
+        for _ in 0..1_000 {
+            if self.regs.read32(GPHY_OCP) & 0x8000_0000 != 0 {
+                return self.regs.read32(GPHY_OCP) as u16;
+            }
+            core::hint::spin_loop();
+        }
+        0
+    }
+
+    fn phy_reg_addr(&self, reg: u32) -> u32 {
+        let reg = if self.phy_ocp_base == OCP_STD_PHY_BASE {
+            reg
+        } else {
+            reg.saturating_sub(0x10)
+        };
+        self.phy_ocp_base + reg * 2
+    }
+
+    fn phy_write(&mut self, reg: u32, value: u16) {
+        if reg == 0x1f {
+            self.phy_ocp_base = if value == 0 {
+                OCP_STD_PHY_BASE
+            } else {
+                u32::from(value) << 4
+            };
+            return;
+        }
+
+        self.phy_ocp_write(self.phy_reg_addr(reg), value);
+    }
+
+    fn phy_read(&self, reg: u32) -> u16 {
+        if reg == 0x1f {
+            return if self.phy_ocp_base == OCP_STD_PHY_BASE {
+                0
+            } else {
+                (self.phy_ocp_base >> 4) as u16
+            };
+        }
+
+        self.phy_ocp_read(self.phy_reg_addr(reg))
+    }
+
+    fn phy_modify(&mut self, reg: u32, mask: u16, set: u16) {
+        let data = self.phy_read(reg);
+        self.phy_write(reg, (data & !mask) | set);
+    }
+
+    fn phy_write_paged(&mut self, page: u16, reg: u32, value: u16) {
+        let old_page = self.phy_read(0x1f);
+        self.phy_write(0x1f, page);
+        self.phy_write(reg, value);
+        self.phy_write(0x1f, old_page);
+    }
+
+    fn phy_modify_paged(&mut self, page: u16, reg: u32, mask: u16, set: u16) {
+        let old_page = self.phy_read(0x1f);
+        self.phy_write(0x1f, page);
+        self.phy_modify(reg, mask, set);
+        self.phy_write(0x1f, old_page);
+    }
+
+    fn phy_param(&mut self, param: u16, mask: u16, set: u16) {
+        let old_page = self.phy_read(0x1f);
+        self.phy_write(0x1f, 0x0a43);
+        self.phy_write(0x13, param);
+        self.phy_modify(0x14, mask, set);
+        self.phy_write(0x1f, old_page);
+    }
+
+    fn config_eee_phy_8125a(&mut self) {
+        self.phy_modify_paged(0x0a43, 0x11, 0, 1 << 4);
+        self.phy_modify_paged(0x0a4a, 0x11, 0, 1 << 9);
+        self.phy_modify_paged(0x0a42, 0x14, 0, 1 << 7);
+        self.phy_modify_paged(0x0a6d, 0x12, 1, 0);
+        self.phy_modify_paged(0x0a6d, 0x14, 1 << 4, 0);
+    }
+
+    fn config_eee_phy_8125b(&mut self) {
+        self.phy_modify_paged(0x0a6d, 0x12, 1, 0);
+        self.phy_modify_paged(0x0a6d, 0x14, 1 << 4, 0);
+        self.phy_modify_paged(0x0a42, 0x14, 1 << 7, 0);
+        self.phy_modify_paged(0x0a4a, 0x11, 1 << 9, 0);
+    }
+
+    fn hw_phy_config(&mut self) {
+        match self.chip {
+            ChipVersion::Rtl8125A => self.hw_phy_config_8125a(),
+            ChipVersion::Rtl8125B | ChipVersion::Unknown(_) => self.hw_phy_config_8125b(),
+        }
+    }
+
+    fn hw_phy_config_8125a(&mut self) {
+        self.phy_modify_paged(0x0ad4, 0x17, 0, 0x0010);
+        self.phy_modify_paged(0x0ad1, 0x13, 0x03ff, 0x03ff);
+        self.phy_modify_paged(0x0ad3, 0x11, 0x003f, 0x0006);
+        self.phy_modify_paged(0x0ac0, 0x14, 0x1100, 0);
+        self.phy_modify_paged(0x0acc, 0x10, 0x0003, 0x0002);
+        self.phy_modify_paged(0x0ad4, 0x10, 0x00e7, 0x0044);
+        self.phy_modify_paged(0x0ac1, 0x12, 0x0080, 0);
+        self.phy_modify_paged(0x0ac8, 0x10, 0x0300, 0);
+        self.phy_modify_paged(0x0ac5, 0x17, 0x0007, 0x0002);
+        self.phy_write_paged(0x0ad4, 0x16, 0x00a8);
+        self.phy_write_paged(0x0ac5, 0x16, 0x01ff);
+        self.phy_modify_paged(0x0ac8, 0x15, 0x00f0, 0x0030);
+
+        self.phy_write(0x1f, 0x0b87);
+        self.phy_write(0x16, 0x80a2);
+        self.phy_write(0x17, 0x0153);
+        self.phy_write(0x16, 0x809c);
+        self.phy_write(0x17, 0x0153);
+        self.phy_write(0x1f, 0);
+
+        self.phy_param(0x8257, 0xffff, 0x020f);
+        self.phy_param(0x80ea, 0xffff, 0x7843);
+        self.phy_modify_paged(0x0d06, 0x14, 0, 0x2000);
+        self.phy_param(0x81a2, 0, 0x0100);
+        self.phy_modify_paged(0x0b54, 0x16, 0xff00, 0xdb00);
+        self.phy_modify_paged(0x0a45, 0x12, 0x0001, 0);
+        self.phy_modify_paged(0x0a5d, 0x12, 0, 0x0020);
+        self.phy_modify_paged(0x0ad4, 0x17, 0x0010, 0);
+        self.phy_modify_paged(0x0a86, 0x15, 0x0001, 0);
+        self.phy_modify_paged(0x0a44, 0x11, 0, 1 << 11);
+        self.config_eee_phy_8125a();
+    }
+
+    fn hw_phy_config_8125b(&mut self) {
+        self.phy_modify_paged(0x0a44, 0x11, 0, 0x0800);
+        self.phy_modify_paged(0x0ac4, 0x13, 0x00f0, 0x0090);
+        self.phy_modify_paged(0x0ad3, 0x10, 0x0003, 0x0001);
+
+        self.phy_write(0x1f, 0x0b87);
+        self.phy_write(0x16, 0x80f5);
+        self.phy_write(0x17, 0x760e);
+        self.phy_write(0x16, 0x8107);
+        self.phy_write(0x17, 0x360e);
+        self.phy_write(0x16, 0x8551);
+        self.phy_modify(0x17, 0xff00, 0x0800);
+        self.phy_write(0x1f, 0);
+
+        self.phy_modify_paged(0x0bf0, 0x10, 0xe000, 0xa000);
+        self.phy_modify_paged(0x0bf4, 0x13, 0x0f00, 0x0300);
+        for param in [
+            0x8044, 0x804a, 0x8050, 0x8056, 0x805c, 0x8062, 0x8068, 0x806e, 0x8074, 0x807a,
+        ] {
+            self.phy_param(param, 0xffff, 0x2417);
+        }
+        self.phy_modify_paged(0x0a4c, 0x15, 0, 0x0040);
+        self.phy_modify_paged(0x0bf8, 0x12, 0xe000, 0xa000);
+        self.phy_modify_paged(0x0a5b, 0x12, 1 << 15, 0);
+        self.config_eee_phy_8125b();
+    }
+
     fn wait_link_list_ready(&self) {
         for _ in 0..4_200 {
             if self.regs.read8(MCU) & 0x02 != 0 {
@@ -354,7 +622,10 @@ impl Interface for Rtl8125 {
             },
         );
 
-        self.tx_desc_base = Some(desc.dma_addr().as_u64());
+        {
+            let mut start = self.queue_start.lock();
+            start.tx_base = Some(desc.dma_addr().as_u64());
+        }
         self.tx_created = true;
         self.maybe_start_queues();
 
@@ -365,6 +636,10 @@ impl Interface for Rtl8125 {
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,
+            link_up: None,
+            link_down_drops: 0,
+            submitted: 0,
+            reclaimed: 0,
         }))
     }
 
@@ -378,32 +653,38 @@ impl Interface for Rtl8125 {
             .array_zero_with_align::<RxDesc>(QUEUE_SIZE, DMA_ALIGN, DmaDirection::Bidirectional)
             .ok()?;
 
-        self.rx_desc_base = Some(desc.dma_addr().as_u64());
+        {
+            let mut start = self.queue_start.lock();
+            start.rx_base = Some(desc.dma_addr().as_u64());
+        }
         self.rx_created = true;
         self.maybe_start_queues();
 
         Some(Box::new(Rtl8125RxQueue {
+            regs: self.regs,
             desc,
             dma_mask: self.dma.dma_mask(),
+            start: self.queue_start.clone(),
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,
+            submitted: 0,
+            reclaimed: 0,
+            rx_errors: 0,
         }))
     }
 
     fn enable_irq(&mut self) {
         self.ack_events(u32::MAX);
         self.regs.write32(INTR_MASK_8125, DEFAULT_IRQ_MASK);
-        self.irq_enabled = true;
     }
 
     fn disable_irq(&mut self) {
         self.regs.write32(INTR_MASK_8125, 0);
-        self.irq_enabled = false;
     }
 
     fn is_irq_enabled(&self) -> bool {
-        self.irq_enabled
+        self.regs.read32(INTR_MASK_8125) != 0
     }
 
     fn handle_irq(&mut self) -> Event {
@@ -421,6 +702,9 @@ impl Interface for Rtl8125 {
         if status & (RX_OK | RX_ERR | RX_FIFO_OVER | RX_OVERFLOW) != 0 {
             event.rx_queue.insert(QUEUE_ID0);
         }
+        if status & LINK_CHG != 0 {
+            info!("RTL8125 irq link change: status={:?}", self.status());
+        }
         event
     }
 }
@@ -432,6 +716,10 @@ struct Rtl8125TxQueue {
     bus_addrs: [Option<u64>; QUEUE_SIZE],
     next_submit: usize,
     next_reclaim: usize,
+    link_up: Option<bool>,
+    link_down_drops: u64,
+    submitted: u64,
+    reclaimed: u64,
 }
 
 impl ITxQueue for Rtl8125TxQueue {
@@ -453,17 +741,38 @@ impl ITxQueue for Rtl8125TxQueue {
             return Err(NetError::NotSupported);
         }
 
+        let status = self.observe_link_before_tx(len);
+        if !status.link_up() {
+            self.link_down_drops = self.link_down_drops.saturating_add(1);
+            return Err(NetError::Retry);
+        }
+
         let idx = self.next_submit;
         let next = (idx + 1) % QUEUE_SIZE;
-        if next == self.next_reclaim && self.bus_addrs[idx].is_some() {
+        if self.bus_addrs[idx].is_some() {
             return Err(NetError::Retry);
         }
 
         let ring_end = idx == QUEUE_SIZE - 1;
-        self.desc.set(idx, TxDesc::new(bus_addr, len, ring_end));
+        let desc = TxDesc::new_cpu_owned(bus_addr, len, ring_end);
+        self.desc.set(idx, desc);
+        release_dma_descriptor();
+        self.desc.set(idx, desc.release_to_hw());
         self.bus_addrs[idx] = Some(bus_addr);
         self.next_submit = next;
+        self.submitted = self.submitted.saturating_add(1);
         self.regs.write16(TX_POLL_8125, 1);
+        if self.submitted <= EARLY_PACKET_LOG_COUNT
+            || self.submitted.is_multiple_of(TX_SUBMIT_LOG_INTERVAL)
+        {
+            info!(
+                "RTL8125 tx submitted: idx={idx}, len={len}, submitted={}, reclaimed={}, \
+                 status={:?}",
+                self.submitted,
+                self.reclaimed,
+                read_status(self.regs),
+            );
+        }
         Ok(())
     }
 
@@ -476,16 +785,60 @@ impl ITxQueue for Rtl8125TxQueue {
         }
 
         self.next_reclaim = (idx + 1) % QUEUE_SIZE;
-        self.bus_addrs[idx].take()
+        let bus_addr = self.bus_addrs[idx].take()?;
+        self.reclaimed = self.reclaimed.saturating_add(1);
+        if self.reclaimed <= EARLY_PACKET_LOG_COUNT
+            || self.reclaimed.is_multiple_of(TX_RECLAIM_LOG_INTERVAL)
+        {
+            info!(
+                "RTL8125 tx reclaimed: idx={idx}, len={}, submitted={}, reclaimed={}, status={:?}",
+                desc.packet_len(),
+                self.submitted,
+                self.reclaimed,
+                read_status(self.regs),
+            );
+        }
+        Some(bus_addr)
+    }
+}
+
+impl Rtl8125TxQueue {
+    fn observe_link_before_tx(&mut self, len: usize) -> Rtl8125Status {
+        let status = read_status(self.regs);
+        let link_up = status.link_up();
+        let changed = self.link_up.replace(link_up) != Some(link_up);
+
+        if link_up {
+            if changed {
+                info!("RTL8125 tx link up before submit: len={len}, status={status:?}");
+            }
+        } else if changed
+            || self.link_down_drops == 0
+            || self
+                .link_down_drops
+                .is_multiple_of(LINK_DOWN_DROP_LOG_INTERVAL)
+        {
+            warn!(
+                "RTL8125 tx link down before submit: len={len}, dropped_tx={}, status={status:?}",
+                self.link_down_drops
+            );
+        }
+
+        status
     }
 }
 
 struct Rtl8125RxQueue {
+    regs: Regs,
     desc: DArray<RxDesc>,
     dma_mask: u64,
+    start: QueueStart,
     bus_addrs: [Option<u64>; QUEUE_SIZE],
     next_submit: usize,
     next_reclaim: usize,
+    submitted: usize,
+    reclaimed: u64,
+    rx_errors: u64,
 }
 
 impl IRxQueue for Rtl8125RxQueue {
@@ -498,7 +851,7 @@ impl IRxQueue for Rtl8125RxQueue {
             dma_mask: self.dma_mask,
             align: DMA_ALIGN,
             buf_size: RX_BUF_SIZE,
-            ring_size: QUEUE_SIZE,
+            ring_size: RX_QUEUE_CONFIG_SIZE,
         }
     }
 
@@ -509,15 +862,34 @@ impl IRxQueue for Rtl8125RxQueue {
 
         let idx = self.next_submit;
         let next = (idx + 1) % QUEUE_SIZE;
-        if next == self.next_reclaim && self.bus_addrs[idx].is_some() {
+        if self.bus_addrs[idx].is_some() {
             return Err(NetError::Retry);
         }
 
         let ring_end = idx == QUEUE_SIZE - 1;
-        self.desc
-            .set(idx, RxDesc::new(bus_addr, RX_BUF_SIZE, ring_end));
+        let desc = RxDesc::new_cpu_owned(bus_addr, RX_BUF_SIZE, ring_end);
+        self.desc.set(idx, desc);
+        release_dma_descriptor();
+        self.desc.set(idx, desc.release_to_hw());
         self.bus_addrs[idx] = Some(bus_addr);
         self.next_submit = next;
+        self.submitted = self.submitted.saturating_add(1);
+        if self.submitted >= RX_START_THRESHOLD {
+            let was_ready = {
+                let mut start = self.start.lock();
+                let was_ready = start.rx_ready;
+                start.rx_ready = true;
+                was_ready
+            };
+            if !was_ready {
+                let last_opts1 = self.desc.read(QUEUE_SIZE - 1).map_or(0, |desc| desc.opts1);
+                info!(
+                    "RTL8125 rx ring ready: submitted={}, last_desc_opts1={:#x}",
+                    self.submitted, last_opts1
+                );
+            }
+            try_start_queues(self.regs, self.dma_mask, &self.start);
+        }
         Ok(())
     }
 
@@ -528,19 +900,102 @@ impl IRxQueue for Rtl8125RxQueue {
         if desc.is_owned_by_hw() {
             return None;
         }
+        acquire_dma_descriptor();
 
         self.next_reclaim = (idx + 1) % QUEUE_SIZE;
         self.bus_addrs[idx] = None;
 
         if desc.has_error() || !desc.is_whole_packet() {
+            self.rx_errors = self.rx_errors.saturating_add(1);
+            warn!(
+                "RTL8125 rx error: idx={idx}, opts1={:#x}, submitted={}, reclaimed={}, errors={}, \
+                 status={:?}",
+                desc.opts1,
+                self.submitted,
+                self.reclaimed,
+                self.rx_errors,
+                read_status(self.regs),
+            );
             return Some((bus_addr, 0));
         }
-        Some((bus_addr, desc.packet_len()))
+        let len = desc.packet_len();
+        self.reclaimed = self.reclaimed.saturating_add(1);
+        if self.reclaimed <= EARLY_PACKET_LOG_COUNT
+            || self.reclaimed.is_multiple_of(RX_RECLAIM_LOG_INTERVAL)
+        {
+            info!(
+                "RTL8125 rx packet: idx={idx}, len={len}, submitted={}, reclaimed={}, status={:?}",
+                self.submitted,
+                self.reclaimed,
+                read_status(self.regs),
+            );
+        }
+        Some((bus_addr, len))
     }
+}
+
+fn release_dma_descriptor() {
+    fence(AtomicOrdering::Release);
+}
+
+fn acquire_dma_descriptor() {
+    fence(AtomicOrdering::Acquire);
 }
 
 fn rtl8125_xid(regs: Regs) -> u16 {
     ((regs.read32(TX_CONFIG) >> 20) & 0x0fcf) as u16
+}
+
+fn read_status(regs: Regs) -> Rtl8125Status {
+    Rtl8125Status {
+        phy_status: regs.read8(PHY_STATUS),
+        chip_cmd: regs.read8(CHIP_CMD),
+        mcu: regs.read8(MCU),
+        intr_status: regs.read32(INTR_STATUS_8125),
+        intr_mask: regs.read32(INTR_MASK_8125),
+        rx_config: regs.read32(RX_CONFIG),
+        tx_config: regs.read32(TX_CONFIG),
+        cplus_cmd: regs.read16(CPLUS_CMD),
+    }
+}
+
+fn try_start_queues(regs: Regs, dma_mask: u64, start: &QueueStart) {
+    let (tx_base, rx_base) = {
+        let mut start = start.lock();
+        if start.started || !start.rx_ready {
+            return;
+        }
+        let (Some(tx_base), Some(rx_base)) = (start.tx_base, start.rx_base) else {
+            return;
+        };
+        start.started = true;
+        (tx_base, rx_base)
+    };
+
+    regs.write8(CFG9346, CFG9346_UNLOCK);
+    regs.write32(TX_DESC_START_ADDR_HIGH, (tx_base >> 32) as u32);
+    regs.write32(TX_DESC_START_ADDR_LOW, tx_base as u32);
+    regs.write32(RX_DESC_ADDR_HIGH, (rx_base >> 32) as u32);
+    regs.write32(RX_DESC_ADDR_LOW, rx_base as u32);
+    regs.write8(CFG9346, CFG9346_LOCK);
+
+    info!("RTL8125 queue DMA bases: tx={tx_base:#x}, rx={rx_base:#x}, mask={dma_mask:#x}");
+    regs.write8(CHIP_CMD, CMD_TX_ENB | CMD_RX_ENB);
+    regs.write32(RX_CONFIG, RX_FETCH_DFLT_8125 | RX_DMA_BURST);
+    regs.write32(TX_CONFIG, TX_DMA_BURST | INTER_FRAME_GAP);
+    regs.write32(INTR_STATUS_8125, u32::MAX);
+    set_rx_mode(regs);
+    regs.write32(INTR_MASK_8125, DEFAULT_IRQ_MASK);
+    regs.commit();
+    info!("RTL8125 queues started: status={:?}", read_status(regs));
+}
+
+fn set_rx_mode(regs: Regs) {
+    let rx_mode = ACCEPT_BROADCAST | ACCEPT_MULTICAST | ACCEPT_MY_PHYS;
+    regs.write32(MAR0 + 4, u32::MAX);
+    regs.write32(MAR0, u32::MAX);
+    let rx_config = regs.read32(RX_CONFIG);
+    regs.write32(RX_CONFIG, (rx_config & !RX_CONFIG_ACCEPT_OK_MASK) | rx_mode);
 }
 
 fn chip_version(xid: u16) -> ChipVersion {
