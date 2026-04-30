@@ -81,19 +81,151 @@ use sbi_spec::{binary::SbiRet, pmu};
 ///
 /// - Counter 0 exposes the architectural fixed `cycle` counter.
 /// - Counter 1 exposes the architectural fixed `instret` counter.
-/// - Counters 2 and above expose selected SBI firmware counters whose events
+/// - Counters 2..=12 expose selected SBI firmware counters whose events
 ///   can be observed by this vCPU implementation.
+/// - Counters 13 and above are hardware performance counters (HPM) dynamically
+///   allocated by the backend. The number of HPM slots equals
+///   `PmuBackend::num_hpm_counters()` and may be zero (default for QEMU).
 ///
-/// Fixed PMU counters use a virtual offset model. When a fixed counter is
-/// started, the current hardware CSR value is captured as `hardware_base`.
-/// While the counter remains running, the guest-visible value is
-/// `value + (hardware_now - hardware_base)`. When the counter is stopped
-/// without `STOP_RESET`, the current delta is folded back into `value`,
-/// allowing later starts to continue from the same guest-visible value or from
-/// a supplied initial value.
-pub(crate) struct VirtualPmu {
+/// Fixed and HPM counters use a virtual offset model. When a hardware-backed
+/// counter is started, the current hardware value is captured as
+/// `hardware_base`. While running, the guest-visible value is
+/// `value + (hardware_now - hardware_base)`. When stopped without `STOP_RESET`,
+/// the current delta is folded back into `value`.
+pub(crate) struct VirtualPmu<B = QemuPmuBackend>
+where
+    B: PmuBackend,
+{
     /// Guest-visible counter state indexed by virtual counter number.
-    counters: [VirtualPmuCounter; Self::NUM_COUNTERS],
+    ///
+    /// Length is `FIXED_COUNTERS + FIRMWARE_COUNTERS + backend.num_hpm_counters()`
+    /// and is fixed for the lifetime of this instance.
+    counters: alloc::vec::Vec<VirtualPmuCounter>,
+    /// Backend used as the source for physical or emulated PMU values.
+    backend: B,
+}
+
+/// Backend boundary between guest-visible vPMU state and the underlying
+/// hardware PMU source.
+///
+/// `VirtualPmu` owns the SBI PMU ABI, guest-visible counter lifecycle, and
+/// per-vCPU virtual values. The backend supplies:
+///
+/// - reads from architectural fixed counter CSRs (`cycle`, `instret`),
+/// - optional hardware performance counter (`hpmcounter3..31`) allocation,
+///   programming, reading, and release,
+/// - vCPU lifecycle hooks (`on_bind`, `on_unbind`) for saving/restoring
+///   physical PMU state across vCPU context switches.
+///
+/// The default implementation (`QemuPmuBackend`) only reads local CSRs and
+/// exposes no HPM counters. A board-specific implementation can override
+/// every method to schedule real hardware counters with full isolation.
+pub(crate) trait PmuBackend {
+    /// Read the underlying source for the architectural `cycle` counter.
+    fn read_cycle(&self) -> u64;
+
+    /// Read the underlying source for the architectural `instret` counter.
+    fn read_instret(&self) -> u64;
+
+    /// Number of additional hardware PMU counters this backend can expose.
+    ///
+    /// These slots are appended to the virtual bank after the fixed and
+    /// firmware counters. Returning zero means no hardware performance counters
+    /// beyond `cycle` and `instret` are available. The value must remain
+    /// constant for the lifetime of the backend.
+    fn num_hpm_counters(&self) -> usize;
+
+    /// Check whether the backend can count the given SBI event index.
+    ///
+    /// Used by the `SKIP_MATCH` configuration path to test event compatibility
+    /// without performing an allocation. A backend returning `true` here must
+    /// be able to produce an `allocate_hpm` success for the same event, subject
+    /// only to counter availability.
+    fn can_handle_event(&self, event_idx: usize) -> bool;
+
+    /// Allocate a hardware performance counter for the given SBI event.
+    ///
+    /// On success, returns an opaque hardware slot identifier. The caller
+    /// stores the slot in the virtual counter and releases it via `release_hpm`
+    /// when the virtual counter is reset. Returns `None` if the event is
+    /// unsupported or no physical counter is currently free.
+    fn allocate_hpm(&self, event_idx: usize, event_data: u64) -> Option<usize>;
+
+    /// Release a hardware performance counter previously allocated with
+    /// `allocate_hpm`. The slot identifier must not be used after this call.
+    fn release_hpm(&self, hw_slot: usize);
+
+    /// Read the current value of an allocated hardware performance counter.
+    fn read_hpm(&self, hw_slot: usize) -> u64;
+
+    /// Called immediately after the owning vCPU is bound to a hart.
+    ///
+    /// A real-hardware backend should restore `mhpmevent*` and `hpmcounter*`
+    /// state so the guest sees its own counters.
+    fn on_bind(&self);
+
+    /// Called immediately before the owning vCPU is unbound from a hart.
+    ///
+    /// A real-hardware backend should save `mhpmevent*` and `hpmcounter*`
+    /// state so it can be restored by the next `on_bind` call.
+    fn on_unbind(&self);
+}
+
+/// Default PMU backend used by the QEMU-oriented software vPMU.
+///
+/// Reads architectural fixed counter CSRs directly for use as delta sources.
+/// Exposes no HPM counters. All lifecycle hooks are no-ops. Sufficient for
+/// virtual-only counter tracking on QEMU and other software-emulated platforms.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct QemuPmuBackend;
+
+impl PmuBackend for QemuPmuBackend {
+    #[inline]
+    fn read_cycle(&self) -> u64 {
+        let value: usize;
+        unsafe {
+            core::arch::asm!("csrr {value}, cycle", value = out(reg) value);
+        }
+        value as u64
+    }
+
+    #[inline]
+    fn read_instret(&self) -> u64 {
+        let value: usize;
+        unsafe {
+            core::arch::asm!("csrr {value}, instret", value = out(reg) value);
+        }
+        value as u64
+    }
+
+    #[inline]
+    fn num_hpm_counters(&self) -> usize {
+        0
+    }
+
+    #[inline]
+    fn can_handle_event(&self, _event_idx: usize) -> bool {
+        false
+    }
+
+    #[inline]
+    fn allocate_hpm(&self, _event_idx: usize, _event_data: u64) -> Option<usize> {
+        None
+    }
+
+    #[inline]
+    fn release_hpm(&self, _hw_slot: usize) {}
+
+    #[inline]
+    fn read_hpm(&self, _hw_slot: usize) -> u64 {
+        0
+    }
+
+    #[inline]
+    fn on_bind(&self) {}
+
+    #[inline]
+    fn on_unbind(&self) {}
 }
 
 /// Mutable state for one virtual PMU counter.
@@ -103,7 +235,6 @@ pub(crate) struct VirtualPmu {
 /// serializes access per vCPU, so relaxed ordering is sufficient: the atomics
 /// provide race-free storage without imposing cross-counter synchronization
 /// semantics that the virtual PMU does not require.
-#[derive(Default)]
 struct VirtualPmuCounter {
     /// SBI event index currently bound to this counter.
     ///
@@ -117,27 +248,40 @@ struct VirtualPmuCounter {
     configured: AtomicBool,
     /// Whether the counter is currently counting.
     ///
-    /// Firmware counters only increment while this flag is set. Fixed PMU
-    /// counters use it to decide whether `hardware_base` should be applied to
-    /// the stored virtual value.
+    /// Firmware counters only increment while this flag is set. Hardware-backed
+    /// counters (fixed and HPM) use it to decide whether `hardware_base` should
+    /// be applied to the stored virtual value.
     started: AtomicBool,
     /// Stored virtual counter value.
     ///
-    /// For firmware counters this is the complete counter value. For fixed PMU
-    /// counters this is the accumulated guest-visible value at the last clear,
-    /// explicit initialization, or stop point; while running, the live hardware
-    /// delta is added on top.
+    /// For firmware counters this is the complete counter value. For
+    /// hardware-backed counters this is the accumulated guest-visible value at
+    /// the last clear, explicit initialization, or stop point; while running,
+    /// the live hardware delta is added on top.
     value: AtomicU64,
-    /// Hardware CSR baseline for a running fixed PMU counter.
+    /// Hardware counter baseline captured at start time.
     ///
-    /// This field is meaningful only for `cycle` and `instret` while `started`
-    /// is true. It is reset to zero when a fixed counter is stopped or cleared.
+    /// Meaningful only for hardware-backed counters (`cycle`, `instret`, HPM)
+    /// while `started` is true. Reset to zero when the counter is stopped or
+    /// cleared.
     hardware_base: AtomicU64,
+    /// Opaque hardware slot identifier allocated by the backend.
+    ///
+    /// Set to `HW_SLOT_NONE` for unconfigured counters, firmware counters
+    /// (which are always purely virtual), and fixed counters (`cycle`,
+    /// `instret`). For HPM counters it holds the slot returned by
+    /// `PmuBackend::allocate_hpm` and is released via `release_hpm` on reset.
+    hw_slot: AtomicUsize,
 }
 
-impl VirtualPmu {
-    /// Number of virtual counters exposed to the guest through SBI PMU.
-    const NUM_COUNTERS: usize = 13;
+impl<B> VirtualPmu<B>
+where
+    B: PmuBackend,
+{
+    /// Number of fixed CSR-backed PMU counters (cycle and instret).
+    const FIXED_COUNTERS: usize = 2;
+    /// Number of virtual firmware counters in the static counter bank.
+    const FIRMWARE_COUNTERS: usize = 11;
     /// Virtual counter index for the architectural `cycle` CSR.
     const CYCLE_COUNTER: usize = 0;
     /// Virtual counter index for the architectural `instret` CSR.
@@ -164,7 +308,7 @@ impl VirtualPmu {
     const FW_HFENCE_VVMA_SENT_COUNTER: usize = 11;
     /// Firmware counter index for `SBI_PMU_FW_HFENCE_VVMA_ASID_SENT`.
     const FW_HFENCE_VVMA_ASID_SENT_COUNTER: usize = 12;
-    /// Reported fixed-counter width encoded in SBI `COUNTER_GET_INFO`.
+    /// Reported counter width encoded in SBI `COUNTER_GET_INFO`.
     ///
     /// SBI encodes the width as the most significant valid bit index rather
     /// than the number of bits. `usize::BITS - 1` matches the architectural CSR
@@ -174,10 +318,14 @@ impl VirtualPmu {
     const CSR_CYCLE: usize = 0xc00;
     /// CSR number for the architectural `instret` counter.
     const CSR_INSTRET: usize = 0xc02;
+    /// Base CSR number for hardware performance counters (`hpmcounter3`).
+    const CSR_HPM_BASE: usize = 0xc03;
     /// SBI counter-info marker for a firmware counter.
     const FIRMWARE_COUNTER_TYPE: usize = 1 << (usize::BITS as usize - 1);
     /// Sentinel event index stored in counters that have not been configured.
     const UNCONFIGURED_EVENT: usize = usize::MAX;
+    /// Sentinel `hw_slot` value meaning no hardware slot is currently allocated.
+    const HW_SLOT_NONE: usize = usize::MAX;
 
     /// `COUNTER_CONFIG_MATCHING` flag requesting direct use of the supplied set.
     const CFG_FLAG_SKIP_MATCH: usize = 1 << 0;
@@ -196,12 +344,11 @@ impl VirtualPmu {
     /// `COUNTER_STOP` flag requesting that the counter be reset after stopping.
     const STOP_FLAG_RESET: usize = 1 << 0;
 
-    /// Build SBI `COUNTER_GET_INFO` metadata for a CSR-backed fixed PMU counter.
+    /// Build SBI `COUNTER_GET_INFO` metadata for a CSR-backed counter.
     ///
     /// The SBI return value combines the CSR number with the reported counter
-    /// width. Fixed PMU counters are advertised as direct CSR counters so a
-    /// guest can discover the architectural CSR associated with each virtual
-    /// counter.
+    /// width. Both fixed PMU counters and HPM counters are advertised as direct
+    /// CSR counters so a guest can discover the architectural CSR.
     #[inline]
     fn counter_info(csr: usize) -> usize {
         csr | (Self::COUNTER_WIDTH << 12)
@@ -230,9 +377,9 @@ impl VirtualPmu {
     ///
     /// The method checks every selected bit in the mask. A set is invalid if it
     /// selects no counters, overflows while adding the base, or refers to a
-    /// counter beyond the virtual bank exposed by `NUM_COUNTERS`.
+    /// counter beyond the live virtual bank.
     #[inline]
-    fn validate_counter_set(counter_idx_base: usize, counter_idx_mask: usize) -> SbiRet {
+    fn validate_counter_set(&self, counter_idx_base: usize, counter_idx_mask: usize) -> SbiRet {
         if counter_idx_mask == 0 {
             return SbiRet::invalid_param();
         }
@@ -245,7 +392,7 @@ impl VirtualPmu {
             let Some(counter_idx) = counter_idx_base.checked_add(offset) else {
                 return SbiRet::invalid_param();
             };
-            if counter_idx >= Self::NUM_COUNTERS {
+            if counter_idx >= self.counters.len() {
                 return SbiRet::invalid_param();
             }
         }
@@ -255,26 +402,26 @@ impl VirtualPmu {
 
     /// Return the first virtual counter selected by an SBI counter set.
     ///
-    /// This is used for `SKIP_MATCH`, where the guest asks the implementation
-    /// to use the selected counter directly rather than searching for a counter
-    /// that supports the event.
+    /// Used for `SKIP_MATCH` where the guest selects the counter directly.
     #[inline]
-    fn first_counter_in_set(counter_idx_base: usize, counter_idx_mask: usize) -> Option<usize> {
-        (0..Self::NUM_COUNTERS).find(|&counter_idx| {
+    fn first_counter_in_set(
+        &self,
+        counter_idx_base: usize,
+        counter_idx_mask: usize,
+    ) -> Option<usize> {
+        (0..self.counters.len()).find(|&counter_idx| {
             Self::counter_in_set(counter_idx, counter_idx_base, counter_idx_mask)
         })
     }
 
-    /// Map an SBI PMU event index to the virtual counter that can count it.
+    /// Map an SBI PMU event to the fixed or firmware virtual counter for it.
     ///
-    /// Only events that can be represented without host PMU passthrough are
-    /// mapped. General hardware events are limited to architectural fixed
-    /// counters, and firmware events are limited to actions that this vCPU
-    /// implementation can observe directly. Unsupported hardware, cache, raw,
-    /// and platform events return `None` so the SBI call can report
-    /// `SBI_ERR_NOT_SUPPORTED`.
+    /// Returns the dedicated virtual counter index for events covered by the
+    /// static counter bank (`cycle`, `instret`, and the eleven firmware events).
+    /// Returns `None` for any other event, including hardware cache/raw/platform
+    /// events that must be routed through the HPM backend path.
     #[inline]
-    fn event_counter(event_idx: usize) -> Option<usize> {
+    fn event_counter_static(event_idx: usize) -> Option<usize> {
         let event_type = event_idx >> 16;
         let event_code = event_idx & 0xffff;
 
@@ -324,66 +471,72 @@ impl VirtualPmu {
 
     /// Check whether a specific virtual counter can count `event_idx`.
     ///
-    /// This helper is used by the `SKIP_MATCH` configuration path. Even when
-    /// the guest asks to skip matching, the chosen counter still has to be
-    /// compatible with the requested event.
+    /// For fixed and firmware counters the check is a direct static-mapping
+    /// lookup. For HPM virtual slots the backend is queried via
+    /// `can_handle_event` without performing any allocation.
     #[inline]
-    fn counter_supports_event(counter_idx: usize, event_idx: usize) -> bool {
-        Self::event_counter(event_idx) == Some(counter_idx)
+    fn counter_supports_event(&self, counter_idx: usize, event_idx: usize) -> bool {
+        if Self::event_counter_static(event_idx) == Some(counter_idx) {
+            return true;
+        }
+        self.counter_is_hpm(counter_idx) && self.backend.can_handle_event(event_idx)
     }
 
     /// Return whether a counter is one of the virtual firmware counters.
     ///
     /// Firmware counters are read through `COUNTER_FW_READ` rather than direct
-    /// CSR reads. They are incremented by explicit hooks in the vCPU code when
-    /// the corresponding SBI or trap-handling operation occurs.
+    /// CSR reads.
     #[inline]
     fn counter_is_firmware(counter_idx: usize) -> bool {
-        (Self::FW_SET_TIMER_COUNTER..Self::NUM_COUNTERS).contains(&counter_idx)
+        let fw_end = Self::FIXED_COUNTERS + Self::FIRMWARE_COUNTERS;
+        counter_idx >= Self::FIXED_COUNTERS && counter_idx < fw_end
     }
 
-    /// Return whether a counter is one of the fixed CSR-backed PMU counters.
-    ///
-    /// Fixed PMU counters use the offset/baseline model implemented by
-    /// `fixed_virtual_value` instead of explicit event increments.
+    /// Return whether a counter is an HPM virtual slot backed by the backend.
     #[inline]
-    fn counter_is_fixed(counter_idx: usize) -> bool {
-        counter_idx <= Self::INSTRET_COUNTER
+    fn counter_is_hpm(&self, counter_idx: usize) -> bool {
+        let hpm_start = Self::FIXED_COUNTERS + Self::FIRMWARE_COUNTERS;
+        counter_idx >= hpm_start && counter_idx < self.counters.len()
     }
 
-    /// Read the current host hardware value for a fixed architectural counter.
+    /// Return whether a counter uses the hardware baseline/delta model.
     ///
-    /// The returned value is used only as a delta source for virtual fixed
-    /// counters. It is not exposed directly as the guest-visible value unless
-    /// the guest has started the virtual counter with a zero offset and no
-    /// later stop/clear/init operation.
-    ///
-    /// Returns zero for non-fixed counter indices; callers normally guard with
-    /// `counter_is_fixed` before invoking this method.
+    /// Both fixed counters and HPM counters capture `hardware_base` at start
+    /// and accumulate a delta; only firmware counters use direct increment.
     #[inline]
-    fn fixed_hardware_value(counter_idx: usize) -> u64 {
-        let value: usize;
+    fn counter_is_hardware_backed(&self, counter_idx: usize) -> bool {
+        !Self::counter_is_firmware(counter_idx)
+    }
+
+    /// Read the current hardware value for a hardware-backed counter.
+    ///
+    /// For fixed counters this reads the architectural CSR via the backend.
+    /// For HPM counters it delegates to `backend.read_hpm`. Returns zero for
+    /// firmware counter indices or HPM counters with no allocated slot.
+    #[inline]
+    fn hardware_value(&self, counter_idx: usize) -> u64 {
         match counter_idx {
-            Self::CYCLE_COUNTER => unsafe {
-                core::arch::asm!("csrr {value}, cycle", value = out(reg) value);
-            },
-            Self::INSTRET_COUNTER => unsafe {
-                core::arch::asm!("csrr {value}, instret", value = out(reg) value);
-            },
-            _ => return 0,
+            Self::CYCLE_COUNTER => self.backend.read_cycle(),
+            Self::INSTRET_COUNTER => self.backend.read_instret(),
+            idx if self.counter_is_hpm(idx) => {
+                let hw_slot = self.counters[idx].hw_slot.load(Ordering::Relaxed);
+                if hw_slot != Self::HW_SLOT_NONE {
+                    self.backend.read_hpm(hw_slot)
+                } else {
+                    0
+                }
+            }
+            _ => 0,
         }
-        value as u64
     }
 
-    /// Compute the guest-visible value for a fixed PMU counter.
+    /// Compute the guest-visible value for a hardware-backed counter.
     ///
     /// If the counter is stopped, the stored virtual value is already complete.
-    /// If it is running, the method adds the elapsed hardware-counter delta
-    /// since the last start to the stored virtual value. Wrapping arithmetic is
-    /// used to preserve architectural counter behavior across hardware counter
-    /// wraparound.
+    /// If it is running, the live hardware delta since the last start is added
+    /// on top. Wrapping arithmetic preserves architectural wraparound behavior.
     #[inline]
-    fn fixed_virtual_value(&self, counter_idx: usize) -> u64 {
+    fn hardware_virtual_value(&self, counter_idx: usize) -> u64 {
         let counter = &self.counters[counter_idx];
         let value = counter.value.load(Ordering::Relaxed);
         if !counter.started.load(Ordering::Relaxed) {
@@ -391,18 +544,22 @@ impl VirtualPmu {
         }
 
         let hardware_base = counter.hardware_base.load(Ordering::Relaxed);
-        let hardware_now = Self::fixed_hardware_value(counter_idx);
+        let hardware_now = self.hardware_value(counter_idx);
         value.wrapping_add(hardware_now.wrapping_sub(hardware_base))
     }
 
     /// Reset a counter to the unconfigured state.
     ///
-    /// This implements the reset side effect requested by `COUNTER_STOP` with
-    /// `STOP_RESET`. The selected event, configured/start state, virtual value,
-    /// and fixed-counter baseline are all cleared.
+    /// Releases any allocated HPM slot back to the backend, then clears all
+    /// counter fields. This is the only code path that calls `release_hpm`.
     #[inline]
     fn reset_counter(&self, counter_idx: usize) {
         let counter = &self.counters[counter_idx];
+        // Release any allocated HPM slot before clearing the rest of the state.
+        let hw_slot = counter.hw_slot.swap(Self::HW_SLOT_NONE, Ordering::Relaxed);
+        if hw_slot != Self::HW_SLOT_NONE {
+            self.backend.release_hpm(hw_slot);
+        }
         counter
             .event_idx
             .store(Self::UNCONFIGURED_EVENT, Ordering::Relaxed);
@@ -413,26 +570,40 @@ impl VirtualPmu {
     }
 }
 
-impl Default for VirtualPmu {
-    /// Create an empty virtual PMU counter bank.
+impl<B> Default for VirtualPmu<B>
+where
+    B: PmuBackend + Default,
+{
+    fn default() -> Self {
+        Self::new(B::default())
+    }
+}
+
+impl<B> VirtualPmu<B>
+where
+    B: PmuBackend,
+{
+    /// Create an empty virtual PMU counter bank with an explicit backend.
     ///
     /// All counters start unconfigured and stopped. Firmware counters begin at
     /// zero, and fixed PMU counters have no hardware baseline until they are
     /// started by the guest.
-    fn default() -> Self {
-        let counters = core::array::from_fn(|_| VirtualPmuCounter {
-            event_idx: AtomicUsize::new(Self::UNCONFIGURED_EVENT),
-            configured: AtomicBool::new(false),
-            started: AtomicBool::new(false),
-            value: AtomicU64::new(0),
-            hardware_base: AtomicU64::new(0),
-        });
+    pub(crate) fn new(backend: B) -> Self {
+        let total = Self::FIXED_COUNTERS + Self::FIRMWARE_COUNTERS + backend.num_hpm_counters();
+        let counters = (0..total)
+            .map(|_| VirtualPmuCounter {
+                event_idx: AtomicUsize::new(Self::UNCONFIGURED_EVENT),
+                configured: AtomicBool::new(false),
+                started: AtomicBool::new(false),
+                value: AtomicU64::new(0),
+                hardware_base: AtomicU64::new(0),
+                hw_slot: AtomicUsize::new(Self::HW_SLOT_NONE),
+            })
+            .collect();
 
-        Self { counters }
+        Self { counters, backend }
     }
-}
 
-impl VirtualPmu {
     /// Record one guest-visible `SET_TIMER` firmware event.
     ///
     /// The vCPU should call this when it handles or forwards a guest timer SBI
@@ -534,42 +705,6 @@ impl VirtualPmu {
         self.record_firmware_event(Self::FW_HFENCE_VVMA_ASID_SENT_COUNTER);
     }
 
-    /// Read the virtual `cycle` fixed PMU counter.
-    ///
-    /// This helper is intended for a future CSR emulation path. It returns the
-    /// virtual value maintained by this PMU rather than the raw hardware CSR.
-    /// The counter must have been configured by the guest through SBI PMU.
-    #[inline]
-    pub(crate) fn read_cycle(&self) -> SbiRet {
-        self.read_fixed_counter(Self::CYCLE_COUNTER)
-    }
-
-    /// Read the virtual `instret` fixed PMU counter.
-    ///
-    /// This helper is intended for a future CSR emulation path. Until CSR reads
-    /// are trapped and redirected here, a guest direct CSR read may still see
-    /// the underlying hardware value.
-    #[inline]
-    pub(crate) fn read_instret(&self) -> SbiRet {
-        self.read_fixed_counter(Self::INSTRET_COUNTER)
-    }
-
-    /// Read a configured fixed PMU counter by virtual counter index.
-    ///
-    /// Returns `SBI_ERR_INVALID_PARAM` if the counter has not been configured.
-    /// This matches the conservative behavior used for firmware-counter reads:
-    /// guest code should configure a counter before consuming its value through
-    /// the PMU interface.
-    #[inline]
-    fn read_fixed_counter(&self, counter_idx: usize) -> SbiRet {
-        let counter = &self.counters[counter_idx];
-        if !counter.configured.load(Ordering::Relaxed) {
-            return SbiRet::invalid_param();
-        }
-
-        SbiRet::success(self.fixed_virtual_value(counter_idx) as usize)
-    }
-
     /// Increment a firmware counter if it is currently active.
     ///
     /// Firmware counters are purely virtual; they advance only when the vCPU
@@ -582,20 +717,49 @@ impl VirtualPmu {
             counter.value.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    /// Notify the backend that the owning vCPU is being bound to a hart.
+    ///
+    /// Must be called at the end of `AxArchVCpu::bind()` after all VS-mode
+    /// CSRs have been restored. A real-hardware backend uses this hook to
+    /// restore `mhpmevent*` and `hpmcounter*` state so the guest counter view
+    /// is consistent on the newly scheduled hart.
+    #[inline]
+    pub(crate) fn backend_bind(&self) {
+        self.backend.on_bind();
+    }
+
+    /// Notify the backend that the owning vCPU is being unbound from a hart.
+    ///
+    /// Must be called at the beginning of `AxArchVCpu::unbind()` before
+    /// VS-mode CSRs are saved. A real-hardware backend uses this hook to save
+    /// `mhpmevent*` and `hpmcounter*` state so it can be restored by the next
+    /// `backend_bind` call.
+    #[inline]
+    pub(crate) fn backend_unbind(&self) {
+        self.backend.on_unbind();
+    }
 }
 
-impl Pmu for VirtualPmu {
+impl<B> Pmu for VirtualPmu<B>
+where
+    B: PmuBackend,
+{
     /// Return the number of virtual counters exposed by this PMU instance.
+    ///
+    /// The total is the number of counters in the live bank, which equals
+    /// `FIXED_COUNTERS + FIRMWARE_COUNTERS + backend.num_hpm_counters()`.
     #[inline]
     fn num_counters(&self) -> usize {
-        Self::NUM_COUNTERS
+        self.counters.len()
     }
 
     /// Return SBI metadata for a virtual counter.
     ///
-    /// Fixed PMU counters are reported as CSR-backed counters with their
-    /// architectural CSR numbers. Firmware counters are reported as firmware
-    /// counters. Any index outside the virtual counter bank is rejected.
+    /// Fixed PMU counters and HPM counters are reported as CSR-backed counters
+    /// with their architectural CSR numbers. Firmware counters are reported as
+    /// firmware counters. Any index outside the virtual counter bank is
+    /// rejected.
     #[inline]
     fn counter_get_info(&self, counter_idx: usize) -> SbiRet {
         match counter_idx {
@@ -612,26 +776,27 @@ impl Pmu for VirtualPmu {
             Self::FW_HFENCE_GVMA_VMID_SENT_COUNTER => SbiRet::success(Self::FIRMWARE_COUNTER_TYPE),
             Self::FW_HFENCE_VVMA_SENT_COUNTER => SbiRet::success(Self::FIRMWARE_COUNTER_TYPE),
             Self::FW_HFENCE_VVMA_ASID_SENT_COUNTER => SbiRet::success(Self::FIRMWARE_COUNTER_TYPE),
+            idx if self.counter_is_hpm(idx) => {
+                // Report the architectural `hpmcounterN` CSR for this HPM slot.
+                let hpm_local = idx - (Self::FIXED_COUNTERS + Self::FIRMWARE_COUNTERS);
+                SbiRet::success(Self::counter_info(Self::CSR_HPM_BASE + hpm_local))
+            }
             _ => SbiRet::invalid_param(),
         }
     }
 
     /// Configure a virtual counter for an SBI PMU event.
     ///
-    /// The implementation supports only events that can be represented by the
-    /// fixed PMU counters or by vCPU-observable firmware hooks. When
-    /// `SKIP_MATCH` is set, the first selected counter is used only if it
-    /// supports the requested event. Otherwise the event is mapped to its
-    /// dedicated virtual counter and then checked against the guest-supplied
-    /// counter set.
+    /// For fixed and firmware events the dedicated static virtual slot is used.
+    /// For all other events the backend is asked to allocate a hardware slot
+    /// and a free HPM virtual slot is assigned. `SKIP_MATCH` forces selection
+    /// of a specific counter without the event-to-slot search; for HPM slots
+    /// the backend's `can_handle_event` is checked first, then an HPM slot is
+    /// allocated.
     ///
-    /// `CLEAR_VALUE` resets the stored virtual value, and `AUTO_START` starts
-    /// the counter immediately. For fixed PMU counters, auto-start also
-    /// captures the current hardware CSR value as the baseline for future
-    /// virtual delta calculation. A stopped, already-configured counter may be
-    /// reconfigured for another supported event. A running counter is rejected
-    /// with `SBI_ERR_ALREADY_STARTED` even if `AUTO_START` is not set, matching
-    /// the SBI PMU lifecycle rule for `COUNTER_CONFIG_MATCHING`.
+    /// `CLEAR_VALUE` resets the stored virtual value. `AUTO_START` starts the
+    /// counter immediately and captures a hardware baseline. Running counters
+    /// are rejected with `SBI_ERR_ALREADY_STARTED`.
     #[inline]
     fn counter_config_matching(
         &self,
@@ -639,33 +804,78 @@ impl Pmu for VirtualPmu {
         counter_idx_mask: usize,
         config_flags: usize,
         event_idx: usize,
-        _event_data: u64,
+        event_data: u64,
     ) -> SbiRet {
         if (config_flags & !Self::CFG_VALID_FLAGS) != 0 {
             return SbiRet::invalid_param();
         }
-        let ret = Self::validate_counter_set(counter_idx_base, counter_idx_mask);
+        let ret = self.validate_counter_set(counter_idx_base, counter_idx_mask);
         if ret.is_err() {
             return ret;
         }
 
         let counter_idx = if (config_flags & Self::CFG_FLAG_SKIP_MATCH) != 0 {
-            let Some(counter_idx) = Self::first_counter_in_set(counter_idx_base, counter_idx_mask)
-            else {
+            let Some(idx) = self.first_counter_in_set(counter_idx_base, counter_idx_mask) else {
                 return SbiRet::invalid_param();
             };
-            if !Self::counter_supports_event(counter_idx, event_idx) {
+            if !self.counter_supports_event(idx, event_idx) {
                 return SbiRet::not_supported();
             }
-            counter_idx
+            // For HPM slots via SKIP_MATCH: check not-started before allocating
+            // to avoid a needless backend roundtrip.
+            if self.counter_is_hpm(idx) {
+                if self.counters[idx].started.load(Ordering::Relaxed) {
+                    return SbiRet::already_started();
+                }
+                // Release any existing hw_slot (reconfiguration of a stopped
+                // HPM counter for a different event).
+                let old = self.counters[idx]
+                    .hw_slot
+                    .swap(Self::HW_SLOT_NONE, Ordering::Relaxed);
+                if old != Self::HW_SLOT_NONE {
+                    self.backend.release_hpm(old);
+                }
+                match self.backend.allocate_hpm(event_idx, event_data) {
+                    Some(hw_slot) => {
+                        self.counters[idx].hw_slot.store(hw_slot, Ordering::Relaxed);
+                    }
+                    None => return SbiRet::not_supported(),
+                }
+            }
+            idx
         } else {
-            let Some(counter_idx) = Self::event_counter(event_idx) else {
-                return SbiRet::not_supported();
-            };
-            if !Self::counter_in_set(counter_idx, counter_idx_base, counter_idx_mask) {
-                return SbiRet::not_supported();
+            // Try the static event→slot mapping first (cycle, instret, firmware).
+            if let Some(idx) = Self::event_counter_static(event_idx) {
+                if !Self::counter_in_set(idx, counter_idx_base, counter_idx_mask) {
+                    return SbiRet::not_supported();
+                }
+                idx
+            } else {
+                // Route to an HPM virtual slot via backend allocation.
+                let hw_slot = match self.backend.allocate_hpm(event_idx, event_data) {
+                    Some(s) => s,
+                    None => return SbiRet::not_supported(),
+                };
+                let hpm_start = Self::FIXED_COUNTERS + Self::FIRMWARE_COUNTERS;
+                let mut found = None;
+                for idx in hpm_start..self.counters.len() {
+                    if !Self::counter_in_set(idx, counter_idx_base, counter_idx_mask) {
+                        continue;
+                    }
+                    if !self.counters[idx].configured.load(Ordering::Relaxed) {
+                        self.counters[idx].hw_slot.store(hw_slot, Ordering::Relaxed);
+                        found = Some(idx);
+                        break;
+                    }
+                }
+                match found {
+                    Some(idx) => idx,
+                    None => {
+                        self.backend.release_hpm(hw_slot);
+                        return SbiRet::not_supported();
+                    }
+                }
             }
-            counter_idx
         };
 
         let counter = &self.counters[counter_idx];
@@ -680,10 +890,10 @@ impl Pmu for VirtualPmu {
             counter.hardware_base.store(0, Ordering::Relaxed);
         }
         if (config_flags & Self::CFG_FLAG_AUTO_START) != 0 {
-            if Self::counter_is_fixed(counter_idx) {
+            if self.counter_is_hardware_backed(counter_idx) {
                 counter
                     .hardware_base
-                    .store(Self::fixed_hardware_value(counter_idx), Ordering::Relaxed);
+                    .store(self.hardware_value(counter_idx), Ordering::Relaxed);
             }
             counter.started.store(true, Ordering::Relaxed);
         }
@@ -692,13 +902,11 @@ impl Pmu for VirtualPmu {
 
     /// Start one or more configured virtual counters.
     ///
-    /// All selected counters are validated before any counter is modified. This
-    /// keeps the operation atomic from the guest's perspective: if one selected
-    /// counter is unconfigured or already running, no selected counter is
-    /// started. When `START_SET_INIT_VALUE` is present, each selected counter's
-    /// stored virtual value is replaced with `initial_value` before counting
-    /// begins. Fixed PMU counters capture a fresh hardware baseline at start
-    /// time.
+    /// All selected counters are validated before any counter is modified. If
+    /// one selected counter is unconfigured or already running, no counter is
+    /// started. When `START_SET_INIT_VALUE` is present, each counter's stored
+    /// virtual value is replaced with `initial_value` before counting begins.
+    /// Hardware-backed counters (fixed and HPM) capture a fresh baseline.
     #[inline]
     fn counter_start(
         &self,
@@ -710,11 +918,11 @@ impl Pmu for VirtualPmu {
         if (start_flags & !Self::START_FLAG_SET_INIT_VALUE) != 0 {
             return SbiRet::invalid_param();
         }
-        let ret = Self::validate_counter_set(counter_idx_base, counter_idx_mask);
+        let ret = self.validate_counter_set(counter_idx_base, counter_idx_mask);
         if ret.is_err() {
             return ret;
         }
-        for counter_idx in 0..Self::NUM_COUNTERS {
+        for counter_idx in 0..self.counters.len() {
             if !Self::counter_in_set(counter_idx, counter_idx_base, counter_idx_mask) {
                 continue;
             }
@@ -728,17 +936,17 @@ impl Pmu for VirtualPmu {
             }
         }
 
-        for counter_idx in 0..Self::NUM_COUNTERS {
+        for counter_idx in 0..self.counters.len() {
             if Self::counter_in_set(counter_idx, counter_idx_base, counter_idx_mask) {
                 if (start_flags & Self::START_FLAG_SET_INIT_VALUE) != 0 {
                     self.counters[counter_idx]
                         .value
                         .store(initial_value, Ordering::Relaxed);
                 }
-                if Self::counter_is_fixed(counter_idx) {
+                if self.counter_is_hardware_backed(counter_idx) {
                     self.counters[counter_idx]
                         .hardware_base
-                        .store(Self::fixed_hardware_value(counter_idx), Ordering::Relaxed);
+                        .store(self.hardware_value(counter_idx), Ordering::Relaxed);
                 }
                 self.counters[counter_idx]
                     .started
@@ -751,21 +959,15 @@ impl Pmu for VirtualPmu {
 
     /// Stop one or more running virtual counters.
     ///
-    /// As with `counter_start`, validation is performed for the entire selected
-    /// set before mutating any counter. Stopping a fixed PMU counter without
-    /// `STOP_RESET` folds the live hardware delta into the stored virtual value
-    /// so a later read or restart sees a stable guest-visible value. If
-    /// `STOP_RESET` is supplied, the counter is returned to the unconfigured
-    /// state directly and the fixed-counter fold is skipped because the stored
-    /// value would be discarded.
+    /// Validation is performed for the entire selected set before mutating any
+    /// counter. Stopping a hardware-backed counter without `STOP_RESET` folds
+    /// the live delta into the stored virtual value. With `STOP_RESET` the
+    /// counter is returned to the unconfigured state directly: the fold is
+    /// skipped and any HPM slot is released via `reset_counter`.
     ///
-    /// This implementation intentionally returns `SBI_ERR_INVALID_PARAM` when
-    /// the selected counter has never been configured. The SBI PMU
-    /// specification defines invalid-parameter errors for invalid counter
-    /// indices, while a never-configured counter is also stopped in the narrow
-    /// state-machine sense. Returning `ALREADY_STOPPED` for that case would be
-    /// spec-compatible, but the stricter error makes guest lifecycle mistakes
-    /// easier to diagnose.
+    /// Returns `SBI_ERR_INVALID_PARAM` for never-configured counters to
+    /// distinguish stop-before-configure lifecycle errors from the normal
+    /// already-stopped case.
     #[inline]
     fn counter_stop(
         &self,
@@ -776,12 +978,12 @@ impl Pmu for VirtualPmu {
         if (stop_flags & !Self::STOP_FLAG_RESET) != 0 {
             return SbiRet::invalid_param();
         }
-        let ret = Self::validate_counter_set(counter_idx_base, counter_idx_mask);
+        let ret = self.validate_counter_set(counter_idx_base, counter_idx_mask);
         if ret.is_err() {
             return ret;
         }
 
-        for counter_idx in 0..Self::NUM_COUNTERS {
+        for counter_idx in 0..self.counters.len() {
             if !Self::counter_in_set(counter_idx, counter_idx_base, counter_idx_mask) {
                 continue;
             }
@@ -795,20 +997,21 @@ impl Pmu for VirtualPmu {
             }
         }
 
-        for counter_idx in 0..Self::NUM_COUNTERS {
+        for counter_idx in 0..self.counters.len() {
             if !Self::counter_in_set(counter_idx, counter_idx_base, counter_idx_mask) {
                 continue;
             }
 
             let counter = &self.counters[counter_idx];
             if (stop_flags & Self::STOP_FLAG_RESET) != 0 {
+                // reset_counter releases any HPM slot and clears all fields.
                 self.reset_counter(counter_idx);
                 continue;
             }
-            if Self::counter_is_fixed(counter_idx) {
+            if self.counter_is_hardware_backed(counter_idx) {
                 counter
                     .value
-                    .store(self.fixed_virtual_value(counter_idx), Ordering::Relaxed);
+                    .store(self.hardware_virtual_value(counter_idx), Ordering::Relaxed);
                 counter.hardware_base.store(0, Ordering::Relaxed);
             }
             counter.started.store(false, Ordering::Relaxed);
@@ -820,8 +1023,8 @@ impl Pmu for VirtualPmu {
     /// Read the low word of a configured firmware counter.
     ///
     /// SBI PMU exposes firmware-counter values through explicit read calls
-    /// rather than direct CSR access. This method rejects fixed PMU counters and
-    /// unconfigured firmware counters.
+    /// rather than direct CSR access. This method rejects fixed PMU counters,
+    /// HPM counters, and unconfigured firmware counters.
     #[inline]
     fn counter_fw_read(&self, counter_idx: usize) -> SbiRet {
         if !Self::counter_is_firmware(counter_idx) {

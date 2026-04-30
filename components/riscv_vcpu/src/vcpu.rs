@@ -59,10 +59,6 @@ fn instr_is_pseudo(ins: u32) -> bool {
     ins == TINST_PSEUDO_STORE || ins == TINST_PSEUDO_LOAD
 }
 
-/// The architecture dependent configuration of a `AxArchVCpu`.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct VCpuConfig {}
-
 #[derive(Default)]
 /// A virtual CPU within a guest
 pub struct RISCVVCpu {
@@ -220,10 +216,12 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             );
             core::arch::riscv64::hfence_gvma_all();
         }
+        self.sbi.pmu.backend_bind();
         Ok(())
     }
 
     fn unbind(&mut self) -> AxResult {
+        self.sbi.pmu.backend_unbind();
         // Store the vCPU's CSRs to the stored state.
         unsafe {
             self.regs.vs_csrs.vsatp = vsatp::read().bits();
