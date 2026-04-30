@@ -95,6 +95,7 @@ pub(crate) fn prepare_c_case_assets_sync(
 
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     resolver::write_host_resolver_config(&layout.staging_root)?;
+    write_musl_loader_search_path(arch, &layout.staging_root)?;
     let prebuild_script = case_prebuild_script_path(case);
     if prebuild_script.is_file() {
         let apk_region = apk::apk_region_from_env()?;
@@ -157,6 +158,7 @@ pub(crate) fn prepare_grouped_case_assets_sync(
 
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     resolver::write_host_resolver_config(&layout.staging_root)?;
+    write_musl_loader_search_path(arch, &layout.staging_root)?;
 
     let c_subcases = case
         .subcases
@@ -303,6 +305,7 @@ pub(crate) fn prepare_python_case_assets_sync(
     // Extract rootfs into staging
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     resolver::write_host_resolver_config(&layout.staging_root)?;
+    write_musl_loader_search_path(arch, &layout.staging_root)?;
 
     // Prepare guest prebuild environment and install python3
     let apk_region = apk::apk_region_from_env()?;
@@ -382,6 +385,24 @@ pub(crate) fn prepare_python_case_assets_sync(
     }
 
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+fn write_musl_loader_search_path(arch: &str, staging_root: &Path) -> anyhow::Result<()> {
+    let loader_path = staging_root
+        .join("lib")
+        .join(format!("ld-musl-{arch}.so.1"));
+    if !loader_path.is_file() {
+        return Ok(());
+    }
+    let etc_dir = staging_root.join("etc");
+    fs::create_dir_all(&etc_dir)
+        .with_context(|| format!("failed to create {}", etc_dir.display()))?;
+
+    let path_file = etc_dir.join(format!("ld-musl-{arch}.path"));
+    fs::write(&path_file, "/usr/lib\n/lib\n")
+        .with_context(|| format!("failed to write {}", path_file.display()))?;
+
+    Ok(())
 }
 
 /// Recursively copies a directory tree, preserving file permissions.
@@ -1109,6 +1130,35 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn write_musl_loader_search_path_uses_requested_guest_arch() {
+        let root = tempdir().unwrap();
+        let staging_root = root.path().join("staging-root");
+        fs::create_dir_all(staging_root.join("lib")).unwrap();
+        fs::write(staging_root.join("lib/ld-musl-riscv64.so.1"), b"").unwrap();
+
+        write_musl_loader_search_path("riscv64", &staging_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(staging_root.join("etc/ld-musl-riscv64.path")).unwrap(),
+            "/usr/lib\n/lib\n"
+        );
+        assert!(!staging_root.join("etc/ld-musl-aarch64.path").exists());
+    }
+
+    #[test]
+    fn write_musl_loader_search_path_skips_when_guest_loader_is_missing() {
+        let root = tempdir().unwrap();
+        let staging_root = root.path().join("staging-root");
+        fs::create_dir_all(staging_root.join("lib")).unwrap();
+        fs::write(staging_root.join("lib/ld-musl-riscv64.so.1"), b"").unwrap();
+
+        write_musl_loader_search_path("aarch64", &staging_root).unwrap();
+
+        assert!(!staging_root.join("etc/ld-musl-aarch64.path").exists());
+        assert!(!staging_root.join("etc/ld-musl-riscv64.path").exists());
     }
 
     #[test]
