@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     context::{ResolvedBuildRequest, workspace_manifest_path, workspace_metadata_root_manifest},
-    process::ProcessExt,
+    support::process::ProcessExt,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

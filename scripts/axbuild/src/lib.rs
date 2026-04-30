@@ -15,13 +15,10 @@ pub mod arceos;
 pub mod axvisor;
 mod board;
 mod clippy;
-mod command_flow;
 pub mod context;
-mod download;
-mod logging;
-pub mod process;
 mod rootfs;
 pub mod starry;
+mod support;
 mod sync_lint;
 mod test;
 

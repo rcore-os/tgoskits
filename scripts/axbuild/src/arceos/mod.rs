@@ -11,9 +11,8 @@ use ostool::build::config::Cargo;
 use regex::Regex;
 
 use crate::{
-    command_flow::{self, SnapshotPersistence},
-    context::{AppContext, BuildCliArgs, ResolvedBuildRequest},
-    process::ProcessExt,
+    context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
+    support::process::ProcessExt,
     test::qemu as qemu_test,
 };
 
@@ -703,7 +702,9 @@ impl ArceOS {
     }
 
     async fn run_build_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
-        command_flow::run_build(&mut self.app, request, build::load_cargo_config).await
+        self.app.set_debug_mode(request.debug)?;
+        let cargo = build::load_cargo_config(&request)?;
+        self.app.build(cargo, request.build_info_path).await
     }
 
     async fn run_uboot_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {

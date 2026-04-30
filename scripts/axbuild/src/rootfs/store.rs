@@ -184,7 +184,7 @@ async fn ensure_rootfs_image(workspace_root: &Path, image_name: &str) -> anyhow:
         .with_context(|| format!("failed to create {}", rootfs_dir.display()))?;
 
     let archive_path = archive_path(workspace_root, image_name);
-    let client = crate::download::http_client()?;
+    let client = crate::support::download::http_client()?;
 
     download_archive(&client, image_name, &archive_path).await?;
     if let Err(err) = extract_image(&archive_path, image_name, &rootfs_dir).await {
@@ -220,7 +220,7 @@ async fn download_archive(
         "managed rootfs archive not found, downloading from rcore-os/tgosimages release {}...",
         TGOSIMAGES_ROOTFS_RELEASE
     );
-    crate::download::download_file(client, &archive_url(image_name), archive_path).await
+    crate::support::download::download_file(client, &archive_url(image_name), archive_path).await
 }
 
 /// Extracts a single rootfs image entry from an archive on a blocking worker.
@@ -279,7 +279,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::download::test_support;
+    use crate::support::download::test_support;
 
     #[tokio::test]
     async fn ensure_rootfs_for_arch_redownloads_invalid_cached_archive() {
@@ -361,7 +361,7 @@ mod tests {
 
         tokio_fs::create_dir_all(&rootfs_dir).await?;
         let archive_path = archive_path(workspace_root, image_name);
-        let client = crate::download::http_client()?;
+        let client = crate::support::download::http_client()?;
         download_archive_with_url(&client, url, &archive_path).await?;
 
         if let Err(err) = extract_image(&archive_path, image_name, &rootfs_dir).await {
@@ -385,7 +385,7 @@ mod tests {
         if archive_path.exists() {
             return Ok(());
         }
-        crate::download::download_file(client, url, archive_path).await
+        crate::support::download::download_file(client, url, archive_path).await
     }
 
     fn make_tar_xz(files: &[(&str, &[u8])]) -> Vec<u8> {

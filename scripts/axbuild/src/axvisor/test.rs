@@ -10,8 +10,10 @@ use serde::Deserialize;
 
 use super::{Axvisor, build, cli, rootfs};
 use crate::{
-    command_flow::SnapshotPersistence,
-    context::{AxvisorCliArgs, ResolvedAxvisorRequest, resolve_axvisor_arch_and_target},
+    context::{
+        AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence,
+        resolve_axvisor_arch_and_target,
+    },
     test::{
         board as board_test, case as test_case, case::TestQemuCase, qemu as test_qemu,
         qemu::parse_test_target,

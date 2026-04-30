@@ -11,9 +11,8 @@ use serde::Deserialize;
 
 use super::{ArgsTestBoard, ArgsTestQemu, ArgsTestUboot, Starry, board, build, rootfs};
 use crate::{
-    command_flow::SnapshotPersistence,
     context::{
-        ResolvedStarryRequest, StarryCliArgs, arch_for_target_checked,
+        ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs, arch_for_target_checked,
         resolve_starry_arch_and_target, validate_supported_target,
     },
     test::{
