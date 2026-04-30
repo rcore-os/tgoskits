@@ -129,26 +129,24 @@ pub(crate) fn discover_qemu_cases(
     let build_groups = discover_qemu_build_groups(&test_suite_dir, arch, target)?;
     let config_name = test_qemu::qemu_config_name(arch);
     let mut cases = Vec::new();
+    let mut selected_case_dirs_without_config = Vec::new();
 
     for build_group in &build_groups {
         if let Some(case_name) = selected_case {
             let case_dir = build_group.dir.join(case_name);
             if case_dir.is_dir() {
                 let qemu_config_path = case_dir.join(&config_name);
-                if !qemu_config_path.is_file() {
-                    bail!(
-                        "Axvisor qemu test case `{case_name}` in build group `{}` does not \
-                         provide `{}`",
-                        build_group.name,
-                        qemu_config_path.display()
-                    );
+                if qemu_config_path.is_file() {
+                    cases.push(load_qemu_case(
+                        build_group,
+                        case_name.to_string(),
+                        case_dir,
+                        qemu_config_path,
+                    )?);
+                } else {
+                    selected_case_dirs_without_config
+                        .push((build_group.name.clone(), qemu_config_path));
                 }
-                cases.push(load_qemu_case(
-                    build_group,
-                    case_name.to_string(),
-                    case_dir,
-                    qemu_config_path,
-                )?);
             }
             continue;
         }
@@ -180,6 +178,17 @@ pub(crate) fn discover_qemu_cases(
 
     if cases.is_empty() {
         if let Some(case_name) = selected_case {
+            if !selected_case_dirs_without_config.is_empty() {
+                let searched = selected_case_dirs_without_config
+                    .iter()
+                    .map(|(build_group, path)| format!("{build_group}: {}", path.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "Axvisor qemu test case `{case_name}` exists under matching build group(s), \
+                     but none provide `{config_name}` for arch `{arch}`: {searched}"
+                );
+            }
             bail!(
                 "unknown Axvisor qemu test case `{case_name}` for arch `{arch}` under {}; cases \
                  are discovered from <build_group>/<case> directories with matching \
@@ -1075,6 +1084,53 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("does not provide `"));
+    }
+
+    #[test]
+    fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(
+            root.path(),
+            "normal",
+            "board-orangepi-5-plus",
+            "aarch64-unknown-none-softfloat",
+        );
+        write_qemu_build_config(
+            root.path(),
+            "normal",
+            "qemu",
+            "aarch64-unknown-none-softfloat",
+        );
+        write_board_config_in_group(
+            root.path(),
+            "normal",
+            "board-orangepi-5-plus",
+            "smoke",
+            "orangepi-5-plus-linux",
+            "board_type = \"OrangePi-5-Plus\"\n",
+        );
+        write_qemu_config_in_group(
+            root.path(),
+            "normal",
+            "qemu",
+            "smoke",
+            "aarch64",
+            "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = \
+             []\n",
+        );
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "normal",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            Some("smoke"),
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].build_group, "qemu");
+        assert_eq!(cases[0].case.name, "smoke");
     }
 
     #[test]
