@@ -315,7 +315,7 @@ jobs:
           - name: Test starry self-hosted smoke-orangepi-5-plus
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask starry test board -t smoke-orangepi-5-plus
+            command: cargo xtask starry test board -c smoke --board orangepi-5-plus
             cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
@@ -323,7 +323,7 @@ jobs:
           - name: Test starry self-hosted boot-orangepi-5-plus
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask starry test board -t boot-orangepi-5-plus
+            command: cargo xtask starry test board -c boot --board orangepi-5-plus
             cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
