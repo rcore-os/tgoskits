@@ -404,6 +404,24 @@ pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
     qemu.args.push(cpu_num.to_string());
 }
 
+pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {
+    let index = qemu.args.iter().position(|arg| arg == "-smp")?;
+    let value = qemu.args.get(index + 1)?;
+    parse_smp_qemu_value(value)
+}
+
+fn parse_smp_qemu_value(value: &str) -> Option<usize> {
+    let first = value.split(',').next()?;
+    if let Ok(cpu_num) = first.parse() {
+        return Some(cpu_num);
+    }
+
+    value.split(',').find_map(|part| {
+        let cpu_num = part.strip_prefix("cpus=")?;
+        cpu_num.parse().ok()
+    })
+}
+
 pub(crate) fn apply_timeout_scale(qemu: &mut QemuConfig) {
     let Some(timeout) = qemu.timeout else {
         return;

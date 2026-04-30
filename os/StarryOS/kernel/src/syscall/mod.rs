@@ -453,12 +453,16 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         #[cfg(target_arch = "x86_64")]
         Sysno::fork => sys_fork(uctx),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::vfork => sys_vfork(uctx),
         Sysno::exit => sys_exit(uctx.arg0() as _),
         Sysno::exit_group => sys_exit_group(uctx.arg0() as _),
         Sysno::wait4 => sys_waitpid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::getsid => sys_getsid(uctx.arg0() as _),
         Sysno::setsid => sys_setsid(),
         Sysno::getpgid => sys_getpgid(uctx.arg0() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::getpgrp => sys_getpgrp(),
         Sysno::setpgid => sys_setpgid(uctx.arg0() as _, uctx.arg1() as _),
 
         // signal
@@ -543,6 +547,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
 
         // time
+        #[cfg(target_arch = "x86_64")]
+        Sysno::time => sys_time(uctx.arg0() as _),
         Sysno::gettimeofday => sys_gettimeofday(uctx.arg0() as _),
         Sysno::times => sys_times(uctx.arg0() as _),
         Sysno::clock_gettime => sys_clock_gettime(uctx.arg0() as _, uctx.arg1() as _),

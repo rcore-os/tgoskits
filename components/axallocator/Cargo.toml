@@ -12,8 +12,8 @@ readme = "README.md"
 license = "Apache-2.0"
 
 [features]
-default = ["page-alloc-256m"]
-full = ["bitmap", "tlsf", "slab", "buddy", "allocator_api", "page-alloc-256m"]
+default = ["page-alloc-4g"]
+full = ["bitmap", "tlsf", "slab", "buddy", "allocator_api", "page-alloc-4g"]
 
 bitmap = ["dep:bitmap-allocator"]
 
