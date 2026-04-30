@@ -27,6 +27,10 @@ use ax_driver::{
 mod fs;
 
 mod highlevel;
+
+/// Create a filesystem from a dynamic (boxed) block device.
+#[cfg(feature = "ext4")]
+pub use fs::new_from_dyn as new_filesystem_from_dyn;
 pub use highlevel::*;
 
 #[derive(Debug, Default)]
