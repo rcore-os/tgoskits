@@ -19,14 +19,15 @@ This skill captures the repo-specific way to maintain StarryOS system tests. Sta
 
 ## Layout Rules
 
-- `normal` cases live at `test-suit/starryos/normal/<case>/qemu-<arch>.toml`.
-- `stress` cases live at `test-suit/starryos/stress/<case>/qemu-<arch>.toml`.
+- `normal` cases live at `test-suit/starryos/normal/<build_group>/<case>/qemu-<arch>.toml`.
+- `stress` cases live at `test-suit/starryos/stress/<build_group>/<case>/qemu-<arch>.toml`.
+- Build configs live at `test-suit/starryos/{normal,stress}/<build_group>/build-<target>.toml`.
 - `cargo xtask starry test qemu --arch <arch>` only runs `normal`.
 - `cargo xtask starry test qemu --stress --arch <arch>` only runs `stress`.
 - `-c/--test-case` only searches inside the current group.
-- Case directories stay one level below `normal/` or `stress/`.
+- Case directories stay one level below a build group, which stays one level below `normal/` or `stress/`.
 - Grouped cases may add test subdirectories under a case directory, such as
-  `normal/bugfix/<subcase>/c`, when the case-level `qemu-<arch>.toml` uses
+  `normal/qemu-smp1/bugfix/<subcase>/c`, when the case-level `qemu-<arch>.toml` uses
   `test_commands`.
 - Batch QEMU runs skip case directories that do not contain `qemu-<arch>.toml`; explicit `-c` still requires the directory and matching config to exist.
 - Cases may optionally provide `c/CMakeLists.txt` and `c/prebuild.sh`; anything that must land in the guest rootfs should be installed via CMake `install()`, not left as a prebuild side effect.

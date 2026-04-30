@@ -172,24 +172,6 @@ pub(crate) fn qemu_timeout_summary(qemu: &QemuConfig) -> String {
     }
 }
 
-pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {
-    let index = qemu.args.iter().position(|arg| arg == "-smp")?;
-    let value = qemu.args.get(index + 1)?;
-    parse_smp_qemu_value(value)
-}
-
-fn parse_smp_qemu_value(value: &str) -> Option<usize> {
-    let first = value.split(',').next()?;
-    if let Ok(cpu_num) = first.parse() {
-        return Some(cpu_num);
-    }
-
-    value.split(',').find_map(|part| {
-        let cpu_num = part.strip_prefix("cpus=")?;
-        cpu_num.parse().ok()
-    })
-}
-
 pub(crate) fn parse_test_target(
     arch: &Option<String>,
     target: &Option<String>,

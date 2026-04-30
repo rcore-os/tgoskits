@@ -48,6 +48,7 @@ static CASE_RUN_ID: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TestQemuCase {
     pub(crate) name: String,
+    pub(crate) display_name: String,
     pub(crate) case_dir: PathBuf,
     pub(crate) qemu_config_path: PathBuf,
     pub(crate) test_commands: Vec<String>,
@@ -286,7 +287,11 @@ pub(crate) fn prepare_case_assets_sync(
     // directly from the shared image without any layout.
     let needs_injection = pipeline != CasePipeline::Plain;
     let layout = if needs_injection {
-        Some(case_asset_layout(workspace_root, target, &case.name)?)
+        Some(case_asset_layout(
+            workspace_root,
+            target,
+            &case.display_name,
+        )?)
     } else {
         None
     };
@@ -470,7 +475,7 @@ fn case_asset_cache_key(
     hash_token(&mut hasher, "v2");
     hash_token(&mut hasher, arch);
     hash_token(&mut hasher, target);
-    hash_token(&mut hasher, case.name.as_str());
+    hash_token(&mut hasher, case.display_name.as_str());
     hash_token(&mut hasher, pipeline.as_str());
     hash_token(
         &mut hasher,
@@ -684,6 +689,7 @@ mod tests {
         fs::create_dir_all(&case_dir).unwrap();
         TestQemuCase {
             name: name.to_string(),
+            display_name: name.to_string(),
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             test_commands: Vec::new(),

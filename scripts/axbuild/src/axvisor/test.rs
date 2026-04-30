@@ -144,6 +144,7 @@ fn load_qemu_case(
 
     Ok(AxvisorQemuCase {
         case: TestQemuCase {
+            display_name: name.clone(),
             name,
             case_dir,
             qemu_config_path,

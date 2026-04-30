@@ -261,6 +261,7 @@ fn subcase_layout(
 fn subcase_as_case(case: &TestQemuCase, subcase: &TestQemuSubcase) -> TestQemuCase {
     TestQemuCase {
         name: format!("{}/{}", case.name, subcase.name.as_str()),
+        display_name: format!("{}/{}", case.display_name, subcase.name.as_str()),
         case_dir: subcase.case_dir.clone(),
         qemu_config_path: case.qemu_config_path.clone(),
         test_commands: Vec::new(),
@@ -1089,6 +1090,7 @@ mod tests {
         fs::create_dir_all(&case_dir).unwrap();
         TestQemuCase {
             name: name.to_string(),
+            display_name: name.to_string(),
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             test_commands: Vec::new(),

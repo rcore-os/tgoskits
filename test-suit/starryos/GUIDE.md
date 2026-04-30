@@ -7,36 +7,56 @@
 ```
 test-suit/starryos/
   normal/                     # 常规测试（每次 push 均运行）
-    smoke/                    # 基础启动测试
-      qemu-<arch>.toml        # 每个架构一个 TOML 文件
-    usb/                      # USB 设备测试（含 C 源码）
-      c/
-        CMakeLists.txt
-        prebuild.sh           # 可选：在 rootfs 内安装依赖包
-        src/
-          main.c
-      qemu-<arch>.toml
-    helloworld/               # 简单 C 程序（无需 prebuild）
-      c/
-        CMakeLists.txt
-        src/
-          main.c
-      qemu-<arch>.toml
-    bugfix/                   # 分组测试：一次 Starry/QEMU 运行多个 guest 程序
-      bug-a/
+    board-orangepi-5-plus/    # build group：OrangePi 5 Plus 物理板测
+      build-aarch64-unknown-none-softfloat.toml
+      board-orangepi-5-plus/
+        board-orangepi-5-plus.toml
+      pcie-enumerate/
+        board-orangepi-5-plus.toml
+    qemu-smp1/                # build group：默认单核 QEMU 构建
+      build-<target>.toml     # 每个目标一个构建配置
+      smoke/                  # case：基础启动测试
+        qemu-<arch>.toml      # 每个架构一个运行配置
+      usb/                    # case：USB 设备测试（含 C 源码）
+        qemu-<arch>.toml
+        c/
+          CMakeLists.txt
+          prebuild.sh         # 可选：在 rootfs 内安装依赖包
+          src/
+            main.c
+      helloworld/             # case：简单 C 程序（无需 prebuild）
+        qemu-<arch>.toml
         c/
           CMakeLists.txt
           src/
             main.c
-      bug-b/
+      bugfix/                 # case：一次 Starry/QEMU 运行多个 guest 程序
+        qemu-<arch>.toml
+        bug-a/
+          c/
+            CMakeLists.txt
+            src/
+              main.c
+        bug-b/
+          c/
+            CMakeLists.txt
+            src/
+              main.c
+    qemu-smp4/                # build group：显式 `-smp 4` 的 QEMU 测试
+      build-<target>.toml
+      affinity/
+        qemu-x86_64.toml
+      test-shm-deadlock/
+        qemu-<arch>.toml
         c/
           CMakeLists.txt
           src/
             main.c
-      qemu-<arch>.toml
   stress/                     # 压力测试（PR 合入 main 时运行）
     stress-ng-0/
-      qemu-<arch>.toml
+      build-<target>.toml
+      stress-ng-0/
+        qemu-<arch>.toml
 ```
 
 ## 快速开始：纯 Shell 测试
@@ -44,10 +64,11 @@ test-suit/starryos/
 如果测试只需要 shell 命令（不需要编译二进制），只需创建：
 
 ```
-test-suit/starryos/normal/<用例名>/qemu-<arch>.toml
+test-suit/starryos/normal/qemu-smp1/build-<target>.toml
+test-suit/starryos/normal/qemu-smp1/<case>/qemu-<arch>.toml
 ```
 
-示例（`smoke/qemu-riscv64.toml`）：
+示例（`qemu-smp1/smoke/qemu-riscv64.toml`）：
 
 ```toml
 args = [
@@ -71,12 +92,14 @@ timeout = 15
 ### 1. 创建目录结构
 
 ```
-test-suit/starryos/normal/<用例名>/
-  c/
-    CMakeLists.txt     # 必需：构建定义
-    prebuild.sh         # 可选：向 rootfs 安装依赖包
-    src/                # 源码目录
-  qemu-<arch>.toml     # 每个支持的架构一个文件
+test-suit/starryos/normal/qemu-smp1/
+  build-<target>.toml
+  <case>/
+    qemu-<arch>.toml   # 每个支持的架构一个运行配置
+    c/
+      CMakeLists.txt   # 必需：构建定义
+      prebuild.sh       # 可选：向 rootfs 安装依赖包
+      src/              # 源码目录
 ```
 
 ### 2. 编写 `CMakeLists.txt`
@@ -102,12 +125,14 @@ install(TARGETS mytest RUNTIME DESTINATION usr/bin)
 如果多个 C 测试可以共用同一份 QEMU 配置，可以放在同一个 case 目录下：
 
 ```
-test-suit/starryos/normal/<用例组>/
-  <子用例-a>/c/CMakeLists.txt
-  <子用例-a>/c/src/main.c
-  <子用例-b>/c/CMakeLists.txt
-  <子用例-b>/c/src/main.c
-  qemu-<arch>.toml
+test-suit/starryos/normal/qemu-smp1/
+  build-<target>.toml
+  <case>/
+    qemu-<arch>.toml
+    <子用例-a>/c/CMakeLists.txt
+    <子用例-a>/c/src/main.c
+    <子用例-b>/c/CMakeLists.txt
+    <子用例-b>/c/src/main.c
 ```
 
 在 `qemu-<arch>.toml` 中使用 `test_commands`，不要同时写 `shell_init_cmd`：
@@ -148,7 +173,7 @@ apk add zlib-dev   # 按需添加
 shell_init_cmd = "/usr/bin/mytest"
 ```
 
-QEMU 参数可以从已有用例复制（如 `smoke/qemu-<arch>.toml`），按需调整。
+QEMU 参数可以从已有用例复制（如 `qemu-smp1/smoke/qemu-<arch>.toml`），按需调整。
 
 如果某个用例需要多核环境，可以直接在 `qemu-<arch>.toml` 的 `args` 中加入
 `"-smp", "<N>"`。StarryOS 的测试运行器会自动用同样的 CPU 数重新配置内核构建，
