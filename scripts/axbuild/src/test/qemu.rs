@@ -17,6 +17,27 @@ pub(crate) struct TestBuildGroup {
     pub(crate) build_config_path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiscoveredQemuCase {
+    pub(crate) name: String,
+    pub(crate) display_name: String,
+    pub(crate) case_dir: PathBuf,
+    pub(crate) qemu_config_path: PathBuf,
+    pub(crate) build_group: String,
+    pub(crate) build_config_path: PathBuf,
+}
+
+pub(crate) struct QemuCaseGroup<'a, T> {
+    pub(crate) build_group: &'a str,
+    pub(crate) build_config_path: &'a Path,
+    pub(crate) cases: Vec<&'a T>,
+}
+
+pub(crate) trait BuildConfigRef {
+    fn build_group(&self) -> &str;
+    fn build_config_path(&self) -> &Path;
+}
+
 pub(crate) fn qemu_config_name(arch: &str) -> String {
     format!("qemu-{arch}.toml")
 }
@@ -85,6 +106,131 @@ pub(crate) fn discover_build_groups(
     }
 
     Ok(groups)
+}
+
+pub(crate) fn discover_qemu_cases(
+    test_suite_dir: &Path,
+    build_groups: &[TestBuildGroup],
+    arch: &str,
+    selected_case: Option<&str>,
+    suite_name: &str,
+    group_label: &str,
+) -> anyhow::Result<Vec<DiscoveredQemuCase>> {
+    let config_name = qemu_config_name(arch);
+    let mut cases = Vec::new();
+    let mut selected_case_dirs_without_config = Vec::new();
+
+    for build_group in build_groups {
+        if let Some(case_name) = selected_case {
+            let case_dir = build_group.dir.join(case_name);
+            if case_dir.is_dir() {
+                let qemu_config_path = case_dir.join(&config_name);
+                if qemu_config_path.is_file() {
+                    cases.push(discovered_qemu_case(
+                        build_group,
+                        case_name.to_string(),
+                        case_dir,
+                        qemu_config_path,
+                    ));
+                } else {
+                    selected_case_dirs_without_config
+                        .push((build_group.name.clone(), qemu_config_path));
+                }
+            }
+            continue;
+        }
+
+        for entry in fs::read_dir(&build_group.dir)
+            .with_context(|| format!("failed to read {}", build_group.dir.display()))?
+        {
+            let entry = entry?;
+            let case_dir = entry.path();
+            if !case_dir.is_dir() {
+                continue;
+            }
+            let Ok(case_name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let qemu_config_path = case_dir.join(&config_name);
+            if qemu_config_path.is_file() {
+                cases.push(discovered_qemu_case(
+                    build_group,
+                    case_name,
+                    case_dir,
+                    qemu_config_path,
+                ));
+            }
+        }
+    }
+
+    cases.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+
+    if cases.is_empty() {
+        if let Some(case_name) = selected_case {
+            if !selected_case_dirs_without_config.is_empty() {
+                let searched = selected_case_dirs_without_config
+                    .iter()
+                    .map(|(build_group, path)| format!("{build_group}: {}", path.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "{suite_name} {group_label} test case `{case_name}` exists under matching \
+                     build group(s), but none provide `{config_name}` for arch `{arch}`: \
+                     {searched}"
+                );
+            }
+            bail!(
+                "unknown {suite_name} {group_label} test case `{case_name}` for arch `{arch}` \
+                 under {}; cases are discovered from <build_group>/<case> directories with \
+                 matching `{config_name}`",
+                test_suite_dir.display()
+            );
+        }
+        bail!(
+            "no {suite_name} {group_label} qemu test cases for arch `{arch}` found under {}",
+            test_suite_dir.display()
+        );
+    }
+
+    Ok(cases)
+}
+
+fn discovered_qemu_case(
+    build_group: &TestBuildGroup,
+    name: String,
+    case_dir: PathBuf,
+    qemu_config_path: PathBuf,
+) -> DiscoveredQemuCase {
+    DiscoveredQemuCase {
+        display_name: format!("{}/{}", build_group.name, name),
+        name,
+        case_dir,
+        qemu_config_path,
+        build_group: build_group.name.clone(),
+        build_config_path: build_group.build_config_path.clone(),
+    }
+}
+
+pub(crate) fn group_cases_by_build_config<T: BuildConfigRef>(
+    cases: &[T],
+) -> Vec<QemuCaseGroup<'_, T>> {
+    let mut groups: Vec<QemuCaseGroup<'_, T>> = Vec::new();
+    for case in cases {
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.build_config_path == case.build_config_path())
+        {
+            group.cases.push(case);
+        } else {
+            groups.push(QemuCaseGroup {
+                build_group: case.build_group(),
+                build_config_path: case.build_config_path(),
+                cases: vec![case],
+            });
+        }
+    }
+
+    groups
 }
 
 pub(crate) fn normalize_qemu_test_commands<I, S>(

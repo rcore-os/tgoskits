@@ -33,10 +33,14 @@ struct PreparedAxvisorQemuCase {
     qemu: QemuConfig,
 }
 
-struct AxvisorQemuCaseGroup<'a> {
-    build_group: &'a str,
-    build_config_path: &'a Path,
-    cases: Vec<&'a PreparedAxvisorQemuCase>,
+impl test_qemu::BuildConfigRef for PreparedAxvisorQemuCase {
+    fn build_group(&self) -> &str {
+        &self.case.build_group
+    }
+
+    fn build_config_path(&self) -> &Path {
+        &self.case.build_config_path
+    }
 }
 
 const TEST_ARCHES: &[&str] = &["aarch64", "riscv64", "x86_64", "loongarch64"];
@@ -127,104 +131,34 @@ pub(crate) fn discover_qemu_cases(
 ) -> anyhow::Result<Vec<AxvisorQemuCase>> {
     let test_suite_dir = test_suite_dir(workspace_root, group)?;
     let build_groups = discover_qemu_build_groups(&test_suite_dir, arch, target)?;
-    let config_name = test_qemu::qemu_config_name(arch);
-    let mut cases = Vec::new();
-    let mut selected_case_dirs_without_config = Vec::new();
-
-    for build_group in &build_groups {
-        if let Some(case_name) = selected_case {
-            let case_dir = build_group.dir.join(case_name);
-            if case_dir.is_dir() {
-                let qemu_config_path = case_dir.join(&config_name);
-                if qemu_config_path.is_file() {
-                    cases.push(load_qemu_case(
-                        build_group,
-                        case_name.to_string(),
-                        case_dir,
-                        qemu_config_path,
-                    )?);
-                } else {
-                    selected_case_dirs_without_config
-                        .push((build_group.name.clone(), qemu_config_path));
-                }
-            }
-            continue;
-        }
-
-        for entry in fs::read_dir(&build_group.dir)
-            .with_context(|| format!("failed to read {}", build_group.dir.display()))?
-        {
-            let entry = entry?;
-            let case_dir = entry.path();
-            if !case_dir.is_dir() {
-                continue;
-            }
-            let Ok(case_name) = entry.file_name().into_string() else {
-                continue;
-            };
-            let qemu_config_path = case_dir.join(&config_name);
-            if qemu_config_path.is_file() {
-                cases.push(load_qemu_case(
-                    build_group,
-                    case_name,
-                    case_dir,
-                    qemu_config_path,
-                )?);
-            }
-        }
-    }
-
-    cases.sort_by(|left, right| left.case.display_name.cmp(&right.case.display_name));
-
-    if cases.is_empty() {
-        if let Some(case_name) = selected_case {
-            if !selected_case_dirs_without_config.is_empty() {
-                let searched = selected_case_dirs_without_config
-                    .iter()
-                    .map(|(build_group, path)| format!("{build_group}: {}", path.display()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                bail!(
-                    "Axvisor qemu test case `{case_name}` exists under matching build group(s), \
-                     but none provide `{config_name}` for arch `{arch}`: {searched}"
-                );
-            }
-            bail!(
-                "unknown Axvisor qemu test case `{case_name}` for arch `{arch}` under {}; cases \
-                 are discovered from <build_group>/<case> directories with matching \
-                 `{config_name}`",
-                test_suite_dir.display()
-            );
-        }
-        bail!(
-            "no Axvisor qemu test cases for arch `{arch}` found under {}",
-            test_suite_dir.display()
-        );
-    }
-
-    Ok(cases)
+    test_qemu::discover_qemu_cases(
+        &test_suite_dir,
+        &build_groups,
+        arch,
+        selected_case,
+        "Axvisor",
+        "qemu",
+    )?
+    .into_iter()
+    .map(load_qemu_case)
+    .collect()
 }
 
-fn load_qemu_case(
-    build_group: &test_qemu::TestBuildGroup,
-    name: String,
-    case_dir: PathBuf,
-    qemu_config_path: PathBuf,
-) -> anyhow::Result<AxvisorQemuCase> {
-    let config = load_qemu_case_config(&qemu_config_path)?;
-    let test_commands = qemu_case_test_commands(&qemu_config_path, &config)?;
+fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<AxvisorQemuCase> {
+    let config = load_qemu_case_config(&case.qemu_config_path)?;
+    let test_commands = qemu_case_test_commands(&case.qemu_config_path, &config)?;
 
     Ok(AxvisorQemuCase {
         case: TestQemuCase {
-            display_name: format!("{}/{}", build_group.name, name),
-            name,
-            case_dir,
-            qemu_config_path,
+            display_name: case.display_name,
+            name: case.name,
+            case_dir: case.case_dir,
+            qemu_config_path: case.qemu_config_path,
             test_commands,
             subcases: Vec::new(),
         },
-        build_group: build_group.name.clone(),
-        build_config_path: build_group.build_config_path.clone(),
+        build_group: case.build_group,
+        build_config_path: case.build_config_path,
     })
 }
 
@@ -679,24 +613,8 @@ impl Axvisor {
 
     fn group_qemu_cases_by_build_config(
         cases: &[PreparedAxvisorQemuCase],
-    ) -> Vec<AxvisorQemuCaseGroup<'_>> {
-        let mut groups: Vec<AxvisorQemuCaseGroup<'_>> = Vec::new();
-        for case in cases {
-            if let Some(group) = groups
-                .iter_mut()
-                .find(|group| group.build_config_path == case.case.build_config_path.as_path())
-            {
-                group.cases.push(case);
-            } else {
-                groups.push(AxvisorQemuCaseGroup {
-                    build_group: case.case.build_group.as_str(),
-                    build_config_path: case.case.build_config_path.as_path(),
-                    cases: vec![case],
-                });
-            }
-        }
-
-        groups
+    ) -> Vec<test_qemu::QemuCaseGroup<'_, PreparedAxvisorQemuCase>> {
+        test_qemu::group_cases_by_build_config(cases)
     }
 
     fn qemu_group_build_context(

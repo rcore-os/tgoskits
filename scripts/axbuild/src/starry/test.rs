@@ -118,13 +118,6 @@ impl board_test::BoardTestGroupInfo for StarryBoardTestGroup {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct StarryQemuBuildGroup {
-    name: String,
-    dir: PathBuf,
-    build_config_path: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StarryQemuCase {
     case: TestQemuCase,
     build_group: String,
@@ -139,10 +132,14 @@ struct PreparedStarryQemuCase {
     build_config_path: PathBuf,
 }
 
-struct StarryQemuCaseGroup<'a> {
-    build_group: &'a str,
-    build_config_path: &'a Path,
-    cases: Vec<&'a PreparedStarryQemuCase>,
+impl qemu_test::BuildConfigRef for PreparedStarryQemuCase {
+    fn build_group(&self) -> &str {
+        &self.build_group
+    }
+
+    fn build_config_path(&self) -> &Path {
+        &self.build_config_path
+    }
 }
 
 pub(crate) fn parse_test_target(
@@ -187,112 +184,40 @@ pub(crate) fn discover_qemu_cases(
 ) -> anyhow::Result<Vec<StarryQemuCase>> {
     let test_suite_dir = test_suite_dir(workspace_root, group);
     let build_groups = discover_qemu_build_groups(&test_suite_dir, arch, target)?;
-    let config_name = qemu_test::qemu_config_name(arch);
-    let mut cases = Vec::new();
-    let mut selected_case_dirs_without_config = Vec::new();
-
-    for build_group in &build_groups {
-        if let Some(case_name) = selected_case {
-            let case_dir = build_group.dir.join(case_name);
-            if case_dir.is_dir() {
-                let qemu_config_path = case_dir.join(&config_name);
-                if qemu_config_path.is_file() {
-                    cases.push(load_qemu_case(
-                        build_group,
-                        case_name.to_string(),
-                        case_dir,
-                        qemu_config_path,
-                    )?);
-                } else {
-                    selected_case_dirs_without_config
-                        .push((build_group.name.clone(), qemu_config_path));
-                }
-            }
-            continue;
-        }
-
-        for entry in fs::read_dir(&build_group.dir)
-            .with_context(|| format!("failed to read {}", build_group.dir.display()))?
-        {
-            let entry = entry?;
-            let case_dir = entry.path();
-            if !case_dir.is_dir() {
-                continue;
-            }
-            let Ok(case_name) = entry.file_name().into_string() else {
-                continue;
-            };
-            let qemu_config_path = case_dir.join(&config_name);
-            if qemu_config_path.is_file() {
-                cases.push(load_qemu_case(
-                    build_group,
-                    case_name,
-                    case_dir,
-                    qemu_config_path,
-                )?);
-            }
-        }
-    }
-
-    cases.sort_by(|left, right| left.case.display_name.cmp(&right.case.display_name));
-
-    if cases.is_empty() {
-        if let Some(case_name) = selected_case {
-            if !selected_case_dirs_without_config.is_empty() {
-                let searched = selected_case_dirs_without_config
-                    .iter()
-                    .map(|(build_group, path)| format!("{build_group}: {}", path.display()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                bail!(
-                    "Starry {} test case `{case_name}` exists under matching build group(s), but \
-                     none provide `{config_name}` for arch `{arch}`: {searched}",
-                    group.as_str()
-                );
-            }
-            bail!(
-                "unknown Starry {} test case `{case_name}` for arch `{arch}` under {}; cases are \
-                 discovered from <build_group>/<case> directories with matching `{config_name}`",
-                group.as_str(),
-                test_suite_dir.display()
-            );
-        }
-        bail!(
-            "no Starry {} qemu test cases for arch `{arch}` found under {}",
-            group.as_str(),
-            test_suite_dir.display()
-        );
-    }
-
-    Ok(cases)
+    qemu_test::discover_qemu_cases(
+        &test_suite_dir,
+        &build_groups,
+        arch,
+        selected_case,
+        "Starry",
+        group.as_str(),
+    )?
+    .into_iter()
+    .map(load_qemu_case)
+    .collect()
 }
 
-fn load_qemu_case(
-    build_group: &StarryQemuBuildGroup,
-    name: String,
-    case_dir: PathBuf,
-    qemu_config_path: PathBuf,
-) -> anyhow::Result<StarryQemuCase> {
-    let test_commands = load_qemu_case_test_commands(&qemu_config_path)?;
+fn load_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<StarryQemuCase> {
+    let test_commands = load_qemu_case_test_commands(&case.qemu_config_path)?;
     let subcases = if test_commands.is_empty() {
         Vec::new()
     } else {
-        discover_qemu_subcases(&case_dir)?
+        discover_qemu_subcases(&case.case_dir)?
     };
 
-    let case = TestQemuCase {
-        display_name: format!("{}/{}", build_group.name, name),
-        name,
-        case_dir,
-        qemu_config_path,
+    let test_case = TestQemuCase {
+        display_name: case.display_name,
+        name: case.name,
+        case_dir: case.case_dir,
+        qemu_config_path: case.qemu_config_path,
         test_commands,
         subcases,
     };
 
     Ok(StarryQemuCase {
-        case,
-        build_group: build_group.name.clone(),
-        build_config_path: build_group.build_config_path.clone(),
+        case: test_case,
+        build_group: case.build_group,
+        build_config_path: case.build_config_path,
     })
 }
 
@@ -300,17 +225,8 @@ fn discover_qemu_build_groups(
     test_suite_dir: &Path,
     arch: &str,
     target: &str,
-) -> anyhow::Result<Vec<StarryQemuBuildGroup>> {
-    qemu_test::discover_build_groups(test_suite_dir, arch, target, "Starry", "qemu").map(|groups| {
-        groups
-            .into_iter()
-            .map(|group| StarryQemuBuildGroup {
-                name: group.name,
-                dir: group.dir,
-                build_config_path: group.build_config_path,
-            })
-            .collect()
-    })
+) -> anyhow::Result<Vec<qemu_test::TestBuildGroup>> {
+    qemu_test::discover_build_groups(test_suite_dir, arch, target, "Starry", "qemu")
 }
 
 /// Parses `test_commands` from a Starry QEMU case TOML.
@@ -772,24 +688,8 @@ impl Starry {
 
     fn group_qemu_cases_by_build_config(
         cases: &[PreparedStarryQemuCase],
-    ) -> Vec<StarryQemuCaseGroup<'_>> {
-        let mut groups: Vec<StarryQemuCaseGroup<'_>> = Vec::new();
-        for case in cases {
-            if let Some(group) = groups
-                .iter_mut()
-                .find(|group| group.build_config_path == case.build_config_path.as_path())
-            {
-                group.cases.push(case);
-            } else {
-                groups.push(StarryQemuCaseGroup {
-                    build_group: case.build_group.as_str(),
-                    build_config_path: case.build_config_path.as_path(),
-                    cases: vec![case],
-                });
-            }
-        }
-
-        groups
+    ) -> Vec<qemu_test::QemuCaseGroup<'_, PreparedStarryQemuCase>> {
+        qemu_test::group_cases_by_build_config(cases)
     }
 
     fn qemu_group_build_context(
