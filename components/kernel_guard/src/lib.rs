@@ -75,6 +75,12 @@ pub trait BaseGuard {
 
     /// Something that must be done after leaving the critical section.
     fn release(state: Self::State);
+
+    /// Returns whether locks guarded by this type should participate in
+    /// lock dependency tracking.
+    fn lockdep_enabled() -> bool {
+        false
+    }
 }
 
 /// A no-op guard that does nothing around the critical section.
@@ -150,6 +156,10 @@ mod imp {
             // restore IRQ states
             super::arch::local_irq_restore(state);
         }
+
+        fn lockdep_enabled() -> bool {
+            false
+        }
     }
 
     impl BaseGuard for NoPreempt {
@@ -163,6 +173,10 @@ mod imp {
             // enable preempt
             #[cfg(feature = "preempt")]
             ax_crate_interface::call_interface!(KernelGuardIf::enable_preempt);
+        }
+
+        fn lockdep_enabled() -> bool {
+            true
         }
     }
 
@@ -181,6 +195,10 @@ mod imp {
             // enable preempt
             #[cfg(feature = "preempt")]
             ax_crate_interface::call_interface!(KernelGuardIf::enable_preempt);
+        }
+
+        fn lockdep_enabled() -> bool {
+            true
         }
     }
 

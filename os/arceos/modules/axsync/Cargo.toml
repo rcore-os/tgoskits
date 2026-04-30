@@ -9,7 +9,13 @@ license.workspace = true
 
 [features]
 multitask = ["ax-task/multitask"]
-lockdep = ["multitask", "ax-kspin/lockdep", "dep:ax-lockdep"]
+lockdep = [
+  "multitask",
+  "ax-task/lockdep",
+  "ax-kspin/lockdep",
+  "dep:ax-lockdep",
+  "ax-lockdep/task-context",
+]
 default = []
 
 [dependencies]

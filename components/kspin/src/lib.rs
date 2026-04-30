@@ -7,7 +7,7 @@ extern crate std;
 mod base;
 use ax_kernel_guard::{NoOp, NoPreempt, NoPreemptIrqSave};
 #[cfg(feature = "lockdep")]
-mod lockdep;
+pub mod lockdep;
 
 pub use self::base::{BaseSpinLock, BaseSpinLockGuard};
 

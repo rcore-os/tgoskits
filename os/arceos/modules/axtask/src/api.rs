@@ -5,8 +5,12 @@ use alloc::{
     sync::{Arc, Weak},
 };
 
+#[cfg(feature = "lockdep")]
+use ax_kernel_guard::IrqSave;
 use ax_kernel_guard::NoPreemptIrqSave;
 
+#[cfg(feature = "lockdep")]
+pub use crate::lockdep::{HeldLock, HeldLockStack};
 pub(crate) use crate::run_queue::{current_run_queue, select_run_queue};
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
@@ -63,6 +67,38 @@ impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
     }
 }
 
+#[cfg(feature = "lockdep")]
+struct KspinLockdepIfImpl;
+
+#[cfg(feature = "lockdep")]
+#[ax_crate_interface::impl_interface]
+impl ax_kspin::lockdep::KspinLockdepIf for KspinLockdepIfImpl {
+    fn collect_current_task_held_locks(snapshot: &mut ax_kspin::lockdep::HeldLockSnapshot) {
+        let _lockdep_irq_guard = IrqSave::new();
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| snapshot.extend(stack));
+        }
+    }
+
+    fn push_current_task_held_lock(held: ax_kspin::lockdep::HeldLock) {
+        let _lockdep_irq_guard = IrqSave::new();
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| stack.push(held));
+        }
+    }
+
+    fn pop_current_task_held_lock(lock_id: u32) {
+        let _lockdep_irq_guard = IrqSave::new();
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| stack.pop_checked(lock_id));
+        }
+    }
+
+    fn console_write_str(s: &str) {
+        ax_hal::console::write_bytes(s.as_bytes());
+    }
+}
+
 /// Gets the current task, or returns [`None`] if the current task is not
 /// initialized.
 pub fn current_may_uninit() -> Option<CurrentTask> {
@@ -76,6 +112,11 @@ pub fn current_may_uninit() -> Option<CurrentTask> {
 /// Panics if the current task is not initialized.
 pub fn current() -> CurrentTask {
     CurrentTask::get()
+}
+
+#[cfg(feature = "lockdep")]
+pub fn with_current_lockdep_stack<R>(f: impl FnOnce(&mut HeldLockStack) -> R) -> R {
+    current().with_held_locks(f)
 }
 
 /// Initializes the task scheduler (for the primary CPU).

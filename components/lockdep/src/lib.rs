@@ -1,12 +1,22 @@
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(all(not(test), target_os = "none"), no_std)]
 
-#[cfg(any(test, doctest))]
+#[cfg(any(test, doctest, not(target_os = "none")))]
 extern crate std;
 
+mod state;
 mod trace;
 
-pub use self::trace::{dump_trace_buffer, set_trace_enabled};
+pub use self::{
+    state::{
+        HeldLock, HeldLockSnapshot, HeldLockStack, KspinLockdepIf, LockdepCheckError, LockdepMap,
+        PreparedAcquire, current_task_held_lock_snapshot, finish_acquire_task,
+        finish_acquire_with_stack, force_release_task, prepare_acquire_with_snapshot,
+        prepare_acquire_with_snapshot_checked, release_from_stack, release_task,
+    },
+    trace::{dump_trace_buffer, set_trace_enabled},
+};
 
+#[derive(Clone, Copy)]
 pub struct Lockdep {
     addr: usize,
     is_try: bool,

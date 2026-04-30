@@ -13,15 +13,20 @@ use ax_task::{WaitQueue, current, might_sleep};
 pub struct RawMutex {
     wq: WaitQueue,
     owner_id: AtomicU64,
+    #[cfg(feature = "lockdep")]
+    pub(crate) lockdep: crate::lockdep::LockdepMap,
 }
 
 impl RawMutex {
     /// Creates a [`RawMutex`].
     #[inline(always)]
+    #[track_caller]
     pub const fn new() -> Self {
         Self {
             wq: WaitQueue::new(),
             owner_id: AtomicU64::new(0),
+            #[cfg(feature = "lockdep")]
+            lockdep: crate::lockdep::LockdepMap::new(),
         }
     }
 
@@ -46,14 +51,20 @@ unsafe impl lock_api::RawMutex for RawMutex {
     /// value to downstream static items. Can hopefully be replaced with
     /// `const fn new() -> Self` at some point.
     #[allow(clippy::declare_interior_mutable_const)]
-    const INIT: Self = RawMutex::new();
+    const INIT: Self = RawMutex {
+        wq: WaitQueue::new(),
+        owner_id: AtomicU64::new(0),
+        #[cfg(feature = "lockdep")]
+        lockdep: crate::lockdep::LockdepMap::new_dynamic(),
+    };
 
     #[inline(always)]
+    #[track_caller]
     fn lock(&self) {
         might_sleep();
         let current_id = current().id().as_u64();
         #[cfg(feature = "lockdep")]
-        let lockdep = crate::lockdep::Lockdep::prepare(self, false);
+        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, false);
 
         loop {
             // Can fail to lock even if the spinlock is not locked. May be more efficient than `try_lock`
@@ -86,11 +97,12 @@ unsafe impl lock_api::RawMutex for RawMutex {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn try_lock(&self) -> bool {
         might_sleep();
         let current_id = current().id().as_u64();
         #[cfg(feature = "lockdep")]
-        let lockdep = crate::lockdep::Lockdep::prepare(self, true);
+        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, true);
         // The reason for using a strong compare_exchange is explained here:
         // https://github.com/Amanieu/parking_lot/pull/207#issuecomment-575869107
         let acquired = self
