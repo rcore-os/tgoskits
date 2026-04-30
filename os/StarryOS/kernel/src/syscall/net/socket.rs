@@ -1,12 +1,14 @@
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_fs::FS_CONTEXT;
 use ax_task::current;
+use axfs_ng_vfs::{MetadataUpdate, NodeType};
 #[cfg(feature = "vsock")]
 use axnet::vsock::{VsockSocket, VsockStreamTransport};
 use axnet::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     tcp::TcpSocket,
     udp::UdpSocket,
-    unix::{DgramTransport, StreamTransport, UnixSocket},
+    unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
 };
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
@@ -69,7 +71,31 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
 
+    let unix_path = match &addr {
+        SocketAddrEx::Unix(UnixSocketAddr::Path(path)) => Some(path.clone()),
+        _ => None,
+    };
+    let cred = current().as_thread().cred();
+
     Socket::from_fd(fd)?.bind(addr)?;
+
+    if let Some(path) = unix_path {
+        if let Err(err) = FS_CONTEXT
+            .lock()
+            .resolve_no_follow(path.as_ref())
+            .and_then(|loc| {
+                if loc.metadata()?.node_type == NodeType::Socket {
+                    loc.update_metadata(MetadataUpdate {
+                        owner: Some((cred.fsuid, cred.fsgid)),
+                        ..Default::default()
+                    })?;
+                }
+                Ok(())
+            })
+        {
+            warn!("failed to update AF_UNIX socket owner for {path}: {err:?}");
+        }
+    }
 
     Ok(0)
 }
