@@ -453,9 +453,7 @@ pub fn delete_file<B: BlockDevice>(
         debug!("Will free inode:{ino_num} path:{path}");
         free_inode_with_dtime(fs, block_dev, ino_num, &mut target_inode)?;
     } else {
-        debug!(
-            "inode {ino_num} still has {new_links} link(s); removing directory entry only"
-        );
+        debug!("inode {ino_num} still has {new_links} link(s); removing directory entry only");
     }
 
     // Resolve the parent path and child name for the directory-entry removal.
