@@ -51,6 +51,16 @@ impl fmt::Debug for HeldLock {
     }
 }
 
+impl fmt::Display for HeldLock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "id={} class={} addr={:#x} acquired_at={}",
+            self.id, self.class_id, self.addr, self.caller
+        )
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct HeldLockStack {
     depth: usize,
@@ -180,6 +190,26 @@ impl fmt::Debug for HeldLockSnapshot {
             list.entry(&held);
         }
         list.finish()
+    }
+}
+
+struct HeldLockStackDisplay<'a>(&'a HeldLockSnapshot);
+
+impl fmt::Display for HeldLockStackDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.depth == 0 {
+            return write!(f, "  (empty)");
+        }
+
+        for (index, held) in self.0.iter().enumerate() {
+            let relation = if index + 1 == self.0.depth {
+                "top"
+            } else {
+                "held"
+            };
+            writeln!(f, "  [{}] {}: {}", index, relation, held)?;
+        }
+        Ok(())
     }
 }
 
@@ -582,31 +612,40 @@ fn panic_on_lockdep_error(
     caller: &'static Location<'static>,
     held_before: &HeldLockSnapshot,
 ) -> ! {
+    let requested_id = map.lock_id().unwrap_or(0);
+    let requested_class = map.class_id().unwrap_or(0);
     match err {
         LockdepCheckError::Recursive => panic!(
-            "lockdep: recursive {lock_kind} acquisition detected for id={} addr={:#x} at {} with \
-             held stack {:?}",
-            map.lock_id().unwrap_or(0),
+            "lockdep: recursive {lock_kind} acquisition detected\nrequested:\n  id={} class={} \
+             addr={:#x} acquire_at={}\nalready held:\n  {}\nheld stack:\n{}",
+            requested_id,
+            requested_class,
             addr,
             caller,
             held_before
+                .iter()
+                .find(|held| held.id == requested_id)
+                .or_else(|| held_before.iter().next())
+                .expect("held lock snapshot unexpectedly empty"),
+            HeldLockStackDisplay(held_before)
         ),
         LockdepCheckError::OrderInversion => {
             emit_lockdep_marker("lockdep: lock order inversion detected\n");
-            let class_id = map.class_id().unwrap_or(0);
             let held = held_before
                 .iter()
-                .find(|held| with_graph(|graph| graph.reaches(class_id, held.class_id)))
+                .find(|held| with_graph(|graph| graph.reaches(requested_class, held.class_id)))
                 .or_else(|| held_before.iter().next())
                 .expect("held lock snapshot unexpectedly empty");
             panic!(
-                "lockdep: lock order inversion detected while acquiring id={} addr={:#x} at {}; \
-                 held lock {:?}; stack {:?}",
-                map.lock_id().unwrap_or(0),
+                "lockdep: lock order inversion detected\nrequested:\n  kind={} id={} class={} \
+                 addr={:#x} acquire_at={}\nconflicting held lock:\n  {}\nheld stack:\n{}",
+                lock_kind,
+                requested_id,
+                requested_class,
                 addr,
                 caller,
                 held,
-                held_before
+                HeldLockStackDisplay(held_before)
             );
         }
     }
@@ -660,4 +699,46 @@ pub fn release_task(lock_id: Option<u32>) {
 
 pub fn force_release_task(map: &LockdepMap) {
     release_task(map.lock_id());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn held_lock_display_includes_id_class_addr_and_location() {
+        let held = HeldLock {
+            id: 7,
+            class_id: 3,
+            addr: 0x1234,
+            caller: Location::caller(),
+        };
+        let rendered = held.to_string();
+        assert!(rendered.contains("id=7"));
+        assert!(rendered.contains("class=3"));
+        assert!(rendered.contains("addr=0x1234"));
+        assert!(rendered.contains("acquired_at="));
+    }
+
+    #[test]
+    fn held_stack_display_marks_top_entry() {
+        let caller = Location::caller();
+        let mut snapshot = HeldLockSnapshot::new();
+        snapshot.push(HeldLock {
+            id: 1,
+            class_id: 2,
+            addr: 0x10,
+            caller,
+        });
+        snapshot.push(HeldLock {
+            id: 2,
+            class_id: 3,
+            addr: 0x20,
+            caller,
+        });
+
+        let rendered = HeldLockStackDisplay(&snapshot).to_string();
+        assert!(rendered.contains("[0] held: id=1"));
+        assert!(rendered.contains("[1] top: id=2"));
+    }
 }
