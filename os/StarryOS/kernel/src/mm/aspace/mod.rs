@@ -122,7 +122,7 @@ impl AddrSpace {
         }
 
         let offset = start_vaddr.as_usize() as isize - start_paddr.as_usize() as isize;
-        let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
+        let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset, false));
         self.areas.map(area, &mut self.pt, false)?;
         Ok(())
     }

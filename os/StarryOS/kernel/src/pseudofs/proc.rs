@@ -9,10 +9,12 @@ use alloc::{
 };
 use core::{
     ffi::CStr,
+    fmt::Write,
     iter,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ax_hal::paging::MappingFlags;
 use ax_task::{AxCpuMask, AxTaskRef, WeakAxTaskRef, current};
 use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
 use indoc::indoc;
@@ -292,6 +294,68 @@ struct ThreadDir {
     task: WeakAxTaskRef,
 }
 
+impl ThreadDir {
+    fn thread_maps(&self) -> VfsResult<String> {
+        let mut output = String::new();
+
+        let task = match self.task.upgrade() {
+            Some(t) => t,
+            None => return Ok(output),
+        };
+
+        let mm = task.as_thread().proc_data.aspace.lock();
+
+        for area in mm.areas() {
+            let start = area.start();
+            let end = area.end();
+            let backend = area.backend();
+            let (path, file_offset, inode, is_shared) = backend.file_info()?;
+
+            let flag_end = if is_shared { 's' } else { 'p' };
+            let flags = area.flags();
+            let perms = {
+                let r = if flags.contains(MappingFlags::READ) {
+                    'r'
+                } else {
+                    '-'
+                };
+                let w = if flags.contains(MappingFlags::WRITE) {
+                    'w'
+                } else {
+                    '-'
+                };
+                let x = if flags.contains(MappingFlags::EXECUTE) {
+                    'x'
+                } else {
+                    '-'
+                };
+                format!("{}{}{}{}", r, w, x, flag_end)
+            };
+            const MAPS_COL_WIDTH: usize = 25 + core::mem::size_of::<usize>() * 6 - 1;
+            let mut writer = SeqWriter::new(&mut output);
+            write!(
+                &mut writer,
+                "{:08x}-{:08x} {} {:08x} {:02x}:{:02x} {}",
+                start.as_usize(),
+                end.as_usize(),
+                perms,
+                file_offset.unwrap_or(0),
+                0,
+                0,
+                inode.unwrap_or(0),
+            )
+            .map_err(|_| VfsError::InvalidInput)?;
+            writer.pad_to(MAPS_COL_WIDTH)?;
+            if !path.is_empty() {
+                writer.write_str(&path)?;
+            }
+            writer.newline()?;
+        }
+
+        Ok(output)
+    }
+}
+
 impl SimpleDirOps for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
@@ -348,15 +412,10 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "maps" => SimpleFile::new_regular(fs, move || {
-                Ok(indoc! {"
-                    7f000000-7f001000 r--p 00000000 00:00 0          [vdso]
-                    7f001000-7f003000 r-xp 00001000 00:00 0          [vdso]
-                    7f003000-7f005000 r--p 00003000 00:00 0          [vdso]
-                    7f005000-7f007000 rw-p 00005000 00:00 0          [vdso]
-                "})
-            })
-            .into(),
+            "maps" => {
+                let maps = self.thread_maps()?;
+                SimpleFile::new_regular(fs, move || Ok(maps.clone())).into()
+            }
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
             })
@@ -523,6 +582,54 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
 }
 
+pub struct SeqWriter<W: core::fmt::Write> {
+    inner: W,
+    col: usize,
+}
+
+impl<W: core::fmt::Write> SeqWriter<W> {
+    pub fn new(inner: W) -> Self {
+        Self { inner, col: 0 }
+    }
+}
+
+impl<W: core::fmt::Write> SeqWriter<W> {
+    fn write_str(&mut self, s: &str) -> VfsResult<()> {
+        self.col += s.len();
+        self.inner.write_str(s)?;
+        Ok(())
+    }
+
+    #[allow(unused)]
+    fn write_char(&mut self, c: char) -> VfsResult<()> {
+        self.col += c.len_utf8();
+        self.inner.write_char(c)?;
+        Ok(())
+    }
+
+    fn pad_to(&mut self, target: usize) -> VfsResult<()> {
+        if self.col < target {
+            let pad = target - self.col;
+            for _ in 0..pad {
+                self.inner.write_char(' ')?;
+            }
+            self.col = target;
+        }
+        Ok(())
+    }
+
+    fn newline(&mut self) -> VfsResult<()> {
+        self.inner.write_char('\n')?;
+        self.col = 0;
+        Ok(())
+    }
+}
+
+impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write_str(s).map_err(|_| core::fmt::Error)
+    }
+}
 #[cfg(test)]
 mod tests {
     use alloc::{format, string::String};
