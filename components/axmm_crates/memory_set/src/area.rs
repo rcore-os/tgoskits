@@ -66,11 +66,6 @@ impl<B: MappingBackend> MemoryArea<B> {
         self.flags = new_flags;
     }
 
-    /// Changes the end address of the memory area.
-    pub(crate) fn set_end(&mut self, new_end: B::Addr) {
-        self.va_range.end = new_end;
-    }
-
     /// Maps the whole memory area in the page table.
     pub(crate) fn map_area(&self, page_table: &mut B::PageTable) -> MappingResult {
         self.backend

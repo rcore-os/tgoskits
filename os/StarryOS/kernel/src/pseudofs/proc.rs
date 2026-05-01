@@ -15,8 +15,8 @@ use core::{
 };
 
 use ax_hal::paging::MappingFlags;
-use ax_task::{AxCpuMask, AxTaskRef, WeakAxTaskRef, current};
-use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
+use ax_task::{AxCpuMask, AxTaskRef, TaskInner, WeakAxTaskRef, current};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
 use indoc::indoc;
 use starry_process::Process;
 
@@ -309,7 +309,7 @@ impl ThreadDir {
             let start = area.start();
             let end = area.end();
             let backend = area.backend();
-            let (path, file_offset, inode, is_shared) = backend.file_info()?;
+            let (path, file_offset, inode, dev, is_shared) = backend.file_info()?;
 
             let flag_end = if is_shared { 's' } else { 'p' };
             let flags = area.flags();
@@ -333,6 +333,11 @@ impl ThreadDir {
             };
             const MAPS_COL_WIDTH: usize = 25 + core::mem::size_of::<usize>() * 6 - 1;
             let mut writer = SeqWriter::new(&mut output);
+
+            let dev = dev
+                .map(|dev| DeviceId(dev))
+                .map(|dev| (dev.major(), dev.minor()));
+
             write!(
                 &mut writer,
                 "{:08x}-{:08x} {} {:08x} {:02x}:{:02x} {}",
@@ -340,8 +345,8 @@ impl ThreadDir {
                 end.as_usize(),
                 perms,
                 file_offset.unwrap_or(0),
-                0,
-                0,
+                dev.map(|(major, minor)| major).unwrap_or(0),
+                dev.map(|(major, minor)| minor).unwrap_or(0),
                 inode.unwrap_or(0),
             )
             .map_err(|_| VfsError::InvalidInput)?;

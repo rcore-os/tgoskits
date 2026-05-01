@@ -163,7 +163,7 @@ impl CowBackend {
         Ok(())
     }
 
-    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, bool)> {
+    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, Option<u64>, bool)> {
         let loc = self
             .file
             .as_ref()
@@ -171,11 +171,12 @@ impl CowBackend {
         if let Some((loc, offset)) = loc {
             let path = loc.absolute_path().map(|pb| pb.to_string())?;
             let inode = loc.inode();
+            let dev = loc.metadata()?.device;
             let offset = align_down_4k(offset as usize) as u64;
-            return Ok((path, Some(offset), Some(inode), self.shared));
+            return Ok((path, Some(offset), Some(inode), Some(dev), self.shared));
         }
         if let Some(name) = &self.name {
-            return Ok((name.clone(), None, None, self.shared));
+            return Ok((name.clone(), None, None, None, self.shared));
         }
         Err(AxError::InvalidInput)
     }

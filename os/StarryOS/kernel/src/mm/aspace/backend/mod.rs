@@ -138,11 +138,11 @@ impl Backend {
     /// Returns the file information if this is a file-backed mapping, or `None` otherwise.
     ///
     /// The returned tuple contains the file name, offset, inode and whether the mapping is shared.
-    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, bool)> {
+    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, Option<u64>, bool)> {
         match self {
             Backend::Cow(b) => b.file_info(),
-            Backend::Linear(b) => Ok(("".to_string(), None, None, b.is_shared())),
-            Backend::Shared(_) => Ok(("".to_string(), None, None, true)),
+            Backend::Linear(b) => Ok(("".to_string(), None, None, None, b.is_shared())),
+            Backend::Shared(_) => Ok(("".to_string(), None, None, None, true)),
             Backend::File(b) => b.file_info(),
         }
     }

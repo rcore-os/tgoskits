@@ -115,12 +115,13 @@ impl FileBackend {
         Arc::downgrade(&self.0.futex_handle)
     }
 
-    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, bool)> {
+    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, Option<u64>, bool)> {
         let loc = self.0.cache.location();
         let name = loc.absolute_path().map(|pb| pb.to_string())?;
         let offset = (self.0.file_data.lock().offset_page as u64) * PAGE_SIZE_4K as u64;
         let inode = loc.inode();
-        Ok((name, Some(offset), Some(inode), self.0.shared))
+        let dev = loc.metadata()?.device;
+        Ok((name, Some(offset), Some(inode), Some(dev), self.0.shared))
     }
 }
 
