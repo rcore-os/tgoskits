@@ -23,15 +23,22 @@ static mut SECONDARY_BOOT_STACK: [[u8; TASK_STACK_SIZE]; MAX_CPU_NUM - 1] =
 
 static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
+#[cfg(feature = "multitask")]
+fn secondary_boot_stack_bottom(logic_cpu_id: usize) -> VirtAddr {
+    VirtAddr::from(unsafe { SECONDARY_BOOT_STACK[logic_cpu_id].as_ptr() as usize })
+}
+
+fn secondary_boot_stack_top(logic_cpu_id: usize) -> VirtAddr {
+    VirtAddr::from(unsafe { SECONDARY_BOOT_STACK[logic_cpu_id].as_ptr_range().end as usize })
+}
+
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn start_secondary_cpus(primary_cpu_id: usize) {
     let mut logic_cpu_id = 0;
     let cpu_num = ax_hal::cpu_num();
     for i in 0..cpu_num {
         if i != primary_cpu_id && logic_cpu_id < cpu_num - 1 {
-            let stack_top = virt_to_phys(VirtAddr::from(unsafe {
-                SECONDARY_BOOT_STACK[logic_cpu_id].as_ptr_range().end as usize
-            }));
+            let stack_top = virt_to_phys(secondary_boot_stack_top(logic_cpu_id));
 
             debug!("starting CPU {i}...");
             ax_hal::power::cpu_boot(i, stack_top.as_usize());
@@ -62,8 +69,10 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
 
     ax_hal::init_later_secondary(cpu_id);
 
+    // SECONDARY_BOOT_STACK is indexed by the secondary CPU's 0-based slot,
+    // which is derived from the logical cpu_id by subtracting the BSP.
     #[cfg(feature = "multitask")]
-    ax_task::init_scheduler_secondary();
+    ax_task::init_scheduler_secondary(secondary_boot_stack_bottom(cpu_id - 1), TASK_STACK_SIZE);
 
     #[cfg(feature = "ipi")]
     ax_ipi::init();

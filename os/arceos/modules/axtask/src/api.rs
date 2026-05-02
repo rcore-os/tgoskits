@@ -8,6 +8,7 @@ use alloc::{
 #[cfg(feature = "lockdep")]
 use ax_kernel_guard::IrqSave;
 use ax_kernel_guard::NoPreemptIrqSave;
+use ax_memory_addr::VirtAddr;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
@@ -145,8 +146,8 @@ pub(crate) fn cpu_mask_full() -> AxCpuMask {
 }
 
 /// Initializes the task scheduler for secondary CPUs.
-pub fn init_scheduler_secondary() {
-    crate::run_queue::init_secondary();
+pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
+    crate::run_queue::init_secondary(stack_ptr, stack_size);
 }
 
 /// Handles periodic timer ticks for the task manager.
