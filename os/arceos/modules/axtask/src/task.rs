@@ -23,6 +23,11 @@ use futures_util::task::AtomicWaker;
 use crate::lockdep::HeldLockStack;
 use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
 
+#[cfg(all(feature = "stack-canary", target_pointer_width = "64"))]
+const STACK_END_MAGIC: usize = 0x57AC_CE11_57AC_CE11usize;
+#[cfg(all(feature = "stack-canary", target_pointer_width = "32"))]
+const STACK_END_MAGIC: usize = 0x57AC_CE11usize;
+
 /// A unique identifier for a thread.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct TaskId(u64);
@@ -478,6 +483,25 @@ impl TaskInner {
         self.ctx.get()
     }
 
+    #[cfg(feature = "stack-canary")]
+    #[inline]
+    pub(crate) fn check_stack_canary(&self) {
+        if let Some(kstack) = &self.kstack {
+            if kstack.is_canary_intact() {
+                return;
+            }
+
+            panic!(
+                "stack overflow/corruption detected for {}: stack=[{:#x}..{:#x}), expected \
+                 magic={:#x}",
+                self.id_name(),
+                kstack.bottom().as_usize(),
+                kstack.top().as_usize(),
+                STACK_END_MAGIC
+            );
+        };
+    }
+
     /// Set the CPU ID where the task is running or will run.
     #[cfg(feature = "smp")]
     #[inline]
@@ -529,20 +553,80 @@ struct TaskStack {
 impl TaskStack {
     pub fn alloc(size: usize) -> Self {
         let layout = Layout::from_size_align(size, 16).unwrap();
-        Self {
-            ptr: NonNull::new(unsafe { alloc::alloc::alloc(layout) }).unwrap(),
-            layout,
-        }
+        let ptr = NonNull::new(unsafe { alloc::alloc::alloc(layout) }).unwrap();
+        let stack = Self { ptr, layout };
+        #[cfg(feature = "stack-canary")]
+        unsafe {
+            stack.write_canary()
+        };
+        stack
     }
 
+    #[cfg(feature = "stack-canary")]
+    #[inline]
+    pub const fn bottom(&self) -> VirtAddr {
+        unsafe { core::mem::transmute(self.ptr.as_ptr()) }
+    }
+
+    #[inline]
     pub const fn top(&self) -> VirtAddr {
         unsafe { core::mem::transmute(self.ptr.as_ptr().add(self.layout.size())) }
+    }
+
+    #[inline]
+    #[cfg(feature = "stack-canary")]
+    fn canary_ptr(&self) -> *mut usize {
+        self.ptr.as_ptr().cast()
+    }
+
+    #[inline]
+    #[cfg(feature = "stack-canary")]
+    unsafe fn write_canary(&self) {
+        unsafe { self.canary_ptr().write(STACK_END_MAGIC) };
+    }
+
+    #[inline]
+    #[cfg(feature = "stack-canary")]
+    pub fn is_canary_intact(&self) -> bool {
+        unsafe { self.canary_ptr().read() == STACK_END_MAGIC }
+    }
+
+    #[cfg(test)]
+    #[cfg(feature = "stack-canary")]
+    fn corrupt_canary_for_test(&self) {
+        unsafe { self.canary_ptr().write(0) };
     }
 }
 
 impl Drop for TaskStack {
     fn drop(&mut self) {
         unsafe { alloc::alloc::dealloc(self.ptr.as_ptr(), self.layout) }
+    }
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::TaskStack;
+
+    #[cfg(feature = "stack-canary")]
+    #[test]
+    fn task_stack_canary_detects_corruption() {
+        let stack = TaskStack::alloc(0x1000);
+        assert!(stack.is_canary_intact());
+
+        stack.corrupt_canary_for_test();
+
+        assert!(!stack.is_canary_intact());
+    }
+
+    #[cfg(feature = "stack-canary")]
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn task_stack_top_stays_16_byte_aligned() {
+        // x86_64 TaskContext::init() builds the initial switch frame from
+        // kstack_top and assumes the ABI-required 16-byte stack alignment.
+        let stack = TaskStack::alloc(0x1000);
+        assert_eq!(stack.top().as_usize() % 16, 0);
     }
 }
 

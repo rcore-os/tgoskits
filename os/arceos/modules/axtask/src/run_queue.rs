@@ -556,6 +556,8 @@ impl AxRunQueue {
             prev_task.id_name(),
             next_task.id_name()
         );
+        #[cfg(feature = "stack-canary")]
+        prev_task.check_stack_canary();
         #[cfg(feature = "preempt")]
         next_task.set_preempt_pending(false);
         next_task.set_state(TaskState::Running);

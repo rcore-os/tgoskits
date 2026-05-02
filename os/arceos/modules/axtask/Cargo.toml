@@ -12,6 +12,7 @@ default = []
 
 irq = ["ax-hal/irq", "dep:ax-timer-list"]
 multitask = [
+  "stack-canary",
   "dep:ax-config",
   "dep:axpoll",
   "dep:ax-sched",
@@ -27,6 +28,7 @@ multitask = [
 ]
 preempt = ["irq", "ax-percpu?/preempt", "ax-kernel-guard/preempt"]
 smp = ["ax-kspin/smp"]
+stack-canary = []
 lockdep = [
   "multitask",
   "ax-kspin/lockdep",
