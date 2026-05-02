@@ -53,6 +53,25 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; ax_config::plat::M
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
 
+#[cfg(any(not(test), target_os = "none"))]
+fn main_task_stack() -> TaskStack {
+    unsafe extern "C" {
+        fn boot_stack();
+        fn boot_stack_top();
+    }
+
+    TaskStack::borrowed(
+        VirtAddr::from(boot_stack as *const () as usize),
+        (boot_stack_top as *const () as usize) - (boot_stack as *const () as usize),
+        TASK_STACK_ALIGN,
+    )
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+fn main_task_stack() -> TaskStack {
+    TaskStack::alloc(ax_config::TASK_STACK_SIZE)
+}
+
 /// Returns a reference to the current run queue in [`CurrentRunQueueRef`].
 ///
 /// ## Safety
@@ -688,19 +707,7 @@ pub(crate) fn init() {
     });
 
     // Put the subsequent execution into the `main` task.
-    unsafe extern "C" {
-        fn boot_stack();
-        fn boot_stack_top();
-    }
-    let main_task = TaskInner::new_init(
-        "main".into(),
-        TaskStack::borrowed(
-            VirtAddr::from(boot_stack as *const () as usize),
-            (boot_stack_top as *const () as usize) - (boot_stack as *const () as usize),
-            TASK_STACK_ALIGN,
-        ),
-    )
-    .into_arc();
+    let main_task = TaskInner::new_init("main".into(), main_task_stack()).into_arc();
     main_task.set_state(TaskState::Running);
     unsafe { CurrentTask::init_current(main_task) }
 

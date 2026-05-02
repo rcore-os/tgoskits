@@ -624,7 +624,7 @@ impl Drop for TaskStack {
 
 #[cfg(test)]
 mod stack_tests {
-    use super::TaskStack;
+    use super::{TASK_STACK_ALIGN, TaskStack};
 
     #[cfg(feature = "stack-canary")]
     #[test]
