@@ -21,30 +21,42 @@ use ax_hal::mem::{VirtAddr, virt_to_phys};
 static mut SECONDARY_BOOT_STACK: [[u8; TASK_STACK_SIZE]; MAX_CPU_NUM - 1] =
     [[0; TASK_STACK_SIZE]; MAX_CPU_NUM - 1];
 
+static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; MAX_CPU_NUM - 1] =
+    [const { AtomicUsize::new(usize::MAX) }; MAX_CPU_NUM - 1];
+
 static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
 #[cfg(feature = "multitask")]
-fn secondary_boot_stack_bottom(logic_cpu_id: usize) -> VirtAddr {
-    VirtAddr::from(unsafe { SECONDARY_BOOT_STACK[logic_cpu_id].as_ptr() as usize })
+fn secondary_boot_stack_bottom(slot: usize) -> VirtAddr {
+    VirtAddr::from(unsafe { SECONDARY_BOOT_STACK[slot].as_ptr() as usize })
 }
 
-fn secondary_boot_stack_top(logic_cpu_id: usize) -> VirtAddr {
-    VirtAddr::from(unsafe { SECONDARY_BOOT_STACK[logic_cpu_id].as_ptr_range().end as usize })
+fn secondary_boot_stack_top(slot: usize) -> VirtAddr {
+    VirtAddr::from(unsafe { SECONDARY_BOOT_STACK[slot].as_ptr_range().end as usize })
+}
+
+#[cfg(feature = "multitask")]
+fn secondary_slot_from_cpu_id(cpu_id: usize) -> usize {
+    SECONDARY_CPUID_BY_SLOT
+        .iter()
+        .position(|slot_cpu_id| slot_cpu_id.load(Ordering::Acquire) == cpu_id)
+        .unwrap_or_else(|| panic!("secondary slot is not initialized for cpu_id {cpu_id}"))
 }
 
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn start_secondary_cpus(primary_cpu_id: usize) {
-    let mut logic_cpu_id = 0;
+    let mut slot = 0;
     let cpu_num = ax_hal::cpu_num();
     for i in 0..cpu_num {
-        if i != primary_cpu_id && logic_cpu_id < cpu_num - 1 {
-            let stack_top = virt_to_phys(secondary_boot_stack_top(logic_cpu_id));
+        if i != primary_cpu_id && slot < cpu_num - 1 {
+            SECONDARY_CPUID_BY_SLOT[slot].store(i, Ordering::Release);
+            let stack_top = virt_to_phys(secondary_boot_stack_top(slot));
 
             debug!("starting CPU {i}...");
             ax_hal::power::cpu_boot(i, stack_top.as_usize());
-            logic_cpu_id += 1;
+            slot += 1;
 
-            while ENTERED_CPUS.load(Ordering::Acquire) <= logic_cpu_id {
+            while ENTERED_CPUS.load(Ordering::Acquire) <= slot {
                 core::hint::spin_loop();
             }
         }
@@ -69,10 +81,11 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
 
     ax_hal::init_later_secondary(cpu_id);
 
-    // SECONDARY_BOOT_STACK is indexed by the secondary CPU's 0-based slot,
-    // which is derived from the logical cpu_id by subtracting the BSP.
     #[cfg(feature = "multitask")]
-    ax_task::init_scheduler_secondary(secondary_boot_stack_bottom(cpu_id - 1), TASK_STACK_SIZE);
+    ax_task::init_scheduler_secondary(
+        secondary_boot_stack_bottom(secondary_slot_from_cpu_id(cpu_id)),
+        TASK_STACK_SIZE,
+    );
 
     #[cfg(feature = "ipi")]
     ax_ipi::init();
