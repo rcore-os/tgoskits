@@ -10,6 +10,7 @@ pub(crate) const TEST_PACKAGES: &[&str] = &[
     "arceos-net-httpclient",
     "arceos-net-httpserver",
     "arceos-irq",
+    "arceos-lockdep",
     "arceos-parallel",
     "arceos-priority",
     "arceos-fs-shell",

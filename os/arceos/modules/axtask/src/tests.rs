@@ -34,6 +34,11 @@ where
     }
 }
 
+#[cfg(feature = "lockdep")]
+const RAW_TASK_STACK_SIZE: usize = 0x10000;
+#[cfg(not(feature = "lockdep"))]
+const RAW_TASK_STACK_SIZE: usize = 0x1000;
+
 #[test]
 fn test_sched_fifo() {
     run_in_test_scheduler(|| {
@@ -51,7 +56,7 @@ fn test_sched_fifo() {
                     assert_eq!(order, i); // FIFO scheduler
                 },
                 format!("T{i}"),
-                0x1000,
+                RAW_TASK_STACK_SIZE,
             );
         }
 
@@ -146,7 +151,7 @@ fn test_task_join() {
                     ax_task::exit(i as _);
                 },
                 format!("T{i}"),
-                0x1000,
+                RAW_TASK_STACK_SIZE,
             ));
         }
 

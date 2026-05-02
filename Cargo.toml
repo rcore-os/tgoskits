@@ -85,6 +85,7 @@ members = [
     "components/handler_table",
     "components/int_ratio",
     "components/kernel_guard",
+    "components/lockdep",
     "components/kspin",
     "components/linked_list_r4l",
     "components/loongarch_vcpu",
@@ -161,6 +162,7 @@ members = [
     "test-suit/arceos/rust/task/affinity",
     "test-suit/arceos/rust/task/ipi",
     "test-suit/arceos/rust/task/irq",
+    "test-suit/arceos/rust/task/lockdep",
     "test-suit/arceos/rust/task/parallel",
     "test-suit/arceos/rust/task/priority",
     "test-suit/arceos/rust/task/sleep",
@@ -179,6 +181,7 @@ arceos-exception = { version = "0.3.1", path = "test-suit/arceos/rust/exception"
 arceos-fs-shell = { version = "0.3.1", path = "test-suit/arceos/rust/fs/shell" }
 arceos-ipi = { version = "0.3.0", path = "test-suit/arceos/rust/task/ipi" }
 arceos-irq = { version = "0.3.1", path = "test-suit/arceos/rust/task/irq" }
+arceos-lockdep = { version = "0.3.1", path = "test-suit/arceos/rust/task/lockdep" }
 arceos-memtest = { version = "0.3.1", path = "test-suit/arceos/rust/memtest" }
 arceos-net-echoserver = { version = "0.3.1", path = "test-suit/arceos/rust/net/echoserver" }
 arceos-net-httpclient = { version = "0.3.1", path = "test-suit/arceos/rust/net/httpclient" }
@@ -236,6 +239,7 @@ ax-int-ratio = { version = "0.3.6", path = "components/int_ratio" }
 ax-io = { version = "0.5.4", path = "components/axio" }
 ax-ipi = { version = "0.5.11", path = "os/arceos/modules/axipi" }
 ax-kernel-guard = { version = "0.3.8", path = "components/kernel_guard" }
+ax-lockdep = { version = "0.1.0", path = "components/lockdep" }
 ax-kspin = { version = "0.3.7", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.6", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.11", path = "os/arceos/ulib/axlibc" }
