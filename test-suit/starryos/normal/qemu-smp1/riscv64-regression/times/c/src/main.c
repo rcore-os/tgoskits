@@ -26,6 +26,7 @@ static void busy_work(void) {
     for (int i = 0; i < 100000; i++) {
         sum += i;
     }
+    (void)sum;
 }
 
 int main(void) {

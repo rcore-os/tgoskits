@@ -39,6 +39,7 @@ int main(void)
         CHECK_RET(clock_gettime(CLOCK_MONOTONIC, &t1), 0, "单调递增: 取 t1");
         volatile int x = 0;
         for (int i = 0; i < 100000; i++) x += i;
+        (void)x;
         CHECK_RET(clock_gettime(CLOCK_MONOTONIC, &t2), 0, "单调递增: 取 t2");
         long ns1 = t1.tv_sec * 1000000000L + t1.tv_nsec;
         long ns2 = t2.tv_sec * 1000000000L + t2.tv_nsec;

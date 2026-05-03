@@ -53,7 +53,7 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; ax_config::plat::M
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
 
-#[cfg(any(not(test), target_os = "none"))]
+#[cfg(target_os = "none")]
 fn main_task_stack() -> TaskStack {
     unsafe extern "C" {
         fn boot_stack();
@@ -67,7 +67,7 @@ fn main_task_stack() -> TaskStack {
     )
 }
 
-#[cfg(all(test, not(target_os = "none")))]
+#[cfg(not(target_os = "none"))]
 fn main_task_stack() -> TaskStack {
     TaskStack::alloc(ax_config::TASK_STACK_SIZE)
 }
