@@ -1087,10 +1087,91 @@ static void test_posix_timer_fork_not_inherited(void) {
 }
 
 /* ============================================================
+ * POSIX timer exec-not-inherited test
+ *
+ * POSIX (timer_create(2)): "The timers created by timer_create()
+ * are disarmed and deleted during an execve(2)."
+ * ============================================================ */
+
+static void test_posix_timer_exec_not_inherited(char *argv0) {
+    timer_t tid;
+    struct sigevent sev = { .sigev_notify = SIGEV_NONE };
+    int ret;
+
+    char *new_argv[] = { argv0, "exec-child", NULL, NULL };
+    char tid_str[64];
+
+    /* We use fork + execve so we can wait for the result */
+    pid_t pid = fork();
+    if (pid < 0) {
+        printf("  FAIL | %s:%d | fork: %s\n", __FILE__, __LINE__, strerror(errno));
+        __fail++;
+        return;
+    }
+
+    if (pid == 0) {
+        /* Create and arm a timer in the child process BEFORE execve */
+        errno = 0;
+        ret = timer_create(CLOCK_MONOTONIC, &sev, &tid);
+        if (ret != 0) {
+            _exit(1);
+        }
+
+        struct itimerspec its = {
+            .it_value    = { .tv_sec = 60, .tv_nsec = 0 },
+            .it_interval = { .tv_sec = 0,  .tv_nsec = 0 },
+        };
+        timer_settime(tid, 0, &its, NULL);
+
+        /* Convert timer ID to string to pass via execve */
+        sprintf(tid_str, "%p", (void *)tid);
+        new_argv[2] = tid_str;
+
+        /* Child: exec back to itself with special argument */
+        execve(argv0, new_argv, NULL);
+        /* If we reach here, exec failed */
+        perror("execve");
+        _exit(1);
+    }
+
+    /* Parent: wait for child */
+    int status = 0;
+    pid_t w = waitpid(pid, &status, 0);
+
+    CHECK(w == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "execve should clear POSIX timers (EINVAL expected in child)");
+}
+
+static void handle_exec_child(int argc, char *argv[]) {
+    if (argc < 3 || strcmp(argv[1], "exec-child") != 0) {
+        return;
+    }
+
+    /* This is the child process after execve */
+    timer_t tid;
+    sscanf(argv[2], "%p", (void **)&tid);
+
+    struct itimerspec its;
+    errno = 0;
+    /* timer_gettime on the parent's timer ID should fail with EINVAL */
+    int r = timer_gettime(tid, &its);
+    if (r == -1 && errno == EINVAL) {
+        /* Correct: timer not inherited across execve */
+        _exit(0);
+    }
+    /* Wrong: timer was inherited or unexpected error */
+    printf("  exec-child: timer_gettime(tid=%p) returned %d, errno=%d (%s)\n",
+           (void *)tid, r, errno, strerror(errno));
+    _exit(1);
+}
+
+/* ============================================================
  * main
  * ============================================================ */
 
-int main(void) {
+int main(int argc, char *argv[]) {
+    handle_exec_child(argc, argv);
+
     TEST_START("timer-family: getitimer, setitimer, timer_create, timer_settime, timer_gettime");
 
     printf("\n--- setitimer/getitimer error conditions ---\n");
@@ -1143,6 +1224,9 @@ int main(void) {
 
     printf("\n--- timer fork-not-inherited tests ---\n");
     test_posix_timer_fork_not_inherited();
+
+    printf("\n--- timer exec-not-inherited tests ---\n");
+    test_posix_timer_exec_not_inherited(argv[0]);
 
     printf("------------------------------------------------\n");
     printf("  DONE: %d pass, %d fail\n", __pass, __fail);

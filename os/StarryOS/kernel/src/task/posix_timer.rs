@@ -103,6 +103,11 @@ impl PosixTimerTable {
         self.timers.lock().remove(&id).is_some()
     }
 
+    /// Clear all timers. Used on execve.
+    pub fn clear(&self) {
+        self.timers.lock().clear();
+    }
+
     /// Set (arm/disarm) a timer. Returns the old (interval, remaining) in nanos.
     pub fn settime(
         &self,
