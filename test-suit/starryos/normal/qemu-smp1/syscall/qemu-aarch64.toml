@@ -33,6 +33,7 @@ test_commands = [
     "/usr/bin/test_sa_restart",
     "/usr/bin/test-sigaltstack",
     "/usr/bin/test-stat-family",
+    "/usr/bin/test-vfork",
     "/usr/bin/test_ioctl_fionbio_int",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
