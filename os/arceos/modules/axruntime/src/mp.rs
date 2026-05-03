@@ -17,30 +17,78 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use ax_config::{TASK_STACK_SIZE, plat::MAX_CPU_NUM};
 use ax_hal::mem::{VirtAddr, virt_to_phys};
 
-#[unsafe(link_section = ".bss.stack")]
-static mut SECONDARY_BOOT_STACK: [[u8; TASK_STACK_SIZE]; MAX_CPU_NUM - 1] =
-    [[0; TASK_STACK_SIZE]; MAX_CPU_NUM - 1];
+#[cfg(not(feature = "plat-dyn"))]
+struct SecondaryBootStack {
+    pages: ax_alloc::GlobalPage,
+}
+
+#[cfg(not(feature = "plat-dyn"))]
+impl SecondaryBootStack {
+    fn alloc() -> Self {
+        use ax_hal::mem::PAGE_SIZE_4K;
+        use ax_memory_addr::align_up_4k;
+        let stack_size = align_up_4k(TASK_STACK_SIZE);
+        let mut pages =
+            ax_alloc::GlobalPage::alloc_contiguous(stack_size / PAGE_SIZE_4K, PAGE_SIZE_4K)
+                .expect("failed to allocate secondary boot stack");
+        pages.zero();
+        Self { pages }
+    }
+
+    fn bottom(&self) -> VirtAddr {
+        self.pages.start_vaddr()
+    }
+
+    fn top(&self) -> VirtAddr {
+        self.bottom() + self.pages.size()
+    }
+}
+
+#[cfg(not(feature = "plat-dyn"))]
+static SECONDARY_BOOT_STACKS: [ax_lazyinit::LazyInit<SecondaryBootStack>; MAX_CPU_NUM - 1] =
+    [const { ax_lazyinit::LazyInit::new() }; MAX_CPU_NUM - 1];
 
 static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; MAX_CPU_NUM - 1] =
     [const { AtomicUsize::new(usize::MAX) }; MAX_CPU_NUM - 1];
 
 static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
-#[cfg(feature = "multitask")]
+#[cfg(all(feature = "multitask", not(feature = "plat-dyn")))]
 fn secondary_boot_stack_bottom(slot: usize) -> VirtAddr {
-    VirtAddr::from(unsafe { SECONDARY_BOOT_STACK[slot].as_ptr() as usize })
+    SECONDARY_BOOT_STACKS[slot].bottom()
 }
 
+#[cfg(not(feature = "plat-dyn"))]
 fn secondary_boot_stack_top(slot: usize) -> VirtAddr {
-    VirtAddr::from(unsafe { SECONDARY_BOOT_STACK[slot].as_ptr_range().end as usize })
+    SECONDARY_BOOT_STACKS[slot].top()
 }
 
-#[cfg(feature = "multitask")]
+#[cfg(all(feature = "multitask", not(feature = "plat-dyn")))]
 fn secondary_slot_from_cpu_id(cpu_id: usize) -> usize {
     SECONDARY_CPUID_BY_SLOT
         .iter()
         .position(|slot_cpu_id| slot_cpu_id.load(Ordering::Acquire) == cpu_id)
         .unwrap_or_else(|| panic!("secondary slot is not initialized for cpu_id {cpu_id}"))
+}
+
+#[cfg(feature = "multitask")]
+fn secondary_boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
+    #[cfg(feature = "plat-dyn")]
+    {
+        ax_hal::mem::boot_stack_bounds(cpu_id)
+    }
+    #[cfg(not(feature = "plat-dyn"))]
+    {
+        let slot = secondary_slot_from_cpu_id(cpu_id);
+        (secondary_boot_stack_bottom(slot), TASK_STACK_SIZE)
+    }
+}
+
+fn prepare_secondary_boot_stack(slot: usize, cpu_id: usize) {
+    #[cfg(not(feature = "plat-dyn"))]
+    SECONDARY_BOOT_STACKS[slot].init_once(SecondaryBootStack::alloc());
+
+    SECONDARY_CPUID_BY_SLOT[slot].store(cpu_id, Ordering::Release);
 }
 
 #[allow(clippy::absurd_extreme_comparisons)]
@@ -49,7 +97,8 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
     let cpu_num = ax_hal::cpu_num();
     for i in 0..cpu_num {
         if i != primary_cpu_id && slot < cpu_num - 1 {
-            SECONDARY_CPUID_BY_SLOT[slot].store(i, Ordering::Release);
+            prepare_secondary_boot_stack(slot, i);
+
             let stack_top = virt_to_phys(secondary_boot_stack_top(slot));
 
             debug!("starting CPU {i}...");
@@ -82,10 +131,10 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ax_hal::init_later_secondary(cpu_id);
 
     #[cfg(feature = "multitask")]
-    ax_task::init_scheduler_secondary(
-        secondary_boot_stack_bottom(secondary_slot_from_cpu_id(cpu_id)),
-        TASK_STACK_SIZE,
-    );
+    {
+        let (stack_ptr, stack_size) = secondary_boot_stack_bounds(cpu_id);
+        ax_task::init_scheduler_secondary(stack_ptr, stack_size);
+    }
 
     #[cfg(feature = "ipi")]
     ax_ipi::init();
