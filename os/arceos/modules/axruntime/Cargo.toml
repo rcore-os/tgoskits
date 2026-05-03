@@ -21,7 +21,7 @@ rtc = []
 smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
-plat-dyn = ["ax-driver/dyn", "paging", "buddy-slab"]
+plat-dyn = ["ax-hal/plat-dyn", "ax-driver/dyn", "paging", "buddy-slab"]
 
 ax-driver = ["dep:ax-driver"]
 display = ["ax-driver", "dep:ax-display"]

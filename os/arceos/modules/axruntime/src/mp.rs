@@ -14,8 +14,12 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_config::{TASK_STACK_SIZE, plat::MAX_CPU_NUM};
-use ax_hal::mem::{VirtAddr, virt_to_phys};
+use ax_config::plat::MAX_CPU_NUM;
+#[cfg(not(feature = "plat-dyn"))]
+use ax_config::TASK_STACK_SIZE;
+use ax_hal::mem::VirtAddr;
+#[cfg(not(feature = "plat-dyn"))]
+use ax_hal::mem::virt_to_phys;
 
 #[cfg(not(feature = "plat-dyn"))]
 struct SecondaryBootStack {
@@ -99,10 +103,13 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
         if i != primary_cpu_id && slot < cpu_num - 1 {
             prepare_secondary_boot_stack(slot, i);
 
-            let stack_top = virt_to_phys(secondary_boot_stack_top(slot));
+            #[cfg(feature = "plat-dyn")]
+            let stack_top = 0;
+            #[cfg(not(feature = "plat-dyn"))]
+            let stack_top = virt_to_phys(secondary_boot_stack_top(slot)).as_usize();
 
             debug!("starting CPU {i}...");
-            ax_hal::power::cpu_boot(i, stack_top.as_usize());
+            ax_hal::power::cpu_boot(i, stack_top);
             slot += 1;
 
             while ENTERED_CPUS.load(Ordering::Acquire) <= slot {
