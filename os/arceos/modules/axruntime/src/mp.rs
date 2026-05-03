@@ -14,9 +14,9 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_config::plat::MAX_CPU_NUM;
 #[cfg(not(feature = "plat-dyn"))]
 use ax_config::TASK_STACK_SIZE;
+use ax_config::plat::MAX_CPU_NUM;
 use ax_hal::mem::VirtAddr;
 #[cfg(not(feature = "plat-dyn"))]
 use ax_hal::mem::virt_to_phys;
