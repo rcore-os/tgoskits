@@ -80,7 +80,6 @@ jobs:
               - "xtask/**"
             base_container_publish:
               - "container/Dockerfile"
-              - "container/Dockerfile.axvisor-lvz"
               - "rust-toolchain.toml"
             axvisor_lvz_container_publish:
               - "container/Dockerfile.axvisor-lvz"
