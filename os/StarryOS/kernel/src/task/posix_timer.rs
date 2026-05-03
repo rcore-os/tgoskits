@@ -6,6 +6,7 @@ use core::{
     time::Duration,
 };
 
+use ax_errno::{AxError, AxResult};
 use ax_hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_task::WeakAxTaskRef;
 use linux_raw_sys::general::{
@@ -45,6 +46,20 @@ impl Default for PosixTimerTable {
     }
 }
 
+/// Returns true if the clock is valid for use with POSIX timers (timer_create).
+/// Linux returns EOPNOTSUPP for RAW/COARSE clocks.
+fn is_supported_timer_clock(clock_id: u32) -> bool {
+    matches!(
+        clock_id,
+        CLOCK_REALTIME
+            | CLOCK_MONOTONIC
+            | CLOCK_BOOTTIME
+            | CLOCK_PROCESS_CPUTIME_ID
+            | CLOCK_THREAD_CPUTIME_ID
+    )
+}
+
+/// Returns true if the clock is known by the system at all.
 fn is_valid_clock(clock_id: u32) -> bool {
     matches!(
         clock_id,
@@ -71,20 +86,24 @@ fn clock_now_ns(clock_id: u32) -> u64 {
 
 impl PosixTimerTable {
     /// Create a new POSIX timer. Returns the timer ID.
-    pub fn create(&self, clock_id: u32, sigev_notify: u32, sigev_signo: i32) -> Result<i32, ()> {
-        if !is_valid_clock(clock_id) {
-            return Err(());
+    pub fn create(&self, clock_id: u32, sigev_notify: u32, sigev_signo: i32) -> AxResult<i32> {
+        if !is_supported_timer_clock(clock_id) {
+            if is_valid_clock(clock_id) {
+                return Err(AxError::OperationNotSupported);
+            } else {
+                return Err(AxError::InvalidInput);
+            }
         }
 
         let signo = match sigev_notify {
             SIGEV_NONE => None,
             SIGEV_SIGNAL => {
                 if sigev_signo <= 0 || sigev_signo > 64 {
-                    return Err(());
+                    return Err(AxError::InvalidInput);
                 }
                 Signo::from_repr(sigev_signo as u8)
             }
-            _ => return Err(()),
+            _ => return Err(AxError::InvalidInput),
         };
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);

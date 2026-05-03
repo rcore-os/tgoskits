@@ -161,11 +161,7 @@ pub fn sys_timer_create(
         (SIGEV_SIGNAL, 14) // SIGALRM = 14
     };
 
-    let id = thr
-        .proc_data
-        .posix_timers
-        .create(clock_id, notify, signo)
-        .map_err(|_| AxError::InvalidInput)?;
+    let id = thr.proc_data.posix_timers.create(clock_id, notify, signo)?;
 
     timerid.vm_write(id)?;
     Ok(0)

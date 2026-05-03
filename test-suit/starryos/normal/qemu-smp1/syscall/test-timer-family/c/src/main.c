@@ -350,6 +350,36 @@ static void test_timer_create_invalid_clockid(void) {
           "timer_create with clockid=9999 should fail EINVAL or ENOTSUP");
 }
 
+static void test_timer_create_clocks(void) {
+    timer_t tid;
+
+    /* Supported clocks */
+    CHECK(timer_create(CLOCK_REALTIME, NULL, &tid) == 0, "timer_create with CLOCK_REALTIME should succeed");
+    if (errno == 0) timer_delete(tid);
+
+    CHECK(timer_create(CLOCK_MONOTONIC, NULL, &tid) == 0, "timer_create with CLOCK_MONOTONIC should succeed");
+    if (errno == 0) timer_delete(tid);
+
+    CHECK(timer_create(CLOCK_BOOTTIME, NULL, &tid) == 0, "timer_create with CLOCK_BOOTTIME should succeed");
+    if (errno == 0) timer_delete(tid);
+
+    CHECK(timer_create(CLOCK_PROCESS_CPUTIME_ID, NULL, &tid) == 0, "timer_create with CLOCK_PROCESS_CPUTIME_ID should succeed");
+    if (errno == 0) timer_delete(tid);
+
+    CHECK(timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &tid) == 0, "timer_create with CLOCK_THREAD_CPUTIME_ID should succeed");
+    if (errno == 0) timer_delete(tid);
+
+    /* Unsupported but valid clocks (Linux returns EOPNOTSUPP) */
+    CHECK_ERR(timer_create(CLOCK_REALTIME_COARSE, NULL, &tid), EOPNOTSUPP,
+              "timer_create with CLOCK_REALTIME_COARSE should fail EOPNOTSUPP");
+
+    CHECK_ERR(timer_create(CLOCK_MONOTONIC_RAW, NULL, &tid), EOPNOTSUPP,
+              "timer_create with CLOCK_MONOTONIC_RAW should fail EOPNOTSUPP");
+
+    CHECK_ERR(timer_create(CLOCK_MONOTONIC_COARSE, NULL, &tid), EOPNOTSUPP,
+              "timer_create with CLOCK_MONOTONIC_COARSE should fail EOPNOTSUPP");
+}
+
 static void test_timer_create_invalid_sigev_notify(void) {
     timer_t tid;
     struct sigevent sev;
@@ -1192,6 +1222,7 @@ int main(int argc, char *argv[]) {
     test_timer_create_sigev_none();
     test_timer_create_sigev_signal();
     test_timer_create_invalid_clockid();
+    test_timer_create_clocks();
     test_timer_create_invalid_sigev_notify();
     test_timer_create_multiple();
 
