@@ -21,6 +21,11 @@ const PANIC_CPU_INVALID: usize = usize::MAX;
 static PANIC_CPU: AtomicUsize = AtomicUsize::new(PANIC_CPU_INVALID);
 static OOPS_IN_PROGRESS: AtomicUsize = AtomicUsize::new(0);
 
+/// Classifies how the current CPU is entering the panic path.
+///
+/// `Primary` means this CPU won ownership of the panic main path.
+/// `Recursive` means the same CPU re-entered panic while already owning it.
+/// `Concurrent` means another CPU already owns the panic main path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PanicDisposition {
     Primary,
@@ -58,6 +63,10 @@ pub fn classify_panic(current_cpu: usize) -> PanicDisposition {
 }
 
 /// Returns whether the current system is already in an oops/panic-like path.
+///
+/// This is intended as a conservative global hint for output and debug paths to
+/// avoid complex or lock-heavy behavior while the kernel is unwinding a fatal
+/// path.
 pub fn oops_in_progress() -> bool {
     OOPS_IN_PROGRESS.load(Ordering::Acquire) != 0
 }

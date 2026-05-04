@@ -1521,6 +1521,7 @@ name = "axbacktrace"
 version = "0.3.8"
 dependencies = [
  "addr2line",
+ "axpanic",
  "cfg-if",
  "gimli",
  "log",

@@ -18,6 +18,8 @@ use core::panic::PanicInfo;
 fn panic(info: &PanicInfo) -> ! {
     match axpanic::classify_panic(current_cpu_id()) {
         axpanic::PanicDisposition::Primary => panic_primary(info),
+        // Once panic ownership is established, recursive and cross-CPU panic
+        // entries must avoid the full print/backtrace path and stop locally.
         axpanic::PanicDisposition::Recursive | axpanic::PanicDisposition::Concurrent => {
             halt_current_cpu()
         }
@@ -25,6 +27,8 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 fn panic_primary(info: &PanicInfo) -> ! {
+    // Advertise the fatal path before printing so downstream output helpers can
+    // switch to a more conservative mode.
     let _oops_guard = axpanic::enter_oops();
     ax_println!("{}", info);
     ax_println!("{}", axbacktrace::Backtrace::capture());
