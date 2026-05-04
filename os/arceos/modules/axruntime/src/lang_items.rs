@@ -14,8 +14,19 @@
 
 use core::panic::PanicInfo;
 
+use crate::panic_guard::{self, PanicDisposition};
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    match panic_guard::classify_current_panic() {
+        PanicDisposition::Primary => panic_primary(info),
+        PanicDisposition::Recursive | PanicDisposition::Concurrent => {
+            panic_guard::halt_current_cpu()
+        }
+    }
+}
+
+fn panic_primary(info: &PanicInfo) -> ! {
     ax_println!("{}", info);
     ax_println!("{}", axbacktrace::Backtrace::capture());
     ax_hal::power::system_off()
