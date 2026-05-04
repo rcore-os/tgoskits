@@ -1081,6 +1081,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-kspin",
  "ax-log",
+ "axpanic",
  "cfg-if",
  "chrono",
  "log",

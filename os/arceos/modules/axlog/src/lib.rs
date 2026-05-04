@@ -222,6 +222,10 @@ pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
     use ax_kspin::SpinNoIrq; // TODO: more efficient
     static LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
 
+    if axpanic::oops_in_progress() {
+        return Logger.write_fmt(args);
+    }
+
     let _guard = LOCK.lock();
     Logger.write_fmt(args)
 }
