@@ -84,5 +84,8 @@ pub fn sys_execve(
 
     uctx.set_ip(entry_point.as_usize());
     uctx.set_sp(user_stack_base.as_usize());
+
+    current().as_thread().signal_vfork_done();
+
     Ok(0)
 }

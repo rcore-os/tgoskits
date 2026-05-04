@@ -101,6 +101,12 @@ pub struct Thread {
 
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
+
+    /// vfork completion flag — set by child on execve/_exit.
+    vfork_done: SpinNoIrq<Arc<AtomicBool>>,
+
+    /// vfork wake event — parent blocks on this until child signals.
+    vfork_event: SpinNoIrq<Option<Arc<PollSet>>>,
 }
 
 impl Thread {
@@ -123,6 +129,8 @@ impl Thread {
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
             cred: SpinNoIrq::new(cred),
+            vfork_done: SpinNoIrq::new(Arc::new(AtomicBool::new(false))),
+            vfork_event: SpinNoIrq::new(None),
         })
     }
 
@@ -235,6 +243,22 @@ impl Thread {
     /// Set the registered rseq area pointer.
     pub fn set_rseq_area(&self, addr: usize) {
         self.rseq_area.store(addr, Ordering::SeqCst);
+    }
+
+    /// Replace the vfork shared state with parent-provided Arcs.
+    /// Called by the parent after constructing the child Thread.
+    pub fn set_vfork_state(&self, done: Arc<AtomicBool>, event: Arc<PollSet>) {
+        *self.vfork_done.lock() = done;
+        *self.vfork_event.lock() = Some(event);
+    }
+
+    /// Signal vfork completion (called by child on execve or _exit).
+    /// Wakes the blocked parent.
+    pub fn signal_vfork_done(&self) {
+        self.vfork_done.lock().store(true, Ordering::Release);
+        if let Some(event) = self.vfork_event.lock().take() {
+            event.wake();
+        }
     }
 }
 

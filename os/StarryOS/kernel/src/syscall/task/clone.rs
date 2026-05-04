@@ -1,10 +1,15 @@
 use alloc::sync::Arc;
+use core::{future::poll_fn, sync::atomic::Ordering, task::Poll};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_hal::uspace::UserContext;
 use ax_kspin::SpinNoIrq;
-use ax_task::{AxTaskExt, current, spawn_task};
+use ax_task::{
+    AxTaskExt, current,
+    future::{block_on, interruptible},
+    spawn_task,
+};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -144,8 +149,9 @@ impl CloneArgs {
             pidfd,
         } = self;
 
-        if flags.contains(CloneFlags::VFORK) {
-            debug!("do_clone: CLONE_VFORK slow path");
+        let is_vfork = flags.contains(CloneFlags::VFORK);
+        if is_vfork {
+            debug!("do_clone: CLONE_VFORK — parent will block until child execve/_exit");
             flags.remove(CloneFlags::VM);
         }
 
@@ -257,6 +263,16 @@ impl CloneArgs {
 
         let parent_cred = Some(curr.as_thread().cred());
         let thr = Thread::new(tid, new_proc_data.clone(), parent_cred);
+
+        let vfork_done = if is_vfork {
+            let done = Arc::new(core::sync::atomic::AtomicBool::new(false));
+            let event: Arc<axpoll::PollSet> = Arc::default();
+            thr.set_vfork_state(done.clone(), event.clone());
+            Some((done, event))
+        } else {
+            None
+        };
+
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
@@ -276,6 +292,21 @@ impl CloneArgs {
 
         let task = spawn_task(new_task);
         add_task_to_table(&task);
+
+        if let Some((vfork_done, vfork_event)) = vfork_done {
+            debug!("do_clone: parent blocking on vfork for child tid {tid}");
+            block_on(interruptible(poll_fn(|cx| {
+                if vfork_done.load(Ordering::Acquire) {
+                    return Poll::Ready(());
+                }
+                vfork_event.register(cx.waker());
+                if vfork_done.load(Ordering::Acquire) {
+                    return Poll::Ready(());
+                }
+                Poll::Pending
+            })))?;
+            debug!("do_clone: parent resumed after vfork, child tid {tid}");
+        }
 
         Ok(tid as _)
     }
@@ -319,4 +350,14 @@ pub fn sys_clone(
 #[cfg(target_arch = "x86_64")]
 pub fn sys_fork(uctx: &UserContext) -> AxResult<isize> {
     sys_clone(uctx, SIGCHLD, 0, 0, 0, 0)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
+    CloneArgs {
+        flags: CloneFlags::VFORK,
+        exit_signal: SIGCHLD as _,
+        ..Default::default()
+    }
+    .do_clone(uctx)
 }

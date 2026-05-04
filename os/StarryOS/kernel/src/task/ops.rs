@@ -218,6 +218,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     let curr = current();
     let thr = curr.as_thread();
 
+    thr.signal_vfork_done();
+
     info!("{} exit with code: {}", curr.id_name(), exit_code);
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
