@@ -16,7 +16,7 @@ use core::panic::PanicInfo;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    match axpanic::classify_panic(current_cpu_id()) {
+    match axpanic::enter_panic(current_cpu_id()) {
         axpanic::PanicDisposition::Primary => panic_primary(info),
         // Once panic ownership is established, recursive and cross-CPU panic
         // entries must avoid the full print/backtrace path and stop locally.
@@ -30,9 +30,13 @@ fn panic_primary(info: &PanicInfo) -> ! {
     // Advertise the fatal path before printing so downstream output helpers can
     // switch to a more conservative mode.
     let _oops_guard = axpanic::enter_oops();
-    ax_println!("{}", info);
+    panic_message(info);
     panic_backtrace();
-    ax_hal::power::system_off()
+    panic_shutdown()
+}
+
+fn panic_message(info: &PanicInfo) {
+    ax_println!("{}", info);
 }
 
 fn panic_backtrace() {
@@ -46,7 +50,11 @@ fn panic_backtrace() {
 // policies such as platform-specific suppression or additional recursion-aware
 // degradation.
 fn should_print_panic_backtrace() -> bool {
-    axpanic::try_acquire_panic_backtrace()
+    axpanic::should_emit_panic_backtrace()
+}
+
+fn panic_shutdown() -> ! {
+    ax_hal::power::system_off()
 }
 
 fn halt_current_cpu() -> ! {

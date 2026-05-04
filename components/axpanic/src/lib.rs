@@ -50,7 +50,8 @@ impl Drop for OopsGuard {
     }
 }
 
-pub fn classify_panic(current_cpu: usize) -> PanicDisposition {
+/// Claims or observes the global panic state for the current CPU.
+pub fn enter_panic(current_cpu: usize) -> PanicDisposition {
     match PANIC_CPU.compare_exchange(
         PANIC_CPU_INVALID,
         current_cpu,
@@ -63,13 +64,13 @@ pub fn classify_panic(current_cpu: usize) -> PanicDisposition {
     }
 }
 
-/// Returns `true` only for the first panic-path caller that attempts to emit a
-/// backtrace.
+/// Returns whether the caller should emit a panic-path backtrace now.
 ///
-/// The flag is claimed before running the backtrace logic so recursive panics
-/// or nested failures during unwinding cannot repeatedly re-enter the same
-/// complex path.
-pub fn try_acquire_panic_backtrace() -> bool {
+/// This is `true` only for the first panic-path caller that attempts to emit a
+/// backtrace. The flag is claimed before running the backtrace logic so
+/// recursive panics or nested failures during unwinding cannot repeatedly
+/// re-enter the same complex path.
+pub fn should_emit_panic_backtrace() -> bool {
     PANIC_BACKTRACE_USED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
