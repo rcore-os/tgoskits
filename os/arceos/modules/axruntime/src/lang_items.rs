@@ -31,8 +31,22 @@ fn panic_primary(info: &PanicInfo) -> ! {
     // switch to a more conservative mode.
     let _oops_guard = axpanic::enter_oops();
     ax_println!("{}", info);
-    ax_println!("{}", axbacktrace::Backtrace::capture());
+    panic_backtrace();
     ax_hal::power::system_off()
+}
+
+fn panic_backtrace() {
+    if should_print_panic_backtrace() {
+        ax_println!("{}", axbacktrace::Backtrace::capture());
+    }
+}
+
+// This is only the first gate on panic-path backtrace emission. Now it
+// enforces a single attempt, and in future it can be extended with stricter
+// policies such as platform-specific suppression or additional recursion-aware
+// degradation.
+fn should_print_panic_backtrace() -> bool {
+    axpanic::try_acquire_panic_backtrace()
 }
 
 fn halt_current_cpu() -> ! {

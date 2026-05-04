@@ -14,11 +14,12 @@
 
 #![no_std]
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const PANIC_CPU_INVALID: usize = usize::MAX;
 
 static PANIC_CPU: AtomicUsize = AtomicUsize::new(PANIC_CPU_INVALID);
+static PANIC_BACKTRACE_USED: AtomicBool = AtomicBool::new(false);
 static OOPS_IN_PROGRESS: AtomicUsize = AtomicUsize::new(0);
 
 /// Classifies how the current CPU is entering the panic path.
@@ -60,6 +61,18 @@ pub fn classify_panic(current_cpu: usize) -> PanicDisposition {
         Err(owner_cpu) if owner_cpu == current_cpu => PanicDisposition::Recursive,
         Err(_) => PanicDisposition::Concurrent,
     }
+}
+
+/// Returns `true` only for the first panic-path caller that attempts to emit a
+/// backtrace.
+///
+/// The flag is claimed before running the backtrace logic so recursive panics
+/// or nested failures during unwinding cannot repeatedly re-enter the same
+/// complex path.
+pub fn try_acquire_panic_backtrace() -> bool {
+    PANIC_BACKTRACE_USED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 /// Returns whether the current system is already in an oops/panic-like path.
