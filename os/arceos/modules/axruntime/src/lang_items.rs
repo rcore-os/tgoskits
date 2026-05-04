@@ -14,20 +14,38 @@
 
 use core::panic::PanicInfo;
 
-use crate::panic_guard::{self, PanicDisposition};
-
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    match panic_guard::classify_current_panic() {
-        PanicDisposition::Primary => panic_primary(info),
-        PanicDisposition::Recursive | PanicDisposition::Concurrent => {
-            panic_guard::halt_current_cpu()
+    match axpanic::classify_panic(current_cpu_id()) {
+        axpanic::PanicDisposition::Primary => panic_primary(info),
+        axpanic::PanicDisposition::Recursive | axpanic::PanicDisposition::Concurrent => {
+            halt_current_cpu()
         }
     }
 }
 
 fn panic_primary(info: &PanicInfo) -> ! {
+    let _oops_guard = axpanic::enter_oops();
     ax_println!("{}", info);
     ax_println!("{}", axbacktrace::Backtrace::capture());
     ax_hal::power::system_off()
+}
+
+fn halt_current_cpu() -> ! {
+    loop {
+        ax_hal::asm::halt();
+        core::hint::spin_loop();
+    }
+}
+
+fn current_cpu_id() -> usize {
+    #[cfg(feature = "smp")]
+    {
+        ax_hal::percpu::this_cpu_id()
+    }
+
+    #[cfg(not(feature = "smp"))]
+    {
+        0
+    }
 }

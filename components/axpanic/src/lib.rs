@@ -12,22 +12,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![no_std]
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 const PANIC_CPU_INVALID: usize = usize::MAX;
 
 static PANIC_CPU: AtomicUsize = AtomicUsize::new(PANIC_CPU_INVALID);
+static OOPS_IN_PROGRESS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PanicDisposition {
+pub enum PanicDisposition {
     Primary,
     Recursive,
     Concurrent,
 }
 
-pub(crate) fn classify_current_panic() -> PanicDisposition {
-    let current_cpu = current_cpu_id();
+#[must_use]
+pub struct OopsGuard;
 
+impl OopsGuard {
+    fn new() -> Self {
+        OOPS_IN_PROGRESS.fetch_add(1, Ordering::Release);
+        Self
+    }
+}
+
+impl Drop for OopsGuard {
+    fn drop(&mut self) {
+        OOPS_IN_PROGRESS.fetch_sub(1, Ordering::Release);
+    }
+}
+
+pub fn classify_panic(current_cpu: usize) -> PanicDisposition {
     match PANIC_CPU.compare_exchange(
         PANIC_CPU_INVALID,
         current_cpu,
@@ -40,21 +57,12 @@ pub(crate) fn classify_current_panic() -> PanicDisposition {
     }
 }
 
-pub(crate) fn halt_current_cpu() -> ! {
-    loop {
-        ax_hal::asm::halt();
-        core::hint::spin_loop();
-    }
+/// Returns whether the current system is already in an oops/panic-like path.
+pub fn oops_in_progress() -> bool {
+    OOPS_IN_PROGRESS.load(Ordering::Acquire) != 0
 }
 
-fn current_cpu_id() -> usize {
-    #[cfg(feature = "smp")]
-    {
-        ax_hal::percpu::this_cpu_id()
-    }
-
-    #[cfg(not(feature = "smp"))]
-    {
-        0
-    }
+/// Marks the current scope as running inside an oops/panic-like path.
+pub fn enter_oops() -> OopsGuard {
+    OopsGuard::new()
 }

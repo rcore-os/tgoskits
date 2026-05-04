@@ -49,6 +49,7 @@ ax-kspin
 ax-kernel-guard
 ax-lazyinit
 ax-memory-set
+axpanic
 ax-plat
 ax-plat-aarch64-peripherals
 ax-plat-x86-pc

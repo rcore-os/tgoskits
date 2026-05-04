@@ -1408,6 +1408,7 @@ dependencies = [
  "ax-task",
  "axbacktrace",
  "axklib",
+ "axpanic",
  "cfg-if",
  "chrono",
  "indoc",
@@ -1643,6 +1644,10 @@ dependencies = [
  "ax-memory-addr",
  "trait-ffi",
 ]
+
+[[package]]
+name = "axpanic"
+version = "0.1.0"
 
 [[package]]
 name = "axplat-dyn"

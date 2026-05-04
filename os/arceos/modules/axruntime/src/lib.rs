@@ -39,9 +39,6 @@ extern crate ax_log;
 #[cfg(all(target_os = "none", not(test)))]
 mod lang_items;
 
-#[cfg(all(target_os = "none", not(test)))]
-mod panic_guard;
-
 #[cfg(feature = "smp")]
 mod mp;
 
