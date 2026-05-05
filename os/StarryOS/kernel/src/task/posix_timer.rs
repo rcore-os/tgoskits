@@ -7,17 +7,17 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
-use ax_task::WeakAxTaskRef;
+use ax_hal::time::{NANOS_PER_SEC, monotonic_time_nanos, wall_time};
 use linux_raw_sys::general::{
     CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
     CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
     SIGEV_NONE, SIGEV_SIGNAL,
 };
 use spin::Mutex;
+use starry_process::Pid;
 use starry_signal::Signo;
 
-use super::timer::{register_alarm, register_alarm_for};
+use super::timer::{AlarmTarget, register_alarm_for};
 
 /// Kernel-side representation of a POSIX timer.
 struct PosixTimer {
@@ -128,8 +128,10 @@ impl PosixTimerTable {
     }
 
     /// Set (arm/disarm) a timer. Returns the old (interval, remaining) in nanos.
+    #[allow(clippy::too_many_arguments)]
     pub fn settime(
         &self,
+        pid: Pid,
         id: i32,
         flags: i32,
         value_sec: i64,
@@ -191,7 +193,10 @@ impl PosixTimerTable {
                     .saturating_sub(clock_now_ns(timer.clock_id));
                 // Register alarm even if remaining == 0 (already expired)
                 // so that poll_expired runs on the next tick.
-                register_alarm(wall_time() + Duration::from_nanos(remaining));
+                register_alarm_for(
+                    wall_time() + Duration::from_nanos(remaining),
+                    AlarmTarget::Process(pid),
+                );
             }
         }
 
@@ -217,12 +222,13 @@ impl PosixTimerTable {
     /// Called from the alarm_task via poll_timer.
     /// `task` is the user task that owns these timers (needed to
     /// re-register alarms for periodic timers).
-    pub fn poll_expired(&self, emitter: &impl Fn(Signo), task: WeakAxTaskRef) {
+    pub fn poll_expired(&self, pid: Pid, mut emitter: impl FnMut(Signo)) {
         let mut timers = self.timers.lock();
         for timer in timers.values_mut() {
             if timer.deadline_ns == 0 {
                 continue;
             }
+
             let now = clock_now_ns(timer.clock_id);
             if now >= timer.deadline_ns {
                 // Timer expired
@@ -236,7 +242,10 @@ impl PosixTimerTable {
                     let remaining = timer
                         .deadline_ns
                         .saturating_sub(clock_now_ns(timer.clock_id));
-                    register_alarm_for(wall_time() + Duration::from_nanos(remaining), task.clone());
+                    register_alarm_for(
+                        wall_time() + Duration::from_nanos(remaining),
+                        AlarmTarget::Process(pid),
+                    );
                 } else {
                     // One-shot: disarm
                     timer.deadline_ns = 0;

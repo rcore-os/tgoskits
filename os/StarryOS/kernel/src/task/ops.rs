@@ -118,7 +118,7 @@ pub fn register_session(session: &Arc<Session>) {
 }
 
 /// Poll the timer
-pub fn poll_timer(task: &TaskInner, weak_task: WeakAxTaskRef) {
+pub fn poll_timer(task: &TaskInner) {
     let Some(thr) = task.try_as_thread() else {
         return;
     };
@@ -129,10 +129,16 @@ pub fn poll_timer(task: &TaskInner, weak_task: WeakAxTaskRef) {
     let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
     };
-    time.poll(&emitter);
-    // Also poll POSIX timers (pass weak_task so periodic timers can
-    // re-register alarms for the correct user task, not alarm_task).
-    thr.proc_data.posix_timers.poll_expired(&emitter, weak_task);
+    time.poll(emitter);
+}
+
+/// Poll the process-level POSIX timers.
+pub fn poll_process_timer(pid: Pid) {
+    if let Ok(proc_data) = get_process_data(pid) {
+        proc_data.posix_timers.poll_expired(pid, |signo| {
+            let _ = send_signal_to_process(pid, Some(SignalInfo::new_kernel(signo)));
+        });
+    }
 }
 
 /// Sets the timer state.
@@ -144,9 +150,10 @@ pub fn set_timer_state(task: &TaskInner, state: TimerState) {
         // reentrant borrow, likely IRQ
         return;
     };
-    time.poll(|signo| {
+    let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    });
+    };
+    time.poll(emitter);
     time.set_state(state);
 }
 

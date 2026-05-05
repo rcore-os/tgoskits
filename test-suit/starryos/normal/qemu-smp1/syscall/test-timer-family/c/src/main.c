@@ -1198,6 +1198,72 @@ static void handle_exec_child(int argc, char *argv[]) {
 /* ============================================================
  * main
  * ============================================================ */
+static void *timer_creator_thread(void *arg) {
+    timer_t *tid_ptr = (timer_t *)arg;
+    struct sigevent sev;
+    struct itimerspec its;
+
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGUSR1;
+
+    if (timer_create(CLOCK_MONOTONIC, &sev, tid_ptr) != 0) {
+        return NULL;
+    }
+
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_sec = 0;
+    its.it_value.tv_nsec = 100000000; // 100ms first fire
+    its.it_interval.tv_sec = 0;
+    its.it_interval.tv_nsec = 100000000; // 100ms interval
+
+    if (timer_settime(*tid_ptr, 0, &its, NULL) != 0) {
+        return NULL;
+    }
+
+    return NULL;
+}
+
+static void test_posix_timer_thread_exit_persistence(void) {
+    pthread_t thr;
+    timer_t tid;
+    struct sigaction sa, old_sa;
+
+    sig_count = 0;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigalrm_handler; // sigalrm_handler increments sig_count
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR1, &sa, &old_sa);
+
+    if (pthread_create(&thr, NULL, timer_creator_thread, &tid) != 0) {
+        CHECK(0, "pthread_create failed");
+        sigaction(SIGUSR1, &old_sa, NULL);
+        return;
+    }
+
+    pthread_join(thr, NULL);
+    printf("  info: Creator thread has exited. Waiting for multiple signals...\n");
+
+    /* Wait for at least 5 signals. If re-registration fails, it will stop. */
+    for (int i = 0; i < 200; i++) { // 2 seconds total
+
+        if (sig_count >= 5) break;
+        usleep(10000);
+    }
+
+    printf("  info: Received %d signals.\n", sig_count);
+    CHECK(sig_count >= 5, "Timer should continue firing after the creator thread exited");
+
+    timer_delete(tid);
+    sigaction(SIGUSR1, &old_sa, NULL);
+}
+
+
+
+
+/* ============================================================
+ * Main
+ * ============================================================ */
 
 int main(int argc, char *argv[]) {
     handle_exec_child(argc, argv);
@@ -1252,6 +1318,8 @@ int main(int argc, char *argv[]) {
 
     printf("\n--- timer thread-sharing tests ---\n");
     test_posix_timer_thread_sharing();
+    test_posix_timer_thread_exit_persistence();
+
 
     printf("\n--- timer fork-not-inherited tests ---\n");
     test_posix_timer_fork_not_inherited();

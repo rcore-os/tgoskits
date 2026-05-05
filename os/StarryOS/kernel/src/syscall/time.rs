@@ -138,11 +138,8 @@ pub fn sys_setitimer(
 // ---- POSIX timer syscalls ----
 
 use linux_raw_sys::general::{
-    __kernel_itimerspec, __kernel_timer_t, __kernel_timespec, SIGEV_NONE, SIGEV_SIGNAL,
-    TIMER_ABSTIME, sigevent,
+    __kernel_itimerspec, __kernel_timer_t, __kernel_timespec, SIGEV_SIGNAL, sigevent,
 };
-
-use crate::task::posix_timer::PosixTimerTable;
 
 pub fn sys_timer_create(
     clock_id: u32,
@@ -182,6 +179,7 @@ pub fn sys_timer_settime(
         .proc_data
         .posix_timers
         .settime(
+            thr.proc_data.proc.pid(),
             timerid,
             flags,
             new.it_value.tv_sec,

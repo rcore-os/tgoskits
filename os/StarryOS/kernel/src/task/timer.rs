@@ -11,10 +11,11 @@ use ax_task::{
 use event_listener::{Event, listener};
 use lazy_static::lazy_static;
 use spin::Mutex;
+use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
-use crate::task::poll_timer;
+use crate::task::{poll_process_timer, poll_timer};
 
 fn time_value_from_nanos(nanos: usize) -> TimeValue {
     let secs = nanos as u64 / NANOS_PER_SEC;
@@ -22,10 +23,17 @@ fn time_value_from_nanos(nanos: usize) -> TimeValue {
     TimeValue::new(secs, nsecs as u32)
 }
 
+#[derive(Debug, Clone)]
+pub enum AlarmTarget {
+    Thread(WeakAxTaskRef),
+    Process(Pid),
+}
+
 struct Entry {
     deadline: Duration,
-    task: WeakAxTaskRef,
+    target: AlarmTarget,
 }
+
 impl PartialEq for Entry {
     fn eq(&self, other: &Self) -> bool {
         self.deadline == other.deadline
@@ -113,16 +121,16 @@ impl ITimer {
 /// Register an alarm at the given wall-clock deadline for the current task.
 /// Used by both ITimer and POSIX timers.
 pub fn register_alarm(deadline: Duration) {
-    register_alarm_for(deadline, Arc::downgrade(&current()));
+    register_alarm_for(deadline, AlarmTarget::Thread(Arc::downgrade(&current())));
 }
 
-/// Register an alarm at the given wall-clock deadline for a specific task.
+/// Register an alarm at the given wall-clock deadline for a specific target.
 /// Used when re-arming periodic POSIX timers from the alarm_task context,
 /// where `current()` is the alarm_task, not the user task.
-pub fn register_alarm_for(deadline: Duration, task: WeakAxTaskRef) {
+pub fn register_alarm_for(deadline: Duration, target: AlarmTarget) {
     let mut guard = ALARM_LIST.lock();
     let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
-    guard.push(Entry { deadline, task });
+    guard.push(Entry { deadline, target });
     drop(guard);
     if should_wake {
         EVENT_NEW_TIMER.notify(1);
@@ -236,7 +244,7 @@ impl TimeManager {
 
 async fn alarm_task() {
     loop {
-        let guard = ALARM_LIST.lock();
+        let mut guard = ALARM_LIST.lock();
         let Some(entry) = guard.peek() else {
             drop(guard);
             listener!(EVENT_NEW_TIMER => listener);
@@ -252,15 +260,19 @@ async fn alarm_task() {
         let now = wall_time();
         if entry.deadline <= now {
             let entry_deadline = entry.deadline;
-            let weak_task = entry.task.clone();
-            if let Some(task) = entry.task.upgrade() {
-                drop(guard);
-                poll_timer(&task, weak_task);
-            } else {
-                drop(guard);
-            }
-            let mut guard = ALARM_LIST.lock();
+            let target = entry.target.clone();
             assert!(guard.pop().is_some_and(|it| it.deadline == entry_deadline));
+            drop(guard);
+            match target {
+                AlarmTarget::Thread(weak_task) => {
+                    if let Some(task) = weak_task.upgrade() {
+                        poll_timer(&task);
+                    }
+                }
+                AlarmTarget::Process(pid) => {
+                    poll_process_timer(pid);
+                }
+            }
         } else {
             let deadline = entry.deadline;
             drop(guard);
