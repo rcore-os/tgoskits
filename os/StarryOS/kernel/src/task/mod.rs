@@ -270,6 +270,22 @@ impl AsThread for TaskInner {
     }
 }
 
+/// A one-shot completion for vfork synchronization.
+///
+/// This avoids lost-wakeup races by recording the "done" state under the same
+/// lock as the wait queue. If the child completes before the parent enters the
+/// wait, the parent will see `done == true` and skip waiting.
+pub struct VforkDone {
+    done: bool,
+    wq: Arc<WaitQueue>,
+}
+
+impl VforkDone {
+    pub fn new(wq: Arc<WaitQueue>) -> Self {
+        Self { done: false, wq }
+    }
+}
+
 /// [`Process`]-shared data.
 pub struct ProcessData {
     /// The process.
@@ -302,9 +318,10 @@ pub struct ProcessData {
     /// The futex table.
     futex_table: Arc<FutexTable>,
 
-    /// If this process was created by vfork, this points to the parent's wait
-    /// queue. Notified when the child exec's or exits, unblocking the parent.
-    vfork_done: SpinNoIrq<Option<Arc<WaitQueue>>>,
+    /// If this process was created by vfork, this tracks completion state.
+    /// The parent waits until `done` becomes true. Protected by the same lock
+    /// as the wait queue to avoid lost wakeup races.
+    vfork_done: SpinNoIrq<Option<VforkDone>>,
 
     /// The default mask for file permissions.
     umask: AtomicU32,
@@ -430,17 +447,38 @@ impl ProcessData {
         // `_old` drops here — SpinNoIrq already released, IRQs re-enabled.
     }
 
-    /// Set the vfork completion queue (called on the child after a vfork,
+    /// Set the vfork completion (called on the child after a vfork,
     /// before the child task is spawned).
     pub fn set_vfork_done(&self, wq: Arc<WaitQueue>) {
-        *self.vfork_done.lock() = Some(wq);
+        *self.vfork_done.lock() = Some(VforkDone::new(wq));
+    }
+
+    /// Wait for vfork completion. Returns immediately if already done.
+    /// This should be called by the parent after spawning the vfork child.
+    pub fn wait_vfork_done(&self) {
+        let wq = {
+            let guard = self.vfork_done.lock();
+            match guard.as_ref() {
+                Some(vfork) => vfork.wq.clone(),
+                None => return, // No vfork, shouldn't happen but be safe.
+            }
+        };
+        // Wait until done. The condition is checked under lock in wait_until.
+        wq.wait_until(|| {
+            self.vfork_done
+                .lock()
+                .as_ref()
+                .map(|v| v.done)
+                .unwrap_or(true)
+        });
     }
 
     /// Notify the vfork parent that this child has exec'd or exited.
     /// No-op if this process was not created by vfork.
     pub fn notify_vfork_done(&self) {
-        if let Some(wq) = self.vfork_done.lock().take() {
-            wq.notify_one(true);
+        if let Some(vfork) = self.vfork_done.lock().as_mut() {
+            vfork.done = true;
+            vfork.wq.notify_one(true);
         }
     }
 }

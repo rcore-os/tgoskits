@@ -271,20 +271,17 @@ impl CloneArgs {
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
         // CLONE_VFORK: wire a shared WaitQueue to the child so it can wake us.
-        let vfork_wq = if flags.contains(CloneFlags::VFORK) {
+        if flags.contains(CloneFlags::VFORK) {
             let wq = Arc::new(WaitQueue::new());
-            new_proc_data.set_vfork_done(wq.clone());
-            Some(wq)
-        } else {
-            None
-        };
+            new_proc_data.set_vfork_done(wq);
+        }
 
         let task = spawn_task(new_task);
         add_task_to_table(&task);
 
         // Block the parent until the child exec's or exits.
-        if let Some(wq) = vfork_wq {
-            wq.wait();
+        if flags.contains(CloneFlags::VFORK) {
+            new_proc_data.wait_vfork_done();
         }
 
         Ok(tid as _)
