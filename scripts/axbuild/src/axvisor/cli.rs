@@ -121,7 +121,7 @@ pub struct ArgsTestQemu {
     #[arg(
         long,
         value_name = "ARCH",
-        required_unless_present = "target",
+        required_unless_present_any = ["target", "list"],
         help = "Axvisor architecture to test"
     )]
     pub arch: Option<String>,
@@ -129,18 +129,17 @@ pub struct ArgsTestQemu {
         short = 't',
         long,
         value_name = "TARGET",
-        required_unless_present = "arch",
+        required_unless_present_any = ["arch", "list"],
         help = "Axvisor target triple to test"
     )]
     pub target: Option<String>,
     #[arg(
         short = 'g',
         long = "test-group",
-        default_value = "normal",
         value_name = "GROUP",
         help = "Run Axvisor QEMU test cases from one test group"
     )]
-    pub test_group: String,
+    pub test_group: Option<String>,
     #[arg(
         short = 'c',
         long = "test-case",
@@ -148,6 +147,8 @@ pub struct ArgsTestQemu {
         help = "Run only one Axvisor QEMU test case"
     )]
     pub test_case: Option<String>,
+    #[arg(short = 'l', long, help = "List discovered Axvisor QEMU test cases")]
+    pub list: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -167,11 +168,10 @@ pub struct ArgsTestBoard {
     #[arg(
         short = 'g',
         long = "test-group",
-        default_value = "normal",
         value_name = "GROUP",
         help = "Run Axvisor board test cases from one test group"
     )]
-    pub test_group: String,
+    pub test_group: Option<String>,
 
     #[arg(
         short = 'c',
@@ -196,6 +196,9 @@ pub struct ArgsTestBoard {
 
     #[arg(long)]
     pub port: Option<u16>,
+
+    #[arg(short = 'l', long, help = "List discovered Axvisor board test cases")]
+    pub list: bool,
 }
 
 #[derive(Subcommand)]
@@ -308,7 +311,7 @@ mod tests {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.arch.as_deref(), Some("aarch64"));
                     assert_eq!(args.target, None);
-                    assert_eq!(args.test_group, "normal");
+                    assert_eq!(args.test_group, None);
                     assert_eq!(args.test_case, None);
                 }
                 _ => panic!("expected qemu test command"),
@@ -334,7 +337,7 @@ mod tests {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.arch, None);
                     assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
-                    assert_eq!(args.test_group, "normal");
+                    assert_eq!(args.test_group, None);
                 }
                 _ => panic!("expected qemu test command"),
             },
@@ -359,7 +362,7 @@ mod tests {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.arch.as_deref(), Some("aarch64"));
-                    assert_eq!(args.test_group, "normal");
+                    assert_eq!(args.test_group.as_deref(), Some("normal"));
                     assert_eq!(args.test_case.as_deref(), Some("smoke"));
                 }
                 _ => panic!("expected qemu test command"),
@@ -451,7 +454,7 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Board(args) => {
-                    assert_eq!(args.test_group, "normal");
+                    assert_eq!(args.test_group.as_deref(), Some("normal"));
                     assert_eq!(args.test_case.as_deref(), Some("smoke"));
                     assert_eq!(args.board.as_deref(), Some("phytiumpi-linux"));
                     assert_eq!(args.board_type.as_deref(), Some("Phytiumpi"));
