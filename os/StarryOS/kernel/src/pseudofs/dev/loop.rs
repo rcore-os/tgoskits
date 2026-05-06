@@ -1,12 +1,12 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{
     any::Any,
-    cell::UnsafeCell,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FileBackend;
+use ax_kspin::SpinNoPreempt;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
@@ -62,57 +62,24 @@ fn writeback_data(file: &FileBackend, data: &[u8]) -> bool {
 /// Owning an `Arc<CacheData>` keeps the buffer alive even if the
 /// `LoopDevice` replaces its cache slot (e.g. on re-mount).
 ///
-/// # Synchronization (UnsafeCell safety)
-///
-/// `buffer_mut()` (write, via `LoopBlockDevice`) and `buffer()` (read,
-/// in write-back) can never execute concurrently:
-/// - `buffer_mut()` is only called through `LoopBlockDevice` which takes
-///   `&mut self` (exclusive at device level).
-/// - `LoopBlockDevice::new()` sets `mounted = true`; `Drop` clears it.
-/// - Write-back paths check `mounted` and **skip** when it is true.
-/// Therefore, while any `LoopBlockDevice` is alive, no write-back code
-/// reaches `buffer()`; after the device is dropped, `buffer_mut()` can no
-/// longer be called.  The two accesses are mutually exclusive.
+/// The buffer is protected by a `SpinNoPreempt` lock.  Both block-device
+/// I/O (`read_block`/`write_block`, already under ext4's SpinNoPreempt)
+/// and write-back paths (normal syscall context) acquire this lock,
+/// so no concurrent access is possible regardless of mount state.
 struct CacheData {
-    buffer: UnsafeCell<alloc::vec::Vec<u8>>,
+    buffer: SpinNoPreempt<alloc::vec::Vec<u8>>,
     dirty: AtomicBool,
     /// `true` while a `LoopBlockDevice` referencing this cache is alive.
     mounted: AtomicBool,
 }
 
-// Safety: concurrent access to the `UnsafeCell` is prevented by the
-// `mounted` flag — see struct-level Synchronization section above.
-unsafe impl Send for CacheData {}
-unsafe impl Sync for CacheData {}
-
 impl CacheData {
     fn new(data: alloc::vec::Vec<u8>) -> Self {
         Self {
-            buffer: UnsafeCell::new(data),
+            buffer: SpinNoPreempt::new(data),
             dirty: AtomicBool::new(false),
             mounted: AtomicBool::new(false),
         }
-    }
-
-    /// Returns a shared reference to the buffer.
-    ///
-    /// Safe because the caller guarantees no concurrent `buffer_mut()`:
-    /// write-back callers check `mounted` first; inside `LoopBlockDevice`
-    /// the `&mut self` receiver prevents aliasing.
-    fn buffer(&self) -> &alloc::vec::Vec<u8> {
-        // see struct-level Synchronization section.
-        unsafe { &*self.buffer.get() }
-    }
-
-    /// Returns a mutable reference to the buffer.
-    ///
-    /// Safe because this is only called from `LoopBlockDevice` methods
-    /// that take `&mut self`.  Write-back paths skip when `mounted` is
-    /// true, so no concurrent `buffer()` call can race.
-    #[allow(clippy::mut_from_ref)]
-    fn buffer_mut(&self) -> &mut alloc::vec::Vec<u8> {
-        // see struct-level Synchronization section.
-        unsafe { &mut *self.buffer.get() }
     }
 }
 
@@ -138,11 +105,6 @@ pub struct LoopBlockDevice {
     cache: Arc<CacheData>,
     block_size: usize,
 }
-
-// Safety: LoopBlockDevice is only used from the ext4 mount context, where
-// exclusive access is guaranteed by `&mut self` on BlockDriverOps methods.
-unsafe impl Send for LoopBlockDevice {}
-unsafe impl Sync for LoopBlockDevice {}
 
 impl LoopBlockDevice {
     /// Create a new block device adapter backed by the given `CacheData`.
@@ -173,7 +135,7 @@ impl ax_driver::prelude::BaseDriverOps for LoopBlockDevice {
 
 impl ax_driver::prelude::BlockDriverOps for LoopBlockDevice {
     fn num_blocks(&self) -> u64 {
-        self.cache.buffer().len() as u64 / self.block_size as u64
+        self.cache.buffer.lock().len() as u64 / self.block_size as u64
     }
 
     fn block_size(&self) -> usize {
@@ -181,7 +143,7 @@ impl ax_driver::prelude::BlockDriverOps for LoopBlockDevice {
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> ax_driver::prelude::DevResult {
-        let data = self.cache.buffer();
+        let data = self.cache.buffer.lock();
         let offset = block_id as usize * self.block_size;
         let end = offset + buf.len();
         if end > data.len() {
@@ -192,7 +154,7 @@ impl ax_driver::prelude::BlockDriverOps for LoopBlockDevice {
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> ax_driver::prelude::DevResult {
-        let data = self.cache.buffer_mut();
+        let mut data = self.cache.buffer.lock();
         let offset = block_id as usize * self.block_size;
         let end = offset + buf.len();
         if end > data.len() {
@@ -312,9 +274,8 @@ impl LoopDevice {
             if let Some(ref cd) = cache.data
                 && cd.dirty.load(Ordering::Acquire)
             {
-                if cd.mounted.load(Ordering::Acquire) {
-                    warn!("LoopDevice: re-mount writeback skipped — old cache still in use");
-                } else if writeback_data(&file, cd.buffer()) {
+                let data = cd.buffer.lock().clone();
+                if writeback_data(&file, &data) {
                     cd.dirty.store(false, Ordering::Release);
                 }
             }
@@ -355,7 +316,8 @@ impl LoopDevice {
             && cd.dirty.load(Ordering::Acquire)
             && let Some(ref file) = file
         {
-            if writeback_data(file, cd.buffer()) {
+            let data = cd.buffer.lock().clone();
+            if writeback_data(file, &data) {
                 cd.dirty.store(false, Ordering::Release);
             }
         }
@@ -404,17 +366,19 @@ impl DeviceOps for LoopDevice {
 
                 // Write back dirty data from the block cache before clearing.
                 // This runs in normal syscall context so CachedFile VFS I/O
-                // (page cache updates) is safe.
+                // (page cache updates) is safe.  The SpinNoPreempt lock
+                // ensures no concurrent write_block() can race.
                 let mut cache = self.block_cache.lock();
                 #[allow(clippy::collapsible_if)]
                 if let Some(ref cd) = cache.data
                     && cd.dirty.load(Ordering::Acquire)
                 {
-                    if cd.mounted.load(Ordering::Acquire) {
-                        warn!("LoopDevice: LOOP_CLR_FD writeback skipped — cache still in use");
-                    } else if let Some(ref file) = *guard {
-                        if !writeback_data(file, cd.buffer()) {
+                    if let Some(ref file) = *guard {
+                        let data = cd.buffer.lock().clone();
+                        if !writeback_data(file, &data) {
                             warn!("LoopDevice: writeback failed on LOOP_CLR_FD, data may be lost");
+                            // Don't clear dirty or cache — let the caller retry.
+                            return Err(AxError::Io);
                         }
                     }
                     cd.dirty.store(false, Ordering::Release);
@@ -512,12 +476,8 @@ impl DeviceOps for LoopDevice {
                     && cd.dirty.load(Ordering::Acquire)
                     && let Some(ref file) = file
                 {
-                    if cd.mounted.load(Ordering::Acquire) {
-                        warn!(
-                            "LoopDevice: BLKFLSBUF skipped — cache still in use by mounted \
-                             filesystem"
-                        );
-                    } else if writeback_data(file, cd.buffer()) {
+                    let data = cd.buffer.lock().clone();
+                    if writeback_data(file, &data) {
                         cd.dirty.store(false, Ordering::Release);
                     }
                 }

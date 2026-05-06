@@ -496,12 +496,69 @@ int main(void)
      *  After the child exits, the parent also verifies that its own
      *  root was switched to the new root (chroot_fs_refs semantic)
      *  and can still reach the old filesystem through /oldroot.
+     *
+     *  Additionally we verify that a task chroot'd into a subdirectory
+     *  of the old root is NOT affected by pivot_root — only tasks
+     *  whose root *exactly equals* old_root should be updated.
      */
     {
+        /* Set up sentinel for the chroot-subdirectory regression child */
+        run("mkdir -p /tmp/chroot-sub");
+        run("touch /tmp/chroot-sub/sentinel");
+
         run("mkdir -p /tmp/pivot-newroot 2>&1");
         int mnt_ok = (run("mount -t tmpfs tmpfs /tmp/pivot-newroot 2>&1") == 0);
         if (mnt_ok) {
             run("mkdir /tmp/pivot-newroot/oldroot 2>&1");
+
+            /* ---- chroot-subdirectory regression child ----
+             * Fork before pivot_root, chroot into /tmp/chroot-sub (a
+             * subdirectory of the old root), then verify after pivot_root
+             * that this child's root was NOT replaced with new_root. */
+            int ch_p2c[2], ch_c2p[2];
+            int ch_pipes_ok = (pipe(ch_p2c) == 0 && pipe(ch_c2p) == 0);
+            pid_t chroot_child = -1;
+            if (ch_pipes_ok) {
+                chroot_child = fork();
+                if (chroot_child == 0) {
+                    close(ch_p2c[1]);
+                    close(ch_c2p[0]);
+
+                    /* chroot into /tmp/chroot-sub */
+                    chdir("/tmp/chroot-sub");
+                    chroot("/tmp/chroot-sub");
+
+                    struct stat st;
+                    ino_t root_ino = (stat("/", &st) == 0) ? st.st_ino : 0;
+
+                    /* signal parent: chroot done */
+                    char c = 1;
+                    write(ch_c2p[1], &c, 1);
+
+                    /* wait for pivot_root */
+                    read(ch_p2c[0], &c, 1);
+
+                    /* verify root unchanged */
+                    ino_t new_ino = (stat("/", &st) == 0) ? st.st_ino : 0;
+                    int root_ok = (root_ino != 0 && root_ino == new_ino);
+                    int sentinel_ok = (stat("/sentinel", &st) == 0);
+
+                    char result = (root_ok && sentinel_ok) ? 1 : 0;
+                    write(ch_c2p[1], &result, 1);
+
+                    close(ch_p2c[0]);
+                    close(ch_c2p[1]);
+                    _exit(0);
+                }
+                /* parent: close child-side fds */
+                if (chroot_child > 0) {
+                    close(ch_p2c[0]);
+                    close(ch_c2p[1]);
+                    /* wait for child to finish chroot */
+                    char c;
+                    read(ch_c2p[0], &c, 1);
+                }
+            }
 
             pid_t pid = fork();
             if (pid == 0) {
@@ -538,6 +595,19 @@ int main(void)
                                      S_ISDIR(st.st_mode));
                     check(parent_ok,
                           "pivot_root: parent root updated (chroot_fs_refs)");
+                }
+
+                /* Signal chroot child to re-check and collect result */
+                if (chroot_child > 0) {
+                    char c = 1;
+                    write(ch_p2c[1], &c, 1);
+                    char result = 0;
+                    read(ch_c2p[0], &result, 1);
+                    check(result == 1,
+                          "chroot subdirectory: root not replaced after pivot_root");
+                    close(ch_p2c[1]);
+                    close(ch_c2p[0]);
+                    waitpid(chroot_child, &status, 0);
                 }
             } else {
                 check(0, "pivot_root: fork failed");
