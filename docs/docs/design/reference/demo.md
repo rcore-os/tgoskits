@@ -99,7 +99,6 @@ my_component/
 │       ├── check.yml           # 代码检查工作流
 │       ├── test.yml            # 测试工作流
 │       ├── deploy.yml          # 文档部署工作流
-│       ├── push.yml            # 同步到父仓库
 │       └── release.yml         # 发布工作流
 ├── scripts/
 │   ├── check.sh                # 代码检查脚本
@@ -635,9 +634,9 @@ git commit -s -m "refactor(tgmath): address review feedback"
 git push origin <your-branch-name>
 ```
 
-### 6.5 合并后的自动同步
+### 6.5 合并后处理
 
-PR 合并到 `dev` 后，`push.yml` 工作流会自动检测变更并推送到各组件仓库的 `dev` 分支（如果该组件是 subtree 管理的）。对于非 subtree 组件，合并即完成。
+PR 合并到 `dev` 后，对于非 subtree 组件，合并即完成。对于 subtree 管理的独立组件仓库，请按当前仓库维护流程手动同步或由维护者安排同步。
 
 ---
 
@@ -688,7 +687,7 @@ python3 scripts/repo/repo.py push <component> -b dev
 ### 7.3 分支策略图
 
 ```
-feature/* ──PR──► dev ──push.yml──► 独立组件仓库 dev 分支
+feature/* ──PR──► dev ──维护流程──► 独立组件仓库 dev 分支
                    │
                 定期合并
                    │

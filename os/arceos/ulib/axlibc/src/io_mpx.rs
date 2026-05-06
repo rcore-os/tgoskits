@@ -25,7 +25,7 @@ pub unsafe extern "C" fn epoll_ctl(
     fd: c_int,
     event: *mut ctypes::epoll_event,
 ) -> c_int {
-    e(sys_epoll_ctl(epfd, op, fd, event))
+    unsafe { e(sys_epoll_ctl(epfd, op, fd, event)) }
 }
 
 /// Waits for events on the epoll instance referred to by the file descriptor epfd.
@@ -37,7 +37,7 @@ pub unsafe extern "C" fn epoll_wait(
     maxevents: c_int,
     timeout: c_int,
 ) -> c_int {
-    e(sys_epoll_wait(epfd, events, maxevents, timeout))
+    unsafe { e(sys_epoll_wait(epfd, events, maxevents, timeout)) }
 }
 
 /// Monitor multiple file descriptors, waiting until one or more of the file descriptors become "ready" for some class of I/O operation
@@ -50,5 +50,5 @@ pub unsafe extern "C" fn select(
     exceptfds: *mut ctypes::fd_set,
     timeout: *mut ctypes::timeval,
 ) -> c_int {
-    e(sys_select(nfds, readfds, writefds, exceptfds, timeout))
+    unsafe { e(sys_select(nfds, readfds, writefds, exceptfds, timeout)) }
 }

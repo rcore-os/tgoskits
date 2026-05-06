@@ -95,6 +95,7 @@ pub(crate) fn prepare_c_case_assets_sync(
 
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     resolver::write_host_resolver_config(&layout.staging_root)?;
+    write_musl_loader_search_path(arch, &layout.staging_root)?;
     let prebuild_script = case_prebuild_script_path(case);
     if prebuild_script.is_file() {
         let apk_region = apk::apk_region_from_env()?;
@@ -157,6 +158,7 @@ pub(crate) fn prepare_grouped_case_assets_sync(
 
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     resolver::write_host_resolver_config(&layout.staging_root)?;
+    write_musl_loader_search_path(arch, &layout.staging_root)?;
 
     let c_subcases = case
         .subcases
@@ -261,6 +263,7 @@ fn subcase_layout(
 fn subcase_as_case(case: &TestQemuCase, subcase: &TestQemuSubcase) -> TestQemuCase {
     TestQemuCase {
         name: format!("{}/{}", case.name, subcase.name.as_str()),
+        display_name: format!("{}/{}", case.display_name, subcase.name.as_str()),
         case_dir: subcase.case_dir.clone(),
         qemu_config_path: case.qemu_config_path.clone(),
         test_commands: Vec::new(),
@@ -303,6 +306,7 @@ pub(crate) fn prepare_python_case_assets_sync(
     // Extract rootfs into staging
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
     resolver::write_host_resolver_config(&layout.staging_root)?;
+    write_musl_loader_search_path(arch, &layout.staging_root)?;
 
     // Prepare guest prebuild environment and install python3
     let apk_region = apk::apk_region_from_env()?;
@@ -382,6 +386,41 @@ pub(crate) fn prepare_python_case_assets_sync(
     }
 
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+/// Writes a musl loader search-path file into the staging root so that the
+/// guest dynamic linker (`ld-musl-{arch}.so.1`) finds libraries under `/usr/lib`
+/// and `/lib` at runtime.
+///
+/// The file is written to `/etc/ld-musl-{arch}.path` only when the
+/// corresponding loader binary is present under `lib/`; otherwise this is a
+/// no-op (the rootfs may not ship musl at all, or may use a different libc).
+///
+/// This is called from `prepare_c_case_assets_sync`,
+/// `prepare_python_case_assets_sync`, and `prepare_grouped_case_assets_sync`
+/// because those pipelines extract a staging rootfs, optionally run a
+/// `prebuild.sh`, and cross-build guest binaries that link against musl.
+///
+/// It is *not* called from `prepare_sh_case_assets_sync`: shell test cases do
+/// not extract a staging rootfs, do not cross-build C guest binaries, and do
+/// not have a `prebuild.sh` phase — they only copy scripts from the case's
+/// `sh/` source directory into the overlay and inject them directly.
+fn write_musl_loader_search_path(arch: &str, staging_root: &Path) -> anyhow::Result<()> {
+    let loader_path = staging_root
+        .join("lib")
+        .join(format!("ld-musl-{arch}.so.1"));
+    if !loader_path.is_file() {
+        return Ok(());
+    }
+    let etc_dir = staging_root.join("etc");
+    fs::create_dir_all(&etc_dir)
+        .with_context(|| format!("failed to create {}", etc_dir.display()))?;
+
+    let path_file = etc_dir.join(format!("ld-musl-{arch}.path"));
+    fs::write(&path_file, "/usr/lib\n/lib\n")
+        .with_context(|| format!("failed to write {}", path_file.display()))?;
+
+    Ok(())
 }
 
 /// Recursively copies a directory tree, preserving file permissions.
@@ -1089,6 +1128,7 @@ mod tests {
         fs::create_dir_all(&case_dir).unwrap();
         TestQemuCase {
             name: name.to_string(),
+            display_name: name.to_string(),
             case_dir: case_dir.clone(),
             qemu_config_path: case_dir.join("qemu-aarch64.toml"),
             test_commands: Vec::new(),
@@ -1109,6 +1149,35 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn write_musl_loader_search_path_uses_requested_guest_arch() {
+        let root = tempdir().unwrap();
+        let staging_root = root.path().join("staging-root");
+        fs::create_dir_all(staging_root.join("lib")).unwrap();
+        fs::write(staging_root.join("lib/ld-musl-riscv64.so.1"), b"").unwrap();
+
+        write_musl_loader_search_path("riscv64", &staging_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(staging_root.join("etc/ld-musl-riscv64.path")).unwrap(),
+            "/usr/lib\n/lib\n"
+        );
+        assert!(!staging_root.join("etc/ld-musl-aarch64.path").exists());
+    }
+
+    #[test]
+    fn write_musl_loader_search_path_skips_when_guest_loader_is_missing() {
+        let root = tempdir().unwrap();
+        let staging_root = root.path().join("staging-root");
+        fs::create_dir_all(staging_root.join("lib")).unwrap();
+        fs::write(staging_root.join("lib/ld-musl-riscv64.so.1"), b"").unwrap();
+
+        write_musl_loader_search_path("aarch64", &staging_root).unwrap();
+
+        assert!(!staging_root.join("etc/ld-musl-aarch64.path").exists());
+        assert!(!staging_root.join("etc/ld-musl-riscv64.path").exists());
     }
 
     #[test]

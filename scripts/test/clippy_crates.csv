@@ -44,10 +44,12 @@ ax-input
 ax-int-ratio
 ax-io
 ax-ipi
+ax-lockdep
 ax-kspin
 ax-kernel-guard
 ax-lazyinit
 ax-memory-set
+axpanic
 ax-plat
 ax-plat-aarch64-peripherals
 ax-plat-x86-pc

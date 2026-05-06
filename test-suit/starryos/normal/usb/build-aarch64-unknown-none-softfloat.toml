@@ -1,7 +1,0 @@
-target = "aarch64-unknown-none-softfloat"
-env = {}
-features = [
-  "qemu",
-]
-log = "Info"
-plat_dyn = true

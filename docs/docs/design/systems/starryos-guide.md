@@ -141,18 +141,18 @@ cargo starry test qemu --stress -t riscv64 -c stress-ng-0
 cargo starry test board --board orangepi-5-plus --server <ip> --port <port>
 ```
 
-这里直接构建并运行的是 `starryos` 包本体；`test-suit/starryos/normal/<case>/` 和 `test-suit/starryos/stress/<case>/` 负责提供 Starry 测试配置。
+这里直接构建并运行的是 `starryos` 包本体；`test-suit/starryos/<group>/<build_group>/<case>/` 负责提供 Starry 测试配置，`<build_group>` 下的 `build-*.toml` 负责提供构建配置。
 
 - QEMU 测试使用 `qemu-<arch>.toml`
 - 远程板测使用 `board-<name>.toml`
 - `board-<name>.toml` 只保存板测运行判据，实际构建配置仍映射到 `os/StarryOS/configs/board/<name>.toml`
 
-默认 `test qemu` 只跑 `normal` 组，传 `--stress` 后只跑 `stress` 组；`--stress` 等价于 `-g stress`。`-c/--test-case` 只在当前组内按目录名精确筛选单个 case。批量模式会扫描当前组下所有一级子目录，只执行存在 `qemu-<arch>.toml` 的 case；没有当前架构 QEMU 配置的目录会被直接跳过。`test board` 默认只跑 `normal` 组，`--board` 按板卡名筛选并运行该板卡的所有测例，`-c/--test-case` 仅按 case 目录名进一步过滤。
+默认 `test qemu` 只跑 `normal` 组，传 `--stress` 后只跑 `stress` 组；`--stress` 等价于 `-g stress`。`-c/--test-case` 只在当前组内按目录名精确筛选单个 case。批量模式会扫描当前组下所有 build group，再执行其中存在 `qemu-<arch>.toml` 的 case；没有当前架构 QEMU 配置的 case 会被直接跳过。`test board` 默认只跑 `normal` 组，`--board` 按板卡名筛选并运行该板卡的所有测例，`-c/--test-case` 仅按 case 目录名进一步过滤。
 
 Starry QEMU case 还支持可选的 `c/` 子目录约定：
 
-- `test-suit/starryos/<group>/<case>/c/CMakeLists.txt`：必需，作为该 case 的 CMake 项目入口
-- `test-suit/starryos/<group>/<case>/c/prebuild.sh`：可选，若存在则会在 CMake 配置前通过 guest `/bin/sh` 执行
+- `test-suit/starryos/<group>/<build_group>/<case>/c/CMakeLists.txt`：必需，作为该 case 的 CMake 项目入口
+- `test-suit/starryos/<group>/<build_group>/<case>/c/prebuild.sh`：可选，若存在则会在 CMake 配置前通过 guest `/bin/sh` 执行
 - `prebuild.sh` 只负责准备 staging rootfs 内的构建环境，不会自动把副作用同步回最终 rootfs
 - 需要进入 guest rootfs 的文件，必须通过 `install()` 输出，并由 `axbuild` 通过 `cmake --install` 生成 overlay 后回写到 case rootfs
 

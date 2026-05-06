@@ -40,6 +40,7 @@ tls = ["alloc", "ax-feat/tls"]
 
 # Multi-task
 multitask = ["ax-posix-api/multitask"]
+lockdep = ["ax-posix-api/lockdep", "ax-feat/lockdep"]
 
 # File system
 fs = ["ax-posix-api/fs", "fd"]
@@ -48,7 +49,7 @@ fs = ["ax-posix-api/fs", "fd"]
 net = ["ax-posix-api/net", "fd"]
 
 # Libc features
-fd = []
+fd = ["ax-posix-api/fd"]
 pipe = ["ax-posix-api/pipe"]
 select = ["ax-posix-api/select"]
 epoll = ["ax-posix-api/epoll"]

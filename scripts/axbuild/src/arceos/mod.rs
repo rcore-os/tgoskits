@@ -195,18 +195,37 @@ fn build_c_test_make_args(
     base_features: &[String],
     invocation: &CTestInvocation,
 ) -> Vec<String> {
+    let makefile_features = build::makefile_features_from_env();
+    build_c_test_make_args_with_makefile_features(
+        app_path,
+        arch,
+        base_features,
+        invocation,
+        &makefile_features,
+    )
+}
+
+fn build_c_test_make_args_with_makefile_features(
+    app_path: &Path,
+    arch: &str,
+    base_features: &[String],
+    invocation: &CTestInvocation,
+    makefile_features: &[String],
+) -> Vec<String> {
     let mut features = base_features.to_vec();
     let mut extra_vars = Vec::<(String, String)>::new();
 
+    for feature in makefile_features {
+        if !features.iter().any(|existing| existing == feature) {
+            features.push(feature.clone());
+        }
+    }
+
     for (key, value) in &invocation.make_vars {
         if key == "FEATURES" {
-            for feature in value
-                .split(',')
-                .map(str::trim)
-                .filter(|feature| !feature.is_empty())
-            {
-                if !features.iter().any(|existing| existing == feature) {
-                    features.push(feature.to_string());
+            for feature in build::parse_makefile_features(value) {
+                if !features.iter().any(|existing| existing == &feature) {
+                    features.push(feature);
                 }
             }
             continue;
@@ -576,15 +595,16 @@ impl ArceOS {
         for (index, package) in packages.iter().enumerate() {
             println!("[{}/{}] arceos qemu {}", index + 1, packages.len(), package);
             ensure_package_runtime_assets(package)?;
-            let qemu_config = Some(Self::resolve_test_qemu_config(package, target)?);
-            let request = self.prepare_request(
+            let mut request = self.prepare_request(
                 Self::test_build_args(package, target),
-                qemu_config,
+                None,
                 None,
                 SnapshotPersistence::Discard,
             )?;
+            let cargo = build::load_cargo_config(&request)?;
+            request.qemu_config = Some(Self::resolve_test_qemu_config(package, target, &cargo)?);
             match self
-                .run_qemu_request(request)
+                .run_qemu_request_with_cargo(request, cargo)
                 .await
                 .with_context(|| format!("arceos qemu test failed for package `{package}`"))
             {
@@ -646,20 +666,20 @@ impl ArceOS {
         }
     }
 
-    fn resolve_test_qemu_config(package: &str, target: &str) -> anyhow::Result<PathBuf> {
+    fn resolve_test_qemu_config(
+        package: &str,
+        target: &str,
+        cargo: &Cargo,
+    ) -> anyhow::Result<PathBuf> {
         let manifest_path = build::resolve_package_manifest_path(package, None)?;
         let app_dir = manifest_path
             .parent()
             .context("package manifest path has no parent directory")?;
-        let qemu_config = app_dir.join(format!("qemu-{}.toml", arch_from_target(target)));
-        if qemu_config.exists() {
-            Ok(qemu_config)
-        } else {
-            bail!(
-                "missing qemu config for package `{package}` and target `{target}` at {}",
-                qemu_config.display()
-            )
-        }
+        let arch = arch_from_target(target);
+        let qemu_filename =
+            qemu_test::resolve_rust_qemu_config_filename(app_dir, arch, target, &cargo.features)?;
+
+        qemu_test::resolve_named_test_config_path(app_dir, &qemu_filename, "qemu")
     }
 
     async fn load_qemu_config(
@@ -695,8 +715,16 @@ impl ArceOS {
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
-        self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
+        self.run_qemu_request_with_cargo(request, cargo).await
+    }
+
+    async fn run_qemu_request_with_cargo(
+        &mut self,
+        request: ResolvedBuildRequest,
+        cargo: Cargo,
+    ) -> anyhow::Result<()> {
+        self.app.set_debug_mode(request.debug)?;
         let qemu = self.load_qemu_config(&request, &cargo).await?;
         self.app.qemu(cargo, request.build_info_path, qemu).await
     }
@@ -1130,6 +1158,28 @@ mod tests {
             invocations[0].expect_output,
             Some(PathBuf::from("expect.out"))
         );
+    }
+
+    #[test]
+    fn build_c_test_make_args_merges_makefile_features_from_env_and_invocation() {
+        let invocation = CTestInvocation {
+            make_vars: vec![
+                ("FEATURES".to_string(), "sched-rr".to_string()),
+                ("LOG".to_string(), "info".to_string()),
+            ],
+            expect_output: None,
+        };
+
+        let args = build_c_test_make_args_with_makefile_features(
+            Path::new("/tmp/case"),
+            "x86_64",
+            &[String::from("net")],
+            &invocation,
+            &[String::from("lockdep"), String::from("net")],
+        );
+
+        assert!(args.contains(&"FEATURES=net,lockdep,sched-rr".to_string()));
+        assert!(args.contains(&"LOG=info".to_string()));
     }
 
     #[test]

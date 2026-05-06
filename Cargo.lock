@@ -283,6 +283,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-lockdep"
+version = "0.3.1"
+dependencies = [
+ "ax-kspin",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-memtest"
 version = "0.3.1"
 dependencies = [
@@ -1026,7 +1034,7 @@ name = "ax-kspin"
 version = "0.3.7"
 dependencies = [
  "ax-kernel-guard",
- "ax-percpu",
+ "ax-lockdep",
  "cfg-if",
 ]
 
@@ -1050,12 +1058,21 @@ name = "ax-linked-list-r4l"
 version = "0.5.4"
 
 [[package]]
+name = "ax-lockdep"
+version = "0.1.0"
+dependencies = [
+ "ax-crate-interface",
+ "sbi-rt",
+]
+
+[[package]]
 name = "ax-log"
 version = "0.5.11"
 dependencies = [
  "ax-crate-interface",
  "ax-kspin",
  "ax-log",
+ "axpanic",
  "cfg-if",
  "chrono",
  "log",
@@ -1372,7 +1389,9 @@ dependencies = [
  "ax-hal",
  "ax-input",
  "ax-ipi",
+ "ax-lazyinit",
  "ax-log",
+ "ax-memory-addr",
  "ax-mm",
  "ax-net",
  "ax-net-ng",
@@ -1381,6 +1400,7 @@ dependencies = [
  "ax-task",
  "axbacktrace",
  "axklib",
+ "axpanic",
  "cfg-if",
  "chrono",
  "indoc",
@@ -1419,6 +1439,7 @@ name = "ax-sync"
 version = "0.5.12"
 dependencies = [
  "ax-kspin",
+ "ax-lockdep",
  "ax-sync",
  "ax-task",
  "fastrand",
@@ -1437,6 +1458,7 @@ dependencies = [
  "ax-kernel-guard",
  "ax-kspin",
  "ax-lazyinit",
+ "ax-lockdep",
  "ax-memory-addr",
  "ax-percpu",
  "ax-sched",
@@ -1490,6 +1512,7 @@ name = "axbacktrace"
 version = "0.3.8"
 dependencies = [
  "addr2line",
+ "axpanic",
  "cfg-if",
  "gimli",
  "log",
@@ -1614,6 +1637,10 @@ dependencies = [
  "ax-memory-addr",
  "trait-ffi",
 ]
+
+[[package]]
+name = "axpanic"
+version = "0.1.0"
 
 [[package]]
 name = "axplat-dyn"
