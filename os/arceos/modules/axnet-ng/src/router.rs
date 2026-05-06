@@ -5,7 +5,10 @@ use smoltcp::{
     phy::{DeviceCapabilities, Medium},
     storage::PacketMetadata,
     time::Instant,
-    wire::{IpAddress, IpCidr, IpProtocol, IpVersion, Ipv4Packet, Ipv6Packet, TcpPacket},
+    wire::{
+        IpAddress, IpCidr, IpProtocol, IpVersion, Ipv4Address, Ipv4Cidr, Ipv4Packet, Ipv6Packet,
+        TcpPacket,
+    },
 };
 
 use crate::{
@@ -57,6 +60,18 @@ impl RouteTable {
             .iter()
             .find(|rule| rule.filter.contains_addr(dst))
     }
+
+    pub fn remove_ipv4_default_for_dev(&mut self, dev: usize) {
+        self.rules.retain(|rule| {
+            !matches!(
+                rule.filter,
+                IpCidr::Ipv4(cidr)
+                    if rule.dev == dev
+                        && cidr.address() == Ipv4Address::UNSPECIFIED
+                        && cidr.prefix_len() == 0
+            )
+        });
+    }
 }
 
 pub struct Router {
@@ -92,10 +107,50 @@ impl Router {
         self.devices.len() - 1
     }
 
-    pub fn poll(&mut self, timestamp: Instant) {
-        for dev in &mut self.devices {
-            while !self.rx_buffer.is_full() && dev.recv(&mut self.rx_buffer, timestamp) {}
+    pub fn set_ipv4_config(
+        &mut self,
+        dev: usize,
+        address: Option<Ipv4Cidr>,
+        gateway: Option<IpAddress>,
+    ) {
+        self.table.remove_ipv4_default_for_dev(dev);
+        self.devices[dev].set_ipv4_addr(address);
+
+        if let Some(address) = address {
+            self.add_rule(Rule::new(
+                Ipv4Cidr::new(Ipv4Address::UNSPECIFIED, 0).into(),
+                gateway,
+                dev,
+                address.address().into(),
+            ));
         }
+    }
+
+    pub fn poll(
+        &mut self,
+        timestamp: Instant,
+        sockets: &mut SocketSet<'_>,
+        mut snoop: impl FnMut(usize, &[u8]),
+    ) {
+        for (dev_idx, dev) in self.devices.iter_mut().enumerate() {
+            let mut packet_snoop = |packet: &[u8]| {
+                snoop_tcp_packet(packet, sockets);
+                snoop(dev_idx, packet);
+            };
+            while !self.rx_buffer.is_full()
+                && dev.recv(&mut self.rx_buffer, timestamp, &mut packet_snoop)
+            {}
+        }
+    }
+
+    pub fn send_on_device(
+        &mut self,
+        dev: usize,
+        next_hop: IpAddress,
+        packet: &[u8],
+        timestamp: Instant,
+    ) -> bool {
+        self.devices[dev].send(next_hop, packet, timestamp)
     }
 
     pub fn dispatch(&mut self, timestamp: Instant) -> bool {
@@ -204,10 +259,6 @@ impl<'a> smoltcp::phy::RxToken for RxToken<'a> {
         F: FnOnce(&[u8]) -> R,
     {
         f(self.0)
-    }
-
-    fn preprocess(&self, sockets: &mut SocketSet) {
-        snoop_tcp_packet(self.0, sockets);
     }
 }
 

@@ -159,7 +159,7 @@ pub trait SocketOps: Configurable {
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult;
 
     /// Starts listening on the bound address and port.
-    fn listen(&self) -> AxResult {
+    fn listen(&self, _backlog: usize) -> AxResult {
         Err(AxError::OperationNotSupported)
     }
     /// Accepts a connection on a listening socket, returning a new socket.
@@ -190,8 +190,8 @@ impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
         self.as_ref().connect(remote_addr)
     }
 
-    fn listen(&self) -> AxResult {
-        self.as_ref().listen()
+    fn listen(&self, backlog: usize) -> AxResult {
+        self.as_ref().listen(backlog)
     }
 
     fn accept(&self) -> AxResult<Socket> {

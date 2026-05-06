@@ -49,7 +49,7 @@ pub struct EthernetDevice {
     name: String,
     inner: Arc<EthernetIrqState>,
     neighbors: HashMap<IpAddress, Option<Neighbor>>,
-    ip: Ipv4Cidr,
+    ip: Option<Ipv4Cidr>,
 
     pending_packets: PacketBuffer<'static, IpAddress>,
 }
@@ -114,7 +114,7 @@ fn release_ethernet_irq_slot(slot: usize, state: &Arc<EthernetIrqState>) {
 impl EthernetDevice {
     const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
 
-    pub fn new(name: String, inner: AxNetDevice, ip: Ipv4Cidr) -> Self {
+    pub fn new(name: String, inner: AxNetDevice, ip: Option<Ipv4Cidr>) -> Self {
         let irq_num = inner.irq_num();
         let inner = Arc::new(EthernetIrqState {
             irq_num,
@@ -207,6 +207,7 @@ impl EthernetDevice {
         frame: &[u8],
         buffer: &mut PacketBuffer<()>,
         timestamp: Instant,
+        snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
         let frame = EthernetFrame::new_unchecked(frame);
         let Ok(repr) = EthernetRepr::parse(&frame) else {
@@ -223,6 +224,7 @@ impl EthernetDevice {
 
         match repr.ethertype {
             EthernetProtocol::Ipv4 => {
+                snoop(frame.payload());
                 buffer
                     .enqueue(frame.payload().len(), ())
                     .unwrap()
@@ -241,12 +243,16 @@ impl EthernetDevice {
             warn!("IPv6 address ARP is not supported: {}", target_ip);
             return false;
         };
+        let Some(ip) = self.ip else {
+            warn!("cannot request ARP for {target_ipv4}: ethernet IPv4 is not configured");
+            return false;
+        };
         debug!("Requesting ARP for {}", target_ipv4);
 
         let arp_repr = ArpRepr::EthernetIpv4 {
             operation: ArpOperation::Request,
             source_hardware_addr: self.hardware_address(),
-            source_protocol_addr: self.ip.address(),
+            source_protocol_addr: ip.address(),
             target_hardware_addr: EthernetAddress::BROADCAST,
             target_protocol_addr: target_ipv4,
         };
@@ -297,7 +303,10 @@ impl EthernetDevice {
             {
                 return;
             }
-            if self.ip.address() != target_protocol_addr {
+            let Some(ip) = self.ip else {
+                return;
+            };
+            if ip.address() != target_protocol_addr {
                 return;
             }
 
@@ -314,7 +323,7 @@ impl EthernetDevice {
                 let response = ArpRepr::EthernetIpv4 {
                     operation: ArpOperation::Reply,
                     source_hardware_addr: self.hardware_address(),
-                    source_protocol_addr: self.ip.address(),
+                    source_protocol_addr: ip.address(),
                     target_hardware_addr: source_hardware_addr,
                     target_protocol_addr: source_protocol_addr,
                 };
@@ -367,7 +376,12 @@ impl Device for EthernetDevice {
         &self.name
     }
 
-    fn recv(&mut self, buffer: &mut PacketBuffer<()>, timestamp: Instant) -> bool {
+    fn recv(
+        &mut self,
+        buffer: &mut PacketBuffer<()>,
+        timestamp: Instant,
+        snoop: &mut dyn FnMut(&[u8]),
+    ) -> bool {
         loop {
             let rx_buf = {
                 let mut inner = self.inner.driver.lock();
@@ -387,7 +401,7 @@ impl Device for EthernetDevice {
                 rx_buf.packet()
             );
 
-            let result = self.handle_frame(rx_buf.packet(), buffer, timestamp);
+            let result = self.handle_frame(rx_buf.packet(), buffer, timestamp, snoop);
             self.inner.driver.lock().recycle_rx_buffer(rx_buf).unwrap();
             if result {
                 return true;
@@ -396,7 +410,9 @@ impl Device for EthernetDevice {
     }
 
     fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> bool {
-        if next_hop.is_broadcast() || self.ip.broadcast().map(IpAddress::Ipv4) == Some(next_hop) {
+        let is_subnet_broadcast =
+            self.ip.and_then(|ip| ip.broadcast()).map(IpAddress::Ipv4) == Some(next_hop);
+        if next_hop.is_broadcast() || is_subnet_broadcast {
             let mut inner = self.inner.driver.lock();
             Self::send_to(
                 &mut inner,
@@ -438,6 +454,11 @@ impl Device for EthernetDevice {
         };
         dst_buffer.copy_from_slice(packet);
         false
+    }
+
+    fn set_ipv4_addr(&mut self, addr: Option<Ipv4Cidr>) {
+        self.ip = addr;
+        self.neighbors.clear();
     }
 
     fn register_waker(&self, waker: &Waker) {

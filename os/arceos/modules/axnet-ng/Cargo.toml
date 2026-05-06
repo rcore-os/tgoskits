@@ -34,9 +34,7 @@ ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 spin = { workspace = true }
 
 [dependencies.smoltcp]
-package = "starry-smoltcp"
-version = "0.12.1-preview.1"
-default-features = false
+workspace = true
 features = [
   "alloc",
   "log",             # no std
@@ -49,6 +47,7 @@ features = [
   "socket-icmp",
   "socket-udp",
   "socket-tcp",
+  "socket-dhcpv4",
   "socket-dns",
   # "fragmentation-buffer-size-65536", "proto-ipv4-fragmentation",
   # "reassembly-buffer-size-65536", "reassembly-buffer-count-32",

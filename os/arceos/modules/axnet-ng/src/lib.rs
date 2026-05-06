@@ -39,6 +39,10 @@ pub mod vsock;
 mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use ax_driver::{AxDeviceContainer, prelude::*};
 use ax_sync::Mutex;
@@ -59,6 +63,11 @@ static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
 static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
 
 static SERVICE: Once<Mutex<Service>> = Once::new();
+static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
+static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
+
+const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
+const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 fn get_service() -> ax_sync::MutexGuard<'static, Service> {
     SERVICE
@@ -82,11 +91,16 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
         lo_ip.address().into(),
     ));
 
+    let static_network = !IP.is_empty() && !GATEWAY.is_empty();
+    let mut dhcp_dev = None;
+    let mut dhcp_mac = None;
+
     let eth0_ip = if let Some(dev) = net_devs.take_one() {
         info!("  use NIC 0: {:?}", dev.device_name());
 
         let eth0_address = EthernetAddress(dev.mac_address().0);
-        let eth0_ip = Ipv4Cidr::new(IP.parse().expect("Invalid IPv4 address"), IP_PREFIX);
+        let eth0_ip = static_network
+            .then(|| Ipv4Cidr::new(IP.parse().expect("Invalid IPv4 address"), IP_PREFIX));
 
         let eth0_dev = router.add_device(Box::new(EthernetDevice::new(
             "eth0".to_owned(),
@@ -94,18 +108,26 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
             eth0_ip,
         )));
 
-        router.add_rule(Rule::new(
-            Ipv4Cidr::new(Ipv4Address::UNSPECIFIED, 0).into(),
-            Some(GATEWAY.parse().expect("Invalid gateway address")),
-            eth0_dev,
-            eth0_ip.address().into(),
-        ));
-
         info!("eth0:");
         info!("  mac:  {}", eth0_address);
-        info!("  ip:   {}", eth0_ip);
+        if let Some(eth0_ip) = eth0_ip {
+            let gateway = GATEWAY.parse().expect("Invalid gateway address");
+            router.add_rule(Rule::new(
+                Ipv4Cidr::new(Ipv4Address::UNSPECIFIED, 0).into(),
+                Some(gateway),
+                eth0_dev,
+                eth0_ip.address().into(),
+            ));
+            info!("  mode: static");
+            info!("  ip:   {}", eth0_ip);
+            info!("  gw:   {}", gateway);
+        } else {
+            dhcp_dev = Some(eth0_dev);
+            dhcp_mac = Some(eth0_address);
+            info!("  mode: dhcp");
+        }
 
-        Some(eth0_ip)
+        eth0_ip
     } else {
         warn!("  No network device found!");
         None
@@ -122,7 +144,14 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
             ip_addrs.push(eth0_ip.into()).unwrap();
         }
     });
+    if let (Some(dhcp_dev), Some(dhcp_mac)) = (dhcp_dev, dhcp_mac) {
+        service.enable_dhcp(dhcp_dev, dhcp_mac);
+    }
+    let dhcp_enabled = service.dhcp_enabled();
     SERVICE.call_once(|| Mutex::new(service));
+    if dhcp_enabled {
+        ax_task::spawn_with_name(dhcp_bootstrap, "dhcp-bootstrap".to_owned());
+    }
 }
 
 /// Init vsock subsystem by vsock devices.
@@ -142,5 +171,32 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
 
 /// Poll all network interfaces for new events.
 pub fn poll_interfaces() {
-    while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+    POLL_AGAIN.store(true, Ordering::Release);
+    loop {
+        if POLLING_INTERFACES
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        while POLL_AGAIN.swap(false, Ordering::AcqRel) {
+            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+        }
+        POLLING_INTERFACES.store(false, Ordering::Release);
+        if !POLL_AGAIN.load(Ordering::Acquire) {
+            return;
+        }
+    }
+}
+
+fn dhcp_bootstrap() {
+    for _ in 0..DHCP_BOOTSTRAP_ATTEMPTS {
+        poll_interfaces();
+        if get_service().dhcp_configured() {
+            return;
+        }
+        ax_task::sleep(DHCP_BOOTSTRAP_POLL_INTERVAL);
+    }
+    warn!("eth0: DHCP bootstrap timed out");
 }

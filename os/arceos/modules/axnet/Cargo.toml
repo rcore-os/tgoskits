@@ -28,10 +28,8 @@ log.workspace = true
 spin.workspace = true
 
 [dependencies.smoltcp]
-version = "0.12.1-preview.1"
-package = "starry-smoltcp"
+workspace = true
 optional = true
-default-features = false
 features = [
   "alloc",
   "log",             # no std
@@ -44,6 +42,7 @@ features = [
   "socket-icmp",
   "socket-udp",
   "socket-tcp",
+  "socket-dhcpv4",
   "socket-dns",
   # "fragmentation-buffer-size-65536", "proto-ipv4-fragmentation",
   # "reassembly-buffer-size-65536", "reassembly-buffer-count-32",
