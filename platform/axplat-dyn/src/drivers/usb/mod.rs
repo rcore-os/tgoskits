@@ -1,15 +1,21 @@
 extern crate alloc;
 
+#[cfg(feature = "xhci-pci")]
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use crab_usb::{USBHost, err::USBError};
+use crab_usb::USBHost;
+#[cfg(feature = "xhci-pci")]
+use crab_usb::err::USBError;
+#[cfg(feature = "xhci-pci")]
 use fdt_edit::{Fdt, NodeType};
 use rdrive::DriverGeneric;
 
 #[cfg(feature = "rockchip-dwc-xhci")]
 mod xhci_dwc;
+#[cfg(feature = "xhci-mmio")]
 mod xhci_mmio;
+#[cfg(feature = "xhci-pci")]
 mod xhci_pci;
 
 use super::DmaImpl;
@@ -69,6 +75,7 @@ impl PlatformDeviceUsbHost for rdrive::PlatformDevice {
     }
 }
 
+#[cfg(feature = "xhci-pci")]
 fn align_up_4k(size: usize) -> usize {
     const MASK: usize = 0xfff;
     (size + MASK) & !MASK
@@ -91,6 +98,7 @@ fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
     }
 }
 
+#[cfg(feature = "xhci-pci")]
 pub(super) fn resolve_pci_irq_from_fdt(
     endpoint: &rdrive::probe::pci::EndpointRc,
 ) -> Result<usize, USBError> {

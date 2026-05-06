@@ -6,8 +6,10 @@ features = [
   "ax-feat/bus-mmio",
   "ax-feat/bus-pci",
   "ax-feat/driver-sdmmc",
+  "starry-kernel/plat-dyn",
   "axplat-dyn/pci-list-devices",
   "axplat-dyn/rockchip-soc",
+  "axplat-dyn/rockchip-dwc-xhci",
   "axplat-dyn/sdmmc",
   "rknpu",
 ]
