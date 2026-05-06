@@ -75,8 +75,11 @@ pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
     let mut frames = vec![];
 
     let Some(fp_range) = FP_RANGE.get() else {
-        // We cannot panic here!
-        log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
+        if !axpanic::oops_in_progress() {
+            // Avoid recursive output on panic/oops paths, but keep a diagnostic
+            // for ordinary misuse before the backtrace subsystem is ready.
+            log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
+        }
         return frames;
     };
 

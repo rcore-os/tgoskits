@@ -1081,6 +1081,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-kspin",
  "ax-log",
+ "axpanic",
  "cfg-if",
  "chrono",
  "log",
@@ -1408,6 +1409,7 @@ dependencies = [
  "ax-task",
  "axbacktrace",
  "axklib",
+ "axpanic",
  "cfg-if",
  "chrono",
  "indoc",
@@ -1519,6 +1521,7 @@ name = "axbacktrace"
 version = "0.3.8"
 dependencies = [
  "addr2line",
+ "axpanic",
  "cfg-if",
  "gimli",
  "log",
@@ -1643,6 +1646,10 @@ dependencies = [
  "ax-memory-addr",
  "trait-ffi",
 ]
+
+[[package]]
+name = "axpanic"
+version = "0.1.0"
 
 [[package]]
 name = "axplat-dyn"

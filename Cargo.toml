@@ -45,6 +45,7 @@ members = [
     "components/axklib",
     "components/axmm_crates/memory_addr",
     "components/axmm_crates/memory_set",
+    "components/axpanic",
     "components/axplat_crates/axplat",
     "components/axplat_crates/axplat-macros",
     "components/axplat_crates/cargo-axplat",
@@ -247,6 +248,7 @@ ax-linked-list-r4l = { version = "0.5.4", path = "components/linked_list_r4l" }
 ax-log = { version = "0.5.11", path = "os/arceos/modules/axlog" }
 ax-memory-addr = { version = "0.6.7", path = "components/axmm_crates/memory_addr" }
 ax-memory-set = { version = "0.6.7", path = "components/axmm_crates/memory_set" }
+axpanic = { version = "0.1.0", path = "components/axpanic" }
 ax-mm = { version = "0.5.12", path = "os/arceos/modules/axmm" }
 ax-net = { version = "0.5.11", path = "os/arceos/modules/axnet" }
 ax-net-ng = { version = "0.5.12", path = "os/arceos/modules/axnet-ng" }
