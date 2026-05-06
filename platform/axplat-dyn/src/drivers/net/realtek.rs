@@ -43,8 +43,14 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         return Err(OnProbeError::NotMatch);
     };
     info!(
-        "RTL8125 PCI endpoint {address}: BAR{bar_index}={:#x}..{:#x}, irq={irq}",
-        bar.start, bar.end
+        "RTL8125 PCI endpoint {address}: BAR{bar_index}={:#x}..{:#x}, irq={irq}, int_pin={}, \
+         int_line={}, command={:?}, status={:?}",
+        bar.start,
+        bar.end,
+        endpoint.interrupt_pin(),
+        endpoint.interrupt_line(),
+        endpoint.command(),
+        endpoint.status()
     );
 
     endpoint.update_command(|mut cmd| {
