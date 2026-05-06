@@ -263,6 +263,7 @@ static ELF_LOADER: Mutex<ElfLoader> = Mutex::new(ElfLoader::new());
 /// Clear the ELF cache.
 ///
 /// Useful for removing noises during memory leak detect.
+#[cfg(feature = "memtrack")]
 pub fn clear_elf_cache() {
     ELF_LOADER.lock().0.clear();
 }

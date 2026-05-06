@@ -1,7 +1,9 @@
-use std::{collections::HashSet, fs, path::Path, process::Command};
+use std::{collections::HashSet, fs, path::Path};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use cargo_metadata::Metadata;
+
+use crate::support::process::run_cargo_status;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 
@@ -132,12 +134,7 @@ struct ProcessCargoRunner;
 impl CargoRunner for ProcessCargoRunner {
     fn run_test(&mut self, workspace_root: &Path, package: &str) -> anyhow::Result<bool> {
         let args = cargo_test_args(package);
-        let status = Command::new("cargo")
-            .current_dir(workspace_root)
-            .args(&args)
-            .status()
-            .with_context(|| format!("failed to spawn `cargo {}`", args.join(" ")))?;
-        Ok(status.success())
+        run_cargo_status(workspace_root, &args)
     }
 }
 

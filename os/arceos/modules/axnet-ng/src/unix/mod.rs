@@ -1,7 +1,7 @@
 pub(crate) mod dgram;
 pub(crate) mod stream;
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 use core::task::Context;
 
 use async_trait::async_trait;
@@ -206,11 +206,12 @@ impl SocketOps for UnixSocket {
 
     fn accept(&self) -> AxResult<Socket> {
         let (transport, peer_addr) = block_on(interruptible(self.transport.accept()))??;
-        Ok(Socket::Unix(Box::new(Self {
+        Ok(Self {
             transport,
             local_addr: Mutex::new(self.local_addr.lock().clone()),
             remote_addr: Mutex::new(peer_addr),
-        })))
+        }
+        .into())
     }
 
     fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {

@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::anyhow;
 use ostool::run::qemu::QemuConfig;
 
 use crate::{context::ResolvedAxvisorRequest, rootfs};

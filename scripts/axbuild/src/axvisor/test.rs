@@ -130,11 +130,10 @@ pub(crate) fn discover_qemu_cases(
     selected_case: Option<&str>,
 ) -> anyhow::Result<Vec<AxvisorQemuCase>> {
     let test_suite_dir = test_suite_dir(workspace_root, group)?;
-    let build_groups = discover_qemu_build_groups(&test_suite_dir, arch, target)?;
     test_qemu::discover_qemu_cases(
         &test_suite_dir,
-        &build_groups,
         arch,
+        target,
         selected_case,
         "Axvisor",
         "qemu",
@@ -160,14 +159,6 @@ fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<Axvisor
         build_group: case.build_group,
         build_config_path: case.build_config_path,
     })
-}
-
-fn discover_qemu_build_groups(
-    test_suite_dir: &Path,
-    arch: &str,
-    target: &str,
-) -> anyhow::Result<Vec<test_qemu::TestBuildGroup>> {
-    test_qemu::discover_build_groups(test_suite_dir, arch, target, "Axvisor", "qemu")
 }
 
 fn load_qemu_case_config(qemu_config_path: &Path) -> anyhow::Result<AxvisorQemuCaseConfig> {
@@ -229,67 +220,24 @@ fn collect_board_test_groups(
     test_suite_dir: &Path,
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
     let mut groups = Vec::new();
-    for entry in fs::read_dir(test_suite_dir)
-        .with_context(|| format!("failed to read {}", test_suite_dir.display()))?
-    {
-        let entry = entry?;
-        let build_group_dir = entry.path();
-        if !build_group_dir.is_dir() {
-            continue;
-        }
-        let mut board_configs = Vec::new();
-
-        for case_entry in fs::read_dir(&build_group_dir)
-            .with_context(|| format!("failed to read {}", build_group_dir.display()))?
-        {
-            let case_entry = case_entry?;
-            let case_dir = case_entry.path();
-            if !case_dir.is_dir() {
-                continue;
-            }
-            let case_name = match case_entry.file_name().into_string() {
-                Ok(name) => name,
-                Err(_) => continue,
-            };
-
-            for config_entry in fs::read_dir(&case_dir)
-                .with_context(|| format!("failed to read {}", case_dir.display()))?
-            {
-                let config_entry = config_entry?;
-                let config_path = config_entry.path();
-                if !config_path.is_file() || config_path.extension().is_none_or(|ext| ext != "toml")
-                {
-                    continue;
-                }
-
-                let Some(stem) = config_path.file_stem().and_then(|stem| stem.to_str()) else {
-                    continue;
-                };
-                let Some(board_case_name) = stem.strip_prefix("board-") else {
-                    continue;
-                };
-
-                ensure_board_run_config(&config_path)?;
-                board_configs.push((case_name.clone(), board_case_name.to_string(), config_path));
-            }
-        }
-
-        if board_configs.is_empty() {
-            continue;
-        }
-
-        let build_config = resolve_single_board_build_config(&build_group_dir)?;
-        let build_config = resolve_workspace_path(workspace_root, build_config);
+    for config in board_test::discover_board_runtime_configs(test_suite_dir)? {
+        ensure_board_run_config(&config.config_path)?;
+        let wrapper = test_qemu::nearest_target_build_wrapper(
+            test_suite_dir,
+            &config.case_dir,
+            "aarch64-unknown-none-softfloat",
+            "Axvisor",
+            "board",
+        )?;
+        let name = test_qemu::case_name_from_wrapper(test_suite_dir, &wrapper, &config.case_dir)?;
+        let build_config = resolve_workspace_path(workspace_root, wrapper.build_config_path);
         ensure_file_exists(&build_config, "Axvisor board build group config")?;
-
-        groups.extend(board_configs.into_iter().map(
-            |(name, board_name, board_test_config_path)| BoardTestGroup {
-                name,
-                board_name,
-                build_config: build_config.clone(),
-                board_test_config_path,
-            },
-        ));
+        groups.push(BoardTestGroup {
+            name,
+            board_name: config.board_name,
+            build_config,
+            board_test_config_path: config.config_path,
+        });
     }
 
     Ok(groups)
@@ -301,39 +249,6 @@ fn ensure_board_run_config(path: &Path) -> anyhow::Result<()> {
     toml::from_str::<ostool::board::config::BoardRunConfig>(&content)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(())
-}
-
-fn resolve_single_board_build_config(build_group_dir: &Path) -> anyhow::Result<PathBuf> {
-    let mut build_configs = Vec::new();
-    for entry in fs::read_dir(build_group_dir)
-        .with_context(|| format!("failed to read {}", build_group_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if name.starts_with("build-") && name.ends_with(".toml") {
-            build_configs.push(path);
-        }
-    }
-    build_configs.sort();
-
-    match build_configs.as_slice() {
-        [build_config] => Ok(build_config.clone()),
-        [] => bail!(
-            "Axvisor board build group `{}` does not provide a build-*.toml config",
-            build_group_dir.display()
-        ),
-        _ => bail!(
-            "Axvisor board build group `{}` provides multiple build-*.toml configs; board tests \
-             require exactly one build config per board group",
-            build_group_dir.display()
-        ),
-    }
 }
 
 fn resolve_workspace_path(workspace_root: &Path, path: PathBuf) -> PathBuf {
@@ -353,7 +268,7 @@ fn ensure_file_exists(path: &Path, label: &str) -> anyhow::Result<()> {
 }
 
 fn test_suite_dir(workspace_root: &Path, group: &str) -> anyhow::Result<PathBuf> {
-    let test_suite_root = workspace_root.join("test-suit/axvisor");
+    let test_suite_root = test_suite_root(workspace_root);
     let test_suite_dir = test_suite_root.join(group);
     if test_suite_dir.is_dir() {
         Ok(test_suite_dir)
@@ -363,6 +278,29 @@ fn test_suite_dir(workspace_root: &Path, group: &str) -> anyhow::Result<PathBuf>
             supported_test_groups(&test_suite_root)?
         )
     }
+}
+
+fn test_suite_root(workspace_root: &Path) -> PathBuf {
+    workspace_root.join("test-suit/axvisor")
+}
+
+fn discover_test_group_names(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
+    let root = test_suite_root(workspace_root);
+    let mut groups = Vec::new();
+    if root.is_dir() {
+        for entry in
+            fs::read_dir(&root).with_context(|| format!("failed to read {}", root.display()))?
+        {
+            let entry = entry?;
+            if entry.path().is_dir()
+                && let Ok(name) = entry.file_name().into_string()
+            {
+                groups.push(name);
+            }
+        }
+    }
+    groups.sort();
+    Ok(groups)
 }
 
 fn supported_test_groups(test_suite_root: &Path) -> anyhow::Result<String> {
@@ -389,14 +327,70 @@ fn supported_test_groups(test_suite_root: &Path) -> anyhow::Result<String> {
 
 impl Axvisor {
     pub(super) async fn test_qemu(&mut self, args: cli::ArgsTestQemu) -> anyhow::Result<()> {
+        if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
+            let trees = discover_test_group_names(self.app.workspace_root())?
+                .into_iter()
+                .filter_map(|group| {
+                    let test_suite_dir = match test_suite_dir(self.app.workspace_root(), &group) {
+                        Ok(dir) => dir,
+                        Err(err) => return Some(Err(err)),
+                    };
+                    match test_qemu::discover_all_qemu_cases(
+                        &test_suite_dir,
+                        args.test_case.as_deref(),
+                        "Axvisor",
+                        &group,
+                    ) {
+                        Ok(case_names) => Some(Ok(test_qemu::render_case_tree(&group, case_names))),
+                        Err(err) => {
+                            let message = err.to_string();
+                            if message.starts_with("no Axvisor ")
+                                || message.starts_with("unknown Axvisor ")
+                            {
+                                None
+                            } else {
+                                Some(Err(err))
+                            }
+                        }
+                    }
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            if trees.is_empty() {
+                bail!(
+                    "no Axvisor qemu test cases found under {}",
+                    test_suite_root(self.app.workspace_root()).display()
+                );
+            }
+            println!("{}", trees.join("\n"));
+            return Ok(());
+        }
+
+        let test_group = args.test_group.as_deref().unwrap_or("normal");
+        if args.list && args.arch.is_none() && args.target.is_none() {
+            let test_suite_dir = test_suite_dir(self.app.workspace_root(), test_group)?;
+            let case_names = test_qemu::discover_all_qemu_cases(
+                &test_suite_dir,
+                args.test_case.as_deref(),
+                "Axvisor",
+                test_group,
+            )?;
+            println!("{}", test_qemu::render_case_tree(test_group, case_names));
+            return Ok(());
+        }
+
         let (arch, target) = parse_target(&args.arch, &args.target)?;
         let cases = discover_qemu_cases(
             self.app.workspace_root(),
-            &args.test_group,
+            test_group,
             &arch,
             &target,
             args.test_case.as_deref(),
         )?;
+        if args.list {
+            let case_names = cases.iter().map(|case| case.case.name.as_str());
+            println!("{}", test_qemu::render_case_tree(test_group, case_names));
+            return Ok(());
+        }
 
         println!(
             "running axvisor qemu tests for arch: {} (target: {}, cases: {})",
@@ -511,12 +505,53 @@ impl Axvisor {
     }
 
     pub(super) async fn test_board(&mut self, args: cli::ArgsTestBoard) -> anyhow::Result<()> {
+        if args.list && args.test_group.is_none() {
+            let trees = discover_test_group_names(self.app.workspace_root())?
+                .into_iter()
+                .filter_map(|group| {
+                    match discover_board_test_groups(
+                        self.app.workspace_root(),
+                        &group,
+                        args.test_case.as_deref(),
+                        args.board.as_deref(),
+                    ) {
+                        Ok(groups) => {
+                            let case_names = groups.iter().map(|group| group.name.as_str());
+                            Some(Ok(test_qemu::render_case_tree(&group, case_names)))
+                        }
+                        Err(err) => {
+                            let message = err.to_string();
+                            if message.starts_with("no Axvisor ") {
+                                None
+                            } else {
+                                Some(Err(err))
+                            }
+                        }
+                    }
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            if trees.is_empty() {
+                bail!(
+                    "no Axvisor board test groups found under {}",
+                    test_suite_root(self.app.workspace_root()).display()
+                );
+            }
+            println!("{}", trees.join("\n"));
+            return Ok(());
+        }
+
+        let test_group = args.test_group.as_deref().unwrap_or("normal");
         let groups = discover_board_test_groups(
             self.app.workspace_root(),
-            &args.test_group,
+            test_group,
             args.test_case.as_deref(),
             args.board.as_deref(),
         )?;
+        if args.list {
+            let case_names = groups.iter().map(|group| group.name.as_str());
+            println!("{}", test_qemu::render_case_tree(test_group, case_names));
+            return Ok(());
+        }
         let total = groups.len();
         let mut failed = Vec::new();
 
@@ -1001,7 +1036,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.to_string().contains("does not provide `"));
+        assert!(err.to_string().contains("none provide `qemu-aarch64.toml`"));
     }
 
     #[test]
@@ -1204,6 +1239,29 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["smoke/orangepi-5-plus-linux", "smoke/phytiumpi-linux"]
         );
+    }
+
+    #[test]
+    fn discovers_board_case_when_case_dir_contains_build_config() {
+        let root = tempdir().unwrap();
+        let case_dir = root.path().join("test-suit/axvisor/normal/smoke");
+        fs::create_dir_all(&case_dir).unwrap();
+        let build_config = case_dir.join("build-aarch64-unknown-none-softfloat.toml");
+        fs::write(
+            &build_config,
+            "target = \"aarch64-unknown-none-softfloat\"\n",
+        )
+        .unwrap();
+        let board_test_config = case_dir.join("board-phytiumpi-linux.toml");
+        fs::write(&board_test_config, "board_type = \"PhytiumPi\"\n").unwrap();
+
+        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "smoke");
+        assert_eq!(groups[0].board_name, "phytiumpi-linux");
+        assert_eq!(groups[0].build_config, build_config);
+        assert_eq!(groups[0].board_test_config_path, board_test_config);
     }
 
     #[test]

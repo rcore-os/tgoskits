@@ -4,12 +4,7 @@ use core::{net::Ipv4Addr, time::Duration};
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::wall_time;
 use ax_io::prelude::*;
-use ax_task::future::{self, block_on};
-use axnet::{
-    CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
-    options::Configurable,
-};
-use axpoll::IoEvents;
+use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
 use linux_raw_sys::{
     general::timespec,
     net::{
@@ -266,18 +261,16 @@ pub fn sys_recvmmsg(
     // deadline cannot interrupt it. Needs a non-blocking recv path or
     // SO_RCVTIMEO support at the socket layer to fix.
     let deadline = timeout.map(|t| wall_time() + t);
-    let socket = Socket::from_fd(fd)?;
-
     let msgvec = msgvec.get_as_mut_slice(vlen as usize)?;
     let mut received = 0;
     for msg in msgvec.iter_mut() {
-        if let Some(deadline) = deadline {
-            if wall_time() >= deadline {
-                if received == 0 {
-                    return Err(AxError::WouldBlock);
-                }
-                break;
+        if let Some(deadline) = deadline
+            && wall_time() >= deadline
+        {
+            if received == 0 {
+                return Err(AxError::WouldBlock);
             }
+            break;
         }
 
         let recv = recv_impl(

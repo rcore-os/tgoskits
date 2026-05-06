@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Context;
+use anyhow::{Context, anyhow, bail};
 use flate2::read::GzDecoder;
 use indicatif::ProgressBar;
 use sha2::{Digest, Sha256};

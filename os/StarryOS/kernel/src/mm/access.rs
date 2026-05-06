@@ -165,14 +165,6 @@ impl<T> UserPtr<T> {
         )?;
         Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
     }
-
-    pub fn get_as_mut_null_terminated(self) -> AxResult<&'static mut [T]>
-    where
-        T: PartialEq + Default,
-    {
-        let len = check_null_terminated::<T>(self.address(), Self::ACCESS_FLAGS)?;
-        Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
-    }
 }
 
 /// An immutable pointer to user space memory.
@@ -348,11 +340,6 @@ impl VmBytes {
     pub fn new(ptr: *const u8, len: usize) -> Self {
         Self { ptr, len }
     }
-
-    /// Casts the `VmBytes` to a mutable `VmBytesMut`.
-    pub fn cast_mut(&self) -> VmBytesMut {
-        VmBytesMut::new(self.ptr as *mut u8, self.len)
-    }
 }
 
 impl Read for VmBytes {
@@ -389,11 +376,6 @@ impl VmBytesMut {
     /// Creates a new `VmBytesMut` from a raw pointer and a length.
     pub fn new(ptr: *mut u8, len: usize) -> Self {
         Self { ptr, len }
-    }
-
-    /// Casts the `VmBytesMut` to a read-only `VmBytes`.
-    pub fn cast_const(&self) -> VmBytes {
-        VmBytes::new(self.ptr, self.len)
     }
 }
 

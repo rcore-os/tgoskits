@@ -19,22 +19,25 @@ QEMU cases build the `starryos` package and run a per-arch `qemu-<arch>.toml`. B
 ## Workflow
 
 1. Inspect the target directory under `test-suit/starryos` and the current Starry test flow in `scripts/axbuild/src/starry/test.rs`.
-2. Decide whether the case is QEMU or board, and whether it belongs in `normal` or `stress`.
-3. For QEMU, choose the build group (`qemu-smp1`, `qemu-smp4`, or another existing group) and add only the `qemu-<arch>.toml` files for architectures that actually pass.
+2. Decide whether the case is QEMU or board, and choose the top-level test group under `test-suit/starryos` (`normal`, `stress`, or another project-defined group).
+3. For QEMU, put the case directly under the selected group with its own matching `build-*.toml`, or choose a build wrapper directory that contains the matching `build-*.toml` files (`qemu-smp1`, `qemu-smp4`, or another wrapper), then add only the `qemu-<arch>.toml` files for architectures that actually pass.
 4. If the case needs guest assets, use exactly one pipeline: `c/`, `sh/`, `python/`, or grouped `test_commands` with subcase directories.
-5. For board tests, add `board-<board>.toml` under `<build_group>/<case>/` and ensure the mapped board config exists under `os/StarryOS/configs/board/`.
+5. For board tests, add `board-<board>.toml` under the case directory and ensure the case or nearest build wrapper provides the needed `build-*.toml`.
 6. Validate with the matching `cargo xtask starry test ...` command.
 7. If discovery rules, CI expectations, or directory conventions change, update `test-suit/starryos/GUIDE.md` and relevant docs in the same change.
 
 ## Layout Rules
 
-- QEMU cases live at `test-suit/starryos/{normal,stress}/<build_group>/<case>/qemu-<arch>.toml`.
-- Board cases live at `test-suit/starryos/<group>/<build_group>/<case>/board-<board>.toml`.
-- Build configs live at `test-suit/starryos/<group>/<build_group>/build-<target>.toml`; `build-<arch>.toml` is also recognized when present.
-- QEMU discovery first selects build groups with a build config matching the requested arch/target, then discovers cases with the matching `qemu-<arch>.toml`.
-- Board discovery scans for `board-*.toml`; the build config defaults to `os/StarryOS/configs/board/<board>.toml` and may be overridden by a matching test-suit build config in the build group.
+- Test groups are the first-level directories under `test-suit/starryos`; they are discovered dynamically, not limited to `normal` and `stress`.
+- QEMU cases live at `test-suit/starryos/<group>/<case>/qemu-<arch>.toml` or `test-suit/starryos/<group>/<build_wrapper>/<case>/qemu-<arch>.toml`.
+- Board cases live at `test-suit/starryos/<group>/<case>/board-<board>.toml` or `test-suit/starryos/<group>/<build_wrapper>/<case>/board-<board>.toml`.
+- Build configs live in the case directory or nearest build wrapper as `build-<target>.toml`; `build-<arch>.toml` is also recognized when present.
+- A build wrapper packages shared build configs and multiple cases. If a directory itself contains both `build-*` and `qemu-*` or `board-*`, it is also a case.
+- QEMU discovery first selects directories with a build config matching the requested arch/target, then discovers matching `qemu-<arch>.toml` in that directory and below it.
+- Board discovery scans for `board-*.toml` and resolves the build config from the case directory or nearest build wrapper.
 - Batch QEMU runs skip case directories without the requested `qemu-<arch>.toml`; explicit `-c/--test-case` requires the case and config to exist in a matching build group.
 - `--stress` is equivalent to `--test-group stress`; do not combine it with `--test-group normal`.
+- `-l/--list` without `--test-group`, `--arch`, or `--target` lists all discovered groups with matching cases; actual execution without `--test-group` defaults to `normal`.
 
 ## QEMU Asset Pipelines
 

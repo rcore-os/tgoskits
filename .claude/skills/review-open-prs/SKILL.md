@@ -26,9 +26,10 @@ Respect the global subagent policy: spawn subagents only when the user explicitl
    gh api "repos/<owner>/<repo>/pulls/<pr>/reviews?per_page=100"
    gh api "repos/<owner>/<repo>/pulls/<pr>/files?per_page=100"
    ```
-4. Mark a PR eligible when the user has never reviewed it, or the PR latest commit time is newer than the user's last review time.
+4. Mark a PR eligible when the user has never reviewed it, or the PR latest commit time is newer than the user's last review time. Compare the PR latest commit date against the current user's last submitted review timestamp, not `updatedAt`, because comments, CI, or thread resolution can update the PR without new code.
 5. Include drafts unless the user explicitly says to skip drafts; note draft status in the summary.
-6. List excluded PRs and the reason: self-authored, already reviewed at latest commit, closed, or skipped by user scope.
+6. For PRs already reviewed at the latest commit, do not submit another review unless the user explicitly asks for a fresh pass. You may still inspect unresolved review threads to decide whether previously requested changes have been resolved.
+7. List excluded PRs and the reason: self-authored, already reviewed at latest commit, closed, or skipped by user scope.
 
 ## Worktrees
 
@@ -41,6 +42,16 @@ git worktree add --detach /home/zhourui/opensource/tgoskits-review-pr<pr> origin
 
 Never review multiple StarryOS QEMU cases in the same checkout at the same time. Use separate worktrees for parallel PR review, and do not modify or revert the user's main worktree.
 
+If a review worktree already exists, verify it is clean and at the expected PR head before reusing it:
+
+```bash
+git -C /home/zhourui/opensource/tgoskits-review-pr<pr> status --short
+git -C /home/zhourui/opensource/tgoskits-review-pr<pr> rev-parse HEAD
+git rev-parse refs/remotes/origin/pr/<pr>
+```
+
+If the existing worktree is stale and clean, update it to the fetched PR head with a non-destructive detached checkout. If it has local changes, do not overwrite them; create a fresh worktree path or ask how to proceed.
+
 When spawning workers, give each worker exactly one PR and one worktree. Tell workers to:
 
 - perform read-only review plus local validation only;
@@ -49,6 +60,33 @@ When spawning workers, give each worker exactly one PR and one worktree. Tell wo
 - provide `path`, `line`, `side=RIGHT`, and Chinese inline comment body for each blocking issue;
 - include commands run and exact failures;
 - identify missing reproduction tests for bug fixes.
+
+## Review Threads
+
+Use thread-aware review data whenever the task includes resolving old comments or deciding whether previous requested changes are fixed. Flat review comments are not enough because they omit `isResolved`, `isOutdated`, and thread IDs.
+
+Fetch review threads with GraphQL:
+
+```bash
+gh api graphql -F query=@query.graphql -F owner=<owner> -F repo=<repo> -F number=<pr>
+```
+
+The query must include `reviewThreads { nodes { id isResolved isOutdated path line diffSide comments(first: 100) { nodes { author { login } body createdAt } } } }`. Detached worktrees cannot rely on `gh pr view` branch inference, so pass `<owner>`, `<repo>`, and `<pr>` explicitly when using helper scripts.
+
+When resolving threads:
+
+- resolve only threads whose concrete issue is fixed in the current PR head;
+- keep threads open when the fix is partial, the test is not wired into the runner, or the comment is still behaviorally valid;
+- resolving an old thread does not imply approval if new blocking issues remain;
+- after resolving, fetch threads again and confirm `isResolved=true`.
+
+Resolve with:
+
+```bash
+gh api graphql \
+  -f query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}' \
+  -f threadId=<thread-id>
+```
 
 ## Review Standards
 
@@ -89,6 +127,14 @@ Always run local verification that matches the changed surface. Prefer project `
   ```
 
 If `cargo xtask` cannot satisfy a special configuration, inspect the relevant `xtask` help or source first, then fall back to a native Cargo command with matched arguments. Record exact command output for failures such as unknown package names, QEMU timeout, missing guest image, or clippy diagnostics.
+
+For StarryOS grouped QEMU cases, verify that newly listed commands are actually installed into the guest overlay. A `qemu-*.toml` `test_commands` entry such as `/usr/bin/<test>` must correspond to a case/subcase asset path that the runner discovers and builds. Running the containing grouped case is the preferred check, for example:
+
+```bash
+cargo xtask starry test qemu --arch x86_64 -c syscall
+```
+
+Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, or an unbuilt asset directory as blocking even when the Rust code and clippy pass.
 
 Use GitHub check status only as auxiliary evidence:
 
@@ -133,6 +179,21 @@ gh api --method POST repos/<owner>/<repo>/pulls/<pr>/reviews --input review.json
 ```
 
 Use `REQUEST_CHANGES` when there is any blocking issue. Use `APPROVE` when there are no blocking issues; non-blocking suggestions may be included as comments or in the review body.
+
+Inline review payloads must include the current `headRefOid` as `commit_id`, and each inline comment should use a changed-line anchor on `side=RIGHT`:
+
+```json
+{
+  "commit_id": "<headRefOid>",
+  "event": "REQUEST_CHANGES",
+  "body": "...",
+  "comments": [
+    {"path": "path/to/file.rs", "line": 123, "side": "RIGHT", "body": "..."}
+  ]
+}
+```
+
+If a worker returns a finding on a line that is not present on the current PR diff, move the comment to the nearest changed line that demonstrates the problem or put the finding in the review body.
 
 Review body should summarize:
 
