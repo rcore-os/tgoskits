@@ -429,10 +429,11 @@ HELLO = "world"
             axconfig_overrides: Vec::new(),
             plat_dyn: true,
         };
+        let features = build_info.features.clone();
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, true),
+            StarryBuildInfo::build_cargo_args(&request.target, true, &features),
         );
 
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
@@ -492,10 +493,11 @@ HELLO = "world"
             uboot_config: None,
         };
         let build_info = StarryBuildInfo::default_starry_for_target(&request.target);
+        let features = build_info.features.clone();
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, false),
+            StarryBuildInfo::build_cargo_args(&request.target, false, &features),
         );
 
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
