@@ -51,6 +51,7 @@ enum DhcpPhase {
 }
 
 const DHCP_PARAMETER_REQUEST_LIST: &[u8] = &[1, 3, 6, 42];
+const DHCP_MAX_RETRY_SHIFT: usize = 4;
 
 impl DhcpState {
     fn new(dev: usize, mac: EthernetAddress) -> Self {
@@ -165,8 +166,9 @@ impl DhcpState {
             DhcpPhase::Bound => return None,
         };
 
+        let retry_delay_secs = 1usize << self.retry.min(DHCP_MAX_RETRY_SHIFT);
         self.retry = self.retry.saturating_add(1);
-        self.retry_at = timestamp + SmolDuration::from_secs((1usize << self.retry.min(4)) as u64);
+        self.retry_at = timestamp + SmolDuration::from_secs(retry_delay_secs as u64);
 
         Some((
             self.dev,

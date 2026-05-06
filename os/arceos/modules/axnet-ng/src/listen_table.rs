@@ -24,10 +24,11 @@ struct ListenTableEntryInner {
 
 impl ListenTableEntryInner {
     pub fn new(listen_endpoint: IpListenEndpoint, backlog: usize) -> Self {
+        let backlog = backlog.clamp(1, LISTEN_QUEUE_SIZE);
         Self {
             listen_endpoint,
-            backlog: backlog.min(LISTEN_QUEUE_SIZE),
-            syn_queue: VecDeque::with_capacity(backlog.min(LISTEN_QUEUE_SIZE)),
+            backlog,
+            syn_queue: VecDeque::with_capacity(backlog),
         }
     }
 
