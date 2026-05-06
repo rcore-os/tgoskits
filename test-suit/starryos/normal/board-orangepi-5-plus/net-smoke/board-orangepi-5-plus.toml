@@ -1,0 +1,6 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''export GLIBC_TUNABLES=glibc.pthread.rseq=0; echo RTL8125_NET_TEST_START; busybox nc -w 10 connect.rom.miui.com 80 </dev/null >/dev/null; rc=$?; echo RTL8125_NET_TEST_RC=$rc; if [ "$rc" -eq 0 ]; then echo RTL8125_NET_TEST_PASSED; else echo RTL8125_NET_TEST_FAILED rc=$rc; fi'''
+success_regex = ["(?m)^RTL8125_NET_TEST_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^RTL8125_NET_TEST_FAILED\\b"]
+timeout = 180

@@ -1,7 +1,7 @@
 # Build-time config template for StarryOS on Orange Pi 5 Plus.
 target = "aarch64-unknown-none-softfloat"
 # Runtime U-Boot settings live in `orangepi-5-plus-uboot.toml`.
-env = {AX_IP = "10.3.10.201", AX_GW = "10.3.10.254"}
+env = {}
 features = [
   "ax-feat/bus-mmio",
   "ax-feat/bus-pci",
@@ -9,7 +9,7 @@ features = [
   "axplat-dyn/pci-list-devices",
   "axplat-dyn/realtek-rtl8125",
   "axplat-dyn/rockchip-soc",
-  "axplat-dyn/sdmmc",
+  "axplat-dyn/simple-sdmmc",
   "rknpu",
 ]
 log = "Info"
