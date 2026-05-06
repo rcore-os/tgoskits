@@ -92,6 +92,7 @@ rsext4
 scope-local
 simple-sdmmc
 starry-kernel
+starryos
 starry-process
 starry-vm
 tg-xtask
