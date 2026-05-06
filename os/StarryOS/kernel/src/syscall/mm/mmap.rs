@@ -187,72 +187,78 @@ pub fn sys_mmap(
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
             if let Some(ref file) = file {
-                // Try device mmap first (ExportedGemBuffer, etc.)
-                if let Ok(device_mmap) = file.device_mmap(offset as u64) {
-                    match device_mmap {
-                        DeviceMmap::Physical(mut range) => {
-                            range.start += offset;
-                            if range.is_empty() {
-                                return Err(AxError::InvalidInput);
-                            }
-                            length = length.min(range.size().align_down(page_size));
-                            Backend::new_linear(
-                                start.as_usize() as isize - range.start.as_usize() as isize,
-                            );
+                match file.device_mmap(offset as u64) {
+                    Ok(DeviceMmap::Physical(mut range)) => {
+                        range.start += offset;
+                        if range.is_empty() {
+                            return Err(AxError::InvalidInput);
                         }
-                        DeviceMmap::None => return Err(AxError::NoSuchDevice),
-                        _ => return Err(AxError::InvalidInput),
-                    }
-                }
-
-                // Fall through to file-backed mmap
-                let (backend, flags) = file.file_mmap()?;
-                // man 2 mmap EACCES: a file mapping requires the fd to be
-                // open for reading, and MAP_SHARED+PROT_WRITE additionally
-                // requires the fd to be open for writing.
-                if !flags.contains(FileFlags::READ) {
-                    return Err(AxError::PermissionDenied);
-                }
-                if permission_flags.contains(MmapProt::WRITE) && !flags.contains(FileFlags::WRITE) {
-                    return Err(AxError::PermissionDenied);
-                }
-                match backend.clone() {
-                    FileBackend::Cached(cache) => {
-                        // TODO(mivik): file mmap page size
-                        Backend::new_file(
-                            start,
-                            cache,
-                            flags,
-                            offset,
-                            &curr.as_thread().proc_data.aspace,
+                        length = length.min(range.size().align_down(page_size));
+                        Backend::new_linear(
+                            start.as_usize() as isize - range.start.as_usize() as isize,
+                            true,
                         )
                     }
-                    FileBackend::Direct(loc) => {
-                        let device = loc
-                            .entry()
-                            .downcast::<Device>()
-                            .map_err(|_| AxError::NoSuchDevice)?;
-
-                        match device.mmap(offset as u64) {
-                            DeviceMmap::None => {
-                                return Err(AxError::NoSuchDevice);
-                            }
-                            DeviceMmap::Physical(range) => {
-                                if range.is_empty() {
-                                    return Err(AxError::InvalidInput);
-                                }
-                                length = capped_device_map_len(length, range.size(), page_size);
-                                Backend::new_linear(
-                                    start.as_usize() as isize - range.start.as_usize() as isize,
+                    Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
+                    Ok(_) => return Err(AxError::InvalidInput),
+                    Err(_) => {
+                        // Fall through to file-backed mmap
+                        let (backend, flags) = file.file_mmap()?;
+                        // man 2 mmap EACCES: a file mapping requires the fd to be
+                        // open for reading, and MAP_SHARED+PROT_WRITE additionally
+                        // requires the fd to be open for writing.
+                        if !flags.contains(FileFlags::READ) {
+                            return Err(AxError::PermissionDenied);
+                        }
+                        if permission_flags.contains(MmapProt::WRITE)
+                            && !flags.contains(FileFlags::WRITE)
+                        {
+                            return Err(AxError::PermissionDenied);
+                        }
+                        match backend.clone() {
+                            FileBackend::Cached(cache) => {
+                                // TODO(mivik): file mmap page size
+                                Backend::new_file(
+                                    start,
+                                    cache,
+                                    flags,
+                                    offset,
+                                    &curr.as_thread().proc_data.aspace,
+                                    true,
                                 )
                             }
-                            DeviceMmap::Cache(cache) => Backend::new_file(
-                                start,
-                                cache,
-                                flags,
-                                offset,
-                                &curr.as_thread().proc_data.aspace,
-                            ),
+                            FileBackend::Direct(loc) => {
+                                let device = loc
+                                    .entry()
+                                    .downcast::<Device>()
+                                    .map_err(|_| AxError::NoSuchDevice)?;
+
+                                match device.mmap(offset as u64) {
+                                    DeviceMmap::None => {
+                                        return Err(AxError::NoSuchDevice);
+                                    }
+                                    DeviceMmap::Physical(range) => {
+                                        if range.is_empty() {
+                                            return Err(AxError::InvalidInput);
+                                        }
+                                        length =
+                                            capped_device_map_len(length, range.size(), page_size);
+                                        Backend::new_linear(
+                                            start.as_usize() as isize
+                                                - range.start.as_usize() as isize,
+                                            true,
+                                        )
+                                    }
+                                    DeviceMmap::Cache(cache) => Backend::new_file(
+                                        start,
+                                        cache,
+                                        flags,
+                                        offset,
+                                        &curr.as_thread().proc_data.aspace,
+                                        true,
+                                    ),
+                                }
+                            }
                         }
                     }
                 }
@@ -270,9 +276,9 @@ pub fn sys_mmap(
                 if !file_flags.contains(FileFlags::READ) {
                     return Err(AxError::PermissionDenied);
                 }
-                Backend::new_cow(start, page_size, backend, offset as u64, None)
+                Backend::new_cow(start, page_size, backend, offset as u64, None, false)
             } else {
-                Backend::new_alloc(start, page_size)
+                Backend::new_alloc(start, page_size, "")
             }
         }
         _ => return Err(AxError::InvalidInput),
