@@ -898,6 +898,22 @@ impl FileLike for UsbDeviceFile {
                         ctrl.w_length
                     );
                 }
+                match manager::is_snapshot_control_ioctl(arg) {
+                    Ok(true) => {
+                        let result = self.manager.snapshot_device_ioctl(
+                            self.bus_num,
+                            self.device_num,
+                            cmd,
+                            arg,
+                        );
+                        if log {
+                            debug!("usbfs: snapshot control ioctl result={:?}", result);
+                        }
+                        return result;
+                    }
+                    Ok(false) => {}
+                    Err(err) => return Err(err),
+                }
                 let lease = self.lease.lock().clone();
                 if let Some(lease) = lease {
                     let result = lease.ioctl(cmd, arg);

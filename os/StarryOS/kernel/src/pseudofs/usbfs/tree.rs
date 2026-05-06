@@ -8,8 +8,9 @@ use starry_vm::VmMutPtr;
 
 use super::{
     descriptor::{
-        USBDEVFS_CAP_BULK_CONTINUATION, USBDEVFS_CONNECTINFO, USBDEVFS_GET_CAPABILITIES,
-        UsbdevfsConnectInfo, bus_name, device_name, parse_numeric_component, usb_device_id,
+        USBDEVFS_CAP_BULK_CONTINUATION, USBDEVFS_CONNECTINFO, USBDEVFS_CONTROL,
+        USBDEVFS_GET_CAPABILITIES, UsbdevfsConnectInfo, bus_name, device_name,
+        parse_numeric_component, usb_device_id,
     },
     manager::UsbFsManager,
 };
@@ -147,6 +148,10 @@ impl DeviceOps for UsbDeviceOps {
             USBDEVFS_GET_CAPABILITIES => {
                 (arg as *mut u32).vm_write(USBDEVFS_CAP_BULK_CONTINUATION)?;
                 Ok(0)
+            }
+            USBDEVFS_CONTROL => {
+                self.manager
+                    .snapshot_device_ioctl(self.bus_num, self.device_num, cmd, arg)
             }
             _ => Err(AxError::Unsupported),
         }

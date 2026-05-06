@@ -33,6 +33,10 @@ use super::{
 use crate::mm::{UserConstPtr, UserPtr};
 
 const ROOT_HUB_STABLE_DEVICE_ID: usize = usize::MAX;
+const USB_REQ_GET_DESCRIPTOR: u8 = 0x06;
+const USB_REQ_GET_CONFIGURATION: u8 = 0x08;
+const USB_DT_DEVICE: u16 = 0x01;
+const USB_DT_CONFIG: u16 = 0x02;
 
 pub(super) struct UsbHostState {
     pub(super) device_id: RDriveDeviceId,
@@ -522,38 +526,7 @@ impl UsbFsManager {
             .device_snapshot(bus_num, device_num)
             .ok_or(AxError::NotFound)?;
         match cmd {
-            USBDEVFS_CONTROL => {
-                let ctrl = read_usbdevfs_ctrltransfer(arg)?;
-                match (ctrl.b_request_type, ctrl.b_request, ctrl.w_value >> 8) {
-                    (0x80, 0x06, 0x01) => {
-                        let len = snapshot
-                            .descriptor_blob
-                            .len()
-                            .min(18)
-                            .min(ctrl.w_length as usize);
-                        UserPtr::<u8>::from(ctrl.data)
-                            .get_as_mut_slice(len)?
-                            .copy_from_slice(&snapshot.descriptor_blob[..len]);
-                        Ok(len)
-                    }
-                    (0x80, 0x06, 0x02) => {
-                        let config_index = (ctrl.w_value & 0xff) as usize;
-                        let config = snapshot_config_blob(&snapshot, config_index)
-                            .ok_or(AxError::Unsupported)?;
-                        let len = config.len().min(ctrl.w_length as usize);
-                        UserPtr::<u8>::from(ctrl.data)
-                            .get_as_mut_slice(len)?
-                            .copy_from_slice(&config[..len]);
-                        Ok(len)
-                    }
-                    (0x80, 0x08, _) if ctrl.w_length >= 1 => {
-                        ctrl.data
-                            .vm_write(snapshot_active_configuration(&snapshot))?;
-                        Ok(1)
-                    }
-                    _ => Err(AxError::Unsupported),
-                }
-            }
+            USBDEVFS_CONTROL => snapshot_control_ioctl(&snapshot, arg),
             USBDEVFS_CONNECTINFO => {
                 (arg as *mut UsbdevfsConnectInfo).vm_write(UsbdevfsConnectInfo {
                     devnum: snapshot.device_num as u32,
@@ -1005,6 +978,52 @@ impl UsbFsManager {
             );
         }
     }
+}
+
+pub(super) fn is_snapshot_control_ioctl(arg: usize) -> AxResult<bool> {
+    let ctrl = read_usbdevfs_ctrltransfer(arg)?;
+    Ok(matches!(
+        (ctrl.b_request_type, ctrl.b_request, ctrl.w_value >> 8),
+        (0x80, USB_REQ_GET_DESCRIPTOR, USB_DT_DEVICE)
+            | (0x80, USB_REQ_GET_DESCRIPTOR, USB_DT_CONFIG)
+            | (0x80, USB_REQ_GET_CONFIGURATION, _)
+    ))
+}
+
+fn snapshot_control_ioctl(snapshot: &UsbDeviceSnapshot, arg: usize) -> AxResult<usize> {
+    let ctrl = read_usbdevfs_ctrltransfer(arg)?;
+    match (ctrl.b_request_type, ctrl.b_request, ctrl.w_value >> 8) {
+        (0x80, USB_REQ_GET_DESCRIPTOR, USB_DT_DEVICE) => {
+            let descriptor = &snapshot.descriptor_blob[..snapshot.descriptor_blob.len().min(18)];
+            write_control_data(ctrl.data, ctrl.w_length as usize, descriptor)
+        }
+        (0x80, USB_REQ_GET_DESCRIPTOR, USB_DT_CONFIG) => {
+            let config_index = (ctrl.w_value & 0xff) as usize;
+            let config =
+                snapshot_config_blob(snapshot, config_index).ok_or(AxError::Unsupported)?;
+            write_control_data(ctrl.data, ctrl.w_length as usize, config)
+        }
+        (0x80, USB_REQ_GET_CONFIGURATION, _) => {
+            if ctrl.w_length == 0 {
+                return Ok(0);
+            }
+            ctrl.data
+                .vm_write(snapshot_active_configuration(snapshot))?;
+            Ok(1)
+        }
+        _ => Err(AxError::Unsupported),
+    }
+}
+
+fn write_control_data(data: *mut u8, requested_len: usize, source: &[u8]) -> AxResult<usize> {
+    let len = source.len().min(requested_len);
+    if len == 0 {
+        return Ok(0);
+    }
+    UserPtr::<u8>::from(data)
+        .get_as_mut_slice(len)?
+        .copy_from_slice(&source[..len]);
+    Ok(len)
 }
 
 fn snapshot_active_configuration(snapshot: &UsbDeviceSnapshot) -> u8 {
