@@ -106,7 +106,7 @@ impl SocketOps for VsockSocket {
     fn accept(&self) -> AxResult<Socket> {
         self.transport.accept().map(|(transport, _addr)| {
             let socket = VsockSocket::new(transport);
-            Socket::Vsock(socket)
+            socket.into()
         })
     }
 

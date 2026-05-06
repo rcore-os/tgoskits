@@ -389,7 +389,7 @@ impl SocketOps for TcpSocket {
                     handle,
                     socket.with_smol_socket(|socket| socket.remote_endpoint().unwrap())
                 );
-                Socket::Tcp(socket)
+                socket.into()
             })
         })
     }

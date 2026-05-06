@@ -237,16 +237,6 @@ where
         self.reverse.get(value)
     }
 
-    /// Removes a key-value pair by key, returning the value if it existed.
-    pub fn remove_by_key(&mut self, key: &K) -> Option<V> {
-        if let Some(value) = self.forward.remove(key) {
-            self.reverse.remove(&value);
-            Some(value)
-        } else {
-            None
-        }
-    }
-
     /// Removes a key-value pair by value, returning the key if it existed.
     pub fn remove_by_value(&mut self, value: &V) -> Option<K> {
         if let Some(key) = self.reverse.remove(value) {

@@ -5,7 +5,7 @@ use axfs_ng_vfs::{MetadataUpdate, NodeType};
 #[cfg(feature = "vsock")]
 use axnet::vsock::{VsockSocket, VsockStreamTransport};
 use axnet::{
-    Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
+    Shutdown, SocketAddrEx, SocketOps,
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
@@ -35,20 +35,18 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             if proto != 0 && proto != IPPROTO_TCP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            SocketInner::Tcp(TcpSocket::new())
+            TcpSocket::new().into()
         }
         (AF_INET, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            SocketInner::Udp(UdpSocket::new())
+            UdpSocket::new().into()
         }
-        (AF_UNIX, SOCK_STREAM) => SocketInner::Unix(UnixSocket::new(StreamTransport::new(pid))),
-        (AF_UNIX, SOCK_DGRAM) => SocketInner::Unix(UnixSocket::new(DgramTransport::new(pid))),
+        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
+        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
         #[cfg(feature = "vsock")]
-        (AF_VSOCK, SOCK_STREAM) => {
-            SocketInner::Vsock(VsockSocket::new(VsockStreamTransport::new()))
-        }
+        (AF_VSOCK, SOCK_STREAM) => VsockSocket::new(VsockStreamTransport::new()).into(),
         (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
@@ -79,8 +77,8 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
 
     Socket::from_fd(fd)?.bind(addr)?;
 
-    if let Some(path) = unix_path {
-        if let Err(err) = FS_CONTEXT
+    if let Some(path) = unix_path
+        && let Err(err) = FS_CONTEXT
             .lock()
             .resolve_no_follow(path.as_ref())
             .and_then(|loc| {
@@ -92,9 +90,8 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
                 }
                 Ok(())
             })
-        {
-            warn!("failed to update AF_UNIX socket owner for {path}: {err:?}");
-        }
+    {
+        warn!("failed to update AF_UNIX socket owner for {path}: {err:?}");
     }
 
     Ok(0)
@@ -203,8 +200,8 @@ pub fn sys_socketpair(
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
     };
-    let sock1 = Socket(SocketInner::Unix(sock1));
-    let sock2 = Socket(SocketInner::Unix(sock2));
+    let sock1 = Socket(sock1.into());
+    let sock2 = Socket(sock2.into());
 
     if raw_ty & O_NONBLOCK != 0 {
         sock1.set_nonblocking(true)?;
