@@ -1118,6 +1118,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-kspin",
  "ax-log",
+ "axpanic",
  "cfg-if",
  "chrono",
  "log",
@@ -1445,6 +1446,7 @@ dependencies = [
  "ax-task",
  "axbacktrace",
  "axklib",
+ "axpanic",
  "cfg-if",
  "chrono",
  "indoc",
@@ -1556,6 +1558,7 @@ name = "axbacktrace"
 version = "0.3.8"
 dependencies = [
  "addr2line",
+ "axpanic",
  "cfg-if",
  "gimli",
  "log",
@@ -1728,20 +1731,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "axplat"
-version = "0.3.1-pre.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29d8d929fe41fcb361cf784819041f942aba4bcd2d26b9a26305df84e26b206b"
-dependencies = [
- "axplat-macros",
- "bitflags 2.11.1",
- "const-str",
- "crate_interface 0.3.0",
- "handler_table",
- "kspin",
- "memory_addr",
- "percpu 0.2.3-preview.1",
-]
+name = "axpanic"
+version = "0.1.0"
 
 [[package]]
 name = "axplat-dyn"

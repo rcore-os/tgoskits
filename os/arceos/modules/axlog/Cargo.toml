@@ -12,6 +12,7 @@ std = ["dep:chrono"]
 default = []
 
 [dependencies]
+axpanic.workspace = true
 cfg-if.workspace = true
 chrono = { workspace = true, default-features = true, optional = true }
 ax-crate-interface.workspace = true
