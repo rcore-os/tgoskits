@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, bail};
@@ -44,14 +44,18 @@ pub(crate) fn resolve_named_test_config_path(
     filename: &str,
     config_kind: &str,
 ) -> anyhow::Result<PathBuf> {
-    let bare_path = app_dir.join(filename);
-    if bare_path.exists() {
-        return Ok(bare_path);
+    let path = app_dir.join(filename);
+    if path.exists() {
+        return Ok(path);
     }
 
-    let dotted_path = app_dir.join(format!(".{filename}"));
-    if dotted_path.exists() {
-        return Ok(dotted_path);
+    let legacy_path = app_dir.join(format!(".{filename}"));
+    if legacy_path.exists() {
+        bail!(
+            "unsupported legacy {config_kind} config `{}` under {}; expected `{filename}`",
+            legacy_path.display(),
+            app_dir.display()
+        );
     }
 
     bail!(
@@ -105,7 +109,7 @@ pub(crate) fn resolve_rust_qemu_config_filename(
     features: &[String],
 ) -> anyhow::Result<String> {
     let default = format!("qemu-{arch}.toml");
-    let Some(config_path) = resolve_optional_qemu_rule_config_path(app_dir) else {
+    let Some(config_path) = resolve_optional_qemu_rule_config_path(app_dir)? else {
         return Ok(default);
     };
 
@@ -128,16 +132,22 @@ pub(crate) fn resolve_rust_qemu_config_filename(
         .unwrap_or(default))
 }
 
-fn resolve_optional_qemu_rule_config_path(app_dir: &Path) -> Option<PathBuf> {
-    let bare = app_dir.join("qemu-test.toml");
-    if bare.exists() {
-        return Some(bare);
+fn resolve_optional_qemu_rule_config_path(app_dir: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let path = app_dir.join("qemu-test.toml");
+    if path.exists() {
+        return Ok(Some(path));
     }
-    let dotted = app_dir.join(".qemu-test.toml");
-    if dotted.exists() {
-        return Some(dotted);
+
+    let legacy_path = app_dir.join(".qemu-test.toml");
+    if legacy_path.exists() {
+        bail!(
+            "unsupported legacy qemu rule config `{}` under {}; expected `qemu-test.toml`",
+            legacy_path.display(),
+            app_dir.display()
+        );
     }
-    None
+
+    Ok(None)
 }
 
 fn expand_qemu_config_template(template: &str, arch: &str, target: &str) -> String {
@@ -154,28 +164,48 @@ pub(crate) fn qemu_config_name(arch: &str) -> String {
     format!("qemu-{arch}.toml")
 }
 
-pub(crate) fn resolve_build_config_path(dir: &Path, arch: &str, target: &str) -> Option<PathBuf> {
-    let bare_target = dir.join(format!("build-{target}.toml"));
-    if bare_target.is_file() {
-        return Some(bare_target);
+pub(crate) fn resolve_build_config_path(
+    dir: &Path,
+    target: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let path = dir.join(format!("build-{target}.toml"));
+    if path.is_file() {
+        return Ok(Some(path));
     }
 
-    let dotted_target = dir.join(format!(".build-{target}.toml"));
-    if dotted_target.is_file() {
-        return Some(dotted_target);
+    let legacy_candidates = legacy_build_config_candidates(dir, target);
+    if !legacy_candidates.is_empty() {
+        bail!(
+            "unsupported legacy build config name(s) under {}: {}; expected only \
+             `build-{target}.toml`",
+            dir.display(),
+            legacy_candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
-    let bare_arch = dir.join(format!("build-{arch}.toml"));
-    if bare_arch.is_file() {
-        return Some(bare_arch);
-    }
+    Ok(None)
+}
 
-    let dotted_arch = dir.join(format!(".build-{arch}.toml"));
-    if dotted_arch.is_file() {
-        return Some(dotted_arch);
-    }
+fn legacy_build_config_candidates(dir: &Path, target: &str) -> Vec<PathBuf> {
+    let Some(arch) = arch_from_target_name(target) else {
+        return Vec::new();
+    };
+    [
+        dir.join(format!(".build-{target}.toml")),
+        dir.join(format!("build-{arch}.toml")),
+        dir.join(format!(".build-{arch}.toml")),
+    ]
+    .into_iter()
+    .filter(|path| path.is_file())
+    .collect()
+}
 
-    None
+fn arch_from_target_name(target: &str) -> Option<&str> {
+    target.split_once('-').map(|(arch, _)| arch)
 }
 
 pub(crate) fn discover_build_groups(
@@ -197,7 +227,7 @@ pub(crate) fn discover_build_groups(
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let Some(build_config_path) = resolve_build_config_path(&dir, arch, target) else {
+        let Some(build_config_path) = resolve_build_config_path(&dir, target)? else {
             continue;
         };
         groups.push(TestBuildGroup {
@@ -211,8 +241,7 @@ pub(crate) fn discover_build_groups(
     if groups.is_empty() {
         bail!(
             "no {suite_name} {group_kind} build groups for arch `{arch}` target `{target}` found \
-             under {}; expected build-{target}.toml or build-{arch}.toml in <build_group> \
-             directories",
+             under {}; expected build-{target}.toml in <build_group> directories",
             test_suite_dir.display()
         );
     }
@@ -228,6 +257,10 @@ pub(crate) fn discover_qemu_cases(
     suite_name: &str,
     group_label: &str,
 ) -> anyhow::Result<Vec<DiscoveredQemuCase>> {
+    if let Some(case_name) = selected_case {
+        validate_selected_case_name(case_name, suite_name, group_label)?;
+    }
+
     let config_name = qemu_config_name(arch);
     let mut cases = Vec::new();
     let mut selected_case_dirs_without_config = Vec::new();
@@ -305,6 +338,27 @@ pub(crate) fn discover_qemu_cases(
     }
 
     Ok(cases)
+}
+
+fn validate_selected_case_name(
+    case_name: &str,
+    suite_name: &str,
+    group_label: &str,
+) -> anyhow::Result<()> {
+    let path = Path::new(case_name);
+    let valid = !case_name.is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)));
+    if valid {
+        return Ok(());
+    }
+
+    bail!(
+        "invalid {suite_name} {group_label} test case `{case_name}`; expected a relative case \
+         name without path traversal"
+    )
 }
 
 fn discovered_qemu_case(
@@ -507,5 +561,58 @@ mod tests {
             err.to_string()
                 .contains("arceos does not support `test uboot` yet")
         );
+    }
+
+    #[test]
+    fn resolve_build_config_accepts_target_specific_name_only() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("build-x86_64-unknown-none.toml");
+        fs::write(&path, "target = \"x86_64-unknown-none\"\n").unwrap();
+
+        assert_eq!(
+            resolve_build_config_path(root.path(), "x86_64-unknown-none").unwrap(),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn resolve_build_config_rejects_legacy_names() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("build-x86_64.toml"), "").unwrap();
+
+        let err = resolve_build_config_path(root.path(), "x86_64-unknown-none")
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("unsupported legacy build config name"));
+        assert!(err.contains("build-x86_64-unknown-none.toml"));
+    }
+
+    #[test]
+    fn selected_qemu_case_rejects_path_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let build_dir = root.path().join("suite/default");
+        fs::create_dir_all(&build_dir).unwrap();
+        let build_config = build_dir.join("build-x86_64-unknown-none.toml");
+        fs::write(&build_config, "").unwrap();
+        let groups = vec![TestBuildGroup {
+            name: "default".to_string(),
+            dir: build_dir,
+            build_config_path: build_config,
+        }];
+
+        let err = discover_qemu_cases(
+            root.path().join("suite").as_path(),
+            &groups,
+            "x86_64",
+            Some("../escape"),
+            "test",
+            "qemu",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("invalid test qemu test case"));
+        assert!(err.contains("path traversal"));
     }
 }

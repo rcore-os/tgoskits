@@ -39,6 +39,7 @@ const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
 const GROUPED_CASE_RUNNER_NAME: &str = "starry-run-case-tests";
 const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
+const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-v1";
 /// QEMU global snapshot flag — all disk writes go to a temporary file and are
 /// never committed back to the image, keeping the source image pristine.
 const QEMU_SNAPSHOT_ARG: &str = "-snapshot";
@@ -488,6 +489,9 @@ fn case_asset_cache_key(
     // caches for unrelated pipelines.
     if pipeline == CasePipeline::C {
         hash_token(&mut hasher, include_str!("cmake-toolchain.cmake.in"));
+    }
+    if pipeline == CasePipeline::Python {
+        hash_token(&mut hasher, PYTHON_PIPELINE_CACHE_VERSION);
     }
 
     hash_file_metadata(&mut hasher, shared_rootfs)?;

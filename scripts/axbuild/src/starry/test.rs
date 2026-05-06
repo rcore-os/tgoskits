@@ -325,10 +325,9 @@ fn test_suite_dir(workspace_root: &Path, group: StarryTestGroup) -> PathBuf {
 
 pub(crate) fn resolve_case_build_config_path(
     case_dir: &Path,
-    arch: &str,
     target: &str,
-) -> Option<PathBuf> {
-    qemu_test::resolve_build_config_path(case_dir, arch, target)
+) -> anyhow::Result<Option<PathBuf>> {
+    qemu_test::resolve_build_config_path(case_dir, target)
 }
 
 fn render_qemu_case_summary(report: &StarryQemuRunReport) -> String {
@@ -437,12 +436,9 @@ fn collect_board_test_groups(
                              `{case_name}/{board_name}`"
                         )
                     })?;
-                let build_config_path = resolve_case_build_config_path(
-                    &build_group_dir,
-                    arch_for_target_checked(&board_file.target)?,
-                    &board_file.target,
-                )
-                .unwrap_or(default_build_config_path);
+                let build_config_path =
+                    resolve_case_build_config_path(&build_group_dir, &board_file.target)?
+                        .unwrap_or(default_build_config_path);
                 groups.push(StarryBoardTestGroup {
                     name: case_name.clone(),
                     board_name: board_name.to_string(),
@@ -1314,6 +1310,28 @@ mod tests {
         let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
 
         assert_eq!(groups[0].build_config_path, build);
+    }
+
+    #[test]
+    fn board_test_group_rejects_legacy_case_build_config() {
+        let root = tempdir().unwrap();
+        write_board_build_config(
+            root.path(),
+            "orangepi-5-plus",
+            "aarch64-unknown-none-softfloat",
+        );
+        write_board_test_config(root.path(), "smoke", "smoke", "orangepi-5-plus");
+        let legacy = root
+            .path()
+            .join("test-suit/starryos/normal/smoke/.build-aarch64-unknown-none-softfloat.toml");
+        fs::write(&legacy, "").unwrap();
+
+        let err = discover_board_test_groups(root.path(), "normal", None, None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("unsupported legacy build config name"));
+        assert!(err.contains("build-aarch64-unknown-none-softfloat.toml"));
     }
 
     #[test]
