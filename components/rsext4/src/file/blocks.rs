@@ -1,9 +1,10 @@
 use super::*;
 
-/// Builds block mappings for a file inode from absolute data block numbers.
-pub fn build_file_block_mapping<B: BlockDevice>(
+/// Builds block mappings and enables checksums for external extent nodes.
+pub fn build_file_block_mapping_with_inode_num<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     inode: &mut Ext4Inode,
+    inode_num: InodeNumber,
     data_blocks: &[AbsoluteBN],
     block_dev: &mut Jbd2Dev<B>,
 ) {
@@ -57,7 +58,7 @@ pub fn build_file_block_mapping<B: BlockDevice>(
 
         // Insert the computed extents through `ExtentTree` so the inode root
         // receives the same serialized structure as runtime writes.
-        let mut tree = ExtentTree::new(inode);
+        let mut tree = ExtentTree::with_checksum(inode, &fs.superblock, inode_num);
         for extend in exts_vec {
             tree.insert_extent(fs, extend, block_dev)
                 .expect("Extend insert Failed!");

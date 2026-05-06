@@ -1,14 +1,44 @@
 use super::*;
+use crate::{
+    bmalloc::InodeNumber,
+    crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
+    superblock::Ext4Superblock,
+};
 
 /// Extent-tree view bound to a single inode.
 pub struct ExtentTree<'a> {
     pub inode: &'a mut Ext4Inode,
+    inode_num: Option<InodeNumber>,
+    generation: u32,
+    checksum_seed: Option<u32>,
 }
 
 impl<'a> ExtentTree<'a> {
     /// Creates an extent-tree handle backed by the given inode.
     pub fn new(inode: &'a mut Ext4Inode) -> Self {
-        Self { inode }
+        let generation = inode.i_generation;
+        Self {
+            inode,
+            inode_num: None,
+            generation,
+            checksum_seed: None,
+        }
+    }
+
+    /// Creates an extent-tree handle with enough metadata to checksum external nodes.
+    pub fn with_checksum(
+        inode: &'a mut Ext4Inode,
+        superblock: &Ext4Superblock,
+        inode_num: InodeNumber,
+    ) -> Self {
+        let generation = inode.i_generation;
+        Self {
+            inode,
+            inode_num: Some(inode_num),
+            generation,
+            checksum_seed: ext4_superblock_has_metadata_csum(superblock)
+                .then(|| ext4_crc32c_seed_from_superblock(superblock)),
+        }
     }
 
     pub(super) fn add_inode_sectors_for_block(&mut self) {
@@ -25,6 +55,45 @@ impl<'a> ExtentTree<'a> {
         let newv = cur.saturating_sub(sub_sectors);
         self.inode.i_blocks_lo = (newv & 0xFFFF_FFFF) as u32;
         self.inode.l_i_blocks_high = ((newv >> 32) & 0xFFFF) as u16;
+    }
+
+    /// Walks all extent-tree blocks that live outside the inode's inline root.
+    pub fn external_node_blocks<B: BlockDevice>(
+        &self,
+        dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<Vec<AbsoluteBN>> {
+        let Some(root) = self.load_root_from_inode() else {
+            return Ok(Vec::new());
+        };
+
+        fn walk<B: BlockDevice>(
+            dev: &mut Jbd2Dev<B>,
+            node: &ExtentNode,
+            out: &mut Vec<AbsoluteBN>,
+        ) -> Ext4Result<()> {
+            match node {
+                ExtentNode::Leaf { .. } => Ok(()),
+                ExtentNode::Index { entries, .. } => {
+                    for idx in entries {
+                        let child = AbsoluteBN::new(
+                            ((idx.ei_leaf_hi as u64) << 32) | idx.ei_leaf_lo as u64,
+                        );
+                        out.push(child);
+                        dev.read_block(child)?;
+                        let child_node =
+                            ExtentTree::parse_node(dev.buffer()).ok_or(Ext4Error::corrupted())?;
+                        walk(dev, &child_node, out)?;
+                    }
+                    Ok(())
+                }
+            }
+        }
+
+        let mut blocks = Vec::new();
+        walk(dev, &root, &mut blocks)?;
+        blocks.sort_unstable();
+        blocks.dedup();
+        Ok(blocks)
     }
 
     /// Parses the inline extent root from `inode.i_block`.
@@ -98,11 +167,28 @@ impl<'a> ExtentTree<'a> {
     }
 
     /// Writes an extent node to an absolute physical block.
+    fn update_extent_block_checksum(&self, buf: &mut [u8]) {
+        let (Some(seed), Some(inode_num)) = (self.checksum_seed, self.inode_num) else {
+            return;
+        };
+        if buf.len() < 4 {
+            return;
+        }
+
+        let tail = buf.len() - 4;
+        buf[tail..].fill(0);
+        let inode_le = inode_num.raw().to_le_bytes();
+        let generation_le = self.generation.to_le_bytes();
+        let checksum =
+            crate::checksum::ext4_metadata_csum32(seed, &[&inode_le, &generation_le, &buf[..tail]]);
+        buf[tail..].copy_from_slice(&checksum.to_le_bytes());
+    }
+
     pub(super) fn write_node_to_block<B: BlockDevice>(
+        &self,
         dev: &mut Jbd2Dev<B>,
         block_id: AbsoluteBN,
         node: &ExtentNode,
-        _eh_max: u16,
     ) -> Ext4Result<()> {
         let hdr_size = Ext4ExtentHeader::disk_size();
         let block_eh_max = Self::calc_block_eh_max();
@@ -140,6 +226,7 @@ impl<'a> ExtentTree<'a> {
                 }
             }
         }
+        self.update_extent_block_checksum(buf);
         // Mark the metadata block dirty and write it back.
         dev.write_block(block_id, true)?;
         Ok(())

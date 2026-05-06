@@ -1,6 +1,7 @@
 use core::ptr::NonNull;
 
 use ax_errno::AxError;
+use ax_memory_addr::VirtAddr;
 use ax_plat::mem::phys_to_virt;
 use somehal::{KernelOp, setup::*};
 
@@ -18,6 +19,13 @@ fn main() -> ! {
 fn secondary_main() {
     #[cfg(feature = "smp")]
     ax_plat::call_secondary_main(meta.cpu_idx);
+}
+
+pub fn boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
+    let meta = somehal::smp::cpu_meta(cpu_id)
+        .unwrap_or_else(|| panic!("missing somehal PerCpuMeta for cpu_id {cpu_id}"));
+    let stack_size = somehal::mem::stack_size();
+    (VirtAddr::from(meta.stack_top_virt - stack_size), stack_size)
 }
 
 pub struct Kernel;

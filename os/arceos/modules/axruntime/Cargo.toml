@@ -18,10 +18,10 @@ irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
 multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []
-smp = ["ax-hal/smp", "ax-task?/smp"]
+smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
-plat-dyn = ["ax-driver/dyn", "paging", "buddy-slab"]
+plat-dyn = ["ax-hal/plat-dyn", "ax-driver/dyn", "paging", "buddy-slab"]
 
 ax-driver = ["dep:ax-driver"]
 display = ["ax-driver", "dep:ax-display"]
@@ -45,6 +45,8 @@ ax-input = { workspace = true, optional = true }
 ax-ipi = { workspace = true, optional = true }
 axklib = { workspace = true, optional = true }
 ax-log = { workspace = true }
+ax-lazyinit = { workspace = true }
+ax-memory-addr = { workspace = true }
 ax-mm = { workspace = true, optional = true }
 ax-net = { workspace = true, optional = true }
 ax-net-ng = { workspace = true, optional = true }

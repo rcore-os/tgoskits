@@ -27,7 +27,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
 
     {
         // Format the initial root directory block before the inode is finalized.
-        let cached = fs.datablock_cache.create_new(data_block);
+        let cached = fs.datablock_cache.create_new(block_dev, data_block)?;
         let data = &mut cached.data;
 
         let dot_name = b".";
@@ -85,7 +85,13 @@ pub fn create_root_directory_entry<B: BlockDevice>(
     inode.i_size_high = 0;
     inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
     inode.l_i_blocks_high = 0;
-    build_file_block_mapping(fs, &mut inode, &[data_block], block_dev);
+    build_file_block_mapping_with_inode_num(
+        fs,
+        &mut inode,
+        fs.root_inode,
+        &[data_block],
+        block_dev,
+    );
     fs.finalize_inode_update(
         block_dev,
         fs.root_inode,
@@ -132,7 +138,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
 
     {
         // Format the first block of the new directory, including the checksum tail.
-        let cached = fs.datablock_cache.create_new(data_block);
+        let cached = fs.datablock_cache.create_new(block_dev, data_block)?;
         let data = &mut cached.data;
 
         let dot_name = b".";
@@ -192,7 +198,13 @@ pub fn create_lost_found_directory<B: BlockDevice>(
     lost_inode.l_i_blocks_high = 0;
     lost_inode.i_flags =
         Ext4Inode::mask_flags_for_mode(dir_mode, root_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED);
-    build_file_block_mapping(fs, &mut lost_inode, &[data_block], block_dev);
+    build_file_block_mapping_with_inode_num(
+        fs,
+        &mut lost_inode,
+        lost_ino,
+        &[data_block],
+        block_dev,
+    );
     debug!(
         "When create lost+found inode iblock,:{:?} ,data_block:{:?}",
         lost_inode.i_block, data_block

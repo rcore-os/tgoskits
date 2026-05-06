@@ -44,6 +44,7 @@ ax-input
 ax-int-ratio
 ax-io
 ax-ipi
+ax-lockdep
 ax-kspin
 ax-kernel-guard
 ax-lazyinit

@@ -430,18 +430,20 @@ ensure_rootfs_in_target_dir(workspace_root, arch, target)
 
 ### 2.14 `starry test qemu` — 测试执行流程
 
-StarryOS 的 QEMU 测试直接构建 `starryos`，并从 `test-suit/starryos/normal/<case>/qemu-<arch>.toml` 或 `test-suit/starryos/stress/<case>/qemu-<arch>.toml` 发现测例。批量模式会扫描当前组下所有一级子目录，只执行存在 `qemu-<arch>.toml` 的 case；显式 `-c/--test-case` 则要求该目录和当前架构配置都存在，否则直接报错。`${workspace}` / `${workspaceFolder}`、`shell_init_cmd`、`success_regex`、`fail_regex`、`timeout` 仍全部由 case 自己的 QEMU 配置文件决定。
+StarryOS 的 QEMU 测试直接构建 `starryos`。测例目录采用 `test-suit/starryos/{normal|stress}/<build_group>/<case>/qemu-<arch>.toml` 结构，`<build_group>` 下的 `build-<target>.toml` 决定 StarryOS 构建配置，`<case>` 下的 `qemu-<arch>.toml` 决定运行配置。批量模式会先按当前 arch/target 发现匹配的 build group，再扫描其中存在 `qemu-<arch>.toml` 的 case；显式 `-c/--test-case` 则要求匹配 build group 中存在该 case 和当前架构配置，否则直接报错。`${workspace}` / `${workspaceFolder}`、`shell_init_cmd`、`success_regex`、`fail_regex`、`timeout` 仍全部由 case 自己的 QEMU 配置文件决定。
 
 ```
 Starry::test_qemu(args)
   ├── parse_test_target(&args.target)                          ← 解析 arch + target
   ├── parse test group                                        ← 默认 normal, --stress 等价于 -g stress
-  ├── discover_qemu_cases(arch, args.test_case, group)         ← 在当前组发现/筛选 case
-  ├── write_default_qemu_defconfig_for_target(target)
+  ├── discover_qemu_cases(arch, target, args.test_case, group) ← 按 build group 发现/筛选 case
   ├── prepare_request(test_build_args(arch), ...)             ← package 固定是 starryos
   ├── ensure_rootfs_in_target_dir(...)                         ← 确保共享 rootfs 存在
-  ├── load_cargo_config(request)                               ← 准备基础 Cargo 配置
-  ├── for case in cases
+  ├── group cases by (build config, runtime requirements)
+  ├── for build group in groups
+  │     ├── load_cargo_config(group.build_config)
+  │     ├── build StarryOS once for the group
+  │     └── for case in group.cases
   │     ├── copy shared rootfs to per-case rootfs
   │     ├── optional case `c/`
   │     │     ├── extract staging rootfs
@@ -461,19 +463,19 @@ Starry::test_qemu(args)
 | `-t, --target <arch>` | 目标架构（必填） |
 | `-g, --test-group <group>` | 指定测试组名，默认 `normal` |
 | `--stress` | 切换到 `stress` 组，等价于 `-g stress` |
-| `-c, --test-case <case>` | 只运行指定测例；不传则运行该架构下全部匹配测例，缺少当前架构配置的目录在批量模式下会被跳过 |
+| `-c, --test-case <case>` | 只运行指定 case；不传则运行该架构下全部匹配 case，缺少当前架构配置的 case 在批量模式下会被跳过 |
 
 **关键设计**：测试把运行判据完全下沉到分组测例目录，并直接透传 case `qemu-<arch>.toml` 给 `ostool`；如果 case 提供 `c/`，则由 `axbuild` 统一负责 `prebuild.sh`、CMake 构建、install overlay 与 rootfs 回写，而不是在 `axbuild` 内对具体 case 名做构建特判。
 
 ### 2.15 `starry test board` — 远程板测执行流程
 
-StarryOS 的远程板测同样从 `test-suit/starryos/normal/<case>/` 发现测例，但只扫描 `board-<name>.toml`。每个 `board-<name>.toml` 只保存板测运行配置，构建配置并不复制到 test-suit，而是固定映射到 `os/StarryOS/configs/board/<name>.toml`。当前首个预置 group 是 `smoke`。
+StarryOS 的远程板测同样从 `test-suit/starryos/normal/<build_group>/<case>/` 发现测例，但只扫描 `board-<name>.toml`。每个 `board-<name>.toml` 只保存板测运行配置，默认构建配置映射到 `os/StarryOS/configs/board/<name>.toml`；若 build group 提供匹配的 `build-<target>.toml`，则优先使用该构建配置。当前预置 board case 位于 `board-orangepi-5-plus/npu-yolov8`。
 
 ```
 Starry::test_board(args)
   ├── ensure_board_test_args(args)                          ← 显式 config 必须配合 --test-case
   ├── discover_board_test_groups(args.test_group, args.test_case, args.board)
-  │                                                          ← 扫描 normal/*/board-*.toml
+  │                                                          ← 扫描 normal/*/*/board-*.toml
   │     └── case 名 = <case>
   │     └── 执行项 = <case>/<board>
   │     └── build config = os/StarryOS/configs/board/<board>.toml

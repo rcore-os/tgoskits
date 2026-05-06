@@ -20,6 +20,7 @@ pub struct RawMutex {
 impl RawMutex {
     /// Creates a [`RawMutex`].
     #[inline(always)]
+    #[track_caller]
     pub const fn new() -> Self {
         Self {
             wq: WaitQueue::new(),
@@ -50,14 +51,20 @@ unsafe impl lock_api::RawMutex for RawMutex {
     /// value to downstream static items. Can hopefully be replaced with
     /// `const fn new() -> Self` at some point.
     #[allow(clippy::declare_interior_mutable_const)]
-    const INIT: Self = RawMutex::new();
+    const INIT: Self = RawMutex {
+        wq: WaitQueue::new(),
+        owner_id: AtomicU64::new(0),
+        #[cfg(feature = "lockdep")]
+        lockdep: crate::lockdep::LockdepMap::new_dynamic(),
+    };
 
     #[inline(always)]
+    #[track_caller]
     fn lock(&self) {
         might_sleep();
         let current_id = current().id().as_u64();
         #[cfg(feature = "lockdep")]
-        let lockdep = crate::lockdep::LockdepAcquire::prepare(self);
+        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, false);
 
         loop {
             // Can fail to lock even if the spinlock is not locked. May be more efficient than `try_lock`
@@ -86,15 +93,16 @@ unsafe impl lock_api::RawMutex for RawMutex {
         }
 
         #[cfg(feature = "lockdep")]
-        lockdep.finish();
+        lockdep.finish(true);
     }
 
     #[inline(always)]
+    #[track_caller]
     fn try_lock(&self) -> bool {
         might_sleep();
         let current_id = current().id().as_u64();
         #[cfg(feature = "lockdep")]
-        let lockdep = crate::lockdep::LockdepAcquire::prepare(self);
+        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, true);
         // The reason for using a strong compare_exchange is explained here:
         // https://github.com/Amanieu/parking_lot/pull/207#issuecomment-575869107
         let acquired = self
@@ -102,9 +110,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
             .compare_exchange(0, current_id, Ordering::Acquire, Ordering::Relaxed)
             .is_ok();
         #[cfg(feature = "lockdep")]
-        if acquired {
-            lockdep.finish();
-        }
+        lockdep.finish(acquired);
         acquired
     }
 
@@ -116,12 +122,12 @@ unsafe impl lock_api::RawMutex for RawMutex {
             owner_id, current_id,
             "Thread({current_id}) tried to release mutex it doesn't own",
         );
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::release(self);
         // wake up one waiting thread.
         self.wq.notify_one_with(true, |id: u64| {
             self.owner_id.swap(id, Ordering::Release);
         });
-        #[cfg(feature = "lockdep")]
-        crate::lockdep::release(self);
     }
 
     #[inline(always)]
@@ -206,76 +212,5 @@ mod tests {
             assert_eq!(*M.lock(), NUM_ITERS * NUM_TASKS * 3);
             println!("Mutex test OK");
         });
-    }
-
-    #[cfg(feature = "lockdep")]
-    mod lockdep_tests {
-        use core::mem::ManuallyDrop;
-        use std::panic::{AssertUnwindSafe, catch_unwind};
-
-        use super::*;
-
-        fn reset_lockdep_stack() {
-            thread::with_current_lockdep_stack(|stack| *stack = thread::HeldLockStack::new());
-        }
-
-        fn with_lockdep_test<R>(f: impl FnOnce() -> R) -> R {
-            with_test_context(|| {
-                reset_lockdep_stack();
-                let result = f();
-                reset_lockdep_stack();
-                result
-            })
-        }
-
-        fn assert_lockdep_failure(f: impl FnOnce()) {
-            let result = catch_unwind(AssertUnwindSafe(f));
-            assert!(result.is_err());
-            reset_lockdep_stack();
-        }
-
-        #[test]
-        fn rejects_recursive_acquire() {
-            with_lockdep_test(|| {
-                let lock = Mutex::new(0usize);
-                assert_lockdep_failure(|| {
-                    let _guard = lock.lock();
-                    let _guard2 = lock.lock();
-                });
-            });
-        }
-
-        #[test]
-        fn rejects_order_inversion() {
-            with_lockdep_test(|| {
-                let lock_a = Mutex::new(0usize);
-                let lock_b = Mutex::new(0usize);
-
-                {
-                    let _guard_a = lock_a.lock();
-                    let _guard_b = lock_b.lock();
-                }
-
-                let guard_b = ManuallyDrop::new(lock_b.lock());
-                assert_lockdep_failure(|| {
-                    let _guard_a = lock_a.lock();
-                });
-                core::mem::forget(guard_b);
-            });
-        }
-
-        #[test]
-        fn rejects_out_of_order_unlock() {
-            with_lockdep_test(|| {
-                let lock_a = Mutex::new(0usize);
-                let lock_b = Mutex::new(0usize);
-
-                let guard_a = lock_a.lock();
-                let guard_b = ManuallyDrop::new(lock_b.lock());
-
-                assert_lockdep_failure(|| drop(guard_a));
-                core::mem::forget(guard_b);
-            });
-        }
     }
 }

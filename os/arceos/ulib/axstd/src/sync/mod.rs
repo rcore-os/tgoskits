@@ -6,6 +6,8 @@ pub use alloc::sync::{Arc, Weak};
 #[doc(no_inline)]
 pub use core::sync::atomic;
 
+pub use ax_kspin::{dump_lockdep_trace, set_lockdep_trace_enabled};
+
 #[cfg(feature = "multitask")]
 mod mutex;
 

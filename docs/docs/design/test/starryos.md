@@ -7,7 +7,7 @@ sidebar_label: "StarryOS 测试套件"
 
 ## 1. 概览
 
-StarryOS 测试分为**普通测试**（`normal/`）和**压力测试**（`stress/`）两组，每组下每个子目录代表一个独立的测试用例。用例可以无源码（仅平台配置文件），也可以包含 C、Shell 或 Python 资产（分别放在 `c/`、`sh/` 或 `python/` 子目录中）。目录名即测试用例名，由 xtask 自动扫描发现。
+StarryOS 测试分为**普通测试**（`normal/`）和**压力测试**（`stress/`）两组。每组下第一层是 build group（例如 `qemu-smp1`、`qemu-smp4`），build group 下的子目录才是测试 case。case 可以无源码（仅平台配置文件），也可以包含 C、Shell 或 Python 资产（分别放在 `c/`、`sh/` 或 `python/` 子目录中）。case 目录名即测试用例名，由 xtask 自动扫描发现。
 
 从 `scripts/axbuild` 的当前实现看，StarryOS QEMU 测试已经和 Axvisor QEMU 测试采用基本一致的 suite 编排方式：先发现本轮全部 case，准备共享 build request 和 rootfs，OS 本体只构建一次，然后逐 case 加载 `qemu-{arch}.toml` 并运行。case 资产仍按 case 准备和注入，但 rootfs 不再复制多份。
 
@@ -76,9 +76,9 @@ flowchart TD
 
 1. 在 `mod.rs` 中解析 `--target`、`--test-group`、`--test-case`
 2. 在 `test.rs` 中归一化目标架构并发现当前测试组的 case
-3. 依据目标架构加载默认 build config，并确保共享 managed rootfs 已就绪
-4. 预读所有 case 的 `qemu-{arch}.toml`，汇总本轮 suite 对 `-smp` 和 `-m` 的最大需求
-5. 按汇总后的构建需求构建一次 StarryOS
+3. 依据目标架构发现匹配的 build group，并确保共享 managed rootfs 已就绪
+4. 预读所有 case 的 `qemu-{arch}.toml`，按 build config 和 `-smp` 需求分组
+5. 按每个构建分组构建 StarryOS
 6. 对每个 case：
    - 读取 case 自己的 `qemu-{arch}.toml`
    - 调用共享 `test::case::prepare_case_assets(...)` 准备 case overlay、C/Python/sh 资产或 grouped runner
@@ -169,7 +169,7 @@ flowchart TD
 
 `qemu-{arch}.toml` QEMU 测试配置，放在用例根目录下（与 `c/` 同级），定义 QEMU 启动参数、Shell 交互行为以及测试结果判定规则。
 
-**示例** — `normal/smoke/qemu-x86_64.toml`：
+**示例** — `normal/qemu-smp1/smoke/qemu-x86_64.toml`：
 
 ```toml
 args = [
@@ -238,7 +238,7 @@ timeout = 50
 
 `board-{board_name}.toml` 板级测试配置，放在用例根目录下（与 `c/` 同级），用于物理开发板上的测试，通过串口交互判定结果。与 QEMU 配置相比没有 `args`、`uefi`、`to_bin` 字段，但增加了 `board_type` 标识板型。
 
-**示例** — `normal/smoke/board-orangepi-5-plus.toml`：
+**示例** — `normal/board-orangepi-5-plus/npu-yolov8/board-orangepi-5-plus.toml`：
 
 ```toml
 board_type = "OrangePi-5-Plus"
@@ -277,16 +277,17 @@ cargo xtask starry test qemu --target <arch> [--test-group <group>] [--stress] [
 
 #### 2.5.2 发现
 
-xtask 扫描 `test-suit/starryos/{normal|stress}/` 下所有子目录，检查其中是否存在 `qemu-{arch}.toml` 文件。若存在，则将该子目录名作为用例名，并将该 TOML 文件作为 QEMU 运行配置加载。
+xtask 扫描 `test-suit/starryos/{normal|stress}/` 下所有 build group，先根据 `build-<target>.toml` 或 `build-<arch>.toml` 找到当前 arch/target 可用的构建配置，再扫描其中的 case 子目录。若 case 下存在 `qemu-{arch}.toml`，则将该 TOML 文件作为 QEMU 运行配置加载。
 
 ```text
-发现路径: test-suit/starryos/<group>/<case-name>/qemu-<arch>.toml
+构建配置: test-suit/starryos/<group>/<build_group>/build-<target>.toml
+发现路径: test-suit/starryos/<group>/<build_group>/<case-name>/qemu-<arch>.toml
 ```
 
 例如，对于架构 `aarch64`：
 
-- `test-suit/starryos/normal/smoke/qemu-aarch64.toml` → 用例名 `smoke`
-- `test-suit/starryos/stress/stress-ng-0/qemu-aarch64.toml` → 用例名 `stress-ng-0`
+- `test-suit/starryos/normal/qemu-smp1/smoke/qemu-aarch64.toml` → build group `qemu-smp1`，用例名 `smoke`
+- `test-suit/starryos/stress/stress-ng-0/stress-ng-0/qemu-aarch64.toml` → build group `stress-ng-0`，用例名 `stress-ng-0`
 
 #### 2.5.3 构建
 
@@ -403,16 +404,16 @@ cargo xtask starry test board [--board <board>] [--test-group <group>] [--test-c
 
 #### 2.6.2 发现
 
-xtask 扫描 `test-suit/starryos/normal/` 下所有子目录，检查其中是否存在 `board-{board_name}.toml` 文件。若存在，进一步验证对应的构建配置 `os/StarryOS/configs/board/{board_name}.toml` 是否存在，从中提取架构和 target 信息。
+xtask 扫描 `test-suit/starryos/normal/` 下所有 `<build_group>/<case>` 子目录，检查其中是否存在 `board-{board_name}.toml` 文件。若存在，进一步验证对应的构建配置 `os/StarryOS/configs/board/{board_name}.toml` 是否存在，从中提取架构和 target 信息；若 build group 提供匹配 `build-<target>.toml`，则优先使用该构建配置。
 
 ```text
-测试配置:   test-suit/starryos/normal/<case>/board-<board_name>.toml
+测试配置:   test-suit/starryos/normal/board-orangepi-5-plus/<case>/board-<board_name>.toml
 构建配置:   os/StarryOS/configs/board/<board_name>.toml
 ```
 
 #### 2.6.3 构建
 
-当前 StarryOS board 测试不走 `test::case::prepare_case_assets(...)`，也不会为 case 下的 `c/`、`sh/` 或 `python/` 目录执行构建/注入流水线。它根据 `board-<board>.toml` 映射到的 `os/StarryOS/configs/board/<board>.toml`（或 case 级 `build-{arch|target}.toml` 覆盖）构建 StarryOS 本体，然后交给 `AppContext::board(...)` 运行。
+当前 StarryOS board 测试不走 `test::case::prepare_case_assets(...)`，也不会为 case 下的 `c/`、`sh/` 或 `python/` 目录执行构建/注入流水线。它根据 `board-<board>.toml` 映射到的 `os/StarryOS/configs/board/<board>.toml`（或 build group 级 `build-{arch|target}.toml` 覆盖）构建 StarryOS 本体，然后交给 `AppContext::board(...)` 运行。
 
 #### 2.6.4 Rootfs
 

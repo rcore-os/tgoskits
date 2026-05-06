@@ -1,0 +1,11 @@
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+features = [
+    "ax-std/bus-mmio",
+    "ept-level-4",
+    "fs",
+    "sstc"
+]
+log = "Info"
+target = "riscv64gc-unknown-none-elf"
+vm_configs = ["os/axvisor/configs/vms/linux-riscv64-qemu-smp1.toml"]
+max_cpu_num = 4

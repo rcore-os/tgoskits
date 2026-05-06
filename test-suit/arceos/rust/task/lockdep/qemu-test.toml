@@ -1,0 +1,5 @@
+default_qemu_config = "qemu-base-{arch}.toml"
+
+[[rule]]
+when_features_any = ["lockdep"]
+qemu_config = "qemu-{arch}.toml"
