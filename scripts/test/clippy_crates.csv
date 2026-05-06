@@ -3,6 +3,7 @@ aarch64_sysreg
 arceos-affinity
 arceos-display
 arceos-exception
+arceos-fs-shell
 arceos-ipi
 arceos-irq
 arceos-memtest

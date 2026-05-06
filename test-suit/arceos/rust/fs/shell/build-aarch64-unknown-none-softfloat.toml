@@ -1,4 +1,4 @@
-features = ["ax-std"]
+features = ["ax-std", "ax-std/bus-mmio"]
 log = "Warn"
 max_cpu_num = 4
 
