@@ -185,12 +185,10 @@ function HeroTerminal() {
 [ArceOS] Hello, world!
 
 $ cargo xtask starry rootfs --arch riscv64
-$ cargo starry qemu --arch riscv64
+$ cargo xtask starry qemu --arch riscv64
 [StarryOS] shell started.
 
-$ cargo axvisor defconfig qemu-aarch64
-$ (cd os/axvisor && ./scripts/setup_qemu.sh arceos)
-$ cargo axvisor qemu --config os/axvisor/.build.toml
+$ cargo xtask axvisor qemu --arch aarch64
 [Axvisor] Guest[0] ArceOS running.`}</pre>
       <div className="hero-terminal-footer">
         <span>ArceOS</span>
@@ -207,7 +205,7 @@ function CapabilitySection() {
     {
       icon: 'orbit',
       title: '统一入口',
-      desc: '围绕根目录文档与 tg-xtask 组织日常开发入口，降低系统间切换成本。',
+      desc: '围绕根目录文档与 cargo xtask 组织日常开发入口，降低系统间切换成本。',
       to: '/docs/design/reference/build-system',
     },
     {
@@ -407,7 +405,7 @@ function WorkflowSection() {
   const commands = [
     'cargo xtask arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf',
     'cargo xtask starry rootfs --arch riscv64',
-    'cargo axvisor defconfig qemu-aarch64',
+    'cargo xtask axvisor qemu --arch aarch64',
     'cargo xtask clippy',
   ];
 
