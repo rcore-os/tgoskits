@@ -366,7 +366,6 @@ pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
 ///
 /// This runs in the hot path of every instrumented basic block — it must be
 /// lock-free and fast.
-#[unsafe(no_mangle)]
 extern "C" fn kcov_trace_pc_impl(pc: u64) {
     // Guard integrity check: the naked trampoline must have set this.
     if unsafe { IN_KCOV_TRACE } != 1 {
