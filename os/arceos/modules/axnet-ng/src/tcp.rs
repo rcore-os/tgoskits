@@ -77,13 +77,11 @@ impl TcpSocket {
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
         };
-        result.with_smol_socket(|socket| {
-            let endpoint = socket_bound_endpoint(socket);
-            *result.bound_endpoint.lock() = endpoint;
-            result
-                .general
-                .set_device_mask(get_service().device_mask_for(&endpoint));
-        });
+        let endpoint = result.with_smol_socket(|socket| socket_bound_endpoint(socket));
+        *result.bound_endpoint.lock() = endpoint;
+        result
+            .general
+            .set_device_mask(get_service().device_mask_for(&endpoint));
         result
     }
 }
@@ -154,11 +152,11 @@ impl TcpSocket {
 
     fn poll_listener(&self) -> IoEvents {
         let mut events = IoEvents::empty();
+        let port = self.bound_endpoint().unwrap().port;
+        let sockets = SOCKET_SET.inner.lock();
         events.set(
             IoEvents::IN,
-            LISTEN_TABLE
-                .can_accept(self.bound_endpoint().unwrap().port)
-                .unwrap(),
+            LISTEN_TABLE.can_accept(port, &sockets).unwrap(),
         );
         events
     }
@@ -291,23 +289,23 @@ impl SocketOps for TcpSocket {
                     register_tcp_bound(bound_endpoint)?;
                 }
 
-                let result = self.with_smol_socket(|socket| {
-                    socket
-                        .connect(
-                            get_service().iface.context(),
-                            remote_endpoint,
-                            bound_endpoint,
-                        )
-                        .map_err(|e| match e {
-                            smol::ConnectError::InvalidState => {
-                                ax_err_type!(AlreadyConnected)
-                            }
-                            smol::ConnectError::Unaddressable => {
-                                ax_err_type!(ConnectionRefused, "unaddressable")
-                            }
-                        })?;
-                    Ok::<(), AxError>(())
-                });
+                let result = {
+                    let mut service = get_service();
+                    let context = service.iface.context();
+                    self.with_smol_socket(|socket| {
+                        socket
+                            .connect(context, remote_endpoint, bound_endpoint)
+                            .map_err(|e| match e {
+                                smol::ConnectError::InvalidState => {
+                                    ax_err_type!(AlreadyConnected)
+                                }
+                                smol::ConnectError::Unaddressable => {
+                                    ax_err_type!(ConnectionRefused, "unaddressable")
+                                }
+                            })?;
+                        Ok::<(), AxError>(())
+                    })
+                };
                 if let Err(err) = result {
                     if register_bound {
                         unregister_tcp_bound(bound_endpoint);
@@ -380,7 +378,11 @@ impl SocketOps for TcpSocket {
         let bound_port = self.bound_endpoint()?.port;
         self.general.recv_poller(self, || {
             poll_interfaces();
-            LISTEN_TABLE.accept(bound_port).map(|handle| {
+            let handle = {
+                let sockets = SOCKET_SET.inner.lock();
+                LISTEN_TABLE.accept(bound_port, &sockets)?
+            };
+            Ok({
                 let socket = TcpSocket::new_connected(handle);
                 debug!(
                     "accepted connection from {}, {}",

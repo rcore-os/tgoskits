@@ -39,7 +39,10 @@ pub mod vsock;
 mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box};
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use ax_driver::{AxDeviceContainer, prelude::*};
 use ax_sync::Mutex;
@@ -60,6 +63,8 @@ static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
 static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
 
 static SERVICE: Once<Mutex<Service>> = Once::new();
+static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
+static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -166,7 +171,23 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
 
 /// Poll all network interfaces for new events.
 pub fn poll_interfaces() {
-    while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+    POLL_AGAIN.store(true, Ordering::Release);
+    loop {
+        if POLLING_INTERFACES
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        while POLL_AGAIN.swap(false, Ordering::AcqRel) {
+            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+        }
+        POLLING_INTERFACES.store(false, Ordering::Release);
+        if !POLL_AGAIN.load(Ordering::Acquire) {
+            return;
+        }
+    }
 }
 
 fn dhcp_bootstrap() {

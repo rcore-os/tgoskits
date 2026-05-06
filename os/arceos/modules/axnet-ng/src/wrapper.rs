@@ -29,15 +29,6 @@ impl<'a> SocketSetWrapper<'a> {
         handle
     }
 
-    pub fn with_socket<T: AnySocket<'a>, R, F>(&self, handle: SocketHandle, f: F) -> R
-    where
-        F: FnOnce(&T) -> R,
-    {
-        let set = self.inner.lock();
-        let socket = set.get(handle);
-        f(socket)
-    }
-
     pub fn with_socket_mut<T: AnySocket<'a>, R, F>(&self, handle: SocketHandle, f: F) -> R
     where
         F: FnOnce(&mut T) -> R,

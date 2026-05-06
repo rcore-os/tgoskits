@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::ops::DerefMut;
 
 use ax_errno::{AxError, AxResult};
@@ -41,13 +41,9 @@ impl ListenTableEntryInner {
             None => true,
         }
     }
-}
 
-impl Drop for ListenTableEntryInner {
-    fn drop(&mut self) {
-        for &handle in &self.syn_queue {
-            SOCKET_SET.remove(handle);
-        }
+    fn into_handles(self) -> Vec<SocketHandle> {
+        self.syn_queue.into_iter().collect()
     }
 }
 
@@ -91,23 +87,35 @@ impl ListenTable {
 
     pub fn unlisten(&self, port: u16) {
         debug!("TCP socket unlisten on {}", port);
-        *self.tcp[port as usize].lock() = None;
+        let handles = self.tcp[port as usize]
+            .lock()
+            .take()
+            .map(|entry| (*entry).into_handles())
+            .unwrap_or_default();
+        for handle in handles {
+            SOCKET_SET.remove(handle);
+        }
     }
 
     fn listen_entry(&self, port: u16) -> Arc<Mutex<Option<Box<ListenTableEntryInner>>>> {
         self.tcp[port as usize].clone()
     }
 
-    pub fn can_accept(&self, port: u16) -> AxResult<bool> {
+    // Callers pass the locked SocketSet to keep the global order:
+    // SERVICE -> SOCKET_SET -> listen entry.
+    pub fn can_accept(&self, port: u16, sockets: &SocketSet<'_>) -> AxResult<bool> {
         if let Some(entry) = self.listen_entry(port).lock().as_ref() {
-            Ok(entry.syn_queue.iter().any(|&handle| is_connected(handle)))
+            Ok(entry
+                .syn_queue
+                .iter()
+                .any(|&handle| is_connected(sockets, handle)))
         } else {
             warn!("accept before listen");
             Err(AxError::InvalidInput)
         }
     }
 
-    pub fn accept(&self, port: u16) -> AxResult<SocketHandle> {
+    pub fn accept(&self, port: u16, sockets: &SocketSet<'_>) -> AxResult<SocketHandle> {
         let entry = self.listen_entry(port);
         let mut table = entry.lock();
         let Some(entry) = table.deref_mut() else {
@@ -119,7 +127,7 @@ impl ListenTable {
         let idx = syn_queue
             .iter()
             .enumerate()
-            .find_map(|(idx, &handle)| is_connected(handle).then_some(idx))
+            .find_map(|(idx, &handle)| is_connected(sockets, handle).then_some(idx))
             .ok_or(AxError::WouldBlock)?; // wait for connection
         if idx > 0 {
             warn!(
@@ -131,7 +139,7 @@ impl ListenTable {
         let handle = syn_queue.swap_remove_front(idx).unwrap();
         // If the connection is reset, return ConnectionReset error
         // Otherwise, return the handle and the address tuple
-        if is_closed(handle) {
+        if is_closed(sockets, handle) {
             warn!("accept failed: connection reset");
             Err(AxError::ConnectionReset)
         } else {
@@ -176,13 +184,12 @@ impl ListenTable {
     }
 }
 
-fn is_connected(handle: SocketHandle) -> bool {
-    SOCKET_SET.with_socket::<tcp::Socket, _, _>(handle, |socket| {
-        !matches!(socket.state(), State::Listen | State::SynReceived)
-    })
+fn is_connected(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
+    let socket: &tcp::Socket = sockets.get(handle);
+    !matches!(socket.state(), State::Listen | State::SynReceived)
 }
 
-fn is_closed(handle: SocketHandle) -> bool {
-    SOCKET_SET
-        .with_socket::<tcp::Socket, _, _>(handle, |socket| matches!(socket.state(), State::Closed))
+fn is_closed(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
+    let socket: &tcp::Socket = sockets.get(handle);
+    matches!(socket.state(), State::Closed)
 }
