@@ -24,22 +24,22 @@ use crate::{
 
 // ---- ioctl command encoding (Linux uapi) ----
 
-const fn _IOC(dir: u32, ty: u8, nr: u32, size: usize) -> u32 {
+const fn _ioc(dir: u32, ty: u8, nr: u32, size: usize) -> u32 {
     (dir << 30) | ((ty as u32) << 8) | nr | ((size as u32) << 16)
 }
-const fn _IO(ty: u8, nr: u32) -> u32 {
-    _IOC(0, ty, nr, 0)
+const fn _io(ty: u8, nr: u32) -> u32 {
+    _ioc(0, ty, nr, 0)
 }
-const fn _IOR(ty: u8, nr: u32, size: usize) -> u32 {
-    _IOC(2, ty, nr, size)
+const fn _ior(ty: u8, nr: u32, size: usize) -> u32 {
+    _ioc(2, ty, nr, size)
 }
 
 /// Initialize trace collection with the given buffer size (in u64 words).
-pub const KCOV_INIT_TRACE: u32 = _IOR(b'c', 1, core::mem::size_of::<u64>());
+pub const KCOV_INIT_TRACE: u32 = _ior(b'c', 1, core::mem::size_of::<u64>());
 /// Enable coverage collection for the current thread.
-pub const KCOV_ENABLE: u32 = _IO(b'c', 100);
+pub const KCOV_ENABLE: u32 = _io(b'c', 100);
 /// Disable coverage collection for the current thread.
-pub const KCOV_DISABLE: u32 = _IO(b'c', 101);
+pub const KCOV_DISABLE: u32 = _io(b'c', 101);
 
 /// Coverage is disabled.
 pub const KCOV_MODE_DISABLED: u32 = 0;
@@ -132,18 +132,18 @@ pub struct KcovDevice;
 
 impl DeviceOps for KcovDevice {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::InvalidInput.into())
+        Err(AxError::InvalidInput)
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::InvalidInput.into())
+        Err(AxError::InvalidInput)
     }
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
             KCOV_INIT_TRACE => {
                 let cover_size = arg;
                 if cover_size == 0 || cover_size > KCOV_MAX_ENTRIES {
-                    return Err(AxError::InvalidInput.into());
+                    return Err(AxError::InvalidInput);
                 }
 
                 // Buffer layout: [count: u64 | pc[0]: u64 | ... | pc[N-1]: u64]
@@ -186,7 +186,7 @@ impl DeviceOps for KcovDevice {
             KCOV_ENABLE => {
                 let mode = arg as u32;
                 if mode != KCOV_TRACE_PC && mode != KCOV_TRACE_CMP {
-                    return Err(AxError::InvalidInput.into());
+                    return Err(AxError::InvalidInput);
                 }
 
                 // Let the hot path know at least one thread is tracing.
