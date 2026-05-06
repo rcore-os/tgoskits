@@ -26,5 +26,5 @@ echo 'APT_HELLO_TEST_PASSED' || \
 echo 'APT_HELLO_TEST_FAILED'
 '''
 success_regex = ["(?m)^Hello, world!\\s*$", "(?m)^APT_HELLO_TEST_PASSED\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^APT_HELLO_TEST_FAILED\\s*$"]
+fail_regex = ['(?m)^panicked at(?:\s|$)', "(?m)^APT_HELLO_TEST_FAILED\\s*$"]
 timeout = 600
