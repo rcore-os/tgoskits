@@ -5,7 +5,8 @@ use std::{
     process::Command,
 };
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
+use log::{info, warn};
 use ostool::build::config::Cargo;
 pub use ostool::build::config::LogLevel;
 use schemars::JsonSchema;
@@ -244,7 +245,7 @@ impl ArceosBuildInfo {
         let platform_config = resolve_platform_config_path(app_dir, &platform_package)?;
         let platform_name = read_platform_name(&platform_config)
             .unwrap_or_else(|| linker_platform_name(&platform_package).to_string());
-        let out_config = app_dir.join(".axconfig.toml");
+        let out_config = generated_axconfig_path(package, target)?;
 
         generate_axconfig(
             &workspace_root_path()?,
@@ -319,11 +320,7 @@ pub(crate) fn resolve_build_info_path(
         return Ok(path);
     }
 
-    let package_manifest = resolve_package_manifest_path(package, None)?;
-    let app_dir = package_manifest
-        .parent()
-        .context("package manifest path has no parent directory")?;
-    Ok(resolve_build_info_path_in_dir(app_dir, target))
+    default_build_info_path(package, target)
 }
 
 pub(crate) fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosBuildInfo> {
@@ -487,7 +484,8 @@ fn apply_makefile_features_with_manifest_path(
     }
 }
 
-pub(crate) fn resolve_build_info_path_in_dir(dir: &Path, target: &str) -> PathBuf {
+#[cfg(test)]
+fn resolve_build_info_path_in_dir(dir: &Path, target: &str) -> PathBuf {
     let bare_path = dir.join(format!("build-{target}.toml"));
     if bare_path.exists() {
         return bare_path;
@@ -499,6 +497,33 @@ pub(crate) fn resolve_build_info_path_in_dir(dir: &Path, target: &str) -> PathBu
     }
 
     dotted_path
+}
+
+pub(crate) fn default_build_info_path(package: &str, target: &str) -> anyhow::Result<PathBuf> {
+    Ok(default_build_info_path_in_workspace(
+        &workspace_root_path()?,
+        package,
+        target,
+    ))
+}
+
+pub(crate) fn default_build_info_path_in_workspace(
+    workspace_root: &Path,
+    package: &str,
+    target: &str,
+) -> PathBuf {
+    workspace_root
+        .join("target/axbuild/config")
+        .join(package)
+        .join(format!("build-{target}.toml"))
+}
+
+fn generated_axconfig_path(package: &str, target: &str) -> anyhow::Result<PathBuf> {
+    Ok(workspace_root_path()?
+        .join("target/axbuild/axconfig")
+        .join(package)
+        .join(target)
+        .join(".axconfig.toml"))
 }
 
 fn feature_family_from_existing_features(features: &[String]) -> Option<AxFeaturePrefixFamily> {
@@ -835,6 +860,11 @@ fn generate_axconfig(
     max_cpu_num: Option<usize>,
     axconfig_overrides: &[String],
 ) -> anyhow::Result<()> {
+    if let Some(parent) = out_config.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
     let defconfig = resolve_defconfig_path(workspace_root)?;
     let arch = target_arch_name(target)?;
     let mut command = Command::new("ax-config-gen");
@@ -1051,11 +1081,9 @@ mod tests {
         let path = resolve_build_info_path("ax-helloworld", "aarch64-unknown-none-softfloat", None)
             .unwrap();
 
-        assert!(
-            path.ends_with(
-                "os/arceos/examples/helloworld/.build-aarch64-unknown-none-softfloat.toml"
-            )
-        );
+        assert!(path.ends_with(
+            "target/axbuild/config/ax-helloworld/build-aarch64-unknown-none-softfloat.toml"
+        ));
     }
 
     #[test]
@@ -1386,14 +1414,16 @@ AX_GW = "10.0.2.2"
             .parent()
             .unwrap()
             .to_path_buf();
-        let generated_config = app_dir.join(".axconfig.toml");
-        let existed = generated_config.exists();
+        let legacy_app_config = app_dir.join(".axconfig.toml");
+        let legacy_existed = legacy_app_config.exists();
         let request = request(
             "ax-helloworld",
             "aarch64-unknown-none-softfloat",
             Some(false),
             app_dir.join(".build-aarch64-unknown-none-softfloat.toml"),
         );
+        let generated_config = generated_axconfig_path(&request.package, &request.target).unwrap();
+        let generated_existed = generated_config.exists();
 
         let cargo = build_info.into_cargo_config(&request).unwrap();
 
@@ -1415,8 +1445,11 @@ AX_GW = "10.0.2.2"
                 .unwrap()
                 .contains("max-cpu-num = 4")
         );
+        if !legacy_existed {
+            assert!(!legacy_app_config.exists());
+        }
 
-        if !existed && generated_config.exists() {
+        if !generated_existed && generated_config.exists() {
             fs::remove_file(generated_config).unwrap();
         }
     }

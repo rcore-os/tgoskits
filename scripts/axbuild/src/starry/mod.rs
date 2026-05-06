@@ -405,7 +405,7 @@ impl Starry {
         let (request, snapshot) =
             self.app
                 .prepare_starry_request(args, qemu_config, uboot_config)?;
-        if matches!(persistence, SnapshotPersistence::Store) {
+        if persistence.should_store() {
             self.app.store_starry_snapshot(&snapshot)?;
         }
         Ok(request)
@@ -596,12 +596,6 @@ impl Starry {
             SnapshotPersistence::Store,
         )?;
         self.run_uboot_request(request).await
-    }
-}
-
-impl Default for Starry {
-    fn default() -> Self {
-        Self::new().expect("failed to initialize StarryOS")
     }
 }
 

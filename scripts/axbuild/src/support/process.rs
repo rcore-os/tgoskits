@@ -1,6 +1,7 @@
 use std::{
     ffi::OsStr,
     io::{self, Write},
+    path::Path,
     process::{Command, Output, Stdio},
 };
 
@@ -10,6 +11,15 @@ use colored::Colorize;
 pub trait ProcessExt {
     fn exec(&mut self) -> Result<()>;
     fn exec_capture(&mut self) -> Result<Output>;
+}
+
+pub(crate) fn run_cargo_status(workspace_root: &Path, args: &[String]) -> Result<bool> {
+    let status = Command::new("cargo")
+        .current_dir(workspace_root)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to spawn `cargo {}`", args.join(" ")))?;
+    Ok(status.success())
 }
 
 impl ProcessExt for Command {

@@ -1001,7 +1001,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.to_string().contains("does not provide `"));
+        assert!(err.to_string().contains("none provide `qemu-aarch64.toml`"));
     }
 
     #[test]

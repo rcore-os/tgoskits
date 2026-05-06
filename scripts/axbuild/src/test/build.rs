@@ -338,7 +338,9 @@ pub(crate) fn prepare_python_case_assets_sync(
     let mut path_entries = Vec::new();
     path_entries.push(layout.command_wrapper_dir.clone());
     path_entries.extend(std::env::split_paths(&host_path));
-    prebuild_cmd.env("PATH", std::env::join_paths(path_entries).unwrap());
+    let path = std::env::join_paths(path_entries)
+        .map_err(|e| anyhow::anyhow!("failed to build guest prebuild PATH: {e}"))?;
+    prebuild_cmd.env("PATH", path);
     prebuild_cmd.env("QEMU_LD_PREFIX", &layout.staging_root);
 
     prebuild_cmd
@@ -828,7 +830,7 @@ pub(crate) fn build_prebuild_command(
         .arg("-eu")
         .arg(prebuild_script)
         .current_dir(case_c_source_dir(case));
-    apply_case_script_envs(&mut command, layout, &prebuild_env.script_envs);
+    apply_case_script_envs(&mut command, layout, &prebuild_env.script_envs)?;
     Ok(command)
 }
 
@@ -908,18 +910,22 @@ fn apply_case_script_envs(
     command: &mut Command,
     layout: &case_assets::CaseAssetLayout,
     script_envs: &[(String, String)],
-) {
+) -> anyhow::Result<()> {
     let host_path = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = Vec::new();
     path_entries.push(layout.command_wrapper_dir.clone());
     path_entries.extend(std::env::split_paths(&host_path));
 
-    command.env("PATH", std::env::join_paths(path_entries).unwrap());
+    let path = std::env::join_paths(path_entries)
+        .map_err(|e| anyhow::anyhow!("failed to build case script PATH: {e}"))?;
+    command.env("PATH", path);
     command.env("QEMU_LD_PREFIX", &layout.staging_root);
 
     for (key, value) in script_envs {
         command.env(key, value);
     }
+
+    Ok(())
 }
 
 pub(crate) fn case_script_envs(

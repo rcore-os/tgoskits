@@ -1195,7 +1195,7 @@ mod tests {
         .unwrap_err()
         .to_string();
 
-        assert!(err.contains("does not provide"));
+        assert!(err.contains("none provide `qemu-x86_64.toml`"));
         assert!(err.contains("qemu-x86_64.toml"));
     }
 

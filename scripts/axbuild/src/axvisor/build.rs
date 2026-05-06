@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::anyhow;
 use ostool::build::config::Cargo;
 use serde::{Deserialize, Serialize};
 
@@ -93,10 +94,23 @@ pub(crate) fn resolve_build_info_path(
     }
 
     let _ = arch_for_target_checked(target)?;
-    Ok(crate::arceos::build::resolve_build_info_path_in_dir(
-        axvisor_dir,
+    Ok(default_build_info_path(axvisor_dir, target))
+}
+
+pub(crate) fn workspace_root_from_axvisor_dir(axvisor_dir: &Path) -> PathBuf {
+    axvisor_dir
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| axvisor_dir.to_path_buf())
+}
+
+pub(crate) fn default_build_info_path(axvisor_dir: &Path, target: &str) -> PathBuf {
+    crate::arceos::build::default_build_info_path_in_workspace(
+        &workspace_root_from_axvisor_dir(axvisor_dir),
+        AXVISOR_PACKAGE,
         target,
-    ))
+    )
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<Cargo> {
@@ -361,7 +375,7 @@ mod tests {
         assert_eq!(
             path,
             root.path()
-                .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml")
+                .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
         );
     }
 
@@ -380,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_build_info_path_prefers_existing_bare_name() {
+    fn resolve_build_info_path_ignores_source_tree_defaults() {
         let root = tempdir().unwrap();
         let axvisor_dir = root.path().join("os/axvisor");
         fs::create_dir_all(&axvisor_dir).unwrap();
@@ -392,7 +406,11 @@ mod tests {
         let path =
             resolve_build_info_path(&axvisor_dir, "aarch64-unknown-none-softfloat", None).unwrap();
 
-        assert_eq!(path, bare);
+        assert_eq!(
+            path,
+            root.path()
+                .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
+        );
     }
 
     #[test]

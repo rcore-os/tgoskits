@@ -218,6 +218,11 @@ impl AppContext {
             .map(|path| crate::axvisor::build::load_target_from_build_config(path))
             .transpose()?
             .flatten();
+        let explicit_config = if cli.config.is_some() {
+            resolved_config
+        } else {
+            resolved_config.filter(|path| path.exists())
+        };
 
         let effective_arch = cli.arch.clone().or_else(|| {
             if cli.target.is_some() || config_target.is_some() {
@@ -234,12 +239,6 @@ impl AppContext {
             }
         });
         let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
-        let explicit_config = normalize_axvisor_build_config_path(
-            cli.config.as_ref(),
-            &axvisor_dir,
-            &target,
-            resolved_config,
-        )?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
         let smp = cli.smp.or(snapshot.smp);
         let build_info_path =
@@ -354,39 +353,6 @@ impl AppContext {
             self.root.join(path)
         }
     }
-}
-
-fn normalize_axvisor_build_config_path(
-    cli_config: Option<&PathBuf>,
-    axvisor_dir: &Path,
-    target: &str,
-    resolved_config: Option<PathBuf>,
-) -> anyhow::Result<Option<PathBuf>> {
-    if cli_config.is_some() {
-        return Ok(resolved_config);
-    }
-
-    let Some(path) = resolved_config else {
-        return Ok(None);
-    };
-
-    if is_generated_axvisor_build_info_path(&path, axvisor_dir)
-        && path != crate::axvisor::build::resolve_build_info_path(axvisor_dir, target, None)?
-    {
-        return Ok(None);
-    }
-
-    Ok(Some(path))
-}
-
-fn is_generated_axvisor_build_info_path(path: &Path, axvisor_dir: &Path) -> bool {
-    path.parent() == Some(axvisor_dir)
-        && path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| {
-                name == ".build.toml" || (name.starts_with(".build-") && name.ends_with(".toml"))
-            })
 }
 
 pub(crate) fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf> {
