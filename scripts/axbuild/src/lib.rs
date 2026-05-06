@@ -1,3 +1,6 @@
+#![cfg_attr(not(any(windows, unix)), no_std)]
+#![cfg(any(windows, unix))]
+
 use clap::{Args, Parser, Subcommand};
 
 use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
