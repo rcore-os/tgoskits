@@ -271,6 +271,7 @@ impl SimpleDirOps for SysUsbDeviceDir {
                 "devnum",
                 "speed",
                 "descriptors",
+                "bConfigurationValue",
                 "idVendor",
                 "idProduct",
                 "bDeviceClass",
@@ -299,6 +300,10 @@ impl SimpleDirOps for SysUsbDeviceDir {
             "descriptors" => Ok(text_file(
                 self.fs.clone(),
                 self.snapshot.descriptor_blob.clone(),
+            )),
+            "bConfigurationValue" => Ok(text_file(
+                self.fs.clone(),
+                format!("{}\n", self.active_configuration()),
             )),
             "idVendor" => Ok(text_file(
                 self.fs.clone(),
@@ -389,6 +394,16 @@ impl SysUsbDeviceDir {
 
     fn device_protocol(&self) -> u8 {
         self.descriptor_u8(6)
+    }
+
+    fn active_configuration(&self) -> u8 {
+        if self.snapshot.descriptor_blob.len() > 23
+            && self.snapshot.descriptor_blob[18] == 9
+            && self.snapshot.descriptor_blob[19] == 0x02
+        {
+            return self.snapshot.descriptor_blob[23];
+        }
+        1
     }
 }
 

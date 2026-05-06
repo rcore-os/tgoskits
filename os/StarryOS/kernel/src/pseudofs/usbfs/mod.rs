@@ -648,7 +648,18 @@ impl UsbDeviceFile {
         };
 
         let transfer =
-            self.with_live_lease(|lease| lease.submit_endpoint_transfer(endpoint, request))?;
+            self.with_live_lease(|lease| lease.submit_endpoint_transfer(endpoint, request));
+        if let Err(err) = &transfer {
+            warn!(
+                "usbfs: submit endpoint urb failed ep={:#04x} type={:?} len={} packets={} err={:?}",
+                endpoint,
+                transfer_type,
+                total_length,
+                packet_lengths.len(),
+                err
+            );
+        }
+        let transfer = transfer?;
         self.submitted_urbs.lock().push_back(SubmittedUrb {
             user_urb_ptr: arg,
             transfer,
