@@ -624,14 +624,19 @@ impl ArceOS {
         for (index, package) in packages.iter().enumerate() {
             println!("[{}/{}] arceos qemu {}", index + 1, packages.len(), package);
             ensure_package_runtime_assets(package)?;
+            let test_app_dir = Self::test_package_dir(package)?;
             let mut request = self.prepare_request(
-                Self::test_build_args(package, target),
+                Self::test_build_args(package, target, &test_app_dir)?,
                 None,
                 None,
                 SnapshotPersistence::Discard,
             )?;
             let cargo = build::load_cargo_config(&request)?;
-            request.qemu_config = Some(Self::resolve_test_qemu_config(package, target, &cargo)?);
+            request.qemu_config = Some(Self::resolve_test_qemu_config(
+                &test_app_dir,
+                target,
+                &cargo,
+            )?);
             match self
                 .run_qemu_request_with_cargo(request, cargo)
                 .await
@@ -683,27 +688,42 @@ impl ArceOS {
         Ok(request)
     }
 
-    fn test_build_args(package: &str, target: &str) -> BuildCliArgs {
-        BuildCliArgs {
-            config: None,
+    fn test_package_dir(package: &str) -> anyhow::Result<PathBuf> {
+        let manifest_path = build::resolve_package_manifest_path(package, None)?;
+        manifest_path
+            .parent()
+            .map(Path::to_path_buf)
+            .context("package manifest path has no parent directory")
+    }
+
+    fn test_build_args(
+        package: &str,
+        target: &str,
+        app_dir: &Path,
+    ) -> anyhow::Result<BuildCliArgs> {
+        let config = qemu_test::resolve_build_config_path(app_dir, target)?.with_context(|| {
+            format!(
+                "arceos qemu test package `{package}` is missing build-{target}.toml under {}",
+                app_dir.display()
+            )
+        })?;
+
+        Ok(BuildCliArgs {
+            config: Some(config),
             package: Some(package.to_string()),
             arch: None,
             target: Some(target.to_string()),
             plat_dyn: None,
             smp: None,
             debug: false,
-        }
+        })
     }
 
     fn resolve_test_qemu_config(
-        package: &str,
+        app_dir: &Path,
         target: &str,
         cargo: &Cargo,
     ) -> anyhow::Result<PathBuf> {
-        let manifest_path = build::resolve_package_manifest_path(package, None)?;
-        let app_dir = manifest_path
-            .parent()
-            .context("package manifest path has no parent directory")?;
         let arch = arch_from_target(target);
         let qemu_filename =
             qemu_test::resolve_rust_qemu_config_filename(app_dir, arch, target, &cargo.features)?;
@@ -1297,6 +1317,20 @@ mod tests {
         });
 
         assert_eq!(flows, &[QemuTestFlow::Rust]);
+    }
+
+    #[test]
+    fn arceos_rust_qemu_test_uses_case_build_config() {
+        let app_dir = tempfile::tempdir().unwrap();
+        let build_config = app_dir.path().join("build-x86_64-unknown-none.toml");
+        fs::write(&build_config, "features = [\"ax-std\"]\n").unwrap();
+
+        let args = ArceOS::test_build_args("arceos-lockdep", "x86_64-unknown-none", app_dir.path())
+            .unwrap();
+
+        assert_eq!(args.config, Some(build_config));
+        assert_eq!(args.package.as_deref(), Some("arceos-lockdep"));
+        assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
     }
 
     #[test]
