@@ -27,6 +27,8 @@ test_commands = [
     "/usr/bin/bug-unlinkat-einval",
     "/usr/bin/bug-writev-dir-ebadf",
     "/usr/bin/clone3-badsize",
+    "/usr/bin/bug-unaligned-cow-split",
+    "/usr/bin/bug-proc-maps-lseek-refresh",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']

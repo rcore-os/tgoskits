@@ -294,71 +294,69 @@ struct ThreadDir {
     task: WeakAxTaskRef,
 }
 
-impl ThreadDir {
-    fn thread_maps(&self) -> VfsResult<String> {
-        let mut output = String::new();
+fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
+    let mut output = String::new();
 
-        let task = match self.task.upgrade() {
-            Some(t) => t,
-            None => return Ok(output),
-        };
+    let task = match task.upgrade() {
+        Some(t) => t,
+        None => return Ok(output),
+    };
 
-        let mm = task.as_thread().proc_data.aspace.lock();
+    let mm = task.as_thread().proc_data.aspace.lock();
 
-        for area in mm.areas() {
-            let start = area.start();
-            let end = area.end();
-            let backend = area.backend();
-            let (path, file_offset, inode, dev, is_shared) = backend.file_info()?;
+    for area in mm.areas() {
+        let start = area.start();
+        let end = area.end();
+        let backend = area.backend();
+        let (path, file_offset, inode, dev, is_shared) = backend.file_info()?;
 
-            let flag_end = if is_shared { 's' } else { 'p' };
-            let flags = area.flags();
-            let perms = {
-                let r = if flags.contains(MappingFlags::READ) {
-                    'r'
-                } else {
-                    '-'
-                };
-                let w = if flags.contains(MappingFlags::WRITE) {
-                    'w'
-                } else {
-                    '-'
-                };
-                let x = if flags.contains(MappingFlags::EXECUTE) {
-                    'x'
-                } else {
-                    '-'
-                };
-                format!("{}{}{}{}", r, w, x, flag_end)
+        let flag_end = if is_shared { 's' } else { 'p' };
+        let flags = area.flags();
+        let perms = {
+            let r = if flags.contains(MappingFlags::READ) {
+                'r'
+            } else {
+                '-'
             };
-            const MAPS_COL_WIDTH: usize = 25 + core::mem::size_of::<usize>() * 6 - 1;
-            let mut writer = SeqWriter::new(&mut output);
+            let w = if flags.contains(MappingFlags::WRITE) {
+                'w'
+            } else {
+                '-'
+            };
+            let x = if flags.contains(MappingFlags::EXECUTE) {
+                'x'
+            } else {
+                '-'
+            };
+            format!("{}{}{}{}", r, w, x, flag_end)
+        };
+        const MAPS_COL_WIDTH: usize = 25 + core::mem::size_of::<usize>() * 6 - 1;
+        let mut writer = SeqWriter::new(&mut output);
 
-            let dev = dev
-                .map(|dev| DeviceId(dev))
-                .map(|dev| (dev.major(), dev.minor()));
+        let dev = dev
+            .map(|dev| DeviceId(dev))
+            .map(|dev| (dev.major(), dev.minor()));
 
-            write!(
-                &mut writer,
-                "{:08x}-{:08x} {} {:08x} {:02x}:{:02x} {}",
-                start.as_usize(),
-                end.as_usize(),
-                perms,
-                file_offset.unwrap_or(0),
-                dev.map(|(major, _)| major).unwrap_or(0),
-                dev.map(|(_, minor)| minor).unwrap_or(0),
-                inode.unwrap_or(0),
-            )
-            .map_err(|_| VfsError::InvalidInput)?;
-            writer.pad_to(MAPS_COL_WIDTH)?;
-            if !path.is_empty() {
-                writer.write_str(&path)?;
-            }
-            writer.newline()?;
+        write!(
+            &mut writer,
+            "{:08x}-{:08x} {} {:08x} {:02x}:{:02x} {}",
+            start.as_usize(),
+            end.as_usize(),
+            perms,
+            file_offset.unwrap_or(0),
+            dev.map(|(major, _)| major).unwrap_or(0),
+            dev.map(|(_, minor)| minor).unwrap_or(0),
+            inode.unwrap_or(0),
+        )
+        .map_err(|_| VfsError::InvalidInput)?;
+        writer.pad_to(MAPS_COL_WIDTH)?;
+        if !path.is_empty() {
+            writer.write_str(&path)?;
         }
-
-        Ok(output)
+        writer.newline()?;
     }
+
+    Ok(output)
 }
 
 impl SimpleDirOps for ThreadDir {
@@ -418,8 +416,8 @@ impl SimpleDirOps for ThreadDir {
             )
             .into(),
             "maps" => {
-                let maps = self.thread_maps()?;
-                SeqFile::new_regular(fs, move || Ok(maps.clone())).into()
+                let task = self.task.clone();
+                SeqFile::new_regular(fs, move || render_thread_maps(&task)).into()
             }
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
