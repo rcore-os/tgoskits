@@ -91,6 +91,7 @@ rockchip-soc
 rsext4
 scope-local
 simple-sdmmc
+starry-kernel
 starry-process
 starry-vm
 tg-xtask
