@@ -355,6 +355,7 @@ function SystemsSection() {
       eyebrow="Systems"
       title="三条系统路径，共享组件基础但面向不同开发目标"
       description="这里不是简单罗列子项目，而是帮助读者区分三条路径各自的职责、关注点与进入方式。"
+      framed={false}
     >
       <div className="systems-grid">
         {systems.map((system) => (
@@ -494,6 +495,7 @@ function DocsSection() {
       eyebrow="Documentation Map"
       title="文档不只是一串目录，而是一组可组合的阅读入口"
       description="这一部分用导航面板整理首页后的主要文档区域，让专业读者能更快跳到自己真正需要的层次。"
+      framed={false}
     >
       <div className="docs-grid">
         {docs.map((group) => (

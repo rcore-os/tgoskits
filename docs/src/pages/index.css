@@ -483,10 +483,12 @@ html {
     radial-gradient(circle at 85% 80%, rgba(167, 139, 250, 0.1), transparent 26%);
 }
 
-.section-shell--systems .section-shell__surface {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0)),
-    var(--home-panel-strong);
+.section-shell--systems .section-shell__surface--open {
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+  padding: 0;
 }
 
 .section-shell--workflow {
@@ -495,10 +497,12 @@ html {
     radial-gradient(circle at top right, rgba(56, 189, 248, 0.1), transparent 24%);
 }
 
-.section-shell--docs .section-shell__surface {
-  background:
-    radial-gradient(circle at bottom left, rgba(129, 140, 248, 0.12), transparent 25%),
-    var(--home-panel-strong);
+.section-shell--docs .section-shell__surface--open {
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+  padding: 0;
 }
 
 .section-shell--quality {
