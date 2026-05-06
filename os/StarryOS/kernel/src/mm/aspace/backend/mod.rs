@@ -134,15 +134,35 @@ pub enum Backend {
     File(file::FileBackend),
 }
 
+pub struct BackendFileInfo {
+    pub path: String,
+    pub offset: Option<u64>,
+    pub inode: Option<u64>,
+    pub dev: Option<u64>,
+    pub shared: bool,
+}
+
 impl Backend {
     /// Returns the file information if this is a file-backed mapping, or `None` otherwise.
     ///
     /// The returned tuple contains the file name, offset, inode and whether the mapping is shared.
-    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, Option<u64>, bool)> {
+    pub fn file_info(&self) -> AxResult<BackendFileInfo> {
         match self {
             Backend::Cow(b) => b.file_info(),
-            Backend::Linear(b) => Ok(("".to_string(), None, None, None, b.is_shared())),
-            Backend::Shared(_) => Ok(("".to_string(), None, None, None, true)),
+            Backend::Linear(b) => Ok(BackendFileInfo {
+                path: "".to_string(),
+                offset: None,
+                inode: None,
+                dev: None,
+                shared: b.is_shared(),
+            }),
+            Backend::Shared(_) => Ok(BackendFileInfo {
+                path: "".to_string(),
+                offset: None,
+                inode: None,
+                dev: None,
+                shared: true,
+            }),
             Backend::File(b) => b.file_info(),
         }
     }

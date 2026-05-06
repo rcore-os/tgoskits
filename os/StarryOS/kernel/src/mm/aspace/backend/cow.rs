@@ -16,7 +16,8 @@ use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange
 use ax_sync::Mutex;
 
 use super::{
-    AddrSpace, Backend, BackendOps, PopulateCallback, alloc_frame, dealloc_frame, pages_in,
+    AddrSpace, Backend, BackendFileInfo, BackendOps, PopulateCallback, alloc_frame, dealloc_frame,
+    pages_in,
 };
 
 struct FrameRefCnt(u8);
@@ -165,7 +166,7 @@ impl CowBackend {
         Ok(())
     }
 
-    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, Option<u64>, bool)> {
+    pub fn file_info(&self) -> AxResult<BackendFileInfo> {
         let loc = self
             .file
             .as_ref()
@@ -182,10 +183,22 @@ impl CowBackend {
                     .as_usize()
                     .saturating_sub(file_vaddr_base.as_usize()) as u64;
             let offset = align_down_4k(offset as usize) as u64;
-            return Ok((path, Some(offset), Some(inode), Some(dev), self.shared));
+            return Ok(BackendFileInfo {
+                path,
+                offset: Some(offset),
+                inode: Some(inode),
+                dev: Some(dev),
+                shared: self.shared,
+            });
         }
         if let Some(name) = &self.name {
-            return Ok((name.clone(), None, None, None, self.shared));
+            return Ok(BackendFileInfo {
+                path: name.clone(),
+                offset: None,
+                inode: None,
+                dev: None,
+                shared: self.shared,
+            });
         }
         Err(AxError::InvalidInput)
     }

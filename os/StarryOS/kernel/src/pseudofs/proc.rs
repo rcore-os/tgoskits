@@ -22,6 +22,7 @@ use starry_process::Process;
 
 use crate::{
     file::FD_TABLE,
+    mm::BackendFileInfo,
     pseudofs::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SeqFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
@@ -308,7 +309,13 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
         let start = area.start();
         let end = area.end();
         let backend = area.backend();
-        let (path, file_offset, inode, dev, is_shared) = backend.file_info()?;
+        let BackendFileInfo {
+            path,
+            offset: file_offset,
+            inode,
+            dev,
+            shared: is_shared,
+        } = backend.file_info()?;
 
         let flag_end = if is_shared { 's' } else { 'p' };
         let flags = area.flags();
@@ -333,9 +340,7 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
         const MAPS_COL_WIDTH: usize = 25 + core::mem::size_of::<usize>() * 6 - 1;
         let mut writer = SeqWriter::new(&mut output);
 
-        let dev = dev
-            .map(|dev| DeviceId(dev))
-            .map(|dev| (dev.major(), dev.minor()));
+        let dev = dev.map(DeviceId).map(|dev| (dev.major(), dev.minor()));
 
         write!(
             &mut writer,

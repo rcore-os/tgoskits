@@ -1,6 +1,6 @@
 use alloc::{
     boxed::Box,
-    string::{String, ToString},
+    string::ToString,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -13,7 +13,7 @@ use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_sync::Mutex;
 use weak_map::StrongRef;
 
-use super::{AddrSpace, Backend, BackendOps, PopulateCallback, pages_in};
+use super::{AddrSpace, Backend, BackendFileInfo, BackendOps, PopulateCallback, pages_in};
 
 #[doc(hidden)]
 pub struct FileBackendInner {
@@ -115,13 +115,19 @@ impl FileBackend {
         Arc::downgrade(&self.0.futex_handle)
     }
 
-    pub fn file_info(&self) -> AxResult<(String, Option<u64>, Option<u64>, Option<u64>, bool)> {
+    pub fn file_info(&self) -> AxResult<BackendFileInfo> {
         let loc = self.0.cache.location();
         let name = loc.absolute_path().map(|pb| pb.to_string())?;
         let offset = (self.0.file_data.lock().offset_page as u64) * PAGE_SIZE_4K as u64;
         let inode = loc.inode();
         let dev = loc.metadata()?.device;
-        Ok((name, Some(offset), Some(inode), Some(dev), self.0.shared))
+        Ok(BackendFileInfo {
+            path: name,
+            offset: Some(offset),
+            inode: Some(inode),
+            dev: Some(dev),
+            shared: self.0.shared,
+        })
     }
 }
 
@@ -268,11 +274,11 @@ impl BackendOps for FileBackend {
             futex_handle: self.0.futex_handle.clone(),
         });
 
-        if let Some(aspace) = self.1.upgrade() {
+        {
+            let aspace = self.1.upgrade()?;
             inner.register_listener(&aspace);
-        } else {
-            return None;
         }
+
         Some(Backend::File(FileBackend(inner, self.1.clone())))
     }
 
