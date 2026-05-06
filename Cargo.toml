@@ -103,8 +103,6 @@ members = [
     "components/scope-local",
     "components/starry-process",
     "components/starry-signal",
-    "components/starry-smoltcp",
-    "components/starry-smoltcp/fuzz",
     "components/starry-vm",
     "components/timer_list",
     "components/x86_vcpu",
@@ -318,7 +316,7 @@ rockchip-soc = { version = "0.1.1", path = "drivers/soc/rockchip/rockchip-soc" }
 rsext4 = { version = "0.3.7", path = "components/rsext4" }
 scope-local = { version = "0.3.6", path = "components/scope-local" }
 simple-sdmmc = { version = "0.1", path = "drivers/blk/simple-sdmmc" }
-smoltcp = { version = "0.14.2", path = "components/starry-smoltcp" }
+smoltcp = { version = "0.13.0", default-features = false }
 smoltcp-fuzz = { version = "0.2.2", path = "components/starry-smoltcp/fuzz" }
 smp-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/smp-kernel" }
 starry-kernel = { version = "0.5.9", path = "os/StarryOS/kernel" }
