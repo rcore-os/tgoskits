@@ -30,6 +30,11 @@ pub fn sys_getpgid(pid: Pid) -> AxResult<isize> {
     Ok(get_process_data(pid)?.proc.group().pgid() as _)
 }
 
+pub fn sys_getpgrp() -> AxResult<isize> {
+    let curr = current();
+    Ok(curr.as_thread().proc_data.proc.group().pgid() as _)
+}
+
 pub fn sys_setpgid(pid: Pid, pgid: Pid) -> AxResult<isize> {
     let proc = &get_process_data(pid)?.proc;
 

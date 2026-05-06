@@ -1,12 +1,6 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 #![cfg(any(windows, unix))]
 
-#[macro_use]
-extern crate log;
-
-#[macro_use]
-extern crate anyhow;
-
 use clap::{Args, Parser, Subcommand};
 
 use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};

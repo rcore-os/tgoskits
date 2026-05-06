@@ -1,5 +1,7 @@
 args = [
     "-nographic",
+    "-m",
+    "512M",
     "-cpu",
     "cortex-a53",
     "-device",

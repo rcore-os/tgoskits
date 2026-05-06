@@ -237,9 +237,6 @@ pub fn sys_mmap(
                             DeviceMmap::None => {
                                 return Err(AxError::NoSuchDevice);
                             }
-                            DeviceMmap::ReadOnly => {
-                                Backend::new_cow(start, page_size, backend, offset as u64, None)
-                            }
                             DeviceMmap::Physical(range) => {
                                 if range.is_empty() {
                                     return Err(AxError::InvalidInput);

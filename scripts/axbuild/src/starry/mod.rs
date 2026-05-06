@@ -147,7 +147,7 @@ pub struct ArgsTestQemu {
     #[arg(
         long,
         value_name = "ARCH",
-        required_unless_present = "target",
+        required_unless_present_any = ["target", "list"],
         help = "StarryOS architecture to test"
     )]
     pub arch: Option<String>,
@@ -155,7 +155,7 @@ pub struct ArgsTestQemu {
         short = 't',
         long,
         value_name = "TARGET",
-        required_unless_present = "arch",
+        required_unless_present_any = ["arch", "list"],
         help = "StarryOS target triple to test"
     )]
     pub target: Option<String>,
@@ -175,6 +175,8 @@ pub struct ArgsTestQemu {
     pub test_case: Option<String>,
     #[arg(long, help = "Run stress StarryOS qemu test cases")]
     pub stress: bool,
+    #[arg(short = 'l', long, help = "List discovered StarryOS QEMU test cases")]
+    pub list: bool,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -185,11 +187,10 @@ pub struct ArgsTestBoard {
     #[arg(
         short = 'g',
         long = "test-group",
-        default_value = "normal",
         value_name = "GROUP",
         help = "Run Starry board test cases from one test group"
     )]
-    pub test_group: String,
+    pub test_group: Option<String>,
 
     #[arg(
         short = 'c',
@@ -214,6 +215,9 @@ pub struct ArgsTestBoard {
 
     #[arg(long)]
     pub port: Option<u16>,
+
+    #[arg(short = 'l', long, help = "List discovered Starry board test cases")]
+    pub list: bool,
 }
 
 pub struct Starry {
@@ -405,7 +409,7 @@ impl Starry {
         let (request, snapshot) =
             self.app
                 .prepare_starry_request(args, qemu_config, uboot_config)?;
-        if matches!(persistence, SnapshotPersistence::Store) {
+        if persistence.should_store() {
             self.app.store_starry_snapshot(&snapshot)?;
         }
         Ok(request)
@@ -599,12 +603,6 @@ impl Starry {
     }
 }
 
-impl Default for Starry {
-    fn default() -> Self {
-        Self::new().expect("failed to initialize StarryOS")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -717,7 +715,7 @@ mod tests {
         match cli.command {
             Command::Test(args) => match args.command {
                 TestCommand::Board(args) => {
-                    assert_eq!(args.test_group, "normal");
+                    assert_eq!(args.test_group.as_deref(), Some("normal"));
                     assert_eq!(args.test_case.as_deref(), Some("smoke"));
                     assert_eq!(args.board.as_deref(), Some("orangepi-5-plus"));
                     assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));

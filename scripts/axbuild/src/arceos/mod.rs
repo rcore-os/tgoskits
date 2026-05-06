@@ -80,43 +80,72 @@ struct CTestInvocation {
     expect_output: Option<PathBuf>,
 }
 
-/// Known C test directories (relative to `test-suit/arceos/c/`).
-const C_TEST_NAMES: &[&str] = &[
-    "helloworld",
-    "memtest",
-    "httpclient",
-    "pthread/basic",
-    "pthread/parallel",
-    "pthread/pipe",
-    "pthread/sleep",
-];
-
 /// Discover available C tests by checking which directories exist.
 fn discover_c_tests(c_test_root: &Path) -> anyhow::Result<Vec<CTestDef>> {
     let mut tests = Vec::new();
-    for name in C_TEST_NAMES {
-        let dir = c_test_root.join(name);
-        // A C test is valid if it contains at least one .c file
-        let has_c = std::fs::read_dir(&dir)
-            .ok()
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .any(|e| e.path().extension().is_some_and(|ext| ext == "c"))
-            })
-            .unwrap_or(false);
-        if has_c {
-            let features = load_features_txt(&dir.join("features.txt"));
-            let invocations = load_c_test_invocations(&dir.join("test_cmd"))?;
-            tests.push(CTestDef {
-                name: name.to_string(),
-                dir,
-                features,
-                invocations,
-            });
+
+    if !c_test_root.is_dir() {
+        return Ok(tests);
+    }
+
+    discover_c_test_dirs(c_test_root, c_test_root, &mut tests)?;
+    tests.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(tests)
+}
+
+fn discover_c_test_dirs(
+    c_test_root: &Path,
+    dir: &Path,
+    tests: &mut Vec<CTestDef>,
+) -> anyhow::Result<()> {
+    let mut child_dirs = Vec::new();
+    let mut has_c_source = false;
+
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("failed to read C test dir {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            child_dirs.push(path);
+        } else if path.extension().is_some_and(|ext| ext == "c") {
+            has_c_source = true;
         }
     }
-    Ok(tests)
+
+    if has_c_source && has_c_test_marker(dir) {
+        let relative = dir.strip_prefix(c_test_root).with_context(|| {
+            format!(
+                "failed to compute C test name for {} under {}",
+                dir.display(),
+                c_test_root.display()
+            )
+        })?;
+        let name = relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        tests.push(CTestDef {
+            name,
+            dir: dir.to_path_buf(),
+            features: load_features_txt(&dir.join("features.txt")),
+            invocations: load_c_test_invocations(&dir.join("test_cmd"))?,
+        });
+    }
+
+    child_dirs.sort();
+    for child_dir in child_dirs {
+        discover_c_test_dirs(c_test_root, &child_dir, tests)?;
+    }
+
+    Ok(())
+}
+
+fn has_c_test_marker(dir: &Path) -> bool {
+    ["test_cmd", "features.txt", "axbuild.mk"]
+        .iter()
+        .any(|name| dir.join(name).is_file())
 }
 
 /// Load features from a `features.txt` file (one feature per line).
@@ -595,14 +624,19 @@ impl ArceOS {
         for (index, package) in packages.iter().enumerate() {
             println!("[{}/{}] arceos qemu {}", index + 1, packages.len(), package);
             ensure_package_runtime_assets(package)?;
+            let test_app_dir = Self::test_package_dir(package)?;
             let mut request = self.prepare_request(
-                Self::test_build_args(package, target),
+                Self::test_build_args(package, target, &test_app_dir)?,
                 None,
                 None,
                 SnapshotPersistence::Discard,
             )?;
             let cargo = build::load_cargo_config(&request)?;
-            request.qemu_config = Some(Self::resolve_test_qemu_config(package, target, &cargo)?);
+            request.qemu_config = Some(Self::resolve_test_qemu_config(
+                &test_app_dir,
+                target,
+                &cargo,
+            )?);
             match self
                 .run_qemu_request_with_cargo(request, cargo)
                 .await
@@ -648,33 +682,48 @@ impl ArceOS {
         let (request, snapshot) =
             self.app
                 .prepare_arceos_request(args, qemu_config, uboot_config)?;
-        if matches!(persistence, SnapshotPersistence::Store) {
+        if persistence.should_store() {
             self.app.store_arceos_snapshot(&snapshot)?;
         }
         Ok(request)
     }
 
-    fn test_build_args(package: &str, target: &str) -> BuildCliArgs {
-        BuildCliArgs {
-            config: None,
+    fn test_package_dir(package: &str) -> anyhow::Result<PathBuf> {
+        let manifest_path = build::resolve_package_manifest_path(package, None)?;
+        manifest_path
+            .parent()
+            .map(Path::to_path_buf)
+            .context("package manifest path has no parent directory")
+    }
+
+    fn test_build_args(
+        package: &str,
+        target: &str,
+        app_dir: &Path,
+    ) -> anyhow::Result<BuildCliArgs> {
+        let config = qemu_test::resolve_build_config_path(app_dir, target)?.with_context(|| {
+            format!(
+                "arceos qemu test package `{package}` is missing build-{target}.toml under {}",
+                app_dir.display()
+            )
+        })?;
+
+        Ok(BuildCliArgs {
+            config: Some(config),
             package: Some(package.to_string()),
             arch: None,
             target: Some(target.to_string()),
             plat_dyn: None,
             smp: None,
             debug: false,
-        }
+        })
     }
 
     fn resolve_test_qemu_config(
-        package: &str,
+        app_dir: &Path,
         target: &str,
         cargo: &Cargo,
     ) -> anyhow::Result<PathBuf> {
-        let manifest_path = build::resolve_package_manifest_path(package, None)?;
-        let app_dir = manifest_path
-            .parent()
-            .context("package manifest path has no parent directory")?;
         let arch = arch_from_target(target);
         let qemu_filename =
             qemu_test::resolve_rust_qemu_config_filename(app_dir, arch, target, &cargo.features)?;
@@ -899,12 +948,6 @@ fn run_single_c_qemu_test(
     Ok(())
 }
 
-impl Default for ArceOS {
-    fn default() -> Self {
-        Self::new().expect("failed to initialize ArceOS")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1118,6 +1161,7 @@ mod tests {
     #[test]
     fn discover_c_tests_finds_valid_tests() {
         let dir = std::env::temp_dir().join("axbuild_test_c");
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("helloworld")).unwrap();
         std::fs::write(dir.join("helloworld/main.c"), "int main() { return 0; }\n").unwrap();
         std::fs::write(
@@ -1125,11 +1169,26 @@ mod tests {
             "test_one \"LOG=info\" \"expect_info.out\"\n",
         )
         .unwrap();
+        std::fs::create_dir_all(dir.join("pthread/basic")).unwrap();
+        std::fs::write(
+            dir.join("pthread/basic/main.c"),
+            "int main() { return 0; }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("pthread/basic/features.txt"), "pthread\n").unwrap();
+        std::fs::create_dir_all(dir.join("helpers")).unwrap();
+        std::fs::write(dir.join("helpers/helper.c"), "void helper(void) {}\n").unwrap();
         std::fs::create_dir_all(dir.join("empty")).unwrap();
 
         let tests = discover_c_tests(&dir).unwrap();
-        // Only "helloworld" should be found, "empty" is not in C_TEST_NAMES
-        assert!(tests.iter().any(|t| t.name == "helloworld"));
+        // Directories without C sources or test markers are ignored.
+        assert_eq!(
+            tests
+                .iter()
+                .map(|test| test.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["helloworld", "pthread/basic"]
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1261,6 +1320,20 @@ mod tests {
     }
 
     #[test]
+    fn arceos_rust_qemu_test_uses_case_build_config() {
+        let app_dir = tempfile::tempdir().unwrap();
+        let build_config = app_dir.path().join("build-x86_64-unknown-none.toml");
+        fs::write(&build_config, "features = [\"ax-std\"]\n").unwrap();
+
+        let args = ArceOS::test_build_args("arceos-lockdep", "x86_64-unknown-none", app_dir.path())
+            .unwrap();
+
+        assert_eq!(args.config, Some(build_config));
+        assert_eq!(args.package.as_deref(), Some("arceos-lockdep"));
+        assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
+    }
+
+    #[test]
     fn select_arceos_test_packages_defaults_to_all_packages() {
         let selected = select_arceos_test_packages(&[]).unwrap();
         assert_eq!(selected, test::TEST_PACKAGES);
@@ -1297,11 +1370,13 @@ mod tests {
             "int main(void) { return 0; }\n",
         )
         .unwrap();
+        std::fs::write(c_root.join("helloworld/test_cmd"), "").unwrap();
         std::fs::write(
             c_root.join("memtest/main.c"),
             "int main(void) { return 0; }\n",
         )
         .unwrap();
+        std::fs::write(c_root.join("memtest/test_cmd"), "").unwrap();
 
         let events = Arc::new(Mutex::new(Vec::new()));
 

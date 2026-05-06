@@ -35,7 +35,6 @@ rsext4
 scope-local
 starry-process
 starry-signal
-smoltcp
 starry-vm
 ax-timer-list
 ax-alloc

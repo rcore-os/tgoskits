@@ -1,0 +1,10 @@
+[package]
+name = "axpanic"
+version = "0.1.0"
+repository = "https://github.com/rcore-os/tgoskits"
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+description = "Shared panic and oops state helpers for ArceOS components"
+license.workspace = true
+
+[dependencies]

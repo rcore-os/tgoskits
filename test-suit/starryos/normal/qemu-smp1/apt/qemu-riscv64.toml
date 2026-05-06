@@ -1,0 +1,30 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "rv64",
+    "-m",
+    "1G",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-riscv64-debian.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+rm -f /etc/apt/sources.list.d/*.sources && \
+printf 'deb http://mirrors.tuna.tsinghua.edu.cn/debian trixie main\n' > /etc/apt/sources.list && \
+apt update && \
+DEBIAN_FRONTEND=noninteractive apt install -y hello && \
+hello && \
+echo 'APT_HELLO_TEST_PASSED' || \
+echo 'APT_HELLO_TEST_FAILED'
+'''
+success_regex = ["(?m)^Hello, world!\\s*$", "(?m)^APT_HELLO_TEST_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^APT_HELLO_TEST_FAILED\\s*$"]
+timeout = 600

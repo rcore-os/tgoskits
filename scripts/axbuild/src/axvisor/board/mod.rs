@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::anyhow;
+
 use crate::axvisor::build::{AxvisorBoardConfig, load_board_file};
 
 #[derive(Debug, Clone, PartialEq)]

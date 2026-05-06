@@ -19,8 +19,6 @@ pub enum DeviceMmap {
     None,
     /// Maps to a physical address range.
     Physical(PhysAddrRange),
-    /// The device is read-only and will be mapped as CoW.
-    ReadOnly,
     /// Maps to a cached file.
     Cache(CachedFile),
 }

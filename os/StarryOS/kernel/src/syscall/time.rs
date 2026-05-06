@@ -36,6 +36,14 @@ pub fn sys_gettimeofday(ts: *mut timeval) -> AxResult<isize> {
     Ok(0)
 }
 
+pub fn sys_time(tloc: *mut usize) -> AxResult<isize> {
+    let secs = wall_time().as_secs() as isize;
+    if let Some(tloc) = tloc.nullable() {
+        tloc.vm_write(secs as usize)?;
+    }
+    Ok(secs)
+}
+
 pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxResult<isize> {
     if clock_id as u32 != CLOCK_MONOTONIC && clock_id as u32 != CLOCK_REALTIME {
         warn!("Called sys_clock_getres for unsupported clock {clock_id}");
