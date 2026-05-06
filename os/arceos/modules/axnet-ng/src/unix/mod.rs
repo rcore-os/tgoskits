@@ -1,7 +1,7 @@
 pub(crate) mod dgram;
 pub(crate) mod stream;
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::task::Context;
 
 use async_trait::async_trait;
