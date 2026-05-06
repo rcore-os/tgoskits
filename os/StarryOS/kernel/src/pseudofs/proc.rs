@@ -15,7 +15,7 @@ use core::{
 };
 
 use ax_hal::paging::MappingFlags;
-use ax_task::{AxCpuMask, AxTaskRef, TaskInner, WeakAxTaskRef, current};
+use ax_task::{AxCpuMask, AxTaskRef, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
 use indoc::indoc;
 use starry_process::Process;
@@ -23,7 +23,7 @@ use starry_process::Process;
 use crate::{
     file::FD_TABLE,
     pseudofs::{
-        DirMaker, DirMapping, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
+        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
     },
     task::{AsThread, TaskStat, get_task, tasks},
@@ -345,8 +345,8 @@ impl ThreadDir {
                 end.as_usize(),
                 perms,
                 file_offset.unwrap_or(0),
-                dev.map(|(major, minor)| major).unwrap_or(0),
-                dev.map(|(major, minor)| minor).unwrap_or(0),
+                dev.map(|(major, _)| major).unwrap_or(0),
+                dev.map(|(_, minor)| minor).unwrap_or(0),
                 inode.unwrap_or(0),
             )
             .map_err(|_| VfsError::InvalidInput)?;
@@ -419,7 +419,7 @@ impl SimpleDirOps for ThreadDir {
             .into(),
             "maps" => {
                 let maps = self.thread_maps()?;
-                SimpleFile::new_regular(fs, move || Ok(maps.clone())).into()
+                SeqFile::new_regular(fs, move || Ok(maps.clone())).into()
             }
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
