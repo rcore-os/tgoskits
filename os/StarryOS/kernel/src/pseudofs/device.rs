@@ -3,8 +3,6 @@ use core::{any::Any, task::Context};
 
 use ax_fs::CachedFile;
 use ax_memory_addr::PhysAddrRange;
-
-use crate::mm::SharedPages;
 use axfs_ng_vfs::{
     DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
     NodePermission, NodeType, VfsError, VfsResult,
@@ -13,6 +11,7 @@ use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 
 use super::{SimpleFs, SimpleFsNode};
+use crate::mm::SharedPages;
 
 /// Mmap behavior for devices.
 #[derive(Clone)]

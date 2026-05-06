@@ -30,10 +30,9 @@ use starry_signal::{
 };
 
 pub use self::{cred::*, futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
-use crate::mm::AddrSpace;
-
 #[cfg(feature = "kcov")]
 use crate::kcov::KcovThreadState;
+use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.
 /// Used by SA_RESTART to back up the program counter.
@@ -205,7 +204,12 @@ impl Thread {
     /// re-enters here.
     #[cfg(feature = "kcov")]
     pub fn kcov(&self) -> Option<KcovThreadState> {
-        self.kcov.0.try_borrow().ok().as_deref().and_then(|r| r.clone())
+        self.kcov
+            .0
+            .try_borrow()
+            .ok()
+            .as_deref()
+            .and_then(|r| r.clone())
     }
 
     /// Set the KCOV state for this thread.
