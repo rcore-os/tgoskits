@@ -8,7 +8,9 @@ use anyhow::{Context, anyhow, bail};
 use ostool::{board::RunBoardOptions, build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
 
-use super::{Axvisor, build, cli, rootfs};
+use super::{
+    ArgsTest, ArgsTestBoard, ArgsTestQemu, ArgsTestUboot, Axvisor, TestCommand, build, rootfs,
+};
 use crate::{
     context::{
         AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence,
@@ -50,6 +52,14 @@ const TEST_TARGETS: &[&str] = &[
     "x86_64-unknown-none",
     "loongarch64-unknown-none-softfloat",
 ];
+
+pub(super) async fn test(axvisor: &mut Axvisor, args: ArgsTest) -> anyhow::Result<()> {
+    match args.command {
+        TestCommand::Qemu(args) => axvisor.test_qemu(args).await,
+        TestCommand::Uboot(args) => axvisor.test_uboot(args).await,
+        TestCommand::Board(args) => axvisor.test_board(args).await,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UbootBoardConfig {
@@ -326,7 +336,7 @@ fn supported_test_groups(test_suite_root: &Path) -> anyhow::Result<String> {
 }
 
 impl Axvisor {
-    pub(super) async fn test_qemu(&mut self, args: cli::ArgsTestQemu) -> anyhow::Result<()> {
+    pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
             let trees = discover_test_group_names(self.app.workspace_root())?
                 .into_iter()
@@ -456,7 +466,7 @@ impl Axvisor {
         test_qemu::finalize_qemu_test_run("axvisor", "case", &failed)
     }
 
-    pub(super) async fn test_uboot(&mut self, args: cli::ArgsTestUboot) -> anyhow::Result<()> {
+    pub(super) async fn test_uboot(&mut self, args: ArgsTestUboot) -> anyhow::Result<()> {
         let board = uboot_board_config(&args.board, &args.guest)?;
         let explicit_uboot_config = args.uboot_config.clone();
         let uboot_config_summary = explicit_uboot_config
@@ -504,7 +514,7 @@ impl Axvisor {
             })
     }
 
-    pub(super) async fn test_board(&mut self, args: cli::ArgsTestBoard) -> anyhow::Result<()> {
+    pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
         if args.list && args.test_group.is_none() {
             let trees = discover_test_group_names(self.app.workspace_root())?
                 .into_iter()

@@ -6,10 +6,11 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use clap::{Args, Subcommand};
 use ostool::{board::RunBoardOptions, build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
 
-use super::{ArgsTestBoard, ArgsTestQemu, ArgsTestUboot, Starry, board, build, rootfs};
+use super::{Starry, board, build, rootfs};
 use crate::{
     context::{
         ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs, arch_for_target_checked,
@@ -21,6 +22,108 @@ use crate::{
         qemu as qemu_test,
     },
 };
+
+#[derive(Args)]
+pub struct ArgsTest {
+    #[command(subcommand)]
+    pub command: TestCommand,
+}
+
+#[derive(Subcommand)]
+pub enum TestCommand {
+    /// Run StarryOS QEMU test suite
+    Qemu(ArgsTestQemu),
+    /// Reserved StarryOS U-Boot test suite entrypoint
+    Uboot(ArgsTestUboot),
+    /// Run StarryOS remote board test suite
+    Board(ArgsTestBoard),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsTestQemu {
+    #[arg(
+        long,
+        value_name = "ARCH",
+        required_unless_present_any = ["target", "list"],
+        help = "StarryOS architecture to test"
+    )]
+    pub arch: Option<String>,
+    #[arg(
+        short = 't',
+        long,
+        value_name = "TARGET",
+        required_unless_present_any = ["arch", "list"],
+        help = "StarryOS target triple to test"
+    )]
+    pub target: Option<String>,
+    #[arg(
+        short = 'g',
+        long = "test-group",
+        value_name = "GROUP",
+        help = "Run StarryOS QEMU test cases from one test group"
+    )]
+    pub test_group: Option<String>,
+    #[arg(
+        short = 'c',
+        long = "test-case",
+        value_name = "CASE",
+        help = "Run only one StarryOS QEMU test case"
+    )]
+    pub test_case: Option<String>,
+    #[arg(long, help = "Run stress StarryOS qemu test cases")]
+    pub stress: bool,
+    #[arg(short = 'l', long, help = "List discovered StarryOS QEMU test cases")]
+    pub list: bool,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ArgsTestUboot;
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ArgsTestBoard {
+    #[arg(
+        short = 'g',
+        long = "test-group",
+        value_name = "GROUP",
+        help = "Run Starry board test cases from one test group"
+    )]
+    pub test_group: Option<String>,
+
+    #[arg(
+        short = 'c',
+        long = "test-case",
+        value_name = "CASE",
+        help = "Run only one Starry board test case"
+    )]
+    pub test_case: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "BOARD",
+        help = "Run all Starry board test cases for one board"
+    )]
+    pub board: Option<String>,
+
+    #[arg(short = 'b', long = "board-type", value_name = "BOARD_TYPE")]
+    pub board_type: Option<String>,
+
+    #[arg(long)]
+    pub server: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    #[arg(short = 'l', long, help = "List discovered Starry board test cases")]
+    pub list: bool,
+}
+
+pub(super) async fn test(starry: &mut Starry, args: ArgsTest) -> anyhow::Result<()> {
+    match args.command {
+        TestCommand::Qemu(args) => starry.test_qemu(args).await,
+        TestCommand::Uboot(args) => starry.test_uboot(args).await,
+        TestCommand::Board(args) => starry.test_board(args).await,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StarryTestGroup {
@@ -916,6 +1019,30 @@ mod tests {
         fs::write(
             &path,
             format!("target = \"{target}\"\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    fn write_qemu_build_config_with_max_cpu_num(
+        root: &Path,
+        group: StarryTestGroup,
+        build_group: &str,
+        target: &str,
+        max_cpu_num: usize,
+    ) -> PathBuf {
+        let path = root
+            .join("test-suit/starryos")
+            .join(group.as_str())
+            .join(build_group)
+            .join(format!("build-{target}.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "target = \"{target}\"\nfeatures = [\"qemu\"]\nlog = \"Info\"\nmax_cpu_num = \
+                 {max_cpu_num}\n"
+            ),
         )
         .unwrap();
         path

@@ -1,4 +1,4 @@
-//! Shared rootfs helpers used across ArceOS, StarryOS, and AxVisor host-side
+//! Shared rootfs helpers used across ArceOS, StarryOS, and Axvisor host-side
 //! build flows.
 //!
 //! Main responsibilities:

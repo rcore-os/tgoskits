@@ -6,7 +6,6 @@ use std::{
 
 use anyhow::{Context, bail};
 use ostool::run::qemu::QemuConfig;
-use serde::Deserialize;
 
 use crate::{context::validate_supported_target, test::case::TestQemuCase};
 
@@ -38,127 +37,6 @@ pub(crate) struct QemuCaseGroup<'a, T> {
 pub(crate) trait BuildConfigRef {
     fn build_group(&self) -> &str;
     fn build_config_path(&self) -> &Path;
-}
-
-pub(crate) fn resolve_named_test_config_path(
-    app_dir: &Path,
-    filename: &str,
-    config_kind: &str,
-) -> anyhow::Result<PathBuf> {
-    let path = app_dir.join(filename);
-    if path.exists() {
-        return Ok(path);
-    }
-
-    let legacy_path = app_dir.join(format!(".{filename}"));
-    if legacy_path.exists() {
-        bail!(
-            "unsupported legacy {config_kind} config `{}` under {}; expected `{filename}`",
-            legacy_path.display(),
-            app_dir.display()
-        );
-    }
-
-    bail!(
-        "missing {config_kind} config `{filename}` under {}",
-        app_dir.display()
-    )
-}
-
-#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
-struct RustQemuRuleConfig {
-    #[serde(default)]
-    default_qemu_config: Option<String>,
-    #[serde(default, rename = "rule")]
-    rules: Vec<RustQemuRule>,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-struct RustQemuRule {
-    qemu_config: String,
-    #[serde(default)]
-    when_features_any: Vec<String>,
-    #[serde(default)]
-    when_features_all: Vec<String>,
-    #[serde(default)]
-    when_features_none: Vec<String>,
-}
-
-impl RustQemuRule {
-    fn matches(&self, features: &[String]) -> bool {
-        let any_matches = self.when_features_any.is_empty()
-            || self
-                .when_features_any
-                .iter()
-                .any(|feature| feature_matches(features, feature));
-        let all_matches = self
-            .when_features_all
-            .iter()
-            .all(|feature| feature_matches(features, feature));
-        let none_matches = self
-            .when_features_none
-            .iter()
-            .all(|feature| !feature_matches(features, feature));
-        any_matches && all_matches && none_matches
-    }
-}
-
-pub(crate) fn resolve_rust_qemu_config_filename(
-    app_dir: &Path,
-    arch: &str,
-    target: &str,
-    features: &[String],
-) -> anyhow::Result<String> {
-    let default = format!("qemu-{arch}.toml");
-    let Some(config_path) = resolve_optional_qemu_rule_config_path(app_dir)? else {
-        return Ok(default);
-    };
-
-    let config: RustQemuRuleConfig = toml::from_str(
-        &std::fs::read_to_string(&config_path)
-            .with_context(|| format!("failed to read {}", config_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", config_path.display()))?;
-
-    for rule in &config.rules {
-        if rule.matches(features) {
-            return Ok(expand_qemu_config_template(&rule.qemu_config, arch, target));
-        }
-    }
-
-    Ok(config
-        .default_qemu_config
-        .as_deref()
-        .map(|template| expand_qemu_config_template(template, arch, target))
-        .unwrap_or(default))
-}
-
-fn resolve_optional_qemu_rule_config_path(app_dir: &Path) -> anyhow::Result<Option<PathBuf>> {
-    let path = app_dir.join("qemu-test.toml");
-    if path.exists() {
-        return Ok(Some(path));
-    }
-
-    let legacy_path = app_dir.join(".qemu-test.toml");
-    if legacy_path.exists() {
-        bail!(
-            "unsupported legacy qemu rule config `{}` under {}; expected `qemu-test.toml`",
-            legacy_path.display(),
-            app_dir.display()
-        );
-    }
-
-    Ok(None)
-}
-
-fn expand_qemu_config_template(template: &str, arch: &str, target: &str) -> String {
-    template.replace("{arch}", arch).replace("{target}", target)
-}
-
-fn feature_matches(features: &[String], expected: &str) -> bool {
-    features
-        .iter()
-        .any(|feature| feature == expected || feature.rsplit('/').next() == Some(expected))
 }
 
 pub(crate) fn qemu_config_name(arch: &str) -> String {
