@@ -9,13 +9,16 @@
 #include <unistd.h>
 
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
-#define KCOV_ENABLE     _IO('c', 100)
-#define KCOV_DISABLE    _IO('c', 101)
-#define KCOV_TRACE_PC   0x100
-#define KCOV_TRACE_CMP  0x200
+#define KCOV_ENABLE _IO('c', 100)
+#define KCOV_DISABLE _IO('c', 101)
+#define KCOV_TRACE_PC 0x100
+#define KCOV_TRACE_CMP 0x200
 
 static void burst(int n) {
-    for (volatile int i = 0; i < n; i++) { getpid(); getuid(); }
+    for (volatile int i = 0; i < n; i++) {
+        getpid();
+        getuid();
+    }
 }
 
 int main(void) {
@@ -25,9 +28,12 @@ int main(void) {
     CHECK(fd >= 0, "open");
     CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 256), 0, "INIT_TRACE");
     size_t sz = 256 * sizeof(uint64_t);
-    uint64_t *buf = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    uint64_t *buf = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     CHECK_PTR(buf, 1, "mmap");
-    if (buf == MAP_FAILED) { close(fd); TEST_DONE(); }
+    if (buf == MAP_FAILED) {
+        close(fd);
+        TEST_DONE();
+    }
 
     /* §5: TRACE_CMP accepted (even if not implemented for recording) */
     CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_CMP), 0,

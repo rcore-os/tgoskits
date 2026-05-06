@@ -24,12 +24,16 @@
 #endif
 
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
-#define KCOV_ENABLE     _IO('c', 100)
-#define KCOV_DISABLE    _IO('c', 101)
-#define KCOV_TRACE_PC   0x100
+#define KCOV_ENABLE _IO('c', 100)
+#define KCOV_DISABLE _IO('c', 101)
+#define KCOV_TRACE_PC 0x100
 
 static void burst(int n) {
-    for (volatile int i = 0; i < n; i++) { getpid(); getuid(); getppid(); }
+    for (volatile int i = 0; i < n; i++) {
+        getpid();
+        getuid();
+        getppid();
+    }
 }
 
 int main(void) {
@@ -41,9 +45,12 @@ int main(void) {
     /* §3: mmap with correct size succeeds */
     CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 256), 0, "INIT_TRACE size=256");
     size_t sz = 256 * sizeof(uint64_t);
-    uint64_t *buf = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    uint64_t *buf = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     CHECK_PTR(buf, 1, "mmap with correct size");
-    if (buf == MAP_FAILED) { close(fd); TEST_DONE(); }
+    if (buf == MAP_FAILED) {
+        close(fd);
+        TEST_DONE();
+    }
 
     /* §4: buffer layout — cover[0]=count, starts at 0 */
     CHECK(buf[0] == 0, "cover[0] (count) starts at 0");
@@ -59,18 +66,21 @@ int main(void) {
     /* §4: PCs start at cover[1], non-zero */
     int ok = 1;
     for (uint64_t i = 0; i < n; i++) {
-        if (buf[1 + i] == 0) ok = 0;
+        if (buf[1 + i] == 0)
+            ok = 0;
         printf("  TRACE: cover[%lu]=0x%016lx\n", 1 + i, buf[1 + i]);
     }
     CHECK(ok, "cover[1..n] are non-zero");
 
     ok = 1;
-    for(uint64_t i = 0; i < n; i++){
-        if(!(buf[i+1]>=KERNEL_PC_MIN)) ok=0;
+    for (uint64_t i = 0; i < n; i++) {
+        if (!(buf[i + 1] >= KERNEL_PC_MIN))
+            ok = 0;
     }
     CHECK(ok, "PCs in kernel range");
-    
-    /* §3: buffer writable after disable (Linux spec: buffer still accessible) */
+
+    /* §3: buffer writable after disable (Linux spec: buffer still accessible)
+     */
     buf[1] = 0xCAFEBABEDEADBEEFULL;
     CHECK(buf[1] == 0xCAFEBABEDEADBEEFULL, "buffer writable after DISABLE");
 
@@ -79,13 +89,16 @@ int main(void) {
 
     /* Upper-bound: medium buffer, light burst — records but won't fill */
 
-    // If this test fails, try set the buffer larger as the failure might be caused by too many edges instrumented.
+    // If this test fails, try set the buffer larger as the failure might be
+    // caused by too many edges instrumented.
     {
         int fd2 = open("/dev/kcov", O_RDWR);
         CHECK(fd2 >= 0, "open for upper-bound test");
-        CHECK_RET(ioctl(fd2, KCOV_INIT_TRACE, 10240), 0, "INIT_TRACE size=10240");
+        CHECK_RET(ioctl(fd2, KCOV_INIT_TRACE, 10240), 0,
+                  "INIT_TRACE size=10240");
         size_t sz2 = 1024 * sizeof(uint64_t);
-        uint64_t *b2 = mmap(NULL, sz2, PROT_READ|PROT_WRITE, MAP_SHARED, fd2, 0);
+        uint64_t *b2 =
+            mmap(NULL, sz2, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 0);
         CHECK_PTR(b2, 1, "mmap upper-bound test");
         if (b2 != MAP_FAILED) {
             CHECK_RET(ioctl(fd2, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE");

@@ -11,8 +11,8 @@
 #include <unistd.h>
 
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
-#define KCOV_ENABLE     _IO('c', 100)
-#define KCOV_TRACE_PC   0x100
+#define KCOV_ENABLE _IO('c', 100)
+#define KCOV_TRACE_PC 0x100
 
 int main(void) {
     TEST_START("KCOV §2a/§3a/§5a: rejections before INIT_TRACE");
@@ -22,7 +22,7 @@ int main(void) {
         int fd = open("/dev/kcov", O_RDWR);
         CHECK(fd >= 0, "open for mmap-before-init test");
         size_t sz = 256 * sizeof(uint64_t);
-        void *p = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+        void *p = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         CHECK(p == MAP_FAILED, "mmap before INIT_TRACE rejected");
         if (p == MAP_FAILED)
             CHECK(errno == EINVAL, "mmap-before-init errno = EINVAL");

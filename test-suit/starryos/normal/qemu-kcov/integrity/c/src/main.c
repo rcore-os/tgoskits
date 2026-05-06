@@ -8,12 +8,16 @@
 #include <unistd.h>
 
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
-#define KCOV_ENABLE     _IO('c', 100)
-#define KCOV_DISABLE    _IO('c', 101)
-#define KCOV_TRACE_PC   0x100
+#define KCOV_ENABLE _IO('c', 100)
+#define KCOV_DISABLE _IO('c', 101)
+#define KCOV_TRACE_PC 0x100
 
 static void burst(int n) {
-    for (volatile int i = 0; i < n; i++) { getpid(); getuid(); getppid(); }
+    for (volatile int i = 0; i < n; i++) {
+        getpid();
+        getuid();
+        getppid();
+    }
 }
 
 int main(void) {
@@ -24,7 +28,8 @@ int main(void) {
         int fd = open("/dev/kcov", O_RDWR);
         CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 256), 0, "INIT_TRACE");
         size_t sz = 256 * sizeof(uint64_t);
-        uint64_t *buf = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+        uint64_t *buf =
+            mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         CHECK_PTR(buf, 1, "mmap");
         CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE");
         burst(50);
@@ -45,7 +50,8 @@ int main(void) {
         int fd = open("/dev/kcov", O_RDWR);
         CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 256), 0, "INIT_TRACE");
         size_t sz = 256 * sizeof(uint64_t);
-        uint64_t *buf = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+        uint64_t *buf =
+            mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         CHECK_PTR(buf, 1, "mmap");
         CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE");
         burst(30000);
@@ -62,7 +68,8 @@ int main(void) {
         int fd = open("/dev/kcov", O_RDWR);
         CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 256), 0, "INIT_TRACE");
         size_t sz = 256 * sizeof(uint64_t);
-        uint64_t *buf = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+        uint64_t *buf =
+            mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         CHECK_PTR(buf, 1, "mmap");
         CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE before ENABLE");
         for (int c = 1; c <= 3; c++) {
