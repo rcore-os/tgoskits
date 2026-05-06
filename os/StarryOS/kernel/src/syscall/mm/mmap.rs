@@ -201,6 +201,7 @@ pub fn sys_mmap(
                             );
                         }
                         DeviceMmap::None => return Err(AxError::NoSuchDevice),
+                        DeviceMmap::NotConfigured => return Err(AxError::InvalidInput),
                         _ => return Err(AxError::InvalidInput),
                     }
                 }
@@ -237,6 +238,12 @@ pub fn sys_mmap(
                             DeviceMmap::None => {
                                 return Err(AxError::NoSuchDevice);
                             }
+                            DeviceMmap::NotConfigured => {
+                                return Err(AxError::InvalidInput);
+                            }
+                            DeviceMmap::ReadOnly => {
+                                Backend::new_cow(start, page_size, backend, offset as u64, None)
+                            }
                             DeviceMmap::Physical(range) => {
                                 if range.is_empty() {
                                     return Err(AxError::InvalidInput);
@@ -253,6 +260,9 @@ pub fn sys_mmap(
                                 offset,
                                 &curr.as_thread().proc_data.aspace,
                             ),
+                            DeviceMmap::SharedPages(pages) => {
+                                Backend::new_shared(start, pages)
+                            }
                         }
                     }
                 }

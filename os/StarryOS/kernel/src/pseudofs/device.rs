@@ -3,6 +3,8 @@ use core::{any::Any, task::Context};
 
 use ax_fs::CachedFile;
 use ax_memory_addr::PhysAddrRange;
+
+use crate::mm::SharedPages;
 use axfs_ng_vfs::{
     DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
     NodePermission, NodeType, VfsError, VfsResult,
@@ -15,12 +17,19 @@ use super::{SimpleFs, SimpleFsNode};
 /// Mmap behavior for devices.
 #[derive(Clone)]
 pub enum DeviceMmap {
-    /// The device is not mappable.
+    /// The device is not mappable (→ ENODEV, matches Linux).
     None,
+    /// The device supports mmap but is not yet configured
+    /// (→ EINVAL, matches Linux kcov semantics).
+    NotConfigured,
     /// Maps to a physical address range.
     Physical(PhysAddrRange),
+    /// The device is read-only and will be mapped as CoW.
+    ReadOnly,
     /// Maps to a cached file.
     Cache(CachedFile),
+    /// Maps to a pre-allocated set of shared physical pages (kernel↔userspace).
+    SharedPages(Arc<SharedPages>),
 }
 
 /// Trait for device operations.
