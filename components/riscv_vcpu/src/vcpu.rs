@@ -34,10 +34,11 @@ use riscv_h::register::{
     vstvec::{self, Vstvec},
 };
 use rustsbi::{Forward, RustSBI};
-use sbi_spec::{hsm, legacy, srst};
+use sbi_spec::{hsm, legacy, pmu, rfnc, srst};
 
 use crate::{
     EID_HVC, RISCVVCpuCreateConfig, consts::traps::irq::S_EXT, guest_mem, regs::*, sbi_console::*,
+    vpmu::VirtualPmu,
 };
 
 unsafe extern "C" {
@@ -58,10 +59,6 @@ fn instr_is_pseudo(ins: u32) -> bool {
     ins == TINST_PSEUDO_STORE || ins == TINST_PSEUDO_LOAD
 }
 
-/// The architecture dependent configuration of a `AxArchVCpu`.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct VCpuConfig {}
-
 #[derive(Default)]
 /// A virtual CPU within a guest
 pub struct RISCVVCpu {
@@ -71,14 +68,19 @@ pub struct RISCVVCpu {
 
 #[derive(RustSBI)]
 struct RISCVVCpuSbi {
-    #[rustsbi(console, pmu, fence, reset, info, hsm, timer)]
+    #[rustsbi(pmu)]
+    pmu: VirtualPmu,
+    #[rustsbi(console, fence, reset, info, hsm, timer)]
     forward: Forward,
 }
 
 impl Default for RISCVVCpuSbi {
     #[inline]
     fn default() -> Self {
-        Self { forward: Forward }
+        Self {
+            pmu: VirtualPmu::default(),
+            forward: Forward,
+        }
     }
 }
 
@@ -214,10 +216,12 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             );
             core::arch::riscv64::hfence_gvma_all();
         }
+        self.sbi.pmu.backend_bind();
         Ok(())
     }
 
     fn unbind(&mut self) -> AxResult {
+        self.sbi.pmu.backend_unbind();
         // Store the vCPU's CSRs to the stored state.
         unsafe {
             self.regs.vs_csrs.vsatp = vsatp::read().bits();
@@ -371,6 +375,7 @@ impl RISCVVCpu {
                     legacy::LEGACY_SET_TIMER..=legacy::LEGACY_SHUTDOWN => match extension_id {
                         legacy::LEGACY_SET_TIMER => {
                             // info!("set timer: {}", param[0]);
+                            self.sbi.pmu.record_set_timer();
                             self.program_guest_timer(param[0]);
 
                             self.set_gpr_from_gpr_index(GprIndex::A0, 0);
@@ -395,6 +400,7 @@ impl RISCVVCpu {
                     },
                     EID_TIME => match function_id {
                         FID_SET_TIMER => {
+                            self.sbi.pmu.record_set_timer();
                             self.program_guest_timer(param[0]);
                             self.sbi_return(RET_SUCCESS, 0);
                             return Ok(AxVCpuExitReason::Nothing);
@@ -528,6 +534,32 @@ impl RISCVVCpu {
                             return Ok(AxVCpuExitReason::Nothing);
                         }
                     },
+                    pmu::EID_PMU => {
+                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
+                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
+                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
+                    }
+                    rfnc::EID_RFNC => {
+                        match function_id {
+                            rfnc::REMOTE_FENCE_I => self.sbi.pmu.record_fence_i_sent(),
+                            rfnc::REMOTE_SFENCE_VMA => self.sbi.pmu.record_sfence_vma_sent(),
+                            rfnc::REMOTE_SFENCE_VMA_ASID => {
+                                self.sbi.pmu.record_sfence_vma_asid_sent();
+                            }
+                            rfnc::REMOTE_HFENCE_GVMA => self.sbi.pmu.record_hfence_gvma_sent(),
+                            rfnc::REMOTE_HFENCE_GVMA_VMID => {
+                                self.sbi.pmu.record_hfence_gvma_vmid_sent();
+                            }
+                            rfnc::REMOTE_HFENCE_VVMA => self.sbi.pmu.record_hfence_vvma_sent(),
+                            rfnc::REMOTE_HFENCE_VVMA_ASID => {
+                                self.sbi.pmu.record_hfence_vvma_asid_sent();
+                            }
+                            _ => {}
+                        }
+                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
+                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
+                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
+                    }
                     // By default, forward the SBI call to the RustSBI implementation.
                     // See [`RISCVVCpuSbi`].
                     _ => {
@@ -605,6 +637,7 @@ impl RISCVVCpu {
         let csr = ((instr >> 20) & 0xfff) as u16;
 
         if csr != CSR_STIMECMP {
+            self.sbi.pmu.record_illegal_insn();
             return Err(ax_errno::ax_err_type!(
                 Unsupported,
                 alloc::format!(
@@ -657,6 +690,7 @@ impl RISCVVCpu {
                 }
             }
             _ => {
+                self.sbi.pmu.record_illegal_insn();
                 return Err(ax_errno::ax_err_type!(
                     Unsupported,
                     alloc::format!(
@@ -686,6 +720,7 @@ impl RISCVVCpu {
 
     #[cfg(not(feature = "sstc"))]
     fn handle_virtual_instruction(&mut self) -> AxResult<AxVCpuExitReason> {
+        self.sbi.pmu.record_illegal_insn();
         Err(ax_errno::ax_err_type!(
             Unsupported,
             alloc::format!(
@@ -858,14 +893,18 @@ impl RISCVVCpu {
                 i,
                 width,
                 signed_ext,
-            } => AxVCpuExitReason::MmioRead {
-                addr: fault_addr,
-                width,
-                reg: i.rd() as _,
-                reg_width: AccessWidth::Qword,
-                signed_ext,
-            },
+            } => {
+                self.sbi.pmu.record_access_load();
+                AxVCpuExitReason::MmioRead {
+                    addr: fault_addr,
+                    width,
+                    reg: i.rd() as _,
+                    reg_width: AccessWidth::Qword,
+                    signed_ext,
+                }
+            }
             Write { s, width } => {
+                self.sbi.pmu.record_access_store();
                 let source_reg = s.rs2();
                 let value = self.get_gpr(unsafe {
                     // SAFETY: `source_reg` is guaranteed to be in [0, 31]

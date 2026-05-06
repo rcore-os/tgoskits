@@ -1,53 +1,117 @@
-# 添加 StarryOS QEMU 测试用例
+# StarryOS 测试套件维护指南
 
-本文档说明如何在 `test-suit/starryos/` 下添加新的测试用例。
+本文档说明 `test-suit/starryos/` 的当前目录约定，以及
+`scripts/axbuild/src/starry/test.rs` 和 `scripts/axbuild/src/test/` 如何发现、构建和运行这些用例。
 
-## 目录结构
+## 发现规则
 
+StarryOS 测试按运行方式分为 QEMU 和 board 两类。二者都采用：
+
+```text
+test-suit/starryos/<group>/<build_group>/<case>/<runtime-config>.toml
 ```
+
+- `<group>` 为 `normal` 或 `stress`。
+- `<build_group>` 保存 StarryOS 构建配置，通常是 `qemu-smp1`、`qemu-smp4`、`board-orangepi-5-plus` 等。
+- `<case>` 是测试用例名。
+- QEMU 用例通过 `<case>/qemu-<arch>.toml` 发现。
+- Board 用例通过 `<case>/board-<board>.toml` 发现。
+- 构建配置位于 `<build_group>/build-<target>.toml`，也支持按 arch 匹配的 `build-<arch>.toml`。
+- 批量运行时，没有匹配 runtime config 的 case 会被跳过。
+- 显式 `-c/--test-case` 时，case 必须在某个可用 build group 中存在，且必须提供当前 arch 对应的 `qemu-<arch>.toml`。
+
+## 当前目录概览
+
+```text
 test-suit/starryos/
-  normal/                     # 常规测试（每次 push 均运行）
-    smoke/                    # 基础启动测试
-      qemu-<arch>.toml        # 每个架构一个 TOML 文件
-    usb/                      # USB 设备测试（含 C 源码）
-      c/
-        CMakeLists.txt
-        prebuild.sh           # 可选：在 rootfs 内安装依赖包
-        src/
-          main.c
-      qemu-<arch>.toml
-    helloworld/               # 简单 C 程序（无需 prebuild）
-      c/
-        CMakeLists.txt
-        src/
-          main.c
-      qemu-<arch>.toml
-    bugfix/                   # 分组测试：一次 Starry/QEMU 运行多个 guest 程序
-      bug-a/
+  normal/
+    qemu-smp1/
+      build-aarch64-unknown-none-softfloat.toml
+      build-loongarch64-unknown-none-softfloat.toml
+      build-riscv64gc-unknown-none-elf.toml
+      build-x86_64-unknown-none.toml
+      smoke/
+        qemu-<arch>.toml
+      apk-curl/
+        qemu-<arch>.toml
+      busybox/
+        qemu-<arch>.toml
+        sh/
+          busybox-tests.sh
+      python-hello/
+        qemu-<arch>.toml
+        python/
+          test_hello.py
+      bugfix/
+        qemu-<arch>.toml
+        <subcase>/c/CMakeLists.txt
+      syscall/
+        qemu-<arch>.toml
+        <subcase>/c/CMakeLists.txt
+      usb/
+        qemu-<arch>.toml
         c/
           CMakeLists.txt
+          prebuild.sh
           src/
-            main.c
-      bug-b/
-        c/
-          CMakeLists.txt
-          src/
-            main.c
-      qemu-<arch>.toml
-  stress/                     # 压力测试（PR 合入 main 时运行）
+    qemu-smp4/
+      build-<target>.toml
+      affinity/
+        qemu-x86_64.toml
+        <subcase>/c/CMakeLists.txt
+      test-shm-deadlock/
+        qemu-<arch>.toml
+        c/CMakeLists.txt
+    board-orangepi-5-plus/
+      build-aarch64-unknown-none-softfloat.toml
+      npu-yolov8/
+        board-orangepi-5-plus.toml
+      pcie-enumerate/
+        board-orangepi-5-plus.toml
+  stress/
     stress-ng-0/
-      qemu-<arch>.toml
+      build-<target>.toml
+      stress-ng-0/
+        qemu-<arch>.toml
 ```
 
-## 快速开始：纯 Shell 测试
+## QEMU 用例类型
 
-如果测试只需要 shell 命令（不需要编译二进制），只需创建：
+运行器会根据 case 目录内容选择一个 asset pipeline。一个 case 只能使用一种 pipeline。
 
+| Pipeline | 触发条件 | 行为 |
+| --- | --- | --- |
+| `plain` | 无 `test_commands`，且无 `c/`、`sh/`、`python/` | 直接启动共享 rootfs，并追加 QEMU `-snapshot` |
+| `c` | case 目录下存在 `c/` | 使用 CMake 交叉编译，安装产物到 rootfs overlay |
+| `sh` | case 目录下存在 `sh/` | 将 shell 脚本注入 `/usr/bin/` |
+| `python` | case 目录下存在 `python/` | 在 staging rootfs 中安装 `python3`，并注入 `.py` 文件 |
+| `grouped` | `qemu-<arch>.toml` 中存在 `test_commands` | 构建子目录中的 C subcase，生成 `/usr/bin/starry-run-case-tests` 顺序执行命令 |
+
+Pipeline case 会创建每个 case 独立的 rootfs 副本，并把注入后的 rootfs 缓存在：
+
+```text
+target/<target>/qemu-cases/<build_group>/<case>/cache/rootfs/
 ```
-test-suit/starryos/normal/<用例名>/qemu-<arch>.toml
-```
 
-示例（`smoke/qemu-riscv64.toml`）：
+plain case 不复制 rootfs，依赖 QEMU `-snapshot` 保证 guest 写入不落回共享镜像。
+
+## QEMU TOML
+
+每个 `qemu-<arch>.toml` 定义运行配置，而不是构建配置。常用字段如下：
+
+| 字段 | 说明 |
+| --- | --- |
+| `args` | QEMU 参数，`${workspace}` / `${workspaceFolder}` 会解析为仓库根目录 |
+| `uefi` | 是否使用 UEFI |
+| `to_bin` | 是否把 ELF 转为裸二进制 |
+| `shell_prefix` | 等待 guest shell 的提示符 |
+| `shell_init_cmd` | plain/C/sh/python case 的 guest 命令 |
+| `test_commands` | grouped case 的 guest 命令列表；不能与 `shell_init_cmd` 同时使用 |
+| `success_regex` | 全部匹配才 PASS |
+| `fail_regex` | 任一匹配即 FAIL |
+| `timeout` | 超时时间，单位秒 |
+
+示例：
 
 ```toml
 args = [
@@ -66,22 +130,21 @@ fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 15
 ```
 
-## C 测试用例
+## C 用例
 
-### 1. 创建目录结构
+普通 C case：
 
-```
-test-suit/starryos/normal/<用例名>/
+```text
+<case>/
+  qemu-<arch>.toml
   c/
-    CMakeLists.txt     # 必需：构建定义
-    prebuild.sh         # 可选：向 rootfs 安装依赖包
-    src/                # 源码目录
-  qemu-<arch>.toml     # 每个支持的架构一个文件
+    CMakeLists.txt
+    prebuild.sh        # 可选
+    src/
+      main.c
 ```
 
-### 2. 编写 `CMakeLists.txt`
-
-构建系统使用 clang 交叉编译，以 rootfs 作为 sysroot。编译出的可执行文件会被安装到客户机的 `/usr/bin/` 目录。
+`CMakeLists.txt` 至少应安装可执行文件：
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
@@ -97,20 +160,36 @@ target_compile_options(mytest PRIVATE -Wall -Wextra -Werror)
 install(TARGETS mytest RUNTIME DESTINATION usr/bin)
 ```
 
-### 3. 分组 C 测试
+如果需要在 staging rootfs 中安装额外包，可添加 `c/prebuild.sh`：
 
-如果多个 C 测试可以共用同一份 QEMU 配置，可以放在同一个 case 目录下：
+```sh
+#!/bin/sh
+set -eu
 
+apk add zlib-dev
 ```
-test-suit/starryos/normal/<用例组>/
-  <子用例-a>/c/CMakeLists.txt
-  <子用例-a>/c/src/main.c
-  <子用例-b>/c/CMakeLists.txt
-  <子用例-b>/c/src/main.c
+
+`prebuild.sh` 通过 qemu-user 在 staging rootfs 中执行。可用环境变量包括：
+
+- `STARRY_STAGING_ROOT`
+- `STARRY_CASE_DIR`
+- `STARRY_CASE_C_DIR`
+- `STARRY_CASE_WORK_DIR`
+- `STARRY_CASE_BUILD_DIR`
+- `STARRY_CASE_OVERLAY_DIR`
+
+## Grouped 用例
+
+当多个 guest 程序可以共用同一次 StarryOS 启动时，使用 grouped case：
+
+```text
+<case>/
   qemu-<arch>.toml
+  <subcase-a>/c/CMakeLists.txt
+  <subcase-b>/c/CMakeLists.txt
 ```
 
-在 `qemu-<arch>.toml` 中使用 `test_commands`，不要同时写 `shell_init_cmd`：
+在 `qemu-<arch>.toml` 中使用 `test_commands`：
 
 ```toml
 shell_prefix = "root@starry:"
@@ -122,80 +201,85 @@ success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
 ```
 
-运行器会按子目录名稳定构建所有 C 子用例，生成 `/usr/bin/starry-run-case-tests`，
-并在 guest 中顺序执行 `test_commands`。任一命令返回非 0 时，该 grouped case 失败。
+运行器会稳定排序子目录、构建 C subcase，并注入 `/usr/bin/starry-run-case-tests`。
+目前 grouped Rust subcase 还不支持。
 
-### 4. 可选：`prebuild.sh`
+## Shell 和 Python 用例
 
-如果测试需要安装额外的依赖包（如库文件）：
+Shell case 使用 `sh/`：
 
-```sh
-#!/bin/sh
-set -eu
-
-apk add gcc musl-dev libusb-dev   # 按需添加
+```text
+<case>/
+  qemu-<arch>.toml
+  sh/
+    my-test.sh
 ```
 
-该脚本通过 qemu-user 在 rootfs 内执行，可以直接使用 `apk add`。
+Python case 使用 `python/`：
 
-> **注意**：如果使用了 C 标准库头文件（如 `stdio.h`），需要安装 `gcc musl-dev`。
-
-### 5. 编写 `qemu-<arch>.toml`
-
-将 `shell_init_cmd` 设为安装后的二进制路径：
-
-```toml
-shell_init_cmd = "/usr/bin/mytest"
+```text
+<case>/
+  qemu-<arch>.toml
+  python/
+    test_hello.py
 ```
 
-QEMU 参数可以从已有用例复制（如 `smoke/qemu-<arch>.toml`），按需调整。
+Python pipeline 会自动在 staging rootfs 中安装 `python3`，再把 `.py` 文件复制到 `/usr/bin/`。
 
-如果某个用例需要多核环境，可以直接在 `qemu-<arch>.toml` 的 `args` 中加入
-`"-smp", "<N>"`。StarryOS 的测试运行器会自动用同样的 CPU 数重新配置内核构建，
-避免出现 QEMU 是多核而内核仍按单核模式编译的问题。
+## Board 用例
 
-### 6. 支持的架构
+Board 用例目录结构：
 
-| 架构         | Target                              | QEMU CPU  |
-|-------------|-------------------------------------|-----------|
-| x86_64      | x86_64-unknown-none                 | (默认)     |
-| aarch64     | aarch64-unknown-none-softfloat      | cortex-a53 |
-| riscv64     | riscv64gc-unknown-none-elf          | rv64      |
-| loongarch64 | loongarch64-unknown-none-softfloat  | la464     |
+```text
+normal/<build_group>/
+  build-<target>.toml
+  <case>/
+    board-<board>.toml
+```
 
-只为**实际验证通过的架构**创建 `qemu-<arch>.toml`。
+`board-<board>.toml` 是板测运行配置。发现 board case 后，xtask 会默认映射到：
 
-## TOML 字段说明
+```text
+os/StarryOS/configs/board/<board>.toml
+```
 
-| 字段              | 类型            | 说明 |
-|------------------|-----------------|------|
-| `args`           | `[string]`      | QEMU 命令行参数。`${workspace}` 会被替换为仓库根目录。 |
-| `uefi`           | `bool`          | 是否使用 UEFI 启动（大多数用例为 false） |
-| `to_bin`         | `bool`          | 是否用 objcopy 将 ELF 转为裸二进制 |
-| `shell_prefix`   | `string`        | shell 提示符匹配模式，等待该模式出现后再发送命令 |
-| `shell_init_cmd` | `string`        | 发送到客户机 shell 的测试命令 |
-| `test_commands`  | `[string]`      | 分组测试的 guest 命令列表；不能与 `shell_init_cmd` 同时使用 |
-| `success_regex`  | `[string]`      | 所有正则均匹配则判定为 PASS（支持多行正则） |
-| `fail_regex`     | `[string]`      | 任一正则匹配则立即判定为 FAIL |
-| `timeout`        | `integer`       | 超时秒数，超时则判定为失败 |
+并从该 board build config 读取 target。如果当前 build group 下存在匹配的
+`build-<target>.toml` 或 `build-<arch>.toml`，则优先使用 test-suit 中的构建配置。
 
-## 运行测试
+运行示例：
 
 ```bash
-# 运行某架构的所有常规测试
-cargo xtask starry test qemu --arch riscv64
-
-# 运行指定测试用例
-cargo xtask starry test qemu --arch riscv64 -c helloworld
-
-# 运行压力测试
-cargo xtask starry test qemu --stress --arch riscv64
+cargo xtask starry test board --board orangepi-5-plus
+cargo xtask starry test board -c pcie-enumerate --board orangepi-5-plus
 ```
 
-## 注意事项
+## 运行命令
 
-- `fail_regex` 要尽量精准，避免匹配到正常输出如 `failed: 0`。
-- `success_regex` 应选择输出中**稳定且唯一**的成功标志行。
-- 对于较慢的测试，先确认命令仍在正常执行，再酌情增加 `timeout`。
-- 通过 `prebuild.sh` 安装的二进制依赖会在 staging rootfs 中交叉编译，标准 Alpine 包均可使用。
-- 不要在同一个工作区中并行运行多个 `cargo xtask starry test qemu` 命令。
+```bash
+# normal QEMU
+cargo xtask starry test qemu --arch riscv64
+cargo xtask starry test qemu --target riscv64gc-unknown-none-elf
+
+# 指定 group 或 case
+cargo xtask starry test qemu --arch x86_64 -g normal -c smoke
+cargo xtask starry test qemu --arch x86_64 -c affinity
+
+# stress QEMU
+cargo xtask starry test qemu --stress --arch riscv64
+cargo xtask starry test qemu -g stress --arch riscv64
+
+# board
+cargo xtask starry test board --board orangepi-5-plus
+cargo xtask starry test board -g normal -c npu-yolov8 --board orangepi-5-plus
+```
+
+## 维护注意事项
+
+- 只为实际验证通过的架构添加 `qemu-<arch>.toml`。
+- `qemu-smp1` / `qemu-smp4` 的并发度由 build config 决定；不要只改 QEMU `-smp` 而忘记构建配置。
+- `shell_init_cmd` 和 `test_commands` 不能同时使用。
+- 一个 case 只能定义一种 pipeline；不要同时放 `c/`、`sh/`、`python/` 或 `test_commands`。
+- `success_regex` 选择稳定且唯一的成功行。
+- `fail_regex` 保持精确，避免匹配正常输出如 `failed: 0`。
+- 不要在同一个工作区并行运行多个 `cargo xtask starry test qemu`，rootfs 和生成配置可能互相影响。
+- `stress/` 下用例允许更慢、更重；`normal/` 应保持稳定且适合常规 CI。

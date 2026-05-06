@@ -8,13 +8,21 @@ pub const JOURNAL_FILE_INODE: u64 = 8;
 /// ext4 reserves inode 8 for the journal file.
 pub const JBD2_MAGIC: u32 = 0xC03B_3998u32; // jbd2 magic number (on-disk big-endian)
 pub const JOURNAL_BLOCK_COUNT: u32 = 32 * 1024 * 1024 / BLOCK_SIZE_U32;
-pub const JOURANL_ESCAPE: u16 = 0x1;
+pub const JOURNAL_ESCAPE: u16 = 0x1;
 pub const JBD2_FLAG_SAME_UUID: u16 = 0x2;
 pub const JBD2_FLAG_LAST_TAG: u16 = 0x8;
+pub const JBD2_BLOCKTYPE_DESCRIPTOR: u32 = 1;
+pub const JBD2_BLOCKTYPE_COMMIT: u32 = 2;
+pub const JBD2_BLOCKTYPE_SUPERBLOCK_V2: u32 = 4;
+pub const JBD2_BLOCKTYPE_REVOKE: u32 = 5;
 pub const JBD2_DESCRIPTOR_HEADER_SIZE: usize = 12;
 pub const JBD2_TAG_SIZE: usize = 8;
+pub const JBD2_TAG_BLOCKNR_HIGH_SIZE: usize = 4;
+pub const JBD2_TAG3_SIZE: usize = 16;
 pub const JBD2_UUID_SIZE: usize = 16;
 pub const JBD2_CRC32C_CHKSUM: u8 = 4; // JBD2 checksum type for CRC32C
+pub const JBD2_FEATURE_INCOMPAT_64BIT: u32 = 0x0000_0002;
+pub const JBD2_FEATURE_INCOMPAT_CSUM_V3: u32 = 0x0000_0010;
 #[repr(C)]
 /// One journaled metadata update: `(target physical block, serialized block)`.
 pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8; BLOCK_SIZE]>);
@@ -40,7 +48,7 @@ impl Default for JournalHeaderS {
     fn default() -> Self {
         JournalHeaderS {
             h_magic: JBD2_MAGIC,
-            h_blocktype: 4, // Superblock record type.
+            h_blocktype: JBD2_BLOCKTYPE_SUPERBLOCK_V2,
             h_sequence: 0,
         }
     }
@@ -266,7 +274,7 @@ impl DiskFormat for JournalBlockTagS {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct JouranlBlockTag3S {
+pub struct JournalBlockTag3S {
     // v3 tag layout used when JBD2_FEATURE_INCOMPAT_CSUM_V3 is set
     pub t_blocknr: u32,      // __be32: lower 32 bits
     pub t_flags: u32,        // __be32: flags (includes LAST flag, SAME_UUID, ESCAPED)
@@ -275,13 +283,13 @@ pub struct JouranlBlockTag3S {
                               * Optionally followed by a uuid (16 bytes) unless SAME_UUID flag set. */
 }
 
-impl DiskFormat for JouranlBlockTag3S {
+impl DiskFormat for JournalBlockTag3S {
     fn from_disk_bytes(bytes: &[u8]) -> Self {
         let t_blocknr = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
         let t_flags = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
         let t_blocknr_high = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
         let t_checksum = u32::from_be_bytes(bytes[12..16].try_into().unwrap());
-        JouranlBlockTag3S {
+        JournalBlockTag3S {
             t_blocknr,
             t_flags,
             t_blocknr_high,
@@ -338,14 +346,14 @@ impl DiskFormat for Jbd2JournalRevokeHeadS {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct Jbd2JouranlRevokeTail {
+pub struct Jbd2JournalRevokeTail {
     pub r_checksum: u32, // __be32: checksum of uuid + revoke block
 }
 
-impl DiskFormat for Jbd2JouranlRevokeTail {
+impl DiskFormat for Jbd2JournalRevokeTail {
     fn from_disk_bytes(bytes: &[u8]) -> Self {
         let r_checksum = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
-        Jbd2JouranlRevokeTail { r_checksum }
+        Jbd2JournalRevokeTail { r_checksum }
     }
 
     fn to_disk_bytes(&self, bytes: &mut [u8]) {
@@ -510,7 +518,7 @@ mod tests {
         assert_eq!(parsed.t_checksum, tag.t_checksum);
         assert_eq!(parsed.t_flags, tag.t_flags);
 
-        let tag3 = JouranlBlockTag3S {
+        let tag3 = JournalBlockTag3S {
             t_blocknr: 1,
             t_flags: 2,
             t_blocknr_high: 3,
@@ -518,7 +526,7 @@ mod tests {
         };
         let mut b3 = [0u8; 16];
         tag3.to_disk_bytes(&mut b3);
-        let parsed3 = JouranlBlockTag3S::from_disk_bytes(&b3);
+        let parsed3 = JournalBlockTag3S::from_disk_bytes(&b3);
         assert_eq!(parsed3.t_blocknr, tag3.t_blocknr);
         assert_eq!(parsed3.t_flags, tag3.t_flags);
         assert_eq!(parsed3.t_blocknr_high, tag3.t_blocknr_high);
@@ -550,12 +558,12 @@ mod tests {
         assert_eq!(parsed_revoke.r_header.h_magic, revoke.r_header.h_magic);
         assert_eq!(parsed_revoke.r_count, revoke.r_count);
 
-        let rt = Jbd2JouranlRevokeTail {
+        let rt = Jbd2JournalRevokeTail {
             r_checksum: 0xCAFEBABE,
         };
         let mut rtb = [0u8; 4];
         rt.to_disk_bytes(&mut rtb);
-        let parsed_rt = Jbd2JouranlRevokeTail::from_disk_bytes(&rtb);
+        let parsed_rt = Jbd2JournalRevokeTail::from_disk_bytes(&rtb);
         assert_eq!(parsed_rt.r_checksum, rt.r_checksum);
     }
 

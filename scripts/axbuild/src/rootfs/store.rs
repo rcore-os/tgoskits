@@ -66,6 +66,22 @@ pub(crate) fn resolve_rootfs_path(workspace_root: &Path, arch: &str, rootfs: Pat
     rootfs_dir(workspace_root).join(image_name)
 }
 
+/// Resolves an explicit `--rootfs` CLI value into a concrete image path.
+pub(crate) fn resolve_explicit_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    rootfs: PathBuf,
+) -> PathBuf {
+    resolve_rootfs_path(workspace_root, arch, rootfs)
+}
+
+/// Returns the default managed rootfs path for an architecture.
+pub(crate) fn default_rootfs_path(workspace_root: &Path, arch: &str) -> anyhow::Result<PathBuf> {
+    let image_name = default_rootfs_image(arch)
+        .ok_or_else(|| anyhow!("no managed rootfs image available for arch `{arch}`"))?;
+    Ok(rootfs_dir(workspace_root).join(image_name))
+}
+
 /// Ensures a managed rootfs path exists locally before it is used.
 ///
 /// Paths outside the managed rootfs directory are treated as user-managed and
@@ -87,14 +103,26 @@ pub(crate) async fn ensure_managed_rootfs(
     Ok(())
 }
 
+/// Ensures an optional managed rootfs path exists locally before it is used.
+pub(crate) async fn ensure_optional_managed_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    path: Option<&Path>,
+) -> anyhow::Result<()> {
+    if let Some(path) = path {
+        ensure_managed_rootfs(workspace_root, arch, path).await?;
+    }
+    Ok(())
+}
+
 /// Ensures the default managed rootfs image for an architecture is available.
 pub(crate) async fn ensure_rootfs_for_arch(
     workspace_root: &Path,
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
-    let image_name = default_rootfs_image(arch)
-        .ok_or_else(|| anyhow!("no managed rootfs image available for arch `{arch}`"))?;
-    ensure_rootfs_image(workspace_root, image_name).await
+    let rootfs_path = default_rootfs_path(workspace_root, arch)?;
+    ensure_managed_rootfs(workspace_root, arch, &rootfs_path).await?;
+    Ok(rootfs_path)
 }
 
 /// Builds the release asset URL for a managed rootfs archive.
@@ -156,7 +184,7 @@ async fn ensure_rootfs_image(workspace_root: &Path, image_name: &str) -> anyhow:
         .with_context(|| format!("failed to create {}", rootfs_dir.display()))?;
 
     let archive_path = archive_path(workspace_root, image_name);
-    let client = crate::download::http_client()?;
+    let client = crate::support::download::http_client()?;
 
     download_archive(&client, image_name, &archive_path).await?;
     if let Err(err) = extract_image(&archive_path, image_name, &rootfs_dir).await {
@@ -192,7 +220,7 @@ async fn download_archive(
         "managed rootfs archive not found, downloading from rcore-os/tgosimages release {}...",
         TGOSIMAGES_ROOTFS_RELEASE
     );
-    crate::download::download_file(client, &archive_url(image_name), archive_path).await
+    crate::support::download::download_file(client, &archive_url(image_name), archive_path).await
 }
 
 /// Extracts a single rootfs image entry from an archive on a blocking worker.
@@ -251,7 +279,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::download::test_support;
+    use crate::support::download::test_support;
 
     #[tokio::test]
     async fn ensure_rootfs_for_arch_redownloads_invalid_cached_archive() {
@@ -333,7 +361,7 @@ mod tests {
 
         tokio_fs::create_dir_all(&rootfs_dir).await?;
         let archive_path = archive_path(workspace_root, image_name);
-        let client = crate::download::http_client()?;
+        let client = crate::support::download::http_client()?;
         download_archive_with_url(&client, url, &archive_path).await?;
 
         if let Err(err) = extract_image(&archive_path, image_name, &rootfs_dir).await {
@@ -357,7 +385,7 @@ mod tests {
         if archive_path.exists() {
             return Ok(());
         }
-        crate::download::download_file(client, url, archive_path).await
+        crate::support::download::download_file(client, url, archive_path).await
     }
 
     fn make_tar_xz(files: &[(&str, &[u8])]) -> Vec<u8> {

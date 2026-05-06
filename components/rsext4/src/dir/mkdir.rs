@@ -100,7 +100,7 @@ fn mkdir_internal<B: BlockDevice>(
 
     {
         // Initialize `.` and `..`, leaving room for the checksum tail when enabled.
-        let cached = fs.datablock_cache.create_new(data_block);
+        let cached = fs.datablock_cache.create_new(device, data_block)?;
         let data = &mut cached.data;
 
         let dot_name = b".";
@@ -159,7 +159,7 @@ fn mkdir_internal<B: BlockDevice>(
         dir_mode,
         parent_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED,
     );
-    build_file_block_mapping(fs, &mut new_inode, &[data_block], device);
+    build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_dir_ino, &[data_block], device);
     let mut create_update = Ext4InodeMetadataUpdate::create(dir_mode);
     if fs
         .superblock

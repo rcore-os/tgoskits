@@ -222,6 +222,13 @@ pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
     use ax_kspin::SpinNoIrq; // TODO: more efficient
     static LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
 
+    // Panic and oops paths must not re-enter the normal print lock because its
+    // unlock path may restore preemption/IRQs and trigger more complex control
+    // flow while the kernel is already failing.
+    if axpanic::oops_in_progress() {
+        return Logger.write_fmt(args);
+    }
+
     let _guard = LOCK.lock();
     Logger.write_fmt(args)
 }

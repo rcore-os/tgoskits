@@ -23,13 +23,7 @@ struct ConsoleIfImpl;
 impl ConsoleIf for ConsoleIfImpl {
     /// Writes bytes to the console from input u8 slice.
     fn write_bytes(bytes: &[u8]) {
-        for &c in bytes {
-            let mut uart = UART.lock();
-            match c {
-                b'\n' => uart.send_bytes_exact(b"\r\n"),
-                c => uart.send_bytes_exact(&[c]),
-            }
-        }
+        UART.lock().send_bytes_exact(bytes);
     }
 
     /// Reads bytes from the console into the given mutable slice.

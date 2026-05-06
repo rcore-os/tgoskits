@@ -1,4 +1,6 @@
-use ax_plat::{mem::pa, power::PowerIf};
+#[cfg(feature = "smp")]
+use ax_plat::mem::pa;
+use ax_plat::power::PowerIf;
 
 struct PowerImpl;
 

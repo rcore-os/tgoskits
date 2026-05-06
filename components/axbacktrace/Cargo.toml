@@ -14,6 +14,7 @@ alloc = []
 dwarf = ["dep:addr2line", "dep:gimli", "dep:paste", "alloc"]
 
 [dependencies]
+axpanic = { workspace = true }
 cfg-if = "1"
 log = "0.4"
 spin = { version = "0.10", default-features = false, features = ["once"] }

@@ -31,19 +31,9 @@ fn write_reg(offset: usize, value: u32) {
     unsafe { write_volatile(((*UART_BASE) + offset) as *mut u32, value) }
 }
 
-fn do_putchar(uart: &mut Pl011Uart, c: u8) {
-    match c {
-        b'\n' => {
-            uart.putchar(b'\r');
-            uart.putchar(b'\n');
-        }
-        c => uart.putchar(c),
-    }
-}
-
 /// Writes a byte to the console.
 pub fn putchar(c: u8) {
-    do_putchar(&mut UART.lock(), c);
+    UART.lock().putchar(c);
 }
 
 /// Reads a byte from the console, or returns [`None`] if no input is available.
@@ -55,7 +45,7 @@ pub fn getchar() -> Option<u8> {
 pub fn write_bytes(bytes: &[u8]) {
     let mut uart = UART.lock();
     for c in bytes {
-        do_putchar(&mut uart, *c);
+        uart.putchar(*c);
     }
 }
 

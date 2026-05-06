@@ -30,7 +30,7 @@ mod stdio {
     }
 
     pub fn ax_console_write_bytes(buf: &[u8]) -> crate::AxResult<usize> {
-        ax_hal::console::write_bytes(buf);
+        ax_hal::console::write_text_bytes(buf);
         Ok(buf.len())
     }
 

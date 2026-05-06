@@ -42,22 +42,14 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
     Ok(rootfs)
 }
 
-/// Ensures a user-requested rootfs path exists and patches it when managed.
-pub(crate) async fn ensure_managed_rootfs(
+/// Ensures a selected rootfs image exists without modifying its contents.
+pub(crate) async fn ensure_qemu_rootfs_ready(
+    request: &ResolvedStarryRequest,
     workspace_root: &Path,
-    arch: &str,
-    path: &Path,
+    explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
-    store::ensure_managed_rootfs(workspace_root, arch, path).await?;
-    if is_managed_rootfs_path(workspace_root, arch, path) && path.exists() {
-        ensure_apk_region_in_rootfs(path)?;
-    }
-    Ok(())
-}
-
-fn is_managed_rootfs_path(workspace_root: &Path, arch: &str, path: &Path) -> bool {
-    path.starts_with(store::rootfs_dir(workspace_root))
-        && store::default_rootfs_image(arch).is_some()
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    store::ensure_optional_managed_rootfs(workspace_root, &request.arch, Some(&rootfs_path)).await
 }
 
 fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
@@ -146,16 +138,42 @@ fn unique_temp_file_path(rootfs_img: &Path, purpose: &str) -> anyhow::Result<Pat
     )))
 }
 
-/// Applies the default Starry rootfs-backed QEMU arguments for a request.
-pub(crate) async fn apply_default_qemu_args(
-    workspace_root: &Path,
-    request: &ResolvedStarryRequest,
+/// Patches a QEMU config with the rootfs selected for a Starry request.
+pub(crate) fn patch_qemu_rootfs(
     qemu: &mut QemuConfig,
+    request: &ResolvedStarryRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let disk_img =
-        ensure_rootfs_in_target_dir(workspace_root, &request.arch, &request.target).await?;
-    patch_rootfs(qemu, &disk_img, RootfsPatchMode::EnsureDiskBootNet);
+    let expected_target = starry_target_for_arch_checked(&request.arch)?;
+    if request.target != expected_target {
+        bail!(
+            "Starry arch `{}` maps to target `{expected_target}`, but got `{}`",
+            request.arch,
+            request.target
+        );
+    }
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    patch_qemu_rootfs_path(qemu, &rootfs_path);
     Ok(())
+}
+
+/// Resolves the rootfs path selected for a Starry QEMU request.
+pub(crate) fn qemu_rootfs_path(
+    request: &ResolvedStarryRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    if let Some(explicit) = explicit_rootfs {
+        return Ok(explicit.to_path_buf());
+    }
+
+    store::default_rootfs_path(workspace_root, &request.arch)
+}
+
+/// Patches a QEMU config with a concrete Starry rootfs path.
+pub(crate) fn patch_qemu_rootfs_path(qemu: &mut QemuConfig, rootfs_path: &Path) {
+    patch_rootfs(qemu, rootfs_path, RootfsPatchMode::EnsureDiskBootNet);
 }
 
 #[cfg(test)]
@@ -167,11 +185,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn apply_default_qemu_args_includes_rootfs_and_network_defaults() {
+    async fn patch_qemu_rootfs_includes_rootfs_and_network_defaults() {
         let root = tempdir().unwrap();
         let rootfs_dir = root.path().join("target/rootfs");
         fs::create_dir_all(&rootfs_dir).unwrap();
-        fs::write(rootfs_dir.join("rootfs-x86_64-alpine.img"), b"rootfs").unwrap();
+        fs::write(
+            rootfs_dir.join("rootfs-x86_64-alpine.img"),
+            vec![0; 1024 * 1024],
+        )
+        .unwrap();
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),
@@ -187,9 +209,7 @@ mod tests {
         };
         let mut qemu = QemuConfig::default();
 
-        apply_default_qemu_args(root.path(), &request, &mut qemu)
-            .await
-            .unwrap();
+        patch_qemu_rootfs(&mut qemu, &request, root.path(), None).unwrap();
 
         assert_eq!(
             qemu.args,
@@ -209,18 +229,23 @@ mod tests {
                 "user,id=net0".to_string(),
             ]
         );
-        assert_eq!(
-            fs::read(root.path().join("target/rootfs/rootfs-x86_64-alpine.img")).unwrap(),
-            b"rootfs"
+        assert!(
+            root.path()
+                .join("target/rootfs/rootfs-x86_64-alpine.img")
+                .exists()
         );
     }
 
     #[tokio::test]
-    async fn apply_default_qemu_args_preserves_existing_base_args() {
+    async fn patch_qemu_rootfs_preserves_existing_base_args() {
         let root = tempdir().unwrap();
         let rootfs_dir = root.path().join("target/rootfs");
         fs::create_dir_all(&rootfs_dir).unwrap();
-        fs::write(rootfs_dir.join("rootfs-riscv64-alpine.img"), b"rootfs").unwrap();
+        fs::write(
+            rootfs_dir.join("rootfs-riscv64-alpine.img"),
+            vec![0; 1024 * 1024],
+        )
+        .unwrap();
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),
@@ -245,9 +270,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_default_qemu_args(root.path(), &request, &mut qemu)
-            .await
-            .unwrap();
+        patch_qemu_rootfs(&mut qemu, &request, root.path(), None).unwrap();
 
         assert_eq!(
             qemu.args,

@@ -16,7 +16,7 @@ use super::{
     registry::{ImageEntry, ImageRegistry},
     spec::ImageSpecRef,
 };
-use crate::download::{download_file, http_client};
+use crate::support::download::{download_file, http_client};
 
 pub const REGISTRY_FILENAME: &str = "images.toml";
 const LAST_SYNC_FILENAME: &str = ".last_sync";
@@ -402,7 +402,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{axvisor::image::registry::RegistrySource, download::test_support};
+    use crate::{axvisor::image::registry::RegistrySource, support::download::test_support};
 
     fn sample_registry() -> &'static str {
         r#"

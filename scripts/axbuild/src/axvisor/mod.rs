@@ -8,8 +8,7 @@ use ostool::{
 
 use crate::{
     axvisor::context::AxvisorContext,
-    command_flow::{self, SnapshotPersistence},
-    context::{AppContext, AxvisorCliArgs, ResolvedAxvisorRequest},
+    context::{AppContext, AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence},
 };
 
 pub mod board;
@@ -66,9 +65,13 @@ impl Axvisor {
         )?;
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
-        let explicit_rootfs = args
-            .rootfs
-            .map(|r| rootfs::resolve_explicit_rootfs(self.app.workspace_root(), &request.arch, r));
+        let explicit_rootfs = args.rootfs.map(|r| {
+            crate::rootfs::store::resolve_explicit_rootfs(
+                self.app.workspace_root(),
+                &request.arch,
+                r,
+            )
+        });
         rootfs::ensure_qemu_rootfs_ready(
             &request,
             self.app.workspace_root(),
@@ -224,7 +227,9 @@ impl Axvisor {
     }
 
     async fn run_build_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
-        command_flow::run_build(&mut self.app, request, build::load_cargo_config).await
+        self.app.set_debug_mode(request.debug)?;
+        let cargo = build::load_cargo_config(&request)?;
+        self.app.build(cargo, request.build_info_path).await
     }
 
     async fn run_uboot_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {

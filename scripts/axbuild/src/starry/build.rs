@@ -35,6 +35,7 @@ pub(crate) fn resolve_build_info_path(
 }
 
 pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
+    let makefile_features = crate::arceos::build::makefile_features_from_env();
     let mut build_info = if let Some(build_info) = &request.build_info_override {
         build_info.clone()
     } else {
@@ -42,6 +43,12 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
             StarryBuildInfo::default_starry_for_target(&request.target)
         })?
     };
+
+    crate::arceos::build::apply_makefile_features(
+        &mut build_info,
+        &request.package,
+        &makefile_features,
+    );
 
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);

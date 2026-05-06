@@ -48,8 +48,28 @@ struct EarlyConsole;
 
 impl Write for EarlyConsole {
     fn write_str(&mut self, s: &str) -> Result {
-        write_bytes(s.as_bytes());
+        write_text_bytes(s.as_bytes());
         Ok(())
+    }
+}
+
+/// Writes text bytes to the console, expanding line feeds to CRLF.
+///
+/// This is intended for human-readable console output. Use [`write_bytes`] for
+/// raw byte transport.
+pub fn write_text_bytes(bytes: &[u8]) {
+    let mut start = 0;
+    for (i, &byte) in bytes.iter().enumerate() {
+        if byte == b'\n' {
+            if start < i {
+                write_bytes(&bytes[start..i]);
+            }
+            write_bytes(b"\r\n");
+            start = i + 1;
+        }
+    }
+    if start < bytes.len() {
+        write_bytes(&bytes[start..]);
     }
 }
 
