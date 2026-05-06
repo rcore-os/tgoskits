@@ -32,6 +32,9 @@ use starry_signal::{
 pub use self::{cred::*, futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
 use crate::mm::AddrSpace;
 
+#[cfg(feature = "kcov")]
+use crate::kcov::KcovThreadState;
+
 /// Size of the syscall instruction for the current architecture.
 /// Used by SA_RESTART to back up the program counter.
 #[cfg(target_arch = "x86_64")]
@@ -101,6 +104,10 @@ pub struct Thread {
 
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
+
+    /// KCOV coverage state for this thread.
+    #[cfg(feature = "kcov")]
+    kcov: AssumeSync<RefCell<Option<KcovThreadState>>>,
 }
 
 impl Thread {
@@ -123,6 +130,8 @@ impl Thread {
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
             cred: SpinNoIrq::new(cred),
+            #[cfg(feature = "kcov")]
+            kcov: AssumeSync(RefCell::new(None)),
         })
     }
 
@@ -187,6 +196,22 @@ impl Thread {
     /// Set the pdeathsig value.
     pub fn set_pdeathsig(&self, sig: u32) {
         self.pdeathsig.store(sig, Ordering::Relaxed);
+    }
+
+    /// Get the current KCOV state for this thread.
+    ///
+    /// Uses `try_borrow` so that a trace call inside `set_kcov`'s
+    /// `borrow_mut` does not panic when the instrumented hot path
+    /// re-enters here.
+    #[cfg(feature = "kcov")]
+    pub fn kcov(&self) -> Option<KcovThreadState> {
+        self.kcov.0.try_borrow().ok().as_deref().and_then(|r| r.clone())
+    }
+
+    /// Set the KCOV state for this thread.
+    #[cfg(feature = "kcov")]
+    pub fn set_kcov(&self, state: Option<KcovThreadState>) {
+        *self.kcov.0.borrow_mut() = state;
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).
