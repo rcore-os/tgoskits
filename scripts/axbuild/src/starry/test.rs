@@ -761,6 +761,7 @@ impl Starry {
     ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
+        request.build_info_override = None;
         let cargo = build::load_cargo_config(&request)?;
 
         Ok((request, cargo))
@@ -866,6 +867,30 @@ mod tests {
         fs::write(
             &path,
             format!("target = \"{target}\"\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    fn write_qemu_build_config_with_max_cpu_num(
+        root: &Path,
+        group: StarryTestGroup,
+        build_group: &str,
+        target: &str,
+        max_cpu_num: usize,
+    ) -> PathBuf {
+        let path = root
+            .join("test-suit/starryos")
+            .join(group.as_str())
+            .join(build_group)
+            .join(format!("build-{target}.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \
+                 \"Info\"\nmax_cpu_num = {max_cpu_num}\n"
+            ),
         )
         .unwrap();
         path
@@ -1441,6 +1466,35 @@ mod tests {
         let request = Starry::qemu_test_request(request);
 
         assert_eq!(request.smp, None);
+    }
+
+    #[test]
+    fn qemu_group_build_context_uses_group_build_config_over_default_override() {
+        let root = tempdir().unwrap();
+        let build_config = write_qemu_build_config_with_max_cpu_num(
+            root.path(),
+            StarryTestGroup::Normal,
+            "qemu-smp4",
+            "x86_64-unknown-none",
+            4,
+        );
+        let mut request = starry_request(
+            PathBuf::from("/tmp/default-build.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
+        request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
+            max_cpu_num: Some(1),
+            ..crate::starry::build::StarryBuildInfo::default_starry_for_target(
+                "x86_64-unknown-none",
+            )
+        });
+
+        let (_group_request, cargo) =
+            Starry::qemu_group_build_context(&request, &build_config).unwrap();
+
+        assert_eq!(cargo.env.get("SMP").map(String::as_str), Some("4"));
+        assert!(cargo.features.contains(&"ax-feat/smp".to_string()));
     }
 
     #[test]
