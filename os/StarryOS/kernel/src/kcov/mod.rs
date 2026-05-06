@@ -55,7 +55,6 @@ pub const KCOV_MAX_ENTRIES: usize = 64 * 1024;
 /// instrumented code inside `kcov_trace_pc_impl` (and its callees)
 /// does not re-enter the tracer. Checked / set / cleared in the
 /// naked trampoline.
-/// 
 /// This is a workaround as our build system don't allow
 /// per-file/crate compiler args and passing __attribute__((no_sanitize("coverage"))) to llvm directly.
 #[used]
