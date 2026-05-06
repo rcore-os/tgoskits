@@ -49,6 +49,7 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
 
     endpoint.update_command(|mut cmd| {
         cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
+        cmd.remove(CommandRegister::INTERRUPT_DISABLE);
         cmd
     });
 
