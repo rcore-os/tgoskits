@@ -47,7 +47,14 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
 
     // simple-sdmmc handles controller-level clock setup and card initialization internally
-    let sd = unsafe { simple_sdmmc::SdMmc::new(mmio_base.as_ptr() as usize) };
+    let sd =
+        unsafe { simple_sdmmc::SdMmc::try_new(mmio_base.as_ptr() as usize) }.map_err(|err| {
+            warn!(
+                "rockchip-sd at {:#x} is not usable by simple-sdmmc: {err}",
+                base_reg.address
+            );
+            OnProbeError::NotMatch
+        })?;
 
     let dev = SdBlockDevice { dev: Some(sd) };
     plat_dev.register_block(dev);

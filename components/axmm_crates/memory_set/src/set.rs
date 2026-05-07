@@ -102,6 +102,44 @@ impl<B: MappingBackend> MemorySet<B> {
         }
     }
 
+    /// Grows the area containing `addr` by `additional_size` at its end.
+    pub fn extend_area(
+        &mut self,
+        addr: B::Addr,
+        additional_size: usize,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        if additional_size == 0 {
+            return Ok(());
+        }
+
+        // Find the area containing addr.
+        let area_start = self
+            .areas
+            .range(..=addr)
+            .last()
+            .filter(|(_, a)| a.va_range().contains(addr))
+            .map(|(&start, _)| start)
+            .ok_or(MappingError::InvalidParam)?;
+
+        // Only the next area can conflict with a rightward extension.
+        let area_end = self.areas[&area_start].end();
+        let new_end = area_end
+            .checked_add(additional_size)
+            .ok_or(MappingError::InvalidParam)?;
+        if let Some((_, next)) = self.areas.range(area_end..).next()
+            && new_end > next.start()
+        {
+            return Err(MappingError::AlreadyExists);
+        }
+
+        self.areas
+            .get_mut(&area_start)
+            .unwrap()
+            .grow_right(additional_size, page_table)?;
+        Ok(())
+    }
+
     /// Add a new memory mapping.
     ///
     /// The mapping is represented by a [`MemoryArea`].
@@ -192,6 +230,80 @@ impl<B: MappingBackend> MemorySet<B> {
             }
         }
 
+        Ok(())
+    }
+
+    /// Remove memory area metadata without calling the backend's unmap hook.
+    ///
+    /// This is intended for callers that have already moved or detached the
+    /// affected page-table entries and only need to update VMA bookkeeping.
+    pub fn unmap_metadata(&mut self, start: B::Addr, size: usize) -> MappingResult {
+        let range =
+            AddrRange::try_from_start_size(start, size).ok_or(MappingError::InvalidParam)?;
+        if range.is_empty() {
+            return Ok(());
+        }
+
+        let end = range.end;
+
+        self.areas
+            .retain(|_, area| !area.va_range().contained_in(range));
+
+        if let Some((&before_start, before)) = self.areas.range_mut(..start).last() {
+            let before_end = before.end();
+            if before_end > start {
+                if before_end <= end {
+                    before.shrink_right_metadata(start.sub_addr(before_start));
+                } else {
+                    let right_part = before.split(end).unwrap();
+                    before.shrink_right_metadata(start.sub_addr(before_start));
+                    assert_eq!(right_part.start().into(), Into::<usize>::into(end));
+                    self.areas.insert(end, right_part);
+                }
+            }
+        }
+
+        if let Some((&after_start, _)) = self.areas.range(start..).next()
+            && after_start < end
+        {
+            let mut new_area = self.areas.remove(&after_start).unwrap();
+            let after_end = new_area.end();
+            new_area.shrink_left_metadata(after_end.sub_addr(end));
+            assert_eq!(new_area.start().into(), Into::<usize>::into(end));
+            self.areas.insert(end, new_area);
+        }
+
+        Ok(())
+    }
+
+    /// Replaces area metadata without touching page-table entries.
+    pub fn replace_area_metadata(&mut self, area: MemoryArea<B>) -> MappingResult {
+        if area.va_range().is_empty() {
+            return Err(MappingError::InvalidParam);
+        }
+
+        let start = area.start();
+        let end = area.end();
+
+        let old_start = self
+            .areas
+            .range(..=start)
+            .last()
+            .filter(|(_, old)| old.start() <= start && end <= old.end())
+            .map(|(&old_start, _)| old_start)
+            .ok_or(MappingError::InvalidParam)?;
+
+        let mut old_area = self.areas.remove(&old_start).unwrap();
+        if old_start < start {
+            let right_part = old_area.split(start).unwrap();
+            self.areas.insert(old_start, old_area);
+            old_area = right_part;
+        }
+        if old_area.end() > end {
+            let right_part = old_area.split(end).unwrap();
+            self.areas.insert(right_part.start(), right_part);
+        }
+        assert!(self.areas.insert(start, area).is_none());
         Ok(())
     }
 

@@ -122,6 +122,17 @@ impl<B: MappingBackend> MemoryArea<B> {
         Ok(())
     }
 
+    /// Shrinks the memory area at the left side without touching the page
+    /// table.
+    pub(crate) fn shrink_left_metadata(&mut self, new_size: usize) {
+        assert!(new_size > 0 && new_size < self.size());
+
+        let old_size = self.size();
+        let unmap_size = old_size - new_size;
+        self.va_range.start = self.va_range.start.wrapping_add(unmap_size);
+        self.backend.shrink_left(unmap_size);
+    }
+
     /// Shrinks the memory area at the right side.
     ///
     /// The memory area is shrunk to `new_size`, and the right-side part is
@@ -150,6 +161,46 @@ impl<B: MappingBackend> MemoryArea<B> {
         // Use wrapping_sub to avoid overflow check, same as above.
         self.va_range.end = self.va_range.end.wrapping_sub(unmap_size);
         self.backend.shrink_right(unmap_size);
+        Ok(())
+    }
+
+    /// Shrinks the memory area at the right side without touching the page
+    /// table.
+    pub(crate) fn shrink_right_metadata(&mut self, new_size: usize) {
+        assert!(new_size > 0 && new_size < self.size());
+        let old_size = self.size();
+        let unmap_size = old_size - new_size;
+
+        self.va_range.end = self.va_range.end.wrapping_sub(unmap_size);
+        self.backend.shrink_right(unmap_size);
+    }
+
+    /// Inverse of [`shrink_right`]: extends the end by `additional_size`
+    /// and maps the new region via the backend.
+    pub(crate) fn grow_right(
+        &mut self,
+        additional_size: usize,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        assert!(additional_size > 0);
+        assert!(
+            self.end().is_aligned_4k()
+                && additional_size.is_multiple_of(ax_memory_addr::PAGE_SIZE_4K),
+            "grow_right: end and additional_size must be page-aligned"
+        );
+        let map_start = self.end();
+        let new_end = self
+            .va_range
+            .end
+            .checked_add(additional_size)
+            .ok_or(MappingError::InvalidParam)?;
+        if !self
+            .backend
+            .map(map_start, additional_size, self.flags, page_table)
+        {
+            return Err(MappingError::BadState);
+        }
+        self.va_range.end = new_end;
         Ok(())
     }
 

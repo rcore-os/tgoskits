@@ -7,4 +7,4 @@ mod regs;
 mod sdmmc;
 mod utils;
 
-pub use self::sdmmc::SdMmc;
+pub use self::sdmmc::{SdMmc, SdMmcError};

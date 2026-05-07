@@ -166,6 +166,28 @@ impl Backend {
             Backend::File(b) => b.file_info(),
         }
     }
+
+    /// Clone with a different base address (for mremap moves).
+    /// `src_offset` is the distance from the original VMA start to the
+    /// mremap source address, used to adjust file/page offsets.
+    pub fn relocated(
+        &self,
+        new_start: VirtAddr,
+        src_offset: usize,
+        aspace: &Arc<Mutex<AddrSpace>>,
+    ) -> AxResult<Self> {
+        let adjusted = new_start
+            .as_usize()
+            .checked_sub(src_offset)
+            .map(VirtAddr::from)
+            .ok_or(AxError::InvalidInput)?;
+        Ok(match self {
+            Self::Cow(cb) => Self::Cow(cb.with_start(adjusted)),
+            Self::Shared(sb) => Self::Shared(sb.with_start(adjusted)),
+            Self::Linear(_) => return Err(AxError::OperationNotSupported),
+            Self::File(fb) => Self::File(fb.with_start(adjusted, aspace)),
+        })
+    }
 }
 
 impl MappingBackend for Backend {

@@ -4,7 +4,7 @@ use core::{fmt, ops::DerefMut};
 use ax_errno::{AxError, AxResult, ax_bail};
 use ax_hal::{
     mem::phys_to_virt,
-    paging::{MappingFlags, PageTable},
+    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
     trap::PageFaultFlags,
 };
 use ax_memory_addr::{
@@ -16,6 +16,19 @@ use ax_sync::Mutex;
 mod backend;
 
 pub use self::backend::*;
+
+type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, PageSize, bool);
+
+fn rollback_moved_pages(cursor: &mut PageTableCursor, moved_pages: &[MovedPage]) {
+    for &(src_va, dst_va, paddr, flags, page_size, dst_newly_mapped) in moved_pages.iter().rev() {
+        if dst_newly_mapped {
+            let _ = cursor.unmap(dst_va);
+        }
+        if cursor.query(src_va).is_err() {
+            let _ = cursor.map(src_va, paddr, page_size, flags);
+        }
+    }
+}
 
 /// The virtual memory address space.
 pub struct AddrSpace {
@@ -122,7 +135,12 @@ impl AddrSpace {
         }
 
         let offset = start_vaddr.as_usize() as isize - start_paddr.as_usize() as isize;
-        let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset, false));
+        let area = MemoryArea::new(
+            start_vaddr,
+            size,
+            flags,
+            Backend::new_linear(start_vaddr, offset, false),
+        );
         self.areas.map(area, &mut self.pt, false)?;
         Ok(())
     }
@@ -187,6 +205,87 @@ impl AddrSpace {
         Ok(())
     }
 
+    /// Removes VMA metadata without touching page-table entries.
+    pub fn unmap_metadata(&mut self, start: VirtAddr, size: usize) -> AxResult {
+        self.validate_region(start, size)?;
+
+        self.areas.unmap_metadata(start, size)?;
+        Ok(())
+    }
+
+    pub fn replace_area_metadata(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        backend: Backend,
+    ) -> AxResult {
+        self.validate_region(start, size)?;
+
+        let area = MemoryArea::new(start, size, flags, backend);
+        self.areas.replace_area_metadata(area)?;
+        Ok(())
+    }
+
+    /// Relocates page table entries from `[src, src+size)` to `[dst, dst+size)`.
+    /// Pages already mapped at `dst` (shared backends) are skipped.
+    /// Returns an error if any page-table update fails.
+    pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> AxResult {
+        let mut cursor = self.pt.cursor();
+        let mut mapped_pages = alloc::vec::Vec::new();
+        let mut offset = 0;
+        while offset < size {
+            let src_va = src + offset;
+            match cursor.query(src_va) {
+                Ok((paddr, flags, page_size)) => {
+                    mapped_pages.push((src_va, dst + offset, paddr, flags, page_size));
+                    offset += page_size as usize;
+                }
+                Err(_) => offset += PAGE_SIZE_4K,
+            }
+        }
+
+        let mut moved_pages = alloc::vec::Vec::new();
+        for &(src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
+            let mut dst_newly_mapped = false;
+            if cursor.query(dst_va).is_err() {
+                if let Err(err) = cursor.map(dst_va, paddr, page_size, flags) {
+                    rollback_moved_pages(&mut cursor, &moved_pages);
+                    return Err(err.into());
+                }
+                dst_newly_mapped = true;
+            }
+            if let Err(err) = cursor.unmap(src_va) {
+                if dst_newly_mapped {
+                    let _ = cursor.unmap(dst_va);
+                }
+                rollback_moved_pages(&mut cursor, &moved_pages);
+                return Err(err.into());
+            }
+            moved_pages.push((src_va, dst_va, paddr, flags, page_size, dst_newly_mapped));
+        }
+
+        Ok(())
+    }
+
+    /// Grows the mapping containing `addr` by `additional_size` at its end.
+    pub fn extend_area(&mut self, addr: VirtAddr, additional_size: usize) -> AxResult {
+        if additional_size == 0 {
+            return Ok(());
+        }
+        let area = self.areas.find(addr).ok_or(AxError::InvalidInput)?;
+        if area
+            .end()
+            .checked_add(additional_size)
+            .is_none_or(|new_end| new_end > self.va_range.end)
+        {
+            ax_bail!(NoMemory, "extension exceeds address space");
+        }
+        self.areas
+            .extend_area(addr, additional_size, &mut self.pt)?;
+        Ok(())
+    }
+
     /// To process data in this area with the given function.
     ///
     /// Now it supports reading and writing data in the given interval.
@@ -221,12 +320,6 @@ impl AddrSpace {
         Ok(())
     }
 
-    /// To read data from the address space.
-    ///
-    /// # Arguments
-    ///
-    /// * `start` - The start virtual address to read.
-    /// * `buf` - The buffer to store the data.
     pub fn read(&self, start: VirtAddr, buf: &mut [u8]) -> AxResult {
         self.process_area_data(start, buf.len(), |src, offset, read_size| unsafe {
             core::ptr::copy_nonoverlapping(src.as_ptr(), buf.as_mut_ptr().add(offset), read_size);
@@ -376,6 +469,34 @@ impl AddrSpace {
     /// Exposing internal state for system introspection is a standard practice.
     pub fn areas(&self) -> impl Iterator<Item = &MemoryArea<Backend>> {
         self.areas.iter()
+    }
+
+    /// Collects VMA fragments overlapping `[start, start+size)`, clamped to
+    /// the range boundaries. Returns `(frag_start, frag_size, flags, backend)`.
+    pub fn areas_in_range(
+        &self,
+        start: VirtAddr,
+        size: usize,
+    ) -> alloc::vec::Vec<(VirtAddr, usize, MappingFlags, Backend)> {
+        let end = start + size;
+        let mut result = alloc::vec::Vec::new();
+        for area in self.areas.iter() {
+            if area.start() >= end {
+                break;
+            }
+            if area.end() <= start {
+                continue;
+            }
+            let frag_start = area.start().max(start);
+            let frag_end = area.end().min(end);
+            result.push((
+                frag_start,
+                frag_end - frag_start,
+                area.flags(),
+                area.backend().clone(),
+            ));
+        }
+        result
     }
 }
 
