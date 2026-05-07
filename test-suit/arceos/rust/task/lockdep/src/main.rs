@@ -271,6 +271,9 @@ fn main() {
         println!("running case: {}", lockdep_case());
         run_case(lockdep_case());
     }
+    #[cfg(feature = "lockdep")]
+    panic!("lockdep did not report an expected lock order inversion");
+    #[cfg(not(feature = "lockdep"))]
     println!("All tests passed!");
 }
 
