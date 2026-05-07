@@ -18,6 +18,7 @@ pub fn into_vfs_err(err: Ext4Error) -> VfsError {
         rsext4::error::Errno::ELOOP => ax_errno::LinuxError::ELOOP,
         rsext4::error::Errno::ENOMEM => ax_errno::LinuxError::ENOMEM,
         rsext4::error::Errno::EPERM => ax_errno::LinuxError::EPERM,
+        rsext4::error::Errno::EFBIG => ax_errno::LinuxError::EFBIG,
         _ => ax_errno::LinuxError::EIO,
     };
     VfsError::from(linux_err).canonicalize()
