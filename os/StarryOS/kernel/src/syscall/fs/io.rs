@@ -239,12 +239,14 @@ pub fn sys_fadvise64(
     advice: u32,
 ) -> AxResult<isize> {
     debug!("sys_fadvise64 <= fd: {fd}, offset: {offset}, len: {len}, advice: {advice}");
-    if Pipe::from_fd(fd).is_ok() {
-        return Err(AxError::from(LinuxError::ESPIPE));
+    if len < 0 {
+        return Err(AxError::InvalidInput);
     }
     if advice > 5 {
         return Err(AxError::InvalidInput);
     }
+    // Validate fd: invalid/closed → EBADF, pipe → ESPIPE
+    let _ = file_or_espipe(fd)?;
     Ok(0)
 }
 
