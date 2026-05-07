@@ -247,13 +247,13 @@ impl EthernetDevice {
             warn!("cannot request ARP for {target_ipv4}: ethernet IPv4 is not configured");
             return false;
         };
-        debug!("Requesting ARP for {}", target_ipv4);
+        info!("{}: requesting ARP for {}", self.name, target_ipv4);
 
         let arp_repr = ArpRepr::EthernetIpv4 {
             operation: ArpOperation::Request,
             source_hardware_addr: self.hardware_address(),
             source_protocol_addr: ip.address(),
-            target_hardware_addr: EthernetAddress::BROADCAST,
+            target_hardware_addr: EMPTY_MAC,
             target_protocol_addr: target_ipv4,
         };
 
@@ -310,7 +310,10 @@ impl EthernetDevice {
                 return;
             }
 
-            debug!("ARP: {} -> {}", source_protocol_addr, source_hardware_addr);
+            info!(
+                "{}: ARP {} -> {}",
+                self.name, source_protocol_addr, source_hardware_addr
+            );
             self.neighbors.insert(
                 IpAddress::Ipv4(source_protocol_addr),
                 Some(Neighbor {
@@ -357,6 +360,10 @@ impl EthernetDevice {
                     }
 
                     let mut inner = self.inner.driver.lock();
+                    info!(
+                        "{}: sending pending IPv4 packet to {} via {}",
+                        self.name, next_hop, neighbor.hardware_address
+                    );
                     Self::send_to(
                         &mut inner,
                         neighbor.hardware_address,

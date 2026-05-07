@@ -3,6 +3,7 @@
 pub(crate) mod connection_manager;
 pub(crate) mod stream;
 
+use alloc::boxed::Box;
 use core::task::Context;
 
 pub use ax_driver::prelude::{VsockAddr, VsockConnId};
@@ -106,7 +107,7 @@ impl SocketOps for VsockSocket {
     fn accept(&self) -> AxResult<Socket> {
         self.transport.accept().map(|(transport, _addr)| {
             let socket = VsockSocket::new(transport);
-            Socket::Vsock(socket)
+            Socket::Vsock(Box::new(socket))
         })
     }
 

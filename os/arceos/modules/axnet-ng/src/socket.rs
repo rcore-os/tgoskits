@@ -185,14 +185,62 @@ pub trait SocketOps: Configurable {
 #[enum_dispatch(Configurable, SocketOps)]
 pub enum Socket {
     /// UDP socket.
-    Udp(UdpSocket),
+    Udp(Box<UdpSocket>),
     /// TCP socket.
-    Tcp(TcpSocket),
+    Tcp(Box<TcpSocket>),
     /// Unix domain socket.
-    Unix(UnixSocket),
+    Unix(Box<UnixSocket>),
     /// Virtio socket.
     #[cfg(feature = "vsock")]
-    Vsock(VsockSocket),
+    Vsock(Box<VsockSocket>),
+}
+
+impl<T: Configurable + ?Sized> Configurable for Box<T> {
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool> {
+        self.as_ref().get_option_inner(opt)
+    }
+
+    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool> {
+        self.as_ref().set_option_inner(opt)
+    }
+}
+
+impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
+    fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+        self.as_ref().bind(local_addr)
+    }
+
+    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
+        self.as_ref().connect(remote_addr)
+    }
+
+    fn listen(&self, backlog: usize) -> AxResult {
+        self.as_ref().listen(backlog)
+    }
+
+    fn accept(&self) -> AxResult<Socket> {
+        self.as_ref().accept()
+    }
+
+    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+        self.as_ref().send(src, options)
+    }
+
+    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
+        self.as_ref().recv(dst, options)
+    }
+
+    fn local_addr(&self) -> AxResult<SocketAddrEx> {
+        self.as_ref().local_addr()
+    }
+
+    fn peer_addr(&self) -> AxResult<SocketAddrEx> {
+        self.as_ref().peer_addr()
+    }
+
+    fn shutdown(&self, how: Shutdown) -> AxResult {
+        self.as_ref().shutdown(how)
+    }
 }
 
 impl Pollable for Socket {

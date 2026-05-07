@@ -50,8 +50,9 @@ impl RouteTable {
     pub fn add_rule(&mut self, rule: Rule) {
         let idx = self
             .rules
-            .binary_search_by(|it| rule.filter.prefix_len().cmp(&it.filter.prefix_len()))
-            .unwrap_or_else(|idx| idx);
+            .iter()
+            .position(|it| it.filter.prefix_len() < rule.filter.prefix_len())
+            .unwrap_or(self.rules.len());
         self.rules.insert(idx, rule);
     }
 
@@ -61,14 +62,11 @@ impl RouteTable {
             .find(|rule| rule.filter.contains_addr(dst))
     }
 
-    pub fn remove_ipv4_default_for_dev(&mut self, dev: usize) {
+    pub fn remove_ipv4_rules_for_dev(&mut self, dev: usize) {
         self.rules.retain(|rule| {
             !matches!(
                 rule.filter,
-                IpCidr::Ipv4(cidr)
-                    if rule.dev == dev
-                        && cidr.address() == Ipv4Address::UNSPECIFIED
-                        && cidr.prefix_len() == 0
+                IpCidr::Ipv4(_) if rule.dev == dev
             )
         });
     }
@@ -113,10 +111,16 @@ impl Router {
         address: Option<Ipv4Cidr>,
         gateway: Option<IpAddress>,
     ) {
-        self.table.remove_ipv4_default_for_dev(dev);
+        self.table.remove_ipv4_rules_for_dev(dev);
         self.devices[dev].set_ipv4_addr(address);
 
         if let Some(address) = address {
+            self.add_rule(Rule::new(
+                address.into(),
+                None,
+                dev,
+                address.address().into(),
+            ));
             self.add_rule(Rule::new(
                 Ipv4Cidr::new(Ipv4Address::UNSPECIFIED, 0).into(),
                 gateway,
