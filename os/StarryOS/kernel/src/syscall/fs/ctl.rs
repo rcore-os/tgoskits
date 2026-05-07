@@ -116,12 +116,15 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
     // apply umask like mkdir
     perm &= !current().as_thread().proc_data.umask();
 
+    // Linux mknod semantics: S_IFDIR → EPERM, unknown type bits → EINVAL.
     let node_type = match ftype {
+        0 => NodeType::RegularFile,
         S_IFREG => NodeType::RegularFile,
         S_IFCHR => NodeType::CharacterDevice,
         S_IFBLK => NodeType::BlockDevice,
         S_IFIFO => NodeType::Fifo,
         S_IFSOCK => NodeType::Socket,
+        S_IFDIR => return Err(AxError::OperationNotPermitted),
         _ => return Err(AxError::InvalidInput),
     };
 
@@ -421,10 +424,26 @@ pub fn sys_fchownat(
     }
 
     let mut mode = meta.mode;
-    // chown always clears the setuid bits
-    mode.remove(NodePermission::SET_UID);
-    // chown also removes the setgid bits if group-executable
-    if mode.contains(NodePermission::GROUP_EXEC) {
+    // Linux chown_common() + notify_change() semantics for clearing
+    // setuid/setgid: the decision is based on whether the uid/gid *parameter
+    // participates* in the chown (is not -1), not whether the value actually
+    // changes.  This means fchownat(fd, same_uid, same_gid, 0) on a 06755
+    // file still clears both setuid and setgid.
+    let uid_participates = uid != -1;
+    let gid_participates = gid != -1;
+
+    if uid_participates {
+        mode.remove(NodePermission::SET_UID);
+        // When both uid and gid participate, SET_GID is cleared only if
+        // GROUP_EXEC is set (Linux: ATTR_KILL_SGID sees ATTR_MODE already
+        // set by ATTR_KILL_SUID handler → conditional clear).
+        if gid_participates && mode.contains(NodePermission::GROUP_EXEC) {
+            mode.remove(NodePermission::SET_GID);
+        }
+    } else if gid_participates {
+        // Only gid participates (no ATTR_KILL_SUID): SET_UID untouched;
+        // SET_GID cleared unconditionally (ATTR_MODE not set, so
+        // notify_change clears it without the IXGRP guard).
         mode.remove(NodePermission::SET_GID);
     }
 
