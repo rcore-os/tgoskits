@@ -72,14 +72,14 @@ pub fn link<B: BlockDevice>(
     if let Some((_lpino, mut lp_inode)) = get_inode_with_num(fs, block_dev, &linked_parent_path)
         .ok()
         .flatten()
-        && let Ok(blocks) = resolve_inode_block_allextend(fs, block_dev, &mut lp_inode)
+        && let Ok(blocks) = resolve_inode_block_allextend(block_dev, &mut lp_inode)
     {
         for &phys in blocks.values() {
             let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let data = &cached.data[..BLOCK_SIZE];
+            let data = &cached.data[..fs.block_size];
             let iter = DirEntryIterator::new(data);
             for (entry, _) in iter {
                 if entry.inode == 0 {

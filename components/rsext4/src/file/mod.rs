@@ -11,7 +11,6 @@ use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
     checksum::update_ext4_dirblock_csum32,
-    config::*,
     dir::*,
     disknode::*,
     entries::*,

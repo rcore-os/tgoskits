@@ -25,6 +25,8 @@ use rsext4::{
     *,
 };
 
+const TEST_BLOCK_SIZE: usize = 1024usize << rsext4::LOG_BLOCK_SIZE;
+
 /// Shared in-memory block device so tests can remount the same disk image and
 /// corrupt raw metadata bytes between mounts without relying on private APIs.
 #[derive(Clone)]
@@ -38,7 +40,7 @@ impl SharedCrcDevice {
     fn new(size: usize) -> Self {
         Self {
             data: Rc::new(RefCell::new(vec![0; size])),
-            block_size: BLOCK_SIZE as u32,
+            block_size: TEST_BLOCK_SIZE as u32,
             now: Rc::new(Cell::new(1_700_000_000)),
         }
     }
@@ -52,11 +54,11 @@ impl SharedCrcDevice {
     }
 
     fn read_block_bytes(&self, block_id: u64) -> Vec<u8> {
-        self.read_bytes(block_id as usize * BLOCK_SIZE, BLOCK_SIZE)
+        self.read_bytes(block_id as usize * TEST_BLOCK_SIZE, TEST_BLOCK_SIZE)
     }
 
     fn write_block_bytes(&self, block_id: u64, bytes: &[u8]) {
-        self.write_bytes(block_id as usize * BLOCK_SIZE, bytes);
+        self.write_bytes(block_id as usize * TEST_BLOCK_SIZE, bytes);
     }
 }
 
@@ -141,7 +143,7 @@ fn write_superblock(device: &SharedCrcDevice, sb: &Ext4Superblock) {
 
 fn read_group_desc0(device: &SharedCrcDevice, sb: &Ext4Superblock) -> Ext4GroupDesc {
     let desc_size = sb.get_desc_size() as usize;
-    let bytes = device.read_bytes(BLOCK_SIZE, desc_size);
+    let bytes = device.read_bytes(TEST_BLOCK_SIZE, desc_size);
     Ext4GroupDesc::from_disk_bytes(&bytes)
 }
 
@@ -149,7 +151,7 @@ fn write_group_desc0(device: &SharedCrcDevice, sb: &Ext4Superblock, desc: &Ext4G
     let desc_size = sb.get_desc_size() as usize;
     let mut bytes = vec![0u8; Ext4GroupDesc::EXT4_DESC_SIZE_64BIT];
     desc.to_disk_bytes(&mut bytes);
-    device.write_bytes(BLOCK_SIZE, &bytes[..desc_size]);
+    device.write_bytes(TEST_BLOCK_SIZE, &bytes[..desc_size]);
 }
 
 fn write_journal_start(device: &SharedCrcDevice, journal_block: u64, start: u32) {

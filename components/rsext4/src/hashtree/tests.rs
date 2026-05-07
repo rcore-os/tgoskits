@@ -120,6 +120,7 @@ fn create_test_fs() -> Ext4FileSystem {
         group_count: 1,
         mounted: true,
         journal_sb_block_start: None,
+        block_size: 4096,
     }
 }
 

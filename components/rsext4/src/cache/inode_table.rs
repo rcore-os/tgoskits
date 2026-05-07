@@ -431,7 +431,7 @@ mod tests {
 
         let inodes_per_group = 128;
         let inode_table_start = 100;
-        let block_size = BLOCK_SIZE;
+        let block_size = runtime_block_size();
 
         let (block, offset, group) = cache
             .calc_inode_location(

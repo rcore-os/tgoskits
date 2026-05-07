@@ -1,5 +1,7 @@
 //! Configuration constants used across the ext4 implementation.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::superblock::*;
 
 // ============================================================================
@@ -11,15 +13,39 @@ pub const JBD2_BUFFER_MAX: usize = 10;
 // ============================================================================
 // Block geometry
 // ============================================================================
-/// Filesystem block size in bytes.
-pub const BLOCK_SIZE: usize = 4096;
-pub const BLOCK_SIZE_U32: u32 = BLOCK_SIZE as u32;
 
 /// Log2 delta stored in `s_log_block_size`.
 ///
 /// ext4 encodes the real block size as `1024 << s_log_block_size`, so `2`
 /// means a 4 KiB block size.
 pub const LOG_BLOCK_SIZE: u32 = 2;
+
+/// Default runtime block size used before mount discovers the real geometry.
+const DEFAULT_RUNTIME_BLOCK_SIZE: usize = 1024usize << LOG_BLOCK_SIZE;
+
+/// Process-local current ext4 block size.
+///
+/// The crate assumes a single active ext4 instance at a time, so this global
+/// runtime view is intentionally internal-only.
+static RUNTIME_BLOCK_SIZE: AtomicUsize = AtomicUsize::new(DEFAULT_RUNTIME_BLOCK_SIZE);
+
+/// Returns the current ext4 block size in bytes.
+pub(crate) fn runtime_block_size() -> usize {
+    RUNTIME_BLOCK_SIZE.load(Ordering::Acquire)
+}
+
+/// Returns the current ext4 block size in bytes as `u32`.
+pub(crate) fn runtime_block_size_u32() -> u32 {
+    runtime_block_size() as u32
+}
+
+/// Updates the process-local ext4 block size after mount discovers geometry.
+pub(crate) fn set_runtime_block_size(block_size: usize) {
+    debug_assert!(block_size.is_power_of_two());
+    debug_assert!(block_size >= 1024);
+    RUNTIME_BLOCK_SIZE.store(block_size, Ordering::Release);
+}
+
 // ============================================================================
 // Block-group layout
 // ============================================================================

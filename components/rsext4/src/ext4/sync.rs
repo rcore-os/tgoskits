@@ -49,8 +49,8 @@ impl Ext4FileSystem {
     ) -> Ext4Result<()> {
         let total_desc_count = self.group_descs.len();
         let desc_size = self.superblock.get_desc_size() as usize;
-        let gdt_base: u64 = BLOCK_SIZE as u64;
-        let block_size_u64 = BLOCK_SIZE as u64;
+        let gdt_base = Self::primary_gdt_byte_offset(&self.superblock, self.block_size);
+        let block_size_u64 = self.block_size as u64;
 
         debug!(
             "Writing back group descriptors: {total_desc_count} descriptors, desc_size = \

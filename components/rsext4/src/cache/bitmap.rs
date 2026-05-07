@@ -350,8 +350,7 @@ mod tests {
 
     #[test]
     fn test_cached_bitmap() {
-        use crate::BLOCK_SIZE;
-        let data = vec![0u8; BLOCK_SIZE];
+        let data = vec![0u8; crate::config::runtime_block_size()];
         let mut bitmap = CachedBitmap::new(data, AbsoluteBN::new(10));
 
         assert!(!bitmap.dirty);

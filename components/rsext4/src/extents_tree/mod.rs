@@ -4,9 +4,7 @@ use alloc::{vec, vec::*};
 
 use log::{debug, error};
 
-use crate::{
-    blockdev::*, bmalloc::AbsoluteBN, config::*, disknode::*, endian::*, error::*, ext4::*,
-};
+use crate::{blockdev::*, bmalloc::AbsoluteBN, disknode::*, endian::*, error::*, ext4::*};
 
 mod insert;
 mod node;

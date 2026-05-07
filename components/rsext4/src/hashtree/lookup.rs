@@ -9,14 +9,12 @@ use super::{
 };
 use crate::{
     blockdev::{BlockDevice, Jbd2Dev},
-    bmalloc::AbsoluteBN,
-    config::BLOCK_SIZE,
+    bmalloc::{AbsoluteBN, LogicalBN},
     disknode::Ext4Inode,
     entries::{DirEntryIterator, Ext4DirEntryInfo, Ext4DxEntry, classic_dir, htree_dir},
     ext4::Ext4FileSystem,
     loopfile::{resolve_inode_block, resolve_inode_block_allextend},
 };
-use crate::bmalloc::LogicalBN;
 pub(super) fn lookup<B: BlockDevice>(
     manager: &HashTreeManager,
     fs: &mut Ext4FileSystem,
@@ -196,7 +194,7 @@ impl HashTreeManager {
         );
 
         let total_size = dir_inode.size() as usize;
-        let block_bytes = BLOCK_SIZE;
+        let block_bytes = fs.block_size;
         let total_blocks = if total_size == 0 {
             0
         } else {
@@ -205,7 +203,7 @@ impl HashTreeManager {
 
         if dir_inode.have_extend_header_and_use_extend() {
             let mut inode_copy = *dir_inode;
-            let blocks_map = match resolve_inode_block_allextend(fs, block_dev, &mut inode_copy) {
+            let blocks_map = match resolve_inode_block_allextend(block_dev, &mut inode_copy) {
                 Ok(map) => map,
                 Err(_) => return Err(HashTreeError::BlockOutOfRange),
             };

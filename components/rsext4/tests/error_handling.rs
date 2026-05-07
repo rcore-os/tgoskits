@@ -30,7 +30,7 @@ impl ErrorMockDevice {
     fn new(size: usize) -> Self {
         Self {
             data: vec![0; size],
-            block_size: rsext4::BLOCK_SIZE as u32,
+            block_size: 1024u32 << rsext4::LOG_BLOCK_SIZE,
             fail_on_open: false,
             fail_on_close: false,
             fail_on_read: false,
@@ -336,9 +336,10 @@ mod error_handling_tests {
     /// not expose padding bits past `s_blocks_count` as allocatable blocks.
     #[test]
     fn test_partial_last_group_padding_is_not_allocated() {
-        let blocks_per_group = 8 * rsext4::BLOCK_SIZE as u64;
+        let block_size = 1024usize << rsext4::LOG_BLOCK_SIZE;
+        let blocks_per_group = 8 * block_size as u64;
         let total_blocks = blocks_per_group + 128;
-        let device = ErrorMockDevice::new(total_blocks as usize * rsext4::BLOCK_SIZE);
+        let device = ErrorMockDevice::new(total_blocks as usize * block_size);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");

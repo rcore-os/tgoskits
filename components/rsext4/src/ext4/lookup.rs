@@ -36,7 +36,7 @@ impl Ext4FileSystem {
             self.root_inode,
             self.superblock.s_inodes_per_group,
             inode_table_start,
-            BLOCK_SIZE,
+            self.block_size,
         )?;
         let result =
             self.inodetable_cahce

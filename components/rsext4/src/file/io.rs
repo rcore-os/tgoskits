@@ -37,7 +37,7 @@ fn truncate_inode<B: BlockDevice>(
         return Ok(());
     }
 
-    let block_bytes = BLOCK_SIZE as u64;
+    let block_bytes = fs.block_size as u64;
     let old_blocks = if old_size == 0 {
         0u64
     } else {
@@ -62,7 +62,7 @@ fn truncate_inode<B: BlockDevice>(
             let del_start_lbn = new_blocks as u32;
 
             loop {
-                let blocks_map = resolve_inode_block_allextend(fs, device, &mut inode)?;
+                let blocks_map = resolve_inode_block_allextend(device, &mut inode)?;
                 let del_len = if truncate_size == 0 {
                     blocks_map.len() as u32
                 } else {
@@ -135,12 +135,12 @@ fn truncate_inode<B: BlockDevice>(
         inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
         inode.i_size_high = (truncate_size >> 32) as u32;
         // i_blocks reflects number of allocated blocks, not logical length. Recompute after edits.
-        let alloc_blocks = resolve_inode_block_allextend(fs, device, &mut inode)?.len() as u64;
+        let alloc_blocks = resolve_inode_block_allextend(device, &mut inode)?.len() as u64;
         let extent_tree_blocks = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
             .external_node_blocks(device)?
             .len() as u64;
         let iblocks_used =
-            alloc_blocks.saturating_add(extent_tree_blocks) * (BLOCK_SIZE as u64 / 512);
+            alloc_blocks.saturating_add(extent_tree_blocks) * (fs.block_size as u64 / 512);
         inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
         inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
 
@@ -185,7 +185,7 @@ fn truncate_inode<B: BlockDevice>(
 
     inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
     inode.i_size_high = (truncate_size >> 32) as u32;
-    let iblocks_used = new_blocks.saturating_mul(BLOCK_SIZE as u64 / 512);
+    let iblocks_used = new_blocks.saturating_mul(fs.block_size as u64 / 512);
     inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
     inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
 
@@ -217,12 +217,12 @@ fn read_symlink_target<B: BlockDevice>(
         return Ok(raw[..size].to_vec());
     }
 
-    let block_bytes = BLOCK_SIZE;
+    let block_bytes = fs.block_size;
     let total_blocks = size.div_ceil(block_bytes);
     let mut buf = Vec::with_capacity(size);
 
     if inode.have_extend_header_and_use_extend() {
-        let blocks = resolve_inode_block_allextend(fs, device, inode)?;
+        let blocks = resolve_inode_block_allextend(device, inode)?;
         for &phys in blocks.values() {
             let cached = fs.datablock_cache.get_or_load(device, phys)?;
             let data = &cached.data[..block_bytes];
@@ -309,13 +309,13 @@ fn read_file_follow<B: BlockDevice>(
         return Ok(Vec::new());
     }
 
-    let block_bytes = BLOCK_SIZE;
+    let block_bytes = fs.block_size;
     let total_blocks = size.div_ceil(block_bytes);
 
     let mut buf = Vec::with_capacity(size);
 
     if inode.have_extend_header_and_use_extend() {
-        let blocks = resolve_inode_block_allextend(fs, device, &mut inode)?;
+        let blocks = resolve_inode_block_allextend(device, &mut inode)?;
         for &phys in blocks.values() {
             let cached = fs.datablock_cache.get_or_load(device, phys)?;
             let data = &cached.data[..block_bytes];
@@ -388,7 +388,7 @@ fn write_inode_data<B: BlockDevice>(
     let mut inode = fs.get_inode_by_num(device, inode_num)?;
 
     let old_size = inode.size();
-    let block_bytes = BLOCK_SIZE as u64;
+    let block_bytes = fs.block_size as u64;
 
     // Some older or partially initialized inodes may carry the extents flag
     // without a valid embedded header. Repair that before extent operations.
@@ -431,11 +431,11 @@ fn write_inode_data<B: BlockDevice>(
                         tree.insert_extent(fs, ext, device)?;
                     }
 
-                    let add_iblocks = (BLOCK_SIZE / 512) as u32;
-                    inode.i_blocks_lo = inode.i_blocks_lo.saturating_add(add_iblocks);
-                    inode.l_i_blocks_high = inode
-                        .l_i_blocks_high
-                        .saturating_add(((add_iblocks as u64) >> 32) as u16);
+                    let current_iblocks =
+                        ((inode.l_i_blocks_high as u64) << 32) | u64::from(inode.i_blocks_lo);
+                    let next_iblocks = current_iblocks.saturating_add(fs.block_size as u64 / 512);
+                    inode.i_blocks_lo = next_iblocks as u32;
+                    inode.l_i_blocks_high = (next_iblocks >> 32) as u16;
 
                     new_phys
                 }
