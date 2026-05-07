@@ -135,7 +135,7 @@ impl CloneArgs {
         self.validate()?;
 
         let Self {
-            mut flags,
+            flags,
             exit_signal,
             stack,
             tls,
