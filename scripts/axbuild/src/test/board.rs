@@ -22,7 +22,6 @@ pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
     selected_case: Option<&str>,
     selected_board: Option<&str>,
     suite_name: &str,
-    empty_message: impl FnOnce() -> String,
 ) -> anyhow::Result<Vec<T>> {
     groups.sort_by(|left, right| {
         left.name()
@@ -50,10 +49,6 @@ pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
                  {available}",
             ));
         }
-    }
-
-    if groups.is_empty() {
-        bail!("{}", empty_message());
     }
 
     Ok(groups)

@@ -188,21 +188,7 @@ pub(crate) fn discover_all_qemu_cases(
         );
     }
 
-    let cases = by_name.into_keys().collect::<Vec<_>>();
-    if cases.is_empty() {
-        if let Some(case_name) = selected_case {
-            bail!(
-                "unknown {suite_name} {group_label} test case `{case_name}` under {}; cases are \
-                 discovered from build wrapper directories with qemu-*.toml",
-                test_group_dir.display()
-            );
-        }
-        bail!(
-            "no {suite_name} {group_label} qemu test cases found under {}",
-            test_group_dir.display()
-        );
-    }
-    Ok(cases)
+    Ok(by_name.into_keys().collect())
 }
 
 pub(crate) fn discover_all_qemu_cases_with_archs(
@@ -266,21 +252,7 @@ fn discover_all_qemu_cases_with_metadata(
         );
     }
 
-    let cases = by_name.into_iter().collect::<Vec<_>>();
-    if cases.is_empty() {
-        if let Some(case_name) = selected_case {
-            bail!(
-                "unknown {suite_name} {group_label} test case `{case_name}` under {}; cases are \
-                 discovered from build wrapper directories with qemu-*.toml",
-                test_group_dir.display()
-            );
-        }
-        bail!(
-            "no {suite_name} {group_label} qemu test cases found under {}",
-            test_group_dir.display()
-        );
-    }
-    Ok(cases)
+    Ok(by_name.into_iter().collect())
 }
 
 fn collect_all_qemu_cases_in_build_wrapper(

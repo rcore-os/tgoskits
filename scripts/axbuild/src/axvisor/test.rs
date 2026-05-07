@@ -164,12 +164,7 @@ pub(crate) fn discover_board_test_groups(
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
     let test_suite_dir = test_suite_dir(workspace_root, group)?;
     let groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
-    board_test::filter_board_test_groups(groups, selected_case, board, "axvisor", || {
-        format!(
-            "no Axvisor board test groups found under {}",
-            test_suite_dir.display()
-        )
-    })
+    board_test::filter_board_test_groups(groups, selected_case, board, "axvisor")
 }
 
 fn collect_board_test_groups(
@@ -247,17 +242,9 @@ impl Axvisor {
                         "Axvisor",
                         &group,
                     ) {
+                        Ok(case_names) if case_names.is_empty() => None,
                         Ok(case_names) => Some(Ok((group, case_names))),
-                        Err(err) => {
-                            let message = err.to_string();
-                            if message.starts_with("no Axvisor ")
-                                || message.starts_with("unknown Axvisor ")
-                            {
-                                None
-                            } else {
-                                Some(Err(err))
-                            }
-                        }
+                        Err(err) => Some(Err(err)),
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -280,6 +267,11 @@ impl Axvisor {
                 "Axvisor",
                 test_group,
             )?;
+            if case_names.is_empty()
+                && let Some(case) = args.test_case.as_deref()
+            {
+                bail!("unknown Axvisor {test_group} qemu test case `{case}`");
+            }
             println!("{}", test_qemu::render_case_tree(test_group, case_names));
             return Ok(());
         }
@@ -373,6 +365,7 @@ impl Axvisor {
                         args.test_case.as_deref(),
                         args.board.as_deref(),
                     ) {
+                        Ok(groups) if groups.is_empty() => None,
                         Ok(groups) => Some(Ok((
                             group,
                             groups
@@ -380,14 +373,7 @@ impl Axvisor {
                                 .map(|group| (group.name, group.board_name))
                                 .collect::<Vec<_>>(),
                         ))),
-                        Err(err) => {
-                            let message = err.to_string();
-                            if message.starts_with("no Axvisor ") {
-                                None
-                            } else {
-                                Some(Err(err))
-                            }
-                        }
+                        Err(err) => Some(Err(err)),
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;

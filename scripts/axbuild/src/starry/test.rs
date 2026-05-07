@@ -383,12 +383,7 @@ pub(crate) fn discover_board_test_groups(
 ) -> anyhow::Result<Vec<StarryBoardTestGroup>> {
     let test_suite_dir = require_test_suite_group_dir(workspace_root, group)?;
     let groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
-    board_test::filter_board_test_groups(groups, selected_case, selected_board, "Starry", || {
-        format!(
-            "no Starry board test groups found under {}",
-            test_suite_dir.display()
-        )
-    })
+    board_test::filter_board_test_groups(groups, selected_case, selected_board, "Starry")
 }
 
 fn require_test_suite_group_dir(workspace_root: &Path, group: &str) -> anyhow::Result<PathBuf> {
@@ -510,17 +505,9 @@ impl Starry {
                         &group,
                         args.test_case.as_deref(),
                     ) {
+                        Ok(case_names) if case_names.is_empty() => None,
                         Ok(case_names) => Some(Ok((group, case_names))),
-                        Err(err) => {
-                            let message = err.to_string();
-                            if message.starts_with("no Starry ")
-                                || message.starts_with("unknown Starry ")
-                            {
-                                None
-                            } else {
-                                Some(Err(err))
-                            }
-                        }
+                        Err(err) => Some(Err(err)),
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -554,6 +541,11 @@ impl Starry {
                 group,
                 args.test_case.as_deref(),
             )?;
+            if case_names.is_empty()
+                && let Some(case) = args.test_case.as_deref()
+            {
+                bail!("unknown Starry {group} qemu test case `{case}`");
+            }
             println!("{}", qemu_test::render_case_tree(group, case_names));
             return Ok(());
         }
@@ -673,6 +665,7 @@ impl Starry {
                         args.test_case.as_deref(),
                         args.board.as_deref(),
                     ) {
+                        Ok(groups) if groups.is_empty() => None,
                         Ok(groups) => Some(Ok((
                             group,
                             groups
@@ -680,14 +673,7 @@ impl Starry {
                                 .map(|group| (group.name, group.board_name))
                                 .collect::<Vec<_>>(),
                         ))),
-                        Err(err) => {
-                            let message = err.to_string();
-                            if message.starts_with("no Starry ") {
-                                None
-                            } else {
-                                Some(Err(err))
-                            }
-                        }
+                        Err(err) => Some(Err(err)),
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
