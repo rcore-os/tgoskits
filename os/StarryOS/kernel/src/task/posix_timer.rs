@@ -49,14 +49,7 @@ impl Default for PosixTimerTable {
 /// Returns true if the clock is valid for use with POSIX timers (timer_create).
 /// Linux returns EOPNOTSUPP for RAW/COARSE clocks.
 fn is_supported_timer_clock(clock_id: u32) -> bool {
-    matches!(
-        clock_id,
-        CLOCK_REALTIME
-            | CLOCK_MONOTONIC
-            | CLOCK_BOOTTIME
-            | CLOCK_PROCESS_CPUTIME_ID
-            | CLOCK_THREAD_CPUTIME_ID
-    )
+    matches!(clock_id, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME)
 }
 
 /// Returns true if the clock is known by the system at all.

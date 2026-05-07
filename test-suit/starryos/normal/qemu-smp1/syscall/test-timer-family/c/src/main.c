@@ -363,13 +363,13 @@ static void test_timer_create_clocks(void) {
     CHECK(timer_create(CLOCK_BOOTTIME, NULL, &tid) == 0, "timer_create with CLOCK_BOOTTIME should succeed");
     if (errno == 0) timer_delete(tid);
 
-    CHECK(timer_create(CLOCK_PROCESS_CPUTIME_ID, NULL, &tid) == 0, "timer_create with CLOCK_PROCESS_CPUTIME_ID should succeed");
-    if (errno == 0) timer_delete(tid);
-
-    CHECK(timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &tid) == 0, "timer_create with CLOCK_THREAD_CPUTIME_ID should succeed");
-    if (errno == 0) timer_delete(tid);
-
     /* Unsupported but valid clocks (Linux returns EOPNOTSUPP) */
+    CHECK_ERR(timer_create(CLOCK_PROCESS_CPUTIME_ID, NULL, &tid), EOPNOTSUPP,
+              "timer_create with CLOCK_PROCESS_CPUTIME_ID should fail EOPNOTSUPP");
+
+    CHECK_ERR(timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &tid), EOPNOTSUPP,
+              "timer_create with CLOCK_THREAD_CPUTIME_ID should fail EOPNOTSUPP");
+
     CHECK_ERR(timer_create(CLOCK_REALTIME_COARSE, NULL, &tid), EOPNOTSUPP,
               "timer_create with CLOCK_REALTIME_COARSE should fail EOPNOTSUPP");
 
