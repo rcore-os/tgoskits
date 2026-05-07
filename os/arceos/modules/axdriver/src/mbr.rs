@@ -114,10 +114,14 @@ impl<T: BlockDriverOps> MbrPartitionDev<T> {
             }
 
             drop(block_io);
-
-            let range = LbaRangeInclusive::new(starting_lba, ending_lba)
-                .expect("Invalid MBR partition range.");
-            Ok(Self { inner, range })
+            let is_range = LbaRangeInclusive::new(starting_lba, ending_lba);
+            match is_range {
+                Some(range) => Ok(Self { inner, range }),
+                None => {
+                    error!("Invalid MBR partition range.");
+                    Err(DevError::Unsupported)
+                }
+            }
         } else {
             Err(DevError::Unsupported)
         }

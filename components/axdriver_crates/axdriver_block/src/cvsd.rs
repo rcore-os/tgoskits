@@ -35,8 +35,7 @@ impl BaseDriverOps for CvsdDriver {
 
 impl BlockDriverOps for CvsdDriver {
     fn num_blocks(&self) -> u64 {
-        // Capacity info is not exposed by sg200x-bsp sdmmc yet.
-        67108864 // Fake capacity info: 32G
+        self.0.card_capacity_blocks()
     }
 
     fn block_size(&self) -> usize {
