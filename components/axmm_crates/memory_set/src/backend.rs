@@ -35,4 +35,17 @@ pub trait MappingBackend: Clone {
         new_flags: Self::Flags,
         page_table: &mut Self::PageTable,
     ) -> bool;
+
+    /// Splits the backend into two backends at the given alignment difference.
+    fn split(&mut self, align_diff: usize) -> Option<Self>;
+
+    /// Shrinks the backend from the left by the given size.
+    ///
+    /// The backend start address is increased by `shrink_size`.
+    fn shrink_left(&mut self, _shrink_size: usize) {}
+
+    /// Shrinks the backend from the right by the given size.
+    ///
+    /// The backend end address is decreased by `shrink_size`.
+    fn shrink_right(&mut self, _shrink_size: usize) {}
 }

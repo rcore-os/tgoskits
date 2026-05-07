@@ -15,5 +15,8 @@ echo
 # Do your initialization here!
 
 cd "$HOME" || cd /
+cat > /tmp/starry-shrc <<'EOF'
 export PS1='${USER}@${HOSTNAME}:${PWD} # '
-exec /bin/sh -i
+EOF
+export ENV=/tmp/starry-shrc
+exec /bin/sh -l -i

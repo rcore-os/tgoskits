@@ -1,4 +1,8 @@
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+    sync::Arc,
+};
 use core::slice;
 
 use ax_errno::{AxError, AxResult};
@@ -8,11 +12,12 @@ use ax_hal::{
     paging::{MappingFlags, PageSize, PageTableCursor, PagingError},
 };
 use ax_kspin::SpinNoIrq;
-use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
 use ax_sync::Mutex;
 
 use super::{
-    AddrSpace, Backend, BackendOps, PopulateCallback, alloc_frame, dealloc_frame, pages_in,
+    AddrSpace, Backend, BackendFileInfo, BackendOps, PopulateCallback, alloc_frame, dealloc_frame,
+    pages_in,
 };
 
 struct FrameRefCnt(u8);
@@ -78,9 +83,13 @@ static FRAME_TABLE: SpinNoIrq<FrameTableRefCount> = SpinNoIrq::new(FrameTableRef
 /// This corresponds to the `MAP_PRIVATE` flag.
 #[derive(Clone)]
 pub struct CowBackend {
+    // The start address of the memory area.
     start: VirtAddr,
     size: PageSize,
-    file: Option<(FileBackend, u64, Option<u64>)>,
+    // file: (file, file_vaddr_base, file_offset_base, file_offset_end)
+    file: Option<(FileBackend, VirtAddr, u64, Option<u64>)>,
+    name: Option<String>,
+    shared: bool,
 }
 
 impl CowBackend {
@@ -98,22 +107,22 @@ impl CowBackend {
     ) -> AxResult {
         let frame = self.alloc_new_frame(true)?;
 
-        if let Some((file, file_start, file_end)) = &self.file {
+        if let Some((file, file_vaddr_base, file_start, file_end)) = &self.file {
             let buf = unsafe {
                 slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), self.size as _)
             };
-            // vaddr can be smaller than self.start (at most 1 page) due to
-            // non-aligned mappings, we need to keep the gap clean.
-            let start = self.start.as_usize().saturating_sub(vaddr.as_usize());
+            // vaddr can be smaller than file_vaddr_base (at most 1 page) due to
+            // non-aligned mappings; compute page-internal write offset accordingly.
+            let start = file_vaddr_base.as_usize().saturating_sub(vaddr.as_usize());
             assert!(start < self.size as _);
 
-            let file_start =
-                *file_start + vaddr.as_usize().saturating_sub(self.start.as_usize()) as u64;
+            let file_read_offset =
+                file_start + vaddr.as_usize().saturating_sub(file_vaddr_base.as_usize()) as u64;
             let max_read = file_end
-                .map_or(u64::MAX, |end| end.saturating_sub(file_start))
+                .map_or(u64::MAX, |end| end.saturating_sub(file_read_offset))
                 .min((buf.len() - start) as u64) as usize;
 
-            file.read_at(&mut &mut buf[start..start + max_read], file_start)?;
+            file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)?;
         }
         pt.map(vaddr, frame, self.size, flags)?;
         Ok(())
@@ -155,6 +164,43 @@ impl CowBackend {
         }
 
         Ok(())
+    }
+
+    pub fn file_info(&self) -> AxResult<BackendFileInfo> {
+        let loc = self
+            .file
+            .as_ref()
+            .map(|(file, file_vaddr_base, file_start, ..)| {
+                (file.location(), *file_vaddr_base, *file_start)
+            });
+        if let Some((loc, file_vaddr_base, file_start)) = loc {
+            let path = loc.absolute_path().map(|pb| pb.to_string())?;
+            let inode = loc.inode();
+            let dev = loc.metadata()?.device;
+            let offset = file_start
+                + self
+                    .start
+                    .as_usize()
+                    .saturating_sub(file_vaddr_base.as_usize()) as u64;
+            let offset = align_down_4k(offset as usize) as u64;
+            return Ok(BackendFileInfo {
+                path,
+                offset: Some(offset),
+                inode: Some(inode),
+                dev: Some(dev),
+                shared: self.shared,
+            });
+        }
+        if let Some(name) = &self.name {
+            return Ok(BackendFileInfo {
+                path: name.clone(),
+                offset: None,
+                inode: None,
+                dev: None,
+                shared: self.shared,
+            });
+        }
+        Err(AxError::InvalidInput)
     }
 }
 
@@ -264,6 +310,23 @@ impl BackendOps for CowBackend {
 
         Ok(Backend::Cow(self.clone()))
     }
+
+    fn split(&mut self, align_diff: usize) -> Option<Backend> {
+        assert!(align_diff.is_multiple_of(PAGE_SIZE_4K));
+        if align_diff == 0 {
+            return None;
+        }
+        let mut right = self.clone();
+        right.start = self.start + align_diff;
+        Some(Backend::Cow(right))
+    }
+
+    fn shrink_left(&mut self, shrink_size: usize) {
+        assert!(shrink_size.is_multiple_of(PAGE_SIZE_4K));
+        self.start += shrink_size;
+    }
+
+    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 impl Backend {
@@ -273,19 +336,24 @@ impl Backend {
         file: FileBackend,
         file_start: u64,
         file_end: Option<u64>,
+        shared: bool,
     ) -> Self {
         Self::Cow(CowBackend {
-            start,
+            start: start.align_down_4k(),
             size,
-            file: Some((file, file_start, file_end)),
+            file: Some((file, start, file_start, file_end)),
+            name: None,
+            shared,
         })
     }
 
-    pub fn new_alloc(start: VirtAddr, size: PageSize) -> Self {
+    pub fn new_alloc(start: VirtAddr, size: PageSize, name: &str) -> Self {
         Self::Cow(CowBackend {
-            start,
+            start: start.align_down_4k(),
             size,
             file: None,
+            name: Some(name.to_string()),
+            shared: false,
         })
     }
 }

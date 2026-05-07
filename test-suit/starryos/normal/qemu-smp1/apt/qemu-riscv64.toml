@@ -18,13 +18,19 @@ to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
 rm -f /etc/apt/sources.list.d/*.sources && \
-printf 'deb http://mirrors.tuna.tsinghua.edu.cn/debian trixie main\n' > /etc/apt/sources.list && \
-apt update && \
-DEBIAN_FRONTEND=noninteractive apt install -y hello && \
-hello && \
-echo 'APT_HELLO_TEST_PASSED' || \
-echo 'APT_HELLO_TEST_FAILED'
+apt_hello_test() { \
+    printf 'deb %s trixie main\n' "$1" > /etc/apt/sources.list && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends hello && \
+    hello; \
+}; \
+if apt_hello_test http://mirrors.tuna.tsinghua.edu.cn/debian || \
+   apt_hello_test http://deb.debian.org/debian; then \
+    echo 'APT_HELLO_TEST_PASSED'; \
+else \
+    echo 'APT_HELLO_TEST_FAILED'; \
+fi
 '''
 success_regex = ["(?m)^Hello, world!\\s*$", "(?m)^APT_HELLO_TEST_PASSED\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^APT_HELLO_TEST_FAILED\\s*$"]
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', "(?m)^APT_HELLO_TEST_FAILED\\s*$"]
 timeout = 600

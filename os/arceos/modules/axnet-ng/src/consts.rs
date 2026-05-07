@@ -17,6 +17,8 @@ pub const TCP_RX_BUF_LEN: usize = 64 * 1024;
 pub const TCP_TX_BUF_LEN: usize = 64 * 1024;
 pub const UDP_RX_BUF_LEN: usize = 64 * 1024;
 pub const UDP_TX_BUF_LEN: usize = 64 * 1024;
+pub const RAW_RX_BUF_LEN: usize = 64 * 1024;
+pub const RAW_TX_BUF_LEN: usize = 64 * 1024;
 pub const LISTEN_QUEUE_SIZE: usize = 512;
 
 pub const SOCKET_BUFFER_SIZE: usize = 64;
