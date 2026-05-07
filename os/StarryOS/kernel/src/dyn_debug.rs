@@ -21,7 +21,7 @@ impl DebugOps for DynamicDebugOps {
 /// See [ax_debug_fn] for usage.
 ///
 /// # Note
-/// This macro don't depend on the derive macro `#[ddebug::named]`, so the 'f' flag can't be used to print the function name.
+/// This macro doesn't depend on the derive macro `#[ddebug::named]`, so the 'f' flag can't be used to print the function name.
 #[macro_export]
 macro_rules! ax_debug {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {{
