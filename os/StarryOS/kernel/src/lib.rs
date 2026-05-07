@@ -18,7 +18,10 @@ mod config;
 mod file;
 mod mm;
 mod pseudofs;
+mod stop_machine;
 mod syscall;
 mod task;
 mod time;
 mod trap;
+#[macro_use]
+mod dyn_debug;

@@ -743,6 +743,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         SimpleDir::new_maker(fs.clone(), Arc::new(sys))
     });
 
+    root.add("dynamic_debug", {
+        let mut dynamic_debug = DirMapping::new();
+
+        dynamic_debug.add(
+            "control",
+            super::dyn_debug::create_dyn_debug_control_file(fs.clone()),
+        );
+
+        SimpleDir::new_maker(fs.clone(), Arc::new(dynamic_debug))
+    });
+
     let proc_dir = ProcFsHandler(fs.clone());
     SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
 }

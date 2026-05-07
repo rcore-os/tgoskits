@@ -408,3 +408,48 @@ impl IoBufMut for VmBytesMut {
         self.len
     }
 }
+
+/// Writes data to kernel text, ensuring the page permissions are properly handled.
+pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+
+    let aligned_addr = addr.align_down_4k();
+    let aligned_length = (addr + data.len()).align_up_4k() - aligned_addr;
+
+    crate::stop_machine::stop_machine(
+        || -> AxResult<()> {
+            let kspace = ax_mm::kernel_aspace();
+            let mut guard = kspace.lock();
+            let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
+
+            guard.protect(
+                aligned_addr,
+                aligned_length,
+                original_flags | MappingFlags::WRITE,
+            )?;
+            flush_tlb_range(aligned_addr, aligned_length);
+
+            unsafe {
+                core::ptr::copy_nonoverlapping(data.as_ptr(), addr.as_mut_ptr(), data.len());
+            }
+
+            guard.protect(aligned_addr, aligned_length, original_flags)?;
+            Ok(())
+        },
+        move || sync_modified_kernel_text(aligned_addr, aligned_length),
+    )
+}
+
+fn flush_tlb_range(start: VirtAddr, size: usize) {
+    for offset in (0..size).step_by(PAGE_SIZE_4K) {
+        ax_hal::asm::flush_tlb(Some(start + offset));
+    }
+}
+
+fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
+    flush_tlb_range(start, size);
+
+    ax_hal::asm::flush_icache_all();
+}
