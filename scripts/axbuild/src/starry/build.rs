@@ -85,6 +85,7 @@ fn patch_starry_cargo_config(
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package)?;
+    remove_qemu_feature_for_dynamic_platform(cargo);
     if static_defplat {
         cargo.features.push("qemu".to_string());
         cargo.features.sort();
@@ -105,6 +106,18 @@ fn patch_starry_cargo_config(
     }
 
     Ok(())
+}
+
+fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
+    let uses_dynamic_platform = cargo.features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn"
+        )
+    });
+    if uses_dynamic_platform {
+        cargo.features.retain(|feature| feature != "qemu");
+    }
 }
 
 fn uses_static_default_platform(features: &[String]) -> bool {
@@ -451,6 +464,37 @@ HELLO = "world"
                 .iter()
                 .any(|arg| arg.contains("-Clink-arg=-Taxplat.x"))
         );
+    }
+
+    #[test]
+    fn patch_starry_cargo_config_removes_qemu_for_dynamic_platforms() {
+        let request = request(
+            PathBuf::from("/tmp/.build.toml"),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        );
+        let build_info = StarryBuildInfo {
+            env: HashMap::new(),
+            features: vec![
+                "qemu".to_string(),
+                "ax-feat/plat-dyn".to_string(),
+                "starry-kernel/plat-dyn".to_string(),
+            ],
+            log: LogLevel::Info,
+            max_cpu_num: None,
+            axconfig_overrides: Vec::new(),
+            plat_dyn: true,
+        };
+        let mut cargo = build_info.into_base_cargo_config_with_log(
+            STARRY_PACKAGE.to_string(),
+            request.target.clone(),
+            StarryBuildInfo::build_cargo_args(&request.target, true),
+        );
+
+        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+
+        assert!(!cargo.features.contains(&"qemu".to_string()));
+        assert!(!cargo.env.contains_key("AX_PLATFORM"));
     }
 
     #[test]

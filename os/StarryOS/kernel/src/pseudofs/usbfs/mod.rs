@@ -501,16 +501,15 @@ impl UsbDeviceFile {
             Vec::new()
         };
 
+        let packet_actual_lengths =
+            iso_packet_actual_lengths(&submitted.packet_lengths, submitted.is_in, &completion);
+
         UrbTransferResult {
             data,
             data_offset: submitted.data_offset,
             actual_length: completion.actual_length,
             packet_lengths: submitted.packet_lengths,
-            packet_actual_lengths: completion
-                .iso_packets
-                .iter()
-                .map(|packet| packet.actual_length)
-                .collect(),
+            packet_actual_lengths,
         }
     }
 
@@ -647,8 +646,28 @@ impl UsbDeviceFile {
             }
         };
 
-        let transfer =
+        self.collect_submitted_urbs(None);
+        let mut transfer =
             self.with_live_lease(|lease| lease.submit_endpoint_transfer(endpoint, request));
+        if matches!(&transfer, Err(AxError::ResourceBusy)) {
+            self.collect_submitted_urbs(None);
+            let request = match (transfer_type, is_in) {
+                (EndpointTransferType::Bulk, true) => TransferRequest::bulk_in(&mut buffer),
+                (EndpointTransferType::Bulk, false) => TransferRequest::bulk_out(&buffer),
+                (EndpointTransferType::Interrupt, true) => {
+                    TransferRequest::interrupt_in(&mut buffer)
+                }
+                (EndpointTransferType::Interrupt, false) => TransferRequest::interrupt_out(&buffer),
+                (EndpointTransferType::Isochronous, true) => {
+                    TransferRequest::iso_in(&mut buffer, &packet_lengths)
+                }
+                (EndpointTransferType::Isochronous, false) => {
+                    TransferRequest::iso_out(&buffer, &packet_lengths)
+                }
+            };
+            transfer =
+                self.with_live_lease(|lease| lease.submit_endpoint_transfer(endpoint, request));
+        }
         if let Err(err) = &transfer {
             warn!(
                 "usbfs: submit endpoint urb failed ep={:#04x} type={:?} len={} packets={} err={:?}",
@@ -715,7 +734,19 @@ impl UsbDeviceFile {
             false => TransferRequest::control_out(setup, &buffer),
         };
 
-        let transfer = self.with_live_lease(|lease| lease.submit_control_transfer(request))?;
+        self.collect_submitted_urbs(None);
+        let mut transfer = self.with_live_lease(|lease| lease.submit_control_transfer(request));
+        if matches!(&transfer, Err(AxError::ResourceBusy)) {
+            self.collect_submitted_urbs(None);
+            let setup =
+                manager::control_setup_from_raw(b_request_type, b_request, w_value, w_index);
+            let request = match is_in {
+                true => TransferRequest::control_in(setup, &mut buffer),
+                false => TransferRequest::control_out(setup, &buffer),
+            };
+            transfer = self.with_live_lease(|lease| lease.submit_control_transfer(request));
+        }
+        let transfer = transfer?;
         self.submitted_urbs.lock().push_back(SubmittedUrb {
             user_urb_ptr: arg,
             transfer,
@@ -812,6 +843,7 @@ impl UsbDeviceFile {
 
     fn submit_urb(&self, arg: usize) -> AxResult<usize> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
+        self.collect_submitted_urbs(None);
         let type_ = crate::mm::UserPtr::<descriptor::UsbdevfsUrb>::from(arg)
             .get_as_mut()?
             .type_;
@@ -1257,6 +1289,26 @@ fn iso_copy_len(
         offset = offset.saturating_add(requested);
     }
     copy_len
+}
+
+fn iso_packet_actual_lengths(
+    packet_lengths: &[usize],
+    is_in: bool,
+    completion: &TransferCompletion,
+) -> Vec<usize> {
+    if packet_lengths.is_empty() {
+        return Vec::new();
+    }
+
+    if !is_in && completion.iso_packets.len() == packet_lengths.len() {
+        return packet_lengths.to_vec();
+    }
+
+    completion
+        .iso_packets
+        .iter()
+        .map(|packet| packet.actual_length)
+        .collect()
 }
 
 fn usbdevfs_iso_packet_descs_mut(

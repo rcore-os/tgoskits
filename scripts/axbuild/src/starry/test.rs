@@ -739,7 +739,8 @@ impl Starry {
         let mut prepared = Vec::with_capacity(cases.len());
         for starry_case in cases {
             let mut request = request.clone();
-            request.build_info_path = starry_case.build_config_path.clone();
+            request =
+                Self::request_for_qemu_case_build_config(&request, &starry_case.build_config_path);
             let cargo = build::load_cargo_config(&request)?;
             let qemu = self
                 .app
@@ -823,12 +824,21 @@ impl Starry {
         request: &ResolvedStarryRequest,
         build_config_path: &Path,
     ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
-        let mut request = request.clone();
-        request.build_info_path = build_config_path.to_path_buf();
-        request.build_info_override = None;
+        let request = Self::request_for_qemu_case_build_config(request, build_config_path);
         let cargo = build::load_cargo_config(&request)?;
 
         Ok((request, cargo))
+    }
+
+    fn request_for_qemu_case_build_config(
+        request: &ResolvedStarryRequest,
+        build_config_path: &Path,
+    ) -> ResolvedStarryRequest {
+        let mut request = request.clone();
+        request.build_info_path = build_config_path.to_path_buf();
+        request.build_info_override = None;
+        request.plat_dyn = None;
+        request
     }
 
     fn qemu_test_request(mut request: ResolvedStarryRequest) -> ResolvedStarryRequest {
@@ -915,7 +925,31 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            format!("target = \"{target}\"\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
+            format!("target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    fn write_qemu_build_config_with_max_cpu_num(
+        root: &Path,
+        group: StarryTestGroup,
+        build_group: &str,
+        target: &str,
+        max_cpu_num: usize,
+    ) -> PathBuf {
+        let path = root
+            .join("test-suit/starryos")
+            .join(group.as_str())
+            .join(build_group)
+            .join(format!("build-{target}.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \
+                 \"Info\"\nmax_cpu_num = {max_cpu_num}\n"
+            ),
         )
         .unwrap();
         path
@@ -1551,6 +1585,52 @@ mod tests {
 
         assert_eq!(cargo.env.get("SMP").map(String::as_str), Some("4"));
         assert!(cargo.features.contains(&"ax-feat/smp".to_string()));
+    }
+
+    #[test]
+    fn qemu_group_build_context_uses_group_plat_dyn_over_default_request() {
+        let root = tempdir().unwrap();
+        let build_config = root.path().join(
+            "test-suit/starryos/normal/qemu-aarch64-plat-dyn/build-aarch64-unknown-none-softfloat.\
+             toml",
+        );
+        fs::create_dir_all(build_config.parent().unwrap()).unwrap();
+        fs::write(
+            &build_config,
+            "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\", \
+             \"starry-kernel/plat-dyn\"]\nlog = \"Warn\"\nplat_dyn = true\n",
+        )
+        .unwrap();
+        let mut request = starry_request(
+            PathBuf::from("/tmp/default-build.toml"),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        );
+        request.plat_dyn = Some(false);
+        request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
+            features: vec!["qemu".to_string()],
+            plat_dyn: false,
+            ..crate::starry::build::StarryBuildInfo::default_starry_for_target(
+                "aarch64-unknown-none-softfloat",
+            )
+        });
+
+        let (_group_request, cargo) =
+            Starry::qemu_group_build_context(&request, &build_config).unwrap();
+
+        assert!(cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
+        assert!(
+            cargo
+                .features
+                .contains(&"starry-kernel/plat-dyn".to_string())
+        );
+        assert!(!cargo.features.contains(&"qemu".to_string()));
+        assert!(
+            cargo
+                .args
+                .iter()
+                .any(|arg| arg.contains("-Clink-arg=-Taxplat.x"))
+        );
     }
 
     #[test]
