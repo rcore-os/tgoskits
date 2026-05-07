@@ -192,8 +192,17 @@ register_structs![
 impl VmcbFrame {
     /// # Safety
     ///
-    /// The caller must ensure the VMCB page is mapped and uniquely owned.
-    pub unsafe fn as_vmcb(&self) -> &mut VmcbStruct {
+    /// The caller must ensure the VMCB page is mapped and no mutable reference
+    /// to the same frame exists for the returned reference lifetime.
+    pub unsafe fn as_vmcb_ref(&self) -> &VmcbStruct {
+        unsafe { self.as_ptr_vmcb().as_ref().unwrap() }
+    }
+
+    /// # Safety
+    ///
+    /// The caller must ensure the VMCB page is mapped and uniquely owned for
+    /// the returned mutable reference lifetime.
+    pub unsafe fn as_vmcb(&mut self) -> &mut VmcbStruct {
         unsafe { self.as_mut_ptr_vmcb().as_mut().unwrap() }
     }
 }

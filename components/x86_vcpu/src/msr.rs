@@ -18,7 +18,7 @@ use x86::msr::{rdmsr, wrmsr};
 /// X86 model-specific registers. (SDM Vol. 4)
 #[repr(u32)]
 #[derive(Debug, Copy, Clone)]
-#[allow(non_camel_case_types, dead_code)]
+#[allow(non_camel_case_types, dead_code, clippy::upper_case_acronyms)]
 pub enum Msr {
     IA32_FEATURE_CONTROL = 0x3a,
 

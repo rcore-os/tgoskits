@@ -328,7 +328,7 @@ impl SvmVcpu {
     }
 
     pub fn get_cpu_mode(&self) -> VmCpuMode {
-        let vmcb = unsafe { self.vmcb.as_vmcb() };
+        let vmcb = unsafe { self.vmcb.as_vmcb_ref() };
         let efer = vmcb.state.efer.get();
         let cs_attr = vmcb.state.cs.attr.get();
         let cr0 = vmcb.state.cr0.get();
@@ -347,7 +347,7 @@ impl SvmVcpu {
     }
 
     pub fn exit_info(&self) -> AxResult<super::vmcb::SvmExitInfo> {
-        unsafe { self.vmcb.as_vmcb().exit_info() }
+        unsafe { self.vmcb.as_vmcb_ref().exit_info() }
     }
 
     pub fn nested_page_fault_info(&self) -> AxResult<NestedPageFaultInfo> {
@@ -381,7 +381,7 @@ impl SvmVcpu {
     }
 
     pub fn stack_pointer(&self) -> usize {
-        unsafe { self.vmcb.as_vmcb().state.rsp.get() as usize }
+        unsafe { self.vmcb.as_vmcb_ref().state.rsp.get() as usize }
     }
 
     pub fn set_stack_pointer(&mut self, rsp: usize) {
@@ -489,7 +489,7 @@ impl SvmVcpu {
     fn gpr_for_cr_access(&self, reg_idx: u8) -> AxResult<u64> {
         // For SVM CR access exits, EXITINFO1[3:0] identifies the source GPR.
         if reg_idx == 4 {
-            Ok(unsafe { self.vmcb.as_vmcb().state.rsp.get() })
+            Ok(unsafe { self.vmcb.as_vmcb_ref().state.rsp.get() })
         } else if reg_idx < 16 {
             Ok(self.regs().get_reg_of_index(reg_idx))
         } else {
@@ -515,7 +515,7 @@ impl SvmVcpu {
     }
 
     fn guest_visible_efer(&self) -> u64 {
-        unsafe { self.vmcb.as_vmcb().state.efer.get() & !EFER_SVME }
+        unsafe { self.vmcb.as_vmcb_ref().state.efer.get() & !EFER_SVME }
     }
 
     fn set_guest_efer(&mut self, value: u64) {
@@ -654,9 +654,10 @@ impl SvmVcpu {
     }
 
     fn before_vmrun(&mut self) {
+        let rax = self.regs().rax;
         unsafe {
             super::instructions::clgi();
-            self.vmcb.as_vmcb().state.rax.set(self.regs().rax);
+            self.vmcb.as_vmcb().state.rax.set(rax);
         }
         self.load_save_states.save_fs_gs();
         unsafe {
@@ -675,6 +676,13 @@ impl SvmVcpu {
         }
     }
 
+    /// Enter the guest once with AMD SVM `VMRUN`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure SVM is enabled on the current CPU, the VMCB and
+    /// nested page table referenced by this vCPU are valid, and host state is
+    /// restored after the VM exit before returning to normal Rust execution.
     pub unsafe fn svm_run(&mut self) {
         let self_addr = self as *mut Self as u64;
         let vmcb = self.vmcb.phys_addr().as_usize() as u64;

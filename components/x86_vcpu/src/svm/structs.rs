@@ -33,6 +33,10 @@ impl VmcbFrame {
         self.page.as_mut_ptr()
     }
 
+    pub fn as_ptr_vmcb(&self) -> *const VmcbStruct {
+        self.page.as_mut_ptr() as *const VmcbStruct
+    }
+
     pub fn as_mut_ptr_vmcb(&self) -> *mut VmcbStruct {
         self.page.as_mut_ptr() as *mut VmcbStruct
     }
