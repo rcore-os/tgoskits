@@ -14,9 +14,8 @@ use rdrive::{
 use rk3588_pci::{
     Delay, HostConfig, MEM_ATU_FIRST_REGION, OutboundWindow, ResetControl, Rk3588PcieHost,
 };
-use rockchip_pm::{PowerDomain, RockchipPM};
 
-use crate::drivers::soc::{rk3588_enable_clock, rk3588_reset_deassert};
+use crate::drivers::soc::{rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_deassert};
 
 const RK3588_GPIO_BASES: [u64; 5] = [
     0xfd8a_0000,
@@ -221,16 +220,10 @@ fn enable_power_domains(domains: &[usize]) -> Result<(), OnProbeError> {
         return Ok(());
     }
 
-    let pm = rdrive::get_one::<RockchipPM>()
-        .ok_or_else(|| OnProbeError::other("RockchipPM not found for RK3588 PCIe"))?;
-    let mut pm = pm
-        .lock()
-        .map_err(|err| OnProbeError::other(format!("failed to lock RockchipPM: {err}")))?;
-
     for &domain in domains {
-        pm.power_domain_on(PowerDomain(domain)).map_err(|err| {
+        rk3588_enable_power_domain(domain).map_err(|err| {
             OnProbeError::other(format!(
-                "failed to enable RK3588 PCIe power domain {domain}: {err:?}"
+                "failed to enable RK3588 PCIe power domain {domain}: {err}"
             ))
         })?;
     }

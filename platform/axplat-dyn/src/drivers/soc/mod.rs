@@ -16,5 +16,6 @@ mod rockchip;
 
 #[cfg(all(feature = "rockchip-soc", not(feature = "rk3568-clk")))]
 pub(crate) use rockchip::{
-    RockchipPinCtrl, rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert,
+    RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_assert,
+    rk3588_reset_deassert,
 };
