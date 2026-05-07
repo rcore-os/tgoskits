@@ -451,15 +451,42 @@ fn all_qemu_case_groups(
     selected_case: Option<&str>,
 ) -> anyhow::Result<Vec<(String, Vec<qemu_test::ListedQemuCase>)>> {
     let mut groups = Vec::new();
-    groups.push((
-        ARCEOS_RUST_TEST_GROUP.to_string(),
-        rust_qemu_listed_cases(arceos, selected_case)?,
-    ));
-    let c_cases = c_qemu_listed_cases(arceos, selected_case)?;
-    if !c_cases.is_empty() {
+
+    if let Some(rust_cases) =
+        selected_group_cases(rust_qemu_listed_cases(arceos, selected_case), selected_case)?
+    {
+        groups.push((ARCEOS_RUST_TEST_GROUP.to_string(), rust_cases));
+    }
+    if let Some(c_cases) =
+        selected_group_cases(c_qemu_listed_cases(arceos, selected_case), selected_case)?
+        && !c_cases.is_empty()
+    {
         groups.push((ARCEOS_C_TEST_GROUP.to_string(), c_cases));
     }
+    if groups.is_empty()
+        && let Some(case) = selected_case
+    {
+        bail!("unknown ArceOS qemu test case `{case}`");
+    }
     Ok(groups)
+}
+
+fn selected_group_cases(
+    result: anyhow::Result<Vec<qemu_test::ListedQemuCase>>,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Option<Vec<qemu_test::ListedQemuCase>>> {
+    match result {
+        Ok(cases) => Ok(Some(cases)),
+        Err(err) if selected_case.is_some() && is_unknown_selected_case_error(&err.to_string()) => {
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn is_unknown_selected_case_error(message: &str) -> bool {
+    message.starts_with("unknown ArceOS rust test case")
+        || message.starts_with("unknown ArceOS c qemu test case")
 }
 
 fn rust_qemu_listed_cases(
@@ -1588,6 +1615,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(flows, &[QemuTestFlow::Rust]);
+    }
+
+    #[test]
+    fn selected_group_cases_skips_unknown_case_errors_for_global_filter() {
+        let cases = selected_group_cases(
+            Err(anyhow::anyhow!(
+                "unknown ArceOS rust test case `helloworld`"
+            )),
+            Some("helloworld"),
+        )
+        .unwrap();
+
+        assert_eq!(cases, None);
+    }
+
+    #[test]
+    fn selected_group_cases_keeps_non_filter_errors() {
+        let err = selected_group_cases(
+            Err(anyhow::anyhow!("failed to read /tmp/test-suit")),
+            Some("helloworld"),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("failed to read"));
     }
 
     #[test]
