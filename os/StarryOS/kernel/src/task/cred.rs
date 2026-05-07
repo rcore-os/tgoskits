@@ -74,6 +74,13 @@ impl Cred {
         self.fsuid == 0
     }
 
+    /// Check whether this credential has the privilege to create device
+    /// special files (equivalent to `CAP_MKNOD` — approximated as
+    /// fsuid == 0).
+    pub fn has_cap_mknod(&self) -> bool {
+        self.fsuid == 0
+    }
+
     /// Return true if `gid` is the process's fsgid or is in its
     /// supplementary group list. Uses fsgid (not egid) because this
     /// method is used for filesystem permission checks.

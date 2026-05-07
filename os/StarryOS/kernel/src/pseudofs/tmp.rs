@@ -283,6 +283,9 @@ impl NodeOps for MemoryNode {
         if let Some(mtime) = update.mtime {
             metadata.mtime = mtime;
         }
+        if let Some(rdev) = update.rdev {
+            metadata.rdev = rdev;
+        }
         Ok(())
     }
 

@@ -19,7 +19,6 @@ use starry_vm::{VmPtr, vm_write_slice};
 use crate::{
     file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
-    pseudofs::Device,
     task::AsThread,
     time::TimeValueLike,
 };
@@ -103,6 +102,11 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
     })
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn sys_mknod(path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
+    sys_mknodat(AT_FDCWD, path, mode, dev)
+}
+
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
     let path = vm_load_string(path)?;
     debug!(
@@ -117,12 +121,24 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
     perm &= !current().as_thread().proc_data.umask();
 
     let node_type = match ftype {
+        0 => NodeType::RegularFile, // no type specified → regular file
         S_IFREG => NodeType::RegularFile,
-        S_IFCHR => NodeType::CharacterDevice,
-        S_IFBLK => NodeType::BlockDevice,
+        S_IFCHR => {
+            // Creating character/block device nodes requires CAP_MKNOD.
+            if !current().as_thread().cred().has_cap_mknod() {
+                return Err(AxError::OperationNotPermitted);
+            }
+            NodeType::CharacterDevice
+        }
+        S_IFBLK => {
+            if !current().as_thread().cred().has_cap_mknod() {
+                return Err(AxError::OperationNotPermitted);
+            }
+            NodeType::BlockDevice
+        }
         S_IFIFO => NodeType::Fifo,
-        S_IFSOCK => NodeType::Socket,
-        _ => return Err(AxError::InvalidInput),
+        // Linux returns EPERM for S_IFDIR/S_IFSOCK via mknod.
+        _ => return Err(AxError::OperationNotPermitted),
     };
 
     let res = with_fs(dirfd, |fs| {
@@ -133,13 +149,12 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
             NodePermission::from_bits_truncate(perm as u16),
         )?;
 
-        // If device node, set rdev
+        // If device node, set rdev via metadata update
         if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
-            if let Ok(dev_node) = loc.entry().downcast::<Device>() {
-                dev_node.set_device_id(DeviceId(dev));
-            } else {
-                warn!("not a device node, cannot set rdev");
-            }
+            loc.update_metadata(MetadataUpdate {
+                rdev: Some(DeviceId(dev)),
+                ..Default::default()
+            })?;
         }
 
         Ok(0)
@@ -390,6 +405,13 @@ pub fn sys_fchownat(
     gid: i32,
     flags: u32,
 ) -> AxResult<isize> {
+    // man 2 fchownat: flags may contain AT_EMPTY_PATH and/or
+    // AT_SYMLINK_NOFOLLOW. Any other bit is EINVAL.
+    const FCHOWNAT_VALID: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !FCHOWNAT_VALID != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
@@ -421,10 +443,20 @@ pub fn sys_fchownat(
     }
 
     let mut mode = meta.mode;
-    // chown always clears the setuid bits
-    mode.remove(NodePermission::SET_UID);
-    // chown also removes the setgid bits if group-executable
-    if mode.contains(NodePermission::GROUP_EXEC) {
+    // Linux chown_common() + notify_change() semantics:
+    // - When owner changes (ATTR_KILL_SUID): clear SET_UID.
+    // - When both owner and group change: SET_UID cleared; SET_GID cleared
+    //   only if GROUP_EXEC is set (because ATTR_KILL_SGID sees ATTR_MODE
+    //   already set by ATTR_KILL_SUID handler → conditional clear).
+    // - When only group changes (ATTR_KILL_SGID without ATTR_KILL_SUID):
+    //   SET_UID untouched; SET_GID cleared unconditionally (ATTR_MODE not
+    //   set, so notify_change clears it without the IXGRP guard).
+    if changing_owner {
+        mode.remove(NodePermission::SET_UID);
+        if changing_group && mode.contains(NodePermission::GROUP_EXEC) {
+            mode.remove(NodePermission::SET_GID);
+        }
+    } else if changing_group {
         mode.remove(NodePermission::SET_GID);
     }
 
@@ -448,6 +480,13 @@ pub fn sys_fchmod(fd: i32, mode: u32) -> AxResult<isize> {
 }
 
 pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+    // man 2 fchmodat: flags may contain AT_EMPTY_PATH and/or
+    // AT_SYMLINK_NOFOLLOW. Any other bit is EINVAL.
+    const FCHMODAT_VALID: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !FCHMODAT_VALID != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()

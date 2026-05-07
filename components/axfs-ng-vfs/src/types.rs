@@ -115,6 +115,9 @@ pub struct MetadataUpdate {
     pub atime: Option<Duration>,
     /// Time of last modification
     pub mtime: Option<Duration>,
+
+    /// Device ID (rdev) for character/block special files
+    pub rdev: Option<DeviceId>,
 }
 
 /// Device Id

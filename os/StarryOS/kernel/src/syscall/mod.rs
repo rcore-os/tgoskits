@@ -37,6 +37,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         #[cfg(target_arch = "x86_64")]
         Sysno::mkdir => sys_mkdir(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::mkdirat => sys_mkdirat(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::mknod => sys_mknod(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::mknodat => sys_mknodat(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -97,7 +99,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         #[cfg(target_arch = "x86_64")]
         Sysno::chmod => sys_chmod(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::fchmod => sys_fchmod(uctx.arg0() as _, uctx.arg1() as _),
-        Sysno::fchmodat | Sysno::fchmodat2 => sys_fchmodat(
+        Sysno::fchmodat => sys_fchmodat(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _, 0),
+        Sysno::fchmodat2 => sys_fchmodat(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
@@ -343,7 +346,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         #[cfg(target_arch = "x86_64")]
         Sysno::access => sys_access(uctx.arg0() as _, uctx.arg1() as _),
-        Sysno::faccessat | Sysno::faccessat2 => sys_faccessat2(
+        Sysno::faccessat => sys_faccessat2(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _, 0),
+        Sysno::faccessat2 => sys_faccessat2(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
