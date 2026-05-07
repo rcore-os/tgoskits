@@ -322,11 +322,11 @@ int main(void)
         }
     }
 
-    /* 21. 从 VMA 中间移动一个页 */
+    /* 21. mremap 要求 old_address 是 VMA 起点 */
     {
         void *p = mmap(NULL, 3 * PAGE, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        CHECK(p != MAP_FAILED, "mmap for mid-VMA move");
+        CHECK(p != MAP_FAILED, "mmap for mid-VMA rejection");
         if (p != MAP_FAILED) {
             unsigned char *b = (unsigned char *)p;
             memset(b, 0x11, PAGE);
@@ -334,17 +334,43 @@ int main(void)
             memset(b + 2 * PAGE, 0x33, PAGE);
 
             void *r = mremap(b + PAGE, PAGE, 2 * PAGE, MREMAP_MAYMOVE);
-            CHECK(r != MAP_FAILED, "mid-VMA page can move and grow");
-            if (r != MAP_FAILED) {
-                CHECK(((unsigned char *)r)[0] == 0x22, "mid-VMA data moved");
-                CHECK(((unsigned char *)r)[PAGE] == 0, "mid-VMA grown page zeroed");
-                CHECK(b[0] == 0x11, "left fragment remains mapped");
-                CHECK(b[2 * PAGE] == 0x33, "right fragment remains mapped");
-                munmap(r, 2 * PAGE);
-                munmap(p, PAGE);
-                munmap(b + 2 * PAGE, PAGE);
+            CHECK(r == MAP_FAILED && errno == EINVAL, "mid-VMA old_address rejected");
+            CHECK(b[0] == 0x11, "left fragment remains mapped after reject");
+            CHECK(b[PAGE] == 0x22, "middle page remains mapped after reject");
+            CHECK(b[2 * PAGE] == 0x33, "right fragment remains mapped after reject");
+            munmap(p, 3 * PAGE);
+        }
+    }
+
+    /* 22. 移动后重新分配源地址不应破坏目标页 */
+    {
+        void *src = mmap(NULL, PAGE, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *dst = mmap(NULL, PAGE, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(src != MAP_FAILED && dst != MAP_FAILED, "mmap for move lifetime");
+        if (src != MAP_FAILED && dst != MAP_FAILED) {
+            memset(src, 0x5A, PAGE);
+            void *r = raw_mremap(src, PAGE, PAGE,
+                                 MREMAP_MAYMOVE | MREMAP_FIXED, dst);
+            CHECK(r == dst, "FIXED move for lifetime check");
+            if (r == dst) {
+                void *reused = mmap(src, PAGE, PROT_READ | PROT_WRITE,
+                                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+                CHECK(reused == src, "old address can be reused");
+                if (reused == src) {
+                    memset(reused, 0xC3, PAGE);
+                }
+                ((unsigned char *)dst)[0] = 0x7E;
+                CHECK(((unsigned char *)dst)[0] == 0x7E, "target remains writable");
+                CHECK(((unsigned char *)dst)[PAGE - 1] == 0x5A,
+                      "target keeps moved frame after source reuse");
+                if (reused == src) munmap(reused, PAGE);
+                munmap(dst, PAGE);
             } else {
-                munmap(p, 3 * PAGE);
+                if (r != MAP_FAILED) munmap(r, PAGE);
+                munmap(dst, PAGE);
+                munmap(src, PAGE);
             }
         }
     }

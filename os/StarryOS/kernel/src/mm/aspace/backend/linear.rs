@@ -24,6 +24,7 @@ impl LinearBackend {
         Self {
             start: new_start,
             offset: self.offset + (new_start.as_usize() as isize - self.start.as_usize() as isize),
+            shared: self.shared,
         }
     }
 

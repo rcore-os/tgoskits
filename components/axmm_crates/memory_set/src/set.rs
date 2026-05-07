@@ -127,10 +127,10 @@ impl<B: MappingBackend> MemorySet<B> {
         let new_end = area_end
             .checked_add(additional_size)
             .ok_or(MappingError::InvalidParam)?;
-        if let Some((_, next)) = self.areas.range(area_end..).next() {
-            if new_end > next.start() {
-                return Err(MappingError::AlreadyExists);
-            }
+        if let Some((_, next)) = self.areas.range(area_end..).next()
+            && new_end > next.start()
+        {
+            return Err(MappingError::AlreadyExists);
         }
 
         self.areas
@@ -230,6 +230,74 @@ impl<B: MappingBackend> MemorySet<B> {
             }
         }
 
+        Ok(())
+    }
+
+    /// Remove memory area metadata without calling the backend's unmap hook.
+    ///
+    /// This is intended for callers that have already moved or detached the
+    /// affected page-table entries and only need to update VMA bookkeeping.
+    pub fn unmap_metadata(&mut self, start: B::Addr, size: usize) -> MappingResult {
+        let range =
+            AddrRange::try_from_start_size(start, size).ok_or(MappingError::InvalidParam)?;
+        if range.is_empty() {
+            return Ok(());
+        }
+
+        let end = range.end;
+
+        self.areas
+            .retain(|_, area| !area.va_range().contained_in(range));
+
+        if let Some((&before_start, before)) = self.areas.range_mut(..start).last() {
+            let before_end = before.end();
+            if before_end > start {
+                if before_end <= end {
+                    before.shrink_right_metadata(start.sub_addr(before_start));
+                } else {
+                    let right_part = before.split(end).unwrap();
+                    before.shrink_right_metadata(start.sub_addr(before_start));
+                    assert_eq!(right_part.start().into(), Into::<usize>::into(end));
+                    self.areas.insert(end, right_part);
+                }
+            }
+        }
+
+        if let Some((&after_start, _)) = self.areas.range(start..).next()
+            && after_start < end
+        {
+            let mut new_area = self.areas.remove(&after_start).unwrap();
+            let after_end = new_area.end();
+            new_area.shrink_left_metadata(after_end.sub_addr(end));
+            assert_eq!(new_area.start().into(), Into::<usize>::into(end));
+            self.areas.insert(end, new_area);
+        }
+
+        Ok(())
+    }
+
+    /// Replaces the metadata at the start of an existing area without touching
+    /// page-table entries.
+    pub fn replace_area_metadata(&mut self, area: MemoryArea<B>) -> MappingResult {
+        if area.va_range().is_empty() {
+            return Err(MappingError::InvalidParam);
+        }
+
+        let start = area.start();
+        let end = area.end();
+        let old_end = self
+            .areas
+            .get(&start)
+            .filter(|old| old.end() >= end)
+            .map(MemoryArea::end)
+            .ok_or(MappingError::InvalidParam)?;
+
+        let mut old_area = self.areas.remove(&start).unwrap();
+        if old_end > end {
+            let right_part = old_area.split(end).unwrap();
+            self.areas.insert(right_part.start(), right_part);
+        }
+        assert!(self.areas.insert(start, area).is_none());
         Ok(())
     }
 

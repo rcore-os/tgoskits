@@ -9,7 +9,7 @@ use linux_raw_sys::general::*;
 
 use crate::{
     file::get_file_like,
-    mm::{Backend, SharedPages},
+    mm::{Backend, BackendOps, SharedPages},
     pseudofs::{Device, DeviceMmap},
     task::AsThread,
 };
@@ -353,18 +353,32 @@ fn find_free(
         .ok_or(AxError::NoMemory)
 }
 
-fn mremap_move(
-    aspace: &mut crate::mm::AddrSpace,
-    aspace_ref: &Arc<ax_sync::Mutex<crate::mm::AddrSpace>>,
+struct MremapMove<'a> {
     src: VirtAddr,
     src_size: usize,
     target: VirtAddr,
     target_size: usize,
-    src_backend: &Backend,
+    src_backend: &'a Backend,
     flags: MappingFlags,
     dontunmap: bool,
     src_offset: usize,
+}
+
+fn mremap_move(
+    aspace: &mut crate::mm::AddrSpace,
+    aspace_ref: &Arc<ax_sync::Mutex<crate::mm::AddrSpace>>,
+    move_args: MremapMove<'_>,
 ) -> AxResult {
+    let MremapMove {
+        src,
+        src_size,
+        target,
+        target_size,
+        src_backend,
+        flags,
+        dontunmap,
+        src_offset,
+    } = move_args;
     let backend = src_backend.relocated(target, src_offset, aspace_ref)?;
     aspace.map(target, target_size, flags, false, backend)?;
 
@@ -374,17 +388,15 @@ fn mremap_move(
         return Err(e);
     }
 
-    if let Err(e) = aspace.unmap(src, src_size) {
-        let _ = aspace.unmap(target, target_size);
-        return Err(e);
+    if src_size > move_size {
+        aspace.unmap(src + move_size, src_size - move_size)?;
     }
 
     if dontunmap {
         let empty = Backend::new_alloc(src, src_backend.page_size(), "");
-        if let Err(e) = aspace.map(src, src_size, flags, false, empty) {
-            let _ = aspace.unmap(target, target_size);
-            return Err(e);
-        }
+        aspace.replace_area_metadata(src, move_size, flags, empty)?;
+    } else {
+        aspace.unmap_metadata(src, move_size)?;
     }
 
     Ok(())
@@ -461,6 +473,9 @@ pub fn sys_mremap(
     let old_size = old_size.align_up(page_size);
     let new_size = new_size.align_up(page_size);
     let src_offset = addr - vma_start;
+    if old_size != 0 && src_offset != 0 {
+        return Err(AxError::InvalidInput);
+    }
 
     if dontunmap && !matches!(&src_backend, Backend::Cow(cow) if cow.is_anonymous()) {
         return Err(AxError::InvalidInput);
@@ -515,14 +530,16 @@ pub fn sys_mremap(
         mremap_move(
             &mut aspace,
             aspace_ref,
-            addr,
-            old_size,
-            target,
-            new_size,
-            &src_backend,
-            vma_flags,
-            dontunmap,
-            src_offset,
+            MremapMove {
+                src: addr,
+                src_size: old_size,
+                target,
+                target_size: new_size,
+                src_backend: &src_backend,
+                flags: vma_flags,
+                dontunmap,
+                src_offset,
+            },
         )?;
         return Ok(target.as_usize() as isize);
     }
@@ -541,14 +558,16 @@ pub fn sys_mremap(
         mremap_move(
             &mut aspace,
             aspace_ref,
-            addr,
-            old_size,
-            target,
-            new_size,
-            &src_backend,
-            vma_flags,
-            true,
-            src_offset,
+            MremapMove {
+                src: addr,
+                src_size: old_size,
+                target,
+                target_size: new_size,
+                src_backend: &src_backend,
+                flags: vma_flags,
+                dontunmap: true,
+                src_offset,
+            },
         )?;
         return Ok(target.as_usize() as isize);
     }
@@ -571,14 +590,16 @@ pub fn sys_mremap(
     mremap_move(
         &mut aspace,
         aspace_ref,
-        addr,
-        old_size,
-        target,
-        new_size,
-        &src_backend,
-        vma_flags,
-        false,
-        src_offset,
+        MremapMove {
+            src: addr,
+            src_size: old_size,
+            target,
+            target_size: new_size,
+            src_backend: &src_backend,
+            flags: vma_flags,
+            dontunmap: false,
+            src_offset,
+        },
     )?;
     Ok(target.as_usize() as isize)
 }

@@ -4,7 +4,7 @@ use core::{fmt, ops::DerefMut};
 use ax_errno::{AxError, AxResult, ax_bail};
 use ax_hal::{
     mem::phys_to_virt,
-    paging::{MappingFlags, PageTable},
+    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
     trap::PageFaultFlags,
 };
 use ax_memory_addr::{
@@ -16,6 +16,19 @@ use ax_sync::Mutex;
 mod backend;
 
 pub use self::backend::*;
+
+type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, PageSize, bool);
+
+fn rollback_moved_pages(cursor: &mut PageTableCursor, moved_pages: &[MovedPage]) {
+    for &(src_va, dst_va, paddr, flags, page_size, dst_newly_mapped) in moved_pages.iter().rev() {
+        if dst_newly_mapped {
+            let _ = cursor.unmap(dst_va);
+        }
+        if cursor.query(src_va).is_err() {
+            let _ = cursor.map(src_va, paddr, page_size, flags);
+        }
+    }
+}
 
 /// The virtual memory address space.
 pub struct AddrSpace {
@@ -192,6 +205,28 @@ impl AddrSpace {
         Ok(())
     }
 
+    /// Removes VMA metadata without touching page-table entries.
+    pub fn unmap_metadata(&mut self, start: VirtAddr, size: usize) -> AxResult {
+        self.validate_region(start, size)?;
+
+        self.areas.unmap_metadata(start, size)?;
+        Ok(())
+    }
+
+    pub fn replace_area_metadata(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        backend: Backend,
+    ) -> AxResult {
+        self.validate_region(start, size)?;
+
+        let area = MemoryArea::new(start, size, flags, backend);
+        self.areas.replace_area_metadata(area)?;
+        Ok(())
+    }
+
     /// Relocates page table entries from `[src, src+size)` to `[dst, dst+size)`.
     /// Pages already mapped at `dst` (shared backends) are skipped.
     /// Returns an error if any page-table update fails.
@@ -210,14 +245,24 @@ impl AddrSpace {
             }
         }
 
-        for &(_src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
+        let mut moved_pages = alloc::vec::Vec::new();
+        for &(src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
+            let mut dst_newly_mapped = false;
             if cursor.query(dst_va).is_err() {
-                cursor.map(dst_va, paddr, page_size, flags)?;
+                if let Err(err) = cursor.map(dst_va, paddr, page_size, flags) {
+                    rollback_moved_pages(&mut cursor, &moved_pages);
+                    return Err(err.into());
+                }
+                dst_newly_mapped = true;
             }
-        }
-
-        for &(src_va, ..) in &mapped_pages {
-            cursor.unmap(src_va)?;
+            if let Err(err) = cursor.unmap(src_va) {
+                if dst_newly_mapped {
+                    let _ = cursor.unmap(dst_va);
+                }
+                rollback_moved_pages(&mut cursor, &moved_pages);
+                return Err(err.into());
+            }
+            moved_pages.push((src_va, dst_va, paddr, flags, page_size, dst_newly_mapped));
         }
 
         Ok(())
