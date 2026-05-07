@@ -1061,8 +1061,8 @@ mod tests {
         fs::write(
             &path,
             format!(
-                "target = \"{target}\"\nfeatures = [\"qemu\"]\nlog = \"Info\"\nmax_cpu_num = \
-                 {max_cpu_num}\n"
+                "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \
+                 \"Info\"\nmax_cpu_num = {max_cpu_num}\n"
             ),
         )
         .unwrap();
