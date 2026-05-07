@@ -466,6 +466,12 @@ impl CachedFile {
         self.in_memory
     }
 
+    /// A hint to the backend that the file position has changed.
+    /// This is used for operations like resetting file content in proc/sys.
+    pub fn seek_to(&self, pos: u64) -> VfsResult<()> {
+        self.inner.entry().as_file()?.seek_to(pos)
+    }
+
     /// Registers a listener that is called when a page is evicted from cache.
     ///
     /// Returns a handle that can later be passed to
@@ -730,6 +736,15 @@ impl FileBackend {
         Self::Cached(CachedFile::get_or_create(location))
     }
 
+    /// A hint to the backend that the file position has changed.
+    /// This is used for operations like resetting file content in proc/sys.
+    pub fn seek_to(&self, pos: u64) -> VfsResult<()> {
+        match self {
+            Self::Cached(cached) => cached.seek_to(pos),
+            Self::Direct(loc) => loc.entry().as_file()?.seek_to(pos),
+        }
+    }
+
     /// Reads data from the file at `offset` into `dst`.
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, mut offset: u64) -> VfsResult<usize> {
         match self {
@@ -968,7 +983,7 @@ impl Seek for &File {
             let new_pos = match pos {
                 SeekFrom::Start(pos) => pos,
                 SeekFrom::End(off) => {
-                    let size = self.access(FileFlags::empty())?.location().len()?;
+                    let size = self.inner.location().len()?;
                     size.checked_add_signed(off).ok_or(VfsError::InvalidInput)?
                 }
                 SeekFrom::Current(off) => guard
@@ -976,6 +991,10 @@ impl Seek for &File {
                     .ok_or(VfsError::InvalidInput)?,
             };
             *guard = new_pos;
+            // Seeking doesn't actually require any action on the backend since we
+            // track the position in the `File` struct, but we can hint to the backend
+            // about it for potential operations like resetting file content(proc/sys).
+            self.inner.seek_to(new_pos)?;
             Ok(new_pos)
         } else {
             Ok(0)

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, string::ToString, vec::Vec};
+use alloc::{string::ToString, vec::Vec};
 use core::time::Duration;
 
 use rdif_clk::ClockId;
@@ -81,17 +81,19 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     }
 
     let mut emmc = EMmcHost::new(mmio_base.as_ptr() as usize);
-    emmc.init().map_err(|e| {
-        OnProbeError::other(format!(
-            "failed to initialize eMMC device at [PA:{:?}, SZ:0x{:x}): {e:?}",
-            base_reg.address, mmio_size
-        ))
+    emmc.init().map_err(|err| {
+        warn!(
+            "rockchip-emmc at {:#x} is not usable by sdmmc: {err:?}",
+            base_reg.address
+        );
+        OnProbeError::NotMatch
     })?;
-    let info = emmc.get_card_info().map_err(|e| {
-        OnProbeError::other(format!(
-            "failed to get eMMC card info at [PA:{:?}, SZ:0x{:x}): {e:?}",
-            base_reg.address, mmio_size
-        ))
+    let info = emmc.get_card_info().map_err(|err| {
+        warn!(
+            "rockchip-emmc at {:#x} did not provide card info: {err:?}",
+            base_reg.address
+        );
+        OnProbeError::NotMatch
     })?;
     info!("eMMC card info: {:#?}", info);
 

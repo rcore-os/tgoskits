@@ -23,6 +23,8 @@ mod general;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
 pub mod options;
+/// Raw socket implementation.
+pub mod raw;
 mod router;
 mod service;
 mod socket;

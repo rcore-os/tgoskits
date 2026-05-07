@@ -1,6 +1,7 @@
 #!/bin/sh
 # Auto-generated from ChenLongTest by scripts/convert_busybox_tests.py
 PASS=0; FAIL=0; SKIP=0
+export PATH="${PATH:-/bin:/usr/bin:/sbin:/usr/sbin}"
 
 _t=$({ timeout 10 sh -c "busybox adjtimex 2>&1"; } 2>&1)
 if [ -n "$_t" ]; then echo "PASS: busybox_adjtimex"; PASS=$((PASS+1)); else echo "FAIL: busybox_adjtimex (empty)"; FAIL=$((FAIL+1)); fi
@@ -786,6 +787,32 @@ if echo "$_t" | grep -qF "gg_"; then echo "PASS: addgroup"; PASS=$((PASS+1)); el
 # Custom test: adduser
 _t=$({ timeout 10 sh -c "U=\$(date +%s); busybox deluser \"uu_\$U\" 2>/dev/null; busybox adduser -D -H \"uu_\$U\" 2>&1 && busybox grep -F \"uu_\$U:\" /etc/passwd 2>&1; busybox deluser \"uu_\$U\" 2>/dev/null"; } 2>&1)
 if echo "$_t" | grep -qF "uu_"; then echo "PASS: adduser"; PASS=$((PASS+1)); else echo "FAIL: adduser"; FAIL=$((FAIL+1)); fi
+
+# Restored batch: PostgreSQL bring-up applets (see rcore-os/tgoskits#349).
+_t=$({ timeout 10 sh -c "busybox sh -c 'U=\$(busybox id -u); G=\$(busybox id -g); busybox echo c > /tmp/bb_chown_t && busybox chown \"\$U:\$G\" /tmp/bb_chown_t && [ \"\$(busybox stat -c \"%u:%g\" /tmp/bb_chown_t)\" = \"\$U:\$G\" ] && busybox echo chown_ok' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "chown_ok"; then echo "PASS: busybox_chown"; PASS=$((PASS+1)); else echo "FAIL: busybox_chown"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -f /tmp/bb_cpio.arc; busybox rm -rf /tmp/bb_cpio_src /tmp/bb_cpio_out; busybox mkdir -p /tmp/bb_cpio_src /tmp/bb_cpio_out && busybox echo cpio_payload > /tmp/bb_cpio_src/in && cd /tmp/bb_cpio_src && busybox echo in | busybox cpio -o -H newc > /tmp/bb_cpio.arc && cd /tmp/bb_cpio_out && busybox cpio -i < /tmp/bb_cpio.arc && busybox cat in && busybox echo cpio_ok' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "cpio_ok"; then echo "PASS: busybox_cpio"; PASS=$((PASS+1)); else echo "FAIL: busybox_cpio"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox printf \"a\\r\\nb\\r\\n\" > /tmp/bb_d2u && busybox dos2unix /tmp/bb_d2u && busybox od -An -tx1 /tmp/bb_d2u' 2>&1"; } 2>&1)
+_d2u=$(echo "$_t" | tr -d '\n' | tr -s ' ')
+if echo "$_d2u" | grep -qF "61 0a 62 0a" && ! echo "$_d2u" | grep -qF "0d"; then echo "PASS: busybox_dos2unix"; PASS=$((PASS+1)); else echo "FAIL: busybox_dos2unix"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox env 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "PATH="; then echo "PASS: busybox_env"; PASS=$((PASS+1)); else echo "FAIL: busybox_env"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -rf /tmp/bb_spl && busybox mkdir -p /tmp/bb_spl && busybox printf abcdef > /tmp/bb_spl/in && busybox split -b2 /tmp/bb_spl/in /tmp/bb_spl/o && busybox cat /tmp/bb_spl/oaa' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "ab"; then echo "PASS: busybox_split"; PASS=$((PASS+1)); else echo "FAIL: busybox_split"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox printf \"first\\nroot:\\n\" > /tmp/bb_tail_t && busybox tail -n 1 /tmp/bb_tail_t' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "root:"; then echo "PASS: busybox_tail"; PASS=$((PASS+1)); else echo "FAIL: busybox_tail"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -rf /tmp/bb_tar && busybox mkdir -p /tmp/bb_tar && busybox echo one > /tmp/bb_tar/one && busybox tar -cf /tmp/bb_tar.tar -C /tmp/bb_tar one && busybox tar -tf /tmp/bb_tar.tar' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "one"; then echo "PASS: busybox_tar"; PASS=$((PASS+1)); else echo "FAIL: busybox_tar"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox printf 'Hi' | busybox xxd 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "4869"; then echo "PASS: busybox_xxd"; PASS=$((PASS+1)); else echo "FAIL: busybox_xxd"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 # busybox_mkdir (-p on a new path)
 _t=$({ timeout 10 sh -c 'busybox rm -rf /tmp/bb_mkd_one 2>/dev/null && busybox mkdir -p /tmp/bb_mkd_one && busybox ls -d /tmp/bb_mkd_one'; } 2>&1)

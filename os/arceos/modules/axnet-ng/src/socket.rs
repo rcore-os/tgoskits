@@ -17,6 +17,7 @@ use bitflags::bitflags;
 use crate::vsock::VsockSocket;
 use crate::{
     options::{Configurable, GetSocketOption, SetSocketOption},
+    raw::RawSocket,
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{UnixSocket, UnixSocketAddr},
@@ -179,12 +180,62 @@ pub trait SocketOps: Configurable {
     fn shutdown(&self, how: Shutdown) -> AxResult;
 }
 
+impl<T: Configurable + ?Sized> Configurable for Box<T> {
+    fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
+        (**self).get_option_inner(option)
+    }
+
+    fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
+        (**self).set_option_inner(option)
+    }
+}
+
+impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
+    fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+        (**self).bind(local_addr)
+    }
+
+    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
+        (**self).connect(remote_addr)
+    }
+
+    fn listen(&self, backlog: usize) -> AxResult {
+        (**self).listen(backlog)
+    }
+
+    fn accept(&self) -> AxResult<Socket> {
+        (**self).accept()
+    }
+
+    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+        (**self).send(src, options)
+    }
+
+    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
+        (**self).recv(dst, options)
+    }
+
+    fn local_addr(&self) -> AxResult<SocketAddrEx> {
+        (**self).local_addr()
+    }
+
+    fn peer_addr(&self) -> AxResult<SocketAddrEx> {
+        (**self).peer_addr()
+    }
+
+    fn shutdown(&self, how: Shutdown) -> AxResult {
+        (**self).shutdown(how)
+    }
+}
+
 /// Network socket abstraction.
 pub enum Socket {
     /// UDP socket.
     Udp(Box<UdpSocket>),
     /// TCP socket.
     Tcp(Box<TcpSocket>),
+    /// Raw IP socket.
+    Raw(Box<RawSocket>),
     /// Unix domain socket.
     Unix(Box<UnixSocket>),
     /// Virtio socket.
@@ -222,6 +273,7 @@ impl Configurable for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.get_option_inner(opt),
             Socket::Udp(udp) => udp.get_option_inner(opt),
+            Socket::Raw(raw) => raw.get_option_inner(opt),
             Socket::Unix(unix) => unix.get_option_inner(opt),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.get_option_inner(opt),
@@ -232,6 +284,7 @@ impl Configurable for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.set_option_inner(opt),
             Socket::Udp(udp) => udp.set_option_inner(opt),
+            Socket::Raw(raw) => raw.set_option_inner(opt),
             Socket::Unix(unix) => unix.set_option_inner(opt),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.set_option_inner(opt),
@@ -244,6 +297,7 @@ impl SocketOps for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.bind(local_addr),
             Socket::Udp(udp) => udp.bind(local_addr),
+            Socket::Raw(raw) => raw.bind(local_addr),
             Socket::Unix(unix) => unix.bind(local_addr),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.bind(local_addr),
@@ -254,6 +308,7 @@ impl SocketOps for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.connect(remote_addr),
             Socket::Udp(udp) => udp.connect(remote_addr),
+            Socket::Raw(raw) => raw.connect(remote_addr),
             Socket::Unix(unix) => unix.connect(remote_addr),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.connect(remote_addr),
@@ -264,6 +319,7 @@ impl SocketOps for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.listen(backlog),
             Socket::Udp(udp) => udp.listen(backlog),
+            Socket::Raw(raw) => raw.listen(backlog),
             Socket::Unix(unix) => unix.listen(backlog),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.listen(backlog),
@@ -274,6 +330,7 @@ impl SocketOps for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.accept(),
             Socket::Udp(udp) => udp.accept(),
+            Socket::Raw(raw) => raw.accept(),
             Socket::Unix(unix) => unix.accept(),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.accept(),
@@ -284,6 +341,7 @@ impl SocketOps for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.send(src, options),
             Socket::Udp(udp) => udp.send(src, options),
+            Socket::Raw(raw) => raw.send(src, options),
             Socket::Unix(unix) => unix.send(src, options),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.send(src, options),
@@ -294,6 +352,7 @@ impl SocketOps for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.recv(dst, options),
             Socket::Udp(udp) => udp.recv(dst, options),
+            Socket::Raw(raw) => raw.recv(dst, options),
             Socket::Unix(unix) => unix.recv(dst, options),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.recv(dst, options),
@@ -304,6 +363,7 @@ impl SocketOps for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.local_addr(),
             Socket::Udp(udp) => udp.local_addr(),
+            Socket::Raw(raw) => raw.local_addr(),
             Socket::Unix(unix) => unix.local_addr(),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.local_addr(),
@@ -314,6 +374,7 @@ impl SocketOps for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.peer_addr(),
             Socket::Udp(udp) => udp.peer_addr(),
+            Socket::Raw(raw) => raw.peer_addr(),
             Socket::Unix(unix) => unix.peer_addr(),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.peer_addr(),
@@ -324,6 +385,7 @@ impl SocketOps for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.shutdown(how),
             Socket::Udp(udp) => udp.shutdown(how),
+            Socket::Raw(raw) => raw.shutdown(how),
             Socket::Unix(unix) => unix.shutdown(how),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.shutdown(how),
@@ -336,6 +398,7 @@ impl Pollable for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.poll(),
             Socket::Udp(udp) => udp.poll(),
+            Socket::Raw(raw) => raw.poll(),
             Socket::Unix(unix) => unix.poll(),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.poll(),
@@ -346,6 +409,7 @@ impl Pollable for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.register(context, events),
             Socket::Udp(udp) => udp.register(context, events),
+            Socket::Raw(raw) => raw.register(context, events),
             Socket::Unix(unix) => unix.register(context, events),
             #[cfg(feature = "vsock")]
             Socket::Vsock(vsock) => vsock.register(context, events),

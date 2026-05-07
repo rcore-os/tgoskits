@@ -82,7 +82,14 @@ impl<'a> Command<'a> {
         let cmd_crc = cmd.with_check_response_crc(true);
 
         match self {
-            Command::GoIdleState => (cmd_crc.with_send_initialization(true), 0, None),
+            Command::GoIdleState => (
+                Cmd::default()
+                    .with_use_hold_reg(true)
+                    .with_send_initialization(true)
+                    .with_cmd_index(self.cmd_index()),
+                0,
+                None,
+            ),
             Command::SendRelativeAddr => (cmd_crc, 0, None),
             Command::SelectCard(arg) => (cmd_crc, arg, None),
             Command::SendIfCond(arg) | Command::AppCmd(arg) => (cmd_crc, arg, None),

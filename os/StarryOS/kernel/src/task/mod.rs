@@ -18,7 +18,7 @@ use core::{
 
 use ax_hal::time::TimeValue;
 use ax_sync::{Mutex, spin::SpinNoIrq};
-use ax_task::{TaskExt, TaskInner};
+use ax_task::{TaskExt, TaskInner, WaitQueue};
 use axpoll::PollSet;
 use extern_trait::extern_trait;
 use scope_local::{ActiveScope, Scope};
@@ -270,6 +270,22 @@ impl AsThread for TaskInner {
     }
 }
 
+/// A one-shot completion for vfork synchronization.
+///
+/// This avoids lost-wakeup races by recording the "done" state under the same
+/// lock as the wait queue. If the child completes before the parent enters the
+/// wait, the parent will see `done == true` and skip waiting.
+pub struct VforkDone {
+    done: bool,
+    wq: Arc<WaitQueue>,
+}
+
+impl VforkDone {
+    pub fn new(wq: Arc<WaitQueue>) -> Self {
+        Self { done: false, wq }
+    }
+}
+
 /// [`Process`]-shared data.
 pub struct ProcessData {
     /// The process.
@@ -280,7 +296,7 @@ pub struct ProcessData {
     pub cmdline: RwLock<Arc<Vec<String>>>,
     /// The virtual memory address space.
     // TODO: scopify
-    pub aspace: Arc<Mutex<AddrSpace>>,
+    aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
     /// The resource scope
     pub scope: RwLock<Scope>,
     /// The user heap top
@@ -301,6 +317,11 @@ pub struct ProcessData {
 
     /// The futex table.
     futex_table: Arc<FutexTable>,
+
+    /// If this process was created by vfork, this tracks completion state.
+    /// The parent waits until `done` becomes true. Protected by the same lock
+    /// as the wait queue to avoid lost wakeup races.
+    vfork_done: SpinNoIrq<Option<VforkDone>>,
 
     /// The default mask for file permissions.
     umask: AtomicU32,
@@ -324,7 +345,7 @@ impl ProcessData {
             proc,
             exe_path: RwLock::new(exe_path),
             cmdline: RwLock::new(cmdline),
-            aspace,
+            aspace: SpinNoIrq::new(aspace),
             scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
@@ -340,6 +361,8 @@ impl ProcessData {
             )),
 
             futex_table: Arc::new(FutexTable::new()),
+
+            vfork_done: SpinNoIrq::new(None),
 
             umask: AtomicU32::new(0o022),
 
@@ -388,5 +411,84 @@ impl ProcessData {
         let mut time = self.children_cpu_time.lock();
         time.0 += utime;
         time.1 += stime;
+    }
+
+    /// Returns a clone of the address space Arc.
+    pub fn aspace(&self) -> Arc<Mutex<AddrSpace>> {
+        self.aspace.lock().clone()
+    }
+
+    /// Replace this process's address space with a new one.
+    ///
+    /// # Why `mem::replace` instead of `*guard = new_aspace`
+    ///
+    /// `self.aspace` is a `SpinNoIrq<Arc<Mutex<AddrSpace>>>`. Locking it
+    /// disables IRQs and increments `preempt_count`, putting us in atomic
+    /// context. A plain assignment (`*guard = new_aspace`) would drop the
+    /// **old** `Arc<Mutex<AddrSpace>>` while the `SpinNoIrq` guard is still
+    /// alive. If that was the last strong reference (e.g. after a
+    /// `CLONE_VM` + `execve`), the destructor chain would be:
+    ///
+    /// ```text
+    /// Arc::drop → Mutex<AddrSpace>::drop → AddrSpace::drop
+    ///   → self.clear() → areas.clear() → FileBackendInner::drop
+    ///     → cache.remove_evict_listener()
+    ///       → evict_listeners.lock()        ← sleeping Mutex
+    ///         → might_sleep()               ← PANIC (atomic context)
+    /// ```
+    ///
+    /// `mem::replace` moves the old Arc out of the guard so it is dropped
+    /// **after** the `SpinNoIrq` guard, in normal preemptible context.
+    pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
+        let _old = {
+            let mut guard = self.aspace.lock();
+            core::mem::replace(&mut *guard, new_aspace)
+        };
+        // `_old` drops here — SpinNoIrq already released, IRQs re-enabled.
+    }
+
+    /// Set the vfork completion (called on the child after a vfork,
+    /// before the child task is spawned).
+    pub fn set_vfork_done(&self, wq: Arc<WaitQueue>) {
+        *self.vfork_done.lock() = Some(VforkDone::new(wq));
+    }
+
+    /// Wait for vfork completion. Returns immediately if already done.
+    /// This should be called by the parent after spawning the vfork child.
+    pub fn wait_vfork_done(&self) {
+        let wq = {
+            let guard = self.vfork_done.lock();
+            match guard.as_ref() {
+                Some(vfork) => vfork.wq.clone(),
+                None => return, // No vfork, shouldn't happen but be safe.
+            }
+        };
+        // Wait until done. The condition is checked under lock in wait_until.
+        wq.wait_until(|| {
+            self.vfork_done
+                .lock()
+                .as_ref()
+                .map(|v| v.done)
+                .unwrap_or(true)
+        });
+    }
+
+    /// Notify the vfork parent that this child has exec'd or exited.
+    /// No-op if this process was not created by vfork.
+    pub fn notify_vfork_done(&self) {
+        // Set done under the lock, then drop the lock before notifying
+        // to avoid lock-order inversion with the wait-queue internal lock.
+        let wq = {
+            let mut guard = self.vfork_done.lock();
+            match guard.as_mut() {
+                Some(vfork) => {
+                    vfork.done = true;
+                    vfork.wq.clone()
+                }
+                None => return,
+            }
+            // guard dropped here
+        };
+        wq.notify_one(true);
     }
 }

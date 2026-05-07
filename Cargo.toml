@@ -110,6 +110,7 @@ members = [
     "drivers/blk/simple-sdmmc",
     "drivers/npu/rockchip-npu",
     "drivers/pci/rk3588-pci",
+    "drivers/net/realtek-rtl8125",
     "drivers/soc/rockchip/rockchip-pm",
     "drivers/soc/rockchip/rockchip-soc",
     "examples/tgmath",
@@ -311,6 +312,7 @@ riscv_vcpu = { version = "0.5.6", path = "components/riscv_vcpu" }
 riscv_vplic = { version = "0.4.8", path = "components/riscv_vplic" }
 rk3588-pci = { version = "0.1.0", path = "drivers/pci/rk3588-pci" }
 rockchip-npu = { version = "0.1.1", path = "drivers/npu/rockchip-npu" }
+realtek-rtl8125 = { version = "0.1.0", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4.2", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.1.1", path = "drivers/soc/rockchip/rockchip-soc" }
 rsext4 = { version = "0.3.7", path = "components/rsext4" }

@@ -6,11 +6,10 @@ use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_task::current;
 use linux_raw_sys::general::*;
-use starry_vm::{vm_load, vm_write_slice};
 
 use crate::{
     file::get_file_like,
-    mm::{Backend, SharedPages},
+    mm::{Backend, BackendOps, SharedPages},
     pseudofs::{Device, DeviceMmap},
     task::AsThread,
 };
@@ -104,7 +103,8 @@ pub fn sys_mmap(
     }
 
     let curr = current();
-    let mut aspace = curr.as_thread().proc_data.aspace.lock();
+    let curr_aspace = curr.as_thread().proc_data.aspace();
+    let mut aspace = curr_aspace.lock();
     let permission_flags = MmapProt::from_bits_truncate(prot);
     // TODO: check illegal flags for mmap
     let map_flags = match MmapFlags::from_bits(flags) {
@@ -187,72 +187,80 @@ pub fn sys_mmap(
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
             if let Some(ref file) = file {
-                // Try device mmap first (ExportedGemBuffer, etc.)
-                if let Ok(device_mmap) = file.device_mmap(offset as u64) {
-                    match device_mmap {
-                        DeviceMmap::Physical(mut range) => {
-                            range.start += offset;
-                            if range.is_empty() {
-                                return Err(AxError::InvalidInput);
-                            }
-                            length = length.min(range.size().align_down(page_size));
-                            Backend::new_linear(
-                                start.as_usize() as isize - range.start.as_usize() as isize,
-                            );
+                match file.device_mmap(offset as u64) {
+                    Ok(DeviceMmap::Physical(mut range)) => {
+                        range.start += offset;
+                        if range.is_empty() {
+                            return Err(AxError::InvalidInput);
                         }
-                        DeviceMmap::None => return Err(AxError::NoSuchDevice),
-                        _ => return Err(AxError::InvalidInput),
-                    }
-                }
-
-                // Fall through to file-backed mmap
-                let (backend, flags) = file.file_mmap()?;
-                // man 2 mmap EACCES: a file mapping requires the fd to be
-                // open for reading, and MAP_SHARED+PROT_WRITE additionally
-                // requires the fd to be open for writing.
-                if !flags.contains(FileFlags::READ) {
-                    return Err(AxError::PermissionDenied);
-                }
-                if permission_flags.contains(MmapProt::WRITE) && !flags.contains(FileFlags::WRITE) {
-                    return Err(AxError::PermissionDenied);
-                }
-                match backend.clone() {
-                    FileBackend::Cached(cache) => {
-                        // TODO(mivik): file mmap page size
-                        Backend::new_file(
+                        length = length.min(range.size().align_down(page_size));
+                        Backend::new_linear(
                             start,
-                            cache,
-                            flags,
-                            offset,
-                            &curr.as_thread().proc_data.aspace,
+                            start.as_usize() as isize - range.start.as_usize() as isize,
+                            true,
                         )
                     }
-                    FileBackend::Direct(loc) => {
-                        let device = loc
-                            .entry()
-                            .downcast::<Device>()
-                            .map_err(|_| AxError::NoSuchDevice)?;
-
-                        match device.mmap(offset as u64) {
-                            DeviceMmap::None => {
-                                return Err(AxError::NoSuchDevice);
-                            }
-                            DeviceMmap::Physical(range) => {
-                                if range.is_empty() {
-                                    return Err(AxError::InvalidInput);
-                                }
-                                length = capped_device_map_len(length, range.size(), page_size);
-                                Backend::new_linear(
-                                    start.as_usize() as isize - range.start.as_usize() as isize,
+                    Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
+                    Ok(_) => return Err(AxError::InvalidInput),
+                    Err(_) => {
+                        // Fall through to file-backed mmap
+                        let (backend, flags) = file.file_mmap()?;
+                        // man 2 mmap EACCES: a file mapping requires the fd to be
+                        // open for reading, and MAP_SHARED+PROT_WRITE additionally
+                        // requires the fd to be open for writing.
+                        if !flags.contains(FileFlags::READ) {
+                            return Err(AxError::PermissionDenied);
+                        }
+                        if permission_flags.contains(MmapProt::WRITE)
+                            && !flags.contains(FileFlags::WRITE)
+                        {
+                            return Err(AxError::PermissionDenied);
+                        }
+                        match backend.clone() {
+                            FileBackend::Cached(cache) => {
+                                // TODO(mivik): file mmap page size
+                                Backend::new_file(
+                                    start,
+                                    cache,
+                                    flags,
+                                    offset,
+                                    &curr.as_thread().proc_data.aspace(),
+                                    true,
                                 )
                             }
-                            DeviceMmap::Cache(cache) => Backend::new_file(
-                                start,
-                                cache,
-                                flags,
-                                offset,
-                                &curr.as_thread().proc_data.aspace,
-                            ),
+                            FileBackend::Direct(loc) => {
+                                let device = loc
+                                    .entry()
+                                    .downcast::<Device>()
+                                    .map_err(|_| AxError::NoSuchDevice)?;
+
+                                match device.mmap(offset as u64) {
+                                    DeviceMmap::None => {
+                                        return Err(AxError::NoSuchDevice);
+                                    }
+                                    DeviceMmap::Physical(range) => {
+                                        if range.is_empty() {
+                                            return Err(AxError::InvalidInput);
+                                        }
+                                        length =
+                                            capped_device_map_len(length, range.size(), page_size);
+                                        Backend::new_linear(
+                                            start,
+                                            start.as_usize() as isize
+                                                - range.start.as_usize() as isize,
+                                            true,
+                                        )
+                                    }
+                                    DeviceMmap::Cache(cache) => Backend::new_file(
+                                        start,
+                                        cache,
+                                        flags,
+                                        offset,
+                                        &curr.as_thread().proc_data.aspace(),
+                                        true,
+                                    ),
+                                }
+                            }
                         }
                     }
                 }
@@ -270,9 +278,9 @@ pub fn sys_mmap(
                 if !file_flags.contains(FileFlags::READ) {
                     return Err(AxError::PermissionDenied);
                 }
-                Backend::new_cow(start, page_size, backend, offset as u64, None)
+                Backend::new_cow(start, page_size, backend, offset as u64, None, false)
             } else {
-                Backend::new_alloc(start, page_size)
+                Backend::new_alloc(start, page_size, "")
             }
         }
         _ => return Err(AxError::InvalidInput),
@@ -291,7 +299,8 @@ pub fn sys_munmap(addr: usize, length: usize) -> AxResult<isize> {
     }
     debug!("sys_munmap <= addr: {addr:#x}, length: {length:x}");
     let curr = current();
-    let mut aspace = curr.as_thread().proc_data.aspace.lock();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
     aspace.unmap(start_addr, length)?;
@@ -319,7 +328,8 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     }
 
     let curr = current();
-    let mut aspace = curr.as_thread().proc_data.aspace.lock();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
     // man 2 mprotect: addresses without a mapping → ENOMEM.
@@ -331,49 +341,286 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> AxResult<isize> {
+const MREMAP_VALID_FLAGS: u32 = MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP;
+
+fn find_free(
+    aspace: &crate::mm::AddrSpace,
+    hint: VirtAddr,
+    size: usize,
+    align: usize,
+) -> AxResult<VirtAddr> {
+    let limit = VirtAddrRange::new(aspace.base(), aspace.end());
+    aspace
+        .find_free_area(hint, size, limit, align)
+        .or_else(|| aspace.find_free_area(aspace.base(), size, limit, align))
+        .ok_or(AxError::NoMemory)
+}
+
+struct MremapMove<'a> {
+    src: VirtAddr,
+    src_size: usize,
+    target: VirtAddr,
+    target_size: usize,
+    src_backend: &'a Backend,
+    flags: MappingFlags,
+    dontunmap: bool,
+    src_offset: usize,
+}
+
+fn mremap_move(
+    aspace: &mut crate::mm::AddrSpace,
+    aspace_ref: &Arc<ax_sync::Mutex<crate::mm::AddrSpace>>,
+    move_args: MremapMove<'_>,
+) -> AxResult {
+    let MremapMove {
+        src,
+        src_size,
+        target,
+        target_size,
+        src_backend,
+        flags,
+        dontunmap,
+        src_offset,
+    } = move_args;
+    let move_size = src_size.min(target_size);
+    let backend = src_backend.relocated(target, src_offset, aspace_ref)?;
+
+    aspace.map(target, target_size, flags, false, backend)?;
+
+    if dontunmap {
+        let empty = Backend::new_alloc(src, src_backend.page_size(), "");
+        if let Err(e) = aspace.replace_area_metadata(src, move_size, flags, empty) {
+            let _ = aspace.unmap(target, target_size);
+            return Err(e);
+        }
+    }
+
+    if let Err(e) = aspace.move_pages(src, target, move_size) {
+        if dontunmap {
+            aspace
+                .replace_area_metadata(src, move_size, flags, src_backend.clone())
+                .expect("restore source VMA metadata after failed mremap move");
+        }
+        let _ = aspace.unmap(target, target_size);
+        return Err(e);
+    }
+
+    if dontunmap {
+        return Ok(());
+    }
+
+    aspace
+        .unmap_metadata(src, move_size)
+        .expect("remove moved source VMA metadata");
+
+    if src_size > move_size {
+        aspace
+            .unmap(src + move_size, src_size - move_size)
+            .expect("unmap truncated source tail after mremap move");
+    } else {
+        debug_assert_eq!(src_size, move_size);
+    }
+
+    Ok(())
+}
+
+pub fn sys_mremap(
+    addr: usize,
+    old_size: usize,
+    new_size: usize,
+    flags: u32,
+    new_addr: usize,
+) -> AxResult<isize> {
     debug!(
         "sys_mremap <= addr: {addr:#x}, old_size: {old_size:x}, new_size: {new_size:x}, flags: \
-         {flags:#x}"
+         {flags:#x}, new_addr: {new_addr:#x}"
     );
 
-    // TODO: full implementation
-
-    if !addr.is_multiple_of(PageSize::Size4K as usize) {
+    if new_size == 0 {
         return Err(AxError::InvalidInput);
     }
+    if flags & !MREMAP_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let addr = VirtAddr::from(addr);
+    let may_move = flags & MREMAP_MAYMOVE != 0;
+    let fixed = flags & MREMAP_FIXED != 0;
+    let dontunmap = flags & MREMAP_DONTUNMAP != 0;
+
+    if (fixed || dontunmap) && !may_move {
+        return Err(AxError::InvalidInput);
+    }
+    if dontunmap && old_size != new_size {
+        return Err(AxError::InvalidInput);
+    }
+    if fixed {
+        if !new_addr.is_multiple_of(PageSize::Size4K as usize) {
+            return Err(AxError::InvalidInput);
+        }
+        let old_end = addr
+            .as_usize()
+            .checked_add(old_size)
+            .ok_or(AxError::InvalidInput)?;
+        let new_end = new_addr
+            .checked_add(new_size)
+            .ok_or(AxError::InvalidInput)?;
+        if old_end > new_addr && new_end > addr.as_usize() {
+            return Err(AxError::InvalidInput);
+        }
+    }
 
     let curr = current();
-    let aspace = curr.as_thread().proc_data.aspace.lock();
-    let old_size = align_up_4k(old_size);
-    let new_size = align_up_4k(new_size);
+    let aspace_ref = &curr.as_thread().proc_data.aspace();
+    let mut aspace = aspace_ref.lock();
 
-    let area = aspace.find_area(addr).ok_or(AxError::NoMemory)?;
-    let flags = area.flags();
-    // Determine the sharing type from the backend: Shared/File backends are
-    // MAP_SHARED, Cow/Linear backends are MAP_PRIVATE.
-    let mmap_flags = match area.backend() {
-        Backend::Shared(_) | Backend::File(_) => MmapFlags::SHARED | MmapFlags::ANONYMOUS,
-        Backend::Cow(_) | Backend::Linear(_) => MmapFlags::PRIVATE | MmapFlags::ANONYMOUS,
+    let (vma_start, vma_end, vma_flags, src_backend, shared_pages, page_size) = {
+        let area = aspace.find_area(addr).ok_or(AxError::BadAddress)?;
+        let shared_pages = match area.backend() {
+            Backend::Shared(sb) => Some(sb.pages().clone()),
+            _ => None,
+        };
+        (
+            area.start(),
+            area.end(),
+            area.flags(),
+            area.backend().clone(),
+            shared_pages,
+            area.backend().page_size(),
+        )
     };
-    drop(aspace);
-    let new_addr = sys_mmap(
-        addr.as_usize(),
-        new_size,
-        flags.bits() as _,
-        mmap_flags.bits(),
-        -1,
-        0,
-    )? as usize;
+    if !page_size.is_aligned(addr.as_usize()) {
+        return Err(AxError::InvalidInput);
+    }
+    let old_size = old_size.align_up(page_size);
+    let new_size = new_size.align_up(page_size);
+    let src_offset = addr - vma_start;
 
-    let copy_len = new_size.min(old_size);
-    let data = vm_load(addr.as_ptr(), copy_len)?;
-    vm_write_slice(new_addr as *mut u8, &data)?;
+    if dontunmap && !matches!(&src_backend, Backend::Cow(cow) if cow.is_anonymous()) {
+        return Err(AxError::InvalidInput);
+    }
 
-    sys_munmap(addr.as_usize(), old_size)?;
+    // old_size == 0: duplicate a shared mapping (Linux special case).
+    if old_size == 0 {
+        if shared_pages.is_none() || !may_move {
+            return Err(AxError::InvalidInput);
+        }
+        let pages = shared_pages.unwrap();
+        let shared_size = pages.len() * pages.size as usize;
+        if src_offset + new_size > shared_size {
+            return Err(AxError::InvalidInput);
+        }
 
-    Ok(new_addr as isize)
+        let target = if fixed {
+            if !page_size.is_aligned(new_addr) {
+                return Err(AxError::InvalidInput);
+            }
+            aspace.unmap(VirtAddr::from(new_addr), new_size)?;
+            VirtAddr::from(new_addr)
+        } else {
+            find_free(&aspace, addr, new_size, page_size as usize)?
+        };
+        let backend_start = target
+            .as_usize()
+            .checked_sub(src_offset)
+            .map(VirtAddr::from)
+            .ok_or(AxError::InvalidInput)?;
+        let backend = Backend::new_shared(backend_start, pages);
+        aspace.map(target, new_size, vma_flags, false, backend)?;
+        return Ok(target.as_usize() as isize);
+    }
+
+    let old_end = addr
+        .as_usize()
+        .checked_add(old_size)
+        .map(VirtAddr::from)
+        .ok_or(AxError::InvalidInput)?;
+    if old_end > vma_end {
+        return Err(AxError::BadAddress);
+    }
+
+    if fixed {
+        if !page_size.is_aligned(new_addr) {
+            return Err(AxError::InvalidInput);
+        }
+        let target = VirtAddr::from(new_addr);
+        aspace.unmap(target, new_size)?;
+
+        mremap_move(
+            &mut aspace,
+            aspace_ref,
+            MremapMove {
+                src: addr,
+                src_size: old_size,
+                target,
+                target_size: new_size,
+                src_backend: &src_backend,
+                flags: vma_flags,
+                dontunmap,
+                src_offset,
+            },
+        )?;
+        return Ok(target.as_usize() as isize);
+    }
+
+    if new_size == old_size && !dontunmap {
+        return Ok(addr.as_usize() as isize);
+    }
+
+    if new_size < old_size {
+        aspace.unmap(addr + new_size, old_size - new_size)?;
+        return Ok(addr.as_usize() as isize);
+    }
+
+    if dontunmap {
+        let target = find_free(&aspace, addr + old_size, new_size, page_size as usize)?;
+        mremap_move(
+            &mut aspace,
+            aspace_ref,
+            MremapMove {
+                src: addr,
+                src_size: old_size,
+                target,
+                target_size: new_size,
+                src_backend: &src_backend,
+                flags: vma_flags,
+                dontunmap: true,
+                src_offset,
+            },
+        )?;
+        return Ok(target.as_usize() as isize);
+    }
+
+    let delta = new_size - old_size;
+
+    if addr + old_size == vma_end {
+        match aspace.extend_area(addr, delta) {
+            Ok(()) => return Ok(addr.as_usize() as isize),
+            Err(AxError::NoMemory | AxError::AlreadyExists) => {}
+            Err(e) => return Err(e),
+        }
+    }
+
+    if !may_move {
+        return Err(AxError::NoMemory);
+    }
+
+    let target = find_free(&aspace, addr + old_size, new_size, page_size as usize)?;
+    mremap_move(
+        &mut aspace,
+        aspace_ref,
+        MremapMove {
+            src: addr,
+            src_size: old_size,
+            target,
+            target_size: new_size,
+            src_backend: &src_backend,
+            flags: vma_flags,
+            dontunmap: false,
+            src_offset,
+        },
+    )?;
+    Ok(target.as_usize() as isize)
 }
 
 pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
@@ -394,7 +641,8 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
 
     if length > 0 {
         let curr = current();
-        let aspace = curr.as_thread().proc_data.aspace.lock();
+        let aspace_arc = curr.as_thread().proc_data.aspace();
+        let aspace = aspace_arc.lock();
         if aspace.find_area(VirtAddr::from(addr)).is_none() {
             return Err(AxError::NoMemory);
         }
