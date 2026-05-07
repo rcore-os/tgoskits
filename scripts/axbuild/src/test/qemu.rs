@@ -188,7 +188,15 @@ pub(crate) fn discover_all_qemu_cases(
         );
     }
 
-    Ok(by_name.into_keys().collect())
+    let cases = by_name.into_keys().collect::<Vec<_>>();
+    ensure_listed_qemu_cases_not_empty(
+        &cases,
+        selected_case,
+        suite_name,
+        group_label,
+        test_group_dir,
+    )?;
+    Ok(cases)
 }
 
 pub(crate) fn discover_all_qemu_cases_with_archs(
@@ -252,7 +260,38 @@ fn discover_all_qemu_cases_with_metadata(
         );
     }
 
-    Ok(by_name.into_iter().collect())
+    let cases = by_name.into_iter().collect::<Vec<_>>();
+    ensure_listed_qemu_cases_not_empty(
+        &cases,
+        selected_case,
+        suite_name,
+        group_label,
+        test_group_dir,
+    )?;
+    Ok(cases)
+}
+
+fn ensure_listed_qemu_cases_not_empty<T>(
+    cases: &[T],
+    selected_case: Option<&str>,
+    suite_name: &str,
+    group_label: &str,
+    test_group_dir: &Path,
+) -> anyhow::Result<()> {
+    if !cases.is_empty() {
+        return Ok(());
+    }
+    if let Some(case_name) = selected_case {
+        bail!(
+            "unknown {suite_name} {group_label} test case `{case_name}` under {}; cases are \
+             discovered from build wrapper directories with qemu-*.toml",
+            test_group_dir.display()
+        );
+    }
+    bail!(
+        "no {suite_name} {group_label} qemu test cases found under {}",
+        test_group_dir.display()
+    )
 }
 
 fn collect_all_qemu_cases_in_build_wrapper(
@@ -1066,6 +1105,22 @@ mod tests {
             discover_all_qemu_cases(&root.path().join("suite"), None, "test", "qemu").unwrap();
 
         assert_eq!(cases, ["root-case"]);
+    }
+
+    #[test]
+    fn discover_all_qemu_cases_rejects_unknown_selected_case() {
+        let root = tempfile::tempdir().unwrap();
+        let case_dir = root.path().join("suite/root-case");
+        fs::create_dir_all(&case_dir).unwrap();
+        fs::write(case_dir.join("build-x86_64-unknown-none.toml"), "").unwrap();
+        fs::write(case_dir.join("qemu-x86_64.toml"), "").unwrap();
+
+        let err =
+            discover_all_qemu_cases(&root.path().join("suite"), Some("missing"), "test", "qemu")
+                .unwrap_err()
+                .to_string();
+
+        assert!(err.contains("unknown test qemu test case `missing`"));
     }
 
     #[test]

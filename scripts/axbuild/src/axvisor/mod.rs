@@ -125,6 +125,8 @@ pub struct ArgsTest {
 pub enum TestCommand {
     /// Run Axvisor QEMU test suite
     Qemu(ArgsTestQemu),
+    /// Run Axvisor U-Boot board test suite
+    Uboot(ArgsTestUboot),
     /// Run Axvisor remote board test suite
     Board(ArgsTestBoard),
 }
@@ -162,6 +164,18 @@ pub struct ArgsTestQemu {
     pub test_case: Option<String>,
     #[arg(short = 'l', long, help = "List discovered Axvisor QEMU test cases")]
     pub list: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsTestUboot {
+    #[arg(short = 'b', long, value_name = "BOARD")]
+    pub board: String,
+
+    #[arg(long, default_value = "linux", value_name = "GUEST")]
+    pub guest: String,
+
+    #[arg(long)]
+    pub uboot_config: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -559,6 +573,40 @@ mod tests {
                     assert_eq!(args.test_case.as_deref(), Some("smoke"));
                 }
                 _ => panic!("expected qemu test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_uboot() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "test",
+            "uboot",
+            "-b",
+            "roc-rk3568-pc",
+            "--guest",
+            "arceos",
+            "--uboot-config",
+            "uboot.toml",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Uboot(args) => {
+                    assert_eq!(args.board, "roc-rk3568-pc");
+                    assert_eq!(args.guest, "arceos");
+                    assert_eq!(args.uboot_config, Some(PathBuf::from("uboot.toml")));
+                }
+                _ => panic!("expected uboot test command"),
             },
             _ => panic!("expected test command"),
         }
