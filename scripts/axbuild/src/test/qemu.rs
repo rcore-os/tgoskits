@@ -473,39 +473,6 @@ pub(crate) fn nearest_build_wrapper(
     }
 }
 
-pub(crate) fn nearest_target_build_wrapper(
-    test_group_dir: &Path,
-    case_dir: &Path,
-    target: &str,
-    suite_name: &str,
-    group_kind: &str,
-) -> anyhow::Result<TestBuildWrapper> {
-    let mut dir = case_dir;
-    loop {
-        if let Some(build_config_path) = resolve_build_config_path(dir, target)? {
-            return Ok(TestBuildWrapper {
-                name: relative_case_name(test_group_dir, dir)?,
-                dir: dir.to_path_buf(),
-                build_config_path,
-            });
-        }
-
-        if dir == test_group_dir {
-            bail!(
-                "{suite_name} {group_kind} test case `{}` is not under a build wrapper with \
-                 build-{target}.toml",
-                case_dir.display()
-            );
-        }
-        dir = dir.parent().with_context(|| {
-            format!(
-                "failed to find parent while resolving build wrapper for {}",
-                case_dir.display()
-            )
-        })?;
-    }
-}
-
 pub(crate) fn case_name_from_wrapper(
     test_group_dir: &Path,
     wrapper: &TestBuildWrapper,
@@ -1042,13 +1009,6 @@ where
     lines.join("\n")
 }
 
-pub(crate) fn unsupported_uboot_test_command(os: &str) -> anyhow::Result<()> {
-    bail!(
-        "{os} does not support `test uboot` yet; only axvisor currently implements a U-Boot test \
-         suite"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1065,16 +1025,6 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("arceos qemu tests failed for 2 package(s): pkg-b, pkg-c")
-        );
-    }
-
-    #[test]
-    fn unsupported_uboot_error_is_explicit() {
-        let err = unsupported_uboot_test_command("arceos").unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("arceos does not support `test uboot` yet")
         );
     }
 

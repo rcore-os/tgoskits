@@ -19,10 +19,6 @@ use walkdir::WalkDir;
 
 use super::build as case_builder;
 
-pub(crate) const GROUPED_CASE_RUNNER_PATH: &str = "/usr/bin/starry-run-case-tests";
-pub(crate) const GROUPED_CASE_SUCCESS_REGEX: &str = r"(?m)^STARRY_GROUPED_TESTS_PASSED\s*$";
-pub(crate) const GROUPED_CASE_FAIL_REGEX: &str = r"(?m)^STARRY_GROUPED_TEST_FAILED:";
-
 const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
 const CASE_CACHE_DIR_NAME: &str = "cache";
 const CASE_RUNS_DIR_NAME: &str = "runs";
@@ -37,7 +33,6 @@ const CASE_CROSS_BIN_DIR_NAME: &str = "cross-bin";
 const CASE_CMAKE_TOOLCHAIN_FILE_NAME: &str = "cmake-toolchain.cmake";
 const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
-const GROUPED_CASE_RUNNER_NAME: &str = "starry-run-case-tests";
 const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
 const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-v1";
 /// QEMU global snapshot flag — all disk writes go to a temporary file and are
@@ -73,6 +68,40 @@ pub(crate) struct TestQemuSubcase {
     pub(crate) name: String,
     pub(crate) case_dir: PathBuf,
     pub(crate) kind: TestQemuSubcaseKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GroupedCaseRunnerConfig {
+    pub(crate) runner_name: String,
+    pub(crate) runner_path: String,
+    pub(crate) begin_marker: String,
+    pub(crate) passed_marker: String,
+    pub(crate) failed_marker: String,
+    pub(crate) all_passed_marker: String,
+    pub(crate) all_failed_marker: String,
+    pub(crate) success_regex: String,
+    pub(crate) fail_regex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CaseScriptEnvConfig {
+    pub(crate) staging_root: String,
+    pub(crate) case_dir: String,
+    pub(crate) case_c_dir: String,
+    pub(crate) case_work_dir: String,
+    pub(crate) case_build_dir: String,
+    pub(crate) case_overlay_dir: String,
+}
+
+pub(crate) type GuestPackageEnvPrepareFn = fn(&Path) -> anyhow::Result<Vec<(String, String)>>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct CaseAssetConfig {
+    pub(crate) grouped_runner: GroupedCaseRunnerConfig,
+    pub(crate) script_env: CaseScriptEnvConfig,
+    pub(crate) cache_env_vars: Vec<String>,
+    pub(crate) prepare_staging_root: fn(&Path) -> anyhow::Result<()>,
+    pub(crate) prepare_guest_package_env: Option<GuestPackageEnvPrepareFn>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,13 +188,22 @@ pub(crate) async fn prepare_case_assets(
     target: &str,
     case: &TestQemuCase,
     rootfs_path: PathBuf,
+    config: CaseAssetConfig,
 ) -> anyhow::Result<PreparedCaseAssets> {
     let workspace_root = workspace_root.to_path_buf();
     let arch = arch.to_string();
     let target = target.to_string();
     let case = case.clone();
+    let config = config.clone();
     let parts = tokio::task::spawn_blocking(move || {
-        prepare_case_assets_sync(&workspace_root, &arch, &target, &case, &rootfs_path)
+        prepare_case_assets_sync(
+            &workspace_root,
+            &arch,
+            &target,
+            &case,
+            &rootfs_path,
+            &config,
+        )
     })
     .await
     .context("qemu test case asset task failed")??;
@@ -281,6 +319,7 @@ pub(crate) fn prepare_case_assets_sync(
     target: &str,
     case: &TestQemuCase,
     shared_rootfs: &Path,
+    config: &CaseAssetConfig,
 ) -> anyhow::Result<PreparedCaseAssetParts> {
     let pipeline = resolve_case_pipeline(case)?;
 
@@ -305,7 +344,7 @@ pub(crate) fn prepare_case_assets_sync(
         // from directly.  On a cache hit we skip inject_overlay entirely, which
         // is the dominant cost for Python/C pipeline cases.
         let rootfs_cache_img =
-            rootfs_cache_image_path(layout, arch, target, pipeline, case, shared_rootfs)?;
+            rootfs_cache_image_path(layout, arch, target, pipeline, case, shared_rootfs, config)?;
 
         fs::create_dir_all(&layout.run_dir)
             .with_context(|| format!("failed to create {}", layout.run_dir.display()))?;
@@ -320,15 +359,15 @@ pub(crate) fn prepare_case_assets_sync(
             copy_shared_rootfs_for_case(shared_rootfs, layout)?;
             let copy = &layout.case_rootfs_copy;
             match pipeline {
-                CasePipeline::Grouped => {
-                    case_builder::prepare_grouped_case_assets_sync(arch, case, copy, layout)?
-                }
+                CasePipeline::Grouped => case_builder::prepare_grouped_case_assets_sync(
+                    arch, case, copy, layout, config,
+                )?,
                 CasePipeline::C => {
-                    case_builder::prepare_c_case_assets_sync(arch, case, copy, layout)?
+                    case_builder::prepare_c_case_assets_sync(arch, case, copy, layout, config)?
                 }
                 CasePipeline::Sh => prepare_sh_case_assets_sync(case, copy, layout)?,
                 CasePipeline::Python => {
-                    case_builder::prepare_python_case_assets_sync(arch, case, copy, layout)?
+                    case_builder::prepare_python_case_assets_sync(arch, case, copy, layout, config)?
                 }
                 CasePipeline::Plain => unreachable!("plain cases do not prepare injection assets"),
             }
@@ -414,8 +453,9 @@ fn rootfs_cache_image_path(
     pipeline: CasePipeline,
     case: &TestQemuCase,
     shared_rootfs: &Path,
+    config: &CaseAssetConfig,
 ) -> anyhow::Result<PathBuf> {
-    let key = case_asset_cache_key(arch, target, pipeline, case, shared_rootfs)?;
+    let key = case_asset_cache_key(arch, target, pipeline, case, shared_rootfs, config)?;
     Ok(layout.rootfs_cache_dir.join(format!("{key}.img")))
 }
 
@@ -471,6 +511,7 @@ fn case_asset_cache_key(
     pipeline: CasePipeline,
     case: &TestQemuCase,
     shared_rootfs: &Path,
+    config: &CaseAssetConfig,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
     hash_token(&mut hasher, "v2");
@@ -478,12 +519,10 @@ fn case_asset_cache_key(
     hash_token(&mut hasher, target);
     hash_token(&mut hasher, case.display_name.as_str());
     hash_token(&mut hasher, pipeline.as_str());
-    hash_token(
-        &mut hasher,
-        std::env::var(crate::starry::apk::STARRY_APK_REGION_VAR)
-            .unwrap_or_default()
-            .as_str(),
-    );
+    for var in &config.cache_env_vars {
+        hash_token(&mut hasher, var);
+        hash_token(&mut hasher, std::env::var(var).unwrap_or_default().as_str());
+    }
     // Only the C pipeline uses the CMake toolchain template; include it in the
     // key only when relevant so that changes to the template don't invalidate
     // caches for unrelated pipelines.
@@ -558,25 +597,30 @@ fn hash_token(hasher: &mut Sha256, value: &str) {
     hasher.update(value.as_bytes());
 }
 
-pub(crate) fn apply_grouped_qemu_config(qemu: &mut QemuConfig, case: &TestQemuCase) {
+pub(crate) fn apply_grouped_qemu_config(
+    qemu: &mut QemuConfig,
+    case: &TestQemuCase,
+    config: &GroupedCaseRunnerConfig,
+) {
     if !case.is_grouped() {
         return;
     }
 
-    qemu.shell_init_cmd = Some(GROUPED_CASE_RUNNER_PATH.to_string());
-    qemu.success_regex = vec![GROUPED_CASE_SUCCESS_REGEX.to_string()];
+    qemu.shell_init_cmd = Some(config.runner_path.clone());
+    qemu.success_regex = vec![config.success_regex.clone()];
     if !qemu
         .fail_regex
         .iter()
-        .any(|regex| regex == GROUPED_CASE_FAIL_REGEX)
+        .any(|regex| regex == &config.fail_regex)
     {
-        qemu.fail_regex.push(GROUPED_CASE_FAIL_REGEX.to_string());
+        qemu.fail_regex.push(config.fail_regex.clone());
     }
 }
 
 pub(crate) fn write_grouped_case_runner_script(
     overlay_dir: &Path,
     test_commands: &[String],
+    config: &GroupedCaseRunnerConfig,
 ) -> anyhow::Result<()> {
     ensure!(
         !test_commands.is_empty(),
@@ -586,25 +630,27 @@ pub(crate) fn write_grouped_case_runner_script(
     let dest_dir = overlay_dir.join("usr/bin");
     fs::create_dir_all(&dest_dir)
         .with_context(|| format!("failed to create {}", dest_dir.display()))?;
-    let runner_path = dest_dir.join(GROUPED_CASE_RUNNER_NAME);
+    let runner_path = dest_dir.join(&config.runner_name);
 
     let mut body = String::new();
     body.push_str("failed=0\n");
     for command in test_commands {
         let quoted = shell_single_quote(command);
-        let begin = shell_single_quote(&format!("STARRY_GROUPED_TEST_BEGIN: {command}"));
-        let passed = shell_single_quote(&format!("STARRY_GROUPED_TEST_PASSED: {command}"));
-        let failed = shell_single_quote(&format!("STARRY_GROUPED_TEST_FAILED: {command}"));
+        let begin = shell_single_quote(&format!("{}: {command}", config.begin_marker));
+        let passed = shell_single_quote(&format!("{}: {command}", config.passed_marker));
+        let failed = shell_single_quote(&format!("{}: {command}", config.failed_marker));
         body.push_str(&format!(
             "printf '%s\\n' {begin}\nif sh -c {quoted}; then\n\tprintf '%s\\n' \
              {passed}\nelse\n\tstatus=$?\n\tprintf '%s status=%s\\n' {failed} \
              \"$status\"\n\tfailed=1\nfi\n"
         ));
     }
-    body.push_str(
-        "if [ \"$failed\" -eq 0 ]; then\n\techo STARRY_GROUPED_TESTS_PASSED\n\texit 0\nfi\necho \
-         STARRY_GROUPED_TESTS_FAILED\nexit 1\n",
-    );
+    let all_passed = shell_single_quote(&config.all_passed_marker);
+    let all_failed = shell_single_quote(&config.all_failed_marker);
+    body.push_str(&format!(
+        "if [ \"$failed\" -eq 0 ]; then\n\tprintf '%s\\n' {all_passed}\n\texit 0\nfi\nprintf \
+         '%s\\n' {all_failed}\nexit 1\n"
+    ));
 
     write_executable_script(&runner_path, &body)
 }
@@ -688,8 +734,35 @@ mod tests {
 
     use super::*;
 
+    fn fake_config() -> CaseAssetConfig {
+        CaseAssetConfig {
+            grouped_runner: GroupedCaseRunnerConfig {
+                runner_name: "suite-run-case-tests".to_string(),
+                runner_path: "/usr/bin/suite-run-case-tests".to_string(),
+                begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
+                passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
+                failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
+                all_passed_marker: "SUITE_GROUPED_TESTS_PASSED".to_string(),
+                all_failed_marker: "SUITE_GROUPED_TESTS_FAILED".to_string(),
+                success_regex: r"(?m)^SUITE_GROUPED_TESTS_PASSED\s*$".to_string(),
+                fail_regex: r"(?m)^SUITE_GROUPED_TEST_FAILED:".to_string(),
+            },
+            script_env: CaseScriptEnvConfig {
+                staging_root: "SUITE_STAGING_ROOT".to_string(),
+                case_dir: "SUITE_CASE_DIR".to_string(),
+                case_c_dir: "SUITE_CASE_C_DIR".to_string(),
+                case_work_dir: "SUITE_CASE_WORK_DIR".to_string(),
+                case_build_dir: "SUITE_CASE_BUILD_DIR".to_string(),
+                case_overlay_dir: "SUITE_CASE_OVERLAY_DIR".to_string(),
+            },
+            cache_env_vars: Vec::new(),
+            prepare_staging_root: |_| Ok(()),
+            prepare_guest_package_env: None,
+        }
+    }
+
     fn fake_case(root: &Path, name: &str) -> TestQemuCase {
-        let case_dir = root.join("test-suit/starryos/normal").join(name);
+        let case_dir = root.join("test-suite/example/default").join(name);
         fs::create_dir_all(&case_dir).unwrap();
         TestQemuCase {
             name: name.to_string(),
@@ -726,6 +799,7 @@ mod tests {
             "x86_64-unknown-none",
             &case,
             shared_img.clone(),
+            fake_config(),
         )
         .await
         .unwrap();
@@ -750,12 +824,13 @@ mod tests {
             "/usr/bin/beta --flag".to_string(),
         ];
 
-        write_grouped_case_runner_script(&overlay, &commands).unwrap();
+        let config = fake_config();
+        write_grouped_case_runner_script(&overlay, &commands, &config.grouped_runner).unwrap();
 
-        let runner = overlay.join("usr/bin/starry-run-case-tests");
+        let runner = overlay.join("usr/bin/suite-run-case-tests");
         let content = fs::read_to_string(&runner).unwrap();
-        assert!(content.contains("STARRY_GROUPED_TEST_BEGIN: /usr/bin/alpha"));
-        assert!(content.contains("STARRY_GROUPED_TEST_FAILED: /usr/bin/beta --flag"));
-        assert!(content.contains("STARRY_GROUPED_TESTS_PASSED"));
+        assert!(content.contains("SUITE_GROUPED_TEST_BEGIN: /usr/bin/alpha"));
+        assert!(content.contains("SUITE_GROUPED_TEST_FAILED: /usr/bin/beta --flag"));
+        assert!(content.contains("SUITE_GROUPED_TESTS_PASSED"));
     }
 }

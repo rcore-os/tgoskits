@@ -502,25 +502,6 @@ mod tests {
     }
 
     #[test]
-    fn command_parses_test_uboot() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "test", "uboot"]).unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Uboot(_) => {}
-                _ => panic!("expected uboot test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
     fn command_parses_test_board() {
         #[derive(Parser)]
         struct Cli {
