@@ -6,7 +6,6 @@
 use std::cell::Cell;
 
 use rsext4::{
-    api::{OpenAccessMode, OpenFlags, OpenHow, ResolveFlags},
     bmalloc::AbsoluteBN,
     disknode::Ext4Inode,
     error::{Ext4Error, Ext4Result},
@@ -27,7 +26,7 @@ impl TimedBlockDevice {
     fn new(size: usize) -> Self {
         Self {
             data: vec![0; size],
-            block_size: BLOCK_SIZE as u32,
+            block_size: 1024u32 << rsext4::LOG_BLOCK_SIZE,
             now: Cell::new(1_700_000_000),
         }
     }
@@ -101,13 +100,8 @@ fn lookup_inode(
     find_file(fs, dev, path).expect("inode not found")
 }
 
-fn open_readonly() -> OpenHow {
-    OpenHow {
-        access: OpenAccessMode::ReadOnly,
-        flags: OpenFlags::empty(),
-        mode: 0,
-        resolve: ResolveFlags::empty(),
-    }
+fn open_readonly() -> bool {
+    false
 }
 
 #[test]

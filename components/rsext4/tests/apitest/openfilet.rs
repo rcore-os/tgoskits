@@ -1,14 +1,12 @@
-//! `open()` semantic tests.
+//! `open()` semantic tests for the current ext4 API surface.
 //!
-//! Focus:
-//! - Linux-visible error boundaries for `OpenHow`
-//! - create/exclusive/truncate observable behavior
-//! - symlink and directory open semantics currently implemented in rsext4
+//! The current `open()` API is path-oriented and only carries a boolean
+//! "create if missing" switch, so these tests verify that observable contract
+//! directly instead of Linux-style flag parsing.
 
 use std::cell::Cell;
 
 use rsext4::{
-    api::{DEFAULT_CREATE_MODE, OpenAccessMode, OpenFlags, OpenHow, ResolveFlags},
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},
     *,
@@ -24,7 +22,7 @@ impl MockBlockDevice {
     fn new(size: usize) -> Self {
         Self {
             data: vec![0; size],
-            block_size: rsext4::BLOCK_SIZE as u32,
+            block_size: 1024u32 << rsext4::LOG_BLOCK_SIZE,
             now: Cell::new(1_700_000_000),
         }
     }
@@ -88,20 +86,6 @@ fn new_fs() -> (Jbd2Dev<MockBlockDevice>, Ext4FileSystem) {
     (jbd2_dev, fs)
 }
 
-fn how(
-    access: OpenAccessMode,
-    flags: OpenFlags,
-    mode: u16,
-    resolve: ResolveFlags,
-) -> OpenHow {
-    OpenHow {
-        access,
-        flags,
-        mode,
-        resolve,
-    }
-}
-
 fn assert_errno<T>(res: Ext4Result<T>, code: Errno) {
     match res {
         Ok(_) => panic!("expected errno {code:?}, got Ok"),
@@ -110,31 +94,11 @@ fn assert_errno<T>(res: Ext4Result<T>, code: Errno) {
 }
 
 #[test]
-fn test_open_not_found_and_create_parent_semantics() {
+fn test_open_missing_without_create_fails() {
     let (mut dev, mut fs) = new_fs();
 
     assert_errno(
-        open(
-        &mut dev,
-        &mut fs,
-        "/no/such/file",
-        how(OpenAccessMode::ReadWrite, OpenFlags::empty(), 0, ResolveFlags::empty()),
-        ),
-        Errno::ENOENT,
-    );
-
-    assert_errno(
-        open(
-            &mut dev,
-            &mut fs,
-            "/missing_parent/new.txt",
-            how(
-                OpenAccessMode::ReadWrite,
-                OpenFlags::CREAT,
-                DEFAULT_CREATE_MODE,
-                ResolveFlags::empty(),
-            ),
-        ),
+        open(&mut dev, &mut fs, "/no/such/file", false),
         Errno::ENOENT,
     );
 
@@ -142,202 +106,65 @@ fn test_open_not_found_and_create_parent_semantics() {
 }
 
 #[test]
-fn test_open_create_excl_and_trunc_functionality() {
+fn test_open_create_auto_creates_missing_parents() {
     let (mut dev, mut fs) = new_fs();
 
-    let _created = open(
-        &mut dev,
-        &mut fs,
-        "/new.txt",
-        how(
-            OpenAccessMode::ReadWrite,
-            OpenFlags::CREAT,
-            DEFAULT_CREATE_MODE,
-            ResolveFlags::empty(),
-        ),
-    )
-    .unwrap();
-
-    assert_errno(
-        open(
-            &mut dev,
-            &mut fs,
-            "/new.txt",
-            how(
-                OpenAccessMode::ReadWrite,
-                OpenFlags::CREAT | OpenFlags::EXCL,
-                DEFAULT_CREATE_MODE,
-                ResolveFlags::empty(),
-            ),
-        ),
-        Errno::EEXIST,
-    );
-
-    mkfile(&mut dev, &mut fs, "/trunc.txt", Some(b"abcdef"), None).unwrap();
-    let _ = open(
-        &mut dev,
-        &mut fs,
-        "/trunc.txt",
-        how(
-            OpenAccessMode::ReadWrite,
-            OpenFlags::TRUNC,
-            0,
-            ResolveFlags::empty(),
-        ),
-    )
-    .unwrap();
-    let bytes = read_file(&mut dev, &mut fs, "/trunc.txt").unwrap();
-    assert!(bytes.is_empty());
-
-    umount(fs, &mut dev).unwrap();
-}
-
-#[test]
-fn test_open_linux_flag_validation_boundaries() {
-    let (mut dev, mut fs) = new_fs();
-
-    assert_errno(
-        open(
-        &mut dev,
-        &mut fs,
-        "/x",
-        how(OpenAccessMode::ReadOnly, OpenFlags::empty(), 0o644, ResolveFlags::empty()),
-        ),
-        Errno::EINVAL,
-    );
-
-    assert_errno(
-        open(
-            &mut dev,
-            &mut fs,
-            "/x",
-            how(
-                OpenAccessMode::ReadWrite,
-                OpenFlags::CREAT,
-                0o17777,
-                ResolveFlags::empty(),
-            ),
-        ),
-        Errno::EINVAL,
-    );
-
-    assert_errno(
-        open(
-            &mut dev,
-            &mut fs,
-            "/x",
-            how(
-                OpenAccessMode::ReadWrite,
-                OpenFlags::DIRECTORY | OpenFlags::CREAT,
-                DEFAULT_CREATE_MODE,
-                ResolveFlags::empty(),
-            ),
-        ),
-        Errno::EINVAL,
-    );
-
-    assert_errno(
-        open(
-            &mut dev,
-            &mut fs,
-            "/x",
-            how(
-                OpenAccessMode::ReadOnly,
-                OpenFlags::PATH | OpenFlags::TRUNC,
-                0,
-                ResolveFlags::empty(),
-            ),
-        ),
-        Errno::EINVAL,
-    );
-
-    assert_errno(
-        open(
-            &mut dev,
-            &mut fs,
-            "/x",
-            how(
-                OpenAccessMode::ReadWrite,
-                OpenFlags::CREAT,
-                DEFAULT_CREATE_MODE,
-                ResolveFlags::CACHED,
-            ),
-        ),
-        Errno::EAGAIN,
+    let created = open(&mut dev, &mut fs, "/missing_parent/new.txt", true).unwrap();
+    assert!(created.inode.is_file());
+    assert!(
+        find_file(&mut fs, &mut dev, "/missing_parent")
+            .unwrap()
+            .is_dir()
     );
 
     umount(fs, &mut dev).unwrap();
 }
 
 #[test]
-fn test_open_directory_and_root_semantics() {
+fn test_open_create_existing_keeps_file_contents() {
+    let (mut dev, mut fs) = new_fs();
+
+    let created = open(&mut dev, &mut fs, "/new.txt", true).unwrap();
+    assert!(created.inode.is_file());
+
+    mkfile(&mut dev, &mut fs, "/keep.txt", Some(b"abcdef"), None).unwrap();
+    let reopened = open(&mut dev, &mut fs, "/keep.txt", true).unwrap();
+    assert!(reopened.inode.is_file());
+
+    let bytes = read_file(&mut dev, &mut fs, "/keep.txt").unwrap();
+    assert_eq!(bytes, b"abcdef");
+
+    umount(fs, &mut dev).unwrap();
+}
+
+#[test]
+fn test_open_root_directory_and_regular_file() {
     let (mut dev, mut fs) = new_fs();
 
     mkdir(&mut dev, &mut fs, "/d").unwrap();
     mkfile(&mut dev, &mut fs, "/f", Some(b"x"), None).unwrap();
 
-    let _root = open(
-        &mut dev,
-        &mut fs,
-        "/",
-        how(OpenAccessMode::ReadOnly, OpenFlags::empty(), 0, ResolveFlags::empty()),
-    )
-    .unwrap();
+    let root = open(&mut dev, &mut fs, "/", false).unwrap();
+    assert!(root.inode.is_dir());
 
-    assert_errno(
-        open(
-        &mut dev,
-        &mut fs,
-        "/d",
-        how(OpenAccessMode::ReadWrite, OpenFlags::empty(), 0, ResolveFlags::empty()),
-        ),
-        Errno::EISDIR,
-    );
+    let dir = open(&mut dev, &mut fs, "/d", false).unwrap();
+    assert!(dir.inode.is_dir());
 
-    assert_errno(
-        open(
-        &mut dev,
-        &mut fs,
-        "/f",
-        how(OpenAccessMode::ReadOnly, OpenFlags::DIRECTORY, 0, ResolveFlags::empty()),
-        ),
-        Errno::ENOTDIR,
-    );
+    let file = open(&mut dev, &mut fs, "/f", false).unwrap();
+    assert!(file.inode.is_file());
 
     umount(fs, &mut dev).unwrap();
 }
 
 #[test]
-fn test_open_symlink_semantics_current_contract() {
+fn test_open_symlink_returns_link_inode() {
     let (mut dev, mut fs) = new_fs();
 
     mkfile(&mut dev, &mut fs, "/target", Some(b"payload"), None).unwrap();
     create_symbol_link(&mut dev, &mut fs, "/target", "/link").unwrap();
 
-    assert_errno(
-        open(
-            &mut dev,
-            &mut fs,
-            "/link",
-            how(
-                OpenAccessMode::ReadOnly,
-                OpenFlags::NOFOLLOW,
-                0,
-                ResolveFlags::empty(),
-            ),
-        ),
-        Errno::ELOOP,
-    );
-
-    assert_errno(
-        open(
-        &mut dev,
-        &mut fs,
-        "/link",
-        how(OpenAccessMode::ReadOnly, OpenFlags::empty(), 0, ResolveFlags::empty()),
-        ),
-        Errno::EOPNOTSUPP,
-    );
+    let file = open(&mut dev, &mut fs, "/link", false).unwrap();
+    assert!(file.inode.is_symlink());
 
     umount(fs, &mut dev).unwrap();
 }

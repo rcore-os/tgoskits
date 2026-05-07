@@ -1,10 +1,8 @@
 use alloc::string::String;
 
-use crate::BlockDevice;
-use crate::Ext4FileSystem;
-use crate::Ext4Result;
-use crate::Jbd2Dev;
-use crate::{bmalloc::InodeNumber, disknode::Ext4Inode};
+use crate::{
+    BlockDevice, Ext4FileSystem, Ext4Result, Jbd2Dev, bmalloc::InodeNumber, disknode::Ext4Inode,
+};
 /// Open file state tracked by the high-level API.
 pub struct OpenFile {
     /// Inode number of the opened file.
