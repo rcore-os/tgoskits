@@ -165,7 +165,7 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
                     .display()
             );
         }
-        println!("{}", qemu_test::render_case_forest("arceos", groups));
+        println!("{}", qemu_test::render_qemu_case_forest("arceos", groups));
         return Ok(());
     }
 
@@ -449,17 +449,29 @@ fn list_c_qemu_cases(
 fn all_qemu_case_groups(
     arceos: &ArceOS,
     selected_case: Option<&str>,
-) -> anyhow::Result<Vec<(String, Vec<String>)>> {
+) -> anyhow::Result<Vec<(String, Vec<qemu_test::ListedQemuCase>)>> {
     let mut groups = Vec::new();
     groups.push((
         ARCEOS_RUST_TEST_GROUP.to_string(),
-        rust_qemu_case_names(arceos, None, selected_case)?,
+        rust_qemu_listed_cases(arceos, selected_case)?,
     ));
-    let c_cases = c_qemu_case_names(arceos, selected_case)?;
+    let c_cases = c_qemu_listed_cases(arceos, selected_case)?;
     if !c_cases.is_empty() {
         groups.push((ARCEOS_C_TEST_GROUP.to_string(), c_cases));
     }
     Ok(groups)
+}
+
+fn rust_qemu_listed_cases(
+    arceos: &ArceOS,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<qemu_test::ListedQemuCase>> {
+    qemu_test::discover_all_qemu_cases_with_archs(
+        &arceos_rust_test_dir(arceos),
+        selected_case,
+        "ArceOS",
+        ARCEOS_RUST_TEST_GROUP,
+    )
 }
 
 fn rust_qemu_case_names(
@@ -489,6 +501,41 @@ fn c_qemu_case_names(arceos: &ArceOS, selected_case: Option<&str>) -> anyhow::Re
         .into_iter()
         .map(|test| test.name)
         .collect())
+}
+
+fn c_qemu_listed_cases(
+    arceos: &ArceOS,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<qemu_test::ListedQemuCase>> {
+    let tests = discover_c_tests(&arceos_c_test_dir(arceos))?;
+    Ok(select_c_tests(tests, selected_case)?
+        .into_iter()
+        .map(|test| qemu_test::ListedQemuCase {
+            name: test.name,
+            archs: c_test_archs(&test.dir),
+        })
+        .collect())
+}
+
+fn c_test_archs(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut archs = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let name = entry.file_name();
+            name.to_str()
+                .and_then(|name| name.strip_prefix("build_"))
+                .map(|arch| arch.to_string())
+        })
+        .collect::<Vec<_>>();
+    archs.sort();
+    archs
 }
 
 fn resolve_rust_selected_case(

@@ -455,6 +455,15 @@ fn discover_all_qemu_cases_in_group(
     qemu_test::discover_all_qemu_cases(&test_suite_dir, selected_case, "Starry", group)
 }
 
+fn discover_all_qemu_cases_with_archs_in_group(
+    workspace_root: &Path,
+    group: &str,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<qemu_test::ListedQemuCase>> {
+    let test_suite_dir = require_test_suite_group_dir(workspace_root, group)?;
+    qemu_test::discover_all_qemu_cases_with_archs(&test_suite_dir, selected_case, "Starry", group)
+}
+
 fn render_qemu_case_summary(report: &StarryQemuRunReport) -> String {
     let passed = report
         .cases
@@ -539,7 +548,7 @@ impl Starry {
             let groups = discover_test_group_names(self.app.workspace_root())?
                 .into_iter()
                 .filter_map(|group| {
-                    match discover_all_qemu_cases_in_group(
+                    match discover_all_qemu_cases_with_archs_in_group(
                         self.app.workspace_root(),
                         &group,
                         args.test_case.as_deref(),
@@ -564,7 +573,7 @@ impl Starry {
                     test_suite_root(self.app.workspace_root()).display()
                 );
             }
-            println!("{}", qemu_test::render_case_forest("starry", groups));
+            println!("{}", qemu_test::render_qemu_case_forest("starry", groups));
             return Ok(());
         }
 
@@ -701,7 +710,7 @@ impl Starry {
 
     pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
         if args.list && args.test_group.is_none() {
-            let trees = discover_test_group_names(self.app.workspace_root())?
+            let groups = discover_test_group_names(self.app.workspace_root())?
                 .into_iter()
                 .filter_map(|group| {
                     match discover_board_test_groups(
@@ -710,10 +719,13 @@ impl Starry {
                         args.test_case.as_deref(),
                         args.board.as_deref(),
                     ) {
-                        Ok(groups) => {
-                            let case_names = groups.iter().map(|group| group.name.as_str());
-                            Some(Ok(qemu_test::render_case_tree(&group, case_names)))
-                        }
+                        Ok(groups) => Some(Ok((
+                            group,
+                            groups
+                                .into_iter()
+                                .map(|group| (group.name, group.board_name))
+                                .collect::<Vec<_>>(),
+                        ))),
                         Err(err) => {
                             let message = err.to_string();
                             if message.starts_with("no Starry ") {
@@ -725,13 +737,16 @@ impl Starry {
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            if trees.is_empty() {
+            if groups.is_empty() {
                 bail!(
                     "no Starry board test groups found under {}",
                     test_suite_root(self.app.workspace_root()).display()
                 );
             }
-            println!("{}", trees.join("\n"));
+            println!(
+                "{}",
+                qemu_test::render_labeled_case_forest("starry", groups)
+            );
             return Ok(());
         }
 
@@ -743,8 +758,14 @@ impl Starry {
             args.board.as_deref(),
         )?;
         if args.list {
-            let case_names = groups.iter().map(|group| group.name.as_str());
-            println!("{}", qemu_test::render_case_tree(test_group, case_names));
+            let case_names = groups
+                .into_iter()
+                .map(|group| (group.name, group.board_name))
+                .collect::<Vec<_>>();
+            println!(
+                "{}",
+                qemu_test::render_labeled_case_forest("starry", [(test_group, case_names)])
+            );
             return Ok(());
         }
         let total = groups.len();
