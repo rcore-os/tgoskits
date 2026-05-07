@@ -255,8 +255,11 @@ pub fn refresh_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
 pub fn ensure_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
     let build_cfg = tmp_orangepi_build_config_path(workspace_root);
     let run_cfg = tmp_orangepi_uboot_config_path(workspace_root);
-    if !build_cfg.exists() || !run_cfg.exists() {
-        refresh_orangepi_configs(workspace_root)?;
+    if !build_cfg.exists() {
+        copy_template(&orangepi_build_config_path(workspace_root), &build_cfg)?;
+    }
+    if !run_cfg.exists() {
+        copy_template(&orangepi_uboot_config_path(workspace_root), &run_cfg)?;
     }
     Ok(())
 }
@@ -266,6 +269,11 @@ pub fn prepare_orangepi_uboot_config(
     args: &QuickOrangeConfigArgs,
 ) -> anyhow::Result<PathBuf> {
     let tmp_path = tmp_orangepi_uboot_config_path(workspace_root);
+    if tmp_path.exists() {
+        return Ok(tmp_path);
+    }
+
+    copy_template(&orangepi_uboot_config_path(workspace_root), &tmp_path)?;
 
     let mut value: toml::Value = toml::from_str(
         &fs::read_to_string(&tmp_path)

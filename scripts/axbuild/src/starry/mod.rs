@@ -616,8 +616,8 @@ impl Starry {
         &mut self,
         args: quick_start::QuickOrangeConfigArgs,
     ) -> anyhow::Result<()> {
-        quick_start::refresh_orangepi_configs(self.app.workspace_root())?;
         quick_start::prepare_orangepi_uboot_config(self.app.workspace_root(), &args)?;
+        quick_start::ensure_orangepi_configs(self.app.workspace_root())?;
         let request = self.prepare_request(
             Self::quick_start_build_args(
                 "aarch64",
@@ -634,6 +634,8 @@ impl Starry {
         &mut self,
         args: quick_start::QuickOrangeRunArgs,
     ) -> anyhow::Result<()> {
+        let uboot_config =
+            quick_start::prepare_orangepi_uboot_config(self.app.workspace_root(), &args)?;
         quick_start::ensure_orangepi_configs(self.app.workspace_root())?;
         let request = self.prepare_request(
             Self::quick_start_build_args(
@@ -641,10 +643,7 @@ impl Starry {
                 quick_start::tmp_orangepi_build_config_path(self.app.workspace_root()),
             ),
             None,
-            Some(quick_start::prepare_orangepi_uboot_config(
-                self.app.workspace_root(),
-                &args,
-            )?),
+            Some(uboot_config),
             SnapshotPersistence::Store,
         )?;
         self.run_uboot_request(request).await
