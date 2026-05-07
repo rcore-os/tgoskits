@@ -338,7 +338,7 @@ fn supported_test_groups(test_suite_root: &Path) -> anyhow::Result<String> {
 impl Axvisor {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
-            let trees = discover_test_group_names(self.app.workspace_root())?
+            let groups = discover_test_group_names(self.app.workspace_root())?
                 .into_iter()
                 .filter_map(|group| {
                     let test_suite_dir = match test_suite_dir(self.app.workspace_root(), &group) {
@@ -351,7 +351,7 @@ impl Axvisor {
                         "Axvisor",
                         &group,
                     ) {
-                        Ok(case_names) => Some(Ok(test_qemu::render_case_tree(&group, case_names))),
+                        Ok(case_names) => Some(Ok((group, case_names))),
                         Err(err) => {
                             let message = err.to_string();
                             if message.starts_with("no Axvisor ")
@@ -365,13 +365,13 @@ impl Axvisor {
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            if trees.is_empty() {
+            if groups.is_empty() {
                 bail!(
                     "no Axvisor qemu test cases found under {}",
                     test_suite_root(self.app.workspace_root()).display()
                 );
             }
-            println!("{}", trees.join("\n"));
+            println!("{}", test_qemu::render_case_forest("axvisor", groups));
             return Ok(());
         }
 

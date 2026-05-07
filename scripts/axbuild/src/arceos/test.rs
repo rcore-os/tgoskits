@@ -154,14 +154,8 @@ pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<
 
 async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()> {
     if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
-        let trees = [
-            list_rust_qemu_cases(arceos, None, args.test_case.as_deref())?,
-            list_c_qemu_cases(arceos, None, args.test_case.as_deref())?,
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-        if trees.is_empty() {
+        let groups = all_qemu_case_groups(arceos, args.test_case.as_deref())?;
+        if groups.is_empty() {
             bail!(
                 "no ArceOS qemu test cases found under {}",
                 arceos
@@ -171,7 +165,7 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
                     .display()
             );
         }
-        println!("{}", trees.join("\n"));
+        println!("{}", qemu_test::render_case_forest("arceos", groups));
         return Ok(());
     }
 
@@ -430,18 +424,7 @@ fn list_rust_qemu_cases(
     target: Option<(&str, &str)>,
     selected_case: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    let cases = match target {
-        Some((arch, target)) => discover_rust_qemu_cases(arceos, arch, target, selected_case)?
-            .into_iter()
-            .map(|case| case.case.name)
-            .collect::<Vec<_>>(),
-        None => qemu_test::discover_all_qemu_cases(
-            &arceos_rust_test_dir(arceos),
-            selected_case,
-            "ArceOS",
-            ARCEOS_RUST_TEST_GROUP,
-        )?,
-    };
+    let cases = rust_qemu_case_names(arceos, target, selected_case)?;
     Ok(Some(qemu_test::render_case_tree(
         ARCEOS_RUST_TEST_GROUP,
         cases,
@@ -453,11 +436,7 @@ fn list_c_qemu_cases(
     _target: Option<&str>,
     selected_case: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    let tests = discover_c_tests(&arceos_c_test_dir(arceos))?;
-    let cases = select_c_tests(tests, selected_case)?
-        .into_iter()
-        .map(|test| test.name)
-        .collect::<Vec<_>>();
+    let cases = c_qemu_case_names(arceos, selected_case)?;
     if cases.is_empty() {
         return Ok(None);
     }
@@ -465,6 +444,51 @@ fn list_c_qemu_cases(
         ARCEOS_C_TEST_GROUP,
         cases,
     )))
+}
+
+fn all_qemu_case_groups(
+    arceos: &ArceOS,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<(String, Vec<String>)>> {
+    let mut groups = Vec::new();
+    groups.push((
+        ARCEOS_RUST_TEST_GROUP.to_string(),
+        rust_qemu_case_names(arceos, None, selected_case)?,
+    ));
+    let c_cases = c_qemu_case_names(arceos, selected_case)?;
+    if !c_cases.is_empty() {
+        groups.push((ARCEOS_C_TEST_GROUP.to_string(), c_cases));
+    }
+    Ok(groups)
+}
+
+fn rust_qemu_case_names(
+    arceos: &ArceOS,
+    target: Option<(&str, &str)>,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
+    match target {
+        Some((arch, target)) => Ok(
+            discover_rust_qemu_cases(arceos, arch, target, selected_case)?
+                .into_iter()
+                .map(|case| case.case.name)
+                .collect(),
+        ),
+        None => qemu_test::discover_all_qemu_cases(
+            &arceos_rust_test_dir(arceos),
+            selected_case,
+            "ArceOS",
+            ARCEOS_RUST_TEST_GROUP,
+        ),
+    }
+}
+
+fn c_qemu_case_names(arceos: &ArceOS, selected_case: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let tests = discover_c_tests(&arceos_c_test_dir(arceos))?;
+    Ok(select_c_tests(tests, selected_case)?
+        .into_iter()
+        .map(|test| test.name)
+        .collect())
 }
 
 fn resolve_rust_selected_case(

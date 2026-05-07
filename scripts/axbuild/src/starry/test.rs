@@ -536,7 +536,7 @@ impl Starry {
             && args.test_group.is_none()
             && !args.stress
         {
-            let trees = discover_test_group_names(self.app.workspace_root())?
+            let groups = discover_test_group_names(self.app.workspace_root())?
                 .into_iter()
                 .filter_map(|group| {
                     match discover_all_qemu_cases_in_group(
@@ -544,7 +544,7 @@ impl Starry {
                         &group,
                         args.test_case.as_deref(),
                     ) {
-                        Ok(case_names) => Some(Ok(qemu_test::render_case_tree(&group, case_names))),
+                        Ok(case_names) => Some(Ok((group, case_names))),
                         Err(err) => {
                             let message = err.to_string();
                             if message.starts_with("no Starry ")
@@ -558,13 +558,13 @@ impl Starry {
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            if trees.is_empty() {
+            if groups.is_empty() {
                 bail!(
                     "no Starry qemu test cases found under {}",
                     test_suite_root(self.app.workspace_root()).display()
                 );
             }
-            println!("{}", trees.join("\n"));
+            println!("{}", qemu_test::render_case_forest("starry", groups));
             return Ok(());
         }
 

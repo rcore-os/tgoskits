@@ -778,38 +778,62 @@ pub(crate) fn finalize_qemu_test_run(
     }
 }
 
+#[derive(Default)]
+struct CaseTreeNode {
+    children: BTreeMap<String, CaseTreeNode>,
+}
+
+fn insert_case_tree_path(node: &mut CaseTreeNode, path: &str) {
+    let mut current = node;
+    for part in path.split('/').filter(|part| !part.is_empty()) {
+        current = current.children.entry(part.to_string()).or_default();
+    }
+}
+
+fn render_case_tree_node(node: &CaseTreeNode, prefix: &str, lines: &mut Vec<String>) {
+    let total = node.children.len();
+    for (index, (name, child)) in node.children.iter().enumerate() {
+        let is_last = index + 1 == total;
+        let branch = if is_last { "└── " } else { "├── " };
+        lines.push(format!("{prefix}{branch}{name}"));
+
+        let child_prefix = if is_last { "    " } else { "│   " };
+        render_case_tree_node(child, &format!("{prefix}{child_prefix}"), lines);
+    }
+}
+
 pub(crate) fn render_case_tree<I, S>(group: &str, cases: I) -> String
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    #[derive(Default)]
-    struct Node {
-        children: BTreeMap<String, Node>,
-    }
-
-    fn render_node(node: &Node, prefix: &str, lines: &mut Vec<String>) {
-        let total = node.children.len();
-        for (index, (name, child)) in node.children.iter().enumerate() {
-            let is_last = index + 1 == total;
-            let branch = if is_last { "└── " } else { "├── " };
-            lines.push(format!("{prefix}{branch}{name}"));
-
-            let child_prefix = if is_last { "    " } else { "│   " };
-            render_node(child, &format!("{prefix}{child_prefix}"), lines);
-        }
-    }
-
-    let mut root = Node::default();
+    let mut root = CaseTreeNode::default();
     for case in cases {
-        let mut node = &mut root;
-        for part in case.as_ref().split('/').filter(|part| !part.is_empty()) {
-            node = node.children.entry(part.to_string()).or_default();
-        }
+        insert_case_tree_path(&mut root, case.as_ref());
     }
 
     let mut lines = vec![group.to_string()];
-    render_node(&root, "", &mut lines);
+    render_case_tree_node(&root, "", &mut lines);
+    lines.join("\n")
+}
+
+pub(crate) fn render_case_forest<I, G, C, S>(suite: &str, groups: I) -> String
+where
+    I: IntoIterator<Item = (G, C)>,
+    G: AsRef<str>,
+    C: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut root = CaseTreeNode::default();
+    for (group, cases) in groups {
+        let group_node = root.children.entry(group.as_ref().to_string()).or_default();
+        for case in cases {
+            insert_case_tree_path(group_node, case.as_ref());
+        }
+    }
+
+    let mut lines = vec![suite.to_string()];
+    render_case_tree_node(&root, "", &mut lines);
     lines.join("\n")
 }
 
@@ -862,6 +886,21 @@ mod tests {
             ),
             "normal\n├── qemu-smp1\n│   ├── apk-curl\n│   └── smoke\n└── qemu-smp4\n    └── \
              affinity"
+        );
+    }
+
+    #[test]
+    fn render_case_forest_uses_suite_root_and_group_children() {
+        assert_eq!(
+            render_case_forest(
+                "starry",
+                [
+                    ("normal", vec!["qemu-smp1/smoke", "qemu-smp4/affinity"]),
+                    ("stress", vec!["stress-ng-0"]),
+                ],
+            ),
+            "starry\n├── normal\n│   ├── qemu-smp1\n│   │   └── smoke\n│   └── qemu-smp4\n│       \
+             └── affinity\n└── stress\n    └── stress-ng-0"
         );
     }
 
