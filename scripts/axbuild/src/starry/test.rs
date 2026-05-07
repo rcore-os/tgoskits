@@ -755,21 +755,8 @@ impl Starry {
                 })?;
             let rootfs_path =
                 Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path);
-            if rootfs_path == default_rootfs_path {
-                rootfs::ensure_rootfs_in_target_dir(
-                    self.app.workspace_root(),
-                    &request.arch,
-                    &request.target,
-                )
+            self.ensure_qemu_case_managed_rootfs(&request, &qemu, default_rootfs_path)
                 .await?;
-            } else {
-                crate::rootfs::store::ensure_optional_managed_rootfs(
-                    self.app.workspace_root(),
-                    &request.arch,
-                    Some(&rootfs_path),
-                )
-                .await?;
-            }
             qemu_test::validate_grouped_qemu_commands(&qemu, &starry_case.case, "Starry")?;
             let requirements = Self::qemu_case_requirements(&qemu).with_context(|| {
                 format!(
@@ -790,21 +777,47 @@ impl Starry {
         Ok(prepared)
     }
 
+    async fn ensure_qemu_case_managed_rootfs(
+        &self,
+        request: &ResolvedStarryRequest,
+        qemu: &QemuConfig,
+        default_rootfs_path: &Path,
+    ) -> anyhow::Result<()> {
+        let workspace_root = self.app.workspace_root();
+        let managed_rootfs_dir = crate::rootfs::store::rootfs_dir(workspace_root);
+        let mut managed_paths = crate::rootfs::qemu::drive_file_paths(qemu)
+            .into_iter()
+            .filter(|path| path.starts_with(&managed_rootfs_dir))
+            .collect::<Vec<_>>();
+        if managed_paths.is_empty() {
+            managed_paths.push(default_rootfs_path.to_path_buf());
+        }
+        managed_paths.sort();
+        managed_paths.dedup();
+
+        if managed_paths.iter().any(|path| path == default_rootfs_path) {
+            rootfs::ensure_rootfs_in_target_dir(workspace_root, &request.arch, &request.target)
+                .await?;
+        }
+        for path in managed_paths {
+            if path != default_rootfs_path {
+                crate::rootfs::store::ensure_managed_rootfs(workspace_root, &request.arch, &path)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn qemu_case_rootfs_path(
         workspace_root: &Path,
         qemu: &QemuConfig,
         default_rootfs_path: &Path,
     ) -> PathBuf {
         let managed_rootfs_dir = crate::rootfs::store::rootfs_dir(workspace_root);
-        qemu.args
-            .windows(2)
-            .find_map(|args| {
-                (args[0] == "-drive")
-                    .then(|| args[1].strip_prefix("id=disk0,if=none,format=raw,file="))
-                    .flatten()
-                    .map(PathBuf::from)
-                    .filter(|path| path.starts_with(&managed_rootfs_dir))
-            })
+        crate::rootfs::qemu::drive_file_paths(qemu)
+            .into_iter()
+            .find(|path| path.starts_with(&managed_rootfs_dir))
             .unwrap_or_else(|| default_rootfs_path.to_path_buf())
     }
 
@@ -1466,6 +1479,27 @@ mod tests {
                 "-drive".to_string(),
                 format!(
                     "id=disk0,if=none,format=raw,file={}",
+                    managed_rootfs.display()
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let rootfs =
+            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"));
+
+        assert_eq!(rootfs, managed_rootfs);
+    }
+
+    #[test]
+    fn qemu_case_rootfs_accepts_drive_file_with_additional_options() {
+        let root = tempdir().unwrap();
+        let managed_rootfs = root.path().join("target/rootfs/rootfs-aarch64-busybox.img");
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                format!(
+                    "id=usbdisk,if=none,format=raw,snapshot=on,file={}",
                     managed_rootfs.display()
                 ),
             ],
