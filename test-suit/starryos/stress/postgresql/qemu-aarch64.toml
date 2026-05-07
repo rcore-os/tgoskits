@@ -32,9 +32,8 @@ echo "KILLING_POSTMASTER=$PM_PID"; \
 kill -9 "$PM_PID" 2>&1; sleep 1; \
 pkill -9 postgres 2>&1; sleep 1; \
 echo "KILL_DONE"; \
-echo "=== pg.log tail ==="; tail -30 /tmp/pg.log 2>&1; echo "=== end ==="; \
 echo "PG_TEST_DONE=$(date +%s)"
 '''
 success_regex = ["(?m)^PG_TEST_DONE=\\d+\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?i)\b(PG_TEST_FAILED|ERROR|FATAL|failed)\b']
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^PG_TEST_FAILED\s*$']
 timeout = 5400

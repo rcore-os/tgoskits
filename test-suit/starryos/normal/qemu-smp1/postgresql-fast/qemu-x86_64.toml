@@ -1,0 +1,38 @@
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "512M",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+{ \
+apk update >/dev/null 2>&1 && apk add postgresql17 2>&1 && \
+mkdir /tmp/pgfast /tmp/pgfast-run && chmod 0700 /tmp/pgfast /tmp/pgfast-run && chown postgres:postgres /tmp/pgfast /tmp/pgfast-run && \
+PG=/usr/libexec/postgresql17 && \
+su -s /bin/sh postgres -c "$PG/initdb -D /tmp/pgfast --no-locale --username=postgres" 2>&1 && \
+echo "PG_FAST_INITDB_OK" && \
+su -s /bin/sh postgres -c "$PG/pg_ctl -D /tmp/pgfast -l /tmp/pgfast.log start -w -t 60 -o '-c max_connections=4 -c shared_buffers=8MB -c unix_socket_directories=/tmp/pgfast-run -c fsync=off -c full_page_writes=off'" 2>&1 && \
+echo "PG_FAST_START_OK" && \
+RESULT=$(su -s /bin/sh postgres -c "$PG/psql -h /tmp/pgfast-run -d postgres -t -A -c 'SELECT 1'" 2>&1) && \
+echo "PG_FAST_SELECT_RESULT=[$RESULT]" && \
+test "$RESULT" = "1" && \
+su -s /bin/sh postgres -c "$PG/pg_ctl -D /tmp/pgfast stop -m fast -w -t 60" 2>&1 && \
+echo "PG_FAST_STOP_OK" && \
+echo "PG_FAST_TEST_PASSED"; \
+} || { echo "PG_FAST_TEST_FAILED"; echo "=== pgfast.log tail ==="; tail -30 /tmp/pgfast.log 2>&1; echo "=== end ==="; exit 1; }
+'''
+success_regex = ["(?m)^PG_FAST_TEST_PASSED\\s*$"]
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', "(?m)^PG_FAST_TEST_FAILED\\s*$"]
+timeout = 1200
