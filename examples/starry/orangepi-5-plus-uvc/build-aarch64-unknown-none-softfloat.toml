@@ -8,6 +8,7 @@ features = [
   "axplat-dyn/rockchip-soc",
   "axplat-dyn/rockchip-dwc-xhci",
   "axplat-dyn/sdmmc",
+  "axplat-dyn/simple-sdmmc",
 ]
 log = "Info"
 max_cpu_num = 8

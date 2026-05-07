@@ -84,7 +84,7 @@ pub fn probe_all_devices() -> Result<(), AxError> {
     clear_block_devices();
     #[cfg(feature = "net")]
     clear_net_devices();
-    rdrive::probe_all(true).map_err(|_| AxError::BadState)?;
+    rdrive::probe_all(false).map_err(|_| AxError::BadState)?;
 
     for dev in rdrive::get_list::<rd_block::Block>() {
         let block = Box::new(blk::Block::from(dev));
