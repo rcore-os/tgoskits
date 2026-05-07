@@ -170,6 +170,7 @@ fn patch_axvisor_cargo_config(
 
     let cargo_uses_plat_dyn = cargo.features.iter().any(|f| f == "ax-std/plat-dyn");
     normalize_axvisor_platform_features(&mut cargo.features, cargo_uses_plat_dyn);
+    normalize_axvisor_x86_backend_features(&mut cargo.features, &request.arch)?;
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
@@ -221,6 +222,107 @@ fn normalize_axvisor_platform_features(features: &mut Vec<String>, plat_dyn: boo
     {
         features.push("ax-std/myplat".to_string());
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum X86VirtualizationBackend {
+    Vmx,
+    Svm,
+}
+
+impl X86VirtualizationBackend {
+    fn feature(self) -> &'static str {
+        match self {
+            Self::Vmx => "vmx",
+            Self::Svm => "svm",
+        }
+    }
+}
+
+fn normalize_axvisor_x86_backend_features(
+    features: &mut Vec<String>,
+    arch: &str,
+) -> anyhow::Result<()> {
+    normalize_axvisor_x86_backend_features_with(features, arch, detect_host_x86_backend)
+}
+
+fn normalize_axvisor_x86_backend_features_with(
+    features: &mut Vec<String>,
+    arch: &str,
+    detect_backend: impl FnOnce() -> anyhow::Result<X86VirtualizationBackend>,
+) -> anyhow::Result<()> {
+    if arch != "x86_64" {
+        return Ok(());
+    }
+
+    let has_vmx = features.iter().any(|feature| feature == "vmx");
+    let has_svm = features.iter().any(|feature| feature == "svm");
+
+    match (has_vmx, has_svm) {
+        (true, true) => Err(anyhow!(
+            "x86_64 Axvisor features `vmx` and `svm` are mutually exclusive"
+        )),
+        (true, false) | (false, true) => Ok(()),
+        (false, false) => {
+            let backend = detect_backend()?;
+            println!(
+                "Auto-selected x86_64 virtualization backend: {}",
+                backend.feature()
+            );
+            features.push(backend.feature().to_string());
+            Ok(())
+        }
+    }
+}
+
+fn detect_host_x86_backend() -> anyhow::Result<X86VirtualizationBackend> {
+    if let Ok(value) = std::env::var("AXVISOR_X86_BACKEND") {
+        return parse_x86_backend(&value);
+    }
+
+    detect_host_x86_backend_from_cpuid()
+}
+
+fn parse_x86_backend(value: &str) -> anyhow::Result<X86VirtualizationBackend> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "vmx" | "intel" => Ok(X86VirtualizationBackend::Vmx),
+        "svm" | "amd" => Ok(X86VirtualizationBackend::Svm),
+        other => Err(anyhow!(
+            "invalid AXVISOR_X86_BACKEND value `{other}`; expected `vmx`/`intel` or `svm`/`amd`"
+        )),
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn detect_host_x86_backend_from_cpuid() -> anyhow::Result<X86VirtualizationBackend> {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::__cpuid;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::__cpuid;
+
+    let leaf = __cpuid(0);
+    let mut bytes = [0_u8; 12];
+    bytes[0..4].copy_from_slice(&leaf.ebx.to_le_bytes());
+    bytes[4..8].copy_from_slice(&leaf.edx.to_le_bytes());
+    bytes[8..12].copy_from_slice(&leaf.ecx.to_le_bytes());
+    let vendor = String::from_utf8_lossy(&bytes).into_owned();
+
+    match vendor.as_str() {
+        "GenuineIntel" => Ok(X86VirtualizationBackend::Vmx),
+        "AuthenticAMD" => Ok(X86VirtualizationBackend::Svm),
+        _ => Err(anyhow!(
+            "unsupported x86 CPU vendor `{vendor}` for automatic Axvisor backend selection; set \
+             AXVISOR_X86_BACKEND=vmx or AXVISOR_X86_BACKEND=svm to override"
+        )),
+    }
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn detect_host_x86_backend_from_cpuid() -> anyhow::Result<X86VirtualizationBackend> {
+    Err(anyhow!(
+        "cannot auto-select x86_64 Axvisor virtualization backend on non-x86 host; set \
+         AXVISOR_X86_BACKEND=vmx or AXVISOR_X86_BACKEND=svm"
+    ))
 }
 
 pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
@@ -567,9 +669,86 @@ vm_configs = []
         );
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
         assert!(cargo.features.contains(&"fs".to_string()));
+        assert!(cargo.features.contains(&"vmx".to_string()));
         assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
         assert!(cargo.features.contains(&"ax-std/myplat".to_string()));
+    }
+
+    #[test]
+    fn x86_backend_auto_selects_vmx_when_missing() {
+        let mut features = vec!["ept-level-4".to_string(), "fs".to_string()];
+
+        normalize_axvisor_x86_backend_features_with(&mut features, "x86_64", || {
+            Ok(X86VirtualizationBackend::Vmx)
+        })
+        .unwrap();
+
+        assert!(features.contains(&"vmx".to_string()));
+        assert!(!features.contains(&"svm".to_string()));
+    }
+
+    #[test]
+    fn x86_backend_auto_selects_svm_when_missing() {
+        let mut features = vec!["ept-level-4".to_string(), "fs".to_string()];
+
+        normalize_axvisor_x86_backend_features_with(&mut features, "x86_64", || {
+            Ok(X86VirtualizationBackend::Svm)
+        })
+        .unwrap();
+
+        assert!(features.contains(&"svm".to_string()));
+        assert!(!features.contains(&"vmx".to_string()));
+    }
+
+    #[test]
+    fn x86_backend_keeps_explicit_choice() {
+        let mut features = vec!["ept-level-4".to_string(), "svm".to_string()];
+
+        normalize_axvisor_x86_backend_features_with(&mut features, "x86_64", || {
+            Ok(X86VirtualizationBackend::Vmx)
+        })
+        .unwrap();
+
+        assert!(features.contains(&"svm".to_string()));
+        assert!(!features.contains(&"vmx".to_string()));
+    }
+
+    #[test]
+    fn x86_backend_rejects_conflicting_features() {
+        let mut features = vec!["vmx".to_string(), "svm".to_string()];
+
+        let err = normalize_axvisor_x86_backend_features_with(&mut features, "x86_64", || {
+            Ok(X86VirtualizationBackend::Vmx)
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn x86_backend_ignores_other_arches() {
+        let mut features = vec![];
+
+        normalize_axvisor_x86_backend_features_with(&mut features, "aarch64", || {
+            Ok(X86VirtualizationBackend::Vmx)
+        })
+        .unwrap();
+
+        assert!(features.is_empty());
+    }
+
+    #[test]
+    fn parses_x86_backend_override() {
+        assert_eq!(
+            parse_x86_backend("intel").unwrap(),
+            X86VirtualizationBackend::Vmx
+        );
+        assert_eq!(
+            parse_x86_backend("svm").unwrap(),
+            X86VirtualizationBackend::Svm
+        );
+        assert!(parse_x86_backend("unknown").is_err());
     }
 
     #[test]
