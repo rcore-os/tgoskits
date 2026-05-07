@@ -476,9 +476,20 @@ impl ProcessData {
     /// Notify the vfork parent that this child has exec'd or exited.
     /// No-op if this process was not created by vfork.
     pub fn notify_vfork_done(&self) {
-        if let Some(vfork) = self.vfork_done.lock().as_mut() {
-            vfork.done = true;
-            vfork.wq.notify_one(true);
-        }
+        // Set done under the lock, then drop the lock before notifying
+        // to avoid lock-order inversion with the wait-queue internal lock.
+        let wq = {
+            let mut guard = self.vfork_done.lock();
+            match guard.as_mut() {
+                Some(vfork) => {
+                    vfork.done = true;
+                    vfork.wq.clone()
+                }
+                None => return,
+            }
+            // guard dropped here
+        };
+        wq.notify_one(true);
     }
+
 }
