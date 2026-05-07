@@ -112,13 +112,13 @@ pub fn mv<B: BlockDevice>(
 
     let mut src_ino: Option<InodeNumber> = None;
     let mut src_ft: Option<u8> = None;
-    if let Ok(blocks) = resolve_inode_block_allextend(fs, block_dev, &mut old_parent_inode) {
+    if let Ok(blocks) = resolve_inode_block_allextend(block_dev, &mut old_parent_inode) {
         for phys in blocks {
             let cached = match fs.datablock_cache.get_or_load(block_dev, phys.1) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let data = &cached.data[..BLOCK_SIZE];
+            let data = &cached.data[..fs.block_size];
             let iter = DirEntryIterator::new(data);
             for (entry, _) in iter {
                 if entry.inode == 0 {
@@ -142,7 +142,7 @@ pub fn mv<B: BlockDevice>(
         let total_blocks = if total_size == 0 {
             0
         } else {
-            total_size.div_ceil(BLOCK_SIZE)
+            total_size.div_ceil(fs.block_size)
         };
         for lbn in 0..total_blocks {
             let phys = match resolve_inode_block(block_dev, &mut old_parent_inode, lbn as u32) {
@@ -153,7 +153,7 @@ pub fn mv<B: BlockDevice>(
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let data = &cached.data[..BLOCK_SIZE];
+            let data = &cached.data[..fs.block_size];
             let iter = DirEntryIterator::new(data);
             for (entry, _) in iter {
                 if entry.inode == 0 {
@@ -285,7 +285,7 @@ pub fn mv<B: BlockDevice>(
                 }
             };
             let _ = fs.datablock_cache.modify(block_dev, first_blk, |data| {
-                let block_bytes = BLOCK_SIZE;
+                let block_bytes = fs.block_size;
                 if block_bytes < 24 {
                     return;
                 }

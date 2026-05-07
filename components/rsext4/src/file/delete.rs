@@ -6,7 +6,7 @@ fn free_inode_with_dtime<B: BlockDevice>(
     inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<()> {
-    let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_block_allextend(fs, block_dev, inode)?
+    let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_block_allextend(block_dev, inode)?
         .into_values()
         .collect();
     if inode.have_extend_header_and_use_extend() {
@@ -70,14 +70,14 @@ pub fn unlink<B: BlockDevice>(
     };
 
     let mut target_ino: Option<InodeNumber> = None;
-    let blocks = resolve_inode_block_allextend(fs, block_dev, &mut parent_inode)?;
+    let blocks = resolve_inode_block_allextend(block_dev, &mut parent_inode)?;
 
     for &phys in blocks.values() {
         let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let data = &cached.data[..BLOCK_SIZE];
+        let data = &cached.data[..fs.block_size];
         let iter = DirEntryIterator::new(data);
         for (entry, _) in iter {
             if entry.inode == 0 {
@@ -138,7 +138,7 @@ pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
     }
 
     let total_size = parent_inode.size() as usize;
-    let block_bytes = BLOCK_SIZE;
+    let block_bytes = fs.block_size;
     let total_blocks = if total_size == 0 {
         0
     } else {
@@ -293,9 +293,9 @@ pub fn delete_dir<B: BlockDevice>(
         // Stage 0 scans children and pushes subdirectories for a depth-first
         // traversal.
         if frame.stage == 0 {
-            let block_bytes = BLOCK_SIZE;
+            let block_bytes = fs.block_size;
 
-            let dir_blocks = resolve_inode_block_allextend(fs, block_dev, &mut frame.inode)?;
+            let dir_blocks = resolve_inode_block_allextend(block_dev, &mut frame.inode)?;
 
             let mut to_descend: Vec<(
                 alloc::string::String,

@@ -2,7 +2,6 @@
 
 use super::core::ext4_metadata_csum32;
 use crate::{
-    BLOCK_SIZE,
     crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
     endian::read_u16_le,
     entries::{Ext4DirEntryTail, Ext4DxEntry, Ext4DxRootInfo},
@@ -25,22 +24,23 @@ pub fn verify_ext4_dirblock_checksum(
     if !ext4_superblock_has_metadata_csum(sb) {
         return true;
     }
-    if block_bytes.len() < BLOCK_SIZE || BLOCK_SIZE < 12 {
+    let block_size = block_bytes.len();
+    if block_size < 12 {
         return false;
     }
 
-    let tail_ft = block_bytes[BLOCK_SIZE - 5];
+    let tail_ft = block_bytes[block_size - 5];
     if tail_ft != 0xDE {
         return true;
     }
 
     let stored = u32::from_le_bytes([
-        block_bytes[BLOCK_SIZE - 4],
-        block_bytes[BLOCK_SIZE - 3],
-        block_bytes[BLOCK_SIZE - 2],
-        block_bytes[BLOCK_SIZE - 1],
+        block_bytes[block_size - 4],
+        block_bytes[block_size - 3],
+        block_bytes[block_size - 2],
+        block_bytes[block_size - 1],
     ]);
-    let data_len = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+    let data_len = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
     let computed = ext4_dirblock_csum32(sb, ino, generation, &block_bytes[..data_len]);
     computed == stored
 }
@@ -53,10 +53,11 @@ pub fn update_ext4_dirblock_csum32(
     block_bytes: &mut [u8],
 ) {
     if ext4_superblock_has_metadata_csum(sb) {
-        let data_len = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+        let data_len = block_bytes.len() - Ext4DirEntryTail::TAIL_LEN as usize;
         let checksum =
             ext4_dirblock_csum32(sb, parent_dir_ino, generation, &block_bytes[..data_len]);
-        block_bytes[BLOCK_SIZE - 4..].copy_from_slice(&checksum.to_le_bytes());
+        let block_size = block_bytes.len();
+        block_bytes[block_size - 4..].copy_from_slice(&checksum.to_le_bytes());
     }
 }
 

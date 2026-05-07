@@ -1,13 +1,13 @@
 //! JBD2-aware block device facade.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 
 use log::{error, trace, warn};
 
 use super::{cached_device::BlockDev, traits::BlockDevice};
 use crate::{
     bmalloc::AbsoluteBN,
-    config::{BLOCK_SIZE, JBD2_BUFFER_MAX},
+    config::JBD2_BUFFER_MAX,
     disknode::Ext4Timestamp,
     error::{Ext4Error, Ext4Result},
     jbd2::{
@@ -170,9 +170,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         }
 
         let meta_vec = self.inner.buffer();
-        let mut new_buf = Box::new([0; BLOCK_SIZE]);
-        new_buf[..].copy_from_slice(meta_vec);
-        let updates = Jbd2Update(block_id, new_buf);
+        let updates = Jbd2Update(block_id, meta_vec.to_vec().into_boxed_slice());
 
         let Some(system) = self.system.as_mut() else {
             error!(
@@ -232,17 +230,19 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             );
             return self.inner.write_blocks(buf, block_id, count);
         };
+        let block_bytes = self.inner.buffer().len();
         let raw_dev = self.inner.device_mut();
-        let required = count as usize * BLOCK_SIZE;
+        let required = count as usize * block_bytes;
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
 
         for i in 0..count {
-            let off = (i as usize) * BLOCK_SIZE;
-            let mut boxbuf = Box::new([0; BLOCK_SIZE]);
-            boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
-            let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
+            let off = (i as usize) * block_bytes;
+            let updates = Jbd2Update(
+                block_id.checked_add(i)?,
+                buf[off..off + block_bytes].to_vec().into_boxed_slice(),
+            );
 
             Self::enqueue_journal_update(system, raw_dev, updates)?;
         }

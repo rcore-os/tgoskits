@@ -3,9 +3,18 @@
 use log::error;
 
 use crate::{
-    blockdev::*, bmalloc::{InodeNumber, LogicalBN}, checksum::update_ext4_dirblock_csum32, config::*,
-    crc32c::ext4_superblock_has_metadata_csum, disknode::*, endian::DiskFormat, entries::*,
-    error::*, ext4::*, extents_tree::*, loopfile::*, metadata::Ext4InodeMetadataUpdate,
+    blockdev::*,
+    bmalloc::{InodeNumber, LogicalBN},
+    checksum::update_ext4_dirblock_csum32,
+    crc32c::ext4_superblock_has_metadata_csum,
+    disknode::*,
+    endian::DiskFormat,
+    entries::*,
+    error::*,
+    ext4::*,
+    extents_tree::*,
+    loopfile::*,
+    metadata::Ext4InodeMetadataUpdate,
 };
 
 /// Inserts a child entry into a parent directory, extending the directory if needed.
@@ -33,7 +42,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     );
 
     let total_size = parent_inode.size() as usize;
-    let block_bytes = BLOCK_SIZE;
+    let block_bytes = fs.block_size;
     let total_blocks = if total_size == 0 {
         0
     } else {
@@ -43,7 +52,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     let mut inserted = false;
 
     // Try to satisfy the insertion inside already mapped directory blocks first.
-    let blocks = resolve_inode_block_allextend(fs, device, parent_inode)?;
+    let blocks = resolve_inode_block_allextend(device, parent_inode)?;
 
     for lbn in 0..total_blocks {
         if inserted {
@@ -66,7 +75,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
                 return;
             }
 
-            let block_bytes = BLOCK_SIZE;
+            let block_bytes = fs.block_size;
 
             // Walk the block linearly and either reuse a free record or split an
             // oversized live record to create room for the new entry.
@@ -154,7 +163,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     // No existing record could host the child, so append a fresh directory block.
     let new_block = fs.alloc_block(device)?;
 
-    let block_bytes = BLOCK_SIZE;
+    let block_bytes = fs.block_size;
     let old_blocks = if total_size == 0 {
         0
     } else {
@@ -177,7 +186,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     parent_inode.i_size_lo = new_size as u32;
     parent_inode.i_size_high = ((new_size as u64) >> 32) as u32;
     let cur = parent_inode.blocks_count();
-    let add_sectors = BLOCK_SIZE as u64 / 512;
+    let add_sectors = fs.block_size as u64 / 512;
     let newv = cur.saturating_add(add_sectors);
     parent_inode.i_blocks_lo = (newv & 0xffff_ffff) as u32;
     parent_inode.l_i_blocks_high = ((newv >> 32) & 0xffff) as u16;
@@ -189,16 +198,16 @@ pub fn insert_dir_entry<B: BlockDevice>(
         // A new block starts with exactly one live record and an optional checksum tail.
         let mut full_entry = new_entry;
         full_entry.rec_len = if has_checksum {
-            (BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize) as u16
+            (fs.block_size - Ext4DirEntryTail::TAIL_LEN as usize) as u16
         } else {
-            BLOCK_SIZE as u16
+            fs.block_size as u16
         };
         full_entry.to_disk_bytes(&mut data[0..8]);
         let nlen = full_entry.name_len as usize;
         data[8..8 + nlen].copy_from_slice(&full_entry.name[..nlen]);
         if has_checksum {
             let tail = Ext4DirEntryTail::new();
-            let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+            let tail_offset = fs.block_size - Ext4DirEntryTail::TAIL_LEN as usize;
             tail.to_disk_bytes(
                 &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
             );

@@ -17,9 +17,10 @@ pub(super) struct BlockDev<B: BlockDevice> {
 impl<B: BlockDevice> BlockDev<B> {
     /// Creates a new cached block device wrapper.
     pub fn new(dev: B) -> Self {
+        let block_size = dev.block_size() as usize;
         Self {
             dev,
-            buffer: BlockBuffer::new(),
+            buffer: BlockBuffer::new(block_size),
             is_dirty: false,
             cached_block: None,
         }

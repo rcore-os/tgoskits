@@ -109,7 +109,7 @@ pub fn create_symbol_link<B: BlockDevice>(
             }
 
             let blk = fs.alloc_block(device)?;
-            let write_len = core::cmp::min(remaining, BLOCK_SIZE);
+            let write_len = core::cmp::min(remaining, fs.block_size);
             if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
                 for b in data.iter_mut() {
                     *b = 0;
@@ -134,7 +134,7 @@ pub fn create_symbol_link<B: BlockDevice>(
         }
 
         let used_datablocks = data_blocks.len() as u64;
-        let iblocks_used = used_datablocks.saturating_mul(BLOCK_SIZE as u64 / 512) as u32;
+        let iblocks_used = used_datablocks.saturating_mul(fs.block_size as u64 / 512) as u32;
         new_inode.i_blocks_lo = iblocks_used;
         new_inode.l_i_blocks_high = 0; // iblocks_used is u32, so high part is 0
 
@@ -236,7 +236,7 @@ pub fn mkfile<B: BlockDevice>(
                 }
             };
 
-            let write_len = core::cmp::min(remaining, BLOCK_SIZE);
+            let write_len = core::cmp::min(remaining, fs.block_size);
 
             // Zero-fill each new block and copy the live payload prefix into it.
             if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
@@ -298,7 +298,7 @@ pub fn mkfile<B: BlockDevice>(
     if !data_blocks.is_empty() {
         // File starts with allocated data blocks.
         let used_databyte = data_blocks.len() as u64;
-        let iblocks_used = used_databyte.saturating_mul(BLOCK_SIZE as u64 / 512);
+        let iblocks_used = used_databyte.saturating_mul(fs.block_size as u64 / 512);
         let used_blocks_lo = iblocks_used as u32;
         new_inode.i_size_lo = size_lo;
         new_inode.i_size_high = size_hi;

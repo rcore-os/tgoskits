@@ -27,9 +27,15 @@ pub struct Ext4FileSystem {
     pub mounted: bool,
     /// Physical block containing the externalized journal superblock.
     pub journal_sb_block_start: Option<AbsoluteBN>,
+    /// block size
+    pub block_size: usize,
 }
 
 impl Ext4FileSystem {
+    pub(crate) fn primary_gdt_byte_offset(superblock: &Ext4Superblock, block_size: usize) -> u64 {
+        u64::from(superblock.s_first_data_block.saturating_add(1)) * block_size as u64
+    }
+
     pub(crate) fn sync_group_descriptor_if_needed<B: BlockDevice>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
@@ -38,6 +44,7 @@ impl Ext4FileSystem {
         if USE_MULTILEVEL_CACHE {
             return Ok(());
         }
+        let block_size = self.block_size;
 
         let idx = group_id.as_usize()?;
         if idx >= self.group_descs.len() {
@@ -45,10 +52,10 @@ impl Ext4FileSystem {
         }
 
         let desc_size = self.superblock.get_desc_size() as usize;
-        let gdt_base = BLOCK_SIZE as u64;
+        let gdt_base = Self::primary_gdt_byte_offset(&self.superblock, block_size);
         let byte_offset = gdt_base + idx as u64 * desc_size as u64;
-        let block_num = AbsoluteBN::new(byte_offset / BLOCK_SIZE as u64);
-        let in_block = (byte_offset % BLOCK_SIZE as u64) as usize;
+        let block_num = AbsoluteBN::new(byte_offset / block_size as u64);
+        let in_block = (byte_offset % block_size as u64) as usize;
         let end = in_block + desc_size;
 
         let mut desc = self.group_descs[idx];
@@ -162,7 +169,7 @@ impl Ext4FileSystem {
             inode_num,
             self.superblock.s_inodes_per_group,
             AbsoluteBN::new(inode_table_start),
-            BLOCK_SIZE,
+            self.block_size,
         )?;
 
         let sb = self.superblock;
@@ -198,7 +205,7 @@ impl Ext4FileSystem {
             inode_num,
             self.superblock.s_inodes_per_group,
             AbsoluteBN::new(inode_table_start),
-            BLOCK_SIZE,
+            self.block_size,
         )?;
 
         let cached = self

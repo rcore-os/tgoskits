@@ -69,11 +69,15 @@ pub fn need_redundant_backup(gid: u32) -> bool {
 
 /// Returns whether `number` is an exact power of `base`.
 pub fn is_numbers_power(number: usize, base: usize) -> bool {
+    if base < 2 {
+        return number == 1;
+    }
+
     let mut tmp_number = number;
     if tmp_number == 1 {
         return true;
     }
-    while tmp_number % base == 0 {
+    while tmp_number.is_multiple_of(base) {
         tmp_number /= base;
     }
     tmp_number == 1

@@ -3,11 +3,10 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::convert::TryInto;
 
-use crate::{bmalloc::AbsoluteBN, config::*, endian::*};
+use crate::{bmalloc::AbsoluteBN, config::runtime_block_size_u32, endian::*};
 pub const JOURNAL_FILE_INODE: u64 = 8;
 /// ext4 reserves inode 8 for the journal file.
 pub const JBD2_MAGIC: u32 = 0xC03B_3998u32; // jbd2 magic number (on-disk big-endian)
-pub const JOURNAL_BLOCK_COUNT: u32 = 32 * 1024 * 1024 / BLOCK_SIZE_U32;
 pub const JOURNAL_ESCAPE: u16 = 0x1;
 pub const JBD2_FLAG_SAME_UUID: u16 = 0x2;
 pub const JBD2_FLAG_LAST_TAG: u16 = 0x8;
@@ -25,7 +24,7 @@ pub const JBD2_FEATURE_INCOMPAT_64BIT: u32 = 0x0000_0002;
 pub const JBD2_FEATURE_INCOMPAT_CSUM_V3: u32 = 0x0000_0010;
 #[repr(C)]
 /// One journaled metadata update: `(target physical block, serialized block)`.
-pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8; BLOCK_SIZE]>);
+pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8]>);
 #[repr(C)]
 pub struct JBD2DEVSYSTEM {
     pub jbd2_super_block: JournalSuperBllockS,
@@ -115,9 +114,10 @@ impl Default for JournalSuperBllockS {
     /// Callers are expected to override `s_maxlen` with the real journal size.
     fn default() -> Self {
         let header = JournalHeaderS::default();
+        let journal_block_count = 32 * 1024 * 1024 / runtime_block_size_u32();
         JournalSuperBllockS {
             s_header: header,
-            s_blocksize: BLOCK_SIZE_U32,
+            s_blocksize: runtime_block_size_u32(),
             s_maxlen: 4096,
             s_first: 1,
             s_sequence: 1,
@@ -129,8 +129,8 @@ impl Default for JournalSuperBllockS {
             s_uuid: [0; 16],
             s_nr_users: 1,
             s_dynsuper: 0,
-            s_max_transaction: JOURNAL_BLOCK_COUNT,
-            s_max_trans_data: JOURNAL_BLOCK_COUNT * 10,
+            s_max_transaction: journal_block_count,
+            s_max_trans_data: journal_block_count * 10,
             s_checksum_type: 0,
             s_padding2: [0; 3],
             s_padding: [0; 42],

@@ -12,6 +12,8 @@ use rsext4::{
     *,
 };
 
+const IMAGE_BLOCK_SIZE: usize = 4096;
+
 struct FileBlockDevice {
     file: File,
     block_size: u32,
@@ -29,8 +31,8 @@ impl FileBlockDevice {
         let len = file.metadata().expect("image metadata").len();
         Self {
             file,
-            block_size: BLOCK_SIZE as u32,
-            total_blocks: len / BLOCK_SIZE as u64,
+            block_size: IMAGE_BLOCK_SIZE as u32,
+            total_blocks: len / IMAGE_BLOCK_SIZE as u64,
             now: Cell::new(1_700_000_000),
         }
     }
@@ -222,10 +224,10 @@ fn changed_image_blocks(before: &Path, after: &Path) -> Vec<u64> {
     let after_len = after.metadata().expect("after image metadata").len();
     assert_eq!(before_len, after_len, "image lengths should match");
 
-    let mut before_block = vec![0u8; BLOCK_SIZE];
-    let mut after_block = vec![0u8; BLOCK_SIZE];
+    let mut before_block = vec![0u8; IMAGE_BLOCK_SIZE];
+    let mut after_block = vec![0u8; IMAGE_BLOCK_SIZE];
     let mut changed = Vec::new();
-    for block in 0..before_len / BLOCK_SIZE as u64 {
+    for block in 0..before_len / IMAGE_BLOCK_SIZE as u64 {
         before
             .read_exact(&mut before_block)
             .expect("read before image block");
@@ -242,10 +244,10 @@ fn changed_image_blocks(before: &Path, after: &Path) -> Vec<u64> {
 fn read_image_blocks(image: &Path, blocks: &[u64], output: &Path) {
     let mut image = File::open(image).expect("open image for block extraction");
     let mut payload = File::create(output).expect("create journal payload");
-    let mut buffer = vec![0u8; BLOCK_SIZE];
+    let mut buffer = vec![0u8; IMAGE_BLOCK_SIZE];
     for &block in blocks {
         image
-            .seek(SeekFrom::Start(block * BLOCK_SIZE as u64))
+            .seek(SeekFrom::Start(block * IMAGE_BLOCK_SIZE as u64))
             .expect("seek image block");
         image.read_exact(&mut buffer).expect("read image block");
         payload.write_all(&buffer).expect("write payload block");
@@ -417,13 +419,14 @@ fn e2fsck_clean_after_sparse_extent_truncate_keeps_tree_blocks_counted() {
                 &mut dev,
                 &mut fs,
                 path,
-                lbn * BLOCK_SIZE as u64,
+                lbn * IMAGE_BLOCK_SIZE as u64,
                 &[lbn as u8],
             )
             .expect("sparse write");
         }
 
-        truncate(&mut dev, &mut fs, path, 9 * BLOCK_SIZE as u64).expect("truncate sparse file");
+        truncate(&mut dev, &mut fs, path, 9 * IMAGE_BLOCK_SIZE as u64)
+            .expect("truncate sparse file");
         umount(fs, &mut dev).expect("umount image");
     }
 
@@ -451,7 +454,7 @@ fn e2fsck_clean_after_deleting_split_extent_file_frees_tree_blocks() {
                 &mut dev,
                 &mut fs,
                 path,
-                lbn * BLOCK_SIZE as u64,
+                lbn * IMAGE_BLOCK_SIZE as u64,
                 &[0x80 | lbn as u8],
             )
             .expect("sparse write");
@@ -480,17 +483,23 @@ fn e2fsck_clean_after_exact_32768_block_extent() {
 
         let path = "/extent-32768.bin";
         mkfile(&mut dev, &mut fs, path, None, None).expect("create file");
-        let block = vec![0x5a; BLOCK_SIZE];
+        let block = vec![0x5a; IMAGE_BLOCK_SIZE];
         for lbn in 0..32768u64 {
-            write_file(&mut dev, &mut fs, path, lbn * BLOCK_SIZE as u64, &block)
-                .expect("write contiguous extent block");
+            write_file(
+                &mut dev,
+                &mut fs,
+                path,
+                lbn * IMAGE_BLOCK_SIZE as u64,
+                &block,
+            )
+            .expect("write contiguous extent block");
         }
 
         let content = read_file(&mut dev, &mut fs, path).expect("read exact 32768-block file");
-        assert_eq!(content.len(), 32768 * BLOCK_SIZE);
+        assert_eq!(content.len(), 32768 * IMAGE_BLOCK_SIZE);
         assert_eq!(&content[..16], &[0x5a; 16]);
         assert_eq!(
-            &content[32767 * BLOCK_SIZE..32767 * BLOCK_SIZE + 16],
+            &content[32767 * IMAGE_BLOCK_SIZE..32767 * IMAGE_BLOCK_SIZE + 16],
             &[0x5a; 16]
         );
 

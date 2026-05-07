@@ -8,7 +8,7 @@ use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
     checksum::jbd2_update_superblock_checksum,
-    config::*,
+    config::{runtime_block_size, runtime_block_size_u32},
     crc32c::crc32c::ext4_superblock_has_metadata_csum,
     disknode::*,
     endian::*,
@@ -112,16 +112,17 @@ impl JBD2DEVSYSTEM {
         }
     }
 
-    fn parse_replay_tags(&self, desc_buf: &[u8; BLOCK_SIZE], tid: u32) -> Option<Vec<ReplayTag>> {
+    fn parse_replay_tags(&self, desc_buf: &[u8], tid: u32) -> Option<Vec<ReplayTag>> {
         let has_csum_v3 = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_CSUM_V3);
         let has_64bit = self.has_incompat_feature(JBD2_FEATURE_INCOMPAT_64BIT);
         let mut tags = Vec::new();
         let mut off = JBD2_DESCRIPTOR_HEADER_SIZE;
         let mut tag_idx = 0usize;
+        let block_bytes = desc_buf.len();
 
-        while off < BLOCK_SIZE {
+        while off < block_bytes {
             let parsed = if has_csum_v3 {
-                if off + JBD2_TAG3_SIZE > BLOCK_SIZE {
+                if off + JBD2_TAG3_SIZE > block_bytes {
                     debug!("[JBD2 replay] descriptor tag3 truncated: tid={tid} tag_idx={tag_idx}");
                     return None;
                 }
@@ -134,7 +135,7 @@ impl JBD2DEVSYSTEM {
                 off += JBD2_TAG3_SIZE;
                 (block, tag.t_flags, all_zero)
             } else {
-                if off + JBD2_TAG_SIZE > BLOCK_SIZE {
+                if off + JBD2_TAG_SIZE > block_bytes {
                     debug!("[JBD2 replay] descriptor tag truncated: tid={tid} tag_idx={tag_idx}");
                     return None;
                 }
@@ -143,7 +144,7 @@ impl JBD2DEVSYSTEM {
 
                 let mut block_high = 0u32;
                 if has_64bit {
-                    if off + JBD2_TAG_BLOCKNR_HIGH_SIZE > BLOCK_SIZE {
+                    if off + JBD2_TAG_BLOCKNR_HIGH_SIZE > block_bytes {
                         debug!(
                             "[JBD2 replay] descriptor tag high block truncated: tid={tid} \
                              tag_idx={tag_idx}"
@@ -184,7 +185,7 @@ impl JBD2DEVSYSTEM {
             });
 
             if !same_uuid {
-                if off + JBD2_UUID_SIZE > BLOCK_SIZE {
+                if off + JBD2_UUID_SIZE > block_bytes {
                     debug!(
                         "[JBD2 replay] descriptor uuid truncated: tid={} tag_idx={}",
                         tid, tag_idx
@@ -203,14 +204,10 @@ impl JBD2DEVSYSTEM {
         Some(tags)
     }
 
-    fn parse_revoke_blocks(
-        &self,
-        revoke_buf: &[u8; BLOCK_SIZE],
-        tid: u32,
-    ) -> Option<Vec<AbsoluteBN>> {
+    fn parse_revoke_blocks(&self, revoke_buf: &[u8], tid: u32) -> Option<Vec<AbsoluteBN>> {
         let revoke = Jbd2JournalRevokeHeadS::from_disk_bytes(&revoke_buf[0..16]);
         let count = usize::try_from(revoke.r_count).ok()?;
-        if !(16..=BLOCK_SIZE).contains(&count) {
+        if !(16..=revoke_buf.len()).contains(&count) {
             debug!("[JBD2 replay] revoke block has invalid count: tid={tid} count={count}");
             return None;
         }
@@ -250,7 +247,7 @@ impl JBD2DEVSYSTEM {
         let sb_block = self
             .journal_phys_block(journal_blocks, 0)
             .expect("journal superblock block is invalid");
-        let mut sb_data = [0u8; BLOCK_SIZE];
+        let mut sb_data = vec![0u8; runtime_block_size()];
         block_dev
             .read(&mut sb_data, sb_block, 1)
             .expect("Read journal superblock failed");
@@ -324,6 +321,7 @@ impl JBD2DEVSYSTEM {
         block_dev: &mut B,
         journal_blocks: &[AbsoluteBN],
     ) -> Ext4Result<bool> {
+        let block_bytes = runtime_block_size();
         let tid = self.sequence;
         debug!(
             "[JBD2 commit] begin: tid={} updates_len={} head={} start_block={} max_len={} \
@@ -342,7 +340,7 @@ impl JBD2DEVSYSTEM {
             return Ok(false);
         }
 
-        let mut desc_buffer = vec![0; BLOCK_SIZE];
+        let mut desc_buffer = vec![0; block_bytes];
 
         // Build the descriptor block in memory first.
         let new_jbd_header = JournalHeaderS {
@@ -397,10 +395,9 @@ impl JBD2DEVSYSTEM {
         debug!("[JBD2 commit] tid={tid} descriptor_block_id={block_id} (absolute)");
         block_dev.write(&desc_buffer, block_id, 1)?;
 
-        let mut no_escape: Vec<(AbsoluteBN, [u8; BLOCK_SIZE])> = Vec::new();
+        let mut no_escape: Vec<(AbsoluteBN, Vec<u8>)> = Vec::new();
         for update in self.commit_queue.iter() {
-            let mut check_data: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
-            check_data.copy_from_slice(&*update.1);
+            let mut check_data = update.1.to_vec();
             let magic = u32::from_le_bytes(check_data[0..4].try_into().unwrap());
             if magic == JBD2_MAGIC {
                 debug!("[JBD2 commit] zero escaped journal magic in payload copy");
@@ -426,7 +423,7 @@ impl JBD2DEVSYSTEM {
         // Write the commit block BEFORE checkpointing so that a crash during
         // checkpoint still leaves a valid committed transaction in the journal
         // for replay on the next mount.
-        let mut commit_buffer = [0_u8; BLOCK_SIZE];
+        let mut commit_buffer = vec![0_u8; block_bytes];
 
         let commit_block = CommitHeader {
             h_header: JournalHeaderS {
@@ -487,8 +484,9 @@ impl JBD2DEVSYSTEM {
         expect_seq: u32,
     ) -> ReplayScan {
         let mut record_rel = start_rel;
-        let mut meta_blocks: Vec<(ReplayTag, [u8; BLOCK_SIZE])> = Vec::new();
+        let mut meta_blocks: Vec<(ReplayTag, Vec<u8>)> = Vec::new();
         let mut revoked_blocks = BTreeSet::new();
+        let block_bytes = runtime_block_size();
 
         loop {
             let record_phys = match ring.phys(record_rel) {
@@ -499,7 +497,7 @@ impl JBD2DEVSYSTEM {
                     };
                 }
             };
-            let mut record_buf = [0u8; BLOCK_SIZE];
+            let mut record_buf = vec![0u8; block_bytes];
             if let Err(e) = block_dev.read(&mut record_buf, record_phys, 1) {
                 debug!(
                     "[JBD2 replay] read record failed at rel_block={record_rel} \
@@ -548,7 +546,7 @@ impl JBD2DEVSYSTEM {
                                 };
                             }
                         };
-                        let mut mbuf = [0u8; BLOCK_SIZE];
+                        let mut mbuf = vec![0u8; block_bytes];
                         if let Err(e) = block_dev.read(&mut mbuf, meta_phys, 1) {
                             debug!(
                                 "[JBD2 replay] read meta block failed: idx={idx} \
@@ -744,7 +742,7 @@ pub fn create_journal_entry<B: BlockDevice>(
 
     // Ensure journal area starts clean: otherwise old image contents could look like valid
     // descriptor/commit blocks and replay would corrupt filesystem metadata.
-    let zero = [0u8; BLOCK_SIZE];
+    let zero = vec![0u8; runtime_block_size()];
     for &b in free_block.iter() {
         block_dev.write_blocks(&zero, b, 1, true)?;
     }
@@ -755,7 +753,7 @@ pub fn create_journal_entry<B: BlockDevice>(
         "When creating journal inode: iblock={:?}",
         jour_inode.i_block
     );
-    let inode_size: usize = BLOCK_SIZE * free_block.len();
+    let inode_size: usize = runtime_block_size() * free_block.len();
     jour_inode.i_size_lo = inode_size as u32;
     jour_inode.i_size_high = 0;
     jour_inode.i_blocks_lo = (inode_size / 512) as u32;
@@ -792,7 +790,7 @@ pub fn create_journal_entry<B: BlockDevice>(
     // usable log length excludes that block and starts at relative block 1.
     jbd2_sb.s_maxlen = (free_block.len() - 1) as u32;
     jbd2_sb.s_start = 0;
-    jbd2_sb.s_blocksize = BLOCK_SIZE_U32;
+    jbd2_sb.s_blocksize = runtime_block_size_u32();
     jbd2_sb.s_sequence = 1;
     jbd2_sb.s_first = 1;
     jbd2_sb.s_uuid = fs.superblock.s_uuid;

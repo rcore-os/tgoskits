@@ -25,7 +25,7 @@ const MAX_LFS_FILESIZE: u128 = i64::MAX as u128;
 
 /// Integer ceil division for positive integers.
 const fn div_ceil_u128(n: u128, d: u128) -> u128 {
-    if d == 0 { 0 } else { (n + d - 1) / d }
+    if d == 0 { 0 } else { n.div_ceil(d) }
 }
 
 /// Linux `ext4_max_size()` equivalent for extent-mapped inodes, returned in bytes.
@@ -120,6 +120,7 @@ pub fn ext4_get_maxbytes(sb: &Ext4Superblock, inode: &Ext4Inode) -> u64 {
         let extent_guard = (EXT4_MAX_LOGICAL_BLOCK.saturating_add(1)).saturating_mul(block_size);
         ext4_max_size_bytes(blkbits, has_huge_files).min(extent_guard)
     } else {
+        // no have extent
         ext4_max_bitmap_size_bytes(blkbits, has_huge_files)
     }
 }

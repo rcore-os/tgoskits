@@ -419,7 +419,8 @@ pub(crate) fn write_superblock<B: BlockDevice>(
     sb: &Ext4Superblock,
 ) -> Ext4Result<()> {
     // The primary ext4 superblock always starts at byte offset 1024.
-    if BLOCK_SIZE == 1024 {
+    let block_size = 1024usize << sb.s_log_block_size;
+    if block_size == 1024 {
         block_dev.read_block(AbsoluteBN::from(1u32))?;
         let buffer = block_dev.buffer_mut();
         sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
@@ -444,7 +445,7 @@ pub(crate) fn read_superblock<B: BlockDevice>(
 ) -> Ext4Result<Ext4Superblock> {
     // Read the containing filesystem block, then slice out the 1024-byte
     // superblock payload.
-    if BLOCK_SIZE == 1024 {
+    if block_dev.block_size() as usize == 1024 {
         block_dev.read_block(AbsoluteBN::from(1u32))?;
         let buffer = block_dev.buffer();
         let sb = Ext4Superblock::from_disk_bytes(&buffer[0..SUPERBLOCK_SIZE]);
@@ -530,12 +531,12 @@ fn write_group_desc<B: BlockDevice>(
     // matches the exact format chosen during mkfs.
     let superblock = read_superblock(block_dev)?;
     let desc_size = superblock.get_desc_size() as usize;
+    let block_size_u64 = (1024u64 << superblock.s_log_block_size) as u64;
 
     // Convert the descriptor's byte offset inside the GDT into a physical block
     // number plus an offset within that block.
-    let gdt_base: u64 = BLOCK_SIZE as u64;
+    let gdt_base: u64 = block_size_u64;
     let byte_offset = gdt_base + group_id as u64 * desc_size as u64;
-    let block_size_u64 = BLOCK_SIZE as u64;
     let block_num = byte_offset / block_size_u64;
     let in_block = (byte_offset % block_size_u64) as usize;
     let end = in_block + desc_size;
@@ -595,7 +596,7 @@ fn initialize_group_0<B: BlockDevice>(
         }
 
         // Mark bitmap padding bits allocated so they are never handed out.
-        let bits_per_group = BLOCK_SIZE_U32 * 8;
+        let bits_per_group = layout.block_size * 8;
         for i in layout.inodes_per_group..bits_per_group {
             let byte_idx: usize = (i / 8) as usize;
             let bit_idx = i % 8;
@@ -669,7 +670,7 @@ fn initialize_other_groups_bitmaps<B: BlockDevice>(
             let buffer = block_dev.buffer_mut();
             buffer.fill(0);
 
-            let bits_per_group = BLOCK_SIZE_U32 * 8;
+            let bits_per_group = layout.block_size * 8;
             for i in layout.inodes_per_group..bits_per_group {
                 let byte_idx: usize = (i / 8) as usize;
                 let bit_idx = i % 8;

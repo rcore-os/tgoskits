@@ -1,42 +1,10 @@
-use super::*;
-
-use crate::bmalloc::LogicalBN;
-
-fn refresh_open_file_inode<B: BlockDevice>(
-    dev: &mut Jbd2Dev<B>,
-    fs: &mut Ext4FileSystem,
-    file: &mut OpenFile,
-) -> Ext4Result<()> {
-    let Some((ino, inode)) = get_file_inode(fs, dev, &file.path)? else {
-        return Err(Ext4Error::not_found());
-    };
-    file.inode_num = ino;
-    file.inode = inode;
-    Ok(())
-}
-
-/// Writes data at the current file offset.
-pub fn write_at<B: BlockDevice>(
-    dev: &mut Jbd2Dev<B>,
-    fs: &mut Ext4FileSystem,
-    file: &mut OpenFile,
-    data: &[u8],
-) -> Ext4Result<()> {
-    if false {
-        return Err(Ext4Error::unsupported());
-    }
-
-    if data.is_empty() {
-        return Ok(());
-    }
-
-    let off = file.offset;
-    write_file(dev, fs, &file.path, off, data)?;
-    file.offset = file.offset.saturating_add(data.len() as u64);
-    refresh_open_file_inode(dev, fs, file)?;
-    Ok(())
-}
-
+use crate::{
+    BlockDevice, Ext4Error, Ext4FileSystem, Ext4Result, Jbd2Dev,
+    api::{OpenFile, Vec, refresh_open_file_inode_by_num},
+    config::runtime_block_size,
+    loopfile::resolve_inode_block,
+    read_file,
+};
 /// Read a whole file into memory.
 pub fn read<B: BlockDevice>(
     dev: &mut Jbd2Dev<B>,
@@ -57,19 +25,19 @@ pub fn read_at<B: BlockDevice>(
     len: usize,
 ) -> Ext4Result<Vec<u8>> {
     if len == 0 {
-        refresh_open_file_inode(dev, fs, file)?;
+        refresh_open_file_inode_by_num(dev, fs, file)?;
         fs.touch_inode_atime_if_needed(dev, file.inode_num)?;
-        refresh_open_file_inode(dev, fs, file)?;
+        refresh_open_file_inode_by_num(dev, fs, file)?;
         return Ok(Vec::new());
     }
 
     // Refresh the cached inode before computing the readable window.
-    refresh_open_file_inode(dev, fs, file)?;
+    refresh_open_file_inode_by_num(dev, fs, file)?;
 
     let file_size = file.inode.size();
     if file.offset >= file_size {
         fs.touch_inode_atime_if_needed(dev, file.inode_num)?;
-        refresh_open_file_inode(dev, fs, file)?;
+        refresh_open_file_inode_by_num(dev, fs, file)?;
         return Ok(Vec::new());
     }
 
@@ -84,15 +52,12 @@ pub fn read_at<B: BlockDevice>(
         return Err(Ext4Error::unsupported());
     }
 
-    let block_bytes = BLOCK_SIZE as u64;
+    let block_bytes = runtime_block_size() as u64;
     let start_off = file.offset;
     let end_off = start_off + to_read; // exclusive
 
     let start_lbn = start_off / block_bytes;
     let end_lbn = (end_off - 1) / block_bytes;
-
-    // Snapshot the current extent map once, then copy each intersecting logical block.
-    let extent_map = resolve_inode_block_allextend(fs, dev, &mut file.inode)?;
 
     let mut out = Vec::with_capacity(to_read as usize);
     for lbn in start_lbn..=end_lbn {
@@ -106,7 +71,7 @@ pub fn read_at<B: BlockDevice>(
             continue;
         }
 
-        if let Some(&phys) = extent_map.get(&LogicalBN::new(lbn as u32)) {
+        if let Some(phys) = resolve_inode_block(dev, &mut file.inode, lbn as u32)? {
             let cached = fs.datablock_cache.get_or_load(dev, phys)?;
             let data = &cached.data[..block_bytes as usize];
             out.extend_from_slice(&data[copy_start as usize..(copy_start + copy_len) as usize]);
@@ -123,7 +88,7 @@ pub fn read_at<B: BlockDevice>(
     out.truncate(to_read as usize);
     // Update atime only after the read path has completed successfully.
     fs.touch_inode_atime_if_needed(dev, file.inode_num)?;
-    refresh_open_file_inode(dev, fs, file)?;
+    refresh_open_file_inode_by_num(dev, fs, file)?;
     file.offset = file.offset.saturating_add(out.len() as u64);
     Ok(out)
 }

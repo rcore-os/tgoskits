@@ -60,7 +60,7 @@ impl DataBlockCache {
 
     /// Creates a data block cache with default settings.
     pub fn create_default() -> Self {
-        Self::new(64, BLOCK_SIZE)
+        Self::new(64, runtime_block_size())
     }
 
     /// Loads one block from disk.
@@ -264,7 +264,7 @@ impl DataBlockCache {
         dirty_blocks.sort_by_key(|(block_num, _)| *block_num);
 
         // Batch contiguous dirty blocks into one `write_blocks` call.
-        let max_part_size = BLOCK_SIZE * 100;
+        let max_part_size = runtime_block_size() * 100;
         let block_size = self.block_size;
         let mut idx = 0usize;
         while idx < dirty_blocks.len() {
@@ -374,26 +374,29 @@ mod tests {
 
     struct TestBlockDevice {
         data: Vec<u8>,
+        block_size: usize,
     }
 
     impl TestBlockDevice {
         fn new(blocks: usize) -> Self {
+            let block_size = runtime_block_size();
             Self {
-                data: alloc::vec![0; blocks * BLOCK_SIZE],
+                data: alloc::vec![0; blocks * block_size],
+                block_size,
             }
         }
     }
 
     impl BlockDevice for TestBlockDevice {
         fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-            let start = block_id.as_usize()? * BLOCK_SIZE;
+            let start = block_id.as_usize()? * self.block_size;
             let end = start + buffer.len();
             buffer.copy_from_slice(&self.data[start..end]);
             Ok(())
         }
 
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-            let start = block_id.as_usize()? * BLOCK_SIZE;
+            let start = block_id.as_usize()? * self.block_size;
             let end = start + buffer.len();
             self.data[start..end].copy_from_slice(buffer);
             Ok(())
@@ -408,11 +411,11 @@ mod tests {
         }
 
         fn total_blocks(&self) -> u64 {
-            (self.data.len() / BLOCK_SIZE) as u64
+            (self.data.len() / self.block_size) as u64
         }
 
         fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
+            self.block_size as u32
         }
 
         fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
@@ -422,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_datablock_cache_basic() {
-        let cache = DataBlockCache::new(8, BLOCK_SIZE);
+        let cache = DataBlockCache::new(8, runtime_block_size());
         let stats = cache.stats();
 
         assert_eq!(stats.total_entries, 0);
@@ -432,7 +435,7 @@ mod tests {
 
     #[test]
     fn test_create_new_block() {
-        let mut cache = DataBlockCache::new(8, BLOCK_SIZE);
+        let mut cache = DataBlockCache::new(8, runtime_block_size());
 
         let device = TestBlockDevice::new(1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
@@ -441,7 +444,7 @@ mod tests {
             .create_new(&mut jbd2_dev, AbsoluteBN::new(100))
             .expect("create new block");
         assert_eq!(block.block_num, AbsoluteBN::new(100));
-        assert_eq!(block.data.len(), BLOCK_SIZE);
+        assert_eq!(block.data.len(), runtime_block_size());
         assert!(block.dirty); // New cache entries should start dirty.
 
         let stats = cache.stats();
@@ -451,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_invalidate() {
-        let mut cache = DataBlockCache::new(8, BLOCK_SIZE);
+        let mut cache = DataBlockCache::new(8, runtime_block_size());
 
         let device = TestBlockDevice::new(1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
@@ -467,7 +470,7 @@ mod tests {
 
     #[test]
     fn create_new_respects_lru_limit() {
-        let mut cache = DataBlockCache::new(2, BLOCK_SIZE);
+        let mut cache = DataBlockCache::new(2, runtime_block_size());
         let device = TestBlockDevice::new(1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
 

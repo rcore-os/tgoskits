@@ -607,6 +607,7 @@ mod tests {
         blockdev::{BlockDevice, Jbd2Dev},
         bmalloc::{AbsoluteBN, LogicalBN},
         cache::bitmap::CacheKey,
+        config::{runtime_block_size, runtime_block_size_u32},
         error::{Ext4Error, Ext4Result},
         ext4::{mkfs, mount},
     };
@@ -619,7 +620,8 @@ mod tests {
 
     impl MemBlockDev {
         fn new(total_blocks: u64) -> Self {
-            let size = total_blocks as usize * BLOCK_SIZE;
+            let block_size = runtime_block_size();
+            let size = total_blocks as usize * block_size;
             Self {
                 data: vec![0u8; size],
                 total_blocks,
@@ -630,7 +632,7 @@ mod tests {
 
     impl BlockDevice for MemBlockDev {
         fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
-            let block_size = BLOCK_SIZE;
+            let block_size = runtime_block_size();
             let required = block_size * count as usize;
             if buffer.len() < required {
                 return Err(Ext4Error::buffer_too_small(buffer.len(), required));
@@ -648,7 +650,7 @@ mod tests {
         }
 
         fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
-            let block_size = BLOCK_SIZE;
+            let block_size = runtime_block_size();
             let required = block_size * count as usize;
             if buffer.len() < required {
                 return Err(Ext4Error::buffer_too_small(buffer.len(), required));
@@ -678,7 +680,7 @@ mod tests {
         }
 
         fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
+            runtime_block_size_u32()
         }
 
         fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
@@ -1017,10 +1019,18 @@ mod tests {
 
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.insert_extent(&mut fs, Ext4Extent::new(LogicalBN::new(0), base1.raw(), 2), &mut dev)
-                .unwrap();
-            tree.insert_extent(&mut fs, Ext4Extent::new(LogicalBN::new(4), base2.raw(), 2), &mut dev)
-                .unwrap();
+            tree.insert_extent(
+                &mut fs,
+                Ext4Extent::new(LogicalBN::new(0), base1.raw(), 2),
+                &mut dev,
+            )
+            .unwrap();
+            tree.insert_extent(
+                &mut fs,
+                Ext4Extent::new(LogicalBN::new(4), base2.raw(), 2),
+                &mut dev,
+            )
+            .unwrap();
         }
 
         // delete 3 allocated blocks starting at lbn=1: deletes lbn=1, then skips hole [2..4), then deletes lbn=4 and lbn=5
@@ -1062,10 +1072,18 @@ mod tests {
         let base2 = alloc_contiguous(&mut fs, &mut dev, 1);
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.insert_extent(&mut fs, Ext4Extent::new(LogicalBN::new(0), base1.raw(), 2), &mut dev)
-                .unwrap();
-            tree.insert_extent(&mut fs, Ext4Extent::new(LogicalBN::new(10), base2.raw(), 1), &mut dev)
-                .unwrap();
+            tree.insert_extent(
+                &mut fs,
+                Ext4Extent::new(LogicalBN::new(0), base1.raw(), 2),
+                &mut dev,
+            )
+            .unwrap();
+            tree.insert_extent(
+                &mut fs,
+                Ext4Extent::new(LogicalBN::new(10), base2.raw(), 1),
+                &mut dev,
+            )
+            .unwrap();
         }
 
         let before_exts = collect_extents_from_inode(&mut inode, &mut dev);

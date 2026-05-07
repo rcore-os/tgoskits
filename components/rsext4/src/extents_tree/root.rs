@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     bmalloc::InodeNumber,
+    config::runtime_block_size,
     crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
     superblock::Ext4Superblock,
 };
@@ -42,7 +43,7 @@ impl<'a> ExtentTree<'a> {
     }
 
     pub(super) fn add_inode_sectors_for_block(&mut self) {
-        let add_sectors = (BLOCK_SIZE / 512) as u64;
+        let add_sectors = (runtime_block_size() / 512) as u64;
         let cur = ((self.inode.l_i_blocks_high as u64) << 32) | (self.inode.i_blocks_lo as u64);
         let newv = cur.saturating_add(add_sectors);
         self.inode.i_blocks_lo = (newv & 0xFFFF_FFFF) as u32;
@@ -50,7 +51,7 @@ impl<'a> ExtentTree<'a> {
     }
 
     pub(super) fn sub_inode_sectors_for_block(&mut self) {
-        let sub_sectors = (BLOCK_SIZE / 512) as u64;
+        let sub_sectors = (runtime_block_size() / 512) as u64;
         let cur = ((self.inode.l_i_blocks_high as u64) << 32) | (self.inode.i_blocks_lo as u64);
         let newv = cur.saturating_sub(sub_sectors);
         self.inode.i_blocks_lo = (newv & 0xFFFF_FFFF) as u32;

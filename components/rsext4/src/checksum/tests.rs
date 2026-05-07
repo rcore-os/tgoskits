@@ -1,16 +1,10 @@
+use alloc::vec;
+
 use super::*;
 use crate::{
-    BLOCK_SIZE,
-    bmalloc::InodeNumber,
-    crc32c::ext4_crc32c_seed_from_superblock,
-    disknode::Ext4Inode,
-    endian::DiskFormat,
-    entries::{Ext4DirEntryTail, Ext4DxEntry},
-    error::Errno,
-    jbd2::jbdstruct::*,
-    superblock::Ext4Superblock,
+    bmalloc::InodeNumber, config::runtime_block_size, disknode::Ext4Inode, endian::DiskFormat,
+    entries::Ext4DirEntryTail, error::Errno, jbd2::jbdstruct::*, superblock::Ext4Superblock,
 };
-
 fn metadata_csum_superblock() -> Ext4Superblock {
     Ext4Superblock {
         s_magic: Ext4Superblock::EXT4_SUPER_MAGIC,
@@ -119,15 +113,16 @@ fn dirblock_checksum_is_stored_and_detects_corruption() {
     let sb = metadata_csum_superblock();
     let ino = 11;
     let generation = 0x5566_7788;
-    let mut block = [0u8; BLOCK_SIZE];
-    let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+    let block_size = runtime_block_size();
+    let mut block = vec![0u8; block_size];
+    let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
 
     block[..12].copy_from_slice(b"hello crc32c");
     Ext4DirEntryTail::new().to_disk_bytes(&mut block[tail_offset..tail_offset + 12]);
 
     update_ext4_dirblock_csum32(&sb, ino, generation, &mut block);
 
-    let stored = u32::from_le_bytes(block[BLOCK_SIZE - 4..].try_into().unwrap());
+    let stored = u32::from_le_bytes(block[block_size - 4..].try_into().unwrap());
     let expected = ext4_dirblock_csum32(&sb, ino, generation, &block[..tail_offset]);
     assert_eq!(stored, expected);
     assert!(verify_ext4_dirblock_checksum(&sb, ino, generation, &block));
@@ -197,7 +192,7 @@ fn journal_superblock_checksum_uses_raw_crc_accumulator() {
     // Test idea: JBD2 stores the raw ext2fs_crc32c_le(~0, superblock) accumulator, not
     // the finalized CRC32C value. This keeps the value accepted by e2fsck.
     let mut jsb = JournalSuperBllockS {
-        s_blocksize: BLOCK_SIZE as u32,
+        s_blocksize: runtime_block_size() as u32,
         s_maxlen: 8192,
         s_first: 1,
         s_sequence: 5,
