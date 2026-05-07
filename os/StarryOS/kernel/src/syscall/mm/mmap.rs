@@ -379,17 +379,18 @@ fn mremap_move(
         dontunmap,
         src_offset,
     } = move_args;
-    let backend = src_backend.relocated(target, src_offset, aspace_ref)?;
-    aspace.map(target, target_size, flags, false, backend)?;
-
     let move_size = src_size.min(target_size);
-    if let Err(e) = aspace.move_pages(src, target, move_size) {
-        let _ = aspace.unmap(target, target_size);
-        return Err(e);
-    }
+    let backend = src_backend.relocated(target, src_offset, aspace_ref)?;
 
     if src_size > move_size {
         aspace.unmap(src + move_size, src_size - move_size)?;
+    }
+
+    aspace.map(target, target_size, flags, false, backend)?;
+
+    if let Err(e) = aspace.move_pages(src, target, move_size) {
+        let _ = aspace.unmap(target, target_size);
+        return Err(e);
     }
 
     if dontunmap {
