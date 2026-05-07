@@ -111,6 +111,22 @@ impl FileBackend {
         Ok(())
     }
 
+    /// Clone with a different start address and a fresh evict listener.
+    pub fn with_start(&self, new_start: VirtAddr, aspace: &Arc<Mutex<AddrSpace>>) -> Self {
+        let mut file_data = self.0.file_data.lock().clone();
+        file_data.start = new_start;
+        let inner = Arc::new(FileBackendInner {
+            shared: self.0.shared,
+            file_data: Mutex::new(file_data),
+            cache: self.0.cache.clone(),
+            flags: self.0.flags,
+            handle: AtomicUsize::new(0),
+            futex_handle: self.0.futex_handle.clone(),
+        });
+        inner.register_listener(aspace);
+        Self(inner, aspace.downgrade())
+    }
+
     pub fn futex_handle(&self) -> Weak<()> {
         Arc::downgrade(&self.0.futex_handle)
     }
@@ -244,16 +260,8 @@ impl BackendOps for FileBackend {
         _new_pt: &mut PageTableCursor,
         new_aspace: &Arc<Mutex<AddrSpace>>,
     ) -> AxResult<Backend> {
-        let inner = Arc::new(FileBackendInner {
-            shared: self.0.shared,
-            file_data: Mutex::new(self.0.file_data.lock().clone()),
-            cache: self.0.cache.clone(),
-            flags: self.0.flags,
-            handle: AtomicUsize::new(0),
-            futex_handle: self.0.futex_handle.clone(),
-        });
-        inner.register_listener(new_aspace);
-        Ok(Backend::File(FileBackend(inner, new_aspace.downgrade())))
+        let start = self.0.file_data.lock().start;
+        Ok(Backend::File(self.with_start(start, new_aspace)))
     }
 
     fn split(&mut self, align_diff: usize) -> Option<Backend> {
