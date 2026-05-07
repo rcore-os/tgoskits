@@ -19,3 +19,24 @@ pub(crate) use rockchip::{
     RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_assert,
     rk3588_reset_deassert,
 };
+
+#[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
+pub(crate) fn rk3588_enable_clock(id: u32) -> Result<(), rdrive::probe::OnProbeError> {
+    Err(rdrive::probe::OnProbeError::other(alloc::format!(
+        "RK3588 clock support is not enabled for clock {id:#x}"
+    )))
+}
+
+#[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
+pub(crate) fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
+    Err(alloc::format!(
+        "RK3588 power-domain support is not enabled for power domain {domain}"
+    ))
+}
+
+#[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
+pub(crate) fn rk3588_reset_deassert(id: u64) -> Result<(), rdrive::probe::OnProbeError> {
+    Err(rdrive::probe::OnProbeError::other(alloc::format!(
+        "RK3588 reset support is not enabled for reset {id:#x}"
+    )))
+}
