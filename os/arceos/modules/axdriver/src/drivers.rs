@@ -8,7 +8,13 @@ use ax_driver_pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, Pci
 
 pub use super::dummy::*;
 use crate::AxDeviceEnum;
-#[cfg(feature = "virtio")]
+#[cfg(any(
+    feature = "virtio-blk",
+    feature = "virtio-net",
+    feature = "virtio-gpu",
+    feature = "virtio-input",
+    feature = "virtio-socket"
+))]
 use crate::virtio::{self, VirtIoDevMeta};
 
 pub trait DriverProbe {
@@ -21,7 +27,7 @@ pub trait DriverProbe {
         None
     }
 
-    #[cfg(bus = "pci")]
+    #[cfg(all(bus = "pci", feature = "bus-pci"))]
     fn probe_pci<C: ConfigurationAccess>(
         _root: &mut PciRoot<C>,
         _bdf: DeviceFunction,
@@ -117,7 +123,7 @@ cfg_if::cfg_if! {
         pub struct IxgbeDriver;
         register_net_driver!(IxgbeDriver, ax_driver_net::ixgbe::IxgbeNic<IxgbeHalImpl, 1024, 1>);
         impl DriverProbe for IxgbeDriver {
-            #[cfg(bus = "pci")]
+            #[cfg(all(bus = "pci", feature = "bus-pci"))]
             fn probe_pci<C: ax_driver_pci::ConfigurationAccess>(
                 root: &mut ax_driver_pci::PciRoot<C>,
                 bdf: ax_driver_pci::DeviceFunction,

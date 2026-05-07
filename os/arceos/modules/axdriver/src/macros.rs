@@ -46,7 +46,13 @@ macro_rules! for_each_drivers {
     (type $drv_type:ident, $code:block) => {{
         #[allow(unused_imports)]
         use crate::drivers::DriverProbe;
-        #[cfg(feature = "virtio")]
+        #[cfg(any(
+            feature = "virtio-blk",
+            feature = "virtio-net",
+            feature = "virtio-gpu",
+            feature = "virtio-input",
+            feature = "virtio-socket"
+        ))]
         #[allow(unused_imports)]
         use crate::virtio::{self, VirtIoDevMeta};
 

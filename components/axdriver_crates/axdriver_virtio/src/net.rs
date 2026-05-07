@@ -78,10 +78,22 @@ fn slot_mut<T>(slots: &mut [Option<T>], token: usize) -> DevResult<&mut Option<T
     slots.get_mut(token).ok_or(DevError::BadState)
 }
 
+#[cfg(test)]
 fn insert_buffer<T>(slots: &mut [Option<T>], token: usize, buf: T) -> DevResult {
     let slot = slot_mut(slots, token)?;
     if slot.is_some() {
         return Err(DevError::BadState);
+    }
+    *slot = Some(buf);
+    Ok(())
+}
+
+fn insert_buffer_or_return<T>(slots: &mut [Option<T>], token: usize, buf: T) -> Result<(), T> {
+    let Some(slot) = slots.get_mut(token) else {
+        return Err(buf);
+    };
+    if slot.is_some() {
+        return Err(buf);
     }
     *slot = Some(buf);
     Ok(())
@@ -133,10 +145,7 @@ fn validate_received_packet_layout(
     packet_len: usize,
     capacity: usize,
 ) -> DevResult {
-    if packet_len < header_len {
-        return Err(DevError::BadState);
-    }
-    validate_packet_layout(header_len, packet_len - header_len, capacity)
+    validate_packet_layout(header_len, packet_len, capacity)
 }
 
 fn queue_occupancy<T>(slots: &[Option<T>], queue_size: usize) -> DevResult<QueueOccupancy> {
@@ -166,6 +175,7 @@ pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
     free_tx_bufs: Vec<NetBufBox>,
     checked_out_rx_buffers: usize,
     checked_out_tx_buffers: usize,
+    poisoned: bool,
     buf_pool: Arc<NetBufPool>,
     inner: InnerDev<H, T, QS>,
     irq: Option<usize>,
@@ -175,6 +185,13 @@ unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, Q
 unsafe impl<H: Hal, T: Transport, const QS: usize> Sync for VirtIoNetDev<H, T, QS> {}
 
 impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
+    fn ensure_not_poisoned(&self) -> DevResult {
+        if self.poisoned {
+            return Err(DevError::BadState);
+        }
+        Ok(())
+    }
+
     fn queue_capacity(&self) -> usize {
         QS
     }
@@ -267,6 +284,7 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
     }
 
     fn runtime_state_snapshot(&self) -> DevResult<RuntimeStateSnapshot> {
+        self.ensure_not_poisoned()?;
         let rx = queue_occupancy(&self.rx_buffers, self.queue_capacity())?;
         let tx_in_flight = queue_occupancy(&self.tx_buffers, self.queue_capacity())?;
         Ok(RuntimeStateSnapshot {
@@ -346,6 +364,24 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)
     }
 
+    fn poison(&mut self) {
+        self.poisoned = true;
+    }
+
+    fn poison_submitted_rx_buffer(&mut self, rx_buf: NetBufBox) -> DevError {
+        let _ = self.recycle_checked_out_rx_buffer();
+        self.poison();
+        core::mem::forget(rx_buf);
+        DevError::BadState
+    }
+
+    fn poison_submitted_tx_buffer(&mut self, tx_buf: NetBufBox) -> DevError {
+        let _ = self.submit_checked_out_tx_buffer();
+        self.poison();
+        core::mem::forget(tx_buf);
+        DevError::BadState
+    }
+
     fn prime_rx_buffer(&mut self, expected_token: usize) -> DevResult {
         self.validate_rx_capacity(1)?;
         let mut rx_buf = self.allocate_pool_buffer()?;
@@ -354,8 +390,17 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
                 .receive_begin(rx_buf.raw_buf_mut())
                 .map_err(as_dev_err)?
         };
-        self.validate_rx_token(token, expected_token)?;
-        self.insert_rx_buffer(token as usize, rx_buf)
+        if self.validate_rx_token(token, expected_token).is_err() {
+            self.poison();
+            core::mem::forget(rx_buf);
+            return Err(DevError::BadState);
+        }
+        if let Err(rx_buf) = self.insert_rx_buffer_or_return(token as usize, rx_buf) {
+            self.poison();
+            core::mem::forget(rx_buf);
+            return Err(DevError::BadState);
+        }
+        Ok(())
     }
 
     fn fill_rx_buffers(&mut self) -> DevResult {
@@ -388,16 +433,24 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         validate_queue_token(token, expected_token, QS)
     }
 
-    fn insert_rx_buffer(&mut self, token: usize, rx_buf: NetBufBox) -> DevResult {
-        insert_buffer(&mut self.rx_buffers, token, rx_buf)
+    fn insert_rx_buffer_or_return(
+        &mut self,
+        token: usize,
+        rx_buf: NetBufBox,
+    ) -> Result<(), NetBufBox> {
+        insert_buffer_or_return(&mut self.rx_buffers, token, rx_buf)
     }
 
     fn take_rx_buffer(&mut self, token: u16) -> DevResult<NetBufBox> {
         take_buffer(&mut self.rx_buffers, token)
     }
 
-    fn insert_tx_buffer(&mut self, token: u16, tx_buf: NetBufBox) -> DevResult {
-        insert_buffer(&mut self.tx_buffers, token as usize, tx_buf)
+    fn insert_tx_buffer_or_return(
+        &mut self,
+        token: u16,
+        tx_buf: NetBufBox,
+    ) -> Result<(), NetBufBox> {
+        insert_buffer_or_return(&mut self.tx_buffers, token as usize, tx_buf)
     }
 
     fn take_tx_buffer(&mut self, token: u16) -> DevResult<NetBufBox> {
@@ -416,7 +469,9 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         self.validate_rx_capacity(1)?;
         let mut rx_buf = rx_buf;
         let token = self.begin_recycled_rx_buffer(&mut rx_buf)?;
-        self.insert_rx_buffer(token as usize, rx_buf)?;
+        if let Err(rx_buf) = self.insert_rx_buffer_or_return(token as usize, rx_buf) {
+            return Err(self.poison_submitted_rx_buffer(rx_buf));
+        }
         self.recycle_checked_out_rx_buffer()
     }
 
@@ -451,7 +506,9 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
                 .transmit_begin(tx_buf.packet_with_header())
                 .map_err(as_dev_err)?
         };
-        self.insert_tx_buffer(token, tx_buf)?;
+        if let Err(tx_buf) = self.insert_tx_buffer_or_return(token, tx_buf) {
+            return Err(self.poison_submitted_tx_buffer(tx_buf));
+        }
         self.submit_checked_out_tx_buffer()
     }
 
@@ -509,6 +566,7 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
             free_tx_bufs,
             checked_out_rx_buffers: 0,
             checked_out_tx_buffers: 0,
+            poisoned: false,
             buf_pool,
             irq,
         };
@@ -549,12 +607,12 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
 
     #[inline]
     fn can_transmit(&self) -> bool {
-        self.has_free_tx_buffer() && self.inner.can_send()
+        !self.poisoned && self.has_free_tx_buffer() && self.inner.can_send()
     }
 
     #[inline]
     fn can_receive(&self) -> bool {
-        self.inner.poll_receive().is_some()
+        !self.poisoned && self.inner.poll_receive().is_some()
     }
 
     #[inline]
@@ -632,8 +690,8 @@ mod tests {
 
     use super::{
         QueueOccupancy, RuntimeStateSnapshot, count_populated_slots, insert_buffer, take_buffer,
-        validate_packet_layout, validate_queue_token, validate_slot_accounting,
-        validate_tx_accounting,
+        validate_packet_layout, validate_queue_token, validate_received_packet_layout,
+        validate_slot_accounting, validate_tx_accounting,
     };
 
     #[test]
@@ -702,6 +760,19 @@ mod tests {
         assert!(matches!(
             validate_packet_layout(1600, 8, 1526),
             Err(DevError::BadState)
+        ));
+    }
+
+    #[test]
+    fn validate_received_packet_layout_accepts_capacity_boundary() {
+        assert!(validate_received_packet_layout(10, 1516, 1526).is_ok());
+    }
+
+    #[test]
+    fn validate_received_packet_layout_rejects_oversized_total_len() {
+        assert!(matches!(
+            validate_received_packet_layout(14, 1513, 1526),
+            Err(DevError::InvalidParam)
         ));
     }
 

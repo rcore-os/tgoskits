@@ -10,7 +10,8 @@ use crate::{AxDeviceEnum, drivers::DriverProbe};
 
 cfg_if! {
     if #[cfg(bus = "pci")] {
-        use ax_driver_pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
+        #[cfg(feature = "bus-pci")]
+        use ax_driver_virtio::pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
         type VirtIoTransport = ax_driver_virtio::PciTransport;
     } else if #[cfg(bus =  "mmio")] {
         type VirtIoTransport = ax_driver_virtio::MmioTransport;
@@ -129,7 +130,7 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
         None
     }
 
-    #[cfg(bus = "pci")]
+    #[cfg(all(bus = "pci", feature = "bus-pci"))]
     fn probe_pci<C: ConfigurationAccess>(
         root: &mut PciRoot<C>,
         bdf: DeviceFunction,
@@ -147,11 +148,11 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
             _ => return None,
         }
 
-        if let Some((ty, transport, irq)) =
+        if let Some((ty, transport)) =
             ax_driver_virtio::probe_pci_device::<VirtIoHalImpl, C>(root, bdf, dev_info)
             && ty == D::DEVICE_TYPE
         {
-            match D::try_new(transport, Some(irq)) {
+            match D::try_new(transport, Some(pci_irq_for_bdf(bdf))) {
                 Ok(dev) => return Some(dev),
                 Err(e) => {
                     warn!("failed to initialize PCI device at {bdf}({dev_info}): {e:?}");
@@ -180,19 +181,31 @@ impl HalAddress {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ProbeMatch {
-    device_type: DeviceType,
+#[cfg(all(bus = "pci", feature = "bus-pci"))]
+const fn pci_irq_base() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        0x10
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        0x23
+    }
 }
 
-impl ProbeMatch {
-    const fn new(device_type: DeviceType) -> Self {
-        Self { device_type }
-    }
-
-    fn matches(self, expected: DeviceType) -> bool {
-        self.device_type == expected
-    }
+#[cfg(all(bus = "pci", feature = "bus-pci"))]
+const fn pci_irq_for_bdf(bdf: DeviceFunction) -> usize {
+    // Keep the current legacy INTx fallback in the ArceOS PCI glue instead of
+    // hard-coding it in the reusable axdriver_virtio crate.
+    pci_irq_base() + (bdf.device & 3) as usize
 }
 
 #[inline]

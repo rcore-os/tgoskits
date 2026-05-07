@@ -55,7 +55,16 @@
 //! [dyn]: https://doc.rust-lang.org/std/keyword.dyn.html
 
 #![no_std]
-#![cfg_attr(feature = "virtio", feature(associated_type_defaults))]
+#![cfg_attr(
+    any(
+        feature = "virtio-blk",
+        feature = "virtio-net",
+        feature = "virtio-gpu",
+        feature = "virtio-input",
+        feature = "virtio-socket"
+    ),
+    feature(associated_type_defaults)
+)]
 
 #[macro_use]
 extern crate log;
@@ -72,7 +81,13 @@ mod drivers;
 mod dummy;
 mod structs;
 
-#[cfg(feature = "virtio")]
+#[cfg(any(
+    feature = "virtio-blk",
+    feature = "virtio-net",
+    feature = "virtio-gpu",
+    feature = "virtio-input",
+    feature = "virtio-socket"
+))]
 mod virtio;
 
 #[cfg(feature = "ixgbe")]
@@ -150,6 +165,10 @@ impl AllDevices {
                 }
             });
 
+            #[cfg(any(
+                all(bus = "mmio", feature = "bus-mmio"),
+                all(bus = "pci", feature = "bus-pci")
+            ))]
             self.probe_bus_devices();
         }
     }
