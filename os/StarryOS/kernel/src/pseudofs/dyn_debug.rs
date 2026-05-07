@@ -22,7 +22,11 @@ pub struct DynDebugControlFile {
 impl DynDebugControlFile {
     fn new(fs: Arc<SimpleFs>, control: ControlFile<DynamicDebugOps>) -> Arc<Self> {
         Arc::new(Self {
-            node: SimpleFsNode::new(fs, NodeType::RegularFile, NodePermission::default()),
+            node: SimpleFsNode::new(
+                fs,
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o644),
+            ),
             control: Mutex::new(control),
             snapshot: Mutex::new(None),
         })

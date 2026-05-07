@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 
-use ax_hal::{cpu_num, percpu::this_cpu_id};
+use ax_hal::{cpu_num, percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_ipi::run_on_cpu;
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::SpinNoIrq;
@@ -78,8 +78,13 @@ where
         run_on_cpu(cpu_id, move || park_remote_cpu(state));
     }
 
+    const MAX_WAIT_NS: u64 = 5_000_000_000; // 5 seconds
+    let now = monotonic_time_nanos();
     while state.parked.load(Ordering::SeqCst) != remote_cpu_count {
         spin_loop();
+        if monotonic_time_nanos() - now > MAX_WAIT_NS {
+            panic!("stop_machine: timeout waiting for remote CPUs to park");
+        }
     }
 
     // Now all remote CPUs are parked. We can safely execute the critical section.
