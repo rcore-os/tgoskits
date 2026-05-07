@@ -1,6 +1,9 @@
 use std::{
     mem::MaybeUninit,
-    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    sync::{
+        Arc, LazyLock, Mutex, MutexGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use ax_kspin::SpinNoIrq;
@@ -13,9 +16,17 @@ static POOL: LazyLock<Mutex<Box<[u8]>>> = LazyLock::new(|| {
     Mutex::new(vec![0; size].into_boxed_slice())
 });
 
+const TEST_STACK_SIZE: usize = 0x1_0000;
+static NEXT_STACK_OFFSET: AtomicUsize = AtomicUsize::new(0);
+
 pub fn initial_sp() -> usize {
     let pool = POOL.lock().unwrap();
-    pool.as_ptr() as usize + pool.len()
+    let offset = NEXT_STACK_OFFSET.fetch_add(TEST_STACK_SIZE, Ordering::Relaxed);
+    assert!(
+        offset + TEST_STACK_SIZE <= pool.len(),
+        "starry-signal test VM stack pool exhausted"
+    );
+    pool.as_ptr() as usize + offset + TEST_STACK_SIZE
 }
 
 struct Vm(MutexGuard<'static, Box<[u8]>>);

@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::anyhow;
+
 use super::{
     board::{self, Board},
     build,
@@ -170,7 +172,7 @@ plat_dyn = false
         assert_eq!(
             path,
             root.path()
-                .join("os/StarryOS/starryos/.build-riscv64gc-unknown-none-elf.toml")
+                .join("target/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
         );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),

@@ -333,13 +333,16 @@ pub(crate) fn prepare_python_case_assets_sync(
     }
     prebuild_cmd.arg("-eu").arg("-c").arg("apk add python3");
 
-    // Apply environment (PATH with wrappers, QEMU_LD_PREFIX)
+    // Apply environment (PATH with wrappers, guest dynamic linker paths)
     let host_path = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = Vec::new();
     path_entries.push(layout.command_wrapper_dir.clone());
     path_entries.extend(std::env::split_paths(&host_path));
-    prebuild_cmd.env("PATH", std::env::join_paths(path_entries).unwrap());
+    let path = std::env::join_paths(path_entries)
+        .map_err(|e| anyhow::anyhow!("failed to build guest prebuild PATH: {e}"))?;
+    prebuild_cmd.env("PATH", path);
     prebuild_cmd.env("QEMU_LD_PREFIX", &layout.staging_root);
+    prebuild_cmd.env("LD_LIBRARY_PATH", guest_library_path(&layout.staging_root));
 
     prebuild_cmd
         .exec()
@@ -828,7 +831,7 @@ pub(crate) fn build_prebuild_command(
         .arg("-eu")
         .arg(prebuild_script)
         .current_dir(case_c_source_dir(case));
-    apply_case_script_envs(&mut command, layout, &prebuild_env.script_envs);
+    apply_case_script_envs(&mut command, layout, &prebuild_env.script_envs)?;
     Ok(command)
 }
 
@@ -908,18 +911,23 @@ fn apply_case_script_envs(
     command: &mut Command,
     layout: &case_assets::CaseAssetLayout,
     script_envs: &[(String, String)],
-) {
+) -> anyhow::Result<()> {
     let host_path = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = Vec::new();
     path_entries.push(layout.command_wrapper_dir.clone());
     path_entries.extend(std::env::split_paths(&host_path));
 
-    command.env("PATH", std::env::join_paths(path_entries).unwrap());
+    let path = std::env::join_paths(path_entries)
+        .map_err(|e| anyhow::anyhow!("failed to build case script PATH: {e}"))?;
+    command.env("PATH", path);
     command.env("QEMU_LD_PREFIX", &layout.staging_root);
+    command.env("LD_LIBRARY_PATH", guest_library_path(&layout.staging_root));
 
     for (key, value) in script_envs {
         command.env(key, value);
     }
+
+    Ok(())
 }
 
 pub(crate) fn case_script_envs(
@@ -1040,8 +1048,10 @@ fn write_guest_exec_wrapper(
 ) -> anyhow::Result<()> {
     let guest_path = staging_root.join(guest_relative_path);
     let mut body = format!(
-        "export QEMU_LD_PREFIX={root}\nexec {qemu} -0 {guest} -L {root} {guest}",
+        "export QEMU_LD_PREFIX={root}\nexport LD_LIBRARY_PATH={lib_path}\nexec {qemu} -0 {guest} \
+         -L {root} {guest}",
         root = shell_single_quote(staging_root),
+        lib_path = shell_single_quote(guest_library_path(staging_root)),
         qemu = shell_single_quote(qemu_runner),
         guest = shell_single_quote(&guest_path),
     );
@@ -1061,10 +1071,12 @@ fn write_apk_wrapper_script(
     layout: &case_assets::CaseAssetLayout,
 ) -> anyhow::Result<()> {
     let body = format!(
-        "export QEMU_LD_PREFIX={root}\nexec {qemu} -L {root} {apk} --root {root} \
-         --repositories-file {repositories} --keys-dir {keys} --cache-dir {cache} --update-cache \
-         --timeout 60 --no-interactive --force-no-chroot --scripts=no \"$@\"\n",
+        "export QEMU_LD_PREFIX={root}\nexport LD_LIBRARY_PATH={lib_path}\nexec {qemu} -L {root} \
+         {apk} --root {root} --repositories-file {repositories} --keys-dir {keys} --cache-dir \
+         {cache} --update-cache --timeout 60 --no-interactive --force-no-chroot --scripts=no \
+         \"$@\"\n",
         root = shell_single_quote(staging_root),
+        lib_path = shell_single_quote(guest_library_path(staging_root)),
         qemu = shell_single_quote(qemu_runner),
         apk = shell_single_quote(staging_root.join("sbin/apk")),
         repositories = shell_single_quote(staging_root.join("etc/apk/repositories")),
@@ -1072,6 +1084,14 @@ fn write_apk_wrapper_script(
         cache = shell_single_quote(&layout.apk_cache_dir),
     );
     write_wrapper_script(path, &body)
+}
+
+fn guest_library_path(staging_root: &Path) -> String {
+    format!(
+        "{}:{}",
+        staging_root.join("lib").display(),
+        staging_root.join("usr/lib").display()
+    )
 }
 
 fn write_wrapper_script(path: &Path, body: &str) -> anyhow::Result<()> {
@@ -1234,6 +1254,10 @@ mod tests {
             command_env(&command, apk::STARRY_APK_REGION_VAR),
             Some("us".to_string())
         );
+        assert_eq!(
+            command_env(&command, "LD_LIBRARY_PATH"),
+            Some(guest_library_path(&layout.staging_root))
+        );
     }
 
     #[test]
@@ -1327,6 +1351,7 @@ mod tests {
         let prefixed =
             fs::read_to_string(layout.cross_bin_dir.join("aarch64-linux-musl-ld")).unwrap();
         assert!(plain.contains("qemu-aarch64-static"));
+        assert!(plain.contains("LD_LIBRARY_PATH"));
         assert!(plain.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
         assert!(prefixed.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
         assert!(prefixed.contains("-0"));

@@ -27,15 +27,9 @@ pub use self::{
     pty::PtyDriver,
 };
 use crate::{
-    pseudofs::{DeviceOps, SimpleFs},
+    pseudofs::DeviceOps,
     task::{AsThread, get_process_group},
 };
-
-pub fn create_pty_master(fs: Arc<SimpleFs>) -> AxResult<Arc<PtyDriver>> {
-    let (master, slave) = pty::create_pty_pair();
-    pts::add_slave(fs, slave)?;
-    Ok(master)
-}
 
 /// Tty device
 pub struct Tty<R, W> {

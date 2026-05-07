@@ -8,6 +8,7 @@ use axfs_ng_vfs::{MetadataUpdate, NodeType};
 use axnet::vsock::{VsockSocket, VsockStreamTransport};
 use axnet::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
+    raw::{IpProtocol, IpVersion, RawSocket},
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
@@ -15,8 +16,8 @@ use axnet::{
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
-        AF_INET, AF_UNIX, AF_VSOCK, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR, SHUT_WR,
-        SOCK_DGRAM, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
+        AF_INET, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR,
+        SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
     },
 };
 
@@ -37,23 +38,26 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             if proto != 0 && proto != IPPROTO_TCP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            SocketInner::Tcp(Box::new(TcpSocket::new()))
+            TcpSocket::new().into()
         }
         (AF_INET, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            SocketInner::Udp(Box::new(UdpSocket::new()))
+            UdpSocket::new().into()
         }
-        (AF_UNIX, SOCK_STREAM) => {
-            SocketInner::Unix(Box::new(UnixSocket::new(StreamTransport::new(pid))))
-        }
-        (AF_UNIX, SOCK_DGRAM) => {
-            SocketInner::Unix(Box::new(UnixSocket::new(DgramTransport::new(pid))))
-        }
+        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
+        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
         #[cfg(feature = "vsock")]
-        (AF_VSOCK, SOCK_STREAM) => {
-            SocketInner::Vsock(Box::new(VsockSocket::new(VsockStreamTransport::new())))
+        (AF_VSOCK, SOCK_STREAM) => VsockSocket::new(VsockStreamTransport::new()).into(),
+        (AF_INET, SOCK_RAW) => {
+            if proto != IPPROTO_ICMP as u32 {
+                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
+            }
+            if !current().as_thread().cred().has_cap_net_raw() {
+                return Err(AxError::from(LinuxError::EPERM));
+            }
+            SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
         }
         (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
@@ -208,8 +212,8 @@ pub fn sys_socketpair(
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
     };
-    let sock1 = Socket(SocketInner::Unix(Box::new(sock1)));
-    let sock2 = Socket(SocketInner::Unix(Box::new(sock2)));
+    let sock1 = Socket(sock1.into());
+    let sock2 = Socket(sock2.into());
 
     if raw_ty & O_NONBLOCK != 0 {
         sock1.set_nonblocking(true)?;

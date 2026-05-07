@@ -3,7 +3,6 @@
 
 #![no_std]
 #![feature(likely_unlikely)]
-#![feature(bstr)]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 

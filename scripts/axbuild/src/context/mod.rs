@@ -1,9 +1,11 @@
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
 
+use anyhow::Context;
+use log::info;
 use ostool::{
     Tool, ToolConfig,
     board::{RunBoardOptions, config::BoardRunConfig},
@@ -38,7 +40,7 @@ pub use types::{
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
-    find_workspace_root, workspace_manifest_path, workspace_member_dir, workspace_member_dir_in,
+    find_workspace_root, workspace_manifest_path, workspace_member_dir,
     workspace_metadata_root_manifest, workspace_root_path,
 };
 
@@ -46,6 +48,20 @@ pub(crate) use workspace::{
 pub(crate) enum SnapshotPersistence {
     Discard,
     Store,
+}
+
+const NO_SNAPSHOT_ENV: &str = "AXBUILD_NO_SNAPSHOT";
+
+impl SnapshotPersistence {
+    pub(crate) fn should_store(self) -> bool {
+        matches!(self, Self::Store) && !snapshot_store_disabled()
+    }
+}
+
+fn snapshot_store_disabled() -> bool {
+    std::env::var_os(NO_SNAPSHOT_ENV)
+        .as_deref()
+        .is_some_and(|value| !value.is_empty() && value != OsStr::new("0"))
 }
 
 pub struct AppContext {
@@ -64,7 +80,7 @@ impl AppContext {
 
         info!("Workspace root: {}", workspace_root.display());
 
-        let tool = Tool::new(ToolConfig::default()).unwrap();
+        let tool = Tool::new(ToolConfig::default()).context("failed to initialize ostool")?;
         Ok(Self {
             tool,
             build_config_path: None,
@@ -90,10 +106,9 @@ impl AppContext {
             self.axvisor_dir = Some(axvisor_dir);
         }
 
-        Ok(self
-            .axvisor_dir
+        self.axvisor_dir
             .as_deref()
-            .expect("axvisor_dir should be initialized"))
+            .context("axvisor_dir should be initialized")
     }
 
     pub(crate) async fn build(
@@ -111,10 +126,7 @@ impl AppContext {
         build_config_path: PathBuf,
         qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
-        self.restore_original_path();
-        if should_use_loongarch_lvz_for(&cargo.package, &cargo.target) {
-            configure_loongarch_qemu_path(&self.root)?;
-        }
+        let _path_guard = self.scoped_qemu_path(&cargo)?;
         self.set_build_config_path(build_config_path);
         self.tool
             .cargo_run(
@@ -130,10 +142,7 @@ impl AppContext {
     }
 
     pub(crate) async fn run_qemu(&mut self, cargo: &Cargo, qemu: QemuConfig) -> anyhow::Result<()> {
-        self.restore_original_path();
-        if should_use_loongarch_lvz_for(&cargo.package, &cargo.target) {
-            configure_loongarch_qemu_path(&self.root)?;
-        }
+        let _path_guard = self.scoped_qemu_path(cargo)?;
         self.tool
             .run_qemu(
                 &qemu,
@@ -198,16 +207,35 @@ impl AppContext {
         self.tool.set_build_config_path(Some(path));
     }
 
-    fn restore_original_path(&self) {
+    fn scoped_qemu_path(&self, cargo: &Cargo) -> anyhow::Result<PathRestoreGuard> {
+        let guard = PathRestoreGuard::new(self.original_path.clone());
+        guard.restore();
+        if should_use_loongarch_lvz_for(&cargo.package, &cargo.target) {
+            configure_loongarch_qemu_path(&self.root)?;
+        }
+        Ok(guard)
+    }
+}
+
+struct PathRestoreGuard {
+    original_path: OsString,
+}
+
+impl PathRestoreGuard {
+    fn new(original_path: OsString) -> Self {
+        Self { original_path }
+    }
+
+    fn restore(&self) {
         unsafe {
             env::set_var("PATH", &self.original_path);
         }
     }
 }
 
-impl Default for AppContext {
-    fn default() -> Self {
-        Self::new().expect("failed to initialize AppContext")
+impl Drop for PathRestoreGuard {
+    fn drop(&mut self) {
+        self.restore();
     }
 }
 

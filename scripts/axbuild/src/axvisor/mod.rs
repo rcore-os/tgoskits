@@ -159,7 +159,7 @@ impl Axvisor {
         let (request, snapshot) =
             self.app
                 .prepare_axvisor_request(args, qemu_config, uboot_config)?;
-        if matches!(persistence, SnapshotPersistence::Store) {
+        if persistence.should_store() {
             self.app.store_axvisor_snapshot(&snapshot)?;
         }
         Ok(request)
@@ -237,12 +237,6 @@ impl Axvisor {
         let cargo = build::load_cargo_config(&request)?;
         let uboot = self.load_uboot_config(&request, &cargo).await?;
         self.app.uboot(cargo, request.build_info_path, uboot).await
-    }
-}
-
-impl Default for Axvisor {
-    fn default() -> Self {
-        Self::new().expect("failed to initialize Axvisor")
     }
 }
 

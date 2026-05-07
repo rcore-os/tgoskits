@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Context;
+use anyhow::{Context, anyhow, bail};
 use cargo_metadata::{Metadata, Package};
 use proc_macro2::Span;
 use quote::ToTokens;

@@ -242,11 +242,9 @@ impl<B: MappingBackend> MemorySet<B> {
                 } else if area_start < start && area_end > end {
                     //        [ prot ]
                     // [ left | area | right ]
-                    let right_part = area.split(end).unwrap();
-                    area.set_end(start);
+                    let mut middle_part = area.split(start).unwrap();
+                    let right_part = middle_part.split(end).unwrap();
 
-                    let mut middle_part =
-                        MemoryArea::new(start, size, area.flags(), area.backend().clone());
                     middle_part.protect_area(new_flags, page_table)?;
                     middle_part.set_flags(new_flags);
 

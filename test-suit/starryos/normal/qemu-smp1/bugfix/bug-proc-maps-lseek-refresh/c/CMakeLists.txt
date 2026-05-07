@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-proc-maps-lseek-refresh C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-proc-maps-lseek-refresh src/main.c)
+target_compile_options(bug-proc-maps-lseek-refresh PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-proc-maps-lseek-refresh RUNTIME DESTINATION usr/bin)

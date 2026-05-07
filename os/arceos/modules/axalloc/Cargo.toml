@@ -8,7 +8,7 @@ description = "ArceOS global memory allocator"
 license.workspace = true
 
 [features]
-default = ["tlsf", "ax-allocator/page-alloc-256m"]
+default = ["tlsf", "ax-allocator/page-alloc-4g"]
 buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu", "dep:ax-plat"]
 buddy = ["dep:ax-allocator", "ax-allocator/buddy"]
 slab = ["dep:ax-allocator", "ax-allocator/slab"]
