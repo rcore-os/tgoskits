@@ -26,6 +26,8 @@ pub use axvmconfig::{
 use crate::VMMemoryRegion;
 
 const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
+#[cfg(target_arch = "x86_64")]
+const DEFAULT_X86_BIOS_LOAD_GPA: usize = 0x8000;
 
 // /// A part of `AxVCpuConfig`, which represents an architecture-dependent `VCpu`.
 // ///
@@ -90,6 +92,7 @@ pub struct AxVMConfig {
 
 impl From<AxVMCrateConfig> for AxVMConfig {
     fn from(cfg: AxVMCrateConfig) -> Self {
+        let bios_load_gpa = default_bios_load_gpa(&cfg);
         Self {
             id: cfg.base.id,
             name: cfg.base.name,
@@ -105,7 +108,7 @@ impl From<AxVMCrateConfig> for AxVMConfig {
             },
             image_config: VMImageConfig {
                 kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
-                bios_load_gpa: cfg.kernel.bios_load_addr.map(GuestPhysAddr::from),
+                bios_load_gpa,
                 dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
                 ramdisk: cfg.kernel.ramdisk_load_addr.map(|addr| RamdiskInfo {
                     load_gpa: GuestPhysAddr::from(addr),
@@ -121,6 +124,19 @@ impl From<AxVMCrateConfig> for AxVMConfig {
             interrupt_mode: cfg.devices.interrupt_mode,
         }
     }
+}
+
+fn default_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
+    if let Some(addr) = cfg.kernel.bios_load_addr {
+        return Some(GuestPhysAddr::from(addr));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if cfg.kernel.bios_path.is_none() && cfg.kernel.entry_point == DEFAULT_X86_BIOS_LOAD_GPA {
+        return Some(GuestPhysAddr::from(DEFAULT_X86_BIOS_LOAD_GPA));
+    }
+
+    None
 }
 
 pub fn adjusted_kernel_load_gpa(

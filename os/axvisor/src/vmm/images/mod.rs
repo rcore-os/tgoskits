@@ -24,6 +24,8 @@ use crate::vmm::VMRef;
 use crate::vmm::config::{config, get_vm_dtb_arc};
 
 mod linux;
+#[cfg(target_arch = "x86_64")]
+mod x86_boot;
 
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
@@ -87,6 +89,12 @@ impl ImageLoader {
             self.dtb_load_gpa = config.image_config.dtb_load_gpa;
             self.bios_load_gpa = config.image_config.bios_load_gpa;
         });
+        #[cfg(target_arch = "x86_64")]
+        if self.bios_load_gpa.is_none()
+            && self.config.kernel.entry_point == self.default_bios_gpa().as_usize()
+        {
+            self.bios_load_gpa = Some(self.default_bios_gpa());
+        }
 
         match self.config.kernel.image_location.as_deref() {
             Some("memory") => self.load_vm_images_from_memory(),
@@ -146,10 +154,34 @@ impl ImageLoader {
             }
         }
 
-        // Load BIOS image
-        if let Some(buffer) = vm_imags.bios {
-            load_vm_image_from_memory(buffer, self.bios_load_gpa.unwrap(), self.vm.clone())
+        self.load_boot_image_from_memory(vm_imags.bios)?;
+
+        Ok(())
+    }
+
+    fn load_boot_image_from_memory(&self, bios: Option<&[u8]>) -> AxResult {
+        if let Some(buffer) = bios {
+            let load_gpa = self
+                .bios_load_gpa
+                .expect("BIOS image present but BIOS load addr is missed");
+            load_vm_image_from_memory(buffer, load_gpa, self.vm.clone())
                 .expect("Failed to load BIOS images");
+            self.load_x86_multiboot_info()?;
+            return Ok(());
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if self.should_load_default_x86_boot_image() {
+            info!(
+                "Loading built-in x86 boot image at GPA {:#x}",
+                self.default_bios_gpa().as_usize()
+            );
+            load_vm_image_from_memory(
+                x86_boot::DEFAULT_BIOS_IMAGE,
+                self.default_bios_gpa(),
+                self.vm.clone(),
+            )
+            .expect("Failed to load built-in x86 boot image");
             self.load_x86_multiboot_info()?;
         }
 
@@ -157,10 +189,21 @@ impl ImageLoader {
     }
 
     #[cfg(target_arch = "x86_64")]
+    fn should_load_default_x86_boot_image(&self) -> bool {
+        self.config.kernel.bios_path.is_none()
+            && self.config.kernel.entry_point == self.default_bios_gpa().as_usize()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn default_bios_gpa(&self) -> GuestPhysAddr {
+        self.bios_load_gpa
+            .unwrap_or_else(|| GuestPhysAddr::from(x86_boot::DEFAULT_BIOS_LOAD_GPA))
+    }
+
+    #[cfg(target_arch = "x86_64")]
     fn load_x86_multiboot_info(&self) -> AxResult {
         const MULTIBOOT_INFO_GPA: usize = 0x6000;
         const MULTIBOOT_MMAP_GPA: usize = 0x6040;
-        const AXVM_BIOS_EBX_IMM_OFFSET: usize = 0x3c;
         const MULTIBOOT_INFO_FLAGS: u32 = (1 << 0) | (1 << 6);
         const MULTIBOOT_MEMORY_AVAILABLE: u32 = 1;
 
@@ -182,12 +225,12 @@ impl ImageLoader {
         write_u32(&mut mmap, 20, MULTIBOOT_MEMORY_AVAILABLE);
 
         let mbi_gpa = (MULTIBOOT_INFO_GPA as u32).to_le_bytes();
-        let bios_load_gpa = self.bios_load_gpa.expect("BIOS load addr is missed");
+        let bios_load_gpa = self.default_bios_gpa();
         load_vm_image_from_memory(&mbi, MULTIBOOT_INFO_GPA.into(), self.vm.clone())?;
         load_vm_image_from_memory(&mmap, MULTIBOOT_MMAP_GPA.into(), self.vm.clone())?;
         load_vm_image_from_memory(
             &mbi_gpa,
-            (bios_load_gpa.as_usize() + AXVM_BIOS_EBX_IMM_OFFSET).into(),
+            (bios_load_gpa.as_usize() + x86_boot::AXVM_BIOS_EBX_IMM_OFFSET).into(),
             self.vm.clone(),
         )?;
         Ok(())
@@ -344,6 +387,20 @@ pub mod fs {
                 return ax_err!(NotFound, "BIOS load addr is missed");
             }
         };
+        #[cfg(target_arch = "x86_64")]
+        if loader.config.kernel.bios_path.is_none() && loader.should_load_default_x86_boot_image() {
+            info!(
+                "Loading built-in x86 boot image at GPA {:#x}",
+                loader.default_bios_gpa().as_usize()
+            );
+            load_vm_image_from_memory(
+                x86_boot::DEFAULT_BIOS_IMAGE,
+                loader.default_bios_gpa(),
+                loader.vm.clone(),
+            )
+            .expect("Failed to load built-in x86 boot image");
+            loader.load_x86_multiboot_info()?;
+        }
         // Load Ramdisk image if needed.
         if let Some(ramdisk_path) = &loader.config.kernel.ramdisk_path {
             loader.load_ramdisk_from_filesystem(ramdisk_path)?;
