@@ -1,11 +1,11 @@
 use alloc::{vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
+use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
 use ax_io::prelude::*;
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -44,6 +44,7 @@ pub struct TcpSocket {
     bound_registered: AtomicBool,
 
     general: GeneralOptions,
+    pending_error: AtomicI32,
     rx_closed: AtomicBool,
     poll_rx_closed: PollSet,
 }
@@ -60,6 +61,7 @@ impl TcpSocket {
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(),
+            pending_error: AtomicI32::new(0),
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
         }
@@ -74,6 +76,7 @@ impl TcpSocket {
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(),
+            pending_error: AtomicI32::new(0),
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
         };
@@ -115,25 +118,51 @@ impl TcpSocket {
         Ok(endpoint)
     }
 
+    fn store_pending_error(&self, err: LinuxError) {
+        self.pending_error.store(err.code(), Ordering::Release);
+    }
+
+    fn clear_pending_error(&self) {
+        self.pending_error.store(0, Ordering::Release);
+    }
+
+    fn take_pending_error(&self) -> i32 {
+        self.pending_error.swap(0, Ordering::AcqRel)
+    }
+
+    fn connect_error(&self) -> AxError {
+        LinuxError::try_from(self.pending_error.load(Ordering::Acquire))
+            .map_or(AxError::ConnectionRefused, AxError::from)
+    }
+
     fn poll_connect(&self) -> IoEvents {
         let mut events = IoEvents::empty();
-        let writable = self.with_smol_socket(|socket| match socket.state() {
-            smol::State::SynSent => false, // wait for connection
+        self.with_smol_socket(|socket| match socket.state() {
+            smol::State::SynSent | smol::State::SynReceived => {
+                // wait for connection
+            }
             smol::State::Established => {
+                self.clear_pending_error();
                 self.state.set(State::Connected); // connected
                 debug!(
                     "TCP socket {}: connected to {}",
                     self.handle,
                     socket.remote_endpoint().unwrap(),
                 );
-                true
+                events.set(IoEvents::OUT, true);
             }
-            _ => {
+            state => {
+                self.store_pending_error(LinuxError::ECONNREFUSED);
                 self.state.set(State::Closed); // connection failed
-                true
+                debug!(
+                    "TCP socket {}: connect failed in state {:?}",
+                    self.handle, state
+                );
+                events.set(IoEvents::OUT, true);
+                events.set(IoEvents::ERR, true);
+                events.set(IoEvents::HUP, true);
             }
         });
-        events.set(IoEvents::OUT, writable);
         events
     }
 
@@ -165,6 +194,11 @@ impl TcpSocket {
 impl Configurable for TcpSocket {
     fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
         use GetSocketOption as O;
+
+        if let O::Error(error) = option {
+            **error = self.take_pending_error();
+            return Ok(true);
+        }
 
         if self.general.get_option_inner(option)? {
             return Ok(true);
@@ -269,6 +303,7 @@ impl SocketOps for TcpSocket {
                 }
             })?
             .transit(State::Connecting, || {
+                self.clear_pending_error();
                 // TODO: check remote addr unreachable
                 // let (bound_endpoint, remote_endpoint) = self.get_endpoint_pair(remote_addr)?;
                 let remote_endpoint = IpEndpoint::from(remote_addr);
@@ -333,7 +368,7 @@ impl SocketOps for TcpSocket {
             } else if self.state() == State::Connected {
                 Ok(())
             } else {
-                Err(ax_err_type!(ConnectionRefused, "connection refused"))
+                Err(self.connect_error())
             }
         })
     }

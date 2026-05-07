@@ -303,7 +303,8 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
         None => return Ok(output),
     };
 
-    let mm = task.as_thread().proc_data.aspace.lock();
+    let aspace_arc = task.as_thread().proc_data.aspace();
+    let mm = aspace_arc.lock();
 
     for area in mm.areas() {
         let start = area.start();

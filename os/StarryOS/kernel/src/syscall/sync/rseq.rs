@@ -19,11 +19,11 @@ fn validate_rseq_addr(addr: *mut u8, len: usize) -> Result<Option<usize>, AxErro
     Ok(Some(addr.addr()))
 }
 
-/// Minimal implementation of the rseq syscall registration.
+/// Minimal rseq syscall handling.
 ///
-/// This implementation only supports registration/unregistration via the
-/// first argument (addr) and the flags argument. It stores the user pointer
-/// in the current thread structure so kernel-side users can inspect it.
+/// Registration is intentionally reported as unsupported until the kernel
+/// maintains the full per-thread rseq state expected by libc fast paths.
+/// Unregistration succeeds so cleanup code remains harmless.
 ///
 /// C prototype (simplified):
 /// long rseq(void *addr, uint32_t len, int flags, uint32_t sig);
@@ -44,10 +44,8 @@ pub fn sys_rseq(addr: *mut u8, len: usize, flags: u32, sig: u32) -> Result<isize
         return Err(AxError::InvalidInput);
     }
 
-    // Store the user address in the thread.
-    current().as_thread().set_rseq_area(addr);
-
-    Ok(0)
+    warn!("sys_rseq registration is unsupported; returning ENOSYS");
+    Err(AxError::Unsupported)
 }
 
 #[cfg(test)]

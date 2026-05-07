@@ -171,7 +171,7 @@ impl FutexKey {
 
     /// Shortcut to create a `FutexKey` for the current task's address space.
     pub fn new_current(address: usize) -> Self {
-        Self::new(&current().as_thread().proc_data.aspace.lock(), address)
+        Self::new(&current().as_thread().proc_data.aspace().lock(), address)
     }
 
     fn as_usize(&self) -> usize {

@@ -495,7 +495,8 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
         .get_inner_by_shmid(shmid)
         .ok_or(AxError::InvalidInput)?;
     let mut shm_inner = shm_inner_arc.lock();
-    let mut aspace = proc_data.aspace.lock();
+    let aspace_arc = proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
 
     let mut mapping_flags = shm_inner.mapping_flags;
     if shm_flg.contains(ShmAtFlags::SHM_RDONLY) {
@@ -650,7 +651,8 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
 
     // Unmap while only holding the aspace lock.
     {
-        let mut aspace = proc_data.aspace.lock();
+        let aspace_arc = proc_data.aspace();
+        let mut aspace = aspace_arc.lock();
         aspace.unmap(va_range.start, va_range.size())?;
     }
 

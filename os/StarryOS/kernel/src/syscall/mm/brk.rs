@@ -36,7 +36,7 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
 
         if expand_size > 0
             && proc_data
-                .aspace
+                .aspace()
                 .lock()
                 .map(
                     expand_start,
@@ -56,7 +56,7 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
 
         if shrink_size > 0
             && proc_data
-                .aspace
+                .aspace()
                 .lock()
                 .unmap(shrink_start, shrink_size)
                 .is_err()

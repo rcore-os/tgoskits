@@ -1674,6 +1674,7 @@ dependencies = [
  "rdif-clk",
  "rdif-pcie 0.2.0",
  "rdrive 0.20.0",
+ "realtek-rtl8125",
  "rk3568_clk",
  "rk3588-pci",
  "rockchip-npu",
@@ -6684,6 +6685,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "realtek-rtl8125"
+version = "0.1.0"
+dependencies = [
+ "dma-api 0.7.2",
+ "log",
+ "mmio-api",
+ "rdif-eth",
+ "spin 0.10.0",
+ "thiserror 2.0.18",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]

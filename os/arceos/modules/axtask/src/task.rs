@@ -215,6 +215,17 @@ impl TaskInner {
         self.ctx.get_mut()
     }
 
+    /// Updates the page table root stored in this task's context and switches
+    /// the hardware page table immediately. Only safe to call on the current
+    /// running task.
+    #[cfg(feature = "uspace")]
+    pub fn switch_page_table(&self, root: ax_memory_addr::PhysAddr) {
+        // SAFETY: we are the current task and no other thread touches our ctx.
+        unsafe { (*self.ctx.get()).set_page_table_root(root) };
+        unsafe { ax_hal::asm::write_user_page_table(root) };
+        ax_hal::asm::flush_tlb(None);
+    }
+
     #[cfg(feature = "lockdep")]
     pub(crate) fn with_held_locks<R>(&self, f: impl FnOnce(&mut HeldLockStack) -> R) -> R {
         // SAFETY: the held-lock stack belongs to the current task and is only

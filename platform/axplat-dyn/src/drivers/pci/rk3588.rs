@@ -151,6 +151,11 @@ fn probe_rk3588(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnPro
     }
 
     program_memory_windows(&host, &ranges, cfg_phys, cfg_size);
+    host.unmask_legacy_intx_all();
+    info!(
+        "Rockchip RK3588 PCIe host {:#x}: legacy INTx unmasked",
+        host.apb_phys()
+    );
     log_direct_endpoint(&host);
     super::register_legacy_irq(&info, logical_bus_end);
 

@@ -53,4 +53,7 @@ __pycache__/
 .axvisor*
 .board*
 .codex
+.agents
 .image.toml
+os/StarryOS-REF
+.Ds_Store

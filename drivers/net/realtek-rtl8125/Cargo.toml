@@ -1,16 +1,19 @@
 [package]
-name = "rk3588-pci"
+name = "realtek-rtl8125"
 version = "0.1.0"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "hardware-support", "no-std"]
-description = "Portable Rockchip RK3588 DesignWare PCIe host driver"
+description = "Minimal Realtek RTL8125 PCIe Ethernet driver"
 edition.workspace = true
-keywords = ["rk3588", "pcie", "rockchip", "driver"]
-license.workspace = true
+keywords = ["realtek", "rtl8125", "ethernet", "driver"]
+license = "MIT"
 repository.workspace = true
 
 [dependencies]
+dma-api.workspace = true
 log.workspace = true
 mmio-api.workspace = true
-rdif-pcie.workspace = true
+rdif-eth = "0.2"
+spin.workspace = true
 thiserror = { version = "2", default-features = false }
+tock-registers = "0.10"

@@ -83,6 +83,7 @@ fxmac_rs
 loongarch_vcpu
 range-alloc-arceos
 axplat-riscv64-qemu-virt-hv
+realtek-rtl8125
 riscv-h
 riscv_vcpu
 rk3588-pci
