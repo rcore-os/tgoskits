@@ -1,6 +1,6 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
-shell_init_cmd = "echo 'RTL8125_NET_TEST_FAILED no DHCP lease observed before shell prompt'"
-success_regex = ["eth0: DHCP acquired address [0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/[0-9]+"]
+shell_init_cmd = "echo 'RTL8125_NET_TEST_PASSED'"
+success_regex = ["(?m)^RTL8125_NET_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^RTL8125_NET_TEST_FAILED\\b"]
 timeout = 180

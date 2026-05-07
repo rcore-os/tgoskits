@@ -921,6 +921,30 @@ mod tests {
         path
     }
 
+    fn write_qemu_build_config_with_max_cpu_num(
+        root: &Path,
+        group: StarryTestGroup,
+        build_group: &str,
+        target: &str,
+        max_cpu_num: usize,
+    ) -> PathBuf {
+        let path = root
+            .join("test-suit/starryos")
+            .join(group.as_str())
+            .join(build_group)
+            .join(format!("build-{target}.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \
+                 \"Info\"\nmax_cpu_num = {max_cpu_num}\n"
+            ),
+        )
+        .unwrap();
+        path
+    }
+
     fn write_starry_board_build_config(root: &Path, build_group: &str, target: &str) -> PathBuf {
         let path = root
             .join("test-suit/starryos/normal")
