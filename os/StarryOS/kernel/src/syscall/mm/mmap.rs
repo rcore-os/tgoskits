@@ -382,22 +382,40 @@ fn mremap_move(
     let move_size = src_size.min(target_size);
     let backend = src_backend.relocated(target, src_offset, aspace_ref)?;
 
-    if src_size > move_size {
-        aspace.unmap(src + move_size, src_size - move_size)?;
-    }
-
     aspace.map(target, target_size, flags, false, backend)?;
 
+    if dontunmap {
+        let empty = Backend::new_alloc(src, src_backend.page_size(), "");
+        if let Err(e) = aspace.replace_area_metadata(src, move_size, flags, empty) {
+            let _ = aspace.unmap(target, target_size);
+            return Err(e);
+        }
+    }
+
     if let Err(e) = aspace.move_pages(src, target, move_size) {
+        if dontunmap {
+            aspace
+                .replace_area_metadata(src, move_size, flags, src_backend.clone())
+                .expect("restore source VMA metadata after failed mremap move");
+        }
         let _ = aspace.unmap(target, target_size);
         return Err(e);
     }
 
     if dontunmap {
-        let empty = Backend::new_alloc(src, src_backend.page_size(), "");
-        aspace.replace_area_metadata(src, move_size, flags, empty)?;
+        return Ok(());
+    }
+
+    aspace
+        .unmap_metadata(src, move_size)
+        .expect("remove moved source VMA metadata");
+
+    if src_size > move_size {
+        aspace
+            .unmap(src + move_size, src_size - move_size)
+            .expect("unmap truncated source tail after mremap move");
     } else {
-        aspace.unmap_metadata(src, move_size)?;
+        debug_assert_eq!(src_size, move_size);
     }
 
     Ok(())
@@ -474,9 +492,6 @@ pub fn sys_mremap(
     let old_size = old_size.align_up(page_size);
     let new_size = new_size.align_up(page_size);
     let src_offset = addr - vma_start;
-    if old_size != 0 && src_offset != 0 {
-        return Err(AxError::InvalidInput);
-    }
 
     if dontunmap && !matches!(&src_backend, Backend::Cow(cow) if cow.is_anonymous()) {
         return Err(AxError::InvalidInput);

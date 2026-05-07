@@ -322,11 +322,11 @@ int main(void)
         }
     }
 
-    /* 21. mremap 要求 old_address 是 VMA 起点 */
+    /* 21. 页对齐 VMA 中段 mremap */
     {
         void *p = mmap(NULL, 3 * PAGE, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        CHECK(p != MAP_FAILED, "mmap for mid-VMA rejection");
+        CHECK(p != MAP_FAILED, "mmap for mid-VMA move");
         if (p != MAP_FAILED) {
             unsigned char *b = (unsigned char *)p;
             memset(b, 0x11, PAGE);
@@ -334,15 +334,50 @@ int main(void)
             memset(b + 2 * PAGE, 0x33, PAGE);
 
             void *r = mremap(b + PAGE, PAGE, 2 * PAGE, MREMAP_MAYMOVE);
-            CHECK(r == MAP_FAILED && errno == EINVAL, "mid-VMA old_address rejected");
-            CHECK(b[0] == 0x11, "left fragment remains mapped after reject");
-            CHECK(b[PAGE] == 0x22, "middle page remains mapped after reject");
-            CHECK(b[2 * PAGE] == 0x33, "right fragment remains mapped after reject");
-            munmap(p, 3 * PAGE);
+            CHECK(r != MAP_FAILED, "mid-VMA old_address can move");
+            CHECK(b[0] == 0x11, "left fragment remains mapped after move");
+            CHECK(b[2 * PAGE] == 0x33, "right fragment remains mapped after move");
+            if (r != MAP_FAILED) {
+                unsigned char *moved = (unsigned char *)r;
+                CHECK(moved[0] == 0x22, "middle page data moved");
+                CHECK(moved[PAGE] == 0, "expanded page is zero-filled");
+                munmap(r, 2 * PAGE);
+                munmap(p, PAGE);
+                munmap(b + 2 * PAGE, PAGE);
+            } else {
+                munmap(p, 3 * PAGE);
+            }
         }
     }
 
-    /* 22. 移动后重新分配源地址不应破坏目标页 */
+    /* 22. FIXED 失败后源映射应保持完整 */
+    {
+        void *src = mmap(NULL, 4 * PAGE, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(src != MAP_FAILED, "mmap for failed move rollback");
+        if (src != MAP_FAILED) {
+            unsigned char *b = (unsigned char *)src;
+            memset(b, 0x41, PAGE);
+            memset(b + PAGE, 0x42, PAGE);
+            memset(b + 2 * PAGE, 0x43, PAGE);
+            memset(b + 3 * PAGE, 0x44, PAGE);
+
+            errno = 0;
+            void *r = raw_mremap(src, 4 * PAGE, PAGE,
+                                 MREMAP_MAYMOVE | MREMAP_FIXED,
+                                 NULL);
+            CHECK(r == MAP_FAILED && errno != 0, "FIXED shrink to invalid target fails");
+            CHECK(b[0] == 0x41, "failed move keeps first page mapped");
+            CHECK(b[PAGE] == 0x42, "failed move keeps second page mapped");
+            CHECK(b[2 * PAGE] == 0x43, "failed move keeps third page mapped");
+            CHECK(b[3 * PAGE] == 0x44, "failed move keeps fourth page mapped");
+            b[3 * PAGE] = 0x55;
+            CHECK(b[3 * PAGE] == 0x55, "failed move source remains writable");
+            munmap(src, 4 * PAGE);
+        }
+    }
+
+    /* 23. 移动后重新分配源地址不应破坏目标页 */
     {
         void *src = mmap(NULL, PAGE, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

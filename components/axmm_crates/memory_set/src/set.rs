@@ -276,8 +276,7 @@ impl<B: MappingBackend> MemorySet<B> {
         Ok(())
     }
 
-    /// Replaces the metadata at the start of an existing area without touching
-    /// page-table entries.
+    /// Replaces area metadata without touching page-table entries.
     pub fn replace_area_metadata(&mut self, area: MemoryArea<B>) -> MappingResult {
         if area.va_range().is_empty() {
             return Err(MappingError::InvalidParam);
@@ -285,15 +284,22 @@ impl<B: MappingBackend> MemorySet<B> {
 
         let start = area.start();
         let end = area.end();
-        let old_end = self
+
+        let old_start = self
             .areas
-            .get(&start)
-            .filter(|old| old.end() >= end)
-            .map(MemoryArea::end)
+            .range(..=start)
+            .last()
+            .filter(|(_, old)| old.start() <= start && end <= old.end())
+            .map(|(&old_start, _)| old_start)
             .ok_or(MappingError::InvalidParam)?;
 
-        let mut old_area = self.areas.remove(&start).unwrap();
-        if old_end > end {
+        let mut old_area = self.areas.remove(&old_start).unwrap();
+        if old_start < start {
+            let right_part = old_area.split(start).unwrap();
+            self.areas.insert(old_start, old_area);
+            old_area = right_part;
+        }
+        if old_area.end() > end {
             let right_part = old_area.split(end).unwrap();
             self.areas.insert(right_part.start(), right_part);
         }
