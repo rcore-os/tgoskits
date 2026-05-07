@@ -7,6 +7,10 @@ lwext4/
 src/testfs/mount_point/*
 other
 .claude
-AGENTS.md
-CLAUDE.md
+*/AGENTS.md
+*/CLAUDE.md
 .gitnexus
+*gitnexus/
+.ccache/*
+*/.ccache/*
+*/.claude
