@@ -1,4 +1,4 @@
-use core::ptr::NonNull;
+use core::{fmt, ptr::NonNull};
 
 use log::{debug, info, trace};
 use volatile::VolatilePtr;
@@ -8,6 +8,56 @@ use crate::{
     regs::{CType, ClkDiv, ClkEna, Cmd, RegisterBlock, RegisterBlockVolatileFieldAccess},
     utils::{Cid, CsdV2},
 };
+
+/// SD/MMC initialization or command error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SdMmcError {
+    /// A command completed with controller error status.
+    Command(CommandError),
+    /// The SD card does not echo the expected CMD8 check pattern.
+    UnsupportedVersion,
+}
+
+/// SD/MMC command error details.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct CommandError {
+    cmd_index: u8,
+    status: u32,
+    response: [u32; 4],
+}
+
+impl CommandError {
+    fn new(cmd: Cmd, status: u32, response: [u32; 4]) -> Self {
+        Self {
+            cmd_index: cmd.cmd_index(),
+            status,
+            response,
+        }
+    }
+}
+
+impl fmt::Debug for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommandError")
+            .field("cmd_index", &self.cmd_index)
+            .field("status", &format_args!("{:#x}", self.status))
+            .field("response", &self.response)
+            .finish()
+    }
+}
+
+impl fmt::Display for SdMmcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SdMmcError::Command(err) => write!(
+                f,
+                "command {} failed with status {:#x}, response {:?}",
+                err.cmd_index, err.status, err.response
+            ),
+            SdMmcError::UnsupportedVersion => write!(f, "unsupported SD card version"),
+        }
+    }
+}
 
 fn wait_until<F>(mut f: F)
 where
@@ -41,6 +91,16 @@ impl SdMmc {
     /// The caller must ensure that `base` is a valid pointer to the SD/MMC controller's
     /// register block and that no other code is concurrently accessing the same hardware.
     pub unsafe fn new(base: usize) -> Self {
+        unsafe { Self::try_new(base) }.expect("failed to initialize SD/MMC controller")
+    }
+
+    /// Tries to create a new `SdMmc` instance from the given base address.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `base` is a valid pointer to the SD/MMC controller's
+    /// register block and that no other code is concurrently accessing the same hardware.
+    pub unsafe fn try_new(base: usize) -> Result<Self, SdMmcError> {
         let regs = unsafe { VolatilePtr::new(NonNull::new_unchecked(base as *mut _)) };
 
         let mut this = Self {
@@ -48,8 +108,8 @@ impl SdMmc {
             num_blocks: 0,
             rca: 0,
         };
-        this.init();
-        this
+        this.init()?;
+        Ok(this)
     }
 
     fn can_send_cmd(&self) -> bool {
@@ -73,7 +133,7 @@ impl SdMmc {
         self.regs.bytcnt().write(byte_cnt);
     }
 
-    fn send_cmd(&self, command: Command<'_>) -> Option<[u32; 4]> {
+    fn send_cmd(&self, command: Command<'_>) -> Result<[u32; 4], SdMmcError> {
         trace!("send_cmd {command:#x?}");
 
         let (cmd, arg, xfer) = command.build();
@@ -85,6 +145,9 @@ impl SdMmc {
         if cmd.data_expected() {
             wait_until(|| self.can_send_data());
         }
+
+        let rintsts = self.regs.rintsts().read();
+        self.regs.rintsts().write(rintsts);
 
         self.regs.cmdarg().write(arg);
         self.regs.cmd().write(cmd);
@@ -149,14 +212,18 @@ impl SdMmc {
 
         if rintsts.error() {
             trace!("cmd {} error: {rintsts:?} resp: {resp:?}", cmd.cmd_index());
-            return None;
+            return Err(SdMmcError::Command(CommandError::new(
+                cmd,
+                rintsts.into(),
+                resp,
+            )));
         }
-        Some(resp)
+        Ok(resp)
     }
 
-    fn set_clock(&self, divider: u8) {
+    fn set_clock(&self, divider: u8) -> Result<(), SdMmcError> {
         self.regs.clkena().write(ClkEna::new());
-        self.send_cmd(Command::ResetClock);
+        self.send_cmd(Command::ResetClock)?;
 
         self.regs
             .clkdiv()
@@ -165,10 +232,11 @@ impl SdMmc {
         self.regs
             .clkena()
             .write(ClkEna::new().with_cclk_enable(1).with_cclk_low_power(0));
-        self.send_cmd(Command::ResetClock);
+        self.send_cmd(Command::ResetClock)?;
+        Ok(())
     }
 
-    fn init(&mut self) {
+    fn init(&mut self) -> Result<(), SdMmcError> {
         info!("Initializing SD/MMC driver at {:?}", self.regs);
 
         trace!("ctrl: {:?}", self.regs.ctrl().read());
@@ -188,7 +256,7 @@ impl SdMmc {
         trace!("dbaddr: {:?}", self.regs.dbaddr().read());
 
         // reset clock to identification frequency (400kHz)
-        self.set_clock(4);
+        self.set_clock(4)?;
 
         // set data width -> 1bit
         self.regs.ctype().write(0.into());
@@ -203,15 +271,17 @@ impl SdMmc {
 
         trace!("ctrl: {:?}", self.regs.ctrl().read());
 
-        self.send_cmd(Command::GoIdleState);
+        self.send_cmd(Command::GoIdleState)?;
         trace!("idle state set");
 
-        let resp = self.send_cmd(Command::SendIfCond(0x1aa)).unwrap();
-        assert_eq!(resp[0] & 0xff, 0xaa, "unsupported version");
+        let resp = self.send_cmd(Command::SendIfCond(0x1aa))?;
+        if resp[0] & 0xff != 0xaa {
+            return Err(SdMmcError::UnsupportedVersion);
+        }
 
         loop {
-            self.send_cmd(Command::AppCmd(0));
-            let resp = self.send_cmd(Command::SdSendOpCond(0x41FF_8000)).unwrap();
+            self.send_cmd(Command::AppCmd(0))?;
+            let resp = self.send_cmd(Command::SdSendOpCond(0x41FF_8000))?;
             let ocr = resp[0];
             if ocr & 0x8000_0000 != 0 {
                 info!("SD card is ready");
@@ -227,28 +297,28 @@ impl SdMmc {
             core::hint::spin_loop();
         }
 
-        let resp = self.send_cmd(Command::AllSendCid).unwrap();
+        let resp = self.send_cmd(Command::AllSendCid)?;
         let cid = unsafe { core::mem::transmute::<[u32; 4], Cid>(resp) };
         info!("cid: {cid:?}");
 
-        let resp = self.send_cmd(Command::SendRelativeAddr).unwrap();
+        let resp = self.send_cmd(Command::SendRelativeAddr)?;
         self.rca = (resp[0] >> 16) & 0xffff;
         debug!("rca: {:#x}", self.rca);
 
-        let resp = self.send_cmd(Command::SendCsd(self.rca << 16)).unwrap();
+        let resp = self.send_cmd(Command::SendCsd(self.rca << 16))?;
         let csd = unsafe { core::mem::transmute::<[u32; 4], CsdV2>(resp) };
         debug!("csd: {csd:?}");
 
         self.num_blocks = csd.num_blocks();
         info!("SD card capacity: {:#x} blocks", self.num_blocks);
 
-        self.send_cmd(Command::SelectCard(self.rca << 16)).unwrap();
+        self.send_cmd(Command::SelectCard(self.rca << 16))?;
 
-        self.send_cmd(Command::AppCmd(self.rca << 16)).unwrap();
+        self.send_cmd(Command::AppCmd(self.rca << 16))?;
 
         self.set_transaction_size(8, 8);
         let mut buf = [0u8; 512];
-        self.send_cmd(Command::SendScr(&mut buf)).unwrap();
+        self.send_cmd(Command::SendScr(&mut buf))?;
 
         let bus_widths = scr_bus_widths(buf[..8].try_into().unwrap());
         debug!("Bus width supported: {:#x?}", bus_widths);
@@ -262,8 +332,8 @@ impl SdMmc {
 
         // Switch to 4-bit bus width if supported
         if bus_widths & 0x4 != 0 {
-            self.send_cmd(Command::AppCmd(self.rca << 16)).unwrap();
-            self.send_cmd(Command::SetBusWidth(0x2)).unwrap();
+            self.send_cmd(Command::AppCmd(self.rca << 16))?;
+            self.send_cmd(Command::SetBusWidth(0x2))?;
             self.regs.ctype().write(CType::new().with_width4(1));
             info!("Switched to 4-bit bus width");
         }
@@ -271,10 +341,11 @@ impl SdMmc {
         // Increase clock speed for data transfer
         // Use divider 0 (bypass) — assumes CRU has already set a reasonable source clock.
         // Adjust this value based on your SoC's CCLK_SDMMC frequency.
-        self.set_clock(0);
+        self.set_clock(0)?;
         info!("Switched to high-speed clock (clkdiv=0)");
 
         info!("SD/MMC driver initialized");
+        Ok(())
     }
 
     /// Reads a single block from the SD/MMC card.
