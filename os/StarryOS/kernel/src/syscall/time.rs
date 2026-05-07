@@ -160,7 +160,10 @@ pub fn sys_timer_create(
 
     let id = thr.proc_data.posix_timers.create(clock_id, notify, signo)?;
 
-    timerid.vm_write(id)?;
+    if let Err(e) = timerid.vm_write(id) {
+        thr.proc_data.posix_timers.delete(id);
+        return Err(e.into());
+    }
     Ok(0)
 }
 

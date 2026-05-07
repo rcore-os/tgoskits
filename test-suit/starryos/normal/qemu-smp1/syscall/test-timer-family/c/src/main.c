@@ -16,6 +16,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/wait.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
 
 static int __pass = 0;
 static int __fail = 0;
@@ -1048,6 +1050,92 @@ static void test_posix_timer_thread_sharing(void) {
 }
 
 /* ============================================================
+ * timer_create with invalid timerid pointer — transactional-create regression
+ *
+ * Bug: the timer is inserted into the kernel table BEFORE the ID is
+ * written back to the user pointer.  If vm_write(id) fails with EFAULT
+ * the syscall returns an error but a live, armed timer remains in the
+ * kernel — invisible to the process, impossible to delete.
+ *
+ * Observable symptom: the leaked timer fires SIGALRM after 3 s even
+ * though timer_create() returned an error and the process never called
+ * timer_settime().
+ *
+ * We use the raw SYS_timer_create syscall to bypass the glibc wrapper,
+ * which pre-validates the timerid pointer in userspace and would crash
+ * before reaching the kernel.
+ * ============================================================ */
+
+/*
+ * raw_timer_create — call SYS_timer_create directly.
+ * syscall() already converts the kernel's negative errno into -1+errno.
+ */
+static int raw_timer_create(clockid_t clockid, struct sigevent *sevp,
+                             timer_t *timerid)
+{
+    return (int)syscall(SYS_timer_create, (long)clockid,
+                        (long)sevp, (long)timerid);
+}
+
+static void test_timer_create_invalid_timerid_ptr(void) {
+    /*
+     * Regression test for a kernel-side resource leak in sys_timer_create.
+     *
+     * Bug location: kernel/src/syscall/time.rs, sys_timer_create()
+     *
+     *   let id = thr.proc_data.posix_timers.create(...)?;  // slot inserted
+     *   timerid.vm_write(id)?;                             // may fail EFAULT
+     *
+     * If vm_write() returns EFAULT the syscall fails but the timer slot
+     * is already in the kernel table.  It is disarmed (deadline_ns == 0)
+     * so it never fires, and the process has no handle to delete it.
+     * The fix is to make the operation transactional: either write back
+     * first and create only on success, or delete the slot on write failure.
+     *
+     * What is observable from userspace:
+     *   POSIX only guarantees that timer_t values are unique within the
+     *   process for the timer's lifetime.  It says nothing about ordering
+     *   or consecutiveness of IDs, so we cannot portably detect the leak
+     *   by inspecting ID values.  The leaked timer is disarmed, so it
+     *   produces no signals.  There is no per-process timer limit enforced
+     *   by this kernel, so EAGAIN is never triggered.
+     *
+     *   The one thing we CAN assert: timer_create() with a bad pointer
+     *   must return EFAULT.  That is the POSIX-guaranteed postcondition
+     *   for a failed syscall — no timer is created, no resources consumed.
+     *   We verify the error code here; the absence of a kernel-side fix
+     *   is tracked separately.
+     */
+
+    /* Get an unmapped page to use as the bad timerid pointer. */
+    void *bad = mmap(NULL, 4096, PROT_READ|PROT_WRITE,
+                     MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (bad == MAP_FAILED) {
+        printf("  SKIP | %s:%d | mmap failed\n", __FILE__, __LINE__);
+        return;
+    }
+    munmap(bad, 4096); /* now guaranteed unmapped */
+
+    struct sigevent sev;
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo  = SIGALRM;
+
+    errno = 0;
+    int ret = raw_timer_create(CLOCK_REALTIME, &sev, (timer_t *)bad);
+    CHECK(ret == -1 && errno == EFAULT,
+          "timer_create with unmapped timerid ptr must fail with EFAULT");
+
+    /* A subsequent valid create must still succeed (table not corrupted). */
+    timer_t tid;
+    errno = 0;
+    ret = timer_create(CLOCK_REALTIME, NULL, &tid);
+    CHECK(ret == 0, "timer_create must still succeed after the failed call");
+    if (ret == 0)
+        timer_delete(tid);
+}
+
+/* ============================================================
  * POSIX timer fork-not-inherited test
  *
  * POSIX (timer_create(2)): "The child of a fork(2) does not inherit
@@ -1291,6 +1379,7 @@ int main(int argc, char *argv[]) {
     test_timer_create_clocks();
     test_timer_create_invalid_sigev_notify();
     test_timer_create_multiple();
+    test_timer_create_invalid_timerid_ptr();
 
     printf("\n--- timer_settime/timer_gettime error conditions ---\n");
     test_timer_settime_invalid_timerid();
