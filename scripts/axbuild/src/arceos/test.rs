@@ -288,9 +288,10 @@ async fn test_rust_qemu(
     let prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     let total = prepared.len();
 
-    // Phase 1: Build all groups first so compilation errors surface before any
-    // QEMU time is spent.  Each group shares a single cargo artifact, so builds
-    // are still sequential (they share the workspace target directory).
+    // Build one group and run it before moving to the next group.  `ostool`
+    // keeps the current artifact on the app context, so a later build would
+    // otherwise make earlier QEMU cases boot the wrong image.
+    let mut completed = 0;
     for group in qemu_test::group_cases_by_build_config(&prepared) {
         let first_case = group
             .cases
@@ -310,11 +311,7 @@ async fn test_rust_qemu(
                     group.build_config_path.display()
                 )
             })?;
-    }
 
-    // Phase 2: Run all QEMU tests now that all artifacts are available.
-    let mut completed = 0;
-    for group in qemu_test::group_cases_by_build_config(&prepared) {
         for case in group.cases {
             completed += 1;
             let case_name = &case.case.case.name;
@@ -368,7 +365,10 @@ async fn test_generic_qemu(
     let total = prepared.len();
     let mut failed = Vec::new();
 
-    // Phase 1: Build all groups first (fail fast on compile errors).
+    // Build one group and run it before moving to the next group.  `ostool`
+    // keeps the current artifact on the app context, so a later build would
+    // otherwise make earlier QEMU cases boot the wrong image.
+    let mut completed = 0;
     for build_group in qemu_test::group_cases_by_build_config(&prepared) {
         let first_case = build_group
             .cases
@@ -388,11 +388,7 @@ async fn test_generic_qemu(
                     build_group.build_config_path.display()
                 )
             })?;
-    }
 
-    // Phase 2: Run all QEMU tests with all artifacts ready.
-    let mut completed = 0;
-    for build_group in qemu_test::group_cases_by_build_config(&prepared) {
         for case in build_group.cases {
             completed += 1;
             let case_name = &case.case.case.name;
@@ -1274,11 +1270,12 @@ where
     );
 
     // ---------------------------------------------------------------------------
-    // Phase 1: Build all tests in parallel.
+    // Phase 1: Build all tests.
     //
-    // Each thread runs `make defconfig && make build` for one test.  Build
-    // output is captured; only failures are printed (after all threads finish)
-    // so interleaved progress lines don't clutter CI logs.
+    // Builds default to one job because ArceOS C Makefiles share intermediate
+    // directories across tests.  If explicitly enabled, each worker runs
+    // `make defconfig && make build` for one test.  Build output is captured;
+    // only failures are printed after all workers finish.
     // ---------------------------------------------------------------------------
     let build_jobs = c_test_build_jobs(preps.len())?;
     if preps.len() > 1 {
@@ -1335,10 +1332,10 @@ where
 }
 
 fn c_test_build_jobs(total: usize) -> anyhow::Result<usize> {
-    let default = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
-        .min(total.max(1));
+    // ArceOS C builds share Makefile-managed object directories such as
+    // `ulib/axlibc/build_<arch>` and each app's `build_<arch>`.  Keep the
+    // default deterministic; callers can still opt into parallelism explicitly.
+    let default = 1;
     let Ok(value) = std::env::var(C_TEST_BUILD_JOBS_ENV) else {
         return Ok(default.max(1));
     };
@@ -2226,5 +2223,7 @@ mod tests {
 
         assert!(err.contains(C_TEST_BUILD_JOBS_ENV));
         assert!(err.contains("positive integer"));
+
+        assert_eq!(c_test_build_jobs(8).unwrap(), 1);
     }
 }
