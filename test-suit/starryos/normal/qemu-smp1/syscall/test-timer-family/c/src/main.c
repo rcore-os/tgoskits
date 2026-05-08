@@ -365,17 +365,63 @@ static void test_timer_create_clocks(void) {
     CHECK(timer_create(CLOCK_BOOTTIME, NULL, &tid) == 0, "timer_create with CLOCK_BOOTTIME should succeed");
     if (errno == 0) timer_delete(tid);
 
-    /* Unsupported but valid clocks (Linux returns EOPNOTSUPP) */
-    /* NOTE: Linux supports timer_create with CLOCK_PROCESS_CPUTIME_ID and
-     * CLOCK_THREAD_CPUTIME_ID (returning EOPNOTSUPP), but StarryOS does not
-     * implement these clocks for POSIX timers and returns EINVAL instead.
-     * Commented out until StarryOS aligns with Linux behaviour.
-    CHECK_ERR(timer_create(CLOCK_PROCESS_CPUTIME_ID, NULL, &tid), EOPNOTSUPP,
-              "timer_create with CLOCK_PROCESS_CPUTIME_ID should fail EOPNOTSUPP");
-
-    CHECK_ERR(timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &tid), EOPNOTSUPP,
-              "timer_create with CLOCK_THREAD_CPUTIME_ID should fail EOPNOTSUPP");
-    */
+    /* CPU-time clocks: valid but may be unsupported for POSIX timers.
+     *
+     * Two correct outcomes are permitted:
+     *   (a) timer_create succeeds (Linux native path) — verify the timer does
+     *       NOT advance like a wall-clock timer: arm 200 ms, sleep 300 ms wall
+     *       time, then timer_gettime() must still show remaining time > 0
+     *       (CPU-time barely advanced during usleep).
+     *   (b) timer_create fails with EOPNOTSUPP — valid-but-unsupported clock.
+     *       EINVAL is NOT acceptable here; that would mean the kernel treated
+     *       a valid clock ID as an unknown one.
+     */
+    {
+        int cputime_clocks[] = { CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID };
+        const char *cputime_names[] = { "CLOCK_PROCESS_CPUTIME_ID", "CLOCK_THREAD_CPUTIME_ID" };
+        for (int ci = 0; ci < 2; ci++) {
+            timer_t ctid;
+            errno = 0;
+            int cret = timer_create(cputime_clocks[ci], NULL, &ctid);
+            if (cret == -1) {
+                /* Failure is allowed only with EOPNOTSUPP, not EINVAL */
+                CHECK(errno == EOPNOTSUPP,
+                      "timer_create with CPU-time clock failed: errno must be "
+                      "EOPNOTSUPP (valid-but-unsupported), not EINVAL");
+            } else {
+                /* Success path: verify it does NOT behave like a wall-clock timer.
+                 *
+                 * Strategy: arm for 200 ms of CPU time, then sleep 2 s of wall
+                 * time.  The process consumes negligible CPU during usleep, so a
+                 * correct CPU-time timer must still be armed (remaining > 0) after
+                 * the wall sleep.  A broken implementation that tracks wall time
+                 * would have already fired and timer_gettime() would return
+                 * it_value = {0, 0} (expired/disarmed). */
+                struct itimerspec arm, rem;
+                memset(&arm, 0, sizeof(arm));
+                arm.it_value.tv_nsec = 200000000; /* 200 ms CPU time */
+                errno = 0;
+                int sret = timer_settime(ctid, 0, &arm, NULL);
+                CHECK(sret == 0, "timer_settime on CPU-time timer should succeed");
+                if (sret == 0) {
+                    usleep(2000000); /* 2 s wall time — process uses ~0 CPU */
+                    memset(&rem, 0, sizeof(rem));
+                    errno = 0;
+                    int gret = timer_gettime(ctid, &rem);
+                    CHECK(gret == 0, "timer_gettime on CPU-time timer should succeed");
+                    if (gret == 0) {
+                        /* Timer must still be armed: remaining > 0.
+                         * If it expired it was tracking wall time, not CPU time. */
+                        CHECK(rem.it_value.tv_sec > 0 || rem.it_value.tv_nsec > 0,
+                              "CPU-time timer must still be armed after 2s wall sleep "
+                              "(timer must not track wall clock)");
+                    }
+                }
+                timer_delete(ctid);
+            }
+            (void)cputime_names[ci]; /* suppress unused-variable warning */
+        }
+    }
 
     CHECK_ERR(timer_create(CLOCK_REALTIME_COARSE, NULL, &tid), EOPNOTSUPP,
               "timer_create with CLOCK_REALTIME_COARSE should fail EOPNOTSUPP");
