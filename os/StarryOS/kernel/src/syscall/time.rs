@@ -11,7 +11,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    task::{AsThread, ITimerType},
+    task::{AsThread, ITimerType, posix_timer::TimerSpec},
     time::TimeValueLike,
 };
 
@@ -191,10 +191,12 @@ pub fn sys_timer_settime(
             thr.proc_data.proc.pid(),
             timerid,
             flags,
-            new.it_value.tv_sec,
-            new.it_value.tv_nsec,
-            new.it_interval.tv_sec,
-            new.it_interval.tv_nsec,
+            TimerSpec {
+                value_sec: new.it_value.tv_sec,
+                value_nsec: new.it_value.tv_nsec,
+                interval_sec: new.it_interval.tv_sec,
+                interval_nsec: new.it_interval.tv_nsec,
+            },
         )
         .map_err(|_| AxError::InvalidInput)?;
 

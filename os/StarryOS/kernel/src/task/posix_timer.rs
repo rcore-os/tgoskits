@@ -34,6 +34,14 @@ struct PosixTimer {
     deadline_ns: u64,
 }
 
+/// The value/interval pair passed to `timer_settime`.
+pub struct TimerSpec {
+    pub value_sec: i64,
+    pub value_nsec: i64,
+    pub interval_sec: i64,
+    pub interval_nsec: i64,
+}
+
 /// Per-process POSIX timer table.
 pub struct PosixTimerTable {
     next_id: AtomicI32,
@@ -131,17 +139,19 @@ impl PosixTimerTable {
     }
 
     /// Set (arm/disarm) a timer. Returns the old (interval, remaining) in nanos.
-    #[allow(clippy::too_many_arguments)]
     pub fn settime(
         &self,
         pid: Pid,
         id: i32,
         flags: i32,
-        value_sec: i64,
-        value_nsec: i64,
-        interval_sec: i64,
-        interval_nsec: i64,
+        spec: TimerSpec,
     ) -> Result<(u64, u64), ()> {
+        let TimerSpec {
+            value_sec,
+            value_nsec,
+            interval_sec,
+            interval_nsec,
+        } = spec;
         // Validate timespec values
         if value_nsec < 0 || value_nsec >= NANOS_PER_SEC as i64 {
             return Err(());
