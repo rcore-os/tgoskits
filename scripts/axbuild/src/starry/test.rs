@@ -613,10 +613,13 @@ impl Starry {
         let total = cases.len();
         let suite_started = Instant::now();
         let mut reports = Vec::new();
-        let case_groups = Self::group_qemu_cases_by_build_config(&cases);
         let asset_config = starry_case_asset_config();
-        let mut completed = 0;
-        for group in case_groups {
+
+        // Phase 1: Build all build groups first so that compilation errors
+        // surface before any QEMU time is spent.  Within a single arch the
+        // groups are still built sequentially (they share the workspace target
+        // directory and would conflict on the Cargo file lock).
+        for group in Self::group_qemu_cases_by_build_config(&cases) {
             let (group_request, group_cargo) =
                 Self::qemu_group_build_context(&request, group.build_config_path)?;
             self.app
@@ -629,6 +632,13 @@ impl Starry {
                         group.build_config_path.display()
                     )
                 })?;
+        }
+
+        // Phase 2: Run all QEMU tests now that every artifact is available.
+        let mut completed = 0;
+        for group in Self::group_qemu_cases_by_build_config(&cases) {
+            let (group_request, group_cargo) =
+                Self::qemu_group_build_context(&request, group.build_config_path)?;
 
             for case in group.cases {
                 completed += 1;

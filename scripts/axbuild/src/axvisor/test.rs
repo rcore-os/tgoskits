@@ -378,7 +378,9 @@ impl Axvisor {
         let suite_started = Instant::now();
         let mut failed = Vec::new();
         let asset_config = axvisor_case_asset_config();
-        let mut completed = 0;
+
+        // Phase 1: Build all build groups first so compilation errors surface
+        // before any QEMU time is spent.
         for group in Self::group_qemu_cases_by_build_config(&cases) {
             let (group_request, group_cargo) =
                 Self::qemu_group_build_context(&request, group.build_config_path)?;
@@ -394,6 +396,13 @@ impl Axvisor {
                         group.build_config_path.display()
                     )
                 })?;
+        }
+
+        // Phase 2: Run all QEMU tests now that every artifact is available.
+        let mut completed = 0;
+        for group in Self::group_qemu_cases_by_build_config(&cases) {
+            let (group_request, group_cargo) =
+                Self::qemu_group_build_context(&request, group.build_config_path)?;
 
             for case in group.cases {
                 completed += 1;

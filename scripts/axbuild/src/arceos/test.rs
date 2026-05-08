@@ -1,7 +1,9 @@
 use std::{
+    collections::BTreeSet,
     fs,
+    io::Write as _,
     path::{Path, PathBuf},
-    process::{Command as StdCommand, Output},
+    process::{Command as StdCommand, Output, Stdio},
 };
 
 use anyhow::{Context, bail};
@@ -266,7 +268,10 @@ async fn test_rust_qemu(
 
     let prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     let total = prepared.len();
-    let mut completed = 0;
+
+    // Phase 1: Build all groups first so compilation errors surface before any
+    // QEMU time is spent.  Each group shares a single cargo artifact, so builds
+    // are still sequential (they share the workspace target directory).
     for group in qemu_test::group_cases_by_build_config(&prepared) {
         let first_case = group
             .cases
@@ -286,7 +291,11 @@ async fn test_rust_qemu(
                     group.build_config_path.display()
                 )
             })?;
+    }
 
+    // Phase 2: Run all QEMU tests now that all artifacts are available.
+    let mut completed = 0;
+    for group in qemu_test::group_cases_by_build_config(&prepared) {
         for case in group.cases {
             completed += 1;
             let case_name = &case.case.case.name;
@@ -317,7 +326,8 @@ async fn test_c_qemu(
         target,
         selected_case,
         prepare_c_test_cargo_env,
-        run_single_c_qemu_test,
+        build_single_c_test,
+        run_c_qemu_only,
     )
 }
 
@@ -337,8 +347,9 @@ async fn test_generic_qemu(
     );
     let prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     let total = prepared.len();
-    let mut completed = 0;
     let mut failed = Vec::new();
+
+    // Phase 1: Build all groups first (fail fast on compile errors).
     for build_group in qemu_test::group_cases_by_build_config(&prepared) {
         let first_case = build_group
             .cases
@@ -358,6 +369,11 @@ async fn test_generic_qemu(
                     build_group.build_config_path.display()
                 )
             })?;
+    }
+
+    // Phase 2: Run all QEMU tests with all artifacts ready.
+    let mut completed = 0;
+    for build_group in qemu_test::group_cases_by_build_config(&prepared) {
         for case in build_group.cases {
             completed += 1;
             let case_name = &case.case.case.name;
@@ -1115,22 +1131,31 @@ fn arch_from_target(target: &str) -> &str {
     }
 }
 
-fn run_c_qemu_tests_with_hooks<PrepareCargoEnv, RunTest>(
+/// Two-phase C test runner:
+///
+/// Phase 1 – build all tests in **parallel** using per-test `TARGET_DIR`
+/// isolation so concurrent `cargo build` invocations never contend on the
+/// same file lock.  Build output is captured and suppressed on success; it
+/// is printed verbatim only when a build fails, keeping CI logs readable.
+///
+/// Phase 2 – run `make justrun` (QEMU) for each successfully-built test
+/// **sequentially** so their output is never interleaved.  QEMU output is
+/// streamed directly (captured + forwarded via `exec_capture`).
+///
+/// Both `build_fn` and `run_fn` are injectable for unit testing.
+fn run_c_qemu_tests_with_hooks<PrepareCargoEnv, BuildFn, RunFn>(
     workspace_root: &Path,
     target: &str,
     selected_case: Option<&str>,
-    mut prepare_cargo_env: PrepareCargoEnv,
-    mut run_test: RunTest,
+    prepare_cargo_env: PrepareCargoEnv,
+    build_fn: BuildFn,
+    mut run_fn: RunFn,
 ) -> anyhow::Result<()>
 where
-    PrepareCargoEnv: FnMut(&Path) -> CTestCargoEnv,
-    RunTest: FnMut(
-        &Path,
-        &Path,
-        &[String],
-        &PreparedCTestInvocation,
-        &CTestCargoEnv,
-    ) -> anyhow::Result<()>,
+    PrepareCargoEnv: Fn(&Path) -> CTestCargoEnv,
+    // `Fn + Send + Sync` so we can share an immutable reference across threads.
+    BuildFn: Fn(&Path, &Path, &[String], &CTestCargoEnv) -> anyhow::Result<()> + Send + Sync,
+    RunFn: FnMut(&Path, &Path, &PreparedCTestInvocation, &CTestCargoEnv) -> anyhow::Result<()>,
 {
     let arch = arch_from_target(target);
     let arceos_dir = workspace_root.join("os/arceos");
@@ -1151,22 +1176,19 @@ where
 
     let cargo_env = prepare_cargo_env(workspace_root);
 
+    // Prepare all test invocations, injecting a per-test TARGET_DIR so that
+    // parallel `cargo build` calls use separate directories and never block
+    // on each other's file lock.
+    struct CTestPrep {
+        name: String,
+        app_path: PathBuf,
+        invocations: Vec<PreparedCTestInvocation>,
+    }
+
+    let mut preps = Vec::<CTestPrep>::new();
     let mut failed = Vec::new();
-    println!(
-        "running arceos C qemu tests for {} test(s) on target: {} (arch: {})",
-        c_tests.len(),
-        target,
-        arch
-    );
 
-    for (index, c_test) in c_tests.iter().enumerate() {
-        println!(
-            "[{}/{}] arceos c qemu {}",
-            index + 1,
-            c_tests.len(),
-            c_test.name
-        );
-
+    for c_test in c_tests {
         let app_path = match c_test.dir.canonicalize() {
             Ok(path) => path,
             Err(err) => {
@@ -1175,69 +1197,168 @@ where
                 continue;
             }
         };
-
-        let invocations =
+        let target_dir = c_test_target_dir(workspace_root, &c_test.name);
+        let mut invocations =
             prepare_c_test_invocations(&app_path, arch, &c_test.features, &c_test.invocations);
-        let mut built_make_args = Vec::<Vec<String>>::new();
+        // Inject the isolated target directory into every invocation's make
+        // args so both `make build` and `make justrun` use the same path.
+        for inv in &mut invocations {
+            inv.make_args
+                .push(format!("TARGET_DIR={}", target_dir.display()));
+        }
+        preps.push(CTestPrep {
+            name: c_test.name,
+            app_path,
+            invocations,
+        });
+    }
+
+    println!(
+        "running arceos C qemu tests for {} test(s) on target: {} (arch: {})",
+        preps.len(),
+        target,
+        arch
+    );
+
+    // ---------------------------------------------------------------------------
+    // Phase 1: Build all tests in parallel.
+    //
+    // Each thread runs `make defconfig && make build` for one test.  Build
+    // output is captured; only failures are printed (after all threads finish)
+    // so interleaved progress lines don't clutter CI logs.
+    // ---------------------------------------------------------------------------
+    if preps.len() > 1 {
+        println!(
+            "building {} C tests in parallel (build output shown only on failure)…",
+            preps.len()
+        );
+    }
+
+    // Collect (test_name, error) for every build failure.
+    let build_errors: Vec<(String, anyhow::Error)> = std::thread::scope(|s| {
+        let handles: Vec<_> = preps
+            .iter()
+            .map(|prep| {
+                let build_fn_ref = &build_fn;
+                let cargo_env_ref = &cargo_env;
+                let arceos_dir_ref = &arceos_dir;
+                s.spawn(move || -> Option<(String, anyhow::Error)> {
+                    let mut built_args = Vec::<Vec<String>>::new();
+                    for inv in &prep.invocations {
+                        let already_built = built_args
+                            .iter()
+                            .any(|a| a.as_slice() == c_test_build_key(inv));
+                        if !already_built {
+                            if let Err(err) = build_fn_ref(
+                                arceos_dir_ref,
+                                &prep.app_path,
+                                &inv.make_args,
+                                cargo_env_ref,
+                            ) {
+                                return Some((
+                                    prep.name.clone(),
+                                    err.context(format!("c test `{}` build failed", prep.name)),
+                                ));
+                            }
+                            built_args.push(inv.make_args.clone());
+                        }
+                    }
+                    None
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().expect("build thread panicked"))
+            .collect()
+    });
+
+    let failed_builds: BTreeSet<String> = build_errors.iter().map(|(n, _)| n.clone()).collect();
+    for (name, err) in &build_errors {
+        eprintln!("failed: c/{}: {:#}", name, err);
+        failed.push(name.clone());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 2: Run QEMU sequentially for tests that built successfully.
+    // ---------------------------------------------------------------------------
+    let total = preps.len();
+    for (index, prep) in preps.iter().enumerate() {
+        if failed_builds.contains(&prep.name) {
+            continue;
+        }
+
+        println!("[{}/{}] arceos c qemu {}", index + 1, total, prep.name);
 
         let mut test_failed = false;
-        for invocation in &invocations {
-            let build_needed = !built_make_args
-                .iter()
-                .any(|make_args| make_args.as_slice() == c_test_build_key(invocation));
-            let build_args = if build_needed {
-                invocation.make_args.as_slice()
-            } else {
-                &[]
-            };
-            let result = run_test(&arceos_dir, &app_path, build_args, invocation, &cargo_env)
-                .with_context(|| {
-                    format!("c test `{}` failed for `{}`", c_test.name, invocation.label)
+        for invocation in &prep.invocations {
+            let result =
+                run_fn(&arceos_dir, &prep.app_path, invocation, &cargo_env).with_context(|| {
+                    format!("c test `{}` failed for `{}`", prep.name, invocation.label)
                 });
             if let Err(err) = result {
-                eprintln!("failed: c/{}: {:#}", c_test.name, err);
-                failed.push(c_test.name.clone());
+                eprintln!("failed: c/{}: {:#}", prep.name, err);
+                failed.push(prep.name.clone());
                 test_failed = true;
                 break;
-            }
-            if build_needed {
-                built_make_args.push(invocation.make_args.clone());
             }
         }
 
         if !test_failed {
-            println!("ok: c/{}", c_test.name);
+            println!("ok: c/{}", prep.name);
         }
     }
 
     qemu_test::finalize_qemu_test_run("arceos c", "test", &failed)
 }
 
-fn run_single_c_qemu_test(
+/// Returns the isolated Cargo target directory for a C test.
+///
+/// Using a per-test directory lets parallel `cargo build` invocations run
+/// without contending on a shared file lock.
+fn c_test_target_dir(workspace_root: &Path, test_name: &str) -> PathBuf {
+    let dir_name = format!("arceos-c-{}", test_name.replace('/', "-"));
+    workspace_root.join("target").join(dir_name)
+}
+
+/// Build phase of a single C test: runs `make defconfig && make build`.
+///
+/// Build output is **captured and suppressed** on success to keep parallel
+/// build logs readable.  On failure the captured output is flushed to stderr
+/// before the error is returned.
+fn build_single_c_test(
+    arceos_dir: &Path,
+    _app_path: &Path,
+    make_args: &[String],
+    cargo_env: &CTestCargoEnv,
+) -> anyhow::Result<()> {
+    for target in ["defconfig", "build"] {
+        let mut command = StdCommand::new("make");
+        command.current_dir(arceos_dir).args(make_args).arg(target);
+        apply_c_test_cargo_env(&mut command, cargo_env);
+        // Capture stdout/stderr so parallel builds don't interleave output.
+        let output = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .with_context(|| format!("failed to spawn `make {target}`"))?;
+        if !output.status.success() {
+            // Print captured output so the error context is visible.
+            let _ = std::io::stderr().write_all(&output.stderr);
+            let _ = std::io::stdout().write_all(&output.stdout);
+            bail!("`make {}` exited with {}", target, output.status);
+        }
+    }
+    Ok(())
+}
+
+/// QEMU phase of a single C test: runs `make justrun` and verifies output.
+fn run_c_qemu_only(
     arceos_dir: &Path,
     app_path: &Path,
-    build_make_args: &[String],
     invocation: &PreparedCTestInvocation,
     cargo_env: &CTestCargoEnv,
 ) -> anyhow::Result<()> {
-    if !build_make_args.is_empty() {
-        let mut command = StdCommand::new("make");
-        command
-            .current_dir(arceos_dir)
-            .args(build_make_args)
-            .arg("defconfig");
-        apply_c_test_cargo_env(&mut command, cargo_env);
-        command.exec()?;
-
-        let mut command = StdCommand::new("make");
-        command
-            .current_dir(arceos_dir)
-            .args(build_make_args)
-            .arg("build");
-        apply_c_test_cargo_env(&mut command, cargo_env);
-        command.exec()?;
-    }
-
     let mut command = StdCommand::new("make");
     command
         .current_dir(arceos_dir)
@@ -1751,6 +1872,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
 
         let prepare_env_events = events.clone();
+        let build_events = events.clone();
         let run_events = events.clone();
         run_c_qemu_tests_with_hooks(
             workspace_root,
@@ -1763,7 +1885,14 @@ mod tests {
                     .push(format!("prepare_env:{}", root.display()));
                 prepare_c_test_cargo_env(root)
             },
-            move |_arceos_dir, app_path, _build_args, _invocation, _cargo_env| {
+            move |_arceos_dir, app_path, _make_args, _cargo_env| {
+                build_events.lock().unwrap().push(format!(
+                    "build:{}",
+                    app_path.file_name().unwrap().to_string_lossy()
+                ));
+                Ok(())
+            },
+            move |_arceos_dir, app_path, _invocation, _cargo_env| {
                 run_events.lock().unwrap().push(format!(
                     "run:{}",
                     app_path.file_name().unwrap().to_string_lossy()
@@ -1816,27 +1945,43 @@ mod tests {
         )
         .unwrap();
 
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let run_events = events.clone();
+        let build_events = Arc::new(Mutex::new(Vec::new()));
+        let run_events = Arc::new(Mutex::new(Vec::new()));
+        let build_events_clone = build_events.clone();
+        let run_events_clone = run_events.clone();
         run_c_qemu_tests_with_hooks(
             workspace_root,
             "x86_64-unknown-none",
             None,
             prepare_c_test_cargo_env,
-            move |_arceos_dir, _app_path, build_args, invocation, _cargo_env| {
-                run_events.lock().unwrap().push(format!(
-                    "build_args={} label={}",
-                    build_args.len(),
-                    invocation.label
-                ));
+            move |_arceos_dir, _app_path, make_args, _cargo_env| {
+                build_events_clone
+                    .lock()
+                    .unwrap()
+                    .push(format!("build_args={}", make_args.len()));
+                Ok(())
+            },
+            move |_arceos_dir, _app_path, invocation, _cargo_env| {
+                run_events_clone
+                    .lock()
+                    .unwrap()
+                    .push(format!("label={}", invocation.label));
                 Ok(())
             },
         )
         .unwrap();
 
-        let events = events.lock().unwrap();
-        assert_eq!(events.len(), 2);
-        assert!(events[0].starts_with("build_args=4 "));
-        assert!(events[1].starts_with("build_args=0 "));
+        // The two invocations share identical make_args (both "LOG=info"), so
+        // the build phase must only call build_fn once (deduplication).
+        let builds = build_events.lock().unwrap();
+        assert_eq!(
+            builds.len(),
+            1,
+            "build should be deduplicated to a single call"
+        );
+
+        // Both invocations must be executed by the QEMU phase.
+        let runs = run_events.lock().unwrap();
+        assert_eq!(runs.len(), 2, "both invocations should be run");
     }
 }
