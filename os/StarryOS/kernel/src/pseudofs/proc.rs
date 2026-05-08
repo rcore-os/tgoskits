@@ -99,41 +99,53 @@ fn render_cpuinfo() -> String {
 
 #[cfg(target_arch = "riscv64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
-    let _ = write!(
-        buf,
-        "processor\t: {idx}\nhart\t\t: {idx}\nisa\t\t: rv64imafdc_zicsr_zifencei\nmmu\t\t: \
-         sv39\n\n"
-    );
+    let _ = writeln!(buf, "processor\t: {idx}");
+    let _ = writeln!(buf, "hart\t\t: {idx}");
+    let _ = writeln!(buf, "isa\t\t: rv64imafdc_zicsr_zifencei");
+    let _ = writeln!(buf, "mmu\t\t: sv39");
+    let _ = writeln!(buf); // blank line between processors
 }
 
 #[cfg(target_arch = "aarch64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
-    let _ = write!(
-        buf,
-        "processor\t: {idx}\nBogoMIPS\t: 100.00\nCPU implementer\t: 0x00\nCPU architecture: \
-         8\nCPU variant\t: 0x0\nCPU part\t: 0x000\nCPU revision\t: 0\n\n"
-    );
+    let _ = writeln!(buf, "processor\t: {idx}");
+    let _ = writeln!(buf, "BogoMIPS\t: 100.00");
+    let _ = writeln!(buf, "CPU implementer\t: 0x00");
+    let _ = writeln!(buf, "CPU architecture: 8");
+    let _ = writeln!(buf, "CPU variant\t: 0x0");
+    let _ = writeln!(buf, "CPU part\t: 0x000");
+    let _ = writeln!(buf, "CPU revision\t: 0");
+    let _ = writeln!(buf);
 }
 
 #[cfg(target_arch = "x86_64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
-    let _ = write!(
+    let _ = writeln!(buf, "processor\t: {idx}");
+    let _ = writeln!(buf, "vendor_id\t: GenuineIntel");
+    let _ = writeln!(buf, "cpu family\t: 6");
+    let _ = writeln!(buf, "model\t\t: 85");
+    let _ = writeln!(buf, "model name\t: QEMU Virtual CPU v2.5+");
+    let _ = writeln!(buf, "stepping\t: 0");
+    let _ = writeln!(
         buf,
-        "processor\t: {idx}\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 85\nmodel \
-         name\t: QEMU Virtual CPU v2.5+\nstepping\t: 0\nflags\t\t: fpu de pse tsc msr pae mce cx8 \
-         apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx lm \
-         constant_tsc\n\n"
+        "flags\t\t: fpu de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush \
+         mmx fxsr sse sse2 ht syscall nx lm constant_tsc"
     );
+    let _ = writeln!(buf);
 }
 
 #[cfg(target_arch = "loongarch64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
-    let _ = write!(
+    let _ = writeln!(buf, "processor\t\t: {idx}");
+    let _ = writeln!(buf, "core id\t\t\t: {idx}");
+    let _ = writeln!(buf, "Virtual Machine\t\t: no");
+    let _ = writeln!(buf, "Model Name\t\t: QEMU Virtual Machine");
+    let _ = writeln!(buf, "ISA\t\t\t: loongarch32 loongarch64");
+    let _ = writeln!(
         buf,
-        "processor\t\t: {idx}\ncore id\t\t\t: {idx}\nVirtual Machine\t\t: no\nModel Name\t\t: \
-         QEMU Virtual Machine\nISA\t\t\t: loongarch32 loongarch64\nFeat\t\t\t: cpucfg lam ual fpu \
-         lsx lasx crc32 complex crypto lvz\n\n"
+        "Feat\t\t\t: cpucfg lam ual fpu lsx lasx crc32 complex crypto lvz"
     );
+    let _ = writeln!(buf);
 }
 
 #[cfg(not(any(
@@ -143,7 +155,8 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
     target_arch = "loongarch64"
 )))]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
-    let _ = write!(buf, "processor\t: {idx}\n\n");
+    let _ = writeln!(buf, "processor\t: {idx}");
+    let _ = writeln!(buf);
 }
 
 fn render_stat() -> String {
@@ -191,16 +204,18 @@ fn render_stat() -> String {
 
     let mut buf = format!("cpu  {user_jiffies} 0 {sys_jiffies} {idle_jiffies} 0 0 0 0 0 0\n");
     for i in 0..cpu_count {
-        let _ = write!(
+        let _ = writeln!(
             buf,
-            "cpu{i} {per_cpu_user} 0 {per_cpu_sys} {per_cpu_idle} 0 0 0 0 0 0\n"
+            "cpu{i} {per_cpu_user} 0 {per_cpu_sys} {per_cpu_idle} 0 0 0 0 0 0"
         );
     }
-    let _ = write!(
-        buf,
-        "intr {irq_total}\nctxt 0\nbtime {btime}\nprocesses {task_count}\nprocs_running \
-         {procs_running}\nprocs_blocked {procs_blocked}\nsoftirq 0 0 0 0 0 0 0 0 0 0 0\n"
-    );
+    let _ = writeln!(buf, "intr {irq_total}");
+    let _ = writeln!(buf, "ctxt 0");
+    let _ = writeln!(buf, "btime {btime}");
+    let _ = writeln!(buf, "processes {task_count}");
+    let _ = writeln!(buf, "procs_running {procs_running}");
+    let _ = writeln!(buf, "procs_blocked {procs_blocked}");
+    let _ = writeln!(buf, "softirq 0 0 0 0 0 0 0 0 0 0 0");
     buf
 }
 

@@ -484,15 +484,6 @@ impl Starry {
     }
 }
 
-/// Returns the path to the versioned QEMU run-config template for `arch` under
-/// `os/StarryOS/configs/qemu/qemu-{arch}.toml`, or `None` if no such file exists.
-fn starry_qemu_config_template(workspace_root: &Path, arch: &str) -> Option<PathBuf> {
-    let path = workspace_root
-        .join("os/StarryOS/configs/qemu")
-        .join(format!("qemu-{arch}.toml"));
-    path.exists().then_some(path)
-}
-
 #[cfg(test)]
 mod tests {
     use clap::Parser;
