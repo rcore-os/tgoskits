@@ -172,6 +172,9 @@ pub fn sys_fallocate(
     len: __kernel_off_t,
 ) -> AxResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
+    // Validate fd first: invalid/closed/dir/read-only → EBADF, pipe → ESPIPE.
+    // Linux errno priority: EBADF/ESPIPE > EOPNOTSUPP > EINVAL.
+    let f = file_or_espipe_write(fd)?;
     if mode != 0 {
         return Err(AxError::OperationNotSupported);
     }
@@ -185,7 +188,6 @@ pub fn sys_fallocate(
     if end > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
     }
-    let f = file_or_espipe(fd)?;
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
     file.set_len(file.location().len()?.max(end))?;
