@@ -130,7 +130,7 @@ AxVisor 的并发模型可理解为：
 
 `axvisor_api` 的设计目标是替代大量泛型 trait 传递，将底层组件所需的宿主能力按模块分类暴露为统一 API。底层组件无需直接依赖整个 ArceOS，调用方看到的是普通函数风格而非 trait 泛型。
 
-API 按功能域分组：`memory`、`time`、`vmm`、`host`。AxVisor 本体在 `src/hal/mod.rs` 中通过 `#[axvisor_api::api_mod_impl(...)]` 提供这些 API 的真实实现。
+API 按功能域分组：`arch`、`memory`、`time`、`vmm`、`host`。AxVisor 本体在 `src/hal/mod.rs` 中通过 `#[axvisor_api::api_mod_impl(...)]` 提供这些 API 的真实实现。
 
 ## 配置体系
 
@@ -140,7 +140,7 @@ AxVisor 的配置体系分为两层：板级配置控制 Hypervisor 本身的构
 
 板级配置控制 Hypervisor 自身的构建目标、feature 组合和日志级别。每份配置对应一种硬件平台（QEMU 虚拟机或物理开发板），决定最终编译出的 Hypervisor 镜像适配哪个目标。
 
-`configs/board/` 中当前包含 9 份板级配置：
+`configs/board/` 中当前包含 10 份板级配置文件（9 份 TOML 配置 + 1 份 DTB）：
 
 | 配置文件 | 目标 |
 | --- | --- |
@@ -153,6 +153,7 @@ AxVisor 的配置体系分为两层：板级配置控制 Hypervisor 本身的构
 | `roc-rk3568-pc.toml` | RK3568 PC |
 | `rdk-s100.toml` | RDK-S100 |
 | `tac-e400.toml` | TAC-E400 |
+| `orangepi-5-plus.dtb` | Orange Pi 5 Plus 设备树 |
 
 ### VM 配置
 
