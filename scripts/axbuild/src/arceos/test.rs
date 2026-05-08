@@ -158,6 +158,13 @@ struct CTestPrep {
     invocations: Vec<PreparedCTestInvocation>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CTestArtifactPaths {
+    target_dir: PathBuf,
+    out_dir: PathBuf,
+    out_config: PathBuf,
+}
+
 pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<()> {
     match args.command {
         TestCommand::Qemu(args) => test_qemu(arceos, args).await,
@@ -1038,6 +1045,14 @@ fn build_c_test_make_args_with_makefile_features(
     args
 }
 
+fn append_c_test_artifact_args(args: &mut Vec<String>, artifacts: &CTestArtifactPaths) {
+    args.extend([
+        format!("TARGET_DIR={}", artifacts.target_dir.display()),
+        format!("OUT_DIR={}", artifacts.out_dir.display()),
+        format!("OUT_CONFIG={}", artifacts.out_config.display()),
+    ]);
+}
+
 fn runtime_output_regex(pattern: &str) -> anyhow::Result<Regex> {
     Regex::new(&translate_bre_to_regex(pattern))
         .with_context(|| format!("invalid expected-output regex `{pattern}`"))
@@ -1169,10 +1184,11 @@ fn arch_from_target(target: &str) -> &str {
 
 /// Two-phase C test runner:
 ///
-/// Phase 1 – build all tests in **parallel** using per-test `TARGET_DIR`
-/// isolation so concurrent `cargo build` invocations never contend on the
-/// same file lock.  Build output is captured and suppressed on success; it
-/// is printed verbatim only when a build fails, keeping CI logs readable.
+/// Phase 1 – build all tests in **parallel** using per-invocation artifact
+/// isolation so concurrent builds never contend on the same Cargo file lock
+/// and multi-configuration tests cannot overwrite the image that a later
+/// QEMU run needs.  Build output is captured and suppressed on success; it is
+/// printed verbatim only when a build fails, keeping CI logs readable.
 ///
 /// Phase 2 – run `make justrun` (QEMU) for each successfully-built test
 /// **sequentially** so their output is never interleaved.  QEMU output is
@@ -1212,9 +1228,8 @@ where
 
     let cargo_env = prepare_cargo_env(workspace_root);
 
-    // Prepare all test invocations, injecting a per-test TARGET_DIR so that
-    // parallel `cargo build` calls use separate directories and never block
-    // on each other's file lock.
+    // Prepare all test invocations, injecting per-invocation artifact paths so
+    // multi-configuration tests do not overwrite each other's QEMU image.
     let mut preps = Vec::<CTestPrep>::new();
     let mut failed = Vec::new();
 
@@ -1227,14 +1242,22 @@ where
                 continue;
             }
         };
-        let target_dir = c_test_target_dir(workspace_root, &c_test.name);
         let mut invocations =
             prepare_c_test_invocations(&app_path, arch, &c_test.features, &c_test.invocations);
-        // Inject the isolated target directory into every invocation's make
-        // args so both `make build` and `make justrun` use the same path.
+        let mut unique_build_args = Vec::<Vec<String>>::new();
         for inv in &mut invocations {
-            inv.make_args
-                .push(format!("TARGET_DIR={}", target_dir.display()));
+            let artifact_index = match unique_build_args
+                .iter()
+                .position(|args| args == &inv.make_args)
+            {
+                Some(index) => index,
+                None => {
+                    unique_build_args.push(inv.make_args.clone());
+                    unique_build_args.len() - 1
+                }
+            };
+            let artifacts = c_test_artifact_paths(workspace_root, &c_test.name, artifact_index);
+            append_c_test_artifact_args(&mut inv.make_args, &artifacts);
         }
         preps.push(CTestPrep {
             name: c_test.name,
@@ -1387,13 +1410,28 @@ where
     None
 }
 
-/// Returns the isolated Cargo target directory for a C test.
+/// Returns isolated artifact paths for a single C test invocation.
 ///
-/// Using a per-test directory lets parallel `cargo build` invocations run
-/// without contending on a shared file lock.
-fn c_test_target_dir(workspace_root: &Path, test_name: &str) -> PathBuf {
-    let dir_name = format!("arceos-c-{}", test_name.replace('/', "-"));
-    workspace_root.join("target").join(dir_name)
+/// `make build` writes the final image to `OUT_DIR` and the generated config
+/// to `OUT_CONFIG`.  Multi-invocation tests such as `helloworld` build several
+/// configurations for the same app, so every invocation needs its own outputs
+/// for the later `make justrun` phase to execute the matching image.
+fn c_test_artifact_paths(
+    workspace_root: &Path,
+    test_name: &str,
+    invocation_index: usize,
+) -> CTestArtifactPaths {
+    let dir_name = format!(
+        "arceos-c-{}-{}",
+        test_name.replace('/', "-"),
+        invocation_index
+    );
+    let root = workspace_root.join("target").join(dir_name);
+    CTestArtifactPaths {
+        target_dir: root.join("cargo"),
+        out_dir: root.join("out"),
+        out_config: root.join("axconfig.toml"),
+    }
 }
 
 /// Build phase of a single C test: runs `make defconfig && make build`.
@@ -2058,6 +2096,72 @@ mod tests {
         // Both invocations must be executed by the QEMU phase.
         let runs = run_events.lock().unwrap();
         assert_eq!(runs.len(), 2, "both invocations should be run");
+    }
+
+    #[test]
+    fn run_c_qemu_tests_with_hooks_isolates_distinct_invocation_artifacts() {
+        let dir = tempdir().unwrap();
+        let workspace_root = dir.path();
+        let arceos_dir = workspace_root.join("os/arceos");
+        let c_root = arceos_test_group_dir(workspace_root, ARCEOS_C_TEST_GROUP);
+
+        std::fs::create_dir_all(&arceos_dir).unwrap();
+        std::fs::create_dir_all(c_root.join("helloworld")).unwrap();
+        std::fs::write(arceos_dir.join("Makefile"), "run:\n\t@true\n").unwrap();
+        std::fs::write(
+            c_root.join("helloworld/main.c"),
+            "int main(void) { return 0; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            c_root.join("helloworld/test_cmd"),
+            "test_one \"LOG=info\" \"expect_info.out\"\ntest_one \"SMP=4 LOG=info\" \
+             \"expect_info_smp4.out\"\ntest_one \"LOG=info\" \"expect_info_again.out\"\n",
+        )
+        .unwrap();
+
+        let run_args = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let run_args_clone = run_args.clone();
+        run_c_qemu_tests_with_hooks(
+            workspace_root,
+            "x86_64-unknown-none",
+            None,
+            prepare_c_test_cargo_env,
+            move |_arceos_dir, _app_path, _make_args, _cargo_env| Ok(()),
+            move |_arceos_dir, _app_path, invocation, _cargo_env| {
+                run_args_clone
+                    .lock()
+                    .unwrap()
+                    .push(invocation.make_args.clone());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let run_args = run_args.lock().unwrap();
+        assert_eq!(run_args.len(), 3);
+        let first_target_dir = make_arg_value(&run_args[0], "TARGET_DIR").unwrap();
+        let first_out_dir = make_arg_value(&run_args[0], "OUT_DIR").unwrap();
+        let first_out_config = make_arg_value(&run_args[0], "OUT_CONFIG").unwrap();
+        let second_target_dir = make_arg_value(&run_args[1], "TARGET_DIR").unwrap();
+        let second_out_dir = make_arg_value(&run_args[1], "OUT_DIR").unwrap();
+        let second_out_config = make_arg_value(&run_args[1], "OUT_CONFIG").unwrap();
+        let third_target_dir = make_arg_value(&run_args[2], "TARGET_DIR").unwrap();
+        let third_out_dir = make_arg_value(&run_args[2], "OUT_DIR").unwrap();
+        let third_out_config = make_arg_value(&run_args[2], "OUT_CONFIG").unwrap();
+
+        assert_ne!(first_target_dir, second_target_dir);
+        assert_ne!(first_out_dir, second_out_dir);
+        assert_ne!(first_out_config, second_out_config);
+        assert_eq!(first_target_dir, third_target_dir);
+        assert_eq!(first_out_dir, third_out_dir);
+        assert_eq!(first_out_config, third_out_config);
+    }
+
+    fn make_arg_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
+        let prefix = format!("{key}=");
+        args.iter()
+            .find_map(|arg| arg.strip_prefix(prefix.as_str()))
     }
 
     #[test]
