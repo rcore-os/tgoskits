@@ -141,12 +141,12 @@ pub fn print_supported_platforms(workspace_root: &Path) {
 
 pub fn qemu_build_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {
     workspace_root
-        .join("os/StarryOS/configs/qemu")
+        .join("os/StarryOS/configs/board")
         .join(match platform {
-            QuickQemuPlatform::Aarch64 => "build-aarch64.toml",
-            QuickQemuPlatform::Riscv64 => "build-riscv64.toml",
-            QuickQemuPlatform::Loongarch64 => "build-loongarch64.toml",
-            QuickQemuPlatform::X8664 => "build-x86_64.toml",
+            QuickQemuPlatform::Aarch64 => "qemu-aarch64.toml",
+            QuickQemuPlatform::Riscv64 => "qemu-riscv64.toml",
+            QuickQemuPlatform::Loongarch64 => "qemu-loongarch64.toml",
+            QuickQemuPlatform::X8664 => "qemu-x86_64.toml",
         })
 }
 
