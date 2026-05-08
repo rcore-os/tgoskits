@@ -265,7 +265,7 @@ sequenceDiagram
 | `axconfig` | `os/arceos/modules/axconfig` | 构建期常量与目标参数 | 所有模块 |
 | `ax-log` | `os/arceos/modules/axlog` | 多级日志与格式化输出 | 所有模块 |
 | `ax-fs-ng` | `os/arceos/modules/axfs-ng` | 下一代文件系统（FAT、ext4，LRU 缓存） | `ax-driver` |
-| `ax-net-ng` | `os/arceos/modules/axnet-ng` | 下一代网络栈（异步感知，基于 starry-smoltcp） | `ax-driver` |
+| `ax-net-ng` | `os/arceos/modules/axnet-ng` | 下一代网络栈（异步感知，基于 smoltcp） | `ax-driver` |
 | `ax-dma` | `os/arceos/modules/axdma` | DMA 内存分配与管理 | `ax-runtime`、`ax-mm` |
 | `ax-ipi` | `os/arceos/modules/axipi` | 处理器间中断管理 | `ax-hal` |
 | `ax-input` | `os/arceos/modules/axinput` | 输入设备管理与事件分发 | `ax-driver` |

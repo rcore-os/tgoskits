@@ -95,6 +95,8 @@ flowchart TD
 | 用例名 | 类型 | 说明 | 特殊说明 |
 |--------|------|------|----------|
 | `affinity` | 无源码 | CPU affinity / 调度相关冒烟命令 | 当前仅有 `qemu-x86_64.toml` |
+| `apk-curl` | 无源码 | 通过 apk 安装 curl 并执行网络请求验证 | 含多架构 `qemu-{arch}.toml` |
+| `apt` | 无源码 | apt 包管理器功能验证 | 仅 `aarch64` 和 `riscv64` |
 | `bug-rename-replace` | C | rename/replace 行为回归测试 | 使用 `prebuild.sh` |
 | `bug-tmpfs-hardlink-cache` | C | tmpfs hardlink cache 回归测试 | 使用 `prebuild.sh` |
 | `bugfix` | 分组 C 用例 | 多个 bugfix 子用例聚合运行 | `qemu-{arch}.toml` 使用 `test_commands`，子目录下包含多个 `c/` 用例 |
@@ -105,15 +107,28 @@ flowchart TD
 | `riscv64-regression` | 无源码 | RISC-V 回归命令集合 | 当前仅有 `qemu-riscv64.toml` |
 | `smoke` | 无源码 | 冒烟测试：启动后执行 Shell 命令验证系统基本可用 | 含板级配置 `board-orangepi-5-plus.toml` |
 | `syscall` | 无源码 | 系统调用测试集合 | 使用 guest rootfs 中已有测试命令 |
+| `test-clock-getres` | C | clock_getres 系统调用测试 | 仅 `riscv64` |
+| `test-fallocate` | C | fallocate 系统调用测试 | 仅 `riscv64` |
+| `test-file-io-edge` | C | 文件 I/O 边界条件测试 | 含多架构 `qemu-{arch}.toml` |
+| `test-mremap` | C | mremap 系统调用测试 | 含多架构 `qemu-{arch}.toml` |
+| `test-pipe-syscalls` | C | pipe 相关系统调用测试 | 含多架构 `qemu-{arch}.toml` |
+| `test-session-syscalls` | C | session 相关系统调用测试 | 含多架构 `qemu-{arch}.toml` |
 | `test-shm-deadlock` | C | shared memory deadlock 回归测试 | 使用 `prebuild.sh` |
+| `test-unix-bind-chown` | C | Unix socket bind/chown 测试 | 含多架构 `qemu-{arch}.toml` |
 | `test-vectored-io` | C | vectored I/O 回归测试 | 使用 `prebuild.sh` |
+| `udp` | 无源码 | UDP 网络通信测试 | 仅 `x86_64` |
 | `usb` | USB 设备驱动测试 | USB 子系统功能验证 | 使用 case 级 `build-aarch64-unknown-none-softfloat.toml` 和 `prebuild.sh` |
+| `dhcp` | 无源码 | DHCP 网络配置冒烟测试 | 仅 `x86_64`，位于 `qemu-dhcp` build group |
+| `net-smoke` | 无源码 | 板级网络冒烟测试 | 仅 `board-orangepi-5-plus.toml` |
+| `npu-yolov8` | 无源码 | NPU YOLOv8 推理测试 | 仅 `board-orangepi-5-plus.toml` |
+| `pcie-enumerate` | 无源码 | PCIe 设备枚举验证 | 仅 `board-orangepi-5-plus.toml` |
 
 ### 1.4 压力用例
 
 | 用例名 | 类型 | 说明 |
 |--------|------|------|
 | `stress-ng-0` | 无源码 | 通过 apk 安装 stress-ng 执行 CPU/内存/信号压力测试 |
+| `postgresql` | 无源码 | PostgreSQL 数据库压力测试 |
 
 > **注**：StarryOS 当前暂无正式落地的 Rust 测试用例；分组用例中如果出现 Rust 子用例，`scripts/axbuild/src/test/build.rs` 目前会显式拒绝。Rust 测试的目录结构模板（§4）保留供后续扩展使用。
 

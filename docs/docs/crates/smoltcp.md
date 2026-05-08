@@ -1,9 +1,9 @@
 # `smoltcp` 技术文档
 
-> 路径：`components/starry-smoltcp`
+> 路径：`components/starry-smoltcp`（已迁移至 crates.io `smoltcp v0.13.0`）
 > 类型：库 crate
 > 分层：组件层 / TCP/IP 协议栈本体
-> 版本：`0.12.0`
+> 版本：`0.13.0`（crates.io）
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`tests/netsim.rs`、`examples/*`、`benches/bench.rs`、`fuzz/fuzz_targets/*`
 
 `smoltcp` 是仓库中引入并维护的一份独立 TCP/IP 协议栈源码。它提供的是事件驱动的协议状态机、接口层、设备抽象和报文表示，而不是 ArceOS/StarryOS 直接面向系统调用或应用的网络模块。在本仓库里，真正把它接到驱动、等待模型、地址族抽象和系统接口上的，是 `ax-net` 与 `ax-net-ng`。

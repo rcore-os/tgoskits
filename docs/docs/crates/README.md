@@ -149,8 +149,8 @@
 | `riscv_vplic` | 组件层 | `components/riscv_vplic` | 5 | 2 | [查看](./riscv_vplic.md) |
 | `rsext4` | 组件层 | `components/rsext4` | 0 | 1 | [查看](./rsext4.md) |
 | `scope-local` | 组件层 | `components/scope-local` | 1 | 3 | [查看](./scope-local.md) |
-| `smoltcp` | 组件层 | `components/starry-smoltcp` | 0 | 3 | [查看](./smoltcp.md) |
-| `smoltcp-fuzz` | 组件层 | `components/starry-smoltcp/fuzz` | 1 | 0 | [查看](./smoltcp-fuzz.md) |
+| `smoltcp` | 组件层 | `components/starry-smoltcp`（已迁移至 crates.io） | 0 | 3 | [查看](./smoltcp.md) |
+| `smoltcp-fuzz` | 组件层 | `components/starry-smoltcp/fuzz`（已迁移至 crates.io） | 1 | 0 | [查看](./smoltcp-fuzz.md) |
 | `smp-kernel` | 组件层 | `components/axplat_crates/examples/smp-kernel` | 9 | 0 | [查看](./smp-kernel.md) |
 | `starry-kernel` | StarryOS 层 | `os/StarryOS/kernel` | 29 | 2 | [查看](./starry-kernel.md) |
 | `starry-process` | 组件层 | `components/starry-process` | 2 | 1 | [查看](./starry-process.md) |
