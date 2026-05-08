@@ -51,15 +51,6 @@ pub const KCOV_TRACE_CMP: u32 = 0x200;
 /// Maximum number of coverage entries in the buffer.
 pub const KCOV_MAX_ENTRIES: usize = 64 * 1024;
 
-/// Recursion guard: set to 1 while the trace handler runs so that
-/// instrumented code inside `kcov_trace_pc_impl` (and its callees)
-/// does not re-enter the tracer. Checked / set / cleared in the
-/// naked trampoline.
-/// This is a workaround as our build system don't allow
-/// per-file/crate compiler args and passing __attribute__((no_sanitize("coverage"))) to llvm directly.
-#[used]
-static mut IN_KCOV_TRACE: u8 = 0;
-
 /// Safety gate: blocks the trace handler until a thread explicitly enables
 /// KCOV via the `KCOV_ENABLE` ioctl (which happens from userspace, long
 /// after boot).  Without this check, instrumented edges during early boot
@@ -258,117 +249,17 @@ impl DeviceOps for KcovDevice {
     }
 }
 
-// ---- Coverage collection hook ----
-
-// Architecture-specific naked trampolines.
-//
-// Each defines `__sanitizer_cov_trace_pc`. A `#[naked]` function has no
-// prologue, so the return address is still at the ABI-defined entry-point
-// location when the asm runs. The trampoline passes it to `kcov_trace_pc_impl`.
-
-#[cfg(target_arch = "x86_64")]
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
-    core::arch::naked_asm!(
-        "cmp byte ptr [rip + {guard}], 0",
-        "jne 1f",
-        "mov byte ptr [rip + {guard}], 1",
-        "mov rdi, [rsp]",
-        "call {impl}",
-        "mov byte ptr [rip + {guard}], 0",
-        "1:",
-        "ret",
-        guard = sym IN_KCOV_TRACE,
-        impl = sym kcov_trace_pc_impl,
-    );
-}
-
-#[cfg(target_arch = "aarch64")]
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
-    core::arch::naked_asm!(
-        "adrp x16, {guard}",
-        "ldrb w17, [x16, #:lo12:{guard}]",
-        "cbnz w17, 1f",
-        "mov w17, #1",
-        "strb w17, [x16, #:lo12:{guard}]",
-        "str x30, [sp, #-16]!",
-        "mov x0, x30",
-        "bl {impl}",
-        "ldr x30, [sp], #16",
-        "adrp x16, {guard}",
-        "strb wzr, [x16, #:lo12:{guard}]",
-        "1:",
-        "ret",
-        guard = sym IN_KCOV_TRACE,
-        impl = sym kcov_trace_pc_impl,
-    );
-}
-
-#[cfg(target_arch = "riscv64")]
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
-    core::arch::naked_asm!(
-        "la t0, {guard}",
-        "lb t1, 0(t0)",
-        "bnez t1, 1f",
-        "li t1, 1",
-        "sb t1, 0(t0)",
-        "addi sp, sp, -16",
-        "sd ra, 0(sp)",
-        "mv a0, ra",
-        "call {impl}",
-        "ld ra, 0(sp)",
-        "addi sp, sp, 16",
-        "la t0, {guard}",
-        "sb zero, 0(t0)",
-        "1:",
-        "ret",
-        guard = sym IN_KCOV_TRACE,
-        impl = sym kcov_trace_pc_impl,
-    );
-}
-
-#[cfg(target_arch = "loongarch64")]
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
-    core::arch::naked_asm!(
-        "la.local $t0, {guard}",
-        "ld.b $t1, $t0, 0",
-        "bnez $t1, 1f",
-        "ori $t1, $zero, 1",
-        "st.b $t1, $t0, 0",
-        "addi.d $sp, $sp, -16",
-        "st.d $ra, $sp, 0",
-        "ori $a0, $ra, 0",
-        "bl {impl}",
-        "ld.d $ra, $sp, 0",
-        "addi.d $sp, $sp, 16",
-        "la.local $t0, {guard}",
-        "st.b $zero, $t0, 0",
-        "1:",
-        "jirl $zero, $ra, 0",
-        guard = sym IN_KCOV_TRACE,
-        impl = sym kcov_trace_pc_impl,
-    );
-}
-
 /// Records `pc` (the caller's return address) into the current thread's KCOV
 /// coverage buffer. Called from the per-arch `__sanitizer_cov_trace_pc`
-/// assembly trampoline.
+/// assembly trampoline (now in `axhal::kcov`).
 ///
 /// This runs in the hot path of every instrumented basic block — it must be
 /// lock-free and fast.
+///
+/// `no_mangle` + `extern "C"` so that the axhal trampoline can resolve this
+/// symbol at link time.
+#[unsafe(no_mangle)]
 extern "C" fn kcov_trace_pc_impl(pc: u64) {
-    // Guard integrity check: the naked trampoline must have set this.
-    if unsafe { IN_KCOV_TRACE } != 1 {
-        panic!("IN_KCOV_TRACE not correctly set!");
-    }
-
     // Fast bail-out: skip all task/thread lookups when no thread has
     // enabled kcov (e.g. during boot, before the test starts tracing).
     if unsafe { KCOV_ANY_ENABLED == 0 } {
