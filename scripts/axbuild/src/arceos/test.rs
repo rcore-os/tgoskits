@@ -1445,6 +1445,8 @@ fn build_single_c_test(
     make_args: &[String],
     cargo_env: &CTestCargoEnv,
 ) -> anyhow::Result<()> {
+    ensure_c_test_artifact_dirs(make_args)?;
+
     for target in ["defconfig", "build"] {
         let mut command = StdCommand::new("make");
         command.current_dir(arceos_dir).args(make_args).arg(target);
@@ -1463,6 +1465,35 @@ fn build_single_c_test(
         }
     }
     Ok(())
+}
+
+fn ensure_c_test_artifact_dirs(make_args: &[String]) -> anyhow::Result<()> {
+    for key in ["TARGET_DIR", "OUT_DIR"] {
+        if let Some(path) = make_arg_value(make_args, key) {
+            fs::create_dir_all(path)
+                .with_context(|| format!("failed to create {key} directory {}", path.display()))?;
+        }
+    }
+
+    if let Some(out_config) = make_arg_value(make_args, "OUT_CONFIG")
+        && let Some(parent) = out_config.parent()
+    {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create OUT_CONFIG parent directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn make_arg_value<'a>(args: &'a [String], key: &str) -> Option<&'a Path> {
+    let prefix = format!("{key}=");
+    args.iter()
+        .find_map(|arg| arg.strip_prefix(prefix.as_str()))
+        .map(Path::new)
 }
 
 /// QEMU phase of a single C test: runs `make justrun` and verifies output.
@@ -2156,6 +2187,25 @@ mod tests {
         assert_eq!(first_target_dir, third_target_dir);
         assert_eq!(first_out_dir, third_out_dir);
         assert_eq!(first_out_config, third_out_config);
+    }
+
+    #[test]
+    fn ensure_c_test_artifact_dirs_creates_output_parents() {
+        let dir = tempdir().unwrap();
+        let target_dir = dir.path().join("target/cargo");
+        let out_dir = dir.path().join("target/out");
+        let out_config = dir.path().join("target/configs/axconfig.toml");
+
+        ensure_c_test_artifact_dirs(&[
+            format!("TARGET_DIR={}", target_dir.display()),
+            format!("OUT_DIR={}", out_dir.display()),
+            format!("OUT_CONFIG={}", out_config.display()),
+        ])
+        .unwrap();
+
+        assert!(target_dir.is_dir());
+        assert!(out_dir.is_dir());
+        assert!(out_config.parent().unwrap().is_dir());
     }
 
     fn make_arg_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
