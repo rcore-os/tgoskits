@@ -19,4 +19,4 @@ cat > /tmp/starry-shrc <<'EOF'
 export PS1='${USER}@${HOSTNAME}:${PWD} # '
 EOF
 export ENV=/tmp/starry-shrc
-exec /bin/sh -i
+exec /bin/sh -l -i
