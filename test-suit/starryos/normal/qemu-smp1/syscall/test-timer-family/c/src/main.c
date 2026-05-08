@@ -1355,6 +1355,106 @@ static void test_posix_timer_thread_exit_persistence(void) {
 
 
 /* ============================================================
+ * SI_TIMER siginfo test
+ *
+ * Bug: timer_create() discards sigev_value at the syscall boundary.
+ * The kernel constructs SignalInfo::new_kernel(signo) on expiry, which
+ * sets si_code = SI_KERNEL (128).  POSIX/Linux requires si_code = SI_TIMER
+ * (-2) and si_value carrying the sigev_value passed to timer_create().
+ *
+ * Observable from userspace via SA_SIGINFO handler:
+ *   - info->si_code must equal SI_TIMER  (not SI_KERNEL)
+ *   - info->si_value.sival_int must equal the value passed in sigev_value
+ * ============================================================ */
+
+#define SI_TIMER_CODE (-2)
+#define SIGINFO_TEST_VALUE 0x5A5A1234
+
+static volatile int   g_siginfo_received = 0;
+static volatile int   g_si_code          = 0;
+static volatile int   g_si_value         = 0;
+
+static void siginfo_handler(int sig, siginfo_t *info, void *ctx) {
+    (void)sig; (void)ctx;
+    g_si_code  = info->si_code;
+    g_si_value = info->si_value.sival_int;
+    g_siginfo_received = 1;
+}
+
+static void test_posix_timer_siginfo_si_timer(void) {
+    struct sigaction sa, old_sa;
+    struct sigevent  sev;
+    struct itimerspec its;
+    timer_t tid;
+    int ret;
+
+    /* Install SA_SIGINFO handler on SIGRTMIN */
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = siginfo_handler;
+    sa.sa_flags     = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGRTMIN, &sa, &old_sa) != 0) {
+        printf("  SKIP | %s:%d | sigaction failed\n", __FILE__, __LINE__);
+        return;
+    }
+
+    /* Create timer with a known sigev_value */
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify           = SIGEV_SIGNAL;
+    sev.sigev_signo            = SIGRTMIN;
+    sev.sigev_value.sival_int  = SIGINFO_TEST_VALUE;
+
+    ret = timer_create(CLOCK_MONOTONIC, &sev, &tid);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | timer_create failed | errno=%d (%s)\n",
+               __FILE__, __LINE__, errno, strerror(errno));
+        __fail++;
+        sigaction(SIGRTMIN, &old_sa, NULL);
+        return;
+    }
+
+    /* Arm: fire after 50 ms, no repeat */
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_sec  = 0;
+    its.it_value.tv_nsec = 50000000; /* 50 ms */
+    ret = timer_settime(tid, 0, &its, NULL);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | timer_settime failed | errno=%d (%s)\n",
+               __FILE__, __LINE__, errno, strerror(errno));
+        __fail++;
+        timer_delete(tid);
+        sigaction(SIGRTMIN, &old_sa, NULL);
+        return;
+    }
+
+    /* Wait up to 2 s for the signal */
+    struct timespec deadline, now;
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec += 2;
+    while (!g_siginfo_received) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec > deadline.tv_sec ||
+            (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec))
+            break;
+        struct timespec sl = {0, 5000000}; /* 5 ms */
+        nanosleep(&sl, NULL);
+    }
+
+    CHECK(g_siginfo_received,
+          "SIGRTMIN must be delivered within 2 s after timer_settime");
+
+    if (g_siginfo_received) {
+        CHECK(g_si_code == SI_TIMER_CODE,
+              "si_code must be SI_TIMER (-2), not SI_KERNEL (128)");
+        CHECK(g_si_value == SIGINFO_TEST_VALUE,
+              "si_value.sival_int must equal the sigev_value passed to timer_create");
+    }
+
+    timer_delete(tid);
+    sigaction(SIGRTMIN, &old_sa, NULL);
+}
+
+/* ============================================================
  * Main
  * ============================================================ */
 
@@ -1420,6 +1520,9 @@ int main(int argc, char *argv[]) {
 
     printf("\n--- timer exec-not-inherited tests ---\n");
     test_posix_timer_exec_not_inherited(argv[0]);
+
+    printf("\n--- SI_TIMER siginfo tests ---\n");
+    test_posix_timer_siginfo_si_timer();
 
     printf("------------------------------------------------\n");
     printf("  DONE: %d pass, %d fail\n", __pass, __fail);

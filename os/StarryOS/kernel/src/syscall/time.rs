@@ -150,15 +150,21 @@ pub fn sys_timer_create(
     let thr = curr.as_thread();
 
     // Parse sigevent
-    let (notify, signo) = if let Some(sevp) = sevp.nullable() {
+    let (notify, signo, sival) = if let Some(sevp) = sevp.nullable() {
         let sev = unsafe { sevp.vm_read_uninit()?.assume_init() };
-        (sev.sigev_notify as u32, sev.sigev_signo)
+        // sigev_value is a union sigval { sival_int: i32, sival_ptr: *mut void }
+        // On Linux, the kernel stores it as a pointer-sized field.
+        let val = unsafe { sev.sigev_value.sival_ptr as i64 };
+        (sev.sigev_notify as u32, sev.sigev_signo, val)
     } else {
         // NULL sevp defaults to SIGEV_SIGNAL with SIGALRM
-        (SIGEV_SIGNAL, 14) // SIGALRM = 14
+        (SIGEV_SIGNAL, 14, 0i64) // SIGALRM = 14
     };
 
-    let id = thr.proc_data.posix_timers.create(clock_id, notify, signo)?;
+    let id = thr
+        .proc_data
+        .posix_timers
+        .create(clock_id, notify, signo, sival)?;
 
     if let Err(e) = timerid.vm_write(id) {
         thr.proc_data.posix_timers.delete(id);

@@ -15,7 +15,7 @@ use linux_raw_sys::general::{
 };
 use spin::Mutex;
 use starry_process::Pid;
-use starry_signal::Signo;
+use starry_signal::{SignalInfo, Signo};
 
 use super::timer::{AlarmTarget, register_alarm_for};
 
@@ -25,6 +25,9 @@ struct PosixTimer {
     clock_id: u32,
     /// Signal to deliver on expiry (None for SIGEV_NONE).
     signo: Option<Signo>,
+    /// The sigev_value passed by the user at timer_create time.
+    /// Delivered back in siginfo_t.si_value on expiry.
+    sigev_value: i64,
     /// Interval for periodic timers (0 = one-shot).
     interval_ns: u64,
     /// Absolute deadline (monotonic nanos) for the next expiry, or 0 if disarmed.
@@ -79,7 +82,13 @@ fn clock_now_ns(clock_id: u32) -> u64 {
 
 impl PosixTimerTable {
     /// Create a new POSIX timer. Returns the timer ID.
-    pub fn create(&self, clock_id: u32, sigev_notify: u32, sigev_signo: i32) -> AxResult<i32> {
+    pub fn create(
+        &self,
+        clock_id: u32,
+        sigev_notify: u32,
+        sigev_signo: i32,
+        sigev_value: i64,
+    ) -> AxResult<i32> {
         if !is_supported_timer_clock(clock_id) {
             if is_valid_clock(clock_id) {
                 return Err(AxError::OperationNotSupported);
@@ -103,6 +112,7 @@ impl PosixTimerTable {
         let timer = PosixTimer {
             clock_id,
             signo,
+            sigev_value,
             interval_ns: 0,
             deadline_ns: 0,
         };
@@ -215,7 +225,7 @@ impl PosixTimerTable {
     /// Called from the alarm_task via poll_timer.
     /// `task` is the user task that owns these timers (needed to
     /// re-register alarms for periodic timers).
-    pub fn poll_expired(&self, pid: Pid, mut emitter: impl FnMut(Signo)) {
+    pub fn poll_expired(&self, pid: Pid, mut emitter: impl FnMut(SignalInfo)) {
         let mut timers = self.timers.lock();
         for timer in timers.values_mut() {
             if timer.deadline_ns == 0 {
@@ -226,7 +236,7 @@ impl PosixTimerTable {
             if now >= timer.deadline_ns {
                 // Timer expired
                 if let Some(signo) = timer.signo {
-                    emitter(signo);
+                    emitter(SignalInfo::new_timer(signo, timer.sigev_value));
                 }
                 if timer.interval_ns > 0 {
                     // Periodic: advance deadline by interval (avoids drift)
