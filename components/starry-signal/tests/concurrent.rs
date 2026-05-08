@@ -111,8 +111,7 @@ fn concurrent_check_signals() {
     assert!(wait_until(|| thr.pending().has(Signo::SIGTERM)));
     assert!(wait_until(|| thr.pending().has(Signo::SIGINT)));
 
-    let new_sp = uctx.sp() + 8;
-    uctx.set_sp(new_sp);
+    prepare_restore_context(&mut uctx);
     thr.restore(&mut uctx).unwrap();
 
     assert!(!thr.signal_blocked(Signo::SIGTERM));
