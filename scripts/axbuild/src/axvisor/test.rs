@@ -4,11 +4,17 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, anyhow, bail};
-use ostool::{board::RunBoardOptions, build::config::Cargo, run::qemu::QemuConfig};
+use anyhow::{Context, bail};
+use ostool::{
+    board::RunBoardOptions,
+    build::config::Cargo,
+    run::{qemu::QemuConfig, uboot::UbootConfig},
+};
 use serde::Deserialize;
 
-use super::{Axvisor, build, cli, rootfs};
+use super::{
+    ArgsTest, ArgsTestBoard, ArgsTestQemu, ArgsTestUboot, Axvisor, TestCommand, build, rootfs,
+};
 use crate::{
     context::{
         AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence,
@@ -16,9 +22,12 @@ use crate::{
     },
     test::{
         board as board_test, case as test_case, case::TestQemuCase, qemu as test_qemu,
-        qemu::parse_test_target,
+        qemu::parse_test_target, suite as test_suite,
     },
 };
+
+const AXVISOR_TEST_SUITE_OS: &str = "axvisor";
+const AXVISOR_NORMAL_GROUP: &str = "normal";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AxvisorQemuCase {
@@ -51,12 +60,12 @@ const TEST_TARGETS: &[&str] = &[
     "loongarch64-unknown-none-softfloat",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UbootBoardConfig {
-    pub(crate) board: &'static str,
-    pub(crate) guest: &'static str,
-    pub(crate) build_config: &'static str,
-    pub(crate) vmconfig: &'static str,
+pub(super) async fn test(axvisor: &mut Axvisor, args: ArgsTest) -> anyhow::Result<()> {
+    match args.command {
+        TestCommand::Qemu(args) => axvisor.test_qemu(args).await,
+        TestCommand::Uboot(args) => axvisor.test_uboot(args).await,
+        TestCommand::Board(args) => axvisor.test_board(args).await,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,27 +85,6 @@ impl board_test::BoardTestGroupInfo for BoardTestGroup {
         &self.board_name
     }
 }
-
-const UBOOT_BOARD_CONFIGS: &[UbootBoardConfig] = &[
-    UbootBoardConfig {
-        board: "orangepi-5-plus",
-        guest: "linux",
-        build_config: "os/axvisor/configs/board/orangepi-5-plus.toml",
-        vmconfig: "os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml",
-    },
-    UbootBoardConfig {
-        board: "phytiumpi",
-        guest: "linux",
-        build_config: "os/axvisor/configs/board/phytiumpi.toml",
-        vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
-    },
-    UbootBoardConfig {
-        board: "roc-rk3568-pc",
-        guest: "linux",
-        build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
-        vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
-    },
-];
 
 #[derive(Debug, Deserialize)]
 struct AxvisorQemuCaseConfig {
@@ -175,22 +163,6 @@ fn qemu_case_test_commands(
     test_qemu::normalize_qemu_test_commands(qemu_config_path, &config.test_commands, "Axvisor")
 }
 
-pub(crate) fn uboot_board_config(board: &str, guest: &str) -> anyhow::Result<UbootBoardConfig> {
-    UBOOT_BOARD_CONFIGS
-        .iter()
-        .copied()
-        .find(|config| config.board == board && config.guest == guest)
-        .ok_or_else(|| {
-            anyhow!(
-                "unsupported axvisor uboot test target board=`{}` guest=`{}`. Supported \
-                 board/guest pairs are: {}",
-                board,
-                guest,
-                supported_board_guest_pairs()
-            )
-        })
-}
-
 pub(crate) fn discover_board_test_groups(
     workspace_root: &Path,
     group: &str,
@@ -207,14 +179,6 @@ pub(crate) fn discover_board_test_groups(
     })
 }
 
-fn supported_board_guest_pairs() -> String {
-    UBOOT_BOARD_CONFIGS
-        .iter()
-        .map(|config| format!("{}/{}", config.board, config.guest))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn collect_board_test_groups(
     workspace_root: &Path,
     test_suite_dir: &Path,
@@ -222,13 +186,8 @@ fn collect_board_test_groups(
     let mut groups = Vec::new();
     for config in board_test::discover_board_runtime_configs(test_suite_dir)? {
         ensure_board_run_config(&config.config_path)?;
-        let wrapper = test_qemu::nearest_target_build_wrapper(
-            test_suite_dir,
-            &config.case_dir,
-            "aarch64-unknown-none-softfloat",
-            "Axvisor",
-            "board",
-        )?;
+        let wrapper =
+            test_qemu::nearest_build_wrapper(test_suite_dir, &config.case_dir, "Axvisor", "board")?;
         let name = test_qemu::case_name_from_wrapper(test_suite_dir, &wrapper, &config.case_dir)?;
         let build_config = resolve_workspace_path(workspace_root, wrapper.build_config_path);
         ensure_file_exists(&build_config, "Axvisor board build group config")?;
@@ -241,6 +200,54 @@ fn collect_board_test_groups(
     }
 
     Ok(groups)
+}
+
+fn discover_uboot_test_group(
+    workspace_root: &Path,
+    board: &str,
+    guest: &str,
+) -> anyhow::Result<BoardTestGroup> {
+    let board_name = format!("{board}-{guest}");
+    let mut groups = discover_board_test_groups(
+        workspace_root,
+        AXVISOR_NORMAL_GROUP,
+        None,
+        Some(&board_name),
+    )?;
+
+    if groups.len() == 1 {
+        return Ok(groups.remove(0));
+    }
+
+    let labels = groups
+        .iter()
+        .map(|group| format!("{}/{}", group.name, group.board_name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "ambiguous axvisor uboot test target board=`{board}` guest=`{guest}`. Matching cases are: \
+         {labels}"
+    )
+}
+
+fn merge_board_test_uboot_config(
+    base: Option<UbootConfig>,
+    board_test: ostool::board::config::BoardRunConfig,
+) -> UbootConfig {
+    let mut uboot = base.unwrap_or_default();
+    let test_uboot = UbootConfig::from_board_run_config(&board_test);
+    if test_uboot.dtb_file.is_some() {
+        uboot.dtb_file = test_uboot.dtb_file;
+    }
+    uboot.success_regex = test_uboot.success_regex;
+    uboot.fail_regex = test_uboot.fail_regex;
+    uboot.uboot_cmd = test_uboot.uboot_cmd;
+    uboot.shell_prefix = test_uboot.shell_prefix;
+    uboot.shell_init_cmd = test_uboot.shell_init_cmd;
+    if test_uboot.timeout.is_some() {
+        uboot.timeout = test_uboot.timeout;
+    }
+    uboot
 }
 
 fn ensure_board_run_config(path: &Path) -> anyhow::Result<()> {
@@ -268,80 +275,34 @@ fn ensure_file_exists(path: &Path, label: &str) -> anyhow::Result<()> {
 }
 
 fn test_suite_dir(workspace_root: &Path, group: &str) -> anyhow::Result<PathBuf> {
-    let test_suite_root = test_suite_root(workspace_root);
-    let test_suite_dir = test_suite_root.join(group);
-    if test_suite_dir.is_dir() {
-        Ok(test_suite_dir)
-    } else {
-        bail!(
-            "unsupported Axvisor test group `{group}`. Supported groups are: {}",
-            supported_test_groups(&test_suite_root)?
-        )
-    }
+    test_suite::require_group_dir(workspace_root, AXVISOR_TEST_SUITE_OS, "Axvisor", group)
 }
 
 fn test_suite_root(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("test-suit/axvisor")
+    test_suite::suite_root(workspace_root, AXVISOR_TEST_SUITE_OS)
 }
 
 fn discover_test_group_names(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
-    let root = test_suite_root(workspace_root);
-    let mut groups = Vec::new();
-    if root.is_dir() {
-        for entry in
-            fs::read_dir(&root).with_context(|| format!("failed to read {}", root.display()))?
-        {
-            let entry = entry?;
-            if entry.path().is_dir()
-                && let Ok(name) = entry.file_name().into_string()
-            {
-                groups.push(name);
-            }
-        }
-    }
-    groups.sort();
-    Ok(groups)
-}
-
-fn supported_test_groups(test_suite_root: &Path) -> anyhow::Result<String> {
-    let mut groups = Vec::new();
-    if test_suite_root.is_dir() {
-        for entry in fs::read_dir(test_suite_root)
-            .with_context(|| format!("failed to read {}", test_suite_root.display()))?
-        {
-            let entry = entry?;
-            if entry.path().is_dir()
-                && let Ok(name) = entry.file_name().into_string()
-            {
-                groups.push(name);
-            }
-        }
-    }
-    groups.sort();
-    Ok(if groups.is_empty() {
-        "<none>".to_string()
-    } else {
-        groups.join(", ")
-    })
+    test_suite::discover_group_names(workspace_root, AXVISOR_TEST_SUITE_OS)
 }
 
 impl Axvisor {
-    pub(super) async fn test_qemu(&mut self, args: cli::ArgsTestQemu) -> anyhow::Result<()> {
+    pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
-            let trees = discover_test_group_names(self.app.workspace_root())?
+            let groups = discover_test_group_names(self.app.workspace_root())?
                 .into_iter()
                 .filter_map(|group| {
                     let test_suite_dir = match test_suite_dir(self.app.workspace_root(), &group) {
                         Ok(dir) => dir,
                         Err(err) => return Some(Err(err)),
                     };
-                    match test_qemu::discover_all_qemu_cases(
+                    match test_qemu::discover_all_qemu_cases_with_archs(
                         &test_suite_dir,
                         args.test_case.as_deref(),
                         "Axvisor",
                         &group,
                     ) {
-                        Ok(case_names) => Some(Ok(test_qemu::render_case_tree(&group, case_names))),
+                        Ok(case_names) => Some(Ok((group, case_names))),
                         Err(err) => {
                             let message = err.to_string();
                             if message.starts_with("no Axvisor ")
@@ -355,17 +316,17 @@ impl Axvisor {
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            if trees.is_empty() {
+            if groups.is_empty() {
                 bail!(
                     "no Axvisor qemu test cases found under {}",
                     test_suite_root(self.app.workspace_root()).display()
                 );
             }
-            println!("{}", trees.join("\n"));
+            println!("{}", test_qemu::render_qemu_case_forest("axvisor", groups));
             return Ok(());
         }
 
-        let test_group = args.test_group.as_deref().unwrap_or("normal");
+        let test_group = args.test_group.as_deref().unwrap_or(AXVISOR_NORMAL_GROUP);
         if args.list && args.arch.is_none() && args.target.is_none() {
             let test_suite_dir = test_suite_dir(self.app.workspace_root(), test_group)?;
             let case_names = test_qemu::discover_all_qemu_cases(
@@ -456,13 +417,15 @@ impl Axvisor {
         test_qemu::finalize_qemu_test_run("axvisor", "case", &failed)
     }
 
-    pub(super) async fn test_uboot(&mut self, args: cli::ArgsTestUboot) -> anyhow::Result<()> {
-        let board = uboot_board_config(&args.board, &args.guest)?;
+    pub(super) async fn test_uboot(&mut self, args: ArgsTestUboot) -> anyhow::Result<()> {
+        let group = discover_uboot_test_group(self.app.workspace_root(), &args.board, &args.guest)?;
         let explicit_uboot_config = args.uboot_config.clone();
         let uboot_config_summary = explicit_uboot_config
             .as_ref()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "using ostool default search".to_string());
+            .unwrap_or_else(|| "using test-suit board config only".to_string());
+        let board_test_config = group.board_test_config_path.clone();
+        let board_test_config_summary = board_test_config.display().to_string();
 
         if let Some(path) = explicit_uboot_config.as_ref()
             && !path.exists()
@@ -474,39 +437,51 @@ impl Axvisor {
         }
 
         println!(
-            "running axvisor uboot test for board: {} guest: {} with vmconfig: {}",
-            board.board, board.guest, board.vmconfig
+            "running axvisor uboot test for board: {} guest: {} case: {}",
+            args.board, args.guest, group.name
         );
 
-        let mut request = self.prepare_request(
-            axvisor_uboot_test_build_args(board.build_config, board.vmconfig),
+        let request = self.prepare_request(
+            axvisor_board_test_build_args(&group),
             None,
             explicit_uboot_config.clone(),
             SnapshotPersistence::Discard,
         )?;
-        request.uboot_config = explicit_uboot_config;
 
         let cargo = build::load_cargo_config(&request)?;
-        let uboot = self.load_uboot_config(&request, &cargo).await?;
+        let base_uboot = match request.uboot_config.as_deref() {
+            Some(_) => self.load_uboot_config(&request, &cargo).await?,
+            None => Some(
+                self.app
+                    .tool_mut()
+                    .ensure_uboot_config_for_cargo(&cargo)
+                    .await?,
+            ),
+        };
+        let board_config = self
+            .load_board_config(&cargo, Some(board_test_config.as_path()))
+            .await?;
+        let uboot = Some(merge_board_test_uboot_config(base_uboot, board_config));
         self.app
             .uboot(cargo, request.build_info_path, uboot)
             .await
             .with_context(|| {
                 format!(
-                    "axvisor uboot test failed for board `{}` guest `{}` (build_config={}, \
-                     vmconfig={}, uboot_config={})",
-                    board.board,
-                    board.guest,
-                    board.build_config,
-                    board.vmconfig,
+                    "axvisor uboot test failed for board `{}` guest `{}` case `{}` \
+                     (build_config={}, board_test_config={}, uboot_config={})",
+                    args.board,
+                    args.guest,
+                    group.name,
+                    group.build_config.display(),
+                    board_test_config_summary,
                     uboot_config_summary
                 )
             })
     }
 
-    pub(super) async fn test_board(&mut self, args: cli::ArgsTestBoard) -> anyhow::Result<()> {
+    pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
         if args.list && args.test_group.is_none() {
-            let trees = discover_test_group_names(self.app.workspace_root())?
+            let groups = discover_test_group_names(self.app.workspace_root())?
                 .into_iter()
                 .filter_map(|group| {
                     match discover_board_test_groups(
@@ -515,10 +490,14 @@ impl Axvisor {
                         args.test_case.as_deref(),
                         args.board.as_deref(),
                     ) {
-                        Ok(groups) => {
-                            let case_names = groups.iter().map(|group| group.name.as_str());
-                            Some(Ok(test_qemu::render_case_tree(&group, case_names)))
-                        }
+                        Ok(groups) if groups.is_empty() => None,
+                        Ok(groups) => Some(Ok((
+                            group,
+                            groups
+                                .into_iter()
+                                .map(|group| (group.name, group.board_name))
+                                .collect::<Vec<_>>(),
+                        ))),
                         Err(err) => {
                             let message = err.to_string();
                             if message.starts_with("no Axvisor ") {
@@ -530,17 +509,20 @@ impl Axvisor {
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            if trees.is_empty() {
+            if groups.is_empty() {
                 bail!(
                     "no Axvisor board test groups found under {}",
                     test_suite_root(self.app.workspace_root()).display()
                 );
             }
-            println!("{}", trees.join("\n"));
+            println!(
+                "{}",
+                test_qemu::render_labeled_case_forest("axvisor", groups)
+            );
             return Ok(());
         }
 
-        let test_group = args.test_group.as_deref().unwrap_or("normal");
+        let test_group = args.test_group.as_deref().unwrap_or(AXVISOR_NORMAL_GROUP);
         let groups = discover_board_test_groups(
             self.app.workspace_root(),
             test_group,
@@ -548,8 +530,14 @@ impl Axvisor {
             args.board.as_deref(),
         )?;
         if args.list {
-            let case_names = groups.iter().map(|group| group.name.as_str());
-            println!("{}", test_qemu::render_case_tree(test_group, case_names));
+            let case_names = groups
+                .into_iter()
+                .map(|group| (group.name, group.board_name))
+                .collect::<Vec<_>>();
+            println!(
+                "{}",
+                test_qemu::render_labeled_case_forest("axvisor", [(test_group, case_names)])
+            );
             return Ok(());
         }
         let total = groups.len();
@@ -675,7 +663,12 @@ impl Axvisor {
         case: &PreparedAxvisorQemuCase,
     ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
         let mut qemu = case.qemu.clone();
-        test_case::apply_grouped_qemu_config(&mut qemu, &case.case.case);
+        let asset_config = axvisor_case_asset_config();
+        test_case::apply_grouped_qemu_config(
+            &mut qemu,
+            &case.case.case,
+            &asset_config.grouped_runner,
+        );
         test_qemu::apply_timeout_scale(&mut qemu);
 
         let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
@@ -685,6 +678,7 @@ impl Axvisor {
             &request.target,
             &case.case.case,
             rootfs_path,
+            asset_config,
         )
         .await?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
@@ -763,15 +757,30 @@ fn axvisor_qemu_test_build_args(arch: &str, config: Option<PathBuf>) -> AxvisorC
     }
 }
 
-fn axvisor_uboot_test_build_args(build_config: &str, vmconfig: &str) -> AxvisorCliArgs {
-    AxvisorCliArgs {
-        config: Some(PathBuf::from(build_config)),
-        arch: None,
-        target: None,
-        plat_dyn: None,
-        smp: None,
-        debug: false,
-        vmconfigs: vec![PathBuf::from(vmconfig)],
+fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
+    test_case::CaseAssetConfig {
+        grouped_runner: test_case::GroupedCaseRunnerConfig {
+            runner_name: "axvisor-run-case-tests".to_string(),
+            runner_path: "/usr/bin/axvisor-run-case-tests".to_string(),
+            begin_marker: "AXVISOR_GROUPED_TEST_BEGIN".to_string(),
+            passed_marker: "AXVISOR_GROUPED_TEST_PASSED".to_string(),
+            failed_marker: "AXVISOR_GROUPED_TEST_FAILED".to_string(),
+            all_passed_marker: "AXVISOR_GROUPED_TESTS_PASSED".to_string(),
+            all_failed_marker: "AXVISOR_GROUPED_TESTS_FAILED".to_string(),
+            success_regex: r"(?m)^AXVISOR_GROUPED_TESTS_PASSED\s*$".to_string(),
+            fail_regex: r"(?m)^AXVISOR_GROUPED_TEST_FAILED:".to_string(),
+        },
+        script_env: test_case::CaseScriptEnvConfig {
+            staging_root: "AXVISOR_TEST_STAGING_ROOT".to_string(),
+            case_dir: "AXVISOR_TEST_CASE_DIR".to_string(),
+            case_c_dir: "AXVISOR_TEST_CASE_C_DIR".to_string(),
+            case_work_dir: "AXVISOR_TEST_CASE_WORK_DIR".to_string(),
+            case_build_dir: "AXVISOR_TEST_CASE_BUILD_DIR".to_string(),
+            case_overlay_dir: "AXVISOR_TEST_CASE_OVERLAY_DIR".to_string(),
+        },
+        cache_env_vars: Vec::new(),
+        prepare_staging_root: |_| Ok(()),
+        prepare_guest_package_env: None,
     }
 }
 
@@ -1170,50 +1179,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_uboot_board_config_for_linux_smoke() {
-        assert_eq!(
-            uboot_board_config("orangepi-5-plus", "linux").unwrap(),
-            UbootBoardConfig {
-                board: "orangepi-5-plus",
-                guest: "linux",
-                build_config: "os/axvisor/configs/board/orangepi-5-plus.toml",
-                vmconfig: "os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml",
-            }
-        );
-        assert_eq!(
-            uboot_board_config("phytiumpi", "linux").unwrap(),
-            UbootBoardConfig {
-                board: "phytiumpi",
-                guest: "linux",
-                build_config: "os/axvisor/configs/board/phytiumpi.toml",
-                vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
-            }
-        );
-        assert_eq!(
-            uboot_board_config("roc-rk3568-pc", "linux").unwrap(),
-            UbootBoardConfig {
-                board: "roc-rk3568-pc",
-                guest: "linux",
-                build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
-                vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_unsupported_uboot_board() {
-        let err = uboot_board_config("unknown-board", "linux").unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("unsupported axvisor uboot test target board=`unknown-board`")
-        );
-        assert!(err.to_string().contains("orangepi-5-plus/linux"));
-        assert!(err.to_string().contains("phytiumpi/linux"));
-        assert!(err.to_string().contains("roc-rk3568-pc/linux"));
-    }
-
-    #[test]
     fn returns_all_board_test_groups_when_no_filter_is_given() {
         let root = tempdir().unwrap();
         write_board_build_config(root.path(), "default");
@@ -1260,6 +1225,26 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "smoke");
         assert_eq!(groups[0].board_name, "phytiumpi-linux");
+        assert_eq!(groups[0].build_config, build_config);
+        assert_eq!(groups[0].board_test_config_path, board_test_config);
+    }
+
+    #[test]
+    fn board_case_uses_unique_nearest_build_config_without_target_assumption() {
+        let root = tempdir().unwrap();
+        let wrapper_dir = root.path().join("test-suit/axvisor/normal/board-custom");
+        let case_dir = wrapper_dir.join("smoke");
+        fs::create_dir_all(&case_dir).unwrap();
+        let build_config = wrapper_dir.join("build-riscv64gc-unknown-none-elf.toml");
+        fs::write(&build_config, "target = \"riscv64gc-unknown-none-elf\"\n").unwrap();
+        let board_test_config = case_dir.join("board-custom.toml");
+        fs::write(&board_test_config, "board_type = \"Custom\"\n").unwrap();
+
+        let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "smoke");
+        assert_eq!(groups[0].board_name, "custom");
         assert_eq!(groups[0].build_config, build_config);
         assert_eq!(groups[0].board_test_config_path, board_test_config);
     }
@@ -1319,6 +1304,74 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["smoke/phytiumpi-linux", "syscall/phytiumpi-linux"]
         );
+    }
+
+    #[test]
+    fn discovers_uboot_test_group_from_board_cases() {
+        let root = tempdir().unwrap();
+        let build_config = write_board_build_config(root.path(), "board-rdk-s100");
+        let board_test_config = write_board_config_in_group(
+            root.path(),
+            "normal",
+            "board-rdk-s100",
+            "smoke",
+            "rdk-s100-linux",
+            "board_type = \"RDK-S100\"\nuboot_cmd = [\"run ab_select_cmd\", \"run \
+             avb_boot\"]\nsuccess_regex = [\"ubuntu login:\"]\nfail_regex = [\"(?i)panic\"]\n",
+        );
+
+        let group = discover_uboot_test_group(root.path(), "rdk-s100", "linux").unwrap();
+
+        assert_eq!(group.name, "smoke");
+        assert_eq!(group.board_name, "rdk-s100-linux");
+        assert_eq!(group.build_config, build_config);
+        assert_eq!(group.board_test_config_path, board_test_config);
+    }
+
+    #[test]
+    fn uboot_test_config_uses_board_case_matchers_and_keeps_base_local_config() {
+        let base = UbootConfig {
+            dtb_file: Some("${env:BOARD_DTB}".to_string()),
+            success_regex: vec!["old-ok".to_string()],
+            fail_regex: vec!["old-fail".to_string()],
+            uboot_cmd: Some(vec!["old-boot".to_string()]),
+            shell_prefix: Some("old-login:".to_string()),
+            timeout: Some(300),
+            local: ostool::run::uboot::LocalUbootConfig {
+                serial: Some("/dev/ttyUSB1".to_string()),
+                baud_rate: Some("1500000".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let board_test = ostool::board::config::BoardRunConfig {
+            board_type: "RDK-S100".to_string(),
+            success_regex: vec!["ubuntu login:".to_string()],
+            fail_regex: vec!["(?i)panic".to_string()],
+            uboot_cmd: Some(vec![
+                "run ab_select_cmd".to_string(),
+                "run avb_boot".to_string(),
+            ]),
+            shell_prefix: Some("ubuntu login:".to_string()),
+            ..Default::default()
+        };
+
+        let merged = merge_board_test_uboot_config(Some(base), board_test);
+
+        assert_eq!(merged.success_regex, vec!["ubuntu login:"]);
+        assert_eq!(merged.fail_regex, vec!["(?i)panic"]);
+        assert_eq!(
+            merged.uboot_cmd,
+            Some(vec![
+                "run ab_select_cmd".to_string(),
+                "run avb_boot".to_string()
+            ])
+        );
+        assert_eq!(merged.shell_prefix.as_deref(), Some("ubuntu login:"));
+        assert_eq!(merged.dtb_file.as_deref(), Some("${env:BOARD_DTB}"));
+        assert_eq!(merged.timeout, Some(300));
+        assert_eq!(merged.local.serial.as_deref(), Some("/dev/ttyUSB1"));
+        assert_eq!(merged.local.baud_rate.as_deref(), Some("1500000"));
     }
 
     #[test]
@@ -1394,6 +1447,19 @@ mod tests {
                 .contains("unsupported axvisor board test case `unknown`")
         );
         assert!(err.to_string().contains("smoke"));
+    }
+
+    #[test]
+    fn rejects_empty_board_test_group() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("test-suit/axvisor/empty")).unwrap();
+
+        let err = discover_board_test_groups(root.path(), "empty", None, None).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("no Axvisor board test groups found under")
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ Dedicated baseline configs remain available for explicit manual runs:
 - `build-base-aarch64-unknown-none-softfloat.toml`
 - `build-base-loongarch64-unknown-none-softfloat.toml`
 
-## Expected results
+## Expected Results
 
 - With `lockdep` enabled, QEMU output should first print:
   `lockdep: lock order inversion detected`
@@ -39,12 +39,13 @@ Dedicated baseline configs remain available for explicit manual runs:
 - In the `lockdep`-enabled path, the inversion banner is the success signal.
   The app may panic immediately afterwards, which is expected for this
   regression test and does not count as a failure.
+- If `lockdep` is enabled but no inversion is reported, the app panics with:
+  `lockdep did not report an expected lock order inversion`
 
-`cargo xtask arceos test qemu` reads the package-local
-`test-suit/arceos/rust/task/lockdep/qemu-test.toml` rule file and selects the
-QEMU expectation based on whether the effective feature set enables `lockdep`.
-Direct `cargo xtask arceos qemu` runs do not consult `qemu-test.toml`; when you
-run the app manually, pass the intended `--qemu-config` explicitly.
+`cargo xtask arceos test qemu` uses `qemu-{arch}.toml`, whose success patterns
+accept either the baseline completion line or the lockdep inversion banner.
+Panic output remains a failure signal, so the lockdep-enabled path still fails
+if no inversion is reported before the fallback panic.
 
 ## Violation Examples
 
@@ -123,7 +124,7 @@ cargo xtask arceos qemu \
   --package arceos-lockdep \
   --target x86_64-unknown-none \
   --config test-suit/arceos/rust/task/lockdep/build-base-x86_64-unknown-none.toml \
-  --qemu-config test-suit/arceos/rust/task/lockdep/qemu-base-x86_64.toml
+  --qemu-config test-suit/arceos/rust/task/lockdep/qemu-x86_64.toml
 ```
 
 Run a specific manual case with lockdep on x86_64:

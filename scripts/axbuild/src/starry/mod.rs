@@ -6,13 +6,7 @@ use ostool::{
     build::config::Cargo,
 };
 
-use crate::{
-    context::{
-        AppContext, DEFAULT_STARRY_ARCH, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
-        starry_target_for_arch_checked,
-    },
-    test::qemu as qemu_test,
-};
+use crate::context::{AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs};
 
 pub(crate) mod apk;
 pub mod board;
@@ -35,9 +29,9 @@ pub enum Command {
     /// StarryOS board config helpers
     Config(ArgsConfig),
     /// Run StarryOS test suites
-    Test(ArgsTest),
+    Test(test::ArgsTest),
     /// Download rootfs image into workspace target directory
-    Rootfs(ArgsRootfs),
+    Rootfs(rootfs::ArgsRootfs),
     /// Convenience entrypoints for common QEMU and Orange Pi workflows
     #[command(name = "quick-start")]
     QuickStart(quick_start::ArgsQuickStart),
@@ -104,12 +98,6 @@ pub struct ArgsBoard {
 }
 
 #[derive(Args)]
-pub struct ArgsRootfs {
-    #[arg(long)]
-    pub arch: Option<String>,
-}
-
-#[derive(Args)]
 pub struct ArgsDefconfig {
     pub board: String,
 }
@@ -120,108 +108,14 @@ pub struct ArgsConfig {
     pub command: ConfigCommand,
 }
 
-#[derive(Args)]
-pub struct ArgsTest {
-    #[command(subcommand)]
-    pub command: TestCommand,
-}
-
-#[derive(Subcommand)]
-pub enum TestCommand {
-    /// Run StarryOS QEMU test suite
-    Qemu(ArgsTestQemu),
-    /// Reserved StarryOS U-Boot test suite entrypoint
-    Uboot(ArgsTestUboot),
-    /// Run StarryOS remote board test suite
-    Board(ArgsTestBoard),
-}
-
 #[derive(Subcommand)]
 pub enum ConfigCommand {
     /// List available board names
     Ls,
 }
 
-#[derive(Args, Debug, Clone)]
-pub struct ArgsTestQemu {
-    #[arg(
-        long,
-        value_name = "ARCH",
-        required_unless_present_any = ["target", "list"],
-        help = "StarryOS architecture to test"
-    )]
-    pub arch: Option<String>,
-    #[arg(
-        short = 't',
-        long,
-        value_name = "TARGET",
-        required_unless_present_any = ["arch", "list"],
-        help = "StarryOS target triple to test"
-    )]
-    pub target: Option<String>,
-    #[arg(
-        short = 'g',
-        long = "test-group",
-        value_name = "GROUP",
-        help = "Run StarryOS QEMU test cases from one test group"
-    )]
-    pub test_group: Option<String>,
-    #[arg(
-        short = 'c',
-        long = "test-case",
-        value_name = "CASE",
-        help = "Run only one StarryOS QEMU test case"
-    )]
-    pub test_case: Option<String>,
-    #[arg(long, help = "Run stress StarryOS qemu test cases")]
-    pub stress: bool,
-    #[arg(short = 'l', long, help = "List discovered StarryOS QEMU test cases")]
-    pub list: bool,
-}
-
-#[derive(Args, Debug, Clone, Default)]
-pub struct ArgsTestUboot;
-
-#[derive(Args, Debug, Clone, Default)]
-pub struct ArgsTestBoard {
-    #[arg(
-        short = 'g',
-        long = "test-group",
-        value_name = "GROUP",
-        help = "Run Starry board test cases from one test group"
-    )]
-    pub test_group: Option<String>,
-
-    #[arg(
-        short = 'c',
-        long = "test-case",
-        value_name = "CASE",
-        help = "Run only one Starry board test case"
-    )]
-    pub test_case: Option<String>,
-
-    #[arg(
-        long,
-        value_name = "BOARD",
-        help = "Run all Starry board test cases for one board"
-    )]
-    pub board: Option<String>,
-
-    #[arg(short = 'b', long = "board-type", value_name = "BOARD_TYPE")]
-    pub board_type: Option<String>,
-
-    #[arg(long)]
-    pub server: Option<String>,
-
-    #[arg(long)]
-    pub port: Option<u16>,
-
-    #[arg(short = 'l', long, help = "List discovered Starry board test cases")]
-    pub list: bool,
-}
-
 pub struct Starry {
-    app: AppContext,
+    pub(super) app: AppContext,
 }
 
 impl From<&ArgsBuild> for StarryCliArgs {
@@ -281,33 +175,14 @@ impl Starry {
             );
         }
         if let Some(rootfs) = args.rootfs {
-            let rootfs = crate::rootfs::store::resolve_explicit_rootfs(
-                self.app.workspace_root(),
-                &request.arch,
-                rootfs,
-            );
-            rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), Some(&rootfs))
-                .await?;
-            self.app.set_debug_mode(request.debug)?;
-            let cargo = build::load_cargo_config(&request)?;
-            let mut qemu = self.load_qemu_config(&request, &cargo, false).await?;
-            rootfs::patch_qemu_rootfs_path(&mut qemu, &rootfs);
-            qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
-            self.app
-                .qemu(cargo, request.build_info_path, Some(qemu))
-                .await
+            rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
         } else {
             self.run_qemu_request(request).await
         }
     }
 
-    async fn rootfs(&mut self, args: ArgsRootfs) -> anyhow::Result<()> {
-        let arch = args.arch.unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
-        let target = starry_target_for_arch_checked(&arch)?.to_string();
-        let disk_img =
-            rootfs::ensure_rootfs_in_target_dir(self.app.workspace_root(), &arch, &target).await?;
-        println!("rootfs ready at {}", disk_img.display());
-        Ok(())
+    async fn rootfs(&mut self, args: rootfs::ArgsRootfs) -> anyhow::Result<()> {
+        rootfs::rootfs(self, args).await
     }
 
     fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
@@ -391,15 +266,11 @@ impl Starry {
             },
         }
     }
-    async fn test(&mut self, args: ArgsTest) -> anyhow::Result<()> {
-        match args.command {
-            TestCommand::Qemu(args) => self.test_qemu(args).await,
-            TestCommand::Uboot(args) => self.test_uboot(args).await,
-            TestCommand::Board(args) => self.test_board(args).await,
-        }
+    async fn test(&mut self, args: test::ArgsTest) -> anyhow::Result<()> {
+        test::test(self, args).await
     }
 
-    fn prepare_request(
+    pub(super) fn prepare_request(
         &self,
         args: StarryCliArgs,
         qemu_config: Option<PathBuf>,
@@ -423,35 +294,6 @@ impl Starry {
             smp: None,
             debug: false,
         }
-    }
-
-    async fn load_qemu_config(
-        &mut self,
-        request: &ResolvedStarryRequest,
-        cargo: &Cargo,
-        apply_default_args: bool,
-    ) -> anyhow::Result<ostool::run::qemu::QemuConfig> {
-        let mut qemu = match request.qemu_config.as_deref() {
-            Some(path) => {
-                self.app
-                    .tool_mut()
-                    .read_qemu_config_from_path_for_cargo(cargo, path)
-                    .await?
-            }
-            None => {
-                self.app
-                    .tool_mut()
-                    .ensure_qemu_config_for_cargo(cargo)
-                    .await?
-            }
-        };
-
-        if request.qemu_config.is_none() && apply_default_args {
-            rootfs::patch_qemu_rootfs(&mut qemu, request, self.app.workspace_root(), None)?;
-        }
-        qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
-
-        Ok(qemu)
     }
 
     async fn load_uboot_config(
@@ -493,13 +335,7 @@ impl Starry {
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
-        self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
-        rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), None).await?;
-        let qemu = self.load_qemu_config(&request, &cargo, true).await?;
-        self.app
-            .qemu(cargo, request.build_info_path, Some(qemu))
-            .await
+        rootfs::qemu(self, request).await
     }
 
     async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
@@ -524,10 +360,8 @@ impl Starry {
 
         match action {
             quick_start::QuickQemuAction::Build => {
-                let target = starry_target_for_arch_checked(arch)?.to_string();
                 quick_start::refresh_qemu_configs(self.app.workspace_root(), platform)?;
-                rootfs::ensure_rootfs_in_target_dir(self.app.workspace_root(), arch, &target)
-                    .await?;
+                rootfs::ensure_quick_start_qemu_rootfs(self.app.workspace_root(), arch).await?;
                 let request = self.prepare_request(
                     Self::quick_start_build_args(
                         arch,
@@ -608,6 +442,7 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+    use crate::starry::test::TestCommand;
 
     #[test]
     fn command_parses_test_qemu() {
@@ -663,25 +498,6 @@ mod tests {
                 ConfigCommand::Ls => {}
             },
             _ => panic!("expected config ls command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_uboot() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "test", "uboot"]).unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Uboot(_) => {}
-                _ => panic!("expected uboot test command"),
-            },
-            _ => panic!("expected test command"),
         }
     }
 
