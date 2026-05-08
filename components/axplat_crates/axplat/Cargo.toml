@@ -1,26 +1,26 @@
 [package]
 name = "ax-plat"
 version = "0.5.7"
-repository.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 description = "This crate provides a unified abstraction layer for diverse hardware platforms."
 keywords = ["arceos", "os", "hal", "embedded"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
-authors.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.com>", "yanjuguang <coolyanjg@163.com>", "Su Mingxian <aarkegz@gmail.com>", "RobertYuan <634954435@qq.com>", "hky1999 <keyang.hu@qq.com>"]
+license = "Apache-2.0"
 
 [features]
 smp = ["ax-kspin/smp"]
 irq = ["dep:ax-handler-table"]
 
 [dependencies]
-ax-memory-addr = "0.6"
+ax-memory-addr = { workspace = true }
 bitflags = "2.6"
-ax-crate-interface = "0.5"
-ax-handler-table = { version = "0.3", optional = true, path = "../../handler_table" }
+ax-crate-interface = { workspace = true }
+ax-handler-table = { workspace = true, optional = true }
 const-str = "1.0"
 ax-plat-macros = { workspace = true }
-ax-kspin = "0.3"
+ax-kspin = { workspace = true }
 ax-percpu.workspace = true
 
 [package.metadata.docs.rs]

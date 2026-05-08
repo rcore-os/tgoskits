@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_task::{WaitQueue, current};
+use ax_task::{WaitQueue, current, might_sleep};
 
 /// A [`lock_api::RawMutex`] implementation.
 ///
@@ -13,15 +13,20 @@ use ax_task::{WaitQueue, current};
 pub struct RawMutex {
     wq: WaitQueue,
     owner_id: AtomicU64,
+    #[cfg(feature = "lockdep")]
+    pub(crate) lockdep: crate::lockdep::LockdepMap,
 }
 
 impl RawMutex {
     /// Creates a [`RawMutex`].
     #[inline(always)]
+    #[track_caller]
     pub const fn new() -> Self {
         Self {
             wq: WaitQueue::new(),
             owner_id: AtomicU64::new(0),
+            #[cfg(feature = "lockdep")]
+            lockdep: crate::lockdep::LockdepMap::new(),
         }
     }
 
@@ -46,11 +51,20 @@ unsafe impl lock_api::RawMutex for RawMutex {
     /// value to downstream static items. Can hopefully be replaced with
     /// `const fn new() -> Self` at some point.
     #[allow(clippy::declare_interior_mutable_const)]
-    const INIT: Self = RawMutex::new();
+    const INIT: Self = RawMutex {
+        wq: WaitQueue::new(),
+        owner_id: AtomicU64::new(0),
+        #[cfg(feature = "lockdep")]
+        lockdep: crate::lockdep::LockdepMap::new_dynamic(),
+    };
 
     #[inline(always)]
+    #[track_caller]
     fn lock(&self) {
+        might_sleep();
         let current_id = current().id().as_u64();
+        #[cfg(feature = "lockdep")]
+        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, false);
 
         loop {
             // Can fail to lock even if the spinlock is not locked. May be more efficient than `try_lock`
@@ -77,16 +91,27 @@ unsafe impl lock_api::RawMutex for RawMutex {
                 }
             }
         }
+
+        #[cfg(feature = "lockdep")]
+        lockdep.finish(true);
     }
 
     #[inline(always)]
+    #[track_caller]
     fn try_lock(&self) -> bool {
+        might_sleep();
         let current_id = current().id().as_u64();
+        #[cfg(feature = "lockdep")]
+        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, true);
         // The reason for using a strong compare_exchange is explained here:
         // https://github.com/Amanieu/parking_lot/pull/207#issuecomment-575869107
-        self.owner_id
+        let acquired = self
+            .owner_id
             .compare_exchange(0, current_id, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+            .is_ok();
+        #[cfg(feature = "lockdep")]
+        lockdep.finish(acquired);
+        acquired
     }
 
     #[inline(always)]
@@ -97,6 +122,8 @@ unsafe impl lock_api::RawMutex for RawMutex {
             owner_id, current_id,
             "Thread({current_id}) tried to release mutex it doesn't own",
         );
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::release(self);
         // wake up one waiting thread.
         self.wq.notify_one_with(true, |id: u64| {
             self.owner_id.swap(id, Ordering::Release);
@@ -116,13 +143,31 @@ pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use std::sync::Once;
+    use std::sync::{Mutex as StdMutex, Once, OnceLock};
 
     use ax_task as thread;
 
     use crate::Mutex;
 
     static INIT: Once = Once::new();
+    static TEST_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
+
+    fn init_test_scheduler() {
+        INIT.call_once(thread::init_scheduler);
+    }
+
+    fn lock_test_context() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .get_or_init(|| StdMutex::new(()))
+            .lock()
+            .expect("test serialization mutex poisoned")
+    }
+
+    fn with_test_context<R>(f: impl FnOnce() -> R) -> R {
+        let _test_guard = lock_test_context();
+        init_test_scheduler();
+        f()
+    }
 
     fn may_interrupt() {
         // simulate interrupts
@@ -133,39 +178,39 @@ mod tests {
 
     #[test]
     fn lots_and_lots() {
-        INIT.call_once(thread::init_scheduler);
+        with_test_context(|| {
+            const NUM_TASKS: u32 = 10;
+            const NUM_ITERS: u32 = 10_000;
+            static M: Mutex<u32> = Mutex::new(0);
 
-        const NUM_TASKS: u32 = 10;
-        const NUM_ITERS: u32 = 10_000;
-        static M: Mutex<u32> = Mutex::new(0);
+            fn inc(delta: u32) {
+                for _ in 0..NUM_ITERS {
+                    let mut val = M.lock();
+                    *val += delta;
+                    may_interrupt();
+                    drop(val);
+                    may_interrupt();
+                }
+            }
 
-        fn inc(delta: u32) {
-            for _ in 0..NUM_ITERS {
-                let mut val = M.lock();
-                *val += delta;
+            for _ in 0..NUM_TASKS {
+                thread::spawn(|| inc(1));
+                thread::spawn(|| inc(2));
+            }
+
+            println!("spawn OK");
+            loop {
+                let val = M.lock();
+                if *val == NUM_ITERS * NUM_TASKS * 3 {
+                    break;
+                }
                 may_interrupt();
                 drop(val);
                 may_interrupt();
             }
-        }
 
-        for _ in 0..NUM_TASKS {
-            thread::spawn(|| inc(1));
-            thread::spawn(|| inc(2));
-        }
-
-        println!("spawn OK");
-        loop {
-            let val = M.lock();
-            if *val == NUM_ITERS * NUM_TASKS * 3 {
-                break;
-            }
-            may_interrupt();
-            drop(val);
-            may_interrupt();
-        }
-
-        assert_eq!(*M.lock(), NUM_ITERS * NUM_TASKS * 3);
-        println!("Mutex test OK");
+            assert_eq!(*M.lock(), NUM_ITERS * NUM_TASKS * 3);
+            println!("Mutex test OK");
+        });
     }
 }

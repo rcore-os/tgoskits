@@ -103,6 +103,14 @@ unsafe fn strftime_inner<W: WriteByte>(
     format: *const c_char,
     t: *const ctypes::tm,
 ) -> ctypes::size_t {
+    fn format_byte(format: *const c_char) -> u8 {
+        unsafe { *format as u8 }
+    }
+
+    fn advance_format(format: *const c_char) -> *const c_char {
+        unsafe { format.add(1) }
+    }
+
     #[allow(clippy::unnecessary_cast)]
     pub unsafe fn inner_strftime<W: WriteByte>(
         w: &mut W,
@@ -125,7 +133,7 @@ unsafe fn strftime_inner<W: WriteByte>(
                 fmt.push_str($fmt);
                 fmt.push('\0');
 
-                if !inner_strftime(w, fmt.as_ptr() as *mut c_char, t) {
+                if !unsafe { inner_strftime(w, fmt.as_ptr() as *const c_char, t) } {
                     return false;
                 }
             }};
@@ -164,75 +172,76 @@ unsafe fn strftime_inner<W: WriteByte>(
             "November",
             "December",
         ];
+        let tm = unsafe { &*t };
 
-        while *format != 0 {
-            if *format as u8 != b'%' {
-                w!(byte * format as u8);
-                format = format.offset(1);
+        while format_byte(format) != 0 {
+            if format_byte(format) != b'%' {
+                w!(byte format_byte(format));
+                format = advance_format(format);
                 continue;
             }
 
-            format = format.offset(1);
+            format = advance_format(format);
 
-            if *format as u8 == b'E' || *format as u8 == b'O' {
+            if format_byte(format) == b'E' || format_byte(format) == b'O' {
                 // Ignore because these do nothing without locale
-                format = format.offset(1);
+                format = advance_format(format);
             }
 
-            match *format as u8 {
+            match format_byte(format) {
                 b'%' => w!(byte b'%'),
                 b'n' => w!(byte b'\n'),
                 b't' => w!(byte b'\t'),
-                b'a' => w!(&WDAYS[(*t).tm_wday as usize][..3]),
-                b'A' => w!(WDAYS[(*t).tm_wday as usize]),
-                b'b' | b'h' => w!(&MONTHS[(*t).tm_mon as usize][..3]),
-                b'B' => w!(MONTHS[(*t).tm_mon as usize]),
+                b'a' => w!(&WDAYS[tm.tm_wday as usize][..3]),
+                b'A' => w!(WDAYS[tm.tm_wday as usize]),
+                b'b' | b'h' => w!(&MONTHS[tm.tm_mon as usize][..3]),
+                b'B' => w!(MONTHS[tm.tm_mon as usize]),
                 b'C' => {
-                    let mut year = (*t).tm_year / 100;
+                    let mut year = tm.tm_year / 100;
                     // Round up
-                    if (*t).tm_year % 100 != 0 {
+                    if tm.tm_year % 100 != 0 {
                         year += 1;
                     }
                     w!("{:02}", year + 19);
                 }
-                b'd' => w!("{:02}", (*t).tm_mday),
+                b'd' => w!("{:02}", tm.tm_mday),
                 b'D' => w!(recurse "%m/%d/%y"),
-                b'e' => w!("{:2}", (*t).tm_mday),
+                b'e' => w!("{:2}", tm.tm_mday),
                 b'F' => w!(recurse "%Y-%m-%d"),
-                b'H' => w!("{:02}", (*t).tm_hour),
-                b'I' => w!("{:02}", ((*t).tm_hour + 12 - 1) % 12 + 1),
-                b'j' => w!("{:03}", (*t).tm_yday),
-                b'k' => w!("{:2}", (*t).tm_hour),
-                b'l' => w!("{:2}", ((*t).tm_hour + 12 - 1) % 12 + 1),
-                b'm' => w!("{:02}", (*t).tm_mon + 1),
-                b'M' => w!("{:02}", (*t).tm_min),
-                b'p' => w!(if (*t).tm_hour < 12 { "AM" } else { "PM" }),
-                b'P' => w!(if (*t).tm_hour < 12 { "am" } else { "pm" }),
+                b'H' => w!("{:02}", tm.tm_hour),
+                b'I' => w!("{:02}", (tm.tm_hour + 12 - 1) % 12 + 1),
+                b'j' => w!("{:03}", tm.tm_yday),
+                b'k' => w!("{:2}", tm.tm_hour),
+                b'l' => w!("{:2}", (tm.tm_hour + 12 - 1) % 12 + 1),
+                b'm' => w!("{:02}", tm.tm_mon + 1),
+                b'M' => w!("{:02}", tm.tm_min),
+                b'p' => w!(if tm.tm_hour < 12 { "AM" } else { "PM" }),
+                b'P' => w!(if tm.tm_hour < 12 { "am" } else { "pm" }),
                 b'r' => w!(recurse "%I:%M:%S %p"),
                 b'R' => w!(recurse "%H:%M"),
                 // Nothing is modified in mktime, but the C standard of course requires a mutable pointer ._.
-                b's' => w!("{}", super::mktime(t as *mut ctypes::tm)),
-                b'S' => w!("{:02}", (*t).tm_sec),
+                b's' => w!("{}", unsafe { super::mktime(t as *mut ctypes::tm) }),
+                b'S' => w!("{:02}", tm.tm_sec),
                 b'T' => w!(recurse "%H:%M:%S"),
-                b'u' => w!("{}", ((*t).tm_wday + 7 - 1) % 7 + 1),
-                b'U' => w!("{}", ((*t).tm_yday + 7 - (*t).tm_wday) / 7),
-                b'w' => w!("{}", (*t).tm_wday),
-                b'W' => w!("{}", ((*t).tm_yday + 7 - ((*t).tm_wday + 6) % 7) / 7),
-                b'y' => w!("{:02}", (*t).tm_year % 100),
-                b'Y' => w!("{}", (*t).tm_year + 1900),
+                b'u' => w!("{}", (tm.tm_wday + 7 - 1) % 7 + 1),
+                b'U' => w!("{}", (tm.tm_yday + 7 - tm.tm_wday) / 7),
+                b'w' => w!("{}", tm.tm_wday),
+                b'W' => w!("{}", (tm.tm_yday + 7 - (tm.tm_wday + 6) % 7) / 7),
+                b'y' => w!("{:02}", tm.tm_year % 100),
+                b'Y' => w!("{}", tm.tm_year + 1900),
                 b'z' => w!("+0000"), // TODO
                 b'Z' => w!("UTC"),   // TODO
                 b'+' => w!(recurse "%a %b %d %T %Z %Y"),
                 _ => return false,
             }
 
-            format = format.offset(1);
+            format = advance_format(format);
         }
         true
     }
 
     let mut w: CountingWriter<W> = CountingWriter::new(w);
-    if !inner_strftime(&mut w, format, t) {
+    if !unsafe { inner_strftime(&mut w, format, t) } {
         return 0;
     }
 
@@ -248,6 +257,6 @@ pub unsafe extern "C" fn strftime(
     format: *const c_char,
     timeptr: *const ctypes::tm,
 ) -> ctypes::size_t {
-    let ret = strftime_inner(StringWriter(buf as *mut u8, size), format, timeptr);
+    let ret = unsafe { strftime_inner(StringWriter(buf as *mut u8, size), format, timeptr) };
     if ret < size { ret } else { 0 }
 }

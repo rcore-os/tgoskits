@@ -1,7 +1,7 @@
 [package]
 name = "axdevice_base"
 version = "0.4.7"
-edition = "2024"
+edition.workspace = true
 authors = ["Hui Xiao <1127751018@qq.com>"]
 description = "Basic traits and structures for emulated devices in ArceOS hypervisor."
 documentation = "https://docs.rs/axdevice_base"
@@ -15,10 +15,9 @@ license = "Apache-2.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 
 # ArceOS and AxVisor crates.
-axaddrspace = "0.5"
-ax-errno = "0.4"
-axvmconfig = {version = "0.4", default-features = false}
-
+axaddrspace = { workspace = true }
+ax-errno = { workspace = true }
+axvmconfig = { path = "../axvmconfig", default-features = false }
 [dev-dependencies]
 
 [package.metadata.docs.rs]

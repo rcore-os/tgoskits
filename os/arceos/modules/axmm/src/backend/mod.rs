@@ -68,6 +68,19 @@ impl MappingBackend for Backend {
             .protect_region(start, size, new_flags)
             .is_ok()
     }
+
+    fn split(&mut self, _align_diff: usize) -> Option<Self> {
+        // backend can be trivially split since it does not have any state.
+        Some(self.clone())
+    }
+
+    fn shrink_left(&mut self, _shrink_size: usize) {
+        // backend can be trivially shrunk since it does not have any state.
+    }
+
+    fn shrink_right(&mut self, _shrink_size: usize) {
+        // backend can be trivially shrunk since it does not have any state.
+    }
 }
 
 impl Backend {

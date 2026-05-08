@@ -125,7 +125,7 @@ impl<T> LazyInit<T> {
     #[inline]
     pub unsafe fn get_unchecked(&self) -> &T {
         debug_assert!(self.is_inited());
-        self.force_get()
+        unsafe { self.force_get() }
     }
 
     /// Get a mutable reference to the value without checking if it is initialized.
@@ -136,17 +136,17 @@ impl<T> LazyInit<T> {
     #[inline]
     pub unsafe fn get_mut_unchecked(&mut self) -> &mut T {
         debug_assert!(self.is_inited());
-        self.force_get_mut()
+        unsafe { self.force_get_mut() }
     }
 
     #[inline]
     unsafe fn force_get(&self) -> &T {
-        (*self.data.get()).assume_init_ref()
+        unsafe { (*self.data.get()).assume_init_ref() }
     }
 
     #[inline]
     unsafe fn force_get_mut(&mut self) -> &mut T {
-        (*self.data.get()).assume_init_mut()
+        unsafe { (*self.data.get()).assume_init_mut() }
     }
 
     fn panic_message(&self) -> ! {
@@ -271,11 +271,9 @@ mod tests {
 
     #[test]
     fn lazyinit_get_mut_unchecked() {
-        static mut VALUE: LazyInit<u32> = LazyInit::new();
-        unsafe {
-            VALUE.init_once(123);
-        }
-        let v = unsafe { VALUE.get_mut_unchecked() };
+        let mut value: LazyInit<u32> = LazyInit::new();
+        value.init_once(123);
+        let v = unsafe { value.get_mut_unchecked() };
         *v += 3;
         assert_eq!(*v, 126);
     }

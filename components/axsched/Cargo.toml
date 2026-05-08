@@ -2,14 +2,13 @@
 name = "ax-sched"
 version = "0.5.5"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
     "guoweikang <guoweikang.kernel@gmail.com>",
 ]
 description = "Various scheduler algorithms in a unified interface"
-rust-version = "1.76"
 license = "Apache-2.0"
 
 [dependencies]
-ax-linked-list-r4l = "0.5"
+ax-linked-list-r4l = { workspace = true }

@@ -2,13 +2,12 @@
 name = "ax-page-table-multiarch"
 description = "Generic page table structures for various hardware architectures"
 version = "0.8.7"
-repository.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
-authors.workspace = true
-keywords.workspace = true
-categories.workspace = true
-rust-version.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+keywords = ["arceos", "paging", "page-table", "virtual-memory"]
+categories = ["os", "hardware-support", "memory-management", "no-std"]
+license = "Apache-2.0"
 
 [features]
 default = []
@@ -16,7 +15,7 @@ ax-errno = ["dep:ax-errno"]
 copy-from = ["dep:bitmaps"]
 
 [dependencies]
-ax-errno = { version = "0.4", optional = true }
+ax-errno = { workspace = true, optional = true }
 arrayvec = { version = "0.7", default-features = false }
 bitmaps = { version = "3.2", default-features = false, optional = true }
 log = "0.4"

@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+
 use toml_edit::{Decor, DocumentMut, Item, Table, Value};
 
-use crate::output::{Output, OutputFormat};
-use crate::{ConfigErr, ConfigResult, ConfigType, ConfigValue};
+use crate::{
+    ConfigErr, ConfigResult, ConfigType, ConfigValue,
+    output::{Output, OutputFormat},
+};
 
 type ConfigTable = BTreeMap<String, ConfigItem>;
 
@@ -228,7 +231,7 @@ impl Config {
                     return Err(ConfigErr::Other(format!(
                         "Object array `[[{}]]` is not supported",
                         key
-                    )))
+                    )));
                 }
             }
         }

@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 ax-std = { workspace = true, features = ["multitask", "net"], optional = true }
+ax-io.workspace = true
 
 [features]
 default = []

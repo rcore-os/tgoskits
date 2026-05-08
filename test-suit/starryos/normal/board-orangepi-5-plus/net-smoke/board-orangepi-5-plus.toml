@@ -1,0 +1,6 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "echo 'RTL8125_NET_TEST_PASSED'"
+success_regex = ["(?m)^RTL8125_NET_TEST_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^RTL8125_NET_TEST_FAILED\\b"]
+timeout = 180

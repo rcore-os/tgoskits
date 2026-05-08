@@ -9,15 +9,17 @@
 //! - <https://github.com/raspberrypi/documentation/files/1888662/BCM2837-ARM-Peripherals.-.Revised.-.V2-1.pdf>
 //! - <https://developer.arm.com/documentation/ddi0183/latest>
 
-use crate::{
-    bsp::device_driver::common::MMIODerefWrapper, console, cpu, driver, synchronization,
-    synchronization::NullLock,
-};
 use core::fmt;
+
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_bitfields, register_structs,
     registers::{ReadOnly, ReadWrite, WriteOnly},
+};
+
+use crate::{
+    bsp::device_driver::common::MMIODerefWrapper, console, cpu, driver, synchronization,
+    synchronization::NullLock,
 };
 
 //--------------------------------------------------------------------------------------------------

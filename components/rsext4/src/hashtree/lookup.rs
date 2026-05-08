@@ -108,6 +108,7 @@ impl HashTreeManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn search_in_entries<B: BlockDevice>(
         &self,
         fs: &mut Ext4FileSystem,

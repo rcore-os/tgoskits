@@ -2,12 +2,13 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::Path,
-    process::Command,
 };
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use cargo_metadata::{Metadata, Package};
 use serde_json::Value;
+
+use crate::support::process::run_cargo_status;
 
 const CLIPPY_CRATES_CSV: &str = "scripts/test/clippy_crates.csv";
 
@@ -402,12 +403,7 @@ struct ProcessCargoRunner;
 impl CargoRunner for ProcessCargoRunner {
     fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool> {
         let args = check.cargo_args();
-        let status = Command::new("cargo")
-            .current_dir(workspace_root)
-            .args(&args)
-            .status()
-            .with_context(|| format!("failed to spawn `cargo {}`", args.join(" ")))?;
-        Ok(status.success())
+        run_cargo_status(workspace_root, &args)
     }
 }
 

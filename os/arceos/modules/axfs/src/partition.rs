@@ -204,11 +204,10 @@ fn parse_gpt_partitions(disk: &mut Disk) -> AxResult<Vec<PartitionInfo>> {
 
             // Read partition name as UTF-16LE
             let mut partition_name = [0u16; 36];
-            for j in 0..36 {
+            for (j, pn) in partition_name.iter_mut().enumerate() {
                 let offset = 56 + j * 2;
                 if offset + 1 < entry_data.len() {
-                    partition_name[j] =
-                        u16::from_le_bytes([entry_data[offset], entry_data[offset + 1]]);
+                    *pn = u16::from_le_bytes([entry_data[offset], entry_data[offset + 1]]);
                 }
             }
 
@@ -237,18 +236,13 @@ fn parse_gpt_partitions(disk: &mut Disk) -> AxResult<Vec<PartitionInfo>> {
         let name_str = {
             // First, copy the partition name to a local array to avoid packed field reference
             let mut name_utf16 = [0u16; 36];
+            #[allow(clippy::manual_memcpy)]
             for j in 0..36 {
                 name_utf16[j] = entry.partition_name[j];
             }
 
             // Find the null terminator
-            let mut name_len = 36;
-            for j in 0..36 {
-                if name_utf16[j] == 0 {
-                    name_len = j;
-                    break;
-                }
-            }
+            let name_len = name_utf16.iter().position(|&c| c == 0).unwrap_or(36);
 
             // Convert only the valid portion
             let name_slice = &name_utf16[..name_len];

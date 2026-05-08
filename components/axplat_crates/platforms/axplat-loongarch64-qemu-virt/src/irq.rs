@@ -14,7 +14,7 @@ mod eiointc;
 mod pch_pic;
 
 /// The maximum number of IRQs.
-pub const MAX_IRQ_COUNT: usize = 13;
+pub const MAX_IRQ_COUNT: usize = 256;
 const IOCSR_IPI_SEND_CPU_SHIFT: u32 = 16;
 const IOCSR_IPI_SEND_BLOCKING: u32 = 1 << 31;
 

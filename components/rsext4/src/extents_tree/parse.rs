@@ -108,7 +108,7 @@ impl<'a> ExtentTree<'a> {
             ExtentNode::Leaf { entries, .. } => {
                 for et in entries {
                     let start = et.ee_block;
-                    let len = et.ee_len as u32;
+                    let len = et.len();
                     let end = start.saturating_add(len); // half-open range [start, end)
                     if lblock >= start && lblock < end {
                         return Ok(Some(*et));

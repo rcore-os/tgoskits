@@ -113,22 +113,25 @@ fn do_select(
             poll_io(&fds, IoEvents::empty(), false, || {
                 let mut res = 0usize;
                 for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
-                    let events = fd.poll() & *interested;
-                    if events.contains(IoEvents::IN)
-                        && let Some(set) = readfds.as_deref_mut()
-                    {
+                    let events = fd.poll();
+                    let always_report = events & IoEvents::ALWAYS_POLL;
+                    let selected = events & *interested;
+                    let selected_read = selected.contains(IoEvents::IN)
+                        || (read_set.0.get(index) && !always_report.is_empty());
+                    let selected_write = selected.contains(IoEvents::OUT)
+                        || (write_set.0.get(index) && !always_report.is_empty());
+                    let selected_except =
+                        selected.contains(IoEvents::ERR) && except_set.0.get(index);
+
+                    if selected_read && let Some(set) = readfds.as_deref_mut() {
                         res += 1;
                         unsafe { FD_SET(index as _, set) };
                     }
-                    if events.contains(IoEvents::OUT)
-                        && let Some(set) = writefds.as_deref_mut()
-                    {
+                    if selected_write && let Some(set) = writefds.as_deref_mut() {
                         res += 1;
                         unsafe { FD_SET(index as _, set) };
                     }
-                    if events.contains(IoEvents::ERR)
-                        && let Some(set) = exceptfds.as_deref_mut()
-                    {
+                    if selected_except && let Some(set) = exceptfds.as_deref_mut() {
                         res += 1;
                         unsafe { FD_SET(index as _, set) };
                     }

@@ -6,10 +6,10 @@ documentation = "https://docs.rs/axvisor_api_proc"
 readme = "README.md"
 keywords = ["axvisor", "api", "embedded", "macros"]
 categories = ["development-tools::procedural-macro-helpers"]
-authors.workspace = true
+authors = ["Su Mingxian <aarkegz@gmail.com>"]
 edition.workspace = true
-repository.workspace = true
-license.workspace = true
+repository = "https://github.com/arceos-hypervisor/axvisor_api"
+license = "Apache-2.0"
 
 [lib]
 proc-macro = true

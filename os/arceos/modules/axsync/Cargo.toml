@@ -1,6 +1,6 @@
 [package]
 name = "ax-sync"
-version = "0.5.11"
+version = "0.5.12"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -9,15 +9,23 @@ license.workspace = true
 
 [features]
 multitask = ["ax-task/multitask"]
+lockdep = [
+  "multitask",
+  "ax-task/lockdep",
+  "ax-kspin/lockdep",
+  "dep:ax-lockdep",
+  "ax-lockdep/task-context",
+]
 default = []
 
 [dependencies]
+ax-lockdep = { workspace = true, optional = true }
 ax-task.workspace = true
 ax-kspin.workspace = true
 lock_api.workspace = true
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
-ax-sync = { path = ".", features = ["multitask"] }
+ax-sync = { workspace = true, features = ["multitask"] }
 ax-task = { workspace = true, features = ["test"] }
 # FIXME: `rand` crate can not be used since https://github.com/google/zerocopy/pull/2574
 fastrand = "2.3"

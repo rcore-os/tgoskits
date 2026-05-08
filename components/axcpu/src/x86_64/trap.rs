@@ -1,5 +1,5 @@
 use x86::{controlregs::cr2, irq::*};
-use x86_64::structures::idt::PageFaultErrorCode;
+use x86_64::{registers::rflags::RFlags, structures::idt::PageFaultErrorCode};
 
 use super::{TrapFrame, gdt};
 use crate::trap::PageFaultFlags;
@@ -20,7 +20,11 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     let access_flags = err_code_to_flags(tf.error_code)
         .unwrap_or_else(|e| panic!("Invalid #PF error code: {:#x}", e));
     let vaddr = va!(unsafe { cr2() });
-    if crate::trap::page_fault_handler(vaddr, access_flags) {
+    if crate::trap::call_page_fault_handler_with_parent_irqs(
+        vaddr,
+        access_flags,
+        RFlags::from_bits_truncate(tf.rflags).contains(RFlags::INTERRUPT_FLAG),
+    ) {
         return;
     }
     #[cfg(feature = "uspace")]
@@ -38,11 +42,31 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     );
 }
 
+fn handle_breakpoint(tf: &mut TrapFrame) {
+    debug!("#BP @ {:#x} ", tf.rip);
+    let _ = crate::trap::breakpoint_handler(tf);
+}
+
+fn handle_debug(tf: &mut TrapFrame) {
+    debug!("#DB @ {:#x} ", tf.rip);
+    if crate::trap::debug_handler(tf) {
+        return;
+    }
+    panic!(
+        "Unhandled #DB @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",
+        tf.rip,
+        tf.error_code,
+        tf,
+        tf.backtrace()
+    );
+}
+
 #[unsafe(no_mangle)]
 fn x86_trap_handler(tf: &mut TrapFrame) {
     match tf.vector as u8 {
         PAGE_FAULT_VECTOR => handle_page_fault(tf),
-        BREAKPOINT_VECTOR => debug!("#BP @ {:#x} ", tf.rip),
+        BREAKPOINT_VECTOR => handle_breakpoint(tf),
+        DEBUG_VECTOR => handle_debug(tf),
         GENERAL_PROTECTION_FAULT_VECTOR => {
             panic!(
                 "#GP @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",

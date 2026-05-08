@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::anyhow;
+
 use super::{
     board::{self, Board},
     build,
@@ -157,7 +159,9 @@ plat_dyn = false
             target: Some("aarch64-unknown-none-softfloat".to_string()),
             smp: None,
             qemu: StarryQemuSnapshot {
-                qemu_config: Some(PathBuf::from("test-suit/starryos/smoke/qemu-riscv64.toml")),
+                qemu_config: Some(PathBuf::from(
+                    "test-suit/starryos/normal/smoke/qemu-riscv64.toml",
+                )),
             },
             uboot: StarryUbootSnapshot {
                 uboot_config: Some(PathBuf::from("configs/uboot.toml")),
@@ -170,7 +174,7 @@ plat_dyn = false
         assert_eq!(
             path,
             root.path()
-                .join("os/StarryOS/starryos/.build-riscv64gc-unknown-none-elf.toml")
+                .join("target/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
         );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -185,7 +189,9 @@ plat_dyn = false
         );
         assert_eq!(
             snapshot.qemu.qemu_config,
-            Some(PathBuf::from("test-suit/starryos/smoke/qemu-riscv64.toml"))
+            Some(PathBuf::from(
+                "test-suit/starryos/normal/smoke/qemu-riscv64.toml"
+            ))
         );
         assert_eq!(
             snapshot.uboot.uboot_config,

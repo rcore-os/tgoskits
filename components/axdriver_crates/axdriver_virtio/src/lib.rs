@@ -110,10 +110,57 @@ const fn is_supported_dev_type(t: VirtIoDevType) -> bool {
     )
 }
 
-fn probe_pci_device_type(dev_info: &DeviceFunctionInfo) -> Option<DeviceType> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PciProbeMetadata {
+    device_type: DeviceType,
+    irq: usize,
+}
+
+impl PciProbeMetadata {
+    const fn new(device_type: DeviceType, irq: usize) -> Self {
+        Self { device_type, irq }
+    }
+
+    const fn device_type(self) -> DeviceType {
+        self.device_type
+    }
+
+    const fn irq(self) -> usize {
+        self.irq
+    }
+}
+
+const fn pci_irq_base() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        0x10
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        0x23
+    }
+}
+
+const fn pci_irq_for_bdf(bdf: DeviceFunction) -> usize {
+    pci_irq_base() + (bdf.device & 3) as usize
+}
+
+fn probe_pci_metadata(
+    dev_info: &DeviceFunctionInfo,
+    bdf: DeviceFunction,
+) -> Option<PciProbeMetadata> {
     use virtio_drivers::transport::pci::virtio_device_type;
 
-    virtio_device_type(dev_info).and_then(as_dev_type)
+    let device_type = virtio_device_type(dev_info).and_then(as_dev_type)?;
+    Some(PciProbeMetadata::new(device_type, pci_irq_for_bdf(bdf)))
 }
 
 const fn as_socket_dev_err(e: virtio_drivers::device::socket::SocketError) -> DevError {
@@ -152,10 +199,10 @@ pub fn probe_pci_device<H: VirtIoHal, C: ConfigurationAccess>(
     root: &mut PciRoot<C>,
     bdf: DeviceFunction,
     dev_info: &DeviceFunctionInfo,
-) -> Option<(DeviceType, PciTransport)> {
-    let device_type = probe_pci_device_type(dev_info)?;
+) -> Option<(DeviceType, PciTransport, usize)> {
+    let metadata = probe_pci_metadata(dev_info, bdf)?;
     let transport = PciTransport::new::<H, C>(root, bdf).ok()?;
-    Some((device_type, transport))
+    Some((metadata.device_type(), transport, metadata.irq()))
 }
 
 const fn as_dev_type(t: VirtIoDevType) -> Option<DeviceType> {

@@ -268,7 +268,7 @@ excluded_devices = [
 1. **qemu 启动参数**：
 ```
   arceos_args = ["BUS=mmio", "BLK=y", "LOG=info", "SMP=4", "MEM=8g",
-                "QEMU_ARGS=\"-machine gic-version=3  -cpu cortex-a72 -append 'root=/dev/vda rw init=/init' \"",
+                "QEMU_ARGS=\"-machine gic-version=3  -cpu cortex-a72 -append 'root=/dev/vda rw init=/bin/sh' \"",
                 "DISK_IMG=\"tmp/qemu/rootfs.img\"",]
 ```
-其中当不提供设备树时 `-append 'root=/dev/vda rw init=/init'`参数必须添加，目的是在主机设备树中添加chosen节点的bootargs属性。
+其中当不提供设备树时 `-append 'root=/dev/vda rw init=/bin/sh'`参数必须添加，目的是在主机设备树中添加chosen节点的bootargs属性。

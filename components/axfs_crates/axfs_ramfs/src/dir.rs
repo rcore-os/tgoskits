@@ -63,10 +63,12 @@ impl DirNode {
     pub fn remove_node(&self, name: &str) -> VfsResult {
         let mut children = self.children.write();
         let node = children.get(name).ok_or(VfsError::NotFound)?;
-        if let Some(dir) = node.as_any().downcast_ref::<DirNode>() {
-            if !dir.children.read().is_empty() {
-                return Err(VfsError::DirectoryNotEmpty);
-            }
+        if node
+            .as_any()
+            .downcast_ref::<DirNode>()
+            .is_some_and(|dir| !dir.children.read().is_empty())
+        {
+            return Err(VfsError::DirectoryNotEmpty);
         }
         children.remove(name);
         Ok(())

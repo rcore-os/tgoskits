@@ -16,17 +16,20 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use core::ptr::NonNull;
 
 use super::vm_fdt::{FdtWriter, FdtWriterNode};
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_memory_addr::MemoryAddr;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 use axaddrspace::GuestPhysAddr;
-use axvm::{
-    VMMemoryRegion,
-    config::{AxVMCrateConfig, VmMemMappingType},
-};
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
+use axvm::VMMemoryRegion;
+use axvm::config::AxVMCrateConfig;
 use fdt_parser::{Fdt, Node};
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::vmm::{VMRef, images::load_vm_image_from_memory};
 
 // use crate::vmm::fdt::print::{print_fdt, print_guest_fdt};
@@ -68,14 +71,14 @@ pub fn crate_guest_fdt(
 
     for (index, node) in all_nodes.iter().enumerate() {
         let node_path = &all_paths[index];
-        let node_action = determine_node_action(node, &node_path, passthrough_device_names);
+        let node_action = determine_node_action(node, node_path, passthrough_device_names);
 
         match node_action {
             NodeAction::RootNode => {
                 node_stack.push(fdt_writer.begin_node("").unwrap());
             }
             NodeAction::CpuNode => {
-                let need = need_cpu_node(&phys_cpu_ids, node, &node_path);
+                let need = need_cpu_node(&phys_cpu_ids, node, node_path);
                 if need {
                     handle_node_level_change(
                         &mut fdt_writer,
@@ -239,11 +242,20 @@ fn is_ancestor_of_passthrough_device(node_path: &str, passthrough_device_names: 
 
 /// Determine if CPU node is needed
 fn need_cpu_node(phys_cpu_ids: &[usize], node: &Node, node_path: &str) -> bool {
-    let mut should_include_node = false;
-
     if !node_path.starts_with("/cpus/cpu@") {
-        should_include_node = true;
-    } else if let Some(mut cpu_reg) = node.reg()
+        return true;
+    }
+
+    if let Some(cpu_id) = node_path
+        .strip_prefix("/cpus/cpu@")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|id| usize::from_str_radix(id, 16).ok())
+        && phys_cpu_ids.contains(&cpu_id)
+    {
+        return true;
+    }
+
+    if let Some(mut cpu_reg) = node.reg()
         && let Some(reg_entry) = cpu_reg.next()
     {
         let cpu_address = reg_entry.address as usize;
@@ -252,26 +264,27 @@ fn need_cpu_node(phys_cpu_ids: &[usize], node: &Node, node_path: &str) -> bool {
             node.name(),
             cpu_address
         );
-        // Check if this CPU address is in the configured phys_cpu_ids
         if phys_cpu_ids.contains(&cpu_address) {
-            should_include_node = true;
             debug!(
                 "CPU node {} with address 0x{:x} is in phys_cpu_ids, including in guest FDT",
                 node.name(),
                 cpu_address
             );
-        } else {
-            debug!(
-                "CPU node {} with address 0x{:x} is NOT in phys_cpu_ids, skipping",
-                node.name(),
-                cpu_address
-            );
+            return true;
         }
+
+        debug!(
+            "CPU node {} with address 0x{:x} is NOT in phys_cpu_ids, skipping",
+            node.name(),
+            cpu_address
+        );
     }
-    should_include_node
+
+    false
 }
 
 /// Add memory node
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 fn add_memory_node(
     new_memory: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
@@ -295,7 +308,7 @@ fn add_memory_node(
     }
 
     let mut new_value: Vec<u32> = Vec::new();
-    for (mem, cfg) in new_memory.iter().take(configured_region_count).zip(
+    for (mem, _cfg) in new_memory.iter().take(configured_region_count).zip(
         crate_config
             .kernel
             .memory_regions
@@ -316,6 +329,7 @@ fn add_memory_node(
     new_fdt.property_string("device_type", "memory").unwrap();
 }
 
+#[cfg(any(target_arch = "aarch64", test))]
 fn initrd_range_from_image_config(
     ramdisk: Option<&axvm::config::RamdiskInfo>,
 ) -> Option<(u64, u64)> {
@@ -325,11 +339,32 @@ fn initrd_range_from_image_config(
     Some((start, start + size))
 }
 
+#[cfg(any(target_arch = "aarch64", test))]
 fn sanitize_bootargs(bootargs: &str) -> String {
     const RAMDISK_BOOTARGS: [&str; 3] = ["root=/dev/ram0", "rdinit=/init", "rootwait"];
+    const FSCK_REPAIR_BOOTARG: &str = "fsck.repair=yes";
 
     let rewritten = bootargs.replace(" ro ", " rw ");
     let tokens = rewritten.split_whitespace().collect::<Vec<_>>();
+    let has_fsck_policy = tokens.iter().any(|token| {
+        matches!(
+            *token,
+            "fastboot"
+                | "fsck.mode=skip"
+                | "forcefsck"
+                | "fsck.mode=force"
+                | "fsckfix"
+                | "fsck.repair=yes"
+                | "fsck.repair=no"
+        )
+    });
+    let has_block_root = tokens.iter().any(|token| {
+        token.starts_with("root=/dev/")
+            || token.starts_with("root=PARTLABEL=")
+            || token.starts_with("root=LABEL=")
+            || token.starts_with("root=UUID=")
+            || token.starts_with("root=PARTUUID=")
+    });
     let mut sanitized = Vec::with_capacity(tokens.len());
     let mut index = 0;
 
@@ -343,9 +378,14 @@ fn sanitize_bootargs(bootargs: &str) -> String {
         index += 1;
     }
 
+    if has_block_root && !has_fsck_policy {
+        sanitized.push(FSCK_REPAIR_BOOTARG);
+    }
+
     sanitized.join(" ")
 }
 
+#[cfg(target_arch = "aarch64")]
 pub fn update_fdt(
     fdt_src: NonNull<u8>,
     dtb_size: usize,
@@ -469,9 +509,33 @@ pub fn update_fdt(
         .expect("Failed to load VM images");
 }
 
+#[cfg(target_arch = "riscv64")]
+pub fn update_fdt(
+    fdt_src: NonNull<u8>,
+    dtb_size: usize,
+    vm: VMRef,
+    crate_config: &AxVMCrateConfig,
+) {
+    // Fix up the cached DTB against the runtime layout before boot.
+    let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
+    let fdt = Fdt::from_bytes(fdt_bytes)
+        .map_err(|e| format!("Failed to parse cached guest FDT: {e:#?}"))
+        .expect("Failed to parse cached guest FDT");
+    // Keep boot metadata such as /chosen from the host FDT.
+    let host_fdt = Fdt::from_bytes(super::get_host_fdt())
+        .map_err(|e| format!("Failed to parse host FDT while updating guest FDT: {e:#?}"))
+        .expect("Failed to parse host FDT while updating guest FDT");
+    let new_fdt_bytes =
+        patch_guest_fdt_for_runtime(&fdt, &vm.memory_regions(), crate_config, &host_fdt);
+    // Recompute the DTB load address from the runtime memory layout.
+    let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len());
+
+    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm).expect("Failed to load VM images");
+}
+
 #[cfg(test)]
 mod tests {
-    use super::initrd_range_from_image_config;
+    use super::{initrd_range_from_image_config, sanitize_bootargs};
     use axaddrspace::GuestPhysAddr;
     use axvm::config::RamdiskInfo;
 
@@ -492,9 +556,32 @@ mod tests {
             Some((0xa000_0000, 0xa000_1234))
         );
     }
+
+    #[test]
+    fn sanitize_bootargs_enables_auto_repair_for_block_roots() {
+        let bootargs = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 rootwait rootfstype=ext4";
+
+        assert_eq!(
+            sanitize_bootargs(bootargs),
+            "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 rootwait rootfstype=ext4 \
+             fsck.repair=yes"
+        );
+    }
+
+    #[test]
+    fn sanitize_bootargs_preserves_existing_fsck_policy() {
+        let bootargs =
+            "root=/dev/mmcblk0p2 ro rootwait rootfstype=ext4 fsckfix rdinit=/init root=/dev/ram0";
+
+        assert_eq!(
+            sanitize_bootargs(bootargs),
+            "root=/dev/mmcblk0p2 rw rootwait rootfstype=ext4 fsckfix"
+        );
+    }
 }
 
-fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
     const MB: usize = 1024 * 1024;
 
     // Get main memory from VM memory regions outside the closure
@@ -524,6 +611,76 @@ fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {
     })
 }
 
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn patch_guest_fdt_for_runtime(
+    fdt: &Fdt,
+    memory_regions: &[VMMemoryRegion],
+    crate_config: &AxVMCrateConfig,
+    host_fdt: &Fdt,
+) -> Vec<u8> {
+    let mut new_fdt = FdtWriter::new().unwrap();
+    let mut previous_node_level = 0usize;
+    let mut node_stack: Vec<FdtWriterNode> = Vec::new();
+    let mut has_chosen = false;
+
+    for node in fdt.all_nodes() {
+        // Drop the stale /memory node and rebuild it later.
+        if node.name().starts_with("memory") {
+            continue;
+        }
+
+        if node.name() == "chosen" {
+            has_chosen = true;
+        }
+
+        if node.name() == "/" {
+            node_stack.push(new_fdt.begin_node("").unwrap());
+        } else {
+            handle_node_level_change(
+                &mut new_fdt,
+                &mut node_stack,
+                node.level,
+                previous_node_level,
+            );
+            node_stack.push(new_fdt.begin_node(node.name()).unwrap());
+        }
+        previous_node_level = node.level;
+
+        for prop in node.propertys() {
+            new_fdt.property(prop.name, prop.raw_value()).unwrap();
+        }
+    }
+
+    // Return to the root before inserting synthetic nodes.
+    while node_stack.len() > 1 {
+        let node = node_stack.pop().unwrap();
+        new_fdt.end_node(node).unwrap();
+    }
+
+    assert_eq!(node_stack.len(), 1);
+
+    // Restore /chosen from the host FDT when it is missing.
+    if !has_chosen && let Some(chosen_node) = host_fdt.find_nodes("/chosen").next() {
+        let chosen = new_fdt.begin_node("chosen").unwrap();
+        for prop in chosen_node.propertys() {
+            new_fdt.property(prop.name, prop.raw_value()).unwrap();
+        }
+        new_fdt.end_node(chosen).unwrap();
+    }
+
+    // Rebuild /memory from the runtime-visible regions that correspond to the
+    // user-configured memory layout.
+    let memory_node = new_fdt.begin_node("memory").unwrap();
+    add_memory_node(memory_regions, crate_config, &mut new_fdt);
+    new_fdt.end_node(memory_node).unwrap();
+
+    let root = node_stack.pop().unwrap();
+    new_fdt.end_node(root).unwrap();
+
+    new_fdt.finish().unwrap()
+}
+
+#[cfg(target_arch = "aarch64")]
 pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig) -> Vec<u8> {
     let mut new_fdt = FdtWriter::new().unwrap();
     let mut previous_node_level = 0;

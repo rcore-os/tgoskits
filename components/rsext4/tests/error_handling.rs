@@ -6,7 +6,7 @@
 use std::cell::Cell;
 
 use rsext4::{
-    bmalloc::AbsoluteBN,
+    bmalloc::{AbsoluteBN, BGIndex},
     error::{Ext4Error, Ext4Result},
     *,
 };
@@ -329,6 +329,38 @@ mod error_handling_tests {
         assert_eq!(data, large_data);
 
         // Unmount may fail after exhaustion; the test only cares about data survival.
+        let _ = umount(fs, &mut jbd2_dev);
+    }
+
+    /// A device whose size does not end on a full block-group boundary must
+    /// not expose padding bits past `s_blocks_count` as allocatable blocks.
+    #[test]
+    fn test_partial_last_group_padding_is_not_allocated() {
+        let blocks_per_group = 8 * rsext4::BLOCK_SIZE as u64;
+        let total_blocks = blocks_per_group + 128;
+        let device = ErrorMockDevice::new(total_blocks as usize * rsext4::BLOCK_SIZE);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let fs = mount(&mut jbd2_dev).expect("mount failed");
+
+        let last_group = BGIndex::new(fs.group_count - 1);
+        let last_desc = fs
+            .get_group_desc(last_group)
+            .expect("last group descriptor should exist");
+        assert!(last_desc.free_blocks_count() < 128);
+
+        jbd2_dev
+            .read_block(AbsoluteBN::new(last_desc.block_bitmap()))
+            .expect("read last block bitmap");
+        let bitmap = jbd2_dev.buffer();
+        for bit in 128..fs.superblock.s_blocks_per_group as usize {
+            assert!(
+                bitmap[bit / 8] & (1 << (bit % 8)) != 0,
+                "partial-group padding bit {bit} should be marked allocated"
+            );
+        }
+
         let _ = umount(fs, &mut jbd2_dev);
     }
 

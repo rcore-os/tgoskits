@@ -41,6 +41,7 @@ unsafe fn restore_host_sp_el0() {
 /// between VMs.
 #[repr(C)]
 #[derive(Clone, Debug, Copy, Default)]
+#[allow(dead_code)]
 pub struct VmCpuRegisters {
     /// guest trap context
     pub trap_context_regs: TrapFrame,

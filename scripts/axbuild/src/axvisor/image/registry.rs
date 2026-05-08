@@ -1,12 +1,12 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::spec::ImageSpecRef;
-use crate::download::fetch_text;
+use crate::support::download::fetch_text;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {

@@ -77,8 +77,8 @@ impl NetDevice {
 
             let ifreq_mac_addr = unsafe { ifreq.ioctl(lower, SIOCGIFHWADDR)?.mac_addr };
             let mut mac_addr = [0u8; 6];
-            for i in 0..6 {
-                mac_addr[i] = ifreq_mac_addr.sa_data[i] as u8;
+            for (dst, src) in mac_addr.iter_mut().zip(ifreq_mac_addr.sa_data.iter()) {
+                *dst = *src as u8;
             }
 
             println!(

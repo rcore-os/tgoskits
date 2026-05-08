@@ -1,5 +1,5 @@
 [package]
-edition = "2024"
+edition.workspace = true
 name = "arm_vcpu"
 version = "0.5.5"
 authors = [
@@ -25,10 +25,9 @@ spin = "0.10"
 aarch64-cpu = "11.0"
 numeric-enum-macro = "0.2"
 
-ax-errno = "0.4"
-ax-percpu = { version = "0.4", features = ["arm-el2"] }
-
-axaddrspace = "0.5"
-axdevice_base = "0.4"
-axvcpu = "0.5"
-axvisor_api = "0.5"
+ax-errno = { workspace = true }
+ax-percpu = { workspace = true, features = ["arm-el2"] }
+axaddrspace = { workspace = true }
+axdevice_base = { workspace = true }
+axvcpu = { workspace = true }
+axvisor_api = { workspace = true }

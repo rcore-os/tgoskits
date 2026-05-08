@@ -1,13 +1,13 @@
 [package]
 name = "ax-plat-macros"
 version = "0.3.5"
-repository.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 description = "Procedural macros for the `axplat` crate"
 keywords = ["arceos", "os", "hal", "embedded", "macros"]
 categories = ["development-tools::procedural-macro-helpers"]
 edition.workspace = true
-authors.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.com>", "yanjuguang <coolyanjg@163.com>", "Su Mingxian <aarkegz@gmail.com>", "RobertYuan <634954435@qq.com>", "hky1999 <keyang.hu@qq.com>"]
+license = "Apache-2.0"
 
 [dependencies]
 proc-macro2 = "1.0"
@@ -15,7 +15,6 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 
 [dev-dependencies]
-ax-crate-interface = "0.5"
-
+ax-crate-interface = { workspace = true }
 [lib]
 proc-macro = true

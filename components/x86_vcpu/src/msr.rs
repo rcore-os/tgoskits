@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "vmx")]
 use x86::msr::{rdmsr, wrmsr};
 
 /// X86 model-specific registers. (SDM Vol. 4)
@@ -56,6 +57,7 @@ pub enum Msr {
 impl Msr {
     /// Read 64 bits msr register.
     #[inline(always)]
+    #[cfg(feature = "vmx")]
     pub fn read(self) -> u64 {
         unsafe { rdmsr(self as _) }
     }
@@ -67,11 +69,13 @@ impl Msr {
     /// The caller must ensure that this write operation has no unsafe side
     /// effects.
     #[inline(always)]
+    #[cfg(feature = "vmx")]
     pub unsafe fn write(self, value: u64) {
         unsafe { wrmsr(self as _, value) }
     }
 }
 
+#[cfg(feature = "vmx")]
 pub(super) trait MsrReadWrite {
     const MSR: Msr;
 

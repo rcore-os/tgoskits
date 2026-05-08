@@ -2,7 +2,7 @@
 name = "ax-riscv-plic"
 version = "0.4.4"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2024"
+edition.workspace = true
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
 description = "RISC-V platform-level interrupt controller (PLIC) register definitions and basic operations"
 keywords = ["arceos", "riscv", "riscv64", "plic", "interrupt-controller"]

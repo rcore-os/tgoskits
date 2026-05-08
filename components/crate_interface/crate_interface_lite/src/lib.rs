@@ -29,7 +29,7 @@ macro_rules! def_interface {
         impl $name for $crate::r#priv::DefaultImpl {$(
             $(#[$fn_attr])*
             fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)? {
-                extern "Rust" {
+                unsafe extern "Rust" {
                     #[link_name = concat!("__", stringify!($name), "__", stringify!($fn_name))]
                     fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)?;
                 }
@@ -83,7 +83,7 @@ macro_rules! impl_interface {
 
             $($(#[$fn_attr])*
             fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)? {
-                #[export_name = concat!("__", stringify!($interface), "__", stringify!($fn_name))]
+                #[unsafe(export_name = concat!("__", stringify!($interface), "__", stringify!($fn_name)))]
                 extern "Rust" fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)? {
                     $($body)*
                 }

@@ -319,7 +319,11 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
 
         // Call shutdown
         match vm.shutdown() {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                // Notify all vCPUs to wake up to check the shutdown flag
+                vcpus::notify_all_vcpus(vm_id);
+                Ok(())
+            }
             Err(_err) => {
                 // Revert status on failure
                 Err("Failed to shutdown VM")
@@ -671,6 +675,8 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
                 );
                 vm.set_vm_status(VMStatus::Stopping);
                 let _ = vm.shutdown();
+                // Notify all vCPUs to wake up to check the shutdown flag
+                vcpus::notify_all_vcpus(vm_id);
             }
             VMStatus::Loaded => {
                 // Transition from Loaded to Stopped

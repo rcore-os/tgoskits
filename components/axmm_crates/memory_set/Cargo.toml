@@ -4,16 +4,14 @@ description = "Data structures and operations for managing memory mappings"
 keywords = ["arceos", "virtual-memory", "memory-area", "mmap"]
 
 version = "0.6.7"
-repository.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
-authors.workspace = true
-categories.workspace = true
-rust-version.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "aarkegz <aarkegz@gmail.com>"]
+categories = ["os", "memory-management", "no-std"]
+license = "Apache-2.0"
 
 [dependencies]
-ax-errno = { version = "0.4", optional = true }
-ax-memory-addr = { path = "../memory_addr", version = "0.6" }
-
+ax-errno = { workspace = true, optional = true }
+ax-memory-addr = { workspace = true }
 [features]
 ax-errno = ["dep:ax-errno"]

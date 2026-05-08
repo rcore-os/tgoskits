@@ -1,7 +1,9 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
-use ax_driver_net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps};
+use ax_driver_net::{
+    EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps, NetIrqEvent,
+};
 use virtio_drivers::{Hal, device::net::VirtIONetRaw as InnerDev, transport::Transport};
 
 use crate::as_dev_err;
@@ -580,6 +582,10 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         // 3. Validate queue bookkeeping before exposing the device.
         dev.validate_runtime_state()?;
 
+        if irq.is_some() {
+            dev.inner.enable_interrupts();
+        }
+
         // 4. Return the driver instance.
         Ok(dev)
     }
@@ -651,7 +657,6 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
     fn receive(&mut self) -> DevResult<NetBufPtr> {
         self.validate_runtime_state()?;
         self.validate_before_receive()?;
-        self.inner.ack_interrupt();
         if let Some(token) = self.poll_received_token() {
             let rx_buf = self.complete_received_buffer(token)?;
             self.checkout_rx_buffer()?;
@@ -679,6 +684,21 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
         // 2. Return the buffer.
         self.validate_runtime_state()?;
         Ok(net_buf.into_buf_ptr())
+    }
+
+    fn handle_irq(&mut self) -> NetIrqEvent {
+        self.inner.ack_interrupt();
+
+        let mut events = NetIrqEvent::empty();
+        if self.inner.poll_receive().is_some() {
+            events |= NetIrqEvent::RX_READY;
+        }
+
+        if events.is_empty() {
+            NetIrqEvent::SPURIOUS
+        } else {
+            events
+        }
     }
 }
 

@@ -2,7 +2,7 @@
 name = "ax-io"
 version = "0.5.4"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2024"
+edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "`std::io` for `no_std` environment"
 keywords = ["arceos", "io", "no-std"]
@@ -14,9 +14,6 @@ alloc = []
 default = []
 
 [dependencies]
-ax-errno = "0.4"
+ax-errno = { workspace = true }
 heapless = "0.9"
 memchr = { version = "2", default-features = false }
-
-[build-dependencies]
-autocfg = "1"

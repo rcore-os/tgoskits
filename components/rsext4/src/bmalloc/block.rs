@@ -173,15 +173,19 @@ mod tests {
 
     #[test]
     fn test_block_allocator_single() {
-        let mut sb = Ext4Superblock::default();
-        sb.s_blocks_per_group = 1024;
-        sb.s_first_data_block = 0;
+        let sb = Ext4Superblock {
+            s_blocks_per_group: 1024,
+            s_first_data_block: 0,
+            ..Default::default()
+        };
 
         let allocator = BlockAllocator::new(&sb);
 
         let mut bitmap_data = vec![0u8; 128]; // 1024 bits
-        let mut gd = Ext4GroupDesc::default();
-        gd.bg_free_blocks_count_lo = 1024;
+        let gd = Ext4GroupDesc {
+            bg_free_blocks_count_lo: 1024,
+            ..Default::default()
+        };
 
         let result = allocator.alloc_block_in_group(&mut bitmap_data, BGIndex::new(0), &gd);
         assert!(result.is_ok());
@@ -194,9 +198,11 @@ mod tests {
 
     #[test]
     fn test_block_allocator_contiguous() {
-        let mut sb = Ext4Superblock::default();
-        sb.s_blocks_per_group = 1024;
-        sb.s_first_data_block = 0;
+        let sb = Ext4Superblock {
+            s_blocks_per_group: 1024,
+            s_first_data_block: 0,
+            ..Default::default()
+        };
 
         let allocator = BlockAllocator::new(&sb);
 

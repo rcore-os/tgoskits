@@ -5,9 +5,9 @@ description = "Manages hardware platform packages using `axplat`"
 keywords = ["arceos", "hal", "hardware", "cargo-subcommand"]
 categories = ["development-tools", "development-tools::cargo-plugins", "embedded", "hardware-support", "os"]
 edition.workspace = true
-authors.workspace = true
-repository.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.com>", "yanjuguang <coolyanjg@163.com>", "Su Mingxian <aarkegz@gmail.com>", "RobertYuan <634954435@qq.com>", "hky1999 <keyang.hu@qq.com>"]
+repository = "https://github.com/rcore-os/tgoskits"
+license = "Apache-2.0"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

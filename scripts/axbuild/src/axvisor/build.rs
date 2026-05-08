@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::anyhow;
 use ostool::build::config::Cargo;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,7 @@ pub struct AxvisorBoardConfig {
 struct LoadedAxvisorBuildConfig {
     build_info: AxvisorBuildInfo,
     target: String,
+    vm_configs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -62,6 +64,7 @@ impl AxvisorBoardConfig {
         LoadedAxvisorBuildConfig {
             build_info: self.arceos,
             target,
+            vm_configs: self.vm_configs,
         }
     }
 }
@@ -91,10 +94,23 @@ pub(crate) fn resolve_build_info_path(
     }
 
     let _ = arch_for_target_checked(target)?;
-    Ok(crate::arceos::build::resolve_build_info_path_in_dir(
-        axvisor_dir,
+    Ok(default_build_info_path(axvisor_dir, target))
+}
+
+pub(crate) fn workspace_root_from_axvisor_dir(axvisor_dir: &Path) -> PathBuf {
+    axvisor_dir
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| axvisor_dir.to_path_buf())
+}
+
+pub(crate) fn default_build_info_path(axvisor_dir: &Path, target: &str) -> PathBuf {
+    crate::arceos::build::default_build_info_path_in_workspace(
+        &workspace_root_from_axvisor_dir(axvisor_dir),
+        AXVISOR_PACKAGE,
         target,
-    ))
+    )
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<Cargo> {
@@ -106,21 +122,27 @@ fn to_cargo_config(
     request: &ResolvedAxvisorRequest,
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
+    let plat_dyn = config
+        .build_info
+        .effective_plat_dyn(&config.target, request.plat_dyn);
+    normalize_axvisor_platform_features(&mut config.build_info.features, plat_dyn);
     let mut cargo = config.build_info.into_prepared_base_cargo_config(
         &request.package,
         &config.target,
         request.plat_dyn,
     )?;
-    patch_axvisor_cargo_config(&mut cargo, request)?;
+    patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
     Ok(cargo)
 }
 
 fn patch_axvisor_cargo_config(
     cargo: &mut Cargo,
     request: &ResolvedAxvisorRequest,
+    config_vmconfigs: &[PathBuf],
 ) -> anyhow::Result<()> {
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
+    cargo.to_bin = default_axvisor_to_bin(&request.arch);
     ensure_axvisor_bin_arg(&mut cargo.args);
     cargo
         .env
@@ -129,8 +151,16 @@ fn patch_axvisor_cargo_config(
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
 
-    if !request.vmconfigs.is_empty() {
-        let joined = std::env::join_paths(&request.vmconfigs)
+    let vmconfigs = if request.vmconfigs.is_empty() {
+        config_vmconfigs
+            .iter()
+            .map(|path| resolve_build_config_vmconfig_path(request, path))
+            .collect::<Vec<_>>()
+    } else {
+        request.vmconfigs.clone()
+    };
+    if !vmconfigs.is_empty() {
+        let joined = std::env::join_paths(&vmconfigs)
             .map_err(|e| anyhow!("failed to join vmconfig paths: {e}"))?;
         cargo.env.insert(
             "AXVISOR_VM_CONFIGS".to_string(),
@@ -138,10 +168,27 @@ fn patch_axvisor_cargo_config(
         );
     }
 
-    normalize_axvisor_platform_features(&mut cargo.features);
+    let cargo_uses_plat_dyn = cargo.features.iter().any(|f| f == "ax-std/plat-dyn");
+    normalize_axvisor_platform_features(&mut cargo.features, cargo_uses_plat_dyn);
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
+}
+
+fn resolve_build_config_vmconfig_path(request: &ResolvedAxvisorRequest, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let workspace_root = request
+        .axvisor_dir
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(&request.axvisor_dir);
+    workspace_root.join(path)
+}
+
+fn default_axvisor_to_bin(arch: &str) -> bool {
+    !matches!(arch, "x86_64" | "loongarch64")
 }
 
 fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
@@ -153,9 +200,10 @@ fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
     args.push(AXVISOR_PACKAGE.to_string());
 }
 
-fn normalize_axvisor_platform_features(features: &mut Vec<String>) {
+fn normalize_axvisor_platform_features(features: &mut Vec<String>, plat_dyn: bool) {
     let has_axstd_defplat = features.iter().any(|feature| feature == "ax-std/defplat");
     let has_axstd_myplat = features.iter().any(|feature| feature == "ax-std/myplat");
+    let has_axstd_plat_dyn = features.iter().any(|feature| feature == "ax-std/plat-dyn");
 
     if has_axstd_defplat && !has_axstd_myplat {
         for feature in features.iter_mut() {
@@ -165,6 +213,13 @@ fn normalize_axvisor_platform_features(features: &mut Vec<String>) {
         }
     } else {
         features.retain(|feature| feature != "ax-std/defplat");
+    }
+
+    if !plat_dyn
+        && !has_axstd_plat_dyn
+        && !features.iter().any(|feature| feature == "ax-std/myplat")
+    {
+        features.push("ax-std/myplat".to_string());
     }
 }
 
@@ -221,6 +276,7 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
         let mut loaded = LoadedAxvisorBuildConfig {
             build_info: default_build_info,
             target: request.target.clone(),
+            vm_configs: Vec::new(),
         };
         if let Some(smp) = request.smp {
             loaded.build_info.max_cpu_num = Some(smp);
@@ -249,6 +305,7 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
                 let mut loaded = LoadedAxvisorBuildConfig {
                     build_info,
                     target: request.target.clone(),
+                    vm_configs: Vec::new(),
                 };
                 if let Some(smp) = request.smp {
                     loaded.build_info.max_cpu_num = Some(smp);
@@ -318,7 +375,7 @@ mod tests {
         assert_eq!(
             path,
             root.path()
-                .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml")
+                .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
         );
     }
 
@@ -337,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_build_info_path_prefers_existing_bare_name() {
+    fn resolve_build_info_path_ignores_source_tree_defaults() {
         let root = tempdir().unwrap();
         let axvisor_dir = root.path().join("os/axvisor");
         fs::create_dir_all(&axvisor_dir).unwrap();
@@ -349,7 +406,11 @@ mod tests {
         let path =
             resolve_build_info_path(&axvisor_dir, "aarch64-unknown-none-softfloat", None).unwrap();
 
-        assert_eq!(path, bare);
+        assert_eq!(
+            path,
+            root.path()
+                .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
+        );
     }
 
     #[test]
@@ -543,5 +604,39 @@ plat_dyn = false
 
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
         assert!(cargo.features.contains(&"ax-std/myplat".to_string()));
+        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
+    }
+
+    #[test]
+    fn load_cargo_config_keeps_loongarch_axvisor_as_elf() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+env = {}
+features = ["ept-level-4", "ax-std/bus-mmio"]
+log = "Info"
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "loongarch64".to_string(),
+            target: "loongarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(!cargo.to_bin);
+        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
     }
 }

@@ -643,12 +643,11 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
     }
 
     fn listen(&mut self, src_port: u32) {
-        if let Some(request) = prepare_listen_request(src_port) {
-            if should_listen_on_port(request) {
-                if let Some(request) = normalize_listen_request(request) {
-                    self.listen_on_port(request);
-                }
-            }
+        if let Some(request) = prepare_listen_request(src_port)
+            && should_listen_on_port(request)
+            && let Some(request) = normalize_listen_request(request)
+        {
+            self.listen_on_port(request);
         }
     }
 

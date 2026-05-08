@@ -148,11 +148,12 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
             _ => return None,
         }
 
-        if let Some((ty, transport)) =
+        if let Some((ty, transport, irq)) =
             ax_driver_virtio::probe_pci_device::<VirtIoHalImpl, C>(root, bdf, dev_info)
             && ty == D::DEVICE_TYPE
         {
-            match D::try_new(transport, Some(pci_irq_for_bdf(bdf))) {
+            let irq = pci_irq_vector(bdf, irq);
+            match D::try_new(transport, Some(irq)) {
                 Ok(dev) => return Some(dev),
                 Err(e) => {
                     warn!("failed to initialize PCI device at {bdf}({dev_info}): {e:?}");
@@ -162,6 +163,36 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
         }
         None
     }
+}
+
+#[cfg(all(bus = "pci", feature = "bus-pci", target_arch = "x86_64"))]
+fn pci_irq_vector(bdf: DeviceFunction, fallback: usize) -> usize {
+    const PCI_INTERRUPT_REG: usize = 0x3c;
+    const IO_APIC_VECTOR_OFFSET: usize = 0x20;
+
+    let config_offset = ((bdf.bus as usize) << 20)
+        | ((bdf.device as usize) << 15)
+        | ((bdf.function as usize) << 12)
+        | PCI_INTERRUPT_REG;
+    let config_addr = ax_config::devices::PCI_ECAM_BASE + config_offset;
+    let int_reg =
+        unsafe { (phys_to_virt(config_addr.into()).as_usize() as *const u32).read_volatile() };
+    let line = (int_reg & 0xff) as usize;
+    let pin = ((int_reg >> 8) & 0xff) as usize;
+
+    if (1..0x20).contains(&line) && pin != 0 {
+        let vector = IO_APIC_VECTOR_OFFSET + line;
+        debug!("PCI {bdf} INTx line {line}, pin {pin} -> vector {vector:#x}");
+        vector
+    } else {
+        debug!("PCI {bdf} has INTx line {line}, pin {pin}; using fallback vector {fallback:#x}");
+        fallback
+    }
+}
+
+#[cfg(all(bus = "pci", feature = "bus-pci", not(target_arch = "x86_64")))]
+fn pci_irq_vector(_bdf: DeviceFunction, fallback: usize) -> usize {
+    fallback
 }
 
 pub struct VirtIoHalImpl;
@@ -179,33 +210,6 @@ impl HalAddress {
     const fn addr(self) -> usize {
         self.addr
     }
-}
-
-#[cfg(all(bus = "pci", feature = "bus-pci"))]
-const fn pci_irq_base() -> usize {
-    #[cfg(target_arch = "x86_64")]
-    {
-        0x20
-    }
-    #[cfg(target_arch = "riscv64")]
-    {
-        0x20
-    }
-    #[cfg(target_arch = "loongarch64")]
-    {
-        0x10
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        0x23
-    }
-}
-
-#[cfg(all(bus = "pci", feature = "bus-pci"))]
-const fn pci_irq_for_bdf(bdf: DeviceFunction) -> usize {
-    // Keep the current legacy INTx fallback in the ArceOS PCI glue instead of
-    // hard-coding it in the reusable axdriver_virtio crate.
-    pci_irq_base() + (bdf.device & 3) as usize
 }
 
 #[inline]

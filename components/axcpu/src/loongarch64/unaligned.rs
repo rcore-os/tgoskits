@@ -8,7 +8,7 @@ use crate::{GeneralRegisters, TrapFrame};
 
 core::arch::global_asm!(include_asm_macros!(), include_str!("unaligned.S"));
 
-extern "C" {
+unsafe extern "C" {
     fn _unaligned_read(addr: u64, value: &mut u64, n: u64, symbol: bool) -> i32;
     fn _unaligned_write(addr: u64, value: u64, n: u64) -> i32;
 }
@@ -555,7 +555,7 @@ impl TrapFrame {
         let mut value: u64 = 0;
 
         let badv = badv::read().vaddr() as u64;
-        let badi = core::ptr::read(self.era as *const u32);
+        let badi = unsafe { core::ptr::read(self.era as *const u32) };
         let rd = (badi & 0x1f) as usize;
 
         let regs = unsafe {

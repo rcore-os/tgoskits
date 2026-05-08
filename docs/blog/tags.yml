@@ -1,0 +1,24 @@
+tgoskits:
+  label: TGOSKits
+  permalink: /tgoskits
+  description: 关于 TGOSKits 工作区与文档体系的文章
+
+workspace:
+  label: Workspace
+  permalink: /workspace
+  description: 关于统一工作区组织方式的文章
+
+arceos:
+  label: ArceOS
+  permalink: /arceos
+  description: 与 ArceOS 相关的文章
+
+starryos:
+  label: StarryOS
+  permalink: /starryos
+  description: 与 StarryOS 相关的文章
+
+axvisor:
+  label: Axvisor
+  permalink: /axvisor
+  description: 与 Axvisor 相关的文章

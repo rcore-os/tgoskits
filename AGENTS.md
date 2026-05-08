@@ -6,6 +6,12 @@
 - Use `update-std-tests` when the user wants to audit or update `scripts/test/std_crates.csv`, compare workspace packages against the std test whitelist, or confirm which new std-test candidates should be added.
 - `starry-test-suit`: project-local skill at `.claude/skills/starry-test-suit/SKILL.md`
 - Use `starry-test-suit` when the user wants to add, regroup, adapt, or validate `test-suit/starryos` cases, including `qemu-*.toml`, `normal`/`stress` grouping, success/fail regexes, or Starry test-suit related CI behavior.
+- `cross-kernel-driver`: project-local skill at `.claude/skills/cross-kernel-driver/SKILL.md`
+- Use `cross-kernel-driver` when the user wants to create, refactor, review, or optimize portable Rust driver crates under `drivers/` by device type, separate Driver Core / Capability Boundary / OS Glue / Runtime layers, handle MMIO/iomap with `mmio-api`, handle DMA with `dma-api`, design IRQ event or queue contracts, or audit OS API coupling in driver code.
+- `review-open-prs`: project-local skill at `.claude/skills/review-open-prs/SKILL.md`
+- Use `review-open-prs` when the user wants to audit all open GitHub PRs, review non-self PRs, re-review PRs updated after their last review, use subagents/worktrees for PR review, compare changes with POSIX/Linux/RFC/VirtIO semantics, run local validation, and submit approve or request-changes reviews.
+- `board-uboot-fsck-repair`: project-local skill at `.claude/skills/board-uboot-fsck-repair/SKILL.md`
+- Use `board-uboot-fsck-repair` when a physical board Linux rootfs needs ext4 recovery through U-Boot, initramfs fsck reports unrepaired corruption, OrangePi-5-Plus needs `extraboardargs=fsckfix`, or Starry board write tests must be bracketed by Linux fsck/boot checks.
 
 ## Other Requirements
 

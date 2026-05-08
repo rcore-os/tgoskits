@@ -1,5 +1,19 @@
-#![cfg_attr(feature = "ax-std", no_std)]
-#![cfg_attr(feature = "ax-std", no_main)]
+#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_std)]
+#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_main)]
+
+#[cfg(any(not(target_os = "none"), feature = "ax-std"))]
+macro_rules! app {
+    ($($item:item)*) => {
+        $($item)*
+    };
+}
+
+#[cfg(not(any(not(target_os = "none"), feature = "ax-std")))]
+macro_rules! app {
+    ($($item:item)*) => {};
+}
+
+app! {
 
 #[macro_use]
 #[cfg(feature = "ax-std")]
@@ -27,23 +41,23 @@ fn test_wait() {
 
     for _ in 0..NUM_TASKS {
         thread::spawn(move || {
-            COUNTER.fetch_add(1, Ordering::Relaxed);
+            COUNTER.fetch_add(1, Ordering::Release);
             api::ax_wait_queue_wake(&WQ1, 1); // WQ1.wait_until()
             api::ax_wait_queue_wait_until(&WQ2, || GO.load(Ordering::Acquire), None);
 
-            COUNTER.fetch_sub(1, Ordering::Relaxed);
+            COUNTER.fetch_sub(1, Ordering::Release);
             api::ax_wait_queue_wake(&WQ1, 1); // WQ1.wait_until()
         });
     }
 
-    api::ax_wait_queue_wait_until(&WQ1, || COUNTER.load(Ordering::Relaxed) == NUM_TASKS, None);
-    assert_eq!(COUNTER.load(Ordering::Relaxed), NUM_TASKS);
+    api::ax_wait_queue_wait_until(&WQ1, || COUNTER.load(Ordering::Acquire) == NUM_TASKS, None);
+    assert_eq!(COUNTER.load(Ordering::Acquire), NUM_TASKS);
 
     GO.store(true, Ordering::Release);
     api::ax_wait_queue_wake(&WQ2, u32::MAX); // WQ2.wait_until()
 
-    api::ax_wait_queue_wait_until(&WQ1, || COUNTER.load(Ordering::Relaxed) == 0, None);
-    assert_eq!(COUNTER.load(Ordering::Relaxed), 0);
+    api::ax_wait_queue_wait_until(&WQ1, || COUNTER.load(Ordering::Acquire) == 0, None);
+    assert_eq!(COUNTER.load(Ordering::Acquire), 0);
 
     println!("wait_queue: test_wait() OK!");
 }
@@ -74,7 +88,7 @@ fn test_wait_timeout_until() {
                 Some(Duration::from_secs(time_to_wait_in_seconds)),
             );
             assert!(!timeout, "It should not be woken up by timeout");
-            COUNTER2.fetch_add(1, Ordering::Relaxed);
+            COUNTER2.fetch_add(1, Ordering::Release);
             // Notify the main task who waits on WQ4 that this task is finished.
             api::ax_wait_queue_wake(&WQ4, 1);
         });
@@ -89,8 +103,8 @@ fn test_wait_timeout_until() {
     // Wake up all tasks who are waiting for timeout.
     api::ax_wait_queue_wake(&WQ3, u32::MAX);
     // Wait for all tasks to finish (woken up by notification).
-    api::ax_wait_queue_wait_until(&WQ4, || COUNTER2.load(Ordering::Relaxed) == NUM_TASKS, None);
-    assert_eq!(COUNTER2.load(Ordering::Relaxed), NUM_TASKS);
+    api::ax_wait_queue_wait_until(&WQ4, || COUNTER2.load(Ordering::Acquire) == NUM_TASKS, None);
+    assert_eq!(COUNTER2.load(Ordering::Acquire), NUM_TASKS);
 
     println!("wait_timeout_until: tasks woken up by notification test OK!");
 
@@ -112,7 +126,7 @@ fn test_wait_timeout_until() {
                 Some(Duration::from_millis(time_to_wait_in_millis)),
             );
             assert!(timeout, "It should be woken up by timeout");
-            COUNTER2.fetch_sub(1, Ordering::Relaxed);
+            COUNTER2.fetch_sub(1, Ordering::Release);
 
             // Notify the main task who waits on WQ4 that this task is finished.
             api::ax_wait_queue_wake(&WQ4, 1);
@@ -121,8 +135,8 @@ fn test_wait_timeout_until() {
 
     println!("wait_timeout_until: wait for all tasks to finish");
     // Wait for all tasks to finish (woken up by timeout).
-    api::ax_wait_queue_wait_until(&WQ4, || COUNTER2.load(Ordering::Relaxed) == 0, None);
-    assert_eq!(COUNTER2.load(Ordering::Relaxed), 0);
+    api::ax_wait_queue_wait_until(&WQ4, || COUNTER2.load(Ordering::Acquire) == 0, None);
+    assert_eq!(COUNTER2.load(Ordering::Acquire), 0);
 
     println!("wait_timeout_until: tasks woken up by timeout test OK!");
 
@@ -139,7 +153,7 @@ fn test_wait_timeout_until() {
         thread::spawn(move || {
             let timeout = api::ax_wait_queue_wait_until(
                 &WQ3,
-                || CONDITION.load(Ordering::Relaxed),
+                || CONDITION.load(Ordering::Acquire),
                 // equals to sleep(0.1s)
                 Some(Duration::from_millis(time_to_wait_in_millis)),
             );
@@ -148,7 +162,7 @@ fn test_wait_timeout_until() {
                 thread::current().id(),
                 if timeout { "timeout" } else { "notification" }
             );
-            COUNTER2.fetch_add(1, Ordering::Relaxed);
+            COUNTER2.fetch_add(1, Ordering::Release);
 
             // Notify the main task who waits on WQ4 that this task is finished.
             api::ax_wait_queue_wake(&WQ4, 1);
@@ -158,13 +172,13 @@ fn test_wait_timeout_until() {
     // Sleep for 100ms to let all tasks start and wait for timeout.
     thread::sleep(Duration::from_millis(time_to_wait_in_millis - 10));
     // Set condition to true to wake up all tasks who call `ax_wait_queue_wait_until`.
-    CONDITION.store(true, Ordering::Relaxed);
+    CONDITION.store(true, Ordering::Release);
     // Wake up all tasks who are waiting for timeout.
     api::ax_wait_queue_wake(&WQ3, u32::MAX);
 
     // Wait for all tasks to finish (woken up by timeout).
-    api::ax_wait_queue_wait_until(&WQ4, || COUNTER2.load(Ordering::Relaxed) == NUM_TASKS, None);
-    assert_eq!(COUNTER2.load(Ordering::Relaxed), NUM_TASKS);
+    api::ax_wait_queue_wait_until(&WQ4, || COUNTER2.load(Ordering::Acquire) == NUM_TASKS, None);
+    assert_eq!(COUNTER2.load(Ordering::Acquire), NUM_TASKS);
 
     println!("wait_timeout_until: test tasks woken up by notification or timeout, test OK!");
 }
@@ -178,4 +192,16 @@ fn main() {
     test_wait_timeout_until();
 
     println!("All tests passed!");
+}
+
+}
+
+#[cfg(all(target_os = "none", not(feature = "ax-std")))]
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() {}
+
+#[cfg(all(target_os = "none", not(feature = "ax-std")))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    loop {}
 }

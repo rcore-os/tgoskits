@@ -133,9 +133,6 @@ pub fn read_at<B: BlockDevice>(
     let start_lbn = start_off / block_bytes;
     let end_lbn = (end_off - 1) / block_bytes;
 
-    // Snapshot the current extent map once, then copy each intersecting logical block.
-    let extent_map = resolve_inode_block_allextend(fs, dev, &mut file.inode)?;
-
     let mut out = Vec::with_capacity(to_read as usize);
     for lbn in start_lbn..=end_lbn {
         let lbn_start = lbn * block_bytes;
@@ -148,7 +145,7 @@ pub fn read_at<B: BlockDevice>(
             continue;
         }
 
-        if let Some(&phys) = extent_map.get(&(lbn as u32)) {
+        if let Some(phys) = resolve_inode_block(dev, &mut file.inode, lbn as u32)? {
             let cached = fs.datablock_cache.get_or_load(dev, phys)?;
             let data = &cached.data[..block_bytes as usize];
             out.extend_from_slice(&data[copy_start as usize..(copy_start + copy_len) as usize]);

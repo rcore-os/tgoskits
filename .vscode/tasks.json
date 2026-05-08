@@ -2,6 +2,43 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "TGOS: Build ArceOS debug image",
+      "hide": true,
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "xtask",
+        "arceos",
+        "build",
+        "--debug",
+        "--package",
+        "ax-helloworld",
+        "--arch",
+        "aarch64"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "TGOS: Prepare ArceOS QEMU debug",
+      "hide": true,
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "TGOS: Build ArceOS debug image",
+        "TGOS: Start ArceOS QEMU debug"
+      ],
+      "problemMatcher": []
+    },
+    {
       "label": "TGOS: Start ArceOS QEMU debug",
       "hide": true,
       "isBackground": true,
@@ -65,6 +102,41 @@
       }
     },
     {
+      "label": "TGOS: Build Axvisor debug image",
+      "hide": true,
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "xtask",
+        "axvisor",
+        "build",
+        "--debug",
+        "--config",
+        "os/axvisor/.build.toml"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "TGOS: Prepare Axvisor QEMU debug",
+      "hide": true,
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "TGOS: Build Axvisor debug image",
+        "TGOS: Start Axvisor QEMU debug"
+      ],
+      "problemMatcher": []
+    },
+    {
       "label": "TGOS: Start Axvisor QEMU debug",
       "hide": true,
       "isBackground": true,
@@ -126,6 +198,41 @@
         "panel": "shared",
         "reveal": "never"
       }
+    },
+    {
+      "label": "TGOS: Build StarryOS debug image",
+      "hide": true,
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "xtask",
+        "starry",
+        "build",
+        "--debug",
+        "--arch",
+        "aarch64"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "TGOS: Prepare StarryOS QEMU debug",
+      "hide": true,
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "TGOS: Build StarryOS debug image",
+        "TGOS: Start StarryOS QEMU debug"
+      ],
+      "problemMatcher": []
     },
     {
       "label": "TGOS: Start StarryOS QEMU debug",

@@ -45,9 +45,6 @@ mod mp;
 #[cfg(feature = "paging")]
 mod klib;
 
-#[cfg(feature = "buddy-slab")]
-use ax_alloc::eii::ax_alloc_virt_to_phys_impl;
-
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 
@@ -67,18 +64,12 @@ unsafe extern "C" {
     fn main();
 }
 
-#[cfg(feature = "buddy-slab")]
-#[ax_alloc_virt_to_phys_impl]
-fn ax_alloc_virt_to_phys(vaddr: usize) -> usize {
-    ax_hal::mem::virt_to_phys(vaddr.into()).as_usize()
-}
-
 struct LogIfImpl;
 
 #[ax_crate_interface::impl_interface]
 impl ax_log::LogIf for LogIfImpl {
     fn console_write_str(s: &str) {
-        ax_hal::console::write_bytes(s.as_bytes());
+        ax_hal::console::write_text_bytes(s.as_bytes());
     }
 
     fn current_time() -> core::time::Duration {
@@ -137,7 +128,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     };
     ax_hal::percpu::init_primary(cpu_id);
     #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
-    ax_alloc::init_precpu_slab(cpu_id);
+    ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
 
@@ -357,6 +348,9 @@ fn init_interrupt() {
         unsafe { NEXT_DEADLINE.write_current_raw(deadline + PERIODIC_INTERVAL_NANOS) };
         ax_hal::time::set_oneshot_timer(deadline);
     }
+
+    #[cfg(target_arch = "loongarch64")]
+    ax_hal::irq::init_common_irq_handler();
 
     ax_hal::irq::register(ax_hal::time::irq_num(), || {
         update_timer();

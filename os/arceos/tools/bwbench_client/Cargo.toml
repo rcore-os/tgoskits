@@ -1,9 +1,9 @@
 [package]
 name = "bwbench-client"
 version = "0.3.1"
-edition = "2024"
+edition.workspace = true
 authors = ["ChengXiang Qi <kuangjux@outlook.com>"]
-license.workspace = true
+license = "Apache-2.0"
 publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,9 +11,3 @@ publish = false
 [dependencies]
 chrono = "0.4"
 libc = "0.2.18"
-
-[workspace]
-
-
-[workspace.package]
-license = "Apache-2.0"

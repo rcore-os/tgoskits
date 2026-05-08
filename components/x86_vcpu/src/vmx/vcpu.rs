@@ -335,19 +335,16 @@ impl VmxVcpu {
         // debug!("VM exit: {:#x?}", exit_info);
 
         match self.builtin_vmexit_handler(&exit_info) {
-            Some(result) => {
-                if result.is_err() {
+            Some(result) => match result {
+                Ok(()) => None,
+                Err(err) => {
                     panic!(
                         "VmxVcpu failed to handle a VM-exit that should be handled by itself: \
                          {:?}, error {:?}, vcpu: {:#x?}",
-                        exit_info.exit_reason,
-                        result.unwrap_err(),
-                        self
+                        exit_info.exit_reason, err, self
                     );
                 }
-
-                None
-            }
+            },
             None => Some(exit_info),
         }
     }

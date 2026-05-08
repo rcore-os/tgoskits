@@ -1,4 +1,4 @@
-use ax_memory_addr::{va_range, MemoryAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, VirtAddr, va_range};
 
 use crate::{MappingBackend, MappingError, MemoryArea, MemorySet};
 
@@ -52,6 +52,14 @@ impl MappingBackend for MockBackend {
         }
         true
     }
+
+    fn split(&mut self, _align_diff: usize) -> Option<Self> {
+        Some(self.clone())
+    }
+
+    fn shrink_left(&mut self, _shrink_size: usize) {}
+
+    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 macro_rules! assert_ok {

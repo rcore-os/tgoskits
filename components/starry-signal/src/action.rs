@@ -25,9 +25,14 @@ pub enum DefaultSignalAction {
     Continue,
 }
 
-/// Signal action that should be properly handled by the OS.
+/// Result of delivering a pending signal.
 ///
-/// See [`SignalManager::check_signals`] for details.
+/// Indicates how the OS should continue handling the signal after one pending
+/// signal has been delivered. Some variants request further kernel action,
+/// while [`SignalOSAction::NoFurtherAction`] means delivery is already complete
+/// and execution can return to user space.
+///
+/// See [`ThreadSignalManager::check_signals`] for details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalOSAction {
     /// Terminate the process.
@@ -38,9 +43,9 @@ pub enum SignalOSAction {
     Stop,
     /// Continue the process if stopped.
     Continue,
-    /// A signal handler is pushed into the signal stack. The OS doesn't need to
-    /// do anything.
-    Handler,
+    /// The user signal handler frame is installed. No further kernel action is
+    /// needed before returning to user space.
+    NoFurtherAction,
 }
 
 bitflags! {

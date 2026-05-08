@@ -10,14 +10,16 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, OpenOptions};
+use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
 use ax_task::current;
 use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
-use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
+use linux_raw_sys::general::{
+    O_RDONLY, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx, statx_timestamp,
+};
 use spin::RwLock;
 
 pub use self::{
@@ -26,7 +28,10 @@ pub use self::{
     pidfd::PidFd,
     pipe::Pipe,
 };
-use crate::task::{AX_FILE_LIMIT, AsThread};
+use crate::{
+    pseudofs::DeviceMmap,
+    task::{AX_FILE_LIMIT, AsThread},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kstat {
@@ -95,8 +100,11 @@ impl From<Kstat> for statx {
     fn from(value: Kstat) -> Self {
         // SAFETY: valid for statx
         let mut statx: statx = unsafe { core::mem::zeroed() };
+        // We always populate the basic stats; Linux returns the same mask.
+        // `stx_attributes` is left zero — it reports FS-specific flags we do
+        // not track.
+        statx.stx_mask = STATX_BASIC_STATS;
         statx.stx_blksize = value.blksize as _;
-        statx.stx_attributes = value.mode as _;
         statx.stx_nlink = value.nlink as _;
         statx.stx_uid = value.uid as _;
         statx.stx_gid = value.gid as _;
@@ -149,8 +157,24 @@ pub trait FileLike: Pollable + DowncastSync {
 
     fn path(&self) -> Cow<'_, str>;
 
+    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+        // man 2 mmap ENODEV: "The underlying filesystem of the specified file
+        // does not support memory mapping." This is the right errno for fd
+        // kinds that do not back onto a mappable file (directory, pipe,
+        // socket, epoll, eventfd, etc.).
+        Err(AxError::NoSuchDevice)
+    }
+
+    fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {
+        Err(AxError::BadFileDescriptor)
+    }
+
     fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
         Err(AxError::NotATty)
+    }
+
+    fn open_flags(&self) -> u32 {
+        0
     }
 
     fn nonblocking(&self) -> bool {
@@ -220,17 +244,47 @@ pub fn close_file_like(fd: c_int) -> AxResult {
     Ok(())
 }
 
+/// Close all open file descriptors for the current process.
+///
+/// This must be called when a process exits, so that pipe write ends and other
+/// resources are properly released. Without this, parent processes blocking on
+/// pipe reads will never receive EOF.
+pub fn close_all_fds() {
+    // CLONE_FILES may share the same fd table across multiple tasks/processes.
+    // In that case, an exiting sharer must not clear the whole table, or other
+    // live sharers (including the parent) will lose stdout/stderr unexpectedly.
+    if Arc::strong_count(&FD_TABLE) > 1 {
+        return;
+    }
+
+    let mut table = FD_TABLE.write();
+    let ids: alloc::vec::Vec<usize> = table.ids().collect();
+    let mut removed = alloc::vec::Vec::with_capacity(ids.len());
+    for id in ids {
+        match table.remove(id) {
+            Some(fd) => removed.push(fd),
+            None => warn!("close_all_fds: fd {id} disappeared during close sweep"),
+        }
+    }
+    drop(table);
+
+    // Drop removed descriptors after releasing FD_TABLE lock to avoid
+    // lock re-entry or side effects from destructor paths.
+    drop(removed);
+}
+
 pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
     assert_eq!(fd_table.count(), 0);
     let cx = FS_CONTEXT.lock();
-    let open = |options: &mut OpenOptions| {
+    let open = |options: &mut OpenOptions, flags| {
         AxResult::Ok(Arc::new(File::new(
             options.open(&cx, "/dev/console")?.into_file()?,
+            flags,
         )))
     };
 
-    let tty_in = open(OpenOptions::new().read(true).write(false))?;
-    let tty_out = open(OpenOptions::new().read(false).write(true))?;
+    let tty_in = open(OpenOptions::new().read(true).write(false), O_RDONLY as _)?;
+    let tty_out = open(OpenOptions::new().read(false).write(true), O_WRONLY as _)?;
     fd_table
         .add(FileDescriptor {
             inner: tty_in,

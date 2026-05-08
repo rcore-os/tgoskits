@@ -86,7 +86,7 @@ pub unsafe extern "C" fn recvfrom(
     if socket_addr.is_null() {
         return e(sys_recv(socket_fd, buf_ptr, len, flag) as _) as _;
     }
-    e(sys_recvfrom(socket_fd, buf_ptr, len, flag, socket_addr, addrlen) as _) as _
+    unsafe { e(sys_recvfrom(socket_fd, buf_ptr, len, flag, socket_addr, addrlen) as _) as _ }
 }
 
 /// Receive a message on a socket.
@@ -122,7 +122,7 @@ pub unsafe extern "C" fn accept(
     socket_addr: *mut ctypes::sockaddr,
     socket_len: *mut ctypes::socklen_t,
 ) -> c_int {
-    e(sys_accept(socket_fd, socket_addr, socket_len))
+    unsafe { e(sys_accept(socket_fd, socket_addr, socket_len)) }
 }
 
 /// Shut down a full-duplex connection.
@@ -146,7 +146,7 @@ pub unsafe extern "C" fn getaddrinfo(
     hints: *const ctypes::addrinfo,
     res: *mut *mut ctypes::addrinfo,
 ) -> c_int {
-    let ret = e(sys_getaddrinfo(nodename, servname, hints, res));
+    let ret = unsafe { e(sys_getaddrinfo(nodename, servname, hints, res)) };
     match ret {
         r if r < 0 => ctypes::EAI_FAIL,
         0 => ctypes::EAI_NONAME,
@@ -157,7 +157,7 @@ pub unsafe extern "C" fn getaddrinfo(
 /// Free queried `addrinfo` struct
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn freeaddrinfo(res: *mut ctypes::addrinfo) {
-    sys_freeaddrinfo(res);
+    unsafe { sys_freeaddrinfo(res) };
 }
 
 /// Get current address to which the socket sockfd is bound.
@@ -167,7 +167,7 @@ pub unsafe extern "C" fn getsockname(
     addr: *mut ctypes::sockaddr,
     addrlen: *mut ctypes::socklen_t,
 ) -> c_int {
-    e(sys_getsockname(sock_fd, addr, addrlen))
+    unsafe { e(sys_getsockname(sock_fd, addr, addrlen)) }
 }
 
 /// Get peer address to which the socket sockfd is connected.
@@ -177,5 +177,5 @@ pub unsafe extern "C" fn getpeername(
     addr: *mut ctypes::sockaddr,
     addrlen: *mut ctypes::socklen_t,
 ) -> c_int {
-    e(sys_getpeername(sock_fd, addr, addrlen))
+    unsafe { e(sys_getpeername(sock_fd, addr, addrlen)) }
 }

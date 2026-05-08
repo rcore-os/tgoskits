@@ -1,0 +1,8 @@
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+features = [
+    "ept-level-4",
+    "fs",
+]
+log = "Info"
+target = "x86_64-unknown-none"
+vm_configs = ["os/axvisor/configs/vms/nimbos-x86_64-qemu-smp1.toml"]

@@ -21,6 +21,9 @@ pub enum ReturnReason {
 /// A generalized kind for [`ExceptionInfo`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExceptionKind {
+    #[cfg(target_arch = "x86_64")]
+    /// A debug exception.
+    Debug,
     /// A breakpoint exception.
     Breakpoint,
     /// An illegal instruction exception.
@@ -46,11 +49,11 @@ struct ExceptionTableEntry {
 
 impl ExceptionTableEntry {
     #[inline]
-    fn from_addr(&self) -> usize {
+    fn source_addr(&self) -> usize {
         #[cfg(target_arch = "aarch64")]
         {
             let base = (&self.from as *const i32) as isize;
-            return (base + self.from as isize) as usize;
+            (base + self.from as isize) as usize
         }
 
         #[cfg(not(target_arch = "aarch64"))]
@@ -64,7 +67,7 @@ impl ExceptionTableEntry {
         #[cfg(target_arch = "aarch64")]
         {
             let base = (&self.to as *const i32) as isize;
-            return (base + self.to as isize) as usize;
+            (base + self.to as isize) as usize
         }
 
         #[cfg(not(target_arch = "aarch64"))]
@@ -89,7 +92,7 @@ impl TrapFrame {
                     .offset_from_unsigned(_ex_table_start.as_ptr()),
             )
         };
-        match entries.binary_search_by_key(&self.ip(), ExceptionTableEntry::from_addr) {
+        match entries.binary_search_by_key(&self.ip(), ExceptionTableEntry::source_addr) {
             Ok(entry) => {
                 self.set_ip(entries[entry].to_addr());
                 true
@@ -109,5 +112,5 @@ pub(crate) fn init_exception_table() {
                 .offset_from_unsigned(_ex_table_start.as_ptr()),
         )
     };
-    ex_table.sort_unstable_by_key(ExceptionTableEntry::from_addr);
+    ex_table.sort_unstable_by_key(ExceptionTableEntry::source_addr);
 }

@@ -110,6 +110,11 @@ pub fn memory_regions() -> impl Iterator<Item = PhysMemRegion> {
     ALL_MEM_REGIONS.iter().cloned()
 }
 
+#[cfg(plat_dyn)]
+pub fn boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
+    axplat_dyn::boot_stack_bounds(cpu_id)
+}
+
 /// Fills the `.bss` section with zeros.
 ///
 /// It requires the symbols `_sbss` and `_ebss` to be defined in the linker script.

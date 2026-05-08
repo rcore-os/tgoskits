@@ -1,0 +1,10 @@
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+features = [
+    "ept-level-4",
+    "ax-std/bus-mmio",
+    "fs",
+]
+log = "Info"
+plat_dyn = true
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["os/axvisor/configs/vms/linux-aarch64-qemu-smp1.toml"]

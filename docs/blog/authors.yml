@@ -1,0 +1,8 @@
+tgoskits-team:
+  name: TGOSKits Team
+  title: Maintainers and Contributors of the TGOSKits Workspace
+  url: https://github.com/rcore-os/tgoskits
+  image_url: https://github.com/rcore-os.png
+  page: true
+  socials:
+    github: rcore-os

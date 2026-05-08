@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version = "0.5.11"
+version = "0.5.12"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -9,7 +9,9 @@ license.workspace = true
 
 [features]
 fat = ["dep:fatfs"]
-ext4 = ["dep:lwext4_rust"]
+ext4-lwext4 = ["dep:lwext4_rust"]
+ext4-rsext4 = ["dep:rsext4"]
+ext4 = ["ext4-rsext4"]
 times = []
 std = ["lwext4_rust?/std"]
 
@@ -36,6 +38,10 @@ spin = { workspace = true }
 [dependencies.lwext4_rust]
 version = "0.2"
 default-features = false
+optional = true
+
+[dependencies.rsext4]
+workspace = true
 optional = true
 
 [dependencies.fatfs]

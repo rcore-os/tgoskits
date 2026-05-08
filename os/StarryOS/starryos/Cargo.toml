@@ -11,23 +11,25 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.8"
+version = "0.5.9"
 
 [features]
 default = []
 qemu = [
   "ax-feat/defplat",
   "ax-feat/irq",
+  "ax-feat/rtc",
   "ax-feat/bus-pci",
   "ax-feat/display",
   "starry-kernel/input",
   "starry-kernel/vsock", # auxilary features
+  "axplat-dyn?/rtc",
   "axplat-dyn?/intel-net",
   "axplat-dyn?/virtio-net-pci",
 ]
-smp = ["ax-feat/smp", "axplat-dyn?/smp", "axplat-riscv64-visionfive2?/smp"]
+smp = ["ax-feat/smp", "axplat-dyn?/smp"]
 
-vf2 = ["dep:axplat-riscv64-visionfive2", "ax-feat/driver-sdmmc"]
+rknpu = ["dep:axplat-dyn", "starry-kernel/rknpu", "axplat-dyn/rknpu"]
 
 [[bin]]
 name = "starryos"
@@ -38,20 +40,15 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-ax-feat = {workspace = true, features = ["fs-ng-times", "irq"]}
-axplat-dyn = {workspace = true, optional = true}
-starry-kernel = {workspace = true, features = ["dev-log"]}
-
-[dependencies.axplat-riscv64-visionfive2]
-features = ["fp-simd", "irq", "rtc"]
-optional = true
-version = "0.1.0-pre.1"
+ax-feat = { workspace = true, features = ["fs-ng-times", "irq"] }
+axplat-dyn = { workspace = true, optional = true }
+starry-kernel = { workspace = true, features = ["dev-log"] }
 
 [target.'cfg(any(windows,unix))'.dependencies]
 anyhow = "1.0"
-axbuild = "0.4"
-clap = {version = "4.6", features = ["derive"]}
-tokio = {version = "1.0", features = ["full"]}
+axbuild = { workspace = true }
+clap = { version = "4.6", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
 
 [package.metadata.vendor-filter]
 all-features = true

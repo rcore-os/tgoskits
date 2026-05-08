@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::{AxResult, ax_err_type};
+use ax_errno::AxResult;
 use axaddrspace::GuestPhysAddr;
 
 use axvm::VMMemoryRegion;
@@ -121,18 +121,18 @@ impl ImageLoader {
 
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             crate::vmm::fdt::update_fdt(
                 core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
                 _dtb_slice.len(),
                 self.vm.clone(),
                 &self.config,
             );
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(target_arch = "loongarch64")]
             load_vm_image_from_memory(_dtb_slice, self.dtb_load_gpa.unwrap(), self.vm.clone())
                 .expect("Failed to load DTB images");
         } else {
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
             if let Some(buffer) = vm_imags.dtb {
                 load_vm_image_from_memory(buffer, self.dtb_load_gpa.unwrap(), self.vm.clone())
                     .expect("Failed to load DTB images");
@@ -179,7 +179,7 @@ impl ImageLoader {
         let load_gpa = self
             .vm
             .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
-            .ok_or_else(|| ax_err_type!(NotFound, "Ramdisk load addr is missed"))?;
+            .ok_or_else(|| ax_errno::ax_err_type!(NotFound, "Ramdisk load addr is missed"))?;
         let (_, ramdisk_size) = fs::open_image_file(ramdisk_path)?;
         self.vm.with_config(|config| {
             if let Some(ref mut rd) = config.image_config.ramdisk {
@@ -308,14 +308,14 @@ pub mod fs {
         let vm_config = axvm::config::AxVMConfig::from(loader.config.clone());
         if let Some(dtb_arc) = get_vm_dtb_arc(&vm_config) {
             let _dtb_slice: &[u8] = &dtb_arc;
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             crate::vmm::fdt::update_fdt(
                 core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
                 _dtb_slice.len(),
                 loader.vm.clone(),
                 &loader.config,
             );
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(target_arch = "loongarch64")]
             load_vm_image_from_memory(_dtb_slice, loader.dtb_load_gpa.unwrap(), loader.vm.clone())
                 .expect("Failed to load DTB images");
         }

@@ -152,7 +152,7 @@ impl DeviceOps for LoopDevice {
         self
     }
 
-    fn mmap(&self) -> DeviceMmap {
+    fn mmap(&self, _offset: u64) -> DeviceMmap {
         if let Some(FileBackend::Cached(cache)) = self.file.lock().as_ref() {
             DeviceMmap::Cache(cache.clone())
         } else {

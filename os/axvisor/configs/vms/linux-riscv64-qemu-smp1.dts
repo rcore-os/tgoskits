@@ -44,7 +44,7 @@
 	};
 
 	chosen {
-		bootargs = "earlycon=sbi console=ttyS0,115200 init=/init root=/dev/vda rw";
+		bootargs = "earlycon=sbi console=ttyS0,115200 init=/bin/sh root=/dev/vda rw";
 		stdout-path = "/soc/serial@10000000";
 	};
 

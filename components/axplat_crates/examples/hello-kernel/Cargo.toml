@@ -2,9 +2,9 @@
 name = "hello-kernel"
 version = "0.3.1"
 edition.workspace = true
-authors.workspace = true
-repository.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.com>", "yanjuguang <coolyanjg@163.com>", "Su Mingxian <aarkegz@gmail.com>", "RobertYuan <634954435@qq.com>", "hky1999 <keyang.hu@qq.com>"]
+repository = "https://github.com/rcore-os/tgoskits"
+license = "Apache-2.0"
 publish = false
 
 [dependencies]
@@ -12,13 +12,10 @@ cfg-if = "1.0"
 ax-plat = { workspace = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-ax-plat-x86-pc = { path = "../../platforms/axplat-x86-pc" }
-
+ax-plat-x86-pc = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-ax-plat-aarch64-qemu-virt = { path = "../../platforms/axplat-aarch64-qemu-virt" }
-
+ax-plat-aarch64-qemu-virt = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-ax-plat-riscv64-qemu-virt = { path = "../../platforms/axplat-riscv64-qemu-virt" }
-
+ax-plat-riscv64-qemu-virt = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
-ax-plat-loongarch64-qemu-virt = { path = "../../platforms/axplat-loongarch64-qemu-virt" }
+ax-plat-loongarch64-qemu-virt = { workspace = true }

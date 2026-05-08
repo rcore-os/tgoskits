@@ -6,13 +6,14 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use ax_alloc::tracking::{allocations_in, current_generation, disable_tracking, enable_tracking};
 use axbacktrace::Backtrace;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 
 use crate::{
     mm::clear_elf_cache,
+    pseudofs::DeviceOps,
     task::{cleanup_task_tables, tasks},
-    vfs::DeviceOps,
 };
 
 static STAMPED_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -101,10 +102,10 @@ fn run_memory_analysis() {
     );
 
     let from = STAMPED_GENERATION.load(Ordering::SeqCst);
-    let to = ax_alloc::current_generation();
+    let to = current_generation();
 
     let mut allocations: BTreeMap<MemoryCategory, Vec<Layout>> = BTreeMap::new();
-    ax_alloc::allocations_in(from..to, |info| {
+    allocations_in(from..to, |info| {
         let category = MemoryCategory::new(&info.backtrace);
         allocations.entry(category).or_default().push(info.layout);
     });
@@ -142,14 +143,14 @@ impl DeviceOps for MemTrack {
         if offset == 0 && !buf.is_empty() {
             match buf {
                 b"start\n" => {
-                    let generation = ax_alloc::current_generation();
+                    let generation = current_generation();
                     STAMPED_GENERATION.store(generation, Ordering::SeqCst);
                     ax_println!("Memory allocation generation stamped: {}", generation);
-                    ax_alloc::enable_tracking();
+                    enable_tracking();
                 }
                 b"end\n" => {
                     run_memory_analysis();
-                    ax_alloc::disable_tracking();
+                    disable_tracking();
                 }
                 _ => {}
             }

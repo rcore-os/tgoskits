@@ -97,7 +97,7 @@ fn concurrent_check_signals() {
 
     let (si, action) = thr.check_signals(&mut uctx, None).unwrap();
     assert_eq!(si.signo(), Signo::SIGTERM);
-    assert_eq!(action, SignalOSAction::Handler);
+    assert_eq!(action, SignalOSAction::NoFurtherAction);
     assert!(thr.signal_blocked(Signo::SIGTERM));
 
     thread::spawn({

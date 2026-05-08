@@ -258,6 +258,8 @@ fn main() -> anyhow::Result<()> {
 
     let platform = if arch == "aarch64" {
         "aarch64-generic".to_string()
+    } else if arch == "loongarch64" {
+        "loongarch64-qemu-virt".to_string()
     } else if arch == "x86_64" {
         "x86-qemu-q35".to_string()
     } else if arch == "riscv64" {

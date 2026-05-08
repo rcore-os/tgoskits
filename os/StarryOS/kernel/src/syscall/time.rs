@@ -24,9 +24,7 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxR
             utime + stime
         }
         _ => {
-            warn!("Called sys_clock_gettime for unsupported clock {clock_id}");
-            wall_time()
-            // return Err(AxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
     };
     ts.vm_write(timespec::from_time_value(now))?;
@@ -38,12 +36,27 @@ pub fn sys_gettimeofday(ts: *mut timeval) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxResult<isize> {
-    if clock_id as u32 != CLOCK_MONOTONIC && clock_id as u32 != CLOCK_REALTIME {
-        warn!("Called sys_clock_getres for unsupported clock {clock_id}");
+pub fn sys_time(tloc: *mut usize) -> AxResult<isize> {
+    let secs = wall_time().as_secs() as isize;
+    if let Some(tloc) = tloc.nullable() {
+        tloc.vm_write(secs as usize)?;
     }
+    Ok(secs)
+}
+
+pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxResult<isize> {
+    let resolution = match clock_id as u32 {
+        CLOCK_REALTIME
+        | CLOCK_MONOTONIC
+        | CLOCK_MONOTONIC_RAW
+        | CLOCK_BOOTTIME
+        | CLOCK_PROCESS_CPUTIME_ID
+        | CLOCK_THREAD_CPUTIME_ID => TimeValue::from_nanos(1),
+        CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => TimeValue::from_millis(4),
+        _ => return Err(AxError::InvalidInput),
+    };
     if let Some(res) = res.nullable() {
-        res.vm_write(timespec::from_time_value(TimeValue::from_micros(1)))?;
+        res.vm_write(timespec::from_time_value(resolution))?;
     }
     Ok(0)
 }
@@ -62,13 +75,12 @@ pub struct Tms {
 
 pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
     let (utime, stime) = current().as_thread().time.borrow().output();
-    let utime = utime.as_micros() as usize;
-    let stime = stime.as_micros() as usize;
+    let (cutime, cstime) = current().as_thread().proc_data.children_cpu_time();
     tms.vm_write(Tms {
-        tms_utime: utime,
-        tms_stime: stime,
-        tms_cutime: utime,
-        tms_cstime: stime,
+        tms_utime: utime.as_micros() as usize,
+        tms_stime: stime.as_micros() as usize,
+        tms_cutime: cutime.as_micros() as usize,
+        tms_cstime: cstime.as_micros() as usize,
     })?;
     Ok(nanos_to_ticks(monotonic_time_nanos()) as _)
 }

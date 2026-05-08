@@ -40,6 +40,14 @@ cfg_if::cfg_if! {
         /// RISC-V uses Sv39 (3 levels) or Sv48 (4 levels) for guest page tables.
         /// Default to 4 levels (Sv48) for maximum address space.
         pub fn max_guest_page_table_levels() -> usize { 4 }
+    } else if #[cfg(target_arch = "loongarch64")] {
+        pub use loongarch_vcpu::LoongArchPerCpu as AxVMArchPerCpuImpl;
+        pub use loongarch_vcpu::LoongArchVCpu as AxArchVCpuImpl;
+        pub use loongarch_vcpu::LoongArchVCpuCreateConfig as AxVCpuCreateConfig;
+        pub use loongarch_vcpu::has_hardware_support;
+
+        /// LoongArch guests currently use 4-level page tables.
+        pub fn max_guest_page_table_levels() -> usize { 4 }
     } else if #[cfg(target_arch = "aarch64")] {
         pub use arm_vcpu::Aarch64VCpu as AxArchVCpuImpl;
         pub use arm_vcpu::Aarch64PerCpu as AxVMArchPerCpuImpl;

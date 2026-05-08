@@ -25,7 +25,7 @@ pub use {
 #[cfg(feature = "net")]
 pub use {
     crate::structs::AxNetDevice,
-    ax_driver_net::{NetBufPtr, NetDriverOps},
+    ax_driver_net::{NetBufPtr, NetDriverOps, NetIrqEvent},
 };
 #[cfg(feature = "vsock")]
 pub use {

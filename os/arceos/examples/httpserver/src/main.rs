@@ -6,8 +6,22 @@
 //! ab -n 5000 -c 20 http://X.X.X.X:5555/
 //! ```
 
-#![cfg_attr(feature = "ax-std", no_std)]
-#![cfg_attr(feature = "ax-std", no_main)]
+#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_std)]
+#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_main)]
+
+#[cfg(any(not(target_os = "none"), feature = "ax-std"))]
+macro_rules! app {
+    ($($item:item)*) => {
+        $($item)*
+    };
+}
+
+#[cfg(not(any(not(target_os = "none"), feature = "ax-std")))]
+macro_rules! app {
+    ($($item:item)*) => {};
+}
+
+app! {
 
 #[macro_use]
 #[cfg(feature = "ax-std")]
@@ -96,4 +110,16 @@ fn accept_loop() -> io::Result<()> {
 fn main() {
     println!("Hello, ArceOS HTTP server!");
     accept_loop().expect("test HTTP server failed");
+}
+
+}
+
+#[cfg(all(target_os = "none", not(feature = "ax-std")))]
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() {}
+
+#[cfg(all(target_os = "none", not(feature = "ax-std")))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    loop {}
 }

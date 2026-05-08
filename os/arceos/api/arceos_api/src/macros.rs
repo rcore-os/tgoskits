@@ -32,7 +32,7 @@ macro_rules! define_api {
         $(
             $(#[$attr])*
             $vis unsafe fn $name( $($arg : $type),* ) $( -> $ret )? {
-                $crate::imp::$name( $($arg),* )
+                unsafe { $crate::imp::$name( $($arg),* ) }
             }
         )+
     };
@@ -63,7 +63,7 @@ macro_rules! define_api {
             #[cfg(feature = $feature)]
             $(#[$attr])*
             $vis unsafe fn $name( $($arg : $type),* ) $( -> $ret )? {
-                $crate::imp::$name( $($arg),* )
+                unsafe { $crate::imp::$name( $($arg),* ) }
             }
 
             #[allow(unused_variables)]

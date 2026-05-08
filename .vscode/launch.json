@@ -8,7 +8,7 @@
       "initCommands": [
         "process handle SIGINT -p false -s false -n false"
       ],
-      "preLaunchTask": "TGOS: Start ArceOS QEMU debug",
+      "preLaunchTask": "TGOS: Prepare ArceOS QEMU debug",
       "postDebugTask": "TGOS: Stop ArceOS QEMU debug",
       "targetCreateCommands": [
         "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld",
@@ -32,7 +32,7 @@
       "initCommands": [
         "process handle SIGINT -p false -s false -n false"
       ],
-      "preLaunchTask": "TGOS: Start ArceOS QEMU debug",
+      "preLaunchTask": "TGOS: Prepare ArceOS QEMU debug",
       "postDebugTask": "TGOS: Stop ArceOS QEMU debug",
       "targetCreateCommands": [
         "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld",
@@ -59,7 +59,7 @@
         "process handle SIGINT -p false -s false -n false",
         "settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table_entry::|page_table_multiarch::)"
       ],
-      "preLaunchTask": "TGOS: Start Axvisor QEMU debug",
+      "preLaunchTask": "TGOS: Prepare Axvisor QEMU debug",
       "postDebugTask": "TGOS: Stop Axvisor QEMU debug",
       "targetCreateCommands": [
         "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor",
@@ -84,7 +84,7 @@
         "process handle SIGINT -p false -s false -n false",
         "settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table_entry::|page_table_multiarch::)"
       ],
-      "preLaunchTask": "TGOS: Start Axvisor QEMU debug",
+      "preLaunchTask": "TGOS: Prepare Axvisor QEMU debug",
       "postDebugTask": "TGOS: Stop Axvisor QEMU debug",
       "targetCreateCommands": [
         "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor",
@@ -108,7 +108,7 @@
       "initCommands": [
         "process handle SIGINT -p false -s false -n false"
       ],
-      "preLaunchTask": "TGOS: Start StarryOS QEMU debug",
+      "preLaunchTask": "TGOS: Prepare StarryOS QEMU debug",
       "postDebugTask": "TGOS: Stop StarryOS QEMU debug",
       "targetCreateCommands": [
         "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/starryos",
@@ -132,7 +132,7 @@
       "initCommands": [
         "process handle SIGINT -p false -s false -n false"
       ],
-      "preLaunchTask": "TGOS: Start StarryOS QEMU debug",
+      "preLaunchTask": "TGOS: Prepare StarryOS QEMU debug",
       "postDebugTask": "TGOS: Stop StarryOS QEMU debug",
       "targetCreateCommands": [
         "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/starryos",

@@ -5,12 +5,32 @@
 extern crate std;
 
 mod base;
-#[cfg(feature = "lockdep")]
-mod lockdep;
-
 use ax_kernel_guard::{NoOp, NoPreempt, NoPreemptIrqSave};
+#[cfg(feature = "lockdep")]
+pub mod lockdep;
 
 pub use self::base::{BaseSpinLock, BaseSpinLockGuard};
+
+/// Enables or disables the phase-3 lock flow tracing path.
+pub fn set_lockdep_trace_enabled(enabled: bool) {
+    #[cfg(feature = "lockdep")]
+    {
+        ax_lockdep::set_trace_enabled(enabled);
+    }
+
+    #[cfg(not(feature = "lockdep"))]
+    {
+        let _ = enabled;
+    }
+}
+
+/// Dumps the buffered phase-3 trace stream to the raw trace sink.
+pub fn dump_lockdep_trace() {
+    #[cfg(feature = "lockdep")]
+    {
+        ax_lockdep::dump_trace_buffer();
+    }
+}
 
 /// A spin lock that disables kernel preemption while trying to lock, and
 /// re-enables it after unlocking.

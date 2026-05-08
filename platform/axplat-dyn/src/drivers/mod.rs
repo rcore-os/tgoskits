@@ -14,9 +14,13 @@ use rdrive::probe::OnProbeError;
 use spin::Mutex;
 
 mod pci;
+#[cfg(feature = "rknpu")]
+mod rknpu;
 #[cfg(feature = "serial")]
 mod serial;
 mod soc;
+#[cfg(feature = "rtc")]
+mod time;
 mod virtio;
 
 pub mod blk;

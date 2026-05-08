@@ -3,6 +3,7 @@ use somehal::irq_handler;
 
 /// The maximum number of IRQs.
 const MAX_IRQ_COUNT: usize = 1024;
+const GIC_SPECIAL_IRQ_START: usize = 1020;
 
 static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 
@@ -57,6 +58,10 @@ impl IrqIf for IrqIfImpl {
 
 #[irq_handler]
 fn somehal_handle_irq(irq: somehal::irq::IrqId) {
+    if irq.raw() >= GIC_SPECIAL_IRQ_START {
+        trace!("Ignoring special IRQ {irq:?}");
+        return;
+    }
     if !IRQ_HANDLER_TABLE.handle(irq.raw()) {
         warn!("Unhandled IRQ {irq:?}");
     }

@@ -1,0 +1,11 @@
+{
+  "label": "快速开始",
+  "position": 2,
+  "collapsed": false,
+  "link": {
+    "type": "generated-index",
+    "title": "快速开始",
+    "slug": "/quickstart",
+    "description": "环境准备与 QEMU 配置，以及各系统在不同架构下的快速上手指南。"
+  }
+}
