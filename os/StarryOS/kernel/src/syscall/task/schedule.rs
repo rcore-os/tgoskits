@@ -11,7 +11,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use crate::{
-    task::{get_process_data, get_process_group, get_task},
+    task::{AsThread, ProcessData, get_process_data, get_process_group, get_task, processes},
     time::TimeValueLike,
 };
 
@@ -152,24 +152,93 @@ pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
 
     match which {
         PRIO_PROCESS => {
-            if who != 0 {
-                let _proc = get_process_data(who)?;
-            }
-            Ok(20)
+            let proc = get_process_data(who)?;
+            Ok(raw_priority(proc.nice()))
         }
         PRIO_PGRP => {
-            if who != 0 {
-                let _pg = get_process_group(who)?;
-            }
-            Ok(20)
+            let pgid = if who == 0 {
+                current().as_thread().proc_data.proc.group().pgid()
+            } else {
+                get_process_group(who)?.pgid()
+            };
+            min_priority_for_processes(
+                processes()
+                    .into_iter()
+                    .filter(|proc| proc.proc.group().pgid() == pgid),
+            )
         }
         PRIO_USER => {
             if who == 0 {
-                Ok(20)
+                Ok(raw_priority(current().as_thread().proc_data.nice()))
             } else {
                 Err(AxError::NoSuchProcess)
             }
         }
         _ => Err(AxError::InvalidInput),
+    }
+}
+
+pub fn sys_setpriority(which: u32, who: u32, prio: i32) -> AxResult<isize> {
+    debug!("sys_setpriority <= which: {which}, who: {who}, prio: {prio}");
+
+    let nice = prio.clamp(-20, 19);
+    match which {
+        PRIO_PROCESS => {
+            let proc = get_process_data(who)?;
+            proc.set_nice(nice);
+            Ok(0)
+        }
+        PRIO_PGRP => {
+            let pgid = if who == 0 {
+                current().as_thread().proc_data.proc.group().pgid()
+            } else {
+                get_process_group(who)?.pgid()
+            };
+            set_priority_for_processes(
+                processes()
+                    .into_iter()
+                    .filter(|proc| proc.proc.group().pgid() == pgid),
+                nice,
+            )
+        }
+        PRIO_USER => {
+            if who == 0 {
+                current().as_thread().proc_data.set_nice(nice);
+                Ok(0)
+            } else {
+                Err(AxError::NoSuchProcess)
+            }
+        }
+        _ => Err(AxError::InvalidInput),
+    }
+}
+
+fn raw_priority(nice: i32) -> isize {
+    (20 - nice) as isize
+}
+
+fn min_priority_for_processes(
+    procs: impl Iterator<Item = alloc::sync::Arc<ProcessData>>,
+) -> AxResult<isize> {
+    procs
+        .map(|proc| proc.nice())
+        .min()
+        .map(raw_priority)
+        .ok_or(AxError::NoSuchProcess)
+}
+
+fn set_priority_for_processes(
+    procs: impl Iterator<Item = alloc::sync::Arc<ProcessData>>,
+    nice: i32,
+) -> AxResult<isize> {
+    let mut found = false;
+    for proc in procs {
+        proc.set_nice(nice);
+        found = true;
+    }
+    if found {
+        Ok(0)
+    } else {
+        Err(AxError::NoSuchProcess)
     }
 }

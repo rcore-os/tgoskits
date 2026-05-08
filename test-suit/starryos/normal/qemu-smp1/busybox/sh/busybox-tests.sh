@@ -408,6 +408,9 @@ if echo "$_t" | grep -qF "Usage: nc"; then echo "PASS: busybox_nc"; PASS=$((PASS
 _t=$({ timeout 10 sh -c "busybox netstat -a 2>&1; busybox echo netstat_ok"; } 2>&1)
 if echo "$_t" | grep -qF "netstat_ok"; then echo "PASS: busybox_netstat"; PASS=$((PASS+1)); else echo "FAIL: busybox_netstat"; FAIL=$((FAIL+1)); fi
 
+_t=$({ timeout 10 sh -c "busybox nice -n 10 busybox echo nice_ok 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "nice_ok"; then echo "PASS: busybox_nice"; PASS=$((PASS+1)); else echo "FAIL: busybox_nice"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox nl -ba /etc/passwd 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "root:"; then echo "PASS: busybox_nl"; PASS=$((PASS+1)); else echo "FAIL: busybox_nl"; FAIL=$((FAIL+1)); fi
 
