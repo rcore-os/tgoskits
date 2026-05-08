@@ -44,7 +44,7 @@ sidebar_label: "环境与平台"
 | 模拟器 | QEMU ≥ 10.2.1 | 系统级验证的执行环境 | 源码构建或发行版包（Container 内已预装） |
 | 辅助构建 | `cmake`, `make`, `ninja-build` | C 测试用例交叉编译 | 系统 apt 包 |
 | 辅助分析 | `cargo-binutils` | 二进制分析（`cargo size`, `cargo objdump`） | `cargo install cargo-binutils` |
-| 镜像操作 | `ostool` | ELF / 镜像格式转换 | 仓库内建 |
+| 镜像操作 | `ostool` | ELF / 镜像格式转换 | Cargo 依赖（v0.15） |
 
 ### 容器镜像
 
@@ -158,7 +158,6 @@ Axvisor 通过硬编码的测试组管理板级支持，每组对应一块物理
 板级配置位于 `os/axvisor/configs/`：
 - `board/<board_name>.toml` — 构建配置（编译选项、内核特性）
 - `vms/<vm_config>.toml` — 虚拟机配置（内存、CPU、设备列表）
-- `board-test/<group>.toml` — 板级测试配置（串口参数、超时、判定正则）
 
 ### StarryOS 开发板
 
