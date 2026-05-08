@@ -146,13 +146,30 @@ pub struct ExceptionInfo {
 }
 
 impl ExceptionInfo {
+    /// Returns the raw Exception Syndrome Register value.
+    pub fn esr_value(&self) -> u64 {
+        self.esr.get()
+    }
+
+    /// Returns the raw exception class bits.
+    pub fn ec_value(&self) -> u64 {
+        self.esr.read(ESR_EL1::EC)
+    }
+
+    /// Returns the instruction specific syndrome bits.
+    pub fn iss_value(&self) -> u64 {
+        self.esr.read(ESR_EL1::ISS)
+    }
+
     /// Returns a generalized kind of this exception.
     pub fn kind(&self) -> ExceptionKind {
         match self.esr.read_as_enum(ESR_EL1::EC) {
             Some(ESR_EL1::EC::Value::Brk64) | Some(ESR_EL1::EC::Value::Bkpt32) => {
                 ExceptionKind::Breakpoint
             }
-            Some(ESR_EL1::EC::Value::IllegalExecutionState) => ExceptionKind::IllegalInstruction,
+            Some(ESR_EL1::EC::Value::IllegalExecutionState) | Some(ESR_EL1::EC::Value::Unknown) => {
+                ExceptionKind::IllegalInstruction
+            }
             Some(ESR_EL1::EC::Value::PCAlignmentFault)
             | Some(ESR_EL1::EC::Value::SPAlignmentFault) => ExceptionKind::Misaligned,
             _ => ExceptionKind::Other,

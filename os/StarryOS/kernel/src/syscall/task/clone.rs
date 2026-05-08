@@ -4,7 +4,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_hal::uspace::UserContext;
 use ax_kspin::SpinNoIrq;
-use ax_task::{AxTaskExt, current, spawn_task};
+use ax_task::{AxTaskExt, WaitQueue, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -135,7 +135,7 @@ impl CloneArgs {
         self.validate()?;
 
         let Self {
-            mut flags,
+            flags,
             exit_signal,
             stack,
             tls,
@@ -143,11 +143,6 @@ impl CloneArgs {
             child_tid,
             pidfd,
         } = self;
-
-        if flags.contains(CloneFlags::VFORK) {
-            debug!("do_clone: CLONE_VFORK slow path");
-            flags.remove(CloneFlags::VM);
-        }
 
         debug!(
             "do_clone <= flags: {:?}, exit_signal: {}, stack: {:#x}, tls: {:#x}",
@@ -188,7 +183,7 @@ impl CloneArgs {
         let new_proc_data = if flags.contains(CloneFlags::THREAD) {
             new_task
                 .ctx_mut()
-                .set_page_table_root(old_proc_data.aspace.lock().page_table_root());
+                .set_page_table_root(old_proc_data.aspace().lock().page_table_root());
             old_proc_data.clone()
         } else {
             let proc = if flags.contains(CloneFlags::PARENT) {
@@ -199,9 +194,10 @@ impl CloneArgs {
             .fork(tid);
 
             let aspace = if flags.contains(CloneFlags::VM) {
-                old_proc_data.aspace.clone()
+                old_proc_data.aspace()
             } else {
-                let mut aspace = old_proc_data.aspace.lock();
+                let aspace_arc = old_proc_data.aspace();
+                let mut aspace = aspace_arc.lock();
                 let aspace = aspace.try_clone()?;
                 copy_from_kernel(&mut aspace.lock())?;
                 aspace
@@ -274,8 +270,19 @@ impl CloneArgs {
         }
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
+        // CLONE_VFORK: wire a shared WaitQueue to the child so it can wake us.
+        if flags.contains(CloneFlags::VFORK) {
+            let wq = Arc::new(WaitQueue::new());
+            new_proc_data.set_vfork_done(wq);
+        }
+
         let task = spawn_task(new_task);
         add_task_to_table(&task);
+
+        // Block the parent until the child exec's or exits.
+        if flags.contains(CloneFlags::VFORK) {
+            new_proc_data.wait_vfork_done();
+        }
 
         Ok(tid as _)
     }
@@ -319,4 +326,10 @@ pub fn sys_clone(
 #[cfg(target_arch = "x86_64")]
 pub fn sys_fork(uctx: &UserContext) -> AxResult<isize> {
     sys_clone(uctx, SIGCHLD, 0, 0, 0, 0)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
+    let flags = (CloneFlags::VFORK | CloneFlags::VM).bits() as u32 | SIGCHLD;
+    sys_clone(uctx, flags, 0, 0, 0, 0)
 }

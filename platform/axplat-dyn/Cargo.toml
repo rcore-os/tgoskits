@@ -26,6 +26,7 @@ phytium-blk = ["dep:phytium-mci"]
 serial = ["dep:some-serial"]
 net = ["dep:ax-driver-net", "dep:rd-net"]
 intel-net = ["net", "dep:eth-intel", "dep:pcie"]
+realtek-rtl8125 = ["net", "dep:pcie", "dep:realtek-rtl8125"]
 virtio-net-pci = ["net"]
 pci-list-devices = []
 rknpu = ["dep:rockchip-npu", "rockchip-pm", "rockchip-soc"]
@@ -53,6 +54,7 @@ mmio-api.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
 pcie = { version = "0.6", optional = true }
+realtek-rtl8125 = { workspace = true, optional = true }
 rd-block = "0.1"
 rd-net = { version = "0.1", optional = true }
 rdif-clk = "0.5"

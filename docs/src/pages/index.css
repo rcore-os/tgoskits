@@ -23,6 +23,16 @@
   --system-accent-axvisor: #14b8a6;
   --workflow-accent-1: #38bdf8;
   --workflow-accent-2: #6366f1;
+
+  --platform-chip-qemu-bg: rgba(255, 255, 255, 0.34);
+  --platform-chip-qemu-hover: rgba(59, 130, 246, 0.06);
+  --platform-chip-board-bg: linear-gradient(135deg, rgba(139, 92, 246, 0.06), rgba(167, 139, 250, 0.04));
+  --platform-chip-board-hover: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(167, 139, 250, 0.08));
+
+  --driver-chip-bg: rgba(255, 255, 255, 0.35);
+  --driver-chip-hover-shadow: 0 8px 24px rgba(12, 18, 44, 0.08);
+  --driver-framework-bg: linear-gradient(135deg, rgba(95, 107, 255, 0.06), rgba(127, 224, 255, 0.05));
+  --driver-framework-border: rgba(95, 107, 255, 0.13);
 }
 
 html[data-theme='dark'] {
@@ -46,6 +56,16 @@ html[data-theme='dark'] {
   --system-accent-axvisor: #2dd4bf;
   --workflow-accent-1: #38bdf8;
   --workflow-accent-2: #818cf8;
+
+  --platform-chip-qemu-bg: rgba(255, 255, 255, 0.06);
+  --platform-chip-qemu-hover: rgba(59, 130, 246, 0.1);
+  --platform-chip-board-bg: rgba(139, 92, 246, 0.08);
+  --platform-chip-board-hover: rgba(139, 92, 246, 0.15);
+
+  --driver-chip-bg: rgba(255, 255, 255, 0.04);
+  --driver-chip-hover: rgba(255, 255, 255, 0.08);
+  --driver-framework-bg: rgba(95, 107, 255, 0.06);
+  --driver-framework-border: rgba(95, 107, 255, 0.14);
 }
 
 html {
@@ -76,7 +96,7 @@ html {
   text-transform: uppercase;
   font-size: 0.75rem;
   font-weight: 700;
-  margin-bottom: 1rem;
+  margin-bottom: 1.2rem;
   color: var(--ifm-color-primary);
 }
 
@@ -146,7 +166,7 @@ html {
 .hero-copy h1 {
   font-size: clamp(3rem, 4.6vw, 5.25rem);
   line-height: 1.03;
-  margin: 0 0 1.3rem;
+  margin: 0 0 1.6rem;
   animation-delay: 0.2s;
 }
 
@@ -194,7 +214,7 @@ html {
 }
 
 .hero-actions {
-  margin-top: 2.2rem;
+  margin-top: 2.6rem;
   animation-delay: 0.3s;
 }
 
@@ -202,7 +222,7 @@ html {
   display: flex;
   gap: 0.75rem;
   flex-wrap: wrap;
-  margin-top: 1.2rem;
+  margin-top: 1.5rem;
   animation-delay: 0.35s;
 }
 
@@ -262,7 +282,7 @@ html {
 }
 
 .hero-stats {
-  margin-top: 2rem;
+  margin-top: 2.4rem;
   display: grid;
   gap: 1rem;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -460,7 +480,7 @@ html {
 
 .section-header {
   text-align: center;
-  max-width: 780px;
+  max-width: 920px;
   margin: 0 auto 2.75rem;
 }
 
@@ -483,10 +503,12 @@ html {
     radial-gradient(circle at 85% 80%, rgba(167, 139, 250, 0.1), transparent 26%);
 }
 
-.section-shell--systems .section-shell__surface {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0)),
-    var(--home-panel-strong);
+.section-shell--systems .section-shell__surface--open {
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+  padding: 0;
 }
 
 .section-shell--workflow {
@@ -495,10 +517,12 @@ html {
     radial-gradient(circle at top right, rgba(56, 189, 248, 0.1), transparent 24%);
 }
 
-.section-shell--docs .section-shell__surface {
-  background:
-    radial-gradient(circle at bottom left, rgba(129, 140, 248, 0.12), transparent 25%),
-    var(--home-panel-strong);
+.section-shell--docs .section-shell__surface--open {
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+  padding: 0;
 }
 
 .section-shell--quality {
@@ -826,6 +850,445 @@ html {
   align-items: start;
 }
 
+/* ---------- Platform Section ---------- */
+
+.section-shell--platforms {
+  background:
+    radial-gradient(ellipse at 15% 40%, rgba(59, 130, 246, 0.07), transparent 30%),
+    radial-gradient(ellipse at 85% 60%, rgba(139, 92, 246, 0.07), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 60%);
+}
+
+.platform-matrix {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1.1rem;
+  margin-bottom: 1.6rem;
+}
+
+.platform-group {
+  position: relative;
+  border-radius: 26px;
+  border: 1px solid var(--home-panel-border);
+  background: var(--home-panel-strong);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 10px 40px rgba(12, 18, 44, 0.06);
+  padding: 1.5rem 1.3rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  overflow: hidden;
+  transition: transform 0.35s ease, box-shadow 0.35s ease, border-color 0.35s ease;
+}
+
+.platform-group:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 60px rgba(12, 18, 44, 0.12);
+}
+
+/* Architecture accent top-border stripes */
+.platform-group::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+}
+
+.platform-group--aarch64::before { background: linear-gradient(90deg, var(--system-accent-arceos), #60a5fa, #3b82f6); }
+.platform-group--riscv64::before { background: linear-gradient(90deg, var(--system-accent-axvisor), #2dd4bf, #14b8a6); }
+.platform-group--x8664::before  { background: linear-gradient(90deg, var(--system-accent-starry), #a78bfa, #8b5cf6); }
+.platform-group--loongarch64::before { background: linear-gradient(90deg, #f59e0b, #f97316, #ea580c); }
+
+.platform-group__header {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.platform-arch-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem 0.72rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-family: var(--ifm-font-family-monospace);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.platform-group--aarch64 .platform-arch-badge     { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+.platform-group--riscv64 .platform-arch-badge     { background: linear-gradient(135deg, #14b8a6, #0f766e); }
+.platform-group--x8664 .platform-arch-badge       { background: linear-gradient(135deg, #8b5cf6, #7c3aed); }
+.platform-group--loongarch64 .platform-arch-badge { background: linear-gradient(135deg, #f59e0b, #d97706); }
+
+.platform-group__header strong {
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.platform-group__targets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.platform-chip {
+  padding: 0.65rem 0.85rem;
+  border-radius: 14px;
+  border: 1px solid var(--home-panel-border);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  transition: background 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
+}
+
+.platform-chip:hover {
+  transform: translateX(3px);
+}
+
+.platform-chip--qemu {
+  background: rgba(255, 255, 255, 0.34);
+  border-color: rgba(59, 130, 246, 0.12);
+}
+
+.platform-chip--qemu:hover {
+  background: rgba(59, 130, 246, 0.06);
+  border-color: rgba(59, 130, 246, 0.24);
+}
+
+.platform-chip--qemu::before {
+  content: '';
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.14), rgba(96, 165, 250, 0.1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.platform-chip--board {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.06), rgba(167, 139, 250, 0.04));
+  border-color: rgba(139, 92, 246, 0.18);
+}
+
+.platform-chip--board:hover {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(167, 139, 250, 0.08));
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.platform-chip--board::before {
+  content: '';
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(167, 139, 250, 0.12));
+  box-shadow: inset 0 0 0 2px rgba(167, 139, 250, 0.25);
+}
+
+.platform-chip__name {
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.platform-chip__desc {
+  color: var(--home-text-soft);
+  font-size: 0.78rem;
+  margin-left: auto;
+}
+
+.platform-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.4rem;
+  flex-wrap: wrap;
+  padding: 1.1rem 1.5rem;
+  border-radius: 22px;
+  border: 1px solid var(--home-panel-border);
+  background: linear-gradient(135deg, var(--home-panel-strong), var(--home-panel));
+  backdrop-filter: blur(18px);
+  box-shadow: 0 8px 30px rgba(12, 18, 44, 0.04);
+}
+
+.platform-footer__note {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.platform-footer__note strong {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.85rem;
+  padding: 0.28rem 0.7rem;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(95, 107, 255, 0.14), rgba(127, 224, 255, 0.1));
+  color: var(--ifm-color-primary);
+  white-space: nowrap;
+  border: 1px solid rgba(95, 107, 255, 0.16);
+}
+
+.platform-footer__note span {
+  color: var(--home-text-soft);
+  font-size: 0.87rem;
+  line-height: 1.55;
+}
+
+/* ---------- Driver Section ---------- */
+
+.section-shell--drivers {
+  background:
+    radial-gradient(ellipse at 10% 30%, rgba(236, 72, 153, 0.05), transparent 28%),
+    radial-gradient(ellipse at 90% 70%, rgba(95, 107, 255, 0.06), transparent 26%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 50%);
+}
+
+.split-layout--drivers {
+  grid-template-columns: minmax(0, 1.05fr) minmax(390px, 0.95fr);
+  gap: 1.6rem;
+}
+
+/* ---- left: device cards ---- */
+
+.driver-device-grid h3 {
+  margin: 0 0 0.2rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.driver-subtitle {
+  color: var(--home-text-soft);
+  font-size: 0.86rem;
+  margin: 0 0 1.2rem;
+}
+
+.driver-device-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.driver-device-card {
+  position: relative;
+  display: flex;
+  gap: 0.95rem;
+  padding: 1.15rem 1.2rem;
+  border-radius: 22px;
+  border: 1px solid var(--home-panel-border);
+  background: var(--home-panel-strong);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 8px 30px rgba(12, 18, 44, 0.04);
+  transition: transform 0.35s ease, box-shadow 0.35s ease, border-color 0.35s ease;
+  overflow: hidden;
+}
+
+.driver-device-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+  border-radius: 22px;
+}
+
+.driver-device-card--blk::after  { background: radial-gradient(circle at 80% 20%, rgba(59, 130, 246, 0.08), transparent 60%); }
+.driver-device-card--npu::after  { background: radial-gradient(circle at 80% 20%, rgba(236, 72, 153, 0.08), transparent 60%); }
+.driver-device-card--pci::after  { background: radial-gradient(circle at 80% 20%, rgba(139, 92, 246, 0.08), transparent 60%); }
+.driver-device-card--soc::after  { background: radial-gradient(circle at 80% 20%, rgba(20, 184, 166, 0.08), transparent 60%); }
+
+.driver-device-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 18px 50px rgba(12, 18, 44, 0.1);
+}
+
+.driver-device-card:hover::after { opacity: 1; }
+
+.driver-device-card--blk:hover  { border-color: rgba(59, 130, 246, 0.24); }
+.driver-device-card--npu:hover  { border-color: rgba(236, 72, 153, 0.24); }
+.driver-device-card--pci:hover  { border-color: rgba(139, 92, 246, 0.24); }
+.driver-device-card--soc:hover  { border-color: rgba(20, 184, 166, 0.24); }
+
+.driver-device-card .feature-icon {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 0;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.driver-device-card--blk .feature-icon { background: linear-gradient(135deg, rgba(59, 130, 246, 0.14), rgba(96, 165, 250, 0.1)); color: #3b82f6; }
+.driver-device-card--npu .feature-icon { background: linear-gradient(135deg, rgba(236, 72, 153, 0.14), rgba(244, 114, 182, 0.1)); color: #ec4899; }
+.driver-device-card--pci .feature-icon { background: linear-gradient(135deg, rgba(139, 92, 246, 0.14), rgba(167, 139, 250, 0.1)); color: #8b5cf6; }
+.driver-device-card--soc .feature-icon { background: linear-gradient(135deg, rgba(20, 184, 166, 0.14), rgba(45, 212, 191, 0.1)); color: #14b8a6; }
+
+.driver-device-card .feature-icon svg {
+  width: 25px;
+  height: 25px;
+}
+
+.driver-device-card__body {
+  min-width: 0;
+  flex: 1;
+}
+
+.driver-device-card__body h4 {
+  margin: 0 0 0.22rem;
+  font-size: 0.96rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.driver-device-card__body p {
+  margin: 0 0 0.6rem;
+  font-size: 0.81rem;
+  color: var(--home-text-soft);
+  line-height: 1.5;
+}
+
+.driver-device-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.driver-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.7rem;
+  font-weight: 500;
+  border: 1px solid var(--home-panel-border);
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--home-text-soft);
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.driver-device-card--blk .driver-tag { color: #2563eb; background: rgba(59, 130, 246, 0.08); border-color: rgba(59, 130, 246, 0.16); }
+.driver-device-card--npu .driver-tag { color: #db2777; background: rgba(236, 72, 153, 0.08); border-color: rgba(236, 72, 153, 0.16); }
+.driver-device-card--pci .driver-tag { color: #7c3aed; background: rgba(139, 92, 246, 0.08); border-color: rgba(139, 92, 246, 0.16); }
+.driver-device-card--soc .driver-tag { color: #0f766e; background: rgba(20, 184, 166, 0.08); border-color: rgba(20, 184, 166, 0.16); }
+
+/* ---- right: subsystem panel ---- */
+
+.driver-subsystem-panel {
+  border-radius: 28px;
+  border: 1px solid var(--home-panel-border);
+  background: var(--home-panel-strong);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 10px 40px rgba(12, 18, 44, 0.06);
+  padding: 1.5rem 1.6rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.driver-subsystem-panel h3 {
+  margin: 0 0 0.2rem;
+  font-size: 1.08rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.driver-subsystem-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 1.3rem;
+}
+
+.driver-subsystem-chip {
+  padding: 0.7rem 0.85rem;
+  border-radius: 16px;
+  border: 1px solid var(--home-panel-border);
+  background: rgba(255, 255, 255, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease;
+  cursor: default;
+  position: relative;
+  overflow: hidden;
+}
+
+.driver-subsystem-chip::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 0 0;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.driver-subsystem-chip:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(12, 18, 44, 0.08);
+}
+
+.driver-subsystem-chip:hover::before { opacity: 0.5; }
+
+.driver-subsystem-chip code {
+  font-size: 0.76rem;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--ifm-color-primary);
+  font-weight: 600;
+  position: relative;
+  z-index: 1;
+}
+
+.driver-subsystem-chip span {
+  font-size: 0.76rem;
+  color: var(--home-text-soft);
+  position: relative;
+  z-index: 1;
+}
+
+.driver-framework-note {
+  margin-top: auto;
+  padding: 1.1rem 1.2rem;
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(95, 107, 255, 0.06), rgba(127, 224, 255, 0.05));
+  border: 1px solid rgba(95, 107, 255, 0.13);
+  position: relative;
+  overflow: hidden;
+}
+
+.driver-framework-note::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 4px;
+  background: linear-gradient(180deg, var(--ifm-color-primary), rgba(127, 224, 255, 0.5));
+  border-radius: 4px 0 0 4px;
+}
+
+.driver-framework-note h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.93rem;
+  font-weight: 700;
+}
+
+.driver-framework-note p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--home-text-soft);
+  line-height: 1.65;
+}
+
 .cta-section {
   padding: 0 0 clamp(5rem, 8vw, 6rem);
 }
@@ -869,7 +1332,11 @@ html {
 .icon-chip,
 .icon-chip-pins line,
 .icon-device,
-.icon-line {
+.icon-line,
+.icon-grid-cell,
+.icon-plug-stem,
+.icon-plug-body,
+.icon-plug-tip {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -880,6 +1347,20 @@ html {
 .icon-core,
 .icon-dot {
   fill: currentColor;
+}
+
+.icon-grid-cell {
+  stroke-width: 1.6;
+}
+
+.icon-plug-body {
+  fill: currentColor;
+  opacity: 0.18;
+}
+
+.icon-plug-tip {
+  fill: currentColor;
+  opacity: 0.4;
 }
 
 @keyframes heroReveal {
@@ -986,7 +1467,8 @@ html {
 @media (max-width: 1120px) {
   .hero-content,
   .split-layout--architecture,
-  .split-layout--workflow {
+  .split-layout--workflow,
+  .split-layout--drivers {
     grid-template-columns: 1fr;
   }
 
@@ -1000,6 +1482,10 @@ html {
   .systems-grid,
   .quality-grid,
   .docs-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .platform-matrix {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1020,6 +1506,14 @@ html {
   .systems-grid,
   .docs-grid,
   .quality-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-matrix {
+    grid-template-columns: 1fr;
+  }
+
+  .driver-device-cards {
     grid-template-columns: 1fr;
   }
 
@@ -1087,6 +1581,21 @@ html {
     padding: 1.25rem;
     border-radius: 22px;
   }
+
+  .platform-footer {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.9rem;
+  }
+
+  .driver-subsystem-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .driver-device-card {
+    flex-direction: column;
+    gap: 0.65rem;
+  }
 }
 
 @media (max-width: 520px) {
@@ -1106,3 +1615,54 @@ html {
     font-size: 0.74rem;
   }
 }
+
+/* ============================================================
+   Dark-theme overrides for Platform & Driver sections
+   ============================================================ */
+
+html[data-theme='dark'] .platform-chip--qemu {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+html[data-theme='dark'] .platform-chip--qemu:hover {
+  background: rgba(59, 130, 246, 0.12);
+}
+
+html[data-theme='dark'] .platform-chip--board {
+  background: rgba(139, 92, 246, 0.08);
+}
+
+html[data-theme='dark'] .platform-chip--board:hover {
+  background: rgba(139, 92, 246, 0.16);
+}
+
+html[data-theme='dark'] .driver-subsystem-chip {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+html[data-theme='dark'] .driver-subsystem-chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='dark'] .driver-framework-note {
+  background: rgba(95, 107, 255, 0.06);
+  border-color: rgba(95, 107, 255, 0.14);
+}
+
+html[data-theme='dark'] .driver-device-card::after {
+  opacity: 0.15;
+}
+
+html[data-theme='dark'] .driver-device-card:hover::after {
+  opacity: 0.35;
+}
+
+html[data-theme='dark'] .driver-tag {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+html[data-theme='dark'] .driver-device-card--blk .driver-tag { color: #93c5fd; background: rgba(59, 130, 246, 0.12); border-color: rgba(59, 130, 246, 0.2); }
+html[data-theme='dark'] .driver-device-card--npu .driver-tag { color: #f9a8d4; background: rgba(236, 72, 153, 0.12); border-color: rgba(236, 72, 153, 0.2); }
+html[data-theme='dark'] .driver-device-card--pci .driver-tag { color: #c4b5fd; background: rgba(139, 92, 246, 0.12); border-color: rgba(139, 92, 246, 0.2); }
+html[data-theme='dark'] .driver-device-card--soc .driver-tag { color: #5eead4; background: rgba(20, 184, 166, 0.12); border-color: rgba(20, 184, 166, 0.2); }

@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use ostool::run::qemu::QemuConfig;
 
+use super::{ArceOS, build};
+use crate::{context::ResolvedBuildRequest, test::qemu as qemu_test};
+
 /// Resolves an explicit ArceOS rootfs CLI value into a concrete path.
 pub(crate) fn resolve_explicit_rootfs(
     workspace_root: &Path,
@@ -34,4 +37,25 @@ pub(crate) fn patch_qemu_rootfs(qemu: &mut QemuConfig, rootfs: &Path) {
         rootfs,
         crate::rootfs::qemu::RootfsPatchMode::EnsureDiskBootNet,
     );
+}
+
+pub(super) async fn qemu_with_explicit_rootfs(
+    arceos: &mut ArceOS,
+    request: ResolvedBuildRequest,
+    rootfs: PathBuf,
+) -> anyhow::Result<()> {
+    let rootfs = resolve_explicit_rootfs(arceos.app.workspace_root(), &request.arch, rootfs);
+    ensure_rootfs_ready(arceos.app.workspace_root(), &request.arch, &rootfs).await?;
+    arceos.app.set_debug_mode(request.debug)?;
+    let cargo = build::load_cargo_config(&request)?;
+    let mut qemu = arceos
+        .load_qemu_config(&request, &cargo)
+        .await?
+        .unwrap_or_default();
+    patch_qemu_rootfs(&mut qemu, &rootfs);
+    qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
+    arceos
+        .app
+        .qemu(cargo, request.build_info_path, Some(qemu))
+        .await
 }

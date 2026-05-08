@@ -29,6 +29,12 @@ pub trait FileNodeOps: NodeOps + Pollable {
     fn ioctl(&self, _cmd: u32, _arg: usize) -> VfsResult<usize> {
         Err(VfsError::NotATty)
     }
+
+    /// A hint to the backend that the file position has changed.
+    /// This is used for operations like resetting file content in proc/sys.
+    fn seek_to(&self, _pos: u64) -> VfsResult<()> {
+        Ok(())
+    }
 }
 
 #[repr(transparent)]

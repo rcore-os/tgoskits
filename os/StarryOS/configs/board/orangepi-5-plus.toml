@@ -7,8 +7,10 @@ features = [
   "ax-feat/bus-pci",
   "ax-feat/driver-sdmmc",
   "axplat-dyn/pci-list-devices",
+  "axplat-dyn/realtek-rtl8125",
   "axplat-dyn/rockchip-soc",
   "axplat-dyn/sdmmc",
+  "axplat-dyn/simple-sdmmc",
   "rknpu",
 ]
 log = "Info"

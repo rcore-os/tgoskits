@@ -1,7 +1,7 @@
 [package]
 name = "rk3588-pci"
 version = "0.1.0"
-authors.workspace = true
+authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "hardware-support", "no-std"]
 description = "Portable Rockchip RK3588 DesignWare PCIe host driver"
 edition.workspace = true

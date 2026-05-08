@@ -49,6 +49,11 @@ fn truncate_inode<B: BlockDevice>(
         truncate_size.div_ceil(block_bytes)
     };
 
+    // ext4 logical block numbers are u32; reject sizes that need more blocks.
+    if new_blocks > u32::MAX as u64 {
+        return Err(Ext4Error::new(Errno::EFBIG));
+    }
+
     // Extent-backed files handle sparse growth and extent-aware shrinking here.
     if fs.superblock.has_extents() && inode.have_extend_header_and_use_extend() {
         if truncate_size < old_size {
