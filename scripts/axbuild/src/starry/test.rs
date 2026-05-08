@@ -407,7 +407,7 @@ fn discover_all_qemu_cases_in_group(
     workspace_root: &Path,
     group: &str,
     selected_case: Option<&str>,
-) -> anyhow::Result<Vec<String>> {
+) -> qemu_test::ListQemuCasesResult<Vec<String>> {
     let test_suite_dir = require_test_suite_group_dir(workspace_root, group)?;
     qemu_test::discover_all_qemu_cases(&test_suite_dir, selected_case, "Starry", group)
 }
@@ -416,7 +416,7 @@ fn discover_all_qemu_cases_with_archs_in_group(
     workspace_root: &Path,
     group: &str,
     selected_case: Option<&str>,
-) -> anyhow::Result<Vec<qemu_test::ListedQemuCase>> {
+) -> qemu_test::ListQemuCasesResult<Vec<qemu_test::ListedQemuCase>> {
     let test_suite_dir = require_test_suite_group_dir(workspace_root, group)?;
     qemu_test::discover_all_qemu_cases_with_archs(&test_suite_dir, selected_case, "Starry", group)
 }
@@ -459,6 +459,14 @@ fn render_qemu_case_summary(report: &StarryQemuRunReport) -> String {
 
     lines.push(format!("total: {}", format_duration(report.total_duration)));
     lines.join("\n")
+}
+
+fn qemu_list_error_is_ignorable(kind: qemu_test::ListQemuCasesErrorKind) -> bool {
+    matches!(
+        kind,
+        qemu_test::ListQemuCasesErrorKind::EmptyGroup
+            | qemu_test::ListQemuCasesErrorKind::UnknownSelectedCase
+    )
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -512,13 +520,10 @@ impl Starry {
                     ) {
                         Ok(case_names) => Some(Ok((group, case_names))),
                         Err(err) => {
-                            let message = err.to_string();
-                            if message.starts_with("no Starry ")
-                                || message.starts_with("unknown Starry ")
-                            {
+                            if qemu_list_error_is_ignorable(err.kind()) {
                                 None
                             } else {
-                                Some(Err(err))
+                                Some(Err(anyhow::Error::new(err)))
                             }
                         }
                     }
@@ -553,7 +558,8 @@ impl Starry {
                 self.app.workspace_root(),
                 group,
                 args.test_case.as_deref(),
-            )?;
+            )
+            .map_err(anyhow::Error::new)?;
             if case_names.is_empty()
                 && let Some(case) = args.test_case.as_deref()
             {
@@ -615,39 +621,46 @@ impl Starry {
         let mut reports = Vec::new();
         let asset_config = starry_case_asset_config();
 
+        let build_groups = qemu_test::prepare_case_build_groups(&cases, |build_config_path| {
+            Self::qemu_group_build_context(&request, build_config_path)
+        })?;
+
         // Phase 1: Build all build groups first so that compilation errors
         // surface before any QEMU time is spent.  Within a single arch the
         // groups are still built sequentially (they share the workspace target
         // directory and would conflict on the Cargo file lock).
-        for group in Self::group_qemu_cases_by_build_config(&cases) {
-            let (group_request, group_cargo) =
-                Self::qemu_group_build_context(&request, group.build_config_path)?;
+        for build_group in &build_groups {
             self.app
-                .build(group_cargo.clone(), group_request.build_info_path.clone())
+                .build(
+                    build_group.cargo.clone(),
+                    build_group.request.build_info_path.clone(),
+                )
                 .await
                 .with_context(|| {
                     format!(
                         "failed to build Starry qemu test artifact for build group `{}` ({})",
-                        group.build_group,
-                        group.build_config_path.display()
+                        build_group.group.build_group,
+                        build_group.group.build_config_path.display()
                     )
                 })?;
         }
 
         // Phase 2: Run all QEMU tests now that every artifact is available.
         let mut completed = 0;
-        for group in Self::group_qemu_cases_by_build_config(&cases) {
-            let (group_request, group_cargo) =
-                Self::qemu_group_build_context(&request, group.build_config_path)?;
-
-            for case in group.cases {
+        for build_group in &build_groups {
+            for case in &build_group.group.cases {
                 completed += 1;
                 let case_name = &case.case.name;
                 println!("[{completed}/{total}] starry qemu {case_name}");
 
                 let case_started = Instant::now();
                 match self
-                    .run_qemu_case(&group_request, &group_cargo, case, &asset_config)
+                    .run_qemu_case(
+                        &build_group.request,
+                        &build_group.cargo,
+                        case,
+                        &asset_config,
+                    )
                     .await
                     .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
                 {
@@ -689,13 +702,7 @@ impl Starry {
                         args.test_case.as_deref(),
                         args.board.as_deref(),
                     ) {
-                        Ok(groups) => Some(Ok((
-                            group,
-                            groups
-                                .into_iter()
-                                .map(|group| (group.name, group.board_name))
-                                .collect::<Vec<_>>(),
-                        ))),
+                        Ok(groups) => Some(Ok((group, board_test::labeled_board_cases(groups)))),
                         Err(err) => {
                             let message = err.to_string();
                             if message.starts_with("no Starry ") {
@@ -728,34 +735,26 @@ impl Starry {
             args.board.as_deref(),
         )?;
         if args.list {
-            let case_names = groups
-                .into_iter()
-                .map(|group| (group.name, group.board_name))
-                .collect::<Vec<_>>();
+            let case_names = board_test::labeled_board_cases(groups);
             println!(
                 "{}",
                 qemu_test::render_labeled_case_forest("starry", [(test_group, case_names)])
             );
             return Ok(());
         }
-        let total = groups.len();
-        let mut failed = Vec::new();
 
+        let mut run_state = board_test::BoardTestRunState::new("starry", groups.len());
         for (index, group) in groups.into_iter().enumerate() {
-            let group_label = format!("{}/{}", group.name, group.board_name);
+            let group_label = run_state.start_group(index, &group);
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
-
             if !board_test_config.exists() {
-                eprintln!(
-                    "failed: {}: missing board test config `{}`",
-                    group_label, board_test_config_summary
+                run_state.fail_group(
+                    group_label,
+                    anyhow::anyhow!("missing board test config `{board_test_config_summary}`"),
                 );
-                failed.push(group_label);
                 continue;
             }
-
-            println!("[{}/{}] starry board {}", index + 1, total, group_label);
 
             let result = async {
                 let request = self.prepare_request(
@@ -793,15 +792,11 @@ impl Starry {
             .await;
 
             match result {
-                Ok(()) => println!("ok: {}", group_label),
-                Err(err) => {
-                    eprintln!("failed: {}: {:#}", group_label, err);
-                    failed.push(group_label);
-                }
+                Ok(()) => run_state.pass_group(&group_label),
+                Err(err) => run_state.fail_group(group_label, err),
             }
         }
-
-        board_test::finalize_board_test_run("starry", &failed)
+        run_state.finish()
     }
 
     fn test_build_args(target: &str, config: Option<PathBuf>) -> StarryCliArgs {
@@ -939,12 +934,6 @@ impl Starry {
         Ok(StarryQemuCaseRequirements {
             smp: qemu_test::smp_from_qemu_arg(qemu).unwrap_or(1),
         })
-    }
-
-    fn group_qemu_cases_by_build_config(
-        cases: &[PreparedStarryQemuCase],
-    ) -> Vec<qemu_test::QemuCaseGroup<'_, PreparedStarryQemuCase>> {
-        qemu_test::group_cases_by_build_config(cases)
     }
 
     fn qemu_group_build_context(
@@ -1648,7 +1637,7 @@ mod tests {
             prepared_qemu_case("syscall", default_build_config.clone()),
         ];
 
-        let groups = Starry::group_qemu_cases_by_build_config(&cases);
+        let groups = qemu_test::group_cases_by_build_config(&cases);
 
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].build_config_path, default_build_config.as_path());

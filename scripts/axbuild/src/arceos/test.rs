@@ -4,6 +4,7 @@ use std::{
     io::Write as _,
     path::{Path, PathBuf},
     process::{Command as StdCommand, Output, Stdio},
+    sync::LazyLock,
 };
 
 use anyhow::{Context, bail};
@@ -29,6 +30,11 @@ pub(crate) const TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loong
 const ARCEOS_RUST_TEST_GROUP: &str = "rust";
 const ARCEOS_C_TEST_GROUP: &str = "c";
 const ARCEOS_TEST_SUITE_OS: &str = "arceos";
+const C_TEST_BUILD_JOBS_ENV: &str = "AXBUILD_C_TEST_JOBS";
+
+static ANSI_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])").expect("invalid ANSI stripping regex")
+});
 
 #[derive(Args)]
 pub struct ArgsTest {
@@ -144,6 +150,12 @@ struct PreparedCTestInvocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CTestCargoEnv {
     vars: Vec<(String, String)>,
+}
+
+struct CTestPrep {
+    name: String,
+    app_path: PathBuf,
+    invocations: Vec<PreparedCTestInvocation>,
 }
 
 pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<()> {
@@ -544,7 +556,8 @@ fn list_generic_qemu_cases(
                 .map(|case| case.case.name)
                 .collect()
         }
-        None => qemu_test::discover_all_qemu_cases(&dir, selected_case, "ArceOS", group)?,
+        None => qemu_test::discover_all_qemu_cases(&dir, selected_case, "ArceOS", group)
+            .map_err(anyhow::Error::new)?,
     };
     if cases.is_empty() {
         return Ok(None);
@@ -561,17 +574,28 @@ fn all_qemu_case_groups(
         test_suite::discover_group_names(arceos.app.workspace_root(), ARCEOS_TEST_SUITE_OS)?
     {
         let cases: Option<Vec<qemu_test::ListedQemuCase>> = match group.as_str() {
-            ARCEOS_RUST_TEST_GROUP => rust_qemu_listed_cases(arceos, selected_case)
-                .ok()
-                .filter(|v| !v.is_empty()),
+            ARCEOS_RUST_TEST_GROUP => match rust_qemu_listed_cases(arceos, selected_case) {
+                Ok(cases) if !cases.is_empty() => Some(cases),
+                Ok(_) => None,
+                Err(err) if qemu_list_error_is_ignorable(err.kind()) => None,
+                Err(err) => return Err(anyhow::Error::new(err)),
+            },
             ARCEOS_C_TEST_GROUP => c_qemu_listed_cases(arceos, selected_case)
                 .ok()
                 .filter(|v| !v.is_empty()),
             _ => {
                 let dir = arceos_test_group_dir(arceos.app.workspace_root(), &group);
-                qemu_test::discover_all_qemu_cases_with_archs(&dir, selected_case, "ArceOS", &group)
-                    .ok()
-                    .filter(|v| !v.is_empty())
+                match qemu_test::discover_all_qemu_cases_with_archs(
+                    &dir,
+                    selected_case,
+                    "ArceOS",
+                    &group,
+                ) {
+                    Ok(cases) if !cases.is_empty() => Some(cases),
+                    Ok(_) => None,
+                    Err(err) if qemu_list_error_is_ignorable(err.kind()) => None,
+                    Err(err) => return Err(anyhow::Error::new(err)),
+                }
             }
         };
         if let Some(cases) = cases {
@@ -586,10 +610,18 @@ fn all_qemu_case_groups(
     Ok(groups)
 }
 
+fn qemu_list_error_is_ignorable(kind: qemu_test::ListQemuCasesErrorKind) -> bool {
+    matches!(
+        kind,
+        qemu_test::ListQemuCasesErrorKind::EmptyGroup
+            | qemu_test::ListQemuCasesErrorKind::UnknownSelectedCase
+    )
+}
+
 fn rust_qemu_listed_cases(
     arceos: &ArceOS,
     selected_case: Option<&str>,
-) -> anyhow::Result<Vec<qemu_test::ListedQemuCase>> {
+) -> qemu_test::ListQemuCasesResult<Vec<qemu_test::ListedQemuCase>> {
     qemu_test::discover_all_qemu_cases_with_archs(
         &arceos_rust_test_dir(arceos),
         selected_case,
@@ -615,7 +647,8 @@ fn rust_qemu_case_names(
             selected_case,
             "ArceOS",
             ARCEOS_RUST_TEST_GROUP,
-        ),
+        )
+        .map_err(anyhow::Error::new),
     }
 }
 
@@ -1039,14 +1072,12 @@ fn translate_bre_to_regex(pattern: &str) -> String {
 }
 
 fn normalize_c_test_runtime_output(output: &Output) -> String {
-    let ansi_regex =
-        Regex::new(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])").expect("invalid ANSI stripping regex");
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    ansi_regex
+    ANSI_REGEX
         .replace_all(&combined.replace(['\r', '\0', '\u{0007}'], ""), "")
         .into_owned()
 }
@@ -1054,15 +1085,9 @@ fn normalize_c_test_runtime_output(output: &Output) -> String {
 fn verify_c_test_runtime_output(output: &Output, expected_path: &Path) -> anyhow::Result<()> {
     let normalized = normalize_c_test_runtime_output(output);
     let actual_lines = normalized.lines().collect::<Vec<_>>();
-    let expected = fs::read_to_string(expected_path)
-        .with_context(|| format!("failed to read {}", expected_path.display()))?;
+    let expected = load_c_test_expected_output(expected_path)?;
 
-    for pattern in expected
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        let regex = runtime_output_regex(pattern)?;
+    for (pattern, regex) in expected {
         if actual_lines.iter().any(|line| regex.is_match(line)) {
             continue;
         }
@@ -1081,6 +1106,17 @@ fn verify_c_test_runtime_output(output: &Output, expected_path: &Path) -> anyhow
     }
 
     Ok(())
+}
+
+fn load_c_test_expected_output(expected_path: &Path) -> anyhow::Result<Vec<(String, Regex)>> {
+    let expected = fs::read_to_string(expected_path)
+        .with_context(|| format!("failed to read {}", expected_path.display()))?;
+    expected
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|pattern| Ok((pattern.to_string(), runtime_output_regex(pattern)?)))
+        .collect()
 }
 
 fn c_test_invocation_label(invocation: &CTestInvocation) -> String {
@@ -1179,12 +1215,6 @@ where
     // Prepare all test invocations, injecting a per-test TARGET_DIR so that
     // parallel `cargo build` calls use separate directories and never block
     // on each other's file lock.
-    struct CTestPrep {
-        name: String,
-        app_path: PathBuf,
-        invocations: Vec<PreparedCTestInvocation>,
-    }
-
     let mut preps = Vec::<CTestPrep>::new();
     let mut failed = Vec::new();
 
@@ -1227,51 +1257,20 @@ where
     // output is captured; only failures are printed (after all threads finish)
     // so interleaved progress lines don't clutter CI logs.
     // ---------------------------------------------------------------------------
+    let build_jobs = c_test_build_jobs(preps.len())?;
     if preps.len() > 1 {
         println!(
-            "building {} C tests in parallel (build output shown only on failure)…",
-            preps.len()
+            "building {} C tests with up to {} job(s) (build output shown only on failure)…",
+            preps.len(),
+            build_jobs
         );
+
+        if build_jobs < preps.len() {
+            println!("set {C_TEST_BUILD_JOBS_ENV}=N to tune ArceOS C test build parallelism");
+        }
     }
 
-    // Collect (test_name, error) for every build failure.
-    let build_errors: Vec<(String, anyhow::Error)> = std::thread::scope(|s| {
-        let handles: Vec<_> = preps
-            .iter()
-            .map(|prep| {
-                let build_fn_ref = &build_fn;
-                let cargo_env_ref = &cargo_env;
-                let arceos_dir_ref = &arceos_dir;
-                s.spawn(move || -> Option<(String, anyhow::Error)> {
-                    let mut built_args = Vec::<Vec<String>>::new();
-                    for inv in &prep.invocations {
-                        let already_built = built_args
-                            .iter()
-                            .any(|a| a.as_slice() == c_test_build_key(inv));
-                        if !already_built {
-                            if let Err(err) = build_fn_ref(
-                                arceos_dir_ref,
-                                &prep.app_path,
-                                &inv.make_args,
-                                cargo_env_ref,
-                            ) {
-                                return Some((
-                                    prep.name.clone(),
-                                    err.context(format!("c test `{}` build failed", prep.name)),
-                                ));
-                            }
-                            built_args.push(inv.make_args.clone());
-                        }
-                    }
-                    None
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .filter_map(|h| h.join().expect("build thread panicked"))
-            .collect()
-    });
+    let build_errors = run_c_test_builds(&preps, &build_fn, &cargo_env, &arceos_dir, build_jobs);
 
     let failed_builds: BTreeSet<String> = build_errors.iter().map(|(n, _)| n.clone()).collect();
     for (name, err) in &build_errors {
@@ -1310,6 +1309,82 @@ where
     }
 
     qemu_test::finalize_qemu_test_run("arceos c", "test", &failed)
+}
+
+fn c_test_build_jobs(total: usize) -> anyhow::Result<usize> {
+    let default = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(total.max(1));
+    let Ok(value) = std::env::var(C_TEST_BUILD_JOBS_ENV) else {
+        return Ok(default.max(1));
+    };
+    let trimmed = value.trim();
+    let jobs = trimmed.parse::<usize>().with_context(|| {
+        format!("invalid {C_TEST_BUILD_JOBS_ENV} value `{trimmed}`; expected positive integer")
+    })?;
+    if jobs == 0 {
+        bail!("invalid {C_TEST_BUILD_JOBS_ENV} value `{trimmed}`; expected positive integer");
+    }
+    Ok(jobs.min(total.max(1)))
+}
+
+fn run_c_test_builds<BuildFn>(
+    preps: &[CTestPrep],
+    build_fn: &BuildFn,
+    cargo_env: &CTestCargoEnv,
+    arceos_dir: &Path,
+    jobs: usize,
+) -> Vec<(String, anyhow::Error)>
+where
+    BuildFn: Fn(&Path, &Path, &[String], &CTestCargoEnv) -> anyhow::Result<()> + Send + Sync,
+{
+    let chunk_size = preps.len().div_ceil(jobs.max(1));
+    std::thread::scope(|s| {
+        let handles: Vec<_> = preps
+            .chunks(chunk_size.max(1))
+            .map(|chunk| {
+                s.spawn(move || {
+                    chunk
+                        .iter()
+                        .filter_map(|prep| build_c_test_prep(prep, build_fn, arceos_dir, cargo_env))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("build thread panicked"))
+            .collect()
+    })
+}
+
+fn build_c_test_prep<BuildFn>(
+    prep: &CTestPrep,
+    build_fn: &BuildFn,
+    arceos_dir: &Path,
+    cargo_env: &CTestCargoEnv,
+) -> Option<(String, anyhow::Error)>
+where
+    BuildFn: Fn(&Path, &Path, &[String], &CTestCargoEnv) -> anyhow::Result<()> + Send + Sync,
+{
+    let mut built_args = Vec::<Vec<String>>::new();
+    for inv in &prep.invocations {
+        let already_built = built_args
+            .iter()
+            .any(|a| a.as_slice() == c_test_build_key(inv));
+        if already_built {
+            continue;
+        }
+        if let Err(err) = build_fn(arceos_dir, &prep.app_path, &inv.make_args, cargo_env) {
+            return Some((
+                prep.name.clone(),
+                err.context(format!("c test `{}` build failed", prep.name)),
+            ));
+        }
+        built_args.push(inv.make_args.clone());
+    }
+    None
 }
 
 /// Returns the isolated Cargo target directory for a C test.
@@ -1983,5 +2058,19 @@ mod tests {
         // Both invocations must be executed by the QEMU phase.
         let runs = run_events.lock().unwrap();
         assert_eq!(runs.len(), 2, "both invocations should be run");
+    }
+
+    #[test]
+    fn c_test_build_jobs_rejects_invalid_env_value() {
+        unsafe {
+            std::env::set_var(C_TEST_BUILD_JOBS_ENV, "0");
+        }
+        let err = c_test_build_jobs(2).unwrap_err().to_string();
+        unsafe {
+            std::env::remove_var(C_TEST_BUILD_JOBS_ENV);
+        }
+
+        assert!(err.contains(C_TEST_BUILD_JOBS_ENV));
+        assert!(err.contains("positive integer"));
     }
 }

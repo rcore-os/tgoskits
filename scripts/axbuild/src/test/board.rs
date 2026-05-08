@@ -17,6 +17,13 @@ pub(crate) trait BoardTestGroupInfo {
     fn board_name(&self) -> &str;
 }
 
+pub(crate) fn labeled_board_cases<T: BoardTestGroupInfo>(groups: Vec<T>) -> Vec<(String, String)> {
+    groups
+        .into_iter()
+        .map(|group| (group.name().to_string(), group.board_name().to_string()))
+        .collect()
+}
+
 pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
     mut groups: Vec<T>,
     selected_case: Option<&str>,
@@ -128,6 +135,47 @@ pub(crate) fn finalize_board_test_run(suite_name: &str, failed: &[String]) -> an
             failed.len(),
             failed.join(", ")
         )
+    }
+}
+
+pub(crate) struct BoardTestRunState<'a> {
+    suite_name: &'a str,
+    total: usize,
+    failed: Vec<String>,
+}
+
+impl<'a> BoardTestRunState<'a> {
+    pub(crate) fn new(suite_name: &'a str, total: usize) -> Self {
+        Self {
+            suite_name,
+            total,
+            failed: Vec::new(),
+        }
+    }
+
+    pub(crate) fn start_group<T: BoardTestGroupInfo>(&self, index: usize, group: &T) -> String {
+        let group_label = format!("{}/{}", group.name(), group.board_name());
+        println!(
+            "[{}/{}] {} board {}",
+            index + 1,
+            self.total,
+            self.suite_name,
+            group_label
+        );
+        group_label
+    }
+
+    pub(crate) fn pass_group(&self, group_label: &str) {
+        println!("ok: {group_label}");
+    }
+
+    pub(crate) fn fail_group(&mut self, group_label: String, err: anyhow::Error) {
+        eprintln!("failed: {}: {:#}", group_label, err);
+        self.failed.push(group_label);
+    }
+
+    pub(crate) fn finish(self) -> anyhow::Result<()> {
+        finalize_board_test_run(self.suite_name, &self.failed)
     }
 }
 
