@@ -7,13 +7,15 @@ use core::{
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::{
     GuestPhysAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo,
-    device::{AccessWidth, Port, SysRegAddr},
+    device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
 };
+use axdevice_base::BaseDeviceOps;
 use axvcpu::{AxArchVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::{VCpuId, VMId};
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86_64::registers::control::Cr0Flags;
+use x86_vlapic::EmulatedLocalApic;
 
 use super::{
     definitions::{SvmExitCode, SvmIntercept},
@@ -31,6 +33,9 @@ const EFER_LMA: u64 = 1 << 10;
 const EFER_LME: u64 = 1 << 8;
 const CR0_PG: u64 = 1 << 31;
 const CR0_PE: u64 = 1 << 0;
+const X2APIC_MSR_BASE: u32 = 0x800;
+// Match the current VMX/vLAPIC path, which handles x2APIC register offsets 0x00..=0x3f.
+const X2APIC_MSR_END: u32 = 0x83f;
 
 macro_rules! save_regs_no_rax {
     () => {
@@ -113,21 +118,32 @@ impl VmLoadSaveStates {
 /// permission map.
 #[repr(C)]
 pub struct SvmVcpu {
+    /// Guest general-purpose registers.
     guest_regs: GeneralRegisters,
     // Used by `svm_run()` assembly; keep immediately after `guest_regs`.
     host_stack_top: u64,
+    /// Whether this VCPU has entered the guest at least once.
     launched: bool,
+    /// The guest entry point.
     entry: Option<GuestPhysAddr>,
+    /// The nested page table root address.
     npt_root: Option<HostPhysAddr>,
+    /// The guest VMCB.
     vmcb: VmcbFrame,
+    /// Host state saved with VMSAVE and restored with VMLOAD.
     load_save_states: VmLoadSaveStates,
+    /// The I/O permission map used by SVM I/O intercepts.
     iopm: IOPm,
+    /// The MSR permission map used by SVM MSR intercepts.
     msrpm: MSRPm,
+    /// Emulated Local APIC for x2APIC MSR accesses.
+    vlapic: EmulatedLocalApic,
+    /// The XState of the VCpu. Both host and guest.
     xstate: XState,
 }
 
 impl SvmVcpu {
-    fn create(_vm_id: VMId, _vcpu_id: VCpuId) -> AxResult<Self> {
+    fn create(vm_id: VMId, vcpu_id: VCpuId) -> AxResult<Self> {
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
@@ -138,6 +154,7 @@ impl SvmVcpu {
             load_save_states: VmLoadSaveStates::new()?,
             iopm: IOPm::passthrough_all()?,
             msrpm: MSRPm::passthrough_all()?,
+            vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
             xstate: XState::new(),
         };
         info!("[HV] created SvmVcpu(vmcb: {:#x})", vcpu.vmcb.phys_addr());
@@ -246,6 +263,11 @@ impl SvmVcpu {
         // clears the host-required SVME bit stored in the VMCB.
         self.msrpm.set_read_intercept(Msr::IA32_EFER as u32, true);
         self.msrpm.set_write_intercept(Msr::IA32_EFER as u32, true);
+        // Route x2APIC MSRs through the emulated local APIC instead of the host APIC.
+        for msr in X2APIC_MSR_BASE..=X2APIC_MSR_END {
+            self.msrpm.set_read_intercept(msr, true);
+            self.msrpm.set_write_intercept(msr, true);
+        }
         Ok(())
     }
 
@@ -414,6 +436,11 @@ impl SvmVcpu {
             Ok(SvmExitCode::MSR) if self.regs().rcx as u32 == Msr::IA32_EFER as u32 => {
                 Some(self.handle_efer_msr(exit_info))
             }
+            Ok(SvmExitCode::MSR)
+                if (X2APIC_MSR_BASE..=X2APIC_MSR_END).contains(&(self.regs().rcx as u32)) =>
+            {
+                Some(self.handle_apic_msr_access(exit_info, self.regs().rcx as u32))
+            }
             _ => None,
         }
     }
@@ -451,6 +478,34 @@ impl SvmVcpu {
         } else {
             self.set_guest_efer(value);
         }
+        self.advance_rip(VM_EXIT_INSTR_LEN_MSR)
+    }
+
+    fn handle_apic_msr_access(
+        &mut self,
+        exit_info: &super::vmcb::SvmExitInfo,
+        msr: u32,
+    ) -> AxResult {
+        const VM_EXIT_INSTR_LEN_MSR: u8 = 2;
+        let write = exit_info.exit_info_1 != 0;
+
+        if write {
+            let value = self.read_edx_eax() as usize;
+            <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_write(
+                &self.vlapic,
+                SysRegAddr::new(msr as usize),
+                AccessWidth::Qword,
+                value,
+            )?;
+        } else {
+            let value = <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_read(
+                &self.vlapic,
+                SysRegAddr::new(msr as usize),
+                AccessWidth::Qword,
+            )? as u64;
+            self.write_edx_eax(value);
+        }
+
         self.advance_rip(VM_EXIT_INSTR_LEN_MSR)
     }
 
@@ -591,6 +646,11 @@ impl SvmVcpu {
 
     fn read_edx_eax(&self) -> u64 {
         ((self.regs().rdx & 0xffff_ffff) << 32) | (self.regs().rax & 0xffff_ffff)
+    }
+
+    fn write_edx_eax(&mut self, val: u64) {
+        self.regs_mut().rax = val & 0xffff_ffff;
+        self.regs_mut().rdx = val >> 32;
     }
 
     fn before_vmrun(&mut self) {
