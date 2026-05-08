@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     time::Instant,
@@ -376,6 +377,7 @@ impl Axvisor {
         let total = cases.len();
         let suite_started = Instant::now();
         let mut failed = Vec::new();
+        let asset_config = axvisor_case_asset_config();
         let mut completed = 0;
         for group in Self::group_qemu_cases_by_build_config(&cases) {
             let (group_request, group_cargo) =
@@ -400,7 +402,7 @@ impl Axvisor {
 
                 let case_started = Instant::now();
                 let result = self
-                    .run_qemu_case(&group_request, &group_cargo, case)
+                    .run_qemu_case(&group_request, &group_cargo, case, &asset_config)
                     .await
                     .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
                 match result {
@@ -612,10 +614,13 @@ impl Axvisor {
         cases: Vec<AxvisorQemuCase>,
     ) -> anyhow::Result<Vec<PreparedAxvisorQemuCase>> {
         let mut prepared = Vec::with_capacity(cases.len());
+        let mut cargo_by_build_config = BTreeMap::new();
         for case in cases {
-            let mut request = request.clone();
-            request.build_info_path = case.build_config_path.clone();
-            let cargo = build::load_cargo_config(&request)?;
+            let cargo = Self::qemu_case_cargo_config(
+                request,
+                &case.build_config_path,
+                &mut cargo_by_build_config,
+            )?;
             let qemu = self
                 .app
                 .tool_mut()
@@ -632,6 +637,22 @@ impl Axvisor {
         }
 
         Ok(prepared)
+    }
+
+    fn qemu_case_cargo_config(
+        request: &ResolvedAxvisorRequest,
+        build_config_path: &Path,
+        cargo_by_build_config: &mut BTreeMap<PathBuf, Cargo>,
+    ) -> anyhow::Result<Cargo> {
+        if let Some(cargo) = cargo_by_build_config.get(build_config_path) {
+            return Ok(cargo.clone());
+        }
+
+        let mut request = request.clone();
+        request.build_info_path = build_config_path.to_path_buf();
+        let cargo = build::load_cargo_config(&request)?;
+        cargo_by_build_config.insert(build_config_path.to_path_buf(), cargo.clone());
+        Ok(cargo)
     }
 
     fn group_qemu_cases_by_build_config(
@@ -661,9 +682,9 @@ impl Axvisor {
         &mut self,
         request: &ResolvedAxvisorRequest,
         case: &PreparedAxvisorQemuCase,
+        asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
         let mut qemu = case.qemu.clone();
-        let asset_config = axvisor_case_asset_config();
         test_case::apply_grouped_qemu_config(
             &mut qemu,
             &case.case.case,
@@ -678,7 +699,7 @@ impl Axvisor {
             &request.target,
             &case.case.case,
             rootfs_path,
-            asset_config,
+            asset_config.clone(),
         )
         .await?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
@@ -691,9 +712,12 @@ impl Axvisor {
         request: &ResolvedAxvisorRequest,
         cargo: &Cargo,
         case: &PreparedAxvisorQemuCase,
+        asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<()> {
         let prepare_started = Instant::now();
-        let (qemu, prepared_assets) = self.load_qemu_case_config(request, case).await?;
+        let (qemu, prepared_assets) = self
+            .load_qemu_case_config(request, case, asset_config)
+            .await?;
         println!(
             "  prepare assets: {:.2?} (pipeline={}, cache={})",
             prepare_started.elapsed(),

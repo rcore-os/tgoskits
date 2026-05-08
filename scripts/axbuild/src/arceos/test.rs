@@ -99,9 +99,11 @@ struct ArceosRustQemuCase {
     package: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct PreparedArceosRustQemuCase {
     case: ArceosRustQemuCase,
+    request: ResolvedBuildRequest,
+    cargo: Cargo,
     qemu: QemuConfig,
 }
 
@@ -266,21 +268,16 @@ async fn test_rust_qemu(
     let total = prepared.len();
     let mut completed = 0;
     for group in qemu_test::group_cases_by_build_config(&prepared) {
-        let package = group
+        let first_case = group
             .cases
             .first()
-            .map(|case| case.case.package.as_str())
             .context("empty ArceOS Rust qemu build group")?;
-        let request = arceos.prepare_request(
-            test_build_args(package, target, group.build_config_path),
-            None,
-            None,
-            SnapshotPersistence::Discard,
-        )?;
-        let cargo = build::load_cargo_config(&request)?;
         arceos
             .app
-            .build(cargo.clone(), request.build_info_path.clone())
+            .build(
+                first_case.cargo.clone(),
+                first_case.request.build_info_path.clone(),
+            )
             .await
             .with_context(|| {
                 format!(
@@ -294,7 +291,7 @@ async fn test_rust_qemu(
             completed += 1;
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] arceos rust qemu {case_name}");
-            match run_rust_qemu_case(arceos, &request, &cargo, case)
+            match run_rust_qemu_case(arceos, case)
                 .await
                 .with_context(|| format!("arceos rust qemu test failed for case `{case_name}`"))
             {
@@ -343,21 +340,16 @@ async fn test_generic_qemu(
     let mut completed = 0;
     let mut failed = Vec::new();
     for build_group in qemu_test::group_cases_by_build_config(&prepared) {
-        let package = build_group
+        let first_case = build_group
             .cases
             .first()
-            .map(|case| case.case.package.as_str())
             .with_context(|| format!("empty ArceOS {group} qemu build group"))?;
-        let request = arceos.prepare_request(
-            test_build_args(package, target, build_group.build_config_path),
-            None,
-            None,
-            SnapshotPersistence::Discard,
-        )?;
-        let cargo = build::load_cargo_config(&request)?;
         arceos
             .app
-            .build(cargo.clone(), request.build_info_path.clone())
+            .build(
+                first_case.cargo.clone(),
+                first_case.request.build_info_path.clone(),
+            )
             .await
             .with_context(|| {
                 format!(
@@ -370,7 +362,7 @@ async fn test_generic_qemu(
             completed += 1;
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] {group_label} qemu {case_name}");
-            match run_rust_qemu_case(arceos, &request, &cargo, case)
+            match run_rust_qemu_case(arceos, case)
                 .await
                 .with_context(|| format!("{group_label} qemu test failed for case `{case_name}`"))
             {
@@ -478,18 +470,21 @@ async fn prepare_rust_qemu_cases(
                     case.case.display_name
                 )
             })?;
-        prepared.push(PreparedArceosRustQemuCase { case, qemu });
+        prepared.push(PreparedArceosRustQemuCase {
+            case,
+            request,
+            cargo,
+            qemu,
+        });
     }
     Ok(prepared)
 }
 
 async fn run_rust_qemu_case(
     arceos: &mut ArceOS,
-    _request: &ResolvedBuildRequest,
-    cargo: &Cargo,
     case: &PreparedArceosRustQemuCase,
 ) -> anyhow::Result<()> {
-    arceos.app.run_qemu(cargo, case.qemu.clone()).await
+    arceos.app.run_qemu(&case.cargo, case.qemu.clone()).await
 }
 
 fn list_rust_qemu_cases(

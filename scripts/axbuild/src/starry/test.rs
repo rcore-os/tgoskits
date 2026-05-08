@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -614,6 +614,7 @@ impl Starry {
         let suite_started = Instant::now();
         let mut reports = Vec::new();
         let case_groups = Self::group_qemu_cases_by_build_config(&cases);
+        let asset_config = starry_case_asset_config();
         let mut completed = 0;
         for group in case_groups {
             let (group_request, group_cargo) =
@@ -636,7 +637,7 @@ impl Starry {
 
                 let case_started = Instant::now();
                 match self
-                    .run_qemu_case(&group_request, &group_cargo, case)
+                    .run_qemu_case(&group_request, &group_cargo, case, &asset_config)
                     .await
                     .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
                 {
@@ -820,10 +821,14 @@ impl Starry {
         cases: Vec<StarryQemuCase>,
     ) -> anyhow::Result<Vec<PreparedStarryQemuCase>> {
         let mut prepared = Vec::with_capacity(cases.len());
+        let mut cargo_by_build_config = BTreeMap::new();
+        let mut rootfs_paths = BTreeSet::new();
         for starry_case in cases {
-            let mut request = request.clone();
-            request.build_info_path = starry_case.build_config_path.clone();
-            let cargo = build::load_cargo_config(&request)?;
+            let cargo = Self::qemu_case_cargo_config(
+                request,
+                &starry_case.build_config_path,
+                &mut cargo_by_build_config,
+            )?;
             let qemu = self
                 .app
                 .tool_mut()
@@ -837,21 +842,7 @@ impl Starry {
                 })?;
             let rootfs_path =
                 Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path);
-            if rootfs_path == default_rootfs_path {
-                rootfs::ensure_rootfs_in_target_dir(
-                    self.app.workspace_root(),
-                    &request.arch,
-                    &request.target,
-                )
-                .await?;
-            } else {
-                crate::rootfs::store::ensure_optional_managed_rootfs(
-                    self.app.workspace_root(),
-                    &request.arch,
-                    Some(&rootfs_path),
-                )
-                .await?;
-            }
+            rootfs_paths.insert(rootfs_path.clone());
             qemu_test::validate_grouped_qemu_commands(&qemu, &starry_case.case, "Starry")?;
             let requirements = Self::qemu_case_requirements(&qemu).with_context(|| {
                 format!(
@@ -869,7 +860,51 @@ impl Starry {
             });
         }
 
+        self.ensure_qemu_case_rootfs_paths(request, default_rootfs_path, &rootfs_paths)
+            .await?;
         Ok(prepared)
+    }
+
+    fn qemu_case_cargo_config(
+        request: &ResolvedStarryRequest,
+        build_config_path: &Path,
+        cargo_by_build_config: &mut BTreeMap<PathBuf, Cargo>,
+    ) -> anyhow::Result<Cargo> {
+        if let Some(cargo) = cargo_by_build_config.get(build_config_path) {
+            return Ok(cargo.clone());
+        }
+
+        let mut request = request.clone();
+        request.build_info_path = build_config_path.to_path_buf();
+        let cargo = build::load_cargo_config(&request)?;
+        cargo_by_build_config.insert(build_config_path.to_path_buf(), cargo.clone());
+        Ok(cargo)
+    }
+
+    async fn ensure_qemu_case_rootfs_paths(
+        &self,
+        request: &ResolvedStarryRequest,
+        default_rootfs_path: &Path,
+        rootfs_paths: &BTreeSet<PathBuf>,
+    ) -> anyhow::Result<()> {
+        for rootfs_path in rootfs_paths {
+            if rootfs_path == default_rootfs_path {
+                rootfs::ensure_rootfs_in_target_dir(
+                    self.app.workspace_root(),
+                    &request.arch,
+                    &request.target,
+                )
+                .await?;
+            } else {
+                crate::rootfs::store::ensure_optional_managed_rootfs(
+                    self.app.workspace_root(),
+                    &request.arch,
+                    Some(rootfs_path),
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     fn qemu_case_rootfs_path(
@@ -924,10 +959,10 @@ impl Starry {
         request: &ResolvedStarryRequest,
         cargo: &Cargo,
         prepared_case: &PreparedStarryQemuCase,
+        asset_config: &case::CaseAssetConfig,
     ) -> anyhow::Result<()> {
         let case = &prepared_case.case;
         let mut qemu = prepared_case.qemu.clone();
-        let asset_config = starry_case_asset_config();
         case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_runner);
 
         qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
@@ -940,7 +975,7 @@ impl Starry {
             &request.target,
             case,
             prepared_case.rootfs_path.clone(),
-            asset_config,
+            asset_config.clone(),
         )
         .await?;
         println!(
