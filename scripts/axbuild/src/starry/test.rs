@@ -7,8 +7,15 @@ use std::{
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
-use ostool::{board::RunBoardOptions, build::config::Cargo, run::qemu::QemuConfig};
+use futures::AsyncWriteExt as _;
+use ostool::{
+    board::{RunBoardOptions, serial_stream},
+    build::config::Cargo,
+    run::qemu::QemuConfig,
+};
+use regex::Regex;
 use serde::Deserialize;
+use uboot_shell::UbootShell;
 
 use super::{Starry, board, build, rootfs};
 use crate::{
@@ -24,6 +31,11 @@ use crate::{
 };
 
 const STARRY_TEST_SUITE_OS: &str = "starryos";
+const ORANGEPI_STARRY_BOARD_NAME: &str = "orangepi-5-plus";
+const ORANGEPI_BOARD_TYPE: &str = "OrangePi-5-Plus";
+const STARRY_BOARD_LINUX_GUARD_TIMEOUT_SECS: u64 = 600;
+const STARRY_BOARD_LINUX_GUARD_LOGIN_REGEX: &str = r"(?m)(root@[^#\r\n]*#\s*$|[A-Za-z0-9_.-]+\s+login:\s*$|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[^\r\n]*[#$]\s*$)";
+const STARRY_BOARD_LINUX_GUARD_FAIL_REGEX: &str = r"(?i)(EUCLEAN|Structure needs cleaning|UNEXPECTED INCONSISTENCY|RUN fsck MANUALLY|requires a manual fsck|directory corrupted)";
 
 #[derive(Args)]
 pub struct ArgsTest {
@@ -112,6 +124,15 @@ pub struct ArgsTestBoard {
 
     #[arg(short = 'l', long, help = "List discovered Starry board test cases")]
     pub list: bool,
+
+    #[arg(
+        long,
+        help = "Skip the Linux clean-boot guard after destructive Starry board cases"
+    )]
+    pub no_linux_guard: bool,
+
+    #[arg(long, default_value = "auto", value_parser = ["auto", "always", "never"])]
+    pub linux_guard: String,
 }
 
 pub(super) async fn test(starry: &mut Starry, args: ArgsTest) -> anyhow::Result<()> {
@@ -465,6 +486,180 @@ fn format_duration(duration: Duration) -> String {
     format!("{:.2}s", duration.as_secs_f64())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StarryBoardLinuxGuardMode {
+    Auto,
+    Always,
+    Never,
+}
+
+impl StarryBoardLinuxGuardMode {
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "" => Ok(Self::Auto),
+            "auto" => Ok(Self::Auto),
+            "always" => Ok(Self::Always),
+            "never" => Ok(Self::Never),
+            other => bail!("unsupported Starry board Linux guard mode `{other}`"),
+        }
+    }
+
+    fn should_guard(self, board_name: &str) -> bool {
+        match self {
+            Self::Auto => board_name == ORANGEPI_STARRY_BOARD_NAME,
+            Self::Always => true,
+            Self::Never => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StarryBoardLinuxGuard {
+    board_type: String,
+    server: Option<String>,
+    port: Option<u16>,
+    timeout: Duration,
+    login_regex: Regex,
+    fail_regex: Regex,
+}
+
+impl StarryBoardLinuxGuard {
+    fn new(board_type: String, server: Option<String>, port: Option<u16>) -> anyhow::Result<Self> {
+        Ok(Self {
+            board_type,
+            server,
+            port,
+            timeout: Duration::from_secs(STARRY_BOARD_LINUX_GUARD_TIMEOUT_SECS),
+            login_regex: Regex::new(STARRY_BOARD_LINUX_GUARD_LOGIN_REGEX)?,
+            fail_regex: Regex::new(STARRY_BOARD_LINUX_GUARD_FAIL_REGEX)?,
+        })
+    }
+
+    async fn run(&self, label: &str, repair: bool) -> anyhow::Result<()> {
+        let global_config = ostool::board::load_board_global_config_with_notice()?;
+        let (server, port) = global_config.resolve_server(self.server.as_deref(), self.port);
+        let repair_label = if repair {
+            " with fsckfix"
+        } else {
+            " without fsckfix"
+        };
+        println!("checking Linux clean boot after {label}{repair_label}");
+
+        tokio::time::timeout(self.timeout, async {
+            self.run_inner(&server, port, repair)
+                .await
+                .with_context(|| format!("Linux clean-boot guard failed after `{label}`"))
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "Linux clean-boot guard timed out after {}s after `{label}`",
+                self.timeout.as_secs()
+            )
+        })?
+    }
+
+    async fn run_inner(&self, server: &str, port: u16, repair: bool) -> anyhow::Result<()> {
+        let (client, session) =
+            ostool::board::acquire_board_session(server, port, &self.board_type).await?;
+        let result = async {
+            let ws_path = session
+                .info()
+                .ws_url
+                .as_deref()
+                .context("server did not return a serial websocket URL")?;
+            let ws_url = client.resolve_ws_url(ws_path)?;
+            let (mut tx, mut rx, tasks) = serial_stream::connect_serial_stream(ws_url).await?;
+            let mut uboot = UbootShell::new(tx, rx)
+                .await
+                .context("failed to interrupt U-Boot shell for Linux clean-boot guard")?;
+            if repair {
+                uboot
+                    .cmd("setenv extraboardargs fsckfix")
+                    .await
+                    .context("failed to set one-shot fsckfix U-Boot argument")?;
+            }
+            uboot
+                .cmd_without_reply("boot")
+                .await
+                .context("failed to boot Linux from U-Boot")?;
+            tx = uboot.tx.take().context("missing U-Boot serial writer")?;
+            rx = uboot.rx.take().context("missing U-Boot serial reader")?;
+            drop(uboot);
+            let wait_result =
+                wait_for_linux_guard_prompt(&mut tx, &mut rx, &self.login_regex, &self.fail_regex)
+                    .await;
+            drop(tx);
+            drop(rx);
+            let shutdown_result = tasks.shutdown_with_timeout(Duration::from_secs(1)).await;
+            wait_result.and(shutdown_result)
+        }
+        .await;
+
+        let release_result = session.release().await;
+        match (result, release_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(err)) => Err(err),
+            (Err(run_err), Err(release_err)) => Err(run_err.context(format!(
+                "additionally failed to release board session: {release_err:#}"
+            ))),
+        }
+    }
+}
+
+async fn wait_for_linux_guard_prompt(
+    tx: &mut (dyn futures::AsyncWrite + Send + Unpin),
+    rx: &mut (dyn futures::AsyncRead + Send + Unpin),
+    login_regex: &Regex,
+    fail_regex: &Regex,
+) -> anyhow::Result<()> {
+    let mut recent = String::new();
+    let mut buffer = [0u8; 1024];
+    loop {
+        let read = futures::AsyncReadExt::read(rx, &mut buffer)
+            .await
+            .context("failed to read Linux clean-boot guard serial output")?;
+        if read == 0 {
+            bail!("serial stream closed before Linux reached a prompt");
+        }
+        let text = String::from_utf8_lossy(&buffer[..read]);
+        print!("{text}");
+        recent = append_recent_serial(&recent, strip_ansi(&text), 64 * 1024);
+        if fail_regex.is_match(&recent) {
+            bail!("Linux clean-boot guard matched filesystem corruption output");
+        }
+        if login_regex.is_match(&recent) {
+            tx.write_all(b"\n").await?;
+            tx.flush().await?;
+            return Ok(());
+        }
+    }
+}
+
+fn append_recent_serial(current: &str, chunk: impl AsRef<str>, limit: usize) -> String {
+    let mut merged = String::with_capacity(current.len() + chunk.as_ref().len());
+    merged.push_str(current);
+    merged.push_str(chunk.as_ref());
+    if merged.len() > limit {
+        merged.split_off(merged.len() - limit)
+    } else {
+        merged
+    }
+}
+
+fn strip_ansi(text: &str) -> String {
+    static ANSI_REGEX: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").unwrap());
+    ANSI_REGEX.replace_all(text, "").into_owned()
+}
+
+fn push_unique_failed(failed: &mut Vec<String>, label: &str) {
+    if !failed.iter().any(|failed| failed == label) {
+        failed.push(label.to_string());
+    }
+}
+
 fn collect_board_test_groups(
     _workspace_root: &Path,
     test_suite_dir: &Path,
@@ -740,9 +935,30 @@ impl Starry {
         }
         let total = groups.len();
         let mut failed = Vec::new();
+        let guard_mode = if args.no_linux_guard {
+            StarryBoardLinuxGuardMode::Never
+        } else {
+            StarryBoardLinuxGuardMode::parse(&args.linux_guard)?
+        };
+        let guard = if groups
+            .iter()
+            .any(|group| guard_mode.should_guard(&group.board_name))
+        {
+            Some(StarryBoardLinuxGuard::new(
+                args.board_type
+                    .clone()
+                    .unwrap_or_else(|| ORANGEPI_BOARD_TYPE.to_string()),
+                args.server.clone(),
+                args.port,
+            )?)
+        } else {
+            None
+        };
+        let mut guard_checked_before_suite = false;
 
         for (index, group) in groups.into_iter().enumerate() {
             let group_label = format!("{}/{}", group.name, group.board_name);
+            let should_guard_group = guard_mode.should_guard(&group.board_name);
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
 
@@ -756,8 +972,25 @@ impl Starry {
             }
 
             println!("[{}/{}] starry board {}", index + 1, total, group_label);
+            if let Some(guard) = guard.as_ref()
+                && should_guard_group
+                && !guard_checked_before_suite
+            {
+                guard_checked_before_suite = true;
+                if let Err(err) = guard.run("Starry board suite start", false).await {
+                    eprintln!("failed: pre-test Linux clean-boot guard: {err:#}");
+                    guard
+                        .run("Starry board suite start", true)
+                        .await
+                        .context("pre-test Linux clean-boot guard repair failed")?;
+                    guard
+                        .run("Starry board suite start", false)
+                        .await
+                        .context("pre-test Linux clean-boot guard still failed after repair")?;
+                }
+            }
 
-            let result = async {
+            let result: anyhow::Result<()> = async {
                 let request = self.prepare_request(
                     Self::test_board_build_args(&group),
                     None,
@@ -788,16 +1021,40 @@ impl Starry {
                             group.build_config_path.display(),
                             board_test_config_summary
                         )
-                    })
+                    })?;
+                Ok(())
             }
             .await;
 
-            match result {
-                Ok(()) => println!("ok: {}", group_label),
+            let group_passed = match result {
+                Ok(()) => true,
                 Err(err) => {
                     eprintln!("failed: {}: {:#}", group_label, err);
-                    failed.push(group_label);
+                    push_unique_failed(&mut failed, &group_label);
+                    false
                 }
+            };
+
+            if let Some(guard) = guard.as_ref()
+                && should_guard_group
+                && let Err(err) = guard.run(&group_label, false).await
+            {
+                eprintln!("failed: {}: {:#}", group_label, err);
+                push_unique_failed(&mut failed, &group_label);
+                if let Err(repair_err) = guard.run(&group_label, true).await {
+                    eprintln!(
+                        "failed: {}: Linux fsckfix repair guard failed: {:#}",
+                        group_label, repair_err
+                    );
+                }
+                bail!(
+                    "stopping Starry board tests after Linux clean-boot guard failure; run a \
+                     board fsck repair before reusing this board"
+                );
+            }
+
+            if group_passed {
+                println!("ok: {}", group_label);
             }
         }
 
@@ -1785,6 +2042,51 @@ mod tests {
         assert!(summary.contains("smoke (0.50s)"));
         assert!(summary.contains("usb (2.00s)"));
         assert!(summary.contains("total: 3.00s"));
+    }
+
+    #[test]
+    fn starry_board_linux_guard_mode_defaults_to_orangepi_only() {
+        let mode = StarryBoardLinuxGuardMode::parse("auto").unwrap();
+
+        assert!(mode.should_guard("orangepi-5-plus"));
+        assert!(!mode.should_guard("vision-five2"));
+        assert_eq!(StarryBoardLinuxGuardMode::parse("").unwrap(), mode);
+    }
+
+    #[test]
+    fn starry_board_linux_guard_modes_support_overrides() {
+        assert!(
+            StarryBoardLinuxGuardMode::parse("always")
+                .unwrap()
+                .should_guard("vision-five2")
+        );
+        assert!(
+            !StarryBoardLinuxGuardMode::parse("never")
+                .unwrap()
+                .should_guard("orangepi-5-plus")
+        );
+        assert!(StarryBoardLinuxGuardMode::parse("sometimes").is_err());
+    }
+
+    #[test]
+    fn starry_board_linux_guard_detects_dirty_rootfs_output() {
+        let fail = Regex::new(STARRY_BOARD_LINUX_GUARD_FAIL_REGEX).unwrap();
+
+        assert!(fail.is_match("Mount failed: EUCLEAN: Structure needs cleaning"));
+        assert!(fail.is_match("UNEXPECTED INCONSISTENCY; RUN fsck MANUALLY"));
+        assert!(!fail.is_match("root@orangepi5plus:~#"));
+    }
+
+    #[test]
+    fn appends_recent_serial_with_limit() {
+        let recent = append_recent_serial("abcdef", "ghij", 5);
+
+        assert_eq!(recent, "fghij");
+    }
+
+    #[test]
+    fn strip_ansi_removes_color_sequences() {
+        assert_eq!(strip_ansi("\u{1b}[31merror\u{1b}[0m"), "error");
     }
 
     #[test]

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- *(starry)* guard OrangePi-5-Plus board tests with Linux clean-boot checks after each case.
+
 ## [0.4.5](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.4...axbuild-v0.4.5) - 2026-04-27
 
 ### Added

@@ -1532,6 +1532,7 @@ dependencies = [
  "colored",
  "env_logger",
  "flate2",
+ "futures",
  "futures-util",
  "indicatif",
  "jkconfig 0.1.8",
@@ -1554,6 +1555,7 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "uboot-shell",
  "walkdir",
  "xz2",
 ]
