@@ -2,6 +2,7 @@ mod ctl;
 mod event;
 mod fd_ops;
 mod io;
+mod lock;
 mod memfd;
 mod mount;
 mod pidfd;

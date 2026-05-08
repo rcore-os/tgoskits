@@ -185,6 +185,15 @@ pub trait FileLike: Pollable + DowncastSync {
         Ok(())
     }
 
+    /// (device, inode) identity used as the key for advisory file locks
+    /// (fcntl POSIX/OFD locks and flock(2)).
+    ///
+    /// Returns `None` for fd kinds that are not lockable (pipes, sockets,
+    /// epoll, eventfd, ...). Only regular files override this.
+    fn inode_key(&self) -> Option<(u64, u64)> {
+        None
+    }
+
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
     where
         Self: Sized + 'static,
