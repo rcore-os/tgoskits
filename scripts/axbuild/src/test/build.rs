@@ -341,6 +341,7 @@ pub(crate) fn prepare_python_case_assets_sync(
         .map_err(|e| anyhow::anyhow!("failed to build guest prebuild PATH: {e}"))?;
     prebuild_cmd.env("PATH", path);
     prebuild_cmd.env("QEMU_LD_PREFIX", &layout.staging_root);
+    prebuild_cmd.env("LD_LIBRARY_PATH", guest_library_path(&layout.staging_root));
     for (key, value) in extra_script_envs {
         prebuild_cmd.env(key, value);
     }
