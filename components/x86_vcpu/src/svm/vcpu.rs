@@ -84,87 +84,27 @@ pub enum VmCpuMode {
     Mode64,
 }
 
-/// Host state touched by SVM VMLOAD/VMSAVE and restored around guest entry.
-#[derive(Default)]
+/// Host save area used to restore CPU state touched by SVM VMLOAD/VMSAVE.
 pub struct VmLoadSaveStates {
-    pub fs_base: u64,
-    pub gs_base: u64,
-    pub kernel_gs_base: u64,
-    pub sysenter_cs: u64,
-    pub sysenter_esp: u64,
-    pub sysenter_eip: u64,
-    pub star: u64,
-    pub lstar: u64,
-    pub cstar: u64,
-    pub sfmask: u64,
-    pub ldtr: u16,
-    pub tr: u16,
+    vmcb: VmcbFrame,
 }
 
 impl VmLoadSaveStates {
-    pub fn save_fs_gs(&mut self) {
-        self.fs_base = Msr::IA32_FS_BASE.read();
-        self.gs_base = Msr::IA32_GS_BASE.read();
-        self.kernel_gs_base = Msr::IA32_KERNEL_GSBASE.read();
+    pub fn new() -> AxResult<Self> {
+        Ok(Self {
+            vmcb: VmcbFrame::new()?,
+        })
     }
 
-    pub fn save_sysenter(&mut self) {
-        self.sysenter_cs = Msr::IA32_SYSENTER_CS.read();
-        self.sysenter_esp = Msr::IA32_SYSENTER_ESP.read();
-        self.sysenter_eip = Msr::IA32_SYSENTER_EIP.read();
-    }
-
-    pub fn save_syscall(&mut self) {
-        self.star = Msr::IA32_STAR.read();
-        self.lstar = Msr::IA32_LSTAR.read();
-        self.cstar = Msr::IA32_CSTAR.read();
-        self.sfmask = Msr::IA32_FMASK.read();
-    }
-
-    pub fn save_segs(&mut self) {
+    pub fn save(&mut self) {
         unsafe {
-            asm!(
-                "sldt {ldtr:x}",
-                "str {tr:x}",
-                ldtr = out(reg) self.ldtr,
-                tr = out(reg) self.tr,
-            );
+            let _ = super::instructions::vmsave(self.vmcb.phys_addr().as_usize() as u64);
         }
     }
 
-    pub fn load_fs_gs(&self) {
+    pub fn load(&self) {
         unsafe {
-            Msr::IA32_FS_BASE.write(self.fs_base);
-            Msr::IA32_GS_BASE.write(self.gs_base);
-            Msr::IA32_KERNEL_GSBASE.write(self.kernel_gs_base);
-        }
-    }
-
-    pub fn load_sysenter(&self) {
-        unsafe {
-            Msr::IA32_SYSENTER_CS.write(self.sysenter_cs);
-            Msr::IA32_SYSENTER_ESP.write(self.sysenter_esp);
-            Msr::IA32_SYSENTER_EIP.write(self.sysenter_eip);
-        }
-    }
-
-    pub fn load_syscall(&self) {
-        unsafe {
-            Msr::IA32_STAR.write(self.star);
-            Msr::IA32_LSTAR.write(self.lstar);
-            Msr::IA32_CSTAR.write(self.cstar);
-            Msr::IA32_FMASK.write(self.sfmask);
-        }
-    }
-
-    pub fn load_segs(&self) {
-        unsafe {
-            asm!(
-                "lldt {ldtr:x}",
-                "ltr {tr:x}",
-                ldtr = in(reg) self.ldtr,
-                tr = in(reg) self.tr,
-            );
+            let _ = super::instructions::vmload(self.vmcb.phys_addr().as_usize() as u64);
         }
     }
 }
@@ -195,7 +135,7 @@ impl SvmVcpu {
             entry: None,
             npt_root: None,
             vmcb: VmcbFrame::new()?,
-            load_save_states: VmLoadSaveStates::default(),
+            load_save_states: VmLoadSaveStates::new()?,
             iopm: IOPm::passthrough_all()?,
             msrpm: MSRPm::passthrough_all()?,
             xstate: XState::new(),
@@ -659,7 +599,7 @@ impl SvmVcpu {
             super::instructions::clgi();
             self.vmcb.as_vmcb().state.rax.set(rax);
         }
-        self.load_save_states.save_fs_gs();
+        self.load_save_states.save();
         unsafe {
             let _ = super::instructions::vmload(self.vmcb.phys_addr().as_usize() as u64);
         }
@@ -669,7 +609,7 @@ impl SvmVcpu {
         unsafe {
             let _ = super::instructions::vmsave(self.vmcb.phys_addr().as_usize() as u64);
         }
-        self.load_save_states.load_fs_gs();
+        self.load_save_states.load();
         self.regs_mut().rax = unsafe { self.vmcb.as_vmcb().state.rax.get() };
         unsafe {
             super::instructions::stgi();
