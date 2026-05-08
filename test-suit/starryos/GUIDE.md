@@ -255,13 +255,6 @@ cargo xtask starry test board --board orangepi-5-plus
 cargo xtask starry test board -c pcie-enumerate --board orangepi-5-plus
 ```
 
-OrangePi-5-Plus board tests default to a Linux clean-boot guard. The runner
-boots Linux before the suite starts and after each Starry case so eMMC ext4
-rootfs corruption is reported at the case boundary instead of cascading into
-later cases. If the normal Linux boot guard reports filesystem corruption, the
-runner attempts a one-shot `extraboardargs=fsckfix` boot and stops the remaining
-Starry cases.
-
 ## 运行命令
 
 ```bash
@@ -284,7 +277,6 @@ cargo xtask starry test qemu -g stress --arch riscv64
 # board
 cargo xtask starry test board --board orangepi-5-plus
 cargo xtask starry test board -g normal -c npu-yolov8 --board orangepi-5-plus
-cargo xtask starry test board --board orangepi-5-plus --linux-guard never
 ```
 
 ## 维护注意事项

@@ -18,7 +18,6 @@ clap = { version = "4.6", features = ["derive"], optional = true }
 colored = { version = "3" }
 env_logger = { workspace = true }
 futures-util = "0.3"
-futures = "0.3"
 flate2 = { version = "1.0" }
 indicatif = "0.18"
 jkconfig = { version = "0.1" }
@@ -32,12 +31,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1" }
 sha2 = { version = "0.10" }
 tar = { version = "0.4" }
-tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"], optional = true }
+tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread"], optional = true }
 toml.workspace = true
 tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "std", "time"] }
-uboot-shell = "0.2"
 xz2 = "0.1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
