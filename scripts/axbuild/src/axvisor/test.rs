@@ -236,13 +236,17 @@ fn merge_board_test_uboot_config(
 ) -> UbootConfig {
     let mut uboot = base.unwrap_or_default();
     let test_uboot = UbootConfig::from_board_run_config(&board_test);
-    uboot.dtb_file = test_uboot.dtb_file;
+    if test_uboot.dtb_file.is_some() {
+        uboot.dtb_file = test_uboot.dtb_file;
+    }
     uboot.success_regex = test_uboot.success_regex;
     uboot.fail_regex = test_uboot.fail_regex;
     uboot.uboot_cmd = test_uboot.uboot_cmd;
     uboot.shell_prefix = test_uboot.shell_prefix;
     uboot.shell_init_cmd = test_uboot.shell_init_cmd;
-    uboot.timeout = test_uboot.timeout;
+    if test_uboot.timeout.is_some() {
+        uboot.timeout = test_uboot.timeout;
+    }
     uboot
 }
 
@@ -1327,10 +1331,12 @@ mod tests {
     #[test]
     fn uboot_test_config_uses_board_case_matchers_and_keeps_base_local_config() {
         let base = UbootConfig {
+            dtb_file: Some("${env:BOARD_DTB}".to_string()),
             success_regex: vec!["old-ok".to_string()],
             fail_regex: vec!["old-fail".to_string()],
             uboot_cmd: Some(vec!["old-boot".to_string()]),
             shell_prefix: Some("old-login:".to_string()),
+            timeout: Some(300),
             local: ostool::run::uboot::LocalUbootConfig {
                 serial: Some("/dev/ttyUSB1".to_string()),
                 baud_rate: Some("1500000".to_string()),
@@ -1362,6 +1368,8 @@ mod tests {
             ])
         );
         assert_eq!(merged.shell_prefix.as_deref(), Some("ubuntu login:"));
+        assert_eq!(merged.dtb_file.as_deref(), Some("${env:BOARD_DTB}"));
+        assert_eq!(merged.timeout, Some(300));
         assert_eq!(merged.local.serial.as_deref(), Some("/dev/ttyUSB1"));
         assert_eq!(merged.local.baud_rate.as_deref(), Some("1500000"));
     }
