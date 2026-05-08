@@ -18,6 +18,7 @@ to_bin = true
 shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/bug-futex-wait-wake",
+    "/usr/bin/bug-linkat-flags-symlink",
     "/usr/bin/bug-lseek-negative-einval",
     "/usr/bin/bug-mkdir-empty-path",
     "/usr/bin/bug-mmap-fd-zero-anon",

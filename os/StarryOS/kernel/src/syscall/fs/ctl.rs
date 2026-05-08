@@ -237,6 +237,11 @@ pub fn sys_linkat(
     new_path: *const c_char,
     flags: u32,
 ) -> AxResult<isize> {
+    const LINKAT_VALID_FLAGS: u32 = AT_SYMLINK_FOLLOW | AT_EMPTY_PATH;
+    if flags & !LINKAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let old_path = old_path.nullable().map(vm_load_string).transpose()?;
     let new_path = vm_load_string(new_path)?;
     debug!(
@@ -244,11 +249,15 @@ pub fn sys_linkat(
          new_path: {new_path}, flags: {flags}"
     );
 
-    if flags != 0 {
-        warn!("Unsupported flags: {flags}");
-    }
+    // Unlike most *at syscalls, linkat() does not follow old_path when flags
+    // is 0. It follows the final symlink only with AT_SYMLINK_FOLLOW.
+    let resolve_flags = if flags & AT_SYMLINK_FOLLOW != 0 {
+        flags & AT_EMPTY_PATH
+    } else {
+        (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
+    };
 
-    let old = resolve_at(old_dirfd, old_path.as_deref(), flags)?
+    let old = resolve_at(old_dirfd, old_path.as_deref(), resolve_flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
     if old.is_dir() {
