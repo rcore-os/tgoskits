@@ -7172,7 +7172,7 @@ dependencies = [
 
 [[package]]
 name = "rockchip-soc"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bare-test 0.7.0",
  "bare-test-macros 0.2.0",
