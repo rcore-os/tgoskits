@@ -97,7 +97,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         #[cfg(target_arch = "x86_64")]
         Sysno::chmod => sys_chmod(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::fchmod => sys_fchmod(uctx.arg0() as _, uctx.arg1() as _),
-        Sysno::fchmodat | Sysno::fchmodat2 => sys_fchmodat(
+        Sysno::fchmodat => sys_fchmodat(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _, 0),
+        Sysno::fchmodat2 => sys_fchmodat(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,

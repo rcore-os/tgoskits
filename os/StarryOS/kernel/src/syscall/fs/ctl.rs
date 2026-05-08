@@ -448,6 +448,11 @@ pub fn sys_fchmod(fd: i32, mode: u32) -> AxResult<isize> {
 }
 
 pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+    const FCHMODAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !FCHMODAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
