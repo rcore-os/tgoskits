@@ -239,14 +239,18 @@ pub fn sys_fadvise64(
     advice: u32,
 ) -> AxResult<isize> {
     debug!("sys_fadvise64 <= fd: {fd}, offset: {offset}, len: {len}, advice: {advice}");
+    // Validate fd first: invalid/closed → EBADF, non-file/non-dir → ESPIPE.
+    // Linux fadvise64 accepts regular files and directories (advisory hint).
+    let f = get_file_like(fd)?;
+    if f.downcast_ref::<File>().is_none() && f.downcast_ref::<Directory>().is_none() {
+        return Err(AxError::from(LinuxError::ESPIPE));
+    }
     if len < 0 {
         return Err(AxError::InvalidInput);
     }
     if advice > 5 {
         return Err(AxError::InvalidInput);
     }
-    // Validate fd: invalid/closed → EBADF, pipe → ESPIPE
-    let _ = file_or_espipe(fd)?;
     Ok(0)
 }
 

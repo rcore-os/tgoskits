@@ -6,14 +6,15 @@
 
 /*
  * fadvise64 对比测试:
- *   Linux/WSL 作为正确基线，StarryOS 的偏差即为 BUG
+ *   Linux 作为正确基线，验证 StarryOS 的 errno 优先级和 fd 类型语义。
  *
  * Linux posix_fadvise(2):
  *   int posix_fadvise(int fd, off_t offset, off_t len, int advice);
  *
- * StarryOS 已知问题:
- *   1. 校验 fd 有效性：Pipe::from_fd(fd).is_ok() 只拦截有效 pipe fd，
- *      无效/已关闭的 fd 会直接通过，返回假成功
+ * 关键语义:
+ *   1. EBADF 优先级 > ESPIPE > EINVAL
+ *   2. 目录 fd 返回成功 (fadvise 仅是 advisory hint)
+ *   3. offset 可为负数 (不做实际 I/O)
  */
 
 static inline int call_fadvise(int fd, off_t offset, off_t len, int advice)
@@ -120,7 +121,6 @@ int main(void)
 
     /* ================================================================
      * 6. 无效 fd (-1) — 应返回 EBADF
-     *    StarryOS BUG: 返回 0 (Pipe::from_fd(-1) 报错被吞)
      * ================================================================ */
     {
         CHECK_ERR(call_fadvise(-1, 0, 4096, POSIX_FADV_NORMAL), EBADF,
@@ -129,7 +129,6 @@ int main(void)
 
     /* ================================================================
      * 7. 已关闭的 fd — 应返回 EBADF
-     *    StarryOS BUG: 返回 0
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fadvise-XXXXXX";
@@ -177,6 +176,43 @@ int main(void)
 
         close(rd_fd);
         unlink(tmpl);
+    }
+
+    /* ================================================================
+     * 10. fd=-1 且 len=-1 — EBADF 优先级高于 EINVAL
+     *     Linux fadvise64(-1, 0, -1, NORMAL) 返回 EBADF
+     * ================================================================ */
+    {
+        CHECK_ERR(call_fadvise(-1, 0, -1, POSIX_FADV_NORMAL), EBADF,
+                  "fd=-1 且 len=-1, EBADF 优先级高于 EINVAL");
+    }
+
+    /* ================================================================
+     * 11. 已关闭 fd 且 len=-1 — EBADF 优先级高于 EINVAL
+     * ================================================================ */
+    {
+        char tmpl[] = "/tmp/test-fadvise-XXXXXX";
+        int fd = mkstemp(tmpl);
+        CHECK(fd >= 0, "mkstemp 应成功");
+        close(fd);
+
+        CHECK_ERR(call_fadvise(fd, 0, -1, POSIX_FADV_NORMAL), EBADF,
+                  "已关闭 fd 且 len=-1, EBADF 优先级高于 EINVAL");
+
+        unlink(tmpl);
+    }
+
+    /* ================================================================
+     * 12. 目录 fd — Linux fadvise64 对目录返回成功 (仅 advisory hint)
+     * ================================================================ */
+    {
+        int dir_fd = open("/tmp", O_RDONLY);
+        CHECK(dir_fd >= 0, "open /tmp O_RDONLY 应成功");
+
+        CHECK_RET(call_fadvise(dir_fd, 0, 4096, POSIX_FADV_NORMAL), 0,
+                  "目录 fd fadvise 应返回 0");
+
+        close(dir_fd);
     }
 
     TEST_DONE();
