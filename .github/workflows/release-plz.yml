@@ -1,8 +1,13 @@
 name: Release-plz
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
     branches:
+      - dev
       - main
 
 permissions:
@@ -14,10 +19,17 @@ env:
 jobs:
   release-plz-pr:
     name: Open release PR
-    if: github.repository_owner == 'rcore-os'
+    if: >-
+      ${{
+        github.repository_owner == 'rcore-os'
+        && github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && github.event.workflow_run.head_branch == 'dev'
+      }}
     runs-on: ubuntu-latest
     concurrency:
-      group: release-plz-${{ github.ref }}
+      group: release-plz-pr-${{ github.event.workflow_run.head_branch }}
       cancel-in-progress: false
     permissions:
       contents: write
@@ -27,6 +39,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
       - name: Install Rust toolchain
@@ -42,8 +55,18 @@ jobs:
 
   release-plz-release:
     name: Publish releases
-    if: github.repository_owner == 'rcore-os'
+    if: >-
+      ${{
+        github.repository_owner == 'rcore-os'
+        && github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && github.event.workflow_run.head_branch == 'main'
+      }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-release-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: read
@@ -52,6 +75,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
       - name: Install Rust toolchain

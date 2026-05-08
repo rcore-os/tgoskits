@@ -89,6 +89,7 @@ jobs:
         id: outputs
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
           MANUAL_TARGET: ${{ github.event.inputs.container_target }}
           FILTER_CI_CHECKS: ${{ steps.filter.outputs.ci_checks }}
           FILTER_BASE_CONTAINER_PUBLISH: ${{ steps.filter.outputs.base_container_publish }}
@@ -115,7 +116,11 @@ jobs:
                 ;;
             esac
           else
-            ci_checks="${FILTER_CI_CHECKS}"
+            if [ "$EVENT_NAME" = "push" ] && { [ "$REF_NAME" = "main" ] || [ "$REF_NAME" = "dev" ]; }; then
+              ci_checks=true
+            else
+              ci_checks="${FILTER_CI_CHECKS}"
+            fi
             base_container_publish="${FILTER_BASE_CONTAINER_PUBLISH}"
             axvisor_lvz_container_publish="${FILTER_AXVISOR_LVZ_CONTAINER_PUBLISH}"
           fi
