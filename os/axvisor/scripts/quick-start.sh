@@ -289,7 +289,7 @@ setup_qemu_loongarch64() {
     run_cmd cp configs/board/qemu-loongarch64.toml tmp/configs/
 
     info "Preparing QEMU config file..."
-    run_cmd cp scripts/ostool/qemu-loongarch64.toml tmp/configs/qemu-loongarch64-runtime.toml
+    run_cmd cp configs/qemu/qemu-loongarch64.toml tmp/configs/qemu-loongarch64-runtime.toml
 
     if [[ -n "${AXBUILD_QEMU_SYSTEM_LOONGARCH64:-}" ]]; then
         info "Using explicit LoongArch QEMU override: ${AXBUILD_QEMU_SYSTEM_LOONGARCH64}"

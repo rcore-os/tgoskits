@@ -595,7 +595,7 @@ Axvisor::qemu(args)
   │
   └── run_qemu_request(request)
         └── app.qemu(cargo, build_info_path, QemuRunConfig {
-              qemu_config: os/axvisor/scripts/ostool/qemu-{arch}.toml,
+              qemu_config: os/axvisor/configs/qemu/qemu-{arch}.toml,
               default_args: { to_bin, args: [...] },        ← 含 rootfs 路径
               override_args: { ... },                        ← vmconfig 覆盖
             })
@@ -667,7 +667,7 @@ Axvisor::test_qemu(args)
   │     → 返回 vmconfig 路径
   │
   ├── prepare_request(..., SnapshotPersistence::Discard)   ← 测试不存 snapshot
-  ├── default_qemu_config_template_path(...)               ← os/axvisor/scripts/ostool/qemu-{arch}.toml
+  ├── default_qemu_config_template_path(...)               ← os/axvisor/configs/qemu/qemu-{arch}.toml
   ├── axvisor_test_shell_config(arch)                       ← Shell 自动化配置
   │     aarch64: prefix="~ #", init_cmd="pwd && echo 'guest test pass!'"
   │              success=["guest test pass!"], fail=[panic, kernel panic, ...]
