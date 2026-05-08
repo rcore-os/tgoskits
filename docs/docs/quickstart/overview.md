@@ -7,6 +7,15 @@ sidebar_label: "环境准备"
 
 本文是 ArceOS、StarryOS、Axvisor 快速上手的公共前置文档，重点说明当前仓库推荐的开发环境、QEMU 支持范围和统一命令入口。
 
+```mermaid
+flowchart LR
+  A[环境准备] --> B[QEMU 验证]
+  B --> C{选择系统}
+  C --> D[ArceOS]
+  C --> E[StarryOS]
+  C --> F[Axvisor]
+```
+
 ## 1. 环境
 
 本节给出快速上手所需的最小环境集合。目标不是覆盖所有开发场景，而是先确保常用 QEMU 路径和基础构建链路可以稳定运行。
@@ -107,10 +116,6 @@ cargo xtask --help
 | StarryOS | [StarryOS 快速上手](./starryos) | `cargo xtask starry qemu ...` |
 | Axvisor | [Axvisor 快速上手](./axvisor) | `cargo xtask axvisor test qemu ...` |
 
-环境确认无误后，可以直接进入具体系统的快速上手页面。每一页都会给出当前项目中可用的最短命令路径，而不是抽象的概念说明：
-
-- [ArceOS 快速上手](./arceos)
-- [StarryOS 快速上手](./starryos)
-- [Axvisor 快速上手](./axvisor)
+环境确认无误后，可以直接进入具体系统的快速上手页面。每一页都会给出当前项目中可用的最短命令路径，而不是抽象的概念说明。
 
 如果需要先了解仓库整体结构，也可以继续阅读：[项目概览](../introduction/overview)

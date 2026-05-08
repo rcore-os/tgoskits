@@ -8,6 +8,21 @@ title: "Axvisor 快速上手"
 
 Axvisor 的最短验证路径建议直接使用测试入口。当前 QEMU 测试覆盖 AArch64、RISC-V64、x86_64 和 LoongArch64；板测则依赖 self-hosted 环境。
 
+```mermaid
+flowchart TD
+  A[cargo xtask axvisor test] --> B{验证层级}
+  B --> C[QEMU]
+  B --> D[U-Boot]
+  B --> E[Board]
+  C --> C1[aarch64]
+  C --> C2[riscv64]
+  C --> C3[x86_64]
+  C --> C4[loongarch64]
+  D --> D1[orangepi-5-plus]
+  D --> D2[phytiumpi]
+  E --> E1[self-hosted runner]
+```
+
 ## 1. QEMU
 
 Axvisor 的快速验证建议优先从 `test qemu` 开始，而不是直接进入更复杂的板级或 U-Boot 路径。这样可以先确认 hypervisor、Guest 资产和基础运行链路是否已经正常。
@@ -57,17 +72,7 @@ cargo xtask axvisor test board --board orangepi-5-plus-linux
 
 > Board 测试通常需要 self-hosted runner、串口服务器或物理板环境，本地普通开发机通常无法直接复现。
 
-## 4. 选择建议
-
-如果你不确定应该从哪条命令开始，可以先按这里的建议选一条最短路径。这样能把“命令是否正确”和“环境是否齐全”两个问题分开验证。
-
-| 目标 | 建议 |
-|------|------|
-| 第一次跑通 Axvisor | 先用 `test qemu --target aarch64` |
-| 验证 x86 路径 | 使用 `test qemu --target x86_64` |
-| 验证板级路径 | 使用 `test uboot`，或使用 `test board --board <board>` 运行 test-suit 中对应开发板的板测 case |
-
-快速上手只覆盖最常见的入口。若需要继续理解测试分组、QEMU/U-Boot/board 三条链路的实现细节，可以继续阅读：
+若需要继续理解测试分组、QEMU/U-Boot/board 三条链路的实现细节，可以继续阅读：
 
 - [Axvisor 开发指南](../design/systems/axvisor-guide)
 - [Axvisor 测试套件设计](../design/test/axvisor)
