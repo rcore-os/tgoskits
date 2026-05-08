@@ -71,7 +71,7 @@ flowchart LR
 | 内核服务模块层 | `os/arceos/modules/*` | 内存分配、页表、任务调度、驱动、文件系统、网络、图形等 OS 能力 |
 | API 聚合层 | `os/arceos/api/*` | feature 选择、稳定 API 封装、POSIX 兼容接口 |
 | 用户库层 | `os/arceos/ulib/*` | `ax-std`、`ax-libc` 等高层开发接口 |
-| 应用与测试层 | `os/arceos/examples/*`、`test-suit/arceos/*` | 场景化验证与系统回归 |
+| 应用与测试层 | `os/arceos/examples/*`（8 个示例）、`test-suit/arceos/*` | 场景化验证与系统回归 |
 
 ### 2.2 必选模块与可选模块
 
@@ -86,15 +86,15 @@ ArceOS 的基础骨架由四个必选模块组成：
 
 | 模块 | 典型 feature | 作用 |
 | --- | --- | --- |
-| `ax-alloc` | `alloc` | 全局内存分配器（支持 TLSF、buddy、slab 等策略） |
+| `ax-alloc` | `alloc` | 全局内存分配器（支持 TLSF、buddy-slab 等策略） |
 | `ax-mm` | `paging` | 地址空间与页表管理 |
-| `ax-task` | `multitask`、`sched-*` | 任务创建、调度（FIFO/RR/CFS）、sleep、wait queue |
+| `ax-task` | `multitask`、`smp` | 任务创建、调度（FIFO/RR/CFS）、sleep、wait queue |
 | `ax-sync` | `multitask` | mutex、信号量等同步原语 |
-| `ax-driver` | `driver-*`、`fs`、`net`、`display` | 设备探测与驱动初始化（virtio、AHCI、SDMMC 等） |
+| `ax-driver` | `ax-driver` | 设备探测与驱动初始化（virtio、AHCI、SDMMC 等） |
 | `ax-fs` | `fs` | 文件系统（FAT、ramfs、ext4） |
 | `ax-fs-ng` | `fs-ng` | 下一代文件系统（FAT、ext4，带 LRU 缓存） |
 | `ax-net` | `net` | 网络栈（基于 smoltcp） |
-| `ax-net-ng` | `net-ng` | 下一代网络栈（异步感知） |
+| `ax-net-ng` | `net-ng` | 下一代网络栈（异步感知，基于 smoltcp） |
 | `ax-display` | `display` | 图形显示（帧缓冲） |
 | `ax-input` | `input` | 输入设备管理 |
 | `ax-dma` | `dma` | DMA 内存分配与管理 |
@@ -153,33 +153,25 @@ ax-std = { workspace = true, features = ["alloc", "multitask", "net"], optional 
 
 ```toml
 [features]
-# 内存
 alloc = ["dep:ax-alloc"]
-paging = ["dep:ax-mm"]
-dma = ["dep:ax-dma"]
-# 并发
-multitask = ["ax-task/multitask", "dep:ax-sync"]
-smp = ["ax-hal/smp"]
-tls = ["ax-hal/tls"]
-ipi = ["dep:ax-ipi", "ax-hal/ipi"]
-# 中断与时间
-irq = ["ax-hal/irq"]
-rtc = ["ax-hal/rtc"]
-# 虚拟化
-hv = ["ax-hal/hv", "ax-alloc/hv"]
-# 平台
-plat-dyn = ["ax-hal/plat-dyn"]
+dma = ["paging"]
+buddy-slab = ["alloc", "ax-alloc/buddy-slab"]
+ipi = ["dep:ax-ipi"]
+irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
+multitask = ["ax-task/multitask"]
+paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
+rtc = []
+smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
+tls = ["ax-hal/tls", "ax-task?/tls"]
+plat-dyn = ["ax-hal/plat-dyn", "ax-driver/dyn", "paging", "buddy-slab"]
 ax-driver = ["dep:ax-driver"]
-# 文件系统
+display = ["ax-driver", "dep:ax-display"]
 fs = ["ax-driver", "dep:ax-fs"]
 fs-ng = ["ax-driver", "dep:ax-fs-ng"]
-# 网络
+input = ["ax-driver", "dep:ax-input"]
 net = ["ax-driver", "dep:ax-net"]
 net-ng = ["ax-driver", "dep:ax-net-ng"]
-vsock = ["dep:ax-net", "dep:ax-net-ng"]
-# 显示与输入
-display = ["ax-driver", "dep:ax-display"]
-input = ["ax-driver", "dep:ax-input"]
+vsock = ["net-ng", "ax-net-ng/vsock"]
 ```
 
 这意味着对开发者而言：**ArceOS 的"功能是否存在"本质上是编译期装配问题，而非运行时开关问题。**
@@ -249,7 +241,7 @@ sequenceDiagram
 
 ### 4.1 核心模块总览
 
-以下表格汇总了 ArceOS 各核心模块的目录位置、职责及常见联动对象：
+以下表格汇总了 ArceOS 17 个核心模块的目录位置、职责及常见联动对象。
 
 | 组件 | 目录 | 关键职责 | 常见联动对象 |
 | --- | --- | --- | --- |

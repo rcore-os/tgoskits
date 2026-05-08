@@ -30,7 +30,7 @@ flowchart LR
     virtComponents["VirtComponents: axvm axvcpu axdevice axaddrspace"]
     apiBridge["ApiBridge: axvisor_api + hal impl"]
     axvisorRuntime["AxvisorRuntime: main hal vmm task shell driver"]
-    guestSystems["GuestSystems: ArceOS Linux NimbOS"]
+    guestSystems["GuestSystems: ArceOS Linux NimbOS RT-Thread FreeRTOS Zephyr"]
     boardConfig["BoardConfig: configs/board/*.toml"]
     vmConfig["VmConfig: configs/vms/*.toml 或 /guest/vm_default/*.toml"]
 
@@ -69,11 +69,14 @@ AxVisor 的实际行为同时取决于 Rust 代码和运行时加载的 TOML 配
 - `qemu-aarch64.toml`（AArch64，默认推荐）
 - `qemu-riscv64.toml`（RISC-V 64）
 - `qemu-x86_64.toml`（x86_64，当前为 stub 实现）
+- `qemu-loongarch64.toml`（LoongArch64）
 - `orangepi-5-plus.toml`（Orange Pi 5 Plus，RK3588）
 - `phytiumpi.toml`（飞腾派，E2000）
 - `roc-rk3568-pc.toml`（RK3568 PC）
+- `rdk-s100.toml`（RDK-S100）
+- `tac-e400.toml`（TAC-E400）
 
-此外，`configs/vms/` 中包含 40 余份 Guest VM 配置，覆盖 ArceOS、Linux、NimbOS、RT-Thread 四类 Guest，按 `{os}-{arch}-{board}-smp{N}` 命名。
+此外，`configs/vms/` 中包含 50 余份 Guest VM 配置，覆盖 ArceOS、Linux、NimbOS、RT-Thread、FreeRTOS、Zephyr 等多类 Guest，按 `{os}-{arch}-{board}-smp{N}` 命名。
 
 本地开发推荐使用 `qemu-aarch64`：
 
@@ -91,22 +94,24 @@ AxVisor 的实际行为同时取决于 Rust 代码和运行时加载的 TOML 配
 fn main() {
     logo::print_logo();
     info!("Starting virtualization...");
-    info!("Hardware support: {:?}", axvm::has_hardware_support());
+    ensure_hardware_support();
     hal::enable_virtualization();
     vmm::init();
     vmm::start();
+    info!("[OK] Default guest initialized");
     shell::console_init();
 }
 ```
 
-AxVisor 运行时主线可概括为四步：
+AxVisor 运行时主线可概括为五步：
 
-1. 使能硬件虚拟化支持。
-2. 初始化 VMM 和 Guest VM 描述。
-3. 启动 VM。
-4. 进入交互 shell。
+1. 检查硬件虚拟化支持。
+2. 使能硬件虚拟化。
+3. 初始化 VMM 和 Guest VM 描述。
+4. 启动 VM。
+5. 进入交互 shell。
 
-真正的复杂度集中在 `hal`、`vmm` 和配置解析中。其中 `hal/arch/` 提供三套架构适配：aarch64 实现 EL2 虚拟化与 GIC 中断注入，riscv64 实现 PLIC 中断注入，x86_64 当前为 stub 占位。
+真正的复杂度集中在 `hal`、`vmm` 和配置解析中。其中 `hal/arch/` 提供四套架构适配：aarch64 实现 EL2 虚拟化与 GIC 中断注入，riscv64 实现 PLIC 中断注入，loongarch64 实现 LVZ 虚拟化，x86_64 当前为 stub 占位。
 
 ### 3.2 配置驱动的 VM 实例化
 
