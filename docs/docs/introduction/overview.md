@@ -150,7 +150,7 @@ flowchart LR
 | API 聚合层 (`api/`) | `arceos_api`, `arceos_posix_api`, `axfeat` | 向上提供统一 API 接口与 feature 开关 |
 | 用户态库 (`ulib/`) | `axstd`, `axlibc` | Rust 标准库子集与 C 库兼容层 |
 
-→ 开发指南：[ArceOS 开发指南](/docs/design/systems/arceos-guide) | 内部机制：[ArceOS 内部机制](/docs/design/architecture/arceos-internals)
+→ 开发指南：[ArceOS 开发指南](/docs/design/systems/arceos-guide) | 架构说明：[ArceOS 架构](/docs/design/architecture/arceos)
 
 ### StarryOS
 
@@ -186,7 +186,7 @@ flowchart TD
 
 测试套件按 `normal` / `stress` 两大分组组织，通过 build group 共享构建产物和 rootfs。
 
-→ 开发指南：[StarryOS 开发指南](/docs/design/systems/starryos-guide) | 内部机制：[StarryOS 内部机制](/docs/design/architecture/starryos-internals)
+→ 开发指南：[StarryOS 开发指南](/docs/design/systems/starryos-guide) | 架构说明：[StarryOS 架构](/docs/design/architecture/starryos)
 
 ### Axvisor
 
@@ -231,7 +231,7 @@ flowchart TD
 | Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread、Nimbos |
 | 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/*.toml`）双层结构 |
 
-→ 开发指南：[Axvisor 开发指南](/docs/design/systems/axvisor-guide) | 内部机制：[Axvisor 内部机制](/docs/design/architecture/axvisor-internals)
+→ 开发指南：[Axvisor 开发指南](/docs/design/systems/axvisor-guide) | 架构说明：[Axvisor 架构](/docs/design/architecture/axvisor)
 
 ## 改动影响评估
 

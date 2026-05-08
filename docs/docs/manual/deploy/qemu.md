@@ -47,5 +47,5 @@ cargo xtask axvisor qemu --arch aarch64
 
 - [ArceOS 快速上手](/docs/quickstart/arceos)
 - [Axvisor 开发指南](/docs/design/systems/axvisor-guide)
-- [AxVisor 内部机制](/docs/design/architecture/axvisor-internals)
+- [Axvisor 架构](/docs/design/architecture/axvisor)
 - [Guest 管理入口](../guest/cmd)

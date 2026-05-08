@@ -187,11 +187,11 @@ cargo axvisor test qemu --target aarch64
 | 你想继续看什么 | 下一篇建议文档 |
 | --- | --- |
 | 继续做 ArceOS 示例、模块或平台 | [arceos-guide.md](/docs/design/systems/arceos-guide) |
-| 理解 ArceOS 的分层、feature 装配和启动路径 | [arceos-internals.md](/docs/design/architecture/arceos-internals) |
+| 理解 ArceOS 的分层、feature 装配和启动路径 | [ArceOS 架构](/docs/design/architecture/arceos) |
 | 修改 StarryOS 内核、rootfs 或 syscall | [starryos-guide.md](/docs/design/systems/starryos-guide) |
-| 理解 StarryOS 的 syscall、进程和 rootfs 装载链路 | [starryos-internals.md](/docs/design/architecture/starryos-internals) |
+| 理解 StarryOS 的 syscall、进程和 rootfs 装载链路 | [StarryOS 架构](/docs/design/architecture/starryos) |
 | 搞清楚 Axvisor 的板级配置、VM 配置和虚拟化组件 | [axvisor-guide.md](/docs/design/systems/axvisor-guide) |
-| 理解 Axvisor 的 VMM、vCPU 与配置生效路径 | [axvisor-internals.md](/docs/design/architecture/axvisor-internals) |
+| 理解 Axvisor 的 VMM、vCPU 与配置生效路径 | [Axvisor 架构](/docs/design/architecture/axvisor) |
 | 从组件视角理解三个系统的关系 | [components.md](components) |
 | 理解工作区、xtask、Makefile 和测试矩阵 | [build-system.md](build-system) |
 

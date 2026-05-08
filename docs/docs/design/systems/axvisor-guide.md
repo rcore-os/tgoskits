@@ -244,7 +244,7 @@ cargo axvisor qemu \
 
 ## 8. 继续往哪里读
 
-- [axvisor-internals.md](/docs/design/architecture/axvisor-internals): 系统理解 Axvisor 的五层架构、VMM 启动链、vCPU 任务模型与 `axvisor_api`
+- [Axvisor 架构](/docs/design/architecture/axvisor): 系统理解 Axvisor 的五层架构、VMM 启动链、vCPU 任务模型与 `axvisor_api`
 - [components.md](/docs/design/reference/components): 从组件角度看 Axvisor 与 ArceOS / StarryOS 的共享依赖
 - [build-system.md](/docs/design/reference/build-system): 理解 `cargo axvisor`、辅助脚本和统一测试入口的边界
 - [quick-start.md](/docs/design/reference/quick-start): 如果你只是想先把第一条 QEMU 路径跑通

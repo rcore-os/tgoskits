@@ -218,7 +218,7 @@ make ARCH=riscv64 debug
 
 ## 8. 继续往哪里读
 
-- [starryos-internals.md](/docs/design/architecture/starryos-internals): 系统理解 StarryOS 的叠层架构、syscall 分发、进程与地址空间机制
+- [StarryOS 架构](/docs/design/architecture/starryos): 系统理解 StarryOS 的叠层架构、syscall 分发、进程与地址空间机制
 - [components.md](/docs/design/reference/components): 从组件视角理解共享依赖如何落到 StarryOS
 - [build-system.md](/docs/design/reference/build-system): 理解 rootfs 位置、xtask 和 Makefile 的边界
 - [arceos-guide.md](/docs/design/systems/arceos-guide): 当你的改动落在 ArceOS 共享模块层时

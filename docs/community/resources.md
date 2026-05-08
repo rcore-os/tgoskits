@@ -11,7 +11,7 @@ sidebar_label: "社区资源"
 
 ### 文档
 - [用户文档](/docs/introduction/overview) - 完整的用户指南和教程
-- [架构设计](/docs/design/architecture/arch) - 系统架构和设计原理
+- [总体架构](/docs/design/architecture/overview) - 系统架构和设计原理
 - [QEMU 部署](/docs/manual/deploy/qemu) - 常见运行与部署路径
 
 ### 演示和示例
@@ -52,7 +52,7 @@ sidebar_label: "社区资源"
 
 ### 推荐阅读
 - [项目概览](/docs/introduction/overview) - 仓库定位与系统关系
-- [架构文档](/docs/design/architecture/arch) - 系统设计原理
+- [架构文档](/docs/design/architecture/overview) - 系统设计原理
 - [组件开发指南](/docs/design/reference/components) - 共享组件与影响面分析
 - [构建系统](/docs/design/reference/build-system) - 统一命令入口与实现分层
 

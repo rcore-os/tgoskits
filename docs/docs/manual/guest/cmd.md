@@ -26,5 +26,5 @@ Axvisor 的 Guest 相关操作分布在多个入口点。
 ## 详细参考
 
 - [Axvisor 开发指南](/docs/design/systems/axvisor-guide) — 完整开发流程
-- [AxVisor 内部机制](/docs/design/architecture/axvisor-internals) — 配置体系与执行路径
+- [Axvisor 架构](/docs/design/architecture/axvisor) — 配置体系与执行路径
 - [QEMU 部署](../deploy/qemu) — QEMU 环境配置

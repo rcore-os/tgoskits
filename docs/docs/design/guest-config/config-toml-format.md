@@ -33,4 +33,4 @@ sidebar_label: "TOML 字段参考"
 2. 确认镜像路径和文件系统布局是否匹配
 3. 检查内存、中断和设备映射细节
 
-字段详解：[AxVisor 内部机制](/docs/design/architecture/axvisor-internals)
+字段详解：[Axvisor 架构](/docs/design/architecture/axvisor)
