@@ -1204,6 +1204,38 @@ pub(crate) fn prepare_rust_case_assets_sync(
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
     write_cross_bin_wrappers(layout, spec, &qemu_runner)?;
 
+    // Run prebuild.sh if present — runs inside the Alpine staging root via
+    // qemu-user, same as C cases.  Use this to install native deps (e.g.
+    // `apk add dbus-dev`) that the cargo build needs via pkg-config.
+    let prebuild_script = rust_dir.join(CASE_PREBUILD_SCRIPT_NAME);
+    if prebuild_script.is_file() {
+        case_assets::reset_dir(&layout.command_wrapper_dir)?;
+        write_guest_command_wrappers(layout, &qemu_runner)?;
+
+        let guest_busybox = layout.staging_root.join("bin/busybox");
+        let guest_shell = layout.staging_root.join("bin/sh");
+        let mut prebuild_cmd = Command::new(&qemu_runner);
+        prebuild_cmd.arg("-L").arg(&layout.staging_root);
+        if guest_busybox.is_file() {
+            prebuild_cmd.arg(&guest_busybox).arg("sh");
+        } else {
+            ensure!(
+                guest_shell.is_file(),
+                "staging root is missing guest shell `{}`",
+                guest_shell.display()
+            );
+            prebuild_cmd.arg(&guest_shell);
+        }
+        prebuild_cmd
+            .arg("-eu")
+            .arg(&prebuild_script)
+            .current_dir(&rust_dir);
+        apply_case_script_envs(&mut prebuild_cmd, layout, &[])?;
+        prebuild_cmd
+            .exec()
+            .with_context(|| format!("failed to run rust case prebuild.sh for `{}`", case.name))?;
+    }
+
     // The linker env var name is CARGO_TARGET_<UPPER_TRIPLE>_LINKER.
     let linker_env_key = format!(
         "CARGO_TARGET_{}_LINKER",
@@ -1222,7 +1254,22 @@ pub(crate) fn prepare_rust_case_assets_sync(
         .arg("--target-dir")
         .arg(&layout.build_dir)
         .env("RUSTFLAGS", "-C target-feature=+crt-static")
-        .env(&linker_env_key, &linker_path);
+        .env(&linker_env_key, &linker_path)
+        // Point pkg-config at the Alpine sysroot so crates with native deps
+        // (e.g. dbus via keyring) can find their .pc files when cross-compiling.
+        .env(
+            "PKG_CONFIG_LIBDIR",
+            format!(
+                "{}:{}",
+                layout.staging_root.join("usr/lib/pkgconfig").display(),
+                layout.staging_root.join("usr/share/pkgconfig").display()
+            ),
+        )
+        .env(
+            "PKG_CONFIG_SYSROOT_DIR",
+            layout.staging_root.display().to_string(),
+        )
+        .env("PKG_CONFIG_PATH", "");
     cmd.exec().with_context(|| {
         format!(
             "failed to cross-compile Rust case `{}` for target `{target_triple}`",

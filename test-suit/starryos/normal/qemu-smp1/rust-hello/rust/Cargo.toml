@@ -10,3 +10,7 @@ edition = "2021"
 [[bin]]
 name = "rust-hello"
 path = "src/main.rs"
+
+[dependencies]
+# Uses the system zlib installed by prebuild.sh to validate the prebuild pipeline.
+flate2 = { version = "1", features = ["zlib"], default-features = false }
