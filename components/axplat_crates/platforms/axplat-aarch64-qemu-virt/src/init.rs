@@ -4,7 +4,9 @@ use ax_plat::{
 };
 
 #[allow(unused_imports)]
-use crate::config::devices::{GICC_PADDR, GICD_PADDR, RTC_PADDR, TIMER_IRQ, UART_IRQ, UART_PADDR};
+use crate::config::devices::{
+    GICC_PADDR, GICD_PADDR, GICR_PADDR, RTC_PADDR, TIMER_IRQ, UART_IRQ, UART_PADDR,
+};
 use crate::config::plat::PSCI_METHOD;
 
 struct InitIfImpl;
@@ -39,9 +41,15 @@ impl InitIf for InitIfImpl {
     fn init_later(_cpu_id: usize, _dtb: usize) {
         #[cfg(feature = "irq")]
         {
+            // `init_gic` picks v2 (GICC MMIO) or v3 (GICR + ICC_*
+            // system registers) at compile time based on the
+            // `AX_GIC_V3` env var; see `axplat-aarch64-peripherals`'s
+            // `build.rs`. Platforms hand all three addresses; the
+            // backend that gets compiled in uses the relevant pair.
             ax_plat_aarch64_peripherals::gic::init_gic(
                 phys_to_virt(pa!(GICD_PADDR)),
                 phys_to_virt(pa!(GICC_PADDR)),
+                phys_to_virt(pa!(GICR_PADDR)),
             );
             ax_plat_aarch64_peripherals::gic::init_gicc();
             ax_plat_aarch64_peripherals::generic_timer::enable_irqs(TIMER_IRQ);
