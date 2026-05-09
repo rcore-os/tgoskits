@@ -10,16 +10,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "prompt",
-            "prompt": "Check if .claude/cache/task-active.flag exists. If it does, read the task name from it, then read .claude/hooks/session-end-journal.md and follow its instructions to generate the journal. Do NOT do this if the flag does not exist or if a journal was already generated for this task."
-          }
-        ]
-      }
     ]
   }
 }
