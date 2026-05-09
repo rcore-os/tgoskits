@@ -20,6 +20,7 @@ use ax_hal::{
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
+use indoc::indoc;
 use starry_process::Process;
 
 use crate::{
@@ -218,6 +219,11 @@ fn render_stat() -> String {
     let _ = writeln!(buf, "softirq 0 0 0 0 0 0 0 0 0 0 0");
     buf
 }
+
+const PROC_NET_ARP: &str = indoc! {"
+    IP address       HW type     Flags       HW address            Mask     Device
+    10.0.2.2         0x1         0x2         52:54:00:12:34:56     *        eth0
+"};
 
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
@@ -741,6 +747,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         });
 
         SimpleDir::new_maker(fs.clone(), Arc::new(sys))
+    });
+
+    root.add("net", {
+        let mut net = DirMapping::new();
+
+        net.add(
+            "arp",
+            SimpleFile::new_regular(fs.clone(), || Ok(PROC_NET_ARP)),
+        );
+
+        SimpleDir::new_maker(fs.clone(), Arc::new(net))
     });
 
     let proc_dir = ProcFsHandler(fs.clone());
