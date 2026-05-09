@@ -1,6 +1,7 @@
 pub mod epoll;
 pub mod event;
 mod fs;
+pub mod memfd;
 mod net;
 pub mod netlink;
 mod packet;

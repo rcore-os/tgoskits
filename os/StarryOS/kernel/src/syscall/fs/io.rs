@@ -15,8 +15,8 @@ use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
-    file::{Directory, File, FileLike, Pipe, get_file_like},
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
+    file::{Directory, File, FileLike, Pipe, get_file_like, memfd::Memfd},
+    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut},
     task::AsThread,
 };
 
@@ -184,6 +184,10 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     debug!("sys_ftruncate <= {fd} {length}");
     if length < 0 {
         return Err(AxError::InvalidInput);
+    }
+    if let Ok(memfd) = Memfd::from_fd(fd) {
+        memfd.set_len_sealed(length as u64)?;
+        return Ok(0);
     }
     let f = File::from_fd(fd).map_err(|e| {
         if e == AxError::IsADirectory {
