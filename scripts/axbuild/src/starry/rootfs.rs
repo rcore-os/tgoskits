@@ -95,11 +95,35 @@ pub(super) async fn load_patched_qemu_config(
                 .await?
         }
         None => {
-            starry
-                .app
-                .tool_mut()
-                .ensure_qemu_config_for_cargo(cargo)
-                .await?
+            // Prefer the versioned template from configs/qemu/ so that
+            // `cargo starry qemu` never falls back to ostool's minimal
+            // auto-generated default (which lacks -m, virtio devices, etc.).
+            let template = {
+                let path = starry
+                    .app
+                    .workspace_root()
+                    .join("os/StarryOS/configs/qemu")
+                    .join(format!("qemu-{}.toml", &request.arch));
+                path.exists().then_some(path)
+            };
+            match template {
+                Some(path) => {
+                    starry
+                        .app
+                        .tool_mut()
+                        .read_qemu_config_from_path_for_cargo(cargo, &path)
+                        .await?
+                }
+                None => {
+                    // Unknown arch or no template — let ostool create a minimal
+                    // default as a last resort.
+                    starry
+                        .app
+                        .tool_mut()
+                        .ensure_qemu_config_for_cargo(cargo)
+                        .await?
+                }
+            }
         }
     };
 

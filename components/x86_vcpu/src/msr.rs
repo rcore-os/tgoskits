@@ -12,15 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(feature = "vmx")]
+#[cfg(any(feature = "vmx", feature = "svm"))]
 use x86::msr::{rdmsr, wrmsr};
 
 /// X86 model-specific registers. (SDM Vol. 4)
 #[repr(u32)]
 #[derive(Debug, Copy, Clone)]
-#[allow(non_camel_case_types, dead_code)]
+#[allow(non_camel_case_types, dead_code, clippy::upper_case_acronyms)]
 pub enum Msr {
     IA32_FEATURE_CONTROL = 0x3a,
+
+    IA32_SYSENTER_CS     = 0x174,
+    IA32_SYSENTER_ESP    = 0x175,
+    IA32_SYSENTER_EIP    = 0x176,
 
     IA32_PAT             = 0x277,
 
@@ -52,12 +56,23 @@ pub enum Msr {
     IA32_FS_BASE         = 0xc000_0100,
     IA32_GS_BASE         = 0xc000_0101,
     IA32_KERNEL_GSBASE   = 0xc000_0102,
+
+    VM_CR                = 0xc001_0114,
+    IGNNE                = 0xc001_0115,
+    VM_HSAVE_PA          = 0xc001_0117,
+
+    PERF_EVT_SEL0        = 0xc001_0200,
+    PERF_EVT_SEL1        = 0xc001_0202,
+    PERF_EVT_SEL2        = 0xc001_0204,
+    PERF_EVT_SEL3        = 0xc001_0206,
+    PERF_EVT_SEL4        = 0xc001_0208,
+    PERF_EVT_SEL5        = 0xc001_020a,
 }
 
 impl Msr {
     /// Read 64 bits msr register.
     #[inline(always)]
-    #[cfg(feature = "vmx")]
+    #[cfg(any(feature = "vmx", feature = "svm"))]
     pub fn read(self) -> u64 {
         unsafe { rdmsr(self as _) }
     }
@@ -69,13 +84,14 @@ impl Msr {
     /// The caller must ensure that this write operation has no unsafe side
     /// effects.
     #[inline(always)]
-    #[cfg(feature = "vmx")]
+    #[cfg(any(feature = "vmx", feature = "svm"))]
     pub unsafe fn write(self, value: u64) {
         unsafe { wrmsr(self as _, value) }
     }
 }
 
-#[cfg(feature = "vmx")]
+#[cfg(any(feature = "vmx", feature = "svm"))]
+#[allow(dead_code)]
 pub(super) trait MsrReadWrite {
     const MSR: Msr;
 

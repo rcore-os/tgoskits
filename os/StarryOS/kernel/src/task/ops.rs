@@ -5,6 +5,7 @@ use alloc::{
 use core::{ffi::c_long, sync::atomic::Ordering};
 
 use ax_errno::{AxError, AxResult};
+use ax_hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
@@ -115,6 +116,32 @@ pub fn register_process_group(pg: &Arc<ProcessGroup>) {
 pub fn register_session(session: &Arc<Session>) {
     let mut session_table = SESSION_TABLE.write();
     session_table.insert(session.sid(), session);
+}
+
+/// Accumulates CPU time for `task` from a timer-tick IRQ context.
+///
+/// Unlike `poll_timer`, this never emits signals, making it safe to call
+/// from interrupt handlers.
+pub fn tick_cpu_time(task: &TaskInner) {
+    let Some(thr) = task.try_as_thread() else {
+        return;
+    };
+    let Ok(mut time) = thr.time.try_borrow_mut() else {
+        // Reentrant borrow means the task is mid-state-transition; skip.
+        return;
+    };
+    time.tick();
+}
+
+/// Returns the accumulated `(utime, stime)` for a task without side effects.
+pub fn task_cpu_time(task: &TaskInner) -> (TimeValue, TimeValue) {
+    let Some(thr) = task.try_as_thread() else {
+        return (TimeValue::ZERO, TimeValue::ZERO);
+    };
+    let Ok(time) = thr.time.try_borrow() else {
+        return (TimeValue::ZERO, TimeValue::ZERO);
+    };
+    time.output()
 }
 
 /// Poll the timer
