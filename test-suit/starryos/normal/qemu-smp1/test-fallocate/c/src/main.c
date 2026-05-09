@@ -6,14 +6,15 @@
 
 /*
  * fallocate 对比测试:
- *   Linux/WSL 作为正确基线，StarryOS 的偏差即为 BUG
+ *   Linux 作为正确基线，验证 StarryOS 的 errno 优先级和 fd 类型语义。
  *
  * Linux fallocate(2):
  *   int fallocate(int fd, int mode, off_t offset, off_t len);
  *
- * StarryOS 已知问题:
- *   1. mode != 0 直接返回 EINVAL (Linux 返回 EOPNOTSUPP)
- *   2. offset/len 为 i64，直接 cast 到 u64 做加法，不检查负数
+ * 关键语义:
+ *   1. EBADF 优先级 > ESPIPE > EOPNOTSUPP > EINVAL
+ *   2. mode != 0 返回 EOPNOTSUPP (Linux 文件系统默认不支持)
+ *   3. offset < 0 或 len <= 0 返回 EINVAL
  */
 
 static int call_fallocate(int fd, int mode, off_t offset, off_t len)
@@ -104,7 +105,6 @@ int main(void)
 
     /* ================================================================
      * 3. len=0 — Linux 返回 EINVAL (POSIX: len <= 0 为无效参数)
-     *    StarryOS BUG: 不检查 len，cast u64 后当成 no-op 返回 0
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fallocate-XXXXXX";
@@ -126,7 +126,6 @@ int main(void)
 
     /* ================================================================
      * 4. offset 为负数 — Linux 返回 EINVAL
-     *    StarryOS BUG: cast i64 -> u64，-1 变 0xFFFF...
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fallocate-XXXXXX";
@@ -142,7 +141,6 @@ int main(void)
 
     /* ================================================================
      * 5. len 为负数 — Linux 返回 EINVAL
-     *    StarryOS BUG: 同上
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fallocate-XXXXXX";
@@ -195,7 +193,55 @@ int main(void)
     }
 
     /* ================================================================
-     * 9. 只读 fd — Linux 返回 EBADF
+     * 9. fd=-1 + mode=0xdead — EBADF 优先级高于 EOPNOTSUPP
+     *    Linux fallocate(-1, 0xdead, 0, 4096) 返回 EBADF
+     * ================================================================ */
+    {
+        CHECK_ERR(call_fallocate(-1, 0xdead, 0, 4096), EBADF,
+                  "fd=-1 且 mode=0xdead, EBADF 优先级高于 EOPNOTSUPP");
+    }
+
+    /* ================================================================
+     * 10. fd=-1 + len=-1 — EBADF 优先级高于 EINVAL
+     *     Linux fallocate(-1, 0, 0, -1) 返回 EBADF
+     * ================================================================ */
+    {
+        CHECK_ERR(call_fallocate(-1, 0, 0, -1), EBADF,
+                  "fd=-1 且 len=-1, EBADF 优先级高于 EINVAL");
+    }
+
+    /* ================================================================
+     * 11. 已关闭 fd + mode=0xdead — EBADF 优先级高于 EOPNOTSUPP
+     * ================================================================ */
+    {
+        char tmpl[] = "/tmp/test-fallocate-XXXXXX";
+        int fd = mkstemp(tmpl);
+        CHECK(fd >= 0, "mkstemp 应成功");
+        close(fd);
+
+        CHECK_ERR(call_fallocate(fd, 0xdead, 0, 4096), EBADF,
+                  "已关闭 fd 且 mode=0xdead, EBADF 优先级高于 EOPNOTSUPP");
+
+        unlink(tmpl);
+    }
+
+    /* ================================================================
+     * 12. 已关闭 fd + len=-1 — EBADF 优先级高于 EINVAL
+     * ================================================================ */
+    {
+        char tmpl[] = "/tmp/test-fallocate-XXXXXX";
+        int fd = mkstemp(tmpl);
+        CHECK(fd >= 0, "mkstemp 应成功");
+        close(fd);
+
+        CHECK_ERR(call_fallocate(fd, 0, 0, -1), EBADF,
+                  "已关闭 fd 且 len=-1, EBADF 优先级高于 EINVAL");
+
+        unlink(tmpl);
+    }
+
+    /* ================================================================
+     * 13. 只读 fd — Linux 返回 EBADF
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fallocate-XXXXXX";
@@ -214,7 +260,7 @@ int main(void)
     }
 
     /* ================================================================
-     * 10. pipe fd — Linux 返回 ESPIPE
+     * 14. pipe fd — Linux 返回 ESPIPE
      * ================================================================ */
     {
         int pipe_fds[2];
@@ -228,9 +274,21 @@ int main(void)
     }
 
     /* ================================================================
-     * 11. mode = FALLOC_FL_KEEP_SIZE (0x01)
+     * 15. 目录 fd — Linux 返回 EBADF (目录不可写入)
+     * ================================================================ */
+    {
+        int dir_fd = open("/tmp", O_RDONLY);
+        CHECK(dir_fd >= 0, "open /tmp O_RDONLY 应成功");
+
+        CHECK_ERR(call_fallocate(dir_fd, 0, 0, 4096), EBADF,
+                  "目录 fd 上 fallocate 应返回 EBADF");
+
+        close(dir_fd);
+    }
+
+    /* ================================================================
+     * 16. mode = FALLOC_FL_KEEP_SIZE (0x01)
      *     Linux: 返回 0 (文件系统支持) 或 EOPNOTSUPP (不支持)
-     *     StarryOS BUG: mode != 0 直接返回 EINVAL
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fallocate-XXXXXX";
@@ -250,9 +308,8 @@ int main(void)
     }
 
     /* ================================================================
-     * 12. mode = 0xdead (随机无效 flag)
+     * 17. mode = 0xdead (随机无效 flag)
      *     Linux: 返回 EOPNOTSUPP
-     *     StarryOS: 返回 EINVAL (不够精确)
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fallocate-XXXXXX";
@@ -272,9 +329,8 @@ int main(void)
     }
 
     /* ================================================================
-     * 13. mode = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE
+     * 18. mode = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE
      *     Linux: 返回 0 (tmpfs/ext4 支持) 或 EOPNOTSUPP (不支持)
-     *     StarryOS BUG: mode != 0 直接返回 EINVAL
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fallocate-XXXXXX";
@@ -298,8 +354,7 @@ int main(void)
     }
 
     /* ================================================================
-     * 14. 超大 offset (2^60) — Linux 返回 EFBIG
-     *     StarryOS BUG: 返回 0 不检查 offset+len 是否溢出或超限
+     * 19. 超大 offset (2^60) — Linux 返回 EFBIG
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-fallocate-XXXXXX";
