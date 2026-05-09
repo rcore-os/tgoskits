@@ -53,8 +53,13 @@ enum LockKind {
 /// Owner of an entry in the fcntl POSIX/OFD lock table.
 #[derive(Debug)]
 enum FOwner {
-    Posix { pid: Pid },
-    Ofd { addr: OfdAddr, weak: Weak<dyn FileLike> },
+    Posix {
+        pid: Pid,
+    },
+    Ofd {
+        addr: OfdAddr,
+        weak: Weak<dyn FileLike>,
+    },
 }
 
 impl FOwner {
@@ -161,12 +166,7 @@ fn kinds_conflict(a: LockKind, b: LockKind) -> bool {
 
 /// Remove (and split where needed) any same-owner entries on `inode` that
 /// overlap `[start, end)`. Used by both F_UNLCK and SETLK insert paths.
-fn clear_owner_overlap(
-    entries: &mut Vec<FLockEntry>,
-    owner: &FOwner,
-    start: i64,
-    end: i64,
-) {
+fn clear_owner_overlap(entries: &mut Vec<FLockEntry>, owner: &FOwner, start: i64, end: i64) {
     let mut i = 0;
     while i < entries.len() {
         let e = &entries[i];
@@ -224,13 +224,11 @@ fn find_conflict<'a>(
     kind: LockKind,
 ) -> Option<&'a FLockEntry> {
     entries.retain(|e| !e.owner.is_dead());
-    entries
-        .iter()
-        .find(|e| {
-            !e.owner.same_as(requester)
-                && ranges_overlap(e.start, e.end, start, end)
-                && kinds_conflict(e.kind, kind)
-        })
+    entries.iter().find(|e| {
+        !e.owner.same_as(requester)
+            && ranges_overlap(e.start, e.end, start, end)
+            && kinds_conflict(e.kind, kind)
+    })
 }
 
 // ─── fcntl entry points ────────────────────────────────────────────────
@@ -331,7 +329,11 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> AxResult<isize> {
                 e.kind,
                 e.owner.report_pid(),
                 e.start,
-                if e.end == i64::MAX { 0 } else { e.end - e.start },
+                if e.end == i64::MAX {
+                    0
+                } else {
+                    e.end - e.start
+                },
             )
         });
         (report, entries.is_empty())
@@ -341,7 +343,11 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> AxResult<isize> {
     }
 
     if let Some((kind, pid, l_start, l_len)) = report {
-        fl.l_type = (if kind == LockKind::Read { F_RDLCK } else { F_WRLCK }) as i16;
+        fl.l_type = (if kind == LockKind::Read {
+            F_RDLCK
+        } else {
+            F_WRLCK
+        }) as i16;
         fl.l_whence = SEEK_SET as i16;
         fl.l_start = l_start;
         fl.l_len = l_len;
