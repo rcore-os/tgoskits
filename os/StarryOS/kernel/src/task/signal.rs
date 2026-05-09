@@ -27,7 +27,13 @@ pub fn check_signals(
     // Honor zap requests before consulting the signal queue. A sibling
     // performing `execve` set this flag, and we must do a thread-only
     // exit (no `group_exit`) so the new image is left intact.
-    if thr.pending_exit_request() {
+    //
+    // `take_exit_request` consumes the flag atomically so the outer
+    // `while check_signals(...)` drain loop (see `task/user.rs`) doesn't
+    // re-enter `do_exit` for the same zap. After `do_exit` runs, the
+    // task's `exit` flag is set; control returns through the drain loop
+    // and the user-task outer loop bails on `pending_exit()`.
+    if thr.take_exit_request() {
         do_exit(0, false);
         return true;
     }

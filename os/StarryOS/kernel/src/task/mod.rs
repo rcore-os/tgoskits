@@ -199,9 +199,12 @@ impl Thread {
         self.exit.store(true, Ordering::Release);
     }
 
-    /// True if a thread-only exit has been requested via `set_exit_request`.
-    pub fn pending_exit_request(&self) -> bool {
-        self.exit_request.load(Ordering::Acquire)
+    /// Consume a pending thread-only exit request, returning whether one
+    /// was set. The flag is cleared in the same atomic step so that a
+    /// re-entrant `check_signals` (the user loop drains signals in a
+    /// while-loop) doesn't fire `do_exit` twice for the same zap.
+    pub fn take_exit_request(&self) -> bool {
+        self.exit_request.swap(false, Ordering::AcqRel)
     }
 
     /// Request a thread-only exit. Honored by `check_signals` on the next
