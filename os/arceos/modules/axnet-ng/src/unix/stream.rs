@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::Context,
@@ -15,13 +15,33 @@ use ringbuf::{
 };
 
 use crate::{
-    RecvOptions, SendOptions, Shutdown,
+    CMsgData, RecvOptions, SendOptions, Shutdown,
     general::GeneralOptions,
     options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
     unix::{Transport, TransportOps, UnixSocketAddr},
 };
 
 const BUF_SIZE: usize = 64 * 1024;
+
+/// One pending cmsg batch carried across a Unix stream socketpair.
+///
+/// `start_byte` is the 1-based cumulative tx-byte offset of the first
+/// byte of the send that carried this cmsg.  `end_byte` is the (1-based
+/// inclusive) offset of the last byte of that same send.  These bound
+/// the "message" that the cmsg belongs to.
+///
+/// On the recv side, `start_byte` is used to release the cmsg once the
+/// consumer has read at least `start_byte` bytes (Linux's "cmsg
+/// delivered with the first byte of its message").  `end_byte` caps a
+/// recv at the end of the current cmsg-bearing message so the next
+/// recvmsg starts cleanly at the next message.
+struct PendingCmsg {
+    start_byte: u64,
+    end_byte: u64,
+    cmsg: Vec<CMsgData>,
+}
+
+type CmsgQueue = Arc<Mutex<VecDeque<PendingCmsg>>>;
 
 fn new_uni_channel() -> (HeapProd<u8>, HeapCons<u8>) {
     let rb = HeapRb::new(BUF_SIZE);
@@ -31,16 +51,26 @@ fn new_channels(pid: u32) -> (Channel, Channel) {
     let (client_tx, server_rx) = new_uni_channel();
     let (server_tx, client_rx) = new_uni_channel();
     let poll_update = Arc::new(PollSet::new());
+    let c2s_cmsg = CmsgQueue::default();
+    let s2c_cmsg = CmsgQueue::default();
     (
         Channel {
             tx: client_tx,
             rx: client_rx,
+            tx_cmsg: c2s_cmsg.clone(),
+            rx_cmsg: s2c_cmsg.clone(),
+            tx_bytes_total: 0,
+            rx_bytes_total: 0,
             poll_update: poll_update.clone(),
             peer_pid: pid,
         },
         Channel {
             tx: server_tx,
             rx: server_rx,
+            tx_cmsg: s2c_cmsg,
+            rx_cmsg: c2s_cmsg,
+            tx_bytes_total: 0,
+            rx_bytes_total: 0,
             poll_update,
             peer_pid: pid,
         },
@@ -50,6 +80,17 @@ fn new_channels(pid: u32) -> (Channel, Channel) {
 struct Channel {
     tx: HeapProd<u8>,
     rx: HeapCons<u8>,
+    /// Cmsg queue for the outgoing direction. On sendmsg we push a
+    /// `PendingCmsg` covering the byte range of the call. The peer's
+    /// recvmsg drains entries whose `start_byte` has been consumed.
+    tx_cmsg: CmsgQueue,
+    /// Cmsg queue for the incoming direction. Entries with
+    /// `start_byte <= rx_bytes_total` are ready to deliver.
+    rx_cmsg: CmsgQueue,
+    /// Cumulative byte counter for the tx direction.
+    tx_bytes_total: u64,
+    /// Cumulative byte counter for the rx direction.
+    rx_bytes_total: u64,
     // TODO: granularity
     poll_update: Arc<PollSet>,
     peer_pid: u32,
@@ -215,14 +256,23 @@ impl TransportOps for StreamTransport {
         ))
     }
 
-    fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+    fn send(&self, mut src: impl Read + IoBuf, mut options: SendOptions) -> AxResult<usize> {
         if options.to.is_some() {
             return Err(AxError::InvalidInput);
         }
         let size = src.remaining();
         let mut total = 0;
-        let non_blocking = self.general.nonblocking();
-        self.general.send_poller(self, || {
+        let dontwait = options.flags.contains(crate::SendFlags::DONTWAIT);
+        let non_blocking = self.general.nonblocking() || dontwait;
+        // Attach any incoming cmsg to the first byte written on this send
+        // call (Linux semantics: cmsg is delivered with the first byte of
+        // the message). We stash the vec here and push into the peer's
+        // cmsg queue once some bytes actually got written.
+        let pending_cmsg = core::mem::take(&mut options.cmsg);
+        let had_cmsg = !pending_cmsg.is_empty();
+        let mut cmsg_slot: Option<Vec<CMsgData>> = had_cmsg.then_some(pending_cmsg);
+
+        self.general.send_poller_with(self, dontwait, || {
             let mut guard = self.channel.lock();
             let Some(chan) = guard.as_mut() else {
                 return Err(AxError::NotConnected);
@@ -242,6 +292,28 @@ impl TransportOps for StreamTransport {
             };
             total += count;
             if count > 0 {
+                // Attach cmsg (if any) to the first write of this send
+                // call.  Continuations of the same multi-iter send extend
+                // the just-pushed entry; back-to-back separate send calls
+                // (no cmsg) must NOT extend a prior call's cmsg, otherwise
+                // a non-cmsg send glued to a preceding cmsg send would
+                // appear to peer as a single oversized cmsg-bearing
+                // message.
+                if let Some(cmsg) = cmsg_slot.take() {
+                    let start_byte = chan.tx_bytes_total.saturating_add(1);
+                    let end_byte = chan.tx_bytes_total.saturating_add(count as u64);
+                    chan.tx_cmsg.lock().push_back(PendingCmsg {
+                        start_byte,
+                        end_byte,
+                        cmsg,
+                    });
+                } else if had_cmsg
+                    && let Some(last) = chan.tx_cmsg.lock().back_mut()
+                    && last.end_byte == chan.tx_bytes_total
+                {
+                    last.end_byte = last.end_byte.saturating_add(count as u64);
+                }
+                chan.tx_bytes_total = chan.tx_bytes_total.saturating_add(count as u64);
                 chan.poll_update.wake();
             }
 
@@ -253,34 +325,70 @@ impl TransportOps for StreamTransport {
         })
     }
 
-    fn recv(&self, mut dst: impl Write, _options: RecvOptions) -> AxResult<usize> {
-        self.general.recv_poller(self, || {
+    fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
+        let dontwait = options.flags.contains(crate::RecvFlags::DONTWAIT);
+        let recv_count = self.general.recv_poller_with(self, dontwait, || {
             let mut guard = self.channel.lock();
             let Some(chan) = guard.as_mut() else {
                 return Err(AxError::NotConnected);
             };
 
+            // Cap the read at the end of the first pending cmsg-bearing
+            // message so the next recv starts cleanly at the next message.
+            let cap_bytes: Option<usize> = {
+                let q = chan.rx_cmsg.lock();
+                q.front().and_then(|front| {
+                    if front.end_byte > chan.rx_bytes_total {
+                        let cap = front.end_byte.saturating_sub(chan.rx_bytes_total);
+                        Some(cap as usize)
+                    } else {
+                        None
+                    }
+                })
+            };
+
             let count = {
                 let (left, right) = chan.rx.as_slices();
-                let mut count = dst.write(left)?;
-                if count >= left.len() {
-                    count += dst.write(right)?;
+                let left_cap = cap_bytes.map_or(left.len(), |c| c.min(left.len()));
+                let mut count = dst.write(&left[..left_cap])?;
+                let remaining_cap = cap_bytes.map_or(usize::MAX, |c| c.saturating_sub(count));
+                if count >= left_cap && remaining_cap > 0 {
+                    let right_cap = right.len().min(remaining_cap);
+                    count += dst.write(&right[..right_cap])?;
                 }
                 unsafe { chan.rx.advance_read_index(count) };
                 count
             };
             if count > 0 {
+                chan.rx_bytes_total = chan.rx_bytes_total.saturating_add(count as u64);
                 chan.poll_update.wake();
                 Ok(count)
             } else if !chan.rx.write_is_held() {
                 // Peer dropped its sender end and the ring is empty: EOF.
-                // Returning WouldBlock here would park the caller forever
-                // waiting for data that will never arrive.
                 Ok(0)
             } else {
                 Err(AxError::WouldBlock)
             }
-        })
+        })?;
+
+        // Deliver any cmsg whose attached message's first byte has been
+        // consumed.  Because the read cap above stops at the boundary of
+        // the *next* cmsg-bearing message, this delivers at most one
+        // cmsg batch per recv.
+        if let Some(dst_cmsg) = options.cmsg {
+            let mut guard = self.channel.lock();
+            if let Some(chan) = guard.as_mut() {
+                let mut q = chan.rx_cmsg.lock();
+                while let Some(front) = q.front()
+                    && front.start_byte <= chan.rx_bytes_total
+                {
+                    let entry = q.pop_front().unwrap();
+                    dst_cmsg.extend(entry.cmsg);
+                }
+            }
+        }
+
+        Ok(recv_count)
     }
 
     fn shutdown(&self, how: Shutdown) -> AxResult<()> {
