@@ -829,6 +829,11 @@ if echo "$_t" | grep -qF "rmdir_ok"; then echo "PASS: busybox_rmdir"; PASS=$((PA
 _t=$({ timeout 10 sh -c 'busybox rm -f /tmp/bb_link_a /tmp/bb_link_b; busybox echo link_data > /tmp/bb_link_a && busybox link /tmp/bb_link_a /tmp/bb_link_b && busybox cat /tmp/bb_link_b'; } 2>&1)
 if echo "$_t" | grep -qF "link_data"; then echo "PASS: busybox_link"; PASS=$((PASS+1)); else echo "FAIL: busybox_link"; FAIL=$((FAIL+1)); fi
 
+# busybox_blockdev — query block device sector size
+_t=$({ timeout 10 sh -c 'busybox blockdev --getss /dev/loop0'; } 2>&1)
+_rc=$?
+if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: busybox_blockdev"; PASS=$((PASS+1)); else echo "FAIL: busybox_blockdev (exit=$_rc)"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
 _m1="Test"; _m2="run"; _m3="completed"; echo "$_m1 $_m2 $_m3"
