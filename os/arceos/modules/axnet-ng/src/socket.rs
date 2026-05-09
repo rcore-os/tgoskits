@@ -180,16 +180,6 @@ pub trait SocketOps: Configurable {
     fn shutdown(&self, how: Shutdown) -> AxResult;
 }
 
-impl<T: Configurable + ?Sized> Configurable for Box<T> {
-    fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
-        (**self).get_option_inner(option)
-    }
-
-    fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
-        (**self).set_option_inner(option)
-    }
-}
-
 impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
         (**self).bind(local_addr)

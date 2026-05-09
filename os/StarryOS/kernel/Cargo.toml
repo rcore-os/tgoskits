@@ -18,6 +18,7 @@ dev-log = []
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
+plat-dyn = ["dep:axplat-dyn", "axplat-dyn/usb", "dep:crab-usb", "dep:rdrive"]
 vsock = ["ax-feat/vsock"]
 
 [dependencies]
@@ -46,6 +47,7 @@ ax-driver.workspace = true
 ax-fs = { path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
+ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
 axnet = { path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
@@ -53,6 +55,8 @@ axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
+crab-usb = { version = "0.9", optional = true }
+rdrive = { version = "0.20", optional = true }
 
 axbacktrace = { workspace = true }
 ax-errno = { workspace = true }
@@ -81,6 +85,7 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
     "net",
+    "netlink",
     "prctl",
     "system",
     "ioctl",

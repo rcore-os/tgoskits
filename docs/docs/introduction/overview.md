@@ -69,7 +69,7 @@ tgoskits/
 │   ├── test/                   # 测试白名单（std_crates.csv, clippy_crates.csv）
 │   └── repo/                   # Subtree 管理工具
 ├── xtask/                      # xtask 入口 crate（tg-xtask）
-├── examples/                   # 独立示例项目
+├── examples/                   # 可运行场景示例（如 StarryOS 板端案例）
 └── docs/                       # 当前文档站点（Docusaurus）
 ```
 

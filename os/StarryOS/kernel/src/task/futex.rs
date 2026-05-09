@@ -171,7 +171,21 @@ impl FutexKey {
 
     /// Shortcut to create a `FutexKey` for the current task's address space.
     pub fn new_current(address: usize) -> Self {
-        Self::new(&current().as_thread().proc_data.aspace().lock(), address)
+        let curr = current();
+        let aspace_arc = curr.as_thread().proc_data.aspace();
+        let aspace = aspace_arc.lock();
+        Self::new(&aspace, address)
+    }
+
+    /// Best-effort variant for teardown paths that may be reached after a
+    /// faultable user-memory access.
+    pub fn new_current_teardown(address: usize) -> Self {
+        let curr = current();
+        let aspace_arc = curr.as_thread().proc_data.aspace();
+        let Some(aspace) = aspace_arc.try_lock() else {
+            return Self::Private { address };
+        };
+        Self::new(&aspace, address)
     }
 
     fn as_usize(&self) -> usize {

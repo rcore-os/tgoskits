@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, sync::Arc, vec};
+use alloc::{borrow::Cow, sync::Arc, vec, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
     task::Context,
@@ -6,7 +6,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
-use ax_io::{Seek, SeekFrom};
+use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
 use axfs_ng_vfs::NodeType;
 use axpoll::{IoEvents, Pollable};
@@ -16,7 +16,7 @@ use syscalls::Sysno;
 
 use crate::{
     file::{Directory, File, FileLike, Pipe, get_file_like},
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut},
+    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -91,14 +91,15 @@ pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
 /// Return the written size if success.
 pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
-    Ok(get_file_like(fd)?.write(&mut VmBytes::new(buf, len))? as _)
+    let data = copy_user_read_buf(buf.cast_const(), len)?;
+    Ok(get_file_like(fd)?.write(&mut data.as_slice())? as _)
 }
 
 pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
+    let data = copy_user_iov_read_buf(iov, iovcnt)?;
     let f = get_file_like(fd)?;
-    f.write(&mut IoVectorBuf::new(iov, iovcnt)?.into_io())
-        .map(|n| n as _)
+    f.write(&mut data.as_slice()).map(|n| n as _)
 }
 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
@@ -270,7 +271,8 @@ pub fn sys_pwrite64(
     if len == 0 {
         return Ok(0);
     }
-    let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
+    let data = copy_user_read_buf(buf, len)?;
+    let write = f.inner().write_at(data.as_slice(), offset as _)?;
     Ok(write as _)
 }
 
@@ -344,15 +346,33 @@ pub fn sys_pwritev2(
     if offset < -1 {
         return Err(AxError::InvalidInput);
     }
-    let mut io_buf = IoVectorBuf::new(iov, iovcnt)?.into_io();
     if offset == -1 {
         // offset == -1: use current file position (like writev)
+        let data = copy_user_iov_read_buf(iov, iovcnt)?;
         let f = get_file_like(fd)?;
-        f.write(&mut io_buf).map(|n| n as _)
+        f.write(&mut data.as_slice()).map(|n| n as _)
     } else {
+        let data = copy_user_iov_read_buf(iov, iovcnt)?;
         let f = file_or_espipe(fd)?;
-        f.inner().write_at(io_buf, offset as _).map(|n| n as _)
+        f.inner()
+            .write_at(data.as_slice(), offset as _)
+            .map(|n| n as _)
     }
+}
+
+fn copy_user_read_buf(buf: *const u8, len: usize) -> AxResult<Vec<u8>> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    Ok(UserConstPtr::<u8>::from(buf).get_as_slice(len)?.to_vec())
+}
+
+fn copy_user_iov_read_buf(iov: *const IoVec, iovcnt: usize) -> AxResult<Vec<u8>> {
+    let mut src = IoVectorBuf::new(iov, iovcnt)?.into_io();
+    let len = src.remaining();
+    let mut data = vec![0; len];
+    src.read_exact(&mut data)?;
+    Ok(data)
 }
 
 enum SendFile {

@@ -9,7 +9,7 @@
 //! This file only changes runner-side configuration and does not modify rootfs
 //! image contents.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ostool::run::qemu::QemuConfig;
 
@@ -28,6 +28,26 @@ pub(crate) fn patch_rootfs(qemu: &mut QemuConfig, rootfs_path: &Path, mode: Root
         RootfsPatchMode::ReplaceDriveOnly => replace_drive_arg(&mut qemu.args, rootfs_path),
         RootfsPatchMode::EnsureDiskBootNet => ensure_disk_boot_net_args(qemu, rootfs_path),
     }
+}
+
+/// Returns all raw image paths referenced by `-drive ...file=...` arguments.
+pub(crate) fn drive_file_paths(qemu: &QemuConfig) -> Vec<PathBuf> {
+    qemu.args
+        .windows(2)
+        .filter_map(|args| {
+            if args[0] != "-drive" {
+                return None;
+            }
+
+            drive_file_value(&args[1]).map(PathBuf::from)
+        })
+        .collect()
+}
+
+fn drive_file_value(drive_arg: &str) -> Option<&str> {
+    drive_arg
+        .split(',')
+        .find_map(|part| part.strip_prefix("file="))
 }
 
 /// Replaces an existing `disk0` drive argument or inserts one next to the
@@ -117,5 +137,48 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
     if !has_netdev {
         args.push("-netdev".to_string());
         args.push("user,id=net0".to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_file_paths_extracts_all_drive_file_values() {
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
+                "-device".to_string(),
+                "qemu-xhci,id=xhci".to_string(),
+                "-drive".to_string(),
+                "id=usbdisk,if=none,format=raw,snapshot=on,file=/tmp/usb.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            drive_file_paths(&qemu),
+            vec![
+                PathBuf::from("/tmp/rootfs.img"),
+                PathBuf::from("/tmp/usb.img")
+            ]
+        );
+    }
+
+    #[test]
+    fn drive_file_paths_ignores_drive_args_without_file() {
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0,file=/tmp/not-a-drive.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert!(drive_file_paths(&qemu).is_empty());
     }
 }
