@@ -1,7 +1,8 @@
-use ax_errno::AxResult;
+use ax_errno::{AxError, AxResult};
 use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{VirtAddr, align_up_4k};
 use ax_task::current;
+use linux_raw_sys::general::RLIMIT_DATA;
 
 use crate::{
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
@@ -13,14 +14,19 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
     let current_top = proc_data.get_heap_top() as usize;
-    let heap_limit = USER_HEAP_BASE + USER_HEAP_SIZE_MAX;
 
+    // Check RLIMIT_DATA limit
+    let rlimit_data = proc_data.rlim.read()[RLIMIT_DATA].current as usize;
+    let heap_limit = USER_HEAP_BASE + core::cmp::min(USER_HEAP_SIZE_MAX, rlimit_data);
+
+    // brk(0) returns current heap top
     if addr == 0 {
         return Ok(current_top as isize);
     }
 
+    // Invalid address: return -1 with ENOMEM
     if addr < USER_HEAP_BASE || addr > heap_limit {
-        return Ok(current_top as isize);
+        return Err(AxError::NoMemory);
     }
 
     let new_top_aligned = align_up_4k(addr);
@@ -47,7 +53,7 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
                 )
                 .is_err()
         {
-            return Ok(current_top as isize);
+            return Err(AxError::NoMemory);
         }
     } else if new_top_aligned < current_top_aligned {
         // Only unmap pages beyond the initially mapped heap region.
@@ -61,10 +67,10 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
                 .unmap(shrink_start, shrink_size)
                 .is_err()
         {
-            return Ok(current_top as isize);
+            return Err(AxError::NoMemory);
         }
     }
 
     proc_data.set_heap_top(addr);
-    Ok(addr as isize)
+    Ok(0) // Linux brk() returns 0 on success
 }
