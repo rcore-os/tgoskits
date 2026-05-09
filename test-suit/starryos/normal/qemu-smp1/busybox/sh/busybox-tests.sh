@@ -33,6 +33,11 @@ if echo "$_t" | grep -qF "can't open console"; then echo "PASS: busybox_beep"; P
 _t=$({ timeout 10 sh -c "busybox brctl -h 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "/sys/class/net"; then echo "PASS: busybox_brctl"; PASS=$((PASS+1)); else echo "FAIL: busybox_brctl"; FAIL=$((FAIL+1)); fi
 
+# busybox_blkdiscard — discard blocks on a block device
+# On a non-block device it should fail without crashing
+_t=$({ timeout 10 sh -c 'busybox blkdiscard /dev/null 2>&1; echo EXIT:$? >&2'; } 2>&1)
+if echo "$_t" | grep -qF "EXIT:1"; then echo "PASS: busybox_blkdiscard"; PASS=$((PASS+1)); else echo "FAIL: busybox_blkdiscard"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox sh -c 'busybox echo bunzip_ok > /tmp/bb_bunzip_t && busybox bzip2 -f /tmp/bb_bunzip_t && busybox bunzip2 -f /tmp/bb_bunzip_t.bz2 && busybox cat /tmp/bb_bunzip_t' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "bunzip_ok"; then echo "PASS: busybox_bunzip2"; PASS=$((PASS+1)); else echo "FAIL: busybox_bunzip2"; FAIL=$((FAIL+1)); fi
 
