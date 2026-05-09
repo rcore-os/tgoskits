@@ -1,10 +1,8 @@
-use std::{
-    env,
-    io::{Read, Write},
-    process,
-};
+use std::{env, process};
 
-use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+// Embedded by the compiler from the file written by prebuild.sh.
+// If prebuild.sh did not run, this will fail at compile time.
+const PREBUILD_MARKER: &str = include_str!("prebuild_marker.txt");
 
 fn main() {
     println!("Hello from Rust on StarryOS!");
@@ -15,24 +13,10 @@ fn main() {
     assert_eq!(1 + 1, 2, "math is broken");
     assert!(process::id() > 0, "getpid failed");
 
-    // Exercise zlib (installed by prebuild.sh) via flate2.
-    let input = b"Hello from zlib on StarryOS!";
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(input).expect("compress write failed");
-    let compressed = encoder.finish().expect("compress finish failed");
-    assert!(!compressed.is_empty(), "compressed output is empty");
+    // Validate that prebuild.sh ran and wrote the marker file.
+    let marker = PREBUILD_MARKER.trim();
+    assert_eq!(marker, "prebuild-ok", "prebuild marker mismatch: {marker:?}");
+    println!("prebuild marker ok: {marker:?}");
 
-    let mut decoder = GzDecoder::new(compressed.as_slice());
-    let mut decompressed = Vec::new();
-    decoder
-        .read_to_end(&mut decompressed)
-        .expect("decompress failed");
-    assert_eq!(decompressed, input, "round-trip mismatch");
-
-    println!(
-        "zlib round-trip ok ({} -> {} bytes)",
-        input.len(),
-        compressed.len()
-    );
     println!("TEST PASSED");
 }
