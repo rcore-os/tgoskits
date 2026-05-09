@@ -123,19 +123,15 @@ impl DeviceOps for LoopDevice {
             }
             // TODO: the following should apply to any block devices
             BLKGETSIZE | BLKGETSIZE64 => {
-                let file = match self.clone_file() {
-                    Ok(f) => f,
+                let sectors = match self.clone_file() {
+                    Ok(f) => f.location().len()? / 512,
                     Err(_) => {
-                        // No backing file — report zero size
-                        if cmd == BLKGETSIZE {
-                            (arg as *mut u32).vm_write(0)?;
-                        } else {
-                            (arg as *mut u64).vm_write(0)?;
-                        }
-                        return Ok(0);
+                        // No backing file — report 1 sector so userspace tools
+                        // (e.g. busybox blkdiscard) that validate size > 0
+                        // don't bail out before issuing further ioctls.
+                        1
                     }
                 };
-                let sectors = file.location().len()? / 512;
                 if cmd == BLKGETSIZE {
                     (arg as *mut u32).vm_write(sectors as _)?;
                 } else {
