@@ -5,8 +5,8 @@ use ax_fs::FS_CONTEXT;
 use ax_task::current;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
-    __kernel_fsid_t, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE, AT_SYMLINK_NOFOLLOW, R_OK,
-    STATX__RESERVED, W_OK, X_OK, stat, statfs, statx,
+    __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
+    AT_SYMLINK_NOFOLLOW, R_OK, STATX__RESERVED, W_OK, X_OK, stat, statfs, statx,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -133,6 +133,15 @@ pub fn sys_access(path: *const c_char, mode: u32) -> AxResult<isize> {
 // because fsuid/fsgid track euid/egid by default in our credential model,
 // so the real-ID vs effective-ID distinction AT_EACCESS controls is a no-op.
 pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+    // man 2 access: mode is a mask of F_OK(0), R_OK, W_OK, and X_OK;
+    // faccessat2 flags are limited to AT_EACCESS, AT_EMPTY_PATH, and
+    // AT_SYMLINK_NOFOLLOW. Linux rejects invalid bits before path resolution.
+    const FACCESSAT2_VALID_FLAGS: u32 = AT_EACCESS | AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    const FACCESSAT2_VALID_MODE: u32 = R_OK | W_OK | X_OK;
+    if mode & !FACCESSAT2_VALID_MODE != 0 || flags & !FACCESSAT2_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
 
