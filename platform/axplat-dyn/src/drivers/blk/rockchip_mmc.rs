@@ -111,6 +111,8 @@ struct BlockQueue {
     raw: EMmcHost,
 }
 
+const MMC_IO_RETRIES: usize = 3;
+
 impl DriverGeneric for BlockDivce {
     fn name(&self) -> &str {
         "rockchip-emmc"
@@ -170,16 +172,64 @@ impl rd_block::IQueue for BlockQueue {
         match request.kind {
             rd_block::RequestKind::Read(mut buffer) => {
                 let blocks = buffer.len() / self.block_size();
-                self.raw
-                    .read_blocks(id as _, blocks as _, &mut buffer)
-                    .map_err(maping_dev_err_to_blk_err)?;
+                let mut attempt = 0;
+                loop {
+                    match self.raw.read_blocks(id as _, blocks as _, &mut buffer) {
+                        Ok(()) => break,
+                        Err(err) if is_retryable_dev_err(&err) && attempt < MMC_IO_RETRIES => {
+                            attempt += 1;
+                            warn!(
+                                "Rockchip eMMC read timeout, retrying: lba={} blocks={} bytes={} \
+                                 attempt={}/{} err={err:?}",
+                                id,
+                                blocks,
+                                buffer.len(),
+                                attempt,
+                                MMC_IO_RETRIES
+                            );
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Rockchip eMMC read failed: lba={} blocks={} bytes={} err={err:?}",
+                                id,
+                                blocks,
+                                buffer.len()
+                            );
+                            return Err(maping_dev_err_to_blk_err(err));
+                        }
+                    }
+                }
                 Ok(rd_block::RequestId::new(0))
             }
             rd_block::RequestKind::Write(items) => {
                 let blocks = items.len() / self.block_size();
-                self.raw
-                    .write_blocks(id as _, blocks as _, items)
-                    .map_err(maping_dev_err_to_blk_err)?;
+                let mut attempt = 0;
+                loop {
+                    match self.raw.write_blocks(id as _, blocks as _, items) {
+                        Ok(()) => break,
+                        Err(err) if is_retryable_dev_err(&err) && attempt < MMC_IO_RETRIES => {
+                            attempt += 1;
+                            warn!(
+                                "Rockchip eMMC write timeout, retrying: lba={} blocks={} bytes={} \
+                                 attempt={}/{} err={err:?}",
+                                id,
+                                blocks,
+                                items.len(),
+                                attempt,
+                                MMC_IO_RETRIES
+                            );
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Rockchip eMMC write failed: lba={} blocks={} bytes={} err={err:?}",
+                                id,
+                                blocks,
+                                items.len()
+                            );
+                            return Err(maping_dev_err_to_blk_err(err));
+                        }
+                    }
+                }
                 Ok(rd_block::RequestId::new(0))
             }
         }
@@ -190,11 +240,17 @@ impl rd_block::IQueue for BlockQueue {
     }
 }
 
+fn is_retryable_dev_err(err: &sdmmc::err::SdError) -> bool {
+    matches!(
+        err,
+        sdmmc::err::SdError::Timeout | sdmmc::err::SdError::DataTimeout
+    )
+}
+
 fn maping_dev_err_to_blk_err(err: sdmmc::err::SdError) -> rd_block::BlkError {
     match err {
         sdmmc::err::SdError::Timeout | sdmmc::err::SdError::DataTimeout => {
-            // transient timeout, ask caller to retry
-            rd_block::BlkError::Retry
+            rd_block::BlkError::Other("SD/MMC timeout".into())
         }
         sdmmc::err::SdError::Crc
         | sdmmc::err::SdError::DataCrc

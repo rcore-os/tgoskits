@@ -30,6 +30,7 @@ pub fn sys_getpgid(pid: Pid) -> AxResult<isize> {
     Ok(get_process_data(pid)?.proc.group().pgid() as _)
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn sys_getpgrp() -> AxResult<isize> {
     let curr = current();
     Ok(curr.as_thread().proc_data.proc.group().pgid() as _)

@@ -156,6 +156,7 @@ impl CloneArgs {
         };
 
         let mut new_uctx = *uctx;
+        new_uctx.prepare_clone_child_return_state();
         if stack != 0 {
             new_uctx.set_sp(stack);
         }
@@ -197,8 +198,7 @@ impl CloneArgs {
                 old_proc_data.aspace()
             } else {
                 let aspace_arc = old_proc_data.aspace();
-                let mut aspace = aspace_arc.lock();
-                let aspace = aspace.try_clone()?;
+                let aspace = aspace_arc.lock().try_clone()?;
                 copy_from_kernel(&mut aspace.lock())?;
                 aspace
             };
