@@ -14,7 +14,7 @@ use linux_raw_sys::{
 
 use super::addr::SocketAddrExt;
 use crate::{
-    file::{FileLike, Socket, add_file_like},
+    file::{FileLike, PacketSocket, Socket, add_file_like},
     mm::{IoVec, IoVectorBuf, UserConstPtr, UserPtr, VmBytes, VmBytesMut},
     syscall::net::{CMsg, CMsgBuilder},
     time::TimeValueLike,
@@ -66,6 +66,10 @@ fn send_impl(
     addrlen: socklen_t,
     cmsg: Vec<CMsgData>,
 ) -> AxResult<isize> {
+    if let Ok(packet) = PacketSocket::from_fd(fd) {
+        return Ok(packet.send_packet(&mut src)? as isize);
+    }
+
     let addr = if addr.is_null() || addrlen == 0 {
         None
     } else {
@@ -120,6 +124,17 @@ fn recv_impl(
     cmsg_builder: Option<CMsgBuilder>,
 ) -> AxResult<isize> {
     debug!("sys_recv <= fd: {fd}, flags: {flags}");
+
+    if let Ok(packet) = PacketSocket::from_fd(fd) {
+        let (recv, from) = packet.recv_packet(&mut dst)?;
+        if !addr.is_null() {
+            from.write_to_user(
+                addr.address().as_usize() as *mut sockaddr,
+                addrlen.get_as_mut()?,
+            )?;
+        }
+        return Ok(recv as isize);
+    }
 
     let socket = Socket::from_fd(fd)?;
     let mut recv_flags = RecvFlags::empty();

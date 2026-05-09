@@ -9,6 +9,9 @@ if [ -n "$_t" ]; then echo "PASS: busybox_adjtimex"; PASS=$((PASS+1)); else echo
 _t=$({ timeout 10 sh -c "busybox arch 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "riscv"; then echo "PASS: busybox_arch"; PASS=$((PASS+1)); else echo "FAIL: busybox_arch"; FAIL=$((FAIL+1)); fi
 
+_t=$({ timeout 10 sh -c "busybox arping -c 1 127.0.0.1 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "Received"; then echo "PASS: busybox_arping"; PASS=$((PASS+1)); else echo "FAIL: busybox_arping"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox ash -c 'echo ash_ok' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "ash_ok"; then echo "PASS: busybox_ash"; PASS=$((PASS+1)); else echo "FAIL: busybox_ash"; FAIL=$((FAIL+1)); fi
 
