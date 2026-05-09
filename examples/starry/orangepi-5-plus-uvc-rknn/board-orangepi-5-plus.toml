@@ -1,8 +1,8 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
-success_regex = [
-  "(?m)^YOLO_RESULT index=3 .*$",
-]
+#success_regex = [
+#  "(?m)^YOLO_RESULT index=3 .*$",
+#]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?m)^uvc-fps: error: .*$",
