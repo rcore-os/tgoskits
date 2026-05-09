@@ -1,7 +1,7 @@
 #include "usb_msc_bot.h"
 
+#include <inttypes.h>
 #include <stdarg.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,11 +9,12 @@
 #include <unistd.h>
 
 #define MAX_TUR_RETRIES 5
+#define MAX_BLOCK_SIZE (1024u * 1024u)
 
 static int failf(const char *format, ...) {
     va_list args;
     va_start(args, format);
-    fputs("USB test failed: ", stdout);
+    fputs("USB storage test failed: ", stdout);
     vprintf(format, args);
     fputc('\n', stdout);
     va_end(args);
@@ -64,14 +65,9 @@ static int wait_until_ready(usb_msc_device_t *device) {
 }
 
 int main(void) {
-    puts("todo usb test");
-    return 0;
-
     usb_msc_device_t device;
     uint32_t last_lba = 0;
     uint32_t block_size = 0;
-    uint32_t total_blocks = 0;
-    uint32_t test_lba = 0;
     uint8_t *write_buffer = NULL;
     uint8_t *read_buffer = NULL;
     int exit_code = 1;
@@ -112,34 +108,34 @@ int main(void) {
         );
     }
 
-    total_blocks = last_lba + 1;
+    const uint64_t total_blocks = (uint64_t)last_lba + 1u;
     printf(
-        "usb capacity: last_lba=%u blocks=%u block_size=%u\n",
+        "usb capacity: last_lba=%u blocks=%" PRIu64 " block_size=%u\n",
         last_lba,
         total_blocks,
         block_size
     );
-    if (block_size == 0 || total_blocks < 2) {
+    if (block_size == 0 || block_size > MAX_BLOCK_SIZE || total_blocks == 0) {
         usb_msc_close(&device);
         return failf("invalid capacity response");
     }
 
-    test_lba = total_blocks > 64 ? 32u : 1u;
-    if (test_lba >= total_blocks) {
-        test_lba = total_blocks - 1;
-    }
-
-    write_buffer = malloc(block_size);
     read_buffer = malloc(block_size);
+    write_buffer = malloc(block_size);
     if (write_buffer == NULL || read_buffer == NULL) {
         free(write_buffer);
         free(read_buffer);
         usb_msc_close(&device);
-        return failf("failed to allocate transfer buffers");
+        return failf("failed to allocate %u-byte transfer buffers", block_size);
     }
 
     fill_pattern(write_buffer, block_size);
     memset(read_buffer, 0, block_size);
+
+    uint32_t test_lba = total_blocks > 64 ? 32u : 1u;
+    if (test_lba >= total_blocks) {
+        test_lba = (uint32_t)total_blocks - 1u;
+    }
 
     result = usb_msc_write10(&device, test_lba, 1, write_buffer, block_size);
     if (result != 0) {
@@ -153,7 +149,7 @@ int main(void) {
             libusb_error_name(result)
         );
     }
-    printf("usb write test completed at lba=%u\n", test_lba);
+    printf("usb write ok: lba=%u bytes=%u\n", test_lba, block_size);
 
     result = usb_msc_read10(&device, test_lba, 1, read_buffer, block_size);
     if (result != 0) {
@@ -167,7 +163,6 @@ int main(void) {
             libusb_error_name(result)
         );
     }
-    printf("usb readback completed at lba=%u\n", test_lba);
 
     if (memcmp(write_buffer, read_buffer, block_size) != 0) {
         free(write_buffer);
@@ -176,7 +171,8 @@ int main(void) {
         return failf("readback data mismatch");
     }
 
-    puts("USB transfer tests passed!");
+    printf("usb readback ok: lba=%u bytes=%u\n", test_lba, block_size);
+    puts("USB storage tests passed!");
     exit_code = 0;
 
     free(write_buffer);

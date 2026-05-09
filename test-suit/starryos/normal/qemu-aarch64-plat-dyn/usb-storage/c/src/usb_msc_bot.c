@@ -1,6 +1,5 @@
 #include "usb_msc_bot.h"
 
-#include <arpa/inet.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +28,23 @@ struct __attribute__((packed)) usb_msc_csw {
     uint8_t status;
 };
 
+static uint32_t read_be32(const uint8_t *bytes) {
+    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
+           ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
+}
+
+static void write_be16(uint8_t *bytes, uint16_t value) {
+    bytes[0] = (uint8_t)(value >> 8);
+    bytes[1] = (uint8_t)value;
+}
+
+static void write_be32(uint8_t *bytes, uint32_t value) {
+    bytes[0] = (uint8_t)(value >> 24);
+    bytes[1] = (uint8_t)(value >> 16);
+    bytes[2] = (uint8_t)(value >> 8);
+    bytes[3] = (uint8_t)value;
+}
+
 static int find_bulk_endpoints(
     const struct libusb_interface_descriptor *descriptor,
     uint8_t *endpoint_in,
@@ -38,27 +54,26 @@ static int find_bulk_endpoints(
     *endpoint_out = 0;
 
     for (int index = 0; index < descriptor->bNumEndpoints; index++) {
-        const struct libusb_endpoint_descriptor *endpoint =
-            &descriptor->endpoint[index];
+        const struct libusb_endpoint_descriptor *endpoint = &descriptor->endpoint[index];
 
         if ((endpoint->bmAttributes & LIBUSB_TRANSFER_TYPE_MASK) !=
             LIBUSB_TRANSFER_TYPE_BULK) {
             continue;
         }
 
-        if ((endpoint->bEndpointAddress & LIBUSB_ENDPOINT_DIR_MASK) ==
-            LIBUSB_ENDPOINT_IN) {
+        if ((endpoint->bEndpointAddress & LIBUSB_ENDPOINT_DIR_MASK) == LIBUSB_ENDPOINT_IN) {
             *endpoint_in = endpoint->bEndpointAddress;
         } else {
             *endpoint_out = endpoint->bEndpointAddress;
         }
     }
 
-    return (*endpoint_in != 0 && *endpoint_out != 0) ? 0 : -1;
+    return (*endpoint_in != 0 && *endpoint_out != 0) ? 0 : LIBUSB_ERROR_NOT_FOUND;
 }
 
 static int prepare_bulk_only_device(
     libusb_device *usb_device,
+    uint8_t config_value,
     const struct libusb_interface_descriptor *descriptor,
     usb_msc_device_t *device
 ) {
@@ -67,16 +82,28 @@ static int prepare_bulk_only_device(
         return result;
     }
 
-    device->interface_number = descriptor->bInterfaceNumber;
-    result = find_bulk_endpoints(
-        descriptor,
-        &device->endpoint_in,
-        &device->endpoint_out
-    );
+    int active_config = 0;
+    result = libusb_get_configuration(device->handle, &active_config);
     if (result != 0) {
         libusb_close(device->handle);
         device->handle = NULL;
-        return LIBUSB_ERROR_NOT_FOUND;
+        return result;
+    }
+    if (config_value != 0 && active_config != config_value) {
+        result = libusb_set_configuration(device->handle, config_value);
+        if (result != 0) {
+            libusb_close(device->handle);
+            device->handle = NULL;
+            return result;
+        }
+    }
+
+    device->interface_number = descriptor->bInterfaceNumber;
+    result = find_bulk_endpoints(descriptor, &device->endpoint_in, &device->endpoint_out);
+    if (result != 0) {
+        libusb_close(device->handle);
+        device->handle = NULL;
+        return result;
     }
 
     (void)libusb_set_auto_detach_kernel_driver(device->handle, 1);
@@ -97,6 +124,28 @@ static int prepare_bulk_only_device(
         return result;
     }
 
+    if (descriptor->bAlternateSetting != 0) {
+        result = libusb_set_interface_alt_setting(
+            device->handle,
+            device->interface_number,
+            descriptor->bAlternateSetting
+        );
+        if (result != 0) {
+            libusb_release_interface(device->handle, device->interface_number);
+            libusb_close(device->handle);
+            device->handle = NULL;
+            return result;
+        }
+    }
+
+    printf(
+        "usb mass-storage selection: if=%u alt=%u bulk_in=%02x bulk_out=%02x\n",
+        device->interface_number,
+        descriptor->bAlternateSetting,
+        device->endpoint_in,
+        device->endpoint_out
+    );
+    fflush(stdout);
     device->tag = 1;
     return 0;
 }
@@ -128,12 +177,13 @@ int usb_msc_find_and_open(usb_msc_device_t *device) {
         }
 
         printf(
-            "usb device: bus=%u addr=%u vid=%04x pid=%04x class=%02x\n",
+            "usb device: bus=%u addr=%u vid=%04x pid=%04x class=%02x configs=%u\n",
             libusb_get_bus_number(usb_device),
             libusb_get_device_address(usb_device),
             descriptor.idVendor,
             descriptor.idProduct,
-            descriptor.bDeviceClass
+            descriptor.bDeviceClass,
+            descriptor.bNumConfigurations
         );
 
         struct libusb_config_descriptor *config = NULL;
@@ -142,6 +192,7 @@ int usb_msc_find_and_open(usb_msc_device_t *device) {
             result = libusb_get_config_descriptor(usb_device, 0, &config);
         }
         if (result != 0 || config == NULL) {
+            printf("  no config descriptor: %d %s\n", result, libusb_error_name(result));
             continue;
         }
 
@@ -150,8 +201,7 @@ int usb_msc_find_and_open(usb_msc_device_t *device) {
              interface_index < config->bNumInterfaces && !found;
              interface_index++) {
             const struct libusb_interface *interface = &config->interface[interface_index];
-            for (int alt_index = 0;
-                 alt_index < interface->num_altsetting && !found;
+            for (int alt_index = 0; alt_index < interface->num_altsetting && !found;
                  alt_index++) {
                 const struct libusb_interface_descriptor *if_desc =
                     &interface->altsetting[alt_index];
@@ -161,9 +211,20 @@ int usb_msc_find_and_open(usb_msc_device_t *device) {
                     continue;
                 }
 
-                result = prepare_bulk_only_device(usb_device, if_desc, device);
+                result = prepare_bulk_only_device(
+                    usb_device,
+                    config->bConfigurationValue,
+                    if_desc,
+                    device
+                );
                 if (result == 0) {
                     found = true;
+                } else {
+                    printf(
+                        "  mass-storage open failed: %d %s\n",
+                        result,
+                        libusb_error_name(result)
+                    );
                 }
             }
         }
@@ -253,10 +314,7 @@ static int transfer_command(
         return result != 0 ? result : LIBUSB_ERROR_IO;
     }
 
-    if (csw.signature != CSW_SIGNATURE || csw.tag != cbw.tag) {
-        return LIBUSB_ERROR_IO;
-    }
-    if (csw.status != 0) {
+    if (csw.signature != CSW_SIGNATURE || csw.tag != cbw.tag || csw.status != 0) {
         return LIBUSB_ERROR_IO;
     }
 
@@ -287,14 +345,7 @@ int usb_msc_inquiry(usb_msc_device_t *device, char vendor[9], char product[17]) 
 
 int usb_msc_test_unit_ready(usb_msc_device_t *device) {
     uint8_t command[6] = {0x00, 0, 0, 0, 0, 0};
-    return transfer_command(
-        device,
-        command,
-        sizeof(command),
-        LIBUSB_ENDPOINT_IN,
-        NULL,
-        0
-    );
+    return transfer_command(device, command, sizeof(command), 0, NULL, 0);
 }
 
 int usb_msc_request_sense(
@@ -348,8 +399,8 @@ int usb_msc_read_capacity10(
         return result;
     }
 
-    *last_lba = ntohl(*(uint32_t *)&response[0]);
-    *block_size = ntohl(*(uint32_t *)&response[4]);
+    *last_lba = read_be32(&response[0]);
+    *block_size = read_be32(&response[4]);
     return 0;
 }
 
@@ -361,10 +412,8 @@ int usb_msc_read10(
     uint32_t transfer_length
 ) {
     uint8_t command[10] = {0x28, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    const uint32_t be_lba = htonl(lba);
-    const uint16_t be_blocks = htons(blocks);
-    memcpy(&command[2], &be_lba, sizeof(be_lba));
-    memcpy(&command[7], &be_blocks, sizeof(be_blocks));
+    write_be32(&command[2], lba);
+    write_be16(&command[7], blocks);
 
     return transfer_command(
         device,
@@ -384,10 +433,8 @@ int usb_msc_write10(
     uint32_t transfer_length
 ) {
     uint8_t command[10] = {0x2a, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    const uint32_t be_lba = htonl(lba);
-    const uint16_t be_blocks = htons(blocks);
-    memcpy(&command[2], &be_lba, sizeof(be_lba));
-    memcpy(&command[7], &be_blocks, sizeof(be_blocks));
+    write_be32(&command[2], lba);
+    write_be16(&command[7], blocks);
 
     return transfer_command(
         device,
