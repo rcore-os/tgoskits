@@ -220,7 +220,7 @@ impl ArceosBuildInfo {
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn)?;
         self.resolve_features(package, plat_dyn);
-        let args = Self::build_cargo_args(target, plat_dyn);
+        let args = Self::build_cargo_args(target, plat_dyn, &self.features);
 
         Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
     }
@@ -275,17 +275,36 @@ impl ArceosBuildInfo {
         }
     }
 
-    pub(crate) fn build_cargo_args(target: &str, plat_dyn: bool) -> Vec<String> {
+    pub(crate) fn build_cargo_args(
+        target: &str,
+        plat_dyn: bool,
+        features: &[String],
+    ) -> Vec<String> {
         let mut args = Vec::new();
         args.push("--config".to_string());
-        args.push(if plat_dyn {
-            format!("target.{target}.rustflags=[\"-Clink-arg=-Taxplat.x\"]")
+
+        let mut flags: Vec<String> = if plat_dyn {
+            vec!["-Clink-arg=-Taxplat.x".to_string()]
         } else {
-            format!(
-                "target.{target}.rustflags=[\"-Clink-arg=-Tlinker.x\",\"-Clink-arg=-no-pie\",\"\
-                 -Clink-arg=-znostart-stop-gc\"]"
-            )
-        });
+            vec![
+                "-Clink-arg=-Tlinker.x".to_string(),
+                "-Clink-arg=-no-pie".to_string(),
+                "-Clink-arg=-znostart-stop-gc".to_string(),
+            ]
+        };
+
+        if features.iter().any(|f| f == "kcov") {
+            flags.push("-Cllvm-args=-sanitizer-coverage-level=3".to_string());
+            flags.push("-Cllvm-args=-sanitizer-coverage-trace-pc".to_string());
+            flags.push("-Cpasses=sancov-module".to_string());
+        }
+
+        let rustflags = flags
+            .iter()
+            .map(|f| format!("\"{f}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        args.push(format!("target.{target}.rustflags=[{rustflags}]"));
         args
     }
 
@@ -916,6 +935,7 @@ fn resolve_defconfig_path(workspace_root: &Path) -> anyhow::Result<PathBuf> {
 mod tests {
     use std::fs;
 
+    use ostool::build;
     use tempfile::tempdir;
 
     use super::*;
@@ -961,7 +981,11 @@ mod tests {
         assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", true);
+        let args = ArceosBuildInfo::build_cargo_args(
+            "aarch64-unknown-none-softfloat",
+            true,
+            &build_info.features,
+        );
         assert!(args.iter().any(|arg| arg.contains("-Taxplat.x")));
     }
 
@@ -973,7 +997,11 @@ mod tests {
         assert!(build_info.features.contains(&"ax-std/defplat".to_string()));
         assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", false);
+        let args = ArceosBuildInfo::build_cargo_args(
+            "aarch64-unknown-none-softfloat",
+            false,
+            &build_info.features,
+        );
         assert!(args.iter().any(|arg| arg.contains("-Tlinker.x")));
     }
 
