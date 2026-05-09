@@ -1,7 +1,6 @@
 ---
 name: pre-pr-gate
-description: Block PR creation and direct push unless clean branch + local CI pass
-type: hook
+description: Reference documentation for the PR/push gate (enforced by pre-pr-gate.py via hooks.json)
 ---
 
 # Pre-PR Gate

@@ -13,7 +13,6 @@
     "agents/driver-audit.md"
   ],
   "hooks": [
-    "hooks/pre-pr-gate.md",
     "hooks/hooks.json"
   ]
 }
