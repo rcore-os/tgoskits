@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Before executing this Bash command, check if it matches gh pr create or git push. If it does, read .claude/hooks/pre-pr-gate.md and follow its instructions. If the gate checks fail, block the command and tell the user what needs to be fixed."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/post-tool-use-log.py\" \"${CLAUDE_PLUGIN_ROOT}\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Check if .claude/cache/task-active.flag exists. If it does, read the task name from it, then read .claude/hooks/session-end-journal.md and follow its instructions to generate the journal. Do NOT do this if the flag does not exist or if a journal was already generated for this task."
+          }
+        ]
+      }
+    ]
+  }
+}
