@@ -44,9 +44,10 @@ pub fn init(args: &[String], envs: &[String]) {
     let mut task = new_user_task(name, uctx, 0);
     task.ctx_mut().set_page_table_root(uspace.page_table_root());
 
-    let pid = task.id().as_u64() as Pid;
+    let tid = task.id().as_u64() as Pid;
+    let pid: Pid = 1;
     let proc = Process::new_init(pid);
-    proc.add_thread(pid);
+    proc.add_thread(tid);
 
     N_TTY.bind_to(&proc).expect("Failed to bind ntty");
 
@@ -65,7 +66,7 @@ pub fn init(args: &[String], envs: &[String]) {
             .expect("Failed to add stdio");
     }
 
-    let thr = Thread::new(pid, proc, None);
+    let thr = Thread::new(tid, proc, None);
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = spawn_task(task);

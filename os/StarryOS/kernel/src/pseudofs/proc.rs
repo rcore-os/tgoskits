@@ -29,7 +29,7 @@ use crate::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SeqFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
     },
-    task::{AsThread, TaskStat, get_task, tasks, tick_cpu_time},
+    task::{AsThread, TaskStat, get_process_data, get_task, processes, tasks, tick_cpu_time},
 };
 
 /// Global IRQ counter incremented on every timer tick.
@@ -623,9 +623,9 @@ struct ProcFsHandler(Arc<SimpleFs>);
 impl SimpleDirOps for ProcFsHandler {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            tasks()
+            processes()
                 .into_iter()
-                .map(|task| task.id().as_u64().to_string().into())
+                .map(|proc_data| proc_data.proc.pid().to_string().into())
                 .chain([Cow::Borrowed("self")]),
         )
     }
@@ -634,7 +634,14 @@ impl SimpleDirOps for ProcFsHandler {
         let task = if name == "self" {
             current().clone()
         } else {
-            let tid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+            let pid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+            let proc_data = get_process_data(pid).map_err(|_| VfsError::NotFound)?;
+            let tid = proc_data
+                .proc
+                .threads()
+                .into_iter()
+                .next()
+                .ok_or(VfsError::NotFound)?;
             get_task(tid).map_err(|_| VfsError::NotFound)?
         };
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(

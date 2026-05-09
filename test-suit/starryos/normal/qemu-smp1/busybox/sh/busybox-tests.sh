@@ -447,6 +447,9 @@ if echo "$_t" | grep -qF "a	b"; then echo "PASS: busybox_paste"; PASS=$((PASS+1)
 _t=$({ timeout 10 sh -c "busybox pgrep -h 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Usage: pgrep"; then echo "PASS: busybox_pgrep"; PASS=$((PASS+1)); else echo "FAIL: busybox_pgrep"; FAIL=$((FAIL+1)); fi
 
+_t=$({ busybox pidof -s init 2>&1 || busybox pidof -s sh 2>&1; } 2>&1)
+if echo "$_t" | grep -qF "1"; then echo "PASS: busybox_pidof"; PASS=$((PASS+1)); else echo "FAIL: busybox_pidof"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox ping6 -c 1 ::1 2>&1 || busybox echo ping6_fallback"; } 2>&1)
 if echo "$_t" | grep -qF "ping6_"; then echo "PASS: busybox_ping6"; PASS=$((PASS+1)); else echo "FAIL: busybox_ping6"; FAIL=$((FAIL+1)); fi
 
