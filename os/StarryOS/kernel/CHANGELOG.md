@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - *(mmap)* accept fd 0 for file mappings and ignore fd for anonymous mappings
+- *(renameat2)* reject unknown flags and implement `RENAME_NOREPLACE`
 
 ## [0.5.9](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.8...starry-kernel-v0.5.9) - 2026-04-27
 
