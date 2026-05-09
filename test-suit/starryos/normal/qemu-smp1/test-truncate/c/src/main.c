@@ -230,8 +230,9 @@ int main(void)
     }
 
     /* ================================================================
-     * 11. 只读文件 truncate — 应返回 EACCES
-     *     StarryOS BUG: 不检查文件写权限，对 0444 文件返回 0
+     * 11. 只读文件 truncate 权限检查
+     *     root (fsuid=0) 绕过写权限检查 (CAP_FOWNER)，
+     *     非 root 用户对 0444 文件 truncate 返回 EACCES。
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-truncate-XXXXXX";
@@ -241,9 +242,18 @@ int main(void)
         close(fd);
 
         CHECK_RET(chmod(tmpl, 0444), 0, "chmod 0444 只读");
-        CHECK_ERR(call_truncate(tmpl, 2), EACCES,
-                  "只读文件 truncate 应返回 EACCES");
 
+        /* root 可绕过写权限检查 */
+        CHECK_RET(call_truncate(tmpl, 2), 0,
+                  "root truncate 0444 文件成功 (CAP_FOWNER 绕过)");
+
+        /* 切换到非 root 用户 (fsuid=1000) */
+        CHECK_RET(setreuid(-1, 1000), 0, "setreuid 到 1000");
+        CHECK_ERR(call_truncate(tmpl, 2), EACCES,
+                  "非 root truncate 0444 文件应返回 EACCES");
+
+        /* 恢复 root */
+        CHECK_RET(setreuid(-1, 0), 0, "恢复 root");
         CHECK_RET(chmod(tmpl, 0644), 0, "恢复权限");
         unlink(tmpl);
     }
