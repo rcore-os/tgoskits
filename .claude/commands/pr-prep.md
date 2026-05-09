@@ -41,7 +41,7 @@ Report: "Branch `$BRANCH_NAME` created from upstream/dev. Ready for coding."
 
 Tell the user: "Branch is ready. Start coding — the hook will automatically log changes to `log.md`. When done, say 'proceed to CI'."
 
-The AI writes code normally. The PostToolUse hook (configured in settings.json) automatically logs changes.
+The AI writes code normally. The PostToolUse hook (configured in hooks.json) automatically logs changes to `log.md`.
 
 ## Phase 3: CI Loop
 

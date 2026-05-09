@@ -101,6 +101,9 @@ def generate_journal(task_name, entries, start_time=None):
 if __name__ == "__main__":
     task_name = sys.argv[1] if len(sys.argv) > 1 else "task"
     entries = read_log_entries()
+    if not entries:
+        print(f"No log entries found in {LOG_PATH} — skipping journal generation")
+        sys.exit(0)
     journal = generate_journal(task_name, entries)
     output_path = os.path.join(WORKSPACE, f"{task_name}-journal.md")
     with open(output_path, "w") as f:

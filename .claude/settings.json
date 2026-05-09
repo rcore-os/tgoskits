@@ -1,15 +1,1 @@
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "prompt",
-            "prompt": "If this Bash command does NOT contain 'gh pr create' or 'git push', reply with the single word 'PROCEED' and take no further action. If it DOES contain those, read .claude/hooks/pre-pr-gate.md and follow its checks before allowing the command. Block only if a gate check explicitly fails."
-          }
-        ]
-      }
-    ]
-  }
-}
+{}

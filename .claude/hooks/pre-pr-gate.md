@@ -38,7 +38,7 @@ If it does not exist or status is not "pass":
 **BLOCK the command.** Tell the user:
 > "Local CI has not passed. Please run at minimum:"
 > ```
-> ./scripts/local-ci.sh quick
+> bash .claude/scripts/local-ci.sh quick
 > ```
 
 ### Check 3: Direct Push (block for main/dev)

@@ -177,6 +177,9 @@ cmd_full() {
 
 cmd_test() {
     local os="$1" arch="$2"
+    if [ -z "$os" ] || [ -z "$arch" ]; then
+        die "Usage: local-ci.sh test <os> <arch>"
+    fi
     ensure_image "base"
     local img="tgoskits-ci"
     local cmd="cargo xtask ${os} test qemu --arch ${arch}"

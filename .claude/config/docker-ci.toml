@@ -35,8 +35,3 @@ commands = [
     "cargo xtask axvisor test qemu --arch riscv64",
     "cargo xtask axvisor test qemu --arch loongarch64",
 ]
-
-[pre_pr_gate]
-require_local_ci = true
-require_clean_base = true
-block_direct_push = true

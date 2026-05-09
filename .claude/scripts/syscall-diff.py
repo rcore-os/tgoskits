@@ -83,12 +83,23 @@ def parse_os_output(path: str) -> dict:
 
 def extract_linux_output(raw_strace_text: str) -> str:
     """Extract process output lines from strace raw text.
-    Process output lines are those NOT matching the strace syscall line pattern."""
+    Uses the same pattern as parse_strace_log to identify syscall lines,
+    plus handles <unfinished> and <... resumed> strace markers."""
     output_lines = []
     for line in raw_strace_text.split("\n"):
-        if re.match(r'^\d+\s+\w+\(', line):
+        stripped = line.strip()
+        if not stripped:
+            output_lines.append(line)
             continue
-        if line.startswith(("+++", "---", "strace:")):
+        # Match strace syscall lines (same pattern as parse_strace_log)
+        if re.match(r'^\d+\s+\w+\(.+\).*=\s*\S', stripped):
+            continue
+        # Match <unfinished ...> and <... resumed> strace markers
+        if re.match(r'^\d+\s+\w+\(.*<unfinished\s*\.\.\.>$', stripped):
+            continue
+        if re.match(r'^\d+\s+<\.\.\.\s+\w+\s+resumed>', stripped):
+            continue
+        if stripped.startswith(("+++", "---", "strace:")):
             continue
         output_lines.append(line)
     return "\n".join(output_lines)

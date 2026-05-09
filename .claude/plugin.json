@@ -13,9 +13,7 @@
     "agents/driver-audit.md"
   ],
   "hooks": [
-    "hooks/post-tool-use-log.md",
     "hooks/pre-pr-gate.md",
-    "hooks/session-end-journal.md",
     "hooks/hooks.json"
   ]
 }

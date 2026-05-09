@@ -1,6 +1,11 @@
 {
   "hooks": [
     {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-pr-gate.py\""
+    },
+    {
       "event": "PostToolUse",
       "matcher": "Edit|Write",
       "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/post-tool-use-log.py\" \"${CLAUDE_PLUGIN_ROOT}\""
