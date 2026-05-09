@@ -293,13 +293,13 @@ int main(void)
     }
 
     /* ================================================================
-     * 13. O_APPEND fd — truncate 成功后 offset 不受影响
-     *      (POSIX: ftruncate 不改变文件位置)
+     * 13. O_APPEND fd — truncate 成功后 offset 不受影响，
+     *     后续 write 追加到文件末尾
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-ftruncate-XXXXXX";
-        int fd = open(tmpl, O_RDWR | O_CREAT | O_TRUNC, 0644);
-        CHECK(fd >= 0, "create file");
+        int fd = open(tmpl, O_RDWR | O_CREAT | O_TRUNC | O_APPEND, 0644);
+        CHECK(fd >= 0, "create O_APPEND file");
 
         CHECK_RET(write(fd, "ABCDEFGHIJ", 10), 10, "写入 10 字节");
         CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "seek 到开头");
@@ -309,6 +309,10 @@ int main(void)
         CHECK(pos == 0, "ftruncate 不应改变文件位置");
 
         check_size(fd, 5, __FILE__, __LINE__, "截断后大小应为 5");
+
+        /* O_APPEND: 即使 seek 到 0，write 仍应追加到文件末尾 */
+        CHECK_RET(write(fd, "XYZ", 3), 3, "O_APPEND write 追加 3 字节");
+        check_size(fd, 8, __FILE__, __LINE__, "追加后大小应为 8");
 
         close(fd);
         unlink(tmpl);
@@ -330,6 +334,30 @@ int main(void)
 
         close(fd);
         unlink(tmpl);
+    }
+
+    /* ================================================================
+     * 15. Bad fd (-1) + 超大 length — 应返回 EBADF 而非 EFBIG
+     *     (errno 优先级: fd 校验先于 length 校验)
+     * ================================================================ */
+    {
+        off_t huge = (off_t)((unsigned long long)1 << 60);
+        CHECK_ERR(call_ftruncate(-1, huge), EBADF,
+                  "bad fd + 超大 length 应返回 EBADF");
+    }
+
+    /* ================================================================
+     * 16. Pipe fd + 超大 length — 应返回 EINVAL 而非 EFBIG
+     *     (errno 优先级: fd type 校验先于 length 校验)
+     * ================================================================ */
+    {
+        int p[2];
+        CHECK_RET(pipe(p), 0, "创建 pipe");
+        off_t huge = (off_t)((unsigned long long)1 << 60);
+        CHECK_ERR(call_ftruncate(p[1], huge), EINVAL,
+                  "pipe fd + 超大 length 应返回 EINVAL");
+        close(p[0]);
+        close(p[1]);
     }
 
     TEST_DONE();

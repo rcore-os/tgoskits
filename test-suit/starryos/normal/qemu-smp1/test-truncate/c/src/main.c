@@ -283,5 +283,26 @@ int main(void)
         unlink(tmpl);
     }
 
+    /* ================================================================
+     * 13. 不存在路径 + 超大 length — 应返回 ENOENT 而非 EFBIG
+     *     (errno 优先级: 路径解析先于 length 校验)
+     * ================================================================ */
+    {
+        off_t huge = (off_t)((unsigned long long)1 << 60);
+        CHECK_ERR(call_truncate("/tmp/no-such-file-XXXXXX", huge),
+                  ENOENT,
+                  "不存在文件 + 超大 length 应返回 ENOENT");
+    }
+
+    /* ================================================================
+     * 14. 目录 + 超大 length — 应返回 EISDIR 而非 EFBIG
+     *     (errno 优先级: type 校验先于 length 校验)
+     * ================================================================ */
+    {
+        off_t huge = (off_t)((unsigned long long)1 << 60);
+        CHECK_ERR(call_truncate("/tmp", huge), EISDIR,
+                  "目录 + 超大 length 应返回 EISDIR");
+    }
+
     TEST_DONE();
 }

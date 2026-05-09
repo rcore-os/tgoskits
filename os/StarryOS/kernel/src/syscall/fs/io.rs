@@ -152,13 +152,13 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
     if length < 0 {
         return Err(AxError::InvalidInput);
     }
-    if (length as u64) > u32::MAX as u64 * 4096 {
-        return Err(AxError::from(LinuxError::EFBIG));
-    }
     let file = OpenOptions::new()
         .write(true)
         .open(&FS_CONTEXT.lock(), path)?
         .into_file()?;
+    if (length as u64) > u32::MAX as u64 * 4096 {
+        return Err(AxError::from(LinuxError::EFBIG));
+    }
     // Check write permission against current credentials following the
     // same owner/group/other + root-bypass rules as faccessat2(2).
     let cred = current().as_thread().cred();
@@ -185,9 +185,6 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     if length < 0 {
         return Err(AxError::InvalidInput);
     }
-    if (length as u64) > u32::MAX as u64 * 4096 {
-        return Err(AxError::from(LinuxError::EFBIG));
-    }
     let f = File::from_fd(fd).map_err(|e| {
         if e == AxError::IsADirectory {
             AxError::from(LinuxError::EINVAL)
@@ -195,6 +192,9 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
             e
         }
     })?;
+    if (length as u64) > u32::MAX as u64 * 4096 {
+        return Err(AxError::from(LinuxError::EFBIG));
+    }
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
