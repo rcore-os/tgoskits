@@ -20,10 +20,28 @@ Designed and implemented a project-local Claude Code plugin for the TGOSKits mon
 
 ## Test Results
 
+### Static validation
 - JSON validation: plugin.json + settings.json parse OK
 - Python syntax: syscall-diff.py, journal-generator.py, post-tool-use-log.py all compile OK
 - Bash syntax: local-ci.sh passes `bash -n`
 - Plugin structure: all 15 files created under `.claude/`
+
+### Docker images
+- Base image `tgoskits-ci:latest` (6.84 GB): built with all 8 QEMU targets, 4 musl-cross toolchains, Rust nightly-2026-04-27 + cargo-binutils/axconfig-gen/cargo-axplat + strace
+- Axvisor-LVZ image `tgoskits-ci-lvz:latest` (7.03 GB): built on top of base, adds QEMU-LVZ for loongarch64 virtualization
+- End-to-end QEMU test passed: `cargo xtask arceos qemu --package ax-helloworld --arch aarch64` → "Hello, world!"
+- `.dockerignore` added to exclude target/ from build context (reduced from 80GB to 5.4GB)
+
+### syscall-diff.py
+- Tested with real strace output from a C program (open/write/close syscalls)
+- Correctly parsed 34 Linux syscalls, identified missing syscalls vs OS output
+- Output diff correctly flagged mismatches between Linux and simulated OS output
+- Works in both markdown and JSON modes
+
+### Hook fixes
+- PostToolUse hook moved from settings.json to hooks/hooks.json: `${CLAUDE_PLUGIN_ROOT}` variable now resolves correctly
+- PreToolUse hook prompt optimized: non-matching commands get "PROCEED" response
+- Hook architecture validated: prompt-based hooks in settings.json, command-based hooks in hooks.json
 
 ## Key Decisions
 
@@ -35,8 +53,10 @@ Designed and implemented a project-local Claude Code plugin for the TGOSKits mon
 
 ## Open Issues
 
-- Docker images not yet built locally — `local-ci.sh rebuild` needs to be run to create base + axvisor-lvz images
-- syscall-diff.py needs real-world testing with actual strace logs vs OS QEMU output
-- Bug-Hunt Agent Phase 1 step 2 C test generation currently expects the AI to write the test program — could be improved with pre-built test templates
-- GITHUB_TOKEN not configured for ghcr.io push — image push will silently skip until token is set
-- `/pr-prep` Phase 4 references `.claude/agents/pr-review.md` which now exists but hasn't been tested end-to-end
+- ~~Docker images not yet built locally~~ → Done (base + axvisor-lvz built, validated)
+- ~~syscall-diff.py needs real-world testing~~ → Done (tested with strace output)
+- ~~GITHUB_TOKEN not configured~~ → Ongoing; push will silently skip until token set
+- `/pr-prep` hasn't been tested end-to-end (requires a real feature to implement)
+- Bug-Hunt Agent hasn't been tested with a real bug discovery scenario
+- Test-Gen Agent hasn't been tested with a real syscall test generation
+- Driver-Audit Agent hasn't been audited against actual driver code
