@@ -11,6 +11,7 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test-mt-execve"
 success_regex = [
     "(?m)^PHASE1_OK\\s*$",
+    "(?m)^PHASE2_OK\\s*$",
     "(?m)^EXECVE_CHILD_OK\\s*$",
 ]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)FAIL']

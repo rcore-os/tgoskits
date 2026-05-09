@@ -4,13 +4,19 @@
  * Phase 1: a failed execve from a multi-threaded process must leave the
  *          thread group intact (POSIX says execve failures preserve the
  *          process state).
- * Phase 2: a successful execve from a multi-threaded process must tear
- *          down the sibling threads and run the new image.
+ * Phase 2: execve from a non-leader thread is currently rejected with
+ *          EPERM (full Linux de_thread leader transfer is TODO); the
+ *          process must remain intact and joinable after that rejection.
+ * Phase 3: a successful execve from the leader of a multi-threaded
+ *          process must tear down the sibling threads and run the new
+ *          image; the new image must observe gettid() == getpid().
  */
 
 #include "test_framework.h"
 
 #include <pthread.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -19,6 +25,8 @@ static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
 #define SIBLING_SENTINEL ((void *)0xfeedbeefL)
+
+static pid_t my_gettid(void) { return (pid_t)syscall(SYS_gettid); }
 
 static void *sibling_quick(void *arg)
 {
@@ -45,8 +53,29 @@ static void *sibling_block(void *arg)
     pthread_cond_broadcast(&cond);
     pthread_mutex_unlock(&mtx);
 
-    /* Block until the exec path SIGKILLs us. */
-    for (;;) pause();
+    /* Block until the exec path zaps us. */
+    for (;;) {
+        pause();
+    }
+    return NULL;
+}
+
+struct nonleader_exec_result {
+    int ret;
+    int saved_errno;
+};
+
+static void *nonleader_exec_thread(void *arg)
+{
+    struct nonleader_exec_result *r = arg;
+    /* Bad path keeps this safe even if the EPERM check ever regresses:
+     * we'd then fall through to path resolution and get ENOENT instead
+     * of actually replacing the process image. */
+    char *av[] = { (char *)"/this/path/does/not/exist/mt-execve", NULL };
+    char *ev[] = { NULL };
+    errno = 0;
+    r->ret = execve("/this/path/does/not/exist/mt-execve", av, ev);
+    r->saved_errno = errno;
     return NULL;
 }
 
@@ -65,6 +94,17 @@ int main(int argc, char *argv[])
 
     /* Re-entry after a successful execve from the multi-threaded parent. */
     if (argc >= 2 && strcmp(argv[1], "child-after-exec") == 0) {
+        /* The new image must be single-threaded with the original TGID
+         * as its identity. If sibling teardown leaked or the leader
+         * identity drifted, this would fail. */
+        pid_t tid = my_gettid();
+        pid_t pid = getpid();
+        if (tid != pid) {
+            fprintf(stderr,
+                    "FAIL: post-exec gettid(%d) != getpid(%d)\n",
+                    (int)tid, (int)pid);
+            return 1;
+        }
         printf("EXECVE_CHILD_OK\n");
         return 0;
     }
@@ -99,12 +139,33 @@ int main(int argc, char *argv[])
     }
 
     /* Phase-1 marker. The success regex ANDs this with the post-exec marker
-     * so the test only passes if both phases work. */
+     * so the test only passes if all phases work. */
     printf("PHASE1_OK\n");
 
-    /* Phase 2: successful execve from a multi-threaded process. The
-     * siblings block in pause() and will be reaped by the kernel as part
-     * of de_thread; control then jumps into the new image. */
+    /* Phase 2: non-leader execve is rejected with EPERM and does not
+     * disturb the process. Until we implement de_thread leader transfer,
+     * the kernel returns EPERM for any execve where caller_tid != tgid. */
+    struct nonleader_exec_result nl = { 0, 0 };
+    pthread_t nlt;
+    CHECK(pthread_create(&nlt, NULL, nonleader_exec_thread, &nl) == 0,
+          "spawn non-leader exec attempt");
+    CHECK(pthread_join(nlt, NULL) == 0, "non-leader exec thread joinable");
+    CHECK(nl.ret == -1, "non-leader execve returns -1");
+    CHECK(nl.saved_errno == EPERM,
+          "non-leader execve sets errno to EPERM");
+    /* Process must still be the same one (TGID unchanged, leader alive). */
+    CHECK(my_gettid() == getpid(),
+          "leader identity intact after non-leader exec attempt");
+
+    if (__fail > 0) {
+        TEST_DONE();
+    }
+
+    printf("PHASE2_OK\n");
+
+    /* Phase 3: successful execve from the leader of a multi-threaded
+     * process. Siblings block in pause() and are zapped during de_thread;
+     * control then jumps into the new image. */
     sibling_ready = 0;
     pthread_t lt1, lt2, lt3;
     CHECK(pthread_create(&lt1, NULL, sibling_block, NULL) == 0,
