@@ -1,0 +1,27 @@
+[package]
+edition = "2024"
+name = "arm-scmi"
+version = "0.1.0"
+
+[dependencies]
+bitflags = "2"
+dma-api = {version = "0.5", features = ["alloc"]}
+log = "0.4"
+mbarrier = "0.1"
+smccc = "0.2"
+thiserror = {version = "2", default-features = false}
+tock-registers = "0.10"
+spin = "0.10"
+nb = "1"
+aarch64-cpu-ext = "0.1"
+
+[dev-dependencies]
+bare-test = "0.7"
+num-align = "0.1"
+
+[build-dependencies]
+bare-test-macros = "0.2"
+
+[[test]]
+harness = false
+name = "test"
