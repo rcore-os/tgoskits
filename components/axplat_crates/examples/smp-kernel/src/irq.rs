@@ -7,7 +7,7 @@ fn handle_irq(vector: usize) -> bool {
 }
 
 pub fn init_irq() {
-    fn update_timer() {
+    fn update_timer(_irq_num: usize) {
         // One timer interrupt per second.
         static PERIODIC_INTERVAL_NANOS: u64 = ax_plat::time::NANOS_PER_SEC;
         // Reset the timer for the next interrupt.

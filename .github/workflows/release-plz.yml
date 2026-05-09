@@ -1,13 +1,6 @@
 name: Release-plz
 
 on:
-  workflow_run:
-    workflows:
-      - CI
-    types:
-      - completed
-    branches:
-      - dev
   push:
     branches:
       - main
@@ -51,80 +44,3 @@ jobs:
           config: release-plz.toml
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-  release-ci-gate:
-    name: Confirm CI checks ran
-    if: >-
-      ${{
-        github.repository_owner == 'rcore-os'
-        && github.event_name == 'workflow_run'
-        && github.event.workflow_run.conclusion == 'success'
-        && github.event.workflow_run.event == 'push'
-        && github.event.workflow_run.head_branch == 'dev'
-      }}
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-    outputs:
-      ready: ${{ steps.check.outputs.ready }}
-    steps:
-      - name: Check CI job results
-        id: check
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const run_id = context.payload.workflow_run.id;
-            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-              owner,
-              repo,
-              run_id,
-              per_page: 100,
-            });
-
-            const fmtJobs = jobs.filter((job) =>
-              job.name === "Check formatting" || job.name.startsWith("Check formatting /")
-            );
-            const ready = fmtJobs.some((job) => job.conclusion === "success");
-
-            if (!ready) {
-              core.notice("CI finished successfully without running Check formatting; release publishing will be skipped.");
-            }
-
-            core.setOutput("ready", ready ? "true" : "false");
-
-  release-plz-release:
-    name: Publish releases
-    needs: release-ci-gate
-    if: >-
-      ${{
-        needs.release-ci-gate.outputs.ready == 'true'
-      }}
-    runs-on: ubuntu-latest
-    concurrency:
-      group: release-plz-release-${{ github.event.workflow_run.head_branch }}
-      cancel-in-progress: false
-    permissions:
-      contents: write
-      pull-requests: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha }}
-          persist-credentials: false
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run release-plz release
-        uses: release-plz/action@v0.5
-        with:
-          command: release
-          config: release-plz.toml
-          token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

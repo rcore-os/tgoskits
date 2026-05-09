@@ -139,8 +139,7 @@ fn restore() {
     let (_si, action) = thr.check_signals(&mut uctx, None).unwrap();
     assert_eq!(action, SignalOSAction::NoFurtherAction);
 
-    let new_sp = uctx.sp() + 8;
-    uctx.set_sp(new_sp);
+    prepare_restore_context(&mut uctx);
     thr.restore(&mut uctx).unwrap();
 
     assert_eq!(uctx.ip(), initial.ip());
