@@ -75,6 +75,7 @@ jobs:
               - "Cargo.lock"
               - "rust-toolchain.toml"
               - "components/**"
+              - "drivers/**"
               - "examples/**"
               - "os/**"
               - "platform/**"
