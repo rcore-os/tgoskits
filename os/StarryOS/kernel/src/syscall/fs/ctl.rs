@@ -17,7 +17,6 @@ use linux_raw_sys::{
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
-    ax_debug, ax_debug_fn,
     file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
     pseudofs::Device,
@@ -52,7 +51,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
 #[ddebug::named]
 pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    ax_debug_fn!("sys_chdir <= path: {path}");
+    debug_fn!("sys_chdir <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
     let entry = fs.resolve(path)?;
@@ -61,7 +60,7 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
 }
 
 pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
-    ax_debug!("sys_fchdir <= dirfd: {dirfd}");
+    debug!("sys_fchdir <= dirfd: {dirfd}");
 
     let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
     FS_CONTEXT.lock().set_current_dir(entry)?;
@@ -75,7 +74,7 @@ pub fn sys_mkdir(path: *const c_char, mode: u32) -> AxResult<isize> {
 
 pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    ax_debug!("sys_chroot <= path: {path}");
+    debug!("sys_chroot <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
     let loc = fs.resolve(path)?;
@@ -88,7 +87,7 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
 
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    ax_debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
+    debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
 
     let mode = mode & !current().as_thread().proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
@@ -107,12 +106,9 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
 
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
     let path = vm_load_string(path)?;
-    ax_debug!(
+    debug!(
         "sys_mknodat <= dirfd: {}, path: {:?}, mode: {}, dev: {}",
-        dirfd,
-        path,
-        mode,
-        dev
+        dirfd, path, mode, dev
     );
 
     // Split type and permission bits

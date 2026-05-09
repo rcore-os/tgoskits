@@ -18,25 +18,40 @@ impl DebugOps for DynamicDebugOps {
     }
 }
 
-/// See [ax_debug_fn] for usage.
+/// Dynamic debug macro. When `dynamic_debug` feature is enabled,
+/// uses per-callsite static key for runtime control via `/proc/dynamic_debug/control`.
+/// Otherwise falls back to `log::debug!`.
 ///
 /// # Note
 /// This macro doesn't depend on the derive macro `#[ddebug::named]`, so the 'f' flag can't be used to print the function name.
+#[cfg(feature = "dynamic_debug")]
 #[macro_export]
-macro_rules! ax_debug {
+macro_rules! debug {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {{
         ddebug::pr_debug!($crate::dyn_debug::DynamicDebugOps, $fmt $(, $arg)*);
     }};
 }
 
-/// A debug print macro that also prints the function name. This is useful for debugging dynamic debug sites, as it can help identify which site is being hit.
+/// Dynamic debug macro. When `dynamic_debug` feature is enabled,
+/// uses per-callsite static key for runtime control via `/proc/dynamic_debug/control`, and also prints the function name of the callsite.
+/// Otherwise falls back to `log::debug!`.
 ///
 /// # Note
 /// This macro depends on the derive macro `#[ddebug::named]` to work, which will set the function name for the debug site.
+#[cfg(feature = "dynamic_debug")]
 #[macro_export]
-macro_rules! ax_debug_fn {
+macro_rules! debug_fn {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {{
         ddebug::pr_debug_fn!($crate::dyn_debug::DynamicDebugOps, $fmt $(, $arg)*);
+    }};
+}
+
+/// When `dynamic_debug` feature is disabled, `debug!` and `debug_fn!` both fall back to `log::debug!`.
+#[cfg(not(feature = "dynamic_debug"))]
+#[macro_export]
+macro_rules! debug_fn {
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {{
+        ax_log::debug!($fmt $(, $arg)*);
     }};
 }
 
