@@ -102,17 +102,3 @@ starry-vm
 tg-xtask
 tgmath
 x86_vcpu
-ax-ctor-bare
-ax-ctor-bare-macros
-ax-driver-base
-ax-driver-input
-ax-driver-pci
-ax-driver-vsock
-ax-page-table-entry
-ax-page-table-multiarch
-ax-plat-aarch64-phytium-pi
-ax-plat-aarch64-raspi
-ax-plat-macros
-axvisor_api
-axvisor_api_proc
-cargo-axplat
