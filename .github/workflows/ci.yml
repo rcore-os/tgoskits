@@ -51,6 +51,8 @@ jobs:
       ci_checks: ${{ steps.outputs.outputs.ci_checks }}
       base_container_publish: ${{ steps.outputs.outputs.base_container_publish }}
       axvisor_lvz_container_publish: ${{ steps.outputs.outputs.axvisor_lvz_container_publish }}
+      base_container_image: ${{ steps.outputs.outputs.base_container_image }}
+      axvisor_lvz_container_image: ${{ steps.outputs.outputs.axvisor_lvz_container_image }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -66,6 +68,7 @@ jobs:
           filters: |
             ci_checks:
               - ".cargo/**"
+              - ".github/workflows/container-publish.yml"
               - ".github/workflows/ci.yml"
               - ".github/workflows/reusable-command.yml"
               - "Cargo.toml"
@@ -95,6 +98,10 @@ jobs:
           FILTER_BASE_CONTAINER_PUBLISH: ${{ steps.filter.outputs.base_container_publish }}
           FILTER_AXVISOR_LVZ_CONTAINER_PUBLISH: ${{ steps.filter.outputs.axvisor_lvz_container_publish }}
         run: |
+          repository="$(printf '%s' "$GITHUB_REPOSITORY" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+          base_container_image="ghcr.io/${repository}-container"
+          axvisor_lvz_container_image="ghcr.io/${repository}-container-axvisor-lvz"
+
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             ci_checks=false
             case "$MANUAL_TARGET" in
@@ -129,6 +136,8 @@ jobs:
             echo "ci_checks=${ci_checks}"
             echo "base_container_publish=${base_container_publish}"
             echo "axvisor_lvz_container_publish=${axvisor_lvz_container_publish}"
+            echo "base_container_image=${base_container_image}"
+            echo "axvisor_lvz_container_image=${axvisor_lvz_container_image}"
           } >> "$GITHUB_OUTPUT"
 
   fmt:
@@ -154,7 +163,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask clippy
             cache_key: clippy
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Run sync-lint
@@ -162,7 +171,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask sync-lint
             cache_key: sync-lint
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test with std
@@ -170,7 +179,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask test
             cache_key: test-std
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor aarch64 qemu
@@ -178,7 +187,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask axvisor test qemu --arch aarch64
             cache_key: test-axvisor-aarch64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor riscv64 qemu
@@ -186,7 +195,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask axvisor test qemu --arch riscv64
             cache_key: test-axvisor-riscv64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor loongarch64 qemu
@@ -194,7 +203,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask axvisor test qemu --arch loongarch64
             cache_key: test-axvisor-loongarch64
-            container_image: ghcr.io/${{ github.repository }}-container-axvisor-lvz:latest
+            container_image: axvisor-lvz
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
@@ -202,7 +211,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch riscv64
             cache_key: test-starry-riscv64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry aarch64 qemu
@@ -210,7 +219,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch aarch64
             cache_key: test-starry-aarch64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry loongarch64 qemu
@@ -218,7 +227,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch loongarch64
             cache_key: test-starry-loongarch64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry x86_64 qemu
@@ -226,7 +235,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch x86_64
             cache_key: test-starry-x86_64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos x86_64 qemu
@@ -234,7 +243,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask arceos test qemu --arch x86_64
             cache_key: test-arceos-x86_64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos riscv64 qemu
@@ -242,7 +251,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask arceos test qemu --arch riscv64
             cache_key: test-arceos-riscv64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos aarch64 qemu
@@ -250,7 +259,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask arceos test qemu --arch aarch64
             cache_key: test-arceos-aarch64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos loongarch64 qemu
@@ -258,7 +267,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask arceos test qemu --arch loongarch64
             cache_key: test-arceos-loongarch64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: false
           - name: Stress starry aarch64
@@ -266,7 +275,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: echo "TODO!"
             cache_key: test-starry-stress-aarch64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: true
           - name: Stress starry riscv64
@@ -274,7 +283,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: echo "TODO!"
             cache_key: test-starry-stress-riscv64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: true
           - name: Stress starry loongarch64
@@ -282,7 +291,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: echo "TODO!"
             cache_key: test-starry-stress-loongarch64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: true
           - name: Stress starry x86_64
@@ -290,7 +299,7 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: echo "TODO!"
             cache_key: test-starry-stress-x86_64
-            container_image: ghcr.io/${{ github.repository }}-container:latest
+            container_image: base
             required_repository_owner: ""
             main_pr_only: true
           - name: Test axvisor self-hosted x86_64
@@ -323,7 +332,14 @@ jobs:
       use_container: ${{ matrix.use_container }}
       command: ${{ matrix.command }}
       cache_key: ${{ matrix.cache_key }}
-      container_image: ${{ matrix.container_image }}
+      container_image: >-
+        ${{
+          matrix.container_image == 'base'
+          && format('{0}:latest', needs.detect_changes.outputs.base_container_image)
+          || matrix.container_image == 'axvisor-lvz'
+          && format('{0}:latest', needs.detect_changes.outputs.axvisor_lvz_container_image)
+          || matrix.container_image
+        }}
       apk_region: >-
         ${{
           (
@@ -387,7 +403,7 @@ jobs:
       - detect_changes
     uses: ./.github/workflows/container-publish.yml
     with:
-      image_name: ghcr.io/${{ github.repository }}-container
+      image_name: ${{ needs.detect_changes.outputs.base_container_image }}
       dockerfile: container/Dockerfile
       cache_scope: container
     permissions:
@@ -412,11 +428,11 @@ jobs:
       - publish_base_container
     uses: ./.github/workflows/container-publish.yml
     with:
-      image_name: ghcr.io/${{ github.repository }}-container-axvisor-lvz
+      image_name: ${{ needs.detect_changes.outputs.axvisor_lvz_container_image }}
       dockerfile: container/Dockerfile.axvisor-lvz
       cache_scope: container-axvisor-lvz
       build_args: |
-        BASE_IMAGE=ghcr.io/${{ github.repository }}-container:latest
+        BASE_IMAGE=${{ needs.detect_changes.outputs.base_container_image }}:latest
     permissions:
       contents: read
       packages: write
