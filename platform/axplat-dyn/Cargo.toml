@@ -22,6 +22,10 @@ rk3568-clk = ["dep:rk3568_clk"]
 sdmmc = ["dep:sdmmc"]
 simple-sdmmc = ["dep:simple-sdmmc"]
 rockchip-pm = ["dep:rockchip-pm"]
+usb = ["dep:crab-usb"]
+rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
+xhci-mmio = ["usb"]
+xhci-pci = ["usb", "dep:pcie"]
 phytium-blk = ["dep:phytium-mci"]
 serial = ["dep:some-serial"]
 net = ["dep:ax-driver-net", "dep:rd-net"]
@@ -53,6 +57,7 @@ log.workspace = true
 mmio-api.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
+crab-usb = { version = "0.9", optional = true }
 pcie = { version = "0.6", optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rd-block = "0.1"

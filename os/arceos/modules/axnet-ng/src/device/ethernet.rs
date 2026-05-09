@@ -70,11 +70,11 @@ fn handle_ethernet_irq(slot: usize) {
     }
 }
 
-fn handle_ethernet_irq_slot<const SLOT: usize>() {
+fn handle_ethernet_irq_slot<const SLOT: usize>(_: usize) {
     handle_ethernet_irq(SLOT);
 }
 
-const ETHERNET_IRQ_HANDLERS: [fn(); ETHERNET_IRQ_SLOTS] = [
+const ETHERNET_IRQ_HANDLERS: [fn(usize); ETHERNET_IRQ_SLOTS] = [
     handle_ethernet_irq_slot::<0>,
     handle_ethernet_irq_slot::<1>,
     handle_ethernet_irq_slot::<2>,

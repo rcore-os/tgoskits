@@ -74,7 +74,7 @@ pub static XMAC: AtomicPtr<FXmac> = AtomicPtr::new(core::ptr::null_mut());
 ///
 /// This function accesses the global `XMAC` pointer. It assumes that the
 /// pointer has been properly initialized by [`xmac_init`].
-pub fn xmac_intr_handler() {
+pub fn xmac_intr_handler(_irq: usize) {
     debug!("Handling xmac intr ...");
 
     let xmac = XMAC.load(Ordering::Relaxed);

@@ -48,6 +48,9 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
 
     let curr = current();
     let aspace_arc = curr.as_thread().proc_data.aspace();
+    if unsafe { aspace_arc.raw() }.is_owned_by_current() {
+        return Err(AxError::BadAddress);
+    }
     let mut aspace = aspace_arc.lock();
 
     if !aspace.can_access_range(start, layout.size(), access_flags) {
@@ -92,6 +95,9 @@ fn check_null_terminated<T: PartialEq + Default>(
                 // allocated yet.
                 let curr = current();
                 let aspace_arc = curr.as_thread().proc_data.aspace();
+                if unsafe { aspace_arc.raw() }.is_owned_by_current() {
+                    return Err(AxError::BadAddress);
+                }
                 let aspace = aspace_arc.lock();
                 if !aspace.can_access_range(page, PAGE_SIZE_4K, access_flags) {
                     return Err(AxError::BadAddress);

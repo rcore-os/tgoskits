@@ -1,9 +1,9 @@
 extern crate alloc;
 
-use alloc::format;
+use alloc::{format, vec::Vec};
 use core::time::Duration;
 
-use fdt_edit::{PciRange, PciSpace, RegFixed};
+use fdt_edit::{Node, PciRange, PciSpace, RegFixed};
 use mmio_api::{MmioAddr, MmioOp, MmioRaw};
 use rdif_pcie::{PciMem64, PcieController};
 use rdrive::{
@@ -14,6 +14,8 @@ use rdrive::{
 use rk3588_pci::{
     Delay, HostConfig, MEM_ATU_FIRST_REGION, OutboundWindow, ResetControl, Rk3588PcieHost,
 };
+
+use crate::drivers::soc::{rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_deassert};
 
 const RK3588_GPIO_BASES: [u64; 5] = [
     0xfd8a_0000,
@@ -119,6 +121,7 @@ fn probe_rk3588(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnPro
     let (cfg_phys, cfg_size) = config_window(&regs, &ranges)?;
     let (bus_base, logical_bus_end) = bus_range_info(node.bus_range());
     let mut reset = pcie_reset_gpio(&info, apb_reg.address);
+    prepare_controller_resources(info.node)?;
 
     let apb_size = apb_reg.size.unwrap_or(0x10000) as usize;
     let dbi_size = dbi_reg.size.unwrap_or(0x400000) as usize;
@@ -193,6 +196,86 @@ fn map_mmio(phys: u64, size: usize) -> Result<MmioRaw, OnProbeError> {
 
 fn map_rk3588_error(err: rk3588_pci::Error) -> OnProbeError {
     OnProbeError::other(format!("{err:?}"))
+}
+
+fn prepare_controller_resources(node: NodeType<'_>) -> Result<(), OnProbeError> {
+    enable_power_domains(&parse_power_domains(node.as_node())?)?;
+    enable_clocks(node.clocks())?;
+    deassert_resets(parse_resets(node)?)?;
+    axklib::time::busy_wait(Duration::from_millis(1));
+    Ok(())
+}
+
+fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
+    let Some(prop) = node.get_property("power-domains") else {
+        return Ok(Vec::new());
+    };
+    let cells = prop.get_u32_iter().collect::<Vec<_>>();
+    if cells.len() % 2 != 0 {
+        return Err(OnProbeError::other(format!(
+            "[{}] has malformed power-domains",
+            node.name()
+        )));
+    }
+    Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
+}
+
+fn enable_power_domains(domains: &[usize]) -> Result<(), OnProbeError> {
+    if domains.is_empty() {
+        return Ok(());
+    }
+
+    for &domain in domains {
+        rk3588_enable_power_domain(domain).map_err(|err| {
+            OnProbeError::other(format!(
+                "failed to enable RK3588 PCIe power domain {domain}: {err}"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn enable_clocks(clocks: Vec<fdt_edit::ClockRef>) -> Result<(), OnProbeError> {
+    for clock in clocks {
+        let Some(&id) = clock.specifier.first() else {
+            continue;
+        };
+        if id == 0 {
+            continue;
+        }
+        rk3588_enable_clock(id).map_err(|err| {
+            OnProbeError::other(format!(
+                "failed to enable RK3588 PCIe clock {:?} ({id:#x}): {err}",
+                clock.name
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn parse_resets(node: NodeType<'_>) -> Result<Vec<u64>, OnProbeError> {
+    let Some(prop) = node.as_node().get_property("resets") else {
+        return Ok(Vec::new());
+    };
+    let cells = prop.get_u32_iter().collect::<Vec<_>>();
+    if cells.len() % 2 != 0 {
+        return Err(OnProbeError::other(format!(
+            "[{}] has malformed resets",
+            node.name()
+        )));
+    }
+    Ok(cells.chunks(2).map(|chunk| u64::from(chunk[1])).collect())
+}
+
+fn deassert_resets(resets: Vec<u64>) -> Result<(), OnProbeError> {
+    for reset in resets {
+        rk3588_reset_deassert(reset).map_err(|err| {
+            OnProbeError::other(format!(
+                "failed to deassert RK3588 PCIe reset {reset:#x}: {err}"
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 fn pcie_reset_gpio(info: &FdtInfo<'_>, apb_base: u64) -> Option<Rk3588GpioReset> {
