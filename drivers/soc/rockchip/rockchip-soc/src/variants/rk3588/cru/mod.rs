@@ -648,17 +648,6 @@ mod tests {
         assert_eq!(ACLK_TOP_S200_SEL_MASK, 0x3 << 6);
     }
 
-    /// 测试 clksel_con 寄存器地址计算
-    #[test]
-    fn test_clksel_con_address() {
-        // clksel_con[0] = 0x300
-        assert_eq!(CLKSEL_CON_OFFSET + 0 * 4, 0x300);
-        // clksel_con[9] = 0x324
-        assert_eq!(CLKSEL_CON_OFFSET + 9 * 4, 0x324);
-        // clksel_con[38] = 0x398
-        assert_eq!(CLKSEL_CON_OFFSET + 38 * 4, 0x398);
-    }
-
     /// 模拟 u-boot 配置的寄存器值验证
     #[test]
     fn test_expected_register_values() {

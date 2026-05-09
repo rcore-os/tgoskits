@@ -1,6 +1,9 @@
 use std::{
     mem::MaybeUninit,
-    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    sync::{
+        Arc, LazyLock, Mutex, MutexGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use ax_kspin::SpinNoIrq;
@@ -13,9 +16,17 @@ static POOL: LazyLock<Mutex<Box<[u8]>>> = LazyLock::new(|| {
     Mutex::new(vec![0; size].into_boxed_slice())
 });
 
+const TEST_STACK_SIZE: usize = 0x1_0000;
+static NEXT_STACK_OFFSET: AtomicUsize = AtomicUsize::new(0);
+
 pub fn initial_sp() -> usize {
     let pool = POOL.lock().unwrap();
-    pool.as_ptr() as usize + pool.len()
+    let offset = NEXT_STACK_OFFSET.fetch_add(TEST_STACK_SIZE, Ordering::Relaxed);
+    assert!(
+        offset + TEST_STACK_SIZE <= pool.len(),
+        "starry-signal test VM stack pool exhausted"
+    );
+    pool.as_ptr() as usize + offset + TEST_STACK_SIZE
 }
 
 struct Vm(MutexGuard<'static, Box<[u8]>>);
@@ -59,4 +70,14 @@ pub fn new_test_env() -> (Arc<ProcessSignalManager>, Arc<ThreadSignalManager>) {
     ));
     let thr = ThreadSignalManager::new(TID, proc.clone());
     (proc, thr)
+}
+
+pub fn prepare_restore_context(_uctx: &mut ax_cpu::uspace::UserContext) {
+    // Simulate the user-state that `rt_sigreturn` sees after the handler returns.
+    // x86_64 consumes the pushed restorer with `ret`; other archs keep SP unchanged.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let frame_sp = _uctx.sp() + core::mem::size_of::<usize>();
+        _uctx.set_sp(frame_sp);
+    }
 }

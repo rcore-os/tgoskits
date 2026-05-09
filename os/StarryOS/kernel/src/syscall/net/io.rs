@@ -261,6 +261,7 @@ pub fn sys_recvmmsg(
     // deadline cannot interrupt it. Needs a non-blocking recv path or
     // SO_RCVTIMEO support at the socket layer to fix.
     let deadline = timeout.map(|t| wall_time() + t);
+    let _socket = Socket::from_fd(fd)?;
     let msgvec = msgvec.get_as_mut_slice(vlen as usize)?;
     let mut received = 0;
     for msg in msgvec.iter_mut() {

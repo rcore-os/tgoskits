@@ -53,6 +53,22 @@ const iconLibrary = {
       <circle cx="70" cy="80" r="3" className="icon-dot" />
     </svg>
   ),
+  grid: (
+    <svg viewBox="0 0 120 120" role="presentation" aria-hidden="true">
+      <rect x="18" y="18" width="36" height="36" rx="6" className="icon-grid-cell" />
+      <rect x="66" y="18" width="36" height="36" rx="6" className="icon-grid-cell" />
+      <rect x="18" y="66" width="36" height="36" rx="6" className="icon-grid-cell" />
+      <rect x="66" y="66" width="36" height="36" rx="6" className="icon-grid-cell" />
+    </svg>
+  ),
+  plug: (
+    <svg viewBox="0 0 120 120" role="presentation" aria-hidden="true">
+      <path d="M55 20 L55 50" className="icon-plug-stem" />
+      <path d="M65 20 L65 50" className="icon-plug-stem" />
+      <rect x="42" y="50" width="36" height="30" rx="6" className="icon-plug-body" />
+      <rect x="50" y="80" width="20" height="18" rx="4" className="icon-plug-tip" />
+    </svg>
+  ),
 };
 
 function SectionShell({ id, className, eyebrow, title, description, children, framed = true }) {
@@ -185,12 +201,10 @@ function HeroTerminal() {
 [ArceOS] Hello, world!
 
 $ cargo xtask starry rootfs --arch riscv64
-$ cargo starry qemu --arch riscv64
+$ cargo xtask starry qemu --arch riscv64
 [StarryOS] shell started.
 
-$ cargo axvisor defconfig qemu-aarch64
-$ (cd os/axvisor && ./scripts/setup_qemu.sh arceos)
-$ cargo axvisor qemu --config os/axvisor/.build.toml
+$ cargo xtask axvisor qemu --arch aarch64
 [Axvisor] Guest[0] ArceOS running.`}</pre>
       <div className="hero-terminal-footer">
         <span>ArceOS</span>
@@ -207,7 +221,7 @@ function CapabilitySection() {
     {
       icon: 'orbit',
       title: '统一入口',
-      desc: '围绕根目录文档与 tg-xtask 组织日常开发入口，降低系统间切换成本。',
+      desc: '围绕根目录文档与 cargo xtask 组织日常开发入口，降低系统间切换成本。',
       to: '/docs/design/reference/build-system',
     },
     {
@@ -248,7 +262,7 @@ function CapabilitySection() {
       className="section-shell--capabilities"
       eyebrow="Core Capabilities"
       title="围绕系统软件工程构建统一能力面"
-      description="首页首先回答项目能做什么，以及这些能力如何在同一工作区里被组织和使用。"
+      description="统一入口、组件共享、安全实现、多架构适配、构建闭环与分层验证构成项目的六项核心能力。"
       framed={false}
     >
       <div className="feature-grid">
@@ -285,7 +299,7 @@ function ArchitectureSection() {
       className="section-shell--architecture"
       eyebrow="Architecture"
       title="从组件层到系统层，信息结构保持稳定且可推导"
-      description="这一部分强调仓库的层次化结构，让首次进入项目的读者能快速建立整体心智模型。"
+      description="仓库按 components / os / platform / test-suit 四层组织，从基础 crate 到系统实现再到平台适配形成清晰依赖关系。"
       framed={false}
     >
       <div className="split-layout split-layout--architecture">
@@ -356,7 +370,8 @@ function SystemsSection() {
       className="section-shell--systems"
       eyebrow="Systems"
       title="三条系统路径，共享组件基础但面向不同开发目标"
-      description="这里不是简单罗列子项目，而是帮助读者区分三条路径各自的职责、关注点与进入方式。"
+      description="ArceOS 提供模块化内核基础，StarryOS 在其上构建 Linux 兼容系统，Axvisor 聚焦 Type-I 虚拟化场景，三者共享组件栈但面向不同目标。"
+      framed={false}
     >
       <div className="systems-grid">
         {systems.map((system) => (
@@ -407,7 +422,7 @@ function WorkflowSection() {
   const commands = [
     'cargo xtask arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf',
     'cargo xtask starry rootfs --arch riscv64',
-    'cargo axvisor defconfig qemu-aarch64',
+    'cargo xtask axvisor qemu --arch aarch64',
     'cargo xtask clippy',
   ];
 
@@ -417,7 +432,7 @@ function WorkflowSection() {
       className="section-shell--workflow"
       eyebrow="Getting Started"
       title="首页即入口，阅读顺序与命令顺序相互对应"
-      description="这一部分将文档阅读、系统启动和验证动作串成一条连续路径，降低第一次进入项目时的决策成本。"
+      description="从理解项目结构、跑通 QEMU 构建运行，到深入架构设计与验证策略，按顺序渐进式进入开发。"
       framed={false}
     >
       <div className="split-layout split-layout--workflow">
@@ -495,7 +510,8 @@ function DocsSection() {
       className="section-shell--docs"
       eyebrow="Documentation Map"
       title="文档不只是一串目录，而是一组可组合的阅读入口"
-      description="这一部分用导航面板整理首页后的主要文档区域，让专业读者能更快跳到自己真正需要的层次。"
+      description="按项目介绍、参考资料、设计与实现、系统指南四个维度组织文档入口，快速跳转到所需层次。"
+      framed={false}
     >
       <div className="docs-grid">
         {docs.map((group) => (
@@ -541,7 +557,7 @@ function QualitySection() {
       className="section-shell--quality"
       eyebrow="Verification"
       title="从组件到系统再到平台，验证路径与工程层次保持一致"
-      description="专业性不仅来自功能丰富，也来自验证策略的清晰可执行。首页通过一组验证板块把这种工程秩序显式展示出来。"
+      description="从 Host 侧组件级测试与静态检查，到 QEMU 系统级运行验证，再到跨平台/跨系统影响面回归，验证粒度与工程层次对齐。"
       framed={false}
     >
       <div className="quality-grid">
@@ -556,6 +572,182 @@ function QualitySection() {
             </ul>
           </div>
         ))}
+      </div>
+    </SectionShell>
+  );
+}
+
+function PlatformSection() {
+  const platformGroups = [
+    {
+      arch: 'aarch64',
+      cssClass: 'aarch64',
+      label: 'ARMv8 (AArch64)',
+      targets: [
+        { name: 'QEMU virt', desc: '虚拟平台仿真', type: 'qemu' },
+        { name: 'Raspberry Pi', desc: '树莓派板卡', type: 'board' },
+        { name: 'Phytium Pi', desc: '飞腾派板卡', type: 'board' },
+        { name: 'BSTA1000B', desc: 'BSTA 板卡', type: 'board' },
+      ],
+    },
+    {
+      arch: 'riscv64',
+      cssClass: 'riscv64',
+      label: 'RISC-V 64',
+      targets: [
+        { name: 'QEMU virt', desc: '虚拟平台仿真', type: 'qemu' },
+      ],
+    },
+    {
+      arch: 'x86_64',
+      cssClass: 'x8664',
+      label: 'x86-64',
+      targets: [
+        { name: 'PC (QEMU)', desc: 'x86 PC 平台', type: 'qemu' },
+      ],
+    },
+    {
+      arch: 'loongarch64',
+      cssClass: 'loongarch64',
+      label: 'LoongArch 64',
+      targets: [
+        { name: 'QEMU virt', desc: '虚拟平台仿真', type: 'qemu' },
+      ],
+    },
+  ];
+
+  return (
+    <SectionShell
+      id="platforms"
+      className="section-shell--platforms"
+      eyebrow="Platform Matrix"
+      title="从 QEMU 仿真到物理板卡，覆盖主流架构的完整平台矩阵"
+      description="平台层不是简单的 BSP 堆叠，而是通过 axplat 体系在统一接口下管理架构差异，并通过 axplat-dyn 支持运行时平台切换。"
+      framed={false}
+    >
+      <div className="platform-matrix">
+        {platformGroups.map((group) => (
+          <div className={`platform-group platform-group--${group.cssClass}`} key={group.arch}>
+            <div className="platform-group__header">
+              <span className="platform-arch-badge">{group.arch}</span>
+              <strong>{group.label}</strong>
+            </div>
+            <div className="platform-group__targets">
+              {group.targets.map((target) => (
+                <div className={`platform-chip platform-chip--${target.type}`} key={target.name}>
+                  <span className="platform-chip__name">{target.name}</span>
+                  <span className="platform-chip__desc">{target.desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="platform-footer">
+        <div className="platform-footer__note">
+          <strong>axplat-dyn</strong>
+          <span>动态平台层：支持运行时选择平台实现，无需重新编译即可切换板卡适配。</span>
+        </div>
+        <Link className="button button--outline button--hero button--compact" to="/docs/introduction/hardware">
+          查看完整硬件支持
+        </Link>
+      </div>
+    </SectionShell>
+  );
+}
+
+function DriverSection() {
+  const driverCategories = [
+    {
+      icon: 'server',
+      title: '块设备驱动',
+      desc: 'SD/MMC 存储支持',
+      cssClass: 'blk',
+      items: ['simple-sdmmc'],
+    },
+    {
+      icon: 'chip',
+      title: 'NPU 驱动',
+      desc: '神经网络加速',
+      cssClass: 'npu',
+      items: ['rockchip-npu'],
+    },
+    {
+      icon: 'layers',
+      title: 'PCI 总线驱动',
+      desc: 'PCIe 控制器适配',
+      cssClass: 'pci',
+      items: ['rk3588-pci'],
+    },
+    {
+      icon: 'grid',
+      title: 'SoC 平台驱动',
+      desc: '片上系统外设',
+      cssClass: 'soc',
+      items: ['rockchip (GPIO, clk, reset)'],
+    },
+  ];
+
+  const driverSubsystems = [
+    { name: 'block', label: '块设备' },
+    { name: 'display', label: '显示' },
+    { name: 'input', label: '输入' },
+    { name: 'net', label: '网络' },
+    { name: 'pci', label: 'PCI 总线' },
+    { name: 'virtio', label: 'VirtIO' },
+    { name: 'vsock', label: '虚拟 Socket' },
+    { name: 'base', label: '驱动基础层' },
+  ];
+
+  return (
+    <SectionShell
+      id="drivers"
+      className="section-shell--drivers"
+      eyebrow="Driver Ecosystem"
+      title="跨内核可复用的驱动框架，从设备抽象到具体硬件形成统一分层"
+      description="驱动不再与单一内核绑定——通过 Driver Core / Capability Boundary / OS Glue / Runtime 四层分离，同一驱动可跨 ArceOS、StarryOS 与 Axvisor 复用。"
+      framed={false}
+    >
+      <div className="split-layout split-layout--drivers">
+        <div className="driver-device-grid">
+          <h3>具体设备驱动</h3>
+          <p className="driver-subtitle">drivers/ 目录下的硬件驱动实现</p>
+          <div className="driver-device-cards">
+            {driverCategories.map((cat) => (
+              <div className={`driver-device-card driver-device-card--${cat.cssClass}`} key={cat.title}>
+                <div className="feature-icon">{iconLibrary[cat.icon]}</div>
+                <div className="driver-device-card__body">
+                  <h4>{cat.title}</h4>
+                  <p>{cat.desc}</p>
+                  <div className="driver-device-tags">
+                    {cat.items.map((item) => (
+                      <span className="driver-tag" key={item}>{item}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="driver-subsystem-panel">
+          <h3>驱动子系统抽象</h3>
+          <p className="driver-subtitle">axdriver_crates 提供的通用驱动接口层</p>
+          <div className="driver-subsystem-grid">
+            {driverSubsystems.map((sub) => (
+              <div className="driver-subsystem-chip" key={sub.name}>
+                <code>axdriver_{sub.name}</code>
+                <span>{sub.label}</span>
+              </div>
+            ))}
+          </div>
+          <div className="driver-framework-note">
+            <h4>跨内核驱动框架</h4>
+            <p>
+              基于 Driver Core → Capability Boundary → OS Glue → Runtime 四层分层模型，
+              将驱动核心逻辑与 OS 依赖解耦，通过 mmio-api / dma-api / IRQ 契约实现跨系统复用。
+            </p>
+          </div>
+        </div>
       </div>
     </SectionShell>
   );
@@ -591,7 +783,9 @@ export default function Home() {
       <HeroBanner />
       <CapabilitySection />
       <ArchitectureSection />
+      <PlatformSection />
       <SystemsSection />
+      <DriverSection />
       <WorkflowSection />
       <DocsSection />
       <QualitySection />

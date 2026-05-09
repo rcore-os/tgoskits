@@ -1,10 +1,10 @@
-//! AxVisor-specific rootfs resolution and preparation helpers.
+//! Axvisor-specific rootfs resolution and preparation helpers.
 //!
 //! Main responsibilities:
-//! - Resolve which rootfs image AxVisor should use for a QEMU run
+//! - Resolve which rootfs image Axvisor should use for a QEMU run
 //! - Distinguish between explicit, managed, and VM-config-derived rootfs paths
-//! - Prepare managed rootfs images before launch when AxVisor relies on them
-//! - Patch QEMU configs with the selected rootfs using AxVisor-specific rules
+//! - Prepare managed rootfs images before launch when Axvisor relies on them
+//! - Patch QEMU configs with the selected rootfs using Axvisor-specific rules
 
 use std::{
     fs,
@@ -12,11 +12,65 @@ use std::{
 };
 
 use anyhow::anyhow;
-use ostool::run::qemu::QemuConfig;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
+use super::{Axvisor, build};
 use crate::{context::ResolvedAxvisorRequest, rootfs};
 
-/// Ensures the managed rootfs required by an AxVisor QEMU run is available.
+pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
+    let request = axvisor.prepare_request(
+        (&args.build).into(),
+        args.qemu_config,
+        None,
+        crate::context::SnapshotPersistence::Store,
+    )?;
+    axvisor.app.set_debug_mode(request.debug)?;
+    let cargo = build::load_cargo_config(&request)?;
+    let explicit_rootfs = args.rootfs.map(|rootfs| {
+        crate::rootfs::store::resolve_explicit_rootfs(
+            axvisor.app.workspace_root(),
+            &request.arch,
+            rootfs,
+        )
+    });
+    ensure_qemu_rootfs_ready(
+        &request,
+        axvisor.app.workspace_root(),
+        explicit_rootfs.as_deref(),
+    )
+    .await?;
+    let qemu =
+        load_patched_qemu_config(axvisor, &request, &cargo, explicit_rootfs.as_deref()).await?;
+    axvisor
+        .app
+        .qemu(cargo, request.build_info_path, Some(qemu))
+        .await
+}
+
+pub(super) async fn load_patched_qemu_config(
+    axvisor: &mut Axvisor,
+    request: &ResolvedAxvisorRequest,
+    cargo: &Cargo,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<QemuConfig> {
+    let config_path = request.qemu_config.clone().unwrap_or_else(|| {
+        super::default_qemu_config_template_path(&request.axvisor_dir, &request.arch)
+    });
+    let mut qemu = axvisor
+        .app
+        .tool_mut()
+        .read_qemu_config_from_path_for_cargo(cargo, &config_path)
+        .await?;
+    patch_qemu_rootfs(
+        &mut qemu,
+        request,
+        axvisor.app.workspace_root(),
+        explicit_rootfs,
+    )?;
+    Ok(qemu)
+}
+
+/// Ensures the managed rootfs required by an Axvisor QEMU run is available.
 pub(crate) async fn ensure_qemu_rootfs_ready(
     request: &ResolvedAxvisorRequest,
     workspace_root: &Path,
@@ -31,7 +85,7 @@ pub(crate) async fn ensure_qemu_rootfs_ready(
     .await
 }
 
-/// Patches a QEMU config with the rootfs selected for an AxVisor request.
+/// Patches a QEMU config with the rootfs selected for an Axvisor request.
 pub(crate) fn patch_qemu_rootfs(
     config: &mut QemuConfig,
     request: &ResolvedAxvisorRequest,
@@ -43,7 +97,7 @@ pub(crate) fn patch_qemu_rootfs(
     Ok(())
 }
 
-/// Resolves the rootfs path selected for an AxVisor QEMU request.
+/// Resolves the rootfs path selected for an Axvisor QEMU request.
 pub(crate) fn qemu_rootfs_path(
     request: &ResolvedAxvisorRequest,
     workspace_root: &Path,
@@ -58,7 +112,7 @@ pub(crate) fn qemu_rootfs_path(
         .unwrap_or_else(|| rootfs::store::default_rootfs_path(workspace_root, &request.arch))
 }
 
-/// Patches a QEMU config with a concrete AxVisor rootfs path.
+/// Patches a QEMU config with a concrete Axvisor rootfs path.
 pub(crate) fn patch_qemu_rootfs_path(config: &mut QemuConfig, rootfs_path: &Path) {
     rootfs::qemu::patch_rootfs(
         config,
@@ -67,7 +121,7 @@ pub(crate) fn patch_qemu_rootfs_path(config: &mut QemuConfig, rootfs_path: &Path
     );
 }
 
-/// Returns the managed rootfs path AxVisor should prepare, if any.
+/// Returns the managed rootfs path Axvisor should prepare, if any.
 pub(crate) fn managed_rootfs_path(
     request: &ResolvedAxvisorRequest,
     workspace_root: &Path,

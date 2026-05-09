@@ -18,8 +18,13 @@ to_bin = true
 shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/bug-futex-wait-wake",
+    "/usr/bin/bug-faccessat2-validation",
+    "/usr/bin/bug-fchmodat2-flags",
+    "/usr/bin/bug-linkat-flags-symlink",
     "/usr/bin/bug-lseek-negative-einval",
     "/usr/bin/bug-mkdir-empty-path",
+    "/usr/bin/bug-mknodat-mode-type",
+    "/usr/bin/bug-mmap-fd-zero-anon",
     "/usr/bin/bug-open-dir-wronly",
     "/usr/bin/bug-pipe-fd-errno",
     "/usr/bin/bug-preadv2-invalid-flags",
@@ -27,8 +32,13 @@ test_commands = [
     "/usr/bin/bug-pwritev2-read-at",
     "/usr/bin/bug-signal-to-child",
     "/usr/bin/bug-unlinkat-einval",
+    "/usr/bin/bug-wait4-invalid-options",
     "/usr/bin/bug-writev-dir-ebadf",
     "/usr/bin/clone3-badsize",
+    "/usr/bin/bug-unaligned-cow-split",
+    "/usr/bin/bug-proc-maps-lseek-refresh",
+    "/usr/bin/bug-renameat2-noreplace-flags",
+    "/usr/bin/bug-readlinkat-zero-size",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']

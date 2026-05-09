@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, string::ToString, vec::Vec};
+use alloc::{string::ToString, vec::Vec};
 use core::time::Duration;
 
 use rdif_clk::ClockId;
@@ -81,17 +81,19 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     }
 
     let mut emmc = EMmcHost::new(mmio_base.as_ptr() as usize);
-    emmc.init().map_err(|e| {
-        OnProbeError::other(format!(
-            "failed to initialize eMMC device at [PA:{:?}, SZ:0x{:x}): {e:?}",
-            base_reg.address, mmio_size
-        ))
+    emmc.init().map_err(|err| {
+        warn!(
+            "rockchip-emmc at {:#x} is not usable by sdmmc: {err:?}",
+            base_reg.address
+        );
+        OnProbeError::NotMatch
     })?;
-    let info = emmc.get_card_info().map_err(|e| {
-        OnProbeError::other(format!(
-            "failed to get eMMC card info at [PA:{:?}, SZ:0x{:x}): {e:?}",
-            base_reg.address, mmio_size
-        ))
+    let info = emmc.get_card_info().map_err(|err| {
+        warn!(
+            "rockchip-emmc at {:#x} did not provide card info: {err:?}",
+            base_reg.address
+        );
+        OnProbeError::NotMatch
     })?;
     info!("eMMC card info: {:#?}", info);
 
@@ -108,6 +110,8 @@ struct BlockDivce {
 struct BlockQueue {
     raw: EMmcHost,
 }
+
+const MMC_IO_RETRIES: usize = 3;
 
 impl DriverGeneric for BlockDivce {
     fn name(&self) -> &str {
@@ -168,16 +172,64 @@ impl rd_block::IQueue for BlockQueue {
         match request.kind {
             rd_block::RequestKind::Read(mut buffer) => {
                 let blocks = buffer.len() / self.block_size();
-                self.raw
-                    .read_blocks(id as _, blocks as _, &mut buffer)
-                    .map_err(maping_dev_err_to_blk_err)?;
+                let mut attempt = 0;
+                loop {
+                    match self.raw.read_blocks(id as _, blocks as _, &mut buffer) {
+                        Ok(()) => break,
+                        Err(err) if is_retryable_dev_err(&err) && attempt < MMC_IO_RETRIES => {
+                            attempt += 1;
+                            warn!(
+                                "Rockchip eMMC read timeout, retrying: lba={} blocks={} bytes={} \
+                                 attempt={}/{} err={err:?}",
+                                id,
+                                blocks,
+                                buffer.len(),
+                                attempt,
+                                MMC_IO_RETRIES
+                            );
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Rockchip eMMC read failed: lba={} blocks={} bytes={} err={err:?}",
+                                id,
+                                blocks,
+                                buffer.len()
+                            );
+                            return Err(maping_dev_err_to_blk_err(err));
+                        }
+                    }
+                }
                 Ok(rd_block::RequestId::new(0))
             }
             rd_block::RequestKind::Write(items) => {
                 let blocks = items.len() / self.block_size();
-                self.raw
-                    .write_blocks(id as _, blocks as _, items)
-                    .map_err(maping_dev_err_to_blk_err)?;
+                let mut attempt = 0;
+                loop {
+                    match self.raw.write_blocks(id as _, blocks as _, items) {
+                        Ok(()) => break,
+                        Err(err) if is_retryable_dev_err(&err) && attempt < MMC_IO_RETRIES => {
+                            attempt += 1;
+                            warn!(
+                                "Rockchip eMMC write timeout, retrying: lba={} blocks={} bytes={} \
+                                 attempt={}/{} err={err:?}",
+                                id,
+                                blocks,
+                                items.len(),
+                                attempt,
+                                MMC_IO_RETRIES
+                            );
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Rockchip eMMC write failed: lba={} blocks={} bytes={} err={err:?}",
+                                id,
+                                blocks,
+                                items.len()
+                            );
+                            return Err(maping_dev_err_to_blk_err(err));
+                        }
+                    }
+                }
                 Ok(rd_block::RequestId::new(0))
             }
         }
@@ -188,11 +240,17 @@ impl rd_block::IQueue for BlockQueue {
     }
 }
 
+fn is_retryable_dev_err(err: &sdmmc::err::SdError) -> bool {
+    matches!(
+        err,
+        sdmmc::err::SdError::Timeout | sdmmc::err::SdError::DataTimeout
+    )
+}
+
 fn maping_dev_err_to_blk_err(err: sdmmc::err::SdError) -> rd_block::BlkError {
     match err {
         sdmmc::err::SdError::Timeout | sdmmc::err::SdError::DataTimeout => {
-            // transient timeout, ask caller to retry
-            rd_block::BlkError::Retry
+            rd_block::BlkError::Other("SD/MMC timeout".into())
         }
         sdmmc::err::SdError::Crc
         | sdmmc::err::SdError::DataCrc

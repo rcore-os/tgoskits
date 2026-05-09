@@ -17,22 +17,13 @@ use anyhow::{Context, bail, ensure};
 
 use super::{
     case as case_assets,
-    case::{TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
+    case::{CaseAssetConfig, TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
 };
-use crate::{
-    starry::{apk, resolver},
-    support::process::ProcessExt,
-};
+use crate::support::process::ProcessExt;
 
 const CASE_C_DIR_NAME: &str = "c";
 const CASE_PREBUILD_SCRIPT_NAME: &str = "prebuild.sh";
 const CASE_CMAKE_FILE_NAME: &str = "CMakeLists.txt";
-pub(crate) const STARRY_STAGING_ROOT_VAR: &str = "STARRY_STAGING_ROOT";
-pub(crate) const STARRY_CASE_DIR_VAR: &str = "STARRY_CASE_DIR";
-pub(crate) const STARRY_CASE_C_DIR_VAR: &str = "STARRY_CASE_C_DIR";
-pub(crate) const STARRY_CASE_WORK_DIR_VAR: &str = "STARRY_CASE_WORK_DIR";
-pub(crate) const STARRY_CASE_BUILD_DIR_VAR: &str = "STARRY_CASE_BUILD_DIR";
-pub(crate) const STARRY_CASE_OVERLAY_DIR_VAR: &str = "STARRY_CASE_OVERLAY_DIR";
 const CROSS_BINUTILS: &[&str] = &[
     "ld", "as", "ar", "ranlib", "strip", "nm", "objcopy", "objdump", "readelf",
 ];
@@ -76,6 +67,7 @@ pub(crate) fn prepare_c_case_assets_sync(
     case: &TestQemuCase,
     case_rootfs: &Path,
     layout: &case_assets::CaseAssetLayout,
+    config: &CaseAssetConfig,
 ) -> anyhow::Result<()> {
     let source_dir = case_c_source_dir(case);
     let cmake_lists = source_dir.join(CASE_CMAKE_FILE_NAME);
@@ -94,21 +86,20 @@ pub(crate) fn prepare_c_case_assets_sync(
         .with_context(|| format!("failed to create {}", layout.apk_cache_dir.display()))?;
 
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
-    resolver::write_host_resolver_config(&layout.staging_root)?;
+    (config.prepare_staging_root)(&layout.staging_root)?;
     write_musl_loader_search_path(arch, &layout.staging_root)?;
     let prebuild_script = case_prebuild_script_path(case);
     if prebuild_script.is_file() {
-        let apk_region = apk::apk_region_from_env()?;
-        apk::rewrite_apk_repositories_for_region(&layout.staging_root, apk_region)?;
-        log_apk_prebuild_context(&layout.staging_root, apk_region)?;
-        let prebuild_env = prepare_guest_prebuild_env(arch, case, layout, apk_region)?;
+        let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
+        let prebuild_env =
+            prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
         let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
         command.exec().context("failed to run case prebuild.sh")?;
     }
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
     let build_env = prepare_host_cross_build_env(arch, layout, &qemu_runner)?;
 
-    let mut configure = build_cmake_configure_command(case, layout, &build_env);
+    let mut configure = build_cmake_configure_command(case, layout, &build_env, config);
     configure
         .exec()
         .context("failed to configure case C project")?;
@@ -129,6 +120,7 @@ pub(crate) fn prepare_grouped_case_assets_sync(
     case: &TestQemuCase,
     case_rootfs: &Path,
     layout: &case_assets::CaseAssetLayout,
+    config: &CaseAssetConfig,
 ) -> anyhow::Result<()> {
     ensure!(
         case.is_grouped(),
@@ -157,7 +149,7 @@ pub(crate) fn prepare_grouped_case_assets_sync(
         .with_context(|| format!("failed to create {}", layout.apk_cache_dir.display()))?;
 
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
-    resolver::write_host_resolver_config(&layout.staging_root)?;
+    (config.prepare_staging_root)(&layout.staging_root)?;
     write_musl_loader_search_path(arch, &layout.staging_root)?;
 
     let c_subcases = case
@@ -167,10 +159,14 @@ pub(crate) fn prepare_grouped_case_assets_sync(
         .collect::<Vec<_>>();
 
     if !c_subcases.is_empty() {
-        prepare_grouped_c_subcases_sync(arch, case, &c_subcases, layout)?;
+        prepare_grouped_c_subcases_sync(arch, case, &c_subcases, layout, config)?;
     }
 
-    case_assets::write_grouped_case_runner_script(&layout.overlay_dir, &case.test_commands)?;
+    case_assets::write_grouped_case_runner_script(
+        &layout.overlay_dir,
+        &case.test_commands,
+        &config.grouped_runner,
+    )?;
     crate::rootfs::runtime::sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
     crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
 }
@@ -180,6 +176,7 @@ fn prepare_grouped_c_subcases_sync(
     case: &TestQemuCase,
     subcases: &[&TestQemuSubcase],
     layout: &case_assets::CaseAssetLayout,
+    config: &CaseAssetConfig,
 ) -> anyhow::Result<()> {
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
 
@@ -187,17 +184,20 @@ fn prepare_grouped_c_subcases_sync(
         .iter()
         .any(|subcase| case_prebuild_script_path(&subcase_as_case(case, subcase)).is_file())
     {
-        let apk_region = apk::apk_region_from_env()?;
-        apk::rewrite_apk_repositories_for_region(&layout.staging_root, apk_region)?;
-        log_apk_prebuild_context(&layout.staging_root, apk_region)?;
+        let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
 
         for subcase in subcases {
             let subcase_case = subcase_as_case(case, subcase);
             let subcase_layout = subcase_layout(layout, subcase.name.as_str());
             let prebuild_script = case_prebuild_script_path(&subcase_case);
             if prebuild_script.is_file() {
-                let prebuild_env =
-                    prepare_guest_prebuild_env(arch, &subcase_case, &subcase_layout, apk_region)?;
+                let prebuild_env = prepare_guest_prebuild_env(
+                    arch,
+                    &subcase_case,
+                    &subcase_layout,
+                    extra_script_envs.clone(),
+                    config,
+                )?;
                 let mut command = build_prebuild_command(
                     &subcase_case,
                     &prebuild_script,
@@ -223,7 +223,7 @@ fn prepare_grouped_c_subcases_sync(
         );
 
         let mut configure =
-            build_cmake_configure_command(&subcase_case, &subcase_layout, &build_env);
+            build_cmake_configure_command(&subcase_case, &subcase_layout, &build_env, config);
         configure.exec().with_context(|| {
             format!(
                 "failed to configure grouped C subcase `{}`",
@@ -289,6 +289,7 @@ pub(crate) fn prepare_python_case_assets_sync(
     case: &TestQemuCase,
     case_rootfs: &Path,
     layout: &case_assets::CaseAssetLayout,
+    config: &CaseAssetConfig,
 ) -> anyhow::Result<()> {
     let python_dir = case_python_source_dir(case);
     ensure!(
@@ -305,13 +306,11 @@ pub(crate) fn prepare_python_case_assets_sync(
 
     // Extract rootfs into staging
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
-    resolver::write_host_resolver_config(&layout.staging_root)?;
+    (config.prepare_staging_root)(&layout.staging_root)?;
     write_musl_loader_search_path(arch, &layout.staging_root)?;
 
     // Prepare guest prebuild environment and install python3
-    let apk_region = apk::apk_region_from_env()?;
-    apk::rewrite_apk_repositories_for_region(&layout.staging_root, apk_region)?;
-    log_apk_prebuild_context(&layout.staging_root, apk_region)?;
+    let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
 
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
     write_guest_command_wrappers(layout, &qemu_runner)?;
@@ -333,7 +332,7 @@ pub(crate) fn prepare_python_case_assets_sync(
     }
     prebuild_cmd.arg("-eu").arg("-c").arg("apk add python3");
 
-    // Apply environment (PATH with wrappers, QEMU_LD_PREFIX)
+    // Apply environment (PATH with wrappers, guest dynamic linker paths)
     let host_path = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = Vec::new();
     path_entries.push(layout.command_wrapper_dir.clone());
@@ -342,6 +341,10 @@ pub(crate) fn prepare_python_case_assets_sync(
         .map_err(|e| anyhow::anyhow!("failed to build guest prebuild PATH: {e}"))?;
     prebuild_cmd.env("PATH", path);
     prebuild_cmd.env("QEMU_LD_PREFIX", &layout.staging_root);
+    prebuild_cmd.env("LD_LIBRARY_PATH", guest_library_path(&layout.staging_root));
+    for (key, value) in extra_script_envs {
+        prebuild_cmd.env(key, value);
+    }
 
     prebuild_cmd
         .exec()
@@ -542,40 +545,34 @@ fn copy_dir_recursive_inner(src: &Path, dst: &Path, canonical_root: &Path) -> an
     Ok(())
 }
 
-fn log_apk_prebuild_context(staging_root: &Path, region: apk::ApkRegion) -> anyhow::Result<()> {
-    let repositories_path = staging_root.join("etc/apk/repositories");
-    let repositories = fs::read_to_string(&repositories_path)
-        .with_context(|| format!("failed to read {}", repositories_path.display()))?;
-
-    println!("STARRY_APK_REGION={}", region.canonical_name());
-    println!("apk repositories:");
-    print!("{repositories}");
-    if !repositories.ends_with('\n') {
-        println!();
-    }
-
-    Ok(())
-}
-
 fn prepare_guest_prebuild_env(
     arch: &str,
     case: &TestQemuCase,
     layout: &case_assets::CaseAssetLayout,
-    apk_region: apk::ApkRegion,
+    extra_script_envs: Vec<(String, String)>,
+    config: &CaseAssetConfig,
 ) -> anyhow::Result<GuestPrebuildEnv> {
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
     write_guest_command_wrappers(layout, &qemu_runner)?;
 
-    let mut script_envs = case_script_envs(case, layout);
-    script_envs.push((
-        apk::STARRY_APK_REGION_VAR.to_string(),
-        apk_region.canonical_name().to_string(),
-    ));
+    let mut script_envs = case_script_envs(case, layout, config);
+    script_envs.extend(extra_script_envs);
 
     Ok(GuestPrebuildEnv {
         qemu_runner,
         script_envs,
     })
+}
+
+fn prepare_guest_package_env(
+    config: &CaseAssetConfig,
+    staging_root: &Path,
+) -> anyhow::Result<Vec<(String, String)>> {
+    config
+        .prepare_guest_package_env
+        .map(|prepare| prepare(staging_root))
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn prepare_host_cross_build_env(
@@ -838,6 +835,7 @@ pub(crate) fn build_cmake_configure_command(
     case: &TestQemuCase,
     layout: &case_assets::CaseAssetLayout,
     build_env: &HostCrossBuildEnv,
+    config: &CaseAssetConfig,
 ) -> Command {
     let mut command = Command::new(&build_env.cmake);
     command
@@ -863,7 +861,8 @@ pub(crate) fn build_cmake_configure_command(
             build_env.pkg_config.display()
         ))
         .arg(format!(
-            "-D{STARRY_STAGING_ROOT_VAR}={}",
+            "-D{}={}",
+            config.script_env.staging_root,
             layout.staging_root.display()
         ));
 
@@ -920,6 +919,7 @@ fn apply_case_script_envs(
         .map_err(|e| anyhow::anyhow!("failed to build case script PATH: {e}"))?;
     command.env("PATH", path);
     command.env("QEMU_LD_PREFIX", &layout.staging_root);
+    command.env("LD_LIBRARY_PATH", guest_library_path(&layout.staging_root));
 
     for (key, value) in script_envs {
         command.env(key, value);
@@ -931,30 +931,31 @@ fn apply_case_script_envs(
 pub(crate) fn case_script_envs(
     case: &TestQemuCase,
     layout: &case_assets::CaseAssetLayout,
+    config: &CaseAssetConfig,
 ) -> Vec<(String, String)> {
     vec![
         (
-            STARRY_STAGING_ROOT_VAR.to_string(),
+            config.script_env.staging_root.clone(),
             layout.staging_root.display().to_string(),
         ),
         (
-            STARRY_CASE_DIR_VAR.to_string(),
+            config.script_env.case_dir.clone(),
             case.case_dir.display().to_string(),
         ),
         (
-            STARRY_CASE_C_DIR_VAR.to_string(),
+            config.script_env.case_c_dir.clone(),
             case_c_source_dir(case).display().to_string(),
         ),
         (
-            STARRY_CASE_WORK_DIR_VAR.to_string(),
+            config.script_env.case_work_dir.clone(),
             layout.work_dir.display().to_string(),
         ),
         (
-            STARRY_CASE_BUILD_DIR_VAR.to_string(),
+            config.script_env.case_build_dir.clone(),
             layout.build_dir.display().to_string(),
         ),
         (
-            STARRY_CASE_OVERLAY_DIR_VAR.to_string(),
+            config.script_env.case_overlay_dir.clone(),
             layout.overlay_dir.display().to_string(),
         ),
     ]
@@ -1046,8 +1047,10 @@ fn write_guest_exec_wrapper(
 ) -> anyhow::Result<()> {
     let guest_path = staging_root.join(guest_relative_path);
     let mut body = format!(
-        "export QEMU_LD_PREFIX={root}\nexec {qemu} -0 {guest} -L {root} {guest}",
+        "export QEMU_LD_PREFIX={root}\nexport LD_LIBRARY_PATH={lib_path}\nexec {qemu} -0 {guest} \
+         -L {root} {guest}",
         root = shell_single_quote(staging_root),
+        lib_path = shell_single_quote(guest_library_path(staging_root)),
         qemu = shell_single_quote(qemu_runner),
         guest = shell_single_quote(&guest_path),
     );
@@ -1067,10 +1070,12 @@ fn write_apk_wrapper_script(
     layout: &case_assets::CaseAssetLayout,
 ) -> anyhow::Result<()> {
     let body = format!(
-        "export QEMU_LD_PREFIX={root}\nexec {qemu} -L {root} {apk} --root {root} \
-         --repositories-file {repositories} --keys-dir {keys} --cache-dir {cache} --update-cache \
-         --timeout 60 --no-interactive --force-no-chroot --scripts=no \"$@\"\n",
+        "export QEMU_LD_PREFIX={root}\nexport LD_LIBRARY_PATH={lib_path}\nexec {qemu} -L {root} \
+         {apk} --root {root} --repositories-file {repositories} --keys-dir {keys} --cache-dir \
+         {cache} --update-cache --timeout 60 --no-interactive --force-no-chroot --scripts=no \
+         \"$@\"\n",
         root = shell_single_quote(staging_root),
+        lib_path = shell_single_quote(guest_library_path(staging_root)),
         qemu = shell_single_quote(qemu_runner),
         apk = shell_single_quote(staging_root.join("sbin/apk")),
         repositories = shell_single_quote(staging_root.join("etc/apk/repositories")),
@@ -1078,6 +1083,14 @@ fn write_apk_wrapper_script(
         cache = shell_single_quote(&layout.apk_cache_dir),
     );
     write_wrapper_script(path, &body)
+}
+
+fn guest_library_path(staging_root: &Path) -> String {
+    format!(
+        "{}:{}",
+        staging_root.join("lib").display(),
+        staging_root.join("usr/lib").display()
+    )
 }
 
 fn write_wrapper_script(path: &Path, body: &str) -> anyhow::Result<()> {
@@ -1129,8 +1142,37 @@ mod tests {
 
     use super::*;
 
+    fn fake_config() -> CaseAssetConfig {
+        CaseAssetConfig {
+            grouped_runner: case_assets::GroupedCaseRunnerConfig {
+                runner_name: "suite-run-case-tests".to_string(),
+                runner_path: "/usr/bin/suite-run-case-tests".to_string(),
+                begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
+                passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
+                failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
+                all_passed_marker: "SUITE_GROUPED_TESTS_PASSED".to_string(),
+                all_failed_marker: "SUITE_GROUPED_TESTS_FAILED".to_string(),
+                success_regex: r"(?m)^SUITE_GROUPED_TESTS_PASSED\s*$".to_string(),
+                fail_regex: r"(?m)^SUITE_GROUPED_TEST_FAILED:".to_string(),
+            },
+            script_env: case_assets::CaseScriptEnvConfig {
+                staging_root: "SUITE_STAGING_ROOT".to_string(),
+                case_dir: "SUITE_CASE_DIR".to_string(),
+                case_c_dir: "SUITE_CASE_C_DIR".to_string(),
+                case_work_dir: "SUITE_CASE_WORK_DIR".to_string(),
+                case_build_dir: "SUITE_CASE_BUILD_DIR".to_string(),
+                case_overlay_dir: "SUITE_CASE_OVERLAY_DIR".to_string(),
+            },
+            cache_env_vars: vec!["SUITE_PACKAGE_REGION".to_string()],
+            prepare_staging_root: |_| Ok(()),
+            prepare_guest_package_env: Some(|_| {
+                Ok(vec![("SUITE_PACKAGE_REGION".to_string(), "us".to_string())])
+            }),
+        }
+    }
+
     fn fake_case(root: &Path, name: &str) -> TestQemuCase {
-        let case_dir = root.join("test-suit/starryos/normal").join(name);
+        let case_dir = root.join("test-suite/example/default").join(name);
         fs::create_dir_all(&case_dir).unwrap();
         TestQemuCase {
             name: name.to_string(),
@@ -1199,8 +1241,8 @@ mod tests {
         let prebuild_env = GuestPrebuildEnv {
             qemu_runner: PathBuf::from("/usr/bin/qemu-aarch64-static"),
             script_envs: {
-                let mut envs = case_script_envs(&case, &layout);
-                envs.push((apk::STARRY_APK_REGION_VAR.to_string(), "us".to_string()));
+                let mut envs = case_script_envs(&case, &layout, &fake_config());
+                envs.push(("SUITE_PACKAGE_REGION".to_string(), "us".to_string()));
                 envs
             },
         };
@@ -1233,12 +1275,16 @@ mod tests {
             Some(case_c_source_dir(&case).as_path())
         );
         assert_eq!(
-            command_env(&command, STARRY_CASE_OVERLAY_DIR_VAR),
+            command_env(&command, "SUITE_CASE_OVERLAY_DIR"),
             Some(layout.overlay_dir.display().to_string())
         );
         assert_eq!(
-            command_env(&command, apk::STARRY_APK_REGION_VAR),
+            command_env(&command, "SUITE_PACKAGE_REGION"),
             Some("us".to_string())
+        );
+        assert_eq!(
+            command_env(&command, "LD_LIBRARY_PATH"),
+            Some(guest_library_path(&layout.staging_root))
         );
     }
 
@@ -1257,7 +1303,8 @@ mod tests {
             command_envs: vec![("PKG_CONFIG_LIBDIR".to_string(), "/sysroot".to_string())],
         };
 
-        let command = build_cmake_configure_command(&case, &layout, &build_env);
+        let config = fake_config();
+        let command = build_cmake_configure_command(&case, &layout, &build_env, &config);
         let args = command_args(&command);
 
         assert_eq!(
@@ -1269,7 +1316,8 @@ mod tests {
             build_env.cmake_toolchain_file.display()
         )));
         assert!(args.contains(&format!(
-            "-D{STARRY_STAGING_ROOT_VAR}={}",
+            "-D{}={}",
+            config.script_env.staging_root,
             layout.staging_root.display()
         )));
         assert_eq!(
@@ -1333,6 +1381,7 @@ mod tests {
         let prefixed =
             fs::read_to_string(layout.cross_bin_dir.join("aarch64-linux-musl-ld")).unwrap();
         assert!(plain.contains("qemu-aarch64-static"));
+        assert!(plain.contains("LD_LIBRARY_PATH"));
         assert!(plain.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
         assert!(prefixed.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
         assert!(prefixed.contains("-0"));
@@ -1410,14 +1459,14 @@ mod tests {
             case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb")
                 .unwrap();
 
-        let envs = case_script_envs(&case, &layout);
+        let envs = case_script_envs(&case, &layout, &fake_config());
 
         assert!(envs.contains(&(
-            STARRY_CASE_DIR_VAR.to_string(),
+            "SUITE_CASE_DIR".to_string(),
             case.case_dir.display().to_string()
         )));
         assert!(envs.contains(&(
-            STARRY_CASE_BUILD_DIR_VAR.to_string(),
+            "SUITE_CASE_BUILD_DIR".to_string(),
             layout.build_dir.display().to_string()
         )));
     }

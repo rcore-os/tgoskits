@@ -3,6 +3,7 @@
 mod cred;
 mod futex;
 mod ops;
+pub mod posix_timer;
 mod resources;
 mod signal;
 mod stat;
@@ -18,7 +19,7 @@ use core::{
 
 use ax_hal::time::TimeValue;
 use ax_sync::{Mutex, spin::SpinNoIrq};
-use ax_task::{TaskExt, TaskInner};
+use ax_task::{TaskExt, TaskInner, WaitQueue};
 use axpoll::PollSet;
 use extern_trait::extern_trait;
 use scope_local::{ActiveScope, Scope};
@@ -29,7 +30,10 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
-pub use self::{cred::*, futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
+pub use self::{
+    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
+    timer::*, user::*,
+};
 #[cfg(feature = "kcov")]
 use crate::kcov::KcovThreadState;
 use crate::mm::AddrSpace;
@@ -54,6 +58,23 @@ impl<T> Deref for AssumeSync<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+/// A one-shot flag that suppresses exactly one signal check.
+struct NextSignalCheckBlock(AtomicBool);
+
+impl NextSignalCheckBlock {
+    const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    fn block(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn unblock(&self) -> bool {
+        self.0.swap(false, Ordering::AcqRel)
     }
 }
 
@@ -91,6 +112,9 @@ pub struct Thread {
     /// Indicates whether the thread is currently accessing user memory.
     accessing_user_memory: AtomicBool,
 
+    /// Skips one signal check after returning from a user-space signal handler.
+    block_next_signal_check: NextSignalCheckBlock,
+
     /// Self exit event
     pub exit_event: Arc<PollSet>,
 
@@ -125,6 +149,7 @@ impl Thread {
             exit: Arc::new(AtomicBool::new(false)),
             oom_score_adj: AtomicI32::new(200),
             accessing_user_memory: AtomicBool::new(false),
+            block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
@@ -265,6 +290,16 @@ impl Thread {
     pub fn set_rseq_area(&self, addr: usize) {
         self.rseq_area.store(addr, Ordering::SeqCst);
     }
+
+    /// Block the next signal check for this thread.
+    pub fn block_next_signal_check(&self) {
+        self.block_next_signal_check.block();
+    }
+
+    /// Consume and clear the one-shot signal-check block flag.
+    pub fn unblock_next_signal_check(&self) -> bool {
+        self.block_next_signal_check.unblock()
+    }
 }
 
 #[extern_trait]
@@ -299,6 +334,22 @@ impl AsThread for TaskInner {
     }
 }
 
+/// A one-shot completion for vfork synchronization.
+///
+/// This avoids lost-wakeup races by recording the "done" state under the same
+/// lock as the wait queue. If the child completes before the parent enters the
+/// wait, the parent will see `done == true` and skip waiting.
+pub struct VforkDone {
+    done: bool,
+    wq: Arc<WaitQueue>,
+}
+
+impl VforkDone {
+    pub fn new(wq: Arc<WaitQueue>) -> Self {
+        Self { done: false, wq }
+    }
+}
+
 /// [`Process`]-shared data.
 pub struct ProcessData {
     /// The process.
@@ -309,7 +360,7 @@ pub struct ProcessData {
     pub cmdline: RwLock<Arc<Vec<String>>>,
     /// The virtual memory address space.
     // TODO: scopify
-    pub aspace: Arc<Mutex<AddrSpace>>,
+    aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
     /// The resource scope
     pub scope: RwLock<Scope>,
     /// The user heap top
@@ -331,12 +382,20 @@ pub struct ProcessData {
     /// The futex table.
     futex_table: Arc<FutexTable>,
 
+    /// If this process was created by vfork, this tracks completion state.
+    /// The parent waits until `done` becomes true. Protected by the same lock
+    /// as the wait queue to avoid lost wakeup races.
+    vfork_done: SpinNoIrq<Option<VforkDone>>,
+
     /// The default mask for file permissions.
     umask: AtomicU32,
 
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
+
+    /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
+    pub posix_timers: Arc<PosixTimerTable>,
 }
 
 impl ProcessData {
@@ -353,7 +412,7 @@ impl ProcessData {
             proc,
             exe_path: RwLock::new(exe_path),
             cmdline: RwLock::new(cmdline),
-            aspace,
+            aspace: SpinNoIrq::new(aspace),
             scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
@@ -370,9 +429,13 @@ impl ProcessData {
 
             futex_table: Arc::new(FutexTable::new()),
 
+            vfork_done: SpinNoIrq::new(None),
+
             umask: AtomicU32::new(0o022),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
+
+            posix_timers: Arc::new(PosixTimerTable::default()),
         })
     }
 
@@ -417,5 +480,130 @@ impl ProcessData {
         let mut time = self.children_cpu_time.lock();
         time.0 += utime;
         time.1 += stime;
+    }
+
+    /// Returns a clone of the address space Arc.
+    pub fn aspace(&self) -> Arc<Mutex<AddrSpace>> {
+        self.aspace.lock().clone()
+    }
+
+    /// Replace this process's address space with a new one.
+    ///
+    /// # Why `mem::replace` instead of `*guard = new_aspace`
+    ///
+    /// `self.aspace` is a `SpinNoIrq<Arc<Mutex<AddrSpace>>>`. Locking it
+    /// disables IRQs and increments `preempt_count`, putting us in atomic
+    /// context. A plain assignment (`*guard = new_aspace`) would drop the
+    /// **old** `Arc<Mutex<AddrSpace>>` while the `SpinNoIrq` guard is still
+    /// alive. If that was the last strong reference (e.g. after a
+    /// `CLONE_VM` + `execve`), the destructor chain would be:
+    ///
+    /// ```text
+    /// Arc::drop → Mutex<AddrSpace>::drop → AddrSpace::drop
+    ///   → self.clear() → areas.clear() → FileBackendInner::drop
+    ///     → cache.remove_evict_listener()
+    ///       → evict_listeners.lock()        ← sleeping Mutex
+    ///         → might_sleep()               ← PANIC (atomic context)
+    /// ```
+    ///
+    /// `mem::replace` moves the old Arc out of the guard so it is dropped
+    /// **after** the `SpinNoIrq` guard, in normal preemptible context.
+    pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
+        let _old = {
+            let mut guard = self.aspace.lock();
+            core::mem::replace(&mut *guard, new_aspace)
+        };
+        // `_old` drops here — SpinNoIrq already released, IRQs re-enabled.
+    }
+
+    /// Set the vfork completion (called on the child after a vfork,
+    /// before the child task is spawned).
+    pub fn set_vfork_done(&self, wq: Arc<WaitQueue>) {
+        *self.vfork_done.lock() = Some(VforkDone::new(wq));
+    }
+
+    /// Wait for vfork completion. Returns immediately if already done.
+    /// This should be called by the parent after spawning the vfork child.
+    pub fn wait_vfork_done(&self) {
+        let wq = {
+            let guard = self.vfork_done.lock();
+            match guard.as_ref() {
+                Some(vfork) => vfork.wq.clone(),
+                None => return, // No vfork, shouldn't happen but be safe.
+            }
+        };
+        // Wait until done. The condition is checked under lock in wait_until.
+        wq.wait_until(|| {
+            self.vfork_done
+                .lock()
+                .as_ref()
+                .map(|v| v.done)
+                .unwrap_or(true)
+        });
+    }
+
+    /// Notify the vfork parent that this child has exec'd or exited.
+    /// No-op if this process was not created by vfork.
+    pub fn notify_vfork_done(&self) {
+        // Set done under the lock, then drop the lock before notifying
+        // to avoid lock-order inversion with the wait-queue internal lock.
+        let wq = {
+            let mut guard = self.vfork_done.lock();
+            match guard.as_mut() {
+                Some(vfork) => {
+                    vfork.done = true;
+                    vfork.wq.clone()
+                }
+                None => return,
+            }
+            // guard dropped here
+        };
+        wq.notify_one(true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use super::NextSignalCheckBlock;
+
+    #[test]
+    fn old_global_signal_check_block_leaks_between_threads() {
+        static OLD_BLOCK_NEXT_SIGNAL_CHECK: AtomicBool = AtomicBool::new(false);
+
+        fn block_next_signal() {
+            OLD_BLOCK_NEXT_SIGNAL_CHECK.store(true, Ordering::SeqCst);
+        }
+
+        fn unblock_next_signal() -> bool {
+            OLD_BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst)
+        }
+
+        // Simulate thread A returning from `rt_sigreturn()`.
+        block_next_signal();
+
+        // Simulate thread B reaching the user return path first and incorrectly
+        // consuming thread A's one-shot state.
+        assert!(
+            unblock_next_signal(),
+            "the old global flag leaks across logical threads"
+        );
+        assert!(!unblock_next_signal());
+    }
+
+    #[test]
+    fn per_thread_signal_check_block_is_isolated() {
+        let thread_a = NextSignalCheckBlock::new();
+        let thread_b = NextSignalCheckBlock::new();
+
+        thread_a.block();
+
+        assert!(
+            !thread_b.unblock(),
+            "thread B must not observe thread A's signal-check block"
+        );
+        assert!(thread_a.unblock());
+        assert!(!thread_a.unblock());
     }
 }

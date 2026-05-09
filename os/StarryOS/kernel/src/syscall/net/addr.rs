@@ -11,7 +11,7 @@ use ax_errno::{AxError, AxResult, LinuxError};
 #[cfg(feature = "vsock")]
 use axnet::vsock::VsockAddr;
 use axnet::{SocketAddrEx, unix::UnixSocketAddr};
-use linux_raw_sys::net::*;
+use linux_raw_sys::{net::*, netlink::sockaddr_nl};
 
 use crate::mm::{UserConstPtr, UserPtr};
 
@@ -50,6 +50,28 @@ fn fill_addr(addr: UserPtr<sockaddr>, addrlen: &mut socklen_t, data: &[u8]) -> A
     Ok(())
 }
 
+pub fn read_netlink_addr(
+    addr: UserConstPtr<sockaddr>,
+    addrlen: socklen_t,
+) -> AxResult<sockaddr_nl> {
+    if addrlen != size_of::<sockaddr_nl>() as socklen_t {
+        return Err(AxError::InvalidInput);
+    }
+    let addr_nl = addr.cast::<sockaddr_nl>().get_as_ref()?;
+    if addr_nl.nl_family as u32 != AF_NETLINK {
+        return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+    }
+    Ok(*addr_nl)
+}
+
+pub fn write_netlink_addr(
+    addr_nl: &sockaddr_nl,
+    addr: UserPtr<sockaddr>,
+    addrlen: &mut socklen_t,
+) -> AxResult<()> {
+    fill_addr(addr, addrlen, unsafe { cast_to_slice(addr_nl) })
+}
+
 impl SocketAddrExt for SocketAddr {
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> AxResult<Self> {
         match read_family(addr, addrlen)? as u32 {
@@ -76,7 +98,7 @@ impl SocketAddrExt for SocketAddr {
 
 impl SocketAddrExt for SocketAddrV4 {
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> AxResult<Self> {
-        if addrlen != size_of::<sockaddr_in>() as socklen_t {
+        if addrlen < size_of::<sockaddr_in>() as socklen_t {
             return Err(AxError::InvalidInput);
         }
         let addr_in = addr.cast::<sockaddr_in>().get_as_ref()?;
@@ -109,7 +131,7 @@ impl SocketAddrExt for SocketAddrV4 {
 
 impl SocketAddrExt for SocketAddrV6 {
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> AxResult<Self> {
-        if addrlen != size_of::<sockaddr_in6>() as socklen_t {
+        if addrlen < size_of::<sockaddr_in6>() as socklen_t {
             return Err(AxError::InvalidInput);
         }
         let addr_in6 = addr.cast::<sockaddr_in6>().get_as_ref()?;

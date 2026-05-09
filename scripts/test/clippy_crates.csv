@@ -23,6 +23,8 @@ ax-arm-pl011
 ax-arm-pl031
 ax-cap-access
 ax-config
+ax-config-gen
+ax-config-macros
 ax-cpu
 ax-cpumask
 ax-crate-interface
@@ -49,6 +51,7 @@ ax-lockdep
 ax-kspin
 ax-kernel-guard
 ax-lazyinit
+ax-memory-addr
 ax-memory-set
 axpanic
 ax-plat
@@ -83,6 +86,7 @@ fxmac_rs
 loongarch_vcpu
 range-alloc-arceos
 axplat-riscv64-qemu-virt-hv
+realtek-rtl8125
 riscv-h
 riscv_vcpu
 rk3588-pci
@@ -91,8 +95,9 @@ rockchip-soc
 rsext4
 scope-local
 simple-sdmmc
+starry-kernel
+starryos
 starry-process
 starry-vm
 tg-xtask
-tgmath
 x86_vcpu

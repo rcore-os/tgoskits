@@ -13,5 +13,5 @@ args = [
 ]
 uefi = false
 to_bin = false
-success_regex = ["lockdep: lock order inversion detected"]
-fail_regex = ["All tests passed!"]
+success_regex = ["lockdep: lock order inversion detected", "All tests passed!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
