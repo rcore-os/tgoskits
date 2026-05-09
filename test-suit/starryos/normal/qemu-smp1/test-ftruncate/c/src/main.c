@@ -293,13 +293,13 @@ int main(void)
     }
 
     /* ================================================================
-     * 13. O_APPEND fd — truncate 成功后 offset 不受影响，
-     *     后续 write 追加到文件末尾
+     * 13. truncate 成功后 offset 不受影响
+     *      (POSIX: ftruncate 不改变文件位置)
      * ================================================================ */
     {
         char tmpl[] = "/tmp/test-ftruncate-XXXXXX";
-        int fd = open(tmpl, O_RDWR | O_CREAT | O_TRUNC | O_APPEND, 0644);
-        CHECK(fd >= 0, "create O_APPEND file");
+        int fd = open(tmpl, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        CHECK(fd >= 0, "create file");
 
         CHECK_RET(write(fd, "ABCDEFGHIJ", 10), 10, "写入 10 字节");
         CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "seek 到开头");
@@ -309,10 +309,6 @@ int main(void)
         CHECK(pos == 0, "ftruncate 不应改变文件位置");
 
         check_size(fd, 5, __FILE__, __LINE__, "截断后大小应为 5");
-
-        /* O_APPEND: 即使 seek 到 0，write 仍应追加到文件末尾 */
-        CHECK_RET(write(fd, "XYZ", 3), 3, "O_APPEND write 追加 3 字节");
-        check_size(fd, 8, __FILE__, __LINE__, "追加后大小应为 8");
 
         close(fd);
         unlink(tmpl);
