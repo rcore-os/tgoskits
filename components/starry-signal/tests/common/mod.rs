@@ -77,7 +77,7 @@ pub fn prepare_restore_context(_uctx: &mut ax_cpu::uspace::UserContext) {
     // x86_64 consumes the pushed restorer with `ret`; other archs keep SP unchanged.
     #[cfg(target_arch = "x86_64")]
     {
-        let frame_sp = _uctx.sp() + size_of::<usize>();
+        let frame_sp = _uctx.sp() + core::mem::size_of::<usize>();
         _uctx.set_sp(frame_sp);
     }
 }
