@@ -25,11 +25,9 @@ use core::any::Any;
 use ax_errno::AxError;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
-use linux_raw_sys::ioctl::BLKGETSIZE64;
 #[cfg(feature = "dev-log")]
 pub use log::bind_dev_log;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
-use starry_vm::VmMutPtr;
 
 use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 
@@ -48,18 +46,6 @@ impl DeviceOps for Null {
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Ok(buf.len())
-    }
-
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
-        if cmd == BLKGETSIZE64 {
-            // Report a minimal size so tools like busybox blkid attempt to
-            // probe the device and produce output (they'll read 0 bytes since
-            // this is /dev/null, but the device name typically appears in the
-            // error message which satisfies the test's grep pattern).
-            (arg as *mut u64).vm_write(512)?;
-            return Ok(0);
-        }
-        Err(AxError::NotATty)
     }
 
     fn as_any(&self) -> &dyn Any {

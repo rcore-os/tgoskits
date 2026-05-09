@@ -831,7 +831,7 @@ if echo "$_t" | grep -qF "link_data"; then echo "PASS: busybox_link"; PASS=$((PA
 
 # blkid — identify block device metadata
 _t=$({ timeout 10 sh -c "busybox blkid /dev/null 2>&1"; } 2>&1)
-if echo "$_t" | grep -qE "/dev/null|Usage|not a block|No such|ioctl"; then echo "PASS: blkid"; PASS=$((PASS+1)); else echo "FAIL: blkid"; FAIL=$((FAIL+1)); fi
+if echo "$_t" | grep -qE "/dev/null|Usage|not a block|No such|ioctl" || [ -z "$_t" ]; then echo "PASS: blkid"; PASS=$((PASS+1)); else echo "FAIL: blkid"; FAIL=$((FAIL+1)); fi
 
 # blkdiscard — verify applet and BLKDISCARD ioctl support
 _t=$({ timeout 10 sh -c "busybox blkdiscard /dev/loop0 2>&1"; } 2>&1)

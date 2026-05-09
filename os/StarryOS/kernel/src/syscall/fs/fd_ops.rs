@@ -44,7 +44,10 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     if flags & O_PATH != 0 {
         options.path(true);
     }
-    if flags & O_EXCL != 0 {
+    // O_EXCL only makes sense with O_CREAT (POSIX). Without O_CREAT, Linux
+    // ignores O_EXCL for existing files — busybox blkdiscard opens block
+    // devices with O_RDWR|O_EXCL (no O_CREAT).
+    if flags & O_EXCL != 0 && flags & O_CREAT != 0 {
         options.create_new(true);
     }
     if flags & O_DIRECTORY != 0 {
