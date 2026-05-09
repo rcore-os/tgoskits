@@ -8,7 +8,7 @@ use ax_fs::FileBackend;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
-    ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET},
+    ioctl::{BLKDISCARD, BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET, BLKSSZGET},
     loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS, loop_info},
 };
 use starry_vm::{VmMutPtr, VmPtr};
@@ -113,9 +113,26 @@ impl DeviceOps for LoopDevice {
                 let info = unsafe { (arg as *const loop_info).vm_read_uninit()?.assume_init() };
                 self.set_info(info)?;
             }
+            BLKSSZGET => {
+                (arg as *mut u32).vm_write(512)?;
+            }
+            BLKDISCARD => {
+                // No-op for loop devices; the underlying file handles space management.
+            }
             // TODO: the following should apply to any block devices
             BLKGETSIZE | BLKGETSIZE64 => {
-                let file = self.clone_file()?;
+                let file = match self.clone_file() {
+                    Ok(f) => f,
+                    Err(_) => {
+                        // No backing file — report zero size
+                        if cmd == BLKGETSIZE {
+                            (arg as *mut u32).vm_write(0)?;
+                        } else {
+                            (arg as *mut u64).vm_write(0)?;
+                        }
+                        return Ok(0);
+                    }
+                };
                 let sectors = file.location().len()? / 512;
                 if cmd == BLKGETSIZE {
                     (arg as *mut u32).vm_write(sectors as _)?;

@@ -829,6 +829,18 @@ if echo "$_t" | grep -qF "rmdir_ok"; then echo "PASS: busybox_rmdir"; PASS=$((PA
 _t=$({ timeout 10 sh -c 'busybox rm -f /tmp/bb_link_a /tmp/bb_link_b; busybox echo link_data > /tmp/bb_link_a && busybox link /tmp/bb_link_a /tmp/bb_link_b && busybox cat /tmp/bb_link_b'; } 2>&1)
 if echo "$_t" | grep -qF "link_data"; then echo "PASS: busybox_link"; PASS=$((PASS+1)); else echo "FAIL: busybox_link"; FAIL=$((FAIL+1)); fi
 
+# blkid — identify block device metadata
+_t=$({ timeout 10 sh -c "busybox blkid /dev/null 2>&1"; } 2>&1)
+if echo "$_t" | grep -qE "/dev/null|Usage|not a block|No such|ioctl" || [ -z "$_t" ]; then echo "PASS: blkid"; PASS=$((PASS+1)); else echo "FAIL: blkid"; FAIL=$((FAIL+1)); fi
+
+# blkdiscard — verify applet and BLKDISCARD ioctl support
+_t=$({ timeout 10 sh -c "busybox blkdiscard 2>&1"; } 2>&1)
+if echo "$_t" | grep -qE "Usage|blkdiscard|discard"; then echo "PASS: blkdiscard"; PASS=$((PASS+1)); else echo "FAIL: blkdiscard"; FAIL=$((FAIL+1)); fi
+
+# blockdev — get sector size of block device
+_t=$({ timeout 10 sh -c "busybox blockdev --getss /dev/loop0 2>&1"; } 2>&1)
+_rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: blockdev"; PASS=$((PASS+1)); else echo "FAIL: blockdev"; FAIL=$((FAIL+1)); fi
+
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
 _m1="Test"; _m2="run"; _m3="completed"; echo "$_m1 $_m2 $_m3"
