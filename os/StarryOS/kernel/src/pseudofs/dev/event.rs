@@ -1,5 +1,20 @@
 use alloc::{format, sync::Arc};
-use core::{any::Any, task::Context, time::Duration};
+use core::{
+    any::Any,
+    sync::atomic::{AtomicU32, Ordering},
+    task::Context,
+    time::Duration,
+};
+
+/// Number of registered `/dev/input/event*` nodes. Populated by
+/// [`input_devices`] at boot and read by sysfs so
+/// `/sys/class/input/event<N>` matches reality.
+static EVENT_DEVICE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Returns the number of `/dev/input/event*` devices currently exposed.
+pub fn input_device_count() -> u32 {
+    EVENT_DEVICE_COUNT.load(Ordering::Acquire)
+}
 
 #[allow(unused_imports)]
 use ax_driver::prelude::{
@@ -323,27 +338,40 @@ impl Pollable for EventDev {
 
 pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
     let mut inputs = DirMapping::new();
-    let mut input_id = 0;
+    let mut input_id: u32 = 0;
     let input_devices = ax_input::take_inputs();
     let mut keys = [0; 0x300usize.div_ceil(8)];
-    for (i, mut device) in input_devices.into_iter().enumerate() {
+    for mut device in input_devices.into_iter() {
         assert!(device.get_event_bits(EventType::Key, &mut keys).unwrap());
 
-        let dev = Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(13, (i + 1) as _),
-            Arc::new(EventDev::new(device)),
-        );
-
         const BTN_MOUSE: usize = 0x110;
-        if keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0 {
-            // Mouse
+        let is_mouse_only = keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0;
+        if is_mouse_only {
+            // PS/2-style mouse aggregator. No per-device evdev node, no
+            // sysfs entry — exposed as /dev/input/mice with the legacy
+            // mousedev minor (63).
+            let dev = Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(13, 63),
+                Arc::new(EventDev::new(device)),
+            );
             inputs.add("mice", dev);
         } else {
+            // /dev/input/event<N> with Linux's EVDEV_MINOR_BASE = 64.
+            // libinput's evdev_device_have_same_syspath compares
+            // fstat().st_rdev against the (major:minor) recorded in
+            // /sys/class/input/event<N>/dev — they have to agree.
+            let dev = Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(13, (64 + input_id) as _),
+                Arc::new(EventDev::new(device)),
+            );
             inputs.add(format!("event{input_id}"), dev);
             input_id += 1;
         }
     }
+    EVENT_DEVICE_COUNT.store(input_id, Ordering::Release);
     inputs
 }

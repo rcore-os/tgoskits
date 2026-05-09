@@ -9,7 +9,7 @@ mod dma_heap;
 #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod drm;
 #[cfg(feature = "input")]
-mod event;
+pub mod event;
 mod fb;
 #[cfg(feature = "dev-log")]
 mod log;
