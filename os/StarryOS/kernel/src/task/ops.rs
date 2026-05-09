@@ -126,9 +126,19 @@ pub fn poll_timer(task: &TaskInner) {
         // reentrant borrow, likely IRQ
         return;
     };
-    time.poll(|signo| {
+    let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    });
+    };
+    time.poll(emitter);
+}
+
+/// Poll the process-level POSIX timers.
+pub fn poll_process_timer(pid: Pid) {
+    if let Ok(proc_data) = get_process_data(pid) {
+        proc_data.posix_timers.poll_expired(pid, |sig| {
+            let _ = send_signal_to_process(pid, Some(sig));
+        });
+    }
 }
 
 /// Sets the timer state.
@@ -140,9 +150,10 @@ pub fn set_timer_state(task: &TaskInner, state: TimerState) {
         // reentrant borrow, likely IRQ
         return;
     };
-    time.poll(|signo| {
+    let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    });
+    };
+    time.poll(emitter);
     time.set_state(state);
 }
 
@@ -165,7 +176,7 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
         .checked_add_signed(offset)
         .ok_or(AxError::InvalidInput)?;
     let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
-    let key = FutexKey::new_current(address);
+    let key = FutexKey::new_current_teardown(address);
 
     let futex_table = futex_table_for(&key);
 
@@ -218,7 +229,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
     if clear_child_tid.vm_write(0).is_ok() {
-        let key = FutexKey::new_current(clear_child_tid as usize);
+        let key = FutexKey::new_current_teardown(clear_child_tid as usize);
         let table = futex_table_for(&key);
         let guard = table.get(&key);
         if let Some(futex) = guard {
