@@ -48,9 +48,8 @@ use trait_ffi::*;
 
 /// A simple IRQ handler function pointer type.
 ///
-/// This is a function that takes no arguments and returns nothing,
-/// used for handling interrupt requests (IRQs) in the kernel.
-pub type IrqHandler = fn();
+/// The handler receives the IRQ number that triggered it.
+pub type IrqHandler = fn(usize);
 
 /// The kernel helper trait that platform implementations must provide.
 #[def_extern_trait]

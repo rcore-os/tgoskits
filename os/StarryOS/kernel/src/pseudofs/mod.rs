@@ -7,15 +7,16 @@ mod file;
 mod fs;
 mod proc;
 mod tmp;
+#[cfg(feature = "plat-dyn")]
+pub(crate) mod usbfs;
 
 use alloc::sync::Arc;
 
 use ax_errno::LinuxResult;
 use ax_fs::{FS_CONTEXT, FsContext};
-use axfs_ng_vfs::{
-    DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry,
-    path::{Path, PathBuf},
-};
+#[cfg(not(feature = "plat-dyn"))]
+use axfs_ng_vfs::path::{Path, PathBuf};
+use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 pub use tmp::MemoryFs;
 
 pub use self::{device::*, dir::*, file::*, fs::*};
@@ -63,20 +64,27 @@ pub fn mount_all() -> LinuxResult<()> {
 
     let fs = FS_CONTEXT.lock();
     mount_at(&fs, "/dev", dev::new_devfs())?;
+    #[cfg(feature = "plat-dyn")]
+    mount_at(&fs, "/dev/bus/usb", usbfs::new_usbfs()?)?;
     mount_at(&fs, "/dev/shm", tmp::MemoryFs::new())?;
     mount_at(&fs, "/tmp", tmp::MemoryFs::new())?;
     mount_at(&fs, "/proc", proc::new_procfs())?;
 
-    mount_at(&fs, "/sys", tmp::MemoryFs::new())?;
-    let mut path = PathBuf::new();
-    for comp in Path::new("/sys/class/graphics/fb0/device").components() {
-        path.push(comp.as_str());
-        if fs.resolve(&path).is_err() {
-            fs.create_dir(&path, DIR_PERMISSION)?;
+    #[cfg(feature = "plat-dyn")]
+    mount_at(&fs, "/sys", usbfs::new_sysfs())?;
+    #[cfg(not(feature = "plat-dyn"))]
+    {
+        mount_at(&fs, "/sys", tmp::MemoryFs::new())?;
+        let mut path = PathBuf::new();
+        for comp in Path::new("/sys/class/graphics/fb0/device").components() {
+            path.push(comp.as_str());
+            if fs.resolve(&path).is_err() {
+                fs.create_dir(&path, DIR_PERMISSION)?;
+            }
         }
+        path.push("subsystem");
+        fs.symlink("whatever", &path)?;
     }
-    path.push("subsystem");
-    fs.symlink("whatever", &path)?;
     drop(fs);
 
     #[cfg(feature = "dev-log")]
