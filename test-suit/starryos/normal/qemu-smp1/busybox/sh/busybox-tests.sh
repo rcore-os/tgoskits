@@ -255,6 +255,9 @@ if echo "$_t" | grep -qF "Usage: ipcrm"; then echo "PASS: busybox_ipcrm"; PASS=$
 _t=$({ timeout 10 sh -c "busybox ipcs 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Message Queues"; then echo "PASS: busybox_ipcs"; PASS=$((PASS+1)); else echo "FAIL: busybox_ipcs"; FAIL=$((FAIL+1)); fi
 
+_t=$({ timeout 10 sh -c "busybox ip link 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "link/"; then echo "PASS: busybox_ip"; PASS=$((PASS+1)); else echo "FAIL: busybox_ip"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox ip neigh show 2>&1; busybox echo ipneigh_ok"; } 2>&1)
 if echo "$_t" | grep -qF "ipneigh_ok"; then echo "PASS: busybox_ipneigh"; PASS=$((PASS+1)); else echo "FAIL: busybox_ipneigh"; FAIL=$((FAIL+1)); fi
 
