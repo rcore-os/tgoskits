@@ -57,6 +57,15 @@ def check_clean_base():
         )
     upstream_head = result.stdout.strip()
 
+    if not upstream_head:
+        print(
+            "BLOCKED: Cannot reach upstream/dev or origin/dev.\n"
+            "Check your network connection and remote configuration:\n"
+            "  git remote -v",
+            file=sys.stderr
+        )
+        return False
+
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", upstream_head],
         capture_output=True, text=True, cwd=workspace

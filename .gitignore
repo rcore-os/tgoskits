@@ -62,3 +62,7 @@ os/StarryOS-REF
 .claude/cache/*.json
 .claude/cache/*.hash
 .claude/cache/*.flag
+
+# Claude plugin runtime artifacts
+/log.md
+/*-journal.md

@@ -265,10 +265,10 @@ Commands:
   rebuild --push       Force rebuild + validate + push to remote
 
 Examples:
-  ./scripts/local-ci.sh quick
-  ./scripts/local-ci.sh test starry aarch64
-  ./scripts/local-ci.sh full
-  ./scripts/local-ci.sh rebuild --push
+  .claude/scripts/local-ci.sh quick
+  .claude/scripts/local-ci.sh test starry aarch64
+  .claude/scripts/local-ci.sh full
+  .claude/scripts/local-ci.sh rebuild --push
 EOF
 }
 

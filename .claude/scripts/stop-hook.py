@@ -30,9 +30,13 @@ if os.path.exists(journal_path):
 
 # Generate journal
 generator = os.path.join(PLUGIN_ROOT, "scripts", "journal-generator.py")
-subprocess.run([sys.executable, generator, task_name], cwd=workspace)
+result = subprocess.run([sys.executable, generator, task_name], cwd=workspace)
 
-# Cleanup
+if result.returncode != 0:
+    print(f"Journal generator failed with exit code {result.returncode}", file=sys.stderr)
+    sys.exit(0)  # Don't cleanup flag — allow retry next session
+
+# Cleanup only on success
 os.remove(FLAG_FILE)
 if os.path.exists(STARTED_FILE):
     os.remove(STARTED_FILE)
