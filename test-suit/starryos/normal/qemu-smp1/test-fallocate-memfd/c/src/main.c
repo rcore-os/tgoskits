@@ -5,7 +5,6 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
-#include <linux/memfd.h>
 
 /*
  * test-fallocate-memfd: weston 的 os_create_anonymous_file 用

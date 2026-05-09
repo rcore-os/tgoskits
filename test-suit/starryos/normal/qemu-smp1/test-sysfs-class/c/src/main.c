@@ -4,7 +4,11 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/stat.h>
-#include <linux/limits.h>
+#include <limits.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 /*
  * test-sysfs-class: 验证 /sys/class/<subsystem>/<name> 的形状对得上
