@@ -11,5 +11,6 @@ mod signalfd;
 mod stat;
 
 pub use self::{
-    ctl::*, event::*, fd_ops::*, io::*, memfd::*, mount::*, pidfd::*, pipe::*, signalfd::*, stat::*,
+    ctl::*, event::*, fd_ops::*, io::*, lock::release_pid_locks, memfd::*, mount::*, pidfd::*,
+    pipe::*, signalfd::*, stat::*,
 };

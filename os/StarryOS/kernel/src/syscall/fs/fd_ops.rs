@@ -17,7 +17,7 @@ use crate::{
         Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
         with_fs,
     },
-    mm::{UserPtr, vm_load_string},
+    mm::vm_load_string,
     pseudofs::{Device, dev::tty},
     task::AsThread,
 };

@@ -10,9 +10,10 @@
 //! covered):
 //!   * `F_SETLKW` and blocking `flock` do not actually block — they return
 //!     `EAGAIN` on conflict, just like the non-blocking variants.
-//!   * POSIX `close()`-triggered release of all per-pid locks on an inode
-//!     is not implemented; locks live until explicit `F_UNLCK` or process
-//!     exit.
+//!   * POSIX `close(fd)` does NOT release the calling pid's locks on that
+//!     inode (Linux does — see `fcntl(2)` "OFD vs POSIX"). Use OFD locks
+//!     (`F_OFD_*`) for release-on-close. Process *exit* does release the
+//!     exiting pid's POSIX locks — see [`release_pid_locks`].
 //!   * Only `SEEK_SET` is accepted for `l_whence`.
 //!   * Mandatory (kernel-enforced) locking is not supported.
 
@@ -26,8 +27,8 @@ use core::ffi::c_int;
 use ax_errno::{AxError, AxResult};
 use ax_task::current;
 use linux_raw_sys::general::{
-    F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK, LOCK_EX,
-    LOCK_NB, LOCK_SH, LOCK_UN, SEEK_SET, flock64,
+    F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
+    LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, SEEK_SET, flock64,
 };
 use spin::RwLock;
 use starry_process::Pid;
@@ -374,6 +375,23 @@ pub fn dispatch_fcntl(fd: c_int, cmd: c_int, arg: usize) -> Option<AxResult<isiz
     })
 }
 
+/// Release every POSIX (`fcntl`) lock owned by `pid`. Called from the
+/// process-exit hook (`task::ops`) so that a process that crashes or
+/// exits without explicit `F_UNLCK` does not leave its records pinned in
+/// `FCNTL_LOCKS`. OFD entries are untouched: their owner is the open
+/// file description, which is already cleaned up by `close_all_fds`
+/// dropping the underlying `Arc<dyn FileLike>`.
+pub fn release_pid_locks(pid: Pid) {
+    let mut table = FCNTL_LOCKS.write();
+    table.retain(|_inode, entries| {
+        entries.retain(|e| match &e.owner {
+            FOwner::Posix { pid: p } => *p != pid,
+            FOwner::Ofd { .. } => true,
+        });
+        !entries.is_empty()
+    });
+}
+
 // ─── flock(2) ──────────────────────────────────────────────────────────
 
 /// Implementation of `sys_flock`. Supports `LOCK_SH`, `LOCK_EX`, `LOCK_UN`,
@@ -405,12 +423,16 @@ pub fn flock_op(fd: c_int, operation: c_int) -> AxResult<isize> {
                 false
             }
             Some(want) => {
-                // For upgrade/downgrade, drop our own entry first so we
-                // don't conflict with ourselves.
-                entries.retain(|e| e.addr != addr);
-                if entries.iter().any(|e| kinds_conflict(e.kind, want)) {
+                // Check conflict against OTHER OFDs only — leave our own
+                // existing entry in place so a failed upgrade rolls back
+                // to the original lock instead of silently dropping it.
+                let blocked = entries
+                    .iter()
+                    .any(|e| e.addr != addr && kinds_conflict(e.kind, want));
+                if blocked {
                     true
                 } else {
+                    entries.retain(|e| e.addr != addr);
                     entries.push(FlockEntry {
                         addr,
                         weak: Arc::downgrade(&file),
