@@ -104,6 +104,7 @@ pub fn sys_execve(
     proc_data.set_heap_top(USER_HEAP_BASE);
 
     proc_data.signal.reset_actions();
+    proc_data.posix_timers.clear();
 
     // Clear set_child_tid after exec since the original address is no longer valid
     curr.as_thread().set_clear_child_tid(0);

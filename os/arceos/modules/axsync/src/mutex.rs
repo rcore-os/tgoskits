@@ -34,6 +34,12 @@ impl RawMutex {
     fn is_owner(&self, owner_id: u64) -> bool {
         self.owner_id.load(Ordering::Acquire) == owner_id
     }
+
+    /// Returns whether the current task already owns this mutex.
+    #[inline(always)]
+    pub fn is_owned_by_current(&self) -> bool {
+        self.is_owner(current().id().as_u64())
+    }
 }
 
 impl Default for RawMutex {

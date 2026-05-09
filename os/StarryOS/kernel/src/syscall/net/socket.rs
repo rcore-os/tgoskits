@@ -16,14 +16,15 @@ use axnet::{
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
-        AF_INET, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR,
-        SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
+        AF_INET, AF_NETLINK, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD,
+        SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
     },
+    netlink::NETLINK_KOBJECT_UEVENT,
 };
 
 use super::addr::SocketAddrExt;
 use crate::{
-    file::{FileLike, Socket},
+    file::{FileLike, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
     task::AsThread,
 };
@@ -48,6 +49,17 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         }
         (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
         (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
+        (AF_NETLINK, SOCK_RAW) => {
+            if proto != NETLINK_KOBJECT_UEVENT {
+                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
+            }
+            let socket = NetlinkSocket::new(proto);
+            if raw_ty & O_NONBLOCK != 0 {
+                socket.set_nonblocking(true)?;
+            }
+            let cloexec = raw_ty & O_CLOEXEC != 0;
+            return add_file_like(socket as _, cloexec).map(|fd| fd as isize);
+        }
         #[cfg(feature = "vsock")]
         (AF_VSOCK, SOCK_STREAM) => VsockSocket::new(VsockStreamTransport::new()).into(),
         (AF_INET, SOCK_RAW) => {
@@ -59,7 +71,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             }
             SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
         }
-        (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
+        (AF_INET, _) | (AF_UNIX, _) | (AF_NETLINK, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
@@ -78,6 +90,16 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
 }
 
 pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult<isize> {
+    if let Ok(socket) = NetlinkSocket::from_fd(fd) {
+        let mut addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
+        if addr.nl_pid == 0 {
+            addr.nl_pid = current().as_thread().proc_data.proc.pid();
+        }
+        debug!("sys_bind <= fd: {fd}, netlink_addr: {addr:?}");
+        socket.bind(addr)?;
+        return Ok(0);
+    }
+
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
 
