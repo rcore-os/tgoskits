@@ -432,21 +432,11 @@ jobs:
         && needs.detect_changes.outputs.ci_checks == 'true'
         && needs.fmt.result == 'success'
         && needs.post_fmt_checks.result == 'success'
-        && (
-          needs.publish_base_container.result == 'success'
-          || needs.publish_base_container.result == 'skipped'
-        )
-        && (
-          needs.publish_axvisor_lvz_container.result == 'success'
-          || needs.publish_axvisor_lvz_container.result == 'skipped'
-        )
       }}
     needs:
       - detect_changes
       - fmt
       - post_fmt_checks
-      - publish_base_container
-      - publish_axvisor_lvz_container
     runs-on: ubuntu-latest
     concurrency:
       group: release-plz-release-${{ github.ref_name }}
