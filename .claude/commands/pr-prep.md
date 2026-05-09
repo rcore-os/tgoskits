@@ -69,7 +69,7 @@ Do NOT proceed to Phase 4 until CI passes.
 
 ## Phase 4: Self-Review Loop
 
-Once CI passes, launch the PR-Review Agent. Read `.claude/agents/pr-review.md` if it exists and follow its workflow. If the agent file does not exist yet (it's being created in Batch 4), perform a manual review:
+Once CI passes, launch the PR-Review Agent. Read `.claude/agents/pr-review.md` and follow its workflow:
 
 1. Review each changed file for:
    - Syscall semantics: do return values and errno match POSIX/Linux?
