@@ -173,6 +173,9 @@ pub fn sys_fallocate(
     len: __kernel_off_t,
 ) -> AxResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
+    // Validate fd first: invalid/closed/dir/read-only → EBADF, pipe → ESPIPE.
+    // Linux errno priority: EBADF/ESPIPE > EOPNOTSUPP > EINVAL.
+    let f = file_or_espipe_write(fd)?;
     if mode != 0 {
         return Err(AxError::OperationNotSupported);
     }
@@ -186,7 +189,6 @@ pub fn sys_fallocate(
     if end > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
     }
-    let f = file_or_espipe(fd)?;
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
     file.set_len(file.location().len()?.max(end))?;
@@ -240,8 +242,14 @@ pub fn sys_fadvise64(
     advice: u32,
 ) -> AxResult<isize> {
     debug!("sys_fadvise64 <= fd: {fd}, offset: {offset}, len: {len}, advice: {advice}");
-    if Pipe::from_fd(fd).is_ok() {
+    // Validate fd first: invalid/closed → EBADF, non-file/non-dir → ESPIPE.
+    // Linux fadvise64 accepts regular files and directories (advisory hint).
+    let f = get_file_like(fd)?;
+    if f.downcast_ref::<File>().is_none() && f.downcast_ref::<Directory>().is_none() {
         return Err(AxError::from(LinuxError::ESPIPE));
+    }
+    if len < 0 {
+        return Err(AxError::InvalidInput);
     }
     if advice > 5 {
         return Err(AxError::InvalidInput);
