@@ -75,3 +75,108 @@ cargo test -p starry-kernel per_thread_signal_check_block_is_isolated -- --nocap
   `kernel/src/mm/io.rs`
   `kernel/src/task/ops.rs`
   `kernel/src/syscall/signal.rs`
+
+## Bug 4：`/proc/stat` 缺失导致 `busybox iostat` 无法工作
+
+- 类型：语义、正确性、兼容性
+- 关联用户态程序：
+  `busybox iostat`
+- 修复前相关代码：
+  `kernel/src/pseudofs/proc.rs`
+- 修复后相关代码：
+  `kernel/src/pseudofs/proc.rs`
+  `test-suit/starryos/normal/qemu-smp1/busybox-iostat`
+
+### 问题现象
+
+在 StarryOS 中执行 `busybox iostat 1 1` 时，程序不会输出 CPU/磁盘统计信息，而是直接报错退出：
+
+`iostat: can't open '/proc/stat': No such file or directory`
+
+这说明用户态工具已经正常启动，但在读取 Linux 兼容接口时立刻失败。进一步检查还可以发现，StarryOS 的 `/proc` 根目录虽然已经实现了 `meminfo`、`mounts`、`interrupts` 等节点，但仍然缺少 `iostat` 依赖的几个基础统计文件：
+
+- `/proc/stat`
+- `/proc/diskstats`
+- `/proc/uptime`
+
+由于这些节点不存在，`busybox iostat` 在最开始读取 CPU 统计信息时就直接退出，后续逻辑完全没有机会继续执行。
+
+### 为什么这是 bug
+
+- `busybox iostat` 是典型的 Linux 用户态系统观测工具，它不是依赖某个私有驱动接口，而是依赖标准 procfs 统计节点。
+- StarryOS 已经提供了 `/proc` 文件系统，并且目标就是模拟 Linux 兼容环境；在这种前提下，缺失 `iostat` 所依赖的核心节点会导致兼容性断裂。
+- 这不是“功能还没做”的抽象缺口，而是一个可以被稳定复现的用户态失败：命令启动后立刻因为缺文件报错。
+- 即使当前系统里没有完整的磁盘吞吐统计数据，也至少应该提供最基本、可读取、格式正确的 procfs 节点，让标准工具能够运行并输出合理的结果，而不是直接失败。
+
+### 修复方式
+
+本次修复没有去扩展复杂的块设备统计逻辑，而是采用“最小兼容补全”的方式，先把 `busybox iostat` 真正依赖的 procfs 接口补上：
+
+- 在 `kernel/src/pseudofs/proc.rs` 中新增 `/proc/stat`：
+  - 提供总 CPU 行 `cpu ...`
+  - 提供每个逻辑 CPU 的 `cpuN ...` 行
+  - 补充 `intr`、`ctxt`、`btime`、`processes`、`procs_running`、`procs_blocked`、`softirq` 等基础字段
+- 新增 `/proc/uptime`：
+  - 基于系统单调时钟 `monotonic_time_nanos()` 动态生成运行时间
+  - 以 Linux 常见的“秒.百分秒”格式输出
+- 新增 `/proc/diskstats`：
+  - 当前先提供一个可打开、可读取的空统计文件
+  - 这样 `iostat` 不会因为节点缺失而中止，后续即使没有设备统计，也可以先完成 CPU 部分输出
+- 新增若干单元测试，验证：
+  - `/proc/stat` 的 CPU 行格式正确
+  - `/proc/uptime` 的时间格式正确
+  - `/proc/diskstats` 至少稳定存在
+  - CPU 空闲 tick 计算遵循 Linux 常见的 `USER_HZ=100`
+
+这个修复策略的核心不是伪造复杂数据，而是先补齐 Linux 用户态真正依赖的接口边界，让标准工具从“直接失败”变成“能够正常工作并输出可解析结果”。
+
+### Docker 验证
+
+验证使用 `starryos-dev:ubuntu-qemu10.2.1` 镜像完成。
+
+#### 1. 修复前，bug 确实存在
+
+在修复前的临时 probe case 中，QEMU 内执行 `busybox iostat 1 1` 的实际输出为：
+
+`iostat: can't open '/proc/stat': No such file or directory`
+
+这一步用来证明：问题不是测例写错，也不是 `busybox` 自身不可用，而是 StarryOS 的 procfs 缺少必要节点，导致 `iostat` 无法运行。
+
+#### 2. 修复后，专用回归测例通过
+
+新增测例：
+
+- `test-suit/starryos/normal/qemu-smp1/busybox-iostat/qemu-x86_64.toml`
+- `test-suit/starryos/normal/qemu-smp1/busybox-iostat/sh/busybox-iostat.sh`
+
+验证命令：
+
+```bash
+docker run --rm -v "$PWD":/workspace -w /workspace \
+  starryos-dev:ubuntu-qemu10.2.1 \
+  bash -lc '
+    set -e
+    export RUSTUP_TOOLCHAIN=nightly-2026-04-27
+    cargo xtask starry test qemu --target x86_64-unknown-none -c busybox-iostat
+  '
+```
+
+修复后的 QEMU 关键输出：
+
+```text
+Linux 10.0.0 (starry)  05/09/26  _x86_64_  (1 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           0.00    0.00    0.00    0.00    0.00  100.00
+
+Device:            tps   Blk_read/s   Blk_wrtn/s   Blk_read   Blk_wrtn
+TEST PASSED
+```
+
+这说明修复后 `busybox iostat` 已经可以正常读取 procfs 并完成输出，不再因为缺少 `/proc/stat` 而直接失败。
+
+### 附加检查
+
+- 已运行 `cargo fmt --manifest-path Cargo.toml --all`
+- 已在 docker 中运行 `cargo check -p starry-kernel --all-targets`，通过
+- 已在 docker 中运行 `cargo xtask clippy --package starry-kernel`，7 个检查全部通过

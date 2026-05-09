@@ -14,7 +14,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_hal::paging::MappingFlags;
+use ax_hal::{paging::MappingFlags, time::monotonic_time_nanos};
 use ax_task::{AxCpuMask, AxTaskRef, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
 use indoc::indoc;
@@ -89,6 +89,8 @@ const DUMMY_MEMINFO: &str = indoc! {"
     DirectMap2M:    31492096 kB
     DirectMap1G:     1048576 kB
 "};
+
+const USER_HZ: u64 = 100;
 
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
@@ -247,6 +249,49 @@ where
     }
 
     cpu_presence
+}
+
+fn nanos_to_clock_ticks(nanos: u64) -> u64 {
+    nanos.saturating_mul(USER_HZ) / 1_000_000_000
+}
+
+fn render_proc_stat() -> String {
+    render_proc_stat_with_uptime(monotonic_time_nanos() as u64, ax_hal::cpu_num())
+}
+
+fn render_proc_stat_with_uptime(uptime_nanos: u64, cpu_num: usize) -> String {
+    let idle_ticks = nanos_to_clock_ticks(uptime_nanos);
+    let mut output = format!("cpu  0 0 0 {idle_ticks} 0 0 0 0 0 0\n");
+
+    for cpu in 0..cpu_num {
+        let _ = writeln!(output, "cpu{cpu} 0 0 0 {idle_ticks} 0 0 0 0 0 0");
+    }
+
+    output.push_str("intr 0\n");
+    output.push_str("ctxt 0\n");
+    output.push_str("btime 0\n");
+    output.push_str("processes 0\n");
+    output.push_str("procs_running 1\n");
+    output.push_str("procs_blocked 0\n");
+    output.push_str("softirq 0 0 0 0 0 0 0 0 0 0 0\n");
+    output
+}
+
+fn render_proc_diskstats() -> &'static str {
+    ""
+}
+
+fn render_proc_uptime() -> String {
+    render_proc_uptime_from_nanos(monotonic_time_nanos() as u64, ax_hal::cpu_num())
+}
+
+fn render_proc_uptime_from_nanos(uptime_nanos: u64, cpu_num: usize) -> String {
+    let secs = uptime_nanos / 1_000_000_000;
+    let centis = (uptime_nanos % 1_000_000_000) / 10_000_000;
+    let idle_nanos = uptime_nanos.saturating_mul(cpu_num as u64);
+    let idle_secs = idle_nanos / 1_000_000_000;
+    let idle_centis = (idle_nanos % 1_000_000_000) / 10_000_000;
+    format!("{secs}.{centis:02} {idle_secs}.{idle_centis:02}\n")
 }
 
 /// The /proc/[pid]/fd directory
@@ -543,6 +588,18 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         }),
     );
     root.add(
+        "stat",
+        SimpleFile::new_regular(fs.clone(), || Ok(render_proc_stat())),
+    );
+    root.add(
+        "diskstats",
+        SimpleFile::new_regular(fs.clone(), || Ok(render_proc_diskstats())),
+    );
+    root.add(
+        "uptime",
+        SimpleFile::new_regular(fs.clone(), || Ok(render_proc_uptime())),
+    );
+    root.add(
         "instret",
         SimpleFile::new_regular(fs.clone(), || {
             #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
@@ -645,7 +702,8 @@ mod tests {
 
     use super::{
         collect_cpu_presence, format_cpu_presence_hex, format_cpu_presence_list,
-        render_task_status_fields,
+        nanos_to_clock_ticks, render_proc_diskstats, render_proc_stat_with_uptime,
+        render_proc_uptime_from_nanos, render_task_status_fields,
     };
     use crate::task::Cred;
 
@@ -704,5 +762,35 @@ mod tests {
         assert!(status.contains("Pid:\t84\n"));
         assert!(status.contains("Cpus_allowed:\t0000000a\n"));
         assert!(status.contains("Cpus_allowed_list:\t1,3\n"));
+    }
+
+    #[test]
+    fn proc_stat_reports_cpu_totals_and_core_lines() {
+        let stat = render_proc_stat_with_uptime(2_500_000_000, 2);
+
+        assert!(stat.starts_with("cpu  0 0 0 250 0 0 0 0 0 0\n"));
+        assert!(stat.contains("cpu0 0 0 0 250 0 0 0 0 0 0\n"));
+        assert!(stat.contains("cpu1 0 0 0 250 0 0 0 0 0 0\n"));
+        assert!(stat.contains("procs_running 1\n"));
+        assert!(stat.contains("softirq 0 0 0 0 0 0 0 0 0 0 0\n"));
+    }
+
+    #[test]
+    fn proc_uptime_formats_seconds_and_idle_centiseconds() {
+        let uptime = render_proc_uptime_from_nanos(12_340_000_000, 2);
+
+        assert_eq!(uptime, "12.34 24.68\n");
+    }
+
+    #[test]
+    fn proc_diskstats_exists_even_when_no_device_stats_are_available() {
+        assert_eq!(render_proc_diskstats(), "");
+    }
+
+    #[test]
+    fn proc_stat_idle_ticks_follow_linux_user_hz() {
+        assert_eq!(nanos_to_clock_ticks(0), 0);
+        assert_eq!(nanos_to_clock_ticks(1_000_000_000), 100);
+        assert_eq!(nanos_to_clock_ticks(2_500_000_000), 250);
     }
 }
