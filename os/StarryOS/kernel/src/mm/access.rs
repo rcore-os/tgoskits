@@ -438,7 +438,7 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
             guard.protect(aligned_addr, aligned_length, original_flags)?;
             Ok(())
         },
-        move || sync_modified_kernel_text(aligned_addr, aligned_length),
+        move || sync_modified_kernel_text(aligned_addr, aligned_length, addr),
     )
 }
 
@@ -448,8 +448,11 @@ fn flush_tlb_range(start: VirtAddr, size: usize) {
     }
 }
 
-fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
+fn sync_modified_kernel_text(start: VirtAddr, size: usize, _addr: VirtAddr) {
     flush_tlb_range(start, size);
+
+    #[cfg(target_arch = "aarch64")]
+    ax_hal::asm::flush_dcache_line(_addr);
 
     ax_hal::asm::flush_icache_all();
 }
