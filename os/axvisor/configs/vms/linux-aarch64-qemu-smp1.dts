@@ -389,7 +389,7 @@
 	};
 
 	chosen {
-		bootargs = "root=/dev/vda rw init=/init";
+		bootargs = "root=/dev/vda rw init=/bin/sh";
 		stdout-path = "/pl011@9000000";
 		rng-seed = <0xc63e7c7f 0x25869631 0xfa243fbb 0xe48363de 0xfd9dc3ce 0x5127dfe3 0x88de6403 0xb04a0eef>;
 		kaslr-seed = <0xdcf4331d 0x73a35db>;

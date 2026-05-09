@@ -76,8 +76,8 @@ pub mod paging;
 /// Console input and output.
 pub mod console {
     #[cfg(feature = "irq")]
-    pub use ax_plat::console::irq_num;
-    pub use ax_plat::console::{read_bytes, write_bytes};
+    pub use ax_plat::console::{ConsoleIrqEvent, handle_irq, irq_num, set_input_irq_enabled};
+    pub use ax_plat::console::{read_bytes, write_bytes, write_text_bytes};
 }
 
 /// CPU power management.

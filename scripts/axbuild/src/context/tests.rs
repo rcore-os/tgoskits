@@ -90,6 +90,24 @@ fn snapshot_load_returns_default_when_missing() {
 }
 
 #[test]
+fn snapshot_persistence_can_be_disabled_by_env() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _env = TempEnvVar::set(NO_SNAPSHOT_ENV, "1");
+
+    assert!(!SnapshotPersistence::Store.should_store());
+    assert!(!SnapshotPersistence::Discard.should_store());
+}
+
+#[test]
+fn snapshot_persistence_treats_zero_env_as_enabled() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _env = TempEnvVar::set(NO_SNAPSHOT_ENV, "0");
+
+    assert!(SnapshotPersistence::Store.should_store());
+    assert!(!SnapshotPersistence::Discard.should_store());
+}
+
+#[test]
 fn axvisor_snapshot_load_returns_default_when_missing() {
     let root = tempdir().unwrap();
     let snapshot = AxvisorCommandSnapshot::load(root.path()).unwrap();
@@ -128,7 +146,9 @@ fn axvisor_snapshot_store_round_trips() {
         target: Some(DEFAULT_AXVISOR_TARGET.into()),
         plat_dyn: Some(false),
         smp: None,
-        config: Some(PathBuf::from("os/axvisor/.build.toml")),
+        config: Some(PathBuf::from(
+            "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml",
+        )),
         vmconfigs: vec![PathBuf::from("tmp/vm1.toml"), PathBuf::from("tmp/vm2.toml")],
         qemu: AxvisorQemuSnapshot {
             qemu_config: Some(PathBuf::from("configs/qemu.toml")),
@@ -503,7 +523,7 @@ uboot_config = "configs/uboot.toml"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml")
+            .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
     );
     assert_eq!(
         request.qemu_config,
@@ -523,7 +543,7 @@ uboot_config = "configs/uboot.toml"
     assert_eq!(
         snapshot.config,
         Some(PathBuf::from(
-            "os/axvisor/.build-aarch64-unknown-none-softfloat.toml"
+            "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
         ))
     );
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_AXVISOR_ARCH));
@@ -564,7 +584,7 @@ fn prepare_axvisor_request_resolves_target_from_arch() {
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/axvisor/.build-x86_64-unknown-none.toml")
+            .join("target/axbuild/config/axvisor/build-x86_64-unknown-none.toml")
     );
     assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
     assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
@@ -661,11 +681,13 @@ target = "loongarch64-unknown-none-softfloat"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/axvisor/.build-x86_64-unknown-none.toml")
+            .join("target/axbuild/config/axvisor/build-x86_64-unknown-none.toml")
     );
     assert_eq!(
         snapshot.config,
-        Some(PathBuf::from("os/axvisor/.build-x86_64-unknown-none.toml"))
+        Some(PathBuf::from(
+            "target/axbuild/config/axvisor/build-x86_64-unknown-none.toml"
+        ))
     );
     assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
     assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
@@ -693,12 +715,12 @@ target = "aarch64-unknown-none-softfloat"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml")
+            .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
     );
     assert_eq!(
         snapshot.config,
         Some(PathBuf::from(
-            "os/axvisor/.build-aarch64-unknown-none-softfloat.toml"
+            "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
         ))
     );
 }
@@ -818,7 +840,7 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/StarryOS/starryos/.build-riscv64gc-unknown-none-elf.toml")
+            .join("target/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
     );
     assert_eq!(
         request.qemu_config,

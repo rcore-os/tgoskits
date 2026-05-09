@@ -118,7 +118,7 @@ unsafe fn init_detect_trap(param: usize) -> (bool, Stvec, usize) {
     }
     // use detect trap handler to handle exceptions
     let stored_stvec = stvec::read();
-    let mut trap_addr = on_detect_trap as usize;
+    let mut trap_addr = on_detect_trap as *const () as usize;
     if trap_addr & 0b1 != 0 {
         trap_addr += 0b1;
     }

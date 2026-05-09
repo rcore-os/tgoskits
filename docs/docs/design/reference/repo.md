@@ -310,4 +310,4 @@ python3 scripts/repo/repo.py init -f scripts/repo/repos.csv
 
 ### 6.4 查看仓库当前是否仍有自动同步
 
-当前主仓库默认只保留常规测试 workflow。历史上的 `push.yml` / `release.yml` 自动化流程已从启用状态中移除，不应再按“push 后自动同步”或“自动创建同步 PR”的方式理解本仓库。
+当前主仓库默认只保留常规测试 workflow。历史上的自动同步与自动发布流程已从启用状态中移除，不应再按“push 后自动同步”或“自动创建同步 PR”的方式理解本仓库。

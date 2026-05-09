@@ -141,4 +141,3 @@ fn convert_vsock_event(event: VsockEvent) -> DevResult<VsockDriverEvent> {
         _ => Ok(VsockDriverEvent::Unknown),
     }
 }
-

@@ -65,6 +65,14 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
                 let inner = device.inner().as_any();
+                #[cfg(feature = "plat-dyn")]
+                if crate::pseudofs::usbfs::is_usbfs_device(inner) {
+                    let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
+                    if flags & O_NONBLOCK != 0 {
+                        wrapped.set_nonblocking(true)?;
+                    }
+                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                }
                 if let Some(ptmx) = inner.downcast_ref::<tty::Ptmx>() {
                     // Opening /dev/ptmx creates a new pseudo-terminal
                     let (master, pty_number) = ptmx.create_pty()?;
@@ -258,7 +266,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
 
             let mut ret = f.open_flags();
             if f.nonblocking() {
-                ret |= O_NONBLOCK as u32;
+                ret |= O_NONBLOCK;
             }
 
             Ok(ret as _)

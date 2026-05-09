@@ -383,7 +383,13 @@ impl FileNodeOps for Inode {
                 let iblocks_used = used_datablocks.saturating_mul(BLOCK_SIZE as u64 / 512) as u32;
                 inode.i_blocks_lo = iblocks_used;
                 inode.l_i_blocks_high = 0;
-                rsext4::file::build_file_block_mapping(fs, &mut inode, &data_blocks, dev);
+                rsext4::file::build_file_block_mapping_with_inode_num(
+                    fs,
+                    &mut inode,
+                    self.ino,
+                    &data_blocks,
+                    dev,
+                );
             }
 
             fs.modify_inode(dev, self.ino, |on_disk| {

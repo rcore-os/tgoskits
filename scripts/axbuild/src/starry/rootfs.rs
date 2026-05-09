@@ -3,20 +3,120 @@
 //! Main responsibilities:
 //! - Resolve and prepare the default managed rootfs used by StarryOS targets
 //! - Patch QEMU configs so StarryOS boots with the expected rootfs image
-//! - Build case-specific rootfs assets for C and shell-based Starry test cases
-//! - Orchestrate staging roots, overlays, runtime dependency sync, and helper
-//!   tooling around rootfs content injection
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use anyhow::bail;
-use ostool::run::qemu::QemuConfig;
+use anyhow::{Context, bail};
+use clap::Args;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
+use super::{Starry, apk, build};
 pub(crate) use crate::rootfs::qemu::{RootfsPatchMode, patch_rootfs};
 use crate::{
-    context::{ResolvedStarryRequest, starry_target_for_arch_checked},
-    rootfs::store,
+    context::{DEFAULT_STARRY_ARCH, ResolvedStarryRequest, starry_target_for_arch_checked},
+    rootfs::{inject, store},
+    test::qemu as qemu_test,
 };
+
+#[derive(Args)]
+pub struct ArgsRootfs {
+    #[arg(long)]
+    pub arch: Option<String>,
+}
+
+pub(super) async fn rootfs(starry: &mut Starry, args: ArgsRootfs) -> anyhow::Result<()> {
+    let arch = args.arch.unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
+    let target = starry_target_for_arch_checked(&arch)?.to_string();
+    let disk_img = ensure_rootfs_in_target_dir(starry.app.workspace_root(), &arch, &target).await?;
+    println!("rootfs ready at {}", disk_img.display());
+    Ok(())
+}
+
+pub(super) async fn ensure_quick_start_qemu_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+) -> anyhow::Result<PathBuf> {
+    let target = starry_target_for_arch_checked(arch)?.to_string();
+    ensure_rootfs_in_target_dir(workspace_root, arch, &target).await
+}
+
+pub(super) async fn qemu_with_explicit_rootfs(
+    starry: &mut Starry,
+    request: ResolvedStarryRequest,
+    rootfs: PathBuf,
+) -> anyhow::Result<()> {
+    let rootfs = crate::rootfs::store::resolve_explicit_rootfs(
+        starry.app.workspace_root(),
+        &request.arch,
+        rootfs,
+    );
+    ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), Some(&rootfs)).await?;
+    starry.app.set_debug_mode(request.debug)?;
+    let cargo = build::load_cargo_config(&request)?;
+    let qemu = load_patched_qemu_config(starry, &request, &cargo, Some(&rootfs), false).await?;
+    starry
+        .app
+        .qemu(cargo, request.build_info_path, Some(qemu))
+        .await
+}
+
+pub(super) async fn qemu(
+    starry: &mut Starry,
+    request: ResolvedStarryRequest,
+) -> anyhow::Result<()> {
+    starry.app.set_debug_mode(request.debug)?;
+    let cargo = build::load_cargo_config(&request)?;
+    ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
+    let qemu = load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
+    starry
+        .app
+        .qemu(cargo, request.build_info_path, Some(qemu))
+        .await
+}
+
+pub(super) async fn load_patched_qemu_config(
+    starry: &mut Starry,
+    request: &ResolvedStarryRequest,
+    cargo: &Cargo,
+    explicit_rootfs: Option<&Path>,
+    apply_default_args: bool,
+) -> anyhow::Result<QemuConfig> {
+    let mut qemu = match request.qemu_config.as_deref() {
+        Some(path) => {
+            starry
+                .app
+                .tool_mut()
+                .read_qemu_config_from_path_for_cargo(cargo, path)
+                .await?
+        }
+        None => {
+            starry
+                .app
+                .tool_mut()
+                .ensure_qemu_config_for_cargo(cargo)
+                .await?
+        }
+    };
+
+    if let Some(rootfs) = explicit_rootfs {
+        patch_qemu_rootfs_path(&mut qemu, rootfs);
+    } else if request.qemu_config.is_none() && apply_default_args {
+        patch_qemu_rootfs(&mut qemu, request, starry.app.workspace_root(), None)?;
+    }
+    qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
+
+    Ok(qemu)
+}
+
+const APK_REPOSITORIES_PATH: &str = "/etc/apk/repositories";
+const QEMU_SLIRP_RESOLV_CONF: &str = "nameserver 10.0.2.3\n";
+const EXT_SUPER_MAGIC_OFFSET: u64 = 1080;
+const EXT_SUPER_MAGIC: [u8; 2] = [0x53, 0xef];
 
 /// Ensures the default managed rootfs for a Starry arch/target is available.
 pub(crate) async fn ensure_rootfs_in_target_dir(
@@ -29,57 +129,145 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
         bail!("Starry arch `{arch}` maps to target `{expected_target}`, but got `{target}`");
     }
 
-    store::ensure_rootfs_for_arch(workspace_root, arch).await
+    let rootfs = store::ensure_rootfs_for_arch(workspace_root, arch).await?;
+    ensure_apk_region_in_rootfs(&rootfs)?;
+    Ok(rootfs)
 }
 
-/// Applies the default Starry rootfs-backed QEMU arguments for a request.
-pub(crate) async fn apply_default_qemu_args(
-    workspace_root: &Path,
+/// Ensures a selected rootfs image exists without modifying its contents.
+pub(crate) async fn ensure_qemu_rootfs_ready(
     request: &ResolvedStarryRequest,
-    qemu: &mut QemuConfig,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let disk_img =
-        ensure_rootfs_in_target_dir(workspace_root, &request.arch, &request.target).await?;
-    patch_rootfs(qemu, &disk_img, RootfsPatchMode::EnsureDiskBootNet);
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    store::ensure_optional_managed_rootfs(workspace_root, &request.arch, Some(&rootfs_path)).await
+}
+
+fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
+    if !looks_like_ext_image(rootfs_img)? {
+        return Ok(());
+    }
+
+    let Some(original) = inject::read_text_file(rootfs_img, APK_REPOSITORIES_PATH)? else {
+        sync_qemu_slirp_resolver_in_rootfs(rootfs_img)?;
+        return Ok(());
+    };
+    let region = apk::apk_region_from_env()?;
+    let rewritten = apk::rewrite_apk_repositories_content(&original, region);
+    replace_rootfs_text_file_if_changed(rootfs_img, APK_REPOSITORIES_PATH, &rewritten)?;
+    sync_qemu_slirp_resolver_in_rootfs(rootfs_img)
+}
+
+fn sync_qemu_slirp_resolver_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
+    replace_rootfs_text_file_if_changed(rootfs_img, "/etc/resolv.conf", QEMU_SLIRP_RESOLV_CONF)
+}
+
+fn replace_rootfs_text_file_if_changed(
+    rootfs_img: &Path,
+    guest_path: &str,
+    content: &str,
+) -> anyhow::Result<()> {
+    if inject::read_text_file(rootfs_img, guest_path)?.as_deref() == Some(content) {
+        return Ok(());
+    }
+
+    let temp_purpose = guest_path.trim_start_matches('/').replace('/', "-");
+    let temp_path = unique_temp_file_path(rootfs_img, &temp_purpose)?;
+    fs::write(&temp_path, content)
+        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("failed to chmod {}", temp_path.display()))?;
+    }
+    let replace_result = inject::replace_file(rootfs_img, guest_path, &temp_path);
+    let cleanup_result = fs::remove_file(&temp_path)
+        .with_context(|| format!("failed to remove {}", temp_path.display()));
+
+    replace_result?;
+    cleanup_result?;
     Ok(())
 }
 
-/// Applies or replaces the `-smp` argument in a QEMU config.
-pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
-    let Some(cpu_num) = smp else {
-        return;
-    };
-
-    if let Some(index) = qemu.args.iter().position(|arg| arg == "-smp")
-        && let Some(value) = qemu.args.get_mut(index + 1)
+fn looks_like_ext_image(path: &Path) -> anyhow::Result<bool> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    if file
+        .metadata()
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len()
+        < EXT_SUPER_MAGIC_OFFSET + EXT_SUPER_MAGIC.len() as u64
     {
-        *value = cpu_num.to_string();
-        return;
+        return Ok(false);
     }
 
-    qemu.args.push("-smp".to_string());
-    qemu.args.push(cpu_num.to_string());
+    let mut magic = [0_u8; 2];
+    file.seek(SeekFrom::Start(EXT_SUPER_MAGIC_OFFSET))
+        .with_context(|| format!("failed to seek {}", path.display()))?;
+    file.read_exact(&mut magic)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(magic == EXT_SUPER_MAGIC)
 }
 
-/// Reads the effective CPU count from a QEMU `-smp` argument, if present.
-pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {
-    let index = qemu.args.iter().position(|arg| arg == "-smp")?;
-    let value = qemu.args.get(index + 1)?;
-    parse_smp_qemu_value(value)
+fn unique_temp_file_path(rootfs_img: &Path, purpose: &str) -> anyhow::Result<PathBuf> {
+    let dir = rootfs_img
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("rootfs image has no parent: {}", rootfs_img.display()))?;
+    let image_name = rootfs_img
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("invalid rootfs image path: {}", rootfs_img.display()))?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before UNIX_EPOCH")?
+        .as_nanos();
+    Ok(dir.join(format!(
+        ".{image_name}.{purpose}.{}.{}.tmp",
+        std::process::id(),
+        nanos
+    )))
 }
 
-/// Parses the CPU count encoded in a QEMU `-smp` value.
-fn parse_smp_qemu_value(value: &str) -> Option<usize> {
-    let first = value.split(',').next()?;
-    if let Ok(cpu_num) = first.parse() {
-        return Some(cpu_num);
+/// Patches a QEMU config with the rootfs selected for a Starry request.
+pub(crate) fn patch_qemu_rootfs(
+    qemu: &mut QemuConfig,
+    request: &ResolvedStarryRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<()> {
+    let expected_target = starry_target_for_arch_checked(&request.arch)?;
+    if request.target != expected_target {
+        bail!(
+            "Starry arch `{}` maps to target `{expected_target}`, but got `{}`",
+            request.arch,
+            request.target
+        );
+    }
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    patch_qemu_rootfs_path(qemu, &rootfs_path);
+    Ok(())
+}
+
+/// Resolves the rootfs path selected for a Starry QEMU request.
+pub(crate) fn qemu_rootfs_path(
+    request: &ResolvedStarryRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    if let Some(explicit) = explicit_rootfs {
+        return Ok(explicit.to_path_buf());
     }
 
-    value.split(',').find_map(|part| {
-        let cpu_num = part.strip_prefix("cpus=")?;
-        cpu_num.parse().ok()
-    })
+    store::default_rootfs_path(workspace_root, &request.arch)
 }
+
+/// Patches a QEMU config with a concrete Starry rootfs path.
+pub(crate) fn patch_qemu_rootfs_path(qemu: &mut QemuConfig, rootfs_path: &Path) {
+    patch_rootfs(qemu, rootfs_path, RootfsPatchMode::EnsureDiskBootNet);
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, path::PathBuf};
@@ -89,11 +277,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn apply_default_qemu_args_includes_rootfs_and_network_defaults() {
+    async fn patch_qemu_rootfs_includes_rootfs_and_network_defaults() {
         let root = tempdir().unwrap();
         let rootfs_dir = root.path().join("target/rootfs");
         fs::create_dir_all(&rootfs_dir).unwrap();
-        fs::write(rootfs_dir.join("rootfs-x86_64-alpine.img"), b"rootfs").unwrap();
+        fs::write(
+            rootfs_dir.join("rootfs-x86_64-alpine.img"),
+            vec![0; 1024 * 1024],
+        )
+        .unwrap();
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),
@@ -109,9 +301,7 @@ mod tests {
         };
         let mut qemu = QemuConfig::default();
 
-        apply_default_qemu_args(root.path(), &request, &mut qemu)
-            .await
-            .unwrap();
+        patch_qemu_rootfs(&mut qemu, &request, root.path(), None).unwrap();
 
         assert_eq!(
             qemu.args,
@@ -131,18 +321,23 @@ mod tests {
                 "user,id=net0".to_string(),
             ]
         );
-        assert_eq!(
-            fs::read(root.path().join("target/rootfs/rootfs-x86_64-alpine.img")).unwrap(),
-            b"rootfs"
+        assert!(
+            root.path()
+                .join("target/rootfs/rootfs-x86_64-alpine.img")
+                .exists()
         );
     }
 
     #[tokio::test]
-    async fn apply_default_qemu_args_preserves_existing_base_args() {
+    async fn patch_qemu_rootfs_preserves_existing_base_args() {
         let root = tempdir().unwrap();
         let rootfs_dir = root.path().join("target/rootfs");
         fs::create_dir_all(&rootfs_dir).unwrap();
-        fs::write(rootfs_dir.join("rootfs-riscv64-alpine.img"), b"rootfs").unwrap();
+        fs::write(
+            rootfs_dir.join("rootfs-riscv64-alpine.img"),
+            vec![0; 1024 * 1024],
+        )
+        .unwrap();
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),
@@ -167,9 +362,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_default_qemu_args(root.path(), &request, &mut qemu)
-            .await
-            .unwrap();
+        patch_qemu_rootfs(&mut qemu, &request, root.path(), None).unwrap();
 
         assert_eq!(
             qemu.args,
@@ -194,90 +387,5 @@ mod tests {
                 "user,id=net0".to_string(),
             ]
         );
-    }
-
-    #[test]
-    fn apply_smp_qemu_arg_appends_cpu_count() {
-        let mut qemu = QemuConfig {
-            args: vec!["-machine".to_string(), "virt".to_string()],
-            ..Default::default()
-        };
-
-        apply_smp_qemu_arg(&mut qemu, Some(4));
-
-        assert_eq!(
-            qemu.args,
-            vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-smp".to_string(),
-                "4".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn apply_smp_qemu_arg_replaces_existing_cpu_count() {
-        let mut qemu = QemuConfig {
-            args: vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-smp".to_string(),
-                "1".to_string(),
-            ],
-            ..Default::default()
-        };
-
-        apply_smp_qemu_arg(&mut qemu, Some(4));
-
-        assert_eq!(
-            qemu.args,
-            vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-smp".to_string(),
-                "4".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn smp_from_qemu_arg_reads_plain_cpu_count() {
-        let qemu = QemuConfig {
-            args: vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-smp".to_string(),
-                "4".to_string(),
-            ],
-            ..Default::default()
-        };
-
-        assert_eq!(smp_from_qemu_arg(&qemu), Some(4));
-    }
-
-    #[test]
-    fn smp_from_qemu_arg_reads_cpus_key_value_syntax() {
-        let qemu = QemuConfig {
-            args: vec![
-                "-machine".to_string(),
-                "q35".to_string(),
-                "-smp".to_string(),
-                "cpus=3,sockets=1,cores=3,threads=1".to_string(),
-            ],
-            ..Default::default()
-        };
-
-        assert_eq!(smp_from_qemu_arg(&qemu), Some(3));
-    }
-
-    #[test]
-    fn smp_from_qemu_arg_returns_none_when_missing() {
-        let qemu = QemuConfig {
-            args: vec!["-machine".to_string(), "q35".to_string()],
-            ..Default::default()
-        };
-
-        assert_eq!(smp_from_qemu_arg(&qemu), None);
     }
 }

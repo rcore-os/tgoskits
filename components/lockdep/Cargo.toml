@@ -1,0 +1,17 @@
+[package]
+name = "ax-lockdep"
+version = "0.1.0"
+repository = "https://github.com/rcore-os/tgoskits"
+edition.workspace = true
+authors = ["Shi Lei <shi_lei@massclouds.com>"]
+description = "Lock dependency tracing helpers for ArceOS components"
+license.workspace = true
+
+[features]
+task-context = []
+
+[dependencies]
+ax-crate-interface = { workspace = true }
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+sbi-rt = { version = "0.0.3", features = ["legacy"] }

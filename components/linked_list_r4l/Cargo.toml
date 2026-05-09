@@ -2,7 +2,7 @@
 name = "ax-linked-list-r4l"
 version = "0.5.4"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = ["Wedson Almeida Filho <wedsonaf@google.com>", "WeiKang Guo <guoweikang.kernel@gmail.com>"]
 description = "Linked lists that supports arbitrary removal in constant time"
 keywords = ["list"]

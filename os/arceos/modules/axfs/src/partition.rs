@@ -204,11 +204,10 @@ fn parse_gpt_partitions(disk: &mut Disk) -> AxResult<Vec<PartitionInfo>> {
 
             // Read partition name as UTF-16LE
             let mut partition_name = [0u16; 36];
-            for j in 0..36 {
+            for (j, name_char) in partition_name.iter_mut().enumerate() {
                 let offset = 56 + j * 2;
                 if offset + 1 < entry_data.len() {
-                    partition_name[j] =
-                        u16::from_le_bytes([entry_data[offset], entry_data[offset + 1]]);
+                    *name_char = u16::from_le_bytes([entry_data[offset], entry_data[offset + 1]]);
                 }
             }
 
@@ -236,19 +235,13 @@ fn parse_gpt_partitions(disk: &mut Disk) -> AxResult<Vec<PartitionInfo>> {
         // Convert partition name from UTF-16LE to UTF-8
         let name_str = {
             // First, copy the partition name to a local array to avoid packed field reference
-            let mut name_utf16 = [0u16; 36];
-            for j in 0..36 {
-                name_utf16[j] = entry.partition_name[j];
-            }
+            let name_utf16 = entry.partition_name;
 
             // Find the null terminator
-            let mut name_len = 36;
-            for j in 0..36 {
-                if name_utf16[j] == 0 {
-                    name_len = j;
-                    break;
-                }
-            }
+            let name_len = name_utf16
+                .iter()
+                .position(|&name_char| name_char == 0)
+                .unwrap_or(name_utf16.len());
 
             // Convert only the valid portion
             let name_slice = &name_utf16[..name_len];

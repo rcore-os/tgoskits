@@ -5,7 +5,10 @@ use alloc::{
     sync::{Arc, Weak},
 };
 
+#[cfg(feature = "lockdep")]
+use ax_kernel_guard::IrqSave;
 use ax_kernel_guard::NoPreemptIrqSave;
+use ax_memory_addr::VirtAddr;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
@@ -65,6 +68,38 @@ impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
     }
 }
 
+#[cfg(feature = "lockdep")]
+struct KspinLockdepIfImpl;
+
+#[cfg(feature = "lockdep")]
+#[ax_crate_interface::impl_interface]
+impl ax_kspin::lockdep::KspinLockdepIf for KspinLockdepIfImpl {
+    fn collect_current_task_held_locks(snapshot: &mut ax_kspin::lockdep::HeldLockSnapshot) {
+        let _lockdep_irq_guard = IrqSave::new();
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| snapshot.extend(stack));
+        }
+    }
+
+    fn push_current_task_held_lock(held: ax_kspin::lockdep::HeldLock) {
+        let _lockdep_irq_guard = IrqSave::new();
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| stack.push(held));
+        }
+    }
+
+    fn pop_current_task_held_lock(lock_id: u32) {
+        let _lockdep_irq_guard = IrqSave::new();
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| stack.pop_checked(lock_id));
+        }
+    }
+
+    fn console_write_str(s: &str) {
+        ax_hal::console::write_bytes(s.as_bytes());
+    }
+}
+
 /// Gets the current task, or returns [`None`] if the current task is not
 /// initialized.
 pub fn current_may_uninit() -> Option<CurrentTask> {
@@ -111,8 +146,8 @@ pub(crate) fn cpu_mask_full() -> AxCpuMask {
 }
 
 /// Initializes the task scheduler for secondary CPUs.
-pub fn init_scheduler_secondary() {
-    crate::run_queue::init_secondary();
+pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
+    crate::run_queue::init_secondary(stack_ptr, stack_size);
 }
 
 /// Handles periodic timer ticks for the task manager.
@@ -199,7 +234,7 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
         // the affinity. If not, we need to migrate the task to the correct CPU.
         #[cfg(feature = "smp")]
         if !cpumask.get(ax_hal::percpu::this_cpu_id()) {
-            const MIGRATION_TASK_STACK_SIZE: usize = 4096;
+            const MIGRATION_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
             // Spawn a new migration task for migrating.
             let migration_task = TaskInner::new(
                 move || crate::run_queue::migrate_entry(curr),

@@ -27,4 +27,3 @@ fn test_unknown_event_variant_constructible() {
     let evt = VsockDriverEvent::Unknown;
     assert!(matches!(evt, VsockDriverEvent::Unknown));
 }
-

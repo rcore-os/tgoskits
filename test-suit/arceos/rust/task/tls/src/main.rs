@@ -1,6 +1,7 @@
 #![cfg_attr(any(feature = "ax-std", target_os = "none"), no_std)]
 #![cfg_attr(any(feature = "ax-std", target_os = "none"), no_main)]
 #![feature(thread_local)]
+#![allow(unused_features)]
 #![allow(unused_unsafe)]
 
 #[cfg(any(not(target_os = "none"), feature = "ax-std"))]

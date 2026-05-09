@@ -54,6 +54,12 @@ impl Cred {
         self.euid == 0
     }
 
+    /// Check whether this credential may create raw network sockets
+    /// (equivalent to `CAP_NET_RAW` — approximated as euid == 0).
+    pub fn has_cap_net_raw(&self) -> bool {
+        self.euid == 0
+    }
+
     /// Check whether this credential has the privilege to change file
     /// ownership (equivalent to `CAP_CHOWN` — approximated as fsuid == 0,
     /// since this is a filesystem capability).

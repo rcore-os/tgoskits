@@ -13,10 +13,10 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use flate2::read::GzDecoder;
 use tokio::fs as tokio_fs;
+use xz2::read::XzDecoder;
 
-const TGOSIMAGES_ROOTFS_RELEASE: &str = "v0.0.4";
+const TGOSIMAGES_ROOTFS_RELEASE: &str = "v0.0.5";
 
 /// Returns the default managed rootfs image filename for a given architecture.
 pub(crate) fn default_rootfs_image(arch: &str) -> Option<&'static str> {
@@ -66,6 +66,22 @@ pub(crate) fn resolve_rootfs_path(workspace_root: &Path, arch: &str, rootfs: Pat
     rootfs_dir(workspace_root).join(image_name)
 }
 
+/// Resolves an explicit `--rootfs` CLI value into a concrete image path.
+pub(crate) fn resolve_explicit_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    rootfs: PathBuf,
+) -> PathBuf {
+    resolve_rootfs_path(workspace_root, arch, rootfs)
+}
+
+/// Returns the default managed rootfs path for an architecture.
+pub(crate) fn default_rootfs_path(workspace_root: &Path, arch: &str) -> anyhow::Result<PathBuf> {
+    let image_name = default_rootfs_image(arch)
+        .ok_or_else(|| anyhow!("no managed rootfs image available for arch `{arch}`"))?;
+    Ok(rootfs_dir(workspace_root).join(image_name))
+}
+
 /// Ensures a managed rootfs path exists locally before it is used.
 ///
 /// Paths outside the managed rootfs directory are treated as user-managed and
@@ -87,14 +103,26 @@ pub(crate) async fn ensure_managed_rootfs(
     Ok(())
 }
 
+/// Ensures an optional managed rootfs path exists locally before it is used.
+pub(crate) async fn ensure_optional_managed_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    path: Option<&Path>,
+) -> anyhow::Result<()> {
+    if let Some(path) = path {
+        ensure_managed_rootfs(workspace_root, arch, path).await?;
+    }
+    Ok(())
+}
+
 /// Ensures the default managed rootfs image for an architecture is available.
 pub(crate) async fn ensure_rootfs_for_arch(
     workspace_root: &Path,
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
-    let image_name = default_rootfs_image(arch)
-        .ok_or_else(|| anyhow!("no managed rootfs image available for arch `{arch}`"))?;
-    ensure_rootfs_image(workspace_root, image_name).await
+    let rootfs_path = default_rootfs_path(workspace_root, arch)?;
+    ensure_managed_rootfs(workspace_root, arch, &rootfs_path).await?;
+    Ok(rootfs_path)
 }
 
 /// Builds the release asset URL for a managed rootfs archive.
@@ -108,7 +136,7 @@ fn archive_url(image_name: &str) -> String {
 
 /// Returns the managed archive filename for a rootfs image.
 fn archive_name(image_name: &str) -> String {
-    format!("{image_name}.tar.gz")
+    format!("{image_name}.tar.xz")
 }
 
 /// Returns the local cache path for a managed rootfs archive.
@@ -116,16 +144,39 @@ fn archive_path(workspace_root: &Path, image_name: &str) -> PathBuf {
     rootfs_dir(workspace_root).join(archive_name(image_name))
 }
 
+/// Minimum acceptable size for a managed rootfs image.  Any file smaller than
+/// this is considered corrupt (e.g. an interrupted extraction) and will be
+/// removed and re-downloaded.
+const MIN_ROOTFS_IMAGE_SIZE: u64 = 1024 * 1024; // 1 MiB
+
 /// Ensures a named managed rootfs image exists in the workspace cache.
 ///
 /// This function downloads the corresponding archive on demand and retries once
-/// if extraction fails due to a corrupt cached archive.
+/// if extraction fails due to a corrupt cached archive.  It also treats
+/// images that are smaller than [`MIN_ROOTFS_IMAGE_SIZE`] as corrupt and
+/// triggers a fresh download, since a truncated file left by an interrupted
+/// extraction would otherwise cause a silent QEMU boot failure.
 async fn ensure_rootfs_image(workspace_root: &Path, image_name: &str) -> anyhow::Result<PathBuf> {
     let rootfs_dir = rootfs_dir(workspace_root);
     let image_path = rootfs_dir.join(image_name);
 
-    if image_path.exists() {
-        return Ok(image_path);
+    if let Ok(metadata) = tokio_fs::metadata(&image_path).await {
+        if metadata.len() >= MIN_ROOTFS_IMAGE_SIZE {
+            return Ok(image_path);
+        }
+        // File exists but is too small — likely a truncated or empty file from
+        // a previously interrupted download/extraction.  Remove it so that the
+        // download+extraction path below runs cleanly.
+        eprintln!(
+            "managed rootfs image `{}` is too small ({} bytes, expected >= {} bytes), removing \
+             and re-downloading",
+            image_path.display(),
+            metadata.len(),
+            MIN_ROOTFS_IMAGE_SIZE
+        );
+        tokio_fs::remove_file(&image_path)
+            .await
+            .with_context(|| format!("failed to remove corrupt image {}", image_path.display()))?;
     }
 
     tokio_fs::create_dir_all(&rootfs_dir)
@@ -133,7 +184,7 @@ async fn ensure_rootfs_image(workspace_root: &Path, image_name: &str) -> anyhow:
         .with_context(|| format!("failed to create {}", rootfs_dir.display()))?;
 
     let archive_path = archive_path(workspace_root, image_name);
-    let client = crate::download::http_client()?;
+    let client = crate::support::download::http_client()?;
 
     download_archive(&client, image_name, &archive_path).await?;
     if let Err(err) = extract_image(&archive_path, image_name, &rootfs_dir).await {
@@ -169,7 +220,7 @@ async fn download_archive(
         "managed rootfs archive not found, downloading from rcore-os/tgosimages release {}...",
         TGOSIMAGES_ROOTFS_RELEASE
     );
-    crate::download::download_file(client, &archive_url(image_name), archive_path).await
+    crate::support::download::download_file(client, &archive_url(image_name), archive_path).await
 }
 
 /// Extracts a single rootfs image entry from an archive on a blocking worker.
@@ -186,12 +237,12 @@ async fn extract_image(
         .context("rootfs extraction task failed")?
 }
 
-/// Unpacks the expected rootfs image file from a `.tar.gz` archive.
+/// Unpacks the expected rootfs image file from a `.tar.xz` archive.
 fn unpack_image(archive_path: &Path, image_name: &str, out_dir: &Path) -> anyhow::Result<()> {
     let file = fs::File::open(archive_path)
         .with_context(|| format!("failed to open {}", archive_path.display()))?;
-    let gz = GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
+    let xz = XzDecoder::new(file);
+    let mut archive = tar::Archive::new(xz);
 
     for entry in archive
         .entries()
@@ -228,16 +279,17 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::support::download::test_support;
 
     #[tokio::test]
     async fn ensure_rootfs_for_arch_redownloads_invalid_cached_archive() {
-        let archive = make_tar_gz(&[("rootfs-loongarch64-alpine.img", b"rootfs")]);
+        let archive = make_tar_xz(&[("rootfs-loongarch64-alpine.img", b"rootfs")]);
         let server = TestServer::start(archive).await;
         let workspace = tempdir().unwrap();
         let rootfs_dir = rootfs_dir(workspace.path());
         fs::create_dir_all(&rootfs_dir).unwrap();
         fs::write(
-            rootfs_dir.join("rootfs-loongarch64-alpine.img.tar.gz"),
+            rootfs_dir.join("rootfs-loongarch64-alpine.img.tar.xz"),
             b"corrupt",
         )
         .unwrap();
@@ -253,7 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_managed_rootfs_uses_requested_image_name() {
-        let archive = make_tar_gz(&[("rootfs-aarch64-debian.img", b"debian")]);
+        let archive = make_tar_xz(&[("rootfs-aarch64-debian.img", b"debian")]);
         let server = TestServer::start(archive).await;
         let workspace = tempdir().unwrap();
         let rootfs_path = rootfs_dir(workspace.path()).join("rootfs-aarch64-debian.img");
@@ -309,7 +361,7 @@ mod tests {
 
         tokio_fs::create_dir_all(&rootfs_dir).await?;
         let archive_path = archive_path(workspace_root, image_name);
-        let client = crate::download::http_client()?;
+        let client = crate::support::download::http_client()?;
         download_archive_with_url(&client, url, &archive_path).await?;
 
         if let Err(err) = extract_image(&archive_path, image_name, &rootfs_dir).await {
@@ -333,14 +385,14 @@ mod tests {
         if archive_path.exists() {
             return Ok(());
         }
-        crate::download::download_file(client, url, archive_path).await
+        crate::support::download::download_file(client, url, archive_path).await
     }
 
-    fn make_tar_gz(files: &[(&str, &[u8])]) -> Vec<u8> {
-        use flate2::{Compression, write::GzEncoder};
+    fn make_tar_xz(files: &[(&str, &[u8])]) -> Vec<u8> {
         use tar::Builder;
+        use xz2::write::XzEncoder;
 
-        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let encoder = XzEncoder::new(Vec::new(), 6);
         let mut builder = Builder::new(encoder);
         for (name, contents) in files {
             let mut header = tar::Header::new_gnu();
@@ -354,71 +406,22 @@ mod tests {
     }
 
     struct TestServer {
-        addr: std::net::SocketAddr,
-        requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+        handle: test_support::MockHandle,
     }
 
     impl TestServer {
         async fn start(body: Vec<u8>) -> Self {
-            use tokio::{
-                io::{AsyncReadExt, AsyncWriteExt},
-                net::TcpListener,
-            };
-
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let request_counter = requests.clone();
-            let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
-
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = &mut shutdown_rx => break,
-                        accepted = listener.accept() => {
-                            let Ok((mut socket, _)) = accepted else {
-                                break;
-                            };
-                            let body = body.clone();
-                            let request_counter = request_counter.clone();
-                            tokio::spawn(async move {
-                                let mut buf = [0u8; 4096];
-                                let _ = socket.read(&mut buf).await;
-                                request_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                let header = format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                    body.len()
-                                );
-                                let _ = socket.write_all(header.as_bytes()).await;
-                                let _ = socket.write_all(&body).await;
-                            });
-                        }
-                    }
-                }
-            });
-
             Self {
-                addr,
-                requests,
-                shutdown: Some(shutdown_tx),
+                handle: test_support::register_bytes("rootfs.img.tar.gz", body),
             }
         }
 
         fn url(&self) -> String {
-            format!("http://{}/rootfs.img.tar.gz", self.addr)
+            self.handle.url().to_string()
         }
 
         fn request_count(&self) -> usize {
-            self.requests.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    impl Drop for TestServer {
-        fn drop(&mut self) {
-            if let Some(shutdown) = self.shutdown.take() {
-                let _ = shutdown.send(());
-            }
+            self.handle.request_count()
         }
     }
 }

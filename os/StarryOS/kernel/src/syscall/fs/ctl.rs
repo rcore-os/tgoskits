@@ -91,9 +91,15 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
     let mode = mode & !current().as_thread().proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
 
-    with_fs(dirfd, |fs| {
-        fs.create_dir(path, mode)?;
-        Ok(0)
+    with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
+        Ok(_) => Ok(0),
+        // mkdir on an existing path should report EEXIST.
+        // Use no-follow lookup so dangling symlinks are treated as existing
+        // entries, and avoid converting empty-path invalid input.
+        Err(AxError::InvalidInput) if !path.is_empty() && fs.resolve_no_follow(&path).is_ok() => {
+            Err(AxError::AlreadyExists)
+        }
+        Err(err) => Err(err),
     })
 }
 
@@ -111,11 +117,12 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
     perm &= !current().as_thread().proc_data.umask();
 
     let node_type = match ftype {
-        S_IFREG => NodeType::RegularFile,
+        0 | S_IFREG => NodeType::RegularFile,
         S_IFCHR => NodeType::CharacterDevice,
         S_IFBLK => NodeType::BlockDevice,
         S_IFIFO => NodeType::Fifo,
         S_IFSOCK => NodeType::Socket,
+        S_IFDIR => return Err(AxError::OperationNotPermitted),
         _ => return Err(AxError::InvalidInput),
     };
 
@@ -349,6 +356,10 @@ pub fn sys_readlinkat(
     buf: *mut u8,
     size: usize,
 ) -> AxResult<isize> {
+    if size == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = vm_load_string(path)?;
 
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
@@ -442,6 +453,11 @@ pub fn sys_fchmod(fd: i32, mode: u32) -> AxResult<isize> {
 }
 
 pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+    const FCHMODAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !FCHMODAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()

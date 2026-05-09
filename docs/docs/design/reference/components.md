@@ -150,7 +150,6 @@ my_component/
 │   │  ├── check.yml            # 代码检查工作流
 │   │  ├── test.yml             # 测试工作流
 │   │  ├── deploy.yml           # 文档部署工作流
-│   │  ├── push.yml             # 同步到父仓库
 │   │  └── release.yml          # 发布工作流
 │   └── config.json             # 项目配置文件
 ├── scripts/                    # 实用脚本
@@ -389,7 +388,7 @@ cargo xtask qemu \
 
 ## 10. 持续集成与部署
 
-所有 CI 工作流通过调用 axci 的共享工作流实现（push.yml 除外）。
+CI 工作流通常通过调用 axci 的共享工作流实现。
 
 ### check.yml — 代码检查
 
@@ -420,12 +419,6 @@ jobs:
 触发条件：push 稳定版 tag（`v*.*.*`，不含 `-preview.*`）
 
 功能：生成 API 文档 (rustdoc) 并部署到 GitHub Pages
-
-### push.yml — 同步到父仓库
-
-触发条件：push 到 main 分支（此工作流为独立实现，直接复制自 axci，不使用 `uses:`）
-
-功能：从父仓库 `scripts/repo/repos.csv` 定位组件 subtree 路径，执行 `git subtree pull`，创建或更新 PR
 
 ## 11. 什么时候需要看 `repo.md`
 

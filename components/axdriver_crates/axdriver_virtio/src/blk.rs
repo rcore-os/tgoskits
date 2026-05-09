@@ -16,9 +16,9 @@ impl<H: Hal, T: Transport> VirtIoBlkDev<H, T> {
     /// Creates a new driver instance and initializes the device, or returns
     /// an error if any step fails.
     pub fn try_new(transport: T) -> DevResult<Self> {
-        Ok(Self {
-            inner: InnerDev::new(transport).map_err(as_dev_err)?,
-        })
+        let mut inner = InnerDev::new(transport).map_err(as_dev_err)?;
+        inner.disable_interrupts();
+        Ok(Self { inner })
     }
 }
 

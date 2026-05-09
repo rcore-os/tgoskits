@@ -10,12 +10,86 @@
 
 use std::{
     fs,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
 };
 
 use anyhow::{Context, bail, ensure};
+
+/// Reads a text file from a rootfs image with `debugfs`.
+///
+/// Returns `Ok(None)` when the image is readable but the guest path does not
+/// exist, allowing distro-specific files to be optional.
+pub(crate) fn read_text_file(
+    rootfs_img: &Path,
+    guest_path: &str,
+) -> anyhow::Result<Option<String>> {
+    ensure!(
+        guest_path.starts_with('/'),
+        "guest path must be absolute: `{guest_path}`"
+    );
+
+    let output = Command::new("debugfs")
+        .arg("-R")
+        .arg(format!("cat {guest_path}"))
+        .arg(rootfs_img)
+        .output()
+        .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        bail!(
+            "failed to read {guest_path} from {}: {}",
+            rootfs_img.display(),
+            stderr.trim()
+        );
+    }
+    if output.stdout.is_empty() && stderr.contains("File not found") {
+        return Ok(None);
+    }
+
+    String::from_utf8(output.stdout)
+        .map(Some)
+        .with_context(|| format!("{}:{guest_path} is not valid UTF-8", rootfs_img.display()))
+}
+
+/// Replaces one regular file inside a rootfs image with a host file.
+pub(crate) fn replace_file(
+    rootfs_img: &Path,
+    guest_path: &str,
+    source_path: &Path,
+) -> anyhow::Result<()> {
+    ensure!(
+        guest_path.starts_with('/'),
+        "guest path must be absolute: `{guest_path}`"
+    );
+
+    let mut commands = vec![
+        format!("rm {guest_path}"),
+        format!("write {} {guest_path}", source_path.display()),
+    ];
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(source_path)
+            .with_context(|| format!("failed to stat {}", source_path.display()))?
+            .permissions()
+            .mode();
+        commands.push(format!("sif {guest_path} mode 0{mode:o}"));
+    }
+
+    run_debugfs_script(
+        rootfs_img,
+        &commands,
+        &format!(
+            "failed to replace {guest_path} in {} with {}",
+            rootfs_img.display(),
+            source_path.display()
+        ),
+    )
+}
 
 /// Extracts the contents of a rootfs image into a host staging directory.
 pub(crate) fn extract_rootfs(rootfs_img: &Path, output_dir: &Path) -> anyhow::Result<()> {
@@ -123,6 +197,10 @@ fn collect_overlay_debugfs_commands(
 }
 
 /// Executes a generated `debugfs` script against a writable rootfs image.
+///
+/// Stderr lines that only report that a directory already exists are suppressed
+/// because `mkdir /usr/bin` is harmless when the directory is already present.
+/// All other stderr output is forwarded so genuine errors remain visible.
 fn run_debugfs_script(
     rootfs_img: &Path,
     commands: &[String],
@@ -134,9 +212,33 @@ fn run_debugfs_script(
         .arg(rootfs_img)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
+
+    // Start draining stderr on a background thread BEFORE writing stdin.
+    // Without this ordering, a classic pipe deadlock occurs: debugfs fills the
+    // stderr pipe while we are still writing stdin, which causes debugfs to
+    // block on its stderr write, which causes it to stop reading stdin, which
+    // causes our stdin write to block — a deadlock.  Draining stderr
+    // concurrently with stdin writes prevents the pipe from filling up.
+    let stderr_handle = child
+        .stderr
+        .take()
+        .context("failed to open debugfs stderr")?;
+    let filter_handle = thread::spawn(move || {
+        let reader = BufReader::new(stderr_handle);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if line.contains("File exists") || line.contains("already exists") {
+                continue;
+            }
+            eprintln!("{line}");
+        }
+    });
 
     {
         let mut stdin = child.stdin.take().context("failed to open debugfs stdin")?;
@@ -147,6 +249,8 @@ fn run_debugfs_script(
     }
 
     let status = child.wait().context("failed to wait for debugfs")?;
+    let _ = filter_handle.join();
+
     if status.success() {
         Ok(())
     } else {

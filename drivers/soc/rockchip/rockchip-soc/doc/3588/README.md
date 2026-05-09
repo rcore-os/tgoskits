@@ -1,0 +1,156 @@
+# RK3588 文档索引
+
+本目录包含 RK3588 SoC 的技术文档和实现说明。
+
+## 📚 文档列表
+
+### 核心文档
+
+1. **[PLL.md](PLL.md)** - PLL 时钟配置完整说明
+2. **[TEST_REPORT.md](TEST_REPORT.md)** - PLL 配置测试报告
+3. **[CRU_INIT_VERIFICATION.md](CRU_INIT_VERIFICATION.md)** - CRU 初始化验证
+4. **[PLL_READING.md](PLL_READING.md)** - PLL 寄存器读取实现
+5. **[REFACTOR_2025-12-31.md](REFACTOR_2025-12-31.md)** - Cru 模块整合重构
+
+**注意**: `PLL_ID_MAPPING.md` 已过时,因为 PllId 优化已消除双重 ID 系统的混淆。详见 [PLL.md#设计亮点](PLL.md#设计亮点)。
+
+## 📖 文档说明
+
+### CRU_INIT_VERIFICATION.md - CRU 初始化验证
+
+包含内容:
+- u-boot `rk3588_clk_init()` 配置分析
+- Rust 实现的寄存器验证逻辑
+- 单元测试覆盖
+- Debug 输出示例
+- 寄存器地址映射
+
+**适合**: 需要了解 CRU 初始化和验证逻辑的开发者
+
+### PLL.md - PLL 时钟配置
+
+包含内容:
+- 9 个 PLL 的列表和用途
+- 寄存器映射表
+- 频率计算公式 (整数和小数分频)
+- 17 个预设频率配置
+- 使用示例和代码片段
+- **设计亮点**: PllId 优化说明
+- 与 u-boot 的对比
+
+**适合**: 需要了解 RK3588 PLL 硬件配置的开发者
+
+### TEST_REPORT.md - 测试报告
+
+包含内容:
+- 21 个单元测试的覆盖说明
+- 关键修正历史
+- 与 u-boot C 代码的详细对比
+- 完整的测试执行结果
+
+**适合**: 需要验证实现正确性或了解测试覆盖的开发者
+
+### PLL_READING.md - PLL 寄存器读取实现
+
+包含内容:
+- PLL 寄存器读取的完整实现
+- 与 u-boot `rk3588_pll_get_rate()` 的对比
+- 频率计算公式详解 (整数和小数分频)
+- 单元测试覆盖说明
+- 使用示例和验证方法
+
+**适合**: 需要理解或调试 PLL 频率读取的开发者
+
+## 🚀 快速开始
+
+### 我想要...
+
+| 需求 | 推荐文档 |
+|------|---------|
+| 了解 RK3588 PLL 硬件 | [PLL.md](PLL.md) |
+| 使用 PLL 配置 API | [PLL.md](PLL.md#使用示例) |
+| 计算 PLL 输出频率 | [PLL.md](PLL.md#频率计算公式) |
+| 理解 PllId 设计 | [PLL.md](PLL.md#设计亮点) |
+| 了解为什么只需一个 ID | [PLL.md](PLL.md#设计亮点) |
+| 验证实现正确性 | [TEST_REPORT.md](TEST_REPORT.md) |
+| 理解 PLL 寄存器读取 | [PLL_READING.md](PLL_READING.md) |
+| 读取并验证 PLL 频率 | [PLL_READING.md](PLL_READING.md#rust-实现) |
+
+## ✨ 设计亮点
+
+### PllId 枚举优化
+
+**之前的问题**: 存在两套 ID 系统
+- C 代码枚举: 从 0 开始 (0-8)
+- 设备树绑定: 从 1 开始 (1-9)
+
+**现在的解决方案**: 统一为一个 ID 系统
+```rust
+pub enum PllId {
+    B0PLL = 1,  // 直接匹配 #define PLL_B0PLL 1
+    B1PLL = 2,  // 直接匹配 #define PLL_B1PLL 2
+    ...
+}
+```
+
+**优点**:
+- ✅ 消除了两套 ID 系统的混淆
+- ✅ `PllId` 值可直接用于时钟框架
+- ✅ 无需 `+1/-1` 转换
+- ✅ 语义清晰,不易出错
+
+### 安全的访问方式
+
+通过 `get_pll()` 函数封装数组访问:
+```rust
+pub const fn get_pll(id: PllId) -> &'static PllClock {
+    &RK3588_PLL_CLOCKS[id as usize - 1]  // 内部处理索引转换
+}
+```
+
+**推荐用法**:
+```rust
+let gpll = get_pll(PllId::GPLL);  // ✅ 推荐
+```
+
+## 🔗 相关代码
+
+| 代码文件 | 说明 |
+|---------|------|
+| `src/variants/rk3588/cru/pll.rs` | RK3588 PLL 配置实现 |
+| `src/clock/pll.rs` | 通用 PLL 基础类型定义 |
+| `src/variants/rk3588/cru/consts.rs` | CRU 寄存器常量 |
+
+## 🧪 测试
+
+运行所有 RK3588 PLL 测试:
+
+```bash
+cd rockchip-soc
+cargo test --lib pll
+```
+
+预期结果:
+```
+test result: ok. 21 passed; 0 failed
+```
+
+## 📚 外部参考
+
+1. **u-boot 源码**
+   - `drivers/clk/rockchip/clk_rk3588.c`
+   - `drivers/clk/rockchip/clk_pll.c`
+   - `arch/arm/include/asm/arch-rockchip/cru_rk3588.h`
+
+2. **设备树绑定**
+   - `include/dt-bindings/clock/rk3588-cru.h`
+
+3. **硬件文档**
+   - RK3588 TRM (Technical Reference Manual)
+
+---
+**文档版本**: 2.1
+**最后更新**: 2025-12-31
+**主要变更**:
+- v2.1: 新增 PLL_READING.md 文档,说明 PLL 寄存器读取实现
+- v2.0: PllId 优化为从 1 开始,消除 ID 混淆

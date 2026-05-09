@@ -7,7 +7,7 @@ use axnet::{
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::S_IFSOCK;
+use linux_raw_sys::general::{O_RDWR, S_IFSOCK};
 
 use super::{FileLike, Kstat};
 use crate::file::{IoDst, IoSrc, get_file_like};
@@ -54,6 +54,10 @@ impl FileLike for Socket {
 
     fn path(&self) -> Cow<'_, str> {
         format!("socket:[{}]", self as *const _ as usize).into()
+    }
+
+    fn open_flags(&self) -> u32 {
+        O_RDWR
     }
 
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>

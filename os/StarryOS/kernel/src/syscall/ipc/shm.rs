@@ -237,16 +237,6 @@ where
         self.reverse.get(value)
     }
 
-    /// Removes a key-value pair by key, returning the value if it existed.
-    pub fn remove_by_key(&mut self, key: &K) -> Option<V> {
-        if let Some(value) = self.forward.remove(key) {
-            self.reverse.remove(&value);
-            Some(value)
-        } else {
-            None
-        }
-    }
-
     /// Removes a key-value pair by value, returning the key if it existed.
     pub fn remove_by_value(&mut self, value: &V) -> Option<K> {
         if let Some(key) = self.reverse.remove(value) {
@@ -505,7 +495,8 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
         .get_inner_by_shmid(shmid)
         .ok_or(AxError::InvalidInput)?;
     let mut shm_inner = shm_inner_arc.lock();
-    let mut aspace = proc_data.aspace.lock();
+    let aspace_arc = proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
 
     let mut mapping_flags = shm_inner.mapping_flags;
     if shm_flg.contains(ShmAtFlags::SHM_RDONLY) {
@@ -660,7 +651,8 @@ pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
 
     // Unmap while only holding the aspace lock.
     {
-        let mut aspace = proc_data.aspace.lock();
+        let aspace_arc = proc_data.aspace();
+        let mut aspace = aspace_arc.lock();
         aspace.unmap(va_range.start, va_range.size())?;
     }
 

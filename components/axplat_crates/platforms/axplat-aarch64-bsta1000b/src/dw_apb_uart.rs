@@ -1,6 +1,11 @@
 //! snps,dw-apb-uart serial driver
 
+#[cfg(feature = "irq")]
+use core::ptr::read_volatile;
+
 use ax_kspin::SpinNoIrq;
+#[cfg(feature = "irq")]
+use ax_plat::console::ConsoleIrqEvent;
 use ax_plat::{
     console::ConsoleIf,
     mem::{PhysAddr, pa},
@@ -13,17 +18,13 @@ const UART_BASE: PhysAddr = pa!(crate::config::devices::UART_PADDR);
 
 static UART: SpinNoIrq<DW8250> = SpinNoIrq::new(DW8250::new(phys_to_virt(UART_BASE).as_usize()));
 
+#[cfg(feature = "irq")]
+const UART_LSR_OFFSET: usize = 0x14;
+
 /// Writes a byte to the console.
 #[allow(dead_code)]
 pub fn putchar(c: u8) {
-    let mut uart = UART.lock();
-    match c {
-        b'\r' | b'\n' => {
-            uart.putchar(b'\r');
-            uart.putchar(b'\n');
-        }
-        c => uart.putchar(c),
-    }
+    UART.lock().putchar(c);
 }
 
 /// Reads a byte from the console, or returns [`None`] if no input is available.
@@ -34,12 +35,6 @@ fn getchar() -> Option<u8> {
 /// UART simply initialize
 pub fn init_early() {
     UART.lock().init();
-}
-
-/// Set UART IRQ Enable
-#[cfg(feature = "irq")]
-pub fn init_irq() {
-    UART.lock().set_ier(true);
 }
 
 struct ConsoleIfImpl;
@@ -74,5 +69,31 @@ impl ConsoleIf for ConsoleIfImpl {
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
         Some(crate::config::devices::UART_IRQ)
+    }
+
+    #[cfg(feature = "irq")]
+    fn set_input_irq_enabled(enabled: bool) {
+        UART.lock().set_ier(enabled);
+    }
+
+    #[cfg(feature = "irq")]
+    fn handle_irq() -> ConsoleIrqEvent {
+        let _guard = UART.lock();
+        let lsr = unsafe {
+            read_volatile((phys_to_virt(UART_BASE).as_usize() + UART_LSR_OFFSET) as *const u32)
+        };
+
+        let mut events = ConsoleIrqEvent::empty();
+        if lsr & 0b1 != 0 {
+            events |= ConsoleIrqEvent::RX_READY;
+        }
+        if lsr & (1 << 1) != 0 {
+            events |= ConsoleIrqEvent::OVERRUN;
+        }
+        if lsr & ((1 << 2) | (1 << 3) | (1 << 4) | (1 << 7)) != 0 {
+            events |= ConsoleIrqEvent::RX_ERROR;
+        }
+
+        events
     }
 }

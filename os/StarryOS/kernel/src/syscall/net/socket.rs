@@ -1,24 +1,30 @@
+use alloc::boxed::Box;
+
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_fs::FS_CONTEXT;
 use ax_task::current;
+use axfs_ng_vfs::{MetadataUpdate, NodeType};
 #[cfg(feature = "vsock")]
 use axnet::vsock::{VsockSocket, VsockStreamTransport};
 use axnet::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
+    raw::{IpProtocol, IpVersion, RawSocket},
     tcp::TcpSocket,
     udp::UdpSocket,
-    unix::{DgramTransport, StreamTransport, UnixSocket},
+    unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
 };
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
-        AF_INET, AF_UNIX, AF_VSOCK, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR, SHUT_WR,
-        SOCK_DGRAM, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
+        AF_INET, AF_NETLINK, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD,
+        SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
     },
+    netlink::NETLINK_KOBJECT_UEVENT,
 };
 
 use super::addr::SocketAddrExt;
 use crate::{
-    file::{FileLike, Socket},
+    file::{FileLike, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
     task::AsThread,
 };
@@ -33,21 +39,39 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             if proto != 0 && proto != IPPROTO_TCP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            SocketInner::Tcp(TcpSocket::new())
+            TcpSocket::new().into()
         }
         (AF_INET, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            SocketInner::Udp(UdpSocket::new())
+            UdpSocket::new().into()
         }
-        (AF_UNIX, SOCK_STREAM) => SocketInner::Unix(UnixSocket::new(StreamTransport::new(pid))),
-        (AF_UNIX, SOCK_DGRAM) => SocketInner::Unix(UnixSocket::new(DgramTransport::new(pid))),
+        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
+        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
+        (AF_NETLINK, SOCK_RAW) => {
+            if proto != NETLINK_KOBJECT_UEVENT {
+                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
+            }
+            let socket = NetlinkSocket::new(proto);
+            if raw_ty & O_NONBLOCK != 0 {
+                socket.set_nonblocking(true)?;
+            }
+            let cloexec = raw_ty & O_CLOEXEC != 0;
+            return add_file_like(socket as _, cloexec).map(|fd| fd as isize);
+        }
         #[cfg(feature = "vsock")]
-        (AF_VSOCK, SOCK_STREAM) => {
-            SocketInner::Vsock(VsockSocket::new(VsockStreamTransport::new()))
+        (AF_VSOCK, SOCK_STREAM) => VsockSocket::new(VsockStreamTransport::new()).into(),
+        (AF_INET, SOCK_RAW) => {
+            if proto != IPPROTO_ICMP as u32 {
+                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
+            }
+            if !current().as_thread().cred().has_cap_net_raw() {
+                return Err(AxError::from(LinuxError::EPERM));
+            }
+            SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
         }
-        (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
+        (AF_INET, _) | (AF_UNIX, _) | (AF_NETLINK, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
@@ -66,10 +90,43 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
 }
 
 pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult<isize> {
+    if let Ok(socket) = NetlinkSocket::from_fd(fd) {
+        let mut addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
+        if addr.nl_pid == 0 {
+            addr.nl_pid = current().as_thread().proc_data.proc.pid();
+        }
+        debug!("sys_bind <= fd: {fd}, netlink_addr: {addr:?}");
+        socket.bind(addr)?;
+        return Ok(0);
+    }
+
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
 
+    let unix_path = match &addr {
+        SocketAddrEx::Unix(UnixSocketAddr::Path(path)) => Some(path.clone()),
+        _ => None,
+    };
+    let cred = current().as_thread().cred();
+
     Socket::from_fd(fd)?.bind(addr)?;
+
+    if let Some(path) = unix_path
+        && let Err(err) = FS_CONTEXT
+            .lock()
+            .resolve_no_follow(path.as_ref())
+            .and_then(|loc| {
+                if loc.metadata()?.node_type == NodeType::Socket {
+                    loc.update_metadata(MetadataUpdate {
+                        owner: Some((cred.fsuid, cred.fsgid)),
+                        ..Default::default()
+                    })?;
+                }
+                Ok(())
+            })
+    {
+        warn!("failed to update AF_UNIX socket owner for {path}: {err:?}");
+    }
 
     Ok(0)
 }
@@ -96,7 +153,7 @@ pub fn sys_listen(fd: i32, backlog: i32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
-    Socket::from_fd(fd)?.listen()?;
+    Socket::from_fd(fd)?.listen(backlog as usize)?;
 
     Ok(0)
 }
@@ -125,7 +182,7 @@ pub fn sys_accept4(
         socket.set_nonblocking(true)?;
     }
 
-    let remote_addr = socket.local_addr()?;
+    let remote_addr = socket.peer_addr()?;
     let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
     debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
 
@@ -177,8 +234,8 @@ pub fn sys_socketpair(
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
     };
-    let sock1 = Socket(SocketInner::Unix(sock1));
-    let sock2 = Socket(SocketInner::Unix(sock2));
+    let sock1 = Socket(sock1.into());
+    let sock2 = Socket(sock2.into());
 
     if raw_ty & O_NONBLOCK != 0 {
         sock1.set_nonblocking(true)?;

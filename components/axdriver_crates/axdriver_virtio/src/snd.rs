@@ -1,10 +1,8 @@
 use core::marker::PhantomData;
 
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
-use ax_driver_sound::{
-    SoundCaps, SoundDirection, SoundDriverOps, SoundParams, SoundStreamState,
-};
-use virtio_drivers::{transport::Transport, Hal};
+use ax_driver_sound::{SoundCaps, SoundDirection, SoundDriverOps, SoundParams, SoundStreamState};
+use virtio_drivers::{Hal, transport::Transport};
 
 /// The VirtIO sound device driver (MVP skeleton).
 ///

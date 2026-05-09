@@ -158,11 +158,11 @@ mod imp {
         }
 
         fn lockdep_enabled() -> bool {
-            // `ax-kspin` lockdep stores held-lock state in per-CPU data, which
-            // requires preemption to remain disabled while a tracked lock is
-            // held. `IrqSave` only disables local IRQs, so enabling lockdep
-            // here would let a task be preempted while its held-lock state is
-            // still recorded on the current CPU.
+            // Keep this disabled for now. The current task-only lockdep model
+            // no longer depends on per-CPU held-lock state, but the codebase
+            // does not currently expose any BaseSpinLock<IrqSave, _> aliases or
+            // real users, so there is no need to widen the tracked guard set
+            // until that use case is defined and tested.
             false
         }
     }

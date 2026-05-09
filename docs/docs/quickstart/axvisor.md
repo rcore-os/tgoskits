@@ -6,7 +6,7 @@ title: "Axvisor 快速上手"
 
 # Axvisor 快速上手
 
-Axvisor 的最短验证路径建议直接使用测试入口。当前主流快速路径是 AArch64 和 x86_64 的 QEMU 测试；板测则依赖 self-hosted 环境。
+Axvisor 的最短验证路径建议直接使用测试入口。当前 QEMU 测试覆盖 AArch64、RISC-V64、x86_64 和 LoongArch64；板测则依赖 self-hosted 环境。
 
 ## 1. QEMU
 
@@ -28,7 +28,7 @@ cargo xtask axvisor test qemu --target aarch64-unknown-none-softfloat
 cargo xtask axvisor test qemu --target x86_64-unknown-none
 ```
 
-> `axvisor test qemu` 当前只支持 `aarch64` 和 `x86_64`。  
+> `axvisor test qemu` 当前支持 `aarch64`、`riscv64`、`x86_64` 和 `loongarch64`。
 > `--guest` 不是 `test qemu` 的参数；如果需要板级 U-Boot 测试中的 guest 选择，应使用 `cargo xtask axvisor test uboot ...`。
 
 ## 2. U-Boot 测试
@@ -45,20 +45,14 @@ cargo xtask axvisor test uboot --board roc-rk3568-pc --guest linux
 
 ## 3. Board 测试
 
-`test board` 适合在已有板级环境或 self-hosted runner 条件下使用。这里的命令按测试组名组织，而不是按裸板名组织，因此更接近当前仓库中的自动化入口。
+`test board` 适合在已有板级环境或 self-hosted runner 条件下使用。这里的命令按
+test-suit 中的板卡名选择平台；指定 `--board` 后，会依次运行所有匹配该开发板的
+`board-*.toml` 测例。
 
-当前 `test board` 不是直接传板名，而是使用测试组名：
-
-```bash
-cargo xtask axvisor test board -t orangepi-5-plus-linux
-cargo xtask axvisor test board -t phytiumpi-linux
-cargo xtask axvisor test board -t roc-rk3568-pc-linux
-```
-
-如需显式指定板测配置，也可以使用：
+当前 `test board` 使用板卡名：
 
 ```bash
-cargo xtask axvisor test board -t orangepi-5-plus-linux --board-test-config <path>
+cargo xtask axvisor test board --board orangepi-5-plus-linux
 ```
 
 > Board 测试通常需要 self-hosted runner、串口服务器或物理板环境，本地普通开发机通常无法直接复现。
@@ -71,7 +65,7 @@ cargo xtask axvisor test board -t orangepi-5-plus-linux --board-test-config <pat
 |------|------|
 | 第一次跑通 Axvisor | 先用 `test qemu --target aarch64` |
 | 验证 x86 路径 | 使用 `test qemu --target x86_64` |
-| 验证板级路径 | 使用 `test uboot` 或 `test board` 的硬编码测试组 |
+| 验证板级路径 | 使用 `test uboot`，或使用 `test board --board <board>` 运行 test-suit 中对应开发板的板测 case |
 
 快速上手只覆盖最常见的入口。若需要继续理解测试分组、QEMU/U-Boot/board 三条链路的实现细节，可以继续阅读：
 

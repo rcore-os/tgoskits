@@ -1,12 +1,6 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 #![cfg(any(windows, unix))]
 
-#[macro_use]
-extern crate log;
-
-#[macro_use]
-extern crate anyhow;
-
 use clap::{Args, Parser, Subcommand};
 
 use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
@@ -15,16 +9,12 @@ pub mod arceos;
 pub mod axvisor;
 mod board;
 mod clippy;
-mod command_flow;
 pub mod context;
-mod download;
-mod logging;
-pub mod process;
 mod rootfs;
 pub mod starry;
+mod support;
 mod sync_lint;
-mod test_qemu;
-mod test_std;
+mod test;
 
 #[derive(Parser)]
 struct Cli {
@@ -79,7 +69,7 @@ pub async fn run() -> anyhow::Result<()> {
 
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Commands::Test => test_std::run_std_test_command(),
+        Commands::Test => test::std::run_std_test_command(),
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
         Commands::SyncLint => sync_lint::run_sync_lint_command(),
         Commands::Board { command } => board::execute(command).await,

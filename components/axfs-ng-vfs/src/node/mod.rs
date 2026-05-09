@@ -149,7 +149,7 @@ impl Reference {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct TypeMap(SmallVec<[(TypeId, Arc<dyn Any + Send + Sync>); 2]>);
 impl TypeMap {
     pub fn new() -> Self {

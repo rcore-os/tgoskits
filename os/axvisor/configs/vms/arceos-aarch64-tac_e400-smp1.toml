@@ -23,13 +23,13 @@ entry_point = 0x20_2008_0000
 image_location = "memory"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_2008_0000
-## The file path of the kernel image.
+# The file path of the kernel image.
 kernel_path = "/path/to/arceos_aarch64-dyn_smp1.bin"
-## The file path of the device tree blob (DTB).
+# The file path of the device tree blob (DTB).
 dtb_load_addr = 0x20_2000_0000
-#dtb_path = "/path/to/arceos-aarch64-tac_e400-smp1.dtb"
+# dtb_path = "/path/to/arceos-aarch64-tac_e400-smp1.dtb"
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
-# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
   [0x20_2000_0000, 0x2000_0000, 0x7, 1], # System RAM MAP_IDENTICAL
 ]
@@ -38,6 +38,9 @@ memory_regions = [
 # Device specifications
 #
 [devices]
+# The interrupt mode.
+interrupt_mode = "passthrough"
+
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 emu_devices = []

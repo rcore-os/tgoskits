@@ -38,7 +38,7 @@ kernel_load_addr = 0x9020_0000
 # disk_path = ""
 
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
-# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
   [0x9000_0000, 0x100_0000, 0xf, 0], # Low RAM		16M	0b1111  R|W|EXECUTE|U
 ]
@@ -47,6 +47,9 @@ memory_regions = [
 # Device specifications
 #
 [devices]
+# The interrupt mode.
+interrupt_mode = "passthrough"
+
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 emu_devices = []

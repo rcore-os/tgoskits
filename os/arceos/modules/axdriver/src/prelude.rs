@@ -25,12 +25,12 @@ pub use {
 #[cfg(feature = "net")]
 pub use {
     crate::structs::AxNetDevice,
-    ax_driver_net::{NetBufPtr, NetDriverOps},
+    ax_driver_net::{NetBufPtr, NetDriverOps, NetIrqEvent},
 };
 #[cfg(feature = "sound")]
 pub use {
     crate::structs::AxSoundDevice,
-    ax_driver_sound::{SoundCaps, SoundDirection, SoundDriverOps, SoundParams, SoundStreamState},
+    ax_driver_sound::{SoundDirection, SoundDriverOps, SoundParams, SoundStreamState},
 };
 #[cfg(feature = "vsock")]
 pub use {

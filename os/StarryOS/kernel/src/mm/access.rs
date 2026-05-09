@@ -47,7 +47,11 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     }
 
     let curr = current();
-    let mut aspace = curr.as_thread().proc_data.aspace.lock();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    if unsafe { aspace_arc.raw() }.is_owned_by_current() {
+        return Err(AxError::BadAddress);
+    }
+    let mut aspace = aspace_arc.lock();
 
     if !aspace.can_access_range(start, layout.size(), access_flags) {
         return Err(AxError::BadAddress);
@@ -90,7 +94,11 @@ fn check_null_terminated<T: PartialEq + Default>(
                 // querying the page table since the page might has not been
                 // allocated yet.
                 let curr = current();
-                let aspace = curr.as_thread().proc_data.aspace.lock();
+                let aspace_arc = curr.as_thread().proc_data.aspace();
+                if unsafe { aspace_arc.raw() }.is_owned_by_current() {
+                    return Err(AxError::BadAddress);
+                }
+                let aspace = aspace_arc.lock();
                 if !aspace.can_access_range(page, PAGE_SIZE_4K, access_flags) {
                     return Err(AxError::BadAddress);
                 }
@@ -163,14 +171,6 @@ impl<T> UserPtr<T> {
             Layout::array::<T>(len).unwrap(),
             Self::ACCESS_FLAGS,
         )?;
-        Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
-    }
-
-    pub fn get_as_mut_null_terminated(self) -> AxResult<&'static mut [T]>
-    where
-        T: PartialEq + Default,
-    {
-        let len = check_null_terminated::<T>(self.address(), Self::ACCESS_FLAGS)?;
         Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
     }
 }
@@ -277,7 +277,7 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
 
     might_sleep();
     thr.proc_data
-        .aspace
+        .aspace()
         .lock()
         .handle_page_fault(vaddr, access_flags)
 }
@@ -348,11 +348,6 @@ impl VmBytes {
     pub fn new(ptr: *const u8, len: usize) -> Self {
         Self { ptr, len }
     }
-
-    /// Casts the `VmBytes` to a mutable `VmBytesMut`.
-    pub fn cast_mut(&self) -> VmBytesMut {
-        VmBytesMut::new(self.ptr as *mut u8, self.len)
-    }
 }
 
 impl Read for VmBytes {
@@ -389,11 +384,6 @@ impl VmBytesMut {
     /// Creates a new `VmBytesMut` from a raw pointer and a length.
     pub fn new(ptr: *mut u8, len: usize) -> Self {
         Self { ptr, len }
-    }
-
-    /// Casts the `VmBytesMut` to a read-only `VmBytes`.
-    pub fn cast_const(&self) -> VmBytes {
-        VmBytes::new(self.ptr, self.len)
     }
 }
 

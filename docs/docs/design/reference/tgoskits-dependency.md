@@ -1,8 +1,8 @@
 # tgoskits 组件层次依赖分析
 
-本文档覆盖 **137** 个 crate（与 `docs/crates/README.md` / `gen_crate_docs` 一致），按仓库内**直接**路径依赖自底向上分层。
+本文档覆盖 **137** 个 crate，按仓库内**直接**路径依赖自底向上分层。
 
-由 `scripts/analyze_tgoskits_deps.py` 生成。
+本文档为仓库依赖关系的静态参考。
 
 ## 1. 统计概览
 
@@ -77,10 +77,6 @@ flowchart TB
         direction TB
         starry_kernel["starry-kernel\nv0.4.0"]
         starryos["starryos\nv0.4.0"]
-    end
-    subgraph sg___["<b>其他</b>"]
-        direction TB
-        tgmath["tgmath\nv0.3.0"]
     end
     subgraph sg____["<b>工具层</b>"]
         direction TB
@@ -897,7 +893,6 @@ flowchart TB
     class test_weak cat_comp
     class test_weak_partial cat_comp
     class tg_xtask cat_tool
-    class tgmath cat_misc
     class x86_vcpu cat_comp
     class x86_vlapic cat_comp
 ```
@@ -984,7 +979,6 @@ flowchart TB
 | 0 | 基础层（无仓库内直接依赖） | ArceOS 层 | `bwbench-client` | `0.3.0` | `os/arceos/tools/bwbench_client` |
 | 0 | 基础层（无仓库内直接依赖） | ArceOS 层 | `deptool` | `0.3.0` | `os/arceos/tools/deptool` |
 | 0 | 基础层（无仓库内直接依赖） | ArceOS 层 | `mingo` | `0.8.0` | `os/arceos/tools/raspi4/chainloader` |
-| 0 | 基础层（无仓库内直接依赖） | 其他 | `tgmath` | `0.3.0` | `examples/tgmath` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `aarch64_sysreg` | `0.3.1` | `components/aarch64_sysreg` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-arm-pl011` | `0.3.0` | `components/arm_pl011` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-arm-pl031` | `0.4.1` | `components/arm_pl031` |
@@ -1135,7 +1129,7 @@ flowchart TB
 
 | 层级 | 数 | 成员 |
 |------|-----|------|
-| 0 | 33 | `aarch64_sysreg` `ax-arm-pl011` `ax-arm-pl031` `ax-cap-access` `ax-config-gen` `ax-cpumask` `ax-crate-interface` `ax-crate-interface-lite` `ax-ctor-bare-macros` `ax-driver-base` `ax-driver-pci` `ax-errno` `ax-handler-table` `ax-int-ratio` `ax-lazyinit` `ax-linked-list-r4l` `ax-memory-addr` `ax-percpu-macros` `ax-riscv-plic` `ax-timer-list` `axbacktrace` `axpoll` `axvisor_api_proc` `bitmap-allocator` `bwbench-client` `cargo-axplat` `deptool` `mingo` `range-alloc-arceos` `riscv-h` `rsext4` `smoltcp` `tgmath` |
+| 0 | 32 | `aarch64_sysreg` `ax-arm-pl011` `ax-arm-pl031` `ax-cap-access` `ax-config-gen` `ax-cpumask` `ax-crate-interface` `ax-crate-interface-lite` `ax-ctor-bare-macros` `ax-driver-base` `ax-driver-pci` `ax-errno` `ax-handler-table` `ax-int-ratio` `ax-lazyinit` `ax-linked-list-r4l` `ax-memory-addr` `ax-percpu-macros` `ax-riscv-plic` `ax-timer-list` `axbacktrace` `axpoll` `axvisor_api_proc` `bitmap-allocator` `bwbench-client` `cargo-axplat` `deptool` `mingo` `range-alloc-arceos` `riscv-h` `rsext4` `smoltcp` |
 | 1 | 23 | `ax-allocator` `ax-config-macros` `ax-ctor-bare` `ax-driver-block` `ax-driver-display` `ax-driver-input` `ax-driver-vsock` `ax-fs-vfs` `ax-io` `ax-kernel-guard` `ax-memory-set` `ax-page-table-entry` `ax-plat-macros` `ax-sched` `axfs-ng-vfs` `axhvc` `axklib` `axvmconfig` `define-simple-traits` `define-weak-traits` `fxmac_rs` `smoltcp-fuzz` `starry-vm` |
 | 2 | 11 | `ax-config` `ax-driver-net` `ax-fs-devfs` `ax-fs-ramfs` `ax-kspin` `ax-page-table-multiarch` `ax-percpu` `axbuild` `impl-simple-traits` `impl-weak-partial` `impl-weak-traits` |
 | 3 | 12 | `ax-alloc` `ax-cpu` `ax-driver-virtio` `ax-log` `ax-plat` `axaddrspace` `scope-local` `starry-process` `test-simple` `test-weak` `test-weak-partial` `tg-xtask` |
@@ -1154,7 +1148,7 @@ flowchart TB
 | 16 | 22 | `arceos-affinity` `arceos-display` `arceos-exception` `arceos-fs-shell` `arceos-irq` `arceos-memtest` `arceos-net-echoserver` `arceos-net-httpclient` `arceos-net-httpserver` `arceos-net-udpserver` `arceos-parallel` `arceos-priority` `arceos-sleep` `arceos-tls` `arceos-wait-queue` `arceos-yield` `ax-helloworld` `ax-helloworld-myplat` `ax-httpclient` `ax-httpserver` `ax-shell` `axvisor` |
 ### 4.3 直接依赖 / 被直接依赖（仓库内组件）
 
-下列仅统计**本仓库 137 个 crate 之间**的直接边（与 `gen_crate_docs` 的路径/workspace 解析一致）。
+下列仅统计**本仓库 137 个 crate 之间**的直接边。
 **层级**与本文 §4.1 一致（自底向上编号，0 为仅依赖仓库外的底层）。简介优先 `Cargo.toml` 的 `description`，否则取 crate 文档摘要，否则为路径启发说明；**不超过 50 字**。
 列为空时记为 —。
 
@@ -1306,7 +1300,6 @@ flowchart TB
 | `test-weak` | 3 | Integration tests for weak_default traits with FU… | `ax-crate-interface` `define-weak-traits` `impl-weak-traits` | — |
 | `test-weak-partial` | 3 | Integration tests for weak_default traits with PA… | `ax-crate-interface` `define-weak-traits` `impl-weak-partial` | — |
 | `tg-xtask` | 3 | 根工作区任务编排工具 | `axbuild` | — |
-| `tgmath` | 0 | A tiny math utility crate for TGOSKits demo. | — | — |
 | `x86_vcpu` | 6 | x86 Virtual CPU implementation for the Arceos Hyp… | `ax-crate-interface` `ax-errno` `ax-memory-addr` `ax-page-table-entry` `axaddrspace` `axdevice_base` `axvcpu` `axvisor_api` `x86_vlapic` | `axvm` |
 | `x86_vlapic` | 5 | x86 Virtual Local APIC | `ax-errno` `ax-memory-addr` `axaddrspace` `axdevice_base` `axvisor_api` | `x86_vcpu` |
 
@@ -1817,7 +1810,7 @@ flowchart TB
 | `riscv_goldfish` `0.1.1` | System Real Time Clock (RTC) Drivers for riscv based on goldfish. | `ax-plat-riscv64-qemu-virt` | — |
 | `riscv_plic` `0.2.0` | — | — | — |
 | `rk3568_clk` `0.1.0` | — | `axvisor` | — |
-| `rk3588-clk` `0.1.3` | — | `axvisor` | — |
+| `rockchip-soc` `0.1.1` | — | `axvisor` | — |
 | `rkyv` `0.7.46` | Zero-copy deserialization framework for Rust | — | — |
 | `rlsf` `0.2.2` | Real-time dynamic memory allocator based on the TLSF algorithm | `ax-allocator` | — |
 | `rockchip-pm` `0.4.1` | — | `axvisor` | — |

@@ -8,6 +8,6 @@ keywords = ["allocator"]
 authors = ["the gfx-rs Developers"]
 documentation = "https://docs.rs/range-alloc-arceos"
 categories = ["memory-management"]
-edition = "2018"
+edition.workspace = true
 readme = "README.md"
 license = "Apache-2.0"

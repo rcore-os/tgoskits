@@ -53,17 +53,11 @@ impl<H: Hal, T: Transport> VirtIoInputDev<H, T> {
 fn build_identifiers(device_id: InputDeviceId) -> (String, String) {
     let physical_location = format!(
         "virtio/input/{:04x}:{:04x}:{:04x}:{:04x}",
-        device_id.bus_type,
-        device_id.vendor,
-        device_id.product,
-        device_id.version
+        device_id.bus_type, device_id.vendor, device_id.product, device_id.version
     );
     let unique_id = format!(
         "virtio-input-{:04x}-{:04x}-{:04x}-{:04x}",
-        device_id.bus_type,
-        device_id.vendor,
-        device_id.product,
-        device_id.version
+        device_id.bus_type, device_id.vendor, device_id.product, device_id.version
     );
     (physical_location, unique_id)
 }
@@ -100,7 +94,6 @@ impl<H: Hal, T: Transport> InputDriverOps for VirtIoInputDev<H, T> {
     }
 
     fn read_event(&mut self) -> DevResult<Event> {
-        self.inner.ack_interrupt();
         self.inner
             .pop_pending_event()
             .map(|e| Event {
@@ -111,4 +104,3 @@ impl<H: Hal, T: Transport> InputDriverOps for VirtIoInputDev<H, T> {
             .ok_or(DevError::Again)
     }
 }
-

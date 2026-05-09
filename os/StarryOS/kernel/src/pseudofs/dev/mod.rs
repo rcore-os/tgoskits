@@ -1,12 +1,12 @@
 //! Special devices
 
-#[cfg(feature = "rknpu")]
+#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod card0;
-#[cfg(feature = "rknpu")]
+#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod card1;
-#[cfg(feature = "rknpu")]
+#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod dma_heap;
-#[cfg(feature = "rknpu")]
+#[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod drm;
 #[cfg(feature = "input")]
 mod event;
@@ -282,8 +282,16 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "shm",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
     );
+    {
+        let mut bus_dir = DirMapping::new();
+        bus_dir.add(
+            "usb",
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        );
+        root.add("bus", SimpleDir::new_maker(fs.clone(), Arc::new(bus_dir)));
+    }
 
-    #[cfg(feature = "rknpu")]
+    #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
     {
         // DMA heap devices
         let mut dma_heap_dir = DirMapping::new();

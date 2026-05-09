@@ -12,6 +12,15 @@ static mut BOOT_PT_L0: Aligned4K<[A64PTE; 512]> = Aligned4K::new([A64PTE::empty(
 #[unsafe(link_section = ".data")]
 static mut BOOT_PT_L1: Aligned4K<[A64PTE; 512]> = Aligned4K::new([A64PTE::empty(); 512]);
 
+const DTB_HEADER_MAGIC: u32 = 0xd00d_feed;
+const DTB_MAGIC_OFFSET: usize = 0;
+const DTB_TOTAL_SIZE_OFFSET: usize = 4;
+const DTB_RELOC_BUF_SIZE: usize = 0x10_0000;
+
+#[unsafe(link_section = ".data")]
+static mut DTB_RELOC_BUF: Aligned4K<[u8; DTB_RELOC_BUF_SIZE]> =
+    Aligned4K::new([0; DTB_RELOC_BUF_SIZE]);
+
 unsafe fn init_boot_page_table() {
     unsafe {
         // 0x0000_0000_0000 ~ 0x0080_0000_0000, table
@@ -37,6 +46,33 @@ unsafe fn enable_fp() {
     // like `memset` and `memcpy`.
     #[cfg(feature = "fp-simd")]
     ax_cpu::asm::enable_fp();
+}
+
+fn read_dtb_header_field(dtb: *const u8, offset: usize) -> u32 {
+    let field = unsafe { core::ptr::read_unaligned(dtb.add(offset).cast::<u32>()) };
+    u32::from_be(field)
+}
+
+fn relocate_dtb(dtb_paddr: usize) -> usize {
+    if dtb_paddr == 0 {
+        return 0;
+    }
+
+    let dtb = dtb_paddr as *const u8;
+    let magic = read_dtb_header_field(dtb, DTB_MAGIC_OFFSET);
+    let total_size = read_dtb_header_field(dtb, DTB_TOTAL_SIZE_OFFSET) as usize;
+
+    assert_eq!(magic, DTB_HEADER_MAGIC, "invalid DTB magic: {magic:#x}");
+    assert!(
+        total_size <= DTB_RELOC_BUF_SIZE,
+        "DTB too large: {total_size:#x} > buffer {DTB_RELOC_BUF_SIZE:#x}"
+    );
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(dtb, (&raw mut DTB_RELOC_BUF).cast::<u8>(), total_size);
+    }
+
+    &raw const DTB_RELOC_BUF as usize
 }
 
 /// Kernel entry point with Linux image header.
@@ -86,6 +122,11 @@ unsafe extern "C" fn _start_primary() -> ! {
 
         bl      {switch_to_el1}         // switch to EL1
         bl      {enable_fp}             // enable fp/neon
+
+        mov     x0, x20
+        bl      {relocate_dtb}
+        mov     x20, x0
+
         bl      {init_boot_page_table}
         adrp    x0, {boot_pt}
         bl      {init_mmu}              // setup MMU
@@ -100,6 +141,7 @@ unsafe extern "C" fn _start_primary() -> ! {
         b      .",
         switch_to_el1 = sym ax_cpu::init::switch_to_el1,
         init_mmu = sym ax_cpu::init::init_mmu,
+        relocate_dtb = sym relocate_dtb,
         init_boot_page_table = sym init_boot_page_table,
         enable_fp = sym enable_fp,
         boot_pt = sym BOOT_PT_L0,

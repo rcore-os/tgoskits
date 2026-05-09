@@ -1,27 +1,27 @@
 [package]
 name = "ax-plat-aarch64-peripherals"
 version = "0.5.7"
-repository.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 description = "ARM64 common peripheral drivers with `axplat` compatibility"
 keywords = ["arceos", "os", "hal", "peripheral", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
-authors.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.com>", "yanjuguang <coolyanjg@163.com>", "Su Mingxian <aarkegz@gmail.com>", "RobertYuan <634954435@qq.com>", "hky1999 <keyang.hu@qq.com>"]
+license = "Apache-2.0"
 
 [features]
 irq = ["ax-plat/irq"]
 
 [dependencies]
-ax-kspin = "0.3"
+ax-kspin = { workspace = true }
 log = "0.4"
 spin = "0.10"
-ax-int-ratio = "0.3"
-ax-lazyinit = "0.4"
+ax-int-ratio = { workspace = true }
+ax-lazyinit = { workspace = true }
 aarch64-cpu = "11.0"
-ax-arm-pl011 = "0.3"
+ax-arm-pl011 = { workspace = true }
 arm-gic-driver = "0.16"
-ax-arm-pl031 = "0.4"
+ax-arm-pl031 = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
 

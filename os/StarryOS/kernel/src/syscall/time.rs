@@ -1,5 +1,7 @@
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time};
+use ax_hal::time::{
+    NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
+};
 use ax_task::current;
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE,
@@ -9,7 +11,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    task::{AsThread, ITimerType},
+    task::{AsThread, ITimerType, posix_timer::TimerSpec},
     time::TimeValueLike,
 };
 
@@ -36,12 +38,28 @@ pub fn sys_gettimeofday(ts: *mut timeval) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxResult<isize> {
-    if clock_id as u32 != CLOCK_MONOTONIC && clock_id as u32 != CLOCK_REALTIME {
-        warn!("Called sys_clock_getres for unsupported clock {clock_id}");
+#[cfg(target_arch = "x86_64")]
+pub fn sys_time(tloc: *mut usize) -> AxResult<isize> {
+    let secs = wall_time().as_secs() as isize;
+    if let Some(tloc) = tloc.nullable() {
+        tloc.vm_write(secs as usize)?;
     }
+    Ok(secs)
+}
+
+pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxResult<isize> {
+    let resolution = match clock_id as u32 {
+        CLOCK_REALTIME
+        | CLOCK_MONOTONIC
+        | CLOCK_MONOTONIC_RAW
+        | CLOCK_BOOTTIME
+        | CLOCK_PROCESS_CPUTIME_ID
+        | CLOCK_THREAD_CPUTIME_ID => TimeValue::from_nanos(1),
+        CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => TimeValue::from_millis(4),
+        _ => return Err(AxError::InvalidInput),
+    };
     if let Some(res) = res.nullable() {
-        res.vm_write(timespec::from_time_value(TimeValue::from_micros(1)))?;
+        res.vm_write(timespec::from_time_value(resolution))?;
     }
     Ok(0)
 }
@@ -116,4 +134,132 @@ pub fn sys_setitimer(
         })?;
     }
     Ok(0)
+}
+
+// ---- POSIX timer syscalls ----
+
+use linux_raw_sys::general::{
+    __kernel_itimerspec, __kernel_timer_t, __kernel_timespec, SIGEV_SIGNAL, sigevent,
+};
+
+pub fn sys_timer_create(
+    clock_id: u32,
+    sevp: *const sigevent,
+    timerid: *mut __kernel_timer_t,
+) -> AxResult<isize> {
+    let curr = current();
+    let thr = curr.as_thread();
+
+    // Parse sigevent
+    let (notify, signo, sival) = if let Some(sevp) = sevp.nullable() {
+        let sev = unsafe { sevp.vm_read_uninit()?.assume_init() };
+        // sigev_value is a union sigval { sival_int: i32, sival_ptr: *mut void }
+        // On Linux, the kernel stores it as a pointer-sized field.
+        let val = unsafe { sev.sigev_value.sival_ptr as i64 };
+        (sev.sigev_notify as u32, sev.sigev_signo, val)
+    } else {
+        // NULL sevp defaults to SIGEV_SIGNAL with SIGALRM
+        (SIGEV_SIGNAL, 14, 0i64) // SIGALRM = 14
+    };
+
+    let id = thr
+        .proc_data
+        .posix_timers
+        .create(clock_id, notify, signo, sival)?;
+
+    if let Err(e) = timerid.vm_write(id) {
+        thr.proc_data.posix_timers.delete(id);
+        return Err(e.into());
+    }
+    Ok(0)
+}
+
+pub fn sys_timer_settime(
+    timerid: __kernel_timer_t,
+    flags: i32,
+    new_value: *const __kernel_itimerspec,
+    old_value: *mut __kernel_itimerspec,
+) -> AxResult<isize> {
+    let curr = current();
+    let thr = curr.as_thread();
+
+    let new = unsafe { new_value.vm_read_uninit()?.assume_init() };
+
+    let (old_interval, old_remaining) = thr
+        .proc_data
+        .posix_timers
+        .settime(
+            thr.proc_data.proc.pid(),
+            timerid,
+            flags,
+            TimerSpec {
+                value_sec: new.it_value.tv_sec,
+                value_nsec: new.it_value.tv_nsec,
+                interval_sec: new.it_interval.tv_sec,
+                interval_nsec: new.it_interval.tv_nsec,
+            },
+        )
+        .map_err(|_| AxError::InvalidInput)?;
+
+    if let Some(old_value) = old_value.nullable() {
+        let old_iv_sec = (old_interval / NANOS_PER_SEC) as i64;
+        let old_iv_nsec = (old_interval % NANOS_PER_SEC) as i64;
+        let old_rem_sec = (old_remaining / NANOS_PER_SEC) as i64;
+        let old_rem_nsec = (old_remaining % NANOS_PER_SEC) as i64;
+        old_value.vm_write(__kernel_itimerspec {
+            it_interval: __kernel_timespec {
+                tv_sec: old_iv_sec,
+                tv_nsec: old_iv_nsec,
+            },
+            it_value: __kernel_timespec {
+                tv_sec: old_rem_sec,
+                tv_nsec: old_rem_nsec,
+            },
+        })?;
+    }
+
+    Ok(0)
+}
+
+pub fn sys_timer_gettime(
+    timerid: __kernel_timer_t,
+    curr_value: *mut __kernel_itimerspec,
+) -> AxResult<isize> {
+    let curr = current();
+    let thr = curr.as_thread();
+
+    let (interval, remaining) = thr
+        .proc_data
+        .posix_timers
+        .gettime(timerid)
+        .map_err(|_| AxError::InvalidInput)?;
+
+    let iv_sec = (interval / NANOS_PER_SEC) as i64;
+    let iv_nsec = (interval % NANOS_PER_SEC) as i64;
+    let rem_sec = (remaining / NANOS_PER_SEC) as i64;
+    let rem_nsec = (remaining % NANOS_PER_SEC) as i64;
+
+    curr_value.vm_write(__kernel_itimerspec {
+        it_interval: __kernel_timespec {
+            tv_sec: iv_sec,
+            tv_nsec: iv_nsec,
+        },
+        it_value: __kernel_timespec {
+            tv_sec: rem_sec,
+            tv_nsec: rem_nsec,
+        },
+    })?;
+
+    Ok(0)
+}
+
+pub fn sys_timer_delete(timerid: __kernel_timer_t) -> AxResult<isize> {
+    let curr = current();
+    let thr = curr.as_thread();
+
+    if thr.proc_data.posix_timers.delete(timerid) {
+        Ok(0)
+    } else {
+        Err(AxError::InvalidInput)
+    }
 }

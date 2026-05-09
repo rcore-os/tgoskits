@@ -2,7 +2,7 @@
 name = "bitmap-allocator"
 version = "0.4.4"
 authors = ["WangRunji <wangrunji0408@163.com>"]
-edition = "2021"
+edition.workspace = true
 readme = "README.md"
 description = "Bit allocator based on segment tree algorithm."
 repository = "https://github.com/rcore-os/bitmap-allocator"

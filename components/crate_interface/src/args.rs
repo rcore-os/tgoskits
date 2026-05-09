@@ -118,15 +118,15 @@ impl Parse for CallInterface {
         // try to parse namespace if any, we just assume that no programmer with
         // basic sanity would name a trait "namespace", and, anyway, a valid
         // path here requires at least 2 segments (Trait::func).
-        if let Some(ident) = path.get_ident() {
-            if ident == KEY_NAMESPACE {
-                input.parse::<Token![=]>()?;
-                let ns_ident: Ident = input.parse()?;
-                namespace = Some(ns_ident.to_string());
+        if let Some(ident) = path.get_ident()
+            && ident == KEY_NAMESPACE
+        {
+            input.parse::<Token![=]>()?;
+            let ns_ident: Ident = input.parse()?;
+            namespace = Some(ns_ident.to_string());
 
-                input.parse::<Token![,]>()?;
-                path = input.parse()?;
-            }
+            input.parse::<Token![,]>()?;
+            path = input.parse()?;
         }
 
         let args = if input.peek(Token![,]) {

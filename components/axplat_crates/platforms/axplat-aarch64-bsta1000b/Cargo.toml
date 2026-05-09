@@ -1,13 +1,13 @@
 [package]
 name = "ax-plat-aarch64-bsta1000b"
 version = "0.5.7"
-repository.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 description = "Implementation of `axplat` hardware abstraction layer for Black Sesame Technology A1000b SoC."
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
-authors.workspace = true
-license.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.com>", "yanjuguang <coolyanjg@163.com>", "Su Mingxian <aarkegz@gmail.com>", "RobertYuan <634954435@qq.com>", "hky1999 <keyang.hu@qq.com>"]
+license = "Apache-2.0"
 
 [features]
 fp-simd = ["ax-cpu/fp-simd"]
@@ -17,11 +17,11 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 
 [dependencies]
 log = "0.4"
-ax-kspin = "0.3"
-ax-page-table-entry = "0.8"
+ax-kspin = { workspace = true }
+ax-page-table-entry = { workspace = true }
 dw_apb_uart = "0.1"
 
-ax-config-macros = "0.4"
+ax-config-macros = { workspace = true }
 ax-plat-aarch64-peripherals = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }

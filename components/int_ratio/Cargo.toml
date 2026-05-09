@@ -2,12 +2,11 @@
 name = "ax-int-ratio"
 version = "0.3.6"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "The type of ratios represented by two integers."
 keywords = ["ratio", "fraction", "integer", "approximation"]
 categories = ["mathematics"]
-rust-version = "1.57.0"
 license = "Apache-2.0"
 
 [dependencies]

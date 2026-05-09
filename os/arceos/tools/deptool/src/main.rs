@@ -1,5 +1,6 @@
-use deptool::{run, parse_cmd};
 use std::process;
+
+use deptool::{parse_cmd, run};
 
 fn main() {
     let config = parse_cmd().unwrap_or_else(|err| {

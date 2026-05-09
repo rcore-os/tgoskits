@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, sync::Arc, vec};
+use alloc::{borrow::Cow, sync::Arc, vec, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
     task::Context,
@@ -6,7 +6,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
-use ax_io::{Seek, SeekFrom};
+use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
 use axfs_ng_vfs::NodeType;
 use axpoll::{IoEvents, Pollable};
@@ -15,8 +15,8 @@ use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
-    file::{File, FileLike, Pipe, get_file_like},
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut},
+    file::{Directory, File, FileLike, Pipe, get_file_like},
+    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -34,14 +34,17 @@ fn file_or_espipe(fd: c_int) -> AxResult<Arc<File>> {
 
 /// Like `file_or_espipe`, but for write operations: converts IsADirectory
 /// to BadFileDescriptor because directories cannot be opened for writing.
+/// and verifies that the file descriptor is writable.
 fn file_or_espipe_write(fd: c_int) -> AxResult<Arc<File>> {
-    file_or_espipe(fd).map_err(|e| {
+    let f = file_or_espipe(fd).map_err(|e| {
         if e == AxError::IsADirectory {
             AxError::BadFileDescriptor
         } else {
             e
         }
-    })
+    })?;
+    let _ = f.inner().access(FileFlags::WRITE)?;
+    Ok(f)
 }
 
 struct DummyFd;
@@ -88,14 +91,15 @@ pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
 /// Return the written size if success.
 pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
-    Ok(get_file_like(fd)?.write(&mut VmBytes::new(buf, len))? as _)
+    let data = copy_user_read_buf(buf.cast_const(), len)?;
+    Ok(get_file_like(fd)?.write(&mut data.as_slice())? as _)
 }
 
 pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
+    let data = copy_user_iov_read_buf(iov, iovcnt)?;
     let f = get_file_like(fd)?;
-    f.write(&mut IoVectorBuf::new(iov, iovcnt)?.into_io())
-        .map(|n| n as _)
+    f.write(&mut data.as_slice()).map(|n| n as _)
 }
 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
@@ -111,8 +115,31 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
         2 => SeekFrom::End(offset as _),
         _ => return Err(AxError::InvalidInput),
     };
-    let off = file_or_espipe(fd)?.inner().seek(pos)?;
-    Ok(off as _)
+    let any_file = get_file_like(fd)?;
+
+    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+        let off = f.inner().seek(pos)?;
+        return Ok(off as _);
+    }
+
+    if let Ok(d) = any_file.downcast_arc::<Directory>() {
+        let mut off = d.offset.lock();
+        let new_pos = match pos {
+            SeekFrom::Start(pos) => pos,
+            SeekFrom::End(delta) => d
+                .inner()
+                .len()?
+                .checked_add_signed(delta)
+                .ok_or(AxError::InvalidInput)?,
+            SeekFrom::Current(delta) => {
+                off.checked_add_signed(delta).ok_or(AxError::InvalidInput)?
+            }
+        };
+        *off = new_pos;
+        return Ok(new_pos as _);
+    }
+
+    Err(AxError::from(LinuxError::ESPIPE))
 }
 
 pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
@@ -131,6 +158,9 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
 
 pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     debug!("sys_ftruncate <= {fd} {length}");
+    if length < 0 {
+        return Err(AxError::InvalidInput);
+    }
     let f = File::from_fd(fd)?;
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
@@ -144,42 +174,49 @@ pub fn sys_fallocate(
 ) -> AxResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
     if mode != 0 {
+        return Err(AxError::OperationNotSupported);
+    }
+    if offset < 0 || len <= 0 {
         return Err(AxError::InvalidInput);
+    }
+    let end = (offset as u64)
+        .checked_add(len as u64)
+        .ok_or(AxError::from(LinuxError::EFBIG))?;
+    // Reject sizes beyond what ext4 can represent (u32 block numbers × 4 KiB blocks).
+    if end > u32::MAX as u64 * 4096 {
+        return Err(AxError::from(LinuxError::EFBIG));
     }
     let f = file_or_espipe(fd)?;
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
-    file.set_len(file.location().len()?.max(offset as u64 + len as u64))?;
+    file.set_len(file.location().len()?.max(end))?;
     Ok(0)
 }
 
 pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fsync <= {fd}");
-    match File::from_fd(fd) {
-        Ok(f) => {
-            f.inner().sync(false)?;
-            Ok(0)
-        }
-        Err(AxError::IsADirectory) => {
-            // Linux allows fsync() on directory fds to flush directory
-            // metadata. We don't have directory-level sync, but returning
-            // Ok matches Linux behavior for applications like PostgreSQL.
-            Ok(0)
-        }
-        Err(e) => Err(e),
+    let any_file = get_file_like(fd)?;
+    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+        f.inner().sync(false)?;
+        return Ok(0);
+    } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
+        d.inner().sync(false)?;
+        return Ok(0);
     }
+    Err(AxError::from(LinuxError::EINVAL))
 }
 
 pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fdatasync <= {fd}");
-    match File::from_fd(fd) {
-        Ok(f) => {
-            f.inner().sync(true)?;
-            Ok(0)
-        }
-        Err(AxError::IsADirectory) => Ok(0),
-        Err(e) => Err(e),
+    let any_file = get_file_like(fd)?;
+    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+        f.inner().sync(true)?;
+        return Ok(0);
+    } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
+        d.inner().sync(true)?;
+        return Ok(0);
     }
+    Err(AxError::from(LinuxError::EINVAL))
 }
 
 pub fn sys_sync_file_range(fd: c_int, _offset: i64, _nbytes: i64, _flags: u32) -> AxResult<isize> {
@@ -230,11 +267,12 @@ pub fn sys_pwrite64(
     if offset < 0 {
         return Err(AxError::InvalidInput);
     }
+    let f = file_or_espipe_write(fd)?;
     if len == 0 {
         return Ok(0);
     }
-    let f = file_or_espipe_write(fd)?;
-    let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
+    let data = copy_user_read_buf(buf, len)?;
+    let write = f.inner().write_at(data.as_slice(), offset as _)?;
     Ok(write as _)
 }
 
@@ -308,15 +346,33 @@ pub fn sys_pwritev2(
     if offset < -1 {
         return Err(AxError::InvalidInput);
     }
-    let mut io_buf = IoVectorBuf::new(iov, iovcnt)?.into_io();
     if offset == -1 {
         // offset == -1: use current file position (like writev)
+        let data = copy_user_iov_read_buf(iov, iovcnt)?;
         let f = get_file_like(fd)?;
-        f.write(&mut io_buf).map(|n| n as _)
+        f.write(&mut data.as_slice()).map(|n| n as _)
     } else {
+        let data = copy_user_iov_read_buf(iov, iovcnt)?;
         let f = file_or_espipe(fd)?;
-        f.inner().write_at(io_buf, offset as _).map(|n| n as _)
+        f.inner()
+            .write_at(data.as_slice(), offset as _)
+            .map(|n| n as _)
     }
+}
+
+fn copy_user_read_buf(buf: *const u8, len: usize) -> AxResult<Vec<u8>> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    Ok(UserConstPtr::<u8>::from(buf).get_as_slice(len)?.to_vec())
+}
+
+fn copy_user_iov_read_buf(iov: *const IoVec, iovcnt: usize) -> AxResult<Vec<u8>> {
+    let mut src = IoVectorBuf::new(iov, iovcnt)?.into_io();
+    let len = src.remaining();
+    let mut data = vec![0; len];
+    src.read_exact(&mut data)?;
+    Ok(data)
 }
 
 enum SendFile {

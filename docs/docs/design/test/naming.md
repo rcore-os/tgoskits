@@ -11,8 +11,8 @@ sidebar_label: "命名与配置"
 
 | 配置类型 | 文件名格式 | 主要使用方 | 作用 |
 |----------|------------|------------|------|
-| QEMU 运行配置 | `qemu-{arch}.toml` | StarryOS、ArceOS | 描述 QEMU 参数、shell 交互方式、成功/失败判据 |
-| 板级测试配置 | `board-{board_name}.toml` | StarryOS | 描述串口交互规则、板型标识和判定规则 |
+| QEMU 运行配置 | `qemu-{arch}.toml` | StarryOS、Axvisor、ArceOS | 描述 QEMU 参数、shell 交互方式、成功/失败判据；Axvisor 还可声明 `build_config` 和 `vmconfigs` |
+| 板级测试配置 | `board-{board_name}.toml` | StarryOS、Axvisor | 描述串口交互规则、板型标识和判定规则；Axvisor 还可声明构建配置和 VM 配置 |
 | 构建配置 | `build-{target}.toml` | ArceOS Rust 测试 | 描述 features、日志级别、CPU 数量和环境变量 |
 
 这些文件的共同点是：它们都作为 xtask 的输入，决定“怎样构建”和“怎样判定通过”。但具体字段并不完全跨系统复用，因此字段级说明更适合放在对应系统文档中，而不是再维护一份独立的重复清单。
@@ -46,12 +46,13 @@ flowchart TD
 适用场景：
 
 - StarryOS 的普通/压力测试
+- Axvisor 的 QEMU 测试
 - ArceOS Rust 测试
 - 部分需要 shell 交互或正则判定的 OS 级 QEMU 回归
 
 ### 1.3 Board 配置
 
-`board-{board_name}.toml` 主要用于 StarryOS 的物理板测试。它和 QEMU 配置的思路一致，都是“等待输出、发送命令、按正则判定”，但不直接描述 QEMU 参数，而是额外通过 `board_type` 关联到板级构建配置。
+`board-{board_name}.toml` 用于 StarryOS 和 Axvisor 的物理板测试。它和 QEMU 配置的思路一致，都是“等待输出、发送命令、按正则判定”，但不直接描述 QEMU 参数。StarryOS 通过文件名映射到 `os/StarryOS/configs/board/{board_name}.toml`，Axvisor 则在 board 测试配置中显式声明 `build_config` 与 `vmconfigs`。
 
 ### 1.4 Build 配置
 
@@ -91,21 +92,23 @@ flowchart TD
 
 ### 2.4 发现路径
 
-对 StarryOS 而言，xtask 主要按目录和文件名自动发现：
+对 StarryOS 和 Axvisor 而言，xtask 主要按目录和文件名自动发现 QEMU/board case：
 
 ```mermaid
 flowchart TD
-    sroot["test-suit/starryos/"]
+    sroot["test-suit/<os>/"]
     sgroup["<group>/"]
     scase["<case>/"]
     sqemu["qemu-<arch>.toml"]
-    sboard["board-<board>.toml<br/>仅 normal 组"]
+    sboard["board-<board>.toml"]
 
     sroot --> sgroup
     sgroup --> scase
     scase --> sqemu
     scase --> sboard
 ```
+
+其中 StarryOS 目前只接受 `normal` 和 `stress` 两个 QEMU 组，`--stress` 等价于 `--test-group stress`；Axvisor 的测试组来自 `test-suit/axvisor/<group>` 下的实际目录，当前仓库预置 `normal`。
 
 对 ArceOS 而言，C/Rust 测试虽然还包含硬编码注册列表，但目录结构和配置文件命名仍然决定了用例组织方式：
 

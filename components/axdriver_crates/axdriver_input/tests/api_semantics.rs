@@ -37,4 +37,3 @@ fn test_input_device_id_ordering_is_lexicographic() {
 
     assert!(a < b);
 }
-

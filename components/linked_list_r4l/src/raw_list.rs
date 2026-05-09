@@ -235,10 +235,10 @@ impl<G: GetLinks> RawList<G> {
             self.head = None
         } else {
             // Update the head if we're removing it.
-            if let Some(raw_head) = self.head {
-                if ptr::eq(data, raw_head.as_ptr()) {
-                    self.head = Some(next);
-                }
+            if let Some(raw_head) = self.head
+                && ptr::eq(data, raw_head.as_ptr())
+            {
+                self.head = Some(next);
             }
 
             // SAFETY: It's safe to get the previous entry because the list cannot change.

@@ -5,7 +5,7 @@ authors = [
   "DeBin Luo <luodeb@outlook.com>",
 ]
 categories = ["os", "no-std"]
-edition = "2021"
+edition.workspace = true
 keywords = ["hypervisor", "kernel", "vgic"]
 name = "arm_vgic"
 repository = "https://github.com/arceos-hypervisor/arm_vgic"
@@ -22,15 +22,14 @@ default = []
 vgicv3 = []
 
 [dependencies]
-axaddrspace = "0.5"
-axdevice_base = "0.4"
-axvisor_api = "0.5"
-
+axaddrspace = { workspace = true }
+axdevice_base = { workspace = true }
+axvisor_api = { workspace = true }
 aarch64-cpu = "11.0"
-aarch64_sysreg = "0.3"
-ax-errno = "0.4"
+aarch64_sysreg = { workspace = true }
+ax-errno = { workspace = true }
 bitmaps = {version = "3.2", default-features = false}
 log = "0.4"
-ax-memory-addr = "0.6"
+ax-memory-addr = { workspace = true }
 spin = "0.10"
 tock-registers = "0.10"

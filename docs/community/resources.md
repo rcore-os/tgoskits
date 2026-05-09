@@ -16,7 +16,7 @@ sidebar_label: "社区资源"
 
 ### 演示和示例
 - [快速开始](/docs/design/reference/quick-start) - 统一上手入口
-- [测试与验证](/docs/design/test) - 验证策略与执行路径
+- [测试与验证](/docs/design/test/overview) - 验证策略与执行路径
 - [构建系统](/docs/design/reference/build-system) - `cargo xtask` 和构建链说明
 
 ## 社区贡献

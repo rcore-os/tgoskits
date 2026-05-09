@@ -465,6 +465,28 @@ fn add_device_address_config(
         return;
     }
 
+    let addr_end = base_address.saturating_add(size);
+    // Runtime DT parsing may discover the same device range that is already
+    // owned by an emulated device (for example the guest PLIC window). Do not
+    // add a passthrough mapping for such a range, otherwise the guest can
+    // bypass the emulation layer entirely.
+    if let Some(emu_dev) = vm_cfg.emu_devices().iter().find(|emu_dev| {
+        let emu_start = emu_dev.base_gpa;
+        let emu_end = emu_dev.base_gpa.saturating_add(emu_dev.length);
+        base_address < emu_end && emu_start < addr_end
+    }) {
+        debug!(
+            "Skipping passthrough mapping for node {} [{:#x}~{:#x}] because it overlaps emulated device {} [{:#x}~{:#x}]",
+            node_name,
+            base_address,
+            addr_end,
+            emu_dev.name,
+            emu_dev.base_gpa,
+            emu_dev.base_gpa.saturating_add(emu_dev.length),
+        );
+        return;
+    }
+
     // Create a device configuration for each address segment
     let device_name = if index == 0 {
         match prefix {

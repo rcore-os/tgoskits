@@ -9,10 +9,7 @@ use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
-use ax_task::{
-    current,
-    future::{block_on, poll_io},
-};
+use ax_task::current;
 use axfs_ng_vfs::NodeFlags;
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
@@ -20,7 +17,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use self::terminal::{
     Terminal, WindowSize,
-    ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite},
+    ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite, write_output_bytes},
     termios::{Termios, Termios2},
 };
 pub use self::{
@@ -30,15 +27,9 @@ pub use self::{
     pty::PtyDriver,
 };
 use crate::{
-    pseudofs::{DeviceOps, SimpleFs},
+    pseudofs::DeviceOps,
     task::{AsThread, get_process_group},
 };
-
-pub fn create_pty_master(fs: Arc<SimpleFs>) -> AxResult<Arc<PtyDriver>> {
-    let (master, slave) = pty::create_pty_pair();
-    pts::add_slave(fs, slave)?;
-    Ok(master)
-}
 
 /// Tty device
 pub struct Tty<R, W> {
@@ -52,7 +43,7 @@ pub struct Tty<R, W> {
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
     fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
         let writer = config.writer.clone();
-        let is_ptm = matches!(&config.process_mode, ProcessMode::None(_));
+        let is_ptm = matches!(&config.process_mode, ProcessMode::Passive(_));
         let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));
         Arc::new_cyclic(|this| Self {
             this: this.clone(),
@@ -86,22 +77,20 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {
-        block_on(poll_io(
-            &self.terminal.job_control,
-            IoEvents::IN,
-            false,
-            || {
-                if self.is_ptm || self.terminal.job_control.current_in_foreground() {
-                    self.ldisc.lock().read(buf)
-                } else {
-                    Err(AxError::WouldBlock)
-                }
-            },
-        ))
+        if self.is_ptm || self.terminal.job_control.current_in_foreground() {
+            self.ldisc.lock().read(buf)
+        } else {
+            Err(AxError::WouldBlock)
+        }
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> AxResult<usize> {
-        self.writer.write(buf);
+        if self.is_ptm {
+            self.writer.write(buf);
+        } else {
+            let term = self.terminal.load_termios();
+            write_output_bytes(&self.writer, term.as_ref(), buf);
+        }
         Ok(buf.len())
     }
 

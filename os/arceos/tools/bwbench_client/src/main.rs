@@ -4,10 +4,11 @@
 #![deny(missing_docs)]
 #![allow(dead_code, unused_variables)]
 
-use crate::device::NetDevice;
+use std::{env, fmt::Display};
+
 use chrono::Local;
-use std::env;
-use std::fmt::Display;
+
+use crate::device::NetDevice;
 
 mod device;
 

@@ -485,6 +485,10 @@ fn vcpu_run() {
                     // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
                     ax_hal::trap::irq_handler(vector as usize);
                     super::timer::check_events();
+                    #[cfg(target_arch = "riscv64")]
+                    {
+                        vcpu.get_arch_vcpu().latch_hvip_from_hw();
+                    }
                 }
                 AxVCpuExitReason::Halt => {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");

@@ -46,11 +46,11 @@ pub enum PagingError {
 }
 
 #[cfg(feature = "ax-errno")]
-impl From<PagingError> for ax_errno::AxError {
+impl From<PagingError> for ax_errno::AxErrorKind {
     fn from(value: PagingError) -> Self {
         match value {
-            PagingError::NoMemory => ax_errno::AxError::NoMemory,
-            _ => ax_errno::AxError::InvalidInput,
+            PagingError::NoMemory => ax_errno::AxErrorKind::NoMemory,
+            _ => ax_errno::AxErrorKind::InvalidInput,
         }
     }
 }

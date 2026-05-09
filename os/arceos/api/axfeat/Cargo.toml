@@ -1,6 +1,6 @@
 [package]
 name = "ax-feat"
-version = "0.5.11"
+version = "0.5.12"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -8,20 +8,20 @@ description = "Top-level feature selection for ArceOS"
 license.workspace = true
 
 [features]
-default = []
+default = ["alloc"]
 
 # Multicore
-smp = ["ax-hal/smp", "ax-runtime/smp", "ax-task?/smp", "ax-kspin/smp"]
+smp = ["alloc", "ax-hal/smp", "ax-runtime/smp", "ax-task?/smp", "ax-kspin/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
 
 # User space support
-uspace = ["ax-hal/uspace"]
+uspace = ["ax-hal/uspace", "ax-task?/uspace"]
 hv = ["ax-hal/hv"]
 
 # Interrupts
-irq = ["ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
+irq = ["alloc", "ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi"]
 
 # Custom or default platforms
@@ -52,6 +52,7 @@ multitask = [
     "ax-sync/multitask",
     "ax-runtime/multitask",
 ]
+lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep"]
 task-ext = ["ax-task/task-ext"]
 sched-fifo = ["ax-task/sched-fifo"]
 sched-rr = ["ax-task/sched-rr", "irq"]

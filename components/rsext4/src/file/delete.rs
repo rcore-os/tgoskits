@@ -9,13 +9,33 @@ fn free_inode_with_dtime<B: BlockDevice>(
     let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_block_allextend(fs, block_dev, inode)?
         .into_values()
         .collect();
+    if inode.have_extend_header_and_use_extend() {
+        used_blocks.extend(
+            ExtentTree::with_checksum(inode, &fs.superblock, inode_num)
+                .external_node_blocks(block_dev)?,
+        );
+    }
     used_blocks.sort_unstable();
+    used_blocks.dedup();
 
-    let _ = fs.apply_inode_dtime(block_dev, inode_num, Ext4DtimeUpdate::SetNow)?;
+    let updated_inode = fs.apply_inode_dtime(block_dev, inode_num, Ext4DtimeUpdate::SetNow)?;
 
     for blk in used_blocks {
         fs.free_block(block_dev, blk)?;
     }
+
+    *inode = updated_inode;
+    inode.i_block = [0; 15];
+    inode.i_blocks_lo = 0;
+    inode.l_i_blocks_high = 0;
+    inode.i_size_lo = 0;
+    inode.i_size_high = 0;
+    fs.finalize_inode_update(
+        block_dev,
+        inode_num,
+        inode,
+        Ext4InodeMetadataUpdate::link_count_change(),
+    )?;
 
     fs.free_inode(block_dev, inode_num)
 }
@@ -335,15 +355,11 @@ pub fn delete_dir<B: BlockDevice>(
             }
 
             if removed_child_dirs != 0 {
-                match fs.get_inode_by_num(block_dev, frame.ino_num) {
-                    Ok(current_inode) => {
-                        let new_links = current_inode
-                            .i_links_count
-                            .saturating_sub(removed_child_dirs);
-                        fs.set_inode_links_count(block_dev, frame.ino_num, new_links)?;
-                    }
-                    Err(e) => return Err(e),
-                }
+                let current_inode = fs.get_inode_by_num(block_dev, frame.ino_num)?;
+                let new_links = current_inode
+                    .i_links_count
+                    .saturating_sub(removed_child_dirs);
+                fs.set_inode_links_count(block_dev, frame.ino_num, new_links)?;
             }
 
             // Push children in reverse so traversal order remains stable.
@@ -437,10 +453,7 @@ pub fn delete_file<B: BlockDevice>(
         debug!("Will free inode:{ino_num} path:{path}");
         free_inode_with_dtime(fs, block_dev, ino_num, &mut target_inode)?;
     } else {
-        error!(
-            "Inode num:{} links:{} >0 ,only remove entry!",
-            ino_num, new_links
-        );
+        debug!("inode {ino_num} still has {new_links} link(s); removing directory entry only");
     }
 
     // Resolve the parent path and child name for the directory-entry removal.

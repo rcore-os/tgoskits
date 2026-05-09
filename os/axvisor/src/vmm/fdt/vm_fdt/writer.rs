@@ -438,7 +438,7 @@ impl FdtWriter {
     }
 
     /// Write a string property.
-    #[cfg(any(target_arch = "aarch64", test))]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
     pub fn property_string(&mut self, name: &str, val: &str) -> Result<()> {
         let cstr_value = CString::new(val).map_err(|_| Error::InvalidString)?;
         self.property(name, cstr_value.to_bytes_with_nul())
@@ -468,7 +468,7 @@ impl FdtWriter {
     }
 
     /// Write a property containing an array of 32-bit unsigned integers.
-    #[cfg(any(target_arch = "aarch64", test))]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
     pub fn property_array_u32(&mut self, name: &str, cells: &[u32]) -> Result<()> {
         let mut arr = Vec::with_capacity(size_of_val(cells));
         for &c in cells {

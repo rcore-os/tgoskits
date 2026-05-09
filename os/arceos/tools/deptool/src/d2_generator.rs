@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use crate::{parse_deps, cmd_parser::is_arceos_crate};
+use crate::{cmd_parser::is_arceos_crate, parse_deps};
 
 /// without further exploiting the feature of d2 graph, this is almost the same syntax with mermaid
 /// except that d2 use " -> ", instead of "-->"
-pub fn gen_d2_script(deps: &String, result: &mut String) {
-    let deps_parsed = parse_deps(&deps);
+pub fn gen_d2_script(deps: &str, result: &mut String) {
+    let deps_parsed = parse_deps(deps);
     let dep_root = &deps_parsed[0];
 
     let mut parsed_crates: Vec<&String> = Vec::new();
@@ -15,7 +15,7 @@ pub fn gen_d2_script(deps: &String, result: &mut String) {
     lastest_dep_map.insert(0, &dep_root.1);
     while idx < deps_parsed.len() {
         let (level, name) = deps_parsed.get(idx).unwrap();
-        if !is_arceos_crate(&name) {
+        if !is_arceos_crate(name) {
             idx += 1;
             continue;
         }
@@ -31,7 +31,7 @@ pub fn gen_d2_script(deps: &String, result: &mut String) {
             }
             idx += 1;
         } else {
-            parsed_crates.push(&name);
+            parsed_crates.push(name);
             lastest_dep_map.insert(*level, name);
             idx += 1;
         }
