@@ -150,11 +150,11 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
             _ => return None,
         }
 
-        if let Some((ty, transport, irq)) =
+        if let Some((ty, transport)) =
             ax_driver_virtio::probe_pci_device::<VirtIoHalImpl, C>(root, bdf, dev_info)
             && ty == D::DEVICE_TYPE
         {
-            let irq = pci_irq_vector(bdf, irq);
+            let irq = pci_irq_vector(bdf);
             match D::try_new(transport, Some(irq)) {
                 Ok(dev) => return Some(dev),
                 Err(e) => {
@@ -168,10 +168,11 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
 }
 
 #[cfg(all(bus = "pci", feature = "bus-pci", target_arch = "x86_64"))]
-fn pci_irq_vector(bdf: DeviceFunction, fallback: usize) -> usize {
+fn pci_irq_vector(bdf: DeviceFunction) -> usize {
     const PCI_INTERRUPT_REG: usize = 0x3c;
     const IO_APIC_VECTOR_OFFSET: usize = 0x20;
 
+    let fallback = pci_legacy_irq_fallback(bdf);
     let config_offset = ((bdf.bus as usize) << 20)
         | ((bdf.device as usize) << 15)
         | ((bdf.function as usize) << 12)
@@ -193,8 +194,33 @@ fn pci_irq_vector(bdf: DeviceFunction, fallback: usize) -> usize {
 }
 
 #[cfg(all(bus = "pci", feature = "bus-pci", not(target_arch = "x86_64")))]
-fn pci_irq_vector(_bdf: DeviceFunction, fallback: usize) -> usize {
-    fallback
+fn pci_irq_vector(bdf: DeviceFunction) -> usize {
+    pci_legacy_irq_fallback(bdf)
+}
+
+#[cfg(all(bus = "pci", feature = "bus-pci"))]
+const fn pci_irq_base() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        0x10
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        0x23
+    }
+}
+
+#[cfg(all(bus = "pci", feature = "bus-pci"))]
+const fn pci_legacy_irq_fallback(bdf: DeviceFunction) -> usize {
+    pci_irq_base() + (bdf.device & 3) as usize
 }
 
 pub struct VirtIoHalImpl;
