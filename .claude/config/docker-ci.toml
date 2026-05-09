@@ -1,0 +1,42 @@
+[base_image]
+name = "tgoskits-ci"
+dockerfile = "container/Dockerfile"
+remote = "ghcr.io/seek-hope/tgoskits-container:latest"
+rebuild_triggers = ["container/Dockerfile", "rust-toolchain.toml"]
+
+[axvisor_lvz_image]
+name = "tgoskits-ci-lvz"
+dockerfile = "container/Dockerfile.axvisor-lvz"
+remote = "ghcr.io/seek-hope/tgoskits-container-axvisor-lvz:latest"
+rebuild_triggers = ["container/Dockerfile.axvisor-lvz", "container/Dockerfile", "rust-toolchain.toml"]
+
+[quick]
+commands = [
+    "cargo fmt --all -- --check",
+    "cargo xtask clippy",
+    "cargo xtask sync-lint",
+]
+
+[full]
+commands = [
+    "cargo fmt --all -- --check",
+    "cargo xtask clippy",
+    "cargo xtask sync-lint",
+    "cargo xtask test",
+    "cargo xtask arceos test qemu --arch x86_64",
+    "cargo xtask arceos test qemu --arch riscv64",
+    "cargo xtask arceos test qemu --arch aarch64",
+    "cargo xtask arceos test qemu --arch loongarch64",
+    "cargo xtask starry test qemu --arch riscv64",
+    "cargo xtask starry test qemu --arch aarch64",
+    "cargo xtask starry test qemu --arch x86_64",
+    "cargo xtask starry test qemu --arch loongarch64",
+    "cargo xtask axvisor test qemu --arch aarch64",
+    "cargo xtask axvisor test qemu --arch riscv64",
+    "cargo xtask axvisor test qemu --arch loongarch64",
+]
+
+[pre_pr_gate]
+require_local_ci = true
+require_clean_base = true
+block_direct_push = true
