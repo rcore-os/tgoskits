@@ -834,11 +834,12 @@ _t=$({ timeout 10 sh -c "busybox blkid /dev/null 2>&1"; } 2>&1)
 _rc=$?
 if echo "$_t" | grep -qE "/dev/null|Usage|not a block|No such|ioctl" || { [ -z "$_t" ] && [ "$_rc" -eq 0 ]; }; then echo "PASS: blkid"; PASS=$((PASS+1)); else echo "FAIL: blkid"; echo "$_t (rc=$_rc)"; FAIL=$((FAIL+1)); fi
 
-# blkdiscard — verify applet reaches ioctl stage; failure on unbound loop
-# device (ENXIO) or unimplemented discard (EOPNOTSUPP) is expected.
+# blkdiscard — unbound loop device must fail with non-zero exit and a
+# device-level error (ENXIO → "No such device").  Accepting rc=0 or
+# generic busybox prefix matches would let the old no-op-success bug pass.
 _t=$({ timeout 10 sh -c "busybox blkdiscard /dev/loop0 2>&1"; } 2>&1)
 _rc=$?
-if [ "$_rc" -eq 0 ] || echo "$_t" | grep -qiE "BLK|ioctl|discard|error|No such|not supported"; then echo "PASS: blkdiscard"; PASS=$((PASS+1)); else echo "FAIL: blkdiscard"; echo "$_t (rc=$_rc)"; FAIL=$((FAIL+1)); fi
+if [ "$_rc" -ne 0 ] && echo "$_t" | grep -qiE "No such device|ENXIO"; then echo "PASS: blkdiscard"; PASS=$((PASS+1)); else echo "FAIL: blkdiscard"; echo "$_t (rc=$_rc)"; FAIL=$((FAIL+1)); fi
 
 # blockdev — get sector size of block device
 _t=$({ timeout 10 sh -c "busybox blockdev --getss /dev/loop0 2>&1"; } 2>&1)
