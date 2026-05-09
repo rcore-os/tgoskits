@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
+use core::{future::poll_fn, task::Poll};
 
-use ax_errno::{AxError, AxResult};
-use ax_hal::time::TimeValue;
+use ax_errno::{AxError, AxResult, LinuxError};
+use ax_hal::{time::TimeValue, uspace::UserContext};
 use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use linux_raw_sys::general::{POLLNVAL, pollfd, timespec};
@@ -12,9 +13,27 @@ use crate::{
     file::get_file_like,
     mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
-    task::with_blocked_signals,
+    task::{AsThread, check_signals, with_blocked_signals},
     time::TimeValueLike,
 };
+
+fn wait_for_signal(uctx: &mut UserContext) -> AxResult<isize> {
+    let curr = ax_task::current();
+    let thr = curr.as_thread();
+
+    // Some libc pause(2) implementations use ppoll(NULL, 0, NULL, NULL).
+    // It must return EINTR after a caught signal, even with SA_RESTART.
+    uctx.set_retval(-LinuxError::EINTR.code() as usize);
+    block_on(poll_fn(|cx| {
+        if check_signals(thr, uctx, None, None) {
+            return Poll::Ready(());
+        }
+        let _ = curr.poll_interrupt(cx);
+        Poll::Pending
+    }));
+
+    Err(AxError::Interrupted)
+}
 
 fn do_poll(
     poll_fds: &mut [pollfd],
@@ -102,6 +121,7 @@ pub fn sys_poll(fds: UserPtr<pollfd>, nfds: u32, timeout: i32) -> AxResult<isize
 }
 
 pub fn sys_ppoll(
+    uctx: &mut UserContext,
     fds: UserPtr<pollfd>,
     nfds: i32,
     timeout: UserConstPtr<timespec>,
@@ -113,6 +133,10 @@ pub fn sys_ppoll(
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
-    // TODO: handle signal
-    do_poll(fds, timeout, nullable!(sigmask.get_as_ref())?.copied())
+    let sigmask = nullable!(sigmask.get_as_ref())?.copied();
+    if fds.is_empty() && timeout.is_none() && sigmask.is_none() {
+        return wait_for_signal(uctx);
+    }
+    // TODO: handle signal for general poll sets.
+    do_poll(fds, timeout, sigmask)
 }

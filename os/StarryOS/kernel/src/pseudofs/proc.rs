@@ -219,6 +219,10 @@ fn render_stat() -> String {
     buf
 }
 
+fn render_diskstats() -> &'static str {
+    "7 0 loop0 1 0 8 0 1 0 8 0 0 0 0\n"
+}
+
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -663,6 +667,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "stat",
         SimpleFile::new_regular(fs.clone(), || Ok(render_stat())),
+    );
+    root.add(
+        "diskstats",
+        SimpleFile::new_regular(fs.clone(), || Ok(render_diskstats())),
     );
     root.add(
         "meminfo",
