@@ -126,15 +126,13 @@ pub fn sys_mmap(
     if type_bits != MAP_PRIVATE && type_bits != MAP_SHARED {
         return Err(AxError::InvalidInput);
     }
-    if map_flags.contains(MmapFlags::ANONYMOUS) != (fd <= 0) {
-        return Err(AxError::InvalidInput);
-    }
-    if fd <= 0 && offset != 0 {
-        return Err(AxError::InvalidInput);
-    }
     let offset: usize = offset.try_into().map_err(|_| AxError::InvalidInput)?;
     if !PageSize::Size4K.is_aligned(offset) {
         return Err(AxError::InvalidInput);
+    }
+    let anonymous = map_flags.contains(MmapFlags::ANONYMOUS);
+    if !anonymous && fd < 0 {
+        return Err(AxError::BadFileDescriptor);
     }
 
     debug!(
@@ -178,10 +176,10 @@ pub fn sys_mmap(
             .ok_or(AxError::NoMemory)?
     };
 
-    let file = if fd > 0 {
-        Some(get_file_like(fd)?)
-    } else {
+    let file = if anonymous {
         None
+    } else {
+        Some(get_file_like(fd)?)
     };
 
     let backend = match map_type {

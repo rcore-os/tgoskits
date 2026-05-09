@@ -12,14 +12,106 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use ostool::run::qemu::QemuConfig;
+use clap::Args;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
-use super::apk;
+use super::{Starry, apk, build};
 pub(crate) use crate::rootfs::qemu::{RootfsPatchMode, patch_rootfs};
 use crate::{
-    context::{ResolvedStarryRequest, starry_target_for_arch_checked},
+    context::{DEFAULT_STARRY_ARCH, ResolvedStarryRequest, starry_target_for_arch_checked},
     rootfs::{inject, store},
+    test::qemu as qemu_test,
 };
+
+#[derive(Args)]
+pub struct ArgsRootfs {
+    #[arg(long)]
+    pub arch: Option<String>,
+}
+
+pub(super) async fn rootfs(starry: &mut Starry, args: ArgsRootfs) -> anyhow::Result<()> {
+    let arch = args.arch.unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
+    let target = starry_target_for_arch_checked(&arch)?.to_string();
+    let disk_img = ensure_rootfs_in_target_dir(starry.app.workspace_root(), &arch, &target).await?;
+    println!("rootfs ready at {}", disk_img.display());
+    Ok(())
+}
+
+pub(super) async fn ensure_quick_start_qemu_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+) -> anyhow::Result<PathBuf> {
+    let target = starry_target_for_arch_checked(arch)?.to_string();
+    ensure_rootfs_in_target_dir(workspace_root, arch, &target).await
+}
+
+pub(super) async fn qemu_with_explicit_rootfs(
+    starry: &mut Starry,
+    request: ResolvedStarryRequest,
+    rootfs: PathBuf,
+) -> anyhow::Result<()> {
+    let rootfs = crate::rootfs::store::resolve_explicit_rootfs(
+        starry.app.workspace_root(),
+        &request.arch,
+        rootfs,
+    );
+    ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), Some(&rootfs)).await?;
+    starry.app.set_debug_mode(request.debug)?;
+    let cargo = build::load_cargo_config(&request)?;
+    let qemu = load_patched_qemu_config(starry, &request, &cargo, Some(&rootfs), false).await?;
+    starry
+        .app
+        .qemu(cargo, request.build_info_path, Some(qemu))
+        .await
+}
+
+pub(super) async fn qemu(
+    starry: &mut Starry,
+    request: ResolvedStarryRequest,
+) -> anyhow::Result<()> {
+    starry.app.set_debug_mode(request.debug)?;
+    let cargo = build::load_cargo_config(&request)?;
+    ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
+    let qemu = load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
+    starry
+        .app
+        .qemu(cargo, request.build_info_path, Some(qemu))
+        .await
+}
+
+pub(super) async fn load_patched_qemu_config(
+    starry: &mut Starry,
+    request: &ResolvedStarryRequest,
+    cargo: &Cargo,
+    explicit_rootfs: Option<&Path>,
+    apply_default_args: bool,
+) -> anyhow::Result<QemuConfig> {
+    let mut qemu = match request.qemu_config.as_deref() {
+        Some(path) => {
+            starry
+                .app
+                .tool_mut()
+                .read_qemu_config_from_path_for_cargo(cargo, path)
+                .await?
+        }
+        None => {
+            starry
+                .app
+                .tool_mut()
+                .ensure_qemu_config_for_cargo(cargo)
+                .await?
+        }
+    };
+
+    if let Some(rootfs) = explicit_rootfs {
+        patch_qemu_rootfs_path(&mut qemu, rootfs);
+    } else if request.qemu_config.is_none() && apply_default_args {
+        patch_qemu_rootfs(&mut qemu, request, starry.app.workspace_root(), None)?;
+    }
+    qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
+
+    Ok(qemu)
+}
 
 const APK_REPOSITORIES_PATH: &str = "/etc/apk/repositories";
 const QEMU_SLIRP_RESOLV_CONF: &str = "nameserver 10.0.2.3\n";

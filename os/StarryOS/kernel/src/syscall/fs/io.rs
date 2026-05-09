@@ -173,12 +173,22 @@ pub fn sys_fallocate(
 ) -> AxResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
     if mode != 0 {
+        return Err(AxError::OperationNotSupported);
+    }
+    if offset < 0 || len <= 0 {
         return Err(AxError::InvalidInput);
+    }
+    let end = (offset as u64)
+        .checked_add(len as u64)
+        .ok_or(AxError::from(LinuxError::EFBIG))?;
+    // Reject sizes beyond what ext4 can represent (u32 block numbers × 4 KiB blocks).
+    if end > u32::MAX as u64 * 4096 {
+        return Err(AxError::from(LinuxError::EFBIG));
     }
     let f = file_or_espipe(fd)?;
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
-    file.set_len(file.location().len()?.max(offset as u64 + len as u64))?;
+    file.set_len(file.location().len()?.max(end))?;
     Ok(0)
 }
 

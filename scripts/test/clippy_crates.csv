@@ -23,6 +23,8 @@ ax-arm-pl011
 ax-arm-pl031
 ax-cap-access
 ax-config
+ax-config-gen
+ax-config-macros
 ax-cpu
 ax-cpumask
 ax-crate-interface

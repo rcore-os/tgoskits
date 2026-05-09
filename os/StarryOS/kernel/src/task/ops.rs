@@ -126,9 +126,19 @@ pub fn poll_timer(task: &TaskInner) {
         // reentrant borrow, likely IRQ
         return;
     };
-    time.poll(|signo| {
+    let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    });
+    };
+    time.poll(emitter);
+}
+
+/// Poll the process-level POSIX timers.
+pub fn poll_process_timer(pid: Pid) {
+    if let Ok(proc_data) = get_process_data(pid) {
+        proc_data.posix_timers.poll_expired(pid, |sig| {
+            let _ = send_signal_to_process(pid, Some(sig));
+        });
+    }
 }
 
 /// Sets the timer state.
@@ -140,9 +150,10 @@ pub fn set_timer_state(task: &TaskInner, state: TimerState) {
         // reentrant borrow, likely IRQ
         return;
     };
-    time.poll(|signo| {
+    let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    });
+    };
+    time.poll(emitter);
     time.set_state(state);
 }
 

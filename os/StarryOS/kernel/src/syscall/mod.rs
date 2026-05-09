@@ -97,7 +97,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         #[cfg(target_arch = "x86_64")]
         Sysno::chmod => sys_chmod(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::fchmod => sys_fchmod(uctx.arg0() as _, uctx.arg1() as _),
-        Sysno::fchmodat | Sysno::fchmodat2 => sys_fchmodat(
+        Sysno::fchmodat => sys_fchmodat(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _, 0),
+        Sysno::fchmodat2 => sys_fchmodat(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
@@ -343,7 +344,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         #[cfg(target_arch = "x86_64")]
         Sysno::access => sys_access(uctx.arg0() as _, uctx.arg1() as _),
-        Sysno::faccessat | Sysno::faccessat2 => sys_faccessat2(
+        Sysno::faccessat => sys_faccessat2(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _, 0),
+        Sysno::faccessat2 => sys_faccessat2(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
@@ -672,7 +674,17 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         | Sysno::open_tree
         | Sysno::memfd_secret => sys_dummy_fd(sysno),
 
-        Sysno::timer_create | Sysno::timer_gettime | Sysno::timer_settime => Ok(0),
+        Sysno::timer_create => {
+            sys_timer_create(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
+        Sysno::timer_settime => sys_timer_settime(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::timer_gettime => sys_timer_gettime(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
 
         _ => {
             let tid = ax_task::current().id().as_u64() as u32;
