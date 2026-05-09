@@ -78,6 +78,10 @@ RUN set -eux; \
     cargo --version; \
     cargo install cargo-binutils axconfig-gen cargo-axplat
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends strace \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace
 
 CMD ["/bin/bash"]
