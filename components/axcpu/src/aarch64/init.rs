@@ -89,9 +89,21 @@ pub unsafe fn init_mmu(root_paddr: PhysAddr) {
     // Flush the entire TLB
     crate::asm::flush_tlb(None);
 
-    // Enable the MMU and turn on I-cache and D-cache
-    SCTLR_EL1.modify(SCTLR_EL1::M::Enable + SCTLR_EL1::C::Cacheable + SCTLR_EL1::I::Cacheable);
-    // Disable SPAN
+    // Enable the MMU, I/D cache, and EL0-accessible cache instructions.
+    // UCT/DZE/UCI let userspace execute `MRS CTR_EL0`, `DC ZVA`, and
+    // `DC CVAU` / `IC IVAU`. musl, glibc, and Mesa emit these
+    // unconditionally during early process startup. Without them, the
+    // first userspace cache-line lookup traps as EC=0x18 and the process
+    // dies with SIGTRAP before reaching `main()`.
+    SCTLR_EL1.modify(
+        SCTLR_EL1::M::Enable
+            + SCTLR_EL1::C::Cacheable
+            + SCTLR_EL1::I::Cacheable
+            + SCTLR_EL1::UCT::DontTrap
+            + SCTLR_EL1::DZE::DontTrap
+            + SCTLR_EL1::UCI::DontTrap,
+    );
+    // Disable SPAN (bit 23; not exposed as a named field by aarch64-cpu).
     SCTLR_EL1.set(SCTLR_EL1.get() | (1 << 23));
     barrier::isb(barrier::SY);
 }
