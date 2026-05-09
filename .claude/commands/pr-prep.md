@@ -96,11 +96,14 @@ Generate the PR body using this template:
 
 ### 1. <Issue Title>
 
-**Type**: <behavior-bug | memory-bug | concurrency-bug | crash-bug | access-bug | resource-bug | missing-feature>
+**Root Cause**: <logic-bug | memory-bug | concurrency-bug | validation-bug | resource-bug>
+**Manifestation**: <wrong-result | wrong-output | crash | hang | silent-corruption | leak>
 
-**Analysis**: <Root cause — which function/line, why it's wrong>
+**Analysis**: <Root cause — which function/line, why the defect exists, what invariant was violated.>
 
-**Solution**: <What files were changed, what was done>
+**Solution**: <What files were changed, the specific fix, and why this fix is correct.>
+
+**Repro**: `<path to test case>` — <one-line description of the minimal repro>
 
 ## Expected Behavior
 - <Expected outcome 1>

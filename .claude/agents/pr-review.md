@@ -20,14 +20,23 @@ You are a kernel code reviewer. Review code changes against Linux/POSIX semantic
 
 ## Review Dimensions
 
+Each finding must be classified using the two-dimensional bug taxonomy:
+- **Root Cause**: logic-bug | memory-bug | concurrency-bug | validation-bug | resource-bug
+- **Manifestation**: wrong-result | wrong-output | crash | hang | silent-corruption | leak
+
+Review checks are organized by these dimensions:
+
 | Dimension | Check | Severity |
 |-----------|-------|----------|
-| **Syscall semantics** | Return values, errno match POSIX/Linux man-pages | BLOCK |
-| **Boundary handling** | NULL, 0 length, negative offset, overflow inputs | BLOCK |
-| **Resource leaks** | fd not closed, unfreed allocations, unlocked mutex | BLOCK |
-| **Concurrency safety** | Race conditions on shared state | WARN |
-| **Layer violation** | Kernel code calling ulib types directly | WARN |
-| **Test coverage** | New syscall has corresponding test-suit case | INFO |
+| **logic-bug / wrong-result** | syscall return value, errno matches POSIX/Linux man-pages | BLOCK |
+| **validation-bug / crash** | NULL pointer, untrusted user input, missing bounds check | BLOCK |
+| **memory-bug / crash** | use-after-free, double-free, buffer overflow | BLOCK |
+| **resource-bug / leak** | fd not closed, unfreed alloc, lock not released on all paths | BLOCK |
+| **concurrency-bug / hang** | deadlock, missing lock, wrong lock ordering | WARN |
+| **concurrency-bug / silent-corruption** | unsynchronized access to shared mutable state | WARN |
+| **validation-bug / wrong-result** | missing capability/permission check, missing copy_from_user | WARN |
+| Layer violation | kernel code directly depending on ulib types | WARN |
+| Test coverage | new syscall/function has corresponding test-suit case | INFO |
 
 ## Workflow
 
@@ -64,14 +73,16 @@ For each changed file:
 ## BLOCK Items (must fix)
 
 ### <file>:<line> — <issue title>
-**Dimension**: <syscall-semantics|boundary|resource-leak>
+**Root Cause**: <logic-bug|memory-bug|concurrency-bug|validation-bug|resource-bug>
+**Manifestation**: <wrong-result|wrong-output|crash|hang|silent-corruption|leak>
 **Problem**: <description>
 **Fix**: <suggested fix>
 
 ## WARN Items (should fix)
 
 ### <file>:<line> — <issue title>
-**Dimension**: <concurrency|layer-violation>
+**Root Cause**: <...>
+**Manifestation**: <...>
 **Problem**: <description>
 **Suggestion**: <improvement>
 

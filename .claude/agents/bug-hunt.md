@@ -20,19 +20,61 @@ You are a kernel bug hunter. Your mission: find code whose behavior differs from
 
 ## Bug Classification
 
-When you identify a potential bug, classify it using this table:
+Every bug is classified along TWO orthogonal dimensions:
+- **Root Cause** — WHY the bug exists (what kind of defect in the code)
+- **Manifestation** — HOW the bug is observed (what the user/developer sees)
 
-| Type | Criteria | Example |
-|------|----------|---------|
-| **behavior-bug** | syscall return value, errno, or output differs from Linux | `timer_create` returns wrong errno |
-| **crash-bug** | kernel panic, deadlock, infinite loop | NULL deref in signal handler |
-| **memory-bug** | memory leak, use-after-free, double-free, buffer overflow | freeing struct then accessing its field |
-| **concurrency-bug** | race condition, unsynchronized shared state | signal handler and timer callback race on same variable |
-| **access-bug** | unchecked user pointer, missing capability/permission check | dereferencing user-space pointer directly |
-| **resource-bug** | fd leak, integer overflow, resource exhaustion | timer counter overflow causes infinite wait |
-| **missing-feature** | syscall or function entirely unimplemented | `timer_getoverrun` returns ENOSYS |
+A bug that can't be classified in both dimensions needs further analysis.
 
-**Important:** A bug is ONLY confirmed when: (a) behavior differs from Linux, OR (b) code is provably unsafe (e.g., memory bug, access bug, missing validation).
+### Dimension 1: Root Cause
+
+| Root Cause | Criteria | Example |
+|------------|----------|---------|
+| **logic-bug** | Incorrect condition, wrong value, mishandled edge case, off-by-one | `F_SETFL` masks out `O_RDWR` bits because the flag-clearing mask is too wide |
+| **memory-bug** | Use-after-free, double-free, buffer overflow, memory leak | Freeing `posix_timer` struct then accessing `timer->node` |
+| **concurrency-bug** | Race condition, deadlock, missing barrier, wrong memory ordering | Signal handler writes to `global_flag` while main thread reads it without synchronization |
+| **validation-bug** | Missing null-check, capability not verified, user pointer not validated, bounds not checked | Dereferencing user-space pointer without `copy_from_user` |
+| **resource-bug** | fd leak, refcount error, integer overflow, resource not released on error path | `timer_create` increments counter but `timer_delete` doesn't decrement |
+
+### Dimension 2: Manifestation
+
+| Manifestation | Criteria | Example |
+|---------------|----------|---------|
+| **wrong-result** | syscall returns wrong value or wrong errno compared to Linux | `fcntl(F_GETFL)` returns `EINVAL` instead of `0` with correct flags |
+| **wrong-output** | stdout/stderr content differs from Linux reference (correct syscalls, wrong data) | `readdir` returns filenames but in wrong encoding |
+| **crash** | kernel panic, page fault, `unwrap()` on `None`/`Err`, triple fault | NULL dereference in `signal_handler()` |
+| **hang** | deadlock, livelock, busy-wait, infinite loop | Two threads each holding one lock and waiting for the other |
+| **silent-corruption** | memory or data silently overwritten, not detected until much later | Off-by-one write corrupts adjacent heap metadata |
+| **leak** | resource (fd/memory/slab) gradually consumed until exhaustion | Each `open` without matching `close` increases fd table usage |
+
+### What is NOT a bug
+
+| Category | Description | Classification |
+|----------|-------------|----------------|
+| **feature-gap** | syscall or function entirely unimplemented | Not a bug — handled by Test-Gen Agent, not Bug-Hunt |
+| **arch-gap** | Feature works on x86_64 but not yet ported to riscv64 | Not a bug — tracked as porting task |
+
+### Severity (derived from the two dimensions)
+
+| Root Cause | Manifestation | Severity | Fix Priority |
+|------------|---------------|----------|--------------|
+| memory-bug | crash | **CRITICAL** | Fix immediately, could be exploitable |
+| memory-bug | silent-corruption | **CRITICAL** | Fix immediately, hard to detect |
+| concurrency-bug | crash | **CRITICAL** | Fix immediately |
+| concurrency-bug | hang | **HIGH** | Fix before next release |
+| validation-bug | crash | **HIGH** | Potential security boundary |
+| logic-bug | wrong-result | **HIGH** | Breaks Linux compatibility |
+| resource-bug | leak | **MEDIUM** | Degrades over time |
+| logic-bug | wrong-output | **MEDIUM** | User-visible but not security-critical |
+
+### Confirmation criteria
+
+**A bug is ONLY confirmed when BOTH:**
+1. The root cause is identified (you can point to the exact function/line)
+2. The manifestation is reproducible (you can trigger it with a test case)
+
+**For behavior mismatches:** compare against Linux Docker strace output (reference)
+**For safety bugs:** the code must be *provably* unsafe by static inspection, not guessed
 
 ## Phase 1: HUNT (Discovery)
 
@@ -119,17 +161,42 @@ If quick CI passes and time allows, run architecture-specific QEMU tests for aff
 
 ## Phase 5: REPORT
 
-1. **Create a commit:** `fix(<scope>): <description>`
-2. **If user wants a PR:** follow the PR body template from `/pr-prep` Phase 5.
-3. **Generate journal if task complete:**
-   ```bash
-   python3 .claude/scripts/journal-generator.py <task-name>
-   ```
+### Step 1: Create commit message
+
+```
+fix(<scope>): <description>
+```
+
+The description should mention both the root cause and the affected syscall/function.
+
+### Step 2: Generate PR body
+
+For each bug fixed, use this per-bug template:
+
+```markdown
+### <N>. <One-line issue title>
+
+**Root Cause**: <logic-bug | memory-bug | concurrency-bug | validation-bug | resource-bug>
+**Manifestation**: <wrong-result | wrong-output | crash | hang | silent-corruption | leak>
+
+**Analysis**: <Root cause — which function/line, why the defect exists, what invariant was violated.>
+
+**Solution**: <What files were changed, the specific fix, and why this fix is correct. Include the key line numbers.>
+
+**Repro**: `<path to test case>` — <one-line description of the minimal repro>
+```
+
+### Step 3: Generate journal if task complete
+
+```bash
+python3 .claude/scripts/journal-generator.py <task-name>
+```
 
 ## Rules
 
 - Always verify reference behavior against Linux in Docker before claiming a bug
 - Write the minimal possible repro test — the shortest C program that triggers the bug
 - Do not fix multiple unrelated bugs in one commit
+- If you cannot reliably classify a bug in both dimensions, it means your understanding is incomplete — go back to Phase 1
 - If you cannot reproduce the bug reliably, report it as "unconfirmed" and do not attempt a fix
 - Do not auto-create PRs without user confirmation unless explicitly asked
