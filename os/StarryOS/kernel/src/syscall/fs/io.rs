@@ -17,6 +17,7 @@ use syscalls::Sysno;
 use crate::{
     file::{Directory, File, FileLike, Pipe, get_file_like},
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut},
+    task::AsThread,
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -157,9 +158,22 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
         .write(true)
         .open(&FS_CONTEXT.lock(), path)?
         .into_file()?;
-    let metadata = file.location().metadata()?;
-    if !metadata.mode.contains(NodePermission::OWNER_WRITE) {
-        return Err(AxError::from(LinuxError::EACCES));
+    // Check write permission against current credentials following the
+    // same owner/group/other + root-bypass rules as faccessat2(2).
+    let cred = current().as_thread().cred();
+    if cred.fsuid != 0 {
+        let metadata = file.location().metadata()?;
+        let (file_uid, file_gid, file_mode) = (metadata.uid, metadata.gid, metadata.mode);
+        let has_write = if cred.fsuid == file_uid {
+            file_mode.contains(NodePermission::OWNER_WRITE)
+        } else if cred.fsgid == file_gid || cred.groups.contains(&file_gid) {
+            file_mode.contains(NodePermission::GROUP_WRITE)
+        } else {
+            file_mode.contains(NodePermission::OTHER_WRITE)
+        };
+        if !has_write {
+            return Err(AxError::from(LinuxError::EACCES));
+        }
     }
     file.access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
