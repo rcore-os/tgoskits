@@ -1,0 +1,109 @@
+/*
+ * test-evdev-prop-bits
+ *
+ * 验证 /dev/input/event* 暴露的 EVIOCGPROP 与 EVIOCGABS 信息:
+ *   - EVIOCGPROP 返回非空字节, 且 INPUT_PROP_POINTER (bit 0) 已置位
+ *     (内核为带 EV_REL/EV_ABS 且非触摸屏的指针类设备合成)
+ *   - 对带 EV_ABS 的设备, EVIOCGABS(ABS_X) 返回的 input_absinfo.maximum
+ *     大于 minimum, 即 libinput 能用来归一化坐标
+ *
+ * 找不到任何 /dev/input/event* 时直接通过, 兼容没有 virtio-input
+ * 设备的 toml.
+ */
+
+#include "test_framework.h"
+
+#include <dirent.h>
+#include <fcntl.h>
+#include <linux/input.h>
+#include <linux/input-event-codes.h>
+#include <stdint.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#ifndef INPUT_PROP_POINTER
+#define INPUT_PROP_POINTER 0x00
+#endif
+#ifndef INPUT_PROP_DIRECT
+#define INPUT_PROP_DIRECT  0x01
+#endif
+
+static int has_bit(const unsigned char *bits, size_t nbits, size_t bit) {
+    if (bit / 8 >= nbits) return 0;
+    return (bits[bit / 8] >> (bit % 8)) & 1;
+}
+
+static int test_one_device(const char *path) {
+    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) {
+        printf("  SKIP | %s | open failed errno=%d (%s)\n",
+               path, errno, strerror(errno));
+        return 0;
+    }
+
+    /* 拉一份事件位图判断设备是否带 EV_ABS / EV_REL */
+    unsigned char ev_bits[(EV_MAX + 7) / 8] = {0};
+    int rc = ioctl(fd, EVIOCGBIT(0, sizeof(ev_bits)), ev_bits);
+    CHECK(rc >= 0, "EVIOCGBIT(0)");
+    int has_abs = has_bit(ev_bits, sizeof(ev_bits), EV_ABS);
+    int has_rel = has_bit(ev_bits, sizeof(ev_bits), EV_REL);
+
+    /* EVIOCGPROP — 内核应返回 4 字节属性图. 带轴非触摸屏需置 POINTER. */
+    unsigned char prop_bits[8] = {0};
+    rc = ioctl(fd, EVIOCGPROP(sizeof(prop_bits)), prop_bits);
+    CHECK(rc >= 0, "EVIOCGPROP returns success");
+    if (rc >= 0) {
+        int is_touchscreen = has_bit(prop_bits, sizeof(prop_bits), INPUT_PROP_DIRECT);
+        if ((has_abs || has_rel) && !is_touchscreen) {
+            CHECK(has_bit(prop_bits, sizeof(prop_bits), INPUT_PROP_POINTER),
+                  "INPUT_PROP_POINTER set on pointer device");
+        } else {
+            printf("  SKIP | %s | INPUT_PROP_POINTER check (touchscreen or no axes)\n",
+                   path);
+        }
+    }
+
+    /* EVIOCGABS(ABS_X) — 仅当设备带 EV_ABS 才有意义 */
+    if (has_abs) {
+        struct input_absinfo abs;
+        memset(&abs, 0, sizeof(abs));
+        rc = ioctl(fd, EVIOCGABS(ABS_X), &abs);
+        CHECK(rc >= 0, "EVIOCGABS(ABS_X) returns success");
+        if (rc >= 0) {
+            CHECK(abs.maximum > abs.minimum,
+                  "absinfo.maximum > minimum (libinput can normalize)");
+        }
+    }
+
+    close(fd);
+    return 1;
+}
+
+int main(void) {
+    TEST_START("evdev-prop-bits");
+
+    DIR *d = opendir("/dev/input");
+    if (!d) {
+        printf("  SKIP | /dev/input not present\n");
+        TEST_DONE();
+    }
+
+    int devices_seen = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strncmp(ent->d_name, "event", 5) != 0) continue;
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/input/%s", ent->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        devices_seen += test_one_device(path);
+    }
+    closedir(d);
+
+    if (devices_seen == 0) {
+        printf("  SKIP | no /dev/input/event* devices to probe\n");
+    }
+
+    TEST_DONE();
+}
