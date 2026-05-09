@@ -413,6 +413,45 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
+          - name: Visual starry riscv64
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: |
+              apt-get update && apt-get install -y --no-install-recommends e2tools
+              cargo xtask starry build --arch riscv64
+              cargo xtask starry rootfs --arch riscv64
+              bash scripts/visual-test/run_all.sh --arch riscv64
+            cache_key: test-visual-riscv64
+            container_image: base
+            apk_region: us
+            required_repository_owner: ""
+            main_pr_only: false
+          - name: Visual starry aarch64
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: |
+              apt-get update && apt-get install -y --no-install-recommends e2tools
+              cargo xtask starry build --arch aarch64
+              cargo xtask starry rootfs --arch aarch64
+              bash scripts/visual-test/run_all.sh --arch aarch64
+            cache_key: test-visual-aarch64
+            container_image: base
+            apk_region: us
+            required_repository_owner: ""
+            main_pr_only: false
+          - name: Visual starry x86_64
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: |
+              apt-get update && apt-get install -y --no-install-recommends e2tools
+              cargo xtask starry build --arch x86_64
+              cargo xtask starry rootfs --arch x86_64
+              bash scripts/visual-test/run_all.sh --arch x86_64
+            cache_key: test-visual-x86_64
+            container_image: base
+            apk_region: us
+            required_repository_owner: ""
+            main_pr_only: false
           # Stress tests: uncomment to enable (runs only on PRs targeting main).
           # - name: Stress starry aarch64
           #   use_container: true
