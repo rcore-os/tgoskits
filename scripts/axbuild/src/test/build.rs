@@ -1185,16 +1185,31 @@ pub(crate) fn prepare_rust_case_assets_sync(
     let target_triple = rust_musl_target(arch)?;
 
     case_assets::reset_dir(&layout.overlay_dir)?;
+    case_assets::reset_dir(&layout.staging_root)?;
+    case_assets::reset_dir(&layout.cross_bin_dir)?;
 
     // Ensure the musl target is installed in the active toolchain.
     let mut add_target = Command::new("rustup");
+    add_target.arg("target").arg("add").arg(target_triple);
     add_target
-        .arg("target")
-        .arg("add")
-        .arg(target_triple);
-    add_target.exec().with_context(|| {
-        format!("failed to install Rust target `{target_triple}` via rustup")
-    })?;
+        .exec()
+        .with_context(|| format!("failed to install Rust target `{target_triple}` via rustup"))?;
+
+    // Extract the rootfs so we can use the Alpine cross-linker for architectures
+    // whose ELF format the host linker cannot handle (e.g. loongarch64).
+    crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
+
+    // Build a qemu-user wrapper for the cross-linker from the Alpine sysroot.
+    let spec = cross_compile_spec(arch)?;
+    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
+    write_cross_bin_wrappers(layout, spec, &qemu_runner)?;
+
+    // The linker env var name is CARGO_TARGET_<UPPER_TRIPLE>_LINKER.
+    let linker_env_key = format!(
+        "CARGO_TARGET_{}_LINKER",
+        target_triple.to_uppercase().replace('-', "_")
+    );
+    let linker_path = layout.cross_bin_dir.join("ld");
 
     // Cross-compile the Rust project for the musl target.
     let mut cmd = Command::new("cargo");
@@ -1206,7 +1221,8 @@ pub(crate) fn prepare_rust_case_assets_sync(
         .arg(&cargo_toml)
         .arg("--target-dir")
         .arg(&layout.build_dir)
-        .env("RUSTFLAGS", "-C target-feature=+crt-static");
+        .env("RUSTFLAGS", "-C target-feature=+crt-static")
+        .env(&linker_env_key, &linker_path);
     cmd.exec().with_context(|| {
         format!(
             "failed to cross-compile Rust case `{}` for target `{target_triple}`",
@@ -1278,15 +1294,18 @@ fn rust_case_bin_name(cargo_toml: &Path) -> anyhow::Result<String> {
     let manifest: CargoToml = toml::from_str(&content)
         .with_context(|| format!("failed to parse {}", cargo_toml.display()))?;
 
-    if let Some(bins) = manifest.bin {
-        if let Some(first) = bins.into_iter().next() {
-            return Ok(first.name);
-        }
+    if let Some(bins) = manifest.bin
+        && let Some(first) = bins.into_iter().next()
+    {
+        return Ok(first.name);
     }
-    manifest
-        .package
-        .map(|p| p.name)
-        .ok_or_else(|| anyhow::anyhow!("no `[package]` or `[[bin]]` found in {}", cargo_toml.display()))
+
+    manifest.package.map(|p| p.name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no `[package]` or `[[bin]]` found in {}",
+            cargo_toml.display()
+        )
+    })
 }
 
 #[cfg(test)]
