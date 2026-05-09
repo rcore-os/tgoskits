@@ -1,41 +1,41 @@
 //! ARM Generic Timer.
 
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_TVAL_EL0, CNTPCT_EL0, Readable, Writeable};
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTV_TVAL_EL0, CNTVCT_EL0, Readable, Writeable};
 use ax_int_ratio::Ratio;
 
-static mut CNTPCT_TO_NANOS_RATIO: Ratio = Ratio::zero();
-static mut NANOS_TO_CNTPCT_RATIO: Ratio = Ratio::zero();
+static mut CNTVCT_TO_NANOS_RATIO: Ratio = Ratio::zero();
+static mut NANOS_TO_CNTVCT_RATIO: Ratio = Ratio::zero();
 
 /// Returns the current clock time in hardware ticks.
 #[inline]
 pub fn current_ticks() -> u64 {
-    CNTPCT_EL0.get()
+    CNTVCT_EL0.get()
 }
 
 /// Converts hardware ticks to nanoseconds.
 #[inline]
 pub fn ticks_to_nanos(ticks: u64) -> u64 {
-    unsafe { CNTPCT_TO_NANOS_RATIO.mul_trunc(ticks) }
+    unsafe { CNTVCT_TO_NANOS_RATIO.mul_trunc(ticks) }
 }
 
 /// Converts nanoseconds to hardware ticks.
 #[inline]
 pub fn nanos_to_ticks(nanos: u64) -> u64 {
-    unsafe { NANOS_TO_CNTPCT_RATIO.mul_trunc(nanos) }
+    unsafe { NANOS_TO_CNTVCT_RATIO.mul_trunc(nanos) }
 }
 
 /// Set a one-shot timer.
 ///
 /// A timer interrupt will be triggered at the specified monotonic time deadline (in nanoseconds).
 pub fn set_oneshot_timer(deadline_ns: u64) {
-    let cnptct = CNTPCT_EL0.get();
+    let cnptct = CNTVCT_EL0.get();
     let cnptct_deadline = nanos_to_ticks(deadline_ns);
     if cnptct < cnptct_deadline {
         let interval = cnptct_deadline - cnptct;
         debug_assert!(interval <= u32::MAX as u64);
-        CNTP_TVAL_EL0.set(interval);
+        CNTV_TVAL_EL0.set(interval);
     } else {
-        CNTP_TVAL_EL0.set(0);
+        CNTV_TVAL_EL0.set(0);
     }
 }
 
@@ -43,8 +43,8 @@ pub fn set_oneshot_timer(deadline_ns: u64) {
 pub fn init_early() {
     let freq = CNTFRQ_EL0.get();
     unsafe {
-        CNTPCT_TO_NANOS_RATIO = Ratio::new(ax_plat::time::NANOS_PER_SEC as u32, freq as u32);
-        NANOS_TO_CNTPCT_RATIO = CNTPCT_TO_NANOS_RATIO.inverse();
+        CNTVCT_TO_NANOS_RATIO = Ratio::new(ax_plat::time::NANOS_PER_SEC as u32, freq as u32);
+        NANOS_TO_CNTVCT_RATIO = CNTVCT_TO_NANOS_RATIO.inverse();
     }
 }
 
@@ -54,9 +54,16 @@ pub fn init_early() {
 /// Peripheral Interrupt).
 #[cfg(feature = "irq")]
 pub fn enable_irqs(timer_irq_num: usize) {
-    use aarch64_cpu::registers::CNTP_CTL_EL0;
-    CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
-    CNTP_TVAL_EL0.set(0);
+    // CNTV (virtual timer) instead of CNTP (physical): in virtualized
+    // environments — Apple HVF in particular — EL2 owns CNTP and traps
+    // any EL1 access to it with `EC=Unknown`, crashing us. CNTV is the
+    // guest-owned timer and is always accessible at EL1. On bare-metal
+    // TCG the two tick identically, so this choice is harmless there.
+    // IRQ number changes too: CNTV is PPI 11 (IRQ 27), CNTP is PPI 14
+    // (IRQ 30); `timer-irq` in axconfig.toml now advertises 27.
+    use aarch64_cpu::registers::CNTV_CTL_EL0;
+    CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);
+    CNTV_TVAL_EL0.set(0);
     ax_plat::irq::set_enable(timer_irq_num, true);
 }
 
