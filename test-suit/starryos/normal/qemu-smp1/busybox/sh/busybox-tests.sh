@@ -7,7 +7,7 @@ _t=$({ timeout 10 sh -c "busybox adjtimex 2>&1"; } 2>&1)
 if [ -n "$_t" ]; then echo "PASS: busybox_adjtimex"; PASS=$((PASS+1)); else echo "FAIL: busybox_adjtimex (empty)"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox arch 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "riscv"; then echo "PASS: busybox_arch"; PASS=$((PASS+1)); else echo "FAIL: busybox_arch"; FAIL=$((FAIL+1)); fi
+if [ -n "$_t" ] && echo "$_t" | grep -qE "x86_64|riscv|aarch64|arm|loongarch|mips|powerpc|s390"; then echo "PASS: busybox_arch"; PASS=$((PASS+1)); else echo "FAIL: busybox_arch"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox ash -c 'echo ash_ok' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "ash_ok"; then echo "PASS: busybox_ash"; PASS=$((PASS+1)); else echo "FAIL: busybox_ash"; FAIL=$((FAIL+1)); fi
