@@ -3,7 +3,8 @@ use core::{any::Any, task::Context, time::Duration};
 
 #[allow(unused_imports)]
 use ax_driver::prelude::{
-    AxInputDevice, BaseDriverOps, DevError, Event, EventType, InputDeviceId, InputDriverOps,
+    AbsInfo, AxInputDevice, BaseDriverOps, DevError, Event, EventType, InputDeviceId,
+    InputDriverOps,
 };
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::wall_time;
@@ -52,9 +53,38 @@ impl Inner {
     }
 }
 
+/// Linux `INPUT_PROP_CNT` — the property bitmap is 4 bytes (32 properties).
+const INPUT_PROP_CNT: usize = 0x20;
+/// Linux `INPUT_PROP_POINTER` — emulates a relative pointer or maps absolute
+/// coordinates to screen space. libinput hides the cursor on absolute-axis
+/// devices that do not advertise this until proximity is reported.
+const INPUT_PROP_POINTER: usize = 0x00;
+/// Linux `INPUT_PROP_DIRECT` — direct-mapped axes (touchscreens).
+const INPUT_PROP_DIRECT: usize = 0x01;
+
+/// Linux uapi `struct input_absinfo` — six `i32`s returned by
+/// `EVIOCGABS(axis)`.
+#[repr(C)]
+#[derive(Default, Clone, Copy, FromBytes, IntoBytes, Immutable)]
+struct InputAbsInfo {
+    value: i32,
+    minimum: i32,
+    maximum: i32,
+    fuzz: i32,
+    flat: i32,
+    resolution: i32,
+}
+
 pub struct EventDev {
     inner: Mutex<Inner>,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
+    /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
+    /// raw bits with a synthesized `INPUT_PROP_POINTER` for absolute or
+    /// relative pointing devices that aren't touchscreens. QEMU's
+    /// virtio-mouse / virtio-tablet do not set the bit themselves, so
+    /// libinput would otherwise classify the tablet as a graphics tablet
+    /// and suppress the cursor pending a never-firing `BTN_TOOL_PEN`.
+    prop_bits: [u8; INPUT_PROP_CNT.div_ceil(8)],
 }
 
 impl EventDev {
@@ -72,18 +102,15 @@ impl EventDev {
             }
         }
 
-        // let mut out = [0u8; 2000];
-        // if device.get_event_bits(EventType::Absolute, &mut out).unwrap() {
-        //     let mut bits = Vec::new();
-        //     for i in 0..EventType::Absolute.bits_count() {
-        //         if (out[i / 8] >> (i % 8)) & 1 != 0 {
-        //             bits.push(i);
-        //         }
-        //     }
-        //     warn!("{bits:?}");
-        // } else {
-        //     warn!("failure");
-        // }
+        let mut prop_bits = [0u8; INPUT_PROP_CNT.div_ceil(8)];
+        let _ = device.get_prop_bits(&mut prop_bits);
+        let is_touchscreen = prop_bits[INPUT_PROP_DIRECT / 8] & (1 << (INPUT_PROP_DIRECT % 8)) != 0;
+        let has_axes =
+            ev_bits.get(EventType::Relative as usize) || ev_bits.get(EventType::Absolute as usize);
+        if has_axes && !is_touchscreen {
+            prop_bits[INPUT_PROP_POINTER / 8] |= 1 << (INPUT_PROP_POINTER % 8);
+        }
+
         Self {
             inner: Mutex::new(Inner {
                 device,
@@ -91,6 +118,7 @@ impl EventDev {
                 key_state: Bitmap::new(),
             }),
             ev_bits,
+            prop_bits,
         }
     }
 
@@ -260,11 +288,14 @@ impl DeviceOps for EventDev {
                             0x08 => {
                                 return return_str(arg, size, self.inner.lock().device.unique_id());
                             }
-                            // EVIOCGPROP
+                            // EVIOCGPROP — device property bitmap. libinput
+                            // uses INPUT_PROP_POINTER to keep the cursor
+                            // visible on absolute-axis pointing devices like
+                            // virtio-tablet; we synthesize the bit at probe
+                            // for any non-touchscreen with REL/ABS axes.
                             0x09 => {
-                                // For some reasons virtio does not provide prop
-                                // bits for now
-                                return Ok(0);
+                                let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
+                                return Ok(copy_bytes(&self.prop_bits, slice));
                             }
                             // EVIOCGKEY
                             0x18 => {
@@ -293,8 +324,28 @@ impl DeviceOps for EventDev {
                         }
                         const ABS_CNT: u8 = 0x40;
                         if nr & !(ABS_CNT - 1) == ABS_CNT {
-                            // TODO: abs info
-                            return Ok(0);
+                            // EVIOCGABS(axis) — absolute axis info.
+                            // libinput needs min/max/res to map the
+                            // virtio-tablet's 0..0x7FFF absolute range to
+                            // screen pixels; without it motion is treated
+                            // as noise.
+                            let axis = nr & (ABS_CNT - 1);
+                            let info = match self.inner.lock().device.get_abs_info(axis) {
+                                Ok(info) => info,
+                                Err(DevError::Unsupported) => return Ok(0),
+                                Err(_) => return Err(AxError::InvalidInput),
+                            };
+                            let abs = InputAbsInfo {
+                                value: 0,
+                                minimum: info.min as i32,
+                                maximum: info.max as i32,
+                                fuzz: info.fuzz as i32,
+                                flat: info.flat as i32,
+                                resolution: info.res as i32,
+                            };
+                            let bytes = abs.as_bytes();
+                            let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
+                            return Ok(copy_bytes(bytes, slice));
                         }
                         return Err(AxError::InvalidInput);
                     }
