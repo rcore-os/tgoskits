@@ -19,7 +19,7 @@ use core::{
 
 use ax_hal::time::TimeValue;
 use ax_sync::{Mutex, spin::SpinNoIrq};
-use ax_task::{TaskExt, TaskInner, WaitQueue};
+use ax_task::{TaskExt, TaskInner, WaitQueue as AxWaitQueue};
 use axpoll::PollSet;
 use extern_trait::extern_trait;
 use scope_local::{ActiveScope, Scope};
@@ -312,11 +312,11 @@ impl AsThread for TaskInner {
 /// wait, the parent will see `done == true` and skip waiting.
 pub struct VforkDone {
     done: bool,
-    wq: Arc<WaitQueue>,
+    wq: Arc<AxWaitQueue>,
 }
 
 impl VforkDone {
-    pub fn new(wq: Arc<WaitQueue>) -> Self {
+    pub fn new(wq: Arc<AxWaitQueue>) -> Self {
         Self { done: false, wq }
     }
 }
@@ -489,7 +489,7 @@ impl ProcessData {
 
     /// Set the vfork completion (called on the child after a vfork,
     /// before the child task is spawned).
-    pub fn set_vfork_done(&self, wq: Arc<WaitQueue>) {
+    pub fn set_vfork_done(&self, wq: Arc<AxWaitQueue>) {
         *self.vfork_done.lock() = Some(VforkDone::new(wq));
     }
 
