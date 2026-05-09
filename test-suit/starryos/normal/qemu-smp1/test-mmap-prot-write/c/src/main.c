@@ -20,7 +20,7 @@ int main(void)
 
     size_t len = 4096;
     void *p = mmap(NULL, len, PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-    CHECK(p != MAP_FAILED, "mmap PROT_WRITE | MAP_ANON returns non-MAP_FAILED");
+    CHECK(p != MAP_FAILED, "mmap PROT_WRITE returns valid pointer");
     if (p == MAP_FAILED) {
         TEST_DONE();
     }
