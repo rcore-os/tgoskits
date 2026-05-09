@@ -18,6 +18,16 @@ use crate::{
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut},
 };
 
+const RWF_SUPPORTED: u32 = 0;
+
+fn check_rwf_flags(flags: u32) -> AxResult<()> {
+    if flags & !RWF_SUPPORTED != 0 {
+        Err(AxError::OperationNotSupported)
+    } else {
+        Ok(())
+    }
+}
+
 struct DummyFd;
 impl FileLike for DummyFd {
     fn path(&self) -> Cow<'_, str> {
@@ -180,8 +190,9 @@ pub fn sys_preadv(
     iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
+    _offset_high: usize,
 ) -> AxResult<isize> {
-    sys_preadv2(fd, iov, iovcnt, offset, 0)
+    sys_preadv_at(fd, iov, iovcnt, offset)
 }
 
 pub fn sys_pwritev(
@@ -189,8 +200,9 @@ pub fn sys_pwritev(
     iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
+    _offset_high: usize,
 ) -> AxResult<isize> {
-    sys_pwritev2(fd, iov, iovcnt, offset, 0)
+    sys_pwritev_at(fd, iov, iovcnt, offset)
 }
 
 pub fn sys_preadv2(
@@ -198,9 +210,30 @@ pub fn sys_preadv2(
     iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
-    _flags: u32,
+    _offset_high: usize,
+    flags: u32,
 ) -> AxResult<isize> {
-    debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
+    debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {flags}");
+    check_rwf_flags(flags)?;
+    if offset == -1 {
+        let f = File::from_fd(fd)?;
+        return f
+            .inner()
+            .read(IoVectorBuf::new(iov, iovcnt)?.into_io())
+            .map(|n| n as _);
+    }
+    sys_preadv_at(fd, iov, iovcnt, offset)
+}
+
+fn sys_preadv_at(
+    fd: c_int,
+    iov: *const IoVec,
+    iovcnt: usize,
+    offset: __kernel_off_t,
+) -> AxResult<isize> {
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     let f = File::from_fd(fd)?;
     f.inner()
         .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
@@ -212,13 +245,41 @@ pub fn sys_pwritev2(
     iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
-    _flags: u32,
+    _offset_high: usize,
+    flags: u32,
 ) -> AxResult<isize> {
-    debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
+    debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {flags}");
+    check_rwf_flags(flags)?;
+    if offset == -1 {
+        let f = File::from_fd(fd)?;
+        return f
+            .inner()
+            .write(IoVectorBuf::new(iov, iovcnt)?.into_io())
+            .map(|n| n as _);
+    }
+    sys_pwritev_at(fd, iov, iovcnt, offset)
+}
+
+fn sys_pwritev_at(
+    fd: c_int,
+    iov: *const IoVec,
+    iovcnt: usize,
+    offset: __kernel_off_t,
+) -> AxResult<isize> {
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     let f = File::from_fd(fd)?;
-    f.inner()
-        .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
-        .map(|n| n as _)
+    let io = IoVectorBuf::new(iov, iovcnt)?.into_io();
+    if f.inner().flags().contains(FileFlags::APPEND) {
+        f.inner()
+            .access(FileFlags::WRITE)?
+            .append(io)
+            .map(|(n, _)| n)
+    } else {
+        f.inner().write_at(io, offset as _)
+    }
+    .map(|n| n as _)
 }
 
 enum SendFile {

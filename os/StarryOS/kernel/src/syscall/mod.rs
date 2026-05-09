@@ -173,12 +173,14 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
+            uctx.arg4(),
         ),
         Sysno::pwritev => sys_pwritev(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
+            uctx.arg4(),
         ),
         Sysno::preadv2 => sys_preadv2(
             uctx.arg0() as _,
@@ -186,6 +188,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
             uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
         Sysno::pwritev2 => sys_pwritev2(
             uctx.arg0() as _,
@@ -193,6 +196,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
             uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
         Sysno::sendfile => sys_sendfile(
             uctx.arg0() as _,
