@@ -40,7 +40,13 @@ impl From<MmapProt> for MappingFlags {
             flags |= MappingFlags::READ;
         }
         if value.contains(MmapProt::WRITE) {
-            flags |= MappingFlags::WRITE;
+            // Writable pages must also be readable. RISC-V's privileged spec
+            // reserves the (R=0, W=1) PTE encoding, so a PROT_WRITE-only mmap
+            // would produce an unusable PTE. Linux implicitly promotes
+            // PROT_WRITE to PROT_READ | PROT_WRITE for this reason; match that
+            // behavior so userspace paths that mmap with PROT_WRITE alone
+            // (e.g. weston's drm-pixman shadow framebuffer) work on riscv64.
+            flags |= MappingFlags::READ | MappingFlags::WRITE;
         }
         if value.contains(MmapProt::EXEC) {
             flags |= MappingFlags::EXECUTE;
