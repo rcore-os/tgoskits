@@ -6,18 +6,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "Before executing this Bash command, check if it matches gh pr create or git push. If it does, read .claude/hooks/pre-pr-gate.md and follow its instructions. If the gate checks fail, block the command and tell the user what needs to be fixed."
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/post-tool-use-log.py\" \"${CLAUDE_PLUGIN_ROOT}\""
+            "prompt": "If this Bash command does NOT contain 'gh pr create' or 'git push', reply with the single word 'PROCEED' and take no further action. If it DOES contain those, read .claude/hooks/pre-pr-gate.md and follow its checks before allowing the command. Block only if a gate check explicitly fails."
           }
         ]
       }
