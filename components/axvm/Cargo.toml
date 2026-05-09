@@ -11,8 +11,9 @@ license = "Apache-2.0"
 
 [features]
 default = ["vmx"]
-vmx = []
-4-level-ept = []   # TODO: Realize 4-level-ept on x86_64 and riscv64.
+vmx = ["axaddrspace/vmx", "x86_vcpu/vmx"]
+svm = ["axaddrspace/svm", "x86_vcpu/svm"]
+4-level-ept = ["vmx"]   # TODO: Realize 4-level-ept on x86_64 and riscv64.
 
 [dependencies]
 log = "0.4"

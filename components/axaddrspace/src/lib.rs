@@ -19,6 +19,9 @@
 extern crate log;
 extern crate alloc;
 
+#[cfg(all(feature = "vmx", feature = "svm"))]
+compile_error!("features `vmx` and `svm` are mutually exclusive");
+
 mod addr;
 mod address_space;
 pub mod device;
