@@ -29,7 +29,7 @@ use linux_raw_sys::ioctl::BLKGETSIZE64;
 #[cfg(feature = "dev-log")]
 pub use log::bind_dev_log;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
-use starry_vm::VmPtr;
+use starry_vm::VmMutPtr;
 
 use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 
