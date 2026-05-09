@@ -680,18 +680,18 @@ dependencies = [
 
 [[package]]
 name = "ax-crate-interface-lite"
-version = "0.3.4"
+version = "0.3.5"
 
 [[package]]
 name = "ax-ctor-bare"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "ax-ctor-bare-macros",
 ]
 
 [[package]]
 name = "ax-ctor-bare-macros"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-base"
-version = "0.3.11"
+version = "0.3.12"
 
 [[package]]
 name = "ax-driver-block"
@@ -764,14 +764,14 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-display"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "ax-driver-base",
 ]
 
 [[package]]
 name = "ax-driver-input"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "ax-driver-base",
  "strum 0.27.2",
@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-pci"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "virtio-drivers",
 ]
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-vsock"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "ax-driver-base",
  "log",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "ax-page-table-entry"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-memory-addr",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "ax-page-table-multiarch"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "arrayvec",
  "ax-errno",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-aarch64-phytium-pi"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-aarch64-raspi"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-config-macros",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-macros"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "ax-crate-interface",
  "proc-macro2",
@@ -1861,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor_api"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "ax-cpumask",
  "ax-crate-interface",
@@ -1872,7 +1872,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor_api_proc"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-axplat"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "cargo_metadata 0.22.0",
  "clap",
@@ -4119,9 +4119,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.17.0"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "heapless"
@@ -4546,7 +4546,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
- "hashbrown 0.17.0",
+ "hashbrown 0.17.1",
  "serde",
  "serde_core",
 ]
@@ -7765,7 +7765,7 @@ dependencies = [
 
 [[package]]
 name = "simple-sdmmc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitfield-struct",
  "log",
