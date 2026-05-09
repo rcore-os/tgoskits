@@ -32,17 +32,18 @@ module_driver!(
 fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     let base_reg = info
         .node
-        .reg()
-        .and_then(|mut regs| regs.next())
+        .regs()
+        .into_iter()
+        .next()
         .ok_or(OnProbeError::other(alloc::format!(
             "[{}] has no reg",
             info.node.name()
         )))?;
 
-    let mmio_size = base_reg.size.unwrap_or(0x1000);
+    let mmio_size = base_reg.size.unwrap_or(0x1000) as usize;
     let board = RkBoard::Rk3588;
 
-    let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
+    let mmio_base = iomap((base_reg.address as usize).into(), mmio_size)?;
     let pm = RockchipPM::new(mmio_base, board);
 
     plat_dev.register(pm);

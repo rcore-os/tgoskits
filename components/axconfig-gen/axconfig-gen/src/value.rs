@@ -57,15 +57,11 @@ impl ConfigValue {
     /// Updates the config value with a new value.
     pub fn update(&mut self, new_value: Self) -> ConfigResult<()> {
         match (&self.ty, &new_value.ty) {
-            (Some(ty), Some(new_ty)) => {
-                if ty != new_ty {
-                    return Err(ConfigErr::ValueTypeMismatch);
-                }
+            (Some(ty), Some(new_ty)) if ty != new_ty => {
+                return Err(ConfigErr::ValueTypeMismatch);
             }
-            (Some(ty), None) => {
-                if !value_type_matches(&new_value.value, ty) {
-                    return Err(ConfigErr::ValueTypeMismatch);
-                }
+            (Some(ty), None) if !value_type_matches(&new_value.value, ty) => {
+                return Err(ConfigErr::ValueTypeMismatch);
             }
             (None, Some(new_ty)) => {
                 if !value_type_matches(&self.value, new_ty) {

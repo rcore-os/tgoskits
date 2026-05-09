@@ -71,6 +71,7 @@ define_options! {
 
     // ---- IP level options (IP_*) ----
     Ttl(u8),
+    RecvErr(bool),
 
     // ---- Extra options ----
     NonBlocking(bool),

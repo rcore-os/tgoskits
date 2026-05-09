@@ -13,7 +13,7 @@
 
 ifeq ($(APP_TYPE),c)
   ax_feat_prefix := ax-feat/
-  lib_features := fp-simd irq alloc multitask fs net fd pipe select epoll
+  lib_features := fp-simd irq alloc multitask lockdep fs net fd pipe select epoll
 else
   ifeq ($(NO_AXSTD),y)
     ax_feat_prefix := ax-feat/

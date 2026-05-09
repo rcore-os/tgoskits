@@ -1,0 +1,35 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"label": "debug test",
+			"command": "cargo",
+			"args": [
+				"test",
+				"--test",
+				"test",
+				"--",
+				"--show-output",
+				"--no-run",
+			],
+			"options": {
+				"cwd": "${fileDirname}"
+			},
+			"problemMatcher": {
+				"base": "$rustc",
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": "^.*",
+					"endsPattern": "^.*Running tests"
+				}
+			},
+			"group": {
+				"kind": "test",
+				"isDefault": true
+			},
+			"detail": "断点调试 test 测试用例",
+			"isBackground": true,
+		}
+	]
+}

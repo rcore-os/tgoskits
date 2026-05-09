@@ -22,7 +22,11 @@ use core::alloc::Layout;
 
 use crate::vmm::{VM, images::ImageLoader, vm_list::push_vm};
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "riscv64"
+))]
 use crate::vmm::fdt::*;
 
 use alloc::sync::Arc;
@@ -128,7 +132,11 @@ pub mod config {
 }
 
 pub fn get_vm_dtb_arc(_vm_cfg: &AxVMConfig) -> Option<Arc<[u8]>> {
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    ))]
     {
         let cache_lock = dtb_cache().lock();
         if let Some(dtb) = cache_lock.get(&_vm_cfg.id()) {
@@ -140,7 +148,11 @@ pub fn get_vm_dtb_arc(_vm_cfg: &AxVMConfig) -> Option<Arc<[u8]>> {
 
 pub fn init_guest_vms() {
     // Initialize the DTB cache in the fdt module
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    ))]
     {
         init_dtb_cache();
     }
@@ -170,6 +182,18 @@ pub fn init_guest_vms() {
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    ))]
+    let mut vm_create_config =
+        AxVMCrateConfig::from_toml(raw_cfg).expect("Failed to resolve VM config");
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    )))]
     let vm_create_config =
         AxVMCrateConfig::from_toml(raw_cfg).expect("Failed to resolve VM config");
 
@@ -180,15 +204,27 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         );
     }
 
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    ))]
     let mut vm_config = AxVMConfig::from(vm_create_config.clone());
 
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    )))]
     let vm_config = AxVMConfig::from(vm_create_config.clone());
 
     // Handle FDT-related operations for architectures that boot guests with DTB.
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    handle_fdt_operations(&mut vm_config, &vm_create_config);
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    ))]
+    handle_fdt_operations(&mut vm_config, &mut vm_create_config);
 
     // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);
     info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
@@ -228,7 +264,7 @@ fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion) {
         if let Some(kernel_addr) =
             adjusted_kernel_load_gpa(main_memory, config.image_config.bios_load_gpa)
         {
-            info!(
+            debug!(
                 "Adjusting kernel load address from {:#x} to {:#x}",
                 config.image_config.kernel_load_gpa, kernel_addr
             );
@@ -255,7 +291,7 @@ fn vm_alloc_memorys(vm_create_config: &AxVMCrateConfig, vm: &VM) {
                     .expect("Failed to allocate memory region for VM");
             }
             VmMemMappingType::MapReserved => {
-                info!("VM[{}] map same region: {:#x?}", vm.id(), memory);
+                debug!("VM[{}] map same region: {:#x?}", vm.id(), memory);
                 let layout = Layout::from_size_align(memory.size, ALIGN).unwrap();
                 vm.map_reserved_memory_region(layout, Some(GuestPhysAddr::from(memory.gpa)))
                     .expect("Failed to map memory region for VM");

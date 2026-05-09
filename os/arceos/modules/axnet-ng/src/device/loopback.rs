@@ -35,8 +35,14 @@ impl Device for LoopbackDevice {
         "lo"
     }
 
-    fn recv(&mut self, buffer: &mut PacketBuffer<()>, _timestamp: Instant) -> bool {
+    fn recv(
+        &mut self,
+        buffer: &mut PacketBuffer<()>,
+        _timestamp: Instant,
+        snoop: &mut dyn FnMut(&[u8]),
+    ) -> bool {
         self.buffer.dequeue().ok().is_some_and(|(_, rx_buf)| {
+            snoop(rx_buf);
             buffer
                 .enqueue(rx_buf.len(), ())
                 .unwrap()

@@ -6,7 +6,6 @@
 //! be registered as the standard library's default allocator.
 
 #![no_std]
-#![cfg_attr(feature = "buddy-slab", feature(extern_item_impls))]
 
 #[macro_use]
 extern crate log;
@@ -111,14 +110,6 @@ impl From<AllocError> for AxError {
     }
 }
 
-#[cfg(feature = "buddy-slab")]
-/// Platform hooks required by the buddy-slab backend.
-pub mod eii {
-    /// Translate a virtual address to a physical address.
-    #[eii(ax_alloc_virt_to_phys_impl)]
-    pub fn virt_to_phys(vaddr: usize) -> usize;
-}
-
 /// Unified allocator operations provided by all `ax-alloc` backends.
 pub trait AllocatorOps {
     /// Returns the allocator name.
@@ -195,7 +186,7 @@ mod default_impl;
 #[cfg(not(feature = "buddy-slab"))]
 use default_impl as imp;
 #[cfg(feature = "buddy-slab")]
-pub use imp::init_precpu_slab;
+pub use imp::init_percpu_slab;
 pub use imp::{DefaultByteAllocator, GlobalAllocator, global_add_memory, global_init};
 
 /// Returns the reference to the global allocator.

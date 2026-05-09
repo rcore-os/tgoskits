@@ -65,7 +65,7 @@ pub fn init(args: &[String], envs: &[String]) {
             .expect("Failed to add stdio");
     }
 
-    let thr = Thread::new(pid, proc);
+    let thr = Thread::new(pid, proc, None);
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = spawn_task(task);

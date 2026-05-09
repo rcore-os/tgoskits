@@ -13,10 +13,12 @@
 // limitations under the License.
 
 #![no_std]
-#![feature(doc_cfg)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(feature = "vmx")]
 #[macro_use]
+extern crate log;
+#[cfg(not(feature = "vmx"))]
 extern crate log;
 
 extern crate alloc;
@@ -25,9 +27,12 @@ extern crate alloc;
 mod test_utils;
 
 pub(crate) mod msr;
+#[cfg(feature = "vmx")]
 #[macro_use]
 pub(crate) mod regs;
 mod ept;
+#[cfg(not(feature = "vmx"))]
+pub(crate) mod regs;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "vmx")] {
@@ -42,4 +47,10 @@ cfg_if::cfg_if! {
 
 pub use ept::GuestPageWalkInfo;
 pub use regs::GeneralRegisters;
+#[cfg(feature = "vmx")]
 pub use vender::has_hardware_support;
+
+#[cfg(not(feature = "vmx"))]
+pub fn has_hardware_support() -> bool {
+    false
+}

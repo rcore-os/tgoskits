@@ -1,80 +1,124 @@
+//! StarryOS-specific rootfs orchestration for run and test flows.
+//!
+//! Main responsibilities:
+//! - Resolve and prepare the default managed rootfs used by StarryOS targets
+//! - Patch QEMU configs so StarryOS boots with the expected rootfs image
+
 use std::{
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, bail};
-use indicatif::ProgressBar;
-use tokio::fs as tokio_fs;
-use xz2::read::XzDecoder;
+use clap::Args;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
+use super::{Starry, apk, build};
+pub(crate) use crate::rootfs::qemu::{RootfsPatchMode, patch_rootfs};
 use crate::{
-    context::{ResolvedStarryRequest, starry_target_for_arch_checked},
-    download::download_to_path_with_progress,
+    context::{DEFAULT_STARRY_ARCH, ResolvedStarryRequest, starry_target_for_arch_checked},
+    rootfs::{inject, store},
+    test::qemu as qemu_test,
 };
 
-const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
+#[derive(Args)]
+pub struct ArgsRootfs {
+    #[arg(long)]
+    pub arch: Option<String>,
+}
 
-/// Remove the timeout field from the configuration file
-fn remove_timeout_field(config: &str) -> String {
-    // Check if config contains timeout line
-    if !config.contains("timeout") {
-        return config.to_string();
+pub(super) async fn rootfs(starry: &mut Starry, args: ArgsRootfs) -> anyhow::Result<()> {
+    let arch = args.arch.unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
+    let target = starry_target_for_arch_checked(&arch)?.to_string();
+    let disk_img = ensure_rootfs_in_target_dir(starry.app.workspace_root(), &arch, &target).await?;
+    println!("rootfs ready at {}", disk_img.display());
+    Ok(())
+}
+
+pub(super) async fn ensure_quick_start_qemu_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+) -> anyhow::Result<PathBuf> {
+    let target = starry_target_for_arch_checked(arch)?.to_string();
+    ensure_rootfs_in_target_dir(workspace_root, arch, &target).await
+}
+
+pub(super) async fn qemu_with_explicit_rootfs(
+    starry: &mut Starry,
+    request: ResolvedStarryRequest,
+    rootfs: PathBuf,
+) -> anyhow::Result<()> {
+    let rootfs = crate::rootfs::store::resolve_explicit_rootfs(
+        starry.app.workspace_root(),
+        &request.arch,
+        rootfs,
+    );
+    ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), Some(&rootfs)).await?;
+    starry.app.set_debug_mode(request.debug)?;
+    let cargo = build::load_cargo_config(&request)?;
+    let qemu = load_patched_qemu_config(starry, &request, &cargo, Some(&rootfs), false).await?;
+    starry
+        .app
+        .qemu(cargo, request.build_info_path, Some(qemu))
+        .await
+}
+
+pub(super) async fn qemu(
+    starry: &mut Starry,
+    request: ResolvedStarryRequest,
+) -> anyhow::Result<()> {
+    starry.app.set_debug_mode(request.debug)?;
+    let cargo = build::load_cargo_config(&request)?;
+    ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
+    let qemu = load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
+    starry
+        .app
+        .qemu(cargo, request.build_info_path, Some(qemu))
+        .await
+}
+
+pub(super) async fn load_patched_qemu_config(
+    starry: &mut Starry,
+    request: &ResolvedStarryRequest,
+    cargo: &Cargo,
+    explicit_rootfs: Option<&Path>,
+    apply_default_args: bool,
+) -> anyhow::Result<QemuConfig> {
+    let mut qemu = match request.qemu_config.as_deref() {
+        Some(path) => {
+            starry
+                .app
+                .tool_mut()
+                .read_qemu_config_from_path_for_cargo(cargo, path)
+                .await?
+        }
+        None => {
+            starry
+                .app
+                .tool_mut()
+                .ensure_qemu_config_for_cargo(cargo)
+                .await?
+        }
+    };
+
+    if let Some(rootfs) = explicit_rootfs {
+        patch_qemu_rootfs_path(&mut qemu, rootfs);
+    } else if request.qemu_config.is_none() && apply_default_args {
+        patch_qemu_rootfs(&mut qemu, request, starry.app.workspace_root(), None)?;
     }
-    // Remove timeout line while preserving original format
-    config
-        .lines()
-        .filter(|line| !line.trim().starts_with("timeout"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
+
+    Ok(qemu)
 }
 
-/// Update the timeout field in the configuration file to the specified value
-fn update_timeout_field(config: &str, timeout_seconds: u64) -> String {
-    let timeout_line = format!("timeout = {}", timeout_seconds);
-    if config.contains("timeout") {
-        // Replace existing timeout line
-        config
-            .lines()
-            .map(|line| {
-                if line.trim().starts_with("timeout") {
-                    timeout_line.clone()
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        // Add timeout field
-        format!("{}\n{}", config, timeout_line)
-    }
-}
+const APK_REPOSITORIES_PATH: &str = "/etc/apk/repositories";
+const QEMU_SLIRP_RESOLV_CONF: &str = "nameserver 10.0.2.3\n";
+const EXT_SUPER_MAGIC_OFFSET: u64 = 1080;
+const EXT_SUPER_MAGIC: [u8; 2] = [0x53, 0xef];
 
-pub(crate) fn rootfs_image_name(arch: &str) -> anyhow::Result<String> {
-    let _ = starry_target_for_arch_checked(arch)?;
-    Ok(format!("rootfs-{arch}.img"))
-}
-
-pub(crate) fn resolve_target_dir(workspace_root: &Path, target: &str) -> anyhow::Result<PathBuf> {
-    let _ = crate::context::starry_arch_for_target_checked(target)?;
-    Ok(workspace_root.join("target").join(target))
-}
-
-fn rootfs_image_path(workspace_root: &Path, arch: &str, target: &str) -> anyhow::Result<PathBuf> {
-    let target_dir = resolve_target_dir(workspace_root, target)?;
-    Ok(target_dir.join(rootfs_image_name(arch)?))
-}
-
-fn shared_rootfs_image_path(target: &str, arch: &str) -> anyhow::Result<String> {
-    Ok(format!(
-        "${{workspace}}/target/{target}/{}",
-        rootfs_image_name(arch)?
-    ))
-}
-
+/// Ensures the default managed rootfs for a Starry arch/target is available.
 pub(crate) async fn ensure_rootfs_in_target_dir(
     workspace_root: &Path,
     arch: &str,
@@ -85,196 +129,182 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
         bail!("Starry arch `{arch}` maps to target `{expected_target}`, but got `{target}`");
     }
 
-    let target_dir = resolve_target_dir(workspace_root, target)?;
-    tokio_fs::create_dir_all(&target_dir)
-        .await
-        .with_context(|| format!("failed to create {}", target_dir.display()))?;
+    let rootfs = store::ensure_rootfs_for_arch(workspace_root, arch).await?;
+    ensure_apk_region_in_rootfs(&rootfs)?;
+    Ok(rootfs)
+}
 
-    let rootfs_name = rootfs_image_name(arch)?;
-    let rootfs_img = rootfs_image_path(workspace_root, arch, target)?;
-    let rootfs_xz = target_dir.join(format!("{rootfs_name}.xz"));
+/// Ensures a selected rootfs image exists without modifying its contents.
+pub(crate) async fn ensure_qemu_rootfs_ready(
+    request: &ResolvedStarryRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<()> {
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    store::ensure_optional_managed_rootfs(workspace_root, &request.arch, Some(&rootfs_path)).await
+}
 
-    if !rootfs_img.exists() {
-        println!("image not found, downloading {}...", rootfs_name);
-        let url = format!("{ROOTFS_URL}/{rootfs_name}.xz");
-        download_with_progress(&url, &rootfs_xz).await?;
-        decompress_xz_file(&rootfs_xz, &rootfs_img).await?;
+fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
+    if !looks_like_ext_image(rootfs_img)? {
+        return Ok(());
     }
 
-    Ok(rootfs_img)
-}
-
-pub(crate) async fn default_qemu_args(
-    workspace_root: &Path,
-    request: &ResolvedStarryRequest,
-) -> anyhow::Result<Vec<String>> {
-    let disk_img =
-        ensure_rootfs_in_target_dir(workspace_root, &request.arch, &request.target).await?;
-    qemu_args_for_disk_image(disk_img)
-}
-
-pub(crate) async fn prepare_test_qemu_config(
-    workspace_root: &Path,
-    request: &ResolvedStarryRequest,
-    template_path: &Path,
-    timeout_override: Option<u64>,
-) -> anyhow::Result<PathBuf> {
-    let base_disk_img =
-        ensure_rootfs_in_target_dir(workspace_root, &request.arch, &request.target).await?;
-    let isolated_disk_img = isolated_test_disk_image_path(workspace_root, request)?;
-    tokio_fs::copy(&base_disk_img, &isolated_disk_img)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                base_disk_img.display(),
-                isolated_disk_img.display()
-            )
-        })?;
-
-    let shared_disk = shared_rootfs_image_path(&request.target, &request.arch)?;
-    let config = tokio_fs::read_to_string(template_path)
-        .await
-        .with_context(|| format!("failed to read {}", template_path.display()))?;
-    let config = config.replace(&shared_disk, &isolated_disk_img.display().to_string());
-
-    // Handle timeout override
-    let config = match timeout_override {
-        None => config,                           // Keep timeout from config file
-        Some(0) => remove_timeout_field(&config), // 0 means disable timeout
-        Some(seconds) => {
-            // Set the specified timeout value
-            update_timeout_field(&config, seconds)
-        }
+    let Some(original) = inject::read_text_file(rootfs_img, APK_REPOSITORIES_PATH)? else {
+        sync_qemu_slirp_resolver_in_rootfs(rootfs_img)?;
+        return Ok(());
     };
-
-    let generated_config = std::env::temp_dir().join(format!(
-        "starry-test-qemu-{}-{}-{}.toml",
-        request.arch,
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("system time is before unix epoch")?
-            .as_nanos()
-    ));
-    tokio_fs::write(&generated_config, config)
-        .await
-        .with_context(|| format!("failed to write {}", generated_config.display()))?;
-
-    Ok(generated_config)
+    let region = apk::apk_region_from_env()?;
+    let rewritten = apk::rewrite_apk_repositories_content(&original, region);
+    replace_rootfs_text_file_if_changed(rootfs_img, APK_REPOSITORIES_PATH, &rewritten)?;
+    sync_qemu_slirp_resolver_in_rootfs(rootfs_img)
 }
 
-fn qemu_args_for_disk_image(disk_img: PathBuf) -> anyhow::Result<Vec<String>> {
-    Ok(vec![
-        "-device".to_string(),
-        "virtio-blk-pci,drive=disk0".to_string(),
-        "-drive".to_string(),
-        format!("id=disk0,if=none,format=raw,file={}", disk_img.display()),
-        "-device".to_string(),
-        "virtio-net-pci,netdev=net0".to_string(),
-        "-netdev".to_string(),
-        "user,id=net0".to_string(),
-    ])
+fn sync_qemu_slirp_resolver_in_rootfs(rootfs_img: &Path) -> anyhow::Result<()> {
+    replace_rootfs_text_file_if_changed(rootfs_img, "/etc/resolv.conf", QEMU_SLIRP_RESOLV_CONF)
 }
 
-fn isolated_test_disk_image_path(
-    workspace_root: &Path,
-    request: &ResolvedStarryRequest,
-) -> anyhow::Result<PathBuf> {
-    let target_dir = resolve_target_dir(workspace_root, &request.target)?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system time is before unix epoch")?
-        .as_nanos();
-    Ok(target_dir.join(format!("disk-test-{}-{timestamp}.img", std::process::id())))
-}
+fn replace_rootfs_text_file_if_changed(
+    rootfs_img: &Path,
+    guest_path: &str,
+    content: &str,
+) -> anyhow::Result<()> {
+    if inject::read_text_file(rootfs_img, guest_path)?.as_deref() == Some(content) {
+        return Ok(());
+    }
 
-async fn download_with_progress(url: &str, output_path: &Path) -> anyhow::Result<()> {
-    let client = crate::download::http_client()?;
-    download_to_path_with_progress(&client, url, output_path).await
-}
+    let temp_purpose = guest_path.trim_start_matches('/').replace('/', "-");
+    let temp_path = unique_temp_file_path(rootfs_img, &temp_purpose)?;
+    fs::write(&temp_path, content)
+        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("failed to chmod {}", temp_path.display()))?;
+    }
+    let replace_result = inject::replace_file(rootfs_img, guest_path, &temp_path);
+    let cleanup_result = fs::remove_file(&temp_path)
+        .with_context(|| format!("failed to remove {}", temp_path.display()));
 
-async fn decompress_xz_file(input_path: &Path, output_path: &Path) -> anyhow::Result<()> {
-    let input_path = input_path.to_path_buf();
-    let output_path = output_path.to_path_buf();
-    let input_path_for_task = input_path.clone();
-    let output_path_for_task = output_path.clone();
-    let progress = ProgressBar::new_spinner();
-    progress.set_message(format!("decompressing {}", input_path.display()));
-    progress.enable_steady_tick(std::time::Duration::from_millis(100));
-
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let input = fs::File::open(&input_path_for_task)
-            .with_context(|| format!("failed to open {}", input_path_for_task.display()))?;
-        let output = fs::File::create(&output_path_for_task)
-            .with_context(|| format!("failed to create {}", output_path_for_task.display()))?;
-
-        let mut decoder = XzDecoder::new(input);
-        let mut writer = std::io::BufWriter::new(output);
-        let mut buffer = vec![0u8; 64 * 1024];
-
-        loop {
-            let read = decoder.read(&mut buffer).with_context(|| {
-                format!("failed to decompress {}", input_path_for_task.display())
-            })?;
-            if read == 0 {
-                break;
-            }
-            writer
-                .write_all(&buffer[..read])
-                .with_context(|| format!("failed to write {}", output_path_for_task.display()))?;
-        }
-        writer
-            .flush()
-            .with_context(|| format!("failed to flush {}", output_path_for_task.display()))?;
-        Ok(())
-    })
-    .await
-    .context("decompression task failed")??;
-
-    progress.finish_with_message(format!("decompressed {}", output_path.display()));
-    tokio_fs::remove_file(&input_path)
-        .await
-        .with_context(|| format!("failed to remove {}", input_path.display()))?;
+    replace_result?;
+    cleanup_result?;
     Ok(())
 }
+
+fn looks_like_ext_image(path: &Path) -> anyhow::Result<bool> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    if file
+        .metadata()
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len()
+        < EXT_SUPER_MAGIC_OFFSET + EXT_SUPER_MAGIC.len() as u64
+    {
+        return Ok(false);
+    }
+
+    let mut magic = [0_u8; 2];
+    file.seek(SeekFrom::Start(EXT_SUPER_MAGIC_OFFSET))
+        .with_context(|| format!("failed to seek {}", path.display()))?;
+    file.read_exact(&mut magic)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(magic == EXT_SUPER_MAGIC)
+}
+
+fn unique_temp_file_path(rootfs_img: &Path, purpose: &str) -> anyhow::Result<PathBuf> {
+    let dir = rootfs_img
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("rootfs image has no parent: {}", rootfs_img.display()))?;
+    let image_name = rootfs_img
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("invalid rootfs image path: {}", rootfs_img.display()))?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before UNIX_EPOCH")?
+        .as_nanos();
+    Ok(dir.join(format!(
+        ".{image_name}.{purpose}.{}.{}.tmp",
+        std::process::id(),
+        nanos
+    )))
+}
+
+/// Patches a QEMU config with the rootfs selected for a Starry request.
+pub(crate) fn patch_qemu_rootfs(
+    qemu: &mut QemuConfig,
+    request: &ResolvedStarryRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<()> {
+    let expected_target = starry_target_for_arch_checked(&request.arch)?;
+    if request.target != expected_target {
+        bail!(
+            "Starry arch `{}` maps to target `{expected_target}`, but got `{}`",
+            request.arch,
+            request.target
+        );
+    }
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    patch_qemu_rootfs_path(qemu, &rootfs_path);
+    Ok(())
+}
+
+/// Resolves the rootfs path selected for a Starry QEMU request.
+pub(crate) fn qemu_rootfs_path(
+    request: &ResolvedStarryRequest,
+    workspace_root: &Path,
+    explicit_rootfs: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    if let Some(explicit) = explicit_rootfs {
+        return Ok(explicit.to_path_buf());
+    }
+
+    store::default_rootfs_path(workspace_root, &request.arch)
+}
+
+/// Patches a QEMU config with a concrete Starry rootfs path.
+pub(crate) fn patch_qemu_rootfs_path(qemu: &mut QemuConfig, rootfs_path: &Path) {
+    patch_rootfs(qemu, rootfs_path, RootfsPatchMode::EnsureDiskBootNet);
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
 
     use tempfile::tempdir;
 
     use super::*;
 
-    #[test]
-    fn resolve_target_dir_uses_workspace_target_directory() {
-        let root = tempdir().unwrap();
-        let dir = resolve_target_dir(root.path(), "x86_64-unknown-none").unwrap();
-
-        assert_eq!(dir, root.path().join("target/x86_64-unknown-none"));
-    }
-
     #[tokio::test]
-    async fn default_qemu_args_include_rootfs_and_network_defaults() {
+    async fn patch_qemu_rootfs_includes_rootfs_and_network_defaults() {
         let root = tempdir().unwrap();
-        let target_dir = root.path().join("target/x86_64-unknown-none");
-        fs::create_dir_all(&target_dir).unwrap();
-        fs::write(target_dir.join("rootfs-x86_64.img"), b"rootfs").unwrap();
+        let rootfs_dir = root.path().join("target/rootfs");
+        fs::create_dir_all(&rootfs_dir).unwrap();
+        fs::write(
+            rootfs_dir.join("rootfs-x86_64-alpine.img"),
+            vec![0; 1024 * 1024],
+        )
+        .unwrap();
 
         let request = ResolvedStarryRequest {
             package: "starryos".to_string(),
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: None,
+            smp: None,
+            debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
+            build_info_override: None,
             qemu_config: None,
             uboot_config: None,
         };
+        let mut qemu = QemuConfig::default();
 
-        let args = default_qemu_args(root.path(), &request).await.unwrap();
+        patch_qemu_rootfs(&mut qemu, &request, root.path(), None).unwrap();
 
         assert_eq!(
-            args,
+            qemu.args,
             vec![
                 "-device".to_string(),
                 "virtio-blk-pci,drive=disk0".to_string(),
@@ -282,7 +312,7 @@ mod tests {
                 format!(
                     "id=disk0,if=none,format=raw,file={}",
                     root.path()
-                        .join("target/x86_64-unknown-none/rootfs-x86_64.img")
+                        .join("target/rootfs/rootfs-x86_64-alpine.img")
                         .display()
                 ),
                 "-device".to_string(),
@@ -291,102 +321,71 @@ mod tests {
                 "user,id=net0".to_string(),
             ]
         );
-        assert_eq!(
-            fs::read(
-                root.path()
-                    .join("target/x86_64-unknown-none/rootfs-x86_64.img")
-            )
-            .unwrap(),
-            b"rootfs"
+        assert!(
+            root.path()
+                .join("target/rootfs/rootfs-x86_64-alpine.img")
+                .exists()
         );
     }
 
     #[tokio::test]
-    async fn prepare_test_qemu_config_rewrites_shared_disk_path() {
+    async fn patch_qemu_rootfs_preserves_existing_base_args() {
         let root = tempdir().unwrap();
-        let target_dir = root.path().join("target/x86_64-unknown-none");
-        fs::create_dir_all(&target_dir).unwrap();
-        fs::write(target_dir.join("rootfs-x86_64.img"), b"rootfs").unwrap();
-        let template = root.path().join("qemu-x86_64.toml");
+        let rootfs_dir = root.path().join("target/rootfs");
+        fs::create_dir_all(&rootfs_dir).unwrap();
         fs::write(
-            &template,
-            r#"
-args = ["-nographic", "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/x86_64-unknown-none/rootfs-x86_64.img"]
-shell_prefix = "starry:~#"
-"#,
+            rootfs_dir.join("rootfs-riscv64-alpine.img"),
+            vec![0; 1024 * 1024],
         )
         .unwrap();
 
         let request = ResolvedStarryRequest {
-            package: "starryos-test".to_string(),
-            arch: "x86_64".to_string(),
-            target: "x86_64-unknown-none".to_string(),
+            package: "starryos".to_string(),
+            arch: "riscv64".to_string(),
+            target: "riscv64gc-unknown-none-elf".to_string(),
             plat_dyn: None,
+            smp: None,
+            debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
+            build_info_override: None,
             qemu_config: None,
             uboot_config: None,
         };
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-nographic".to_string(),
+                "-cpu".to_string(),
+                "rv64".to_string(),
+                "-machine".to_string(),
+                "virt".to_string(),
+            ],
+            ..Default::default()
+        };
 
-        let generated = prepare_test_qemu_config(root.path(), &request, &template, None)
-            .await
-            .unwrap();
-        let content = fs::read_to_string(generated).unwrap();
+        patch_qemu_rootfs(&mut qemu, &request, root.path(), None).unwrap();
 
-        assert!(content.contains("disk-test-"));
-        assert!(!content.contains("${workspace}/target/x86_64-unknown-none/rootfs-x86_64.img"));
-        assert!(content.contains("shell_prefix = \"starry:~#\""));
-    }
-
-    #[test]
-    fn remove_timeout_field_removes_timeout_line() {
-        let config = r#"args = ["-nographic"]
-shell_prefix = "starry:~#"
-timeout = 3
-"#;
-        let result = remove_timeout_field(config);
-        assert!(!result.contains("timeout"));
-        assert!(result.contains("args = [\"-nographic\"]"));
-        assert!(result.contains("shell_prefix = \"starry:~#\""));
-    }
-
-    #[test]
-    fn remove_timeout_field_handles_config_without_timeout() {
-        let config = r#"args = ["-nographic"]
-shell_prefix = "starry:~#"
-"#;
-        let result = remove_timeout_field(config);
-        assert_eq!(result, config);
-    }
-
-    #[test]
-    fn update_timeout_field_replaces_existing_timeout() {
-        let config = r#"args = ["-nographic"]
-shell_prefix = "starry:~#"
-timeout = 3
-"#;
-        let result = update_timeout_field(config, 10);
-        assert!(result.contains("timeout = 10"));
-        assert!(!result.contains("timeout = 3"));
-    }
-
-    #[test]
-    fn update_timeout_field_adds_timeout_when_not_present() {
-        let config = r#"args = ["-nographic"]
-shell_prefix = "starry:~#"
-"#;
-        let result = update_timeout_field(config, 30);
-        assert!(result.contains("timeout = 30"));
-        assert!(result.contains("args = [\"-nographic\"]"));
-        assert!(result.contains("shell_prefix = \"starry:~#\""));
-    }
-
-    #[test]
-    fn update_timeout_field_with_zero_disables_timeout() {
-        let config = r#"args = ["-nographic"]
-shell_prefix = "starry:~#"
-timeout = 3
-"#;
-        let result = remove_timeout_field(config);
-        assert!(!result.contains("timeout"));
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-nographic".to_string(),
+                "-cpu".to_string(),
+                "rv64".to_string(),
+                "-machine".to_string(),
+                "virt".to_string(),
+                "-device".to_string(),
+                "virtio-blk-pci,drive=disk0".to_string(),
+                "-drive".to_string(),
+                format!(
+                    "id=disk0,if=none,format=raw,file={}",
+                    root.path()
+                        .join("target/rootfs/rootfs-riscv64-alpine.img")
+                        .display()
+                ),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0".to_string(),
+            ]
+        );
     }
 }

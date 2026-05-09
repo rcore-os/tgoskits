@@ -1,10 +1,11 @@
 use core::sync::atomic::Ordering;
 
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_task::current;
 use linux_raw_sys::general::{
-    FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE,
-    FUTEX_WAKE_BITSET, robust_list_head, timespec,
+    FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT,
+    FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, robust_list_head, timespec,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -19,6 +20,29 @@ fn assert_unsigned(value: u32) -> AxResult<u32> {
     } else {
         Ok(value)
     }
+}
+
+fn futex_wait_timeout(
+    futex_op: u32,
+    command: u32,
+    timeout: *const timespec,
+) -> AxResult<Option<TimeValue>> {
+    let Some(ts) = timeout.nullable() else {
+        return Ok(None);
+    };
+
+    let timeout = unsafe { ts.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
+    if command == FUTEX_WAIT {
+        return Ok(Some(timeout));
+    }
+
+    let now = if futex_op & FUTEX_CLOCK_REALTIME != 0 {
+        wall_time()
+    } else {
+        monotonic_time()
+    };
+
+    Ok(Some(timeout.saturating_sub(now)))
 }
 
 pub fn sys_futex(
@@ -46,13 +70,7 @@ pub fn sys_futex(
                 return Err(AxError::WouldBlock);
             }
 
-            let timeout = if let Some(ts) = timeout.nullable() {
-                // FIXME: AnyBitPattern
-                let ts = unsafe { ts.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
-                Some(ts)
-            } else {
-                None
-            };
+            let timeout = futex_wait_timeout(futex_op, command, timeout)?;
 
             let futex = futex_table.get_or_insert(&key);
 

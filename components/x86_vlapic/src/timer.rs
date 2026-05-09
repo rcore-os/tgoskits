@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use alloc::boxed::Box;
+
 use ax_errno::{AxResult, ax_err};
 use axvisor_api::{
     time::{self, current_ticks, register_timer, ticks_to_nanos, ticks_to_time},
@@ -73,11 +74,11 @@ pub struct ApicTimer {
 impl ApicTimer {
     pub(crate) const fn new(vm_id: VMId, vcpu_id: VCpuId) -> Self {
         Self {
-            lvt_timer_register: LvtTimerRegisterLocal::new(RESET_LVT_REG), // masked, one-shot, vector 0
+            lvt_timer_register: LvtTimerRegisterLocal::new(RESET_LVT_REG), /* masked, one-shot, vector 0 */
             initial_count_register: 0,                                     // 0 (stopped)
             divide_configuration_register: 0,                              // divide by 2
 
-            divide_shift: 1, // as `divide_configuration_register` is 0, the shift is 1 (divide by 2)
+            divide_shift: 1, /* as `divide_configuration_register` is 0, the shift is 1 (divide by 2) */
             last_start_ticks: 0,
             deadline_ns: 0,
             cancel_token: None,
@@ -218,7 +219,8 @@ impl ApicTimer {
         let vector = self.vector();
 
         trace!(
-            "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) starts timer @ tick {current_ticks:?}, deadline tick {deadline_ticks:?}"
+            "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) starts timer @ tick {current_ticks:?}, \
+             deadline tick {deadline_ticks:?}"
         );
 
         self.last_start_ticks = current_ticks;
@@ -229,7 +231,8 @@ impl ApicTimer {
             Box::new(move |_| {
                 // TODO: read the LVT Timer Register here
                 trace!(
-                    "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) timer expired, inject interrupt {vector}"
+                    "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) timer expired, inject interrupt \
+                     {vector}"
                 );
                 inject_interrupt(vm_id, vcpu_id, vector);
             }),
@@ -301,9 +304,9 @@ impl ApicTimer {
 
 #[cfg(test)]
 mod tests {
-    use crate::regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode;
-    use crate::timer::ApicTimer;
     use axvisor_api::vmm::{VCpuId, VMId};
+
+    use crate::{regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode, timer::ApicTimer};
 
     #[test]
     fn test_apic_timer_creation() {

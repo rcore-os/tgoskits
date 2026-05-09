@@ -1,0 +1,7 @@
+env = {}
+features = [
+  "qemu", # auxilary features
+]
+log = "Warn"
+plat_dyn = false
+target = "riscv64gc-unknown-none-elf"

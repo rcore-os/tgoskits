@@ -1,0 +1,10 @@
+# Runtime U-Boot config template for booting StarryOS on Orange Pi 5 Plus.
+# This file is consumed by ostool's U-Boot runner, not by cargo build itself.
+serial = "/dev/ttyUSB0"
+baud_rate = "1500000"
+dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
+
+success_regex = []
+fail_regex = [
+  "panicked at",
+]

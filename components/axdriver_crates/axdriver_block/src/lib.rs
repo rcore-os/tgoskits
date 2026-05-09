@@ -3,6 +3,10 @@
 #![no_std]
 #![cfg_attr(doc, feature(doc_cfg))]
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+
 #[cfg(feature = "bcm2835-sdhci")]
 pub mod bcm2835sdhci;
 
@@ -14,6 +18,7 @@ pub mod ramdisk_static;
 
 #[cfg(feature = "ahci")]
 pub mod ahci;
+pub mod partition;
 #[cfg(feature = "sdmmc")]
 pub mod sdmmc;
 
@@ -43,4 +48,26 @@ pub trait BlockDriverOps: BaseDriverOps {
 
     /// Flushes the device to write all pending data to the storage.
     fn flush(&mut self) -> DevResult;
+}
+
+impl<T: BlockDriverOps + ?Sized> BlockDriverOps for Box<T> {
+    fn num_blocks(&self) -> u64 {
+        (**self).num_blocks()
+    }
+
+    fn block_size(&self) -> usize {
+        (**self).block_size()
+    }
+
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> DevResult {
+        (**self).read_block(block_id, buf)
+    }
+
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
+        (**self).write_block(block_id, buf)
+    }
+
+    fn flush(&mut self) -> DevResult {
+        (**self).flush()
+    }
 }

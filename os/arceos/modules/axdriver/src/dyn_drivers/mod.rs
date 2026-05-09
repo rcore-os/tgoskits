@@ -16,6 +16,11 @@ pub fn probe_all_devices() -> Vec<super::AxDeviceEnum> {
             devices.push(super::AxDeviceEnum::Block(dev));
         }
 
+        #[cfg(feature = "net")]
+        for dev in axplat_dyn::drivers::take_net_devices() {
+            devices.push(super::AxDeviceEnum::Net(dev));
+        }
+
         devices
     }
     #[cfg(not(target_os = "none"))]

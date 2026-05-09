@@ -51,10 +51,10 @@ else
   endif
 endif
 
-_check_need_rebuild: $(obj_dir)
-	@if [ "$(CFLAGS)" != "`cat $(last_cflags) 2>&1`" ]; then \
+$(last_cflags): FORCE | $(obj_dir)
+	@if [ "$(CFLAGS)" != "`cat $@ 2>&1`" ]; then \
 		echo "CFLAGS changed, rebuild"; \
-		echo "$(CFLAGS)" > $(last_cflags); \
+		echo "$(CFLAGS)" > $@; \
 	fi
 
 $(obj_dir):
@@ -63,16 +63,28 @@ $(obj_dir):
 $(obj_dir)/%.o: $(src_dir)/%.c $(last_cflags)
 	$(call run_cmd,$(CC),$(CFLAGS) -c -o $@ $<)
 
-$(c_lib): $(obj_dir) _check_need_rebuild $(ulib_obj)
+$(c_lib): $(obj_dir) $(ulib_obj)
 	$(call run_cmd,$(AR),rcs $@ $(ulib_obj))
 
 app-objs := main.o
 
 -include $(APP)/axbuild.mk  # override `app-objs`
 
-app-objs := $(addprefix $(APP)/,$(app-objs))
+app_obj_dir := $(APP)/build_$(ARCH)
+last_app_cflags := $(app_obj_dir)/.cflags
+app-objs := $(addprefix $(app_obj_dir)/,$(app-objs))
 
-$(APP)/%.o: $(APP)/%.c $(ulib_hdr)
+$(last_app_cflags): FORCE | $(app_obj_dir)
+	@if [ "$(CFLAGS) $(APP_CFLAGS)" != "`cat $@ 2>&1`" ]; then \
+		echo "APP CFLAGS changed, rebuild"; \
+		echo "$(CFLAGS) $(APP_CFLAGS)" > $@; \
+	fi
+
+$(app_obj_dir):
+	$(call run_cmd,mkdir,-p $@)
+
+$(app_obj_dir)/%.o: $(APP)/%.c $(ulib_hdr) $(last_app_cflags)
+	$(call run_cmd,mkdir,-p $(dir $@))
 	$(call run_cmd,$(CC),$(CFLAGS) $(APP_CFLAGS) -c -o $@ $<)
 
 $(OUT_ELF): $(libgcc) $(app-objs) $(c_lib) $(rust_lib)
@@ -81,4 +93,5 @@ $(OUT_ELF): $(libgcc) $(app-objs) $(c_lib) $(rust_lib)
 
 $(APP)/axbuild.mk: ;
 
-.PHONY: _check_need_rebuild
+.PHONY: FORCE
+FORCE:

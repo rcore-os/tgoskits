@@ -15,7 +15,8 @@ use rdrive::{
 };
 use spin::Mutex;
 
-use super::virtio::{VirtIoBlkDevice, VirtIoHalImpl, register_virtio_block};
+use super::virtio::{VirtIoBlkDevice, register_virtio_block};
+use crate::drivers::virtio::VirtIoHalImpl;
 
 module_driver!(
     name: "Virtio PCI Block",

@@ -1,0 +1,9 @@
+env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
+features = [
+  "ept-level-4",
+  "fs",
+]
+log = "Info"
+max_cpu_num = 1
+target = "loongarch64-unknown-none-softfloat"
+vm_configs = []

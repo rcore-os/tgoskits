@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::marker::PhantomPinned;
 
-use ax_driver::AxBlockDevice;
+use ax_driver::{AxBlockDevice, PartitionRegion};
 use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
@@ -32,9 +32,10 @@ pub struct FatFilesystem {
 }
 
 impl FatFilesystem {
-    pub fn new(dev: AxBlockDevice) -> VfsResult<Filesystem> {
+    pub fn new(dev: AxBlockDevice, region: PartitionRegion) -> VfsResult<Filesystem> {
+        let disk = SeekableDisk::new(dev, region);
         let mut inner = FatFilesystemInner {
-            inner: ff::FileSystem::new(SeekableDisk::new(dev), fatfs::FsOptions::new())
+            inner: ff::FileSystem::new(disk, fatfs::FsOptions::new())
                 .expect("failed to initialize FAT filesystem"),
             inode_allocator: Slab::new(),
             _pinned: PhantomPinned,

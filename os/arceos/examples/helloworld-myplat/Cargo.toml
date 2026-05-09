@@ -1,10 +1,11 @@
 [package]
 name = "ax-helloworld-myplat"
-version = "0.3.0"
+version = "0.3.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 license.workspace = true
+publish = false
 
 [features]
 x86-pc = ["dep:ax-plat-x86-pc"]

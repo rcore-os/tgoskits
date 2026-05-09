@@ -19,9 +19,10 @@
 
 #![no_std]
 
+extern crate alloc;
+#[cfg(feature = "smoltcp")]
 #[macro_use]
 extern crate log;
-extern crate alloc;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "smoltcp")] {
@@ -30,14 +31,19 @@ cfg_if::cfg_if! {
     }
 }
 
-use ax_driver::{AxDeviceContainer, prelude::*};
+#[cfg(feature = "smoltcp")]
+use ax_driver::{AxDeviceContainer, AxNetDevice};
 
+#[cfg(feature = "smoltcp")]
 pub use self::net_impl::{
     TcpSocket, UdpSocket, bench_receive, bench_transmit, dns_query, poll_interfaces,
 };
 
 /// Initializes the network subsystem by NIC devices.
+#[cfg(feature = "smoltcp")]
 pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
+    use ax_driver::prelude::*;
+
     info!("Initialize network subsystem...");
 
     if let Some(dev) = net_devs.take_one() {

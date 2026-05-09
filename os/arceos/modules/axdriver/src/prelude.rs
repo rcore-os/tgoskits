@@ -2,7 +2,16 @@
 
 pub use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 #[cfg(feature = "block")]
-pub use {crate::structs::AxBlockDevice, ax_driver_block::BlockDriverOps};
+pub use {
+    crate::structs::AxBlockDevice,
+    ax_driver_block::{
+        BlockDriverOps,
+        partition::{
+            PartitionBlockDevice, PartitionInfo, PartitionRegion, PartitionTable,
+            PartitionTableKind, scan_partitions,
+        },
+    },
+};
 #[cfg(feature = "display")]
 pub use {
     crate::structs::AxDisplayDevice,
@@ -16,7 +25,7 @@ pub use {
 #[cfg(feature = "net")]
 pub use {
     crate::structs::AxNetDevice,
-    ax_driver_net::{NetBufPtr, NetDriverOps},
+    ax_driver_net::{NetBufPtr, NetDriverOps, NetIrqEvent},
 };
 #[cfg(feature = "vsock")]
 pub use {

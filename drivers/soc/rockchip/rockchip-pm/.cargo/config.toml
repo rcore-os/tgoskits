@@ -1,0 +1,8 @@
+[target.'cfg(all(target_os = "none"))']
+runner = "cargo osrun"
+
+[alias]
+uboot = "test --test test -- tests uboot"
+
+[build]
+target = "aarch64-unknown-none-softfloat"

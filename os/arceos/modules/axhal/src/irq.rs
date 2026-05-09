@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "ipi")]
 pub use ax_config::devices::IPI_IRQ;
-use ax_cpu::trap::irq_handler;
+use ax_cpu::trap::{irq_handler, set_irq_handler};
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
 pub use ax_plat::irq::{handle, register, set_enable, unregister};
@@ -46,4 +46,13 @@ pub fn handle_irq(vector: usize) -> bool {
 
     drop(guard); // rescheduling may occur when preemption is re-enabled.
     true
+}
+
+/// Installs the default ArceOS IRQ dispatcher into `ax-cpu`'s runtime hook.
+///
+/// This is intended for runtimes that dispatch traps through
+/// [`ax_cpu::trap::dispatch_irq`] instead of relying on the `#[irq_handler]`
+/// link-time override path.
+pub fn init_common_irq_handler() {
+    let _ = set_irq_handler(handle_irq);
 }

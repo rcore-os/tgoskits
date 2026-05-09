@@ -1,0 +1,5 @@
+# Build-time config template for StarryOS QEMU LoongArch64.
+features = ["qemu"]
+log = "Warn"
+
+[env]

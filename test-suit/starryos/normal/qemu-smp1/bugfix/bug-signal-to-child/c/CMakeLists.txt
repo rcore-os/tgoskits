@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-signal-to-child C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-signal-to-child src/main.c)
+target_compile_options(bug-signal-to-child PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-signal-to-child RUNTIME DESTINATION usr/bin)

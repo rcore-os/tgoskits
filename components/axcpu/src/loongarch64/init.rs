@@ -2,7 +2,7 @@
 
 use ax_memory_addr::PhysAddr;
 use ax_page_table_multiarch::loongarch64::LA64MetaData;
-use loongArch64::register::{crmd, stlbps, tlbidx, tlbrehi, tlbrentry};
+use loongArch64::register::{MemoryAccessType, crmd, stlbps, tlbidx, tlbrehi, tlbrentry};
 
 /// Initializes TLB and MMU related registers on the current CPU.
 ///
@@ -32,8 +32,21 @@ pub fn init_mmu(root_paddr: PhysAddr, phys_virt_offset: usize) {
     }
     crate::asm::flush_tlb(None);
 
-    // Enable mapped address translation mode
-    crmd::set_pg(true);
+    // Update CRMD in one CSR write so we do not create a transient state where
+    // direct mapping is disabled before paged translation is fully enabled.
+    // Larger images such as the LoongArch C memtest can place the following
+    // instructions across a page boundary, making that transition window
+    // observable as an instruction-fetch fault at the next page.
+    let mut crmd_bits = crmd::read().raw();
+    crmd_bits &= !(1 << 3); // DA
+    crmd_bits |= 1 << 4; // PG
+    crmd_bits &= !(0b11 << 5);
+    crmd_bits |= (MemoryAccessType::CoherentCached as usize) << 5; // DATF
+    crmd_bits &= !(0b11 << 7);
+    crmd_bits |= (MemoryAccessType::CoherentCached as usize) << 7; // DATM
+    unsafe {
+        core::arch::asm!("csrwr {}, {}", in(reg) crmd_bits, const 0x0);
+    }
 }
 
 /// Initializes trap handling on the current CPU.
@@ -43,7 +56,7 @@ pub fn init_trap() {
     #[cfg(feature = "uspace")]
     crate::uspace_common::init_exception_table();
     unsafe {
-        extern "C" {
+        unsafe extern "C" {
             fn exception_entry_base();
         }
         core::arch::asm!(include_asm_macros!(), "csrwr $r0, KSAVE_KSP");

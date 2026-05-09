@@ -1,6 +1,0 @@
-apk update
-apk add stress-ng
-stress-ng --cpu 8 --timeout 10s
-stress-ng --sigsegv 8 --sigsegv-ops 1000
-pwd
-echo 'All tests passed!'

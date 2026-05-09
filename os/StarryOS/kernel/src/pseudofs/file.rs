@@ -1,6 +1,7 @@
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering, task::Context};
 
+use ax_sync::Mutex;
 use axfs_ng_vfs::{
     FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
     NodeType, VfsError, VfsResult,
@@ -172,6 +173,132 @@ impl FileNodeOps for SimpleFile {
 impl Pollable for SimpleFile {
     fn poll(&self) -> IoEvents {
         IoEvents::IN | IoEvents::OUT
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+}
+
+/// A Sequential file, which only supports reading all content. It is used for procfs and sysfs.
+pub struct SeqFile {
+    node: SimpleFsNode,
+    ops: Arc<dyn SeqFileOps>,
+    content_cache: Mutex<Option<Vec<u8>>>,
+}
+
+impl SeqFile {
+    /// Creates a sequential file from given file operations.
+    pub fn new(fs: Arc<SimpleFs>, ty: NodeType, ops: impl SeqFileOps) -> Arc<Self> {
+        let node = SimpleFsNode::new(fs, ty, NodePermission::default());
+        Arc::new(Self {
+            node,
+            ops: Arc::new(ops),
+            content_cache: Mutex::new(None),
+        })
+    }
+
+    /// Creates a sequential file from given file operations.
+    pub fn new_regular(fs: Arc<SimpleFs>, ops: impl SeqFileOps) -> Arc<Self> {
+        Self::new(fs, NodeType::RegularFile, ops)
+    }
+}
+
+// TODO: create a linux like seq file that supports iterating content in chunks instead of reading all content at once, to avoid large memory usage for large files.
+/// Operations for a sequential file.
+pub trait SeqFileOps: Send + Sync + 'static {
+    /// Reads all content in the file.
+    fn read_all(&self) -> VfsResult<Cow<'_, [u8]>>;
+}
+
+impl<F, R> SeqFileOps for F
+where
+    F: Fn() -> VfsResult<R> + Send + Sync + 'static,
+    R: Into<Vec<u8>>,
+{
+    fn read_all(&self) -> VfsResult<Cow<'_, [u8]>> {
+        (self)().map(|it| Cow::Owned(it.into()))
+    }
+}
+
+#[inherit_methods(from = "self.node")]
+impl NodeOps for SeqFile {
+    fn inode(&self) -> u64;
+
+    fn metadata(&self) -> VfsResult<Metadata>;
+
+    fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    fn filesystem(&self) -> &dyn FilesystemOps;
+
+    fn sync(&self, data_only: bool) -> VfsResult<()>;
+
+    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+        self
+    }
+
+    fn len(&self) -> VfsResult<u64> {
+        // Cache the content to avoid repeated generation.
+        let mut cache = self.content_cache.lock();
+        if let Some(content) = cache.as_ref() {
+            Ok(content.len() as u64)
+        } else {
+            let content = self.ops.read_all()?;
+            let len = content.len() as u64;
+            *cache = Some(content.into_owned());
+            Ok(len)
+        }
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE
+    }
+}
+
+impl FileNodeOps for SeqFile {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        let mut cache = self.content_cache.lock();
+        if cache.is_none() {
+            let content = self.ops.read_all()?;
+            *cache = Some(content.into_owned());
+        }
+
+        let data = cache.as_ref().unwrap();
+        if offset >= data.len() as u64 {
+            return Ok(0);
+        }
+        let data = &data[offset as usize..];
+        let read = data.len().min(buf.len());
+        buf[..read].copy_from_slice(&data[..read]);
+        Ok(read)
+    }
+
+    fn seek_to(&self, pos: u64) -> VfsResult<()> {
+        if pos == 0 {
+            // Clear the cache to reset the file content.
+            let mut cache = self.content_cache.lock();
+            *cache = None;
+        }
+        Ok(())
+    }
+
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Err(VfsError::OperationNotPermitted)
+    }
+    fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
+        Err(VfsError::OperationNotPermitted)
+    }
+
+    fn set_len(&self, _len: u64) -> VfsResult<()> {
+        Err(VfsError::OperationNotPermitted)
+    }
+
+    fn set_symlink(&self, _target: &str) -> VfsResult<()> {
+        Err(VfsError::OperationNotPermitted)
+    }
+}
+
+impl Pollable for SeqFile {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN
     }
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}

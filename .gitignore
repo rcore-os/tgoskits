@@ -25,7 +25,10 @@
 
 # IDEs
 /.idea/
-/.vscode/
+/.vscode/*
+!/.vscode/launch.json
+!/.vscode/session.py
+!/.vscode/tasks.json
 /.zed/
 
 # Python cache
@@ -49,3 +52,8 @@ __pycache__/
 .starry*
 .axvisor*
 .board*
+.codex
+.agents
+.image.toml
+os/StarryOS-REF
+.Ds_Store

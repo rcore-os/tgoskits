@@ -12,7 +12,7 @@ const fn align_up_64(val: usize) -> usize {
 #[cfg(not(target_os = "none"))]
 static PERCPU_AREA_BASE: spin::once::Once<usize> = spin::once::Once::new();
 
-extern "C" {
+unsafe extern "C" {
     fn _percpu_start();
     fn _percpu_end();
     // WARNING: `_percpu_load_start`/`_percpu_load_end` (i.e. symbols in the
@@ -212,6 +212,6 @@ use crate as ax_percpu;
 
 /// On x86, we use `gs:SELF_PTR` to store the address of the per-CPU data area base.
 #[cfg(target_arch = "x86_64")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[ax_percpu_macros::def_percpu]
 static SELF_PTR: usize = 0;

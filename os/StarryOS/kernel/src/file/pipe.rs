@@ -13,7 +13,10 @@ use ax_task::{
     future::{block_on, poll_io},
 };
 use axpoll::{IoEvents, PollSet, Pollable};
-use linux_raw_sys::{general::S_IFIFO, ioctl::FIONREAD};
+use linux_raw_sys::{
+    general::{O_RDONLY, O_WRONLY, S_IFIFO},
+    ioctl::FIONREAD,
+};
 use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer},
@@ -191,6 +194,10 @@ impl FileLike for Pipe {
         format!("pipe:[{}]", self as *const _ as usize).into()
     }
 
+    fn open_flags(&self) -> u32 {
+        if self.is_read() { O_RDONLY } else { O_WRONLY }
+    }
+
     fn set_nonblocking(&self, nonblocking: bool) -> AxResult {
         self.non_blocking.store(nonblocking, Ordering::Release);
         Ok(())
@@ -216,8 +223,12 @@ impl Pollable for Pipe {
         let mut events = IoEvents::empty();
         let buf = self.shared.buffer.lock();
         if self.read_side {
-            events.set(IoEvents::IN, buf.occupied_len() > 0);
-            events.set(IoEvents::HUP, self.closed());
+            let closed = self.closed();
+            // Report IN when there is data to read OR when write end is closed
+            // (read will return 0 = EOF). This matches Linux behavior where
+            // select() reports a pipe as readable when the write end closes.
+            events.set(IoEvents::IN, buf.occupied_len() > 0 || closed);
+            events.set(IoEvents::HUP, closed);
         } else {
             events.set(IoEvents::OUT, buf.vacant_len() > 0);
         }

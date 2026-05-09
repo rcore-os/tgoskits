@@ -12,3 +12,4 @@ rusty-tags.vi
 /.axconfig.*
 /.cargo/axbuild-ostool.toml
 /.cargo/config.toml
+/Cargo.lock

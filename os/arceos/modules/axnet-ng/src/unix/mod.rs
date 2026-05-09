@@ -200,17 +200,18 @@ impl SocketOps for UnixSocket {
         Ok(())
     }
 
-    fn listen(&self) -> AxResult {
+    fn listen(&self, _backlog: usize) -> AxResult {
         Ok(())
     }
 
     fn accept(&self) -> AxResult<Socket> {
         let (transport, peer_addr) = block_on(interruptible(self.transport.accept()))??;
-        Ok(Socket::Unix(Self {
+        Ok(Self {
             transport,
             local_addr: Mutex::new(self.local_addr.lock().clone()),
             remote_addr: Mutex::new(peer_addr),
-        }))
+        }
+        .into())
     }
 
     fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {

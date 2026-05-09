@@ -55,15 +55,25 @@ impl Drop for SharedPages {
 pub struct SharedBackend {
     start: VirtAddr,
     pages: Arc<SharedPages>,
+    page_offset: usize,
 }
 impl SharedBackend {
     pub fn pages(&self) -> &Arc<SharedPages> {
         &self.pages
     }
 
+    /// Returns a clone with a different start address.
+    pub fn with_start(&self, new_start: VirtAddr) -> Self {
+        Self {
+            start: new_start,
+            pages: self.pages.clone(),
+            page_offset: self.page_offset,
+        }
+    }
+
     fn pages_starting_from(&self, start: VirtAddr) -> &[PhysAddr] {
         debug_assert!(start.is_aligned(self.pages.size));
-        let start_index = divide_page(start - self.start, self.pages.size);
+        let start_index = self.page_offset + divide_page(start - self.start, self.pages.size);
         &self.pages[start_index..]
     }
 }
@@ -101,10 +111,32 @@ impl BackendOps for SharedBackend {
     ) -> AxResult<Backend> {
         Ok(Backend::Shared(self.clone()))
     }
+
+    fn split(&mut self, align_diff: usize) -> Option<Backend> {
+        if align_diff == 0 {
+            return None;
+        }
+        Some(Backend::Shared(SharedBackend {
+            start: self.start + align_diff,
+            pages: self.pages.clone(),
+            page_offset: self.page_offset + divide_page(align_diff, self.pages.size),
+        }))
+    }
+
+    fn shrink_left(&mut self, shrink_size: usize) {
+        self.start += shrink_size;
+        self.page_offset += divide_page(shrink_size, self.pages.size);
+    }
+
+    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 impl Backend {
     pub fn new_shared(start: VirtAddr, pages: Arc<SharedPages>) -> Self {
-        Self::Shared(SharedBackend { start, pages })
+        Self::Shared(SharedBackend {
+            start,
+            pages,
+            page_offset: 0,
+        })
     }
 }

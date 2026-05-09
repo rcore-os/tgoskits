@@ -5,16 +5,21 @@ use alloc::{
     sync::{Arc, Weak},
 };
 
+#[cfg(feature = "lockdep")]
+use ax_kernel_guard::IrqSave;
 use ax_kernel_guard::NoPreemptIrqSave;
+use ax_memory_addr::VirtAddr;
 
+#[cfg(feature = "lockdep")]
+pub use crate::lockdep::{HeldLock, HeldLockStack};
 pub(crate) use crate::run_queue::{current_run_queue, select_run_queue};
-#[doc(cfg(all(feature = "multitask", feature = "task-ext")))]
+#[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
-#[doc(cfg(all(feature = "multitask", feature = "irq")))]
+#[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "irq"))))]
 #[cfg(feature = "irq")]
 pub use crate::timers::register_timer_callback;
-#[doc(cfg(feature = "multitask"))]
+#[cfg_attr(doc, doc(cfg(feature = "multitask")))]
 pub use crate::{
     task::{CurrentTask, TaskId, TaskInner, TaskState},
     wait_queue::WaitQueue,
@@ -63,6 +68,38 @@ impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
     }
 }
 
+#[cfg(feature = "lockdep")]
+struct KspinLockdepIfImpl;
+
+#[cfg(feature = "lockdep")]
+#[ax_crate_interface::impl_interface]
+impl ax_kspin::lockdep::KspinLockdepIf for KspinLockdepIfImpl {
+    fn collect_current_task_held_locks(snapshot: &mut ax_kspin::lockdep::HeldLockSnapshot) {
+        let _lockdep_irq_guard = IrqSave::new();
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| snapshot.extend(stack));
+        }
+    }
+
+    fn push_current_task_held_lock(held: ax_kspin::lockdep::HeldLock) {
+        let _lockdep_irq_guard = IrqSave::new();
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| stack.push(held));
+        }
+    }
+
+    fn pop_current_task_held_lock(lock_id: u32) {
+        let _lockdep_irq_guard = IrqSave::new();
+        if let Some(curr) = current_may_uninit() {
+            curr.with_held_locks(|stack| stack.pop_checked(lock_id));
+        }
+    }
+
+    fn console_write_str(s: &str) {
+        ax_hal::console::write_bytes(s.as_bytes());
+    }
+}
+
 /// Gets the current task, or returns [`None`] if the current task is not
 /// initialized.
 pub fn current_may_uninit() -> Option<CurrentTask> {
@@ -76,6 +113,11 @@ pub fn current_may_uninit() -> Option<CurrentTask> {
 /// Panics if the current task is not initialized.
 pub fn current() -> CurrentTask {
     CurrentTask::get()
+}
+
+#[cfg(feature = "lockdep")]
+pub fn with_current_lockdep_stack<R>(f: impl FnOnce(&mut HeldLockStack) -> R) -> R {
+    current().with_held_locks(f)
 }
 
 /// Initializes the task scheduler (for the primary CPU).
@@ -104,15 +146,15 @@ pub(crate) fn cpu_mask_full() -> AxCpuMask {
 }
 
 /// Initializes the task scheduler for secondary CPUs.
-pub fn init_scheduler_secondary() {
-    crate::run_queue::init_secondary();
+pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
+    crate::run_queue::init_secondary(stack_ptr, stack_size);
 }
 
 /// Handles periodic timer ticks for the task manager.
 ///
 /// For example, advance scheduler states, checks timed events, etc.
 #[cfg(feature = "irq")]
-#[doc(cfg(feature = "irq"))]
+#[cfg_attr(doc, doc(cfg(feature = "irq")))]
 pub fn on_timer_tick() {
     use ax_kernel_guard::NoOp;
     crate::timers::check_events();
@@ -180,6 +222,8 @@ pub fn set_priority(prio: isize) -> bool {
 ///
 /// TODO: support set the affinity for other tasks.
 pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
+    might_sleep();
+
     if cpumask.is_empty() {
         false
     } else {
@@ -190,7 +234,7 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
         // the affinity. If not, we need to migrate the task to the correct CPU.
         #[cfg(feature = "smp")]
         if !cpumask.get(ax_hal::percpu::this_cpu_id()) {
-            const MIGRATION_TASK_STACK_SIZE: usize = 4096;
+            const MIGRATION_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
             // Spawn a new migration task for migrating.
             let migration_task = TaskInner::new(
                 move || crate::run_queue::migrate_entry(curr),
@@ -213,7 +257,20 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
 
 /// Current task gives up the CPU time voluntarily, and switches to another
 /// ready task.
+#[track_caller]
 pub fn yield_now() {
+    might_sleep();
+
+    yield_now_unchecked();
+}
+
+/// Gives up the CPU from a kernel-internal path.
+///
+/// This bypasses the public `might_sleep()` guard and is intended only for
+/// carefully reviewed scheduler or syscall paths that must yield while running
+/// under internal kernel guards.
+#[doc(hidden)]
+pub(crate) fn yield_now_unchecked() {
     current_run_queue::<NoPreemptIrqSave>().yield_current()
 }
 
@@ -229,6 +286,8 @@ pub fn sleep(dur: core::time::Duration) {
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
 pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
     #[cfg(feature = "irq")]
+    might_sleep();
+    #[cfg(feature = "irq")]
     current_run_queue::<NoPreemptIrqSave>().sleep_until(deadline);
     #[cfg(not(feature = "irq"))]
     ax_hal::time::busy_wait_until(deadline);
@@ -236,15 +295,63 @@ pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
 
 /// Exits the current task.
 pub fn exit(exit_code: i32) -> ! {
+    might_sleep();
+
     current_run_queue::<NoPreemptIrqSave>().exit_current(exit_code)
+}
+
+fn current_preempt_count() -> usize {
+    #[cfg(feature = "preempt")]
+    {
+        current_may_uninit().map_or(0, |curr| curr.preempt_count())
+    }
+    #[cfg(not(feature = "preempt"))]
+    {
+        0
+    }
+}
+
+/// Returns whether the current context is atomic, meaning sleeping or
+/// rescheduling is not allowed.
+///
+/// This matches the intent of Linux's `might_sleep()`: catch misuse from
+/// IRQ-disabled or preempt-disabled regions before a sleep-like action happens.
+pub(crate) fn in_atomic_context() -> bool {
+    #[cfg(feature = "irq")]
+    if !ax_hal::asm::irqs_enabled() {
+        return true;
+    }
+
+    #[cfg(feature = "preempt")]
+    if current_preempt_count() != 0 {
+        return true;
+    }
+
+    false
+}
+
+/// Marks an operation as one that may sleep or reschedule.
+///
+/// Panics if it is executed in an atomic context.
+#[track_caller]
+pub fn might_sleep() {
+    if in_atomic_context() {
+        panic!(
+            "sleeping or rescheduling is not allowed in atomic context: irq_enabled={}, \
+             preempt_count={}",
+            ax_hal::asm::irqs_enabled(),
+            current_preempt_count()
+        );
+    }
 }
 
 /// The idle task routine.
 ///
-/// It runs an infinite loop that keeps calling [`yield_now()`].
+/// It runs an infinite loop that keeps trying to hand over the CPU before
+/// waiting for the next interrupt.
 pub fn run_idle() -> ! {
     loop {
-        yield_now();
+        yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
         #[cfg(feature = "irq")]
         ax_hal::asm::wait_for_irqs();

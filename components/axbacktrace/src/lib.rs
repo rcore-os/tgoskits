@@ -41,11 +41,14 @@ pub struct Frame {
 }
 
 impl Frame {
+    #[cfg(feature = "alloc")]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     const OFFSET: usize = 0;
+    #[cfg(feature = "alloc")]
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     const OFFSET: usize = 1;
 
+    #[cfg(feature = "alloc")]
     fn read(fp: usize) -> Option<Self> {
         if fp == 0 || !fp.is_multiple_of(core::mem::align_of::<Frame>()) {
             return None;
@@ -72,8 +75,11 @@ pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
     let mut frames = vec![];
 
     let Some(fp_range) = FP_RANGE.get() else {
-        // We cannot panic here!
-        log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
+        if !axpanic::oops_in_progress() {
+            // Avoid recursive output on panic/oops paths, but keep a diagnostic
+            // for ordinary misuse before the backtrace subsystem is ready.
+            log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
+        }
         return frames;
     };
 

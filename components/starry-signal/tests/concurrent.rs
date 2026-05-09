@@ -97,7 +97,7 @@ fn concurrent_check_signals() {
 
     let (si, action) = thr.check_signals(&mut uctx, None).unwrap();
     assert_eq!(si.signo(), Signo::SIGTERM);
-    assert_eq!(action, SignalOSAction::Handler);
+    assert_eq!(action, SignalOSAction::NoFurtherAction);
     assert!(thr.signal_blocked(Signo::SIGTERM));
 
     thread::spawn({
@@ -113,7 +113,7 @@ fn concurrent_check_signals() {
 
     let new_sp = uctx.sp() + 8;
     uctx.set_sp(new_sp);
-    thr.restore(&mut uctx);
+    thr.restore(&mut uctx).unwrap();
 
     assert!(!thr.signal_blocked(Signo::SIGTERM));
 

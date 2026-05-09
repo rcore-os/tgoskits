@@ -41,6 +41,7 @@ unsafe fn restore_host_sp_el0() {
 /// between VMs.
 #[repr(C)]
 #[derive(Clone, Debug, Copy, Default)]
+#[allow(dead_code)]
 pub struct VmCpuRegisters {
     /// guest trap context
     pub trap_context_regs: TrapFrame,
@@ -117,6 +118,10 @@ impl axvcpu::AxArchVCpu for Aarch64VCpu {
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+        unsafe {
+            core::arch::asm!("msr daifset, #2");
+        }
+
         // Run guest.
         let exit_reson = unsafe {
             // Save host SP_EL0 to the ctx becase it's used as current task ptr.
@@ -125,6 +130,10 @@ impl axvcpu::AxArchVCpu for Aarch64VCpu {
             self.restore_vm_system_regs();
             self.run_guest()
         };
+
+        unsafe {
+            core::arch::asm!("msr daifclr, #2");
+        }
 
         let trap_kind = TrapKind::try_from(exit_reson as u8).expect("Invalid TrapKind");
         self.vmexit_handler(trap_kind)

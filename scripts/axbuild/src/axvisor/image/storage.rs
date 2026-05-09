@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Context;
+use anyhow::{Context, anyhow, bail};
 use flate2::read::GzDecoder;
 use indicatif::ProgressBar;
 use sha2::{Digest, Sha256};
@@ -16,10 +16,11 @@ use super::{
     registry::{ImageEntry, ImageRegistry},
     spec::ImageSpecRef,
 };
-use crate::download::{download_to_path_with_progress, http_client};
+use crate::support::download::{download_file, http_client};
 
 pub const REGISTRY_FILENAME: &str = "images.toml";
 const LAST_SYNC_FILENAME: &str = ".last_sync";
+const EXTRACTED_SHA256_FILENAME: &str = ".archive.sha256";
 
 #[derive(Debug)]
 pub struct Storage {
@@ -142,7 +143,15 @@ impl Storage {
         }
 
         let extract_dir = output_dir.join(image_extract_dir_name(spec));
-        extract_archive(&archive_path, &extract_dir).await?;
+        if extracted_archive_matches(&extract_dir, &image.sha256)? {
+            println!(
+                "image already extracted and up to date at {}",
+                extract_dir.display()
+            );
+            return Ok(extract_dir);
+        }
+
+        extract_archive(&archive_path, &extract_dir, &image.sha256).await?;
         println!("image extracted to {}", extract_dir.display());
         Ok(extract_dir)
     }
@@ -181,7 +190,7 @@ impl Storage {
         }
 
         let client = http_client()?;
-        let download_result = download_to_path_with_progress(&client, &image.url, &part_path).await;
+        let download_result = download_file(&client, &image.url, &part_path).await;
         if let Err(err) = download_result {
             let _ = fs::remove_file(&part_path);
             return Err(err);
@@ -309,7 +318,31 @@ fn image_verify_sha256(file_path: &Path, expected_sha256: &str) -> anyhow::Resul
     Ok(actual_sha256 == expected_sha256)
 }
 
-async fn extract_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Result<()> {
+fn extracted_archive_matches(extract_dir: &Path, expected_sha256: &str) -> anyhow::Result<bool> {
+    if !extract_dir.exists() {
+        return Ok(false);
+    }
+
+    let marker_path = extract_dir.join(EXTRACTED_SHA256_FILENAME);
+    let actual_sha256 = match fs::read_to_string(&marker_path) {
+        Ok(actual_sha256) => actual_sha256,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(anyhow!(
+                "failed to read extraction marker {}: {err}",
+                marker_path.display()
+            ));
+        }
+    };
+
+    Ok(actual_sha256.trim() == expected_sha256)
+}
+
+async fn extract_archive(
+    archive_path: &Path,
+    extract_dir: &Path,
+    expected_sha256: &str,
+) -> anyhow::Result<()> {
     if extract_dir.exists() {
         fs::remove_dir_all(extract_dir)
             .with_context(|| format!("failed to remove {}", extract_dir.display()))?;
@@ -321,6 +354,7 @@ async fn extract_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Res
     let extract_dir = extract_dir.to_path_buf();
     let archive_path_for_task = archive_path.clone();
     let extract_dir_for_task = extract_dir.clone();
+    let expected_sha256 = expected_sha256.to_string();
     let progress = ProgressBar::new_spinner();
     progress.set_message(format!("extracting {}", archive_path.display()));
     progress.enable_steady_tick(std::time::Duration::from_millis(100));
@@ -332,6 +366,16 @@ async fn extract_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Res
         let mut archive = Archive::new(decoder);
         archive.unpack(&extract_dir_for_task).with_context(|| {
             format!("failed to extract into {}", extract_dir_for_task.display())
+        })?;
+        fs::write(
+            extract_dir_for_task.join(EXTRACTED_SHA256_FILENAME),
+            expected_sha256,
+        )
+        .with_context(|| {
+            format!(
+                "failed to write extraction marker in {}",
+                extract_dir_for_task.display()
+            )
         })?;
         Ok(())
     })
@@ -353,17 +397,12 @@ async fn extract_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Res
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write, net::SocketAddr, sync::Arc};
+    use std::io::Write;
 
     use tempfile::tempdir;
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-        sync::oneshot,
-    };
 
     use super::*;
-    use crate::axvisor::image::registry::RegistrySource;
+    use crate::{axvisor::image::registry::RegistrySource, support::download::test_support};
 
     fn sample_registry() -> &'static str {
         r#"
@@ -402,64 +441,6 @@ url = "https://example.com/linux-0.0.1.tar.gz"
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         format!("{:x}", hasher.finalize())
-    }
-
-    async fn start_http_server(
-        routes: Vec<(String, Vec<u8>)>,
-    ) -> (SocketAddr, oneshot::Sender<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let routes = Arc::new(routes);
-        let (tx, mut rx) = oneshot::channel();
-
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut rx => break,
-                    accept = listener.accept() => {
-                        let (mut stream, _) = accept.unwrap();
-                        let routes = routes.clone();
-                        tokio::spawn(async move {
-                            let mut buf = [0u8; 4096];
-                            let size = stream.read(&mut buf).await.unwrap();
-                            let request = String::from_utf8_lossy(&buf[..size]);
-                            let path = request
-                                .lines()
-                                .next()
-                                .and_then(|line| line.split_whitespace().nth(1))
-                                .unwrap_or("/");
-                            let response = routes
-                                .iter()
-                                .find(|(route, _)| route == path)
-                                .map(|(_, body)| {
-                                    format!(
-                                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                        body.len()
-                                    )
-                                    .into_bytes()
-                                });
-                            if let Some(mut header) = response {
-                                let body = routes
-                                    .iter()
-                                    .find(|(route, _)| route == path)
-                                    .map(|(_, body)| body.clone())
-                                    .unwrap();
-                                header.extend_from_slice(&body);
-                                let _ = stream.write_all(&header).await;
-                            } else {
-                                let _ = stream
-                                    .write_all(
-                                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                                    )
-                                    .await;
-                            }
-                        });
-                    }
-                }
-            }
-        });
-
-        (addr, tx)
     }
 
     #[test]
@@ -510,6 +491,52 @@ url = "https://example.com/linux-0.0.1.tar.gz"
         assert!(dir.path().join(REGISTRY_FILENAME).exists());
     }
 
+    #[tokio::test]
+    async fn pull_image_skips_reextract_when_marker_matches() {
+        let dir = tempdir().unwrap();
+        let image_name = "linux";
+        let archive_bytes = make_tar_gz(&[("kernel.bin", b"kernel")]);
+        let sha256 = sha256_hex(&archive_bytes);
+        let registry_path = dir.path().join(REGISTRY_FILENAME);
+        fs::write(
+            &registry_path,
+            format!(
+                r#"
+[[images]]
+name = "{image_name}"
+version = "0.0.1"
+released_at = "2025-01-01T00:00:00Z"
+description = "Linux guest"
+sha256 = "{sha256}"
+arch = "aarch64"
+url = "https://example.com/{image_name}.tar.gz"
+"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join(image_archive_filename(ImageSpecRef::parse(image_name))),
+            archive_bytes,
+        )
+        .unwrap();
+        let extract_dir = dir
+            .path()
+            .join(image_extract_dir_name(ImageSpecRef::parse(image_name)));
+        fs::create_dir_all(&extract_dir).unwrap();
+        fs::write(extract_dir.join(EXTRACTED_SHA256_FILENAME), &sha256).unwrap();
+        fs::write(extract_dir.join("sentinel"), b"keep").unwrap();
+
+        let storage = Storage::new(dir.path().to_path_buf()).unwrap();
+        let extracted = storage
+            .pull_image(ImageSpecRef::parse(image_name), None, true)
+            .await
+            .unwrap();
+
+        assert_eq!(extracted, extract_dir);
+        assert_eq!(fs::read(extract_dir.join("sentinel")).unwrap(), b"keep");
+    }
+
     #[test]
     fn config_without_auto_sync_requires_local_registry() {
         let dir = tempdir().unwrap();
@@ -534,8 +561,7 @@ url = "https://example.com/linux-0.0.1.tar.gz"
             ("axvm-bios.bin", b"bios"),
         ]);
         let sha256 = sha256_hex(&archive);
-        let (addr, shutdown) =
-            start_http_server(vec![("/archive.tar.gz".to_string(), archive.clone())]).await;
+        let archive_url = test_support::register_bytes("archive.tar.gz", archive.clone());
 
         let dir = tempdir().unwrap();
         let registry = ImageRegistry {
@@ -546,7 +572,7 @@ url = "https://example.com/linux-0.0.1.tar.gz"
                 description: "NimbOS guest".to_string(),
                 sha256,
                 arch: "x86_64".to_string(),
-                url: format!("http://{addr}/archive.tar.gz"),
+                url: archive_url.url().to_string(),
             }],
         };
         fs::write(
@@ -565,15 +591,13 @@ url = "https://example.com/linux-0.0.1.tar.gz"
         assert_eq!(fs::read(extracted.join("rootfs.img")).unwrap(), b"rootfs");
         assert!(dir.path().join("qemu_x86_64_nimbos.tar.gz").exists());
         assert!(!dir.path().join("qemu_x86_64_nimbos.tar.gz.part").exists());
-        let _ = shutdown.send(());
     }
 
     #[tokio::test]
     async fn pull_redownloads_when_existing_archive_is_invalid() {
         let archive = make_tar_gz(&[("rootfs.img", b"new-rootfs")]);
         let sha256 = sha256_hex(&archive);
-        let (addr, shutdown) =
-            start_http_server(vec![("/archive.tar.gz".to_string(), archive.clone())]).await;
+        let archive_url = test_support::register_bytes("archive.tar.gz", archive.clone());
         let dir = tempdir().unwrap();
         let storage = Storage {
             path: dir.path().to_path_buf(),
@@ -585,7 +609,7 @@ url = "https://example.com/linux-0.0.1.tar.gz"
                     description: "Linux guest".to_string(),
                     sha256,
                     arch: "aarch64".to_string(),
-                    url: format!("http://{addr}/archive.tar.gz"),
+                    url: archive_url.url().to_string(),
                 }],
             },
         };
@@ -600,15 +624,13 @@ url = "https://example.com/linux-0.0.1.tar.gz"
             fs::read(extracted.join("rootfs.img")).unwrap(),
             b"new-rootfs"
         );
-        let _ = shutdown.send(());
     }
 
     #[tokio::test]
     async fn pull_uses_custom_output_dir() {
         let archive = make_tar_gz(&[("rootfs.img", b"rootfs")]);
         let sha256 = sha256_hex(&archive);
-        let (addr, shutdown) =
-            start_http_server(vec![("/archive.tar.gz".to_string(), archive.clone())]).await;
+        let archive_url = test_support::register_bytes("archive.tar.gz", archive.clone());
         let root = tempdir().unwrap();
         let output = root.path().join("images");
         let storage = Storage {
@@ -621,7 +643,7 @@ url = "https://example.com/linux-0.0.1.tar.gz"
                     description: "Linux guest".to_string(),
                     sha256,
                     arch: "aarch64".to_string(),
-                    url: format!("http://{addr}/archive.tar.gz"),
+                    url: archive_url.url().to_string(),
                 }],
             },
         };
@@ -637,14 +659,12 @@ url = "https://example.com/linux-0.0.1.tar.gz"
             fs::read(output.join("linux/rootfs.img")).unwrap(),
             b"rootfs"
         );
-        let _ = shutdown.send(());
     }
 
     #[tokio::test]
     async fn failed_checksum_does_not_leave_final_or_part_file() {
         let archive = make_tar_gz(&[("rootfs.img", b"rootfs")]);
-        let (addr, shutdown) =
-            start_http_server(vec![("/archive.tar.gz".to_string(), archive.clone())]).await;
+        let archive_url = test_support::register_bytes("archive.tar.gz", archive.clone());
         let dir = tempdir().unwrap();
         let storage = Storage {
             path: dir.path().to_path_buf(),
@@ -656,7 +676,7 @@ url = "https://example.com/linux-0.0.1.tar.gz"
                     description: "Linux guest".to_string(),
                     sha256: "deadbeef".to_string(),
                     arch: "aarch64".to_string(),
-                    url: format!("http://{addr}/archive.tar.gz"),
+                    url: archive_url.url().to_string(),
                 }],
             },
         };
@@ -669,7 +689,6 @@ url = "https://example.com/linux-0.0.1.tar.gz"
         assert!(err.to_string().contains("checksum mismatch"));
         assert!(!dir.path().join("linux.tar.gz").exists());
         assert!(!dir.path().join("linux.tar.gz.part").exists());
-        let _ = shutdown.send(());
     }
 
     #[tokio::test]
@@ -681,16 +700,15 @@ version = "0.0.1"
 description = "Linux guest"
 sha256 = "abc"
 arch = "aarch64"
-url = "https://example.com/linux.tar.gz"
-"#
+        url = "https://example.com/linux.tar.gz"
+        "#
         .to_vec();
-        let (addr, shutdown) =
-            start_http_server(vec![("/fallback.toml".to_string(), fallback_body)]).await;
+        let fallback = test_support::register_text("fallback.toml", fallback_body);
         let client = http_client().unwrap();
         let source = ImageRegistry::resolve_bootstrap_source(
             &client,
-            "http://127.0.0.1:9/default.toml",
-            &format!("http://{addr}/fallback.toml"),
+            "mock://missing/default.toml",
+            fallback.url(),
         )
         .await
         .unwrap();
@@ -698,11 +716,10 @@ url = "https://example.com/linux.tar.gz"
         assert_eq!(
             source,
             RegistrySource {
-                url: format!("http://{addr}/fallback.toml"),
+                url: fallback.url().to_string(),
                 kind: "fallback registry",
             }
         );
-        let _ = shutdown.send(());
     }
 
     #[tokio::test]
@@ -712,19 +729,17 @@ url = "https://example.com/linux.tar.gz"
 url = "http://127.0.0.1:0/included.toml"
 "#
         .to_vec();
-        let (addr, shutdown) =
-            start_http_server(vec![("/default.toml".to_string(), default_body)]).await;
+        let default = test_support::register_text("default.toml", default_body);
         let client = http_client().unwrap();
         let source = ImageRegistry::resolve_bootstrap_source(
             &client,
-            &format!("http://{addr}/default.toml"),
-            "http://127.0.0.1:9/fallback.toml",
+            default.url(),
+            "mock://missing/fallback.toml",
         )
         .await
         .unwrap();
 
         assert_eq!(source.kind, "included registry from default.toml");
         assert_eq!(source.url, "http://127.0.0.1:0/included.toml");
-        let _ = shutdown.send(());
     }
 }

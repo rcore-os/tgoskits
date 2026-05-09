@@ -98,11 +98,8 @@ cargo -V
 ### 3. Prepare rootfs
 
 ```bash
-# Default target: riscv64
-make rootfs
-# Explicit target
-make ARCH=riscv64 rootfs
-make ARCH=loongarch64 rootfs
+cargo xtask starry rootfs --arch riscv64
+cargo xtask starry rootfs --arch loongarch64
 ```
 
 This will download rootfs image from [Starry-OS/rootfs](https://github.com/Starry-OS/rootfs/releases) and set up the disk file for running on QEMU.
@@ -110,30 +107,25 @@ This will download rootfs image from [Starry-OS/rootfs](https://github.com/Starr
 ### 4. Build and run on QEMU
 
 ```bash
-# Default target: riscv64
-make build
-# Explicit target
-make ARCH=riscv64 build
-make ARCH=loongarch64 build
+cargo xtask starry build --arch riscv64
+cargo xtask starry build --arch loongarch64
 
 # Run on QEMU (also rebuilds if necessary)
-make ARCH=riscv64 run
-make ARCH=loongarch64 run
+cargo xtask starry qemu --arch riscv64
+cargo xtask starry qemu --arch loongarch64
 ```
 
 Note:
 
-1. Binary dependencies will be automatically built during `make build`.
-2. You don't have to rerun `build` every time. `run` automatically rebuilds if necessary.
-3. The disk file will **not** be reset between each run. As a result, if you want to switch to another architecture, you must run `make rootfs` with the new architecture before `make run`.
+1. Binary dependencies will be automatically built during `cargo xtask starry build`.
+2. You don't have to rerun `build` every time. `qemu` automatically rebuilds if necessary.
+3. The disk file will **not** be reset between each run. As a result, if you want to switch to another architecture, you must run `cargo xtask starry rootfs --arch <arch>` with the new architecture before `cargo xtask starry qemu --arch <arch>`.
 
 ## What next?
 
-You can check out the [GUI guide](./docs/x11.md) to set up a graphical environment, or explore other documentation in this folder.
+Explore the board configs under [`configs/board`](./configs/board), or run `cargo xtask starry --help` for the full command list.
 
 If you're interested in contributing to the project, please see our [Contributing Guide](./CONTRIBUTING.md).
-
-See more build options in the [Makefile](./Makefile).
 
 ## License
 

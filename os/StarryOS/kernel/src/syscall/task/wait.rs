@@ -13,7 +13,7 @@ use linux_raw_sys::general::{
 use starry_process::{Pid, Process};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::AsThread;
+use crate::task::{AsThread, get_task};
 
 bitflags! {
     #[derive(Debug)]
@@ -65,8 +65,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
     let curr = current();
-    let proc_data = &curr.as_thread().proc_data;
-    let proc = &proc_data.proc;
+    let proc = &curr.as_thread().proc_data.proc;
 
     let pid = if pid == -1 {
         WaitPid::Any
@@ -89,9 +88,18 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         return Err(AxError::from(LinuxError::ECHILD));
     }
 
+    let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
         if let Some(child) = children.iter().find(|child| child.is_zombie()) {
             if !options.contains(WaitOptions::WNOWAIT) {
+                // Accumulate child's CPU time before freeing
+                for tid in child.threads() {
+                    if let Ok(task) = get_task(tid) {
+                        let thr = task.as_thread();
+                        let (utime, stime) = thr.time.borrow().output();
+                        proc_data.add_child_cpu_time(utime, stime);
+                    }
+                }
                 child.free();
             }
             if let Some(exit_code) = exit_code.nullable() {
@@ -110,7 +118,13 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             Some(res) => Poll::Ready(res),
             None => {
                 proc_data.child_exit_event.register(cx.waker());
-                Poll::Pending
+                // A child may exit between the check above and waker
+                // registration. Recheck after registering so that wakeup is
+                // not lost in that race window.
+                match check_children().transpose() {
+                    Some(res) => Poll::Ready(res),
+                    None => Poll::Pending,
+                }
             }
         }
     })))?

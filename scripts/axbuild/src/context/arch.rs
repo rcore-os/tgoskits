@@ -27,10 +27,6 @@ pub(crate) fn starry_target_for_arch_checked(arch: &str) -> anyhow::Result<&'sta
     target_for_arch_checked_impl(arch, "Starry")
 }
 
-pub(crate) fn target_for_arch_checked(arch: &str) -> anyhow::Result<&'static str> {
-    target_for_arch_checked_impl(arch, "Starry")
-}
-
 pub(crate) fn starry_arch_for_target_checked(target: &str) -> anyhow::Result<&'static str> {
     arch_for_target_checked_impl(target, "Starry")
 }
@@ -76,6 +72,25 @@ pub(crate) fn resolve_axvisor_arch_and_target(
         DEFAULT_AXVISOR_TARGET,
         "Axvisor",
     )
+}
+
+pub(crate) fn validate_supported_target(
+    target: &str,
+    suite_name: &str,
+    supported_kind: &str,
+    supported: &[&str],
+) -> anyhow::Result<()> {
+    if supported.contains(&target) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "unsupported target `{}` for {}. Supported {} are: {}",
+            target,
+            suite_name,
+            supported_kind,
+            supported.join(", ")
+        )
+    }
 }
 
 fn arch_target_entry(arch: &str) -> Option<&'static (&'static str, &'static str)> {

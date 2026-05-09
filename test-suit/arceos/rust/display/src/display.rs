@@ -1,3 +1,4 @@
+#[cfg(feature = "ax-std")]
 use std::os::arceos::api::display as api;
 
 use embedded_graphics::{
@@ -13,14 +14,24 @@ pub struct Display {
 
 impl Display {
     pub fn new() -> Self {
+        #[cfg(feature = "ax-std")]
         let info = api::ax_framebuffer_info();
+        #[cfg(feature = "ax-std")]
         let fb =
             unsafe { core::slice::from_raw_parts_mut(info.fb_base_vaddr as *mut u8, info.fb_size) };
+        #[cfg(feature = "ax-std")]
         let size = Size::new(info.width, info.height);
+
+        #[cfg(not(feature = "ax-std"))]
+        let size = Size::new(640, 480);
+        #[cfg(not(feature = "ax-std"))]
+        let fb = std::vec![0; size.width as usize * size.height as usize * 4].leak();
+
         Self { size, fb }
     }
 
     pub fn flush(&self) {
+        #[cfg(feature = "ax-std")]
         api::ax_framebuffer_flush();
     }
 }

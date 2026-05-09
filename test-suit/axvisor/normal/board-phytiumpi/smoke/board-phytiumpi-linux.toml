@@ -1,0 +1,13 @@
+board_type = "PhytiumPi"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+]
+shell_init_cmd = "root"
+shell_prefix = "login:"
+success_regex = [
+  "(?m)^root@.*#\\s*$",
+]
+timeout = 300

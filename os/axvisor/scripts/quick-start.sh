@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # AxVisor Environment Setup and Launch Script
-# Supported platforms: qemu-aarch64, qemu-riscv64, qemu-x86_64, phytiumpi, roc-rk3568-pc
+# Supported platforms: qemu-aarch64, qemu-riscv64, qemu-loongarch64, qemu-x86_64, phytiumpi, roc-rk3568-pc, rdk-s100, rdk-s100p
 # Documentation: https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart
 #
 
@@ -69,9 +69,12 @@ AxVisor Environment Setup and Launch Script
 Platforms:
     qemu-aarch64       QEMU AArch64 (ArceOS/Linux)
     qemu-riscv64       QEMU RISC-V64 (ArceOS)
+    qemu-loongarch64   QEMU LoongArch64 (AxVisor shell smoke)
     qemu-x86_64        QEMU x86_64 (NimbOS)
     phytiumpi          Phytium Pi Board (ArceOS/Linux)
     roc-rk3568-pc      ROC-RK3568-PC Board (ArceOS/Linux)
+    rdk-s100           D-Robotics RDK S100P Board (ArceOS/Linux)
+    rdk-s100p          Alias of rdk-s100
 
 Commands:
     setup               Prepare environment (download images, config files, etc.)
@@ -80,7 +83,7 @@ Commands:
 
 Setup Options (for setup/start commands):
     --serial <device>   Specify serial device
-                        Required for board platforms (phytiumpi, roc-rk3568-pc)
+                        Required for board platforms (phytiumpi, roc-rk3568-pc, rdk-s100)
                         If not specified, setup will prepare config but NOT launch
 
 Launch Options (for run/start commands):
@@ -90,6 +93,8 @@ Launch Options (for run/start commands):
         -m, --multi         Launch multiple guests (ArceOS+Linux)
     QEMU RISC-V64:
         -a, --arceos        Launch single ArceOS guest (default)
+    QEMU LoongArch64:
+        --axvisor           Launch AxVisor shell smoke (default)
     QEMU x86_64:
         -n, --nimbos        Launch single NimbOS guest (default)
     Phytium Pi:
@@ -97,6 +102,10 @@ Launch Options (for run/start commands):
         -l, --linux         Launch single Linux guest
         -m, --multi         Launch multiple guests (ArceOS+Linux)
     ROC-RK3568-PC:
+        -a, --arceos        Launch single ArceOS guest (default)
+        -l, --linux         Launch single Linux guest
+        -m, --multi         Launch multiple guests (ArceOS+Linux)
+    RDK S100P:
         -a, --arceos        Launch single ArceOS guest (default)
         -l, --linux         Launch single Linux guest
         -m, --multi         Launch multiple guests (ArceOS+Linux)
@@ -110,6 +119,10 @@ Examples:
 
     # QEMU RISC-V64
     $0 qemu-riscv64 start --arceos                  # One-step: prepare + launch ArceOS
+
+    # QEMU LoongArch64
+    $0 qemu-loongarch64 start --axvisor             # One-step: prepare + launch AxVisor shell
+    $0 qemu-loongarch64 start                       # Same as above (default axvisor)
 
     # QEMU x86_64
     $0 qemu-x86_64 start --nimbos                   # One-step: prepare + launch NimbOS
@@ -129,6 +142,14 @@ Examples:
     $0 roc-rk3568-pc start --serial /dev/ttyUSB0 --arceos # One-step: prepare + launch
     $0 roc-rk3568-pc start --serial /dev/ttyACM0 --multi # One-step with custom serial device
 
+    # RDK S100P (requires --serial for start)
+    $0 rdk-s100 setup                               # Prepare environment only
+    $0 rdk-s100 setup --serial /dev/ttyUSB0         # Prepare with custom serial device
+    $0 rdk-s100 run --arceos                        # Launch ArceOS (serial must be set in config)
+    $0 rdk-s100 start --serial /dev/ttyUSB0 --linux # One-step: prepare + launch Linux
+    $0 rdk-s100 start --serial /dev/ttyUSB0 --multi # One-step with custom serial device
+    $0 rdk-s100p start --serial /dev/ttyUSB0 --linux # Same as rdk-s100
+
     # Step-by-step execution
     $0 qemu-aarch64 setup                           # Prepare environment only
     $0 qemu-aarch64 run --arceos                    # Launch only
@@ -142,6 +163,16 @@ run_axvisor_qemu() {
 
 run_axvisor_uboot() {
     run_cmd cargo xtask uboot "$@"
+}
+
+ensure_ostool() {
+    info "Checking/installing ostool..."
+    if ! command -v ostool &> /dev/null; then
+        info "ostool not installed, installing..."
+        cargo install ostool
+    else
+        info "ostool already installed"
+    fi
 }
 
 # ============================================================================
@@ -186,7 +217,7 @@ setup_qemu_aarch64() {
 
 run_qemu_aarch64_arceos() {
     info "=== Launching QEMU AArch64 ArceOS Guest ==="
-    run_cmd cargo xtask qemu \
+    run_axvisor_qemu \
         --config "$(pwd)/tmp/configs/qemu-aarch64.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-aarch64-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-qemu-smp1.toml"
@@ -194,7 +225,7 @@ run_qemu_aarch64_arceos() {
 
 run_qemu_aarch64_linux() {
     info "=== Launching QEMU AArch64 Linux Guest ==="
-    run_cmd cargo xtask qemu \
+    run_axvisor_qemu \
         --config "$(pwd)/tmp/configs/qemu-aarch64.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-aarch64-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-qemu-smp1.toml"
@@ -202,7 +233,7 @@ run_qemu_aarch64_linux() {
 
 run_qemu_aarch64_multi() {
     info "=== Launching QEMU AArch64 Multiple Guests (ArceOS + Linux) ==="
-    run_cmd cargo xtask qemu \
+    run_axvisor_qemu \
         --config "$(pwd)/tmp/configs/qemu-aarch64.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-aarch64-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-qemu-smp1.toml" \
@@ -240,45 +271,46 @@ setup_qemu_riscv64() {
 run_qemu_riscv64_arceos() {
     info "=== Launching QEMU RISC-V64 ArceOS Guest ==="
     run_axvisor_qemu \
-        --build-config tmp/configs/qemu-riscv64.toml \
-        --qemu-config tmp/configs/qemu-riscv64-runtime.toml \
-        --vmconfigs tmp/configs/arceos-riscv64-qemu-smp1.toml
+        --config "$(pwd)/tmp/configs/qemu-riscv64.toml" \
+        --qemu-config "$(pwd)/tmp/configs/qemu-riscv64-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-riscv64-qemu-smp1.toml"
 }
 
 # ============================================================================
-# QEMU RISC-V64 Architecture Setup
+# QEMU x86_64 Architecture Setup
 # ============================================================================
 
-setup_qemu_riscv64() {
-    info "=== QEMU RISC-V64 Preparation ==="
+setup_qemu_loongarch64() {
+    info "=== QEMU LoongArch64 Preparation ==="
 
-    run_cmd mkdir -p tmp/{configs,images}
-
-    info "Downloading ArceOS image..."
-    run_cmd cargo axvisor image pull qemu_riscv64_arceos --output-dir tmp/images
+    run_cmd mkdir -p tmp/configs
 
     info "Preparing board config file..."
-    run_cmd cp configs/board/qemu-riscv64.toml tmp/configs/
-
-    info "Preparing guest config file..."
-    run_cmd cp configs/vms/arceos-riscv64-qemu-smp1.toml tmp/configs/
-
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_riscv64_arceos/qemu-riscv64"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
-    run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
+    run_cmd cp configs/board/qemu-loongarch64.toml tmp/configs/
 
     info "Preparing QEMU config file..."
-    run_cmd cp .github/workflows/qemu-riscv64.toml tmp/configs/qemu-riscv64-runtime.toml
-    run_cmd cp tmp/images/qemu_riscv64_arceos/rootfs.img tmp/rootfs.img
+    run_cmd cp scripts/ostool/qemu-loongarch64.toml tmp/configs/qemu-loongarch64-runtime.toml
 
-    info "=== QEMU RISC-V64 Preparation Complete ==="
+    if [[ -n "${AXBUILD_QEMU_SYSTEM_LOONGARCH64:-}" ]]; then
+        info "Using explicit LoongArch QEMU override: ${AXBUILD_QEMU_SYSTEM_LOONGARCH64}"
+    elif [[ -x "$HOME/QEMU-LVZ/build/qemu-system-loongarch64" ]]; then
+        info "Detected QEMU-LVZ at $HOME/QEMU-LVZ/build/qemu-system-loongarch64"
+    elif [[ -x "$HOME/qemu-lvz/build/qemu-system-loongarch64" ]]; then
+        info "Detected QEMU-LVZ at $HOME/qemu-lvz/build/qemu-system-loongarch64"
+    elif command -v qemu-system-loongarch64 &> /dev/null; then
+        warn "Using qemu-system-loongarch64 from PATH. Stock QEMU usually lacks LoongArch virtualization extensions; prefer QEMU-LVZ."
+    else
+        warn "No LoongArch QEMU binary detected. Set AXBUILD_QEMU_SYSTEM_LOONGARCH64 or install QEMU-LVZ before running."
+    fi
+
+    info "=== QEMU LoongArch64 Preparation Complete ==="
 }
 
-run_qemu_riscv64_arceos() {
-    info "=== Launching QEMU RISC-V64 ArceOS Guest ==="
+run_qemu_loongarch64_axvisor() {
+    info "=== Launching QEMU LoongArch64 AxVisor Shell ==="
     run_axvisor_qemu \
-        --build-config tmp/configs/qemu-riscv64.toml \
-        --qemu-config tmp/configs/qemu-riscv64-runtime.toml \
-        --vmconfigs tmp/configs/arceos-riscv64-qemu-smp1.toml
+        --config "$(pwd)/tmp/configs/qemu-loongarch64.toml" \
+        --qemu-config "$(pwd)/tmp/configs/qemu-loongarch64-runtime.toml"
 }
 
 # ============================================================================
@@ -310,7 +342,7 @@ setup_qemu_x86_64() {
 
 run_qemu_x86_64_nimbos() {
     info "=== Launching QEMU x86_64 NimbOS Guest ==="
-    run_cmd cargo xtask qemu \
+    run_axvisor_qemu \
         --config "$(pwd)/tmp/configs/qemu-x86_64.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-x86_64-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/nimbos-x86_64-qemu-smp1.toml"
@@ -346,13 +378,7 @@ setup_phytiumpi() {
 
     run_cmd mkdir -p tmp/{configs,images}
 
-    info "Checking/installing ostool..."
-    if ! command -v ostool &> /dev/null; then
-        info "ostool not installed, installing..."
-        cargo install ostool
-    else
-        info "ostool already installed"
-    fi
+    ensure_ostool
 
     info "Downloading ArceOS image..."
     run_cmd cargo axvisor image pull phytiumpi_arceos --output-dir tmp/images
@@ -413,7 +439,7 @@ setup_phytiumpi() {
 
 run_phytiumpi_arceos() {
     info "=== Launching Phytium Pi ArceOS Guest ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --config "$(pwd)/tmp/configs/phytiumpi.toml" \
         --uboot-config "$(pwd)/tmp/configs/phytiumpi-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-e2000-smp1.toml"
@@ -421,7 +447,7 @@ run_phytiumpi_arceos() {
 
 run_phytiumpi_linux() {
     info "=== Launching Phytium Pi Linux Guest ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --config "$(pwd)/tmp/configs/phytiumpi.toml" \
         --uboot-config "$(pwd)/tmp/configs/phytiumpi-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-e2000-smp1.toml"
@@ -429,7 +455,7 @@ run_phytiumpi_linux() {
 
 run_phytiumpi_multi() {
     info "=== Launching Phytium Pi Multiple Guests (ArceOS + Linux) ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --config "$(pwd)/tmp/configs/phytiumpi.toml" \
         --uboot-config "$(pwd)/tmp/configs/phytiumpi-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-e2000-smp1.toml" \
@@ -466,13 +492,7 @@ setup_roc_rk3568_pc() {
 
     run_cmd mkdir -p tmp/{configs,images}
 
-    info "Checking/installing ostool..."
-    if ! command -v ostool &> /dev/null; then
-        info "ostool not installed, installing..."
-        cargo install ostool
-    else
-        info "ostool already installed"
-    fi
+    ensure_ostool
 
     info "Downloading ArceOS image..."
     run_cmd cargo axvisor image pull roc-rk3568-pc_arceos --output-dir tmp/images
@@ -534,7 +554,7 @@ setup_roc_rk3568_pc() {
 
 run_roc_rk3568_pc_arceos() {
     info "=== Launching ROC-RK3568-PC ArceOS Guest ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --config "$(pwd)/tmp/configs/roc-rk3568-pc.toml" \
         --uboot-config "$(pwd)/tmp/configs/roc-rk3568-pc-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-rk3568-smp1.toml"
@@ -542,7 +562,7 @@ run_roc_rk3568_pc_arceos() {
 
 run_roc_rk3568_pc_linux() {
     info "=== Launching ROC-RK3568-PC Linux Guest ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --config "$(pwd)/tmp/configs/roc-rk3568-pc.toml" \
         --uboot-config "$(pwd)/tmp/configs/roc-rk3568-pc-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-rk3568-smp1.toml"
@@ -550,11 +570,140 @@ run_roc_rk3568_pc_linux() {
 
 run_roc_rk3568_pc_multi() {
     info "=== Launching ROC-RK3568-PC Multiple Guests (ArceOS + Linux) ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --config "$(pwd)/tmp/configs/roc-rk3568-pc.toml" \
         --uboot-config "$(pwd)/tmp/configs/roc-rk3568-pc-runtime.toml" \
         --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-rk3568-smp1.toml" \
         --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-rk3568-smp1.toml"
+}
+
+# ============================================================================
+# RDK S100P Board Setup
+# ============================================================================
+
+setup_rdk_s100() {
+    local serial_device=""
+    local serial_specified=false
+    local arceos_image="${AXVISOR_RDK_S100P_ARCEOS_IMAGE:-rdk-s100p_arceos}"
+    local linux_image="${AXVISOR_RDK_S100P_LINUX_IMAGE:-rdk-s100p_linux}"
+    local image_storage="${AXVISOR_IMAGE_LOCAL_STORAGE:-/tmp/.axvisor-images}"
+    local image_pull_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --serial)
+                serial_device="$2"
+                serial_specified=true
+                shift 2
+                ;;
+            *)
+                error "Unknown option: $1"
+                echo ""
+                echo "RDK S100P setup supports the following options:"
+                echo "  --serial <device>   Specify serial device"
+                exit 1
+                ;;
+        esac
+    done
+
+    info "=== RDK S100P Board Preparation ==="
+
+    run_cmd mkdir -p tmp/{configs,images}
+
+    if [ -n "${AXVISOR_IMAGE_LOCAL_STORAGE:-}" ]; then
+        image_pull_args+=(-S "${AXVISOR_IMAGE_LOCAL_STORAGE}")
+    fi
+    if [ -n "${AXVISOR_IMAGE_REGISTRY:-}" ]; then
+        image_pull_args+=(-R "${AXVISOR_IMAGE_REGISTRY}")
+    fi
+    if [ "${AXVISOR_IMAGE_FORCE_SYNC:-0}" = "1" ]; then
+        run_cmd rm -f "${image_storage}/images.toml" "${image_storage}/.last_sync"
+    fi
+
+    ensure_ostool
+
+    if [ -d "tmp/images/${arceos_image}" ]; then
+        info "Using existing ArceOS image directory: tmp/images/${arceos_image}"
+    else
+        info "Downloading ArceOS image..."
+        run_cmd cargo axvisor image "${image_pull_args[@]}" pull "${arceos_image}" --output-dir tmp/images
+    fi
+
+    if [ -d "tmp/images/${linux_image}" ]; then
+        info "Using existing Linux image directory: tmp/images/${linux_image}"
+    else
+        info "Downloading Linux image (including device tree)..."
+        run_cmd cargo axvisor image "${image_pull_args[@]}" pull "${linux_image}" --output-dir tmp/images
+    fi
+
+    info "Preparing board config file..."
+    run_cmd cp configs/board/rdk-s100.toml tmp/configs/
+
+    info "Preparing guest config files..."
+    run_cmd cp configs/vms/arceos-aarch64-s100-smp1.toml tmp/configs/
+    run_cmd cp configs/vms/linux-aarch64-s100-smp1.toml tmp/configs/
+
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/'"${arceos_image}"'/rdk-s100p"|g' tmp/configs/arceos-aarch64-s100-smp1.toml
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/'"${linux_image}"'/rdk-s100p"|g' tmp/configs/linux-aarch64-s100-smp1.toml
+
+    info "Preparing uboot config file..."
+    local workspace_root
+    local uboot_template
+    workspace_root="$(cd ../.. && pwd)"
+    uboot_template="${workspace_root}/.github/workflows/uboot-rdk-s100.toml"
+    if [ ! -f "$uboot_template" ]; then
+        error "RDK S100P U-Boot config not found: $uboot_template"
+        exit 1
+    fi
+    run_cmd cp "$uboot_template" tmp/configs/rdk-s100-runtime.toml
+    run_cmd sed -i '/success_regex = \[/,/\]/c\success_regex = []' tmp/configs/rdk-s100-runtime.toml
+
+    if [ "$serial_specified" = true ]; then
+        info "Setting serial device to: $serial_device"
+        run_cmd sed -i 's|^serial = "\${env:BOARD_COMM_UART_DEV}"|serial = "'"$serial_device"'"|g' tmp/configs/rdk-s100-runtime.toml
+    else
+        run_cmd sed -i '/^serial = "\${env:BOARD_COMM_UART_DEV}"/d' tmp/configs/rdk-s100-runtime.toml
+    fi
+
+    info "Adding device tree file path to uboot config..."
+    DTB_PATH="$(pwd)/tmp/images/${linux_image}/rdk-s100p-v1p0.dtb"
+    run_cmd sed -i 's|^dtb_file = "\${env:BOARD_DTB}"|dtb_file = "'"$DTB_PATH"'"|g' tmp/configs/rdk-s100-runtime.toml
+
+    info "=== RDK S100P Board Preparation Complete ==="
+    info "Baud rate has been set to 921600"
+    if [ "$serial_specified" = true ]; then
+        info "Serial device set to: $serial_device"
+    else
+        warn "IMPORTANT: tmp/configs/rdk-s100-runtime.toml is not runnable until serial is set"
+        warn "Preferred: rerun setup with --serial, for example:"
+        warn "  $0 rdk-s100 setup --serial /dev/ttyUSB0"
+        warn "Or edit tmp/configs/rdk-s100-runtime.toml and add: serial = \"/dev/ttyUSB0\""
+    fi
+}
+
+run_rdk_s100_arceos() {
+    info "=== Launching RDK S100P ArceOS Guest ==="
+    run_axvisor_uboot \
+        --config "$(pwd)/tmp/configs/rdk-s100.toml" \
+        --uboot-config "$(pwd)/tmp/configs/rdk-s100-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-s100-smp1.toml"
+}
+
+run_rdk_s100_linux() {
+    info "=== Launching RDK S100P Linux Guest ==="
+    run_axvisor_uboot \
+        --config "$(pwd)/tmp/configs/rdk-s100.toml" \
+        --uboot-config "$(pwd)/tmp/configs/rdk-s100-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-s100-smp1.toml"
+}
+
+run_rdk_s100_multi() {
+    info "=== Launching RDK S100P Multiple Guests (ArceOS + Linux) ==="
+    run_axvisor_uboot \
+        --config "$(pwd)/tmp/configs/rdk-s100.toml" \
+        --uboot-config "$(pwd)/tmp/configs/rdk-s100-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-s100-smp1.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-s100-smp1.toml"
 }
 
 # ============================================================================
@@ -685,6 +834,81 @@ cmd_start_qemu_riscv64() {
 }
 
 # ============================================================================
+# QEMU LoongArch64 Command Handling
+# ============================================================================
+
+cmd_setup_qemu_loongarch64() {
+    setup_qemu_loongarch64
+}
+
+cmd_run_qemu_loongarch64() {
+    local mode="$1"
+
+    case "$mode" in
+        --axvisor|"")
+            run_qemu_loongarch64_axvisor
+            ;;
+        -l|--linux)
+            error "Unsupported combination: QEMU LoongArch64 quick start does not launch a Linux guest yet"
+            echo ""
+            echo "QEMU LoongArch64 quick start currently supports the following mode:"
+            echo "  - AxVisor shell smoke (use --axvisor)"
+            echo ""
+            echo "To launch a Linux guest, please use:"
+            echo "  $0 qemu-aarch64 start --linux"
+            exit 1
+            ;;
+        -a|--arceos)
+            error "Unsupported combination: QEMU LoongArch64 quick start does not launch an ArceOS guest yet"
+            echo ""
+            echo "QEMU LoongArch64 quick start currently supports the following mode:"
+            echo "  - AxVisor shell smoke (use --axvisor)"
+            echo ""
+            echo "To launch an ArceOS guest, please use:"
+            echo "  $0 qemu-aarch64 start --arceos"
+            echo "  $0 qemu-riscv64 start --arceos"
+            exit 1
+            ;;
+        -m|--multi)
+            error "Unsupported combination: QEMU LoongArch64 does not support multi-guest quick start yet"
+            echo ""
+            echo "QEMU LoongArch64 quick start currently supports the following mode:"
+            echo "  - AxVisor shell smoke (use --axvisor)"
+            exit 1
+            ;;
+        -n|--nimbos)
+            error "Unsupported combination: QEMU LoongArch64 does not support NimbOS"
+            echo ""
+            echo "To run NimbOS, please use QEMU x86_64 platform:"
+            echo "  $0 qemu-x86_64 start --nimbos"
+            exit 1
+            ;;
+        *)
+            error "Unknown option: $mode"
+            echo ""
+            echo "QEMU LoongArch64 platform supports the following options:"
+            echo "  --axvisor       Launch AxVisor shell smoke"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_start_qemu_loongarch64() {
+    local mode="$1"
+    case "$mode" in
+        --axvisor|"")
+            ;;
+        *)
+            cmd_run_qemu_loongarch64 "$mode"
+            return
+            ;;
+    esac
+    setup_qemu_loongarch64
+    echo ""
+    cmd_run_qemu_loongarch64 "$mode"
+}
+
+# ============================================================================
 # QEMU x86_64 Command Handling
 # ============================================================================
 
@@ -709,6 +933,7 @@ cmd_run_qemu_x86_64() {
             echo "  $0 qemu-aarch64 start --arceos"
             echo "  $0 phytiumpi setup && $0 phytiumpi run --arceos"
             echo "  $0 roc-rk3568-pc setup && $0 roc-rk3568-pc run --arceos"
+            echo "  $0 rdk-s100 setup && $0 rdk-s100 run --arceos"
             exit 1
             ;;
         -l|--linux)
@@ -721,6 +946,7 @@ cmd_run_qemu_x86_64() {
             echo "  $0 qemu-aarch64 start --linux"
             echo "  $0 phytiumpi setup && $0 phytiumpi run --linux"
             echo "  $0 roc-rk3568-pc setup && $0 roc-rk3568-pc run --linux"
+            echo "  $0 rdk-s100 setup && $0 rdk-s100 run --linux"
             exit 1
             ;;
         -m|--multi)
@@ -733,6 +959,7 @@ cmd_run_qemu_x86_64() {
             echo "  $0 qemu-aarch64 start --multi"
             echo "  $0 phytiumpi setup && $0 phytiumpi run --multi"
             echo "  $0 roc-rk3568-pc setup && $0 roc-rk3568-pc run --multi"
+            echo "  $0 rdk-s100 setup && $0 rdk-s100 run --multi"
             exit 1
             ;;
         *)
@@ -928,6 +1155,84 @@ cmd_run_roc_rk3568_pc() {
 }
 
 # ============================================================================
+# RDK S100P Command Handling
+# ============================================================================
+
+cmd_setup_rdk_s100() {
+    setup_rdk_s100 "$@"
+}
+
+cmd_start_rdk_s100() {
+    local serial_args=()
+    local guest_mode=""
+    local serial_specified=false
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --serial)
+                serial_args+=("$1" "$2")
+                serial_specified=true
+                shift 2
+                ;;
+            -a|--arceos|-l|--linux|-m|--multi|"")
+                guest_mode="$1"
+                shift
+                ;;
+            *)
+                error "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+    done
+
+    setup_rdk_s100 "${serial_args[@]}"
+
+    if [ "$serial_specified" = false ]; then
+        return
+    fi
+
+    echo ""
+    cmd_run_rdk_s100 "$guest_mode"
+}
+
+cmd_run_rdk_s100() {
+    local mode="$1"
+
+    case "$mode" in
+        -a|--arceos|"")
+            run_rdk_s100_arceos
+            ;;
+        -l|--linux)
+            run_rdk_s100_linux
+            ;;
+        -m|--multi)
+            run_rdk_s100_multi
+            ;;
+        -n|--nimbos)
+            error "Unsupported combination: RDK S100P board does not support NimbOS"
+            echo ""
+            echo "RDK S100P board supports the following guest systems:"
+            echo "  - ArceOS (use --arceos)"
+            echo "  - Linux  (use --linux)"
+            echo "  - Multiple guests (use --multi)"
+            echo ""
+            echo "To run NimbOS, please use QEMU x86_64 platform:"
+            echo "  $0 qemu-x86_64 start --nimbos"
+            exit 1
+            ;;
+        *)
+            error "Unknown option: $mode"
+            echo ""
+            echo "RDK S100P board supports the following options:"
+            echo "  -a, --arceos    Launch ArceOS guest"
+            echo "  -l, --linux     Launch Linux guest"
+            echo "  -m, --multi     Launch multiple guests (ArceOS + Linux)"
+            exit 1
+            ;;
+    esac
+}
+
+# ============================================================================
 # Main Program
 # ============================================================================
 
@@ -983,6 +1288,30 @@ case "$PLATFORM" in
                 ;;
             start)
                 cmd_start_qemu_riscv64 "$@"
+                ;;
+            *)
+                error "Unknown command: $CMD"
+                show_help
+                exit 1
+                ;;
+        esac
+        ;;
+    qemu-loongarch64)
+        if [ $# -eq 0 ]; then
+            show_help
+            exit 0
+        fi
+        CMD="$1"
+        shift
+        case "$CMD" in
+            setup)
+                cmd_setup_qemu_loongarch64
+                ;;
+            run)
+                cmd_run_qemu_loongarch64 "$@"
+                ;;
+            start)
+                cmd_start_qemu_loongarch64 "$@"
                 ;;
             *)
                 error "Unknown command: $CMD"
@@ -1065,6 +1394,34 @@ case "$PLATFORM" in
                 echo ""
                 echo "ROC-RK3568-PC board supports the following commands:"
                 echo "  setup [--serial <device>]   Prepare board environment (download images, prepare config files)"
+                echo "  run [--arceos|--linux|--multi]    Launch guest"
+                echo "  start [--serial <device>] [--arceos|--linux|--multi]   One-step setup + launch"
+                exit 1
+                ;;
+        esac
+        ;;
+    rdk-s100|rdk-s100p)
+        if [ $# -eq 0 ]; then
+            show_help
+            exit 0
+        fi
+        CMD="$1"
+        shift
+        case "$CMD" in
+            setup)
+                cmd_setup_rdk_s100 "$@"
+                ;;
+            run)
+                cmd_run_rdk_s100 "$@"
+                ;;
+            start)
+                cmd_start_rdk_s100 "$@"
+                ;;
+            *)
+                error "Unknown command: $CMD"
+                echo ""
+                echo "RDK S100P board supports the following commands:"
+                echo "  setup [--serial <device>]   Prepare board environment (serial is ignored for compatibility)"
                 echo "  run [--arceos|--linux|--multi]    Launch guest"
                 echo "  start [--serial <device>] [--arceos|--linux|--multi]   One-step setup + launch"
                 exit 1

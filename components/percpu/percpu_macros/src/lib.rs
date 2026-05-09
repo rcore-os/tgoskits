@@ -105,7 +105,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// Caller must ensure that preemption is disabled on the current CPU.
             #[inline]
             pub unsafe fn read_current_raw(&self) -> #ty {
-                #read_current_raw
+                unsafe { #read_current_raw }
             }
 
             /// Set the value of the per-CPU static variable on the current CPU.
@@ -115,7 +115,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// Caller must ensure that preemption is disabled on the current CPU.
             #[inline]
             pub unsafe fn write_current_raw(&self, val: #ty) {
-                #write_current_raw
+                unsafe { #write_current_raw }
             }
 
             /// Returns the value of the per-CPU static variable on the current CPU. Preemption will be disabled during
@@ -142,7 +142,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let offset = arch::gen_offset(inner_symbol_name);
     let current_ptr = arch::gen_current_ptr(inner_symbol_name, ty);
     quote! {
-        #[cfg_attr(not(target_os = "macos"), link_section = ".percpu")] // unimplemented on macos
+        #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".percpu"))] // unimplemented on macos
         #(#attrs)*
         static mut #inner_symbol_name: #ty = #init_expr;
 
@@ -177,7 +177,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// Caller must ensure that preemption is disabled on the current CPU.
             #[inline]
             pub unsafe fn current_ptr(&self) -> *const #ty {
-                #current_ptr
+                unsafe { #current_ptr }
             }
 
             /// Returns the reference of the per-CPU static variable on the current CPU.
@@ -187,7 +187,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// Caller must ensure that preemption is disabled on the current CPU.
             #[inline]
             pub unsafe fn current_ref_raw(&self) -> &#ty {
-                &*self.current_ptr()
+                unsafe { &*self.current_ptr() }
             }
 
             /// Returns the mutable reference of the per-CPU static variable on the current CPU.
@@ -198,7 +198,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             #[inline]
             #[allow(clippy::mut_from_ref)]
             pub unsafe fn current_ref_mut_raw(&self) -> &mut #ty {
-                &mut *(self.current_ptr() as *mut #ty)
+                unsafe { &mut *(self.current_ptr() as *mut #ty) }
             }
 
             /// Manipulate the per-CPU data on the current CPU in the given closure.
@@ -234,7 +234,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// - data races will not happen.
             #[inline]
             pub unsafe fn remote_ref_raw(&self, cpu_id: usize) -> &#ty {
-                &*self.remote_ptr(cpu_id)
+                unsafe { &*self.remote_ptr(cpu_id) }
             }
 
             /// Returns the mutable reference of the per-CPU static variable on the given CPU.
@@ -247,7 +247,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             #[inline]
             #[allow(clippy::mut_from_ref)]
             pub unsafe fn remote_ref_mut_raw(&self, cpu_id: usize) -> &mut #ty {
-                &mut *(self.remote_ptr(cpu_id) as *mut #ty)
+                unsafe { &mut *(self.remote_ptr(cpu_id) as *mut #ty) }
             }
 
             #read_write_methods

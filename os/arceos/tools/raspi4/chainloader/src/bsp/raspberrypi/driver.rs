@@ -4,9 +4,10 @@
 
 //! BSP driver support.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use super::memory::map::mmio;
 use crate::{bsp::device_driver, console, driver as generic_driver};
-use core::sync::atomic::{AtomicBool, Ordering};
 
 //--------------------------------------------------------------------------------------------------
 // Global instances

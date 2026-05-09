@@ -36,14 +36,14 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
 
         if expand_size > 0
             && proc_data
-                .aspace
+                .aspace()
                 .lock()
                 .map(
                     expand_start,
                     expand_size,
                     MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
                     false,
-                    Backend::new_alloc(expand_start, PageSize::Size4K),
+                    Backend::new_alloc(expand_start, PageSize::Size4K, "[heap]"),
                 )
                 .is_err()
         {
@@ -56,7 +56,7 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
 
         if shrink_size > 0
             && proc_data
-                .aspace
+                .aspace()
                 .lock()
                 .unmap(shrink_start, shrink_size)
                 .is_err()

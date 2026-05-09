@@ -1,0 +1,10 @@
+{
+  "label": "在线调试",
+  "position": 6,
+  "link": {
+    "type": "generated-index",
+    "title": "在线调试",
+    "slug": "/debug",
+    "description": "本地 VS Code、QEMU 与 LLDB 调试设计，覆盖概述、环境、流程以及统一的平台实现。"
+  }
+}

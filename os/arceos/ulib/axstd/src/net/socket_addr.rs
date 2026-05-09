@@ -87,7 +87,7 @@ impl<T: ToSocketAddrs + ?Sized> ToSocketAddrs for &T {
 }
 
 #[cfg(not(feature = "dns"))]
-#[doc(cfg(feature = "net"))]
+#[cfg_attr(doc, doc(cfg(feature = "net")))]
 mod no_dns {
     use super::*;
 
@@ -134,7 +134,7 @@ mod no_dns {
 }
 
 #[cfg(feature = "dns")]
-#[doc(cfg(feature = "net"))]
+#[cfg_attr(doc, doc(cfg(feature = "net")))]
 mod dns {
     use alloc::{vec, vec::Vec};
 

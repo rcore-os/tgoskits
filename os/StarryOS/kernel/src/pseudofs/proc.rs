@@ -9,19 +9,22 @@ use alloc::{
 };
 use core::{
     ffi::CStr,
+    fmt::Write,
     iter,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_task::{AxTaskRef, WeakAxTaskRef, current};
-use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
+use ax_hal::paging::MappingFlags;
+use ax_task::{AxCpuMask, AxTaskRef, WeakAxTaskRef, current};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
 use indoc::indoc;
 use starry_process::Process;
 
 use crate::{
     file::FD_TABLE,
+    mm::BackendFileInfo,
     pseudofs::{
-        DirMaker, DirMapping, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
+        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
     },
     task::{AsThread, TaskStat, get_task, tasks},
@@ -131,20 +134,119 @@ impl SimpleDirOps for ProcessTaskDir {
     }
 }
 
-#[rustfmt::skip]
 fn task_status(task: &AxTaskRef) -> String {
+    let thread = task.as_thread();
+    let cred = thread.cred();
+    render_task_status(
+        thread.proc_data.proc.pid(),
+        task.id().as_u64(),
+        &cred,
+        task.cpumask(),
+        ax_hal::cpu_num(),
+    )
+}
+
+fn render_task_status(
+    tgid: u32,
+    pid: u64,
+    cred: &crate::task::Cred,
+    cpumask: AxCpuMask,
+    cpu_num: usize,
+) -> String {
+    let cpus_allowed = format_cpumask_hex(cpumask, cpu_num);
+    let cpus_allowed_list = format_cpumask_list(cpumask, cpu_num);
+
+    render_task_status_fields(tgid, pid, cred, &cpus_allowed, &cpus_allowed_list)
+}
+
+#[rustfmt::skip]
+fn render_task_status_fields(
+    tgid: u32,
+    pid: u64,
+    cred: &crate::task::Cred,
+    cpus_allowed: &str,
+    cpus_allowed_list: &str,
+) -> String {
     format!(
-        "Tgid:\t{}\n\
-        Pid:\t{}\n\
-        Uid:\t0 0 0 0\n\
-        Gid:\t0 0 0 0\n\
-        Cpus_allowed:\t1\n\
-        Cpus_allowed_list:\t0\n\
+        "Tgid:\t{tgid}\n\
+        Pid:\t{pid}\n\
+        Uid:\t{}\t{}\t{}\t{}\n\
+        Gid:\t{}\t{}\t{}\t{}\n\
+        Cpus_allowed:\t{cpus_allowed}\n\
+        Cpus_allowed_list:\t{cpus_allowed_list}\n\
         Mems_allowed:\t1\n\
         Mems_allowed_list:\t0",
-        task.as_thread().proc_data.proc.pid(),
-        task.id().as_u64()
+        cred.uid, cred.euid, cred.suid, cred.fsuid,
+        cred.gid, cred.egid, cred.sgid, cred.fsgid,
     )
+}
+
+fn format_cpumask_hex(cpumask: AxCpuMask, cpu_num: usize) -> String {
+    format_cpu_presence_hex(&collect_cpu_presence(&cpumask, cpu_num))
+}
+
+fn format_cpu_presence_hex(cpu_presence: &[bool]) -> String {
+    let word_count = cpu_presence.len().div_ceil(32).max(1);
+    let mut words = vec![0u32; word_count];
+
+    for (cpu, allowed) in cpu_presence.iter().copied().enumerate() {
+        if allowed {
+            words[cpu / 32] |= 1u32 << (cpu % 32);
+        }
+    }
+
+    words
+        .iter()
+        .rev()
+        .map(|word| format!("{word:08x}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn format_cpumask_list(cpumask: AxCpuMask, cpu_num: usize) -> String {
+    format_cpu_presence_list(&collect_cpu_presence(&cpumask, cpu_num))
+}
+
+fn format_cpu_presence_list(cpu_presence: &[bool]) -> String {
+    let mut ranges = Vec::new();
+    let mut cpu = 0;
+
+    while cpu < cpu_presence.len() {
+        if !cpu_presence[cpu] {
+            cpu += 1;
+            continue;
+        }
+
+        let start = cpu;
+        let mut end = cpu;
+        while end + 1 < cpu_presence.len() && cpu_presence[end + 1] {
+            end += 1;
+        }
+
+        ranges.push(if start == end {
+            start.to_string()
+        } else {
+            format!("{start}-{end}")
+        });
+        cpu = end + 1;
+    }
+
+    ranges.join(",")
+}
+
+fn collect_cpu_presence<I>(cpus: I, cpu_num: usize) -> Vec<bool>
+where
+    I: IntoIterator<Item = usize>,
+{
+    let mut cpu_presence = vec![false; cpu_num];
+
+    for cpu in cpus {
+        if cpu < cpu_num {
+            cpu_presence[cpu] = true;
+        }
+    }
+
+    cpu_presence
 }
 
 /// The /proc/[pid]/fd directory
@@ -191,6 +293,76 @@ impl SimpleDirOps for ThreadFdDir {
 struct ThreadDir {
     fs: Arc<SimpleFs>,
     task: WeakAxTaskRef,
+}
+
+fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
+    let mut output = String::new();
+
+    let task = match task.upgrade() {
+        Some(t) => t,
+        None => return Ok(output),
+    };
+
+    let aspace_arc = task.as_thread().proc_data.aspace();
+    let mm = aspace_arc.lock();
+
+    for area in mm.areas() {
+        let start = area.start();
+        let end = area.end();
+        let backend = area.backend();
+        let BackendFileInfo {
+            path,
+            offset: file_offset,
+            inode,
+            dev,
+            shared: is_shared,
+        } = backend.file_info()?;
+
+        let flag_end = if is_shared { 's' } else { 'p' };
+        let flags = area.flags();
+        let perms = {
+            let r = if flags.contains(MappingFlags::READ) {
+                'r'
+            } else {
+                '-'
+            };
+            let w = if flags.contains(MappingFlags::WRITE) {
+                'w'
+            } else {
+                '-'
+            };
+            let x = if flags.contains(MappingFlags::EXECUTE) {
+                'x'
+            } else {
+                '-'
+            };
+            format!("{}{}{}{}", r, w, x, flag_end)
+        };
+        const MAPS_COL_WIDTH: usize = 25 + core::mem::size_of::<usize>() * 6 - 1;
+        let mut writer = SeqWriter::new(&mut output);
+
+        let dev = dev.map(DeviceId).map(|dev| (dev.major(), dev.minor()));
+
+        write!(
+            &mut writer,
+            "{:08x}-{:08x} {} {:08x} {:02x}:{:02x} {}",
+            start.as_usize(),
+            end.as_usize(),
+            perms,
+            file_offset.unwrap_or(0),
+            dev.map(|(major, _)| major).unwrap_or(0),
+            dev.map(|(_, minor)| minor).unwrap_or(0),
+            inode.unwrap_or(0),
+        )
+        .map_err(|_| VfsError::InvalidInput)?;
+        writer.pad_to(MAPS_COL_WIDTH)?;
+        if !path.is_empty() {
+            writer.write_str(&path)?;
+        }
+        writer.newline()?;
+    }
+
+    Ok(output)
 }
 
 impl SimpleDirOps for ThreadDir {
@@ -249,15 +421,10 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "maps" => SimpleFile::new_regular(fs, move || {
-                Ok(indoc! {"
-                    7f000000-7f001000 r--p 00000000 00:00 0          [vdso]
-                    7f001000-7f003000 r-xp 00001000 00:00 0          [vdso]
-                    7f003000-7f005000 r--p 00003000 00:00 0          [vdso]
-                    7f005000-7f007000 rw-p 00005000 00:00 0          [vdso]
-                "})
-            })
-            .into(),
+            "maps" => {
+                let task = self.task.clone();
+                SeqFile::new_regular(fs, move || render_thread_maps(&task)).into()
+            }
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
             })
@@ -422,4 +589,120 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     let proc_dir = ProcFsHandler(fs.clone());
     SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
+}
+
+pub struct SeqWriter<W: core::fmt::Write> {
+    inner: W,
+    col: usize,
+}
+
+impl<W: core::fmt::Write> SeqWriter<W> {
+    pub fn new(inner: W) -> Self {
+        Self { inner, col: 0 }
+    }
+}
+
+impl<W: core::fmt::Write> SeqWriter<W> {
+    fn write_str(&mut self, s: &str) -> VfsResult<()> {
+        self.col += s.len();
+        self.inner.write_str(s)?;
+        Ok(())
+    }
+
+    #[allow(unused)]
+    fn write_char(&mut self, c: char) -> VfsResult<()> {
+        self.col += c.len_utf8();
+        self.inner.write_char(c)?;
+        Ok(())
+    }
+
+    fn pad_to(&mut self, target: usize) -> VfsResult<()> {
+        if self.col < target {
+            let pad = target - self.col;
+            for _ in 0..pad {
+                self.inner.write_char(' ')?;
+            }
+            self.col = target;
+        }
+        Ok(())
+    }
+
+    fn newline(&mut self) -> VfsResult<()> {
+        self.inner.write_char('\n')?;
+        self.col = 0;
+        Ok(())
+    }
+}
+
+impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write_str(s).map_err(|_| core::fmt::Error)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use alloc::{format, string::String};
+
+    use super::{
+        collect_cpu_presence, format_cpu_presence_hex, format_cpu_presence_list,
+        render_task_status_fields,
+    };
+    use crate::task::Cred;
+
+    fn legacy_render_task_status(tgid: u32, pid: u64) -> String {
+        format!(
+            "Tgid:\t{}\nPid:\t{}\nUid:\t0 0 0 0\nGid:\t0 0 0 \
+             0\nCpus_allowed:\t1\nCpus_allowed_list:\t0\nMems_allowed:\t1\nMems_allowed_list:\t0",
+            tgid, pid
+        )
+    }
+
+    fn render_task_status_from_cpus(tgid: u32, pid: u64, cpus: &[usize], cpu_num: usize) -> String {
+        let cpu_presence = collect_cpu_presence(cpus.iter().copied(), cpu_num);
+        let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+        let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+
+        render_task_status_fields(tgid, pid, &Cred::root(), &cpus_allowed, &cpus_allowed_list)
+    }
+
+    #[test]
+    fn old_hardcoded_status_lies_about_non_cpu0_affinity() {
+        let legacy = legacy_render_task_status(42, 84);
+
+        assert!(legacy.contains("Cpus_allowed:\t1\n"));
+        assert!(legacy.contains("Cpus_allowed_list:\t0\n"));
+        assert!(!legacy.contains("Cpus_allowed:\t0000000a\n"));
+        assert!(!legacy.contains("Cpus_allowed_list:\t1,3\n"));
+    }
+
+    #[test]
+    fn cpus_allowed_hex_matches_actual_affinity_bits() {
+        let cpu_presence = collect_cpu_presence([1, 3], 4);
+
+        assert_eq!(format_cpu_presence_hex(&cpu_presence), "0000000a");
+    }
+
+    #[test]
+    fn cpus_allowed_hex_orders_32bit_words_from_high_to_low() {
+        let cpu_presence = collect_cpu_presence([0, 1, 32, 63], 64);
+
+        assert_eq!(format_cpu_presence_hex(&cpu_presence), "80000001,00000003");
+    }
+
+    #[test]
+    fn cpus_allowed_list_compacts_contiguous_ranges() {
+        let cpu_presence = collect_cpu_presence([0, 2, 3, 4, 7, 9, 10, 11], 12);
+
+        assert_eq!(format_cpu_presence_list(&cpu_presence), "0,2-4,7,9-11");
+    }
+
+    #[test]
+    fn task_status_reports_real_affinity_instead_of_cpu0_only() {
+        let status = render_task_status_from_cpus(42, 84, &[1, 3], 4);
+
+        assert!(status.contains("Tgid:\t42\n"));
+        assert!(status.contains("Pid:\t84\n"));
+        assert!(status.contains("Cpus_allowed:\t0000000a\n"));
+        assert!(status.contains("Cpus_allowed_list:\t1,3\n"));
+    }
 }

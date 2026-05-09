@@ -115,6 +115,7 @@ fn map_elf<'a>(
             FileBackend::Cached(cache.clone()),
             ph.offset,
             Some(ph.offset + ph.file_size),
+            false,
         );
         uspace.map(
             seg_start.align_down_4k(),
@@ -233,9 +234,18 @@ impl ElfLoader {
         };
 
         let elf = map_elf(uspace, crate::config::USER_SPACE_BASE, elf)?;
-        let ldso = ldso
-            .map(|elf| map_elf(uspace, crate::config::USER_INTERP_BASE, elf))
-            .transpose()?;
+        let ldso = if ldso.is_some() {
+            let max_end = uspace
+                .areas()
+                .map(|area| area.end().as_usize())
+                .max()
+                .unwrap_or(crate::config::USER_SPACE_BASE);
+            let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
+            ldso.map(|elf| map_elf(uspace, interp_base, elf))
+                .transpose()?
+        } else {
+            None
+        };
 
         let entry = VirtAddr::from_usize(
             ldso.as_ref()
@@ -254,6 +264,7 @@ static ELF_LOADER: Mutex<ElfLoader> = Mutex::new(ElfLoader::new());
 /// Clear the ELF cache.
 ///
 /// Useful for removing noises during memory leak detect.
+#[cfg(feature = "memtrack")]
 pub fn clear_elf_cache() {
     ELF_LOADER.lock().0.clear();
 }
@@ -318,7 +329,7 @@ pub fn load_user_app(
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         false,
-        Backend::new_alloc(ustack_start, PageSize::Size4K),
+        Backend::new_alloc(ustack_start, PageSize::Size4K, "[stack]"),
     )?;
 
     let stack_data = app_stack_region(args, envs, &auxv, ustack_top.into());
@@ -338,7 +349,7 @@ pub fn load_user_app(
         heap_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
-        Backend::new_alloc(heap_start, PageSize::Size4K),
+        Backend::new_alloc(heap_start, PageSize::Size4K, "[heap]"),
     )?;
 
     Ok((entry, user_sp))

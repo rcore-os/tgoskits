@@ -2,7 +2,7 @@ env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
   "ax-std/bus-mmio",
   "sdmmc",
-  "rk3588-clk",
+  "rockchip-soc",
   "fs",
 ]
 log = "Info"

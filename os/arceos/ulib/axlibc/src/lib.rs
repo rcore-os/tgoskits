@@ -26,8 +26,7 @@
 //! [epoll]: https://man7.org/linux/man-pages/man7/epoll.7.html
 
 #![cfg_attr(all(not(test), not(doc)), no_std)]
-#![feature(doc_cfg)]
-#![feature(thread_local)]
+#![cfg_attr(feature = "tls", feature(thread_local))]
 #![allow(clippy::missing_safety_doc)]
 
 #[cfg(feature = "alloc")]

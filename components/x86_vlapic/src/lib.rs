@@ -30,21 +30,21 @@ mod vlapic;
 use core::cell::UnsafeCell;
 
 use ax_errno::AxResult;
-use axvisor_api::{
-    memory,
-    vmm::{VCpuId, VMId},
-};
 use ax_memory_addr::{AddrRange, PAGE_SIZE_4K};
-
 use axaddrspace::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr,
     device::{AccessWidth, SysRegAddr, SysRegAddrRange},
 };
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+use axvisor_api::{
+    memory,
+    vmm::{VCpuId, VMId},
+};
 
-use crate::consts::x2apic::x2apic_msr_access_reg;
-use crate::consts::xapic::xapic_mmio_access_reg_offset;
-use crate::vlapic::VirtualApicRegs;
+use crate::{
+    consts::{x2apic::x2apic_msr_access_reg, xapic::xapic_mmio_access_reg_offset},
+    vlapic::VirtualApicRegs,
+};
 
 #[repr(align(4096))]
 struct APICAccessPage([u8; PAGE_SIZE_4K]);

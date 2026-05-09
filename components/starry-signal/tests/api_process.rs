@@ -39,12 +39,21 @@ fn signal_ignore() {
 }
 
 #[test]
+fn signal_default_ignore() {
+    let env = TestEnv::new();
+    let sig = SignalInfo::new_user(Signo::SIGCHLD, 0, 100);
+
+    assert_eq!(env.proc.send_signal(sig), None);
+    assert!(!env.proc.pending().has(Signo::SIGCHLD));
+}
+
+#[test]
 fn can_restart() {
     let env = TestEnv::new();
-    assert!(!env.proc.can_restart(Signo::SIGTERM));
+    assert!(!env.proc.actions.lock()[Signo::SIGTERM].is_restartable());
 
     env.proc.actions.lock()[Signo::SIGTERM]
         .flags
         .insert(SignalActionFlags::RESTART);
-    assert!(env.proc.can_restart(Signo::SIGTERM));
+    assert!(env.proc.actions.lock()[Signo::SIGTERM].is_restartable());
 }

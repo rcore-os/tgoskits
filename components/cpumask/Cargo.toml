@@ -1,8 +1,8 @@
 [package]
 name = "ax-cpumask"
-version = "0.3.0"
+version = "0.3.4"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = ["keyang.hu@qq.com"]
 description = "CPU mask library in Rust"
 keywords = ["arceos", "cpu-affinity", "cpumask"]

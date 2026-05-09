@@ -1,0 +1,301 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "TGOS: Build ArceOS debug image",
+      "hide": true,
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "xtask",
+        "arceos",
+        "build",
+        "--debug",
+        "--package",
+        "ax-helloworld",
+        "--arch",
+        "aarch64"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "TGOS: Prepare ArceOS QEMU debug",
+      "hide": true,
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "TGOS: Build ArceOS debug image",
+        "TGOS: Start ArceOS QEMU debug"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "TGOS: Start ArceOS QEMU debug",
+      "hide": true,
+      "isBackground": true,
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/.vscode/session.py",
+        "start"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_COMMAND": "cargo xtask arceos qemu --debug --package ax-helloworld --arch aarch64",
+          "TGOS_DEBUG_PORT": "1234",
+          "TGOS_DEBUG_SESSION": "arceos",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": {
+        "owner": "arceos-qemu",
+        "pattern": {
+          "regexp": "^(QEMU_DEBUG_FAILED).*$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^QEMU_DEBUG_STARTING session=arceos\\b.*$",
+          "endsPattern": "^QEMU_GDB_READY session=arceos\\b.*$"
+        }
+      }
+    },
+    {
+      "label": "TGOS: Stop ArceOS QEMU debug",
+      "hide": true,
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/.vscode/session.py",
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_SESSION": "arceos",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "panel": "shared",
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "TGOS: Build Axvisor debug image",
+      "hide": true,
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "xtask",
+        "axvisor",
+        "build",
+        "--debug",
+        "--config",
+        "os/axvisor/.build.toml"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "TGOS: Prepare Axvisor QEMU debug",
+      "hide": true,
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "TGOS: Build Axvisor debug image",
+        "TGOS: Start Axvisor QEMU debug"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "TGOS: Start Axvisor QEMU debug",
+      "hide": true,
+      "isBackground": true,
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/.vscode/session.py",
+        "start"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_COMMAND": "cargo xtask axvisor qemu --debug --config os/axvisor/.build.toml",
+          "TGOS_DEBUG_PORT": "1234",
+          "TGOS_DEBUG_SESSION": "axvisor",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": {
+        "owner": "axvisor-qemu",
+        "pattern": {
+          "regexp": "^(QEMU_DEBUG_FAILED).*$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^QEMU_DEBUG_STARTING session=axvisor\\b.*$",
+          "endsPattern": "^QEMU_GDB_READY session=axvisor\\b.*$"
+        }
+      }
+    },
+    {
+      "label": "TGOS: Stop Axvisor QEMU debug",
+      "hide": true,
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/.vscode/session.py",
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_SESSION": "axvisor",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "panel": "shared",
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "TGOS: Build StarryOS debug image",
+      "hide": true,
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "xtask",
+        "starry",
+        "build",
+        "--debug",
+        "--arch",
+        "aarch64"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "TGOS: Prepare StarryOS QEMU debug",
+      "hide": true,
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "TGOS: Build StarryOS debug image",
+        "TGOS: Start StarryOS QEMU debug"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "TGOS: Start StarryOS QEMU debug",
+      "hide": true,
+      "isBackground": true,
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/.vscode/session.py",
+        "start"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_COMMAND": "cargo xtask starry qemu --debug --arch aarch64",
+          "TGOS_DEBUG_PORT": "1234",
+          "TGOS_DEBUG_SESSION": "starry",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": {
+        "owner": "starry-qemu",
+        "pattern": {
+          "regexp": "^(QEMU_DEBUG_FAILED).*$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^QEMU_DEBUG_STARTING session=starry\\b.*$",
+          "endsPattern": "^QEMU_GDB_READY session=starry\\b.*$"
+        }
+      }
+    },
+    {
+      "label": "TGOS: Stop StarryOS QEMU debug",
+      "hide": true,
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/.vscode/session.py",
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_SESSION": "starry",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "panel": "shared",
+        "reveal": "never"
+      }
+    }
+  ]
+}

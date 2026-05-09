@@ -49,7 +49,7 @@ impl UserContext {
     ///
     /// This function returns when an exception or syscall occurs.
     pub fn run(&mut self) -> ReturnReason {
-        extern "C" {
+        unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
 

@@ -151,6 +151,7 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
             ax_driver_virtio::probe_pci_device::<VirtIoHalImpl, C>(root, bdf, dev_info)
             && ty == D::DEVICE_TYPE
         {
+            let irq = pci_irq_vector(bdf, irq);
             match D::try_new(transport, Some(irq)) {
                 Ok(dev) => return Some(dev),
                 Err(e) => {
@@ -161,6 +162,36 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
         }
         None
     }
+}
+
+#[cfg(all(bus = "pci", target_arch = "x86_64"))]
+fn pci_irq_vector(bdf: DeviceFunction, fallback: usize) -> usize {
+    const PCI_INTERRUPT_REG: usize = 0x3c;
+    const IO_APIC_VECTOR_OFFSET: usize = 0x20;
+
+    let config_offset = ((bdf.bus as usize) << 20)
+        | ((bdf.device as usize) << 15)
+        | ((bdf.function as usize) << 12)
+        | PCI_INTERRUPT_REG;
+    let config_addr = ax_config::devices::PCI_ECAM_BASE + config_offset;
+    let int_reg =
+        unsafe { (phys_to_virt(config_addr.into()).as_usize() as *const u32).read_volatile() };
+    let line = (int_reg & 0xff) as usize;
+    let pin = ((int_reg >> 8) & 0xff) as usize;
+
+    if (1..0x20).contains(&line) && pin != 0 {
+        let vector = IO_APIC_VECTOR_OFFSET + line;
+        debug!("PCI {bdf} INTx line {line}, pin {pin} -> vector {vector:#x}");
+        vector
+    } else {
+        debug!("PCI {bdf} has INTx line {line}, pin {pin}; using fallback vector {fallback:#x}");
+        fallback
+    }
+}
+
+#[cfg(all(bus = "pci", not(target_arch = "x86_64")))]
+fn pci_irq_vector(_bdf: DeviceFunction, fallback: usize) -> usize {
+    fallback
 }
 
 pub struct VirtIoHalImpl;

@@ -71,7 +71,8 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> AxResult<isize> 
 
     // Get current address space
     let curr = current();
-    let aspace = curr.as_thread().proc_data.aspace.lock();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let aspace = aspace_arc.lock();
 
     let mut result = vec![0u8; page_count];
     let mut i = 0;

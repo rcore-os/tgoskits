@@ -4,8 +4,9 @@
 
 //! A panic handler that infinitely waits.
 
-use crate::{cpu, println};
 use core::panic::PanicInfo;
+
+use crate::{cpu, println};
 
 //--------------------------------------------------------------------------------------------------
 // Private Code
@@ -51,9 +52,7 @@ fn panic(info: &PanicInfo) -> ! {
     };
 
     println!(
-        "Kernel panic!\n\n\
-        Panic location:\n      File '{}', line {}, column {}\n\n\
-        {}",
+        "Kernel panic!\n\nPanic location:\n      File '{}', line {}, column {}\n\n{}",
         location,
         line,
         column,

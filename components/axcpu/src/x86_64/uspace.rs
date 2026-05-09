@@ -68,7 +68,7 @@ impl UserContext {
     ///
     /// This function returns when an exception or syscall occurs.
     pub fn run(&mut self) -> ReturnReason {
-        extern "C" {
+        unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
 
@@ -140,6 +140,7 @@ impl ExceptionInfo {
     /// Returns a generalized kind of this exception.
     pub fn kind(&self) -> ExceptionKind {
         match ExceptionVector::try_from(self.vector) {
+            Ok(ExceptionVector::Debug) => ExceptionKind::Debug,
             Ok(ExceptionVector::Breakpoint) => ExceptionKind::Breakpoint,
             Ok(ExceptionVector::InvalidOpcode) => ExceptionKind::IllegalInstruction,
             _ => ExceptionKind::Other,
@@ -149,7 +150,7 @@ impl ExceptionInfo {
 
 /// Initializes syscall support and setups the syscall handler.
 pub(super) fn init_syscall() {
-    extern "C" {
+    unsafe extern "C" {
         fn syscall_entry();
     }
 

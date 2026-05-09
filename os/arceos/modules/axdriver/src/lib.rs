@@ -55,9 +55,7 @@
 //! [dyn]: https://doc.rust-lang.org/std/keyword.dyn.html
 
 #![no_std]
-#![feature(doc_cfg)]
-#![feature(used_with_arg)]
-#![feature(associated_type_defaults)]
+#![cfg_attr(feature = "virtio", feature(associated_type_defaults))]
 
 #[macro_use]
 extern crate log;
@@ -84,6 +82,12 @@ mod ixgbe;
 mod dyn_drivers;
 
 pub mod prelude;
+
+#[cfg(feature = "block")]
+pub use ax_driver_block::partition::{
+    PartitionBlockDevice, PartitionInfo, PartitionRegion, PartitionTable, PartitionTableKind,
+    scan_partitions,
+};
 
 #[allow(unused_imports)]
 use self::prelude::*;
