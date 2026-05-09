@@ -8,7 +8,9 @@ use ax_fs::FileBackend;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
-    ioctl::{BLKDISCARD, BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET, BLKSSZGET},
+    ioctl::{
+        BLKDISCARD, BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET, BLKSSZGET,
+    },
     loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS, loop_info},
 };
 use starry_vm::{VmMutPtr, VmPtr};
