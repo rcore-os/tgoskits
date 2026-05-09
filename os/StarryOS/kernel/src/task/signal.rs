@@ -134,7 +134,15 @@ pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> AxRes
     if let Some(sig) = sig {
         info!("Send signal {:?} to process group {}", sig.signo(), pgid);
         for proc in pg.processes() {
-            send_signal_to_process(proc.pid(), Some(sig.clone()))?;
+            // A zombie's ProcessData may already be freed; skip it so live
+            // siblings still receive the signal.
+            if let Err(e) = send_signal_to_process(proc.pid(), Some(sig.clone())) {
+                debug!(
+                    "send_signal_to_process_group: skipped pid {}: {:?}",
+                    proc.pid(),
+                    e
+                );
+            }
         }
     }
 

@@ -5,6 +5,7 @@ use alloc::{
 use core::{ffi::c_long, sync::atomic::Ordering};
 
 use ax_errno::{AxError, AxResult};
+use ax_hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
@@ -117,6 +118,32 @@ pub fn register_session(session: &Arc<Session>) {
     session_table.insert(session.sid(), session);
 }
 
+/// Accumulates CPU time for `task` from a timer-tick IRQ context.
+///
+/// Unlike `poll_timer`, this never emits signals, making it safe to call
+/// from interrupt handlers.
+pub fn tick_cpu_time(task: &TaskInner) {
+    let Some(thr) = task.try_as_thread() else {
+        return;
+    };
+    let Ok(mut time) = thr.time.try_borrow_mut() else {
+        // Reentrant borrow means the task is mid-state-transition; skip.
+        return;
+    };
+    time.tick();
+}
+
+/// Returns the accumulated `(utime, stime)` for a task without side effects.
+pub fn task_cpu_time(task: &TaskInner) -> (TimeValue, TimeValue) {
+    let Some(thr) = task.try_as_thread() else {
+        return (TimeValue::ZERO, TimeValue::ZERO);
+    };
+    let Ok(time) = thr.time.try_borrow() else {
+        return (TimeValue::ZERO, TimeValue::ZERO);
+    };
+    time.output()
+}
+
 /// Poll the timer
 pub fn poll_timer(task: &TaskInner) {
     let Some(thr) = task.try_as_thread() else {
@@ -176,7 +203,7 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
         .checked_add_signed(offset)
         .ok_or(AxError::InvalidInput)?;
     let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
-    let key = FutexKey::new_current(address);
+    let key = FutexKey::new_current_teardown(address);
 
     let futex_table = futex_table_for(&key);
 
@@ -229,7 +256,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
     if clear_child_tid.vm_write(0).is_ok() {
-        let key = FutexKey::new_current(clear_child_tid as usize);
+        let key = FutexKey::new_current_teardown(clear_child_tid as usize);
         let table = futex_table_for(&key);
         let guard = table.get(&key);
         if let Some(futex) = guard {

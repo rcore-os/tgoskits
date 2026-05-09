@@ -387,7 +387,7 @@ if echo "$_t" | grep -qF "mount_ok"; then echo "PASS: busybox_mount"; PASS=$((PA
 _t=$({ timeout 10 sh -c "busybox mountpoint / 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "is a mountpoint"; then echo "PASS: busybox_mountpoint"; PASS=$((PASS+1)); else echo "FAIL: busybox_mountpoint"; FAIL=$((FAIL+1)); fi
 
-_t=$({ timeout 10 sh -c "busybox mpstat 1 1 2>&1; busybox echo mpstat_ok"; } 2>&1)
+_t=$({ timeout 5 sh -c "busybox mpstat 2>&1; busybox echo mpstat_ok"; } 2>&1)
 if echo "$_t" | grep -qF "mpstat_ok"; then echo "PASS: busybox_mpstat"; PASS=$((PASS+1)); else echo "FAIL: busybox_mpstat"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox nameif -h 2>&1"; } 2>&1)

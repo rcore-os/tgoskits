@@ -24,6 +24,7 @@ use crate::{
         has_hardware_support,
         structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion},
     },
+    xstate::enable_xsave,
 };
 
 /// Represents the per-CPU state for Virtual Machine Extensions (VMX).
@@ -67,7 +68,7 @@ impl AxArchPerCpu for VmxPerCpuState {
         }
 
         // Enable XSAVE/XRSTOR.
-        super::vcpu::XState::enable_xsave();
+        enable_xsave();
 
         // Enable VMXON, if required.
         let ctrl = FeatureControl::read();

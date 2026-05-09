@@ -38,6 +38,7 @@ pub fn sys_gettimeofday(ts: *mut timeval) -> AxResult<isize> {
     Ok(0)
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn sys_time(tloc: *mut usize) -> AxResult<isize> {
     let secs = wall_time().as_secs() as isize;
     if let Some(tloc) = tloc.nullable() {

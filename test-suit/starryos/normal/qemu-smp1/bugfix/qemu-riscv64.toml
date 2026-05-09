@@ -20,6 +20,7 @@ test_commands = [
     "/usr/bin/bug-futex-wait-wake",
     "/usr/bin/bug-faccessat2-validation",
     "/usr/bin/bug-fchmodat2-flags",
+    "/usr/bin/bug-linkat-flags-symlink",
     "/usr/bin/bug-lseek-negative-einval",
     "/usr/bin/bug-mkdir-empty-path",
     "/usr/bin/bug-mknodat-mode-type",
@@ -36,6 +37,7 @@ test_commands = [
     "/usr/bin/clone3-badsize",
     "/usr/bin/bug-unaligned-cow-split",
     "/usr/bin/bug-proc-maps-lseek-refresh",
+    "/usr/bin/bug-renameat2-noreplace-flags",
     "/usr/bin/bug-readlinkat-zero-size",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
