@@ -8,7 +8,7 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use ax_task::current;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -67,6 +67,13 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
         OpenResult::File(mut file) => {
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
+                // Block device exclusive open (O_EXCL without O_CREAT).
+                if let Ok(meta) = device.metadata()
+                    && meta.node_type == NodeType::BlockDevice
+                    && flags & O_EXCL != 0
+                {
+                    device.inner().open(true)?;
+                }
                 let inner = device.inner().as_any();
                 #[cfg(feature = "plat-dyn")]
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {

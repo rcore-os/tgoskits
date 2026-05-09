@@ -30,11 +30,9 @@ pub struct LoopDevice {
     pub ro: AtomicBool,
     /// Read-ahead size for the loop device, in bytes.
     pub ra: AtomicU32,
-    /// When true (default), unbound devices emulate a minimal valid block device
-    /// (1 sector, accept discard) for compatibility with bootstrap tools like BusyBox.
-    /// When false, unbound devices return ENXIO/ENODEV matching Linux behavior.
-    /// TODO: Disable once proper loop setup (losetup) is available in userspace.
-    compat_unbound: AtomicBool,
+    /// True while an O_EXCL opener holds the device. Non-exclusive opens
+    /// and further exclusive opens are rejected with EBUSY while set.
+    exclusive: AtomicBool,
 }
 
 impl LoopDevice {
@@ -45,7 +43,7 @@ impl LoopDevice {
             file: Mutex::new(None),
             ro: AtomicBool::new(false),
             ra: AtomicU32::new(512),
-            compat_unbound: AtomicBool::new(true),
+            exclusive: AtomicBool::new(false),
         }
     }
 
@@ -92,6 +90,23 @@ impl DeviceOps for LoopDevice {
             .write_at(buf, offset)
     }
 
+    fn open(&self, exclusive: bool) -> VfsResult<()> {
+        if exclusive {
+            if self.exclusive.swap(true, Ordering::Acquire) {
+                return Err(AxError::ResourceBusy);
+            }
+        } else if self.exclusive.load(Ordering::Acquire) {
+            return Err(AxError::ResourceBusy);
+        }
+        Ok(())
+    }
+
+    fn close(&self, exclusive: bool) {
+        if exclusive {
+            self.exclusive.store(false, Ordering::Release);
+        }
+    }
+
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
             LOOP_SET_FD => {
@@ -129,17 +144,28 @@ impl DeviceOps for LoopDevice {
                 (arg as *mut u32).vm_write(512)?;
             }
             BLKDISCARD => {
-                if !self.is_bound() && !self.compat_unbound.load(Ordering::Relaxed) {
-                    return Err(AxError::from(LinuxError::ENODEV));
+                if !self.is_bound() {
+                    return Err(AxError::from(LinuxError::ENXIO));
                 }
-                // No-op: underlying file or compat mode handles space management.
+                if self.ro.load(Ordering::Relaxed) {
+                    return Err(AxError::ReadOnlyFilesystem);
+                }
+                let ptr = arg as *const u64;
+                let start = ptr.vm_read()?;
+                let len = unsafe { ptr.add(1) }.vm_read()?;
+                if len == 0 {
+                    return Err(AxError::InvalidInput);
+                }
+                let dev_size = self.clone_file()?.location().len()?;
+                if start.saturating_add(len) > dev_size {
+                    return Err(AxError::InvalidInput);
+                }
+                // Real discard (punch-hole on backing file) not yet implemented.
+                return Err(AxError::OperationNotSupported);
             }
-            // TODO: the following should apply to any block devices
             BLKGETSIZE | BLKGETSIZE64 => {
                 let sectors = if let Ok(f) = self.clone_file() {
                     f.location().len()? / 512
-                } else if self.compat_unbound.load(Ordering::Relaxed) {
-                    1 // compat: minimal valid size for bootstrap tools
                 } else {
                     return Err(AxError::from(LinuxError::ENXIO));
                 };
@@ -166,10 +192,6 @@ impl DeviceOps for LoopDevice {
                 self.ra
                     .store((arg as *const u32).vm_read()? as _, Ordering::Relaxed);
             }
-            // TODO: Introduce a BlockDeviceOps trait with capability/queue abstraction
-            // providing unified query interface for discard, sector size, readonly,
-            // flush etc. This enables real discard/punch-hole support and more complete
-            // Linux block layer compatibility.
             _ => {
                 warn!("unknown ioctl for loop device: {cmd}");
                 return Err(AxError::NotATty);
