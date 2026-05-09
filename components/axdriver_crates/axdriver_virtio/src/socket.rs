@@ -290,6 +290,10 @@ fn validate_buffer_len(buf_len: usize, operation: ConnectionOperation) -> DevRes
     Ok(())
 }
 
+const fn short_circuit_empty_io(buf_len: usize) -> Option<usize> {
+    if buf_len == 0 { Some(0) } else { None }
+}
+
 fn validate_peer_addr(addr: &ax_driver_vsock::VsockAddr) -> DevResult<()> {
     if addr.cid == 0 {
         return Err(DevError::InvalidParam);
@@ -657,11 +661,17 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
     }
 
     fn send(&mut self, cid: VsockConnId, buf: &[u8]) -> DevResult<usize> {
+        if let Some(result) = short_circuit_empty_io(buf.len()) {
+            return Ok(result);
+        }
         let request = build_buffered_operation_request(cid, ConnectionOperation::Send, buf.len())?;
         self.send_on_mapped(request, buf)
     }
 
     fn recv(&mut self, cid: VsockConnId, buf: &mut [u8]) -> DevResult<usize> {
+        if let Some(result) = short_circuit_empty_io(buf.len()) {
+            return Ok(result);
+        }
         let request =
             build_buffered_operation_request(cid, ConnectionOperation::Receive, buf.len())?;
         self.recv_on_mapped(request, buf)
@@ -704,7 +714,7 @@ mod tests {
     use ax_driver_vsock::{VsockAddr as DriverVsockAddr, VsockConnId, VsockDriverEvent};
     use virtio_drivers::device::socket::{DisconnectReason, VsockAddr, VsockEvent, VsockEventType};
 
-    use super::{convert_vsock_event, map_conn_id, map_event_cid};
+    use super::{convert_vsock_event, map_conn_id, map_event_cid, short_circuit_empty_io};
 
     fn sample_conn_id() -> VsockConnId {
         VsockConnId {
@@ -790,5 +800,15 @@ mod tests {
         let event = sample_event(VsockEventType::CreditRequest);
         let mapped = convert_vsock_event(event).unwrap();
         assert!(matches!(mapped, VsockDriverEvent::Unknown));
+    }
+
+    #[test]
+    fn short_circuit_empty_io_returns_zero_for_empty_buffer() {
+        assert_eq!(short_circuit_empty_io(0), Some(0));
+    }
+
+    #[test]
+    fn short_circuit_empty_io_skips_non_empty_buffer() {
+        assert_eq!(short_circuit_empty_io(8), None);
     }
 }

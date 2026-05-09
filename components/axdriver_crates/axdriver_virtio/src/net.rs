@@ -34,6 +34,7 @@ impl QueueOccupancy {
 struct RuntimeStateSnapshot {
     rx: QueueOccupancy,
     tx_in_flight: QueueOccupancy,
+    free_rx_buffers: usize,
     free_tx_buffers: usize,
     checked_out_rx_buffers: usize,
     checked_out_tx_buffers: usize,
@@ -49,7 +50,7 @@ impl RuntimeStateSnapshot {
     }
 
     const fn all_rx_buffers_accounted_for(self) -> bool {
-        self.rx.occupied + self.checked_out_rx_buffers == self.rx.capacity
+        self.rx.occupied + self.free_rx_buffers + self.checked_out_rx_buffers == self.rx.capacity
     }
 
     const fn all_tx_buffers_accounted_for(self) -> bool {
@@ -132,6 +133,32 @@ fn validate_tx_accounting<T>(
     Ok(())
 }
 
+fn rollback_checked_out_tx_buffer<T>(
+    free_buffers: &mut Vec<T>,
+    checked_out_buffers: &mut usize,
+    tx_buf: T,
+) -> DevResult {
+    if *checked_out_buffers == 0 {
+        return Err(DevError::BadState);
+    }
+    *checked_out_buffers -= 1;
+    free_buffers.push(tx_buf);
+    Ok(())
+}
+
+fn rollback_checked_out_rx_buffer<T>(
+    free_buffers: &mut Vec<T>,
+    checked_out_buffers: &mut usize,
+    rx_buf: T,
+) -> DevResult {
+    if *checked_out_buffers == 0 {
+        return Err(DevError::BadState);
+    }
+    *checked_out_buffers -= 1;
+    free_buffers.push(rx_buf);
+    Ok(())
+}
+
 fn validate_packet_layout(header_len: usize, packet_len: usize, capacity: usize) -> DevResult {
     if header_len > capacity {
         return Err(DevError::BadState);
@@ -174,6 +201,7 @@ fn validate_runtime_snapshot(snapshot: RuntimeStateSnapshot) -> DevResult {
 pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
     rx_buffers: Vec<Option<NetBufBox>>,
     tx_buffers: Vec<Option<NetBufBox>>,
+    free_rx_bufs: Vec<NetBufBox>,
     free_tx_bufs: Vec<NetBufBox>,
     checked_out_rx_buffers: usize,
     checked_out_tx_buffers: usize,
@@ -208,6 +236,10 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
 
     fn free_tx_buffer_count(&self) -> usize {
         self.free_tx_bufs.len()
+    }
+
+    fn free_rx_buffer_count(&self) -> usize {
+        self.free_rx_bufs.len()
     }
 
     fn checked_out_rx_buffer_count(&self) -> usize {
@@ -292,6 +324,7 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         Ok(RuntimeStateSnapshot {
             rx,
             tx_in_flight,
+            free_rx_buffers: self.free_rx_buffer_count(),
             free_tx_buffers: self.free_tx_buffer_count(),
             checked_out_rx_buffers: self.checked_out_rx_buffer_count(),
             checked_out_tx_buffers: self.checked_out_tx_buffer_count(),
@@ -377,11 +410,39 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         DevError::BadState
     }
 
+    fn rollback_unsubmitted_rx_buffer(&mut self, rx_buf: NetBufBox, err: DevError) -> DevError {
+        if rollback_checked_out_rx_buffer(
+            &mut self.free_rx_bufs,
+            &mut self.checked_out_rx_buffers,
+            rx_buf,
+        )
+        .is_err()
+        {
+            self.poison();
+            return DevError::BadState;
+        }
+        err
+    }
+
     fn poison_submitted_tx_buffer(&mut self, tx_buf: NetBufBox) -> DevError {
         let _ = self.submit_checked_out_tx_buffer();
         self.poison();
         core::mem::forget(tx_buf);
         DevError::BadState
+    }
+
+    fn rollback_unsubmitted_tx_buffer(&mut self, tx_buf: NetBufBox, err: DevError) -> DevError {
+        if rollback_checked_out_tx_buffer(
+            &mut self.free_tx_bufs,
+            &mut self.checked_out_tx_buffers,
+            tx_buf,
+        )
+        .is_err()
+        {
+            self.poison();
+            return DevError::BadState;
+        }
+        err
     }
 
     fn prime_rx_buffer(&mut self, expected_token: usize) -> DevResult {
@@ -467,10 +528,30 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         }
     }
 
+    fn replenish_free_rx_buffers(&mut self) -> DevResult {
+        while let Some(mut rx_buf) = self.free_rx_bufs.pop() {
+            match self.begin_recycled_rx_buffer(&mut rx_buf) {
+                Ok(token) => {
+                    if let Err(rx_buf) = self.insert_rx_buffer_or_return(token as usize, rx_buf) {
+                        return Err(self.poison_submitted_rx_buffer(rx_buf));
+                    }
+                }
+                Err(err) => {
+                    self.free_rx_bufs.push(rx_buf);
+                    return Err(err);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn submit_recycled_rx_buffer(&mut self, rx_buf: NetBufBox) -> DevResult {
         self.validate_rx_capacity(1)?;
         let mut rx_buf = rx_buf;
-        let token = self.begin_recycled_rx_buffer(&mut rx_buf)?;
+        let token = match self.begin_recycled_rx_buffer(&mut rx_buf) {
+            Ok(token) => token,
+            Err(err) => return Err(self.rollback_unsubmitted_rx_buffer(rx_buf, err)),
+        };
         if let Err(rx_buf) = self.insert_rx_buffer_or_return(token as usize, rx_buf) {
             return Err(self.poison_submitted_rx_buffer(rx_buf));
         }
@@ -503,10 +584,9 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
     }
 
     fn submit_tx_buffer(&mut self, tx_buf: NetBufBox) -> DevResult {
-        let token = unsafe {
-            self.inner
-                .transmit_begin(tx_buf.packet_with_header())
-                .map_err(as_dev_err)?
+        let token = match unsafe { self.inner.transmit_begin(tx_buf.packet_with_header()) } {
+            Ok(token) => token,
+            Err(err) => return Err(self.rollback_unsubmitted_tx_buffer(tx_buf, as_dev_err(err))),
         };
         if let Err(tx_buf) = self.insert_tx_buffer_or_return(token, tx_buf) {
             return Err(self.poison_submitted_tx_buffer(tx_buf));
@@ -559,12 +639,14 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         let mut tx_buffers = Vec::with_capacity(QS);
         tx_buffers.resize_with(QS, || None);
         let buf_pool = NetBufPool::new(2 * QS, NET_BUF_LEN)?;
+        let free_rx_bufs = Vec::with_capacity(QS);
         let free_tx_bufs = Vec::with_capacity(QS);
 
         let mut dev = Self {
             rx_buffers,
             inner,
             tx_buffers,
+            free_rx_bufs,
             free_tx_bufs,
             checked_out_rx_buffers: 0,
             checked_out_tx_buffers: 0,
@@ -636,6 +718,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
         self.validate_before_rx_recycle()?;
         let rx_buf = unsafe { NetBuf::from_buf_ptr(rx_buf) };
         self.submit_recycled_rx_buffer(rx_buf)?;
+        let _ = self.replenish_free_rx_buffers();
         self.validate_runtime_state()
     }
 
@@ -694,6 +777,14 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
             events |= NetIrqEvent::RX_READY;
         }
 
+        if self
+            .recycle_completed_transmissions()
+            .ok()
+            .is_some_and(|count| count != 0)
+        {
+            events |= NetIrqEvent::TX_DONE;
+        }
+
         if events.is_empty() {
             NetIrqEvent::SPURIOUS
         } else {
@@ -709,7 +800,8 @@ mod tests {
     use ax_driver_base::DevError;
 
     use super::{
-        QueueOccupancy, RuntimeStateSnapshot, count_populated_slots, insert_buffer, take_buffer,
+        QueueOccupancy, RuntimeStateSnapshot, count_populated_slots, insert_buffer,
+        rollback_checked_out_rx_buffer, rollback_checked_out_tx_buffer, take_buffer,
         validate_packet_layout, validate_queue_token, validate_received_packet_layout,
         validate_slot_accounting, validate_tx_accounting,
     };
@@ -824,10 +916,53 @@ mod tests {
     }
 
     #[test]
+    fn rollback_checked_out_tx_buffer_restores_free_list_and_count() {
+        let mut free_buffers = vec![1u8];
+        let mut checked_out_buffers = 1usize;
+        rollback_checked_out_tx_buffer(&mut free_buffers, &mut checked_out_buffers, 2u8).unwrap();
+        assert_eq!(checked_out_buffers, 0);
+        assert_eq!(free_buffers, vec![1u8, 2u8]);
+    }
+
+    #[test]
+    fn rollback_checked_out_tx_buffer_rejects_missing_checked_out_state() {
+        let mut free_buffers = vec![1u8];
+        let mut checked_out_buffers = 0usize;
+        assert!(matches!(
+            rollback_checked_out_tx_buffer(&mut free_buffers, &mut checked_out_buffers, 2u8),
+            Err(DevError::BadState)
+        ));
+        assert_eq!(checked_out_buffers, 0);
+        assert_eq!(free_buffers, vec![1u8]);
+    }
+
+    #[test]
+    fn rollback_checked_out_rx_buffer_restores_free_list_and_count() {
+        let mut free_buffers = vec![1u8];
+        let mut checked_out_buffers = 1usize;
+        rollback_checked_out_rx_buffer(&mut free_buffers, &mut checked_out_buffers, 2u8).unwrap();
+        assert_eq!(checked_out_buffers, 0);
+        assert_eq!(free_buffers, vec![1u8, 2u8]);
+    }
+
+    #[test]
+    fn rollback_checked_out_rx_buffer_rejects_missing_checked_out_state() {
+        let mut free_buffers = vec![1u8];
+        let mut checked_out_buffers = 0usize;
+        assert!(matches!(
+            rollback_checked_out_rx_buffer(&mut free_buffers, &mut checked_out_buffers, 2u8),
+            Err(DevError::BadState)
+        ));
+        assert_eq!(checked_out_buffers, 0);
+        assert_eq!(free_buffers, vec![1u8]);
+    }
+
+    #[test]
     fn runtime_snapshot_accepts_tx_provisioning_before_free_list_is_filled() {
         let snapshot = RuntimeStateSnapshot {
             rx: QueueOccupancy::new(4, 4),
             tx_in_flight: QueueOccupancy::new(0, 4),
+            free_rx_buffers: 0,
             free_tx_buffers: 0,
             checked_out_rx_buffers: 0,
             checked_out_tx_buffers: 0,
