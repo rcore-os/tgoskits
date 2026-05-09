@@ -114,6 +114,13 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
 pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()> {
     let proc_data = get_process_data(pid)?;
 
+    // A zombie process has already been terminated and is waiting to be
+    // reaped by its parent. It is not a live process for signaling purposes.
+    // kill(pid, 0) on a zombie must return ESRCH, matching Linux semantics.
+    if proc_data.proc.is_zombie() {
+        return Err(AxError::NoSuchProcess);
+    }
+
     if let Some(sig) = sig {
         let signo = sig.signo();
         info!("Send signal {signo:?} to process {pid}");
