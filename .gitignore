@@ -57,3 +57,8 @@ __pycache__/
 .image.toml
 os/StarryOS-REF
 .Ds_Store
+
+# Claude plugin cache files
+.claude/cache/*.json
+.claude/cache/*.hash
+.claude/cache/*.flag
