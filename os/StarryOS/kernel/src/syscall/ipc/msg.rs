@@ -543,7 +543,21 @@ pub fn sys_msgrcv(
 ) -> AxResult<isize> {
     // Parse flags and get current process information
 
-    let flags = MsgRcvFlags::from_bits_truncate(msgflg);
+    let mut flags = MsgRcvFlags::from_bits_truncate(msgflg);
+    const IPC_NOWAIT_RAW: i32 = 0o4000;
+    const MSG_NOERROR_RAW: i32 = 0o10000;
+    const MSG_EXCEPT_RAW: i32 = 0o20000;
+    const MSG_EXCEPT_ALT_RAW: i32 = 0o2000;
+    const MSG_COPY_RAW: i32 = 0o40000;
+    let msg_copy = (msgflg & MSG_COPY_RAW) != 0;
+    let msg_except = (msgflg & (MSG_EXCEPT_RAW | MSG_EXCEPT_ALT_RAW)) != 0;
+    let ipc_nowait = (msgflg & IPC_NOWAIT_RAW) != 0;
+    let msg_noerror = (msgflg & MSG_NOERROR_RAW) != 0;
+    if msg_except {
+        flags |= MsgRcvFlags::MSG_EXCEPT;
+    } else {
+        flags.remove(MsgRcvFlags::MSG_EXCEPT);
+    }
     let current = current();
     let thread = current.as_thread();
     let proc_data = &thread.proc_data;
@@ -553,13 +567,19 @@ pub fn sys_msgrcv(
     let current_pid = proc_data.proc.pid();
 
     // Check validity of flag combinations
-    if flags.contains(MsgRcvFlags::MSG_COPY) {
-        if !flags.contains(MsgRcvFlags::IPC_NOWAIT) {
+    if msg_copy {
+        if !ipc_nowait {
             return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - MSG_COPY must be used with IPC_NOWAIT
         }
-        if flags.contains(MsgRcvFlags::MSG_EXCEPT) {
+        if msg_except {
             return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - MSG_COPY and MSG_EXCEPT are mutually exclusive
         }
+    }
+    if msgtyp == i64::MIN {
+        return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - invalid msgtyp (abs overflow)
+    }
+    if msg_except && msgtyp <= 0 {
+        return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - MSG_EXCEPT requires msgtyp > 0
     }
 
     // Get the message queue
@@ -587,9 +607,12 @@ pub fn sys_msgrcv(
     }
 
     // Message matching logic (distinguish between MSG_COPY and normal mode)
-    let (mtype, data_slice, index, should_remove) = if flags.contains(MsgRcvFlags::MSG_COPY) {
+    let (mtype, data_slice, index, should_remove) = if msg_copy {
         // MSG_COPY mode: msgtyp is the message index
-        let index = msgtyp as usize;
+        if msgtyp < 0 {
+            return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - MSG_COPY requires non-negative index
+        }
+        let index = usize::try_from(msgtyp).map_err(|_| AxError::from(LinuxError::EINVAL))?; // EINVAL - index out of range
 
         // Check if the index is valid
         if index >= msg_queue.get_total_message_count() {
@@ -615,7 +638,7 @@ pub fn sys_msgrcv(
                 break (mtype, data_slice, index, true);
             }
 
-            if flags.contains(MsgRcvFlags::IPC_NOWAIT) {
+            if ipc_nowait {
                 return Err(AxError::from(LinuxError::ENOMSG)); // ENOMSG
             }
 
@@ -632,7 +655,7 @@ pub fn sys_msgrcv(
 
     // Message size check
     if data_slice.len() > msgsz {
-        if flags.contains(MsgRcvFlags::MSG_NOERROR) {
+        if msg_noerror {
             // MSG_NOERROR: Truncate the message and continue
         } else {
             // Without MSG_NOERROR: return an error

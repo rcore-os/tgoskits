@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 #ifndef MSG_COPY
-#define MSG_COPY 020000
+#define MSG_COPY 040000
 #endif
 #ifndef MSG_EXCEPT
 #define MSG_EXCEPT 02000
