@@ -5,7 +5,20 @@ import os
 import subprocess
 import sys
 
-tool_input = os.environ.get("CLAUDE_TOOL_INPUT", "")
+def get_tool_input():
+    """Read tool input from env var, fall back to stdin JSON."""
+    env_val = os.environ.get("CLAUDE_TOOL_INPUT", "")
+    if env_val:
+        return env_val
+    # Fallback: read JSON from stdin (alternative hook protocol)
+    try:
+        import json as _json
+        data = _json.load(sys.stdin)
+        return data.get("input", data.get("command", ""))
+    except Exception:
+        return ""
+
+tool_input = get_tool_input()
 
 # Only gate gh pr create and git push commands
 if "gh pr create" not in tool_input and "git push" not in tool_input:

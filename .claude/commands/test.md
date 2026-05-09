@@ -49,21 +49,9 @@ Run `bash .claude/scripts/local-ci.sh quick` first if images are not yet built (
 
 Run the mapped command. Capture stdout and stderr.
 
-### Step 4: Save results
+### Step 4: Check results
 
-Save results to `.claude/cache/last-ci-result.json`:
-
-```json
-{
-  "timestamp": "<ISO timestamp>",
-  "status": "pass|fail",
-  "command": "<what was run>",
-  "results": [
-    {"command": "cargo fmt --all -- --check", "pass": true, "output": "..."},
-    {"command": "cargo xtask clippy", "pass": false, "output": "error: ..."}
-  ]
-}
-```
+`local-ci.sh` automatically writes `.claude/cache/last-ci-result.json` with the outcome.
 
 ### Step 5: Report
 

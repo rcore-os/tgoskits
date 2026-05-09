@@ -62,11 +62,14 @@ def append_log(files, summary):
 
 ---
 """
-    # Deduplicate: don't write if last entry has the same content
+    # Deduplicate: skip only if identical to the immediately preceding entry
     if os.path.exists(LOG_PATH):
         with open(LOG_PATH) as f:
-            existing = f.read()
-        if entry.strip() in existing:
+            content = f.read()
+        # Get last entry block (everything after the last "---" separator)
+        last_sep = content.rfind("\n---\n")
+        last_entry = content[last_sep + 1:].strip() if last_sep >= 0 else content.strip()
+        if entry.strip() == last_entry:
             return
 
     with open(LOG_PATH, "a") as f:

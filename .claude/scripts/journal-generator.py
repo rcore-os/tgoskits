@@ -109,3 +109,8 @@ if __name__ == "__main__":
     with open(output_path, "w") as f:
         f.write(journal)
     print(f"Journal written to {output_path}")
+
+    # Clear consumed entries from log.md
+    if os.path.exists(LOG_PATH):
+        os.remove(LOG_PATH)
+        print(f"Cleared {LOG_PATH} (entries archived to journal)")

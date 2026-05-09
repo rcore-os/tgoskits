@@ -105,19 +105,8 @@ ensure_image() {
     echo "[$name] No local image, building from $dockerfile..."
     if docker build -t "$name" -f "$WORKSPACE/$dockerfile" "$WORKSPACE"; then
         echo "$hash" > "$hash_file"
-        if remote_exists "$remote"; then
-            local remote_hash
-            remote_hash=$(docker manifest inspect "$remote" 2>/dev/null | grep -o '"digest":"[^"]*"' | head -1 | cut -d'"' -f4)
-            if [ -n "$remote_hash" ] && [ "$hash" != "$remote_hash" ]; then
-                echo "[$name] Remote differs from local, pushing..."
-                push_image "$name" "$remote"
-            else
-                echo "[$name] Remote matches local, no push needed"
-            fi
-        else
-            echo "[$name] No remote image found, pushing..."
-            push_image "$name" "$remote"
-        fi
+        echo "[$name] Build succeeded, pushing to remote..."
+        push_image "$name" "$remote"
     else
         warn "Build failed, falling back to remote..."
         if remote_exists "$remote"; then
@@ -138,39 +127,75 @@ run_in_container() {
     docker run --rm -v "$WORKSPACE:/workspace" -w /workspace "$image" bash -c "$cmd"
 }
 
+save_ci_result() {
+    local status="$1" total="$2" passed="$3" failed="$4"
+    local timestamp
+    timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    cat > "$CACHE_DIR/last-ci-result.json" << EOF
+{
+  "timestamp": "${timestamp}",
+  "status": "${status}",
+  "total": ${total:-0},
+  "passed": ${passed:-0},
+  "failed": ${failed:-0}
+}
+EOF
+}
+
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
 cmd_quick() {
     ensure_image "base"
-    local commands line
+    local total=0 passed=0 failed=0 line
     while IFS= read -r line; do
         line=$(echo "$line" | sed 's/^[[:space:]]*"//;s/",\?$//')
         [ -z "$line" ] && continue
-        run_in_container "tgoskits-ci" "$line" || { echo "FAIL: $line"; return 1; }
+        total=$((total + 1))
+        if run_in_container "tgoskits-ci" "$line"; then
+            passed=$((passed + 1))
+        else
+            failed=$((failed + 1))
+            echo "FAIL: $line"
+        fi
     done < <(sed -n '/\[quick\]/,/^\[/p' "$CONFIG_FILE" | grep '^\s*"')
-    echo "ALL QUICK CHECKS PASSED"
+    if [ "$failed" -eq 0 ]; then
+        echo "ALL QUICK CHECKS PASSED"
+        save_ci_result "pass" "$total" "$passed" "$failed"
+    else
+        echo "SOME QUICK CHECKS FAILED"
+        save_ci_result "fail" "$total" "$passed" "$failed"
+        return 1
+    fi
 }
 
 cmd_full() {
     ensure_image "base"
     ensure_image "axvisor_lvz"
 
-    local failed=0 line
+    local total=0 passed=0 failed=0 line
     while IFS= read -r line; do
         line=$(echo "$line" | sed 's/^[[:space:]]*"//;s/",\?$//')
         [ -z "$line" ] && continue
+        total=$((total + 1))
         local img="tgoskits-ci"
         if echo "$line" | grep -q "axvisor.*loongarch64"; then
             img="tgoskits-ci-lvz"
         fi
-        run_in_container "$img" "$line" || { echo "FAIL: $line"; failed=1; }
+        if run_in_container "$img" "$line"; then
+            passed=$((passed + 1))
+        else
+            failed=$((failed + 1))
+            echo "FAIL: $line"
+        fi
     done < <(sed -n '/\[full\]/,/^\[/p' "$CONFIG_FILE" | grep '^\s*"')
 
     if [ "$failed" -eq 0 ]; then
         echo "ALL FULL CI CHECKS PASSED"
+        save_ci_result "pass" "$total" "$passed" "$failed"
     else
         echo "SOME CHECKS FAILED"
+        save_ci_result "fail" "$total" "$passed" "$failed"
         return 1
     fi
 }
@@ -187,7 +212,12 @@ cmd_test() {
         ensure_image "axvisor_lvz"
         img="tgoskits-ci-lvz"
     fi
-    run_in_container "$img" "$cmd"
+    if run_in_container "$img" "$cmd"; then
+        save_ci_result "pass" 1 1 0
+    else
+        save_ci_result "fail" 1 0 1
+        return 1
+    fi
 }
 
 cmd_rebuild() {
