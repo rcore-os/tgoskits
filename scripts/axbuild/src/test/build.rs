@@ -61,6 +61,11 @@ pub(crate) fn case_prebuild_script_path(case: &TestQemuCase) -> PathBuf {
     case_c_source_dir(case).join(CASE_PREBUILD_SCRIPT_NAME)
 }
 
+/// Returns the optional prebuild script path for a Rust-based QEMU case.
+pub(crate) fn case_rust_prebuild_script_path(case: &TestQemuCase) -> PathBuf {
+    case_rust_source_dir(case).join(CASE_PREBUILD_SCRIPT_NAME)
+}
+
 /// Prepares rootfs-backed assets for a C-based QEMU test case.
 pub(crate) fn prepare_c_case_assets_sync(
     arch: &str,
@@ -1168,6 +1173,7 @@ pub(crate) fn prepare_rust_case_assets_sync(
     case: &TestQemuCase,
     case_rootfs: &Path,
     layout: &case_assets::CaseAssetLayout,
+    config: &CaseAssetConfig,
 ) -> anyhow::Result<()> {
     let rust_dir = case_rust_source_dir(case);
     ensure!(
@@ -1186,7 +1192,10 @@ pub(crate) fn prepare_rust_case_assets_sync(
 
     case_assets::reset_dir(&layout.overlay_dir)?;
     case_assets::reset_dir(&layout.staging_root)?;
+    case_assets::reset_dir(&layout.command_wrapper_dir)?;
     case_assets::reset_dir(&layout.cross_bin_dir)?;
+    fs::create_dir_all(&layout.apk_cache_dir)
+        .with_context(|| format!("failed to create {}", layout.apk_cache_dir.display()))?;
 
     // Ensure the musl target is installed in the active toolchain.
     let mut add_target = Command::new("rustup");
@@ -1198,6 +1207,8 @@ pub(crate) fn prepare_rust_case_assets_sync(
     // Extract the rootfs so we can use the Alpine cross-linker for architectures
     // whose ELF format the host linker cannot handle (e.g. loongarch64).
     crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
+    (config.prepare_staging_root)(&layout.staging_root)?;
+    write_musl_loader_search_path(arch, &layout.staging_root)?;
 
     // Build a qemu-user wrapper for the cross-linker from the Alpine sysroot.
     let spec = cross_compile_spec(arch)?;
@@ -1207,31 +1218,15 @@ pub(crate) fn prepare_rust_case_assets_sync(
     // Run prebuild.sh if present — runs inside the Alpine staging root via
     // qemu-user, same as C cases.  Use this to install native deps (e.g.
     // `apk add dbus-dev`) that the cargo build needs via pkg-config.
-    let prebuild_script = rust_dir.join(CASE_PREBUILD_SCRIPT_NAME);
+    let prebuild_script = case_rust_prebuild_script_path(case);
     if prebuild_script.is_file() {
-        case_assets::reset_dir(&layout.command_wrapper_dir)?;
-        write_guest_command_wrappers(layout, &qemu_runner)?;
-
-        let guest_busybox = layout.staging_root.join("bin/busybox");
-        let guest_shell = layout.staging_root.join("bin/sh");
-        let mut prebuild_cmd = Command::new(&qemu_runner);
-        prebuild_cmd.arg("-L").arg(&layout.staging_root);
-        if guest_busybox.is_file() {
-            prebuild_cmd.arg(&guest_busybox).arg("sh");
-        } else {
-            ensure!(
-                guest_shell.is_file(),
-                "staging root is missing guest shell `{}`",
-                guest_shell.display()
-            );
-            prebuild_cmd.arg(&guest_shell);
-        }
-        prebuild_cmd
-            .arg("-eu")
-            .arg(&prebuild_script)
-            .current_dir(&rust_dir);
-        apply_case_script_envs(&mut prebuild_cmd, layout, &[])?;
-        prebuild_cmd
+        let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
+        let prebuild_env =
+            prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
+        let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
+        // Override current_dir to rust/ — build_prebuild_command defaults to c/.
+        command.current_dir(&rust_dir);
+        command
             .exec()
             .with_context(|| format!("failed to run rust case prebuild.sh for `{}`", case.name))?;
     }

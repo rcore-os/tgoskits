@@ -373,7 +373,7 @@ pub(crate) fn prepare_case_assets_sync(
                     case_builder::prepare_python_case_assets_sync(arch, case, copy, layout, config)?
                 }
                 CasePipeline::Rust => {
-                    case_builder::prepare_rust_case_assets_sync(arch, case, copy, layout)?
+                    case_builder::prepare_rust_case_assets_sync(arch, case, copy, layout, config)?
                 }
                 CasePipeline::Plain => unreachable!("plain cases do not prepare injection assets"),
             }
