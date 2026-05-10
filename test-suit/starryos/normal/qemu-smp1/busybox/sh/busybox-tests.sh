@@ -519,6 +519,12 @@ if echo "$_t" | grep -qF "renice_ok"; then echo "PASS: busybox_renice"; PASS=$((
 _t=$({ timeout 10 sh -c "busybox reset 2>/dev/null; busybox echo reset_done 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "reset_done"; then echo "PASS: busybox_reset"; PASS=$((PASS+1)); else echo "FAIL: busybox_reset"; FAIL=$((FAIL+1)); fi
 
+# busybox_resize — probes terminal size via escape sequences (requires xterm);
+# falls back to TIOCGWINSZ on some builds. On serial console it exits non-zero
+# but must not crash the kernel.
+_t=$({ timeout 10 sh -c "busybox resize 2>&1; echo resize_exit:\$? >&2"; } 2>&1)
+if echo "$_t" | grep -qF "resize_exit:"; then echo "PASS: busybox_resize"; PASS=$((PASS+1)); else echo "FAIL: busybox_resize"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox echo abcd | busybox rev 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "dcba"; then echo "PASS: busybox_rev"; PASS=$((PASS+1)); else echo "FAIL: busybox_rev"; FAIL=$((FAIL+1)); fi
 
@@ -530,6 +536,9 @@ if echo "$_t" | grep -qF "rm_ok"; then echo "PASS: busybox_rm"; PASS=$((PASS+1))
 
 _t=$({ timeout 10 sh -c "busybox rmmod -h 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Usage: rmmod"; then echo "PASS: busybox_rmmod"; PASS=$((PASS+1)); else echo "FAIL: busybox_rmmod"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "d=/tmp/runparts_test && mkdir -p \$d && printf '#!/bin/sh\necho rp_ok\n' > \$d/01.sh && chmod +x \$d/01.sh && busybox run-parts \$d 2>&1; rm -rf \$d; echo runparts_exit:\$? >&2"; } 2>&1)
+if echo "$_t" | grep -qF "rp_ok"; then echo "PASS: busybox_run_parts"; PASS=$((PASS+1)); else echo "FAIL: busybox_run_parts"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox route -n 2>&1; busybox echo route_ok"; } 2>&1)
 if echo "$_t" | grep -qF "route_ok"; then echo "PASS: busybox_route"; PASS=$((PASS+1)); else echo "FAIL: busybox_route"; FAIL=$((FAIL+1)); fi
@@ -551,6 +560,10 @@ if echo "$_t" | grep -qF "Usage: setfont"; then echo "PASS: busybox_setfont"; PA
 
 _t=$({ timeout 10 sh -c "busybox setkeycodes -h 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Usage: setkeycodes"; then echo "PASS: busybox_setkeycodes"; PASS=$((PASS+1)); else echo "FAIL: busybox_setkeycodes"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox setlogcons 2>&1; echo setlogcons_exit:\$? >&2"; } 2>&1)
+# setlogcons requires a console number; too few args shows usage and exits non-zero
+if echo "$_t" | grep -qF "setlogcons_exit:1"; then echo "PASS: busybox_setlogcons"; PASS=$((PASS+1)); else echo "FAIL: busybox_setlogcons"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox setpriv -h 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Usage: setpriv"; then echo "PASS: busybox_setpriv"; PASS=$((PASS+1)); else echo "FAIL: busybox_setpriv"; FAIL=$((FAIL+1)); fi
