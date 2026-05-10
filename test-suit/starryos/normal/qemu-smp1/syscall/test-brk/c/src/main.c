@@ -18,6 +18,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>  /* for direct syscall() */
 
 /* ---------- helper macros ---------- */
 
@@ -270,6 +271,58 @@ static void test_sbrk_huge_negative_invariant(void)
     }
 }
 
+/* ---------- raw syscall tests ---------- */
+
+/*
+ * Test raw brk syscall semantics directly.
+ * Linux sys_brk() returns:
+ *   - new break address on success
+ *   - current break address on failure (NOT -1 or errno)
+ * This is different from libc brk() which returns 0/-1 + errno.
+ */
+static void test_raw_brk_success(void)
+{
+    /* Query current break via raw syscall */
+    unsigned long current = syscall(SYS_brk, 0);
+    assert(current > 0);
+
+    /* Try to expand by one page */
+    unsigned long new_addr = current + 4096;
+    unsigned long ret = syscall(SYS_brk, new_addr);
+
+    /* On success: raw syscall returns new_addr */
+    if (ret == new_addr) {
+        /* Verify break changed */
+        unsigned long after = syscall(SYS_brk, 0);
+        assert(after == new_addr);
+
+        /* Restore */
+        ret = syscall(SYS_brk, current);
+        assert(ret == current);
+    }
+    /* If failed: ret == current, skip expansion test */
+}
+
+static void test_raw_brk_failure(void)
+{
+    unsigned long current = syscall(SYS_brk, 0);
+    assert(current > 0);
+
+    /* Try absurd address - should fail */
+    unsigned long absurd = 1UL << 50;
+    errno = 0;
+    unsigned long ret = syscall(SYS_brk, absurd);
+
+    /* Raw syscall failure: returns current break, NOT -1 */
+    assert(ret == current);
+    /* errno is NOT set by raw syscall */
+    assert(errno == 0);
+
+    /* Verify break unchanged */
+    unsigned long after = syscall(SYS_brk, 0);
+    assert(after == current);
+}
+
 /* ---------- main ---------- */
 
 int main(void)
@@ -291,6 +344,10 @@ int main(void)
         { "sbrk ENOMEM (huge increment)",     test_sbrk_enomem_huge_increment },
         { "brk ENOMEM (RLIMIT_DATA)",         test_brk_enomem_rlimit          },
         { "sbrk huge negative invariant",     test_sbrk_huge_negative_invariant },
+
+        /* Raw syscall semantics */
+        { "raw brk success returns new addr", test_raw_brk_success            },
+        { "raw brk failure returns current",  test_raw_brk_failure           },
     };
 
     int passed = 0;
