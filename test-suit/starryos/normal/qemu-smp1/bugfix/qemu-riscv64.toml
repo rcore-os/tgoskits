@@ -26,6 +26,7 @@ test_commands = [
     "/usr/bin/bug-mknodat-mode-type",
     "/usr/bin/bug-mmap-fd-zero-anon",
     "/usr/bin/bug-netlink-getlink",
+    "/usr/bin/bug-netlink-getaddr",
     "/usr/bin/bug-open-dir-wronly",
     "/usr/bin/bug-pipe-fd-errno",
     "/usr/bin/bug-preadv2-invalid-flags",
