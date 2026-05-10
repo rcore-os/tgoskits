@@ -157,6 +157,7 @@ fn lockable(fd: c_int) -> AxResult<(InodeKey, Arc<dyn FileLike>)> {
 ///   * `l_len == 0` — `[l_start, i64::MAX)` (to end of file).
 ///   * `l_len < 0` — `[l_start + l_len, l_start)` (reverse range; the
 ///     resolved start must be non-negative).
+///
 /// Any overflow or a resolved start < 0 returns `EINVAL`.
 fn flock_range(l_start: i64, l_len: i64) -> AxResult<(i64, i64)> {
     if l_len == 0 {
