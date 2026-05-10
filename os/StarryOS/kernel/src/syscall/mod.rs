@@ -488,9 +488,9 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg0() as _, // args_ptr
             uctx.arg1() as _, // args_size
         ),
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(target_arch = "x86_64")]
         Sysno::fork => sys_fork(uctx),
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(target_arch = "x86_64")]
         Sysno::vfork => sys_vfork(uctx),
         Sysno::exit => sys_exit(uctx.arg0() as _),
         Sysno::exit_group => sys_exit_group(uctx.arg0() as _),
