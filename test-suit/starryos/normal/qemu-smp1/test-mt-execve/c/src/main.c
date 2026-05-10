@@ -4,9 +4,12 @@
  * Phase 1: a failed execve from a multi-threaded process must leave the
  *          thread group intact (POSIX says execve failures preserve the
  *          process state).
- * Phase 2: execve from a non-leader thread is currently rejected with
- *          EPERM (full Linux de_thread leader transfer is TODO); the
- *          process must remain intact and joinable after that rejection.
+ * Phase 2: a successful execve from a non-leader thread of a multi-threaded
+ *          process must zap every other thread (including the original
+ *          leader) and transfer the leader's TID/TGID identity to the
+ *          calling thread, so the new image observes gettid() == getpid().
+ *          We run this in a forked child so its successful exec doesn't
+ *          consume the test driver before Phase 3 runs.
  * Phase 3: a successful execve from the leader of a multi-threaded
  *          process must tear down the sibling threads and run the new
  *          image; the new image must observe gettid() == getpid().
@@ -17,6 +20,7 @@
 #include <pthread.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -60,22 +64,19 @@ static void *sibling_block(void *arg)
     return NULL;
 }
 
-struct nonleader_exec_result {
-    int ret;
-    int saved_errno;
-};
-
+/* Non-leader thread that re-execs the test binary with a sentinel arg
+ * exercising the de_thread leader-transfer path. The new image must
+ * observe gettid() == getpid() — that's the crux of the assertion. */
 static void *nonleader_exec_thread(void *arg)
 {
-    struct nonleader_exec_result *r = arg;
-    /* Bad path keeps this safe even if the EPERM check ever regresses:
-     * we'd then fall through to path resolution and get ENOENT instead
-     * of actually replacing the process image. */
-    char *av[] = { (char *)"/this/path/does/not/exist/mt-execve", NULL };
+    char *self = (char *)arg;
+    char *av[] = { self, (char *)"nonleader-child", NULL };
     char *ev[] = { NULL };
-    errno = 0;
-    r->ret = execve("/this/path/does/not/exist/mt-execve", av, ev);
-    r->saved_errno = errno;
+    /* On success this never returns: the new image starts from main()
+     * with our argv. If we ever fall through here, the exec failed and
+     * the parent's pthread_join will see this thread return normally,
+     * which the parent treats as failure. */
+    execve(self, av, ev);
     return NULL;
 }
 
@@ -86,27 +87,38 @@ static void wait_for_siblings(int n)
     pthread_mutex_unlock(&mtx);
 }
 
+/* Re-entry path used by both Phase 2 (non-leader exec) and Phase 3
+ * (leader exec). The single invariant we check is the one Linux's
+ * de_thread guarantees: the post-exec image is single-threaded and the
+ * calling thread holds the original leader's identity, i.e.
+ * gettid() == getpid(). */
+static int run_post_exec_child(const char *marker)
+{
+    pid_t tid = my_gettid();
+    pid_t pid = getpid();
+    if (tid != pid) {
+        fprintf(stderr,
+                "FAIL: post-exec gettid(%d) != getpid(%d) (%s)\n",
+                (int)tid, (int)pid, marker);
+        return 1;
+    }
+    printf("%s\n", marker);
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     /* Unbuffered so phase markers reach the test runner before execve. */
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    /* Re-entry after a successful execve from the multi-threaded parent. */
-    if (argc >= 2 && strcmp(argv[1], "child-after-exec") == 0) {
-        /* The new image must be single-threaded with the original TGID
-         * as its identity. If sibling teardown leaked or the leader
-         * identity drifted, this would fail. */
-        pid_t tid = my_gettid();
-        pid_t pid = getpid();
-        if (tid != pid) {
-            fprintf(stderr,
-                    "FAIL: post-exec gettid(%d) != getpid(%d)\n",
-                    (int)tid, (int)pid);
-            return 1;
-        }
-        printf("EXECVE_CHILD_OK\n");
-        return 0;
+    /* Re-entry from Phase 2 (non-leader exec) inside the fork child. */
+    if (argc >= 2 && strcmp(argv[1], "nonleader-child") == 0) {
+        return run_post_exec_child("NONLEADER_CHILD_OK");
+    }
+    /* Re-entry from Phase 3 (leader exec). */
+    if (argc >= 2 && strcmp(argv[1], "leader-child") == 0) {
+        return run_post_exec_child("LEADER_CHILD_OK");
     }
 
     TEST_START("multi-thread execve");
@@ -138,24 +150,59 @@ int main(int argc, char *argv[])
         TEST_DONE();
     }
 
-    /* Phase-1 marker. The success regex ANDs this with the post-exec marker
+    /* Phase-1 marker. The success regex ANDs this with the post-exec markers
      * so the test only passes if all phases work. */
     printf("PHASE1_OK\n");
 
-    /* Phase 2: non-leader execve is rejected with EPERM and does not
-     * disturb the process. Until we implement de_thread leader transfer,
-     * the kernel returns EPERM for any execve where caller_tid != tgid. */
-    struct nonleader_exec_result nl = { 0, 0 };
-    pthread_t nlt;
-    CHECK(pthread_create(&nlt, NULL, nonleader_exec_thread, &nl) == 0,
-          "spawn non-leader exec attempt");
-    CHECK(pthread_join(nlt, NULL) == 0, "non-leader exec thread joinable");
-    CHECK(nl.ret == -1, "non-leader execve returns -1");
-    CHECK(nl.saved_errno == EPERM,
-          "non-leader execve sets errno to EPERM");
-    /* Process must still be the same one (TGID unchanged, leader alive). */
-    CHECK(my_gettid() == getpid(),
-          "leader identity intact after non-leader exec attempt");
+    /* Phase 2: non-leader thread successfully execs and inherits the
+     * leader identity. We do this in a forked child so the success path
+     * doesn't replace our test driver image and skip Phase 3.
+     *
+     * In the child:
+     *   - spawn a couple of blocking siblings (so the leader is not the
+     *     only co-thread; this exercises sibling teardown for both the
+     *     blocking siblings and the original leader),
+     *   - spawn a non-leader exec thread that calls execve to
+     *     "nonleader-child",
+     *   - the leader (main) sleeps; it'll be zapped by execve.
+     *
+     * The child's new image (from execve) prints NONLEADER_CHILD_OK and
+     * exits 0. We assert child exit status to gate Phase 2 success. */
+    pid_t cpid = fork();
+    CHECK(cpid != -1, "fork for non-leader exec test");
+    if (cpid == 0) {
+        sibling_ready = 0;
+        pthread_t bt1, bt2, nlt;
+        if (pthread_create(&bt1, NULL, sibling_block, NULL) != 0
+            || pthread_create(&bt2, NULL, sibling_block, NULL) != 0) {
+            fprintf(stderr, "FAIL: spawn blocking sibling in fork child\n");
+            _exit(2);
+        }
+        wait_for_siblings(2);
+
+        if (pthread_create(&nlt, NULL, nonleader_exec_thread, argv[0]) != 0) {
+            fprintf(stderr, "FAIL: spawn non-leader exec thread\n");
+            _exit(2);
+        }
+        /* Wait to be zapped by the non-leader's successful exec. If exec
+         * fails the non-leader thread returns normally; pthread_join
+         * here would let us notice that. We give it 5 seconds before
+         * giving up so a regression doesn't hang the test forever. */
+        for (int i = 0; i < 5000; i++) {
+            struct timespec ts = { 0, 1000000 };
+            nanosleep(&ts, NULL);
+        }
+        fprintf(stderr, "FAIL: leader survived non-leader exec\n");
+        _exit(3);
+    }
+
+    int wstatus = 0;
+    pid_t waited = waitpid(cpid, &wstatus, 0);
+    CHECK(waited == cpid, "waitpid returned the non-leader-exec child");
+    CHECK(WIFEXITED(wstatus),
+          "non-leader-exec child exited normally (not via signal)");
+    CHECK(WEXITSTATUS(wstatus) == 0,
+          "non-leader-exec child exited with status 0");
 
     if (__fail > 0) {
         TEST_DONE();
@@ -164,8 +211,8 @@ int main(int argc, char *argv[])
     printf("PHASE2_OK\n");
 
     /* Phase 3: successful execve from the leader of a multi-threaded
-     * process. Siblings block in pause() and are zapped during de_thread;
-     * control then jumps into the new image. */
+     * process. Siblings block in pause() and are zapped during sibling
+     * teardown; control then jumps into the new image. */
     sibling_ready = 0;
     pthread_t lt1, lt2, lt3;
     CHECK(pthread_create(&lt1, NULL, sibling_block, NULL) == 0,
@@ -180,12 +227,12 @@ int main(int argc, char *argv[])
         TEST_DONE();
     }
 
-    char *good_argv[] = { argv[0], (char *)"child-after-exec", NULL };
+    char *good_argv[] = { argv[0], (char *)"leader-child", NULL };
     char *good_envp[] = { NULL };
     execve(argv[0], good_argv, good_envp);
 
     /* Should not be reached on success. */
-    fprintf(stderr, "FAIL: good execve returned, errno=%d (%s)\n",
+    fprintf(stderr, "FAIL: leader execve returned, errno=%d (%s)\n",
             errno, strerror(errno));
     return 1;
 }
