@@ -863,6 +863,10 @@ if [ "$_rc" -ne 0 ] && echo "$_t" | grep -qiE "No such device|ENXIO"; then echo 
 _t=$({ timeout 10 sh -c "busybox blockdev --getss /dev/loop0 2>&1"; } 2>&1)
 _rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: blockdev"; PASS=$((PASS+1)); else echo "FAIL: blockdev"; echo "$_t (rc=$_rc)"; FAIL=$((FAIL+1)); fi
 
+# hwclock — read hardware clock
+_t=$({ timeout 10 sh -c "busybox hwclock -r 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "hwclock"; then echo "PASS: busybox_hwclock"; PASS=$((PASS+1)); else echo "FAIL: busybox_hwclock"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
 _m1="Test"; _m2="run"; _m3="completed"; echo "$_m1 $_m2 $_m3"
