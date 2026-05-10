@@ -24,7 +24,10 @@ const NLM_F_MULTI: u16 = 2;
 
 const RTM_GETLINK: u16 = 18;
 const RTM_NEWLINK: u16 = 16;
+const RTM_GETADDR: u16 = 22;
+const RTM_NEWADDR: u16 = 20;
 
+const AF_INET: u8 = 2;
 const ARPHRD_ETHER: u16 = 1;
 const ARPHRD_LOOPBACK: u16 = 772;
 
@@ -43,8 +46,16 @@ const IFLA_QDISC: u16 = 6;
 const IFLA_TXQLEN: u16 = 13;
 const IFLA_OPERSTATE: u16 = 16;
 
+const IFA_ADDRESS: u16 = 1;
+const IFA_LOCAL: u16 = 2;
+const IFA_LABEL: u16 = 3;
+const IFA_BROADCAST: u16 = 4;
+
 const IF_OPER_UNKNOWN: u8 = 0;
 const IF_OPER_UP: u8 = 6;
+
+const RT_SCOPE_UNIVERSE: u8 = 0;
+const RT_SCOPE_HOST: u8 = 254;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -74,6 +85,16 @@ struct IfInfoMsg {
     change: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IfAddrMsg {
+    family: u8,
+    prefix_len: u8,
+    flags: u8,
+    scope: u8,
+    index: u32,
+}
+
 struct LinkInfo {
     index: i32,
     name: &'static str,
@@ -85,6 +106,15 @@ struct LinkInfo {
     operstate: u8,
     address: [u8; 6],
     broadcast: [u8; 6],
+}
+
+struct AddrInfo {
+    index: u32,
+    label: &'static str,
+    prefix_len: u8,
+    scope: u8,
+    local: [u8; 4],
+    broadcast: Option<[u8; 4]>,
 }
 
 const LINKS: &[LinkInfo] = &[
@@ -111,6 +141,25 @@ const LINKS: &[LinkInfo] = &[
         operstate: IF_OPER_UP,
         address: [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
         broadcast: [0xff; 6],
+    },
+];
+
+const ADDRS: &[AddrInfo] = &[
+    AddrInfo {
+        index: 1,
+        label: "lo",
+        prefix_len: 8,
+        scope: RT_SCOPE_HOST,
+        local: [127, 0, 0, 1],
+        broadcast: None,
+    },
+    AddrInfo {
+        index: 2,
+        label: "eth0",
+        prefix_len: 24,
+        scope: RT_SCOPE_UNIVERSE,
+        local: [10, 0, 2, 15],
+        broadcast: Some([10, 0, 2, 255]),
     },
 ];
 
@@ -203,10 +252,18 @@ impl NetlinkSocket {
         let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
         let pid = self.local_pid();
         let mut response = Vec::new();
-        if header.ty == RTM_GETLINK {
-            for link in LINKS {
-                push_link_message(&mut response, header.seq, pid, link);
+        match header.ty {
+            RTM_GETLINK => {
+                for link in LINKS {
+                    push_link_message(&mut response, header.seq, pid, link);
+                }
             }
+            RTM_GETADDR => {
+                for addr in ADDRS {
+                    push_addr_message(&mut response, header.seq, pid, addr);
+                }
+            }
+            _ => {}
         }
         push_done_message(&mut response, header.seq, pid);
         Ok(response)
@@ -320,6 +377,29 @@ fn push_link_message(out: &mut Vec<u8>, seq: u32, pid: u32, link: &LinkInfo) {
     push_attr(&mut body, IFLA_OPERSTATE, &[link.operstate]);
 
     push_nl_header(out, RTM_NEWLINK, NLM_F_MULTI, seq, pid, body.len());
+    out.extend_from_slice(&body);
+}
+
+fn push_addr_message(out: &mut Vec<u8>, seq: u32, pid: u32, addr: &AddrInfo) {
+    let mut body = Vec::new();
+    push_struct(
+        &mut body,
+        &IfAddrMsg {
+            family: AF_INET,
+            prefix_len: addr.prefix_len,
+            flags: 0,
+            scope: addr.scope,
+            index: addr.index,
+        },
+    );
+    push_attr(&mut body, IFA_ADDRESS, &addr.local);
+    push_attr(&mut body, IFA_LOCAL, &addr.local);
+    push_attr_string(&mut body, IFA_LABEL, addr.label);
+    if let Some(broadcast) = addr.broadcast {
+        push_attr(&mut body, IFA_BROADCAST, &broadcast);
+    }
+
+    push_nl_header(out, RTM_NEWADDR, NLM_F_MULTI, seq, pid, body.len());
     out.extend_from_slice(&body);
 }
 
