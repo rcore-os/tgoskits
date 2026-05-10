@@ -12,7 +12,7 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIONBIO, TIOCGWINSZ},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
@@ -38,9 +38,9 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         .map(|result| result as isize)
         .inspect_err(|err| {
             if *err == AxError::NotATty {
-                // glibc likes to call TIOCGWINSZ on non-terminal files, just
-                // ignore it
-                if cmd == TIOCGWINSZ {
+                // Applications commonly probe non-terminal/blobk fds with
+                // these ioctls; suppress noise.
+                if matches!(cmd, TIOCGWINSZ | BLKGETSIZE64 | BLKRAGET | BLKSSZGET) {
                     return;
                 }
                 warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
