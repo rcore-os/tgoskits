@@ -110,6 +110,57 @@ Concurrency bugs follow the taxonomy established by Lu et al. (ASPLOS 2008) and 
 **For behavior mismatches:** compare against Linux Docker strace output (reference)
 **For safety bugs:** the code must be *provably* unsafe by static inspection, not guessed
 
+### Concurrency Detection Tools
+
+TGOSKits provides **lockdep** (lock dependency checker) through the `kspin` crate. When hunting for concurrency bugs (especially `deadlock`, `lock-hierarchy-violation`, `data-race`), always use lockdep as the first-line detection tool.
+
+#### Enabling lockdep
+
+Add `"lockdep"` to the `features` array in the crate's `build-<arch>.toml` config file under `test-suit/`:
+
+```toml
+features = ["ax-std", "lockdep"]
+```
+
+This activates the lockdep infrastructure in `kspin`: every `SpinLock::lock()` / `Mutex::lock()` call is tracked, and lock ordering violations are detected at runtime.
+
+#### Running a lockdep-enabled test
+
+```bash
+# Build and run with lockdep enabled
+docker run --rm -v "$PWD:/workspace" -w /workspace tgoskits-ci bash -c '
+  cargo xtask arceos qemu --package <test-package> --arch <arch>
+'
+```
+
+#### What lockdep detects
+
+| Detection | Output Pattern | Corresponding Bug Type |
+|-----------|---------------|----------------------|
+| Lock order inversion (ABBA) | `lockdep: lock order inversion detected` | `deadlock`, `lock-hierarchy-violation` |
+| Circular dependency (3+ locks) | `lockdep: circular locking dependency` | `deadlock` |
+| Held lock across task sleep | `lockdep: lock held across schedule` | `atomicity-violation` |
+| Repeated lock acquire (recursive) | `lockdep: recursive locking` | `deadlock` |
+
+#### Interpreting lockdep output
+
+When lockdep reports an inversion, it prints:
+1. **The violated ordering** — which two locks were acquired in inconsistent order
+2. **First acquisition chain** — where lock A→B was first established
+3. **Second acquisition chain** — where lock B→A was attempted (the violation)
+
+Use this information to locate the exact code paths that need fixing. The fix is usually: enforce a consistent lock acquisition order, or redesign the locking to avoid the cross-dependency.
+
+#### lockdep test patterns
+
+TGOSKits includes a lockdep regression test at `test-suit/arceos/rust/task/lockdep/` covering 8 scenarios:
+- `mutex-single` / `mutex-two-task` — Mutex ABBA (single-task and two-task)
+- `spin-single` / `spin-two-task` — SpinLock ABBA
+- `mixed-single` / `mixed-two-task` — Spin→Mutex vs Mutex→Spin ABBA
+- `mixed-ms-single` / `mixed-ms-two-task` — Mutex→Spin vs Spin→Mutex ABBA
+
+When writing a repro test for a suspected concurrency bug, use these patterns as templates.
+
 ## Phase 1: HUNT (Discovery)
 
 ### Step 1: Determine scope
@@ -148,7 +199,25 @@ docker run --rm -v "$PWD:/workspace" -w /workspace tgoskits-ci bash -c '
 python3 .claude/scripts/syscall-diff.py /tmp/trace.log /tmp/os-output.log
 ```
 
-### Step 5: Report findings
+### Step 5: Run lockdep check (concurrency bugs only)
+
+If the target involves locks, shared state, or multi-core execution, enable lockdep and run the test:
+
+```bash
+# 1. Add "lockdep" feature to build config
+# 2. Re-run the QEMU test
+docker run --rm -v "$PWD:/workspace" -w /workspace tgoskits-ci bash -c '
+  cargo xtask <os> qemu --package <test-package> --arch <arch>
+' 2>&1 | tee /tmp/lockdep-output.log
+
+# 3. Check for lockdep warnings
+grep -E 'lockdep: (lock order inversion|circular locking|recursive locking|lock held across)' /tmp/lockdep-output.log
+```
+
+If lockdep reports violations: classify each using the concurrency subtype table above.
+If lockdep reports nothing but suspicion remains: smp ≥ 4 is required to trigger races; ensure `-smp` is set in the QEMU config.
+
+### Step 6: Report findings
 
 List each discrepancy with the relevant syscall/function and the nature of the mismatch.
 
@@ -189,6 +258,16 @@ List each discrepancy with the relevant syscall/function and the nature of the m
 
 ```bash
 bash .claude/scripts/local-ci.sh quick
+```
+
+If the fix involves locks or shared state, also run with lockdep enabled on smp ≥ 4 to verify no regression:
+
+```bash
+# Ensure the lockdep test still passes after the fix
+LOCKDEP_CASE=<relevant-case> docker run --rm -v "$PWD:/workspace" \
+  -e LOCKDEP_CASE -w /workspace tgoskits-ci bash -c '
+  cargo xtask arceos qemu --package arceos-lockdep --arch x86_64
+' 2>&1 | grep -E 'SUCCESS|FAIL|lockdep|lock order'
 ```
 
 If quick CI passes and time allows, run architecture-specific QEMU tests for affected architectures.

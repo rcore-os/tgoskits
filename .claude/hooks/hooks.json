@@ -3,6 +3,11 @@
     {
       "event": "PreToolUse",
       "matcher": "Bash",
+      "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/docker-check.py\""
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
       "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-pr-gate.py\""
     },
     {
