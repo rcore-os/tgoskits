@@ -339,4 +339,20 @@ impl ThreadSignalManager {
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set | self.proc.pending()
     }
+
+    /// Drops every queued thread-level pending signal. Called by `execve`
+    /// so the new image starts with an empty thread signal queue —
+    /// pending signals targeting the old image are no longer meaningful.
+    pub fn clear_pending(&self) {
+        let mut pending = self.pending.lock();
+        *pending = PendingSignals::default();
+        self.possibly_has_signal.store(false, Ordering::Release);
+    }
+
+    /// Resets the alternate signal stack to the default (disabled, addr=0)
+    /// across `execve`. The pre-exec stack address pointed into user
+    /// memory that no longer exists once the new aspace replaces the old.
+    pub fn reset_stack(&self) {
+        *self.stack.lock() = SignalStack::default();
+    }
 }

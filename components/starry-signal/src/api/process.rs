@@ -119,6 +119,56 @@ impl ProcessSignalManager {
         *self.actions.lock() = Default::default();
     }
 
+    /// Resets actions across `execve` per POSIX/Linux semantics.
+    ///
+    /// Custom user handlers are reset to `SIG_DFL`, and the action's flags,
+    /// mask and restorer are cleared. `SIG_IGN` (whether explicit or via the
+    /// signal's default ignore disposition like `SIGCHLD`) is preserved
+    /// across the exec, because POSIX requires it: a parent that did
+    /// `signal(SIGCHLD, SIG_IGN)` to auto-reap zombies must keep that
+    /// behavior in the new image.
+    pub fn reset_actions_for_exec(&self) {
+        let mut actions = self.actions.lock();
+        for signo_idx in 0..64u8 {
+            let Some(signo) = Signo::from_repr(signo_idx + 1) else {
+                continue;
+            };
+            let action = &mut actions[signo];
+            if action.is_ignore(signo) {
+                // Replace with an explicit SIG_IGN that no longer carries
+                // any flags/mask/restorer from the pre-exec installation.
+                *action = SignalAction {
+                    disposition: crate::SignalDisposition::Ignore,
+                    ..Default::default()
+                };
+            } else {
+                *action = SignalAction::default();
+            }
+        }
+    }
+
+    /// Drops every queued process-level pending signal. Called by `execve`
+    /// so the new image starts with an empty process-wide signal queue —
+    /// pending signals targeting the old image are no longer meaningful.
+    pub fn clear_pending(&self) {
+        let mut pending = self.pending.lock();
+        *pending = PendingSignals::default();
+        self.possibly_has_signal.store(false, Ordering::Release);
+    }
+
+    /// Updates a thread's TID in the children registration. Called by
+    /// `execve`'s de_thread step so signals targeting the inherited leader
+    /// TID resolve to the (renamed) caller thread.
+    pub fn rename_child(&self, old_tid: u32, new_tid: u32) {
+        let mut children = self.children.lock();
+        for entry in children.iter_mut() {
+            if entry.0 == old_tid {
+                entry.0 = new_tid;
+                break;
+            }
+        }
+    }
+
     /// Registers a new action and returns the old one.
     pub fn set_action(
         &self,
