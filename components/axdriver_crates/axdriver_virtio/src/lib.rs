@@ -60,54 +60,25 @@ struct MmioProbeRegion {
 }
 
 impl MmioProbeRegion {
-    const fn new(base: *mut u8, size: usize) -> Self {
-        Self { base, size }
+    fn try_new(base: *mut u8, size: usize) -> Option<Self> {
+        if base.is_null() || size == 0 {
+            return None;
+        }
+        Some(Self { base, size })
     }
 
-    const fn base(self) -> *mut u8 {
-        self.base
+    fn header(self) -> Option<core::ptr::NonNull<virtio_drivers::transport::mmio::VirtIOHeader>> {
+        use core::ptr::NonNull;
+
+        use virtio_drivers::transport::mmio::VirtIOHeader;
+
+        NonNull::new(self.base as *mut VirtIOHeader)
     }
 
-    const fn size(self) -> usize {
-        self.size
+    fn try_transport(self) -> Option<MmioTransport> {
+        let header = self.header()?;
+        unsafe { MmioTransport::new(header, self.size) }.ok()
     }
-
-    const fn is_non_empty(self) -> bool {
-        self.size != 0
-    }
-}
-
-fn validate_mmio_probe_region(region: MmioProbeRegion) -> Option<MmioProbeRegion> {
-    if region.base().is_null() || !region.is_non_empty() {
-        return None;
-    }
-    Some(region)
-}
-
-fn probe_mmio_header(
-    region: MmioProbeRegion,
-) -> Option<core::ptr::NonNull<virtio_drivers::transport::mmio::VirtIOHeader>> {
-    use core::ptr::NonNull;
-
-    use virtio_drivers::transport::mmio::VirtIOHeader;
-
-    NonNull::new(region.base() as *mut VirtIOHeader)
-}
-
-fn probe_mmio_transport(region: MmioProbeRegion) -> Option<MmioTransport> {
-    let header = probe_mmio_header(region)?;
-    unsafe { MmioTransport::new(header, region.size()) }.ok()
-}
-
-const fn is_supported_dev_type(t: VirtIoDevType) -> bool {
-    matches!(
-        t,
-        VirtIoDevType::Block
-            | VirtIoDevType::Network
-            | VirtIoDevType::GPU
-            | VirtIoDevType::Input
-            | VirtIoDevType::Socket
-    )
 }
 
 const fn as_socket_dev_err(e: virtio_drivers::device::socket::SocketError) -> DevError {
@@ -132,8 +103,8 @@ pub fn probe_mmio_device(
     reg_base: *mut u8,
     reg_size: usize,
 ) -> Option<(DeviceType, MmioTransport)> {
-    let region = validate_mmio_probe_region(MmioProbeRegion::new(reg_base, reg_size))?;
-    let transport = probe_mmio_transport(region)?;
+    let region = MmioProbeRegion::try_new(reg_base, reg_size)?;
+    let transport = region.try_transport()?;
     let dev_type = as_dev_type(transport.device_type())?;
     Some((dev_type, transport))
 }
@@ -155,9 +126,6 @@ pub fn probe_pci_device<H: VirtIoHal, C: ConfigurationAccess>(
 }
 
 const fn as_dev_type(t: VirtIoDevType) -> Option<DeviceType> {
-    if !is_supported_dev_type(t) {
-        return None;
-    }
     use VirtIoDevType::*;
     match t {
         Block => Some(DeviceType::Block),
