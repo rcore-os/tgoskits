@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, task::Wake, vec::Vec};
 use core::{
     future::poll_fn,
+    marker::PhantomData,
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
     task::{Poll, Waker},
@@ -27,13 +28,6 @@ type ReadBuf = Arc<ringbuf::StaticRb<u8, BUF_SIZE>>;
 
 /// How should we process inputs?
 pub enum ProcessMode {
-    /// Process inputs only on call to `read`
-    ///
-    /// This is the fallback strategy and is rather limited. For instance, you
-    /// can't interrupt a running program by Ctrl+C unless it's not blocked on a
-    /// `read` call to the terminal, since the signal is emitted only when
-    /// inputs are being processed.
-    Manual,
     /// Spawns task for processing inputs, relying on an external event source
     /// to wake it up.
     InterruptDriven(Arc<PollSet>),
@@ -236,8 +230,7 @@ impl<R: TtyRead> SimpleReader<R> {
     }
 }
 
-enum Processor<R, W> {
-    Manual(InputReader<R, W>),
+enum Processor<R> {
     InterruptDriven,
     Passive(SimpleReader<R>, Arc<PollSet>),
 }
@@ -249,7 +242,8 @@ pub struct LineDiscipline<R, W> {
     pump_retry: Arc<PollSet>,
     eof_ready: Arc<AtomicBool>,
     clear_line_buf: Arc<AtomicBool>,
-    processor: Processor<R, W>,
+    processor: Processor<R>,
+    _writer: PhantomData<W>,
 }
 
 struct WakeSignal {
@@ -340,7 +334,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         let input_ready = Arc::new(PollSet::new());
         let pump_retry = Arc::new(PollSet::new());
         let processor = match config.process_mode {
-            ProcessMode::Manual => Processor::Manual(reader),
             ProcessMode::InterruptDriven(input_source) => {
                 Self::spawn_interrupt_driven_reader(
                     reader,
@@ -370,6 +363,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             eof_ready,
             clear_line_buf,
             processor,
+            _writer: PhantomData,
         }
     }
 
@@ -380,12 +374,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     }
 
     pub fn poll_read(&mut self) -> bool {
-        match &mut self.processor {
-            Processor::Manual(reader) => {
-                reader.drain_source_into_line_buffer();
-            }
-            Processor::Passive(reader, _) => reader.poll(),
-            _ => {}
+        if let Processor::Passive(reader, _) = &mut self.processor {
+            reader.poll();
         }
         let term = self.terminal.termios.lock().clone();
         if term.canonical() {
@@ -401,9 +391,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
     pub fn register_rx_waker(&self, waker: &Waker) {
         match &self.processor {
-            Processor::Manual(_) => {
-                waker.wake_by_ref();
-            }
             Processor::InterruptDriven => {
                 self.input_ready.register(waker);
             }
@@ -439,21 +426,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
         if buf.len() < vmin {
             return Err(AxError::WouldBlock);
-        }
-
-        let mut total_read = 0;
-        if let Processor::Manual(reader) = &mut self.processor {
-            loop {
-                reader.drain_source_into_line_buffer();
-                total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
-                if total_read >= vmin {
-                    return Ok(total_read);
-                }
-                if self.eof_ready.swap(false, Ordering::AcqRel) {
-                    return Ok(0);
-                }
-                ax_task::yield_now();
-            }
         }
 
         let available = self.buf_rx.occupied_len();
