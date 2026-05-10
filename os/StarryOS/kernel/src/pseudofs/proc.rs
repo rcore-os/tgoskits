@@ -21,7 +21,7 @@ use ax_hal::{
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
 use indoc::indoc;
-use starry_process::Process;
+use starry_process::{Pid, Process};
 
 use crate::{
     file::FD_TABLE,
@@ -30,12 +30,35 @@ use crate::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SeqFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
     },
-    task::{AsThread, TaskStat, get_task, tasks, tick_cpu_time},
+    task::{
+        AsThread, ProcessData, TaskStat, get_process_data, get_task, processes, tasks,
+        tick_cpu_time,
+    },
 };
 
 /// Global IRQ counter incremented on every timer tick.
 /// Module-level so both `/proc/interrupts` and `/proc/stat` can read it.
 static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
+const PROCFS_INIT_PID: Pid = 1;
+
+fn procfs_visible_pid(proc: &Arc<Process>) -> Pid {
+    if proc.is_init() {
+        PROCFS_INIT_PID
+    } else {
+        proc.pid()
+    }
+}
+
+fn procfs_lookup_process(pid: Pid) -> VfsResult<Arc<ProcessData>> {
+    if pid == PROCFS_INIT_PID {
+        processes()
+            .into_iter()
+            .find(|proc_data| proc_data.proc.is_init())
+            .ok_or(VfsError::NotFound)
+    } else {
+        get_process_data(pid).map_err(|_| VfsError::NotFound)
+    }
+}
 
 fn render_meminfo() -> String {
     let total = ax_hal::mem::total_ram_size();
@@ -260,6 +283,7 @@ impl SimpleDirOps for ProcessTaskDir {
             Arc::new(ThreadDir {
                 fs: self.fs.clone(),
                 task: Arc::downgrade(&task),
+                procfs_pid: None,
             }),
         )))
     }
@@ -428,6 +452,7 @@ impl SimpleDirOps for ThreadFdDir {
 struct ThreadDir {
     fs: Arc<SimpleFs>,
     task: WeakAxTaskRef,
+    procfs_pid: Option<Pid>,
 }
 
 fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
@@ -524,11 +549,36 @@ impl SimpleDirOps for ThreadDir {
         let fs = self.fs.clone();
         let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
         Ok(match name {
-            "stat" => SimpleFile::new_regular(fs, move || {
-                Ok(format!("{}", TaskStat::from_thread(&task)?).into_bytes())
-            })
-            .into(),
-            "status" => SimpleFile::new_regular(fs, move || Ok(task_status(&task))).into(),
+            "stat" => {
+                let procfs_pid = self.procfs_pid;
+                SimpleFile::new_regular(fs, move || {
+                    let mut stat = TaskStat::from_thread(&task)?;
+                    if let Some(pid) = procfs_pid {
+                        stat.pid = pid;
+                    }
+                    Ok(format!("{stat}").into_bytes())
+                })
+                .into()
+            }
+            "status" => {
+                let procfs_pid = self.procfs_pid;
+                SimpleFile::new_regular(fs, move || {
+                    if let Some(pid) = procfs_pid {
+                        let thread = task.as_thread();
+                        let cred = thread.cred();
+                        Ok(render_task_status(
+                            pid,
+                            pid as u64,
+                            &cred,
+                            task.cpumask(),
+                            ax_hal::cpu_num(),
+                        ))
+                    } else {
+                        Ok(task_status(&task))
+                    }
+                })
+                .into()
+            }
             "oom_score_adj" => SimpleFile::new_regular(
                 fs,
                 RwFile::new(move |req| match req {
@@ -629,25 +679,36 @@ struct ProcFsHandler(Arc<SimpleFs>);
 impl SimpleDirOps for ProcFsHandler {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            tasks()
+            processes()
                 .into_iter()
-                .map(|task| task.id().as_u64().to_string().into())
+                .map(|proc_data| procfs_visible_pid(&proc_data.proc).to_string().into())
                 .chain([Cow::Borrowed("self")]),
         )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        let task = if name == "self" {
-            current().clone()
+        let (task, procfs_pid) = if name == "self" {
+            (current().clone(), None)
         } else {
-            let tid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-            get_task(tid).map_err(|_| VfsError::NotFound)?
+            let pid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+            let proc_data = procfs_lookup_process(pid)?;
+            let tid = proc_data
+                .proc
+                .threads()
+                .into_iter()
+                .next()
+                .ok_or(VfsError::NotFound)?;
+            let task = get_task(tid).map_err(|_| VfsError::NotFound)?;
+            let procfs_pid =
+                (procfs_visible_pid(&proc_data.proc) != proc_data.proc.pid()).then_some(pid);
+            (task, procfs_pid)
         };
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(
             self.0.clone(),
             Arc::new(ThreadDir {
                 fs: self.0.clone(),
                 task: Arc::downgrade(&task),
+                procfs_pid,
             }),
         ));
         Ok(node)
@@ -758,6 +819,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         );
 
         SimpleDir::new_maker(fs.clone(), Arc::new(net))
+    });
+
+    root.add("dynamic_debug", {
+        let mut dynamic_debug = DirMapping::new();
+
+        dynamic_debug.add(
+            "control",
+            super::dyn_debug::create_dyn_debug_control_file(fs.clone()),
+        );
+
+        SimpleDir::new_maker(fs.clone(), Arc::new(dynamic_debug))
     });
 
     let proc_dir = ProcFsHandler(fs.clone());
