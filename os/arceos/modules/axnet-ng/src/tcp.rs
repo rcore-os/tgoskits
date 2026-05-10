@@ -431,7 +431,7 @@ impl SocketOps for TcpSocket {
 
     fn send(&self, mut src: impl Read, _options: SendOptions) -> AxResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
-        self.general.send_poller(self, || {
+        let result = self.general.send_poller(self, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
@@ -450,7 +450,14 @@ impl SocketOps for TcpSocket {
                     Ok(len)
                 }
             })
-        })
+        });
+        // Poll again after writing so the data is transmitted through the
+        // network stack immediately. For loopback, this causes loopback.send()
+        // to run, which wakes any epoll wakers registered on the peer socket.
+        if result.is_ok() {
+            poll_interfaces();
+        }
+        result
     }
 
     fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {

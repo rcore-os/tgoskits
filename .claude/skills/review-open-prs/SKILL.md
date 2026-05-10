@@ -7,7 +7,9 @@ description: Review eligible open GitHub pull requests in this tgoskits reposito
 
 ## Overview
 
-Review all open PRs that actually need the current user attention, using isolated worktrees and local validation before submitting GitHub reviews. The default outcome is a submitted `APPROVE` review when no blocking issue remains, or a submitted `REQUEST_CHANGES` review with Chinese inline comments when correctness, standards compliance, tests, or CI coverage are insufficient.
+Review only open PRs that actually need the current user attention, using isolated worktrees and local validation before submitting GitHub reviews. By default this is not a full re-review of every open PR: review PRs the current user has never reviewed, or PRs whose latest commit is newer than the current user's last submitted review. The default outcome is a submitted `APPROVE` review when no blocking issue remains, or a submitted `REQUEST_CHANGES` review with Chinese inline comments when correctness, standards compliance, tests, or CI coverage are insufficient.
+
+When the user asks to handle conflicts too, treat merge-conflict repair as a separate maintenance pass: fix and push only PRs that allow maintainer edits, and request changes for conflicted PRs that do not allow maintainer edits.
 
 Respect the global subagent policy: spawn subagents only when the user explicitly asks for subagents, delegation, or parallel agent work. If subagents are allowed, use them for bounded per-PR review work and keep final GitHub submission in the main agent.
 
@@ -17,7 +19,7 @@ Respect the global subagent policy: spawn subagents only when the user explicitl
    ```bash
    gh auth status
    gh repo view --json nameWithOwner,defaultBranchRef,url
-   gh pr list --state open --limit 100 --json number,title,author,headRefName,headRepositoryOwner,baseRefName,updatedAt,isDraft,url,reviewDecision
+   gh pr list --state open --limit 100 --json number,title,author,headRefName,headRepositoryOwner,baseRefName,updatedAt,isDraft,url,reviewDecision,mergeStateStatus,maintainerCanModify
    ```
 2. Exclude PRs authored by the current GitHub user.
 3. For each remaining PR, fetch latest commit and the current user's last review:
@@ -28,8 +30,41 @@ Respect the global subagent policy: spawn subagents only when the user explicitl
    ```
 4. Mark a PR eligible when the user has never reviewed it, or the PR latest commit time is newer than the user's last review time. Compare the PR latest commit date against the current user's last submitted review timestamp, not `updatedAt`, because comments, CI, or thread resolution can update the PR without new code.
 5. Include drafts unless the user explicitly says to skip drafts; note draft status in the summary.
-6. For PRs already reviewed at the latest commit, do not submit another review unless the user explicitly asks for a fresh pass. You may still inspect unresolved review threads to decide whether previously requested changes have been resolved.
+6. For PRs already reviewed by the current user at the latest commit, do not submit another review unless the user explicitly asks for a fresh pass of those PRs. A general request like "review open PRs" still means review only eligible/unreviewed-or-updated PRs, not every open PR. If the user asks to audit already-approved PRs too, treat that as an explicit expanded scope for that turn only.
 7. List excluded PRs and the reason: self-authored, already reviewed at latest commit, closed, or skipped by user scope.
+
+## Merge Conflicts
+
+When the user explicitly asks to handle conflicted PRs, inspect `mergeStateStatus` and `maintainerCanModify`:
+
+- If `mergeStateStatus` is `DIRTY` and `maintainerCanModify=false`, do not attempt to repair the branch. Submit `REQUEST_CHANGES` explaining that the branch conflicts with the base and maintainers cannot push a fix; ask the author to merge/rebase the latest base branch and suggest enabling "Allow edits by maintainers".
+- If `mergeStateStatus` is `DIRTY` and `maintainerCanModify=true`, create a separate conflict worktree such as `/home/zhourui/opensource/tgoskits-conflict-pr<pr>`, checkout `origin/pr/<pr>` detached, merge `origin/<base>`, resolve conflicts according to the PR intent and current base behavior, validate, then commit the merge locally.
+- Keep conflict workers scoped to one worktree and one PR. Workers may resolve and commit locally, but the main agent must perform the final head-SHA check and push.
+- Before pushing a repaired conflict branch, fetch or query the PR again and confirm the local merge commit's first parent equals the current remote `headRefOid`. If the remote head changed, stop and rebase/re-review instead of pushing.
+- Push repaired fork branches with a normal non-force push to the PR head owner and branch, for example `git push https://github.com/<head-owner>/<repo>.git HEAD:<headRefName>`. Never force-push a contributor branch.
+- After pushing conflict repairs, refresh PR status. A PR may remain `BLOCKED` or `UNSTABLE` because of CI or reviews even after the merge conflict is gone; do not treat that as a failed conflict repair by itself.
+
+## Duplicate or Superseded Fixes
+
+Before approving a PR that fixes a user-visible bug, check whether the same bug is already fixed on the latest base branch or in another open PR:
+
+```bash
+git fetch origin <base> '+refs/pull/*/head:refs/remotes/origin/pr/*'
+gh pr list --state open --limit 100 --search '<bug keyword or command>'
+git grep -n -E '<relevant symbols|paths|commands>' origin/<base> -- <likely paths>
+gh pr diff <related-pr> --patch --color=never
+```
+
+Use `gh pr diff` or `git diff origin/<base>...origin/pr/<pr>` to understand the PR's own patch. Use `git diff origin/<base>..origin/pr/<pr>` only when intentionally checking how stale the branch is against current base; stale branches can show large unrelated reversions.
+
+Treat a PR as not mergeable when it is superseded by a more complete PR or would regress newer base-branch work. In that case, leave a neutral project-focused comment explaining why the newer PR or base implementation should be preferred. If asked to close such a PR, prefer:
+
+```bash
+gh pr comment <pr> --body-file comment.md
+gh pr close <pr>
+```
+
+Some `gh` versions do not support `gh pr close --comment-file`; avoid shell backticks in inline `--comment` strings because they can be executed by the shell.
 
 ## Worktrees
 
@@ -56,6 +91,7 @@ When spawning workers, give each worker exactly one PR and one worktree. Tell wo
 
 - perform read-only review plus local validation only;
 - not submit GitHub reviews;
+- not push contributor branches unless explicitly assigned a conflict-repair task, and even then prefer local commit only with final push by the main agent;
 - return `APPROVE` or `REQUEST_CHANGES`;
 - provide `path`, `line`, `side=RIGHT`, and Chinese inline comment body for each blocking issue;
 - include commands run and exact failures;
@@ -101,6 +137,10 @@ Review code against the PR's stated intent, existing project patterns, and relev
 
 For bug fixes, require a reproduction test that fails before the fix and passes after it, unless the environment makes that impossible. If a reproduction cannot be run locally, explain the blocker and what evidence was checked instead.
 
+For syscall semantics bugs, ensure tests exercise the same ABI surface being fixed. A libc wrapper may translate raw syscall return values or errno behavior, so raw syscall bugs often need direct `syscall(SYS_...)` coverage in addition to libc wrapper coverage.
+
+Do not accept "success path" tests that silently skip on unexpected failure, such as returning early when `brk`, `sbrk`, I/O, or socket setup returns `ENOMEM`/`EAGAIN`, unless the test prints an explicit skip marker and the review explains why the environment legitimately cannot require success. Bugfix reproduction tests should fail loudly when the fixed behavior is absent.
+
 ## Validation
 
 Always run local verification that matches the changed surface. Prefer project `xtask` commands:
@@ -136,13 +176,15 @@ cargo xtask starry test qemu --arch x86_64 -c syscall
 
 Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, or an unbuilt asset directory as blocking even when the Rust code and clippy pass.
 
-Use GitHub check status only as auxiliary evidence:
+For bugfix tests in grouped cases, inspect the new test's assertions as well as running the case. A grouped case passing is not sufficient when the new test accepts both the fixed behavior and the broken behavior.
+
+Use GitHub check status as required evidence, but not as the only review input:
 
 ```bash
 gh pr checks <pr> --watch=false
 ```
 
-Do not approve solely because remote CI passes; local review and targeted validation still matter.
+Do not approve solely because remote CI passes; local review and targeted validation still matter. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, treat that as blocking unless there is a clear project-approved reason. A branch with "no checks reported" is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
 
 ## Findings
 
@@ -155,6 +197,7 @@ Treat these as blocking unless clearly non-blocking:
 - bug fix lacks a meaningful reproduction test;
 - submitted buffers, DMA memory, queue tokens, or IRQ ownership can be leaked, freed too early, or handled in the wrong layer;
 - a change silently makes CI hang, time out, or skip the new coverage.
+- an older PR duplicates or weakens a fix already present on the base branch or in a more complete open PR.
 
 Inline comments must be in Chinese, neutral, and project-focused. Each comment should include:
 
@@ -162,7 +205,7 @@ Inline comments must be in Chinese, neutral, and project-focused. Each comment s
 2. the relevant standard, project rule, or observed test failure;
 3. a suggested fix.
 
-Prefer commenting on changed lines in the PR diff. If GitHub cannot resolve a comment line, move the comment to the nearest changed line or put it in the review body.
+Prefer commenting on changed lines in the PR diff. If GitHub cannot resolve a comment line, move the comment to the nearest changed line that demonstrates the problem or put the finding in the review body. Before submitting inline comments from a worker, verify each `line` is present on the right side of the current PR diff; context or unchanged lines may be rejected by the review API.
 
 ## Submit Reviews
 
@@ -171,6 +214,8 @@ Before submission, confirm the PR head SHA has not changed:
 ```bash
 gh pr view <pr> --json number,headRefOid,reviewDecision
 ```
+
+If the PR head changed after a worker reported, after local validation, or after a previous review was submitted, do not submit stale findings against the old head. Fetch the new head, update the worktree, re-check whether each finding still applies on changed right-side lines, and rerun at least the targeted validation that supported the decision.
 
 Submit with the GitHub review API so inline comments and final event land together:
 
@@ -194,6 +239,8 @@ Inline review payloads must include the current `headRefOid` as `commit_id`, and
 ```
 
 If a worker returns a finding on a line that is not present on the current PR diff, move the comment to the nearest changed line that demonstrates the problem or put the finding in the review body.
+
+After the API call returns, re-query the PR. If a new commit landed during review submission, immediately refresh and submit a follow-up review only if the blocking issue still applies to the new head.
 
 Review body should summarize:
 

@@ -35,6 +35,7 @@ const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
 const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
 const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-v1";
+const RUST_PIPELINE_CACHE_VERSION: &str = "rust-cross-v1";
 /// QEMU global snapshot flag — all disk writes go to a temporary file and are
 /// never committed back to the image, keeping the source image pristine.
 const QEMU_SNAPSHOT_ARG: &str = "-snapshot";
@@ -136,6 +137,7 @@ pub(crate) enum CasePipeline {
     C,
     Sh,
     Python,
+    Rust,
 }
 
 impl CasePipeline {
@@ -146,6 +148,7 @@ impl CasePipeline {
             Self::C => "c",
             Self::Sh => "sh",
             Self::Python => "python",
+            Self::Rust => "rust",
         }
     }
 }
@@ -369,6 +372,9 @@ pub(crate) fn prepare_case_assets_sync(
                 CasePipeline::Python => {
                     case_builder::prepare_python_case_assets_sync(arch, case, copy, layout, config)?
                 }
+                CasePipeline::Rust => {
+                    case_builder::prepare_rust_case_assets_sync(arch, case, copy, layout, config)?
+                }
                 CasePipeline::Plain => unreachable!("plain cases do not prepare injection assets"),
             }
             // Save the post-injection rootfs to cache so future runs can skip
@@ -424,6 +430,9 @@ pub(crate) fn resolve_case_pipeline(case: &TestQemuCase) -> anyhow::Result<CaseP
     }
     if case_python_source_dir(case).is_dir() {
         pipelines.push(CasePipeline::Python);
+    }
+    if case_builder::case_rust_source_dir(case).is_dir() {
+        pipelines.push(CasePipeline::Rust);
     }
 
     if pipelines.len() > 1 {
@@ -531,6 +540,9 @@ fn case_asset_cache_key(
     }
     if pipeline == CasePipeline::Python {
         hash_token(&mut hasher, PYTHON_PIPELINE_CACHE_VERSION);
+    }
+    if pipeline == CasePipeline::Rust {
+        hash_token(&mut hasher, RUST_PIPELINE_CACHE_VERSION);
     }
 
     hash_file_metadata(&mut hasher, shared_rootfs)?;
