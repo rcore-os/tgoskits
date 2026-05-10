@@ -3,6 +3,7 @@
 pub mod dev;
 mod device;
 mod dir;
+mod dyn_debug;
 mod file;
 mod fs;
 mod proc;

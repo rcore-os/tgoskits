@@ -29,6 +29,9 @@ test_commands = [
     "/usr/bin/clone3-badsize",
     "/usr/bin/bug-unaligned-cow-split",
     "/usr/bin/bug-proc-maps-lseek-refresh",
+    "/usr/bin/bug-proc-stat-diskstats",
+    "/usr/bin/bug-alarm-pause",
+    "/usr/bin/bug-proc-init-pid",
     "/usr/bin/bug-tcp-send-no-epoll-notify",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]

@@ -78,6 +78,13 @@ pub unsafe fn write_kernel_page_table(root_paddr: PhysAddr) {
     pgdh::set_base(root_paddr.as_usize());
 }
 
+/// Flushes the entire instruction cache.
+/// See <https://elixir.bootlin.com/linux/v6.6/source/arch/loongarch/mm/cache.c#L38>
+#[inline]
+pub fn flush_icache_all() {
+    unsafe { asm!("ibar 0") };
+}
+
 /// Flushes the TLB.
 ///
 /// If `vaddr` is [`None`], flushes the entire TLB. Otherwise, flushes the TLB
