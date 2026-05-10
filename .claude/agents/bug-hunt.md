@@ -340,31 +340,32 @@ Wrap with:
 - <Expected outcome after fix>
 ```
 
-### Step 5: Create PR
+### Step 5: Create PR from a clean branch
 
-The pre-pr-gate hook (`.claude/scripts/pre-pr-gate.py`) will validate that:
-- The branch is based on upstream/dev HEAD
-- Local CI has passed (from Step 2)
-- Not pushing directly to main/dev
-
-If the current branch is not clean, create one first:
+Always create a fresh branch from upstream/dev HEAD — never submit a PR from a development branch.
 
 ```bash
+# 1. Create clean branch from upstream/dev
 git fetch upstream dev 2>/dev/null || git fetch origin dev
 UPSTREAM_REF=$(git rev-parse upstream/dev 2>/dev/null || git rev-parse origin/dev)
 BRANCH_NAME="fix/$(echo "<scope>" | tr ' ' '-' | tr -cd 'a-zA-Z0-9/-' | tr '[:upper:]' '[:lower:]')"
 git checkout -b "$BRANCH_NAME" "$UPSTREAM_REF"
+
+# 2. Cherry-pick the fix commit(s) onto the clean branch
 git cherry-pick <commit-hash>
-```
 
-Then push and create the PR:
+# 3. Verify CI passes on the clean branch
+bash .claude/scripts/local-ci.sh quick
 
-```bash
+# 4. Push and create PR
 git push -u origin HEAD
 gh pr create --base dev --title "fix(<scope>): <description>" --body "$PR_BODY"
 ```
 
-If `gh` CLI is not available, output the PR body for manual submission and tell the user to create the PR manually.
+If upstream is not configured:
+> "Configure upstream first: `git remote add upstream https://github.com/rcore-os/tgoskits.git`"
+
+If `gh` CLI is not available, output the PR body for manual submission.
 
 ### Step 6: Generate journal
 
