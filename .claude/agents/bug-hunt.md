@@ -273,17 +273,47 @@ LOCKDEP_CASE=<relevant-case> docker run --rm -v "$PWD:/workspace" \
 
 If quick CI passes and time allows, run architecture-specific QEMU tests for affected architectures.
 
-## Phase 5: REPORT
+## Phase 5: REPORT & PR
 
-### Step 1: Create commit message
+After a fix is committed, proceed to the PR workflow. This phase ensures every bug fix is validated, reviewed, and submitted with a structured PR.
+
+### Step 1: Create commit
 
 ```
 fix(<scope>): <description>
 ```
 
-The description should mention both the root cause and the affected syscall/function.
+The description should mention both the root cause subtype and the affected syscall/function.
 
-### Step 2: Generate PR body
+### Step 2: Run local CI
+
+```bash
+bash .claude/scripts/local-ci.sh quick
+```
+
+**If CI fails:** analyze failures, fix, re-run. Repeat up to **3 iterations**.
+After each fix: "CI fix <N>/3: fixed <what>. <X> failures remaining."
+At 3 failures: "CI fix limit reached. Manual investigation needed." → STOP, do not proceed.
+
+### Step 3: Self-review
+
+Launch the PR-Review Agent. Read `.claude/agents/pr-review.md` and follow its review workflow against the committed changes.
+
+**If review passes (no BLOCK items):** → Step 4
+
+**If review finds BLOCK items:**
+1. Auto-fix the BLOCK items
+2. Re-run `bash .claude/scripts/local-ci.sh quick`
+3. Re-review
+4. Repeat up to **3 iterations**
+
+After each iteration:
+> "Self-review <N>/3: fixed <X> BLOCK, <Y> WARN remaining."
+
+At 3 iterations with remaining BLOCKs:
+> "Self-review limit reached. Remaining BLOCK items: <list>. Proceed anyway or wait for manual fix?"
+
+### Step 4: Generate PR body
 
 For each bug fixed, use this per-bug template:
 
@@ -300,7 +330,43 @@ For each bug fixed, use this per-bug template:
 **Repro**: `<path to test case>` — <one-line description of the minimal repro>
 ```
 
-### Step 3: Generate journal if task complete
+Wrap with:
+
+```markdown
+## Summary
+<One-line summary of what this PR fixes>
+
+## Expected Behavior
+- <Expected outcome after fix>
+```
+
+### Step 5: Create PR
+
+The pre-pr-gate hook (`.claude/scripts/pre-pr-gate.py`) will validate that:
+- The branch is based on upstream/dev HEAD
+- Local CI has passed (from Step 2)
+- Not pushing directly to main/dev
+
+If the current branch is not clean, create one first:
+
+```bash
+git fetch upstream dev 2>/dev/null || git fetch origin dev
+UPSTREAM_REF=$(git rev-parse upstream/dev 2>/dev/null || git rev-parse origin/dev)
+BRANCH_NAME="fix/$(echo "<scope>" | tr ' ' '-' | tr -cd 'a-zA-Z0-9/-' | tr '[:upper:]' '[:lower:]')"
+git checkout -b "$BRANCH_NAME" "$UPSTREAM_REF"
+git cherry-pick <commit-hash>
+```
+
+Then push and create the PR:
+
+```bash
+git push -u origin HEAD
+gh pr create --base dev --title "fix(<scope>): <description>" --body "$PR_BODY"
+```
+
+If `gh` CLI is not available, output the PR body for manual submission and tell the user to create the PR manually.
+
+### Step 6: Generate journal
 
 ```bash
 python3 .claude/scripts/journal-generator.py <task-name>
