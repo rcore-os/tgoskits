@@ -1,4 +1,4 @@
-use ax_errno::{AxError, AxResult};
+use ax_errno::AxResult;
 use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{VirtAddr, align_up_4k};
 use ax_task::current;
@@ -24,9 +24,10 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
         return Ok(current_top as isize);
     }
 
-    // Invalid address: return -1 with ENOMEM
+    // Invalid address: return current break (raw syscall semantics)
+    // libc wrapper will convert this to -1 + errno
     if addr < USER_HEAP_BASE || addr > heap_limit {
-        return Err(AxError::NoMemory);
+        return Ok(current_top as isize);
     }
 
     let new_top_aligned = align_up_4k(addr);
@@ -53,7 +54,7 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
                 )
                 .is_err()
         {
-            return Err(AxError::NoMemory);
+            return Ok(current_top as isize);
         }
     } else if new_top_aligned < current_top_aligned {
         // Only unmap pages beyond the initially mapped heap region.
@@ -67,10 +68,10 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
                 .unmap(shrink_start, shrink_size)
                 .is_err()
         {
-            return Err(AxError::NoMemory);
+            return Ok(current_top as isize);
         }
     }
 
     proc_data.set_heap_top(addr);
-    Ok(0) // Linux brk() returns 0 on success
+    Ok(addr as isize) // Linux brk syscall returns new break address on success
 }
