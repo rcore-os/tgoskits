@@ -48,9 +48,10 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         })
 }
 
+#[ddebug::named]
 pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    debug!("sys_chdir <= path: {path}");
+    debug_fn!("sys_chdir <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
     let entry = fs.resolve(path)?;

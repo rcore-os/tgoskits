@@ -9,7 +9,8 @@ use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
     ioctl::{
-        BLKDISCARD, BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET, BLKSSZGET,
+        BLKDISCARD, BLKGETSIZE, BLKGETSIZE64, BLKPBSZGET, BLKRAGET, BLKRASET, BLKROGET, BLKROSET,
+        BLKSSZGET,
     },
     loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS, loop_info},
 };
@@ -140,9 +141,6 @@ impl DeviceOps for LoopDevice {
                 let info = unsafe { (arg as *const loop_info).vm_read_uninit()?.assume_init() };
                 self.set_info(info)?;
             }
-            BLKSSZGET => {
-                (arg as *mut u32).vm_write(512)?;
-            }
             BLKDISCARD => {
                 if !self.is_bound() {
                     return Err(AxError::from(LinuxError::ENXIO));
@@ -174,6 +172,9 @@ impl DeviceOps for LoopDevice {
                 } else {
                     (arg as *mut u64).vm_write(sectors * 512)?;
                 }
+            }
+            BLKSSZGET | BLKPBSZGET => {
+                (arg as *mut u32).vm_write(512)?;
             }
             BLKROGET => {
                 (arg as *mut u32).vm_write(self.ro.load(Ordering::Relaxed) as u32)?;
