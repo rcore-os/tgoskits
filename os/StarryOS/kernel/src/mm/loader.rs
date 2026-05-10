@@ -315,7 +315,12 @@ pub fn load_user_app(
                     .collect();
                 return load_user_app(uspace, None, &new_args, envs);
             }
-            return Err(AxError::InvalidExecutable);
+            // Not an ELF and no shebang: retry via /bin/sh.
+            // This mirrors how Linux user-space handles ENOEXEC.
+            let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
+                .chain(args.iter().cloned())
+                .collect();
+            return load_user_app(uspace, None, &new_args, envs);
         }
     };
 
