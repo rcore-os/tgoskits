@@ -23,7 +23,7 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
     // - Success: return new break address
     // - Failure: return current break address (NOT -1, no errno)
     // Invalid address range: return current break unchanged
-    if addr < USER_HEAP_BASE || addr > USER_HEAP_BASE + USER_HEAP_SIZE_MAX {
+    if !(USER_HEAP_BASE..=USER_HEAP_BASE + USER_HEAP_SIZE_MAX).contains(&addr) {
         return Ok(current_top as isize);
     }
 
