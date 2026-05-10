@@ -2,7 +2,6 @@ use ax_errno::AxResult;
 use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{VirtAddr, align_up_4k};
 use ax_task::current;
-use linux_raw_sys::general::RLIMIT_DATA;
 
 use crate::{
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
@@ -15,18 +14,16 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
     let proc_data = &curr.as_thread().proc_data;
     let current_top = proc_data.get_heap_top() as usize;
 
-    // Check RLIMIT_DATA limit
-    let rlimit_data = proc_data.rlim.read()[RLIMIT_DATA].current as usize;
-    let heap_limit = USER_HEAP_BASE + core::cmp::min(USER_HEAP_SIZE_MAX, rlimit_data);
-
     // brk(0) returns current heap top
     if addr == 0 {
         return Ok(current_top as isize);
     }
 
-    // Invalid address: return current break (raw syscall semantics)
-    // libc wrapper will convert this to -1 + errno
-    if addr < USER_HEAP_BASE || addr > heap_limit {
+    // Linux brk syscall semantics:
+    // - Success: return new break address
+    // - Failure: return current break address (NOT -1, no errno)
+    // Invalid address range: return current break unchanged
+    if addr < USER_HEAP_BASE || addr > USER_HEAP_BASE + USER_HEAP_SIZE_MAX {
         return Ok(current_top as isize);
     }
 
