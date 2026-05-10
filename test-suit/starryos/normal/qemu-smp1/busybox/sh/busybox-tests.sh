@@ -168,6 +168,11 @@ if echo "$_t" | grep -qF "Usage: fbsplash"; then echo "PASS: busybox_fbsplash"; 
 _t=$({ timeout 10 sh -c "busybox fdisk -h 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Usage: fdisk"; then echo "PASS: busybox_fdisk"; PASS=$((PASS+1)); else echo "FAIL: busybox_fdisk"; FAIL=$((FAIL+1)); fi
 
+# busybox_blkid — list block device attributes
+# blkid should handle non-block-device files gracefully (exit 0, error msg to stderr)
+_t=$({ timeout 10 sh -c 'busybox blkid 2>&1; S=$(busybox blkid /dev/null 2>&1); R=$?; echo "$S"; echo EXIT:$R >&2'; } 2>&1)
+if echo "$_t" | grep -qF "EXIT:0"; then echo "PASS: busybox_blkid"; PASS=$((PASS+1)); else echo "FAIL: busybox_blkid"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox echo hello | busybox fgrep hell 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "hello"; then echo "PASS: busybox_fgrep"; PASS=$((PASS+1)); else echo "FAIL: busybox_fgrep"; FAIL=$((FAIL+1)); fi
 
@@ -206,6 +211,10 @@ if echo "$_t" | grep -qF "hello"; then echo "PASS: busybox_grep"; PASS=$((PASS+1
 
 _t=$({ timeout 10 sh -c "busybox groups 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "root"; then echo "PASS: busybox_groups"; PASS=$((PASS+1)); else echo "FAIL: busybox_groups"; FAIL=$((FAIL+1)); fi
+
+# busybox_ttysize — query terminal size (outputs "rows cols")
+_t=$({ timeout 10 sh -c 'busybox ttysize 2>&1'; } 2>&1)
+if echo "$_t" | grep -qE '^[0-9]+ [0-9]+$'; then echo "PASS: busybox_ttysize"; PASS=$((PASS+1)); else echo "FAIL: busybox_ttysize"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox echo -n hello | busybox gzip -c | busybox gunzip -c 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "hello"; then echo "PASS: busybox_gunzip"; PASS=$((PASS+1)); else echo "FAIL: busybox_gunzip"; FAIL=$((FAIL+1)); fi
