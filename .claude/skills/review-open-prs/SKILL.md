@@ -7,7 +7,7 @@ description: Review eligible open GitHub pull requests in this tgoskits reposito
 
 ## Overview
 
-Review all open PRs that actually need the current user attention, using isolated worktrees and local validation before submitting GitHub reviews. The default outcome is a submitted `APPROVE` review when no blocking issue remains, or a submitted `REQUEST_CHANGES` review with Chinese inline comments when correctness, standards compliance, tests, or CI coverage are insufficient.
+Review only open PRs that actually need the current user attention, using isolated worktrees and local validation before submitting GitHub reviews. By default this is not a full re-review of every open PR: review PRs the current user has never reviewed, or PRs whose latest commit is newer than the current user's last submitted review. The default outcome is a submitted `APPROVE` review when no blocking issue remains, or a submitted `REQUEST_CHANGES` review with Chinese inline comments when correctness, standards compliance, tests, or CI coverage are insufficient.
 
 Respect the global subagent policy: spawn subagents only when the user explicitly asks for subagents, delegation, or parallel agent work. If subagents are allowed, use them for bounded per-PR review work and keep final GitHub submission in the main agent.
 
@@ -28,8 +28,30 @@ Respect the global subagent policy: spawn subagents only when the user explicitl
    ```
 4. Mark a PR eligible when the user has never reviewed it, or the PR latest commit time is newer than the user's last review time. Compare the PR latest commit date against the current user's last submitted review timestamp, not `updatedAt`, because comments, CI, or thread resolution can update the PR without new code.
 5. Include drafts unless the user explicitly says to skip drafts; note draft status in the summary.
-6. For PRs already reviewed at the latest commit, do not submit another review unless the user explicitly asks for a fresh pass. You may still inspect unresolved review threads to decide whether previously requested changes have been resolved.
+6. For PRs already reviewed by the current user at the latest commit, do not submit another review unless the user explicitly asks for a fresh pass of those PRs. A general request like "review open PRs" still means review only eligible/unreviewed-or-updated PRs, not every open PR. If the user asks to audit already-approved PRs too, treat that as an explicit expanded scope for that turn only.
 7. List excluded PRs and the reason: self-authored, already reviewed at latest commit, closed, or skipped by user scope.
+
+## Duplicate or Superseded Fixes
+
+Before approving a PR that fixes a user-visible bug, check whether the same bug is already fixed on the latest base branch or in another open PR:
+
+```bash
+git fetch origin <base> '+refs/pull/*/head:refs/remotes/origin/pr/*'
+gh pr list --state open --limit 100 --search '<bug keyword or command>'
+git grep -n -E '<relevant symbols|paths|commands>' origin/<base> -- <likely paths>
+gh pr diff <related-pr> --patch --color=never
+```
+
+Use `gh pr diff` or `git diff origin/<base>...origin/pr/<pr>` to understand the PR's own patch. Use `git diff origin/<base>..origin/pr/<pr>` only when intentionally checking how stale the branch is against current base; stale branches can show large unrelated reversions.
+
+Treat a PR as not mergeable when it is superseded by a more complete PR or would regress newer base-branch work. In that case, leave a neutral project-focused comment explaining why the newer PR or base implementation should be preferred. If asked to close such a PR, prefer:
+
+```bash
+gh pr comment <pr> --body-file comment.md
+gh pr close <pr>
+```
+
+Some `gh` versions do not support `gh pr close --comment-file`; avoid shell backticks in inline `--comment` strings because they can be executed by the shell.
 
 ## Worktrees
 
@@ -136,13 +158,13 @@ cargo xtask starry test qemu --arch x86_64 -c syscall
 
 Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, or an unbuilt asset directory as blocking even when the Rust code and clippy pass.
 
-Use GitHub check status only as auxiliary evidence:
+Use GitHub check status as required evidence, but not as the only review input:
 
 ```bash
 gh pr checks <pr> --watch=false
 ```
 
-Do not approve solely because remote CI passes; local review and targeted validation still matter.
+Do not approve solely because remote CI passes; local review and targeted validation still matter. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, treat that as blocking unless there is a clear project-approved reason. A branch with "no checks reported" is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
 
 ## Findings
 
@@ -155,6 +177,7 @@ Treat these as blocking unless clearly non-blocking:
 - bug fix lacks a meaningful reproduction test;
 - submitted buffers, DMA memory, queue tokens, or IRQ ownership can be leaked, freed too early, or handled in the wrong layer;
 - a change silently makes CI hang, time out, or skip the new coverage.
+- an older PR duplicates or weakens a fix already present on the base branch or in a more complete open PR.
 
 Inline comments must be in Chinese, neutral, and project-focused. Each comment should include:
 
@@ -162,7 +185,7 @@ Inline comments must be in Chinese, neutral, and project-focused. Each comment s
 2. the relevant standard, project rule, or observed test failure;
 3. a suggested fix.
 
-Prefer commenting on changed lines in the PR diff. If GitHub cannot resolve a comment line, move the comment to the nearest changed line or put it in the review body.
+Prefer commenting on changed lines in the PR diff. If GitHub cannot resolve a comment line, move the comment to the nearest changed line that demonstrates the problem or put the finding in the review body. Before submitting inline comments from a worker, verify each `line` is present on the right side of the current PR diff; context or unchanged lines may be rejected by the review API.
 
 ## Submit Reviews
 
