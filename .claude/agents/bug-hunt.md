@@ -28,13 +28,39 @@ A bug that can't be classified in both dimensions needs further analysis.
 
 ### Dimension 1: Root Cause
 
-| Root Cause | Criteria | Example |
-|------------|----------|---------|
-| **logic-bug** | Incorrect condition, wrong value, mishandled edge case, off-by-one | `F_SETFL` masks out `O_RDWR` bits because the flag-clearing mask is too wide |
-| **memory-bug** | Use-after-free, double-free, buffer overflow, memory leak | Freeing `posix_timer` struct then accessing `timer->node` |
-| **concurrency-bug** | Race condition, deadlock, missing barrier, wrong memory ordering | Signal handler writes to `global_flag` while main thread reads it without synchronization |
-| **validation-bug** | Missing null-check, capability not verified, user pointer not validated, bounds not checked | Dereferencing user-space pointer without `copy_from_user` |
-| **resource-bug** | fd leak, refcount error, integer overflow, resource not released on error path | `timer_create` increments counter but `timer_delete` doesn't decrement |
+| Root Cause | Subtype | Criteria | Example |
+|------------|---------|----------|---------|
+| **logic-bug** | — | Incorrect condition, wrong value, mishandled edge case, off-by-one | `F_SETFL` masks out `O_RDWR` bits because the flag-clearing mask is too wide |
+| **memory-bug** | — | Use-after-free, double-free, buffer overflow, memory leak | Freeing `posix_timer` struct then accessing `timer->node` |
+| **concurrency-bug** | **(see subtypes below)** | Defect involving multi-core or interrupt-concurrent execution | |
+| **validation-bug** | — | Missing null-check, capability not verified, user pointer not validated, bounds not checked | Dereferencing user-space pointer without `copy_from_user` |
+| **resource-bug** | — | fd leak, refcount error, integer overflow, resource not released on error path | `timer_create` increments counter but `timer_delete` doesn't decrement |
+
+#### Concurrency Bug Subtypes
+
+Concurrency bugs follow the taxonomy established by Lu et al. (ASPLOS 2008) and the Linux Kernel Memory Model (LKMM). When classifying a concurrency bug, **always pick the most specific subtype**.
+
+| Subtype | Definition | Kernel-typical Example | Typical Fix |
+|---------|-----------|----------------------|-------------|
+| **data-race** | Two cores access the same memory location concurrently; at least one is a write; no synchronization protects the access | ISR increments `irq_counter` while task context reads it without `atomic_t` | Use `AtomicI32` / `AtomicBool` with appropriate ordering |
+| **atomicity-violation** | A code sequence assumed to be atomic is interrupted by another thread inserting an operation in the middle | Check `ptr != NULL`, another thread frees `ptr`, then dereference → UAF | Extend critical section to cover the full assumed-atomic sequence |
+| **order-violation** | Expected ordering A-before-B is violated at runtime; B executes before A completes | `rcu_assign_pointer(p, new)` called but reader sees `new` before `p` is updated | Add barrier: `smp_wmb()` before write, `smp_rmb()` before read; or use `Acquire`/`Release` ordering |
+| **deadlock** | Two or more threads cyclically wait for locks held by each other; system permanently stuck | CPU0 holds `lockA`, waits for `lockB`; CPU1 holds `lockB`, waits for `lockA` | Enforce lock ordering (always lock A before B); or use `try_lock` with backoff |
+| **lock-hierarchy-violation** | Lock acquisition order is inconsistent across code paths — latent deadlock | `foo()`: lock A → lock B; `bar()`: lock B → lock A; both called from different syscall paths that don't overlap yet | Define and document lock hierarchy; audit all paths to follow it |
+| **missing-barrier** | Lock-free code relies on memory ordering but omits the required fence/barrier | `atomic_store(&flag, 1, Relaxed)` then write `data`; another core reads `flag==1` but sees stale `data` | Replace `Relaxed` with `Release` on store, `Acquire` on load; or insert explicit `fence(SeqCst)` / `smp_mb()` |
+| **starvation** | A thread consistently loses resource contention and never makes progress | High-priority task holds spinlock; low-priority task is never scheduled to release it | Use fair locks (ticket lock, MCS lock); priority inheritance |
+| **livelock** | Threads are active and changing state but the system as a whole makes no forward progress | Two transactions detect each other's writes and retry indefinitely | Add randomized backoff; bounded retry with fallback to pessimistic locking |
+
+#### Mapping to root fix strategy
+
+| When you see... | First check... |
+|----------------|---------------|
+| `data-race` | Does the variable need to be `Atomic*`? Is a lock missing around the read AND the write? |
+| `atomicity-violation` | Is the critical section too small? Does a pointer validity window need RCU or refcount protection? |
+| `order-violation` | Are `Acquire`/`Release` orderings paired correctly? Is an `smp_mb()` needed between the two relevant writes? |
+| `deadlock` / `lock-hierarchy-violation` | What is the lock dependency graph? Which code path violates the ordering? |
+| `missing-barrier` | Is this a store-load pattern? If so, `SeqCst` or store-`Release` + load-`Acquire`. Is this a store-store? Use `smp_wmb()`. |
+| `starvation` / `livelock` | Is the lock fair? Is there a backoff mechanism? Can the hot path be made lock-free?
 
 ### Dimension 2: Manifestation
 
@@ -60,10 +86,18 @@ A bug that can't be classified in both dimensions needs further analysis.
 |------------|---------------|----------|--------------|
 | memory-bug | crash | **CRITICAL** | Fix immediately, could be exploitable |
 | memory-bug | silent-corruption | **CRITICAL** | Fix immediately, hard to detect |
-| concurrency-bug | crash | **CRITICAL** | Fix immediately |
-| concurrency-bug | hang | **HIGH** | Fix before next release |
+| data-race | crash | **CRITICAL** | Fix immediately, potentially exploitable |
+| data-race | silent-corruption | **CRITICAL** | Fix immediately, may corrupt kernel state |
+| atomicity-violation | crash | **CRITICAL** | TOCTOU gap with UAF risk |
+| deadlock | hang | **CRITICAL** | System permanently stuck; requires reboot |
+| missing-barrier | silent-corruption | **HIGH** | Works on x86 (TSO) but breaks on ARM/RISC-V (weak ordering) |
+| missing-barrier | wrong-result | **HIGH** | Observer sees partially-initialized data |
+| order-violation | wrong-result | **HIGH** | Breaks happens-before guarantee |
+| lock-hierarchy-violation | hang | **HIGH** | Latent deadlock; may not trigger under low load |
 | validation-bug | crash | **HIGH** | Potential security boundary |
 | logic-bug | wrong-result | **HIGH** | Breaks Linux compatibility |
+| starvation | hang | **MEDIUM** | Thread makes no progress but system recovers on its own |
+| livelock | hang | **MEDIUM** | CPU spins but no progress; watchdog may catch |
 | resource-bug | leak | **MEDIUM** | Degrades over time |
 | logic-bug | wrong-output | **MEDIUM** | User-visible but not security-critical |
 
@@ -176,7 +210,7 @@ For each bug fixed, use this per-bug template:
 ```markdown
 ### <N>. <One-line issue title>
 
-**Root Cause**: <logic-bug | memory-bug | concurrency-bug | validation-bug | resource-bug>
+**Root Cause**: <logic-bug | memory-bug | validation-bug | resource-bug | data-race | atomicity-violation | order-violation | deadlock | lock-hierarchy-violation | missing-barrier | starvation | livelock>
 **Manifestation**: <wrong-result | wrong-output | crash | hang | silent-corruption | leak>
 
 **Analysis**: <Root cause — which function/line, why the defect exists, what invariant was violated.>

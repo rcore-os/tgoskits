@@ -96,7 +96,7 @@ Generate the PR body using this template:
 
 ### 1. <Issue Title>
 
-**Root Cause**: <logic-bug | memory-bug | concurrency-bug | validation-bug | resource-bug>
+**Root Cause**: <logic-bug | memory-bug | validation-bug | resource-bug | data-race | atomicity-violation | order-violation | deadlock | lock-hierarchy-violation | missing-barrier | starvation | livelock>
 **Manifestation**: <wrong-result | wrong-output | crash | hang | silent-corruption | leak>
 
 **Analysis**: <Root cause — which function/line, why the defect exists, what invariant was violated.>
