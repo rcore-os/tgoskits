@@ -8,7 +8,7 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
-use axfs_ng_vfs::NodeType;
+use axfs_ng_vfs::{NodePermission, NodeType};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::__kernel_off_t;
 use starry_vm::{VmMutPtr, VmPtr};
@@ -17,6 +17,7 @@ use syscalls::Sysno;
 use crate::{
     file::{Directory, File, FileLike, Pipe, get_file_like},
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
+    task::AsThread,
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -145,6 +146,9 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
 pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
     let path = path.get_as_str()?;
     debug!("sys_truncate <= {path:?} {length}");
+    if path.is_empty() {
+        return Err(AxError::from(LinuxError::ENOENT));
+    }
     if length < 0 {
         return Err(AxError::InvalidInput);
     }
@@ -152,6 +156,26 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
         .write(true)
         .open(&FS_CONTEXT.lock(), path)?
         .into_file()?;
+    if (length as u64) > u32::MAX as u64 * 4096 {
+        return Err(AxError::from(LinuxError::EFBIG));
+    }
+    // Check write permission against current credentials following the
+    // same owner/group/other + root-bypass rules as faccessat2(2).
+    let cred = current().as_thread().cred();
+    if cred.fsuid != 0 {
+        let metadata = file.location().metadata()?;
+        let (file_uid, file_gid, file_mode) = (metadata.uid, metadata.gid, metadata.mode);
+        let has_write = if cred.fsuid == file_uid {
+            file_mode.contains(NodePermission::OWNER_WRITE)
+        } else if cred.fsgid == file_gid || cred.groups.contains(&file_gid) {
+            file_mode.contains(NodePermission::GROUP_WRITE)
+        } else {
+            file_mode.contains(NodePermission::OTHER_WRITE)
+        };
+        if !has_write {
+            return Err(AxError::from(LinuxError::EACCES));
+        }
+    }
     file.access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
@@ -161,7 +185,16 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     if length < 0 {
         return Err(AxError::InvalidInput);
     }
-    let f = File::from_fd(fd)?;
+    let f = File::from_fd(fd).map_err(|e| {
+        if e == AxError::IsADirectory {
+            AxError::from(LinuxError::EINVAL)
+        } else {
+            e
+        }
+    })?;
+    if (length as u64) > u32::MAX as u64 * 4096 {
+        return Err(AxError::from(LinuxError::EFBIG));
+    }
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
@@ -173,6 +206,9 @@ pub fn sys_fallocate(
     len: __kernel_off_t,
 ) -> AxResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
+    // Validate fd first: invalid/closed/dir/read-only → EBADF, pipe → ESPIPE.
+    // Linux errno priority: EBADF/ESPIPE > EOPNOTSUPP > EINVAL.
+    let f = file_or_espipe_write(fd)?;
     if mode != 0 {
         return Err(AxError::OperationNotSupported);
     }
@@ -186,7 +222,6 @@ pub fn sys_fallocate(
     if end > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
     }
-    let f = file_or_espipe(fd)?;
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
     file.set_len(file.location().len()?.max(end))?;
@@ -240,8 +275,14 @@ pub fn sys_fadvise64(
     advice: u32,
 ) -> AxResult<isize> {
     debug!("sys_fadvise64 <= fd: {fd}, offset: {offset}, len: {len}, advice: {advice}");
-    if Pipe::from_fd(fd).is_ok() {
+    // Validate fd first: invalid/closed → EBADF, non-file/non-dir → ESPIPE.
+    // Linux fadvise64 accepts regular files and directories (advisory hint).
+    let f = get_file_like(fd)?;
+    if f.downcast_ref::<File>().is_none() && f.downcast_ref::<Directory>().is_none() {
         return Err(AxError::from(LinuxError::ESPIPE));
+    }
+    if len < 0 {
+        return Err(AxError::InvalidInput);
     }
     if advice > 5 {
         return Err(AxError::InvalidInput);
