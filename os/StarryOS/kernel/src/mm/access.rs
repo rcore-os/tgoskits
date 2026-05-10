@@ -418,27 +418,30 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
     let aligned_addr = addr.align_down_4k();
     let aligned_length = (addr + data.len()).align_up_4k() - aligned_addr;
 
-    crate::stop_machine::stop_machine(
-        || -> AxResult<()> {
-            let kspace = ax_mm::kernel_aspace();
-            let mut guard = kspace.lock();
-            let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
+    let mut guard = ax_mm::kernel_aspace().lock();
+    let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
 
+    crate::stop_machine::stop_machine(
+        move || -> AxResult<()> {
             guard.protect(
                 aligned_addr,
                 aligned_length,
                 original_flags | MappingFlags::WRITE,
             )?;
+
             flush_tlb_range(aligned_addr, aligned_length);
 
             unsafe {
                 core::ptr::copy_nonoverlapping(data.as_ptr(), addr.as_mut_ptr(), data.len());
             }
 
+            #[cfg(target_arch = "aarch64")]
+            ax_hal::asm::clean_dcache_range_to_pou(addr, data.len());
+
             guard.protect(aligned_addr, aligned_length, original_flags)?;
             Ok(())
         },
-        move || sync_modified_kernel_text(aligned_addr, aligned_length, addr),
+        move || sync_modified_kernel_text(aligned_addr, aligned_length),
     )
 }
 
@@ -448,11 +451,8 @@ fn flush_tlb_range(start: VirtAddr, size: usize) {
     }
 }
 
-fn sync_modified_kernel_text(start: VirtAddr, size: usize, _addr: VirtAddr) {
+fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     flush_tlb_range(start, size);
-
-    #[cfg(target_arch = "aarch64")]
-    ax_hal::asm::flush_dcache_line(_addr);
 
     ax_hal::asm::flush_icache_all();
 }

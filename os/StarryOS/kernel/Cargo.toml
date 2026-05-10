@@ -21,7 +21,7 @@ memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
 plat-dyn = ["dep:axplat-dyn", "axplat-dyn/usb", "dep:crab-usb", "dep:rdrive"]
 vsock = ["ax-feat/vsock"]
-dynamic_debug = []
+dynamic_debug = ["ax-feat/ipi"]
 
 [dependencies]
 ax-feat = { workspace = true, features = [
