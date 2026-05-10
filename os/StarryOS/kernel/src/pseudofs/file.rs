@@ -178,6 +178,7 @@ impl Pollable for SimpleFile {
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
+// TODO: create a linux like seq file that supports iterating content in chunks instead of reading all content at once, to avoid large memory usage for large files.
 /// A Sequential file, which only supports reading all content. It is used for procfs and sysfs.
 pub struct SeqFile {
     node: SimpleFsNode,
@@ -202,7 +203,6 @@ impl SeqFile {
     }
 }
 
-// TODO: create a linux like seq file that supports iterating content in chunks instead of reading all content at once, to avoid large memory usage for large files.
 /// Operations for a sequential file.
 pub trait SeqFileOps: Send + Sync + 'static {
     /// Reads all content in the file.
@@ -256,7 +256,7 @@ impl NodeOps for SeqFile {
 impl FileNodeOps for SeqFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let mut cache = self.content_cache.lock();
-        if cache.is_none() {
+        if cache.is_none() || offset == 0 {
             let content = self.ops.read_all()?;
             *cache = Some(content.into_owned());
         }
@@ -271,18 +271,10 @@ impl FileNodeOps for SeqFile {
         Ok(read)
     }
 
-    fn seek_to(&self, pos: u64) -> VfsResult<()> {
-        if pos == 0 {
-            // Clear the cache to reset the file content.
-            let mut cache = self.content_cache.lock();
-            *cache = None;
-        }
-        Ok(())
-    }
-
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Err(VfsError::OperationNotPermitted)
     }
+
     fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
         Err(VfsError::OperationNotPermitted)
     }

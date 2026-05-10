@@ -264,6 +264,9 @@ if echo "$_t" | grep -qF "Usage: ipcrm"; then echo "PASS: busybox_ipcrm"; PASS=$
 _t=$({ timeout 10 sh -c "busybox ipcs 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Message Queues"; then echo "PASS: busybox_ipcs"; PASS=$((PASS+1)); else echo "FAIL: busybox_ipcs"; FAIL=$((FAIL+1)); fi
 
+_t=$({ timeout 10 sh -c "busybox iplink 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "link/"; then echo "PASS: busybox_iplink"; PASS=$((PASS+1)); else echo "FAIL: busybox_iplink"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox ip addr 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "inet "; then echo "PASS: busybox_ipaddr"; PASS=$((PASS+1)); else echo "FAIL: busybox_ipaddr"; FAIL=$((FAIL+1)); fi
 
@@ -458,6 +461,9 @@ if echo "$_t" | grep -qF "a	b"; then echo "PASS: busybox_paste"; PASS=$((PASS+1)
 
 _t=$({ timeout 10 sh -c "busybox pgrep -h 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Usage: pgrep"; then echo "PASS: busybox_pgrep"; PASS=$((PASS+1)); else echo "FAIL: busybox_pgrep"; FAIL=$((FAIL+1)); fi
+
+_t=$({ busybox pidof -s init 2>&1 || busybox pidof -s sh 2>&1; } 2>&1)
+if echo "$_t" | grep -qF "1"; then echo "PASS: busybox_pidof"; PASS=$((PASS+1)); else echo "FAIL: busybox_pidof"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox ping6 -c 1 ::1 2>&1 || busybox echo ping6_fallback"; } 2>&1)
 if echo "$_t" | grep -qF "ping6_"; then echo "PASS: busybox_ping6"; PASS=$((PASS+1)); else echo "FAIL: busybox_ping6"; FAIL=$((FAIL+1)); fi
@@ -855,7 +861,7 @@ if [ "$_rc" -ne 0 ] && echo "$_t" | grep -qiE "No such device|ENXIO"; then echo 
 
 # blockdev — get sector size of block device
 _t=$({ timeout 10 sh -c "busybox blockdev --getss /dev/loop0 2>&1"; } 2>&1)
-_rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: blockdev"; PASS=$((PASS+1)); else echo "FAIL: blockdev"; FAIL=$((FAIL+1)); fi
+_rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: blockdev"; PASS=$((PASS+1)); else echo "FAIL: blockdev"; echo "$_t (rc=$_rc)"; FAIL=$((FAIL+1)); fi
 
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"

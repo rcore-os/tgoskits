@@ -43,6 +43,7 @@ test_commands = [
     "/usr/bin/bug-fcntl-len-negative",
     "/usr/bin/bug-flock",
     "/usr/bin/bug-flock-failed-upgrade",
+    "/usr/bin/bug-proc-init-pid",
     "/usr/bin/bug-tcp-send-no-epoll-notify",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
