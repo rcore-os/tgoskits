@@ -212,6 +212,10 @@ if echo "$_t" | grep -qF "hello"; then echo "PASS: busybox_grep"; PASS=$((PASS+1
 _t=$({ timeout 10 sh -c "busybox groups 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "root"; then echo "PASS: busybox_groups"; PASS=$((PASS+1)); else echo "FAIL: busybox_groups"; FAIL=$((FAIL+1)); fi
 
+# busybox_ttysize — query terminal size (outputs "rows cols")
+_t=$({ timeout 10 sh -c 'busybox ttysize 2>&1'; } 2>&1)
+if echo "$_t" | grep -qE '^[0-9]+ [0-9]+$'; then echo "PASS: busybox_ttysize"; PASS=$((PASS+1)); else echo "FAIL: busybox_ttysize"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox echo -n hello | busybox gzip -c | busybox gunzip -c 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "hello"; then echo "PASS: busybox_gunzip"; PASS=$((PASS+1)); else echo "FAIL: busybox_gunzip"; FAIL=$((FAIL+1)); fi
 
