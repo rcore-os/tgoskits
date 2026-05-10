@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::{fmt, time::Duration};
+use core::{fmt, mem::MaybeUninit, time::Duration};
 
 use ax_errno::{AxError, AxResult};
 use ax_task::future::{self, block_on, poll_io};
@@ -7,9 +7,10 @@ use axpoll::IoEvents;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::*,
-    select_macros::{FD_ISSET, FD_SET, FD_ZERO},
+    select_macros::{FD_ISSET, FD_SET},
 };
 use starry_signal::SignalSet;
+use starry_vm::{vm_read_slice, vm_write_slice};
 
 use super::FdPollSet;
 use crate::{
@@ -42,6 +43,32 @@ impl fmt::Debug for FdSet {
     }
 }
 
+/// Copy a single `__kernel_fd_set` from user space into a kernel-local value.
+///
+/// Returns `None` if the pointer is null (fd_set argument was omitted).
+fn read_fd_set_from_user(ptr: UserPtr<__kernel_fd_set>) -> AxResult<Option<__kernel_fd_set>> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    let mut buf = [MaybeUninit::<__kernel_fd_set>::uninit()];
+    vm_read_slice(ptr.address().as_usize() as *const __kernel_fd_set, &mut buf)
+        .map_err(|_| AxError::BadAddress)?;
+    // SAFETY: __kernel_fd_set is [c_ulong; 16]; all bit patterns are valid.
+    Ok(Some(unsafe { buf[0].assume_init() }))
+}
+
+/// Write a kernel-local `__kernel_fd_set` back to user space.
+fn write_fd_set_to_user(ptr: UserPtr<__kernel_fd_set>, set: &__kernel_fd_set) -> AxResult<()> {
+    if ptr.is_null() {
+        return Ok(());
+    }
+    vm_write_slice(
+        ptr.address().as_usize() as *mut __kernel_fd_set,
+        core::slice::from_ref(set),
+    )
+    .map_err(|_| AxError::BadAddress)
+}
+
 fn do_select(
     nfds: u32,
     readfds: UserPtr<__kernel_fd_set>,
@@ -61,13 +88,16 @@ fn do_select(
         None
     };
 
-    let mut readfds = nullable!(readfds.get_as_mut())?;
-    let mut writefds = nullable!(writefds.get_as_mut())?;
-    let mut exceptfds = nullable!(exceptfds.get_as_mut())?;
+    // Read the input fd_sets from user space into kernel-local copies.
+    // Reads are safe even on COW pages (read faults are never triggered by
+    // COW; only writes are).
+    let r_readfds = read_fd_set_from_user(readfds)?;
+    let r_writefds = read_fd_set_from_user(writefds)?;
+    let r_exceptfds = read_fd_set_from_user(exceptfds)?;
 
-    let read_set = FdSet::new(nfds as _, readfds.as_deref());
-    let write_set = FdSet::new(nfds as _, writefds.as_deref());
-    let except_set = FdSet::new(nfds as _, exceptfds.as_deref());
+    let read_set = FdSet::new(nfds as _, r_readfds.as_ref());
+    let write_set = FdSet::new(nfds as _, r_writefds.as_ref());
+    let except_set = FdSet::new(nfds as _, r_exceptfds.as_ref());
 
     debug!(
         "sys_select <= nfds: {nfds} sets: [read: {read_set:?}, write: {write_set:?}, except: \
@@ -98,16 +128,16 @@ fn do_select(
     drop(fd_table);
     let fds = FdPollSet(fds);
 
-    if let Some(readfds) = readfds.as_deref_mut() {
-        unsafe { FD_ZERO(readfds) };
-    }
-    if let Some(writefds) = writefds.as_deref_mut() {
-        unsafe { FD_ZERO(writefds) };
-    }
-    if let Some(exceptfds) = exceptfds.as_deref_mut() {
-        unsafe { FD_ZERO(exceptfds) };
-    }
-    with_blocked_signals(sigmask.copied(), || {
+    // Kernel-local output fd_sets, zero-initialised (equivalent to FD_ZERO).
+    // We build results here and write them back to user space after polling.
+    let mut k_readfds: Option<__kernel_fd_set> =
+        r_readfds.map(|_| unsafe { core::mem::zeroed::<__kernel_fd_set>() });
+    let mut k_writefds: Option<__kernel_fd_set> =
+        r_writefds.map(|_| unsafe { core::mem::zeroed::<__kernel_fd_set>() });
+    let mut k_exceptfds: Option<__kernel_fd_set> =
+        r_exceptfds.map(|_| unsafe { core::mem::zeroed::<__kernel_fd_set>() });
+
+    let result = with_blocked_signals(sigmask.copied(), || {
         match block_on(future::timeout(
             timeout,
             poll_io(&fds, IoEvents::empty(), false, || {
@@ -146,7 +176,22 @@ fn do_select(
             Ok(r) => r,
             Err(_) => Ok(0),
         }
-    })
+    })?;
+
+    // Write the kernel-local fd_sets back to user space via vm_write_slice.
+    // This goes through access_user_memory + user_copy, which correctly handles
+    // COW write-faults that may have been introduced by a concurrent fork.
+    if let Some(ref set) = k_readfds {
+        write_fd_set_to_user(readfds, set)?;
+    }
+    if let Some(ref set) = k_writefds {
+        write_fd_set_to_user(writefds, set)?;
+    }
+    if let Some(ref set) = k_exceptfds {
+        write_fd_set_to_user(exceptfds, set)?;
+    }
+
+    Ok(result)
 }
 
 #[cfg(target_arch = "x86_64")]

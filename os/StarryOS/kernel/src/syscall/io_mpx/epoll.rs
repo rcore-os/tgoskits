@@ -1,4 +1,5 @@
-use core::{mem::size_of, time::Duration};
+use alloc::vec;
+use core::time::Duration;
 
 use ax_errno::{AxError, AxResult};
 use ax_task::future::{self, block_on, poll_io};
@@ -15,23 +16,11 @@ use crate::{
         FileLike,
         epoll::{Epoll, EpollEvent, EpollFlags},
     },
-    mm::{UserConstPtr, UserPtr, check_access, nullable},
+    mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
     task::with_blocked_signals,
     time::TimeValueLike,
 };
-
-const EP_MAX_EVENTS: usize = i32::MAX as usize / size_of::<epoll_event>();
-
-fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> AxResult<()> {
-    let len = maxevents
-        .checked_mul(size_of::<epoll_event>())
-        .ok_or(AxError::BadAddress)?;
-    let start = events.as_ptr() as usize;
-    start.checked_add(len).ok_or(AxError::BadAddress)?;
-    check_access(start, len)?;
-    Ok(())
-}
 
 bitflags! {
     /// Flags for the `epoll_create` syscall.
@@ -107,33 +96,35 @@ fn do_epoll_wait(
         return Err(AxError::InvalidInput);
     }
     let maxevents = maxevents as usize;
-    if maxevents > EP_MAX_EVENTS {
-        return Err(AxError::InvalidInput);
-    }
-    if events.is_null() {
-        return Err(AxError::BadAddress);
-    }
-    check_epoll_events_access(events, maxevents)?;
+
+    // Allocate a kernel-owned buffer for the events (Linux-compatible approach).
+    // We operate on kernel memory and write results back via vm_write_slice,
+    // avoiding direct references to user memory that can trigger unhandled
+    // COW write-faults from kernel mode.
+    // epoll_event derives Copy, so vec![zero; n] is safe and avoids unsafe.
+    let mut kevents = vec![epoll_event { events: 0, data: 0 }; maxevents];
 
     let count = with_blocked_signals(
         nullable!(sigmask.get_as_ref())?.copied(),
         || match block_on(future::timeout(
             timeout,
             poll_io(epoll.as_ref(), IoEvents::IN, false, || {
-                epoll.poll_events_with(maxevents, |index, event| {
-                    vm_write_slice(
-                        events.as_ptr().wrapping_add(index),
-                        core::slice::from_ref(&event),
-                    )?;
-                    Ok(())
-                })
+                epoll.poll_events(&mut kevents)
             }),
         )) {
-            Ok(r) => r.map(|n| n as _),
+            Ok(r) => r.map(|n| n as isize),
             Err(_) => Ok(0),
         },
     )?;
 
+    // Write only the filled events back to user space.
+    if count > 0 {
+        vm_write_slice(
+            events.address().as_usize() as *mut epoll_event,
+            &kevents[..count as usize],
+        )
+        .map_err(|_| AxError::BadAddress)?;
+    }
     Ok(count)
 }
 

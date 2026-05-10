@@ -276,7 +276,20 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     };
 
     if unlikely(!thr.is_accessing_user_memory()) {
-        return false;
+        // Still handle kernel-mode faults on user-space addresses.
+        // This covers COW write faults that arise when kernel code holds a direct
+        // `&mut` reference into user memory (via get_as_mut / get_as_mut_slice) and
+        // a concurrent fork has re-marked the page read-only between check_region
+        // and the actual write.
+        let user_range = USER_SPACE_BASE..USER_SPACE_BASE + USER_SPACE_SIZE;
+        if !user_range.contains(&vaddr.as_usize()) {
+            return false;
+        }
+        // Avoid deadlock: the aspace lock must not already be held by this thread.
+        let aspace_arc = thr.proc_data.aspace();
+        if unsafe { aspace_arc.raw() }.is_owned_by_current() {
+            return false;
+        }
     }
 
     might_sleep();
