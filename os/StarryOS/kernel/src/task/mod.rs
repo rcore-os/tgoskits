@@ -170,6 +170,15 @@ pub struct Thread {
     pub fault_dump_signo: AtomicU8,
 
     pub kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
+
+    /// Whether uid_map has been written for this thread's user namespace.
+    uid_map_written: AtomicBool,
+
+    /// Whether gid_map has been written for this thread's user namespace.
+    gid_map_written: AtomicBool,
+
+    /// Whether setgroups has been set to "deny" for this thread's user namespace.
+    setgroups_deny: AtomicBool,
 }
 
 impl Thread {
@@ -200,6 +209,10 @@ impl Thread {
 
             fault_dump_signo: AtomicU8::new(0),
             kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
+
+            uid_map_written: AtomicBool::new(false),
+            gid_map_written: AtomicBool::new(false),
+            setgroups_deny: AtomicBool::new(false),
         })
     }
 
@@ -357,6 +370,36 @@ impl Thread {
     /// Get the registered rseq signature.
     pub fn rseq_signature(&self) -> u32 {
         self.rseq_signature.load(Ordering::SeqCst)
+    }
+
+    /// Check if uid_map has been written for this thread's user namespace.
+    pub fn uid_map_written(&self) -> bool {
+        self.uid_map_written.load(Ordering::Relaxed)
+    }
+
+    /// Mark uid_map as written.
+    pub fn set_uid_map_written(&self, val: bool) {
+        self.uid_map_written.store(val, Ordering::Relaxed);
+    }
+
+    /// Check if gid_map has been written for this thread's user namespace.
+    pub fn gid_map_written(&self) -> bool {
+        self.gid_map_written.load(Ordering::Relaxed)
+    }
+
+    /// Mark gid_map as written.
+    pub fn set_gid_map_written(&self, val: bool) {
+        self.gid_map_written.store(val, Ordering::Relaxed);
+    }
+
+    /// Check if setgroups has been set to "deny".
+    pub fn setgroups_deny(&self) -> bool {
+        self.setgroups_deny.load(Ordering::Relaxed)
+    }
+
+    /// Set the setgroups deny flag.
+    pub fn set_setgroups_deny(&self, val: bool) {
+        self.setgroups_deny.store(val, Ordering::Relaxed);
     }
 
     /// Set the registered rseq area pointer.
