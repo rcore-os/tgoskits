@@ -13,6 +13,91 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#ifndef AF_NETLINK
+#define AF_NETLINK 16
+#endif
+
+#ifndef AF_PACKET
+#define AF_PACKET 17
+#endif
+
+#define NETLINK_ROUTE 0
+
+#define NLM_F_REQUEST 0x01
+#define NLM_F_ROOT 0x100
+#define NLM_F_MATCH 0x200
+#define NLM_F_DUMP (NLM_F_ROOT | NLM_F_MATCH)
+
+#define NLMSG_DONE 3
+
+#define RTM_NEWLINK 16
+#define RTM_GETLINK 18
+
+#define IFLA_IFNAME 3
+
+#define NLMSG_ALIGNTO 4U
+#define NLMSG_ALIGN(len) (((len) + NLMSG_ALIGNTO - 1) & ~(NLMSG_ALIGNTO - 1))
+#define NLMSG_HDRLEN ((int)NLMSG_ALIGN(sizeof(struct nlmsghdr)))
+#define NLMSG_LENGTH(len) ((len) + NLMSG_HDRLEN)
+#define NLMSG_DATA(nlh) ((void *)((char *)(nlh) + NLMSG_HDRLEN))
+#define NLMSG_NEXT(nlh, len) \
+    ((len) -= NLMSG_ALIGN((nlh)->nlmsg_len), \
+     (struct nlmsghdr *)((char *)(nlh) + NLMSG_ALIGN((nlh)->nlmsg_len)))
+#define NLMSG_OK(nlh, len) \
+    ((len) >= (int)sizeof(struct nlmsghdr) && \
+     (nlh)->nlmsg_len >= sizeof(struct nlmsghdr) && \
+     (nlh)->nlmsg_len <= (uint32_t)(len))
+#define NLMSG_PAYLOAD(nlh, len) ((nlh)->nlmsg_len - NLMSG_ALIGN(NLMSG_LENGTH((len))))
+
+#define RTA_ALIGNTO 4U
+#define RTA_ALIGN(len) (((len) + RTA_ALIGNTO - 1) & ~(RTA_ALIGNTO - 1))
+#define RTA_LENGTH(len) (RTA_ALIGN(sizeof(struct rtattr)) + (len))
+#define RTA_DATA(rta) ((void *)((char *)(rta) + RTA_LENGTH(0)))
+#define RTA_NEXT(rta, len) \
+    ((len) -= RTA_ALIGN((rta)->rta_len), \
+     (struct rtattr *)((char *)(rta) + RTA_ALIGN((rta)->rta_len)))
+#define RTA_OK(rta, len) \
+    ((len) >= (int)sizeof(struct rtattr) && \
+     (rta)->rta_len >= sizeof(struct rtattr) && \
+     (rta)->rta_len <= (uint16_t)(len))
+
+#define IFLA_RTA(ifi) \
+    ((struct rtattr *)((char *)(ifi) + NLMSG_ALIGN(sizeof(struct ifinfomsg))))
+#define IFLA_PAYLOAD(nlh) NLMSG_PAYLOAD(nlh, sizeof(struct ifinfomsg))
+
+struct sockaddr_nl_compat {
+    uint16_t nl_family;
+    uint16_t nl_pad;
+    uint32_t nl_pid;
+    uint32_t nl_groups;
+};
+
+struct nlmsghdr {
+    uint32_t nlmsg_len;
+    uint16_t nlmsg_type;
+    uint16_t nlmsg_flags;
+    uint32_t nlmsg_seq;
+    uint32_t nlmsg_pid;
+};
+
+struct rtgenmsg {
+    unsigned char rtgen_family;
+};
+
+struct rtattr {
+    uint16_t rta_len;
+    uint16_t rta_type;
+};
+
+struct ifinfomsg {
+    uint8_t ifi_family;
+    uint8_t __ifi_pad;
+    uint16_t ifi_type;
+    int32_t ifi_index;
+    uint32_t ifi_flags;
+    uint32_t ifi_change;
+};
+
 static int check(int condition, const char *message)
 {
     if (!condition) {
@@ -20,6 +105,77 @@ static int check(int condition, const char *message)
         return 1;
     }
     return 0;
+}
+
+static int netlink_eth0_ifindex(void)
+{
+    int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    if (fd < 0) {
+        return -1;
+    }
+
+    struct sockaddr_nl_compat bind_addr;
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.nl_family = AF_NETLINK;
+    if (bind(fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    struct {
+        struct nlmsghdr hdr;
+        struct rtgenmsg gen;
+    } req;
+    memset(&req, 0, sizeof(req));
+    req.hdr.nlmsg_len = sizeof(req);
+    req.hdr.nlmsg_type = RTM_GETLINK;
+    req.hdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    req.hdr.nlmsg_seq = 7;
+    req.gen.rtgen_family = AF_PACKET;
+
+    if (send(fd, &req, sizeof(req), 0) != (ssize_t)sizeof(req)) {
+        close(fd);
+        return -1;
+    }
+
+    unsigned char buf[4096];
+    int eth0_ifindex = -1;
+    int saw_done = 0;
+
+    while (!saw_done && eth0_ifindex < 0) {
+        ssize_t len = recv(fd, buf, sizeof(buf), 0);
+        if (len <= 0) {
+            close(fd);
+            return -1;
+        }
+
+        for (struct nlmsghdr *hdr = (struct nlmsghdr *)buf; NLMSG_OK(hdr, (unsigned int)len);
+             hdr = NLMSG_NEXT(hdr, len)) {
+            if (hdr->nlmsg_seq != 7) {
+                continue;
+            }
+            if (hdr->nlmsg_type == NLMSG_DONE) {
+                saw_done = 1;
+                break;
+            }
+            if (hdr->nlmsg_type != RTM_NEWLINK) {
+                continue;
+            }
+
+            struct ifinfomsg *ifi = NLMSG_DATA(hdr);
+            int attr_len = IFLA_PAYLOAD(hdr);
+            for (struct rtattr *attr = IFLA_RTA(ifi); RTA_OK(attr, attr_len);
+                 attr = RTA_NEXT(attr, attr_len)) {
+                if (attr->rta_type == IFLA_IFNAME && strcmp((const char *)RTA_DATA(attr), "eth0") == 0) {
+                    eth0_ifindex = ifi->ifi_index;
+                    break;
+                }
+            }
+        }
+    }
+
+    close(fd);
+    return eth0_ifindex;
 }
 
 static int check_bytes(const unsigned char *actual, const unsigned char *expected, size_t len,
@@ -64,6 +220,13 @@ int main(void)
     }
     int ifindex = ifr.ifr_ifindex;
     printf("eth0 ifindex=%d\n", ifindex);
+
+    int netlink_ifindex = netlink_eth0_ifindex();
+    printf("eth0 netlink ifindex=%d\n", netlink_ifindex);
+    if (check(netlink_ifindex == ifindex, "SIOCGIFINDEX eth0 matches RTM_GETLINK eth0")) {
+        close(fd);
+        return 1;
+    }
 
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, "eth0", IFNAMSIZ - 1);

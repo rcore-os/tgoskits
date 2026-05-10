@@ -21,9 +21,9 @@ use starry_vm::{vm_read_slice, vm_write_slice};
 use super::{FileLike, Kstat};
 use crate::file::{IoDst, IoSrc, get_file_like};
 
-pub const ETH0_IFINDEX: i32 = 1;
+pub(super) const ETH0_IFINDEX: i32 = 2;
 const ETH0_NAME: &[u8] = b"eth0";
-const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+pub(super) const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 const SYNTHETIC_PEER_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02];
 
 const ARPHRD_ETHER: u16 = 1;
