@@ -14,7 +14,7 @@ use linux_raw_sys::{
 
 use super::addr::SocketAddrExt;
 use crate::{
-    file::{FileLike, Socket, add_file_like},
+    file::{FileLike, Socket, add_file_like, get_file_like, netlink::NetlinkSocket},
     mm::{IoVec, IoVectorBuf, UserConstPtr, UserPtr, VmBytes, VmBytesMut},
     syscall::net::{CMsg, CMsgBuilder},
     time::TimeValueLike,
@@ -66,25 +66,34 @@ fn send_impl(
     addrlen: socklen_t,
     cmsg: Vec<CMsgData>,
 ) -> AxResult<isize> {
-    let addr = if addr.is_null() || addrlen == 0 {
-        None
-    } else {
-        Some(SocketAddrEx::read_from_user(addr, addrlen)?)
-    };
+    if let Ok(socket) = Socket::from_fd(fd) {
+        let addr = if addr.is_null() || addrlen == 0 {
+            None
+        } else {
+            Some(SocketAddrEx::read_from_user(addr, addrlen)?)
+        };
 
-    debug!("sys_send <= fd: {fd}, flags: {flags}, addr: {addr:?}");
+        debug!("sys_send <= fd: {fd}, flags: {flags}, addr: {addr:?}");
 
-    let socket = Socket::from_fd(fd)?;
-    let sent = socket.send(
-        &mut src,
-        SendOptions {
-            to: addr,
-            flags: SendFlags::default(),
-            cmsg,
-        },
-    )?;
+        let sent = socket.send(
+            &mut src,
+            SendOptions {
+                to: addr,
+                flags: SendFlags::default(),
+                cmsg,
+            },
+        )?;
 
-    Ok(sent as isize)
+        return Ok(sent as isize);
+    }
+
+    if let Ok(netlink) = NetlinkSocket::from_fd(fd) {
+        let sent = netlink.write(&mut src)?;
+        return Ok(sent as isize);
+    }
+
+    get_file_like(fd)?;
+    Err(AxError::NotASocket)
 }
 
 pub fn sys_sendto(
@@ -121,7 +130,22 @@ fn recv_impl(
 ) -> AxResult<isize> {
     debug!("sys_recv <= fd: {fd}, flags: {flags}");
 
-    let socket = Socket::from_fd(fd)?;
+    let Ok(socket) = Socket::from_fd(fd) else {
+        if let Ok(netlink) = NetlinkSocket::from_fd(fd) {
+            let recv = netlink.read(&mut dst)?;
+            if !addr.is_null() {
+                super::addr::write_netlink_addr(
+                    &netlink.kernel_addr(),
+                    addr,
+                    addrlen.get_as_mut()?,
+                )?;
+            }
+            return Ok(recv as isize);
+        }
+
+        get_file_like(fd)?;
+        return Err(AxError::NotASocket);
+    };
     let mut recv_flags = RecvFlags::empty();
     if flags & MSG_PEEK != 0 {
         recv_flags |= RecvFlags::PEEK;

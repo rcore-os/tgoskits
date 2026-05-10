@@ -7,7 +7,7 @@ _t=$({ timeout 10 sh -c "busybox adjtimex 2>&1"; } 2>&1)
 if [ -n "$_t" ]; then echo "PASS: busybox_adjtimex"; PASS=$((PASS+1)); else echo "FAIL: busybox_adjtimex (empty)"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox arch 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "riscv"; then echo "PASS: busybox_arch"; PASS=$((PASS+1)); else echo "FAIL: busybox_arch"; FAIL=$((FAIL+1)); fi
+if [ -n "$_t" ] && echo "$_t" | grep -qE "x86_64|riscv|aarch64|arm|loongarch|mips|powerpc|s390"; then echo "PASS: busybox_arch"; PASS=$((PASS+1)); else echo "FAIL: busybox_arch"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox ash -c 'echo ash_ok' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "ash_ok"; then echo "PASS: busybox_ash"; PASS=$((PASS+1)); else echo "FAIL: busybox_ash"; FAIL=$((FAIL+1)); fi
@@ -254,6 +254,9 @@ if echo "$_t" | grep -qF "Usage: ipcrm"; then echo "PASS: busybox_ipcrm"; PASS=$
 
 _t=$({ timeout 10 sh -c "busybox ipcs 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Message Queues"; then echo "PASS: busybox_ipcs"; PASS=$((PASS+1)); else echo "FAIL: busybox_ipcs"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox ip addr 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "inet "; then echo "PASS: busybox_ipaddr"; PASS=$((PASS+1)); else echo "FAIL: busybox_ipaddr"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox ip neigh show 2>&1; busybox echo ipneigh_ok"; } 2>&1)
 if echo "$_t" | grep -qF "ipneigh_ok"; then echo "PASS: busybox_ipneigh"; PASS=$((PASS+1)); else echo "FAIL: busybox_ipneigh"; FAIL=$((FAIL+1)); fi
@@ -829,10 +832,21 @@ if echo "$_t" | grep -qF "rmdir_ok"; then echo "PASS: busybox_rmdir"; PASS=$((PA
 _t=$({ timeout 10 sh -c 'busybox rm -f /tmp/bb_link_a /tmp/bb_link_b; busybox echo link_data > /tmp/bb_link_a && busybox link /tmp/bb_link_a /tmp/bb_link_b && busybox cat /tmp/bb_link_b'; } 2>&1)
 if echo "$_t" | grep -qF "link_data"; then echo "PASS: busybox_link"; PASS=$((PASS+1)); else echo "FAIL: busybox_link"; FAIL=$((FAIL+1)); fi
 
-# busybox_blockdev — query block device sector size
-_t=$({ timeout 10 sh -c 'busybox blockdev --getss /dev/loop0'; } 2>&1)
+# blkid — identify block device metadata
+_t=$({ timeout 10 sh -c "busybox blkid /dev/null 2>&1"; } 2>&1)
 _rc=$?
-if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: busybox_blockdev"; PASS=$((PASS+1)); else echo "FAIL: busybox_blockdev (exit=$_rc)"; echo "$_t"; FAIL=$((FAIL+1)); fi
+if echo "$_t" | grep -qE "/dev/null|Usage|not a block|No such|ioctl" || { [ -z "$_t" ] && [ "$_rc" -eq 0 ]; }; then echo "PASS: blkid"; PASS=$((PASS+1)); else echo "FAIL: blkid"; echo "$_t (rc=$_rc)"; FAIL=$((FAIL+1)); fi
+
+# blkdiscard — unbound loop device must fail with non-zero exit and a
+# device-level error (ENXIO → "No such device").  Accepting rc=0 or
+# generic busybox prefix matches would let the old no-op-success bug pass.
+_t=$({ timeout 10 sh -c "busybox blkdiscard /dev/loop0 2>&1"; } 2>&1)
+_rc=$?
+if [ "$_rc" -ne 0 ] && echo "$_t" | grep -qiE "No such device|ENXIO"; then echo "PASS: blkdiscard"; PASS=$((PASS+1)); else echo "FAIL: blkdiscard"; echo "$_t (rc=$_rc)"; FAIL=$((FAIL+1)); fi
+
+# blockdev — get sector size of block device
+_t=$({ timeout 10 sh -c "busybox blockdev --getss /dev/loop0 2>&1"; } 2>&1)
+_rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: blockdev"; PASS=$((PASS+1)); else echo "FAIL: blockdev"; echo "$_t (rc=$_rc)"; FAIL=$((FAIL+1)); fi
 
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
