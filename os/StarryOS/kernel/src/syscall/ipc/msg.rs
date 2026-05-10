@@ -73,6 +73,8 @@ pub struct Message {
     pub mtype: i64,
     /// message data
     pub data: Vec<u8>,
+    /// FIFO sequence number
+    pub seq: u64,
 }
 
 /// This struct is used to maintain the message queue in kernel.
@@ -83,6 +85,8 @@ pub struct MessageQueue {
     pub messages: BTreeMap<i64, Vec<Message>>, // mtype -> messages of that type
     /// Total bytes in queue
     pub total_bytes: usize,
+    /// Next FIFO sequence number
+    pub next_seq: u64,
     /// Waiters blocked on send due to full queue
     pub send_wait_queue: Arc<WaitQueue>,
     /// Waiters blocked on receive due to empty queue
@@ -98,6 +102,7 @@ impl MessageQueue {
             msqid_ds: msqid_ds::new(key, mode, pid as __kernel_pid_t, uid, gid),
             messages: BTreeMap::new(),
             total_bytes: 0,
+            next_seq: 0,
             send_wait_queue: Arc::new(WaitQueue::new()),
             recv_wait_queue: Arc::new(WaitQueue::new()),
             mark_removed: false,
@@ -112,7 +117,9 @@ impl MessageQueue {
             return Err(AxError::from(LinuxError::ENOSPC)); // ENOSPC
         }
 
-        let message = Message { mtype, data };
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let message = Message { mtype, data, seq };
 
         self.messages.entry(mtype).or_default().push(message);
         self.total_bytes += data_len;
@@ -122,14 +129,32 @@ impl MessageQueue {
         Ok(())
     }
 
-    /// Find the first message (without removing)
-    pub fn find_first_message(&self) -> Option<(i64, &[u8])> {
+    fn find_fifo_message<F>(&self, filter: F) -> Option<(i64, &[u8])>
+    where
+        F: Fn(i64) -> bool,
+    {
+        let mut candidate: Option<&Message> = None;
+
         for (&mtype, messages) in &self.messages {
+            if !filter(mtype) {
+                continue;
+            }
             if let Some(message) = messages.first() {
-                return Some((mtype, &message.data[..]));
+                let should_pick = candidate
+                    .map(|current| message.seq < current.seq)
+                    .unwrap_or(true);
+                if should_pick {
+                    candidate = Some(message);
+                }
             }
         }
-        None
+
+        candidate.map(|message| (message.mtype, &message.data[..]))
+    }
+
+    /// Find the first message in FIFO order (without removing)
+    pub fn find_first_message(&self) -> Option<(i64, &[u8])> {
+        self.find_fifo_message(|_| true)
     }
 
     /// Find message by type (without removing)
@@ -140,17 +165,10 @@ impl MessageQueue {
             .map(|msg| (msgtyp, &msg.data[..]))
     }
 
-    /// Find the first message with a type not equal to the specified value
-    /// (without removing)
+    /// Find the first message with a type not equal to the specified value,
+    /// in FIFO order (without removing)
     pub fn find_message_not_equal(&self, msgtyp: i64) -> Option<(i64, &[u8])> {
-        for (&mtype, messages) in &self.messages {
-            if mtype != msgtyp
-                && let Some(message) = messages.first()
-            {
-                return Some((mtype, &message.data[..]));
-            }
-        }
-        None
+        self.find_fifo_message(|mtype| mtype != msgtyp)
     }
 
     /// Find the first message with a type less than or equal to |msgtyp|
@@ -184,18 +202,21 @@ impl MessageQueue {
         self.messages.values().map(|msgs| msgs.len()).sum()
     }
 
-    /// Get message by index (for MSG_COPY)
+    /// Get message by FIFO index (for MSG_COPY)
     pub fn get_message_by_index(&self, index: usize) -> Option<&Message> {
-        let mut current_index = 0;
-
-        // Iterate over all messages in order of message type
-        for messages in self.messages.values() {
-            if index < current_index + messages.len() {
-                return messages.get(index - current_index);
-            }
-            current_index += messages.len();
+        let total = self.get_total_message_count();
+        if index >= total {
+            return None;
         }
-        None
+
+        let mut ordered: Vec<&Message> = Vec::with_capacity(total);
+        for messages in self.messages.values() {
+            for message in messages {
+                ordered.push(message);
+            }
+        }
+        ordered.sort_by_key(|message| message.seq);
+        ordered.get(index).copied()
     }
 
     /// Remove the message by specified type and index

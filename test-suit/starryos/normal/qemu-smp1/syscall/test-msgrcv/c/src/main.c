@@ -159,7 +159,31 @@ int main(void)
     CHECK(n == 4 && check_message(&recv_buf, 3, "CCCC", 4),
           "receive remaining message with msgtyp=0");
 
-    CHECK_ERR(msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 0, IPC_NOWAIT), ENOMSG,
+        CHECK_RET(send_message(msqid, 5, "FIRST"), 0, "msgsnd fifo type=5 first");
+        CHECK_RET(send_message(msqid, 1, "SECOND"), 0, "msgsnd fifo type=1 second");
+        CHECK_RET(send_message(msqid, 3, "THIRD"), 0, "msgsnd fifo type=3 third");
+
+        n = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 0, MSG_COPY | IPC_NOWAIT);
+        CHECK(n == 5 && check_message(&recv_buf, 5, "FIRST", 5),
+            "MSG_COPY index 0 follows FIFO order");
+
+        n = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 1, MSG_COPY | IPC_NOWAIT);
+        CHECK(n == 6 && check_message(&recv_buf, 1, "SECOND", 6),
+            "MSG_COPY index 1 follows FIFO order");
+
+        n = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 0, 0);
+        CHECK(n == 5 && check_message(&recv_buf, 5, "FIRST", 5),
+            "msgtyp=0 returns FIFO head even if mtype is larger");
+
+        n = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 0, 0);
+        CHECK(n == 6 && check_message(&recv_buf, 1, "SECOND", 6),
+            "msgtyp=0 drains FIFO in order #2");
+
+        n = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 0, 0);
+        CHECK(n == 5 && check_message(&recv_buf, 3, "THIRD", 5),
+            "msgtyp=0 drains FIFO in order #3");
+
+        CHECK_ERR(msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 0, IPC_NOWAIT), ENOMSG,
               "empty queue with IPC_NOWAIT => ENOMSG");
 
     pid_t pid = fork();
