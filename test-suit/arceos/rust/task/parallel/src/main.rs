@@ -1,5 +1,19 @@
-#![cfg_attr(feature = "ax-std", no_std)]
-#![cfg_attr(feature = "ax-std", no_main)]
+#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_std)]
+#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_main)]
+
+#[cfg(any(not(target_os = "none"), feature = "ax-std"))]
+macro_rules! app {
+    ($($item:item)*) => {
+        $($item)*
+    };
+}
+
+#[cfg(not(any(not(target_os = "none"), feature = "ax-std")))]
+macro_rules! app {
+    ($($item:item)*) => {};
+}
+
+app! {
 
 #[macro_use]
 #[cfg(feature = "ax-std")]
@@ -20,10 +34,10 @@ fn barrier() {
     static BARRIER_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
     static BARRIER_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    BARRIER_COUNT.fetch_add(1, Ordering::Relaxed);
+    BARRIER_COUNT.fetch_add(1, Ordering::Release);
     api::ax_wait_queue_wait_until(
         &BARRIER_WQ,
-        || BARRIER_COUNT.load(Ordering::Relaxed) == NUM_TASKS,
+        || BARRIER_COUNT.load(Ordering::Acquire) == NUM_TASKS,
         None,
     );
     api::ax_wait_queue_wake(&BARRIER_WQ, u32::MAX); // wakeup all
@@ -94,4 +108,16 @@ fn main() {
     assert_eq!(expect, actual);
 
     println!("All tests passed!");
+}
+
+}
+
+#[cfg(all(target_os = "none", not(feature = "ax-std")))]
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() {}
+
+#[cfg(all(target_os = "none", not(feature = "ax-std")))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    loop {}
 }

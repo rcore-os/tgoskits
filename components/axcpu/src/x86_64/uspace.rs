@@ -51,6 +51,14 @@ impl UserContext {
         }
     }
 
+    /// Normalizes a cloned user context so it can safely return to ring 3.
+    pub fn prepare_clone_child_return_state(&mut self) {
+        let mut flags = RFlags::from_bits_truncate(self.tf.rflags);
+        flags.insert(RFlags::INTERRUPT_FLAG);
+        flags.remove(RFlags::TRAP_FLAG | RFlags::NESTED_TASK | RFlags::RESUME_FLAG);
+        self.tf.rflags = flags.bits();
+    }
+
     /// Gets the TLS area.
     pub const fn tls(&self) -> usize {
         self.fs_base as _
@@ -68,7 +76,7 @@ impl UserContext {
     ///
     /// This function returns when an exception or syscall occurs.
     pub fn run(&mut self) -> ReturnReason {
-        extern "C" {
+        unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
 
@@ -140,6 +148,7 @@ impl ExceptionInfo {
     /// Returns a generalized kind of this exception.
     pub fn kind(&self) -> ExceptionKind {
         match ExceptionVector::try_from(self.vector) {
+            Ok(ExceptionVector::Debug) => ExceptionKind::Debug,
             Ok(ExceptionVector::Breakpoint) => ExceptionKind::Breakpoint,
             Ok(ExceptionVector::InvalidOpcode) => ExceptionKind::IllegalInstruction,
             _ => ExceptionKind::Other,
@@ -149,7 +158,7 @@ impl ExceptionInfo {
 
 /// Initializes syscall support and setups the syscall handler.
 pub(super) fn init_syscall() {
-    extern "C" {
+    unsafe extern "C" {
         fn syscall_entry();
     }
 

@@ -268,7 +268,7 @@ where
     /// Returns an iterator over allocated non-empty ranges
     pub fn allocated_ranges(&self) -> impl Iterator<Item = Range<T>> + '_ {
         let first = match self.free_ranges.first() {
-            Some(Range { ref start, .. }) if *start > self.initial_range.start => {
+            Some(Range { start, .. }) if *start > self.initial_range.start => {
                 Some(self.initial_range.start..*start)
             }
             None => Some(self.initial_range.clone()),

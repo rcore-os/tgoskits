@@ -1,8 +1,9 @@
 [package]
 name = "arceos-net-udpserver"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 authors = ["Dashuai Wu <wudashuaijss@foxmail.com>"]
+publish = false
 
 [dependencies]
 ax-std = { workspace = true, features = ["net"], optional = true }

@@ -1,0 +1,5 @@
+target = "loongarch64-unknown-none-softfloat"
+env = {}
+log = "Warn"
+features = ["qemu"]
+plat_dyn = false

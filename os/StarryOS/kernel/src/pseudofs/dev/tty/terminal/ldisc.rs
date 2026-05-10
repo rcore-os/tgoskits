@@ -1,16 +1,16 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, task::Wake, vec::Vec};
 use core::{
     future::poll_fn,
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
-    task::{Context, Poll, Waker},
+    task::{Poll, Waker},
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_task::future::{block_on, poll_io};
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_task::future::block_on;
+use axpoll::PollSet;
 use linux_raw_sys::general::{
-    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
+    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
 use ringbuf::{
     CachingCons, CachingProd,
@@ -34,17 +34,14 @@ pub enum ProcessMode {
     /// `read` call to the terminal, since the signal is emitted only when
     /// inputs are being processed.
     Manual,
-    /// Spawns task for processing inputs, relying on external events to wake
-    /// up.
-    ///
-    /// In this mode a dedicated task is spawned to handle inputs. When there's
-    /// nothing to read the argument is invoked to register rx waker.
-    External(Box<dyn Fn(Waker) + Send + Sync>),
+    /// Spawns task for processing inputs, relying on an external event source
+    /// to wake it up.
+    InterruptDriven(Arc<PollSet>),
     /// Do not process inputs.
     ///
     /// This is only used by the master side of pseudo tty. The argument is the
     /// [`PollSet`] for incoming data.
-    None(Arc<PollSet>),
+    Passive(Arc<PollSet>),
 }
 
 pub struct TtyConfig<R, W> {
@@ -60,6 +57,27 @@ pub trait TtyWrite: Send + Sync + 'static {
     fn write(&self, buf: &[u8]);
 }
 
+pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf: &[u8]) {
+    if !term.has_oflag(OPOST) || !term.has_oflag(ONLCR) {
+        writer.write(buf);
+        return;
+    }
+
+    let mut start = 0;
+    for (i, &byte) in buf.iter().enumerate() {
+        if byte == b'\n' {
+            if start < i {
+                writer.write(&buf[start..i]);
+            }
+            writer.write(b"\r\n");
+            start = i + 1;
+        }
+    }
+    if start < buf.len() {
+        writer.write(&buf[start..]);
+    }
+}
+
 struct InputReader<R, W> {
     terminal: Arc<Terminal>,
 
@@ -72,10 +90,11 @@ struct InputReader<R, W> {
 
     line_buf: Vec<u8>,
     line_read: Option<usize>,
+    eof_ready: Arc<AtomicBool>,
     clear_line_buf: Arc<AtomicBool>,
 }
 impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
-    pub fn poll(&mut self) -> bool {
+    pub fn drain_source_into_line_buffer(&mut self) -> bool {
         if self.clear_line_buf.swap(false, Ordering::Relaxed) {
             self.line_buf.clear();
         }
@@ -114,10 +133,16 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
                 }
             }
 
-            self.check_send_signal(&term, ch);
+            let signaled = self.check_send_signal(&term, ch);
 
-            if term.echo() {
+            let eof = term.canonical() && ch == term.special_char(VEOF);
+            if term.echo() && !eof {
                 self.output_char(&term, ch);
+            }
+            if signaled {
+                self.line_buf.clear();
+                self.line_read = None;
+                continue;
             }
             if !term.canonical() {
                 self.buf_tx.try_push(ch).unwrap();
@@ -135,17 +160,23 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
                 continue;
             }
 
-            if term.is_eol(ch) || ch == term.special_char(VEOF) {
-                if ch != term.special_char(VEOF) {
-                    self.line_buf.push(ch);
-                }
-                if !self.line_buf.is_empty() {
+            if ch == term.special_char(VEOF) {
+                if self.line_buf.is_empty() {
+                    self.eof_ready.store(true, Ordering::Release);
+                    sent += 1;
+                } else {
                     self.line_read = Some(0);
                 }
                 continue;
             }
 
-            if ch == b' ' || ch.is_ascii_graphic() {
+            if term.is_eol(ch) {
+                self.line_buf.push(ch);
+                self.line_read = Some(0);
+                continue;
+            }
+
+            if ch == b'\t' || !ch.is_ascii_control() {
                 self.line_buf.push(ch);
                 continue;
             }
@@ -154,28 +185,37 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         sent > 0
     }
 
-    fn check_send_signal(&self, term: &Termios2, ch: u8) {
-        if !term.canonical() || !term.has_lflag(ISIG) {
-            return;
+    fn check_send_signal(&self, term: &Termios2, ch: u8) -> bool {
+        if !term.has_lflag(ISIG) {
+            return false;
         }
-        if let Some(signo) = term.signo_for(ch)
-            && let Some(pg) = self.terminal.job_control.foreground()
-        {
-            let sig = SignalInfo::new_kernel(signo);
-            if let Err(err) = send_signal_to_process_group(pg.pgid(), Some(sig)) {
-                warn!("Failed to send signal: {err:?}");
+        if let Some(signo) = term.signo_for(ch) {
+            if let Some(pg) = self.terminal.job_control.foreground() {
+                let sig = SignalInfo::new_kernel(signo);
+                if let Err(err) = send_signal_to_process_group(pg.pgid(), Some(sig)) {
+                    warn!("Failed to send signal: {err:?}");
+                }
             }
+            true
+        } else {
+            false
         }
     }
 
     fn output_char(&self, term: &Termios2, ch: u8) {
         match ch {
-            b'\n' => self.writer.write(b"\n"),
-            b'\r' => self.writer.write(b"\r\n"),
+            b'\n' => write_output_bytes(&self.writer, term, b"\n"),
+            b'\t' => self.writer.write(b"\t"),
             ch if ch == term.special_char(VERASE) => self.writer.write(b"\x08 \x08"),
-            ch if ch == b' ' || ch.is_ascii_graphic() => self.writer.write(&[ch]),
+            ch if ch == b' ' || ch.is_ascii_graphic() || !ch.is_ascii() => {
+                self.writer.write(&[ch]);
+            }
             ch if ch.is_ascii_control() && term.has_lflag(ECHOCTL) => {
-                self.writer.write(&[b'^', (ch + 0x40)]);
+                let escaped = if ch == b'\x7f' { b'?' } else { ch + 0x40 };
+                self.writer.write(&[b'^', escaped]);
+            }
+            ch if ch.is_ascii_control() => {
+                self.writer.write(&[ch]);
             }
             other => {
                 warn!("Ignored echo char: {other:#x}");
@@ -192,50 +232,96 @@ struct SimpleReader<R> {
 impl<R: TtyRead> SimpleReader<R> {
     pub fn poll(&mut self) {
         let read = self.reader.read(&mut self.read_buf);
-        for ch in &self.read_buf[..read] {
-            if *ch == b'\n' {
-                let _ = self.buf_tx.try_push(b'\r');
-            }
-            let _ = self.buf_tx.try_push(*ch);
-        }
+        let _ = self.buf_tx.push_slice(&self.read_buf[..read]);
     }
 }
 
 enum Processor<R, W> {
     Manual(InputReader<R, W>),
-    External(Arc<PollSet>),
-    None(SimpleReader<R>, Arc<PollSet>),
+    InterruptDriven,
+    Passive(SimpleReader<R>, Arc<PollSet>),
 }
 
 pub struct LineDiscipline<R, W> {
     terminal: Arc<Terminal>,
     buf_rx: CachingCons<ReadBuf>,
-    poll_tx: Arc<PollSet>,
+    input_ready: Arc<PollSet>,
+    pump_retry: Arc<PollSet>,
+    eof_ready: Arc<AtomicBool>,
     clear_line_buf: Arc<AtomicBool>,
     processor: Processor<R, W>,
 }
 
-struct WaitPollable<'a>(Option<&'a Arc<PollSet>>);
-impl Pollable for WaitPollable<'_> {
-    fn poll(&self) -> IoEvents {
-        unreachable!()
+struct WakeSignal {
+    fired: Arc<AtomicBool>,
+    task: Waker,
+}
+
+impl Wake for WakeSignal {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
     }
 
-    fn register(&self, context: &mut Context<'_>, _events: IoEvents) {
-        if let Some(set) = self.0 {
-            set.register(context.waker());
-        } else {
-            context.waker().wake_by_ref();
-        }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.fired.store(true, Ordering::Release);
+        self.task.wake_by_ref();
     }
 }
 
 impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
+    fn drive_input(reader: &mut InputReader<R, W>, input_ready: &PollSet) -> bool {
+        let mut progressed = false;
+        while reader.drain_source_into_line_buffer() {
+            progressed = true;
+            input_ready.wake();
+        }
+        progressed
+    }
+
+    fn spawn_interrupt_driven_reader(
+        mut reader: InputReader<R, W>,
+        input_source: Arc<PollSet>,
+        input_ready: Arc<PollSet>,
+        pump_retry: Arc<PollSet>,
+    ) {
+        ax_task::spawn_with_name(
+            move || loop {
+                Self::drive_input(&mut reader, input_ready.as_ref());
+
+                let fired = Arc::new(AtomicBool::new(false));
+                block_on(poll_fn(|cx| {
+                    if Self::drive_input(&mut reader, input_ready.as_ref())
+                        || fired.swap(false, Ordering::AcqRel)
+                    {
+                        return Poll::Ready(());
+                    }
+
+                    let waker = Waker::from(Arc::new(WakeSignal {
+                        fired: fired.clone(),
+                        task: cx.waker().clone(),
+                    }));
+                    input_source.register(&waker);
+                    pump_retry.register(&waker);
+
+                    if Self::drive_input(&mut reader, input_ready.as_ref())
+                        || fired.swap(false, Ordering::AcqRel)
+                    {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }));
+            },
+            "tty-reader".into(),
+        );
+    }
+
     pub fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Self {
         let (buf_tx, buf_rx) = ReadBuf::default().split();
 
+        let eof_ready = Arc::new(AtomicBool::new(false));
         let clear_line_buf = Arc::new(AtomicBool::new(false));
-        let mut reader = InputReader {
+        let reader = InputReader {
             terminal: terminal.clone(),
 
             reader: config.reader,
@@ -247,43 +333,30 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
             line_buf: Vec::new(),
             line_read: None,
+            eof_ready: eof_ready.clone(),
             clear_line_buf: clear_line_buf.clone(),
         };
 
-        let poll_tx = Arc::new(PollSet::new());
+        let input_ready = Arc::new(PollSet::new());
+        let pump_retry = Arc::new(PollSet::new());
         let processor = match config.process_mode {
             ProcessMode::Manual => Processor::Manual(reader),
-            ProcessMode::External(register) => {
-                let poll_rx = Arc::new(PollSet::new());
-                ax_task::spawn_with_name(
-                    {
-                        let poll_rx = poll_rx.clone();
-                        let poll_tx = poll_tx.clone();
-                        move || {
-                            block_on(poll_fn(|cx| {
-                                while reader.poll() {
-                                    poll_rx.wake();
-                                }
-                                poll_tx.register(cx.waker());
-                                register(cx.waker().clone());
-                                while reader.poll() {
-                                    poll_rx.wake();
-                                }
-                                Poll::Pending
-                            }))
-                        }
-                    },
-                    "tty-reader".into(),
+            ProcessMode::InterruptDriven(input_source) => {
+                Self::spawn_interrupt_driven_reader(
+                    reader,
+                    input_source,
+                    input_ready.clone(),
+                    pump_retry.clone(),
                 );
-                Processor::External(poll_rx)
+                Processor::InterruptDriven
             }
-            ProcessMode::None(poll_rx) => {
-                // Destruct the reader here
-                Processor::None(
+            ProcessMode::Passive(poll_rx) => {
+                let InputReader { reader, buf_tx, .. } = reader;
+                Processor::Passive(
                     SimpleReader {
-                        reader: reader.reader,
+                        reader,
                         read_buf: [0; BUF_SIZE],
-                        buf_tx: reader.buf_tx,
+                        buf_tx,
                     },
                     poll_rx,
                 )
@@ -292,7 +365,9 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         Self {
             terminal,
             buf_rx,
-            poll_tx,
+            input_ready,
+            pump_retry,
+            eof_ready,
             clear_line_buf,
             processor,
         }
@@ -300,18 +375,24 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
     pub fn drain_input(&mut self) {
         self.buf_rx.clear();
+        self.eof_ready.store(false, Ordering::Release);
         self.clear_line_buf.store(true, Ordering::Relaxed);
     }
 
     pub fn poll_read(&mut self) -> bool {
         match &mut self.processor {
             Processor::Manual(reader) => {
-                reader.poll();
+                reader.drain_source_into_line_buffer();
             }
-            Processor::None(reader, _) => reader.poll(),
+            Processor::Passive(reader, _) => reader.poll(),
             _ => {}
         }
-        !self.buf_rx.is_empty()
+        let term = self.terminal.termios.lock().clone();
+        if term.canonical() {
+            return self.eof_ready.load(Ordering::Acquire) || !self.buf_rx.is_empty();
+        }
+        let vmin = term.special_char(VMIN) as usize;
+        vmin == 0 || self.buf_rx.occupied_len() >= vmin
     }
 
     pub fn register_rx_waker(&self, waker: &Waker) {
@@ -319,7 +400,10 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             Processor::Manual(_) => {
                 waker.wake_by_ref();
             }
-            Processor::External(set) | Processor::None(_, set) => {
+            Processor::InterruptDriven => {
+                self.input_ready.register(waker);
+            }
+            Processor::Passive(_, set) => {
                 set.register(waker);
             }
         }
@@ -329,7 +413,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         if buf.is_empty() {
             return Ok(0);
         }
-        if matches!(self.processor, Processor::None(_, _)) {
+        if matches!(self.processor, Processor::Passive(_, _)) {
             let read = self.buf_rx.pop_slice(buf);
             return if read == 0 {
                 Err(AxError::WouldBlock)
@@ -349,34 +433,41 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             term.special_char(VMIN) as usize
         };
 
-        if buf.len() < vmin as usize {
+        if buf.len() < vmin {
             return Err(AxError::WouldBlock);
         }
 
         let mut total_read = 0;
         if let Processor::Manual(reader) = &mut self.processor {
             loop {
-                reader.poll();
+                reader.drain_source_into_line_buffer();
                 total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
                 if total_read >= vmin {
                     return Ok(total_read);
+                }
+                if self.eof_ready.swap(false, Ordering::AcqRel) {
+                    return Ok(0);
                 }
                 ax_task::yield_now();
             }
         }
 
-        let set = match &self.processor {
-            Processor::Manual(_) => None,
-            Processor::External(set) => Some(set),
-            _ => unreachable!(),
-        };
-        let pollable = WaitPollable(set);
-        block_on(poll_io(&pollable, IoEvents::IN, false, || {
-            total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
-            self.poll_tx.wake();
-            (total_read >= vmin)
-                .then_some(total_read)
-                .ok_or(AxError::WouldBlock)
-        }))
+        let available = self.buf_rx.occupied_len();
+        if available == 0 {
+            if term.canonical() && self.eof_ready.swap(false, Ordering::AcqRel) {
+                return Ok(0);
+            }
+            if vmin == 0 {
+                return Ok(0);
+            }
+            return Err(AxError::WouldBlock);
+        }
+        if vmin > 0 && available < vmin {
+            return Err(AxError::WouldBlock);
+        }
+
+        let read = self.buf_rx.pop_slice(buf);
+        self.pump_retry.clone().wake();
+        Ok(read)
     }
 }

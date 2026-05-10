@@ -4,14 +4,15 @@
 
 //! GPIO Driver.
 
-use crate::{
-    bsp::device_driver::common::MMIODerefWrapper, driver, synchronization,
-    synchronization::NullLock,
-};
 use tock_registers::{
     interfaces::{ReadWriteable, Writeable},
     register_bitfields, register_structs,
     registers::ReadWrite,
+};
+
+use crate::{
+    bsp::device_driver::common::MMIODerefWrapper, driver, synchronization,
+    synchronization::NullLock,
 };
 
 //--------------------------------------------------------------------------------------------------

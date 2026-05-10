@@ -1,0 +1,33 @@
+ARG BASE_IMAGE=ghcr.io/rcore-os/tgoskits-container:latest
+FROM ${BASE_IMAGE}
+
+# Pin the external source revision so container rebuilds stay reproducible.
+ARG QEMU_LVZ_REPO=https://github.com/numpy1314/QEMU-LVZ
+ARG QEMU_LVZ_REF=f82f6aee0da1cd1ee86e455a799f07057f477dee
+ARG QEMU_TARGET_LIST=loongarch64-softmmu
+
+ENV AXBUILD_QEMU_SYSTEM_LOONGARCH64=/opt/qemu-lvz/bin/qemu-system-loongarch64 \
+    PATH=/opt/qemu-lvz/bin:${PATH}
+
+RUN set -eux; \
+    mkdir -p /tmp/qemu-lvz-src; \
+    curl -L "${QEMU_LVZ_REPO}/archive/${QEMU_LVZ_REF}.tar.gz" -o /tmp/qemu-lvz.tar.gz; \
+    tar -xzf /tmp/qemu-lvz.tar.gz --strip-components=1 -C /tmp/qemu-lvz-src; \
+    cd /tmp/qemu-lvz-src; \
+    ./configure \
+      --prefix=/opt/qemu-lvz \
+      --target-list="${QEMU_TARGET_LIST}" \
+      --disable-werror \
+      --disable-kvm \
+      --enable-slirp \
+      --disable-docs \
+      --disable-gtk \
+      --disable-sdl \
+      --disable-vte; \
+    make -j"$(nproc)"; \
+    make install; \
+    rm -rf /tmp/qemu-lvz-src /tmp/qemu-lvz.tar.gz
+
+WORKDIR /workspace
+
+CMD ["/bin/bash"]

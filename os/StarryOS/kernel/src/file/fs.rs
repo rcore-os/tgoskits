@@ -7,15 +7,18 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FsContext};
+use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_EXCL};
 
 use super::{FileLike, Kstat, get_file_like};
-use crate::file::{IoDst, IoSrc};
+use crate::{
+    file::{IoDst, IoSrc},
+    pseudofs::Device,
+};
 
 pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
     let mut fs = FS_CONTEXT.lock();
@@ -99,13 +102,15 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
 /// File wrapper for `ax_fs::fops::File`.
 pub struct File {
     inner: ax_fs::File,
+    open_flags: u32,
     nonblock: AtomicBool,
 }
 
 impl File {
-    pub fn new(inner: ax_fs::File) -> Self {
+    pub fn new(inner: ax_fs::File, open_flags: u32) -> Self {
         Self {
             inner,
+            open_flags,
             nonblock: AtomicBool::new(false),
         }
     }
@@ -113,7 +118,19 @@ impl File {
     pub fn inner(&self) -> &ax_fs::File {
         &self.inner
     }
+}
 
+impl Drop for File {
+    fn drop(&mut self) {
+        if self.open_flags & O_EXCL != 0
+            && let Ok(device) = self.inner.location().entry().downcast::<Device>()
+        {
+            device.inner().close(true);
+        }
+    }
+}
+
+impl File {
     fn is_blocking(&self) -> bool {
         self.inner.location().flags().contains(NodeFlags::BLOCKING)
     }
@@ -155,6 +172,10 @@ impl FileLike for File {
         self.inner().backend()?.location().ioctl(cmd, arg)
     }
 
+    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+        Ok((self.inner().backend()?.clone(), self.inner().flags()))
+    }
+
     fn set_nonblocking(&self, flag: bool) -> AxResult {
         self.nonblock.store(flag, Ordering::Release);
         Ok(())
@@ -162,6 +183,10 @@ impl FileLike for File {
 
     fn nonblocking(&self) -> bool {
         self.nonblock.load(Ordering::Acquire)
+    }
+
+    fn open_flags(&self) -> u32 {
+        self.open_flags
     }
 
     fn path(&self) -> Cow<'_, str> {
@@ -176,7 +201,7 @@ impl FileLike for File {
             if any.is::<Directory>() {
                 AxError::IsADirectory
             } else {
-                AxError::BrokenPipe
+                AxError::InvalidInput
             }
         })
     }
@@ -213,10 +238,13 @@ impl Directory {
 
 impl FileLike for Directory {
     fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
-        Err(AxError::BadFileDescriptor)
+        Err(AxError::IsADirectory)
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
+        // Directories cannot be opened for writing, so any write attempt
+        // means the fd is not open for writing → EBADF.
+        // Linux VFS checks FMODE_WRITE before reaching the filesystem layer.
         Err(AxError::BadFileDescriptor)
     }
 

@@ -62,7 +62,7 @@ pub unsafe fn crc32c_hardware(mut crc: u32, data: &[u8]) -> u32 {
         let mut len = data.len();
 
         // 1. Consume the unaligned prefix so the hot loop can use 64-bit loads.
-        while len > 0 && (p as usize) % 8 != 0 {
+        while len > 0 && !(p as usize).is_multiple_of(8) {
             crc = __crc32cb(crc, *p);
             p = p.add(1);
             len -= 1;

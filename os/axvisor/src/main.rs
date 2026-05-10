@@ -18,7 +18,6 @@
 
 #![no_std]
 #![no_main]
-#![feature(used_with_arg)]
 #![cfg(target_os = "none")]
 
 #[macro_use]
@@ -29,6 +28,8 @@ extern crate alloc;
 
 extern crate ax_std as std;
 
+#[cfg(target_arch = "loongarch64")]
+extern crate ax_plat_loongarch64_qemu_virt;
 #[cfg(target_arch = "x86_64")]
 extern crate axplat_x86_qemu_q35;
 
@@ -38,12 +39,28 @@ mod shell;
 mod task;
 mod vmm;
 
+fn ensure_hardware_support() {
+    if axvm::has_hardware_support() {
+        return;
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    panic!(
+        "LoongArch virtualization extensions are unavailable. Use a virtualization-capable \
+         LoongArch QEMU build such as QEMU-LVZ instead of stock qemu-system-loongarch64."
+    );
+
+    #[cfg(not(target_arch = "loongarch64"))]
+    panic!("Hardware does not support virtualization");
+}
+
 #[unsafe(no_mangle)]
 fn main() {
     logo::print_logo();
 
     info!("Starting virtualization...");
     info!("Hardware support: {:?}", axvm::has_hardware_support());
+    ensure_hardware_support();
     hal::enable_virtualization();
 
     vmm::init();

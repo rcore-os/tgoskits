@@ -9,7 +9,7 @@ args = [
     "4",
     "-nographic",
     "-device",
-    "virtio-gpu-device",
+    "virtio-gpu-pci",
     "-serial",
     "mon:stdio",
 ]

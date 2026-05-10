@@ -3,15 +3,19 @@ extern crate alloc;
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
-use ax_driver_net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps};
+use ax_driver_net::{
+    EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps, NetIrqEvent,
+};
+use ax_kspin::SpinNoIrq;
 use rd_net::{Interface, NetError};
 use rdrive::{Device, DriverGeneric};
-use spin::Mutex;
 
 use super::DmaImpl;
 
 #[cfg(feature = "intel-net")]
 mod intel;
+#[cfg(feature = "realtek-rtl8125")]
+mod realtek;
 #[cfg(feature = "virtio-net-pci")]
 mod virtio_pci;
 
@@ -19,15 +23,17 @@ const NET_BUF_LEN: usize = 2048;
 const NET_BUF_POOL_CAPACITY: usize = 512;
 const NET_QUEUE_SIZE: usize = 256;
 const RX_PREFETCH_TARGET: usize = 1;
+const ETH_ZLEN: usize = 60;
 
 pub struct PlatformNetDevice {
     name: &'static str,
     net: rd_net::Net,
+    irq_num: Option<usize>,
 }
 
 impl PlatformNetDevice {
-    fn new(name: &'static str, net: rd_net::Net) -> Self {
-        Self { name, net }
+    fn new(name: &'static str, net: rd_net::Net, irq_num: Option<usize>) -> Self {
+        Self { name, net, irq_num }
     }
 }
 
@@ -57,8 +63,10 @@ struct NetState {
 pub struct Net {
     name: &'static str,
     mac: [u8; 6],
+    irq_num: Option<usize>,
     buf_pool: Arc<NetBufPool>,
-    state: Mutex<NetState>,
+    irq_handler: Option<rd_net::IrqHandler>,
+    state: SpinNoIrq<NetState>,
 }
 
 impl TryFrom<Device<PlatformNetDevice>> for Net {
@@ -68,15 +76,19 @@ impl TryFrom<Device<PlatformNetDevice>> for Net {
         let mut dev = device.lock().map_err(map_device_err_to_dev_err)?;
         let name = dev.name;
         let mac = dev.net.mac_address();
+        let irq_num = dev.irq_num;
         let tx_queue = dev.net.create_tx_queue().map_err(map_net_err_to_dev_err)?;
         let rx_queue = dev.net.create_rx_queue().map_err(map_net_err_to_dev_err)?;
+        let irq_handler = irq_num.map(|_| dev.net.irq_handler());
         drop(dev);
 
         Ok(Self {
             name,
             mac,
+            irq_num,
             buf_pool: NetBufPool::new(NET_BUF_POOL_CAPACITY, NET_BUF_LEN)?,
-            state: Mutex::new(NetState {
+            irq_handler,
+            state: SpinNoIrq::new(NetState {
                 tx_queue,
                 rx_queue,
                 pending_rx: VecDeque::with_capacity(RX_PREFETCH_TARGET),
@@ -121,6 +133,24 @@ impl Net {
     }
 }
 
+pub(super) fn pci_legacy_irq_for_address(address: rdrive::probe::pci::PciAddress) -> usize {
+    if let Some(irq) = super::pci::legacy_irq_for_address(address) {
+        return irq;
+    }
+
+    const PCI_IRQ_BASE: usize = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "riscv64") {
+        0x20
+    } else if cfg!(target_arch = "loongarch64") {
+        0x10
+    } else if cfg!(target_arch = "aarch64") {
+        0x23
+    } else {
+        0
+    };
+
+    PCI_IRQ_BASE + (usize::from(address.device()) & 3)
+}
+
 impl BaseDriverOps for Net {
     fn device_name(&self) -> &str {
         self.name
@@ -131,7 +161,7 @@ impl BaseDriverOps for Net {
     }
 
     fn irq_num(&self) -> Option<usize> {
-        None
+        self.irq_num
     }
 }
 
@@ -180,12 +210,14 @@ impl NetDriverOps for Net {
     fn transmit(&mut self, tx_buf: NetBufPtr) -> DevResult {
         let tx_buf = unsafe { NetBuf::from_buf_ptr(tx_buf) };
         let packet = tx_buf.packet();
+        let tx_len = packet.len().max(ETH_ZLEN);
 
         let mut state = self.state.lock();
         let (_ret, mut pending) = state
             .tx_queue
-            .prepare_send(packet.len(), |buffer| {
+            .prepare_send(tx_len, |buffer| {
                 buffer[..packet.len()].copy_from_slice(packet);
+                buffer[packet.len()..tx_len].fill(0);
             })
             .map_err(map_net_err_to_dev_err)?;
         pending.try_submit().map_err(map_net_err_to_dev_err)?;
@@ -213,21 +245,48 @@ impl NetDriverOps for Net {
         net_buf.set_packet_len(size);
         Ok(net_buf.into_buf_ptr())
     }
+
+    fn handle_irq(&mut self) -> NetIrqEvent {
+        let Some(handler) = &self.irq_handler else {
+            return NetIrqEvent::SPURIOUS;
+        };
+
+        handler.handle();
+
+        let mut events = NetIrqEvent::empty();
+        let mut state = self.state.lock();
+        if let Err(err) = self.prefetch_rx_packets(&mut state, RX_PREFETCH_TARGET) {
+            warn!(
+                "failed to prefetch rx packets for {} during irq: {err:?}",
+                self.name
+            );
+            events |= NetIrqEvent::RX_ERROR;
+        }
+        if !state.pending_rx.is_empty() {
+            events |= NetIrqEvent::RX_READY;
+        }
+
+        if events.is_empty() {
+            NetIrqEvent::SPURIOUS
+        } else {
+            events
+        }
+    }
 }
 
 pub trait PlatformDeviceNet {
-    fn register_net<T>(self, name: &'static str, dev: T)
+    fn register_net<T>(self, name: &'static str, dev: T, irq_num: Option<usize>)
     where
         T: Interface + 'static;
 }
 
 impl PlatformDeviceNet for rdrive::PlatformDevice {
-    fn register_net<T>(self, name: &'static str, dev: T)
+    fn register_net<T>(self, name: &'static str, dev: T, irq_num: Option<usize>)
     where
         T: Interface + 'static,
     {
         let net = rd_net::Net::new(dev, &DmaImpl);
-        self.register(PlatformNetDevice::new(name, net));
+        self.register(PlatformNetDevice::new(name, net, irq_num));
     }
 }
 

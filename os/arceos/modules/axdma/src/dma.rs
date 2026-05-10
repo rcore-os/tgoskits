@@ -1,31 +1,26 @@
 use core::{alloc::Layout, ptr::NonNull};
 
-#[cfg(not(feature = "buddy-slab"))]
-use ax_alloc::DefaultByteAllocator;
 use ax_alloc::{AllocError, AllocResult, UsageKind, global_allocator};
-#[cfg(not(feature = "buddy-slab"))]
-use ax_allocator::{BaseAllocator, ByteAllocator};
+use ax_allocator::{BaseAllocator, ByteAllocator, SlabByteAllocator};
 use ax_hal::{mem::virt_to_phys, paging::MappingFlags};
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, va};
-#[cfg(not(feature = "buddy-slab"))]
-use log::debug;
-use log::error;
+use log::{debug, error};
 
 use crate::{BusAddr, DMAInfo, phys_to_bus};
 
 pub(crate) static ALLOCATOR: SpinNoIrq<DmaAllocator> = SpinNoIrq::new(DmaAllocator::new());
 
 pub(crate) struct DmaAllocator {
-    #[cfg(not(feature = "buddy-slab"))]
-    alloc: DefaultByteAllocator,
+    alloc: SlabByteAllocator,
+    alloc_initialized: bool,
 }
 
 impl DmaAllocator {
     pub const fn new() -> Self {
         Self {
-            #[cfg(not(feature = "buddy-slab"))]
-            alloc: DefaultByteAllocator::new(),
+            alloc: SlabByteAllocator::new(),
+            alloc_initialized: false,
         }
     }
 
@@ -36,20 +31,13 @@ impl DmaAllocator {
     /// memory, it asks the global page allocator for more memory and adds it to the
     /// byte allocator.
     pub unsafe fn alloc_coherent(&mut self, layout: Layout) -> AllocResult<DMAInfo> {
-        #[cfg(feature = "buddy-slab")]
-        {
-            self.alloc_coherent_pages(layout)
-        }
-
-        #[cfg(not(feature = "buddy-slab"))]
-        if layout.size() >= PAGE_SIZE_4K {
+        if layout.size() >= PAGE_SIZE_4K || layout.align() > PAGE_SIZE_4K {
             self.alloc_coherent_pages(layout)
         } else {
             self.alloc_coherent_bytes(layout)
         }
     }
 
-    #[cfg(not(feature = "buddy-slab"))]
     fn alloc_coherent_bytes(&mut self, layout: Layout) -> AllocResult<DMAInfo> {
         let mut is_expanded = false;
         loop {
@@ -76,12 +64,25 @@ impl DmaAllocator {
                     num_pages,
                     MappingFlags::READ | MappingFlags::WRITE | MappingFlags::UNCACHED,
                 )?;
-                self.alloc
-                    .add_memory(vaddr_raw, expand_size)
-                    .map_err(AllocError::from)
+                self.add_coherent_memory(vaddr_raw, expand_size)
                     .inspect_err(|e| error!("add memory fail: {e:?}"))?;
                 debug!("expand memory @{vaddr:#X}, size: {expand_size:#X} bytes");
             }
+        }
+    }
+
+    fn add_coherent_memory(&mut self, start: usize, size: usize) -> AllocResult<()> {
+        if self.alloc_initialized {
+            self.alloc.add_memory(start, size).map_err(|err| match err {
+                ax_allocator::AllocError::InvalidParam => AllocError::InvalidParam,
+                ax_allocator::AllocError::MemoryOverlap => AllocError::MemoryOverlap,
+                ax_allocator::AllocError::NoMemory => AllocError::NoMemory,
+                ax_allocator::AllocError::NotAllocated => AllocError::NotAllocated,
+            })
+        } else {
+            self.alloc.init(start, size);
+            self.alloc_initialized = true;
+            Ok(())
         }
     }
 
@@ -122,20 +123,7 @@ impl DmaAllocator {
 
     /// Gives back the allocated region to the byte allocator.
     pub unsafe fn dealloc_coherent(&mut self, dma: DMAInfo, layout: Layout) {
-        #[cfg(feature = "buddy-slab")]
-        {
-            let num_pages = layout_pages(&layout);
-            let virt_raw = dma.cpu_addr.as_ptr() as usize;
-            global_allocator().dealloc_pages(virt_raw, num_pages, UsageKind::Dma);
-            let _ = self.update_flags(
-                va!(virt_raw),
-                num_pages,
-                MappingFlags::READ | MappingFlags::WRITE,
-            );
-        }
-
-        #[cfg(not(feature = "buddy-slab"))]
-        if layout.size() >= PAGE_SIZE_4K {
+        if layout.size() >= PAGE_SIZE_4K || layout.align() > PAGE_SIZE_4K {
             let num_pages = layout_pages(&layout);
             let virt_raw = dma.cpu_addr.as_ptr() as usize;
             global_allocator().dealloc_pages(virt_raw, num_pages, UsageKind::Dma);
@@ -145,7 +133,7 @@ impl DmaAllocator {
                 MappingFlags::READ | MappingFlags::WRITE,
             );
         } else {
-            self.alloc.dealloc(dma.cpu_addr, layout)
+            self.alloc.dealloc(dma.cpu_addr, layout);
         }
     }
 }

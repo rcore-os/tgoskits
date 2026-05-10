@@ -19,13 +19,15 @@ mod structs;
 mod vcpu;
 mod vmcs;
 
-use self::structs::VmxBasic;
 use ax_errno::ax_err_type;
 
-pub use self::definitions::VmxExitReason;
-pub use self::percpu::VmxPerCpuState as VmxArchPerCpuState;
-pub use self::vcpu::VmxVcpu as VmxArchVCpu;
-pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
+use self::structs::VmxBasic;
+pub use self::{
+    definitions::VmxExitReason,
+    percpu::VmxPerCpuState as VmxArchPerCpuState,
+    vcpu::VmxVcpu as VmxArchVCpu,
+    vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo},
+};
 
 /// Return if current platform support virtualization extension.
 pub fn has_hardware_support() -> bool {

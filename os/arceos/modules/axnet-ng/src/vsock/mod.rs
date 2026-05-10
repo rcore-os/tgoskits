@@ -99,14 +99,14 @@ impl SocketOps for VsockSocket {
         self.transport.connect(remote_addr)
     }
 
-    fn listen(&self) -> AxResult {
+    fn listen(&self, _backlog: usize) -> AxResult {
         self.transport.listen()
     }
 
     fn accept(&self) -> AxResult<Socket> {
         self.transport.accept().map(|(transport, _addr)| {
             let socket = VsockSocket::new(transport);
-            Socket::Vsock(socket)
+            socket.into()
         })
     }
 

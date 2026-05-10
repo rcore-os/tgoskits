@@ -46,6 +46,24 @@ impl UserContext {
         }
     }
 
+    /// Normalizes a cloned user context so it can safely return to EL0.
+    pub fn prepare_clone_child_return_state(&mut self) {
+        use aarch64_cpu::registers::SPSR_EL1;
+
+        self.tf.spsr = (self.tf.spsr
+            & !(SPSR_EL1::M.mask
+                | SPSR_EL1::D.mask
+                | SPSR_EL1::A.mask
+                | SPSR_EL1::I.mask
+                | SPSR_EL1::F.mask))
+            | (SPSR_EL1::M::EL0t
+                + SPSR_EL1::D::Masked
+                + SPSR_EL1::A::Masked
+                + SPSR_EL1::I::Unmasked
+                + SPSR_EL1::F::Masked)
+                .value;
+    }
+
     /// Gets the stack pointer.
     pub const fn sp(&self) -> usize {
         self.sp as _
@@ -73,7 +91,7 @@ impl UserContext {
     ///
     /// This function returns when an exception or syscall occurs.
     pub fn run(&mut self) -> ReturnReason {
-        extern "C" {
+        unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext) -> TrapKind;
         }
 
@@ -146,11 +164,30 @@ pub struct ExceptionInfo {
 }
 
 impl ExceptionInfo {
+    /// Returns the raw Exception Syndrome Register value.
+    pub fn esr_value(&self) -> u64 {
+        self.esr.get()
+    }
+
+    /// Returns the raw exception class bits.
+    pub fn ec_value(&self) -> u64 {
+        self.esr.read(ESR_EL1::EC)
+    }
+
+    /// Returns the instruction specific syndrome bits.
+    pub fn iss_value(&self) -> u64 {
+        self.esr.read(ESR_EL1::ISS)
+    }
+
     /// Returns a generalized kind of this exception.
     pub fn kind(&self) -> ExceptionKind {
         match self.esr.read_as_enum(ESR_EL1::EC) {
-            Some(ESR_EL1::EC::Value::BreakpointLowerEL) => ExceptionKind::Breakpoint,
-            Some(ESR_EL1::EC::Value::IllegalExecutionState) => ExceptionKind::IllegalInstruction,
+            Some(ESR_EL1::EC::Value::Brk64) | Some(ESR_EL1::EC::Value::Bkpt32) => {
+                ExceptionKind::Breakpoint
+            }
+            Some(ESR_EL1::EC::Value::IllegalExecutionState) | Some(ESR_EL1::EC::Value::Unknown) => {
+                ExceptionKind::IllegalInstruction
+            }
             Some(ESR_EL1::EC::Value::PCAlignmentFault)
             | Some(ESR_EL1::EC::Value::SPAlignmentFault) => ExceptionKind::Misaligned,
             _ => ExceptionKind::Other,

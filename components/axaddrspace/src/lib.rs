@@ -15,11 +15,12 @@
 //! [ArceOS-Hypervisor](https://github.com/arceos-hypervisor/) guest VM address space management module.
 
 #![no_std]
-#![feature(const_trait_impl)]
-
 #[macro_use]
 extern crate log;
 extern crate alloc;
+
+#[cfg(all(feature = "vmx", feature = "svm"))]
+compile_error!("features `vmx` and `svm` are mutually exclusive");
 
 mod addr;
 mod address_space;

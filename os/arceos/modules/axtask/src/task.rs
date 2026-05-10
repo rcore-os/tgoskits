@@ -7,7 +7,6 @@ use core::{
     fmt,
     mem::ManuallyDrop,
     ops::Deref,
-    ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
     task::{Context, Poll},
 };
@@ -19,7 +18,18 @@ use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{VirtAddr, align_up_4k};
 use futures_util::task::AtomicWaker;
 
+#[cfg(feature = "lockdep")]
+use crate::lockdep::HeldLockStack;
 use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
+
+#[cfg(all(feature = "stack-canary", target_pointer_width = "64"))]
+const STACK_END_MAGIC: usize = 0x57AC_CE11_57AC_CE11usize;
+#[cfg(all(feature = "stack-canary", target_pointer_width = "32"))]
+const STACK_END_MAGIC: usize = 0x57AC_CE11usize;
+
+/// Required alignment for task kernel stacks. x86_64 task context setup relies
+/// on the ABI-mandated 16-byte stack alignment at task entry.
+pub(crate) const TASK_STACK_ALIGN: usize = 16;
 
 /// A unique identifier for a thread.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -92,8 +102,10 @@ pub struct TaskInner {
     exit_code: AtomicI32,
     wait_for_exit: WaitQueue,
 
-    kstack: Option<TaskStack>,
+    kstack: TaskStack,
     ctx: UnsafeCell<TaskContext>,
+    #[cfg(feature = "lockdep")]
+    held_locks: UnsafeCell<HeldLockStack>,
 
     #[cfg(feature = "task-ext")]
     task_ext: Option<AxTaskExt>,
@@ -136,19 +148,19 @@ impl TaskInner {
     where
         F: FnOnce() + Send + 'static,
     {
-        let mut t = Self::new_common(TaskId::new(), name);
-        debug!("new task: {}", t.id_name());
         let kstack = TaskStack::alloc(align_up_4k(stack_size));
+        let mut t = Self::new_common(TaskId::new(), name, kstack);
+        debug!("new task: {}", t.id_name());
 
         #[cfg(feature = "tls")]
         let tls = VirtAddr::from(t.tls.tls_ptr() as usize);
         #[cfg(not(feature = "tls"))]
         let tls = VirtAddr::from(0);
+        let kstack_top = t.kstack.top();
 
         t.entry = Cell::new(Some(Box::new(entry)));
         t.ctx_mut()
-            .init(task_entry as *const () as usize, kstack.top(), tls);
-        t.kstack = Some(kstack);
+            .init(task_entry as *const () as usize, kstack_top, tls);
         if t.name() == "idle" {
             t.is_idle = true;
         }
@@ -203,13 +215,22 @@ impl TaskInner {
         self.ctx.get_mut()
     }
 
-    /// Returns the top address of the kernel stack.
-    #[inline]
-    pub const fn kernel_stack_top(&self) -> Option<VirtAddr> {
-        match &self.kstack {
-            Some(s) => Some(s.top()),
-            None => None,
-        }
+    /// Updates the page table root stored in this task's context and switches
+    /// the hardware page table immediately. Only safe to call on the current
+    /// running task.
+    #[cfg(feature = "uspace")]
+    pub fn switch_page_table(&self, root: ax_memory_addr::PhysAddr) {
+        // SAFETY: we are the current task and no other thread touches our ctx.
+        unsafe { (*self.ctx.get()).set_page_table_root(root) };
+        unsafe { ax_hal::asm::write_user_page_table(root) };
+        ax_hal::asm::flush_tlb(None);
+    }
+
+    #[cfg(feature = "lockdep")]
+    pub(crate) fn with_held_locks<R>(&self, f: impl FnOnce(&mut HeldLockStack) -> R) -> R {
+        // SAFETY: the held-lock stack belongs to the current task and is only
+        // mutated by the current task while lockdep tracking is active.
+        f(unsafe { &mut *self.held_locks.get() })
     }
 
     /// Returns the CPU ID where the task is running or will run.
@@ -240,10 +261,14 @@ impl TaskInner {
     /// Polls whether the task has been interrupted.
     #[inline]
     pub fn poll_interrupt(&self, cx: &Context) -> Poll<()> {
+        // Register the waker BEFORE rechecking the flag. Under preemptive
+        // scheduling a timer IRQ between an initial swap and register could
+        // allow `interrupt()` to run and call `wake()` on an empty waker
+        // slot — the wake is lost. Registering first closes the window.
+        self.interrupt_waker.register(cx.waker());
         if self.interrupted.swap(false, Ordering::AcqRel) {
             Poll::Ready(())
         } else {
-            self.interrupt_waker.register(cx.waker());
             Poll::Pending
         }
     }
@@ -264,7 +289,7 @@ impl TaskInner {
 
 // private methods
 impl TaskInner {
-    fn new_common(id: TaskId, name: String) -> Self {
+    fn new_common(id: TaskId, name: String, kstack: TaskStack) -> Self {
         Self {
             id,
             name: SpinNoIrq::new(name),
@@ -288,8 +313,10 @@ impl TaskInner {
             interrupt_waker: AtomicWaker::new(),
             exit_code: AtomicI32::new(0),
             wait_for_exit: WaitQueue::new(),
-            kstack: None,
+            kstack,
             ctx: UnsafeCell::new(TaskContext::new()),
+            #[cfg(feature = "lockdep")]
+            held_locks: UnsafeCell::new(HeldLockStack::new()),
             #[cfg(feature = "task-ext")]
             task_ext: None,
             #[cfg(feature = "tls")]
@@ -305,8 +332,8 @@ impl TaskInner {
     ///
     /// And there is no need to set the `entry`, `kstack` or `tls` fields, as
     /// they will be filled automatically when the task is switches out.
-    pub(crate) fn new_init(name: String) -> Self {
-        let mut t = Self::new_common(TaskId::new(), name);
+    pub(crate) fn new_init(name: String, kstack: TaskStack) -> Self {
+        let mut t = Self::new_common(TaskId::new(), name, kstack);
         t.is_init = true;
         #[cfg(feature = "smp")]
         t.set_on_cpu(true);
@@ -461,6 +488,22 @@ impl TaskInner {
         self.ctx.get()
     }
 
+    #[cfg(feature = "stack-canary")]
+    #[inline]
+    pub(crate) fn check_stack_canary(&self) {
+        if self.kstack.is_canary_intact() {
+            return;
+        }
+
+        panic!(
+            "stack overflow/corruption detected for {}: stack=[{:#x}..{:#x}), expected magic={:#x}",
+            self.id_name(),
+            self.kstack.bottom().as_usize(),
+            self.kstack.top().as_usize(),
+            STACK_END_MAGIC
+        );
+    }
+
     /// Set the CPU ID where the task is running or will run.
     #[cfg(feature = "smp")]
     #[inline]
@@ -504,28 +547,115 @@ impl Drop for TaskInner {
     }
 }
 
-struct TaskStack {
-    ptr: NonNull<u8>,
-    layout: Layout,
+pub(crate) struct TaskStack {
+    ptr: usize,
+    size: usize,
+    align: usize,
+    owned: bool,
 }
 
 impl TaskStack {
     pub fn alloc(size: usize) -> Self {
-        let layout = Layout::from_size_align(size, 16).unwrap();
-        Self {
-            ptr: NonNull::new(unsafe { alloc::alloc::alloc(layout) }).unwrap(),
-            layout,
-        }
+        let align = TASK_STACK_ALIGN;
+        let layout = Layout::from_size_align(size, align).unwrap();
+        let ptr = unsafe { alloc::alloc::alloc(layout) as usize };
+        assert_ne!(ptr, 0, "task stack allocation failed");
+        let stack = Self {
+            ptr,
+            size,
+            align,
+            owned: true,
+        };
+        #[cfg(feature = "stack-canary")]
+        unsafe {
+            stack.write_canary()
+        };
+        stack
     }
 
-    pub const fn top(&self) -> VirtAddr {
-        unsafe { core::mem::transmute(self.ptr.as_ptr().add(self.layout.size())) }
+    pub fn borrowed(bottom: VirtAddr, size: usize, align: usize) -> Self {
+        assert_ne!(bottom.as_usize(), 0, "static task stack pointer is null");
+        let stack = Self {
+            ptr: bottom.as_usize(),
+            size,
+            align,
+            owned: false,
+        };
+        #[cfg(feature = "stack-canary")]
+        unsafe {
+            stack.write_canary()
+        };
+        stack
+    }
+
+    #[cfg(feature = "stack-canary")]
+    #[inline]
+    pub fn bottom(&self) -> VirtAddr {
+        VirtAddr::from(self.ptr)
+    }
+
+    #[inline]
+    pub fn top(&self) -> VirtAddr {
+        VirtAddr::from(self.ptr + self.size)
+    }
+
+    #[inline]
+    #[cfg(feature = "stack-canary")]
+    fn canary_ptr(&self) -> *mut usize {
+        self.ptr as *mut usize
+    }
+
+    #[inline]
+    #[cfg(feature = "stack-canary")]
+    unsafe fn write_canary(&self) {
+        unsafe { self.canary_ptr().write(STACK_END_MAGIC) };
+    }
+
+    #[inline]
+    #[cfg(feature = "stack-canary")]
+    pub fn is_canary_intact(&self) -> bool {
+        unsafe { self.canary_ptr().read() == STACK_END_MAGIC }
+    }
+
+    #[cfg(test)]
+    #[cfg(feature = "stack-canary")]
+    fn corrupt_canary_for_test(&self) {
+        unsafe { self.canary_ptr().write(0) };
     }
 }
 
 impl Drop for TaskStack {
     fn drop(&mut self) {
-        unsafe { alloc::alloc::dealloc(self.ptr.as_ptr(), self.layout) }
+        if self.owned {
+            let layout = Layout::from_size_align(self.size, self.align).unwrap();
+            unsafe { alloc::alloc::dealloc(self.ptr as *mut u8, layout) }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::{TASK_STACK_ALIGN, TaskStack};
+
+    #[cfg(feature = "stack-canary")]
+    #[test]
+    fn task_stack_canary_detects_corruption() {
+        let stack = TaskStack::alloc(0x1000);
+        assert!(stack.is_canary_intact());
+
+        stack.corrupt_canary_for_test();
+
+        assert!(!stack.is_canary_intact());
+    }
+
+    #[cfg(feature = "stack-canary")]
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn task_stack_top_stays_16_byte_aligned() {
+        // x86_64 TaskContext::init() builds the initial switch frame from
+        // kstack_top and assumes the ABI-required 16-byte stack alignment.
+        let stack = TaskStack::alloc(0x1000);
+        assert_eq!(stack.top().as_usize() % TASK_STACK_ALIGN, 0);
     }
 }
 

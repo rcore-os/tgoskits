@@ -34,13 +34,15 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         _ => return Err(OnProbeError::NotMatch),
     }
 
-    let bdf = as_device_function(endpoint.address());
+    let address = endpoint.address();
+    let bdf = as_device_function(address);
     let dev_info = as_device_function_info(endpoint);
     let mut root = PciRoot::new(EndpointConfigAccess::new(bdf, endpoint.take()));
 
     let (ty, transport, irq) =
         ax_driver_virtio::probe_pci_device::<VirtIoHalImpl, _>(&mut root, bdf, &dev_info)
             .ok_or(OnProbeError::NotMatch)?;
+    debug_assert_eq!(irq, super::pci_legacy_irq_for_address(address));
 
     if ty != DeviceType::Net {
         return Err(OnProbeError::NotMatch);
@@ -53,7 +55,7 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
     })?;
 
     plat_dev.register_net_driver(DRIVER_NAME, dev);
-    debug!("virtio PCI network device registered successfully at {bdf}");
+    debug!("virtio PCI network device registered successfully at {bdf} with irq {irq:#x}");
     Ok(())
 }
 

@@ -1,0 +1,9 @@
+{
+  "label": "使用手册",
+  "position": 4,
+  "link": {
+    "type": "generated-index",
+    "title": "使用手册",
+    "description": "围绕当前仓库的实际开发和运行动作组织的手册页。"
+  }
+}

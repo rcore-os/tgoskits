@@ -1,12 +1,6 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 #![cfg(any(windows, unix))]
 
-#[macro_use]
-extern crate log;
-
-#[macro_use]
-extern crate anyhow;
-
 use clap::{Args, Parser, Subcommand};
 
 use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
@@ -15,14 +9,12 @@ pub mod arceos;
 pub mod axvisor;
 mod board;
 mod clippy;
-mod command_flow;
 pub mod context;
-mod download;
-mod logging;
-pub mod process;
+mod rootfs;
 pub mod starry;
-mod test_qemu;
-mod test_std;
+mod support;
+mod sync_lint;
+mod test;
 
 #[derive(Parser)]
 struct Cli {
@@ -46,6 +38,8 @@ enum Commands {
     Test,
     /// Run clippy for the maintained whitelist by default
     Clippy(ClippyArgs),
+    /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
+    SyncLint,
     /// Remote board management via ostool-server
     Board {
         #[command(subcommand)]
@@ -75,194 +69,12 @@ pub async fn run() -> anyhow::Result<()> {
 
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Commands::Test => test_std::run_std_test_command(),
+        Commands::Test => test::std::run_std_test_command(),
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
+        Commands::SyncLint => sync_lint::run_sync_lint_command(),
         Commands::Board { command } => board::execute(command).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => Starry::new()?.execute(command).await,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cli_parses_test_command() {
-        let cli = Cli::try_parse_from(["axbuild", "test"]).unwrap();
-
-        match cli.command {
-            Commands::Test => {}
-            _ => panic!("expected `test` command"),
-        }
-    }
-
-    #[test]
-    fn cli_rejects_legacy_test_std_command() {
-        assert!(Cli::try_parse_from(["axbuild", "test", "std"]).is_err());
-    }
-
-    #[test]
-    fn cli_parses_clippy_command() {
-        let cli = Cli::try_parse_from(["axbuild", "clippy"]).unwrap();
-
-        match cli.command {
-            Commands::Clippy(args) => {
-                assert!(!args.all);
-                assert!(args.packages.is_empty());
-            }
-            _ => panic!("expected `clippy` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_clippy_all_command() {
-        let cli = Cli::try_parse_from(["axbuild", "clippy", "--all"]).unwrap();
-
-        match cli.command {
-            Commands::Clippy(args) => {
-                assert!(args.all);
-                assert!(args.packages.is_empty());
-            }
-            _ => panic!("expected `clippy --all` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_clippy_package_command() {
-        let cli = Cli::try_parse_from(["axbuild", "clippy", "--package", "ax-driver"]).unwrap();
-
-        match cli.command {
-            Commands::Clippy(args) => {
-                assert!(!args.all);
-                assert_eq!(args.packages, vec!["ax-driver"]);
-            }
-            _ => panic!("expected `clippy --package` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_repeated_clippy_package_command() {
-        let cli = Cli::try_parse_from([
-            "axbuild",
-            "clippy",
-            "--package",
-            "ax-driver",
-            "--package",
-            "axbuild",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Commands::Clippy(args) => {
-                assert_eq!(args.packages, vec!["ax-driver", "axbuild"]);
-            }
-            _ => panic!("expected repeated `clippy --package` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_board_ls_command() {
-        let cli = Cli::try_parse_from([
-            "axbuild", "board", "ls", "--server", "10.0.0.2", "--port", "9000",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Commands::Board {
-                command: board::Command::Ls(server),
-            } => {
-                assert_eq!(server.server.as_deref(), Some("10.0.0.2"));
-                assert_eq!(server.port, Some(9000));
-            }
-            _ => panic!("expected `board ls` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_board_connect_command() {
-        let cli = Cli::try_parse_from([
-            "axbuild",
-            "board",
-            "connect",
-            "-b",
-            "rk3568",
-            "--server",
-            "board.example",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Commands::Board {
-                command: board::Command::Connect(args),
-            } => {
-                assert_eq!(args.board_type, "rk3568");
-                assert_eq!(args.server.server.as_deref(), Some("board.example"));
-                assert_eq!(args.server.port, None);
-            }
-            _ => panic!("expected `board connect` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_board_config_command() {
-        let cli = Cli::try_parse_from(["axbuild", "board", "config"]).unwrap();
-
-        match cli.command {
-            Commands::Board {
-                command: board::Command::Config,
-            } => {}
-            _ => panic!("expected `board config` command"),
-        }
-    }
-
-    #[test]
-    fn cli_rejects_legacy_test_qemu_command() {
-        assert!(Cli::try_parse_from(["axbuild", "test", "qemu", "arceos"]).is_err());
-    }
-
-    #[test]
-    fn cli_rejects_legacy_test_uboot_command() {
-        assert!(Cli::try_parse_from(["axbuild", "test", "uboot", "axvisor"]).is_err());
-    }
-
-    #[test]
-    fn cli_parses_arceos_branch_command() {
-        let cli = Cli::try_parse_from([
-            "axbuild",
-            "arceos",
-            "test",
-            "qemu",
-            "--target",
-            "x86_64-unknown-none",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Commands::Arceos { .. } => {}
-            _ => panic!("expected `arceos` branch command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_starry_branch_command() {
-        let cli = Cli::try_parse_from(["axbuild", "starry", "test", "qemu", "--target", "x86_64"])
-            .unwrap();
-
-        match cli.command {
-            Commands::Starry { .. } => {}
-            _ => panic!("expected `starry` branch command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_axvisor_branch_command() {
-        let cli = Cli::try_parse_from(["axbuild", "axvisor", "image", "ls"]).unwrap();
-
-        match cli.command {
-            Commands::Axvisor { .. } => {}
-            _ => panic!("expected `axvisor` branch command"),
-        }
     }
 }

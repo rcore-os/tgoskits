@@ -12,14 +12,21 @@ core::arch::global_asm!(
     trapframe_size = const (core::mem::size_of::<TrapFrame>()),
 );
 
-fn handle_breakpoint(era: &mut usize) {
-    debug!("Exception(Breakpoint) @ {era:#x} ");
-    *era += 4;
+fn handle_breakpoint(tf: &mut TrapFrame) {
+    debug!("Exception(Breakpoint) @ {:#x} ", tf.era);
+    if crate::trap::breakpoint_handler(tf) {
+        return;
+    }
+    tf.era += 4;
 }
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(badv::read().vaddr());
-    if crate::trap::page_fault_handler(vaddr, access_flags) {
+    if crate::trap::call_page_fault_handler_with_parent_irqs(
+        vaddr,
+        access_flags,
+        tf.prmd & (1 << 2) != 0,
+    ) {
         return;
     }
     #[cfg(feature = "uspace")]
@@ -53,13 +60,13 @@ fn loongarch64_trap_handler(tf: &mut TrapFrame) {
         | Trap::Exception(Exception::PageNonExecutableFault) => {
             handle_page_fault(tf, PageFaultFlags::EXECUTE);
         }
-        Trap::Exception(Exception::Breakpoint) => handle_breakpoint(&mut tf.era),
+        Trap::Exception(Exception::Breakpoint) => handle_breakpoint(tf),
         Trap::Exception(Exception::AddressNotAligned) => unsafe {
             tf.emulate_unaligned().unwrap();
         },
         Trap::Interrupt(_) => {
             let irq_num: usize = estat.is().trailing_zeros() as usize;
-            crate::trap::irq_handler(irq_num);
+            crate::trap::dispatch_irq(irq_num);
         }
         trap => {
             panic!(

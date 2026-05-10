@@ -9,9 +9,7 @@
 #![feature(linkage)]
 
 use ax_crate_interface::impl_interface;
-use define_weak_traits::{
-    AllDefaultIf, CallerWeakIf, NamespacedWeakIf, SelfRefIf, WeakDefaultIf,
-};
+use define_weak_traits::{AllDefaultIf, CallerWeakIf, NamespacedWeakIf, SelfRefIf, WeakDefaultIf};
 
 /// Full implementation - overrides ALL methods including defaults.
 /// This creates strong symbols that override the weak symbol defaults.

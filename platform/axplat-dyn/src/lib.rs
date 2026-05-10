@@ -20,10 +20,14 @@ mod init;
 mod irq;
 mod mem;
 mod power;
+#[cfg(feature = "rknpu")]
+pub mod rknpu;
 
 #[cfg(not(feature = "irq"))]
 #[somehal::irq_handler]
 fn somehal_handle_irq(_irq: somehal::irq::IrqId) {}
+
+pub use boot::boot_stack_bounds;
 
 // pub mod config {
 //     //! Platform configuration module.

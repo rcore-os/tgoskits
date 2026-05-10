@@ -1,8 +1,8 @@
 [package]
 name = "ax-arm-pl011"
-version = "0.3.0"
+version = "0.3.7"
 repository = "https://github.com/rcore-os/tgoskits"
-edition = "2021"
+edition.workspace = true
 authors = ["Shiping Yuan <robert_yuan@pku.edu.com>", "Yuekai Jia <equation618@gmail.com>"]
 description = "ARM Uart pl011 register definitions and basic operations"
 keywords = ["arm", "pl011", "uart", "arceos"]

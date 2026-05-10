@@ -1,5 +1,4 @@
 //！Macros for registering constructor functions for Rust under no_std, which is like __attribute__((constructor)) in C/C++.
-//!
 //! **DO NOT** use this crate directly. Use the [ax-ctor-bare](https://docs.rs/ax-ctor-bare) crate instead.
 //!
 //! After attching the `register_ctor` macro to the given function, a pointer pointing to it will be stored in the `.init_array` section.
@@ -36,7 +35,7 @@ pub fn register_ctor(attr: TokenStream, function: TokenStream) -> TokenStream {
         let name_ident = format_ident!("_INIT_{}", name_str);
         let output = &func.sig.output;
         // Constructor functions should not have any return value.
-        if let syn::ReturnType::Type(_, _) = output {
+        if let syn::ReturnType::Type(..) = output {
             return Error::new(
                 Span::call_site(),
                 "expect no return value for the constructor function",

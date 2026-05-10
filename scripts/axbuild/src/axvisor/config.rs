@@ -3,14 +3,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::anyhow;
+
 use crate::{
     axvisor::board::{self, Board},
-    context::{AxvisorCommandSnapshot, snapshot_path_value},
+    context::{AxvisorCommandSnapshot, arch_for_target_checked, snapshot_path_value},
 };
-
-pub(crate) fn default_build_config_path(axvisor_dir: &Path) -> PathBuf {
-    axvisor_dir.join(".build.toml")
-}
 
 pub(crate) fn available_board_names(axvisor_dir: &Path) -> anyhow::Result<Vec<String>> {
     board::board_names(axvisor_dir)
@@ -33,7 +31,8 @@ pub(crate) fn write_defconfig(
     board_name: &str,
 ) -> anyhow::Result<PathBuf> {
     let board = resolve_board(axvisor_dir, board_name)?;
-    let build_config_path = default_build_config_path(axvisor_dir);
+    let build_config_path =
+        crate::axvisor::build::default_build_info_path(axvisor_dir, board.target.as_str());
     if let Some(parent) = build_config_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -46,6 +45,8 @@ pub(crate) fn write_defconfig(
     })?;
 
     let mut snapshot = AxvisorCommandSnapshot::load(workspace_root)?;
+    snapshot.arch = Some(arch_for_target_checked(&board.target)?.to_string());
+    snapshot.target = Some(board.target);
     snapshot.config = Some(snapshot_path_value(workspace_root, &build_config_path));
     snapshot.store(workspace_root)?;
 
@@ -89,6 +90,7 @@ vm_configs = []
             arch: Some(DEFAULT_AXVISOR_ARCH.to_string()),
             target: Some(DEFAULT_AXVISOR_TARGET.to_string()),
             plat_dyn: Some(false),
+            smp: None,
             config: Some(PathBuf::from("os/axvisor/.build-aarch64.toml")),
             vmconfigs: vec![PathBuf::from("tmp/vm1.toml")],
             qemu: AxvisorQemuSnapshot {
@@ -102,7 +104,11 @@ vm_configs = []
 
         let path = write_defconfig(root.path(), &axvisor_dir, "roc-rk3568-pc").unwrap();
 
-        assert_eq!(path, axvisor_dir.join(".build.toml"));
+        assert_eq!(
+            path,
+            root.path()
+                .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
+        );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             fs::read_to_string(source).unwrap()
@@ -111,10 +117,15 @@ vm_configs = []
         let snapshot = AxvisorCommandSnapshot::load(root.path()).unwrap();
         assert_eq!(
             snapshot.config,
-            Some(PathBuf::from("os/axvisor/.build.toml"))
+            Some(PathBuf::from(
+                "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
+            ))
         );
-        assert_eq!(snapshot.arch, existing_snapshot.arch);
-        assert_eq!(snapshot.target, existing_snapshot.target);
+        assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
+        assert_eq!(
+            snapshot.target.as_deref(),
+            Some("aarch64-unknown-none-softfloat")
+        );
         assert_eq!(snapshot.plat_dyn, existing_snapshot.plat_dyn);
         assert_eq!(snapshot.vmconfigs, existing_snapshot.vmconfigs);
         assert_eq!(snapshot.qemu.qemu_config, Some(qemu_config));
@@ -140,7 +151,7 @@ plat_dyn = true
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["rk3588-clk"]
+features = ["rockchip-soc"]
 log = "Info"
 plat_dyn = true
 "#,

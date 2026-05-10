@@ -25,16 +25,16 @@ pub use apic_base::*;
 pub use dfr::*;
 pub use esr::*;
 pub use icr::*;
-pub use svr::*;
-
-use tock_registers::register_structs;
-use tock_registers::registers::{ReadOnly, ReadWrite, WriteOnly};
-
 use lvt::{
     LvtCmciRegisterMmio, LvtErrorRegisterMmio, LvtLint0RegisterMmio, LvtLint1RegisterMmio,
     LvtPerformanceCounterRegisterMmio, LvtThermalMonitorRegisterMmio, LvtTimerRegisterMmio,
 };
+pub use svr::*;
 use timer::DivideConfigurationRegisterMmio;
+use tock_registers::{
+    register_structs,
+    registers::{ReadOnly, ReadWrite, WriteOnly},
+};
 
 register_structs! {
     #[allow(non_snake_case)]

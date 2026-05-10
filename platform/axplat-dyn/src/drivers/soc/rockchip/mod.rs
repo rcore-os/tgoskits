@@ -12,13 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(all(feature = "rk3588-clk", not(feature = "rk3568-clk")))]
-#[path = "clk/rk3588-clk.rs"]
+#[cfg(all(feature = "rockchip-soc", not(feature = "rk3568-clk")))]
+#[path = "clk/rk3588.rs"]
 mod clk;
 
-#[cfg(all(feature = "rk3568-clk", not(feature = "rk3588-clk")))]
+#[cfg(all(feature = "rk3568-clk", not(feature = "rockchip-soc")))]
 #[path = "clk/rk3568-clk.rs"]
 mod clk;
 
 #[cfg(feature = "rockchip-pm")]
 mod pm;
+
+#[cfg(all(feature = "rockchip-soc", not(feature = "rk3568-clk")))]
+mod pinctrl;
+
+#[cfg(all(feature = "rockchip-soc", not(feature = "rk3568-clk")))]
+pub(crate) use clk::{rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert};
+#[cfg(all(feature = "rockchip-soc", not(feature = "rk3568-clk")))]
+pub(crate) use pinctrl::RockchipPinCtrl;
+#[cfg(all(
+    feature = "rockchip-soc",
+    feature = "rockchip-pm",
+    not(feature = "rk3568-clk")
+))]
+pub(crate) use pm::rk3588_enable_power_domain;
+
+#[cfg(all(
+    feature = "rockchip-soc",
+    not(feature = "rockchip-pm"),
+    not(feature = "rk3568-clk")
+))]
+pub(crate) fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
+    Err(alloc::format!(
+        "rockchip-pm feature is not enabled for power domain {domain}"
+    ))
+}

@@ -59,6 +59,8 @@ pub mod vsip;
 pub mod vsscratch;
 /// Virtual supervisor status register
 pub mod vsstatus;
+/// Virtual supervisor timer compare register
+pub mod vstimecmp;
 /// Virtual supervisor trap value register
 pub mod vstval;
 /// Virtual supervisor trap vector register

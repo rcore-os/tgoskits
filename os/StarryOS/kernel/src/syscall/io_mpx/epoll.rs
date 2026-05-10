@@ -83,7 +83,9 @@ fn do_epoll_wait(
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
 ) -> AxResult<isize> {
-    check_sigset_size(sigsetsize)?;
+    if !sigmask.is_null() {
+        check_sigset_size(sigsetsize)?;
+    }
     debug!("sys_epoll_wait <= epfd: {epfd}, maxevents: {maxevents}, timeout: {timeout:?}");
 
     let epoll = Epoll::from_fd(epfd)?;

@@ -19,6 +19,3 @@ fn main() {
 
     starry_kernel::entry::init(&args, &envs);
 }
-
-#[cfg(feature = "vf2")]
-extern crate axplat_riscv64_visionfive2;

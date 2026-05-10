@@ -41,6 +41,10 @@ pub struct Rlimits([Rlimit; RLIM_NLIMITS as usize]);
 impl Default for Rlimits {
     fn default() -> Self {
         let mut result = Self(Default::default());
+        // Match the Linux default (8 MiB) so applications like PostgreSQL
+        // that compute safe recursion/stack-depth limits from getrlimit
+        // get a consistent answer. USER_STACK_SIZE is kept in sync so the
+        // advertised limit matches the mapped stack VMA.
         result[RLIMIT_STACK] = (crate::config::USER_STACK_SIZE as u64).into();
         result[RLIMIT_NOFILE] = (AX_FILE_LIMIT as u64).into();
         result

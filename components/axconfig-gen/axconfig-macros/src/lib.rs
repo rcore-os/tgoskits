@@ -1,13 +1,14 @@
 #![cfg_attr(feature = "nightly", feature(proc_macro_expand))]
 #![doc = include_str!("../README.md")]
 
-use proc_macro::{LexError, TokenStream};
-use quote::{quote, ToTokens};
-use syn::parse::{Parse, ParseStream};
-use syn::parse_macro_input;
-use syn::{Error, Ident, LitStr, Result, Token};
-
 use ax_config_gen::{Config, OutputFormat};
+use proc_macro::{LexError, TokenStream};
+use quote::{ToTokens, quote};
+use syn::{
+    Error, Ident, LitStr, Result, Token,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+};
 
 fn compiler_error<T: ToTokens>(tokens: T, msg: String) -> TokenStream {
     Error::new_spanned(tokens, msg).to_compile_error().into()
@@ -26,7 +27,7 @@ pub fn parse_configs(config_toml: TokenStream) -> TokenStream {
         Err(e) => {
             return Error::new(proc_macro2::Span::call_site(), e.to_string())
                 .to_compile_error()
-                .into()
+                .into();
         }
     };
 
@@ -122,7 +123,7 @@ impl Parse for IncludeConfigsArgs {
                     return Err(Error::new(
                         ident.span(),
                         format!("unexpected parameter `{}`", ident),
-                    ))
+                    ));
                 }
             }
 

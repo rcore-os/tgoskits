@@ -1,0 +1,46 @@
+name: Release-plz
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-plz-pr:
+    name: Open release PR
+    if: >-
+      ${{
+        github.repository_owner == 'rcore-os'
+        && github.event_name == 'push'
+        && github.ref_name == 'main'
+      }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-pr-${{ github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz release-pr
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+          config: release-plz.toml
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

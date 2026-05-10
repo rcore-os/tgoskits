@@ -77,7 +77,7 @@ use crate as ax_percpu;
 
 /// On x86, we use `gs:SELF_PTR` to store the address of the per-CPU data area base.
 #[cfg(target_arch = "x86_64")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[ax_percpu_macros::def_percpu]
 static SELF_PTR: usize = 0;
 
@@ -87,7 +87,7 @@ static mut GS: usize = 0;
 /// .
 /// # Safety
 #[cfg(target_os = "linux")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __get_gs() -> usize {
-    GS
+    unsafe { GS }
 }

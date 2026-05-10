@@ -13,55 +13,46 @@
 // limitations under the License.
 
 use alloc::collections::VecDeque;
-use bit_field::BitField;
 use core::{
     arch::naked_asm,
     fmt::{Debug, Formatter, Result},
     mem::size_of,
 };
+
+use ax_errno::{AxResult, ax_err, ax_err_type};
+use axaddrspace::{
+    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo,
+    device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
+};
+use axdevice_base::BaseDeviceOps;
+use axvcpu::{AxArchVCpu, AxVCpuExitReason};
+use axvisor_api::vmm::{VCpuId, VMId};
+use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
     bits64::vmx,
-    controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write},
+    controlregs::Xcr0,
     dtables::{self, DescriptorTablePointer},
     segmentation::SegmentSelector,
 };
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 use x86_vlapic::EmulatedLocalApic;
 
-use axaddrspace::{
-    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo,
-    device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
+use super::{
+    VmxExitInfo, as_axerr,
+    definitions::VmxExitReason,
+    structs::{IOBitmap, MsrBitmap, VmxRegion},
+    vmcs::{
+        self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
+        VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
+    },
 };
-use axdevice_base::BaseDeviceOps;
-use ax_errno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvisor_api::vmm::{VCpuId, VMId};
-
-use super::VmxExitInfo;
-use super::as_axerr;
-use super::definitions::VmxExitReason;
-use super::structs::{IOBitmap, MsrBitmap, VmxRegion};
-use super::vmcs::{
-    self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
-    VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
-};
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
+use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters, xstate::XState};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
-
-pub struct XState {
-    host_xcr0: u64,
-    guest_xcr0: u64,
-    host_xss: u64,
-    guest_xss: u64,
-
-    xsave_available: bool,
-    xsaves_available: bool,
-}
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
@@ -69,97 +60,6 @@ pub enum VmCpuMode {
     Protected,
     Compatibility, // IA-32E mode (CS.L = 0)
     Mode64,        // IA-32E mode (CS.L = 1)
-}
-
-impl XState {
-    /// Create a new [`XState`] instance with current host state
-    fn new() -> Self {
-        // Check if XSAVE is available
-        let xsave_available = Self::xsave_available();
-        // Check if XSAVES and XRSTORS (as well as IA32_XSS) are available
-        let xsaves_available = if xsave_available {
-            Self::xsaves_available()
-        } else {
-            false
-        };
-
-        // Read XCR0 iff XSAVE is available
-        let xcr0 = if xsave_available {
-            unsafe { xcr0_read().bits() }
-        } else {
-            0
-        };
-        // Read IA32_XSS iff XSAVES is available
-        let xss = if xsaves_available {
-            Msr::IA32_XSS.read()
-        } else {
-            0
-        };
-
-        Self {
-            host_xcr0: xcr0,
-            guest_xcr0: xcr0,
-            host_xss: xss,
-            guest_xss: xss,
-            xsave_available,
-            xsaves_available,
-        }
-    }
-
-    /// Enable extended processor state management instructions, including XGETBV and XSAVE.
-    pub fn enable_xsave() {
-        if Self::xsave_available() {
-            unsafe { Cr4::write(Cr4::read() | Cr4Flags::OSXSAVE) };
-        }
-    }
-
-    /// Check if XSAVE is available on the current CPU.
-    pub fn xsave_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_feature_info()
-            .map(|f| f.has_xsave())
-            .unwrap_or(false)
-    }
-
-    /// Check if XSAVES and XRSTORS (as well as IA32_XSS) are available on the current CPU.
-    pub fn xsaves_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_extended_state_info()
-            .map(|f| f.has_xsaves_xrstors())
-            .unwrap_or(false)
-    }
-
-    /// Save the current host XCR0 and IA32_XSS values and load the guest values.
-    pub fn switch_to_guest(&mut self) {
-        unsafe {
-            if self.xsave_available {
-                self.host_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.guest_xcr0));
-
-                if self.xsaves_available {
-                    self.host_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.guest_xss);
-                }
-            }
-        }
-    }
-
-    /// Save the current guest XCR0 and IA32_XSS values and load the host values.
-    pub fn switch_to_host(&mut self) {
-        unsafe {
-            if self.xsave_available {
-                self.guest_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.host_xcr0));
-
-                if self.xsaves_available {
-                    self.guest_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.host_xss);
-                }
-            }
-        }
-    }
 }
 
 const MSR_IA32_EFER_LMA_BIT: u64 = 1 << 10;
@@ -334,18 +234,16 @@ impl VmxVcpu {
         // debug!("VM exit: {:#x?}", exit_info);
 
         match self.builtin_vmexit_handler(&exit_info) {
-            Some(result) => {
-                if result.is_err() {
+            Some(result) => match result {
+                Ok(()) => None,
+                Err(err) => {
                     panic!(
-                        "VmxVcpu failed to handle a VM-exit that should be handled by itself: {:?}, error {:?}, vcpu: {:#x?}",
-                        exit_info.exit_reason,
-                        result.unwrap_err(),
-                        self
+                        "VmxVcpu failed to handle a VM-exit that should be handled by itself: \
+                         {:?}, error {:?}, vcpu: {:#x?}",
+                        exit_info.exit_reason, err, self
                     );
                 }
-
-                None
-            }
+            },
             None => Some(exit_info),
         }
     }
@@ -603,7 +501,7 @@ impl VmxVcpu {
         self.set_cr(4, 0);
 
         macro_rules! set_guest_segment {
-            ($seg: ident, $access_rights: expr) => {{
+            ($seg:ident, $access_rights:expr) => {{
                 use VmcsGuest16::*;
                 use VmcsGuest32::*;
                 use VmcsGuestNW::*;
@@ -654,8 +552,9 @@ impl VmxVcpu {
 
     fn setup_vmcs_control(&mut self, ept_root: HostPhysAddr, is_guest: bool) -> AxResult {
         // Intercept NMI and external interrupts.
-        use super::vmcs::controls::*;
         use PinbasedControls as PinCtrl;
+
+        use super::vmcs::controls::*;
         let raw_cpuid = CpuId::new();
 
         vmcs::set_control(
@@ -1040,11 +939,9 @@ impl VmxVcpu {
     }
 
     fn handle_vmx_preemption_timer(&mut self) -> AxResult {
-        /*
-        The VMX-preemption timer counts down at rate proportional to that of the timestamp counter (TSC).
-        Specifically, the timer counts down by 1 every time bit X in the TSC changes due to a TSC increment.
-        The value of X is in the range 0–31 and can be determined by consulting the VMX capability MSR IA32_VMX_MISC (see Appendix A.6).
-         */
+        // The VMX-preemption timer counts down at rate proportional to that of the timestamp counter (TSC).
+        // Specifically, the timer counts down by 1 every time bit X in the TSC changes due to a TSC increment.
+        // The value of X is in the range 0–31 and can be determined by consulting the VMX capability MSR IA32_VMX_MISC (see Appendix A.6).
         VmcsGuest32::VMX_PREEMPTION_TIMER_VALUE.write(VMX_PREEMPTION_TIMER_SET_VALUE)?;
         Ok(())
     }
@@ -1059,7 +956,7 @@ impl VmxVcpu {
         let cr = cr_access_info.cr_number;
 
         match cr_access_info.access_type {
-            /* move to cr */
+            // move to cr
             0 => {
                 let val = if reg == 4 {
                     self.stack_pointer() as u64
@@ -1068,7 +965,7 @@ impl VmxVcpu {
                 };
                 if cr == 0 || cr == 4 {
                     self.advance_rip(VM_EXIT_INSTR_LEN_MV_TO_CR)?;
-                    /* TODO: check for #GP reasons */
+                    // TODO: check for #GP reasons
                     self.set_cr(cr as usize, val);
 
                     if cr == 0 && Cr0Flags::from_bits_truncate(val).contains(Cr0Flags::PAGING) {
@@ -1150,7 +1047,8 @@ impl VmxVcpu {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
                     warn!(
-                        "handle_cpuid: Failed to get TSC frequency by CPUID, default to {TIMER_FREQUENCY_MHZ} MHz"
+                        "handle_cpuid: Failed to get TSC frequency by CPUID, default to \
+                         {TIMER_FREQUENCY_MHZ} MHz"
                     );
                     res.eax = TIMER_FREQUENCY_MHZ;
                 }
@@ -1423,8 +1321,9 @@ impl AxArchVCpu for VmxVcpu {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::format;
+
+    use super::*;
 
     #[test]
     fn test_vm_cpu_mode_enum() {

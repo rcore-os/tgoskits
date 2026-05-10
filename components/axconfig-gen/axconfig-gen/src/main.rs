@@ -1,6 +1,8 @@
 use ax_config_gen::{Config, ConfigValue, OutputFormat};
-use clap::builder::{PossibleValuesParser, TypedValueParser};
-use clap::Parser;
+use clap::{
+    Parser,
+    builder::{PossibleValuesParser, TypedValueParser},
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -127,9 +129,11 @@ fn main() {
             );
         }
         let new_value = unwrap!(ConfigValue::new(&value));
-        let item = unwrap!(config
-            .config_at_mut(&table, &key)
-            .ok_or_else(|| format!("Config item `{}` not found", arg)));
+        let item = unwrap!(
+            config
+                .config_at_mut(&table, &key)
+                .ok_or_else(|| format!("Config item `{}` not found", arg))
+        );
         unwrap!(item.value_mut().update(new_value));
     }
 
@@ -140,9 +144,11 @@ fn main() {
         } else {
             debug!("[DEBUG] Getting config item `{}.{}`", table, key);
         }
-        let item = unwrap!(config
-            .config_at(&table, &key)
-            .ok_or_else(|| format!("Config item `{}` not found", arg)));
+        let item = unwrap!(
+            config
+                .config_at(&table, &key)
+                .ok_or_else(|| format!("Config item `{}` not found", arg))
+        );
         println!("{}", item.value().to_toml_value());
     }
 

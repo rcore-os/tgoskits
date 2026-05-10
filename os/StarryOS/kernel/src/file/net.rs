@@ -1,5 +1,5 @@
 use alloc::{borrow::Cow, format, sync::Arc};
-use core::{ffi::c_int, ops::Deref, task::Context};
+use core::{ffi::c_int, mem::offset_of, ops::Deref, task::Context};
 
 use ax_errno::{AxError, AxResult};
 use axnet::{
@@ -7,7 +7,12 @@ use axnet::{
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::S_IFSOCK;
+use linux_raw_sys::{
+    general::{O_RDWR, S_IFSOCK},
+    ioctl::SIOCGIFTXQLEN,
+    net::ifreq,
+};
+use starry_vm::VmMutPtr;
 
 use super::{FileLike, Kstat};
 use crate::file::{IoDst, IoSrc, get_file_like};
@@ -54,6 +59,21 @@ impl FileLike for Socket {
 
     fn path(&self) -> Cow<'_, str> {
         format!("socket:[{}]", self as *const _ as usize).into()
+    }
+
+    fn open_flags(&self) -> u32 {
+        O_RDWR
+    }
+
+    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+        match cmd {
+            SIOCGIFTXQLEN => {
+                let qlen_ptr = (arg + offset_of!(ifreq, ifr_ifru)) as *mut i32;
+                qlen_ptr.vm_write(1000)?;
+                Ok(0)
+            }
+            _ => Err(AxError::NotATty),
+        }
     }
 
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>

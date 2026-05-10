@@ -194,19 +194,22 @@ impl IrqIf for IrqIfImpl {
                 let handler = TIMER_HANDLER.load(Ordering::Acquire);
                 if !handler.is_null() {
                     // SAFETY: The handler is guaranteed to be a valid function pointer.
-                    unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)() };
+                    unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)(irq) };
                 }
                 Some(irq)
             },
             @S_SOFT => {
                 trace!("IRQ: IPI");
+                // Clear SSIP before draining the queue so a new IPI that
+                // arrives while handling callbacks can set the pending bit
+                // again instead of losing the wakeup.
+                unsafe {
+                    riscv::register::sip::clear_ssoft();
+                }
                 let handler = IPI_HANDLER.load(Ordering::Acquire);
                 if !handler.is_null() {
                     // SAFETY: The handler is guaranteed to be a valid function pointer.
-                    unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)() };
-                }
-                unsafe {
-                    riscv::register::sip::clear_ssoft();
+                    unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)(irq) };
                 }
                 Some(irq)
             },

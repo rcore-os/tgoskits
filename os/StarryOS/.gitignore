@@ -14,4 +14,4 @@
 *.swo
 /.cargo/.config-local.toml
 /tmp/
-
+/Cargo.lock

@@ -19,8 +19,7 @@
 //! If CPUID.(EAX=1):ECX.21 is set , the processor supports the x2APIC capability and can be placed into the x2APIC mode.
 //! System software can place the local APIC in the x2APIC mode by setting the x2APIC mode enable bit (bit 10) in the IA32_APIC_BASE MSR at MSR address 01BH.
 
-use tock_registers::LocalRegisterCopy;
-use tock_registers::register_bitfields;
+use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 register_bitfields! {
     u64,

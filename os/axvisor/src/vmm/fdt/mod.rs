@@ -32,8 +32,10 @@ use spin::Mutex;
 
 pub use parser::*;
 // pub use print::print_fdt;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use create::update_fdt;
+pub use device::build_all_node_paths;
+#[cfg(any(target_arch = "aarch64", test))]
 pub use device::build_node_path;
 
 use crate::vmm::config::{config, get_vm_dtb_arc};
@@ -60,8 +62,8 @@ pub fn crate_guest_fdt_with_cache(dtb_data: Vec<u8>, crate_config: &AxVMCrateCon
     cache_lock.insert(crate_config.base.id, dtb_data);
 }
 
-/// Handle all FDT-related operations for aarch64 architecture
-pub fn handle_fdt_operations(vm_config: &mut AxVMConfig, vm_create_config: &AxVMCrateConfig) {
+/// Handle all FDT-related operations for guest architectures that boot with DTB.
+pub fn handle_fdt_operations(vm_config: &mut AxVMConfig, vm_create_config: &mut AxVMCrateConfig) {
     let host_fdt_bytes = get_host_fdt();
     let host_fdt = Fdt::from_bytes(host_fdt_bytes)
         .map_err(|e| format!("Failed to parse FDT: {e:#?}"))
@@ -82,7 +84,9 @@ pub fn handle_fdt_operations(vm_config: &mut AxVMConfig, vm_create_config: &AxVM
     // Overlay VM config with the given DTB.
     if let Some(dtb_arc) = get_vm_dtb_arc(vm_config) {
         let dtb = dtb_arc.as_ref();
-        parse_passthrough_devices_address(vm_config, dtb);
+        parse_reserved_memory_regions(vm_create_config, dtb);
+        parse_passthrough_devices_address(vm_config, vm_create_config, dtb);
+        #[cfg(target_arch = "aarch64")]
         parse_vm_interrupt(vm_config, dtb);
     } else {
         error!(

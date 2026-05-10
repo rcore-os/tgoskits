@@ -15,30 +15,58 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
 
+#[cfg(any(feature = "vmx", feature = "svm"))]
 #[macro_use]
+extern crate log;
+#[cfg(not(any(feature = "vmx", feature = "svm")))]
 extern crate log;
 
 extern crate alloc;
+
+#[cfg(all(feature = "vmx", feature = "svm"))]
+compile_error!("features `vmx` and `svm` are mutually exclusive");
 
 #[cfg(test)]
 mod test_utils;
 
 pub(crate) mod msr;
+#[cfg(feature = "vmx")]
 #[macro_use]
 pub(crate) mod regs;
 mod ept;
+#[cfg(not(feature = "vmx"))]
+pub(crate) mod regs;
+#[cfg(any(feature = "vmx", feature = "svm"))]
+pub(crate) mod xstate;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "vmx")] {
         mod vmx;
-        use vmx as vender;
+        use vmx as vendor;
         pub use vmx::{VmxExitInfo, VmxExitReason, VmxInterruptInfo, VmxIoExitInfo};
 
-        pub use vender::VmxArchVCpu;
-        pub use vender::VmxArchPerCpuState;
+        pub use vendor::{
+            VmxArchPerCpuState, VmxArchPerCpuState as X86ArchPerCpuState, VmxArchVCpu,
+            VmxArchVCpu as X86ArchVCpu,
+        };
+    } else if #[cfg(feature = "svm")] {
+        mod svm;
+        use svm as vendor;
+
+        pub use svm::{SvmExitCode, SvmExitInfo, SvmIntercept};
+        pub use vendor::{
+            SvmArchPerCpuState, SvmArchPerCpuState as X86ArchPerCpuState, SvmArchVCpu,
+            SvmArchVCpu as X86ArchVCpu,
+        };
     }
 }
 
 pub use ept::GuestPageWalkInfo;
 pub use regs::GeneralRegisters;
-pub use vender::has_hardware_support;
+#[cfg(any(feature = "vmx", feature = "svm"))]
+pub use vendor::has_hardware_support;
+
+#[cfg(not(any(feature = "vmx", feature = "svm")))]
+pub fn has_hardware_support() -> bool {
+    false
+}

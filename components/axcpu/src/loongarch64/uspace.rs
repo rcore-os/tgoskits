@@ -30,6 +30,13 @@ impl UserContext {
         Self(trap_frame)
     }
 
+    /// Normalizes a cloned user context so it can safely return to user mode.
+    pub fn prepare_clone_child_return_state(&mut self) {
+        const PPLV_MASK: usize = 0b11;
+        const PIE: usize = 1 << 2;
+        self.0.prmd = (self.0.prmd & !PPLV_MASK) | PPLV_MASK | PIE;
+    }
+
     /// Enter user space.
     ///
     /// It restores the user registers and jumps to the user entry point
@@ -37,7 +44,7 @@ impl UserContext {
     ///
     /// This function returns when an exception or syscall occurs.
     pub fn run(&mut self) -> ReturnReason {
-        extern "C" {
+        unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
 

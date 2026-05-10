@@ -49,7 +49,7 @@
 //!         // Your implementation
 //!     }
 //!
-//!     fn dma_request_irq(irq: usize, handler: fn()) {
+//!     fn dma_request_irq(irq: usize, handler: fn(usize)) {
 //!         // Your implementation
 //!     }
 //! }
@@ -123,7 +123,7 @@ mod log {
     }
 }
 
-//mod mii_const;
+// mod mii_const;
 mod fxmac_const;
 
 mod fxmac;
@@ -137,7 +137,7 @@ pub use fxmac::*;
 // Re-exports for DMA operations
 pub use fxmac_dma::*;
 // Re-exports for interrupt handling
-pub use fxmac_intr::{xmac_intr_handler, FXmacIntrHandler};
+pub use fxmac_intr::{FXmacIntrHandler, xmac_intr_handler};
 // Re-exports for PHY interface
 pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 
@@ -180,7 +180,7 @@ pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 ///         allocator.free_dma(vaddr, pages)
 ///     }
 ///
-///     fn dma_request_irq(irq: usize, handler: fn()) {
+///     fn dma_request_irq(irq: usize, handler: fn(usize)) {
 ///         // Register interrupt handler for the specified IRQ
 ///         interrupt_controller.register(irq, handler)
 ///     }
@@ -250,7 +250,7 @@ pub trait KernelFunc {
     ///
     /// * `irq` - The IRQ number to register.
     /// * `handler` - The interrupt handler function to call when the IRQ fires.
-    fn dma_request_irq(irq: usize, handler: fn());
+    fn dma_request_irq(irq: usize, handler: fn(usize));
 }
 
 #[cfg(test)]

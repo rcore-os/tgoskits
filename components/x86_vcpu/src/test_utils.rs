@@ -14,11 +14,12 @@
 
 #[cfg(test)]
 pub mod mock {
+    use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
     use axvisor_api::{api_impl, memory::MemoryIf};
-    use ax_memory_addr::{PhysAddr, VirtAddr};
     use spin::Mutex;
 
     static GLOBAL_LOCK: Mutex<MockMmHalState> = Mutex::new(MockMmHalState::new());
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     // State for the mock memory allocator
     struct MockMmHalState {
@@ -51,7 +52,7 @@ pub mod mock {
                 let bit = 1 << i;
                 if (state.alloc_mask & bit) == 0 {
                     state.alloc_mask |= bit;
-                    let phys_addr = 0x1000 + (i * 4096);
+                    let phys_addr = 0x1000 + i * PAGE_SIZE_4K;
                     return Some(ax_memory_addr::PhysAddr::from(phys_addr));
                 }
             }
@@ -59,8 +60,27 @@ pub mod mock {
         }
 
         /// Allocate a number of contiguous frames, with a specified alignment.
-        fn alloc_contiguous_frames(_num_frames: usize, _frame_align: usize) -> Option<PhysAddr> {
-            unimplemented!()
+        fn alloc_contiguous_frames(num_frames: usize, frame_align: usize) -> Option<PhysAddr> {
+            let mut state = GLOBAL_LOCK.lock();
+
+            if num_frames == 0 || num_frames > 16 {
+                return None;
+            }
+
+            let align = frame_align.max(PAGE_SIZE_4K);
+            for start in 0..=16 - num_frames {
+                let phys_addr = 0x1000 + start * PAGE_SIZE_4K;
+                if phys_addr % align != 0 {
+                    continue;
+                }
+
+                let mask = ((1u16 << num_frames) - 1) << start;
+                if (state.alloc_mask & mask) == 0 {
+                    state.alloc_mask |= mask;
+                    return Some(PhysAddr::from(phys_addr));
+                }
+            }
+            None
         }
 
         /// Deallocate a frame allocated previously by [`alloc_frame`].
@@ -68,8 +88,11 @@ pub mod mock {
             let mut state = GLOBAL_LOCK.lock();
 
             let addr = paddr.as_usize();
-            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) && (addr - 0x1000) % 4096 == 0 {
-                let page_index = (addr - 0x1000) / 4096;
+            if addr >= 0x1000
+                && addr < 0x1000 + 16 * PAGE_SIZE_4K
+                && (addr - 0x1000).is_multiple_of(PAGE_SIZE_4K)
+            {
+                let page_index = (addr - 0x1000) / PAGE_SIZE_4K;
                 let bit = 1 << page_index;
                 state.alloc_mask &= !bit;
             }
@@ -77,8 +100,24 @@ pub mod mock {
 
         /// Deallocate a number of contiguous frames allocated previously by
         /// [`alloc_contiguous_frames`].
-        fn dealloc_contiguous_frames(_first_addr: PhysAddr, _num_frames: usize) {
-            unimplemented!()
+        fn dealloc_contiguous_frames(first_addr: PhysAddr, num_frames: usize) {
+            let mut state = GLOBAL_LOCK.lock();
+
+            let addr = first_addr.as_usize();
+            if num_frames == 0
+                || num_frames > 16
+                || addr < 0x1000
+                || addr >= 0x1000 + 16 * PAGE_SIZE_4K
+                || !(addr - 0x1000).is_multiple_of(PAGE_SIZE_4K)
+            {
+                return;
+            }
+
+            let start = (addr - 0x1000) / PAGE_SIZE_4K;
+            if start + num_frames <= 16 {
+                let mask = ((1u16 << num_frames) - 1) << start;
+                state.alloc_mask &= !mask;
+            }
         }
 
         /// Convert a physical address to a virtual address.
@@ -86,9 +125,9 @@ pub mod mock {
             let state = GLOBAL_LOCK.lock();
 
             let addr = paddr.as_usize();
-            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) {
-                let page_index = (addr - 0x1000) / 4096;
-                let offset = (addr - 0x1000) % 4096;
+            if addr >= 0x1000 && addr < 0x1000 + 16 * PAGE_SIZE_4K {
+                let page_index = (addr - 0x1000) / PAGE_SIZE_4K;
+                let offset = (addr - 0x1000) % PAGE_SIZE_4K;
 
                 let page_ptr = state.memory_pool[page_index].as_ptr();
                 ax_memory_addr::VirtAddr::from(unsafe { page_ptr.add(offset) as usize })
@@ -102,7 +141,7 @@ pub mod mock {
             let state = GLOBAL_LOCK.lock();
 
             let pool_start = state.memory_pool.as_ptr() as usize;
-            let pool_end = pool_start + (16 * 4096);
+            let pool_end = pool_start + 16 * PAGE_SIZE_4K;
 
             if vaddr.as_usize() >= pool_start && vaddr.as_usize() < pool_end {
                 let offset = vaddr.as_usize() - pool_start;
@@ -118,7 +157,7 @@ pub mod mock {
         #[allow(dead_code)]
         pub fn reset() {
             let mut state = GLOBAL_LOCK.lock();
-            state.memory_pool = [[0; 4096]; 16];
+            state.memory_pool = [[0; PAGE_SIZE_4K]; 16];
             state.alloc_mask = 0;
             state.reset_counter += 1;
         }
@@ -136,8 +175,11 @@ pub mod mock {
             let state = GLOBAL_LOCK.lock();
 
             let addr = paddr.as_usize();
-            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) && (addr - 0x1000) % 4096 == 0 {
-                let page_index = (addr - 0x1000) / 4096;
+            if addr >= 0x1000
+                && addr < 0x1000 + 16 * PAGE_SIZE_4K
+                && (addr - 0x1000).is_multiple_of(PAGE_SIZE_4K)
+            {
+                let page_index = (addr - 0x1000) / PAGE_SIZE_4K;
                 let bit = 1 << page_index;
                 (state.alloc_mask & bit) != 0
             } else {
@@ -151,30 +193,60 @@ pub mod mock {
             let state = GLOBAL_LOCK.lock();
             state.reset_counter
         }
+
+        #[allow(dead_code)]
+        pub fn run_test<F, R>(test: F) -> R
+        where
+            F: FnOnce() -> R,
+        {
+            let _guard = TEST_LOCK.lock();
+            Self::reset();
+            test()
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::mock::MockMmHal;
     use axvisor_api::memory::MemoryIf;
+
+    use crate::test_utils::mock::MockMmHal;
 
     #[test]
     fn test_mock_allocator() {
-        MockMmHal::reset();
+        MockMmHal::run_test(|| {
+            // Test multiple allocations return different addresses
+            let addr1 = MockMmHal::alloc_frame().unwrap();
+            let addr2 = MockMmHal::alloc_frame().unwrap();
+            let addr3 = MockMmHal::alloc_frame().unwrap();
 
-        // Test multiple allocations return different addresses
-        let addr1 = MockMmHal::alloc_frame().unwrap();
-        let addr2 = MockMmHal::alloc_frame().unwrap();
-        let addr3 = MockMmHal::alloc_frame().unwrap();
+            assert_ne!(addr1.as_usize(), addr2.as_usize());
+            assert_ne!(addr2.as_usize(), addr3.as_usize());
+            assert_ne!(addr1.as_usize(), addr3.as_usize());
 
-        assert_ne!(addr1.as_usize(), addr2.as_usize());
-        assert_ne!(addr2.as_usize(), addr3.as_usize());
-        assert_ne!(addr1.as_usize(), addr3.as_usize());
+            // Addresses should be page-aligned
+            assert_eq!(addr1.as_usize() % 0x1000, 0);
+            assert_eq!(addr2.as_usize() % 0x1000, 0);
+            assert_eq!(addr3.as_usize() % 0x1000, 0);
+        });
+    }
 
-        // Addresses should be page-aligned
-        assert_eq!(addr1.as_usize() % 0x1000, 0);
-        assert_eq!(addr2.as_usize() % 0x1000, 0);
-        assert_eq!(addr3.as_usize() % 0x1000, 0);
+    #[test]
+    fn test_mock_contiguous_allocator() {
+        MockMmHal::run_test(|| {
+            let addr = MockMmHal::alloc_contiguous_frames(3, 0x1000).unwrap();
+            assert_eq!(addr.as_usize(), 0x1000);
+            assert_eq!(MockMmHal::allocated_count(), 3);
+
+            let aligned = MockMmHal::alloc_contiguous_frames(2, 0x4000).unwrap();
+            assert_eq!(aligned.as_usize() % 0x4000, 0);
+            assert_eq!(MockMmHal::allocated_count(), 5);
+
+            MockMmHal::dealloc_contiguous_frames(addr, 3);
+            assert_eq!(MockMmHal::allocated_count(), 2);
+
+            MockMmHal::dealloc_contiguous_frames(aligned, 2);
+            assert_eq!(MockMmHal::allocated_count(), 0);
+        });
     }
 }

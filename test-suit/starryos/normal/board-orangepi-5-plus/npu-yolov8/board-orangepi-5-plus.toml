@@ -1,0 +1,6 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "cd /guest/npu_demo && ./yolov8.sh"
+success_regex = ["(?m)^=== Detection Results Summary ===\\s*$"]
+fail_regex = ["(?m)^rknn_init fail! ret=-1\\s*$"]
+timeout = 300

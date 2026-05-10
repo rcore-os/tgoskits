@@ -1,7 +1,7 @@
 [package]
 name = "axpoll"
-version = "0.3.2"
-edition = "2024"
+version = "0.3.8"
+edition.workspace = true
 description = "A library for polling I/O events and waking up tasks."
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 repository = "https://github.com/Starry-OS/axpoll"
@@ -13,6 +13,7 @@ alloc = []          # Deprecated
 default = ["alloc"]
 
 [dependencies]
+ax-kspin = { workspace = true }
 bitflags = { version = "2.10", default-features = false }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",

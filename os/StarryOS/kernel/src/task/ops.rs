@@ -5,6 +5,7 @@ use alloc::{
 use core::{ffi::c_long, sync::atomic::Ordering};
 
 use ax_errno::{AxError, AxResult};
+use ax_hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
@@ -31,6 +32,7 @@ static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap:
 ///
 /// This function is intended to be used during memory leak analysis to remove
 /// possible noise caused by expired entries in the [`WeakMap`].
+#[cfg(feature = "memtrack")]
 pub fn cleanup_task_tables() {
     TASK_TABLE.write().cleanup();
     PROCESS_TABLE.write().cleanup();
@@ -104,9 +106,42 @@ pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
         .ok_or(AxError::NoSuchProcess)
 }
 
-/// Finds the session with the given SID.
-pub fn get_session(sid: Pid) -> AxResult<Arc<Session>> {
-    SESSION_TABLE.read().get(&sid).ok_or(AxError::NoSuchProcess)
+/// Registers a process group in the global table.
+pub fn register_process_group(pg: &Arc<ProcessGroup>) {
+    let mut pg_table = PROCESS_GROUP_TABLE.write();
+    pg_table.insert(pg.pgid(), pg);
+}
+
+/// Registers a session in the global table.
+pub fn register_session(session: &Arc<Session>) {
+    let mut session_table = SESSION_TABLE.write();
+    session_table.insert(session.sid(), session);
+}
+
+/// Accumulates CPU time for `task` from a timer-tick IRQ context.
+///
+/// Unlike `poll_timer`, this never emits signals, making it safe to call
+/// from interrupt handlers.
+pub fn tick_cpu_time(task: &TaskInner) {
+    let Some(thr) = task.try_as_thread() else {
+        return;
+    };
+    let Ok(mut time) = thr.time.try_borrow_mut() else {
+        // Reentrant borrow means the task is mid-state-transition; skip.
+        return;
+    };
+    time.tick();
+}
+
+/// Returns the accumulated `(utime, stime)` for a task without side effects.
+pub fn task_cpu_time(task: &TaskInner) -> (TimeValue, TimeValue) {
+    let Some(thr) = task.try_as_thread() else {
+        return (TimeValue::ZERO, TimeValue::ZERO);
+    };
+    let Ok(time) = thr.time.try_borrow() else {
+        return (TimeValue::ZERO, TimeValue::ZERO);
+    };
+    time.output()
 }
 
 /// Poll the timer
@@ -118,9 +153,19 @@ pub fn poll_timer(task: &TaskInner) {
         // reentrant borrow, likely IRQ
         return;
     };
-    time.poll(|signo| {
+    let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    });
+    };
+    time.poll(emitter);
+}
+
+/// Poll the process-level POSIX timers.
+pub fn poll_process_timer(pid: Pid) {
+    if let Ok(proc_data) = get_process_data(pid) {
+        proc_data.posix_timers.poll_expired(pid, |sig| {
+            let _ = send_signal_to_process(pid, Some(sig));
+        });
+    }
 }
 
 /// Sets the timer state.
@@ -132,9 +177,10 @@ pub fn set_timer_state(task: &TaskInner, state: TimerState) {
         // reentrant borrow, likely IRQ
         return;
     };
-    time.poll(|signo| {
+    let emitter = |signo| {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    });
+    };
+    time.poll(emitter);
     time.set_state(state);
 }
 
@@ -157,7 +203,7 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
         .checked_add_signed(offset)
         .ok_or(AxError::InvalidInput)?;
     let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
-    let key = FutexKey::new_current(address);
+    let key = FutexKey::new_current_teardown(address);
 
     let futex_table = futex_table_for(&key);
 
@@ -194,6 +240,11 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
         ax_task::yield_now();
     }
 
+    // Process the pending entry that was skipped in the loop
+    if !pending.is_null() {
+        handle_futex_death(pending, offset)?;
+    }
+
     Ok(())
 }
 
@@ -205,7 +256,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
     if clear_child_tid.vm_write(0).is_ok() {
-        let key = FutexKey::new_current(clear_child_tid as usize);
+        let key = FutexKey::new_current_teardown(clear_child_tid as usize);
         let table = futex_table_for(&key);
         let guard = table.get(&key);
         if let Some(futex) = guard {
@@ -222,6 +273,15 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let process = &thr.proc_data.proc;
     if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
+        // Close all file descriptors before marking the process as exited.
+        // This ensures pipe write ends and other resources are properly released,
+        // so parent processes blocking on pipe reads will receive EOF.
+        crate::file::close_all_fds();
+
+        // Snapshot children BEFORE process.exit() reparents them to init
+        // via mem::take. Otherwise process.children() returns an empty
+        // list and pdeathsig never reaches the real children.
+        let children_snapshot = process.children();
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
@@ -231,11 +291,27 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 data.child_exit_event.wake();
             }
         }
+        // Send pdeathsig to child processes
+        for child in children_snapshot {
+            let child_pid = child.pid();
+            if let Ok(child_task) = get_task(child_pid)
+                && let Some(child_thr) = child_task.try_as_thread()
+            {
+                let sig = child_thr.pdeathsig();
+                if sig > 0
+                    && let Some(signo) = Signo::from_repr(sig as u8)
+                {
+                    let _ = send_signal_to_process(child_pid, Some(SignalInfo::new_kernel(signo)));
+                }
+            }
+        }
+
         thr.proc_data.exit_event.wake();
 
-        crate::syscall::SHM_MANAGER
-            .lock()
-            .clear_proc_shm(process.pid());
+        // Unblock a vfork parent waiting for this child to exit.
+        thr.proc_data.notify_vfork_done();
+
+        crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
     }
     thr.exit_event.wake();
 

@@ -5,9 +5,9 @@ license.workspace = true
 name = "tg-xtask"
 publish = false
 repository.workspace = true
-version.workspace = true
+version = "0.5.11"
 
-[dependencies]
-anyhow = {workspace = true}
+[target.'cfg(any(windows, unix))'.dependencies]
+anyhow = { workspace = true }
 axbuild.workspace = true
-tokio = {version = "1.0", features = ["full"]}
+tokio = { version = "1.0", features = ["full"] }

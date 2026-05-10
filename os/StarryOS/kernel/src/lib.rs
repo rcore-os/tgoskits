@@ -3,7 +3,6 @@
 
 #![no_std]
 #![feature(likely_unlikely)]
-#![feature(bstr)]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
@@ -22,3 +21,4 @@ mod pseudofs;
 mod syscall;
 mod task;
 mod time;
+mod trap;

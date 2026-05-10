@@ -1,6 +1,9 @@
 use std::{
+    env,
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
 };
 
 use ostool::{Tool, ToolConfig};
@@ -14,7 +17,46 @@ fn test_app_context(root: &Path) -> AppContext {
         build_config_path: None,
         root: root.to_path_buf(),
         axvisor_dir: Some(root.join("os/axvisor")),
+        original_path: env::var_os("PATH").unwrap_or_default(),
         debug: false,
+    }
+}
+
+static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+struct TempEnvVar {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl TempEnvVar {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = env::var_os(key);
+        unsafe {
+            env::set_var(key, value);
+        }
+        Self { key, original }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let original = env::var_os(key);
+        unsafe {
+            env::remove_var(key);
+        }
+        Self { key, original }
+    }
+}
+
+impl Drop for TempEnvVar {
+    fn drop(&mut self) {
+        match self.original.as_ref() {
+            Some(value) => unsafe {
+                env::set_var(self.key, value);
+            },
+            None => unsafe {
+                env::remove_var(self.key);
+            },
+        }
     }
 }
 
@@ -48,6 +90,24 @@ fn snapshot_load_returns_default_when_missing() {
 }
 
 #[test]
+fn snapshot_persistence_can_be_disabled_by_env() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _env = TempEnvVar::set(NO_SNAPSHOT_ENV, "1");
+
+    assert!(!SnapshotPersistence::Store.should_store());
+    assert!(!SnapshotPersistence::Discard.should_store());
+}
+
+#[test]
+fn snapshot_persistence_treats_zero_env_as_enabled() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _env = TempEnvVar::set(NO_SNAPSHOT_ENV, "0");
+
+    assert!(SnapshotPersistence::Store.should_store());
+    assert!(!SnapshotPersistence::Discard.should_store());
+}
+
+#[test]
 fn axvisor_snapshot_load_returns_default_when_missing() {
     let root = tempdir().unwrap();
     let snapshot = AxvisorCommandSnapshot::load(root.path()).unwrap();
@@ -62,6 +122,7 @@ fn snapshot_store_round_trips() {
         arch: Some("aarch64".into()),
         target: Some("target".into()),
         plat_dyn: Some(true),
+        smp: None,
         qemu: ArceosQemuSnapshot {
             qemu_config: Some(PathBuf::from("configs/qemu.toml")),
         },
@@ -84,7 +145,10 @@ fn axvisor_snapshot_store_round_trips() {
         arch: Some("aarch64".into()),
         target: Some(DEFAULT_AXVISOR_TARGET.into()),
         plat_dyn: Some(false),
-        config: Some(PathBuf::from("os/axvisor/.build.toml")),
+        smp: None,
+        config: Some(PathBuf::from(
+            "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml",
+        )),
         vmconfigs: vec![PathBuf::from("tmp/vm1.toml"), PathBuf::from("tmp/vm2.toml")],
         qemu: AxvisorQemuSnapshot {
             qemu_config: Some(PathBuf::from("configs/qemu.toml")),
@@ -131,6 +195,7 @@ uboot_config = "configs/snapshot-uboot.toml"
                 arch: Some("aarch64".into()),
                 target: Some(DEFAULT_ARCEOS_TARGET.into()),
                 plat_dyn: Some(true),
+                smp: Some(4),
                 debug: true,
             },
             Some(PathBuf::from("/tmp/qemu.toml")),
@@ -141,24 +206,24 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.package, "from-cli");
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
     assert_eq!(request.plat_dyn, Some(true));
+    assert_eq!(request.smp, Some(4));
     assert!(request.debug);
     assert_eq!(
         request.build_info_path,
         PathBuf::from("/tmp/custom-build.toml")
     );
     assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
-    assert_eq!(
-        request.uboot_config,
-        Some(root.path().join("configs/snapshot-uboot.toml"))
-    );
+    assert_eq!(request.uboot_config, None);
     assert_eq!(snapshot.package.as_deref(), Some("from-cli"));
     assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_ARCEOS_TARGET));
     assert_eq!(snapshot.plat_dyn, Some(true));
+    assert_eq!(snapshot.smp, Some(4));
     assert_eq!(
         snapshot.qemu.qemu_config,
         Some(PathBuf::from("/tmp/qemu.toml"))
     );
+    assert_eq!(snapshot.uboot.uboot_config, None);
 }
 
 #[test]
@@ -218,6 +283,7 @@ fn prepare_request_resolves_arceos_target_from_arch() {
                 arch: Some("x86_64".into()),
                 target: None,
                 plat_dyn: None,
+                smp: None,
                 debug: false,
             },
             None,
@@ -229,6 +295,114 @@ fn prepare_request_resolves_arceos_target_from_arch() {
     assert_eq!(request.target, "x86_64-unknown-none");
     assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
     assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
+}
+
+#[test]
+fn should_use_loongarch_lvz_only_for_axvisor_loongarch() {
+    assert!(should_use_loongarch_lvz_for(
+        crate::axvisor::build::AXVISOR_PACKAGE,
+        "loongarch64-unknown-none-softfloat"
+    ));
+    assert!(!should_use_loongarch_lvz_for(
+        crate::axvisor::build::AXVISOR_PACKAGE,
+        "riscv64gc-unknown-none-elf"
+    ));
+    assert!(!should_use_loongarch_lvz_for(
+        STARRY_PACKAGE,
+        "loongarch64-unknown-none-softfloat"
+    ));
+}
+
+#[test]
+fn find_loongarch_qemu_dir_prefers_explicit_env_override() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let root = tempdir().unwrap();
+    let qemu_bin_dir = tempdir().unwrap();
+    let fallback_dir = tempdir().unwrap();
+    fs::write(qemu_bin_dir.path().join("qemu-system-loongarch64"), "").unwrap();
+    fs::write(fallback_dir.path().join("qemu-system-loongarch64"), "").unwrap();
+
+    let _qemu_dir = TempEnvVar::set("AXBUILD_QEMU_DIR", fallback_dir.path());
+    let _qemu_bin = TempEnvVar::set(
+        "AXBUILD_QEMU_SYSTEM_LOONGARCH64",
+        qemu_bin_dir.path().join("qemu-system-loongarch64"),
+    );
+    let _home = TempEnvVar::unset("HOME");
+
+    assert_eq!(
+        find_loongarch_qemu_dir(root.path()),
+        Some(qemu_bin_dir.path().to_path_buf())
+    );
+}
+
+#[test]
+fn find_loongarch_qemu_dir_checks_home_before_workspace_ancestors() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let home = tempdir().unwrap();
+    let workspace_parent = tempdir().unwrap();
+    let workspace_root = workspace_parent.path().join("workspace/repo");
+    let home_qemu_dir = home.path().join("QEMU-LVZ/build");
+    let ancestor_qemu_dir = workspace_parent.path().join("qemu-lvz/build");
+
+    fs::create_dir_all(&workspace_root).unwrap();
+    fs::create_dir_all(&home_qemu_dir).unwrap();
+    fs::create_dir_all(&ancestor_qemu_dir).unwrap();
+    fs::write(home_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+    fs::write(ancestor_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+
+    let _qemu_dir = TempEnvVar::unset("AXBUILD_QEMU_DIR");
+    let _qemu_bin = TempEnvVar::unset("AXBUILD_QEMU_SYSTEM_LOONGARCH64");
+    let _home = TempEnvVar::set("HOME", home.path());
+
+    assert_eq!(
+        find_loongarch_qemu_dir(&workspace_root),
+        Some(home_qemu_dir)
+    );
+}
+
+#[test]
+fn prepare_request_cli_target_drops_stale_arceos_runtime_paths() {
+    let root = tempdir().unwrap();
+    fs::write(
+        root.path().join(ARCEOS_SNAPSHOT_FILE),
+        r#"
+package = "ax-helloworld"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+
+[qemu]
+qemu_config = "configs/qemu-aarch64.toml"
+
+[uboot]
+uboot_config = "configs/uboot-aarch64.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = app
+        .prepare_arceos_request(
+            BuildCliArgs {
+                config: None,
+                package: None,
+                arch: None,
+                target: Some("riscv64gc-unknown-none-elf".into()),
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(request.arch, "riscv64");
+    assert_eq!(request.target, "riscv64gc-unknown-none-elf");
+    assert_eq!(request.qemu_config, None);
+    assert_eq!(request.uboot_config, None);
+    assert_eq!(snapshot.qemu.qemu_config, None);
+    assert_eq!(snapshot.uboot.uboot_config, None);
 }
 
 #[test]
@@ -261,6 +435,7 @@ uboot_config = "configs/snapshot-uboot.toml"
                 arch: Some("aarch64".into()),
                 target: Some(DEFAULT_AXVISOR_TARGET.into()),
                 plat_dyn: Some(true),
+                smp: Some(6),
                 debug: true,
                 vmconfigs: vec![
                     PathBuf::from("/tmp/vm1.toml"),
@@ -276,6 +451,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.arch, DEFAULT_AXVISOR_ARCH);
     assert_eq!(request.target, DEFAULT_AXVISOR_TARGET);
     assert_eq!(request.plat_dyn, Some(true));
+    assert_eq!(request.smp, Some(6));
     assert!(request.debug);
     assert_eq!(
         request.build_info_path,
@@ -297,6 +473,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_AXVISOR_ARCH));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_AXVISOR_TARGET));
     assert_eq!(snapshot.plat_dyn, Some(true));
+    assert_eq!(snapshot.smp, Some(6));
     assert_eq!(
         snapshot.vmconfigs,
         vec![
@@ -346,7 +523,7 @@ uboot_config = "configs/uboot.toml"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml")
+            .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
     );
     assert_eq!(
         request.qemu_config,
@@ -366,7 +543,7 @@ uboot_config = "configs/uboot.toml"
     assert_eq!(
         snapshot.config,
         Some(PathBuf::from(
-            "os/axvisor/.build-aarch64-unknown-none-softfloat.toml"
+            "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
         ))
     );
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_AXVISOR_ARCH));
@@ -393,6 +570,7 @@ fn prepare_axvisor_request_resolves_target_from_arch() {
                 arch: Some("x86_64".into()),
                 target: None,
                 plat_dyn: None,
+                smp: None,
                 debug: false,
                 vmconfigs: vec![],
             },
@@ -406,7 +584,110 @@ fn prepare_axvisor_request_resolves_target_from_arch() {
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/axvisor/.build-x86_64-unknown-none.toml")
+            .join("target/axbuild/config/axvisor/build-x86_64-unknown-none.toml")
+    );
+    assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
+    assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
+}
+
+#[test]
+fn prepare_axvisor_request_cli_arch_drops_stale_runtime_paths() {
+    let root = tempdir().unwrap();
+    fs::write(
+        root.path().join(AXVISOR_SNAPSHOT_FILE),
+        r#"
+config = "os/axvisor/.build.toml"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+vmconfigs = ["tmp/snapshot-vm.toml"]
+
+[qemu]
+qemu_config = "configs/qemu-aarch64.toml"
+
+[uboot]
+uboot_config = "configs/uboot-aarch64.toml"
+"#,
+    )
+    .unwrap();
+
+    let mut app = test_app_context(root.path());
+
+    let (request, snapshot) = app
+        .prepare_axvisor_request(
+            AxvisorCliArgs {
+                config: None,
+                arch: Some("x86_64".into()),
+                target: None,
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                vmconfigs: vec![],
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(request.arch, "x86_64");
+    assert_eq!(request.target, "x86_64-unknown-none");
+    assert_eq!(request.qemu_config, None);
+    assert_eq!(request.uboot_config, None);
+    assert_eq!(snapshot.qemu.qemu_config, None);
+    assert_eq!(snapshot.uboot.uboot_config, None);
+}
+
+#[test]
+fn prepare_axvisor_request_cli_arch_ignores_stale_snapshot_config_target() {
+    let root = tempdir().unwrap();
+    fs::write(
+        root.path().join(AXVISOR_SNAPSHOT_FILE),
+        r#"
+config = "os/axvisor/.build-loongarch64-unknown-none-softfloat.toml"
+arch = "loongarch64"
+target = "loongarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.path().join("os/axvisor")).unwrap();
+    fs::write(
+        root.path()
+            .join("os/axvisor/.build-loongarch64-unknown-none-softfloat.toml"),
+        r#"
+target = "loongarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+
+    let mut app = test_app_context(root.path());
+
+    let (request, snapshot) = app
+        .prepare_axvisor_request(
+            AxvisorCliArgs {
+                config: None,
+                arch: Some("x86_64".into()),
+                target: None,
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                vmconfigs: vec![],
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(request.arch, "x86_64");
+    assert_eq!(request.target, "x86_64-unknown-none");
+    assert_eq!(
+        request.build_info_path,
+        root.path()
+            .join("target/axbuild/config/axvisor/build-x86_64-unknown-none.toml")
+    );
+    assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from(
+            "target/axbuild/config/axvisor/build-x86_64-unknown-none.toml"
+        ))
     );
     assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
     assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
@@ -434,12 +715,12 @@ target = "aarch64-unknown-none-softfloat"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml")
+            .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
     );
     assert_eq!(
         snapshot.config,
         Some(PathBuf::from(
-            "os/axvisor/.build-aarch64-unknown-none-softfloat.toml"
+            "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
         ))
     );
 }
@@ -455,9 +736,9 @@ fn starry_snapshot_load_returns_default_when_missing() {
 fn starry_snapshot_store_round_trips() {
     let root = tempdir().unwrap();
     let snapshot = StarryCommandSnapshot {
-        arch: Some("aarch64".into()),
+        arch: Some(DEFAULT_STARRY_ARCH.into()),
         target: Some(DEFAULT_STARRY_TARGET.into()),
-        plat_dyn: Some(false),
+        smp: None,
         qemu: StarryQemuSnapshot {
             qemu_config: Some(PathBuf::from("configs/qemu.toml")),
         },
@@ -482,7 +763,6 @@ fn prepare_starry_request_prefers_cli_over_snapshot() {
         r#"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = false
 
 [qemu]
 qemu_config = "configs/snapshot-qemu.toml"
@@ -500,8 +780,8 @@ uboot_config = "configs/snapshot-uboot.toml"
             StarryCliArgs {
                 config: Some(PathBuf::from("/tmp/starry-build.toml")),
                 arch: Some("aarch64".into()),
-                target: Some(DEFAULT_STARRY_TARGET.into()),
-                plat_dyn: Some(true),
+                target: Some("aarch64-unknown-none-softfloat".into()),
+                smp: Some(4),
                 debug: true,
             },
             Some(PathBuf::from("/tmp/qemu.toml")),
@@ -510,22 +790,28 @@ uboot_config = "configs/snapshot-uboot.toml"
         .unwrap();
 
     assert_eq!(request.package, STARRY_PACKAGE);
-    assert_eq!(request.arch, DEFAULT_STARRY_ARCH);
-    assert_eq!(request.target, DEFAULT_STARRY_TARGET);
-    assert_eq!(request.plat_dyn, Some(true));
+    assert_eq!(request.arch, "aarch64");
+    assert_eq!(request.target, "aarch64-unknown-none-softfloat");
+    assert_eq!(request.plat_dyn, None);
+    assert_eq!(request.smp, Some(4));
     assert!(request.debug);
     assert_eq!(
         request.build_info_path,
         PathBuf::from("/tmp/starry-build.toml")
     );
     assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
+    assert_eq!(request.uboot_config, None);
+    assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
     assert_eq!(
-        request.uboot_config,
-        Some(root.path().join("configs/snapshot-uboot.toml"))
+        snapshot.target.as_deref(),
+        Some("aarch64-unknown-none-softfloat")
     );
-    assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_STARRY_ARCH));
-    assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_STARRY_TARGET));
-    assert_eq!(snapshot.plat_dyn, Some(true));
+    assert_eq!(snapshot.smp, Some(4));
+    assert_eq!(
+        snapshot.qemu.qemu_config,
+        Some(PathBuf::from("/tmp/qemu.toml"))
+    );
+    assert_eq!(snapshot.uboot.uboot_config, None);
 }
 
 #[test]
@@ -554,7 +840,7 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml")
+            .join("target/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
     );
     assert_eq!(
         request.qemu_config,
@@ -576,7 +862,7 @@ fn prepare_starry_request_rejects_mismatched_arch_and_target() {
                 config: None,
                 arch: Some("aarch64".into()),
                 target: Some("x86_64-unknown-none".into()),
-                plat_dyn: None,
+                smp: None,
                 debug: false,
             },
             None,
@@ -608,7 +894,7 @@ target = "aarch64-unknown-none-softfloat"
                 config: None,
                 arch: Some("riscv64".into()),
                 target: None,
-                plat_dyn: None,
+                smp: None,
                 debug: false,
             },
             None,
@@ -646,7 +932,7 @@ target = "aarch64-unknown-none-softfloat"
                 config: None,
                 arch: None,
                 target: Some("x86_64-unknown-none".into()),
-                plat_dyn: None,
+                smp: None,
                 debug: false,
             },
             None,
@@ -661,9 +947,52 @@ target = "aarch64-unknown-none-softfloat"
 }
 
 #[test]
+fn prepare_starry_request_cli_arch_drops_stale_snapshot_runtime_paths() {
+    let root = tempdir().unwrap();
+    prepare_starry_workspace(root.path());
+    fs::write(
+        root.path().join(STARRY_SNAPSHOT_FILE),
+        r#"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+
+[qemu]
+qemu_config = "os/StarryOS/starryos/.qemu-aarch64.toml"
+
+[uboot]
+uboot_config = "configs/uboot-aarch64.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = app
+        .prepare_starry_request(
+            StarryCliArgs {
+                config: None,
+                arch: Some("riscv64".into()),
+                target: None,
+                smp: None,
+                debug: false,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(request.arch, "riscv64");
+    assert_eq!(request.target, "riscv64gc-unknown-none-elf");
+    assert_eq!(request.qemu_config, None);
+    assert_eq!(request.uboot_config, None);
+    assert_eq!(snapshot.qemu.qemu_config, None);
+    assert_eq!(snapshot.uboot.uboot_config, None);
+}
+
+#[test]
 fn starry_arch_target_mapping_helpers_work() {
     assert_eq!(
-        starry_target_for_arch_checked("aarch64").unwrap(),
+        starry_target_for_arch_checked(DEFAULT_STARRY_ARCH).unwrap(),
         DEFAULT_STARRY_TARGET
     );
     assert_eq!(

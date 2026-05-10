@@ -6,7 +6,7 @@ use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_plat::mem::{PhysAddr, pa, phys_to_virt};
 use x2apic::{
-    ioapic::IoApic,
+    ioapic::{IoApic, IrqFlags},
     lapic::{LocalApic, LocalApicBuilder, xapic_base},
 };
 use x86_64::instructions::port::Port;
@@ -20,6 +20,7 @@ pub(super) mod vectors {
 }
 
 const IO_APIC_BASE: PhysAddr = pa!(0xFEC0_0000);
+const IO_APIC_VECTOR_OFFSET: u8 = 0x20;
 
 static mut LOCAL_APIC: MaybeUninit<LocalApic> = MaybeUninit::uninit();
 static mut IS_X2APIC: bool = false;
@@ -28,16 +29,28 @@ static IO_APIC: LazyInit<SpinNoIrq<IoApic>> = LazyInit::new();
 /// Enables or disables the given IRQ.
 #[cfg(feature = "irq")]
 pub fn set_enable(vector: usize, enabled: bool) {
-    // should not affect LAPIC interrupts
-    if vector < APIC_TIMER_VECTOR as _ {
+    if let Some(irq) = vector_to_io_apic_irq(vector) {
         unsafe {
+            let mut io_apic = IO_APIC.lock();
+            if irq > io_apic.max_table_entry() {
+                warn!("IO APIC IRQ {irq} is out of range for vector {vector:#x}");
+                return;
+            }
             if enabled {
-                IO_APIC.lock().enable_irq(vector as u8);
+                io_apic.enable_irq(irq);
             } else {
-                IO_APIC.lock().disable_irq(vector as u8);
+                io_apic.disable_irq(irq);
             }
         }
     }
+}
+
+#[cfg(feature = "irq")]
+fn vector_to_io_apic_irq(vector: usize) -> Option<u8> {
+    if vector < IO_APIC_VECTOR_OFFSET as usize || vector >= APIC_TIMER_VECTOR as usize {
+        return None;
+    }
+    Some((vector - IO_APIC_VECTOR_OFFSET as usize) as u8)
 }
 
 #[cfg(any(feature = "smp", feature = "irq"))]
@@ -95,7 +108,20 @@ pub fn init_primary() {
     }
 
     info!("Initialize IO APIC...");
-    let io_apic = unsafe { IoApic::new(phys_to_virt(IO_APIC_BASE).as_usize() as u64) };
+    let mut io_apic = unsafe { IoApic::new(phys_to_virt(IO_APIC_BASE).as_usize() as u64) };
+    unsafe {
+        io_apic.init(IO_APIC_VECTOR_OFFSET);
+        let max_entry = io_apic.max_table_entry();
+        for irq in 0..=max_entry {
+            let mut entry = io_apic.table_entry(irq);
+            entry.set_flags(entry.flags() | IrqFlags::MASKED);
+            io_apic.set_table_entry(irq, entry);
+        }
+        debug!(
+            "IO APIC initialized with vector offset {:#x}, entries 0..={}",
+            IO_APIC_VECTOR_OFFSET, max_entry
+        );
+    }
     IO_APIC.init_once(SpinNoIrq::new(io_apic));
 }
 

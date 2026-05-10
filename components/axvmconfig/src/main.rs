@@ -17,16 +17,18 @@
 //! This is the main entry point for the axvmconfig command-line tool.
 //! The tool provides functionality to validate and generate VM configuration
 //! files for the ArceOS hypervisor system.
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(all(feature = "std", any(windows, unix))), no_main)]
+#![cfg_attr(not(all(feature = "std", any(windows, unix))), no_std)]
 
+#[cfg(all(feature = "std", any(windows, unix)))]
 use axvmconfig::*;
 
 // CLI tool module - only available with std feature.
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", any(windows, unix)))]
 mod tool;
 
 // Template generation module - only available with std feature.
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", any(windows, unix)))]
 mod templates;
 
 /// Main entry point for the axvmconfig CLI tool.
@@ -35,14 +37,23 @@ mod templates;
 /// The tool supports two main operations:
 /// - Validating existing TOML configuration files
 /// - Generating new configuration templates from command-line parameters
+#[cfg(all(feature = "std", any(windows, unix)))]
 fn main() {
     // Configure logger with debug level for development
-    #[cfg(feature = "std")]
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Debug)
         .init();
 
     // Run the CLI tool
-    #[cfg(feature = "std")]
     tool::run();
+}
+
+#[cfg(not(all(feature = "std", any(windows, unix))))]
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() {}
+
+#[cfg(not(all(feature = "std", any(windows, unix))))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    loop {}
 }

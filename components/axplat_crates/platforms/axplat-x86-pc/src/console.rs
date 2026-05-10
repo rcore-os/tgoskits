@@ -23,13 +23,7 @@ struct ConsoleIfImpl;
 impl ConsoleIf for ConsoleIfImpl {
     /// Writes bytes to the console from input u8 slice.
     fn write_bytes(bytes: &[u8]) {
-        for &c in bytes {
-            let mut uart = UART.lock();
-            match c {
-                b'\n' => uart.send_bytes_exact(b"\r\n"),
-                c => uart.send_bytes_exact(&[c]),
-            }
-        }
+        UART.lock().send_bytes_exact(bytes);
     }
 
     /// Reads bytes from the console into the given mutable slice.
@@ -43,5 +37,13 @@ impl ConsoleIf for ConsoleIfImpl {
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
         None
+    }
+
+    #[cfg(feature = "irq")]
+    fn set_input_irq_enabled(_enabled: bool) {}
+
+    #[cfg(feature = "irq")]
+    fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
+        ax_plat::console::ConsoleIrqEvent::empty()
     }
 }

@@ -1,5 +1,19 @@
-#![cfg_attr(feature = "ax-std", no_std)]
-#![cfg_attr(feature = "ax-std", no_main)]
+#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_std)]
+#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_main)]
+
+#[cfg(any(not(target_os = "none"), feature = "ax-std"))]
+macro_rules! app {
+    ($($item:item)*) => {
+        $($item)*
+    };
+}
+
+#[cfg(not(any(not(target_os = "none"), feature = "ax-std")))]
+macro_rules! app {
+    ($($item:item)*) => {};
+}
+
+app! {
 
 #[macro_use]
 #[cfg(feature = "ax-std")]
@@ -30,11 +44,11 @@ fn test_yielding() {
                 assert_irq_enabled_and_disabled();
             }
 
-            let _ = YIELDING_FINISHED_TASKS.fetch_add(1, Ordering::Relaxed);
+            let _ = YIELDING_FINISHED_TASKS.fetch_add(1, Ordering::Release);
         });
     }
 
-    while YIELDING_FINISHED_TASKS.load(Ordering::Relaxed) < NUM_TASKS {
+    while YIELDING_FINISHED_TASKS.load(Ordering::Acquire) < NUM_TASKS {
         thread::yield_now();
         assert_irq_enabled_and_disabled();
     }
@@ -71,11 +85,11 @@ fn test_sleep() {
                 thread::sleep(Duration::from_secs(sec as _));
                 assert_irq_enabled_and_disabled();
             }
-            SLEEP_FINISHED_TASKS.fetch_add(1, Ordering::Relaxed);
+            SLEEP_FINISHED_TASKS.fetch_add(1, Ordering::Release);
         });
     }
 
-    while SLEEP_FINISHED_TASKS.load(Ordering::Relaxed) < NUM_TASKS {
+    while SLEEP_FINISHED_TASKS.load(Ordering::Acquire) < NUM_TASKS {
         thread::sleep(Duration::from_millis(10));
     }
     println!("IRQ state tests on task sleep run OK!");
@@ -103,31 +117,33 @@ fn test_wait_queue() {
             WQ3.wait_timeout_until(std::time::Duration::from_millis(100), || false);
             assert_irq_enabled_and_disabled();
 
-            COUNTER.fetch_add(1, Ordering::Relaxed);
+            // Use release/acquire synchronization here because the wait-queue
+            // handshake runs across CPUs on weakly ordered architectures.
+            COUNTER.fetch_add(1, Ordering::Release);
             WQ1.notify_one(true); // WQ1.wait_until()
             assert_irq_enabled();
             WQ2.wait_until(|| GO.load(Ordering::Acquire));
 
             assert_irq_enabled_and_disabled();
 
-            COUNTER.fetch_sub(1, Ordering::Relaxed);
+            COUNTER.fetch_sub(1, Ordering::Release);
             WQ1.notify_one(true); // WQ1.wait_until()
         });
     }
     assert_irq_enabled();
 
-    WQ1.wait_until(|| COUNTER.load(Ordering::Relaxed) == NUM_TASKS);
+    WQ1.wait_until(|| COUNTER.load(Ordering::Acquire) == NUM_TASKS);
 
     assert_irq_enabled_and_disabled();
 
-    assert_eq!(COUNTER.load(Ordering::Relaxed), NUM_TASKS);
+    assert_eq!(COUNTER.load(Ordering::Acquire), NUM_TASKS);
     GO.store(true, Ordering::Release);
     WQ2.notify_all(true); // WQ2.wait_until()
 
     assert_irq_enabled();
-    WQ1.wait_until(|| COUNTER.load(Ordering::Relaxed) == 0);
+    WQ1.wait_until(|| COUNTER.load(Ordering::Acquire) == 0);
     assert_irq_enabled_and_disabled();
-    assert_eq!(COUNTER.load(Ordering::Relaxed), 0);
+    assert_eq!(COUNTER.load(Ordering::Acquire), 0);
 
     println!("IRQ state tests on task wait run OK!");
 }
@@ -142,4 +158,16 @@ fn main() {
     test_wait_queue();
 
     println!("All tests passed!");
+}
+
+}
+
+#[cfg(all(target_os = "none", not(feature = "ax-std")))]
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() {}
+
+#[cfg(all(target_os = "none", not(feature = "ax-std")))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    loop {}
 }

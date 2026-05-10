@@ -1,0 +1,9 @@
+{
+  "label": "系统开发指南",
+  "position": 5,
+  "link": {
+    "type": "generated-index",
+    "title": "系统开发指南",
+    "description": "围绕 ArceOS、StarryOS、Axvisor 的目录结构、命令入口与验证闭环展开。"
+  }
+}

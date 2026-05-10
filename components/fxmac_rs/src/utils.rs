@@ -108,7 +108,7 @@ mod arch {
                 adr += CACHE_LINE;
             }
         }
-        /* Wait for invalidate to complete */
+        // Wait for invalidate to complete
         DSB();
         MTCPSR(currmask);
     }
@@ -127,12 +127,12 @@ mod arch {
                 adr += CACHE_LINE;
             }
         }
-        /* Wait for Clean to complete */
+        // Wait for Clean to complete
         DSB();
         MTCPSR(currmask);
     }
 
-    use aarch64_cpu::registers::{Readable, CNTFRQ_EL0, CNTVCT_EL0};
+    use aarch64_cpu::registers::{CNTFRQ_EL0, CNTVCT_EL0, Readable};
 
     #[inline]
     pub fn now_tsc() -> u64 {
@@ -168,6 +168,7 @@ mod arch {
 }
 
 use alloc::boxed::Box;
+
 pub use arch::*;
 
 // 纳秒(ns)
@@ -232,7 +233,7 @@ pub(crate) fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
     let len = paddr.len();
 
     let paddr = Box::into_raw(paddr) as *const u32 as usize;
-    //let vaddr = phys_to_virt(paddr);
+    // let vaddr = phys_to_virt(paddr);
     let vaddr = paddr;
     debug!("fxmac: dma alloc paddr: {:#x}, len={}", paddr, len);
 
@@ -253,10 +254,10 @@ pub(crate) fn dma_free_coherent(vaddr: usize, pages: usize) {
 /// 请求分配irq
 #[linkage = "weak"]
 #[unsafe(export_name = "dma_request_irq_fxmac")]
-pub(crate) fn dma_request_irq(irq: usize, handler: fn()) {
+pub(crate) fn dma_request_irq(irq: usize, handler: fn(usize)) {
     warn!("dma_request_irq_fxmac unimplemented");
-    //unimplemented!()
+    // unimplemented!()
 }
 
 // 路由中断到指定的cpu，或所有的cpu
-//pub(crate) fn InterruptSetTargetCpus() {}
+// pub(crate) fn InterruptSetTargetCpus() {}

@@ -7,13 +7,11 @@ use ax_task::{
     future::{block_on, interruptible},
 };
 use bitflags::bitflags;
-use linux_raw_sys::general::{
-    __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
-};
+use linux_raw_sys::general::{__WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WNOHANG, WUNTRACED};
 use starry_process::{Pid, Process};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::AsThread;
+use crate::task::{AsThread, get_task};
 
 bitflags! {
     #[derive(Debug)]
@@ -23,13 +21,9 @@ bitflags! {
         /// Report the status of selected processes which are stopped due to a
         /// `SIGTTIN`, `SIGTTOU`, `SIGTSTP`, or `SIGSTOP` signal.
         const WUNTRACED = WUNTRACED;
-        /// Report the status of selected processes which have terminated.
-        const WEXITED = WEXITED;
         /// Report the status of selected processes that have continued from a
         /// job control stop by receiving a `SIGCONT` signal.
         const WCONTINUED = WCONTINUED;
-        /// Don't reap, just poll status.
-        const WNOWAIT = WNOWAIT;
 
         /// Don't wait on children of other threads in this group
         const WNOTHREAD = __WNOTHREAD;
@@ -61,12 +55,11 @@ impl WaitPid {
 }
 
 pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isize> {
-    let options = WaitOptions::from_bits_truncate(options);
+    let options = WaitOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
     let curr = current();
-    let proc_data = &curr.as_thread().proc_data;
-    let proc = &proc_data.proc;
+    let proc = &curr.as_thread().proc_data.proc;
 
     let pid = if pid == -1 {
         WaitPid::Any
@@ -89,11 +82,18 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         return Err(AxError::from(LinuxError::ECHILD));
     }
 
+    let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
         if let Some(child) = children.iter().find(|child| child.is_zombie()) {
-            if !options.contains(WaitOptions::WNOWAIT) {
-                child.free();
+            // Accumulate child's CPU time before freeing.
+            for tid in child.threads() {
+                if let Ok(task) = get_task(tid) {
+                    let thr = task.as_thread();
+                    let (utime, stime) = thr.time.borrow().output();
+                    proc_data.add_child_cpu_time(utime, stime);
+                }
             }
+            child.free();
             if let Some(exit_code) = exit_code.nullable() {
                 exit_code.vm_write(child.exit_code())?;
             }
@@ -110,7 +110,13 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             Some(res) => Poll::Ready(res),
             None => {
                 proc_data.child_exit_event.register(cx.waker());
-                Poll::Pending
+                // A child may exit between the check above and waker
+                // registration. Recheck after registering so that wakeup is
+                // not lost in that race window.
+                match check_children().transpose() {
+                    Some(res) => Poll::Ready(res),
+                    None => Poll::Pending,
+                }
             }
         }
     })))?

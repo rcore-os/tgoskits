@@ -32,3 +32,4 @@ target
 
 # Downloaded test framework
 /scripts/.axci/
+/Cargo.lock

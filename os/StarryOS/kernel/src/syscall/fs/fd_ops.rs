@@ -8,7 +8,7 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use ax_task::current;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -19,7 +19,6 @@ use crate::{
     },
     mm::{UserPtr, vm_load_string},
     pseudofs::{Device, dev::tty},
-    syscall::sys::{sys_getegid, sys_geteuid},
     task::AsThread,
 };
 
@@ -45,7 +44,10 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     if flags & O_PATH != 0 {
         options.path(true);
     }
-    if flags & O_EXCL != 0 {
+    // O_EXCL only makes sense with O_CREAT (POSIX). Without O_CREAT, Linux
+    // ignores O_EXCL for existing files — busybox blkdiscard opens block
+    // devices with O_RDWR|O_EXCL (no O_CREAT).
+    if flags & O_EXCL != 0 && flags & O_CREAT != 0 {
         options.create_new(true);
     }
     if flags & O_DIRECTORY != 0 {
@@ -65,7 +67,22 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
         OpenResult::File(mut file) => {
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
+                // Block device exclusive open (O_EXCL without O_CREAT).
+                if let Ok(meta) = device.metadata()
+                    && meta.node_type == NodeType::BlockDevice
+                    && flags & O_EXCL != 0
+                {
+                    device.inner().open(true)?;
+                }
                 let inner = device.inner().as_any();
+                #[cfg(feature = "plat-dyn")]
+                if crate::pseudofs::usbfs::is_usbfs_device(inner) {
+                    let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
+                    if flags & O_NONBLOCK != 0 {
+                        wrapped.set_nonblocking(true)?;
+                    }
+                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                }
                 if let Some(ptmx) = inner.downcast_ref::<tty::Ptmx>() {
                     // Opening /dev/ptmx creates a new pseudo-terminal
                     let (master, pty_number) = ptmx.create_pty()?;
@@ -98,7 +115,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     file = ax_fs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
-            Arc::new(File::new(file))
+            Arc::new(File::new(file, flags))
         }
         OpenResult::Dir(dir) => Arc::new(Directory::new(dir)),
     };
@@ -125,7 +142,8 @@ pub fn sys_openat(
 
     let mode = mode & !current().as_thread().proc_data.umask();
 
-    let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
+    let cred = current().as_thread().cred();
+    let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     with_fs(dirfd, |fs| options.open(fs, path))
         .and_then(|it| add_to_fd(it, flags as _))
         .map(|fd| fd as isize)
@@ -256,18 +274,9 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         F_GETFL => {
             let f = get_file_like(fd)?;
 
-            let mut ret = 0;
+            let mut ret = f.open_flags();
             if f.nonblocking() {
                 ret |= O_NONBLOCK;
-            }
-
-            let perm = NodePermission::from_bits_truncate(f.stat()?.mode as _);
-            if perm.contains(NodePermission::OWNER_WRITE) {
-                if perm.contains(NodePermission::OWNER_READ) {
-                    ret |= O_RDWR;
-                } else {
-                    ret |= O_WRONLY;
-                }
             }
 
             Ok(ret as _)

@@ -12,7 +12,7 @@ Environment:
 """
 
 import os
-import pty
+import shutil
 import signal
 import socket
 import subprocess
@@ -20,6 +20,11 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+try:
+    import pty
+except ImportError:
+    pty = None
 
 # ---------------------------------------------------------------------------
 # Configuration from environment
@@ -38,6 +43,12 @@ _state_dir = Path(_state_dir_str)
 _log_file  = _state_dir / f"{_session}.log"
 _pid_file  = _state_dir / f"{_session}.pid"
 _pgid_file = _state_dir / f"{_session}.pgid"
+_proc_root = Path("/proc")
+_has_procfs = _proc_root.is_dir()
+_has_pty = pty is not None
+_has_process_groups = hasattr(os, "getpgid")
+_taskkill = shutil.which("taskkill")
+_new_process_group_flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 # ---------------------------------------------------------------------------
 # /proc helpers  (Linux-only; no external commands needed)
@@ -52,14 +63,18 @@ def _read_bytes(path: str) -> bytes:
 
 
 def _all_pids() -> list[int]:
+    if not _has_procfs:
+        return []
     try:
-        return [int(n) for n in os.listdir("/proc") if n.isdigit()]
+        return [int(n.name) for n in _proc_root.iterdir() if n.name.isdigit()]
     except OSError:
         return []
 
 
 def _pgid_of(pid: int) -> int | None:
     """Return the process group ID of *pid* via getpgid(2)."""
+    if not _has_process_groups:
+        return None
     try:
         return os.getpgid(pid)
     except OSError:
@@ -152,11 +167,21 @@ def _tcp_connectable() -> bool:
         return s.connect_ex(("127.0.0.1", _port)) == 0
 
 
-def _wait_for_qemu_ready(pgid: int, timeout: float = 20.0, interval: float = 0.1) -> bool:
+def _wait_for_qemu_ready(
+    pgid: int,
+    proc: subprocess.Popen,
+    timeout: float = 20.0,
+    interval: float = 0.1,
+) -> bool:
     """Poll until QEMU is running and its GDB port accepts connections."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _has_qemu_in_group(pgid) and _port_owned_by_group(pgid) and _tcp_connectable():
+        if proc.poll() is not None:
+            return False
+        if _has_procfs and _has_process_groups:
+            if _has_qemu_in_group(pgid) and _port_owned_by_group(pgid) and _tcp_connectable():
+                return True
+        elif _tcp_connectable():
             return True
         time.sleep(interval)
     return False
@@ -167,6 +192,8 @@ def _wait_for_qemu_ready(pgid: int, timeout: float = 20.0, interval: float = 0.1
 # ---------------------------------------------------------------------------
 
 def _group_alive(pgid: int) -> bool:
+    if not _has_process_groups:
+        return False
     try:
         os.kill(-pgid, 0)
         return True
@@ -175,14 +202,29 @@ def _group_alive(pgid: int) -> bool:
 
 
 def _kill_group(pgid: int, sig: signal.Signals = signal.SIGTERM) -> None:
+    if not _has_process_groups:
+        return
     try:
         os.kill(-pgid, sig)
     except OSError:
         pass
 
 
+def _kill_pid_tree(pid: int) -> None:
+    if not _taskkill:
+        return
+    subprocess.run(
+        [_taskkill, "/PID", str(pid), "/T", "/F"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
 def _orphaned_pgids() -> list[int]:
     """Return PGIDs of session processes that are not part of the current group."""
+    if not _has_procfs or not _has_process_groups:
+        return []
     my_pgid = os.getpgid(os.getpid())
     found: set[int] = set()
     for pid in _all_pids():
@@ -213,6 +255,17 @@ def _kill_orphans() -> None:
 
 def _cleanup() -> None:
     """Terminate the tracked process group and sweep up orphaned session groups."""
+    if not _has_process_groups:
+        if _pid_file.exists():
+            try:
+                pid = int(_pid_file.read_text().strip())
+                _kill_pid_tree(pid)
+            except (ValueError, OSError):
+                pass
+            _pid_file.unlink(missing_ok=True)
+        _pgid_file.unlink(missing_ok=True)
+        return
+
     # Try the whole PGID first; fall back to the bare PID if the pgid_file is gone.
     for path, use_pgid in ((_pgid_file, True), (_pid_file, False)):
         if path.exists():
@@ -229,14 +282,34 @@ def _cleanup() -> None:
 # Commands
 # ---------------------------------------------------------------------------
 
+def _start_stdin_forwarder(write_chunk: callable) -> threading.Thread | None:
+    """Forward terminal input to the child process if stdin is available."""
+    try:
+        stdin_fd = sys.stdin.fileno()
+    except (AttributeError, OSError):
+        return None
+
+    def _stdin_loop() -> None:
+        try:
+            while chunk := os.read(stdin_fd, 1024):
+                write_chunk(chunk)
+        except OSError:
+            pass
+
+    thread = threading.Thread(target=_stdin_loop, daemon=True)
+    thread.start()
+    return thread
+
 def _cmd_start(debug_command: str) -> int:
     _state_dir.mkdir(parents=True, exist_ok=True)
     _cleanup()  # Evict any stale session from a previous run.
     print(f"QEMU_DEBUG_STARTING session={_session} port={_port}", flush=True)
 
     log_fh = open(_log_file, "wb")
+    input_thread: threading.Thread | None = None
+    master_fd: int | None = None
 
-    if _tee:
+    if _tee and _has_pty:
         # Allocate a PTY so cargo / QEMU see a real terminal on their stdout.
         # Without a PTY, stdout is a PIPE and applications switch to fully-
         # buffered mode (~8 KB), which delays or completely hides output in
@@ -247,8 +320,8 @@ def _cmd_start(debug_command: str) -> int:
         proc = subprocess.Popen(
             debug_command,
             shell=True,
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
+            start_new_session=_has_process_groups,
+            stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
             close_fds=True,
@@ -264,27 +337,47 @@ def _cmd_start(debug_command: str) -> int:
                     log_fh.flush()
             except OSError:
                 pass  # EIO once all slave-side fds are closed (QEMU exited).
-            finally:
-                try:
-                    os.close(master_fd)
-                except OSError:
-                    pass
 
         tee_thread: threading.Thread | None = threading.Thread(target=_tee_loop, daemon=True)
         tee_thread.start()
+        input_thread = _start_stdin_forwarder(lambda chunk: os.write(master_fd, chunk))
     else:
-        # Log-only: redirect QEMU output directly to the log file.
+        # Fall back to pipe-based teeing when PTY support is unavailable.
+        stdout_target = subprocess.PIPE if _tee else log_fh
         proc = subprocess.Popen(
             debug_command,
             shell=True,
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=log_fh,
+            start_new_session=_has_process_groups,
+            stdin=subprocess.PIPE,
+            stdout=stdout_target,
             stderr=subprocess.STDOUT,
+            bufsize=0,
+            creationflags=_new_process_group_flag if not _has_process_groups else 0,
         )
-        tee_thread = None
+        if _tee:
+            assert proc.stdout is not None
 
-    child_pgid = os.getpgid(proc.pid)
+            def _pipe_tee_loop() -> None:
+                try:
+                    while chunk := proc.stdout.read(4096):
+                        sys.stdout.buffer.write(chunk)
+                        sys.stdout.buffer.flush()
+                        log_fh.write(chunk)
+                        log_fh.flush()
+                finally:
+                    proc.stdout.close()
+
+            tee_thread = threading.Thread(target=_pipe_tee_loop, daemon=True)
+            tee_thread.start()
+        else:
+            tee_thread = None
+
+        if proc.stdin is not None:
+            input_thread = _start_stdin_forwarder(
+                lambda chunk: (proc.stdin.write(chunk), proc.stdin.flush())
+            )
+
+    child_pgid = _pgid_of(proc.pid) or proc.pid
     _pid_file.write_text(str(proc.pid))
     _pgid_file.write_text(str(child_pgid))
 
@@ -295,7 +388,7 @@ def _cmd_start(debug_command: str) -> int:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
-    if _wait_for_qemu_ready(child_pgid):
+    if _wait_for_qemu_ready(child_pgid, proc):
         print(
             f"QEMU_GDB_READY session={_session} port={_port}"
             f" pid={proc.pid} log={_log_file}",
@@ -304,6 +397,13 @@ def _cmd_start(debug_command: str) -> int:
         proc.wait()
         if tee_thread:
             tee_thread.join(timeout=2)
+        if input_thread:
+            input_thread.join(timeout=0.2)
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
         log_fh.close()
         # QEMU exited cleanly (or was stopped by `stop`).  All processes in its
         # group are already gone; clear state files and skip the orphan scan.
@@ -318,6 +418,11 @@ def _cmd_start(debug_command: str) -> int:
         print("\n".join(_log_file.read_text(errors="replace").splitlines()[-80:]), flush=True)
     except OSError:
         pass
+    if master_fd is not None:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
     log_fh.close()
     _cleanup()
     return 1

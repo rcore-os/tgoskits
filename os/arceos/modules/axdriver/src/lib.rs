@@ -83,6 +83,12 @@ mod dyn_drivers;
 
 pub mod prelude;
 
+#[cfg(feature = "block")]
+pub use ax_driver_block::partition::{
+    PartitionBlockDevice, PartitionInfo, PartitionRegion, PartitionTable, PartitionTableKind,
+    scan_partitions,
+};
+
 #[allow(unused_imports)]
 use self::prelude::*;
 #[cfg(feature = "block")]

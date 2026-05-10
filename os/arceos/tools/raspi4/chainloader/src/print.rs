@@ -4,8 +4,9 @@
 
 //! Printing.
 
-use crate::console;
 use core::fmt;
+
+use crate::console;
 
 //--------------------------------------------------------------------------------------------------
 // Public Code
