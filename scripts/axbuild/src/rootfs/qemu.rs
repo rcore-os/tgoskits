@@ -163,7 +163,7 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
             }
             "-netdev" if index + 1 < args.len() => {
                 let value = &mut args[index + 1];
-                if value == &netdev_value {
+                if value.starts_with("user,id=net0") {
                     has_netdev = true;
                 }
                 index += 2;

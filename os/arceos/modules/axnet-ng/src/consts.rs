@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 macro_rules! env_or_default {
     ($key:literal) => {
         match option_env!($key) {
@@ -23,3 +25,9 @@ pub const LISTEN_QUEUE_SIZE: usize = 512;
 
 pub const SOCKET_BUFFER_SIZE: usize = 64;
 pub const ETHERNET_MAX_PENDING_PACKETS: usize = 32;
+
+pub const DHCP_MAX_RETRY_SHIFT: usize = 4;
+pub const DHCP_MAX_RETRY_COUNT: usize = 8;
+pub const DHCP_FAILED_RETRY_INTERVAL: u64 = 60;
+pub const DHCP_PARAMETER_REQUEST_LIST: &[u8] = &[1, 3, 6, 42, 51, 58, 59];
+pub const DHCP_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(180);

@@ -40,19 +40,23 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
-use alloc::{borrow::ToOwned, boxed::Box, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, string::String, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
 use ax_driver::{AxDeviceContainer, prelude::*};
+use ax_hal::time::wall_time_nanos;
 use ax_sync::Mutex;
-use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
+use smoltcp::{
+    time::Duration as SmolDuration,
+    wire::{EthernetAddress, Ipv4Address, Ipv4Cidr},
+};
 use spin::{Lazy, Once};
 
 use self::{
-    consts::{GATEWAY, IP, IP_PREFIX},
+    consts::{DHCP_BOOTSTRAP_TIMEOUT, GATEWAY, IP, IP_PREFIX},
     device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
     router::{Router, Rule},
@@ -68,14 +72,16 @@ static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
 
-const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
-const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
 fn get_service() -> ax_sync::MutexGuard<'static, Service> {
     SERVICE
         .get()
         .expect("Network service not initialized")
         .lock()
+}
+
+/// Returns DHCP configuration info (IP, gateway, DNS) for display in /proc/net/dhcp.
+pub fn dhcp_info() -> Option<String> {
+    SERVICE.get()?.lock().dhcp_info()
 }
 
 /// Initializes the network subsystem by NIC devices.
@@ -197,12 +203,55 @@ pub fn arp_entries() -> Vec<ArpEntry> {
 }
 
 fn dhcp_bootstrap() {
-    for _ in 0..DHCP_BOOTSTRAP_ATTEMPTS {
-        poll_interfaces();
-        if get_service().dhcp_configured() {
+    let deadline_ns = wall_time_nanos() + DHCP_BOOTSTRAP_TIMEOUT.as_nanos() as u64;
+    poll_interfaces();
+    while !get_service().dhcp_configured() {
+        if wall_time_nanos() >= deadline_ns {
+            warn!(
+                "eth0: DHCP bootstrap timed out after {:?}",
+                DHCP_BOOTSTRAP_TIMEOUT
+            );
             return;
         }
-        ax_task::sleep(DHCP_BOOTSTRAP_POLL_INTERVAL);
+        // Poll at least every 100ms so we catch DHCP responses promptly,
+        // but also respect the retry timer (dhcp_poll_duration) when it's sooner.
+        let poll_dur = get_service()
+            .dhcp_poll_duration()
+            .unwrap_or(SmolDuration::from_millis(100));
+        let sleep = poll_dur.min(SmolDuration::from_millis(100));
+        ax_task::sleep(Duration::from_micros(sleep.total_micros().max(1000)));
+        poll_interfaces();
     }
-    warn!("eth0: DHCP bootstrap timed out");
+    // Bootstrap succeeded — spawn the maintenance task that drives
+    // T1/T2/lease-expiry timers for the remainder of the lease.
+    ax_task::spawn_with_name(dhcp_maintain, "dhcp-maintain".to_owned());
+}
+
+/// Persistently polls the DHCP state machine at the next expected deadline
+/// so that T1 (renew), T2 (rebind), and lease expiry are honoured even
+/// when no socket I/O would otherwise trigger [`poll_interfaces`].
+///
+/// [`poll_interfaces`] uses a `POLLING_INTERFACES` CAS re-entrancy guard
+/// that bounces concurrent callers.  That is harmless for this task: the
+/// guard's `POLL_AGAIN` flag, which we set *before* the CAS, ensures the
+/// active poller will do another round — our work is never lost.
+fn dhcp_maintain() {
+    loop {
+        if !get_service().dhcp_enabled() {
+            return;
+        }
+        let poll_dur = match get_service().dhcp_poll_duration() {
+            Some(d) => d,
+            None => {
+                // No DHCP state — should not happen after bootstrap, but
+                // sleep a long interval to avoid spinning if it does.
+                ax_task::sleep(Duration::from_secs(60));
+                poll_interfaces();
+                continue;
+            }
+        };
+        let sleep_us = poll_dur.total_micros().max(1000) as u64;
+        ax_task::sleep(Duration::from_micros(sleep_us));
+        poll_interfaces();
+    }
 }

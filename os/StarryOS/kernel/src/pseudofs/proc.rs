@@ -820,6 +820,19 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         }),
     );
 
+    root.add("net", {
+        let mut net = DirMapping::new();
+        net.add(
+            "dhcp",
+            SimpleFile::new_regular(fs.clone(), || axnet::dhcp_info().ok_or(VfsError::NotFound)),
+        );
+        net.add(
+            "arp",
+            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_arp())),
+        );
+        SimpleDir::new_maker(fs.clone(), Arc::new(net))
+    });
+
     root.add("sys", {
         let mut sys = DirMapping::new();
 
@@ -835,17 +848,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         });
 
         SimpleDir::new_maker(fs.clone(), Arc::new(sys))
-    });
-
-    root.add("net", {
-        let mut net = DirMapping::new();
-
-        net.add(
-            "arp",
-            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_arp())),
-        );
-
-        SimpleDir::new_maker(fs.clone(), Arc::new(net))
     });
 
     root.add("dynamic_debug", {
