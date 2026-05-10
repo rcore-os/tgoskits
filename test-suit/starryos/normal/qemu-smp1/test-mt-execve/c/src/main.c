@@ -1,6 +1,11 @@
 /*
  * Multi-threaded execve regression test.
  *
+ * Phase 0: `execve(path, NULL, NULL)` (raw syscall, libc bypassed) is a
+ *          legitimate ABI shape on Linux — `count_strings_kernel`
+ *          accepts a NULL argv/envp and treats it as an empty pointer
+ *          array. Resolving a nonexistent path must therefore reach
+ *          path-resolution and yield ENOENT, never EFAULT.
  * Phase 1: a failed execve from a multi-threaded process must leave the
  *          thread group intact (POSIX says execve failures preserve the
  *          process state).
@@ -122,6 +127,36 @@ int main(int argc, char *argv[])
     }
 
     TEST_START("multi-thread execve");
+
+    /* Phase 0: NULL argv/envp must reach path resolution, not be
+     * short-circuited to EFAULT.
+     *
+     * Linux's `count_strings_kernel` (fs/exec.c) explicitly accepts a
+     * NULL `argv.ptr.native` and treats it as an empty pointer array;
+     * glibc's `execl(path, NULL)` and `execve(path, NULL, NULL)`
+     * depend on that ABI. We don't actually want to consume the test
+     * driver here, so we use a path that does not exist: success would
+     * mean the kernel kept going past the NULL check and tried to
+     * resolve the path, returning ENOENT — exactly what Linux does.
+     * If the kernel had rejected NULL argv/envp with EFAULT we would
+     * see EFAULT instead.
+     *
+     * Use the raw syscall so libc can't intercept and synthesize an
+     * argv on our behalf. */
+    errno = 0;
+    long nullret = syscall(SYS_execve,
+                           "/this/path/does/not/exist/mt-execve",
+                           (char *const *)NULL, (char *const *)NULL);
+    CHECK(nullret == -1L,
+          "execve(path, NULL, NULL) to nonexistent path returns -1");
+    CHECK(errno == ENOENT,
+          "execve(path, NULL, NULL) returns ENOENT, not EFAULT");
+
+    if (__fail > 0) {
+        TEST_DONE();
+    }
+
+    printf("PHASE0_OK\n");
 
     /* Phase 1: failed execve preserves thread group. */
     sibling_ready = 0;
