@@ -24,6 +24,7 @@ test_commands = [
     "/usr/bin/bug-preadv2-offset-neg1",
     "/usr/bin/bug-pwritev2-read-at",
     "/usr/bin/bug-signal-to-child",
+    "/usr/bin/bug-tmpfs-cwd-drop-safe",
     "/usr/bin/bug-unlinkat-einval",
     "/usr/bin/bug-writev-dir-ebadf",
     "/usr/bin/clone3-badsize",
