@@ -1,6 +1,6 @@
 ---
 name: bug-hunt
-description: Find bugs (behavior mismatches with Linux or unsafe code), write repro tests, fix, verify, and optionally create PR
+description: Find bugs (behavior mismatches with Linux or unsafe code), write repro tests, fix, verify, and create PR
 skills:
   - starry-test-suit
   - cross-kernel-driver
@@ -279,8 +279,10 @@ After a fix is committed, proceed to the PR workflow. This phase ensures every b
 
 ### Step 1: Create commit
 
-```
-fix(<scope>): <description>
+```bash
+git add <fixed-files>
+git commit -m "fix(<scope>): <description>"
+FIX_COMMIT=$(git rev-parse HEAD)  # capture for Step 5 cherry-pick
 ```
 
 The description should mention both the root cause subtype and the affected syscall/function.
@@ -291,9 +293,9 @@ The description should mention both the root cause subtype and the affected sysc
 bash .claude/scripts/local-ci.sh quick
 ```
 
-**If CI fails:** analyze failures, fix, re-run. Repeat up to **3 iterations**.
-After each fix: "CI fix <N>/3: fixed <what>. <X> failures remaining."
-At 3 failures: "CI fix limit reached. Manual investigation needed." → STOP, do not proceed.
+**If CI fails:** analyze failures, fix, re-run. Repeat up to **5 iterations**.
+After each fix: "CI fix <N>/5: fixed <what>. <X> failures remaining."
+At 5 failures: "CI fix limit reached. Manual investigation needed." → STOP, do not proceed.
 
 ### Step 3: Self-review
 
