@@ -841,14 +841,16 @@ impl SimpleDirOps for ThreadDir {
                         Ok(Some(content.into_bytes()))
                     }
                     SimpleFileOperation::Write(data) => {
-                        let input = core::str::from_utf8(data)
-                            .map_err(|_| VfsError::InvalidInput)?;
+                        let input =
+                            core::str::from_utf8(data).map_err(|_| VfsError::InvalidInput)?;
                         // Parse "0 <uid> 1" format
                         let parts: Vec<&str> = input.split_whitespace().collect();
                         if parts.len() >= 3 {
-                            let _mapped: u32 = parts[0].parse().map_err(|_| VfsError::InvalidInput)?;
+                            let _mapped: u32 =
+                                parts[0].parse().map_err(|_| VfsError::InvalidInput)?;
                             let orig: u32 = parts[1].parse().map_err(|_| VfsError::InvalidInput)?;
-                            let _count: u32 = parts[2].parse().map_err(|_| VfsError::InvalidInput)?;
+                            let _count: u32 =
+                                parts[2].parse().map_err(|_| VfsError::InvalidInput)?;
                             // Apply the mapping: set uid to the mapped value (0 = root in namespace)
                             let thr = task.as_thread();
                             let mut cred = (*thr.cred()).clone();
@@ -878,13 +880,15 @@ impl SimpleDirOps for ThreadDir {
                         Ok(Some(content.into_bytes()))
                     }
                     SimpleFileOperation::Write(data) => {
-                        let input = core::str::from_utf8(data)
-                            .map_err(|_| VfsError::InvalidInput)?;
+                        let input =
+                            core::str::from_utf8(data).map_err(|_| VfsError::InvalidInput)?;
                         let parts: Vec<&str> = input.split_whitespace().collect();
                         if parts.len() >= 3 {
-                            let _mapped: u32 = parts[0].parse().map_err(|_| VfsError::InvalidInput)?;
+                            let _mapped: u32 =
+                                parts[0].parse().map_err(|_| VfsError::InvalidInput)?;
                             let orig: u32 = parts[1].parse().map_err(|_| VfsError::InvalidInput)?;
-                            let _count: u32 = parts[2].parse().map_err(|_| VfsError::InvalidInput)?;
+                            let _count: u32 =
+                                parts[2].parse().map_err(|_| VfsError::InvalidInput)?;
                             let thr = task.as_thread();
                             let mut cred = (*thr.cred()).clone();
                             cred.gid = orig;
@@ -904,7 +908,11 @@ impl SimpleDirOps for ThreadDir {
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => {
                         let thr = task.as_thread();
-                        let content = if thr.setgroups_deny() { "deny\n" } else { "allow\n" };
+                        let content = if thr.setgroups_deny() {
+                            "deny\n"
+                        } else {
+                            "allow\n"
+                        };
                         Ok(Some(content.as_bytes().to_vec()))
                     }
                     SimpleFileOperation::Write(data) => {
