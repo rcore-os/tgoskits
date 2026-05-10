@@ -19,7 +19,7 @@ use linux_raw_sys::{
         AF_INET, AF_NETLINK, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD,
         SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
     },
-    netlink::NETLINK_KOBJECT_UEVENT,
+    netlink::{NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE},
 };
 
 use super::addr::SocketAddrExt;
@@ -49,9 +49,12 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         }
         (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
         (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
-        (AF_NETLINK, SOCK_RAW) => {
-            if proto != NETLINK_KOBJECT_UEVENT {
+        (AF_NETLINK, SOCK_RAW | SOCK_DGRAM) => {
+            if proto != NETLINK_KOBJECT_UEVENT && proto != NETLINK_ROUTE {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
+            }
+            if proto == NETLINK_KOBJECT_UEVENT && ty != SOCK_RAW {
+                return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
             }
             let socket = NetlinkSocket::new(proto);
             if raw_ty & O_NONBLOCK != 0 {

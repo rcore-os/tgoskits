@@ -238,6 +238,11 @@ pub fn sys_linkat(
     new_path: *const c_char,
     flags: u32,
 ) -> AxResult<isize> {
+    const LINKAT_VALID_FLAGS: u32 = AT_SYMLINK_FOLLOW | AT_EMPTY_PATH;
+    if flags & !LINKAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let old_path = old_path.nullable().map(vm_load_string).transpose()?;
     let new_path = vm_load_string(new_path)?;
     debug!(
@@ -245,11 +250,15 @@ pub fn sys_linkat(
          new_path: {new_path}, flags: {flags}"
     );
 
-    if flags != 0 {
-        warn!("Unsupported flags: {flags}");
-    }
+    // Unlike most *at syscalls, linkat() does not follow old_path when flags
+    // is 0. It follows the final symlink only with AT_SYMLINK_FOLLOW.
+    let resolve_flags = if flags & AT_SYMLINK_FOLLOW != 0 {
+        flags & AT_EMPTY_PATH
+    } else {
+        (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
+    };
 
-    let old = resolve_at(old_dirfd, old_path.as_deref(), flags)?
+    let old = resolve_at(old_dirfd, old_path.as_deref(), resolve_flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
     if old.is_dir() {
@@ -598,6 +607,11 @@ pub fn sys_renameat2(
     new_path: *const c_char,
     flags: u32,
 ) -> AxResult<isize> {
+    const RENAMEAT2_SUPPORTED_FLAGS: u32 = RENAME_NOREPLACE;
+    if flags & !RENAMEAT2_SUPPORTED_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let old_path = vm_load_string(old_path)?;
     let new_path = vm_load_string(new_path)?;
     debug!(
@@ -606,10 +620,20 @@ pub fn sys_renameat2(
     );
 
     let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(&old_path)))?;
-    let (new_dir, new_name) =
-        with_fs(new_dirfd, |fs| fs.resolve_nonexistent(Path::new(&new_path)))?;
+    let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_parent(Path::new(&new_path)))?;
 
-    old_dir.rename(&old_name, &new_dir, new_name)?;
+    if flags & RENAME_NOREPLACE != 0 {
+        // Linux reports a missing source leaf before checking whether the
+        // no-replace destination already exists.
+        old_dir.lookup_no_follow(&old_name)?;
+        match new_dir.lookup_no_follow(&new_name) {
+            Ok(_) => return Err(AxError::AlreadyExists),
+            Err(AxError::NotFound) => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    old_dir.rename(&old_name, &new_dir, &new_name)?;
     Ok(0)
 }
 

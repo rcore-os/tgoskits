@@ -13,8 +13,8 @@ use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
     ioctl::{
-        BLKFLSBUF, BLKGETSIZE, BLKGETSIZE64, BLKIOMIN, BLKIOOPT, BLKPG, BLKRAGET, BLKRASET,
-        BLKROGET, BLKROSET, BLKRRPART, BLKSSZGET,
+        BLKDISCARD, BLKFLSBUF, BLKGETSIZE, BLKGETSIZE64, BLKIOMIN, BLKIOOPT, BLKPG, BLKRAGET,
+        BLKRASET, BLKROGET, BLKROSET, BLKRRPART, BLKSSZGET,
     },
     loop_device::{
         LOOP_CLR_FD, LOOP_CONFIGURE, LOOP_GET_STATUS, LOOP_GET_STATUS64, LOOP_SET_FD,
@@ -206,6 +206,9 @@ pub struct LoopDevice {
     /// written back and cleared by `LOOP_CLR_FD`.
     #[cfg(feature = "ext4")]
     block_cache: Mutex<BlockCache>,
+    /// True while an O_EXCL opener holds the device. Non-exclusive opens
+    /// and further exclusive opens are rejected with EBUSY while set.
+    exclusive: AtomicBool,
 }
 
 impl LoopDevice {
@@ -219,7 +222,12 @@ impl LoopDevice {
             file_name: Mutex::new([0u8; 64]),
             #[cfg(feature = "ext4")]
             block_cache: Mutex::new(BlockCache { data: None }),
+            exclusive: AtomicBool::new(false),
         }
+    }
+
+    fn is_bound(&self) -> bool {
+        self.file.lock().is_some()
     }
 
     /// Get information about the loop device.
@@ -395,6 +403,23 @@ impl DeviceOps for LoopDevice {
             .write_at(buf, offset)
     }
 
+    fn open(&self, exclusive: bool) -> VfsResult<()> {
+        if exclusive {
+            if self.exclusive.swap(true, Ordering::Acquire) {
+                return Err(AxError::ResourceBusy);
+            }
+        } else if self.exclusive.load(Ordering::Acquire) {
+            return Err(AxError::ResourceBusy);
+        }
+        Ok(())
+    }
+
+    fn close(&self, exclusive: bool) {
+        if exclusive {
+            self.exclusive.store(false, Ordering::Release);
+        }
+    }
+
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
             LOOP_SET_FD => {
@@ -504,10 +529,32 @@ impl DeviceOps for LoopDevice {
                 drop(guard);
                 *self.file_name.lock() = cfg.info.lo_file_name;
             }
-            // TODO: the following should apply to any block devices
+            BLKDISCARD => {
+                if !self.is_bound() {
+                    return Err(AxError::from(LinuxError::ENXIO));
+                }
+                if self.ro.load(Ordering::Relaxed) {
+                    return Err(AxError::ReadOnlyFilesystem);
+                }
+                let ptr = arg as *const u64;
+                let start = ptr.vm_read()?;
+                let len = unsafe { ptr.add(1) }.vm_read()?;
+                if len == 0 {
+                    return Err(AxError::InvalidInput);
+                }
+                let dev_size = self.clone_file()?.location().len()?;
+                if start.saturating_add(len) > dev_size {
+                    return Err(AxError::InvalidInput);
+                }
+                // Real discard (punch-hole on backing file) not yet implemented.
+                return Err(AxError::OperationNotSupported);
+            }
             BLKGETSIZE | BLKGETSIZE64 => {
-                let file = self.clone_file()?;
-                let sectors = file.location().len()? / 512;
+                let sectors = if let Ok(f) = self.clone_file() {
+                    f.location().len()? / 512
+                } else {
+                    return Err(AxError::from(LinuxError::ENXIO));
+                };
                 if cmd == BLKGETSIZE {
                     (arg as *mut u32).vm_write(sectors as _)?;
                 } else {
