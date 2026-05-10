@@ -11,6 +11,13 @@ const PROTO_TCP: u32 = linux_raw_sys::net::IPPROTO_TCP as u32;
 
 const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
+fn read_int_sockopt(optval: UserConstPtr<u8>, optlen: socklen_t) -> AxResult<i32> {
+    if (optlen as usize) < size_of::<i32>() {
+        return Err(AxError::InvalidInput);
+    }
+    Ok(*optval.cast::<i32>().get_as_ref()?)
+}
+
 mod conv {
     use ax_errno::{AxError, AxResult};
     use axnet::options::UnixCredentials;
@@ -95,6 +102,10 @@ macro_rules! call_dispatch {
 
             (PROTO_TCP, TCP_NODELAY) => NoDelay as IntBool,
             (PROTO_TCP, TCP_MAXSEG) => MaxSegment as Int<usize>,
+            (PROTO_TCP, TCP_KEEPIDLE) => TcpKeepIdle as Int<u32>,
+            (PROTO_TCP, TCP_KEEPINTVL) => TcpKeepInterval as Int<u32>,
+            (PROTO_TCP, TCP_KEEPCNT) => TcpKeepCount as Int<u32>,
+            (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
             (PROTO_TCP, TCP_INFO) => TcpInfo,
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
@@ -180,18 +191,12 @@ pub fn sys_setsockopt(
                 return Ok(0);
             }
             (SOL_SOCKET, SO_RCVBUF | SO_RCVBUFFORCE) => {
-                if (optlen as usize) < size_of::<i32>() {
-                    return Err(AxError::InvalidInput);
-                }
-                let value = *optval.cast::<i32>().get_as_ref()?;
+                let value = read_int_sockopt(optval, optlen)?;
                 socket.set_receive_buffer_size(value.max(0) as usize);
                 return Ok(0);
             }
             (SOL_SOCKET, SO_PASSCRED) => {
-                if (optlen as usize) < size_of::<i32>() {
-                    return Err(AxError::InvalidInput);
-                }
-                let value = *optval.cast::<i32>().get_as_ref()?;
+                let value = read_int_sockopt(optval, optlen)?;
                 socket.set_passcred(value != 0);
                 return Ok(0);
             }
