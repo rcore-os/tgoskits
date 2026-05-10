@@ -1,7 +1,7 @@
 //! User task management.
 
 mod cred;
-mod futex;
+pub mod futex;
 mod ops;
 pub mod posix_timer;
 mod resources;

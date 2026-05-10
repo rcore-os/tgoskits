@@ -47,7 +47,7 @@ use starry_process::Pid;
 use crate::{
     file::{FileLike, get_file_like},
     mm::UserPtr,
-    task::{AsThread, WaitQueue},
+    task::{AsThread, futex::WaitQueue},
 };
 
 type InodeKey = (u64, u64); // (device, inode_no)
