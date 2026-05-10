@@ -138,9 +138,10 @@ docker run --rm -v "$PWD:/workspace" -w /workspace tgoskits-ci bash -c '
 | Detection | Output Pattern | Corresponding Bug Type |
 |-----------|---------------|----------------------|
 | Lock order inversion (ABBA) | `lockdep: lock order inversion detected` | `deadlock`, `lock-hierarchy-violation` |
-| Circular dependency (3+ locks) | `lockdep: circular locking dependency` | `deadlock` |
-| Held lock across task sleep | `lockdep: lock held across schedule` | `atomicity-violation` |
-| Repeated lock acquire (recursive) | `lockdep: recursive locking` | `deadlock` |
+| Recursive lock acquisition | `lockdep: recursive {kind} acquisition detected` | `deadlock` |
+| Unlock order violation | `lockdep: unlock order violation` | `lock-hierarchy-violation` |
+
+Note: the actual message format is verified against `components/lockdep/src/state.rs`. The `{kind}` placeholder is replaced with "spin" or "mutex" at runtime.
 
 #### Interpreting lockdep output
 
@@ -211,7 +212,7 @@ docker run --rm -v "$PWD:/workspace" -w /workspace tgoskits-ci bash -c '
 ' 2>&1 | tee /tmp/lockdep-output.log
 
 # 3. Check for lockdep warnings
-grep -E 'lockdep: (lock order inversion|circular locking|recursive locking|lock held across)' /tmp/lockdep-output.log
+grep -E 'lockdep: (lock order inversion|recursive|unlock order violation)' /tmp/lockdep-output.log
 ```
 
 If lockdep reports violations: classify each using the concurrency subtype table above.
