@@ -13,7 +13,7 @@ use super::{
     IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, MSG_INFO,
     MSG_STAT, has_ipc_permission, next_ipc_id,
 };
-use crate::task::{AsThread, WaitQueue};
+use crate::task::{AsThread, WaitQueue as MsgWaitQueue};
 
 /// Data structure describing a message queue.
 #[repr(C)]
@@ -88,9 +88,9 @@ pub struct MessageQueue {
     /// Next FIFO sequence number
     pub next_seq: u64,
     /// Waiters blocked on send due to full queue
-    pub send_wait_queue: Arc<WaitQueue>,
+    pub send_wait_queue: Arc<MsgWaitQueue>,
     /// Waiters blocked on receive due to empty queue
-    pub recv_wait_queue: Arc<WaitQueue>,
+    pub recv_wait_queue: Arc<MsgWaitQueue>,
     /// Marked for removal
     pub mark_removed: bool,
 }
@@ -103,8 +103,8 @@ impl MessageQueue {
             messages: BTreeMap::new(),
             total_bytes: 0,
             next_seq: 0,
-            send_wait_queue: Arc::new(WaitQueue::new()),
-            recv_wait_queue: Arc::new(WaitQueue::new()),
+            send_wait_queue: Arc::new(MsgWaitQueue::new()),
+            recv_wait_queue: Arc::new(MsgWaitQueue::new()),
             mark_removed: false,
         }
     }
@@ -215,8 +215,8 @@ impl MessageQueue {
                 ordered.push(message);
             }
         }
-        ordered.sort_by_key(|message| message.seq);
-        ordered.get(index).copied()
+        let (_, selected, _) = ordered.select_nth_unstable_by_key(index, |message| message.seq);
+        Some(*selected)
     }
 
     /// Remove the message by specified type and index
@@ -908,6 +908,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
     if cmd == IPC_RMID {
         msg_queue.mark_removed = true;
         msg_queue.msqid_ds.msg_ctime = monotonic_time_nanos() as _;
+        // Note: Linux keeps queued messages until drained; we clear immediately.
         msg_queue.messages.clear();
         msg_queue.total_bytes = 0;
         msg_queue.msqid_ds.msg_cbytes = 0;
