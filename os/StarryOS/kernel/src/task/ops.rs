@@ -8,7 +8,7 @@ use ax_errno::{AxError, AxResult};
 use ax_hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
-use linux_raw_sys::general::ROBUST_LIST_LIMIT;
+use linux_raw_sys::general::{FUTEX_OWNER_DIED, FUTEX_TID_MASK, ROBUST_LIST_LIMIT};
 use spin::RwLock;
 use starry_process::{Pid, ProcessGroup, Session};
 use starry_signal::{SignalInfo, Signo};
@@ -203,15 +203,49 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
         .checked_add_signed(offset)
         .ok_or(AxError::InvalidInput)?;
     let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
+
+    // Mark the user-space futex word with FUTEX_OWNER_DIED before waking
+    // waiters.  This matches the Linux semantics and closes a lost-wakeup
+    // race: a concurrent FUTEX_WAIT can pass the fast-path value check,
+    // but the wake below fires before the waiter pushes itself onto the
+    // wait queue.  Once FUTEX_OWNER_DIED is set in the futex word the
+    // value no longer matches the expected TID, so the waiter re-checks
+    // the value under the queue lock and correctly bails out without
+    // sleeping.  Without this write the waiter would sleep forever.
+    //
+    // The write happens unconditionally (independent of the futex table)
+    // because a FUTEX_WAIT might not have created a table entry yet when
+    // the death notification fires.
+    let tid = current().id().as_u64() as u32;
+    match (address as *const u32).vm_read() {
+        Ok(current_value) if (current_value & FUTEX_TID_MASK) == tid => {
+            let new_value = (current_value & FUTEX_TID_MASK) | FUTEX_OWNER_DIED;
+            debug!(
+                "handle_futex_death: writing FUTEX_OWNER_DIED: {current_value:#x} -> \
+                 {new_value:#x} at addr={address:#x}"
+            );
+            let _ = (address as *mut u32).vm_write(new_value);
+        }
+        Ok(current_value) => {
+            debug!(
+                "handle_futex_death: TID mismatch current_value=0x{current_value:x} \
+                 TID_MASK=0x{FUTEX_TID_MASK:x} tid={tid}"
+            );
+        }
+        Err(e) => {
+            debug!("handle_futex_death: vm_read failed at addr={address:#x}: {e:?}");
+        }
+    }
+
+    // Now wake any kernel-side waiters through the futex table.
     let key = FutexKey::new_current_teardown(address);
-
     let futex_table = futex_table_for(&key);
+    if let Some(futex) = futex_table.get(&key) {
+        debug!("handle_futex_death: waking futex waiters at addr={address:#x}");
+        futex.owner_dead.store(true, Ordering::SeqCst);
+        futex.wq.wake(1, u32::MAX);
+    }
 
-    let Some(futex) = futex_table.get(&key) else {
-        return Ok(());
-    };
-    futex.owner_dead.store(true, Ordering::SeqCst);
-    futex.wq.wake(1, u32::MAX);
     Ok(())
 }
 
@@ -221,12 +255,17 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
     let mut limit = ROBUST_LIST_LIMIT;
 
     let end_ptr = unsafe { &raw const (*head).list };
+    debug!("exit_robust_list: head={head:p} end_ptr={end_ptr:p}");
     let head = head.vm_read()?;
     let mut entry = head.list.next;
     let offset = head.futex_offset;
     let pending = head.list_op_pending;
+    debug!(
+        "exit_robust_list: entry={entry:p} offset={offset} pending={pending:p} end_ptr={end_ptr:p}"
+    );
 
     while !core::ptr::eq(entry, end_ptr) {
+        debug!("exit_robust_list: processing entry={entry:p}");
         let next_entry = entry.vm_read()?.next;
         if entry != pending {
             handle_futex_death(entry, offset)?;
@@ -242,9 +281,11 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
 
     // Process the pending entry that was skipped in the loop
     if !pending.is_null() {
+        debug!("exit_robust_list: processing pending={pending:p}");
         handle_futex_death(pending, offset)?;
     }
 
+    debug!("exit_robust_list: done");
     Ok(())
 }
 
@@ -265,9 +306,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         ax_task::yield_now();
     }
     let head = thr.robust_list_head() as *const RobustListHead;
-    if !head.is_null()
-        && let Err(err) = exit_robust_list(head)
-    {
+    debug!("do_exit: robust_list_head={head:p}");
+    if head.is_null() {
+        debug!("do_exit: robust_list_head is NULL, skipping");
+    } else if let Err(err) = exit_robust_list(head) {
         warn!("exit robust list failed: {err:?}");
     }
 
