@@ -10,7 +10,7 @@ use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
 use spin::RwLock;
-use starry_process::{Pid, ProcessGroup, Session};
+use starry_process::{Pid, Process, ProcessGroup, Session};
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 use weak_map::WeakMap;
@@ -24,14 +24,15 @@ static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::ne
 
 static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<ProcessData>>> = RwLock::new(WeakMap::new());
 
-/// PIDs of processes that have exited but not yet been reaped by waitpid().
+/// Zombie processes: exited but not yet reaped by waitpid().
 ///
-/// A zombie process has no live threads, so its `ProcessData` is dropped and
-/// `PROCESS_TABLE` can no longer find it.  This set keeps the PID visible so
-/// that `kill(pid, 0)` correctly returns 0 (process exists) rather than ESRCH.
-/// The entry is removed when `waitpid()` reaps the zombie.
-static ZOMBIE_PIDS: RwLock<alloc::collections::BTreeSet<Pid>> =
-    RwLock::new(alloc::collections::BTreeSet::new());
+/// Maps PID → `Arc<Process>` so that syscalls like `getsid`, `getpgid`, and
+/// `getpriority` can still return correct values for zombie PIDs.  The
+/// `Arc<Process>` is cloned from `thr.proc_data.proc` at `register_zombie`
+/// time and dropped when `unregister_zombie` is called after `waitpid` reaps
+/// the child.
+static ZOMBIE_PIDS: RwLock<alloc::collections::BTreeMap<Pid, Arc<Process>>> =
+    RwLock::new(alloc::collections::BTreeMap::new());
 
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
 
@@ -118,22 +119,31 @@ pub fn remove_process(pid: Pid) {
 
 /// Records a PID as zombie (exited but not yet reaped).
 ///
-/// Called from `do_exit` after `process.exit()`.  Keeps the PID visible to
-/// `kill(pid, 0)` until `waitpid()` reaps it.
-pub fn register_zombie(pid: Pid) {
-    ZOMBIE_PIDS.write().insert(pid);
+/// Called from `do_exit` after `process.exit()`.  Stores the `Arc<Process>`
+/// so that `getsid`, `getpgid`, and similar syscalls can still return correct
+/// values for zombie PIDs until `waitpid()` reaps them.
+pub fn register_zombie(pid: Pid, proc: Arc<Process>) {
+    ZOMBIE_PIDS.write().insert(pid, proc);
 }
 
-/// Removes a PID from the zombie set.
+/// Removes a PID from the zombie map.
 ///
-/// Called from `waitpid` after `child.free()`.
+/// Called from `waitpid` after `child.free()`.  Drops the stored `Arc<Process>`.
 pub fn unregister_zombie(pid: Pid) {
     ZOMBIE_PIDS.write().remove(&pid);
 }
 
 /// Returns `true` if `pid` is a zombie (exited but not yet reaped).
 pub fn is_zombie_pid(pid: Pid) -> bool {
-    ZOMBIE_PIDS.read().contains(&pid)
+    ZOMBIE_PIDS.read().contains_key(&pid)
+}
+
+/// Returns the `Arc<Process>` for a zombie PID, or `None` if not a zombie.
+///
+/// Used by syscalls that must return valid data for zombie processes
+/// (e.g. `getsid`, `getpgid`).
+pub fn get_zombie_process(pid: Pid) -> Option<Arc<Process>> {
+    ZOMBIE_PIDS.read().get(&pid).cloned()
 }
 
 /// Finds the process group with the given PGID.
@@ -321,7 +331,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // list and pdeathsig never reaches the real children.
         let children_snapshot = process.children();
         process.exit();
-        register_zombie(process.pid());
+        register_zombie(process.pid(), process.clone());
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
                 let _ = send_signal_to_process(parent.pid(), Some(SignalInfo::new_kernel(signo)));
