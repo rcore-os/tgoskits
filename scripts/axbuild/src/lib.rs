@@ -30,6 +30,9 @@ pub(crate) struct ClippyArgs {
     /// Run clippy only for the named workspace package(s)
     #[arg(long = "package", value_name = "PACKAGE")]
     pub(crate) packages: Vec<String>,
+    /// Run clippy for whitelisted packages affected since the git ref
+    #[arg(long, value_name = "REF")]
+    pub(crate) since: Option<String>,
 }
 
 #[derive(Subcommand)]

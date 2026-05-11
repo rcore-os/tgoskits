@@ -56,6 +56,20 @@ pub(crate) fn workspace_metadata_root_manifest(
         })
 }
 
+pub(crate) fn workspace_metadata_root_manifest_with_deps(
+    workspace_manifest_path: &Path,
+) -> anyhow::Result<cargo_metadata::Metadata> {
+    cargo_metadata::MetadataCommand::new()
+        .manifest_path(workspace_manifest_path)
+        .exec()
+        .with_context(|| {
+            format!(
+                "failed to get cargo metadata for workspace root {}",
+                workspace_manifest_path.display()
+            )
+        })
+}
+
 fn workspace_member_manifest_path(workspace_root: &Path, package: &str) -> anyhow::Result<PathBuf> {
     let metadata = workspace_metadata(workspace_root)?;
     let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();

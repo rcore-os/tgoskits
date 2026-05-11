@@ -43,7 +43,8 @@ pub use types::{
 };
 pub(crate) use workspace::{
     find_workspace_root, workspace_manifest_path, workspace_member_dir,
-    workspace_metadata_root_manifest, workspace_root_path,
+    workspace_metadata_root_manifest, workspace_metadata_root_manifest_with_deps,
+    workspace_root_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

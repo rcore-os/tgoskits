@@ -162,7 +162,20 @@ jobs:
           - name: Run clippy
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask clippy
+            command: |
+              set -eux
+              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+                cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
+              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                before="${{ github.event.before }}"
+                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
+                  cargo xtask clippy
+                else
+                  cargo xtask clippy --since "${before}"
+                fi
+              else
+                cargo xtask clippy
+              fi
             cache_key: clippy
             container_image: base
             required_repository_owner: ""
