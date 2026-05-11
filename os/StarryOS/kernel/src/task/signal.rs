@@ -6,6 +6,7 @@ use starry_signal::{SignalInfo, SignalOSAction, SignalSet};
 
 use super::{
     AsThread, SYSCALL_INSN_LEN, Thread, do_exit, get_process_data, get_process_group, get_task,
+    is_zombie_pid,
 };
 
 /// Information needed to restart a syscall if SA_RESTART applies.
@@ -112,6 +113,13 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
 
 /// Sends a signal to a process.
 pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()> {
+    // A zombie process has exited but not yet been reaped by waitpid().
+    // Its ProcessData is gone, but the PID still exists — kill(pid, 0)
+    // must return 0, and signals are silently dropped (no live threads).
+    if is_zombie_pid(pid) {
+        return Ok(());
+    }
+
     let proc_data = get_process_data(pid)?;
 
     if let Some(sig) = sig {
