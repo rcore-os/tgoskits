@@ -1,9 +1,9 @@
 ---
 sidebar_position: 7
-sidebar_label: "CI"
+sidebar_label: "持续集成"
 ---
 
-# CI
+# 自动 CI 测试
 
 TGOSKits 将构建与运行依赖收敛到统一的 container 镜像，由 GitHub Actions 和本地开发流程共同消费。CI 系统的目标是**确保每次代码变更都经过格式检查、静态分析和自动化测试的完整验证**，同时通过容器化保证本地开发环境与 CI 环境的一致性。
 

@@ -30,15 +30,17 @@ flowchart LR
 
 ## 三大能力
 
+axbuild 的三大能力层层递进：**构建**是基础，负责将源码编译为可执行产物；**运行**在构建之上增加目标环境部署（QEMU 虚拟机、U-Boot 引导、远程板卡）；**测试**在运行之上进一步增加用例发现、资产准备和结果判定逻辑。每个子系统（ArceOS/StarryOS/Axvisor）对三大能力都有自己的实现，但共享底层的参数解析、配置管理和 ostool 执行基础设施。
+
 | 能力 | 命令 | 说明 |
 |------|------|------|
 | **构建** | `cargo xtask <os> build` | 编译 OS 产物（ELF / BIN） |
 | **运行** | `cargo xtask <os> qemu/uboot/board` | 在 QEMU、U-Boot 或物理板上运行 |
 | **测试** | `cargo xtask <os> test qemu/board` | 自动发现用例、构建一次、逐 case 运行并判定 |
 
-axbuild 的三大能力层层递进：**构建**是基础，负责将源码编译为可执行产物；**运行**在构建之上增加目标环境部署（QEMU 虚拟机、U-Boot 引导、远程板卡）；**测试**在运行之上进一步增加用例发现、资产准备和结果判定逻辑。每个子系统（ArceOS/StarryOS/Axvisor）对三大能力都有自己的实现，但共享底层的参数解析、配置管理和 ostool 执行基础设施。
-
 ## 模块结构
+
+axbuild 的代码组织分为四层：`lib.rs` 作为顶层入口，负责命令分发；`context/` 提供全局构建上下文和参数管理，被所有子系统共享；各子系统（`arceos/`、`starry/`、`axvisor/`）实现各自的构建、运行和测试流程；`test/`、`rootfs/`、`board.rs`、`support/` 等共享基础设施为三个子系统提供通用能力。
 
 ```mermaid
 graph TD
@@ -77,11 +79,11 @@ graph TD
     OS --> SUPPORT
 ```
 
-axbuild 的代码组织分为四层：`lib.rs` 作为顶层入口，负责命令分发；`context/` 提供全局构建上下文和参数管理，被所有子系统共享；各子系统（`arceos/`、`starry/`、`axvisor/`）实现各自的构建、运行和测试流程；`test/`、`rootfs/`、`board.rs`、`support/` 等共享基础设施为三个子系统提供通用能力。
-
 `context/` 是整个系统的配置中枢：`arch.rs` 维护架构与 target triple 的双向映射；`resolve.rs` 将 CLI 参数与 Snapshot 合并为 `ResolvedRequest`；`snapshot.rs` 将最近一次的参数持久化到 `.{os}.toml` 文件中，使得后续的短命令可以复用之前的配置。
 
 ## 三层架构
+
+三层架构将关注点清晰地分离：CLI 层提供用户友好的命令行接口；axbuild 层负责 OS 特有的流程编排（如 ArceOS 的 axconfig 生成、StarryOS 的 rootfs 管理、Axvisor 的 VM 配置注入）；ostool 层则封装了与外部工具（cargo、QEMU、ostool-server）的直接交互，处理环境变量设置、进程管理等底层细节。
 
 ```mermaid
 flowchart TB
@@ -102,16 +104,3 @@ flowchart TB
 | **CLI 层** | 用户体验与参数统一（`cargo xtask` 别名） |
 | **axbuild 层** | 系统维度的流程编排、参数解析、配置生成、测试编排 |
 | **ostool 层** | 底层 cargo build/run、QEMU/U-Boot/板卡运行 |
-
-三层架构将关注点清晰地分离：CLI 层提供用户友好的命令行接口；axbuild 层负责 OS 特有的流程编排（如 ArceOS 的 axconfig 生成、StarryOS 的 rootfs 管理、Axvisor 的 VM 配置注入）；ostool 层则封装了与外部工具（cargo、QEMU、ostool-server）的直接交互，处理环境变量设置、进程管理等底层细节。
-
-## 章节导航
-
-| 章节 | 内容 |
-|------|------|
-| [命令参考](./commands) | 所有可用命令与参数 |
-| [配置](./configuration) | Snapshot、Build Info、Arch/Target 映射 |
-| [构建](./build) | 从参数解析到编译产物的完整管线 |
-| [运行](./run) | QEMU、U-Boot、板卡运行的配置与执行 |
-| [测试](./test/overview) | 用例发现、资产准备、执行编排与结果判定 |
-| [CI](./ci) | Container 镜像、CI 流水线与命名规则 |

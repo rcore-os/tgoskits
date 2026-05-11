@@ -1,6 +1,6 @@
 ---
 sidebar_position: 7
-sidebar_label: "Axvisor"
+sidebar_label: "Axvisor 测试"
 ---
 
 # Axvisor 测试

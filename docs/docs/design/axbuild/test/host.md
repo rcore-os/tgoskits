@@ -1,6 +1,6 @@
 ---
 sidebar_position: 8
-sidebar_label: "Host 端"
+sidebar_label: "Host 端检查"
 ---
 
 # Host 端测试

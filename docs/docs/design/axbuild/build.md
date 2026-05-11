@@ -1,9 +1,9 @@
 ---
 sidebar_position: 4
-sidebar_label: "构建"
+sidebar_label: "构建管线"
 ---
 
-# 构建
+# 构建管线
 
 从用户输入 `cargo xtask <os> build` 到编译产物的完整管线。构建过程分为八个阶段，依次完成上下文初始化、参数解析、架构映射、配置加载、Feature 解析、平台配置生成、Cargo 参数组装和最终编译执行。构建配置细节见 [配置](./configuration)，底层执行见 [运行](./run)。
 
@@ -32,6 +32,7 @@ pub struct AppContext {
     tool: Tool,               // ostool Tool 实例
     build_config_path: Option<PathBuf>,
     root: PathBuf,            // workspace 根目录
+    axvisor_dir: Option<PathBuf>, // Axvisor 源码目录（惰性初始化）
     original_path: OsString,  // 原始 PATH（用于 LoongArch 恢复）
     debug: bool,
 }

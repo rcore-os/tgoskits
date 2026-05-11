@@ -1,6 +1,6 @@
 ---
 sidebar_position: 6
-sidebar_label: "StarryOS"
+sidebar_label: "StarryOS 测试"
 ---
 
 # StarryOS 测试

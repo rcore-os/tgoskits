@@ -1,9 +1,9 @@
 ---
 sidebar_position: 5
-sidebar_label: "运行"
+sidebar_label: "运行时环境"
 ---
 
-# 运行
+# 运行时环境
 
 `cargo xtask <os> qemu/uboot/board` 在构建基础上增加运行环节。运行过程的核心是**将编译好的 OS 产物部署到目标环境（QEMU 虚拟机、U-Boot 引导或物理板卡）中执行**，并收集运行输出。`AppContext` 封装了四个执行方法，将底层编译和运行委托给 `ostool::Tool`。
 
@@ -118,8 +118,8 @@ flowchart TD
 Rootfs 选择遵循三级回退策略：用户显式指定优先，其次检查 VM 配置旁的本地镜像（Axvisor 特有），最后回退到 managed rootfs（自动下载并缓存的 Alpine Linux 镜像）。这种设计确保了首次使用时自动获取基础镜像，后续运行直接复用缓存。
 
 StarryOS 额外管理：
-- APK 区域自动配置（`/etc/apk/repositories`）
-- DNS 解析器注入（QEMU slirp 模式 `nameserver 10.0.2.3`）
-- ext4 镜像格式检测与文件替换
+- APK 区域自动配置（`/etc/apk/repositories`）—— 根据 `STARRY_APK_REGION` 环境变量重写软件源
+- DNS 解析器注入（QEMU slirp 模式 `nameserver 10.0.2.3`）—— 写入 `/etc/resolv.conf`
+- ext2/3/4 文件系统检测与文件替换 —— `looks_like_ext_image()` 通过 superblock 魔数（偏移 0x438）检测 rootfs 格式，确认后在原位替换配置文件
 
 StarryOS 的 rootfs 管理比 Axvisor 更复杂，因为它需要在 rootfs 内安装额外的软件包（通过 APK）和配置网络（DNS 解析器），以支持 Shell 和 Python 测试用例的运行。

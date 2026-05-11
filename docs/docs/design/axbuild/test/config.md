@@ -1,6 +1,6 @@
 ---
 sidebar_position: 4
-sidebar_label: "配置文件"
+sidebar_label: "运行配置文件"
 ---
 
 # 测试配置文件
@@ -44,12 +44,10 @@ sidebar_label: "配置文件"
 
 ## SMP 参数注入
 
-`apply_smp_qemu_arg()` 从 QEMU 配置的 `-smp` 参数读取 CPU 数量，确保 build config 的 SMP 设置与 QEMU 配置一致。也支持从配置中提取 SMP 值：`smp_from_qemu_arg()`。
-
-SMP 参数注入解决了一个常见的配置不一致问题：用户可能在 build config 中设置了 4 核，但 QEMU 配置中仍然是 `-smp 1`，或者反过来。`apply_smp_qemu_arg()` 自动同步两者的 SMP 设置，确保内核编译的核数与 QEMU 模拟的核数一致。
+`apply_smp_qemu_arg()` 和 `smp_from_qemu_arg()` 共同实现构建配置与 QEMU 配置之间的 SMP 双向同步。`apply_smp_qemu_arg()` 确保 QEMU 的 `-smp` 参数与传入的 CPU 数量一致，`smp_from_qemu_arg()` 从 QEMU 配置中提取 SMP 值供 reverse check 使用。
 
 ## 超时缩放
 
 环境变量 `AXBUILD_TEST_TIMEOUT_SCALE` 可线性放大所有 case 超时（用于 CI 慢环境）。
 
-CI 环境的执行速度通常比本地开发环境慢（尤其是在共享 runner 上），直接使用本地调试时的超时值可能导致用例因超时而误报失败。`AXBUILD_TEST_TIMEOUT_SCALE` 允许 CI 脚本按比例放大所有用例的超时值（如设置为 `2.0` 将超时翻倍），而不需要逐个修改配置文件。
+`apply_timeout_scale()` 从 QEMU 配置中读取 `timeout` 字段，乘以缩放因子后写回。CI 环境的执行速度通常比本地开发环境慢（尤其是在共享 runner 上），直接使用本地调试时的超时值可能导致用例因超时而误报失败。`AXBUILD_TEST_TIMEOUT_SCALE` 允许 CI 脚本按比例放大所有用例的超时值（如设置为 `2.0` 将超时翻倍），而不需要逐个修改配置文件。
