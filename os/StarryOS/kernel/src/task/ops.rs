@@ -330,8 +330,15 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // via mem::take. Otherwise process.children() returns an empty
         // list and pdeathsig never reaches the real children.
         let children_snapshot = process.children();
-        process.exit();
+
+        // Register the zombie BEFORE process.exit() publishes is_zombie=true.
+        // This closes a race where the parent's waitpid(WNOHANG) could observe
+        // is_zombie=true, complete the reap (free + unregister_zombie), and
+        // then this thread would late-insert a stale zombie entry that is
+        // never cleaned up.  By inserting first, any reap that sees
+        // is_zombie=true is guaranteed to find (and remove) the entry.
         register_zombie(process.pid(), process.clone());
+        process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
                 let _ = send_signal_to_process(parent.pid(), Some(SignalInfo::new_kernel(signo)));
