@@ -90,7 +90,8 @@ impl ImageLoader {
             self.bios_load_gpa = config.image_config.bios_load_gpa;
         });
         #[cfg(target_arch = "x86_64")]
-        if self.bios_load_gpa.is_none()
+        if self.config.kernel.bios_path.is_none()
+            && self.bios_load_gpa.is_none()
             && self.config.kernel.entry_point == self.default_bios_gpa().as_usize()
         {
             self.bios_load_gpa = Some(self.default_bios_gpa());
@@ -166,7 +167,8 @@ impl ImageLoader {
                 .expect("BIOS image present but BIOS load addr is missed");
             load_vm_image_from_memory(buffer, load_gpa, self.vm.clone())
                 .expect("Failed to load BIOS images");
-            self.load_x86_multiboot_info()?;
+            #[cfg(target_arch = "x86_64")]
+            self.load_x86_multiboot_info(buffer)?;
             return Ok(());
         }
 
@@ -182,7 +184,8 @@ impl ImageLoader {
                 self.vm.clone(),
             )
             .expect("Failed to load built-in x86 boot image");
-            self.load_x86_multiboot_info()?;
+            #[cfg(target_arch = "x86_64")]
+            self.load_x86_multiboot_info(x86_boot::DEFAULT_BIOS_IMAGE)?;
         }
 
         Ok(())
@@ -201,7 +204,7 @@ impl ImageLoader {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn load_x86_multiboot_info(&self) -> AxResult {
+    fn load_x86_multiboot_info(&self, bios_image: &[u8]) -> AxResult {
         const MULTIBOOT_INFO_GPA: usize = 0x6000;
         const MULTIBOOT_MMAP_GPA: usize = 0x6040;
         const MULTIBOOT_INFO_FLAGS: u32 = (1 << 0) | (1 << 6);
@@ -226,6 +229,7 @@ impl ImageLoader {
 
         let mbi_gpa = (MULTIBOOT_INFO_GPA as u32).to_le_bytes();
         let bios_load_gpa = self.default_bios_gpa();
+        validate_x86_bios_patch_region(bios_image)?;
         load_vm_image_from_memory(&mbi, MULTIBOOT_INFO_GPA.into(), self.vm.clone())?;
         load_vm_image_from_memory(&mmap, MULTIBOOT_MMAP_GPA.into(), self.vm.clone())?;
         load_vm_image_from_memory(
@@ -233,11 +237,6 @@ impl ImageLoader {
             (bios_load_gpa.as_usize() + x86_boot::AXVM_BIOS_EBX_IMM_OFFSET).into(),
             self.vm.clone(),
         )?;
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    fn load_x86_multiboot_info(&self) -> AxResult {
         Ok(())
     }
 
@@ -334,7 +333,6 @@ pub fn load_vm_image_from_memory(
 #[cfg(feature = "fs")]
 pub mod fs {
     use super::*;
-    use crate::hal::CacheOp;
     use ax_errno::{AxResult, ax_err, ax_err_type};
     use std::{fs::File, vec::Vec};
 
@@ -381,8 +379,16 @@ pub mod fs {
         // Load BIOS image if needed.
         if let Some(bios_path) = &loader.config.kernel.bios_path {
             if let Some(bios_load_addr) = loader.bios_load_gpa {
+                #[cfg(target_arch = "x86_64")]
+                let bios_image = read_image_file(bios_path)?;
+                #[cfg(target_arch = "x86_64")]
+                {
+                    validate_x86_bios_patch_region(&bios_image)?;
+                    load_vm_image_from_memory(&bios_image, bios_load_addr, loader.vm.clone())?;
+                    loader.load_x86_multiboot_info(&bios_image)?;
+                }
+                #[cfg(not(target_arch = "x86_64"))]
                 load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
-                loader.load_x86_multiboot_info()?;
             } else {
                 return ax_err!(NotFound, "BIOS load addr is missed");
             }
@@ -399,7 +405,8 @@ pub mod fs {
                 loader.vm.clone(),
             )
             .expect("Failed to load built-in x86 boot image");
-            loader.load_x86_multiboot_info()?;
+            #[cfg(target_arch = "x86_64")]
+            loader.load_x86_multiboot_info(x86_boot::DEFAULT_BIOS_IMAGE)?;
         }
         // Load Ramdisk image if needed.
         if let Some(ramdisk_path) = &loader.config.kernel.ramdisk_path {
@@ -453,6 +460,22 @@ pub mod fs {
         Ok(())
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn read_image_file(image_path: &str) -> AxResult<Vec<u8>> {
+        use std::io::{BufReader, Read};
+        let (image_file, image_size) = open_image_file(image_path)?;
+        let mut image = vec![0; image_size];
+        BufReader::new(image_file)
+            .read_exact(&mut image)
+            .map_err(|err| {
+                ax_err_type!(
+                    Io,
+                    format!("Failed in reading from file {}, err {:?}", image_path, err)
+                )
+            })?;
+        Ok(image)
+    }
+
     pub fn open_image_file(file_name: &str) -> AxResult<(File, usize)> {
         let file = File::open(file_name).map_err(|err| {
             ax_err_type!(
@@ -479,10 +502,40 @@ pub mod fs {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+fn validate_x86_bios_patch_region(bios_image: &[u8]) -> AxResult {
+    let patch_end = x86_boot::AXVM_BIOS_EBX_IMM_OFFSET + core::mem::size_of::<u32>();
+    if bios_image.len() < patch_end {
+        return Err(ax_errno::ax_err_type!(
+            InvalidInput,
+            format!(
+                "x86 BIOS image is too small for multiboot info patch: size {}, need at least {} bytes for EBX immediate at offset {:#x}",
+                bios_image.len(),
+                patch_end,
+                x86_boot::AXVM_BIOS_EBX_IMM_OFFSET
+            )
+        ));
+    }
+
+    if bios_image[x86_boot::AXVM_BIOS_EBX_IMM_OFFSET - 1] != x86_boot::MOV_EBX_IMM32_OPCODE {
+        return Err(ax_errno::ax_err_type!(
+            InvalidInput,
+            format!(
+                "x86 BIOS image does not match axvm-bios layout: expected mov ebx, imm32 opcode at offset {:#x}",
+                x86_boot::AXVM_BIOS_EBX_IMM_OFFSET - 1
+            )
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
 fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
     buffer[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
+#[cfg(target_arch = "x86_64")]
 fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
     buffer[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }

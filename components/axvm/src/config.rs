@@ -26,6 +26,9 @@ pub use axvmconfig::{
 use crate::VMMemoryRegion;
 
 const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
+
+/// Default BIOS load GPA for x86_64 when no bios_path is configured
+/// and the kernel entry_point equals this address, indicating x86 real-mode boot.
 #[cfg(target_arch = "x86_64")]
 const DEFAULT_X86_BIOS_LOAD_GPA: usize = 0x8000;
 
