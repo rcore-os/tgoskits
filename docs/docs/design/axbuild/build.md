@@ -96,22 +96,22 @@ Build Info 加载是构建管线中与用户交互最密切的环节。用户可
 
 ```mermaid
 flowchart TD
-    A[resolve_features] --> B["检测 feature 前缀族<br/>(ax-std/ 或 ax-feat/)"]
-    B --> C["归一化旧别名<br/>(axstd→ax-std, axfeat→ax-feat)"]
+    A[resolve_features] --> B["检测 feature 前缀族<br/>通过依赖关系确定 ax-std 或 ax-feat"]
+    B --> C["清理已存在的平台 feature<br/>(去掉 defplat/myplat/plat-dyn)"]
     C --> D{plat_dyn?}
-    D -->|true| E["ax-std/plat-dyn"]
-    D -->|false| F{有 myplat 依赖?}
-    F -->|是| G["ax-std/myplat"]
-    F -->|否| H["ax-std/defplat"]
+    D -->|true| E["注入 {prefix}/plat-dyn"]
+    D -->|false| F{已有 myplat feature?}
+    F -->|是| G["注入 {prefix}/myplat"]
+    F -->|否| H["注入 {prefix}/defplat"]
     E --> I{max_cpu_num > 1?}
     G --> I
     H --> I
-    I -->|是| J["注入 ax-std/smp"]
-    I -->|否| K["合并 FEATURES 环境变量"]
+    I -->|是| J["注入 {prefix}/smp"]
+    I -->|否| K["排序并去重"]
     J --> K
 ```
 
-Feature 解析是构建管线中最复杂的阶段之一。它需要处理多个维度：平台类型（动态/静态/自定义）、SMP 支持、旧版别名兼容。解析过程首先归一化 feature 名称（处理历史演进中的命名变更），然后根据平台配置确定使用 `plat-dyn`、`myplat` 还是 `defplat`，最后根据 SMP 核数决定是否注入 `smp` feature。最终结果合并为 Cargo 的 `--features` 参数。
+Feature 解析是构建管线中最复杂的阶段之一。它需要处理多个维度：feature 前缀族（通过分析包的 Cargo.toml 依赖关系确定使用 `ax-std` 还是 `ax-feat` 前缀）、平台类型（动态/静态/自定义）、以及 SMP 支持。解析过程首先检测前缀族，然后清除已存在的旧平台 feature（`defplat`、`myplat`、`plat-dyn`），再根据 `plat_dyn` 标志和是否有 `myplat` feature 注入新的带前缀平台 feature，最后按 SMP 核数决定是否注入 `smp` feature。最终结果排序去重后合并为 Cargo 的 `--features` 参数。
 
 ## 6. axconfig 生成
 

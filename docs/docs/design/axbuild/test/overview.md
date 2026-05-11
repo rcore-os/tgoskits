@@ -61,7 +61,7 @@ test-suit/
 │   ├── c/              C 语言测试（helloworld、pthread 等）
 │   │   └── <case>/
 │   │       ├── *.c           C 源码
-│   │       ├── axbuild.mk    可选 Makefile 片段
+│   │       ├── axbuild.mk    C 测试标识文件
 │   │       ├── features.txt  可选 features
 │   │       ├── test_cmd      测试调用定义
 │   │       └── expect_*.out  预期输出

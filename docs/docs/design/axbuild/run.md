@@ -15,16 +15,17 @@ sidebar_label: "运行"
 |------|------|-------------|
 | `build()` | 纯编译 | `Tool::cargo_build()` |
 | `qemu()` | 编译 + QEMU 运行 | `Tool::cargo_run(Qemu)` |
+| `run_qemu()` | 仅 QEMU 运行（已构建） | `Tool::run_qemu()` |
 | `uboot()` | 编译 + U-Boot 运行 | `Tool::cargo_run(Uboot)` |
 | `board()` | 编译 + 板卡运行 | `Tool::cargo_run_board()` |
 
-四个方法中，`build()` 仅编译不运行；其余三个在编译后分别通过 QEMU、U-Boot 或 ostool-server 执行产物。`qemu()` 和 `uboot()` 调用 ostool 的 `cargo_run()`（传入不同的运行模式），`board()` 调用 `cargo_run_board()` 与远程板卡交互。
+五个方法中，`build()` 仅编译不运行；`qemu()`、`uboot()` 和 `board()` 先编译再运行；`run_qemu()` 仅运行已编译好的产物，用于测试场景中每组构建后逐 case 运行。`qemu()` 和 `uboot()` 调用 ostool 的 `cargo_run()`（传入不同的运行模式），`board()` 调用 `cargo_run_board()` 与远程板卡交互，`run_qemu()` 调用 ostool 的 `run_qemu()` 直接启动 QEMU。
 
 ## QEMU 运行
 
 ```mermaid
 flowchart TD
-    A["AppContext::qemu(cargo, build_info_path)"] --> B["set_build_config_path()"]
+    A["AppContext::qemu(cargo, build_config_path, qemu_config)"] --> B["set_build_config_path()"]
     B --> C["scoped_qemu_path()<br/>(LoongArch 特殊处理)"]
     C --> D{QEMU 配置获取方式?}
     D -->|显式 --qemu-config| E["read_qemu_config_from_path()"]
