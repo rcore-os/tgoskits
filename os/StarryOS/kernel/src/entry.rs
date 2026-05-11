@@ -18,6 +18,7 @@ use crate::{
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
+    static_keys::global_init();
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
 

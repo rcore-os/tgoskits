@@ -1,6 +1,7 @@
 env = {}
 features = [
   "starry-kernel/input",
+  "starry-kernel/plat-dyn",
   "starry-kernel/vsock", # auxilary features
   "axplat-dyn/intel-net",
   "axplat-dyn/virtio-net-pci",

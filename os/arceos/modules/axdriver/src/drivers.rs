@@ -185,7 +185,7 @@ cfg_if::cfg_if! {
                 global_allocator().dealloc_pages(vaddr, pages, UsageKind::Dma);
             }
 
-            fn dma_request_irq(_irq: usize, _handler: fn()) {
+            fn dma_request_irq(_irq: usize, _handler: fn(usize)) {
                 warn!("unimplemented dma_request_irq for fxmax");
             }
         }

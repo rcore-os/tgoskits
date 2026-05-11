@@ -1,7 +1,14 @@
 use super::*;
 use crate::{
-    BLOCK_SIZE, bmalloc::InodeNumber, disknode::Ext4Inode, endian::DiskFormat,
-    entries::Ext4DirEntryTail, error::Errno, jbd2::jbdstruct::*, superblock::Ext4Superblock,
+    BLOCK_SIZE,
+    bmalloc::InodeNumber,
+    crc32c::ext4_crc32c_seed_from_superblock,
+    disknode::Ext4Inode,
+    endian::DiskFormat,
+    entries::{Ext4DirEntryTail, Ext4DxEntry},
+    error::Errno,
+    jbd2::jbdstruct::*,
+    superblock::Ext4Superblock,
 };
 
 fn metadata_csum_superblock() -> Ext4Superblock {
@@ -127,6 +134,62 @@ fn dirblock_checksum_is_stored_and_detects_corruption() {
 
     block[0] ^= 0x80;
     assert!(!verify_ext4_dirblock_checksum(&sb, ino, generation, &block));
+}
+
+#[test]
+fn dx_checksum_uses_counted_entries_and_tail() {
+    // Test idea: HTree index blocks store a dx_tail checksum after the full entry limit,
+    // while the checksum covers only the counted dx entries plus the tail's reserved word.
+    let sb = metadata_csum_superblock();
+    let ino = 704258u32;
+    let generation = 7817325u32;
+    let mut block = [0u8; BLOCK_SIZE];
+    let count_offset = 32;
+    let entry_size = ::core::mem::size_of::<Ext4DxEntry>();
+    let limit = ((BLOCK_SIZE - count_offset - 8) / entry_size) as u16;
+    let count = 3u16;
+    let tail_offset = count_offset + limit as usize * entry_size;
+
+    block[0..4].copy_from_slice(&ino.to_le_bytes());
+    block[4..6].copy_from_slice(&12u16.to_le_bytes());
+    block[6] = 1;
+    block[7] = 2;
+    block[12..16].copy_from_slice(&2u32.to_le_bytes());
+    block[16..18].copy_from_slice(&((BLOCK_SIZE - 12) as u16).to_le_bytes());
+    block[18] = 2;
+    block[19] = 2;
+    block[24..28].fill(0);
+    block[29] = 8;
+    block[30] = 0;
+    block[count_offset..count_offset + 2].copy_from_slice(&limit.to_le_bytes());
+    block[count_offset + 2..count_offset + 4].copy_from_slice(&count.to_le_bytes());
+    block[count_offset + 4..count_offset + 8].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+    block[count_offset + 8..count_offset + 12].copy_from_slice(&1u32.to_le_bytes());
+    block[count_offset + 12..count_offset + 16].copy_from_slice(&0x9ABC_DEF0u32.to_le_bytes());
+    block[count_offset + 16..count_offset + 20].copy_from_slice(&5u32.to_le_bytes());
+    block[tail_offset..tail_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+
+    let expected = ext4_metadata_csum32(
+        ext4_crc32c_seed_from_superblock(&sb),
+        &[
+            &ino.to_le_bytes(),
+            &generation.to_le_bytes(),
+            &block[..count_offset + count as usize * entry_size],
+            &block[tail_offset..tail_offset + 4],
+            &[0, 0, 0, 0],
+        ],
+    );
+    block[tail_offset + 4..tail_offset + 8].copy_from_slice(&expected.to_le_bytes());
+
+    assert_eq!(
+        verify_ext4_dx_checksum(&sb, ino, generation, &block),
+        Some(true)
+    );
+    block[count_offset + 8] ^= 0x20;
+    assert_eq!(
+        verify_ext4_dx_checksum(&sb, ino, generation, &block),
+        Some(false)
+    );
 }
 
 #[test]

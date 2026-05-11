@@ -29,7 +29,7 @@ lazy_static! {
     static ref CONSOLE_INPUT_SOURCE: Arc<PollSet> = Arc::new(PollSet::new());
 }
 
-fn handle_console_input_irq() {
+fn handle_console_input_irq(_irq_num: usize) {
     let events = ax_hal::console::handle_irq();
     if events.intersects(
         ax_hal::console::ConsoleIrqEvent::RX_READY
