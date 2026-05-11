@@ -346,11 +346,13 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
                 let child_uid = thr.cred().uid;
                 let (code, status) = if group_exit {
-                    // Killed by signal — exit_code holds the raw signal number.
-                    let signum = process.exit_code();
-                    if signum > 128 {
-                        // CoreDump: do_exit was called with 128 + signo
-                        (CLD_DUMPED as i32, signum - 128)
+                    // Killed by signal — exit_code uses Linux wait-status
+                    // encoding: low 7 bits = signal number, bit 7 = core dumped.
+                    let raw = process.exit_code();
+                    let signum = raw & 0x7f;
+                    let core_dumped = (raw & 0x80) != 0;
+                    if core_dumped {
+                        (CLD_DUMPED as i32, signum)
                     } else {
                         (CLD_KILLED as i32, signum)
                     }

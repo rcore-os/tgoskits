@@ -104,9 +104,9 @@ impl ProcessSignalManager {
                     .iter()
                     .all(|(_, thread)| thread.upgrade().map_or(true, |t| t.signal_blocked(signo)));
             let any = children.iter().any(|(_, thread)| {
-                thread
-                    .upgrade()
-                    .map_or(false, |t| t.sigwait_set.lock().map_or(false, |s| s.has(signo)))
+                thread.upgrade().map_or(false, |t| {
+                    t.sigwait_set.lock().map_or(false, |s| s.has(signo))
+                })
             });
             (all, any)
         };

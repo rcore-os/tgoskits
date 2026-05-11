@@ -58,7 +58,7 @@ pub fn check_signals(
 
     match os_action {
         SignalOSAction::Terminate => do_exit(signo as i32, true),
-        SignalOSAction::CoreDump => do_exit(128 + signo as i32, true),
+        SignalOSAction::CoreDump => do_exit(signo as i32 | 0x80, true),
         SignalOSAction::Stop => do_exit(1, true),
         SignalOSAction::Continue => {}
         SignalOSAction::NoFurtherAction => {}
