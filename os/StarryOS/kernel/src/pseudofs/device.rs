@@ -51,6 +51,14 @@ pub trait DeviceOps: Send + Sync {
     fn flags(&self) -> NodeFlags {
         NodeFlags::empty()
     }
+
+    /// Called when the device is opened. `exclusive` is true if O_EXCL was set.
+    fn open(&self, _exclusive: bool) -> VfsResult<()> {
+        Ok(())
+    }
+
+    /// Called when the last file descriptor to this device is closed.
+    fn close(&self, _exclusive: bool) {}
 }
 
 /// A device node in the filesystem.

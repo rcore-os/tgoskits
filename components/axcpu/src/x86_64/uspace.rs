@@ -51,6 +51,14 @@ impl UserContext {
         }
     }
 
+    /// Normalizes a cloned user context so it can safely return to ring 3.
+    pub fn prepare_clone_child_return_state(&mut self) {
+        let mut flags = RFlags::from_bits_truncate(self.tf.rflags);
+        flags.insert(RFlags::INTERRUPT_FLAG);
+        flags.remove(RFlags::TRAP_FLAG | RFlags::NESTED_TASK | RFlags::RESUME_FLAG);
+        self.tf.rflags = flags.bits();
+    }
+
     /// Gets the TLS area.
     pub const fn tls(&self) -> usize {
         self.fs_base as _

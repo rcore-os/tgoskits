@@ -4,7 +4,7 @@ use ax_errno::AxResult;
 use ax_task::{TaskInner, TaskState};
 use starry_signal::Signo;
 
-use crate::task::AsThread;
+use crate::task::{AsThread, task_cpu_time};
 
 /// Represents the `/proc/[pid]/stat` file.
 ///
@@ -84,6 +84,15 @@ impl TaskStat {
         let ppid = proc.parent().map_or(0, |p| p.pid());
         let pgrp = proc.group().pgid();
         let session = proc.group().session().sid();
+
+        let (utime_tv, stime_tv) = task_cpu_time(task);
+        // Convert to jiffies (USER_HZ = 100, so 1 jiffy = 10 ms = 10_000_000 ns).
+        let utime = (utime_tv.as_millis() / 10) as u64;
+        let stime = (stime_tv.as_millis() / 10) as u64;
+        let (cutime_tv, cstime_tv) = proc_data.children_cpu_time();
+        let cutime = (cutime_tv.as_millis() / 10) as u64;
+        let cstime = (cstime_tv.as_millis() / 10) as u64;
+
         Ok(Self {
             pid,
             comm: comm.to_owned(),
@@ -91,6 +100,10 @@ impl TaskStat {
             ppid,
             pgrp,
             session,
+            utime,
+            stime,
+            cutime,
+            cstime,
             num_threads: proc.threads().len() as u32,
             exit_signal: proc_data.exit_signal.unwrap_or(Signo::SIGCHLD) as u8,
             exit_code: proc.exit_code(),

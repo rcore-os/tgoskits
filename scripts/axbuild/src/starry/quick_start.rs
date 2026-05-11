@@ -71,6 +71,12 @@ pub struct QuickOrangeConfigArgs {
 
 pub type QuickOrangeRunArgs = QuickOrangeConfigArgs;
 
+impl QuickOrangeConfigArgs {
+    fn has_overrides(&self) -> bool {
+        self.serial.is_some() || self.baud.is_some() || self.dtb.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum QuickQemuPlatform {
     Aarch64,
@@ -108,14 +114,14 @@ pub fn print_supported_platforms(workspace_root: &Path) {
         QuickQemuPlatform::X8664,
     ] {
         let build = qemu_build_config_path(workspace_root, platform);
-        let run = qemu_run_config_path(workspace_root, platform);
         let tmp_build = tmp_qemu_build_config_path(workspace_root, platform);
-        let tmp_run = tmp_qemu_run_config_path(workspace_root, platform);
         println!("  {}", platform.cli_name());
         println!("    build template: {}", build.display());
-        println!("    run template:   {}", run.display());
+        println!(
+            "    run template:   {}",
+            super::default_qemu_config_template_path(workspace_root, platform.arch()).display()
+        );
         println!("    tmp build cfg:  {}", tmp_build.display());
-        println!("    tmp run cfg:    {}", tmp_run.display());
         println!(
             "    commands:\n      cargo xtask starry quick-start {} build\n      cargo xtask \
              starry quick-start {} run",
@@ -141,18 +147,7 @@ pub fn print_supported_platforms(workspace_root: &Path) {
 
 pub fn qemu_build_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {
     workspace_root
-        .join("os/StarryOS/configs/qemu")
-        .join(match platform {
-            QuickQemuPlatform::Aarch64 => "build-aarch64.toml",
-            QuickQemuPlatform::Riscv64 => "build-riscv64.toml",
-            QuickQemuPlatform::Loongarch64 => "build-loongarch64.toml",
-            QuickQemuPlatform::X8664 => "build-x86_64.toml",
-        })
-}
-
-pub fn qemu_run_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {
-    workspace_root
-        .join("os/StarryOS/configs/qemu")
+        .join("os/StarryOS/configs/board")
         .join(match platform {
             QuickQemuPlatform::Aarch64 => "qemu-aarch64.toml",
             QuickQemuPlatform::Riscv64 => "qemu-riscv64.toml",
@@ -182,15 +177,6 @@ pub fn tmp_qemu_build_config_path(workspace_root: &Path, platform: QuickQemuPlat
     })
 }
 
-pub fn tmp_qemu_run_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {
-    tmp_config_dir(workspace_root).join(match platform {
-        QuickQemuPlatform::Aarch64 => "qemu-aarch64.toml",
-        QuickQemuPlatform::Riscv64 => "qemu-riscv64.toml",
-        QuickQemuPlatform::Loongarch64 => "qemu-loongarch64.toml",
-        QuickQemuPlatform::X8664 => "qemu-x86_64.toml",
-    })
-}
-
 pub fn tmp_orangepi_build_config_path(workspace_root: &Path) -> PathBuf {
     tmp_config_dir(workspace_root).join("orangepi-5-plus.toml")
 }
@@ -213,7 +199,7 @@ fn copy_template(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn refresh_qemu_configs(
+pub fn refresh_qemu_build_config(
     workspace_root: &Path,
     platform: QuickQemuPlatform,
 ) -> anyhow::Result<()> {
@@ -221,21 +207,16 @@ pub fn refresh_qemu_configs(
         &qemu_build_config_path(workspace_root, platform),
         &tmp_qemu_build_config_path(workspace_root, platform),
     )?;
-    copy_template(
-        &qemu_run_config_path(workspace_root, platform),
-        &tmp_qemu_run_config_path(workspace_root, platform),
-    )?;
     Ok(())
 }
 
-pub fn ensure_qemu_configs(
+pub fn ensure_qemu_build_config(
     workspace_root: &Path,
     platform: QuickQemuPlatform,
 ) -> anyhow::Result<()> {
     let build_cfg = tmp_qemu_build_config_path(workspace_root, platform);
-    let run_cfg = tmp_qemu_run_config_path(workspace_root, platform);
-    if !build_cfg.exists() || !run_cfg.exists() {
-        refresh_qemu_configs(workspace_root, platform)?;
+    if !build_cfg.exists() {
+        refresh_qemu_build_config(workspace_root, platform)?;
     }
     Ok(())
 }
@@ -255,8 +236,11 @@ pub fn refresh_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
 pub fn ensure_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
     let build_cfg = tmp_orangepi_build_config_path(workspace_root);
     let run_cfg = tmp_orangepi_uboot_config_path(workspace_root);
-    if !build_cfg.exists() || !run_cfg.exists() {
-        refresh_orangepi_configs(workspace_root)?;
+    if !build_cfg.exists() {
+        copy_template(&orangepi_build_config_path(workspace_root), &build_cfg)?;
+    }
+    if !run_cfg.exists() {
+        copy_template(&orangepi_uboot_config_path(workspace_root), &run_cfg)?;
     }
     Ok(())
 }
@@ -266,6 +250,14 @@ pub fn prepare_orangepi_uboot_config(
     args: &QuickOrangeConfigArgs,
 ) -> anyhow::Result<PathBuf> {
     let tmp_path = tmp_orangepi_uboot_config_path(workspace_root);
+    let tmp_exists = tmp_path.exists();
+    if tmp_exists && !args.has_overrides() {
+        return Ok(tmp_path);
+    }
+
+    if !tmp_exists {
+        copy_template(&orangepi_uboot_config_path(workspace_root), &tmp_path)?;
+    }
 
     let mut value: toml::Value = toml::from_str(
         &fs::read_to_string(&tmp_path)
@@ -283,19 +275,91 @@ pub fn prepare_orangepi_uboot_config(
         table.insert("baud_rate".into(), toml::Value::String(baud.clone()));
     }
 
-    let dtb_path = args
+    if let Some(dtb_path) = args
         .dtb
         .clone()
-        .unwrap_or_else(|| default_orangepi_dtb_path(workspace_root));
-    if !dtb_path.exists() {
-        bail!("DTB path does not exist: {}", dtb_path.display());
+        .or_else(|| (!tmp_exists).then(|| default_orangepi_dtb_path(workspace_root)))
+    {
+        if !dtb_path.exists() {
+            bail!("DTB path does not exist: {}", dtb_path.display());
+        }
+        table.insert(
+            "dtb_file".into(),
+            toml::Value::String(dtb_path.display().to_string()),
+        );
     }
-    table.insert(
-        "dtb_file".into(),
-        toml::Value::String(dtb_path.display().to_string()),
-    );
 
     fs::write(&tmp_path, toml::to_string_pretty(&value)?)
         .with_context(|| format!("failed to write {}", tmp_path.display()))?;
     Ok(tmp_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn write_orangepi_uboot_template(root: &Path) {
+        let path = orangepi_uboot_config_path(root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            "serial = \"/dev/template\"\nbaud_rate = \"1500000\"\ndtb_file = \"template.dtb\"\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn prepare_orangepi_uboot_config_keeps_existing_tmp_without_overrides() {
+        let root = tempdir().unwrap();
+        write_orangepi_uboot_template(root.path());
+        let tmp_path = tmp_orangepi_uboot_config_path(root.path());
+        fs::create_dir_all(tmp_path.parent().unwrap()).unwrap();
+        fs::write(
+            &tmp_path,
+            "serial = \"/dev/existing\"\nbaud_rate = \"9600\"\ndtb_file = \"existing.dtb\"\n",
+        )
+        .unwrap();
+
+        prepare_orangepi_uboot_config(root.path(), &QuickOrangeConfigArgs::default()).unwrap();
+
+        let value: toml::Value = toml::from_str(&fs::read_to_string(tmp_path).unwrap()).unwrap();
+        assert_eq!(value["serial"].as_str(), Some("/dev/existing"));
+        assert_eq!(value["baud_rate"].as_str(), Some("9600"));
+        assert_eq!(value["dtb_file"].as_str(), Some("existing.dtb"));
+    }
+
+    #[test]
+    fn prepare_orangepi_uboot_config_updates_existing_tmp_overrides() {
+        let root = tempdir().unwrap();
+        write_orangepi_uboot_template(root.path());
+        let tmp_path = tmp_orangepi_uboot_config_path(root.path());
+        fs::create_dir_all(tmp_path.parent().unwrap()).unwrap();
+        fs::write(
+            &tmp_path,
+            "serial = \"/dev/existing\"\nbaud_rate = \"9600\"\ndtb_file = \"existing.dtb\"\n",
+        )
+        .unwrap();
+        let dtb_path = root.path().join("custom.dtb");
+        fs::write(&dtb_path, "").unwrap();
+
+        prepare_orangepi_uboot_config(
+            root.path(),
+            &QuickOrangeConfigArgs {
+                serial: Some("/dev/ttyUSB1".to_string()),
+                baud: Some("115200".to_string()),
+                dtb: Some(dtb_path.clone()),
+            },
+        )
+        .unwrap();
+
+        let value: toml::Value = toml::from_str(&fs::read_to_string(tmp_path).unwrap()).unwrap();
+        assert_eq!(value["serial"].as_str(), Some("/dev/ttyUSB1"));
+        assert_eq!(value["baud_rate"].as_str(), Some("115200"));
+        let expected_dtb = dtb_path.display().to_string();
+        assert_eq!(value["dtb_file"].as_str(), Some(expected_dtb.as_str()));
+    }
 }

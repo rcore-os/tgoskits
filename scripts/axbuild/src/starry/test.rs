@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -407,7 +407,7 @@ fn discover_all_qemu_cases_in_group(
     workspace_root: &Path,
     group: &str,
     selected_case: Option<&str>,
-) -> anyhow::Result<Vec<String>> {
+) -> qemu_test::ListQemuCasesResult<Vec<String>> {
     let test_suite_dir = require_test_suite_group_dir(workspace_root, group)?;
     qemu_test::discover_all_qemu_cases(&test_suite_dir, selected_case, "Starry", group)
 }
@@ -416,7 +416,7 @@ fn discover_all_qemu_cases_with_archs_in_group(
     workspace_root: &Path,
     group: &str,
     selected_case: Option<&str>,
-) -> anyhow::Result<Vec<qemu_test::ListedQemuCase>> {
+) -> qemu_test::ListQemuCasesResult<Vec<qemu_test::ListedQemuCase>> {
     let test_suite_dir = require_test_suite_group_dir(workspace_root, group)?;
     qemu_test::discover_all_qemu_cases_with_archs(&test_suite_dir, selected_case, "Starry", group)
 }
@@ -459,6 +459,14 @@ fn render_qemu_case_summary(report: &StarryQemuRunReport) -> String {
 
     lines.push(format!("total: {}", format_duration(report.total_duration)));
     lines.join("\n")
+}
+
+fn qemu_list_error_is_ignorable(kind: qemu_test::ListQemuCasesErrorKind) -> bool {
+    matches!(
+        kind,
+        qemu_test::ListQemuCasesErrorKind::EmptyGroup
+            | qemu_test::ListQemuCasesErrorKind::UnknownSelectedCase
+    )
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -512,13 +520,10 @@ impl Starry {
                     ) {
                         Ok(case_names) => Some(Ok((group, case_names))),
                         Err(err) => {
-                            let message = err.to_string();
-                            if message.starts_with("no Starry ")
-                                || message.starts_with("unknown Starry ")
-                            {
+                            if qemu_list_error_is_ignorable(err.kind()) {
                                 None
                             } else {
-                                Some(Err(err))
+                                Some(Err(anyhow::Error::new(err)))
                             }
                         }
                     }
@@ -553,7 +558,8 @@ impl Starry {
                 self.app.workspace_root(),
                 group,
                 args.test_case.as_deref(),
-            )?;
+            )
+            .map_err(anyhow::Error::new)?;
             if case_names.is_empty()
                 && let Some(case) = args.test_case.as_deref()
             {
@@ -613,30 +619,41 @@ impl Starry {
         let total = cases.len();
         let suite_started = Instant::now();
         let mut reports = Vec::new();
-        let case_groups = Self::group_qemu_cases_by_build_config(&cases);
+        let asset_config = starry_case_asset_config();
+
+        let build_groups = qemu_test::prepare_case_build_groups(&cases, |build_config_path| {
+            Self::qemu_group_build_context(&request, build_config_path)
+        })?;
+
         let mut completed = 0;
-        for group in case_groups {
-            let (group_request, group_cargo) =
-                Self::qemu_group_build_context(&request, group.build_config_path)?;
+        for build_group in &build_groups {
             self.app
-                .build(group_cargo.clone(), group_request.build_info_path.clone())
+                .build(
+                    build_group.cargo.clone(),
+                    build_group.request.build_info_path.clone(),
+                )
                 .await
                 .with_context(|| {
                     format!(
                         "failed to build Starry qemu test artifact for build group `{}` ({})",
-                        group.build_group,
-                        group.build_config_path.display()
+                        build_group.group.build_group,
+                        build_group.group.build_config_path.display()
                     )
                 })?;
 
-            for case in group.cases {
+            for case in &build_group.group.cases {
                 completed += 1;
                 let case_name = &case.case.name;
                 println!("[{completed}/{total}] starry qemu {case_name}");
 
                 let case_started = Instant::now();
                 match self
-                    .run_qemu_case(&group_request, &group_cargo, case)
+                    .run_qemu_case(
+                        &build_group.request,
+                        &build_group.cargo,
+                        case,
+                        &asset_config,
+                    )
                     .await
                     .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
                 {
@@ -678,13 +695,7 @@ impl Starry {
                         args.test_case.as_deref(),
                         args.board.as_deref(),
                     ) {
-                        Ok(groups) => Some(Ok((
-                            group,
-                            groups
-                                .into_iter()
-                                .map(|group| (group.name, group.board_name))
-                                .collect::<Vec<_>>(),
-                        ))),
+                        Ok(groups) => Some(Ok((group, board_test::labeled_board_cases(groups)))),
                         Err(err) => {
                             let message = err.to_string();
                             if message.starts_with("no Starry ") {
@@ -717,34 +728,26 @@ impl Starry {
             args.board.as_deref(),
         )?;
         if args.list {
-            let case_names = groups
-                .into_iter()
-                .map(|group| (group.name, group.board_name))
-                .collect::<Vec<_>>();
+            let case_names = board_test::labeled_board_cases(groups);
             println!(
                 "{}",
                 qemu_test::render_labeled_case_forest("starry", [(test_group, case_names)])
             );
             return Ok(());
         }
-        let total = groups.len();
-        let mut failed = Vec::new();
 
+        let mut run_state = board_test::BoardTestRunState::new("starry", groups.len());
         for (index, group) in groups.into_iter().enumerate() {
-            let group_label = format!("{}/{}", group.name, group.board_name);
+            let group_label = run_state.start_group(index, &group);
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
-
             if !board_test_config.exists() {
-                eprintln!(
-                    "failed: {}: missing board test config `{}`",
-                    group_label, board_test_config_summary
+                run_state.fail_group(
+                    group_label,
+                    anyhow::anyhow!("missing board test config `{board_test_config_summary}`"),
                 );
-                failed.push(group_label);
                 continue;
             }
-
-            println!("[{}/{}] starry board {}", index + 1, total, group_label);
 
             let result = async {
                 let request = self.prepare_request(
@@ -782,15 +785,11 @@ impl Starry {
             .await;
 
             match result {
-                Ok(()) => println!("ok: {}", group_label),
-                Err(err) => {
-                    eprintln!("failed: {}: {:#}", group_label, err);
-                    failed.push(group_label);
-                }
+                Ok(()) => run_state.pass_group(&group_label),
+                Err(err) => run_state.fail_group(group_label, err),
             }
         }
-
-        board_test::finalize_board_test_run("starry", &failed)
+        run_state.finish()
     }
 
     fn test_build_args(target: &str, config: Option<PathBuf>) -> StarryCliArgs {
@@ -820,10 +819,14 @@ impl Starry {
         cases: Vec<StarryQemuCase>,
     ) -> anyhow::Result<Vec<PreparedStarryQemuCase>> {
         let mut prepared = Vec::with_capacity(cases.len());
+        let mut cargo_by_build_config = BTreeMap::new();
+        let mut rootfs_paths = BTreeSet::new();
         for starry_case in cases {
-            let mut request = request.clone();
-            request.build_info_path = starry_case.build_config_path.clone();
-            let cargo = build::load_cargo_config(&request)?;
+            let cargo = Self::qemu_case_cargo_config(
+                request,
+                &starry_case.build_config_path,
+                &mut cargo_by_build_config,
+            )?;
             let qemu = self
                 .app
                 .tool_mut()
@@ -837,21 +840,11 @@ impl Starry {
                 })?;
             let rootfs_path =
                 Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path);
-            if rootfs_path == default_rootfs_path {
-                rootfs::ensure_rootfs_in_target_dir(
-                    self.app.workspace_root(),
-                    &request.arch,
-                    &request.target,
-                )
-                .await?;
-            } else {
-                crate::rootfs::store::ensure_optional_managed_rootfs(
-                    self.app.workspace_root(),
-                    &request.arch,
-                    Some(&rootfs_path),
-                )
-                .await?;
-            }
+            rootfs_paths.insert(rootfs_path.clone());
+            rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
+                self.app.workspace_root(),
+                &qemu,
+            ));
             qemu_test::validate_grouped_qemu_commands(&qemu, &starry_case.case, "Starry")?;
             let requirements = Self::qemu_case_requirements(&qemu).with_context(|| {
                 format!(
@@ -869,7 +862,51 @@ impl Starry {
             });
         }
 
+        self.ensure_qemu_case_rootfs_paths(request, default_rootfs_path, &rootfs_paths)
+            .await?;
         Ok(prepared)
+    }
+
+    fn qemu_case_cargo_config(
+        request: &ResolvedStarryRequest,
+        build_config_path: &Path,
+        cargo_by_build_config: &mut BTreeMap<PathBuf, Cargo>,
+    ) -> anyhow::Result<Cargo> {
+        if let Some(cargo) = cargo_by_build_config.get(build_config_path) {
+            return Ok(cargo.clone());
+        }
+
+        let mut request = request.clone();
+        request.build_info_path = build_config_path.to_path_buf();
+        let cargo = build::load_cargo_config(&request)?;
+        cargo_by_build_config.insert(build_config_path.to_path_buf(), cargo.clone());
+        Ok(cargo)
+    }
+
+    async fn ensure_qemu_case_rootfs_paths(
+        &self,
+        request: &ResolvedStarryRequest,
+        default_rootfs_path: &Path,
+        rootfs_paths: &BTreeSet<PathBuf>,
+    ) -> anyhow::Result<()> {
+        for rootfs_path in rootfs_paths {
+            if rootfs_path == default_rootfs_path {
+                rootfs::ensure_rootfs_in_target_dir(
+                    self.app.workspace_root(),
+                    &request.arch,
+                    &request.target,
+                )
+                .await?;
+            } else {
+                crate::rootfs::store::ensure_optional_managed_rootfs(
+                    self.app.workspace_root(),
+                    &request.arch,
+                    Some(rootfs_path),
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     fn qemu_case_rootfs_path(
@@ -877,17 +914,18 @@ impl Starry {
         qemu: &QemuConfig,
         default_rootfs_path: &Path,
     ) -> PathBuf {
-        let managed_rootfs_dir = crate::rootfs::store::rootfs_dir(workspace_root);
-        qemu.args
-            .windows(2)
-            .find_map(|args| {
-                (args[0] == "-drive")
-                    .then(|| args[1].strip_prefix("id=disk0,if=none,format=raw,file="))
-                    .flatten()
-                    .map(PathBuf::from)
-                    .filter(|path| path.starts_with(&managed_rootfs_dir))
-            })
+        Self::qemu_case_managed_rootfs_paths(workspace_root, qemu)
+            .into_iter()
+            .next()
             .unwrap_or_else(|| default_rootfs_path.to_path_buf())
+    }
+
+    fn qemu_case_managed_rootfs_paths(workspace_root: &Path, qemu: &QemuConfig) -> Vec<PathBuf> {
+        let managed_rootfs_dir = crate::rootfs::store::rootfs_dir(workspace_root);
+        crate::rootfs::qemu::drive_file_paths(qemu)
+            .into_iter()
+            .filter(|path| path.starts_with(&managed_rootfs_dir))
+            .collect()
     }
 
     fn qemu_case_requirements(qemu: &QemuConfig) -> anyhow::Result<StarryQemuCaseRequirements> {
@@ -896,22 +934,25 @@ impl Starry {
         })
     }
 
-    fn group_qemu_cases_by_build_config(
-        cases: &[PreparedStarryQemuCase],
-    ) -> Vec<qemu_test::QemuCaseGroup<'_, PreparedStarryQemuCase>> {
-        qemu_test::group_cases_by_build_config(cases)
-    }
-
     fn qemu_group_build_context(
         request: &ResolvedStarryRequest,
         build_config_path: &Path,
     ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
-        let mut request = request.clone();
-        request.build_info_path = build_config_path.to_path_buf();
-        request.build_info_override = None;
+        let request = Self::request_for_qemu_case_build_config(request, build_config_path);
         let cargo = build::load_cargo_config(&request)?;
 
         Ok((request, cargo))
+    }
+
+    fn request_for_qemu_case_build_config(
+        request: &ResolvedStarryRequest,
+        build_config_path: &Path,
+    ) -> ResolvedStarryRequest {
+        let mut request = request.clone();
+        request.build_info_path = build_config_path.to_path_buf();
+        request.build_info_override = None;
+        request.plat_dyn = None;
+        request
     }
 
     fn qemu_test_request(mut request: ResolvedStarryRequest) -> ResolvedStarryRequest {
@@ -924,10 +965,10 @@ impl Starry {
         request: &ResolvedStarryRequest,
         cargo: &Cargo,
         prepared_case: &PreparedStarryQemuCase,
+        asset_config: &case::CaseAssetConfig,
     ) -> anyhow::Result<()> {
         let case = &prepared_case.case;
         let mut qemu = prepared_case.qemu.clone();
-        let asset_config = starry_case_asset_config();
         case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_runner);
 
         qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
@@ -940,7 +981,7 @@ impl Starry {
             &request.target,
             case,
             prepared_case.rootfs_path.clone(),
-            asset_config,
+            asset_config.clone(),
         )
         .await?;
         println!(
@@ -1055,7 +1096,7 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            format!("target = \"{target}\"\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
+            format!("target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
         )
         .unwrap();
         path
@@ -1561,6 +1602,50 @@ mod tests {
     }
 
     #[test]
+    fn qemu_case_rootfs_accepts_drive_file_with_additional_options() {
+        let root = tempdir().unwrap();
+        let managed_rootfs = root.path().join("target/rootfs/rootfs-aarch64-busybox.img");
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                format!(
+                    "id=usbdisk,if=none,format=raw,snapshot=on,file={}",
+                    managed_rootfs.display()
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let rootfs =
+            Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"));
+
+        assert_eq!(rootfs, managed_rootfs);
+    }
+
+    #[test]
+    fn qemu_case_rootfs_collects_all_managed_drive_files() {
+        let root = tempdir().unwrap();
+        let boot_rootfs = root.path().join("target/rootfs/rootfs-aarch64-alpine.img");
+        let usb_rootfs = root.path().join("target/rootfs/rootfs-aarch64-busybox.img");
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                format!("id=disk0,if=none,format=raw,file={}", boot_rootfs.display()),
+                "-drive".to_string(),
+                format!(
+                    "id=usbdisk,if=none,format=raw,snapshot=on,file={}",
+                    usb_rootfs.display()
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let rootfs_paths = Starry::qemu_case_managed_rootfs_paths(root.path(), &qemu);
+
+        assert_eq!(rootfs_paths, vec![boot_rootfs, usb_rootfs]);
+    }
+
+    #[test]
     fn qemu_case_rootfs_ignores_non_managed_drive_file_arg() {
         let root = tempdir().unwrap();
         let qemu = QemuConfig {
@@ -1603,7 +1688,7 @@ mod tests {
             prepared_qemu_case("syscall", default_build_config.clone()),
         ];
 
-        let groups = Starry::group_qemu_cases_by_build_config(&cases);
+        let groups = qemu_test::group_cases_by_build_config(&cases);
 
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].build_config_path, default_build_config.as_path());
@@ -1667,6 +1752,52 @@ mod tests {
 
         assert_eq!(cargo.env.get("SMP").map(String::as_str), Some("4"));
         assert!(cargo.features.contains(&"ax-feat/smp".to_string()));
+    }
+
+    #[test]
+    fn qemu_group_build_context_uses_group_plat_dyn_over_default_request() {
+        let root = tempdir().unwrap();
+        let build_config = root.path().join(
+            "test-suit/starryos/normal/qemu-aarch64-plat-dyn/build-aarch64-unknown-none-softfloat.\
+             toml",
+        );
+        fs::create_dir_all(build_config.parent().unwrap()).unwrap();
+        fs::write(
+            &build_config,
+            "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\", \
+             \"starry-kernel/plat-dyn\"]\nlog = \"Warn\"\nplat_dyn = true\n",
+        )
+        .unwrap();
+        let mut request = starry_request(
+            PathBuf::from("/tmp/default-build.toml"),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        );
+        request.plat_dyn = Some(false);
+        request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
+            features: vec!["qemu".to_string()],
+            plat_dyn: false,
+            ..crate::starry::build::StarryBuildInfo::default_starry_for_target(
+                "aarch64-unknown-none-softfloat",
+            )
+        });
+
+        let (_group_request, cargo) =
+            Starry::qemu_group_build_context(&request, &build_config).unwrap();
+
+        assert!(cargo.features.contains(&"ax-feat/plat-dyn".to_string()));
+        assert!(
+            cargo
+                .features
+                .contains(&"starry-kernel/plat-dyn".to_string())
+        );
+        assert!(!cargo.features.contains(&"qemu".to_string()));
+        assert!(
+            cargo
+                .args
+                .iter()
+                .any(|arg| arg.contains("-Clink-arg=-Taxplat.x"))
+        );
     }
 
     #[test]

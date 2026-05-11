@@ -16,7 +16,6 @@ mod log;
 mod r#loop;
 #[cfg(feature = "memtrack")]
 mod memtrack;
-mod rtc;
 pub mod tty;
 
 use alloc::{format, sync::Arc};
@@ -197,15 +196,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(Random::new()),
         ),
     );
-    root.add(
-        "rtc0",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            rtc::RTC0_DEVICE_ID,
-            Arc::new(rtc::Rtc),
-        ),
-    );
     if ax_display::has_display() {
         root.add(
             "fb0",
@@ -282,6 +272,14 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "shm",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
     );
+    {
+        let mut bus_dir = DirMapping::new();
+        bus_dir.add(
+            "usb",
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        );
+        root.add("bus", SimpleDir::new_maker(fs.clone(), Arc::new(bus_dir)));
+    }
 
     #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
     {
