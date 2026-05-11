@@ -22,4 +22,11 @@ pub const RAW_TX_BUF_LEN: usize = 64 * 1024;
 pub const LISTEN_QUEUE_SIZE: usize = 512;
 
 pub const SOCKET_BUFFER_SIZE: usize = 64;
-pub const ETHERNET_MAX_PENDING_PACKETS: usize = 32;
+/// Number of outbound packets that can be queued while waiting for ARP
+/// resolution of the next-hop.  32 was too small: applications like jcode
+/// open 10-20 concurrent TCP connections at startup and generate a burst of
+/// SYN/HTTP-CONNECT packets before the gateway ARP reply arrives.  Also,
+/// if the ARP cache expires mid-stream (60 s TTL) while a large streaming
+/// response is in flight, all the TCP ACKs queue simultaneously.
+/// 256 × 1514 ≈ 384 KiB is comfortable for these workloads.
+pub const ETHERNET_MAX_PENDING_PACKETS: usize = 256;
