@@ -12,11 +12,11 @@ sidebar_label: "社区资源"
 ### 文档
 - [用户文档](/docs/introduction/overview) - 完整的用户指南和教程
 - [总体架构](/docs/architecture/overview) - 系统架构和设计原理
-- [QEMU 部署](/docs/build/qemu) - 常见运行与部署路径
+- [QEMU 运行](/docs/build/overview) - 常见运行与部署路径
 
 ### 演示和示例
 - [快速开始](/docs/quickstart/overview) - 统一上手入口
-- [测试与验证](/docs/design/test/overview) - 验证策略与执行路径
+- [测试与验证](/docs/build/ci) - 验证策略与执行路径
 - [构建系统](/docs/build/overview) - `cargo xtask` 和构建链说明
 
 ## 社区贡献

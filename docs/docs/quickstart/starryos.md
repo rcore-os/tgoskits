@@ -113,10 +113,10 @@ cargo xtask starry test qemu --target loongarch64-unknown-none-softfloat
 cargo xtask starry test board --board orangepi-5-plus --server <ip> --port <port>
 ```
 
-详细说明见：[StarryOS 测试套件设计](../test/starryos)
+详细说明见：[StarryOS 测试套件设计](/docs/build/test/starry)
 
 若需要继续了解 case 结构、rootfs 组织方式和测试实现细节，可以继续阅读：
 
-- [StarryOS 开发指南](../development/starryos)
-- [StarryOS 测试套件设计](../test/starryos)
-- [QEMU 部署](../build/qemu)
+- [StarryOS 开发指南](/docs/development/starryos)
+- [StarryOS 测试套件设计](/docs/build/test/starry)
+- [QEMU 运行](/docs/build/overview)

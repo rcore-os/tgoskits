@@ -279,4 +279,4 @@ flowchart LR
 | `cargo xtask axvisor <sub>` | Axvisor 构建/运行/QEMU/U-Boot/板级测试 | `cargo xtask axvisor test qemu --target aarch64` |
 | `cargo xtask board <sub>` | 远程开发板管理 | `cargo xtask board list` |
 
-→ 命令体系详解：[构建流程](../build/flow) | [命令总览](../build/cmd)
+→ 命令体系详解：[构建流程](/docs/build) | [命令总览](/docs/build/commands)

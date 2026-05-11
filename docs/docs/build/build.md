@@ -5,7 +5,7 @@ sidebar_label: "构建管线"
 
 # 构建管线
 
-从用户输入 `cargo xtask <os> build` 到编译产物的完整管线。构建过程分为八个阶段，依次完成上下文初始化、参数解析、架构映射、配置加载、Feature 解析、平台配置生成、Cargo 参数组装和最终编译执行。构建配置细节见 [配置](./configuration)，底层执行见 [运行](./run)。
+从用户输入 `cargo xtask <os> build` 到编译产物的完整管线。构建过程分为八个阶段，依次完成上下文初始化、参数解析、架构映射、配置加载、Feature 解析、平台配置生成、Cargo 参数组装和最终编译执行。构建配置细节见 [配置](/docs/build/configuration)，底层执行见 [运行](/docs/build/run)。
 
 构建管线的核心目标是**将用户友好的高层参数（如 `--arch aarch64`、`--smp 4`）转换为 Cargo 能理解的底层编译参数（target triple、features、环境变量、链接器脚本等）**。三套子系统共享前四个阶段的逻辑，在 Feature 解析和 axconfig 生成阶段开始分化，最终都汇聚到统一的 ostool `cargo_build()` 调用。
 
@@ -72,13 +72,13 @@ clap 解析得到原始 CLI 结构体后，`prepare_*_request()` 函数加载 Sn
 
 ## 3. Arch / Target 解析
 
-由 `context/arch.rs` 维护统一映射表（详见 [配置](./configuration#arch--target-映射)）。
+由 `context/arch.rs` 维护统一映射表（详见 [配置](/docs/build/configuration#arch--target-映射)）。
 
 此阶段将合并后的 `arch` 和 `target` 参数解析为确定值。如果两者都未指定，使用子系统的默认值（ArceOS → aarch64，StarryOS → riscv64，Axvisor → aarch64）。
 
 ## 4. Build Info 加载
 
-构建配置存放在 `target/axbuild/config/<package>/build-<target>.toml`，由 `ArceosBuildInfo` 描述（详见 [配置](./configuration#build-info)）。
+构建配置存放在 `target/axbuild/config/<package>/build-<target>.toml`，由 `ArceosBuildInfo` 描述（详见 [配置](/docs/build/configuration#build-info)）。
 
 ```mermaid
 flowchart TD
