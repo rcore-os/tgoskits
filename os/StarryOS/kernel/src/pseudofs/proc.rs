@@ -20,7 +20,6 @@ use ax_hal::{
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
-use indoc::indoc;
 use starry_process::{Pid, Process};
 
 use crate::{
@@ -243,10 +242,38 @@ fn render_stat() -> String {
     buf
 }
 
-const PROC_NET_ARP: &str = indoc! {"
-    IP address       HW type     Flags       HW address            Mask     Device
-    10.0.2.2         0x1         0x2         52:54:00:12:34:56     *        eth0
-"};
+fn render_proc_net_arp() -> String {
+    let mut entries = axnet::arp_entries();
+    entries.sort_by(|a, b| {
+        a.device
+            .cmp(&b.device)
+            .then_with(|| a.ip_addr.cmp(&b.ip_addr))
+    });
+
+    let mut buf = "IP address       HW type     Flags       HW address            Mask     \
+                   Device\n"
+        .to_string();
+    for entry in entries {
+        let ip = entry.ip_addr;
+        let mac = entry.hw_addr;
+        let ip_addr = format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+        let _ = writeln!(
+            buf,
+            "{:<16} 0x{:<8x} 0x{:<8x} {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}     *        {}",
+            ip_addr,
+            entry.hw_type,
+            entry.flags,
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5],
+            entry.device
+        );
+    }
+    buf
+}
 
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
@@ -815,7 +842,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
         net.add(
             "arp",
-            SimpleFile::new_regular(fs.clone(), || Ok(PROC_NET_ARP)),
+            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_arp())),
         );
 
         SimpleDir::new_maker(fs.clone(), Arc::new(net))
