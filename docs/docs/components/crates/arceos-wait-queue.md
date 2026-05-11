@@ -4,7 +4,7 @@
 > 类型：测试入口 crate
 > 分层：测试层 / ArceOS 阻塞唤醒语义回归
 > 版本：`0.1.0`
-> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build-system.md`
+> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build/overview.md`
 
 `arceos-wait-queue` 是专门验证 ArceOS 等待队列语义的系统级测试入口。它通过 `AxWaitQueueHandle` 和 `ax_wait_queue_wait_until()` / `ax_wait_queue_wake()` 组合出三类场景：条件满足唤醒、超时唤醒、以及“通知与超时都可能发生”的竞态场景。
 

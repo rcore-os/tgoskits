@@ -4,7 +4,7 @@
 > 类型：测试入口 crate
 > 分层：测试层 / ArceOS 定时休眠回归
 > 版本：`0.1.0`
-> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build-system.md`
+> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build/overview.md`
 
 `arceos-sleep` 用一组非常直观的工作负载，验证 ArceOS 中“线程睡眠到期后被唤醒”这条能力链是否正常。它既测试主线程的单次睡眠，也测试多个任务在不同休眠长度下的并发睡眠，还额外放了一个后台 tick 任务观察时间推进。
 

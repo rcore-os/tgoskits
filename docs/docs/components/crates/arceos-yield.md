@@ -4,7 +4,7 @@
 > 类型：测试入口 crate
 > 分层：测试层 / ArceOS 调度让出语义回归
 > 版本：`0.1.0`
-> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build-system.md`
+> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build/overview.md`
 
 `arceos-yield` 是一条非常短、但很有代表性的调度测试：它批量创建任务，在任务体和主线程里调用 `thread::yield_now()`，并在特定 feature 组合下检查任务完成顺序是否符合预期。
 

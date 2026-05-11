@@ -1,8 +1,12 @@
+---
+sidebar_position: 1
+sidebar_label: "组件开发指南"
+---
 # 组件开发指南
 
 TGOSKits 的核心价值不仅在于将各仓库整合到同一工作区，更在于使开发者能够从组件出发，追踪其在 ArceOS、StarryOS 和 Axvisor 中的实际使用方式。本文档介绍 TGOSKits 的多层组件架构、改动影响评估、验证路径选择，以及将新组件接入三套系统的标准流程。
 
-若已知目标 crate 的名称，建议配合 [`docs/crates/README.md`](crates/README.md) 阅读本文档：本文档侧重说明"组件处于哪一层、通常影响哪些系统"，而 crate 索引负责回答"它依赖哪些包、文档入口在哪里"。
+若已知目标 crate 的名称，建议配合 [Crate 索引](crates/README.md) 阅读本文档：本文档侧重说明"组件处于哪一层、通常影响哪些系统"，而 crate 索引负责回答"它依赖哪些包、文档入口在哪里"。
 
 ## 1. 组件层次结构
 
@@ -256,7 +260,7 @@ my_component = { path = "components/my_component" }
 
 ### 5.6 什么时候需要改 `repos.csv`
 
-只有当这个新组件本身要作为独立 subtree 仓库管理时，才需要把它加入 `scripts/repo/repos.csv`。如果你只是先在 TGOSKits 内部做原型，不一定要立刻动 subtree 配置。Subtree 的详细操作请参阅 [repo.md](repo.md)。
+只有当这个新组件本身要作为独立 subtree 仓库管理时，才需要把它加入 `scripts/repo/repos.csv`。如果你只是先在 TGOSKits 内部做原型，不一定要立刻动 subtree 配置。Subtree 的详细操作请参阅 [仓库管理](/docs/contributing/repo)。
 
 ## 6. ArceOS 集成
 
@@ -420,7 +424,7 @@ jobs:
 
 功能：生成 API 文档 (rustdoc) 并部署到 GitHub Pages
 
-## 11. 什么时候需要看 `repo.md`
+## 11. 什么时候需要看仓库管理
 
 并不是所有的组件开发工作都需要深入了解 subtree 的细节。下面这些场景暂时不需要进入 subtree 细节：
 
@@ -428,7 +432,7 @@ jobs:
 - 在 TGOSKits 里先做联调验证
 - 只做根 workspace 内的依赖接线
 
-但是，下面这些场景就应该去看 [repo.md](repo.md)：
+但是，下面这些场景就应该去看 [仓库管理](/docs/contributing/repo)：
 
 - 新增一个要长期独立维护的 subtree 组件
 - 需要同步组件仓库和主仓库
@@ -438,8 +442,8 @@ jobs:
 
 为了帮助开发者系统地掌握 TGOSKits 的组件开发和集成，建议按照以下顺序阅读相关文档：
 
-- [quick-start.md](quick-start): 先把三套系统入口跑通
-- [build-system.md](/docs/build/overview): 再理解 workspace、xtask 和测试矩阵
-- [arceos-guide.md](/docs/development/arceos): 继续看 ArceOS 的模块与 API 关系
-- [starryos-guide.md](/docs/development/starryos): 继续看 StarryOS 的 rootfs、syscall 和内核入口
-- [axvisor-guide.md](/docs/development/axvisor): 继续看 Axvisor 的板级配置、VM 配置和 Guest 启动
+- [快速开始](/docs/quickstart/overview): 先把三套系统入口跑通
+- [构建系统](/docs/build/overview): 再理解 workspace、xtask 和测试矩阵
+- [ArceOS 开发指南](/docs/development/arceos): 继续看 ArceOS 的模块与 API 关系
+- [StarryOS 开发指南](/docs/development/starryos): 继续看 StarryOS 的 rootfs、syscall 和内核入口
+- [Axvisor 开发指南](/docs/development/axvisor): 继续看 Axvisor 的板级配置、VM 配置和 Guest 启动

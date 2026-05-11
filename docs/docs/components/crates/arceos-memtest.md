@@ -4,7 +4,7 @@
 > 类型：测试入口 crate
 > 分层：测试层 / ArceOS 堆分配与集合操作回归
 > 版本：`0.1.0`
-> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build-system.md`
+> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build/overview.md`
 
 `arceos-memtest` 通过两个简单但压力不小的工作负载，验证 ArceOS 在 `alloc` 打开后，堆分配与常用集合操作仍然可用：一个是大规模 `Vec<u32>` 分配、排序与有序性检查，另一个是 `BTreeMap<String, u32>` 插入与回读校验。
 
