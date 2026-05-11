@@ -84,7 +84,6 @@ flowchart TD
 
 - [组件概述](/docs/components/overview) — 分类统计、依赖图与外部依赖概要
 - [层级关系](/docs/components/layers) — 16 层分级总览与逐 crate 层级表
-- [Lock 外部依赖](/docs/components/extern) — Cargo.lock 外部依赖分类索引
 
 ## 3. 改动定位
 
