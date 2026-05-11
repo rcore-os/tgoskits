@@ -103,6 +103,7 @@ fn resolve_requested_packages(
         match crate::support::git::select_incremental_packages(
             workspace_root,
             metadata,
+            all_packages,
             since,
             &whitelist,
         )? {

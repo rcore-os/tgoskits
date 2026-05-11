@@ -178,6 +178,7 @@ jobs:
               fi
             cache_key: clippy
             container_image: base
+            fetch_depth: 0
             required_repository_owner: ""
             main_pr_only: false
           - name: Run sync-lint

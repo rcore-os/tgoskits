@@ -16,10 +16,11 @@ pub(crate) enum IncrementalPackageSelection {
 pub(crate) fn select_incremental_packages(
     workspace_root: &Path,
     metadata: &Metadata,
+    workspace_packages: &[Package],
     since: &str,
     whitelist: &[String],
 ) -> anyhow::Result<IncrementalPackageSelection> {
-    let changed_paths = match git_changed_paths(workspace_root, since) {
+    let changed_paths = match changed_paths_since(workspace_root, since) {
         Ok(paths) => paths,
         Err(err) => {
             return Ok(IncrementalPackageSelection::Full {
@@ -27,10 +28,19 @@ pub(crate) fn select_incremental_packages(
             });
         }
     };
-    select_incremental_packages_for_paths(workspace_root, metadata, changed_paths, whitelist)
+    select_incremental_packages_for_paths(
+        workspace_root,
+        metadata,
+        workspace_packages,
+        changed_paths,
+        whitelist,
+    )
 }
 
-fn git_changed_paths(workspace_root: &Path, since: &str) -> anyhow::Result<Vec<PathBuf>> {
+pub(crate) fn changed_paths_since(
+    workspace_root: &Path,
+    since: &str,
+) -> anyhow::Result<Vec<PathBuf>> {
     let range = format!("{since}..HEAD");
     let output = Command::new("git")
         .args(["diff", "--name-only", range.as_str(), "--"])
@@ -61,13 +71,14 @@ fn git_changed_paths(workspace_root: &Path, since: &str) -> anyhow::Result<Vec<P
 pub(crate) fn select_incremental_packages_for_paths<I>(
     workspace_root: &Path,
     metadata: &Metadata,
+    workspace_packages: &[Package],
     changed_paths: I,
     whitelist: &[String],
 ) -> anyhow::Result<IncrementalPackageSelection>
 where
     I: IntoIterator<Item = PathBuf>,
 {
-    let package_index = PackagePathIndex::new(workspace_root, metadata)?;
+    let package_index = PackagePathIndex::new(workspace_root, workspace_packages)?;
     let changed_packages = match package_index.changed_packages(changed_paths)? {
         ChangedPackages::Packages(packages) => packages,
         ChangedPackages::Full { path } => {
@@ -80,7 +91,7 @@ where
         }
     };
 
-    let affected = affected_workspace_packages(metadata, &changed_packages);
+    let affected = affected_workspace_packages(metadata, workspace_packages, &changed_packages);
     let whitelist: BTreeSet<_> = whitelist.iter().cloned().collect();
     let selected = affected
         .into_iter()
@@ -105,12 +116,12 @@ struct PackagePathEntry {
 }
 
 impl PackagePathIndex {
-    fn new(workspace_root: &Path, metadata: &Metadata) -> anyhow::Result<Self> {
+    fn new(workspace_root: &Path, workspace_packages: &[Package]) -> anyhow::Result<Self> {
         let workspace_root = workspace_root
             .canonicalize()
             .with_context(|| format!("failed to canonicalize {}", workspace_root.display()))?;
-        let mut packages = workspace_packages(metadata)
-            .into_iter()
+        let mut packages = workspace_packages
+            .iter()
             .map(|package| {
                 let manifest = package.manifest_path.clone().into_std_path_buf();
                 let manifest_dir = manifest.parent().ok_or_else(|| {
@@ -193,17 +204,19 @@ fn normalize_git_path(path: PathBuf) -> anyhow::Result<PathBuf> {
 
 fn affected_workspace_packages(
     metadata: &Metadata,
+    workspace_packages: &[Package],
     changed_packages: &BTreeSet<String>,
 ) -> Vec<String> {
     if changed_packages.is_empty() {
         return Vec::new();
     }
 
-    let workspace_members: BTreeSet<_> = metadata.workspace_members.iter().cloned().collect();
-    let id_to_name = metadata
-        .packages
+    let workspace_members: BTreeSet<_> = workspace_packages
         .iter()
-        .filter(|package| workspace_members.contains(&package.id))
+        .map(|package| package.id.clone())
+        .collect();
+    let id_to_name = workspace_packages
+        .iter()
         .map(|package| (package.id.clone(), package.name.to_string()))
         .collect::<BTreeMap<_, _>>();
     let name_to_id = id_to_name
@@ -247,16 +260,6 @@ fn affected_workspace_packages(
     affected
         .into_iter()
         .filter_map(|id| id_to_name.get(&id).cloned())
-        .collect()
-}
-
-fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
-    let workspace_members: BTreeSet<_> = metadata.workspace_members.iter().cloned().collect();
-    metadata
-        .packages
-        .iter()
-        .filter(|package| workspace_members.contains(&package.id))
-        .cloned()
         .collect()
 }
 
@@ -322,7 +325,7 @@ mod tests {
         })
     }
 
-    fn test_workspace() -> (tempfile::TempDir, Metadata) {
+    fn test_workspace() -> (tempfile::TempDir, Metadata, Vec<Package>) {
         let root = tempfile::tempdir().unwrap();
         for package in ["alpha", "beta", "gamma"] {
             std::fs::create_dir_all(root.path().join("crates").join(package).join("src")).unwrap();
@@ -375,15 +378,18 @@ mod tests {
             "workspace_root": root.path(),
             "metadata": null,
         });
-        (root, serde_json::from_value(value).unwrap())
+        let metadata: Metadata = serde_json::from_value(value).unwrap();
+        let workspace_packages = metadata.packages.clone();
+        (root, metadata, workspace_packages)
     }
 
     #[test]
     fn changed_crate_selects_reverse_dependencies_intersected_with_whitelist() {
-        let (root, metadata) = test_workspace();
+        let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
+            &workspace_packages,
             [PathBuf::from("crates/alpha/src/lib.rs")],
             &["alpha".into(), "gamma".into()],
         )
@@ -397,10 +403,11 @@ mod tests {
 
     #[test]
     fn changed_unlisted_crate_still_checks_whitelisted_dependents() {
-        let (root, metadata) = test_workspace();
+        let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
+            &workspace_packages,
             [PathBuf::from("crates/alpha/src/lib.rs")],
             &["beta".into()],
         )
@@ -414,10 +421,11 @@ mod tests {
 
     #[test]
     fn no_changes_selects_no_packages() {
-        let (root, metadata) = test_workspace();
+        let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
+            &workspace_packages,
             Vec::<PathBuf>::new(),
             &["alpha".into(), "beta".into(), "gamma".into()],
         )
@@ -428,10 +436,11 @@ mod tests {
 
     #[test]
     fn non_crate_file_falls_back_to_full_run() {
-        let (root, metadata) = test_workspace();
+        let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
+            &workspace_packages,
             [PathBuf::from("Cargo.lock")],
             &["alpha".into()],
         )
@@ -445,10 +454,11 @@ mod tests {
 
     #[test]
     fn global_config_file_falls_back_to_full_run() {
-        let (root, metadata) = test_workspace();
+        let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
+            &workspace_packages,
             [PathBuf::from(".cargo/config.toml")],
             &["alpha".into()],
         )
