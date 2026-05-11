@@ -267,6 +267,9 @@ if echo "$_t" | grep -qF "Usage: ipcrm"; then echo "PASS: busybox_ipcrm"; PASS=$
 _t=$({ timeout 10 sh -c "busybox ipcs 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Message Queues"; then echo "PASS: busybox_ipcs"; PASS=$((PASS+1)); else echo "FAIL: busybox_ipcs"; FAIL=$((FAIL+1)); fi
 
+_t=$({ timeout 10 sh -c "busybox ip link 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "link/"; then echo "PASS: busybox_ip"; PASS=$((PASS+1)); else echo "FAIL: busybox_ip"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox iplink 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "link/"; then echo "PASS: busybox_iplink"; PASS=$((PASS+1)); else echo "FAIL: busybox_iplink"; FAIL=$((FAIL+1)); fi
 
@@ -865,6 +868,10 @@ if [ "$_rc" -ne 0 ] && echo "$_t" | grep -qiE "No such device|ENXIO"; then echo 
 # blockdev — get sector size of block device
 _t=$({ timeout 10 sh -c "busybox blockdev --getss /dev/loop0 2>&1"; } 2>&1)
 _rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: blockdev"; PASS=$((PASS+1)); else echo "FAIL: blockdev"; echo "$_t (rc=$_rc)"; FAIL=$((FAIL+1)); fi
+
+# hwclock — read hardware clock
+_t=$({ timeout 10 sh -c "busybox hwclock -r 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "hwclock"; then echo "PASS: busybox_hwclock"; PASS=$((PASS+1)); else echo "FAIL: busybox_hwclock"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"

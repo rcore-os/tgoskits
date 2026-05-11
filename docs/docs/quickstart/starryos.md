@@ -8,6 +8,15 @@ title: "StarryOS 快速上手"
 
 StarryOS 的最短启动路径通常包含 rootfs。当前 `qemu` 路径会在缺少 rootfs 时自动补齐，也可以显式先执行 `rootfs`。
 
+```mermaid
+flowchart LR
+  A[准备 rootfs] --> B[cargo xtask starry qemu]
+  B --> C{单次启动通过?}
+  C -- 是 --> D[测试套件]
+  C -- 否 --> E[检查环境 / rootfs]
+  E --> A
+```
+
 ## 1. 快速启动
 
 StarryOS 的快速启动比 ArceOS 多了一层 rootfs 资产准备，因此这里同时给出“一步运行”和“显式分步”两种方式。第一次上手时，任选其一即可。
@@ -104,21 +113,10 @@ cargo xtask starry test qemu --target loongarch64-unknown-none-softfloat
 cargo xtask starry test board --board orangepi-5-plus --server <ip> --port <port>
 ```
 
-详细说明见：[StarryOS 测试套件设计](../design/test/starryos)
+详细说明见：[StarryOS 测试套件设计](/docs/build/test/starry)
 
-## 3. 架构选择
+若需要继续了解 case 结构、rootfs 组织方式和测试实现细节，可以继续阅读：
 
-如果只是想快速建立对 StarryOS 的整体印象，建议先从推荐路径开始；如果已经明确知道目标平台，也可以直接按下表选择更接近实际场景的架构。
-
-| 架构 | 说明 |
-|------|------|
-| `riscv64` | 推荐首选，验证链路短 |
-| `aarch64` | 默认主路径，适合与 Axvisor 对齐 |
-| `x86_64` | 适合 x86 平台适配 |
-| `loongarch64` | 实验性支持 |
-
-快速上手页面主要覆盖启动与测试入口。更细的 case 结构、rootfs 组织方式和测试实现细节，可以继续阅读：
-
-- [StarryOS 开发指南](../design/systems/starryos-guide)
-- [StarryOS 测试套件设计](../design/test/starryos)
-- [QEMU 部署](../manual/deploy/qemu)
+- [StarryOS 开发指南](/docs/development/starryos)
+- [StarryOS 测试套件设计](/docs/build/test/starry)
+- [QEMU 运行](/docs/build/overview)

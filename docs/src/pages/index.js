@@ -99,8 +99,8 @@ function HeroBanner() {
   const quickLinks = [
     { label: '项目概览', to: '/docs/introduction/overview' },
     { label: '快速开始', to: '/docs/quickstart/overview' },
-    { label: '构建系统', to: '/docs/design/reference/build-system' },
-    { label: '组件视图', to: '/docs/design/reference/components' },
+    { label: '构建系统', to: '/docs/build/overview' },
+    { label: '组件视图', to: '/docs/development/components' },
   ];
 
   return (
@@ -222,19 +222,19 @@ function CapabilitySection() {
       icon: 'orbit',
       title: '统一入口',
       desc: '围绕根目录文档与 cargo xtask 组织日常开发入口，降低系统间切换成本。',
-      to: '/docs/design/reference/build-system',
+      to: '/docs/build/overview',
     },
     {
       icon: 'layers',
       title: '组件共享',
       desc: '基础能力以独立 crate 组织，被多个系统路径复用，职责边界更清晰。',
-      to: '/docs/design/reference/components',
+      to: '/docs/development/components',
     },
     {
       icon: 'shield',
       title: '安全实现',
       desc: '以内存安全为优先，围绕 Rust 构建可维护的系统软件组件与接口。',
-      to: '/docs/design/architecture/arch',
+      to: '/docs/architecture/overview',
     },
     {
       icon: 'pulse',
@@ -246,13 +246,13 @@ function CapabilitySection() {
       icon: 'chip',
       title: '构建闭环',
       desc: '从配置、构建、镜像生成到 QEMU 运行与快照管理形成完整流程。',
-      to: '/docs/design/build/flow',
+      to: '/docs/build/overview',
     },
     {
       icon: 'server',
       title: '验证体系',
       desc: '从 host 侧测试到系统级运行验证，覆盖组件、系统和平台多个层面。',
-      to: '/docs/design/test/overview',
+      to: '/docs/build/test/overview',
     },
   ];
 
@@ -321,7 +321,7 @@ function ArchitectureSection() {
             <Link className="button button--primary button--hero button--compact" to="/docs/introduction/overview">
               查看项目概览
             </Link>
-            <Link className="button button--outline button--hero button--compact" to="/docs/design/reference/repo">
+            <Link className="button button--outline button--hero button--compact" to="/docs/contributing/repo">
               浏览仓库结构
             </Link>
           </div>
@@ -346,21 +346,21 @@ function SystemsSection() {
       accentClass: 'accent-arceos',
       desc: '模块化内核路径，是多个系统能力向上复用的基础层。',
       items: ['聚焦模块、平台和示例应用', '适合理解基础能力如何组合成系统', '也是 StarryOS 与 Axvisor 的底座之一'],
-      to: '/docs/design/systems/arceos-guide',
+      to: '/docs/development/arceos',
     },
     {
       name: 'StarryOS',
       accentClass: 'accent-starry',
       desc: '建立在 ArceOS 之上的 Linux 兼容系统，强调内核与 rootfs 联动。',
       items: ['覆盖 syscall、进程、信号等核心语义', '包含 rootfs 与用户态验证路径', '适合完整 OS 路径开发与调试'],
-      to: '/docs/design/systems/starryos-guide',
+      to: '/docs/development/starryos',
     },
     {
       name: 'Axvisor',
       accentClass: 'accent-axvisor',
       desc: 'Type-I Hypervisor 路径，围绕板级配置、VM 配置和 Guest 镜像组织开发流程。',
       items: ['覆盖 VM、vCPU、虚拟设备与地址空间抽象', '强调虚拟化组件与板级能力协作', '适合系统与虚拟化联合验证'],
-      to: '/docs/design/systems/axvisor-guide',
+      to: '/docs/development/axvisor',
     },
   ];
 
@@ -415,7 +415,7 @@ function WorkflowSection() {
       index: '03',
       title: '深入设计与验证',
       desc: '进入 architecture、build、test、guest config 等文档，理解底层设计和验证策略。',
-      to: '/docs/design/architecture/arch',
+      to: '/docs/architecture/overview',
     },
   ];
 
@@ -455,9 +455,9 @@ function WorkflowSection() {
             ))}
           </div>
           <div className="command-board__links">
-            <Link to="/docs/design/reference/build-system">构建系统说明</Link>
-            <Link to="/docs/design/test/overview">验证策略</Link>
-            <Link to="/docs/design/build/flow">构建流程</Link>
+            <Link to="/docs/build/overview">构建系统说明</Link>
+            <Link to="/docs/build/test/overview">验证策略</Link>
+            <Link to="/docs/build/overview">构建流程</Link>
           </div>
         </div>
       </div>
@@ -479,27 +479,27 @@ function DocsSection() {
       title: '参考资料',
       desc: '查看仓库结构、组件分析、构建系统和依赖关系等全局性资料。',
       links: [
-        { label: '仓库结构', to: '/docs/design/reference/repo' },
-        { label: '组件开发指南', to: '/docs/design/reference/components' },
-        { label: '构建系统', to: '/docs/design/reference/build-system' },
+        { label: '仓库结构', to: '/docs/contributing/repo' },
+        { label: '组件开发指南', to: '/docs/development/components' },
+        { label: '构建系统', to: '/docs/build/overview' },
       ],
     },
     {
       title: '设计与实现',
       desc: '阅读架构、构建链、测试链和 Guest 配置等底层设计说明。',
       links: [
-        { label: '架构设计', to: '/docs/design/architecture/arch' },
-        { label: '构建流程', to: '/docs/design/build/flow' },
-        { label: 'Guest 配置', to: '/docs/design/guest-config/config-overview' },
+        { label: '架构设计', to: '/docs/architecture/overview' },
+        { label: '构建流程', to: '/docs/build/overview' },
+        { label: 'Guest 配置', to: '/docs/build/overview' },
       ],
     },
     {
       title: '系统指南',
       desc: '按目标系统进入具体开发路径，聚焦目录、命令和验证方式。',
       links: [
-        { label: 'ArceOS', to: '/docs/design/systems/arceos-guide' },
-        { label: 'StarryOS', to: '/docs/design/systems/starryos-guide' },
-        { label: 'Axvisor', to: '/docs/design/systems/axvisor-guide' },
+        { label: 'ArceOS', to: '/docs/development/arceos' },
+        { label: 'StarryOS', to: '/docs/development/starryos' },
+        { label: 'Axvisor', to: '/docs/development/axvisor' },
       ],
     },
   ];
@@ -765,7 +765,7 @@ function CTASection() {
             <Link className="button button--primary button--hero" to="/docs/quickstart/overview">
               打开快速开始
             </Link>
-            <Link className="button button--outline button--hero" to="/docs/design/reference/components">
+            <Link className="button button--outline button--hero" to="/docs/development/components">
               查看组件分析
             </Link>
           </div>

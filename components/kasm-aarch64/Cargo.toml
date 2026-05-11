@@ -1,0 +1,19 @@
+[package]
+name = "kasm-aarch64"
+authors.workspace = true
+categories.workspace = true
+description = "AArch64-specific assembly macros for kernel development."
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version = "0.2.1"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1.0"
+proc-macro2 = "1.0"
+syn = { version = "2.0", features = ["extra-traits", "full"] }
+darling = "0.23"
