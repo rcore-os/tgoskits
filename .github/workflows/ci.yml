@@ -397,6 +397,7 @@ jobs:
         }}
       required_repository_owner: ${{ matrix.required_repository_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
+      fetch_depth: ${{ matrix.fetch_depth || 1 }}
 
   skip_non_test_changes:
     name: Skip CI checks for non-test changes

@@ -157,19 +157,20 @@ where
         if path.as_os_str().is_empty() {
             continue;
         }
+        if !path.extension().is_some_and(|ext| ext == "rs") {
+            continue;
+        }
         let Some(_package_dir) = package_dir_for_path(&package_dirs, &path) else {
             return Ok(SyncLintSelection::All {
                 reason: Some(format!(
-                    "changed path `{}` is outside any workspace package",
+                    "changed Rust path `{}` is outside any workspace package",
                     path.display()
                 )),
             });
         };
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            let absolute = workspace_root.join(&path);
-            if absolute.is_file() {
-                files.insert(absolute);
-            }
+        let absolute = workspace_root.join(&path);
+        if absolute.is_file() {
+            files.insert(absolute);
         }
     }
 
@@ -967,7 +968,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_selection_falls_back_for_global_files() {
+    fn incremental_selection_skips_changed_non_rust_global_files() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("crates/alpha/src")).unwrap();
         let packages = vec![package(root.path(), "alpha")];
@@ -976,9 +977,23 @@ mod tests {
             select_sync_lint_files_for_paths(root.path(), &packages, [PathBuf::from("Cargo.lock")])
                 .unwrap();
 
+        assert_eq!(selection, SyncLintSelection::Files(Vec::new()));
+    }
+
+    #[test]
+    fn incremental_selection_falls_back_for_global_rust_files() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("crates/alpha/src")).unwrap();
+        fs::write(root.path().join("build.rs"), "").unwrap();
+        let packages = vec![package(root.path(), "alpha")];
+
+        let selection =
+            select_sync_lint_files_for_paths(root.path(), &packages, [PathBuf::from("build.rs")])
+                .unwrap();
+
         assert!(matches!(
             selection,
-            SyncLintSelection::All { reason: Some(reason) } if reason.contains("Cargo.lock")
+            SyncLintSelection::All { reason: Some(reason) } if reason.contains("build.rs")
         ));
     }
 
