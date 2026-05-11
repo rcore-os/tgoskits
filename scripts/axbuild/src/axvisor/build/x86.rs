@@ -63,17 +63,10 @@ fn parse_backend(value: &str) -> anyhow::Result<VirtualizationBackend> {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn detect_host_backend_from_cpuid() -> anyhow::Result<VirtualizationBackend> {
-    #[cfg(target_arch = "x86")]
-    use std::arch::x86::__cpuid;
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::__cpuid;
-
-    let leaf = __cpuid(0);
-    let mut bytes = [0_u8; 12];
-    bytes[0..4].copy_from_slice(&leaf.ebx.to_le_bytes());
-    bytes[4..8].copy_from_slice(&leaf.edx.to_le_bytes());
-    bytes[8..12].copy_from_slice(&leaf.ecx.to_le_bytes());
-    let vendor = String::from_utf8_lossy(&bytes).into_owned();
+    let cpuid = raw_cpuid::CpuId::new();
+    let vendor = cpuid
+        .get_vendor_info()
+        .ok_or_else(|| anyhow!("failed to read x86 CPUID vendor information"))?;
 
     match vendor.as_str() {
         "GenuineIntel" => Ok(VirtualizationBackend::Vmx),
@@ -137,6 +130,7 @@ mod tests {
         assert!(err.to_string().contains("mutually exclusive"));
     }
 
+    #[test]
     fn parses_backend_override() {
         assert_eq!(parse_backend("intel").unwrap(), VirtualizationBackend::Vmx);
         assert_eq!(parse_backend("svm").unwrap(), VirtualizationBackend::Svm);
