@@ -600,7 +600,6 @@ fn vcpu_run() {
                 info!("VM[{}] state changed to Stopped", vm_id);
 
                 sub_running_vm_count(1);
-                ax_hal::asm::enable_irqs();
                 ax_wait_queue_wake(&super::VMM, 1);
             }
 

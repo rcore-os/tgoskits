@@ -68,12 +68,16 @@ const CR0_PE: usize = 1 << 0;
 /// A virtual CPU within a guest.
 #[repr(C)]
 pub struct VmxVcpu {
-    // The order of `guest_regs` and `host_stack_top` is mandatory. They must be the first two fields. If you want to
-    // change the order or the type of these fields, you must also change the assembly in this file.
+    // The order of `guest_regs`, `host_stack_top`, and `host_rflags` is
+    // mandatory. They must be the first three fields. If you want to change
+    // the order or the type of these fields, you must also change the assembly
+    // in this file.
     /// Guest general-purpose registers.
     guest_regs: GeneralRegisters,
     /// The top of the host stack.
     host_stack_top: u64,
+    /// Host RFLAGS captured immediately before VM entry.
+    host_rflags: u64,
 
     // The order of the following fields is not mandatory.
 
@@ -118,6 +122,7 @@ impl VmxVcpu {
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
+            host_rflags: 0,
             launched: false,
             entry: None,
             ept_root: None,
@@ -223,6 +228,7 @@ impl VmxVcpu {
             }
         }
         self.load_host_xstate();
+        restore_host_interrupt_flag(self.host_rflags);
 
         #[cfg(feature = "tracing")]
         {
@@ -757,6 +763,8 @@ impl VmxVcpu {
 macro_rules! vmx_entry_with {
     ($instr:literal) => {
         naked_asm!(
+            "pushfq",                                  // save host RFLAGS, including IF
+            "pop    qword ptr [rdi + {host_rflags}]",
             save_regs_to_stack!(),                      // save host status
             "mov    [rdi + {host_stack_size}], rsp",    // save current RSP to Vcpu::host_stack_top
             "mov    rsp, rdi",                          // set RSP to guest regs area
@@ -764,6 +772,7 @@ macro_rules! vmx_entry_with {
             $instr,                                     // let's go!
             "jmp    {failed}",
             host_stack_size = const size_of::<GeneralRegisters>(),
+            host_rflags = const size_of::<GeneralRegisters>() + size_of::<u64>(),
             failed = sym Self::vmx_entry_failed,
             // options(noreturn),
         )
@@ -800,6 +809,7 @@ impl VmxVcpu {
     unsafe extern "C" fn vmx_exit(&mut self) -> usize {
         // it's not necessary to use another `unsafe` here, as Rust now do not require it in naked functions.
         naked_asm!(
+            "cli",                                  // keep host IRQs off until host xstate is restored
             save_regs_to_stack!(),                  // save guest status, after this, rsp points to the `VmxVcpu`
             "mov    rsp, [rsp + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
             restore_regs_from_stack!(),             // restore host status
@@ -1125,6 +1135,14 @@ impl VmxVcpu {
 
     fn load_host_xstate(&mut self) {
         self.xstate.switch_to_host();
+    }
+}
+
+fn restore_host_interrupt_flag(host_rflags: u64) {
+    if host_rflags & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0 {
+        x86_64::instructions::interrupts::enable();
+    } else {
+        x86_64::instructions::interrupts::disable();
     }
 }
 

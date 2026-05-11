@@ -122,6 +122,8 @@ pub struct SvmVcpu {
     guest_regs: GeneralRegisters,
     // Used by `svm_run()` assembly; keep immediately after `guest_regs`.
     host_stack_top: u64,
+    /// Host RFLAGS captured immediately before VM entry.
+    host_rflags: u64,
     /// Whether this VCPU has entered the guest at least once.
     launched: bool,
     /// The guest entry point.
@@ -147,6 +149,7 @@ impl SvmVcpu {
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
+            host_rflags: 0,
             launched: false,
             entry: None,
             npt_root: None,
@@ -694,16 +697,20 @@ impl SvmVcpu {
         // in this window may clobber the guest registers prepared for entry.
         unsafe {
             asm!(
+                "pushfq",
+                "pop qword ptr [rdi + {host_rflags}]",
                 save_regs_no_rax!(),
                 "mov [rdi + {host_stack_top}], rsp",
                 "mov rsp, rdi",
                 restore_regs_no_rax!(),
                 "vmrun rax",
+                "cli",
                 save_regs_no_rax!(),
                 "mov rdi, rsp",
                 "mov rsp, [rdi + {host_stack_top}]",
                 restore_regs_no_rax!(),
                 host_stack_top = const size_of::<GeneralRegisters>(),
+                host_rflags = const size_of::<GeneralRegisters>() + size_of::<u64>(),
                 in("rax") vmcb,
                 in("rdi") self_addr,
             );
@@ -711,6 +718,15 @@ impl SvmVcpu {
 
         self.after_vmrun();
         self.load_host_xstate();
+        restore_host_interrupt_flag(self.host_rflags);
+    }
+}
+
+fn restore_host_interrupt_flag(host_rflags: u64) {
+    if host_rflags & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0 {
+        x86_64::instructions::interrupts::enable();
+    } else {
+        x86_64::instructions::interrupts::disable();
     }
 }
 
