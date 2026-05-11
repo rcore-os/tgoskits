@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -204,6 +204,16 @@ pub(crate) struct StarryQemuCase {
     case: TestQemuCase,
     build_group: String,
     build_config_path: PathBuf,
+}
+
+impl qemu_test::BuildConfigRef for StarryQemuCase {
+    fn build_group(&self) -> &str {
+        &self.build_group
+    }
+
+    fn build_config_path(&self) -> &Path {
+        &self.build_config_path
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -610,10 +620,6 @@ impl Starry {
         }
         let default_rootfs_path =
             crate::rootfs::store::default_rootfs_path(self.app.workspace_root(), &request.arch)?;
-        let cases = self
-            .prepare_qemu_cases(&request, &default_rootfs_path, cases)
-            .await
-            .context("failed to load Starry qemu test cases")?;
         self.app.set_debug_mode(request.debug)?;
 
         let total = cases.len();
@@ -641,7 +647,23 @@ impl Starry {
                     )
                 })?;
 
-            for case in &build_group.group.cases {
+            let cases = self
+                .prepare_qemu_cases(
+                    &build_group.request,
+                    &build_group.cargo,
+                    &default_rootfs_path,
+                    &build_group.group.cases,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to load Starry qemu test cases for build group `{}` ({})",
+                        build_group.group.build_group,
+                        build_group.group.build_config_path.display()
+                    )
+                })?;
+
+            for case in &cases {
                 completed += 1;
                 let case_name = &case.case.name;
                 println!("[{completed}/{total}] starry qemu {case_name}");
@@ -815,22 +837,17 @@ impl Starry {
     async fn prepare_qemu_cases(
         &mut self,
         request: &ResolvedStarryRequest,
+        cargo: &Cargo,
         default_rootfs_path: &Path,
-        cases: Vec<StarryQemuCase>,
+        cases: &[&StarryQemuCase],
     ) -> anyhow::Result<Vec<PreparedStarryQemuCase>> {
         let mut prepared = Vec::with_capacity(cases.len());
-        let mut cargo_by_build_config = BTreeMap::new();
         let mut rootfs_paths = BTreeSet::new();
         for starry_case in cases {
-            let cargo = Self::qemu_case_cargo_config(
-                request,
-                &starry_case.build_config_path,
-                &mut cargo_by_build_config,
-            )?;
             let qemu = self
                 .app
                 .tool_mut()
-                .read_qemu_config_from_path_for_cargo(&cargo, &starry_case.case.qemu_config_path)
+                .read_qemu_config_from_path_for_cargo(cargo, &starry_case.case.qemu_config_path)
                 .await
                 .with_context(|| {
                     format!(
@@ -853,10 +870,10 @@ impl Starry {
                 )
             })?;
             prepared.push(PreparedStarryQemuCase {
-                case: starry_case.case,
+                case: starry_case.case.clone(),
                 qemu,
-                build_group: starry_case.build_group,
-                build_config_path: starry_case.build_config_path,
+                build_group: starry_case.build_group.clone(),
+                build_config_path: starry_case.build_config_path.clone(),
                 rootfs_path,
                 requirements,
             });
@@ -865,22 +882,6 @@ impl Starry {
         self.ensure_qemu_case_rootfs_paths(request, default_rootfs_path, &rootfs_paths)
             .await?;
         Ok(prepared)
-    }
-
-    fn qemu_case_cargo_config(
-        request: &ResolvedStarryRequest,
-        build_config_path: &Path,
-        cargo_by_build_config: &mut BTreeMap<PathBuf, Cargo>,
-    ) -> anyhow::Result<Cargo> {
-        if let Some(cargo) = cargo_by_build_config.get(build_config_path) {
-            return Ok(cargo.clone());
-        }
-
-        let mut request = request.clone();
-        request.build_info_path = build_config_path.to_path_buf();
-        let cargo = build::load_cargo_config(&request)?;
-        cargo_by_build_config.insert(build_config_path.to_path_buf(), cargo.clone());
-        Ok(cargo)
     }
 
     async fn ensure_qemu_case_rootfs_paths(
