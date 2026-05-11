@@ -88,9 +88,27 @@ impl ProcessSignalManager {
 
         // Lock by `actions`
         let actions = self.actions.lock();
-        if actions[signo].is_ignore(signo) {
+
+        // Check whether the signal is ignored, but only when it is not blocked
+        // in all threads.  POSIX requires that a signal blocked in the calling
+        // thread is queued as pending even if its default disposition is Ignore,
+        // because sigwaitinfo()/rt_sigtimedwait() can retrieve it.  If at least
+        // one thread has the signal unblocked we can apply the ignore check
+        // normally; if every thread has it blocked we must queue it regardless.
+        let all_blocked = {
+            let children = self.children.lock();
+            !children.is_empty()
+                && children
+                    .iter()
+                    .all(|(_, thread)| thread.upgrade().map_or(true, |t| t.signal_blocked(signo)))
+        };
+        if !all_blocked && actions[signo].is_ignore(signo) {
             return None;
         }
+        // Drop `actions` before acquiring `self.pending` to maintain a
+        // consistent lock ordering (actions → children → pending) and avoid
+        // potential deadlocks.
+        drop(actions);
 
         if self.pending.lock().put_signal(sig) {
             self.possibly_has_signal.store(true, Ordering::Release);

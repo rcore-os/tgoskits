@@ -125,10 +125,31 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
     if let Some(sig) = sig {
         let signo = sig.signo();
         info!("Send signal {signo:?} to process {pid}");
-        if let Some(tid) = proc_data.signal.send_signal(sig)
-            && let Ok(task) = get_task(tid)
-        {
-            task.interrupt();
+        if let Some(tid) = proc_data.signal.send_signal(sig) {
+            // A thread was found that doesn't have the signal blocked — wake it.
+            if let Ok(task) = get_task(tid) {
+                task.interrupt();
+            }
+        } else {
+            // All threads have this signal blocked — the signal is now pending
+            // at the process level.  Defensive wakeup: interrupt every thread
+            // so that any thread about to enter (or racing into)
+            // sigwaitinfo()/rt_sigtimedwait() will re-check the pending set.
+            //
+            // In the common case (thread calls sigwaitinfo after blocking the
+            // signal), rt_sigtimedwait temporarily unblocks the signal before
+            // sleeping, so send_signal() would take the Some(tid) path above.
+            // This else branch covers the narrow race where the signal arrives
+            // after sigprocmask(SIG_BLOCK) but before sigwaitinfo() unblocks
+            // it — the thread hasn't slept yet and will find the signal
+            // immediately on its first dequeue_signal() poll.  The spurious
+            // wakeups to other threads are harmless (they find nothing pending
+            // and resume sleeping).
+            for tid in proc_data.proc.threads() {
+                if let Ok(task) = get_task(tid) {
+                    task.interrupt();
+                }
+            }
         }
     }
 
