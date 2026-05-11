@@ -67,6 +67,7 @@ static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
 static SERVICE: Once<Mutex<Service>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
+static POLL_INTERFACES_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -173,6 +174,10 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
 
 /// Poll all network interfaces for new events.
 pub fn poll_interfaces() {
+    let count = POLL_INTERFACES_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count.is_multiple_of(200) {
+        debug!("poll_interfaces called {} times total", count);
+    }
     POLL_AGAIN.store(true, Ordering::Release);
     loop {
         if POLLING_INTERFACES

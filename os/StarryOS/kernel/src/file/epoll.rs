@@ -272,7 +272,8 @@ impl Epoll {
         Self::default()
     }
 
-    // only register waker, not add to ready queue
+    // Register waker only — no immediate poll check.
+    // Used for NoEvent (spurious wakeup): re-arm and wait for a real state change.
     fn register_waker_only(&self, interest: &Arc<EpollInterest>) {
         let Some(file) = interest.key.get_file() else {
             return;
@@ -397,6 +398,7 @@ impl Epoll {
         // into the loop and filling out[] with duplicates of one ready fd.
         let mut txlist = core::mem::take(&mut *self.inner.ready_queue.lock());
         let mut count = 0;
+        let mut no_event_count = 0usize;
         let mut keep: VecDeque<Weak<EpollInterest>> = VecDeque::new();
 
         while let Some(weak_interest) = txlist.pop_front() {
@@ -416,9 +418,10 @@ impl Epoll {
                 continue;
             };
 
+            let current_poll = file.poll();
             trace!(
-                "Epoll: consuming ready interest for fd={}, events={:?}",
-                interest.key.fd, interest.event.events
+                "Epoll: consuming ready interest for fd={}, interest_events={:?}, file.poll()={:?}",
+                interest.key.fd, interest.event.events, current_poll
             );
 
             match interest.consume(file.as_ref()) {
@@ -449,17 +452,24 @@ impl Epoll {
                         keep.push_back(Arc::downgrade(&interest));
                     } else {
                         interest.mark_not_in_queue();
+                        // EPOLLET: re-arm by registering a fresh waker.
+                        // Any new data that arrived between mark_not_in_queue() and
+                        // register() will be caught by the still-live old InterestWaker
+                        // (held by the underlying PollSet), which calls try_mark_in_queue()
+                        // and re-queues the interest atomically.  We must NOT poll the
+                        // file here: existing unread data must not re-trigger ET — only a
+                        // state transition (new data arriving) should.
                         self.register_waker_only(&interest);
                     }
                 }
                 ConsumeResult::NoEvent => {
+                    no_event_count += 1;
+                    debug!(
+                        "Epoll: NoEvent fd={} interest={:?} file.poll()={:?} (spurious #{})",
+                        interest.key.fd, interest.event.events, current_poll, no_event_count
+                    );
                     interest.mark_not_in_queue();
-                    // Events arriving between consume()'s poll and the new
-                    // register() would otherwise be lost: the old waker
-                    // CAS-fails (in_ready_queue still set), and a plain
-                    // register only fires on the next edge. Re-poll after
-                    // registering to recover them.
-                    self.check_and_register_waker(&interest);
+                    self.register_waker_only(&interest);
                 }
             }
         }
@@ -476,6 +486,9 @@ impl Epoll {
         if count == 0 {
             Err(AxError::WouldBlock)
         } else {
+            if no_event_count > 0 {
+                debug!("Epoll: poll_events count={count} no_event_spurious={no_event_count}");
+            }
             Ok(count)
         }
     }

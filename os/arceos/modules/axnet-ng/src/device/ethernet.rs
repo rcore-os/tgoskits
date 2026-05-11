@@ -512,8 +512,14 @@ impl Device for EthernetDevice {
     }
 
     fn register_waker(&self, waker: &Waker) {
-        if self.inner.irq_num.is_some() {
+        if let Some(irq) = self.inner.irq_num {
+            warn!("EthernetDevice: register_waker on IRQ={irq}");
             self.inner.poll_ready.register(waker);
+        } else {
+            warn!(
+                "EthernetDevice: register_waker called but irq_num=None — waker NOT registered, \
+                 TCP wake will never fire!"
+            );
         }
     }
 }

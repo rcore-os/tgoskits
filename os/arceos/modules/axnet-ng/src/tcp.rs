@@ -163,13 +163,16 @@ impl TcpSocket {
         let mut events = IoEvents::empty();
         self.with_smol_socket(|socket| match socket.state() {
             smol::State::SynSent | smol::State::SynReceived => {
-                // wait for connection
+                debug!(
+                    "TCP {}: poll_connect — still SynSent/SynReceived (waiting)",
+                    self.handle
+                );
             }
             smol::State::Established => {
                 self.clear_pending_error();
-                self.state.set(State::Connected); // connected
-                debug!(
-                    "TCP socket {}: connected to {}",
+                self.state.set(State::Connected);
+                warn!(
+                    "TCP {}: poll_connect — Established, connected to {}",
                     self.handle,
                     socket.remote_endpoint().unwrap(),
                 );
@@ -177,9 +180,9 @@ impl TcpSocket {
             }
             state => {
                 self.store_pending_error(LinuxError::ECONNREFUSED);
-                self.state.set(State::Closed); // connection failed
-                debug!(
-                    "TCP socket {}: connect failed in state {:?}",
+                self.state.set(State::Closed);
+                warn!(
+                    "TCP {}: poll_connect — connect failed in state {:?}",
                     self.handle, state
                 );
                 events.set(IoEvents::OUT, true);
@@ -423,15 +426,23 @@ impl SocketOps for TcpSocket {
         ax_task::yield_now();
 
         // Here our state must be `CONNECTING`, and only one thread can run here.
+        warn!(
+            "TCP {}: entering connect poll loop (nonblocking={})",
+            self.handle,
+            self.general.nonblocking()
+        );
         self.general.send_poller(self, || {
             poll_interfaces();
             let events = self.poll_connect();
             if !events.contains(IoEvents::OUT) {
                 Err(AxError::WouldBlock)
             } else if self.state() == State::Connected {
+                warn!("TCP {}: connect succeeded", self.handle);
                 Ok(())
             } else {
-                Err(self.connect_error())
+                let err = self.connect_error();
+                warn!("TCP {}: connect error {:?}", self.handle, err);
+                Err(err)
             }
         })
     }
@@ -493,16 +504,19 @@ impl SocketOps for TcpSocket {
     }
 
     fn send(&self, mut src: impl Read, _options: SendOptions) -> AxResult<usize> {
-        // SAFETY: `self.handle` should be initialized in a connected socket.
         let result = self.general.send_poller(self, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
+                    warn!(
+                        "TCP {}: send — not active (state={:?})",
+                        self.handle,
+                        socket.state()
+                    );
                     Err(AxError::NotConnected)
                 } else if !socket.can_send() {
                     Err(AxError::WouldBlock)
                 } else {
-                    // connected, and the tx buffer is not full
                     let len = socket
                         .send(|buffer| {
                             let result = src.read(buffer);
@@ -510,13 +524,11 @@ impl SocketOps for TcpSocket {
                             (len, result)
                         })
                         .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
+                    debug!("TCP {}: sent {} bytes", self.handle, len);
                     Ok(len)
                 }
             })
         });
-        // Poll again after writing so the data is transmitted through the
-        // network stack immediately. For loopback, this causes loopback.send()
-        // to run, which wakes any epoll wakers registered on the peer socket.
         if result.is_ok() {
             poll_interfaces();
         }
@@ -525,14 +537,24 @@ impl SocketOps for TcpSocket {
 
     fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
         if self.rx_closed.load(Ordering::Acquire) {
+            warn!(
+                "TCP {}: recv — rx_closed, returning NotConnected",
+                self.handle
+            );
             return Err(AxError::NotConnected);
         }
         self.general.recv_poller(self, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
+                    warn!(
+                        "TCP {}: recv — not active (state={:?})",
+                        self.handle,
+                        socket.state()
+                    );
                     Err(AxError::NotConnected)
                 } else if !socket.may_recv() {
+                    warn!("TCP {}: recv — may_recv=false, returning EOF", self.handle);
                     Ok(0)
                 } else if socket.recv_queue() == 0 {
                     Err(AxError::WouldBlock)
@@ -543,13 +565,15 @@ impl SocketOps for TcpSocket {
                             .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?,
                     )
                 } else {
-                    socket
+                    let n = socket
                         .recv(|buf| {
                             let result = dst.write(buf);
                             let len = result.unwrap_or(0);
                             (len, result)
                         })
-                        .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?
+                        .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
+                    debug!("TCP {}: recv got {} bytes", self.handle, n);
+                    Ok(n)
                 }
             })
         })

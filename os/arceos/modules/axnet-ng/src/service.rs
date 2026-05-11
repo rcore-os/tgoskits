@@ -343,6 +343,7 @@ impl Service {
 
         if let Some(t) = next {
             let next = TimeValue::from_micros(t.total_micros() as _);
+            warn!("Service::register_waker: next poll_at = {:?}", next);
 
             // drop old timeout future
             self.timeout = None;
@@ -351,15 +352,19 @@ impl Service {
             let mut cx = Context::from_waker(waker);
 
             if fut.as_mut().poll(&mut cx).is_ready() {
+                warn!("Service::register_waker: timeout already ready, waking immediately");
                 waker.wake_by_ref();
                 return;
             } else {
                 self.timeout = Some(fut);
             }
+        } else {
+            warn!("Service::register_waker: no next poll_at (no pending timers), mask={mask:#x}");
         }
 
         for (i, device) in self.router.devices.iter().enumerate() {
             if mask & (1 << i) != 0 {
+                warn!("Service::register_waker: registering on device[{i}]");
                 device.register_waker(waker);
             }
         }

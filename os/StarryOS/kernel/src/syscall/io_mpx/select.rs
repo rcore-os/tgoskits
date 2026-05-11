@@ -123,15 +123,15 @@ fn do_select(
                     let selected_except =
                         selected.contains(IoEvents::ERR) && except_set.0.get(index);
 
-                    if selected_read && let Some(set) = readfds.as_deref_mut() {
+                    if selected_read && let Some(ref mut set) = k_readfds {
                         res += 1;
                         unsafe { FD_SET(index as _, set) };
                     }
-                    if selected_write && let Some(set) = writefds.as_deref_mut() {
+                    if selected_write && let Some(ref mut set) = k_writefds {
                         res += 1;
                         unsafe { FD_SET(index as _, set) };
                     }
-                    if selected_except && let Some(set) = exceptfds.as_deref_mut() {
+                    if selected_except && let Some(ref mut set) = k_exceptfds {
                         res += 1;
                         unsafe { FD_SET(index as _, set) };
                     }
