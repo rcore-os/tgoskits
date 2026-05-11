@@ -242,7 +242,8 @@ static void stress_max_entries(void) {
     close(fd);
 }
 
-/* §8: Mode toggle — 200 TRACE_PC ↔ TRACE_CMP switches */
+/* §8: Mode toggle — 100 TRACE_PC ENABLE/DISABLE cycles; TRACE_CMP is
+ * intentionally rejected with EINVAL until CMP hooks are implemented. */
 static void stress_mode_toggle(void) {
     int fd = open_kcov();
     CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 128), 0, "INIT_TRACE");
@@ -253,14 +254,16 @@ static void stress_mode_toggle(void) {
         close(fd);
         return;
     }
-    for (int i = 0; i < 200; i++) {
-        unsigned long m = (i & 1) ? KCOV_TRACE_CMP : KCOV_TRACE_PC;
-        CHECK_RET(ioctl(fd, KCOV_ENABLE, m), 0, "ENABLE");
+    /* Verify TRACE_CMP is properly rejected */
+    CHECK_ERR(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_CMP), EINVAL, "CMP reject (not yet implemented)");
+    /* PC mode toggle stress */
+    for (int i = 0; i < 100; i++) {
+        CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE");
         for (volatile int j = 0; j < 50; j++)
             getpid();
         CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE");
     }
-    printf("  INFO: 200 mode-toggle cycles, count=%lu\n", buf[0]);
+    printf("  INFO: 100 PC mode-toggle cycles, count=%lu\n", buf[0]);
     munmap(buf, sz);
     close(fd);
 }

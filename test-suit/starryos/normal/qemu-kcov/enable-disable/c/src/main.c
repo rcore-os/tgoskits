@@ -35,9 +35,9 @@ int main(void) {
         TEST_DONE();
     }
 
-    /* §5: TRACE_CMP accepted (even if not implemented for recording) */
-    CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_CMP), 0,
-              "ENABLE TRACE_CMP accepted");
+    /* §5: TRACE_CMP is rejected with EINVAL until CMP hooks are implemented */
+    CHECK_ERR(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_CMP), EINVAL,
+              "ENABLE TRACE_CMP rejected (not yet implemented)");
     CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE");
 
     /* §6: DISABLE before ENABLE is no-op */

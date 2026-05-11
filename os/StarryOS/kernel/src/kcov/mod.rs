@@ -176,7 +176,11 @@ impl DeviceOps for KcovDevice {
 
             KCOV_ENABLE => {
                 let mode = arg as u32;
-                if mode != KCOV_TRACE_PC && mode != KCOV_TRACE_CMP {
+                // KCOV_TRACE_CMP (comparison instrumentation) is accepted at the
+                // ioctl layer but the actual comparison hooks have not yet been
+                // implemented.  Until then, accept only TRACE_PC to avoid
+                // silently giving userspace no data.
+                if mode != KCOV_TRACE_PC {
                     return Err(AxError::InvalidInput);
                 }
 
@@ -226,7 +230,12 @@ impl DeviceOps for KcovDevice {
         }
     }
 
-    fn mmap(&self, _offset: u64) -> DeviceMmap {
+    fn mmap(&self, offset: u64) -> DeviceMmap {
+        // Linux kcov requires vm_pgoff == 0; non-zero offset is rejected.
+        if offset != 0 {
+            return DeviceMmap::NotConfigured;
+        }
+
         let task = ax_task::current();
         let tid = task.id().as_u64() as u32;
 
