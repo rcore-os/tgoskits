@@ -45,8 +45,14 @@ pub fn sys_futex_wait(
     );
     if let Some(timeout) = unsafe { timeout.as_ref() } {
         trace!("called sys_futex_wait with timeout: {:?}", timeout);
-        let duration = Duration::new(timeout.tv_sec as u64, timeout.tv_nsec as u32);
-        wait_queue.wait_timeout(duration);
+        let duration = Duration::new(
+            timeout.tv_sec.saturating_cast_unsigned(),
+            timeout.tv_nsec.saturating_cast_unsigned(),
+        );
+        if wait_queue.wait_timeout(duration) {
+            // timeout
+            return err(LinuxError::ETIMEDOUT);
+        }
     } else {
         trace!("called sys_futex_wait without timeout");
         wait_queue.wait();

@@ -45,7 +45,7 @@ dma = ["ax-api/dma", "ax-feat/dma"]
 tls = ["ax-feat/tls"]
 
 # Multi-threading and scheduler
-multitask = ["ax-api/multitask", "ax-feat/multitask"]
+multitask = ["ax-api/multitask", "ax-feat/multitask", "irq"]
 sched-fifo = ["ax-feat/sched-fifo"]
 sched-rr = ["ax-feat/sched-rr"]
 sched-cfs = ["ax-feat/sched-cfs"]
