@@ -155,7 +155,62 @@ pub fn flush_icache_all() {
     unsafe { asm!("ic iallu; dsb sy; isb") };
 }
 
-/// Flushes the data cache line (64 bytes) at the given virtual address
+#[inline]
+fn read_ctr_el0() -> u64 {
+    let value;
+    unsafe {
+        asm!("mrs {}, ctr_el0", out(reg) value);
+    }
+    value
+}
+
+/// Reads the data cache line size from `CTR_EL0` and returns it in bytes.
+#[inline]
+pub fn dcache_line_size_from_ctr() -> usize {
+    let ctr = read_ctr_el0();
+
+    // CTR_EL0.DminLine: bits [19:16]
+    // bytes = 4 << DminLine
+    let dminline = ((ctr >> 16) & 0xf) as usize;
+
+    4usize << dminline
+}
+
+/// Reads the instruction cache line size from `CTR_EL0` and returns it in bytes.
+#[inline]
+pub fn icache_line_size_from_ctr() -> usize {
+    let ctr = read_ctr_el0();
+
+    // CTR_EL0.IminLine: bits [3:0]
+    // bytes = 4 << IminLine
+    let iminline = (ctr & 0xf) as usize;
+
+    4usize << iminline
+}
+
+/// Cleans a data cache range to the point of unification.
+#[inline]
+pub fn clean_dcache_range_to_pou(vaddr: VirtAddr, size: usize) {
+    if size == 0 {
+        return;
+    }
+
+    let line_size = dcache_line_size_from_ctr();
+    let start = vaddr.as_usize() & !(line_size - 1);
+    let end = (vaddr.as_usize() + size + line_size - 1) & !(line_size - 1);
+
+    for line in (start..end).step_by(line_size) {
+        unsafe { asm!("dc cvau, {0:x}", in(reg) line) };
+    }
+
+    unsafe { asm!("dsb sy") };
+}
+
+/// Cleans and invalidates the data cache line that covers the given address.
+///
+/// This is useful for publishing small pieces of data to other agents that may
+/// observe memory outside the local D-cache, such as spin tables used to start
+/// secondary CPUs.
 #[inline]
 pub fn flush_dcache_line(vaddr: VirtAddr) {
     unsafe { asm!("dc ivac, {0:x}; dsb sy; isb", in(reg) vaddr.as_usize()) };

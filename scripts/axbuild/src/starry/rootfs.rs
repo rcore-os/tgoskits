@@ -95,41 +95,21 @@ pub(super) async fn load_patched_qemu_config(
                 .await?
         }
         None => {
-            // Prefer the versioned template from configs/qemu/ so that
-            // `cargo starry qemu` never falls back to ostool's minimal
-            // auto-generated default (which lacks -m, virtio devices, etc.).
-            let template = {
-                let path = starry
-                    .app
-                    .workspace_root()
-                    .join("os/StarryOS/configs/qemu")
-                    .join(format!("qemu-{}.toml", &request.arch));
-                path.exists().then_some(path)
-            };
-            match template {
-                Some(path) => {
-                    starry
-                        .app
-                        .tool_mut()
-                        .read_qemu_config_from_path_for_cargo(cargo, &path)
-                        .await?
-                }
-                None => {
-                    // Unknown arch or no template — let ostool create a minimal
-                    // default as a last resort.
-                    starry
-                        .app
-                        .tool_mut()
-                        .ensure_qemu_config_for_cargo(cargo)
-                        .await?
-                }
-            }
+            let path = super::default_qemu_config_template_path(
+                starry.app.workspace_root(),
+                &request.arch,
+            );
+            starry
+                .app
+                .tool_mut()
+                .read_qemu_config_from_path_for_cargo(cargo, &path)
+                .await?
         }
     };
 
     if let Some(rootfs) = explicit_rootfs {
         patch_qemu_rootfs_path(&mut qemu, rootfs);
-    } else if request.qemu_config.is_none() && apply_default_args {
+    } else if apply_default_args {
         patch_qemu_rootfs(&mut qemu, request, starry.app.workspace_root(), None)?;
     }
     qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
@@ -154,6 +134,7 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
     }
 
     let rootfs = store::ensure_rootfs_for_arch(workspace_root, arch).await?;
+    let _lock = crate::support::download::acquire_path_lock(&rootfs).await?;
     ensure_apk_region_in_rootfs(&rootfs)?;
     Ok(rootfs)
 }

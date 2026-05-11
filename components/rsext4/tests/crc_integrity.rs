@@ -241,6 +241,35 @@ fn clean_unmount_preserves_real_error_fs_state() {
 }
 
 #[test]
+fn needs_recovery_enables_mount_replay_when_caller_disabled_journal() {
+    // Test idea: EXT4_FEATURE_INCOMPAT_RECOVER means home metadata may be
+    // stale. Mount should replay the journal before ordinary metadata access
+    // even if the caller disabled journaling for normal writes.
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut sb = read_superblock(&device);
+    sb.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+    sb.update_checksum();
+    write_superblock(&device, &sb);
+
+    let mut remount_dev = Jbd2Dev::initial_jbd2dev(0, device.clone(), false);
+    let fs = mount(&mut remount_dev).expect("mount should replay needs_recovery journal");
+    assert!(!remount_dev.is_use_journal());
+    assert_eq!(
+        fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
+        0
+    );
+
+    let recovered_sb = read_superblock(&device);
+    assert_eq!(
+        recovered_sb.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
+        0
+    );
+}
+
+#[test]
 fn corrupted_superblock_checksum_is_reported_as_euclean_on_mount() {
     // Test idea: corrupt only the stored superblock CRC field and ensure mount
     // rejects the image with the checksum-specific EUCLEAN errno.

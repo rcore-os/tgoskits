@@ -114,14 +114,14 @@ pub fn print_supported_platforms(workspace_root: &Path) {
         QuickQemuPlatform::X8664,
     ] {
         let build = qemu_build_config_path(workspace_root, platform);
-        let run = qemu_run_config_path(workspace_root, platform);
         let tmp_build = tmp_qemu_build_config_path(workspace_root, platform);
-        let tmp_run = tmp_qemu_run_config_path(workspace_root, platform);
         println!("  {}", platform.cli_name());
         println!("    build template: {}", build.display());
-        println!("    run template:   {}", run.display());
+        println!(
+            "    run template:   {}",
+            super::default_qemu_config_template_path(workspace_root, platform.arch()).display()
+        );
         println!("    tmp build cfg:  {}", tmp_build.display());
-        println!("    tmp run cfg:    {}", tmp_run.display());
         println!(
             "    commands:\n      cargo xtask starry quick-start {} build\n      cargo xtask \
              starry quick-start {} run",
@@ -147,18 +147,7 @@ pub fn print_supported_platforms(workspace_root: &Path) {
 
 pub fn qemu_build_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {
     workspace_root
-        .join("os/StarryOS/configs/qemu")
-        .join(match platform {
-            QuickQemuPlatform::Aarch64 => "build-aarch64.toml",
-            QuickQemuPlatform::Riscv64 => "build-riscv64.toml",
-            QuickQemuPlatform::Loongarch64 => "build-loongarch64.toml",
-            QuickQemuPlatform::X8664 => "build-x86_64.toml",
-        })
-}
-
-pub fn qemu_run_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {
-    workspace_root
-        .join("os/StarryOS/configs/qemu")
+        .join("os/StarryOS/configs/board")
         .join(match platform {
             QuickQemuPlatform::Aarch64 => "qemu-aarch64.toml",
             QuickQemuPlatform::Riscv64 => "qemu-riscv64.toml",
@@ -188,15 +177,6 @@ pub fn tmp_qemu_build_config_path(workspace_root: &Path, platform: QuickQemuPlat
     })
 }
 
-pub fn tmp_qemu_run_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {
-    tmp_config_dir(workspace_root).join(match platform {
-        QuickQemuPlatform::Aarch64 => "qemu-aarch64.toml",
-        QuickQemuPlatform::Riscv64 => "qemu-riscv64.toml",
-        QuickQemuPlatform::Loongarch64 => "qemu-loongarch64.toml",
-        QuickQemuPlatform::X8664 => "qemu-x86_64.toml",
-    })
-}
-
 pub fn tmp_orangepi_build_config_path(workspace_root: &Path) -> PathBuf {
     tmp_config_dir(workspace_root).join("orangepi-5-plus.toml")
 }
@@ -219,7 +199,7 @@ fn copy_template(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn refresh_qemu_configs(
+pub fn refresh_qemu_build_config(
     workspace_root: &Path,
     platform: QuickQemuPlatform,
 ) -> anyhow::Result<()> {
@@ -227,21 +207,16 @@ pub fn refresh_qemu_configs(
         &qemu_build_config_path(workspace_root, platform),
         &tmp_qemu_build_config_path(workspace_root, platform),
     )?;
-    copy_template(
-        &qemu_run_config_path(workspace_root, platform),
-        &tmp_qemu_run_config_path(workspace_root, platform),
-    )?;
     Ok(())
 }
 
-pub fn ensure_qemu_configs(
+pub fn ensure_qemu_build_config(
     workspace_root: &Path,
     platform: QuickQemuPlatform,
 ) -> anyhow::Result<()> {
     let build_cfg = tmp_qemu_build_config_path(workspace_root, platform);
-    let run_cfg = tmp_qemu_run_config_path(workspace_root, platform);
-    if !build_cfg.exists() || !run_cfg.exists() {
-        refresh_qemu_configs(workspace_root, platform)?;
+    if !build_cfg.exists() {
+        refresh_qemu_build_config(workspace_root, platform)?;
     }
     Ok(())
 }

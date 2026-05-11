@@ -16,7 +16,6 @@ mod log;
 mod r#loop;
 #[cfg(feature = "memtrack")]
 mod memtrack;
-mod rtc;
 pub mod tty;
 
 use alloc::{format, sync::Arc};
@@ -195,15 +194,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(1, 9),
             Arc::new(Random::new()),
-        ),
-    );
-    root.add(
-        "rtc0",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            rtc::RTC0_DEVICE_ID,
-            Arc::new(rtc::Rtc),
         ),
     );
     if ax_display::has_display() {

@@ -7,6 +7,15 @@ sidebar_label: "环境准备"
 
 本文是 ArceOS、StarryOS、Axvisor 快速上手的公共前置文档，重点说明当前仓库推荐的开发环境、QEMU 支持范围和统一命令入口。
 
+```mermaid
+flowchart LR
+  A[环境准备] --> B[QEMU 验证]
+  B --> C{选择系统}
+  C --> D[ArceOS]
+  C --> E[StarryOS]
+  C --> F[Axvisor]
+```
+
 ## 1. 环境
 
 本节给出快速上手所需的最小环境集合。目标不是覆盖所有开发场景，而是先确保常用 QEMU 路径和基础构建链路可以稳定运行。
@@ -22,25 +31,35 @@ sidebar_label: "环境准备"
 | QEMU | 建议使用仓库容器镜像内置版本 |
 | 磁盘空间 | 建议至少 20 GB（工具链、QEMU、构建产物、rootfs、Guest 镜像） |
 
-### 1.2 推荐方式
+### 1.2 Docker 镜像（推荐）
 
-对首次接触 TGOSKits 的开发者，容器方式通常是最省时间的选择。它可以直接复用仓库当前维护的测试环境，减少宿主机和 CI 之间的差异。
+仓库提供预构建的容器镜像，已包含完整的开发环境（QEMU、Rust toolchain、交叉编译工具链等），与 CI 环境完全一致：
 
-推荐直接使用仓库提供的容器环境。该环境与 CI 使用的基础镜像一致，已包含：
+```bash
+# 拉取预构建镜像
+docker pull ghcr.io/rcore-os/tgoskits-container:latest
 
-- QEMU
-- Rust toolchain
-- 交叉编译工具链
-- `cmake`、`ninja`、`pkg-config` 等构建依赖
+# 启动容器，将当前工作区挂载进去
+docker run -it --rm \
+  -v "$(pwd)":/workspace \
+  -w /workspace \
+  ghcr.io/rcore-os/tgoskits-container:latest
+```
+
+进入容器后即可直接运行 `cargo xtask` 命令，无需安装任何依赖。
+
+镜像详情见 [CI 与容器镜像](/docs/build/ci)。
+
+### 1.3 本地构建容器
+
+如果需要自定义容器内容，也可以从 Dockerfile 本地构建：
 
 ```bash
 docker build -t tgoskits-env -f container/Dockerfile .
 docker run -it --rm -v "$(pwd)":/workspace -w /workspace tgoskits-env
 ```
 
-容器化测试环境详见：[测试基础设施与环境](../design/test/infrastructure)
-
-### 1.3 手动安装
+### 1.4 手动安装
 
 手动安装适合已经有本地工具链管理习惯，或者不方便使用容器的环境。建议把它视为容器方案的替代路径，而不是默认首选路径。
 
@@ -107,10 +126,6 @@ cargo xtask --help
 | StarryOS | [StarryOS 快速上手](./starryos) | `cargo xtask starry qemu ...` |
 | Axvisor | [Axvisor 快速上手](./axvisor) | `cargo xtask axvisor test qemu ...` |
 
-环境确认无误后，可以直接进入具体系统的快速上手页面。每一页都会给出当前项目中可用的最短命令路径，而不是抽象的概念说明：
-
-- [ArceOS 快速上手](./arceos)
-- [StarryOS 快速上手](./starryos)
-- [Axvisor 快速上手](./axvisor)
+环境确认无误后，可以直接进入具体系统的快速上手页面。每一页都会给出当前项目中可用的最短命令路径，而不是抽象的概念说明。
 
 如果需要先了解仓库整体结构，也可以继续阅读：[项目概览](../introduction/overview)
