@@ -257,6 +257,11 @@ impl FileLike for Directory {
         Ok(metadata_to_kstat(&self.inner.metadata()?))
     }
 
+    fn inode_key(&self) -> Option<(u64, u64)> {
+        let m = self.inner.metadata().ok()?;
+        Some((m.device, m.inode))
+    }
+
     fn path(&self) -> Cow<'_, str> {
         path_for(&self.inner)
     }

@@ -190,8 +190,10 @@ pub trait FileLike: Pollable + DowncastSync {
     /// (device, inode) identity used as the key for advisory file locks
     /// (fcntl POSIX/OFD locks and flock(2)).
     ///
-    /// Returns `None` for fd kinds that are not lockable (pipes, sockets,
-    /// epoll, eventfd, ...). Only regular files override this.
+    /// Returns `None` for fd kinds that have no inode and are therefore
+    /// not lockable (pipes, sockets, epoll, eventfd, ...). Regular files
+    /// and directories override this — Linux allows both kinds to carry
+    /// advisory locks.
     fn inode_key(&self) -> Option<(u64, u64)> {
         None
     }
@@ -280,6 +282,7 @@ pub fn release_locks_on_close(fd: FileDescriptor) {
     drop(fd);
     if let Some(k) = key {
         crate::syscall::wake_lock_waiters(k);
+        crate::syscall::wake_flock_waiters(k);
     }
 }
 
@@ -323,6 +326,7 @@ pub fn close_all_fds() {
     drop(removed);
     for key in lock_keys {
         crate::syscall::wake_lock_waiters(key);
+        crate::syscall::wake_flock_waiters(key);
     }
 }
 
