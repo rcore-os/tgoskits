@@ -1,6 +1,6 @@
 ---
 sidebar_position: 7
-sidebar_label: "持续集成"
+sidebar_label: "自动 CI 测试"
 ---
 
 # 自动 CI 测试
@@ -10,6 +10,8 @@ TGOSKits 将构建与运行依赖收敛到统一的 container 镜像，由 GitHu
 CI 的设计遵循"环境即代码"原则：工具链版本（Rust、QEMU、交叉编译器）全部固定在 Dockerfile 中，避免因环境差异导致"本地通过 CI 不通过"的问题。开发者可以通过 `cargo xtask` 在本地复现完整的 CI 流水线，无需手动安装任何依赖。
 
 ## 三层架构
+
+CI 体系由 Container 镜像、可复用工作流和 CI 编排三层组成，各层职责分明：
 
 ```mermaid
 flowchart TB
@@ -54,6 +56,8 @@ flowchart TB
 LVZ 扩展镜像用于 Axvisor 在 loongarch64 架构上的测试。龙芯的硬件虚拟化扩展（LVZ）需要定制版 QEMU，基础镜像中的标准 QEMU 不支持。该镜像从 `QEMU-LVZ` 仓库源码编译并安装到独立路径，通过 `AXBUILD_QEMU_SYSTEM_LOONGARCH64` 环境变量告知 axbuild 使用该版本。
 
 ## CI 流水线
+
+CI 流水线从变更检测开始，逐层执行格式检查、静态分析和多维度测试：
 
 ```mermaid
 flowchart TD

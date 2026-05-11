@@ -11,6 +11,8 @@ axbuild 的设计围绕三个核心目标：**统一的命令接口**（一个 `
 
 ## 调用链
 
+用户通过 `cargo xtask <cmd>` 发起命令，经 `tg-xtask` 包转发到 `axbuild::run()`，由 clap 解析后分派到各个子系统的执行入口。
+
 ```mermaid
 flowchart LR
     A["cargo xtask &lt;cmd&gt;"] --> B["tg-xtask<br/>(cargo run -p tg-xtask)"]
@@ -24,9 +26,7 @@ flowchart LR
     D --> J["Board → board::execute()"]
 ```
 
-用户在 workspace 根目录执行 `cargo xtask <cmd>` 时，Cargo 将任务委托给 `xtask` 包（即 `tg-xtask`），后者仅作为薄转发层调用 `axbuild::run()`。`run()` 内部通过 clap 解析命令行参数，将请求分派到 ArceOS、StarryOS、Axvisor 三个子系统的 `execute()` 入口，或直接处理 `test`（std 白名单测试）、`clippy`（静态检查）、`board`（板卡管理）等横切命令。
-
-这种分层设计的好处是：`xtask/src/main.rs` 仅负责调用 `axbuild::run()` 并映射退出码，所有业务逻辑都封装在 `scripts/axbuild` 中，使得 axbuild 既可以作为 xtask 的后端使用，也可以作为独立库被其他工具集成。
+`xtask/src/main.rs` 仅调用 `axbuild::run()` 并映射退出码，所有业务逻辑封装在 `scripts/axbuild` 中，这使得 axbuild 既可以作为 xtask 的后端使用，也可以作为独立库被其他工具集成。
 
 ## 三大能力
 

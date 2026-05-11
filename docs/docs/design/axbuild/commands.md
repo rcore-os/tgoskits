@@ -11,6 +11,8 @@ sidebar_label: "命令参考"
 
 ## 顶层命令
 
+顶层命令提供了面向操作的全局视图，覆盖构建、运行、测试和开发辅助四个类别。
+
 | 命令 | 能力 | 说明 | 实现位置 |
 |------|------|------|---------|
 | `cargo xtask <os> build` | 构建 | 编译 OS 产物 | `axbuild::<os>::build` |
@@ -24,9 +26,11 @@ sidebar_label: "命令参考"
 | `cargo xtask sync-lint` | 测试 | Relaxed 原子序检查 | `axbuild::sync_lint` |
 | `cargo xtask board ...` | 运行 | 板卡管理 (ls/connect/config) | `axbuild::board` |
 
-顶层命令提供了面向操作的全局视图。`cargo xtask <os> qemu` 等运行类命令会先触发构建，再执行运行，因此用户通常不需要单独先 `build` 再运行——一条命令即可完成编译到部署的全过程。板卡管理命令（`board ls`、`board connect`、`board config`）是独立的工具集，用于查看可用板卡、分配串口连接和配置 ostool-server 地址。
+`cargo xtask <os> qemu` 等运行类命令会先触发构建再执行运行，因此用户通常不需要单独先 `build` 再运行。板卡管理命令（`board ls`、`board connect`、`board config`）是独立的工具集，用于查看可用板卡、分配串口连接和配置 ostool-server 地址。
 
 ## ArceOS
+
+ArceOS 的命令特点是需要显式指定 `--package`（如 `arceos-httpserver`），因为 ArceOS 以模块化 app 的方式组织——每个包对应一个独立的可运行应用。
 
 ```text
 cargo xtask arceos <subcommand> [options]
@@ -45,9 +49,11 @@ cargo xtask arceos <subcommand> [options]
 
 **测试参数**：`--test-group`、`--test-case`、`--package`、`--list`
 
-ArceOS 的命令特点是需要显式指定 `--package`（如 `arceos-httpserver`、`arceos-filesystem`），因为 ArceOS 以模块化 app 的方式组织——每个包对应一个独立的可运行应用。`--plat_dyn` 控制是否使用动态平台加载（仅 aarch64 支持），`--smp` 设置对称多处理器核数。测试方面，ArceOS 支持 Rust 和 C 两类用例，通过 `--test-group` 选择测试组。
+`--plat_dyn` 控制是否使用动态平台加载（仅 aarch64 支持），`--smp` 设置对称多处理器核数。测试方面，ArceOS 支持 Rust 和 C 两类用例，通过 `--test-group` 选择测试组。
 
 ## StarryOS
+
+StarryOS 与 ArceOS 的主要区别在于：不需要 `--package`（编译整个内核），增加了 rootfs 管理命令，以及支持 `--stress` 快捷方式选择压力测试组。
 
 ```text
 cargo xtask starry <subcommand> [options]
@@ -72,9 +78,11 @@ cargo xtask starry <subcommand> [options]
 
 **测试参数**：`--test-group`、`--test-case`、`--stress`、`--list`
 
-StarryOS 与 ArceOS 的主要区别在于：不需要 `--package`（StarryOS 编译整个内核），增加了 rootfs 管理命令（`rootfs`、`defconfig`），以及支持 `--stress` 快捷方式选择压力测试组。StarryOS 的板卡运行通过 `ostool-server` 与远程板卡交互，需要指定 `--server` 和 `--port` 参数或通过 `board config` 预先配置。
+板卡运行通过 `ostool-server` 与远程板卡交互，需要指定 `--server` 和 `--port` 参数或通过 `board config` 预先配置。
 
 ## Axvisor
+
+Axvisor 作为 Hypervisor，增加了 `--vmconfigs` 参数用于指定虚拟机配置列表，以及 `image` 子命令管理 Guest 镜像，并独有 `test uboot` 测试模式。
 
 ```text
 cargo xtask axvisor <subcommand> [options]
@@ -97,7 +105,7 @@ cargo xtask axvisor <subcommand> [options]
 
 **测试参数**：`--test-group`、`--test-case`、`--list`、`--board`（board 测试）
 
-Axvisor 作为 Hypervisor，命令上增加了 `--vmconfigs` 参数用于指定虚拟机配置列表，以及 `image` 子命令管理 Guest 镜像。Axvisor 独有 `test uboot` 测试模式，通过 U-Boot 加载并验证 Hypervisor 和 Guest 组合的正确性。在 loongarch64 架构上运行时，axbuild 会自动搜索 LVZ 扩展版 QEMU。
+通过 U-Boot 加载并验证 Hypervisor 和 Guest 组合的正确性。在 loongarch64 架构上运行时，axbuild 会自动搜索 LVZ 扩展版 QEMU。
 
 ## 其他命令
 

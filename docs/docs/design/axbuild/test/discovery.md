@@ -11,6 +11,8 @@ sidebar_label: "用例发现"
 
 ## 发现流程
 
+发现算法采用两阶段栈式 DFS，先定位 build wrapper 再在其中查找 QEMU 用例：
+
 ```mermaid
 flowchart TD
     A["discover_qemu_cases(suite_dir, arch, target)"] --> B["discover_build_wrappers(suite_dir, target)"]
@@ -32,6 +34,8 @@ flowchart TD
 整个发现流程分为两个阶段：第一阶段 `discover_build_wrappers()` 扫描出所有构建边界，第二阶段在每个 wrapper 内扫描出具体的测试用例。两阶段设计确保了构建边界和运行边界的清晰分离——一个 wrapper 定义"用什么配置编译"，一个 case 定义"运行什么、如何判定"。
 
 ## 核心数据结构
+
+发现结果由两个核心结构体承载，分别表示构建边界和运行边界：
 
 ```rust
 // 发现的构建包装器
@@ -89,7 +93,7 @@ display_name 的命名规则确保了每个用例的唯一标识：以 build gro
 
 ## 按构建配置分组
 
-发现的 case 按 `build_config_path` 分组，每组只构建 OS 一次：
+发现的 case 通过 `BuildConfigRef` trait 和 `group_cases_by_build_config()` 函数按 `build_config_path` 分组：
 
 ```rust
 // BuildConfigRef trait —— 所有子系统 case 都实现此 trait

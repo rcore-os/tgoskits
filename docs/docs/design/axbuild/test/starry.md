@@ -9,6 +9,8 @@ StarryOS 的测试体系围绕 **normal/stress 双分组**和 **五种 pipeline 
 
 ## 命令
 
+StarryOS 提供 QEMU 和板级两个测试入口，通过 `--stress` 快捷方式可切换至压力测试组：
+
 ```text
 # QEMU 测试
 cargo xtask starry test qemu --arch <arch> [--test-group <group>] [--stress] [--test-case <case>]
@@ -20,6 +22,8 @@ QEMU 测试和板级测试使用不同的命令入口。`--stress` 是 `--test-g
 
 ## 分组
 
+StarryOS 测试用例按功能分为 normal 和 stress 两个组：
+
 | 分组 | 路径 | 选择方式 |
 |------|------|----------|
 | `normal` | `test-suit/starryos/normal/` | 默认 |
@@ -29,15 +33,17 @@ normal 组包含功能测试（如 smoke、syscall、affinity），stress 组包
 
 ## 用例类型
 
+StarryOS 支持全部五种 pipeline 类型，取决于用例目录中是否包含 `c/`、`sh/`、`python/` 子目录或 `test_commands`：
+
 - **Plain**：仅 `qemu-{arch}.toml`（如 `smoke`、`affinity`）
 - **C**：含 `c/` 子目录，CMake 交叉编译（如 `bugfix`、`test-mremap`）
 - **Shell**：含 `sh/` 子目录（如 `busybox`）
 - **Python**：含 `python/` 子目录（如 `python-hello`）
 - **Grouped**：`qemu-{arch}.toml` 中使用 `test_commands`（如 `bugfix`）
 
-StarryOS 支持全部五种 pipeline 类型，这得益于其完整的用户空间环境（Alpine Linux rootfs）。C 用例通过 musl 交叉编译器编译为静态可执行文件，Shell 用例直接复制到 rootfs 的 `/usr/bin/`，Python 用例需要先在 rootfs 中安装 python3 解释器。
-
 ## QEMU 执行流程
+
+完整的 QEMU 测试流程从 CLI 参数解析开始，经过用例发现、rootfs 准备、资产注入、分组构建到逐 case 运行和结果汇总：
 
 ```mermaid
 sequenceDiagram
@@ -102,6 +108,8 @@ total: 13.24s
 报告按通过和失败分类列出每个用例的 display_name 和耗时，最后给出总耗时。这种格式便于快速定位失败的用例，同时评估整体测试性能。
 
 ## Board 执行流程
+
+板级测试复用与 QEMU 测试相同的构建和发现基础设施，差异仅在于运行目标为物理板卡：
 
 1. 从 `test-suit/starryos/<group>/` 递归发现 `board-*.toml`
 2. 每个 board config 关联到最近的 build wrapper

@@ -11,6 +11,8 @@ sidebar_label: "测试概述"
 
 ## 总体流程
 
+测试流程从参数解析开始，经历发现、分组、构建、资产准备、运行到结果汇总：
+
 ```mermaid
 flowchart TD
     A["cargo xtask &lt;os&gt; test qemu"] --> B[参数解析 / 目标架构归一化]
@@ -55,6 +57,8 @@ flowchart TD
 `suite.rs` 是测试目录结构的入口，提供统一的路径解析函数，使得各子系统无需硬编码自己的测试目录路径。`qemu.rs` 和 `board.rs` 分别封装了 QEMU 和板级测试的发现与结果聚合逻辑。`case.rs` 是资产编排的核心，负责判定用例类型、准备 per-case rootfs 和管理缓存。`build.rs` 处理需要编译步骤的资产（C、Grouped、Python）。
 
 ## 测试目录结构
+
+三个子系统的测试资产统一位于 `test-suit/` 目录下，按 OS 名称分组：
 
 ```text
 test-suit/

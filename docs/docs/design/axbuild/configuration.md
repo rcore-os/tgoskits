@@ -24,6 +24,8 @@ TGOSKits 支持四种 CPU 架构，每种架构对应一个固定的 target trip
 
 ### 解析规则
 
+`resolve_arch_and_target()` 根据用户提供的参数组合选择对应的解析策略：
+
 ```mermaid
 flowchart TD
     A["resolve_arch_and_target()"] --> B{arch + target 都指定?}
@@ -44,15 +46,17 @@ flowchart TD
 
 ### 默认值
 
+各子系统使用不同的默认架构，对应其最常用的开发和测试目标：
+
 | 子系统 | 默认 arch | 默认 target |
 |--------|-----------|-------------|
 | ArceOS | `aarch64` | `aarch64-unknown-none-softfloat` |
 | StarryOS | `riscv64` | `riscv64gc-unknown-none-elf` |
 | Axvisor | `aarch64` | `aarch64-unknown-none-softfloat` |
 
-各子系统的默认值对应其最常用的开发和测试架构：ArceOS 和 Axvisor 主要在 aarch64 上验证，StarryOS 以 riscv64 为主。
-
 ### 特殊行为
+
+除默认值差异外，各架构还有一些需要注意的特殊行为：
 
 - **plat_dyn**：仅 `aarch64` 支持 `plat_dyn = true`（动态平台加载），其他架构使用静态平台绑定
 - **to_bin**：`x86_64` 不使用 `--bin`（直接生成 ELF 即可），其余架构默认将 ELF 转为 raw binary
@@ -74,6 +78,8 @@ Snapshot 机制解决了一个常见的工作流痛点：用户首次执行 `car
 
 ### 示例
 
+典型的 ArceOS Snapshot 文件内容如下，包含 package 名称、架构和 QEMU/U-Boot 运行配置：
+
 ```toml
 # .arceos.toml
 package = "arceos-httpserver"
@@ -89,6 +95,8 @@ uboot_config = "..."
 ```
 
 ### 读写时序
+
+命令执行时 Snapshot 的加载与写回遵循严格的时序，确保 CLI 参数与持久化状态正确合并：
 
 ```mermaid
 sequenceDiagram
@@ -114,6 +122,8 @@ sequenceDiagram
 `SnapshotPersistence` 枚举控制是否写回：用户手动调用的命令使用 `Store`（保留参数供下次复用），测试套件使用 `Discard`（不污染用户的 Snapshot 文件）。
 
 ### 合并策略
+
+CLI 参数与 Snapshot 的合并遵循"用户显式指定优先"原则：
 
 | 参数 | 规则 |
 |------|------|
@@ -142,7 +152,7 @@ target/axbuild/config/
 
 ### ArceosBuildInfo
 
-三套子系统共用的核心类型：
+三套子系统共用 `ArceosBuildInfo` 作为核心配置类型：
 
 ```rust
 pub struct ArceosBuildInfo {
@@ -161,6 +171,8 @@ pub struct ArceosBuildInfo {
 
 ### 加载流程
 
+`load_or_create_build_info()` 按以下逻辑获取或创建 Build Info 文件：
+
 ```mermaid
 flowchart TD
     A["load_or_create_build_info(path)"] --> B{文件存在?}
@@ -176,6 +188,8 @@ flowchart TD
 对于 Axvisor，首次创建 Build Info 时还会尝试从 `os/axvisor/configs/board/` 目录复制与板卡名匹配的默认配置，这使得 Axvisor 的 `defconfig` 流程能直接提供可用的初始配置。
 
 ### 环境变量注入
+
+Build Info 的字段在编译时转换为以下环境变量：
 
 | 环境变量 | 来源 | 说明 |
 |----------|------|------|

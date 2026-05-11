@@ -11,6 +11,8 @@ sidebar_label: "构建管线"
 
 ## 流程总览
 
+八个阶段从前到后构成一条连续的流水线，每阶段以上一阶段的输出为输入：
+
 ```mermaid
 flowchart TD
     A["cargo xtask &lt;os&gt; build"] --> B[1. 初始化 AppContext]

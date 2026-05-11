@@ -11,6 +11,8 @@ sidebar_label: "运行时环境"
 
 ## 执行方法
 
+`AppContext` 提供五个方法覆盖构建到运行的各种组合：
+
 | 方法 | 功能 | ostool 调用 |
 |------|------|-------------|
 | `build()` | 纯编译 | `Tool::cargo_build()` |
@@ -22,6 +24,8 @@ sidebar_label: "运行时环境"
 五个方法中，`build()` 仅编译不运行；`qemu()`、`uboot()` 和 `board()` 先编译再运行；`run_qemu()` 仅运行已编译好的产物，用于测试场景中每组构建后逐 case 运行。`qemu()` 和 `uboot()` 调用 ostool 的 `cargo_run()`（传入不同的运行模式），`board()` 调用 `cargo_run_board()` 与远程板卡交互，`run_qemu()` 调用 ostool 的 `run_qemu()` 直接启动 QEMU。
 
 ## QEMU 运行
+
+QEMU 运行流程分为配置获取、环境准备、子系统补丁和执行四个阶段：
 
 ```mermaid
 flowchart TD
