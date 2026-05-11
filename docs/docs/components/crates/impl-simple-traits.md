@@ -1,4 +1,4 @@
-# `impl-simple-traits` 技术文档
+# `impl-simple-traits`
 
 > 路径：`components/crate_interface/test_crates/impl-simple-traits`
 > 类型：库 crate / `crate_interface` 稳定测试矩阵的实现端资产
@@ -8,7 +8,7 @@
 
 `impl-simple-traits` 的真实职责很单一：为 `define-simple-traits` 中定义的接口提供一组确定性实现，并通过 `#[impl_interface]` 把这些实现导出为可链接的符号，供 `test-simple` 在最终二进制里调用。它不是 ArceOS、StarryOS 或 Axvisor 的正式运行时组件，而是 `crate_interface` 多 crate 稳定测试矩阵中的“实现端”测试资产。
 
-## 1. 架构设计
+## 架构设计
 
 ### 1.1 真实定位
 
@@ -53,9 +53,9 @@
 - 它默认每个接口在同一最终二进制里只有一份实现。
 - 它的实现值首先服务测试辨识度，而不是功能正确性之外的含义。
 
-## 2. 核心功能
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 为稳定路径的接口样例导出强符号实现。
 - 覆盖基础调用、命名空间调用、`gen_caller` 调用和组合路径。
@@ -73,13 +73,13 @@
 
 真正被验证的是链接期符号绑定，而不是对象方法派发。
 
-### 2.3 最关键的边界澄清
+### 边界说明
 
 `impl-simple-traits` 不是“供运行时直接依赖的一组接口实现”，而是 `crate_interface` 稳定测试矩阵中的实现端测试资产；这里公开的 `SimpleImpl`、`CallerImpl` 等类型本质上是符号导出和链接观测的载体。
 
-## 3. 依赖关系
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -96,7 +96,7 @@
 | 脚本入口 | `run_tests.sh simple` | 稳定路径的一键执行入口 |
 | CI 入口 | `cargo run -p test-simple` | 在 `crate_interface` CI 中持续回归 |
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 什么时候应该修改它
 
@@ -119,7 +119,7 @@
 - 不要把它当作可复用运行时后端。
 - 不要在这里测试弱默认实现回退；那属于 `impl-weak-traits` / `impl-weak-partial` 矩阵。
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前测试方式
 
@@ -142,7 +142,7 @@
 - 若断言值与默认值或其他场景过于接近，失败时难以定位。
 - 若有人误以为它是正式实现库并在主线代码复用，会把测试资产和运行时组件混淆。
 
-## 6. 跨项目定位
+## 跨项目定位
 
 | 项目 | 与本 crate 的关系 | 实际意义 |
 | --- | --- | --- |
@@ -150,6 +150,6 @@
 | StarryOS | 当前源码下未见 `os/StarryOS` 直接引用 `crate_interface` | 本 crate 对 StarryOS 的价值是仓库级基础设施回归，而不是运行时依赖 |
 | Axvisor | `components/axvisor_api` 把 `crate_interface` 封装成 API 宏能力，但不会直接消费本 crate | 本 crate 为 Axvisor 相关封装提供底层实现端语义的回归样本 |
 
-## 7. 总结
+## 总结
 
 `impl-simple-traits` 的价值不在于它“实现了几个 trait”，而在于它把 `crate_interface` 最基础、最常用的实现端路径钉成了一个可重复链接、可稳定断言的测试样例。只要它与 `test-simple` 的闭环仍然成立，`crate_interface` 在 stable Rust 下的多 crate 实现模型就仍然成立。

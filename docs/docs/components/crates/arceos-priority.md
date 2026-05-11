@@ -1,4 +1,4 @@
-# `arceos-priority` 技术文档
+# `arceos-priority`
 
 > 路径：`test-suit/arceos/task/priority`
 > 类型：测试入口 crate
@@ -10,7 +10,7 @@
 
 最关键的边界是：**这不是调度器性能 benchmark，也不是通用优先级框架；它只是一个围绕“设置当前任务优先级后，系统行为是否还自洽”的回归入口。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 工作负载设计
 源码里定义了 5 组 `TaskParam`：
 
@@ -50,7 +50,7 @@ flowchart LR
 
 而默认 `qemu-riscv64.toml` 使用 `-smp 4`，所以在自动回归里，这个顺序断言通常不会触发。当前自动化更偏向“API 与计算结果 smoke test”，而不是严格调度次序验证。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 测试覆盖内容
 这个 crate 实际覆盖了三件事：
 
@@ -75,7 +75,7 @@ flowchart LR
 
 它只在可控场景下验证优先级设置接口及其基本可观察效果。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     test["arceos-priority"] --> ax-std["ax-std(alloc, multitask)"]
@@ -83,21 +83,21 @@ graph LR
     ax-api --> ax-task["ax-task / scheduler"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `ax-std(alloc, multitask)`：需要堆对象、线程和 `join`。
 - `sched-rr` / `sched-cfs`：通过 feature 透传到底层调度器。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax_api::task::ax_set_current_priority`
 - `ax-task::set_priority`
 - 底层调度器实现（FIFO/RR/CFS 中的一种）
 
-### 3.3 主要消费者
+### 主要消费者
 - `ax-task` 调度器优先级路径改动后的回归。
 - `cargo arceos test qemu` 自动收集的任务语义测试集合。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cargo xtask arceos run --package arceos-priority --arch riscv64
 ```
@@ -108,7 +108,7 @@ cargo xtask arceos run --package arceos-priority --arch riscv64
 cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 若要验证顺序，必须明确是单核还是多核。
 2. 若要验证 CFS 的 `nice` 语义，必须同时确认对应 feature 已打开。
 3. 不要把输出时间当成性能基准报告；这里只能做相对语义检查。
@@ -122,7 +122,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 
 否则默认 4 核配置下，顺序本来就不应被写死。
 
-## 5. 测试策略
+## 测试
 ### 5.1 当前自动化形态
 `qemu-riscv64.toml` 使用：
 
@@ -142,12 +142,12 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 多核下不要误把日志顺序波动理解为 bug。
 - 调度器 feature 切换后，要重新评估当前断言是否仍合理。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 它是 ArceOS 调度器优先级语义的专门回归入口，但只关注任务侧行为，不属于可复用子系统。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 不直接运行它；不过共享任务调度实现改动时，这种短路径回归依然具有预警价值。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 也不会直接依赖它。它的跨项目意义只在于：先用简单工作负载确认共享调度基础没有回退，再进入更复杂场景。

@@ -1,4 +1,4 @@
-# `axvcpu` 技术文档
+# `axvcpu`
 
 > 路径：`components/axvcpu`
 > 类型：库 crate
@@ -8,9 +8,9 @@
 
 `axvcpu` 是 Axvisor 虚拟 CPU 子系统的架构无关抽象层。它并不直接实现 VMCS、EL2 寄存器切换或 RISC-V H 扩展细节，而是把这些架构相关逻辑收敛进 `AxArchVCpu` / `AxArchPerCpu` 两组 trait，由 `arm_vcpu`、`riscv_vcpu`、`x86_vcpu` 等后端实现；同时，它自己负责提供统一的 vCPU 生命周期、状态机、per-CPU 当前 vCPU 绑定、HAL 边界和统一 VM exit 枚举。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 如果把 Axvisor 的 vCPU 栈拆分，可以得到这样一条层次：
 
@@ -24,7 +24,7 @@
 - 让 `axvm` 和更上层逻辑不必为不同架构写多套状态机和调度骨架
 - 定义跨架构共用的 VM exit 语义
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -172,9 +172,9 @@ flowchart LR
 
 这里需要如实记录一个源码细节：方法名当前拼写为 `irq_hanlder`，而不是更自然的 `irq_handler`。这不影响接口使用，但对阅读和实现都应明确说明。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 为不同架构提供统一的 vCPU 生命周期外壳
 - 维护显式的 vCPU 状态机
@@ -213,9 +213,9 @@ flowchart TD
 - `os/axvisor` 在物理 CPU 初始化阶段创建并启用 `AxPerCpu`
 - 各架构后端通过 `AxVCpuExitReason` 把硬件 trap 语义翻译给 `axvm`
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -225,7 +225,7 @@ flowchart TD
 | `ax-percpu` | current vCPU 与 per-CPU 虚拟化状态 |
 | `memory_addr` | 地址相关基础类型 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `axvm`
 - `arm_vcpu`
@@ -247,7 +247,7 @@ graph TD
     F --> G[Axvisor]
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 新增架构后端时的接入步骤
 
@@ -272,7 +272,7 @@ graph TD
 - `AxVCpuExitReason` 是否完整覆盖架构后端返回语义
 - `CURRENT_VCPU` 是否在架构后端执行期间正确可见
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前已有测试
 
@@ -297,7 +297,7 @@ graph TD
 - `CURRENT_VCPU` 通过原始指针维护，虽然高效，但必须严格遵守调用约束。
 - 抽象名称与具体架构实现之间存在语义差，例如 `set_ept_root()` 在非 x86 上只是统一接口名。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -305,6 +305,6 @@ graph TD
 | StarryOS | 当前仓库未见直接主线接入 | 非核心路径 | 当前仓库中没有证据表明 StarryOS 直接围绕 `axvcpu` 组织运行时 |
 | Axvisor | vCPU 主线核心基础件 | 架构无关 vCPU 外壳与退出协议 | 是 `arm_vcpu`、`riscv_vcpu`、`x86_vcpu` 与 `axvm` 之间的中间层，决定 vCPU 生命周期和 VM exit 协议长什么样 |
 
-## 7. 总结
+## 总结
 
 `axvcpu` 的核心贡献，是把各架构高度异构的 vCPU 执行后端压缩到一套统一抽象里：`AxArchVCpu` 负责硬件相关细节，`AxVCpu` 负责状态机和外壳语义，`AxVCpuExitReason` 负责向上沟通。对 Axvisor 来说，它就是“不同 CPU 架构的 vCPU 后端之上，统一的那一层”。

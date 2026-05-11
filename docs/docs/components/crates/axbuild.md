@@ -1,4 +1,4 @@
-# `axbuild` 技术文档
+# `axbuild`
 
 > 路径：`scripts/axbuild`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `axbuild` 是当前工作区里承上启下的宿主侧构建基础库。它不属于目标镜像，也不参与内核热路径；它负责把“应用配置、平台配置、feature 装配、QEMU 参数、产物路径”这些宿主机侧信息整理成可执行的构建/运行计划，并将底层执行委托给 `ostool`、`ax-config-gen`、`cargo axplat` 等工具。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `axbuild` 的最上层接口很简洁：
 
 - `lib.rs` 只暴露两个子域：`arceos` 和 `axvisor`
@@ -76,8 +76,8 @@ flowchart TD
 
 这使得 `axbuild` 同时服务 ArceOS/StarryOS 的统一构建和 Axvisor 的专用宿主工具链。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 解析和合并 ArceOS 构建配置。
 - 生成 `.axconfig.toml`、必要的 `.qemu.toml` 等中间产物。
 - 计算模块 feature 与库 feature 的正确装配方式。
@@ -108,7 +108,7 @@ flowchart TD
 
 两者经常一起出现，但职责边界非常明确。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     xtask["tg-xtask / Axvisor xtask"] --> axbuild["axbuild"]
@@ -118,14 +118,14 @@ graph LR
     axbuild --> axvmconfig["axvmconfig"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ostool`：真正执行 cargo 构建和 QEMU 运行的底层桥接。
 - `cargo_metadata`：用于解析工作区和依赖关系。
 - `toml`、`serde`、`serde_json`、`schemars`：配置读写和结构化数据处理。
 - `axvmconfig`：Axvisor VM 配置相关工具链依赖。
 - `reqwest`、`flate2`、`tar`、`sha2`：Axvisor 镜像下载、解压和校验能力。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - 根工作区 `tg-xtask`
 - `os/axvisor` 宿主侧命令
 
@@ -134,7 +134,7 @@ graph LR
 - StarryOS 构建/运行流程（通过根 `tg-xtask` 和 ArceOS 构建能力复用）
 - Axvisor 的镜像测试流程
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 适合在这里修改的内容
 - 宿主侧配置格式与覆写规则
 - feature 计算与平台解析
@@ -142,7 +142,7 @@ graph LR
 - QEMU 配置拼装
 - Axvisor 宿主侧镜像与测试工具
 
-### 4.2 修改时的关键约束
+### 注意事项
 1. 不要把目标机运行时代码放进 `axbuild`，它必须保持宿主侧纯工具属性。
 2. 改 feature 逻辑时，要同时检查 `FeatureResolver` 与 `ostool::build_features()`。
 3. 改平台解析逻辑时，要一起检查 `cargo axplat info` 和链接脚本参数生成。
@@ -155,8 +155,8 @@ graph LR
 - 涉及 QEMU 行为时，再做一次宿主侧运行验证。
 - 改 Axvisor 相关模块时，还应验证镜像下载或 xtest 流程。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 `axbuild` 已有较多宿主侧单元测试，主要分布在：
 
 - `src/arceos/build.rs`
@@ -183,12 +183,12 @@ graph LR
 - 构建环境变量与链接参数生成
 - QEMU 测试自动化链路
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 对 ArceOS 来说，`axbuild` 是宿主侧构建总控：它把配置文件、平台选择、feature 装配、产物输出和 QEMU 运行串成一条一致的工具链。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 通过根工作区的命令系统复用 `axbuild` 的 ArceOS 构建能力，因此它在 StarryOS 中承担的是“共享构建后端”角色，而不是 StarryOS 私有逻辑。
 
-### 6.3 Axvisor
+### Axvisor
 对 Axvisor 来说，`axbuild` 不只是通用构建库，还包含镜像下载和 xtest 等专用宿主工具模块。因此它在 Axvisor 侧既是公共基础设施，也是专用开发工具库，但始终停留在宿主机边界之外。

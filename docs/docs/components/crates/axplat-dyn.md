@@ -1,4 +1,4 @@
-# `axplat-dyn` 技术文档
+# `axplat-dyn`
 
 > 路径：`platform/axplat-dyn`
 > 类型：库 crate
@@ -8,9 +8,9 @@
 
 `axplat-dyn` 不是 `cargo-axplat` 生成的那类“用 `axconfig.toml` 固化板级常量”的常规 `axplat-*` 平台包。它更像一层桥接适配器：把 `somehal` 已经建立好的启动入口、FDT 地址、内存图、时钟、IRQ、电源与 SMP 元数据转译成 `axplat` 的统一契约；同时再补上一条 `ax-driver` 动态设备模型所需的设备探测与 DMA glue。这里的 `dyn` 真正表示“平台事实来自运行时抽象层和探测结果”，而不是“把平台包当作运行时可装卸模块加载”。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 `axplat-dyn` 在当前仓库里的位置可以概括为：
 
@@ -24,7 +24,7 @@
 - 普通 `axplat-*` 平台包主要把编译期 `axconfig.toml` 变成板级常量，再围绕这些常量实现 `axplat` 接口。
 - `axplat-dyn` 则把 `somehal` 暴露的运行时事实直接转成 `axplat` 接口，不以 `axconfig.toml` 为主线。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -159,9 +159,9 @@ flowchart TD
 - 与 `somehal` 的边界：真正的“平台事实来源”在 `somehal`，包括入口、内存图、时钟、IRQ、电源与 CPU 元数据；`axplat-dyn` 负责转译，而不是重新探测 CPU 模式或自己管理整套启动环境。
 - 与 `cargo-axplat` / `ax-config-gen` 的边界：当前源码中保留了一段被注释掉的 `config` 模块草稿，但现行实现并没有启用 `axconfig.toml -> AX_CONFIG_PATH -> include_configs!` 这条常规平台包主线，因此它不属于典型 `axplat-*` 配置化平台生态。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 作为 `somehal` 到 `axplat` 的桥接层，提供统一的启动、内存、时间、中断和电源接口实现。
 - 通过 `build.rs + link.ld` 生成适配当前内核镜像的 `axplat.x` 链接脚本扩展。
@@ -186,9 +186,9 @@ flowchart TD
 - 需要配合 `ax-driver` 的 `dyn` 模型，在运行时探测并收集多实例块设备。
 - 需要实验性地复用一套更“运行时驱动”的平台 bring-up 路径，而不是重新写一个静态 `axplat-*` 板级包。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -202,7 +202,7 @@ flowchart TD
 | `dma-api` | 为设备 DMA 提供抽象接口 |
 | `heapless`、`spin` | 用于固定容量缓存与锁/一次初始化结构 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `os/arceos/modules/axhal`：通过 `plat-dyn` feature 选择该平台路径。
 - `os/arceos/modules/axdriver`：通过 `dyn` feature 调用其动态设备探测入口。
@@ -224,7 +224,7 @@ graph TD
     E --> H[复用 ArceOS 模块栈的上层系统]
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 何时应使用这条路径
 
@@ -254,9 +254,9 @@ graph TD
 - 当前 crate 根部有 `#![cfg(not(any(windows, unix)))]`，说明主机侧 `cargo test`/`cargo check` 不是它的主要验证面。
 - 源码中虽保留了被注释掉的 `config` 模块草稿，但现行代码并不实际消费 `AX_CONFIG_PATH` 或 `axconfig.toml`。
 
-## 5. 测试策略
+## 测试
 
-### 5.1 当前有效验证面
+### 测试覆盖
 
 - 裸机目标上的完整启动冒烟：确认 `somehal` 入口能贯通到 `ax_plat::call_main()`。
 - 内存图验证：检查 `somehal::mem::memory_map()` 过滤出的 RAM、保留区和 MMIO 是否与上层预期一致。
@@ -276,7 +276,7 @@ graph TD
 - 该 crate 同时承担“平台契约 glue”和“设备探测 glue”两类职责，回归面比普通平台包更宽。
 - 当前动态设备路径主要覆盖块设备，若上层以为 `dyn` 模式天然涵盖所有设备类型，容易产生错误预期。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -284,6 +284,6 @@ graph TD
 | StarryOS | 仅在复用同一模块栈时才可能间接接入 | 非默认平台包路径 | 它不是 `axplat_crates/platforms` 中那类标准发行平台包，只有在共享 ArceOS 底层模块时才会发挥作用 |
 | Axvisor | 宿主侧若共享 `ax-hal`/`ax-driver` 路径时可复用 | 宿主 bring-up 桥接层 | 可为基于 ArceOS 模块栈的宿主环境提供动态平台 glue，但虚拟化核心并不在本 crate 中 |
 
-## 7. 总结
+## 总结
 
 `axplat-dyn` 的价值不在“又实现了一套新的板级常量配置”，而在它把 `somehal` 的运行时平台事实和 `rdrive` 的设备探测能力拼成了 `axplat`/`ax-driver` 能消费的标准形态。它既不是常规 `axplat-*` 平台包，也不是运行时装卸模块，而是一条面向动态平台事实和动态驱动模型的桥接路径。理解这一点，是读懂它与 `axplat`、`ax-plat-macros`、`cargo-axplat` 及上层构建系统边界的关键。

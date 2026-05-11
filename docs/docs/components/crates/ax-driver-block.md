@@ -1,4 +1,4 @@
-# `axdriver_block` 技术文档
+# `axdriver_block`
 
 > 路径：`components/axdriver_crates/axdriver_block`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `axdriver_block` 不是文件系统，也不是块缓存层。它的真实定位是 ArceOS 驱动栈里的块设备类别接口 crate：一方面定义统一的 `BlockDriverOps`，另一方面在 feature 打开时提供少量叶子块设备实现，例如 `ramdisk`、`sdmmc`、`bcm2835-sdhci` 和 `ahci`。上层 `ax-driver` 负责探测与聚合，`ax-fs`/`ax-fs-ng` 才是消费块设备并组织文件系统语义的地方。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 这个 crate 同时承担两类职责：
 
 - **类别接口层**：通过 `BlockDriverOps` 统一块设备的容量、块大小、读写和刷盘语义。
@@ -74,14 +74,14 @@
 - `axdriver_block` 的核心价值首先是 trait 契约。
 - 具体实现不一定非要写在本 crate 内，也可以由其它 crate 适配后满足 `BlockDriverOps`。
 
-## 2. 核心功能说明
-### 2.1 主要能力
+## 核心功能
+### 功能概览
 - 提供统一的块设备 trait `BlockDriverOps`。
 - 为 RAM 盘、SD/MMC、BCM2835 SDHCI、AHCI 等设备提供可选实现入口。
 - 复用 `ax-driver-base` 的名称、类别和错误模型。
 - 作为 `ax_driver_virtio::VirtIoBlkDev` 与 `platform/axplat-dyn` 动态块设备包装的共同契约。
 
-### 2.2 典型调用链
+### 调用链路
 当前仓库里最典型的使用主线是：
 
 1. `ax_runtime::init_drivers()` 调用 `ax-driver::init_drivers()`。
@@ -96,8 +96,8 @@
 - `flush()` 在多个实现里目前为空操作或恒成功，语义上更接近“同步点占位接口”。
 - 各实现对缓冲区对齐、长度和块大小的要求不同，调用方不能假设所有块驱动都能接受任意字节数。
 
-## 3. 依赖关系图谱
-### 3.1 直接依赖
+## 依赖关系
+### 直接依赖
 | 依赖 | 作用 |
 | --- | --- |
 | `ax-driver-base` | 统一设备元信息和错误类型 |
@@ -106,7 +106,7 @@
 | `bcm2835-sdhci` | `bcm2835sdhci` 模块的底层控制器实现 |
 | `log` | 初始化与错误日志 |
 
-### 3.2 主要消费者
+### 主要消费者
 - `os/arceos/modules/axdriver`
 - `components/axdriver_crates/axdriver_virtio`
 - `platform/axplat-dyn`
@@ -118,7 +118,7 @@
 - 向上输出统一的 `BlockDriverOps` 语义。
 - 由 `ax-driver` 聚合层决定哪些设备真正进入系统。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 何时应在这里扩展
 适合放进 `axdriver_block` 的内容有两类：
 
@@ -138,20 +138,20 @@
 - 仅在本 crate 中加入一个模块，并不会自动进入 `ax-driver` 探测流程。
 - `flush()` 语义在不同实现里强弱不同，不能想当然地把它当作硬件缓存落盘保证。
 
-## 5. 测试策略
-### 5.1 当前有效验证面
+## 测试
+### 测试覆盖
 该 crate 没有独立的 `tests/` 目录，验证主要依赖：
 
 - `ramdisk` 的内存读写行为。
 - `ax-driver` 初始化阶段是否能真正注册块设备。
 - `ax-fs` / `ax-fs-ng` 是否能基于这些设备完成挂载和读写。
 
-### 5.2 建议补充的单元测试
+### 单元测试
 - `ramdisk` 的块对齐、越界与多块读写。
 - `sdmmc` 与 `bcm2835sdhci` 的参数检查和错误映射。
 - `BlockDriverOps` 约定下 `num_blocks() * block_size()` 的边界一致性。
 
-### 5.3 集成测试重点
+### 集成测试
 - `virtio-blk`、`ramdisk`、`sdmmc` 至少各保留一条整机启动路径。
 - 文件系统挂载和基础 I/O 回归。
 - 若补齐 `ahci` 接线，应新增对应的总线探测和 BAR 配置验证。
@@ -160,12 +160,12 @@
 - Feature 已声明但探测主线未接线，是当前最容易引入误判的地方。
 - 块大小和缓冲区约束一旦处理错误，问题通常会在更上层文件系统中以数据损坏形式出现。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 这是当前仓库里的主消费方。ArceOS 通过 `ax-driver` 和文件系统模块把它作为块设备类别契约和部分内建驱动实现使用。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 在当前仓库中没有把 `axdriver_block` 当成独立块子系统直接使用；它更多是通过共享的 ArceOS 底层模块栈间接受益。
 
-### 6.3 Axvisor
+### Axvisor
 当前 Axvisor 代码主线更偏向 `rd_block` 与自身驱动体系，而不是直接依赖 `axdriver_block`。因此不应把本 crate 写成 Axvisor 的通用块设备框架。

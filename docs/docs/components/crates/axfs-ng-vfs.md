@@ -1,4 +1,4 @@
-# `axfs-ng-vfs` 技术文档
+# `axfs-ng-vfs`
 
 > 路径：`components/axfs-ng-vfs`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `axfs-ng-vfs` 是新文件系统栈真正的核心抽象层。它不是老 `axfs_vfs` 那种“只有一组 trait 的薄接口”，而是完整拥有 `Filesystem`、`Mountpoint`、`Location`、`DirEntry`、元数据模型、目录项缓存、挂载图与路径语义的对象模型库。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `axfs-ng-vfs` 解决的是新栈里“怎样表达一个可挂载、可缓存、可携带元数据、可跨项目复用的 VFS 对象模型”。
 
 它的定位可以分成三层理解：
@@ -18,7 +18,7 @@
 - 对高层文件接口：提供 `Location`、`Mountpoint`、`Metadata`、`NodeFlags`、`Path`/`PathBuf` 等“有状态对象”，让上层不必自己重新维护挂载树或路径解析。
 - 对跨项目消费者：ArceOS 的 `ax-fs-ng`、`ax-net-ng` 的 Unix socket、StarryOS 的 pseudofs 都可以在同一套节点语义上工作。
 
-### 1.2 模块划分
+### 模块结构
 - `src/fs.rs`：定义 `FilesystemOps`、`Filesystem` 和 `StatFs`。这是“一个文件系统实例”的外部门面。
 - `src/node/mod.rs`：定义 `NodeOps`、`DirEntry`、`Reference`、`TypeMap`、`NodeFlags` 等共用对象，是节点对象图的核心。
 - `src/node/dir.rs`：定义 `DirNodeOps`、目录项缓存、挂载点引用与目录操作。
@@ -70,8 +70,8 @@ graph TD
 - `axfs-ng-vfs` 则显式拥有 `Mountpoint`、`Location`、`MetadataUpdate`、`NodeFlags`、`Pollable` 等一整套对象模型。
 - `axfs_vfs` 更像“旧栈的 ABI 契约”，`axfs-ng-vfs` 更像“新栈的 VFS 运行时对象层”。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 表达文件系统实例与挂载点。
 - 表达目录节点、文件节点和目录项引用。
 - 提供跨挂载点路径解析、挂载与卸载。
@@ -89,12 +89,12 @@ graph TD
 - `DirNodeOps::read_dir()` 的回调式 `DirEntrySink` 设计要求实现者避免在回调里再次递归访问同一目录，以免死锁。
 - `unmount()` 只能作用在挂载点根节点；如果还有子挂载点，必须先清理，或者改用 `unmount_all()`。
 
-### 2.4 真实使用场景
+### 使用场景
 - `ax-fs-ng` 用它组织 ext4/FAT 根文件系统、任务局部 cwd 与页缓存共享。
 - `ax-net-ng` 用它把 Unix socket 地址映射到文件节点。
 - StarryOS 用它实现 `tmpfs`、`devfs`、`procfs`、`sysfs` 一类 pseudofs，并支撑文件系统调用层。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax_errno["ax-errno"] --> current["axfs-ng-vfs"]
@@ -105,12 +105,12 @@ graph LR
     current --> starry_pseudofs["StarryOS pseudofs / file layer"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-errno`：统一错误类型。
 - `axpoll`：文件/节点轮询接口。
 - `spin`、`hashbrown`、`smallvec`：为目录项缓存、挂载点管理与轻量集合提供支撑。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-fs-ng`：最主要的高层消费者。
 - `ax-net-ng`：把 socket 地址空间接到文件系统对象模型里。
 - StarryOS：在 pseudofs、文件描述符层和设备节点模型中大量使用。
@@ -119,8 +119,8 @@ graph LR
 - 具体文件系统实现依赖 `axfs-ng-vfs`，但不必了解更高层 `FsContext` 或页缓存。
 - `axfs-ng-vfs` 自身不负责“块设备选择”或“默认根文件系统初始化”；那是 `ax-fs-ng` 的职责。
 
-## 4. 开发指南
-### 4.1 接入方式
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 axfs-ng-vfs = { workspace = true }
@@ -137,17 +137,17 @@ axfs-ng-vfs = { workspace = true }
 - 实现 `rename()` 时务必考虑目录替换、非空目录、祖先关系与跨设备限制。
 - 实现 `read_dir()` 时要明确 offset 语义，因为高层迭代器会依赖它继续遍历。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 当前 crate 自带的显式测试主要集中在 `src/path.rs`，用于验证路径组件前后向遍历与 `file_name()` 语义。
 
-### 5.2 建议的单元测试
+### 单元测试
 - `Location::mount()`/`unmount()`/`unmount_all()`。
 - 目录项缓存命中与失效。
 - `rename()` 的跨设备拒绝与祖先目录保护。
 - `user_data()` 在共享缓存与节点扩展中的生命周期。
 
-### 5.3 建议的集成测试
+### 集成测试
 - `ax-fs-ng` 的页缓存共享状态是否正确挂在 `user_data()` 上。
 - Unix socket 路径绑定与 `BindSlot` 复用。
 - StarryOS pseudofs 在多挂载点、多层目录和动态目录项下的行为。
@@ -158,12 +158,12 @@ axfs-ng-vfs = { workspace = true }
 - `is_cacheable()` 与目录项缓存的一致性。
 - `absolute_path()` 在多层挂载链下的恢复结果。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `axfs-ng-vfs` 是 ArceOS 新文件系统栈的底层对象模型。`ax-fs-ng` 之所以能拥有更完整的路径、元数据和挂载语义，根基就在这里。
 
-### 6.2 StarryOS
+### StarryOS
 在 StarryOS 中，它的地位更接近“文件系统内核框架”。`tmpfs`、`devfs`、`procfs`、socket 路径命名空间、文件描述符层都直接建立在这套对象模型之上。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库里的 `os/axvisor` 没有直接使用 `axfs-ng-vfs`。因此它在这棵树中的跨项目定位主要是 ArceOS/StarryOS 共享的 VFS 核心，而不是 Axvisor 的公共基础层。

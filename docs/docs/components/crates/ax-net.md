@@ -1,4 +1,4 @@
-# `ax-net` 技术文档
+# `ax-net`
 
 > 路径：`os/arceos/modules/axnet`
 > 类型：库 crate
@@ -10,9 +10,9 @@
 
 最核心的边界是：`ax-net` 只是第一代 IP 网络包装层，不是统一 socket 服务层。它的重点是 TCP/UDP/DNS over IP，而不是 Unix domain socket、vsock、复杂路由服务或细粒度事件管理。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 `ax-net` 的设计目标非常直接：把 `smoltcp` 变成 ArceOS 可直接消费的同步网络 API。当前实现采用三层收敛：
 
@@ -22,7 +22,7 @@
 
 这是一种典型的早期内核集成模型：单 NIC、全局状态、围绕一个 `smoltcp::Interface` 运转。
 
-### 1.2 模块划分
+### 模块结构
 
 `ax-net` 的主要实现集中在 `smoltcp_impl`：
 
@@ -83,9 +83,9 @@
 
 所以，`ax-net` 不是“`ax-net-ng` 的轻量别名”，而是更早一代、边界更窄的 IP 网络封装。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 初始化单个网络接口并配置 IP / 默认网关
 - 提供同步 `TcpSocket` 与 `UdpSocket`
@@ -131,9 +131,9 @@
 - `ax-net` 不提供细粒度事件注册机制；它只向上暴露 `PollState`
 - `ax-net` 不是应用级 HTTP/DNS 客户端库，而是更低层的网络原语层
 
-## 3. 依赖关系
+## 依赖关系
 
-### 3.1 关键直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -157,7 +157,7 @@
 
 虽然 `ax-httpclient`、`ax-httpserver` 不直接依赖 `ax-net` 的源码 API，但它们经由 `ax-std`、`ax-api`、`ax-runtime` 间接走的正是这条网络装配链。因此，这些示例更适合作为 `ax-net` 的系统行为样例，而不是 `ax-net` 自身的 API 示例。
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 依赖方式
 
@@ -185,7 +185,7 @@ axnet = { workspace = true }
 - `dns.rs`：当前是同步轮询实现，容易受 socket 生命周期与超时处理影响
 - `bench.rs`：与宿主机基准工具的口径绑定较紧，不能按普通 socket 功能随意改
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前测试现状
 
@@ -207,16 +207,16 @@ axnet = { workspace = true }
 - 用 POSIX socket 调用路径验证 `ax-posix-api`
 - 用 `bench_transmit` / `bench_receive` + `bwbench-client` 验证吞吐基准路径
 
-## 6. 跨项目定位
+## 跨项目定位
 
-### 6.1 ArceOS
+### ArceOS
 
 `ax-net` 是 ArceOS 老一代网络装配链的重要组成部分。它直接服务 `ax-api`、`ax-posix-api` 和运行时 `net` 路径，是早期同步 IP 网络能力的核心封装。
 
-### 6.2 StarryOS
+### StarryOS
 
 当前仓库中的 StarryOS 并不直接使用这个 `ax-net` crate。相反，`os/StarryOS/Cargo.toml` 与 `os/StarryOS/kernel/Cargo.toml` 都把依赖名 `ax-net` 绑定到了 `package = "ax-net-ng"`，说明 StarryOS 已经切换到第二代网络层。
 
-### 6.3 Axvisor
+### Axvisor
 
 当前没有看到 Axvisor 直接消费 `ax-net` 的证据。即便存在间接复用，也更可能经由 ArceOS 公共 API 层，而不是把这个老一代同步网络模块当成独立基础设施。

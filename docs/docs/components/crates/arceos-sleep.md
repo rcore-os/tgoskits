@@ -1,4 +1,4 @@
-# `arceos-sleep` 技术文档
+# `arceos-sleep`
 
 > 路径：`test-suit/arceos/task/sleep`
 > 类型：测试入口 crate
@@ -10,7 +10,7 @@
 
 最重要的边界是：**它不是计时器精度 benchmark，也不是实时性测试套件；它只是用行为级断言和日志来验证 `thread::sleep()` 没有失效。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 测试场景划分
 这个 crate 可以拆成三段：
 
@@ -47,7 +47,7 @@ flowchart LR
 
 这让 `arceos-sleep` 同时具备“单线程休眠验证”和“多任务定时推进 smoke test”两层含义。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 具体验证内容
 当前实现主要覆盖：
 
@@ -72,7 +72,7 @@ flowchart LR
 
 它只是“休眠 API 仍然可用”的回归入口。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     test["arceos-sleep"] --> ax-std["ax-std(multitask, irq)"]
@@ -81,19 +81,19 @@ graph LR
     ax-task --> ax-hal["ax-hal time/irq"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `ax-std(multitask, irq)`：说明测试直接依赖多任务和中断驱动的睡眠路径。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax-task::sleep_until`：真正把当前任务挂入等待队列。
 - `ax-hal` 的时间和中断能力：提供超时唤醒所需的时钟推进。
 
-### 3.3 主要消费者
+### 主要消费者
 - `cargo arceos test qemu` 自动发现的任务时间语义回归。
 - 调整 timer、IRQ 或 `ax-task` 睡眠路径后的快速验证。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cargo xtask arceos run --package arceos-sleep --arch riscv64
 ```
@@ -104,7 +104,7 @@ cargo xtask arceos run --package arceos-sleep --arch riscv64
 cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 保持总耗时在 CI 可接受范围内；当前场景已经接近十几秒。
 2. 若增加更长睡眠，先评估测试脚本的超时限制。
 3. 不要引入过于苛刻的时间精度断言，否则很容易造成虚假失败。
@@ -114,7 +114,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 极短超时与长超时混合压力
 - 单核和多核配置下的唤醒可达性
 
-## 5. 测试策略
+## 测试
 ### 5.1 当前自动化形态
 `qemu-riscv64.toml` 中已经提供：
 
@@ -134,12 +134,12 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 若 timer/IRQ 路径失效，通常会表现为任务永久不醒。
 - 若调度器有活性问题，后台 tick 或等待循环可能先暴露异常。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 它是 ArceOS 时间与调度基本语义的一条行为回归入口，直接服务 `ax-task` 和 timer 相关实现。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 不直接运行它，但底层时间推进和任务睡眠问题往往会先在这种简单回归里被发现。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 也不直接依赖它；它的跨项目价值在于给共享底层定时与调度改动提供一条比虚拟机场景更容易定位的回归路径。

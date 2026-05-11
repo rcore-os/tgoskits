@@ -1,4 +1,4 @@
-# `test-weak` 技术文档
+# `test-weak`
 
 > 路径：`components/crate_interface/test_crates/test-weak`
 > 类型：二进制 crate（独立测试工作区成员，`publish = false`）
@@ -8,7 +8,7 @@
 
 `test-weak` 是 `crate_interface` `weak_default` 测试矩阵中负责“强覆盖优先级与混合解析”的最终链接/验证端。它把 `define-weak-traits` 提供的弱符号默认实现、`impl-weak-traits` 提供的覆盖型实现，以及调用侧断言逻辑真正收束到同一个 nightly 可执行文件里，借此观察链接器最终到底选择了强符号还是弱符号。与 `components/crate_interface/tests/test_weak_default.rs` 这样的最小功能测试相比，`test-weak` 验证的是更接近真实使用方式的跨 crate 链接结果。
 
-## 1. 架构设计分析
+## 架构设计
 
 ### 1.1 在测试矩阵中的真实定位
 
@@ -70,9 +70,9 @@
 
 也就是说，它是 README 所描述的“跨 crate 定义/实现/调用模型”在 `weak_default` 场景下的最终证明。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 验证强符号在存在覆盖时能优先于弱符号默认实现
 - 验证未覆写的方法仍可在同一二进制中回退到默认实现
@@ -99,9 +99,9 @@ flowchart TD
 
 因此它必须作为最终二进制存在，才能承担验证职责。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -129,7 +129,7 @@ graph TD
     D --> C
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 什么时候应该修改它
 
@@ -139,7 +139,7 @@ graph TD
 - 新增一个 `namespace` 或 `gen_caller` 与弱默认并存的样例
 - 新增一个默认实现内部包含 `Self::foo()` 或函数引用的复杂代理场景
 
-### 4.2 修改时的关键约束
+### 注意事项
 
 - 定义侧默认方法变更后，必须同步更新 `impl-weak-traits` 与 `test-weak`
 - 不要删除实现类型的显式类型引用；它们承担链接锚点职责
@@ -168,7 +168,7 @@ components/crate_interface/test_crates/run_tests.sh weak
 - 纯默认回退路径：放到 `test-weak-partial`
 - stable 路径回归：放到 `test-simple`
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前测试目标
 
@@ -194,7 +194,7 @@ components/crate_interface/test_crates/run_tests.sh weak
 - 若覆盖值与默认值过于接近，断言即便失败也很难快速定位
 - 若只验证普通默认方法，不验证 `SelfRefIf` 的代理路径，会遗漏最复杂的真实风险点
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -202,6 +202,6 @@ components/crate_interface/test_crates/run_tests.sh weak
 | StarryOS | 无主线直接依赖 | 间接保护测试资产 | 通过复用公共基础设施，间接受益于弱默认覆盖路径的回归验证 |
 | Axvisor | 无主线直接依赖 | 间接保护测试资产 | `axvisor_api` 等组件使用 `crate_interface`，但不会直接消费该测试二进制 |
 
-## 7. 最关键的边界澄清
+## 总结
 
 `test-weak` 不是正式运行时组件，也不是“给系统提供默认实现”的二进制；它只是 `crate_interface` `weak_default` 测试矩阵中面向强符号优先级与混合解析的最终链接验证端，用来证明链接器在真实程序里做出了正确选择。

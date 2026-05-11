@@ -1,4 +1,4 @@
-# `ax-driver-virtio` 技术文档
+# `ax-driver-virtio`
 
 > 路径：`components/axdriver_crates/axdriver_virtio`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `ax-driver-virtio` 负责把 `virtio-drivers` crate 中的具体设备包装成 `axdriver_*` 系列接口。它既不是全局驱动聚合层，也不是总线枚举层，而是位于两者之间的 “VirtIO 设备适配层”：上接 `axdriver_block` / `axdriver_net` / `axdriver_display` / `axdriver_input` / `axdriver_vsock` 的类别 trait，下接 `virtio-drivers` 的 MMIO/PCI transport 与设备对象。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 本 crate 的职责可以概括为两部分：
 
 - **设备包装**：把 VirtIO block/net/gpu/input/socket 设备包装成 `*DriverOps` 实现。
@@ -21,7 +21,7 @@
 - 不是 `ax-driver-pci`：不负责扫描总线或分配 BAR。
 - 也不是 `virtio-drivers` 本身：它提供的是 ArceOS 风格的包装接口，而非原始 VirtIO API。
 
-### 1.2 模块划分
+### 模块结构
 | 模块 | feature | 作用 |
 | --- | --- | --- |
 | `blk` | `block` | `VirtIoBlkDev`，实现 `BlockDriverOps` |
@@ -80,8 +80,8 @@
 ### 1.8 边界澄清
 最关键的边界是：**`ax-driver-virtio` 负责“把 VirtIO 设备包装成 ArceOS 驱动接口”，但它不负责全局设备探测编排，也不负责 PCI/MMIO 总线扫描。**
 
-## 2. 核心功能说明
-### 2.1 主要能力
+## 核心功能
+### 功能概览
 - 识别支持的 VirtIO MMIO/PCI 设备类型。
 - 为 block/net/gpu/input/socket 提供统一包装。
 - 向外导出 `VirtIoHal`、`Transport` 等关键类型，便于平台提供 HAL glue。
@@ -108,8 +108,8 @@
 
 这也意味着本 crate 不是“所有 VirtIO 设备的统一外壳”，而是只覆盖当前仓库已接入的那几个类别。
 
-## 3. 依赖关系图谱
-### 3.1 直接依赖
+## 依赖关系
+### 直接依赖
 | 依赖 | 作用 |
 | --- | --- |
 | `virtio-drivers` | 提供底层 transport 和设备实现 |
@@ -117,7 +117,7 @@
 | `axdriver_block` / `display` / `input` / `net` / `vsock` | 提供各类别 trait |
 | `log` | 初始化和错误日志 |
 
-### 3.2 主要消费者
+### 主要消费者
 - `os/arceos/modules/axdriver`
 - `platform/axplat-dyn`
 
@@ -126,7 +126,7 @@
 - 向上输出 `axdriver_*` 兼容设备对象。
 - 由 `ax-driver` 决定这些对象何时、如何进入 `AllDevices`。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 新增一种 VirtIO 设备支持时要改哪些地方
 1. 在本 crate 中新增对应模块，实现目标 `*DriverOps`。
 2. 在 `lib.rs` 中加 feature、导出和 `as_dev_type()` 映射。
@@ -144,20 +144,20 @@
 - `probe_pci_device()` 计算 IRQ 的方式带有平台/架构假设，迁移时需要重新检查。
 - `gpu.rs` / `input.rs` 的 `unwrap()` 表明某些错误分支还未完全软化为 `DevError`。
 
-## 5. 测试策略
-### 5.1 当前有效验证面
+## 测试
+### 测试覆盖
 该 crate 没有独立测试目录，当前主要依赖：
 
 - QEMU/平台上的 VirtIO MMIO 或 PCI 启动。
 - `ax-driver` 对 `virtio-*` 设备的探测与初始化。
 - `ax-display`、`ax-input`、`ax-net`、`ax-fs`、`ax-net-ng` 对包装后设备的实际消费。
 
-### 5.2 建议补充的单元测试
+### 单元测试
 - `as_dev_type()` 和 `as_dev_err()` 的映射。
 - `probe_mmio_device()` / `probe_pci_device()` 对不同设备类型的识别。
 - `VirtIoNetDev` 的缓冲回收流程。
 
-### 5.3 集成测试重点
+### 集成测试
 - `virtio-blk` 文件系统挂载。
 - `virtio-net` 网络收发。
 - `virtio-gpu` framebuffer 刷新。
@@ -168,12 +168,12 @@
 - HAL 地址转换或 DMA 错误会影响所有 VirtIO 设备。
 - 设备初始化中的 `unwrap()` 会让某些异常以 panic 形式暴露，而不是优雅错误返回。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 是当前最主要的主线消费者：`ax-driver` 通过它把 VirtIO 设备接入块、网、显、输入和 vsock 各类别路径。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 若通过共享 ArceOS 驱动栈获得显示、输入或存储能力，会间接使用本 crate；但它并不把本 crate 当作独立的 VirtIO 管理框架。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库里没有看到 Axvisor 直接把 `ax-driver-virtio` 作为其虚拟设备框架使用。这里处理的是宿主侧/内核侧 VirtIO 设备包装，而不是 VMM 侧 VirtIO 仿真。

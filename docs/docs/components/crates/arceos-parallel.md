@@ -1,4 +1,4 @@
-# `arceos-parallel` 技术文档
+# `arceos-parallel`
 
 > 路径：`test-suit/arceos/task/parallel`
 > 类型：测试入口 crate
@@ -10,7 +10,7 @@
 
 核心边界非常清楚：**它不是线程池、不是并行算法库，也不是性能 benchmark；它只是用一个固定工作负载证明并行任务、同步屏障和结果归并没有坏。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 工作负载结构
 这个 crate 的主线分三步：
 
@@ -45,7 +45,7 @@ flowchart LR
 
 此外，`main()` 一开始还故意调用了一次“永不满足条件、500ms 超时返回”的 `ax_wait_queue_wait_until()`，专门验证超时路径能返回 `true`。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 工作负载本身在测什么
 每个任务对自己负责的区间执行整数平方根近似 `sqrt()` 并求和。这个计算不复杂，但足够耗时，能让：
 
@@ -71,7 +71,7 @@ flowchart LR
 
 它只是一个“结果可核对、同步点明确”的并发回归入口。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     test["arceos-parallel"] --> ax-std["ax-std(alloc, multitask, irq)"]
@@ -80,21 +80,21 @@ graph LR
     ax-api --> ax-task["ax-task / wait queue"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `ax-std(alloc, multitask, irq)`：表明它同时依赖堆分配、多任务和超时等待。
 - `rand(small_rng)`：生成固定输入数据集。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `JoinHandle::join`：等待子任务结果收敛。
 - `AxWaitQueueHandle`：构造 barrier 与超时 smoke test。
 - `ax-task`：真实承载调度与同步。
 
-### 3.3 主要消费者
+### 主要消费者
 - 并行任务与同步基础设施改动后的快速回归。
 - `cargo arceos test qemu` 自动收集的任务并发回归集。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cargo xtask arceos run --package arceos-parallel --arch riscv64
 ```
@@ -105,7 +105,7 @@ cargo xtask arceos run --package arceos-parallel --arch riscv64
 cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 保持输入数据与分片方式可复现，不要引入难以重现实验条件。
 2. 如果修改 `NUM_TASKS`，要同步审视 `barrier()` 的等待条件。
 3. 不要把性能比较结果写死为断言；这个 crate 更关注正确性与活性。
@@ -115,7 +115,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 不同切片分布策略
 - 更复杂但仍可精确校验结果的工作负载
 
-## 5. 测试策略
+## 测试
 ### 5.1 当前自动化形态
 `qemu-riscv64.toml` 明确配置了：
 
@@ -135,12 +135,12 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 若等待队列或 `join` 逻辑有问题，最常见现象是卡住不结束。
 - 若任务分片或结果汇总出错，会直接表现为 `assert_eq!(expect, actual)` 失败。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 它是 ArceOS 并发执行与同步语义的一条综合回归入口，但仍然只是测试入口，不是系统功能本身。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 不直接运行它；不过共享调度、同步或等待队列改动后，这类回归依然能先一步暴露底层问题。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 也不会直接消费它。它的价值在于把“并发 + 同步 + 可校验结果”这条短路径先验证好，再进入更复杂的虚拟化执行场景。

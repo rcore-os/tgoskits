@@ -1,4 +1,4 @@
-# `axdevice` 技术文档
+# `axdevice`
 
 > 路径：`components/axdevice`
 > 类型：库 crate
@@ -8,9 +8,9 @@
 
 `axdevice` 是 Axvisor 虚拟化栈中的设备聚合与分发层。它不直接负责客户机地址空间映射，也不试图内建完整的模拟设备世界；它的核心职责是把 `axvmconfig` 描述的设备配置转化为一组 `BaseDeviceOps` 对象，并在运行期根据 MMIO、系统寄存器或端口访问地址，将 VM exit 精确转发给对应设备。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 `axdevice` 解决的是虚拟机设备栈中的两个问题：
 
@@ -25,7 +25,7 @@
 
 特别要强调的是：**`axdevice` 不负责把 GPA 映射到 HPA，也不负责建立 Stage-2/EPT 映射。** 这些工作属于 `axvm` 和地址空间层。`axdevice` 只关心“某个地址落在哪个设备对象上，然后调它的 `handle_read/handle_write`”。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -151,9 +151,9 @@ flowchart TD
 
 换言之，`axdevice` 是 per-VM device table，而 `axvm` 是把这个 table 纳入 VM 执行模型的调度者。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要功能
+### 功能概览
 
 - 以统一 API 构造某个 VM 的设备集合。
 - 为 MMIO、系统寄存器、端口 IO 提供地址到设备对象的分发。
@@ -200,9 +200,9 @@ let mut devices = AxVmDevices::new(config);
 
 这说明 IVC 在 `axdevice` 眼中不是“模拟寄存器设备”，而是“被 VM 和管理程序共同使用的共享地址空间资源”。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -216,7 +216,7 @@ let mut devices = AxVmDevices::new(config);
 | `arm_vgic` | AArch64 虚拟 GIC 设备实现 |
 | `riscv_vplic` | RISC-V 虚拟 PLIC 设备实现 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `components/axvm`：直接持有 `AxVmDevices` 并在 VM exit 中调用分发接口。
 - `os/axvisor`：通过 `axvm` 间接消费，是当前仓库中的核心落地点。
@@ -234,7 +234,7 @@ graph TD
     F --> G[Axvisor]
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 基本接入流程
 
@@ -270,7 +270,7 @@ cargo test -p axdevice
 
 当前测试主要覆盖 MMIO 分发逻辑；更完整的验证仍需在 `axvm`/`Axvisor` 整机路径中完成。
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前已有测试
 
@@ -294,7 +294,7 @@ cargo test -p axdevice
 - 分发失败采用 panic 策略，虽然适合早期暴露问题，但在生产场景中需要更加严谨的配置回归。
 - IVC 只做区间分配，不验证上层是否真的把该共享区映射给正确的 VM。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -302,6 +302,6 @@ cargo test -p axdevice
 | StarryOS | 当前仓库内未见直接依赖 | 非核心路径 | StarryOS 在本仓库中没有直接消费 `axdevice` 的迹象，不宜把它描述为 StarryOS 常规组件 |
 | Axvisor | 虚拟化主线核心部件 | 每 VM 设备表与 IO 分发中心 | 把配置、设备对象和 VM exit 处理连接起来，是 Axvisor 设备仿真路径的调度枢纽 |
 
-## 7. 总结
+## 总结
 
 `axdevice` 的价值在于“薄而关键”：它不负责所有事，但虚拟化设备链路里最关键的那一步恰恰由它完成，即把配置生成的设备集合转成可运行的 per-VM device table，并把各种 IO 退出精准分发到具体设备对象。对 Axvisor 来说，它是连接 `axvmconfig`、`axvm`、`arm_vgic`、`riscv_vplic` 和 IVC 机制的中枢层。

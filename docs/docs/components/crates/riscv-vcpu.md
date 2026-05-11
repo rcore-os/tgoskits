@@ -1,4 +1,4 @@
-# `riscv_vcpu` 技术文档
+# `riscv_vcpu`
 
 > 路径：`components/riscv_vcpu`
 > 类型：库 crate
@@ -8,9 +8,9 @@
 
 `riscv_vcpu` 是 Axvisor 在 RISC-V 架构上的 vCPU 后端实现。它围绕 RISC-V Hypervisor Extension 组织，负责完成四类核心工作：每核 H 扩展环境准备、vCPU 寄存器与 CSR 上下文保存恢复、客户机进入/退出虚拟化执行、以及把 SBI 调用、外部中断、timer 事件和 guest page fault 转译成统一的 `AxVCpuExitReason`。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 该 crate 在虚拟化栈中的定位非常明确：
 
@@ -26,7 +26,7 @@
 
 因此，尽管泛型接口里保留了 `set_ept_root()` 这类跨架构命名，实际实现并非 EPT，而是写入 `hgatp`。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -185,9 +185,9 @@ flowchart TD
 
 这些边界应在文档中明确，而不应被 README 中泛化的“完整 vCPU 实现”表述掩盖。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 在支持 H 扩展的 RISC-V 平台上创建并运行 vCPU。
 - 完成 VS 级 CSR 和共享寄存器上下文的保存与恢复。
@@ -220,9 +220,9 @@ flowchart TD
 
 对调用者而言，`riscv_vcpu` 提供的是“RISC-V 版本的统一 vCPU 后端”，而不是一个直接面向应用的 API。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -236,7 +236,7 @@ flowchart TD
 | `ax-page-table-entry` / `memory_addr` | 页表相关辅助类型 |
 | `memoffset` / `tock-registers` | 汇编偏移和寄存器组织辅助 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `components/axvm`：把它作为 RISC-V 架构后端重导出为 `AxArchVCpuImpl` 与 `AxVMArchPerCpuImpl`。
 - `os/axvisor`：通过 `axvm` 间接使用，是当前仓库中的实际落地对象。
@@ -253,7 +253,7 @@ graph TD
     G[riscv_vplic] --> E
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 接入步骤
 
@@ -298,7 +298,7 @@ cargo build -p riscv_vcpu --target riscv64gc-unknown-none-elf
 - `guest_mem.rs` 通过清空 `vsatp` 访问 GPA，修改时要同步考虑 `hfence_vvma_all()` 语义。
 - `vmexit_handler()` 集中承载了 SBI、timer、external IRQ 和 MMIO trap 语义，属于最敏感路径。
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前测试现状
 
@@ -318,7 +318,7 @@ cargo build -p riscv_vcpu --target riscv64gc-unknown-none-elf
 - 一旦 `VmCpuRegisters` 布局与 `trap.S` 不匹配，故障通常会非常早且难定位。
 - `inject_interrupt()` 尚未实现，意味着通用中断注入接口仍未闭环，当前更多依赖 `hvip` 直接操作和外围设备协同。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -326,6 +326,6 @@ cargo build -p riscv_vcpu --target riscv64gc-unknown-none-elf
 | StarryOS | 当前仓库未见直接使用 | 非核心路径 | StarryOS 在本仓库中没有直接使用该 crate 的迹象，不应把它写成 StarryOS 通用组件 |
 | Axvisor | RISC-V 虚拟化主线核心 | vCPU 架构后端 | 负责创建、运行和退出 RISC-V guest vCPU，是 `axvm` 在 RISC-V 上的实际执行引擎 |
 
-## 7. 总结
+## 总结
 
 `riscv_vcpu` 的本质不是一个“普通 Rust 对象库”，而是一层极其靠近硬件的虚拟化执行后端：汇编负责进入和退出 guest，Rust 负责维护 CSR 状态和解释 VM exit，SBI/中断/MMIO fault 被统一翻译成上层可消费的退出原因。对 Axvisor 的 RISC-V 路线而言，它就是客户机真正跑起来的那台“虚拟 CPU”。

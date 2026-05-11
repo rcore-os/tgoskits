@@ -1,4 +1,4 @@
-# `axpoll` 技术文档
+# `axpoll`
 
 > 路径：`components/axpoll`
 > 类型：库 crate
@@ -10,9 +10,9 @@
 
 最关键的一条边界是：`axpoll` 只提供 readiness 与唤醒协议，不是 `poll(2)` / `epoll(7)` 的系统调用实现，更不是调度器。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 仓库里已经有 `axio` 负责同步读写语义，但还需要另一层来回答两个问题：
 
@@ -71,9 +71,9 @@
 
 同一文件里还有 `register_irq_waker()`，说明 `axpoll` 不只服务文件/网络对象，也被用来桥接 IRQ 事件与任务等待。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 用统一位图表达可读、可写、挂断、错误等事件
 - 为任意内核对象定义 `poll()` / `register()` 契约
@@ -105,9 +105,9 @@
 - `axpoll` 不负责系统调用级 `poll` / `epoll` 数据结构和 fd 管理
 - `axpoll` 不替对象生成事件，只消费对象已经判断好的 readiness
 
-## 3. 依赖关系
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -117,7 +117,7 @@
 
 `Cargo.toml` 中的 `alloc` feature 已标记为 deprecated，目前更多是兼容旧用法，而不是新设计中的能力分层。
 
-### 3.2 主要消费者
+### 主要消费者
 
 | 消费者 | 使用方式 |
 | --- | --- |
@@ -126,7 +126,7 @@
 | `ax-fs-ng` | 让文件节点支持统一 readiness 协议 |
 | StarryOS 内核 | 作为 fd 世界底层的 readiness glue 层 |
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 依赖方式
 
@@ -149,7 +149,7 @@ axpoll = { workspace = true }
 - `wake()` 依赖旧 `Inner` 的 `Drop` 完成真正逐个唤醒，改这条路径极易产生丢唤醒
 - `IoEvents` 与 Linux 常量必须保持稳定对应关系，否则上层兼容性会直接出问题
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前已有测试
 
@@ -171,16 +171,16 @@ axpoll = { workspace = true }
 cargo test -p axpoll
 ```
 
-## 6. 跨项目定位
+## 跨项目定位
 
-### 6.1 ArceOS
+### ArceOS
 
 在 ArceOS 中，`axpoll` 处在同步 nonblocking I/O 与任务等待之间，是 `ax-task`、`ax-net-ng`、`ax-fs-ng` 的公共 readiness glue 层。
 
-### 6.2 StarryOS
+### StarryOS
 
 在 StarryOS 中，`axpoll` 的地位更直接。大量 `FileLike` 对象、pipe、socket 与 `epoll` 相关路径都建立在这套 readiness 协议之上。
 
-### 6.3 Axvisor
+### Axvisor
 
 当前没有看到 Axvisor 直接把 `axpoll` 当作独立子系统来消费的证据。它即使间接复用，也更可能经过 ArceOS/Starry 的公共层，而不是作为 hypervisor 侧专门框架存在。

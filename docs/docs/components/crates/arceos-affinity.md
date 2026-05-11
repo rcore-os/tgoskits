@@ -1,4 +1,4 @@
-# `arceos-affinity` 技术文档
+# `arceos-affinity`
 
 > 路径：`test-suit/arceos/task/affinity`
 > 类型：测试入口 crate
@@ -10,7 +10,7 @@
 
 它的核心边界非常明确：**这不是 CPU 亲和性管理库，也不是通用并发框架；它只是拿 `ax_set_current_affinity()` 这条真实调用链做回归验证。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 测试场景结构
 源码只有一个 `main()`，但内部场景分成两段：
 
@@ -53,7 +53,7 @@ flowchart LR
 
 因此它验证的是“亲和性约束是否成立”，而不是“某个调度器策略是否更优”。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 测试内容
 每个任务执行的核心逻辑如下：
 
@@ -79,7 +79,7 @@ flowchart LR
 
 它只验证“当前任务设置亲和性后，运行位置是否真的受约束”。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     test["arceos-affinity"] --> ax-std["ax-std(multitask)"]
@@ -88,20 +88,20 @@ graph LR
     test --> ax-hal["ax-hal::percpu::this_cpu_id"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `ax-std(multitask)`：提供线程创建、`yield_now()` 和 ArceOS 扩展任务 API 入口。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax_api::task::ax_set_current_affinity`：对上层暴露亲和性设置接口。
 - `ax-task::set_current_affinity`：实际执行亲和性更新与迁移。
 - `ax-hal::percpu::this_cpu_id`：用来观察当前任务实际落在哪个 CPU 上。
 
-### 3.3 主要消费者
+### 主要消费者
 - `cargo arceos test qemu` 自动发现的任务回归集合。
 - 调整 `ax-task`、`ax-cpumask`、SMP 调度逻辑后的定向回归。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 单独调试时可直接运行：
 
 ```bash
@@ -114,7 +114,7 @@ cargo xtask arceos run --package arceos-affinity --arch riscv64
 cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 任何新场景都应保持“失败时能明确 panic，成功时有稳定结束语”。
 2. 若新增断言依赖多核，记得同步检查 QEMU 配置是否仍使用 `-smp 4`。
 3. 不要把这个 crate 发展成调度器测试大杂烩；它应始终聚焦 affinity。
@@ -124,7 +124,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 更复杂的 CPU 掩码组合
 - 与特定调度器 feature 组合下的迁移稳定性
 
-## 5. 测试策略
+## 测试
 ### 5.1 当前自动化形态
 `qemu-riscv64.toml` 明确给出了：
 
@@ -146,12 +146,12 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 如果迁移实现有竞态，通常会表现为间歇性断言失败。
 - 若未来单核运行该测试，多核相关覆盖会明显下降。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 它属于 ArceOS 的任务回归集，直接服务 `ax-task` 的 SMP 与 affinity 语义验证，是系统测试入口，不是系统功能的一部分。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 可能间接受益于底层调度和 CPU 掩码实现的修复，但不会直接运行这个测试包。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 同样不直接依赖它；它的价值只在于当共享底层任务/SMP 机制调整后，先用这条较短的回归路径验证基本语义。

@@ -1,4 +1,4 @@
-# `axaddrspace` 技术文档
+# `axaddrspace`
 
 > 路径：`components/axaddrspace`
 > 类型：库 crate
@@ -8,9 +8,9 @@
 
 `axaddrspace` 是 Axvisor 虚拟化栈中的 guest 地址空间管理核心件。它最容易被误读成“普通虚拟地址空间库”，但从当前源码看，它的主线语义实际上是：以 `GuestPhysAddr` 为输入侧地址，维护一套面向嵌套页表的地址空间模型，把 GPA/IPA 映射到宿主物理页帧，并向设备仿真、vCPU fault 处理和宿主 API 暴露统一的地址类型与访问边界。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 `axaddrspace` 有三层职责同时存在：
 
@@ -26,7 +26,7 @@
 
 因此，本 crate 更准确的定位应是“guest physical address space manager”，而不是通用进程虚拟地址空间库。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -210,9 +210,9 @@ flowchart TD
 
 `PhysFrame<H>` 基于它实现 RAII 物理页帧生命周期管理。这样 `axaddrspace` 既不直接依赖某个宿主分配器，也不把页帧管理硬编码到地址空间逻辑中。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 建立和维护 guest GPA 视角的地址空间
 - 管理线性映射与分配型映射
@@ -221,16 +221,16 @@ flowchart TD
 - 暴露 MMIO / port / sysreg 等统一设备地址类型
 - 为上层提供 HPA 查询、访问边界和 guest 内存读写辅助
 
-### 2.2 典型使用场景
+### 使用场景
 
 - `axvm` 为新建 VM 初始化 GPA 地址空间
 - `axdevice` 用本 crate 的地址类型定义 MMIO/port/sysreg 设备范围
 - `riscv_vcpu` / `arm_vcpu` 等在处理 guest fault 或设备访问时，以 GPA 为核心地址语义与上层交互
 - `axvisor_api::memory::PhysFrame` 通过 `AxMmHal` 兼容本 crate 的页帧抽象
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -242,7 +242,7 @@ flowchart TD
 | `bitflags` / `bit_field` / `numeric-enum-macro` | 辅助标志与枚举操作 |
 | `ax-lazyinit` / `log` | 初始化与日志 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `axvm`
 - `axdevice`
@@ -268,7 +268,7 @@ graph TD
     D --> H[Axvisor]
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 初始化地址空间
 
@@ -294,7 +294,7 @@ graph TD
 - `GuestMemoryAccessor` 是 trait，本 crate 并未在根模块里直接完成所有实现；调用者需要根据具体对象补齐实现。
 - `arm-el2` 是默认 feature，会把 `ax-page-table-entry/arm-el2` 透传下去。
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前已有测试
 
@@ -323,7 +323,7 @@ graph TD
 - 它同时承担地址类型库和地址空间管理器双重职责，修改公共地址类型会影响设备、vCPU 和宿主 API 多条链路。
 - `NestedPageTable` 是跨架构统一封装，任何分页层级或 flags 处理改动都会有较大波及面。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -331,6 +331,6 @@ graph TD
 | StarryOS | 当前仓库未见直接主线接入 | 非核心路径 | 现有仓库中 StarryOS 没有直接围绕 `axaddrspace` 构建内存主线 |
 | Axvisor | 虚拟化内存主线核心 | guest 地址空间与嵌套页表中枢 | 为 VM 内存映射、MMIO 地址建模、nested page fault 处理和设备访问边界提供统一抽象 |
 
-## 7. 总结
+## 总结
 
 `axaddrspace` 的关键价值，在于把虚拟化场景里最容易分散的几件事收敛到了一起：GPA 地址类型、嵌套页表、映射后端、缺页处理和设备访问地址语义。它不是单纯的“页表封装”，也不是单纯的“地址类型库”，而是 Axvisor 内存虚拟化栈的交汇点。

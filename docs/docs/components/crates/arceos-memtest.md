@@ -1,4 +1,4 @@
-# `arceos-memtest` 技术文档
+# `arceos-memtest`
 
 > 路径：`test-suit/arceos/memtest`
 > 类型：测试入口 crate
@@ -10,7 +10,7 @@
 
 最重要的边界澄清是：**它不是物理内存测试器，也不是页分配器诊断工具；它验证的是“用户侧堆对象和集合在 ArceOS 上还能正常工作”。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 两个测试工作负载
 源码里的测试非常集中：
 
@@ -43,7 +43,7 @@ flowchart LR
 ### 1.3 固定随机种子的意义
 `SmallRng::seed_from_u64(0xdead_beef)` 不是装饰，而是为了让测试输入稳定可复现。这样在不同架构或不同回归轮次中，容器处理的是同一批数据，便于定位问题。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 `test_vec()`
 这个子测试重点覆盖：
 
@@ -76,7 +76,7 @@ flowchart LR
 
 它只是较大强度地验证“堆上常见容器还能正常工作”。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     test["arceos-memtest"] --> ax-std["ax-std(alloc)"]
@@ -84,20 +84,20 @@ graph LR
     ax-std --> ax-alloc["ax-alloc / 全局分配器链"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `ax-std(alloc)`：说明本测试只关心分配相关能力，不涉及多任务或文件系统。
 - `rand(small_rng)`：用固定种子生成可复现的数据集。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax-alloc`：真正承接用户侧堆分配。
 - `Vec`、`BTreeMap`、`String`：分别代表顺序容器、树形容器和字符串对象的典型分配形态。
 
-### 3.3 主要消费者
+### 主要消费者
 - `cargo arceos test qemu` 自动发现的内存/分配基础回归。
 - 调整 `ax-alloc` 或更底层内存管理实现后的 smoke test。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cargo xtask arceos run --package arceos-memtest --arch riscv64
 ```
@@ -108,7 +108,7 @@ cargo xtask arceos run --package arceos-memtest --arch riscv64
 cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 保持输入确定性，尽量不要引入随机不稳定因素。
 2. 数据规模要与测试环境内存预算匹配；当前 QEMU 配置是 128M。
 3. 若新增容器场景，应明确它在验证哪类堆对象模式。
@@ -118,7 +118,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 大量分配后释放再重分配的场景
 - 更极端的小对象碎片化压力
 
-## 5. 测试策略
+## 测试
 ### 5.1 当前自动化形态
 各架构 `qemu-*.toml` 都设置了：
 
@@ -136,12 +136,12 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 如果分配器或底层页分配存在 bug，通常会表现为 panic、排序错误或映射关系校验失败。
 - 若未来调整数据规模，要同步评估 QEMU 内存压力和执行时间。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 它是 ArceOS 堆对象可用性的直接回归入口，用来快速判断“用户侧 alloc 基础设施有没有坏”。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 不直接运行它，但共享分配基础设施改动后，这种简单工作负载往往比完整用户态场景更容易先暴露问题。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 也不会直接依赖它；不过共享的分配和底层内存能力如果出现回退，这类短路径测试通常能更快给出信号。

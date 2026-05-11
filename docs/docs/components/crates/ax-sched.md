@@ -1,4 +1,4 @@
-# `axsched` 技术文档
+# `axsched`
 
 > 路径：`components/axsched`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `axsched` 是 ArceOS 调度算法库。它通过统一的 `BaseScheduler` trait 提供 FIFO、RR、CFS 三种就绪队列算法，供 `ax-task` 这类真正的任务运行时选择和封装。它是典型的叶子基础件：只负责“在一组 runnable 实体里选下一个”，不负责任务生命周期、阻塞/唤醒、上下文切换或 CPU bring-up。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `axsched` 的核心分层边界非常明确：
 
 - `axsched`：提供调度算法和就绪队列操作。
@@ -17,7 +17,7 @@
 
 `BaseScheduler` 的文档也直接说明了一点：调度器里的实体都被视为“可运行实体”，睡眠或阻塞的任务应该在外层先移出调度器。这意味着 `axsched` 从设计上就不是完整的任务系统。
 
-### 1.2 模块划分
+### 模块结构
 - `src/lib.rs`：统一 trait 定义与三种算法导出。
 - `src/fifo.rs`：协作式 FIFO 调度器。
 - `src/round_robin.rs`：带时间片的 RR 调度器。
@@ -45,23 +45,23 @@
 
 需要特别说明的是：这里的 CFS 是“能工作的简化实现”，并不是 Linux 调度器的完整移植。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 在统一 trait 下暴露三类可替换的调度算法。
 - 为每类算法定义适配的任务包装类型。
 - 给上层运行时提供 `add/remove/pick/put_prev/task_tick/set_priority` 这组就绪队列操作。
 
-### 2.2 关键 API 与真实使用位置
+### 使用场景
 - `BaseScheduler`：由 `ax-task/src/run_queue.rs` 直接依赖。
 - `FifoScheduler` / `RRScheduler` / `CFScheduler`：由 `ax-task/src/api.rs` 按 feature 选成 `Scheduler` 类型别名。
 - `FifoTask` / `RRTask` / `CFSTask`：由 `ax-task` 用来包裹 `TaskInner`，形成真正进入运行队列的对象。
 
-### 2.3 使用边界
+### 边界说明
 - `axsched` 不保存任务的 `Running/Ready/Blocked/Exited` 状态机；那是 `ax-task::TaskState` 的职责。
 - `axsched` 不做上下文切换；它只决定“应该切到谁”。
 - `axsched` 的 `set_priority()` 语义因算法不同而不同，不能把它误解为统一系统优先级接口。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     linked_list["ax-linked-list-r4l"] --> axsched["ax-sched"]
@@ -70,21 +70,21 @@ graph LR
     ax-task --> axvisor["axvisor (indirect)"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-linked-list-r4l`：FIFO 和 RR 使用的 intrusive 链表容器。
 - `alloc` / `BTreeMap`：CFS 的有序队列依赖标准 `alloc` 数据结构。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-task`：当前仓库里唯一的直接消费者，也是 `axsched` 的实际封装层。
 
-## 4. 开发指南
-### 4.1 依赖配置
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 ax-sched = { workspace = true }
 ```
 
-### 4.2 修改时的关键约束
+### 注意事项
 1. `BaseScheduler::remove_task()` 的安全约束不能放松；调用方默认会假定待删实体确实在队列中。
 2. 修改 FIFO/RR 时，要同时检查 `ax-linked-list-r4l` 上的节点所有权和 O(1) 删除语义是否仍成立。
 3. 修改 CFS 的权重或 vruntime 逻辑时，要同步评估 `set_priority()`、`task_tick()` 和 `put_prev_task()` 的协同关系。
@@ -95,33 +95,33 @@ ax-sched = { workspace = true }
 - 如果只是想改任务对象字段，应优先看 `ax-task::TaskInner`，不要在 `axsched` 里扩散业务语义。
 - 对需要复杂 load balancing 的场景，应在 `ax-task::run_queue` 层做队列选择，而不是让 `axsched` 感知整个系统拓扑。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 `src/tests.rs` 为 FIFO、RR、CFS 三种算法统一生成了三类测试：
 
 - `test_sched()`：验证调度顺序。
 - `bench_yield()`：测量高频 pick/put 的开销。
 - `bench_remove()`：测量大量 remove 的性能。
 
-### 5.2 单元测试重点
+### 单元测试
 - FIFO 的顺序稳定性。
 - RR 的时间片耗尽与 `put_prev_task()` 位置策略。
 - CFS 的 vruntime 排序与 `nice` 映射。
 
-### 5.3 集成测试重点
+### 集成测试
 - 在 `ax-task` 中分别打开 `sched-fifo`、`sched-rr`、`sched-cfs`，验证系统级调度行为不回归。
 - 检查 `set_priority()` 在上层 API 中的外显行为是否与所选调度器一致。
 
-### 5.4 覆盖率要求
+### 覆盖率
 - 对 `axsched`，算法行为覆盖比普通行覆盖更重要。
 - 任何改动 ready queue 结构、时间片逻辑或 vruntime 规则的提交，都应补对应算法的专门测试。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `axsched` 在 ArceOS 中是 `ax-task` 背后的算法底座。它决定调度策略，但不直接承担任务系统本体。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 通过复用 `ax-task` 间接复用 `axsched`。因此它在 StarryOS 中仍是调度算法叶子件，而不是 Linux 兼容线程系统本身。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 若通过共享任务栈把 vCPU 组织成宿主任务，也会间接受用 `axsched`。它提供的是调度算法，不是 hypervisor 并发模型的完整定义。

@@ -1,4 +1,4 @@
-# `ax-config` 技术文档
+# `ax-config`
 
 > 路径：`os/arceos/modules/axconfig`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `ax-config` 是 ArceOS 的平台常量入口。它不负责解析命令行、不负责运行时热更新，也不负责系统初始化；它做的事情只有一件：把构建阶段确定下来的平台参数导出成 Rust 常量，供 `ax-hal`、`ax-runtime`、`ax-task`、`ax-driver`、`ax-posix-api` 等模块在编译期和运行期直接读取。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 从源码看，`ax-config` 的结构非常薄：
 
 - `build.rs` 只做 Cargo 级依赖追踪，监听 `AX_CONFIG_PATH` 及其指向文件的变化。
@@ -64,14 +64,14 @@ flowchart TD
 - `ax-dma` 用 `plat::PHYS_BUS_OFFSET` 计算总线地址映射。
 - `ax-posix-api` 用 `TASK_STACK_SIZE`、`plat::MAX_CPU_NUM` 实现 `getrlimit` 和 `sysconf`。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 在编译期把平台配置转成 Rust 常量。
 - 为内核模块提供统一的只读平台参数入口。
 - 为静态平台和动态平台提供同名常量表面，降低上层模块分支复杂度。
 - 通过 `build.rs` 确保配置文件变化能触发重新编译。
 
-### 2.2 典型调用链
+### 调用链路
 在当前工作区里，最典型的调用链是：
 
 1. `axbuild` 或人工流程生成/指定 `.axconfig.toml`
@@ -88,7 +88,7 @@ flowchart TD
 
 三者是串联关系，不是替代关系。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     gen["ax-config-gen / axbuild"] --> toml[".axconfig.toml"]
@@ -103,11 +103,11 @@ graph LR
     ax-config --> posix["ax-posix-api"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-config-macros`：默认路径下的核心依赖，负责把 TOML 展开成常量。
 - `const-str`：仅在 `plat-dyn` 路径下启用，用来在常量上下文解析 `SMP` 环境变量。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-hal`：链接脚本和平台内存布局的关键消费者。
 - `ax-runtime`：启动日志、定时器节拍与 SMP 初始化路径的关键消费者。
 - `ax-task`、`ax-ipi`：CPU 数量、默认栈大小等调度相关消费者。
@@ -117,13 +117,13 @@ graph LR
 ### 3.3 `plat-dyn` 的特殊性
 `plat-dyn` 不是简单的“再开一个 feature”，而是让 `ax-config` 切换到另一套常量来源。这也是它和普通功能 feature 最大的区别。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 修改常量时要先判断来源
 1. 如果常量属于普通平台配置，优先修改配置规范文件和生成链，而不是在 `ax-config` 里手写。
 2. 如果常量只在动态平台兼容路径中成立，再考虑修改 `driver_dyn_config.rs`。
 3. 如果新增常量需要被下游模块普遍访问，应保持它在默认路径和 `plat-dyn` 路径里都可用。
 
-### 4.2 修改时的关键约束
+### 注意事项
 - 常量名一旦被 `ax-hal`、`ax-runtime`、`ax-task` 等广泛使用，改名成本极高。
 - `plat::MAX_CPU_NUM` 这类参与数组长度、类型参数和链接脚本展开的常量，属于高风险接口。
 - `devices::*` 中的物理地址和 IRQ 号必须与真实平台配置保持一致，不能仅按 README 直觉修改。
@@ -134,8 +134,8 @@ graph LR
 - 再验证至少一条使用 `TASK_STACK_SIZE`、`MAX_CPU_NUM`、`devices::*` 的系统路径。
 - 改动 `plat-dyn` 时，必须同时验证动态平台和非动态平台两套分支。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 `ax-config` 本身没有 crate 内单元测试；当前质量主要依赖消费者能否正确编译和启动。
 
 ### 5.2 建议重点验证
@@ -144,7 +144,7 @@ graph LR
 - `plat-dyn` 路径：`driver_dyn_config.rs` 导出的常量是否满足 `ax-hal`、`ax-runtime`、`ax-driver` 需求。
 - 关键消费者：`ax-task`、`ax-runtime`、`ax-driver`、`ax-posix-api` 是否继续通过。
 
-### 5.3 集成测试建议
+### 集成测试
 - ArceOS 最小样例启动，确认 `ARCH`、`PLATFORM`、`TICKS_PER_SEC` 被正确消费。
 - 启用 SMP 的构建，确认 `plat::MAX_CPU_NUM` 与运行参数一致。
 - 启用设备或文件系统能力的样例，确认 `devices::*` 相关常量没有失配。
@@ -152,12 +152,12 @@ graph LR
 ### 5.4 覆盖率重点
 对 `ax-config` 来说，比行覆盖率更重要的是“配置来源覆盖率”：默认 TOML 路径、动态平台路径、以及被关键消费者读取的路径都要覆盖到。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `ax-config` 是 ArceOS 内核模块共享的平台常量入口。它让 `ax-hal`、`ax-runtime`、`ax-task`、`ax-driver` 在不关心配置来源的前提下使用统一常量接口。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 在复用 ArceOS 模块时，也会继承这套常量接口。因此在 StarryOS 侧，`ax-config` 不是 Linux 兼容层的一部分，而是底层平台参数基座。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 在当前仓库里会直接依赖 `ax-config`，尤其在动态平台场景下使用 `plat-dyn` 分支。因此对 Axvisor 来说，`ax-config` 提供的是构建后固化的目标平台常量，而不是 hypervisor 运行时可变配置。

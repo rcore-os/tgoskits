@@ -1,4 +1,4 @@
-# `ax-task` 技术文档
+# `ax-task`
 
 > 路径：`os/arceos/modules/axtask`
 > 类型：库 crate
@@ -8,7 +8,7 @@
 
 `ax-task` 是 ArceOS 的任务管理核心模块。它既承担线程/任务对象的创建、阻塞、退出与回收，又通过 `axsched` 抽象把 FIFO、RR、CFS 等调度策略统一到同一个运行队列框架下，并进一步向 StarryOS 和 Axvisor 输出可复用的调度基础设施。
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 总体设计
 `ax-task` 的设计目标不是提供“单一线程库”，而是构造一个可裁剪的内核任务运行时：
 
@@ -18,7 +18,7 @@
 
 因此，`ax-task` 是一个强 feature 驱动的状态机模块，而不是简单的 API 封装。
 
-### 1.2 模块划分
+### 模块结构
 - `src/lib.rs`：顶层 feature 门控。决定编译 `run_queue`、`task`、`api`、`wait_queue`、`future`、`timers` 还是退回 `api_s` 单任务实现。
 - `src/task.rs`：任务实体定义与状态机，包含 `TaskInner`、`TaskState`、`CurrentTask`、栈对象、退出码、join 与可选 TLS/TaskExt 字段。
 - `src/run_queue.rs`：每 CPU 运行队列、调度切换、GC 任务、SMP 下多队列初始化与迁移逻辑。
@@ -76,8 +76,8 @@ stateDiagram-v2
 4. `yield_current()`、`blocked_resched()`、`scheduler_timer_tick()` 驱动状态在 `Running/Ready/Blocked` 间转换。
 5. `exit_current()` 把任务移入退出队列，由 GC 任务清理最终资源。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 任务创建：`spawn_task()`、`spawn_raw()`、`spawn_with_name()`、`spawn()`。
 - 任务调度：`yield_now()`、调度器 tick、优先级调整、CPU 亲和迁移。
 - 阻塞与等待：`WaitQueue`、`block_on()`、sleep/timeout。
@@ -118,7 +118,7 @@ let wq = ax-task::WaitQueue::new();
 // 条件不满足时 wait，条件满足后 wake
 ```
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax-hal["ax-hal"] --> ax-task["ax-task"]
@@ -136,7 +136,7 @@ graph LR
     ax-task --> axvisor["axvisor (via ax-std/indirect)"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-hal`：任务上下文、当前 CPU、时间、IRQ、TLS 与上下文切换能力来源。
 - `axsched`：具体调度算法实现。
 - `axconfig`：任务栈大小、CPU 数量上限等静态配置来源。
@@ -144,15 +144,15 @@ graph LR
 - `axpoll`：异步 poll 与 I/O 等待适配。
 - `cpumask`、`ax-percpu`、`ax-kspin`：SMP 与每核运行队列支持。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-runtime`：在启动链中初始化调度器，并在 timer tick 中调用 `on_timer_tick()`。
 - `ax-sync`：基于 `ax-task` 的阻塞/唤醒机制构建锁和同步原语。
 - `ax-api`、`ax-posix-api`：把任务、睡眠、等待队列等能力对外暴露。
 - `starry-kernel`：在 Linux 兼容线程模型上直接复用 `ax-task`。
 - `ax-net`、`ax-net-ng`：在网络栈阻塞/异步路径上复用调度与等待能力。
 
-## 4. 开发指南
-### 4.1 依赖配置
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 ax-task = { workspace = true }
@@ -180,8 +180,8 @@ ax-task = { workspace = true }
 - 修改 `WaitQueue`、`future`、`timers` 时，要区分 `irq` 开启与关闭两条实现路径。
 - 修改 `smp` 相关逻辑时，要同时验证 CPU 亲和、迁移任务和每核队列初始化。
 
-## 5. 测试策略
-### 5.1 单元测试
+## 测试
+### 单元测试
 `src/tests.rs` 已经覆盖了几类关键路径：
 
 - FIFO 调度顺序。
@@ -196,7 +196,7 @@ ax-task = { workspace = true }
 - `task-ext`、TLS、CPU 亲和与迁移路径。
 - `irq` 与非 `irq` 两种 sleep/timeout 语义。
 
-### 5.2 集成测试
+### 集成测试
 系统级验证更重要：
 
 - `test-suit/arceos/task/*` 是最直接的回归入口。
@@ -209,12 +209,12 @@ ax-task = { workspace = true }
 - 调度器切换、阻塞/唤醒、GC 回收和多核迁移必须有专门覆盖。
 - 涉及 `preempt`、`irq`、`smp`、`task-ext` 的修改必须做系统级回归。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `ax-task` 是 ArceOS 的标准任务运行时。它为 `ax-runtime`、`ax-sync`、`ax-api` 和各种示例/测试提供统一的任务抽象，是系统从“单核顺序执行”迈向“可调度 OS”的关键模块。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 直接复用 `ax-task` 作为线程调度基础，并借助 `TaskExt` 把 Linux 兼容线程对象挂接到任务实体上。因此，`ax-task` 在 StarryOS 中承担的是“底层线程调度内核”，而不是外围帮助库。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 并不直接依赖 `ax-task` 包名，但它通过 `ax-std` 启用的任务能力，把每个 vCPU 组织成可调度任务，并利用 `TaskExt`、`WaitQueue` 和运行队列复用 Hypervisor 并发模型。因此，`ax-task` 是 Axvisor 把“vCPU”转化成“宿主调度实体”的关键基础设施。

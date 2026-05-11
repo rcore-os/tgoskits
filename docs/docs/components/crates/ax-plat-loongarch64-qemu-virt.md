@@ -1,4 +1,4 @@
-# `ax-plat-loongarch64-qemu-virt` 技术文档
+# `ax-plat-loongarch64-qemu-virt`
 
 > 路径：`components/axplat_crates/platforms/axplat-loongarch64-qemu-virt`
 > 类型：库 crate
@@ -8,7 +8,7 @@
 
 `ax-plat-loongarch64-qemu-virt` 是 QEMU LoongArch 虚拟机在 `axplat` 体系下的完整平台实现。它不是“只提供启动代码”的薄封装，而是自己承担了控制台、时间、中断、电源、内存和可选多核的全部板级落地工作：从 LoongArch 启动头、DMW 映射和早期页表，到 16550 串口、LoongArch timer CSR、EIOINTC/PCH PIC、GED 关机寄存器，几乎都在本 crate 内部完成。
 
-## 1. 架构设计分析
+## 架构设计
 
 ### 1.1 真实定位
 
@@ -29,7 +29,7 @@
 
 这意味着它不是“仅供样例演示”的平台包，而是当前 LoongArch 路径里的主力参考实现。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -109,9 +109,9 @@ LoongArch QEMU virt 的中断模型在这个 crate 里被明确分层了：
 - `boot.rs` 当前把第二个参数 `arg` 固定传成 `0`，并留有 `TODO: parse dtb`；也就是说，本 crate 目前并不真正解析设备树。
 - `mem.rs` 虽然保留了 `0..0x200000` 作为 `boot_info + fdt` 区，但这只是内存保留语义，不等于平台已经把 FDT 接进运行期配置系统。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 为 LoongArch QEMU virt 提供可直接链接的启动入口。
 - 提供基于 MMIO 16550 的控制台实现。
@@ -160,9 +160,9 @@ LoongArch QEMU virt 的中断模型在这个 crate 里被明确分层了：
 - `ax-hal` 是消费它的更高一层。
 - FDT 目前只体现在保留区和 TODO 注释里，尚未成为本 crate 的运行时配置来源。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -176,7 +176,7 @@ LoongArch QEMU virt 的中断模型在这个 crate 里被明确分层了：
 | `chrono` | `rtc` 打开时的墙钟时间解析 |
 | `log` | 启动与调试日志 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `os/arceos/modules/axhal`：当前 LoongArch 默认平台路径之一。
 - `components/axplat_crates/examples/hello-kernel`
@@ -196,9 +196,9 @@ graph TD
     D --> G[ArceOS]
 ```
 
-## 4. 开发指南
+## 开发指南
 
-### 4.1 接入方式
+### 接入方式
 
 作为平台包使用时，最常见的依赖方式如下：
 
@@ -226,9 +226,9 @@ ax-plat-loongarch64-qemu-virt = { workspace = true, features = ["irq", "smp", "r
 
 因此它是“主力参考实现”，但还不是“所有 LoongArch virt 能力都完全收敛完成”的终局形态。
 
-## 5. 测试策略
+## 测试
 
-### 5.1 当前有效验证面
+### 测试覆盖
 
 - `ax-hal` 默认平台链路会持续编译和运行它。
 - `hello-kernel`、`irq-kernel`、`smp-kernel` 分别覆盖最小启动、中断和多核路径。
@@ -250,7 +250,7 @@ ax-plat-loongarch64-qemu-virt = { workspace = true, features = ["irq", "smp", "r
 - `arg` 目前固定为 0，任何假设“FDT 已接入”的上层逻辑都会出错。
 - `smp` 代码和默认单核配置之间存在张力，测试必须区分“代码存在”和“默认配置已开启”。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -258,6 +258,6 @@ ax-plat-loongarch64-qemu-virt = { workspace = true, features = ["irq", "smp", "r
 | StarryOS | 当前无仓库内直接依赖 | 潜在宿主平台基础 | 若未来 StarryOS 走 LoongArch + ArceOS HAL 路线，可复用该平台包，但当前仓库未直接接线 |
 | Axvisor | 当前无仓库内直接依赖 | 潜在宿主板级支持 | 本 crate 不提供虚拟化能力，只提供宿主平台 bring-up 基础；当前仓库没有直接依赖 |
 
-## 7. 总结
+## 总结
 
 `ax-plat-loongarch64-qemu-virt` 是一个完整度很高的 LoongArch 平台包：启动、串口、时间、中断、内存和关机都在本 crate 内部自洽落地。它最关键的设计，不是单个设备驱动，而是把 LoongArch virt 的地址映射、中断级联和最小运行环境整理成了稳定的 `axplat` 契约，因此它既适合作为当前仓库的默认 LoongArch 平台，也适合作为后续平台演进的参考基线。

@@ -1,4 +1,4 @@
-# `starryos` 技术文档
+# `starryos`
 
 > 路径：`os/StarryOS/starryos`
 > 类型：二进制 crate
@@ -10,8 +10,8 @@
 
 换句话说，`starryos` 负责的是“把内核打包成一个能启动的 StarryOS 镜像”，而不是“内核本体”。真正的系统核心仍在 `starry-kernel`。
 
-## 1. 架构设计分析
-### 1.1 总体定位
+## 架构设计
+### 设计定位
 从源码和构建链看，`starryos` 是一个非常薄的入口包，但它承担了 StarryOS 对外最直接的一层职责：
 
 - 选择默认 feature 组合。
@@ -78,8 +78,8 @@ flowchart TD
 
 这些都在 `starry-kernel`。`starryos` 提供的是入口参数、feature 组合和平台配置。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 定义 StarryOS 的默认可启动包。
 - 组织 feature 与平台配置，生成对应镜像。
 - 指定默认 init 命令行为 `/bin/sh -c init.sh`。
@@ -99,7 +99,7 @@ cargo xtask starry rootfs --arch riscv64
 cargo xtask starry run --arch riscv64 --package starryos
 ```
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax-feat["ax-feat"] --> starryos["starryos"]
@@ -107,7 +107,7 @@ graph LR
     vf2["axplat-riscv64-visionfive2 (optional)"] --> starryos
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-feat`：把底层 ArceOS 运行时、驱动和平台 feature 接到镜像入口包上。
 - `starry-kernel`：真正的内核实现，`starryos` 只在 `main()` 里调用其入口。
 - `axplat-riscv64-visionfive2`：仅在 `vf2` feature 下引入，用于板级适配。
@@ -117,7 +117,7 @@ graph LR
 - 平台配置：由 `.axconfig.toml` 和 `ArceosConfigOverride` 共同决定。
 - QEMU 参数：由 `.qemu.toml` 和 xtask 运行参数共同决定。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 常用运行方式
 ```bash
 cargo xtask starry rootfs --arch riscv64
@@ -136,8 +136,8 @@ cargo xtask starry run --arch riscv64 --package starryos
 2. 进程资源、信号、用户虚拟内存问题应改对应 `starry-*` 组件或 `starry-kernel`。
 3. 自动化回归入口问题应优先检查 `starryos-test` 和 xtask 测试路径。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 这个 crate 本身没有独立的 `tests/`。它的验证方式主要是系统级启动：
 
 - 是否能成功生成镜像。
@@ -155,12 +155,12 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 自动化回归则应优先用 `starryos-test`，因为 `cargo starry test qemu` 默认跑的是测试入口包，而不是这里。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `starryos` 建立在 ArceOS 的 `ax-feat`/平台/运行时能力之上，但不是 ArceOS 本体的一部分。它消费的是 ArceOS 的底座能力。
 
-### 6.2 StarryOS
+### StarryOS
 这是 StarryOS 的默认启动镜像入口。用户平时执行 `cargo xtask starry run --package starryos`，真正启动的就是这个包。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库中 Axvisor 不直接依赖 `starryos`。两者没有代码级直接关系。

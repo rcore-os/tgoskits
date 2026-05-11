@@ -1,6 +1,11 @@
+---
+sidebar_position: 2
+sidebar_label: "层级关系"
+---
+
 # 层级关系
 
-> 统计概览见 [组件开发指南](/docs/development/components)。
+> 统计概览见 [组件概述](/docs/components)。
 
 
 

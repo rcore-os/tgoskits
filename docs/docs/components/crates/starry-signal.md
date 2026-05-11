@@ -1,4 +1,4 @@
-# `starry-signal` 技术文档
+# `starry-signal`
 
 > 路径：`components/starry-signal`
 > 类型：库 crate
@@ -10,8 +10,8 @@
 
 它负责的是“信号应当怎样投递、屏蔽、排队、进入用户处理器”，而不是“谁有权发信号”“收到信号后内核最终怎样终止进程”。后者由 `starry-kernel` 的 syscall 层和任务层在消费 `SignalOSAction` 时决定。
 
-## 1. 架构设计分析
-### 1.1 总体定位
+## 架构设计
+### 设计定位
 从真实调用关系看，`starry-signal` 位于三层之间：
 
 - 向上承接 `sys_kill`、`sys_rt_sigaction`、`sys_rt_sigprocmask`、`sys_rt_sigreturn` 等系统调用语义。
@@ -20,7 +20,7 @@
 
 因此它不是简单的常量定义 crate，而是 StarryOS 用户态信号路径的核心组件。
 
-### 1.2 模块划分
+### 模块结构
 - `src/types.rs`：定义 `Signo`、`SignalSet`、`SignalInfo`、`SignalStack`。
 - `src/action.rs`：定义 `SignalActionFlags`、`SignalDisposition`、`SignalAction`、`SignalOSAction`、`k_sigaction` 兼容层。
 - `src/pending.rs`：定义 `PendingSignals`，管理标准信号与实时信号的排队策略。
@@ -93,8 +93,8 @@ StarryOS 内核中的对应接线点非常明确：
 
 所以本 crate 定义的是信号语义模型，而不是完整的进程生命周期策略。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 定义 Linux 风格信号编号、默认动作和掩码表示。
 - 管理标准信号与实时信号的 pending 队列。
 - 管理进程级共享 `sigaction` 表。
@@ -122,7 +122,7 @@ let sig = SignalInfo::new_kernel(Signo::SIGTERM);
 let wake_tid = proc_signal.send_signal(sig);
 ```
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax-cpu["ax-cpu"] --> sig["starry-signal"]
@@ -135,16 +135,16 @@ graph LR
     starry --> starrytest["starryos-test"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-cpu`：提供 `UserContext` 及寄存器定义，是保存/恢复信号现场的基础。
 - `starry-vm`：用于把 `SignalFrame` 写入用户栈，以及读写用户空间中的 signal 相关对象。
 - `ax-kspin`：保护动作表、mask、pending 队列等可变状态。
 - `linux-raw-sys`：提供 `siginfo_t`、`kernel_sigaction`、`SA_*`、`sigset_t` 等兼容定义。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `starry-kernel`：信号 syscall、任务中断、fault 转信号、signalfd、pselect 等路径都直接消费此 crate。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 依赖接入
 ```toml
 [dependencies]
@@ -164,7 +164,7 @@ starry-signal = { workspace = true }
 - 不要在这个 crate 里实现 syscall 权限校验或 `waitpid` 语义；那是内核层职责。
 - 若修改 `SA_ONSTACK` / `restorer` / `sigreturn` 路径，优先做跨架构核对，因为这些代码最容易在 ABI 细节处失配。
 
-## 5. 测试策略
+## 测试
 ### 5.1 现有测试覆盖
 当前 crate 自带的 host 侧测试已经覆盖了关键语义：
 
@@ -187,12 +187,12 @@ starry-signal = { workspace = true }
 - `ThreadSignalManager::handle_signal()` / `restore()` 必须覆盖正常和失败路径。
 - 所有涉及 `arch/*` 布局、`SignalActionFlags` 和 `SignalInfo` ABI 的改动都应做系统级回归。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 本体不直接依赖 `starry-signal`。这是 StarryOS 为 Linux 风格用户态信号补上的专门组件。
 
-### 6.2 StarryOS
+### StarryOS
 这是 `starry-signal` 的主战场。StarryOS 用它定义“信号是什么、如何排队、何时切入用户 handler”，再由 `starry-kernel` 负责 syscall 入口、任务中断和进程终结策略。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库中 Axvisor 不直接依赖 `starry-signal`。两者没有代码级直接关系。

@@ -138,7 +138,7 @@ const config = {
             {label: 'ArceOS', to: '/docs/development/arceos'},
             {label: 'StarryOS', to: '/docs/development/starryos'},
             {label: 'Axvisor', to: '/docs/development/axvisor'},
-            {label: '组件库', to: '/docs/components/crates'},
+            {label: '组件库', to: '/docs/components'},
           ],
         },
         {

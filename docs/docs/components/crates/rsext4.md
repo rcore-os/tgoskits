@@ -1,4 +1,4 @@
-# `rsext4` 技术文档
+# `rsext4`
 
 > 路径：`components/rsext4`
 > 类型：库 + 演示二进制 crate
@@ -8,15 +8,15 @@
 
 `rsext4` 是当前仓库里的独立 ext4 引擎。它自己定义块设备接口、挂载与卸载流程、目录/文件 API、JBD2 日志代理、多级缓存和若干 host 侧验证程序；在这棵代码树里，它主要作为旧 `ax-fs` 的 ext4 叶子后端被消费，而不是作为系统的 VFS 层或名字空间层存在。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `rsext4` 的边界非常靠下：
 
 - 它直接面向 ext4 语义和块设备，而不是面向统一 VFS trait。
 - 它对外导出的接口既有高层 API（`mount`、`open`、`read_at`、`mkdir` 等），也有大量后端内部模块，属于“引擎 + 宽导出 API”的风格。
 - 在当前仓库里，旧 `ax_fs::fs::ext4fs` 通过适配层把它包装成 `ax_fs_vfs::VfsOps`；新 `ax-fs-ng` 的 ext4 路径则改用了 `lwext4_rust`，不再依赖它。
 
-### 1.2 内部模块划分
+### 模块结构
 - `src/ext4_backend/blockdev.rs`：定义 `BlockDevice` trait、`BlockDev` 缓冲封装以及 `Jbd2Dev`。
 - `src/ext4_backend/ext4.rs`：文件系统核心对象 `Ext4FileSystem`，包含超级块、块组描述符、分配器和三层缓存。
 - `src/ext4_backend/api.rs`：高层调用入口，如 `fs_mount`、`fs_umount`、`open`、`read_at`、`write_at`。
@@ -67,8 +67,8 @@ flowchart TD
 - `rsext4` 和 `axfs-ng-vfs` 处于完全不同层级：前者是格式引擎，后者是 VFS 对象模型。
 - 当前仓库里的 StarryOS 和 `ax-fs-ng` 新栈不直接使用它。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - `mkfs`、`mount`、`umount`。
 - `open`/`lseek`/`read_at`/`write_at`。
 - `mkdir`/`mkfile`/`delete_file`/`delete_dir`。
@@ -107,7 +107,7 @@ flowchart TD
 - `src/lib.rs` 直接 `pub use` 大量后端模块，说明这个 crate 对上层暴露的是“偏底层引擎接口”，而不是收敛后的极简 facade。
 - crate 级别启用了 `#![deny(warnings)]`，任何小的告警都会导致构建失败。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     bitflags["bitflags"] --> current["rsext4"]
@@ -118,12 +118,12 @@ graph LR
     current --> host_demo["src/main.rs / testfs host 回归"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `bitflags`：位图与标志位表达。
 - `lazy_static`：no_std 下的静态对象辅助。
 - `log`：调试与事务日志输出。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - 旧 `ax_fs::fs::ext4fs`：当前仓库里的主要生产消费者。
 - `src/main.rs`：host 侧文件镜像驱动的演示与回归程序。
 
@@ -132,8 +132,8 @@ graph LR
 - `ax_fs::fs::ext4fs` 负责把它翻译成旧 `axfs_vfs` 所需的节点语义。
 - 新 `ax-fs-ng` ext4 路径已转向 `lwext4_rust`。
 
-## 4. 开发指南
-### 4.1 接入方式
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 rsext4 = { workspace = true }
@@ -152,21 +152,21 @@ rsext4 = { workspace = true }
 - 如果你改的是 JBD2 路径，最好保留 `src/main.rs` 那套 host 镜像回归，因为它能覆盖断电重放等系统外很难复现的路径。
 - 如果你打算继续增强 ext4 元数据或缓存能力，应优先保持 `sync_filesystem()` 的写回顺序稳定。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 `rsext4` 的测试覆盖明显强于其它几个目标 crate：
 
 - 多个后端模块自带 `#[test]`，覆盖位图、块组描述符、extent、缓存、CRC32C、JBD2 结构等。
 - `src/main.rs` 会在 host 文件镜像上执行 mkfs、mount、大文件 IO、link/unlink、symlink、truncate、journal 回放等场景。
 - `src/testfs/test_example.rs` 则是这些场景的集中用例库。
 
-### 5.2 建议的单元测试
+### 单元测试
 - extent 映射与洞区读取。
 - 三层缓存的淘汰与写回。
 - superblock / group descriptor / bitmap checksum。
 - JBD2 descriptor / commit / replay 的结构与顺序。
 
-### 5.3 建议的集成测试
+### 集成测试
 - 旧 `ax_fs::fs::ext4fs` 适配层与 `rsext4` 的联调。
 - 512B 底层块设备经过 4 KiB block 适配后的读写正确性。
 - journal 打开后的断电回放。
@@ -177,12 +177,12 @@ rsext4 = { workspace = true }
 - `truncate`、`mv`、`link`、`symlink` 组合路径。
 - 旧 `ax-fs` 适配层对 block size 的换算。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 在 ArceOS 旧文件系统栈里，`rsext4` 是 ext4 叶子格式引擎。它通过 `ax_fs::fs::ext4fs` 间接进入系统，而不是直接成为统一文件 API。
 
-### 6.2 StarryOS
+### StarryOS
 当前仓库里的 StarryOS 主线已经转向 `ax-fs-ng` + `lwext4_rust` 组合，没有直接依赖 `rsext4`。因此它对 StarryOS 更像历史并行路线，而不是当前主干依赖。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库里的 `os/axvisor` 没有直接依赖 `rsext4`。它在这棵代码树中的跨项目定位主要是“旧 ArceOS 栈可复用的 ext4 引擎”，而不是 Axvisor 当前公共文件系统层。

@@ -1,4 +1,4 @@
-# `starry-vm` 技术文档
+# `starry-vm`
 
 > 路径：`components/starry-vm`
 > 类型：库 crate
@@ -10,8 +10,8 @@
 
 名字里虽然带 `vm`，但它并不管理页表、VMA、`mmap`、ELF 装载或缺页策略。那些真正的“虚拟内存管理”职责在 `starry-kernel::mm`，尤其是 `AddrSpace`、`loader.rs` 和 `access.rs` 中。
 
-## 1. 架构设计分析
-### 1.1 总体定位
+## 架构设计
+### 设计定位
 从 StarryOS 的真实调用关系看，`starry-vm` 位于 syscall 层和用户地址空间之间：
 
 - syscall 参数进入内核后，常先通过 `VmPtr` / `VmMutPtr` / `vm_load*()` 做指针编组。
@@ -20,7 +20,7 @@
 
 这使它更像“用户内存 I/O 抽象层”，而不是“地址空间对象模型”。
 
-### 1.2 模块划分
+### 模块结构
 - `src/lib.rs`：定义 `VmError`、`VmResult`、`VmIo`、`vm_read_slice()`、`vm_write_slice()`。
 - `src/thin.rs`：定义 `VmPtr` / `VmMutPtr` 两个轻量指针 trait，支持原始指针和 `NonNull<T>`。
 - `src/alloc.rs`：在启用 `alloc` feature 时提供 `vm_load_any()`、`vm_load()`、`vm_load_until_nul()`。
@@ -75,8 +75,8 @@ flowchart TD
 
 这些职责在 `starry-kernel::mm::{aspace,loader,access}`。`starry-vm` 只负责“已经给你一个用户地址，现在安全地把它读出来或写回去”。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 对用户态原始指针进行对齐检查和安全读写。
 - 把用户空间数组加载为内核侧 `Vec<T>`。
 - 读取 NUL 终止数组，为 `argv`、`envp`、路径字符串等场景服务。
@@ -103,7 +103,7 @@ let data = vm_load(buf_ptr, len)?;
 vm_write_slice(out_ptr, &data)?;
 ```
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax_errno["ax-errno"] --> vm["starry-vm"]
@@ -116,16 +116,16 @@ graph LR
     starry --> starrytest["starryos-test"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-errno`：把 `VmError` 映射到 StarryOS/ArceOS 统一错误模型。
 - `bytemuck`：为 `vm_read()`、`vm_load()`、`vm_load_until_nul()` 提供按位可解释类型约束。
 - `extern-trait`：让 `VmIo` 的具体实现留给外部环境注入。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `starry-kernel`：几乎所有需要读写用户缓冲区的 syscall 路径都直接依赖它。
 - `starry-signal`：利用它写入用户信号栈 frame。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 依赖接入
 ```toml
 [dependencies]
@@ -151,7 +151,7 @@ starry-vm = { workspace = true }
 - 不要在这里实现具体架构的 page fault 策略；那是 `starry-kernel::mm` 的职责。
 - 不要绕过它直接把用户指针转换成普通引用；那会破坏用户态边界检查。
 
-## 5. 测试策略
+## 测试
 ### 5.1 现有测试覆盖
 `tests/test.rs` 使用一个 1 MiB 的假内存池实现 `VmIo`，已经覆盖：
 
@@ -172,12 +172,12 @@ starry-vm = { workspace = true }
 - 需要同时覆盖未对齐、越界、只读区域和过长字符串四类失败路径。
 - 涉及 `VmIo` 语义变化的改动，建议至少跑一轮 `execve + clone3 + futex + signal` 回归。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 本体不直接消费 `starry-vm`。这个 crate 更像是 StarryOS 为 Linux 风格用户态接口补上的“用户指针访问层”。
 
-### 6.2 StarryOS
+### StarryOS
 这是 `starry-vm` 的主战场。StarryOS 把它放在 syscall 和 `AddrSpace` 之间，统一处理用户态参数编组、缓冲区复制和字符串加载。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库中 Axvisor 不直接依赖 `starry-vm`。从真实依赖关系看，它并不是虚拟化栈组件，而是 StarryOS 用户内存访问组件。

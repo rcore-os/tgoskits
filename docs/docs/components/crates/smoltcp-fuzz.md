@@ -1,4 +1,4 @@
-# `smoltcp-fuzz` 技术文档
+# `smoltcp-fuzz`
 
 > 路径：`components/starry-smoltcp/fuzz`
 > 类型：模糊测试工作区 / 二进制目标集合
@@ -10,9 +10,9 @@
 
 最需要明确的边界是：`smoltcp-fuzz` 只是开发期质量保障工具，不参与 ArceOS、StarryOS 或 Axvisor 的运行时装配，也不应被理解成“网络测试应用”。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 `Cargo.toml` 中的 `package.metadata.cargo-fuzz = true` 已经明确表明：这是一个 `cargo fuzz` 工作区，而不是普通应用 crate。它的职责很单一：
 
@@ -46,7 +46,7 @@
 
 这种拆法不是按源码目录划分，而是按“高风险输入面”划分，更符合协议栈 fuzz 的实际需求。
 
-## 2. 核心功能说明
+## 核心功能
 
 ### 2.1 每个 target 在测什么
 
@@ -94,9 +94,9 @@
 - `smoltcp-fuzz` 不负责系统级连通性回归
 - `smoltcp-fuzz` 主要关注解析健壮性、repr/emit 一致性以及部分协议状态机面对畸形输入时的鲁棒性
 
-## 3. 依赖关系
+## 依赖关系
 
-### 3.1 关键直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -113,7 +113,7 @@
 
 ArceOS / StarryOS 不会运行这些 fuzz target，但都会间接受益于修复结果，因为它们的 IP 协议行为都建立在同一份 `smoltcp` 之上。
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 运行方式
 
@@ -141,7 +141,7 @@ cargo fuzz run packet_parser
 - 对需要状态机环境的场景，优先采用 `tcp_headers.rs` 这种“先建立最小系统，再注入畸形数据”的模式
 - 若 target 依赖 examples 工具代码，需同步注意两边行为是否漂移
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前覆盖重点
 
@@ -165,16 +165,16 @@ cargo fuzz run packet_parser
 | `netsim` / examples | 协议行为与性能回归 |
 | `smoltcp-fuzz` | 非法输入、畸形报文、异常状态迁移下的健壮性 |
 
-## 6. 跨项目定位
+## 跨项目定位
 
-### 6.1 ArceOS
+### ArceOS
 
 对 ArceOS 来说，`smoltcp-fuzz` 不是运行时组件，而是 `smoltcp` 底层协议引擎的开发期安全网。
 
-### 6.2 StarryOS
+### StarryOS
 
 对 StarryOS 也是一样。它不会直接运行 fuzz target，但会间接受益于这些 target 提前暴露出的解析与状态机缺陷。
 
-### 6.3 Axvisor
+### Axvisor
 
 当前没有看到 Axvisor 直接使用 `smoltcp` 网络路径，因此 `smoltcp-fuzz` 对它的影响最多是间接的公共代码质量提升，而不是直接的系统测试工具。

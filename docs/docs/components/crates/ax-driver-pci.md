@@ -1,4 +1,4 @@
-# `ax-driver-pci` 技术文档
+# `ax-driver-pci`
 
 > 路径：`components/axdriver_crates/axdriver_pci`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `ax-driver-pci` 的定位非常清晰：它是 `ax-driver` 体系里的 PCI 总线访问辅助层。它不负责把设备按类别聚合，也不负责实现具体网卡、块设备或显示设备驱动；它提供的是 PCI 配置空间相关类型的统一来源，以及一个很小但很关键的 `PciRangeAllocator`，供上层为未分配地址的 PCI BAR 安排 MMIO 窗口。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 这个 crate 的源码很小，但边界十分明确：
 
 - 绝大多数 PCI 相关类型直接从 `virtio_drivers::transport::pci::bus` 再导出。
@@ -59,8 +59,8 @@
 ### 1.6 边界澄清
 最关键的边界是：**`ax-driver-pci` 是 PCI 总线访问辅助层，不是通用驱动聚合层，也不是完整的 PCI 设备管理子系统。**
 
-## 2. 核心功能说明
-### 2.1 主要能力
+## 核心功能
+### 功能概览
 - 统一提供 PCI 配置空间访问相关类型。
 - 为 BAR 资源分配提供最小分配器 `PciRangeAllocator`。
 - 为上层 `ax-driver` 的 PCI 枚举和 VirtIO PCI 探测提供公共底座。
@@ -76,13 +76,13 @@
 - 不负责设备类别识别。
 - 不负责 DMA、IOMMU 或驱动生命周期管理。
 
-## 3. 依赖关系图谱
-### 3.1 直接依赖
+## 依赖关系
+### 直接依赖
 | 依赖 | 作用 |
 | --- | --- |
 | `virtio-drivers` | 提供 PCI bus 访问类型和实现 |
 
-### 3.2 主要消费者
+### 主要消费者
 - `os/arceos/modules/axdriver/src/bus/pci.rs`
 - `os/arceos/modules/axdriver/src/virtio.rs`
 
@@ -91,7 +91,7 @@
 - 向上：服务 `ax-driver` 的 PCI 探测与 VirtIO PCI 路径。
 - 横向：保持对设备类别中立，不直接依赖 `axdriver_block`、`axdriver_net` 等类别 crate。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 何时应改这里
 适合修改 `ax-driver-pci` 的场景包括：
 
@@ -111,19 +111,19 @@
 - 不要在这里引入按设备类别分支的逻辑；那会污染总线层边界。
 - 升级 `virtio-drivers` 时，要注意其 PCI 类型 API 变更可能直接影响本 crate 的对外接口。
 
-## 5. 测试策略
-### 5.1 当前有效验证面
+## 测试
+### 测试覆盖
 该 crate 没有独立测试目录，当前有效验证主要来自：
 
 - QEMU/真实平台上的 PCI 枚举。
 - BAR 地址自动分配。
 - VirtIO PCI 和 ixgbe PCI 设备是否能被后续驱动正确接管。
 
-### 5.2 建议补充的单元测试
+### 单元测试
 - `PciRangeAllocator::alloc()` 的对齐、越界和非法参数处理。
 - 不同 BAR 大小组合下的顺序分配结果。
 
-### 5.3 集成测试重点
+### 集成测试
 - `PCI_ECAM_BASE` 有效性与总线枚举。
 - 未初始化 BAR 的自动分配与命令寄存器启用。
 - `virtio-net`、`virtio-blk`、`ixgbe` 等不同 PCI 设备的后续探测。
@@ -132,12 +132,12 @@
 - BAR 分配错误会直接导致后续驱动映射错误，通常很难在更上层快速定位。
 - 若把设备类别识别逻辑下沉到这里，会破坏整个驱动栈的层次边界。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 是当前仓库里唯一明确的直接主线消费者。`ax-driver` 的 PCI 探测路径完全建立在本 crate 暴露的类型和分配器之上。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 若复用 ArceOS 底层驱动栈，会间接依赖本 crate；但当前仓库中没有看到它作为 StarryOS 独立 PCI 子系统直接存在。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库里没有看到 Axvisor 直接依赖 `ax-driver-pci`。它不是 Axvisor 的宿主 PCI 管理核心，也不是虚拟 PCI 设备框架。

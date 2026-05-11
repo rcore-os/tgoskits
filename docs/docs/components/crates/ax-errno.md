@@ -1,4 +1,4 @@
-# `ax-errno` 技术文档
+# `ax-errno`
 
 > 路径：`components/axerrno`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `ax-errno` 是 ArceOS 体系的统一错误码契约层。它同时维护一套面向内核模块的 `AxErrorKind`，以及一套面向 Linux/POSIX 兼容层的 `LinuxError`，并用 `AxError` 把两者压缩到单个 `i32` 表示中。它是叶子基础件：负责错误值的表示和转换，不负责错误传播策略、日志策略或 syscall 分派策略。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 这个 crate 解决的核心问题是“不同层次的错误语义如何共存”：
 
 - 内核内部希望用较稳定、较抽象的 `AxErrorKind`。
@@ -58,25 +58,25 @@ flowchart TD
 
 这说明 `ax-errno` 不只是“枚举定义”，而是同时承担一套轻量错误书写 DSL。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 统一 ArceOS 错误类别表示。
 - 提供 Linux errno 桥接。
 - 提供 `i32` 编码与解码规则。
 - 提供便捷宏，降低错误返回样板代码。
 
-### 2.2 关键 API 与真实使用位置
+### 使用场景
 - `AxErrorKind` / `AxError`：在 `ax-alloc`、`ax-mm`、`ax-net`、`ax-fs`、`ax-task` 等模块里高频使用。
 - `LinuxError`：在 `ax-libc`、`ax-posix-api`、`ax-net-ng` 的 POSIX 兼容路径中直接使用。
 - `ax_err!` / `ax_err_type!`：在 `axvisor`、`ax-net`、`ax-std`、`ax-task` 等代码里广泛出现。
 - `canonicalize()`：适合把兼容层传回来的 Linux 错误重新折叠到内核内部语义。
 
-### 2.3 使用边界
+### 边界说明
 - `ax-errno` 不负责“何时打印日志”；宏里的 `warn!` 只是便捷副作用，不等于统一错误审计策略。
 - `ax-errno` 不负责“错误恢复”；它只描述错误值，不描述恢复流程。
 - `LinuxError` 和 `AxErrorKind` 不是简单同义词；`AxError` 能同时承载两套编码语义。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     log["log"] --> ax_errno["ax-errno"]
@@ -93,23 +93,23 @@ graph LR
     ax_errno --> axvisor["axvisor"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `strum`：为 `AxErrorKind` 提供计数等派生能力。
 - `log`：支撑 `ax_err_type!` 等宏里的 `warn!` 输出。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - ArceOS 几乎所有核心模块：`ax-alloc`、`ax-mm`、`ax-fs`、`ax-net`、`ax-task`、`ax-std`、`ax-libc`。
 - StarryOS 内核与相关虚拟化组件。
 - Axvisor 和其设备/虚拟机管理路径。
 
-## 4. 开发指南
-### 4.1 依赖配置
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 ax-errno = { workspace = true }
 ```
 
-### 4.2 修改时的关键约束
+### 注意事项
 1. 新增 `AxErrorKind` 时，必须同步更新 `as_str()`、到 `LinuxError` 的转换、从 `LinuxError` 的逆转换以及常量导出宏。
 2. `AxError` 的正负号编码语义不能随意改；这会直接影响 syscall/FFI 边界。
 3. 修改 `errno.h` 或 `build.rs` 时，要确认生成出的 `LinuxError` 与兼容层使用的常量值一致。
@@ -120,32 +120,32 @@ ax-errno = { workspace = true }
 - 只在 POSIX/Linux 兼容边界附近落到 `LinuxError` 或负 errno。
 - 宏很方便，但对热点路径或精细日志控制的代码，仍要明确评估其 `warn!` 副作用是否合适。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 `src/lib.rs` 已有两类关键测试：
 
 - `test_try_from()`：验证编码范围与 `i32` 解码规则。
 - `test_conversion()`：验证 `LinuxError` 与 `AxError` 的双向转换。
 
-### 5.2 单元测试重点
+### 单元测试
 - 新增错误种类后的转换表完整性。
 - `canonicalize()` 在 Ax/Linux 两套错误语义间的归一行为。
 - 宏在有无日志环境下的返回值稳定性。
 
-### 5.3 集成测试重点
+### 集成测试
 - POSIX 路径返回的错误码能否被 `ax-libc`、`ax-posix-api` 正确消费。
 - 内核内部模块使用 `AxResult` 时，错误语义是否仍保持一致。
 
-### 5.4 覆盖率要求
+### 覆盖率
 - 对 `ax-errno`，转换表覆盖率是核心指标。
 - 任何新增或调整错误码映射的改动，都必须补齐正向和逆向测试。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `ax-errno` 是 ArceOS 基础栈里最广泛共享的契约层之一。它把驱动、文件系统、网络、内存、任务等模块的错误语义统一到同一套类型上。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 复用 `ax-errno` 作为内核内部与 Linux 兼容边界之间的错误桥。它在这里仍是契约层，而不是“系统调用错误处理框架”本身。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 同样直接使用 `ax-errno`。在 hypervisor 场景里，它承担的是跨模块统一错误值的角色，而不是 VMM 策略层。

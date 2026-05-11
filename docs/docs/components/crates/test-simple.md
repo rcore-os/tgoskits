@@ -1,4 +1,4 @@
-# `test-simple` 技术文档
+# `test-simple`
 
 > 路径：`components/crate_interface/test_crates/test-simple`
 > 类型：二进制 crate（独立测试工作区成员，`publish = false`）
@@ -8,7 +8,7 @@
 
 `test-simple` 是 `crate_interface` stable 路径里的“最终链接/验证端”测试资产。它自己既不定义接口，也不承载正式实现，而是把 `define-simple-traits` 的定义侧、`impl-simple-traits` 的实现侧和调用侧验证逻辑真正收束到同一个可执行文件中，再用 `assert_eq!` 把结果钉死。与 `components/crate_interface/tests/test_crate_interface.rs` 这类同 crate 测试相比，它验证的是更接近真实使用方式的三 crate 闭环：接口定义、符号导出、最终调用必须在真正完成链接之后仍然成立。
 
-## 1. 架构设计分析
+## 架构设计
 
 ### 1.1 在测试矩阵中的真实定位
 
@@ -59,9 +59,9 @@
 
 这些测试更偏向“宏展开后的基本调用语义是否成立”。`test-simple` 则再向前迈一步，专门证明当定义侧、实现侧、调用侧分别位于不同 crate 时，最终二进制仍然能正确完成符号绑定。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 把 stable 定义侧与实现侧真实链接进同一可执行文件
 - 同时验证 `call_interface!`、`namespace`、`gen_caller` 三条主要能力
@@ -82,9 +82,9 @@ flowchart TD
 
 只有二进制 crate 才能把“最终链接行为”完整暴露出来。若只停留在库内单测或宏展开检查，很多问题会被隐藏在“尚未进入最终链接单元”这一步之前，无法证明真实程序也能成立。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -112,7 +112,7 @@ graph TD
     D --> C
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 什么时候应该修改它
 
@@ -122,7 +122,7 @@ graph TD
 - 需要为现有 `namespace` 或 `gen_caller` 分支补更明确的终端断言
 - 需要提升断言值的可辨识度，便于快速定位链接错误
 
-### 4.2 修改时的关键约束
+### 注意事项
 
 - 定义侧新增接口后，必须同步补 `impl-simple-traits` 与 `test-simple`
 - 不要删除实现类型的显式类型引用；它们是链接锚点的一部分
@@ -151,7 +151,7 @@ components/crate_interface/test_crates/run_tests.sh simple
 - `ax-crate-interface-lite` 的轻量语法覆盖：放到 `components/crate_interface/crate_interface_lite/tests/test_crate_interface.rs`
 - `weak_default`、弱符号优先级、默认回退：放到 `test-weak` 与 `test-weak-partial`
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前测试目标
 
@@ -177,7 +177,7 @@ components/crate_interface/test_crates/run_tests.sh simple
 - 若对同一接口引入第二份实现，测试可能从断言失败升级为重复符号问题
 - 若断言值与默认值或其他 case 不够区分，定位会明显变慢
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -185,6 +185,6 @@ components/crate_interface/test_crates/run_tests.sh simple
 | StarryOS | 无主线直接依赖 | 间接保护测试资产 | 通过复用 ArceOS 公共基础设施，间接受益于 stable 链接语义回归 |
 | Axvisor | 无主线直接依赖 | 间接保护测试资产 | `axvisor_api` 等组件使用 `crate_interface`，但不会直接消费这个测试二进制 |
 
-## 7. 最关键的边界澄清
+## 总结
 
 `test-simple` 不是正式运行时组件，也不是通用集成测试框架；它只是 `crate_interface` stable 多 crate 测试矩阵中的最终链接验证可执行体，职责到“证明定义侧、实现侧、调用侧能在真实二进制里闭环”为止。

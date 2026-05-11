@@ -1,4 +1,4 @@
-# `arceos-yield` 技术文档
+# `arceos-yield`
 
 > 路径：`test-suit/arceos/task/yield`
 > 类型：测试入口 crate
@@ -10,7 +10,7 @@
 
 它的边界需要说得很明确：**这个 crate 不是调度器框架，也不是性能 benchmark；它只是拿“主动让出 CPU”这条最基础的调度语义做回归检查。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 测试结构
 整个场景只依赖两个共享状态：
 
@@ -47,7 +47,7 @@ flowchart LR
 
 所以这个 crate 不是“无条件断言所有调度器都应同序执行”，而是有边界地验证默认/特定调度语义。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 实际验证内容
 它主要检查三件事：
 
@@ -75,7 +75,7 @@ flowchart LR
 
 它只是“主动让出 CPU 这一下是否还正常”的快速探针。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     test["arceos-yield"] --> ax-std["ax-std(multitask)"]
@@ -83,19 +83,19 @@ graph LR
     ax-api --> ax-task["ax-task"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `ax-std(multitask)`：提供 `thread::spawn`、`thread::yield_now` 与 `available_parallelism()`。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax_api::task::ax_yield_now`：连接用户侧线程 API 与内核任务 API。
 - `ax-task::yield_now`：真正对当前 run queue 触发让出和重新调度。
 
-### 3.3 主要消费者
+### 主要消费者
 - `cargo arceos test qemu` 自动收集的任务基础回归。
 - 修改 `ax-task`、调度器 feature 或 cooperative 调度路径后的最小验证。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cargo xtask arceos run --package arceos-yield --arch riscv64
 ```
@@ -106,7 +106,7 @@ cargo xtask arceos run --package arceos-yield --arch riscv64
 cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 不要把这个 crate 扩展成通用调度测试集合；它应持续聚焦 `yield`。
 2. 如果新增顺序断言，必须明确它依赖单核还是特定调度器。
 3. 若改变成功输出，要同步更新对应 `success_regex`。
@@ -115,7 +115,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 单核专用配置下的更强顺序断言
 - RR/CFS 下“让出后系统仍能前进”的更明确 smoke check
 
-## 5. 测试策略
+## 测试
 ### 5.1 当前自动化形态
 `qemu-riscv64.toml` 使用：
 
@@ -135,12 +135,12 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 多核下不要误读日志顺序为调度错误。
 - 若未来调度器默认 feature 变化，需要重新审视条件编译分支是否仍合理。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 它是 ArceOS 最基础的任务调度回归之一，用来盯住 cooperative `yield` 这条最短语义链。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 不直接消费这个测试包，但会间接受到底层调度实现改动影响，因此这类回归对共享任务栈仍有参考意义。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 也不会直接运行它；它的意义在于先用比虚拟化场景简单得多的工作负载验证共享调度基础没有被破坏。

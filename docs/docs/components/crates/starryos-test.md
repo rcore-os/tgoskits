@@ -1,4 +1,4 @@
-# `starryos-test` 技术文档
+# `starryos-test`
 
 > 路径：`test-suit/starryos`
 > 类型：二进制 crate
@@ -10,8 +10,8 @@
 
 因此，`starryos-test` 不是另一套内核实现，而是“被测试系统的入口包”。它把 StarryOS 的真实启动主线放进了专门的自动化回归通道里。
 
-## 1. 架构设计分析
-### 1.1 总体定位
+## 架构设计
+### 设计定位
 这个包的职责可以概括为三点：
 
 - 作为 `cargo starry test qemu` 的默认目标包。
@@ -73,8 +73,8 @@ flowchart TD
 
 `test-suit/starryos` 目录当前没有自己的 `.axconfig.toml` 或 `.qemu.toml`，这也进一步说明它的测试配置主要来自 xtask，而不是包内静态 dotfile。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 作为 `cargo starry test qemu` 的目标包。
 - 复用真实的 StarryOS 启动主线进行系统级回归。
 - 为 xtask 提供稳定的包标识和产物根目录。
@@ -100,7 +100,7 @@ cargo starry test qemu --target riscv64
 cargo xtask starry run --arch riscv64 --package starryos-test
 ```
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax-feat["ax-feat"] --> test["starryos-test"]
@@ -108,7 +108,7 @@ graph LR
     vf2["axplat-riscv64-visionfive2 (optional)"] --> test
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-feat`：提供底层平台、驱动和运行时装配。
 - `starry-kernel`：真正执行系统 bring-up。
 - `axplat-riscv64-visionfive2`：在 `vf2` feature 下可选引入。
@@ -116,7 +116,7 @@ graph LR
 ### 3.2 关键外部驱动者
 - `tg-xtask`：不是 Cargo 依赖，但是真正让这个包进入测试流水线的上层驱动者。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 常用运行方式
 ```bash
 cargo starry test qemu --target riscv64
@@ -138,8 +138,8 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 - 不要以为它当前已经有独立的脚本化测试程序；目前主要判据仍是“能否进入 shell 提示符”。
 - 不要忘记 package 名和 bin 名不同：xtask 认的是 package `starryos-test`，运行出来的二进制仍叫 `starryos`。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 这个 crate 自己就是系统测试入口，因此它的价值主要来自端到端运行：
 
 - QEMU 能否成功启动镜像。
@@ -157,12 +157,12 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 - 这里的覆盖率应按“场景覆盖”理解，而不是 host 侧代码覆盖率。
 - 至少应覆盖正常启动、panic 失败、rootfs 准备和目标架构切换几类核心路径。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 本体不直接依赖 `starryos-test`。这是 StarryOS 在根工作区中单独建立的系统测试入口包。
 
-### 6.2 StarryOS
+### StarryOS
 这是 StarryOS 的自动化回归入口。仓库里执行 `cargo starry test qemu` 时，真正被构建和运行的是它，而不是普通的 `starryos` 包。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库中 Axvisor 不直接依赖 `starryos-test`。两者没有代码级直接关系。

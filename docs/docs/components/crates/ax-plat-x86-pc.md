@@ -1,4 +1,4 @@
-# `ax-plat-x86-pc` 技术文档
+# `ax-plat-x86-pc`
 
 > 路径：`components/axplat_crates/platforms/axplat-x86-pc`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `ax-plat-x86-pc` 是 `axplat` 在 x86 Standard PC / Multiboot 场景上的平台实现。它把 Multiboot 引导、临时页表、COM1 串口、TSC、LAPIC/IOAPIC、多核启动以及 PC 风格电源控制整合成 `axplat` 约定的接口，是 ArceOS x86 默认平台路径中的经典板级实现。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 这个 crate 的职责非常聚焦：
 
 - 它是 x86 PC 机型的 `axplat` 实现，而不是通用 x86 抽象层。
@@ -18,7 +18,7 @@
 
 因此，`ax-plat-x86-pc` 的价值在于“把经典 PC 平台假设精确定义出来”，而不是“适配所有 x86 机器”。
 
-### 1.2 内部模块划分
+### 模块结构
 - `src/lib.rs`：平台入口总装。定义 `rust_entry` / `rust_entry_secondary`，并汇总各个 `*IfImpl`。
 - `src/boot.rs`：Multiboot 常量、启动栈、CR0/CR4/EFER 设置等最早期引导辅助。
 - `src/multiboot.S`：真正的 `_start` 汇编入口，从 32 位准备进入 64 位并调用 Rust。
@@ -92,15 +92,15 @@ flowchart TD
 - `phys_to_virt` / `virt_to_phys` 建立在线性 `PHYS_VIRT_OFFSET` 上，因此高半部偏移是平台契约的一部分。
 - 当前启动页表使用 1GiB 大页，这对某些宿主虚拟化后端有兼容性注意事项。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 提供 Multiboot 到 `ax_plat::call_main()` 的最早期引导桥接。
 - 提供基于 COM1 的平台控制台。
 - 提供基于 TSC 和可选 RTC 的时间接口。
 - 提供基于 LAPIC / IOAPIC 的中断与 IPI 支持。
 - 提供 x86 PC 场景下的 RAM、MMIO、SMP 和电源控制接口。
 
-### 2.2 关键 API 与使用场景
+### 使用场景
 - `InitIfImpl`：被 `ax-hal` / `ax-runtime` 在启动时调用。
 - `ConsoleIfImpl`：日志和控制台输出的基础。
 - `MemIfImpl`：为内核内存管理提供 RAM/MMIO 描述。
@@ -108,7 +108,7 @@ flowchart TD
 - `IrqIfImpl`：为 IRQ 注册和分发提供平台落点。
 - `PowerIfImpl`：供关机和 AP 启动使用。
 
-### 2.3 典型使用方式
+### 使用方式
 和其他平台包一样，它通常不是“业务代码直接依赖”的对象，而是平台选择的一部分：
 
 ```toml
@@ -118,7 +118,7 @@ ax-plat-x86-pc = { workspace = true, features = ["irq", "smp", "rtc"] }
 
 在 ArceOS/StarryOS 的常见 x86 构建路径里，这个选择通常由 `ax-hal` 的平台 feature 或 make/xtask 的平台包变量进一步驱动。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     axplat["ax-plat"] --> current["ax-plat-x86-pc"]
@@ -133,14 +133,14 @@ graph LR
     current --> arceos["ArceOS x86 默认平台路径"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `axplat`：提供平台 trait 与 `call_main` / `call_secondary_main` 契约。
 - `ax-cpu`：trap 和 per-CPU 初始化相关能力。
 - `multiboot`：解析引导信息。
 - `x2apic`、`x86`、`x86_64`：APIC、寄存器和架构级辅助。
 - `uart_16550`、`raw-cpuid`、可选 `x86_rtc`：对应控制台、CPU 频率信息和墙钟。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-hal`：在 x86 PC 场景下复用本 crate 的 `axplat` 实现。
 - `components/axplat_crates/examples/*`：最小平台样例。
 - ArceOS 和 StarryOS 的 x86 默认平台路径。
@@ -150,8 +150,8 @@ graph LR
 - StarryOS 的 x86 平台 bring-up。
 - Axvisor 的依赖图中可能出现该包，但主 x86 平台更偏向 `axplat-x86-qemu-q35`。
 
-## 4. 开发指南
-### 4.1 依赖配置
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 ax-plat-x86-pc = { workspace = true, features = ["irq", "smp"] }
@@ -168,33 +168,33 @@ ax-plat-x86-pc = { workspace = true, features = ["irq", "smp"] }
 - `cpu_boot()`、`rust_entry_secondary()` 与 `mp.rs` 的启动页布局是一套强约束组合，不能分开改。
 - 对 x86 PC 场景之外的机器，应优先考虑是否应该新建平台包，而不是继续在本 crate 内堆特判。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 该 crate 主要依赖交叉编译检查和 QEMU/平台示例验证，而不是 crate 内单元测试。
 
-### 5.2 单元测试重点
+### 单元测试
 - 多为配置、地址换算和向量编号这类可静态验证逻辑。
 - 对启动路径中的结构布局和符号契约，优先考虑编译期断言和最小样例验证。
 
-### 5.3 集成测试重点
+### 集成测试
 - `hello-kernel`：验证 Multiboot 启动、串口和最小 bring-up。
 - `irq-kernel`：验证 IOAPIC/LAPIC 中断路径。
 - `smp-kernel`：验证 AP 启动与 secondary path。
 - 启用 `rtc` 时验证 wall time 路径。
 
-### 5.4 覆盖率要求
+### 覆盖率
 - 对平台 crate，重点是 bring-up 场景覆盖。
 - 至少应覆盖启动、串口、中断、时间和 SMP 五条主线对应的 feature 组合。
 - 任何涉及启动页表、APIC 配置或 Multiboot 内存解析的改动，都应要求真实平台或 QEMU 集成回归。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `ax-plat-x86-pc` 是 ArceOS 在传统 x86 PC / Multiboot 场景上的关键平台包之一。它把 x86 bring-up 的复杂度收束进 `axplat` 接口，是 x86 版本 ArceOS 的板级基座。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 在 x86 默认平台路径中也会复用这条 `axplat` 实现。因此它在 StarryOS 中承担的是板级 bring-up 与平台设施角色，而不是 Linux 兼容语义层。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 的主 x86 manifest 更明确地偏向 `axplat-x86-qemu-q35`，因此 `ax-plat-x86-pc` 在 Axvisor 中更适合作为“通用 PC / Multiboot 参考实现”来理解，而不是其当前主平台实现。
 # `ax-plat-x86-pc` 技术文档
 
@@ -206,7 +206,7 @@ Axvisor 的主 x86 manifest 更明确地偏向 `axplat-x86-qemu-q35`，因此 `a
 
 `ax-plat-x86-pc` 的核心定位是：Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine.
 
-## 1. 架构设计分析
+## 架构设计
 - 目录角色：可复用基础组件
 - crate 形态：库 crate
 - 工作区位置：子工作区 `components/axplat_crates`
@@ -214,7 +214,7 @@ Axvisor 的主 x86 manifest 更明确地偏向 `axplat-x86-qemu-q35`，因此 `a
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `IrqIfImpl`、`ConsoleIfImpl`、`InitIfImpl`、`MemIfImpl`、`PowerImpl`、`TimeIfImpl`、`APIC_TIMER_VECTOR`、`APIC_SPURIOUS_VECTOR`、`APIC_ERROR_VECTOR`、`IO_APIC_BASE`。
 - 设计重心：该 crate 的重心通常是板级假设、条件编译矩阵和启动时序，阅读时应优先关注架构/平台绑定点。
 
-### 1.1 内部模块划分
+### 模块结构
 - `apic`：Advanced Programmable Interrupt Controller (APIC) support
 - `boot`：Kernel booting using multiboot header
 - `console`：Uart 16550 serial port
@@ -224,17 +224,17 @@ Axvisor 的主 x86 manifest 更明确地偏向 `axplat-x86-qemu-q35`，因此 `a
 - `time`：Time management. Currently, the TSC is used as the clock source
 - `mp`：Multi-processor booting（按 feature: smp 条件启用）
 
-### 1.2 核心算法/机制
+### 核心机制
 - 该 crate 以平台初始化、板级寄存器配置和硬件能力接线为主，算法复杂度次于时序与寄存器语义正确性。
 - 初始化顺序控制与全局状态建立
 
-## 2. 核心功能说明
+## 核心功能
 - 功能定位：Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine.
 - 对外接口：从源码可见的主要公开入口包括 `set_enable`、`local_apic`、`raw_apic_id`、`init_primary`、`init_secondary`、`putchar`、`getchar`、`init`、`IrqIfImpl`、`ConsoleIfImpl` 等（另有 4 个公开入口）。
 - 典型使用场景：承担架构/板级适配职责，为上层运行时提供启动、中断、时钟、串口、设备树和内存布局等基础能力。
 - 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `init_primary()` -> `init_secondary()` -> `register()` -> `init()` -> `init_early()` -> ...。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     current["ax-plat-x86-pc"]
@@ -252,7 +252,7 @@ graph LR
     smp_kernel["smp-kernel"] --> current
 ```
 
-### 3.1 直接与间接依赖
+### 直接依赖
 - `ax-config-macros`
 - `ax-cpu`
 - `axplat`
@@ -261,7 +261,7 @@ graph LR
 - `ax-lazyinit`
 - `ax-percpu`
 
-### 3.2 间接本地依赖
+### 间接依赖
 - `axbacktrace`
 - `ax-config-gen`
 - `ax-errno`
@@ -281,7 +281,7 @@ graph LR
 - `irq-kernel`
 - `smp-kernel`
 
-### 3.4 间接被依赖情况
+### 被依赖情况
 - `arceos-affinity`
 - `ax-helloworld`
 - `ax-httpclient`
@@ -296,7 +296,7 @@ graph LR
 - `arceos-yield`
 - 另外还有 `22` 个同类项未在此展开
 
-### 3.5 关键外部依赖
+### 外部依赖
 - `bitflags`
 - `heapless`
 - `log`
@@ -308,8 +308,8 @@ graph LR
 - `x86_64`
 - `x86_rtc`
 
-## 4. 开发指南
-### 4.1 依赖配置
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 ax-plat-x86-pc = { workspace = true }
@@ -318,34 +318,34 @@ ax-plat-x86-pc = { workspace = true }
 # ax-plat-x86-pc = { path = "components/axplat_crates/platforms/axplat-x86-pc" }
 ```
 
-### 4.2 初始化流程
+### 初始化
 1. 先确认目标架构、板型和外设假设，再检查 feature/cfg 是否能选中正确的平台实现。
 2. 修改平台代码时优先验证启动、串口、中断、时钟和内存布局这些 bring-up 基线能力。
 3. 若涉及设备树或 MMIO 基址变化，需同步验证上层驱动和运行时是否仍能正确接线。
 
-### 4.3 关键 API 使用提示
+### API 使用
 - 优先关注函数入口：`set_enable`、`local_apic`、`raw_apic_id`、`init_primary`、`init_secondary`、`putchar`、`getchar`、`init` 等（另有 2 项）。
 - 上下文/对象类型通常从 `IrqIfImpl`、`ConsoleIfImpl`、`InitIfImpl`、`MemIfImpl`、`PowerImpl`、`TimeIfImpl` 等结构开始。
 
-## 5. 测试策略
-### 5.1 当前仓库内的测试形态
+## 测试
+### 测试覆盖
 - 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
 
-### 5.2 单元测试重点
+### 单元测试
 - 若存在纯函数或配置辅助逻辑，可覆盖地址布局计算、设备树解析和平台参数选择分支。
 
-### 5.3 集成测试重点
+### 集成测试
 - 重点验证启动、串口、中断、时钟和内存布局等 bring-up 基线能力，必要时覆盖多板级/多架构。
 
-### 5.4 覆盖率要求
+### 覆盖率
 - 覆盖率建议以平台场景覆盖为主：至少确保一条真实启动链贯通，并覆盖关键 cfg/feature 组合。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `ax-plat-x86-pc` 不在 ArceOS 目录内部，但被 `ax-helloworld-myplat`、`ax-hal` 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
 
-### 6.2 StarryOS
+### StarryOS
 `ax-plat-x86-pc` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
 
-### 6.3 Axvisor
+### Axvisor
 `ax-plat-x86-pc` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。

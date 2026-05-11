@@ -1,4 +1,4 @@
-# `ax-driver-base` 技术文档
+# `ax-driver-base`
 
 > 路径：`components/axdriver_crates/axdriver_base`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `ax-driver-base` 是整个 `axdriver_crates` 体系的最小公共基座。它不负责探测设备、枚举总线、管理 DMA，也不组织 `AllDevices` 这样的设备聚合对象；它只把所有驱动都必须共享的设备分类、错误模型和基础元信息接口集中定义出来，供 `axdriver_block`、`axdriver_net`、`axdriver_display`、`axdriver_input`、`axdriver_vsock` 以及上层 `ax-driver` 聚合层复用。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `ax-driver-base` 的职责非常克制，核心只有三件事：
 
 - 用 `DeviceType` 给驱动实例贴上统一类别标签。
@@ -56,8 +56,8 @@
 
 这里最关键的边界澄清是：**`ax-driver-base` 只是公共契约层，不是驱动管理器。**
 
-## 2. 核心功能说明
-### 2.1 主要能力
+## 核心功能
+### 功能概览
 - 为所有驱动提供统一的 `DeviceType`。
 - 为所有驱动提供统一的 `DevError` / `DevResult`。
 - 为各类别 trait 提供共同父接口 `BaseDriverOps`。
@@ -77,11 +77,11 @@
 - `DevError` 主要覆盖驱动常见失败语义，例如 `Again`、`NoMemory`、`Unsupported`、`BadState` 等，适合 no_std 驱动环境的通用错误归一。
 - `core::fmt::Display` 只为 `DevError` 提供人类可读文本，不承担额外错误上下文聚合。
 
-## 3. 依赖关系图谱
-### 3.1 直接依赖
+## 依赖关系
+### 直接依赖
 `ax-driver-base` 当前没有本地或外部 Rust 依赖；`Cargo.toml` 的 `[dependencies]` 为空。这进一步说明它只承担语言层面的共性抽象。
 
-### 3.2 主要消费者
+### 主要消费者
 - `axdriver_block`
 - `axdriver_display`
 - `axdriver_input`
@@ -98,7 +98,7 @@
 - 向上：被所有类别层、总线适配层和聚合层共享。
 - 向旁：通过 `ax-driver::prelude` 间接进入 `ax-display`、`ax-input`、`ax-net`、`ax-fs` 等上层模块。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 何时应该修改本 crate
 只有在以下场景才应改动 `ax-driver-base`：
 
@@ -118,16 +118,16 @@
 - 不要把设备探测接口放进这里；探测属于 `ax-driver` 或总线/传输适配层的职责。
 - 不要把“设备名可打印”误解为“设备可被系统自动管理”；管理逻辑在上层。
 
-## 5. 测试策略
+## 测试
 ### 5.1 当前验证形态
 该 crate 没有单独的 `tests/` 目录。它的正确性主要通过编译期接口一致性和上层集成使用来验证。
 
-### 5.2 建议的单元测试重点
+### 单元测试
 - `DeviceType` 的基础匹配逻辑。
 - `DevError` 的 `Display` 文本。
 - `BaseDriverOps` 默认 `irq_num()` 返回 `None` 的契约。
 
-### 5.3 集成测试重点
+### 集成测试
 - 各类别驱动能否以同一套 `BaseDriverOps` 被 `ax-driver::prelude` 和 `AllDevices` 使用。
 - `DevError` 是否能被 `ax-driver-virtio`、`axdriver_net`、`axdriver_block` 等映射成一致行为。
 
@@ -135,12 +135,12 @@
 - 新增设备类别时，最容易漏掉上层聚合容器和日志路径。
 - 改动 `BaseDriverOps` 是典型的“低层小改动、全栈大影响”风险点。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 这是当前仓库中最主要的直接消费方。ArceOS 通过 `ax-driver` 聚合层把它作为整个驱动体系的公共接口底座。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 不是直接围绕 `ax-driver-base` 写业务逻辑，而是通过共享的 `ax-driver`、`ax-display`、`ax-input` 等模块间接复用这套基础契约。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库里没有看到 Axvisor 直接把 `ax-driver-base` 当作其核心设备管理接口。即便未来在某些宿主兼容路径中复用它，它也只会扮演“共享驱动契约层”，而不是虚拟机设备分发中心。

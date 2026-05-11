@@ -1,4 +1,4 @@
-# `ax-kspin` 技术文档
+# `ax-kspin`
 
 > 路径：`components/kspin`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `ax-kspin` 是内核态自旋锁实现。它把“锁状态”和“进入临界区前要不要关抢占/关 IRQ”两件事拆开：锁本体由 `BaseSpinLock` 负责，临界区语义则由 `kernel_guard` 的 guard 类型决定。它是同步叶子基础件：不是阻塞式 mutex、不是调度器，也不是完整同步库。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `ax-kspin` 的设计核心在于“锁”和“临界区策略”解耦：
 
 - `BaseSpinLock<G, T>`：负责原子测试并设置锁状态。
@@ -23,7 +23,7 @@
 
 这也决定了它的边界：`ax-kspin` 实现的是“自旋锁家族”，不是“内核同步总控”。
 
-### 1.2 模块划分
+### 模块结构
 - `src/lib.rs`：公开类型别名，把 `kernel_guard` 的 guard 组合成 `SpinRaw` / `SpinNoPreempt` / `SpinNoIrq`。
 - `src/base.rs`：`BaseSpinLock` 与 `BaseSpinLockGuard` 的具体实现，以及测试。
 
@@ -41,23 +41,23 @@
 
 因此，`ax-kspin` 在单核下并不是“性能优化的普通 mutex”，而是“把锁状态优化掉的单核专用自旋锁”。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 提供可参数化临界区策略的内核自旋锁。
 - 提供面向常见场景的三类类型别名。
 - 在 `smp` 下提供真实多核互斥，在非 `smp` 下保留最小语义成本。
 
-### 2.2 关键 API 与真实使用位置
+### 使用场景
 - `SpinNoIrq`：被 `ax-alloc`、`ax-ipi`、`ax-log`、`ax-mm`、Axvisor 计时器等路径广泛使用。
 - `SpinNoPreempt`：在 `ax-fs-ng` 等需要关抢占但不一定关 IRQ 的路径使用。
 - `SpinRaw`：被 `ax-task::run_queue` 用来保护已由外层 guard 保证过的就绪队列状态。
 
-### 2.3 使用边界
+### 边界说明
 - `ax-kspin` 不会睡眠等待，所以它不是阻塞式锁。
 - `ax-kspin` 不维护条件变量、等待队列或唤醒机制，这些属于 `ax-sync` / `ax-task`。
 - `ax-kspin` 也不决定 guard 的具体语义；那部分在 `kernel_guard`。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     kernel_guard["kernel_guard"] --> ax_kspin["ax-kspin"]
@@ -73,17 +73,17 @@ graph LR
     ax_kspin --> axvisor["axvisor"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `kernel_guard`：提供 `NoOp`、`NoPreempt`、`NoPreemptIrqSave` 这些 guard 语义。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-alloc`、`ax-ipi`、`ax-log`、`ax-mm`：系统运行时基础模块。
 - `ax-task`：任务与 run queue 路径。
 - `ax-sync`：在非 `multitask` 路径下直接把 `SpinNoIrq` 当 `Mutex`。
 - 各类平台 crate、StarryOS、Axvisor：用于平台状态和驱动共享状态保护。
 
-## 4. 开发指南
-### 4.1 依赖配置
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 ax-kspin = { workspace = true }
@@ -96,7 +96,7 @@ ax-kspin = { workspace = true }
 ax-kspin = { workspace = true, features = ["smp"] }
 ```
 
-### 4.2 修改时的关键约束
+### 注意事项
 1. `BaseSpinLockGuard::drop()` 的顺序不能随意改，必须先释放锁位，再恢复 guard 状态。
 2. `try_lock()` 失败时一定要恢复 guard，否则会导致“没拿到锁却把中断/抢占关住”。
 3. `SpinRaw` 的前提是调用方已经处在足够安全的上下文里，不能把它当普通默认锁到处替换。
@@ -107,8 +107,8 @@ ax-kspin = { workspace = true, features = ["smp"] }
 - 已有外层 guard 保证的极短临界区才考虑 `SpinRaw`。
 - 需要可睡眠互斥语义时不要硬用 `ax-kspin`，应该去用 `ax-sync` 的阻塞 mutex。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 `src/base.rs` 已覆盖多类关键测试：
 
 - `smoke()`、`try_lock()`：基本互斥行为。
@@ -116,25 +116,25 @@ ax-kspin = { workspace = true, features = ["smp"] }
 - `test_irq_lock_restored()`、`test_irq_try_lock_failed()`：guard 恢复语义。
 - `test_mutex_arc_nested()`、`test_mutex_unsized()`、`test_mutex_force_lock()`：复杂类型与极端用法。
 
-### 5.2 单元测试重点
+### 单元测试
 - `smp` 与非 `smp` 的双路径语义。
 - `try_lock()` 失败后的 guard 恢复。
 - `force_unlock()` 与 RAII drop 的相互关系。
 
-### 5.3 集成测试重点
+### 集成测试
 - `ax-task` run queue 在高频调度下是否仍稳定。
 - `ax-log`、`ax-alloc` 这类高频使用者在并发环境下是否出现死锁或输出/统计错乱。
 
-### 5.4 覆盖率要求
+### 覆盖率
 - 对 `ax-kspin`，并发行为覆盖比普通代码覆盖更重要。
 - 任何改动 CAS、自旋或 drop 顺序的提交，都应补对应并发和 guard 语义测试。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `ax-kspin` 是 ArceOS 基础栈里最常见的低层锁之一，广泛分布在内存、日志、IPI、平台状态和任务运行队列周围。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 直接复用 `ax-kspin`。在这里它仍然只是自旋锁基础件，而不是线程同步框架本身。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 同样把 `ax-kspin` 用在计时器、平台状态和 VMM 内部共享对象上。它提供的是宿主侧临界区保护，不是 Hypervisor 调度器。

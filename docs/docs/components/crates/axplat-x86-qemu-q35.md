@@ -1,4 +1,4 @@
-# `axplat-x86-qemu-q35` 技术文档
+# `axplat-x86-qemu-q35`
 
 > 路径：`platform/x86-qemu-q35`
 > 类型：库 crate
@@ -8,7 +8,7 @@
 
 `axplat-x86-qemu-q35` 是面向 QEMU Q35 机型的 x86_64 `axplat` 平台实现，当前主要服务于 Axvisor 的宿主侧启动路径。它把 Multiboot 引导、临时 GDT/页表、COM1 控制台、TSC/LAPIC/IOAPIC、AP 启动页、Q35 MMIO 窗口和关机/重启策略收敛成 `axplat` 契约。它不是通用 x86 PC 平台抽象，也不是虚拟化核心本身；它解决的是“Axvisor 在 Q35 这台机器上怎样把宿主环境带起来”的问题。
 
-## 1. 架构设计分析
+## 架构设计
 
 ### 1.1 真实定位
 
@@ -25,7 +25,7 @@
 - 通过 `build.rs` 和 `linker.lds.S` 在构建期注入内核基址与 CPU 数。
 - 为 Axvisor 提供宿主侧最小板级环境，但不介入 VMX/EPT、VM exit 或虚拟设备模拟。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -116,9 +116,9 @@ flowchart TD
 
 理解这点非常关键，否则很容易把两者都写成“又一个 x86 平台包”，从而写不出真实边界。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 通过 Multiboot 从 32 位进入 64 位长模式。
 - 提供基于 COM1 的最小控制台。
@@ -140,7 +140,7 @@ flowchart TD
 
 当前默认 feature 已打开 `irq`、`smp` 和 `reboot-on-system-off`，这说明它默认假设自己服务的是一个需要多核和可恢复测试循环的 Axvisor 开发环境。
 
-### 2.3 最关键的边界澄清
+### 边界说明
 
 这个 crate 有几个看起来像“系统能力”、但其实只是“板级实现”的点：
 
@@ -149,9 +149,9 @@ flowchart TD
 - `TimeIf` 虽然提供 LAPIC one-shot timer，但源代码里还留有“需要用 HPET 校准”的 TODO，当前更偏工程可用而非精确校准完成态。
 - `mem.rs` 只消费 Multiboot 内存图，不解析 ACPI，不发现 NUMA，也不接管 PCI 总线。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -167,7 +167,7 @@ flowchart TD
 | `int_ratio` / `ax-lazyinit` / `ax-kspin` | 时间换算、全局对象初始化与锁 |
 | `log` | 启动和调试日志 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `os/axvisor/Cargo.toml`：当前仓库内的直接依赖者。
 - 任何以 Axvisor 为宿主、目标为 x86_64 Q35 的构建路径。
@@ -182,9 +182,9 @@ graph TD
     D --> E[x86_64 Q35 宿主环境]
 ```
 
-## 4. 开发指南
+## 开发指南
 
-### 4.1 接入方式
+### 接入方式
 
 当前仓库里的主要接入方式来自 Axvisor：
 
@@ -216,9 +216,9 @@ AXVISOR_SMP=4 cargo build -p axplat-x86-qemu-q35 --target x86_64-unknown-none
 - `multiboot.S` 里使用 1 GiB huge page，源码已经注明某些宿主后端可能不支持。
 - `reboot-on-system-off` 默认开启，意味着很多“关机测试”实际得到的是重启行为而非掉电。
 
-## 5. 测试策略
+## 测试
 
-### 5.1 当前有效验证面
+### 测试覆盖
 
 - Axvisor x86_64 构建与 bring-up 是最直接的集成验证。
 - Q35 + Multiboot 启动链可覆盖最早期引导、串口和内存解析。
@@ -240,7 +240,7 @@ AXVISOR_SMP=4 cargo build -p axplat-x86-qemu-q35 --target x86_64-unknown-none
 - 1 GiB huge page 对某些宿主虚拟化后端兼容性有限。
 - APIC timer 还未完成精确校准，时间相关测试不能过度依赖绝对精度。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -248,6 +248,6 @@ AXVISOR_SMP=4 cargo build -p axplat-x86-qemu-q35 --target x86_64-unknown-none
 | StarryOS | 当前无仓库内直接接入 | 潜在宿主平台基础 | 目前仓库中没有直接依赖，也不是 StarryOS 默认平台路径 |
 | Axvisor | x86_64 宿主默认平台之一 | 宿主板级平台包 | 直接承担 Multiboot、串口、内存、APIC、时间和多核 bring-up，但不承担 VMX/EPT 等虚拟化核心职责 |
 
-## 7. 总结
+## 总结
 
 `axplat-x86-qemu-q35` 的真正价值，在于它把 Axvisor 在 x86_64 Q35 上的宿主 bring-up 路径压缩成了一份独立而清晰的 `axplat` 实现：配置从哪里来、CPU 数如何注入、Multiboot 怎样切到长模式、APIC 和 TSC 怎样接、Q35 的关键 MMIO 窗口有哪些。它不是通用 PC 平台的重复实现，更不是虚拟化核心，而是 Axvisor 宿主环境最底层的板级基座。

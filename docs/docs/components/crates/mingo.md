@@ -1,4 +1,4 @@
-# `mingo` 技术文档
+# `mingo`
 
 > 路径：`os/arceos/tools/raspi4/chainloader`
 > crate 形态：独立二进制 crate，包名为 `mingo`，`[[bin]]` 名为 `kernel`
@@ -9,7 +9,7 @@
 
 `mingo` 的真实定位必须先讲清楚，否则整篇文档都会偏掉。它不是可以被别的 crate 依赖的库，也不是开发机上执行的串口发送命令；它是部署在树莓派板上的裸机小程序，先由树莓派固件从 SD 卡拉起，再通过 UART 向宿主机的 `minipush.rb` 请求下一级镜像，最后把 payload 写回固件默认加载地址 `0x8_0000` 并直接跳转。它位于 `tools/` 目录，源码又保留了上游 tutorial 风格，因此很容易被误写成“实验样例”或“宿主机辅助工具”；更准确的说法应是：**它是一个带教学来源色彩、但已经被 ArceOS 树莓派开发流程实际使用的板端链加载工具**。
 
-## 1. 真实定位与边界
+## 架构设计
 
 ### 1.1 它是什么，不是什么
 
@@ -53,7 +53,7 @@ sequenceDiagram
 - 宿主机侧发送器是 `os/arceos/tools/raspi4/common/serial/minipush.rb`，不是 `mingo`。
 - `os/arceos/tools/raspi4/chainloader/Makefile` 里的 `chainboot` 发送的是教程自带的 `demo_payload_rpi4.img`；而 ArceOS 主工程 `os/arceos/scripts/make/raspi4.mk` 里的 `make chainboot` 才会发送当前构建出来的真实内核镜像。
 
-## 2. 架构设计
+## 架构设计
 
 ### 2.1 启动与自重定位
 
@@ -116,7 +116,7 @@ flowchart TD
 - 它没有面向中断、抢占、多线程设计同步原语。
 - 它适合作为极早期板端工具，不适合作为通用运行时基础设施。
 
-## 3. 核心功能
+## 核心功能
 
 ### 3.1 UART 链加载协议
 
@@ -165,9 +165,9 @@ flowchart TD
 
 但下一级 payload 的落点不变，始终仍是 `0x8_0000`。
 
-## 4. 依赖关系
+## 依赖关系
 
-### 4.1 Cargo 直接依赖
+### 直接依赖
 
 | 依赖 | 类型 | 作用 |
 | --- | --- | --- |
@@ -196,7 +196,7 @@ flowchart TD
 - 但 ArceOS 在 Raspberry Pi 上构建出的镜像，常常是由 `ax-plat-aarch64-raspi` 支撑的平台 payload。
 - `mingo` 负责把这些 payload 搬到正确位置并交出控制权。
 
-## 5. 开发指南
+## 开发指南
 
 ### 5.1 构建与部署
 
@@ -246,7 +246,7 @@ make A=examples/helloworld MYPLAT=ax-plat-aarch64-raspi chainboot
 - 在现有 `NullLock` 模型上直接引入复杂并发。
 - 在没有重新设计协议和恢复逻辑的前提下宣称其具备“可靠升级”能力。
 
-## 6. 测试策略
+## 测试
 
 ### 6.1 最可信的测试方式：实板链加载
 
@@ -277,7 +277,7 @@ make A=examples/helloworld MYPLAT=ax-plat-aarch64-raspi chainboot
 - 当前协议没有上界检查，超大或损坏 payload 可能破坏内存。
 - UART/GPIO 初始化顺序或引脚映射错误，通常表现为“完全无串口输出”。
 
-## 7. 跨项目定位
+## 跨项目定位
 
 ### 7.1 在 ArceOS 中的位置
 
@@ -305,6 +305,6 @@ make A=examples/helloworld MYPLAT=ax-plat-aarch64-raspi chainboot
 - Axvisor 当前也没有直接接入这套树莓派链加载路径。
 - `mingo` 目前是 ArceOS 树莓派实板工作流的专用边缘工具，而不是整个仓库共享的底座组件。
 
-## 8. 总结
+## 总结
 
 `mingo` 的真实价值不在于“提供一个可复用 Rust 库”，而在于把 Raspberry Pi 实板上的快速重载过程压缩成一个极小、地址模型清楚、易于观察和调试的板端程序。它既不是宿主机串口工具，也不是通用 bootloader 框架；它是一个实际接入 ArceOS `chainboot` / `jtagboot` 流程的、带教学来源色彩的板端链加载器。最关键的边界是：**主机负责发送，`mingo` 负责接收和跳转；下一级系统才是它加载的真正目标。**

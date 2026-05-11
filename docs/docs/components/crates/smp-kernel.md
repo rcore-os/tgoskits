@@ -1,4 +1,4 @@
-# `smp-kernel` 技术文档
+# `smp-kernel`
 
 > 路径：`components/axplat_crates/examples/smp-kernel`
 > 类型：平台样例内核 crate
@@ -10,8 +10,8 @@
 
 因此必须先把边界说透：**它不是可复用 SMP 框架，也不是 ArceOS `ax-runtime` 的替代实现；它只是把 `axplat` 的多核启动链用最小内核样例形式跑通。**
 
-## 1. 架构设计分析
-### 1.1 模块划分
+## 架构设计
+### 模块结构
 与前两个样例不同，这个 crate 已经拆成了三个明确模块：
 
 - `init.rs`：主核/次核的初始化共性与 `INITED_CPUS` 同步计数
@@ -54,7 +54,7 @@ flowchart TD
 
 因此它验证的不是“能 boot 第二个核”这么简单，而是“多核初始化能否有序收敛”。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 `CPU_NUM` 与运行规模
 `CPU_NUM` 不是写死在源码里，而是：
 
@@ -94,7 +94,7 @@ make ARCH=riscv64 run SMP=4
 
 它只是最小内核级的多核 bring-up 演示。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     sample["smp-kernel"] --> axplat["ax-plat"]
@@ -108,7 +108,7 @@ graph LR
     sample --> loong["ax-plat-loongarch64-qemu-virt(irq,smp)"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `axplat`：统一平台抽象入口。
 - `ax-cpu`：IRQ/trap 与 CPU 辅助。
 - `ax-percpu`：多核定时器中的 per-CPU 状态。
@@ -116,18 +116,18 @@ graph LR
 - `const-str`：解析 `AX_CPU_NUM`。
 - 各平台包的 `irq` + `smp` feature：真正提供 AP boot 与多核 IRQ 能力。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax_plat::power::cpu_boot`
 - `ax_plat::call_secondary_main`
 - `ax_plat::init::{init_early_secondary, init_later_secondary}`
 - `ax_plat::time::set_oneshot_timer`
 
-### 3.3 主要消费者
+### 主要消费者
 - 平台包 SMP 能力 bring-up。
 - 在接入更高层 `ax-runtime` 前验证多核基础链路。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cd components/axplat_crates/examples/smp-kernel
 make ARCH=<x86_64|aarch64|riscv64|loongarch64> run SMP=4
@@ -135,7 +135,7 @@ make ARCH=<x86_64|aarch64|riscv64|loongarch64> run SMP=4
 
 不带 `SMP` 时默认为 1 核，此时它仍能验证主核路径，但多核价值会明显降低。
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 所有主核初始化改动，都要同时考虑次核对应路径。
 2. 任何与启动栈、物理地址转换相关的改动都属于高风险。
 3. 不要把任务调度或复杂内存管理逻辑堆进这里；那已经超出 `axplat` 样例的边界。
@@ -145,8 +145,8 @@ make ARCH=<x86_64|aarch64|riscv64|loongarch64> run SMP=4
 - 平台特定 AP boot 差异验证
 - 多核 IPI 或更复杂 IRQ 但仍保持“最小内核”定位
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 README 已给出两类典型输出：
 
 - 单核：验证主核启动与 timer IRQ
@@ -163,12 +163,12 @@ README 已给出两类典型输出：
 - `INITED_CPUS` 同步不正确时，主核和次核会卡在等待屏障。
 - per-CPU `NEXT_DEADLINE` 有问题时，多核定时器行为会异常。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 不直接依赖这个样例，但 `ax-runtime` 的 SMP bring-up 与它验证的是同一类底层平台契约。先跑通它，通常能更快判断问题在平台层还是运行时层。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 也不会直接运行它。这个样例的价值在于提前验证共享平台包的多核 boot 与中断基础能力。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 同样不直接消费它；不过 Hypervisor 对多核启动路径更敏感，因此在平台层改动后，先用 `smp-kernel` 做最小多核 smoke test 往往非常有用。

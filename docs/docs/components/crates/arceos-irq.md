@@ -1,4 +1,4 @@
-# `arceos-irq` 技术文档
+# `arceos-irq`
 
 > 路径：`test-suit/arceos/task/irq`
 > 类型：测试入口 crate
@@ -10,7 +10,7 @@
 
 需要强调的是：**这不是通用中断框架样例，也不是设备驱动模板；它专门验证任务上下文里的 IRQ 使能/关闭语义。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 子测试划分
 `main()` 依次调用：
 
@@ -46,7 +46,7 @@ flowchart TD
 
 重点不是中断有没有发生，而是“任务在这些切换后回来时，中断状态是否仍符合预期”。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 `test_yielding()`
 这个子测试会创建 16 个任务，每个任务反复：
 
@@ -84,7 +84,7 @@ flowchart TD
 
 它只证明任务相关路径没有把 IRQ 语义搞乱。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     test["arceos-irq"] --> ax-std["ax-std(multitask, irq)"]
@@ -93,19 +93,19 @@ graph LR
     ax-std --> ax-api["ax_api::task"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `ax-std(multitask, irq)`：启用多任务与中断相关路径。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax-task`：任务切换、睡眠和等待队列的真实实现。
 - `ax-hal::asm`：读取和切换当前 CPU 的 IRQ 状态。
 
-### 3.3 主要消费者
+### 主要消费者
 - `cargo arceos test qemu` 自动回归。
 - `ax-task`、IRQ 相关上下文切换逻辑改动后的定向验证。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cargo xtask arceos run --package arceos-irq --arch riscv64
 ```
@@ -116,7 +116,7 @@ cargo xtask arceos run --package arceos-irq --arch riscv64
 cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 新增场景必须明确说明是在验证哪条任务路径的 IRQ 语义。
 2. 尽量复用 `src/irq.rs` 的检查函数，避免分散出多套判定逻辑。
 3. 不要把设备驱动级测试塞进这里，那是另一类回归。
@@ -125,7 +125,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 与 IPI 或抢占结合的 IRQ 状态回归
 - 不同调度器 feature 下的上下文切换状态检查
 
-## 5. 测试策略
+## 测试
 ### 5.1 当前自动化形态
 `qemu-riscv64.toml` 中已配置：
 
@@ -144,12 +144,12 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 若某条路径错误地在恢复任务时关闭了 IRQ，这个测试会直接 panic。
 - 若 timer/等待队列路径有更深层 bug，可能首先表现为“卡住不结束”。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 它是 ArceOS 任务上下文 IRQ 语义的直接回归入口，定位很窄但很关键。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 不直接运行它，但共享任务和 IRQ 基础设施改动时，这类回归能帮助更早发现底层问题。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 也不会直接依赖它；它的意义在于先把共享的任务/IRQ 语义验证清楚，再进入更复杂的虚拟化中断场景。

@@ -1,4 +1,4 @@
-# `test-weak-partial` 技术文档
+# `test-weak-partial`
 
 > 路径：`components/crate_interface/test_crates/test-weak-partial`
 > 类型：二进制 crate（独立测试工作区成员，`publish = false`）
@@ -8,7 +8,7 @@
 
 `test-weak-partial` 是 `crate_interface` `weak_default` 测试矩阵中负责“默认回退路径”的最终链接/验证端。它只链接 `define-weak-traits` 和 `impl-weak-partial`，并且刻意不把 `impl-weak-traits` 带入最终二进制，从而观察当实现侧只补齐必需方法时，弱符号默认实现是否会在真实程序里接管剩余方法。它不是“功能不完整的运行时组件”，而是专门为链接期默认回退语义准备的终端测试资产。
 
-## 1. 架构设计分析
+## 架构设计
 
 ### 1.1 在测试矩阵中的真实定位
 
@@ -67,9 +67,9 @@
 
 这也是 README 中“定义、实现、调用可拆到不同 crate”的模型在默认回退场景下的真正落地证明。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 在真实二进制中验证弱符号默认实现的回退路径
 - 验证“部分实现 + 默认实现”可以在同一接口上稳定协作
@@ -90,9 +90,9 @@ flowchart TD
 
 默认回退这件事只有在“覆盖型实现完全缺席”的最终链接单元里才可验证。因此 `test-weak-partial` 不是 `test-weak` 的精简版，也不是冗余副本，而是 `weak_default` 测试矩阵不可替代的一半。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -120,7 +120,7 @@ graph TD
     D --> C
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 什么时候应该修改它
 
@@ -130,7 +130,7 @@ graph TD
 - 需要补一个默认实现内部包含 `Self::foo()` 或函数引用的未覆写样例
 - 需要提高回退值与覆盖值之间的可辨识度
 
-### 4.2 修改时的关键约束
+### 注意事项
 
 - 不要把本应测试“回退”的方法意外实现掉，否则测试语义会消失
 - 不要把 `impl-weak-traits` 相关实现混入本二进制
@@ -161,7 +161,7 @@ components/crate_interface/test_crates/run_tests.sh weak
 - 最小 `weak_default` 功能检查：放到 `components/crate_interface/tests/test_weak_default.rs`
 - stable 路径回归：放到 `test-simple`
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前测试目标
 
@@ -187,7 +187,7 @@ components/crate_interface/test_crates/run_tests.sh weak
 - 若默认值与覆盖值设计得不够分明，测试可观测性会明显下降
 - 若只验证普通默认方法，不验证 `SelfRefIf` 的代理路径，会漏掉更复杂也更关键的问题
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -195,6 +195,6 @@ components/crate_interface/test_crates/run_tests.sh weak
 | StarryOS | 无主线直接依赖 | 间接保护测试资产 | 通过复用公共基础设施，间接受益于弱默认回退路径的回归验证 |
 | Axvisor | 无主线直接依赖 | 间接保护测试资产 | `axvisor_api` 等组件使用 `crate_interface`，但不会直接消费该测试二进制 |
 
-## 7. 最关键的边界澄清
+## 总结
 
 `test-weak-partial` 不是“不完整的正式实现”，也不是给运行时兜底的默认组件；它只是 `crate_interface` `weak_default` 测试矩阵中专门验证默认回退路径的最终链接验证端，用来证明当覆盖实现刻意缺席时，弱符号默认实现会在真实程序里接管剩余方法。

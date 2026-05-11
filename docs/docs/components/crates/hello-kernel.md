@@ -1,4 +1,4 @@
-# `hello-kernel` 技术文档
+# `hello-kernel`
 
 > 路径：`components/axplat_crates/examples/hello-kernel`
 > 类型：平台样例内核 crate
@@ -10,7 +10,7 @@
 
 因此它最重要的边界是：**它不是可复用内核框架，也不是上层系统应该直接继承的骨架；它只是验证 `axplat` 最小启动链是否成立的样例入口。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 最小内核主线
 源码只有一个文件，但结构非常清晰：
 
@@ -47,7 +47,7 @@ flowchart LR
 
 这说明它本质上是 `axplat` 平台包的最小消费者，用来证明平台包已经具备最小 bring-up 能力。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 实际演示的能力链
 这个样例实际覆盖的是：
 
@@ -74,7 +74,7 @@ flowchart LR
 
 它只是 `axplat` 平台包的最小消费者。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     sample["hello-kernel"] --> axplat["ax-plat"]
@@ -84,22 +84,22 @@ graph LR
     sample --> loong["ax-plat-loongarch64-qemu-virt"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `axplat`：对外暴露统一的平台抽象接口。
 - `cfg-if`：按架构切换平台 crate。
 - 各平台包：提供真正的板级实现。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax-plat-macros`：支撑 `#[ax_plat::main]`。
 - `ax-cpu`、串口/时钟相关底层组件：由平台包继续下接。
 
-### 3.3 主要消费者
+### 主要消费者
 - `axplat` 平台包的 bring-up 验证。
 - 新平台接入时的第一条最短运行路径。
 - `irq-kernel`、`smp-kernel` 之前的基础烟雾测试。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cd components/axplat_crates/examples/hello-kernel
 make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
@@ -107,7 +107,7 @@ make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
 
 `Makefile` 会根据架构选择 target triple，并在必要时把 ELF 转成 bin 后交给 QEMU。
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 保持这个样例足够小，不要把更高层能力堆进来。
 2. 如果新增某个平台支持，要同时更新 `Cargo.toml`、`cfg_if!` 分支和 `Makefile` 运行路径。
 3. `panic_handler` 和正常退出都应走最短控制台/关机链，便于定位问题。
@@ -117,8 +117,8 @@ make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
 - 要测多核：换 `smp-kernel`
 - 要测上层 OS bring-up：换 ArceOS 的 `ax-helloworld`
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 这是手工和联调型样例，不是 `test-suit` 自动回归包。README 给出了预期输出，重点观察：
 
 - `Hello, ArceOS!`
@@ -135,12 +135,12 @@ make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
 - 如果时间源没有初始化，`elapsed` 输出会异常。
 - 如果平台关机路径有问题，最后一步会卡住。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 不直接依赖这个样例，但会复用同一批平台包。它对 ArceOS 的价值在于：平台层有问题时，先用这条最小路径定位，再进入 `ax-runtime` 和更高层。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 同样不会直接运行它。这个样例只是帮助验证其下方共享的 `axplat` 平台栈是否最起码可启动。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 也不直接消费它。不过对平台 bring-up 来说，先跑 `hello-kernel` 往往比直接调 Hypervisor 更容易分辨问题在平台层还是上层逻辑。

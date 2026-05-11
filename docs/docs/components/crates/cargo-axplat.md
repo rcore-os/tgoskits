@@ -1,4 +1,4 @@
-# `cargo-axplat` 技术文档
+# `cargo-axplat`
 
 > 路径：`components/axplat_crates/cargo-axplat`
 > 类型：二进制 crate
@@ -8,9 +8,9 @@
 
 `cargo-axplat` 是一个宿主机侧 `cargo` 子命令，用来管理 `axplat` 平台包的三件事：生成平台包脚手架、把平台包依赖写入项目清单、在构建前定位平台包自带的 `axconfig.toml`。它本身不参与目标镜像运行，也不直接实现任何 `axplat` trait；真正的运行时平台实现仍在被创建或被查询的 `axplat-*` crate 中。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 `cargo-axplat` 在 `axplat` 体系中的职责可以概括为：
 
@@ -24,7 +24,7 @@
 - `add` 负责清单注入；
 - `info` 负责配置定位与元信息查询。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -129,7 +129,7 @@ flowchart TD
 
 它管理的是平台包生命周期中的“元信息与脚手架”，不是平台语义完整性。
 
-## 2. 核心功能说明
+## 核心功能
 
 ### 2.1 三个子命令的真实职责
 
@@ -185,9 +185,9 @@ cd "components/axplat_crates" && cargo run -p cargo-axplat -- axplat new /tmp/ax
 - 该平台包是否适合当前目标架构之外的 feature 组合；
 - `axconfig.toml` 中的其它字段是否满足更上层内核的全部需求。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -196,7 +196,7 @@ cd "components/axplat_crates" && cargo run -p cargo-axplat -- axplat new /tmp/ax
 | `toml_edit` | 读写 `Cargo.toml` 与 `axconfig.toml` |
 | `thiserror` | 定义 `info` 路径上的错误类型 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - 平台包开发者：用 `new` 和 `add` 创建与接入平台包。
 - `os/arceos`、`os/StarryOS` 的 Make 构建脚本：用 `info -c` 解析平台配置路径。
@@ -215,7 +215,7 @@ graph TD
     G --> H[真正的平台包构建]
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 创建并接入一个新平台包
 
@@ -239,7 +239,7 @@ graph TD
 - `new` 不会自动把新包加入现有 workspace。
 - 当前模板会自动填入 `arch` 和 `package`，但不会自动填入 `platform` 名称。
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前仓库里的实际验证面
 
@@ -264,7 +264,7 @@ graph TD
 - `platform` 占位符不会自动填充，若开发者忘记修改，后续 `info` 与构建链会出现语义错误。
 - `add` 基于宿主机 `cargo add`，其行为受本地 Cargo 能力与版本影响。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -272,6 +272,6 @@ graph TD
 | StarryOS | 复用同一套 Make 逻辑 | 平台配置查询工具 | 与 ArceOS 基本同构，主要使用 `info -c` 找平台包配置路径 |
 | Axvisor | 当前仓库中无同级直接依赖 | 可选宿主机辅助工具 | 若未来复用同样的 `axplat` 平台包管理流程，可以沿用，但它不属于运行时虚拟化组件 |
 
-## 7. 总结
+## 总结
 
 `cargo-axplat` 的真正价值不在“帮你写了几个命令别名”，而在它把 `axplat` 平台包的宿主机生命周期标准化了：先用模板生成一个结构正确的骨架，再把这个平台包接到项目依赖里，最后在构建前准确找回它的 `axconfig.toml`。它不实现平台、不参与运行时，也不替代 `ax-config-gen`；它负责的是平台包开发和构建链之间那段最容易散乱的 glue。

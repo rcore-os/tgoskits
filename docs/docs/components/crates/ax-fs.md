@@ -1,4 +1,4 @@
-# `ax-fs` 技术文档
+# `ax-fs`
 
 > 路径：`os/arceos/modules/axfs`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `ax-fs` 是当前仓库中“旧文件系统栈”的系统装配器。它本身并不是一个具体文件系统实现，而是把块设备访问、分区扫描、FAT/ext4 适配、`ramfs`/`devfs` 以及根目录挂载树组合在一起，再向 ArceOS 运行时、`ax-api` 和 `ax-posix-api` 暴露一套统一的文件接口。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `ax-fs` 位于 `ax-runtime` 与旧版 `axfs_vfs` trait 生态之间，承担的是“启动期装配 + 运行期路径路由”双重职责：
 
 - 启动期，它从 `ax-driver` 提供的块设备中取出第一个块设备，解析 `bootargs` 中的 `root=` 参数，扫描 GPT 或直接把整盘视为单分区，再决定根文件系统应该落在哪个分区上。
@@ -18,7 +18,7 @@
 
 这意味着 `ax-fs` 的重心不是“实现某种文件系统格式”，而是“把多种旧栈组件按当前系统启动方式拼起来”。
 
-### 1.2 内部模块划分
+### 模块结构
 - `src/lib.rs`：初始化主入口。负责选择块设备、解析 `root=`、触发 GPT 扫描与根文件系统初始化。
 - `src/dev.rs`：把 `AxBlockDevice` 包装成带游标的 `Disk`，再切出 `Partition` 视图。整个旧栈默认以 512B block 为基本访问粒度。
 - `src/partition.rs`：解析 GPT 分区表，检测 FAT/ext4 魔数，提取 `UUID`/`PARTUUID`，并根据检测结果创建具体文件系统实例。
@@ -60,8 +60,8 @@ flowchart TD
 - `ax-fs` 的当前工作目录是 `ROOT_DIR`/`CURRENT_DIR` 这组全局静态对象，而不是任务局部对象。这一点与 `ax-fs-ng` 的 `FS_CONTEXT` 有本质差异。
 - `root.rs` 顶部已经明确写出 TODO：当挂载点存在包含关系时，这套路由逻辑并不“工作得很好”。因此它更适合简单的根目录拼装，而不是复杂命名空间系统。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 启动时自动选择根文件系统，并在 FAT 与 ext4 间做格式检测。
 - 提供 GPT 分区扫描与 `UUID`/`PARTUUID` 识别。
 - 把主根文件系统、额外挂载分区和伪文件系统合并成统一根目录。
@@ -96,7 +96,7 @@ flowchart TD
 - `remove_dir()` 会显式阻止删除挂载点目录。
 - `/proc`、`/sys` 目前不是真正的 procfs/sysfs，而是兼容性占位实现。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax-driver["ax-driver(block)"] --> current["ax-fs"]
@@ -112,14 +112,14 @@ graph LR
     current --> ax-posix-api["ax-posix-api"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-driver`：提供块设备来源。
 - `axfs_vfs`：旧栈统一 trait 契约。
 - `axfs_ramfs`、`axfs_devfs`：旧栈中的内存文件系统与设备文件系统。
 - `axfatfs`、`rsext4`：分别承担 FAT 与 ext4 的实际格式实现。
 - `ax-cap-access`：为 `fops` 提供打开后能力控制。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-runtime`：在 `fs` feature 下初始化整个旧文件系统子系统。
 - `ax-api`：把 `ax_fs::fops` 和 `ax_fs::api` 包装为更稳定的系统 API。
 - `ax-posix-api`：当前仓库里的 POSIX 文件接口主要仍落在 `ax-fs` 上。
@@ -129,8 +129,8 @@ graph LR
 - `rsext4` 比 `ax-fs` 更靠下，只负责 ext4 语义，不负责根目录、当前目录或挂载树。
 - `ax-fs-ng` 与 `ax-fs` 不是简单的“新旧版本号关系”，而是两套边界不同的文件系统栈。
 
-## 4. 开发指南
-### 4.1 接入方式
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 ax-fs = { workspace = true }
@@ -149,17 +149,17 @@ ax-fs = { workspace = true }
 - 若要增强目录/文件权限模型，需要同时修改 `VfsNodeAttr` 提供者与 `fops` 中的 `perm_to_cap()` 路径。
 - 若要支持更复杂的挂载命名空间或任务级 cwd，继续堆在 `root.rs` 上的收益已经不高，应优先考虑迁移到 `ax-fs-ng`/`axfs-ng-vfs` 风格。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 `ax-fs` 自身目录下没有独立的 `#[test]` 用例。当前验证主要依赖系统启动与上层 API 集成路径。
 
-### 5.2 建议的单元测试
+### 单元测试
 - `root=` 解析：覆盖 `/dev/sdaX`、`/dev/mmcblkXpY`、`PARTUUID=`、`UUID=`、`PARTLABEL=`。
 - 分区扫描：覆盖 GPT 正常路径、GPT 失败回退路径、整盘直挂路径。
 - `RootDirectory`：覆盖最长前缀挂载匹配、`read_dir` 去重、挂载点删除保护。
 - `OpenOptions`：覆盖 `append`/`truncate`/`create_new` 组合合法性。
 
-### 5.3 建议的集成测试
+### 集成测试
 - FAT 根盘启动。
 - ext4 根盘启动。
 - 没有可识别文件系统时回退到 `ramfs`。
@@ -172,12 +172,12 @@ ax-fs = { workspace = true }
 - `UUID`/`PARTUUID` 匹配大小写与格式兼容性。
 - ext4 适配层与 `rsext4` 的 block size 换算。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `ax-fs` 仍是 ArceOS 旧 `fs` 路径的核心文件系统模块，并且当前 `ax-api`、`ax-posix-api` 仍直接建立在它之上。因此它在 ArceOS 中的定位依旧是“对外可见的旧文件系统栈入口”。
 
-### 6.2 StarryOS
+### StarryOS
 当前仓库里的 StarryOS 已转向 `ax-fs-ng`，并在 `Cargo.toml` 中把 `ax-fs-ng` 重命名为 `ax-fs` 使用；其 pseudofs 也建立在 `axfs-ng-vfs` 上，而不是继续复用旧 `ax-fs`。因此 `ax-fs` 对 StarryOS 来说更多是历史并行栈，而不是主干路径。
 
-### 6.3 Axvisor
+### Axvisor
 虽然源码版权和注释中能看到明显的 Axvisor 痕迹，但当前仓库里的 `os/axvisor` 并没有直接依赖 `ax-fs`。因此在这棵代码树里，`ax-fs` 更应理解为“被 Axvisor 团队扩展过的 ArceOS 旧文件系统模块”，而不是 Axvisor 当前运行时的直接文件系统入口。

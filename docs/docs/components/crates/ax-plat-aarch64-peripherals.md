@@ -1,4 +1,4 @@
-# `ax-plat-aarch64-peripherals` 技术文档
+# `ax-plat-aarch64-peripherals`
 
 > 路径：`components/axplat_crates/platforms/axplat-aarch64-peripherals`
 > 类型：库 crate
@@ -8,9 +8,9 @@
 
 `ax-plat-aarch64-peripherals` 是 AArch64 平台包复用的“公共外设适配层”。它并不定义完整的板级平台，也不持有启动页表、内存布局或 boot stub；它的职责是把 PL011、PL031、Generic Timer、GICv2、PSCI 这些通用外设与 `axplat` trait 体系粘合起来，使具体 `axplat-aarch64-*` 平台包只需提供设备地址、IRQ 号和初始化时序即可完成对接。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 该 crate 解决的是 AArch64 平台族中的“横向复用”问题：
 
@@ -24,7 +24,7 @@
 - 它不知道本机 RAM 布局、内核线性映射、引导入口符号和次核启动栈布局。
 - 它不处理 PCI/ECAM/VirtIO MMIO 设备树扫描，这些信息由板级包或更上层驱动体系负责。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -106,9 +106,9 @@ flowchart TD
 
 一个重要结论是：**PCI 不在此 crate 中实现。** 即使某些板级包会在 `axconfig` 中描述 PCI ECAM 或 PCI MMIO 窗口，这里也不会负责枚举、配置或 `axplat` 化暴露 PCI 设备。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要功能
+### 功能概览
 
 - 为 PL011 提供统一的控制台读写能力。
 - 为 Generic Timer 提供单调时钟、tick/纳秒转换和 oneshot 定时器能力。
@@ -117,7 +117,7 @@ flowchart TD
 - 为 PSCI 提供系统关机和 CPU 启动的底层调用接口。
 - 通过宏把上述能力直接注册到 `axplat`。
 
-### 2.2 典型使用场景
+### 使用场景
 
 该 crate 几乎不会被应用或内核主体直接使用，它的典型使用者是板级平台 crate：
 
@@ -150,9 +150,9 @@ generic_timer::enable_irqs(timer_irq);
 
 因此它在系统中的价值更接近“把外设能力转译进 `axplat` 合约”。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -167,7 +167,7 @@ generic_timer::enable_irqs(timer_irq);
 | `int_ratio` | tick 与纳秒换算比例 |
 | `log` | 调试与错误日志 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `ax-plat-aarch64-qemu-virt`
 - `ax-plat-aarch64-raspi`
@@ -193,7 +193,7 @@ graph TD
     H --> I
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 新平台如何复用该 crate
 
@@ -231,7 +231,7 @@ cargo build -p ax-plat-aarch64-peripherals --target aarch64-unknown-none --all-f
 - `time_if_impl!` 依赖调用方提供 `TIMER_IRQ`；板级配置错误会直接造成时钟中断失效。
 - `bsta1000b` 等平台可能不复用 PL011，而是使用自己的 UART glue，不能假设所有 AArch64 平台都展开 `console_if_impl!`。
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前可见测试基础
 
@@ -250,7 +250,7 @@ cargo build -p ax-plat-aarch64-peripherals --target aarch64-unknown-none --all-f
 - 该 crate 把大量平台差异隐藏在宏和静态单例后，配置错误通常表现为“运行时无输出”或“IRQ 不到达”，不一定在编译期暴露。
 - 中断号、基地址、PSCI 调用方式高度依赖板级常量，最适合通过端到端启动回归覆盖。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -258,6 +258,6 @@ cargo build -p ax-plat-aarch64-peripherals --target aarch64-unknown-none --all-f
 | StarryOS | 通过 `ax-hal` 间接使用 | 宿主平台外设适配层 | StarryOS 不直接依赖该 crate，但若运行在 ArceOS 平台栈上，会间接受益于同一套 AArch64 外设 glue |
 | Axvisor | 宿主侧平台支持的一部分 | 宿主 bring-up 公共层 | Axvisor 的虚拟中断和虚拟设备核心在 `arm_vgic`/`axdevice`/`axvm`，而本 crate 负责宿主平台侧的串口、计时和 GIC 基础设施，不应与虚拟化设备层混淆 |
 
-## 7. 总结
+## 总结
 
 `ax-plat-aarch64-peripherals` 的真正价值，在于把“跨多个 AArch64 平台都相似的外设接线逻辑”抽成一个稳定复用层：板级平台包只负责地址、IRQ 号和初始化时序，本 crate 负责把这些通用外设可靠地接入 `axplat`。它让 AArch64 平台支持不再是“每个平台重新写一遍 UART/GIC/timer glue”，而是“在统一骨架上替换配置与启动细节”。

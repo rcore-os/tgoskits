@@ -1,4 +1,4 @@
-# `define-simple-traits` 技术文档
+# `define-simple-traits`
 
 > 路径：`components/crate_interface/test_crates/define-simple-traits`
 > 类型：库 crate / `crate_interface` 多 crate 测试矩阵中的定义端测试资产
@@ -8,7 +8,7 @@
 
 `define-simple-traits` 位于 `components/crate_interface/test_crates` 独立工作区中，在 `components/crate_interface/Cargo.toml` 和仓库根 `Cargo.toml` 里都被显式排除，不参与主工作区的常规构建与发布。它的职责不是给 ArceOS、StarryOS 或 Axvisor 提供正式运行时接口，而是为 `crate_interface` 提供稳定版多 crate 验收测试中的“定义端”样例。
 
-## 1. 真实定位与架构设计
+## 架构设计
 
 ### 1.1 为什么单独做成定义端 crate
 
@@ -44,7 +44,7 @@
 - 不模拟真实业务协议，只提供足够暴露符号命名和调用约定问题的样例。
 - 不追求外部 API 稳定性；接口名字和返回值首先服务测试覆盖面。
 
-## 2. 核心功能
+## 核心功能
 
 `define-simple-traits` 的核心功能不是执行业务逻辑，而是定义一组可回归的“跨 crate 链接协议样本”。它具体承担以下作用：
 
@@ -57,9 +57,9 @@
 
 从测试视角看，这个 crate 定义的是符号命名和调用约定，不是运行时代码路径。
 
-## 3. 依赖关系
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 用途 |
 | --- | --- |
@@ -74,7 +74,7 @@
 - `run_tests.sh simple` 把这条链路包装成稳定版多 crate 验收测试入口。
 - `components/crate_interface/tests/test_crate_interface.rs` 提供的是同测试 crate 内的宏能力冒烟覆盖，而 `define-simple-traits` 所在工作区补上了真正的多 crate 链接验证。
 
-## 4. 开发指南
+## 开发指南
 
 只有在你要扩大 `crate_interface` 稳定版测试矩阵时，才应该修改这个 crate。典型场景包括新增命名空间组合、新增 `gen_caller` 形态，或新增更容易暴露链接回归的签名。
 
@@ -86,7 +86,7 @@
 - 如果新接口名可能与现有样例或未来样例冲突，优先显式添加 `namespace`。
 - 返回值和参数应尽量便于肉眼判断，不要把样例复杂度堆在业务逻辑上。
 
-## 5. 测试策略
+## 测试
 
 这个 crate 自身没有独立单元测试；它的正确性通过最终二进制来验证：
 
@@ -102,7 +102,7 @@
 
 高风险改动主要有两类：一类是定义变了但实现或断言没有同步更新，另一类是误把测试样例当正式接口包来维护，导致接口演化方向被业务需求绑架。
 
-## 6. 跨项目定位
+## 跨项目定位
 
 在这个仓库里，`crate_interface` 的正式用法出现在真实组件中，例如：
 
@@ -114,6 +114,6 @@
 
 对 StarryOS 而言，当前也没有直接链接这个测试 crate；它最多只会通过共享基础设施间接受益于这类回归验证。
 
-## 7. 最关键的边界澄清
+## 总结
 
 `define-simple-traits` 是 `crate_interface` stable 测试矩阵中的定义端测试资产，不是任何子系统的正式运行时接口 crate；这里的 trait 只是测试协议样本，不应被当作可长期复用的生产 API 合约。

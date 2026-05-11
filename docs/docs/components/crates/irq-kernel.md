@@ -1,4 +1,4 @@
-# `irq-kernel` 技术文档
+# `irq-kernel`
 
 > 路径：`components/axplat_crates/examples/irq-kernel`
 > 类型：平台样例内核 crate
@@ -10,7 +10,7 @@
 
 因此必须明确：**它不是通用 IRQ 框架，也不是驱动层抽象库；它只是 `axplat` 平台中断能力的最小验证入口。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 与 `hello-kernel` 的差异
 `main.rs` 的总体结构与 `hello-kernel` 很像，但多了两步：
 
@@ -47,7 +47,7 @@ flowchart LR
 - 定时器重新装载接口可用
 - 时间推进与中断数量大致匹配
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 `init_irq()`
 这个函数做了三件事：
 
@@ -78,7 +78,7 @@ flowchart LR
 
 它只聚焦“最小内核 + 定时器 IRQ”这条链。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     sample["irq-kernel"] --> axplat["ax-plat"]
@@ -90,30 +90,30 @@ graph LR
     sample --> loong["ax-plat-loongarch64-qemu-virt(irq)"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `axplat`：平台抽象与 `irq`/`time` 接口。
 - `ax-cpu`：trap handler 注册与开中断辅助。
 - `linkme`：支撑 `register_trap_handler` 这类分布式注册。
 - 各平台包的 `irq` feature：真正接入板级中断控制器与定时器。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax_plat::irq::register`
 - `ax_plat::irq::handle`
 - `ax_plat::time::set_oneshot_timer`
 - 平台配置中的 `config::devices::TIMER_IRQ`
 
-### 3.3 主要消费者
+### 主要消费者
 - 平台中断能力 bring-up 的第一条最小路径。
 - `smp-kernel` 之前的单核 IRQ smoke test。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cd components/axplat_crates/examples/irq-kernel
 make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
 ```
 
-### 4.2 修改时的注意点
+### 注意事项
 1. 处理函数应尽量短，只做计数和重装定时器。
 2. 若修改 `TICKS_PER_SEC`，要同步检查 README 和期望计数下限。
 3. 不要在这里引入复杂调度逻辑，否则会把“IRQ 问题”与“上层任务问题”混在一起。
@@ -123,8 +123,8 @@ make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
 - 更长时间窗口下的统计稳定性
 - 与 SMP 结合的多核中断路径，但那通常应放到 `smp-kernel`
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 这是 README 驱动的运行样例，典型输出会显示：
 
 - handler 注册成功
@@ -142,12 +142,12 @@ make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
 - 如果 trap 分发没接通，`irq_handler` 根本不会执行。
 - 如果 one-shot 重装有 bug，计数通常只增长一次或几次。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 不直接依赖这个样例，但会复用相同的 `axplat` 平台包和 IRQ 底座。因此它对 ArceOS 的意义是“先确认平台 IRQ 最小链路成立，再进入 `ax-runtime` 和 `ax-task` 的更复杂场景”。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 也不会直接运行它。这个样例只是帮助确认共享平台包的 trap/IRQ 基础能力仍然健全。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 同样不直接消费它，不过对任何依赖平台中断的系统来说，先用这条最小路径验证 timer IRQ，通常比直接调完整系统更高效。

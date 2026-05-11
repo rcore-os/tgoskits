@@ -1,4 +1,4 @@
-# `ax-plat-aarch64-qemu-virt` 技术文档
+# `ax-plat-aarch64-qemu-virt`
 
 > 路径：`components/axplat_crates/platforms/axplat-aarch64-qemu-virt`
 > 类型：库 crate
@@ -8,9 +8,9 @@
 
 `ax-plat-aarch64-qemu-virt` 是 QEMU ARM64 `virt` 机器在 `axplat` 体系下的具体板级实现。它不是通用外设驱动库，而是把启动入口、早期页表、物理内存布局、PSCI 启停、QEMU `virt` 设备地址表以及 `ax-plat-aarch64-peripherals` 提供的 PL011/GIC/Generic Timer/PL031 glue 组合成一个可以直接被内核链接的完整平台包。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 该 crate 在 AArch64 平台栈中的位置可以概括为：
 
@@ -23,7 +23,7 @@
 - `ax-plat-aarch64-peripherals` 只负责“通用外设怎么接进 `axplat`”；
 - 本 crate 负责“QEMU `virt` 这块板子从哪启动、地址在哪里、次核怎么拉起、内核线性映射怎么建”。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -157,9 +157,9 @@ flowchart TD
 
 这里的设计说明该 crate 不是“被动等待 bootloader 拉起所有核”，而是主动承担 AArch64 QEMU `virt` 多核 bring-up 的板级职责。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 为 QEMU ARM64 `virt` 提供可链接的 `axplat` 平台实现。
 - 提供主核和次核入口，负责最小页表和 MMU 打开。
@@ -167,7 +167,7 @@ flowchart TD
 - 接入 PL011、GICv2、Generic Timer、PL031 和 PSCI。
 - 为 `ax-hal`、示例内核和上层系统提供统一板级运行基础。
 
-### 2.2 典型使用场景
+### 使用场景
 
 - ArceOS 在 AArch64/QEMU 上作为默认开发和回归平台运行。
 - StarryOS 通过 `ax-hal` 间接使用同一板级 bring-up 栈。
@@ -190,9 +190,9 @@ flowchart TD
 - `init.rs` 处理 `irq`、`rtc`
 - `power.rs` 处理 `smp`
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -203,7 +203,7 @@ flowchart TD
 | `ax-config-macros` | 编译期导入 `axconfig.toml` 配置 |
 | `log` | 调试输出 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `os/arceos/modules/axhal`：AArch64 默认平台之一。
 - `components/axplat_crates/examples/hello-kernel`
@@ -225,7 +225,7 @@ graph TD
     E --> I[Axvisor 宿主环境]
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 配置与裁剪
 
@@ -270,7 +270,7 @@ cargo build -p ax-plat-aarch64-qemu-virt --target aarch64-unknown-none --feature
 - 若修改 `PHYS_VIRT_OFFSET`，需要同时检查引导栈、次核入口和上层页表安装逻辑。
 - `irq`、`smp`、`rtc` 的行为跨越 `boot.rs`、`init.rs` 和 `power.rs`，改动任一处都应做整机回归。
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 推荐测试覆盖
 
@@ -291,7 +291,7 @@ cargo build -p ax-plat-aarch64-qemu-virt --target aarch64-unknown-none --feature
 - 启动页表与最终内核地址空间之间存在阶段切换，任何地址计算错误都可能在极早期导致静默故障。
 - PSCI 方法和 GIC/PPI 编号都依赖配置，配置漂移会直接破坏关机、多核或时钟中断。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -299,6 +299,6 @@ cargo build -p ax-plat-aarch64-qemu-virt --target aarch64-unknown-none --feature
 | StarryOS | 通过 `ax-hal` 间接接入 | 宿主板级运行底座 | StarryOS 在 AArch64/QEMU 上运行时，底层仍复用这套平台初始化和硬件布局描述 |
 | Axvisor | 宿主环境的板级基础 | AArch64 hypervisor 宿主 bring-up 层 | Axvisor 的虚拟化核心不在本 crate 中，但若其宿主环境跑在 AArch64/QEMU 上，最低层启动、串口、时钟和 PSCI 基础能力由该 crate 提供 |
 
-## 7. 总结
+## 总结
 
 `ax-plat-aarch64-qemu-virt` 把 QEMU ARM64 `virt` 机器的“板级事实”转译成 `axplat` 可以消费的形式：它知道从哪里启动、如何打开 MMU、哪些地址属于 RAM 或 MMIO、如何通过 PSCI 拉起次核、如何把 PL011/GIC/Timer/RTC 接上统一接口。对 ArceOS 生态而言，它不仅是一个可用平台包，更是 AArch64 开发和回归的主力参考实现。

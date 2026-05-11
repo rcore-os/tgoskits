@@ -1,4 +1,4 @@
-# `ax-allocator` 技术文档
+# `ax-allocator`
 
 > 路径：`components/axallocator`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `ax-allocator` 是一个“统一接口下的多种分配算法库”。它提供页级、字节级和 ID 分配的 trait 与若干实现，供 `ax-alloc`、`ax-dma` 等上层模块挑选和组合。它属于叶子基础件：负责算法和接口，不负责全局分配器注册、锁保护、内存发现或地址空间策略。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `ax-allocator` 解决的是“如何把不同分配算法放到同一套接口下复用”：
 
 - 通过 `BaseAllocator`、`ByteAllocator`、`PageAllocator`、`IdAllocator` 定义统一抽象。
@@ -18,7 +18,7 @@
 
 因此，这个 crate 不是全局分配器，也不是内存管理器；它更像“可插拔分配算法工具箱”。
 
-### 1.2 模块划分
+### 模块结构
 - `src/lib.rs`：公共 trait、错误类型、feature 导出，以及 `AllocatorRc` 适配器。
 - `src/bitmap.rs`：基于 `bitmap-allocator` 的页级分配实现。
 - `src/buddy.rs`：对 `buddy_system_allocator` 的薄包装。
@@ -49,8 +49,8 @@
   - 通过 `multilevel segregated fit` 追求稳定分配复杂度。
   - 手工维护 `total_bytes` 与 `used_bytes` 统计。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 提供统一的分配 trait，隔离上层代码和具体算法实现。
 - 提供位图页分配、buddy、slab、TLSF 四类现成实现。
 - 提供 `AllocatorRc<A>`，方便用标准容器在主机环境直接压测字节分配器。
@@ -61,12 +61,12 @@
 - `PageAllocator::alloc_pages()` / `alloc_pages_at()` / `dealloc_pages()`：页级分配。
 - `AllocatorRc::new()`：把某个 `ByteAllocator` 包装成实现 `core::alloc::Allocator` 的对象，仅在 `allocator_api` 下存在。
 
-### 2.3 使用边界
+### 边界说明
 - 这个 crate 不提供锁；多核/多任务并发访问时，调用者必须自己加锁。
 - 这个 crate 不负责全局单例；`#[global_allocator]` 的装配在 `ax-alloc` 层。
 - 这个 crate 不负责验证内存池来源是否合法；`init()` / `add_memory()` 默认信任调用者提供的地址区间。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     bitmap["bitmap-allocator"] --> ax-allocator["ax-allocator"]
@@ -79,19 +79,19 @@ graph LR
     ax-allocator --> ax_dma["ax-dma"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `bitmap-allocator`：页级位图分配核心。
 - `buddy_system_allocator`：buddy 字节分配核心。
 - `ax_slab_allocator`：slab 分配核心。
 - `rlsf`：TLSF 分配核心。
 - `ax-errno`：可选错误桥接层。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-alloc`：默认全局分配器装配层。
 - `ax-dma`：DMA 内存场景中直接使用字节分配 trait 和错误类型。
 
-## 4. 开发指南
-### 4.1 依赖配置
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 ax-allocator = { workspace = true, features = ["bitmap", "tlsf"] }
@@ -99,7 +99,7 @@ ax-allocator = { workspace = true, features = ["bitmap", "tlsf"] }
 
 是否启用 `bitmap`、`buddy`、`slab`、`tlsf`，应由具体上层模块的使用场景决定。
 
-### 4.2 修改时的关键约束
+### 注意事项
 1. 如果扩展某个 trait，必须同步检查 `ax-alloc`、`ax-dma` 等现有消费者是否需要适配。
 2. `BitmapPageAllocator` 的地址/对齐规则比较严格，修改初始化逻辑时要同时保住容量上界和 `MAX_ALIGN_1GB` 约束。
 3. `AllocatorRc` 只是一层测试/适配包装，不应把正式内核路径的策略塞进去。
@@ -110,33 +110,33 @@ ax-allocator = { workspace = true, features = ["bitmap", "tlsf"] }
 - 需要“并发保护”时去用 `ax-kspin`/`ax-sync`，不要在算法实现里偷偷引入全局锁。
 - 需要“错误码落到 OS 语义”时用 `ax-errno` feature；纯算法测试可直接用 `AllocError`。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 `ax-allocator` 的测试覆盖在这批基础件里算比较完整：
 
 - `src/bitmap.rs`：页级位图分配的单元测试。
 - `tests/allocator.rs`：用 `Vec`、`BTreeMap`、对齐随机申请等场景同时压测 buddy/slab/TLSF。
 - `benches/collections.rs`：基准测试不同算法在容器场景下的表现。
 
-### 5.2 单元测试重点
+### 单元测试
 - 页级对齐、定点页分配、容量边界。
 - 各字节分配器的统计值与回收语义。
 - `AllocError` 到 `AxError` 的桥接行为。
 
-### 5.3 集成测试重点
+### 集成测试
 - 通过 `ax-alloc` 验证算法在真实 `#[global_allocator]` 场景下仍成立。
 - 通过 `ax-dma` 验证对 `AllocResult`、`ByteAllocator` trait 的直接复用不回归。
 
-### 5.4 覆盖率要求
+### 覆盖率
 - 不同算法至少各有一条“初始化 -> 申请 -> 回收 -> 统计”的完整覆盖。
 - 任何改动 `bitmap` 容量 feature 或 `allocator_api` 适配层的变更，都应补对应测试。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 在 ArceOS 中，`ax-allocator` 是 `ax-alloc` 和 `ax-dma` 的算法底座。它不直接参与系统 bring-up，而是为运行时分配层提供可选实现。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 主要通过共享的 ArceOS 基础栈间接受用 `ax-allocator`。它在 StarryOS 里仍然是算法叶子件，而不是内核内存管理模块。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 当前的 `ax-alloc/hv` 主路径会切换到 `buddy-slab-allocator`，因此 `ax-allocator` 并不是 Axvisor 全局分配的主后端。它更多通过共享基础模块或 DMA 相关路径间接参与。

@@ -1,4 +1,4 @@
-# `axdriver_vsock` 技术文档
+# `axdriver_vsock`
 
 > 路径：`components/axdriver_crates/axdriver_vsock`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `axdriver_vsock` 用来定义 vsock 驱动的统一接口。它既不是通用 socket API，也不是网络协议栈，而是把“面向 host/guest 通道的设备驱动”抽象成一组统一操作，让 `virtio-vsock` 之类的具体实现能被 `ax-driver` 聚合层和 `ax-net-ng` 上层消费。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 这个 crate 的职责集中在三个方面：
 
 - 定义 `VsockAddr` 和 `VsockConnId` 这两个连接标识类型。
@@ -61,8 +61,8 @@
 ### 1.6 边界澄清
 最关键的边界是：**`axdriver_vsock` 定义的是 vsock 设备驱动契约，不是用户可见的 socket API，也不是通用网络栈。**
 
-## 2. 核心功能说明
-### 2.1 主要能力
+## 核心功能
+### 功能概览
 - 统一表达 vsock 地址、连接和驱动事件。
 - 为设备驱动提供一套面向连接管理和事件轮询的 trait。
 - 让 `virtio-vsock` 这样的实现可以被 `ax-driver` 聚合和 `ax-net-ng` 消费。
@@ -75,14 +75,14 @@
 ### 2.3 当前实现范围
 本 crate 目前只定义契约，不内建任何具体设备实现。当前仓库里的实际实现来自 `ax_driver_virtio::VirtIoSocketDev`，也就是说，它本身是纯类别层。
 
-## 3. 依赖关系图谱
-### 3.1 直接依赖
+## 依赖关系
+### 直接依赖
 | 依赖 | 作用 |
 | --- | --- |
 | `ax-driver-base` | 提供统一设备元信息和错误类型 |
 | `log` | 为实现 crate 预留日志依赖环境 |
 
-### 3.2 主要消费者
+### 主要消费者
 - `components/axdriver_crates/axdriver_virtio`
 - `os/arceos/modules/axdriver`
 - `os/arceos/modules/axnet-ng`
@@ -92,7 +92,7 @@
 - 向上作为 `ax-net-ng` 的一个设备能力来源。
 - 真正的设备探测和 transport 建立仍由 `ax-driver` 与 `ax-driver-virtio` 负责。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 何时修改这里
 适合修改 `axdriver_vsock` 的情况包括：
 
@@ -112,20 +112,20 @@
 - 不要把连接 ID 当成持久化资源句柄；它只是驱动层连接标识。
 - 不要在这里引入系统调用或文件描述符语义。
 
-## 5. 测试策略
-### 5.1 当前有效验证面
+## 测试
+### 测试覆盖
 该 crate 没有独立测试目录。当前有效验证主要依赖：
 
 - `virtio-vsock` 设备初始化。
 - `ax_net_ng::init_vsock()` 是否能接管驱动。
 - host/guest 之间的实际 vsock 通信。
 
-### 5.2 建议补充的单元测试
+### 单元测试
 - `VsockConnId::listening()` 构造行为。
 - 事件枚举与连接标识的基本映射。
 - mock 驱动上 `poll_event()`、`recv_avail()` 的契约测试。
 
-### 5.3 集成测试重点
+### 集成测试
 - 建立连接、发送、接收、断开和强制关闭。
 - `CreditUpdate` 与读写窗口变化。
 - 无事件轮询与异常断开分支。
@@ -134,12 +134,12 @@
 - 事件模型和连接状态机一旦不一致，上层通常很难区分是驱动 bug 还是协议对端问题。
 - 当前主线只看到 VirtIO 实现，若将来接入其它 vsock 设备，必须重新检查事件语义是否兼容。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 通过 `ax-driver` 和 `ax-net-ng` 使用它，是当前仓库中唯一明确的主线落点。
 
-### 6.2 StarryOS
+### StarryOS
 当前仓库中没有看到 StarryOS 直接消费 `axdriver_vsock` 的证据，因此不应把它描述成 StarryOS 的常规网络接口层。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库中也没有看到 Axvisor 把 `axdriver_vsock` 当作虚拟化通信主接口使用。它不是 hypervisor 侧的 VM 通信控制层。

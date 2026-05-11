@@ -1,4 +1,4 @@
-# `smoltcp` 技术文档
+# `smoltcp`
 
 > 路径：`components/starry-smoltcp`（已迁移至 crates.io `smoltcp v0.13.0`）
 > 类型：库 crate
@@ -10,9 +10,9 @@
 
 最关键的边界是：`smoltcp` 负责协议与报文，不负责操作系统策略。路由装配、阻塞/非阻塞等待、超时、Unix socket、vsock、文件描述符映射与系统调用兼容，都不属于它的职责。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 从 `README.md` 与 `src/lib.rs` 顶层文档可见，`smoltcp` 的目标十分稳定：
 
@@ -78,9 +78,9 @@
 
 因此，`ax-net` / `ax-net-ng` 不是“薄薄一层壳”，而是在把协议栈本体接到操作系统语义上。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 提供 IPv4、IPv6、6LoWPAN、DNS、ICMP、UDP、TCP 等协议支持
 - 提供 `Interface` + `SocketSet` + `phy::Device` 的核心运行时模型
@@ -116,9 +116,9 @@
 - `smoltcp` 的 examples 不是 ArceOS 示例程序，而是协议栈自带的 host-side / bare-metal 演示
 - `smoltcp` 不处理 Unix domain socket 或 vsock
 
-## 3. 依赖关系
+## 依赖关系
 
-### 3.1 关键直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -130,7 +130,7 @@
 | `log` / `defmt` | 可选日志后端 |
 | `libc` | host-side 原始 socket / tuntap 支持（启用对应 feature 时） |
 
-### 3.2 仓库内主要消费者
+### 主要消费者
 
 | 消费者 | 使用方式 |
 | --- | --- |
@@ -146,7 +146,7 @@
 | `ax-net` | 把 `smoltcp` 封装成第一代同步 TCP/UDP/DNS 接口 |
 | `ax-net-ng` | 在 `smoltcp` 之上实现统一 socket 语义、路由、Unix/vsock、poll/waker |
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 依赖方式
 
@@ -175,7 +175,7 @@ smoltcp = { version = "0.12", default-features = false, features = ["alloc"] }
 - `wire` 层 parse/emit 面对非法报文的容错逻辑
 - 任意 feature 组合变化导致的编译面扩张或收缩
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前已有测试与验证资产
 
@@ -203,16 +203,16 @@ cargo test -p smoltcp --test netsim --features _netsim
 
 若要继续验证解析健壮性，再进入 `smoltcp-fuzz` 路径。
 
-## 6. 跨项目定位
+## 跨项目定位
 
-### 6.1 ArceOS
+### ArceOS
 
 在 ArceOS 中，`smoltcp` 不是用户直接面对的网络 API，而是 `ax-net` / `ax-net-ng` 下方的协议引擎。它决定 TCP/UDP/DNS/IP 行为，但不直接决定系统调用或应用接口语义。
 
-### 6.2 StarryOS
+### StarryOS
 
 StarryOS 同样不会把 `smoltcp` 直接暴露给上层，而是通过 `ax-net-ng` 间接使用它。对 StarryOS 来说，`smoltcp` 是主 socket 子系统下方的协议核心，而不是 socket 子系统本身。
 
-### 6.3 Axvisor
+### Axvisor
 
 当前没有看到 Axvisor 把 `smoltcp` 当作独立组件直接接入的证据。它即使间接受益，也更可能经由 ArceOS 公共网络层，而不是直接操作协议栈本体。

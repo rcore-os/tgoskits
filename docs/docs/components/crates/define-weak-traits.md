@@ -1,4 +1,4 @@
-# `define-weak-traits` 技术文档
+# `define-weak-traits`
 
 > 路径：`components/crate_interface/test_crates/define-weak-traits`
 > 类型：库 crate / `crate_interface` 多 crate 测试矩阵中的定义端测试资产
@@ -11,7 +11,7 @@
 
 和 `define-simple-traits` 一样，它位于独立的 `test_crates` 工作区中，被 `components/crate_interface/Cargo.toml` 和仓库根 `Cargo.toml` 双重排除，不参与主工作区常规构建，也不参与正式运行时发布。
 
-## 1. 真实定位与架构设计
+## 架构设计
 
 ### 1.1 它在测试矩阵里的位置
 
@@ -51,7 +51,7 @@
 
 因此，`define-weak-traits` 的核心价值不是“提供默认逻辑”，而是“定义一组能暴露链接期选择结果的默认逻辑样本”。
 
-## 2. 核心功能
+## 核心功能
 
 `define-weak-traits` 负责把 `crate_interface` 的 nightly 弱默认能力固化成一组可回归的定义端样例。它具体承担以下功能：
 
@@ -62,9 +62,9 @@
 
 这里的默认方法都刻意设计成容易区分“默认结果”和“覆写结果”的常量或简单算式，目的是提升回归测试的可判读性，而不是模拟业务层兜底逻辑。
 
-## 3. 依赖关系
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 用途 |
 | --- | --- |
@@ -80,7 +80,7 @@
 - `test-weak-partial` 负责把部分实现端链接进最终二进制，并断言回退路径。
 - `run_tests.sh weak` 把上述两条路径打包成 nightly 多 crate 验收测试入口。
 
-## 4. 开发指南
+## 开发指南
 
 只有在你要扩展 `crate_interface` `weak_default` 语义覆盖面时，才应该修改这个 crate。典型场景包括新增会调用其他默认方法的默认实现、新增 `namespace` 与 `gen_caller` 的组合样例，或新增更复杂的 `Self::method` 间接引用路径。
 
@@ -92,7 +92,7 @@
 - 像 `required_value()`、`required_name()`、`required_id()` 这类必需方法不要随意删除，它们是实现端注册和结果判别的重要锚点。
 - 接口仍应保持 `crate_interface` README 所要求的约束，不引入带接收者的方法或泛型接口。
 
-## 5. 测试策略
+## 测试
 
 这个 crate 自身没有独立单元测试；它通过最终测试二进制验证实际链接结果：
 
@@ -112,7 +112,7 @@
 
 高风险改动主要集中在默认实现变更后只更新了一侧验证，或误把默认方法当成正式 API 的兜底语义来扩展，这两类错误都会直接模糊测试边界。
 
-## 6. 跨项目定位
+## 跨项目定位
 
 仓库中有若干正式组件依赖 `crate_interface` 生态，例如 ArceOS 的 `ax-log`/`ax-runtime`、`kernel_guard`/`ax-task`，以及 Axvisor 侧的 `axvisor_api` 宏封装；但这些正式组件都不会直接链接 `define-weak-traits`。
 
@@ -120,6 +120,6 @@
 
 对 StarryOS 而言，当前同样没有直接依赖这份测试定义集；它最多只会通过共享基础设施间接受益于这里的验证结果。
 
-## 7. 最关键的边界澄清
+## 总结
 
 `define-weak-traits` 不是带默认实现的正式接口库，而是 `crate_interface` nightly 测试矩阵中的定义端测试资产；这里的默认方法是给链接器行为做回归验证的测试样本，不是给运行时模块提供兜底逻辑的生产实现。

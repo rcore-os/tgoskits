@@ -1,4 +1,4 @@
-# `ax-config-gen` 技术文档
+# `ax-config-gen`
 
 > 路径：`components/axconfig-gen/axconfig-gen`
 > 类型：库 + 二进制混合 crate
@@ -8,8 +8,8 @@
 
 `ax-config-gen` 是 ArceOS 配置链路里的“配置编译器”。它运行在宿主机上，负责把一组带类型注释的 TOML 规格文件解析成统一配置，再输出成新的 TOML 文件或 Rust 常量代码；`ax-config-macros` 直接复用它的库接口，而 `axbuild` 则直接调用其可执行文件生成 `.axconfig.toml`。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `ax-config-gen` 同时提供库接口和命令行入口，但两者都围绕同一个核心模型工作：
 
 - `Config`：整个配置集合，包含全局表和多个具名表。
@@ -57,8 +57,8 @@ flowchart TD
 
 这也解释了为什么 `Config::from_toml` 会拒绝 `[[table]]` 这样的对象数组：它的目标不是通用 TOML 引擎，而是为内核/平台常量生成服务。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 解析带类型注释的 TOML 配置规格。
 - 合并多份规格文件，并拒绝重复键。
 - 用旧配置或命令行写入项覆盖默认值。
@@ -86,7 +86,7 @@ flowchart TD
 
 因此，`ax-config-gen` 是宏层和命令行层共享的核心实现，而不是一个只给终端使用的独立工具。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     cli["axbuild / 手工命令"] --> exe["ax-config-gen 可执行文件"]
@@ -95,11 +95,11 @@ graph LR
     lib --> out["TOML / Rust 常量代码"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `toml_edit`：负责 TOML 解析和装饰信息保留。
 - `clap`：提供 CLI 参数解析。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-config-macros`：直接复用库接口，把 TOML 转成 Rust 代码。
 - `axbuild`：通过执行 `ax-config-gen` 命令生成最终 `.axconfig.toml`。
 - 人工构建流程：开发者也可以直接用命令行查看、修改、生成配置。
@@ -108,13 +108,13 @@ graph LR
 - `axconfig`：通过 `ax-config-macros` 或构建链间接使用它的输出。
 - 依赖 `axconfig` 的所有内核模块：间接受益于它生成的常量。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 适合在这里做的改动
 - 扩展配置项类型系统。
 - 调整 TOML 到 Rust 常量的输出格式。
 - 改进多规格合并、旧配置覆盖或 CLI 交互体验。
 
-### 4.2 修改时的关键约束
+### 注意事项
 1. 新增类型时，必须同时修改 `ty.rs`、`value.rs` 和 `output.rs`。
 2. 任何改变输出格式的改动，都要考虑 `ax-config-macros` 和 `axconfig` 的兼容性。
 3. `merge()` 与 `update()` 语义不同：前者拒绝重复键，后者只更新已知键并返回未触达/多余项。
@@ -130,8 +130,8 @@ ax-config-gen configs/defconfig.toml configs/board/qemu-aarch64.toml \
 
 这个示例正对应当前仓库里 `axbuild` 的典型工作方式：先合并规格，再覆写少量构建参数。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 `ax-config-gen` 是这条链路里测试相对完整的一环，`src/tests.rs` 已覆盖：
 
 - 类型推导
@@ -152,12 +152,12 @@ ax-config-gen configs/defconfig.toml configs/board/qemu-aarch64.toml \
 ### 5.4 覆盖率重点
 对 `ax-config-gen` 来说，最重要的是“类型系统覆盖”和“输出稳定性覆盖”；一旦这些行为变动，整个 `axconfig*` 链都会受影响。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `ax-config-gen` 是 ArceOS 配置链路的生成核心。无论是 `axbuild` 生成 `.axconfig.toml`，还是 `ax-config-macros` 生成 Rust 常量，底层都依赖它的解析与输出逻辑。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 不直接把 `ax-config-gen` 当运行时依赖使用，但只要沿用同一套 ArceOS 平台配置和构建装配链，就会间接受到它的输出格式和类型系统影响。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 在当前工作区里通过共享的构建基础设施间接受益于 `ax-config-gen`，尤其在动态平台或统一构建工具链场景中更明显。但它依然是宿主侧工具依赖，而不是 hypervisor 镜像中的运行时组件。

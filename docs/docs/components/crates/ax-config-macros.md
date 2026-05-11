@@ -1,4 +1,4 @@
-# `ax-config-macros` 技术文档
+# `ax-config-macros`
 
 > 路径：`components/axconfig-gen/axconfig-macros`
 > 类型：过程宏库
@@ -8,8 +8,8 @@
 
 `ax-config-macros` 把 TOML 配置文本直接变成 Rust 常量定义，是 `axconfig*` 链路中的“编译期翻译器”。它不生成配置文件，也不保存任何运行时状态；它的职责是在宏展开阶段读取配置文本，调用 `ax-config-gen` 解析后输出等价的 Rust 代码。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 从源码可见，`ax-config-macros` 只暴露两个过程宏：
 
 - `parse_configs!`：把一段 TOML 文本直接展开成 Rust 常量代码。
@@ -66,8 +66,8 @@ flowchart LR
 
 这说明 `ax-config-macros` 既服务“最终常量模块”，也服务“平台自身配置模块”。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 将 TOML 配置文本直接转换为 Rust 常量定义。
 - 支持通过环境变量或回退路径选择配置文件。
 - 将读取失败、解析失败和代码生成失败转化为清晰的编译期错误。
@@ -91,7 +91,7 @@ flowchart LR
 
 换句话说，它解决的是“怎么把配置编进程序”，不是“程序运行时怎么读配置”。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax_config_gen["ax-config-gen"] --> macros["ax-config-macros"]
@@ -100,11 +100,11 @@ graph LR
     macros --> template["cargo-axplat 模板"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-config-gen`：宏层真正复用的 TOML 解析与 Rust 输出实现。
 - `syn`、`quote`、`proc-macro2`：标准过程宏栈。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `axconfig`：最终系统常量入口。
 - 多个 `axplat-*` 平台 crate：板级默认配置入口。
 - `cargo-axplat` 模板：新平台生成模板的默认实现。
@@ -112,14 +112,14 @@ graph LR
 ### 3.3 特性 `nightly`
 `nightly` 仅用于启用 `proc_macro_expand`，让 `parse_configs!` 能处理先展开表达式再解析的场景。它改变的是宏输入能力，不影响最终生成代码的语义模型。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 适合在这里修改的内容
 - 宏参数语法
 - 编译期错误信息
 - 配置文件定位策略
 - 与 `ax-config-gen` 的对接方式
 
-### 4.2 修改时的关键约束
+### 注意事项
 1. `parse_configs!` 和 `include_configs!` 必须保持相同的生成语义，否则同一配置文本在两种入口下会得到不同常量。
 2. 任何对路径解析规则的改动，都要考虑 `CARGO_MANIFEST_DIR` 相对路径行为。
 3. 若调整 `IncludeConfigsArgs` 语法，需要同步更新 README、测试和所有现有调用点。
@@ -130,8 +130,8 @@ graph LR
 - 再编译 `axconfig` 和至少一个 `axplat-*` 平台 crate。
 - 若动了 `nightly` 分支，还应验证 `parse_configs!(include_str!(...))` 路径。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 当前已有 `tests/example_config.rs` 作为正向集成测试，分别验证：
 
 - `include_configs!` 读取文件后的生成结果
@@ -151,12 +151,12 @@ graph LR
 ### 5.4 覆盖率重点
 对过程宏来说，最重要的不是行覆盖率，而是“生成代码与错误诊断是否稳定”；这两点一旦变化，会直接影响所有下游 crate 的编译体验。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `ax-config-macros` 是 ArceOS 配置常量链的编译期核心之一。`axconfig` 和平台 crate 都依赖它把 TOML 变成最终的 Rust 常量模块。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 复用 ArceOS 平台和配置链时，会间接受到 `ax-config-macros` 的影响，但它并不把这个 crate 当成运行时模块使用。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 在动态平台或共享平台 crate 的构建链中，也会间接受益于 `ax-config-macros` 的展开能力；不过这仍然是编译期复用，不是运行时依赖。

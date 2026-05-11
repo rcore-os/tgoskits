@@ -1,4 +1,4 @@
-# `bwbench-client` 技术文档
+# `bwbench-client`
 
 > 路径：`os/arceos/tools/bwbench_client`
 > 类型：二进制 crate
@@ -10,9 +10,9 @@
 
 最关键的边界是：`bwbench-client` 只负责在宿主机侧制造或接收原始以太网流量，用来观察链路吞吐。它不是 ArceOS 网络栈的一部分，也不是通用 benchmark 框架。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 从目录和源码看，`bwbench-client` 与仓库里的 HTTP 示例完全不同：
 
@@ -22,7 +22,7 @@
 
 因此，它不是“ArceOS 的一个网络示例”，而是“ArceOS 网络基准的宿主机配套工具”。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 |
 | --- | --- |
@@ -57,7 +57,7 @@
 
 并在达到 `MAX_BYTES = 10 * GB` 后结束。
 
-## 2. 核心功能说明
+## 核心功能
 
 ### 2.1 发送路径
 
@@ -91,9 +91,9 @@
 - `bwbench-client` 不参与 ArceOS 镜像运行时装配
 - `bwbench-client` 的统计结果主要反映原始链路吞吐，而不是完整应用栈吞吐
 
-## 3. 依赖关系
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -115,7 +115,7 @@
 | Linux raw socket | 提供二层帧收发能力 |
 | ArceOS `ax-net` 基准入口 | 提供客体侧发送/接收对端 |
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 运行方式
 
@@ -140,9 +140,9 @@ sudo ./target/release/bwbench_client [sender|receiver] <interface>
 - 设备实现只针对 Linux，其他平台直接返回 `"Not supported"`
 - `ifreq`、`sockaddr_ll` 这类底层结构依赖 `unsafe` 与平台 ABI，修改时必须逐项核对
 
-## 5. 测试策略
+## 测试
 
-### 5.1 当前测试形态
+### 测试覆盖
 
 没有独立单元测试。这个工具天然依赖真实宿主网络环境，因此验证方式主要是手工或脚本化端到端测试。
 
@@ -160,16 +160,16 @@ sudo ./target/release/bwbench_client [sender|receiver] <interface>
 2. 客体侧启动 ArceOS 的网络基准入口
 3. 对照两边统计结果，观察收发是否匹配、吞吐是否稳定
 
-## 6. 跨项目定位
+## 跨项目定位
 
-### 6.1 ArceOS
+### ArceOS
 
 虽然路径位于 `os/arceos/tools/` 下，但 `bwbench-client` 并不是跑在 ArceOS 里的程序，而是 ArceOS 网络基准的宿主机侧对端工具。
 
-### 6.2 StarryOS
+### StarryOS
 
 当前没有看到 StarryOS 直接使用这个工具的证据。它的 README、命名和对接方式都明显围绕 ArceOS 网络基准场景。
 
-### 6.3 Axvisor
+### Axvisor
 
 同样没有看到 Axvisor 与它的直接关系。它本质上是原始链路吞吐测试的配套工具，而不是通用虚拟化测试组件。

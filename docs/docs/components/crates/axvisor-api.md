@@ -1,4 +1,4 @@
-# `axvisor_api` 技术文档
+# `axvisor_api`
 
 > 路径：`components/axvisor_api`
 > 类型：库 crate
@@ -8,9 +8,9 @@
 
 `axvisor_api` 是 Axvisor 多 crate 架构中的“窄腰层”。它试图解决的问题不是页表、设备或 vCPU 本身，而是：在不把每个组件都做成泛型 HAL trait 大杂烩的前提下，如何把宿主 hypervisor 必须提供的能力统一暴露给 `arm_vcpu`、`riscv_vcpu`、`arm_vgic`、`axvcpu` 等组件。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 从源码和 README 看，`axvisor_api` 的设计目标非常明确：
 
@@ -20,7 +20,7 @@
 
 这使它在架构上更接近“组件公共服务总线”，而不是传统意义上的 HAL trait 集合。
 
-### 1.2 模块划分
+### 模块结构
 
 `axvisor_api` 本体的模块划分很清晰：
 
@@ -169,9 +169,9 @@ mod memory_api_impl {
 
 这说明 `axvisor_api` 故意把接口面收得较窄，只暴露跨组件真正稳定的那部分能力。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 为 Axvisor 各组件提供统一内存 API
 - 提供时间、定时器和 VMM 上下文 API
@@ -203,9 +203,9 @@ flowchart TD
 - vCPU/设备代码需要知道当前 VM/vCPU 或向其它 vCPU 注入中断
 - AArch64 组件需要拿到 host GIC 信息或直接进行硬件虚拟中断注入
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -214,7 +214,7 @@ flowchart TD
 | `memory_addr` | 基础地址类型 |
 | `axaddrspace` | `AxMmHal` 与 `PhysFrame` 桥接 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `arm_vcpu`
 - `arm_vgic`
@@ -235,7 +235,7 @@ graph TD
     F[os/axvisor::hal] --> B
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 新增 API 的步骤
 
@@ -257,7 +257,7 @@ graph TD
 - `arch` 模块当前只覆盖 AArch64，不应误认为是通用架构接口
 - `axvisor_api` 在仓库中是独立 workspace 维护的，而不是普通主 workspace 成员
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前已有测试
 
@@ -280,7 +280,7 @@ graph TD
 - 一旦 `axvisor_api` 接口面设计过宽，就容易沦为“万物都往里塞”的公共杂物层。
 - 实现与定义分离在不同 crate 中，文档和代码审查都需要同时核对两侧。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -288,6 +288,6 @@ graph TD
 | StarryOS | 当前仓库未见直接依赖 | 非核心路径 | 当前仓库中 StarryOS 没有直接依赖 `axvisor_api` |
 | Axvisor | 多 crate 生态的公共接口中枢 | Hypervisor 组件窄腰层 | 把宿主实现细节与组件调用面隔开，是 `arm_vcpu`、`riscv_vcpu`、`axvcpu`、`arm_vgic` 等组件共享的统一服务面 |
 
-## 7. 总结
+## 总结
 
 `axvisor_api` 的真正价值，不在于它提供了多少 API，而在于它用一套统一机制把“组件调用宿主能力”这件事做成了稳定的公共层。它既减少了跨 crate 的泛型参数污染，也把 ArceOS 宿主实现细节隔离在最终实现层之外，是 Axvisor 多 crate 架构能保持清晰分层的关键基础设施之一。

@@ -1,4 +1,4 @@
-# `axvmconfig` 技术文档
+# `axvmconfig`
 
 > 路径：`components/axvmconfig`
 > 类型：库 + 二进制混合 crate
@@ -8,9 +8,9 @@
 
 `axvmconfig` 是 Axvisor 虚拟机配置链路的静态模型层。它的职责不是直接创建 VM，也不是直接操作页表或设备，而是把 TOML 中描述的 VM 元信息、镜像布局、内存区域、模拟设备、直通设备和中断模式转换成一组稳定的数据结构；这些结构随后被 `axvm` 转成运行时 `AxVMConfig`，再由 `os/axvisor` 继续执行内存分配、镜像加载、FDT 处理和 VM 实例化。
 
-## 1. 架构设计分析
+## 架构设计
 
-### 1.1 设计定位
+### 设计定位
 
 `axvmconfig` 兼具两个身份：
 
@@ -22,7 +22,7 @@
 - 核心模型保持 `no_std` 兼容，便于 `axvm`、`axdevice` 等运行时 crate 以 `default-features = false` 方式依赖。
 - 与文件系统、命令行、JSON Schema 生成相关的能力全部通过 `std` feature 外挂。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -184,9 +184,9 @@ flowchart TD
 
 这说明 `axvmconfig` 本身是“配置语义源头”，但 VM 资源真正落地仍由 `axvm` 和 `os/axvisor` 分段完成。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要功能
+### 功能概览
 
 - 解析 VM TOML 配置并生成 `AxVMCrateConfig`
 - 为 VM 基本属性、镜像布局、内存区域和设备资源提供统一建模
@@ -220,9 +220,9 @@ cargo run -p axvmconfig -- generate --arch aarch64 --output vm.toml
 
 需要注意，静态 `templates/*.toml` 与当前 `AxVMCrateConfig` 的 `[base]` / `[kernel]` / `[devices]` 分段结构并不完全同构；实际使用时更应以 `generate` 输出和 `README` 示例为准，而不是把模板文件视作始终可直接反序列化的权威格式。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -235,7 +235,7 @@ cargo run -p axvmconfig -- generate --arch aarch64 --output vm.toml
 | `env_logger` | CLI 日志初始化 |
 | `schemars` | `std` 模式下导出 JSON Schema |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `components/axvm`：通过 `AxVMConfig::from()` 把静态配置转成运行时配置
 - `components/axdevice` / `axdevice_base`：复用 `EmulatedDeviceType` 和设备配置模型
@@ -253,7 +253,7 @@ graph TD
     C --> E
 ```
 
-## 4. 开发指南
+## 开发指南
 
 ### 4.1 新增配置字段时的建议
 
@@ -281,7 +281,7 @@ graph TD
 - `phys_cpu_ids` 和 `phys_cpu_sets` 的解释会受到目标架构影响，特别是 RISC-V 分支会补充 `pcpu_mask_flag` 逻辑。
 - `EmulatedDeviceType` 的值域具有体系化含义，新增设备类型时应遵守源码里既定的数值分配区间。
 
-## 5. 测试策略
+## 测试
 
 ### 5.1 当前已有测试
 
@@ -307,7 +307,7 @@ graph TD
 - `memory_regions` 保持在 crate 配置层是合理分层，但也意味着修改者若只盯 `AxVMConfig`，可能误以为该字段未被使用。
 - 设备类型枚举被多个 crate 共同依赖，一旦编号变化，影响面会扩散到设备构造、管理平面和文档层。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -315,6 +315,6 @@ graph TD
 | StarryOS | 当前仓库未见直接依赖 | 非核心路径 | 现有仓库内 StarryOS 主线不直接消费 `axvmconfig` |
 | Axvisor | 配置链路核心 | VM 静态配置语言与工具入口 | 从 TOML 到 VM 创建、内存分配、镜像装载的第一层抽象，属于 Axvisor 管理平面的基础设施 |
 
-## 7. 总结
+## 总结
 
 `axvmconfig` 的价值在于把“虚拟机应该长什么样”稳定地表达出来。它既不是纯工具，也不是纯运行时库，而是连接宿主工具链、运行时 VM 配置、设备建模和镜像装载的配置语义中心。对 Axvisor 而言，很多复杂逻辑真正开始发生之前，首先都要经过 `axvmconfig` 这道配置建模关口。

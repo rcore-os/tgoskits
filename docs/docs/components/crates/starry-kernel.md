@@ -1,4 +1,4 @@
-# `starry-kernel` 技术文档
+# `starry-kernel`
 
 > 路径：`os/StarryOS/kernel`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `starry-kernel` 是 StarryOS 的内核核心 crate。它以 ArceOS 的 `ax*` 模块为底座，叠加 `starry-process`、`starry-signal`、`starry-vm` 等组件，最终形成一个具备 Linux 风格进程、线程、syscall、用户态装载与伪文件系统能力的宏内核。
 
-## 1. 架构设计分析
-### 1.1 总体定位
+## 架构设计
+### 设计定位
 与 ArceOS 直接面向 unikernel 应用不同，`starry-kernel` 的任务是组织一个“完整的用户态世界”：
 
 - 负责构造 init 进程。
@@ -19,7 +19,7 @@
 
 因此，它是一个“建立在 ArceOS 之上的系统内核”，而不是单纯的模块集合。
 
-### 1.2 模块划分
+### 模块结构
 - `src/entry.rs`：系统启动主线。挂载伪文件系统、创建初始用户地址空间、加载第一个用户程序、创建 init 任务并等待其退出。
 - `src/syscall/`：系统调用总入口及各子系统分发实现，包含 `fs`、`mm`、`task`、`net`、`ipc`、`signal`、`time`、`resources`、`io_mpx` 等。
 - `src/task/`：进程/线程核心逻辑，包含 `Thread`、`ProcessData`、PID/TID 表、futex、资源限制、信号与时间统计。
@@ -79,8 +79,8 @@ flowchart TD
 
 这种设计使 StarryOS 可以在复用 `ax-task` 线程调度能力的同时，补齐 Linux 风格进程模型。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 系统启动与 init 进程构造。
 - syscall 分发与 Linux 风格错误码映射。
 - 用户态程序装载与地址空间重建。
@@ -112,7 +112,7 @@ starry_kernel::entry::init(&args, &envs);
 starry_kernel::syscall::handle_syscall(&mut uctx);
 ```
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax-feat["ax-feat"] --> starry["starry-kernel"]
@@ -129,7 +129,7 @@ graph LR
     starry --> starryos_test["starryos-test"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-feat`：把 `uspace`、`multitask`、`sched-rr`、`fs-ng-ext4`、`net-ng` 等能力一次性装配到内核。
 - `ax-hal`：用户态上下文、页表、trap、时间与控制台基础能力。
 - `ax-task`：底层线程调度、`TaskExt` 和阻塞/唤醒机制。
@@ -137,11 +137,11 @@ graph LR
 - `ax-net-ng`：网络与 socket 路径的底层支撑。
 - `starry-process`、`starry-signal`、`starry-vm`：分别承接进程模型、信号模型和用户内存安全访问。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `os/StarryOS/starryos`：启动镜像包，最终调用 `entry::init()`。
 - `test-suit/starryos`：StarryOS 侧的系统级测试入口。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 依赖与接线
 ```toml
 [dependencies]
@@ -163,8 +163,8 @@ starry-kernel = { workspace = true }
 - 修改 `execve`、`clone`、`wait` 等路径时，要以 Linux 语义为准而不是只看本地实现是否“能跑”。
 - 修改 `file/*` 时，要同步验证 `FD_TABLE`、`CLOEXEC`、pipe/socket/epoll 等行为。
 
-## 5. 测试策略
-### 5.1 单元测试
+## 测试
+### 单元测试
 `starry-kernel` 当前以系统级验证为主，crate 内没有大量独立 `tests/`。若补充单元测试，建议优先覆盖：
 
 - syscall 分发表与错误码映射。
@@ -172,7 +172,7 @@ starry-kernel = { workspace = true }
 - `execve`、`clone`、`waitpid`、`futex` 等复杂内核语义。
 - `FD_TABLE` 与 `CLOEXEC` 路径。
 
-### 5.2 集成测试
+### 集成测试
 StarryOS 的主验证方式是端到端系统运行：
 
 - `test-suit/starryos`
@@ -186,12 +186,12 @@ StarryOS 的主验证方式是端到端系统运行：
 - `execve`、`clone`、`waitpid`、`futex`、`epoll` 等复杂路径至少应有场景级验证。
 - 所有涉及用户态恢复、地址空间切换和 init 进程构造的改动都应跑系统级回归。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `starry-kernel` 并不是 ArceOS 的被复用组件，而是构建在 ArceOS `ax*` 模块之上的更高层系统。它消费 `ax-hal`、`ax-task`、`ax-mm`、`ax-fs`、`ax-net` 等能力，把它们重组为 Linux 风格宏内核语义。
 
-### 6.2 StarryOS
+### StarryOS
 这是 `starry-kernel` 的主战场。`starryos` 包本身只负责启动入口和参数准备，而真正的内核逻辑几乎都集中在 `starry-kernel` 中，因此它就是 StarryOS 的核心内核实现。
 
-### 6.3 Axvisor
+### Axvisor
 在当前仓库中，Axvisor 并不直接依赖 `starry-kernel`。两者更准确的关系是：Axvisor 可以在生态层面支持 StarryOS 作为 guest，但不会把 `starry-kernel` 链接进 Hypervisor 本体。因此，`starry-kernel` 与 Axvisor 的关系是“guest 兼容性”，不是“代码直接依赖”。

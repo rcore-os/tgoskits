@@ -1,4 +1,4 @@
-# `axdriver_net` 技术文档
+# `axdriver_net`
 
 > 路径：`components/axdriver_crates/axdriver_net`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `axdriver_net` 的定位是 NIC 驱动类别层，而不是网络栈。它一方面定义网卡驱动必须实现的 `NetDriverOps`，另一方面内建 `fxmac` 和 `ixgbe` 两个具体实现模块，并提供一套在当前 ArceOS 网络驱动栈里非常关键的缓冲区抽象 `NetBuf` / `NetBufPool` / `NetBufPtr`。上层 `ax-net`、`ax-net-ng` 依赖它消费网卡，下层具体设备和总线探测则由 `ax-driver`、`ax-driver-virtio` 等承担。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 这个 crate 同样是“类别契约 + 部分叶子实现”的混合结构：
 
 - `NetDriverOps` 统一定义 NIC 的收发、队列和缓冲区契约。
@@ -75,8 +75,8 @@
 ### 1.7 边界澄清
 最重要的边界是：**`axdriver_net` 是 NIC 驱动类别层，不是网络栈、socket 层，也不是接口管理层。**
 
-## 2. 核心功能说明
-### 2.1 主要能力
+## 核心功能
+### 功能概览
 - 定义统一的 NIC 驱动 trait `NetDriverOps`。
 - 提供网络缓冲区池和所有权转换模型。
 - 通过 feature 内建 `fxmac` 和 `ixgbe` 网卡实现。
@@ -96,8 +96,8 @@
 
 这正是类别层和网络栈之间的清晰分界。
 
-## 3. 依赖关系图谱
-### 3.1 直接依赖
+## 依赖关系
+### 直接依赖
 | 依赖 | 作用 |
 | --- | --- |
 | `ax-driver-base` | 提供共性设备接口与错误类型 |
@@ -106,7 +106,7 @@
 | `ixgbe-driver` | `ixgbe` 实现的底层库 |
 | `log` | 初始化和错误日志 |
 
-### 3.2 主要消费者
+### 主要消费者
 - `components/axdriver_crates/axdriver_virtio`
 - `os/arceos/modules/axdriver`
 - `os/arceos/modules/ax-net`
@@ -117,7 +117,7 @@
 - 向上统一暴露网卡语义。
 - 由 `ax-driver` 决定设备探测与聚合，由 `ax-net`/`ax-net-ng` 决定协议栈语义。
 
-## 4. 开发指南
+## 开发指南
 ### 4.1 何时应该改这里
 适合修改 `axdriver_net` 的场景包括：
 
@@ -138,20 +138,20 @@
 - `can_transmit()` / `can_receive()` 只是即时状态，不代表永远可用。
 - 不要把本 crate 写成“网络子系统”；路由、socket、poll 接口都不在这里。
 
-## 5. 测试策略
-### 5.1 当前有效验证面
+## 测试
+### 测试覆盖
 该 crate 没有独立测试目录，当前有效验证主要来自：
 
 - `virtio-net`、`ixgbe`、`fxmac` 的整机 bring-up。
 - `ax-net` / `ax-net-ng` 的网络收发路径。
 - `NetBufPool` 在不同驱动上的缓冲回收行为。
 
-### 5.2 建议补充的单元测试
+### 单元测试
 - `NetBufPool` 的容量、长度边界和回收行为。
 - `NetBuf` 的 header / packet 区域长度管理。
 - `NetBufPtr` 与 `NetBuf` 的往返恢复。
 
-### 5.3 集成测试重点
+### 集成测试
 - QEMU `virtio-net` 网络冒烟。
 - ixgbe PCI 探测和 DMA 路径。
 - fxmac 平台初始化和报文收发。
@@ -161,12 +161,12 @@
 - 缓冲回收协议一旦写错，问题往往表现为“跑一段时间后 RX/TX 队列耗尽”。
 - DMA 和物理地址转换错误通常不会只影响一个包，而会直接让整个 NIC 不稳定。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 ArceOS 是当前仓库里最主要的直接消费者：`ax-driver` 负责把设备接进来，`ax-net` / `ax-net-ng` 负责把它们变成网络能力。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 当前并没有把 `axdriver_net` 当成独立网络栈；若复用网络能力，也主要是通过共享的 ArceOS 底层模块链路间接使用。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库未显示 Axvisor 直接以 `axdriver_net` 作为其主线网卡框架。它不是虚拟化设备网络平面的核心抽象。

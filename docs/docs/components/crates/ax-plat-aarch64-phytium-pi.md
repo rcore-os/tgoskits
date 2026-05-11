@@ -1,4 +1,4 @@
-# `ax-plat-aarch64-phytium-pi` 技术文档
+# `ax-plat-aarch64-phytium-pi`
 
 > 路径：`components/axplat_crates/platforms/axplat-aarch64-phytium-pi`
 > 类型：库 crate
@@ -8,7 +8,7 @@
 
 `ax-plat-aarch64-phytium-pi` 是飞腾派开发板在 `axplat` 体系下的板级平台包。它把启动入口、早期页表、CPU 硬件 ID 到逻辑 CPU ID 的映射、PL011/GIC/Generic Timer/PSCI 接线、固定物理内存布局和 PCIe 地址窗口组织成 `axplat` 可以消费的实现。它不是通用 AArch64 板级抽象，也不是 PCI 子系统；它只负责把“飞腾派这块板子怎么启动、地址在哪里、哪些最小平台能力可用”稳定地交给上层。
 
-## 1. 架构设计分析
+## 架构设计
 
 ### 1.1 真实定位
 
@@ -25,7 +25,7 @@
 - 平台有非连续的 CPU 硬件 ID 编号，因此启动阶段必须把 MPIDR 映射成逻辑 CPU ID。
 - 平台配置里出现了完整的 PCIe ECAM 和 MMIO 窗口，但这些信息在本 crate 里只是资源描述，不是 PCIe 枚举实现。
 
-### 1.2 模块划分
+### 模块结构
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
@@ -92,9 +92,9 @@ flowchart TD
 
 还要特别说明一处实现现实：`axconfig.toml` 里有 “GICv3 还未支持” 的注释，而当前代码实际仍按 GICD/GICC 这套 GICv2 风格接口接线。文档应以当前源码行为为准，而不是以板卡硬件理论能力为准。
 
-## 2. 核心功能说明
+## 核心功能
 
-### 2.1 主要能力
+### 功能概览
 
 - 提供飞腾派板级启动入口和最小引导页表。
 - 在进入上层内核前完成 CPU 硬件 ID 到逻辑 ID 的转换。
@@ -115,7 +115,7 @@ flowchart TD
 
 和这个平台有关的一个现实约束是：虽然 feature 名叫 `rtc`，但当前源码并没有调用 PL031 或其它 RTC 设备，所以上层不应把它当成已经提供墙钟支持。
 
-### 2.3 最关键的边界澄清
+### 边界说明
 
 这个 crate 既不是“飞腾派设备树解析器”，也不是“飞腾派 PCIe 驱动”：
 
@@ -130,9 +130,9 @@ flowchart TD
 - `PowerIf`：关机与次核启动。
 - 以及通过宏展开提供的 `ConsoleIf`、`TimeIf`、`IrqIf`。
 
-## 3. 依赖关系图谱
+## 依赖关系
 
-### 3.1 直接依赖
+### 直接依赖
 
 | 依赖 | 作用 |
 | --- | --- |
@@ -143,7 +143,7 @@ flowchart TD
 | `ax-config-macros` | 把 `axconfig.toml` 生成为 `config` 常量 |
 | `log` | 启动日志 |
 
-### 3.2 主要消费者
+### 主要消费者
 
 - `os/arceos/examples/helloworld-myplat`：当前仓库内的直接使用者。
 - 飞腾派板卡 bring-up 流程：仓库文档中通过 `ostool` / U-Boot 启动最小内核。
@@ -160,9 +160,9 @@ graph TD
     E --> F[飞腾派板卡启动与调试]
 ```
 
-## 4. 开发指南
+## 开发指南
 
-### 4.1 接入方式
+### 接入方式
 
 典型依赖方式如下：
 
@@ -199,9 +199,9 @@ extern crate axplat_aarch64_phytium_pi;
 - 本 crate 只是把地址和最小控制台/中断/时间能力接到 `axplat`。
 - 更高层的 GPIO、I2C、PCIe 控制器驱动仍然在别处，或者还没有实现。
 
-## 5. 测试策略
+## 测试
 
-### 5.1 当前有效验证面
+### 测试覆盖
 
 - 交叉构建可验证 `aarch64-unknown-none` 下的编译完整性。
 - `ax-helloworld-myplat` 可覆盖最小启动、串口输出和平台初始化主线。
@@ -222,7 +222,7 @@ extern crate axplat_aarch64_phytium_pi;
 - 当前中断路径依赖 GICv2 风格接线，若板卡配置向 GICv3 漂移，现有实现不会自动适配。
 - `rtc` feature 目前没有真实实现，文档和测试必须避免把它写成既成能力。
 
-## 6. 跨项目定位分析
+## 跨项目定位
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
@@ -230,6 +230,6 @@ extern crate axplat_aarch64_phytium_pi;
 | StarryOS | 当前无仓库内直接接入 | 潜在宿主平台包 | 若未来接入，更可能作为定制板级平台直接链接，而不是默认平台能力 |
 | Axvisor | 当前无仓库内直接接入 | 潜在宿主 bring-up 层 | 本 crate 不提供虚拟化能力，只能提供飞腾派宿主板级初始化基础；当前仓库没有直接依赖 |
 
-## 7. 总结
+## 总结
 
 `ax-plat-aarch64-phytium-pi` 的核心价值，不在于“覆盖了多少飞腾派外设”，而在于它把飞腾派启动所必需的那部分板级事实准确翻译成了 `axplat` 契约：入口怎么进、CPU 编号怎么规整、控制台和时钟怎么接、GIC/PSCI 怎样初始化、哪些地址属于 RAM 或 MMIO。它是一个偏板卡 bring-up 的平台包，而不是运行时驱动总线或设备树解释层。

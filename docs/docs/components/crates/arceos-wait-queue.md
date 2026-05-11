@@ -1,4 +1,4 @@
-# `arceos-wait-queue` 技术文档
+# `arceos-wait-queue`
 
 > 路径：`test-suit/arceos/task/wait_queue`
 > 类型：测试入口 crate
@@ -10,7 +10,7 @@
 
 这份 crate 的边界必须说清：**它不是生产级同步抽象，也不是通用条件变量库；它只是用最直接的 API 调用去证明 wait queue 语义没有回退。**
 
-## 1. 架构设计分析
+## 架构设计
 ### 1.1 测试场景划分
 `main()` 实际上只负责顺序执行两个子测试：
 
@@ -47,7 +47,7 @@ flowchart LR
 
 只有把这三类都覆盖到，才能较全面地验证 `wait_timeout_until()` 的返回值语义和边界行为。
 
-## 2. 核心功能说明
+## 核心功能
 ### 2.1 `test_wait()` 覆盖的能力链
 `test_wait()` 使用 `WQ1` / `WQ2`、`COUNTER` 和 `GO` 组织了一套典型的“主线程等子线程全部到位，再统一放行”的阻塞模型。它验证：
 
@@ -72,7 +72,7 @@ flowchart LR
 
 它只聚焦在“等待、通知、超时返回值”这三个公开语义点上。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     test["arceos-wait-queue"] --> ax-std["ax-std(multitask, irq)"]
@@ -80,21 +80,21 @@ graph LR
     ax-api --> ax-task["ax-task::WaitQueue"]
 ```
 
-### 3.1 直接依赖
+### 直接依赖
 - `ax-std(multitask, irq)`：说明本测试依赖多任务与基于中断的超时等待。
 
-### 3.2 关键间接依赖
+### 间接依赖
 - `ax_api::task::AxWaitQueueHandle`
 - `ax_api::task::ax_wait_queue_wait_until`
 - `ax_api::task::ax_wait_queue_wake`
 - `ax-task::WaitQueue`
 
-### 3.3 主要消费者
+### 主要消费者
 - `cargo arceos test qemu` 自动发现的任务同步回归。
 - 修改 `ax-task::wait_queue` 或 `ax_api::task` 封装后的首批验证对象。
 
-## 4. 开发指南
-### 4.1 推荐运行方式
+## 开发指南
+### 接入方式
 ```bash
 cargo xtask arceos run --package arceos-wait-queue --arch riscv64
 ```
@@ -115,7 +115,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 多次重复通知/空通知的行为
 - 单核与多核环境下的一致性回归
 
-## 5. 测试策略
+## 测试
 ### 5.1 当前自动化形态
 `qemu-riscv64.toml` 已明确配置：
 
@@ -135,12 +135,12 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 - 若 timer/IRQ 路径失效，超时测试最先挂住。
 - 若 `notify_all(true)` 或条件闭包语义变化，混合场景最容易暴露回归。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 它是 ArceOS 任务同步公开 API 的直接回归入口，重点验证 `ax-api` 到 `ax-task` 的等待队列桥接。
 
-### 6.2 StarryOS
+### StarryOS
 StarryOS 不直接运行它，但共享底层任务同步实现时，这类回归对发现基础语义回退依然有价值。
 
-### 6.3 Axvisor
+### Axvisor
 Axvisor 也不会直接消费它；不过仓库中其他组件也会使用等待队列思想，因此先用这条短路径验证基础语义通常更容易定位问题。

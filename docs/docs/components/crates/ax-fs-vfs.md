@@ -1,4 +1,4 @@
-# `axfs_vfs` 技术文档
+# `axfs_vfs`
 
 > 路径：`components/axfs_crates/axfs_vfs`
 > 类型：库 crate
@@ -8,8 +8,8 @@
 
 `axfs_vfs` 是旧文件系统栈使用的 VFS trait 契约。它提供的不是完整的挂载与名字空间对象模型，而是一组足够让 `ax-fs`、`axfs_ramfs`、`axfs_devfs` 和格式适配层对接起来的最小接口集合。
 
-## 1. 架构设计分析
-### 1.1 设计定位
+## 架构设计
+### 设计定位
 `axfs_vfs` 的设计非常克制：
 
 - 它只定义文件系统与节点的基础操作接口。
@@ -57,8 +57,8 @@
 - `axfs_vfs` 的 `FileSystemInfo` 目前几乎是空壳结构；新栈的 `StatFs` 才是真正可用的统计结构。
 - `axfs_vfs` 不负责跨设备重命名/硬链接规则；旧 `ax-fs` 只能在自己那层做有限约束。
 
-## 2. 核心功能说明
-### 2.1 主要功能
+## 核心功能
+### 功能概览
 - 为旧栈文件系统定义统一 trait。
 - 为目录项、节点属性和权限位定义统一结构。
 - 提供路径规范化工具。
@@ -69,7 +69,7 @@
 - `create()`/`remove()`/`rename()` 都是字符串路径风格接口，路径拆分和递归路由由具体文件系统自己决定。
 - `path::canonicalize()` 只做纯字符串归一化，不查询文件系统，也不会强制转成绝对路径。
 
-### 2.3 典型使用方式
+### 使用方式
 在当前仓库里，它的直接消费者主要有三类：
 
 - `ax-fs`：系统级聚合层。
@@ -78,7 +78,7 @@
 
 也就是说，它服务的是一整套旧栈组件，而不是面向最终业务逻辑直接暴露。
 
-## 3. 依赖关系图谱
+## 依赖关系
 ```mermaid
 graph LR
     ax_errno["ax-errno"] --> current["ax-fs-vfs"]
@@ -88,12 +88,12 @@ graph LR
     current --> axfs_devfs["ax-fs-devfs"]
 ```
 
-### 3.1 关键直接依赖
+### 直接依赖
 - `ax-errno`：错误码来源。
 - `bitflags`：权限位实现。
 - `log`：长目录项名警告等辅助日志。
 
-### 3.2 关键直接消费者
+### 主要消费者
 - `ax-fs`：通过它抽象 FAT/ext4/ramfs/devfs 节点。
 - `axfs_ramfs`：用它定义纯内存文件与目录。
 - `axfs_devfs`：用它定义设备目录树与字符设备节点。
@@ -103,8 +103,8 @@ graph LR
 - `axfs_ramfs`、`axfs_devfs` 是它之上的具体实现层。
 - `ax-fs` 则是再上一层的系统装配层。
 
-## 4. 开发指南
-### 4.1 接入方式
+## 开发指南
+### 接入方式
 ```toml
 [dependencies]
 ax-fs-vfs = { workspace = true }
@@ -121,17 +121,17 @@ ax-fs-vfs = { workspace = true }
 - 如果只是给旧 `ax-fs` 增加一种简单叶子文件系统，实现 `VfsOps`/`VfsNodeOps` 仍然是最低成本路径。
 - 写 `rename()` 时要明确是否支持跨目录或跨挂载点；旧 trait 不会替你兜底。
 
-## 5. 测试策略
-### 5.1 当前测试形态
+## 测试
+### 测试覆盖
 当前 crate 自带测试主要集中在 `src/path.rs`，验证路径规范化行为。
 
-### 5.2 建议的单元测试
+### 单元测试
 - `canonicalize()` 的边界条件。
 - `VfsNodePerm` 与 `VfsNodeType` 的辅助方法。
 - 目录项名超过 63 字节时的行为。
 - 默认宏返回错误类型是否符合预期。
 
-### 5.3 建议的集成测试
+### 集成测试
 - 用一个最小 dummy fs 同时验证 `lookup`、`create`、`remove`、`read_dir`、`rename`。
 - 在 `ax-fs` 中验证 `VfsNodeAttr` 对权限与类型判断的影响。
 - 在 `axfs_ramfs`/`axfs_devfs` 中验证 `parent()` 与路径递归。
@@ -141,12 +141,12 @@ ax-fs-vfs = { workspace = true }
 - 固定长度目录项名缓冲带来的兼容性问题。
 - `lookup(self: Arc<Self>)` 所要求的所有权语义被破坏。
 
-## 6. 跨项目定位分析
-### 6.1 ArceOS
+## 跨项目定位
+### ArceOS
 `axfs_vfs` 是 ArceOS 旧文件系统栈的接口基石。`ax-fs`、`axfs_ramfs`、`axfs_devfs` 都围绕这套 trait 工作。
 
-### 6.2 StarryOS
+### StarryOS
 当前仓库里的 StarryOS 已转向 `ax-fs-ng`/`axfs-ng-vfs` 栈，没有直接复用 `axfs_vfs`。因此它对 StarryOS 更像历史接口层，而不是主线基础设施。
 
-### 6.3 Axvisor
+### Axvisor
 当前仓库里的 `os/axvisor` 没有直接依赖 `axfs_vfs`。它在这棵代码树中的主要意义是旧文件系统组件间的共享接口，而不是跨所有项目通用的 VFS 核心。
