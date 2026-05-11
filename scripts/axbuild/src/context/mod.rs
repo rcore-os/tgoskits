@@ -42,7 +42,7 @@ pub use types::{
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
-    find_workspace_root, workspace_manifest_path, workspace_member_dir,
+    axbuild_tmp_dir, find_workspace_root, workspace_manifest_path, workspace_member_dir,
     workspace_metadata_root_manifest, workspace_metadata_root_manifest_with_deps,
     workspace_root_path,
 };

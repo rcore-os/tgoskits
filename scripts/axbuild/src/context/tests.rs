@@ -82,6 +82,16 @@ fn prepare_starry_workspace(root: &Path) {
     .unwrap();
 }
 
+fn snapshot_path(root: &Path, file_name: &str) -> PathBuf {
+    axbuild_tmp_dir(root).join(file_name)
+}
+
+fn write_snapshot_text(root: &Path, file_name: &str, content: &str) -> std::io::Result<()> {
+    let path = snapshot_path(root, file_name);
+    fs::create_dir_all(path.parent().unwrap())?;
+    fs::write(path, content)
+}
+
 #[test]
 fn snapshot_load_returns_default_when_missing() {
     let root = tempdir().unwrap();
@@ -134,7 +144,7 @@ fn snapshot_store_round_trips() {
     let path = snapshot.store(root.path()).unwrap();
     let loaded = ArceosCommandSnapshot::load(root.path()).unwrap();
 
-    assert_eq!(path, root.path().join(ARCEOS_SNAPSHOT_FILE));
+    assert_eq!(path, snapshot_path(root.path(), ARCEOS_SNAPSHOT_FILE));
     assert_eq!(loaded, snapshot);
 }
 
@@ -147,7 +157,7 @@ fn axvisor_snapshot_store_round_trips() {
         plat_dyn: Some(false),
         smp: None,
         config: Some(PathBuf::from(
-            "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml",
+            "tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml",
         )),
         vmconfigs: vec![PathBuf::from("tmp/vm1.toml"), PathBuf::from("tmp/vm2.toml")],
         qemu: AxvisorQemuSnapshot {
@@ -161,15 +171,16 @@ fn axvisor_snapshot_store_round_trips() {
     let path = snapshot.store(root.path()).unwrap();
     let loaded = AxvisorCommandSnapshot::load(root.path()).unwrap();
 
-    assert_eq!(path, root.path().join(AXVISOR_SNAPSHOT_FILE));
+    assert_eq!(path, snapshot_path(root.path(), AXVISOR_SNAPSHOT_FILE));
     assert_eq!(loaded, snapshot);
 }
 
 #[test]
 fn prepare_request_prefers_cli_over_snapshot() {
     let root = tempdir().unwrap();
-    fs::write(
-        root.path().join(ARCEOS_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
         r#"
 package = "from-snapshot"
 arch = "riscv64"
@@ -229,8 +240,9 @@ uboot_config = "configs/snapshot-uboot.toml"
 #[test]
 fn prepare_request_uses_snapshot_and_default_target() {
     let root = tempdir().unwrap();
-    fs::write(
-        root.path().join(ARCEOS_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
         r#"
 package = "ax-helloworld"
 
@@ -363,8 +375,9 @@ fn find_loongarch_qemu_dir_checks_home_before_workspace_ancestors() {
 #[test]
 fn prepare_request_cli_target_drops_stale_arceos_runtime_paths() {
     let root = tempdir().unwrap();
-    fs::write(
-        root.path().join(ARCEOS_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
         r#"
 package = "ax-helloworld"
 arch = "aarch64"
@@ -408,8 +421,9 @@ uboot_config = "configs/uboot-aarch64.toml"
 #[test]
 fn prepare_axvisor_request_prefers_cli_over_snapshot() {
     let root = tempdir().unwrap();
-    fs::write(
-        root.path().join(AXVISOR_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
         r#"
 config = "os/axvisor/.build.toml"
 arch = "riscv64"
@@ -494,8 +508,9 @@ uboot_config = "configs/snapshot-uboot.toml"
 #[test]
 fn prepare_axvisor_request_uses_snapshot_when_cli_omits_values() {
     let root = tempdir().unwrap();
-    fs::write(
-        root.path().join(AXVISOR_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
         r#"
 config = "os/axvisor/.build.toml"
 arch = "aarch64"
@@ -523,7 +538,7 @@ uboot_config = "configs/uboot.toml"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
+            .join("tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
     );
     assert_eq!(
         request.qemu_config,
@@ -543,7 +558,7 @@ uboot_config = "configs/uboot.toml"
     assert_eq!(
         snapshot.config,
         Some(PathBuf::from(
-            "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
+            "tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
         ))
     );
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_AXVISOR_ARCH));
@@ -584,7 +599,7 @@ fn prepare_axvisor_request_resolves_target_from_arch() {
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("target/axbuild/config/axvisor/build-x86_64-unknown-none.toml")
+            .join("tmp/axbuild/config/axvisor/build-x86_64-unknown-none.toml")
     );
     assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
     assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
@@ -593,8 +608,9 @@ fn prepare_axvisor_request_resolves_target_from_arch() {
 #[test]
 fn prepare_axvisor_request_cli_arch_drops_stale_runtime_paths() {
     let root = tempdir().unwrap();
-    fs::write(
-        root.path().join(AXVISOR_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
         r#"
 config = "os/axvisor/.build.toml"
 arch = "aarch64"
@@ -639,8 +655,9 @@ uboot_config = "configs/uboot-aarch64.toml"
 #[test]
 fn prepare_axvisor_request_cli_arch_ignores_stale_snapshot_config_target() {
     let root = tempdir().unwrap();
-    fs::write(
-        root.path().join(AXVISOR_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
         r#"
 config = "os/axvisor/.build-loongarch64-unknown-none-softfloat.toml"
 arch = "loongarch64"
@@ -681,12 +698,12 @@ target = "loongarch64-unknown-none-softfloat"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("target/axbuild/config/axvisor/build-x86_64-unknown-none.toml")
+            .join("tmp/axbuild/config/axvisor/build-x86_64-unknown-none.toml")
     );
     assert_eq!(
         snapshot.config,
         Some(PathBuf::from(
-            "target/axbuild/config/axvisor/build-x86_64-unknown-none.toml"
+            "tmp/axbuild/config/axvisor/build-x86_64-unknown-none.toml"
         ))
     );
     assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
@@ -696,8 +713,9 @@ target = "loongarch64-unknown-none-softfloat"
 #[test]
 fn prepare_axvisor_request_rewrites_stale_generated_snapshot_config_path() {
     let root = tempdir().unwrap();
-    fs::write(
-        root.path().join(AXVISOR_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
         r#"
 config = "os/axvisor/.build-riscv64gc-unknown-none-elf.toml"
 arch = "aarch64"
@@ -715,12 +733,12 @@ target = "aarch64-unknown-none-softfloat"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
+            .join("tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
     );
     assert_eq!(
         snapshot.config,
         Some(PathBuf::from(
-            "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
+            "tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
         ))
     );
 }
@@ -750,7 +768,7 @@ fn starry_snapshot_store_round_trips() {
     let path = snapshot.store(root.path()).unwrap();
     let loaded = StarryCommandSnapshot::load(root.path()).unwrap();
 
-    assert_eq!(path, root.path().join(STARRY_SNAPSHOT_FILE));
+    assert_eq!(path, snapshot_path(root.path(), STARRY_SNAPSHOT_FILE));
     assert_eq!(loaded, snapshot);
 }
 
@@ -758,8 +776,9 @@ fn starry_snapshot_store_round_trips() {
 fn prepare_starry_request_prefers_cli_over_snapshot() {
     let root = tempdir().unwrap();
     prepare_starry_workspace(root.path());
-    fs::write(
-        root.path().join(STARRY_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        STARRY_SNAPSHOT_FILE,
         r#"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
@@ -818,8 +837,9 @@ uboot_config = "configs/snapshot-uboot.toml"
 fn prepare_starry_request_uses_snapshot_and_default_arch() {
     let root = tempdir().unwrap();
     prepare_starry_workspace(root.path());
-    fs::write(
-        root.path().join(STARRY_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        STARRY_SNAPSHOT_FILE,
         r#"
 [qemu]
 qemu_config = "configs/qemu.toml"
@@ -840,7 +860,7 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("target/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
+            .join("tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
     );
     assert_eq!(
         request.qemu_config,
@@ -877,8 +897,9 @@ fn prepare_starry_request_rejects_mismatched_arch_and_target() {
 fn prepare_starry_request_cli_arch_overrides_snapshot_target() {
     let root = tempdir().unwrap();
     prepare_starry_workspace(root.path());
-    fs::write(
-        root.path().join(STARRY_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        STARRY_SNAPSHOT_FILE,
         r#"
 arch = "aarch64"
 target = "aarch64-unknown-none-softfloat"
@@ -915,8 +936,9 @@ target = "aarch64-unknown-none-softfloat"
 fn prepare_starry_request_cli_target_overrides_snapshot_arch() {
     let root = tempdir().unwrap();
     prepare_starry_workspace(root.path());
-    fs::write(
-        root.path().join(STARRY_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        STARRY_SNAPSHOT_FILE,
         r#"
 arch = "aarch64"
 target = "aarch64-unknown-none-softfloat"
@@ -950,8 +972,9 @@ target = "aarch64-unknown-none-softfloat"
 fn prepare_starry_request_cli_arch_drops_stale_snapshot_runtime_paths() {
     let root = tempdir().unwrap();
     prepare_starry_workspace(root.path());
-    fs::write(
-        root.path().join(STARRY_SNAPSHOT_FILE),
+    write_snapshot_text(
+        root.path(),
+        STARRY_SNAPSHOT_FILE,
         r#"
 arch = "aarch64"
 target = "aarch64-unknown-none-softfloat"

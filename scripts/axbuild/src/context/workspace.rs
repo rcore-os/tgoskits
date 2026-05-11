@@ -37,6 +37,10 @@ pub(crate) fn workspace_manifest_path() -> anyhow::Result<PathBuf> {
     Ok(workspace_root_path()?.join("Cargo.toml"))
 }
 
+pub(crate) fn axbuild_tmp_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join("tmp").join("axbuild")
+}
+
 pub(crate) fn workspace_manifest_path_in(workspace_root: &Path) -> PathBuf {
     workspace_root.join("Cargo.toml")
 }

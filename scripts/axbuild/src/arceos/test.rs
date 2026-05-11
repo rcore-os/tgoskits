@@ -1413,7 +1413,9 @@ fn c_test_artifact_paths(
         test_name.replace('/', "-"),
         invocation_index
     );
-    let root = workspace_root.join("target").join(dir_name);
+    let root = crate::context::axbuild_tmp_dir(workspace_root)
+        .join("arceos-c")
+        .join(dir_name);
     CTestArtifactPaths {
         target_dir: root.join("cargo"),
         out_dir: root.join("out"),

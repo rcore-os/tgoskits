@@ -3,7 +3,7 @@
 //! Main responsibilities:
 //! - Define default naming rules for workspace-managed rootfs images
 //! - Resolve user-facing `--rootfs` values into concrete image paths
-//! - Manage image files and cached archives under `target/rootfs/`
+//! - Manage image files and cached archives under `tmp/axbuild/rootfs/`
 //! - Download and extract rootfs archives on demand so images are available
 //!   locally
 
@@ -25,7 +25,7 @@ pub(crate) fn default_rootfs_image(arch: &str) -> Option<&'static str> {
 
 /// Returns the workspace directory that stores managed rootfs images.
 pub(crate) fn rootfs_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("target").join("rootfs")
+    crate::context::axbuild_tmp_dir(workspace_root).join("rootfs")
 }
 
 /// Resolves a user-facing rootfs argument into a concrete image path.

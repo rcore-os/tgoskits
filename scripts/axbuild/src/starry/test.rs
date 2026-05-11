@@ -892,7 +892,7 @@ impl Starry {
     ) -> anyhow::Result<()> {
         for rootfs_path in rootfs_paths {
             if rootfs_path == default_rootfs_path {
-                rootfs::ensure_rootfs_in_target_dir(
+                rootfs::ensure_rootfs_in_tmp_dir(
                     self.app.workspace_root(),
                     &request.arch,
                     &request.target,
@@ -1580,7 +1580,9 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_uses_drive_file_arg() {
         let root = tempdir().unwrap();
-        let managed_rootfs = root.path().join("target/rootfs/rootfs-riscv64-debian.img");
+        let managed_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-riscv64-debian.img");
         let qemu = QemuConfig {
             args: vec![
                 "-device".to_string(),
@@ -1605,7 +1607,9 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_accepts_drive_file_with_additional_options() {
         let root = tempdir().unwrap();
-        let managed_rootfs = root.path().join("target/rootfs/rootfs-aarch64-busybox.img");
+        let managed_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-aarch64-busybox.img");
         let qemu = QemuConfig {
             args: vec![
                 "-drive".to_string(),
@@ -1626,8 +1630,12 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_collects_all_managed_drive_files() {
         let root = tempdir().unwrap();
-        let boot_rootfs = root.path().join("target/rootfs/rootfs-aarch64-alpine.img");
-        let usb_rootfs = root.path().join("target/rootfs/rootfs-aarch64-busybox.img");
+        let boot_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-aarch64-alpine.img");
+        let usb_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-aarch64-busybox.img");
         let qemu = QemuConfig {
             args: vec![
                 "-drive".to_string(),
