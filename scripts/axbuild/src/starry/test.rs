@@ -841,6 +841,10 @@ impl Starry {
             let rootfs_path =
                 Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path);
             rootfs_paths.insert(rootfs_path.clone());
+            rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
+                self.app.workspace_root(),
+                &qemu,
+            ));
             qemu_test::validate_grouped_qemu_commands(&qemu, &starry_case.case, "Starry")?;
             let requirements = Self::qemu_case_requirements(&qemu).with_context(|| {
                 format!(
@@ -910,11 +914,18 @@ impl Starry {
         qemu: &QemuConfig,
         default_rootfs_path: &Path,
     ) -> PathBuf {
+        Self::qemu_case_managed_rootfs_paths(workspace_root, qemu)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| default_rootfs_path.to_path_buf())
+    }
+
+    fn qemu_case_managed_rootfs_paths(workspace_root: &Path, qemu: &QemuConfig) -> Vec<PathBuf> {
         let managed_rootfs_dir = crate::rootfs::store::rootfs_dir(workspace_root);
         crate::rootfs::qemu::drive_file_paths(qemu)
             .into_iter()
-            .find(|path| path.starts_with(&managed_rootfs_dir))
-            .unwrap_or_else(|| default_rootfs_path.to_path_buf())
+            .filter(|path| path.starts_with(&managed_rootfs_dir))
+            .collect()
     }
 
     fn qemu_case_requirements(qemu: &QemuConfig) -> anyhow::Result<StarryQemuCaseRequirements> {
@@ -1609,6 +1620,29 @@ mod tests {
             Starry::qemu_case_rootfs_path(root.path(), &qemu, Path::new("/tmp/default.img"));
 
         assert_eq!(rootfs, managed_rootfs);
+    }
+
+    #[test]
+    fn qemu_case_rootfs_collects_all_managed_drive_files() {
+        let root = tempdir().unwrap();
+        let boot_rootfs = root.path().join("target/rootfs/rootfs-aarch64-alpine.img");
+        let usb_rootfs = root.path().join("target/rootfs/rootfs-aarch64-busybox.img");
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                format!("id=disk0,if=none,format=raw,file={}", boot_rootfs.display()),
+                "-drive".to_string(),
+                format!(
+                    "id=usbdisk,if=none,format=raw,snapshot=on,file={}",
+                    usb_rootfs.display()
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let rootfs_paths = Starry::qemu_case_managed_rootfs_paths(root.path(), &qemu);
+
+        assert_eq!(rootfs_paths, vec![boot_rootfs, usb_rootfs]);
     }
 
     #[test]
