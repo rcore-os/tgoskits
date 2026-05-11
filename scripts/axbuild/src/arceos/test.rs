@@ -19,14 +19,6 @@ use crate::{
     test::{case::TestQemuCase, qemu as qemu_test, suite as test_suite},
 };
 
-pub(crate) const TEST_TARGETS: &[&str] = &[
-    "x86_64-unknown-none",
-    "riscv64gc-unknown-none-elf",
-    "aarch64-unknown-none-softfloat",
-    "loongarch64-unknown-none-softfloat",
-];
-pub(crate) const TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
-
 const ARCEOS_RUST_TEST_GROUP: &str = "rust";
 const ARCEOS_C_TEST_GROUP: &str = "c";
 const ARCEOS_TEST_SUITE_OS: &str = "arceos";
@@ -222,8 +214,8 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
         &args.arch,
         &args.target,
         "arceos qemu tests",
-        TEST_ARCHES,
-        TEST_TARGETS,
+        &crate::context::supported_arches(),
+        &crate::context::supported_targets(),
         crate::context::resolve_arceos_arch_and_target,
     )?;
     let groups = selected_qemu_test_groups(arceos.app.workspace_root(), &args)?;
@@ -1528,8 +1520,8 @@ pub(crate) fn parse_target(
         arch,
         target,
         "arceos qemu tests",
-        TEST_ARCHES,
-        TEST_TARGETS,
+        &crate::context::supported_arches(),
+        &crate::context::supported_targets(),
         crate::context::resolve_arceos_arch_and_target,
     )
 }
