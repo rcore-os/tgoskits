@@ -29,12 +29,21 @@ int main(void)
     __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
     CHECK(ctr != 0, "MRS CTR_EL0 returned a non-zero value");
 
-    /* DC ZVA 块大小: CTR_EL0[3:0] 的 4-bit 字段, 单位是 4 字节字。
-     * QEMU 上常见 64 字节, 但保险起见按字段算。 */
-    unsigned dczid_log2_words = (unsigned)(ctr & 0xf);
+    /* DC ZVA 块大小由 DCZID_EL0.BS 给出, 单位是 4 字节字。
+     * DCZID_EL0.DZP 置位时, 用户态不应执行 DC ZVA。 */
+    uint64_t dczid = 0;
+    __asm__ volatile("mrs %0, dczid_el0" : "=r"(dczid));
+    CHECK((dczid & (1u << 4)) == 0, "DCZID_EL0 permits DC ZVA at EL0");
+    if ((dczid & (1u << 4)) != 0) {
+        TEST_DONE();
+    }
+
+    unsigned dczid_log2_words = (unsigned)(dczid & 0xf);
     size_t dczid_bytes = (size_t)4u << dczid_log2_words;
+    CHECK(dczid_bytes >= 16 && dczid_bytes <= 2048,
+          "DCZID_EL0 reports a supported DC ZVA block size");
     if (dczid_bytes < 16 || dczid_bytes > 2048) {
-        dczid_bytes = 64; /* 兜底, 不让奇怪数值打挂下一步 */
+        TEST_DONE();
     }
 
     /* 2. DC ZVA: 把一段对齐到 dczid_bytes 的缓冲区清零, DZE=1 才允许。 */

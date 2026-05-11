@@ -38,11 +38,13 @@ int main(void)
     TEST_DONE();
 #else
     /* 1. RLIMIT_STACK 应该至少 8 MiB, 与 USER_STACK_SIZE 一致。 */
-    struct rlimit rl;
+    struct rlimit rl = {0};
     int rc = getrlimit(RLIMIT_STACK, &rl);
     CHECK(rc == 0, "getrlimit(RLIMIT_STACK) succeeded");
-    CHECK(rl.rlim_cur >= 8u * 1024u * 1024u,
-          "RLIMIT_STACK current >= 8 MiB");
+    if (rc == 0) {
+        CHECK(rl.rlim_cur >= 8u * 1024u * 1024u,
+              "RLIMIT_STACK current >= 8 MiB");
+    }
 
     /* 2. 在栈上放 6 MiB 数组, 写首尾两字节, 不能触发 SIGSEGV。
      *  小于 8 MiB 留一点 frame 余量, 避免内核栈帧 + libc 启动占的几页
