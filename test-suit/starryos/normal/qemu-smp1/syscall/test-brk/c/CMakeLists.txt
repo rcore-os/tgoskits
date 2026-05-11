@@ -7,4 +7,5 @@ set(CMAKE_C_EXTENSIONS OFF)
 add_executable(test-brk src/main.c)
 target_compile_options(test-brk PRIVATE -Wall -Wextra)
 target_link_options(test-brk PRIVATE -static)
+
 install(TARGETS test-brk RUNTIME DESTINATION usr/bin)

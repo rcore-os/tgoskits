@@ -1,23 +1,29 @@
 /*
- * test_brk.c - Test cases for brk(2) / sbrk(2)
+ * test_brk.c - Test cases for brk(2) syscall
  *
- * Covers raw syscall and libc wrapper semantics.
- * Separate test groups to avoid state contamination.
+ * Covers raw syscall semantics and libc wrapper behavior.
+ * Uses CHECK macros (not assert) to work correctly in Release builds.
+ *
+ * Note: Static musl binaries may reject brk() with ENOMEM (known quirk).
+ * We follow the pattern from linux-compatible-testsuit/tests/test_brk.c:
+ * - Allow brk() to fail with ENOMEM for static musl
+ * - But verify sbrk(0) confirms break unchanged
  */
 
-#if !defined(_DEFAULT_SOURCE)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE 1
 #endif
 
-#include <assert.h>
+#include "test_framework.h"
 #include <stdint.h>
 #include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <sys/resource.h>
 
 /* ============================================================
  * RAW SYSCALL TESTS - Verify Linux brk syscall ABI directly
@@ -26,10 +32,10 @@
 static void test_raw_brk_query(void)
 {
     unsigned long break1 = syscall(SYS_brk, 0);
-    assert(break1 > 0);
+    CHECK(break1 > 0, "raw brk(0) returns valid address");
 
     unsigned long break2 = syscall(SYS_brk, 0);
-    assert(break2 == break1);
+    CHECK(break2 == break1, "raw brk(0) returns consistent address");
 
     printf("  raw brk(0) = 0x%lx\n", break1);
 }
@@ -37,26 +43,26 @@ static void test_raw_brk_query(void)
 static void test_raw_brk_expand_success(void)
 {
     unsigned long current = syscall(SYS_brk, 0);
-    assert(current > 0);
+    CHECK(current > 0, "get current break for expand test");
 
     unsigned long new_addr = current + 4096;
     unsigned long ret = syscall(SYS_brk, new_addr);
 
     /* MUST return new_addr on success */
-    assert(ret == new_addr);
+    CHECK(ret == new_addr, "raw brk(expand) returns new address");
 
     unsigned long after = syscall(SYS_brk, 0);
-    assert(after == new_addr);
+    CHECK(after == new_addr, "raw brk(0) confirms new break");
 
     /* Write to memory */
     memset((void *)current, 0xAA, 4096);
-    assert(((unsigned char *)current)[0] == 0xAA);
+    CHECK(((unsigned char *)current)[0] == 0xAA, "memory write/read succeeds");
 
     /* Restore */
     syscall(SYS_brk, current);
 
     after = syscall(SYS_brk, 0);
-    assert(after == current);
+    CHECK(after == current, "raw brk(shrink) restores original break");
 }
 
 static void test_raw_brk_shrink_success(void)
@@ -65,139 +71,272 @@ static void test_raw_brk_shrink_success(void)
 
     unsigned long expanded = current + 8192;
     unsigned long ret = syscall(SYS_brk, expanded);
-    assert(ret == expanded);
+    CHECK(ret == expanded, "raw brk(expand 8K) returns new address");
 
     ret = syscall(SYS_brk, current);
-    assert(ret == current);
+    CHECK(ret == current, "raw brk(shrink) returns original address");
 
     unsigned long after = syscall(SYS_brk, 0);
-    assert(after == current);
+    CHECK(after == current, "raw brk(0) confirms shrink");
 }
 
 static void test_raw_brk_failure(void)
 {
     unsigned long current = syscall(SYS_brk, 0);
-    assert(current > 0);
+    CHECK(current > 0, "get current break for failure test");
 
     unsigned long absurd = 1UL << 50;
     errno = 0;
     unsigned long ret = syscall(SYS_brk, absurd);
 
-    assert(ret == current);
-    assert(errno == 0);
+    CHECK(ret == current, "raw brk(absurd) returns current break");
+    CHECK(errno == 0, "raw brk(absurd) does not set errno");
 
     unsigned long after = syscall(SYS_brk, 0);
-    assert(after == current);
+    CHECK(after == current, "break unchanged after failure");
 }
 
 static void test_raw_brk_below_base(void)
 {
     unsigned long current = syscall(SYS_brk, 0);
-    assert(current > 0);
+    CHECK(current > 0, "get current break for below-base test");
 
     errno = 0;
     unsigned long ret = syscall(SYS_brk, 0x1000);
 
-    assert(ret == current);
-    assert(errno == 0);
+    CHECK(ret == current, "raw brk(below base) returns current break");
+    CHECK(errno == 0, "raw brk(below base) does not set errno");
 
     unsigned long after = syscall(SYS_brk, 0);
-    assert(after == current);
+    CHECK(after == current, "break unchanged after below-base attempt");
+}
+
+static void test_raw_brk_roundtrip(void)
+{
+    unsigned long base = syscall(SYS_brk, 0);
+    CHECK(base > 0, "get base for roundtrip test");
+
+    /* Expand by multiple pages */
+    unsigned long expanded1 = syscall(SYS_brk, base + 4096);
+    CHECK(expanded1 == base + 4096, "raw brk(expand 4K) succeeds");
+
+    unsigned long expanded2 = syscall(SYS_brk, base + 8192);
+    CHECK(expanded2 == base + 8192, "raw brk(expand 8K) succeeds");
+
+    /* Write to memory */
+    memset((void *)base, 0xDD, 8192);
+    CHECK(((unsigned char *)base)[0] == 0xDD, "memory write succeeds");
+    CHECK(((unsigned char *)base)[4095] == 0xDD, "page 1 read succeeds");
+    CHECK(((unsigned char *)base)[8191] == 0xDD, "page 2 read succeeds");
+
+    /* Shrink back to base */
+    unsigned long shrunk = syscall(SYS_brk, base);
+    CHECK(shrunk == base, "raw brk(shrink to base) succeeds");
+
+    unsigned long final = syscall(SYS_brk, 0);
+    CHECK(final == base, "raw brk(0) confirms base restored");
 }
 
 /* ============================================================
- * LIBC WRAPPER TESTS - Use ONLY libc functions
- * These tests run in a fresh process (forked) to avoid contamination
+ * LIBC WRAPPER TESTS - Test brk/sbrk via libc functions
+ *
+ * Note: Static musl binaries may reject brk() with ENOMEM.
+ * We follow the pattern from linux-compatible-testsuit/test_brk.c:
+ * - Allow brk() to fail with ENOMEM
+ * - But verify sbrk(0) confirms break unchanged
  * ============================================================ */
 
-static void run_libc_tests(void)
+static void test_libc_brk_current_break(void)
 {
-    /* Test 1: sbrk(0) */
-    void *p1 = sbrk(0);
-    assert(p1 != (void *)-1);
-    void *p2 = sbrk(0);
-    assert(p2 == p1);
-    printf("[ PASS ] libc sbrk(0)\n\n");
+    void *cur = sbrk(0);
+    CHECK(cur != (void *)-1, "sbrk(0) returns valid address");
 
-    /* Test 2: brk expand */
-    void *original = sbrk(0);
-    void *new_break = (char *)original + 4096;
     errno = 0;
-    int ret = brk(new_break);
-    assert(ret == 0);
-    void *after = sbrk(0);
-    assert(after == new_break);
-    memset(original, 0x55, 4096);
-    assert(((unsigned char *)original)[0] == 0x55);
-    brk(original);
-    after = sbrk(0);
-    assert(after == original);
-    printf("[ PASS ] libc brk expand MUST succeed\n\n");
-
-    /* Test 3: sbrk expand */
-    void *old_break = sbrk(0);
-    errno = 0;
-    void *returned = sbrk(4096);
-    assert(returned == old_break);
-    memset(returned, 0xBB, 4096);
-    sbrk(-4096);
-    void *final = sbrk(0);
-    assert(final == old_break);
-    printf("[ PASS ] libc sbrk expand MUST succeed\n\n");
-
-    /* Test 4: brk failure */
-    void *current = sbrk(0);
-    void *absurd = (void *)(1UL << 50);
-    errno = 0;
-    ret = brk(absurd);
-    assert(ret == -1);
-    assert(errno == ENOMEM);
-    after = sbrk(0);
-    assert(after == current);
-    printf("[ PASS ] libc brk failure ENOMEM\n\n");
-
-    /* Test 5: sbrk failure */
-    current = sbrk(0);
-    errno = 0;
-    void *sbrk_ret = sbrk((intptr_t)1 << 40);
-    assert(sbrk_ret == (void *)-1);
-    assert(errno == ENOMEM);
-    after = sbrk(0);
-    assert(after == current);
-    printf("[ PASS ] libc sbrk failure ENOMEM\n\n");
-
-    /* Test 6: sequential sbrk */
-    void *base = sbrk(0);
-    errno = 0;
-    void *p3_1 = sbrk(4096);
-    assert(p3_1 == base);
-    void *p3_2 = sbrk(4096);
-    assert(p3_2 == (char *)base + 4096);
-    void *p3_3 = sbrk(4096);
-    assert(p3_3 == (char *)base + 8192);
-    memset(base, 0xCC, 12288);
-    assert(((unsigned char *)base)[0] == 0xCC);
-    brk(base);
-    after = sbrk(0);
-    assert(after == base);
-    printf("[ PASS ] libc sbrk sequential MUST ok\n\n");
+    int ret = brk(cur);
+    if (ret == 0) {
+        CHECK(sbrk(0) == cur, "brk(current) succeeded, break unchanged");
+    } else {
+        /* Static musl may reject no-op brk() with ENOMEM */
+        CHECK(ret == -1 && errno == ENOMEM, "brk(current) failed with ENOMEM (static musl quirk)");
+        CHECK(sbrk(0) == cur, "break unchanged despite brk() failure");
+    }
 }
 
-/* Fork to run libc tests in a clean process */
-static void test_libc_wrapper_forked(void)
+static void test_libc_sbrk_zero(void)
 {
-    pid_t pid = fork();
-    if (pid == 0) {
-        /* Child: run libc tests */
-        run_libc_tests();
-        exit(0);
-    } else {
-        /* Parent: wait for child */
-        int status;
-        waitpid(pid, &status, 0);
-        assert(WIFEXITED(status));
-        assert(WEXITSTATUS(status) == 0);
+    void *p1 = sbrk(0);
+    CHECK(p1 != (void *)-1, "sbrk(0) first call succeeds");
+
+    void *p2 = sbrk(0);
+    CHECK(p2 != (void *)-1, "sbrk(0) second call succeeds");
+
+    CHECK(p1 == p2, "two consecutive sbrk(0) return same value");
+}
+
+static void test_libc_sbrk_allocate(void)
+{
+    void *old_break = sbrk(0);
+    CHECK(old_break != (void *)-1, "sbrk(0) returns current break");
+
+    errno = 0;
+    void *returned = sbrk(4096);
+    if (returned == (void *)-1) {
+        CHECK(errno == ENOMEM, "sbrk(+4K) failed with ENOMEM");
+        return;
     }
+
+    CHECK(returned == old_break, "sbrk(+4K) returns old break (success)");
+
+    void *new_break = sbrk(0);
+    CHECK(new_break == (char *)old_break + 4096, "sbrk(0) confirms expansion");
+
+    /* Write to allocated memory */
+    memset(returned, 0x55, 4096);
+    CHECK(((unsigned char *)returned)[0] == 0x55, "memory write succeeds");
+
+    /* Restore */
+    errno = 0;
+    void *after_free = sbrk(-4096);
+    CHECK(after_free != (void *)-1, "sbrk(-4K) succeeds");
+
+    CHECK(sbrk(0) == old_break, "break restored to original");
+}
+
+static void test_libc_sbrk_sequential(void)
+{
+    void *base = sbrk(0);
+    CHECK(base != (void *)-1, "sbrk(0) returns base");
+
+    errno = 0;
+    void *p1 = sbrk(4096);
+    if (p1 == (void *)-1) {
+        CHECK(errno == ENOMEM, "sbrk(+4K) failed with ENOMEM");
+        return;
+    }
+    CHECK(p1 == base, "first sbrk(+4K) returns base");
+
+    errno = 0;
+    void *p2 = sbrk(4096);
+    if (p2 == (void *)-1) {
+        CHECK(errno == ENOMEM, "second sbrk(+4K) failed with ENOMEM");
+        brk(base);
+        return;
+    }
+    CHECK(p2 == (char *)base + 4096, "second sbrk(+4K) returns base+4K");
+
+    errno = 0;
+    void *p3 = sbrk(4096);
+    if (p3 == (void *)-1) {
+        CHECK(errno == ENOMEM, "third sbrk(+4K) failed with ENOMEM");
+        brk(base);
+        return;
+    }
+    CHECK(p3 == (char *)base + 2 * 4096, "third sbrk(+4K) returns base+8K");
+
+    /* Write across full 12K region */
+    memset(base, 0xBB, 3 * 4096);
+    CHECK(((unsigned char *)base)[0] == 0xBB, "memory write succeeds");
+
+    /* Restore */
+    errno = 0;
+    int ret = brk(base);
+    CHECK(ret == 0, "brk(base) restores original");
+}
+
+static void test_libc_sbrk_huge_negative(void)
+{
+    void *before = sbrk(0);
+    CHECK(before != (void *)-1, "sbrk(0) returns current break");
+
+    errno = 0;
+    void *after = sbrk(-((intptr_t)1 << 40));
+
+    if (after == (void *)-1) {
+        CHECK(errno == ENOMEM, "sbrk(huge negative) returns -1 with ENOMEM");
+    } else {
+        /* Some implementations clamp; verify break stays sane */
+        void *current = sbrk(0);
+        CHECK(current != (void *)-1, "sbrk(0) still valid");
+        CHECK((uintptr_t)current <= (uintptr_t)before, "break not increased");
+    }
+}
+
+static void test_libc_brk_enomem_huge(void)
+{
+    void *absurd = (void *)(1UL << 50);
+
+    errno = 0;
+    int ret = brk(absurd);
+    CHECK(ret == -1, "brk(absurd address) returns -1");
+    CHECK(errno == ENOMEM, "brk(absurd address) sets ENOMEM");
+
+    /* Break unchanged */
+    void *current = sbrk(0);
+    CHECK(current != (void *)-1, "sbrk(0) still valid");
+    CHECK(current != absurd, "break not moved to absurd address");
+}
+
+/* ============================================================
+ * RLIMIT_DATA TESTS
+ * ============================================================ */
+
+static void test_raw_brk_rlimit_data(void)
+{
+    struct rlimit old_rlim;
+    CHECK(getrlimit(RLIMIT_DATA, &old_rlim) == 0, "getrlimit(RLIMIT_DATA) succeeds");
+
+    unsigned long current = syscall(SYS_brk, 0);
+    CHECK(current > 0, "get current break for rlimit test");
+
+    /* Set tight limit: current + 4K */
+    struct rlimit new_rlim = {
+        .rlim_cur = 4096,
+        .rlim_max = old_rlim.rlim_max
+    };
+    CHECK(setrlimit(RLIMIT_DATA, &new_rlim) == 0, "setrlimit(RLIMIT_DATA) succeeds");
+
+    /* Try to allocate well beyond limit */
+    errno = 0;
+    unsigned long beyond_limit = current + 64 * 1024;
+    unsigned long ret = syscall(SYS_brk, beyond_limit);
+
+    CHECK(ret == current, "brk beyond RLIMIT_DATA returns current break");
+    CHECK(errno == 0, "raw syscall does not set errno");
+
+    unsigned long after = syscall(SYS_brk, 0);
+    CHECK(after == current, "break unchanged after rlimit rejection");
+
+    /* Restore original limit */
+    CHECK(setrlimit(RLIMIT_DATA, &old_rlim) == 0, "restore RLIMIT_DATA");
+}
+
+static void test_libc_brk_rlimit_data(void)
+{
+    struct rlimit old_rlim;
+    CHECK(getrlimit(RLIMIT_DATA, &old_rlim) == 0, "getrlimit(RLIMIT_DATA) succeeds");
+
+    void *original = sbrk(0);
+    CHECK(original != (void *)-1, "sbrk(0) returns current break");
+
+    /* Set tight limit: 4K */
+    struct rlimit new_rlim = {
+        .rlim_cur = 4096,
+        .rlim_max = old_rlim.rlim_max
+    };
+    CHECK(setrlimit(RLIMIT_DATA, &new_rlim) == 0, "setrlimit(RLIMIT_DATA) succeeds");
+
+    /* Try to allocate beyond limit via libc brk() */
+    errno = 0;
+    int ret = brk((char *)original + 64 * 1024);
+
+    CHECK(ret == -1, "brk beyond RLIMIT_DATA returns -1");
+    CHECK(errno == ENOMEM, "brk beyond RLIMIT_DATA sets ENOMEM");
+
+    /* Break unchanged */
+    CHECK(sbrk(0) == original, "break unchanged after rlimit rejection");
+
+    /* Restore original limit */
+    CHECK(setrlimit(RLIMIT_DATA, &old_rlim) == 0, "restore RLIMIT_DATA");
 }
 
 /* ============================================================
@@ -206,36 +345,27 @@ static void test_libc_wrapper_forked(void)
 
 int main(void)
 {
-    const struct {
-        const char *name;
-        void (*fn)(void);
-    } raw_tests[] = {
-        { "raw brk(0) query",            test_raw_brk_query            },
-        { "raw brk expand MUST succeed", test_raw_brk_expand_success   },
-        { "raw brk shrink MUST succeed", test_raw_brk_shrink_success   },
-        { "raw brk failure returns cur", test_raw_brk_failure          },
-        { "raw brk below base",          test_raw_brk_below_base       },
-    };
+    TEST_START("brk syscall");
 
-    int passed = 0;
-    int raw_total = (int)(sizeof(raw_tests) / sizeof(raw_tests[0]));
-
-    printf("=== brk/sbrk syscall tests ===\n\n");
     printf("--- raw syscall tests ---\n\n");
 
-    for (int i = 0; i < raw_total; i++) {
-        printf("[ RUN  ] %s\n", raw_tests[i].name);
-        raw_tests[i].fn();
-        printf("[ PASS ] %s\n\n", raw_tests[i].name);
-        passed++;
-    }
+    test_raw_brk_query();
+    test_raw_brk_expand_success();
+    test_raw_brk_shrink_success();
+    test_raw_brk_failure();
+    test_raw_brk_below_base();
+    test_raw_brk_roundtrip();
+    test_raw_brk_rlimit_data();
 
-    printf("--- libc wrapper tests (forked for isolation) ---\n\n");
-    printf("[ RUN  ] libc wrapper tests\n");
-    test_libc_wrapper_forked();
-    printf("[ PASS ] libc wrapper tests (6 tests)\n\n");
-    passed++;
+    printf("\n--- libc wrapper tests ---\n\n");
 
-    printf("=== %d test groups passed ===\n", passed);
-    return 0;
+    test_libc_brk_current_break();
+    test_libc_sbrk_zero();
+    test_libc_sbrk_allocate();
+    test_libc_sbrk_sequential();
+    test_libc_sbrk_huge_negative();
+    test_libc_brk_enomem_huge();
+    test_libc_brk_rlimit_data();
+
+    TEST_DONE();
 }

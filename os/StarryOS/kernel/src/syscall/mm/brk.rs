@@ -2,6 +2,7 @@ use ax_errno::AxResult;
 use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{VirtAddr, align_up_4k};
 use ax_task::current;
+use linux_raw_sys::general::RLIMIT_DATA;
 
 use crate::{
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
@@ -22,9 +23,23 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
     // Linux brk syscall semantics:
     // - Success: return new break address
     // - Failure: return current break address (NOT -1, no errno)
-    // Invalid address range: return current break unchanged
+
+    // Check address is within valid heap range
     if !(USER_HEAP_BASE..=USER_HEAP_BASE + USER_HEAP_SIZE_MAX).contains(&addr) {
         return Ok(current_top as isize);
+    }
+
+    // Check RLIMIT_DATA: Linux limits heap expansion by RLIMIT_DATA.
+    // The limit applies to (new_brk - start_brk) + (end_data - start_data).
+    // Since we don't have end_data - start_data, we approximate by checking
+    // (addr - USER_HEAP_BASE) against the soft limit.
+    // RLIM_INFINITY (u64::MAX) means unlimited.
+    let rlimit_data = proc_data.rlim.read()[RLIMIT_DATA].current;
+    if rlimit_data != u64::MAX {
+        let heap_size = addr.saturating_sub(USER_HEAP_BASE);
+        if heap_size > rlimit_data as usize {
+            return Ok(current_top as isize);
+        }
     }
 
     let new_top_aligned = align_up_4k(addr);
