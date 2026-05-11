@@ -367,9 +367,9 @@ bitflags::bitflags! {
         /// Truncate message if too long (instead of failing)
         const MSG_NOERROR = 0o10000;
         /// For internal use - mark as COPIED
-        const MSG_COPY = 0o20000;
+        const MSG_COPY = 0o40000;
         /// Receive any message except of specified type (Linux extension)
-        const MSG_EXCEPT = 0o2000;
+        const MSG_EXCEPT = 0o20000;
     }
 }
 
@@ -538,7 +538,7 @@ pub fn sys_msgsnd(
 
             let recv_wait_queue = msg_queue.recv_wait_queue.clone();
             drop(msg_queue);
-            recv_wait_queue.wake(1, u32::MAX);
+            recv_wait_queue.wake(usize::MAX, u32::MAX);
             return Ok(0);
         }
 
@@ -568,10 +568,9 @@ pub fn sys_msgrcv(
     const IPC_NOWAIT_RAW: i32 = 0o4000;
     const MSG_NOERROR_RAW: i32 = 0o10000;
     const MSG_EXCEPT_RAW: i32 = 0o20000;
-    const MSG_EXCEPT_ALT_RAW: i32 = 0o2000;
     const MSG_COPY_RAW: i32 = 0o40000;
     let msg_copy = (msgflg & MSG_COPY_RAW) != 0;
-    let msg_except = (msgflg & (MSG_EXCEPT_RAW | MSG_EXCEPT_ALT_RAW)) != 0;
+    let msg_except = (msgflg & MSG_EXCEPT_RAW) != 0;
     let ipc_nowait = (msgflg & IPC_NOWAIT_RAW) != 0;
     let msg_noerror = (msgflg & MSG_NOERROR_RAW) != 0;
     if msg_except {
@@ -599,10 +598,6 @@ pub fn sys_msgrcv(
     if msgtyp == i64::MIN {
         return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - invalid msgtyp (abs overflow)
     }
-    if msg_except && msgtyp <= 0 {
-        return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - MSG_EXCEPT requires msgtyp > 0
-    }
-
     // Get the message queue
     let msg_queue_ref = {
         let msg_manager = MSG_MANAGER.lock();
@@ -714,7 +709,7 @@ pub fn sys_msgrcv(
     let should_cleanup = msg_queue.mark_removed && msg_queue.msqid_ds.msg_qnum == 0;
     drop(msg_queue);
     if should_remove {
-        send_wait_queue.wake(1, u32::MAX);
+        send_wait_queue.wake(usize::MAX, u32::MAX);
     }
     if should_cleanup {
         MSG_MANAGER.lock().remove_msqid(msqid);
@@ -893,7 +888,8 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
         msg_queue.msqid_ds.msg_perm.mode = user_buf.msg_perm.mode & 0o777; // Only take permission bits
 
         // Update queue size limit (requires privilege check)
-        if user_buf.msg_qbytes != msg_queue.msqid_ds.msg_qbytes {
+        let old_qbytes = msg_queue.msqid_ds.msg_qbytes;
+        if user_buf.msg_qbytes != old_qbytes {
             if user_buf.msg_qbytes > MSGMNB as u64 && !is_privileged {
                 return Err(AxError::from(LinuxError::EPERM)); // EPERM - requires privilege to exceed MSGMNB
             }
@@ -902,6 +898,12 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
 
         // Update modification time
         msg_queue.msqid_ds.msg_ctime = monotonic_time_nanos() as _;
+
+        if user_buf.msg_qbytes > old_qbytes {
+            let send_wait_queue = msg_queue.send_wait_queue.clone();
+            drop(msg_queue);
+            send_wait_queue.wake(usize::MAX, u32::MAX);
+        }
 
         return Ok(0);
     }
