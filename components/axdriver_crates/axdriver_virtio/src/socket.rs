@@ -294,21 +294,21 @@ const fn short_circuit_empty_io(buf_len: usize) -> Option<usize> {
     if buf_len == 0 { Some(0) } else { None }
 }
 
-fn validate_peer_addr(addr: &ax_driver_vsock::VsockAddr) -> DevResult<()> {
-    if addr.cid == 0 {
-        return Err(DevError::InvalidParam);
-    }
+fn validate_peer_addr_for_operation(
+    addr: &ax_driver_vsock::VsockAddr,
+    _operation: ConnectionOperation,
+) -> DevResult<()> {
     validate_port(addr.port)
 }
 
-fn validate_conn_id(cid: VsockConnId) -> DevResult<VsockConnId> {
-    validate_peer_addr(&cid.peer_addr)?;
+fn validate_conn_id(cid: VsockConnId, operation: ConnectionOperation) -> DevResult<VsockConnId> {
+    validate_peer_addr_for_operation(&cid.peer_addr, operation)?;
     validate_port(cid.local_port)?;
     Ok(cid)
 }
 
 fn validate_event_endpoint(addr: &ax_driver_vsock::VsockAddr) -> DevResult<()> {
-    validate_peer_addr(addr)
+    validate_port(addr.port)
 }
 
 fn validate_received_length_for_event(length: usize) -> DevResult<usize> {
@@ -336,7 +336,7 @@ fn validate_conn_id_for_operation(
     cid: VsockConnId,
     operation: ConnectionOperation,
 ) -> DevResult<VsockConnId> {
-    let cid = validate_conn_id(cid)?;
+    let cid = validate_conn_id(cid, operation)?;
     match operation {
         ConnectionOperation::Connect
         | ConnectionOperation::Send
@@ -599,7 +599,7 @@ fn translate_vsock_event(event: VsockEvent) -> TranslatedEvent {
 }
 
 fn validate_translated_event(translated: TranslatedEvent) -> DevResult<TranslatedEvent> {
-    validate_conn_id(translated.conn_id())?;
+    validate_conn_id(translated.conn_id(), ConnectionOperation::Connect)?;
     if let TranslatedEventKind::Received(length) = translated.kind() {
         validate_received_length_for_event(length)?;
     }
@@ -621,9 +621,9 @@ fn validate_mapped_conn(
     operation: ConnectionOperation,
 ) -> DevResult<MappedConnId> {
     let driver_conn = conn.into_driver_conn_id();
-    validate_conn_id(driver_conn)?;
+    validate_conn_id(driver_conn, operation)?;
     if operation.refreshes_credit_after_completion() {
-        validate_peer_addr(&driver_conn.peer_addr)?;
+        validate_peer_addr_for_operation(&driver_conn.peer_addr, operation)?;
     }
     let _ = operation.name();
     Ok(conn)
@@ -714,7 +714,10 @@ mod tests {
     use ax_driver_vsock::{VsockAddr as DriverVsockAddr, VsockConnId, VsockDriverEvent};
     use virtio_drivers::device::socket::{DisconnectReason, VsockAddr, VsockEvent, VsockEventType};
 
-    use super::{convert_vsock_event, map_conn_id, map_event_cid, short_circuit_empty_io};
+    use super::{
+        ConnectionOperation, convert_vsock_event, map_conn_id, map_event_cid,
+        short_circuit_empty_io, validate_conn_id_for_operation, validate_event_endpoint,
+    };
 
     fn sample_conn_id() -> VsockConnId {
         VsockConnId {
@@ -810,5 +813,42 @@ mod tests {
     #[test]
     fn short_circuit_empty_io_skips_non_empty_buffer() {
         assert_eq!(short_circuit_empty_io(8), None);
+    }
+
+    #[test]
+    fn connect_validation_allows_hypervisor_cid() {
+        let conn = VsockConnId {
+            peer_addr: DriverVsockAddr { cid: 0, port: 1025 },
+            local_port: 2048,
+        };
+
+        assert!(validate_conn_id_for_operation(conn, ConnectionOperation::Connect).is_ok());
+    }
+
+    #[test]
+    fn send_validation_allows_hypervisor_cid() {
+        let conn = VsockConnId {
+            peer_addr: DriverVsockAddr { cid: 0, port: 1025 },
+            local_port: 2048,
+        };
+
+        assert!(validate_conn_id_for_operation(conn, ConnectionOperation::Send).is_ok());
+    }
+
+    #[test]
+    fn event_endpoint_allows_hypervisor_cid() {
+        let endpoint = DriverVsockAddr { cid: 0, port: 1025 };
+
+        assert!(validate_event_endpoint(&endpoint).is_ok());
+    }
+
+    #[test]
+    fn peer_port_zero_remains_invalid() {
+        let conn = VsockConnId {
+            peer_addr: DriverVsockAddr { cid: 0, port: 0 },
+            local_port: 2048,
+        };
+
+        assert!(validate_conn_id_for_operation(conn, ConnectionOperation::Connect).is_err());
     }
 }
