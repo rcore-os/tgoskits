@@ -57,7 +57,34 @@ LVZ 扩展镜像用于 Axvisor 在 loongarch64 架构上的测试。龙芯的硬
 
 ## CI 流水线
 
-CI 流水线从变更检测开始，逐层执行格式检查、静态分析和多维度测试：
+### 工作流文件
+
+| 文件 | 职责 |
+|------|------|
+| `ci.yml` | 主 CI 编排：变更检测 → 格式检查 → 测试矩阵 → 镜像发布 |
+| `reusable-command.yml` | 可复用工作流：在 host 或 container 中执行单条命令 |
+| `container-publish.yml` | 可复用工作流：构建并推送容器镜像到 GHCR |
+| `docs.yml` | 文档站点构建与部署（见 [文档部署](/docs/contributing/docs)） |
+| `release-plz.yml` | 自动版本发布 |
+
+### 触发条件
+
+CI 在以下情况触发：
+
+- **push / pull_request**：自动触发，但 `*.md`、`docs/**` 等纯文档变更会跳过
+- **workflow_dispatch**：手动触发，可选择只发布容器镜像（`base` / `axvisor-lvz` / `both`）
+
+并发控制：同一分支连续推送会取消旧的运行（`concurrency` 配置）。
+
+### 变更检测
+
+CI 首先通过 `dorny/paths-filter` 检测变更范围，决定后续执行哪些任务：
+
+| 检测路径 | 触发的任务 |
+|----------|-----------|
+| `components/`, `os/`, `scripts/`, `xtask/` 等 | CI 检查（fmt → clippy → 测试矩阵） |
+| `container/Dockerfile`, `rust-toolchain.toml` | 发布基础容器镜像 |
+| `container/Dockerfile.axvisor-lvz` | 发布 LVZ 扩展镜像 |
 
 ```mermaid
 flowchart TD
@@ -68,23 +95,83 @@ flowchart TD
     D --> F["cargo xtask test"]
     D --> G["各 OS QEMU 测试<br/>(container 内)"]
     D --> H["板级测试<br/>(self-hosted runner)"]
-    D --> I["镜像发布<br/>(变更命中时)"]
+    B --> I{"Dockerfile 变更?"}
+    I -->|是| J["发布容器镜像<br/>(GHCR)"]
+    I -->|否| K["跳过"]
 ```
 
-CI 流水线在每次 push 或 pull_request 时触发。首先通过 `dorny/paths-filter` 检测变更范围，跳过纯文档变更；然后执行 `cargo fmt --check` 确保代码格式；最后进入测试矩阵，并行执行 clippy 检查、std 测试、各 OS 的 QEMU 测试和板级测试。
+### 测试矩阵
 
-### 触发条件
+格式检查通过后，CI 并行执行以下测试矩阵（全部在容器内运行）：
 
-- `push` / `pull_request`，但 `*.md`、`docs/**` 等纯文档变更会跳过
-- 同一分支连续推送会取消旧的运行
-
-路径过滤机制确保只有影响代码的变更才会触发完整测试，避免文档更新浪费 CI 资源。并发取消策略（`concurrency` 配置）确保同一分支的多次快速推送只保留最新的一次运行。
+| 测试项 | 命令 | 使用镜像 |
+|--------|------|---------|
+| Clippy | `cargo xtask clippy` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| Sync-lint | `cargo xtask sync-lint` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| Std 测试 | `cargo xtask test` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| ArceOS aarch64 | `cargo xtask arceos test qemu --arch aarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| ArceOS riscv64 | `cargo xtask arceos test qemu --arch riscv64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| ArceOS x86_64 | `cargo xtask arceos test qemu --arch x86_64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| ArceOS loongarch64 | `cargo xtask arceos test qemu --arch loongarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| StarryOS aarch64 | `cargo xtask starry test qemu --arch aarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| StarryOS riscv64 | `cargo xtask starry test qemu --arch riscv64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| StarryOS x86_64 | `cargo xtask starry test qemu --arch x86_64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| StarryOS loongarch64 | `cargo xtask starry test qemu --arch loongarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| Axvisor aarch64 | `cargo xtask axvisor test qemu --arch aarch64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| Axvisor riscv64 | `cargo xtask axvisor test qemu --arch riscv64` | `ghcr.io/rcore-os/tgoskits-container:latest` |
+| Axvisor loongarch64 | `cargo xtask axvisor test qemu --arch loongarch64` | **LVZ 镜像** |
 
 ### Self-hosted 测试
 
-板级测试和部分 Axvisor 测试需要物理板或特定 runner 环境，运行在 self-hosted runner 上。
+以下测试需要物理设备，运行在 self-hosted runner 上（仅 `rcore-os` 组织内执行）：
 
-self-hosted runner 连接了实际的物理板卡（如 OrangePi-5-Plus），用于验证 OS 在真实硬件上的行为。这些测试无法在 GitHub Actions 的标准 runner 上执行，因为它们需要物理设备的串口连接和电源控制。
+| 测试项 | Runner 标签 | 命令 |
+|--------|------------|------|
+| Axvisor x86_64 | `self-hosted`, `linux`, `intel` | `cargo xtask axvisor test qemu --arch x86_64` |
+| Axvisor OrangePi-5-Plus | `self-hosted`, `linux`, `board` | `cargo xtask axvisor test board --board orangepi-5-plus-linux` |
+| StarryOS OrangePi-5-Plus | `self-hosted`, `linux`, `board` | `cargo xtask starry test board --board orangepi-5-plus` |
+
+### Stress 测试
+
+StarryOS 的压力测试（Stress starry *）仅在 target 为 `main` 的 PR 中执行，当前命令为 `echo "TODO!"`（占位）。
+
+## 容器镜像发布
+
+### 镜像地址
+
+| 镜像 | 地址 | 用途 |
+|------|------|------|
+| 基础镜像 | `ghcr.io/rcore-os/tgoskits-container:latest` | CI 测试 + 本地开发 |
+| LVZ 扩展镜像 | `ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest` | Axvisor loongarch64 测试 |
+
+### 发布触发
+
+容器镜像在以下条件满足时自动发布：
+
+- **触发事件**：push 到 `main` 或 `dev` 分支
+- **路径条件**：
+  - 基础镜像：`container/Dockerfile` 或 `rust-toolchain.toml` 有变更
+  - LVZ 镜像：`container/Dockerfile.axvisor-lvz` 或 `rust-toolchain.toml` 有变更
+- **手动触发**：通过 `workflow_dispatch` 选择发布 `base` / `axvisor-lvz` / `both`
+
+LVZ 扩展镜像依赖基础镜像，发布时会等待基础镜像构建完成后再构建。
+
+### 本地使用预构建镜像
+
+开发者可以直接拉取 CI 使用的预构建镜像：
+
+```bash
+# 拉取基础镜像
+docker pull ghcr.io/rcore-os/tgoskits-container:latest
+
+# 进入开发环境
+docker run -it --rm \
+  -v "$(pwd)":/workspace \
+  -w /workspace \
+  ghcr.io/rcore-os/tgoskits-container:latest
+```
+
+这确保本地环境与 CI 环境完全一致。
 
 ## 命名规则
 
@@ -107,13 +194,4 @@ self-hosted runner 连接了实际的物理板卡（如 OrangePi-5-Plus），用
 | `riscv64` | `riscv64gc-unknown-none-elf` |
 | `loongarch64` | `loongarch64-unknown-none-softfloat` |
 
-## 镜像发布
 
-镜像通过 `.github/workflows/container-publish.yml` 发布到 GHCR。标签策略：Git tag 对应版本镜像 + 每次推送 `latest`。
-
-### 发布触发
-
-- 基础镜像：`Dockerfile`、`container-publish.yml`、`ci.yml`、`rust-toolchain.toml` 变更
-- LVZ 镜像：`Dockerfile.axvisor-lvz` 变更
-
-镜像发布采用按需触发策略：只有当容器定义文件或工具链版本发生变更时才重新构建和发布镜像，避免不必要的构建开销。发布后的镜像被 CI 流水线和本地开发者共同使用，确保环境一致性。

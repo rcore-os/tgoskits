@@ -31,25 +31,35 @@ flowchart LR
 | QEMU | 建议使用仓库容器镜像内置版本 |
 | 磁盘空间 | 建议至少 20 GB（工具链、QEMU、构建产物、rootfs、Guest 镜像） |
 
-### 1.2 推荐方式
+### 1.2 Docker 镜像（推荐）
 
-对首次接触 TGOSKits 的开发者，容器方式通常是最省时间的选择。它可以直接复用仓库当前维护的测试环境，减少宿主机和 CI 之间的差异。
+仓库提供预构建的容器镜像，已包含完整的开发环境（QEMU、Rust toolchain、交叉编译工具链等），与 CI 环境完全一致：
 
-推荐直接使用仓库提供的容器环境。该环境与 CI 使用的基础镜像一致，已包含：
+```bash
+# 拉取预构建镜像
+docker pull ghcr.io/rcore-os/tgoskits-container:latest
 
-- QEMU
-- Rust toolchain
-- 交叉编译工具链
-- `cmake`、`ninja`、`pkg-config` 等构建依赖
+# 启动容器，将当前工作区挂载进去
+docker run -it --rm \
+  -v "$(pwd)":/workspace \
+  -w /workspace \
+  ghcr.io/rcore-os/tgoskits-container:latest
+```
+
+进入容器后即可直接运行 `cargo xtask` 命令，无需安装任何依赖。
+
+镜像详情见 [CI 与容器镜像](/docs/build/ci)。
+
+### 1.3 本地构建容器
+
+如果需要自定义容器内容，也可以从 Dockerfile 本地构建：
 
 ```bash
 docker build -t tgoskits-env -f container/Dockerfile .
 docker run -it --rm -v "$(pwd)":/workspace -w /workspace tgoskits-env
 ```
 
-容器化测试环境详见：[测试基础设施与环境](/docs/build/test/host)
-
-### 1.3 手动安装
+### 1.4 手动安装
 
 手动安装适合已经有本地工具链管理习惯，或者不方便使用容器的环境。建议把它视为容器方案的替代路径，而不是默认首选路径。
 
