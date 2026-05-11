@@ -107,7 +107,7 @@ make A=examples/helloworld ARCH=riscv64 debug
 ## 继续往哪里读
 
 - [ArceOS 架构](/docs/architecture/arceos): 分层、feature 装配、模块体系
-- [components.md](/docs/components/overview): 共享依赖如何接到三个系统
+- [components.md](/docs/development/components): 共享依赖如何接到三个系统
 - [build-system.md](/docs/build/overview): xtask、Makefile 与 workspace 边界
 - [starryos-guide.md](/docs/development/starryos): 如果改动波及 StarryOS
 - [axvisor-guide.md](/docs/development/axvisor): 如果改动波及 Axvisor

@@ -118,6 +118,6 @@ cargo xtask axvisor qemu \
 ## 继续往哪里读
 
 - [Axvisor 架构](/docs/architecture/axvisor): 五层架构、VMM 启动链、vCPU 任务模型
-- [components.md](/docs/components/overview): Axvisor 与 ArceOS / StarryOS 的共享依赖
+- [components.md](/docs/development/components): Axvisor 与 ArceOS / StarryOS 的共享依赖
 - [build-system.md](/docs/build/overview): xtask、辅助脚本与测试入口边界
 - [arceos-guide.md](/docs/development/arceos): Axvisor 所依赖的 ArceOS 基础能力

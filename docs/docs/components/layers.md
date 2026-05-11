@@ -1,6 +1,6 @@
 # 层级总览与层级表
 
-> 统计概览见 [组件依赖分析](dependency)。
+> 统计概览见 [组件开发指南](/docs/development/components)。
 
 
 

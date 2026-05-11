@@ -146,7 +146,7 @@ const config = {
           items: [
             {label: 'GitHub 仓库', href: 'https://github.com/rcore-os/tgoskits'},
             {label: '构建系统', to: '/docs/build/overview'},
-            {label: '组件依赖图', to: '/docs/components/dependency'},
+            {label: '组件依赖图', to: '/docs/development/components'},
             {label: 'Blog', to: '/blog'},
             {label: 'Community', to: '/community/introduction'},
           ],

@@ -25,7 +25,7 @@ This repository contains multiple systems and dozens of standalone components. D
 | StarryOS quick start | [docs/docs/quickstart/starryos.md](docs/docs/quickstart/starryos.md) | `cargo xtask starry qemu --arch aarch64` |
 | Axvisor quick start | [docs/docs/quickstart/axvisor.md](docs/docs/quickstart/axvisor.md) | `cargo xtask axvisor qemu --arch aarch64` |
 | Full development example | [docs/docs/contributing/demo.md](docs/docs/contributing/demo.md) | A complete example for creating or modifying a component from scratch |
-| Component development guide | [docs/docs/components/overview.md](docs/docs/components/overview.md) | Start from `components/` or `os/arceos/modules/` |
+| Component development guide | [docs/docs/development/components.md](docs/docs/development/components.md) | Start from `components/` or `os/arceos/modules/` |
 | Develop ArceOS | [docs/docs/development/arceos.md](docs/docs/development/arceos.md) | `cargo xtask arceos qemu --package ax-helloworld --arch aarch64` |
 | Develop StarryOS | [docs/docs/development/starryos.md](docs/docs/development/starryos.md) | `cargo xtask starry qemu --arch aarch64` |
 | Develop Axvisor | [docs/docs/development/axvisor.md](docs/docs/development/axvisor.md) | `cargo xtask axvisor qemu --arch aarch64` |

@@ -100,7 +100,7 @@ function HeroBanner() {
     { label: '项目概览', to: '/docs/introduction/overview' },
     { label: '快速开始', to: '/docs/quickstart/overview' },
     { label: '构建系统', to: '/docs/build/overview' },
-    { label: '组件视图', to: '/docs/components/overview' },
+    { label: '组件视图', to: '/docs/development/components' },
   ];
 
   return (
@@ -228,7 +228,7 @@ function CapabilitySection() {
       icon: 'layers',
       title: '组件共享',
       desc: '基础能力以独立 crate 组织，被多个系统路径复用，职责边界更清晰。',
-      to: '/docs/components/overview',
+      to: '/docs/development/components',
     },
     {
       icon: 'shield',
@@ -480,7 +480,7 @@ function DocsSection() {
       desc: '查看仓库结构、组件分析、构建系统和依赖关系等全局性资料。',
       links: [
         { label: '仓库结构', to: '/docs/contributing/repo' },
-        { label: '组件开发指南', to: '/docs/components/overview' },
+        { label: '组件开发指南', to: '/docs/development/components' },
         { label: '构建系统', to: '/docs/build/overview' },
       ],
     },
@@ -765,7 +765,7 @@ function CTASection() {
             <Link className="button button--primary button--hero" to="/docs/quickstart/overview">
               打开快速开始
             </Link>
-            <Link className="button button--outline button--hero" to="/docs/components/overview">
+            <Link className="button button--outline button--hero" to="/docs/development/components">
               查看组件分析
             </Link>
           </div>

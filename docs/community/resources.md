@@ -53,7 +53,7 @@ sidebar_label: "社区资源"
 ### 推荐阅读
 - [项目概览](/docs/introduction/overview) - 仓库定位与系统关系
 - [架构文档](/docs/architecture/overview) - 系统设计原理
-- [组件开发指南](/docs/components/overview) - 共享组件与影响面分析
+- [组件开发指南](/docs/development/components) - 共享组件与影响面分析
 - [构建系统](/docs/build/overview) - 统一命令入口与实现分层
 
 ### 学习路径
