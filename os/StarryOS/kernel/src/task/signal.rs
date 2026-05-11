@@ -145,9 +145,9 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
                         .sigwait_set
                         .lock()
                         .is_some_and(|s| s.has(signo))
-                    {
-                        task.interrupt();
-                    }
+                {
+                    task.interrupt();
+                }
             }
         }
     }
