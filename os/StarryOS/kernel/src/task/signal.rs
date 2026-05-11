@@ -138,17 +138,16 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
             // Waking other threads (e.g. ones blocked in waitpid) would cause
             // spurious EINTR.
             for tid in proc_data.proc.threads() {
-                if let Ok(task) = get_task(tid) {
-                    if task
+                if let Ok(task) = get_task(tid)
+                    && task
                         .as_thread()
                         .signal
                         .sigwait_set
                         .lock()
-                        .map_or(false, |s| s.has(signo))
+                        .is_some_and(|s| s.has(signo))
                     {
                         task.interrupt();
                     }
-                }
             }
         }
     }
