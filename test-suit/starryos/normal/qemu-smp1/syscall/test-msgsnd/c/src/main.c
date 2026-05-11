@@ -22,6 +22,14 @@ struct msgbuf_local
     char mtext[LOCAL_MSGMAX + 1];
 };
 
+static volatile sig_atomic_t got_signal;
+
+static void signal_handler(int signo)
+{
+    (void)signo;
+    got_signal = 1;
+}
+
 static void sleep_ms(int ms)
 {
     struct timespec ts;
@@ -83,6 +91,40 @@ static size_t fill_queue(int msqid, size_t msg_qbytes)
     }
 
     return total;
+}
+
+static int send_sized_message(int msqid, long mtype, size_t msgsz, int flags)
+{
+    struct msgbuf_local msg;
+
+    msg.mtype = mtype;
+    memset(msg.mtext, (int)('A' + (mtype % 26)), msgsz);
+
+    return msgsnd(msqid, &msg, msgsz, flags);
+}
+
+static int set_queue_bytes(int msqid, unsigned long qbytes)
+{
+    struct msqid_ds info;
+
+    if (msgctl(msqid, IPC_STAT, &info) != 0)
+    {
+        return -1;
+    }
+    info.msg_qbytes = qbytes;
+    return msgctl(msqid, IPC_SET, &info);
+}
+
+static int fill_to_exact_one_byte_messages(int msqid, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (send_sized_message(msqid, 1, 1, IPC_NOWAIT) != 0)
+        {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int fill_to_full(int msqid)
@@ -149,6 +191,113 @@ int main(void)
     CHECK(msgrcv(msqid, &recv_buf, LOCAL_MSGMAX, 0, 0) >= 0,
           "msgrcv frees space for blocking msgsnd");
     CHECK(wait_child(pid, 2000), "blocking msgsnd unblocks after space freed");
+
+
+    int wake_msqid = msgget(IPC_PRIVATE, 0600);
+    CHECK(wake_msqid >= 0, "msgget creates queue for multi-sender wake test");
+    if (wake_msqid >= 0)
+    {
+        CHECK_RET(set_queue_bytes(wake_msqid, 16), 0,
+                  "IPC_SET lowers qbytes for multi-sender wake test");
+        CHECK_RET(fill_to_exact_one_byte_messages(wake_msqid, 16), 0,
+                  "fill queue with one-byte messages for multi-sender wake test");
+
+        pid_t long_pid = fork();
+        if (long_pid == 0)
+        {
+            errno = 0;
+            if (send_sized_message(wake_msqid, 2, 8, 0) == 0 || errno == EIDRM)
+            {
+                _exit(0);
+            }
+            _exit(1);
+        }
+        sleep_ms(100);
+
+        pid_t short_pid = fork();
+        if (short_pid == 0)
+        {
+            if (send_sized_message(wake_msqid, 3, 1, 0) == 0)
+            {
+                _exit(0);
+            }
+            _exit(1);
+        }
+        sleep_ms(100);
+
+        CHECK(msgrcv(wake_msqid, &recv_buf, LOCAL_MSGMAX, 0, 0) == 1,
+              "msgrcv frees only enough space for short sender");
+        CHECK(wait_child(short_pid, 2000),
+              "short blocking msgsnd wakes even if earlier long sender cannot fit");
+        CHECK_RET(msgctl(wake_msqid, IPC_RMID, NULL), 0,
+                  "IPC_RMID cleans multi-sender wake queue");
+        CHECK(wait_child(long_pid, 2000),
+              "long blocking msgsnd exits after multi-sender queue removal");
+    }
+
+    int grow_msqid = msgget(IPC_PRIVATE, 0600);
+    CHECK(grow_msqid >= 0, "msgget creates queue for IPC_SET wake test");
+    if (grow_msqid >= 0)
+    {
+        CHECK_RET(set_queue_bytes(grow_msqid, 1), 0,
+                  "IPC_SET lowers qbytes for grow wake test");
+        CHECK_RET(send_sized_message(grow_msqid, 1, 1, IPC_NOWAIT), 0,
+                  "fill one-byte queue before grow wake test");
+
+        pid_t grow_pid = fork();
+        if (grow_pid == 0)
+        {
+            if (send_sized_message(grow_msqid, 2, 1, 0) == 0)
+            {
+                _exit(0);
+            }
+            _exit(1);
+        }
+        sleep_ms(100);
+        CHECK_RET(set_queue_bytes(grow_msqid, 2), 0,
+                  "IPC_SET increases qbytes while sender waits");
+        CHECK(wait_child(grow_pid, 2000),
+              "blocking msgsnd wakes after IPC_SET increases qbytes");
+        CHECK_RET(msgctl(grow_msqid, IPC_RMID, NULL), 0,
+                  "IPC_RMID cleans IPC_SET grow wake queue");
+    }
+
+    int intr_msqid = msgget(IPC_PRIVATE, 0600);
+    CHECK(intr_msqid >= 0, "msgget creates queue for msgsnd EINTR test");
+    if (intr_msqid >= 0)
+    {
+        CHECK_RET(set_queue_bytes(intr_msqid, 1), 0,
+                  "IPC_SET lowers qbytes for msgsnd EINTR test");
+        CHECK_RET(send_sized_message(intr_msqid, 1, 1, IPC_NOWAIT), 0,
+                  "fill queue before msgsnd EINTR test");
+
+        pid_t intr_pid = fork();
+        if (intr_pid == 0)
+        {
+            struct sigaction sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = signal_handler;
+            sa.sa_flags = SA_RESTART;
+            sigemptyset(&sa.sa_mask);
+            if (sigaction(SIGUSR1, &sa, NULL) != 0)
+            {
+                _exit(1);
+            }
+
+            errno = 0;
+            got_signal = 0;
+            if (send_sized_message(intr_msqid, 2, 1, 0) == -1 && errno == EINTR && got_signal)
+            {
+                _exit(0);
+            }
+            _exit(1);
+        }
+        sleep_ms(100);
+        CHECK_RET(kill(intr_pid, SIGUSR1), 0, "signal blocking msgsnd with SA_RESTART");
+        CHECK(wait_child(intr_pid, 2000), "blocking msgsnd returns EINTR despite SA_RESTART");
+        CHECK_RET(msgctl(intr_msqid, IPC_RMID, NULL), 0,
+                  "IPC_RMID cleans msgsnd EINTR queue");
+    }
 
     fill_queue(msqid, (size_t)info.msg_qbytes);
     CHECK(fill_to_full(msqid), "queue full before IPC_RMID test");

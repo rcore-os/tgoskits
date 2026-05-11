@@ -29,6 +29,14 @@ struct msgbuf_local
     char mtext[128];
 };
 
+static volatile sig_atomic_t got_signal;
+
+static void signal_handler(int signo)
+{
+    (void)signo;
+    got_signal = 1;
+}
+
 static key_t make_key(void)
 {
     key_t key = (key_t)(((unsigned int)getpid() << 8) ^ 0x4d534753U);
@@ -200,6 +208,79 @@ int main(void)
     sleep_ms(100);
     CHECK_RET(send_message(msqid, 7, "BLOCK"), 0, "msgsnd wakes blocking msgrcv");
     CHECK(wait_child(pid, 2000), "blocking msgrcv unblocks after message arrival");
+
+
+    CHECK_RET(send_message(msqid, 1, "EXCEPT_ZERO"), 0,
+              "msgsnd type=1 for MSG_EXCEPT msgtyp=0");
+    CHECK_RET(send_message(msqid, 2, "EXCEPT_NEG"), 0,
+              "msgsnd type=2 for MSG_EXCEPT negative msgtyp");
+
+    n = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 0, MSG_EXCEPT);
+    CHECK(n == 11 && check_message(&recv_buf, 1, "EXCEPT_ZERO", 11),
+          "MSG_EXCEPT with msgtyp=0 is accepted and ignored");
+
+    n = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), -2, MSG_EXCEPT);
+    CHECK(n == 10 && check_message(&recv_buf, 2, "EXCEPT_NEG", 10),
+          "MSG_EXCEPT with negative msgtyp is accepted and ignored");
+
+    pid_t type1_pid = fork();
+    if (type1_pid == 0)
+    {
+        ssize_t ret = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 1, 0);
+        if (ret == 9 && check_message(&recv_buf, 1, "WAKE_ONE1", 9))
+        {
+            _exit(0);
+        }
+        _exit(1);
+    }
+    sleep_ms(100);
+
+    pid_t type2_pid = fork();
+    if (type2_pid == 0)
+    {
+        ssize_t ret = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 2, 0);
+        if (ret == 9 && check_message(&recv_buf, 2, "WAKE_TWO2", 9))
+        {
+            _exit(0);
+        }
+        _exit(1);
+    }
+    sleep_ms(100);
+
+    CHECK_RET(send_message(msqid, 2, "WAKE_TWO2"), 0,
+              "msgsnd wakes all receive waiters for type recheck");
+    CHECK(wait_child(type2_pid, 2000),
+          "blocking msgrcv for later matching type is woken");
+    CHECK_RET(send_message(msqid, 1, "WAKE_ONE1"), 0,
+              "msgsnd wakes remaining receive waiter");
+    CHECK(wait_child(type1_pid, 2000),
+          "blocking msgrcv for first type still completes");
+
+    pid = fork();
+    if (pid == 0)
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = signal_handler;
+        sa.sa_flags = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        if (sigaction(SIGUSR1, &sa, NULL) != 0)
+        {
+            _exit(1);
+        }
+
+        errno = 0;
+        got_signal = 0;
+        ssize_t ret = msgrcv(msqid, &recv_buf, sizeof(recv_buf.mtext), 9, 0);
+        if (ret == -1 && errno == EINTR && got_signal)
+        {
+            _exit(0);
+        }
+        _exit(1);
+    }
+    sleep_ms(100);
+    CHECK_RET(kill(pid, SIGUSR1), 0, "signal blocking msgrcv with SA_RESTART");
+    CHECK(wait_child(pid, 2000), "blocking msgrcv returns EINTR despite SA_RESTART");
 
     pid = fork();
     if (pid == 0)
