@@ -46,6 +46,7 @@ pub const KCOV_MODE_DISABLED: u32 = 0;
 /// Trace program counters (PCs).
 pub const KCOV_TRACE_PC: u32 = 0x100;
 /// Trace comparison operations (not yet implemented).
+#[expect(dead_code)]
 pub const KCOV_TRACE_CMP: u32 = 0x200;
 
 /// Maximum number of coverage entries in the buffer.
