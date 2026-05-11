@@ -625,10 +625,10 @@ impl Starry {
             Self::qemu_group_build_context(&request, build_config_path)
         })?;
 
-        // Phase 1: Build all build groups first so that compilation errors
-        // surface before any QEMU time is spent.  Within a single arch the
-        // groups are still built sequentially (they share the workspace target
-        // directory and would conflict on the Cargo file lock).
+        // Build one group and run it before moving to the next group.  `ostool`
+        // keeps the current artifact on the app context, so a later build would
+        // otherwise make earlier QEMU cases boot the wrong image.
+        let mut completed = 0;
         for build_group in &build_groups {
             self.app
                 .build(
@@ -643,11 +643,7 @@ impl Starry {
                         build_group.group.build_config_path.display()
                     )
                 })?;
-        }
 
-        // Phase 2: Run all QEMU tests now that every artifact is available.
-        let mut completed = 0;
-        for build_group in &build_groups {
             for case in &build_group.group.cases {
                 completed += 1;
                 let case_name = &case.case.name;
