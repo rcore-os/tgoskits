@@ -154,6 +154,7 @@ members = [
     "os/arceos/ulib/axstd",
     "os/axvisor",
     "platform/axplat-dyn",
+    "platform/somehal",
     "platform/riscv64-qemu-virt",
     "platform/x86-qemu-q35",
     "scripts/axbuild",
@@ -344,6 +345,11 @@ kernutil = { path = "components/kernutil", version = "0.2" }
 ranges-ext = { version = "0.6", path = "components/ranges-ext" }
 somehal-macros = { path = "components/somehal-macros", version = "0.1" }
 kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2" }
+somehal = { version = "0.6", path = "platform/somehal" }
+
+rdif-intc = {  version = "0.14" }
+rdrive = { version = "0.20" }
+arm-gic-driver = { version = "0.17"  }
 
 # External crates
 anyhow = { version = "1.0", default-features = false }
