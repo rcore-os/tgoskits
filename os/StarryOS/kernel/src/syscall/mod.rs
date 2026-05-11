@@ -19,6 +19,10 @@ pub use self::{
     time::*,
 };
 
+pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
+    !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
+}
+
 pub fn handle_syscall(uctx: &mut UserContext) {
     let Some(sysno) = Sysno::new(uctx.sysno()) else {
         warn!("Invalid syscall number: {}", uctx.sysno());
