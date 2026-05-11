@@ -274,7 +274,7 @@ members = [
 cargo test -p tgmath
 ```
 
-### 2.7（可选）如果是 subtree 管理的组件
+### 2.7 Subtree 组件（可选）
 
 如果新组件有独立仓库，则需要使用 `scripts/repo/repo.py` 工具，将独立仓库的组件显示添加到当前主仓库中。
 

@@ -87,15 +87,13 @@ cargo xtask starry rootfs --arch aarch64
 
 ### 4.4 Axvisor 专用命令
 
-Axvisor 的 rootfs 通常与 Guest 镜像一起准备：
+Axvisor 的 rootfs 与 StarryOS 使用相同的统一命令：
 
 ```bash
-# 使用官方脚本自动准备（推荐）
-(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
-
-# 或手动通过 xtask
-cargo xtask axvisor qemu --rootfs alpine --arch aarch64
+cargo xtask axvisor qemu --arch aarch64
 ```
+
+xtask 会在启动时自动检查并按需下载所需的 rootfs 镜像，无需手动运行 `setup_qemu.sh` 或单独下载。
 
 ## 5. 镜像管理机制
 

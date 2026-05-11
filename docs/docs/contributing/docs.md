@@ -54,7 +54,7 @@ docs/
 
 ## 3. 站点配置
 
-### 3.1 `docusaurus.config.js` 关键配置
+### 3.1 关键配置
 
 ```js
 // 站点基础信息
@@ -211,9 +211,38 @@ title: "自定义标题"
 ---
 ```
 
-## 6. 部署流程
+## 6. 部署
 
-### 6.1 自动部署
+文档通过 GitHub Actions 自动部署到 GitHub Pages。
+
+### 6.1 前置配置
+
+部署前需要在 GitHub 仓库中完成以下配置：
+
+**1) 启用 GitHub Pages**
+
+进入仓库 **Settings → Pages**：
+
+| 配置项 | 值 |
+|--------|-----|
+| Source | **GitHub Actions**（不是 "Deploy from a branch"） |
+
+选择 "GitHub Actions" 后，Pages 将由工作流的 `actions/deploy-pages` 负责部署，不再使用传统的 `gh-pages` 分支方式。
+
+**2) 配置 Environments**
+
+进入仓库 **Settings → Environments**，创建 `github-pages` 环境：
+
+| 配置项 | 说明 |
+|--------|------|
+| Environment name | `github-pages` |
+| Deployment branch | `main`（或按需限制） |
+
+如果需要审批流程，可在此环境中配置 **Required reviewers**，要求指定人员批准后才执行部署。
+
+> 工作流 `.github/workflows/docs.yml` 中已通过 `environment: name: github-pages` 引用此环境，因此环境名称必须匹配。
+
+### 6.2 自动部署
 
 文档通过 GitHub Actions 自动部署，工作流定义在 `.github/workflows/docs.yml`：
 
@@ -237,9 +266,8 @@ push to main (docs/ changed)
 
 **部署结果**：
 - URL：`https://rcore-os.github.io/tgoskits/`
-- 分支：`gh-pages`
 
-### 6.2 手动部署
+### 6.3 手动部署
 
 如有需要，也可从本地部署：
 
@@ -248,16 +276,9 @@ cd docs
 yarn deploy
 ```
 
-> 注意：`yarn deploy` 使用 `docusaurus deploy` 命令，会将构建产物推送到 `gh-pages` 分支。需要对应仓库的写权限。
+> 注意：`yarn deploy` 使用 `docusaurus deploy` 命令，会将构建产物推送到 `gh-pages` 分支。需要对应仓库的写权限。这种方式与 GitHub Actions 部署互为替代，不会冲突。
 
-### 6.3 预览 PR 中的文档变更
-
-在 PR 中修改文档后，可以通过以下方式预览：
-
-1. 在本地拉取 PR 分支后运行 `yarn start`
-2. 或等待 GitHub Actions 构建完成后查看部署预览
-
-## 7. 添加新文档
+## 7. 添加文档
 
 ### 7.1 添加新页面
 
