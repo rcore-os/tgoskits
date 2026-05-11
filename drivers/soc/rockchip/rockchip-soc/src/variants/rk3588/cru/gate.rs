@@ -13,7 +13,7 @@
 use super::{consts::*, *};
 use crate::clock::ClkId;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClkType {
     Gate,
     Composite,
@@ -78,6 +78,23 @@ macro_rules! clk_composite_table {
                     clk_id: $clk_id,
                     kind: ClkType::Composite,
                     bank: GateBank::Main,
+                    reg_idx: $reg_idx,
+                    bit: $bit,
+                }
+                ),*
+        ];
+    };
+}
+
+macro_rules! clk_pmu_composite_table {
+    ($($clk_id:expr => ($reg_idx:expr, $bit:expr)),* $(,)?) => {
+        #[allow(non_upper_case_globals)]
+        const CLK_PMU_COMPOSITE_TABLE: &[ClkGate] = &[
+            $(
+                ClkGate {
+                    clk_id: $clk_id,
+                    kind: ClkType::Composite,
+                    bank: GateBank::Pmu,
                     reg_idx: $reg_idx,
                     bit: $bit,
                 }
@@ -325,8 +342,11 @@ clk_php_gate_table!(
     PCLK_PCIE_COMBO_PIPE_PHY => (0, 8),
 );
 
-clk_composite_table!(
-    USBDPPHY_MIPIDCPPHY_REF => (4, 3),
+clk_composite_table!();
+
+clk_pmu_composite_table!(
+    CLK_USB2PHY_HDPTXRXPHY_REF => (4, 7),
+    CLK_USBDPPHY_MIPIDCPPHY_REF => (4, 3),
 );
 
 // =============================================================================
@@ -341,6 +361,7 @@ impl Cru {
             .chain(CLK_PMU_GATE_TABLE)
             .chain(CLK_PHP_GATE_TABLE)
             .chain(CLK_COMPOSITE_TABLE)
+            .chain(CLK_PMU_COMPOSITE_TABLE)
             .find(|gate| gate.clk_id == id)
             .copied()
     }
@@ -368,6 +389,8 @@ mod tests {
             .iter()
             .chain(CLK_PMU_GATE_TABLE)
             .chain(CLK_PHP_GATE_TABLE)
+            .chain(CLK_COMPOSITE_TABLE)
+            .chain(CLK_PMU_COMPOSITE_TABLE)
             .find(|gate| gate.clk_id == clk_id)
             .copied()
             .expect("gate not found")
@@ -389,11 +412,15 @@ mod tests {
         // ADC: 4
         // NPU: 22
         // PCIe/PHP: 51
-        // USB: 21
-        // 总计: 158
+        // USB: 21 main/php gates + 2 PMU composite gates
+        // 总计: 160
         assert_eq!(
-            CLK_GATE_TABLE.len() + CLK_PMU_GATE_TABLE.len() + CLK_PHP_GATE_TABLE.len(),
-            158
+            CLK_GATE_TABLE.len()
+                + CLK_PMU_GATE_TABLE.len()
+                + CLK_PHP_GATE_TABLE.len()
+                + CLK_COMPOSITE_TABLE.len()
+                + CLK_PMU_COMPOSITE_TABLE.len(),
+            160
         );
     }
 
@@ -404,6 +431,8 @@ mod tests {
             .iter()
             .chain(CLK_PMU_GATE_TABLE)
             .chain(CLK_PHP_GATE_TABLE)
+            .chain(CLK_COMPOSITE_TABLE)
+            .chain(CLK_PMU_COMPOSITE_TABLE)
             .map(|gate| gate.clk_id.value())
             .collect::<Vec<_>>();
 
@@ -412,7 +441,11 @@ mod tests {
 
         assert_eq!(
             clk_ids.len(),
-            CLK_GATE_TABLE.len() + CLK_PMU_GATE_TABLE.len() + CLK_PHP_GATE_TABLE.len(),
+            CLK_GATE_TABLE.len()
+                + CLK_PMU_GATE_TABLE.len()
+                + CLK_PHP_GATE_TABLE.len()
+                + CLK_COMPOSITE_TABLE.len()
+                + CLK_PMU_COMPOSITE_TABLE.len(),
             "CLK_GATE_TABLE should not have duplicate clkid entries"
         );
     }
@@ -500,6 +533,18 @@ mod tests {
         let aclk_usb3otg0 = find_gate(ACLK_USB3OTG0);
         assert_eq!(aclk_usb3otg0.reg_idx, 42);
         assert_eq!(aclk_usb3otg0.bit, 4);
+
+        let usb2phy_ref = find_gate(CLK_USB2PHY_HDPTXRXPHY_REF);
+        assert_eq!(usb2phy_ref.kind, ClkType::Composite);
+        assert_eq!(usb2phy_ref.bank, GateBank::Pmu);
+        assert_eq!(usb2phy_ref.reg_idx, 4);
+        assert_eq!(usb2phy_ref.bit, 7);
+
+        let usbdpphy_ref = find_gate(CLK_USBDPPHY_MIPIDCPPHY_REF);
+        assert_eq!(usbdpphy_ref.kind, ClkType::Composite);
+        assert_eq!(usbdpphy_ref.bank, GateBank::Pmu);
+        assert_eq!(usbdpphy_ref.reg_idx, 4);
+        assert_eq!(usbdpphy_ref.bit, 3);
     }
 
     #[test]

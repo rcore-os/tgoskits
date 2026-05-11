@@ -1,8 +1,6 @@
 use core::fmt::Debug;
 
-use crate::{
-    Mmio, ResetRockchip, RstId, clock::ClkId, grf::GrfMmio, variants::rk3588::cru::gate::ClkType,
-};
+use crate::{Mmio, ResetRockchip, RstId, clock::ClkId, grf::GrfMmio};
 
 pub mod clock;
 mod consts;
@@ -274,10 +272,6 @@ impl Cru {
     /// ```
     pub fn clk_enable(&mut self, id: ClkId) -> ClockResult<()> {
         let gate = self.find_clk_gate(id).ok_or(ClockError::unsupported(id))?;
-        if matches!(gate.kind, ClkType::Composite) {
-            return Ok(());
-        }
-
         let offset = self.get_gate_reg_offset(gate);
 
         // Rockchip 写掩码机制：清除 bit
@@ -338,10 +332,6 @@ impl Cru {
     /// 返回 true 表示时钟已使能，false 表示已禁止，None 表示不支持
     pub fn clk_is_enabled(&self, id: ClkId) -> ClockResult<bool> {
         let gate = self.find_clk_gate(id).ok_or(ClockError::unsupported(id))?;
-        if matches!(gate.kind, ClkType::Composite) {
-            return Ok(true);
-        }
-
         let offset = self.get_gate_reg_offset(gate);
 
         // 读取寄存器，检查 bit

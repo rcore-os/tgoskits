@@ -354,8 +354,10 @@ clk_id_group!(
     USBDP_PHY1_IMMORTAL = 640,
 );
 
-clk_id_group!(CLK_USBPHY_480M = 693,);
-clk_id_group!(USBDPPHY_MIPIDCPPHY_REF = 694,);
+clk_id_group!(
+    CLK_USB2PHY_HDPTXRXPHY_REF = 693,
+    CLK_USBDPPHY_MIPIDCPPHY_REF = 694,
+);
 clk_id_group!(CLK_PCIE1L0_PIPE = 708, CLK_PCIE1L1_PIPE = 709,);
 
 pub const PCLK_PHP_USBHOST3_0: ClkId = PCLK_PHP_ROOT;
@@ -427,7 +429,8 @@ pub fn is_npu_clk(clk_id: ClkId) -> bool {
 /// 判断时钟 ID 是否为 USB
 ///
 /// USB 时钟包括：
-/// - 可配置频率时钟：ACLK_USB_ROOT, HCLK_USB_ROOT, CLK_UTMI_OTG2, PCLK_PHP_USBHOST3_0, ACLK_USB, HCLK_USB
+/// - 可配置频率时钟：ACLK_USB_ROOT, HCLK_USB_ROOT, CLK_UTMI_OTG2,
+///   PCLK_PHP_USBHOST3_0, ACLK_USB, HCLK_USB
 /// - 固定频率门控时钟：其他所有 USB 时钟
 pub fn is_usb_clk(clk_id: ClkId) -> bool {
     // 可配置频率时钟
@@ -437,7 +440,8 @@ pub fn is_usb_clk(clk_id: ClkId) -> bool {
             | HCLK_USB_ROOT
             | CLK_UTMI_OTG2
             | PCLK_PHP_USBHOST3_0
-            | CLK_USBPHY_480M
+            | CLK_USB2PHY_HDPTXRXPHY_REF
+            | CLK_USBDPPHY_MIPIDCPPHY_REF
             | ACLK_USB
             | HCLK_USB
     );
@@ -463,7 +467,6 @@ pub fn is_usb_clk(clk_id: ClkId) -> bool {
             | PCLK_USBDPPHY1
             | USBDP_PHY0_IMMORTAL
             | USBDP_PHY1_IMMORTAL
-            | USBDPPHY_MIPIDCPPHY_REF
     );
 
     configurable || gates

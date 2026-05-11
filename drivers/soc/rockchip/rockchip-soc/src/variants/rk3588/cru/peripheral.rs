@@ -855,8 +855,8 @@ impl Cru {
     pub(crate) fn usb_get_rate(&self, id: ClkId) -> ClockResult<u64> {
         // 导入 USB clock ID 常量
         use clock::{
-            ACLK_USB, ACLK_USB_ROOT, CLK_USBPHY_480M, CLK_UTMI_OTG2, HCLK_USB, HCLK_USB_ROOT,
-            PCLK_PHP_USBHOST3_0,
+            ACLK_USB, ACLK_USB_ROOT, CLK_USB2PHY_HDPTXRXPHY_REF, CLK_USBDPPHY_MIPIDCPPHY_REF,
+            CLK_UTMI_OTG2, HCLK_USB, HCLK_USB_ROOT, PCLK_PHP_USBHOST3_0,
         };
 
         // USB 时钟源常量
@@ -865,8 +865,10 @@ impl Cru {
         const CLK_100M: u64 = 100 * MHZ;
         const CLK_50M: u64 = 50 * MHZ;
 
-        if id == CLK_USBPHY_480M {
-            return Ok(480 * MHZ);
+        match id {
+            CLK_USB2PHY_HDPTXRXPHY_REF => return Ok(OSC_HZ),
+            CLK_USBDPPHY_MIPIDCPPHY_REF => return Ok(OSC_HZ),
+            _ => {}
         }
 
         // 根据时钟 ID 确定寄存器和位域
@@ -980,8 +982,8 @@ impl Cru {
     pub(crate) fn usb_set_rate(&mut self, id: ClkId, rate_hz: u64) -> ClockResult<u64> {
         // 导入 USB clock ID 常量
         use clock::{
-            ACLK_USB, ACLK_USB_ROOT, CLK_USBPHY_480M, CLK_UTMI_OTG2, HCLK_USB, HCLK_USB_ROOT,
-            PCLK_PHP_USBHOST3_0,
+            ACLK_USB, ACLK_USB_ROOT, CLK_USB2PHY_HDPTXRXPHY_REF, CLK_USBDPPHY_MIPIDCPPHY_REF,
+            CLK_UTMI_OTG2, HCLK_USB, HCLK_USB_ROOT, PCLK_PHP_USBHOST3_0,
         };
 
         const CLK_200M: u64 = 200 * MHZ;
@@ -993,8 +995,8 @@ impl Cru {
             return Err(ClockError::invalid_rate(id, rate_hz));
         }
 
-        if id == CLK_USBPHY_480M {
-            return Err(ClockError::unsupported(id));
+        if matches!(id, CLK_USB2PHY_HDPTXRXPHY_REF | CLK_USBDPPHY_MIPIDCPPHY_REF) {
+            return Err(ClockError::invalid_rate(id, rate_hz));
         }
 
         // HCLK_USB_ROOT 是 COMPOSITE_NODIV，不支持 set_rate
