@@ -24,3 +24,10 @@ target_link_libraries(imageutils
     ${LIBRGA}
     ${LIBJPEG}
 )
+
+add_library(imagedrawing STATIC
+    image_drawing.c
+)
+target_include_directories(imagedrawing PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)

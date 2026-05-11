@@ -49,6 +49,7 @@ target_link_libraries(rknn_yolov8_image
 target_link_libraries(rknn_yolov8_stream
     imageutils
     fileutils
+    imagedrawing
     ${LIBRKNNRT}
     ${LIBJPEG}
     dl
