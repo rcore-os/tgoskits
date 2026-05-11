@@ -276,6 +276,9 @@ clk_gate_table!(
     CLK_PIPEPHY0_REF => (37, 0),
     CLK_PIPEPHY1_REF => (37, 1),
     CLK_PIPEPHY2_REF => (37, 2),
+    CLK_REF_PIPE_PHY0_OSC_SRC => (77, 0),
+    CLK_REF_PIPE_PHY1_OSC_SRC => (77, 1),
+    CLK_REF_PIPE_PHY2_OSC_SRC => (77, 2),
     PCLK_PHP_ROOT => (32, 0),
     CLK_PCIE4L_PIPE => (39, 0),
     CLK_PCIE2L_PIPE => (39, 1),
@@ -342,7 +345,11 @@ clk_php_gate_table!(
     PCLK_PCIE_COMBO_PIPE_PHY => (0, 8),
 );
 
-clk_composite_table!();
+clk_composite_table!(
+    CLK_REF_PIPE_PHY0_PLL_SRC => (77, 3),
+    CLK_REF_PIPE_PHY1_PLL_SRC => (77, 4),
+    CLK_REF_PIPE_PHY2_PLL_SRC => (77, 5),
+);
 
 clk_pmu_composite_table!(
     CLK_USB2PHY_HDPTXRXPHY_REF => (4, 7),
@@ -411,16 +418,16 @@ mod tests {
         // PWM: 12 (PWM1-3: 9, PMU1PWM: 3)
         // ADC: 4
         // NPU: 22
-        // PCIe/PHP: 51
+        // PCIe/PHP: 57
         // USB: 21 main/php gates + 2 PMU composite gates
-        // 总计: 160
+        // 总计: 166
         assert_eq!(
             CLK_GATE_TABLE.len()
                 + CLK_PMU_GATE_TABLE.len()
                 + CLK_PHP_GATE_TABLE.len()
                 + CLK_COMPOSITE_TABLE.len()
                 + CLK_PMU_COMPOSITE_TABLE.len(),
-            160
+            166
         );
     }
 

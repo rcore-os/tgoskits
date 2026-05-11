@@ -1,13 +1,13 @@
 extern crate alloc;
 
-use alloc::{format, string::ToString, vec::Vec};
+use alloc::{format, string::ToString, vec, vec::Vec};
 use core::ptr::NonNull;
 
-use fdt_edit::{Fdt, NodeType, Phandle, RegFixed};
+use fdt_edit::{Fdt, Node, NodeType, Phandle, RegFixed};
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
 };
-use rockchip_soc::{GpioDirection, PinConfig, PinCtrl, PinCtrlOp, PinId, SocType};
+use rockchip_soc::{BankId, GpioDirection, PinConfig, PinCtrl, PinCtrlOp, PinId, SocType};
 
 use crate::drivers::iomap;
 
@@ -44,36 +44,60 @@ impl RockchipPinCtrl {
             OnProbeError::other(format!("regulator phandle {phandle:?} not found"))
         })?;
         let node_name = node.name().to_string();
-        let active_value = node.as_node().get_property("enable-active-low").is_none();
-        let pinctrls = node
-            .as_node()
-            .get_property("pinctrl-0")
-            .ok_or_else(|| OnProbeError::other(format!("[{node_name}] has no pinctrl-0")))?
-            .get_u32_iter()
-            .map(Phandle::from)
-            .collect::<Vec<_>>();
+        let active_value = fixed_regulator_active_value(node.as_node());
+        let gpio_active_low = gpio_active_low(node.as_node());
+        let drive_value = if gpio_active_low {
+            !active_value
+        } else {
+            active_value
+        };
+        let pins = if let Some(gpio) = parse_gpio_pin(&fdt, node.as_node(), "gpios")
+            .or_else(|| parse_gpio_pin(&fdt, node.as_node(), "gpio"))
+        {
+            vec![gpio?]
+        } else {
+            let pinctrls = node
+                .as_node()
+                .get_property("pinctrl-0")
+                .ok_or_else(|| OnProbeError::other(format!("[{node_name}] has no enable GPIO")))?
+                .get_u32_iter()
+                .map(Phandle::from)
+                .collect::<Vec<_>>();
 
-        let mut pins = Vec::new();
-        for pinctrl in pinctrls {
-            pins.extend(self.apply_pinctrl_phandle(pinctrl)?);
-        }
-        if pins.is_empty() {
-            return Err(OnProbeError::other(format!(
-                "[{node_name}] pinctrl-0 did not configure any GPIO"
-            )));
-        }
+            let mut pins = Vec::new();
+            for pinctrl in pinctrls {
+                pins.extend(self.apply_pinctrl_phandle(pinctrl)?);
+            }
+            if pins.is_empty() {
+                return Err(OnProbeError::other(format!(
+                    "[{node_name}] pinctrl-0 did not configure any GPIO"
+                )));
+            }
+            pins
+        };
 
         for pin in pins {
             self.inner
-                .set_gpio_direction(pin, GpioDirection::Output(active_value))
+                .set_gpio_direction(pin, GpioDirection::Output(drive_value))
                 .map_err(|err| {
                     OnProbeError::other(format!(
                         "failed to set [{node_name}] GPIO {pin:?} direction: {err}"
                     ))
                 })?;
-            self.inner.write_gpio(pin, active_value).map_err(|err| {
+            self.inner.write_gpio(pin, drive_value).map_err(|err| {
                 OnProbeError::other(format!("failed to drive [{node_name}] GPIO {pin:?}: {err}"))
             })?;
+        }
+
+        let startup_delay_us = node
+            .as_node()
+            .get_property("startup-delay-us")
+            .and_then(|prop| prop.get_u32())
+            .unwrap_or(0);
+        if startup_delay_us != 0 {
+            axklib::time::busy_wait(core::time::Duration::from_micros(u64::from(
+                startup_delay_us,
+            )));
         }
 
         info!("Rockchip fixed regulator {node_name} enabled via pinctrl");
@@ -192,6 +216,94 @@ fn map_node_reg(node: NodeType<'_>, context: &str) -> Result<NonNull<u8>, OnProb
 fn map_reg(reg: RegFixed) -> Result<NonNull<u8>, OnProbeError> {
     let size = align_up_4k((reg.size.unwrap_or(0x1000) as usize).max(1));
     iomap((reg.address as usize).into(), size)
+}
+
+fn fixed_regulator_active_value(node: &Node) -> bool {
+    node.get_property("enable-active-low").is_none()
+}
+
+fn gpio_active_low(node: &Node) -> bool {
+    node.get_property("gpios")
+        .or_else(|| node.get_property("gpio"))
+        .and_then(|prop| prop.get_u32_iter().nth(2))
+        .is_some_and(|flags| flags & 1 != 0)
+}
+
+fn parse_gpio_pin(fdt: &Fdt, node: &Node, prop_name: &str) -> Option<Result<PinId, OnProbeError>> {
+    let prop = node.get_property(prop_name)?;
+    Some((|| {
+        let mut cells = prop.get_u32_iter();
+        let phandle = Phandle::from(cells.next().ok_or_else(|| {
+            OnProbeError::other(format!("[{}] has malformed {prop_name}", node.name()))
+        })?);
+        let pin = cells.next().ok_or_else(|| {
+            OnProbeError::other(format!("[{}] has malformed {prop_name}", node.name()))
+        })?;
+        let gpio = fdt.get_by_phandle(phandle).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] {prop_name} GPIO phandle {phandle:?} not found",
+                node.name()
+            ))
+        })?;
+        let bank = gpio_bank_index(gpio.as_node()).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] cannot resolve GPIO bank for {prop_name} phandle {phandle:?}",
+                node.name()
+            ))
+        })?;
+        PinId::from_bank_pin(BankId::new(bank).unwrap_or(BankId::from(bank)), pin).ok_or_else(
+            || {
+                OnProbeError::other(format!(
+                    "[{}] invalid GPIO bank {bank} pin {pin}",
+                    node.name()
+                ))
+            },
+        )
+    })())
+}
+
+fn gpio_bank_index(node: &Node) -> Option<u32> {
+    let name = node.name();
+    if let Some(name) = name
+        .strip_prefix("gpio")
+        .filter(|name| !name.starts_with('@'))
+    {
+        if let Some(bank) = name
+            .chars()
+            .next()
+            .and_then(|ch| ch.to_digit(10))
+            .filter(|bank| *bank < GPIO_BANK_COUNT as u32)
+        {
+            return Some(bank);
+        }
+    }
+
+    let address = gpio_bank_address(node)?;
+    match address {
+        0xfd8a_0000 => Some(0),
+        0xfec2_0000 => Some(1),
+        0xfec3_0000 => Some(2),
+        0xfec4_0000 => Some(3),
+        0xfec5_0000 => Some(4),
+        _ => None,
+    }
+}
+
+fn gpio_bank_address(node: &Node) -> Option<u64> {
+    if let Some(address) = node
+        .name()
+        .split_once('@')
+        .and_then(|(_, unit)| u64::from_str_radix(unit, 16).ok())
+    {
+        return Some(address);
+    }
+
+    let reg = node.get_property("reg")?.get_u32_iter().collect::<Vec<_>>();
+    match reg.as_slice() {
+        [addr] => Some(u64::from(*addr)),
+        cells if cells.len() >= 2 => Some((u64::from(cells[0]) << 32) | u64::from(cells[1])),
+        _ => None,
+    }
 }
 
 fn align_up_4k(size: usize) -> usize {

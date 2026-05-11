@@ -52,6 +52,182 @@ fn find_best_divider(
 
 impl Cru {
     // ========================================================================
+    // PCIe/PHP 时钟
+    // ========================================================================
+
+    fn pcie_root_ref_parent(&self, id: ClkId) -> ClockResult<ClkId> {
+        let (con, shift, osc_src, pll_src) = match id {
+            CLK_REF_PIPE_PHY0 => (
+                clksel_con(177),
+                clk_sel177::CLK_PCIE_PHY0_REF_SEL_SHIFT,
+                CLK_REF_PIPE_PHY0_OSC_SRC,
+                CLK_REF_PIPE_PHY0_PLL_SRC,
+            ),
+            CLK_REF_PIPE_PHY1 => (
+                clksel_con(177),
+                clk_sel177::CLK_PCIE_PHY1_REF_SEL_SHIFT,
+                CLK_REF_PIPE_PHY1_OSC_SRC,
+                CLK_REF_PIPE_PHY1_PLL_SRC,
+            ),
+            CLK_REF_PIPE_PHY2 => (
+                clksel_con(177),
+                clk_sel177::CLK_PCIE_PHY2_REF_SEL_SHIFT,
+                CLK_REF_PIPE_PHY2_OSC_SRC,
+                CLK_REF_PIPE_PHY2_PLL_SRC,
+            ),
+            _ => return Err(ClockError::unsupported(id)),
+        };
+        let use_ppll = ((self.read(con) >> shift) & 1) == clk_sel177::CLK_PCIE_PHY_REF_SEL_PPLL;
+        Ok(if use_ppll { pll_src } else { osc_src })
+    }
+
+    pub(crate) fn pcie_root_ref_enable(&mut self, id: ClkId) -> ClockResult<()> {
+        let parent = self.pcie_root_ref_parent(id)?;
+        self.clk_enable(parent)
+    }
+
+    pub(crate) fn pcie_root_ref_disable(&mut self, id: ClkId) -> ClockResult<()> {
+        let parent = self.pcie_root_ref_parent(id)?;
+        self.clk_disable(parent)
+    }
+
+    pub(crate) fn pcie_root_ref_is_enabled(&self, id: ClkId) -> ClockResult<bool> {
+        let parent = self.pcie_root_ref_parent(id)?;
+        self.clk_is_enabled(parent)
+    }
+
+    pub(crate) fn pcie_get_rate(&self, id: ClkId) -> ClockResult<u64> {
+        match id {
+            CLK_REF_PIPE_PHY0 | CLK_REF_PIPE_PHY1 | CLK_REF_PIPE_PHY2 => {
+                self.pcie_get_rate(self.pcie_root_ref_parent(id)?)
+            }
+            CLK_REF_PIPE_PHY0_OSC_SRC | CLK_REF_PIPE_PHY1_OSC_SRC | CLK_REF_PIPE_PHY2_OSC_SRC => {
+                Ok(OSC_HZ)
+            }
+            CLK_REF_PIPE_PHY0_PLL_SRC | CLK_REF_PIPE_PHY1_PLL_SRC | CLK_REF_PIPE_PHY2_PLL_SRC => {
+                let (con, shift, mask) = match id {
+                    CLK_REF_PIPE_PHY0_PLL_SRC => (
+                        clksel_con(176),
+                        clk_sel176::CLK_PCIE_PHY0_PLL_DIV_SHIFT,
+                        clk_sel176::CLK_PCIE_PHY0_PLL_DIV_MASK,
+                    ),
+                    CLK_REF_PIPE_PHY1_PLL_SRC => (
+                        clksel_con(176),
+                        clk_sel176::CLK_PCIE_PHY1_PLL_DIV_SHIFT,
+                        clk_sel176::CLK_PCIE_PHY1_PLL_DIV_MASK,
+                    ),
+                    CLK_REF_PIPE_PHY2_PLL_SRC => (
+                        clksel_con(177),
+                        clk_sel177::CLK_PCIE_PHY2_PLL_DIV_SHIFT,
+                        clk_sel177::CLK_PCIE_PHY2_PLL_DIV_MASK,
+                    ),
+                    _ => unreachable!(),
+                };
+                let div = ((self.read(con) & mask) >> shift) as u64 + 1;
+                Ok(self.ppll_hz / div)
+            }
+            CLK_PIPEPHY0_REF | CLK_PIPEPHY1_REF | CLK_PIPEPHY2_REF | CLK_PCIE_AUX0
+            | CLK_PCIE_AUX1 | CLK_PCIE_AUX2 | CLK_PCIE_AUX3 | CLK_PCIE_AUX4 => Ok(OSC_HZ),
+            _ => Err(ClockError::rate_read_failed(
+                id,
+                "PCIe clock rate is not modeled",
+            )),
+        }
+    }
+
+    pub(crate) fn pcie_set_rate(&mut self, id: ClkId, rate_hz: u64) -> ClockResult<u64> {
+        match id {
+            CLK_REF_PIPE_PHY0 | CLK_REF_PIPE_PHY1 | CLK_REF_PIPE_PHY2 => {
+                let (pll_src, osc_src, con, shift) = match id {
+                    CLK_REF_PIPE_PHY0 => (
+                        CLK_REF_PIPE_PHY0_PLL_SRC,
+                        CLK_REF_PIPE_PHY0_OSC_SRC,
+                        clksel_con(177),
+                        clk_sel177::CLK_PCIE_PHY0_REF_SEL_SHIFT,
+                    ),
+                    CLK_REF_PIPE_PHY1 => (
+                        CLK_REF_PIPE_PHY1_PLL_SRC,
+                        CLK_REF_PIPE_PHY1_OSC_SRC,
+                        clksel_con(177),
+                        clk_sel177::CLK_PCIE_PHY1_REF_SEL_SHIFT,
+                    ),
+                    CLK_REF_PIPE_PHY2 => (
+                        CLK_REF_PIPE_PHY2_PLL_SRC,
+                        CLK_REF_PIPE_PHY2_OSC_SRC,
+                        clksel_con(177),
+                        clk_sel177::CLK_PCIE_PHY2_REF_SEL_SHIFT,
+                    ),
+                    _ => unreachable!(),
+                };
+                if rate_hz == OSC_HZ {
+                    self.clk_enable(osc_src)?;
+                    self.clrsetreg(
+                        con,
+                        1 << shift,
+                        clk_sel177::CLK_PCIE_PHY_REF_SEL_24M << shift,
+                    );
+                    Ok(OSC_HZ)
+                } else {
+                    let actual_rate = self.pcie_set_rate(pll_src, rate_hz)?;
+                    self.clrsetreg(
+                        con,
+                        1 << shift,
+                        clk_sel177::CLK_PCIE_PHY_REF_SEL_PPLL << shift,
+                    );
+                    Ok(actual_rate)
+                }
+            }
+            CLK_REF_PIPE_PHY0_PLL_SRC | CLK_REF_PIPE_PHY1_PLL_SRC | CLK_REF_PIPE_PHY2_PLL_SRC => {
+                if rate_hz == 0 || !self.ppll_hz.is_multiple_of(rate_hz) {
+                    return Err(ClockError::invalid_rate(id, rate_hz));
+                }
+                let div = self.ppll_hz / rate_hz;
+                if !(1..=64).contains(&div) {
+                    return Err(ClockError::invalid_divider(id, div as u32));
+                }
+
+                let (con, shift, mask) = match id {
+                    CLK_REF_PIPE_PHY0_PLL_SRC => (
+                        clksel_con(176),
+                        clk_sel176::CLK_PCIE_PHY0_PLL_DIV_SHIFT,
+                        clk_sel176::CLK_PCIE_PHY0_PLL_DIV_MASK,
+                    ),
+                    CLK_REF_PIPE_PHY1_PLL_SRC => (
+                        clksel_con(176),
+                        clk_sel176::CLK_PCIE_PHY1_PLL_DIV_SHIFT,
+                        clk_sel176::CLK_PCIE_PHY1_PLL_DIV_MASK,
+                    ),
+                    CLK_REF_PIPE_PHY2_PLL_SRC => (
+                        clksel_con(177),
+                        clk_sel177::CLK_PCIE_PHY2_PLL_DIV_SHIFT,
+                        clk_sel177::CLK_PCIE_PHY2_PLL_DIV_MASK,
+                    ),
+                    _ => unreachable!(),
+                };
+                self.clrsetreg(con, mask, ((div as u32) - 1) << shift);
+                self.clk_enable(id)?;
+                Ok(self.ppll_hz / div)
+            }
+            CLK_REF_PIPE_PHY0_OSC_SRC | CLK_REF_PIPE_PHY1_OSC_SRC | CLK_REF_PIPE_PHY2_OSC_SRC => {
+                if rate_hz == OSC_HZ {
+                    Ok(OSC_HZ)
+                } else {
+                    Err(ClockError::invalid_rate(id, rate_hz))
+                }
+            }
+            CLK_PIPEPHY0_REF | CLK_PIPEPHY1_REF | CLK_PIPEPHY2_REF | CLK_PCIE_AUX0
+            | CLK_PCIE_AUX1 | CLK_PCIE_AUX2 | CLK_PCIE_AUX3 | CLK_PCIE_AUX4 => {
+                if rate_hz == OSC_HZ {
+                    Ok(OSC_HZ)
+                } else {
+                    Err(ClockError::invalid_rate(id, rate_hz))
+                }
+            }
+            _ => Err(ClockError::invalid_rate(id, rate_hz)),
+        }
+    }
+
+    // ========================================================================
     // I2C 时钟
     // ========================================================================
 

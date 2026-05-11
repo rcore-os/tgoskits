@@ -357,6 +357,15 @@ clk_id_group!(
 clk_id_group!(
     CLK_USB2PHY_HDPTXRXPHY_REF = 693,
     CLK_USBDPPHY_MIPIDCPPHY_REF = 694,
+    CLK_REF_PIPE_PHY0_OSC_SRC = 695,
+    CLK_REF_PIPE_PHY1_OSC_SRC = 696,
+    CLK_REF_PIPE_PHY2_OSC_SRC = 697,
+    CLK_REF_PIPE_PHY0_PLL_SRC = 698,
+    CLK_REF_PIPE_PHY1_PLL_SRC = 699,
+    CLK_REF_PIPE_PHY2_PLL_SRC = 700,
+    CLK_REF_PIPE_PHY0 = 701,
+    CLK_REF_PIPE_PHY1 = 702,
+    CLK_REF_PIPE_PHY2 = 703,
 );
 clk_id_group!(CLK_PCIE1L0_PIPE = 708, CLK_PCIE1L1_PIPE = 709,);
 
@@ -470,6 +479,74 @@ pub fn is_usb_clk(clk_id: ClkId) -> bool {
     );
 
     configurable || gates
+}
+
+/// 判断时钟 ID 是否为 PCIe/PHP 相关时钟
+pub fn is_pcie_clk(clk_id: ClkId) -> bool {
+    let gates = matches!(
+        clk_id,
+        ACLK_PHP_GIC_ITS
+            | ACLK_MMU_PCIE
+            | ACLK_MMU_PHP
+            | ACLK_PCIE_4L_DBI
+            | ACLK_PCIE_2L_DBI
+            | ACLK_PCIE_1L0_DBI
+            | ACLK_PCIE_1L1_DBI
+            | ACLK_PCIE_1L2_DBI
+            | ACLK_PCIE_4L_MSTR
+            | ACLK_PCIE_2L_MSTR
+            | ACLK_PCIE_1L0_MSTR
+            | ACLK_PCIE_1L1_MSTR
+            | ACLK_PCIE_1L2_MSTR
+            | ACLK_PCIE_4L_SLV
+            | ACLK_PCIE_2L_SLV
+            | ACLK_PCIE_1L0_SLV
+            | ACLK_PCIE_1L1_SLV
+            | ACLK_PCIE_1L2_SLV
+            | PCLK_PCIE_4L
+            | PCLK_PCIE_2L
+            | PCLK_PCIE_1L0
+            | PCLK_PCIE_1L1
+            | PCLK_PCIE_1L2
+            | CLK_PCIE_AUX0
+            | CLK_PCIE_AUX1
+            | CLK_PCIE_AUX2
+            | CLK_PCIE_AUX3
+            | CLK_PCIE_AUX4
+            | CLK_PIPEPHY0_REF
+            | CLK_PIPEPHY1_REF
+            | CLK_PIPEPHY2_REF
+            | PCLK_PHP_ROOT
+            | ACLK_PCIE_ROOT
+            | ACLK_PHP_ROOT
+            | ACLK_PCIE_BRIDGE
+            | CLK_PCIE4L_PIPE
+            | CLK_PCIE2L_PIPE
+            | CLK_PIPEPHY0_PIPE_G
+            | CLK_PIPEPHY1_PIPE_G
+            | CLK_PIPEPHY2_PIPE_G
+            | CLK_PIPEPHY0_PIPE_ASIC_G
+            | CLK_PIPEPHY1_PIPE_ASIC_G
+            | CLK_PIPEPHY2_PIPE_ASIC_G
+            | CLK_PCIE1L2_PIPE
+            | CLK_PCIE1L0_PIPE
+            | CLK_PCIE1L1_PIPE
+            | PCLK_PCIE_COMBO_PIPE_PHY0
+            | PCLK_PCIE_COMBO_PIPE_PHY1
+            | PCLK_PCIE_COMBO_PIPE_PHY2
+            | PCLK_PCIE_COMBO_PIPE_PHY
+            | CLK_REF_PIPE_PHY0_OSC_SRC
+            | CLK_REF_PIPE_PHY1_OSC_SRC
+            | CLK_REF_PIPE_PHY2_OSC_SRC
+            | CLK_REF_PIPE_PHY0_PLL_SRC
+            | CLK_REF_PIPE_PHY1_PLL_SRC
+            | CLK_REF_PIPE_PHY2_PLL_SRC
+            | CLK_REF_PIPE_PHY0
+            | CLK_REF_PIPE_PHY1
+            | CLK_REF_PIPE_PHY2
+    );
+
+    gates
 }
 
 /// 获取 I2C 编号 (0-8)
