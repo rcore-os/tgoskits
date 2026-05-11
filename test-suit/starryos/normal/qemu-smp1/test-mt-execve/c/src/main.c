@@ -38,6 +38,7 @@
 
 #include <pthread.h>
 #include <signal.h>
+#include <stdint.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
