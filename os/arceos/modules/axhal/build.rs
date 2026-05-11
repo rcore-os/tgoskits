@@ -31,7 +31,6 @@ struct LinkerConfig {
     platform: String,
     kernel_base_vaddr: usize,
     max_cpu_num: usize,
-    phys_virt_offset: usize,
     kernel_base_paddr: usize,
 }
 
@@ -45,7 +44,6 @@ fn load_linker_config() -> Result<LinkerConfig> {
             platform: ax_config::PLATFORM.to_string(),
             kernel_base_vaddr: ax_config::plat::KERNEL_BASE_VADDR,
             max_cpu_num: ax_config::plat::MAX_CPU_NUM,
-            phys_virt_offset: ax_config::plat::PHYS_VIRT_OFFSET,
             kernel_base_paddr: ax_config::plat::KERNEL_BASE_PADDR,
         }),
     }
@@ -58,7 +56,6 @@ fn read_linker_config(path: &Path) -> Result<LinkerConfig> {
         platform: get_string(&value, &["platform"])?,
         kernel_base_vaddr: get_usize(&value, &["plat", "kernel-base-vaddr"])?,
         max_cpu_num: get_usize(&value, &["plat", "max-cpu-num"])?,
-        phys_virt_offset: get_usize(&value, &["plat", "phys-virt-offset"])?,
         kernel_base_paddr: get_usize(&value, &["plat", "kernel-base-paddr"])?,
     })
 }
