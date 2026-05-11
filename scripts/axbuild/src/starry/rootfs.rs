@@ -134,6 +134,7 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
     }
 
     let rootfs = store::ensure_rootfs_for_arch(workspace_root, arch).await?;
+    let _lock = crate::support::download::acquire_path_lock(&rootfs).await?;
     ensure_apk_region_in_rootfs(&rootfs)?;
     Ok(rootfs)
 }

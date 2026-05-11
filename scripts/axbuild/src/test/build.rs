@@ -28,6 +28,49 @@ const CROSS_BINUTILS: &[&str] = &[
     "ld", "as", "ar", "ranlib", "strip", "nm", "objcopy", "objdump", "readelf",
 ];
 
+const CROSS_COMPILE_SPECS: &[(&str, CrossCompileSpec, &[&str])] = &[
+    (
+        "aarch64",
+        CrossCompileSpec {
+            llvm_target: "aarch64-linux-musl",
+            cmake_system_processor: "aarch64",
+            guest_tool_dir: "usr/aarch64-alpine-linux-musl/bin",
+            gnu_tool_prefix: "aarch64-linux-musl",
+        },
+        &["qemu-aarch64-static", "qemu-aarch64"],
+    ),
+    (
+        "riscv64",
+        CrossCompileSpec {
+            llvm_target: "riscv64-linux-musl",
+            cmake_system_processor: "riscv64",
+            guest_tool_dir: "usr/riscv64-alpine-linux-musl/bin",
+            gnu_tool_prefix: "riscv64-linux-musl",
+        },
+        &["qemu-riscv64-static", "qemu-riscv64"],
+    ),
+    (
+        "x86_64",
+        CrossCompileSpec {
+            llvm_target: "x86_64-linux-musl",
+            cmake_system_processor: "x86_64",
+            guest_tool_dir: "usr/x86_64-alpine-linux-musl/bin",
+            gnu_tool_prefix: "x86_64-linux-musl",
+        },
+        &["qemu-x86_64-static", "qemu-x86_64"],
+    ),
+    (
+        "loongarch64",
+        CrossCompileSpec {
+            llvm_target: "loongarch64-linux-musl",
+            cmake_system_processor: "loongarch64",
+            guest_tool_dir: "usr/loongarch64-alpine-linux-musl/bin",
+            gnu_tool_prefix: "loongarch64-linux-musl",
+        },
+        &["qemu-loongarch64-static", "qemu-loongarch64"],
+    ),
+];
+
 #[derive(Debug, Clone)]
 pub(crate) struct HostCrossBuildEnv {
     cmake: PathBuf,
@@ -618,36 +661,9 @@ fn prepare_host_cross_build_env(
 }
 
 pub(crate) fn cross_compile_spec(arch: &str) -> anyhow::Result<CrossCompileSpec> {
-    match arch {
-        "aarch64" => Ok(CrossCompileSpec {
-            llvm_target: "aarch64-linux-musl",
-            cmake_system_processor: "aarch64",
-            guest_tool_dir: "usr/aarch64-alpine-linux-musl/bin",
-            gnu_tool_prefix: "aarch64-linux-musl",
-        }),
-        "riscv64" => Ok(CrossCompileSpec {
-            llvm_target: "riscv64-linux-musl",
-            cmake_system_processor: "riscv64",
-            guest_tool_dir: "usr/riscv64-alpine-linux-musl/bin",
-            gnu_tool_prefix: "riscv64-linux-musl",
-        }),
-        "x86_64" => Ok(CrossCompileSpec {
-            llvm_target: "x86_64-linux-musl",
-            cmake_system_processor: "x86_64",
-            guest_tool_dir: "usr/x86_64-alpine-linux-musl/bin",
-            gnu_tool_prefix: "x86_64-linux-musl",
-        }),
-        "loongarch64" => Ok(CrossCompileSpec {
-            llvm_target: "loongarch64-linux-musl",
-            cmake_system_processor: "loongarch64",
-            guest_tool_dir: "usr/loongarch64-alpine-linux-musl/bin",
-            gnu_tool_prefix: "loongarch64-linux-musl",
-        }),
-        _ => bail!(
-            "C-based QEMU test cases are only supported on aarch64, riscv64, x86_64, and \
-             loongarch64, but got `{arch}`"
-        ),
-    }
+    cross_compile_spec_entry(arch)
+        .map(|(_, spec, _)| *spec)
+        .ok_or_else(|| unsupported_cross_compile_arch(arch))
 }
 
 pub(crate) fn write_cross_bin_wrappers(
@@ -1031,16 +1047,26 @@ fn ensure_guest_tool_exists(staging_root: &Path, relative_path: &str) -> anyhow:
 }
 
 pub(crate) fn qemu_user_binary_names(arch: &str) -> anyhow::Result<&'static [&'static str]> {
-    match arch {
-        "aarch64" => Ok(&["qemu-aarch64-static", "qemu-aarch64"]),
-        "riscv64" => Ok(&["qemu-riscv64-static", "qemu-riscv64"]),
-        "x86_64" => Ok(&["qemu-x86_64-static", "qemu-x86_64"]),
-        "loongarch64" => Ok(&["qemu-loongarch64-static", "qemu-loongarch64"]),
-        _ => bail!(
-            "C-based QEMU test cases are only supported on aarch64, riscv64, x86_64, and \
-             loongarch64, but got `{arch}`"
-        ),
-    }
+    cross_compile_spec_entry(arch)
+        .map(|(_, _, qemu_user_binaries)| *qemu_user_binaries)
+        .ok_or_else(|| unsupported_cross_compile_arch(arch))
+}
+
+fn cross_compile_spec_entry(
+    arch: &str,
+) -> Option<&'static (&'static str, CrossCompileSpec, &'static [&'static str])> {
+    CROSS_COMPILE_SPECS
+        .iter()
+        .find(|(candidate, ..)| *candidate == arch)
+}
+
+fn unsupported_cross_compile_arch(arch: &str) -> anyhow::Error {
+    let supported = CROSS_COMPILE_SPECS
+        .iter()
+        .map(|(arch, ..)| *arch)
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::anyhow!("C-based QEMU test cases are only supported on {supported}, but got `{arch}`")
 }
 
 fn write_guest_exec_wrapper(

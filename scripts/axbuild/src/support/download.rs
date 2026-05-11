@@ -220,7 +220,7 @@ fn part_path(path: &Path) -> PathBuf {
     path.with_file_name(file_name)
 }
 
-async fn acquire_path_lock(path: &Path) -> anyhow::Result<PathLock> {
+pub(crate) async fn acquire_path_lock(path: &Path) -> anyhow::Result<PathLock> {
     let lock_path = lock_path(path);
 
     loop {
@@ -333,7 +333,7 @@ fn progress_bar(total_size: Option<u64>, path: &Path) -> ProgressBar {
     }
 }
 
-struct PathLock {
+pub(crate) struct PathLock {
     path: PathBuf,
 }
 

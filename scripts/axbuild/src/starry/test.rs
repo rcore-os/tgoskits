@@ -625,9 +625,6 @@ impl Starry {
             Self::qemu_group_build_context(&request, build_config_path)
         })?;
 
-        // Build one group and run it before moving to the next group.  `ostool`
-        // keeps the current artifact on the app context, so a later build would
-        // otherwise make earlier QEMU cases boot the wrong image.
         let mut completed = 0;
         for build_group in &build_groups {
             self.app
@@ -1089,30 +1086,6 @@ mod tests {
         fs::write(
             &path,
             format!("target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
-        )
-        .unwrap();
-        path
-    }
-
-    fn write_qemu_build_config_with_max_cpu_num(
-        root: &Path,
-        group: StarryTestGroup,
-        build_group: &str,
-        target: &str,
-        max_cpu_num: usize,
-    ) -> PathBuf {
-        let path = root
-            .join("test-suit/starryos")
-            .join(group.as_str())
-            .join(build_group)
-            .join(format!("build-{target}.toml"));
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(
-            &path,
-            format!(
-                "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \
-                 \"Info\"\nmax_cpu_num = {max_cpu_num}\n"
-            ),
         )
         .unwrap();
         path

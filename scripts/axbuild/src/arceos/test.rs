@@ -276,7 +276,6 @@ async fn test_rust_qemu(
     target: &str,
     selected_case: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut failed = Vec::new();
     let cases = discover_rust_qemu_cases(arceos, arch, target, selected_case)?;
     println!(
         "running arceos rust qemu tests for arch: {} (target: {}, cases: {})",
@@ -288,31 +287,32 @@ async fn test_rust_qemu(
     let prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     let total = prepared.len();
 
-    // Build one group and run it before moving to the next group.  `ostool`
-    // keeps the current artifact on the app context, so a later build would
-    // otherwise make earlier QEMU cases boot the wrong image.
-    let mut completed = 0;
-    for group in qemu_test::group_cases_by_build_config(&prepared) {
-        let first_case = group
-            .cases
-            .first()
+    let build_groups = qemu_test::prepare_case_build_groups(&prepared, |build_config_path| {
+        let first_case = prepared
+            .iter()
+            .find(|case| case.case.build_config_path == build_config_path)
             .context("empty ArceOS Rust qemu build group")?;
+        Ok((first_case.request.clone(), first_case.cargo.clone()))
+    })?;
+    let mut failed = Vec::new();
+    let mut completed = 0;
+    for build_group in &build_groups {
         arceos
             .app
             .build(
-                first_case.cargo.clone(),
-                first_case.request.build_info_path.clone(),
+                build_group.cargo.clone(),
+                build_group.request.build_info_path.clone(),
             )
             .await
             .with_context(|| {
                 format!(
                     "failed to build ArceOS rust qemu test artifact for build group `{}` ({})",
-                    group.build_group,
-                    group.build_config_path.display()
+                    build_group.group.build_group,
+                    build_group.group.build_config_path.display()
                 )
             })?;
 
-        for case in group.cases {
+        for case in &build_group.group.cases {
             completed += 1;
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] arceos rust qemu {case_name}");
@@ -363,33 +363,33 @@ async fn test_generic_qemu(
     );
     let prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     let total = prepared.len();
-    let mut failed = Vec::new();
 
-    // Build one group and run it before moving to the next group.  `ostool`
-    // keeps the current artifact on the app context, so a later build would
-    // otherwise make earlier QEMU cases boot the wrong image.
-    let mut completed = 0;
-    for build_group in qemu_test::group_cases_by_build_config(&prepared) {
-        let first_case = build_group
-            .cases
-            .first()
+    let build_groups = qemu_test::prepare_case_build_groups(&prepared, |build_config_path| {
+        let first_case = prepared
+            .iter()
+            .find(|case| case.case.build_config_path == build_config_path)
             .with_context(|| format!("empty ArceOS {group} qemu build group"))?;
+        Ok((first_case.request.clone(), first_case.cargo.clone()))
+    })?;
+    let mut failed = Vec::new();
+    let mut completed = 0;
+    for build_group in &build_groups {
         arceos
             .app
             .build(
-                first_case.cargo.clone(),
-                first_case.request.build_info_path.clone(),
+                build_group.cargo.clone(),
+                build_group.request.build_info_path.clone(),
             )
             .await
             .with_context(|| {
                 format!(
                     "failed to build ArceOS {group} qemu test artifact for build group `{}` ({})",
-                    build_group.build_group,
-                    build_group.build_config_path.display()
+                    build_group.group.build_group,
+                    build_group.group.build_config_path.display()
                 )
             })?;
 
-        for case in build_group.cases {
+        for case in &build_group.group.cases {
             completed += 1;
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] {group_label} qemu {case_name}");
@@ -1159,32 +1159,12 @@ fn prepare_c_test_invocations(
         .collect()
 }
 
-fn c_test_build_key(invocation: &PreparedCTestInvocation) -> &[String] {
-    &invocation.make_args
-}
-
-/// Extract architecture short name from a target triple (e.g. "x86_64-unknown-none" -> "x86_64").
-fn arch_from_target(target: &str) -> &str {
-    if target.starts_with("x86_64") {
-        "x86_64"
-    } else if target.starts_with("aarch64") {
-        "aarch64"
-    } else if target.starts_with("riscv64") {
-        "riscv64"
-    } else if target.starts_with("loongarch64") {
-        "loongarch64"
-    } else {
-        "unknown"
-    }
-}
-
 /// Two-phase C test runner:
 ///
-/// Phase 1 – build all tests in **parallel** using per-invocation artifact
-/// isolation so concurrent builds never contend on the same Cargo file lock
-/// and multi-configuration tests cannot overwrite the image that a later
-/// QEMU run needs.  Build output is captured and suppressed on success; it is
-/// printed verbatim only when a build fails, keeping CI logs readable.
+/// Phase 1 – build all tests.  Builds default to serial because the ArceOS C
+/// Makefiles share intermediate directories.  Build output is captured and
+/// suppressed on success; it is printed verbatim only when a build fails,
+/// keeping CI logs readable.
 ///
 /// Phase 2 – run `make justrun` (QEMU) for each successfully-built test
 /// **sequentially** so their output is never interleaved.  QEMU output is
@@ -1205,7 +1185,7 @@ where
     BuildFn: Fn(&Path, &Path, &[String], &CTestCargoEnv) -> anyhow::Result<()> + Send + Sync,
     RunFn: FnMut(&Path, &Path, &PreparedCTestInvocation, &CTestCargoEnv) -> anyhow::Result<()>,
 {
-    let arch = arch_from_target(target);
+    let arch = crate::context::arch_for_target_checked(target)?;
     let arceos_dir = workspace_root.join("os/arceos");
     let c_test_root = arceos_test_group_dir(workspace_root, ARCEOS_C_TEST_GROUP);
 
@@ -1286,7 +1266,10 @@ where
         );
 
         if build_jobs < preps.len() {
-            println!("set {C_TEST_BUILD_JOBS_ENV}=N to tune ArceOS C test build parallelism");
+            println!(
+                "set {C_TEST_BUILD_JOBS_ENV}=N to experiment with ArceOS C test build \
+                 parallelism; shared Makefile build directories may make values above 1 unsafe"
+            );
         }
     }
 
@@ -1374,9 +1357,24 @@ where
             .collect();
         handles
             .into_iter()
-            .flat_map(|h| h.join().expect("build thread panicked"))
+            .flat_map(|h| {
+                h.join().unwrap_or_else(|panic| {
+                    vec![(
+                        "build-worker".to_string(),
+                        anyhow::anyhow!("build thread panicked: {}", panic_payload(panic)),
+                    )]
+                })
+            })
             .collect()
     })
+}
+
+fn panic_payload(panic: Box<dyn std::any::Any + Send>) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|value| (*value).to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic payload".to_string())
 }
 
 fn build_c_test_prep<BuildFn>(
@@ -1392,7 +1390,7 @@ where
     for inv in &prep.invocations {
         let already_built = built_args
             .iter()
-            .any(|a| a.as_slice() == c_test_build_key(inv));
+            .any(|a| a.as_slice() == inv.make_args.as_slice());
         if already_built {
             continue;
         }
@@ -1727,20 +1725,6 @@ mod tests {
         let rejected_target = "mips64-unknown-none".to_string();
         let err = parse_target(&None, &Some(rejected_target.clone())).unwrap_err();
         assert!(err.to_string().contains(&rejected_target));
-    }
-
-    #[test]
-    fn arch_from_target_extracts_correct_arch() {
-        assert_eq!(arch_from_target("x86_64-unknown-none"), "x86_64");
-        assert_eq!(
-            arch_from_target("aarch64-unknown-none-softfloat"),
-            "aarch64"
-        );
-        assert_eq!(arch_from_target("riscv64gc-unknown-none-elf"), "riscv64");
-        assert_eq!(
-            arch_from_target("loongarch64-unknown-none-softfloat"),
-            "loongarch64"
-        );
     }
 
     #[test]

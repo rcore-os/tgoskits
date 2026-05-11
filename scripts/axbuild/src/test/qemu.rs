@@ -886,25 +886,54 @@ pub(crate) fn validate_grouped_qemu_commands(
     Ok(())
 }
 
+struct QemuArgs<'a> {
+    args: &'a [String],
+}
+
+impl<'a> QemuArgs<'a> {
+    fn new(args: &'a [String]) -> Self {
+        Self { args }
+    }
+
+    fn option_value(&self, option: &str) -> Option<&str> {
+        let index = self.args.iter().position(|arg| arg == option)?;
+        self.args.get(index + 1).map(String::as_str)
+    }
+}
+
+struct QemuArgsMut<'a> {
+    args: &'a mut Vec<String>,
+}
+
+impl<'a> QemuArgsMut<'a> {
+    fn new(args: &'a mut Vec<String>) -> Self {
+        Self { args }
+    }
+
+    fn set_option_value(&mut self, option: &str, value: String) {
+        if let Some(index) = self.args.iter().position(|arg| arg == option)
+            && let Some(existing) = self.args.get_mut(index + 1)
+        {
+            *existing = value;
+            return;
+        }
+
+        self.args.push(option.to_string());
+        self.args.push(value);
+    }
+}
+
 pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
     let Some(cpu_num) = smp else {
         return;
     };
 
-    if let Some(index) = qemu.args.iter().position(|arg| arg == "-smp")
-        && let Some(value) = qemu.args.get_mut(index + 1)
-    {
-        *value = cpu_num.to_string();
-        return;
-    }
-
-    qemu.args.push("-smp".to_string());
-    qemu.args.push(cpu_num.to_string());
+    QemuArgsMut::new(&mut qemu.args).set_option_value("-smp", cpu_num.to_string());
 }
 
 pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {
-    let index = qemu.args.iter().position(|arg| arg == "-smp")?;
-    let value = qemu.args.get(index + 1)?;
+    let args = QemuArgs::new(&qemu.args);
+    let value = args.option_value("-smp")?;
     parse_smp_qemu_value(value)
 }
 
