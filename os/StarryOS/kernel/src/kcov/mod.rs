@@ -3,6 +3,7 @@
 //! Exposes `/dev/kcov` as a character device. Userspace opens it, initializes
 //! a trace buffer via `KCOV_INIT_TRACE`, mmap's the buffer, enables coverage
 //! via `KCOV_ENABLE`, runs the workload, and disables via `KCOV_DISABLE`.
+//! Currently only KCOV_TRACE_PC is implemented, KCOV_TRACE_CMP
 
 use alloc::sync::Arc;
 use core::any::Any;
@@ -46,7 +47,6 @@ pub const KCOV_MODE_DISABLED: u32 = 0;
 /// Trace program counters (PCs).
 pub const KCOV_TRACE_PC: u32 = 0x100;
 /// Trace comparison operations (not yet implemented).
-#[expect(dead_code)]
 pub const KCOV_TRACE_CMP: u32 = 0x200;
 
 /// Maximum number of coverage entries in the buffer.
@@ -181,6 +181,10 @@ impl DeviceOps for KcovDevice {
                 // ioctl layer but the actual comparison hooks have not yet been
                 // implemented.  Until then, accept only TRACE_PC to avoid
                 // silently giving userspace no data.
+                if mode == KCOV_TRACE_CMP {
+                    // To be implemented!
+                    return Err(AxError::InvalidInput);
+                }
                 if mode != KCOV_TRACE_PC {
                     return Err(AxError::InvalidInput);
                 }
