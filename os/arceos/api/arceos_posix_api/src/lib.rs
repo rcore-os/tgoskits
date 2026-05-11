@@ -4,6 +4,7 @@
 
 #![cfg_attr(all(not(test), not(doc)), no_std)]
 #![allow(clippy::missing_safety_doc)]
+#[allow(clippy::needless_update)]
 
 #[macro_use]
 extern crate ax_log;
@@ -25,7 +26,9 @@ pub mod config {
 /// POSIX C types.
 #[rustfmt::skip]
 #[allow(nonstandard_style, dead_code, missing_docs)]
-pub mod ctypes_gen;
+pub mod ctypes_gen {
+    include!(concat!(env!("OUT_DIR"), "/ctypes_gen.rs"));
+}
 
 #[cfg(not(feature = "use-hermit-types"))]
 pub use self::ctypes_gen as ctypes;
