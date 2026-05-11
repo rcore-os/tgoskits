@@ -17,7 +17,7 @@ pub struct File {
 }
 
 pub struct Directory {
-    inner: Mutex<axfs::fops::Directory>,
+    inner: Mutex<ax_fs::fops::Directory>,
 }
 
 // ============================================================================
@@ -160,12 +160,12 @@ impl<'a> HermitDirBuffer<'a> {
 // Common file type conversion
 // ============================================================================
 
-fn file_type_to_d_type(ty: axfs::fops::FileType) -> u8 {
+fn file_type_to_d_type(ty: ax_fs::fops::FileType) -> u8 {
     match ty {
-        axfs::fops::FileType::Dir => 4,      // DT_DIR
-        axfs::fops::FileType::File => 8,     // DT_REG
-        axfs::fops::FileType::SymLink => 10, // DT_LNK
-        _ => 0,                              // DT_UNKNOWN
+        ax_fs::fops::FileType::Dir => 4,      // DT_DIR
+        ax_fs::fops::FileType::File => 8,     // DT_REG
+        ax_fs::fops::FileType::SymLink => 10, // DT_LNK
+        _ => 0,                               // DT_UNKNOWN
     }
 }
 
@@ -189,7 +189,7 @@ impl File {
 }
 
 impl Directory {
-    fn new(inner: axfs::fops::Directory) -> Self {
+    fn new(inner: ax_fs::fops::Directory) -> Self {
         Self {
             inner: Mutex::new(inner),
         }
@@ -328,7 +328,7 @@ pub fn sys_open(filename: *const c_char, flags: c_int, mode: ctypes::mode_t) -> 
         let options = flags_to_options(flags, mode);
         let filename = filename?;
         if (flags as u32) & ctypes::O_DIRECTORY != 0 {
-            let dir = axfs::fops::Directory::open_dir(filename, &options)?;
+            let dir = ax_fs::fops::Directory::open_dir(filename, &options)?;
             Directory::new(dir).add_to_fd_table()
         } else {
             let file = ax_fs::fops::File::open(filename, &options)?;
@@ -359,8 +359,8 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
         let mut dir_buf = DirBuffer::new(out);
 
-        let mut entries: [axfs::fops::DirEntry; 16] =
-            core::array::from_fn(|_| axfs::fops::DirEntry::default());
+        let mut entries: [ax_fs::fops::DirEntry; 16] =
+            core::array::from_fn(|_| ax_fs::fops::DirEntry::default());
         loop {
             let nr = dir.read_dir(&mut entries)?;
             if nr == 0 {
@@ -413,8 +413,8 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
         let mut dir_buf = HermitDirBuffer::new(out);
 
-        let mut entries: [axfs::fops::DirEntry; 16] =
-            core::array::from_fn(|_| axfs::fops::DirEntry::default());
+        let mut entries: [ax_fs::fops::DirEntry; 16] =
+            core::array::from_fn(|_| ax_fs::fops::DirEntry::default());
         loop {
             let nr = dir.read_dir(&mut entries)?;
             if nr == 0 {
@@ -498,7 +498,7 @@ pub unsafe fn sys_lstat(path: *const c_char, buf: *mut ctypes::stat) -> ctypes::
         // ArceOS currently doesn't support symbolic links, so lstat behaves the same as stat
         let mut options = OpenOptions::new();
         options.read(true);
-        let file = axfs::fops::File::open(path?, &options)?;
+        let file = ax_fs::fops::File::open(path?, &options)?;
         let st = File::new(file).stat()?;
         unsafe { *buf = st };
         Ok(0)

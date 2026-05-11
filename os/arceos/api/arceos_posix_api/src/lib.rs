@@ -4,7 +4,8 @@
 
 #![cfg_attr(all(not(test), not(doc)), no_std)]
 #![allow(clippy::missing_safety_doc)]
-#[allow(clippy::needless_update)]
+#![allow(clippy::needless_update)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 #[macro_use]
 extern crate ax_log;

@@ -46,7 +46,7 @@ pub unsafe fn sys_clock_gettime(clk: ctypes::clockid_t, ts: *mut ctypes::timespe
         if ts.is_null() {
             return Err(LinuxError::EFAULT);
         }
-        let now = match clk as u32 {
+        let now = match clk as _ {
             CLOCK_REALTIME => ax_hal::time::wall_time().into(),
             CLOCK_MONOTONIC => ax_hal::time::monotonic_time().into(),
             _ => {

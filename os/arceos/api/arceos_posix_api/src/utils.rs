@@ -5,7 +5,6 @@ use core::ffi::{CStr, c_char};
 
 use ax_errno::{LinuxError, LinuxResult};
 
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn char_ptr_to_str<'a>(str: *const c_char) -> LinuxResult<&'a str> {
     if str.is_null() {
         Err(LinuxError::EFAULT)

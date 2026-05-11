@@ -1,7 +1,7 @@
 use core::ffi::c_int;
 
-use axerrno::{LinuxError, LinuxResult};
-use axhal::time::wall_time;
+use ax_errno::LinuxError;
+use ax_hal::time::wall_time;
 
 use crate::{ctypes, imp::fd_ops::get_file_like};
 
@@ -20,7 +20,7 @@ pub fn sys_poll(fds: *mut ctypes::pollfd, nfds: ctypes::nfds_t, timeout: c_int) 
         }
 
         let fds_slice = if nfds > 0 {
-            unsafe { core::slice::from_raw_parts_mut(fds, nfds) }
+            unsafe { core::slice::from_raw_parts_mut(fds, nfds as _) }
         } else {
             &mut []
         };
@@ -54,25 +54,25 @@ pub fn sys_poll(fds: *mut ctypes::pollfd, nfds: ctypes::nfds_t, timeout: c_int) 
                 match get_file_like(pfd.fd) {
                     Ok(file) => match file.poll() {
                         Ok(state) => {
-                            let mut revents: i16 = 0;
-                            if state.readable && (pfd.events & ctypes::POLLIN) != 0 {
+                            let mut revents = 0;
+                            if state.readable && (pfd.events & ctypes::POLLIN as i16) != 0 {
                                 revents |= ctypes::POLLIN;
                             }
-                            if state.writable && (pfd.events & ctypes::POLLOUT) != 0 {
+                            if state.writable && (pfd.events & ctypes::POLLOUT as i16) != 0 {
                                 revents |= ctypes::POLLOUT;
                             }
                             if revents != 0 {
-                                pfd.revents = revents;
+                                pfd.revents = revents as _;
                                 ready_count += 1;
                             }
                         }
                         Err(_) => {
-                            pfd.revents = ctypes::POLLERR;
+                            pfd.revents = ctypes::POLLERR as _;
                             ready_count += 1;
                         }
                     },
                     Err(_) => {
-                        pfd.revents = ctypes::POLLNVAL;
+                        pfd.revents = ctypes::POLLNVAL as _;
                         ready_count += 1;
                     }
                 }

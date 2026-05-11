@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <stddef.h>
 #include <time.h>
+#include <poll.h>
 #include <sys/epoll.h>
 #include <sys/resource.h>
 #include <sys/select.h>
