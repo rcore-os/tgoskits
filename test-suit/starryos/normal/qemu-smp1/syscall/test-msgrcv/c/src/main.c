@@ -14,7 +14,7 @@
 #define MSG_COPY 040000
 #endif
 #ifndef MSG_EXCEPT
-#define MSG_EXCEPT 02000
+#define MSG_EXCEPT 020000
 #endif
 #ifndef MSG_NOERROR
 #define MSG_NOERROR 010000

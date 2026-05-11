@@ -367,9 +367,9 @@ bitflags::bitflags! {
         /// Truncate message if too long (instead of failing)
         const MSG_NOERROR = 0o10000;
         /// For internal use - mark as COPIED
-        const MSG_COPY = 0o20000;
+        const MSG_COPY = 0o40000;
         /// Receive any message except of specified type (Linux extension)
-        const MSG_EXCEPT = 0o2000;
+        const MSG_EXCEPT = 0o20000;
     }
 }
 
@@ -568,10 +568,9 @@ pub fn sys_msgrcv(
     const IPC_NOWAIT_RAW: i32 = 0o4000;
     const MSG_NOERROR_RAW: i32 = 0o10000;
     const MSG_EXCEPT_RAW: i32 = 0o20000;
-    const MSG_EXCEPT_ALT_RAW: i32 = 0o2000;
     const MSG_COPY_RAW: i32 = 0o40000;
     let msg_copy = (msgflg & MSG_COPY_RAW) != 0;
-    let msg_except = (msgflg & (MSG_EXCEPT_RAW | MSG_EXCEPT_ALT_RAW)) != 0;
+    let msg_except = (msgflg & MSG_EXCEPT_RAW) != 0;
     let ipc_nowait = (msgflg & IPC_NOWAIT_RAW) != 0;
     let msg_noerror = (msgflg & MSG_NOERROR_RAW) != 0;
     if msg_except {
