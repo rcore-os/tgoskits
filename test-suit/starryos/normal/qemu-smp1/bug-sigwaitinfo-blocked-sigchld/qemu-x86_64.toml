@@ -10,10 +10,6 @@ args = [
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
-    "-debugcon",
-    "file:/workspace/syscall-starry.log",
-    "-global",
-    "isa-debugcon.iobase=0xe9",
 ]
 uefi = false
 to_bin = false
