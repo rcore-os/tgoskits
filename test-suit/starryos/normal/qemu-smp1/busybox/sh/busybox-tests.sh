@@ -9,8 +9,8 @@ if [ -n "$_t" ]; then echo "PASS: busybox_adjtimex"; PASS=$((PASS+1)); else echo
 _t=$({ timeout 10 sh -c "busybox arch 2>&1"; } 2>&1)
 if [ -n "$_t" ] && echo "$_t" | grep -qE "x86_64|riscv|aarch64|arm|loongarch|mips|powerpc|s390"; then echo "PASS: busybox_arch"; PASS=$((PASS+1)); else echo "FAIL: busybox_arch"; FAIL=$((FAIL+1)); fi
 
-_t=$({ timeout 10 sh -c "busybox arping -c 1 127.0.0.1 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "Received"; then echo "PASS: busybox_arping"; PASS=$((PASS+1)); else echo "FAIL: busybox_arping"; echo "$_t"; FAIL=$((FAIL+1)); fi
+_t=$({ timeout 10 sh -c "busybox arping -c 1 127.0.0.1 2>&1"; echo "ARPING_STATUS:$?"; } 2>&1)
+if echo "$_t" | grep -qF "ARPING_STATUS:0" && echo "$_t" | grep -Eq "Received [1-9][0-9]* response[(]s[)]|Unicast reply"; then echo "PASS: busybox_arping"; PASS=$((PASS+1)); else echo "FAIL: busybox_arping"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox ash -c 'echo ash_ok' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "ash_ok"; then echo "PASS: busybox_ash"; PASS=$((PASS+1)); else echo "FAIL: busybox_ash"; FAIL=$((FAIL+1)); fi
