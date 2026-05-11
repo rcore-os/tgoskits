@@ -99,8 +99,8 @@ function HeroBanner() {
   const quickLinks = [
     { label: '项目概览', to: '/docs/introduction/overview' },
     { label: '快速开始', to: '/docs/quickstart/overview' },
-    { label: '构建系统', to: '/docs/design/reference/build-system' },
-    { label: '组件视图', to: '/docs/design/reference/components' },
+    { label: '构建系统', to: '/docs/build/overview' },
+    { label: '组件视图', to: '/docs/components/overview' },
   ];
 
   return (
@@ -222,19 +222,19 @@ function CapabilitySection() {
       icon: 'orbit',
       title: '统一入口',
       desc: '围绕根目录文档与 cargo xtask 组织日常开发入口，降低系统间切换成本。',
-      to: '/docs/design/reference/build-system',
+      to: '/docs/build/overview',
     },
     {
       icon: 'layers',
       title: '组件共享',
       desc: '基础能力以独立 crate 组织，被多个系统路径复用，职责边界更清晰。',
-      to: '/docs/design/reference/components',
+      to: '/docs/components/overview',
     },
     {
       icon: 'shield',
       title: '安全实现',
       desc: '以内存安全为优先，围绕 Rust 构建可维护的系统软件组件与接口。',
-      to: '/docs/design/architecture/arch',
+      to: '/docs/architecture/arch',
     },
     {
       icon: 'pulse',
@@ -321,7 +321,7 @@ function ArchitectureSection() {
             <Link className="button button--primary button--hero button--compact" to="/docs/introduction/overview">
               查看项目概览
             </Link>
-            <Link className="button button--outline button--hero button--compact" to="/docs/design/reference/repo">
+            <Link className="button button--outline button--hero button--compact" to="/docs/contributing/repo">
               浏览仓库结构
             </Link>
           </div>
@@ -415,7 +415,7 @@ function WorkflowSection() {
       index: '03',
       title: '深入设计与验证',
       desc: '进入 architecture、build、test、guest config 等文档，理解底层设计和验证策略。',
-      to: '/docs/design/architecture/arch',
+      to: '/docs/architecture/arch',
     },
   ];
 
@@ -455,7 +455,7 @@ function WorkflowSection() {
             ))}
           </div>
           <div className="command-board__links">
-            <Link to="/docs/design/reference/build-system">构建系统说明</Link>
+            <Link to="/docs/build/overview">构建系统说明</Link>
             <Link to="/docs/design/test/overview">验证策略</Link>
             <Link to="/docs/design/build/flow">构建流程</Link>
           </div>
@@ -479,16 +479,16 @@ function DocsSection() {
       title: '参考资料',
       desc: '查看仓库结构、组件分析、构建系统和依赖关系等全局性资料。',
       links: [
-        { label: '仓库结构', to: '/docs/design/reference/repo' },
-        { label: '组件开发指南', to: '/docs/design/reference/components' },
-        { label: '构建系统', to: '/docs/design/reference/build-system' },
+        { label: '仓库结构', to: '/docs/contributing/repo' },
+        { label: '组件开发指南', to: '/docs/components/overview' },
+        { label: '构建系统', to: '/docs/build/overview' },
       ],
     },
     {
       title: '设计与实现',
       desc: '阅读架构、构建链、测试链和 Guest 配置等底层设计说明。',
       links: [
-        { label: '架构设计', to: '/docs/design/architecture/arch' },
+        { label: '架构设计', to: '/docs/architecture/arch' },
         { label: '构建流程', to: '/docs/design/build/flow' },
         { label: 'Guest 配置', to: '/docs/design/guest-config/config-overview' },
       ],
@@ -765,7 +765,7 @@ function CTASection() {
             <Link className="button button--primary button--hero" to="/docs/quickstart/overview">
               打开快速开始
             </Link>
-            <Link className="button button--outline button--hero" to="/docs/design/reference/components">
+            <Link className="button button--outline button--hero" to="/docs/components/overview">
               查看组件分析
             </Link>
           </div>

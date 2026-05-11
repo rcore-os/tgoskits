@@ -47,7 +47,7 @@ docker build -t tgoskits-env -f container/Dockerfile .
 docker run -it --rm -v "$(pwd)":/workspace -w /workspace tgoskits-env
 ```
 
-容器化测试环境详见：[测试基础设施与环境](../design/test/infrastructure)
+容器化测试环境详见：[测试基础设施与环境](../test/infrastructure)
 
 ### 1.3 手动安装
 

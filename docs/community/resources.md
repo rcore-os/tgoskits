@@ -11,13 +11,13 @@ sidebar_label: "社区资源"
 
 ### 文档
 - [用户文档](/docs/introduction/overview) - 完整的用户指南和教程
-- [总体架构](/docs/design/architecture/overview) - 系统架构和设计原理
-- [QEMU 部署](/docs/manual/deploy/qemu) - 常见运行与部署路径
+- [总体架构](/docs/architecture/overview) - 系统架构和设计原理
+- [QEMU 部署](/docs/build/qemu) - 常见运行与部署路径
 
 ### 演示和示例
-- [快速开始](/docs/design/reference/quick-start) - 统一上手入口
+- [快速开始](/docs/quickstart/overview) - 统一上手入口
 - [测试与验证](/docs/design/test/overview) - 验证策略与执行路径
-- [构建系统](/docs/design/reference/build-system) - `cargo xtask` 和构建链说明
+- [构建系统](/docs/build/overview) - `cargo xtask` 和构建链说明
 
 ## 社区贡献
 
@@ -52,13 +52,13 @@ sidebar_label: "社区资源"
 
 ### 推荐阅读
 - [项目概览](/docs/introduction/overview) - 仓库定位与系统关系
-- [架构文档](/docs/design/architecture/overview) - 系统设计原理
-- [组件开发指南](/docs/design/reference/components) - 共享组件与影响面分析
-- [构建系统](/docs/design/reference/build-system) - 统一命令入口与实现分层
+- [架构文档](/docs/architecture/overview) - 系统设计原理
+- [组件开发指南](/docs/components/overview) - 共享组件与影响面分析
+- [构建系统](/docs/build/overview) - 统一命令入口与实现分层
 
 ### 学习路径
-1. 从[快速开始](/docs/design/reference/quick-start)开始
-2. 阅读[项目概览](/docs/introduction/overview)和[仓库结构](/docs/design/reference/repo)
+1. 从[快速开始](/docs/quickstart/overview)开始
+2. 阅读[项目概览](/docs/introduction/overview)和[仓库结构](/docs/contributing/repo)
 3. 参考目标系统指南进行实践
 4. 探索[社区资源](/community/resources)获取更多工具
 

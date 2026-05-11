@@ -439,7 +439,7 @@ jobs:
 为了帮助开发者系统地掌握 TGOSKits 的组件开发和集成，建议按照以下顺序阅读相关文档：
 
 - [quick-start.md](quick-start): 先把三套系统入口跑通
-- [build-system.md](build-system): 再理解 workspace、xtask 和测试矩阵
-- [arceos-guide.md](/docs/design/systems/arceos-guide): 继续看 ArceOS 的模块与 API 关系
-- [starryos-guide.md](/docs/design/systems/starryos-guide): 继续看 StarryOS 的 rootfs、syscall 和内核入口
-- [axvisor-guide.md](/docs/design/systems/axvisor-guide): 继续看 Axvisor 的板级配置、VM 配置和 Guest 启动
+- [build-system.md](/docs/build/overview): 再理解 workspace、xtask 和测试矩阵
+- [arceos-guide.md](/docs/development/arceos): 继续看 ArceOS 的模块与 API 关系
+- [starryos-guide.md](/docs/development/starryos): 继续看 StarryOS 的 rootfs、syscall 和内核入口
+- [axvisor-guide.md](/docs/development/axvisor): 继续看 Axvisor 的板级配置、VM 配置和 Guest 启动
