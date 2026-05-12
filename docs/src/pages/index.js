@@ -268,8 +268,10 @@ function CapabilitySection() {
       <div className="feature-grid">
         {features.map((feature) => (
           <Link className="feature-card" key={feature.title} to={feature.to}>
-            <div className="feature-icon">{iconLibrary[feature.icon]}</div>
-            <h3>{feature.title}</h3>
+            <div className="feature-card__header">
+              <div className="feature-icon">{iconLibrary[feature.icon]}</div>
+              <h3>{feature.title}</h3>
+            </div>
             <p>{feature.desc}</p>
           </Link>
         ))}

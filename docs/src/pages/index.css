@@ -730,6 +730,13 @@ html {
   border-color: rgba(95, 107, 255, 0.22);
 }
 
+.feature-card__header {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+}
+
 .feature-icon {
   width: 56px;
   height: 56px;
@@ -742,9 +749,22 @@ html {
   border-radius: 18px;
 }
 
+.feature-card .feature-icon {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 0;
+  border-radius: 15px;
+}
+
 .feature-icon svg {
   width: 28px;
   height: 28px;
+}
+
+.feature-card .feature-icon svg {
+  width: 24px;
+  height: 24px;
 }
 
 .feature-card h3,
@@ -755,6 +775,10 @@ html {
 .command-board h3 {
   margin: 0 0 0.7rem;
   font-size: 1.16rem;
+}
+
+.feature-card h3 {
+  margin: 0;
 }
 
 .feature-card p,
