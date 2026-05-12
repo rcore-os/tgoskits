@@ -30,7 +30,6 @@
 //!
 //! All the features are optional and disabled by default.
 
-#![feature(extern_item_impls)]
 #![cfg_attr(not(test), no_std)]
 #![allow(missing_abi)]
 
@@ -60,16 +59,9 @@ const LOGO: &str = r#"
 d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
 "#;
 
-#[eii]
-fn ax_app_entry() {
-    #[cfg(not(test))]
-    unsafe extern "C" {
-        /// Legacy application's entry point.
-        safe fn main();
-    }
-    // Default implementation
-    #[cfg(not(test))]
-    main();
+unsafe extern "C" {
+    /// Application's entry point.
+    fn main();
 }
 
 struct LogIfImpl;
@@ -285,7 +277,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         core::hint::spin_loop();
     }
 
-    ax_app_entry();
+    unsafe { main() };
 
     #[cfg(feature = "multitask")]
     ax_task::exit(0);

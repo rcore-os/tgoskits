@@ -18,8 +18,6 @@ license.workspace = true
 [features]
 default = []
 
-use-hermit-types = []
-
 smp = ["ax-feat/smp"]
 irq = ["ax-feat/irq"]
 alloc = ["dep:ax-alloc", "ax-feat/alloc"]
@@ -30,7 +28,6 @@ fs = ["dep:ax-fs", "ax-feat/fs", "fd"]
 net = ["dep:ax-net", "ax-feat/net", "fd"]
 pipe = ["fd"]
 select = ["fd"]
-poll = ["fd"]
 epoll = ["fd"]
 
 [dependencies]

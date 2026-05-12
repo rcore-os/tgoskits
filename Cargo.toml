@@ -152,13 +152,6 @@ members = [
     "os/arceos/examples/httpclient",
     "os/arceos/examples/httpserver",
     "os/arceos/examples/shell",
-    "os/arceos/examples/std/helloworld",
-    "os/arceos/examples/std/httpclient",
-    "os/arceos/examples/std/httpserver",
-    "os/arceos/examples/std/thread_test",
-    "os/arceos/examples/std/io_test",
-    "os/arceos/examples/std/tokio_test",
-    "os/arceos/examples/std/arce_agent",
     "os/arceos/modules/axalloc",
     "os/arceos/modules/axconfig",
     "os/arceos/modules/axdisplay",
@@ -181,8 +174,6 @@ members = [
     "os/arceos/tools/raspi4/chainloader",
     "os/arceos/ulib/axlibc",
     "os/arceos/ulib/axstd",
-    "os/arceos/ulib/arceos-rust",
-    "os/arceos/ulib/arceos-rust/lib",
     "os/axvisor",
     "platform/axplat-dyn",
     "platform/somehal",
@@ -228,7 +219,6 @@ arceos-net-httpserver = { version = "0.3.1", path = "test-suit/arceos/rust/net/h
 arceos-net-udpserver = { version = "0.3.1", path = "test-suit/arceos/rust/net/udpserver" }
 arceos-parallel = { version = "0.3.1", path = "test-suit/arceos/rust/task/parallel" }
 arceos-priority = { version = "0.3.1", path = "test-suit/arceos/rust/task/priority" }
-arceos-rust = { version = "0.1", path = "os/arceos/ulib/arceos-rust", default-features = false }
 arceos-sleep = { version = "0.3.1", path = "test-suit/arceos/rust/task/sleep" }
 arceos-tls = { version = "0.3.1", path = "test-suit/arceos/rust/task/tls" }
 arceos-wait-queue = { version = "0.3.1", path = "test-suit/arceos/rust/task/wait_queue" }
@@ -425,7 +415,6 @@ lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.10"
 ostool = { version = "0.15" }
-rand = { version = "0.9", default-features = false }
 uefi = "0.36"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"

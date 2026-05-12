@@ -4,8 +4,6 @@
 
 #![cfg_attr(all(not(test), not(doc)), no_std)]
 #![allow(clippy::missing_safety_doc)]
-#![allow(clippy::needless_update)]
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 #[macro_use]
 extern crate ax_log;
@@ -15,7 +13,7 @@ extern crate ax_runtime;
 extern crate alloc;
 
 #[macro_use]
-pub mod utils;
+mod utils;
 
 mod imp;
 
@@ -26,27 +24,15 @@ pub mod config {
 
 /// POSIX C types.
 #[rustfmt::skip]
-#[allow(nonstandard_style, dead_code, missing_docs)]
-pub mod ctypes_gen {
+#[allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::upper_case_acronyms, missing_docs)]
+pub mod ctypes {
     include!(concat!(env!("OUT_DIR"), "/ctypes_gen.rs"));
 }
 
-#[cfg(not(feature = "use-hermit-types"))]
-pub use self::ctypes_gen as ctypes;
-
-#[cfg(feature = "use-hermit-types")]
-mod hermit_abi;
-
-#[cfg(feature = "use-hermit-types")]
-pub use hermit_abi::hermit_types as ctypes;
 #[cfg(feature = "fd")]
 pub use imp::fd_ops::{sys_close, sys_dup, sys_dup2, sys_fcntl};
 #[cfg(feature = "fs")]
-pub use imp::fs::{
-    sys_fstat, sys_getcwd, sys_getdents64, sys_lseek, sys_lstat, sys_open, sys_rename, sys_stat,
-};
-#[cfg(feature = "poll")]
-pub use imp::io_mpx::sys_poll;
+pub use imp::fs::{sys_fstat, sys_getcwd, sys_lseek, sys_lstat, sys_open, sys_rename, sys_stat};
 #[cfg(feature = "select")]
 pub use imp::io_mpx::sys_select;
 #[cfg(feature = "epoll")]
@@ -54,8 +40,8 @@ pub use imp::io_mpx::{sys_epoll_create, sys_epoll_ctl, sys_epoll_wait};
 #[cfg(feature = "net")]
 pub use imp::net::{
     sys_accept, sys_bind, sys_connect, sys_freeaddrinfo, sys_getaddrinfo, sys_getpeername,
-    sys_getsockname, sys_listen, sys_recv, sys_recvfrom, sys_send, sys_sendto, sys_setsockopt,
-    sys_shutdown, sys_socket,
+    sys_getsockname, sys_listen, sys_recv, sys_recvfrom, sys_send, sys_sendto, sys_shutdown,
+    sys_socket,
 };
 #[cfg(feature = "pipe")]
 pub use imp::pipe::sys_pipe;

@@ -129,16 +129,6 @@ impl Socket {
             }
         }
     }
-
-    fn set_reuseaddr(&self, reuse: bool) -> LinuxResult {
-        match self {
-            Socket::Udp(_) => Err(LinuxError::ENOPROTOOPT),
-            Socket::Tcp(tcpsocket) => {
-                tcpsocket.lock().set_reuseaddr(reuse);
-                Ok(())
-            }
-        }
-    }
 }
 
 impl FileLike for Socket {
@@ -184,7 +174,7 @@ impl FileLike for Socket {
 impl From<SocketAddrV4> for ctypes::sockaddr_in {
     fn from(addr: SocketAddrV4) -> ctypes::sockaddr_in {
         ctypes::sockaddr_in {
-            sin_family: ctypes::AF_INET as _,
+            sin_family: ctypes::AF_INET as u16,
             sin_port: addr.port().to_be(),
             sin_addr: ctypes::in_addr {
                 // `s_addr` is stored as BE on all machines and the array is in BE order.
@@ -192,7 +182,6 @@ impl From<SocketAddrV4> for ctypes::sockaddr_in {
                 s_addr: u32::from_ne_bytes(addr.ip().octets()),
             },
             sin_zero: [0; 8],
-            ..Default::default()
         }
     }
 }
@@ -229,7 +218,7 @@ fn from_sockaddr(
     }
 
     let mid = unsafe { *(addr as *const ctypes::sockaddr_in) };
-    if mid.sin_family != ctypes::AF_INET as _ {
+    if mid.sin_family != ctypes::AF_INET as u16 {
         return Err(LinuxError::EINVAL);
     }
 
@@ -588,89 +577,5 @@ pub unsafe fn sys_getpeername(
             (*addr, *addrlen) = into_sockaddr(Socket::from_fd(sock_fd)?.peer_addr()?);
         }
         Ok(0)
-    })
-}
-
-pub unsafe fn sys_setsockopt(
-    socket_fd: c_int,
-    level: c_int,
-    optname: c_int,
-    optval: *const c_void,
-    optlen: ctypes::socklen_t,
-) -> c_int {
-    debug!(
-        "sys_setsockopt <= {} {} {} {:#x} {}",
-        socket_fd, level, optname, optval as usize, optlen
-    );
-    syscall_body!(sys_setsockopt, {
-        if optval.is_null() {
-            return Err(LinuxError::EFAULT);
-        }
-        let _socket = Socket::from_fd(socket_fd)?;
-        if level == ctypes::SOL_SOCKET as _ {
-            match optname as _ {
-                ctypes::SO_REUSEADDR => {
-                    if optlen < size_of::<c_int>() as u32 {
-                        return Err(LinuxError::EINVAL);
-                    }
-                    let flag = unsafe { *(optval as *const c_int) };
-                    _socket.set_reuseaddr(flag != 0)?;
-                    Ok(0)
-                }
-                // Accept and silently ignore timeouts — ArceOS's smoltcp
-                // stack does not track per-socket read/write timeouts, but
-                // hermit std calls setsockopt for these during
-                // set_read_timeout / set_write_timeout.
-                ctypes::SO_RCVTIMEO | ctypes::SO_SNDTIMEO => {
-                    debug!(
-                        "sys_setsockopt: ignoring SO_{}TIMEO for fd {}",
-                        if optname == ctypes::SO_RCVTIMEO as _ {
-                            "RCV"
-                        } else {
-                            "SND"
-                        },
-                        socket_fd
-                    );
-                    Ok(0)
-                }
-                ctypes::SO_LINGER | ctypes::SO_KEEPALIVE => {
-                    debug!(
-                        "sys_setsockopt: ignoring option {:#x} for fd {}",
-                        optname, socket_fd
-                    );
-                    Ok(0)
-                }
-                _ => {
-                    warn!(
-                        "sys_setsockopt: unsupported SOL_SOCKET option {:#x}",
-                        optname
-                    );
-                    Err(LinuxError::ENOPROTOOPT)
-                }
-            }
-        } else if level == ctypes::IPPROTO_TCP as _ {
-            match optname as _ {
-                ctypes::TCP_NODELAY => {
-                    // Accept silently — smoltcp's Nagle is controlled
-                    // through TcpSocket::set_nagle_enabled, but we don't
-                    // expose it through setsockopt yet.
-                    debug!("sys_setsockopt: ignoring TCP_NODELAY for fd {}", socket_fd);
-                    Ok(0)
-                }
-                _ => {
-                    warn!(
-                        "sys_setsockopt: unsupported IPPROTO_TCP option {:#x}",
-                        optname
-                    );
-                    Err(LinuxError::ENOPROTOOPT)
-                }
-            }
-        } else {
-            warn!(
-                "sys_setsockopt: unsupported level {} option {:#x}",
-                level, optname
-            );
-            Err(LinuxError::ENOPROTOOPT)
-        }
     })
 }

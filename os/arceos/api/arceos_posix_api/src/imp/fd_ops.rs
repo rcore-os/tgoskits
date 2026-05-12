@@ -116,19 +116,23 @@ pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> c_int {
 pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> c_int {
     debug!("sys_fcntl <= fd: {fd} cmd: {cmd} arg: {arg}");
     syscall_body!(sys_fcntl, {
-        let cmd = cmd as u32;
-        if cmd == ctypes::F_DUPFD || cmd == ctypes::F_DUPFD_CLOEXEC {
-            // TODO: Change fd flags for F_DUPFD_CLOEXEC.
-            dup_fd(fd)
-        } else if cmd == ctypes::F_SETFL {
-            if fd == 0 || fd == 1 || fd == 2 {
-                return Ok(0);
+        match cmd as u32 {
+            ctypes::F_DUPFD => dup_fd(fd),
+            ctypes::F_DUPFD_CLOEXEC => {
+                // TODO: Change fd flags
+                dup_fd(fd)
             }
-            get_file_like(fd)?.set_nonblocking(arg & (ctypes::O_NONBLOCK as usize) > 0)?;
-            Ok(0)
-        } else {
-            warn!("unsupported fcntl parameters: cmd {cmd}");
-            Ok(0)
+            ctypes::F_SETFL => {
+                if fd == 0 || fd == 1 || fd == 2 {
+                    return Ok(0);
+                }
+                get_file_like(fd)?.set_nonblocking(arg & (ctypes::O_NONBLOCK as usize) > 0)?;
+                Ok(0)
+            }
+            _ => {
+                warn!("unsupported fcntl parameters: cmd {cmd}");
+                Ok(0)
+            }
         }
     })
 }

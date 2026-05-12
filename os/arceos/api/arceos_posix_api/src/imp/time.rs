@@ -26,7 +26,7 @@ impl From<Duration> for ctypes::timespec {
     fn from(d: Duration) -> Self {
         ctypes::timespec {
             tv_sec: d.as_secs() as c_long,
-            tv_nsec: d.subsec_nanos() as _,
+            tv_nsec: d.subsec_nanos() as c_long,
         }
     }
 }
@@ -35,7 +35,7 @@ impl From<Duration> for ctypes::timeval {
     fn from(d: Duration) -> Self {
         ctypes::timeval {
             tv_sec: d.as_secs() as c_long,
-            tv_usec: d.subsec_micros() as _,
+            tv_usec: d.subsec_micros() as c_long,
         }
     }
 }
@@ -46,7 +46,7 @@ pub unsafe fn sys_clock_gettime(clk: ctypes::clockid_t, ts: *mut ctypes::timespe
         if ts.is_null() {
             return Err(LinuxError::EFAULT);
         }
-        let now = match clk as _ {
+        let now = match clk as u32 {
             CLOCK_REALTIME => ax_hal::time::wall_time().into(),
             CLOCK_MONOTONIC => ax_hal::time::monotonic_time().into(),
             _ => {

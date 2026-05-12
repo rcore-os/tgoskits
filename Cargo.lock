@@ -325,87 +325,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-rust"
-version = "0.1.0"
-dependencies = [
- "arceos-rust-interface",
-]
-
-[[package]]
-name = "arceos-rust-interface"
-version = "1.0.0"
-dependencies = [
- "ax-api",
- "ax-errno",
- "ax-feat",
- "ax-io",
- "ax-kspin",
- "ax-posix-api",
- "ax-runtime",
- "log",
- "rand 0.9.4",
-]
-
-[[package]]
 name = "arceos-sleep"
 version = "0.3.1"
 dependencies = [
  "ax-std",
-]
-
-[[package]]
-name = "arceos-std-arce_agent"
-version = "0.2.0"
-dependencies = [
- "arceos-rust",
- "env_logger",
- "log",
- "minreq",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "arceos-std-helloworld"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "arceos-std-httpclient"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "arceos-std-httpserver"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "arceos-std-io_test"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "arceos-std-thread_test"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
-]
-
-[[package]]
-name = "arceos-std-tokio_test"
-version = "0.1.0"
-dependencies = [
- "arceos-rust",
- "tokio",
 ]
 
 [[package]]
@@ -5107,12 +5030,6 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
-
-[[package]]
-name = "minreq"
-version = "2.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
 
 [[package]]
 name = "mio"
