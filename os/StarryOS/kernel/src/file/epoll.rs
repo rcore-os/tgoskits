@@ -381,6 +381,7 @@ impl Epoll {
     pub fn poll_events(&self, out: &mut [epoll_event]) -> AxResult<usize> {
         trace!("Epoll: poll_events called, out.len()={}", out.len());
         let mut count = 0;
+        let mut needs_reregister = alloc::vec::Vec::new();
         loop {
             let weak_interest = {
                 let mut queue = self.inner.ready_queue.lock();
@@ -431,13 +432,20 @@ impl Epoll {
                     };
                     count += 1;
                     interest.mark_not_in_queue();
-                    self.register_waker_only(&interest);
+                    needs_reregister.push(interest);
                 }
                 ConsumeResult::NoEvent => {
                     interest.mark_not_in_queue();
-                    self.register_waker_only(&interest);
+                    needs_reregister.push(interest);
                 }
             }
+        }
+
+        // Re-register wakers AFTER the drain loop to prevent register_rx_waker()
+        // from immediately re-adding the fd to the ready queue during iteration,
+        // which would cause an infinite loop in Manual (no-IRQ) TTY polling mode.
+        for interest in needs_reregister {
+            self.register_waker_only(&interest);
         }
 
         if count == 0 {
