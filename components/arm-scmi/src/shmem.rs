@@ -30,9 +30,22 @@ tock_registers::register_bitfields![
     ],
 ];
 
+/// SCMI shared-memory transport window.
+///
+/// Maps a region of memory shared between the SCMI agent (OS) and the
+/// SCMI platform (secure monitor / SCP). All reads/writes use volatile
+/// access with the appropriate memory barriers.
+///
+/// # Safety
+///
+/// The caller must ensure that `address` points to a valid, mapped
+/// shared-memory region whose lifetime exceeds that of this `Shmem`.
 pub struct Shmem {
+    /// Virtual address of the shared-memory window.
     pub address: NonNull<u8>,
+    /// Bus (physical) address of the window, for DMA or device-tree use.
     pub bus_address: usize,
+    /// Size of the window in bytes.
     pub size: usize,
 }
 
@@ -42,6 +55,19 @@ unsafe impl Send for Shmem {}
 
 impl Shmem {
     const PAYLOAD_OFFSET: usize = size_of::<ShmemHeader>();
+
+    /// Create a new shared-memory handle.
+    ///
+    /// # Safety
+    ///
+    /// `address` must point to a valid mapped region of at least `size` bytes.
+    pub unsafe fn new(address: NonNull<u8>, bus_address: usize, size: usize) -> Self {
+        Self {
+            address,
+            bus_address,
+            size,
+        }
+    }
 
     pub fn reset(&mut self) {
         trace!("Reset SHMEM at {:p}", self.address);

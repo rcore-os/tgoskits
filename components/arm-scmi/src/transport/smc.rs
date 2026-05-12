@@ -2,12 +2,24 @@ use tock_registers::interfaces::Readable;
 
 use crate::{Shmem, Transport, Xfer, err::ScmiError};
 
+/// SMC (Secure Monitor Call) transport.
+///
+/// Issues an `smc #0` with a configurable function ID to hand the
+/// shared-memory buffer to the secure monitor / SCP and waits for
+/// synchronous completion.
 pub struct Smc {
     func_id: u32,
     irq: Option<u32>,
 }
 
 impl Smc {
+    /// Create a new SMC transport.
+    ///
+    /// * `func_id` – the SMC/HVC function ID that the platform expects for
+    ///   SCMI messages (e.g. `0x82000010`).
+    /// * `irq` – optional completion interrupt number; when `None` the
+    ///   transport reports `no_completion_irq() == true` and relies on
+    ///   polling.
     pub fn new(func_id: u32, irq: Option<u32>) -> Self {
         Smc { func_id, irq }
     }

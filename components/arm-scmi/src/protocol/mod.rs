@@ -6,23 +6,37 @@ use spin::Mutex;
 
 use crate::{Data, Transport, err::ScmiError};
 
+pub mod base;
 pub mod clock;
 
+pub use base::Base;
 pub use clock::Clock;
 
 const PROTOCOL_VERSION: u8 = 0;
+#[allow(dead_code)]
 const PROTOCOL_ATTRIBUTES: u8 = 0x1;
+#[allow(dead_code)]
+const PROTOCOL_MESSAGE_ATTRIBUTES: u8 = 0x2;
 
-pub struct Protocal<T: Transport> {
+/// A generic SCMI protocol handle bound to a specific transport.
+///
+/// Holds a reference-counted handle to the shared transport data and the
+/// 8-bit protocol identifier used in every message header.
+pub struct Protocol<T: Transport> {
     data: Data<T>,
     id: u8,
 }
 
-impl<T: Transport> Protocal<T> {
+impl<T: Transport> Protocol<T> {
     pub(super) fn new(data: Data<T>, id: u8) -> Self {
         Self { data, id }
     }
 
+    /// Start a transfer for this protocol.
+    ///
+    /// The returned [`XferFuture`] follows a three-stage poll cycle
+    /// (Init → SendOk → RespOk). Callers typically drive it to completion
+    /// with `nb::block!`.
     pub fn do_xfer<'a, R, F>(
         &'a mut self,
         mut xfer: Xfer,
@@ -32,7 +46,6 @@ impl<T: Transport> Protocal<T> {
         F: Fn(&mut Xfer) -> Result<R, ScmiError>,
     {
         xfer.hdr.protocol_id = self.id;
-
         xfer.hdr.clear_status();
         xfer.status = XferStatus::Init;
 
@@ -44,6 +57,9 @@ impl<T: Transport> Protocal<T> {
         }
     }
 
+    /// Query the protocol version (message ID 0x0).
+    ///
+    /// Returns `(major, minor)` as defined by the SCMI specification.
     pub fn version(&mut self) -> impl FuturePoll<Output = (u16, u16)> + '_ {
         let xfer = Xfer::new(PROTOCOL_VERSION, 4);
         self.do_xfer(xfer, |xfer| {
@@ -53,15 +69,48 @@ impl<T: Transport> Protocal<T> {
             Ok((major, minor))
         })
     }
+
+    /// Query protocol attributes (message ID 0x1).
+    ///
+    /// Returns the raw 32-bit attributes value. Each protocol interprets
+    /// this field differently.
+    #[allow(dead_code)]
+    pub fn attributes(&mut self) -> impl FuturePoll<Output = u32> + '_ {
+        let xfer = Xfer::new(PROTOCOL_ATTRIBUTES, 4);
+        self.do_xfer(xfer, |xfer| {
+            Ok(u32::from_le_bytes([
+                xfer.rx[0], xfer.rx[1], xfer.rx[2], xfer.rx[3],
+            ]))
+        })
+    }
+
+    /// Query whether a specific message ID is supported (message ID 0x2).
+    ///
+    /// Returns `true` if the message is implemented by the platform.
+    #[allow(dead_code)]
+    pub fn message_attributes(&mut self, message_id: u8) -> impl FuturePoll<Output = bool> + '_ {
+        let mut xfer = Xfer::new(PROTOCOL_MESSAGE_ATTRIBUTES, 4);
+        xfer.tx
+            .extend_from_slice(&(message_id as u32).to_le_bytes());
+        self.do_xfer(xfer, |_xfer| Ok(true))
+    }
 }
 
+/// A polling-based future for SCMI transfers.
+///
+/// Unlike `std::future::Future`, this uses an explicit `poll_completion`
+/// interface compatible with `nb::block!` in `no_std` environments.
 pub trait FuturePoll {
     type Output;
     fn poll_completion(&mut self) -> nb::Result<Self::Output, ScmiError>;
 }
 
+/// Future returned by [`Protocol::do_xfer`].
+///
+/// Drives a transfer through the three stages:
+/// `Init` → send → `SendOk` → fetch response → `RespOk` → callback.
 pub struct XferFuture<'a, T: Transport, R, F: Fn(&mut Xfer) -> Result<R, ScmiError>> {
-    protocol: &'a mut Protocal<T>,
+    protocol: &'a mut Protocol<T>,
     xfer: Xfer,
     on_complete: F,
 }
@@ -93,6 +142,7 @@ impl<'a, T: Transport, R, F: Fn(&mut Xfer) -> Result<R, ScmiError>> FuturePoll
     }
 }
 
+/// Standard SCMI protocol identifiers (DEN0056, Table 5-1).
 #[allow(dead_code)]
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,11 +240,10 @@ pub enum MsgType {
     Notification    = 3,
 }
 
-#[allow(dead_code)]
-type Refcount = i32;
-#[allow(dead_code)]
-type Spinlock = (); // placeholder, TODO: implement spinlock
-
+/// An SCMI transfer (request/response pair).
+///
+/// Holds the message header, TX payload, and a pre-allocated RX buffer.
+/// A unique token is assigned on creation and released on drop.
 pub struct Xfer {
     pub transfer_id: i32,
     pub hdr: MsgHeader,
@@ -205,6 +254,8 @@ pub struct Xfer {
 }
 
 impl Xfer {
+    /// Create a new transfer for message `msg_id` with `rx_size` bytes of
+    /// receive buffer.
     pub fn new(msg_id: u8, rx_size: usize) -> Self {
         let transfer_id = TRANSFER_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         let token = TOKEN_ALLOCATOR
@@ -271,17 +322,22 @@ impl TokenTable {
 
     fn alloc(&mut self, base: i32) -> Option<u16> {
         let base = base as u16;
-        if self.is_token_not_used(base) {
+        if self.try_alloc(base) {
             return Some(base);
         }
-        (0..MSG_TOKEN_MAX as u16).find(|&token| self.is_token_not_used(token))
+        (0..MSG_TOKEN_MAX as u16).find(|&token| self.try_alloc(token))
     }
 
-    fn is_token_not_used(&self, token: u16) -> bool {
+    fn try_alloc(&mut self, token: u16) -> bool {
         let word_idx = token / TOKENS_PER_WORD as u16;
         let bit_idx = token % TOKENS_PER_WORD as u16;
         let mask = 1u32 << bit_idx;
-        (self.bitmap[word_idx as usize] & mask) == 0
+        if (self.bitmap[word_idx as usize] & mask) == 0 {
+            self.bitmap[word_idx as usize] |= mask;
+            true
+        } else {
+            false
+        }
     }
 
     fn release(&mut self, token: u16) {

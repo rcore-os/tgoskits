@@ -1,3 +1,7 @@
+/// SCMI status codes mapped to Rust errors.
+///
+/// These correspond to the completion statuses defined in the ARM SCMI
+/// specification (DEN0056).
 #[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScmiError {
     #[error("Not supported")]
@@ -25,8 +29,10 @@ pub enum ScmiError {
 }
 
 impl ScmiError {
+    /// SCMI success status (0).
     pub const SUCCESS: i32 = 0;
 
+    /// Convert a raw SCMI status integer to `Result<(), ScmiError>`.
     pub fn from_status(status: i32) -> Result<(), Self> {
         match status {
             0 => Ok(()),

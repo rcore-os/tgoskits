@@ -9,7 +9,7 @@ extern crate bare_test;
 mod tests {
     use alloc::vec::Vec;
 
-    use arm_scmi::{Scmi, Shmem, Smc};
+    use arm_scmi_rs::{Scmi, Shmem, Smc};
     use bare_test::{
         globals::{PlatformInfoKind, global_val},
         irq::Phandle,

@@ -218,7 +218,7 @@ members = [
 [workspace.dependencies]
 # Local workspace crates
 aarch64_sysreg = { version = "0.3.6", path = "components/aarch64_sysreg" }
-arm-scmi = { version = "0.1.0", path = "components/arm-scmi" }
+arm-scmi-rs = { version = "0.1.1", path = "components/arm-scmi" }
 arceos-affinity = { version = "0.3.1", path = "test-suit/arceos/rust/task/affinity" }
 arceos-display = { version = "0.3.1", path = "test-suit/arceos/rust/display" }
 arceos-exception = { version = "0.3.1", path = "test-suit/arceos/rust/exception" }
