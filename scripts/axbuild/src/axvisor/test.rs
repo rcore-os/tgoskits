@@ -53,14 +53,6 @@ impl test_qemu::BuildConfigRef for PreparedAxvisorQemuCase {
     }
 }
 
-const TEST_ARCHES: &[&str] = &["aarch64", "riscv64", "x86_64", "loongarch64"];
-const TEST_TARGETS: &[&str] = &[
-    "aarch64-unknown-none-softfloat",
-    "riscv64gc-unknown-none-elf",
-    "x86_64-unknown-none",
-    "loongarch64-unknown-none-softfloat",
-];
-
 pub(super) async fn test(axvisor: &mut Axvisor, args: ArgsTest) -> anyhow::Result<()> {
     match args.command {
         TestCommand::Qemu(args) => axvisor.test_qemu(args).await,
@@ -105,8 +97,8 @@ pub(crate) fn parse_target(
         arch,
         target,
         "axvisor qemu tests",
-        TEST_ARCHES,
-        TEST_TARGETS,
+        &crate::context::supported_arches(),
+        &crate::context::supported_targets(),
         resolve_axvisor_arch_and_target,
     )
 }

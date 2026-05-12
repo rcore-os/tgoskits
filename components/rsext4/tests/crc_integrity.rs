@@ -20,6 +20,7 @@ use rsext4::{
     },
     endian::DiskFormat,
     error::{Errno, Ext4Error, Ext4Result},
+    jbd2::jbdstruct::{JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_MAGIC, JournalHeaderS, JournalSuperBllockS},
     superblock::Ext4Superblock,
     *,
 };
@@ -151,6 +152,28 @@ fn write_group_desc0(device: &SharedCrcDevice, sb: &Ext4Superblock, desc: &Ext4G
     device.write_bytes(BLOCK_SIZE, &bytes[..desc_size]);
 }
 
+fn write_journal_start(device: &SharedCrcDevice, journal_block: u64, start: u32) {
+    let mut bytes = device.read_block_bytes(journal_block);
+    let mut journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
+    journal_sb.s_start = start;
+    journal_sb.to_disk_bytes(&mut bytes);
+    device.write_block_bytes(journal_block, &bytes);
+}
+
+fn write_incomplete_journal_descriptor(device: &SharedCrcDevice, journal_block: u64) {
+    let bytes = device.read_block_bytes(journal_block);
+    let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
+
+    let mut descriptor = vec![0u8; BLOCK_SIZE];
+    JournalHeaderS {
+        h_magic: JBD2_MAGIC,
+        h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,
+        h_sequence: journal_sb.s_sequence,
+    }
+    .to_disk_bytes(&mut descriptor);
+    device.write_block_bytes(journal_block + 1, &descriptor);
+}
+
 #[test]
 fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
     // Test idea: write one real file, inspect the raw on-disk checksum fields,
@@ -186,6 +209,41 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
     let mut fs = mount(&mut remount_dev).expect("mount after intact checksum data failed");
     let read_back = read_file(&mut remount_dev, &mut fs, "/crc.txt").expect("read_file failed");
     assert_eq!(read_back, payload);
+    umount(fs, &mut remount_dev).expect("umount failed");
+}
+
+#[test]
+fn clean_mount_does_not_replay_journal_without_recovery_feature() {
+    // Test idea: normal journaled operation may leave a non-zero journal
+    // superblock start value, but ext4 recovery is driven by the superblock
+    // needs_recovery bit. A clean mount should initialize journal state for
+    // future writes without treating the journal as mandatory recovery input.
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut first_mount_dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let journal_block = fs
+        .journal_sb_block_start
+        .expect("journal superblock should be mapped")
+        .raw();
+    umount(fs, &mut first_mount_dev).expect("umount failed");
+
+    let mut sb = read_superblock(&device);
+    sb.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+    sb.update_checksum();
+    write_superblock(&device, &sb);
+    write_journal_start(&device, journal_block, 1);
+    write_incomplete_journal_descriptor(&device, journal_block);
+
+    let mut remount_dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut remount_dev).expect("clean mount should not force journal replay");
+    assert_eq!(
+        fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
+        0
+    );
+    assert!(remount_dev.is_use_journal());
     umount(fs, &mut remount_dev).expect("umount failed");
 }
 

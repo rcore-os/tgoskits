@@ -165,7 +165,10 @@ pub fn orangepi_uboot_config_path(workspace_root: &Path) -> PathBuf {
 }
 
 pub fn tmp_config_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("os/StarryOS/tmp/configs")
+    crate::context::axbuild_tmp_dir(workspace_root)
+        .join("config")
+        .join("starryos")
+        .join("quick-start")
 }
 
 pub fn tmp_qemu_build_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {

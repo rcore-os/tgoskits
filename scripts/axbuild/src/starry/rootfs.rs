@@ -32,7 +32,7 @@ pub struct ArgsRootfs {
 pub(super) async fn rootfs(starry: &mut Starry, args: ArgsRootfs) -> anyhow::Result<()> {
     let arch = args.arch.unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
     let target = starry_target_for_arch_checked(&arch)?.to_string();
-    let disk_img = ensure_rootfs_in_target_dir(starry.app.workspace_root(), &arch, &target).await?;
+    let disk_img = ensure_rootfs_in_tmp_dir(starry.app.workspace_root(), &arch, &target).await?;
     println!("rootfs ready at {}", disk_img.display());
     Ok(())
 }
@@ -42,7 +42,7 @@ pub(super) async fn ensure_quick_start_qemu_rootfs(
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
     let target = starry_target_for_arch_checked(arch)?.to_string();
-    ensure_rootfs_in_target_dir(workspace_root, arch, &target).await
+    ensure_rootfs_in_tmp_dir(workspace_root, arch, &target).await
 }
 
 pub(super) async fn qemu_with_explicit_rootfs(
@@ -123,7 +123,7 @@ const EXT_SUPER_MAGIC_OFFSET: u64 = 1080;
 const EXT_SUPER_MAGIC: [u8; 2] = [0x53, 0xef];
 
 /// Ensures the default managed rootfs for a Starry arch/target is available.
-pub(crate) async fn ensure_rootfs_in_target_dir(
+pub(crate) async fn ensure_rootfs_in_tmp_dir(
     workspace_root: &Path,
     arch: &str,
     target: &str,
@@ -284,7 +284,7 @@ mod tests {
     #[tokio::test]
     async fn patch_qemu_rootfs_includes_rootfs_and_network_defaults() {
         let root = tempdir().unwrap();
-        let rootfs_dir = root.path().join("target/rootfs");
+        let rootfs_dir = root.path().join("tmp/axbuild/rootfs");
         fs::create_dir_all(&rootfs_dir).unwrap();
         fs::write(
             rootfs_dir.join("rootfs-x86_64-alpine.img"),
@@ -317,7 +317,7 @@ mod tests {
                 format!(
                     "id=disk0,if=none,format=raw,file={}",
                     root.path()
-                        .join("target/rootfs/rootfs-x86_64-alpine.img")
+                        .join("tmp/axbuild/rootfs/rootfs-x86_64-alpine.img")
                         .display()
                 ),
                 "-device".to_string(),
@@ -328,7 +328,7 @@ mod tests {
         );
         assert!(
             root.path()
-                .join("target/rootfs/rootfs-x86_64-alpine.img")
+                .join("tmp/axbuild/rootfs/rootfs-x86_64-alpine.img")
                 .exists()
         );
     }
@@ -336,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn patch_qemu_rootfs_preserves_existing_base_args() {
         let root = tempdir().unwrap();
-        let rootfs_dir = root.path().join("target/rootfs");
+        let rootfs_dir = root.path().join("tmp/axbuild/rootfs");
         fs::create_dir_all(&rootfs_dir).unwrap();
         fs::write(
             rootfs_dir.join("rootfs-riscv64-alpine.img"),
@@ -383,7 +383,7 @@ mod tests {
                 format!(
                     "id=disk0,if=none,format=raw,file={}",
                     root.path()
-                        .join("target/rootfs/rootfs-riscv64-alpine.img")
+                        .join("tmp/axbuild/rootfs/rootfs-riscv64-alpine.img")
                         .display()
                 ),
                 "-device".to_string(),

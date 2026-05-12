@@ -14,7 +14,7 @@ use smoltcp::{
 use crate::{
     LISTEN_TABLE,
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
-    device::Device,
+    device::{ArpEntry, Device},
 };
 
 #[derive(Debug)]
@@ -155,6 +155,14 @@ impl Router {
         timestamp: Instant,
     ) -> bool {
         self.devices[dev].send(next_hop, packet, timestamp)
+    }
+
+    pub fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {
+        let mut entries = Vec::new();
+        for device in &self.devices {
+            entries.extend(device.arp_entries(timestamp));
+        }
+        entries
     }
 
     pub fn dispatch(&mut self, timestamp: Instant) -> bool {

@@ -22,6 +22,7 @@ else
 endif
 
 define defconfig
+  $(call run_cmd,mkdir,-p "$(dir $(OUT_CONFIG))")
   $(call run_cmd,ax-config-gen,$(config_args))
 endef
 

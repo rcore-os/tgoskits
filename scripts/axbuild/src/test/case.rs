@@ -856,7 +856,7 @@ mod tests {
     async fn prepare_case_assets_plain_case_uses_shared_rootfs_with_snapshot() {
         let root = tempdir().unwrap();
         let target_dir = root.path().join("target/x86_64-unknown-none");
-        let rootfs_dir = root.path().join("target/rootfs");
+        let rootfs_dir = root.path().join("tmp/axbuild/rootfs");
         fs::create_dir_all(&target_dir).unwrap();
         fs::create_dir_all(&rootfs_dir).unwrap();
         let shared_img = rootfs_dir.join("rootfs-x86_64-alpine.img");

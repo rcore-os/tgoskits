@@ -1,0 +1,10 @@
+[qemu]
+machine = "virt"
+cpu = "cortex-a72"
+graphic = false
+args = """
+    -device pcie-pci-bridge,id=pcie_pci_bridge1,bus=pcie.0
+    -drive file=LICENSE,if=none,id=nvm -device nvme,serial=deadbeef,drive=nvm
+    -device e1000e,netdev=net0
+    -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555
+    """
