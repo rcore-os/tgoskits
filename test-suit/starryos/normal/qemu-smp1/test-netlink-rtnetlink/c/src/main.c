@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 //
 // AF_NETLINK / NETLINK_ROUTE smoke test.  Verifies the basic socket
-// shape: socket() + bind() + getsockname() round trip, that a sendto()
-// of an RTM_GETLINK request is accepted by the kernel side, and that
-// reading from an empty queue with O_NONBLOCK returns EAGAIN.  Real
-// RTM_GETLINK responder behaviour is intentionally not asserted here
-// (the J PR provides the byte transport; the responder lands later).
+// shape and that RTM_GETLINK returns a multipart dump response instead
+// of silently accepting the request and leaving the receive queue empty.
 //
 // We inline the netlink uapi structs because musl does not ship
 // <linux/netlink.h> / <linux/rtnetlink.h>.
@@ -49,9 +46,42 @@ struct ifinfomsg_inl {
     unsigned int ifi_change;
 };
 
+struct rtattr_inl {
+    unsigned short rta_len;
+    unsigned short rta_type;
+};
+
 #define NLMSG_REQUEST 0x01
 #define NLMSG_DUMP    0x300
+#define NLMSG_DONE    3
 #define RTM_GETLINK   18
+#define RTM_NEWLINK   16
+#define IFLA_IFNAME   3
+
+#define NLMSG_ALIGNTO 4U
+#define NLMSG_ALIGN(len) (((len) + NLMSG_ALIGNTO - 1) & ~(NLMSG_ALIGNTO - 1))
+#define NLMSG_HDRLEN ((int)NLMSG_ALIGN(sizeof(struct nlmsghdr_inl)))
+#define NLMSG_LENGTH(len) ((len) + NLMSG_HDRLEN)
+#define NLMSG_DATA(nlh) ((void *)((char *)(nlh) + NLMSG_LENGTH(0)))
+#define NLMSG_NEXT(nlh, len)                                                                    \
+    ((len) -= NLMSG_ALIGN((nlh)->nlmsg_len),                                                    \
+     (struct nlmsghdr_inl *)((char *)(nlh) + NLMSG_ALIGN((nlh)->nlmsg_len)))
+#define NLMSG_OK(nlh, len)                                                                       \
+    ((len) >= (int)sizeof(struct nlmsghdr_inl) &&                                                \
+     (nlh)->nlmsg_len >= sizeof(struct nlmsghdr_inl) &&                                          \
+     (nlh)->nlmsg_len <= (unsigned int)(len))
+
+#define RTA_ALIGNTO 4U
+#define RTA_ALIGN(len) (((len) + RTA_ALIGNTO - 1) & ~(RTA_ALIGNTO - 1))
+#define RTA_LENGTH(len) (RTA_ALIGN(sizeof(struct rtattr_inl)) + (len))
+#define RTA_DATA(rta) ((void *)((char *)(rta) + RTA_LENGTH(0)))
+#define RTA_NEXT(rta, attrlen)                                                                   \
+    ((attrlen) -= RTA_ALIGN((rta)->rta_len),                                                     \
+     (struct rtattr_inl *)((char *)(rta) + RTA_ALIGN((rta)->rta_len)))
+#define RTA_OK(rta, len)                                                                         \
+    ((len) >= (int)sizeof(struct rtattr_inl) && (rta)->rta_len >= sizeof(struct rtattr_inl) &&    \
+     (rta)->rta_len <= (unsigned int)(len))
+#define IFLA_RTA(r) ((struct rtattr_inl *)(((char *)(r)) + NLMSG_ALIGN(sizeof(struct ifinfomsg_inl))))
 
 int main(void) {
     TEST_START("netlink rtnetlink");
@@ -75,8 +105,8 @@ int main(void) {
               "getsockname round-trip");
     CHECK(got.nl_family == AF_NETLINK, "getsockname: nl_family == AF_NETLINK");
 
-    // Send a well-formed RTM_GETLINK dump request.  Kernel currently
-    // accepts the bytes (drain-and-ack); responder may or may not exist.
+    // Send a well-formed RTM_GETLINK dump request. The kernel must return
+    // at least one RTM_NEWLINK and terminate the multipart dump.
     struct {
         struct nlmsghdr_inl  nh;
         struct ifinfomsg_inl ifi;
@@ -91,23 +121,43 @@ int main(void) {
     ssize_t sent = send(fd, &req, sizeof(req), 0);
     CHECK(sent == (ssize_t)sizeof(req), "send(RTM_GETLINK) drained by kernel");
 
-    // Drain in non-blocking mode; an empty queue must report EAGAIN, not
-    // crash and not block forever.
     int fl = fcntl(fd, F_GETFL, 0);
     CHECK_RET(fcntl(fd, F_SETFL, fl | O_NONBLOCK), 0, "F_SETFL O_NONBLOCK");
 
     char buf[4096];
+    int saw_link = 0;
+    int saw_lo = 0;
+    int saw_done = 0;
     errno = 0;
     ssize_t n = read(fd, buf, sizeof(buf));
-    if (n >= 0) {
-        // A future responder could legitimately succeed here.  Either way
-        // counts as PASS for the transport layer.
-        printf("  PASS | empty/responded read returned %ld bytes\n", n);
-        __pass++;
-    } else {
-        CHECK(errno == EAGAIN || errno == EWOULDBLOCK,
-              "empty queue → EAGAIN/EWOULDBLOCK");
+    CHECK(n > 0, "read(RTM_GETLINK response) returns data");
+    if (n > 0) {
+        int remaining = (int)n;
+        for (struct nlmsghdr_inl *nh = (struct nlmsghdr_inl *)buf; NLMSG_OK(nh, remaining);
+             nh = NLMSG_NEXT(nh, remaining)) {
+            if (nh->nlmsg_type == NLMSG_DONE) {
+                saw_done = 1;
+                break;
+            }
+            if (nh->nlmsg_type != RTM_NEWLINK) {
+                continue;
+            }
+
+            saw_link = 1;
+            struct ifinfomsg_inl *ifi = NLMSG_DATA(nh);
+            int len = (int)nh->nlmsg_len - NLMSG_LENGTH(sizeof(*ifi));
+            for (struct rtattr_inl *attr = IFLA_RTA(ifi); RTA_OK(attr, len);
+                 attr = RTA_NEXT(attr, len)) {
+                if (attr->rta_type == IFLA_IFNAME &&
+                    strcmp((const char *)RTA_DATA(attr), "lo") == 0) {
+                    saw_lo = 1;
+                }
+            }
+        }
     }
+    CHECK(saw_link, "RTM_GETLINK returns at least one RTM_NEWLINK");
+    CHECK(saw_lo, "RTM_GETLINK includes loopback ifname");
+    CHECK(saw_done, "RTM_GETLINK dump ends with NLMSG_DONE");
 
     close(fd);
     TEST_DONE();

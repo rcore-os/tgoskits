@@ -19,10 +19,14 @@
 use alloc::{
     borrow::Cow,
     collections::VecDeque,
+    format,
+    string::String,
     sync::{Arc, Weak},
+    vec,
     vec::Vec,
 };
 use core::{
+    mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
     task::Context,
 };
@@ -31,14 +35,165 @@ use ax_errno::{AxError, AxResult};
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 use lazy_static::lazy_static;
-use linux_raw_sys::{net::AF_NETLINK, netlink::sockaddr_nl};
+use linux_raw_sys::{
+    general::{O_RDWR, S_IFSOCK},
+    net::AF_NETLINK,
+    netlink::{NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
+};
 use spin::Mutex;
 
-use crate::file::{FileLike, IoDst, IoSrc};
+use crate::{
+    file::{FileLike, IoDst, IoSrc},
+    task::AsThread,
+};
 
 /// Maximum number of queued receive messages per socket.  Matches
 /// libudev's default monitor buffer expectation (~32 messages × 4 KiB).
 const MAX_QUEUED: usize = 128;
+
+const NLMSG_DONE: u16 = 3;
+const NLM_F_MULTI: u16 = 2;
+
+const RTM_GETLINK: u16 = 18;
+const RTM_NEWLINK: u16 = 16;
+const RTM_GETADDR: u16 = 22;
+const RTM_NEWADDR: u16 = 20;
+
+const AF_INET: u8 = 2;
+const ARPHRD_ETHER: u16 = 1;
+const ARPHRD_LOOPBACK: u16 = 772;
+
+const IFF_UP: u32 = 1;
+const IFF_BROADCAST: u32 = 2;
+const IFF_LOOPBACK: u32 = 8;
+const IFF_RUNNING: u32 = 64;
+const IFF_MULTICAST: u32 = 4096;
+const IFF_LOWER_UP: u32 = 65536;
+
+const IFLA_ADDRESS: u16 = 1;
+const IFLA_BROADCAST: u16 = 2;
+const IFLA_IFNAME: u16 = 3;
+const IFLA_MTU: u16 = 4;
+const IFLA_QDISC: u16 = 6;
+const IFLA_TXQLEN: u16 = 13;
+const IFLA_OPERSTATE: u16 = 16;
+
+const IFA_ADDRESS: u16 = 1;
+const IFA_LOCAL: u16 = 2;
+const IFA_LABEL: u16 = 3;
+const IFA_BROADCAST: u16 = 4;
+
+const IF_OPER_UNKNOWN: u8 = 0;
+const IF_OPER_UP: u8 = 6;
+
+const RT_SCOPE_UNIVERSE: u8 = 0;
+const RT_SCOPE_HOST: u8 = 254;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NlMsgHdr {
+    len: u32,
+    ty: u16,
+    flags: u16,
+    seq: u32,
+    pid: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RtAttr {
+    len: u16,
+    ty: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IfInfoMsg {
+    family: u8,
+    pad: u8,
+    ty: u16,
+    index: i32,
+    flags: u32,
+    change: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IfAddrMsg {
+    family: u8,
+    prefix_len: u8,
+    flags: u8,
+    scope: u8,
+    index: u32,
+}
+
+struct LinkInfo {
+    index: i32,
+    name: &'static str,
+    ty: u16,
+    flags: u32,
+    mtu: u32,
+    qlen: u32,
+    qdisc: &'static str,
+    operstate: u8,
+    address: [u8; 6],
+    broadcast: [u8; 6],
+}
+
+struct AddrInfo {
+    index: u32,
+    label: &'static str,
+    prefix_len: u8,
+    scope: u8,
+    local: [u8; 4],
+    broadcast: Option<[u8; 4]>,
+}
+
+const LINKS: &[LinkInfo] = &[
+    LinkInfo {
+        index: 1,
+        name: "lo",
+        ty: ARPHRD_LOOPBACK,
+        flags: IFF_UP | IFF_LOOPBACK | IFF_RUNNING | IFF_LOWER_UP,
+        mtu: 65536,
+        qlen: 1000,
+        qdisc: "noqueue",
+        operstate: IF_OPER_UNKNOWN,
+        address: [0; 6],
+        broadcast: [0; 6],
+    },
+    LinkInfo {
+        index: 2,
+        name: "eth0",
+        ty: ARPHRD_ETHER,
+        flags: IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_MULTICAST | IFF_LOWER_UP,
+        mtu: 1500,
+        qlen: 1000,
+        qdisc: "mq",
+        operstate: IF_OPER_UP,
+        address: [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+        broadcast: [0xff; 6],
+    },
+];
+
+const ADDRS: &[AddrInfo] = &[
+    AddrInfo {
+        index: 1,
+        label: "lo",
+        prefix_len: 8,
+        scope: RT_SCOPE_HOST,
+        local: [127, 0, 0, 1],
+        broadcast: None,
+    },
+    AddrInfo {
+        index: 2,
+        label: "eth0",
+        prefix_len: 24,
+        scope: RT_SCOPE_UNIVERSE,
+        local: [10, 0, 2, 15],
+        broadcast: Some([10, 0, 2, 255]),
+    },
+];
 
 #[derive(Clone, Copy, Default)]
 struct NetlinkState {
@@ -121,15 +276,58 @@ impl NetlinkSocket {
         self.protocol
     }
 
+    fn local_pid(&self) -> u32 {
+        let mut state = self.state.lock();
+        match state.addr {
+            Some(addr) if addr.nl_pid != 0 => addr.nl_pid,
+            _ => {
+                let pid = ax_task::current().as_thread().proc_data.proc.pid();
+                state.addr = Some(sockaddr_nl {
+                    nl_family: AF_NETLINK as _,
+                    nl_pad: 0,
+                    nl_pid: pid,
+                    nl_groups: 0,
+                });
+                pid
+            }
+        }
+    }
+
+    fn build_route_response(&self, request: &[u8]) -> AxResult<Vec<u8>> {
+        if request.len() < size_of::<NlMsgHdr>() {
+            return Err(AxError::InvalidInput);
+        }
+
+        let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+        let pid = self.local_pid();
+        let mut response = Vec::new();
+        match header.ty {
+            RTM_GETLINK => {
+                for link in LINKS {
+                    push_link_message(&mut response, header.seq, pid, link);
+                }
+            }
+            RTM_GETADDR => {
+                for addr in ADDRS {
+                    push_addr_message(&mut response, header.seq, pid, addr);
+                }
+            }
+            _ => {}
+        }
+        push_done_message(&mut response, header.seq, pid);
+        Ok(response)
+    }
+
     /// Drain at most one queued message into `dst`.  Returns `WouldBlock`
     /// when the queue is empty.
     fn read_one(&self, dst: &mut IoDst) -> AxResult<usize> {
         let mut queue = self.queue.lock();
-        let Some(msg) = queue.pop_front() else {
+        let Some(msg) = queue.front() else {
             return Err(AxError::WouldBlock);
         };
         // Cap at the message length; netlink datagrams are not coalesced.
-        let n = dst.write(&msg)?;
+        let n = dst.write(msg)?;
+        queue.pop_front();
         Ok(n)
     }
 }
@@ -172,24 +370,28 @@ impl FileLike for NetlinkSocket {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        // Drain the user buffer (up to 64 KiB) and report success.
-        // Userspace→kernel netlink traffic is not interpreted at this
-        // layer; protocol-specific responders (rtnetlink, genl) will
-        // intercept on the way in once they exist.  libudev never sends
-        // on its monitor socket, so this is a no-op for it today.
-        let mut buf = [0u8; 4096];
-        let mut total = 0usize;
-        loop {
-            let n = src.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            total = total.saturating_add(n);
-            if total >= 64 * 1024 {
-                break;
-            }
+        let size = src.remaining().min(64 * 1024);
+        let mut request = vec![0; size];
+        let total = src.read(&mut request)?;
+        request.truncate(total);
+
+        if self.protocol == NETLINK_ROUTE {
+            let response = self.build_route_response(&request)?;
+            let mut queue = self.queue.lock();
+            queue.clear();
+            queue.push_back(response);
+            drop(queue);
+            self.poll_rx.wake();
         }
         Ok(total)
+    }
+
+    fn stat(&self) -> AxResult<crate::file::Kstat> {
+        Ok(crate::file::Kstat {
+            mode: S_IFSOCK | 0o777,
+            blksize: 4096,
+            ..Default::default()
+        })
     }
 
     fn nonblocking(&self) -> bool {
@@ -202,7 +404,15 @@ impl FileLike for NetlinkSocket {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        "socket:[netlink]".into()
+        if self.protocol == NETLINK_KOBJECT_UEVENT {
+            "socket:[netlink]".into()
+        } else {
+            format!("netlink:{}:[{}]", self.protocol, self as *const _ as usize).into()
+        }
+    }
+
+    fn open_flags(&self) -> u32 {
+        O_RDWR
     }
 }
 
@@ -219,4 +429,102 @@ impl Pollable for NetlinkSocket {
             self.poll_rx.register(context.waker());
         }
     }
+}
+
+fn push_link_message(out: &mut Vec<u8>, seq: u32, pid: u32, link: &LinkInfo) {
+    let mut body = Vec::new();
+    push_struct(
+        &mut body,
+        &IfInfoMsg {
+            family: 0,
+            pad: 0,
+            ty: link.ty,
+            index: link.index,
+            flags: link.flags,
+            change: 0,
+        },
+    );
+    push_attr_string(&mut body, IFLA_IFNAME, link.name);
+    push_attr(&mut body, IFLA_ADDRESS, &link.address);
+    push_attr(&mut body, IFLA_BROADCAST, &link.broadcast);
+    push_attr(&mut body, IFLA_MTU, &link.mtu.to_ne_bytes());
+    push_attr(&mut body, IFLA_QDISC, link.qdisc.as_bytes());
+    push_attr(&mut body, IFLA_TXQLEN, &link.qlen.to_ne_bytes());
+    push_attr(&mut body, IFLA_OPERSTATE, &[link.operstate]);
+
+    push_nl_header(out, RTM_NEWLINK, NLM_F_MULTI, seq, pid, body.len());
+    out.extend_from_slice(&body);
+}
+
+fn push_addr_message(out: &mut Vec<u8>, seq: u32, pid: u32, addr: &AddrInfo) {
+    let mut body = Vec::new();
+    push_struct(
+        &mut body,
+        &IfAddrMsg {
+            family: AF_INET,
+            prefix_len: addr.prefix_len,
+            flags: 0,
+            scope: addr.scope,
+            index: addr.index,
+        },
+    );
+    push_attr(&mut body, IFA_ADDRESS, &addr.local);
+    push_attr(&mut body, IFA_LOCAL, &addr.local);
+    push_attr_string(&mut body, IFA_LABEL, addr.label);
+    if let Some(broadcast) = addr.broadcast {
+        push_attr(&mut body, IFA_BROADCAST, &broadcast);
+    }
+
+    push_nl_header(out, RTM_NEWADDR, NLM_F_MULTI, seq, pid, body.len());
+    out.extend_from_slice(&body);
+}
+
+fn push_done_message(out: &mut Vec<u8>, seq: u32, pid: u32) {
+    push_nl_header(out, NLMSG_DONE, NLM_F_MULTI, seq, pid, size_of::<i32>());
+    out.extend_from_slice(&0i32.to_ne_bytes());
+}
+
+fn push_nl_header(out: &mut Vec<u8>, ty: u16, flags: u16, seq: u32, pid: u32, payload_len: usize) {
+    push_struct(
+        out,
+        &NlMsgHdr {
+            len: (size_of::<NlMsgHdr>() + payload_len) as u32,
+            ty,
+            flags,
+            seq,
+            pid,
+        },
+    );
+}
+
+fn push_attr_string(out: &mut Vec<u8>, ty: u16, value: &str) {
+    let mut data = String::from(value).into_bytes();
+    data.push(0);
+    push_attr(out, ty, &data);
+}
+
+fn push_attr(out: &mut Vec<u8>, ty: u16, payload: &[u8]) {
+    let len = size_of::<RtAttr>() + payload.len();
+    push_struct(
+        out,
+        &RtAttr {
+            len: len as u16,
+            ty,
+        },
+    );
+    out.extend_from_slice(payload);
+    pad_to_align4(out);
+}
+
+fn push_struct<T>(out: &mut Vec<u8>, value: &T) {
+    out.extend_from_slice(unsafe { as_bytes(value) });
+}
+
+unsafe fn as_bytes<T>(value: &T) -> &[u8] {
+    unsafe { core::slice::from_raw_parts(value as *const T as *const u8, size_of::<T>()) }
+}
+
+fn pad_to_align4(out: &mut Vec<u8>) {
+    let aligned = (out.len() + 3) & !3;
+    out.resize(aligned, 0);
 }
