@@ -295,6 +295,14 @@ pub fn sys_rt_sigtimedwait(
     let signal = &thr.signal;
 
     let old_blocked = signal.blocked();
+    // Publish sigwait_set BEFORE unblocking the signal.  send_signal checks
+    // sigwait_set to decide whether to skip is_ignore(); if we unblocked first
+    // there would be a window where the signal is neither blocked nor in
+    // sigwait_set, causing send_signal to silently drop it via is_ignore().
+    *signal.sigwait_set.lock() = Some(set);
+
+    // Unblock the waited signals so that a newly-arrived signal is visible to
+    // dequeue_signal inside the poll loop below.
     signal.set_blocked(old_blocked & !set);
 
     uctx.set_retval(-LinuxError::EINTR.code() as usize);
@@ -312,13 +320,17 @@ pub fn sys_rt_sigtimedwait(
 
     let Ok(sig) = block_on(future::timeout(timeout, fut)) else {
         // Timeout
+        *signal.sigwait_set.lock() = None;
         signal.set_blocked(old_blocked);
         return Err(AxError::WouldBlock);
     };
     let Some(sig) = sig else {
         // Interrupted
+        *signal.sigwait_set.lock() = None;
         return Ok(0);
     };
+
+    *signal.sigwait_set.lock() = None;
 
     if let Some(info) = info.nullable() {
         info.vm_write(sig.0)?;

@@ -51,6 +51,15 @@ pub struct ThreadSignalManager {
     stack: SpinNoIrq<SignalStack>,
 
     possibly_has_signal: AtomicBool,
+
+    /// The set of signals this thread is currently waiting for via
+    /// `rt_sigtimedwait`/`sigwaitinfo`, or `None` if not in a sigwait call.
+    ///
+    /// `ProcessSignalManager::send_signal` checks this to avoid dropping
+    /// a signal via `is_ignore()` when a thread is specifically waiting for it.
+    /// Using the actual wait set (instead of a bare boolean) avoids queuing
+    /// unrelated signals that happen to be default-ignore.
+    pub sigwait_set: SpinNoIrq<Option<SignalSet>>,
 }
 
 impl ThreadSignalManager {
@@ -63,6 +72,7 @@ impl ThreadSignalManager {
             stack: SpinNoIrq::new(SignalStack::default()),
 
             possibly_has_signal: AtomicBool::new(false),
+            sigwait_set: SpinNoIrq::new(None),
         });
         proc.children.lock().push((tid, Arc::downgrade(&this)));
         this
