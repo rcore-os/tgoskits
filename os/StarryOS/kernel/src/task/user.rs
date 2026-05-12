@@ -10,75 +10,6 @@ use super::{
 };
 use crate::syscall::handle_syscall;
 
-/// Dump user-mode register state at a fatal exception.
-///
-/// Logged at `info!` so it shows up in QEMU serial output without needing
-/// `RUST_LOG=debug`. Arch-aware; falls back to a placeholder on unexpected
-/// targets.
-fn dump_user_crash_context(uctx: &UserContext) {
-    #[cfg(target_arch = "riscv64")]
-    {
-        let r = &uctx.regs;
-        info!(
-            "  pc(sepc)={:#018x} ra={:#018x} sp={:#018x}",
-            uctx.sepc, r.ra, r.sp,
-        );
-        info!("  gp={:#018x}  tp={:#018x}  s0={:#018x}", r.gp, r.tp, r.s0,);
-        info!(
-            "  a0={:#018x} a1={:#018x} a2={:#018x} a3={:#018x}",
-            r.a0, r.a1, r.a2, r.a3,
-        );
-        info!(
-            "  a4={:#018x} a5={:#018x} a6={:#018x} a7={:#018x}",
-            r.a4, r.a5, r.a6, r.a7,
-        );
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        info!("  pc(elr)={:#018x} spsr={:#018x}", uctx.elr, uctx.spsr,);
-        info!(
-            "  x0={:#018x} x1={:#018x} x2={:#018x} x3={:#018x}",
-            uctx.x[0], uctx.x[1], uctx.x[2], uctx.x[3],
-        );
-        info!(
-            "  x29(fp)={:#018x} x30(lr)={:#018x}",
-            uctx.x[29], uctx.x[30],
-        );
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        info!(
-            "  rip={:#018x} rsp={:#018x} rflags={:#018x}",
-            uctx.rip, uctx.rsp, uctx.rflags,
-        );
-        info!(
-            "  rax={:#018x} rdi={:#018x} rsi={:#018x} rdx={:#018x}",
-            uctx.rax, uctx.rdi, uctx.rsi, uctx.rdx,
-        );
-    }
-    #[cfg(target_arch = "loongarch64")]
-    {
-        let r = &uctx.regs;
-        info!(
-            "  era={:#018x} ra={:#018x} sp={:#018x} tp={:#018x}",
-            uctx.era, r.ra, r.sp, r.tp,
-        );
-        info!(
-            "  a0={:#018x} a1={:#018x} a2={:#018x} a3={:#018x}",
-            r.a0, r.a1, r.a2, r.a3,
-        );
-    }
-    #[cfg(not(any(
-        target_arch = "riscv64",
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        target_arch = "loongarch64",
-    )))]
-    {
-        info!("  (register dump not implemented for this arch)");
-    }
-}
-
 /// Create a new user task.
 pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) -> TaskInner {
     TaskInner::new(
@@ -109,8 +40,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 "{:?}: segmentation fault at {:#x} {:?}",
                                 thr.proc_data.proc, addr, flags
                             );
-                            dump_user_crash_context(&uctx);
-                            raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV))
+                            raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV), &uctx)
                                 .expect("Failed to send SIGSEGV");
                         }
                     }
@@ -142,13 +72,12 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             ExceptionKind::IllegalInstruction => Signo::SIGILL,
                             _ => Signo::SIGTRAP,
                         };
-                        dump_user_crash_context(&uctx);
-                        raise_signal_fatal(SignalInfo::new_kernel(signo))
+                        raise_signal_fatal(SignalInfo::new_kernel(signo), &uctx)
                             .expect("Failed to send SIGTRAP");
                     }
                     r => {
                         warn!("Unexpected return reason: {r:?}");
-                        raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV))
+                        raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV), &uctx)
                             .expect("Failed to send SIGSEGV");
                     }
                 }

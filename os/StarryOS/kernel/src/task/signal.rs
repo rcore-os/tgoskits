@@ -18,6 +18,54 @@ pub struct SyscallRestartInfo {
     pub saved_sysno: usize,
 }
 
+/// Dump user-mode register state once the signal disposition really terminates.
+fn dump_user_crash_context(uctx: &UserContext) {
+    #[cfg(target_arch = "riscv64")]
+    {
+        let r = &uctx.regs;
+        warn!(
+            "user register dump:\n  pc(sepc)={:#018x} ra={:#018x} sp={:#018x}\n  gp={:#018x}  \
+             tp={:#018x}  s0={:#018x}\n  a0={:#018x} a1={:#018x} a2={:#018x} a3={:#018x}\n  \
+             a4={:#018x} a5={:#018x} a6={:#018x} a7={:#018x}",
+            uctx.sepc, r.ra, r.sp, r.gp, r.tp, r.s0, r.a0, r.a1, r.a2, r.a3, r.a4, r.a5, r.a6, r.a7,
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        warn!(
+            "user register dump:\n  pc(elr)={:#018x} spsr={:#018x}\n  x0={:#018x} x1={:#018x} \
+             x2={:#018x} x3={:#018x}\n  x29(fp)={:#018x} x30(lr)={:#018x}",
+            uctx.elr, uctx.spsr, uctx.x[0], uctx.x[1], uctx.x[2], uctx.x[3], uctx.x[29], uctx.x[30],
+        );
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        warn!(
+            "user register dump:\n  rip={:#018x} rsp={:#018x} rflags={:#018x}\n  rax={:#018x} \
+             rdi={:#018x} rsi={:#018x} rdx={:#018x}",
+            uctx.rip, uctx.rsp, uctx.rflags, uctx.rax, uctx.rdi, uctx.rsi, uctx.rdx,
+        );
+    }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        let r = &uctx.regs;
+        warn!(
+            "user register dump:\n  era={:#018x} ra={:#018x} sp={:#018x} tp={:#018x}\n  \
+             a0={:#018x} a1={:#018x} a2={:#018x} a3={:#018x}",
+            uctx.era, r.ra, r.sp, r.tp, r.a0, r.a1, r.a2, r.a3,
+        );
+    }
+    #[cfg(not(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64",
+    )))]
+    {
+        warn!("user register dump: not implemented for this arch");
+    }
+}
+
 pub fn check_signals(
     thr: &Thread,
     uctx: &mut UserContext,
@@ -56,8 +104,14 @@ pub fn check_signals(
     let signo = sig.signo();
 
     match os_action {
-        SignalOSAction::Terminate => do_exit(signo as i32, true),
-        SignalOSAction::CoreDump => do_exit(128 + signo as i32, true),
+        SignalOSAction::Terminate => {
+            dump_user_crash_context(uctx);
+            do_exit(signo as i32, true);
+        }
+        SignalOSAction::CoreDump => {
+            dump_user_crash_context(uctx);
+            do_exit(128 + signo as i32, true);
+        }
         SignalOSAction::Stop => do_exit(1, true),
         SignalOSAction::Continue => {}
         SignalOSAction::NoFurtherAction => {}
@@ -142,7 +196,7 @@ pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> AxRes
 }
 
 /// Sends a fatal signal to the current process.
-pub fn raise_signal_fatal(sig: SignalInfo) -> AxResult<()> {
+pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
 
@@ -154,6 +208,7 @@ pub fn raise_signal_fatal(sig: SignalInfo) -> AxResult<()> {
         task.interrupt();
     } else {
         // No task wants to handle the signal, abort the task
+        dump_user_crash_context(uctx);
         do_exit(signo as i32, true);
     }
 
