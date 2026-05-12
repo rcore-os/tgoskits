@@ -157,6 +157,8 @@ pub struct StarryCommandSnapshot {
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smp: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "StarryQemuSnapshot::is_empty")]
     pub qemu: StarryQemuSnapshot,
     #[serde(default, skip_serializing_if = "StarryUbootSnapshot::is_empty")]

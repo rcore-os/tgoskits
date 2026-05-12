@@ -121,6 +121,14 @@ impl AppContext {
         uboot_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
         let snapshot = StarryCommandSnapshot::load(&self.root)?;
+        let inherit_snapshot_config =
+            cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
+        let resolved_config = self.resolve_command_path(
+            cli.config.clone(),
+            inherit_snapshot_config
+                .then_some(snapshot.config.as_ref())
+                .flatten(),
+        );
         let effective_arch = cli.arch.clone().or_else(|| {
             if cli.target.is_some() {
                 None
@@ -153,7 +161,7 @@ impl AppContext {
             },
         );
         let build_info_path =
-            crate::starry::build::resolve_build_info_path(&self.root, &target, cli.config)?;
+            crate::starry::build::resolve_build_info_path(&self.root, &target, resolved_config)?;
 
         let request = ResolvedStarryRequest {
             package: STARRY_PACKAGE.to_string(),
@@ -162,7 +170,7 @@ impl AppContext {
             plat_dyn: None,
             smp,
             debug: cli.debug,
-            build_info_path,
+            build_info_path: build_info_path.clone(),
             build_info_override: None,
             qemu_config: runtime_paths.qemu_config.clone(),
             uboot_config: runtime_paths.uboot_config.clone(),
@@ -172,6 +180,7 @@ impl AppContext {
             arch: Some(arch),
             target: Some(target),
             smp,
+            config: Some(snapshot_path_value(&self.root, &build_info_path)),
             qemu: StarryQemuSnapshot {
                 qemu_config: runtime_paths
                     .qemu_config
