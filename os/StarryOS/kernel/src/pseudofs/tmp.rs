@@ -60,25 +60,46 @@ impl MemoryFs {
     /// Creates a new empty memory filesystem.
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> Filesystem {
-        let fs = Arc::new(Self {
+        let (fs, handle) = Self::new_with_handle();
+        drop(handle);
+        fs
+    }
+
+    /// Creates a new empty memory filesystem and returns a handle to the
+    /// underlying `MemoryFs` so callers can create anonymous (unlinked) nodes.
+    pub fn new_with_handle() -> (Filesystem, Arc<Self>) {
+        let handle = Arc::new(Self {
             inodes: Mutex::new(Slab::new()),
             root: Mutex::default(),
         });
         let root_ino = Inode::new(
-            &fs,
+            &handle,
             None,
             NodeType::Directory,
             NodePermission::from_bits_truncate(0o755),
         );
-        *fs.root.lock() = Some(DirEntry::new_dir(
-            |this| DirNode::new(MemoryNode::new(fs.clone(), root_ino, Some(this))),
+        *handle.root.lock() = Some(DirEntry::new_dir(
+            |this| DirNode::new(MemoryNode::new(handle.clone(), root_ino, Some(this))),
             Reference::root(),
         ));
-        Filesystem::new(fs)
+        (Filesystem::new(handle.clone()), handle)
     }
 
     fn get(&self, ino: u64) -> Arc<Inode> {
         self.inodes.lock()[ino as usize - 1].clone()
+    }
+
+    /// Creates an anonymous (unlinked) regular file inode within this tmpfs.
+    ///
+    /// The returned entry is not inserted into any directory, so it has no
+    /// path-based lookup and is kept alive solely by the returned handle(s).
+    pub fn create_anonymous_file(self: &Arc<Self>, name: &str, perm: NodePermission) -> DirEntry {
+        let inode = Inode::new(self, None, NodeType::RegularFile, perm);
+        DirEntry::new_file(
+            FileNode::new(MemoryNode::new(self.clone(), inode, None)),
+            NodeType::RegularFile,
+            Reference::new(None, name.to_owned()),
+        )
     }
 }
 

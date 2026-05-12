@@ -1,10 +1,11 @@
 use ax_errno::{AxError, AxResult};
 use bitflags::bitflags;
+use linux_raw_sys::general::SI_USER;
 use starry_signal::SignalInfo;
 
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like},
-    syscall::signal::make_queue_signal_info,
+    syscall::signal::{make_queue_signal_info, make_siginfo},
     task::{AsThread, get_process_data, get_task, send_signal_to_process},
 };
 
@@ -36,6 +37,10 @@ pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
 pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize> {
     debug!("sys_pidfd_getfd <= pidfd: {pidfd}, target_fd: {target_fd}, flags: {flags}");
 
+    if flags != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let pidfd = PidFd::from_fd(pidfd)?;
     let proc_data = pidfd.process_data()?;
     FD_TABLE
@@ -62,7 +67,11 @@ pub fn sys_pidfd_send_signal(
     let pidfd = PidFd::from_fd(pidfd)?;
     let pid = pidfd.process_data()?.proc.pid();
 
-    let sig = make_queue_signal_info(pid, signo, sig)?;
+    let sig = if sig.is_null() {
+        make_siginfo(signo, SI_USER as _)?
+    } else {
+        make_queue_signal_info(pid, signo, sig)?
+    };
     send_signal_to_process(pid, sig)?;
     Ok(0)
 }

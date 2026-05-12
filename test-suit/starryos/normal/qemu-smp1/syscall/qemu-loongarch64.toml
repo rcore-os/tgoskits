@@ -29,6 +29,7 @@ test_commands = [
     "/usr/bin/test-getrandom",
     "/usr/bin/test-madvise",
     "/usr/bin/test-mmap-family",
+    "/usr/bin/test-modern-fd-family",
     "/usr/bin/test-prctl-pdeathsig",
     "/usr/bin/test-raw-msg-peek",
     "/usr/bin/test-rlimit-stack",

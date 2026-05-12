@@ -96,7 +96,7 @@ pub fn sys_rt_sigpending(set: *mut SignalSet, sigsetsize: usize) -> AxResult<isi
     Ok(0)
 }
 
-fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
+pub(crate) fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
     if signo == 0 {
         return Ok(None);
     }
