@@ -16,7 +16,7 @@ use syscalls::Sysno;
 
 use crate::{
     file::{Directory, File, FileLike, Pipe, get_file_like, memfd::Memfd},
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut},
+    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
     task::AsThread,
 };
 

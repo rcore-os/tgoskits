@@ -76,6 +76,21 @@ int main(void) {
         CHECK_RET(fcntl(gfd, F_ADD_SEALS, F_SEAL_GROW), 0, "F_ADD_SEALS F_SEAL_GROW");
         CHECK_ERR(ftruncate(gfd, 8192), EPERM, "ftruncate grow rejected with EPERM");
         CHECK_RET(ftruncate(gfd, 4096), 0, "ftruncate same-size still allowed under GROW");
+
+        /* write(2) past current EOF is also disallowed under F_SEAL_GROW. */
+        char buf[64];
+        memset(buf, 'A', sizeof(buf));
+        CHECK_RET((int)lseek(gfd, 4090, SEEK_SET), 4090, "lseek to 4090 under GROW");
+        errno = 0;
+        ssize_t wn = write(gfd, buf, sizeof(buf));
+        CHECK(wn == -1 && errno == EPERM,
+              "write past EOF rejected with EPERM under F_SEAL_GROW");
+
+        /* write that stays within current size is still allowed. */
+        CHECK_RET((int)lseek(gfd, 0, SEEK_SET), 0, "lseek to 0 under GROW");
+        wn = write(gfd, buf, sizeof(buf));
+        CHECK(wn == (ssize_t)sizeof(buf), "in-bounds write still allowed under GROW");
+
         close(gfd);
     }
 

@@ -202,12 +202,22 @@ impl FileLike for File {
     where
         Self: Sized + 'static,
     {
-        get_file_like(fd)?.downcast_arc().map_err(|any| {
-            if any.is::<Directory>() {
-                AxError::IsADirectory
-            } else {
-                AxError::InvalidInput
-            }
+        let any = get_file_like(fd)?;
+        if let Ok(file) = any.clone().downcast_arc::<File>() {
+            return Ok(file);
+        }
+        // Memfd wraps a regular File and is meant to behave as one for
+        // every read-data / size-changing syscall (lseek, fallocate,
+        // sendfile, pread, pwrite, ...). Hand back the inner File so
+        // those paths don't trip on the wrapper. Seal-aware ftruncate
+        // already takes a separate Memfd::from_fd branch upstream.
+        if let Ok(memfd) = any.clone().downcast_arc::<crate::file::memfd::Memfd>() {
+            return Ok(memfd.inner().clone());
+        }
+        Err(if any.is::<Directory>() {
+            AxError::IsADirectory
+        } else {
+            AxError::InvalidInput
         })
     }
 }

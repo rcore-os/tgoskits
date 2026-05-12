@@ -13,14 +13,12 @@
 //!   - `F_SEAL_WRITE`   — no further writes via write(); also rejects new
 //!     `MAP_SHARED|PROT_WRITE` mmap calls
 //!
-//! Remaining gaps vs. Linux (will be addressed in a follow-up PR):
+//! Remaining gap vs. Linux (will be addressed in a follow-up PR):
 //!   - `F_SEAL_WRITE` does not revoke write access on extant
 //!     `MAP_SHARED|PROT_WRITE` mappings — the seal only blocks new mmap
 //!     calls. Implementing live-mapping revocation needs a registry of
 //!     installed VMAs and a way to call `aspace.protect` from the seal
 //!     path; deferred to keep this PR focused on the seal mask itself.
-//!   - `F_SEAL_GROW` is enforced on `ftruncate` but not on `write(2)` past
-//!     current EOF.
 //!
 //! Wayland's `wl_shm` requires `F_SEAL_SHRINK`, which is fully enforced.
 
@@ -151,10 +149,30 @@ impl FileLike for Memfd {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        if self.get_seals() & F_SEAL_WRITE != 0 {
+        let seals = self.get_seals();
+        if seals & F_SEAL_WRITE != 0 {
             return Err(AxError::OperationNotPermitted);
         }
-        self.inner.write(src)
+        if seals & F_SEAL_GROW == 0 {
+            return self.inner.write(src);
+        }
+        // F_SEAL_GROW: the inner File owns the cursor and Linux's
+        // shmem_write would reject the write atomically. We don't have
+        // public access to the cursor, so serialize against ftruncate
+        // and other sealed writes, snapshot the size, do the write, and
+        // truncate back if it grew. The truncate_mtx blocks ftruncate
+        // too, so the rollback target stays valid for the window.
+        let _guard = self.truncate_mtx.lock();
+        let pre_len = self.inner.inner().backend()?.location().len()?;
+        let written = self.inner.write(src)?;
+        let post_len = self.inner.inner().backend()?.location().len()?;
+        if post_len > pre_len {
+            if let Ok(f) = self.inner.inner().access(FileFlags::WRITE) {
+                let _ = f.set_len(pre_len);
+            }
+            return Err(AxError::OperationNotPermitted);
+        }
+        Ok(written)
     }
 
     fn stat(&self) -> AxResult<Kstat> {
