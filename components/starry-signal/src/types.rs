@@ -231,6 +231,33 @@ impl SignalInfo {
         result
     }
 
+    /// Construct a SignalInfo for a child process state change (SIGCHLD).
+    ///
+    /// - `child_pid`: PID of the child process
+    /// - `child_uid`: UID of the child process
+    /// - `code`: one of `CLD_EXITED`, `CLD_KILLED`, `CLD_DUMPED`, etc.
+    /// - `status`: for `CLD_EXITED` the raw exit value (0–255); for
+    ///   `CLD_KILLED`/`CLD_DUMPED` the signal number that killed the process.
+    pub fn new_sigchld(child_pid: u32, child_uid: u32, code: i32, status: i32) -> Self {
+        let mut result: Self = unsafe { mem::zeroed() };
+        result.set_signo(Signo::SIGCHLD);
+        result.set_code(code);
+        // SAFETY: The siginfo union is zeroed above. We access the _sigchld
+        // variant which is valid for SIGCHLD signals.
+        unsafe {
+            let fields = &mut result
+                .0
+                .__bindgen_anon_1
+                .__bindgen_anon_1
+                ._sifields
+                ._sigchld;
+            fields._pid = child_pid as _;
+            fields._uid = child_uid as _;
+            fields._status = status;
+        }
+        result
+    }
+
     /// Construct a SignalInfo for a POSIX timer expiry.
     ///
     /// Sets si_code = SI_TIMER and si_value = sigev_value (the value the user

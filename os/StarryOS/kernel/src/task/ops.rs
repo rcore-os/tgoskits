@@ -366,7 +366,32 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
-                let _ = send_signal_to_process(parent.pid(), Some(SignalInfo::new_kernel(signo)));
+                use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
+                use starry_signal::Signo;
+
+                let child_uid = thr.cred().uid;
+                let (code, status) = if group_exit {
+                    // Killed by signal — exit_code uses Linux wait-status
+                    // encoding: low 7 bits = signal number, bit 7 = core dumped.
+                    let raw = process.exit_code();
+                    let signum = raw & 0x7f;
+                    let core_dumped = (raw & 0x80) != 0;
+                    if core_dumped {
+                        (CLD_DUMPED as i32, signum)
+                    } else {
+                        (CLD_KILLED as i32, signum)
+                    }
+                } else {
+                    // Normal exit — exit_code is wait-status encoded (code << 8).
+                    (CLD_EXITED as i32, (process.exit_code() >> 8) & 0xff)
+                };
+
+                let sig = if signo == Signo::SIGCHLD {
+                    SignalInfo::new_sigchld(process.pid(), child_uid, code, status)
+                } else {
+                    SignalInfo::new_kernel(signo)
+                };
+                let _ = send_signal_to_process(parent.pid(), Some(sig));
             }
             if let Ok(data) = get_process_data(parent.pid()) {
                 data.child_exit_event.wake();
