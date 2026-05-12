@@ -12,7 +12,9 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -72,6 +74,18 @@ static int x_pidfd_send_signal(int pidfd, int sig, siginfo_t *info, unsigned int
 static int x_pidfd_getfd(int pidfd, int targetfd, unsigned int flags)
 {
     return (int)syscall(__NR_pidfd_getfd, pidfd, targetfd, flags);
+}
+
+/* musl 可能无 fallocate/copy_file_range 封装，与 syscall 分组其它用例一致走 syscall */
+static int x_fallocate(int fd, int mode, off_t offset, off_t len)
+{
+    return (int)syscall(SYS_fallocate, fd, mode, offset, len);
+}
+
+static ssize_t my_copy_file_range(int fd_in, off_t *off_in, int fd_out, off_t *off_out,
+                                  size_t len, unsigned int flags)
+{
+    return syscall(SYS_copy_file_range, fd_in, off_in, fd_out, off_out, len, flags);
 }
 
 /* ---- memfd_create ---- */
@@ -273,6 +287,120 @@ static void test_memfd_seal_enforcement(void)
     }
 }
 
+static void test_memfd_seal_more_syscalls(void)
+{
+    printf("--- memfd seals: writev/pwritev/fallocate/sendfile/copy_file_range ---\n");
+
+    ssize_t w;
+    char one_byte = 'x';
+    struct iovec iov;
+    iov.iov_base = &one_byte;
+    iov.iov_len = 1;
+
+    /* F_SEAL_WRITE + writev */
+    errno = 0;
+    int fd = memfd_create("seal_writev", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(seal_writev)");
+    if (fd >= 0) {
+        CHECK_RET(ftruncate(fd, 4096), 0, "writev: ftruncate 4KiB");
+        CHECK_RET(lseek(fd, 0, SEEK_SET), 0, "writev: lseek 0");
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "writev: ADD_SEALS(F_SEAL_WRITE)");
+        errno = 0;
+        w = writev(fd, &iov, 1);
+        CHECK(w == -1 && errno == EPERM, "F_SEAL_WRITE 后 writev -> EPERM");
+        close(fd);
+    }
+
+    /* F_SEAL_WRITE + pwritev */
+    errno = 0;
+    fd = memfd_create("seal_pwritev", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(seal_pwritev)");
+    if (fd >= 0) {
+        CHECK_RET(ftruncate(fd, 4096), 0, "pwritev: ftruncate 4KiB");
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "pwritev: ADD_SEALS(F_SEAL_WRITE)");
+        errno = 0;
+        w = pwritev(fd, &iov, 1, 0);
+        CHECK(w == -1 && errno == EPERM, "F_SEAL_WRITE 后 pwritev -> EPERM");
+        close(fd);
+    }
+
+    /* F_SEAL_WRITE + fallocate (grow file) */
+    errno = 0;
+    fd = memfd_create("seal_falloc_w", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(seal_falloc_w)");
+    if (fd >= 0) {
+        CHECK_RET(ftruncate(fd, 4096), 0, "falloc+WRITE: ftruncate 4KiB");
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "falloc+WRITE: ADD_SEALS");
+        CHECK_ERR(x_fallocate(fd, 0, 0, 8192), EPERM,
+                  "F_SEAL_WRITE 后 fallocate 扩到 8KiB -> EPERM");
+        close(fd);
+    }
+
+    /* F_SEAL_GROW + fallocate (grow file) */
+    errno = 0;
+    fd = memfd_create("seal_falloc_g", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(seal_falloc_g)");
+    if (fd >= 0) {
+        CHECK_RET(ftruncate(fd, 4096), 0, "falloc+GROW: ftruncate 4KiB");
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_GROW), 0, "falloc+GROW: ADD_SEALS(F_SEAL_GROW)");
+        CHECK_ERR(x_fallocate(fd, 0, 0, 8192), EPERM,
+                  "F_SEAL_GROW 后 fallocate 扩到 8KiB -> EPERM");
+        close(fd);
+    }
+
+    /* F_SEAL_WRITE + sendfile (out_fd sealed) */
+    errno = 0;
+    int out_fd = memfd_create("seal_sf_out", MFD_ALLOW_SEALING);
+    int in_fd = memfd_create("seal_sf_in", 0);
+    CHECK(out_fd >= 0 && in_fd >= 0, "memfd pair for sendfile");
+    if (out_fd >= 0 && in_fd >= 0) {
+        CHECK_RET(ftruncate(out_fd, 4096), 0, "sendfile: out ftruncate 4KiB");
+        CHECK_RET(ftruncate(in_fd, 4096), 0, "sendfile: in ftruncate 4KiB");
+        CHECK_RET(write(in_fd, "Z", 1), 1, "sendfile: in write 1 byte");
+        CHECK_RET(lseek(in_fd, 0, SEEK_SET), 0, "sendfile: in lseek 0");
+        CHECK_RET(fcntl(out_fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "sendfile: out ADD_SEALS");
+        errno = 0;
+        ssize_t sf = sendfile(out_fd, in_fd, NULL, 1);
+        CHECK(sf == -1 && errno == EPERM, "sendfile 写入 sealed memfd -> EPERM");
+        close(out_fd);
+        close(in_fd);
+    } else {
+        if (out_fd >= 0) {
+            close(out_fd);
+        }
+        if (in_fd >= 0) {
+            close(in_fd);
+        }
+    }
+
+    /* F_SEAL_WRITE + copy_file_range (into sealed memfd) */
+    errno = 0;
+    int src_fd = memfd_create("seal_cfr_in", 0);
+    int dst_fd = memfd_create("seal_cfr_out", MFD_ALLOW_SEALING);
+    CHECK(src_fd >= 0 && dst_fd >= 0, "memfd pair for copy_file_range");
+    if (src_fd >= 0 && dst_fd >= 0) {
+        CHECK_RET(ftruncate(src_fd, 4096), 0, "cfr: src ftruncate 4KiB");
+        CHECK_RET(write(src_fd, "Q", 1), 1, "cfr: src write");
+        CHECK_RET(lseek(src_fd, 0, SEEK_SET), 0, "cfr: src lseek 0");
+        CHECK_RET(ftruncate(dst_fd, 4096), 0, "cfr: dst ftruncate 4KiB");
+        CHECK_RET(fcntl(dst_fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "cfr: dst ADD_SEALS");
+        off_t off_in = 0;
+        off_t off_out = 0;
+        errno = 0;
+        ssize_t cfr = my_copy_file_range(src_fd, &off_in, dst_fd, &off_out, 1, 0);
+        CHECK(cfr == -1 && errno == EPERM, "copy_file_range 写入 sealed memfd -> EPERM");
+        close(src_fd);
+        close(dst_fd);
+    } else {
+        if (src_fd >= 0) {
+            close(src_fd);
+        }
+        if (dst_fd >= 0) {
+            close(dst_fd);
+        }
+    }
+}
+
 /* ---- pidfd_open ---- */
 
 static void test_pidfd_open_self(void)
@@ -452,6 +580,7 @@ int main(void)
     test_memfd_name_limits();
     test_memfd_flags();
     test_memfd_seal_enforcement();
+    test_memfd_seal_more_syscalls();
     test_memfd_hugetlb_and_reserved_flags();
 
     test_pidfd_open_self();
