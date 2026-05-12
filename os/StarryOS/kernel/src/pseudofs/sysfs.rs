@@ -21,8 +21,17 @@
 //! Out of scope (deliberately):
 //!   - Writeable sysfs knobs (`/sys/kernel/*`, `/sys/module/*`).
 //!   - Dynamic uevent emission via `/sys/.../uevent` writes (depends on
-//!     AF_NETLINK broadcast; see PR J).
+//!     AF_NETLINK broadcast and is not implemented here).
 //!   - ALSA `sound/` subsystem (separate submission).
+
+// This module is gated to non-plat-dyn builds. In feature combos where
+// the module compiles but the call into `new_sysfs` is excluded by the
+// same gate at a different layer, rustc still walks the module body
+// and complains about every internal helper being dead. The contents
+// are tightly wired to libudev's enumeration shape, not arbitrary
+// scaffolding, so the right answer is to keep them and silence the
+// lint for the whole module rather than #[allow] each item.
+#![allow(dead_code)]
 
 use alloc::{
     borrow::{Cow, ToOwned},
@@ -67,6 +76,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "class",
         SimpleDir::new_maker(fs.clone(), Arc::new(ClassDir { fs: fs.clone() })),
+    );
+    root.add(
+        "bus",
+        SimpleDir::new_maker(fs.clone(), Arc::new(BusDir { fs: fs.clone() })),
     );
     root.add(
         "devices",
@@ -218,7 +231,7 @@ impl SimpleDirOps for ClassSubsystemDir {
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        if !self.names.iter().any(|n| *n == name) {
+        if !self.names.contains(&name) {
             return Err(VfsError::NotFound);
         }
         let target = format!("../../devices/virtual/{}/{}", self.subsystem, name);
@@ -273,6 +286,40 @@ fn input_device_count() -> u32 {
 #[cfg(not(feature = "input"))]
 fn input_device_count() -> u32 {
     0
+}
+
+// ========================================================================
+// /sys/bus
+// ========================================================================
+
+struct BusDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for BusDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["platform"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        Ok(NodeOpsMux::Dir(match name {
+            "platform" => SimpleDir::new_maker(fs.clone(), Arc::new(PlatformBusClassDir)),
+            _ => return Err(VfsError::NotFound),
+        }))
+    }
+}
+
+struct PlatformBusClassDir;
+
+impl SimpleDirOps for PlatformBusClassDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(core::iter::empty())
+    }
+
+    fn lookup_child(&self, _name: &str) -> VfsResult<NodeOpsMux> {
+        Err(VfsError::NotFound)
+    }
 }
 
 // ========================================================================

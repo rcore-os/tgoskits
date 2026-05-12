@@ -340,13 +340,13 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
     let mut inputs = DirMapping::new();
     let mut input_id: u32 = 0;
     let input_devices = ax_input::take_inputs();
-    let mut keys = [0; 0x300usize.div_ceil(8)];
     for mut device in input_devices.into_iter() {
+        let mut keys = [0; 0x300usize.div_ceil(8)];
         assert!(device.get_event_bits(EventType::Key, &mut keys).unwrap());
 
         const BTN_MOUSE: usize = 0x110;
-        let is_mouse_only = keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0;
-        if is_mouse_only {
+        let has_mouse_button = keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0;
+        if has_mouse_button {
             // PS/2-style mouse aggregator. No per-device evdev node, no
             // sysfs entry — exposed as /dev/input/mice with the legacy
             // mousedev minor (63).

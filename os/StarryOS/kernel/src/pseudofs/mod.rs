@@ -7,6 +7,7 @@ mod dyn_debug;
 mod file;
 mod fs;
 mod proc;
+#[cfg(not(feature = "plat-dyn"))]
 mod sysfs;
 mod tmp;
 #[cfg(feature = "plat-dyn")]

@@ -17,10 +17,9 @@ int main(void)
 
     struct stat st;
     int rc = stat("/dev/input/event0", &st);
+    CHECK_RET(rc, 0,
+              "/dev/input/event0 应存在 (QEMU config includes virtio-keyboard)");
     if (rc != 0) {
-        /* 没有 input 设备，QEMU 没接 virtio-keyboard 时跳过即可 */
-        printf("  SKIP | %s:%d | /dev/input/event0 不存在 (errno=%d)\n",
-               __FILE__, __LINE__, errno);
         TEST_DONE();
     }
 
