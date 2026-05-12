@@ -14,12 +14,14 @@ repository.workspace = true
 license.workspace = true
 
 [features]
+default = ["dynamic_debug"]
 dev-log = []
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
 plat-dyn = ["dep:axplat-dyn", "axplat-dyn/usb", "dep:crab-usb", "dep:rdrive"]
 vsock = ["ax-feat/vsock"]
+dynamic_debug = ["ax-feat/ipi"]
 
 [dependencies]
 ax-feat = { workspace = true, features = [
@@ -56,7 +58,7 @@ ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
 crab-usb = { version = "0.9", optional = true }
-rdrive = { version = "0.20", optional = true }
+rdrive = { workspace = true, optional = true }
 
 axbacktrace = { workspace = true }
 ax-errno = { workspace = true }
@@ -111,6 +113,9 @@ uluru = "3.1.0"
 weak-map = "0.1.1"
 xmas-elf = "0.9"
 zerocopy = { version = "0.8", features = ["derive"] }
+ax-ipi = { workspace = true }
+static-keys = "0.8"
+ddebug = "0.5"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

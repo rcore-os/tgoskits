@@ -1,0 +1,9 @@
+/target
+/.bare-test.toml
+/.spec-workflow
+/CLAUDE.md
+/.claude
+.serena
+.qemu*
+!.qemu.toml
+.uboot*

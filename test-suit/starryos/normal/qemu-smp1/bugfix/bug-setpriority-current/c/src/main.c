@@ -47,7 +47,7 @@ static int child_uid_priority_checks(void)
     check(ret == 0, "child can drop to uid 1000");
 
     ret = raw_setpriority(PRIO_PROCESS, 0, 0);
-    check(ret == -1 && errno == EPERM,
+    check(ret == -1 && errno == EACCES,
           "unprivileged child cannot lower nice without CAP_SYS_NICE");
 
     ret = raw_setpriority(PRIO_USER, 1000, 15);
@@ -61,6 +61,54 @@ static int child_uid_priority_checks(void)
 
     printf("CHILD RESULT: %d passed / %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
+}
+
+static void cross_uid_priority_check(void)
+{
+    int pipefd[2];
+    long ret = pipe(pipefd);
+    check(ret == 0, "pipe for cross-uid setpriority check");
+    if (ret != 0) {
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pipefd[0]);
+        if (setuid(1001) != 0) {
+            _exit(1);
+        }
+        if (write(pipefd[1], "x", 1) != 1) {
+            _exit(2);
+        }
+        sleep(2);
+        _exit(0);
+    }
+
+    check(pid > 0, "fork child with mismatched uid");
+    close(pipefd[1]);
+    if (pid <= 0) {
+        close(pipefd[0]);
+        return;
+    }
+
+    char marker = 0;
+    ret = read(pipefd[0], &marker, sizeof(marker));
+    close(pipefd[0]);
+    check(ret == 1, "child dropped to uid 1001");
+
+    ret = setuid(1000);
+    check(ret == 0, "parent can drop to uid 1000");
+    if (ret == 0) {
+        ret = raw_setpriority(PRIO_PROCESS, pid, 15);
+        check(ret == -1 && errno == EPERM,
+              "setpriority mismatched target credentials returns EPERM");
+    }
+
+    int status = 0;
+    ret = waitpid(pid, &status, 0);
+    check(ret == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "cross-uid child exits cleanly");
 }
 
 int main(void)
@@ -97,6 +145,8 @@ int main(void)
         check(ret == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "child uid priority checks passed");
     }
+
+    cross_uid_priority_check();
 
     printf("RESULT: %d passed / %d failed\n", passed, failed);
     if (failed == 0) {

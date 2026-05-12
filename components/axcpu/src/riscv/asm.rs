@@ -93,6 +93,12 @@ pub unsafe fn write_kernel_page_table(root_paddr: PhysAddr) {
     unsafe { write_user_page_table(root_paddr) };
 }
 
+/// Flushes the entire instruction cache.
+#[inline]
+pub fn flush_icache_all() {
+    riscv::asm::fence_i();
+}
+
 /// Flushes the TLB.
 ///
 /// If `vaddr` is [`None`], flushes the entire TLB. Otherwise, flushes the TLB

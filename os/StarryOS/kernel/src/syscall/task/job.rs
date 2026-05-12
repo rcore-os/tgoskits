@@ -3,11 +3,19 @@ use ax_task::current;
 use starry_process::Pid;
 
 use crate::task::{
-    AsThread, get_process_data, get_process_group, register_process_group, register_session,
+    AsThread, get_process_data, get_process_group, get_zombie_process, register_process_group,
+    register_session,
 };
 
 pub fn sys_getsid(pid: Pid) -> AxResult<isize> {
-    Ok(get_process_data(pid)?.proc.group().session().sid() as _)
+    if let Ok(data) = get_process_data(pid) {
+        return Ok(data.proc.group().session().sid() as _);
+    }
+    // Zombie: ProcessData is gone but Arc<Process> is still held in ZOMBIE_PIDS.
+    if let Some(proc) = get_zombie_process(pid) {
+        return Ok(proc.group().session().sid() as _);
+    }
+    Err(AxError::NoSuchProcess)
 }
 
 pub fn sys_setsid() -> AxResult<isize> {
@@ -27,7 +35,14 @@ pub fn sys_setsid() -> AxResult<isize> {
 }
 
 pub fn sys_getpgid(pid: Pid) -> AxResult<isize> {
-    Ok(get_process_data(pid)?.proc.group().pgid() as _)
+    if let Ok(data) = get_process_data(pid) {
+        return Ok(data.proc.group().pgid() as _);
+    }
+    // Zombie: ProcessData is gone but Arc<Process> is still held in ZOMBIE_PIDS.
+    if let Some(proc) = get_zombie_process(pid) {
+        return Ok(proc.group().pgid() as _);
+    }
+    Err(AxError::NoSuchProcess)
 }
 
 #[cfg(target_arch = "x86_64")]

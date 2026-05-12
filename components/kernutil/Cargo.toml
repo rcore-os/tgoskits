@@ -1,0 +1,14 @@
+[package]
+name = "kernutil"
+version = "0.2.2"
+license.workspace = true
+categories.workspace = true
+description = "Utilities for kernel development."
+edition.workspace = true
+keywords.workspace = true
+repository.workspace = true
+
+[dependencies]
+heapless = "0.9"
+ranges-ext = {workspace = true}
+num-align = "0.1"

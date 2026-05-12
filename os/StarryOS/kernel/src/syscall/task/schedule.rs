@@ -13,7 +13,10 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use crate::{
-    task::{AsThread, Cred, ProcessData, get_process_data, get_process_group, get_task, processes},
+    task::{
+        AsThread, Cred, ProcessData, get_process_data, get_process_group, get_task, is_zombie_pid,
+        processes,
+    },
     time::TimeValueLike,
 };
 
@@ -153,10 +156,11 @@ pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
     debug!("sys_getpriority <= which: {which}, who: {who}");
 
     match which {
-        PRIO_PROCESS => {
-            let proc = get_process_data(who)?;
-            Ok(raw_priority(proc.nice()))
-        }
+        PRIO_PROCESS => match get_process_data(who) {
+            Ok(proc) => Ok(raw_priority(proc.nice())),
+            Err(AxError::NoSuchProcess) if who != 0 && is_zombie_pid(who) => Ok(20),
+            Err(err) => Err(err),
+        },
         PRIO_PGRP => {
             let pgid = if who == 0 {
                 current().as_thread().proc_data.proc.group().pgid()
@@ -265,10 +269,10 @@ fn check_setpriority_permission(proc: &ProcessData, nice: i32) -> AxResult<()> {
 
     let target = process_cred(proc)?;
     if !setpriority_cred_matches(&caller, &target) {
-        return Err(AxError::PermissionDenied);
+        return Err(AxError::OperationNotPermitted);
     }
     if nice < proc.nice() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(AxError::PermissionDenied);
     }
     Ok(())
 }

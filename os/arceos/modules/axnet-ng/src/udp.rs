@@ -132,7 +132,7 @@ impl SocketOps for UdpSocket {
 
         if !self.general.reuse_address() {
             // Check if the address is already in use
-            SOCKET_SET.bind_check(local_endpoint.addr, local_endpoint.port)?;
+            SOCKET_SET.udp_bind_check(local_endpoint.addr, local_endpoint.port)?;
         }
 
         self.with_smol_socket(|socket| {

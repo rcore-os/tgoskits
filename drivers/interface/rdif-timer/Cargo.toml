@@ -1,0 +1,13 @@
+[package]
+name = "rdif-timer"
+version = "0.6.1"
+edition.workspace = true
+authors = ["周睿 <zrufo747@outlook.com>"]
+repository.workspace = true
+license = "MIT"
+description = "Driver Interface of system timer."
+keywords = ["os", "driver"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+rdif-base = { workspace = true }
