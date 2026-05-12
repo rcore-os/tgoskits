@@ -2,6 +2,7 @@
 name = "arceos-std-arce_agent"
 version = "0.2.0"
 edition.workspace = true
+publish = false
 
 [dependencies]
 # minreq: minimal HTTP client, no TLS (we use a local HTTP proxy for HTTPS APIs)
