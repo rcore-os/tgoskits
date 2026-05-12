@@ -16,18 +16,16 @@
 //! (GICD) and redistributor (GICR) stay MMIO in both versions, but
 //! those accesses are plain u32 LDR/STR that HVF decodes correctly.
 //!
-//! Runtime detection between v2 and v3 is not feasible here: see the
-//! comment on `USE_V3` for why each candidate probe (ID register,
-//! GICD_PIDR2 at 0xFE8, GICD_PIDR2 at 0xFFE8) fails under at least
-//! one of TCG-v2 / HVF-v3.
+//! Runtime detection between v2 and v3 is not feasible here; see the
+//! `init_gic_v3` docs for why each candidate probe fails under at
+//! least one of TCG-v2 / HVF-v3.
 
-use arm_gic_driver::{
-    v2::{
-        Ack as V2Ack, Gic as GicV2, IntId, SGITarget as V2SGITarget, TargetList,
-        TrapOp as V2TrapOp, Trigger, VirtAddr as DriverVirtAddr,
-    },
-    v3::{Affinity, Gic as GicV3, SGITarget as V3SGITarget},
+use arm_gic_driver::v2::{
+    Ack as V2Ack, Gic as GicV2, IntId, SGITarget as V2SGITarget, TargetList, TrapOp as V2TrapOp,
+    Trigger, VirtAddr as DriverVirtAddr,
 };
+#[cfg(gic_v3)]
+use arm_gic_driver::v3::{Affinity, Gic as GicV3, SGITarget as V3SGITarget};
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_plat::irq::{HandlerTable, IpiTarget, IrqHandler};
@@ -46,38 +44,12 @@ enum Backend {
         /// `self.gic.cpu_interface()` on every IRQ.
         trap: V2TrapOp,
     },
-    V3 {
-        gic: GicV3,
-    },
+    #[cfg(gic_v3)]
+    V3 { gic: GicV3 },
 }
 
 static GIC: LazyInit<SpinNoIrq<Backend>> = LazyInit::new();
 static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
-
-/// Whether to use GICv3 at this build. Gated by the `AX_GIC_V3=1`
-/// build-time env var (see `build.rs`).
-///
-/// We chose a build-time switch rather than runtime detection because
-/// neither detection method works cleanly under both QEMU modes:
-///
-///   - **`ID_AA64PFR0_EL1.GIC`** (the Linux approach) reports 0 on
-///     Apple HVF with `-cpu host` even though HVF's emulated GIC is
-///     v3 — HVF hides the v3 sysreg capability bit for some reason.
-///   - **GICD_PIDR2 MMIO probe at 0xFE8** works under TCG-v2 (inside
-///     GICD's 4 KiB block) but under HVF-v3 QEMU doesn't back that
-///     offset and the access triggers Apple HVF's ISV=0 trap.
-///   - **GICD_PIDR2 MMIO probe at 0xFFE8** works under HVF-v3 but
-///     triggers an aspace fault under TCG-v2 (address is outside
-///     GICv2's 4 KiB GICD).
-///
-/// Since one binary can't do a safe runtime probe, the build-time
-/// env var tells us definitively which backend to compile in. Users
-/// running under HVF / real v3 hardware set `AX_GIC_V3=1` before
-/// building; regular TCG builds leave it unset for v2.
-#[cfg(gic_v3)]
-const USE_V3: bool = true;
-#[cfg(not(gic_v3))]
-const USE_V3: bool = false;
 
 /// Enables or disables the given IRQ.
 pub fn set_enable(irq: usize, enabled: bool) {
@@ -91,6 +63,7 @@ pub fn set_enable(irq: usize, enabled: bool) {
                 gic.set_cfg(intid, Trigger::Edge);
             }
         }
+        #[cfg(gic_v3)]
         Backend::V3 { gic } => {
             gic.set_irq_enable(intid, enabled);
             // v3 SPI trigger config also stays on the distributor.
@@ -99,6 +72,12 @@ pub fn set_enable(irq: usize, enabled: bool) {
             }
         }
     }
+}
+
+enum ActiveIrq {
+    V2(V2Ack),
+    #[cfg(gic_v3)]
+    V3(IntId),
 }
 
 /// Registers an IRQ handler for the given IRQ.
@@ -123,7 +102,7 @@ pub fn unregister_handler(irq: usize) -> Option<IrqHandler> {
 pub fn handle_irq(_irq: usize) -> Option<usize> {
     // Ack + dispatch + EOI. v2 goes through GICC MMIO via the cached
     // TrapOp; v3 uses `ICC_IAR1_EL1` / `ICC_EOIR1_EL1` system regs.
-    let (irq, ack_v2, ack_v3) = {
+    let (irq, active_irq) = {
         let guard = GIC.lock();
         match &*guard {
             Backend::V2 { trap, .. } => {
@@ -136,8 +115,9 @@ pub fn handle_irq(_irq: usize) -> Option<usize> {
                     V2Ack::SGI { intid, cpu_id: _ } => intid,
                 }
                 .to_u32() as usize;
-                (irq, Some(ack), None)
+                (irq, ActiveIrq::V2(ack))
             }
+            #[cfg(gic_v3)]
             Backend::V3 { gic } => {
                 // Group 1 Non-secure is what QEMU's virt machine uses.
                 let ack = gic.cpu_interface().ack1();
@@ -146,7 +126,7 @@ pub fn handle_irq(_irq: usize) -> Option<usize> {
                 if ack.is_special() {
                     return None;
                 }
-                (ack.to_u32() as usize, None, Some(ack))
+                (ack.to_u32() as usize, ActiveIrq::V3(ack))
             }
         }
     };
@@ -158,22 +138,28 @@ pub fn handle_irq(_irq: usize) -> Option<usize> {
 
     // EOI and (if two-step mode) deactivate.
     let guard = GIC.lock();
-    match &*guard {
-        Backend::V2 { trap, .. } => {
-            let ack = ack_v2.unwrap();
-            trap.eoi(ack);
-            if trap.eoi_mode_ns() {
-                trap.dir(ack);
+    match active_irq {
+        ActiveIrq::V2(ack) => match &*guard {
+            Backend::V2 { trap, .. } => {
+                trap.eoi(ack);
+                if trap.eoi_mode_ns() {
+                    trap.dir(ack);
+                }
             }
-        }
-        Backend::V3 { gic } => {
-            let ack = ack_v3.unwrap();
-            let cpu = gic.cpu_interface();
-            cpu.eoi1(ack);
-            if cpu.eoi_mode() {
-                cpu.dir(ack);
+            #[cfg(gic_v3)]
+            Backend::V3 { .. } => unreachable!("GIC backend changed while handling an IRQ"),
+        },
+        #[cfg(gic_v3)]
+        ActiveIrq::V3(ack) => match &*guard {
+            Backend::V3 { gic } => {
+                let cpu = gic.cpu_interface();
+                cpu.eoi1(ack);
+                if cpu.eoi_mode() {
+                    cpu.dir(ack);
+                }
             }
-        }
+            Backend::V2 { .. } => unreachable!("GIC backend changed while handling an IRQ"),
+        },
     }
 
     Some(irq)
@@ -197,6 +183,7 @@ pub fn send_ipi(irq_num: usize, target: IpiTarget) {
             };
             gic.send_sgi(sgi, v2_target);
         }
+        #[cfg(gic_v3)]
         Backend::V3 { gic } => {
             let sgi = IntId::sgi(irq_num as u32);
             let v3_target = match target {
@@ -224,38 +211,36 @@ pub fn send_ipi(irq_num: usize, target: IpiTarget) {
     }
 }
 
-/// Initializes the GIC distributor. Picks v2 or v3 based on runtime
-/// detection of the system-register interface. On v2, the second
-/// argument is the GICC (CPU interface) base; on v3, the third argument
-/// is the GICR (Redistributor) base and the GICC address is unused.
-/// Platforms pass all three; unused one is ignored.
-pub fn init_gic(
-    gicd_base: ax_plat::mem::VirtAddr,
-    gicc_base: ax_plat::mem::VirtAddr,
-    gicr_base: ax_plat::mem::VirtAddr,
-) {
-    let _ = gicd_base; // silence unused warning in the v3 branch
-    if USE_V3 {
-        info!("Initialize GICv3 (system-register CPU interface)...");
-        let gicd = DriverVirtAddr::new(gicd_base.into());
-        let gicr = DriverVirtAddr::new(gicr_base.into());
-        // SAFETY: platform code supplies canonical QEMU virt addresses
-        // mapped as Device memory; the backing hardware is uniquely
-        // controlled by this kernel instance.
-        let mut gic = unsafe { GicV3::new(gicd, gicr) };
-        gic.init();
-        GIC.init_once(SpinNoIrq::new(Backend::V3 { gic }));
-    } else {
-        info!("Initialize GICv2 (MMIO CPU interface)...");
-        let gicd = DriverVirtAddr::new(gicd_base.into());
-        let gicc = DriverVirtAddr::new(gicc_base.into());
-        // SAFETY: see above.
-        let mut gic = unsafe { GicV2::new(gicd, gicc, None) };
-        gic.init();
-        let cpu = gic.cpu_interface();
-        let trap = cpu.trap_operations();
-        GIC.init_once(SpinNoIrq::new(Backend::V2 { gic, trap }));
-    }
+/// Initializes the GICv2 distributor and MMIO CPU interface.
+pub fn init_gic(gicd_base: ax_plat::mem::VirtAddr, gicc_base: ax_plat::mem::VirtAddr) {
+    info!("Initialize GICv2 (MMIO CPU interface)...");
+    let gicd = DriverVirtAddr::new(gicd_base.into());
+    let gicc = DriverVirtAddr::new(gicc_base.into());
+    // SAFETY: platform code supplies mapped Device-memory addresses
+    // for the interrupt controller and this kernel owns the device.
+    let mut gic = unsafe { GicV2::new(gicd, gicc, None) };
+    gic.init();
+    let cpu = gic.cpu_interface();
+    let trap = cpu.trap_operations();
+    GIC.init_once(SpinNoIrq::new(Backend::V2 { gic, trap }));
+}
+
+/// Initializes the GICv3 distributor and redistributor.
+///
+/// GICv3 is selected at compile time by setting `AX_GIC_V3=1`. We do
+/// not runtime-probe the backend because neither `ID_AA64PFR0_EL1.GIC`
+/// nor GICD PIDR2 probing works cleanly under both QEMU TCG GICv2 and
+/// Apple HVF GICv3.
+#[cfg(gic_v3)]
+pub fn init_gic_v3(gicd_base: ax_plat::mem::VirtAddr, gicr_base: ax_plat::mem::VirtAddr) {
+    info!("Initialize GICv3 (system-register CPU interface)...");
+    let gicd = DriverVirtAddr::new(gicd_base.into());
+    let gicr = DriverVirtAddr::new(gicr_base.into());
+    // SAFETY: platform code supplies mapped Device-memory addresses
+    // for the interrupt controller and this kernel owns the device.
+    let mut gic = unsafe { GicV3::new(gicd, gicr) };
+    gic.init();
+    GIC.init_once(SpinNoIrq::new(Backend::V3 { gic }));
 }
 
 /// Initializes the CPU-side state. Must be called per-CPU.
@@ -267,6 +252,7 @@ pub fn init_gicc() {
             cpu.init_current_cpu();
             cpu.set_eoi_mode_ns(false);
         }
+        #[cfg(gic_v3)]
         Backend::V3 { gic } => {
             let mut cpu = gic.cpu_interface();
             if let Err(e) = cpu.init_current_cpu() {

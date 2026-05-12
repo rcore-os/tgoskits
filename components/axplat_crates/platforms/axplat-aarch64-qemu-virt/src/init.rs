@@ -41,14 +41,17 @@ impl InitIf for InitIfImpl {
     fn init_later(_cpu_id: usize, _dtb: usize) {
         #[cfg(feature = "irq")]
         {
-            // `init_gic` picks v2 (GICC MMIO) or v3 (GICR + ICC_*
-            // system registers) at compile time based on the
-            // `AX_GIC_V3` env var; see `axplat-aarch64-peripherals`'s
-            // `build.rs`. Platforms hand all three addresses; the
-            // backend that gets compiled in uses the relevant pair.
+            // The GIC backend is selected at compile time using
+            // `AX_GIC_V3`; see `axplat-aarch64-peripherals`'s
+            // `build.rs`.
+            #[cfg(not(gic_v3))]
             ax_plat_aarch64_peripherals::gic::init_gic(
                 phys_to_virt(pa!(GICD_PADDR)),
                 phys_to_virt(pa!(GICC_PADDR)),
+            );
+            #[cfg(gic_v3)]
+            ax_plat_aarch64_peripherals::gic::init_gic_v3(
+                phys_to_virt(pa!(GICD_PADDR)),
                 phys_to_virt(pa!(GICR_PADDR)),
             );
             ax_plat_aarch64_peripherals::gic::init_gicc();

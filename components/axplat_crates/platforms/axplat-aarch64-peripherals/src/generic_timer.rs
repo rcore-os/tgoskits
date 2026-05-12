@@ -28,10 +28,10 @@ pub fn nanos_to_ticks(nanos: u64) -> u64 {
 ///
 /// A timer interrupt will be triggered at the specified monotonic time deadline (in nanoseconds).
 pub fn set_oneshot_timer(deadline_ns: u64) {
-    let cnptct = CNTVCT_EL0.get();
-    let cnptct_deadline = nanos_to_ticks(deadline_ns);
-    if cnptct < cnptct_deadline {
-        let interval = cnptct_deadline - cnptct;
+    let cntvct = CNTVCT_EL0.get();
+    let cntvct_deadline = nanos_to_ticks(deadline_ns);
+    if cntvct < cntvct_deadline {
+        let interval = cntvct_deadline - cntvct;
         debug_assert!(interval <= u32::MAX as u64);
         CNTV_TVAL_EL0.set(interval);
     } else {
