@@ -37,6 +37,10 @@ pub(crate) fn workspace_manifest_path() -> anyhow::Result<PathBuf> {
     Ok(workspace_root_path()?.join("Cargo.toml"))
 }
 
+pub(crate) fn axbuild_tmp_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join("tmp").join("axbuild")
+}
+
 pub(crate) fn workspace_manifest_path_in(workspace_root: &Path) -> PathBuf {
     workspace_root.join("Cargo.toml")
 }
@@ -46,6 +50,20 @@ pub(crate) fn workspace_metadata_root_manifest(
 ) -> anyhow::Result<cargo_metadata::Metadata> {
     cargo_metadata::MetadataCommand::new()
         .no_deps()
+        .manifest_path(workspace_manifest_path)
+        .exec()
+        .with_context(|| {
+            format!(
+                "failed to get cargo metadata for workspace root {}",
+                workspace_manifest_path.display()
+            )
+        })
+}
+
+pub(crate) fn workspace_metadata_root_manifest_with_deps(
+    workspace_manifest_path: &Path,
+) -> anyhow::Result<cargo_metadata::Metadata> {
+    cargo_metadata::MetadataCommand::new()
         .manifest_path(workspace_manifest_path)
         .exec()
         .with_context(|| {

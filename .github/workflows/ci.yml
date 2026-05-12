@@ -162,17 +162,45 @@ jobs:
           - name: Run clippy
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask clippy
+            command: |
+              set -eux
+              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+                cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
+              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                before="${{ github.event.before }}"
+                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
+                  cargo xtask clippy
+                else
+                  cargo xtask clippy --since "${before}"
+                fi
+              else
+                cargo xtask clippy
+              fi
             cache_key: clippy
             container_image: base
+            fetch_depth: 0
             required_repository_owner: ""
             main_pr_only: false
           - name: Run sync-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask sync-lint
+            command: |
+              set -eux
+              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+                cargo xtask sync-lint --since "${{ github.event.pull_request.base.sha }}"
+              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                before="${{ github.event.before }}"
+                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
+                  cargo xtask sync-lint
+                else
+                  cargo xtask sync-lint --since "${before}"
+                fi
+              else
+                cargo xtask sync-lint
+              fi
             cache_key: sync-lint
             container_image: base
+            fetch_depth: 0
             required_repository_owner: ""
             main_pr_only: false
           - name: Test with std
@@ -369,6 +397,7 @@ jobs:
         }}
       required_repository_owner: ${{ matrix.required_repository_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
+      fetch_depth: ${{ matrix.fetch_depth || 1 }}
 
   skip_non_test_changes:
     name: Skip CI checks for non-test changes

@@ -274,7 +274,7 @@ kernel_path = "{}"
             vec![format!(
                 "id=disk0,if=none,format=raw,file={}",
                 root.path()
-                    .join("target/rootfs/rootfs-aarch64-alpine.img")
+                    .join("tmp/axbuild/rootfs/rootfs-aarch64-alpine.img")
                     .display()
             )]
         );
@@ -304,7 +304,7 @@ kernel_path = "{}"
                 format!(
                     "id=disk0,if=none,format=raw,file={}",
                     root.path()
-                        .join("target/rootfs/rootfs-aarch64-alpine.img")
+                        .join("tmp/axbuild/rootfs/rootfs-aarch64-alpine.img")
                         .display()
                 ),
                 "-append".to_string(),
@@ -328,7 +328,10 @@ kernel_path = "/tmp/qemu-aarch64"
 
         assert_eq!(
             managed_rootfs_path(&request(root.path(), vec![vmconfig]), root.path(), None).unwrap(),
-            Some(root.path().join("target/rootfs/rootfs-aarch64-alpine.img"))
+            Some(
+                root.path()
+                    .join("tmp/axbuild/rootfs/rootfs-aarch64-alpine.img")
+            )
         );
     }
 
@@ -360,7 +363,9 @@ kernel_path = "{}"
     #[test]
     fn managed_rootfs_path_keeps_explicit_managed_rootfs() {
         let root = tempdir().unwrap();
-        let explicit = root.path().join("target/rootfs/rootfs-aarch64-debian.img");
+        let explicit = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-aarch64-debian.img");
 
         assert_eq!(
             managed_rootfs_path(

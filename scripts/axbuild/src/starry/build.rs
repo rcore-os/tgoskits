@@ -79,7 +79,7 @@ fn patch_starry_cargo_config(
     cargo: &mut Cargo,
     request: &ResolvedStarryRequest,
 ) -> anyhow::Result<()> {
-    let platform = default_platform_for_arch(&request.arch)?;
+    let platform = crate::context::starry_default_platform_for_arch_checked(&request.arch)?;
     let static_defplat = uses_static_default_platform(&cargo.features);
 
     cargo.package = request.package.clone();
@@ -174,19 +174,6 @@ fn package_has_bin_named(package: &str, bin_name: &str) -> anyhow::Result<bool> 
     }))
 }
 
-fn default_platform_for_arch(arch: &str) -> anyhow::Result<&'static str> {
-    match arch {
-        "aarch64" => Ok("aarch64-qemu-virt"),
-        "x86_64" => Ok("x86-pc"),
-        "riscv64" => Ok("riscv64-qemu-virt"),
-        "loongarch64" => Ok("loongarch64-qemu-virt"),
-        _ => anyhow::bail!(
-            "unsupported Starry architecture `{arch}`; expected one of aarch64, x86_64, riscv64, \
-             loongarch64"
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, fs};
@@ -239,7 +226,7 @@ mod tests {
         assert_eq!(
             path,
             root.path()
-                .join("target/axbuild/config/starryos/build-aarch64-unknown-none-softfloat.toml")
+                .join("tmp/axbuild/config/starryos/build-aarch64-unknown-none-softfloat.toml")
         );
     }
 
@@ -265,7 +252,7 @@ mod tests {
         assert_eq!(
             path,
             root.path()
-                .join("target/axbuild/config/starryos/build-aarch64-unknown-none-softfloat.toml")
+                .join("tmp/axbuild/config/starryos/build-aarch64-unknown-none-softfloat.toml")
         );
     }
 
@@ -515,7 +502,7 @@ HELLO = "world"
         assert_eq!(
             path,
             root.path()
-                .join("target/axbuild/config/starryos/build-aarch64-unknown-none-softfloat.toml")
+                .join("tmp/axbuild/config/starryos/build-aarch64-unknown-none-softfloat.toml")
         );
     }
 

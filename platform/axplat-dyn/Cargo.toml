@@ -73,6 +73,6 @@ rockchip-pm = { workspace = true, optional = true }
 phytium-mci = { version = "0.1", default-features = false, features = ["pio"], optional = true }
 sdmmc = { version = "0.1", default-features = false, features = ["pio"], optional = true }
 simple-sdmmc = { workspace = true, optional = true }
-somehal = "0.6"
+somehal.workspace = true
 some-serial = { version = "0.3.1", optional = true }
 spin = "0.10"

@@ -24,13 +24,13 @@ This repository contains multiple systems and dozens of standalone components. D
 | ArceOS quick start | [docs/docs/quickstart/arceos.md](docs/docs/quickstart/arceos.md) | `cargo xtask arceos qemu --package ax-helloworld --arch aarch64` |
 | StarryOS quick start | [docs/docs/quickstart/starryos.md](docs/docs/quickstart/starryos.md) | `cargo xtask starry qemu --arch aarch64` |
 | Axvisor quick start | [docs/docs/quickstart/axvisor.md](docs/docs/quickstart/axvisor.md) | `cargo xtask axvisor qemu --arch aarch64` |
-| Full development example | [docs/docs/design/reference/demo.md](docs/docs/design/reference/demo.md) | A complete example for creating or modifying a component from scratch |
-| Component development guide | [docs/docs/design/reference/components.md](docs/docs/design/reference/components.md) | Start from `components/` or `os/arceos/modules/` |
-| Develop ArceOS | [docs/docs/design/systems/arceos-guide.md](docs/docs/design/systems/arceos-guide.md) | `cargo xtask arceos qemu --package ax-helloworld --arch aarch64` |
-| Develop StarryOS | [docs/docs/design/systems/starryos-guide.md](docs/docs/design/systems/starryos-guide.md) | `cargo xtask starry qemu --arch aarch64` |
-| Develop Axvisor | [docs/docs/design/systems/axvisor-guide.md](docs/docs/design/systems/axvisor-guide.md) | `cargo xtask axvisor qemu --arch aarch64` |
+| Full development example | [docs/docs/contributing/demo.md](docs/docs/contributing/demo.md) | A complete example for creating or modifying a component from scratch |
+| Component development guide | [docs/docs/development/components.md](docs/docs/development/components.md) | Start from `components/` or `os/arceos/modules/` |
+| Develop ArceOS | [docs/docs/development/arceos.md](docs/docs/development/arceos.md) | `cargo xtask arceos qemu --package ax-helloworld --arch aarch64` |
+| Develop StarryOS | [docs/docs/development/starryos.md](docs/docs/development/starryos.md) | `cargo xtask starry qemu --arch aarch64` |
+| Develop Axvisor | [docs/docs/development/axvisor.md](docs/docs/development/axvisor.md) | `cargo xtask axvisor qemu --arch aarch64` |
 | Understand the build and test matrix | [docs/docs/design/build/flow.md](docs/docs/design/build/flow.md) | `cargo xtask test` |
-| Understand how the repository organizes many standalone components | [docs/docs/design/reference/repo.md](docs/docs/design/reference/repo.md) | `python3 scripts/repo/repo.py list` |
+| Understand how the repository organizes many standalone components | [docs/docs/contributing/repo.md](docs/docs/contributing/repo.md) | `python3 scripts/repo/repo.py list` |
 
 ## 2. Repository Layout
 
@@ -67,7 +67,7 @@ feature/* ──PR──► dev
                  main
 ```
 
-If you need to synchronize with component repositories, maintainers should explicitly run `scripts/repo/repo.py pull/push`. See [docs/docs/design/reference/repo.md](docs/docs/design/reference/repo.md) for details.
+If you need to synchronize with component repositories, maintainers should explicitly run `scripts/repo/repo.py pull/push`. See [docs/docs/contributing/repo.md](docs/docs/contributing/repo.md) for details.
 
 ## 3. Quick Experience
 
@@ -93,15 +93,15 @@ cargo xtask axvisor qemu --arch aarch64
 cargo axvisor qemu --arch aarch64
 ```
 
-Axvisor cannot be started only with `build/qemu`, because guest images, VM configuration, and rootfs are still required before runtime. It is recommended to use `os/axvisor/scripts/setup_qemu.sh` to prepare those runtime resources first, then run `cargo xtask axvisor qemu --arch <arch>`. See [docs/docs/manual/deploy/qemu.md](docs/docs/manual/deploy/qemu.md) and [docs/docs/design/systems/axvisor-guide.md](docs/docs/design/systems/axvisor-guide.md) for the full workflow.
+Axvisor cannot be started only with `build/qemu`, because guest images, VM configuration, and rootfs are still required before runtime. It is recommended to use `os/axvisor/scripts/setup_qemu.sh` to prepare those runtime resources first, then run `cargo xtask axvisor qemu --arch <arch>`. See [docs/docs/build/qemu.md](docs/docs/build/qemu.md) and [docs/docs/development/axvisor.md](docs/docs/development/axvisor.md) for the full workflow.
 
 ## 4. Quick Development
 
 The repository includes built-in `.vscode/launch.json` and `.vscode/tasks.json`. After opening the workspace in VS Code, press `F5` to start debugging in one click — it automatically performs a debug build, launches QEMU (with GDB stub), attaches LLDB, and hits a breakpoint. Each system provides **Main** (stops at the main application entry) and **Boot** (sets multiple breakpoints at platform boot / runtime initialization) entry types, covering different debugging needs from early boot to business logic.
 
-![VS Code debug target selection](docs/docs/design/debug/images/debug_target.png)
+![VS Code debug target selection](docs/docs/debug/images/debug_target.png)
 
-Before first use, ensure the [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) extension is installed, `rustup target add aarch64-unknown-none-softfloat` has been executed, and `qemu-system-aarch64` is on the system `PATH`. See the [debug design docs](docs/docs/design/debug/overview.md) for full details.
+Before first use, ensure the [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) extension is installed, `rustup target add aarch64-unknown-none-softfloat` has been executed, and `qemu-system-aarch64` is on the system `PATH`. See the [debug design docs](docs/docs/debug/overview.md) for full details.
 
 For quick runs without debugging, use the terminal commands below; run regression tests after stabilizing changes:
 

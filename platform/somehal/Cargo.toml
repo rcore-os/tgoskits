@@ -1,0 +1,36 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories.workspace = true
+description = "SomeHAL: A hardware abstraction layer for kernel development."
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "somehal"
+repository.workspace = true
+version = "0.6.7"
+
+[features]
+efi = ["someboot/efi"]
+hv = ["mmu", "someboot/hv"]
+mmu = ["someboot/mmu"]
+percpu-prealloc = ["someboot/percpu-prealloc"]
+uspace = ["mmu", "someboot/uspace"]
+
+[dependencies]
+anyhow = {workspace = true}
+page-table-generic = {workspace = true}
+rdif-intc.workspace = true
+rdrive = {workspace = true}
+someboot = {workspace = true}
+somehal-macros = {workspace = true}
+tock-registers.workspace = true
+thiserror = {workspace = true}
+log = {workspace = true}
+kernutil = {workspace = true}
+mmio-api = {workspace = true}
+spin = "0.10"
+
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu = "11"
+arm-gic-driver = {workspace = true, features = ["rdif"]}

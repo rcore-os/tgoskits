@@ -30,6 +30,16 @@ pub(crate) struct ClippyArgs {
     /// Run clippy only for the named workspace package(s)
     #[arg(long = "package", value_name = "PACKAGE")]
     pub(crate) packages: Vec<String>,
+    /// Run clippy for whitelisted packages affected since the git ref
+    #[arg(long, value_name = "REF")]
+    pub(crate) since: Option<String>,
+}
+
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SyncLintArgs {
+    /// Run sync-lint only for Rust files changed since the git ref
+    #[arg(long, value_name = "REF")]
+    pub(crate) since: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -39,7 +49,7 @@ enum Commands {
     /// Run clippy for the maintained whitelist by default
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
-    SyncLint,
+    SyncLint(SyncLintArgs),
     /// Remote board management via ostool-server
     Board {
         #[command(subcommand)]
@@ -71,7 +81,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Test => test::std::run_std_test_command(),
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
-        Commands::SyncLint => sync_lint::run_sync_lint_command(),
+        Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
         Commands::Board { command } => board::execute(command).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
