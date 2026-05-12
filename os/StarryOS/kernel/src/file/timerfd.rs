@@ -15,12 +15,12 @@
 //! Missed-tick coalescing: if the scheduler delays the task by N intervals,
 //! `read` returns the full count (Linux semantics).
 //!
-//! Deferred to real-realtime-clock work:
-//!   - `CLOCK_REALTIME + TFD_TIMER_ABSTIME` is rejected (EINVAL) because
-//!     `wall_time()` on this kernel is monotonic; treating absolute realtime
-//!     deadlines as monotonic would produce ~54-year skew.
-//!   - `TFD_TIMER_CANCEL_ON_SET` is accepted but has no effect (no clock
-//!     step notifications yet).
+//! Caveats vs. Linux:
+//!   - This kernel has no true wall clock; `wall_time()` is monotonic. An
+//!     absolute `CLOCK_REALTIME` deadline is interpreted against the same
+//!     timebase as `CLOCK_MONOTONIC` (so a Unix-epoch absolute time will
+//!     fire immediately, matching the "deadline in the past" rule). Clock
+//!     stepping doesn't exist, so `TFD_TIMER_CANCEL_ON_SET` is a no-op.
 
 use alloc::{
     borrow::{Cow, ToOwned},
@@ -68,7 +68,6 @@ struct State {
 /// A timerfd. Held behind `Arc` and referenced both from the fd table and
 /// from the background timer task (as a `Weak<Timerfd>`).
 pub struct Timerfd {
-    clockid: u32,
     state: Mutex<State>,
     expire_count: AtomicU64,
     poll_rx: PollSet,
@@ -90,7 +89,6 @@ impl Timerfd {
             _ => return Err(AxError::InvalidInput),
         }
         let this = Arc::new(Self {
-            clockid,
             state: Mutex::new(State::default()),
             expire_count: AtomicU64::new(0),
             poll_rx: PollSet::new(),
@@ -115,12 +113,6 @@ impl Timerfd {
         new_value: Duration,
         new_interval: Duration,
     ) -> AxResult<(Duration, Duration)> {
-        // CLOCK_REALTIME with TFD_TIMER_ABSTIME would need a separate realtime
-        // timebase; wall_time() here is monotonic-equivalent. Fail loud.
-        if abstime && matches!(self.clockid, CLOCK_REALTIME | CLOCK_REALTIME_ALARM) {
-            return Err(AxError::InvalidInput);
-        }
-
         let now = wall_time();
 
         let mut state = self.state.lock();

@@ -7,7 +7,7 @@
  *   - timerfd_settime with 50ms repeating interval
  *   - after ~200ms at least 3 expirations are delivered
  *   - poll() reports readable after the first tick
- *   - CLOCK_REALTIME + TFD_TIMER_ABSTIME is rejected with EINVAL
+ *   - CLOCK_REALTIME + TFD_TIMER_ABSTIME is accepted and fires
  */
 #include "test_framework.h"
 
@@ -62,17 +62,35 @@ int main(void) {
 
     close(fd);
 
-    /* CLOCK_REALTIME + TFD_TIMER_ABSTIME must be rejected: this kernel's
-     * wall_time() is monotonic-equivalent, treating absolute REALTIME as
-     * monotonic would give a ~54-year skew. */
+    /* CLOCK_REALTIME + TFD_TIMER_ABSTIME: pass an absolute deadline 100 ms
+     * past `now` (read via clock_gettime). On Linux this fires at that
+     * wall-clock instant; this kernel maps wall_time onto the monotonic
+     * timebase, so the deadline still falls ~100 ms in the future and the
+     * timer fires once. The point of this check is the syscall is accepted
+     * and produces an expiration — not the EINVAL the previous version
+     * locked in. */
     int rfd = timerfd_create(CLOCK_REALTIME, 0);
     CHECK(rfd >= 0, "create CLOCK_REALTIME");
+
+    struct timespec now_ts = {0};
+    CHECK_RET(clock_gettime(CLOCK_REALTIME, &now_ts), 0, "clock_gettime REALTIME");
+
+    long deadline_nsec = now_ts.tv_nsec + 100 * 1000 * 1000;
     struct itimerspec abs_spec = {
         .it_interval = {0, 0},
-        .it_value    = {0, 100 * 1000 * 1000},
+        .it_value    = {
+            .tv_sec  = now_ts.tv_sec + deadline_nsec / 1000000000,
+            .tv_nsec = deadline_nsec % 1000000000,
+        },
     };
-    CHECK_ERR(timerfd_settime(rfd, TFD_TIMER_ABSTIME, &abs_spec, NULL), EINVAL,
-              "REALTIME + ABSTIME rejected with EINVAL");
+    CHECK_RET(timerfd_settime(rfd, TFD_TIMER_ABSTIME, &abs_spec, NULL), 0,
+              "REALTIME + ABSTIME settime succeeds");
+
+    uint64_t abs_expirations = 0;
+    ssize_t abs_n = read(rfd, &abs_expirations, sizeof(abs_expirations));
+    CHECK(abs_n == (ssize_t)sizeof(abs_expirations),
+          "REALTIME + ABSTIME read returned 8 bytes");
+    CHECK(abs_expirations >= 1, "REALTIME + ABSTIME expiration count >= 1");
     close(rfd);
 
     TEST_DONE();
