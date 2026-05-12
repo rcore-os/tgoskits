@@ -121,8 +121,26 @@ inject_via_e2tools() {
             [[ "$d" == "." ]] && continue
             e2mkdir -G0 -O0 "$SCRATCH/disk.img:$d" 2>/dev/null || true
         done)
-        (cd "$SCENARIO_DIR/rootfs_extras" && find . -type f | while read -r f; do
-            e2cp -G0 -O0 "$f" "$SCRATCH/disk.img:${f#.}"
+        (cd "$SCENARIO_DIR/rootfs_extras" && find . \( -type f -o -type l \) | while read -r f; do
+            src="$f"
+            tmp=""
+            if [[ -L "$f" ]]; then
+                target="$(readlink "$f")"
+                if [[ "$target" = /* ]]; then
+                    src=".$target"
+                else
+                    src="$(dirname "$f")/$target"
+                fi
+                if [[ ! -f "$src" ]]; then
+                    echo "rootfs_extras symlink target is not a file: $f -> $target" >&2
+                    exit 1
+                fi
+                tmp="$(mktemp "$SCRATCH/rootfs-extra.XXXXXX")"
+                cp "$src" "$tmp"
+                src="$tmp"
+            fi
+            e2cp -G0 -O0 "$src" "$SCRATCH/disk.img:${f#.}"
+            [[ -z "$tmp" ]] || rm -f "$tmp"
         done)
     fi
 }

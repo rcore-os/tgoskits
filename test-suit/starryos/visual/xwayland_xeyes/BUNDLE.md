@@ -1,10 +1,22 @@
 # Bundling Xwayland + xeyes for the visual-test rootfs
 
-The scenario needs an Alpine-edge Xwayland binary plus a few transitive
-deps that the base weston rootfs doesn't ship. Running the scenario
-without the bundle present in the rootfs produces "0 non-black pixels"
-because Xwayland fails to load. The extraction below is what I actually
-ran; kept here so a clean-room rebuild is reproducible.
+The scenario needs Alpine-edge Xwayland packages that the base weston
+rootfs doesn't ship. CI materializes them from
+`rootfs_extras.packages` before running the visual scenario:
+
+```sh
+python3 scripts/visual-test/prepare_rootfs_extras.py \
+    --arch riscv64 \
+    --scenario xwayland_xeyes
+```
+
+`run_all.sh` fails the scenario if `rootfs_extras.packages` exists but
+`rootfs_extras/` was not generated, so a green CI run proves the
+declared Xwayland dependencies were injected into the scratch rootfs.
+
+Running the scenario without the bundle present in the rootfs produces
+"0 non-black pixels" because Xwayland fails to load. The manual
+extraction below is kept as a fallback/debugging recipe.
 
 ## Build for riscv64
 

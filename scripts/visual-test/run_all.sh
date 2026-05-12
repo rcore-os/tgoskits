@@ -27,17 +27,6 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$ARCH" ]] || { echo "--arch required" >&2; exit 2; }
 
-# Lazy CI skip until the kernel-side prerequisites for booting weston
-# all land (sysfs, cmsg/IRQ wakers, DRM ioctls). The harness, the
-# perceptual diff, and the golden frames are committed up front so the
-# CI matrix can be wired now; once the dependent PRs merge, set
-# WESTON_SMOKE_READY=1 (in the workflow command, or remove this guard)
-# so the matrix starts running scenarios for real.
-if [[ "${WESTON_SMOKE_READY:-0}" != "1" ]]; then
-    echo "SKIP visual-$ARCH (WESTON_SMOKE_READY not set; weston prereqs pending)"
-    exit 0
-fi
-
 REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 SCENARIO_ROOT="$REPO_ROOT/test-suit/starryos/visual"
 
@@ -80,7 +69,7 @@ fi
 
 if [[ ! -d "$SCENARIO_ROOT" ]]; then
     echo "no scenarios registered under $SCENARIO_ROOT" >&2
-    exit 0
+    exit 1
 fi
 
 shopt -s nullglob
@@ -90,8 +79,8 @@ for d in "$SCENARIO_ROOT"/*/; do
 done
 
 if (( ${#SCENARIOS[@]} == 0 )); then
-    echo "no scenarios found"
-    exit 0
+    echo "no scenarios found" >&2
+    exit 1
 fi
 
 declare -i pass_count=0
@@ -109,6 +98,17 @@ for sc in "${SCENARIOS[@]}"; do
         skip_count+=1
         continue
     fi
+    scenario_dir="$SCENARIO_ROOT/$sc"
+    if [[ -f "$scenario_dir/rootfs_extras.packages" ]]; then
+        if [[ ! -d "$scenario_dir/rootfs_extras" ]] \
+            || ! find "$scenario_dir/rootfs_extras" -mindepth 1 -print -quit | grep -q .; then
+            echo "FAIL $ARCH/$sc (declares rootfs_extras.packages but rootfs_extras is missing or empty)" >&2
+            echo "run: python3 scripts/visual-test/prepare_rootfs_extras.py --arch $ARCH --scenario $sc" >&2
+            fail_count+=1
+            continue
+        fi
+    fi
+
     echo "=== $ARCH/$sc ==="
     if bash "$REPO_ROOT/scripts/visual-test/run_scenario.sh" \
             --arch "$ARCH" --scenario "$sc" "${UPDATE_GOLDEN_ARG[@]}"; then
@@ -123,4 +123,8 @@ done
 echo "==========================================="
 echo "  $ARCH: PASS=$pass_count FAIL=$fail_count SKIP=$skip_count"
 echo "==========================================="
+if (( pass_count == 0 && fail_count == 0 )); then
+    echo "no scenarios ran for $ARCH" >&2
+    exit 1
+fi
 exit $(( fail_count > 0 ? 1 : 0 ))

@@ -420,6 +420,7 @@ jobs:
               apt-get update && apt-get install -y --no-install-recommends e2tools
               cargo xtask starry build --arch riscv64
               cargo xtask starry rootfs --arch riscv64
+              python3 scripts/visual-test/prepare_rootfs_extras.py --arch riscv64 --scenario xwayland_xeyes
               bash scripts/visual-test/run_all.sh --arch riscv64
             cache_key: test-visual-riscv64
             container_image: base
@@ -433,6 +434,7 @@ jobs:
               apt-get update && apt-get install -y --no-install-recommends e2tools
               cargo xtask starry build --arch aarch64
               cargo xtask starry rootfs --arch aarch64
+              python3 scripts/visual-test/prepare_rootfs_extras.py --arch aarch64 --scenario xwayland_xeyes
               bash scripts/visual-test/run_all.sh --arch aarch64
             cache_key: test-visual-aarch64
             container_image: base
@@ -446,6 +448,7 @@ jobs:
               apt-get update && apt-get install -y --no-install-recommends e2tools
               cargo xtask starry build --arch x86_64
               cargo xtask starry rootfs --arch x86_64
+              python3 scripts/visual-test/prepare_rootfs_extras.py --arch x86_64 --scenario xwayland_xeyes
               bash scripts/visual-test/run_all.sh --arch x86_64
             cache_key: test-visual-x86_64
             container_image: base
