@@ -5,6 +5,7 @@ inspect_value = $(strip $(patsubst $(1)=%,%,$(filter $(1)=%,$(platform_info))))
 
 config_value = $(strip $(shell $(AXCONFIG) "$(PLAT_CONFIG)" -r $(1)))
 config_string_value = $(patsubst "%",%,$(call config_value,$(1)))
+platform_package_aliases = $(strip $(1) $(patsubst axplat-%,ax-plat-%,$(1)) $(patsubst ax-plat-%,axplat-%,$(1)))
 
 define validate_config
   $(if $(strip $(PLAT_PACKAGE)),,$(error PLAT_CONFIG=$(PLAT_CONFIG) is not a valid platform configuration file)) \
@@ -22,7 +23,7 @@ endef
 
 ifneq ($(wildcard $(PLAT_CONFIG)),)
   PLAT_PACKAGE := $(call config_string_value,package)
-  EXPECTED_PLAT_PACKAGE := $(if $(MYPLAT),$(MYPLAT),$(PLAT_PACKAGE))
+  EXPECTED_PLAT_PACKAGE := $(if $(MYPLAT),$(call platform_package_aliases,$(MYPLAT)),$(PLAT_PACKAGE))
   PLAT_NAME := $(call config_string_value,platform)
   PLAT_ARCH := $(call config_string_value,arch)
   PLAT_SMP := $(call config_value,plat.max-cpu-num)
@@ -55,7 +56,7 @@ else ifeq ($(MYPLAT),)
 else
   # `MYPLAT` is specified, treat it as a package name
   PLAT_PACKAGE := $(MYPLAT)
-  EXPECTED_PLAT_PACKAGE := $(PLAT_PACKAGE)
+  EXPECTED_PLAT_PACKAGE := $(call platform_package_aliases,$(PLAT_PACKAGE))
   $(if $(strip $(AXPLAT_INSPECT)),,$(error AXPLAT_INSPECT is required when PLAT_CONFIG is not set))
   platform_info := $(call inspect_platform)
   PLAT_CONFIG := $(call inspect_value,PLAT_CONFIG)
