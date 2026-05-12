@@ -161,8 +161,6 @@ impl BuildInfo {
             return Ok(());
         }
 
-        ensure_arceos_tooling_installed()?;
-
         let package_manifest = resolve_package_manifest_path(package, metadata)?;
         let app_dir = package_manifest
             .parent()
@@ -173,6 +171,7 @@ impl BuildInfo {
             .unwrap_or_else(|| linker_platform_name(&platform_package).to_string());
         let out_config = generated_axconfig_path(package, target)?;
 
+        ensure_ax_config_gen_installed()?;
         generate_axconfig(
             &crate::context::workspace_root_path()?,
             target,
@@ -690,6 +689,8 @@ fn resolve_platform_config_path(
         return Ok(local_path);
     }
 
+    ensure_cargo_axplat_installed()?;
+
     let workspace_root = crate::context::workspace_root_path()?;
     let root_manifest = workspace_root.join("Cargo.toml");
     let output = Command::new("cargo")
@@ -749,12 +750,6 @@ fn find_local_platform_config_path(
         .join("axconfig.toml");
 
     Ok(component_candidate.exists().then_some(component_candidate))
-}
-
-fn ensure_arceos_tooling_installed() -> anyhow::Result<()> {
-    ensure_cargo_axplat_installed()?;
-    ensure_ax_config_gen_installed()?;
-    Ok(())
 }
 
 fn ensure_cargo_axplat_installed() -> anyhow::Result<()> {
@@ -959,6 +954,21 @@ mod tests {
         let path = find_local_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata)
             .unwrap()
             .expect("workspace platform config should exist");
+
+        assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
+    }
+
+    #[test]
+    fn resolve_platform_config_path_uses_local_config_without_cargo_axplat() {
+        let metadata = repo_metadata();
+        let app_dir = resolve_package_manifest_path("axvisor", &metadata)
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        let path = resolve_platform_config_path(&app_dir, "axplat-riscv64-qemu-virt-hv", &metadata)
+            .unwrap();
 
         assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
     }
