@@ -1,0 +1,13 @@
+[package]
+name = "rdif-def"
+version = "0.2.3"
+edition.workspace = true
+repository.workspace = true
+authors = ["周睿 <zrufo747@outlook.com>"]
+license = "MIT"
+description = "Driver Interface base definition."
+keywords = ["os", "driver"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+thiserror = { version = "2", default-features = false }

@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::boxed::Box;
-
 use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
 use some_serial::{BSerial, ns16550, pl011};
 
@@ -35,8 +33,9 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     info!("Probing serial device: {}", info.node.name());
     let base_reg = info
         .node
-        .reg()
-        .and_then(|mut regs| regs.next())
+        .regs()
+        .into_iter()
+        .next()
         .ok_or(OnProbeError::other(alloc::format!(
             "[{}] has no reg",
             info.node.name()
@@ -45,24 +44,32 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     let mmio_size = base_reg.size.unwrap_or(0x1000);
     let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
 
-    let clock_freq = info.node.clock_frequency().unwrap_or(24_000_000);
-
+    let node = info.node.as_node();
+    let clock_freq = prop_u32(node, "clock-frequency").unwrap_or(24_000_000);
+    let reg_width = prop_u32(node, "reg-io-width").unwrap_or(1) as usize;
     let mut serial: Option<BSerial> = None;
-    for c in info.node.compatibles() {
+    for c in node.compatibles() {
         if c == "arm,pl011" {
-            serial = Some(Box::new(pl011::Pl011::new(mmio_base, clock_freq)));
+            serial = Some(pl011::Pl011::new_boxed(mmio_base, clock_freq));
             break;
         }
 
         if c == "snps,dw-apb-uart" {
-            serial = Some(Box::new(ns16550::Ns16550::new_mmio(mmio_base, clock_freq)));
+            serial = Some(ns16550::Ns16550::new_mmio_boxed(
+                mmio_base, clock_freq, reg_width,
+            ));
             break;
         }
     }
     if let Some(s) = serial {
-        info!("Serial@{:#x} registered successfully", s.base());
+        let base = s.base_addr();
+        info!("Serial@{base:#x} registered successfully");
         plat_dev.register(s);
     }
 
     Ok(())
+}
+
+fn prop_u32(node: &fdt_edit::Node, name: &str) -> Option<u32> {
+    node.get_property(name).and_then(|prop| prop.get_u32())
 }

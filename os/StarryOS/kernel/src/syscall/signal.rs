@@ -128,11 +128,17 @@ fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
     if target_pid == self_pid {
         return Ok(());
     }
-    let target_task = get_task(target_pid).map_err(|_| AxError::NoSuchProcess)?;
-    let target_cred = target_task
-        .try_as_thread()
-        .map(|t| t.cred())
-        .ok_or(AxError::NoSuchProcess)?;
+    // Try the live task first.  If it has already been GC'd (the process is
+    // a zombie whose task was freed before waitpid() ran), fall back to the
+    // credential snapshot stored in the zombie table.  This mirrors Linux,
+    // where task_struct (and its cred) lives until the zombie is reaped.
+    let target_cred = if let Ok(task) = get_task(target_pid) {
+        task.try_as_thread()
+            .map(|t| t.cred())
+            .ok_or(AxError::NoSuchProcess)?
+    } else {
+        crate::task::get_zombie_cred(target_pid).ok_or(AxError::NoSuchProcess)?
+    };
     // Linux checks: {sender.euid, sender.uid} × {target.uid, target.euid, target.suid}
     if sender.euid == target_cred.uid
         || sender.euid == target_cred.euid

@@ -263,11 +263,8 @@ impl SocketOps for TcpSocket {
                 if local_addr.port() == 0 {
                     local_addr.set_port(get_ephemeral_port()?);
                 }
-                if !self.general.reuse_address() {
-                    SOCKET_SET.bind_check(local_addr.ip().into(), local_addr.port())?;
-                    if !LISTEN_TABLE.can_listen(local_addr.port()) {
-                        return Err(AxError::AddrInUse);
-                    }
+                if !self.general.reuse_address() && !LISTEN_TABLE.can_listen(local_addr.port()) {
+                    return Err(AxError::AddrInUse);
                 }
 
                 let endpoint = IpListenEndpoint {

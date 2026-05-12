@@ -5,7 +5,7 @@ args = [
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
-    "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-x86_64-alpine.img",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
     "-device",
     "virtio-net-pci,netdev=net0",
     "-netdev",
@@ -16,6 +16,7 @@ to_bin = false
 shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/helloworld",
+    "/usr/bin/test-brk",
     "/usr/bin/test-clock-gettime",
     "/usr/bin/test-copy-file-range",
     "/usr/bin/test-credentials",
@@ -23,6 +24,10 @@ test_commands = [
     "/usr/bin/test-fsync-dir",
     "/usr/bin/test-getgroups",
     "/usr/bin/test-getrandom",
+    "/usr/bin/test-msgget",
+    "/usr/bin/test-msgctl",
+    "/usr/bin/test-msgrcv",
+    "/usr/bin/test-msgsnd",
     "/usr/bin/test-madvise",
     "/usr/bin/test-mmap-family",
     "/usr/bin/test-modern-fd-family",
