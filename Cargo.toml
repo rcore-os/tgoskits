@@ -155,6 +155,7 @@ members = [
     "os/axvisor",
     "platform/axplat-dyn",
     "platform/somehal",
+    "platform/riscv64-visionfive2",
     "platform/riscv64-qemu-virt",
     "platform/x86-qemu-q35",
     "scripts/axbuild",
@@ -290,6 +291,7 @@ axfs-ng-vfs = { version = "0.3.8", path = "components/axfs-ng-vfs" }
 axhvc = { version = "0.4.5", path = "components/axhvc" }
 axklib = { version = "0.5.6", path = "components/axklib" }
 axplat-dyn = { version = "0.5.12", path = "platform/axplat-dyn", default-features = false }
+axplat-riscv64-visionfive2 = { version = "0.1.0-pre.3", path = "platform/riscv64-visionfive2" }
 axplat-riscv64-qemu-virt-hv = { version = "0.5.5", path = "platform/riscv64-qemu-virt" }
 axplat-x86-qemu-q35 = { version = "0.4.5", path = "platform/x86-qemu-q35" }
 axpoll = { version = "0.3.8", path = "components/axpoll" }
