@@ -1,6 +1,6 @@
 ---
 slug: introducing-tgoskits
-title: 认识 TGOSKits：统一组织 ArceOS、StarryOS 与 Axvisor 的工作区
+title: 认识 TGOSKits
 authors: [tgoskits-team]
 tags: [tgoskits, workspace, arceos, starryos, axvisor]
 ---
