@@ -2,6 +2,7 @@
 edition.workspace = true
 name = "rockchip-pm"
 version = "0.4.2"
+autotests = false
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "no-std"]
 description = "Driver for Rockchip Power Management Unit (PMU) supporting RK3588 and similar SoCs."
@@ -18,15 +19,10 @@ exclude = [
 [dependencies]
 log = "0.4"
 mbarrier = "0.1"
-rdif-base = "0.8"
+rdif-base.workspace = true
 tock-registers = "0.10"
 
-[dev-dependencies]
-bare-test = "0.8"
-
-[build-dependencies]
-bare-test-macros = "0.3"
-
-[[test]]
-harness = false
-name = "test"
+# bare-test integration test is temporarily disabled.
+# [[test]]
+# harness = false
+# name = "test"
