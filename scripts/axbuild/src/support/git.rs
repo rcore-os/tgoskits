@@ -45,6 +45,7 @@ pub(crate) fn changed_paths_since(
 
     let range = format!("{since}..HEAD");
     let output = Command::new("git")
+        .args(git_safe_directory_args(workspace_root))
         .arg("-C")
         .arg(workspace_root)
         .args(["diff", "--name-only", range.as_str(), "--"])
@@ -73,6 +74,7 @@ pub(crate) fn changed_paths_since(
 
 fn ensure_git_work_tree(workspace_root: &Path) -> anyhow::Result<()> {
     let output = Command::new("git")
+        .args(git_safe_directory_args(workspace_root))
         .arg("-C")
         .arg(workspace_root)
         .args(["rev-parse", "--is-inside-work-tree"])
@@ -102,6 +104,13 @@ fn ensure_git_work_tree(workspace_root: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn git_safe_directory_args(workspace_root: &Path) -> [String; 2] {
+    [
+        "-c".to_string(),
+        format!("safe.directory={}", workspace_root.display()),
+    ]
 }
 
 pub(crate) fn select_incremental_packages_for_paths<I>(

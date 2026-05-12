@@ -102,6 +102,7 @@ jobs:
         run: |
           set -eux
           command -v git
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           git rev-parse --show-toplevel
           git rev-parse --is-inside-work-tree
 
