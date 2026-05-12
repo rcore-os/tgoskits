@@ -1054,11 +1054,26 @@ html {
 .split-layout--drivers {
   grid-template-columns: minmax(0, 1.05fr) minmax(390px, 0.95fr);
   gap: 1.6rem;
+  align-items: stretch;
 }
 
 /* ---- left: device cards ---- */
 
-.driver-device-grid h3 {
+.driver-device-grid,
+.driver-subsystem-panel {
+  border-radius: 28px;
+  border: 1px solid var(--home-panel-border);
+  background: var(--home-panel-strong);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 10px 40px rgba(12, 18, 44, 0.06);
+  padding: 1.5rem 1.6rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.driver-device-grid h3,
+.driver-subsystem-panel h3 {
   margin: 0 0 0.2rem;
   font-size: 1.15rem;
   font-weight: 700;
@@ -1075,6 +1090,7 @@ html {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.85rem;
+  flex: 1;
 }
 
 .driver-device-card {
@@ -1185,24 +1201,6 @@ html {
 
 /* ---- right: subsystem panel ---- */
 
-.driver-subsystem-panel {
-  border-radius: 28px;
-  border: 1px solid var(--home-panel-border);
-  background: var(--home-panel-strong);
-  backdrop-filter: blur(18px);
-  box-shadow: 0 10px 40px rgba(12, 18, 44, 0.06);
-  padding: 1.5rem 1.6rem;
-  display: flex;
-  flex-direction: column;
-}
-
-.driver-subsystem-panel h3 {
-  margin: 0 0 0.2rem;
-  font-size: 1.08rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
 .driver-subsystem-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1258,7 +1256,6 @@ html {
 }
 
 .driver-framework-note {
-  margin-top: auto;
   padding: 1.1rem 1.2rem;
   border-radius: 20px;
   background: linear-gradient(135deg, rgba(95, 107, 255, 0.06), rgba(127, 224, 255, 0.05));
