@@ -391,8 +391,12 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         if term.canonical() {
             return self.eof_ready.load(Ordering::Acquire) || !self.buf_rx.is_empty();
         }
+        // VMIN=0 means read() returns immediately with 0 bytes if empty, but
+        // poll() should still only report POLLIN when actual data is present.
+        // This matches Linux n_tty behavior: minimum_chars_to_read() treats
+        // VMIN=0 as requiring at least 1 byte to wake poll().
         let vmin = term.special_char(VMIN) as usize;
-        vmin == 0 || self.buf_rx.occupied_len() >= vmin
+        !self.buf_rx.is_empty() && (vmin == 0 || self.buf_rx.occupied_len() >= vmin)
     }
 
     pub fn register_rx_waker(&self, waker: &Waker) {

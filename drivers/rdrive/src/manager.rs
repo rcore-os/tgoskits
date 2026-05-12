@@ -1,0 +1,193 @@
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
+
+use rdif_base::DriverGeneric;
+
+use crate::{
+    Descriptor, Device, DeviceId, DeviceOwner, GetDeviceError,
+    error::DriverError,
+    probe::ProbeError,
+    register::{DriverRegister, RegisterContainer},
+};
+
+pub struct Manager {
+    pub registers: RegisterContainer,
+    pub(crate) dev_container: DeviceContainer,
+    // pub(crate) enum_system: EnumSystem,
+}
+
+impl Manager {
+    pub fn new() -> Result<Self, DriverError> {
+        Ok(Self {
+            // enum_system: EnumSystem::new(platform)?,
+            registers: RegisterContainer::default(),
+            dev_container: DeviceContainer::default(),
+        })
+    }
+
+    pub fn unregistered(&mut self) -> Result<Vec<DriverRegister>, ProbeError> {
+        let mut out = self.registers.unregistered();
+        out.sort_by_key(|a| a.priority);
+        Ok(out)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct DeviceContainer {
+    devices: BTreeMap<DeviceId, DeviceOwner>,
+}
+
+impl DeviceContainer {
+    pub fn insert<T: DriverGeneric>(&mut self, descriptor: Descriptor, device: T) {
+        self.devices
+            .insert(descriptor.device_id, DeviceOwner::new(descriptor, device));
+    }
+
+    pub fn get_typed<T: DriverGeneric>(&self, id: DeviceId) -> Result<Device<T>, GetDeviceError> {
+        let dev = self.devices.get(&id).ok_or(GetDeviceError::NotFound)?;
+
+        dev.weak()
+    }
+
+    pub fn get_one<T: DriverGeneric>(&self) -> Option<Device<T>> {
+        for dev in self.devices.values() {
+            if let Ok(val) = dev.weak::<T>() {
+                return Some(val);
+            }
+        }
+        None
+    }
+
+    pub fn devices<T: DriverGeneric>(&self) -> Vec<Device<T>> {
+        let mut result = Vec::new();
+        for dev in self.devices.values() {
+            if let Ok(val) = dev.weak::<T>() {
+                result.push(val);
+            }
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use rdif_intc::*;
+
+    use super::*;
+    use crate::driver::{DriverGeneric, Empty};
+
+    struct DeviceTest;
+
+    impl DriverGeneric for DeviceTest {
+        fn name(&self) -> &str {
+            "DeviceTest"
+        }
+    }
+
+    #[test]
+    fn test_device_container() {
+        let mut container = DeviceContainer::default();
+        let desc = Descriptor::new();
+        let id = desc.device_id;
+        container.insert(desc, Empty);
+        let weak = container.get_typed::<Empty>(id).unwrap();
+
+        {
+            let device = weak.lock().unwrap();
+            assert_eq!(device.name(), "Empty Driver");
+        }
+
+        {
+            let device = weak.lock().unwrap();
+            assert_eq!(device.name(), "Empty Driver");
+        }
+    }
+    #[test]
+    fn test_get_one() {
+        let mut container = DeviceContainer::default();
+        container.insert(Descriptor::new(), Empty);
+        container.insert(Descriptor::new(), DeviceTest);
+
+        let weak = container.get_one::<Empty>().unwrap();
+        {
+            let device = weak.lock().unwrap();
+            assert_eq!(device.name(), "Empty Driver");
+        }
+    }
+
+    #[test]
+    fn test_devices() {
+        let mut container = DeviceContainer::default();
+        container.insert(Descriptor::new(), Empty);
+        container.insert(Descriptor::new(), Empty);
+        container.insert(Descriptor::new(), DeviceTest);
+        let devices = container.devices::<Empty>();
+        assert_eq!(devices.len(), 2);
+    }
+
+    #[test]
+    fn test_not_found() {
+        let container = DeviceContainer::default();
+        let dev = container.get_one::<Intc>();
+        assert!(dev.is_none(), "Expected no devices found");
+    }
+
+    struct IrqTest;
+
+    impl IrqTest {
+        fn is_ok(&mut self) -> bool {
+            true // Placeholder for actual logic
+        }
+    }
+
+    impl crate::DriverGeneric for IrqTest {
+        fn name(&self) -> &str {
+            "IrqTest"
+        }
+    }
+
+    impl Interface for IrqTest {}
+
+    #[test]
+    fn test_inner_type() {
+        let mut container = DeviceContainer::default();
+        let desc = Descriptor::new();
+        container.insert(desc, Intc::new(IrqTest));
+
+        let weak = container.get_one::<Intc>().unwrap();
+        {
+            let device = weak.lock().unwrap();
+            let intc = device.typed_ref::<IrqTest>();
+            assert!(intc.is_some(), "Expected to find IrqTest device");
+        }
+    }
+
+    #[test]
+    fn test_device_downcast() {
+        let mut container = DeviceContainer::default();
+        let desc = Descriptor::new();
+        container.insert(desc, Intc::new(IrqTest));
+
+        let weak = container.get_one::<Intc>().unwrap();
+        let intc_typed = weak.downcast::<IrqTest>().unwrap();
+        let mut device = intc_typed.lock().unwrap();
+        assert!(device.is_ok(), "Expected device to be ok");
+    }
+
+    #[test]
+    fn test_locked_device() {
+        let mut container = DeviceContainer::default();
+        let desc = Descriptor::new();
+        let id = desc.device_id;
+        container.insert(desc, Empty);
+
+        let weak = container.get_typed::<Empty>(id).unwrap();
+        let device = weak.lock().unwrap();
+        let r = weak.try_lock();
+        assert!(
+            r.is_err(),
+            "Expected error when trying to lock an already locked device"
+        );
+        let _ = device;
+    }
+}
