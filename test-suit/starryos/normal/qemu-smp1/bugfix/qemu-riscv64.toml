@@ -41,6 +41,7 @@ test_commands = [
     "/usr/bin/bug-proc-maps-lseek-refresh",
     "/usr/bin/bug-renameat2-noreplace-flags",
     "/usr/bin/bug-readlinkat-zero-size",
+    "/usr/bin/bug-proc-net-arp",
     "/usr/bin/bug-proc-init-pid",
     "/usr/bin/bug-tcp-send-no-epoll-notify",
 ]

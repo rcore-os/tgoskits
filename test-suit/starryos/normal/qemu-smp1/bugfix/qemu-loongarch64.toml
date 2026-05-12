@@ -34,6 +34,7 @@ test_commands = [
     "/usr/bin/clone3-badsize",
     "/usr/bin/bug-unaligned-cow-split",
     "/usr/bin/bug-proc-maps-lseek-refresh",
+    "/usr/bin/bug-proc-net-arp",
     "/usr/bin/bug-proc-init-pid",
     "/usr/bin/bug-tcp-send-no-epoll-notify",
 ]
