@@ -58,7 +58,7 @@ use sdmmc_protocol::{
 };
 
 pub use crate::{
-    dma::{IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE},
+    dma::{AsyncDmaRequest, AsyncRequestSlot, IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE, RequestId},
     host::{DEFAULT_FIFO_OFFSET, DwMmc},
 };
 use crate::{host::PendingData, regs::RegisterBlockVolatileFieldAccess};
@@ -81,6 +81,29 @@ pub enum Event {
     /// Status bits are pending but do not map to a high-level event yet.
     Other { raw_status: u32 },
 }
+
+pub(crate) const DWMMC_INT_RESPONSE_ERROR: u32 = 1 << 1;
+pub(crate) const DWMMC_INT_COMMAND_DONE: u32 = 1 << 2;
+pub(crate) const DWMMC_INT_DATA_TRANSFER_OVER: u32 = 1 << 3;
+pub(crate) const DWMMC_INT_RESPONSE_CRC_ERROR: u32 = 1 << 6;
+pub(crate) const DWMMC_INT_DATA_CRC_ERROR: u32 = 1 << 7;
+pub(crate) const DWMMC_INT_RESPONSE_TIMEOUT: u32 = 1 << 8;
+pub(crate) const DWMMC_INT_DATA_READ_TIMEOUT: u32 = 1 << 9;
+pub(crate) const DWMMC_INT_HOST_TIMEOUT: u32 = 1 << 10;
+pub(crate) const DWMMC_INT_FIFO_UNDER_OVER_RUN: u32 = 1 << 11;
+pub(crate) const DWMMC_INT_HARDWARE_LOCKED_WRITE: u32 = 1 << 12;
+pub(crate) const DWMMC_INT_START_BIT_ERROR: u32 = 1 << 13;
+pub(crate) const DWMMC_INT_END_BIT_ERROR: u32 = 1 << 15;
+pub(crate) const DWMMC_INT_ERROR_MASK: u32 = DWMMC_INT_RESPONSE_ERROR
+    | DWMMC_INT_RESPONSE_CRC_ERROR
+    | DWMMC_INT_DATA_CRC_ERROR
+    | DWMMC_INT_RESPONSE_TIMEOUT
+    | DWMMC_INT_DATA_READ_TIMEOUT
+    | DWMMC_INT_HOST_TIMEOUT
+    | DWMMC_INT_FIFO_UNDER_OVER_RUN
+    | DWMMC_INT_HARDWARE_LOCKED_WRITE
+    | DWMMC_INT_START_BIT_ERROR
+    | DWMMC_INT_END_BIT_ERROR;
 
 impl SdioHost for DwMmc {
     fn send_command(&mut self, cmd: &Command) -> Result<Response, Error> {
@@ -206,12 +229,13 @@ impl DwMmc {
     /// Read and acknowledge pending controller status, returning a stable
     /// event for OS glue to translate into wakeups or worker scheduling.
     pub fn handle_irq(&mut self) -> Event {
-        let raw_status = self.regs.rintsts().read().into_bits();
+        let raw_status = self.regs.mintsts().read();
         if raw_status != 0 {
             self.regs
                 .rintsts()
                 .write(crate::regs::RIntSts::from_bits(raw_status));
         }
+        self.irq_pending_status |= raw_status;
         event_from_raw_status(raw_status)
     }
 }

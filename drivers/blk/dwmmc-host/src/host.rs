@@ -62,6 +62,8 @@ pub struct DwMmc {
     pub(crate) data_blocks_remaining: u32,
     pub(crate) data_cmd_index: u8,
     pub(crate) dma: Option<DeviceDma>,
+    pub(crate) irq_pending_status: u32,
+    pub(crate) data_irq_enabled: bool,
 }
 
 impl DwMmc {
@@ -97,6 +99,8 @@ impl DwMmc {
             data_blocks_remaining: 0,
             data_cmd_index: 0,
             dma: None,
+            irq_pending_status: 0,
+            data_irq_enabled: false,
         }
     }
 
@@ -182,6 +186,8 @@ impl DwMmc {
         // Mask every interrupt; clear any leftover raw status.
         self.regs.intmask().write(0);
         self.clear_all_int_status();
+        self.irq_pending_status = 0;
+        self.data_irq_enabled = false;
 
         // Default to 1-bit bus until the protocol layer asks for wider.
         self.regs.ctype().write(CType::new());
@@ -272,6 +278,26 @@ impl DwMmc {
     pub(crate) fn clear_all_int_status(&self) {
         let cur = self.regs.rintsts().read();
         self.regs.rintsts().write(cur);
+    }
+
+    pub fn enable_data_irq(&mut self) {
+        self.data_irq_enabled = true;
+        self.regs.intmask().write(
+            crate::DWMMC_INT_DATA_TRANSFER_OVER
+                | crate::DWMMC_INT_COMMAND_DONE
+                | crate::DWMMC_INT_ERROR_MASK,
+        );
+        self.regs.ctrl().update(|r| r.with_int_enable(true));
+    }
+
+    pub fn disable_data_irq(&mut self) {
+        self.data_irq_enabled = false;
+        self.regs.intmask().write(0);
+        self.regs.ctrl().update(|r| r.with_int_enable(false));
+    }
+
+    pub fn data_irq_enabled(&self) -> bool {
+        self.data_irq_enabled
     }
 
     /// Set bus width. DW_mshc encodes width in CTYPE: bit 0 of `width4`

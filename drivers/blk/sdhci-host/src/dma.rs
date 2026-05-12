@@ -21,14 +21,17 @@
 
 use core::{num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{DeviceDma, DmaDirection};
+use dma_api::{DArray, DeviceDma, DmaDirection, SArrayPtr};
 use sdmmc_protocol::{
     cmd::{Command, DataDirection, cmd17, cmd18, cmd24, cmd25},
     error::{Error, ErrorContext, Phase},
     response::Response,
 };
 
-use crate::host::{PendingData, Sdhci};
+use crate::{
+    host::{PendingData, Sdhci},
+    regs::*,
+};
 
 /// 32-bit ADMA2 descriptor.
 ///
@@ -68,6 +71,84 @@ const ADMA2_MAX_PER_DESC: usize = 65_528; // 64 KiB - 8B, multiple of 8
 pub const ADMA2_DESC_COUNT: usize = 16;
 pub const ADMA2_DESC_ALIGN: usize = 64;
 const BLOCK_SIZE: usize = 512;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestId(usize);
+
+impl RequestId {
+    pub const fn new(id: usize) -> Self {
+        Self(id)
+    }
+}
+
+impl From<RequestId> for usize {
+    fn from(value: RequestId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Default)]
+pub struct AsyncRequestSlot {
+    next: usize,
+    active: Option<RequestId>,
+}
+
+pub struct AsyncDmaRequest {
+    inner: AsyncDmaRequestKind,
+}
+
+// `AsyncDmaRequest` owns the DMA mappings and descriptor buffer for one
+// submitted transfer. Moving that ownership to another queue thread does not
+// grant shared access to the mapped memory; completion still requires a
+// mutable `Sdhci` reference and consumes the request.
+unsafe impl Send for AsyncDmaRequest {}
+
+enum AsyncDmaRequestKind {
+    Read {
+        id: RequestId,
+        map: SArrayPtr<u8>,
+        _desc: DArray<Adma2Desc32>,
+        cmd_index: u8,
+        phase: Phase,
+        stop_after_complete: bool,
+    },
+    Write {
+        id: RequestId,
+        _map: SArrayPtr<u8>,
+        _desc: DArray<Adma2Desc32>,
+        cmd_index: u8,
+        phase: Phase,
+        stop_after_complete: bool,
+    },
+}
+
+impl AsyncDmaRequest {
+    pub fn id(&self) -> RequestId {
+        match &self.inner {
+            AsyncDmaRequestKind::Read { id, .. } | AsyncDmaRequestKind::Write { id, .. } => *id,
+        }
+    }
+}
+
+impl AsyncRequestSlot {
+    pub fn start(&mut self) -> Result<RequestId, Error> {
+        if self.active.is_some() {
+            return Err(Error::UnsupportedCommand);
+        }
+        let id = RequestId::new(self.next);
+        self.next = self.next.wrapping_add(1);
+        self.active = Some(id);
+        Ok(id)
+    }
+
+    pub fn complete(&mut self, id: RequestId) -> Result<(), Error> {
+        if self.active != Some(id) {
+            return Err(Error::InvalidArgument);
+        }
+        self.active = None;
+        Ok(())
+    }
+}
 
 /// Build the ADMA2 descriptor table covering `[base, base+total_len)`.
 ///
@@ -209,24 +290,9 @@ impl Sdhci {
         size: NonZeroUsize,
         dma: &DeviceDma,
     ) -> Result<(), Error> {
-        let block_count = dma_read_block_count(size)?;
-        let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
-                BLOCK_SIZE,
-                DmaDirection::FromDevice,
-            )
-            .map_err(map_dma_error)?;
-        let mut desc = dma
-            .array_zero_with_align::<Adma2Desc32>(
-                ADMA2_DESC_COUNT,
-                ADMA2_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
-            .map_err(map_dma_error)?;
-
-        self.dma_read_blocks_mapped(start_block, block_count, map.dma_addr().as_u64(), &mut desc)?;
-        map.prepare_read_all();
+        let mut slot = AsyncRequestSlot::default();
+        let request = self.submit_dma_read_blocks(start_block, buffer, size, dma, &mut slot)?;
+        self.wait_async_dma_request(request, &mut slot)?;
         Ok(())
     }
 
@@ -242,101 +308,81 @@ impl Sdhci {
         size: NonZeroUsize,
         dma: &DeviceDma,
     ) -> Result<(), Error> {
-        let block_count = dma_write_block_count(size)?;
-        let map = dma
-            .map_single_array(
-                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
-                BLOCK_SIZE,
-                DmaDirection::ToDevice,
-            )
-            .map_err(map_dma_error)?;
-        map.confirm_write_all();
-
-        let mut desc = dma
-            .array_zero_with_align::<Adma2Desc32>(
-                ADMA2_DESC_COUNT,
-                ADMA2_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
-            .map_err(map_dma_error)?;
-
-        self.dma_write_blocks_mapped(start_block, block_count, map.dma_addr().as_u64(), &mut desc)
+        let mut slot = AsyncRequestSlot::default();
+        let request = self.submit_dma_write_blocks(start_block, buffer, size, dma, &mut slot)?;
+        self.wait_async_dma_request(request, &mut slot)
     }
 
-    fn dma_read_blocks_mapped(
+    pub fn submit_dma_read_blocks(
         &mut self,
         start_block: u32,
-        block_count: u32,
-        buffer_dma: u64,
-        desc: &mut dma_api::DArray<Adma2Desc32>,
-    ) -> Result<(), Error> {
-        if block_count == 0 {
-            return Err(Error::InvalidArgument);
+        buffer: NonNull<u8>,
+        size: NonZeroUsize,
+        dma: &DeviceDma,
+        slot: &mut AsyncRequestSlot,
+    ) -> Result<AsyncDmaRequest, Error> {
+        let id = slot.start()?;
+        match self.build_dma_read_request(start_block, buffer, size, dma, id) {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
         }
-        let byte_count = block_count
-            .checked_mul(BLOCK_SIZE as u32)
-            .ok_or(Error::InvalidArgument)? as usize;
-        build_descriptors_into_dma(desc, buffer_dma, byte_count, Phase::DataRead)?;
-
-        let desc_bus = desc.dma_addr().as_u64();
-        let desc_end = desc_bus
-            .checked_add(desc.bytes_len() as u64)
-            .ok_or(Error::InvalidArgument)?;
-        if desc_end > u32::MAX as u64 + 1 {
-            return Err(Error::BadResponse(ErrorContext::new(Phase::DataRead)));
-        }
-
-        let cmd = if block_count == 1 {
-            cmd17(start_block)
-        } else {
-            cmd18(start_block)
-        };
-        self.dma_data_transfer_prepared(
-            &cmd,
-            block_count,
-            desc_bus as u32,
-            DataDirection::Read,
-            Phase::DataRead,
-        )?;
-        Ok(())
     }
 
-    fn dma_write_blocks_mapped(
+    pub fn submit_dma_write_blocks(
         &mut self,
         start_block: u32,
-        block_count: u32,
-        buffer_dma: u64,
-        desc: &mut dma_api::DArray<Adma2Desc32>,
+        buffer: NonNull<u8>,
+        size: NonZeroUsize,
+        dma: &DeviceDma,
+        slot: &mut AsyncRequestSlot,
+    ) -> Result<AsyncDmaRequest, Error> {
+        let id = slot.start()?;
+        match self.build_dma_write_request(start_block, buffer, size, dma, id) {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn poll_async_dma_request(
+        &mut self,
+        request: &mut Option<AsyncDmaRequest>,
+        id: RequestId,
+        slot: &mut AsyncRequestSlot,
     ) -> Result<(), Error> {
-        if block_count == 0 {
+        let Some(active) = request.as_ref() else {
+            return Err(Error::InvalidArgument);
+        };
+        if active.id() != id {
             return Err(Error::InvalidArgument);
         }
-        let byte_count = block_count
-            .checked_mul(BLOCK_SIZE as u32)
-            .ok_or(Error::InvalidArgument)? as usize;
-        build_descriptors_into_dma(desc, buffer_dma, byte_count, Phase::DataWrite)?;
 
-        let desc_bus = desc.dma_addr().as_u64();
-        let desc_end = desc_bus
-            .checked_add(desc.bytes_len() as u64)
-            .ok_or(Error::InvalidArgument)?;
-        if desc_end > u32::MAX as u64 + 1 {
-            return Err(Error::BadResponse(ErrorContext::new(Phase::DataWrite)));
-        }
-
-        let cmd = if block_count == 1 {
-            cmd24(start_block)
-        } else {
-            cmd25(start_block)
+        let (cmd_index, phase) = match &active.inner {
+            AsyncDmaRequestKind::Read {
+                cmd_index, phase, ..
+            }
+            | AsyncDmaRequestKind::Write {
+                cmd_index, phase, ..
+            } => (*cmd_index, *phase),
         };
-        self.dma_data_transfer_prepared(
-            &cmd,
-            block_count,
-            desc_bus as u32,
-            DataDirection::Write,
-            Phase::DataWrite,
-        )?;
-        Ok(())
+
+        match self.poll_data_complete_with_adma(cmd_index, phase) {
+            Ok(PollResult::Pending) => Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index))),
+            Ok(PollResult::Complete) => {
+                let active = request.take().ok_or(Error::InvalidArgument)?;
+                self.finish_async_dma_request(active)?;
+                slot.complete(id)
+            }
+            Err(err) => {
+                self.abort_async_dma_request(request, id, slot);
+                Err(err)
+            }
+        }
     }
 
     fn dma_data_transfer_mapped(
@@ -391,6 +437,231 @@ impl Sdhci {
         self.use_dma = false;
         result
     }
+
+    fn build_dma_read_request(
+        &mut self,
+        start_block: u32,
+        buffer: NonNull<u8>,
+        size: NonZeroUsize,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<AsyncDmaRequest, Error> {
+        let block_count = dma_read_block_count(size)?;
+        let map = dma
+            .map_single_array(
+                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+                BLOCK_SIZE,
+                DmaDirection::FromDevice,
+            )
+            .map_err(map_dma_error)?;
+        let mut desc = dma
+            .array_zero_with_align::<Adma2Desc32>(
+                ADMA2_DESC_COUNT,
+                ADMA2_DESC_ALIGN,
+                DmaDirection::ToDevice,
+            )
+            .map_err(map_dma_error)?;
+        let cmd = if block_count == 1 {
+            cmd17(start_block)
+        } else {
+            cmd18(start_block)
+        };
+        self.submit_dma_blocks_mapped(
+            &cmd,
+            block_count,
+            map.dma_addr().as_u64(),
+            &mut desc,
+            DataDirection::Read,
+            Phase::DataRead,
+        )?;
+        Ok(AsyncDmaRequest {
+            inner: AsyncDmaRequestKind::Read {
+                id,
+                map,
+                _desc: desc,
+                cmd_index: cmd.cmd,
+                phase: Phase::DataRead,
+                stop_after_complete: block_count > 1,
+            },
+        })
+    }
+
+    fn build_dma_write_request(
+        &mut self,
+        start_block: u32,
+        buffer: NonNull<u8>,
+        size: NonZeroUsize,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<AsyncDmaRequest, Error> {
+        let block_count = dma_write_block_count(size)?;
+        let map = dma
+            .map_single_array(
+                unsafe { core::slice::from_raw_parts(buffer.as_ptr(), size.get()) },
+                BLOCK_SIZE,
+                DmaDirection::ToDevice,
+            )
+            .map_err(map_dma_error)?;
+        map.confirm_write_all();
+        let mut desc = dma
+            .array_zero_with_align::<Adma2Desc32>(
+                ADMA2_DESC_COUNT,
+                ADMA2_DESC_ALIGN,
+                DmaDirection::ToDevice,
+            )
+            .map_err(map_dma_error)?;
+        let cmd = if block_count == 1 {
+            cmd24(start_block)
+        } else {
+            cmd25(start_block)
+        };
+        self.submit_dma_blocks_mapped(
+            &cmd,
+            block_count,
+            map.dma_addr().as_u64(),
+            &mut desc,
+            DataDirection::Write,
+            Phase::DataWrite,
+        )?;
+        Ok(AsyncDmaRequest {
+            inner: AsyncDmaRequestKind::Write {
+                id,
+                _map: map,
+                _desc: desc,
+                cmd_index: cmd.cmd,
+                phase: Phase::DataWrite,
+                stop_after_complete: block_count > 1,
+            },
+        })
+    }
+
+    fn submit_dma_blocks_mapped(
+        &mut self,
+        cmd: &Command,
+        block_count: u32,
+        buffer_dma: u64,
+        desc: &mut DArray<Adma2Desc32>,
+        direction: DataDirection,
+        phase: Phase,
+    ) -> Result<Response, Error> {
+        if block_count == 0 {
+            return Err(Error::InvalidArgument);
+        }
+        let byte_count = block_count
+            .checked_mul(BLOCK_SIZE as u32)
+            .ok_or(Error::InvalidArgument)? as usize;
+        build_descriptors_into_dma(desc, buffer_dma, byte_count, phase)?;
+
+        let desc_bus = desc.dma_addr().as_u64();
+        let desc_end = desc_bus
+            .checked_add(desc.bytes_len() as u64)
+            .ok_or(Error::InvalidArgument)?;
+        if desc_end > u32::MAX as u64 + 1 {
+            return Err(Error::BadResponse(ErrorContext::new(phase)));
+        }
+
+        self.pending_data = Some(PendingData {
+            direction,
+            block_size: BLOCK_SIZE as u32,
+            block_count,
+        });
+        self.use_dma = true;
+        self.select_adma2_32();
+        self.write_adma_addr(desc_bus as u32);
+        let response = self.issue_command(cmd);
+        self.use_dma = false;
+        response
+    }
+
+    fn wait_async_dma_request(
+        &mut self,
+        request: AsyncDmaRequest,
+        slot: &mut AsyncRequestSlot,
+    ) -> Result<(), Error> {
+        let id = request.id();
+        let mut request = Some(request);
+        loop {
+            match self.poll_async_dma_request(&mut request, id, slot) {
+                Err(Error::Timeout(_)) => core::hint::spin_loop(),
+                result => return result,
+            }
+        }
+    }
+
+    fn finish_async_dma_request(&mut self, request: AsyncDmaRequest) -> Result<(), Error> {
+        match request.inner {
+            AsyncDmaRequestKind::Read {
+                map,
+                stop_after_complete,
+                ..
+            } => {
+                map.prepare_read_all();
+                if stop_after_complete {
+                    let _ = self.issue_command(&sdmmc_protocol::cmd::CMD12);
+                }
+            }
+            AsyncDmaRequestKind::Write {
+                stop_after_complete,
+                ..
+            } => {
+                if stop_after_complete {
+                    let _ = self.issue_command(&sdmmc_protocol::cmd::CMD12);
+                }
+            }
+        }
+        self.pending_data = None;
+        self.active_data_cmd = 0;
+        Ok(())
+    }
+
+    fn abort_async_dma_request(
+        &mut self,
+        request: &mut Option<AsyncDmaRequest>,
+        id: RequestId,
+        slot: &mut AsyncRequestSlot,
+    ) {
+        let _ = request.take();
+        self.use_dma = false;
+        self.pending_data = None;
+        self.active_data_cmd = 0;
+        self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
+        self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+        let _ = self.reset_cmd();
+        let _ = self.reset_dat();
+        let _ = slot.complete(id);
+    }
+
+    fn poll_data_complete_with_adma(
+        &mut self,
+        cmd_index: u8,
+        phase: Phase,
+    ) -> Result<PollResult, Error> {
+        let (status, err) = self.take_data_irq_status();
+        if status & NORMAL_INT_XFER_COMPLETE != 0 {
+            return Ok(PollResult::Complete);
+        }
+        if status & NORMAL_INT_ERROR != 0 {
+            let ctx = ErrorContext::for_cmd(phase, cmd_index);
+            return Err(if err & ERROR_INT_ADMA != 0 {
+                Error::Misaligned
+            } else if err & (ERROR_INT_DATA_TIMEOUT | ERROR_INT_CMD_TIMEOUT) != 0 {
+                Error::Timeout(ctx)
+            } else if err & (ERROR_INT_DATA_CRC | ERROR_INT_CMD_CRC) != 0 {
+                Error::Crc(ctx)
+            } else if matches!(phase, Phase::DataRead) {
+                Error::ReadError(ctx)
+            } else {
+                Error::WriteError(ctx)
+            });
+        }
+        Ok(PollResult::Pending)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PollResult {
+    Pending,
+    Complete,
 }
 
 fn build_descriptors_into_dma(
@@ -505,5 +776,27 @@ mod tests {
     fn sdhci_dma_write_plan_rejects_non_block_sized_buffers() {
         let size = core::num::NonZeroUsize::new(513).unwrap();
         assert_eq!(dma_write_block_count(size), Err(Error::Misaligned));
+    }
+
+    #[test]
+    fn async_request_slot_rejects_second_request_until_completed() {
+        let mut slot = AsyncRequestSlot::default();
+        let first = slot.start().unwrap();
+
+        assert_eq!(slot.start(), Err(Error::UnsupportedCommand));
+        assert_eq!(
+            slot.complete(RequestId::new(usize::from(first) + 1)),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(slot.complete(first), Ok(()));
+        assert!(slot.start().is_ok());
+    }
+
+    #[test]
+    fn async_dma_request_can_cross_queue_thread_boundary() {
+        fn assert_send<T: Send>() {}
+
+        assert_send::<AsyncDmaRequest>();
+        assert_send::<AsyncRequestSlot>();
     }
 }

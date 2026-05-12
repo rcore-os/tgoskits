@@ -60,7 +60,7 @@ mod dma;
 mod host;
 mod regs;
 
-pub use dma::{ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT};
+pub use dma::{ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, AsyncDmaRequest, AsyncRequestSlot, RequestId};
 pub use host::Sdhci;
 use sdmmc_protocol::{
     cmd::{Command, DataDirection},
@@ -366,6 +366,8 @@ impl Sdhci {
         if error != 0 {
             self.write_u16(REG_ERROR_INT_STATUS, error);
         }
+        self.irq_pending_normal |= normal;
+        self.irq_pending_error |= error;
 
         event_from_status(normal, error)
     }

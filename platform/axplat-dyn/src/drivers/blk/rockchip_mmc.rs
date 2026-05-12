@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, string::ToString};
-use core::time::Duration;
+use alloc::{format, string::ToString, sync::Arc, vec::Vec};
+use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
+use ax_kspin::SpinNoIrq;
 use dma_api::DeviceDma;
 use rdif_clk::ClockId;
 use rdrive::{
     Device, DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
 };
-use sdhci_host::Sdhci;
+use sdhci_host::{AsyncDmaRequest, AsyncRequestSlot, RequestId, Sdhci};
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
@@ -28,7 +29,11 @@ use sdmmc_protocol::{
 };
 use spin::Once;
 
-use crate::drivers::{DmaImpl, blk::PlatformDeviceBlock, iomap};
+use crate::drivers::{
+    DmaImpl,
+    blk::{PlatformDeviceBlock, decode_fdt_irq},
+    iomap,
+};
 
 const BLOCK_SIZE: usize = 512;
 const SDHCI_POWER_330: u8 = 0x0e;
@@ -100,12 +105,16 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         card_info.ext_csd.is_some()
     );
 
+    let irq_num = decode_fdt_irq(&info.interrupts());
+    let raw = Arc::new(SpinNoIrq::new(card));
     let dev = BlockDevice {
-        dev: Some(card),
+        raw: Some(raw.clone()),
         capacity_blocks: card_info.capacity_blocks.unwrap_or(0),
+        irq_enabled: false,
+        queue_created: false,
     };
-    plat_dev.register_block(dev);
-    info!("rockchip-sdhci block device registered");
+    plat_dev.register_block_with_irq(dev, irq_num);
+    info!("rockchip-sdhci block device registered irq={:?}", irq_num);
     Ok(())
 }
 
@@ -190,13 +199,18 @@ fn clock_error() -> Error {
 }
 
 struct BlockDevice {
-    dev: Option<RockchipSdhci>,
+    raw: Option<Arc<SpinNoIrq<RockchipSdhci>>>,
     capacity_blocks: u64,
+    irq_enabled: bool,
+    queue_created: bool,
 }
 
 struct BlockQueue {
-    raw: RockchipSdhci,
+    raw: Arc<SpinNoIrq<RockchipSdhci>>,
     capacity_blocks: u64,
+    async_slot: AsyncRequestSlot,
+    pending: Option<AsyncDmaRequest>,
+    completed: Vec<rd_block::RequestId>,
 }
 
 impl DriverGeneric for BlockDevice {
@@ -207,24 +221,51 @@ impl DriverGeneric for BlockDevice {
 
 impl rd_block::Interface for BlockDevice {
     fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rd_block::IQueue>> {
-        self.dev.take().map(|dev| {
+        if self.queue_created {
+            return None;
+        }
+        self.raw.as_ref().map(|dev| {
+            self.queue_created = true;
             alloc::boxed::Box::new(BlockQueue {
-                raw: dev,
+                raw: dev.clone(),
                 capacity_blocks: self.capacity_blocks,
+                async_slot: AsyncRequestSlot::default(),
+                pending: None,
+                completed: Vec::new(),
             }) as _
         })
     }
 
-    fn enable_irq(&mut self) {}
+    fn enable_irq(&mut self) {
+        if let Some(raw) = &self.raw {
+            raw.lock().host_mut().enable_data_irq();
+            self.irq_enabled = true;
+        }
+    }
 
-    fn disable_irq(&mut self) {}
+    fn disable_irq(&mut self) {
+        if let Some(raw) = &self.raw {
+            raw.lock().host_mut().disable_data_irq();
+        }
+        self.irq_enabled = false;
+    }
 
     fn is_irq_enabled(&self) -> bool {
-        false
+        self.irq_enabled
     }
 
     fn handle_irq(&mut self) -> rd_block::Event {
-        rd_block::Event::none()
+        let Some(raw) = &self.raw else {
+            return rd_block::Event::none();
+        };
+        match raw.lock().host_mut().handle_irq() {
+            sdhci_host::Event::TransferComplete | sdhci_host::Event::Error { .. } => {
+                let mut event = rd_block::Event::none();
+                event.queue.insert(0);
+                event
+            }
+            _ => rd_block::Event::none(),
+        }
     }
 }
 
@@ -253,17 +294,34 @@ impl rd_block::IQueue for BlockQueue {
         &mut self,
         request: rd_block::Request<'_>,
     ) -> Result<rd_block::RequestId, rd_block::BlkError> {
-        let start_block = request.block_id as u32;
+        self.reap_pending_request()?;
+        let mut raw = self.raw.lock();
+        let start_block = block_addr_for_card(request.block_id, raw.is_high_capacity())?;
         match request.kind {
-            rd_block::RequestKind::Read(mut buffer) => {
+            rd_block::RequestKind::Read(buffer) => {
                 if !buffer.len().is_multiple_of(BLOCK_SIZE) {
                     return Err(rd_block::BlkError::Other(
                         "read buffer is not block aligned".into(),
                     ));
                 }
-                self.raw
-                    .read_blocks_into(start_block, &mut buffer)
+                let ptr = NonNull::new(buffer.virt).ok_or_else(|| {
+                    rd_block::BlkError::Other("read buffer pointer is null".into())
+                })?;
+                let size = NonZeroUsize::new(buffer.len())
+                    .ok_or_else(|| rd_block::BlkError::Other("read buffer is empty".into()))?;
+                let request = raw
+                    .host_mut()
+                    .submit_dma_read_blocks(
+                        start_block,
+                        ptr,
+                        size,
+                        &DeviceDma::new(u32::MAX as u64, &DmaImpl),
+                        &mut self.async_slot,
+                    )
                     .map_err(map_dev_err_to_blk_err)?;
+                let id = request.id();
+                self.pending = Some(request);
+                Ok(rd_block::RequestId::new(usize::from(id)))
             }
             rd_block::RequestKind::Write(items) => {
                 if !items.len().is_multiple_of(BLOCK_SIZE) {
@@ -271,16 +329,78 @@ impl rd_block::IQueue for BlockQueue {
                         "write buffer is not block aligned".into(),
                     ));
                 }
-                self.raw
-                    .write_blocks_from(start_block, items)
+                let ptr = NonNull::new(items.as_ptr() as *mut u8).ok_or_else(|| {
+                    rd_block::BlkError::Other("write buffer pointer is null".into())
+                })?;
+                let size = NonZeroUsize::new(items.len())
+                    .ok_or_else(|| rd_block::BlkError::Other("write buffer is empty".into()))?;
+                let request = raw
+                    .host_mut()
+                    .submit_dma_write_blocks(
+                        start_block,
+                        ptr,
+                        size,
+                        &DeviceDma::new(u32::MAX as u64, &DmaImpl),
+                        &mut self.async_slot,
+                    )
                     .map_err(map_dev_err_to_blk_err)?;
+                let id = request.id();
+                self.pending = Some(request);
+                Ok(rd_block::RequestId::new(usize::from(id)))
             }
         }
-        Ok(rd_block::RequestId::new(0))
     }
 
-    fn poll_request(&mut self, _request: rd_block::RequestId) -> Result<(), rd_block::BlkError> {
-        Ok(())
+    fn poll_request(&mut self, request: rd_block::RequestId) -> Result<(), rd_block::BlkError> {
+        if let Some(index) = self.completed.iter().position(|id| *id == request) {
+            self.completed.swap_remove(index);
+            return Ok(());
+        }
+        self.poll_active_request(request)
+    }
+}
+
+impl BlockQueue {
+    fn poll_active_request(
+        &mut self,
+        request: rd_block::RequestId,
+    ) -> Result<(), rd_block::BlkError> {
+        self.raw
+            .lock()
+            .host_mut()
+            .poll_async_dma_request(
+                &mut self.pending,
+                RequestId::new(usize::from(request)),
+                &mut self.async_slot,
+            )
+            .map_err(map_dev_err_to_blk_err)
+    }
+
+    fn reap_pending_request(&mut self) -> Result<(), rd_block::BlkError> {
+        let Some(active) = self.pending.as_ref() else {
+            return Ok(());
+        };
+        let id = rd_block::RequestId::new(usize::from(active.id()));
+        match self.poll_active_request(id) {
+            Ok(()) => {
+                self.completed.push(id);
+                Ok(())
+            }
+            Err(rd_block::BlkError::Retry) => Err(rd_block::BlkError::Retry),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+fn block_addr_for_card(block_id: usize, high_capacity: bool) -> Result<u32, rd_block::BlkError> {
+    let block_id =
+        u32::try_from(block_id).map_err(|_| rd_block::BlkError::InvalidBlockIndex(block_id))?;
+    if high_capacity {
+        Ok(block_id)
+    } else {
+        block_id
+            .checked_mul(BLOCK_SIZE as u32)
+            .ok_or(rd_block::BlkError::InvalidBlockIndex(block_id as usize))
     }
 }
 

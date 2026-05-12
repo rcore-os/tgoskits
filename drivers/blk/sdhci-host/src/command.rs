@@ -92,16 +92,17 @@ impl Sdhci {
 
     /// Same as [`wait_data_complete`] but also surfaces ADMA-engine
     /// errors. Used by the DMA data path.
-    pub fn wait_data_complete_with_adma(&self, cmd_index: u8, phase: Phase) -> Result<(), Error> {
+    pub fn wait_data_complete_with_adma(
+        &mut self,
+        cmd_index: u8,
+        phase: Phase,
+    ) -> Result<(), Error> {
         for _ in 0..POLL_LIMIT {
-            let status = self.read_u16(REG_NORMAL_INT_STATUS);
+            let (status, err) = self.take_data_irq_status();
             if status & NORMAL_INT_XFER_COMPLETE != 0 {
-                self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_XFER_COMPLETE);
                 return Ok(());
             }
             if status & NORMAL_INT_ERROR != 0 {
-                let err = self.read_u16(REG_ERROR_INT_STATUS);
-                self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
                 let ctx = ErrorContext::for_cmd(phase, cmd_index);
                 return Err(if err & ERROR_INT_ADMA != 0 {
                     // ADMA engine raised an error — treat as misaligned
@@ -120,6 +121,29 @@ impl Sdhci {
             core::hint::spin_loop();
         }
         Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)))
+    }
+
+    pub(crate) fn take_data_irq_status(&mut self) -> (u16, u16) {
+        let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
+        let error_hw = if normal_hw & NORMAL_INT_ERROR != 0 {
+            self.read_u16(REG_ERROR_INT_STATUS)
+        } else {
+            0
+        };
+        if normal_hw != 0 {
+            self.write_u16(REG_NORMAL_INT_STATUS, normal_hw);
+        }
+        if error_hw != 0 {
+            self.write_u16(REG_ERROR_INT_STATUS, error_hw);
+        }
+
+        let normal = self.irq_pending_normal | normal_hw;
+        let error = self.irq_pending_error | error_hw;
+        self.irq_pending_normal &= !(NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR);
+        if error != 0 {
+            self.irq_pending_error = 0;
+        }
+        (normal, error)
     }
 
     fn wait_inhibit(&self, has_data: bool, cmd_index: u8) -> Result<(), Error> {

@@ -44,6 +44,8 @@ pub struct Sdhci {
     /// `read_data` / `write_data`.
     pub(crate) active_data_cmd: u8,
     pub(crate) dma: Option<DeviceDma>,
+    pub(crate) irq_pending_normal: u16,
+    pub(crate) irq_pending_error: u16,
 }
 
 impl Sdhci {
@@ -61,6 +63,8 @@ impl Sdhci {
             ext_clock: None,
             active_data_cmd: 0,
             dma: None,
+            irq_pending_normal: 0,
+            irq_pending_error: 0,
         }
     }
 
@@ -222,6 +226,26 @@ impl Sdhci {
         // Don't route to host CPU IRQ — leave Signal Enable cleared.
         self.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, 0);
         self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, 0);
+    }
+
+    /// Route data-completion and error status to the host CPU IRQ line.
+    pub fn enable_data_irq(&mut self) {
+        self.write_u16(
+            REG_NORMAL_INT_SIGNAL_ENABLE,
+            NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR,
+        );
+        self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, ERROR_INT_DATA_OR_ADMA_MASK);
+    }
+
+    /// Mask host CPU IRQ delivery while keeping status bits observable.
+    pub fn disable_data_irq(&mut self) {
+        self.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, 0);
+        self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, 0);
+    }
+
+    pub fn data_irq_enabled(&self) -> bool {
+        self.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & (NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR)
+            != 0
     }
 
     /// Read the controller's base reference clock from Capabilities (Hz).
