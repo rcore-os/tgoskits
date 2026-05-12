@@ -31,16 +31,23 @@ fn new_channels(pid: u32) -> (Channel, Channel) {
     let (client_tx, server_rx) = new_uni_channel();
     let (server_tx, client_rx) = new_uni_channel();
     let poll_update = Arc::new(PollSet::new());
+    // Cross-wired close flags: each side's my_tx_closed is the other's peer_tx_closed.
+    let client_tx_closed = Arc::new(AtomicBool::new(false));
+    let server_tx_closed = Arc::new(AtomicBool::new(false));
     (
         Channel {
             tx: client_tx,
             rx: client_rx,
+            my_tx_closed: client_tx_closed.clone(),
+            peer_tx_closed: server_tx_closed.clone(),
             poll_update: poll_update.clone(),
             peer_pid: pid,
         },
         Channel {
             tx: server_tx,
             rx: server_rx,
+            my_tx_closed: server_tx_closed,
+            peer_tx_closed: client_tx_closed,
             poll_update,
             peer_pid: pid,
         },
@@ -50,7 +57,10 @@ fn new_channels(pid: u32) -> (Channel, Channel) {
 struct Channel {
     tx: HeapProd<u8>,
     rx: HeapCons<u8>,
-    // TODO: granularity
+    /// Set to true by Drop (our side) before waking the peer.
+    my_tx_closed: Arc<AtomicBool>,
+    /// Set to true by the peer's Drop before it wakes us.
+    peer_tx_closed: Arc<AtomicBool>,
     poll_update: Arc<PollSet>,
     peer_pid: u32,
 }
@@ -274,10 +284,8 @@ impl TransportOps for StreamTransport {
                 debug!("UnixStream: recv got {} bytes", count);
                 chan.poll_update.wake();
                 Ok(count)
-            } else if !chan.rx.write_is_held() {
-                // Peer dropped its sender end and the ring is empty: EOF.
-                // Returning WouldBlock here would park the caller forever
-                // waiting for data that will never arrive.
+            } else if !chan.rx.write_is_held() || chan.peer_tx_closed.load(Ordering::Acquire) {
+                // Peer closed (either HeapProd dropped or tx_closed flag set): EOF.
                 Ok(0)
             } else {
                 Err(AxError::WouldBlock)
@@ -307,10 +315,13 @@ impl TransportOps for StreamTransport {
 impl Pollable for StreamTransport {
     fn poll(&self) -> IoEvents {
         let mut events = IoEvents::empty();
+        let rx_closed = self.rx_closed.load(Ordering::Acquire);
+        let mut peer_eof = false;
         if let Some(chan) = self.channel.lock().as_ref() {
+            peer_eof = chan.peer_tx_closed.load(Ordering::Acquire);
             events.set(
                 IoEvents::IN,
-                !self.rx_closed.load(Ordering::Acquire) && chan.rx.occupied_len() > 0,
+                !rx_closed && (chan.rx.occupied_len() > 0 || peer_eof),
             );
             events.set(
                 IoEvents::OUT,
@@ -319,7 +330,7 @@ impl Pollable for StreamTransport {
         } else if let Some((conn_tx, _)) = self.conn_rx.lock().as_ref() {
             events.set(IoEvents::IN, !conn_tx.is_empty());
         }
-        events.set(IoEvents::RDHUP, self.rx_closed.load(Ordering::Acquire));
+        events.set(IoEvents::RDHUP, peer_eof || rx_closed);
         events
     }
 
@@ -340,7 +351,11 @@ impl Pollable for StreamTransport {
 impl Drop for StreamTransport {
     fn drop(&mut self) {
         if let Some(chan) = self.channel.lock().as_ref() {
+            // Set the flag BEFORE waking the peer so poll() sees peer_eof=true
+            // when it runs, even though our HeapProd hasn't dropped yet.
+            chan.my_tx_closed.store(true, Ordering::Release);
             chan.poll_update.wake();
         }
+        self.poll_state.wake();
     }
 }

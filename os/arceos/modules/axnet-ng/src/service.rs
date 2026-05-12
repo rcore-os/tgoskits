@@ -343,7 +343,7 @@ impl Service {
 
         if let Some(t) = next {
             let next = TimeValue::from_micros(t.total_micros() as _);
-            warn!("Service::register_waker: next poll_at = {:?}", next);
+            debug!("Service::register_waker: next poll_at = {:?}", next);
 
             // drop old timeout future
             self.timeout = None;
