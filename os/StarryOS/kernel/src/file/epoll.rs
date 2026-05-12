@@ -431,7 +431,12 @@ impl Epoll {
                 }
                 ConsumeResult::NoEvent => {
                     interest.mark_not_in_queue();
-                    self.register_waker_only(&interest);
+                    // Events arriving between consume()'s poll and the new
+                    // register() would otherwise be lost: the old waker
+                    // CAS-fails (in_ready_queue still set), and a plain
+                    // register only fires on the next edge. Re-poll after
+                    // registering to recover them.
+                    self.check_and_register_waker(&interest);
                 }
             }
         }
@@ -441,6 +446,8 @@ impl Epoll {
             for entry in keep {
                 queue.push_back(entry);
             }
+            drop(queue);
+            self.inner.poll_ready.wake();
         }
 
         if count == 0 {
