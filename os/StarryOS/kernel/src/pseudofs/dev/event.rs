@@ -103,11 +103,17 @@ impl EventDev {
         }
 
         let mut prop_bits = [0u8; INPUT_PROP_CNT.div_ceil(8)];
-        let _ = device.get_prop_bits(&mut prop_bits);
+        let prop_bits_reliable = match device.get_prop_bits(&mut prop_bits) {
+            Ok(_) => true,
+            Err(err) => {
+                warn!("Failed to get input property bits: {err:?}");
+                false
+            }
+        };
         let is_touchscreen = prop_bits[INPUT_PROP_DIRECT / 8] & (1 << (INPUT_PROP_DIRECT % 8)) != 0;
         let has_axes =
             ev_bits.get(EventType::Relative as usize) || ev_bits.get(EventType::Absolute as usize);
-        if has_axes && !is_touchscreen {
+        if prop_bits_reliable && has_axes && !is_touchscreen {
             prop_bits[INPUT_PROP_POINTER / 8] |= 1 << (INPUT_PROP_POINTER % 8);
         }
 
@@ -152,6 +158,19 @@ fn return_str(arg: usize, size: usize, s: &str) -> AxResult<usize> {
     let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
     Ok(copy_bytes(s.as_bytes(), slice))
 }
+
+fn dev_error_to_ax_error(err: DevError) -> AxError {
+    match err {
+        DevError::AlreadyExists => AxError::AlreadyExists,
+        DevError::Again => AxError::WouldBlock,
+        DevError::BadState => AxError::BadState,
+        DevError::InvalidParam | DevError::Unsupported => AxError::InvalidInput,
+        DevError::Io => AxError::Io,
+        DevError::NoMemory => AxError::NoMemory,
+        DevError::ResourceBusy => AxError::ResourceBusy,
+    }
+}
+
 fn return_zero_bits(arg: usize, size: usize, bits: usize) -> AxResult<usize> {
     let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
     let len = bits.div_ceil(8).min(slice.len());
@@ -329,11 +348,13 @@ impl DeviceOps for EventDev {
                             // virtio-tablet's 0..0x7FFF absolute range to
                             // screen pixels; without it motion is treated
                             // as noise.
+                            if size < size_of::<InputAbsInfo>() {
+                                return Err(AxError::InvalidInput);
+                            }
                             let axis = nr & (ABS_CNT - 1);
                             let info = match self.inner.lock().device.get_abs_info(axis) {
                                 Ok(info) => info,
-                                Err(DevError::Unsupported) => return Ok(0),
-                                Err(_) => return Err(AxError::InvalidInput),
+                                Err(err) => return Err(dev_error_to_ax_error(err)),
                             };
                             let abs = InputAbsInfo {
                                 value: 0,
@@ -345,7 +366,8 @@ impl DeviceOps for EventDev {
                             };
                             let bytes = abs.as_bytes();
                             let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
-                            return Ok(copy_bytes(bytes, slice));
+                            slice[..bytes.len()].copy_from_slice(bytes);
+                            return Ok(bytes.len());
                         }
                         return Err(AxError::InvalidInput);
                     }

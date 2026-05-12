@@ -7,8 +7,8 @@
  *   - 对带 EV_ABS 的设备, EVIOCGABS(ABS_X) 返回的 input_absinfo.maximum
  *     大于 minimum, 即 libinput 能用来归一化坐标
  *
- * 找不到任何 /dev/input/event* 时直接通过, 兼容没有 virtio-input
- * 设备的 toml.
+ * qemu toml provides virtio-tablet, so missing /dev/input/event* is a
+ * regression instead of a skip.
  */
 
 #include "test_framework.h"
@@ -28,10 +28,20 @@
 #ifndef INPUT_PROP_DIRECT
 #define INPUT_PROP_DIRECT  0x01
 #endif
+#ifndef EVIOCGABS_SMALL
+#define EVIOCGABS_SMALL(axis) _IOC(_IOC_READ, 'E', 0x40 + (axis), sizeof(int))
+#endif
 
 static int has_bit(const unsigned char *bits, size_t nbits, size_t bit) {
     if (bit / 8 >= nbits) return 0;
     return (bits[bit / 8] >> (bit % 8)) & 1;
+}
+
+static int first_unsupported_abs_axis(const unsigned char *bits, size_t nbits) {
+    for (int axis = 0; axis <= ABS_MAX; axis++) {
+        if (!has_bit(bits, nbits, axis)) return axis;
+    }
+    return -1;
 }
 
 static int test_one_device(const char *path) {
@@ -66,13 +76,37 @@ static int test_one_device(const char *path) {
 
     /* EVIOCGABS(ABS_X) — 仅当设备带 EV_ABS 才有意义 */
     if (has_abs) {
+        unsigned char abs_bits[(ABS_MAX + 7) / 8] = {0};
+        rc = ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits);
+        CHECK(rc >= 0, "EVIOCGBIT(EV_ABS)");
+
         struct input_absinfo abs;
         memset(&abs, 0, sizeof(abs));
         rc = ioctl(fd, EVIOCGABS(ABS_X), &abs);
         CHECK(rc >= 0, "EVIOCGABS(ABS_X) returns success");
-        if (rc >= 0) {
+        int abs_x_ok = rc >= 0;
+        if (abs_x_ok) {
             CHECK(abs.maximum > abs.minimum,
                   "absinfo.maximum > minimum (libinput can normalize)");
+
+            int tiny_abs = 0;
+            errno = 0;
+            rc = ioctl(fd, EVIOCGABS_SMALL(ABS_X), &tiny_abs);
+            CHECK(rc < 0 && errno == EINVAL,
+                  "undersized EVIOCGABS(ABS_X) returns EINVAL");
+        }
+
+        if (abs_x_ok) {
+            int unsupported_axis = first_unsupported_abs_axis(abs_bits, sizeof(abs_bits));
+            if (unsupported_axis >= 0) {
+                errno = 0;
+                rc = ioctl(fd, EVIOCGABS(unsupported_axis), &abs);
+                CHECK(rc < 0 && errno == EINVAL,
+                      "unsupported EVIOCGABS(axis) returns EINVAL");
+            } else {
+                printf("  SKIP | %s | unsupported ABS axis check (all axes advertised)\n",
+                       path);
+            }
         }
     }
 
@@ -85,7 +119,7 @@ int main(void) {
 
     DIR *d = opendir("/dev/input");
     if (!d) {
-        printf("  SKIP | /dev/input not present\n");
+        CHECK(0, "/dev/input present");
         TEST_DONE();
     }
 
@@ -102,8 +136,9 @@ int main(void) {
     closedir(d);
 
     if (devices_seen == 0) {
-        printf("  SKIP | no /dev/input/event* devices to probe\n");
+        CHECK(0, "at least one /dev/input/event* device to probe");
     }
+    CHECK(__pass > 0, "at least one evdev assertion ran");
 
     TEST_DONE();
 }
