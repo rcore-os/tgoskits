@@ -22,6 +22,25 @@
 #ifndef MFD_ALLOW_SEALING
 #define MFD_ALLOW_SEALING 2u
 #endif
+/* Linux uapi fcntl seals: may be missing from some guest libc headers. */
+#ifndef F_ADD_SEALS
+#define F_ADD_SEALS 1033
+#endif
+#ifndef F_GET_SEALS
+#define F_GET_SEALS 1034
+#endif
+#ifndef F_SEAL_SEAL
+#define F_SEAL_SEAL 0x0001
+#endif
+#ifndef F_SEAL_SHRINK
+#define F_SEAL_SHRINK 0x0002
+#endif
+#ifndef F_SEAL_GROW
+#define F_SEAL_GROW 0x0004
+#endif
+#ifndef F_SEAL_WRITE
+#define F_SEAL_WRITE 0x0008
+#endif
 /* Linux uapi linux/memfd.h (not always in guest libc headers). */
 #ifndef MFD_HUGETLB
 #define MFD_HUGETLB 4u
@@ -169,6 +188,16 @@ static void test_memfd_flags(void)
     fd = memfd_create("noseal", MFD_ALLOW_SEALING);
     CHECK(fd >= 0, "MFD_ALLOW_SEALING 创建成功");
     if (fd >= 0) {
+        int seals = fcntl(fd, F_GET_SEALS);
+        CHECK(seals >= 0 && seals == 0, "F_GET_SEALS 初始为 0");
+
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "F_ADD_SEALS(F_SEAL_WRITE) 成功");
+        seals = fcntl(fd, F_GET_SEALS);
+        CHECK(seals >= 0 && (seals & F_SEAL_WRITE) != 0, "F_GET_SEALS 包含 F_SEAL_WRITE");
+
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_SEAL), 0, "F_ADD_SEALS(F_SEAL_SEAL) 成功");
+        CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_GROW), EPERM,
+                  "F_SEAL_SEAL 后继续 ADD_SEALS -> EPERM");
         close(fd);
     }
 
@@ -177,6 +206,69 @@ static void test_memfd_flags(void)
     CHECK(fd >= 0, "MFD_CLOEXEC|MFD_ALLOW_SEALING 创建成功");
     if (fd >= 0) {
         CHECK(get_cloexec(fd) == 1, "组合标志下 FD_CLOEXEC 置位");
+        close(fd);
+    }
+}
+
+static void test_memfd_seal_enforcement(void)
+{
+    printf("--- memfd seals enforcement (F_SEAL_*) ---\n");
+
+    /* F_SEAL_WRITE: write(2) should fail with EPERM. */
+    errno = 0;
+    int fd = memfd_create("seal_write", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(seal_write) 成功");
+    if (fd >= 0) {
+        CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 初始 4KiB");
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "ADD_SEALS(F_SEAL_WRITE)");
+
+        errno = 0;
+        ssize_t w = write(fd, "x", 1);
+        CHECK(w == -1 && errno == EPERM, "F_SEAL_WRITE 后 write -> EPERM");
+
+        /* F_SEAL_WRITE: mmap(MAP_SHARED|PROT_WRITE) should fail with EPERM. */
+        errno = 0;
+        void *p = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        CHECK(p == MAP_FAILED && errno == EPERM, "F_SEAL_WRITE 后 shared writable mmap -> EPERM");
+        if (p != MAP_FAILED) {
+            munmap(p, 4096);
+        }
+
+        /* Linux: MAP_PRIVATE|PROT_WRITE stays allowed (COW); does not mutate the memfd object. */
+        errno = 0;
+        p = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+        CHECK(p != MAP_FAILED, "F_SEAL_WRITE 后 private writable mmap 仍成功");
+        if (p != MAP_FAILED) {
+            CHECK_RET(munmap(p, 4096), 0, "munmap private map");
+        }
+
+        close(fd);
+    }
+
+    /* F_SEAL_GROW: ftruncate that grows should fail with EPERM. */
+    errno = 0;
+    fd = memfd_create("seal_grow", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(seal_grow) 成功");
+    if (fd >= 0) {
+        CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 初始 4KiB");
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_GROW), 0, "ADD_SEALS(F_SEAL_GROW)");
+        CHECK_ERR(ftruncate(fd, 8192), EPERM, "F_SEAL_GROW 后 grow ftruncate -> EPERM");
+        CHECK_RET(ftruncate(fd, 4096), 0, "F_SEAL_GROW 后同尺寸 ftruncate 仍成功");
+        errno = 0;
+        ssize_t pw = pwrite(fd, "z", 1, 8190);
+        CHECK(pw == -1 && errno == EPERM, "F_SEAL_GROW 后 pwrite 隐式扩展 -> EPERM");
+        close(fd);
+    }
+
+    /* F_SEAL_SHRINK: ftruncate that shrinks should fail with EPERM. */
+    errno = 0;
+    fd = memfd_create("seal_shrink", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(seal_shrink) 成功");
+    if (fd >= 0) {
+        CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 初始 4KiB");
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK), 0, "ADD_SEALS(F_SEAL_SHRINK)");
+        CHECK_ERR(ftruncate(fd, 2048), EPERM, "F_SEAL_SHRINK 后 shrink ftruncate -> EPERM");
+        CHECK_RET(ftruncate(fd, 4096), 0, "F_SEAL_SHRINK 后同尺寸 ftruncate 仍成功");
         close(fd);
     }
 }
@@ -359,6 +451,7 @@ int main(void)
     test_memfd_errors();
     test_memfd_name_limits();
     test_memfd_flags();
+    test_memfd_seal_enforcement();
     test_memfd_hugetlb_and_reserved_flags();
 
     test_pidfd_open_self();

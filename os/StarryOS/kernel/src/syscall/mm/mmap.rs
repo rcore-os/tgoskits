@@ -11,6 +11,7 @@ use crate::{
     file::get_file_like,
     mm::{Backend, BackendOps, SharedPages},
     pseudofs::{Device, DeviceMmap},
+    syscall::fs::memfd_check_write_seal,
     task::AsThread,
 };
 
@@ -181,6 +182,14 @@ pub fn sys_mmap(
     } else {
         Some(get_file_like(fd)?)
     };
+    if let Some(ref file_like) = file
+        && map_type == MmapFlags::SHARED
+        && permission_flags.contains(MmapProt::WRITE)
+    {
+        // Linux: F_SEAL_WRITE forbids shared writable mappings, but still allows
+        // MAP_PRIVATE|PROT_WRITE because it does not modify the underlying file.
+        memfd_check_write_seal(file_like)?;
+    }
 
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {

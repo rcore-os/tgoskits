@@ -12,6 +12,7 @@ use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
+use super::memfd::MemFdMeta;
 use crate::{
     file::{
         Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
@@ -307,12 +308,44 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             pipe.resize(arg)?;
             Ok(0)
         }
-        // memfd seals are not implemented yet; do not fake success.
-        F_ADD_SEALS | F_GET_SEALS => Err(AxError::InvalidInput),
+        F_ADD_SEALS | F_GET_SEALS => handle_memfd_seals(fd, cmd as u32, arg),
         _ => {
             warn!("unsupported fcntl parameters: cmd: {cmd}");
             Err(AxError::InvalidInput)
         }
+    }
+}
+
+fn handle_memfd_seals(fd: c_int, cmd: u32, arg: usize) -> AxResult<isize> {
+    let file_like = get_file_like(fd)?;
+    let Some(file) = file_like.downcast_ref::<File>() else {
+        return Err(AxError::InvalidInput);
+    };
+    let loc = file.inner().backend()?.location().clone();
+    let Some(meta) = loc.user_data().get::<MemFdMeta>() else {
+        return Err(AxError::InvalidInput);
+    };
+
+    match cmd {
+        F_GET_SEALS => Ok(meta.seals.load(core::sync::atomic::Ordering::Relaxed) as isize),
+        F_ADD_SEALS => {
+            if !meta.allow_sealing {
+                return Err(AxError::OperationNotPermitted);
+            }
+            let supported = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE;
+            let add = arg as u32;
+            if add & !supported != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            let current = meta.seals.load(core::sync::atomic::Ordering::Relaxed);
+            if current & F_SEAL_SEAL != 0 {
+                return Err(AxError::OperationNotPermitted);
+            }
+            meta.seals
+                .store(current | add, core::sync::atomic::Ordering::Relaxed);
+            Ok(0)
+        }
+        _ => Err(AxError::InvalidInput),
     }
 }
 

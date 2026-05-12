@@ -14,6 +14,10 @@ use linux_raw_sys::general::__kernel_off_t;
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
+use super::memfd::{
+    memfd_check_resize_seals, memfd_check_write_seal, memfd_checks_before_stream_write,
+    memfd_checks_before_write_at,
+};
 use crate::{
     file::{Directory, File, FileLike, Pipe, get_file_like},
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
@@ -93,14 +97,17 @@ pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
 pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let data = copy_user_read_buf(buf.cast_const(), len)?;
-    Ok(get_file_like(fd)?.write(&mut data.as_slice())? as _)
+    let file_like = get_file_like(fd)?;
+    memfd_checks_before_stream_write(&file_like, len as u64)?;
+    Ok(file_like.write(&mut data.as_slice())? as _)
 }
 
 pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
     let data = copy_user_iov_read_buf(iov, iovcnt)?;
-    let f = get_file_like(fd)?;
-    f.write(&mut data.as_slice()).map(|n| n as _)
+    let file_like = get_file_like(fd)?;
+    memfd_checks_before_stream_write(&file_like, data.len() as u64)?;
+    file_like.write(&mut data.as_slice()).map(|n| n as _)
 }
 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
@@ -185,6 +192,7 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     if length < 0 {
         return Err(AxError::InvalidInput);
     }
+    let f_like = get_file_like(fd)?;
     let f = File::from_fd(fd).map_err(|e| {
         if e == AxError::IsADirectory {
             AxError::from(LinuxError::EINVAL)
@@ -195,6 +203,8 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
     }
+    let old_len = f.inner().location().len()?;
+    memfd_check_resize_seals(&f_like, old_len, length as u64)?;
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
@@ -209,6 +219,8 @@ pub fn sys_fallocate(
     // Validate fd first: invalid/closed/dir/read-only → EBADF, pipe → ESPIPE.
     // Linux errno priority: EBADF/ESPIPE > EOPNOTSUPP > EINVAL.
     let f = file_or_espipe_write(fd)?;
+    let f_like = get_file_like(fd)?;
+    memfd_check_write_seal(&f_like)?;
     if mode != 0 {
         return Err(AxError::OperationNotSupported);
     }
@@ -224,7 +236,9 @@ pub fn sys_fallocate(
     }
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
-    file.set_len(file.location().len()?.max(end))?;
+    let old_len = file.location().len()?;
+    memfd_check_resize_seals(&f_like, old_len, old_len.max(end))?;
+    file.set_len(old_len.max(end))?;
     Ok(0)
 }
 
@@ -309,10 +323,13 @@ pub fn sys_pwrite64(
         return Err(AxError::InvalidInput);
     }
     let f = file_or_espipe_write(fd)?;
+    let file_like = get_file_like(fd)?;
     if len == 0 {
+        memfd_check_write_seal(&file_like)?;
         return Ok(0);
     }
     let data = copy_user_read_buf(buf, len)?;
+    memfd_checks_before_write_at(&file_like, offset as u64, len as u64)?;
     let write = f.inner().write_at(data.as_slice(), offset as _)?;
     Ok(write as _)
 }
@@ -390,11 +407,14 @@ pub fn sys_pwritev2(
     if offset == -1 {
         // offset == -1: use current file position (like writev)
         let data = copy_user_iov_read_buf(iov, iovcnt)?;
-        let f = get_file_like(fd)?;
-        f.write(&mut data.as_slice()).map(|n| n as _)
+        let file_like = get_file_like(fd)?;
+        memfd_checks_before_stream_write(&file_like, data.len() as u64)?;
+        file_like.write(&mut data.as_slice()).map(|n| n as _)
     } else {
         let data = copy_user_iov_read_buf(iov, iovcnt)?;
-        let f = file_or_espipe(fd)?;
+        let f = file_or_espipe_write(fd)?;
+        let file_like = get_file_like(fd)?;
+        memfd_checks_before_write_at(&file_like, offset as u64, data.len() as u64)?;
         f.inner()
             .write_at(data.as_slice(), offset as _)
             .map(|n| n as _)
@@ -444,9 +464,14 @@ impl SendFile {
 
     fn write(&mut self, mut buf: &[u8]) -> AxResult<usize> {
         match self {
-            SendFile::Direct(file) => file.write(&mut buf),
+            SendFile::Direct(file) => {
+                super::memfd::memfd_checks_before_stream_write(file, buf.len() as u64)?;
+                file.write(&mut buf)
+            }
             SendFile::Offset(file, offset) => {
                 let off = offset.vm_read()?;
+                let file_like: Arc<dyn FileLike> = file.clone();
+                super::memfd::memfd_checks_before_write_at(&file_like, off, buf.len() as u64)?;
                 let bytes_written = file.inner().write_at(buf, off)?;
                 offset.vm_write(off + bytes_written as u64)?;
                 Ok(bytes_written)
