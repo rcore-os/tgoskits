@@ -11,7 +11,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use crate::{
-    task::{get_process_data, get_process_group, get_task},
+    task::{get_process_data, get_process_group, get_task, is_zombie_pid},
     time::TimeValueLike,
 };
 
@@ -153,7 +153,10 @@ pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
     match which {
         PRIO_PROCESS => {
             if who != 0 {
-                let _proc = get_process_data(who)?;
+                // Zombies have no ProcessData but still exist — return 0 like Linux.
+                if get_process_data(who).is_err() && !is_zombie_pid(who) {
+                    return Err(AxError::NoSuchProcess);
+                }
             }
             Ok(20)
         }
