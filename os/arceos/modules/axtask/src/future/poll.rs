@@ -63,12 +63,8 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     /// task context.
     const MAX_TRACKED_IRQ: usize = 256;
 
-    // SAFETY: AtomicBool defaults to false; arrays of AtomicBool are
-    // safe to declare const through this pattern.
-    static IRQ_PENDING: [AtomicBool; MAX_TRACKED_IRQ] = {
-        const FALSE: AtomicBool = AtomicBool::new(false);
-        [FALSE; MAX_TRACKED_IRQ]
-    };
+    static IRQ_PENDING: [AtomicBool; MAX_TRACKED_IRQ] =
+        [const { AtomicBool::new(false) }; MAX_TRACKED_IRQ];
     static ANY_PENDING: AtomicBool = AtomicBool::new(false);
     static DRAIN_WAKER: PollSet = PollSet::new();
     static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);
@@ -119,8 +115,8 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
                         let mut to_wake: alloc::vec::Vec<Arc<PollSet>> = alloc::vec::Vec::new();
                         {
                             let map = POLL_IRQ.lock();
-                            for irq in 0..MAX_TRACKED_IRQ {
-                                if IRQ_PENDING[irq].swap(false, Ordering::AcqRel)
+                            for (irq, slot) in IRQ_PENDING.iter().enumerate() {
+                                if slot.swap(false, Ordering::AcqRel)
                                     && let Some(set) = map.get(&irq)
                                 {
                                     to_wake.push(set.clone());
