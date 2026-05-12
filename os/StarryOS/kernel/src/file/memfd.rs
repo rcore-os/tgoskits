@@ -156,12 +156,14 @@ impl FileLike for Memfd {
         if seals & F_SEAL_GROW == 0 {
             return self.inner.write(src);
         }
-        // F_SEAL_GROW: the inner File owns the cursor and Linux's
-        // shmem_write would reject the write atomically. We don't have
-        // public access to the cursor, so serialize against ftruncate
-        // and other sealed writes, snapshot the size, do the write, and
-        // truncate back if it grew. The truncate_mtx blocks ftruncate
-        // too, so the rollback target stays valid for the window.
+        // F_SEAL_GROW: writes past current EOF must fail. The inner
+        // File owns the cursor privately, so we can't pre-check
+        // "would-extend" by computing `pos + len > size`; instead we
+        // serialize against ftruncate and other sealed writes (so the
+        // size we observe stays stable), perform the write, and snap
+        // back to the pre-write size if it grew. Observable contract
+        // matches Linux's shmem_write_check_limits: file size never
+        // grows under the seal, and the call reports EPERM.
         let _guard = self.truncate_mtx.lock();
         let pre_len = self.inner.inner().backend()?.location().len()?;
         let written = self.inner.write(src)?;
