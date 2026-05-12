@@ -101,7 +101,7 @@ ifneq ($(wildcard $(APP)/Cargo.toml),)
 else
   APP_TYPE := c
   AX_LIB ?= ax-libc
-  CARGO_MANIFEST_DIR := $(CURDIR)
+  CARGO_MANIFEST_DIR := $(TGOSKITS_ROOT)
 endif
 
 .DEFAULT_GOAL := all
