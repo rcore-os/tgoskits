@@ -5,6 +5,11 @@
 //! intentionally covers only the subset `card0.rs` implements today; the
 //! full DRM ioctl set has ~100 commands, and we add them incrementally.
 
+// Some uapi-shaped constants live here purely to document the value set
+// we accept on the wire; they don't all have a Rust caller yet, but
+// keeping the full enum surface inline with Linux's header is the point.
+#![allow(dead_code)]
+
 use core::ffi::c_int;
 
 use bytemuck::{AnyBitPattern, NoUninit};
@@ -321,10 +326,10 @@ pub struct DrmModeDestroyDumb {
 
 /// XRGB8888 — four bytes per pixel, little-endian, X/R/G/B in low-to-high.
 pub const DRM_FORMAT_XRGB8888: u32 =
-    ((b'X' as u32) << 0) | ((b'R' as u32) << 8) | ((b'2' as u32) << 16) | ((b'4' as u32) << 24);
+    (b'X' as u32) | ((b'R' as u32) << 8) | ((b'2' as u32) << 16) | ((b'4' as u32) << 24);
 /// ARGB8888 — same layout but with meaningful alpha.
 pub const DRM_FORMAT_ARGB8888: u32 =
-    ((b'A' as u32) << 0) | ((b'R' as u32) << 8) | ((b'2' as u32) << 16) | ((b'4' as u32) << 24);
+    (b'A' as u32) | ((b'R' as u32) << 8) | ((b'2' as u32) << 16) | ((b'4' as u32) << 24);
 
 // ======== M4b: planes, properties, page flip, vblank ========
 
@@ -447,7 +452,7 @@ pub const DRM_VBLANK_RELATIVE: u32 = 0x1;
 /// Mask isolating the type bits that matter (ABSOLUTE/RELATIVE +
 /// EVENT + NEXTONMISS + SECONDARY + SIGNAL). Higher bits are the
 /// per-CRTC index. We only look at the RELATIVE bit.
-pub const DRM_VBLANK_FLAGS_MASK: u64 = 0x3_F_0000_0000;
+pub const DRM_VBLANK_FLAGS_MASK: u64 = 0x3F_0000_0000;
 
 // ---- event delivery ----
 //
