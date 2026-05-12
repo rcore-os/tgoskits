@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::snapshot::{CommandSnapshotFile, load_snapshot, store_snapshot};
-use crate::arceos::build::ArceosBuildInfo;
+use crate::build::BuildInfo;
 
 pub const ARCEOS_SNAPSHOT_FILE: &str = ".arceos.toml";
 pub const DEFAULT_ARCEOS_ARCH: &str = "aarch64";
@@ -174,7 +174,7 @@ pub struct ResolvedStarryRequest {
     pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,
-    pub build_info_override: Option<ArceosBuildInfo>,
+    pub build_info_override: Option<BuildInfo>,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
 }
