@@ -5,11 +5,6 @@
 //! intentionally covers only the subset `card0.rs` implements today; the
 //! full DRM ioctl set has ~100 commands, and we add them incrementally.
 
-// Some uapi-shaped constants live here purely to document the value set
-// we accept on the wire; they don't all have a Rust caller yet, but
-// keeping the full enum surface inline with Linux's header is the point.
-#![allow(dead_code)]
-
 use core::ffi::c_int;
 
 use bytemuck::{AnyBitPattern, NoUninit};
@@ -112,7 +107,6 @@ pub struct DrmGetCap {
 
 /// DRM capability IDs (`DRM_CAP_*`).  Only the ones we report are listed.
 pub const DRM_CAP_DUMB_BUFFER: u64 = 0x1;
-pub const DRM_CAP_PRIME: u64 = 0x5;
 pub const DRM_CAP_TIMESTAMP_MONOTONIC: u64 = 0x6;
 pub const DRM_CAP_CRTC_IN_VBLANK_EVENT: u64 = 0x12;
 /// Reported by Linux DRM drivers that honor the `modifier[]` array in
@@ -150,10 +144,6 @@ pub struct DrmSetClientCap {
     pub capability: u64,
     pub value: u64,
 }
-
-/// Client-cap IDs (`DRM_CLIENT_CAP_*`).  Only the ones we accept are listed.
-pub const DRM_CLIENT_CAP_UNIVERSAL_PLANES: u64 = 2;
-pub const DRM_CLIENT_CAP_ATOMIC: u64 = 3;
 
 // ======== modesetting ioctls ========
 //
@@ -359,16 +349,9 @@ pub struct DrmModeGetPlane {
 /// match on them.
 pub const DRM_MODE_OBJECT_CRTC: u32 = 0xcccc_cccc;
 pub const DRM_MODE_OBJECT_CONNECTOR: u32 = 0xc0c0_c0c0;
-pub const DRM_MODE_OBJECT_FB: u32 = 0xfbfb_fbfb;
-pub const DRM_MODE_OBJECT_BLOB: u32 = 0xbbbb_bbbb;
 pub const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
 
-/// Plane type values (plane's `type` enum property).  Linux KMS spec:
-/// 0 = overlay, 1 = primary, 2 = cursor. We advertise primary always
-/// and cursor when the backing driver has a hardware cursor overlay.
-pub const DRM_PLANE_TYPE_OVERLAY: u64 = 0;
 pub const DRM_PLANE_TYPE_PRIMARY: u64 = 1;
-pub const DRM_PLANE_TYPE_CURSOR: u64 = 2;
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
@@ -449,10 +432,6 @@ pub struct DrmWaitVblank {
 /// `_DRM_VBLANK_ABSOLUTE = 0`, `_DRM_VBLANK_RELATIVE = 1`. The low bits
 /// of `type` are a CRTC index (unused here — we have one CRTC).
 pub const DRM_VBLANK_RELATIVE: u32 = 0x1;
-/// Mask isolating the type bits that matter (ABSOLUTE/RELATIVE +
-/// EVENT + NEXTONMISS + SECONDARY + SIGNAL). Higher bits are the
-/// per-CRTC index. We only look at the RELATIVE bit.
-pub const DRM_VBLANK_FLAGS_MASK: u64 = 0x3F_0000_0000;
 
 // ---- event delivery ----
 //
