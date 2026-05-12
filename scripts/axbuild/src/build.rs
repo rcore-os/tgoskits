@@ -762,12 +762,6 @@ fn ensure_cargo_axplat_installed() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if std::env::var("AXBUILD_AUTO_INSTALL_TOOLS").as_deref() != Ok("1") {
-        bail!(
-            "`cargo axplat` is not installed.\nInstall it manually with: cargo install \
-             cargo-axplat\nOr set AXBUILD_AUTO_INSTALL_TOOLS=1 to allow automatic installation."
-        );
-    }
     warn!("`cargo axplat` not found, installing `cargo-axplat` via cargo");
     Command::new("cargo")
         .arg("install")
@@ -788,14 +782,6 @@ fn ensure_ax_config_gen_installed() -> anyhow::Result<()> {
 
     let workspace_root = crate::context::workspace_root_path()?;
     let ax_config_gen_dir = workspace_root.join("components/axconfig-gen/axconfig-gen");
-
-    if std::env::var("AXBUILD_AUTO_INSTALL_TOOLS").as_deref() != Ok("1") {
-        bail!(
-            "`ax-config-gen` is not installed.\nInstall it manually with: cargo install --path \
-             {}\nOr set AXBUILD_AUTO_INSTALL_TOOLS=1 to allow automatic installation.",
-            ax_config_gen_dir.display()
-        );
-    }
 
     warn!(
         "`ax-config-gen` not found, installing from local path {}",
