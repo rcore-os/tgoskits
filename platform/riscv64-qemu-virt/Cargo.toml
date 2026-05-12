@@ -26,7 +26,7 @@ riscv = "0.14.0"
 riscv_goldfish = { version = "0.1", optional = true }
 ax-riscv-plic = { workspace = true }
 sbi-rt = { version = "0.0.3", features = ["legacy"] }
-some-serial = "0.4.0"
+some-serial.workspace = true
 
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }

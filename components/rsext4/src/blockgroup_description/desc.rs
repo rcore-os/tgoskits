@@ -107,8 +107,24 @@ impl Ext4GroupDesc {
         let expected = ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]);
         if expected != self.bg_checksum {
             error!(
-                "Group descriptor checksum mismatch for group {}: expected {:04x}, got {:04x}",
-                group_id, self.bg_checksum, expected
+                "Group descriptor checksum mismatch: group={} stored={:#06x} expected={:#06x} \
+                 desc_size={} block_bitmap={} inode_bitmap={} inode_table={} free_blocks={} \
+                 free_inodes={} used_dirs={} itable_unused={} flags={:#x} block_bitmap_csum={:#x} \
+                 inode_bitmap_csum={:#x}",
+                group_id,
+                self.bg_checksum,
+                expected,
+                desc_size,
+                self.block_bitmap(),
+                self.inode_bitmap(),
+                self.inode_table(),
+                self.free_blocks_count(),
+                self.free_inodes_count(),
+                self.used_dirs_count(),
+                self.itable_unused(),
+                self.bg_flags,
+                self.block_bitmap_csum(),
+                self.inode_bitmap_csum()
             );
             return Err(Ext4Error::checksum());
         }

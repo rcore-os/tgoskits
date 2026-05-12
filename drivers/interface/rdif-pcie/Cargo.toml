@@ -1,0 +1,19 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["embedded", "no-std"]
+description = "Driver Interface of interrupt controller."
+edition.workspace = true
+keywords = ["os", "driver"]
+license = "MIT"
+name = "rdif-pcie"
+repository.workspace = true
+version = "0.2.1"
+
+[dependencies]
+pci_types = "0.10"
+rdif-base = { workspace = true }
+thiserror = { version = "2", default-features = false }
+serde = { version = "1", optional = true, features = ["derive"] }
+
+[features]
+serde = ["dep:serde"]

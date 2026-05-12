@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    thread,
 };
 
 use anyhow::{Context, anyhow, bail};
@@ -44,19 +45,11 @@ pub(crate) fn run_sync_lint_command(args: &crate::SyncLintArgs) -> anyhow::Resul
         }
     }
 
-    let mut findings = Vec::new();
-    match selection {
-        SyncLintSelection::All { .. } => {
-            for package in &packages {
-                findings.extend(package_findings(package)?);
-            }
-        }
-        SyncLintSelection::Files(files) => {
-            for file in files {
-                findings.extend(file_findings(&file)?);
-            }
-        }
-    }
+    let files = match selection {
+        SyncLintSelection::All { .. } => workspace_rust_source_files(&packages)?,
+        SyncLintSelection::Files(files) => files,
+    };
+    let findings = files_findings(files)?;
 
     if findings.is_empty() {
         println!("all sync-lint checks passed");
@@ -104,7 +97,7 @@ fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
     packages
 }
 
-fn package_findings(package: &Package) -> anyhow::Result<Vec<Finding>> {
+fn package_dir(package: &Package) -> anyhow::Result<PathBuf> {
     let package_dir = package
         .manifest_path
         .clone()
@@ -112,12 +105,15 @@ fn package_findings(package: &Package) -> anyhow::Result<Vec<Finding>> {
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow!("invalid manifest path for package `{}`", package.name))?;
+    Ok(package_dir)
+}
 
-    let mut findings = Vec::new();
-    for source_path in rust_source_files(&package_dir) {
-        findings.extend(file_findings(&source_path)?);
+fn workspace_rust_source_files(packages: &[Package]) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = BTreeSet::new();
+    for package in packages {
+        files.extend(rust_source_files(&package_dir(package)?));
     }
-    Ok(findings)
+    Ok(files.into_iter().collect())
 }
 
 fn select_sync_lint_files(
@@ -260,6 +256,63 @@ fn file_findings(path: &Path) -> anyhow::Result<Vec<Finding>> {
     let syntax = syn::parse_file(&source)
         .with_context(|| format!("failed to parse Rust file {}", path.display()))?;
     Ok(analyze_file(path, &source, &syntax))
+}
+
+fn files_findings(files: Vec<PathBuf>) -> anyhow::Result<Vec<Finding>> {
+    let parallelism = thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(files.len());
+    if parallelism <= 1 || files.len() <= 1 {
+        return files_findings_sequential(files);
+    }
+
+    let chunk_size = files.len().div_ceil(parallelism);
+    let chunks = files
+        .chunks(chunk_size)
+        .map(|chunk| chunk.to_vec())
+        .collect::<Vec<_>>();
+
+    let mut findings = thread::scope(|scope| {
+        let handles = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut findings = Vec::new();
+                    for file in chunk {
+                        findings.extend(file_findings(&file)?);
+                    }
+                    Ok::<_, anyhow::Error>(findings)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut findings = Vec::new();
+        for handle in handles {
+            findings.extend(
+                handle
+                    .join()
+                    .map_err(|_| anyhow!("sync-lint worker thread panicked"))??,
+            );
+        }
+        Ok::<_, anyhow::Error>(findings)
+    })?;
+    findings.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.line.cmp(&right.line))
+            .then_with(|| left.column.cmp(&right.column))
+            .then_with(|| left.rule.label().cmp(right.rule.label()))
+            .then_with(|| left.message.cmp(&right.message))
+    });
+    Ok(findings)
+}
+
+fn files_findings_sequential(files: Vec<PathBuf>) -> anyhow::Result<Vec<Finding>> {
+    let mut findings = Vec::new();
+    for file in files {
+        findings.extend(file_findings(&file)?);
+    }
+    Ok(findings)
 }
 
 fn analyze_file(path: &Path, source: &str, syntax: &File) -> Vec<Finding> {
@@ -995,6 +1048,27 @@ mod tests {
             selection,
             SyncLintSelection::All { reason: Some(reason) } if reason.contains("build.rs")
         ));
+    }
+
+    #[test]
+    fn workspace_source_files_are_deduplicated_for_nested_packages() {
+        let root = tempfile::tempdir().unwrap();
+        let alpha_src = root.path().join("crates/alpha/src");
+        let beta_src = root.path().join("crates/alpha/beta/src");
+        fs::create_dir_all(&alpha_src).unwrap();
+        fs::create_dir_all(&beta_src).unwrap();
+        let alpha_lib = alpha_src.join("lib.rs");
+        let beta_lib = beta_src.join("lib.rs");
+        fs::write(&alpha_lib, "").unwrap();
+        fs::write(&beta_lib, "").unwrap();
+        let packages = vec![
+            package(root.path(), "alpha"),
+            package(root.path(), "alpha/beta"),
+        ];
+
+        let files = workspace_rust_source_files(&packages).unwrap();
+
+        assert_eq!(files, vec![beta_lib, alpha_lib]);
     }
 
     #[test]
