@@ -96,7 +96,7 @@ int main(void) {
         CHECK(fd2 >= 0, "open for upper-bound test");
         CHECK_RET(ioctl(fd2, KCOV_INIT_TRACE, 10240), 0,
                   "INIT_TRACE size=10240");
-        size_t sz2 = 1024 * sizeof(uint64_t);
+        size_t sz2 = 10240 * sizeof(uint64_t);
         uint64_t *b2 =
             mmap(NULL, sz2, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 0);
         CHECK_PTR(b2, 1, "mmap upper-bound test");

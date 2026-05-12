@@ -3,7 +3,7 @@
 //! Exposes `/dev/kcov` as a character device. Userspace opens it, initializes
 //! a trace buffer via `KCOV_INIT_TRACE`, mmap's the buffer, enables coverage
 //! via `KCOV_ENABLE`, runs the workload, and disables via `KCOV_DISABLE`.
-//! Currently only KCOV_TRACE_PC is implemented, KCOV_TRACE_CMP
+//! Currently only KCOV_TRACE_PC is implemented, KCOV_TRACE_CMP is not yet implemented.
 
 use alloc::sync::Arc;
 use core::any::Any;

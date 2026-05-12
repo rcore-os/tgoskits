@@ -86,7 +86,7 @@ int main(void) {
 	}
 
 	CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 51200), 0,
-		  "KCOV_INIT_TRACE size=512");
+		  "KCOV_INIT_TRACE size=51200");
 	size_t sz = 51200 * sizeof(uint64_t);
 	uint64_t *buf =
 	    mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
