@@ -24,15 +24,6 @@
 //!     AF_NETLINK broadcast and is not implemented here).
 //!   - ALSA `sound/` subsystem (separate submission).
 
-// This module is gated to non-plat-dyn builds. In feature combos where
-// the module compiles but the call into `new_sysfs` is excluded by the
-// same gate at a different layer, rustc still walks the module body
-// and complains about every internal helper being dead. The contents
-// are tightly wired to libudev's enumeration shape, not arbitrary
-// scaffolding, so the right answer is to keep them and silence the
-// lint for the whole module rather than #[allow] each item.
-#![allow(dead_code)]
-
 use alloc::{
     borrow::{Cow, ToOwned},
     boxed::Box,
