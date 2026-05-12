@@ -346,6 +346,14 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // so parent processes blocking on pipe reads will receive EOF.
         crate::file::close_all_fds();
 
+        // Release all POSIX (fcntl) locks held by this pid. Linux releases
+        // them implicitly via fl_release_private when the last fd referring
+        // to the inode is closed; we track POSIX locks by pid rather than
+        // by fd, so the cleanup happens here at process-exit time. Without
+        // this, a child fork → F_SETLK → exit would permanently pin the
+        // record in FCNTL_LOCKS and block all later acquirers.
+        crate::syscall::release_pid_locks(process.pid());
+
         // Snapshot children BEFORE process.exit() reparents them to init
         // via mem::take. Otherwise process.children() returns an empty
         // list and pdeathsig never reaches the real children.
