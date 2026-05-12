@@ -42,6 +42,7 @@ test_commands = [
     "/usr/bin/bug-renameat2-noreplace-flags",
     "/usr/bin/bug-readlinkat-zero-size",
     "/usr/bin/bug-proc-init-pid",
+    "/usr/bin/bug-tcp-udp-bind-same-port",
     "/usr/bin/bug-tcp-send-no-epoll-notify",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
