@@ -16,7 +16,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use weak_map::WeakMap;
 
 use super::{
-    AsThread, FutexKey, ProcessData, TimerState, futex_table_for, send_signal_thread_inner,
+    AsThread, Cred, FutexKey, ProcessData, TimerState, futex_table_for, send_signal_thread_inner,
     send_signal_to_process, send_signal_to_thread,
 };
 
@@ -24,14 +24,24 @@ static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::ne
 
 static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<ProcessData>>> = RwLock::new(WeakMap::new());
 
+/// Per-zombie data retained until `waitpid()` reaps the process.
+///
+/// - `proc`: keeps `getsid`, `getpgid`, `getpriority`, etc. working.
+/// - `cred`: snapshot of the exiting thread's final credentials, used by
+///   `check_kill_permission` when the task has already been GC'd.  On Linux
+///   the `task_struct` (and its `cred`) lives until the zombie is reaped;
+///   we replicate that guarantee here.
+struct ZombieEntry {
+    proc: Arc<Process>,
+    cred: Arc<Cred>,
+}
+
 /// Zombie processes: exited but not yet reaped by waitpid().
 ///
-/// Maps PID → `Arc<Process>` so that syscalls like `getsid`, `getpgid`, and
-/// `getpriority` can still return correct values for zombie PIDs.  The
-/// `Arc<Process>` is cloned from `thr.proc_data.proc` at `register_zombie`
-/// time and dropped when `unregister_zombie` is called after `waitpid` reaps
-/// the child.
-static ZOMBIE_PIDS: RwLock<alloc::collections::BTreeMap<Pid, Arc<Process>>> =
+/// Maps PID → [`ZombieEntry`].  Inserted by `register_zombie` (called from
+/// `do_exit` before `process.exit()`), removed by `unregister_zombie` (called
+/// from `waitpid` after `child.free()`).
+static ZOMBIE_TABLE: RwLock<alloc::collections::BTreeMap<Pid, ZombieEntry>> =
     RwLock::new(alloc::collections::BTreeMap::new());
 
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
@@ -119,23 +129,24 @@ pub fn remove_process(pid: Pid) {
 
 /// Records a PID as zombie (exited but not yet reaped).
 ///
-/// Called from `do_exit` after `process.exit()`.  Stores the `Arc<Process>`
-/// so that `getsid`, `getpgid`, and similar syscalls can still return correct
-/// values for zombie PIDs until `waitpid()` reaps them.
-pub fn register_zombie(pid: Pid, proc: Arc<Process>) {
-    ZOMBIE_PIDS.write().insert(pid, proc);
+/// Called from `do_exit` before `process.exit()`.  Stores both the
+/// `Arc<Process>` (for `getsid`/`getpgid`/etc.) and a snapshot of the
+/// exiting thread's final credentials (for `check_kill_permission` after
+/// the task has been GC'd).
+pub fn register_zombie(pid: Pid, proc: Arc<Process>, cred: Arc<Cred>) {
+    ZOMBIE_TABLE.write().insert(pid, ZombieEntry { proc, cred });
 }
 
-/// Removes a PID from the zombie map.
+/// Removes a PID from the zombie table.
 ///
-/// Called from `waitpid` after `child.free()`.  Drops the stored `Arc<Process>`.
+/// Called from `waitpid` after `child.free()`.  Drops the stored entry.
 pub fn unregister_zombie(pid: Pid) {
-    ZOMBIE_PIDS.write().remove(&pid);
+    ZOMBIE_TABLE.write().remove(&pid);
 }
 
 /// Returns `true` if `pid` is a zombie (exited but not yet reaped).
 pub fn is_zombie_pid(pid: Pid) -> bool {
-    ZOMBIE_PIDS.read().contains_key(&pid)
+    ZOMBIE_TABLE.read().contains_key(&pid)
 }
 
 /// Returns the `Arc<Process>` for a zombie PID, or `None` if not a zombie.
@@ -143,7 +154,16 @@ pub fn is_zombie_pid(pid: Pid) -> bool {
 /// Used by syscalls that must return valid data for zombie processes
 /// (e.g. `getsid`, `getpgid`).
 pub fn get_zombie_process(pid: Pid) -> Option<Arc<Process>> {
-    ZOMBIE_PIDS.read().get(&pid).cloned()
+    ZOMBIE_TABLE.read().get(&pid).map(|e| e.proc.clone())
+}
+
+/// Returns the credential snapshot for a zombie PID, or `None` if not a zombie.
+///
+/// Used by `check_kill_permission` to authorise signals to zombies whose
+/// task has already been GC'd.  Mirrors Linux behaviour where `task_struct`
+/// (and its `cred`) lives until the zombie is reaped by `waitpid`.
+pub fn get_zombie_cred(pid: Pid) -> Option<Arc<Cred>> {
+    ZOMBIE_TABLE.read().get(&pid).map(|e| e.cred.clone())
 }
 
 /// Finds the process group with the given PGID.
@@ -337,7 +357,12 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // then this thread would late-insert a stale zombie entry that is
         // never cleaned up.  By inserting first, any reap that sees
         // is_zombie=true is guaranteed to find (and remove) the entry.
-        register_zombie(process.pid(), process.clone());
+        //
+        // Snapshot the exiting thread's final credentials so that
+        // check_kill_permission can still authorise signals to this zombie
+        // after the task has been GC'd (mirrors Linux task_struct lifetime).
+        let zombie_cred = thr.cred();
+        register_zombie(process.pid(), process.clone(), zombie_cred);
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
