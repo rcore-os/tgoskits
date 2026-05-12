@@ -383,6 +383,58 @@ function ArchitectureSection() {
   );
 }
 
+function ComponentWorkspaceSection() {
+  const workspaceItems = [
+    {
+      title: '独立组件汇聚',
+      desc: 'components/ 下维护 60 多个可复用 crate，覆盖内存、调度、设备、虚拟化、文件系统、平台抽象等系统软件基础能力。',
+      tags: ['components/*', 'ax* crates', 'starry-*', 'arch backends'],
+    },
+    {
+      title: 'Subtree 同步工具',
+      desc: 'scripts/repo/repo.py 负责列出、拉取和推送组件仓库，让独立组件可以在统一工作区内集成验证后再同步回上游。',
+      tags: ['repo.py list', 'repo.py pull', 'repo.py push', 'repos.csv'],
+    },
+    {
+      title: '来源边界清晰',
+      desc: 'repos.csv 显式记录组件来源、目标路径、分类和分支信息，便于维护者判断哪些改动属于本仓库集成，哪些需要同步回组件仓库。',
+      tags: ['target_dir', 'category', 'branch', 'description'],
+    },
+  ];
+
+  return (
+    <SectionShell
+      id="component-workspace"
+      className="section-shell--component-workspace"
+      eyebrow="Component Workspace"
+      title="60 多个独立组件在一个工作区内集成、同步与来源管理"
+      description="TGOSKits 不只是普通 monorepo，而是通过 Git Subtree 管理独立组件仓库，用显式清单和维护脚本把组件来源、目标路径与同步动作收束到同一入口。"
+      framed={false}
+    >
+      <div className="workspace-grid">
+        {workspaceItems.map((item) => (
+          <article className="workspace-card" key={item.title}>
+            <h3>{item.title}</h3>
+            <p>{item.desc}</p>
+            <div className="workspace-tags">
+              {item.tags.map((tag) => (
+                <code key={tag}>{tag}</code>
+              ))}
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className="workspace-command-strip">
+        <code>python3 scripts/repo/repo.py list</code>
+        <span>查看组件仓库映射与同步状态</span>
+        <Link className="button button--outline button--hero button--compact" to="/docs/contributing/repo">
+          查看仓库维护说明
+        </Link>
+      </div>
+    </SectionShell>
+  );
+}
+
 function SystemsSection() {
   const systems = [
     {
@@ -499,9 +551,9 @@ function WorkflowSection() {
             ))}
           </div>
           <div className="command-board__links">
-            <Link to="/docs/build/overview">构建系统说明</Link>
+            <Link to="/docs/quickstart/overview">快速开始</Link>
             <Link to="/docs/build/test/overview">验证策略</Link>
-            <Link to="/docs/build/overview">构建流程</Link>
+            <Link to="/docs/contributing/repo">仓库维护</Link>
           </div>
         </div>
       </div>
@@ -827,12 +879,13 @@ export default function Home() {
       <HeroBanner />
       <CapabilitySection />
       <ArchitectureSection />
-      <PlatformSection />
+      <ComponentWorkspaceSection />
       <SystemsSection />
+      <PlatformSection />
       <DriverSection />
       <WorkflowSection />
-      <DocsSection />
       <QualitySection />
+      <DocsSection />
       <CTASection />
     </Layout>
   );

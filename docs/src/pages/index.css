@@ -317,6 +317,7 @@ html {
 .command-board,
 .docs-card,
 .quality-card,
+.workspace-card,
 .cta-panel,
 .system-card {
   border: 1px solid var(--home-panel-border);
@@ -664,6 +665,12 @@ html {
   padding: 0;
 }
 
+.section-shell--component-workspace {
+  background:
+    radial-gradient(circle at 12% 20%, rgba(20, 184, 166, 0.08), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 42%);
+}
+
 .section-shell--workflow {
   background:
     linear-gradient(180deg, rgba(56, 189, 248, 0.04), transparent 36%),
@@ -694,6 +701,84 @@ html {
 
 .feature-grid {
   grid-template-columns: repeat(3, minmax(280px, 1fr));
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.workspace-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 24px;
+  padding: 1.45rem;
+}
+
+.workspace-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  background: linear-gradient(90deg, var(--arch-accent-main), var(--arch-accent-alt));
+  opacity: 0.78;
+}
+
+.workspace-card h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1.08rem;
+}
+
+.workspace-card p {
+  margin: 0;
+  color: var(--home-text-soft);
+  line-height: 1.68;
+  font-size: 0.9rem;
+}
+
+.workspace-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 1.1rem;
+}
+
+.workspace-tags code {
+  padding: 0.3rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--arch-chip-border);
+  background: var(--arch-chip-bg);
+  color: var(--ifm-color-primary);
+  font-size: 0.72rem;
+}
+
+.workspace-command-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: 22px;
+  border: 1px solid var(--home-panel-border);
+  background: var(--home-panel-strong);
+  box-shadow: 0 10px 34px rgba(12, 18, 44, 0.06);
+}
+
+.workspace-command-strip code {
+  padding: 0.45rem 0.7rem;
+  border-radius: 12px;
+  background: rgba(11, 18, 36, 0.94);
+  color: #e2e8f0;
+  font-size: 0.78rem;
+}
+
+.workspace-command-strip span {
+  flex: 1;
+  min-width: 220px;
+  color: var(--home-text-soft);
+  font-size: 0.9rem;
 }
 
 .feature-card,
@@ -1580,7 +1665,8 @@ html {
   }
 
   .architecture-map,
-  .architecture-notes {
+  .architecture-notes,
+  .workspace-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1617,7 +1703,8 @@ html {
   .feature-grid,
   .systems-grid,
   .docs-grid,
-  .quality-grid {
+  .quality-grid,
+  .workspace-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1685,9 +1772,19 @@ html {
   .architecture-flow,
   .architecture-rail,
   .architecture-note,
+  .workspace-card,
   .command-board {
     padding: 1.25rem;
     border-radius: 22px;
+  }
+
+  .workspace-command-strip {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .workspace-command-strip span {
+    min-width: 0;
   }
 
   .platform-footer {
@@ -1755,6 +1852,16 @@ html[data-theme='dark'] .architecture-rail li {
 
 html[data-theme='dark'] .architecture-backbone span {
   color: rgba(153, 246, 228, 0.72);
+}
+
+html[data-theme='dark'] .workspace-card,
+html[data-theme='dark'] .workspace-command-strip {
+  background: rgba(13, 24, 39, 0.9);
+  border-color: rgba(94, 234, 212, 0.14);
+}
+
+html[data-theme='dark'] .workspace-tags code {
+  color: #99f6e4;
 }
 
 html[data-theme='dark'] .platform-chip--qemu {
