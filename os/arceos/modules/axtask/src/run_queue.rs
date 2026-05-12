@@ -437,6 +437,12 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
 
     /// Block the current task, put current task into the wait queue and reschedule.
     /// This is special just for future.
+    ///
+    /// Retained for future use when IRQ-driven wakeup is race-free (i.e. when
+    /// the timer waker can be guaranteed to fire only after the task is fully
+    /// in the blocked state). Currently unused because `block_on` uses
+    /// `yield_now()` to avoid the lost-wakeup race window.
+    #[allow(dead_code)]
     pub fn future_blocked_resched(&mut self, mut woke: SpinNoIrqGuard<'_, bool>) {
         let curr = &self.current_task;
         assert!(curr.is_running());

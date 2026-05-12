@@ -67,16 +67,20 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
     let mut cx = Context::from_waker(&waker);
 
     loop {
+        check_timer_events();
+
         match fut.as_mut().poll(&mut cx) {
             Poll::Pending => {
-                let mut rq = current_run_queue::<NoPreemptIrqSave>();
+                let rq = current_run_queue::<NoPreemptIrqSave>();
                 let mut woke = axwaker.woke.lock();
                 if !*woke {
-                    // blocked_resched() will set *woke = false and drop
-                    // the guard internally before rescheduling. When this
-                    // task is woken, woke will be set to true by the waker
-                    // and we'll re-enter the loop to poll again.
-                    rq.future_blocked_resched(woke);
+                    // woke is already false; reset explicitly to document
+                    // that each iteration starts with a clean slate, in case
+                    // a future refactor moves the branches around.
+                    *woke = false;
+                    drop(woke);
+                    drop(rq);
+                    crate::yield_now();
                 } else {
                     // ③ woke = true: waker fired between poll() returning
                     // Pending and us acquiring the lock.

@@ -80,10 +80,8 @@ percpu_static! {
     TIMER_RUNTIME: TimerRuntime = TimerRuntime::new(),
 }
 
-#[allow(dead_code)]
 pub(crate) fn check_timer_events() {
-    // SAFETY: only called in timer::check_events
-    unsafe { TIMER_RUNTIME.current_ref_mut_raw() }.wake();
+    with_current(|r| r.wake());
 }
 
 fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {

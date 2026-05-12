@@ -297,6 +297,11 @@ pub fn sys_rt_sigtimedwait(
     let old_blocked = signal.blocked();
     signal.set_blocked(old_blocked & !set);
 
+    // Mark this thread as being in sigwaitinfo with the specific signal set,
+    // so that send_signal does not drop the signal via is_ignore() when the
+    // thread is specifically waiting for it.
+    *signal.sigwait_set.lock() = Some(set);
+
     uctx.set_retval(-LinuxError::EINTR.code() as usize);
     let fut = poll_fn(|cx| {
         if let Some(sig) = signal.dequeue_signal(&set) {
@@ -312,13 +317,17 @@ pub fn sys_rt_sigtimedwait(
 
     let Ok(sig) = block_on(future::timeout(timeout, fut)) else {
         // Timeout
+        *signal.sigwait_set.lock() = None;
         signal.set_blocked(old_blocked);
         return Err(AxError::WouldBlock);
     };
     let Some(sig) = sig else {
         // Interrupted
+        *signal.sigwait_set.lock() = None;
         return Ok(0);
     };
+
+    *signal.sigwait_set.lock() = None;
 
     if let Some(info) = info.nullable() {
         info.vm_write(sig.0)?;
