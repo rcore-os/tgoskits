@@ -1,6 +1,6 @@
 # Architecture and platform resolving
 
-inspect_platform = $(shell $(AXPLAT_INSPECT) --package $(PLAT_PACKAGE))
+inspect_platform = $(shell $(AXPLAT_INSPECT) --manifest-dir "$(CARGO_MANIFEST_DIR)" --package $(PLAT_PACKAGE))
 inspect_value = $(strip $(patsubst $(1)=%,%,$(filter $(1)=%,$(platform_info))))
 
 config_value = $(strip $(shell $(AXCONFIG) "$(PLAT_CONFIG)" -r $(1)))

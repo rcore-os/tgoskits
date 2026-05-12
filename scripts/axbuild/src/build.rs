@@ -696,7 +696,15 @@ pub(crate) fn resolve_platform_config_by_package(
 ) -> anyhow::Result<ResolvedPlatformConfig> {
     let deps_metadata = workspace_metadata_with_deps()
         .context("failed to load dependency metadata for platform config resolution")?;
-    let config_path = resolve_platform_config_path(platform_package, metadata, &deps_metadata)?;
+    resolve_platform_config_by_package_with_metadata(platform_package, metadata, &deps_metadata)
+}
+
+pub(crate) fn resolve_platform_config_by_package_with_metadata(
+    platform_package: &str,
+    metadata: &Metadata,
+    deps_metadata: &Metadata,
+) -> anyhow::Result<ResolvedPlatformConfig> {
+    let config_path = resolve_platform_config_path(platform_package, metadata, deps_metadata)?;
     let name = read_platform_name(&config_path)
         .unwrap_or_else(|| linker_platform_name(platform_package).to_string());
     Ok(ResolvedPlatformConfig {

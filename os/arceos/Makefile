@@ -97,9 +97,11 @@ endif
 ifneq ($(wildcard $(APP)/Cargo.toml),)
   APP_TYPE := rust
   AX_LIB ?= ax-std
+  CARGO_MANIFEST_DIR := $(abspath $(APP))
 else
   APP_TYPE := c
   AX_LIB ?= ax-libc
+  CARGO_MANIFEST_DIR := $(CURDIR)
 endif
 
 .DEFAULT_GOAL := all

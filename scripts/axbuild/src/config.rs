@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use ax_config_gen::{
@@ -7,7 +7,10 @@ use ax_config_gen::{
 };
 use clap::{Args, Subcommand};
 
-use crate::build::{resolve_platform_config_by_package, workspace_metadata};
+use crate::build::{
+    resolve_platform_config_by_package, resolve_platform_config_by_package_with_metadata,
+    workspace_metadata,
+};
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -59,6 +62,9 @@ pub struct InspectArgs {
     /// Platform package name
     #[arg(long = "package", value_name = "PACKAGE")]
     package: String,
+    /// Directory containing the application Cargo.toml used for dependency lookup
+    #[arg(long = "manifest-dir", value_name = "DIR")]
+    manifest_dir: Option<PathBuf>,
     /// Optional explicit platform config path
     #[arg(long = "config", value_name = "PATH")]
     config: Option<PathBuf>,
@@ -130,8 +136,12 @@ fn inspect(args: InspectArgs) -> anyhow::Result<()> {
     let platform_config = match args.config {
         Some(path) => path,
         None => {
-            let metadata = workspace_metadata().context("failed to load workspace metadata")?;
-            resolve_platform_config_by_package(&args.package, &metadata)?.config_path
+            if let Some(manifest_dir) = args.manifest_dir.as_deref() {
+                resolve_platform_config_from_manifest_dir(&args.package, manifest_dir)?.config_path
+            } else {
+                let metadata = workspace_metadata().context("failed to load workspace metadata")?;
+                resolve_platform_config_by_package(&args.package, &metadata)?.config_path
+            }
         }
     };
     let config = load_config_specs(std::slice::from_ref(&platform_config)).with_context(|| {
@@ -168,6 +178,23 @@ fn inspect(args: InspectArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_platform_config_from_manifest_dir(
+    package: &str,
+    manifest_dir: &Path,
+) -> anyhow::Result<crate::build::ResolvedPlatformConfig> {
+    let manifest_path = manifest_dir.join("Cargo.toml");
+    let metadata = crate::context::workspace_metadata_root_manifest(&manifest_path)
+        .with_context(|| format!("failed to load metadata for {}", manifest_path.display()))?;
+    let deps_metadata = crate::context::workspace_metadata_root_manifest_with_deps(&manifest_path)
+        .with_context(|| {
+            format!(
+                "failed to load dependency metadata for {}",
+                manifest_path.display()
+            )
+        })?;
+    resolve_platform_config_by_package_with_metadata(package, &metadata, &deps_metadata)
 }
 
 fn shell_escape(value: &str) -> String {
