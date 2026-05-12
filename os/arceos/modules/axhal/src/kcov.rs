@@ -10,7 +10,6 @@ use core::arch::naked_asm;
 
 /// Recursion guard: nonzero while inside `kcov_trace_pc_impl`.
 /// Set/cleared by the trampoline asm before/after calling the implementation.
-#[unsafe(no_mangle)]
 static mut IN_KCOV_TRACE: u8 = 0;
 
 // Provided by the kernel crate (`starry_kernel::kcov`).
