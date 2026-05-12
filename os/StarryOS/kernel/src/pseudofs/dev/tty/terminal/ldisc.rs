@@ -92,9 +92,11 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         if self.clear_line_buf.swap(false, Ordering::Relaxed) {
             self.line_buf.clear();
         }
+        let mut progressed = false;
         if self.read_range.is_empty() {
             let read = self.reader.read(&mut self.read_buf);
             self.read_range = 0..read;
+            progressed |= read > 0;
         }
         let term = self.terminal.load_termios();
         let mut sent = 0;
@@ -117,6 +119,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
             }
             let mut ch = self.read_buf[self.read_range.start];
             self.read_range.start += 1;
+            progressed = true;
 
             if ch == b'\r' {
                 if term.has_iflag(IGNCR) {
@@ -176,7 +179,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
             }
         }
 
-        sent > 0
+        sent > 0 || progressed
     }
 
     fn check_send_signal(&self, term: &Termios2, ch: u8) -> bool {
@@ -445,5 +448,98 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         let read = self.buf_rx.pop_slice(buf);
         self.pump_retry.clone().wake();
         Ok(read)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{sync::Arc, vec::Vec};
+    use core::sync::atomic::AtomicBool;
+
+    use ringbuf::traits::{Observer, Split};
+
+    use super::{BUF_SIZE, InputReader, ReadBuf, TtyRead, TtyWrite};
+    use crate::pseudofs::dev::tty::terminal::Terminal;
+
+    struct MockReader {
+        data: Vec<u8>,
+        pos: usize,
+    }
+    impl MockReader {
+        fn new(data: Vec<u8>) -> Self {
+            Self { data, pos: 0 }
+        }
+    }
+    impl TtyRead for MockReader {
+        fn read(&mut self, buf: &mut [u8]) -> usize {
+            let remaining = &self.data[self.pos..];
+            let n = remaining.len().min(buf.len());
+            buf[..n].copy_from_slice(&remaining[..n]);
+            self.pos += n;
+            n
+        }
+    }
+
+    struct MockWriter;
+    impl TtyWrite for MockWriter {
+        fn write(&self, _buf: &[u8]) {}
+    }
+
+    fn make_reader(
+        data: Vec<u8>,
+    ) -> (
+        InputReader<MockReader, MockWriter>,
+        ringbuf::CachingCons<ReadBuf>,
+    ) {
+        let (buf_tx, buf_rx) = ReadBuf::default().split();
+        let reader = InputReader {
+            terminal: Arc::new(Terminal::default()),
+            reader: MockReader::new(data),
+            writer: MockWriter,
+            buf_tx,
+            read_buf: [0; BUF_SIZE],
+            read_range: 0..0,
+            line_buf: Vec::new(),
+            line_read: None,
+            eof_ready: Arc::new(AtomicBool::new(false)),
+            clear_line_buf: Arc::new(AtomicBool::new(false)),
+        };
+        (reader, buf_rx)
+    }
+
+    /// Regression test: a canonical-mode input longer than BUF_SIZE characters
+    /// (with no newline in the first chunk) must not stall drain_source_into_line_buffer.
+    ///
+    /// Before the fix, the function returned `sent > 0` which was false after the
+    /// first BUF_SIZE bytes were consumed into line_buf (no newline yet), causing
+    /// drive_input() to stop looping and the remaining input (including the newline)
+    /// to be silently dropped.  The board CI symptom was shell commands being
+    /// truncated to the first BUF_SIZE characters (e.g. "sleep 5; ..." → "leep 5; ...").
+    #[test]
+    fn canonical_long_line_drain_continues_past_buf_size() {
+        // BUF_SIZE ordinary chars followed by '\n' — total BUF_SIZE+1 bytes.
+        let mut data: Vec<u8> = (0..BUF_SIZE).map(|_| b'a').collect();
+        data.push(b'\n');
+
+        let (mut reader, mut rx) = make_reader(data);
+
+        // First drain: reads the BUF_SIZE 'a' bytes into line_buf; no newline yet,
+        // so nothing reaches buf_rx.  Must still return true (progress was made).
+        assert!(
+            reader.drain_source_into_line_buffer(),
+            "first drain must return true even though buf_rx is still empty"
+        );
+        assert_eq!(
+            rx.occupied_len(),
+            0,
+            "buf_rx must remain empty before the newline is processed"
+        );
+
+        // Second drain: reads the '\n', completes the line, flushes to buf_rx.
+        reader.drain_source_into_line_buffer();
+        assert!(
+            rx.occupied_len() > 0,
+            "buf_rx must contain data after the newline is processed"
+        );
     }
 }
