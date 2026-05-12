@@ -45,8 +45,8 @@ on:
       fetch_depth:
         description: Checkout fetch depth. Use 0 when the command needs full git history.
         required: false
-        type: number
-        default: 1
+        type: string
+        default: "1"
 
 jobs:
   run_host:
@@ -109,8 +109,6 @@ jobs:
         shell: bash
         run: |
           set -eux
-
-          missing=0
           for emulator in \
             qemu-aarch64-static \
             qemu-riscv64-static \
@@ -118,15 +116,10 @@ jobs:
             qemu-x86_64-static
           do
             if ! command -v "${emulator}" >/dev/null 2>&1; then
-              missing=1
-              break
+              echo "::error::${emulator} not found; rebuild the CI container image to include qemu-user-static"
+              exit 1
             fi
           done
-
-          if [ "${missing}" -eq 1 ]; then
-            apt-get update
-            apt-get install -y --no-install-recommends qemu-user-static
-          fi
 
       - name: Ensure musl cross toolchains
         shell: bash
