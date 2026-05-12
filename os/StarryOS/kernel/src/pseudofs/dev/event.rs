@@ -396,27 +396,40 @@ impl Pollable for EventDev {
 
 pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
     let mut inputs = DirMapping::new();
-    let mut input_id = 0;
+    let mut mice_alias: Option<Arc<EventDev>> = None;
     let input_devices = ax_input::take_inputs();
     let mut keys = [0; 0x300usize.div_ceil(8)];
     for (i, mut device) in input_devices.into_iter().enumerate() {
         assert!(device.get_event_bits(EventType::Key, &mut keys).unwrap());
 
+        const BTN_MOUSE: usize = 0x110;
+        let is_mouse = keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0;
+
+        let event_dev = Arc::new(EventDev::new(device));
         let dev = Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
-            DeviceId::new(13, (i + 1) as _),
-            Arc::new(EventDev::new(device)),
+            DeviceId::new(13, 64 + i as u32),
+            event_dev.clone(),
         );
+        inputs.add(format!("event{i}"), dev);
 
-        const BTN_MOUSE: usize = 0x110;
-        if keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0 {
-            // Mouse
-            inputs.add("mice", dev);
-        } else {
-            inputs.add(format!("event{input_id}"), dev);
-            input_id += 1;
+        if is_mouse && mice_alias.is_none() {
+            mice_alias = Some(event_dev);
         }
     }
+
+    if let Some(event_dev) = mice_alias {
+        inputs.add(
+            "mice",
+            Device::new(
+                fs,
+                NodeType::CharacterDevice,
+                DeviceId::new(13, 63),
+                event_dev,
+            ),
+        );
+    }
+
     inputs
 }
