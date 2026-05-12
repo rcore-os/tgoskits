@@ -1,5 +1,5 @@
 use ax_config_gen::{
-    GenerateOptions, OutputFormat, generate_config, load_config_specs, parse_config_read_arg,
+    GenerateOptions, OutputFormat, generate_config, load_config_state, parse_config_read_arg,
 };
 use clap::{
     Parser,
@@ -59,15 +59,23 @@ fn main() {
     let args = Args::parse();
 
     let specs = args.spec.iter().map(Into::into).collect::<Vec<_>>();
+    let options = GenerateOptions {
+        specs,
+        oldconfig: args.oldconfig.map(Into::into),
+        output: args.output.map(Into::into),
+        fmt: args.fmt,
+        writes: args.write,
+        keep_backup: true,
+    };
 
     if !args.read.is_empty() {
-        let config = unwrap!(load_config_specs(&specs));
+        let report = unwrap!(load_config_state(&options));
         for arg in &args.read {
             if args.verbose {
                 eprintln!("[DEBUG] Getting config item `{}`", arg);
             }
             let (table, key) = unwrap!(parse_config_read_arg(arg));
-            let item = unwrap!(config.config_at(&table, &key).ok_or_else(|| {
+            let item = unwrap!(report.config.config_at(&table, &key).ok_or_else(|| {
                 ax_config_gen::ConfigErr::Other(format!("Config item `{}` not found", arg))
             }));
             println!("{}", item.value().to_toml_value());
@@ -79,14 +87,6 @@ fn main() {
         return;
     }
 
-    let options = GenerateOptions {
-        specs,
-        oldconfig: args.oldconfig.map(Into::into),
-        output: args.output.map(Into::into),
-        fmt: args.fmt,
-        writes: args.write,
-        keep_backup: true,
-    };
     let report = unwrap!(generate_config(&options));
     for item in &report.untouched {
         eprintln!(

@@ -516,6 +516,11 @@ pub(crate) fn workspace_metadata() -> anyhow::Result<Metadata> {
     workspace_metadata_root_manifest(&manifest_path)
 }
 
+fn workspace_metadata_with_deps() -> anyhow::Result<Metadata> {
+    let manifest_path = workspace_manifest_path()?;
+    crate::context::workspace_metadata_root_manifest_with_deps(&manifest_path)
+}
+
 fn workspace_package<'a>(metadata: &'a Metadata, package: &str) -> anyhow::Result<&'a Package> {
     metadata
         .packages
@@ -689,7 +694,9 @@ pub(crate) fn resolve_platform_config_by_package(
     platform_package: &str,
     metadata: &Metadata,
 ) -> anyhow::Result<ResolvedPlatformConfig> {
-    let config_path = resolve_platform_config_path(platform_package, metadata)?;
+    let deps_metadata = workspace_metadata_with_deps()
+        .context("failed to load dependency metadata for platform config resolution")?;
+    let config_path = resolve_platform_config_path(platform_package, metadata, &deps_metadata)?;
     let name = read_platform_name(&config_path)
         .unwrap_or_else(|| linker_platform_name(platform_package).to_string());
     Ok(ResolvedPlatformConfig {
@@ -702,8 +709,12 @@ pub(crate) fn resolve_platform_config_by_package(
 pub(crate) fn resolve_platform_config_path(
     platform_package: &str,
     metadata: &Metadata,
+    deps_metadata: &Metadata,
 ) -> anyhow::Result<PathBuf> {
     if let Some(local_path) = find_local_platform_config_path(platform_package, metadata)? {
+        return Ok(local_path);
+    }
+    if let Some(local_path) = find_local_platform_config_path(platform_package, deps_metadata)? {
         return Ok(local_path);
     }
 
@@ -812,6 +823,10 @@ mod tests {
         workspace_metadata_root_manifest(manifest_path).unwrap()
     }
 
+    fn metadata_for_manifest_with_deps(manifest_path: &Path) -> cargo_metadata::Metadata {
+        crate::context::workspace_metadata_root_manifest_with_deps(manifest_path).unwrap()
+    }
+
     fn repo_metadata() -> cargo_metadata::Metadata {
         workspace_metadata().unwrap()
     }
@@ -841,6 +856,30 @@ mod tests {
         fs::write(app_dir.join("src/lib.rs"), "pub fn smoke() {}\n")?;
 
         Ok(root)
+    }
+
+    fn add_platform_package(
+        workspace: &Path,
+        package_name: &str,
+        config_package_name: &str,
+    ) -> anyhow::Result<()> {
+        let platform_dir = workspace.join("platform");
+        fs::create_dir_all(platform_dir.join("src"))?;
+        fs::write(
+            platform_dir.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+            ),
+        )?;
+        fs::write(platform_dir.join("src/lib.rs"), "")?;
+        fs::write(
+            platform_dir.join("axconfig.toml"),
+            format!(
+                "arch = \"aarch64\" # str\nplatform = \"custom-board\" # str\npackage = \
+                 \"{config_package_name}\" # str\n"
+            ),
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -880,8 +919,35 @@ mod tests {
     #[test]
     fn resolve_platform_config_path_uses_workspace_config() {
         let metadata = repo_metadata();
-        let path = resolve_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata).unwrap();
+        let deps_metadata = workspace_metadata_with_deps().unwrap();
+        let path =
+            resolve_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata, &deps_metadata)
+                .unwrap();
 
         assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
+    }
+
+    #[test]
+    fn resolve_platform_config_path_uses_dependency_config() {
+        let workspace = temp_workspace(
+            "custom-app",
+            "ax-plat-aarch64-custom = { path = \"../platform\" }\n",
+        )
+        .unwrap();
+        add_platform_package(
+            &workspace,
+            "ax-plat-aarch64-custom",
+            "ax-plat-aarch64-custom",
+        )
+        .unwrap();
+
+        let manifest_path = workspace.join("Cargo.toml");
+        let metadata = metadata_for_manifest(&manifest_path);
+        let deps_metadata = metadata_for_manifest_with_deps(&manifest_path);
+        let path =
+            resolve_platform_config_path("ax-plat-aarch64-custom", &metadata, &deps_metadata)
+                .unwrap();
+
+        assert!(path.ends_with("platform/axconfig.toml"));
     }
 }

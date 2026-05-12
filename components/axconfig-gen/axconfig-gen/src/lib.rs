@@ -104,6 +104,17 @@ pub struct GenerateReport {
     pub output: String,
 }
 
+/// Result of loading and updating config state before output generation.
+#[derive(Debug)]
+pub struct LoadReport {
+    /// Config after specs, old config, and write overrides have been applied.
+    pub config: Config,
+    /// Config items that were not present in the old config.
+    pub untouched: Vec<ConfigItem>,
+    /// Old config items that are not present in the specification.
+    pub extra: Vec<ConfigItem>,
+}
+
 /// Parse a config read argument in `key` or `table.key` form.
 pub fn parse_config_read_arg(arg: &str) -> ConfigResult<(String, String)> {
     if let Some((table, key)) = arg.split_once('.') {
@@ -171,8 +182,8 @@ pub fn apply_config_writes(config: &mut Config, writes: &[String]) -> ConfigResu
     Ok(())
 }
 
-/// Generate config output from specs, optional old config, and write overrides.
-pub fn generate_config(options: &GenerateOptions) -> ConfigResult<GenerateReport> {
+/// Load config state from specs, optional old config, and write overrides.
+pub fn load_config_state(options: &GenerateOptions) -> ConfigResult<LoadReport> {
     let mut config = load_config_specs(&options.specs)?;
     let (untouched, extra) = if let Some(oldconfig_path) = &options.oldconfig {
         let oldconfig = load_config(oldconfig_path)?;
@@ -182,6 +193,21 @@ pub fn generate_config(options: &GenerateOptions) -> ConfigResult<GenerateReport
     };
 
     apply_config_writes(&mut config, &options.writes)?;
+    Ok(LoadReport {
+        config,
+        untouched,
+        extra,
+    })
+}
+
+/// Generate config output from specs, optional old config, and write overrides.
+pub fn generate_config(options: &GenerateOptions) -> ConfigResult<GenerateReport> {
+    let report = load_config_state(options)?;
+    let LoadReport {
+        config,
+        untouched,
+        extra,
+    } = report;
     let output = config.dump(options.fmt.clone())?;
     if let Some(path) = options.output.as_deref() {
         write_config_output(path, &output, options.keep_backup)?;
