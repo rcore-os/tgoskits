@@ -101,6 +101,7 @@ members = [
     "components/riscv_vplic",
     "components/rsext4",
     "components/scope-local",
+    "components/dma-api",
     "components/starry-process",
     "components/starry-signal",
     "components/starry-vm",
@@ -110,6 +111,7 @@ members = [
     "components/page-table-generic",
     "components/someboot",
     "components/kernutil",
+    "components/mmio-api",
     "components/ranges-ext",
     "components/somehal-macros",
     "components/kasm-aarch64",
@@ -385,7 +387,9 @@ x86_vlapic = { version = "0.4.7", path = "components/x86_vlapic" }
 page-table-generic = { version = "0.7", path = "components/page-table-generic" }
 someboot = { version = "0.1", path = "components/someboot" }
 some-serial = { version = "0.4.1", path = "drivers/serial/some-serial" }
+dma-api = { version = "0.7.3", path = "components/dma-api" }
 kernutil = { path = "components/kernutil", version = "0.2" }
+mmio-api = { version = "0.2.2", path = "components/mmio-api" }
 ranges-ext = { version = "0.6", path = "components/ranges-ext" }
 somehal-macros = { path = "components/somehal-macros", version = "0.1" }
 kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2" }
@@ -406,8 +410,6 @@ event-listener = { version = "5.4.0", default-features = false }
 heapless = "0.9"
 schemars = "1.2.1"
 toml = "1"
-dma-api = { version = "0.7.2" }
-mmio-api = "0.2.1"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
