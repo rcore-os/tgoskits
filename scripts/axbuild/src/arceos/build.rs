@@ -13,7 +13,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
-    context::{ResolvedBuildRequest, workspace_manifest_path, workspace_metadata_root_manifest},
+    context::{
+        ResolvedBuildRequest, axbuild_tmp_dir, workspace_manifest_path,
+        workspace_metadata_root_manifest,
+    },
     support::process::ProcessExt,
 };
 
@@ -512,15 +515,15 @@ pub(crate) fn default_build_info_path_in_workspace(
     package: &str,
     target: &str,
 ) -> PathBuf {
-    workspace_root
-        .join("target/axbuild/config")
+    axbuild_tmp_dir(workspace_root)
+        .join("config")
         .join(package)
         .join(format!("build-{target}.toml"))
 }
 
 fn generated_axconfig_path(package: &str, target: &str) -> anyhow::Result<PathBuf> {
-    Ok(workspace_root_path()?
-        .join("target/axbuild/axconfig")
+    Ok(axbuild_tmp_dir(&workspace_root_path()?)
+        .join("axconfig")
         .join(package)
         .join(target)
         .join(".axconfig.toml"))
@@ -1082,7 +1085,7 @@ mod tests {
             .unwrap();
 
         assert!(path.ends_with(
-            "target/axbuild/config/ax-helloworld/build-aarch64-unknown-none-softfloat.toml"
+            "tmp/axbuild/config/ax-helloworld/build-aarch64-unknown-none-softfloat.toml"
         ));
     }
 

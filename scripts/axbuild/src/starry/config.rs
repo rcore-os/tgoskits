@@ -174,7 +174,7 @@ plat_dyn = false
         assert_eq!(
             path,
             root.path()
-                .join("target/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
+                .join("tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
         );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),

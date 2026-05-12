@@ -1,0 +1,68 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["embedded", "no-std"]
+description = "Sparreal OS kernel"
+edition.workspace = true
+keywords = ["os"]
+license = "MPL-2.0"
+name = "someboot"
+repository.workspace = true
+version = "0.1.14"
+
+[features]
+efi = []
+hv = []
+mmu = []
+percpu-prealloc = []
+uspace = ["mmu"]
+
+[dependencies]
+acpi = "6.0.1"
+aml = "0.16"
+ansi_rgb = "0.2"
+anyhow = { workspace = true, default-features = false }
+arrayvec = { version = "0.7", default-features = false }
+bit_field = "0.10"
+bitflags = "2.9"
+buddy_system_allocator = "0.12"
+byte-unit = { workspace = true }
+byteorder = { version = "1", default-features = false }
+fdt-edit.workspace = true
+fdt-raw.workspace = true
+thiserror.workspace = true
+heapless = "0.9"
+kernutil = { workspace = true }
+log = "0.4"
+num-align = "0.1"
+numeric-enum-macro = "0.2"
+page-table-generic = { workspace = true }
+ranges-ext = { workspace = true }
+rgb = "0.8"
+some-serial.workspace = true
+somehal-macros = { workspace = true }
+spin = "0.10"
+tock-registers.workspace = true
+uguid = "2.2.1"
+derive_more.workspace = true
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+loongArch64 = "0.2"
+uefi.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu = "11"
+aarch64-cpu-ext = "0.1"
+kasm-aarch64 = { workspace = true }
+smccc = "0.2"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+uefi.workspace = true
+x86 = "0.52"
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+sbi-rt = { version = "0.0.3", features = ["legacy"] }
+
+[build-dependencies]
+prettyplease = "0.2"
+quote = "1.0"
+syn = "2.0"

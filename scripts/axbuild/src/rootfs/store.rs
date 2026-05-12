@@ -3,7 +3,7 @@
 //! Main responsibilities:
 //! - Define default naming rules for workspace-managed rootfs images
 //! - Resolve user-facing `--rootfs` values into concrete image paths
-//! - Manage image files and cached archives under `target/rootfs/`
+//! - Manage image files and cached archives under `tmp/axbuild/rootfs/`
 //! - Download and extract rootfs archives on demand so images are available
 //!   locally
 
@@ -20,18 +20,12 @@ const TGOSIMAGES_ROOTFS_RELEASE: &str = "v0.0.5";
 
 /// Returns the default managed rootfs image filename for a given architecture.
 pub(crate) fn default_rootfs_image(arch: &str) -> Option<&'static str> {
-    match arch {
-        "aarch64" => Some("rootfs-aarch64-alpine.img"),
-        "riscv64" => Some("rootfs-riscv64-alpine.img"),
-        "x86_64" => Some("rootfs-x86_64-alpine.img"),
-        "loongarch64" => Some("rootfs-loongarch64-alpine.img"),
-        _ => None,
-    }
+    crate::context::default_rootfs_image_for_arch(arch)
 }
 
 /// Returns the workspace directory that stores managed rootfs images.
 pub(crate) fn rootfs_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("target").join("rootfs")
+    crate::context::axbuild_tmp_dir(workspace_root).join("rootfs")
 }
 
 /// Resolves a user-facing rootfs argument into a concrete image path.

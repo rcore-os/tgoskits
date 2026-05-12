@@ -107,6 +107,13 @@ members = [
     "components/timer_list",
     "components/x86_vcpu",
     "components/x86_vlapic",
+    "components/page-table-generic",
+    "components/someboot",
+    "components/kernutil",
+    "components/ranges-ext",
+    "components/somehal-macros",
+    "components/kasm-aarch64",
+
     "drivers/blk/simple-sdmmc",
     "drivers/npu/rockchip-npu",
     "drivers/pci/rk3588-pci",
@@ -147,6 +154,7 @@ members = [
     "os/arceos/ulib/axstd",
     "os/axvisor",
     "platform/axplat-dyn",
+    "platform/somehal",
     "platform/riscv64-qemu-virt",
     "platform/x86-qemu-q35",
     "scripts/axbuild",
@@ -317,7 +325,7 @@ rockchip-soc = { version = "0.1.1", path = "drivers/soc/rockchip/rockchip-soc" }
 rsext4 = { version = "0.3.7", path = "components/rsext4" }
 scope-local = { version = "0.3.6", path = "components/scope-local" }
 simple-sdmmc = { version = "0.1.1", path = "drivers/blk/simple-sdmmc" }
-smoltcp = { version = "0.13.0", default-features = false }
+smoltcp = { version = "0.13.1", default-features = false }
 smoltcp-fuzz = { version = "0.2.2", path = "components/starry-smoltcp/fuzz" }
 smp-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/smp-kernel" }
 starry-kernel = { version = "0.5.9", path = "os/StarryOS/kernel" }
@@ -331,9 +339,22 @@ test-weak-partial = { version = "0.3.4", path = "components/crate_interface/test
 tg-xtask = { version = "0.5.11", path = "xtask" }
 x86_vcpu = { version = "0.5.6", path = "components/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.4.7", path = "components/x86_vlapic" }
+page-table-generic = { version = "0.7", path = "components/page-table-generic" }
+someboot = { version = "0.1", path = "components/someboot" }
+kernutil = { path = "components/kernutil", version = "0.2" }
+ranges-ext = { version = "0.6", path = "components/ranges-ext" }
+somehal-macros = { path = "components/somehal-macros", version = "0.1" }
+kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2" }
+somehal = { version = "0.6", path = "platform/somehal" }
+
+rdif-intc = {  version = "0.14" }
+rdrive = { version = "0.20" }
+arm-gic-driver = { version = "0.17"  }
 
 # External crates
-anyhow = "1.0"
+anyhow = { version = "1.0", default-features = false }
+byte-unit = { version = "5", default-features = false, features = ["byte"] }
+derive_more = { version = "2.1", default-features = false, features = ["full"] }
 bindgen = "0.72"
 buddy-slab-allocator = "0.4"
 cfg-if = "1.0"
@@ -350,3 +371,10 @@ lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.10"
 ostool = { version = "0.15" }
+uefi = "0.36"
+fdt-edit = "0.2.3"
+fdt-raw = "0.3"
+some-serial = { version = "0.4.0" }
+thiserror = { version = "2", default-features = false }
+tock-registers = "0.10"
+x86 = "0.52"

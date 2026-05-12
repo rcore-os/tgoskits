@@ -22,10 +22,10 @@ rdif-base = "0.8"
 tock-registers = "0.10"
 
 [dev-dependencies]
-bare-test = "0.7"
+bare-test = "0.8"
 
 [build-dependencies]
-bare-test-macros = "0.2"
+bare-test-macros = "0.3"
 
 [[test]]
 harness = false
