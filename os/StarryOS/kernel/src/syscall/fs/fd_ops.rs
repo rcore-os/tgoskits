@@ -308,7 +308,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         }
         _ => {
             warn!("unsupported fcntl parameters: cmd: {cmd}");
-            Ok(0)
+            Err(AxError::InvalidInput)
         }
     }
 }
