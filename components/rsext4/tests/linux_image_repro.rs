@@ -266,6 +266,20 @@ fn inject_csum_v3_journal(image: &Path, target_blocks: &[u64], payload: &Path) {
     run_debugfs_script(image, &script, "inject csum-v3 journal");
 }
 
+fn dumpe2fs_header(image: &Path, context: &str) -> String {
+    let output = Command::new("dumpe2fs")
+        .arg("-h")
+        .arg(image)
+        .output()
+        .unwrap_or_else(|err| panic!("failed to spawn dumpe2fs for {context}: {err}"));
+    assert!(
+        output.status.success(),
+        "dumpe2fs failed for {context}\n{}",
+        command_text(&output)
+    );
+    command_text(&output)
+}
+
 fn repair_baseline_image(path: &PathBuf) {
     let probe = Command::new("e2fsck")
         .args(["-fn"])
@@ -349,6 +363,11 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
     );
     read_image_blocks(&mutated, &changed_blocks, &payload);
     inject_csum_v3_journal(&image, &changed_blocks, &payload);
+    let dirty_header = dumpe2fs_header(&image, "pending journal fixture");
+    assert!(
+        dirty_header.contains("needs_recovery"),
+        "debugfs journal fixture should require recovery\n{dirty_header}"
+    );
 
     fs::copy(&image, &baseline).expect("copy baseline image");
     run_debugfs_script(
@@ -369,6 +388,11 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
 
     assert_debugfs_path_exists(&image, "/replay-repro/a");
     assert_debugfs_path_exists(&image, "/replay-repro/b");
+    let recovered_header = dumpe2fs_header(&image, "rsext4 journal replay");
+    assert!(
+        !recovered_header.contains("needs_recovery"),
+        "rsext4 should clear needs_recovery after successful replay\n{recovered_header}"
+    );
     e2fsck_readonly_clean(&image, "rsext4 csum-v3 journal replay");
     fs::remove_dir_all(temp_dir).expect("remove temp dir");
 }

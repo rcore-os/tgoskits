@@ -1,0 +1,15 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["embedded", "no-std"]
+description = "Driver Interface net definition."
+edition.workspace = true
+keywords = ["os", "driver"]
+license = "MIT"
+name = "rdif-eth"
+repository.workspace = true
+version = "0.2.1"
+
+[dependencies]
+dma-api = { workspace = true }
+rdif-base = { workspace = true }
+thiserror = { version = "2", default-features = false }
