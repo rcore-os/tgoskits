@@ -97,6 +97,14 @@ jobs:
         with:
           fetch-depth: ${{ inputs.fetch_depth }}
 
+      - name: Show checkout state
+        shell: bash
+        run: |
+          set -eux
+          command -v git
+          git rev-parse --show-toplevel
+          git rev-parse --is-inside-work-tree
+
       - name: Ensure qemu user emulators
         shell: bash
         run: |
