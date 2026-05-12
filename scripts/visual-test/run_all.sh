@@ -27,7 +27,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$ARCH" ]] || { echo "--arch required" >&2; exit 2; }
 
-REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 SCENARIO_ROOT="$REPO_ROOT/test-suit/starryos/visual"
 
 # Ensure the kernel + rootfs the scenarios depend on actually exist. If
