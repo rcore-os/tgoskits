@@ -23,6 +23,17 @@
   --system-accent-axvisor: #14b8a6;
   --workflow-accent-1: #38bdf8;
   --workflow-accent-2: #6366f1;
+  --arch-accent-main: #0f766e;
+  --arch-accent-soft: #0ea5a3;
+  --arch-accent-alt: #2563eb;
+  --arch-section-glow-1: rgba(20, 184, 166, 0.1);
+  --arch-section-glow-2: rgba(37, 99, 235, 0.07);
+  --arch-surface: rgba(255, 255, 255, 0.9);
+  --arch-layer-bg: rgba(255, 255, 255, 0.58);
+  --arch-chip-bg: rgba(255, 255, 255, 0.68);
+  --arch-chip-border: rgba(15, 118, 110, 0.16);
+  --arch-rail-bg: rgba(255, 255, 255, 0.72);
+  --arch-line: rgba(15, 118, 110, 0.56);
 
   --platform-chip-qemu-bg: rgba(255, 255, 255, 0.34);
   --platform-chip-qemu-hover: rgba(59, 130, 246, 0.06);
@@ -56,6 +67,17 @@ html[data-theme='dark'] {
   --system-accent-axvisor: #2dd4bf;
   --workflow-accent-1: #38bdf8;
   --workflow-accent-2: #818cf8;
+  --arch-accent-main: #5eead4;
+  --arch-accent-soft: #2dd4bf;
+  --arch-accent-alt: #93c5fd;
+  --arch-section-glow-1: rgba(45, 212, 191, 0.12);
+  --arch-section-glow-2: rgba(96, 165, 250, 0.1);
+  --arch-surface: rgba(9, 18, 31, 0.92);
+  --arch-layer-bg: rgba(17, 31, 47, 0.9);
+  --arch-chip-bg: rgba(20, 184, 166, 0.12);
+  --arch-chip-border: rgba(94, 234, 212, 0.24);
+  --arch-rail-bg: rgba(13, 24, 39, 0.9);
+  --arch-line: rgba(94, 234, 212, 0.58);
 
   --platform-chip-qemu-bg: rgba(255, 255, 255, 0.06);
   --platform-chip-qemu-hover: rgba(59, 130, 246, 0.1);
@@ -187,7 +209,7 @@ html {
 
 .lead,
 .section-header p,
-.narrative-card p,
+.architecture-note p,
 .workflow-card p,
 .command-board p,
 .docs-card p,
@@ -206,8 +228,7 @@ html {
 }
 
 .hero-actions,
-.cta-actions,
-.narrative-actions {
+.cta-actions {
   display: flex;
   gap: 1rem;
   flex-wrap: wrap;
@@ -296,8 +317,6 @@ html {
 .command-board,
 .docs-card,
 .quality-card,
-.narrative-card,
-.stack-visual,
 .cta-panel,
 .system-card {
   border: 1px solid var(--home-panel-border);
@@ -499,8 +518,142 @@ html {
 
 .section-shell--architecture {
   background:
-    radial-gradient(circle at 15% 20%, rgba(95, 107, 255, 0.1), transparent 24%),
-    radial-gradient(circle at 85% 80%, rgba(167, 139, 250, 0.1), transparent 26%);
+    radial-gradient(circle at 15% 20%, var(--arch-section-glow-1), transparent 24%),
+    radial-gradient(circle at 85% 80%, var(--arch-section-glow-2), transparent 26%);
+}
+
+.architecture-map {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.78fr) minmax(520px, 1.9fr) minmax(190px, 0.78fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.architecture-flow,
+.architecture-rail,
+.architecture-note {
+  border: 1px solid var(--home-panel-border);
+  background: var(--arch-surface);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 10px 40px rgba(12, 18, 44, 0.06);
+}
+
+.architecture-flow {
+  position: relative;
+  display: grid;
+  gap: 0.85rem;
+  padding: 1.35rem;
+  border-radius: 30px;
+  overflow: hidden;
+}
+
+.architecture-layer {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.42fr) minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: center;
+  padding: 1rem 1.05rem;
+  border-radius: 22px;
+  border: 1px solid var(--home-panel-border);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--arch-accent-main) calc(7% + var(--layer-index, 0) * 2%), transparent), color-mix(in srgb, var(--arch-accent-alt) 8%, transparent)),
+    var(--arch-layer-bg);
+}
+
+.architecture-layer__label {
+  color: var(--arch-accent-main);
+  font-weight: 800;
+  font-size: 0.98rem;
+}
+
+.architecture-layer__items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.architecture-layer__items span {
+  padding: 0.38rem 0.62rem;
+  border-radius: 999px;
+  border: 1px solid var(--arch-chip-border);
+  background: var(--arch-chip-bg);
+  color: var(--home-text-soft);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.architecture-backbone {
+  display: flex;
+  justify-content: center;
+  padding: 0.3rem 0 0;
+}
+
+.architecture-backbone span {
+  color: var(--home-text-soft);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.architecture-rail {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border-radius: 26px;
+  padding: 1.25rem;
+}
+
+.architecture-rail h3,
+.architecture-note h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 750;
+}
+
+.architecture-rail ul {
+  display: grid;
+  gap: 0.55rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.architecture-rail li {
+  padding: 0.58rem 0.7rem;
+  border-radius: 14px;
+  border: 1px solid var(--home-panel-border);
+  background: var(--arch-rail-bg);
+  color: var(--home-text-soft);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem;
+}
+
+.architecture-rail--left {
+  border-left: 4px solid var(--arch-accent-main);
+}
+
+.architecture-rail--right {
+  border-right: 4px solid var(--arch-accent-alt);
+}
+
+.architecture-notes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.architecture-note {
+  border-radius: 24px;
+  padding: 1.25rem;
+}
+
+.architecture-note p {
+  margin: 0;
+  font-size: 0.88rem;
 }
 
 .section-shell--systems .section-shell__surface--open {
@@ -599,7 +752,6 @@ html {
 .workflow-card h3,
 .docs-card h3,
 .quality-card h3,
-.narrative-card h3,
 .command-board h3 {
   margin: 0 0 0.7rem;
   font-size: 1.16rem;
@@ -619,78 +771,13 @@ html {
   align-items: stretch;
 }
 
-.split-layout--architecture {
-  grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
-}
-
 .split-layout--workflow {
   grid-template-columns: minmax(0, 1.12fr) minmax(340px, 0.88fr);
 }
 
-.narrative-card,
-.stack-visual,
 .command-board {
   border-radius: 28px;
   padding: 1.8rem;
-}
-
-.metric-strip {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.9rem;
-  margin-top: 1.4rem;
-}
-
-.metric-chip {
-  padding: 1rem 1.05rem;
-  border-radius: 18px;
-  border: 1px solid var(--home-panel-border);
-  background: rgba(255, 255, 255, 0.38);
-}
-
-.metric-chip strong {
-  display: block;
-  margin-bottom: 0.32rem;
-  font-size: 1rem;
-}
-
-.metric-chip span {
-  color: var(--home-text-soft);
-  font-size: 0.88rem;
-}
-
-.narrative-actions {
-  margin-top: 1.5rem;
-}
-
-.stack-visual {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 0.9rem;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.18)),
-    var(--home-panel);
-}
-
-.stack-layer {
-  padding: 1.15rem 1.2rem;
-  border-radius: 20px;
-  border: 1px solid var(--home-panel-border);
-  background:
-    linear-gradient(135deg, rgba(95, 107, 255, calc(0.08 + var(--stack-index, 0) * 0.01)), rgba(127, 224, 255, 0.08)),
-    rgba(255, 255, 255, 0.35);
-}
-
-.stack-layer strong {
-  display: block;
-  margin-bottom: 0.28rem;
-  font-size: 1rem;
-}
-
-.stack-layer span {
-  color: var(--home-text-soft);
-  font-size: 0.9rem;
 }
 
 .systems-grid {
@@ -1463,9 +1550,13 @@ html {
 
 @media (max-width: 1120px) {
   .hero-content,
-  .split-layout--architecture,
   .split-layout--workflow,
   .split-layout--drivers {
+    grid-template-columns: 1fr;
+  }
+
+  .architecture-map,
+  .architecture-notes {
     grid-template-columns: 1fr;
   }
 
@@ -1535,10 +1626,6 @@ html {
     justify-content: center;
   }
 
-  .metric-strip {
-    grid-template-columns: 1fr;
-  }
-
   .hero-quicklinks {
     width: 100%;
   }
@@ -1550,8 +1637,7 @@ html {
   }
 
   .hero-actions,
-  .cta-actions,
-  .narrative-actions {
+  .cta-actions {
     width: 100%;
   }
 
@@ -1572,8 +1658,9 @@ html {
   .feature-card,
   .docs-card,
   .quality-card,
-  .narrative-card,
-  .stack-visual,
+  .architecture-flow,
+  .architecture-rail,
+  .architecture-note,
   .command-board {
     padding: 1.25rem;
     border-radius: 22px;
@@ -1592,6 +1679,15 @@ html {
   .driver-device-card {
     flex-direction: column;
     gap: 0.65rem;
+  }
+
+  .architecture-layer {
+    grid-template-columns: 1fr;
+    gap: 0.65rem;
+  }
+
+  .architecture-layer__items span {
+    max-width: 100%;
   }
 }
 
@@ -1614,8 +1710,28 @@ html {
 }
 
 /* ============================================================
-   Dark-theme overrides for Platform & Driver sections
+   Dark-theme overrides for Architecture, Platform & Driver sections
    ============================================================ */
+
+html[data-theme='dark'] .architecture-flow,
+html[data-theme='dark'] .architecture-rail,
+html[data-theme='dark'] .architecture-note {
+  border-color: rgba(94, 234, 212, 0.14);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.3);
+}
+
+html[data-theme='dark'] .architecture-layer {
+  border-color: rgba(94, 234, 212, 0.16);
+}
+
+html[data-theme='dark'] .architecture-layer__items span,
+html[data-theme='dark'] .architecture-rail li {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+html[data-theme='dark'] .architecture-backbone span {
+  color: rgba(153, 246, 228, 0.72);
+}
 
 html[data-theme='dark'] .platform-chip--qemu {
   background: rgba(255, 255, 255, 0.05);
