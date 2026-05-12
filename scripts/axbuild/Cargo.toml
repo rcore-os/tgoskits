@@ -44,7 +44,7 @@ walkdir = "2"
 
 [features]
 clap = ["dep:clap", "dep:tokio"]
-cli = ["clap"]
+cli = ["dep:clap", "tokio"]
 default = ["cli"]
 tokio = ["dep:tokio", "dep:clap"]
 

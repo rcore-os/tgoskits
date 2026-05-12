@@ -101,12 +101,13 @@ impl AddrSpace {
     ///
     /// Returns an error if the address range is out of the address space or not
     /// aligned.
-    pub fn map_linear(
+    fn map_linear_with_overlap(
         &mut self,
         start_vaddr: VirtAddr,
         start_paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
+        unmap_overlap: bool,
     ) -> AxResult {
         if !self.contains_range(start_vaddr, size) {
             return ax_err!(InvalidInput, "address out of range");
@@ -117,8 +118,32 @@ impl AddrSpace {
 
         let offset = start_vaddr.as_usize() - start_paddr.as_usize();
         let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
-        self.areas.map(area, &mut self.pt, false)?;
+        self.areas.map(area, &mut self.pt, unmap_overlap)?;
         Ok(())
+    }
+
+    pub fn map_linear(
+        &mut self,
+        start_vaddr: VirtAddr,
+        start_paddr: PhysAddr,
+        size: usize,
+        flags: MappingFlags,
+    ) -> AxResult {
+        self.map_linear_with_overlap(start_vaddr, start_paddr, size, flags, false)
+    }
+
+    /// Add or replace a linear mapping.
+    ///
+    /// This is intended for idempotent kernel MMIO mappings where multiple
+    /// device-tree resources may describe overlapping syscon windows.
+    pub fn map_linear_overwrite(
+        &mut self,
+        start_vaddr: VirtAddr,
+        start_paddr: PhysAddr,
+        size: usize,
+        flags: MappingFlags,
+    ) -> AxResult {
+        self.map_linear_with_overlap(start_vaddr, start_paddr, size, flags, true)
     }
 
     /// Add a new allocation mapping.

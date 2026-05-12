@@ -197,6 +197,41 @@ static int check_bytes(const unsigned char *actual, const unsigned char *expecte
     return 0;
 }
 
+static void fill_arp_request(unsigned char request[28], const unsigned char sender_hw[ETH_ALEN],
+                             const unsigned char sender_ip[4], const unsigned char target_ip[4])
+{
+    memset(request, 0, 28);
+    request[0] = 0x00;
+    request[1] = 0x01;
+    request[2] = 0x08;
+    request[3] = 0x00;
+    request[4] = ETH_ALEN;
+    request[5] = 4;
+    request[6] = 0x00;
+    request[7] = 0x01;
+    memcpy(&request[8], sender_hw, ETH_ALEN);
+    memcpy(&request[14], sender_ip, 4);
+    memcpy(&request[24], target_ip, 4);
+}
+
+static int expect_no_packet(int fd, const char *message)
+{
+    unsigned char reply[64];
+    struct sockaddr_ll from;
+    socklen_t from_len = sizeof(from);
+    errno = 0;
+    ssize_t got = recvfrom(fd, reply, sizeof(reply), 0, (struct sockaddr *)&from, &from_len);
+    if (got >= 0) {
+        printf("FAIL: %s unexpectedly received %zd bytes\n", message, got);
+        return 1;
+    }
+    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        printf("FAIL: %s errno=%d (%s)\n", message, errno, strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
 int main(void)
 {
     printf("=== bug-packet-arping ===\n");
@@ -264,36 +299,23 @@ int main(void)
         return 1;
     }
 
-    unsigned char request[28] = {0};
-    request[0] = 0x00;
-    request[1] = 0x01;
-    request[2] = 0x08;
-    request[3] = 0x00;
-    request[4] = ETH_ALEN;
-    request[5] = 4;
-    request[6] = 0x00;
-    request[7] = 0x01;
-    memcpy(&request[8], local.sll_addr, ETH_ALEN);
-    request[14] = 10;
-    request[15] = 0;
-    request[16] = 2;
-    request[17] = 15;
-    memset(&request[18], 0xff, ETH_ALEN);
-    request[24] = 127;
-    request[25] = 0;
-    request[26] = 0;
-    request[27] = 1;
-
-    struct sockaddr_ll peer = local;
-    memset(peer.sll_addr, 0xff, ETH_ALEN);
-    ssize_t sent = sendto(fd, request, sizeof(request), 0, (struct sockaddr *)&peer, sizeof(peer));
-    if (check(sent == (ssize_t)sizeof(request), "sendto AF_PACKET ARP request")) {
+    int nonblock = 1;
+    if (check(ioctl(fd, FIONBIO, &nonblock) == 0, "FIONBIO packet socket")) {
         close(fd);
         return 1;
     }
 
-    int nonblock = 1;
-    if (check(ioctl(fd, FIONBIO, &nonblock) == 0, "FIONBIO packet socket")) {
+    const unsigned char eth0_ip[4] = {10, 0, 2, 15};
+    const unsigned char gateway_ip[4] = {10, 0, 2, 2};
+    const unsigned char loopback_ip[4] = {127, 0, 0, 1};
+    const unsigned char unknown_ip[4] = {10, 0, 2, 254};
+    unsigned char request[28];
+    fill_arp_request(request, local.sll_addr, eth0_ip, gateway_ip);
+
+    struct sockaddr_ll peer = local;
+    memset(peer.sll_addr, 0xff, ETH_ALEN);
+    ssize_t sent = sendto(fd, request, sizeof(request), 0, (struct sockaddr *)&peer, sizeof(peer));
+    if (check(sent == (ssize_t)sizeof(request), "sendto AF_PACKET ARP request for modeled gateway")) {
         close(fd);
         return 1;
     }
@@ -302,7 +324,7 @@ int main(void)
     struct sockaddr_ll from;
     socklen_t from_len = sizeof(from);
     ssize_t got = recvfrom(fd, reply, sizeof(reply), 0, (struct sockaddr *)&from, &from_len);
-    if (check(got >= 28, "synthetic AF_PACKET ARP reply")) {
+    if (check(got >= 28, "modeled gateway AF_PACKET ARP reply")) {
         close(fd);
         return 1;
     }
@@ -315,7 +337,7 @@ int main(void)
         close(fd);
         return 1;
     }
-    if (check_bytes(&reply[14], &request[24], 4, "ARP reply sender protocol address")) {
+    if (check_bytes(&reply[14], gateway_ip, 4, "ARP reply sender protocol address")) {
         close(fd);
         return 1;
     }
@@ -332,8 +354,30 @@ int main(void)
         return 1;
     }
 
+    fill_arp_request(request, local.sll_addr, eth0_ip, loopback_ip);
+    sent = sendto(fd, request, sizeof(request), 0, (struct sockaddr *)&peer, sizeof(peer));
+    if (check(sent == (ssize_t)sizeof(request), "sendto AF_PACKET ARP request for loopback")) {
+        close(fd);
+        return 1;
+    }
+    if (expect_no_packet(fd, "loopback ARP target must not receive a reply")) {
+        close(fd);
+        return 1;
+    }
+
+    fill_arp_request(request, local.sll_addr, eth0_ip, unknown_ip);
+    sent = sendto(fd, request, sizeof(request), 0, (struct sockaddr *)&peer, sizeof(peer));
+    if (check(sent == (ssize_t)sizeof(request), "sendto AF_PACKET ARP request for unknown peer")) {
+        close(fd);
+        return 1;
+    }
+    if (expect_no_packet(fd, "unknown ARP target must not receive a reply")) {
+        close(fd);
+        return 1;
+    }
+
     close(fd);
-    printf("packet ARP socket returned a synthetic reply\n");
+    printf("packet ARP socket only models the configured gateway peer\n");
     printf("TEST PASSED\n");
     return 0;
 }
