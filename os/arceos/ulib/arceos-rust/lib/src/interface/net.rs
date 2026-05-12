@@ -30,7 +30,7 @@ pub fn sys_getaddrinfo(
         nodename, servname
     );
     let result = unsafe { ax_posix_api::sys_getaddrinfo(nodename, servname, hints, res) };
-    if result > 0 {
+    if result >= 0 {
         // hermit expected us to return 0 if success
         0
     } else {

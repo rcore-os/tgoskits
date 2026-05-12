@@ -9,7 +9,7 @@ description = "Arceos ABI definitions"
 license.workspace = true
 
 [lib]
-crate-type = ["staticlib"]
+crate-type = ["staticlib", "rlib"]
 
 [features]
 default = [
@@ -20,7 +20,7 @@ default = [
 ]
 
 # Multicore
-smp = ["ax-feat/smp", "kspin/smp"]
+smp = ["ax-feat/smp", "ax-kspin/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-feat/fp-simd"]
@@ -87,6 +87,6 @@ ax-api = { workspace = true, features = ["alloc"] }
 ax-runtime = { workspace = true }
 ax-errno = { workspace = true }
 ax-io = { workspace = true }
-kspin = "0.1"
-rand = { version = "0.9.2", default-features = false, features = ["small_rng"] }
-log = "0.4.29"
+ax-kspin = { workspace = true }
+rand = { workspace = true, features = ["small_rng"] }
+log = { workspace = true }

@@ -363,6 +363,9 @@ dependencies = [
 [[package]]
 name = "arceos-rust"
 version = "0.1.0"
+dependencies = [
+ "arceos-rust-interface",
+]
 
 [[package]]
 name = "arceos-rust-interface"
@@ -372,9 +375,9 @@ dependencies = [
  "ax-errno",
  "ax-feat",
  "ax-io",
+ "ax-kspin",
  "ax-posix-api",
  "ax-runtime",
- "kspin",
  "log",
  "rand 0.9.4",
 ]

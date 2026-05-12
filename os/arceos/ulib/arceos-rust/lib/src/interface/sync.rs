@@ -1,9 +1,9 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::time::Duration;
 
-use ax_api::modules::{ax_sync::Mutex, ax_task::WaitQueue};
+use ax_api::modules::{ax_hal::time::monotonic_time, ax_sync::Mutex, ax_task::WaitQueue};
 use ax_errno::LinuxError;
-use ax_posix_api::ctypes::timespec;
+use ax_posix_api::ctypes::{FUTEX_RELATIVE_TIMEOUT, timespec};
 use log::{info, trace};
 
 fn err(error: LinuxError) -> i32 {
@@ -26,8 +26,11 @@ pub fn sys_futex_wait(
     address: *mut u32,
     expected: u32,
     timeout: *const timespec,
-    _flags: u32,
+    flags: u32,
 ) -> i32 {
+    if flags & !FUTEX_RELATIVE_TIMEOUT != 0 {
+        return err(LinuxError::EINVAL);
+    }
     let Some(value) = (unsafe { address.as_ref() }) else {
         return err(LinuxError::EINVAL);
     };
@@ -47,13 +50,18 @@ pub fn sys_futex_wait(
     );
     if let Some(timeout) = unsafe { timeout.as_ref() } {
         trace!("called sys_futex_wait with timeout: {:?}", timeout);
-        let Ok(secs) = timeout.tv_sec.try_into() else {
+        let Some(timeout) = timespec_to_duration(timeout) else {
             return err(LinuxError::EINVAL);
         };
-        let Ok(nanos) = timeout.tv_nsec.try_into() else {
-            return err(LinuxError::EINVAL);
+        let duration = if flags & FUTEX_RELATIVE_TIMEOUT != 0 {
+            timeout
+        } else {
+            let now = monotonic_time();
+            let Some(duration) = timeout.checked_sub(now) else {
+                return err(LinuxError::ETIMEDOUT);
+            };
+            duration
         };
-        let duration = Duration::new(secs, nanos);
         if wait_queue.wait_timeout(duration) {
             // timeout
             return err(LinuxError::ETIMEDOUT);
@@ -63,6 +71,16 @@ pub fn sys_futex_wait(
         wait_queue.wait();
     }
     0
+}
+
+fn timespec_to_duration(timeout: &timespec) -> Option<Duration> {
+    if !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+        return None;
+    }
+    Some(Duration::new(
+        timeout.tv_sec.try_into().ok()?,
+        timeout.tv_nsec.try_into().ok()?,
+    ))
 }
 
 /// Wake `count` threads waiting on the futex at `address`. Returns the number of threads

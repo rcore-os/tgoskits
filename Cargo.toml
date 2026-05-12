@@ -381,6 +381,7 @@ lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.10"
 ostool = { version = "0.15" }
+rand = { version = "0.9", default-features = false }
 uefi = "0.36"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
