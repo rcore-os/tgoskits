@@ -13,12 +13,24 @@ use crate::support::process::run_cargo_status;
 const CLIPPY_CRATES_CSV: &str = "scripts/test/clippy_crates.csv";
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {
+    validate_clippy_args(args)?;
     let workspace_manifest = crate::context::workspace_manifest_path()?;
-    let metadata = crate::context::workspace_metadata_root_manifest(&workspace_manifest)
-        .context("failed to load cargo metadata")?;
+    let metadata = if args.since.is_some() && args.packages.is_empty() && !args.all {
+        crate::context::workspace_metadata_root_manifest_with_deps(&workspace_manifest)
+    } else {
+        crate::context::workspace_metadata_root_manifest(&workspace_manifest)
+    }
+    .context("failed to load cargo metadata")?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
     let all_packages = workspace_packages(&metadata);
-    let packages = resolve_requested_packages(args, &workspace_root, &all_packages)?;
+    let packages = resolve_requested_packages(args, &workspace_root, &metadata, &all_packages)?;
+    if packages.is_empty() {
+        println!(
+            "no clippy packages selected from {}; skipping",
+            workspace_root.display()
+        );
+        return Ok(());
+    }
     let checks = expand_clippy_checks(&packages);
 
     println!(
@@ -44,6 +56,16 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
     )
 }
 
+fn validate_clippy_args(args: &crate::ClippyArgs) -> anyhow::Result<()> {
+    if args.since.is_some() && !args.packages.is_empty() {
+        bail!("`--since` cannot be combined with `--package`; choose one package selection mode");
+    }
+    if args.since.is_some() && args.all {
+        bail!("`--since` cannot be combined with `--all`; choose one package selection mode");
+    }
+    Ok(())
+}
+
 fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
     let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
     let mut packages: Vec<_> = metadata
@@ -59,6 +81,7 @@ fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
 fn resolve_requested_packages(
     args: &crate::ClippyArgs,
     workspace_root: &Path,
+    metadata: &Metadata,
     all_packages: &[Package],
 ) -> anyhow::Result<Vec<Package>> {
     let package_lookup: HashMap<_, _> = all_packages
@@ -74,6 +97,30 @@ fn resolve_requested_packages(
             .iter()
             .map(|pkg| pkg.name.to_string())
             .collect()
+    } else if let Some(since) = args.since.as_deref() {
+        let csv_path = workspace_root.join(CLIPPY_CRATES_CSV);
+        let whitelist = load_clippy_crates(&csv_path, &known_packages)?;
+        match crate::support::git::select_incremental_packages(
+            workspace_root,
+            metadata,
+            all_packages,
+            since,
+            &whitelist,
+        )? {
+            crate::support::git::IncrementalPackageSelection::Packages(packages) => {
+                println!(
+                    "incremental clippy since `{since}` selected {} package(s)",
+                    packages.len()
+                );
+                packages
+            }
+            crate::support::git::IncrementalPackageSelection::Full { reason } => {
+                println!(
+                    "incremental clippy since `{since}` fell back to full whitelist: {reason}"
+                );
+                whitelist
+            }
+        }
     } else {
         let csv_path = workspace_root.join(CLIPPY_CRATES_CSV);
         load_clippy_crates(&csv_path, &known_packages)?
@@ -492,6 +539,7 @@ mod tests {
                 .iter()
                 .map(|package| (*package).to_string())
                 .collect(),
+            since: None,
         }
     }
 
@@ -600,8 +648,20 @@ mod tests {
             pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
             pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
         ];
-        let resolved =
-            resolve_requested_packages(&args(true, &[]), Path::new("/tmp/ws"), &packages).unwrap();
+        let metadata = metadata_with_packages(
+            packages.clone(),
+            &[
+                "alpha 0.1.0 (path+file:///tmp/alpha)",
+                "beta 0.1.0 (path+file:///tmp/beta)",
+            ],
+        );
+        let resolved = resolve_requested_packages(
+            &args(true, &[]),
+            Path::new("/tmp/ws"),
+            &metadata,
+            &packages,
+        )
+        .unwrap();
 
         assert_eq!(
             resolved
@@ -618,9 +678,20 @@ mod tests {
             pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
             pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
         ];
-        let resolved =
-            resolve_requested_packages(&args(false, &["beta"]), Path::new("/tmp/ws"), &packages)
-                .unwrap();
+        let metadata = metadata_with_packages(
+            packages.clone(),
+            &[
+                "alpha 0.1.0 (path+file:///tmp/alpha)",
+                "beta 0.1.0 (path+file:///tmp/beta)",
+            ],
+        );
+        let resolved = resolve_requested_packages(
+            &args(false, &["beta"]),
+            Path::new("/tmp/ws"),
+            &metadata,
+            &packages,
+        )
+        .unwrap();
 
         assert_eq!(
             resolved
@@ -641,6 +712,29 @@ mod tests {
             err.to_string()
                 .contains("duplicate workspace package `alpha`")
         );
+    }
+
+    #[test]
+    fn since_rejects_explicit_package_selection() {
+        let mut args = args(false, &["alpha"]);
+        args.since = Some("origin/main".to_string());
+
+        let err = validate_clippy_args(&args).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("cannot be combined with `--package`")
+        );
+    }
+
+    #[test]
+    fn since_rejects_all_selection() {
+        let mut args = args(true, &[]);
+        args.since = Some("origin/main".to_string());
+
+        let err = validate_clippy_args(&args).unwrap_err();
+
+        assert!(err.to_string().contains("cannot be combined with `--all`"));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use ax_api::{
 use ax_posix_api::ctypes::Tid;
 use log::{info, warn};
 
-const DEFAULT_STACK_SIZE: usize = arceos_api::config::TASK_STACK_SIZE;
+const DEFAULT_STACK_SIZE: usize = ax_api::config::TASK_STACK_SIZE;
 
 static NEXT_TASK_NAME: AtomicU64 = AtomicU64::new(1);
 static TASK_TABLE: Mutex<BTreeMap<u64, AxTaskHandle>> = Mutex::new(BTreeMap::new());

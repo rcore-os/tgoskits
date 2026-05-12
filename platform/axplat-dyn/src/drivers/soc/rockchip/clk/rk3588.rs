@@ -96,6 +96,15 @@ impl ClkDrv {
         })
     }
 
+    fn set_clock_rate(&mut self, id: u32, rate: u64) -> Result<(), OnProbeError> {
+        self.inner
+            .clk_set_rate(ClkId::from(id), rate)
+            .map_err(|err| {
+                OnProbeError::other(alloc::format!("failed to set clock {id}: {err}"))
+            })?;
+        Ok(())
+    }
+
     fn reset_assert(&mut self, id: u64) {
         self.inner.reset_assert(id.into());
     }
@@ -154,6 +163,10 @@ fn with_clk_drv<T>(
 
 pub(crate) fn rk3588_enable_clock(id: u32) -> Result<(), OnProbeError> {
     with_clk_drv(|drv| drv.enable_clock(id))
+}
+
+pub(crate) fn rk3588_set_clock_rate(id: u32, rate: u64) -> Result<(), OnProbeError> {
+    with_clk_drv(|drv| drv.set_clock_rate(id, rate))
 }
 
 pub(crate) fn rk3588_reset_assert(id: u64) -> Result<(), OnProbeError> {

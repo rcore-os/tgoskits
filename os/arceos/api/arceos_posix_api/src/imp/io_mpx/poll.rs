@@ -41,7 +41,7 @@ pub fn sys_poll(fds: *mut ctypes::pollfd, nfds: ctypes::nfds_t, timeout: c_int) 
 
         loop {
             #[cfg(feature = "net")]
-            axnet::poll_interfaces();
+            ax_net::poll_interfaces();
 
             let mut ready_count: usize = 0;
 
@@ -55,10 +55,11 @@ pub fn sys_poll(fds: *mut ctypes::pollfd, nfds: ctypes::nfds_t, timeout: c_int) 
                     Ok(file) => match file.poll() {
                         Ok(state) => {
                             let mut revents = 0;
-                            if state.readable && (pfd.events & ctypes::POLLIN as i16) != 0 {
+                            let events = pfd.events as i32;
+                            if state.readable && (events & ctypes::POLLIN as i32) != 0 {
                                 revents |= ctypes::POLLIN;
                             }
-                            if state.writable && (pfd.events & ctypes::POLLOUT as i16) != 0 {
+                            if state.writable && (events & ctypes::POLLOUT as i32) != 0 {
                                 revents |= ctypes::POLLOUT;
                             }
                             if revents != 0 {

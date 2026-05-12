@@ -1,7 +1,4 @@
-use core::{
-    ffi::c_char,
-    sync::atomic::{AtomicI32, Ordering},
-};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use ax_posix_api::ctypes::iovec;
 use log::info;
@@ -15,6 +12,7 @@ pub(crate) static ERRNO: AtomicI32 = AtomicI32::new(0);
 
 /// Set the global errno value (used by POSIX-style wrappers like sys_poll).
 #[inline]
+#[cfg(feature = "net")]
 pub(crate) fn set_errno(e: i32) {
     ERRNO.store(e, Ordering::Relaxed);
 }
@@ -63,7 +61,7 @@ pub fn sys_lseek(fd: i32, offset: isize, whence: i32) -> isize {
 
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
-pub fn sys_open(name: *const c_char, flags: i32, mode: i32) -> i32 {
+pub fn sys_open(name: *const core::ffi::c_char, flags: i32, mode: i32) -> i32 {
     info!("called sys_open");
     ax_posix_api::sys_open(name, flags, mode as _)
 }

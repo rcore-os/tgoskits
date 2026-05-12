@@ -4,7 +4,9 @@ use ax_errno::AxError;
 use ax_posix_api::{ctypes::stat, utils::char_ptr_to_str};
 use log::info;
 
-use crate::err;
+fn err(error: ax_errno::LinuxError) -> i32 {
+    -(error as i32)
+}
 
 #[unsafe(no_mangle)]
 pub fn sys_stat(name: *const c_char, stat: *mut stat) -> i32 {
@@ -59,5 +61,5 @@ pub fn sys_mkdir(name: *const c_char, _mode: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> isize {
     info!("called sys_getdents64");
-    unsafe { arceos_posix_api::sys_getdents64(fd, buf, len) as _ }
+    unsafe { ax_posix_api::sys_getdents64(fd, buf, len) as _ }
 }

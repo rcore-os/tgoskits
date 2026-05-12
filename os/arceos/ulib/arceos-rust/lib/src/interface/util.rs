@@ -38,7 +38,7 @@ pub fn sys_usleep(usec: u64) {
     info!("called sys_usleep with {} usec", usec);
     let duration = Duration::from_micros(usec);
     #[cfg(feature = "multitask")]
-    arceos_api::modules::axtask::sleep(duration);
+    ax_api::modules::ax_task::sleep(duration);
     #[cfg(not(feature = "multitask"))]
     ax_api::modules::ax_hal::time::busy_wait(duration);
 }
@@ -47,10 +47,10 @@ pub fn sys_usleep(usec: u64) {
 #[cfg(not(feature = "multitask"))]
 #[unsafe(no_mangle)]
 pub fn sys_futex_wait(
-    address: *mut u32,
-    expected: u32,
-    timeout: *const timespec,
-    flags: u32,
+    _address: *mut u32,
+    _expected: u32,
+    _timeout: *const timespec,
+    _flags: u32,
 ) -> i32 {
     0
 }
@@ -58,6 +58,6 @@ pub fn sys_futex_wait(
 /// dummy implementation of futex wake
 #[cfg(not(feature = "multitask"))]
 #[unsafe(no_mangle)]
-pub fn sys_futex_wake(address: *mut u32, count: i32) -> i32 {
+pub fn sys_futex_wake(_address: *mut u32, _count: i32) -> i32 {
     0
 }

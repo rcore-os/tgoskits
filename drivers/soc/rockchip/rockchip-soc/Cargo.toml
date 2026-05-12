@@ -21,12 +21,12 @@ thiserror = {version = "2", default-features = false}
 tock-registers = "0.10"
 
 [target.'cfg(not(any(windows, unix)))'.dev-dependencies]
-bare-test = "0.7"
+bare-test = "0.8"
 num-align = "0.1.0"
 spin = "0.10"
 
 [build-dependencies]
-bare-test-macros = "0.2"
+bare-test-macros = "0.3"
 
 [[test]]
 harness = false

@@ -45,7 +45,7 @@ DWARF ?=
 LTO ?=
 TARGET_DIR ?= $(PWD)/target
 EXTRA_CONFIG ?=
-OUT_CONFIG ?= $(PWD)/.axconfig.toml
+OUT_CONFIG ?= $(CURDIR)/.axconfig.toml
 UIMAGE ?= n
 PLAT_DYN ?= n
 

@@ -6,7 +6,9 @@ use ax_errno::LinuxError;
 use ax_posix_api::ctypes::timespec;
 use log::{info, trace};
 
-use crate::err;
+fn err(error: LinuxError) -> i32 {
+    -(error as i32)
+}
 
 static FUTEX_TABLE: Mutex<BTreeMap<usize, Arc<WaitQueue>>> = Mutex::new(BTreeMap::new());
 
@@ -45,10 +47,13 @@ pub fn sys_futex_wait(
     );
     if let Some(timeout) = unsafe { timeout.as_ref() } {
         trace!("called sys_futex_wait with timeout: {:?}", timeout);
-        let duration = Duration::new(
-            timeout.tv_sec.saturating_cast_unsigned(),
-            timeout.tv_nsec.saturating_cast_unsigned(),
-        );
+        let Ok(secs) = timeout.tv_sec.try_into() else {
+            return err(LinuxError::EINVAL);
+        };
+        let Ok(nanos) = timeout.tv_nsec.try_into() else {
+            return err(LinuxError::EINVAL);
+        };
+        let duration = Duration::new(secs, nanos);
         if wait_queue.wait_timeout(duration) {
             // timeout
             return err(LinuxError::ETIMEDOUT);
@@ -69,7 +74,7 @@ pub fn sys_futex_wake(address: *mut u32, count: i32) -> i32 {
         "called sys_futex_wake with address {:p} and count {}",
         address, count
     );
-    if count < 0 {
+    if address.is_null() || count < 0 {
         return err(LinuxError::EINVAL);
     }
     let wait_queue = {
@@ -79,7 +84,10 @@ pub fn sys_futex_wake(address: *mut u32, count: i32) -> i32 {
             None => return 0,
         }
     };
-    let woken_count = wait_queue.notify_many(count as _, false);
+    let mut woken_count = 0;
+    while woken_count < count && wait_queue.notify_one(false) {
+        woken_count += 1;
+    }
     trace!("futex woke {} threads", woken_count);
-    woken_count as _
+    woken_count
 }

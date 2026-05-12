@@ -1,95 +1,73 @@
 OUTPUT_ARCH(%ARCH%)
 
 BASE_ADDRESS = %KERNEL_BASE%;
-PHYS_BASE = %KERNEL_BASE_PADDR%;
-LOAD_OFFSET = BASE_ADDRESS - PHYS_BASE;
+%EXTRA_LINKER_CONSTANTS%
 CPU_NUM = %CPU_NUM%;
 
-ENTRY(_start)
+%ENTRY_DIRECTIVE%
 SECTIONS
 {
     . = BASE_ADDRESS;
     _skernel = .;
 
-    .text : AT(ADDR(.text) - LOAD_OFFSET) ALIGN(4K) {
+    .text %TEXT_AT% ALIGN(4K) {
         _stext = .;
-        KEEP(*(.text.boot))
+        %TEXT_PROLOGUE%
         *(.text .text.*)
         . = ALIGN(4K);
         _etext = .;
     }
 
     _srodata = .;
-    .rodata : AT(ADDR(.rodata) - LOAD_OFFSET) ALIGN(4K) {
+    .rodata %RODATA_AT% ALIGN(4K) {
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
-        *(.sdata2 .sdata2.*)
+        %RODATA_EXTRA_BODY%
     }
 
-    .init_array : AT(ADDR(.init_array) - LOAD_OFFSET) ALIGN(0x10) {
-        __init_array_start = .;
-        *(.init_array .init_array.*)
-        __init_array_end = .;
-    }
+    %INIT_ARRAY_SECTION%
 
     %DWARF%
 
     . = ALIGN(4K);
     _erodata = .;
 
-    .data : AT(ADDR(.data) - LOAD_OFFSET) ALIGN(4K) {
+    .data %DATA_AT% ALIGN(4K) {
         _sdata = .;
-        *(.data.boot_page_table)
-        . = ALIGN(4K);
+        %DATA_PROLOGUE%
         *(.data .data.*)
         *(.sdata .sdata.*)
-        *(.got .got.*)
-
-        . = ALIGN(0x10);
-        _sdriver = .;
-        KEEP(*(.driver.register*))
-        _edriver = .;
-
-        . = ALIGN(0x10);
-        _ex_table_start = .;
-        KEEP(*(__ex_table))
-        _ex_table_end = .;
+        %DATA_EXTRA_BODY%
     }
 
-    .tdata : AT(ADDR(.tdata) - LOAD_OFFSET) ALIGN(0x10) {
+    %POST_DATA_SECTION%
+
+    .tdata %TDATA_AT% ALIGN(0x10) {
         _stdata = .;
         *(.tdata .tdata.*)
         _etdata = .;
     }
 
-    .tbss : AT(ADDR(.tbss) - LOAD_OFFSET) ALIGN(0x10) {
+    .tbss %TBSS_AT% ALIGN(0x10) {
         _stbss = .;
         *(.tbss .tbss.*)
         *(.tcommon)
         _etbss = .;
     }
 
-    . = ALIGN(4K);
-    _percpu_start = .;
-    _percpu_end = _percpu_start + SIZEOF(.percpu);
-    .percpu 0x0 : AT(_percpu_start - LOAD_OFFSET) {
-        _percpu_load_start = .;
-        *(.percpu .percpu.*)
-        _percpu_load_end = .;
-        . = _percpu_load_start + ALIGN(64) * %CPU_NUM%;
-    }
-    . = _percpu_end;
+    %PERCPU_SECTION%
 
     . = ALIGN(4K);
     _edata = .;
 
-    .bss : AT(ADDR(.bss) - LOAD_OFFSET) ALIGN(4K) {
+    %BSS_PREFIX%
+    .bss %BSS_AT% ALIGN(4K) {
         boot_stack = .;
         *(.bss.stack)
         . = ALIGN(4K);
         boot_stack_top = .;
 
-        _sbss = .;
+        %BSS_INNER_PREFIX%
         *(.bss .bss.*)
         *(.sbss .sbss.*)
         *(COMMON)
@@ -100,11 +78,8 @@ SECTIONS
     _ekernel = .;
 
     /DISCARD/ : {
-        *(.comment) *(.gnu*) *(.note*) *(.eh_frame*)
+        %DISCARD_BODY%
     }
 }
 
-SECTIONS {
-    scope_local : { KEEP(*(scope_local)) }
-}
-INSERT AFTER .tbss;
+%TRAILING_SECTIONS%

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -204,6 +204,16 @@ pub(crate) struct StarryQemuCase {
     case: TestQemuCase,
     build_group: String,
     build_config_path: PathBuf,
+}
+
+impl qemu_test::BuildConfigRef for StarryQemuCase {
+    fn build_group(&self) -> &str {
+        &self.build_group
+    }
+
+    fn build_config_path(&self) -> &Path {
+        &self.build_config_path
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -610,10 +620,6 @@ impl Starry {
         }
         let default_rootfs_path =
             crate::rootfs::store::default_rootfs_path(self.app.workspace_root(), &request.arch)?;
-        let cases = self
-            .prepare_qemu_cases(&request, &default_rootfs_path, cases)
-            .await
-            .context("failed to load Starry qemu test cases")?;
         self.app.set_debug_mode(request.debug)?;
 
         let total = cases.len();
@@ -641,7 +647,23 @@ impl Starry {
                     )
                 })?;
 
-            for case in &build_group.group.cases {
+            let cases = self
+                .prepare_qemu_cases(
+                    &build_group.request,
+                    &build_group.cargo,
+                    &default_rootfs_path,
+                    &build_group.group.cases,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to load Starry qemu test cases for build group `{}` ({})",
+                        build_group.group.build_group,
+                        build_group.group.build_config_path.display()
+                    )
+                })?;
+
+            for case in &cases {
                 completed += 1;
                 let case_name = &case.case.name;
                 println!("[{completed}/{total}] starry qemu {case_name}");
@@ -815,22 +837,17 @@ impl Starry {
     async fn prepare_qemu_cases(
         &mut self,
         request: &ResolvedStarryRequest,
+        cargo: &Cargo,
         default_rootfs_path: &Path,
-        cases: Vec<StarryQemuCase>,
+        cases: &[&StarryQemuCase],
     ) -> anyhow::Result<Vec<PreparedStarryQemuCase>> {
         let mut prepared = Vec::with_capacity(cases.len());
-        let mut cargo_by_build_config = BTreeMap::new();
         let mut rootfs_paths = BTreeSet::new();
         for starry_case in cases {
-            let cargo = Self::qemu_case_cargo_config(
-                request,
-                &starry_case.build_config_path,
-                &mut cargo_by_build_config,
-            )?;
             let qemu = self
                 .app
                 .tool_mut()
-                .read_qemu_config_from_path_for_cargo(&cargo, &starry_case.case.qemu_config_path)
+                .read_qemu_config_from_path_for_cargo(cargo, &starry_case.case.qemu_config_path)
                 .await
                 .with_context(|| {
                     format!(
@@ -853,10 +870,10 @@ impl Starry {
                 )
             })?;
             prepared.push(PreparedStarryQemuCase {
-                case: starry_case.case,
+                case: starry_case.case.clone(),
                 qemu,
-                build_group: starry_case.build_group,
-                build_config_path: starry_case.build_config_path,
+                build_group: starry_case.build_group.clone(),
+                build_config_path: starry_case.build_config_path.clone(),
                 rootfs_path,
                 requirements,
             });
@@ -867,22 +884,6 @@ impl Starry {
         Ok(prepared)
     }
 
-    fn qemu_case_cargo_config(
-        request: &ResolvedStarryRequest,
-        build_config_path: &Path,
-        cargo_by_build_config: &mut BTreeMap<PathBuf, Cargo>,
-    ) -> anyhow::Result<Cargo> {
-        if let Some(cargo) = cargo_by_build_config.get(build_config_path) {
-            return Ok(cargo.clone());
-        }
-
-        let mut request = request.clone();
-        request.build_info_path = build_config_path.to_path_buf();
-        let cargo = build::load_cargo_config(&request)?;
-        cargo_by_build_config.insert(build_config_path.to_path_buf(), cargo.clone());
-        Ok(cargo)
-    }
-
     async fn ensure_qemu_case_rootfs_paths(
         &self,
         request: &ResolvedStarryRequest,
@@ -891,7 +892,7 @@ impl Starry {
     ) -> anyhow::Result<()> {
         for rootfs_path in rootfs_paths {
             if rootfs_path == default_rootfs_path {
-                rootfs::ensure_rootfs_in_target_dir(
+                rootfs::ensure_rootfs_in_tmp_dir(
                     self.app.workspace_root(),
                     &request.arch,
                     &request.target,
@@ -1579,7 +1580,9 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_uses_drive_file_arg() {
         let root = tempdir().unwrap();
-        let managed_rootfs = root.path().join("target/rootfs/rootfs-riscv64-debian.img");
+        let managed_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-riscv64-debian.img");
         let qemu = QemuConfig {
             args: vec![
                 "-device".to_string(),
@@ -1604,7 +1607,9 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_accepts_drive_file_with_additional_options() {
         let root = tempdir().unwrap();
-        let managed_rootfs = root.path().join("target/rootfs/rootfs-aarch64-busybox.img");
+        let managed_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-aarch64-busybox.img");
         let qemu = QemuConfig {
             args: vec![
                 "-drive".to_string(),
@@ -1625,8 +1630,12 @@ mod tests {
     #[test]
     fn qemu_case_rootfs_collects_all_managed_drive_files() {
         let root = tempdir().unwrap();
-        let boot_rootfs = root.path().join("target/rootfs/rootfs-aarch64-alpine.img");
-        let usb_rootfs = root.path().join("target/rootfs/rootfs-aarch64-busybox.img");
+        let boot_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-aarch64-alpine.img");
+        let usb_rootfs = root
+            .path()
+            .join("tmp/axbuild/rootfs/rootfs-aarch64-busybox.img");
         let qemu = QemuConfig {
             args: vec![
                 "-drive".to_string(),

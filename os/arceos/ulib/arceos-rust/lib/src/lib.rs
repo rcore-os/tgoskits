@@ -6,15 +6,10 @@ extern crate alloc;
 mod interface;
 
 use ax_api::modules::ax_log::{debug, info};
-use ax_errno::LinuxError;
 pub use ax_runtime;
 
 unsafe extern "C" {
     fn runtime_entry(argc: i32, argv: *const *const u8, env: *const *const u8) -> !;
-}
-
-pub(crate) fn err(error: LinuxError) -> i32 {
-    -(error as i32)
 }
 
 #[eii(ax_app_entry)]

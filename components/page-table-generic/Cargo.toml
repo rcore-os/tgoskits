@@ -1,0 +1,21 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["no-std"]
+description = "Generic page table walk and map."
+edition.workspace = true
+keywords = ["pagetable", "mmu"]
+license.workspace = true
+name = "page-table-generic"
+repository.workspace = true
+version = "0.7.2"
+
+[dependencies]
+bitflags = "2.9"
+heapless = "0.9"
+log = "0.4"
+num-align = "0.1"
+thiserror = {version = "2", default-features = false}
+
+[dev-dependencies]
+env_logger = "0.11"
+tock-registers = "0.10"
