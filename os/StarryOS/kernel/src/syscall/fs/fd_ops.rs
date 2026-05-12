@@ -307,9 +307,11 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             pipe.resize(arg)?;
             Ok(0)
         }
+        // memfd seals are not implemented yet; do not fake success.
+        F_ADD_SEALS | F_GET_SEALS => Err(AxError::InvalidInput),
         _ => {
             warn!("unsupported fcntl parameters: cmd: {cmd}");
-            Ok(0)
+            Err(AxError::InvalidInput)
         }
     }
 }
