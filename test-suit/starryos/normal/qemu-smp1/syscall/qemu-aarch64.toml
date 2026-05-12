@@ -18,6 +18,7 @@ to_bin = true
 shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/helloworld",
+    "/usr/bin/test-brk",
     "/usr/bin/test-clock-gettime",
     "/usr/bin/test-copy-file-range",
     "/usr/bin/test-credentials",

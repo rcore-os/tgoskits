@@ -147,7 +147,12 @@ impl Ext4FileSystem {
 
             if fs.superblock.has_journal() {
                 let journal_inode_num = InodeNumber::new(JOURNAL_FILE_INODE as u32)?;
-                let journal_exists = fs.get_inode_by_num(block_dev, journal_inode_num)?.i_mode != 0;
+                let journal_inode = fs
+                    .get_inode_by_num(block_dev, journal_inode_num)
+                    .inspect_err(|e| {
+                        error!("Failed to load journal inode {journal_inode_num}: {e}");
+                    })?;
+                let journal_exists = journal_inode.i_mode != 0;
 
                 if fs
                     .superblock
@@ -173,11 +178,15 @@ impl Ext4FileSystem {
                     .get_inode_by_num(block_dev, InodeNumber::new(JOURNAL_FILE_INODE as u32)?)
                     .expect("load journal inode failed");
 
-                let journal_blocks = fs.journal_blocks(block_dev, &mut j_inode)?;
-                let journal_first_block = journal_blocks
-                    .first()
-                    .copied()
-                    .ok_or_else(Ext4Error::corrupted)?;
+                let journal_blocks =
+                    fs.journal_blocks(block_dev, &mut j_inode)
+                        .inspect_err(|e| {
+                            error!("Failed to resolve journal blocks: {e}");
+                        })?;
+                let journal_first_block = journal_blocks.first().copied().ok_or_else(|| {
+                    error!("Journal has no mapped blocks");
+                    Ext4Error::corrupted()
+                })?;
 
                 fs.journal_sb_block_start = Some(journal_first_block);
                 let journal_data = fs
@@ -191,32 +200,41 @@ impl Ext4FileSystem {
 
                 block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks)?;
 
-                // Replay before touching ordinary filesystem metadata. Until
-                // this completes, home blocks may be stale.
-                let original_journal_use = block_dev.is_use_journal();
-                if needs_recovery && !original_journal_use {
-                    info!("Filesystem needs journal recovery; enabling replay for mount");
-                    block_dev.set_journal_use(true);
-                }
-                let replay_status = block_dev.journal_replay_checked();
-                block_dev.set_journal_use(original_journal_use);
-                if replay_status != ReplayStatus::Complete {
-                    return Err(Ext4Error::corrupted());
-                }
+                if needs_recovery {
+                    // Replay before touching ordinary filesystem metadata.
+                    // Until this completes, home blocks may be stale. A clean
+                    // filesystem with journaling enabled still needs JBD2
+                    // state initialized for future metadata writes, but it
+                    // must not force replay without the ext4 recovery bit.
+                    let original_journal_use = block_dev.is_use_journal();
+                    if !original_journal_use {
+                        info!("Filesystem needs journal recovery; enabling replay for mount");
+                        block_dev.set_journal_use(true);
+                    }
+                    let replay_status = block_dev.journal_replay_checked();
+                    block_dev.set_journal_use(original_journal_use);
+                    if replay_status != ReplayStatus::Complete {
+                        error!("Journal replay did not complete: status={replay_status:?}");
+                        return Err(Ext4Error::corrupted());
+                    }
 
-                // Journal replay can update the superblock, group descriptors,
-                // bitmaps, inode table, and directory blocks. Drop all metadata
-                // read before replay and continue mounting from the recovered
-                // on-disk state.
-                fs.reload_after_journal_replay(block_dev)?;
-                fs.clear_recovery_state();
+                    // Journal replay can update the superblock, group
+                    // descriptors, bitmaps, inode table, and directory blocks.
+                    // Drop all metadata read before replay and continue
+                    // mounting from the recovered on-disk state.
+                    fs.reload_after_journal_replay(block_dev)?;
+                    fs.clear_recovery_state();
+                }
             }
         }
 
         // rootinode check !
         debug!("Checking root directory...");
         {
-            let root_inode = fs.get_root(block_dev).map_err(|_| Ext4Error::io())?;
+            let root_inode = fs.get_root(block_dev).map_err(|e| {
+                error!("Failed to load root inode: {e}");
+                Ext4Error::io()
+            })?;
             if root_inode.i_mode == 0 || !root_inode.is_dir() {
                 warn!(
                     "Root inode is uninitialized or not a directory, creating root and \
@@ -250,7 +268,10 @@ impl Ext4FileSystem {
                         warn!("/lost+found missing and create failed");
                     }
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    error!("Failed to resolve /lost+found: {err}");
+                    return Err(err);
+                }
             }
         }
 
@@ -288,7 +309,10 @@ impl Ext4FileSystem {
                     if expected_inode != stored_inode {
                         error!(
                             "Inode bitmap checksum mismatch group=0 expected={expected_inode:#x} \
-                             stored={stored_inode:#x}"
+                             stored={stored_inode:#x} inode_bitmap_block={inode_bitmap_blk} \
+                             inode_table_block={} flags={:#x}",
+                            g0.inode_table(),
+                            g0.bg_flags
                         );
                         return Err(Ext4Error::checksum());
                     }
@@ -301,7 +325,10 @@ impl Ext4FileSystem {
                     if expected_block != stored_block {
                         error!(
                             "Block bitmap checksum mismatch group=0 expected={expected_block:#x} \
-                             stored={stored_block:#x}"
+                             stored={stored_block:#x} block_bitmap_block={data_bitmap_blk} \
+                             inode_table_block={} flags={:#x}",
+                            g0.inode_table(),
+                            g0.bg_flags
                         );
                         return Err(Ext4Error::checksum());
                     }

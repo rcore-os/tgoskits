@@ -8,6 +8,7 @@ use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
 pub mod arceos;
 pub mod axvisor;
 mod board;
+mod build;
 mod clippy;
 pub mod context;
 mod rootfs;
