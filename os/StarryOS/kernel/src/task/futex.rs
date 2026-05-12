@@ -70,9 +70,7 @@ struct WaitIfFuture<'a, F> {
     state: Option<Arc<WaiterState>>,
 }
 
-impl<F> Unpin for WaitIfFuture<'_, F> {}
-
-impl<F: FnOnce() -> bool> Future for WaitIfFuture<'_, F> {
+impl<F: FnOnce() -> bool + Unpin> Future for WaitIfFuture<'_, F> {
     type Output = AxResult<bool>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
@@ -144,7 +142,7 @@ impl WaitQueue {
         &self,
         bitset: u32,
         timeout: Option<Duration>,
-        condition: impl FnOnce() -> bool,
+        condition: impl FnOnce() -> bool + Unpin,
     ) -> AxResult<bool> {
         block_on(interruptible(future::timeout(
             timeout,
