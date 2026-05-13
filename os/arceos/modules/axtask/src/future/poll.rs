@@ -40,16 +40,19 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 
 /// Registers a waker for the given IRQ number.
 ///
-/// This is a generic bridge for IRQ-driven async wakeups. The previous
-/// implementation woke the per-IRQ `PollSet` directly from the IRQ hook,
-/// which forced `PollSet::wake` (allocates, takes a `SpinNoIrq` mutex) to
-/// run in interrupt context. On a single-core build that races against
-/// the task it just preempted holding the same lock and deadlocks; in
-/// practice it manifested as a null deref in the epoll wake chain.
+/// This is a generic bridge for IRQ-driven async wakeups. Calling
+/// `PollSet::wake` directly from an IRQ hook is unsafe: it takes a
+/// `SpinNoIrq` mutex AND allocates (`Inner::new()` replacement when
+/// there is an existing waiter), which can deadlock against the task
+/// the IRQ preempted and triggers the slab from interrupt context.
 ///
-/// The IRQ hook now only sets a per-IRQ pending bit and wakes a static
-/// drain task; the drain task runs in normal task context and is the
-/// only place that ever calls `PollSet::wake`.
+/// The IRQ hook here does only what is safe in interrupt context:
+/// flip a per-IRQ pending bit and `notify_one` a [`WaitQueue`].
+/// `WaitQueue::notify_one` just pops from a `VecDeque` under a
+/// `SpinNoIrq` (no allocation, deadlock-free because IRQs are
+/// already disabled in the holding paths) and re-queues the drain
+/// task. The drain task runs in normal task context and is the only
+/// place that ever calls `PollSet::wake`.
 #[cfg(feature = "irq")]
 pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     use alloc::{collections::BTreeMap, sync::Arc};
@@ -57,6 +60,8 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
 
     use ax_kspin::SpinNoIrq;
     use axpoll::PollSet;
+
+    use crate::WaitQueue;
 
     /// Maximum IRQ number we track in the pending-bit array. Anything
     /// larger falls back to the lock + map check; that path is fine in
@@ -66,19 +71,22 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     static IRQ_PENDING: [AtomicBool; MAX_TRACKED_IRQ] =
         [const { AtomicBool::new(false) }; MAX_TRACKED_IRQ];
     static ANY_PENDING: AtomicBool = AtomicBool::new(false);
-    static DRAIN_WAKER: PollSet = PollSet::new();
+    static DRAIN_WQ: WaitQueue = WaitQueue::new();
     static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);
     static POLL_IRQ: SpinNoIrq<BTreeMap<usize, Arc<PollSet>>> = SpinNoIrq::new(BTreeMap::new());
 
     fn irq_hook(irq: usize) {
-        // Runs in IRQ context with interrupts off. Touching only atomics
-        // and `PollSet::wake` on the dedicated drain set keeps this off
-        // the heap and lock-free.
+        // Runs in IRQ context with interrupts off. Only atomics and a
+        // `WaitQueue::notify_one` — no allocation, no PollSet/Inner
+        // replacement.
         if irq < MAX_TRACKED_IRQ {
             IRQ_PENDING[irq].store(true, Ordering::Release);
         }
         ANY_PENDING.store(true, Ordering::Release);
-        DRAIN_WAKER.wake();
+        // `resched = false` because we cannot preempt from an IRQ
+        // hook — let the scheduler run the drain task when the
+        // current task next yields or reschedules.
+        DRAIN_WQ.notify_one(false);
     }
 
     fn ensure_drain_spawned() {
@@ -90,44 +98,32 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         }
         crate::spawn_raw(
             || {
-                crate::future::block_on(async {
-                    loop {
-                        // Park on the drain waker; the IRQ hook fires
-                        // it without taking any locks.
-                        core::future::poll_fn(|cx| {
-                            if ANY_PENDING.swap(false, Ordering::AcqRel) {
-                                core::task::Poll::Ready(())
-                            } else {
-                                DRAIN_WAKER.register(cx.waker());
-                                if ANY_PENDING.swap(false, Ordering::AcqRel) {
-                                    core::task::Poll::Ready(())
-                                } else {
-                                    core::task::Poll::Pending
-                                }
-                            }
-                        })
-                        .await;
+                loop {
+                    // Block until at least one IRQ pending bit has
+                    // been set. `wait_until` re-checks the condition
+                    // under the wait-queue lock, so spurious wakeups
+                    // do not slip through.
+                    DRAIN_WQ.wait_until(|| ANY_PENDING.swap(false, Ordering::AcqRel));
 
-                        // Snapshot the entries that need waking under
-                        // the lock, then drop the lock before doing
-                        // the actual `wake` work (which can allocate
-                        // and re-enter the scheduler).
-                        let mut to_wake: alloc::vec::Vec<Arc<PollSet>> = alloc::vec::Vec::new();
-                        {
-                            let map = POLL_IRQ.lock();
-                            for (irq, slot) in IRQ_PENDING.iter().enumerate() {
-                                if slot.swap(false, Ordering::AcqRel)
-                                    && let Some(set) = map.get(&irq)
-                                {
-                                    to_wake.push(set.clone());
-                                }
+                    // Snapshot the entries that need waking under the
+                    // map lock, then drop the lock before invoking
+                    // `wake` (which can allocate and re-enter the
+                    // scheduler).
+                    let mut to_wake: alloc::vec::Vec<Arc<PollSet>> = alloc::vec::Vec::new();
+                    {
+                        let map = POLL_IRQ.lock();
+                        for (irq, slot) in IRQ_PENDING.iter().enumerate() {
+                            if slot.swap(false, Ordering::AcqRel)
+                                && let Some(set) = map.get(&irq)
+                            {
+                                to_wake.push(set.clone());
                             }
-                        }
-                        for set in to_wake {
-                            set.wake();
                         }
                     }
-                });
+                    for set in to_wake {
+                        set.wake();
+                    }
+                }
             },
             alloc::string::String::from("irq_waker_drain"),
             0x4000,
