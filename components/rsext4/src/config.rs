@@ -35,7 +35,7 @@ pub(crate) fn runtime_block_size() -> usize {
 }
 
 /// Returns the current ext4 block size in bytes as `u32`.
-pub(crate) fn runtime_block_size_u32() -> u32 {
+pub fn runtime_block_size_u32() -> u32 {
     runtime_block_size() as u32
 }
 

@@ -15,13 +15,13 @@ extern crate alloc;
 // Re-export shared configuration constants for external callers.
 // Re-export the most frequently used public APIs.
 pub use api::{lseek, open, read_at, write_at};
-pub use blockdev::{BlockDevice, Jbd2Dev};
+pub use blockdev::{BlockDevice, DevBN, Jbd2Dev};
 pub use config::{
     BITMAP_CACHE_MAX, DATABLOCK_CACHE_MAX, DEFAULT_FEATURE_COMPAT, DEFAULT_FEATURE_INCOMPAT,
     DEFAULT_FEATURE_RO_COMPAT, DEFAULT_INODE_SIZE, DIRNAME_LEN, EXT4_MAJOR_VERSION,
     EXT4_MINOR_VERSION, EXT4_SUPER_MAGIC, GROUP_DESC_SIZE, GROUP_DESC_SIZE_OLD, INODE_CACHE_MAX,
     JBD2_BUFFER_MAX, LOG_BLOCK_SIZE, RESERVED_GDT_BLOCKS, RESERVED_INODES, SUPERBLOCK_OFFSET,
-    SUPERBLOCK_SIZE,
+    SUPERBLOCK_SIZE, runtime_block_size_u32,
 };
 pub use dir::mkdir;
 pub use disknode::{Ext4TimeSpec, Ext4Timestamp};

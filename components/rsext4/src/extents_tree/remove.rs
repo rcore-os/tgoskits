@@ -631,7 +631,7 @@ mod tests {
     }
 
     impl BlockDevice for MemBlockDev {
-        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn write(&mut self, buffer: &[u8], block_id: DevBN, count: u32) -> Ext4Result<()> {
             let block_size = runtime_block_size();
             let required = block_size * count as usize;
             if buffer.len() < required {
@@ -649,7 +649,7 @@ mod tests {
             Ok(())
         }
 
-        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        fn read(&mut self, buffer: &mut [u8], block_id: DevBN, count: u32) -> Ext4Result<()> {
             let block_size = runtime_block_size();
             let required = block_size * count as usize;
             if buffer.len() < required {
@@ -679,7 +679,7 @@ mod tests {
             self.total_blocks
         }
 
-        fn block_size(&self) -> u32 {
+        fn dev_block_size(&self) -> u32 {
             runtime_block_size_u32()
         }
 

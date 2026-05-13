@@ -7,7 +7,7 @@ use log::{error, trace, warn};
 use super::{cached_device::BlockDev, traits::BlockDevice};
 use crate::{
     bmalloc::AbsoluteBN,
-    config::JBD2_BUFFER_MAX,
+    config::{JBD2_BUFFER_MAX, runtime_block_size_u32},
     disknode::Ext4Timestamp,
     error::{Ext4Error, Ext4Result},
     jbd2::{
@@ -260,9 +260,19 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         self.inner.total_blocks()
     }
 
-    /// Returns the underlying device block size.
+    /// Returns the current ext4 logical block size.
     pub fn block_size(&self) -> u32 {
-        self.inner.block_size()
+        runtime_block_size_u32()
+    }
+
+    /// Returns the backing-device block size.
+    pub fn dev_block_size(&self) -> u32 {
+        self.inner._device().dev_block_size()
+    }
+
+    /// Reads arbitrary bytes from the underlying device without ext4 block translation.
+    pub(crate) fn read_raw_bytes(&mut self, byte_offset: u64, buffer: &mut [u8]) -> Ext4Result<()> {
+        super::read_bytes_from_device(self.inner.device_mut(), byte_offset, buffer)
     }
 
     /// Returns the current timestamp from the underlying device.

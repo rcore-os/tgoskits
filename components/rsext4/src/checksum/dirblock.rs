@@ -106,8 +106,8 @@ pub fn verify_ext4_dx_checksum(
         return Some(false);
     }
 
-    let count_offset = dx_countlimit_offset(block_bytes, runtime_block_size() as usize)?;
-    if count_offset + 4 > runtime_block_size() as usize {
+    let count_offset = dx_countlimit_offset(block_bytes, runtime_block_size())?;
+    if count_offset + 4 > runtime_block_size() {
         return Some(false);
     }
 
@@ -117,14 +117,13 @@ pub fn verify_ext4_dx_checksum(
     let tail_len = core::mem::size_of::<u64>();
 
     if count > limit
-        || count_offset + limit.saturating_mul(entry_size)
-            > runtime_block_size() as usize - tail_len
+        || count_offset + limit.saturating_mul(entry_size) > runtime_block_size() - tail_len
     {
         return Some(false);
     }
 
     let tail_offset = count_offset + limit * entry_size;
-    if tail_offset + tail_len > runtime_block_size() as usize {
+    if tail_offset + tail_len > runtime_block_size() {
         return Some(false);
     }
 

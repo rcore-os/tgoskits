@@ -443,21 +443,9 @@ pub(crate) fn write_superblock<B: BlockDevice>(
 pub(crate) fn read_superblock<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<Ext4Superblock> {
-    // Read the containing filesystem block, then slice out the 1024-byte
-    // superblock payload.
-    if block_dev.block_size() as usize == 1024 {
-        block_dev.read_block(AbsoluteBN::from(1u32))?;
-        let buffer = block_dev.buffer();
-        let sb = Ext4Superblock::from_disk_bytes(&buffer[0..SUPERBLOCK_SIZE]);
-        Ok(sb)
-    } else {
-        block_dev.read_block(AbsoluteBN::from(0u32))?;
-        let buffer = block_dev.buffer();
-        let offset = Ext4Superblock::SUPERBLOCK_OFFSET as usize;
-        let end = offset + Ext4Superblock::SUPERBLOCK_SIZE;
-        let sb = Ext4Superblock::from_disk_bytes(&buffer[offset..end]);
-        Ok(sb)
-    }
+    let mut buffer = [0u8; SUPERBLOCK_SIZE];
+    block_dev.read_raw_bytes(Ext4Superblock::SUPERBLOCK_OFFSET, &mut buffer)?;
+    Ok(Ext4Superblock::from_disk_bytes(&buffer))
 }
 
 /// Writes redundant GDT copies to sparse-super backup groups.

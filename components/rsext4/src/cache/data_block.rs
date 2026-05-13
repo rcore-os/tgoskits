@@ -2,6 +2,8 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
+use log::error;
+
 use crate::{blockdev::*, bmalloc::AbsoluteBN, config::*, error::*};
 /// Cache key for one physical data block.
 pub type BlockCacheKey = AbsoluteBN;
@@ -21,6 +23,11 @@ pub struct CachedBlock {
 
 impl CachedBlock {
     pub fn new(data: Vec<u8>, block_num: AbsoluteBN) -> Self {
+        
+        if data.len() != runtime_block_size() {
+            error!("The block size of lower datablock cache not equal ext4 logic block size");
+        }
+
         Self {
             data,
             dirty: false,
@@ -388,14 +395,14 @@ mod tests {
     }
 
     impl BlockDevice for TestBlockDevice {
-        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+        fn read(&mut self, buffer: &mut [u8], block_id: DevBN, _count: u32) -> Ext4Result<()> {
             let start = block_id.as_usize()? * self.block_size;
             let end = start + buffer.len();
             buffer.copy_from_slice(&self.data[start..end]);
             Ok(())
         }
 
-        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+        fn write(&mut self, buffer: &[u8], block_id: DevBN, _count: u32) -> Ext4Result<()> {
             let start = block_id.as_usize()? * self.block_size;
             let end = start + buffer.len();
             self.data[start..end].copy_from_slice(buffer);
@@ -414,7 +421,7 @@ mod tests {
             (self.data.len() / self.block_size) as u64
         }
 
-        fn block_size(&self) -> u32 {
+        fn dev_block_size(&self) -> u32 {
             self.block_size as u32
         }
 
