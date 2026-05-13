@@ -495,6 +495,9 @@ impl rd_block::IQueue for SdBlockQueue {
         self.reap_pending_request()?;
         let mut raw = self.raw.lock();
         let start_block = block_addr_for_card(request.block_id, raw.is_high_capacity())?;
+        // Block I/O uses the host crate's submit/poll DMA API so completions
+        // can be driven by IRQ wakeups. The SdioHost read_data/write_data
+        // methods remain the synchronous protocol path, with PIO fallback.
         match request.kind {
             rd_block::RequestKind::Read(buffer) => {
                 if !buffer.len().is_multiple_of(BLOCK_SIZE) {

@@ -83,7 +83,12 @@ pub trait SdioHost {
     /// Send a command and receive the response
     fn send_command(&mut self, cmd: &Command) -> Result<Response, Error>;
 
-    /// Issue a read-data command and complete its data phase.
+    /// Issue a read-data command and complete its data phase synchronously.
+    ///
+    /// This protocol-facing method must not return until the data phase has
+    /// completed or failed. Host implementations may use blocking DMA or PIO
+    /// internally. IRQ-driven block queues should expose a separate submit/poll
+    /// interface instead of modelling pending completion through this method.
     fn read_data(
         &mut self,
         cmd: &Command,
@@ -92,7 +97,10 @@ pub trait SdioHost {
         block_count: u32,
     ) -> Result<Response, Error>;
 
-    /// Issue a write-data command and complete its data phase.
+    /// Issue a write-data command and complete its data phase synchronously.
+    ///
+    /// This has the same completion contract as [`SdioHost::read_data`]: it is
+    /// a blocking protocol operation, not the block queue's async request API.
     fn write_data(
         &mut self,
         cmd: &Command,

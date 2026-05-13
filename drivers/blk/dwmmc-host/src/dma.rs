@@ -29,6 +29,32 @@ pub const IDMAC_DESC_SIZE: usize = core::mem::size_of::<IdmacDesc>();
 const BLOCK_SIZE: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IdmacAttemptError {
+    Fallback(Error),
+    Fatal(Error),
+}
+
+impl IdmacAttemptError {
+    pub(crate) const fn fallback(err: Error) -> Self {
+        Self::Fallback(err)
+    }
+
+    const fn fatal(err: Error) -> Self {
+        Self::Fatal(err)
+    }
+
+    pub(crate) const fn can_fallback_to_pio(self) -> bool {
+        matches!(self, Self::Fallback(_))
+    }
+
+    pub(crate) const fn into_error(self) -> Error {
+        match self {
+            Self::Fallback(err) | Self::Fatal(err) => err,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RequestId(usize);
 
 impl RequestId {
@@ -142,58 +168,67 @@ impl IdmacDesc {
 }
 
 impl DwMmc {
-    pub(crate) fn try_idmac_read_transfer(
+    pub(crate) fn try_blocking_idmac_read_transfer(
         &mut self,
         cmd: &Command,
         buf: &mut [u8],
         block_size: u32,
         expected_block_count: u32,
-    ) -> Result<Response, Error> {
+    ) -> Result<Response, IdmacAttemptError> {
         if block_size as usize != BLOCK_SIZE || buf.is_empty() {
-            return Err(Error::UnsupportedCommand);
+            return Err(IdmacAttemptError::fallback(Error::UnsupportedCommand));
         }
-        let dma = self.dma.clone().ok_or(Error::UnsupportedCommand)?;
-        let size = NonZeroUsize::new(buf.len()).ok_or(Error::InvalidArgument)?;
-        let block_count = dma_read_block_count(size)?;
+        let dma = self
+            .dma
+            .clone()
+            .ok_or_else(|| IdmacAttemptError::fallback(Error::UnsupportedCommand))?;
+        let size = NonZeroUsize::new(buf.len())
+            .ok_or_else(|| IdmacAttemptError::fallback(Error::InvalidArgument))?;
+        let block_count = dma_read_block_count(size).map_err(IdmacAttemptError::fallback)?;
         if block_count != expected_block_count {
-            return Err(Error::InvalidArgument);
+            return Err(IdmacAttemptError::fallback(Error::InvalidArgument));
         }
         let map = dma
             .map_single_array(buf, BLOCK_SIZE, DmaDirection::FromDevice)
-            .map_err(|err| map_dma_error(err, Phase::DataRead))?;
+            .map_err(|err| IdmacAttemptError::fallback(map_dma_error(err, Phase::DataRead)))?;
         let mut desc = dma
             .array_zero_with_align::<IdmacDesc>(
                 block_count as usize,
                 IDMAC_DESC_ALIGN,
                 DmaDirection::ToDevice,
             )
-            .map_err(|err| map_dma_error(err, Phase::DataRead))?;
+            .map_err(|err| IdmacAttemptError::fallback(map_dma_error(err, Phase::DataRead)))?;
 
-        let response =
-            self.idmac_transfer_mapped(cmd, block_count, map.dma_addr().as_u64(), &mut desc)?;
+        let response = self
+            .idmac_transfer_mapped(cmd, block_count, map.dma_addr().as_u64(), &mut desc)
+            .map_err(IdmacAttemptError::fatal)?;
         map.prepare_read_all();
         Ok(response)
     }
 
-    pub(crate) fn try_idmac_write_transfer(
+    pub(crate) fn try_blocking_idmac_write_transfer(
         &mut self,
         cmd: &Command,
         buf: &[u8],
         block_size: u32,
         expected_block_count: u32,
-    ) -> Result<Response, Error> {
+    ) -> Result<Response, IdmacAttemptError> {
         if block_size as usize != BLOCK_SIZE || buf.is_empty() {
-            return Err(Error::UnsupportedCommand);
+            return Err(IdmacAttemptError::fallback(Error::UnsupportedCommand));
         }
-        let dma = self.dma.clone().ok_or(Error::UnsupportedCommand)?;
-        let size = NonZeroUsize::new(buf.len()).ok_or(Error::InvalidArgument)?;
-        let block_count = dma_write_block_count(size)?;
+        let dma = self
+            .dma
+            .clone()
+            .ok_or_else(|| IdmacAttemptError::fallback(Error::UnsupportedCommand))?;
+        let size = NonZeroUsize::new(buf.len())
+            .ok_or_else(|| IdmacAttemptError::fallback(Error::InvalidArgument))?;
+        let block_count = dma_write_block_count(size).map_err(IdmacAttemptError::fallback)?;
         if block_count != expected_block_count {
-            return Err(Error::InvalidArgument);
+            return Err(IdmacAttemptError::fallback(Error::InvalidArgument));
         }
         let map = dma
             .map_single_array(buf, BLOCK_SIZE, DmaDirection::ToDevice)
-            .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
+            .map_err(|err| IdmacAttemptError::fallback(map_dma_error(err, Phase::DataWrite)))?;
         map.confirm_write_all();
 
         let mut desc = dma
@@ -202,9 +237,10 @@ impl DwMmc {
                 IDMAC_DESC_ALIGN,
                 DmaDirection::ToDevice,
             )
-            .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
+            .map_err(|err| IdmacAttemptError::fallback(map_dma_error(err, Phase::DataWrite)))?;
 
         self.idmac_transfer_mapped(cmd, block_count, map.dma_addr().as_u64(), &mut desc)
+            .map_err(IdmacAttemptError::fatal)
     }
 
     pub fn dma_read_blocks_into(
@@ -232,6 +268,11 @@ impl DwMmc {
         self.wait_async_dma_request(request, &mut slot)
     }
 
+    /// Submit one IDMAC read request for an external block queue.
+    ///
+    /// The request remains active after this method returns. Callers complete
+    /// it by calling [`DwMmc::poll_async_dma_request`], typically after OS glue
+    /// observes the controller IRQ and wakes the queue/future.
     pub fn submit_dma_read_blocks(
         &mut self,
         start_block: u32,
@@ -250,6 +291,10 @@ impl DwMmc {
         }
     }
 
+    /// Submit one IDMAC write request for an external block queue.
+    ///
+    /// This is the async counterpart to the synchronous
+    /// [`SdioHost::write_data`] protocol method.
     pub fn submit_dma_write_blocks(
         &mut self,
         start_block: u32,
@@ -268,6 +313,10 @@ impl DwMmc {
         }
     }
 
+    /// Poll a previously submitted IDMAC block request.
+    ///
+    /// `Ok(())` means complete. `Error::Timeout` means the request is still in
+    /// flight and platform glue maps it to `BlkError::Retry`.
     pub fn poll_async_dma_request(
         &mut self,
         request: &mut Option<AsyncDmaRequest>,
@@ -917,5 +966,22 @@ mod tests {
 
         assert_send::<AsyncDmaRequest>();
         assert_send::<AsyncRequestSlot>();
+    }
+
+    #[test]
+    fn idmac_presubmit_errors_allow_pio_fallback() {
+        let err = IdmacAttemptError::fallback(Error::UnsupportedCommand);
+
+        assert!(err.can_fallback_to_pio());
+        assert_eq!(err.into_error(), Error::UnsupportedCommand);
+    }
+
+    #[test]
+    fn idmac_postsubmit_errors_do_not_allow_pio_fallback() {
+        let err =
+            IdmacAttemptError::fatal(Error::Timeout(ErrorContext::for_cmd(Phase::DataRead, 18)));
+
+        assert!(!err.can_fallback_to_pio());
+        assert!(matches!(err.into_error(), Error::Timeout(_)));
     }
 }

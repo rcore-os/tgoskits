@@ -48,7 +48,7 @@ jobs:
         cache-targets: false
     - run: sudo apt update && sudo apt install -y libudev-dev
     - run: cargo install cargo-binutils
-    - run: cargo install ostool@0.7.24 
+    - run: cargo install ostool@0.7.24
     - uses: arceos-org/setup-qemu@v1
       with:
         version: 9.2.4

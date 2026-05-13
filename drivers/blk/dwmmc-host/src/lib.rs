@@ -120,9 +120,10 @@ impl SdioHost for DwMmc {
         block_size: u32,
         block_count: u32,
     ) -> Result<Response, Error> {
-        match self.try_idmac_read_transfer(cmd, buf, block_size, block_count) {
+        match self.try_blocking_idmac_read_transfer(cmd, buf, block_size, block_count) {
             Ok(response) => Ok(response),
-            Err(err) => {
+            Err(err) if err.can_fallback_to_pio() => {
+                let err = err.into_error();
                 log::debug!("dwmmc: IDMAC read transfer unavailable/failed: {:?}", err);
                 <Self as SdioHost>::prepare_data_transfer(
                     self,
@@ -136,6 +137,14 @@ impl SdioHost for DwMmc {
                 self.data_blocks_remaining = 0;
                 Ok(response)
             }
+            Err(err) => {
+                let err = err.into_error();
+                log::warn!(
+                    "dwmmc: IDMAC read transfer failed after submit; not falling back to PIO: {:?}",
+                    err
+                );
+                Err(err)
+            }
         }
     }
 
@@ -146,9 +155,10 @@ impl SdioHost for DwMmc {
         block_size: u32,
         block_count: u32,
     ) -> Result<Response, Error> {
-        match self.try_idmac_write_transfer(cmd, buf, block_size, block_count) {
+        match self.try_blocking_idmac_write_transfer(cmd, buf, block_size, block_count) {
             Ok(response) => Ok(response),
-            Err(err) => {
+            Err(err) if err.can_fallback_to_pio() => {
+                let err = err.into_error();
                 log::debug!("dwmmc: IDMAC write transfer unavailable/failed: {:?}", err);
                 <Self as SdioHost>::prepare_data_transfer(
                     self,
@@ -161,6 +171,15 @@ impl SdioHost for DwMmc {
                 self.pio_write(buf, self.data_cmd_index)?;
                 self.data_blocks_remaining = 0;
                 Ok(response)
+            }
+            Err(err) => {
+                let err = err.into_error();
+                log::warn!(
+                    "dwmmc: IDMAC write transfer failed after submit; not falling back to PIO: \
+                     {:?}",
+                    err
+                );
+                Err(err)
             }
         }
     }

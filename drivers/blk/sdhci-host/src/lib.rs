@@ -101,9 +101,10 @@ impl SdioHost for Sdhci {
         block_size: u32,
         block_count: u32,
     ) -> Result<Response, Error> {
-        match self.try_adma2_read_transfer(cmd, buf, block_size, block_count) {
+        match self.try_blocking_adma2_read_transfer(cmd, buf, block_size, block_count) {
             Ok(response) => Ok(response),
-            Err(err) => {
+            Err(err) if err.can_fallback_to_pio() => {
+                let err = err.into_error();
                 log::debug!("sdhci: ADMA2 read transfer unavailable/failed: {:?}", err);
                 <Self as SdioHost>::prepare_data_transfer(
                     self,
@@ -116,6 +117,14 @@ impl SdioHost for Sdhci {
                 self.pio_read(buf, block_size, self.active_data_cmd)?;
                 Ok(response)
             }
+            Err(err) => {
+                let err = err.into_error();
+                log::warn!(
+                    "sdhci: ADMA2 read transfer failed after submit; not falling back to PIO: {:?}",
+                    err
+                );
+                Err(err)
+            }
         }
     }
 
@@ -126,9 +135,10 @@ impl SdioHost for Sdhci {
         block_size: u32,
         block_count: u32,
     ) -> Result<Response, Error> {
-        match self.try_adma2_write_transfer(cmd, buf, block_size, block_count) {
+        match self.try_blocking_adma2_write_transfer(cmd, buf, block_size, block_count) {
             Ok(response) => Ok(response),
-            Err(err) => {
+            Err(err) if err.can_fallback_to_pio() => {
+                let err = err.into_error();
                 log::debug!("sdhci: ADMA2 write transfer unavailable/failed: {:?}", err);
                 <Self as SdioHost>::prepare_data_transfer(
                     self,
@@ -140,6 +150,15 @@ impl SdioHost for Sdhci {
                 let response = self.send_command(cmd)?;
                 self.pio_write(buf, block_size, self.active_data_cmd)?;
                 Ok(response)
+            }
+            Err(err) => {
+                let err = err.into_error();
+                log::warn!(
+                    "sdhci: ADMA2 write transfer failed after submit; not falling back to PIO: \
+                     {:?}",
+                    err
+                );
+                Err(err)
             }
         }
     }

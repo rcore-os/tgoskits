@@ -73,6 +73,32 @@ pub const ADMA2_DESC_ALIGN: usize = 64;
 const BLOCK_SIZE: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Adma2AttemptError {
+    Fallback(Error),
+    Fatal(Error),
+}
+
+impl Adma2AttemptError {
+    pub(crate) const fn fallback(err: Error) -> Self {
+        Self::Fallback(err)
+    }
+
+    const fn fatal(err: Error) -> Self {
+        Self::Fatal(err)
+    }
+
+    pub(crate) const fn can_fallback_to_pio(self) -> bool {
+        matches!(self, Self::Fallback(_))
+    }
+
+    pub(crate) const fn into_error(self) -> Error {
+        match self {
+            Self::Fallback(err) | Self::Fatal(err) => err,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RequestId(usize);
 
 impl RequestId {
@@ -200,64 +226,75 @@ pub(crate) fn build_descriptors(
 }
 
 impl Sdhci {
-    pub(crate) fn try_adma2_read_transfer(
+    pub(crate) fn try_blocking_adma2_read_transfer(
         &mut self,
         cmd: &Command,
         buf: &mut [u8],
         block_size: u32,
         expected_block_count: u32,
-    ) -> Result<Response, Error> {
+    ) -> Result<Response, Adma2AttemptError> {
         if !self.supports_adma2() || block_size as usize != BLOCK_SIZE || buf.is_empty() {
-            return Err(Error::UnsupportedCommand);
+            return Err(Adma2AttemptError::fallback(Error::UnsupportedCommand));
         }
-        let dma = self.dma.clone().ok_or(Error::UnsupportedCommand)?;
-        let size = NonZeroUsize::new(buf.len()).ok_or(Error::InvalidArgument)?;
-        let block_count = dma_read_block_count(size)?;
+        let dma = self
+            .dma
+            .clone()
+            .ok_or_else(|| Adma2AttemptError::fallback(Error::UnsupportedCommand))?;
+        let size = NonZeroUsize::new(buf.len())
+            .ok_or_else(|| Adma2AttemptError::fallback(Error::InvalidArgument))?;
+        let block_count = dma_read_block_count(size).map_err(Adma2AttemptError::fallback)?;
         if block_count != expected_block_count {
-            return Err(Error::InvalidArgument);
+            return Err(Adma2AttemptError::fallback(Error::InvalidArgument));
         }
         let map = dma
             .map_single_array(buf, BLOCK_SIZE, DmaDirection::FromDevice)
-            .map_err(map_dma_error)?;
+            .map_err(|err| Adma2AttemptError::fallback(map_dma_error(err)))?;
         let mut desc = dma
             .array_zero_with_align::<Adma2Desc32>(
                 ADMA2_DESC_COUNT,
                 ADMA2_DESC_ALIGN,
                 DmaDirection::ToDevice,
             )
-            .map_err(map_dma_error)?;
+            .map_err(|err| Adma2AttemptError::fallback(map_dma_error(err)))?;
 
-        let response = self.dma_data_transfer_mapped(
-            cmd,
-            block_count,
-            map.dma_addr().as_u64(),
-            &mut desc,
-            DataDirection::Read,
-            Phase::DataRead,
-        )?;
+        let response = self
+            .dma_data_transfer_mapped(
+                cmd,
+                block_count,
+                map.dma_addr().as_u64(),
+                &mut desc,
+                DataDirection::Read,
+                Phase::DataRead,
+            )
+            .map_err(Adma2AttemptError::fatal)?;
         map.prepare_read_all();
         Ok(response)
     }
 
-    pub(crate) fn try_adma2_write_transfer(
+    pub(crate) fn try_blocking_adma2_write_transfer(
         &mut self,
         cmd: &Command,
         buf: &[u8],
         block_size: u32,
         block_count: u32,
-    ) -> Result<Response, Error> {
+    ) -> Result<Response, Adma2AttemptError> {
         if !self.supports_adma2() || block_size as usize != BLOCK_SIZE || buf.is_empty() {
-            return Err(Error::UnsupportedCommand);
+            return Err(Adma2AttemptError::fallback(Error::UnsupportedCommand));
         }
-        let dma = self.dma.clone().ok_or(Error::UnsupportedCommand)?;
-        let size = NonZeroUsize::new(buf.len()).ok_or(Error::InvalidArgument)?;
-        let computed_block_count = dma_write_block_count(size)?;
+        let dma = self
+            .dma
+            .clone()
+            .ok_or_else(|| Adma2AttemptError::fallback(Error::UnsupportedCommand))?;
+        let size = NonZeroUsize::new(buf.len())
+            .ok_or_else(|| Adma2AttemptError::fallback(Error::InvalidArgument))?;
+        let computed_block_count =
+            dma_write_block_count(size).map_err(Adma2AttemptError::fallback)?;
         if computed_block_count != block_count {
-            return Err(Error::InvalidArgument);
+            return Err(Adma2AttemptError::fallback(Error::InvalidArgument));
         }
         let map = dma
             .map_single_array(buf, BLOCK_SIZE, DmaDirection::ToDevice)
-            .map_err(map_dma_error)?;
+            .map_err(|err| Adma2AttemptError::fallback(map_dma_error(err)))?;
         map.confirm_write_all();
 
         let mut desc = dma
@@ -266,7 +303,7 @@ impl Sdhci {
                 ADMA2_DESC_ALIGN,
                 DmaDirection::ToDevice,
             )
-            .map_err(map_dma_error)?;
+            .map_err(|err| Adma2AttemptError::fallback(map_dma_error(err)))?;
 
         self.dma_data_transfer_mapped(
             cmd,
@@ -276,6 +313,7 @@ impl Sdhci {
             DataDirection::Write,
             Phase::DataWrite,
         )
+        .map_err(Adma2AttemptError::fatal)
     }
 
     /// Read whole 512-byte blocks using the controller's 32-bit ADMA2 engine.
@@ -313,6 +351,11 @@ impl Sdhci {
         self.wait_async_dma_request(request, &mut slot)
     }
 
+    /// Submit one ADMA2 read request for an external block queue.
+    ///
+    /// The request remains active after this method returns. Callers complete
+    /// it by calling [`Sdhci::poll_async_dma_request`], typically after OS glue
+    /// observes the controller IRQ and wakes the queue/future.
     pub fn submit_dma_read_blocks(
         &mut self,
         start_block: u32,
@@ -331,6 +374,10 @@ impl Sdhci {
         }
     }
 
+    /// Submit one ADMA2 write request for an external block queue.
+    ///
+    /// This is the async counterpart to the synchronous
+    /// [`SdioHost::write_data`] protocol method.
     pub fn submit_dma_write_blocks(
         &mut self,
         start_block: u32,
@@ -349,6 +396,10 @@ impl Sdhci {
         }
     }
 
+    /// Poll a previously submitted ADMA2 block request.
+    ///
+    /// `Ok(())` means complete. `Error::Timeout` means the request is still in
+    /// flight and platform glue maps it to `BlkError::Retry`.
     pub fn poll_async_dma_request(
         &mut self,
         request: &mut Option<AsyncDmaRequest>,
@@ -435,6 +486,9 @@ impl Sdhci {
             Ok(response)
         });
         self.use_dma = false;
+        if result.is_err() {
+            self.recover_after_adma2_error();
+        }
         result
     }
 
@@ -621,6 +675,11 @@ impl Sdhci {
         slot: &mut AsyncRequestSlot,
     ) {
         let _ = request.take();
+        self.recover_after_adma2_error();
+        let _ = slot.complete(id);
+    }
+
+    fn recover_after_adma2_error(&mut self) {
         self.use_dma = false;
         self.pending_data = None;
         self.active_data_cmd = 0;
@@ -628,7 +687,6 @@ impl Sdhci {
         self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
         let _ = self.reset_cmd();
         let _ = self.reset_dat();
-        let _ = slot.complete(id);
     }
 
     fn poll_data_complete_with_adma(
@@ -798,5 +856,22 @@ mod tests {
 
         assert_send::<AsyncDmaRequest>();
         assert_send::<AsyncRequestSlot>();
+    }
+
+    #[test]
+    fn adma2_presubmit_errors_allow_pio_fallback() {
+        let err = Adma2AttemptError::fallback(Error::UnsupportedCommand);
+
+        assert!(err.can_fallback_to_pio());
+        assert_eq!(err.into_error(), Error::UnsupportedCommand);
+    }
+
+    #[test]
+    fn adma2_postsubmit_errors_do_not_allow_pio_fallback() {
+        let err =
+            Adma2AttemptError::fatal(Error::Timeout(ErrorContext::for_cmd(Phase::DataRead, 18)));
+
+        assert!(!err.can_fallback_to_pio());
+        assert!(matches!(err.into_error(), Error::Timeout(_)));
     }
 }
