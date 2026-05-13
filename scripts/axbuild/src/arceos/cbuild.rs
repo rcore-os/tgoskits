@@ -19,7 +19,6 @@ pub(crate) struct ArceosCBuildInput {
     pub(crate) app_name: String,
     pub(crate) target_dir: PathBuf,
     pub(crate) out_dir: PathBuf,
-    pub(crate) out_config: PathBuf,
     pub(crate) features: Vec<String>,
 }
 
@@ -58,10 +57,6 @@ pub(crate) fn build_c_app(
         .with_context(|| format!("failed to create {}", app_obj_dir.display()))?;
     fs::create_dir_all(&input.out_dir)
         .with_context(|| format!("failed to create {}", input.out_dir.display()))?;
-    if let Some(parent) = input.out_config.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
 
     build_axlibc_staticlib(workspace_root, &cargo, &input.target_dir, request.debug)?;
     let rust_lib = input

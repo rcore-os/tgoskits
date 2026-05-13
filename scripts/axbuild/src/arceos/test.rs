@@ -111,6 +111,7 @@ impl qemu_test::BuildConfigRef for PreparedArceosRustQemuCase {
 struct CTestDef {
     name: String,
     build_group: String,
+    case_dir: PathBuf,
     build_config_path: PathBuf,
     qemu_config_path: PathBuf,
 }
@@ -135,7 +136,6 @@ struct CTestBuildConfig {
 struct CTestArtifactPaths {
     target_dir: PathBuf,
     out_dir: PathBuf,
-    out_config: PathBuf,
 }
 
 pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<()> {
@@ -789,6 +789,7 @@ fn discover_c_tests(
     .map(|name| CTestDef {
         name: name.clone(),
         build_group: name,
+        case_dir: PathBuf::new(),
         build_config_path: PathBuf::new(),
         qemu_config_path: PathBuf::new(),
     })
@@ -817,6 +818,7 @@ fn load_c_test(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<CTestDef> 
     Ok(CTestDef {
         name: case.name,
         build_group: case.build_group,
+        case_dir: case.case_dir,
         build_config_path: case.build_config_path,
         qemu_config_path: case.qemu_config_path,
     })
@@ -832,36 +834,31 @@ fn load_c_test_qemu_config(path: &Path) -> anyhow::Result<QemuConfig> {
         .with_context(|| format!("failed to parse C qemu config {}", path.display()))
 }
 
-fn resolve_c_test_source_dir(build_config_path: &Path) -> anyhow::Result<PathBuf> {
-    let base = build_config_path.parent().with_context(|| {
-        format!(
-            "failed to resolve parent of C build config {}",
-            build_config_path.display()
-        )
-    })?;
-    if dir_has_c_source(base)? {
-        return base
+fn resolve_c_test_source_dir(case_dir: &Path) -> anyhow::Result<PathBuf> {
+    let source_dir = case_dir.join("c");
+    if source_dir.is_dir() && dir_has_c_source(&source_dir)? {
+        return source_dir
             .canonicalize()
-            .with_context(|| format!("failed to resolve C source dir {}", base.display()));
-    }
-
-    let parent = base.parent().with_context(|| {
-        format!(
-            "failed to resolve parent source dir for C build config {}",
-            build_config_path.display()
-        )
-    })?;
-    if dir_has_c_source(parent)? {
-        return parent
-            .canonicalize()
-            .with_context(|| format!("failed to resolve C source dir {}", parent.display()));
+            .with_context(|| format!("failed to resolve C source dir {}", source_dir.display()));
     }
 
     bail!(
-        "C build config {} must be placed in a directory containing .c files or in a direct child \
-         wrapper of such a directory",
-        build_config_path.display()
+        "ArceOS C qemu test case {} must contain a c/ source asset directory with .c files",
+        case_dir.display()
     )
+}
+
+fn c_test_app_name(source_dir: &Path, fallback: &str) -> String {
+    let app_dir = if source_dir.file_name().and_then(|name| name.to_str()) == Some("c") {
+        source_dir.parent().unwrap_or(source_dir)
+    } else {
+        source_dir
+    };
+    app_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 fn dir_has_c_source(dir: &Path) -> anyhow::Result<bool> {
@@ -949,8 +946,13 @@ async fn build_and_run_c_test(
     let workspace_root = arceos.app.workspace_root().to_path_buf();
     let build_config = load_c_test_build_config(&test.build_config_path)?;
     let qemu_config = load_c_test_qemu_config(&test.qemu_config_path)?;
-    let source_dir = resolve_c_test_source_dir(&test.build_config_path)?;
-    let artifacts = c_test_artifact_paths(&workspace_root, &test.name, c_test_artifact_index(test));
+    let source_dir = resolve_c_test_source_dir(&test.case_dir)?;
+    let artifacts = c_test_artifact_paths(
+        &workspace_root,
+        &test.build_group,
+        &test.name,
+        c_test_artifact_index(test),
+    );
 
     let request = arceos.prepare_request(
         BuildCliArgs {
@@ -968,14 +970,9 @@ async fn build_and_run_c_test(
     )?;
     let input = cbuild::ArceosCBuildInput {
         app_dir: source_dir.clone(),
-        app_name: source_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(&test.name)
-            .to_string(),
+        app_name: c_test_app_name(&source_dir, &test.name),
         target_dir: artifacts.target_dir,
         out_dir: artifacts.out_dir,
-        out_config: artifacts.out_config,
         features: build_config.build.features.clone(),
     };
     let output = cbuild::build_c_app(&workspace_root, &request, &input)?;
@@ -989,25 +986,24 @@ async fn build_and_run_c_test(
 
 /// Returns isolated artifact paths for a single C test invocation.
 ///
-/// Multi-invocation tests such as `helloworld` build several configurations
-/// for the same app, so every invocation gets its own target and output dirs.
+/// Cases under the same build wrapper share a Cargo target dir and therefore
+/// reuse the same ax-libc static library. QEMU output stays isolated per case
+/// and per invocation so generated ELF files do not overwrite each other.
 fn c_test_artifact_paths(
     workspace_root: &Path,
+    build_group: &str,
     test_name: &str,
     invocation_index: usize,
 ) -> CTestArtifactPaths {
-    let dir_name = format!(
-        "arceos-c-{}-{}",
-        test_name.replace('/', "-"),
-        invocation_index
-    );
     let root = crate::context::axbuild_tmp_dir(workspace_root)
         .join("arceos-c")
-        .join(dir_name);
+        .join(test_name.replace('/', "-"));
     CTestArtifactPaths {
-        target_dir: root.join("cargo"),
-        out_dir: root.join("out"),
-        out_config: root.join("axconfig.toml"),
+        target_dir: crate::context::axbuild_tmp_dir(workspace_root)
+            .join("arceos-c")
+            .join(build_group.replace('/', "-"))
+            .join("cargo"),
+        out_dir: root.join(format!("out-{invocation_index}")),
     }
 }
 
@@ -1216,8 +1212,9 @@ mod tests {
 
     fn write_c_case(dir: &Path, name: &str, qemu_arch: &str) {
         let case_dir = dir.join(name);
-        std::fs::create_dir_all(&case_dir).unwrap();
-        std::fs::write(case_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+        let source_dir = case_dir.join("c");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
         std::fs::write(
             case_dir.join("build-x86_64-unknown-none.toml"),
             "features = [\"alloc\"]\nlog = \"Info\"\n",
@@ -1271,7 +1268,7 @@ mod tests {
         let path = dir.path().join("build-x86_64-unknown-none.toml");
         std::fs::write(
             &path,
-            "features = [\"alloc\", \"paging\"]\nlog = \"Trace\"\nmax_cpu_num = 4\n",
+            "features = [\"alloc\", \"paging\"]\nlog = \"Trace\"\nmax_cpu_num = 4\n\n[env]\n",
         )
         .unwrap();
 
@@ -1282,26 +1279,28 @@ mod tests {
     }
 
     #[test]
-    fn resolve_c_test_source_dir_accepts_case_dir_and_direct_wrapper() {
+    fn resolve_c_test_source_dir_accepts_case_c_asset_dir() {
         let dir = tempdir().unwrap();
         let case_dir = dir.path().join("helloworld");
-        let wrapper_dir = case_dir.join("smp4");
-        std::fs::create_dir_all(&wrapper_dir).unwrap();
+        let source_dir = case_dir.join("c");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+
+        assert_eq!(
+            resolve_c_test_source_dir(&case_dir).unwrap(),
+            source_dir.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_c_test_source_dir_rejects_direct_c_sources() {
+        let dir = tempdir().unwrap();
+        let case_dir = dir.path().join("helloworld");
+        std::fs::create_dir_all(&case_dir).unwrap();
         std::fs::write(case_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
 
-        let root_build_config = case_dir.join("build-x86_64-unknown-none.toml");
-        std::fs::write(&root_build_config, "").unwrap();
-        assert_eq!(
-            resolve_c_test_source_dir(&root_build_config).unwrap(),
-            case_dir.canonicalize().unwrap()
-        );
-
-        let wrapper_build_config = wrapper_dir.join("build-x86_64-unknown-none.toml");
-        std::fs::write(&wrapper_build_config, "").unwrap();
-        assert_eq!(
-            resolve_c_test_source_dir(&wrapper_build_config).unwrap(),
-            case_dir.canonicalize().unwrap()
-        );
+        let err = resolve_c_test_source_dir(&case_dir).unwrap_err();
+        assert!(err.to_string().contains("c/ source asset directory"));
     }
 
     #[test]
