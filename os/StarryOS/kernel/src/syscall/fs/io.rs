@@ -118,7 +118,11 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
     };
     let any_file = get_file_like(fd)?;
 
-    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+    // File::from_fd transparently unwraps Memfd onto its backing File, so
+    // memfd fds take this branch and get regular-file seek semantics
+    // (lseek, pread/pwrite, fallocate). Without it memfd would fall
+    // through to ESPIPE.
+    if let Ok(f) = File::from_fd(fd) {
         let off = f.inner().seek(pos)?;
         return Ok(off as _);
     }
