@@ -3,7 +3,7 @@
 //! This module currently mirrors Linux ext4's `s_maxbytes` and `s_bitmap_maxbytes`
 //! computations (see Linux 6.6.98 `fs/ext4/super.c`).
 
-use crate::{disknode::Ext4Inode, superblock::Ext4Superblock};
+use crate::{config::runtime_block_size, disknode::Ext4Inode, superblock::Ext4Superblock};
 
 // Maximum logical block number representable by ext4 extents.
 //
@@ -106,7 +106,7 @@ fn ext4_max_bitmap_size_bytes(bits: u32, has_huge_files: bool) -> u64 {
 /// For extent inodes this mirrors `ext4_get_maxbytes()` via `s_maxbytes`.
 /// For bitmap-mapped inodes this mirrors `s_bitmap_maxbytes`.
 pub fn ext4_get_maxbytes(sb: &Ext4Superblock, inode: &Ext4Inode) -> u64 {
-    let block_size = sb.block_size();
+    let block_size = runtime_block_size();
     if block_size == 0 || !block_size.is_power_of_two() {
         return 0;
     }
