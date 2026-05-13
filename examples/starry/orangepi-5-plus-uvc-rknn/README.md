@@ -136,6 +136,7 @@ well:
 ```bash
 cargo starry board \
   -c examples/starry/orangepi-5-plus-uvc-rknn/build-aarch64-unknown-none-softfloat.toml \
+  --target aarch64-unknown-none-softfloat \
   --board-config examples/starry/orangepi-5-plus-uvc-rknn/board-orangepi-5-plus.toml \
   -b OrangePi-5-Plus-robot \
   --server 10.30.12.60 \
