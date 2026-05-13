@@ -25,7 +25,7 @@ use rdrive::{
 use sdmmc_protocol::{
     Error,
     error::Phase,
-    sdio::{DelayNs, SdioSdmmc},
+    sdio::{DelayNs, SdioHost, SdioSdmmc},
 };
 
 use crate::drivers::{
@@ -424,14 +424,21 @@ impl rd_block::Interface for SdBlockDevice {
 
     fn enable_irq(&mut self) {
         if let Some(raw) = &self.raw {
-            raw.lock().host_mut().enable_data_irq();
+            let mut raw = raw.lock();
+            if let Err(err) = SdioHost::enable_data_irq(raw.host_mut()) {
+                warn!("rockchip-dwmmc: enable data IRQ failed: {:?}", err);
+                return;
+            }
             self.irq_enabled = true;
         }
     }
 
     fn disable_irq(&mut self) {
         if let Some(raw) = &self.raw {
-            raw.lock().host_mut().disable_data_irq();
+            let mut raw = raw.lock();
+            if let Err(err) = SdioHost::disable_data_irq(raw.host_mut()) {
+                warn!("rockchip-dwmmc: disable data IRQ failed: {:?}", err);
+            }
         }
         self.irq_enabled = false;
     }
@@ -444,14 +451,19 @@ impl rd_block::Interface for SdBlockDevice {
         let Some(raw) = &self.raw else {
             return rd_block::Event::none();
         };
-        match raw.lock().host_mut().handle_irq() {
-            dwmmc_host::Event::TransferComplete | dwmmc_host::Event::Error { .. } => {
-                let mut event = rd_block::Event::none();
-                event.queue.insert(0);
-                event
-            }
-            _ => rd_block::Event::none(),
+        let irq_event = raw.lock().host_mut().handle_irq();
+        block_event_from_dwmmc_irq(irq_event)
+    }
+}
+
+fn block_event_from_dwmmc_irq(irq_event: dwmmc_host::Event) -> rd_block::Event {
+    match irq_event {
+        dwmmc_host::Event::TransferComplete | dwmmc_host::Event::Error { .. } => {
+            let mut event = rd_block::Event::none();
+            event.queue.insert(0);
+            event
         }
+        _ => rd_block::Event::none(),
     }
 }
 

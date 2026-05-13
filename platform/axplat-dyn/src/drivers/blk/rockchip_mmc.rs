@@ -25,7 +25,7 @@ use sdhci_host::{AsyncDmaRequest, AsyncRequestSlot, RequestId, Sdhci};
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
-    sdio::{DelayNs, SdioSdmmc},
+    sdio::{DelayNs, SdioHost, SdioSdmmc},
 };
 use spin::Once;
 
@@ -238,14 +238,21 @@ impl rd_block::Interface for BlockDevice {
 
     fn enable_irq(&mut self) {
         if let Some(raw) = &self.raw {
-            raw.lock().host_mut().enable_data_irq();
+            let mut raw = raw.lock();
+            if let Err(err) = SdioHost::enable_data_irq(raw.host_mut()) {
+                warn!("rockchip-sdhci: enable data IRQ failed: {:?}", err);
+                return;
+            }
             self.irq_enabled = true;
         }
     }
 
     fn disable_irq(&mut self) {
         if let Some(raw) = &self.raw {
-            raw.lock().host_mut().disable_data_irq();
+            let mut raw = raw.lock();
+            if let Err(err) = SdioHost::disable_data_irq(raw.host_mut()) {
+                warn!("rockchip-sdhci: disable data IRQ failed: {:?}", err);
+            }
         }
         self.irq_enabled = false;
     }
@@ -258,14 +265,19 @@ impl rd_block::Interface for BlockDevice {
         let Some(raw) = &self.raw else {
             return rd_block::Event::none();
         };
-        match raw.lock().host_mut().handle_irq() {
-            sdhci_host::Event::TransferComplete | sdhci_host::Event::Error { .. } => {
-                let mut event = rd_block::Event::none();
-                event.queue.insert(0);
-                event
-            }
-            _ => rd_block::Event::none(),
+        let irq_event = raw.lock().host_mut().handle_irq();
+        block_event_from_sdhci_irq(irq_event)
+    }
+}
+
+fn block_event_from_sdhci_irq(irq_event: sdhci_host::Event) -> rd_block::Event {
+    match irq_event {
+        sdhci_host::Event::TransferComplete | sdhci_host::Event::Error { .. } => {
+            let mut event = rd_block::Event::none();
+            event.queue.insert(0);
+            event
         }
+        _ => rd_block::Event::none(),
     }
 }
 

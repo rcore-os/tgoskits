@@ -41,7 +41,7 @@ impl Transport for Smc {
     }
 
     fn send_message(&mut self, shmem: &mut Shmem, xfer: &Xfer) -> Result<(), ScmiError> {
-        shmem.tx_prepare(xfer);
+        shmem.tx_prepare(xfer)?;
         trace!("Sending SMC message {:?}", xfer.hdr);
         self.call_sync();
         Ok(())
@@ -55,9 +55,9 @@ impl Transport for Smc {
 
     fn fetch_response(&mut self, shmem: &mut Shmem, xfer: &mut Xfer) -> Result<(), ScmiError> {
         let len = shmem.header().length.get() as usize;
-        let rx_len = len.saturating_sub(8);
+        let rx_len = response_payload_len(len, shmem.size, Self::MAX_MSG_SIZE)?;
 
-        xfer.hdr.status = unsafe { (shmem.payload_ptr() as *const u32).read_volatile() };
+        xfer.hdr.status = shmem.read_payload_u32(0)?;
         trace!(
             "Fetched SMC response rx_len = {rx_len}, header: {:?}",
             xfer.hdr
@@ -65,7 +65,7 @@ impl Transport for Smc {
         xfer.hdr.to_result()?;
         xfer.rx.resize(rx_len, 0);
         if rx_len > 0 {
-            shmem.read_payload(&mut xfer.rx, 4);
+            shmem.read_payload(&mut xfer.rx, 4)?;
         }
         trace!(
             "Fetched response: hdr={:?}, rx_len={}, buff={:?}",
@@ -76,6 +76,28 @@ impl Transport for Smc {
 
         Ok(())
     }
+}
+
+fn response_payload_len(
+    len: usize,
+    shmem_size: usize,
+    max_msg_size: usize,
+) -> Result<usize, ScmiError> {
+    const MSG_HEADER_SIZE: usize = size_of::<u32>();
+    const STATUS_SIZE: usize = size_of::<u32>();
+    const MIN_RESPONSE_LEN: usize = MSG_HEADER_SIZE + STATUS_SIZE;
+
+    if len < MIN_RESPONSE_LEN || len > shmem_size {
+        return Err(ScmiError::ProtocolError);
+    }
+
+    let rx_len = len
+        .checked_sub(MIN_RESPONSE_LEN)
+        .ok_or(ScmiError::ProtocolError)?;
+    if rx_len > max_msg_size {
+        return Err(ScmiError::ProtocolError);
+    }
+    Ok(rx_len)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -100,5 +122,39 @@ fn full_system_barrier() {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_length_rejects_missing_status() {
+        assert_eq!(
+            response_payload_len(7, 64, Smc::MAX_MSG_SIZE),
+            Err(ScmiError::ProtocolError)
+        );
+    }
+
+    #[test]
+    fn response_length_rejects_shmem_overflow() {
+        assert_eq!(
+            response_payload_len(65, 64, Smc::MAX_MSG_SIZE),
+            Err(ScmiError::ProtocolError)
+        );
+    }
+
+    #[test]
+    fn response_length_rejects_oversized_payload() {
+        assert_eq!(
+            response_payload_len(8 + Smc::MAX_MSG_SIZE + 1, 256, Smc::MAX_MSG_SIZE),
+            Err(ScmiError::ProtocolError)
+        );
+    }
+
+    #[test]
+    fn response_length_returns_payload_without_status() {
+        assert_eq!(response_payload_len(12, 64, Smc::MAX_MSG_SIZE), Ok(4));
     }
 }

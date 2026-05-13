@@ -129,16 +129,16 @@ impl Scmi<Smc> {
             return Err(ScmiError::ProtocolError);
         }
         data.shmem
-            .write_message_header(SCMI_CLOCK_PROTOCOL, SCMI_CLOCK_RATE_GET, 4);
-        data.shmem.write_payload_u32(0, clock_id);
+            .write_message_header(SCMI_CLOCK_PROTOCOL, SCMI_CLOCK_RATE_GET, 4)?;
+        data.shmem.write_payload_u32(0, clock_id)?;
         data.transport.call_sync();
-        let status = data.shmem.read_payload_i32(0);
+        let status = data.shmem.read_payload_i32(0)?;
         if let Err(err) = ScmiError::from_status(status) {
             data.shmem.reset();
             return Err(err);
         }
-        let low = data.shmem.read_payload_u32(4) as u64;
-        let high = data.shmem.read_payload_u32(8) as u64;
+        let low = data.shmem.read_payload_u32(4)? as u64;
+        let high = data.shmem.read_payload_u32(8)? as u64;
         data.shmem.reset();
         Ok(low | (high << 32))
     }
@@ -150,13 +150,13 @@ impl Scmi<Smc> {
             return Err(ScmiError::ProtocolError);
         }
         data.shmem
-            .write_message_header(SCMI_CLOCK_PROTOCOL, SCMI_CLOCK_RATE_SET, 16);
-        data.shmem.write_payload_u32(0, 0);
-        data.shmem.write_payload_u32(4, clock_id);
-        data.shmem.write_payload_u32(8, rate as u32);
-        data.shmem.write_payload_u32(12, (rate >> 32) as u32);
+            .write_message_header(SCMI_CLOCK_PROTOCOL, SCMI_CLOCK_RATE_SET, 16)?;
+        data.shmem.write_payload_u32(0, 0)?;
+        data.shmem.write_payload_u32(4, clock_id)?;
+        data.shmem.write_payload_u32(8, rate as u32)?;
+        data.shmem.write_payload_u32(12, (rate >> 32) as u32)?;
         data.transport.call_sync();
-        let status = data.shmem.read_payload_i32(0);
+        let status = data.shmem.read_payload_i32(0)?;
         let result = ScmiError::from_status(status);
         data.shmem.reset();
         result

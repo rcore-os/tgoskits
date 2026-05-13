@@ -72,9 +72,10 @@ use sdmmc_protocol::{
 use crate::{host::PendingData, regs::*};
 
 /// Stable controller event extracted from SDHCI interrupt-status registers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Event {
     /// No status bit requiring runtime action is currently pending.
+    #[default]
     None,
     /// A command response is ready to harvest.
     CommandComplete,
@@ -87,6 +88,8 @@ pub enum Event {
 }
 
 impl SdioHost for Sdhci {
+    type Event = Event;
+
     fn send_command(&mut self, cmd: &Command) -> Result<Response, Error> {
         self.issue_command(cmd)
     }
@@ -332,6 +335,20 @@ impl SdioHost for Sdhci {
             Phase::Init,
             cmd_index,
         )))
+    }
+
+    fn enable_data_irq(&mut self) -> Result<(), Error> {
+        Sdhci::enable_data_irq(self);
+        Ok(())
+    }
+
+    fn disable_data_irq(&mut self) -> Result<(), Error> {
+        Sdhci::disable_data_irq(self);
+        Ok(())
+    }
+
+    fn handle_irq(&mut self) -> Self::Event {
+        Sdhci::handle_irq(self)
     }
 }
 

@@ -14,7 +14,7 @@ lto = true
 resolver = "3"
 members = [
     "components/aarch64_sysreg",
-    "components/arm-scmi",
+    "components/arm-scmi-rs",
     "components/arm_pl011",
     "components/arm_pl031",
     "components/arm_vcpu",
@@ -218,7 +218,7 @@ members = [
 [workspace.dependencies]
 # Local workspace crates
 aarch64_sysreg = { version = "0.3.6", path = "components/aarch64_sysreg" }
-arm-scmi-rs = { version = "0.1.1", path = "components/arm-scmi" }
+arm-scmi-rs = { version = "0.1.1", path = "components/arm-scmi-rs" }
 arceos-affinity = { version = "0.3.1", path = "test-suit/arceos/rust/task/affinity" }
 arceos-display = { version = "0.3.1", path = "test-suit/arceos/rust/display" }
 arceos-exception = { version = "0.3.1", path = "test-suit/arceos/rust/exception" }

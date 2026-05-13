@@ -1,5 +1,6 @@
 package
 aarch64_sysreg
+arm-scmi-rs
 arceos-affinity
 arceos-display
 arceos-exception

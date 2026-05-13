@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 use mbarrier::{rmb, wmb};
 use tock_registers::{interfaces::*, registers::*};
 
-use crate::Xfer;
+use crate::{Xfer, err::ScmiError};
 
 tock_registers::register_structs! {
     pub ShmemHeader {
@@ -82,7 +82,7 @@ impl Shmem {
     pub(crate) fn header(&mut self) -> &mut ShmemHeader {
         unsafe { &mut *(self.address.as_ptr() as *mut ShmemHeader) }
     }
-    pub fn tx_prepare(&mut self, xfer: &Xfer) {
+    pub fn tx_prepare(&mut self, xfer: &Xfer) -> Result<(), ScmiError> {
         self.header().channel_status.set(0);
         self.header().flags.set(0);
         let len = size_of::<u32>() as u32 + xfer.tx.len() as u32;
@@ -96,8 +96,9 @@ impl Shmem {
         );
         // Copy TX payload
         if !xfer.tx.is_empty() {
-            self.write_payload(&xfer.tx);
+            self.write_payload(&xfer.tx)?;
         }
+        Ok(())
     }
 
     pub(crate) fn write_message_header(
@@ -105,32 +106,51 @@ impl Shmem {
         protocol_id: u32,
         message_id: u8,
         payload_len: u32,
-    ) {
+    ) -> Result<(), ScmiError> {
+        let len = size_of::<u32>()
+            .checked_add(payload_len as usize)
+            .ok_or(ScmiError::ProtocolError)?;
+        if len > self.size {
+            return Err(ScmiError::ProtocolError);
+        }
+        self.check_payload_range(0, payload_len as usize)?;
+
         self.header().channel_status.set(0);
         self.header().flags.set(0);
-        self.header().length.set(4 + payload_len);
+        self.header().length.set(len as u32);
         self.header()
             .msg_header
             .set(encode_message_header(protocol_id, message_id));
+        Ok(())
     }
 
-    pub(crate) fn write_payload_u32(&mut self, offset: usize, value: u32) {
+    pub(crate) fn write_payload_u32(&mut self, offset: usize, value: u32) -> Result<(), ScmiError> {
+        if !offset.is_multiple_of(align_of::<u32>()) {
+            return Err(ScmiError::ProtocolError);
+        }
+        self.check_payload_range(offset, size_of::<u32>())?;
         self.write_u32(Self::PAYLOAD_OFFSET + offset, value);
+        Ok(())
     }
 
-    pub(crate) fn read_payload_u32(&self, offset: usize) -> u32 {
-        self.read_u32(Self::PAYLOAD_OFFSET + offset)
+    pub(crate) fn read_payload_u32(&self, offset: usize) -> Result<u32, ScmiError> {
+        if !offset.is_multiple_of(align_of::<u32>()) {
+            return Err(ScmiError::ProtocolError);
+        }
+        self.check_payload_range(offset, size_of::<u32>())?;
+        Ok(self.read_u32(Self::PAYLOAD_OFFSET + offset))
     }
 
-    pub(crate) fn read_payload_i32(&self, offset: usize) -> i32 {
-        self.read_payload_u32(offset) as i32
+    pub(crate) fn read_payload_i32(&self, offset: usize) -> Result<i32, ScmiError> {
+        Ok(self.read_payload_u32(offset)? as i32)
     }
 
     pub fn payload_ptr(&mut self) -> *mut u8 {
         unsafe { self.address.as_ptr().add(Self::PAYLOAD_OFFSET) }
     }
 
-    pub fn write_payload(&mut self, buff: &[u8]) {
+    pub fn write_payload(&mut self, buff: &[u8]) -> Result<(), ScmiError> {
+        self.check_payload_range(0, buff.len())?;
         unsafe {
             let dest = self.address.as_ptr().add(size_of::<ShmemHeader>());
             for (i, &b) in buff.iter().enumerate() {
@@ -138,9 +158,11 @@ impl Shmem {
             }
         }
         wmb();
+        Ok(())
     }
 
-    pub fn read_payload(&mut self, buff: &mut [u8], skip: usize) {
+    pub fn read_payload(&mut self, buff: &mut [u8], skip: usize) -> Result<(), ScmiError> {
+        self.check_payload_range(skip, buff.len())?;
         unsafe {
             let src = self.payload_ptr();
             for (i, b) in buff.iter_mut().enumerate() {
@@ -148,6 +170,18 @@ impl Shmem {
             }
         }
         rmb();
+        Ok(())
+    }
+
+    fn check_payload_range(&self, offset: usize, len: usize) -> Result<(), ScmiError> {
+        let payload_end = offset.checked_add(len).ok_or(ScmiError::ProtocolError)?;
+        let window_end = Self::PAYLOAD_OFFSET
+            .checked_add(payload_end)
+            .ok_or(ScmiError::ProtocolError)?;
+        if window_end > self.size {
+            return Err(ScmiError::ProtocolError);
+        }
+        Ok(())
     }
 
     fn write_u32(&mut self, offset: usize, value: u32) {

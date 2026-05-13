@@ -64,9 +64,10 @@ pub use crate::{
 use crate::{host::PendingData, regs::RegisterBlockVolatileFieldAccess};
 
 /// Stable controller event extracted from DW_mshc raw interrupt status.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Event {
     /// No status bit requiring runtime action is currently pending.
+    #[default]
     None,
     /// A command response has completed.
     CommandComplete,
@@ -106,6 +107,8 @@ pub(crate) const DWMMC_INT_ERROR_MASK: u32 = DWMMC_INT_RESPONSE_ERROR
     | DWMMC_INT_END_BIT_ERROR;
 
 impl SdioHost for DwMmc {
+    type Event = Event;
+
     fn send_command(&mut self, cmd: &Command) -> Result<Response, Error> {
         self.issue_command(cmd)
     }
@@ -203,6 +206,20 @@ impl SdioHost for DwMmc {
 
     fn switch_voltage(&mut self, voltage: SignalVoltage) -> Result<(), Error> {
         self.set_signal_voltage(voltage)
+    }
+
+    fn enable_data_irq(&mut self) -> Result<(), Error> {
+        DwMmc::enable_data_irq(self);
+        Ok(())
+    }
+
+    fn disable_data_irq(&mut self) -> Result<(), Error> {
+        DwMmc::disable_data_irq(self);
+        Ok(())
+    }
+
+    fn handle_irq(&mut self) -> Self::Event {
+        DwMmc::handle_irq(self)
     }
 }
 

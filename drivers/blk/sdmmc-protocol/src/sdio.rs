@@ -74,6 +74,12 @@ pub enum SignalVoltage {
 /// The driver tracks the published RCA itself, so host implementations no
 /// longer need to snoop R6 responses or expose a `rca()` accessor.
 pub trait SdioHost {
+    /// Host-controller IRQ event type.
+    ///
+    /// Portable host crates can expose their native event enum here. The
+    /// protocol layer does not interpret it; OS glue maps it to runtime wakeups.
+    type Event: Default;
+
     /// Send a command and receive the response
     fn send_command(&mut self, cmd: &Command) -> Result<Response, Error>;
 
@@ -152,6 +158,28 @@ pub trait SdioHost {
     /// implement this when the controller can validate the result.
     fn execute_tuning(&mut self, _cmd_index: u8) -> Result<(), Error> {
         Err(Error::UnsupportedCommand)
+    }
+
+    /// Route data-transfer completion and error status to the host IRQ line.
+    ///
+    /// Default is a no-op so polling-only hosts do not have to implement IRQ
+    /// support.
+    fn enable_data_irq(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Mask host IRQ delivery while keeping the controller usable for polling.
+    ///
+    /// Default is a no-op for polling-only hosts.
+    fn disable_data_irq(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Acknowledge pending host IRQ status and return a hardware event summary.
+    ///
+    /// This must not block or perform OS wakeups.
+    fn handle_irq(&mut self) -> Self::Event {
+        Self::Event::default()
     }
 }
 
@@ -1088,6 +1116,8 @@ mod tests {
     }
 
     impl SdioHost for MockHost {
+        type Event = ();
+
         fn send_command(&mut self, cmd: &Command) -> Result<Response, Error> {
             self.commands.push(*cmd);
             if self.replies.is_empty() {
@@ -1173,6 +1203,15 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn sdio_host_irq_methods_default_to_noop() {
+        let mut host = MockHost::new(Vec::new());
+
+        assert_eq!(host.enable_data_irq(), Ok(()));
+        assert_eq!(host.disable_data_irq(), Ok(()));
+        assert_eq!(host.handle_irq(), ());
     }
 
     fn ok_r1() -> Response {
