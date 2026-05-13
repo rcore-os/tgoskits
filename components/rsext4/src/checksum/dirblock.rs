@@ -2,10 +2,7 @@
 
 use super::core::ext4_metadata_csum32;
 use crate::{
-    crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
-    endian::read_u16_le,
-    entries::{Ext4DirEntryTail, Ext4DxEntry, Ext4DxRootInfo},
-    superblock::Ext4Superblock,
+    config::runtime_block_size, crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum}, endian::read_u16_le, entries::{Ext4DirEntryTail, Ext4DxEntry, Ext4DxRootInfo}, superblock::Ext4Superblock
 };
 
 /// Computes the CRC32C for a generic metadata block payload.
@@ -101,12 +98,12 @@ pub fn verify_ext4_dx_checksum(
     if !ext4_superblock_has_metadata_csum(sb) {
         return Some(true);
     }
-    if block_bytes.len() < sb.block_size() as usize {
+    if block_bytes.len() < runtime_block_size() {
         return Some(false);
     }
 
-    let count_offset = dx_countlimit_offset(block_bytes,sb.block_size() as usize)?;
-    if count_offset + 4 > sb.block_size() as usize {
+    let count_offset = dx_countlimit_offset(block_bytes,runtime_block_size() as usize)?;
+    if count_offset + 4 > runtime_block_size() as usize {
         return Some(false);
     }
 
@@ -115,12 +112,12 @@ pub fn verify_ext4_dx_checksum(
     let entry_size = core::mem::size_of::<Ext4DxEntry>();
     let tail_len = core::mem::size_of::<u64>();
 
-    if count > limit || count_offset + limit.saturating_mul(entry_size) > sb.block_size() as usize - tail_len {
+    if count > limit || count_offset + limit.saturating_mul(entry_size) > runtime_block_size() as usize - tail_len {
         return Some(false);
     }
 
     let tail_offset = count_offset + limit * entry_size;
-    if tail_offset + tail_len > sb.block_size() as usize {
+    if tail_offset + tail_len > runtime_block_size() as usize {
         return Some(false);
     }
 
