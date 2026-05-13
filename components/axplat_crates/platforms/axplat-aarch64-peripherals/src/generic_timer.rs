@@ -10,10 +10,10 @@
 //! continue to use CNTP and the IRQ number their `axconfig.toml`
 //! already advertises.
 
-#[cfg(feature = "gic-v3")]
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTV_TVAL_EL0, CNTVCT_EL0, Readable, Writeable};
 #[cfg(not(feature = "gic-v3"))]
 use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_TVAL_EL0, CNTPCT_EL0, Readable, Writeable};
+#[cfg(feature = "gic-v3")]
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTV_TVAL_EL0, CNTVCT_EL0, Readable, Writeable};
 use ax_int_ratio::Ratio;
 
 static mut CNTVCT_TO_NANOS_RATIO: Ratio = Ratio::zero();
