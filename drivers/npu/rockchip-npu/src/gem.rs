@@ -67,7 +67,8 @@ impl GemPool {
 
         let offset = usize::try_from(args.offset.saturating_add(base_offset))
             .map_err(|_| RknpuError::InvalidParameter)?;
-        let requested_size = usize::try_from(args.size).map_err(|_| RknpuError::InvalidParameter)?;
+        let requested_size =
+            usize::try_from(args.size).map_err(|_| RknpuError::InvalidParameter)?;
         let size = if requested_size == 0 {
             data.bytes_len().saturating_sub(offset)
         } else {

@@ -308,9 +308,7 @@ impl Regs {
 
     pub fn csi_read(&self, addr: u32) -> Option<u32> {
         self.regs().csiar.write(
-            CSIAR::ADDR.val(addr & 0x0fff)
-                + CSIAR::FUNCTION.val(0)
-                + CSIAR::BYTE_ENABLE.val(0x0f),
+            CSIAR::ADDR.val(addr & 0x0fff) + CSIAR::FUNCTION.val(0) + CSIAR::BYTE_ENABLE.val(0x0f),
         );
         for _ in 0..1_000 {
             if self.regs().csiar.is_set(CSIAR::FLAG) {

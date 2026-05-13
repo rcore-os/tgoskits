@@ -1,7 +1,7 @@
 use core::time::Duration;
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::wall_time;
+use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use bitflags::bitflags;
 use linux_raw_sys::general::{
@@ -97,20 +97,14 @@ fn do_epoll_wait(
 
     with_blocked_signals(
         nullable!(sigmask.get_as_ref())?.copied(),
-        || {
-            let deadline = timeout.map(|t| wall_time() + t);
-            loop {
-                match epoll.poll_events(events) {
-                    Ok(n) => return Ok(n as _),
-                    Err(AxError::WouldBlock) => {}
-                    Err(e) => return Err(e),
-                }
-
-                if deadline.is_some_and(|ddl| wall_time() >= ddl) {
-                    return Ok(0);
-                }
-                ax_task::yield_now();
-            }
+        || match block_on(future::timeout(
+            timeout,
+            poll_io(epoll.as_ref(), IoEvents::IN, false, || {
+                epoll.poll_events(events)
+            }),
+        )) {
+            Ok(r) => r.map(|n| n as _),
+            Err(_) => Ok(0),
         },
     )
 }

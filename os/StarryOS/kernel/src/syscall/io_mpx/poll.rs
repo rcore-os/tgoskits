@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{TimeValue, wall_time};
+use ax_hal::time::TimeValue;
+use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use linux_raw_sys::general::{POLLNVAL, pollfd, timespec};
 use starry_signal::SignalSet;
@@ -52,37 +53,39 @@ fn do_poll(
     let fds = FdPollSet(fds);
 
     with_blocked_signals(sigmask, || {
-        let deadline = timeout.map(|t| wall_time() + t);
-        loop {
-            let mut res = 0usize;
-            for ((fd, events), revents) in fds.0.iter().zip(revents.iter_mut()) {
-                let mut result = fd.poll();
-                if result.contains(IoEvents::IN) {
-                    result |= IoEvents::RDNORM;
-                }
-                if result.contains(IoEvents::OUT) {
-                    result |= IoEvents::WRNORM;
-                }
-                // POSIX: POLLHUP and POLLERR are always reported in revents,
-                // even if not requested in events. They must NOT be masked out.
-                let always_report =
-                    result & (IoEvents::HUP | IoEvents::ERR | IoEvents::RDHUP | IoEvents::NVAL);
-                result &= *events;
-                result |= always_report;
+        match block_on(future::timeout(
+            timeout,
+            poll_io(&fds, IoEvents::empty(), false, || {
+                let mut res = 0usize;
+                for ((fd, events), revents) in fds.0.iter().zip(revents.iter_mut()) {
+                    let mut result = fd.poll();
+                    if result.contains(IoEvents::IN) {
+                        result |= IoEvents::RDNORM;
+                    }
+                    if result.contains(IoEvents::OUT) {
+                        result |= IoEvents::WRNORM;
+                    }
+                    // POSIX: POLLHUP and POLLERR are always reported in revents,
+                    // even if not requested in events. They must NOT be masked out.
+                    let always_report =
+                        result & (IoEvents::HUP | IoEvents::ERR | IoEvents::RDHUP | IoEvents::NVAL);
+                    result &= *events;
+                    result |= always_report;
 
-                **revents = result.bits() as _;
-                if **revents != 0 {
-                    res += 1;
+                    **revents = result.bits() as _;
+                    if **revents != 0 {
+                        res += 1;
+                    }
                 }
-            }
-            if res > 0 {
-                return Ok(res as _);
-            }
-
-            if deadline.is_some_and(|ddl| wall_time() >= ddl) {
-                return Ok(0);
-            }
-            ax_task::yield_now();
+                if res > 0 {
+                    Ok(res as _)
+                } else {
+                    Err(AxError::WouldBlock)
+                }
+            }),
+        )) {
+            Ok(r) => r,
+            Err(_) => Ok(0),
         }
     })
 }

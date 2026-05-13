@@ -954,7 +954,8 @@ impl IRxQueue for Rtl8125RxQueue {
             {
                 self.last_rx_rearm_idle = self.idle_polls;
                 warn!(
-                    "RTL8125 rx overflow rearm: idx={idx}, opts1={:#x}, submitted={}, reclaimed={}, status={status:?}",
+                    "RTL8125 rx overflow rearm: idx={idx}, opts1={:#x}, submitted={}, \
+                     reclaimed={}, status={status:?}",
                     desc.opts1, self.submitted, self.reclaimed
                 );
                 self.regs.write_interrupt_status(status.intr_status);
@@ -964,11 +965,9 @@ impl IRxQueue for Rtl8125RxQueue {
             }
             if self.idle_polls.is_multiple_of(RX_IDLE_LOG_INTERVAL) {
                 debug!(
-                    "RTL8125 rx idle: idx={idx}, opts1={:#x}, submitted={}, reclaimed={}, status={:?}",
-                    desc.opts1,
-                    self.submitted,
-                    self.reclaimed,
-                    status,
+                    "RTL8125 rx idle: idx={idx}, opts1={:#x}, submitted={}, reclaimed={}, \
+                     status={:?}",
+                    desc.opts1, self.submitted, self.reclaimed, status,
                 );
             }
             return None;
@@ -1039,7 +1038,6 @@ impl Rtl8125RxQueue {
         self.submitted = self.submitted.saturating_add(1);
         Ok(())
     }
-
 }
 
 fn release_dma_descriptor() {
