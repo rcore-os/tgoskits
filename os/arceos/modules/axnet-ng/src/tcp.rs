@@ -415,7 +415,10 @@ impl SocketOps for TcpSocket {
                     self.bound_registered.store(true, Ordering::Release);
                 }
                 self.general
-                    .set_device_mask(get_service().device_mask_for(&bound_endpoint));
+                    .set_device_mask(get_service().device_mask_for(&IpListenEndpoint {
+                        addr: Some(remote_endpoint.addr),
+                        port: remote_endpoint.port,
+                    }));
                 Ok(())
             })?;
 

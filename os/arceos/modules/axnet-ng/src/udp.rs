@@ -162,6 +162,11 @@ impl SocketOps for UdpSocket {
         let remote_addr = IpEndpoint::from(remote_addr);
         let src = get_service().get_source_address(&remote_addr.addr);
         *guard = Some((remote_addr, src));
+        self.general
+            .set_device_mask(get_service().device_mask_for(&IpListenEndpoint {
+                addr: Some(remote_addr.addr),
+                port: remote_addr.port,
+            }));
         debug!("UDP socket {}: connected to {}", self.handle, remote_addr);
         Ok(())
     }
