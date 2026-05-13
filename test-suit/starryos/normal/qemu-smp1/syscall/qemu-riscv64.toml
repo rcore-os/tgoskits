@@ -25,6 +25,7 @@ test_commands = [
     "/usr/bin/test-epoll-pwait-sigsetsize",
     "/usr/bin/test-futex-robust-list",
     "/usr/bin/test-fsync-dir",
+    "/usr/bin/test-fchownat",
     "/usr/bin/test-getgroups",
     "/usr/bin/test-getrandom",
     "/usr/bin/test-msgget",
