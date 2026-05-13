@@ -148,22 +148,22 @@ impl Memfd {
     /// shmem_write_check_limits semantics: a write that straddles EOF
     /// is truncated to the in-EOF bytes (partial success); a write
     /// that starts at or past EOF is rejected with `EPERM`.
+    ///
+    /// `truncate_mtx` is taken before the seal load so a concurrent
+    /// `add_seals(F_SEAL_GROW)` cannot publish between us reading
+    /// the seal and performing the write — without that ordering,
+    /// the unsealed fast path could escape into a write that grows
+    /// the file after the seal landed.
     pub fn write_at(&self, data: &[u8], offset: u64) -> AxResult<usize> {
+        let f = self.inner.inner().access(FileFlags::WRITE)?;
+        let _guard = self.truncate_mtx.lock();
         let seals = self.get_seals();
         if seals & F_SEAL_WRITE != 0 {
             return Err(AxError::OperationNotPermitted);
         }
-        let f = self.inner.inner().access(FileFlags::WRITE)?;
         if seals & F_SEAL_GROW == 0 {
             return f.write_at(data, offset);
         }
-        // F_SEAL_GROW: cap the write to whatever bytes still fit in
-        // the current file size. Hold `truncate_mtx` so the bound we
-        // observe stays stable across the write — a concurrent
-        // sealed-ftruncate or sealed-write that would extend the
-        // file is also forced to take this lock and observes the
-        // post-write size.
-        let _guard = self.truncate_mtx.lock();
         let cur_len = self.inner.inner().backend()?.location().len()?;
         if offset >= cur_len {
             return Err(AxError::OperationNotPermitted);
@@ -182,6 +182,12 @@ impl FileLike for Memfd {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+        // Hold `truncate_mtx` across the seal read and the write so
+        // a concurrent `add_seals(F_SEAL_GROW)` cannot publish in
+        // between and let an unsealed write grow the file after the
+        // seal was supposed to land. `add_seals` also takes this
+        // lock when publishing.
+        let _guard = self.truncate_mtx.lock();
         let seals = self.get_seals();
         if seals & F_SEAL_WRITE != 0 {
             return Err(AxError::OperationNotPermitted);
@@ -189,15 +195,13 @@ impl FileLike for Memfd {
         if seals & F_SEAL_GROW == 0 {
             return self.inner.write(src);
         }
-        // F_SEAL_GROW: writes past current EOF must fail. The inner
-        // File owns the cursor privately, so we can't pre-check
-        // "would-extend" by computing `pos + len > size`; instead we
-        // serialize against ftruncate and other sealed writes (so the
-        // size we observe stays stable), perform the write, and snap
-        // back to the pre-write size if it grew. Observable contract
-        // matches Linux's shmem_write_check_limits: file size never
-        // grows under the seal, and the call reports EPERM.
-        let _guard = self.truncate_mtx.lock();
+        // F_SEAL_GROW: the inner File owns the cursor privately, so
+        // we can't pre-check "would-extend" by computing
+        // `pos + len > size`. Perform the write under the lock,
+        // then snap back to the pre-write size if it grew. Observable
+        // contract matches Linux's shmem_write_check_limits: file
+        // size never grows under the seal, and the call reports
+        // EPERM.
         let pre_len = self.inner.inner().backend()?.location().len()?;
         let written = self.inner.write(src)?;
         let post_len = self.inner.inner().backend()?.location().len()?;
