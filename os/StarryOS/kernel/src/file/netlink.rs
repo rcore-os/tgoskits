@@ -353,13 +353,13 @@ impl NetlinkSocket {
 
         // Unknown family (anything not the controller) → ENOENT.
         if header.ty != GENL_ID_CTRL {
-            push_nlmsg_error(&mut response, &header, pid, -libc_ENOENT);
+            push_nlmsg_error(&mut response, request, pid, -libc_ENOENT);
             return Ok(response);
         }
 
         if genl.cmd != CTRL_CMD_GETFAMILY {
             // Other controller commands are unimplemented.
-            push_nlmsg_error(&mut response, &header, pid, -libc_EOPNOTSUPP);
+            push_nlmsg_error(&mut response, request, pid, -libc_EOPNOTSUPP);
             return Ok(response);
         }
 
@@ -375,7 +375,7 @@ impl NetlinkSocket {
         };
 
         if !target_is_ctrl {
-            push_nlmsg_error(&mut response, &header, pid, -libc_ENOENT);
+            push_nlmsg_error(&mut response, request, pid, -libc_ENOENT);
             return Ok(response);
         }
 
@@ -606,11 +606,20 @@ fn push_ctrl_family(out: &mut Vec<u8>, seq: u32, pid: u32, multi: bool) {
     out.extend_from_slice(&payload);
 }
 
-fn push_nlmsg_error(out: &mut Vec<u8>, request: &NlMsgHdr, pid: u32, error: i32) {
-    let payload_len = size_of::<i32>() + size_of::<NlMsgHdr>();
-    push_nl_header(out, NLMSG_ERROR, 0, request.seq, pid, payload_len);
+/// Emit a `NLMSG_ERROR` whose payload echoes the entire original
+/// request — `i32 error` followed by the request bytes. Linux's
+/// `struct nlmsgerr { int error; struct nlmsghdr msg; }` is followed
+/// by the request payload, and libnl `nl_recvmsgs` walks the inner
+/// nlmsghdr's `nlmsg_len` to find the end of the error frame. Echoing
+/// only the header would leave the inner `nlmsg_len` pointing past
+/// the bytes actually written and trip libnl's parser.
+fn push_nlmsg_error(out: &mut Vec<u8>, request_bytes: &[u8], pid: u32, error: i32) {
+    let header = unsafe { request_bytes.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+    let req_len = (header.len as usize).min(request_bytes.len());
+    let payload_len = size_of::<i32>() + req_len;
+    push_nl_header(out, NLMSG_ERROR, 0, header.seq, pid, payload_len);
     out.extend_from_slice(&error.to_ne_bytes());
-    push_struct(out, request);
+    out.extend_from_slice(&request_bytes[..req_len]);
 }
 
 /// Walk the attribute stream after a `genlmsghdr` and return the
