@@ -11,7 +11,7 @@ use crate::{
 /// 对应 C 结构体 `rknpu_subcore_task`
 /// 用于表示子核心任务的起始索引和任务数量
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RknpuSubcoreTask {
     /// 任务起始索引
     pub task_start: u32,
@@ -183,34 +183,50 @@ impl Rknpu {
             debug!("Nonblock task");
         }
 
-        // RKNN runtime submits identical task ranges for each RK3588 subcore.
-        // The Linux driver schedules those as one logical multi-core job. This
-        // minimal polling driver runs submissions synchronously, so executing
-        // every non-empty subcore in sequence reruns the same graph and
-        // overwrites outputs. Run the first non-empty range only until proper
-        // parallel subcore scheduling is implemented.
         let first_subcore = args
             .subcore_task
             .iter()
-            .position(|subcore| subcore.task_number != 0);
+            .find(|subcore| subcore.task_number != 0)
+            .cloned();
+        let fold_identical_subcores = if let Some(first) = &first_subcore {
+            args.subcore_task.iter().all(|subcore| {
+                subcore.task_number == 0
+                    || (subcore.task_start == first.task_start
+                        && subcore.task_number == first.task_number)
+            })
+        } else {
+            false
+        };
+
+        let mut completed_tasks = 0usize;
         for idx in 0..5 {
-            if Some(idx) != first_subcore {
+            if args.subcore_task[idx].task_number == 0 {
                 continue;
             }
-            if args.subcore_task[idx].task_number == 0 {
+            if fold_identical_subcores && Some(&args.subcore_task[idx]) != first_subcore.as_ref() {
                 continue;
             }
             debug!("Submitting subcore task index: {}", idx);
             let submitted_tasks = self.submit_one(idx, args)?;
+            completed_tasks = completed_tasks.saturating_add(submitted_tasks);
             debug!(
                 "Submitted {} tasks for subcore index {}",
                 submitted_tasks, idx
             );
+            if fold_identical_subcores {
+                break;
+            }
         }
 
         self.gem.prepare_read_all()?;
 
-        args.task_counter = args.task_number as _;
+        args.task_counter = if fold_identical_subcores {
+            args.task_number
+        } else {
+            completed_tasks
+                .try_into()
+                .map_err(|_| RknpuError::InvalidParameter)?
+        };
         args.hw_elapse_time = (args.timeout / 2) as _;
 
         Ok(())
