@@ -17,7 +17,7 @@ use crate::{
         Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
         with_fs,
     },
-    mm::{UserPtr, vm_load_string},
+    mm::vm_load_string,
     pseudofs::{Device, dev::tty},
     task::AsThread,
 };
@@ -195,8 +195,8 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
                 if let Some(f) = fd_table.get_mut(fd as _) {
                     f.cloexec = true;
                 }
-            } else {
-                fd_table.remove(fd as _);
+            } else if let Some(f) = fd_table.remove(fd as _) {
+                crate::file::release_locks_on_close(f);
             }
         }
     }
@@ -246,7 +246,9 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
         .ok_or(AxError::BadFileDescriptor)?;
     f.cloexec = flags.contains(Dup3Flags::O_CLOEXEC);
 
-    fd_table.remove(new_fd as _);
+    if let Some(prev) = fd_table.remove(new_fd as _) {
+        crate::file::release_locks_on_close(prev);
+    }
     fd_table
         .add_at(new_fd as _, f)
         .map_err(|_| AxError::BadFileDescriptor)?;
@@ -257,16 +259,13 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
 pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     debug!("sys_fcntl <= fd: {fd} cmd: {cmd} arg: {arg}");
 
+    if let Some(r) = super::lock::dispatch_fcntl(fd, cmd, arg) {
+        return r;
+    }
+
     match cmd as u32 {
         F_DUPFD => dup_fd(fd, false),
         F_DUPFD_CLOEXEC => dup_fd(fd, true),
-        F_SETLK | F_SETLKW => Ok(0),
-        F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
-        F_GETLK | F_OFD_GETLK => {
-            let arg = UserPtr::<flock64>::from(arg);
-            arg.get_as_mut()?.l_type = F_UNLCK as _;
-            Ok(0)
-        }
         F_SETFL => {
             get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
             Ok(0)
@@ -316,6 +315,5 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
 
 pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
     debug!("flock <= fd: {fd}, operation: {operation}");
-    // TODO: flock
-    Ok(0)
+    super::lock::flock_op(fd, operation)
 }

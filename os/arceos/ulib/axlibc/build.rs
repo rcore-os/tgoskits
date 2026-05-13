@@ -1,6 +1,7 @@
 fn main() {
     fn gen_c_to_rust_bindings(in_file: &str, out_file: &str) {
         println!("cargo:rerun-if-changed={in_file}");
+        println!("cargo:rerun-if-changed=include/ax_pthread_mutex.h");
 
         let target = std::env::var("TARGET").unwrap();
         let allow_types = ["tm", "jmp_buf"];
@@ -10,6 +11,12 @@ fn main() {
             .derive_default(true)
             .size_t_is_usize(false)
             .use_core();
+        for feature in ["MULTITASK", "SMP", "LOCKDEP"] {
+            println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{feature}");
+            if std::env::var_os(format!("CARGO_FEATURE_{feature}")).is_some() {
+                builder = builder.clang_arg(format!("-DAX_CONFIG_{feature}"));
+            }
+        }
         if let Some(llvm_target) = target.strip_suffix("-softfloat") {
             // remove "-softfloat" suffix for some targets
             builder = builder.clang_arg(format!("--target={llvm_target}"));

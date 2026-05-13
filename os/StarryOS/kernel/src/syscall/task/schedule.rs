@@ -1,3 +1,5 @@
+use alloc::{sync::Arc, vec::Vec};
+
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::TimeValue;
 use ax_task::{
@@ -11,7 +13,10 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use crate::{
-    task::{get_process_data, get_process_group, get_task, is_zombie_pid},
+    task::{
+        AsThread, Cred, ProcessData, get_process_data, get_process_group, get_task, is_zombie_pid,
+        processes,
+    },
     time::TimeValueLike,
 };
 
@@ -151,28 +156,140 @@ pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
     debug!("sys_getpriority <= which: {which}, who: {who}");
 
     match which {
-        PRIO_PROCESS => {
-            if who != 0 {
-                // Zombies have no ProcessData but still exist — return 0 like Linux.
-                if get_process_data(who).is_err() && !is_zombie_pid(who) {
-                    return Err(AxError::NoSuchProcess);
-                }
-            }
-            Ok(20)
-        }
+        PRIO_PROCESS => match get_process_data(who) {
+            Ok(proc) => Ok(raw_priority(proc.nice())),
+            Err(AxError::NoSuchProcess) if who != 0 && is_zombie_pid(who) => Ok(20),
+            Err(err) => Err(err),
+        },
         PRIO_PGRP => {
-            if who != 0 {
-                let _pg = get_process_group(who)?;
-            }
-            Ok(20)
+            let pgid = if who == 0 {
+                current().as_thread().proc_data.proc.group().pgid()
+            } else {
+                get_process_group(who)?.pgid()
+            };
+            min_priority_for_processes(
+                processes()
+                    .into_iter()
+                    .filter(|proc| proc.proc.group().pgid() == pgid),
+            )
         }
         PRIO_USER => {
-            if who == 0 {
-                Ok(20)
+            let uid = if who == 0 {
+                current().as_thread().cred().uid
             } else {
-                Err(AxError::NoSuchProcess)
-            }
+                who
+            };
+            min_priority_for_processes(processes_for_uid(uid).into_iter())
         }
         _ => Err(AxError::InvalidInput),
     }
+}
+
+pub fn sys_setpriority(which: u32, who: u32, prio: i32) -> AxResult<isize> {
+    debug!("sys_setpriority <= which: {which}, who: {who}, prio: {prio}");
+
+    let nice = prio.clamp(-20, 19);
+    match which {
+        PRIO_PROCESS => {
+            let proc = get_process_data(who)?;
+            check_setpriority_permission(&proc, nice)?;
+            proc.set_nice(nice);
+            Ok(0)
+        }
+        PRIO_PGRP => {
+            let pgid = if who == 0 {
+                current().as_thread().proc_data.proc.group().pgid()
+            } else {
+                get_process_group(who)?.pgid()
+            };
+            set_priority_for_processes(
+                processes()
+                    .into_iter()
+                    .filter(|proc| proc.proc.group().pgid() == pgid),
+                nice,
+            )
+        }
+        PRIO_USER => {
+            let uid = if who == 0 {
+                current().as_thread().cred().uid
+            } else {
+                who
+            };
+            set_priority_for_processes(processes_for_uid(uid).into_iter(), nice)
+        }
+        _ => Err(AxError::InvalidInput),
+    }
+}
+
+fn raw_priority(nice: i32) -> isize {
+    (20 - nice) as isize
+}
+
+fn min_priority_for_processes(
+    procs: impl Iterator<Item = alloc::sync::Arc<ProcessData>>,
+) -> AxResult<isize> {
+    procs
+        .map(|proc| proc.nice())
+        .min()
+        .map(raw_priority)
+        .ok_or(AxError::NoSuchProcess)
+}
+
+fn processes_for_uid(uid: u32) -> Vec<Arc<ProcessData>> {
+    processes()
+        .into_iter()
+        .filter(|proc| {
+            process_cred(proc)
+                .map(|cred| cred.uid == uid)
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn process_cred(proc: &ProcessData) -> AxResult<Arc<Cred>> {
+    for tid in proc.proc.threads() {
+        if let Ok(task) = get_task(tid)
+            && let Some(thread) = task.try_as_thread()
+        {
+            return Ok(thread.cred());
+        }
+    }
+    Err(AxError::NoSuchProcess)
+}
+
+fn setpriority_cred_matches(caller: &Cred, target: &Cred) -> bool {
+    caller.euid == target.uid || caller.euid == target.euid
+}
+
+fn check_setpriority_permission(proc: &ProcessData, nice: i32) -> AxResult<()> {
+    let caller = current().as_thread().cred();
+    if caller.has_cap_sys_nice() {
+        return Ok(());
+    }
+
+    let target = process_cred(proc)?;
+    if !setpriority_cred_matches(&caller, &target) {
+        return Err(AxError::OperationNotPermitted);
+    }
+    if nice < proc.nice() {
+        return Err(AxError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn set_priority_for_processes(
+    procs: impl Iterator<Item = alloc::sync::Arc<ProcessData>>,
+    nice: i32,
+) -> AxResult<isize> {
+    let procs: Vec<_> = procs.collect();
+    if procs.is_empty() {
+        return Err(AxError::NoSuchProcess);
+    }
+    for proc in &procs {
+        check_setpriority_permission(proc, nice)?;
+    }
+    for proc in procs {
+        proc.set_nice(nice);
+    }
+    Ok(0)
 }

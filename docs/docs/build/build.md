@@ -124,12 +124,12 @@ Feature 解析是构建管线中最复杂的阶段之一。它需要处理多个
 flowchart TD
     A["plat_dyn = false"] --> B["从 Cargo.toml 找到平台依赖包<br/>(如 ax-plat-aarch64-qemu-virt)"]
     B --> C["定位平台包配置文件"]
-    C --> D["调用 ax-config-gen"]
+    C --> D["调用配置引擎库"]
     D --> E["生成 .axconfig.toml<br/>到 target/axbuild/axconfig/"]
     E --> F["注入 AX_CONFIG_PATH<br/>和 AX_PLATFORM 环境变量"]
 ```
 
-ArceOS 的平台配置（如内存布局、中断控制器地址、串口基地址等）由 `ax-config-gen` 工具从平台包的配置文件中提取并生成 `.axconfig.toml`。在动态平台模式下（`plat_dyn = true`），这些配置由运行时动态加载；在静态模式下，必须在编译前预生成并注入 `AX_CONFIG_PATH` 环境变量，使得 OS 源码中的 `include_str!()` 宏能在编译期读取配置。
+ArceOS 的平台配置（如内存布局、中断控制器地址、串口基地址等）由 `axbuild` 复用配置引擎库从平台包配置文件中合并生成 `.axconfig.toml`。在动态平台模式下（`plat_dyn = true`），这些配置由运行时动态加载；在静态模式下，必须在编译前预生成并注入 `AX_CONFIG_PATH` 环境变量，使得 OS 源码中的配置宏能在编译期读取配置。
 
 ## 7. Cargo 配置组装
 

@@ -223,6 +223,7 @@ impl CloneArgs {
                 exit_signal,
             );
             proc_data.set_umask(old_proc_data.umask());
+            proc_data.set_nice(old_proc_data.nice());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
 
             {

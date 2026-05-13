@@ -16,7 +16,7 @@ use super::{
     registry::{ImageEntry, ImageRegistry},
     spec::ImageSpecRef,
 };
-use crate::support::download::{download_file, http_client};
+use crate::support::download::{acquire_path_lock, download_file, http_client};
 
 pub const REGISTRY_FILENAME: &str = "images.toml";
 const LAST_SYNC_FILENAME: &str = ".last_sync";
@@ -166,6 +166,7 @@ impl Storage {
     }
 
     async fn ensure_archive(&self, image: &ImageEntry, archive_path: &Path) -> anyhow::Result<()> {
+        let _lock = acquire_path_lock(archive_path).await?;
         if archive_path.exists() {
             match image_verify_sha256(archive_path, &image.sha256) {
                 Ok(true) => {

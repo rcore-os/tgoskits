@@ -132,7 +132,7 @@ impl SocketOps for UdpSocket {
 
         if !self.general.reuse_address() {
             // Check if the address is already in use
-            SOCKET_SET.bind_check(local_endpoint.addr, local_endpoint.port)?;
+            SOCKET_SET.udp_bind_check(local_endpoint.addr, local_endpoint.port)?;
         }
 
         self.with_smol_socket(|socket| {
@@ -185,7 +185,7 @@ impl SocketOps for UdpSocket {
                 0,
             )))?;
         }
-        self.general.send_poller(self, || {
+        let result = self.general.send_poller(self, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_open() {
@@ -214,7 +214,11 @@ impl SocketOps for UdpSocket {
                     Ok(read)
                 }
             })
-        })
+        });
+        // Dispatch the packet through the network stack (needed for loopback
+        // delivery to wake epoll waiters on the receiving socket).
+        poll_interfaces();
+        result
     }
 
     fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
@@ -224,11 +228,15 @@ impl SocketOps for UdpSocket {
 
         enum ExpectedRemote<'a> {
             Any(&'a mut SocketAddrEx),
+            AnyDiscard,
             Expecting(IpEndpoint),
         }
         let mut expected_remote = match options.from {
             Some(addr) => ExpectedRemote::Any(addr),
-            None => ExpectedRemote::Expecting(self.remote_endpoint()?.0),
+            None => match self.remote_endpoint() {
+                Ok((endpoint, _)) => ExpectedRemote::Expecting(endpoint),
+                Err(_) => ExpectedRemote::AnyDiscard,
+            },
         };
 
         self.general.recv_poller(self, || {
@@ -250,6 +258,9 @@ impl SocketOps for UdpSocket {
                             match &mut expected_remote {
                                 ExpectedRemote::Any(remote_addr) => {
                                     **remote_addr = SocketAddrEx::Ip(meta.endpoint.into());
+                                }
+                                ExpectedRemote::AnyDiscard => {
+                                    // recv() with no addr buffer and no peer — accept from any
                                 }
                                 ExpectedRemote::Expecting(expected) => {
                                     if (!expected.addr.is_unspecified()
