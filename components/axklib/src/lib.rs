@@ -73,13 +73,6 @@ pub trait Klib {
     ///   is later cleaned up if the platform/ABI requires it.
     fn mem_iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr>;
 
-    /// Updates a kernel virtual memory range for DMA coherent access.
-    ///
-    /// `uncached = true` makes the range uncached for device-coherent DMA
-    /// buffers. `uncached = false` restores ordinary read/write cacheable
-    /// kernel memory attributes.
-    fn mem_set_dma_coherent(addr: VirtAddr, size: usize, uncached: bool) -> AxResult;
-
     /// Busy-wait the current execution context for the provided duration.
     ///
     /// This is intended for short delays where sleeping or timer-based
@@ -106,7 +99,7 @@ pub trait Klib {
 
 /// Convenience re-export for memory IO mapping.
 pub mod mem {
-    pub use super::klib::{mem_iomap as iomap, mem_set_dma_coherent as set_dma_coherent};
+    pub use super::klib::mem_iomap as iomap;
 }
 
 /// Convenience re-export for busy-wait timing.
