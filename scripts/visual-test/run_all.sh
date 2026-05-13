@@ -38,11 +38,11 @@ SCENARIO_ROOT="$REPO_ROOT/test-suit/starryos/visual"
 # `cargo xtask` tests assume `cargo starry build` has run.
 case "$ARCH" in
     riscv64)
-        KERNEL="$REPO_ROOT/os/StarryOS/tests/bin/starryos-riscv64.bin"
+        KERNEL="$REPO_ROOT/target/riscv64gc-unknown-none-elf/release/starryos.bin"
         ROOTFS="$REPO_ROOT/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img"
         ;;
     aarch64)
-        KERNEL="$REPO_ROOT/os/StarryOS/tests/bin/starryos-aarch64.bin"
+        KERNEL="$REPO_ROOT/target/aarch64-unknown-none-softfloat/release/starryos.bin"
         ROOTFS="$REPO_ROOT/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img"
         ;;
     x86_64)
