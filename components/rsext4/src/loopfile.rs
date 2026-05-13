@@ -17,6 +17,7 @@ use crate::{
     ext4::*,
     extents_tree::*,
     hashtree::*,
+    checksum::*,
 };
 /// Number of direct data-block slots stored inline in `inode.i_block`.
 ///
