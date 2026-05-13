@@ -195,19 +195,43 @@ pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> AxRes
     Ok(())
 }
 
-/// Sends a fatal signal to the current process.
+/// Deliver a fatal signal raised by a synchronous exception (page
+/// fault, illegal instruction, divide-by-zero, etc.) on the current
+/// thread. Linux's `force_sig_info` semantics: the signal is bound to
+/// the faulting thread and cannot be masked, so the register dump
+/// printed during termination always describes the thread that took
+/// the exception rather than an arbitrary peer that happened to have
+/// the signal unblocked.
+///
+/// Process-wide fatal signals (signals raised on someone else's
+/// behalf) still go through [`send_signal_to_process`] and can land
+/// on any unmasked thread.
 pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
     let curr = current();
-    let proc_data = &curr.as_thread().proc_data;
-
+    let thread = curr.as_thread();
     let signo = sig.signo();
-    info!("Send fatal signal {signo:?} to the current process");
-    if let Some(tid) = proc_data.signal.send_signal(sig)
-        && let Ok(task) = get_task(tid)
-    {
-        task.interrupt();
+    info!(
+        "Synchronous-exception fatal signal {:?} on tid={}",
+        signo,
+        thread.proc_data.proc.pid()
+    );
+
+    // Force-deliver to the faulting thread. Mirrors Linux:
+    //   force_sig_info() bypasses the per-thread mask and the SIG_IGN
+    //   action, since blocking or ignoring a sync fault would just
+    //   make the kernel loop on the same fault.
+    let mut mask = thread.signal.blocked();
+    if mask.has(signo) {
+        mask.remove(signo);
+        thread.signal.set_blocked(mask);
+    }
+    if thread.signal.send_signal(sig) {
+        curr.interrupt();
     } else {
-        // No task wants to handle the signal, abort the task
+        // send_signal returning false means the signal was rejected
+        // (already pending). Either way the faulting thread is the
+        // right one to terminate, so dump and exit here directly so
+        // userspace cannot lose the register state.
         dump_user_crash_context(uctx);
         do_exit(signo as i32, true);
     }
