@@ -70,7 +70,6 @@ static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const NET_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 fn get_service() -> ax_sync::MutexGuard<'static, Service> {
     SERVICE
@@ -97,11 +96,9 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
     let static_network = !IP.is_empty() && !GATEWAY.is_empty();
     let mut dhcp_dev = None;
     let mut dhcp_mac = None;
-    let mut eth0_present = false;
 
     let eth0_ip = if let Some(dev) = net_devs.take_one() {
         info!("  use NIC 0: {:?}", dev.device_name());
-        eth0_present = true;
 
         let eth0_address = EthernetAddress(dev.mac_address().0);
         let eth0_ip = static_network
@@ -117,12 +114,6 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
         info!("  mac:  {}", eth0_address);
         if let Some(eth0_ip) = eth0_ip {
             let gateway = GATEWAY.parse().expect("Invalid gateway address");
-            router.add_rule(Rule::new(
-                eth0_ip.into(),
-                None,
-                eth0_dev,
-                eth0_ip.address().into(),
-            ));
             router.add_rule(Rule::new(
                 Ipv4Cidr::new(Ipv4Address::UNSPECIFIED, 0).into(),
                 Some(gateway),
@@ -160,9 +151,6 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
     }
     let dhcp_enabled = service.dhcp_enabled();
     SERVICE.call_once(|| Mutex::new(service));
-    if eth0_present {
-        ax_task::spawn_with_name(net_poll_daemon, "net-poll".to_owned());
-    }
     if dhcp_enabled {
         ax_task::spawn_with_name(dhcp_bootstrap, "dhcp-bootstrap".to_owned());
     }
@@ -217,11 +205,4 @@ fn dhcp_bootstrap() {
         ax_task::sleep(DHCP_BOOTSTRAP_POLL_INTERVAL);
     }
     warn!("eth0: DHCP bootstrap timed out");
-}
-
-fn net_poll_daemon() {
-    loop {
-        poll_interfaces();
-        ax_task::sleep(NET_POLL_INTERVAL);
-    }
 }

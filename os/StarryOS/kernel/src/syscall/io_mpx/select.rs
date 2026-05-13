@@ -11,7 +11,7 @@ use linux_raw_sys::{
 };
 use starry_signal::SignalSet;
 
-use super::{FdPollSet, poll_network_interfaces};
+use super::FdPollSet;
 use crate::{
     file::FD_TABLE,
     mm::{UserConstPtr, UserPtr, nullable},
@@ -110,8 +110,6 @@ fn do_select(
     with_blocked_signals(sigmask.copied(), || {
         let deadline = timeout.map(|t| wall_time() + t);
         loop {
-            poll_network_interfaces();
-
             let mut res = 0usize;
             for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
                 let events = fd.poll();

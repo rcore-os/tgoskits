@@ -6,8 +6,7 @@ This case verifies the UVC-to-NPU pipeline on StarryOS:
 2. keep only the latest captured frame so capture is not blocked by inference;
 3. periodically decode the latest frame and run YOLOv8 with RKNN;
 4. print each detection as `YOLO_RESULT`;
-5. optionally publish annotated frames as an HTTP MJPEG stream or push them to
-   a host-side relay.
+5. publish annotated frames directly from StarryOS as an HTTP MJPEG stream.
 
 It intentionally does not modify `starry-contest/demo/yolov8`. The image runner
 under `rknn-yolov8-image/` is a copied and trimmed version of the RKNN YOLOv8
@@ -77,29 +76,6 @@ Open the live annotated stream from another machine:
 http://<board-ip>:8080/stream.mjpg
 ```
 
-If the host cannot open the board URL directly, run the reverse relay on the
-host first:
-
-```bash
-python3 examples/starry/orangepi-5-plus-uvc-rknn/tools/mjpeg_relay.py \
-  --ingest-port 18080 \
-  --http-port 18081
-```
-
-Then start the stream with:
-
-```bash
-./rknn_yolov8_stream --model model/yolov8.rknn --label model/coco_80_labels_list.txt \
-  --device 0 --width 320 --height 240 --fps 30 --duration-sec 0 --infer-every 2 --max-inferences 0 \
-  --http-port 8080 --http-fps 15 --push-host <host-ip> --push-port 18080 --push-fps 15 --jpeg-quality 80
-```
-
-Open the relay stream locally:
-
-```text
-http://127.0.0.1:18081/stream.mjpg
-```
-
 Or fetch the latest annotated frame:
 
 ```text
@@ -144,15 +120,6 @@ cargo starry board \
 ```
 
 The Starry command is intentionally continuous. Keep it running while viewing
-the stream, and stop it with `Ctrl+C` when done. The board command also pushes
-annotated frames to the current host IP `10.3.10.11:18080`, so the most reliable
-viewing URL for this lab network is:
-
-```text
-http://127.0.0.1:18081/stream.mjpg
-```
-
-The board-local MJPEG server still listens on port `8080`. StarryOS uses DHCP
-by default; use the `eth0: DHCP acquired address ...` boot log as
-`<starry-board-ip>`, then try `http://<starry-board-ip>:8080/stream.mjpg` if the
-network permits inbound connections to the board.
+the stream, and stop it with `Ctrl+C` when done. StarryOS uses DHCP by default;
+use the `eth0: DHCP acquired address ...` boot log as `<starry-board-ip>`, then
+open `http://<starry-board-ip>:8080/stream.mjpg`.

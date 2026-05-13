@@ -6,7 +6,7 @@ use axpoll::IoEvents;
 use linux_raw_sys::general::{POLLNVAL, pollfd, timespec};
 use starry_signal::SignalSet;
 
-use super::{FdPollSet, poll_network_interfaces};
+use super::FdPollSet;
 use crate::{
     file::get_file_like,
     mm::{UserConstPtr, UserPtr, nullable},
@@ -54,8 +54,6 @@ fn do_poll(
     with_blocked_signals(sigmask, || {
         let deadline = timeout.map(|t| wall_time() + t);
         loop {
-            poll_network_interfaces();
-
             let mut res = 0usize;
             for ((fd, events), revents) in fds.0.iter().zip(revents.iter_mut()) {
                 let mut result = fd.poll();

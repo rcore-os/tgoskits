@@ -404,7 +404,7 @@ impl Regs {
 
     pub fn set_rx_accept_mode(&self) {
         self.regs().rx_config.modify(
-            RX_CONFIG::ACCEPT_ALL_PHYS::SET
+            RX_CONFIG::ACCEPT_ALL_PHYS::CLEAR
                 + RX_CONFIG::ACCEPT_MY_PHYS::SET
                 + RX_CONFIG::ACCEPT_MULTICAST::SET
                 + RX_CONFIG::ACCEPT_BROADCAST::SET,

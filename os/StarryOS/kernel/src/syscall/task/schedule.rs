@@ -21,7 +21,6 @@ use crate::{
 };
 
 pub fn sys_sched_yield() -> AxResult<isize> {
-    axnet::poll_interfaces();
     ax_task::yield_now();
     Ok(0)
 }
@@ -30,12 +29,10 @@ fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> TimeValue {
     debug!("sleep_impl <= {dur:?}");
 
     let start = clock();
-    axnet::poll_interfaces();
 
     // TODO: currently ignoring concrete clock type
     // We detect EINTR manually if the slept time is not enough.
     let _ = block_on(interruptible(sleep(dur)));
-    axnet::poll_interfaces();
 
     clock() - start
 }

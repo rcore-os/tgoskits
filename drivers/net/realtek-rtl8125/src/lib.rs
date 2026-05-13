@@ -41,7 +41,6 @@ const CSI_PCIE_CTRL: u32 = 0x070c;
 const CSI_PCIE_ZRXDC_NONCOMPL: u32 = 1 << 20;
 const CSI_L1_ENTRY_LATENCY: u32 = 0x0719;
 const CSI_L1_ENTRY_LATENCY_DEFAULT: u8 = 0x27;
-const ORANGEPI5P_ROBOT_MAC_FALLBACK: [u8; 6] = [0xc0, 0x74, 0x2b, 0xfa, 0x06, 0xa5];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipVersion {
@@ -193,17 +192,17 @@ impl Rtl8125 {
     }
 
     fn read_mac_address(&self) -> Result<[u8; 6]> {
-        let mac = self.regs.read_mac();
-        if is_valid_mac(mac) {
-            return Ok(mac);
-        }
-
         let mac = self.regs.read_backup_mac();
         if is_valid_mac(mac) {
             return Ok(mac);
         }
 
-        Ok(ORANGEPI5P_ROBOT_MAC_FALLBACK)
+        let mac = self.regs.read_mac();
+        if is_valid_mac(mac) {
+            return Ok(mac);
+        }
+
+        Err(Error::InvalidMacAddress)
     }
 
     fn set_mac_address(&self, mac: [u8; 6]) {
@@ -1115,7 +1114,7 @@ fn chip_version(xid: u16) -> ChipVersion {
 }
 
 fn is_valid_mac(mac: [u8; 6]) -> bool {
-    mac != [0; 6] && mac != [0xff; 6] && mac[0] & 3 == 0
+    mac != [0; 6] && mac != [0xff; 6] && mac[0] & 1 == 0
 }
 
 fn validate_ocp_reg(reg: u32) -> Result<()> {

@@ -9,7 +9,6 @@ use linux_raw_sys::general::{
 };
 use starry_signal::SignalSet;
 
-use super::poll_network_interfaces;
 use crate::{
     file::{
         FileLike,
@@ -101,7 +100,6 @@ fn do_epoll_wait(
         || {
             let deadline = timeout.map(|t| wall_time() + t);
             loop {
-                poll_network_interfaces();
                 match epoll.poll_events(events) {
                     Ok(n) => return Ok(n as _),
                     Err(AxError::WouldBlock) => {}

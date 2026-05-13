@@ -1,6 +1,0 @@
-board_type = "OrangePi-5-Plus"
-shell_prefix = "root@starry:/root #"
-fail_regex = [
-  "(?i)\\bpanic(?:ked)?\\b",
-]
-timeout = 86400

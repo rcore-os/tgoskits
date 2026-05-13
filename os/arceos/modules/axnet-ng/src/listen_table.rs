@@ -157,15 +157,6 @@ impl ListenTable {
             if !entry.can_accept_endpoint(dst) {
                 return;
             }
-            entry.syn_queue.retain(|&handle| !is_closed(sockets, handle));
-            if entry
-                .syn_queue
-                .iter()
-                .any(|&handle| is_same_connection(sockets, handle, src, dst))
-            {
-                debug!("TCP SYN duplicate {} -> {}", src, dst);
-                return;
-            }
             if entry.syn_queue.len() >= entry.backlog {
                 // SYN queue is full, drop the packet
                 warn!("SYN queue overflow!");
@@ -188,13 +179,6 @@ impl ListenTable {
                 "TCP socket {}: prepare for connection {} -> {}",
                 handle, src, entry.listen_endpoint
             );
-            debug!(
-                "TCP listen queue push {} -> {}, handle={:?}, len={}",
-                src,
-                dst,
-                handle,
-                entry.syn_queue.len() + 1
-            );
             entry.syn_queue.push_back(handle);
         }
     }
@@ -208,14 +192,4 @@ fn is_connected(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
 fn is_closed(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
     let socket: &tcp::Socket = sockets.get(handle);
     matches!(socket.state(), State::Closed)
-}
-
-fn is_same_connection(
-    sockets: &SocketSet<'_>,
-    handle: SocketHandle,
-    src: IpEndpoint,
-    dst: IpEndpoint,
-) -> bool {
-    let socket: &tcp::Socket = sockets.get(handle);
-    socket.remote_endpoint() == Some(src) && socket.local_endpoint() == Some(dst)
 }
