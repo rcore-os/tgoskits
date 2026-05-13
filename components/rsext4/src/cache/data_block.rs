@@ -23,7 +23,6 @@ pub struct CachedBlock {
 
 impl CachedBlock {
     pub fn new(data: Vec<u8>, block_num: AbsoluteBN) -> Self {
-        
         if data.len() != runtime_block_size() {
             error!("The block size of lower datablock cache not equal ext4 logic block size");
         }
