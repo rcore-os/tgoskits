@@ -216,10 +216,31 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
         thread.proc_data.proc.pid()
     );
 
-    // Force-deliver to the faulting thread. Mirrors Linux:
-    //   force_sig_info() bypasses the per-thread mask and the SIG_IGN
-    //   action, since blocking or ignoring a sync fault would just
-    //   make the kernel loop on the same fault.
+    // Force-deliver to the faulting thread. Mirrors Linux's
+    //   force_sig_info():
+    //     - Reset SIG_IGN to SIG_DFL so the signal cannot be silently
+    //       swallowed: a synchronous SIGSEGV/SIGILL/SIGBUS on an
+    //       address the user-space program told us to ignore would
+    //       otherwise loop on the same fault forever.
+    //     - Clear the per-thread mask bit so a thread that blocked
+    //       the signal still terminates on a sync fault.
+    //     - Then enqueue normally. If the disposition was a user
+    //       handler, it still gets to run; the bypass only flips
+    //       Ignore.
+    {
+        use starry_signal::SignalDisposition;
+        let mut actions = thread.proc_data.proc.actions.lock();
+        let act = &mut actions[signo];
+        let force_default = matches!(act.disposition, SignalDisposition::Ignore)
+            || (matches!(act.disposition, SignalDisposition::Default)
+                && matches!(
+                    signo.default_action(),
+                    starry_signal::DefaultSignalAction::Ignore
+                ));
+        if force_default {
+            *act = starry_signal::SignalAction::default();
+        }
+    }
     let mut mask = thread.signal.blocked();
     if mask.has(signo) {
         mask.remove(signo);
