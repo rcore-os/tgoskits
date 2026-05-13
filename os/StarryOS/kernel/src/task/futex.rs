@@ -273,11 +273,11 @@ impl Deref for FutexGuard<'_> {
 
 impl Drop for FutexGuard<'_> {
     fn drop(&mut self) {
-        // Lock the table BEFORE checking the strong count to prevent a
-        // TOCTOU race: on SMP, another core could call get_or_insert() on
-        // the same key between our check and the lock acquisition below,
-        // creating a new reference that would be invalidated when we remove
-        // the entry. Checking inside the lock closes this window.
+        // Lock the table BEFORE checking strong_count to prevent a TOCTOU
+        // race: on SMP, another core could call get_or_insert() on the same
+        // key between the count check and the remove() call, creating a new
+        // reference that would be invalidated when we remove the entry.
+        // Checking inside the lock makes check-and-remove atomic.
         let mut table = self.table.0.lock();
         // Re-check strong_count under lock — a concurrent get_or_insert may
         // have cloned the Arc in the meantime. The <= 2 threshold accounts

@@ -252,16 +252,18 @@ pub fn close_file_like(fd: c_int) -> AxResult {
 /// resources are properly released. Without this, parent processes blocking on
 /// pipe reads will never receive EOF.
 pub fn close_all_fds() {
-    // Acquire the write lock first before checking the strong count to
-    // prevent a TOCTOU race: on SMP, a concurrent clone(CLONE_FILES) in
-    // another scope could clone the Arc between the count check and the
-    // lock acquisition, causing a shared FD table to be incorrectly cleared.
+    // Acquire the write lock before checking strong_count. The clone(CLONE_FILES)
+    // path in syscall/task/clone.rs also acquires FD_TABLE.read() before cloning
+    // the Arc, creating a shared synchronization boundary. This ensures:
+    // - If close_all_fds acquires the write lock first, clone blocks on read lock
+    //   until we release, so strong_count cannot change during our check.
+    // - If clone holds the read lock first, we block on write lock, and by the
+    //   time we proceed strong_count already reflects the clone.
     let mut table = FD_TABLE.write();
 
     // CLONE_FILES may share the same fd table across multiple tasks/processes.
     // In that case, an exiting sharer must not clear the whole table, or other
     // live sharers (including the parent) will lose stdout/stderr unexpectedly.
-    // Re-checking under the write lock closes the TOCTOU window.
     if Arc::strong_count(&FD_TABLE) > 1 {
         return;
     }
