@@ -605,7 +605,11 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
                 .receive_complete(token, rx_buf.raw_buf_mut())
                 .map_err(as_dev_err)?
         };
-        validate_received_packet_layout(hdr_len, pkt_len, rx_buf.capacity())?;
+        if let Err(err) = validate_received_packet_layout(hdr_len, pkt_len, rx_buf.capacity()) {
+            self.free_rx_bufs.push(rx_buf);
+            let _ = self.replenish_free_rx_buffers();
+            return Err(err);
+        }
         rx_buf.set_header_len(hdr_len);
         rx_buf.set_packet_len(pkt_len);
         Ok(rx_buf)
@@ -803,7 +807,7 @@ mod tests {
         QueueOccupancy, RuntimeStateSnapshot, count_populated_slots, insert_buffer,
         rollback_checked_out_rx_buffer, rollback_checked_out_tx_buffer, take_buffer,
         validate_packet_layout, validate_queue_token, validate_received_packet_layout,
-        validate_slot_accounting, validate_tx_accounting,
+        validate_runtime_snapshot, validate_slot_accounting, validate_tx_accounting,
     };
 
     #[test]
@@ -969,5 +973,36 @@ mod tests {
         };
         assert!(snapshot.can_provision_tx(1));
         assert!(!snapshot.can_allocate_tx());
+    }
+
+    #[test]
+    fn validate_runtime_snapshot_accepts_reclaimed_rx_buffer() {
+        let snapshot = RuntimeStateSnapshot {
+            rx: QueueOccupancy::new(3, 4),
+            tx_in_flight: QueueOccupancy::new(0, 4),
+            free_rx_buffers: 1,
+            free_tx_buffers: 4,
+            checked_out_rx_buffers: 0,
+            checked_out_tx_buffers: 0,
+        };
+
+        assert!(validate_runtime_snapshot(snapshot).is_ok());
+    }
+
+    #[test]
+    fn validate_runtime_snapshot_rejects_lost_rx_buffer() {
+        let snapshot = RuntimeStateSnapshot {
+            rx: QueueOccupancy::new(3, 4),
+            tx_in_flight: QueueOccupancy::new(0, 4),
+            free_rx_buffers: 0,
+            free_tx_buffers: 4,
+            checked_out_rx_buffers: 0,
+            checked_out_tx_buffers: 0,
+        };
+
+        assert!(matches!(
+            validate_runtime_snapshot(snapshot),
+            Err(DevError::BadState)
+        ));
     }
 }
