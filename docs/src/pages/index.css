@@ -786,6 +786,231 @@ html {
   font-size: 0.9rem;
 }
 
+.workspace-diagram {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 28px;
+  color: var(--ifm-font-color-base);
+}
+
+.workspace-diagram__title {
+  padding: 0.72rem 1rem;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.06);
+  color: var(--arch-accent-main);
+  text-align: center;
+  font-weight: 750;
+  font-size: 1.08rem;
+}
+
+.workspace-diagram__flow {
+  display: grid;
+  grid-template-columns: minmax(0, 0.82fr) minmax(34px, 0.2fr) minmax(0, 1.7fr) minmax(34px, 0.2fr) minmax(0, 0.82fr);
+  gap: 0.7rem;
+  align-items: center;
+  margin-top: 1.15rem;
+}
+
+.workspace-diagram__repos {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.workspace-diagram__repo,
+.workspace-diagram__hub,
+.workspace-diagram__command {
+  border: 1px solid var(--home-panel-border);
+  background: var(--home-panel-strong);
+  box-shadow: 0 12px 36px rgba(12, 18, 44, 0.07);
+}
+
+.workspace-diagram__repo {
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 0.65rem;
+  min-width: 0;
+  height: 7.6rem;
+  align-content: center;
+  justify-items: center;
+  padding: 1.35rem 1rem;
+  border-radius: 18px;
+  text-align: center;
+}
+
+.workspace-diagram__repo code {
+  color: var(--home-text-soft);
+  font-size: 0.9rem;
+  font-weight: 700;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.workspace-diagram__repo span {
+  color: var(--arch-accent-main);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.workspace-diagram__repos--upstream .workspace-diagram__repo span {
+  color: var(--arch-accent-alt);
+}
+
+.workspace-diagram__lane {
+  display: grid;
+  gap: 3.45rem;
+}
+
+.workspace-diagram__lane span {
+  position: relative;
+  display: block;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.32;
+}
+
+.workspace-diagram__lane span::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.workspace-diagram__lane--pull {
+  color: var(--arch-accent-main);
+}
+
+.workspace-diagram__lane--push {
+  color: var(--arch-accent-alt);
+}
+
+.workspace-diagram__hub {
+  display: grid;
+  gap: 0.78rem;
+  min-width: 0;
+  min-height: 18.7rem;
+  align-content: center;
+  padding: 1.25rem 1.25rem;
+  border-radius: 24px;
+  border-color: rgba(15, 118, 110, 0.22);
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.14), rgba(37, 99, 235, 0.12)),
+    var(--home-panel-strong);
+  text-align: center;
+}
+
+.workspace-diagram__hub > strong {
+  color: var(--arch-accent-main);
+  font-size: 1.08rem;
+}
+
+.workspace-diagram__hub > span {
+  color: var(--home-text-soft);
+  font-size: 0.9rem;
+}
+
+.workspace-diagram__hub-divider {
+  height: 1px;
+  margin: 0.16rem 1.3rem;
+  background: var(--home-panel-border);
+}
+
+.workspace-diagram__hub-item {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.workspace-diagram__hub-item b {
+  color: var(--arch-accent-main);
+  font-size: 1.08rem;
+}
+
+.workspace-diagram__hub-item b.is-alt {
+  color: var(--arch-accent-alt);
+}
+
+.workspace-diagram__hub-item span {
+  color: var(--home-text-soft);
+  font-size: 0.9rem;
+  line-height: 1.68;
+}
+
+.workspace-diagram__command {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.15rem;
+  min-height: 3.65rem;
+  padding: 0.95rem 1rem;
+  border-radius: 14px;
+}
+
+.workspace-diagram__command code,
+.workspace-diagram__tools code {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.workspace-diagram__command code {
+  color: var(--arch-accent-main);
+  font-weight: 700;
+}
+
+.workspace-diagram__command span {
+  color: var(--home-text-soft);
+  font-size: 0.9rem;
+}
+
+.workspace-diagram__lineage,
+.workspace-diagram__tools {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.workspace-diagram__lineage {
+  margin-top: 0.8rem;
+  color: var(--home-text-soft);
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.workspace-diagram__tools {
+  margin-top: 0.85rem;
+}
+
+.workspace-diagram__lineage strong {
+  color: var(--arch-accent-main);
+}
+
+.workspace-diagram__tools code {
+  display: grid;
+  min-height: 3.25rem;
+  align-content: center;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--home-panel-border);
+  border-radius: 14px;
+  background: var(--home-panel-strong);
+  box-shadow: 0 10px 30px rgba(12, 18, 44, 0.06);
+  color: var(--home-text-soft);
+  text-align: center;
+}
+
+.workspace-diagram__tools code:first-child {
+  color: var(--arch-accent-main);
+}
+
+.workspace-diagram__tools code:nth-child(2) {
+  color: var(--arch-accent-alt);
+}
+
 .feature-card,
 .workflow-card,
 .docs-card,
@@ -1807,6 +2032,38 @@ html {
     min-width: 0;
   }
 
+  .workspace-diagram__flow {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
+  .workspace-diagram__repos {
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+  }
+
+  .workspace-diagram__repo,
+  .workspace-diagram__hub,
+  .workspace-diagram__command {
+    min-height: 0;
+  }
+
+  .workspace-diagram__lane {
+    display: none;
+  }
+
+  .workspace-diagram__command {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .workspace-diagram__lineage,
+  .workspace-diagram__tools {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+
   .platform-footer {
     flex-direction: column;
     align-items: flex-start;
@@ -1941,6 +2198,7 @@ html[data-theme='dark'] .driver-device-card--soc .driver-tag { color: #5eead4; b
   gap: clamp(2rem, 4vw, 3.5rem);
   align-items: center;
   margin-top: 0.5rem;
+  width: 100%;
 }
 
 .section-body-layout--reverse {
@@ -1961,6 +2219,7 @@ html[data-theme='dark'] .driver-device-card--soc .driver-tag { color: #5eead4; b
 
 .section-illustration {
   width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;

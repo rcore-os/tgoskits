@@ -122,66 +122,85 @@ function CapabilityIllustration() {
   );
 }
 
-function ComponentWorkspaceIllustration() {
+function ComponentWorkspaceDiagram() {
+  const repos = [
+    { name: 'axallocator', path: 'axmm_crates/' },
+    { name: 'arm_vcpu', path: 'components/' },
+    { name: 'axfs-ng-vfs', path: 'axfs_crates/' },
+  ];
+
+  const hubItems = [
+    { title: '独立组件汇聚', desc: ['60 多个可复用 crate', '内存 · 调度 · 设备 · VFS · 虚拟化'] },
+    { title: 'Subtree 同步工具', desc: ['repo.py list / pull / push', '集成验证后同步回上游'] },
+    { title: '来源边界清晰', desc: ['repos.csv · target_dir · category'] },
+  ];
+
   return (
-    <div className="section-illustration section-illustration--wide" aria-hidden="true">
-      <svg viewBox="0 0 640 440">
-        <defs>
-          <filter id="wsShadow"><feDropShadow dx="0" dy="3" stdDeviation="8" floodColor="var(--arch-accent-main)" floodOpacity="0.07" /></filter>
-          <linearGradient id="wsCenter" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="var(--arch-accent-main)" stopOpacity="0.18" /><stop offset="100%" stopColor="var(--arch-accent-alt)" stopOpacity="0.18" />
-          </linearGradient>
-          <marker id="wsArr" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto"><path d="M0,0 L10,4 L0,8" fill="var(--arch-accent-main)" opacity="0.5" /></marker>
-          <marker id="wsArr2" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto"><path d="M0,0 L10,4 L0,8" fill="var(--arch-accent-alt)" opacity="0.5" /></marker>
-        </defs>
-        <rect x="14" y="8" width="612" height="32" rx="16" fill="var(--arch-accent-main)" opacity="0.06" />
-        <text x="320" y="30" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="14" fontWeight="700" fontFamily="system-ui">Git Subtree 工作流：组件仓库 ↔ 统一工作区 ↔ 上游</text>
-        {[{ t:55, n:'axallocator',  p:'axmm_crates/' },{ t:155, n:'arm_vcpu', p:'components/' },{ t:255, n:'axfs-ng-vfs', p:'axfs_crates/' }].map(r => (
-          <g key={r.n}>
-            <rect x="14" y={r.t} width="106" height="58" rx="14" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" filter="url(#wsShadow)" />
-            <text x="67" y={r.t+23} textAnchor="middle" fill="var(--home-text-soft)" fontSize="14" fontFamily="monospace" fontWeight="600">{r.n}</text>
-            <text x="67" y={r.t+44} textAnchor="middle" fill="var(--arch-accent-main)" fontSize="12" fontFamily="monospace" opacity="0.8">{r.p}</text>
-          </g>
-        ))}
-        <rect x="195" y="50" width="250" height="260" rx="24" fill="url(#wsCenter)" stroke="var(--arch-accent-main)" strokeWidth="2" strokeOpacity="0.25" filter="url(#wsShadow)" />
-        <text x="320" y="82" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="18" fontWeight="750" fontFamily="system-ui">TGOSKits</text>
-        <text x="320" y="106" textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">统一集成工作区</text>
-        <line x1="240" y1="118" x2="400" y2="118" stroke="var(--home-panel-border)" strokeWidth="1" />
-        <text x="320" y="144" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="13" fontWeight="700" fontFamily="system-ui">独立组件汇聚</text>
-        <text x="320" y="165" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">60 多个可复用 crate</text>
-        <text x="320" y="181" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">内存 · 调度 · 设备 · VFS · 虚拟化</text>
-        <text x="320" y="210" textAnchor="middle" fill="var(--arch-accent-alt)" fontSize="13" fontWeight="700" fontFamily="system-ui">Subtree 同步工具</text>
-        <text x="320" y="231" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">repo.py list / pull / push</text>
-        <text x="320" y="247" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">集成验证后同步回上游</text>
-        <text x="320" y="276" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="13" fontWeight="700" fontFamily="system-ui">来源边界清晰</text>
-        <text x="320" y="297" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">repos.csv · target_dir · category</text>
-        {[{ t:55, n:'axallocator',  p:'独立仓库' },{ t:155, n:'arm_vcpu', p:'独立仓库' },{ t:255, n:'axfs-ng-vfs', p:'独立仓库' }].map(r => (
-          <g key={r.n+'d'}>
-            <rect x="520" y={r.t} width="106" height="58" rx="14" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" filter="url(#wsShadow)" />
-            <text x="573" y={r.t+23} textAnchor="middle" fill="var(--home-text-soft)" fontSize="14" fontFamily="monospace" fontWeight="600">{r.n}</text>
-            <text x="573" y={r.t+44} textAnchor="middle" fill="var(--arch-accent-alt)" fontSize="12" fontFamily="monospace" opacity="0.8">{r.p}</text>
-          </g>
-        ))}
-        <g stroke="var(--arch-accent-main)" strokeWidth="2" fill="none" opacity="0.3">
-          <path d="M125,84 L189,108" markerEnd="url(#wsArr)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" /></path>
-          <path d="M125,184 L189,188" markerEnd="url(#wsArr)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="0.4s" /></path>
-          <path d="M125,284 L189,250" markerEnd="url(#wsArr)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="0.8s" /></path>
-        </g>
-        <g stroke="var(--arch-accent-alt)" strokeWidth="2" fill="none" opacity="0.3">
-          <path d="M451,108 L514,84" markerEnd="url(#wsArr2)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="1.2s" /></path>
-          <path d="M451,188 L514,184" markerEnd="url(#wsArr2)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="1.6s" /></path>
-          <path d="M451,250 L514,284" markerEnd="url(#wsArr2)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="2s" /></path>
-        </g>
-        <rect x="14" y="332" width="612" height="42" rx="14" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1" filter="url(#wsShadow)" />
-        <text x="40" y="358" fill="var(--arch-accent-main)" fontSize="13" fontFamily="monospace" fontWeight="600">$ python3 scripts/repo/repo.py list</text>
-        <text x="400" y="358" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">查看组件仓库映射与同步状态</text>
-        <text x="67" y="400" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">← 组件仓库</text>
-        <text x="320" y="400" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="11" fontFamily="system-ui">集成验证</text>
-        <text x="573" y="400" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">上游仓库 →</text>
-        <text x="14" y="425" fill="var(--arch-accent-main)" fontSize="11" fontFamily="monospace">$ repo.py pull</text>
-        <text x="200" y="425" fill="var(--arch-accent-alt)" fontSize="11" fontFamily="monospace">$ repo.py push</text>
-        <text x="430" y="425" fill="var(--home-text-soft)" fontSize="11" fontFamily="monospace">repos.csv</text>
-      </svg>
+    <div className="workspace-diagram" aria-label="Git Subtree component workspace workflow">
+      <div className="workspace-diagram__title">Git Subtree 工作流：组件仓库 ↔ 统一工作区 ↔ 上游</div>
+
+      <div className="workspace-diagram__flow">
+        <div className="workspace-diagram__repos workspace-diagram__repos--source">
+          {repos.map((repo) => (
+            <div className="workspace-diagram__repo" key={repo.name}>
+              <code>{repo.name}</code>
+              <span>{repo.path}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="workspace-diagram__lane workspace-diagram__lane--pull" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+
+        <div className="workspace-diagram__hub">
+          <strong>TGOSKits</strong>
+          <span>统一集成工作区</span>
+          <div className="workspace-diagram__hub-divider" />
+          {hubItems.map((item, index) => (
+            <div className="workspace-diagram__hub-item" key={item.title}>
+              <b className={index === 1 ? 'is-alt' : ''}>{item.title}</b>
+              {item.desc.map((line) => (
+                <span key={line}>{line}</span>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="workspace-diagram__lane workspace-diagram__lane--push" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+
+        <div className="workspace-diagram__repos workspace-diagram__repos--upstream">
+          {repos.map((repo) => (
+            <div className="workspace-diagram__repo" key={`${repo.name}-upstream`}>
+              <code>{repo.name}</code>
+              <span>独立仓库</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="workspace-diagram__command">
+        <code>$ python3 scripts/repo/repo.py list</code>
+        <span>查看组件仓库映射与同步状态</span>
+      </div>
+
+      <div className="workspace-diagram__lineage">
+        <span>← 组件仓库</span>
+        <strong>集成验证</strong>
+        <span>上游仓库 →</span>
+      </div>
+
+      <div className="workspace-diagram__tools">
+        <code>$ repo.py pull</code>
+        <code>$ repo.py push</code>
+        <code>repos.csv</code>
+      </div>
     </div>
   );
 }
@@ -679,24 +698,6 @@ function ArchitectureSection() {
 }
 
 function ComponentWorkspaceSection() {
-  const workspaceCards = [
-    {
-      title: '显式来源清单',
-      desc: '通过 repos.csv 记录组件仓库、目标目录和分类信息，让每个 subtree 的来源边界都能被追踪。',
-      tags: ['repos.csv', 'target_dir', 'category'],
-    },
-    {
-      title: '统一同步入口',
-      desc: '用 scripts/repo/repo.py 汇总 list、pull、push 等动作，避免组件仓库同步流程散落在人工步骤里。',
-      tags: ['repo.py list', 'repo.py pull', 'repo.py push'],
-    },
-    {
-      title: '集成后再回推',
-      desc: '组件先在统一工作区内经过构建、格式化和测试验证，再把稳定变更同步回对应上游仓库。',
-      tags: ['cargo xtask', 'fmt', 'test-suit'],
-    },
-  ];
-
   return (
     <SectionShell
       id="component-workspace"
@@ -705,26 +706,8 @@ function ComponentWorkspaceSection() {
       title="60 多个独立组件在一个工作区内集成、同步与来源管理"
       description="TGOSKits 不只是普通 monorepo，而是通过 Git Subtree 管理独立组件仓库，用显式清单和维护脚本把组件来源、目标路径与同步动作收束到同一入口。"
       framed={false}
-      illustration={<ComponentWorkspaceIllustration />}
     >
-      <div className="workspace-grid">
-        {workspaceCards.map((card) => (
-          <article className="workspace-card" key={card.title}>
-            <h3>{card.title}</h3>
-            <p>{card.desc}</p>
-            <div className="workspace-tags">
-              {card.tags.map((tag) => (
-                <code key={tag}>{tag}</code>
-              ))}
-            </div>
-          </article>
-        ))}
-      </div>
-
-      <div className="workspace-command-strip">
-        <code>$ python3 scripts/repo/repo.py list</code>
-        <span>查看组件仓库映射、目标路径与同步状态，并从同一个入口执行 pull / push。</span>
-      </div>
+      <ComponentWorkspaceDiagram />
     </SectionShell>
   );
 }
