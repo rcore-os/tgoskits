@@ -401,6 +401,14 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         thr.proc_data.notify_vfork_done();
 
         crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
+
+        // On SMP, `waitpid` can return before this task's `ProcessData` is dropped.
+        // Tear down a private address space here so inode-scoped accounting
+        // (e.g. memfd `shared_writable_mmap_count`) is released before the
+        // parent observes the reap — while skipping `CLONE_VM` co-owned spaces.
+        if !thr.proc_data.vm_aspace_shared() {
+            thr.proc_data.aspace().lock().clear();
+        }
     }
     thr.exit_event.wake();
 

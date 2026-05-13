@@ -58,6 +58,7 @@ pub fn init(args: &[String], envs: &[String]) {
         Arc::new(Mutex::new(uspace)),
         Arc::default(),
         None,
+        false,
     );
 
     {

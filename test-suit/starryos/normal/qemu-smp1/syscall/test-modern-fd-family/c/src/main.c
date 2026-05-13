@@ -224,6 +224,421 @@ static void test_memfd_flags(void)
     }
 }
 
+/* Linux: default memfd has F_SEAL_SEAL; F_ADD_SEALS(F_SEAL_WRITE) vs MAP_SHARED|PROT_WRITE -> EBUSY */
+static void test_memfd_seal_abi_linux(void)
+{
+    printf("--- memfd seal Linux ABI (F_SEAL_SEAL default / EBUSY) ---\n");
+
+    errno = 0;
+    int fd = memfd_create("abi_default_seal", 0);
+    CHECK(fd >= 0, "memfd_create(..., 0)");
+    if (fd >= 0) {
+        int seals = fcntl(fd, F_GET_SEALS);
+        CHECK(seals >= 0 && (seals & F_SEAL_SEAL) == F_SEAL_SEAL,
+              "无 MFD_ALLOW_SEALING: F_GET_SEALS 含 F_SEAL_SEAL");
+        CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), EPERM,
+                  "无 MFD_ALLOW_SEALING: F_ADD_SEALS -> EPERM");
+        close(fd);
+    }
+
+    errno = 0;
+    fd = memfd_create("abi_busy_write", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(..., MFD_ALLOW_SEALING)");
+    if (fd >= 0) {
+        CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 4KiB");
+        errno = 0;
+        void *p = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        CHECK(p != MAP_FAILED, "MAP_SHARED|PROT_WRITE mmap");
+        if (p != MAP_FAILED) {
+            CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), EBUSY,
+                      "已有 shared 可写映射: ADD_SEALS(F_SEAL_WRITE) -> EBUSY");
+            CHECK_RET(munmap(p, 4096), 0, "munmap");
+        }
+        CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0,
+                  "unmap 后 ADD_SEALS(F_SEAL_WRITE) 成功");
+        close(fd);
+    }
+}
+
+/* O(1) busy counter must observe mprotect upgrading MAP_SHARED to writable. */
+static void test_memfd_seal_write_busy_after_mprotect(void)
+{
+    printf("--- memfd F_SEAL_WRITE busy after mprotect adds WRITE (MAP_SHARED) ---\n");
+
+    errno = 0;
+    int fd = memfd_create("abi_mprotect_seal", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(..., MFD_ALLOW_SEALING)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 4KiB");
+
+    errno = 0;
+    void *p = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0);
+    CHECK(p != MAP_FAILED, "MAP_SHARED|PROT_READ mmap");
+    if (p == MAP_FAILED) {
+        close(fd);
+        return;
+    }
+
+    errno = 0;
+    CHECK_RET(mprotect(p, 4096, PROT_READ | PROT_WRITE), 0, "mprotect add PROT_WRITE");
+
+    errno = 0;
+    CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), EBUSY,
+              "mprotect 后 shared 可写: ADD_SEALS(F_SEAL_WRITE) -> EBUSY");
+
+    CHECK_RET(munmap(p, 4096), 0, "munmap");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "unmap 后 ADD_SEALS(F_SEAL_WRITE) 成功");
+    close(fd);
+}
+
+/* Same inode, two fds: counter is per-memfd, not per-fd. */
+static void test_memfd_seal_dup_two_fds_two_maps(void)
+{
+    printf("--- memfd two fds same inode: both MAP_SHARED|PROT_WRITE -> EBUSY ---\n");
+
+    errno = 0;
+    int fd = memfd_create("dup_seal_base", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 8192), 0, "ftruncate 8KiB");
+
+    errno = 0;
+    int fd2 = dup(fd);
+    CHECK(fd2 >= 0, "dup(memfd)");
+    if (fd2 < 0) {
+        close(fd);
+        return;
+    }
+
+    void *p1 = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(p1 != MAP_FAILED, "mmap fd1 page0");
+    void *p2 = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 4096);
+    CHECK(p2 != MAP_FAILED, "mmap fd2 page1");
+    if (p1 == MAP_FAILED || p2 == MAP_FAILED) {
+        if (p1 != MAP_FAILED) {
+            munmap(p1, 4096);
+        }
+        if (p2 != MAP_FAILED) {
+            munmap(p2, 4096);
+        }
+        close(fd2);
+        close(fd);
+        return;
+    }
+
+    CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), EBUSY, "两 shared 可写映射 -> EBUSY");
+
+    CHECK_RET(munmap(p1, 4096), 0, "munmap p1");
+    CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), EBUSY, "仍有一处映射 -> EBUSY");
+
+    CHECK_RET(munmap(p2, 4096), 0, "munmap p2");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "全 unmap 后 seal 成功");
+
+    close(fd2);
+    close(fd);
+}
+
+/* Interior mprotect: middle pages READ-only, tails stay MAP_SHARED|PROT_WRITE (VMA split). */
+static void test_memfd_seal_busy_after_mprotect_middle_read(void)
+{
+    printf("--- memfd: interior mprotect READ, tails still WRITE -> F_SEAL_WRITE EBUSY ---\n");
+
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps <= 0 || ps > 256 * 1024) {
+        ps = 4096;
+    }
+    size_t maplen = (size_t)ps * 3u;
+
+    errno = 0;
+    int fd = memfd_create("mprotect_middle_seal", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(..., MFD_ALLOW_SEALING)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, (off_t)maplen), 0, "ftruncate 3 pages");
+
+    errno = 0;
+    void *p = mmap(NULL, maplen, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(p != MAP_FAILED, "MAP_SHARED|PROT_WRITE mmap 3 pages");
+    if (p == MAP_FAILED) {
+        close(fd);
+        return;
+    }
+
+    unsigned char *base = (unsigned char *)p;
+    errno = 0;
+    CHECK_RET(mprotect(base + (size_t)ps, (size_t)ps, PROT_READ), 0,
+              "mprotect interior page READ-only");
+
+    errno = 0;
+    CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), EBUSY,
+              "左右两VMA仍可写: ADD_SEALS(F_SEAL_WRITE) -> EBUSY");
+
+    CHECK_RET(munmap(p, maplen), 0, "munmap 3 pages");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "全 unmap 后 seal 成功");
+    close(fd);
+}
+
+/* Extra seal matrix: read-only shared vs F_SEAL_WRITE, F_SEAL_SEAL lock, grow|shrink combo, flags. */
+static int mfd_get_seals(int fd)
+{
+    return fcntl(fd, F_GET_SEALS);
+}
+
+static void test_memfd_seal_extensions(void)
+{
+    printf("--- memfd seal extensions (read-only shared / SEAL lock / flags / proc fd) ---\n");
+
+    /* MAP_SHARED|PROT_READ alone does not block F_SEAL_WRITE (no writable shared VMA). */
+    errno = 0;
+    int fd = memfd_create("seal_ro_shared", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(ro_shared)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 4KiB");
+    errno = 0;
+    void *p_ro = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0);
+    CHECK(p_ro != MAP_FAILED, "MAP_SHARED|PROT_READ mmap");
+    if (p_ro == MAP_FAILED) {
+        close(fd);
+        return;
+    }
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "只读 shared 映射: ADD_SEALS(F_SEAL_WRITE) 成功");
+    int seals = mfd_get_seals(fd);
+    CHECK(seals >= 0 && (seals & F_SEAL_WRITE) != 0, "F_GET_SEALS 含 F_SEAL_WRITE");
+    /* 与「未 seal 时仅 RO shared 不挡」对比：seal 后不能再新开 MAP_SHARED|PROT_WRITE（仍有 RO 映射时）。 */
+    errno = 0;
+    void *p_new = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(p_new == MAP_FAILED && errno == EPERM,
+          "F_SEAL_WRITE 后: 新开 MAP_SHARED|PROT_WRITE mmap -> EPERM (对比 RO shared 不挡 busy)");
+    errno = 0;
+    CHECK_ERR(mprotect(p_ro, 4096, PROT_READ | PROT_WRITE), EPERM,
+              "F_SEAL_WRITE 后 mprotect 升级为可写 -> EPERM");
+    CHECK_RET(munmap(p_ro, 4096), 0, "munmap ro shared");
+    /* unmap 全部 shared 后仍禁止新的 shared 可写映射（seal 在 inode 上）。 */
+    errno = 0;
+    void *p_after = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(p_after == MAP_FAILED && errno == EPERM,
+          "F_SEAL_WRITE 且无 shared 映射后: 新 mmap MAP_SHARED|PROT_WRITE 仍 -> EPERM");
+    CHECK_RET(close(fd), 0, "close memfd (ro shared case)");
+
+    /* F_SEAL_SEAL: further ADD_SEALS fails; mask unchanged. */
+    errno = 0;
+    fd = memfd_create("seal_lock", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(seal_lock)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 4KiB");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "ADD_SEALS(F_SEAL_WRITE)");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_SEAL), 0, "ADD_SEALS(F_SEAL_SEAL)");
+    seals = mfd_get_seals(fd);
+    CHECK(seals >= 0 && (seals & F_SEAL_SEAL) != 0, "F_GET_SEALS 含 F_SEAL_SEAL");
+    errno = 0;
+    CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_GROW), EPERM, "F_SEAL_SEAL 后 ADD_SEALS(F_SEAL_GROW) -> EPERM");
+    CHECK(mfd_get_seals(fd) == seals, "F_SEAL_SEAL 失败后 seals 掩码不变");
+    errno = 0;
+    CHECK_ERR(fcntl(fd, F_ADD_SEALS, 0), EPERM, "F_SEAL_SEAL 后 ADD_SEALS(0) -> EPERM");
+    CHECK(mfd_get_seals(fd) == seals, "ADD_SEALS(0) 失败后掩码不变");
+    close(fd);
+
+    /* F_ADD_SEALS(0) is a no-op only before F_SEAL_SEAL (Linux-compatible). */
+    errno = 0;
+    int fd0 = memfd_create("add_zero", MFD_ALLOW_SEALING);
+    CHECK(fd0 >= 0, "memfd_create(add_zero)");
+    if (fd0 >= 0) {
+        int z0 = mfd_get_seals(fd0);
+        CHECK_RET(fcntl(fd0, F_ADD_SEALS, 0), 0, "未 F_SEAL_SEAL: F_ADD_SEALS(0) 成功");
+        CHECK(mfd_get_seals(fd0) == z0, "ADD_SEALS(0) 后掩码不变");
+        CHECK_RET(close(fd0), 0, "close add_zero");
+    }
+
+    /* F_SEAL_GROW | F_SEAL_SHRINK: grow and shrink both blocked; same size ok. */
+    errno = 0;
+    fd = memfd_create("seal_grow_shrink", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(grow_shrink)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 4KiB");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK), 0,
+              "ADD_SEALS(F_SEAL_GROW|F_SEAL_SHRINK)");
+    CHECK_ERR(ftruncate(fd, 8192), EPERM, "双 seal 后 grow -> EPERM");
+    CHECK_ERR(ftruncate(fd, 2048), EPERM, "双 seal 后 shrink -> EPERM");
+    CHECK_RET(ftruncate(fd, 4096), 0, "双 seal 后同尺寸 ftruncate 成功");
+    close(fd);
+
+    /* MAP_PRIVATE|PROT_WRITE + MAP_SHARED|PROT_READ: private does not block F_SEAL_WRITE. */
+    errno = 0;
+    fd = memfd_create("seal_mixed_maps", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(mixed_maps)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 12288), 0, "ftruncate 12KiB");
+    void *p_sh = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0);
+    void *p_pr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 4096);
+    CHECK(p_sh != MAP_FAILED && p_pr != MAP_FAILED, "shared RO + private RW mmap");
+    if (p_sh == MAP_FAILED || p_pr == MAP_FAILED) {
+        if (p_sh != MAP_FAILED) {
+            munmap(p_sh, 4096);
+        }
+        if (p_pr != MAP_FAILED) {
+            munmap(p_pr, 4096);
+        }
+        close(fd);
+        return;
+    }
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "仅有 shared RO 时 ADD_SEALS(F_SEAL_WRITE) 成功");
+    CHECK_RET(munmap(p_sh, 4096), 0, "munmap shared");
+    CHECK_RET(munmap(p_pr, 4096), 0, "munmap private");
+    close(fd);
+
+    /* memfd_create: unknown flag bit 0x0100 -> EINVAL. */
+    errno = 0;
+    CHECK_ERR(memfd_create("bad_flag_0x100", 0x100u), EINVAL, "flags 0x0100 -> EINVAL");
+
+    /* Re-open same inode via /proc/self/fd/N (new file description); seals + busy still apply. */
+    errno = 0;
+    fd = memfd_create("proc_reopen_seal", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(proc_reopen)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 8192), 0, "ftruncate 8KiB");
+    char proc_path[64];
+    (void)snprintf(proc_path, sizeof proc_path, "/proc/self/fd/%d", fd);
+    errno = 0;
+    int fd_re = open(proc_path, O_RDWR);
+    if (fd_re < 0 && errno == ENOENT) {
+        printf("  (skip: %s not available)\n", proc_path);
+        close(fd);
+        return;
+    }
+    CHECK(fd_re >= 0, "open /proc/self/fd/N 成功");
+    if (fd_re < 0) {
+        close(fd);
+        return;
+    }
+    void *a = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    void *b = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd_re, 4096);
+    CHECK(a != MAP_FAILED && b != MAP_FAILED, "proc-reopened fd mmap shared writable");
+    if (a == MAP_FAILED || b == MAP_FAILED) {
+        if (a != MAP_FAILED) {
+            munmap(a, 4096);
+        }
+        if (b != MAP_FAILED) {
+            munmap(b, 4096);
+        }
+        close(fd_re);
+        close(fd);
+        return;
+    }
+    CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), EBUSY, "proc fd 第二映射: F_SEAL_WRITE -> EBUSY");
+    CHECK_RET(munmap(a, 4096), 0, "munmap a");
+    CHECK_ERR(fcntl(fd_re, F_ADD_SEALS, F_SEAL_WRITE), EBUSY, "仍有一处映射: EBUSY");
+    CHECK_RET(munmap(b, 4096), 0, "munmap b");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "全 unmap 后 seal 成功");
+    close(fd_re);
+    close(fd);
+}
+
+/* fork: child inherits fd; F_SEAL_SEAL on inode blocks child's F_ADD_SEALS. */
+static void test_memfd_seal_fork(void)
+{
+    printf("--- memfd seal: fork 子进程继承 fd，父已 F_SEAL_SEAL 则子不能再 ADD_SEALS ---\n");
+
+    errno = 0;
+    int fd = memfd_create("fork_seal_inherit", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(fork_seal_inherit)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 4KiB");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "父: ADD_SEALS(F_SEAL_WRITE)");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_SEAL), 0, "父: ADD_SEALS(F_SEAL_SEAL)");
+
+    pid_t cpid = fork();
+    if (cpid < 0) {
+        perror("fork");
+        CHECK(0, "fork 失败");
+        close(fd);
+        return;
+    }
+    if (cpid == 0) {
+        errno = 0;
+        long r = (long)fcntl(fd, F_ADD_SEALS, F_SEAL_GROW);
+        if (r == -1L && errno == EPERM) {
+            _exit(0);
+        }
+        _exit(21);
+    }
+
+    int st = 0;
+    CHECK_RET(waitpid(cpid, &st, 0), cpid, "waitpid fork 子进程");
+    CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 0,
+          "子进程: F_SEAL_SEAL 后 F_ADD_SEALS(F_SEAL_GROW) -> EPERM");
+
+    CHECK_RET(close(fd), 0, "close memfd (fork case)");
+}
+
+/* fork clones VMAs: shared-writable memfd count must include child; EBUSY until parent munmap. */
+static void test_memfd_seal_fork_busy_write_seal(void)
+{
+    printf("--- memfd: fork 复制共享可写 VMA -> F_SEAL_WRITE EBUSY 直至父 munmap ---\n");
+
+    errno = 0;
+    int fd = memfd_create("fork_busy_seal", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(fork_busy_seal)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 4KiB");
+
+    errno = 0;
+    void *p = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(p != MAP_FAILED, "mmap MAP_SHARED|PROT_WRITE");
+    if (p == MAP_FAILED) {
+        close(fd);
+        return;
+    }
+
+    pid_t cpid = fork();
+    if (cpid < 0) {
+        perror("fork");
+        CHECK(0, "fork 失败");
+        munmap(p, 4096);
+        close(fd);
+        return;
+    }
+    if (cpid == 0) {
+        _exit(0);
+    }
+
+    errno = 0;
+    CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), EBUSY,
+              "fork 后父子各一共享可写 VMA: ADD_SEALS(F_SEAL_WRITE) -> EBUSY");
+
+    int st = 0;
+    CHECK_RET(waitpid(cpid, &st, 0), cpid, "waitpid 子进程");
+    CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 0, "子进程 _exit(0)");
+
+    errno = 0;
+    CHECK_ERR(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), EBUSY,
+              "子进程退出后父映射仍在: ADD_SEALS(F_SEAL_WRITE) 仍 EBUSY");
+
+    CHECK_RET(munmap(p, 4096), 0, "munmap 父进程映射");
+
+    errno = 0;
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "父 munmap 后 ADD_SEALS(F_SEAL_WRITE) 成功");
+    CHECK_RET(close(fd), 0, "close memfd (fork busy case)");
+}
+
 static void test_memfd_seal_enforcement(void)
 {
     printf("--- memfd seals enforcement (F_SEAL_*) ---\n");
@@ -271,6 +686,11 @@ static void test_memfd_seal_enforcement(void)
         errno = 0;
         ssize_t pw = pwrite(fd, "z", 1, 8190);
         CHECK(pw == -1 && errno == EPERM, "F_SEAL_GROW 后 pwrite 隐式扩展 -> EPERM");
+        /* 小文件 + 越 EOF 一字节：显式覆盖「隐式增长」路径 */
+        CHECK_RET(ftruncate(fd, 100), 0, "ftruncate 100 用于 pwrite 越界");
+        errno = 0;
+        pw = pwrite(fd, "a", 1, 100);
+        CHECK(pw == -1 && errno == EPERM, "F_SEAL_GROW: pwrite 于 EOF 外隐式扩展 -> EPERM");
         close(fd);
     }
 
@@ -431,6 +851,26 @@ static void test_pidfd_open_errors(void)
     CHECK_ERR(x_pidfd_open(getpid(), 0xFFFFFFFFu), EINVAL, "非法 flags -> EINVAL");
 }
 
+/* Linux pidfd_open(2): EINVAL when pid is not valid; 0 is not a referrable pid. */
+static void test_pidfd_open_pid_zero_linux(void)
+{
+    printf("--- pidfd_open pid==0 (Linux EINVAL) ---\n");
+
+    errno = 0;
+    CHECK_ERR(x_pidfd_open(0, 0), EINVAL, "pid==0 -> EINVAL");
+
+#ifndef PIDFD_NONBLOCK
+#define PIDFD_NONBLOCK 2048u
+#endif
+#ifndef PIDFD_THREAD
+#define PIDFD_THREAD 128u
+#endif
+    errno = 0;
+    CHECK_ERR(x_pidfd_open(0, PIDFD_NONBLOCK), EINVAL, "pid==0 + PIDFD_NONBLOCK -> EINVAL");
+    errno = 0;
+    CHECK_ERR(x_pidfd_open(0, PIDFD_THREAD), EINVAL, "pid==0 + PIDFD_THREAD -> EINVAL");
+}
+
 /* ---- pidfd_send_signal ---- */
 
 static void test_pidfd_send_signal_paths(void)
@@ -579,12 +1019,20 @@ int main(void)
     test_memfd_errors();
     test_memfd_name_limits();
     test_memfd_flags();
+    test_memfd_seal_abi_linux();
+    test_memfd_seal_write_busy_after_mprotect();
+    test_memfd_seal_dup_two_fds_two_maps();
+    test_memfd_seal_busy_after_mprotect_middle_read();
+    test_memfd_seal_extensions();
+    test_memfd_seal_fork();
+    test_memfd_seal_fork_busy_write_seal();
     test_memfd_seal_enforcement();
     test_memfd_seal_more_syscalls();
     test_memfd_hugetlb_and_reserved_flags();
 
     test_pidfd_open_self();
     test_pidfd_open_errors();
+    test_pidfd_open_pid_zero_linux();
 
     test_pidfd_send_signal_paths();
 

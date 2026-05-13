@@ -370,6 +370,15 @@ pub struct ProcessData {
 
     /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
     pub posix_timers: Arc<PosixTimerTable>,
+
+    /// `true` when this process shares its [`AddrSpace`] with a parent/sibling
+    /// (`CLONE_VM`, e.g. vfork / posix_spawn). In that case the last thread must
+    /// **not** clear the address space on exit — the co-owner may still be
+    /// running.
+    ///
+    /// `false` for normal `fork()` children and after a successful `execve`
+    /// installs a private address space.
+    vm_aspace_shared: AtomicBool,
 }
 
 impl ProcessData {
@@ -381,6 +390,7 @@ impl ProcessData {
         aspace: Arc<Mutex<AddrSpace>>,
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
+        vm_aspace_shared: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             proc,
@@ -411,7 +421,22 @@ impl ProcessData {
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
 
             posix_timers: Arc::new(PosixTimerTable::default()),
+
+            vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
         })
+    }
+
+    /// Whether this process shares its VM address space (`CLONE_VM`).
+    #[inline]
+    pub fn vm_aspace_shared(&self) -> bool {
+        self.vm_aspace_shared.load(Ordering::Acquire)
+    }
+
+    /// Called after `execve` commits a fresh private address space so exit
+    /// teardown may clear VMAs without touching a vfork parent's mappings.
+    #[inline]
+    pub fn mark_vm_aspace_private_after_exec(&self) {
+        self.vm_aspace_shared.store(false, Ordering::Release);
     }
 
     /// Get the top address of the user heap.

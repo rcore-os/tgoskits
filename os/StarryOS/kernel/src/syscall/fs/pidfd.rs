@@ -5,7 +5,7 @@ use starry_signal::SignalInfo;
 
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like},
-    syscall::signal::{make_queue_signal_info, make_siginfo},
+    syscall::signal::{check_kill_permission, make_queue_signal_info, make_siginfo},
     task::{AsThread, get_process_data, get_task, send_signal_to_process},
 };
 
@@ -21,6 +21,12 @@ pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
     debug!("sys_pidfd_open <= pid: {pid}, flags: {flags}");
 
     let flags = PidFdFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+
+    // Linux pidfd_open(2): EINVAL if pid is not valid. PID 0 is not a
+    // userspace-visible process id for this syscall (do not alias to self).
+    if pid == 0 {
+        return Err(AxError::InvalidInput);
+    }
 
     let fd = if flags.contains(PidFdFlags::THREAD) {
         PidFd::new_thread(get_task(pid)?.as_thread())
@@ -43,6 +49,7 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
 
     let pidfd = PidFd::from_fd(pidfd)?;
     let proc_data = pidfd.process_data()?;
+    check_kill_permission(proc_data.proc.pid())?;
     FD_TABLE
         .scope(&proc_data.scope.read())
         .read()
@@ -66,6 +73,7 @@ pub fn sys_pidfd_send_signal(
 
     let pidfd = PidFd::from_fd(pidfd)?;
     let pid = pidfd.process_data()?.proc.pid();
+    check_kill_permission(pid)?;
 
     let sig = if sig.is_null() {
         make_siginfo(signo, SI_USER as _)?
