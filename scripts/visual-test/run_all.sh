@@ -39,15 +39,15 @@ SCENARIO_ROOT="$REPO_ROOT/test-suit/starryos/visual"
 case "$ARCH" in
     riscv64)
         KERNEL="$REPO_ROOT/os/StarryOS/tests/bin/starryos-riscv64.bin"
-        ROOTFS="$REPO_ROOT/os/StarryOS/make/disk.img"
+        ROOTFS="$REPO_ROOT/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img"
         ;;
     aarch64)
         KERNEL="$REPO_ROOT/os/StarryOS/tests/bin/starryos-aarch64.bin"
-        ROOTFS="$REPO_ROOT/target/aarch64-unknown-none-softfloat/rootfs-aarch64.img"
+        ROOTFS="$REPO_ROOT/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img"
         ;;
     x86_64)
         KERNEL="$REPO_ROOT/target/x86_64-unknown-none/release/starryos"
-        ROOTFS="$REPO_ROOT/target/x86_64-unknown-none/rootfs-x86_64.img"
+        ROOTFS="$REPO_ROOT/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
         ;;
     loongarch64)
         # Visual tests on loongarch64 are gated on the toolchain being
