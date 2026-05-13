@@ -395,7 +395,7 @@ impl FileNodeOps for Inode {
                 }
 
                 let used_datablocks = data_blocks.len() as u64;
-                let iblocks_used = used_datablocks.saturating_mul(block_size as u64 / 512) as u32;
+                let iblocks_used = used_datablocks.saturating_mul(block_size as u64 / (dev.dev_block_size() as u64)) as u32;
                 inode.i_blocks_lo = iblocks_used;
                 inode.l_i_blocks_high = 0;
                 rsext4::file::build_file_block_mapping_with_inode_num(
