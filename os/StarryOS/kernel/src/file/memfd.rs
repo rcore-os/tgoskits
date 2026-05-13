@@ -141,6 +141,39 @@ impl Memfd {
             .set_len(new_len)?;
         Ok(())
     }
+
+    /// Seal-aware offset write (`pwrite64`/`pwritev2`). Routes around
+    /// the underlying `File::write_at` so `F_SEAL_WRITE` rejects with
+    /// `EPERM` and `F_SEAL_GROW` is enforced with Linux's
+    /// shmem_write_check_limits semantics: a write that straddles EOF
+    /// is truncated to the in-EOF bytes (partial success); a write
+    /// that starts at or past EOF is rejected with `EPERM`.
+    pub fn write_at(&self, data: &[u8], offset: u64) -> AxResult<usize> {
+        let seals = self.get_seals();
+        if seals & F_SEAL_WRITE != 0 {
+            return Err(AxError::OperationNotPermitted);
+        }
+        let f = self.inner.inner().access(FileFlags::WRITE)?;
+        if seals & F_SEAL_GROW == 0 {
+            return f.write_at(data, offset);
+        }
+        // F_SEAL_GROW: cap the write to whatever bytes still fit in
+        // the current file size. Hold `truncate_mtx` so the bound we
+        // observe stays stable across the write — a concurrent
+        // sealed-ftruncate or sealed-write that would extend the
+        // file is also forced to take this lock and observes the
+        // post-write size.
+        let _guard = self.truncate_mtx.lock();
+        let cur_len = self.inner.inner().backend()?.location().len()?;
+        if offset >= cur_len {
+            return Err(AxError::OperationNotPermitted);
+        }
+        let writable = (cur_len - offset).min(data.len() as u64) as usize;
+        if writable == 0 {
+            return Err(AxError::OperationNotPermitted);
+        }
+        f.write_at(&data[..writable], offset)
+    }
 }
 
 impl FileLike for Memfd {

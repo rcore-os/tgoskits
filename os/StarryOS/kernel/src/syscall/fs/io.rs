@@ -256,6 +256,14 @@ pub fn sys_fallocate(
 pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fsync <= {fd}");
     let any_file = get_file_like(fd)?;
+    if let Ok(memfd) = any_file.clone().downcast_arc::<Memfd>() {
+        // Linux treats memfd as a regular file for fsync: a successful
+        // no-op (the contents are already in memory). Forward to the
+        // inner File so any future backing-store changes still hook
+        // through one path.
+        memfd.inner().inner().sync(false)?;
+        return Ok(0);
+    }
     if let Ok(f) = any_file.clone().downcast_arc::<File>() {
         f.inner().sync(false)?;
         return Ok(0);
@@ -269,6 +277,10 @@ pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
 pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fdatasync <= {fd}");
     let any_file = get_file_like(fd)?;
+    if let Ok(memfd) = any_file.clone().downcast_arc::<Memfd>() {
+        memfd.inner().inner().sync(true)?;
+        return Ok(0);
+    }
     if let Ok(f) = any_file.clone().downcast_arc::<File>() {
         f.inner().sync(true)?;
         return Ok(0);
@@ -301,9 +313,13 @@ pub fn sys_fadvise64(
 ) -> AxResult<isize> {
     debug!("sys_fadvise64 <= fd: {fd}, offset: {offset}, len: {len}, advice: {advice}");
     // Validate fd first: invalid/closed → EBADF, non-file/non-dir → ESPIPE.
-    // Linux fadvise64 accepts regular files and directories (advisory hint).
+    // Linux fadvise64 accepts regular files, directories, and memfd fds
+    // (advisory hint).
     let f = get_file_like(fd)?;
-    if f.downcast_ref::<File>().is_none() && f.downcast_ref::<Directory>().is_none() {
+    if f.downcast_ref::<File>().is_none()
+        && f.downcast_ref::<Directory>().is_none()
+        && f.downcast_ref::<Memfd>().is_none()
+    {
         return Err(AxError::from(LinuxError::ESPIPE));
     }
     if len < 0 {
@@ -332,6 +348,18 @@ pub fn sys_pwrite64(
 ) -> AxResult<isize> {
     if offset < 0 {
         return Err(AxError::InvalidInput);
+    }
+    // Route memfd fds through the seal-aware `Memfd::write_at` so
+    // `F_SEAL_WRITE`/`F_SEAL_GROW` apply to offset writes the same
+    // as they do to seq writes; otherwise `pwrite64` would silently
+    // bypass the seal by writing straight to the inner file.
+    if let Ok(memfd) = Memfd::from_fd(fd) {
+        if len == 0 {
+            return Ok(0);
+        }
+        let data = copy_user_read_buf(buf, len)?;
+        let write = memfd.write_at(data.as_slice(), offset as u64)?;
+        return Ok(write as _);
     }
     let f = file_or_espipe_write(fd)?;
     if len == 0 {
@@ -417,6 +445,12 @@ pub fn sys_pwritev2(
         let data = copy_user_iov_read_buf(iov, iovcnt)?;
         let f = get_file_like(fd)?;
         f.write(&mut data.as_slice()).map(|n| n as _)
+    } else if let Ok(memfd) = Memfd::from_fd(fd) {
+        // Route memfd offset writes through the seal-aware path.
+        let data = copy_user_iov_read_buf(iov, iovcnt)?;
+        memfd
+            .write_at(data.as_slice(), offset as u64)
+            .map(|n| n as _)
     } else {
         let data = copy_user_iov_read_buf(iov, iovcnt)?;
         let f = file_or_espipe(fd)?;

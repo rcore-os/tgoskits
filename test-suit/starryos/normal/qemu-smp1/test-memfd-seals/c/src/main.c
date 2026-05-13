@@ -23,6 +23,10 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#ifndef POSIX_FADV_NORMAL
+#define POSIX_FADV_NORMAL 0
+#endif
+
 #ifndef F_ADD_SEALS
 #define F_ADD_SEALS 1033
 #endif
@@ -78,19 +82,26 @@ int main(void) {
         CHECK_ERR(ftruncate(gfd, 8192), EPERM, "ftruncate grow rejected with EPERM");
         CHECK_RET(ftruncate(gfd, 4096), 0, "ftruncate same-size still allowed under GROW");
 
-        /* write(2) past current EOF is also disallowed under F_SEAL_GROW. */
+        /* pwrite that straddles EOF returns a short write of the
+         * in-EOF bytes (Linux shmem_write_check_limits) — only a
+         * pwrite that starts at or past EOF is rejected with EPERM. */
         char buf[64];
         memset(buf, 'A', sizeof(buf));
-        CHECK_RET((int)lseek(gfd, 4090, SEEK_SET), 4090, "lseek to 4090 under GROW");
+        ssize_t pwn = pwrite(gfd, buf, sizeof(buf), 4090);
+        CHECK(pwn == 6, "pwrite cross-EOF returns partial 6 bytes under F_SEAL_GROW");
         errno = 0;
-        ssize_t wn = write(gfd, buf, sizeof(buf));
-        CHECK(wn == -1 && errno == EPERM,
-              "write past EOF rejected with EPERM under F_SEAL_GROW");
+        pwn = pwrite(gfd, buf, sizeof(buf), 4096);
+        CHECK(pwn == -1 && errno == EPERM,
+              "pwrite at EOF rejected with EPERM under F_SEAL_GROW");
+        errno = 0;
+        pwn = pwrite(gfd, buf, sizeof(buf), 8192);
+        CHECK(pwn == -1 && errno == EPERM,
+              "pwrite past EOF rejected with EPERM under F_SEAL_GROW");
 
-        /* write that stays within current size is still allowed. */
-        CHECK_RET((int)lseek(gfd, 0, SEEK_SET), 0, "lseek to 0 under GROW");
-        wn = write(gfd, buf, sizeof(buf));
-        CHECK(wn == (ssize_t)sizeof(buf), "in-bounds write still allowed under GROW");
+        /* pwrite that stays within current size is still allowed. */
+        pwn = pwrite(gfd, buf, sizeof(buf), 0);
+        CHECK(pwn == (ssize_t)sizeof(buf),
+              "in-bounds pwrite still allowed under F_SEAL_GROW");
 
         /* fallocate that would extend the file past EOF is forbidden
          * under F_SEAL_GROW; an in-range fallocate is still allowed. */
@@ -138,6 +149,18 @@ int main(void) {
         CHECK_ERR(fcntl(nfd, F_ADD_SEALS, F_SEAL_SHRINK), EPERM,
                   "F_ADD_SEALS denied without MFD_ALLOW_SEALING");
         close(nfd);
+    }
+
+    /* --- fsync / fdatasync / fadvise64 on memfd ----------------------- */
+    int sfd = memfd_create_sys("sync", MFD_CLOEXEC);
+    CHECK(sfd >= 0, "memfd_create for fsync coverage");
+    if (sfd >= 0) {
+        CHECK_RET(ftruncate(sfd, 4096), 0, "ftruncate for fsync coverage");
+        CHECK_RET(fsync(sfd), 0, "fsync(memfd) accepted (Linux: success)");
+        CHECK_RET(fdatasync(sfd), 0, "fdatasync(memfd) accepted");
+        CHECK_RET(posix_fadvise(sfd, 0, 0, POSIX_FADV_NORMAL), 0,
+                  "posix_fadvise(memfd) accepted");
+        close(sfd);
     }
 
     TEST_DONE();
