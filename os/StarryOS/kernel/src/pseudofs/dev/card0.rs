@@ -688,8 +688,7 @@ impl Card0 {
     /// surface consistent with the atomic property enumeration.
     fn handle_get_connector(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeGetConnector;
-        let mut c: DrmModeGetConnector =
-            ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut c: DrmModeGetConnector = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
         if c.connector_id != CONNECTOR_ID {
             return Err(VfsError::InvalidInput);
         }
