@@ -5,6 +5,9 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 use alloc::boxed::Box;
 
 #[cfg(feature = "bcm2835-sdhci")]

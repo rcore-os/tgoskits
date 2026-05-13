@@ -8,7 +8,7 @@ use ax_driver_pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, Pci
 
 pub use super::dummy::*;
 use crate::AxDeviceEnum;
-#[cfg(feature = "virtio")]
+#[cfg(virtio_dev)]
 use crate::virtio::{self, VirtIoDevMeta};
 
 pub trait DriverProbe {
@@ -98,12 +98,11 @@ cfg_if::cfg_if! {
 cfg_if::cfg_if! {
     if #[cfg(block_dev = "cvsd")] {
         use ax_driver_block::cvsd::CvsdDriver;
-        use super::mbr::MbrPartitionDev;
         #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
         use ax_hal::mem::phys_to_virt;
 
         pub struct CvsdMmc;
-        register_block_driver!(CvsdMmc, MbrPartitionDev<CvsdDriver>);
+        register_block_driver!(CvsdMmc, CvsdDriver);
 
         impl DriverProbe for CvsdMmc {
             #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
@@ -114,7 +113,7 @@ cfg_if::cfg_if! {
                     phys_to_virt(ax_config::devices::CVSD_PADDR.into()).into(),
                     phys_to_virt(ax_config::devices::SYSCON_PADDR.into()).into(),
                     ).expect("CVSD init failed");
-                MbrPartitionDev::new(sdmmc).ok().map(AxDeviceEnum::from_block)
+                Some(AxDeviceEnum::from_block(sdmmc))
             }
         }
     }

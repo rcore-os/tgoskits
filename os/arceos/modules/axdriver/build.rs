@@ -3,6 +3,13 @@ const BLOCK_DEV_FEATURES: &[&str] = &["ramdisk", "sdmmc", "cvsd", "bcm2835-sdhci
 const DISPLAY_DEV_FEATURES: &[&str] = &["virtio-gpu"];
 const INPUT_DEV_FEATURES: &[&str] = &["virtio-input"];
 const VSOCK_DEV_FEATURES: &[&str] = &["virtio-socket"];
+const VIRTIO_DEV_FEATURES: &[&str] = &[
+    "virtio-blk",
+    "virtio-gpu",
+    "virtio-input",
+    "virtio-net",
+    "virtio-socket",
+];
 
 fn make_cfg_values(str_list: &[&str]) -> String {
     str_list
@@ -20,15 +27,29 @@ fn has_feature(feature: &str) -> bool {
     .is_ok()
 }
 
+fn has_any_feature(features: &[&str]) -> bool {
+    features.iter().any(|feature| has_feature(feature))
+}
+
 fn enable_cfg(key: &str, value: &str) {
     println!("cargo:rustc-cfg={key}=\"{value}\"");
 }
 
+fn enable_cfg_flag(key: &str) {
+    println!("cargo:rustc-cfg={key}");
+}
+
 fn main() {
+    let has_virtio_dev = has_any_feature(VIRTIO_DEV_FEATURES);
     if has_feature("bus-mmio") {
         enable_cfg("bus", "mmio");
-    } else {
+    } else if has_feature("bus-pci") {
         enable_cfg("bus", "pci");
+    } else if has_virtio_dev {
+        enable_cfg("bus", "mmio");
+    }
+    if has_virtio_dev {
+        enable_cfg_flag("virtio_dev");
     }
 
     // Generate cfgs like `net_dev="virtio-net"`. if `dyn` is not enabled, only one device is
@@ -64,6 +85,7 @@ fn main() {
         "cargo::rustc-check-cfg=cfg(bus, values({}))",
         make_cfg_values(&["pci", "mmio"])
     );
+    println!("cargo::rustc-check-cfg=cfg(virtio_dev)");
     println!(
         "cargo::rustc-check-cfg=cfg(net_dev, values({}, \"dummy\"))",
         make_cfg_values(NET_DEV_FEATURES)

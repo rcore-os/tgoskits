@@ -1,9 +1,16 @@
-use core::{marker::PhantomData, ptr::NonNull};
+use core::marker::PhantomData;
+#[cfg(virtio_dev)]
+use core::ptr::NonNull;
 
+#[cfg(virtio_dev)]
 use ax_alloc::{UsageKind, global_allocator};
 use ax_driver_base::{BaseDriverOps, DevResult, DeviceType};
+#[cfg(virtio_dev)]
 use ax_driver_virtio::{BufferDirection, PhysAddr, VirtIoHal};
-use ax_hal::mem::{phys_to_virt, virt_to_phys};
+#[cfg(any(bus = "mmio", all(bus = "pci", target_arch = "x86_64")))]
+use ax_hal::mem::phys_to_virt;
+#[cfg(virtio_dev)]
+use ax_hal::mem::virt_to_phys;
 use cfg_if::cfg_if;
 
 use crate::{AxDeviceEnum, drivers::DriverProbe};
@@ -13,6 +20,8 @@ cfg_if! {
         use ax_driver_pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
         type VirtIoTransport = ax_driver_virtio::PciTransport;
     } else if #[cfg(bus =  "mmio")] {
+        type VirtIoTransport = ax_driver_virtio::MmioTransport;
+    } else {
         type VirtIoTransport = ax_driver_virtio::MmioTransport;
     }
 }
@@ -196,8 +205,10 @@ fn pci_irq_vector(_bdf: DeviceFunction, fallback: usize) -> usize {
     fallback
 }
 
+#[cfg(virtio_dev)]
 pub struct VirtIoHalImpl;
 
+#[cfg(virtio_dev)]
 unsafe impl VirtIoHal for VirtIoHalImpl {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
         let vaddr = if let Ok(vaddr) = global_allocator().alloc_pages(pages, 0x1000, UsageKind::Dma)
