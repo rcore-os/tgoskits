@@ -137,8 +137,8 @@ int main(void) {
     /* Disarm path: same contract. */
     CHECK_RET(timerfd_settime(sfd, 0, &quick, NULL), 0, "settime quick (2)");
     usleep(150 * 1000);
-    struct itimerspec disarm = {{0, 0}, {0, 0}};
-    CHECK_RET(timerfd_settime(sfd, 0, &disarm, NULL), 0, "settime disarm");
+    struct itimerspec disarm_spec = {{0, 0}, {0, 0}};
+    CHECK_RET(timerfd_settime(sfd, 0, &disarm_spec, NULL), 0, "settime disarm");
     errno = 0;
     rn = read(sfd, &after_rearm, sizeof(after_rearm));
     CHECK(rn == -1 && (errno == EAGAIN || errno == EWOULDBLOCK),
