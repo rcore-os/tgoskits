@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.3`
 > 文档依据：`Cargo.toml`、`src/lib.rs`、`src/arceos/mod.rs`、`src/arceos/build.rs`、`src/arceos/ostool.rs`、`src/arceos/config.rs`、`src/arceos/features.rs`、`src/axvisor/image/mod.rs`、`src/axvisor/xtest/mod.rs`
 
-`axbuild` 是当前工作区里承上启下的宿主侧构建基础库。它不属于目标镜像，也不参与内核热路径；它负责把“应用配置、平台配置、feature 装配、QEMU 参数、产物路径”这些宿主机侧信息整理成可执行的构建/运行计划，并将底层执行委托给 `ostool`、`ax-config-gen`、`cargo axplat` 等工具。
+`axbuild` 是当前工作区里承上启下的宿主侧构建基础库。它不属于目标镜像，也不参与内核热路径；它负责把“应用配置、平台配置、feature 装配、QEMU 参数、产物路径”这些宿主机侧信息整理成可执行的构建/运行计划，并复用 `ax-config-gen` 配置引擎库和 `ostool` 构建桥接能力。
 
 ## 架构设计
 ### 设计定位
@@ -24,7 +24,7 @@
 ```mermaid
 flowchart TD
     A["ArceosConfig / Override"] --> B["resolve_effective_smp + resolve_platform"]
-    B --> C["调用 ax-config-gen 生成 .axconfig.toml"]
+    B --> C["调用配置引擎库生成 .axconfig.toml"]
     C --> D["FeatureResolver 计算 ax_features / lib_features"]
     D --> E["ostool::build_cargo_spec"]
     E --> F["ostool 执行 cargo build / qemu"]
@@ -33,8 +33,8 @@ flowchart TD
 其中几个实现细节非常关键：
 
 - `prepare_artifacts()` 会先解析架构、平台、SMP、内存、feature 等信息。
-- `generate_config()` 会调用宿主机上的 `ax-config-gen` 命令，把 defconfig、平台配置和命令行覆写合成为 `.axconfig.toml`。
-- `resolve_platform_config_path()` 会调用 `cargo axplat info` 找到平台配置文件。
+- `generate_config()` 会调用 `ax-config-gen` 库接口，把 defconfig、平台配置和命令行覆写合成为 `.axconfig.toml`。
+- `resolve_platform_config_path()` 会通过 Cargo metadata 和仓库内平台目录找到平台配置文件。
 - `is_c_app()` 会读取应用 `Cargo.toml`，通过是否出现 `ax-libc` 判断这是 C 应用还是 Rust 应用。
 
 因此，`axbuild` 是把配置链、feature 链和实际构建链连接起来的中枢。
@@ -112,8 +112,7 @@ flowchart TD
 ```mermaid
 graph LR
     xtask["tg-xtask / Axvisor xtask"] --> axbuild["axbuild"]
-    axbuild --> ax_config_gen["ax-config-gen（命令）"]
-    axbuild --> cargo_axplat["cargo axplat"]
+    axbuild --> ax_config_gen["ax-config-gen 配置引擎库"]
     axbuild --> ostool["ostool"]
     axbuild --> axvmconfig["axvmconfig"]
 ```
@@ -145,7 +144,7 @@ graph LR
 ### 注意事项
 1. 不要把目标机运行时代码放进 `axbuild`，它必须保持宿主侧纯工具属性。
 2. 改 feature 逻辑时，要同时检查 `FeatureResolver` 与 `ostool::build_features()`。
-3. 改平台解析逻辑时，要一起检查 `cargo axplat info` 和链接脚本参数生成。
+3. 改平台解析逻辑时，要一起检查 Cargo metadata 查找路径和链接脚本参数生成。
 4. 改 `.axconfig.toml` 生成路径时，要确保 `AX_CONFIG_PATH` 环境变量同步更新。
 5. C 应用与 Rust 应用的分流依赖 `is_c_app()`，相关逻辑改动要谨慎。
 
@@ -172,8 +171,8 @@ graph LR
 - Axvisor 镜像规格解析
 
 ### 5.3 建议继续加强的点
-- `ax-config-gen` 调用失败时的错误路径
-- `cargo axplat info` 失败时的诊断信息
+- 配置引擎库调用失败时的错误路径
+- 平台配置路径探测失败时的诊断信息
 - `is_c_app()` 对不同应用布局的识别
 - Axvisor 镜像下载和解压的更细粒度测试
 

@@ -97,7 +97,7 @@ graph LR
     ax_config_gen["ax-config-gen"] --> macros["ax-config-macros"]
     macros --> axconfig["ax-config"]
     macros --> axplat["axplat-* 平台 crate"]
-    macros --> template["cargo-axplat 模板"]
+    macros --> platform_config["平台配置模板"]
 ```
 
 ### 直接依赖
@@ -107,7 +107,7 @@ graph LR
 ### 主要消费者
 - `axconfig`：最终系统常量入口。
 - 多个 `axplat-*` 平台 crate：板级默认配置入口。
-- `cargo-axplat` 模板：新平台生成模板的默认实现。
+- 平台配置模板：新平台包中板级默认配置的输入来源。
 
 ### 3.3 特性 `nightly`
 `nightly` 仅用于启用 `proc_macro_expand`，让 `parse_configs!` 能处理先展开表达式再解析的场景。它改变的是宏输入能力，不影响最终生成代码的语义模型。

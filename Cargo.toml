@@ -48,7 +48,6 @@ members = [
     "components/axpanic",
     "components/axplat_crates/axplat",
     "components/axplat_crates/axplat-macros",
-    "components/axplat_crates/cargo-axplat",
     "components/axplat_crates/examples/hello-kernel",
     "components/axplat_crates/examples/irq-kernel",
     "components/axplat_crates/examples/smp-kernel",
@@ -335,7 +334,6 @@ axvm = { version = "0.5.6", path = "components/axvm", default-features = false }
 axvmconfig = { version = "0.4.8", path = "components/axvmconfig" }
 bitmap-allocator = { version = "0.4.4", path = "components/bitmap-allocator" }
 bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
-cargo-axplat = { version = "0.4.10", path = "components/axplat_crates/cargo-axplat" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }
 deptool = { version = "0.3.1", path = "os/arceos/tools/deptool" }
