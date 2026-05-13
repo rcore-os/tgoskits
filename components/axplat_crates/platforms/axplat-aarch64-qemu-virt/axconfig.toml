@@ -104,8 +104,8 @@ uart-paddr = 0x0900_0000        # uint
 uart-irq = 33                   # uint
 # Timer interrupt num. CNTP / PPI 14 = IRQ 30 is the default that
 # every aarch64 board in tree expects. GICv3 builds use CNTV / PPI 11
-# = IRQ 27 instead and override this value through their own axconfig
-# (see test-suit/starryos/normal/qemu-aarch64-gicv3/axconfig.toml).
+# = IRQ 27 instead; the qemu-aarch64-gicv3 test build config overrides
+# this via `axconfig_overrides = ["devices.timer-irq=27"]`.
 timer-irq = 30                  # uint
 # IPI interrupt num
 ipi-irq = 1                     # uint
