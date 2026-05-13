@@ -377,15 +377,14 @@ fn link_c_app(
     command
         .arg("-flavor")
         .arg("gnu")
+        .arg("-m")
+        .arg(lld_machine(arch)?)
         .arg("-nostdlib")
         .arg("-static")
         .arg("-no-pie")
         .arg("--gc-sections")
         .arg("-znostart-stop-gc")
         .arg(format!("-T{}", linker_script.display()));
-    if arch == "x86_64" {
-        command.arg("-m").arg("elf_x86_64");
-    }
     if let Some(libgcc) = libgcc {
         command.arg(libgcc);
     }
@@ -398,6 +397,16 @@ fn link_c_app(
     command
         .exec()
         .with_context(|| format!("failed to link {}", elf_path.display()))
+}
+
+fn lld_machine(arch: &str) -> anyhow::Result<&'static str> {
+    match arch {
+        "aarch64" => Ok("aarch64elf"),
+        "loongarch64" => Ok("elf64loongarch"),
+        "riscv64" => Ok("elf64lriscv"),
+        "x86_64" => Ok("elf_x86_64"),
+        arch => bail!("unsupported ArceOS C link architecture `{arch}`"),
+    }
 }
 
 fn libgcc(arch: &str, features: &[String]) -> anyhow::Result<Option<PathBuf>> {
