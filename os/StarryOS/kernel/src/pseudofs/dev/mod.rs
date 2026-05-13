@@ -269,6 +269,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(CpuDmaLatency),
         ),
     );
+    root.add(
+        "rtc0",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            rtc::RTC0_DEVICE_ID,
+            Arc::new(rtc::Rtc),
+        ),
+    );
 
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
