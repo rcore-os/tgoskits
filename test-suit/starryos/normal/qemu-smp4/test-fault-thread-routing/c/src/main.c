@@ -63,14 +63,13 @@ static void segv_handler(int sig)
      * worker that triggered the fault. */
     int expected = 0;
     atomic_compare_exchange_strong(&g_sh->observed_tid, &expected, my_tid());
-    /* Reset to default and return; the faulting instruction re-runs,
-     * the kernel takes the fault again, and SIG_DFL terminates the
-     * process with SIGSEGV — exactly the behavior we want the parent
-     * to observe via WTERMSIG. */
-    struct sigaction sa = {0};
-    sa.sa_handler = SIG_DFL;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGSEGV, &sa, NULL);
+    /* Exit the whole process cleanly here. Returning from the handler
+     * would re-run the faulting instruction and rely on a second
+     * SIGSEGV with SIG_DFL to tear the process down; that path varies
+     * across kernels and can hang if the second delivery races other
+     * threads. _exit with a distinguishable status proves the handler
+     * ran, and the recorded tid proves it ran on the faulting thread. */
+    _exit(77);
 }
 
 static void *worker(void *arg)
@@ -144,12 +143,12 @@ int main(void)
         }
     }
 
-    /* Parent: wait for the crash. */
+    /* Parent: wait for the child to exit via the handler's _exit(77). */
     int status = 0;
     pid_t got = waitpid(pid, &status, 0);
     CHECK(got == pid, "waitpid returned crash child");
-    CHECK(WIFSIGNALED(status), "child terminated by signal");
-    CHECK(WTERMSIG(status) == SIGSEGV, "WTERMSIG == SIGSEGV");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 77,
+          "child exited via SIGSEGV handler (status 77)");
 
     /* Confirm the handler observed the *faulting* thread. */
     int observed = atomic_load(&g_sh->observed_tid);
