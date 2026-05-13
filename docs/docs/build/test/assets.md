@@ -85,7 +85,7 @@ flowchart TD
 每个需要注入的 case 会创建以下目录树：
 
 ```text
-target/{target}/qemu-cases/{case_name}/
+tmp/axbuild/qemu-cases/{case_name}/
 ├── cache/
 │   ├── apk-cache/              APK 包缓存（跨 run 复用）
 │   └── rootfs/                 预注入 rootfs 缓存（{sha256}.img）

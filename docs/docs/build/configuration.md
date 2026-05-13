@@ -66,22 +66,22 @@ flowchart TD
 
 Snapshot 保存最近一次的参数状态，使短命令可以复用之前的 `--arch`、`--package` 等参数。
 
-Snapshot 机制解决了一个常见的工作流痛点：用户首次执行 `cargo xtask arceos build --package arceos-httpserver --arch aarch64` 后，后续只需 `cargo xtask arceos qemu` 即可自动复用之前的 package 和 arch 设置，无需每次都重复输入完整参数。Snapshot 以 TOML 文件的形式存储在 workspace 根目录，每次成功执行命令后自动更新。
+Snapshot 机制解决了一个常见的工作流痛点：用户首次执行 `cargo xtask arceos build --package arceos-httpserver --arch aarch64` 后，后续只需 `cargo xtask arceos qemu` 即可自动复用之前的 package 和 arch 设置，无需每次都重复输入完整参数。Snapshot 以 TOML 文件的形式存储在 `tmp/axbuild/` 目录下，每次成功执行命令后自动更新。
 
 ### 文件位置
 
 | 子系统 | 文件 |
 |--------|------|
-| ArceOS | `.arceos.toml` |
-| StarryOS | `.starry.toml` |
-| Axvisor | `.axvisor.toml` |
+| ArceOS | `tmp/axbuild/.arceos.toml` |
+| StarryOS | `tmp/axbuild/.starry.toml` |
+| Axvisor | `tmp/axbuild/.axvisor.toml` |
 
 ### 示例
 
 典型的 ArceOS Snapshot 文件内容如下，包含 package 名称、架构和 QEMU/U-Boot 运行配置：
 
 ```toml
-# .arceos.toml
+# tmp/axbuild/.arceos.toml
 package = "arceos-httpserver"
 arch = "aarch64"
 target = "aarch64-unknown-none-softfloat"
@@ -107,14 +107,14 @@ sequenceDiagram
 
     CLI->>Resolve: CLI 参数
     Resolve->>Snap: load_snapshot()
-    Snap->>FS: 读取 .{os}.toml
+    Snap->>FS: "读取 tmp/axbuild/.{os}.toml"
     FS-->>Snap: TOML 内容或空
     Snap-->>Resolve: Snapshot 结构体
     Resolve->>Resolve: 合并 CLI + Snapshot<br/>(CLI 优先)
     Resolve-->>CLI: ResolvedRequest + Snapshot
     CLI->>Snap: store_snapshot()
     Note over Snap: AXBUILD_NO_SNAPSHOT=1 时跳过
-    Snap->>FS: 写入 .{os}.toml
+    Snap->>FS: "写入 tmp/axbuild/.{os}.toml"
 ```
 
 每次命令执行时，`resolve.rs` 先从文件系统加载 Snapshot，然后将 CLI 参数与 Snapshot 合并（CLI 显式指定的参数优先），最终得到完整的 `ResolvedRequest`。命令执行成功后，合并后的参数会写回 Snapshot 文件。设置环境变量 `AXBUILD_NO_SNAPSHOT=1` 可跳过 Snapshot 的读写，在 CI 等需要每次使用默认参数的场景中很有用。
@@ -133,16 +133,18 @@ CLI 参数与 Snapshot 的合并遵循"用户显式指定优先"原则：
 
 `qemu_config` 和 `uboot_config` 的合并策略比较特殊：只有当用户完全没有提供相关参数，且 Snapshot 中有值时才复用，避免将测试场景的配置意外带入正常开发流程。
 
+此外，`arch` 和 `target` 之间存在交叉抑制：当 CLI 指定了 `--arch` 时不会从 snapshot 继承 `target`（反之亦然），确保两者始终来自同一来源（CLI 或 snapshot），避免因 CLI 的 `--arch` 与 snapshot 的 `target` 不一致而产生错误组合。
+
 ## Build Info
 
 Build Info 是构建配置的核心数据结构，描述 features、环境变量和平台行为。
 
-Build Info 是连接用户参数与 Cargo 构建的桥梁。它将散落在各处的配置（CLI 参数、Snapshot、子系统默认值、平台约定）收敛为一个统一的数据结构，最终被转换为 ostool 的 `Cargo` 配置执行编译。Build Info 以 TOML 文件的形式持久化到 `target/axbuild/config/` 目录，用户可以通过编辑该文件直接微调构建参数（如添加 features、修改环境变量），而无需修改源码。
+Build Info 是连接用户参数与 Cargo 构建的桥梁。它将散落在各处的配置（CLI 参数、Snapshot、子系统默认值、平台约定）收敛为一个统一的数据结构，最终被转换为 ostool 的 `Cargo` 配置执行编译。Build Info 以 TOML 文件的形式持久化到 `tmp/axbuild/config/` 目录，用户可以通过编辑该文件直接微调构建参数（如添加 features、修改环境变量），而无需修改源码。
 
 ### 文件位置
 
 ```text
-target/axbuild/config/
+tmp/axbuild/config/
 └── <package>/build-<target>.toml
 ```
 
@@ -150,12 +152,12 @@ target/axbuild/config/
 
 首次构建时，系统会在上述路径创建默认的 Build Info 文件；后续构建直接读取该文件。用户可以直接编辑该文件来调整 features、环境变量等配置，修改会在下次构建时生效。
 
-### ArceosBuildInfo
+### BuildInfo
 
-三套子系统共用 `ArceosBuildInfo` 作为核心配置类型：
+三套子系统共用 `BuildInfo` 作为核心配置类型：
 
 ```rust
-pub struct ArceosBuildInfo {
+pub struct BuildInfo {
     pub env: HashMap<String, String>,    // 构建时环境变量
     pub features: Vec<String>,           // Cargo features
     pub log: LogLevel,                   // 日志级别
@@ -169,6 +171,24 @@ pub struct ArceosBuildInfo {
 - **StarryOS**：强制 `plat_dyn = false`（StarryOS 不支持动态平台），默认 feature `["qemu"]`
 - **Axvisor**：默认清空 features，从 board config 加载 VM 配置
 
+### 默认值
+
+新建 BuildInfo 时使用以下默认值：
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `env` | `AX_IP=10.0.2.15`, `AX_GW=10.0.2.2` | QEMU slirp 网络默认地址 |
+| `features` | `["ax-std"]` | 最小 feature 集 |
+| `log` | `Warn` | 默认日志级别 |
+| `max_cpu_num` | `None` | 不限制（单核） |
+| `axconfig_overrides` | `[]` | 无覆盖 |
+| `plat_dyn` | `false`（aarch64 除外） | aarch64 新建时默认为 `true` |
+
+### 验证规则
+
+- `max_cpu_num`：值为 0 时报错（必须大于 0）
+- `plat_dyn`：仅 `aarch64-*` target 真正支持，其他架构即使配置为 `true` 也会被 `supports_platform_dynamic()` 强制回退为 `false`
+
 ### 加载流程
 
 `load_or_create_build_info()` 按以下逻辑获取或创建 Build Info 文件：
@@ -181,7 +201,7 @@ flowchart TD
     D --> E["写入文件"]
     E --> F{子系统?}
     F -->|Axvisor| G["尝试复制 board 默认配置"]
-    C --> H["返回 ArceosBuildInfo"]
+    C --> H["返回 BuildInfo"]
     G --> H
 ```
 
@@ -198,6 +218,9 @@ Build Info 的字段在编译时转换为以下环境变量：
 | `AX_IP` / `AX_GW` | `env` | 网络 |
 | `AX_CONFIG_PATH` | axbuild 生成 | 平台配置路径 |
 | `AX_PLATFORM` | 平台检测 | 平台名 |
+| `FEATURES` | 外部环境变量 | Makefile 兼容的 feature 注入（逗号/空格分隔） |
+
+`FEATURES` 环境变量提供与传统 Makefile 工作流的兼容性：`makefile_features_from_env()` 解析其中的 feature 列表，自动添加前缀族前缀后合并到 BuildInfo。
 | `AX_ARCH` | arch 解析 | 架构名 |
 | `AX_TARGET` | target 解析 | target triple |
 | `AXVISOR_VM_CONFIGS` | `--vmconfigs` | VM 配置列表 |

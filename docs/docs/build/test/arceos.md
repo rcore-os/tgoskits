@@ -77,3 +77,26 @@ test_one ARCH=riscv64 FEATURES=net expect_net.out
 5. 输出与 `expect_*.out` 比对
 
 C 用例的测试方式与 Rust 用例有本质区别：Rust 用例通过 axbuild 的标准发现和分组流程执行，而 C 用例使用独立的 Makefile 构建系统。`test_cmd` 文件定义了多轮编译-运行-比对序列，每轮通过 `test_one` 函数指定编译参数（`MAKE_VARS`）和预期输出文件（`expect_output`）。`features.txt` 中的 features 会被注入到 ArceOS 内核的编译配置中，允许 C 测试启用特定的内核功能。
+
+## C 应用构建管线
+
+除了测试场景外，ArceOS 还支持独立的 C 应用构建（`arceos/cbuild.rs`），用于将 C 源码编译为在 ArceOS 上运行的可执行文件。此管线通过 `ax-libc` 包提供 C 语言支持：
+
+```mermaid
+flowchart TD
+    A["build_c_app()"] --> B["构建 ax-libc 静态库<br/>(cargo build -p ax-libc)"]
+    B --> C["编译 axlibc C 源码<br/>→ libc.a"]
+    C --> D["编译用户 C 源码<br/>→ app .o 文件"]
+    D --> E["归档 libc.a"]
+    E --> F["链接 ELF<br/>rust_lib + libc + app + linker.x"]
+    F --> G["strip 生成最终二进制"]
+```
+
+构建步骤：
+1. **构建 ax-libc**：先编译 `ax-libc` Rust 包，生成 `libax_libc.a` 静态库和 `linker.x` 链接脚本
+2. **编译 C 运行时**：将 `os/arceos/ulib/axlibc/c/` 下的 C 源码（如 `libc.c`）交叉编译为 `.o` 文件并归档为 `libc.a`
+3. **编译用户 C 源码**：将用户 C 源码目录下的文件交叉编译为 `.o` 文件
+4. **链接**：将 Rust 静态库、C 运行时库、用户程序和链接脚本合并为 ELF 可执行文件
+5. **Strip**：去除调试信息生成最终二进制
+
+C 交叉编译使用与目标架构匹配的 musl 工具链（如 `aarch64-linux-musl-gcc`），编译标志包含 `-ffreestanding -nostdlib -static` 等裸机选项，以及来自 ax-libc 的头文件路径。
