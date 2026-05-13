@@ -145,5 +145,80 @@ int main(void) {
           "read after disarm returns EAGAIN (stale ticks discarded)");
     close(sfd);
 
+    /* Regression: CLOCK_MONOTONIC + TFD_TIMER_ABSTIME must interpret
+     * the absolute deadline in the monotonic domain. Earlier kernels
+     * pretended the user passed a wall-clock timestamp and almost
+     * always fired immediately. */
+    int mfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    CHECK(mfd >= 0, "create CLOCK_MONOTONIC for ABSTIME test");
+
+    struct timespec mono_now = {0};
+    CHECK_RET(clock_gettime(CLOCK_MONOTONIC, &mono_now), 0, "clock_gettime MONOTONIC");
+
+    long mono_deadline_nsec = mono_now.tv_nsec + 150 * 1000 * 1000;
+    struct itimerspec mono_abs = {
+        .it_interval = {0, 0},
+        .it_value    = {
+            .tv_sec  = mono_now.tv_sec + mono_deadline_nsec / 1000000000,
+            .tv_nsec = mono_deadline_nsec % 1000000000,
+        },
+    };
+    CHECK_RET(timerfd_settime(mfd, TFD_TIMER_ABSTIME, &mono_abs, NULL), 0,
+              "MONOTONIC + ABSTIME settime succeeds");
+
+    /* The timer is 150ms in the future. A non-blocking read right
+     * after settime must return EAGAIN — if the kernel interpreted
+     * the deadline as a wall-clock time, the deadline would be far
+     * in the past and the read would succeed immediately. */
+    int mfl = fcntl(mfd, F_GETFL, 0);
+    CHECK(mfl != -1, "F_GETFL mfd");
+    CHECK_RET(fcntl(mfd, F_SETFL, mfl | O_NONBLOCK), 0, "F_SETFL O_NONBLOCK mfd");
+    uint64_t mexp = 0;
+    errno = 0;
+    ssize_t mrn = read(mfd, &mexp, sizeof(mexp));
+    CHECK(mrn == -1 && (errno == EAGAIN || errno == EWOULDBLOCK),
+          "MONOTONIC + ABSTIME read returns EAGAIN before deadline");
+
+    /* Restore blocking and wait it out. */
+    CHECK_RET(fcntl(mfd, F_SETFL, mfl), 0, "F_SETFL restore");
+    mrn = read(mfd, &mexp, sizeof(mexp));
+    CHECK(mrn == (ssize_t)sizeof(mexp), "MONOTONIC + ABSTIME read returns 8 bytes");
+    CHECK(mexp >= 1, "MONOTONIC + ABSTIME expiration count >= 1");
+    close(mfd);
+
+    /* Regression: read() with a bad buffer must not consume the
+     * expiration count. Linux preserves the count when the copyout
+     * fails (EFAULT). The previous implementation did
+     * `swap(0)` before the copy and lost the tick. */
+    int bfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    CHECK(bfd >= 0, "create MONOTONIC for bad-buffer test");
+    struct itimerspec quick2 = {
+        .it_interval = {0, 0},
+        .it_value    = {0, 50 * 1000 * 1000},
+    };
+    CHECK_RET(timerfd_settime(bfd, 0, &quick2, NULL), 0, "settime quick (bad-buffer)");
+
+    /* Wait until at least one tick is queued. */
+    {
+        struct pollfd bpf = {.fd = bfd, .events = POLLIN};
+        int pr = poll(&bpf, 1, 500);
+        CHECK(pr == 1 && (bpf.revents & POLLIN),
+              "bfd is readable before bad-buffer read");
+    }
+
+    /* Reading into a bad pointer must EFAULT and leave the tick. */
+    errno = 0;
+    ssize_t bad = read(bfd, (void *)1, sizeof(uint64_t));
+    CHECK(bad == -1 && errno == EFAULT,
+          "read into bad buffer returns EFAULT");
+
+    /* Now a valid read must still see the preserved expiration. */
+    uint64_t bexp = 0;
+    ssize_t good = read(bfd, &bexp, sizeof(bexp));
+    CHECK(good == (ssize_t)sizeof(bexp),
+          "valid read after EFAULT recovers 8 bytes");
+    CHECK(bexp >= 1, "preserved expiration count >= 1 after failed read");
+    close(bfd);
+
     TEST_DONE();
 }

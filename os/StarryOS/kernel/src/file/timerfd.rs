@@ -33,7 +33,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::{TimeValue, wall_time};
+use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io, timeout_at};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -68,6 +68,11 @@ struct State {
 /// A timerfd. Held behind `Arc` and referenced both from the fd table and
 /// from the background timer task (as a `Weak<Timerfd>`).
 pub struct Timerfd {
+    /// The clock domain the user passed to `timerfd_create`. Used by
+    /// `settime(TFD_TIMER_ABSTIME)` to translate a user-supplied
+    /// absolute deadline (which is always in this domain) into the
+    /// internal `wall_time` domain that the timer wheel runs against.
+    clockid: u32,
     state: Mutex<State>,
     expire_count: AtomicU64,
     poll_rx: PollSet,
@@ -89,6 +94,7 @@ impl Timerfd {
             _ => return Err(AxError::InvalidInput),
         }
         let this = Arc::new(Self {
+            clockid,
             state: Mutex::new(State::default()),
             expire_count: AtomicU64::new(0),
             poll_rx: PollSet::new(),
@@ -127,8 +133,26 @@ impl Timerfd {
             state.interval = Duration::ZERO;
         } else {
             let deadline = if abstime {
-                TimeValue::from_secs(new_value.as_secs())
-                    + Duration::from_nanos(new_value.subsec_nanos() as u64)
+                // User passed an absolute deadline in `self.clockid`'s
+                // domain. CLOCK_REALTIME already uses the same epoch
+                // as the timer wheel's wall_time, so the user value
+                // is the wall deadline directly. CLOCK_MONOTONIC /
+                // CLOCK_BOOTTIME are measured since boot; convert to
+                // wall_time by adding the same offset (now - monotonic
+                // now) that the kernel applies elsewhere. Without
+                // this, a `clock_gettime(CLOCK_MONOTONIC) + 100ms`
+                // deadline would be interpreted as a wall timestamp
+                // and almost always fire immediately.
+                let user_abs = TimeValue::from_secs(new_value.as_secs())
+                    + Duration::from_nanos(new_value.subsec_nanos() as u64);
+                match self.clockid {
+                    CLOCK_REALTIME | CLOCK_REALTIME_ALARM => user_abs,
+                    _ => {
+                        let mono = monotonic_time();
+                        let wall_minus_mono = now.checked_sub(mono).unwrap_or(Duration::ZERO);
+                        user_abs.checked_add(wall_minus_mono).unwrap_or(user_abs)
+                    }
+                }
             } else {
                 now + new_value
             };
@@ -286,11 +310,17 @@ impl FileLike for Timerfd {
             return Err(AxError::InvalidInput);
         }
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let n = self.expire_count.swap(0, Ordering::AcqRel);
+            let n = self.expire_count.load(Ordering::Acquire);
             if n == 0 {
                 return Err(AxError::WouldBlock);
             }
+            // Consume only after the copyout succeeds. Linux's
+            // timerfd_read(2) is explicit: a failed read does not
+            // discard the expirations. Using `fetch_sub(n)` (rather
+            // than `swap(0)`) also preserves any ticks the timer
+            // task added between our `load` above and this point.
             dst.write(&n.to_ne_bytes())?;
+            self.expire_count.fetch_sub(n, Ordering::AcqRel);
             Ok(core::mem::size_of::<u64>())
         }))
     }
