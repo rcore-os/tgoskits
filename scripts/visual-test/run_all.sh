@@ -124,7 +124,10 @@ done
 echo "==========================================="
 echo "  $ARCH: PASS=$pass_count FAIL=$fail_count SKIP=$skip_count"
 echo "==========================================="
-if (( pass_count == 0 && fail_count == 0 )); then
+# An arch with every scenario gated out via `arches` is a legitimate
+# "nothing to run" outcome, not an error: keeps the matrix entry as a
+# placeholder until a per-arch golden lands.
+if (( pass_count == 0 && fail_count == 0 && skip_count == 0 )); then
     echo "no scenarios ran for $ARCH" >&2
     exit 1
 fi
