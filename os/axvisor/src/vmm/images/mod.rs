@@ -89,13 +89,6 @@ impl ImageLoader {
             self.dtb_load_gpa = config.image_config.dtb_load_gpa;
             self.bios_load_gpa = config.image_config.bios_load_gpa;
         });
-        #[cfg(target_arch = "x86_64")]
-        if self.config.kernel.bios_path.is_none()
-            && self.bios_load_gpa.is_none()
-            && self.config.kernel.entry_point == self.default_bios_gpa().as_usize()
-        {
-            self.bios_load_gpa = Some(self.default_bios_gpa());
-        }
 
         match self.config.kernel.image_location.as_deref() {
             Some("memory") => self.load_vm_images_from_memory(),
@@ -161,6 +154,10 @@ impl ImageLoader {
     }
 
     fn load_boot_image_from_memory(&self, bios: Option<&[u8]>) -> AxResult {
+        if !self.config.kernel.enable_bios {
+            return Ok(());
+        }
+
         if let Some(buffer) = bios {
             let load_gpa = self
                 .bios_load_gpa
@@ -193,8 +190,7 @@ impl ImageLoader {
 
     #[cfg(target_arch = "x86_64")]
     fn should_load_default_x86_boot_image(&self) -> bool {
-        self.config.kernel.bios_path.is_none()
-            && self.config.kernel.entry_point == self.default_bios_gpa().as_usize()
+        self.config.kernel.enable_bios && self.config.kernel.bios_path.is_none()
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -377,24 +373,26 @@ pub mod fs {
             loader.vm.clone(),
         )?;
         // Load BIOS image if needed.
-        if let Some(bios_path) = &loader.config.kernel.bios_path {
-            if let Some(bios_load_addr) = loader.bios_load_gpa {
-                #[cfg(target_arch = "x86_64")]
-                let bios_image = read_image_file(bios_path)?;
-                #[cfg(target_arch = "x86_64")]
-                {
-                    validate_x86_bios_patch_region(&bios_image)?;
-                    load_vm_image_from_memory(&bios_image, bios_load_addr, loader.vm.clone())?;
-                    loader.load_x86_multiboot_info(&bios_image)?;
+        if loader.config.kernel.enable_bios {
+            if let Some(bios_path) = &loader.config.kernel.bios_path {
+                if let Some(bios_load_addr) = loader.bios_load_gpa {
+                    #[cfg(target_arch = "x86_64")]
+                    let bios_image = read_image_file(bios_path)?;
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        validate_x86_bios_patch_region(&bios_image)?;
+                        load_vm_image_from_memory(&bios_image, bios_load_addr, loader.vm.clone())?;
+                        loader.load_x86_multiboot_info(&bios_image)?;
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
+                } else {
+                    return ax_err!(NotFound, "BIOS load addr is missed");
                 }
-                #[cfg(not(target_arch = "x86_64"))]
-                load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
-            } else {
-                return ax_err!(NotFound, "BIOS load addr is missed");
             }
         };
         #[cfg(target_arch = "x86_64")]
-        if loader.config.kernel.bios_path.is_none() && loader.should_load_default_x86_boot_image() {
+        if loader.should_load_default_x86_boot_image() {
             info!(
                 "Loading built-in x86 boot image at GPA {:#x}",
                 loader.default_bios_gpa().as_usize()

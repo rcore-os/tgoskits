@@ -24,6 +24,8 @@ image_location = "fs"
 kernel_path = "/path/ax-helloworld-x86_64.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
+# Whether to enable BIOS boot flow.
+enable_bios = true
 # The file path of the BIOS image.
 # bios_path = "/path/axvm-bios.bin"
 # The load address of the BIOS image.

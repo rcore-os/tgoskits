@@ -27,8 +27,7 @@ use crate::VMMemoryRegion;
 
 const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
 
-/// Default BIOS load GPA for x86_64 when no bios_path is configured
-/// and the kernel entry_point equals this address, indicating x86 real-mode boot.
+/// Default BIOS load GPA for x86_64 built-in BIOS.
 #[cfg(target_arch = "x86_64")]
 const DEFAULT_X86_BIOS_LOAD_GPA: usize = 0x8000;
 
@@ -95,7 +94,7 @@ pub struct AxVMConfig {
 
 impl From<AxVMCrateConfig> for AxVMConfig {
     fn from(cfg: AxVMCrateConfig) -> Self {
-        let bios_load_gpa = default_bios_load_gpa(&cfg);
+        let bios_load_gpa = configured_bios_load_gpa(&cfg);
         Self {
             id: cfg.base.id,
             name: cfg.base.name,
@@ -129,13 +128,17 @@ impl From<AxVMCrateConfig> for AxVMConfig {
     }
 }
 
-fn default_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
+fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
+    if !cfg.kernel.enable_bios {
+        return None;
+    }
+
     if let Some(addr) = cfg.kernel.bios_load_addr {
         return Some(GuestPhysAddr::from(addr));
     }
 
     #[cfg(target_arch = "x86_64")]
-    if cfg.kernel.bios_path.is_none() && cfg.kernel.entry_point == DEFAULT_X86_BIOS_LOAD_GPA {
+    if cfg.kernel.bios_path.is_none() {
         return Some(GuestPhysAddr::from(DEFAULT_X86_BIOS_LOAD_GPA));
     }
 
@@ -364,5 +367,43 @@ impl PhysCpuList {
     /// Sets the guest CPU sets.
     pub fn set_guest_cpu_sets(&mut self, phys_cpu_sets: Vec<usize>) {
         self.phys_cpu_sets = Some(phys_cpu_sets);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_entry(entry_point: usize) -> AxVMCrateConfig {
+        let mut cfg = AxVMCrateConfig::default();
+        cfg.kernel.entry_point = entry_point;
+        cfg.kernel.kernel_load_addr = 0x20_0000;
+        cfg
+    }
+
+    #[test]
+    fn entry_point_does_not_enable_bios_implicitly() {
+        let cfg = config_with_entry(0x8000);
+
+        let vm_config = AxVMConfig::from(cfg);
+
+        assert!(vm_config.image_config.bios_load_gpa.is_none());
+    }
+
+    #[test]
+    fn explicit_bios_load_addr_enables_bios_gpa() {
+        let mut cfg = config_with_entry(0x8000);
+        cfg.kernel.enable_bios = true;
+        cfg.kernel.bios_load_addr = Some(0x8000);
+
+        let vm_config = AxVMConfig::from(cfg);
+
+        assert_eq!(
+            vm_config
+                .image_config
+                .bios_load_gpa
+                .map(|addr| addr.as_usize()),
+            Some(0x8000)
+        );
     }
 }

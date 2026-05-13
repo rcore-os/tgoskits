@@ -1,4 +1,4 @@
-//! Built-in x86 boot image used when a VM config omits `bios_path`.
+//! Built-in x86 boot image used when BIOS boot is enabled and the VM config omits `bios_path`.
 //!
 //! Axvisor starts x86 guests in 16-bit real mode. This tiny axvm-bios image
 //! switches the guest to 32-bit protected mode, sets the multiboot magic in
@@ -20,7 +20,7 @@ pub const MOV_EBX_IMM32_OPCODE: u8 = 0xbb;
 ///
 /// This byte sequence is intentionally identical to the external
 /// `axvm-bios.bin` used by x86 NimbOS/ArceOS guests, so existing guest boot
-/// assumptions remain unchanged when `bios_path` is omitted.
+/// assumptions remain unchanged when `enable_bios = true` and `bios_path` is omitted.
 pub const DEFAULT_BIOS_IMAGE: &[u8] = &[
     0xfa, 0xfc, 0x31, 0xc0, 0x8e, 0xd8, 0x8e, 0xc0, 0x8e, 0xd0, 0x0f, 0x01, 0x16, 0x68, 0x80, 0x0f,
     0x20, 0xc0, 0x66, 0x83, 0xc8, 0x01, 0x0f, 0x22, 0xc0, 0xea, 0x1e, 0x80, 0x08, 0x00, 0x66, 0xb8,
