@@ -71,7 +71,291 @@ const iconLibrary = {
   ),
 };
 
-function SectionShell({ id, className, eyebrow, title, description, children, framed = true }) {
+// ── Section Illustration SVGs ──
+
+function CapabilityIllustration() {
+  return (
+    <div className="section-illustration" aria-hidden="true">
+      <svg viewBox="0 0 640 480">
+        <defs>
+          <radialGradient id="capGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="var(--feature-accent-1)" stopOpacity="0.12" />
+            <stop offset="100%" stopColor="var(--feature-accent-1)" stopOpacity="0" />
+          </radialGradient>
+          <filter id="capShadow"><feDropShadow dx="0" dy="2" stdDeviation="6" floodColor="var(--feature-accent-1)" floodOpacity="0.1" /></filter>
+        </defs>
+        <circle cx="320" cy="220" r="160" fill="url(#capGlow)" />
+        <circle cx="320" cy="220" r="80" fill="none" stroke="var(--feature-accent-1)" strokeWidth="1.5" strokeOpacity="0.18" strokeDasharray="6,4">
+          <animateTransform attributeName="transform" type="rotate" from="0 320 220" to="360 320 220" dur="30s" repeatCount="indefinite" />
+        </circle>
+        <circle cx="320" cy="220" r="58" fill="var(--home-panel-strong)" stroke="var(--feature-accent-1)" strokeWidth="2" strokeOpacity="0.35" filter="url(#capShadow)" />
+        <circle cx="320" cy="220" r="22" fill="var(--feature-accent-1)" opacity="0.2" />
+        <text x="320" y="218" textAnchor="middle" fill="var(--feature-accent-1)" fontSize="16" fontWeight="750" fontFamily="system-ui">统一入口</text>
+        <text x="320" y="240" textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">cargo xtask</text>
+        <g fill="none" stroke="var(--feature-accent-2)" strokeWidth="1.5" strokeOpacity="0.16" strokeDasharray="5,5">
+          <path d="M270,190 Q160,100 100,140" />
+          <path d="M370,190 Q480,100 540,140" />
+          <path d="M280,260 Q200,360 140,340" />
+          <path d="M360,260 Q440,360 500,340" />
+          <path d="M320,280 Q320,400 320,400" />
+        </g>
+        {[
+          { label: '组件共享', sub: '独立 crate 复用', x: 100, y: 130 },
+          { label: '安全实现', sub: 'Rust 内存安全', x: 540, y: 130 },
+          { label: '多架构', sub: '4 种 CPU 架构', x: 90, y: 360 },
+          { label: '构建闭环', sub: '配置→运行→快照', x: 550, y: 360 },
+          { label: '验证体系', sub: '分层测试覆盖', x: 320, y: 420 },
+        ].map((n) => (
+          <g key={n.label}>
+            <rect x={n.x - 64} y={n.y - 24} width="128" height="48" rx="14" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" filter="url(#capShadow)" />
+            <text x={n.x} y={n.y - 4} textAnchor="middle" fill="var(--ifm-color-primary)" fontSize="14" fontWeight="650" fontFamily="system-ui">{n.label}</text>
+            <text x={n.x} y={n.y + 14} textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">{n.sub}</text>
+          </g>
+        ))}
+        {[['190','145'],['450','145'],['150','300'],['490','300'],['320','360']].map(([cx,cy],i) => (
+          <circle key={i} cx={cx} cy={cy} r="4" fill="var(--feature-accent-2)" opacity="0.5">
+            <animate attributeName="opacity" values="0.3;0.8;0.3" dur="2.8s" repeatCount="indefinite" begin={`${i*0.4}s`} />
+          </circle>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function ComponentWorkspaceIllustration() {
+  return (
+    <div className="section-illustration section-illustration--wide" aria-hidden="true">
+      <svg viewBox="0 0 640 440">
+        <defs>
+          <filter id="wsShadow"><feDropShadow dx="0" dy="3" stdDeviation="8" floodColor="var(--arch-accent-main)" floodOpacity="0.07" /></filter>
+          <linearGradient id="wsCenter" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="var(--arch-accent-main)" stopOpacity="0.18" /><stop offset="100%" stopColor="var(--arch-accent-alt)" stopOpacity="0.18" />
+          </linearGradient>
+          <marker id="wsArr" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto"><path d="M0,0 L10,4 L0,8" fill="var(--arch-accent-main)" opacity="0.5" /></marker>
+          <marker id="wsArr2" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto"><path d="M0,0 L10,4 L0,8" fill="var(--arch-accent-alt)" opacity="0.5" /></marker>
+        </defs>
+        <rect x="14" y="8" width="612" height="32" rx="16" fill="var(--arch-accent-main)" opacity="0.06" />
+        <text x="320" y="30" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="14" fontWeight="700" fontFamily="system-ui">Git Subtree 工作流：组件仓库 ↔ 统一工作区 ↔ 上游</text>
+        {[{ t:55, n:'axallocator',  p:'axmm_crates/' },{ t:155, n:'arm_vcpu', p:'components/' },{ t:255, n:'axfs-ng-vfs', p:'axfs_crates/' }].map(r => (
+          <g key={r.n}>
+            <rect x="14" y={r.t} width="106" height="58" rx="14" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" filter="url(#wsShadow)" />
+            <text x="67" y={r.t+23} textAnchor="middle" fill="var(--home-text-soft)" fontSize="14" fontFamily="monospace" fontWeight="600">{r.n}</text>
+            <text x="67" y={r.t+44} textAnchor="middle" fill="var(--arch-accent-main)" fontSize="12" fontFamily="monospace" opacity="0.8">{r.p}</text>
+          </g>
+        ))}
+        <rect x="195" y="50" width="250" height="260" rx="24" fill="url(#wsCenter)" stroke="var(--arch-accent-main)" strokeWidth="2" strokeOpacity="0.25" filter="url(#wsShadow)" />
+        <text x="320" y="82" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="18" fontWeight="750" fontFamily="system-ui">TGOSKits</text>
+        <text x="320" y="106" textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">统一集成工作区</text>
+        <line x1="240" y1="118" x2="400" y2="118" stroke="var(--home-panel-border)" strokeWidth="1" />
+        <text x="320" y="144" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="13" fontWeight="700" fontFamily="system-ui">独立组件汇聚</text>
+        <text x="320" y="165" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">60 多个可复用 crate</text>
+        <text x="320" y="181" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">内存 · 调度 · 设备 · VFS · 虚拟化</text>
+        <text x="320" y="210" textAnchor="middle" fill="var(--arch-accent-alt)" fontSize="13" fontWeight="700" fontFamily="system-ui">Subtree 同步工具</text>
+        <text x="320" y="231" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">repo.py list / pull / push</text>
+        <text x="320" y="247" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">集成验证后同步回上游</text>
+        <text x="320" y="276" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="13" fontWeight="700" fontFamily="system-ui">来源边界清晰</text>
+        <text x="320" y="297" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">repos.csv · target_dir · category</text>
+        {[{ t:55, n:'axallocator',  p:'独立仓库' },{ t:155, n:'arm_vcpu', p:'独立仓库' },{ t:255, n:'axfs-ng-vfs', p:'独立仓库' }].map(r => (
+          <g key={r.n+'d'}>
+            <rect x="520" y={r.t} width="106" height="58" rx="14" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" filter="url(#wsShadow)" />
+            <text x="573" y={r.t+23} textAnchor="middle" fill="var(--home-text-soft)" fontSize="14" fontFamily="monospace" fontWeight="600">{r.n}</text>
+            <text x="573" y={r.t+44} textAnchor="middle" fill="var(--arch-accent-alt)" fontSize="12" fontFamily="monospace" opacity="0.8">{r.p}</text>
+          </g>
+        ))}
+        <g stroke="var(--arch-accent-main)" strokeWidth="2" fill="none" opacity="0.3">
+          <path d="M125,84 L189,108" markerEnd="url(#wsArr)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" /></path>
+          <path d="M125,184 L189,188" markerEnd="url(#wsArr)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="0.4s" /></path>
+          <path d="M125,284 L189,250" markerEnd="url(#wsArr)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="0.8s" /></path>
+        </g>
+        <g stroke="var(--arch-accent-alt)" strokeWidth="2" fill="none" opacity="0.3">
+          <path d="M451,108 L514,84" markerEnd="url(#wsArr2)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="1.2s" /></path>
+          <path d="M451,188 L514,184" markerEnd="url(#wsArr2)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="1.6s" /></path>
+          <path d="M451,250 L514,284" markerEnd="url(#wsArr2)"><animate attributeName="opacity" values="0.25;0.55;0.25" dur="2.2s" repeatCount="indefinite" begin="2s" /></path>
+        </g>
+        <rect x="14" y="332" width="612" height="42" rx="14" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1" filter="url(#wsShadow)" />
+        <text x="40" y="358" fill="var(--arch-accent-main)" fontSize="13" fontFamily="monospace" fontWeight="600">$ python3 scripts/repo/repo.py list</text>
+        <text x="400" y="358" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">查看组件仓库映射与同步状态</text>
+        <text x="67" y="400" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">← 组件仓库</text>
+        <text x="320" y="400" textAnchor="middle" fill="var(--arch-accent-main)" fontSize="11" fontFamily="system-ui">集成验证</text>
+        <text x="573" y="400" textAnchor="middle" fill="var(--home-text-soft)" fontSize="11" fontFamily="system-ui">上游仓库 →</text>
+        <text x="14" y="425" fill="var(--arch-accent-main)" fontSize="11" fontFamily="monospace">$ repo.py pull</text>
+        <text x="200" y="425" fill="var(--arch-accent-alt)" fontSize="11" fontFamily="monospace">$ repo.py push</text>
+        <text x="430" y="425" fill="var(--home-text-soft)" fontSize="11" fontFamily="monospace">repos.csv</text>
+      </svg>
+    </div>
+  );
+}
+
+function SystemsIllustration() {
+  const SvgLines = ({ x, y, lines, fill, fontSize = 10.5, fontWeight, lineHeight = 15 }) => (
+    <text x={x} y={y} textAnchor="middle" fill={fill} fontSize={fontSize} fontWeight={fontWeight} fontFamily="system-ui">
+      {lines.map((line, index) => (
+        <tspan key={`${line}-${index}`} x={x} dy={index === 0 ? 0 : lineHeight}>{line}</tspan>
+      ))}
+    </text>
+  );
+
+  return (
+    <div className="section-illustration section-illustration--wide" aria-hidden="true">
+      <svg viewBox="0 0 640 480">
+        <defs>
+          <filter id="sysShadow"><feDropShadow dx="0" dy="3" stdDeviation="6" floodColor="var(--home-panel-border)" floodOpacity="0.25" /></filter>
+        </defs>
+        <rect x="60" y="370" width="520" height="80" rx="18" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.5" filter="url(#sysShadow)" />
+        <text x="320" y="402" textAnchor="middle" fill="var(--home-text-soft)" fontSize="16" fontWeight="650" fontFamily="system-ui">共享组件基础层</text>
+        <text x="320" y="428" textAnchor="middle" fill="var(--ifm-color-primary)" fontSize="12" fontFamily="monospace">components/ · ax* crates · starry-* · drivers/ · platform/</text>
+        {[
+          {
+            x:38,
+            c:'var(--system-accent-arceos)',
+            n:'ArceOS',
+            s:'模块化内核',
+            sub:'基础能力层',
+            desc:['模块化内核路径', '系统能力复用基础'],
+            items:[['聚焦模块、平台', '和示例应用'], ['理解基础能力', '如何组合成系统'], ['StarryOS / Axvisor', '共享底座之一']],
+          },
+          {
+            x:240,
+            c:'var(--system-accent-starry)',
+            n:'StarryOS',
+            s:'Linux 兼容 OS',
+            sub:'syscall + rootfs',
+            desc:['基于 ArceOS 构建', '强调内核与 rootfs 联动'],
+            items:[['覆盖 syscall、进程', '信号等核心语义'], ['包含 rootfs 与', '用户态验证路径'], ['适合完整 OS 路径', '开发与调试']],
+          },
+          {
+            x:442,
+            c:'var(--system-accent-axvisor)',
+            n:'Axvisor',
+            s:'Type-I Hypervisor',
+            sub:'虚拟化管理',
+            desc:['围绕板级配置', 'VM 配置与 Guest 镜像'],
+            items:[['覆盖 VM、vCPU', '虚拟设备与地址空间'], ['强调虚拟化组件', '与板级能力协作'], ['适合系统与虚拟化', '联合验证']],
+          },
+        ].map(s=>(
+          <g key={s.n}>
+            <rect x={s.x} y="22" width="160" height="290" rx="20" fill="var(--home-panel-strong)" stroke={s.c} strokeWidth="2.5" strokeOpacity="0.4" filter="url(#sysShadow)" />
+            <rect x={s.x} y="22" width="160" height="48" rx="20" fill={s.c} opacity="0.85" />
+            <rect x={s.x} y="52" width="160" height="18" fill={s.c} opacity="0.85" />
+            <text x={s.x+80} y="55" textAnchor="middle" fill="#fff" fontSize="18" fontWeight="750" fontFamily="system-ui">{s.n}</text>
+            <text x={s.x+80} y="96" textAnchor="middle" fill="var(--home-text-soft)" fontSize="13" fontWeight="600" fontFamily="system-ui">{s.s}</text>
+            <text x={s.x+80} y="120" textAnchor="middle" fill={s.c} fontSize="12" fontFamily="system-ui">{s.sub}</text>
+            <line x1={s.x+15} y1="136" x2={s.x+145} y2="136" stroke="var(--home-panel-border)" strokeWidth="1" />
+            <SvgLines x={s.x+80} y={155} lines={s.desc} fill="var(--home-text-soft)" fontSize={10.5} lineHeight={13} />
+            {s.items.map((item, index) => (
+              <g key={item.join('')} transform={`translate(0 ${index * 36})`}>
+                <circle cx={s.x + 28} cy="198" r="3" fill={s.c} opacity="0.72" />
+                <SvgLines x={s.x+88} y={195} lines={item} fill="var(--ifm-color-primary)" fontSize={10} lineHeight={12} />
+              </g>
+            ))}
+            <line x1={s.x+80} y1="312" x2={s.x+80} y2="364" stroke={s.c} strokeWidth="2" opacity="0.2" strokeDasharray="6,4" />
+          </g>
+        ))}
+        <circle cx="213" cy="110" r="15" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" />
+        <text x="213" y="116" textAnchor="middle" fill="var(--home-text-soft)" fontSize="17" fontWeight="300">+</text>
+        <circle cx="432" cy="110" r="15" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" />
+        <text x="432" y="116" textAnchor="middle" fill="var(--home-text-soft)" fontSize="17" fontWeight="300">+</text>
+      </svg>
+    </div>
+  );
+}
+
+function WorkflowIllustration() {
+  return (
+    <div className="section-illustration" aria-hidden="true">
+      <svg viewBox="0 0 360 480">
+        <defs><filter id="wfShadow"><feDropShadow dx="0" dy="2" stdDeviation="4" floodColor="var(--workflow-accent-1)" floodOpacity="0.08" /></filter></defs>
+        <line x1="54" y1="50" x2="54" y2="440" stroke="var(--workflow-accent-1)" strokeWidth="3" opacity="0.12" />
+        <line x1="54" y1="50" x2="54" y2="440" stroke="var(--workflow-accent-2)" strokeWidth="1" opacity="0.08" strokeDasharray="8,12" />
+        {[
+          { num:'1', cy:90,  title:'建立仓库心智模型', desc:'阅读 overview · repo · architecture' },
+          { num:'2', cy:220, title:'跑通最短命令路径', desc:'QEMU 构建 · 系统运行' },
+          { num:'3', cy:350, title:'深入设计与验证',   desc:'架构 · 测试 · Guest 配置' },
+        ].map((s,i)=>(
+          <g key={s.num}>
+            <circle cx="54" cy={s.cy} r="20" fill="var(--home-panel-strong)" stroke={i===2?'var(--workflow-accent-2)':'var(--workflow-accent-1)'} strokeWidth="2.5" filter="url(#wfShadow)" />
+            <text x="54" y={s.cy+6} textAnchor="middle" fill={i===2?'var(--workflow-accent-2)':'var(--workflow-accent-1)'} fontSize="15" fontWeight="750" fontFamily="system-ui">{s.num}</text>
+            <rect x="96" y={s.cy-22} width="228" height="44" rx="12" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" filter="url(#wfShadow)" />
+            <text x="210" y={s.cy-3} textAnchor="middle" fill="var(--ifm-color-primary)" fontSize="15" fontWeight="650" fontFamily="system-ui">{s.title}</text>
+            <text x="210" y={s.cy+14} textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">{s.desc}</text>
+          </g>
+        ))}
+        <circle cx="54" cy="440" r="14" fill="var(--workflow-accent-2)" opacity="0.15" stroke="var(--workflow-accent-2)" strokeWidth="1.5" strokeOpacity="0.3" />
+        <text x="54" y="445" textAnchor="middle" fill="var(--workflow-accent-2)" fontSize="16" fontWeight="700">✓</text>
+        <text x="96" y="446" fill="var(--ifm-color-primary)" fontSize="15" fontWeight="700" fontFamily="system-ui">开始开发</text>
+      </svg>
+    </div>
+  );
+}
+
+function QualityIllustration() {
+  return (
+    <div className="section-illustration" aria-hidden="true">
+      <svg viewBox="0 0 640 340">
+        <defs>
+          <filter id="qShadow"><feDropShadow dx="0" dy="2" stdDeviation="5" floodColor="var(--feature-accent-2)" floodOpacity="0.06" /></filter>
+          <marker id="qArr" viewBox="0 0 10 8" refX="5" refY="8" markerWidth="7" markerHeight="5" orient="auto"><path d="M0,8 L5,0 L10,8" fill="var(--feature-accent-2)" opacity="0.4" /></marker>
+        </defs>
+        <circle cx="320" cy="170" r="190" fill="none" stroke="var(--feature-accent-2)" strokeWidth="0.6" opacity="0.06" />
+        <circle cx="320" cy="170" r="140" fill="none" stroke="var(--feature-accent-1)" strokeWidth="0.6" opacity="0.06" />
+        {[
+          { y:20,  w:360, c:'var(--feature-accent-2)', t:'平台与场景回归',  d:'platform/* 适配 · Guest/VM 配置 · 跨系统影响面' },
+          { y:112, w:480, c:'var(--feature-accent-1)', t:'系统级验证',        d:'ArceOS 示例 · StarryOS rootfs+QEMU · Axvisor setup+run' },
+          { y:204, w:600, c:'var(--ifm-color-primary)', t:'Host 侧验证',       d:'std tests · cargo xtask test · cargo xtask clippy' },
+        ].map(l=>(
+          <g key={l.t}>
+            <rect x={(640-l.w)/2} y={l.y} width={l.w} height="64" rx="16" fill="var(--home-panel-strong)" stroke={l.c} strokeWidth="2" strokeOpacity="0.3" filter="url(#qShadow)" />
+            <rect x={(640-l.w)/2} y={l.y} width="4" height="64" rx="2" fill={l.c} opacity="0.5" />
+            <text x="320" y={l.y+27} textAnchor="middle" fill={l.c} fontSize="16" fontWeight="700" fontFamily="system-ui">{l.t}</text>
+            <text x="320" y={l.y+48} textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="monospace">{l.d}</text>
+          </g>
+        ))}
+        <g stroke="var(--feature-accent-2)" strokeWidth="1.5" fill="none" opacity="0.3">
+          <line x1="320" y1="84" x2="320" y2="107" markerEnd="url(#qArr)" />
+          <line x1="320" y1="176" x2="320" y2="199" markerEnd="url(#qArr)" />
+        </g>
+        <text x="320" y="305" textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">验证范围随改动影响面渐进扩大 ↑</text>
+      </svg>
+    </div>
+  );
+}
+
+function DocsIllustration() {
+  return (
+    <div className="section-illustration" aria-hidden="true">
+      <svg viewBox="0 0 560 320">
+        <defs><filter id="docsShadow"><feDropShadow dx="0" dy="2" stdDeviation="5" floodColor="var(--ifm-color-primary)" floodOpacity="0.06" /></filter></defs>
+        <circle cx="280" cy="160" r="55" fill="var(--ifm-color-primary)" opacity="0.08" />
+        <circle cx="280" cy="160" r="48" fill="var(--home-panel-strong)" stroke="var(--ifm-color-primary)" strokeWidth="2" strokeOpacity="0.3" filter="url(#docsShadow)" />
+        <text x="280" y="155" textAnchor="middle" fill="var(--ifm-color-primary)" fontSize="16" fontWeight="750" fontFamily="system-ui">文档索引</text>
+        <text x="280" y="173" textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">4 个阅读入口</text>
+        <g stroke="var(--ifm-color-primary)" strokeWidth="1" opacity="0.1" strokeDasharray="4,4">
+          <line x1="280" y1="112" x2="150" y2="40" /><line x1="280" y1="112" x2="410" y2="40" />
+          <line x1="280" y1="208" x2="150" y2="270" /><line x1="280" y1="208" x2="410" y2="270" />
+        </g>
+        {[
+          { x:20,  y:14,  c:'var(--ifm-color-primary)', t:'项目介绍', d:'概览 / 硬件' },
+          { x:410, y:14,  c:'var(--feature-accent-1)',  t:'参考资料', d:'仓库 / 组件' },
+          { x:20,  y:244, c:'var(--feature-accent-2)',  t:'设计实现', d:'架构 / 测试' },
+          { x:410, y:244, c:'var(--arch-accent-main)',  t:'系统指南', d:'ArceOS / StarryOS' },
+        ].map(q=>(
+          <g key={q.t}>
+            <rect x={q.x} y={q.y} width="130" height="62" rx="14" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" filter="url(#docsShadow)" />
+            <text x={q.x+65} y={q.y+26} textAnchor="middle" fill={q.c} fontSize="14" fontWeight="700" fontFamily="system-ui">{q.t}</text>
+            <text x={q.x+65} y={q.y+46} textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">{q.d}</text>
+          </g>
+        ))}
+        <circle cx="200" cy="72" r="4" fill="var(--ifm-color-primary)" opacity="0.3" />
+        <circle cx="360" cy="72" r="4" fill="var(--feature-accent-1)" opacity="0.3" />
+        <circle cx="200" cy="248" r="4" fill="var(--feature-accent-2)" opacity="0.3" />
+        <circle cx="360" cy="248" r="4" fill="var(--arch-accent-main)" opacity="0.3" />
+      </svg>
+    </div>
+  );
+}
+
+function SectionShell({ id, className, eyebrow, title, description, children, illustration, framed = true, layoutReverse = false }) {
+  const hasChildren = children != null && children !== '';
   return (
     <section className={`section-shell ${className || ''}`} id={id}>
       <div className="section-shell__inner">
@@ -81,7 +365,18 @@ function SectionShell({ id, className, eyebrow, title, description, children, fr
             <h2>{title}</h2>
             <p>{description}</p>
           </div>
-          {children}
+          {illustration ? (
+            hasChildren ? (
+              <div className={`section-body-layout${layoutReverse ? ' section-body-layout--reverse' : ''}`}>
+                <div className="section-body-layout__text">{children}</div>
+                <div className="section-body-layout__visual">{illustration}</div>
+              </div>
+            ) : (
+              <div className="section-body-layout section-body-layout--solo">
+                {illustration}
+              </div>
+            )
+          ) : (children)}
         </div>
       </div>
     </section>
@@ -384,21 +679,21 @@ function ArchitectureSection() {
 }
 
 function ComponentWorkspaceSection() {
-  const workspaceItems = [
+  const workspaceCards = [
     {
-      title: '独立组件汇聚',
-      desc: 'components/ 下维护 60 多个可复用 crate，覆盖内存、调度、设备、虚拟化、文件系统、平台抽象等系统软件基础能力。',
-      tags: ['components/*', 'ax* crates', 'starry-*', 'arch backends'],
+      title: '显式来源清单',
+      desc: '通过 repos.csv 记录组件仓库、目标目录和分类信息，让每个 subtree 的来源边界都能被追踪。',
+      tags: ['repos.csv', 'target_dir', 'category'],
     },
     {
-      title: 'Subtree 同步工具',
-      desc: 'scripts/repo/repo.py 负责列出、拉取和推送组件仓库，让独立组件可以在统一工作区内集成验证后再同步回上游。',
-      tags: ['repo.py list', 'repo.py pull', 'repo.py push', 'repos.csv'],
+      title: '统一同步入口',
+      desc: '用 scripts/repo/repo.py 汇总 list、pull、push 等动作，避免组件仓库同步流程散落在人工步骤里。',
+      tags: ['repo.py list', 'repo.py pull', 'repo.py push'],
     },
     {
-      title: '来源边界清晰',
-      desc: 'repos.csv 显式记录组件来源、目标路径、分类和分支信息，便于维护者判断哪些改动属于本仓库集成，哪些需要同步回组件仓库。',
-      tags: ['target_dir', 'category', 'branch', 'description'],
+      title: '集成后再回推',
+      desc: '组件先在统一工作区内经过构建、格式化和测试验证，再把稳定变更同步回对应上游仓库。',
+      tags: ['cargo xtask', 'fmt', 'test-suit'],
     },
   ];
 
@@ -410,26 +705,25 @@ function ComponentWorkspaceSection() {
       title="60 多个独立组件在一个工作区内集成、同步与来源管理"
       description="TGOSKits 不只是普通 monorepo，而是通过 Git Subtree 管理独立组件仓库，用显式清单和维护脚本把组件来源、目标路径与同步动作收束到同一入口。"
       framed={false}
+      illustration={<ComponentWorkspaceIllustration />}
     >
       <div className="workspace-grid">
-        {workspaceItems.map((item) => (
-          <article className="workspace-card" key={item.title}>
-            <h3>{item.title}</h3>
-            <p>{item.desc}</p>
+        {workspaceCards.map((card) => (
+          <article className="workspace-card" key={card.title}>
+            <h3>{card.title}</h3>
+            <p>{card.desc}</p>
             <div className="workspace-tags">
-              {item.tags.map((tag) => (
+              {card.tags.map((tag) => (
                 <code key={tag}>{tag}</code>
               ))}
             </div>
           </article>
         ))}
       </div>
+
       <div className="workspace-command-strip">
-        <code>python3 scripts/repo/repo.py list</code>
-        <span>查看组件仓库映射与同步状态</span>
-        <Link className="button button--outline button--hero button--compact" to="/docs/contributing/repo">
-          查看仓库维护说明
-        </Link>
+        <code>$ python3 scripts/repo/repo.py list</code>
+        <span>查看组件仓库映射、目标路径与同步状态，并从同一个入口执行 pull / push。</span>
       </div>
     </SectionShell>
   );
@@ -438,25 +732,25 @@ function ComponentWorkspaceSection() {
 function SystemsSection() {
   const systems = [
     {
+      accent: 'accent-arceos',
       name: 'ArceOS',
-      accentClass: 'accent-arceos',
+      subtitle: '模块化内核',
       desc: '模块化内核路径，是多个系统能力向上复用的基础层。',
       items: ['聚焦模块、平台和示例应用', '适合理解基础能力如何组合成系统', '也是 StarryOS 与 Axvisor 的底座之一'],
-      to: '/docs/development/arceos',
     },
     {
+      accent: 'accent-starry',
       name: 'StarryOS',
-      accentClass: 'accent-starry',
+      subtitle: 'Linux 兼容 OS',
       desc: '建立在 ArceOS 之上的 Linux 兼容系统，强调内核与 rootfs 联动。',
       items: ['覆盖 syscall、进程、信号等核心语义', '包含 rootfs 与用户态验证路径', '适合完整 OS 路径开发与调试'],
-      to: '/docs/development/starryos',
     },
     {
+      accent: 'accent-axvisor',
       name: 'Axvisor',
-      accentClass: 'accent-axvisor',
+      subtitle: 'Type-I Hypervisor',
       desc: 'Type-I Hypervisor 路径，围绕板级配置、VM 配置和 Guest 镜像组织开发流程。',
       items: ['覆盖 VM、vCPU、虚拟设备与地址空间抽象', '强调虚拟化组件与板级能力协作', '适合系统与虚拟化联合验证'],
-      to: '/docs/development/axvisor',
     },
   ];
 
@@ -468,12 +762,14 @@ function SystemsSection() {
       title="三条系统路径，共享组件基础但面向不同开发目标"
       description="ArceOS 提供模块化内核基础，StarryOS 在其上构建 Linux 兼容系统，Axvisor 聚焦 Type-I 虚拟化场景，三者共享组件栈但面向不同目标。"
       framed={false}
+      illustration={<SystemsIllustration />}
     >
       <div className="systems-grid">
         {systems.map((system) => (
-          <article className={`system-card ${system.accentClass}`} key={system.name}>
+          <article className={`system-card ${system.accent}`} key={system.name}>
             <div className="system-card__header">
               <h3>{system.name}</h3>
+              <p>{system.subtitle}</p>
             </div>
             <div className="system-card__body">
               <p>{system.desc}</p>
@@ -482,9 +778,6 @@ function SystemsSection() {
                   <li key={item}>{item}</li>
                 ))}
               </ul>
-              <Link className="button button--primary button--hero button--compact" to={system.to}>
-                进入指南
-              </Link>
             </div>
           </article>
         ))}
@@ -530,6 +823,7 @@ function WorkflowSection() {
       title="首页即入口，阅读顺序与命令顺序相互对应"
       description="从理解项目结构、跑通 QEMU 构建运行，到深入架构设计与验证策略，按顺序渐进式进入开发。"
       framed={false}
+      illustration={<WorkflowIllustration />}
     >
       <div className="split-layout split-layout--workflow">
         <div className="workflow-timeline">
@@ -608,6 +902,7 @@ function DocsSection() {
       title="文档不只是一串目录，而是一组可组合的阅读入口"
       description="按项目介绍、参考资料、设计与实现、系统指南四个维度组织文档入口，快速跳转到所需层次。"
       framed={false}
+      illustration={<DocsIllustration />}
     >
       <div className="docs-grid">
         {docs.map((group) => (
@@ -655,6 +950,7 @@ function QualitySection() {
       title="从组件到系统再到平台，验证路径与工程层次保持一致"
       description="从 Host 侧组件级测试与静态检查，到 QEMU 系统级运行验证，再到跨平台/跨系统影响面回归，验证粒度与工程层次对齐。"
       framed={false}
+      illustration={<QualityIllustration />}
     >
       <div className="quality-grid">
         {lanes.map((lane) => (
