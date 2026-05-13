@@ -229,7 +229,7 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
     //       Ignore.
     {
         use starry_signal::SignalDisposition;
-        let mut actions = thread.proc_data.proc.actions.lock();
+        let mut actions = thread.proc_data.signal.actions.lock();
         let act = &mut actions[signo];
         let force_default = matches!(act.disposition, SignalDisposition::Ignore)
             || (matches!(act.disposition, SignalDisposition::Default)
