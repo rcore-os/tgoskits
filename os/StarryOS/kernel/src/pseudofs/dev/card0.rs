@@ -1019,6 +1019,11 @@ impl Card0 {
         if f.crtc_id != CRTC_ID || !self.fbs.lock().contains_key(&f.fb_id) {
             return Err(VfsError::InvalidInput);
         }
+        // Mirror the new fb into modeset state so a subsequent
+        // GETCRTC / OBJ_GETPROPERTIES sees the post-flip fb_id rather
+        // than the value left over from the previous SETCRTC or
+        // atomic commit.
+        self.state.lock().plane_fb_id = f.fb_id;
         self.present_fb(f.fb_id);
         if f.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
             self.queue_flip_event(f.user_data);
