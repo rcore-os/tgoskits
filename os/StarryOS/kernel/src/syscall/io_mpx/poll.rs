@@ -1,62 +1,19 @@
 use alloc::vec::Vec;
-use core::mem::{MaybeUninit, offset_of};
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::time::TimeValue;
-use ax_task::{
-    current,
-    future::{self, block_on, poll_io},
-};
+use ax_hal::time::{TimeValue, wall_time};
 use axpoll::IoEvents;
-use linux_raw_sys::general::{POLLNVAL, RLIMIT_NOFILE, pollfd, timespec};
+use linux_raw_sys::general::{POLLNVAL, pollfd, timespec};
 use starry_signal::SignalSet;
-use starry_vm::{vm_read_slice, vm_write_slice};
 
-use super::FdPollSet;
+use super::{FdPollSet, poll_network_interfaces};
 use crate::{
     file::get_file_like,
     mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
-    task::{AsThread, with_blocked_signals},
+    task::with_blocked_signals,
     time::TimeValueLike,
 };
-
-fn check_nfds_limit(nfds: usize) -> AxResult<()> {
-    let nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
-    if nfds as u64 > nofile {
-        Err(AxError::InvalidInput)
-    } else {
-        Ok(())
-    }
-}
-
-fn read_poll_fds(fds: UserPtr<pollfd>, nfds: usize) -> AxResult<Vec<pollfd>> {
-    check_nfds_limit(nfds)?;
-    if nfds == 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut buf = Vec::with_capacity(nfds);
-    buf.resize_with(nfds, MaybeUninit::uninit);
-    vm_read_slice(fds.as_ptr(), &mut buf)?;
-    Ok(buf
-        .into_iter()
-        .map(|fd| unsafe { fd.assume_init() })
-        .collect())
-}
-
-fn write_poll_revents(fds: UserPtr<pollfd>, poll_fds: &[pollfd]) -> AxResult<()> {
-    let revents_offset = offset_of!(pollfd, revents);
-
-    for (index, poll_fd) in poll_fds.iter().enumerate() {
-        let revents_ptr = (fds.as_ptr().wrapping_add(index) as *mut u8)
-            .wrapping_add(revents_offset)
-            .cast::<_>();
-        vm_write_slice(revents_ptr, core::slice::from_ref(&poll_fd.revents))?;
-    }
-
-    Ok(())
-}
 
 fn do_poll(
     poll_fds: &mut [pollfd],
@@ -67,9 +24,8 @@ fn do_poll(
 
     let mut res = 0isize;
     let mut fds = Vec::with_capacity(poll_fds.len());
-    let mut revent_indices = Vec::with_capacity(poll_fds.len());
-    for (index, fd) in poll_fds.iter_mut().enumerate() {
-        fd.revents = 0;
+    let mut revents = Vec::with_capacity(poll_fds.len());
+    for fd in poll_fds.iter_mut() {
         if fd.fd == -1 {
             // Skip -1
             continue;
@@ -81,7 +37,7 @@ fn do_poll(
                     IoEvents::from_bits(fd.events as _).ok_or(AxError::InvalidInput)?
                         | IoEvents::ALWAYS_POLL,
                 ));
-                revent_indices.push(index);
+                revents.push(&mut fd.revents);
             }
             Err(_) => {
                 // If the fd is invalid, set revents to POLLNVAL
@@ -96,58 +52,52 @@ fn do_poll(
     let fds = FdPollSet(fds);
 
     with_blocked_signals(sigmask, || {
-        match block_on(future::timeout(
-            timeout,
-            poll_io(&fds, IoEvents::empty(), false, || {
-                let mut res = 0usize;
-                for ((fd, events), revent_index) in fds.0.iter().zip(revent_indices.iter()) {
-                    let mut result = fd.poll();
-                    if result.contains(IoEvents::IN) {
-                        result |= IoEvents::RDNORM;
-                    }
-                    if result.contains(IoEvents::OUT) {
-                        result |= IoEvents::WRNORM;
-                    }
-                    // POSIX: POLLHUP and POLLERR are always reported in revents,
-                    // even if not requested in events. They must NOT be masked out.
-                    let always_report =
-                        result & (IoEvents::HUP | IoEvents::ERR | IoEvents::RDHUP | IoEvents::NVAL);
-                    result &= *events;
-                    result |= always_report;
+        let deadline = timeout.map(|t| wall_time() + t);
+        loop {
+            poll_network_interfaces();
 
-                    let revents = &mut poll_fds[*revent_index].revents;
-                    *revents = result.bits() as _;
-                    if *revents != 0 {
-                        res += 1;
-                    }
+            let mut res = 0usize;
+            for ((fd, events), revents) in fds.0.iter().zip(revents.iter_mut()) {
+                let mut result = fd.poll();
+                if result.contains(IoEvents::IN) {
+                    result |= IoEvents::RDNORM;
                 }
-                if res > 0 {
-                    Ok(res as _)
-                } else {
-                    Err(AxError::WouldBlock)
+                if result.contains(IoEvents::OUT) {
+                    result |= IoEvents::WRNORM;
                 }
-            }),
-        )) {
-            Ok(r) => r,
-            Err(_) => Ok(0),
+                // POSIX: POLLHUP and POLLERR are always reported in revents,
+                // even if not requested in events. They must NOT be masked out.
+                let always_report =
+                    result & (IoEvents::HUP | IoEvents::ERR | IoEvents::RDHUP | IoEvents::NVAL);
+                result &= *events;
+                result |= always_report;
+
+                **revents = result.bits() as _;
+                if **revents != 0 {
+                    res += 1;
+                }
+            }
+            if res > 0 {
+                return Ok(res as _);
+            }
+
+            if deadline.is_some_and(|ddl| wall_time() >= ddl) {
+                return Ok(0);
+            }
+            ax_task::yield_now();
         }
     })
 }
 
 #[cfg(target_arch = "x86_64")]
 pub fn sys_poll(fds: UserPtr<pollfd>, nfds: u32, timeout: i32) -> AxResult<isize> {
-    let nfds = nfds as usize;
-    let mut poll_fds = read_poll_fds(fds, nfds)?;
+    let fds = fds.get_as_mut_slice(nfds as usize)?;
     let timeout = if timeout < 0 {
         None
     } else {
         Some(TimeValue::from_millis(timeout as u64))
     };
-    let res = do_poll(&mut poll_fds, timeout, None)?;
-    if nfds > 0 {
-        write_poll_revents(fds, &poll_fds)?;
-    }
-    Ok(res)
+    do_poll(fds, timeout, None)
 }
 
 pub fn sys_ppoll(
@@ -158,19 +108,10 @@ pub fn sys_ppoll(
     sigsetsize: usize,
 ) -> AxResult<isize> {
     check_sigset_size(sigsetsize)?;
-    let nfds = nfds.try_into().map_err(|_| AxError::InvalidInput)?;
-    let mut poll_fds = read_poll_fds(fds, nfds)?;
+    let fds = fds.get_as_mut_slice(nfds.try_into().map_err(|_| AxError::InvalidInput)?)?;
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
     // TODO: handle signal
-    let res = do_poll(
-        &mut poll_fds,
-        timeout,
-        nullable!(sigmask.get_as_ref())?.copied(),
-    )?;
-    if nfds > 0 {
-        write_poll_revents(fds, &poll_fds)?;
-    }
-    Ok(res)
+    do_poll(fds, timeout, nullable!(sigmask.get_as_ref())?.copied())
 }

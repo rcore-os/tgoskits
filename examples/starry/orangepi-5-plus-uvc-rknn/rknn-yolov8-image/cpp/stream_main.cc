@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -20,6 +21,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -98,16 +100,21 @@ struct Options {
     int device = 0;
     int width = 320;
     int height = 240;
-    int fps = 30;
-    int duration_sec = 10;
-    int infer_every = 30;
+    int fps = 10;
+    int duration_sec = 0;
+    int infer_every = 3;
     int max_inferences = 0;
-    int http_port = 0;
-    int http_fps = 15;
-    int jpeg_quality = 80;
+    int http_port = 8080;
+    int http_fps = 8;
+    int jpeg_quality = 75;
+    int publish_width = 0;
+    int publish_height = 0;
     const char *push_host = NULL;
     int push_port = 18080;
-    int push_fps = 15;
+    int push_fps = 3;
+    int serial_fps = 0;
+    int log_every = 10;
+    int min_confidence = 55;
     bool draw_result = true;
     const char *model_path = "model/yolov8.rknn";
     const char *label_path = "model/coco_80_labels_list.txt";
@@ -130,6 +137,12 @@ struct SharedState {
     uint64_t dropped = 0;
 };
 
+struct ResultState {
+    std::mutex mutex;
+    object_detect_result_list results;
+    uint64_t frame_id = 0;
+};
+
 struct HttpFrameState {
     std::mutex mutex;
     std::condition_variable updated;
@@ -145,6 +158,8 @@ struct HttpServer {
     int port = 0;
     int listen_fd = -1;
     int target_fps = 15;
+    int max_clients = 4;
+    std::atomic<int> active_clients{0};
     pthread_t thread = 0;
     HttpFrameState *frames = NULL;
 };
@@ -153,6 +168,7 @@ struct HttpClient {
     int fd = -1;
     int target_fps = 15;
     HttpFrameState *frames = NULL;
+    std::atomic<int> *active_clients = NULL;
 };
 
 struct PushClient {
@@ -161,6 +177,27 @@ struct PushClient {
     int target_fps = 15;
     pthread_t thread = 0;
     HttpFrameState *frames = NULL;
+    uint64_t sent = 0;
+    uint64_t sent_packets = 0;
+    uint64_t send_errors = 0;
+};
+
+struct SerialPublisher {
+    pthread_t thread = 0;
+    HttpFrameState *frames = NULL;
+    int target_fps = 1;
+};
+
+struct DisplayPublisher {
+    pthread_t thread = 0;
+    SharedState *capture = NULL;
+    ResultState *results = NULL;
+    HttpFrameState *frames = NULL;
+    int target_fps = 10;
+    int jpeg_quality = 75;
+    int publish_width = 0;
+    int publish_height = 0;
+    bool draw_result = true;
 };
 
 static volatile sig_atomic_t g_running = 1;
@@ -242,6 +279,13 @@ static void frame_callback(UvcFrame *frame, void *ptr)
         return;
     }
 
+    const unsigned char *data = reinterpret_cast<const unsigned char *>(frame->data);
+    const size_t size = frame->data_bytes;
+    if (size < 4 || data[0] != 0xff || data[1] != 0xd8 ||
+        data[size - 2] != 0xff || data[size - 1] != 0xd9) {
+        return;
+    }
+
     SharedState *state = reinterpret_cast<SharedState *>(ptr);
     std::lock_guard<std::mutex> guard(state->mutex);
     state->captured++;
@@ -253,10 +297,10 @@ static void frame_callback(UvcFrame *frame, void *ptr)
     state->latest.sequence = frame->sequence;
     state->latest.width = frame->width;
     state->latest.height = frame->height;
-    state->latest.format = frame->frame_format;
+    state->latest.format = UVC_FRAME_FORMAT_MJPEG;
     state->latest.data.assign(
-        reinterpret_cast<unsigned char *>(frame->data),
-        reinterpret_cast<unsigned char *>(frame->data) + frame->data_bytes);
+        data,
+        data + size);
 }
 
 static int decode_mjpeg(const LatestFrame &frame, image_buffer_t *image)
@@ -388,6 +432,67 @@ static int clamp_int(int value, int low, int high)
     return std::max(low, std::min(high, value));
 }
 
+static object_detect_result_list make_display_results(const object_detect_result_list *results)
+{
+    return *results;
+}
+
+static void scale_display_results(object_detect_result_list *results, int src_width, int src_height, int dst_width, int dst_height)
+{
+    if (results == NULL || src_width <= 0 || src_height <= 0 || dst_width <= 0 || dst_height <= 0) {
+        return;
+    }
+    for (int i = 0; i < results->count; ++i) {
+        image_rect_t *box = &results->results[i].box;
+        box->left = clamp_int(box->left * dst_width / src_width, 0, dst_width - 1);
+        box->right = clamp_int(box->right * dst_width / src_width, 0, dst_width - 1);
+        box->top = clamp_int(box->top * dst_height / src_height, 0, dst_height - 1);
+        box->bottom = clamp_int(box->bottom * dst_height / src_height, 0, dst_height - 1);
+    }
+}
+
+static int resize_rgb_nearest(image_buffer_t *image, int dst_width, int dst_height)
+{
+    if (image == NULL || image->virt_addr == NULL || image->format != IMAGE_FORMAT_RGB888 ||
+        dst_width <= 0 || dst_height <= 0) {
+        return -1;
+    }
+    if (image->width == dst_width && image->height == dst_height) {
+        return 0;
+    }
+
+    int dst_size = dst_width * dst_height * 3;
+    unsigned char *dst = reinterpret_cast<unsigned char *>(malloc(dst_size));
+    if (dst == NULL) {
+        printf("display: malloc resize buffer failed: size=%d\n", dst_size);
+        return -1;
+    }
+
+    int src_stride = image->width_stride > 0 ? image->width_stride : image->width * 3;
+    for (int y = 0; y < dst_height; ++y) {
+        int src_y = y * image->height / dst_height;
+        const unsigned char *src_row = image->virt_addr + src_y * src_stride;
+        unsigned char *dst_row = dst + y * dst_width * 3;
+        for (int x = 0; x < dst_width; ++x) {
+            int src_x = x * image->width / dst_width;
+            const unsigned char *src = src_row + src_x * 3;
+            unsigned char *out = dst_row + x * 3;
+            out[0] = src[0];
+            out[1] = src[1];
+            out[2] = src[2];
+        }
+    }
+
+    free(image->virt_addr);
+    image->width = dst_width;
+    image->height = dst_height;
+    image->width_stride = dst_width * 3;
+    image->height_stride = dst_height;
+    image->virt_addr = dst;
+    image->size = dst_size;
+    return 0;
+}
+
 static void draw_detection_results(image_buffer_t *image, const object_detect_result_list *results)
 {
     for (int i = 0; i < results->count; ++i) {
@@ -400,7 +505,11 @@ static void draw_detection_results(image_buffer_t *image, const object_detect_re
             continue;
         }
 
-        draw_rectangle(image, left, top, right - left, bottom - top, COLOR_GREEN, 2);
+        int line_width = image->width <= 120 ? 1 : 2;
+        draw_rectangle(image, left, top, right - left, bottom - top, COLOR_GREEN, line_width);
+        if (image->width <= 120 || image->height <= 90) {
+            continue;
+        }
 
         char label[96];
         snprintf(label, sizeof(label), "%s %.0f%%", coco_cls_to_name(det->cls_id), det->prop * 100.0f);
@@ -454,13 +563,120 @@ static void publish_http_frame(HttpFrameState *state, uint64_t frame_id, int wid
     state->updated.notify_all();
 }
 
+static bool snapshot_latest_capture(SharedState *state, LatestFrame *frame)
+{
+    std::lock_guard<std::mutex> guard(state->mutex);
+    if (state->latest.id == 0) {
+        return false;
+    }
+    *frame = state->latest;
+    return true;
+}
+
+static void *display_publisher_thread(void *arg)
+{
+    DisplayPublisher *publisher = reinterpret_cast<DisplayPublisher *>(arg);
+    uint64_t last_frame = 0;
+    int sleep_us = publisher->target_fps > 0 ? 1000000 / publisher->target_fps : 100000;
+    while (g_running && publisher->frames->running) {
+        LatestFrame frame;
+        if (!snapshot_latest_capture(publisher->capture, &frame) || frame.id == last_frame) {
+            usleep(10000);
+            continue;
+        }
+        last_frame = frame.id;
+
+        image_buffer_t image;
+        memset(&image, 0, sizeof(image));
+        if (frame_to_image(frame, &image) != 0) {
+            continue;
+        }
+
+        object_detect_result_list results;
+        memset(&results, 0, sizeof(results));
+        {
+            std::lock_guard<std::mutex> guard(publisher->results->mutex);
+            results = publisher->results->results;
+        }
+        object_detect_result_list display_results = make_display_results(&results);
+        int source_width = image.width;
+        int source_height = image.height;
+        if (publisher->publish_width > 0 && publisher->publish_height > 0 &&
+            (publisher->publish_width != image.width || publisher->publish_height != image.height)) {
+            if (resize_rgb_nearest(&image, publisher->publish_width, publisher->publish_height) == 0) {
+                scale_display_results(&display_results, source_width, source_height, image.width, image.height);
+            }
+        }
+        if (publisher->draw_result) {
+            draw_detection_results(&image, &display_results);
+        }
+
+        std::vector<unsigned char> jpeg;
+        if (encode_jpeg(&image, publisher->jpeg_quality, &jpeg) == 0) {
+            publish_http_frame(publisher->frames, frame.id, image.width, image.height, display_results.count, jpeg);
+        }
+        free(image.virt_addr);
+        if (sleep_us > 0) {
+            usleep(sleep_us);
+        }
+    }
+    return NULL;
+}
+
+static bool start_display_publisher(DisplayPublisher *publisher, SharedState *capture, ResultState *results,
+                                    HttpFrameState *frames, int target_fps, int jpeg_quality,
+                                    int publish_width, int publish_height, bool draw_result)
+{
+    publisher->capture = capture;
+    publisher->results = results;
+    publisher->frames = frames;
+    publisher->target_fps = target_fps;
+    publisher->jpeg_quality = jpeg_quality;
+    publisher->publish_width = publish_width;
+    publisher->publish_height = publish_height;
+    publisher->draw_result = draw_result;
+    if (pthread_create(&publisher->thread, NULL, display_publisher_thread, publisher) != 0) {
+        printf("display: pthread_create failed\n");
+        publisher->thread = 0;
+        return false;
+    }
+    printf("stream-rknn: display publisher target_fps=%d publish_size=%dx%d\n",
+           target_fps, publish_width, publish_height);
+    return true;
+}
+
+static void stop_display_publisher(DisplayPublisher *publisher)
+{
+    if (publisher->thread != 0) {
+        pthread_join(publisher->thread, NULL);
+        publisher->thread = 0;
+    }
+}
+
 static bool send_all(int fd, const void *data, size_t len)
 {
     const unsigned char *ptr = reinterpret_cast<const unsigned char *>(data);
+    int retry_count = 0;
     while (len > 0) {
-        ssize_t written = send(fd, ptr, len, 0);
+        ssize_t written = send(fd, ptr, len, MSG_NOSIGNAL);
         if (written < 0) {
             if (errno == EINTR) {
+                continue;
+            }
+            if ((errno == EAGAIN || errno == EWOULDBLOCK) && retry_count++ < 20) {
+                fd_set writefds;
+                FD_ZERO(&writefds);
+                FD_SET(fd, &writefds);
+                struct timeval timeout;
+                timeout.tv_sec = 0;
+                timeout.tv_usec = 100000;
+                int ready = select(fd + 1, NULL, &writefds, NULL, &timeout);
+                if (ready > 0) {
+                    continue;
+                }
+                if (ready < 0 && errno == EINTR) {
+                    continue;
+                }
                 continue;
             }
             return false;
@@ -468,6 +684,7 @@ static bool send_all(int fd, const void *data, size_t len)
         if (written == 0) {
             return false;
         }
+        retry_count = 0;
         ptr += written;
         len -= (size_t)written;
     }
@@ -485,10 +702,39 @@ static bool send_u32_be(int fd, uint32_t value)
     return send_all(fd, &net_value, sizeof(net_value));
 }
 
+static void put_be16(unsigned char *dst, uint16_t value)
+{
+    dst[0] = (unsigned char)((value >> 8) & 0xff);
+    dst[1] = (unsigned char)(value & 0xff);
+}
+
+static void put_be32(unsigned char *dst, uint32_t value)
+{
+    dst[0] = (unsigned char)((value >> 24) & 0xff);
+    dst[1] = (unsigned char)((value >> 16) & 0xff);
+    dst[2] = (unsigned char)((value >> 8) & 0xff);
+    dst[3] = (unsigned char)(value & 0xff);
+}
+
 static void close_client(int fd)
 {
     if (fd >= 0) {
         close(fd);
+    }
+}
+
+static void configure_stream_socket(int fd)
+{
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     }
 }
 
@@ -508,10 +754,51 @@ static int connect_tcp_ipv4(const char *host, int port)
         errno = EINVAL;
         return -1;
     }
-    if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
         close(fd);
         return -1;
     }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        close(fd);
+        return -1;
+    }
+    int conn_ret = connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+    if (conn_ret != 0 && errno != EINPROGRESS) {
+        close(fd);
+        return -1;
+    }
+    if (conn_ret != 0) {
+        fd_set writefds;
+        FD_ZERO(&writefds);
+        FD_SET(fd, &writefds);
+        struct timeval connect_timeout;
+        connect_timeout.tv_sec = 2;
+        connect_timeout.tv_usec = 0;
+        int ready = select(fd + 1, NULL, &writefds, NULL, &connect_timeout);
+        if (ready <= 0) {
+            close(fd);
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        int err = 0;
+        socklen_t err_len = sizeof(err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &err_len) != 0 || err != 0) {
+            close(fd);
+            errno = err != 0 ? err : errno;
+            return -1;
+        }
+    }
+    if (fcntl(fd, F_SETFL, flags) != 0) {
+        close(fd);
+        return -1;
+    }
+    struct timeval timeout;
+    timeout.tv_sec = 2;
+    timeout.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     return fd;
 }
 
@@ -534,6 +821,21 @@ static bool read_http_request(int fd, char *buf, size_t size)
         if (got < 0) {
             if (errno == EINTR) {
                 continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                fd_set readfds;
+                FD_ZERO(&readfds);
+                FD_SET(fd, &readfds);
+                struct timeval timeout;
+                timeout.tv_sec = 1;
+                timeout.tv_usec = 0;
+                int ready = select(fd + 1, &readfds, NULL, NULL, &timeout);
+                if (ready > 0) {
+                    continue;
+                }
+                if (ready < 0 && errno == EINTR) {
+                    continue;
+                }
             }
             return false;
         }
@@ -664,17 +966,34 @@ static void *http_client_thread(void *arg)
     int fd = client->fd;
     HttpFrameState *frames = client->frames;
     int target_fps = client->target_fps;
+    std::atomic<int> *active_clients = client->active_clients;
     delete client;
 
     char request[2048];
     if (!read_http_request(fd, request, sizeof(request))) {
         close_client(fd);
+        if (active_clients != NULL) {
+            active_clients->fetch_sub(1);
+        }
         return NULL;
     }
-    if (strncmp(request, "GET /stream.mjpg ", 17) == 0 ||
-        strncmp(request, "GET / ", 6) == 0) {
+    char method[16] = {0};
+    char path[256] = {0};
+    if (sscanf(request, "%15s %255s", method, path) != 2) {
+        close_client(fd);
+        if (active_clients != NULL) {
+            active_clients->fetch_sub(1);
+        }
+        return NULL;
+    }
+    char *query = strchr(path, '?');
+    if (query != NULL) {
+        *query = '\0';
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/stream.mjpg") == 0) {
         handle_stream_client(fd, frames, target_fps);
-    } else if (strncmp(request, "GET /snapshot.jpg ", 18) == 0) {
+    } else if (strcmp(method, "GET") == 0 && strcmp(path, "/snapshot.jpg") == 0) {
         handle_snapshot_client(fd, frames);
     } else {
         send_text(fd,
@@ -682,10 +1001,13 @@ static void *http_client_thread(void *arg)
                   "Content-Type: text/html\r\n"
                   "Connection: close\r\n\r\n"
                   "<!doctype html><html><head><title>RKNN YOLOv8 Stream</title></head>"
-                  "<body style=\"margin:0;background:#111;color:#eee;font-family:sans-serif\">"
-                  "<img src=\"/stream.mjpg\" style=\"max-width:100vw;max-height:100vh;display:block;margin:auto\">"
+                  "<body style=\"margin:0;background:#111;color:#eee;font-family:sans-serif;overflow:hidden\">"
+                  "<img src=\"/stream.mjpg\" style=\"width:100vw;height:100vh;object-fit:contain;display:block\">"
                   "</body></html>\n");
         close_client(fd);
+    }
+    if (active_clients != NULL) {
+        active_clients->fetch_sub(1);
     }
     return NULL;
 }
@@ -710,6 +1032,7 @@ static void *http_server_thread(void *arg)
             break;
         }
         if (ready == 0) {
+            sched_yield();
             continue;
         }
 
@@ -724,18 +1047,35 @@ static void *http_server_thread(void *arg)
             printf("http: accept failed: %s\n", strerror(errno));
             continue;
         }
+        configure_stream_socket(fd);
+        sched_yield();
+
+        int active = server->active_clients.load();
+        if (active >= server->max_clients) {
+            send_text(fd,
+                      "HTTP/1.1 503 Service Unavailable\r\n"
+                      "Content-Type: text/plain\r\n"
+                      "Connection: close\r\n\r\n"
+                      "too many clients\n");
+            close_client(fd);
+            continue;
+        }
+        server->active_clients.fetch_add(1);
 
         HttpClient *client = new HttpClient;
         if (client == NULL) {
+            server->active_clients.fetch_sub(1);
             close_client(fd);
             continue;
         }
         client->fd = fd;
         client->target_fps = server->target_fps;
         client->frames = server->frames;
+        client->active_clients = &server->active_clients;
         pthread_t thread;
         if (pthread_create(&thread, NULL, http_client_thread, client) != 0) {
             delete client;
+            server->active_clients.fetch_sub(1);
             close_client(fd);
             continue;
         }
@@ -749,6 +1089,7 @@ static bool start_http_server(HttpServer *server, HttpFrameState *frames, int po
     server->port = port;
     server->target_fps = target_fps;
     server->frames = frames;
+    server->active_clients.store(0);
     server->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server->listen_fd < 0) {
         printf("http: socket failed: %s\n", strerror(errno));
@@ -769,7 +1110,7 @@ static bool start_http_server(HttpServer *server, HttpFrameState *frames, int po
         server->listen_fd = -1;
         return false;
     }
-    if (listen(server->listen_fd, 8) != 0) {
+    if (listen(server->listen_fd, 64) != 0) {
         printf("http: listen failed: %s\n", strerror(errno));
         close(server->listen_fd);
         server->listen_fd = -1;
@@ -828,47 +1169,100 @@ static void *push_client_thread(void *arg)
     const int sleep_us = client->target_fps > 0 ? 1000000 / client->target_fps : 100000;
     double last_error_log = 0.0;
 
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        printf("push: udp socket failed: %s\n", strerror(errno));
+        fflush(stdout);
+        return NULL;
+    }
+
+    sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)client->port);
+    if (inet_pton(AF_INET, client->host.c_str(), &addr.sin_addr) != 1) {
+        printf("push: invalid udp host %s\n", client->host.c_str());
+        fflush(stdout);
+        close(fd);
+        return NULL;
+    }
+
+    printf("push: sending chunked UDP JPEG frames to relay %s:%d\n", client->host.c_str(), client->port);
+    fflush(stdout);
+
+    const size_t header_size = 20;
+    const size_t payload_limit = 1200;
+    std::vector<unsigned char> packet(header_size + payload_limit);
+    memcpy(packet.data(), "SRKU", 4);
+
+    uint64_t last_frame = 0;
     while (g_running && frames->running) {
-        int fd = connect_tcp_ipv4(client->host.c_str(), client->port);
-        if (fd < 0) {
+        std::vector<unsigned char> jpeg;
+        uint64_t frame_id = 0;
+        if (!wait_next_frame(frames, last_frame, &jpeg, &frame_id)) {
+            continue;
+        }
+        last_frame = frame_id;
+        if (jpeg.size() > 256 * 1024) {
+            client->send_errors++;
+            continue;
+        }
+
+        const size_t chunk_count = (jpeg.size() + payload_limit - 1) / payload_limit;
+        if (chunk_count == 0 || chunk_count > 256) {
+            client->send_errors++;
+            continue;
+        }
+
+        bool ok = true;
+        uint32_t frame32 = (uint32_t)frame_id;
+        uint32_t total_len = (uint32_t)jpeg.size();
+        for (size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+            size_t offset = chunk_index * payload_limit;
+            size_t chunk_len = std::min(payload_limit, jpeg.size() - offset);
+            put_be32(packet.data() + 4, frame32);
+            put_be32(packet.data() + 8, total_len);
+            put_be16(packet.data() + 12, (uint16_t)chunk_index);
+            put_be16(packet.data() + 14, (uint16_t)chunk_count);
+            put_be16(packet.data() + 16, (uint16_t)chunk_len);
+            put_be16(packet.data() + 18, 0);
+            memcpy(packet.data() + header_size, jpeg.data() + offset, chunk_len);
+            ssize_t sent = sendto(fd, packet.data(), header_size + chunk_len, 0,
+                                  reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+            if (sent < 0) {
+                ok = false;
+                client->send_errors++;
+                double now = monotonic_sec();
+                if (now - last_error_log >= 5.0) {
+                    printf("push: udp sendto %s:%d failed: %s\n", client->host.c_str(), client->port, strerror(errno));
+                    fflush(stdout);
+                    last_error_log = now;
+                }
+                break;
+            }
+            client->sent_packets++;
+        }
+
+        if (ok) {
+            client->sent++;
+        } else {
             double now = monotonic_sec();
             if (now - last_error_log >= 5.0) {
-                printf("push: connect %s:%d failed: %s; retrying\n", client->host.c_str(), client->port, strerror(errno));
+                printf("push: frame send incomplete frame=%llu chunks=%zu sent_frames=%llu sent_packets=%llu errors=%llu\n",
+                       (unsigned long long)frame_id,
+                       chunk_count,
+                       (unsigned long long)client->sent,
+                       (unsigned long long)client->sent_packets,
+                       (unsigned long long)client->send_errors);
                 fflush(stdout);
                 last_error_log = now;
             }
-            sleep_interruptible_ms(1000);
-            continue;
         }
-
-        printf("push: connected to relay %s:%d\n", client->host.c_str(), client->port);
-        fflush(stdout);
-        if (!send_text(fd, "SRKNMJPG1\n")) {
-            close_client(fd);
-            continue;
+        if (sleep_us > 0) {
+            usleep(sleep_us);
         }
-
-        uint64_t last_frame = 0;
-        while (g_running && frames->running) {
-            std::vector<unsigned char> jpeg;
-            uint64_t frame_id = 0;
-            if (!wait_next_frame(frames, last_frame, &jpeg, &frame_id)) {
-                continue;
-            }
-            last_frame = frame_id;
-            if (jpeg.size() > 64U * 1024U * 1024U ||
-                !send_u32_be(fd, (uint32_t)jpeg.size()) ||
-                !send_all(fd, jpeg.data(), jpeg.size())) {
-                printf("push: relay disconnected; reconnecting\n");
-                fflush(stdout);
-                break;
-            }
-            if (sleep_us > 0) {
-                usleep(sleep_us);
-            }
-        }
-        close_client(fd);
     }
+    close(fd);
     return NULL;
 }
 
@@ -897,6 +1291,76 @@ static void stop_push_client(PushClient *client, HttpFrameState *frames)
     if (client->thread != 0) {
         pthread_join(client->thread, NULL);
         client->thread = 0;
+    }
+}
+
+static bool wait_next_frame(HttpFrameState *state, uint64_t last_frame, std::vector<unsigned char> *jpeg, uint64_t *frame_id);
+
+static void print_serial_jpeg_frame(uint64_t frame_id, const std::vector<unsigned char> &jpeg)
+{
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    printf("STARRY_JPEG_BEGIN frame=%llu bytes=%zu\n", (unsigned long long)frame_id, jpeg.size());
+    for (size_t i = 0; i < jpeg.size(); i += 3) {
+        unsigned int b0 = jpeg[i];
+        unsigned int b1 = (i + 1 < jpeg.size()) ? jpeg[i + 1] : 0;
+        unsigned int b2 = (i + 2 < jpeg.size()) ? jpeg[i + 2] : 0;
+        putchar(table[(b0 >> 2) & 0x3f]);
+        putchar(table[((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0f)]);
+        putchar(i + 1 < jpeg.size() ? table[((b1 & 0x0f) << 2) | ((b2 >> 6) & 0x03)] : '=');
+        putchar(i + 2 < jpeg.size() ? table[b2 & 0x3f] : '=');
+        if (((i / 3) + 1) % 19 == 0) {
+            putchar('\n');
+        }
+    }
+    putchar('\n');
+    printf("STARRY_JPEG_END frame=%llu\n", (unsigned long long)frame_id);
+    fflush(stdout);
+}
+
+static void *serial_publisher_thread(void *arg)
+{
+    SerialPublisher *publisher = reinterpret_cast<SerialPublisher *>(arg);
+    HttpFrameState *frames = publisher->frames;
+    const int sleep_us = publisher->target_fps > 0 ? 1000000 / publisher->target_fps : 1000000;
+    uint64_t last_frame = 0;
+    while (g_running && frames->running) {
+        std::vector<unsigned char> jpeg;
+        uint64_t frame_id = 0;
+        if (!wait_next_frame(frames, last_frame, &jpeg, &frame_id)) {
+            continue;
+        }
+        last_frame = frame_id;
+        print_serial_jpeg_frame(frame_id, jpeg);
+        if (sleep_us > 0) {
+            usleep(sleep_us);
+        }
+    }
+    return NULL;
+}
+
+static bool start_serial_publisher(SerialPublisher *publisher, HttpFrameState *frames, int target_fps)
+{
+    publisher->frames = frames;
+    publisher->target_fps = target_fps;
+    if (pthread_create(&publisher->thread, NULL, serial_publisher_thread, publisher) != 0) {
+        printf("serial: pthread_create failed\n");
+        publisher->thread = 0;
+        return false;
+    }
+    printf("stream-rknn: serial JPEG publisher target_fps=%d\n", target_fps);
+    return true;
+}
+
+static void stop_serial_publisher(SerialPublisher *publisher, HttpFrameState *frames)
+{
+    {
+        std::lock_guard<std::mutex> guard(frames->mutex);
+        frames->running = false;
+        frames->updated.notify_all();
+    }
+    if (publisher->thread != 0) {
+        pthread_join(publisher->thread, NULL);
+        publisher->thread = 0;
     }
 }
 
@@ -948,16 +1412,21 @@ static void print_usage(const char *argv0)
     printf("  --device <INDEX>        UVC device index [default: 0]\n");
     printf("  --width <PIXELS>        frame width [default: 320]\n");
     printf("  --height <PIXELS>       frame height [default: 240]\n");
-    printf("  --fps <FPS>             camera FPS [default: 30]\n");
-    printf("  --duration-sec <SECS>   run duration, 0 means forever [default: 10]\n");
-    printf("  --infer-every <N>       infer every Nth captured frame [default: 30]\n");
+    printf("  --fps <FPS>             camera FPS [default: 10]\n");
+    printf("  --duration-sec <SECS>   run duration, 0 means forever [default: 0]\n");
+    printf("  --infer-every <N>       infer every Nth captured frame [default: 3]\n");
     printf("  --max-inferences <N>    stop after N successful inferences\n");
-    printf("  --http-port <PORT>      serve annotated MJPEG stream, 0 disables [default: 0]\n");
-    printf("  --http-fps <FPS>        max MJPEG response FPS [default: 15]\n");
+    printf("  --http-port <PORT>      serve annotated MJPEG stream, 0 disables [default: 8080]\n");
+    printf("  --http-fps <FPS>        max MJPEG response FPS [default: 8]\n");
+    printf("  --publish-width <PX>    resize published MJPEG width, 0 keeps camera width [default: 0]\n");
+    printf("  --publish-height <PX>   resize published MJPEG height, 0 keeps camera height [default: 0]\n");
     printf("  --push-host <IP>        push annotated JPEG frames to relay host\n");
-    printf("  --push-port <PORT>      relay ingest TCP port [default: 18080]\n");
-    printf("  --push-fps <FPS>        max relay push FPS [default: 15]\n");
-    printf("  --jpeg-quality <1-100>  MJPEG JPEG quality [default: 80]\n");
+    printf("  --push-port <PORT>      relay ingest UDP port [default: 18080]\n");
+    printf("  --push-fps <FPS>        max relay push FPS [default: 3]\n");
+    printf("  --serial-fps <FPS>      print annotated JPEG frames as base64 on stdout [default: 0]\n");
+    printf("  --log-every <N>         print YOLO_RESULT every N inferences [default: 10]\n");
+    printf("  --min-confidence <PCT>  detection threshold percentage [default: 55]\n");
+    printf("  --jpeg-quality <1-100>  MJPEG JPEG quality [default: 75]\n");
     printf("  --no-draw-result        publish raw frames without result boxes/text\n");
 }
 
@@ -1059,6 +1528,12 @@ static bool parse_args(int argc, char **argv, Options *options)
         } else if (strcmp(arg, "--http-fps") == 0 && value != NULL) {
             if (!parse_int_arg(arg, value, &options->http_fps)) return false;
             ++i;
+        } else if (strcmp(arg, "--publish-width") == 0 && value != NULL) {
+            if (!parse_nonnegative_int_arg(arg, value, &options->publish_width)) return false;
+            ++i;
+        } else if (strcmp(arg, "--publish-height") == 0 && value != NULL) {
+            if (!parse_nonnegative_int_arg(arg, value, &options->publish_height)) return false;
+            ++i;
         } else if (strcmp(arg, "--push-host") == 0 && value != NULL) {
             options->push_host = value;
             ++i;
@@ -1071,6 +1546,19 @@ static bool parse_args(int argc, char **argv, Options *options)
             ++i;
         } else if (strcmp(arg, "--push-fps") == 0 && value != NULL) {
             if (!parse_int_arg(arg, value, &options->push_fps)) return false;
+            ++i;
+        } else if (strcmp(arg, "--serial-fps") == 0 && value != NULL) {
+            if (!parse_nonnegative_int_arg(arg, value, &options->serial_fps)) return false;
+            ++i;
+        } else if (strcmp(arg, "--log-every") == 0 && value != NULL) {
+            if (!parse_int_arg(arg, value, &options->log_every)) return false;
+            ++i;
+        } else if (strcmp(arg, "--min-confidence") == 0 && value != NULL) {
+            if (!parse_int_arg(arg, value, &options->min_confidence)) return false;
+            if (options->min_confidence < 1 || options->min_confidence > 99) {
+                printf("invalid value for %s: %s\n", arg, value);
+                return false;
+            }
             ++i;
         } else if (strcmp(arg, "--jpeg-quality") == 0 && value != NULL) {
             if (!parse_int_arg(arg, value, &options->jpeg_quality)) return false;
@@ -1130,7 +1618,7 @@ int main(int argc, char **argv)
 
     printf("YOLOv8 UVC Streaming Detection\n");
     printf("===============================\n");
-    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d max_inferences=%d http_port=%d http_fps=%d push_host=%s push_port=%d push_fps=%d jpeg_quality=%d draw_result=%d\n",
+    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d max_inferences=%d http_port=%d http_fps=%d publish_size=%dx%d push_host=%s push_port=%d push_fps=%d serial_fps=%d log_every=%d min_confidence=%d jpeg_quality=%d draw_result=%d\n",
            options.model_path,
            options.label_path,
            options.device,
@@ -1142,9 +1630,14 @@ int main(int argc, char **argv)
            options.max_inferences,
            options.http_port,
            options.http_fps,
+           options.publish_width,
+           options.publish_height,
            options.push_host != NULL ? options.push_host : "",
            options.push_port,
            options.push_fps,
+           options.serial_fps,
+           options.log_every,
+           options.min_confidence,
            options.jpeg_quality,
            options.draw_result ? 1 : 0);
 
@@ -1257,11 +1750,17 @@ int main(int argc, char **argv)
     printf("stream-rknn: streaming started\n");
 
     HttpFrameState http_frames;
+    ResultState result_state;
+    memset(&result_state.results, 0, sizeof(result_state.results));
     HttpServer http_server;
     bool http_started = false;
     PushClient push_client;
     bool push_started = false;
-    if (options.http_port > 0 || options.push_host != NULL) {
+    SerialPublisher serial_publisher;
+    bool serial_started = false;
+    DisplayPublisher display_publisher;
+    bool display_started = false;
+    if (options.http_port > 0 || options.push_host != NULL || options.serial_fps > 0) {
         std::lock_guard<std::mutex> guard(http_frames.mutex);
         http_frames.running = true;
     }
@@ -1294,11 +1793,57 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+    if (options.serial_fps > 0) {
+        serial_started = start_serial_publisher(&serial_publisher, &http_frames, options.serial_fps);
+        if (!serial_started) {
+            if (push_started) {
+                stop_push_client(&push_client, &http_frames);
+            }
+            if (http_started) {
+                stop_http_server(&http_server, &http_frames);
+            }
+            api.stop_streaming(devh);
+            api.close(devh);
+            api.unref_device(dev);
+            api.exit(ctx);
+            close_uvc_api(&api);
+            release_yolov8_model(&app_ctx);
+            deinit_post_process();
+            return 1;
+        }
+    }
+    if (http_started || push_started || serial_started) {
+        int display_fps = options.serial_fps > 0 ? options.serial_fps : (options.push_host != NULL ? options.push_fps : options.http_fps);
+        display_started = start_display_publisher(&display_publisher, &state, &result_state, &http_frames,
+                                                  display_fps, options.jpeg_quality,
+                                                  options.publish_width, options.publish_height,
+                                                  options.draw_result);
+        if (!display_started) {
+            if (push_started) {
+                stop_push_client(&push_client, &http_frames);
+            }
+            if (serial_started) {
+                stop_serial_publisher(&serial_publisher, &http_frames);
+            }
+            if (http_started) {
+                stop_http_server(&http_server, &http_frames);
+            }
+            api.stop_streaming(devh);
+            api.close(devh);
+            api.unref_device(dev);
+            api.exit(ctx);
+            close_uvc_api(&api);
+            release_yolov8_model(&app_ctx);
+            deinit_post_process();
+            return 1;
+        }
+    }
 
     const double start = monotonic_sec();
     double last_report = start;
     uint64_t last_report_captured = 0;
     uint64_t last_inferred_frame = 0;
+    const uint64_t infer_interval = (uint64_t)options.infer_every;
     int inferences = 0;
     int decode_errors = 0;
     int inference_errors = 0;
@@ -1308,7 +1853,7 @@ int main(int argc, char **argv)
         {
             std::lock_guard<std::mutex> guard(state.mutex);
             if (state.latest.id != 0 && state.latest.id != last_inferred_frame &&
-                (state.latest.id % (uint64_t)options.infer_every) == 0) {
+                state.latest.id >= last_inferred_frame + infer_interval) {
                 frame = state.latest;
             }
         }
@@ -1327,7 +1872,12 @@ int main(int argc, char **argv)
             object_detect_result_list results;
             memset(&results, 0, sizeof(results));
             double infer_start = monotonic_sec();
-            ret = inference_yolov8_model(&app_ctx, &image, &results);
+            ret = inference_yolov8_model_with_thresholds(
+                &app_ctx,
+                &image,
+                &results,
+                (float)options.min_confidence / 100.0f,
+                NMS_THRESH);
             double infer_end = monotonic_sec();
             last_inferred_frame = frame.id;
             if (ret != 0) {
@@ -1335,19 +1885,19 @@ int main(int argc, char **argv)
                 inference_errors++;
             } else {
                 inferences++;
-                if (http_started || push_started) {
-                    if (options.draw_result) {
-                        draw_detection_results(&image, &results);
-                    }
-                    std::vector<unsigned char> jpeg;
-                    if (encode_jpeg(&image, options.jpeg_quality, &jpeg) == 0) {
-                        publish_http_frame(&http_frames, frame.id, image.width, image.height, results.count, jpeg);
-                    }
+                {
+                    std::lock_guard<std::mutex> guard(result_state.mutex);
+                    result_state.results = results;
+                    result_state.frame_id = frame.id;
                 }
-                printf("stream-rknn: decode_ms=%.2f ", (infer_start - decode_start) * 1000.0);
-                print_result(inferences, frame.id, frame.sequence, (infer_end - infer_start) * 1000.0, &results);
+                if (options.log_every > 0 && (inferences == 1 || inferences % options.log_every == 0)) {
+                    printf("stream-rknn: decode_ms=%.2f ", (infer_start - decode_start) * 1000.0);
+                    print_result(inferences, frame.id, frame.sequence, (infer_end - infer_start) * 1000.0, &results);
+                }
             }
             free(image.virt_addr);
+            sched_yield();
+            usleep(20000);
             if (options.max_inferences > 0 && inferences >= options.max_inferences) {
                 break;
             }
@@ -1380,10 +1930,15 @@ int main(int argc, char **argv)
 
     if (push_started) {
         stop_push_client(&push_client, &http_frames);
+    } else if (serial_started) {
+        stop_serial_publisher(&serial_publisher, &http_frames);
     } else if (http_started) {
         std::lock_guard<std::mutex> guard(http_frames.mutex);
         http_frames.running = false;
         http_frames.updated.notify_all();
+    }
+    if (display_started) {
+        stop_display_publisher(&display_publisher);
     }
     if (http_started) {
         stop_http_server(&http_server, &http_frames);

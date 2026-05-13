@@ -48,5 +48,7 @@ pub trait Device: Send + Sync {
         Vec::new()
     }
 
+    fn poll_maintenance(&mut self, _timestamp: Instant) {}
+
     fn register_waker(&self, waker: &Waker);
 }

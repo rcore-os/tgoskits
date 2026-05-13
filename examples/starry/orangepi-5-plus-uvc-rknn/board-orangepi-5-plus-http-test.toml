@@ -1,0 +1,14 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''
+echo UVC_RKNN_HTTP_TEST_BEGIN && cd /rknn_yolov8_image && ./rknn_yolov8_stream --infer-every 1 --log-every 1 --min-confidence 25 --http-port 8080 --http-fps 8 --publish-width 0 --publish-height 0 --jpeg-quality 75
+'''
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^rknn_init fail!.*$",
+  "(?m)^(uvc_init|uvc_open|uvc_start_streaming|uvc_get_device_list) failed: .*$",
+  "(?m)^dlopen libuvc\\.so failed: .*$",
+  "(?i)error while loading shared libraries",
+  "(?i)(rknn_yolov8_stream|sh): .*not found",
+]
+timeout = 86400

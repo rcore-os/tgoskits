@@ -3,7 +3,6 @@ import argparse
 import http.server
 import socket
 import socketserver
-import struct
 import threading
 import time
 
@@ -33,60 +32,95 @@ class FrameStore:
             return self.jpeg, self.frame_id
 
 
-def read_exact(sock, size):
-    chunks = []
-    remaining = size
-    while remaining:
-        data = sock.recv(remaining)
-        if not data:
+def be16(data, offset):
+    return (data[offset] << 8) | data[offset + 1]
+
+
+def be32(data, offset):
+    return (
+        (data[offset] << 24)
+        | (data[offset + 1] << 16)
+        | (data[offset + 2] << 8)
+        | data[offset + 3]
+    )
+
+
+class UdpReassembler:
+    def __init__(self):
+        self.frames = {}
+        self.last_cleanup = time.time()
+
+    def push(self, packet):
+        if len(packet) < 20 or packet[:4] != b"SRKU":
             return None
-        chunks.append(data)
-        remaining -= len(data)
-    return b"".join(chunks)
+        frame_id = be32(packet, 4)
+        total_len = be32(packet, 8)
+        chunk_index = be16(packet, 12)
+        chunk_count = be16(packet, 14)
+        chunk_len = be16(packet, 16)
+        payload = packet[20:]
+        if (
+            total_len == 0
+            or total_len > 256 * 1024
+            or chunk_count == 0
+            or chunk_count > 256
+            or chunk_index >= chunk_count
+            or chunk_len != len(payload)
+        ):
+            return None
 
+        now = time.time()
+        if now - self.last_cleanup >= 2.0:
+            self.frames = {
+                key: value for key, value in self.frames.items()
+                if now - value["updated"] < 2.0
+            }
+            self.last_cleanup = now
 
-def handle_ingest(conn, addr, store):
-    try:
-        magic = read_exact(conn, len(b"SRKNMJPG1\n"))
-        if magic != b"SRKNMJPG1\n":
-            print(f"relay: reject {addr[0]}:{addr[1]} invalid magic", flush=True)
-            return
-        print(f"relay: ingest connected from {addr[0]}:{addr[1]}", flush=True)
-        frames = 0
-        started = time.time()
-        while True:
-            header = read_exact(conn, 4)
-            if header is None:
-                break
-            size = struct.unpack("!I", header)[0]
-            if size == 0 or size > 64 * 1024 * 1024:
-                print(f"relay: invalid frame size {size}", flush=True)
-                break
-            jpeg = read_exact(conn, size)
-            if jpeg is None:
-                break
-            store.publish(jpeg)
-            frames += 1
-            now = time.time()
-            if now - started >= 5.0:
-                print(f"relay: ingest_fps={frames / (now - started):.2f} latest_bytes={len(jpeg)}", flush=True)
-                frames = 0
-                started = now
-    finally:
-        conn.close()
-        print(f"relay: ingest disconnected from {addr[0]}:{addr[1]}", flush=True)
+        frame = self.frames.get(frame_id)
+        if frame is None:
+            frame = {
+                "total_len": total_len,
+                "chunk_count": chunk_count,
+                "chunks": {},
+                "updated": now,
+            }
+            self.frames[frame_id] = frame
+        if frame["total_len"] != total_len or frame["chunk_count"] != chunk_count:
+            self.frames.pop(frame_id, None)
+            return None
+        frame["chunks"][chunk_index] = payload
+        frame["updated"] = now
+        if len(frame["chunks"]) != chunk_count:
+            return None
+
+        jpeg = b"".join(frame["chunks"].get(i, b"") for i in range(chunk_count))
+        self.frames.pop(frame_id, None)
+        if len(jpeg) != total_len or not (jpeg.startswith(b"\xff\xd8") and jpeg.endswith(b"\xff\xd9")):
+            return None
+        return jpeg
 
 
 def ingest_server(host, port, store):
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))
-    srv.listen(4)
-    print(f"relay: ingest listening on {host}:{port}", flush=True)
+    print(f"relay: chunked UDP ingest listening on {host}:{port}", flush=True)
+    reassembler = UdpReassembler()
+    frames = 0
+    started = time.time()
     while True:
-        conn, addr = srv.accept()
-        thread = threading.Thread(target=handle_ingest, args=(conn, addr, store), daemon=True)
-        thread.start()
+        packet, addr = srv.recvfrom(2048)
+        jpeg = reassembler.push(packet)
+        if jpeg is None:
+            continue
+        store.publish(jpeg)
+        frames += 1
+        now = time.time()
+        if now - started >= 5.0:
+            print(f"relay: ingest_fps={frames / (now - started):.2f} latest_bytes={len(jpeg)}", flush=True)
+            frames = 0
+            started = now
 
 
 class RelayHandler(http.server.BaseHTTPRequestHandler):

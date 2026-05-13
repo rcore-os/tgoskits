@@ -1,0 +1,17 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''
+echo UVC_RKNN_STATIC_TEST_BEGIN && cd /rknn_yolov8_image && RKNN_DUMP_OUTPUT_STATS=1 ./rknn_yolov8_image test.jpg
+'''
+success_regex = [
+  "(?m)^UVC_RKNN_IMAGE_DONE$",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^rknn_init fail!.*$",
+  "(?m)^read_image fail!.*$",
+  "(?m)^inference_yolov8_model fail!.*$",
+  "(?i)error while loading shared libraries",
+  "(?i)(rknn_yolov8_image|sh): .*not found",
+]
+timeout = 120

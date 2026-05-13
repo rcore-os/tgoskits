@@ -70,7 +70,7 @@ static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const NET_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const NET_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 fn get_service() -> ax_sync::MutexGuard<'static, Service> {
     SERVICE

@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::{fmt, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_task::future::{self, block_on, poll_io};
+use ax_hal::time::wall_time;
 use axpoll::IoEvents;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
@@ -11,7 +11,7 @@ use linux_raw_sys::{
 };
 use starry_signal::SignalSet;
 
-use super::FdPollSet;
+use super::{FdPollSet, poll_network_interfaces};
 use crate::{
     file::FD_TABLE,
     mm::{UserConstPtr, UserPtr, nullable},
@@ -108,43 +108,42 @@ fn do_select(
         unsafe { FD_ZERO(exceptfds) };
     }
     with_blocked_signals(sigmask.copied(), || {
-        match block_on(future::timeout(
-            timeout,
-            poll_io(&fds, IoEvents::empty(), false, || {
-                let mut res = 0usize;
-                for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
-                    let events = fd.poll();
-                    let always_report = events & IoEvents::ALWAYS_POLL;
-                    let selected = events & *interested;
-                    let selected_read = selected.contains(IoEvents::IN)
-                        || (read_set.0.get(index) && !always_report.is_empty());
-                    let selected_write = selected.contains(IoEvents::OUT)
-                        || (write_set.0.get(index) && !always_report.is_empty());
-                    let selected_except =
-                        selected.contains(IoEvents::ERR) && except_set.0.get(index);
+        let deadline = timeout.map(|t| wall_time() + t);
+        loop {
+            poll_network_interfaces();
 
-                    if selected_read && let Some(set) = readfds.as_deref_mut() {
-                        res += 1;
-                        unsafe { FD_SET(index as _, set) };
-                    }
-                    if selected_write && let Some(set) = writefds.as_deref_mut() {
-                        res += 1;
-                        unsafe { FD_SET(index as _, set) };
-                    }
-                    if selected_except && let Some(set) = exceptfds.as_deref_mut() {
-                        res += 1;
-                        unsafe { FD_SET(index as _, set) };
-                    }
-                }
-                if res > 0 {
-                    return Ok(res as _);
-                }
+            let mut res = 0usize;
+            for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
+                let events = fd.poll();
+                let always_report = events & IoEvents::ALWAYS_POLL;
+                let selected = events & *interested;
+                let selected_read = selected.contains(IoEvents::IN)
+                    || (read_set.0.get(index) && !always_report.is_empty());
+                let selected_write = selected.contains(IoEvents::OUT)
+                    || (write_set.0.get(index) && !always_report.is_empty());
+                let selected_except = selected.contains(IoEvents::ERR) && except_set.0.get(index);
 
-                Err(AxError::WouldBlock)
-            }),
-        )) {
-            Ok(r) => r,
-            Err(_) => Ok(0),
+                if selected_read && let Some(set) = readfds.as_deref_mut() {
+                    res += 1;
+                    unsafe { FD_SET(index as _, set) };
+                }
+                if selected_write && let Some(set) = writefds.as_deref_mut() {
+                    res += 1;
+                    unsafe { FD_SET(index as _, set) };
+                }
+                if selected_except && let Some(set) = exceptfds.as_deref_mut() {
+                    res += 1;
+                    unsafe { FD_SET(index as _, set) };
+                }
+            }
+            if res > 0 {
+                return Ok(res as _);
+            }
+
+            if deadline.is_some_and(|ddl| wall_time() >= ddl) {
+                return Ok(0);
+            }
+            ax_task::yield_now();
         }
     })
 }

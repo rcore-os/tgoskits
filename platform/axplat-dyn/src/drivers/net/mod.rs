@@ -22,7 +22,7 @@ mod virtio_pci;
 const NET_BUF_LEN: usize = 2048;
 const NET_BUF_POOL_CAPACITY: usize = 512;
 const NET_QUEUE_SIZE: usize = 256;
-const RX_PREFETCH_TARGET: usize = 1;
+const RX_PREFETCH_TARGET: usize = 32;
 const ETH_ZLEN: usize = 60;
 
 pub struct PlatformNetDevice {
@@ -98,6 +98,12 @@ impl TryFrom<Device<PlatformNetDevice>> for Net {
 }
 
 impl Net {
+    fn service_irq(&self) {
+        if let Some(handler) = &self.irq_handler {
+            handler.handle();
+        }
+    }
+
     fn prefetch_rx_packets(&self, state: &mut NetState, target: usize) -> DevResult {
         while state.pending_rx.len() < target {
             let Some(result) = state.rx_queue.receive(|packet| {
@@ -184,6 +190,7 @@ impl NetDriverOps for Net {
 
     fn can_receive(&self) -> bool {
         let mut state = self.state.lock();
+        self.service_irq();
         if let Err(err) = self.prefetch_rx_packets(&mut state, RX_PREFETCH_TARGET) {
             warn!("failed to prefetch rx packets for {}: {err:?}", self.name);
         }
@@ -227,6 +234,7 @@ impl NetDriverOps for Net {
 
     fn receive(&mut self) -> DevResult<NetBufPtr> {
         let mut state = self.state.lock();
+        self.service_irq();
         self.prefetch_rx_packets(&mut state, RX_PREFETCH_TARGET)?;
         state
             .pending_rx

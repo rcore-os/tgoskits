@@ -183,7 +183,20 @@ impl Rknpu {
             debug!("Nonblock task");
         }
 
+        // RKNN runtime submits identical task ranges for each RK3588 subcore.
+        // The Linux driver schedules those as one logical multi-core job. This
+        // minimal polling driver runs submissions synchronously, so executing
+        // every non-empty subcore in sequence reruns the same graph and
+        // overwrites outputs. Run the first non-empty range only until proper
+        // parallel subcore scheduling is implemented.
+        let first_subcore = args
+            .subcore_task
+            .iter()
+            .position(|subcore| subcore.task_number != 0);
         for idx in 0..5 {
+            if Some(idx) != first_subcore {
+                continue;
+            }
             if args.subcore_task[idx].task_number == 0 {
                 continue;
             }

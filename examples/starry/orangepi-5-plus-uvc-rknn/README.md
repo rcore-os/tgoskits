@@ -125,7 +125,7 @@ For the current shared board, pass the concrete board lease endpoint:
 ```bash
 cargo starry example board -t orangepi-5-plus-uvc-rknn \
   -b OrangePi-5-Plus-robot \
-  --server 10.3.10.60 \
+  --server 10.30.12.60 \
   --port 2999
 ```
 
@@ -138,7 +138,7 @@ cargo starry board \
   -c examples/starry/orangepi-5-plus-uvc-rknn/build-aarch64-unknown-none-softfloat.toml \
   --board-config examples/starry/orangepi-5-plus-uvc-rknn/board-orangepi-5-plus.toml \
   -b OrangePi-5-Plus-robot \
-  --server 10.3.10.60 \
+  --server 10.30.12.60 \
   --port 2999
 ```
 

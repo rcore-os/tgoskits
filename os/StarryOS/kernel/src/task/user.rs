@@ -27,6 +27,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                 let reason = uctx.run();
 
                 set_timer_state(&curr, TimerState::Kernel);
+                axnet::poll_interfaces();
 
                 let saved_a0 = uctx.arg0();
                 let saved_sysno = uctx.sysno();

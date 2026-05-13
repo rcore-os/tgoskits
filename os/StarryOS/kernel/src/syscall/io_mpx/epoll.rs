@@ -1,37 +1,25 @@
-use core::{mem::size_of, time::Duration};
+use core::time::Duration;
 
 use ax_errno::{AxError, AxResult};
-use ax_task::future::{self, block_on, poll_io};
+use ax_hal::time::wall_time;
 use axpoll::IoEvents;
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD, epoll_event, timespec,
 };
 use starry_signal::SignalSet;
-use starry_vm::vm_write_slice;
 
+use super::poll_network_interfaces;
 use crate::{
     file::{
         FileLike,
         epoll::{Epoll, EpollEvent, EpollFlags},
     },
-    mm::{UserConstPtr, UserPtr, check_access, nullable},
+    mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
     task::with_blocked_signals,
     time::TimeValueLike,
 };
-
-const EP_MAX_EVENTS: usize = i32::MAX as usize / size_of::<epoll_event>();
-
-fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> AxResult<()> {
-    let len = maxevents
-        .checked_mul(size_of::<epoll_event>())
-        .ok_or(AxError::BadAddress)?;
-    let start = events.as_ptr() as usize;
-    start.checked_add(len).ok_or(AxError::BadAddress)?;
-    check_access(start, len)?;
-    Ok(())
-}
 
 bitflags! {
     /// Flags for the `epoll_create` syscall.
@@ -106,35 +94,27 @@ fn do_epoll_wait(
     if maxevents <= 0 {
         return Err(AxError::InvalidInput);
     }
-    let maxevents = maxevents as usize;
-    if maxevents > EP_MAX_EVENTS {
-        return Err(AxError::InvalidInput);
-    }
-    if events.is_null() {
-        return Err(AxError::BadAddress);
-    }
-    check_epoll_events_access(events, maxevents)?;
+    let events = events.get_as_mut_slice(maxevents as usize)?;
 
-    let count = with_blocked_signals(
+    with_blocked_signals(
         nullable!(sigmask.get_as_ref())?.copied(),
-        || match block_on(future::timeout(
-            timeout,
-            poll_io(epoll.as_ref(), IoEvents::IN, false, || {
-                epoll.poll_events_with(maxevents, |index, event| {
-                    vm_write_slice(
-                        events.as_ptr().wrapping_add(index),
-                        core::slice::from_ref(&event),
-                    )?;
-                    Ok(())
-                })
-            }),
-        )) {
-            Ok(r) => r.map(|n| n as _),
-            Err(_) => Ok(0),
-        },
-    )?;
+        || {
+            let deadline = timeout.map(|t| wall_time() + t);
+            loop {
+                poll_network_interfaces();
+                match epoll.poll_events(events) {
+                    Ok(n) => return Ok(n as _),
+                    Err(AxError::WouldBlock) => {}
+                    Err(e) => return Err(e),
+                }
 
-    Ok(count)
+                if deadline.is_some_and(|ddl| wall_time() >= ddl) {
+                    return Ok(0);
+                }
+                ax_task::yield_now();
+            }
+        },
+    )
 }
 
 pub fn sys_epoll_pwait(

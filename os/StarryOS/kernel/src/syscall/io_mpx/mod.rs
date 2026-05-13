@@ -10,6 +10,11 @@ use axpoll::{IoEvents, Pollable};
 pub use self::{epoll::*, poll::*, select::*};
 use crate::file::FileLike;
 
+#[inline]
+fn poll_network_interfaces() {
+    axnet::poll_interfaces();
+}
+
 struct FdPollSet(pub Vec<(Arc<dyn FileLike>, IoEvents)>);
 impl Pollable for FdPollSet {
     fn poll(&self) -> IoEvents {

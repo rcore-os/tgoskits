@@ -10,12 +10,13 @@ use ax_driver::prelude::*;
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
 use hashbrown::HashMap;
+use log::debug;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
     time::{Duration, Instant},
     wire::{
         ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
-        EthernetRepr, IpAddress, Ipv4Cidr,
+        EthernetRepr, IpAddress, Ipv4Cidr, Ipv4Packet,
     },
 };
 
@@ -56,6 +57,7 @@ pub struct EthernetDevice {
     neighbors: HashMap<IpAddress, Neighbor>,
     pending_neighbors: HashMap<IpAddress, PendingNeighbor>,
     ip: Option<Ipv4Cidr>,
+    last_arp_announcement: Option<Instant>,
 
     pending_packets: PacketBuffer<'static, IpAddress>,
 }
@@ -118,8 +120,9 @@ fn release_ethernet_irq_slot(slot: usize, state: &Arc<EthernetIrqState>) {
 }
 
 impl EthernetDevice {
-    const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
+    const NEIGHBOR_TTL: Duration = Duration::from_secs(24 * 60 * 60);
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
+    const ARP_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(3);
 
     pub fn new(name: String, inner: AxNetDevice, ip: Option<Ipv4Cidr>) -> Self {
         let irq_num = inner.irq_num();
@@ -145,6 +148,7 @@ impl EthernetDevice {
                     neighbors: HashMap::new(),
                     pending_neighbors: HashMap::new(),
                     ip,
+                    last_arp_announcement: None,
                     pending_packets,
                 };
             };
@@ -161,6 +165,7 @@ impl EthernetDevice {
             neighbors: HashMap::new(),
             pending_neighbors: HashMap::new(),
             ip,
+            last_arp_announcement: None,
 
             pending_packets,
         }
@@ -223,7 +228,6 @@ impl EthernetDevice {
             warn!("Dropping malformed Ethernet frame");
             return false;
         };
-
         if !repr.dst_addr.is_broadcast()
             && repr.dst_addr != EMPTY_MAC
             && repr.dst_addr != self.hardware_address()
@@ -233,6 +237,7 @@ impl EthernetDevice {
 
         match repr.ethertype {
             EthernetProtocol::Ipv4 => {
+                self.learn_ipv4_source(frame.payload(), repr.src_addr, timestamp);
                 snoop(frame.payload());
                 buffer
                     .enqueue(frame.payload().len(), ())
@@ -240,11 +245,34 @@ impl EthernetDevice {
                     .copy_from_slice(frame.payload());
                 return true;
             }
-            EthernetProtocol::Arp => self.process_arp(frame.payload(), timestamp),
+            EthernetProtocol::Arp => {
+                self.process_arp(frame.payload(), timestamp)
+            }
             _ => {}
         }
 
         false
+    }
+
+    fn learn_ipv4_source(&mut self, payload: &[u8], hardware_addr: EthernetAddress, now: Instant) {
+        if !hardware_addr.is_unicast() {
+            return;
+        }
+        let Ok(packet) = Ipv4Packet::new_checked(payload) else {
+            return;
+        };
+        let src = packet.src_addr();
+        if src.is_broadcast() || src.is_multicast() || src.is_unspecified() {
+            return;
+        }
+        self.pending_neighbors.remove(&IpAddress::Ipv4(src));
+        self.neighbors.insert(
+            IpAddress::Ipv4(src),
+            Neighbor {
+                hardware_address: hardware_addr,
+                expires_at: now + Self::NEIGHBOR_TTL,
+            },
+        );
     }
 
     fn request_arp(&mut self, target_ip: IpAddress, timestamp: Instant) -> bool {
@@ -284,13 +312,93 @@ impl EthernetDevice {
         true
     }
 
+    fn send_arp_ipv4(&mut self, operation: ArpOperation) {
+        let Some(ip) = self.ip else {
+            return;
+        };
+        let arp_repr = ArpRepr::EthernetIpv4 {
+            operation,
+            source_hardware_addr: self.hardware_address(),
+            source_protocol_addr: ip.address(),
+            target_hardware_addr: EMPTY_MAC,
+            target_protocol_addr: ip.address(),
+        };
+
+        let mut inner = self.inner.driver.lock();
+        Self::send_to(
+            &mut inner,
+            EthernetAddress::BROADCAST,
+            arp_repr.buffer_len(),
+            |buf| arp_repr.emit(&mut ArpPacket::new_unchecked(buf)),
+            EthernetProtocol::Arp,
+        );
+    }
+
+    fn announce_ipv4(&mut self) {
+        debug!(
+            "{}: announcing IPv4 {} as {}",
+            self.name,
+            self.ip.map(|ip| ip.address()).unwrap(),
+            self.hardware_address()
+        );
+        self.send_arp_ipv4(ArpOperation::Request);
+        self.send_arp_ipv4(ArpOperation::Reply);
+    }
+
+    fn flush_pending_packets(&mut self, now: Instant) {
+        let mut pending = Vec::new();
+        while let Ok((next_hop, buf)) = self.pending_packets.dequeue() {
+            pending.push((next_hop, buf.to_vec()));
+        }
+
+        for (next_hop, packet) in pending {
+            let Some(neighbor) = self.neighbors.get(&next_hop) else {
+                if self
+                    .pending_neighbors
+                    .get(&next_hop)
+                    .is_none_or(|pending| now >= pending.requested_at + Self::ARP_REQUEST_RETRY)
+                {
+                    let _ = self.request_arp(next_hop, now);
+                }
+                if let Ok(dst_buffer) = self.pending_packets.enqueue(packet.len(), next_hop) {
+                    dst_buffer.copy_from_slice(&packet);
+                } else {
+                    warn!("Pending packets buffer is full while requeueing unresolved packet");
+                }
+                continue;
+            };
+            if neighbor.expires_at <= now {
+                self.neighbors.remove(&next_hop);
+                let _ = self.request_arp(next_hop, now);
+                if let Ok(dst_buffer) = self.pending_packets.enqueue(packet.len(), next_hop) {
+                    dst_buffer.copy_from_slice(&packet);
+                } else {
+                    warn!("Pending packets buffer is full while requeueing expired-neighbor packet");
+                }
+                continue;
+            }
+
+            let mut inner = self.inner.driver.lock();
+            info!(
+                "{}: sending pending IPv4 packet to {} via {}",
+                self.name, next_hop, neighbor.hardware_address
+            );
+            Self::send_to(
+                &mut inner,
+                neighbor.hardware_address,
+                packet.len(),
+                |b| b.copy_from_slice(&packet),
+                EthernetProtocol::Ipv4,
+            );
+        }
+    }
+
     fn process_arp(&mut self, payload: &[u8], now: Instant) {
         let Ok(repr) = ArpPacket::new_checked(payload).and_then(|packet| ArpRepr::parse(&packet))
         else {
             warn!("Dropping malformed ARP packet");
             return;
         };
-
         if let ArpRepr::EthernetIpv4 {
             operation,
             source_hardware_addr,
@@ -321,10 +429,16 @@ impl EthernetDevice {
                 return;
             };
             if ip.address() != target_protocol_addr {
+                debug!(
+                    "{}: ignoring ARP for {}, local {}",
+                    self.name,
+                    target_protocol_addr,
+                    ip.address()
+                );
                 return;
             }
 
-            info!(
+            debug!(
                 "{}: ARP {} -> {}",
                 self.name, source_protocol_addr, source_hardware_addr
             );
@@ -357,40 +471,7 @@ impl EthernetDevice {
                 );
             }
 
-            if self
-                .pending_packets
-                .peek()
-                .is_ok_and(|it| it.0 == &IpAddress::Ipv4(source_protocol_addr))
-            {
-                while let Ok((&next_hop, buf)) = self.pending_packets.peek() {
-                    // TODO: optimize logic such that one long-pending ARP
-                    // request does not block all other packets
-
-                    let Some(neighbor) = self.neighbors.get(&next_hop) else {
-                        break;
-                    };
-                    if neighbor.expires_at <= now {
-                        // Neighbor is expired, we need to request ARP again
-                        self.neighbors.remove(&next_hop);
-                        let _ = self.request_arp(next_hop, now);
-                        break;
-                    }
-
-                    let mut inner = self.inner.driver.lock();
-                    info!(
-                        "{}: sending pending IPv4 packet to {} via {}",
-                        self.name, next_hop, neighbor.hardware_address
-                    );
-                    Self::send_to(
-                        &mut inner,
-                        neighbor.hardware_address,
-                        buf.len(),
-                        |b| b.copy_from_slice(buf),
-                        EthernetProtocol::Ipv4,
-                    );
-                    let _ = self.pending_packets.dequeue();
-                }
-            }
+            self.flush_pending_packets(now);
         }
     }
 }
@@ -424,7 +505,6 @@ impl Device for EthernetDevice {
                 rx_buf.packet_len(),
                 rx_buf.packet()
             );
-
             let result = self.handle_frame(rx_buf.packet(), buffer, timestamp, snoop);
             self.inner.driver.lock().recycle_rx_buffer(rx_buf).unwrap();
             if result {
@@ -473,8 +553,8 @@ impl Device for EthernetDevice {
             return false;
         }
         if self.pending_packets.is_full() {
-            warn!("Pending packets buffer is full, dropping packet");
-            return false;
+            let _ = self.pending_packets.dequeue();
+            warn!("Pending packets buffer is full, dropping oldest unresolved packet");
         }
         let Ok(dst_buffer) = self.pending_packets.enqueue(packet.len(), next_hop) else {
             warn!("Failed to enqueue packet in pending packets buffer");
@@ -488,6 +568,21 @@ impl Device for EthernetDevice {
         self.ip = addr;
         self.neighbors.clear();
         self.pending_neighbors.clear();
+        self.last_arp_announcement = None;
+    }
+
+    fn poll_maintenance(&mut self, timestamp: Instant) {
+        if self.ip.is_none() {
+            return;
+        }
+        if self
+            .last_arp_announcement
+            .is_some_and(|last| timestamp < last + Self::ARP_ANNOUNCE_INTERVAL)
+        {
+            return;
+        }
+        self.last_arp_announcement = Some(timestamp);
+        self.announce_ipv4();
     }
 
     fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {

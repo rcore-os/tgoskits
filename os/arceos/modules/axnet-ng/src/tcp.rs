@@ -474,22 +474,30 @@ impl SocketOps for TcpSocket {
         }
 
         let bound_port = self.bound_endpoint()?.port;
-        self.general.recv_poller(self, || {
+        loop {
             poll_interfaces();
-            let handle = {
+            match {
                 let sockets = SOCKET_SET.inner.lock();
-                LISTEN_TABLE.accept(bound_port, &sockets)?
-            };
-            Ok({
-                let socket = TcpSocket::new_connected(handle);
-                debug!(
-                    "accepted connection from {}, {}",
-                    handle,
-                    socket.with_smol_socket(|socket| socket.remote_endpoint().unwrap())
-                );
-                socket.into()
-            })
-        })
+                LISTEN_TABLE.accept(bound_port, &sockets)
+            } {
+                Ok(handle) => {
+                    let socket = TcpSocket::new_connected(handle);
+                    debug!(
+                        "accepted connection from {}, {}",
+                        handle,
+                        socket.with_smol_socket(|socket| socket.remote_endpoint().unwrap())
+                    );
+                    return Ok(socket.into());
+                }
+                Err(AxError::WouldBlock) if self.general.nonblocking() => {
+                    return Err(AxError::WouldBlock);
+                }
+                Err(AxError::WouldBlock) => {
+                    ax_task::yield_now();
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     fn send(&self, mut src: impl Read, _options: SendOptions) -> AxResult<usize> {

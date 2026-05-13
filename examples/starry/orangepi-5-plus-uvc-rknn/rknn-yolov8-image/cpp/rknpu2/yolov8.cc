@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdint.h>
 
 #include "yolov8.h"
 #include "common.h"
@@ -29,6 +30,52 @@ static void dump_tensor_attr(rknn_tensor_attr *attr)
            attr->index, attr->name, attr->n_dims, attr->dims[0], attr->dims[1], attr->dims[2], attr->dims[3],
            attr->n_elems, attr->size, get_format_string(attr->fmt), get_type_string(attr->type),
            get_qnt_type_string(attr->qnt_type), attr->zp, attr->scale);
+}
+
+static bool rknn_dump_stats_enabled()
+{
+    const char *value = getenv("RKNN_DUMP_OUTPUT_STATS");
+    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static void dump_bytes_stats(const char *prefix, int index, const void *buf, size_t size)
+{
+    const unsigned char *data = (const unsigned char *)buf;
+    uint64_t fnv = 1469598103934665603ULL;
+    unsigned int umin = 255;
+    unsigned int umax = 0;
+    long long isum = 0;
+
+    for (size_t i = 0; i < size; i++)
+    {
+        unsigned int value = data[i];
+        if (value < umin)
+        {
+            umin = value;
+        }
+        if (value > umax)
+        {
+            umax = value;
+        }
+        isum += (signed char)data[i];
+        fnv ^= value;
+        fnv *= 1099511628211ULL;
+    }
+
+    printf("%s index=%d bytes=%u umin=%u umax=%u isum=%lld fnv=0x%llx first16=",
+           prefix,
+           index,
+           (unsigned int)size,
+           umin,
+           umax,
+           isum,
+           (unsigned long long)fnv);
+    size_t first = size < 16 ? size : 16;
+    for (size_t i = 0; i < first; i++)
+    {
+        printf("%02x", data[i]);
+    }
+    printf("\n");
 }
 
 int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
@@ -157,13 +204,17 @@ int release_yolov8_model(rknn_app_context_t *app_ctx)
 
 int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results)
 {
+    return inference_yolov8_model_with_thresholds(app_ctx, img, od_results, BOX_THRESH, NMS_THRESH);
+}
+
+int inference_yolov8_model_with_thresholds(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results,
+                                           float box_conf_threshold, float nms_threshold)
+{
     int ret;
     image_buffer_t dst_img;
     letterbox_t letter_box;
     rknn_input inputs[app_ctx->io_num.n_input];
     rknn_output outputs[app_ctx->io_num.n_output];
-    const float nms_threshold = NMS_THRESH;      // 默认的NMS阈值
-    const float box_conf_threshold = BOX_THRESH; // 默认的置信度阈值
     int bg_color = 114;
 
     if ((!app_ctx) || !(img) || (!od_results))
@@ -196,6 +247,19 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
         printf("convert_image_with_letterbox fail! ret=%d\n", ret);
         return -1;
     }
+    bool dump_stats = rknn_dump_stats_enabled();
+    if (dump_stats)
+    {
+        printf("RKNN_LETTERBOX x_pad=%d y_pad=%d input=%dx%d resize=%dx%d scale=%.8f\n",
+               letter_box.x_pad,
+               letter_box.y_pad,
+               letter_box.input_width,
+               letter_box.input_height,
+               letter_box.resize_width,
+               letter_box.resize_height,
+               letter_box.scale);
+        dump_bytes_stats("RKNN_INPUT_STATS", 0, dst_img.virt_addr, dst_img.size);
+    }
 
     // Set Input Data
     inputs[0].index = 0;
@@ -212,7 +276,6 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
     }
 
     // Run
-    printf("rknn_run\n");
     ret = rknn_run(app_ctx->rknn_ctx, nullptr);
     if (ret < 0)
     {
@@ -232,6 +295,16 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
     {
         printf("rknn_outputs_get fail! ret=%d\n", ret);
         goto out;
+    }
+    if (dump_stats)
+    {
+        for (int i = 0; i < app_ctx->io_num.n_output; i++)
+        {
+            if (outputs[i].buf != NULL)
+            {
+                dump_bytes_stats("RKNN_OUTPUT_STATS", i, outputs[i].buf, outputs[i].size);
+            }
+        }
     }
 
     // Post Process

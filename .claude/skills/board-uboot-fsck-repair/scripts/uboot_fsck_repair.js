@@ -4,6 +4,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const WebSocketImpl = globalThis.WebSocket || require('undici').WebSocket || require('ws');
 
 const DEFAULT_BOARD_TYPE = 'OrangePi-5-Plus';
 const DEFAULT_PORT = 2999;
@@ -219,7 +220,7 @@ function dataToBuffer(data) {
 }
 
 function isOpen(ws) {
-  return ws.readyState === WebSocket.OPEN;
+  return ws.readyState === WebSocketImpl.OPEN;
 }
 
 function sendSerial(ws, text) {
@@ -231,7 +232,7 @@ async function sleep(ms) {
 }
 
 async function main() {
-  if (typeof fetch !== 'function' || typeof WebSocket !== 'function') {
+  if (typeof fetch !== 'function' || typeof WebSocketImpl !== 'function') {
     throw new Error('Node.js with built-in fetch and WebSocket support is required');
   }
 
@@ -371,7 +372,7 @@ async function main() {
 
   const wsUrl = resolveWsUrl(wsBase, session.ws_url);
   state.stage = 'connecting serial websocket';
-  ws = new WebSocket(wsUrl);
+  ws = new WebSocketImpl(wsUrl);
   ws.addEventListener('open', () => {
     state.stage = 'waiting for U-Boot autoboot prompt';
     console.error(`Connected serial websocket: ${wsUrl}`);

@@ -12,6 +12,7 @@
 
 use core::time::Duration;
 
+use ax_memory_addr::MemoryAddr;
 use axklib::{AxResult, IrqHandler, Klib, PhysAddr, VirtAddr, impl_trait};
 
 struct KlibImpl;
@@ -25,6 +26,23 @@ impl_trait! {
         fn mem_iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
             // Convert from AxError (struct in ax_errno 0.2) to AxErrorKind (enum used by axklib)
             ax_mm::iomap(addr, size)
+        }
+
+        fn mem_set_dma_coherent(addr: VirtAddr, size: usize, uncached: bool) -> AxResult {
+            if size == 0 {
+                return Ok(());
+            }
+
+            let start = addr.align_down_4k();
+            let end = (addr + size).align_up_4k();
+            let mut flags = ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE;
+            if uncached {
+                flags |= ax_hal::paging::MappingFlags::UNCACHED;
+            }
+
+            ax_mm::kernel_aspace().lock().protect(start, end - start, flags)?;
+            ax_hal::asm::flush_tlb(None);
+            Ok(())
         }
 
         /// Busy-wait for the given duration by calling into `ax-hal`.

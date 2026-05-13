@@ -7,7 +7,7 @@ use ax_driver_block::BlockDriverOps;
 #[cfg(feature = "net")]
 use ax_driver_net::NetDriverOps;
 use ax_errno::AxError;
-use ax_memory_addr::PAGE_SIZE_4K;
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_plat::mem::PhysAddr;
 use heapless::Vec;
 use rdrive::probe::OnProbeError;
@@ -172,6 +172,8 @@ impl DmaPages {
             });
         }
 
+        set_dma_coherent(cpu_addr, num_pages, true)?;
+
         Ok(Self { cpu_addr, dma_addr })
     }
 
@@ -179,12 +181,27 @@ impl DmaPages {
         if num_pages == 0 {
             return;
         }
+        let _ = set_dma_coherent(cpu_addr, num_pages, false);
         ax_alloc::global_allocator().dealloc_pages(
             cpu_addr.as_ptr() as usize,
             num_pages,
             ax_alloc::UsageKind::Dma,
         );
     }
+}
+
+fn set_dma_coherent(
+    cpu_addr: NonNull<u8>,
+    num_pages: usize,
+    uncached: bool,
+) -> Result<(), dma_api::DmaError> {
+    if num_pages == 0 {
+        return Ok(());
+    }
+
+    let start = VirtAddr::from_usize(cpu_addr.as_ptr() as usize).align_down_4k();
+    axklib::mem::set_dma_coherent(start, num_pages * PAGE_SIZE_4K, uncached)
+        .map_err(|_| dma_api::DmaError::NoMemory)
 }
 
 #[inline]
@@ -255,6 +272,37 @@ impl dma_api::DmaOp for DmaImpl {
             let num_pages = DmaPages::layout_pages(handle.layout());
             unsafe { DmaPages::dealloc_pages(map_virt, num_pages) };
         }
+    }
+
+    fn prepare_read(
+        &self,
+        handle: &dma_api::DmaMapHandle,
+        offset: usize,
+        size: usize,
+        direction: dma_api::DmaDirection,
+    ) {
+        if !matches!(
+            direction,
+            dma_api::DmaDirection::FromDevice | dma_api::DmaDirection::Bidirectional
+        ) {
+            return;
+        }
+
+        let target = unsafe { handle.as_ptr().add(offset) };
+        if let Some(map_virt) = handle.alloc_virt()
+            && map_virt != handle.as_ptr()
+        {
+            let source = unsafe { map_virt.add(offset) };
+            self.invalidate(source, size);
+            unsafe {
+                target
+                    .as_ptr()
+                    .copy_from_nonoverlapping(source.as_ptr(), size);
+            }
+            return;
+        }
+
+        self.invalidate(target, size);
     }
 
     fn confirm_write(

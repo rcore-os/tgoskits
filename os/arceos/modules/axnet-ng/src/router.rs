@@ -136,14 +136,27 @@ impl Router {
         sockets: &mut SocketSet<'_>,
         mut snoop: impl FnMut(usize, &[u8]),
     ) {
+        let mut drop_buffer = PacketBuffer::new(
+            vec![PacketMetadata::EMPTY; 1],
+            vec![0u8; STANDARD_MTU],
+        );
         for (dev_idx, dev) in self.devices.iter_mut().enumerate() {
+            dev.poll_maintenance(timestamp);
             let mut packet_snoop = |packet: &[u8]| {
                 snoop_tcp_packet(packet, sockets);
                 snoop(dev_idx, packet);
             };
-            while !self.rx_buffer.is_full()
-                && dev.recv(&mut self.rx_buffer, timestamp, &mut packet_snoop)
-            {}
+            while dev.recv(
+                if self.rx_buffer.is_full() {
+                    &mut drop_buffer
+                } else {
+                    &mut self.rx_buffer
+                },
+                timestamp,
+                &mut packet_snoop,
+            ) {
+                while let Ok(((), _)) = drop_buffer.dequeue() {}
+            }
         }
     }
 
@@ -254,10 +267,11 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
     };
     if protocol == IpProtocol::Tcp {
         let tcp_packet = TcpPacket::new_unchecked(payload);
-        let src_addr = (src_addr, tcp_packet.src_port()).into();
-        let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
+        let src_addr = smoltcp::wire::IpEndpoint::new(src_addr, tcp_packet.src_port());
+        let dst_addr = smoltcp::wire::IpEndpoint::new(dst_addr, tcp_packet.dst_port());
         let is_first = tcp_packet.syn() && !tcp_packet.ack();
         if is_first {
+            debug!("TCP SYN {} -> {}", src_addr, dst_addr);
             LISTEN_TABLE.incoming_tcp_packet(src_addr, dst_addr, sockets);
         }
     }

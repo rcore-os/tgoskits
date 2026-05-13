@@ -14,6 +14,10 @@ extern "C" {
 typedef struct {
     int x_pad;
     int y_pad;
+    int input_width;
+    int input_height;
+    int resize_width;
+    int resize_height;
     float scale;
 } letterbox_t;
 

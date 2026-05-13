@@ -336,6 +336,12 @@ static int crop_and_scale_image_c(int channel, unsigned char *src, int src_width
         printf("dst buffer is null\n");
         return -1;
     }
+    if (src == NULL || channel <= 0 || src_width <= 0 || src_height <= 0 ||
+        crop_width <= 0 || crop_height <= 0 || dst_width <= 0 || dst_height <= 0 ||
+        dst_box_width <= 0 || dst_box_height <= 0) {
+        printf("invalid crop/scale args\n");
+        return -1;
+    }
 
     float x_ratio = (float)crop_width / (float)dst_box_width;
     float y_ratio = (float)crop_height / (float)dst_box_height;
@@ -346,31 +352,64 @@ static int crop_and_scale_image_c(int channel, unsigned char *src, int src_width
     //     dst_width, dst_height, dst_box_x, dst_box_y, dst_box_width, dst_box_height);
     // printf("channel=%d x_ratio=%f y_ratio=%f\n", channel, x_ratio, y_ratio);
 
-    // 从原图指定区域取数据，双线性缩放到目标指定区域
+    // Standard bilinear sampling with clamped edges. This CPU path is used on
+    // StarryOS when RGA is unavailable, so keep it close to normal resize
+    // behavior instead of sampling backwards at the last row/column.
     for (int dst_y = dst_box_y; dst_y < dst_box_y + dst_box_height; dst_y++) {
         for (int dst_x = dst_box_x; dst_x < dst_box_x + dst_box_width; dst_x++) {
             int dst_x_offset = dst_x - dst_box_x;
             int dst_y_offset = dst_y - dst_box_y;
 
-            int src_x = (int)(dst_x_offset * x_ratio) + crop_x;
-            int src_y = (int)(dst_y_offset * y_ratio) + crop_y;
-
-            float x_diff = (dst_x_offset * x_ratio) - (src_x - crop_x);
-            float y_diff = (dst_y_offset * y_ratio) - (src_y - crop_y);
-
-            int index1 = src_y * src_width * channel + src_x * channel;
-            int index2 = index1 + src_width * channel;    // down
-            if (src_y == src_height - 1) {
-                // 如果到图像最下边缘，变成选择上面的像素
-                index2 = index1 - src_width * channel;
+            float src_fx = ((float)dst_x_offset + 0.5f) * x_ratio - 0.5f;
+            float src_fy = ((float)dst_y_offset + 0.5f) * y_ratio - 0.5f;
+            if (src_fx < 0.0f) {
+                src_fx = 0.0f;
             }
-            int index3 = index1 + 1 * channel;            // right
-            int index4 = index2 + 1 * channel;            // down right
-            if (src_x == src_width - 1) {
-                // 如果到图像最右边缘，变成选择左边的像素
-                index3 = index1 - 1 * channel;
-                index4 = index2 - 1 * channel;
+            if (src_fy < 0.0f) {
+                src_fy = 0.0f;
             }
+
+            int rel_x0 = (int)floorf(src_fx);
+            int rel_y0 = (int)floorf(src_fy);
+            int rel_x1 = rel_x0 + 1;
+            int rel_y1 = rel_y0 + 1;
+            if (rel_x0 >= crop_width) {
+                rel_x0 = crop_width - 1;
+            }
+            if (rel_y0 >= crop_height) {
+                rel_y0 = crop_height - 1;
+            }
+            if (rel_x1 >= crop_width) {
+                rel_x1 = crop_width - 1;
+            }
+            if (rel_y1 >= crop_height) {
+                rel_y1 = crop_height - 1;
+            }
+
+            int src_x0 = crop_x + rel_x0;
+            int src_y0 = crop_y + rel_y0;
+            int src_x1 = crop_x + rel_x1;
+            int src_y1 = crop_y + rel_y1;
+            if (src_x0 < 0) src_x0 = 0;
+            if (src_y0 < 0) src_y0 = 0;
+            if (src_x1 < 0) src_x1 = 0;
+            if (src_y1 < 0) src_y1 = 0;
+            if (src_x0 >= src_width) src_x0 = src_width - 1;
+            if (src_y0 >= src_height) src_y0 = src_height - 1;
+            if (src_x1 >= src_width) src_x1 = src_width - 1;
+            if (src_y1 >= src_height) src_y1 = src_height - 1;
+
+            float x_diff = src_fx - (float)rel_x0;
+            float y_diff = src_fy - (float)rel_y0;
+            if (x_diff < 0.0f) x_diff = 0.0f;
+            if (y_diff < 0.0f) y_diff = 0.0f;
+            if (x_diff > 1.0f) x_diff = 1.0f;
+            if (y_diff > 1.0f) y_diff = 1.0f;
+
+            int index1 = (src_y0 * src_width + src_x0) * channel;
+            int index2 = (src_y1 * src_width + src_x0) * channel;
+            int index3 = (src_y0 * src_width + src_x1) * channel;
+            int index4 = (src_y1 * src_width + src_x1) * channel;
 
             // printf("dst_x=%d dst_y=%d dst_x_offset=%d dst_y_offset=%d src_x=%d src_y=%d x_diff=%f y_diff=%f src index=%d %d %d %d\n",
             //     dst_x, dst_y, dst_x_offset, dst_y_offset,
@@ -383,12 +422,18 @@ static int crop_and_scale_image_c(int channel, unsigned char *src, int src_width
                 unsigned char C = src[index2+c];
                 unsigned char D = src[index4+c];
 
-                unsigned char pixel = (unsigned char)(
+                float value =
                     A * (1 - x_diff) * (1 - y_diff) +
                     B * x_diff * (1 - y_diff) +
                     C * y_diff * (1 - x_diff) +
-                    D * x_diff * y_diff
-                );
+                    D * x_diff * y_diff;
+                if (value < 0.0f) {
+                    value = 0.0f;
+                }
+                if (value > 255.0f) {
+                    value = 255.0f;
+                }
+                unsigned char pixel = (unsigned char)(value + 0.5f);
 
                 dst[(dst_y * dst_width  + dst_x) * channel + c] = pixel;
             }
@@ -805,6 +850,10 @@ int convert_image_with_letterbox(image_buffer_t* src_image, image_buffer_t* dst_
         letterbox->scale = scale;
         letterbox->x_pad = _left_offset;
         letterbox->y_pad = _top_offset;
+        letterbox->input_width = src_w;
+        letterbox->input_height = src_h;
+        letterbox->resize_width = resize_w;
+        letterbox->resize_height = resize_h;
     }
     // alloc memory buffer for dst image,
     // remember to free
