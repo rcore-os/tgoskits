@@ -11,6 +11,11 @@ license = "Apache-2.0"
 
 [features]
 irq = ["ax-plat/irq"]
+# Build the GICv3 + CNTV path. Off by default so this crate's
+# consumers — including physical boards that ship GICv2 + CNTP —
+# keep their existing behavior. Enabled by platforms that target
+# GICv3 hosts (e.g. QEMU `-accel hvf` on Apple Silicon).
+gic-v3 = []
 
 [dependencies]
 ax-kspin = { workspace = true }

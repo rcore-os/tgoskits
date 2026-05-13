@@ -41,15 +41,17 @@ impl InitIf for InitIfImpl {
     fn init_later(_cpu_id: usize, _dtb: usize) {
         #[cfg(feature = "irq")]
         {
-            // The GIC backend is selected at compile time using
-            // `AX_GIC_V3`; see `axplat-aarch64-peripherals`'s
-            // `build.rs`.
-            #[cfg(not(gic_v3))]
+            // The GIC backend is selected at compile time by the
+            // `gic-v3` Cargo feature on this crate (forwarded from
+            // `ax-feat::aarch64-gic-v3` → `starryos::gic-v3`).
+            // Default builds keep GICv2 + CNTP for QEMU TCG and
+            // physical boards.
+            #[cfg(not(feature = "gic-v3"))]
             ax_plat_aarch64_peripherals::gic::init_gic(
                 phys_to_virt(pa!(GICD_PADDR)),
                 phys_to_virt(pa!(GICC_PADDR)),
             );
-            #[cfg(gic_v3)]
+            #[cfg(feature = "gic-v3")]
             ax_plat_aarch64_peripherals::gic::init_gic_v3(
                 phys_to_virt(pa!(GICD_PADDR)),
                 phys_to_virt(pa!(GICR_PADDR)),

@@ -14,6 +14,10 @@ fp-simd = ["ax-cpu/fp-simd"]
 irq = ["ax-plat/irq", "ax-plat-aarch64-peripherals/irq"]
 rtc = []
 smp = ["ax-plat/smp"]
+# Enable the GICv3 + CNTV path used by QEMU `-accel hvf` and other
+# GICv3 hosts. Off by default so the legacy GICv2 + CNTP behavior
+# physical boards rely on is unchanged.
+gic-v3 = ["ax-plat-aarch64-peripherals/gic-v3"]
 
 [dependencies]
 log = "0.4"

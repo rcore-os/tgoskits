@@ -1,10 +1,13 @@
 //! ARM Generic Interrupt Controller (GIC), dispatcher over v2 and v3.
 //!
-//! The backend is selected at compile time via the `AX_GIC_V3=1` env
-//! var (see `build.rs`, which emits `cfg(gic_v3)`). Default builds
-//! stay on GICv2 to match the QEMU TCG `-cpu cortex-a72` configuration
-//! used by CI. Setting `AX_GIC_V3=1` switches to GICv3, which is
-//! required to boot under Apple HVF on Apple Silicon.
+//! The backend is selected at compile time by the `gic-v3` Cargo
+//! feature on this crate (forwarded from
+//! `ax-plat-aarch64-qemu-virt`'s `gic-v3` feature, in turn from
+//! `starryos`'s `gic-v3` feature and the `aarch64-gic-v3` feature
+//! on `ax-feat` / `ax-hal`). Default builds stay on GICv2 to match
+//! the QEMU TCG `-cpu cortex-a72` configuration used by CI. Enabling
+//! `gic-v3` switches to GICv3, which is required to boot under Apple
+//! HVF on Apple Silicon.
 //!
 //! Why this matters for HVF: Apple's Hypervisor framework cannot
 //! always populate decoded instruction syndromes (ESR.ISV) for MMIO
@@ -24,7 +27,7 @@ use arm_gic_driver::v2::{
     Ack as V2Ack, Gic as GicV2, IntId, SGITarget as V2SGITarget, TargetList, TrapOp as V2TrapOp,
     Trigger, VirtAddr as DriverVirtAddr,
 };
-#[cfg(gic_v3)]
+#[cfg(feature = "gic-v3")]
 use arm_gic_driver::v3::{Affinity, Gic as GicV3, SGITarget as V3SGITarget};
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
@@ -44,7 +47,7 @@ enum Backend {
         /// `self.gic.cpu_interface()` on every IRQ.
         trap: V2TrapOp,
     },
-    #[cfg(gic_v3)]
+    #[cfg(feature = "gic-v3")]
     V3 { gic: GicV3 },
 }
 
@@ -63,7 +66,7 @@ pub fn set_enable(irq: usize, enabled: bool) {
                 gic.set_cfg(intid, Trigger::Edge);
             }
         }
-        #[cfg(gic_v3)]
+        #[cfg(feature = "gic-v3")]
         Backend::V3 { gic } => {
             gic.set_irq_enable(intid, enabled);
             // v3 SPI trigger config also stays on the distributor.
@@ -76,7 +79,7 @@ pub fn set_enable(irq: usize, enabled: bool) {
 
 enum ActiveIrq {
     V2(V2Ack),
-    #[cfg(gic_v3)]
+    #[cfg(feature = "gic-v3")]
     V3(IntId),
 }
 
@@ -117,7 +120,7 @@ pub fn handle_irq(_irq: usize) -> Option<usize> {
                 .to_u32() as usize;
                 (irq, ActiveIrq::V2(ack))
             }
-            #[cfg(gic_v3)]
+            #[cfg(feature = "gic-v3")]
             Backend::V3 { gic } => {
                 // Group 1 Non-secure is what QEMU's virt machine uses.
                 let ack = gic.cpu_interface().ack1();
@@ -146,10 +149,10 @@ pub fn handle_irq(_irq: usize) -> Option<usize> {
                     trap.dir(ack);
                 }
             }
-            #[cfg(gic_v3)]
+            #[cfg(feature = "gic-v3")]
             Backend::V3 { .. } => unreachable!("GIC backend changed while handling an IRQ"),
         },
-        #[cfg(gic_v3)]
+        #[cfg(feature = "gic-v3")]
         ActiveIrq::V3(ack) => match &*guard {
             Backend::V3 { gic } => {
                 let cpu = gic.cpu_interface();
@@ -183,7 +186,7 @@ pub fn send_ipi(irq_num: usize, target: IpiTarget) {
             };
             gic.send_sgi(sgi, v2_target);
         }
-        #[cfg(gic_v3)]
+        #[cfg(feature = "gic-v3")]
         Backend::V3 { gic } => {
             let sgi = IntId::sgi(irq_num as u32);
             let v3_target = match target {
@@ -227,11 +230,11 @@ pub fn init_gic(gicd_base: ax_plat::mem::VirtAddr, gicc_base: ax_plat::mem::Virt
 
 /// Initializes the GICv3 distributor and redistributor.
 ///
-/// GICv3 is selected at compile time by setting `AX_GIC_V3=1`. We do
-/// not runtime-probe the backend because neither `ID_AA64PFR0_EL1.GIC`
-/// nor GICD PIDR2 probing works cleanly under both QEMU TCG GICv2 and
-/// Apple HVF GICv3.
-#[cfg(gic_v3)]
+/// GICv3 is selected at compile time by enabling the `gic-v3`
+/// feature on this crate. We do not runtime-probe the backend
+/// because neither `ID_AA64PFR0_EL1.GIC` nor GICD PIDR2 probing
+/// works cleanly under both QEMU TCG GICv2 and Apple HVF GICv3.
+#[cfg(feature = "gic-v3")]
 pub fn init_gic_v3(gicd_base: ax_plat::mem::VirtAddr, gicr_base: ax_plat::mem::VirtAddr) {
     info!("Initialize GICv3 (system-register CPU interface)...");
     let gicd = DriverVirtAddr::new(gicd_base.into());
@@ -252,7 +255,7 @@ pub fn init_gicc() {
             cpu.init_current_cpu();
             cpu.set_eoi_mode_ns(false);
         }
-        #[cfg(gic_v3)]
+        #[cfg(feature = "gic-v3")]
         Backend::V3 { gic } => {
             let mut cpu = gic.cpu_interface();
             if let Err(e) = cpu.init_current_cpu() {

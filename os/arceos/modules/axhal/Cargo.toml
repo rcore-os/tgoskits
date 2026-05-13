@@ -39,6 +39,10 @@ rtc = [
     "ax-plat-loongarch64-qemu-virt?/rtc",
     "axplat-dyn?/rtc",
 ]
+# Forward the GICv3 + CNTV toggle to the aarch64 qemu-virt platform.
+# `?` lets non-aarch64 builds pass the feature through without
+# requiring the optional dependency.
+aarch64-gic-v3 = ["ax-plat-aarch64-qemu-virt?/gic-v3"]
 paging = [
     "dep:ax-alloc",
     "dep:ax-page-table-multiarch",

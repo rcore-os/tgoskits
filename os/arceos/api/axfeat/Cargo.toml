@@ -33,6 +33,9 @@ plat-dyn = [
     "ax-runtime/plat-dyn",
     "ax-config/plat-dyn",
 ]
+# Build the aarch64 GICv3 + CNTV path through `defplat`. Only
+# meaningful on aarch64; on other targets it forwards to nothing.
+aarch64-gic-v3 = ["ax-hal/aarch64-gic-v3"]
 
 # Memory
 alloc = ["ax-alloc", "ax-runtime/alloc"]

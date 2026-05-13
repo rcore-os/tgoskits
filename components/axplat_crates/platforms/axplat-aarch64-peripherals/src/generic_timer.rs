@@ -1,6 +1,19 @@
 //! ARM Generic Timer.
+//!
+//! Two timer modes coexist: CNTP (physical) and CNTV (virtual).
+//! Default builds use CNTP, matching the QEMU TCG and physical-board
+//! configurations everything else in the tree expects. The `gic-v3`
+//! feature switches to CNTV because Apple HVF (the same target that
+//! needs GICv3) owns CNTP at EL2 and traps every EL1 access with
+//! `EC=Unknown`; CNTV is the guest-owned timer that is always
+//! accessible from EL1. Boards that ship without the feature
+//! continue to use CNTP and the IRQ number their `axconfig.toml`
+//! already advertises.
 
+#[cfg(feature = "gic-v3")]
 use aarch64_cpu::registers::{CNTFRQ_EL0, CNTV_TVAL_EL0, CNTVCT_EL0, Readable, Writeable};
+#[cfg(not(feature = "gic-v3"))]
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_TVAL_EL0, CNTPCT_EL0, Readable, Writeable};
 use ax_int_ratio::Ratio;
 
 static mut CNTVCT_TO_NANOS_RATIO: Ratio = Ratio::zero();
@@ -9,7 +22,14 @@ static mut NANOS_TO_CNTVCT_RATIO: Ratio = Ratio::zero();
 /// Returns the current clock time in hardware ticks.
 #[inline]
 pub fn current_ticks() -> u64 {
-    CNTVCT_EL0.get()
+    #[cfg(feature = "gic-v3")]
+    {
+        CNTVCT_EL0.get()
+    }
+    #[cfg(not(feature = "gic-v3"))]
+    {
+        CNTPCT_EL0.get()
+    }
 }
 
 /// Converts hardware ticks to nanoseconds.
@@ -28,14 +48,17 @@ pub fn nanos_to_ticks(nanos: u64) -> u64 {
 ///
 /// A timer interrupt will be triggered at the specified monotonic time deadline (in nanoseconds).
 pub fn set_oneshot_timer(deadline_ns: u64) {
-    let cntvct = CNTVCT_EL0.get();
-    let cntvct_deadline = nanos_to_ticks(deadline_ns);
-    if cntvct < cntvct_deadline {
-        let interval = cntvct_deadline - cntvct;
-        debug_assert!(interval <= u32::MAX as u64);
+    let now = current_ticks();
+    let deadline = nanos_to_ticks(deadline_ns);
+    let interval = if now < deadline { deadline - now } else { 0 };
+    debug_assert!(interval <= u32::MAX as u64);
+    #[cfg(feature = "gic-v3")]
+    {
         CNTV_TVAL_EL0.set(interval);
-    } else {
-        CNTV_TVAL_EL0.set(0);
+    }
+    #[cfg(not(feature = "gic-v3"))]
+    {
+        CNTP_TVAL_EL0.set(interval);
     }
 }
 
@@ -54,16 +77,26 @@ pub fn init_early() {
 /// Peripheral Interrupt).
 #[cfg(feature = "irq")]
 pub fn enable_irqs(timer_irq_num: usize) {
-    // CNTV (virtual timer) instead of CNTP (physical): in virtualized
-    // environments — Apple HVF in particular — EL2 owns CNTP and traps
-    // any EL1 access to it with `EC=Unknown`, crashing us. CNTV is the
-    // guest-owned timer and is always accessible at EL1. On bare-metal
-    // TCG the two tick identically, so this choice is harmless there.
-    // IRQ number changes too: CNTV is PPI 11 (IRQ 27), CNTP is PPI 14
-    // (IRQ 30); `timer-irq` in axconfig.toml now advertises 27.
-    use aarch64_cpu::registers::CNTV_CTL_EL0;
-    CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);
-    CNTV_TVAL_EL0.set(0);
+    #[cfg(feature = "gic-v3")]
+    {
+        // CNTV (virtual timer) is the guest-owned timer at EL1. Used
+        // when `gic-v3` is enabled because Apple HVF traps CNTP from
+        // EL1. CNTV PPI is 11 (IRQ 27); the GICv3 axconfig advertises
+        // 27 via `timer-irq`.
+        use aarch64_cpu::registers::CNTV_CTL_EL0;
+        CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);
+        CNTV_TVAL_EL0.set(0);
+    }
+    #[cfg(not(feature = "gic-v3"))]
+    {
+        // CNTP (physical timer) is what every bare-metal / TCG
+        // aarch64 board in tree expects. CNTP PPI is 14 (IRQ 30) on
+        // the GICv2 distributor; existing axconfigs already advertise
+        // 30 as `timer-irq`.
+        use aarch64_cpu::registers::CNTP_CTL_EL0;
+        CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
+        CNTP_TVAL_EL0.set(0);
+    }
     ax_plat::irq::set_enable(timer_irq_num, true);
 }
 
