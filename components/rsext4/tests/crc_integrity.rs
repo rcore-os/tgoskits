@@ -166,7 +166,7 @@ fn write_incomplete_journal_descriptor(device: &SharedCrcDevice, journal_block: 
     let bytes = device.read_block_bytes(journal_block);
     let journal_sb = JournalSuperBllockS::from_disk_bytes(&bytes);
 
-    let mut descriptor = vec![0u8; BLOCK_SIZE];
+    let mut descriptor = vec![0u8; 4096];
     JournalHeaderS {
         h_magic: JBD2_MAGIC,
         h_blocktype: JBD2_BLOCKTYPE_DESCRIPTOR,

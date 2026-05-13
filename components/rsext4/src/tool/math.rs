@@ -117,7 +117,8 @@ pub fn ext4_get_maxbytes(sb: &Ext4Superblock, inode: &Ext4Inode) -> u64 {
     if inode.i_flags & Ext4Inode::EXT4_EXTENTS_FL != 0 {
         // `ee_block` is 32-bit. Keep this explicit guard even though
         // `ext4_max_size_bytes` already mirrors Linux's limit.
-        let extent_guard = (EXT4_MAX_LOGICAL_BLOCK.saturating_add(1)).saturating_mul(block_size);
+        let extent_guard =
+            (EXT4_MAX_LOGICAL_BLOCK.saturating_add(1)).saturating_mul(block_size as u64);
         ext4_max_size_bytes(blkbits, has_huge_files).min(extent_guard)
     } else {
         // no have extent
