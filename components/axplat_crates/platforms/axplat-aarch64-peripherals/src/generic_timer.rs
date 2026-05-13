@@ -50,7 +50,7 @@ pub fn nanos_to_ticks(nanos: u64) -> u64 {
 pub fn set_oneshot_timer(deadline_ns: u64) {
     let now = current_ticks();
     let deadline = nanos_to_ticks(deadline_ns);
-    let interval = if now < deadline { deadline - now } else { 0 };
+    let interval = deadline.saturating_sub(now);
     debug_assert!(interval <= u32::MAX as u64);
     #[cfg(feature = "gic-v3")]
     {
