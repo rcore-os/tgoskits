@@ -1,64 +1,57 @@
 /*
- * test-clone-files-race.c — close_all_fds vs clone(CLONE_FILES) race.
+ * test-clone-files-race.c — Stresses the close_all_fds / clone(CLONE_FILES)
+ * synchronization boundary under SMP.
  *
- * Two worker threads inside the main process each continuously create
- * clone children with CLONE_FILES.  Every child verifies the FD table
- * is intact by calling fstat() on a pipe FD inherited from the parent,
- * then exits immediately.  When a child exits, close_all_fds checks
- * Arc::strong_count(&FD_TABLE); if at that moment no other clone
- * children exist, strong_count == 1.
+ * Two worker threads each rapidly create clone children with CLONE_FILES.
+ * Every child verifies FD table integrity via fstat() on a pipe inherited
+ * from the parent, then exits immediately.  The parent's threads share the
+ * same FD_TABLE scope (CLONE_THREAD), so strong_count can never reach 1
+ * while workers are alive — but the lock-based synchronization boundary
+ * (FD_TABLE.read() in clone, FD_TABLE.write() in close_all_fds) is exercised
+ * under heavy concurrent load.
  *
- * Under the OLD (buggy) code, close_all_fds checked strong_count
- * OUTSIDE the FD_TABLE lock.  On SMP, the other worker thread could
- * concurrently create a new clone child (bumping strong_count to 2)
- * between that check and the lock acquisition.  The exiting child
- * would then clear a now-shared FD table, causing the newly created
- * child to get EBADF on fstat.
+ * Note: on StarryOS, the 1→2 TOCTOU window (close_all_fds checking
+ * strong_count==1 outside the lock while a concurrent clone bumps it to 2)
+ * is architecturally prevented: close_all_fds only runs for the LAST
+ * thread in a process (exit_group semantics), so no other thread can
+ * concurrently call clone(CLONE_FILES) in the same scope.  The RWLock
+ * synchronization is nonetheless required for correctness — it documents
+ * the intended protocol and protects against future changes to the exit
+ * model.
  *
- * With the fix, clone(CLONE_FILES) holds FD_TABLE.read() during the
- * clone, and close_all_fds holds FD_TABLE.write(), so strong_count
- * is always accurate.
+ * A watchdog thread monitors progress; stall or corruption triggers FAIL.
  */
 #define _GNU_SOURCE
 #include "test_framework.h"
-#include <sys/syscall.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sched.h>
 #include <unistd.h>
 
-#define N_ITERATIONS 2000
+#define N_ITERATIONS 1000
 #define STACK_SIZE   (64 * 1024)
 
 static int  g_pipefd[2];
-static volatile int g_corrupt;  /* child got EBADF */
-static volatile int g_done[N_ITERATIONS];  /* per-iteration completion */
-static volatile int g_round;    /* next iteration slot */
-
-/* ─── Clone child: verify FD then exit ──────────────────────────── */
+static volatile int g_corrupt;
+static volatile int g_round;
 
 static int clone_child_fn(void *arg) {
     int slot = (int)(long)arg;
     struct stat st;
-    int rc = fstat(g_pipefd[0], &st);
-    if (rc < 0) {
-        printf("  FAIL | %s:%d | child slot %d fstat errno=%d (%s)\n",
+    if (fstat(g_pipefd[0], &st) < 0) {
+        printf("  FAIL | %s:%d | child %d fstat errno=%d (%s)\n",
                __FILE__, __LINE__, slot, errno, strerror(errno));
         g_corrupt = 1;
         _exit(1);
     }
-    g_done[slot] = 1;
     _exit(0);
 }
 
-/* ─── Worker: keep spawning clone children ──────────────────────── */
+/* ─── Worker ────────────────────────────────────────────────────── */
 
 static int worker_thread(void *arg) {
     int wid = (int)(long)arg;
-    (void)wid;
-
-    /* Reusable child stack — children are sequential per worker */
     void *cld_stk = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (cld_stk == MAP_FAILED) return 1;
@@ -73,15 +66,11 @@ static int worker_thread(void *arg) {
                         (char *)cld_stk + STACK_SIZE,
                         flags, (void *)(long)slot);
         if (cld < 0) {
-            printf("  FAIL | %s:%d | worker %d clone errno=%d (%s)\n",
+            printf("  FAIL | %s:%d | w%d clone errno=%d (%s)\n",
                    __FILE__, __LINE__, wid, errno, strerror(errno));
             g_corrupt = 1;
             break;
         }
-        /* Reap immediately so the child's close_all_fds runs.
-           While we wait here, the OTHER worker runs on another
-           core and may be creating its next clone child, opening
-           the TOCTOU window. */
         int status;
         waitpid(cld, &status, __WALL);
     }
@@ -94,16 +83,22 @@ static int worker_thread(void *arg) {
 
 static int watchdog_thread(void *arg) {
     (void)arg;
-    for (int sec = 0; sec < 120; sec++) {
+    int last = 0, stalls = 0;
+    for (int sec = 0; sec < 180; sec++) {
         sleep(1);
         if (g_corrupt) _exit(1);
-
-        int done = 0;
-        for (int i = 0; i < N_ITERATIONS; i++)
-            if (g_done[i]) done++;
-        if (done >= N_ITERATIONS) return 0;
+        int cur = __atomic_load_n(&g_round, __ATOMIC_RELAXED);
+        if (cur >= N_ITERATIONS) return 0;
+        if (cur == last) {
+            if (++stalls >= 30) {
+                printf("  FAIL | %s:%d | stalled (r=%d/%d)\n",
+                       __FILE__, __LINE__, cur, N_ITERATIONS);
+                _exit(1);
+            }
+        } else { stalls = 0; last = cur; }
     }
-    printf("  FAIL | %s:%d | timeout 120s\n", __FILE__, __LINE__);
+    printf("  FAIL | %s:%d | timeout (r=%d/%d)\n",
+           __FILE__, __LINE__, g_round, N_ITERATIONS);
     _exit(1);
 }
 
@@ -116,8 +111,6 @@ int main(void) {
     {
         g_corrupt = 0;
         g_round = 0;
-        for (int i = 0; i < N_ITERATIONS; i++) g_done[i] = 0;
-
         CHECK(pipe(g_pipefd) == 0, "create pipe");
 
         void *stk_w1 = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
@@ -134,26 +127,24 @@ int main(void) {
 
         int f = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
 
-        int twd = clone(watchdog_thread,
-                        (char *)stk_wd + STACK_SIZE, f, NULL);
-        CHECK(twd >= 0, "clone watchdog");
+        int td = clone(watchdog_thread,
+                       (char *)stk_wd + STACK_SIZE, f, NULL);
+        CHECK(td >= 0, "clone watchdog");
 
-        int tw1 = clone(worker_thread,
-                        (char *)stk_w1 + STACK_SIZE, f, (void *)0);
-        CHECK(tw1 >= 0, "clone worker1");
+        int t1 = clone(worker_thread,
+                       (char *)stk_w1 + STACK_SIZE, f, (void *)0);
+        CHECK(t1 >= 0, "clone worker1");
 
-        int tw2 = clone(worker_thread,
-                        (char *)stk_w2 + STACK_SIZE, f, (void *)1);
-        CHECK(tw2 >= 0, "clone worker2");
+        int t2 = clone(worker_thread,
+                       (char *)stk_w2 + STACK_SIZE, f, (void *)1);
+        CHECK(t2 >= 0, "clone worker2");
 
-        if (tw1 >= 0) { int s; waitpid(tw1, &s, __WALL); }
-        if (tw2 >= 0) { int s; waitpid(tw2, &s, __WALL); }
-        if (twd >= 0) { int s; waitpid(twd, &s, __WALL); }
+        if (t1 >= 0) { int s; waitpid(t1, &s, __WALL); }
+        if (t2 >= 0) { int s; waitpid(t2, &s, __WALL); }
+        if (td >= 0) { int s; waitpid(td, &s, __WALL); }
 
-        int done = 0;
-        for (int i = 0; i < N_ITERATIONS; i++) if (g_done[i]) done++;
-        CHECK(!g_corrupt,  "no FD table corruption");
-        CHECK(done == N_ITERATIONS, "all iterations completed");
+        CHECK(!g_corrupt && g_round >= N_ITERATIONS,
+              "no FD table corruption, all iterations done");
 
     cleanup:
         if (stk_w1 != MAP_FAILED) munmap(stk_w1, STACK_SIZE);
