@@ -3,7 +3,7 @@ use core::{
     future::poll_fn,
     marker::PhantomData,
     ops::Range,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     task::{Poll, Waker},
 };
 
@@ -86,6 +86,10 @@ struct InputReader<R, W> {
     line_read: Option<usize>,
     eof_ready: Arc<AtomicBool>,
     clear_line_buf: Arc<AtomicBool>,
+
+    /// TIOCSTI: pending injected byte (true = valid byte in tiocsti_data).
+    tiocsti_byte: Arc<AtomicBool>,
+    tiocsti_data: Arc<AtomicU8>,
 }
 impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
     pub fn drain_source_into_line_buffer(&mut self) -> bool {
@@ -94,9 +98,16 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         }
         let mut progressed = false;
         if self.read_range.is_empty() {
-            let read = self.reader.read(&mut self.read_buf);
-            self.read_range = 0..read;
-            progressed |= read > 0;
+            // Drain any TIOCSTI-injected byte first; fall back to the hardware reader.
+            if self.tiocsti_byte.swap(false, Ordering::AcqRel) {
+                self.read_buf[0] = self.tiocsti_data.load(Ordering::Acquire);
+                self.read_range = 0..1;
+                progressed = true;
+            } else {
+                let read = self.reader.read(&mut self.read_buf);
+                self.read_range = 0..read;
+                progressed |= read > 0;
+            }
         }
         let term = self.terminal.load_termios();
         let mut sent = 0;
@@ -245,6 +256,9 @@ pub struct LineDiscipline<R, W> {
     pump_retry: Arc<PollSet>,
     eof_ready: Arc<AtomicBool>,
     clear_line_buf: Arc<AtomicBool>,
+    /// TIOCSTI injection: set byte then flip the flag; reader picks it up on next drain.
+    tiocsti_byte: Arc<AtomicBool>,
+    tiocsti_data: Arc<AtomicU8>,
     processor: Processor<R>,
     _writer: PhantomData<W>,
 }
@@ -318,6 +332,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
         let eof_ready = Arc::new(AtomicBool::new(false));
         let clear_line_buf = Arc::new(AtomicBool::new(false));
+        let tiocsti_byte = Arc::new(AtomicBool::new(false));
+        let tiocsti_data = Arc::new(AtomicU8::new(0));
         let reader = InputReader {
             terminal: terminal.clone(),
 
@@ -332,6 +348,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             line_read: None,
             eof_ready: eof_ready.clone(),
             clear_line_buf: clear_line_buf.clone(),
+            tiocsti_byte: tiocsti_byte.clone(),
+            tiocsti_data: tiocsti_data.clone(),
         };
 
         let input_ready = Arc::new(PollSet::new());
@@ -365,8 +383,22 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             pump_retry,
             eof_ready,
             clear_line_buf,
+            tiocsti_byte,
+            tiocsti_data,
             processor,
             _writer: PhantomData,
+        }
+    }
+
+    /// Push a single byte into the line discipline as if it were typed at the keyboard.
+    ///
+    /// Only effective for `InterruptDriven` mode (N_TTY and PTY slave).
+    /// On PTY master (Passive) this is a no-op; inject via the master `write_at` instead.
+    pub fn tiocsti(&self, byte: u8) {
+        if matches!(self.processor, Processor::InterruptDriven) {
+            self.tiocsti_data.store(byte, Ordering::Relaxed);
+            self.tiocsti_byte.store(true, Ordering::Release);
+            self.pump_retry.clone().wake();
         }
     }
 
@@ -454,7 +486,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 #[cfg(test)]
 mod tests {
     use alloc::{sync::Arc, vec::Vec};
-    use core::sync::atomic::AtomicBool;
+    use core::sync::atomic::{AtomicBool, AtomicU8};
 
     use ringbuf::traits::{Observer, Split};
 
@@ -503,6 +535,8 @@ mod tests {
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
             clear_line_buf: Arc::new(AtomicBool::new(false)),
+            tiocsti_byte: Arc::new(AtomicBool::new(false)),
+            tiocsti_data: Arc::new(AtomicU8::new(0)),
         };
         (reader, buf_rx)
     }

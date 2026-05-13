@@ -96,6 +96,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         use linux_raw_sys::ioctl::*;
+        const TIOCSTI: u32 = 0x5412;
         match cmd {
             TCGETS => {
                 let termios = *self.terminal.termios.lock().as_ref().deref();
@@ -154,6 +155,10 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .upgrade()
                     .unwrap()
                     .bind_to(&current().as_thread().proc_data.proc)?;
+            }
+            TIOCSTI => {
+                let byte: u8 = (arg as *const u8).vm_read()?;
+                self.ldisc.lock().tiocsti(byte);
             }
             TIOCNOTTY => {
                 if current()
