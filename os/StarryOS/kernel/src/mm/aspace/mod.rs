@@ -160,6 +160,7 @@ impl AddrSpace {
         if populate {
             self.populate_area(start, size, flags)?;
         }
+        crate::syscall::memfd_on_after_map(self, start);
         Ok(())
     }
 
@@ -201,6 +202,7 @@ impl AddrSpace {
     pub fn unmap(&mut self, start: VirtAddr, size: usize) -> AxResult {
         self.validate_region(start, size)?;
 
+        crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
         self.areas.unmap(start, size, &mut self.pt)?;
         Ok(())
     }
@@ -209,6 +211,7 @@ impl AddrSpace {
     pub fn unmap_metadata(&mut self, start: VirtAddr, size: usize) -> AxResult {
         self.validate_region(start, size)?;
 
+        crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
         self.areas.unmap_metadata(start, size)?;
         Ok(())
     }
@@ -222,6 +225,7 @@ impl AddrSpace {
     ) -> AxResult {
         self.validate_region(start, size)?;
 
+        crate::syscall::memfd_on_aspace_replace_metadata(self, start, size, flags, &backend);
         let area = MemoryArea::new(start, size, flags, backend);
         self.areas.replace_area_metadata(area)?;
         Ok(())
@@ -345,14 +349,18 @@ impl AddrSpace {
     pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> AxResult {
         self.validate_region(start, size)?;
 
+        let touched_memfds =
+            crate::syscall::memfd_collect_metas_touching_mprotect_range(self, start, size);
         self.areas
             .protect(start, size, |_| Some(flags), &mut self.pt)?;
+        crate::syscall::memfd_resync_shared_writable_counts_after_mprotect(self, &touched_memfds);
 
         Ok(())
     }
 
     /// Removes all mappings in the address space.
     pub fn clear(&mut self) {
+        crate::syscall::memfd_release_all_shared_writable_counts_for_aspace(self);
         self.areas.clear(&mut self.pt).unwrap();
     }
 
@@ -438,6 +446,10 @@ impl AddrSpace {
     /// This method creates a new empty address space with the same base and
     /// size, then iterates over all memory areas in the original address
     /// space to copy or share their mappings into the new one.
+    ///
+    /// After each area is mapped, `memfd_on_after_map` runs so each cloned memfd
+    /// shared-writable VMA increments `MemFdMeta::shared_writable_mmap_count` the same way
+    /// as [`AddrSpace::map`]. (`CLONE_VM` shares one address space and does not duplicate VMAs here.)
     pub fn try_clone(&mut self) -> AxResult<Arc<Mutex<Self>>> {
         let new_aspace = Arc::new(Mutex::new(Self::new_empty(self.base(), self.size())?));
         let new_aspace_clone = new_aspace.clone();
@@ -455,8 +467,12 @@ impl AddrSpace {
             )?;
 
             let new_area = MemoryArea::new(area.start(), area.size(), area.flags(), new_backend);
-            let aspace = guard.deref_mut();
-            aspace.areas.map(new_area, &mut aspace.pt, false)?;
+            let start = new_area.start();
+            {
+                let aspace = guard.deref_mut();
+                aspace.areas.map(new_area, &mut aspace.pt, false)?;
+            }
+            crate::syscall::memfd_on_after_map(&guard, start);
         }
         drop(guard);
 

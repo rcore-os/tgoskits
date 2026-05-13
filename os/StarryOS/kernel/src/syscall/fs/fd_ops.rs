@@ -12,7 +12,7 @@ use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
-use super::memfd::MemFdMeta;
+use super::memfd::{MemFdMeta, memfd_shared_writable_seal_is_busy};
 use crate::{
     file::{
         Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
@@ -339,6 +339,15 @@ fn handle_memfd_seals(fd: c_int, cmd: u32, arg: usize) -> AxResult<isize> {
             let current = meta.seals.load(core::sync::atomic::Ordering::Relaxed);
             if current & F_SEAL_SEAL != 0 {
                 return Err(AxError::OperationNotPermitted);
+            }
+            // Busy check uses `MemFdMeta::shared_writable_mmap_count` (VMA-based).
+            // Linux may also block on GUP / folio pins (`memfd_wait_for_pins`); that
+            // path is not modeled here yet.
+            if add & F_SEAL_WRITE != 0
+                && current & F_SEAL_WRITE == 0
+                && memfd_shared_writable_seal_is_busy(meta.as_ref())
+            {
+                return Err(AxError::ResourceBusy);
             }
             meta.seals
                 .store(current | add, core::sync::atomic::Ordering::Relaxed);

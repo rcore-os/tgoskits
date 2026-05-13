@@ -119,7 +119,7 @@ pub(crate) fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>
 /// TODO: SIGCONT is allowed to any process in the same session (job control).
 /// Implementing this requires passing the signal number into this function
 /// and checking session membership.
-fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
+pub(crate) fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
     let sender = current().as_thread().cred();
     if sender.euid == 0 {
         return Ok(());

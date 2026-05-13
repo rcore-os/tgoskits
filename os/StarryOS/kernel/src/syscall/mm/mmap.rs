@@ -11,7 +11,7 @@ use crate::{
     file::get_file_like,
     mm::{Backend, BackendOps, SharedPages},
     pseudofs::{Device, DeviceMmap},
-    syscall::fs::memfd_check_write_seal,
+    syscall::fs::{memfd_check_write_seal, memfd_check_write_seal_for_shared_file_backend},
     task::AsThread,
 };
 
@@ -342,6 +342,13 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     // man 2 mprotect: addresses without a mapping → ENOMEM.
     if aspace.find_area(start_addr).is_none() {
         return Err(AxError::NoMemory);
+    }
+    if permission_flags.contains(MmapProt::WRITE) {
+        for (_frag_start, _frag_size, _old_flags, backend) in
+            aspace.areas_in_range(start_addr, length)
+        {
+            memfd_check_write_seal_for_shared_file_backend(&backend)?;
+        }
     }
     aspace.protect(start_addr, length, permission_flags.into())?;
 
