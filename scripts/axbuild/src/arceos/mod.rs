@@ -47,6 +47,7 @@ fn ensure_fat32_image(path: &str, size: &str, msg: &str) -> anyhow::Result<()> {
 }
 
 pub mod build;
+pub mod cbuild;
 pub mod rootfs;
 pub mod test;
 

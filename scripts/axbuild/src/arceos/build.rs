@@ -13,14 +13,6 @@ use crate::{
 
 pub type ArceosBuildInfo = BuildInfo;
 
-pub(crate) fn parse_makefile_features(input: &str) -> Vec<String> {
-    build::parse_makefile_features(input)
-}
-
-pub(crate) fn makefile_features_from_env() -> Vec<String> {
-    build::makefile_features_from_env()
-}
-
 pub(crate) fn resolve_build_info_path(
     package: &str,
     target: &str,

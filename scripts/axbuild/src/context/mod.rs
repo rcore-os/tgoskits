@@ -128,6 +128,14 @@ impl AppContext {
         self.tool.cargo_build(&cargo).await
     }
 
+    pub(crate) async fn prepare_elf_artifact(
+        &mut self,
+        elf_path: PathBuf,
+        to_bin: bool,
+    ) -> anyhow::Result<()> {
+        self.tool.prepare_elf_artifact(elf_path, to_bin).await
+    }
+
     pub(crate) async fn qemu(
         &mut self,
         cargo: Cargo,
@@ -151,6 +159,18 @@ impl AppContext {
 
     pub(crate) async fn run_qemu(&mut self, cargo: &Cargo, qemu: QemuConfig) -> anyhow::Result<()> {
         let _path_guard = self.scoped_qemu_path(cargo)?;
+        self.tool
+            .run_qemu(
+                &qemu,
+                RunQemuOptions {
+                    dtb_dump: false,
+                    show_output: true,
+                },
+            )
+            .await
+    }
+
+    pub(crate) async fn run_prepared_qemu(&mut self, qemu: QemuConfig) -> anyhow::Result<()> {
         self.tool
             .run_qemu(
                 &qemu,

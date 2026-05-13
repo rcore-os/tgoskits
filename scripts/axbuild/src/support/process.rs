@@ -2,7 +2,7 @@ use std::{
     ffi::OsStr,
     io::{self, Write},
     path::Path,
-    process::{Command, Output, Stdio},
+    process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result, bail};
@@ -10,7 +10,6 @@ use colored::Colorize;
 
 pub trait ProcessExt {
     fn exec(&mut self) -> Result<()>;
-    fn exec_capture(&mut self) -> Result<Output>;
 }
 
 pub(crate) fn run_cargo_status(workspace_root: &Path, args: &[String]) -> Result<bool> {
@@ -35,23 +34,6 @@ impl ProcessExt for Command {
             Ok(())
         } else {
             bail!("command exited with status {status}");
-        }
-    }
-
-    fn exec_capture(&mut self) -> Result<Output> {
-        print_command(self)?;
-        let output = self.output().context("failed to spawn process")?;
-        io::stdout()
-            .write_all(&output.stdout)
-            .context("failed to forward stdout")?;
-        io::stderr()
-            .write_all(&output.stderr)
-            .context("failed to forward stderr")?;
-
-        if output.status.success() {
-            Ok(output)
-        } else {
-            bail!("command exited with status {}", output.status);
         }
     }
 }
