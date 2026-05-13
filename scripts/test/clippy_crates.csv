@@ -13,6 +13,7 @@ arceos-net-httpserver
 arceos-net-udpserver
 arceos-parallel
 arceos-priority
+arceos-rust
 arceos-sleep
 arceos-tls
 arceos-wait-queue

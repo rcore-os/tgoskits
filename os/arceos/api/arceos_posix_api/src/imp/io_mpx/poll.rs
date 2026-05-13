@@ -5,6 +5,26 @@ use ax_hal::time::wall_time;
 
 use crate::{ctypes, imp::fd_ops::get_file_like};
 
+#[cfg(feature = "use-hermit-types")]
+const POLLIN_EVENT: i16 = ctypes::POLLIN;
+#[cfg(not(feature = "use-hermit-types"))]
+const POLLIN_EVENT: i16 = ctypes::POLLIN as i16;
+
+#[cfg(feature = "use-hermit-types")]
+const POLLOUT_EVENT: i16 = ctypes::POLLOUT;
+#[cfg(not(feature = "use-hermit-types"))]
+const POLLOUT_EVENT: i16 = ctypes::POLLOUT as i16;
+
+#[cfg(feature = "use-hermit-types")]
+const POLLERR_EVENT: i16 = ctypes::POLLERR;
+#[cfg(not(feature = "use-hermit-types"))]
+const POLLERR_EVENT: i16 = ctypes::POLLERR as i16;
+
+#[cfg(feature = "use-hermit-types")]
+const POLLNVAL_EVENT: i16 = ctypes::POLLNVAL;
+#[cfg(not(feature = "use-hermit-types"))]
+const POLLNVAL_EVENT: i16 = ctypes::POLLNVAL as i16;
+
 /// Poll file descriptors for I/O readiness (POSIX `poll` semantics).
 ///
 /// Returns the number of ready descriptors on success, 0 on timeout,
@@ -55,24 +75,24 @@ pub fn sys_poll(fds: *mut ctypes::pollfd, nfds: ctypes::nfds_t, timeout: c_int) 
                     Ok(file) => match file.poll() {
                         Ok(state) => {
                             let mut revents = 0;
-                            if state.readable && (pfd.events & ctypes::POLLIN as i16) != 0 {
-                                revents |= ctypes::POLLIN;
+                            if state.readable && (pfd.events & POLLIN_EVENT) != 0 {
+                                revents |= POLLIN_EVENT;
                             }
-                            if state.writable && (pfd.events & ctypes::POLLOUT as i16) != 0 {
-                                revents |= ctypes::POLLOUT;
+                            if state.writable && (pfd.events & POLLOUT_EVENT) != 0 {
+                                revents |= POLLOUT_EVENT;
                             }
                             if revents != 0 {
-                                pfd.revents = revents as _;
+                                pfd.revents = revents;
                                 ready_count += 1;
                             }
                         }
                         Err(_) => {
-                            pfd.revents = ctypes::POLLERR as _;
+                            pfd.revents = POLLERR_EVENT;
                             ready_count += 1;
                         }
                     },
                     Err(_) => {
-                        pfd.revents = ctypes::POLLNVAL as _;
+                        pfd.revents = POLLNVAL_EVENT;
                         ready_count += 1;
                     }
                 }

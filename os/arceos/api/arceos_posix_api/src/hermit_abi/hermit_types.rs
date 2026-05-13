@@ -55,8 +55,7 @@ pub const F_GETFL: u32 = 3;
 pub const F_SETFL: u32 = 4;
 pub const FD_CLOEXEC: i32 = 1;
 
-// will not be used by hermit
-pub const F_DUPFD_CLOEXEC: u32 = F_DUPFD;
+pub const F_DUPFD_CLOEXEC: u32 = 1030;
 
 /// returns true if file descriptor `fd` is a tty
 pub fn isatty(_fd: c_int) -> bool {
