@@ -16,8 +16,8 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     task::{
-        AsThread, block_next_signal, check_signals, get_task, processes, send_signal_to_process,
-        send_signal_to_thread,
+        AsThread, block_next_signal, check_signals, get_process_cred, processes,
+        send_signal_to_process, send_signal_to_thread,
     },
     time::TimeValueLike,
 };
@@ -128,17 +128,7 @@ pub(crate) fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
     if target_pid == self_pid {
         return Ok(());
     }
-    // Try the live task first.  If it has already been GC'd (the process is
-    // a zombie whose task was freed before waitpid() ran), fall back to the
-    // credential snapshot stored in the zombie table.  This mirrors Linux,
-    // where task_struct (and its cred) lives until the zombie is reaped.
-    let target_cred = if let Ok(task) = get_task(target_pid) {
-        task.try_as_thread()
-            .map(|t| t.cred())
-            .ok_or(AxError::NoSuchProcess)?
-    } else {
-        crate::task::get_zombie_cred(target_pid).ok_or(AxError::NoSuchProcess)?
-    };
+    let target_cred = get_process_cred(target_pid)?;
     // Linux checks: {sender.euid, sender.uid} × {target.uid, target.euid, target.suid}
     if sender.euid == target_cred.uid
         || sender.euid == target_cred.euid

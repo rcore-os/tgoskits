@@ -1,32 +1,22 @@
 use std::{
-    collections::BTreeSet,
     fs,
-    io::Write as _,
     path::{Path, PathBuf},
-    process::{Command as StdCommand, Output, Stdio},
-    sync::LazyLock,
 };
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
-use regex::Regex;
+use serde::Deserialize;
 
-use super::{ArceOS, build, ensure_package_runtime_assets};
+use super::{ArceOS, build, cbuild, ensure_package_runtime_assets};
 use crate::{
     context::{BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
-    support::process::ProcessExt,
     test::{case::TestQemuCase, qemu as qemu_test, suite as test_suite},
 };
 
 const ARCEOS_RUST_TEST_GROUP: &str = "rust";
 const ARCEOS_C_TEST_GROUP: &str = "c";
 const ARCEOS_TEST_SUITE_OS: &str = "arceos";
-const C_TEST_BUILD_JOBS_ENV: &str = "AXBUILD_C_TEST_JOBS";
-
-static ANSI_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])").expect("invalid ANSI stripping regex")
-});
 
 #[derive(Args)]
 pub struct ArgsTest {
@@ -120,41 +110,32 @@ impl qemu_test::BuildConfigRef for PreparedArceosRustQemuCase {
 /// A discovered C test under `test-suit/arceos/c/`.
 struct CTestDef {
     name: String,
-    dir: PathBuf,
-    features: Vec<String>,
-    invocations: Vec<CTestInvocation>,
+    build_group: String,
+    case_dir: PathBuf,
+    build_config_path: PathBuf,
+    qemu_config_path: PathBuf,
 }
 
-/// One `test_one "..." "..."` entry from a C test `test_cmd`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CTestInvocation {
-    make_vars: Vec<(String, String)>,
-    expect_output: Option<PathBuf>,
+impl qemu_test::BuildConfigRef for CTestDef {
+    fn build_group(&self) -> &str {
+        &self.build_group
+    }
+
+    fn build_config_path(&self) -> &Path {
+        &self.build_config_path
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PreparedCTestInvocation {
-    label: String,
-    make_args: Vec<String>,
-    expect_output: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CTestCargoEnv {
-    vars: Vec<(String, String)>,
-}
-
-struct CTestPrep {
-    name: String,
-    app_path: PathBuf,
-    invocations: Vec<PreparedCTestInvocation>,
+#[derive(Debug, Clone, Deserialize)]
+struct CTestBuildConfig {
+    #[serde(flatten)]
+    build: build::ArceosBuildInfo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CTestArtifactPaths {
     target_dir: PathBuf,
     out_dir: PathBuf,
-    out_config: PathBuf,
 }
 
 pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<()> {
@@ -230,7 +211,7 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
                 )?),
                 QemuTestFlow::C => trees.extend(list_c_qemu_cases(
                     arceos,
-                    Some(&target),
+                    Some((&arch, &target)),
                     args.test_case.as_deref(),
                 )?),
                 QemuTestFlow::Generic(ref group) => trees.extend(list_generic_qemu_cases(
@@ -329,14 +310,7 @@ async fn test_c_qemu(
     target: &str,
     selected_case: Option<&str>,
 ) -> anyhow::Result<()> {
-    run_c_qemu_tests_with_hooks(
-        arceos.app.workspace_root(),
-        target,
-        selected_case,
-        prepare_c_test_cargo_env,
-        build_single_c_test,
-        run_c_qemu_only,
-    )
+    test_c_qemu_axbuild(arceos, target, selected_case).await
 }
 
 async fn test_generic_qemu(
@@ -524,10 +498,21 @@ fn list_rust_qemu_cases(
 
 fn list_c_qemu_cases(
     arceos: &ArceOS,
-    _target: Option<&str>,
+    target: Option<(&str, &str)>,
     selected_case: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    let cases = c_qemu_case_names(arceos, selected_case)?;
+    let cases: Vec<String> = match target {
+        Some((arch, target)) => discover_c_tests(
+            &arceos_c_test_dir(arceos),
+            Some(arch),
+            Some(target),
+            selected_case,
+        )?
+        .into_iter()
+        .map(|case| case.name)
+        .collect(),
+        None => c_qemu_case_names(arceos, selected_case)?,
+    };
     if cases.is_empty() {
         return Ok(None);
     }
@@ -648,46 +633,20 @@ fn rust_qemu_case_names(
 }
 
 fn c_qemu_case_names(arceos: &ArceOS, selected_case: Option<&str>) -> anyhow::Result<Vec<String>> {
-    let tests = discover_c_tests(&arceos_c_test_dir(arceos))?;
-    Ok(select_c_tests(tests, selected_case)?
-        .into_iter()
-        .map(|test| test.name)
-        .collect())
+    let tests = discover_c_tests(&arceos_c_test_dir(arceos), None, None, selected_case)?;
+    Ok(tests.into_iter().map(|test| test.name).collect())
 }
 
 fn c_qemu_listed_cases(
     arceos: &ArceOS,
     selected_case: Option<&str>,
-) -> anyhow::Result<Vec<qemu_test::ListedQemuCase>> {
-    let tests = discover_c_tests(&arceos_c_test_dir(arceos))?;
-    Ok(select_c_tests(tests, selected_case)?
-        .into_iter()
-        .map(|test| qemu_test::ListedQemuCase {
-            name: test.name,
-            archs: c_test_archs(&test.dir),
-        })
-        .collect())
-}
-
-fn c_test_archs(dir: &Path) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut archs = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !path.is_dir() {
-                return None;
-            }
-            let name = entry.file_name();
-            name.to_str()
-                .and_then(|name| name.strip_prefix("build_"))
-                .map(|arch| arch.to_string())
-        })
-        .collect::<Vec<_>>();
-    archs.sort();
-    archs
+) -> qemu_test::ListQemuCasesResult<Vec<qemu_test::ListedQemuCase>> {
+    qemu_test::discover_all_qemu_cases_with_archs(
+        &arceos_c_test_dir(arceos),
+        selected_case,
+        "ArceOS",
+        ARCEOS_C_TEST_GROUP,
+    )
 }
 
 fn resolve_rust_selected_case(
@@ -745,23 +704,6 @@ fn rust_case_name_for_package(arceos: &ArceOS, package: &str) -> anyhow::Result<
     )
 }
 
-fn select_c_tests(
-    tests: Vec<CTestDef>,
-    selected_case: Option<&str>,
-) -> anyhow::Result<Vec<CTestDef>> {
-    let Some(selected_case) = selected_case else {
-        return Ok(tests);
-    };
-    let selected = tests
-        .into_iter()
-        .filter(|test| test.name == selected_case)
-        .collect::<Vec<_>>();
-    if selected.is_empty() {
-        bail!("unknown ArceOS c qemu test case `{selected_case}`");
-    }
-    Ok(selected)
-}
-
 fn read_manifest_package_name(path: &Path) -> anyhow::Result<String> {
     let contents =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
@@ -816,700 +758,252 @@ fn selected_qemu_test_groups(
     }
 }
 
-fn prepare_c_test_cargo_env(_workspace_root: &Path) -> CTestCargoEnv {
-    CTestCargoEnv {
-        vars: vec![
-            (
-                "CARGO_NET_GIT_FETCH_WITH_CLI".to_string(),
-                "true".to_string(),
-            ),
-            (
-                "CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS".to_string(),
-                "allow".to_string(),
-            ),
-        ],
-    }
-}
-
-/// Discover available C tests by checking which directories exist.
-fn discover_c_tests(c_test_root: &Path) -> anyhow::Result<Vec<CTestDef>> {
-    let mut tests = Vec::new();
-
-    if !c_test_root.is_dir() {
-        return Ok(tests);
-    }
-
-    discover_c_test_dirs(c_test_root, c_test_root, &mut tests)?;
-    tests.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(tests)
-}
-
-fn discover_c_test_dirs(
+fn discover_c_tests(
     c_test_root: &Path,
-    dir: &Path,
-    tests: &mut Vec<CTestDef>,
-) -> anyhow::Result<()> {
-    let mut child_dirs = Vec::new();
-    let mut has_c_source = false;
-
-    for entry in
-        fs::read_dir(dir).with_context(|| format!("failed to read C test dir {}", dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            child_dirs.push(path);
-        } else if path.extension().is_some_and(|ext| ext == "c") {
-            has_c_source = true;
-        }
+    arch: Option<&str>,
+    target: Option<&str>,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<CTestDef>> {
+    if let (Some(arch), Some(target)) = (arch, target) {
+        let tests = qemu_test::discover_qemu_cases(
+            c_test_root,
+            arch,
+            target,
+            None,
+            "ArceOS",
+            ARCEOS_C_TEST_GROUP,
+        )?
+        .into_iter()
+        .map(load_c_test)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+        return filter_c_tests(tests, selected_case);
     }
 
-    if has_c_source && has_c_test_marker(dir) {
-        let relative = dir.strip_prefix(c_test_root).with_context(|| {
-            format!(
-                "failed to compute C test name for {} under {}",
-                dir.display(),
-                c_test_root.display()
-            )
-        })?;
-        let name = relative
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-        tests.push(CTestDef {
-            name,
-            dir: dir.to_path_buf(),
-            features: load_features_txt(&dir.join("features.txt")),
-            invocations: load_c_test_invocations(&dir.join("test_cmd"))?,
-        });
-    }
-
-    child_dirs.sort();
-    for child_dir in child_dirs {
-        discover_c_test_dirs(c_test_root, &child_dir, tests)?;
-    }
-
-    Ok(())
+    Ok(qemu_test::discover_all_qemu_cases(
+        c_test_root,
+        selected_case,
+        "ArceOS",
+        ARCEOS_C_TEST_GROUP,
+    )?
+    .into_iter()
+    .map(|name| CTestDef {
+        name: name.clone(),
+        build_group: name,
+        case_dir: PathBuf::new(),
+        build_config_path: PathBuf::new(),
+        qemu_config_path: PathBuf::new(),
+    })
+    .collect())
 }
 
-fn has_c_test_marker(dir: &Path) -> bool {
-    ["test_cmd", "features.txt", "axbuild.mk"]
-        .iter()
-        .any(|name| dir.join(name).is_file())
+fn filter_c_tests(
+    tests: Vec<CTestDef>,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<CTestDef>> {
+    let Some(selected_case) = selected_case else {
+        return Ok(tests);
+    };
+    let selected_prefix = format!("{selected_case}/");
+    let selected = tests
+        .into_iter()
+        .filter(|test| test.name == selected_case || test.name.starts_with(&selected_prefix))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        bail!("unknown ArceOS c qemu test case `{selected_case}`");
+    }
+    Ok(selected)
 }
 
-/// Load features from a `features.txt` file (one feature per line).
-fn load_features_txt(path: &Path) -> Vec<String> {
-    fs::read_to_string(path)
-        .unwrap_or_default()
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect()
+fn load_c_test(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<CTestDef> {
+    Ok(CTestDef {
+        name: case.name,
+        build_group: case.build_group,
+        case_dir: case.case_dir,
+        build_config_path: case.build_config_path,
+        qemu_config_path: case.qemu_config_path,
+    })
 }
 
-fn load_c_test_invocations(path: &Path) -> anyhow::Result<Vec<CTestInvocation>> {
-    if !path.exists() {
-        return Ok(vec![CTestInvocation {
-            make_vars: Vec::new(),
-            expect_output: None,
-        }]);
-    }
-
-    let test_one_regex = Regex::new(r#"^test_one\s+"([^"]*)"\s+"([^"]+)"\s*$"#)
-        .expect("invalid C test command regex");
-    let mut invocations = Vec::new();
-
-    for (line_no, raw_line) in fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?
-        .lines()
-        .enumerate()
-    {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') || line == "rm -f $APP/*.o" {
-            continue;
-        }
-
-        let captures = test_one_regex.captures(line).ok_or_else(|| {
-            anyhow::anyhow!("unsupported C test command at {}: {}", path.display(), line)
-        })?;
-        let make_vars = parse_c_test_make_vars(&captures[1]).with_context(|| {
-            format!(
-                "failed to parse make vars at {}:{}",
-                path.display(),
-                line_no + 1
-            )
-        })?;
-        invocations.push(CTestInvocation {
-            make_vars,
-            expect_output: Some(PathBuf::from(&captures[2])),
-        });
-    }
-
-    if invocations.is_empty() {
-        invocations.push(CTestInvocation {
-            make_vars: Vec::new(),
-            expect_output: None,
-        });
-    }
-
-    Ok(invocations)
+fn load_c_test_build_config(path: &Path) -> anyhow::Result<CTestBuildConfig> {
+    toml::from_str(&fs::read_to_string(path)?)
+        .with_context(|| format!("failed to parse C build config {}", path.display()))
 }
 
-fn parse_c_test_make_vars(input: &str) -> anyhow::Result<Vec<(String, String)>> {
-    let mut vars = Vec::new();
-    for assignment in input.split_whitespace() {
-        let (key, value) = assignment
-            .split_once('=')
-            .ok_or_else(|| anyhow::anyhow!("invalid make variable assignment `{assignment}`"))?;
-        vars.push((key.to_string(), value.to_string()));
-    }
-    Ok(vars)
+fn load_c_test_qemu_config(path: &Path) -> anyhow::Result<QemuConfig> {
+    toml::from_str(&fs::read_to_string(path)?)
+        .with_context(|| format!("failed to parse C qemu config {}", path.display()))
 }
 
-fn build_c_test_make_args(
-    app_path: &Path,
-    arch: &str,
-    base_features: &[String],
-    invocation: &CTestInvocation,
-) -> Vec<String> {
-    let makefile_features = build::makefile_features_from_env();
-    build_c_test_make_args_with_makefile_features(
-        app_path,
-        arch,
-        base_features,
-        invocation,
-        &makefile_features,
+fn resolve_c_test_source_dir(case_dir: &Path) -> anyhow::Result<PathBuf> {
+    let source_dir = case_dir.join("c");
+    if source_dir.is_dir() && dir_has_c_source(&source_dir)? {
+        return source_dir
+            .canonicalize()
+            .with_context(|| format!("failed to resolve C source dir {}", source_dir.display()));
+    }
+
+    bail!(
+        "ArceOS C qemu test case {} must contain a c/ source asset directory with .c files",
+        case_dir.display()
     )
 }
 
-fn build_c_test_make_args_with_makefile_features(
-    app_path: &Path,
-    arch: &str,
-    base_features: &[String],
-    invocation: &CTestInvocation,
-    makefile_features: &[String],
-) -> Vec<String> {
-    let mut features = base_features.to_vec();
-    let mut extra_vars = Vec::<(String, String)>::new();
-
-    for feature in makefile_features {
-        if !features.iter().any(|existing| existing == feature) {
-            features.push(feature.clone());
-        }
-    }
-
-    for (key, value) in &invocation.make_vars {
-        if key == "FEATURES" {
-            for feature in build::parse_makefile_features(value) {
-                if !features.iter().any(|existing| existing == &feature) {
-                    features.push(feature);
-                }
-            }
-            continue;
-        }
-
-        match extra_vars.iter_mut().find(|(existing, _)| existing == key) {
-            Some((_, existing_value)) => *existing_value = value.clone(),
-            None => extra_vars.push((key.clone(), value.clone())),
-        }
-    }
-
-    let mut args = vec![
-        format!("A={}", app_path.display()),
-        format!("ARCH={}", arch),
-        "ACCEL=n".to_string(),
-    ];
-    if !features.is_empty() {
-        args.push(format!("FEATURES={}", features.join(",")));
-    }
-    args.extend(
-        extra_vars
-            .into_iter()
-            .map(|(key, value)| format!("{key}={value}")),
-    );
-    args
-}
-
-fn append_c_test_artifact_args(args: &mut Vec<String>, artifacts: &CTestArtifactPaths) {
-    args.extend([
-        format!("TARGET_DIR={}", artifacts.target_dir.display()),
-        format!("OUT_DIR={}", artifacts.out_dir.display()),
-        format!("OUT_CONFIG={}", artifacts.out_config.display()),
-    ]);
-}
-
-fn runtime_output_regex(pattern: &str) -> anyhow::Result<Regex> {
-    Regex::new(&translate_bre_to_regex(pattern))
-        .with_context(|| format!("invalid expected-output regex `{pattern}`"))
-}
-
-fn translate_bre_to_regex(pattern: &str) -> String {
-    let mut translated = String::new();
-    let mut chars = pattern.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            match chars.next() {
-                Some(next @ ('+' | '?' | '{' | '}' | '(' | ')' | '|')) => {
-                    translated.push(next);
-                }
-                Some(next) => {
-                    translated.push('\\');
-                    translated.push(next);
-                }
-                None => translated.push('\\'),
-            }
-            continue;
-        }
-
-        if matches!(ch, '(' | ')' | '|' | '+' | '?' | '{' | '}') {
-            translated.push('\\');
-        }
-        translated.push(ch);
-    }
-
-    translated
-}
-
-fn normalize_c_test_runtime_output(output: &Output) -> String {
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    ANSI_REGEX
-        .replace_all(&combined.replace(['\r', '\0', '\u{0007}'], ""), "")
-        .into_owned()
-}
-
-fn verify_c_test_runtime_output(output: &Output, expected_path: &Path) -> anyhow::Result<()> {
-    let normalized = normalize_c_test_runtime_output(output);
-    let actual_lines = normalized.lines().collect::<Vec<_>>();
-    let expected = load_c_test_expected_output(expected_path)?;
-
-    for (pattern, regex) in expected {
-        if actual_lines.iter().any(|line| regex.is_match(line)) {
-            continue;
-        }
-
-        let remaining = actual_lines
-            .iter()
-            .take(40)
-            .copied()
-            .collect::<Vec<_>>()
-            .join("\n");
-        bail!(
-            "runtime output did not match `{pattern}` from {}. Captured output excerpt:\n{}",
-            expected_path.display(),
-            remaining
-        );
-    }
-
-    Ok(())
-}
-
-fn load_c_test_expected_output(expected_path: &Path) -> anyhow::Result<Vec<(String, Regex)>> {
-    let expected = fs::read_to_string(expected_path)
-        .with_context(|| format!("failed to read {}", expected_path.display()))?;
-    expected
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|pattern| Ok((pattern.to_string(), runtime_output_regex(pattern)?)))
-        .collect()
-}
-
-fn c_test_invocation_label(invocation: &CTestInvocation) -> String {
-    if invocation.make_vars.is_empty() {
-        "default".to_string()
+fn c_test_app_name(source_dir: &Path, fallback: &str) -> String {
+    let app_dir = if source_dir.file_name().and_then(|name| name.to_str()) == Some("c") {
+        source_dir.parent().unwrap_or(source_dir)
     } else {
-        invocation
-            .make_vars
-            .iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>()
-            .join(" ")
+        source_dir
+    };
+    app_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn dir_has_c_source(dir: &Path) -> anyhow::Result<bool> {
+    Ok(fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .any(|entry| entry.path().extension().is_some_and(|ext| ext == "c")))
+}
+
+fn c_test_artifact_index(test: &CTestDef) -> usize {
+    let stem = test
+        .qemu_config_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("qemu");
+    match stem.strip_prefix("qemu-") {
+        Some("x86_64") => 0,
+        Some("aarch64") => 1,
+        Some("riscv64") => 2,
+        Some("loongarch64") => 3,
+        Some(_) | None => 0,
     }
 }
 
-fn prepare_c_test_invocations(
-    app_path: &Path,
-    arch: &str,
-    base_features: &[String],
-    invocations: &[CTestInvocation],
-) -> Vec<PreparedCTestInvocation> {
-    invocations
-        .iter()
-        .map(|invocation| PreparedCTestInvocation {
-            label: c_test_invocation_label(invocation),
-            make_args: build_c_test_make_args(app_path, arch, base_features, invocation),
-            expect_output: invocation.expect_output.clone(),
-        })
-        .collect()
+fn c_test_display_suffix(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.strip_prefix("qemu-"))
+        .map(|arch| format!(" ({arch})"))
+        .unwrap_or_default()
 }
 
-/// Two-phase C test runner:
-///
-/// Phase 1 – build all tests.  Builds default to serial because the ArceOS C
-/// Makefiles share intermediate directories.  Build output is captured and
-/// suppressed on success; it is printed verbatim only when a build fails,
-/// keeping CI logs readable.
-///
-/// Phase 2 – run `make justrun` (QEMU) for each successfully-built test
-/// **sequentially** so their output is never interleaved.  QEMU output is
-/// streamed directly (captured + forwarded via `exec_capture`).
-///
-/// Both `build_fn` and `run_fn` are injectable for unit testing.
-fn run_c_qemu_tests_with_hooks<PrepareCargoEnv, BuildFn, RunFn>(
-    workspace_root: &Path,
+async fn test_c_qemu_axbuild(
+    arceos: &mut ArceOS,
     target: &str,
     selected_case: Option<&str>,
-    prepare_cargo_env: PrepareCargoEnv,
-    build_fn: BuildFn,
-    mut run_fn: RunFn,
-) -> anyhow::Result<()>
-where
-    PrepareCargoEnv: Fn(&Path) -> CTestCargoEnv,
-    // `Fn + Send + Sync` so we can share an immutable reference across threads.
-    BuildFn: Fn(&Path, &Path, &[String], &CTestCargoEnv) -> anyhow::Result<()> + Send + Sync,
-    RunFn: FnMut(&Path, &Path, &PreparedCTestInvocation, &CTestCargoEnv) -> anyhow::Result<()>,
-{
+) -> anyhow::Result<()> {
     let arch = crate::context::arch_for_target_checked(target)?;
-    let arceos_dir = workspace_root.join("os/arceos");
-    let c_test_root = arceos_test_group_dir(workspace_root, ARCEOS_C_TEST_GROUP);
-
-    if !arceos_dir.join("Makefile").exists() {
-        bail!(
-            "arceos Makefile not found at {}, required for C test builds",
-            arceos_dir.display()
-        );
-    }
-
-    let c_tests = select_c_tests(discover_c_tests(&c_test_root)?, selected_case)?;
+    let workspace_root = arceos.app.workspace_root().to_path_buf();
+    let c_test_root = arceos_test_group_dir(&workspace_root, ARCEOS_C_TEST_GROUP);
+    let c_tests = discover_c_tests(&c_test_root, Some(arch), Some(target), selected_case)?;
     if c_tests.is_empty() {
         println!("no C tests found in {}", c_test_root.display());
         return Ok(());
     }
 
-    let cargo_env = prepare_cargo_env(workspace_root);
-
-    // Prepare all test invocations, injecting per-invocation artifact paths so
-    // multi-configuration tests do not overwrite each other's QEMU image.
-    let mut preps = Vec::<CTestPrep>::new();
-    let mut failed = Vec::new();
-
-    for c_test in c_tests {
-        let app_path = match c_test.dir.canonicalize() {
-            Ok(path) => path,
-            Err(err) => {
-                eprintln!("failed: c/{}: cannot resolve path: {err:#}", c_test.name);
-                failed.push(c_test.name.clone());
-                continue;
-            }
-        };
-        let mut invocations =
-            prepare_c_test_invocations(&app_path, arch, &c_test.features, &c_test.invocations);
-        let mut unique_build_args = Vec::<Vec<String>>::new();
-        for inv in &mut invocations {
-            let artifact_index = match unique_build_args
-                .iter()
-                .position(|args| args == &inv.make_args)
-            {
-                Some(index) => index,
-                None => {
-                    unique_build_args.push(inv.make_args.clone());
-                    unique_build_args.len() - 1
-                }
-            };
-            let artifacts = c_test_artifact_paths(workspace_root, &c_test.name, artifact_index);
-            append_c_test_artifact_args(&mut inv.make_args, &artifacts);
-        }
-        preps.push(CTestPrep {
-            name: c_test.name,
-            app_path,
-            invocations,
-        });
-    }
-
     println!(
         "running arceos C qemu tests for {} test(s) on target: {} (arch: {})",
-        preps.len(),
+        c_tests.len(),
         target,
         arch
     );
 
-    // ---------------------------------------------------------------------------
-    // Phase 1: Build all tests.
-    //
-    // Builds default to one job because ArceOS C Makefiles share intermediate
-    // directories across tests.  If explicitly enabled, each worker runs
-    // `make defconfig && make build` for one test.  Build output is captured;
-    // only failures are printed after all workers finish.
-    // ---------------------------------------------------------------------------
-    let build_jobs = c_test_build_jobs(preps.len())?;
-    if preps.len() > 1 {
-        println!(
-            "building {} C tests with up to {} job(s) (build output shown only on failure)…",
-            preps.len(),
-            build_jobs
-        );
-
-        if build_jobs < preps.len() {
-            println!(
-                "set {C_TEST_BUILD_JOBS_ENV}=N to experiment with ArceOS C test build \
-                 parallelism; shared Makefile build directories may make values above 1 unsafe"
-            );
-        }
-    }
-
-    let build_errors = run_c_test_builds(&preps, &build_fn, &cargo_env, &arceos_dir, build_jobs);
-
-    let failed_builds: BTreeSet<String> = build_errors.iter().map(|(n, _)| n.clone()).collect();
-    for (name, err) in &build_errors {
-        eprintln!("failed: c/{}: {:#}", name, err);
-        failed.push(name.clone());
-    }
-
-    // ---------------------------------------------------------------------------
-    // Phase 2: Run QEMU sequentially for tests that built successfully.
-    // ---------------------------------------------------------------------------
-    let total = preps.len();
-    for (index, prep) in preps.iter().enumerate() {
-        if failed_builds.contains(&prep.name) {
-            continue;
-        }
-
-        println!("[{}/{}] arceos c qemu {}", index + 1, total, prep.name);
-
-        let mut test_failed = false;
-        for invocation in &prep.invocations {
-            let result =
-                run_fn(&arceos_dir, &prep.app_path, invocation, &cargo_env).with_context(|| {
-                    format!("c test `{}` failed for `{}`", prep.name, invocation.label)
-                });
-            if let Err(err) = result {
-                eprintln!("failed: c/{}: {:#}", prep.name, err);
-                failed.push(prep.name.clone());
-                test_failed = true;
-                break;
-            }
-        }
-
-        if !test_failed {
-            println!("ok: c/{}", prep.name);
+    let mut failed = Vec::new();
+    let total = c_tests.len();
+    for (index, c_test) in c_tests.into_iter().enumerate() {
+        println!("[{}/{}] arceos c qemu {}", index + 1, total, c_test.name);
+        let result = build_and_run_c_test(arceos, target, arch, &c_test)
+            .await
+            .with_context(|| {
+                format!(
+                    "c test `{}` failed{}",
+                    c_test.name,
+                    c_test_display_suffix(&c_test.qemu_config_path)
+                )
+            });
+        if let Err(err) = result {
+            eprintln!("failed: c/{}: {err:#}", c_test.name);
+            failed.push(c_test.name);
+        } else {
+            println!("ok: c/{}", c_test.name);
         }
     }
 
     qemu_test::finalize_qemu_test_run("arceos c", "test", &failed)
 }
 
-fn c_test_build_jobs(total: usize) -> anyhow::Result<usize> {
-    // ArceOS C builds share Makefile-managed object directories such as
-    // `ulib/axlibc/build_<arch>` and each app's `build_<arch>`.  Keep the
-    // default deterministic; callers can still opt into parallelism explicitly.
-    let default = 1;
-    let Ok(value) = std::env::var(C_TEST_BUILD_JOBS_ENV) else {
-        return Ok(default.max(1));
+async fn build_and_run_c_test(
+    arceos: &mut ArceOS,
+    target: &str,
+    _arch: &str,
+    test: &CTestDef,
+) -> anyhow::Result<()> {
+    let workspace_root = arceos.app.workspace_root().to_path_buf();
+    let build_config = load_c_test_build_config(&test.build_config_path)?;
+    let qemu_config = load_c_test_qemu_config(&test.qemu_config_path)?;
+    let source_dir = resolve_c_test_source_dir(&test.case_dir)?;
+    let artifacts = c_test_artifact_paths(
+        &workspace_root,
+        &test.build_group,
+        &test.name,
+        c_test_artifact_index(test),
+    );
+
+    let request = arceos.prepare_request(
+        BuildCliArgs {
+            config: Some(test.build_config_path.clone()),
+            package: Some("ax-libc".to_string()),
+            arch: None,
+            target: Some(target.to_string()),
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+        },
+        None,
+        None,
+        SnapshotPersistence::Discard,
+    )?;
+    let input = cbuild::ArceosCBuildInput {
+        app_dir: source_dir.clone(),
+        app_name: c_test_app_name(&source_dir, &test.name),
+        target_dir: artifacts.target_dir,
+        out_dir: artifacts.out_dir,
+        features: build_config.build.features.clone(),
     };
-    let trimmed = value.trim();
-    let jobs = trimmed.parse::<usize>().with_context(|| {
-        format!("invalid {C_TEST_BUILD_JOBS_ENV} value `{trimmed}`; expected positive integer")
-    })?;
-    if jobs == 0 {
-        bail!("invalid {C_TEST_BUILD_JOBS_ENV} value `{trimmed}`; expected positive integer");
-    }
-    Ok(jobs.min(total.max(1)))
-}
-
-fn run_c_test_builds<BuildFn>(
-    preps: &[CTestPrep],
-    build_fn: &BuildFn,
-    cargo_env: &CTestCargoEnv,
-    arceos_dir: &Path,
-    jobs: usize,
-) -> Vec<(String, anyhow::Error)>
-where
-    BuildFn: Fn(&Path, &Path, &[String], &CTestCargoEnv) -> anyhow::Result<()> + Send + Sync,
-{
-    let chunk_size = preps.len().div_ceil(jobs.max(1));
-    std::thread::scope(|s| {
-        let handles: Vec<_> = preps
-            .chunks(chunk_size.max(1))
-            .map(|chunk| {
-                s.spawn(move || {
-                    chunk
-                        .iter()
-                        .filter_map(|prep| build_c_test_prep(prep, build_fn, arceos_dir, cargo_env))
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| {
-                h.join().unwrap_or_else(|panic| {
-                    vec![(
-                        "build-worker".to_string(),
-                        anyhow::anyhow!("build thread panicked: {}", panic_payload(panic)),
-                    )]
-                })
-            })
-            .collect()
-    })
-}
-
-fn panic_payload(panic: Box<dyn std::any::Any + Send>) -> String {
-    panic
-        .downcast_ref::<&str>()
-        .map(|value| (*value).to_string())
-        .or_else(|| panic.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "unknown panic payload".to_string())
-}
-
-fn build_c_test_prep<BuildFn>(
-    prep: &CTestPrep,
-    build_fn: &BuildFn,
-    arceos_dir: &Path,
-    cargo_env: &CTestCargoEnv,
-) -> Option<(String, anyhow::Error)>
-where
-    BuildFn: Fn(&Path, &Path, &[String], &CTestCargoEnv) -> anyhow::Result<()> + Send + Sync,
-{
-    let mut built_args = Vec::<Vec<String>>::new();
-    for inv in &prep.invocations {
-        let already_built = built_args
-            .iter()
-            .any(|a| a.as_slice() == inv.make_args.as_slice());
-        if already_built {
-            continue;
-        }
-        if let Err(err) = build_fn(arceos_dir, &prep.app_path, &inv.make_args, cargo_env) {
-            return Some((
-                prep.name.clone(),
-                err.context(format!("c test `{}` build failed", prep.name)),
-            ));
-        }
-        built_args.push(inv.make_args.clone());
-    }
-    None
+    let output = cbuild::build_c_app(&workspace_root, &request, &input)?;
+    let qemu = qemu_config;
+    arceos
+        .app
+        .prepare_elf_artifact(output.elf_path, qemu.to_bin)
+        .await?;
+    arceos.app.run_prepared_qemu(qemu).await
 }
 
 /// Returns isolated artifact paths for a single C test invocation.
 ///
-/// `make build` writes the final image to `OUT_DIR` and the generated config
-/// to `OUT_CONFIG`.  Multi-invocation tests such as `helloworld` build several
-/// configurations for the same app, so every invocation needs its own outputs
-/// for the later `make justrun` phase to execute the matching image.
+/// Cases under the same build wrapper share a Cargo target dir and therefore
+/// reuse the same ax-libc static library. QEMU output stays isolated per case
+/// and per invocation so generated ELF files do not overwrite each other.
 fn c_test_artifact_paths(
     workspace_root: &Path,
+    build_group: &str,
     test_name: &str,
     invocation_index: usize,
 ) -> CTestArtifactPaths {
-    let dir_name = format!(
-        "arceos-c-{}-{}",
-        test_name.replace('/', "-"),
-        invocation_index
-    );
     let root = crate::context::axbuild_tmp_dir(workspace_root)
         .join("arceos-c")
-        .join(dir_name);
+        .join(test_name.replace('/', "-"));
     CTestArtifactPaths {
-        target_dir: root.join("cargo"),
-        out_dir: root.join("out"),
-        out_config: root.join("axconfig.toml"),
-    }
-}
-
-/// Build phase of a single C test: runs `make defconfig && make build`.
-///
-/// Build output is **captured and suppressed** on success to keep parallel
-/// build logs readable.  On failure the captured output is flushed to stderr
-/// before the error is returned.
-fn build_single_c_test(
-    arceos_dir: &Path,
-    _app_path: &Path,
-    make_args: &[String],
-    cargo_env: &CTestCargoEnv,
-) -> anyhow::Result<()> {
-    ensure_c_test_artifact_dirs(make_args)?;
-
-    for target in ["defconfig", "build"] {
-        let mut command = StdCommand::new("make");
-        command.current_dir(arceos_dir).args(make_args).arg(target);
-        apply_c_test_cargo_env(&mut command, cargo_env);
-        // Capture stdout/stderr so parallel builds don't interleave output.
-        let output = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .with_context(|| format!("failed to spawn `make {target}`"))?;
-        if !output.status.success() {
-            // Print captured output so the error context is visible.
-            let _ = std::io::stderr().write_all(&output.stderr);
-            let _ = std::io::stdout().write_all(&output.stdout);
-            bail!("`make {}` exited with {}", target, output.status);
-        }
-    }
-    Ok(())
-}
-
-fn ensure_c_test_artifact_dirs(make_args: &[String]) -> anyhow::Result<()> {
-    for key in ["TARGET_DIR", "OUT_DIR"] {
-        if let Some(path) = make_arg_value(make_args, key) {
-            fs::create_dir_all(path)
-                .with_context(|| format!("failed to create {key} directory {}", path.display()))?;
-        }
-    }
-
-    if let Some(out_config) = make_arg_value(make_args, "OUT_CONFIG")
-        && let Some(parent) = out_config.parent()
-    {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create OUT_CONFIG parent directory {}",
-                parent.display()
-            )
-        })?;
-    }
-
-    Ok(())
-}
-
-fn make_arg_value<'a>(args: &'a [String], key: &str) -> Option<&'a Path> {
-    let prefix = format!("{key}=");
-    args.iter()
-        .find_map(|arg| arg.strip_prefix(prefix.as_str()))
-        .map(Path::new)
-}
-
-/// QEMU phase of a single C test: runs `make justrun` and verifies output.
-fn run_c_qemu_only(
-    arceos_dir: &Path,
-    app_path: &Path,
-    invocation: &PreparedCTestInvocation,
-    cargo_env: &CTestCargoEnv,
-) -> anyhow::Result<()> {
-    let mut command = StdCommand::new("make");
-    command
-        .current_dir(arceos_dir)
-        .args(&invocation.make_args)
-        .arg("justrun");
-    apply_c_test_cargo_env(&mut command, cargo_env);
-    let output = command.exec_capture()?;
-
-    if let Some(expect_output) = &invocation.expect_output {
-        verify_c_test_runtime_output(&output, &app_path.join(expect_output))?;
-    }
-
-    Ok(())
-}
-
-fn apply_c_test_cargo_env(command: &mut StdCommand, cargo_env: &CTestCargoEnv) {
-    for (key, value) in &cargo_env.vars {
-        command.env(key, value);
+        target_dir: crate::context::axbuild_tmp_dir(workspace_root)
+            .join("arceos-c")
+            .join(build_group.replace('/', "-"))
+            .join("cargo"),
+        out_dir: root.join(format!("out-{invocation_index}")),
     }
 }
 
@@ -1530,11 +1024,6 @@ pub(crate) fn parse_target(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        os::unix::process::ExitStatusExt,
-        sync::{Arc, Mutex},
-    };
-
     use clap::Parser;
     use tempfile::tempdir;
 
@@ -1721,48 +1210,43 @@ mod tests {
         assert!(err.to_string().contains(&rejected_target));
     }
 
-    #[test]
-    fn load_features_txt_parses_correctly() {
-        let dir = std::env::temp_dir().join("axbuild_test_features");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("features.txt"), "alloc\npaging\nnet\n").unwrap();
-
-        let features = load_features_txt(&dir.join("features.txt"));
-        assert_eq!(features, vec!["alloc", "paging", "net"]);
-
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn write_c_case(dir: &Path, name: &str, qemu_arch: &str) {
+        let case_dir = dir.join(name);
+        let source_dir = case_dir.join("c");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+        std::fs::write(
+            case_dir.join("build-x86_64-unknown-none.toml"),
+            "features = [\"alloc\"]\nlog = \"Info\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            case_dir.join(format!("qemu-{qemu_arch}.toml")),
+            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nsuccess_regex = [\"Shutting \
+             down\"]\nfail_regex = [\"panic\"]\n",
+        )
+        .unwrap();
     }
 
     #[test]
-    fn load_features_txt_handles_missing_file() {
-        let features = load_features_txt(Path::new("/nonexistent/features.txt"));
-        assert!(features.is_empty());
-    }
-
-    #[test]
-    fn discover_c_tests_finds_valid_tests() {
-        let dir = std::env::temp_dir().join("axbuild_test_c");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("helloworld")).unwrap();
-        std::fs::write(dir.join("helloworld/main.c"), "int main() { return 0; }\n").unwrap();
+    fn discover_c_tests_uses_build_and_qemu_toml() {
+        let dir = tempdir().unwrap();
+        write_c_case(dir.path(), "helloworld", "x86_64");
+        write_c_case(dir.path(), "pthread/basic", "x86_64");
+        std::fs::create_dir_all(dir.path().join("helpers")).unwrap();
         std::fs::write(
-            dir.join("helloworld/test_cmd"),
-            "test_one \"LOG=info\" \"expect_info.out\"\n",
+            dir.path().join("helpers/helper.c"),
+            "void helper(void) {}\n",
         )
         .unwrap();
-        std::fs::create_dir_all(dir.join("pthread/basic")).unwrap();
-        std::fs::write(
-            dir.join("pthread/basic/main.c"),
-            "int main() { return 0; }\n",
+
+        let tests = discover_c_tests(
+            dir.path(),
+            Some("x86_64"),
+            Some("x86_64-unknown-none"),
+            None,
         )
         .unwrap();
-        std::fs::write(dir.join("pthread/basic/features.txt"), "pthread\n").unwrap();
-        std::fs::create_dir_all(dir.join("helpers")).unwrap();
-        std::fs::write(dir.join("helpers/helper.c"), "void helper(void) {}\n").unwrap();
-        std::fs::create_dir_all(dir.join("empty")).unwrap();
-
-        let tests = discover_c_tests(&dir).unwrap();
-        // Directories without C sources or test markers are ignored.
         assert_eq!(
             tests
                 .iter()
@@ -1770,101 +1254,71 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["helloworld", "pthread/basic"]
         );
-
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            tests[0]
+                .build_config_path
+                .ends_with("build-x86_64-unknown-none.toml")
+        );
+        assert!(tests[0].qemu_config_path.ends_with("qemu-x86_64.toml"));
     }
 
     #[test]
-    fn load_c_test_invocations_parses_test_cmd() {
+    fn load_c_test_build_config_reads_build_info() {
         let dir = tempdir().unwrap();
-        let test_cmd = dir.path().join("test_cmd");
+        let path = dir.path().join("build-x86_64-unknown-none.toml");
         std::fs::write(
-            &test_cmd,
-            "test_one \"SMP=4 LOG=info FEATURES=sched-rr\" \"expect.out\"\nrm -f $APP/*.o\n",
+            &path,
+            "features = [\"alloc\", \"paging\"]\nlog = \"Trace\"\nmax_cpu_num = 4\n\n[env]\n",
         )
         .unwrap();
 
-        let invocations = load_c_test_invocations(&test_cmd).unwrap();
-        assert_eq!(invocations.len(), 1);
-        assert_eq!(
-            invocations[0].make_vars,
-            vec![
-                ("SMP".to_string(), "4".to_string()),
-                ("LOG".to_string(), "info".to_string()),
-                ("FEATURES".to_string(), "sched-rr".to_string())
-            ]
-        );
-        assert_eq!(
-            invocations[0].expect_output,
-            Some(PathBuf::from("expect.out"))
-        );
+        let config = load_c_test_build_config(&path).unwrap();
+        assert_eq!(config.build.features, vec!["alloc", "paging"]);
+        assert_eq!(config.build.log, build::LogLevel::Trace);
+        assert_eq!(config.build.max_cpu_num, Some(4));
     }
 
     #[test]
-    fn build_c_test_make_args_merges_makefile_features_from_env_and_invocation() {
-        let invocation = CTestInvocation {
-            make_vars: vec![
-                ("FEATURES".to_string(), "sched-rr".to_string()),
-                ("LOG".to_string(), "info".to_string()),
-            ],
-            expect_output: None,
-        };
-
-        let args = build_c_test_make_args_with_makefile_features(
-            Path::new("/tmp/case"),
-            "x86_64",
-            &[String::from("net")],
-            &invocation,
-            &[String::from("lockdep"), String::from("net")],
-        );
-
-        assert!(args.contains(&"FEATURES=net,lockdep,sched-rr".to_string()));
-        assert!(args.contains(&"LOG=info".to_string()));
-    }
-
-    #[test]
-    fn prepare_c_test_cargo_env_uses_env_vars_only() {
-        let env = prepare_c_test_cargo_env(Path::new("/repo"));
-
-        assert_eq!(
-            env.vars,
-            vec![
-                (
-                    "CARGO_NET_GIT_FETCH_WITH_CLI".to_string(),
-                    "true".to_string()
-                ),
-                (
-                    "CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS".to_string(),
-                    "allow".to_string()
-                ),
-            ]
-        );
-    }
-
-    #[test]
-    fn translate_bre_to_regex_handles_bre_quantifiers_and_literals() {
-        let translated =
-            translate_bre_to_regex(r"task 15 actually sleep 5\.[0-9]\+ seconds (2) ...");
-        let regex = Regex::new(&translated).unwrap();
-        assert!(regex.is_match("task 15 actually sleep 5.009334 seconds (2) ..."));
-    }
-
-    #[test]
-    fn verify_c_test_runtime_output_matches_expected_lines_in_order() {
+    fn resolve_c_test_source_dir_accepts_case_c_asset_dir() {
         let dir = tempdir().unwrap();
-        let expected = dir.path().join("expect.out");
+        let case_dir = dir.path().join("helloworld");
+        let source_dir = case_dir.join("c");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+
+        assert_eq!(
+            resolve_c_test_source_dir(&case_dir).unwrap(),
+            source_dir.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_c_test_source_dir_rejects_direct_c_sources() {
+        let dir = tempdir().unwrap();
+        let case_dir = dir.path().join("helloworld");
+        std::fs::create_dir_all(&case_dir).unwrap();
+        std::fs::write(case_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+
+        let err = resolve_c_test_source_dir(&case_dir).unwrap_err();
+        assert!(err.to_string().contains("c/ source asset directory"));
+    }
+
+    #[test]
+    fn load_c_test_qemu_config_reads_standard_qemu_config() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("qemu-x86_64.toml");
         std::fs::write(
-            &expected,
-            "Hello, C app!\nvalue = [0-9]\\+\nShutting down...\n",
+            &path,
+            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nsuccess_regex = \
+             [\"PASS\"]\nfail_regex = [\"panic\"]\ntimeout = 120\n",
         )
         .unwrap();
-        let output = Output {
-            status: std::process::ExitStatus::from_raw(0),
-            stdout: b"noise\nHello, C app!\nvalue = 42\nShutting down...\n".to_vec(),
-            stderr: Vec::new(),
-        };
 
-        verify_c_test_runtime_output(&output, &expected).unwrap();
+        let config = load_c_test_qemu_config(&path).unwrap();
+        assert_eq!(config.args, vec!["-nographic"]);
+        assert_eq!(config.success_regex, vec!["PASS"]);
+        assert_eq!(config.fail_regex, vec!["panic"]);
+        assert_eq!(config.timeout, Some(120));
     }
 
     #[test]
@@ -1962,246 +1416,5 @@ mod tests {
         assert_eq!(args.config, Some(build_config));
         assert_eq!(args.package.as_deref(), Some("arceos-lockdep"));
         assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
-    }
-
-    #[test]
-    fn run_c_qemu_tests_with_hooks_prepares_cargo_env_once_before_running_tests() {
-        let dir = tempdir().unwrap();
-        let workspace_root = dir.path();
-        let arceos_dir = workspace_root.join("os/arceos");
-        let c_root = arceos_test_group_dir(workspace_root, ARCEOS_C_TEST_GROUP);
-
-        std::fs::create_dir_all(&arceos_dir).unwrap();
-        std::fs::create_dir_all(c_root.join("helloworld")).unwrap();
-        std::fs::create_dir_all(c_root.join("memtest")).unwrap();
-        std::fs::write(arceos_dir.join("Makefile"), "run:\n\t@true\n").unwrap();
-        std::fs::write(
-            c_root.join("helloworld/main.c"),
-            "int main(void) { return 0; }\n",
-        )
-        .unwrap();
-        std::fs::write(c_root.join("helloworld/test_cmd"), "").unwrap();
-        std::fs::write(
-            c_root.join("memtest/main.c"),
-            "int main(void) { return 0; }\n",
-        )
-        .unwrap();
-        std::fs::write(c_root.join("memtest/test_cmd"), "").unwrap();
-
-        let events = Arc::new(Mutex::new(Vec::new()));
-
-        let prepare_env_events = events.clone();
-        let build_events = events.clone();
-        let run_events = events.clone();
-        run_c_qemu_tests_with_hooks(
-            workspace_root,
-            "x86_64-unknown-none",
-            None,
-            move |root| {
-                prepare_env_events
-                    .lock()
-                    .unwrap()
-                    .push(format!("prepare_env:{}", root.display()));
-                prepare_c_test_cargo_env(root)
-            },
-            move |_arceos_dir, app_path, _make_args, _cargo_env| {
-                build_events.lock().unwrap().push(format!(
-                    "build:{}",
-                    app_path.file_name().unwrap().to_string_lossy()
-                ));
-                Ok(())
-            },
-            move |_arceos_dir, app_path, _invocation, _cargo_env| {
-                run_events.lock().unwrap().push(format!(
-                    "run:{}",
-                    app_path.file_name().unwrap().to_string_lossy()
-                ));
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        let events = events.lock().unwrap();
-        assert_eq!(
-            events[0],
-            format!("prepare_env:{}", workspace_root.display())
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| event.starts_with("prepare_env:"))
-                .count(),
-            1
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| event.starts_with("run:"))
-                .count(),
-            2
-        );
-    }
-
-    #[test]
-    fn run_c_qemu_tests_with_hooks_reuses_duplicate_build_args() {
-        let dir = tempdir().unwrap();
-        let workspace_root = dir.path();
-        let arceos_dir = workspace_root.join("os/arceos");
-        let c_root = arceos_test_group_dir(workspace_root, ARCEOS_C_TEST_GROUP);
-
-        std::fs::create_dir_all(&arceos_dir).unwrap();
-        std::fs::create_dir_all(c_root.join("helloworld")).unwrap();
-        std::fs::write(arceos_dir.join("Makefile"), "run:\n\t@true\n").unwrap();
-        std::fs::write(
-            c_root.join("helloworld/main.c"),
-            "int main(void) { return 0; }\n",
-        )
-        .unwrap();
-        std::fs::write(
-            c_root.join("helloworld/test_cmd"),
-            "test_one \"LOG=info\" \"expect_info.out\"\ntest_one \"LOG=info\" \
-             \"expect_info_again.out\"\n",
-        )
-        .unwrap();
-
-        let build_events = Arc::new(Mutex::new(Vec::new()));
-        let run_events = Arc::new(Mutex::new(Vec::new()));
-        let build_events_clone = build_events.clone();
-        let run_events_clone = run_events.clone();
-        run_c_qemu_tests_with_hooks(
-            workspace_root,
-            "x86_64-unknown-none",
-            None,
-            prepare_c_test_cargo_env,
-            move |_arceos_dir, _app_path, make_args, _cargo_env| {
-                build_events_clone
-                    .lock()
-                    .unwrap()
-                    .push(format!("build_args={}", make_args.len()));
-                Ok(())
-            },
-            move |_arceos_dir, _app_path, invocation, _cargo_env| {
-                run_events_clone
-                    .lock()
-                    .unwrap()
-                    .push(format!("label={}", invocation.label));
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        // The two invocations share identical make_args (both "LOG=info"), so
-        // the build phase must only call build_fn once (deduplication).
-        let builds = build_events.lock().unwrap();
-        assert_eq!(
-            builds.len(),
-            1,
-            "build should be deduplicated to a single call"
-        );
-
-        // Both invocations must be executed by the QEMU phase.
-        let runs = run_events.lock().unwrap();
-        assert_eq!(runs.len(), 2, "both invocations should be run");
-    }
-
-    #[test]
-    fn run_c_qemu_tests_with_hooks_isolates_distinct_invocation_artifacts() {
-        let dir = tempdir().unwrap();
-        let workspace_root = dir.path();
-        let arceos_dir = workspace_root.join("os/arceos");
-        let c_root = arceos_test_group_dir(workspace_root, ARCEOS_C_TEST_GROUP);
-
-        std::fs::create_dir_all(&arceos_dir).unwrap();
-        std::fs::create_dir_all(c_root.join("helloworld")).unwrap();
-        std::fs::write(arceos_dir.join("Makefile"), "run:\n\t@true\n").unwrap();
-        std::fs::write(
-            c_root.join("helloworld/main.c"),
-            "int main(void) { return 0; }\n",
-        )
-        .unwrap();
-        std::fs::write(
-            c_root.join("helloworld/test_cmd"),
-            "test_one \"LOG=info\" \"expect_info.out\"\ntest_one \"SMP=4 LOG=info\" \
-             \"expect_info_smp4.out\"\ntest_one \"LOG=info\" \"expect_info_again.out\"\n",
-        )
-        .unwrap();
-
-        let run_args = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
-        let run_args_clone = run_args.clone();
-        run_c_qemu_tests_with_hooks(
-            workspace_root,
-            "x86_64-unknown-none",
-            None,
-            prepare_c_test_cargo_env,
-            move |_arceos_dir, _app_path, _make_args, _cargo_env| Ok(()),
-            move |_arceos_dir, _app_path, invocation, _cargo_env| {
-                run_args_clone
-                    .lock()
-                    .unwrap()
-                    .push(invocation.make_args.clone());
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        let run_args = run_args.lock().unwrap();
-        assert_eq!(run_args.len(), 3);
-        let first_target_dir = make_arg_value(&run_args[0], "TARGET_DIR").unwrap();
-        let first_out_dir = make_arg_value(&run_args[0], "OUT_DIR").unwrap();
-        let first_out_config = make_arg_value(&run_args[0], "OUT_CONFIG").unwrap();
-        let second_target_dir = make_arg_value(&run_args[1], "TARGET_DIR").unwrap();
-        let second_out_dir = make_arg_value(&run_args[1], "OUT_DIR").unwrap();
-        let second_out_config = make_arg_value(&run_args[1], "OUT_CONFIG").unwrap();
-        let third_target_dir = make_arg_value(&run_args[2], "TARGET_DIR").unwrap();
-        let third_out_dir = make_arg_value(&run_args[2], "OUT_DIR").unwrap();
-        let third_out_config = make_arg_value(&run_args[2], "OUT_CONFIG").unwrap();
-
-        assert_ne!(first_target_dir, second_target_dir);
-        assert_ne!(first_out_dir, second_out_dir);
-        assert_ne!(first_out_config, second_out_config);
-        assert_eq!(first_target_dir, third_target_dir);
-        assert_eq!(first_out_dir, third_out_dir);
-        assert_eq!(first_out_config, third_out_config);
-    }
-
-    #[test]
-    fn ensure_c_test_artifact_dirs_creates_output_parents() {
-        let dir = tempdir().unwrap();
-        let target_dir = dir.path().join("target/cargo");
-        let out_dir = dir.path().join("target/out");
-        let out_config = dir.path().join("target/configs/axconfig.toml");
-
-        ensure_c_test_artifact_dirs(&[
-            format!("TARGET_DIR={}", target_dir.display()),
-            format!("OUT_DIR={}", out_dir.display()),
-            format!("OUT_CONFIG={}", out_config.display()),
-        ])
-        .unwrap();
-
-        assert!(target_dir.is_dir());
-        assert!(out_dir.is_dir());
-        assert!(out_config.parent().unwrap().is_dir());
-    }
-
-    fn make_arg_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
-        let prefix = format!("{key}=");
-        args.iter()
-            .find_map(|arg| arg.strip_prefix(prefix.as_str()))
-    }
-
-    #[test]
-    fn c_test_build_jobs_rejects_invalid_env_value() {
-        unsafe {
-            std::env::set_var(C_TEST_BUILD_JOBS_ENV, "0");
-        }
-        let err = c_test_build_jobs(2).unwrap_err().to_string();
-        unsafe {
-            std::env::remove_var(C_TEST_BUILD_JOBS_ENV);
-        }
-
-        assert!(err.contains(C_TEST_BUILD_JOBS_ENV));
-        assert!(err.contains("positive integer"));
-
-        assert_eq!(c_test_build_jobs(8).unwrap(), 1);
     }
 }

@@ -7,6 +7,8 @@ mod dyn_debug;
 mod file;
 mod fs;
 mod proc;
+#[cfg(not(feature = "plat-dyn"))]
+mod sysfs;
 mod tmp;
 #[cfg(feature = "plat-dyn")]
 pub(crate) mod usbfs;
@@ -93,18 +95,7 @@ pub fn mount_all() -> LinuxResult<()> {
     #[cfg(feature = "plat-dyn")]
     mount_at(&fs, "/sys", usbfs::new_sysfs())?;
     #[cfg(not(feature = "plat-dyn"))]
-    {
-        mount_at(&fs, "/sys", tmp::MemoryFs::new())?;
-        let mut path = PathBuf::new();
-        for comp in Path::new("/sys/class/graphics/fb0/device").components() {
-            path.push(comp.as_str());
-            if fs.resolve(&path).is_err() {
-                fs.create_dir(&path, DIR_PERMISSION)?;
-            }
-        }
-        path.push("subsystem");
-        fs.symlink("whatever", &path)?;
-    }
+    mount_at(&fs, "/sys", sysfs::new_sysfs())?;
     drop(fs);
 
     #[cfg(feature = "dev-log")]

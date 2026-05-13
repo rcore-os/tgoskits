@@ -19,8 +19,8 @@ impl RamDisk {
     /// Panics if the buffer is not aligned to block size or its size is not
     /// a multiple of block size.
     pub fn new(buf: &'static mut [u8]) -> Self {
-        assert!(buf.as_ptr().addr() & (BLOCK_SIZE - 1) == 0);
-        assert!(buf.len() % BLOCK_SIZE == 0);
+        assert!(buf.as_ptr().addr().is_multiple_of(BLOCK_SIZE));
+        assert!(buf.len().is_multiple_of(BLOCK_SIZE));
         RamDisk(buf)
     }
 }
@@ -61,7 +61,7 @@ impl BlockDriverOps for RamDisk {
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> DevResult {
-        if buf.len() % BLOCK_SIZE != 0 {
+        if !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(DevError::InvalidParam);
         }
         let offset = block_id as usize * BLOCK_SIZE;
@@ -73,7 +73,7 @@ impl BlockDriverOps for RamDisk {
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
-        if buf.len() % BLOCK_SIZE != 0 {
+        if !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(DevError::InvalidParam);
         }
         let offset = block_id as usize * BLOCK_SIZE;

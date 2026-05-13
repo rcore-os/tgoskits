@@ -68,6 +68,10 @@ define_options! {
     // --- TCP level options (TCP_*) ----
     NoDelay(bool),
     MaxSegment(usize),
+    TcpKeepIdle(u32),
+    TcpKeepInterval(u32),
+    TcpKeepCount(u32),
+    TcpUserTimeout(u32),
     TcpInfo(()),
 
     // ---- IP level options (IP_*) ----

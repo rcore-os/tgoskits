@@ -2,7 +2,9 @@ mod fs;
 mod inode;
 mod util;
 
-use ax_driver::{AxBlockDevice, PartitionBlockDevice, PartitionRegion, prelude::BlockDriverOps};
+use alloc::boxed::Box;
+
+use ax_driver::{PartitionBlockDevice, PartitionRegion, prelude::BlockDriverOps};
 pub use fs::*;
 pub use inode::*;
 use rsext4::{
@@ -13,10 +15,10 @@ use rsext4::{
     error::{Ext4Error, Ext4Result},
 };
 
-pub(crate) struct Ext4Disk(PartitionBlockDevice<AxBlockDevice>);
+pub(crate) struct Ext4Disk(PartitionBlockDevice<Box<dyn BlockDriverOps>>);
 
 impl Ext4Disk {
-    pub(crate) const fn new(dev: AxBlockDevice, region: PartitionRegion) -> Self {
+    pub fn new(dev: Box<dyn BlockDriverOps>, region: PartitionRegion) -> Self {
         Self(PartitionBlockDevice::new(dev, region))
     }
 }

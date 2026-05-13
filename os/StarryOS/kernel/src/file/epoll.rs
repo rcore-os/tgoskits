@@ -92,10 +92,11 @@ impl TriggerMode {
 }
 
 enum ConsumeResult {
-    // success and should keep in ready list
-    EventAndKeep(EpollEvent),
-    // success and hould remove ready list
-    EventAndRemove(EpollEvent),
+    Event {
+        event: EpollEvent,
+        old_mode: TriggerMode,
+        keep_ready: bool,
+    },
     // no event and should remove ready list
     NoEvent,
 }
@@ -182,8 +183,8 @@ impl EpollInterest {
         }
 
         let mut mode = self.mode.lock();
+        let old_mode = *mode;
         let (should_notify, new_mode) = mode.should_notify();
-        *mode = new_mode;
         trace!(
             "consume fd: {} matches {:?} should notify: {} ",
             self.key.fd, matched, should_notify
@@ -193,17 +194,22 @@ impl EpollInterest {
             return ConsumeResult::NoEvent;
         }
 
-        // create event
+        *mode = new_mode;
+
         let event = EpollEvent {
             events: matched,
             user_data: self.event.user_data,
         };
 
-        // shoud still keep in ready?
-        match *mode {
-            TriggerMode::Level => ConsumeResult::EventAndKeep(event),
-            TriggerMode::Edge | TriggerMode::OneShot { .. } => ConsumeResult::EventAndRemove(event),
+        ConsumeResult::Event {
+            event,
+            old_mode,
+            keep_ready: matches!(*mode, TriggerMode::Level),
         }
+    }
+
+    fn restore_mode(&self, mode: TriggerMode) {
+        *self.mode.lock() = mode;
     }
 }
 
@@ -378,19 +384,23 @@ impl Epoll {
         Ok(())
     }
 
-    pub fn poll_events(&self, out: &mut [epoll_event]) -> AxResult<usize> {
-        trace!("Epoll: poll_events called, out.len()={}", out.len());
+    pub fn poll_events_with(
+        &self,
+        max_events: usize,
+        mut put_event: impl FnMut(usize, epoll_event) -> AxResult<()>,
+    ) -> AxResult<usize> {
+        trace!("Epoll: poll_events_with called, max_events={max_events}");
 
         // Splice the entire ready_queue into a local txlist, mirroring
         // Linux's ep_send_events. Visiting each interest at most once per
         // epoll_wait prevents the LT path from re-feeding the same fd back
         // into the loop and filling out[] with duplicates of one ready fd.
-        let txlist = core::mem::take(&mut *self.inner.ready_queue.lock());
+        let mut txlist = core::mem::take(&mut *self.inner.ready_queue.lock());
         let mut count = 0;
         let mut keep: VecDeque<Weak<EpollInterest>> = VecDeque::new();
 
-        for weak_interest in txlist {
-            if count >= out.len() {
+        while let Some(weak_interest) = txlist.pop_front() {
+            if count >= max_events {
                 keep.push_back(weak_interest);
                 continue;
             }
@@ -412,22 +422,35 @@ impl Epoll {
             );
 
             match interest.consume(file.as_ref()) {
-                ConsumeResult::EventAndKeep(event) => {
-                    out[count] = epoll_event {
+                ConsumeResult::Event {
+                    event,
+                    old_mode,
+                    keep_ready,
+                } => {
+                    let event = epoll_event {
                         events: event.events.bits(),
                         data: event.user_data,
                     };
+
+                    if let Err(err) = put_event(count, event) {
+                        interest.restore_mode(old_mode);
+                        interest.in_ready_queue.store(true, Ordering::Release);
+                        let mut queue = self.inner.ready_queue.lock();
+                        queue.push_back(Arc::downgrade(&interest));
+                        queue.extend(txlist);
+                        queue.extend(keep);
+                        drop(queue);
+                        self.inner.poll_ready.wake();
+                        return if count == 0 { Err(err) } else { Ok(count) };
+                    }
+
                     count += 1;
-                    keep.push_back(Arc::downgrade(&interest));
-                }
-                ConsumeResult::EventAndRemove(event) => {
-                    out[count] = epoll_event {
-                        events: event.events.bits(),
-                        data: event.user_data,
-                    };
-                    count += 1;
-                    interest.mark_not_in_queue();
-                    self.register_waker_only(&interest);
+                    if keep_ready {
+                        keep.push_back(Arc::downgrade(&interest));
+                    } else {
+                        interest.mark_not_in_queue();
+                        self.register_waker_only(&interest);
+                    }
                 }
                 ConsumeResult::NoEvent => {
                     interest.mark_not_in_queue();

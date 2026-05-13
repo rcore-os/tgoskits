@@ -1,4 +1,5 @@
 use alloc::{
+    borrow::Cow,
     string::String,
     sync::{Arc, Weak},
     vec,
@@ -23,8 +24,8 @@ use crate::{
 pub struct Mountpoint {
     /// Root dir entry in the mountpoint.
     root: DirEntry,
-    /// Location in the parent mountpoint.
-    location: Option<Location>,
+    /// Location in the parent mountpoint. `None` for the global root mount.
+    location: Mutex<Option<Location>>,
     /// Children of the mountpoint.
     children: Mutex<HashMap<ReferenceKey, Weak<Self>>>,
     /// Device ID
@@ -38,7 +39,7 @@ impl Mountpoint {
         let root = fs.root_dir();
         Arc::new(Self {
             root,
-            location: location_in_parent,
+            location: Mutex::new(location_in_parent),
             children: Mutex::default(),
             device: DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
         })
@@ -54,11 +55,55 @@ impl Mountpoint {
 
     /// Returns the location in the parent mountpoint.
     pub fn location(&self) -> Option<Location> {
-        self.location.clone()
+        self.location.lock().clone()
     }
 
     pub fn is_root(&self) -> bool {
-        self.location.is_none()
+        self.location.lock().is_none()
+    }
+
+    /// Pivot the mount tree: the old root (`self`) is detached and re-attached
+    /// at `put_old` under `new_root_mp`, which becomes the global root.
+    ///
+    /// This implements the mount-tree portion of Linux `pivot_root(2)`.
+    pub fn pivot_mount(
+        self: &Arc<Self>,        // old root mountpoint
+        new_root_mp: &Arc<Self>, // new root mountpoint
+        put_old: &Location,      // directory under new_root_mp where old root goes
+    ) -> VfsResult<()> {
+        // put_old must belong to the new root's mountpoint tree.
+        if !Arc::ptr_eq(put_old.mountpoint(), new_root_mp) {
+            return Err(VfsError::InvalidInput);
+        }
+        // put_old must be a directory and not already a mountpoint.
+        put_old.check_is_dir()?;
+        if put_old.is_mountpoint() {
+            return Err(VfsError::ResourceBusy);
+        }
+
+        // 1. Detach new_root from old root's children and clear the old mount
+        //    slot (where new_root was attached in the old root).
+        {
+            let mut new_root_loc = new_root_mp.location.lock();
+            if let Some(ref old_loc) = *new_root_loc {
+                self.children.lock().remove(&old_loc.entry.key());
+                *old_loc.entry.as_dir()?.mountpoint.lock() = None;
+            }
+            // new_root becomes the global root.
+            *new_root_loc = None;
+        }
+
+        // 2. Attach old root at put_old under new_root.
+        {
+            *put_old.entry.as_dir()?.mountpoint.lock() = Some(self.clone());
+            new_root_mp
+                .children
+                .lock()
+                .insert(put_old.entry.key(), Arc::downgrade(self));
+            *self.location.lock() = Some(put_old.clone());
+        }
+
+        Ok(())
     }
 
     /// Returns the effective mountpoint.
@@ -133,11 +178,21 @@ impl Location {
         &self.entry
     }
 
-    pub fn name(&self) -> &str {
+    /// Returns the entry name.
+    ///
+    /// For mount roots the name is derived from the parent location (where this
+    /// mount was attached). Because `location` lives behind a `Mutex`, the
+    /// mount-root case returns an owned `Cow::Owned`; the common non-root case
+    /// returns a borrowed `Cow::Borrowed`.
+    pub fn name(&self) -> Cow<'_, str> {
         if self.is_root_of_mount() {
-            self.mountpoint.location.as_ref().map_or("", Location::name)
+            self.mountpoint
+                .location
+                .lock()
+                .as_ref()
+                .map_or(Cow::Borrowed(""), |loc| Cow::Owned(loc.name().into_owned()))
         } else {
-            self.entry.name()
+            Cow::Borrowed(self.entry.name())
         }
     }
 
@@ -281,8 +336,16 @@ impl Location {
             return Err(VfsError::ResourceBusy);
         }
         assert!(self.entry.ptr_eq(&self.mountpoint.root));
+
+        // Flush filesystem metadata (superblock, bitmaps, etc.) to the
+        // backing block device before tearing down the mount.  For ext4
+        // this writes a clean superblock so the next mount does not see
+        // s_state = ERROR_FS.  For tmpfs/ramfs the default flush is a
+        // no-op.
+        self.filesystem().flush()?;
+
         self.entry.as_dir()?.forget();
-        if let Some(parent_loc) = &self.mountpoint.location {
+        if let Some(parent_loc) = self.mountpoint.location.lock().as_ref() {
             *parent_loc.entry.as_dir()?.mountpoint.lock() = None;
         }
         Ok(())
