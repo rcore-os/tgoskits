@@ -38,7 +38,7 @@ use lazy_static::lazy_static;
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     net::AF_NETLINK,
-    netlink::{NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
+    netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
 };
 use spin::Mutex;
 
@@ -51,8 +51,26 @@ use crate::{
 /// libudev's default monitor buffer expectation (~32 messages × 4 KiB).
 const MAX_QUEUED: usize = 128;
 
+const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLM_F_MULTI: u16 = 2;
+
+/// Generic netlink controller family ID. Linux's
+/// `Documentation/netlink/genetlink-legacy.rst` reserves this for
+/// the controller and only the controller; family ID assignment for
+/// other families starts above this.
+const GENL_ID_CTRL: u16 = 0x10;
+const CTRL_CMD_NEWFAMILY: u8 = 1;
+const CTRL_CMD_GETFAMILY: u8 = 3;
+const CTRL_ATTR_FAMILY_ID: u16 = 1;
+const CTRL_ATTR_FAMILY_NAME: u16 = 2;
+const CTRL_ATTR_VERSION: u16 = 3;
+const CTRL_ATTR_HDRSIZE: u16 = 4;
+const CTRL_ATTR_MAXATTR: u16 = 5;
+/// Linux's max length of a family name, including the NUL terminator.
+const GENL_NAMSIZ: usize = 16;
+const CTRL_VERSION: u32 = 2;
+const CTRL_MAX_ATTR: u32 = 11;
 
 const RTM_GETLINK: u16 = 18;
 const RTM_NEWLINK: u16 = 16;
@@ -98,6 +116,22 @@ struct NlMsgHdr {
     seq: u32,
     pid: u32,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GenlMsgHdr {
+    cmd: u8,
+    version: u8,
+    reserved: u16,
+}
+
+/// Linux errno values used in `NLMSG_ERROR` payloads. Spelled out
+/// here so the genl controller doesn't depend on a target-specific
+/// errno table.
+#[allow(non_upper_case_globals)]
+const libc_ENOENT: i32 = 2;
+#[allow(non_upper_case_globals)]
+const libc_EOPNOTSUPP: i32 = 95;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -293,6 +327,66 @@ impl NetlinkSocket {
         }
     }
 
+    /// Minimal NETLINK_GENERIC controller responder. Recognizes
+    /// `CTRL_CMD_GETFAMILY` on the controller family (`GENL_ID_CTRL`)
+    /// and either reports the controller itself (for a `nlctrl` name
+    /// query or a `NLM_F_DUMP`) or returns `NLMSG_ERROR(-ENOENT)`
+    /// for any other family name. Any request whose `nlmsg_type` is
+    /// not `GENL_ID_CTRL` — i.e. addressed to an unregistered family
+    /// — also returns `-ENOENT`. This matches what libnl-genl and
+    /// `genl-ctrl-list` need to enumerate the controller and report
+    /// "no other families" cleanly.
+    fn build_genl_response(&self, request: &[u8]) -> AxResult<Vec<u8>> {
+        if request.len() < size_of::<NlMsgHdr>() + size_of::<GenlMsgHdr>() {
+            return Err(AxError::InvalidInput);
+        }
+        let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+        let genl = unsafe {
+            request
+                .as_ptr()
+                .add(size_of::<NlMsgHdr>())
+                .cast::<GenlMsgHdr>()
+                .read_unaligned()
+        };
+        let pid = self.local_pid();
+        let mut response = Vec::new();
+
+        // Unknown family (anything not the controller) → ENOENT.
+        if header.ty != GENL_ID_CTRL {
+            push_nlmsg_error(&mut response, &header, pid, -libc_ENOENT);
+            return Ok(response);
+        }
+
+        if genl.cmd != CTRL_CMD_GETFAMILY {
+            // Other controller commands are unimplemented.
+            push_nlmsg_error(&mut response, &header, pid, -libc_EOPNOTSUPP);
+            return Ok(response);
+        }
+
+        // Parse attributes to see whether the caller asked for a
+        // specific family by name. NLM_F_DUMP omits the name and
+        // expects all families back — we only have the controller.
+        let attrs_start = size_of::<NlMsgHdr>() + size_of::<GenlMsgHdr>();
+        let want_name = parse_genl_family_name(&request[attrs_start..]);
+
+        let target_is_ctrl = match want_name.as_deref() {
+            None => true, // dump
+            Some(name) => name == "nlctrl",
+        };
+
+        if !target_is_ctrl {
+            push_nlmsg_error(&mut response, &header, pid, -libc_ENOENT);
+            return Ok(response);
+        }
+
+        let is_dump = want_name.is_none();
+        push_ctrl_family(&mut response, header.seq, pid, is_dump);
+        if is_dump {
+            push_done_message(&mut response, header.seq, pid);
+        }
+        Ok(response)
+    }
+
     fn build_route_response(&self, request: &[u8]) -> AxResult<Vec<u8>> {
         if request.len() < size_of::<NlMsgHdr>() {
             return Err(AxError::InvalidInput);
@@ -375,8 +469,12 @@ impl FileLike for NetlinkSocket {
         let total = src.read(&mut request)?;
         request.truncate(total);
 
-        if self.protocol == NETLINK_ROUTE {
-            let response = self.build_route_response(&request)?;
+        let response = match self.protocol {
+            NETLINK_ROUTE => Some(self.build_route_response(&request)?),
+            NETLINK_GENERIC => Some(self.build_genl_response(&request)?),
+            _ => None,
+        };
+        if let Some(response) = response {
             let mut queue = self.queue.lock();
             queue.clear();
             queue.push_back(response);
@@ -477,6 +575,73 @@ fn push_addr_message(out: &mut Vec<u8>, seq: u32, pid: u32, addr: &AddrInfo) {
 
     push_nl_header(out, RTM_NEWADDR, NLM_F_MULTI, seq, pid, body.len());
     out.extend_from_slice(&body);
+}
+
+fn push_ctrl_family(out: &mut Vec<u8>, seq: u32, pid: u32, multi: bool) {
+    let mut payload = Vec::new();
+    push_struct(
+        &mut payload,
+        &GenlMsgHdr {
+            cmd: CTRL_CMD_NEWFAMILY,
+            version: CTRL_VERSION as u8,
+            reserved: 0,
+        },
+    );
+    push_attr(
+        &mut payload,
+        CTRL_ATTR_FAMILY_ID,
+        &GENL_ID_CTRL.to_ne_bytes(),
+    );
+    push_attr_string(&mut payload, CTRL_ATTR_FAMILY_NAME, "nlctrl");
+    push_attr(&mut payload, CTRL_ATTR_VERSION, &CTRL_VERSION.to_ne_bytes());
+    push_attr(&mut payload, CTRL_ATTR_HDRSIZE, &0u32.to_ne_bytes());
+    push_attr(
+        &mut payload,
+        CTRL_ATTR_MAXATTR,
+        &CTRL_MAX_ATTR.to_ne_bytes(),
+    );
+
+    let flags = if multi { NLM_F_MULTI } else { 0 };
+    push_nl_header(out, GENL_ID_CTRL, flags, seq, pid, payload.len());
+    out.extend_from_slice(&payload);
+}
+
+fn push_nlmsg_error(out: &mut Vec<u8>, request: &NlMsgHdr, pid: u32, error: i32) {
+    let payload_len = size_of::<i32>() + size_of::<NlMsgHdr>();
+    push_nl_header(out, NLMSG_ERROR, 0, request.seq, pid, payload_len);
+    out.extend_from_slice(&error.to_ne_bytes());
+    push_struct(out, request);
+}
+
+/// Walk the attribute stream after a `genlmsghdr` and return the
+/// payload of the first `CTRL_ATTR_FAMILY_NAME` attribute, with the
+/// trailing NUL stripped. Returns `None` when no name attribute is
+/// present (e.g. a `NLM_F_DUMP` request).
+fn parse_genl_family_name(mut buf: &[u8]) -> Option<alloc::string::String> {
+    while buf.len() >= size_of::<RtAttr>() {
+        let attr = unsafe { buf.as_ptr().cast::<RtAttr>().read_unaligned() };
+        let len = attr.len as usize;
+        if len < size_of::<RtAttr>() || len > buf.len() {
+            return None;
+        }
+        if attr.ty == CTRL_ATTR_FAMILY_NAME {
+            let payload = &buf[size_of::<RtAttr>()..len];
+            let nul = payload
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(payload.len());
+            let limited = &payload[..nul.min(GENL_NAMSIZ - 1)];
+            return core::str::from_utf8(limited)
+                .ok()
+                .map(alloc::string::String::from);
+        }
+        let aligned = (len + 3) & !3;
+        if aligned > buf.len() {
+            return None;
+        }
+        buf = &buf[aligned..];
+    }
+    None
 }
 
 fn push_done_message(out: &mut Vec<u8>, seq: u32, pid: u32) {
