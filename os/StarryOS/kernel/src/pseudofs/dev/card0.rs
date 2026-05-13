@@ -468,7 +468,7 @@ impl Card0 {
             || c.height == 0
             || c.bpp == 0
             || c.bpp > 64
-            || c.bpp % 8 != 0
+            || !c.bpp.is_multiple_of(8)
             || c.flags != 0
         {
             return Err(VfsError::InvalidInput);
