@@ -15,6 +15,7 @@
  * exercised here.
  */
 
+#define _GNU_SOURCE
 #include "test_framework.h"
 
 #include <fcntl.h>
@@ -90,6 +91,16 @@ int main(void) {
         CHECK_RET((int)lseek(gfd, 0, SEEK_SET), 0, "lseek to 0 under GROW");
         wn = write(gfd, buf, sizeof(buf));
         CHECK(wn == (ssize_t)sizeof(buf), "in-bounds write still allowed under GROW");
+
+        /* fallocate that would extend the file past EOF is forbidden
+         * under F_SEAL_GROW; an in-range fallocate is still allowed. */
+        errno = 0;
+        int frc = fallocate(gfd, 0, 0, 8192);
+        CHECK(frc == -1 && errno == EPERM,
+              "fallocate growing past EOF rejected with EPERM under F_SEAL_GROW");
+        errno = 0;
+        frc = fallocate(gfd, 0, 0, 4096);
+        CHECK(frc == 0, "fallocate within current size still allowed under F_SEAL_GROW");
 
         close(gfd);
     }

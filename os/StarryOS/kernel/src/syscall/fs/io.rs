@@ -15,7 +15,10 @@ use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
-    file::{Directory, File, FileLike, Pipe, get_file_like, memfd::Memfd},
+    file::{
+        Directory, File, FileLike, Pipe, get_file_like,
+        memfd::{F_SEAL_GROW, F_SEAL_WRITE, Memfd},
+    },
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
     task::AsThread,
 };
@@ -229,6 +232,20 @@ pub fn sys_fallocate(
     // Reject sizes beyond what ext4 can represent (u32 block numbers × 4 KiB blocks).
     if end > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
+    }
+    // For memfd fds, enforce the seal mask before changing the size.
+    // `F_SEAL_WRITE` already forbids any data-mutating path; `F_SEAL_GROW`
+    // additionally forbids a fallocate that would extend EOF. Linux
+    // surfaces both as EPERM (memfd_test.c covers this).
+    if let Ok(memfd) = Memfd::from_fd(fd) {
+        let seals = memfd.get_seals();
+        if seals & F_SEAL_WRITE != 0 {
+            return Err(AxError::OperationNotPermitted);
+        }
+        let cur_len = f.inner().backend()?.location().len()?;
+        if end > cur_len && seals & F_SEAL_GROW != 0 {
+            return Err(AxError::OperationNotPermitted);
+        }
     }
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
