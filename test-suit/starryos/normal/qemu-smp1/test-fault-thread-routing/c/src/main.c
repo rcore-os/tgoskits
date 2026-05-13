@@ -90,13 +90,17 @@ static void *worker(void *arg)
         volatile int *p = (volatile int *)0;
         *p = 42;
     } else {
-        /* Idle until the faulter signals it is about to crash, then
-         * keep spinning so we're a tempting alternate delivery target. */
+        /* Idle cooperatively. The point of having multiple worker
+         * threads is that a buggy `raise_signal_fatal` could route the
+         * SIGSEGV to one of these idle threads instead of the faulter;
+         * the handler's tid comparison catches that misroute. We do
+         * NOT need to busy-spin against the faulter — on SMP=1 that
+         * would just starve it. */
         while (!atomic_load(&g_sh->faulter_armed)) {
             sched_yield();
         }
-        for (int i = 0; i < 100000000; i++) {
-            __asm__ __volatile__("");
+        for (;;) {
+            sched_yield();
         }
     }
     return NULL;
