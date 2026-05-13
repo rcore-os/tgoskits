@@ -57,22 +57,22 @@ case "$ARCH" in
     riscv64)
         QEMU=qemu-system-riscv64
         MACHINE_ARGS=(-machine virt -bios default -m 1G)
-        KERNEL="$REPO_ROOT/os/StarryOS/tests/bin/starryos-riscv64.bin"
-        ROOTFS="$REPO_ROOT/os/StarryOS/make/disk.img"
+        KERNEL="$REPO_ROOT/target/riscv64gc-unknown-none-elf/release/starryos.bin"
+        ROOTFS="$REPO_ROOT/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img"
         GRAPHICS_ARGS=(-device virtio-gpu-pci)
         ;;
     aarch64)
         QEMU=qemu-system-aarch64
         MACHINE_ARGS=(-M virt -cpu cortex-a72 -m 2G -smp 2)
-        KERNEL="$REPO_ROOT/os/StarryOS/tests/bin/starryos-aarch64.bin"
-        ROOTFS="$REPO_ROOT/target/aarch64-unknown-none-softfloat/rootfs-aarch64.img"
+        KERNEL="$REPO_ROOT/target/aarch64-unknown-none-softfloat/release/starryos.bin"
+        ROOTFS="$REPO_ROOT/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img"
         GRAPHICS_ARGS=(-device virtio-gpu-pci)
         ;;
     x86_64)
         QEMU=qemu-system-x86_64
         MACHINE_ARGS=(-machine q35 -m 2G -smp 2)
         KERNEL="$REPO_ROOT/target/x86_64-unknown-none/release/starryos"
-        ROOTFS="$REPO_ROOT/target/x86_64-unknown-none/rootfs-x86_64.img"
+        ROOTFS="$REPO_ROOT/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
         # x86_64 exposes cirrus VGA by default alongside virtio-gpu; mask
         # it so QEMU's VNC captures our DRM scanout, not the VGA text.
         GRAPHICS_ARGS=(-device virtio-gpu-pci -vga none)
