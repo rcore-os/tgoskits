@@ -193,12 +193,23 @@ pub struct Card0 {
     fbs: Mutex<BTreeMap<u32, u32>>,
     /// Next fb id to hand out.
     next_fb_id: AtomicU32,
-    /// `CREATEPROPBLOB`-allocated blobs keyed by their blob_id.
+    /// User-created `CREATEPROPBLOB` blobs keyed by their blob_id.
+    /// Distinct from `system_blobs` so DESTROY_BLOB cannot remove
+    /// kernel-owned blobs (e.g. `IN_FORMATS`).
     blobs: Mutex<BTreeMap<u32, Vec<u8>>>,
     /// Next blob id to hand out.
     next_blob_id: AtomicU32,
-    /// Cached blob_id for the `IN_FORMATS` property.
+    /// Kernel-owned immutable blobs (e.g. plane `IN_FORMATS`) keyed by
+    /// blob_id. Read-only after publish; never freed; DESTROY_BLOB
+    /// refuses to remove ids in this table.
+    system_blobs: Mutex<BTreeMap<u32, Vec<u8>>>,
+    /// Cached blob_id for the `IN_FORMATS` property. Allocated once
+    /// under `system_blobs_init` so concurrent first-callers cannot
+    /// each leak their own copy into `system_blobs`.
     in_formats_blob: AtomicU32,
+    /// Serializes the lazy initialization of `in_formats_blob` so
+    /// only one allocation lands in `system_blobs`.
+    system_blobs_init: Mutex<()>,
 }
 
 impl Card0 {
@@ -214,27 +225,32 @@ impl Card0 {
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
             blobs: Mutex::new(BTreeMap::new()),
             next_blob_id: AtomicU32::new(FIRST_BLOB_ID),
+            system_blobs: Mutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
+            system_blobs_init: Mutex::new(()),
         })
     }
 
     /// Lazily construct the `IN_FORMATS` blob the first time a caller
-    /// asks for plane properties. Cached so repeated calls share an id.
+    /// asks for plane properties. Holds `system_blobs_init` across the
+    /// allocate-and-publish so a concurrent first-caller cannot leak
+    /// a parallel copy into `system_blobs`. The blob lives there
+    /// permanently — `handle_destroy_blob` refuses ids it covers.
     fn ensure_in_formats_blob(&self) -> u32 {
+        let cur = self.in_formats_blob.load(Ordering::Acquire);
+        if cur != 0 {
+            return cur;
+        }
+        let _guard = self.system_blobs_init.lock();
         let cur = self.in_formats_blob.load(Ordering::Acquire);
         if cur != 0 {
             return cur;
         }
         let bytes = build_in_formats_blob();
         let id = self.next_blob_id.fetch_add(1, Ordering::Relaxed);
-        self.blobs.lock().insert(id, bytes);
-        match self
-            .in_formats_blob
-            .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => id,
-            Err(other) => other,
-        }
+        self.system_blobs.lock().insert(id, bytes);
+        self.in_formats_blob.store(id, Ordering::Release);
+        id
     }
 }
 
@@ -445,11 +461,38 @@ impl Card0 {
     fn handle_create_dumb(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCreateDumb;
         let mut c: DrmModeCreateDumb = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-        if c.bpp == 0 || c.width == 0 || c.height == 0 {
+        // libdrm/Mesa always pass bpp ∈ {8, 16, 24, 32}. Reject anything
+        // else: bpp == 0, non-byte-multiple, or absurdly large bpp would
+        // overflow `pitch` below or surface as garbage in users' surfaces.
+        if c.width == 0
+            || c.height == 0
+            || c.bpp == 0
+            || c.bpp > 64
+            || c.bpp % 8 != 0
+            || c.flags != 0
+        {
             return Err(VfsError::InvalidInput);
         }
-        c.pitch = c.width * (c.bpp / 8);
-        c.size = c.pitch as u64 * c.height as u64;
+        // Cap dimensions to avoid u32 overflow in `pitch` and u64 overflow
+        // in `size`. 1<<15 per axis is enough for any user-mode test.
+        if c.width > 16384 || c.height > 16384 {
+            return Err(VfsError::InvalidInput);
+        }
+        let bytes_per_pixel = c.bpp / 8;
+        let pitch = c
+            .width
+            .checked_mul(bytes_per_pixel)
+            .ok_or(VfsError::InvalidInput)?;
+        let size = (pitch as u64)
+            .checked_mul(c.height as u64)
+            .ok_or(VfsError::InvalidInput)?;
+        // Refuse multi-GiB dumb allocations — these tests don't need them
+        // and reasonable users won't either.
+        if size > 256 * 1024 * 1024 {
+            return Err(VfsError::InvalidInput);
+        }
+        c.pitch = pitch;
+        c.size = size;
         let handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
         self.dumbs.lock().insert(
             handle,
@@ -1161,6 +1204,12 @@ impl Card0 {
     fn handle_destroy_blob(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeDestroyBlob;
         let d: DrmModeDestroyBlob = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        // System (kernel-owned) blobs are not user-destroyable. Linux's
+        // DRM rejects ENOTSUPP for this; we map it to PermissionDenied
+        // (EPERM) since VfsError lacks a finer-grained variant.
+        if self.system_blobs.lock().contains_key(&d.blob_id) {
+            return Err(VfsError::PermissionDenied);
+        }
         self.blobs
             .lock()
             .remove(&d.blob_id)
@@ -1172,14 +1221,18 @@ impl Card0 {
         let ptr = arg as *mut DrmModeGetBlob;
         let mut g: DrmModeGetBlob = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
         // Clone the blob bytes out of the lock — `vm_write_slice` can
-        // page-fault and sleep, and we don't want to hold
-        // `self.blobs.lock()` across that.
-        let bytes = self
-            .blobs
-            .lock()
-            .get(&g.blob_id)
-            .ok_or(VfsError::NotFound)?
-            .clone();
+        // page-fault and sleep, and we don't want to hold the blob
+        // map locked across that. Search user blobs first, then
+        // system blobs.
+        let bytes = {
+            if let Some(b) = self.blobs.lock().get(&g.blob_id) {
+                b.clone()
+            } else if let Some(b) = self.system_blobs.lock().get(&g.blob_id) {
+                b.clone()
+            } else {
+                return Err(VfsError::NotFound);
+            }
+        };
         if g.data != 0 && g.length > 0 {
             let n = (g.length as usize).min(bytes.len());
             vm_write_slice(g.data as *mut u8, &bytes[..n]).map_err(|_| VfsError::BadAddress)?;
