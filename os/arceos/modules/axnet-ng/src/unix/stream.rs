@@ -325,7 +325,7 @@ impl TransportOps for StreamTransport {
         })
     }
 
-    fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
+    fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> AxResult<usize> {
         let dontwait = options.flags.contains(crate::RecvFlags::DONTWAIT);
         let recv_count = self.general.recv_poller_with(self, dontwait, || {
             let mut guard = self.channel.lock();
@@ -371,19 +371,26 @@ impl TransportOps for StreamTransport {
             }
         })?;
 
-        // Deliver any cmsg whose attached message's first byte has been
-        // consumed.  Because the read cap above stops at the boundary of
-        // the *next* cmsg-bearing message, this delivers at most one
-        // cmsg batch per recv.
-        if let Some(dst_cmsg) = options.cmsg {
-            let mut guard = self.channel.lock();
-            if let Some(chan) = guard.as_mut() {
-                let mut q = chan.rx_cmsg.lock();
-                while let Some(front) = q.front()
-                    && front.start_byte <= chan.rx_bytes_total
-                {
-                    let entry = q.pop_front().unwrap();
-                    dst_cmsg.extend(entry.cmsg);
+        // Drain every cmsg whose attached message's first byte has been
+        // consumed by this recv. Linux's man recvmsg(2) is explicit:
+        // ancillary data is delivered to the receiver only on the call
+        // that reads the first byte. A recv that consumes the first
+        // byte without an msg_control buffer must still discard the
+        // pending cmsg, otherwise a later recvmsg that does pass a
+        // control buffer would silently inherit stale ancillary data.
+        // The read cap above stops at the boundary of the *next*
+        // cmsg-bearing message, so at most one entry becomes ready
+        // per call.
+        let mut dst_cmsg = options.cmsg.as_deref_mut();
+        let mut guard = self.channel.lock();
+        if let Some(chan) = guard.as_mut() {
+            let mut q = chan.rx_cmsg.lock();
+            while let Some(front) = q.front()
+                && front.start_byte <= chan.rx_bytes_total
+            {
+                let entry = q.pop_front().unwrap();
+                if let Some(dst) = dst_cmsg.as_deref_mut() {
+                    dst.extend(entry.cmsg);
                 }
             }
         }

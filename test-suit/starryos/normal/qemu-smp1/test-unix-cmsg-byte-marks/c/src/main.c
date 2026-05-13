@@ -95,5 +95,38 @@ int main(void)
     close(sv[0]);
     close(sv[1]);
 
+    /* Scenario 2: a recv that consumes the first byte of a cmsg-bearing
+     * message but DOES NOT pass msg_control. The cmsg must still be
+     * dropped; a later recvmsg with msg_control must not see it. */
+    CHECK_RET(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0, "socketpair (2)");
+    int dummy2 = open("/dev/null", O_RDONLY);
+    CHECK(dummy2 >= 0, "open /dev/null (2)");
+
+    CHECK_RET(send_with_optional_cmsg(sv[0], "X", 1, dummy2), 1, "send 1 byte + cmsg");
+    CHECK_RET(send_with_optional_cmsg(sv[0], "Y", 1, -1),     1, "send 1 byte no cmsg");
+
+    /* recv with read(): no msg_control. Must still drop the pending cmsg. */
+    char b;
+    CHECK_RET(read(sv[1], &b, 1), 1, "plain read of first byte");
+    CHECK(b == 'X', "plain read returned 'X'");
+
+    /* Second recv with msg_control. It must NOT carry the dropped cmsg. */
+    struct iovec riov2 = { .iov_base = &b, .iov_len = 1 };
+    struct msghdr rmh2 = {0};
+    char rcbuf2[CMSG_SPACE(sizeof(int))];
+    memset(rcbuf2, 0, sizeof(rcbuf2));
+    rmh2.msg_iov = &riov2;
+    rmh2.msg_iovlen = 1;
+    rmh2.msg_control = rcbuf2;
+    rmh2.msg_controllen = sizeof(rcbuf2);
+    CHECK_RET(recvmsg(sv[1], &rmh2, 0), 1, "second recvmsg");
+    CHECK(b == 'Y', "second recvmsg returned 'Y'");
+    CHECK(CMSG_FIRSTHDR(&rmh2) == NULL,
+          "cmsg from send #1 was dropped (not delivered with later recvmsg)");
+
+    close(dummy2);
+    close(sv[0]);
+    close(sv[1]);
+
     TEST_DONE();
 }
