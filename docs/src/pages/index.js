@@ -71,62 +71,11 @@ const iconLibrary = {
   ),
 };
 
-// ── Section Illustration SVGs ──
-
-function CapabilityIllustration() {
-  return (
-    <div className="section-illustration" aria-hidden="true">
-      <svg viewBox="0 0 640 480">
-        <defs>
-          <radialGradient id="capGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="var(--feature-accent-1)" stopOpacity="0.12" />
-            <stop offset="100%" stopColor="var(--feature-accent-1)" stopOpacity="0" />
-          </radialGradient>
-          <filter id="capShadow"><feDropShadow dx="0" dy="2" stdDeviation="6" floodColor="var(--feature-accent-1)" floodOpacity="0.1" /></filter>
-        </defs>
-        <circle cx="320" cy="220" r="160" fill="url(#capGlow)" />
-        <circle cx="320" cy="220" r="80" fill="none" stroke="var(--feature-accent-1)" strokeWidth="1.5" strokeOpacity="0.18" strokeDasharray="6,4">
-          <animateTransform attributeName="transform" type="rotate" from="0 320 220" to="360 320 220" dur="30s" repeatCount="indefinite" />
-        </circle>
-        <circle cx="320" cy="220" r="58" fill="var(--home-panel-strong)" stroke="var(--feature-accent-1)" strokeWidth="2" strokeOpacity="0.35" filter="url(#capShadow)" />
-        <circle cx="320" cy="220" r="22" fill="var(--feature-accent-1)" opacity="0.2" />
-        <text x="320" y="218" textAnchor="middle" fill="var(--feature-accent-1)" fontSize="16" fontWeight="750" fontFamily="system-ui">统一入口</text>
-        <text x="320" y="240" textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">cargo xtask</text>
-        <g fill="none" stroke="var(--feature-accent-2)" strokeWidth="1.5" strokeOpacity="0.16" strokeDasharray="5,5">
-          <path d="M270,190 Q160,100 100,140" />
-          <path d="M370,190 Q480,100 540,140" />
-          <path d="M280,260 Q200,360 140,340" />
-          <path d="M360,260 Q440,360 500,340" />
-          <path d="M320,280 Q320,400 320,400" />
-        </g>
-        {[
-          { label: '组件共享', sub: '独立 crate 复用', x: 100, y: 130 },
-          { label: '安全实现', sub: 'Rust 内存安全', x: 540, y: 130 },
-          { label: '多架构', sub: '4 种 CPU 架构', x: 90, y: 360 },
-          { label: '构建闭环', sub: '配置→运行→快照', x: 550, y: 360 },
-          { label: '验证体系', sub: '分层测试覆盖', x: 320, y: 420 },
-        ].map((n) => (
-          <g key={n.label}>
-            <rect x={n.x - 64} y={n.y - 24} width="128" height="48" rx="14" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" filter="url(#capShadow)" />
-            <text x={n.x} y={n.y - 4} textAnchor="middle" fill="var(--ifm-color-primary)" fontSize="14" fontWeight="650" fontFamily="system-ui">{n.label}</text>
-            <text x={n.x} y={n.y + 14} textAnchor="middle" fill="var(--home-text-soft)" fontSize="12" fontFamily="system-ui">{n.sub}</text>
-          </g>
-        ))}
-        {[['190','145'],['450','145'],['150','300'],['490','300'],['320','360']].map(([cx,cy],i) => (
-          <circle key={i} cx={cx} cy={cy} r="4" fill="var(--feature-accent-2)" opacity="0.5">
-            <animate attributeName="opacity" values="0.3;0.8;0.3" dur="2.8s" repeatCount="indefinite" begin={`${i*0.4}s`} />
-          </circle>
-        ))}
-      </svg>
-    </div>
-  );
-}
-
 function ComponentWorkspaceDiagram() {
   const repos = [
-    { name: 'axallocator', path: 'components/' },
-    { name: 'arm_vcpu', path: 'components/' },
-    { name: 'rknpu', path: 'drivers/npu/' },
+    { name: 'axallocator', path: 'components/', tone: 'memory' },
+    { name: 'arm_vcpu', path: 'components/', tone: 'virtualization' },
+    { name: 'rknpu', path: 'drivers/npu/', tone: 'driver' },
   ];
 
   const hubItems = [
@@ -142,9 +91,10 @@ function ComponentWorkspaceDiagram() {
       <div className="workspace-diagram__flow">
         <div className="workspace-diagram__repos workspace-diagram__repos--source">
           {repos.map((repo) => (
-            <div className="workspace-diagram__repo" key={repo.name}>
-              <code>{repo.name}</code>
-              <span>{repo.path}</span>
+            <div className={`workspace-diagram__repo workspace-diagram__repo--${repo.tone}`} key={repo.name}>
+              <span className="workspace-diagram__repo-mark" aria-hidden="true" />
+              <code className="workspace-diagram__repo-name">{repo.name}</code>
+              <span className="workspace-diagram__repo-path">{repo.path}</span>
             </div>
           ))}
         </div>
@@ -177,9 +127,10 @@ function ComponentWorkspaceDiagram() {
 
         <div className="workspace-diagram__repos workspace-diagram__repos--upstream">
           {repos.map((repo) => (
-            <div className="workspace-diagram__repo" key={`${repo.name}-upstream`}>
-              <code>{repo.name}</code>
-              <span>独立仓库</span>
+            <div className={`workspace-diagram__repo workspace-diagram__repo--${repo.tone}`} key={`${repo.name}-upstream`}>
+              <span className="workspace-diagram__repo-mark" aria-hidden="true" />
+              <code className="workspace-diagram__repo-name">{repo.name}</code>
+              <span className="workspace-diagram__repo-path">独立仓库</span>
             </div>
           ))}
         </div>
@@ -242,8 +193,7 @@ function SystemsDiagram({ systems }) {
   );
 }
 
-function SectionShell({ id, className, eyebrow, title, description, children, illustration, framed = true, layoutReverse = false }) {
-  const hasChildren = children != null && children !== '';
+function SectionShell({ id, className, eyebrow, title, description, children, framed = true }) {
   return (
     <section className={`section-shell ${className || ''}`} id={id}>
       <div className="section-shell__inner">
@@ -253,18 +203,7 @@ function SectionShell({ id, className, eyebrow, title, description, children, il
             <h2>{title}</h2>
             <p>{description}</p>
           </div>
-          {illustration ? (
-            hasChildren ? (
-              <div className={`section-body-layout${layoutReverse ? ' section-body-layout--reverse' : ''}`}>
-                <div className="section-body-layout__text">{children}</div>
-                <div className="section-body-layout__visual">{illustration}</div>
-              </div>
-            ) : (
-              <div className="section-body-layout section-body-layout--solo">
-                {illustration}
-              </div>
-            )
-          ) : (children)}
+          {children}
         </div>
       </div>
     </section>
@@ -780,17 +719,21 @@ function QualitySection() {
       <div className="quality-pyramid">
         {lanes.map((lane, index) => (
           <div className="quality-card" key={lane.title} style={{ '--quality-level': index }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div className="quality-card__head">
               <span className="quality-level">0{index + 1}</span>
+              <h3>{lane.title}</h3>
+            </div>
+            <div className="quality-card__status">
               <span className="quality-status">{index === 0 ? 'Local' : index === 1 ? 'System' : 'Scenario'}</span>
             </div>
-            <h3>{lane.title}</h3>
-            <p>{lane.desc}</p>
-            <ul>
-              {lane.items.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
+            <div className="quality-card__content">
+              <p>{lane.desc}</p>
+              <ul>
+                {lane.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
           </div>
         ))}
       </div>
@@ -844,7 +787,7 @@ function PlatformSection() {
       className="section-shell--platforms"
       eyebrow="Platform Matrix"
       title="四种 CPU 架构，虚拟平台与物理板卡并行支持"
-      description="每种架构通过 axplat crate 抽象平台差异，axplat-dyn 支持运行时切换平台实现，板卡适配与 QEMU 仿真共用同一接口层。"
+      description="每种架构通过 axplat crate 抽象平台差异，板卡适配与 QEMU 仿真共用同一接口层。"
       framed={false}
     >
       <div className="platform-lanes">
@@ -869,15 +812,11 @@ function PlatformSection() {
             </div>
           </div>
         ))}
-      </div>
-      <div className="platform-footer">
-        <div className="platform-footer__note">
-          <strong>axplat-dyn</strong>
-          <span>动态平台层：支持运行时选择平台实现，无需重新编译即可切换板卡适配。</span>
+        <div className="platform-lanes__action">
+          <Link className="platform-lanes__link" to="/docs/introduction/hardware">
+            查看完整硬件支持
+          </Link>
         </div>
-        <Link className="button button--outline button--hero button--compact" to="/docs/introduction/hardware">
-          查看完整硬件支持
-        </Link>
       </div>
     </SectionShell>
   );
