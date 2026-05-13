@@ -11,7 +11,6 @@ use ostool::{
     build::config::Cargo,
     run::{qemu::QemuConfig, uboot::UbootConfig},
 };
-use serde::Deserialize;
 
 use super::{
     ArgsTest, ArgsTestBoard, ArgsTestQemu, ArgsTestUboot, Axvisor, TestCommand, build, rootfs,
@@ -79,16 +78,6 @@ impl board_test::BoardTestGroupInfo for BoardTestGroup {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct AxvisorQemuCaseConfig {
-    // Note: shell_init_cmd is NOT duplicated here; it is read by ostool's
-    // QemuConfig during the run phase. Keeping it out avoids two independent
-    // sources of truth and makes the mutual-exclusion check with test_commands
-    // happen in one place (Axvisor::load_qemu_case_config).
-    #[serde(default)]
-    test_commands: Vec<String>,
-}
-
 pub(crate) fn parse_target(
     arch: &Option<String>,
     target: &Option<String>,
@@ -125,35 +114,21 @@ pub(crate) fn discover_qemu_cases(
 }
 
 fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<AxvisorQemuCase> {
-    let config = load_qemu_case_config(&case.qemu_config_path)?;
-    let test_commands = qemu_case_test_commands(&case.qemu_config_path, &config)?;
-
+    let build_group = case.build_group;
+    let build_config_path = case.build_config_path;
+    let test_case = test_qemu::load_test_qemu_case_fields(
+        case.display_name,
+        case.name,
+        case.case_dir,
+        case.qemu_config_path,
+        "Axvisor",
+        false,
+    )?;
     Ok(AxvisorQemuCase {
-        case: TestQemuCase {
-            display_name: case.display_name,
-            name: case.name,
-            case_dir: case.case_dir,
-            qemu_config_path: case.qemu_config_path,
-            test_commands,
-            subcases: Vec::new(),
-        },
-        build_group: case.build_group,
-        build_config_path: case.build_config_path,
+        case: test_case,
+        build_group,
+        build_config_path,
     })
-}
-
-fn load_qemu_case_config(qemu_config_path: &Path) -> anyhow::Result<AxvisorQemuCaseConfig> {
-    let content = fs::read_to_string(qemu_config_path)
-        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
-    toml::from_str(&content)
-        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))
-}
-
-fn qemu_case_test_commands(
-    qemu_config_path: &Path,
-    config: &AxvisorQemuCaseConfig,
-) -> anyhow::Result<Vec<String>> {
-    test_qemu::normalize_qemu_test_commands(qemu_config_path, &config.test_commands, "Axvisor")
 }
 
 pub(crate) fn discover_board_test_groups(
@@ -177,18 +152,15 @@ fn collect_board_test_groups(
     test_suite_dir: &Path,
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
     let mut groups = Vec::new();
-    for config in board_test::discover_board_runtime_configs(test_suite_dir)? {
-        ensure_board_run_config(&config.config_path)?;
-        let wrapper =
-            test_qemu::nearest_build_wrapper(test_suite_dir, &config.case_dir, "Axvisor", "board")?;
-        let name = test_qemu::case_name_from_wrapper(test_suite_dir, &wrapper, &config.case_dir)?;
-        let build_config = resolve_workspace_path(workspace_root, wrapper.build_config_path);
+    for info in board_test::discover_board_case_build_infos(test_suite_dir, "Axvisor")? {
+        ensure_board_run_config(&info.board_test_config_path)?;
+        let build_config = resolve_workspace_path(workspace_root, info.build_config_path);
         ensure_file_exists(&build_config, "Axvisor board build group config")?;
         groups.push(BoardTestGroup {
-            name,
-            board_name: config.board_name,
+            name: info.name,
+            board_name: info.board_name,
             build_config,
-            board_test_config_path: config.config_path,
+            board_test_config_path: info.board_test_config_path,
         });
     }
 

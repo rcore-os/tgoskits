@@ -5,6 +5,8 @@ use std::{
 
 use anyhow::{Context, anyhow, bail};
 
+use crate::test::qemu;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BoardRuntimeConfig {
     pub(crate) case_dir: PathBuf,
@@ -15,6 +17,14 @@ pub(crate) struct BoardRuntimeConfig {
 pub(crate) trait BoardTestGroupInfo {
     fn name(&self) -> &str;
     fn board_name(&self) -> &str;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoardCaseBuildInfo {
+    pub(crate) name: String,
+    pub(crate) board_name: String,
+    pub(crate) build_config_path: PathBuf,
+    pub(crate) board_test_config_path: PathBuf,
 }
 
 pub(crate) fn labeled_board_cases<T: BoardTestGroupInfo>(groups: Vec<T>) -> Vec<(String, String)> {
@@ -116,6 +126,25 @@ pub(crate) fn discover_board_runtime_configs(
             .then_with(|| left.board_name.cmp(&right.board_name))
     });
     Ok(configs)
+}
+
+pub(crate) fn discover_board_case_build_infos(
+    test_group_dir: &Path,
+    suite_name: &str,
+) -> anyhow::Result<Vec<BoardCaseBuildInfo>> {
+    let mut groups = Vec::new();
+    for config in discover_board_runtime_configs(test_group_dir)? {
+        let wrapper =
+            qemu::nearest_build_wrapper(test_group_dir, &config.case_dir, suite_name, "board")?;
+        groups.push(BoardCaseBuildInfo {
+            name: qemu::case_name_from_wrapper(test_group_dir, &wrapper, &config.case_dir)?,
+            board_name: config.board_name,
+            build_config_path: wrapper.build_config_path,
+            board_test_config_path: config.config_path,
+        });
+    }
+
+    Ok(groups)
 }
 
 fn available_values<'a>(values: impl Iterator<Item = &'a str>) -> String {
