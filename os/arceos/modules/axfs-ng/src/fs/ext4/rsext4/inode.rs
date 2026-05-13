@@ -12,7 +12,7 @@ use axfs_ng_vfs::{
     VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
-use rsext4::{api::SeekWhence, bmalloc::InodeNumber};
+use rsext4::{bmalloc::InodeNumber};
 
 use super::{
     Ext4Filesystem,
@@ -231,7 +231,7 @@ impl FileNodeOps for Inode {
             return Err(VfsError::Unsupported);
         }
 
-        let block_bytes = fs.superblock.block_size() as u64;
+        let block_bytes = fs.superblock.block_size();
         let end_off = offset + to_read as u64;
         let start_lbn = offset / block_bytes;
         let end_lbn = (end_off - 1) / block_bytes;
@@ -395,7 +395,9 @@ impl FileNodeOps for Inode {
                 }
 
                 let used_datablocks = data_blocks.len() as u64;
-                let iblocks_used = used_datablocks.saturating_mul(block_size as u64 / (dev.dev_block_size() as u64)) as u32;
+                let iblocks_used = used_datablocks
+                    .saturating_mul(block_size as u64 / (dev.dev_block_size() as u64))
+                    as u32;
                 inode.i_blocks_lo = iblocks_used;
                 inode.l_i_blocks_high = 0;
                 rsext4::file::build_file_block_mapping_with_inode_num(
