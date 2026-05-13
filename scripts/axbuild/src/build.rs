@@ -2,10 +2,11 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    sync::OnceLock,
 };
 
 use anyhow::{Context, anyhow, bail};
+use ax_config_gen::{GenerateOptions, generate_config, read_config_string};
 use cargo_metadata::{Metadata, Package};
 use log::{info, warn};
 use ostool::build::config::Cargo;
@@ -13,10 +14,7 @@ pub use ostool::build::config::LogLevel;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{
-    context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest},
-    support::process::ProcessExt,
-};
+use crate::context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
@@ -44,7 +42,7 @@ pub struct BuildInfo {
     /// Maximum number of CPUs to expose to the build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<usize>,
-    /// Additional `ax-config-gen -w` overrides applied when generating `.axconfig.toml`.
+    /// Additional config value overrides applied when generating `.axconfig.toml`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub axconfig_overrides: Vec<String>,
     /// Whether to use the dynamic platform linker flow when supported.
@@ -119,21 +117,6 @@ impl BuildInfo {
         self.into_base_cargo_config(package, target, args)
     }
 
-    pub(crate) fn into_prepared_base_cargo_config(
-        self,
-        package: &str,
-        target: &str,
-        plat_dyn_override: Option<bool>,
-    ) -> anyhow::Result<Cargo> {
-        let metadata = workspace_metadata().context("failed to load workspace metadata")?;
-        self.into_prepared_base_cargo_config_with_metadata(
-            package,
-            target,
-            plat_dyn_override,
-            &metadata,
-        )
-    }
-
     pub(crate) fn into_prepared_base_cargo_config_with_metadata(
         mut self,
         package: &str,
@@ -161,22 +144,14 @@ impl BuildInfo {
             return Ok(());
         }
 
-        let package_manifest = resolve_package_manifest_path(package, metadata)?;
-        let app_dir = package_manifest
-            .parent()
-            .context("package manifest path has no parent directory")?;
-        let platform_package = resolve_platform_package(package, target, &self.features, metadata)?;
-        let platform_config = resolve_platform_config_path(app_dir, &platform_package, metadata)?;
-        let platform_name = read_platform_name(&platform_config)
-            .unwrap_or_else(|| linker_platform_name(&platform_package).to_string());
+        let platform = resolve_platform_config(package, target, &self.features, metadata)?;
         let out_config = generated_axconfig_path(package, target)?;
 
-        ensure_ax_config_gen_installed()?;
         generate_axconfig(
             &crate::context::workspace_root_path()?,
             target,
-            &platform_name,
-            &platform_config,
+            &platform.name,
+            &platform.config_path,
             &out_config,
             self.validated_max_cpu_num()?,
             &self.axconfig_overrides,
@@ -186,8 +161,7 @@ impl BuildInfo {
             "AX_CONFIG_PATH".to_string(),
             out_config.display().to_string(),
         );
-        self.env
-            .insert("AX_PLATFORM".to_string(), platform_name.to_string());
+        self.env.insert("AX_PLATFORM".to_string(), platform.name);
 
         Ok(())
     }
@@ -345,29 +319,33 @@ impl Default for BuildInfo {
     }
 }
 
-pub(crate) fn load_or_create_build_info<T>(
-    path: &Path,
-    default: impl FnOnce() -> T,
-) -> anyhow::Result<T>
+pub(crate) fn ensure_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<()>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize,
 {
     println!("Using build config: {}", path.display());
 
     if path.exists() {
         info!("Found build config at {}", path.display());
-    } else {
-        info!(
-            "Build config not found at {}, writing default config",
-            path.display()
-        );
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let default = default();
-        std::fs::write(path, toml::to_string_pretty(&default)?)?;
+        return Ok(());
     }
 
+    info!(
+        "Build config not found at {}, writing default config",
+        path.display()
+    );
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let default = default();
+    std::fs::write(path, toml::to_string_pretty(&default)?)?;
+    Ok(())
+}
+
+pub(crate) fn load_build_info<T>(path: &Path) -> anyhow::Result<T>
+where
+    T: DeserializeOwned,
+{
     toml::from_str::<T>(&std::fs::read_to_string(path)?)
         .with_context(|| format!("failed to parse build info {}", path.display()))
 }
@@ -528,6 +506,33 @@ pub(crate) fn workspace_metadata() -> anyhow::Result<Metadata> {
     workspace_metadata_root_manifest(&manifest_path)
 }
 
+pub(crate) fn cached_workspace_metadata() -> anyhow::Result<&'static Metadata> {
+    static METADATA: OnceLock<anyhow::Result<Metadata, String>> = OnceLock::new();
+
+    cached_metadata_result(
+        METADATA.get_or_init(|| workspace_metadata().map_err(|err| format!("{err:#}"))),
+    )
+}
+
+fn workspace_metadata_with_deps() -> anyhow::Result<Metadata> {
+    let manifest_path = workspace_manifest_path()?;
+    crate::context::workspace_metadata_root_manifest_with_deps(&manifest_path)
+}
+
+pub(crate) fn cached_workspace_metadata_with_deps() -> anyhow::Result<&'static Metadata> {
+    static METADATA: OnceLock<anyhow::Result<Metadata, String>> = OnceLock::new();
+
+    cached_metadata_result(
+        METADATA.get_or_init(|| workspace_metadata_with_deps().map_err(|err| format!("{err:#}"))),
+    )
+}
+
+fn cached_metadata_result(
+    result: &'static anyhow::Result<Metadata, String>,
+) -> anyhow::Result<&'static Metadata> {
+    result.as_ref().map_err(|err| anyhow::anyhow!("{err}"))
+}
+
 fn workspace_package<'a>(metadata: &'a Metadata, package: &str) -> anyhow::Result<&'a Package> {
     metadata
         .packages
@@ -536,8 +541,8 @@ fn workspace_package<'a>(metadata: &'a Metadata, package: &str) -> anyhow::Resul
         .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))
 }
 
-fn resolve_package_manifest_path(package: &str, metadata: &Metadata) -> anyhow::Result<PathBuf> {
-    workspace_package(metadata, package).map(|pkg| pkg.manifest_path.clone().into_std_path_buf())
+fn metadata_package<'a>(metadata: &'a Metadata, package: &str) -> Option<&'a Package> {
+    metadata.packages.iter().find(|pkg| pkg.name == package)
 }
 
 fn detect_ax_feature_prefix_family(
@@ -665,10 +670,15 @@ fn myplat_dependency_matches_arch(dep_name: &str, arch: &str) -> bool {
 
 fn myplat_dependency_prefixes_for_arch(arch: &str) -> &'static [&'static str] {
     match arch {
-        "x86_64" => &["axplat-x86-", "axplat-x86_64-"],
-        "aarch64" => &["axplat-aarch64-"],
-        "riscv64" => &["axplat-riscv64-"],
-        "loongarch64" => &["axplat-loongarch64-"],
+        "x86_64" => &[
+            "axplat-x86-",
+            "axplat-x86_64-",
+            "ax-plat-x86-",
+            "ax-plat-x86_64-",
+        ],
+        "aarch64" => &["axplat-aarch64-", "ax-plat-aarch64-"],
+        "riscv64" => &["axplat-riscv64-", "ax-plat-riscv64-"],
+        "loongarch64" => &["axplat-loongarch64-", "ax-plat-loongarch64-"],
         _ => &[],
     }
 }
@@ -680,55 +690,71 @@ fn linker_platform_name(platform_package: &str) -> &str {
         .unwrap_or(platform_package)
 }
 
-fn resolve_platform_config_path(
-    app_dir: &Path,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedPlatformConfig {
+    pub(crate) package: String,
+    pub(crate) config_path: PathBuf,
+    pub(crate) name: String,
+}
+
+pub(crate) fn resolve_platform_config(
+    package: &str,
+    target: &str,
+    features: &[String],
+    metadata: &Metadata,
+) -> anyhow::Result<ResolvedPlatformConfig> {
+    let platform_package = resolve_platform_package(package, target, features, metadata)?;
+    resolve_platform_config_by_package(&platform_package, metadata)
+}
+
+pub(crate) fn resolve_platform_config_by_package(
     platform_package: &str,
     metadata: &Metadata,
+) -> anyhow::Result<ResolvedPlatformConfig> {
+    let deps_metadata = cached_workspace_metadata_with_deps()
+        .context("failed to load dependency metadata for platform config resolution")?;
+    resolve_platform_config_by_package_with_metadata(platform_package, metadata, deps_metadata)
+}
+
+pub(crate) fn resolve_platform_config_by_package_with_metadata(
+    platform_package: &str,
+    metadata: &Metadata,
+    deps_metadata: &Metadata,
+) -> anyhow::Result<ResolvedPlatformConfig> {
+    let config_path = resolve_platform_config_path(platform_package, metadata, deps_metadata)?;
+    let name = read_platform_name(&config_path)
+        .unwrap_or_else(|| linker_platform_name(platform_package).to_string());
+    Ok(ResolvedPlatformConfig {
+        package: platform_package.to_string(),
+        config_path,
+        name,
+    })
+}
+
+pub(crate) fn resolve_platform_config_path(
+    platform_package: &str,
+    metadata: &Metadata,
+    deps_metadata: &Metadata,
 ) -> anyhow::Result<PathBuf> {
     if let Some(local_path) = find_local_platform_config_path(platform_package, metadata)? {
         return Ok(local_path);
     }
-
-    ensure_cargo_axplat_installed()?;
-
-    let workspace_root = crate::context::workspace_root_path()?;
-    let root_manifest = workspace_root.join("Cargo.toml");
-    let output = Command::new("cargo")
-        .arg("axplat")
-        .arg("info")
-        .arg("--manifest-path")
-        .arg(&root_manifest)
-        .arg("-C")
-        .arg(app_dir)
-        .arg("-c")
-        .arg(platform_package)
-        .exec_capture()
-        .with_context(|| format!("failed to run cargo axplat info for `{platform_package}`"))?;
-
-    let config_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if config_path.is_empty() {
-        bail!(
-            "cargo axplat info returned empty config path for package `{}`",
-            platform_package
-        );
+    if let Some(local_path) = find_local_platform_config_path(platform_package, deps_metadata)? {
+        return Ok(local_path);
     }
 
-    let config_path = PathBuf::from(config_path);
-    if !config_path.exists() {
-        bail!(
-            "platform config path does not exist: {}",
-            config_path.display()
-        );
-    }
-
-    Ok(config_path)
+    bail!(
+        "failed to resolve platform config for `{}`. Ensure the platform crate is a workspace \
+         member or dependency and contains an axconfig.toml next to its Cargo.toml",
+        platform_package
+    );
 }
 
 fn find_local_platform_config_path(
     platform_package: &str,
     metadata: &Metadata,
 ) -> anyhow::Result<Option<PathBuf>> {
-    if let Ok(pkg) = workspace_package(metadata, platform_package) {
+    if let Some(pkg) = metadata_package(metadata, platform_package) {
         let candidate = Path::new(pkg.manifest_path.as_std_path())
             .parent()
             .map(|dir| dir.join("axconfig.toml"));
@@ -752,62 +778,8 @@ fn find_local_platform_config_path(
     Ok(component_candidate.exists().then_some(component_candidate))
 }
 
-fn ensure_cargo_axplat_installed() -> anyhow::Result<()> {
-    if Command::new("cargo")
-        .arg("axplat")
-        .arg("--version")
-        .exec_capture()
-        .is_ok()
-    {
-        return Ok(());
-    }
-
-    warn!("`cargo axplat` not found, installing `cargo-axplat` via cargo");
-    Command::new("cargo")
-        .arg("install")
-        .arg("cargo-axplat")
-        .exec()
-        .context("failed to install cargo-axplat")?;
-    Ok(())
-}
-
-fn ensure_ax_config_gen_installed() -> anyhow::Result<()> {
-    if Command::new("ax-config-gen")
-        .arg("--version")
-        .exec_capture()
-        .is_ok()
-    {
-        return Ok(());
-    }
-
-    let workspace_root = crate::context::workspace_root_path()?;
-    let ax_config_gen_dir = workspace_root.join("components/axconfig-gen/axconfig-gen");
-
-    warn!(
-        "`ax-config-gen` not found, installing from local path {}",
-        ax_config_gen_dir.display()
-    );
-    Command::new("cargo")
-        .arg("install")
-        .arg("--path")
-        .arg(&ax_config_gen_dir)
-        .exec()
-        .with_context(|| {
-            format!(
-                "failed to install ax-config-gen from {}",
-                ax_config_gen_dir.display()
-            )
-        })?;
-    Ok(())
-}
-
 fn read_platform_name(platform_config: &Path) -> Option<String> {
-    let contents = fs::read_to_string(platform_config).ok()?;
-    let value: toml::Value = toml::from_str(&contents).ok()?;
-    value
-        .get("platform")
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string())
+    read_config_string(&[platform_config.to_path_buf()], "platform").ok()
 }
 
 fn generate_axconfig(
@@ -830,27 +802,24 @@ fn generate_axconfig(
     }
 
     let arch = target_arch_name(target)?;
-    let mut command = Command::new("ax-config-gen");
-    command
-        .arg(defconfig)
-        .arg(platform_config)
-        .arg("-w")
-        .arg(format!("arch=\"{arch}\""))
-        .arg("-w")
-        .arg(format!("platform=\"{platform_name}\""));
+    let mut writes = vec![
+        format!("arch=\"{arch}\""),
+        format!("platform=\"{platform_name}\""),
+    ];
     if let Some(max_cpu_num) = max_cpu_num {
-        command
-            .arg("-w")
-            .arg(format!("plat.max-cpu-num={max_cpu_num}"));
+        writes.push(format!("plat.max-cpu-num={max_cpu_num}"));
     }
-    for override_value in axconfig_overrides {
-        command.arg("-w").arg(override_value);
-    }
-    command
-        .arg("-o")
-        .arg(out_config)
-        .exec()
-        .context("failed to run ax-config-gen")?;
+    writes.extend(axconfig_overrides.iter().cloned());
+
+    generate_config(&GenerateOptions {
+        specs: vec![defconfig, platform_config.to_path_buf()],
+        oldconfig: None,
+        output: Some(out_config.to_path_buf()),
+        fmt: ax_config_gen::OutputFormat::Toml,
+        writes,
+        keep_backup: false,
+    })
+    .context("failed to generate axconfig")?;
 
     Ok(())
 }
@@ -877,6 +846,10 @@ mod tests {
 
     fn metadata_for_manifest(manifest_path: &Path) -> cargo_metadata::Metadata {
         workspace_metadata_root_manifest(manifest_path).unwrap()
+    }
+
+    fn metadata_for_manifest_with_deps(manifest_path: &Path) -> cargo_metadata::Metadata {
+        crate::context::workspace_metadata_root_manifest_with_deps(manifest_path).unwrap()
     }
 
     fn repo_metadata() -> cargo_metadata::Metadata {
@@ -908,6 +881,30 @@ mod tests {
         fs::write(app_dir.join("src/lib.rs"), "pub fn smoke() {}\n")?;
 
         Ok(root)
+    }
+
+    fn add_platform_package(
+        workspace: &Path,
+        package_name: &str,
+        config_package_name: &str,
+    ) -> anyhow::Result<()> {
+        let platform_dir = workspace.join("platform");
+        fs::create_dir_all(platform_dir.join("src"))?;
+        fs::write(
+            platform_dir.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+            ),
+        )?;
+        fs::write(platform_dir.join("src/lib.rs"), "")?;
+        fs::write(
+            platform_dir.join("axconfig.toml"),
+            format!(
+                "arch = \"aarch64\" # str\nplatform = \"custom-board\" # str\npackage = \
+                 \"{config_package_name}\" # str\n"
+            ),
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -945,17 +942,37 @@ mod tests {
     }
 
     #[test]
-    fn resolve_platform_config_path_uses_local_config_without_cargo_axplat() {
+    fn resolve_platform_config_path_uses_workspace_config() {
         let metadata = repo_metadata();
-        let app_dir = resolve_package_manifest_path("axvisor", &metadata)
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-
-        let path = resolve_platform_config_path(&app_dir, "axplat-riscv64-qemu-virt-hv", &metadata)
-            .unwrap();
+        let deps_metadata = workspace_metadata_with_deps().unwrap();
+        let path =
+            resolve_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata, &deps_metadata)
+                .unwrap();
 
         assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
+    }
+
+    #[test]
+    fn resolve_platform_config_path_uses_dependency_config() {
+        let workspace = temp_workspace(
+            "custom-app",
+            "ax-plat-aarch64-custom = { path = \"../platform\" }\n",
+        )
+        .unwrap();
+        add_platform_package(
+            &workspace,
+            "ax-plat-aarch64-custom",
+            "ax-plat-aarch64-custom",
+        )
+        .unwrap();
+
+        let manifest_path = workspace.join("Cargo.toml");
+        let metadata = metadata_for_manifest(&manifest_path);
+        let deps_metadata = metadata_for_manifest_with_deps(&manifest_path);
+        let path =
+            resolve_platform_config_path("ax-plat-aarch64-custom", &metadata, &deps_metadata)
+                .unwrap();
+
+        assert!(path.ends_with("platform/axconfig.toml"));
     }
 }

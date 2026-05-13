@@ -16,15 +16,16 @@ use axnet::{
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
-        AF_INET, AF_NETLINK, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD,
-        SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
+        AF_INET, AF_NETLINK, AF_PACKET, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP,
+        SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, sockaddr,
+        socklen_t,
     },
     netlink::{NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE},
 };
 
 use super::addr::SocketAddrExt;
 use crate::{
-    file::{FileLike, Socket, add_file_like, netlink::NetlinkSocket},
+    file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
     task::AsThread,
 };
@@ -32,6 +33,22 @@ use crate::{
 pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
     debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     let ty = raw_ty & 0xFF;
+
+    if domain == AF_PACKET {
+        if ty != SOCK_DGRAM {
+            warn!("Unsupported packet socket type: {ty}");
+            return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
+        }
+        if !current().as_thread().cred().has_cap_net_raw() {
+            return Err(AxError::from(LinuxError::EPERM));
+        }
+        let socket = PacketSocket::new(proto as u16);
+        if raw_ty & O_NONBLOCK != 0 {
+            socket.set_nonblocking(true)?;
+        }
+        let cloexec = raw_ty & O_CLOEXEC != 0;
+        return socket.add_to_fd_table(cloexec).map(|fd| fd as isize);
+    }
 
     let pid = current().as_thread().proc_data.proc.pid();
     let socket = match (domain, ty) {
@@ -100,6 +117,13 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
         }
         debug!("sys_bind <= fd: {fd}, netlink_addr: {addr:?}");
         socket.bind(addr)?;
+        return Ok(0);
+    }
+
+    if let Ok(packet) = PacketSocket::from_fd(fd) {
+        let addr =
+            SockAddrLl::read_from_user(addr.address().as_usize() as *const sockaddr, addrlen)?;
+        packet.bind_ll(addr)?;
         return Ok(0);
     }
 

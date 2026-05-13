@@ -309,6 +309,7 @@ where
             region,
             name: if name.is_empty() { None } else { Some(name) },
             part_uuid: Some(part_uuid),
+            bootable: false,
         });
     }
 

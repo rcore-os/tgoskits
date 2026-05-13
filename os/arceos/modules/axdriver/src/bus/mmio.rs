@@ -4,7 +4,7 @@ use crate::{AllDevices, prelude::*};
 impl AllDevices {
     pub(crate) fn probe_bus_devices(&mut self) {
         // TODO: parse device tree
-        #[cfg(feature = "virtio")]
+        #[cfg(virtio_dev)]
         for reg in ax_config::devices::VIRTIO_MMIO_RANGES {
             for_each_drivers!(type Driver, {
                 if let Some(dev) = Driver::probe_mmio(reg.0, reg.1) {

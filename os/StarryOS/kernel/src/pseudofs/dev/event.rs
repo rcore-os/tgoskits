@@ -1,5 +1,20 @@
 use alloc::{format, sync::Arc};
-use core::{any::Any, task::Context, time::Duration};
+use core::{
+    any::Any,
+    sync::atomic::{AtomicU32, Ordering},
+    task::Context,
+    time::Duration,
+};
+
+/// Number of registered `/dev/input/event*` nodes. Populated by
+/// [`input_devices`] at boot and read by sysfs so
+/// `/sys/class/input/event<N>` matches reality.
+static EVENT_DEVICE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Returns the number of `/dev/input/event*` devices currently exposed.
+pub fn input_device_count() -> u32 {
+    EVENT_DEVICE_COUNT.load(Ordering::Acquire)
+}
 
 #[allow(unused_imports)]
 use ax_driver::prelude::{
@@ -428,9 +443,10 @@ impl Pollable for EventDev {
 pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
     let mut inputs = DirMapping::new();
     let mut mice_alias: Option<Arc<EventDev>> = None;
+    let mut input_id: u32 = 0;
     let input_devices = ax_input::take_inputs();
-    let mut keys = [0; 0x300usize.div_ceil(8)];
-    for (i, mut device) in input_devices.into_iter().enumerate() {
+    for mut device in input_devices.into_iter() {
+        let mut keys = [0; 0x300usize.div_ceil(8)];
         assert!(device.get_event_bits(EventType::Key, &mut keys).unwrap());
 
         const BTN_MOUSE: usize = 0x110;
@@ -440,10 +456,11 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
         let dev = Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
-            DeviceId::new(13, 64 + i as u32),
+            DeviceId::new(13, 64 + input_id),
             event_dev.clone(),
         );
-        inputs.add(format!("event{i}"), dev);
+        inputs.add(format!("event{input_id}"), dev);
+        input_id += 1;
 
         if is_mouse && mice_alias.is_none() {
             mice_alias = Some(event_dev);
@@ -462,5 +479,6 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
         );
     }
 
+    EVENT_DEVICE_COUNT.store(input_id, Ordering::Release);
     inputs
 }

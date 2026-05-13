@@ -61,7 +61,7 @@ impl Inode {
         } else {
             DirEntry::new_file(
                 FileNode::new(Inode::new(self.fs.clone(), ino, None, path)),
-                inode_to_vfs_type(inode.is_dir(), inode.is_file(), inode.is_symlink()),
+                inode_to_vfs_type(inode.i_mode),
                 reference,
             )
         }
@@ -107,18 +107,23 @@ impl NodeOps for Inode {
         let mut state = self.fs.lock();
         let (fs, dev) = state.split();
         let inode = fs.get_inode_by_num(dev, self.ino).map_err(into_vfs_err)?;
+        let node_type = inode_to_vfs_type(inode.i_mode);
         Ok(Metadata {
             inode: self.ino.as_u64(),
             device: 0,
             nlink: inode.i_links_count as _,
-            mode: NodePermission::from_bits_truncate(inode.i_mode & 0o777),
-            node_type: inode_to_vfs_type(inode.is_dir(), inode.is_file(), inode.is_symlink()),
+            mode: NodePermission::from_bits_truncate(inode.permissions()),
+            node_type,
             uid: inode.uid(),
             gid: inode.gid(),
             size: inode.size(),
             block_size: fs.superblock.block_size(),
             blocks: inode.blocks_count(),
-            rdev: DeviceId::default(),
+            rdev: if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
+                decode_ext4_rdev(&inode.i_block)
+            } else {
+                DeviceId::default()
+            },
             atime: core::time::Duration::from_secs(inode.i_atime as u64),
             mtime: core::time::Duration::from_secs(inode.i_mtime as u64),
             ctime: core::time::Duration::from_secs(inode.i_ctime as u64),
@@ -131,13 +136,22 @@ impl NodeOps for Inode {
             let (fs, dev) = state.split();
             fs.modify_inode(dev, self.ino, |inode| {
                 if let Some(mode) = update.mode {
-                    inode.i_mode = (inode.i_mode & !0o777) | mode.bits();
+                    inode.i_mode =
+                        (inode.i_mode & rsext4::disknode::Ext4Inode::S_IFMT) | mode.bits();
                 }
                 if let Some((uid, gid)) = update.owner {
                     inode.i_uid = (uid & 0xffff) as u16;
                     inode.l_i_uid_high = ((uid >> 16) & 0xffff) as u16;
                     inode.i_gid = (gid & 0xffff) as u16;
                     inode.l_i_gid_high = ((gid >> 16) & 0xffff) as u16;
+                }
+                if let Some(rdev) = update.rdev {
+                    let ty = inode_to_vfs_type(inode.i_mode);
+                    if matches!(ty, NodeType::CharacterDevice | NodeType::BlockDevice) {
+                        let (b0, b1) = encode_ext4_rdev(rdev);
+                        inode.i_block[0] = b0;
+                        inode.i_block[1] = b1;
+                    }
                 }
                 if let Some(atime) = update.atime {
                     inode.i_atime = atime.as_secs() as u32;
@@ -503,7 +517,7 @@ impl DirNodeOps for Inode {
 
             let mode_bits = permission.bits();
             fs.modify_inode(dev, ino, |node| {
-                node.i_mode = (node.i_mode & !0o777) | mode_bits;
+                node.i_mode = (node.i_mode & rsext4::disknode::Ext4Inode::S_IFMT) | mode_bits;
             })
             .map_err(into_vfs_err)?;
             Self::update_ctime_with(fs, dev, ino)?;
@@ -598,5 +612,128 @@ fn join_child_path(parent: &str, name: &str) -> String {
         format!("/{name}")
     } else {
         format!("{parent}/{name}")
+    }
+}
+
+/// Bit widths for the ext4 *old* device-number format (16-bit, u16).
+const EXT4_OLD_MAJOR_BITS: u32 = 8;
+const EXT4_OLD_MINOR_BITS: u32 = 8;
+const EXT4_OLD_MAJOR_MAX: u32 = (1 << EXT4_OLD_MAJOR_BITS) - 1; // 255
+const EXT4_OLD_MINOR_MAX: u32 = (1 << EXT4_OLD_MINOR_BITS) - 1; // 255
+
+/// Bit widths for the ext4 *new* device-number format (32-bit, u32).
+/// Matches the Linux `new_encode_dev` / `new_decode_dev` layout.
+const EXT4_NEW_MAJOR_BITS: u32 = 12;
+const EXT4_NEW_MINOR_BITS: u32 = 20;
+const EXT4_NEW_MAJOR_MASK: u32 = (1 << EXT4_NEW_MAJOR_BITS) - 1; // 0xFFF
+const EXT4_NEW_MINOR_LOW_MASK: u32 = (1 << EXT4_OLD_MINOR_BITS) - 1; // 0xFF
+const EXT4_NEW_MINOR_HIGH_MASK: u32 =
+    ((1 << EXT4_NEW_MINOR_BITS) - 1) & !((1 << EXT4_OLD_MINOR_BITS) - 1); // 0xFFF00
+
+/// Decodes an ext4 on-disk device number from `i_block[0..1]`.
+///
+/// ext4 uses two encoding formats:
+/// - **Old** (u16): when major ≤ 255 && minor ≤ 255, stored in `i_block[0]` low 16 bits.
+/// - **New** (u32): otherwise, `i_block[0] = 0` and `i_block[1] = new_encode_dev`.
+fn decode_ext4_rdev(i_block: &[u32; 15]) -> DeviceId {
+    if i_block[0] & 0xFFFF != 0 {
+        // Old format: i_block[0] low 16 bits = old_encode_dev(dev)
+        let v = i_block[0] as u16;
+        let major = (v >> EXT4_OLD_MINOR_BITS) & (EXT4_OLD_MAJOR_MAX as u16);
+        let minor = v & (EXT4_OLD_MINOR_MAX as u16);
+        DeviceId::new(major as u32, minor as u32)
+    } else {
+        // New format: i_block[1] = new_encode_dev(dev)
+        let v = i_block[1];
+        let major = (v >> EXT4_OLD_MINOR_BITS) & EXT4_NEW_MAJOR_MASK;
+        let minor =
+            (v & EXT4_NEW_MINOR_LOW_MASK) | ((v >> EXT4_NEW_MAJOR_BITS) & EXT4_NEW_MINOR_HIGH_MASK);
+        DeviceId::new(major, minor)
+    }
+}
+
+/// Encodes a `DeviceId` into ext4 on-disk `i_block[0..1]` format.
+///
+/// Returns `(i_block[0], i_block[1])`.
+fn encode_ext4_rdev(rdev: DeviceId) -> (u32, u32) {
+    let major = rdev.major();
+    let minor = rdev.minor();
+    if major <= EXT4_OLD_MAJOR_MAX && minor <= EXT4_OLD_MINOR_MAX {
+        // Old format: old_encode_dev
+        ((major << EXT4_OLD_MINOR_BITS) | minor, 0)
+    } else {
+        // New format: new_encode_dev
+        let encoded = (minor & EXT4_NEW_MINOR_LOW_MASK)
+            | ((major & EXT4_NEW_MAJOR_MASK) << EXT4_OLD_MINOR_BITS)
+            | ((minor & EXT4_NEW_MINOR_HIGH_MASK) << EXT4_NEW_MAJOR_BITS);
+        (0, encoded)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-trip: encode a DeviceId to i_block, then decode it back.
+    fn roundtrip(major: u32, minor: u32) -> (u32, u32) {
+        let dev = DeviceId::new(major, minor);
+        let (b0, b1) = encode_ext4_rdev(dev);
+        let mut iblock = [0u32; 15];
+        iblock[0] = b0;
+        iblock[1] = b1;
+        let back = decode_ext4_rdev(&iblock);
+        (back.major(), back.minor())
+    }
+
+    #[test]
+    fn rdev_old_format_small() {
+        // (1, 3) — console, old format
+        assert_eq!(roundtrip(1, 3), (1, 3));
+    }
+
+    #[test]
+    fn rdev_old_format_boundary() {
+        // Maximum old-format values
+        assert_eq!(roundtrip(255, 255), (255, 255));
+        assert_eq!(roundtrip(0, 0), (0, 0));
+    }
+
+    #[test]
+    fn rdev_new_format_minor_exceeds_old() {
+        // minor = 256 triggers new format
+        assert_eq!(roundtrip(1, 256), (1, 256));
+    }
+
+    #[test]
+    fn rdev_new_format_large_minor() {
+        assert_eq!(roundtrip(1, 1040), (1, 1040));
+        assert_eq!(roundtrip(8, 511), (8, 511));
+    }
+
+    #[test]
+    fn rdev_old_on_disk_decodes_correctly() {
+        // Simulate what Linux writes for (1,3) in old format:
+        // i_block[0] = (1 << 8) | 3 = 259
+        let mut iblock = [0u32; 15];
+        iblock[0] = (1 << EXT4_OLD_MINOR_BITS) | 3;
+        let dev = decode_ext4_rdev(&iblock);
+        assert_eq!(dev.major(), 1);
+        assert_eq!(dev.minor(), 3);
+    }
+
+    #[test]
+    fn rdev_new_on_disk_decodes_correctly() {
+        // Simulate what Linux writes for (1, 256) in new format:
+        // new_encode_dev: (256 & 0xFF) | (1 << 8) | ((256 & 0xFFF00) << 12)
+        // = 0 | 0x100 | (0x100 << 12) = 0x100 | 0x100000 = 0x100100
+        let encoded = (256u32 & EXT4_NEW_MINOR_LOW_MASK)
+            | ((1u32 & EXT4_NEW_MAJOR_MASK) << EXT4_OLD_MINOR_BITS)
+            | ((256u32 & EXT4_NEW_MINOR_HIGH_MASK) << EXT4_NEW_MAJOR_BITS);
+        let mut iblock = [0u32; 15];
+        iblock[0] = 0;
+        iblock[1] = encoded;
+        let dev = decode_ext4_rdev(&iblock);
+        assert_eq!(dev.major(), 1);
+        assert_eq!(dev.minor(), 256);
     }
 }

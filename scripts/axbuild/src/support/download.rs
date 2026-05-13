@@ -12,6 +12,7 @@ use reqwest::{StatusCode, header};
 use tokio::{fs as tokio_fs, io::AsyncWriteExt};
 
 const DOWNLOAD_LOCK_STALE_AFTER: Duration = Duration::from_secs(60 * 60 * 2);
+const DOWNLOAD_LOCK_WAIT: Duration = Duration::from_millis(100);
 
 pub(crate) fn http_client() -> anyhow::Result<reqwest::Client> {
     reqwest::Client::builder()
@@ -239,7 +240,7 @@ pub(crate) async fn acquire_path_lock(path: &Path) -> anyhow::Result<PathLock> {
                     let _ = tokio_fs::remove_file(&lock_path).await;
                     continue;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(DOWNLOAD_LOCK_WAIT).await;
             }
             Err(err) => {
                 return Err(err)

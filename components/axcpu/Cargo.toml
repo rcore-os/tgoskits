@@ -26,6 +26,7 @@ fp-simd = []
 tls = []
 uspace = []
 arm-el2 = ["ax-page-table-entry/arm-el2"]
+xuantie-c9xx = ["ax-page-table-entry/xuantie-c9xx"]
 
 [dependencies]
 axbacktrace = { workspace = true }
