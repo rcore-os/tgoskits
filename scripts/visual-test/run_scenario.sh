@@ -39,7 +39,8 @@ done
 [[ -n "$ARCH" && -n "$SCENARIO" ]] \
     || die "both --arch and --scenario are required"
 
-REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 SCENARIO_DIR="$REPO_ROOT/test-suit/starryos/visual/$SCENARIO"
 GOLDEN_PATH="$REPO_ROOT/test-suit/starryos/golden/$ARCH/$SCENARIO.ppm"
 [[ -d "$SCENARIO_DIR" ]] || die "no scenario dir at $SCENARIO_DIR"
