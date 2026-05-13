@@ -226,6 +226,13 @@ impl Ext4FileSystem {
                     fs.clear_recovery_state();
                 }
             }
+            // If the filesystem was created without a journal (e.g. small images
+            // where mkfs.ext4 omits it), disable journal_use so that metadata
+            // writes bypass the journal path instead of hitting the
+            // "system uninitialized" guard on every write.
+            if !fs.superblock.has_journal() {
+                block_dev.set_journal_use(false);
+            }
         }
 
         // rootinode check !

@@ -121,6 +121,12 @@ typedef struct {{
             .derive_default(true)
             .size_t_is_usize(false)
             .use_core();
+        for feature in ["MULTITASK", "SMP", "LOCKDEP"] {
+            println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{feature}");
+            if std::env::var_os(format!("CARGO_FEATURE_{feature}")).is_some() {
+                builder = builder.clang_arg(format!("-DAX_CONFIG_{feature}"));
+            }
+        }
 
         // Remove the "-softfloat" suffix for some targets.
         if let Some(llvm_target) = target.strip_suffix("-softfloat") {

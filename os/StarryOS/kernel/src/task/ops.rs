@@ -1,4 +1,5 @@
 use alloc::{
+    collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -44,8 +45,7 @@ struct ZombieEntry {
 /// Maps PID → [`ZombieEntry`].  Inserted by `register_zombie` (called from
 /// `do_exit` before `process.exit()`), removed by `unregister_zombie` (called
 /// from `waitpid` after `child.free()`).
-static ZOMBIE_TABLE: RwLock<alloc::collections::BTreeMap<Pid, ZombieEntry>> =
-    RwLock::new(alloc::collections::BTreeMap::new());
+static ZOMBIE_TABLE: RwLock<BTreeMap<Pid, ZombieEntry>> = RwLock::new(BTreeMap::new());
 
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
 
@@ -167,6 +167,34 @@ pub fn get_zombie_process(pid: Pid) -> Option<Arc<Process>> {
 /// (and its `cred`) lives until the zombie is reaped by `waitpid`.
 pub fn get_zombie_cred(pid: Pid) -> Option<Arc<Cred>> {
     ZOMBIE_TABLE.read().get(&pid).map(|e| e.cred.clone())
+}
+
+/// Finds the process with the given PID.
+///
+/// A zombie process may no longer have live [`ProcessData`] after its last
+/// thread exits, but POSIX process-id queries such as `getpgid(pid)` and
+/// `kill(pid, 0)` must still see it until the parent reaps it.
+pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
+    if pid == 0 {
+        return Ok(current().as_thread().proc_data.proc.clone());
+    }
+    if let Ok(proc_data) = get_process_data(pid) {
+        return Ok(proc_data.proc.clone());
+    }
+    get_zombie_process(pid).ok_or(AxError::NoSuchProcess)
+}
+
+/// Finds the credentials for a process that may already be a zombie.
+pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
+    if pid == 0 {
+        return Ok(current().as_thread().cred());
+    }
+    if let Ok(task) = get_task(pid)
+        && let Some(thr) = task.try_as_thread()
+    {
+        return Ok(thr.cred());
+    }
+    get_zombie_cred(pid).ok_or(AxError::NoSuchProcess)
 }
 
 /// Finds the process group with the given PGID.

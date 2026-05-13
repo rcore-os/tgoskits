@@ -294,6 +294,15 @@ pub fn release_locks_on_close(fd: FileDescriptor) {
 /// resources are properly released. Without this, parent processes blocking on
 /// pipe reads will never receive EOF.
 pub fn close_all_fds() {
+    // Acquire the write lock before checking strong_count. The clone(CLONE_FILES)
+    // path in syscall/task/clone.rs also acquires FD_TABLE.read() before cloning
+    // the Arc, creating a shared synchronization boundary. This ensures:
+    // - If close_all_fds acquires the write lock first, clone blocks on read lock
+    //   until we release, so strong_count cannot change during our check.
+    // - If clone holds the read lock first, we block on write lock, and by the
+    //   time we proceed strong_count already reflects the clone.
+    let mut table = FD_TABLE.write();
+
     // CLONE_FILES may share the same fd table across multiple tasks/processes.
     // In that case, an exiting sharer must not clear the whole table, or other
     // live sharers (including the parent) will lose stdout/stderr unexpectedly.
@@ -301,7 +310,6 @@ pub fn close_all_fds() {
         return;
     }
 
-    let mut table = FD_TABLE.write();
     let ids: alloc::vec::Vec<usize> = table.ids().collect();
     let mut removed = alloc::vec::Vec::with_capacity(ids.len());
     for id in ids {

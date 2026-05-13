@@ -98,4 +98,25 @@ pub trait InputDriverOps: BaseDriverOps {
     ///
     /// If no events are available, `Err(DevError::Again)` is returned.
     fn read_event(&mut self) -> DevResult<Event>;
+
+    /// Fetches the input property bitmap (`EVIOCGPROP` equivalent).
+    ///
+    /// libinput reads this to distinguish pointers (`INPUT_PROP_POINTER`)
+    /// from touchscreens (`INPUT_PROP_DIRECT`) and graphics tablets. Writes
+    /// at most `out.len()` bytes; returns the number of bytes populated.
+    /// Default returns 0 (no props advertised) for drivers that don't yet
+    /// expose this information.
+    fn get_prop_bits(&mut self, _out: &mut [u8]) -> DevResult<usize> {
+        Ok(0)
+    }
+
+    /// Fetches the [`AbsInfo`] for an absolute axis (`EVIOCGABS` equivalent).
+    ///
+    /// libinput needs `min`/`max`/`res` to normalize raw axis values into
+    /// compositor coordinates. Default returns
+    /// `Err(DevError::Unsupported)`; drivers that advertise `EV_ABS` must
+    /// override.
+    fn get_abs_info(&mut self, _axis: u8) -> DevResult<AbsInfo> {
+        Err(DevError::Unsupported)
+    }
 }

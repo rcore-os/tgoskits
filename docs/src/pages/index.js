@@ -71,6 +71,128 @@ const iconLibrary = {
   ),
 };
 
+function ComponentWorkspaceDiagram() {
+  const repos = [
+    { name: 'axallocator', path: 'components/', tone: 'memory' },
+    { name: 'arm_vcpu', path: 'components/', tone: 'virtualization' },
+    { name: 'rknpu', path: 'drivers/npu/', tone: 'driver' },
+  ];
+
+  const hubItems = [
+    { title: '独立组件汇聚', desc: ['60+ 个 subtree 仓库', '内存 · 调度 · 设备 · VFS · 虚拟化'] },
+    { title: 'Subtree 同步工具', desc: ['repo.py list / pull / push', '集成验证后同步回上游'] },
+    { title: '来源边界清晰', desc: ['repos.csv · target_dir · category'] },
+  ];
+
+  return (
+    <div className="workspace-diagram" aria-label="Git Subtree component workspace workflow">
+      <div className="workspace-diagram__title">Git Subtree 工作流：组件仓库 ↔ 统一工作区 ↔ 上游</div>
+
+      <div className="workspace-diagram__flow">
+        <div className="workspace-diagram__repos workspace-diagram__repos--source">
+          {repos.map((repo) => (
+            <div className={`workspace-diagram__repo workspace-diagram__repo--${repo.tone}`} key={repo.name}>
+              <span className="workspace-diagram__repo-mark" aria-hidden="true" />
+              <code className="workspace-diagram__repo-name">{repo.name}</code>
+              <span className="workspace-diagram__repo-path">{repo.path}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="workspace-diagram__lane workspace-diagram__lane--pull" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+
+        <div className="workspace-diagram__hub">
+          <strong>TGOSKits</strong>
+          <span>统一集成工作区</span>
+          <div className="workspace-diagram__hub-divider" />
+          {hubItems.map((item, index) => (
+            <div className="workspace-diagram__hub-item" key={item.title}>
+              <b className={index === 1 ? 'is-alt' : ''}>{item.title}</b>
+              {item.desc.map((line) => (
+                <span key={line}>{line}</span>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="workspace-diagram__lane workspace-diagram__lane--push" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+
+        <div className="workspace-diagram__repos workspace-diagram__repos--upstream">
+          {repos.map((repo) => (
+            <div className={`workspace-diagram__repo workspace-diagram__repo--${repo.tone}`} key={`${repo.name}-upstream`}>
+              <span className="workspace-diagram__repo-mark" aria-hidden="true" />
+              <code className="workspace-diagram__repo-name">{repo.name}</code>
+              <span className="workspace-diagram__repo-path">独立仓库</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="workspace-diagram__command">
+        <code>$ python3 scripts/repo/repo.py list</code>
+        <span>查看组件仓库映射与同步状态</span>
+      </div>
+
+      <div className="workspace-diagram__lineage">
+        <span>← 组件仓库</span>
+        <strong>集成验证</strong>
+        <span>上游仓库 →</span>
+      </div>
+
+      <div className="workspace-diagram__tools">
+        <code>$ repo.py pull</code>
+        <code>$ repo.py push</code>
+        <code>repos.csv</code>
+      </div>
+    </div>
+  );
+}
+
+function SystemsDiagram({ systems }) {
+  return (
+    <div className="systems-diagram" aria-label="Shared components powering ArceOS StarryOS and Axvisor">
+      <div className="systems-diagram__cards">
+        {systems.map((system) => (
+          <article className={`systems-diagram__card ${system.accent}`} key={system.name}>
+            <div className="systems-diagram__header">
+              <h3>{system.name}</h3>
+            </div>
+            <div className="systems-diagram__body">
+              <strong>{system.subtitle}</strong>
+              <span className="systems-diagram__tag">{system.tag}</span>
+              <p>{system.desc}</p>
+              <ul>
+                {system.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <div className="systems-diagram__connectors" aria-hidden="true">
+        {systems.map((system) => (
+          <span className={system.accent} key={system.name} />
+        ))}
+      </div>
+
+      <div className="systems-diagram__foundation">
+        <strong>共享组件基础层</strong>
+        <code>components/ · ax* crates · starry-* · drivers/ · platform/</code>
+      </div>
+    </div>
+  );
+}
+
 function SectionShell({ id, className, eyebrow, title, description, children, framed = true }) {
   return (
     <section className={`section-shell ${className || ''}`} id={id}>
@@ -91,7 +213,7 @@ function SectionShell({ id, className, eyebrow, title, description, children, fr
 function HeroBanner() {
   const heroStats = [
     { label: '核心系统', value: '3' },
-    { label: '共享组件', value: '140+' },
+    { label: '共享组件', value: '190+' },
     { label: '主流架构', value: '4' },
     { label: '统一命令入口', value: 'xtask' },
   ];
@@ -137,8 +259,8 @@ function HeroBanner() {
             <em>面向系统软件研发的一体化工作区</em>
           </h1>
           <p className="lead">
-            汇聚 ArceOS、StarryOS、Axvisor 与共享组件栈，在同一仓库中组织系统内核、
-            虚拟化、平台适配、测试验证和构建自动化，形成连贯的工程开发入口。
+            ArceOS、StarryOS、Axvisor 三条系统路径共享 190+ Rust crate，
+            通过 cargo xtask 统一构建、QEMU 运行和分层验证，在同一仓库内完成从组件开发到系统集成的完整闭环。
           </p>
           <div className="hero-actions">
             <Link className="button button--primary button--hero" to="/docs/introduction/overview">
@@ -220,38 +342,38 @@ function CapabilitySection() {
   const features = [
     {
       icon: 'orbit',
-      title: '统一入口',
-      desc: '围绕根目录文档与 cargo xtask 组织日常开发入口，降低系统间切换成本。',
+      title: '统一构建入口',
+      desc: 'cargo xtask 子命令覆盖构建、运行、测试与发布，单条命令切换系统路径与目标架构。',
       to: '/docs/build/overview',
     },
     {
       icon: 'layers',
-      title: '组件共享',
-      desc: '基础能力以独立 crate 组织，被多个系统路径复用，职责边界更清晰。',
+      title: '组件化架构',
+      desc: '内存分配、调度器、文件系统、网络栈等以独立 crate 提取，系统通过组合 crate 而非 fork 衍生。',
       to: '/docs/development/components',
     },
     {
       icon: 'shield',
-      title: '安全实现',
-      desc: '以内存安全为优先，围绕 Rust 构建可维护的系统软件组件与接口。',
+      title: 'Rust 内存安全',
+      desc: '内核、驱动与虚拟化路径均基于 Rust 实现，在编译期消除缓冲区溢出与数据竞争等常见系统漏洞。',
       to: '/docs/architecture/overview',
     },
     {
       icon: 'pulse',
-      title: '多架构支持',
-      desc: '围绕 riscv64、aarch64、x86_64、loongarch64 形成可迁移的构建与验证链路。',
+      title: '四架构支持',
+      desc: 'riscv64、aarch64、x86_64、loongarch64 均可通过 xtask 一键构建与 QEMU 运行，接口统一而适配独立。',
       to: '/docs/introduction/hardware',
     },
     {
       icon: 'chip',
-      title: '构建闭环',
-      desc: '从配置、构建、镜像生成到 QEMU 运行与快照管理形成完整流程。',
+      title: '镜像与快照闭环',
+      desc: '从配置生成、交叉编译、镜像打包到 QEMU 启动与快照管理，构建产物可追溯、可复现。',
       to: '/docs/build/overview',
     },
     {
       icon: 'server',
-      title: '验证体系',
-      desc: '从 host 侧测试到系统级运行验证，覆盖组件、系统和平台多个层面。',
+      title: '分层验证策略',
+      desc: 'Host 侧 cargo test 与 clippy 先行，系统级 QEMU 运行验证跟进，板级回归兜底，验证粒度逐层放大。',
       to: '/docs/build/test/overview',
     },
   ];
@@ -261,8 +383,8 @@ function CapabilitySection() {
       id="capabilities"
       className="section-shell--capabilities"
       eyebrow="Core Capabilities"
-      title="围绕系统软件工程构建统一能力面"
-      description="统一入口、组件共享、安全实现、多架构适配、构建闭环与分层验证构成项目的六项核心能力。"
+      title="面向系统软件工程的核心工程能力"
+      description="构建自动化、组件化架构、内存安全、多架构支持、镜像闭环与分层验证——覆盖从开发到发布的完整链路。"
       framed={false}
     >
       <div className="feature-grid">
@@ -313,16 +435,16 @@ function ArchitectureSection() {
 
   const notes = [
     {
-      title: '系统层清晰分工',
-      desc: 'ArceOS 提供模块化内核底座，StarryOS 复用其能力扩展 Linux 兼容语义，Axvisor 在同一组件基础上组织虚拟化路径。',
+      title: '自底向上的依赖约束',
+      desc: '下层 crate 不依赖上层实现，组件层不引用系统层代码，平台层不感知具体系统。依赖方向单一，修改影响可控。',
     },
     {
-      title: '组件层承接复用',
-      desc: '内存、调度、文件系统、网络、虚拟化与驱动 crate 收敛在 components/，系统实现通过稳定接口组合能力。',
+      title: '水平切分的复用边界',
+      desc: '同一层的 crate 通过 trait 或接口抽象解耦，系统通过组合而非继承获取能力，新增系统路径无需修改现有组件。',
     },
     {
-      title: '平台层闭合验证',
-      desc: '平台适配、构建脚本与 test-suit 把 QEMU、物理板卡和 CI 检查串成反馈链路，让架构改动可验证、可回归。',
+      title: '验证链路与架构层级对应',
+      desc: 'Host 测试覆盖组件层，QEMU 运行覆盖系统层，板级回归覆盖平台层——验证粒度与架构层级一一映射。',
     },
   ];
 
@@ -331,8 +453,8 @@ function ArchitectureSection() {
       id="architecture"
       className="section-shell--architecture"
       eyebrow="Architecture"
-      title="从组件层到系统层，信息结构保持稳定且可推导"
-      description="仓库按 components / os / platform / test-suit 四层组织，从基础 crate 到系统实现再到平台适配形成清晰依赖关系。"
+      title="四层分层，依赖关系自底向上可推导"
+      description="场景入口依赖系统形态，系统形态依赖共享组件，共享组件依赖平台抽象——每一层的变更范围可通过依赖图精确界定。"
       framed={false}
     >
       <div className="architecture-map">
@@ -384,53 +506,16 @@ function ArchitectureSection() {
 }
 
 function ComponentWorkspaceSection() {
-  const workspaceItems = [
-    {
-      title: '独立组件汇聚',
-      desc: 'components/ 下维护 60 多个可复用 crate，覆盖内存、调度、设备、虚拟化、文件系统、平台抽象等系统软件基础能力。',
-      tags: ['components/*', 'ax* crates', 'starry-*', 'arch backends'],
-    },
-    {
-      title: 'Subtree 同步工具',
-      desc: 'scripts/repo/repo.py 负责列出、拉取和推送组件仓库，让独立组件可以在统一工作区内集成验证后再同步回上游。',
-      tags: ['repo.py list', 'repo.py pull', 'repo.py push', 'repos.csv'],
-    },
-    {
-      title: '来源边界清晰',
-      desc: 'repos.csv 显式记录组件来源、目标路径、分类和分支信息，便于维护者判断哪些改动属于本仓库集成，哪些需要同步回组件仓库。',
-      tags: ['target_dir', 'category', 'branch', 'description'],
-    },
-  ];
-
   return (
     <SectionShell
       id="component-workspace"
       className="section-shell--component-workspace"
       eyebrow="Component Workspace"
-      title="60 多个独立组件在一个工作区内集成、同步与来源管理"
-      description="TGOSKits 不只是普通 monorepo，而是通过 Git Subtree 管理独立组件仓库，用显式清单和维护脚本把组件来源、目标路径与同步动作收束到同一入口。"
+      title="Git Subtree 管理的组件同步工作流"
+      description="每个组件同时维护独立仓库与工作区副本，通过 repo.py pull/push 双向同步，集成验证通过后才回推上游。"
       framed={false}
     >
-      <div className="workspace-grid">
-        {workspaceItems.map((item) => (
-          <article className="workspace-card" key={item.title}>
-            <h3>{item.title}</h3>
-            <p>{item.desc}</p>
-            <div className="workspace-tags">
-              {item.tags.map((tag) => (
-                <code key={tag}>{tag}</code>
-              ))}
-            </div>
-          </article>
-        ))}
-      </div>
-      <div className="workspace-command-strip">
-        <code>python3 scripts/repo/repo.py list</code>
-        <span>查看组件仓库映射与同步状态</span>
-        <Link className="button button--outline button--hero button--compact" to="/docs/contributing/repo">
-          查看仓库维护说明
-        </Link>
-      </div>
+      <ComponentWorkspaceDiagram />
     </SectionShell>
   );
 }
@@ -438,25 +523,28 @@ function ComponentWorkspaceSection() {
 function SystemsSection() {
   const systems = [
     {
+      accent: 'accent-arceos',
       name: 'ArceOS',
-      accentClass: 'accent-arceos',
-      desc: '模块化内核路径，是多个系统能力向上复用的基础层。',
-      items: ['聚焦模块、平台和示例应用', '适合理解基础能力如何组合成系统', '也是 StarryOS 与 Axvisor 的底座之一'],
-      to: '/docs/development/arceos',
+      subtitle: '模块化内核',
+      tag: '组件组合层',
+      desc: '以模块化设计组织内核能力，每个模块对应一个独立 crate，可通过配置裁剪组合出不同形态的系统。',
+      items: ['模块化 crates: axlog, axnet, axfs, axhal …', 'examples 覆盖从 helloworld 到完整系统', 'StarryOS 与 Axvisor 的直接依赖'],
     },
     {
+      accent: 'accent-starry',
       name: 'StarryOS',
-      accentClass: 'accent-starry',
-      desc: '建立在 ArceOS 之上的 Linux 兼容系统，强调内核与 rootfs 联动。',
-      items: ['覆盖 syscall、进程、信号等核心语义', '包含 rootfs 与用户态验证路径', '适合完整 OS 路径开发与调试'],
-      to: '/docs/development/starryos',
+      subtitle: 'Linux 兼容 OS',
+      tag: 'POSIX 兼容层',
+      desc: '在 ArceOS 模块基础上实现 Linux 系统调用接口，支持 ELF 加载、进程管理、信号处理与 rootfs 引导。',
+      items: ['syscall 覆盖: 文件 I/O、进程、信号、网络', 'rootfs 构建与用户态程序验证', 'Linux 兼容性 test-suit 回归'],
     },
     {
+      accent: 'accent-axvisor',
       name: 'Axvisor',
-      accentClass: 'accent-axvisor',
-      desc: 'Type-I Hypervisor 路径，围绕板级配置、VM 配置和 Guest 镜像组织开发流程。',
-      items: ['覆盖 VM、vCPU、虚拟设备与地址空间抽象', '强调虚拟化组件与板级能力协作', '适合系统与虚拟化联合验证'],
-      to: '/docs/development/axvisor',
+      subtitle: 'Type-I Hypervisor',
+      tag: '虚拟化层',
+      desc: '裸机 Hypervisor，管理 VM 生命周期、vCPU 调度、虚拟地址空间与虚拟设备，支持多 Guest 并行运行。',
+      items: ['VM / vCPU 生命周期管理', '虚拟设备: UART、块设备、网络', '多架构 Guest: ArceOS、Linux 等'],
     },
   ];
 
@@ -465,30 +553,11 @@ function SystemsSection() {
       id="systems"
       className="section-shell--systems"
       eyebrow="Systems"
-      title="三条系统路径，共享组件基础但面向不同开发目标"
-      description="ArceOS 提供模块化内核基础，StarryOS 在其上构建 Linux 兼容系统，Axvisor 聚焦 Type-I 虚拟化场景，三者共享组件栈但面向不同目标。"
+      title="三条系统路径，各自聚焦不同抽象层级"
+      description="ArceOS 关注模块组合与平台适配，StarryOS 关注 POSIX 语义与用户态兼容，Axvisor 关注虚拟化抽象与 Guest 管理。"
       framed={false}
     >
-      <div className="systems-grid">
-        {systems.map((system) => (
-          <article className={`system-card ${system.accentClass}`} key={system.name}>
-            <div className="system-card__header">
-              <h3>{system.name}</h3>
-            </div>
-            <div className="system-card__body">
-              <p>{system.desc}</p>
-              <ul>
-                {system.items.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-              <Link className="button button--primary button--hero button--compact" to={system.to}>
-                进入指南
-              </Link>
-            </div>
-          </article>
-        ))}
-      </div>
+      <SystemsDiagram systems={systems} />
     </SectionShell>
   );
 }
@@ -497,29 +566,28 @@ function WorkflowSection() {
   const steps = [
     {
       index: '01',
-      title: '建立仓库心智模型',
-      desc: '先阅读 overview、repo 等文档，明确系统层、组件层和平台层之间的关系。',
+      title: '理解仓库分层',
+      desc: '阅读 overview 与 repo 文档，建立组件层、系统层和平台层的心智模型。',
       to: '/docs/introduction/overview',
+      linkLabel: '项目概览',
+      command: 'docs/introduction/overview',
     },
     {
       index: '02',
-      title: '跑通最短命令路径',
-      desc: '从 quick start 或目标系统指南入手，把本地构建和 QEMU 运行路径先打通。',
+      title: '跑通 QEMU 构建',
+      desc: '选择目标系统，用 xtask 一条命令完成编译、镜像生成和虚拟平台运行。',
       to: '/docs/quickstart/overview',
+      linkLabel: '快速开始',
+      command: 'cargo xtask arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf',
     },
     {
       index: '03',
-      title: '深入设计与验证',
-      desc: '进入 architecture、build、test、guest config 等文档，理解底层设计和验证策略。',
+      title: '参与开发与验证',
+      desc: '进入具体系统指南，了解目录约定、构建命令和验证策略后开始贡献。',
       to: '/docs/architecture/overview',
+      linkLabel: '架构与验证',
+      command: 'cargo xtask clippy && cargo xtask test',
     },
-  ];
-
-  const commands = [
-    'cargo xtask arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf',
-    'cargo xtask starry rootfs --arch riscv64',
-    'cargo xtask axvisor qemu --arch aarch64',
-    'cargo xtask clippy',
   ];
 
   return (
@@ -527,35 +595,28 @@ function WorkflowSection() {
       id="workflow"
       className="section-shell--workflow"
       eyebrow="Getting Started"
-      title="首页即入口，阅读顺序与命令顺序相互对应"
-      description="从理解项目结构、跑通 QEMU 构建运行，到深入架构设计与验证策略，按顺序渐进式进入开发。"
+      title="三步进入开发：理解 → 构建 → 验证"
+      description="先建立分层心智模型，再跑通 QEMU 构建运行，最后深入具体系统的开发与验证流程。"
       framed={false}
     >
-      <div className="split-layout split-layout--workflow">
-        <div className="workflow-timeline">
-          {steps.map((step) => (
-            <Link className="workflow-card" key={step.title} to={step.to}>
+      <div className="workflow-timeline">
+        {steps.map((step) => (
+          <div className="workflow-column" key={step.title}>
+            <div className="workflow-card__marker">
               <span className="workflow-index">{step.index}</span>
-              <h3>{step.title}</h3>
-              <p>{step.desc}</p>
-            </Link>
-          ))}
-        </div>
-        <div className="command-board">
-          <h3>高频命令路径</h3>
-          <div className="command-list">
-            {commands.map((command) => (
-              <code className="command-pill" key={command}>
-                {command}
-              </code>
-            ))}
+            </div>
+            <article className="workflow-card">
+              <div className="workflow-card__content">
+                <h3>{step.title}</h3>
+                <p>{step.desc}</p>
+                <code className="command-pill">{step.command}</code>
+                <Link className="workflow-card__link" to={step.to}>
+                  {step.linkLabel}
+                </Link>
+              </div>
+            </article>
           </div>
-          <div className="command-board__links">
-            <Link to="/docs/quickstart/overview">快速开始</Link>
-            <Link to="/docs/build/test/overview">验证策略</Link>
-            <Link to="/docs/contributing/repo">仓库维护</Link>
-          </div>
-        </div>
+        ))}
       </div>
     </SectionShell>
   );
@@ -565,7 +626,7 @@ function DocsSection() {
   const docs = [
     {
       title: '项目介绍',
-      desc: '先理解仓库目标、系统关系、硬件支持和读者入口。',
+      desc: '仓库定位、系统关系、硬件支持矩阵和读者入口。',
       links: [
         { label: '概览', to: '/docs/introduction/overview' },
         { label: '环境与平台', to: '/docs/introduction/hardware' },
@@ -573,25 +634,24 @@ function DocsSection() {
     },
     {
       title: '参考资料',
-      desc: '查看仓库结构、组件分析、构建系统和依赖关系等全局性资料。',
+      desc: '仓库目录结构、组件清单、构建系统和依赖图谱。',
       links: [
         { label: '仓库结构', to: '/docs/contributing/repo' },
-        { label: '组件开发指南', to: '/docs/development/components' },
+        { label: '组件指南', to: '/docs/development/components' },
         { label: '构建系统', to: '/docs/build/overview' },
       ],
     },
     {
       title: '设计与实现',
-      desc: '阅读架构、构建链、测试链和 Guest 配置等底层设计说明。',
+      desc: '分层架构原理、构建链路细节和 Guest 配置方法。',
       links: [
         { label: '架构设计', to: '/docs/architecture/overview' },
         { label: '构建流程', to: '/docs/build/overview' },
-        { label: 'Guest 配置', to: '/docs/build/overview' },
       ],
     },
     {
       title: '系统指南',
-      desc: '按目标系统进入具体开发路径，聚焦目录、命令和验证方式。',
+      desc: '按 ArceOS / StarryOS / Axvisor 分别说明目录、命令和验证方式。',
       links: [
         { label: 'ArceOS', to: '/docs/development/arceos' },
         { label: 'StarryOS', to: '/docs/development/starryos' },
@@ -605,11 +665,11 @@ function DocsSection() {
       id="docs-map"
       className="section-shell--docs"
       eyebrow="Documentation Map"
-      title="文档不只是一串目录，而是一组可组合的阅读入口"
-      description="按项目介绍、参考资料、设计与实现、系统指南四个维度组织文档入口，快速跳转到所需层次。"
+      title="四个维度组织文档入口"
+      description="从项目概览到系统指南，每个维度提供不同粒度的信息，按需跳转即可。"
       framed={false}
     >
-      <div className="docs-grid">
+      <div className="docs-orbit">
         {docs.map((group) => (
           <div className="docs-card" key={group.title}>
             <h3>{group.title}</h3>
@@ -631,19 +691,19 @@ function DocsSection() {
 function QualitySection() {
   const lanes = [
     {
-      title: 'Host 侧验证',
-      desc: '以最小消费者优先，先做组件级标准库测试或 clippy 静态检查。',
-      items: ['cargo test -p <crate>', 'cargo xtask test', 'cargo xtask clippy'],
+      title: 'Host 侧组件验证',
+      desc: '在宿主机上直接执行标准库测试与 clippy 静态检查，秒级反馈，无需交叉编译。',
+      items: ['cargo test -p <crate>', 'cargo xtask clippy', 'cargo xtask test'],
     },
     {
-      title: '系统级验证',
-      desc: '在目标系统路径中准备镜像、rootfs 或配置，再使用 QEMU 执行最短运行链路。',
-      items: ['ArceOS 示例运行', 'StarryOS rootfs + qemu', 'Axvisor setup_qemu + qemu'],
+      title: 'QEMU 系统级验证',
+      desc: '构建目标系统镜像后在 QEMU 中运行，验证 syscall、进程管理、设备驱动等系统级行为。',
+      items: ['ArceOS example 运行检查', 'StarryOS rootfs + shell 启动', 'Axvisor Guest 引导与交互'],
     },
     {
-      title: '平台与场景回归',
-      desc: '当改动涉及平台、板级配置或跨系统共享能力时，再扩大验证范围。',
-      items: ['platform/* 适配检查', 'Guest / VM 配置回归', '多系统共享依赖影响面确认'],
+      title: '板级场景回归',
+      desc: '变更涉及平台适配或跨系统共享组件时，在物理板卡上执行端到端回归测试，确认硬件行为一致。',
+      items: ['platform/* 编译与启动验证', 'VM / Guest 配置兼容性回归', '共享 crate 变更的多系统影响面检查'],
     },
   ];
 
@@ -652,20 +712,28 @@ function QualitySection() {
       id="quality"
       className="section-shell--quality"
       eyebrow="Verification"
-      title="从组件到系统再到平台，验证路径与工程层次保持一致"
-      description="从 Host 侧组件级测试与静态检查，到 QEMU 系统级运行验证，再到跨平台/跨系统影响面回归，验证粒度与工程层次对齐。"
+      title="三层验证：组件 → 系统 → 平台，粒度逐层放大"
+      description="组件级 cargo test 快速反馈，系统级 QEMU 运行验证功能正确性，平台级板卡回归确认硬件适配完整性。"
       framed={false}
     >
-      <div className="quality-grid">
-        {lanes.map((lane) => (
-          <div className="quality-card" key={lane.title}>
-            <h3>{lane.title}</h3>
-            <p>{lane.desc}</p>
-            <ul>
-              {lane.items.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
+      <div className="quality-pyramid">
+        {lanes.map((lane, index) => (
+          <div className="quality-card" key={lane.title} style={{ '--quality-level': index }}>
+            <div className="quality-card__head">
+              <span className="quality-level">0{index + 1}</span>
+              <h3>{lane.title}</h3>
+            </div>
+            <div className="quality-card__status">
+              <span className="quality-status">{index === 0 ? 'Local' : index === 1 ? 'System' : 'Scenario'}</span>
+            </div>
+            <div className="quality-card__content">
+              <p>{lane.desc}</p>
+              <ul>
+                {lane.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
           </div>
         ))}
       </div>
@@ -692,6 +760,7 @@ function PlatformSection() {
       label: 'RISC-V 64',
       targets: [
         { name: 'QEMU virt', desc: '虚拟平台仿真', type: 'qemu' },
+        { name: 'VisionFive 2', desc: 'StarFive 板卡', type: 'board' },
       ],
     },
     {
@@ -717,36 +786,37 @@ function PlatformSection() {
       id="platforms"
       className="section-shell--platforms"
       eyebrow="Platform Matrix"
-      title="从 QEMU 仿真到物理板卡，覆盖主流架构的完整平台矩阵"
-      description="平台层不是简单的 BSP 堆叠，而是通过 axplat 体系在统一接口下管理架构差异，并通过 axplat-dyn 支持运行时平台切换。"
+      title="四种 CPU 架构，虚拟平台与物理板卡并行支持"
+      description="每种架构通过 axplat crate 抽象平台差异，板卡适配与 QEMU 仿真共用同一接口层。"
       framed={false}
     >
-      <div className="platform-matrix">
+      <div className="platform-lanes">
         {platformGroups.map((group) => (
-          <div className={`platform-group platform-group--${group.cssClass}`} key={group.arch}>
-            <div className="platform-group__header">
+          <div className={`platform-lane platform-lane--${group.cssClass}`} key={group.arch}>
+            <div className="platform-lane__arch">
               <span className="platform-arch-badge">{group.arch}</span>
               <strong>{group.label}</strong>
             </div>
-            <div className="platform-group__targets">
+            <div className="platform-lane__rail">
               {group.targets.map((target) => (
                 <div className={`platform-chip platform-chip--${target.type}`} key={target.name}>
+                  <span className="platform-chip__type" aria-hidden="true" />
                   <span className="platform-chip__name">{target.name}</span>
                   <span className="platform-chip__desc">{target.desc}</span>
                 </div>
               ))}
             </div>
+            <div className="platform-lane__coverage">
+              <strong>{group.targets.length}</strong>
+              <span>{group.targets.some((target) => target.type === 'board') ? 'QEMU + board' : 'QEMU'}</span>
+            </div>
           </div>
         ))}
-      </div>
-      <div className="platform-footer">
-        <div className="platform-footer__note">
-          <strong>axplat-dyn</strong>
-          <span>动态平台层：支持运行时选择平台实现，无需重新编译即可切换板卡适配。</span>
+        <div className="platform-lanes__action">
+          <Link className="platform-lanes__link" to="/docs/introduction/hardware">
+            查看完整硬件支持
+          </Link>
         </div>
-        <Link className="button button--outline button--hero button--compact" to="/docs/introduction/hardware">
-          查看完整硬件支持
-        </Link>
       </div>
     </SectionShell>
   );
@@ -800,8 +870,8 @@ function DriverSection() {
       id="drivers"
       className="section-shell--drivers"
       eyebrow="Driver Ecosystem"
-      title="跨内核可复用的驱动框架，从设备抽象到具体硬件形成统一分层"
-      description="驱动不再与单一内核绑定——通过 Driver Core / Capability Boundary / OS Glue / Runtime 四层分离，同一驱动可跨 ArceOS、StarryOS 与 Axvisor 复用。"
+      title="驱动核心逻辑与 OS 依赖完全解耦"
+      description="Driver Core 只包含硬件操作逻辑，OS Glue 层适配不同内核的内存分配与调度接口，同一驱动无需修改即可在 ArceOS、StarryOS 和 Axvisor 中使用。"
       framed={false}
     >
       <div className="split-layout split-layout--drivers">
@@ -849,28 +919,6 @@ function DriverSection() {
   );
 }
 
-function CTASection() {
-  return (
-    <section className="cta-section" id="cta">
-      <div className="section-shell__inner">
-        <div className="cta-panel">
-          <p className="eyebrow">Get Started</p>
-          <h2>从统一入口进入 TGOSKits 的系统、组件与工具链世界</h2>
-          <p>无论你要做的是系统内核、虚拟化、平台适配，还是共享组件与构建链维护，都可以从首页直接进入对应路径。</p>
-          <div className="cta-actions">
-            <Link className="button button--primary button--hero" to="/docs/quickstart/overview">
-              打开快速开始
-            </Link>
-            <Link className="button button--outline button--hero" to="/docs/development/components">
-              查看组件分析
-            </Link>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 export default function Home() {
   const {siteConfig} = useDocusaurusContext();
 
@@ -883,10 +931,9 @@ export default function Home() {
       <SystemsSection />
       <PlatformSection />
       <DriverSection />
-      <WorkflowSection />
       <QualitySection />
       <DocsSection />
-      <CTASection />
+      <WorkflowSection />
     </Layout>
   );
 }

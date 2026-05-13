@@ -33,6 +33,7 @@ ax-crate-interface-lite
 ax-display
 ax-dma
 ax-driver-display
+ax-driver-block
 ax-driver-virtio
 ax-errno
 ax-fs
@@ -57,6 +58,7 @@ ax-memory-set
 axpanic
 ax-plat
 ax-plat-aarch64-peripherals
+ax-plat-riscv64-sg2002
 ax-plat-x86-pc
 ax-percpu
 ax-percpu-macros
