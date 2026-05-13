@@ -37,10 +37,8 @@ int main(void) {
                        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     volatile int *block_cnt = &shared[0];
     volatile int *wake_cnt  = &shared[1];
-    volatile int *enq_cnt   = &shared[2];
     *block_cnt = 0;
     *wake_cnt  = 0;
-    *enq_cnt   = 0;
 
     pid_t waker = fork();
     if (waker < 0) {
