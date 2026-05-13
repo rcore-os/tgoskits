@@ -101,12 +101,12 @@ pub fn verify_ext4_dx_checksum(
     if !ext4_superblock_has_metadata_csum(sb) {
         return Some(true);
     }
-    if block_bytes.len() < BLOCK_SIZE {
+    if block_bytes.len() < sb.block_size() as usize {
         return Some(false);
     }
 
-    let count_offset = dx_countlimit_offset(block_bytes)?;
-    if count_offset + 4 > BLOCK_SIZE {
+    let count_offset = dx_countlimit_offset(block_bytes,sb.block_size() as usize)?;
+    if count_offset + 4 > sb.block_size() as usize {
         return Some(false);
     }
 
@@ -115,12 +115,12 @@ pub fn verify_ext4_dx_checksum(
     let entry_size = core::mem::size_of::<Ext4DxEntry>();
     let tail_len = core::mem::size_of::<u64>();
 
-    if count > limit || count_offset + limit.saturating_mul(entry_size) > BLOCK_SIZE - tail_len {
+    if count > limit || count_offset + limit.saturating_mul(entry_size) > sb.block_size() as usize - tail_len {
         return Some(false);
     }
 
     let tail_offset = count_offset + limit * entry_size;
-    if tail_offset + tail_len > BLOCK_SIZE {
+    if tail_offset + tail_len > sb.block_size() as usize {
         return Some(false);
     }
 
@@ -153,13 +153,12 @@ pub fn verify_ext4_dx_checksum(
     Some(computed == stored)
 }
 
-fn dx_countlimit_offset(block_bytes: &[u8]) -> Option<usize> {
+fn dx_countlimit_offset(block_bytes: &[u8],block_size:usize) -> Option<usize> {
     let rec_len = read_u16_le(&block_bytes[4..6]) as usize;
-    if rec_len == BLOCK_SIZE {
+    if rec_len == block_size {
         return Some(8);
     }
-
-    if rec_len != 12 || BLOCK_SIZE < 32 {
+    if rec_len != 12 || block_size < 32 {
         return None;
     }
 

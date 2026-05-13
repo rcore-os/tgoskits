@@ -2,8 +2,7 @@ use alloc::vec;
 
 use super::*;
 use crate::{
-    bmalloc::InodeNumber, config::runtime_block_size, disknode::Ext4Inode, endian::DiskFormat,
-    entries::Ext4DirEntryTail, error::Errno, jbd2::jbdstruct::*, superblock::Ext4Superblock,
+    bmalloc::InodeNumber, config::runtime_block_size, crc32c::ext4_crc32c_seed_from_superblock, disknode::Ext4Inode, endian::DiskFormat, entries::{Ext4DirEntryTail, Ext4DxEntry}, error::Errno, jbd2::jbdstruct::*, superblock::Ext4Superblock
 };
 fn metadata_csum_superblock() -> Ext4Superblock {
     Ext4Superblock {
@@ -138,10 +137,10 @@ fn dx_checksum_uses_counted_entries_and_tail() {
     let sb = metadata_csum_superblock();
     let ino = 704258u32;
     let generation = 7817325u32;
-    let mut block = [0u8; BLOCK_SIZE];
+    let mut block = [0u8; 4096];
     let count_offset = 32;
     let entry_size = ::core::mem::size_of::<Ext4DxEntry>();
-    let limit = ((BLOCK_SIZE - count_offset - 8) / entry_size) as u16;
+    let limit = ((4096 - count_offset - 8) / entry_size) as u16;
     let count = 3u16;
     let tail_offset = count_offset + limit as usize * entry_size;
 
@@ -150,7 +149,7 @@ fn dx_checksum_uses_counted_entries_and_tail() {
     block[6] = 1;
     block[7] = 2;
     block[12..16].copy_from_slice(&2u32.to_le_bytes());
-    block[16..18].copy_from_slice(&((BLOCK_SIZE - 12) as u16).to_le_bytes());
+    block[16..18].copy_from_slice(&((4096 - 12) as u16).to_le_bytes());
     block[18] = 2;
     block[19] = 2;
     block[24..28].fill(0);
