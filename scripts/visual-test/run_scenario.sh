@@ -192,6 +192,18 @@ if ! kill -0 "$QPID" 2>/dev/null; then
     exit 1
 fi
 
+# Assert that the in-guest runner actually launched. The init.sh hook
+# emits `[init] /test_runner.sh started pid=<n>` to /dev/console
+# immediately after spawning the scenario. Without this check a
+# scenario that silently failed to start would still pass on a
+# golden-match if the captured frame happened to resemble the
+# pre-launch screen.
+if ! grep -q '/test_runner.sh started pid=' "$SCRATCH/serial.log"; then
+    log "in-guest /test_runner.sh never launched; serial tail:"
+    tail -60 "$SCRATCH/serial.log" >&2
+    exit 1
+fi
+
 # Capture.
 OUT_PPM="$SCRATCH/actual.ppm"
 if ! python3 "$REPO_ROOT/scripts/visual-test/rfb_capture.py" \
