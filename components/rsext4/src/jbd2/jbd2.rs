@@ -248,13 +248,11 @@ impl JBD2DEVSYSTEM {
             .journal_phys_block(journal_blocks, 0)
             .expect("journal superblock block is invalid");
         let mut sb_data = vec![0u8; runtime_block_size()];
-        block_dev
-            .read(&mut sb_data, sb_block, 1)
+        read_ext4_blocks(block_dev, &mut sb_data, sb_block, 1)
             .expect("Read journal superblock failed");
         jbd2_update_superblock_checksum(&mut self.jbd2_super_block);
         self.jbd2_super_block.to_disk_bytes(&mut sb_data[0..1024]);
-        block_dev
-            .write(&sb_data, sb_block, 1)
+        write_ext4_blocks(block_dev, &sb_data, sb_block, 1)
             .expect("Write journal superblock failed");
     }
 
@@ -393,7 +391,7 @@ impl JBD2DEVSYSTEM {
         // Persist the descriptor first.
         let block_id = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
         debug!("[JBD2 commit] tid={tid} descriptor_block_id={block_id} (absolute)");
-        block_dev.write(&desc_buffer, block_id, 1)?;
+        write_ext4_blocks(block_dev, &desc_buffer, block_id, 1)?;
 
         let mut no_escape: Vec<(AbsoluteBN, Vec<u8>)> = Vec::new();
         for update in self.commit_queue.iter() {
@@ -415,7 +413,7 @@ impl JBD2DEVSYSTEM {
                  target_phys_block={}",
                 tid, idx, metadata_journal_block_id, up.0
             );
-            block_dev.write(&up.1, metadata_journal_block_id, 1)?;
+            write_ext4_blocks(block_dev, &up.1, metadata_journal_block_id, 1)?;
         }
 
         block_dev.flush()?;
@@ -442,7 +440,7 @@ impl JBD2DEVSYSTEM {
         commit_block.to_disk_bytes(&mut commit_buffer);
         let commit_block_id = self.set_next_log_block_with_mapping(block_dev, journal_blocks)?;
         debug!("[JBD2 commit] tid={tid} commit_block_id={commit_block_id} (absolute)");
-        block_dev.write(&commit_buffer, commit_block_id, 1)?;
+        write_ext4_blocks(block_dev, &commit_buffer, commit_block_id, 1)?;
         block_dev.flush()?;
         self.sequence += 1;
 
@@ -451,7 +449,7 @@ impl JBD2DEVSYSTEM {
         // replay will redo these writes, so partial checkpoints are safe.
         for update in self.commit_queue.iter() {
             debug!("[JBD2 checkpoint] tid={} home_phys_block={}", tid, update.0);
-            block_dev.write(&update.1[..], update.0, 1)?;
+            write_ext4_blocks(block_dev, &update.1[..], update.0, 1)?;
         }
         block_dev.flush()?;
 
@@ -498,7 +496,7 @@ impl JBD2DEVSYSTEM {
                 }
             };
             let mut record_buf = vec![0u8; block_bytes];
-            if let Err(e) = block_dev.read(&mut record_buf, record_phys, 1) {
+            if let Err(e) = read_ext4_blocks(block_dev, &mut record_buf, record_phys, 1) {
                 debug!(
                     "[JBD2 replay] read record failed at rel_block={record_rel} \
                      phys_block={record_phys} err={e:?}"
@@ -547,7 +545,7 @@ impl JBD2DEVSYSTEM {
                             }
                         };
                         let mut mbuf = vec![0u8; block_bytes];
-                        if let Err(e) = block_dev.read(&mut mbuf, meta_phys, 1) {
+                        if let Err(e) = read_ext4_blocks(block_dev, &mut mbuf, meta_phys, 1) {
                             debug!(
                                 "[JBD2 replay] read meta block failed: idx={idx} \
                                  rel_block={record_rel} phys_block={meta_phys} err={e:?}"
@@ -582,7 +580,7 @@ impl JBD2DEVSYSTEM {
                             "[JBD2 replay] tid={expect_seq} apply meta_idx={idx} phys_block={phys}"
                         );
 
-                        if let Err(e) = block_dev.write(data, phys, 1) {
+                        if let Err(e) = write_ext4_blocks(block_dev, data, phys, 1) {
                             debug!(
                                 "[JBD2 replay] write meta block failed: idx={idx} \
                                  phys_block={phys} err={e:?}"

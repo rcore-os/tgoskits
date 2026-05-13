@@ -26,7 +26,7 @@ use ax_fs_vfs::{
 };
 use rsext4::{
     Ext4Error, Ext4FileSystem as Rsext4FileSystem, Ext4Result, Ext4Timestamp, Jbd2Dev,
-    api::{OpenFile, fs_mount, lseek, open, read_at},
+    api::{OpenFile, SeekWhence, fs_mount, lseek, open, read_at},
     dir::{get_inode_with_num, mkdir},
     entries::classic_dir::list_entries,
     file::{delete_dir, mkfile, mv, truncate, unlink, write_file},
@@ -326,13 +326,11 @@ impl VfsNodeOps for FileWrapper {
         let blocks = match self.inner {
             Ext4Inner::Disk(ref inner) => {
                 let mut inner = inner.lock();
-                resolve_inode_block_allextend(&mut fs, &mut inner, &mut inode)
-                    .map_err(|_| VfsError::Io)?
+                resolve_inode_block_allextend(&mut inner, &mut inode).map_err(|_| VfsError::Io)?
             }
             Ext4Inner::Partition(ref inner) => {
                 let mut inner = inner.lock();
-                resolve_inode_block_allextend(&mut fs, &mut inner, &mut inode)
-                    .map_err(|_| VfsError::Io)?
+                resolve_inode_block_allextend(&mut inner, &mut inode).map_err(|_| VfsError::Io)?
             }
         };
 
@@ -435,10 +433,10 @@ impl VfsNodeOps for FileWrapper {
 
         if let Some(ref mut file) = *file_guard {
             let mut fs = self.fs.lock();
-            let _ = lseek(file, offset);
             let data = match self.inner {
                 Ext4Inner::Disk(ref inner) => {
                     let mut inner = inner.lock();
+                    let _ = lseek(&mut inner, &mut fs, file, offset as i64, SeekWhence::Set);
                     read_at(&mut inner, &mut fs, file, buf.len()).map_err(|_| VfsError::Io)?
                 }
                 Ext4Inner::Partition(ref inner) => {
@@ -519,13 +517,7 @@ impl Drop for FileWrapper {
 }
 
 impl rsext4::BlockDevice for Disk {
-    fn write(
-        &mut self,
-        buffer: &[u8],
-        block_id: rsext4::bmalloc::AbsoluteBN,
-        count: u32,
-    ) -> Ext4Result<()> {
-        // RVlwext4 uses 4096 byte blocks, but Disk uses 512 byte blocks
+    fn write(&mut self, buffer: &[u8], block_id: rsext4::DevBN, count: u32) -> Ext4Result<()> {
         self.set_position(block_id.raw() * BLOCK_SIZE as u64);
         let mut total_written = 0;
         let to_write = count as usize * BLOCK_SIZE;
@@ -539,12 +531,7 @@ impl rsext4::BlockDevice for Disk {
         Ok(())
     }
 
-    fn read(
-        &mut self,
-        buffer: &mut [u8],
-        block_id: rsext4::bmalloc::AbsoluteBN,
-        count: u32,
-    ) -> Ext4Result<()> {
+    fn read(&mut self, buffer: &mut [u8], block_id: rsext4::DevBN, count: u32) -> Ext4Result<()> {
         self.set_position(block_id.raw() * BLOCK_SIZE as u64);
         let mut total_read = 0;
         let to_read = count as usize * BLOCK_SIZE;
@@ -567,8 +554,11 @@ impl rsext4::BlockDevice for Disk {
     }
 
     fn total_blocks(&self) -> u64 {
-        // RVlwext4 uses 4096 byte blocks
         self.size() / BLOCK_SIZE as u64
+    }
+
+    fn dev_block_size(&self) -> u32 {
+        BLOCK_SIZE as u32
     }
 
     fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
@@ -580,12 +570,7 @@ impl rsext4::BlockDevice for Disk {
 }
 
 impl rsext4::BlockDevice for Partition {
-    fn write(
-        &mut self,
-        buffer: &[u8],
-        block_id: rsext4::bmalloc::AbsoluteBN,
-        count: u32,
-    ) -> Ext4Result<()> {
+    fn write(&mut self, buffer: &[u8], block_id: rsext4::DevBN, count: u32) -> Ext4Result<()> {
         self.set_position(block_id.raw() * BLOCK_SIZE as u64);
         let mut total_written = 0;
         let to_write = count as usize * BLOCK_SIZE;
@@ -599,12 +584,7 @@ impl rsext4::BlockDevice for Partition {
         Ok(())
     }
 
-    fn read(
-        &mut self,
-        buffer: &mut [u8],
-        block_id: rsext4::bmalloc::AbsoluteBN,
-        count: u32,
-    ) -> Ext4Result<()> {
+    fn read(&mut self, buffer: &mut [u8], block_id: rsext4::DevBN, count: u32) -> Ext4Result<()> {
         self.set_position(block_id.raw() * BLOCK_SIZE as u64);
         let mut total_read = 0;
         let to_read = count as usize * BLOCK_SIZE;
@@ -627,8 +607,11 @@ impl rsext4::BlockDevice for Partition {
     }
 
     fn total_blocks(&self) -> u64 {
-        // RVlwext4 uses 4096 byte blocks
         self.size() / BLOCK_SIZE as u64
+    }
+
+    fn dev_block_size(&self) -> u32 {
+        BLOCK_SIZE as u32
     }
 
     fn current_time(&self) -> Ext4Result<Ext4Timestamp> {

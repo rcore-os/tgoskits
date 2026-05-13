@@ -12,7 +12,7 @@ use axfs_ng_vfs::{
     VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
-use rsext4::{BLOCK_SIZE, bmalloc::InodeNumber};
+use rsext4::{api::SeekWhence, bmalloc::InodeNumber};
 
 use super::{
     Ext4Filesystem,
@@ -231,7 +231,7 @@ impl FileNodeOps for Inode {
             return Err(VfsError::Unsupported);
         }
 
-        let block_bytes = BLOCK_SIZE as u64;
+        let block_bytes = fs.superblock.block_size() as u64;
         let end_off = offset + to_read as u64;
         let start_lbn = offset / block_bytes;
         let end_lbn = (end_off - 1) / block_bytes;
@@ -339,8 +339,7 @@ impl FileNodeOps for Inode {
                 return Err(VfsError::InvalidInput);
             }
 
-            if let Ok(blocks) = rsext4::loopfile::resolve_inode_block_allextend(fs, dev, &mut inode)
-            {
+            if let Ok(blocks) = rsext4::loopfile::resolve_inode_block_allextend(dev, &mut inode) {
                 for blk in blocks.values() {
                     let _ = fs.free_block(dev, *blk);
                 }
@@ -373,12 +372,14 @@ impl FileNodeOps for Inode {
                     return Err(VfsError::Unsupported);
                 }
 
+                let block_size = fs.superblock.block_size() as usize;
+
                 let mut data_blocks = alloc::vec::Vec::new();
                 let mut remaining = target_len;
                 let mut src_off = 0usize;
                 while remaining > 0 {
                     let blk = fs.alloc_block(dev).map_err(into_vfs_err)?;
-                    let write_len = core::cmp::min(remaining, BLOCK_SIZE);
+                    let write_len = core::cmp::min(remaining, block_size);
                     fs.datablock_cache
                         .modify_new(dev, blk, |data| {
                             for b in data.iter_mut() {
@@ -394,7 +395,7 @@ impl FileNodeOps for Inode {
                 }
 
                 let used_datablocks = data_blocks.len() as u64;
-                let iblocks_used = used_datablocks.saturating_mul(BLOCK_SIZE as u64 / 512) as u32;
+                let iblocks_used = used_datablocks.saturating_mul(block_size as u64 / 512) as u32;
                 inode.i_blocks_lo = iblocks_used;
                 inode.l_i_blocks_high = 0;
                 rsext4::file::build_file_block_mapping_with_inode_num(
@@ -430,9 +431,9 @@ impl DirNodeOps for Inode {
         let (fs, dev) = state.split();
         let mut inode = fs.get_inode_by_num(dev, self.ino).map_err(into_vfs_err)?;
 
-        let blocks = rsext4::loopfile::resolve_inode_block_allextend(fs, dev, &mut inode)
+        let blocks = rsext4::loopfile::resolve_inode_block_allextend(dev, &mut inode)
             .map_err(into_vfs_err)?;
-
+        let block_size = fs.superblock.block_size() as usize;
         let mut idx = 0u64;
         let mut count = 0usize;
         for &phys in blocks.values() {
@@ -440,7 +441,7 @@ impl DirNodeOps for Inode {
                 .datablock_cache
                 .get_or_load(dev, phys)
                 .map_err(into_vfs_err)?;
-            let data = &cached.data[..BLOCK_SIZE];
+            let data = &cached.data[..block_size];
             let iter = rsext4::entries::DirEntryIterator::new(data);
             for (entry, _) in iter {
                 if entry.inode == 0 {

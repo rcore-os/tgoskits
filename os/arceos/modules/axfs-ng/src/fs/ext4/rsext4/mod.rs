@@ -8,9 +8,7 @@ use ax_driver::{PartitionBlockDevice, PartitionRegion, prelude::BlockDriverOps};
 pub use fs::*;
 pub use inode::*;
 use rsext4::{
-    BlockDevice,
-    bmalloc::AbsoluteBN,
-    config::BLOCK_SIZE,
+    BlockDevice, DevBN,
     disknode::Ext4Timestamp,
     error::{Ext4Error, Ext4Result},
 };
@@ -24,35 +22,25 @@ impl Ext4Disk {
 }
 
 impl BlockDevice for Ext4Disk {
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
-        let dev_block = self.0.block_size();
-        if !BLOCK_SIZE.is_multiple_of(dev_block) {
-            return Err(Ext4Error::invalid_input());
-        }
-        let factor = (BLOCK_SIZE / dev_block) as u64;
-        let required_size = BLOCK_SIZE * count as usize;
+    fn write(&mut self, buffer: &[u8], block_id: DevBN, count: u32) -> Ext4Result<()> {
+        let dev_block_size = self.0.block_size();
+        let required_size = dev_block_size * count as usize;
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
-        let start_block = block_id.raw() * factor;
         self.0
-            .write_block(start_block, &buffer[..required_size])
+            .write_block(block_id.raw(), &buffer[..required_size])
             .map_err(|_| Ext4Error::io())
     }
 
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
-        let dev_block = self.0.block_size();
-        if !BLOCK_SIZE.is_multiple_of(dev_block) {
-            return Err(Ext4Error::invalid_input());
-        }
-        let factor = (BLOCK_SIZE / dev_block) as u64;
-        let required_size = BLOCK_SIZE * count as usize;
+    fn read(&mut self, buffer: &mut [u8], block_id: DevBN, count: u32) -> Ext4Result<()> {
+        let dev_block_size = self.0.block_size();
+        let required_size = dev_block_size * count as usize;
         if buffer.len() < required_size {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
-        let start_block = block_id.raw() * factor;
         self.0
-            .read_block(start_block, &mut buffer[..required_size])
+            .read_block(block_id.raw(), &mut buffer[..required_size])
             .map_err(|_| Ext4Error::io())
     }
 
@@ -65,13 +53,11 @@ impl BlockDevice for Ext4Disk {
     }
 
     fn total_blocks(&self) -> u64 {
-        let dev_block = self.0.block_size() as u64;
-        let total_bytes = self.0.num_blocks().saturating_mul(dev_block);
-        total_bytes / BLOCK_SIZE as u64
+        self.0.num_blocks()
     }
 
-    fn block_size(&self) -> u32 {
-        BLOCK_SIZE as u32
+    fn dev_block_size(&self) -> u32 {
+        self.0.block_size() as u32
     }
 
     fn flush(&mut self) -> Ext4Result<()> {

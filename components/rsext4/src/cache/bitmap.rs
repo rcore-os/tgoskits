@@ -2,13 +2,13 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use log::debug;
+use log::{debug, error};
 
 use crate::{
     BITMAP_CACHE_MAX,
     blockdev::*,
     bmalloc::{AbsoluteBN, BGIndex},
-    config::USE_MULTILEVEL_CACHE,
+    config::{USE_MULTILEVEL_CACHE, runtime_block_size},
     error::*,
 };
 
@@ -59,6 +59,9 @@ pub struct CachedBitmap {
 
 impl CachedBitmap {
     pub fn new(data: Vec<u8>, block_num: AbsoluteBN) -> Self {
+        if data.len() != runtime_block_size() {
+            error!("The block size of lower datablock cache not equal ext4 logic block size");
+        }
         Self {
             data,
             dirty: false,

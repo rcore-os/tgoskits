@@ -3,7 +3,7 @@ use core::cell::Cell;
 
 use super::*;
 use crate::{
-    blockdev::{BlockDevice, Jbd2Dev},
+    blockdev::{BlockDevice, DevBN, Jbd2Dev},
     bmalloc::{AbsoluteBN, BlockAllocator, InodeAllocator, InodeNumber},
     config::DEFAULT_INODE_SIZE,
     disknode::{Ext4Inode, Ext4Timestamp},
@@ -29,7 +29,7 @@ impl MockBlockDevice {
 }
 
 impl BlockDevice for MockBlockDevice {
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Result<(), Ext4Error> {
+    fn write(&mut self, buffer: &[u8], block_id: DevBN, count: u32) -> Result<(), Ext4Error> {
         if !self.is_open {
             return Err(Ext4Error::badf());
         }
@@ -47,12 +47,7 @@ impl BlockDevice for MockBlockDevice {
         Ok(())
     }
 
-    fn read(
-        &mut self,
-        buffer: &mut [u8],
-        block_id: AbsoluteBN,
-        count: u32,
-    ) -> Result<(), Ext4Error> {
+    fn read(&mut self, buffer: &mut [u8], block_id: DevBN, count: u32) -> Result<(), Ext4Error> {
         if !self.is_open {
             return Err(Ext4Error::badf());
         }
@@ -82,6 +77,10 @@ impl BlockDevice for MockBlockDevice {
 
     fn total_blocks(&self) -> u64 {
         (self.data.len() / 512) as u64
+    }
+
+    fn dev_block_size(&self) -> u32 {
+        512
     }
 
     fn current_time(&self) -> Result<Ext4Timestamp, Ext4Error> {
