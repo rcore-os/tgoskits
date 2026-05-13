@@ -203,7 +203,6 @@ flowchart TB
 | `axvmconfig` | 组件层 | `components/axvmconfig` | 1 | 4 | [查看](crates/axvmconfig) |
 | `bitmap-allocator` | 组件层 | `components/bitmap-allocator` | 0 | 1 | [查看](crates/bitmap-allocator) |
 | `bwbench-client` | ArceOS 层 | `os/arceos/tools/bwbench_client` | 0 | 0 | [查看](crates/bwbench-client) |
-| `cargo-axplat` | 组件层 | `components/axplat_crates/cargo-axplat` | 0 | 0 | [查看](crates/cargo-axplat) |
 | `define-simple-traits` | 组件层 | `components/crate_interface/test_crates/define-simple-traits` | 1 | 2 | [查看](crates/define-simple-traits) |
 | `define-weak-traits` | 组件层 | `components/crate_interface/test_crates/define-weak-traits` | 1 | 4 | [查看](crates/define-weak-traits) |
 | `deptool` | ArceOS 层 | `os/arceos/tools/deptool` | 0 | 0 | [查看](crates/deptool) |

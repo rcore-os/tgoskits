@@ -57,10 +57,10 @@ make A=examples/helloworld ARCH=aarch64 run
 
 #### 1. Install Build Dependencies
 
-Install [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) to use `rust-objcopy` and `rust-objdump` tools, and [`ax-config-gen`](https://github.com/arceos-org/axconfig-gen) for kernel configuration, and [cargo-axplat](https://github.com/arceos-org/axplat_crates/tree/dev/cargo-axplat) for platform configuration:
+Install [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) to use `rust-objcopy` and `rust-objdump` tools:
 
 ```bash
-cargo install cargo-binutils ax-config-gen cargo-axplat
+cargo install cargo-binutils
 ```
 
 ##### Dependencies for running apps

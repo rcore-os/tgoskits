@@ -6,7 +6,7 @@
 > 版本：`0.2.1`
 > 文档依据：`Cargo.toml`、`src/lib.rs`、`src/main.rs`、`src/config.rs`、`src/output.rs`、`src/ty.rs`、`src/value.rs`、`src/tests.rs`、`README.md`
 
-`ax-config-gen` 是 ArceOS 配置链路里的“配置编译器”。它运行在宿主机上，负责把一组带类型注释的 TOML 规格文件解析成统一配置，再输出成新的 TOML 文件或 Rust 常量代码；`ax-config-macros` 直接复用它的库接口，而 `axbuild` 则直接调用其可执行文件生成 `.axconfig.toml`。
+`ax-config-gen` 是 ArceOS 配置链路里的共享配置引擎。它负责把一组带类型注释的 TOML 规格文件解析成统一配置，再输出成新的 TOML 文件或 Rust 常量代码；`ax-config-macros` 和 `axbuild` 都直接复用它的库接口，命令行程序只保留为兼容和手工调试入口。
 
 ## 架构设计
 ### 设计定位
@@ -89,7 +89,8 @@ flowchart TD
 ## 依赖关系
 ```mermaid
 graph LR
-    cli["axbuild / 手工命令"] --> exe["ax-config-gen 可执行文件"]
+    axbuild["axbuild"] --> lib["ax-config-gen 库接口"]
+    cli["手工命令"] --> exe["ax-config-gen 可执行文件"]
     macros["ax-config-macros"] --> lib["ax-config-gen 库接口"]
     exe --> lib
     lib --> out["TOML / Rust 常量代码"]
@@ -101,7 +102,7 @@ graph LR
 
 ### 主要消费者
 - `ax-config-macros`：直接复用库接口，把 TOML 转成 Rust 代码。
-- `axbuild`：通过执行 `ax-config-gen` 命令生成最终 `.axconfig.toml`。
+- `axbuild`：直接调用库接口生成最终 `.axconfig.toml`，并通过 `cargo xtask config ...` 暴露兼容入口。
 - 人工构建流程：开发者也可以直接用命令行查看、修改、生成配置。
 
 ### 3.3 间接消费者
@@ -128,7 +129,7 @@ ax-config-gen configs/defconfig.toml configs/board/qemu-aarch64.toml \
   -o .axconfig.toml
 ```
 
-这个示例正对应当前仓库里 `axbuild` 的典型工作方式：先合并规格，再覆写少量构建参数。
+这个示例对应命令行兼容入口的典型用法；当前仓库里的 `axbuild` 走同一套库接口完成等价的合并和覆写。
 
 ## 测试
 ### 测试覆盖
