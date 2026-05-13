@@ -476,10 +476,20 @@ impl FileLike for NetlinkSocket {
         };
         if let Some(response) = response {
             let mut queue = self.queue.lock();
-            queue.clear();
-            queue.push_back(response);
-            drop(queue);
-            self.poll_rx.wake();
+            // Append the protocol reply alongside whatever async
+            // broadcasts (uevent, rtnetlink events) `broadcast()` may
+            // have already pushed onto this socket. Earlier revisions
+            // cleared the queue here, which let a request/response
+            // round-trip silently drop queued events the user-space
+            // listener had not yet drained — wrong for a single fd
+            // that is shared between event subscription and direct
+            // queries. Linux's netlink only drops on bounded
+            // backpressure, never as a side effect of `send_to`.
+            if queue.len() < MAX_QUEUED {
+                queue.push_back(response);
+                drop(queue);
+                self.poll_rx.wake();
+            }
         }
         Ok(total)
     }

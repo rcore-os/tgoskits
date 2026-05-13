@@ -159,6 +159,39 @@ int main(void) {
     CHECK(saw_lo, "RTM_GETLINK includes loopback ifname");
     CHECK(saw_done, "RTM_GETLINK dump ends with NLMSG_DONE");
 
+    // Regression: sending another netlink request must not clear
+    // responses still sitting in the receive queue. Earlier
+    // revisions clear()ed the queue on every write, which would
+    // drop async broadcasts (uevent, rtnetlink events) that arrived
+    // before a `send(RTM_GETLINK)`. We can't deterministically
+    // trigger a broadcast from user-space, but stacking two
+    // RTM_GETLINK requests back-to-back without reading exercises
+    // the same code path: the second request enqueues a second
+    // response and the first response must survive.
+    int qfd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    CHECK(qfd >= 0, "socket(AF_NETLINK, NETLINK_ROUTE) for queue test");
+    if (qfd >= 0) {
+        req.nh.nlmsg_seq = 0xabcd;
+        CHECK(send(qfd, &req, sizeof(req), 0) == (ssize_t)sizeof(req),
+              "first RTM_GETLINK send (queue test)");
+        req.nh.nlmsg_seq = 0xabce;
+        CHECK(send(qfd, &req, sizeof(req), 0) == (ssize_t)sizeof(req),
+              "second RTM_GETLINK send (queue test)");
+
+        unsigned char rb[4096];
+        ssize_t r_first = read(qfd, rb, sizeof(rb));
+        CHECK(r_first > 0, "first response survives second send");
+        if (r_first > 0) {
+            struct nlmsghdr_inl *h = (struct nlmsghdr_inl *)rb;
+            CHECK(h->nlmsg_seq == 0xabcd,
+                  "first read returns the first send's seq, not a clobbered queue");
+        }
+        ssize_t r_second = read(qfd, rb, sizeof(rb));
+        CHECK(r_second > 0, "second response also queued");
+
+        close(qfd);
+    }
+
     close(fd);
     TEST_DONE();
 }
