@@ -34,6 +34,7 @@ test_commands = [
     "/usr/bin/bug-preadv2-offset-neg1",
     "/usr/bin/bug-pwritev2-read-at",
     "/usr/bin/bug-signal-to-child",
+    "/usr/bin/bug-tty-sigint",
     "/usr/bin/bug-unlinkat-einval",
     "/usr/bin/bug-wait4-invalid-options",
     "/usr/bin/bug-writev-dir-ebadf",
