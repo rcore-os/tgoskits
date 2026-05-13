@@ -1,6 +1,7 @@
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import { Fragment } from 'react';
 import './index.css';
 
 const iconLibrary = {
@@ -205,76 +206,42 @@ function ComponentWorkspaceDiagram() {
   );
 }
 
-function SystemsIllustration() {
-  const SvgLines = ({ x, y, lines, fill, fontSize = 10.5, fontWeight, lineHeight = 15 }) => (
-    <text x={x} y={y} textAnchor="middle" fill={fill} fontSize={fontSize} fontWeight={fontWeight} fontFamily="system-ui">
-      {lines.map((line, index) => (
-        <tspan key={`${line}-${index}`} x={x} dy={index === 0 ? 0 : lineHeight}>{line}</tspan>
-      ))}
-    </text>
-  );
-
+function SystemsDiagram({ systems }) {
   return (
-    <div className="section-illustration section-illustration--wide" aria-hidden="true">
-      <svg viewBox="0 0 640 480">
-        <defs>
-          <filter id="sysShadow"><feDropShadow dx="0" dy="3" stdDeviation="6" floodColor="var(--home-panel-border)" floodOpacity="0.25" /></filter>
-        </defs>
-        <rect x="60" y="370" width="520" height="80" rx="18" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.5" filter="url(#sysShadow)" />
-        <text x="320" y="402" textAnchor="middle" fill="var(--home-text-soft)" fontSize="16" fontWeight="650" fontFamily="system-ui">共享组件基础层</text>
-        <text x="320" y="428" textAnchor="middle" fill="var(--ifm-color-primary)" fontSize="12" fontFamily="monospace">components/ · ax* crates · starry-* · drivers/ · platform/</text>
-        {[
-          {
-            x:38,
-            c:'var(--system-accent-arceos)',
-            n:'ArceOS',
-            s:'模块化内核',
-            sub:'基础能力层',
-            desc:['模块化内核路径', '系统能力复用基础'],
-            items:[['聚焦模块、平台', '和示例应用'], ['理解基础能力', '如何组合成系统'], ['StarryOS / Axvisor', '共享底座之一']],
-          },
-          {
-            x:240,
-            c:'var(--system-accent-starry)',
-            n:'StarryOS',
-            s:'Linux 兼容 OS',
-            sub:'syscall + rootfs',
-            desc:['基于 ArceOS 构建', '强调内核与 rootfs 联动'],
-            items:[['覆盖 syscall、进程', '信号等核心语义'], ['包含 rootfs 与', '用户态验证路径'], ['适合完整 OS 路径', '开发与调试']],
-          },
-          {
-            x:442,
-            c:'var(--system-accent-axvisor)',
-            n:'Axvisor',
-            s:'Type-I Hypervisor',
-            sub:'虚拟化管理',
-            desc:['围绕板级配置', 'VM 配置与 Guest 镜像'],
-            items:[['覆盖 VM、vCPU', '虚拟设备与地址空间'], ['强调虚拟化组件', '与板级能力协作'], ['适合系统与虚拟化', '联合验证']],
-          },
-        ].map(s=>(
-          <g key={s.n}>
-            <rect x={s.x} y="22" width="160" height="290" rx="20" fill="var(--home-panel-strong)" stroke={s.c} strokeWidth="2.5" strokeOpacity="0.4" filter="url(#sysShadow)" />
-            <rect x={s.x} y="22" width="160" height="48" rx="20" fill={s.c} opacity="0.85" />
-            <rect x={s.x} y="52" width="160" height="18" fill={s.c} opacity="0.85" />
-            <text x={s.x+80} y="55" textAnchor="middle" fill="#fff" fontSize="18" fontWeight="750" fontFamily="system-ui">{s.n}</text>
-            <text x={s.x+80} y="96" textAnchor="middle" fill="var(--home-text-soft)" fontSize="13" fontWeight="600" fontFamily="system-ui">{s.s}</text>
-            <text x={s.x+80} y="120" textAnchor="middle" fill={s.c} fontSize="12" fontFamily="system-ui">{s.sub}</text>
-            <line x1={s.x+15} y1="136" x2={s.x+145} y2="136" stroke="var(--home-panel-border)" strokeWidth="1" />
-            <SvgLines x={s.x+80} y={155} lines={s.desc} fill="var(--home-text-soft)" fontSize={10.5} lineHeight={13} />
-            {s.items.map((item, index) => (
-              <g key={item.join('')} transform={`translate(0 ${index * 36})`}>
-                <circle cx={s.x + 28} cy="198" r="3" fill={s.c} opacity="0.72" />
-                <SvgLines x={s.x+88} y={195} lines={item} fill="var(--ifm-color-primary)" fontSize={10} lineHeight={12} />
-              </g>
-            ))}
-            <line x1={s.x+80} y1="312" x2={s.x+80} y2="364" stroke={s.c} strokeWidth="2" opacity="0.2" strokeDasharray="6,4" />
-          </g>
+    <div className="systems-diagram" aria-label="Shared components powering ArceOS StarryOS and Axvisor">
+      <div className="systems-diagram__cards">
+        {systems.map((system, index) => (
+          <Fragment key={system.name}>
+            <article className={`systems-diagram__card ${system.accent}`}>
+              <div className="systems-diagram__header">
+                <h3>{system.name}</h3>
+              </div>
+              <div className="systems-diagram__body">
+                <strong>{system.subtitle}</strong>
+                <span className="systems-diagram__tag">{system.tag}</span>
+                <p>{system.desc}</p>
+                <ul>
+                  {system.items.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            </article>
+            {index < systems.length - 1 ? <div className="systems-diagram__plus" aria-hidden="true">+</div> : null}
+          </Fragment>
         ))}
-        <circle cx="213" cy="110" r="15" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" />
-        <text x="213" y="116" textAnchor="middle" fill="var(--home-text-soft)" fontSize="17" fontWeight="300">+</text>
-        <circle cx="432" cy="110" r="15" fill="var(--home-panel-strong)" stroke="var(--home-panel-border)" strokeWidth="1.2" />
-        <text x="432" y="116" textAnchor="middle" fill="var(--home-text-soft)" fontSize="17" fontWeight="300">+</text>
-      </svg>
+      </div>
+
+      <div className="systems-diagram__connectors" aria-hidden="true">
+        {systems.map((system) => (
+          <span className={system.accent} key={system.name} />
+        ))}
+      </div>
+
+      <div className="systems-diagram__foundation">
+        <strong>共享组件基础层</strong>
+        <code>components/ · ax* crates · starry-* · drivers/ · platform/</code>
+      </div>
     </div>
   );
 }
@@ -718,6 +685,7 @@ function SystemsSection() {
       accent: 'accent-arceos',
       name: 'ArceOS',
       subtitle: '模块化内核',
+      tag: '基础能力层',
       desc: '模块化内核路径，是多个系统能力向上复用的基础层。',
       items: ['聚焦模块、平台和示例应用', '适合理解基础能力如何组合成系统', '也是 StarryOS 与 Axvisor 的底座之一'],
     },
@@ -725,6 +693,7 @@ function SystemsSection() {
       accent: 'accent-starry',
       name: 'StarryOS',
       subtitle: 'Linux 兼容 OS',
+      tag: 'syscall + rootfs',
       desc: '建立在 ArceOS 之上的 Linux 兼容系统，强调内核与 rootfs 联动。',
       items: ['覆盖 syscall、进程、信号等核心语义', '包含 rootfs 与用户态验证路径', '适合完整 OS 路径开发与调试'],
     },
@@ -732,6 +701,7 @@ function SystemsSection() {
       accent: 'accent-axvisor',
       name: 'Axvisor',
       subtitle: 'Type-I Hypervisor',
+      tag: '虚拟化管理',
       desc: 'Type-I Hypervisor 路径，围绕板级配置、VM 配置和 Guest 镜像组织开发流程。',
       items: ['覆盖 VM、vCPU、虚拟设备与地址空间抽象', '强调虚拟化组件与板级能力协作', '适合系统与虚拟化联合验证'],
     },
@@ -745,26 +715,8 @@ function SystemsSection() {
       title="三条系统路径，共享组件基础但面向不同开发目标"
       description="ArceOS 提供模块化内核基础，StarryOS 在其上构建 Linux 兼容系统，Axvisor 聚焦 Type-I 虚拟化场景，三者共享组件栈但面向不同目标。"
       framed={false}
-      illustration={<SystemsIllustration />}
     >
-      <div className="systems-grid">
-        {systems.map((system) => (
-          <article className={`system-card ${system.accent}`} key={system.name}>
-            <div className="system-card__header">
-              <h3>{system.name}</h3>
-              <p>{system.subtitle}</p>
-            </div>
-            <div className="system-card__body">
-              <p>{system.desc}</p>
-              <ul>
-                {system.items.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </div>
-          </article>
-        ))}
-      </div>
+      <SystemsDiagram systems={systems} />
     </SectionShell>
   );
 }

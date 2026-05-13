@@ -1198,6 +1198,174 @@ html {
   opacity: 0.55;
 }
 
+.systems-diagram {
+  width: 100%;
+  color: var(--ifm-font-color-base);
+}
+
+.systems-diagram__cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 1rem;
+  align-items: center;
+}
+
+.systems-diagram__card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--home-panel-border);
+  border-radius: 28px;
+  background: var(--home-panel);
+  box-shadow: var(--home-shadow);
+}
+
+.systems-diagram__header {
+  padding: 1.35rem 1.5rem;
+  color: #fff;
+}
+
+.systems-diagram__header h3 {
+  margin: 0;
+  font-size: 1.16rem;
+}
+
+.systems-diagram__body {
+  display: grid;
+  gap: 0.75rem;
+  min-height: 20rem;
+  align-content: start;
+  padding: 1.45rem 1.5rem 1.55rem;
+}
+
+.systems-diagram__body strong {
+  font-size: 1.08rem;
+}
+
+.systems-diagram__tag {
+  width: fit-content;
+  padding: 0.3rem 0.58rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.systems-diagram__body p {
+  margin: 0;
+  color: var(--home-text-soft);
+  font-size: 0.9rem;
+  line-height: 1.68;
+}
+
+.systems-diagram__body ul {
+  display: grid;
+  gap: 0.55rem;
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+}
+
+.systems-diagram__body li {
+  position: relative;
+  margin: 0;
+  padding-left: 1rem;
+  color: var(--home-text-soft);
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
+.systems-diagram__body li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.7rem;
+  width: 0.36rem;
+  height: 0.36rem;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.systems-diagram__plus {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--home-panel-border);
+  border-radius: 50%;
+  background: var(--home-panel-strong);
+  color: var(--home-text-soft);
+  font-size: 1.25rem;
+  font-weight: 300;
+  box-shadow: 0 10px 30px rgba(12, 18, 44, 0.06);
+}
+
+.systems-diagram__connectors {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: calc(1rem + 2rem);
+  padding: 0 3.25rem;
+}
+
+.systems-diagram__connectors span {
+  justify-self: center;
+  width: 2px;
+  height: 3.25rem;
+  border-radius: 999px;
+  opacity: 0.3;
+  background: currentColor;
+}
+
+.systems-diagram__foundation {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: center;
+  padding: 1.35rem 1.5rem;
+  border: 1px solid var(--home-panel-border);
+  border-radius: 24px;
+  background: var(--home-panel-strong);
+  box-shadow: 0 12px 36px rgba(12, 18, 44, 0.07);
+  text-align: center;
+}
+
+.systems-diagram__foundation strong {
+  color: var(--home-text-soft);
+  font-size: 1.08rem;
+}
+
+.systems-diagram__foundation code {
+  color: var(--ifm-color-primary);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.systems-diagram__card.accent-arceos .systems-diagram__header {
+  background: linear-gradient(135deg, var(--system-accent-arceos), #2563eb);
+}
+
+.systems-diagram__card.accent-starry .systems-diagram__header {
+  background: linear-gradient(135deg, var(--system-accent-starry), #7c3aed);
+}
+
+.systems-diagram__card.accent-axvisor .systems-diagram__header {
+  background: linear-gradient(135deg, var(--system-accent-axvisor), #0f766e);
+}
+
+.systems-diagram__card.accent-arceos .systems-diagram__tag,
+.systems-diagram__connectors .accent-arceos {
+  color: var(--system-accent-arceos);
+}
+
+.systems-diagram__card.accent-starry .systems-diagram__tag,
+.systems-diagram__connectors .accent-starry {
+  color: var(--system-accent-starry);
+}
+
+.systems-diagram__card.accent-axvisor .systems-diagram__tag,
+.systems-diagram__connectors .accent-axvisor {
+  color: var(--system-accent-axvisor);
+}
+
 .workflow-timeline {
   display: grid;
   gap: 1rem;
@@ -1951,6 +2119,19 @@ html {
   .quality-grid,
   .workspace-grid {
     grid-template-columns: 1fr;
+  }
+
+  .systems-diagram__cards {
+    grid-template-columns: 1fr;
+  }
+
+  .systems-diagram__body {
+    min-height: 0;
+  }
+
+  .systems-diagram__plus,
+  .systems-diagram__connectors {
+    display: none;
   }
 
   .platform-matrix {
