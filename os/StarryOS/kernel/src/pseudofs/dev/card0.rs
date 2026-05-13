@@ -380,10 +380,10 @@ impl DeviceOps for Card0 {
             DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER => Ok(0),
 
             DRM_IOCTL_MODE_GETRESOURCES => handle_get_resources(arg),
-            DRM_IOCTL_MODE_GETCRTC => handle_get_crtc(arg),
+            DRM_IOCTL_MODE_GETCRTC => self.handle_get_crtc(arg),
             DRM_IOCTL_MODE_SETCRTC => self.handle_set_crtc(arg),
             DRM_IOCTL_MODE_GETENCODER => handle_get_encoder(arg),
-            DRM_IOCTL_MODE_GETCONNECTOR => handle_get_connector(arg),
+            DRM_IOCTL_MODE_GETCONNECTOR => self.handle_get_connector(arg),
             DRM_IOCTL_MODE_ADDFB2 => self.handle_addfb2(arg),
             DRM_IOCTL_MODE_RMFB => self.handle_rmfb(arg),
             DRM_IOCTL_MODE_CREATE_DUMB => self.handle_create_dumb(arg),
@@ -612,29 +612,53 @@ fn handle_get_resources(arg: usize) -> VfsResult<usize> {
     Ok(0)
 }
 
-fn handle_get_crtc(arg: usize) -> VfsResult<usize> {
-    let ptr = arg as *mut DrmModeCrtc;
-    let mut c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-    if c.crtc_id != CRTC_ID {
-        return Err(VfsError::InvalidInput);
-    }
-    c.x = 0;
-    c.y = 0;
-    c.fb_id = 0;
-    c.gamma_size = 0;
-    c.mode_valid = 1;
-    c.mode = current_mode();
-    c.count_connectors = 0;
-    ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
-    Ok(0)
-}
-
 impl Card0 {
+    /// `GETCRTC` — return the CRTC's current modeset, reflecting the last
+    /// `SETCRTC` or atomic commit. `fb_id` mirrors the plane's bound fb so
+    /// `drmModeGetCrtc()` retrieves a coherent post-commit view. With one
+    /// connector wired to one CRTC, `count_connectors` is 1 whenever the
+    /// CRTC is active.
+    fn handle_get_crtc(&self, arg: usize) -> VfsResult<usize> {
+        let ptr = arg as *mut DrmModeCrtc;
+        let mut c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        if c.crtc_id != CRTC_ID {
+            return Err(VfsError::InvalidInput);
+        }
+        let state = *self.state.lock();
+        c.x = 0;
+        c.y = 0;
+        c.fb_id = state.plane_fb_id;
+        c.gamma_size = 0;
+        c.mode_valid = if state.crtc_active != 0 { 1 } else { 0 };
+        c.mode = current_mode();
+        c.count_connectors = if state.crtc_active != 0 { 1 } else { 0 };
+        ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
+        Ok(0)
+    }
+
+    /// `SETCRTC` — legacy modeset entry point. Mirror the post-commit
+    /// state into `ModesetState` so `GETCRTC`, `OBJ_GETPROPERTIES`, and
+    /// connector queries all see the same configuration. A zero `fb_id`
+    /// is a disable request.
     fn handle_set_crtc(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCrtc;
         let c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
         if c.crtc_id != CRTC_ID {
             return Err(VfsError::InvalidInput);
+        }
+        {
+            let mut state = self.state.lock();
+            if c.fb_id == 0 {
+                state.crtc_active = 0;
+                state.conn_crtc_id = 0;
+                state.plane_fb_id = 0;
+                state.plane_crtc_id = 0;
+            } else {
+                state.crtc_active = 1;
+                state.conn_crtc_id = CRTC_ID;
+                state.plane_fb_id = c.fb_id;
+                state.plane_crtc_id = CRTC_ID;
+            }
         }
         if c.fb_id != 0 {
             self.present_fb(c.fb_id);
@@ -657,33 +681,45 @@ fn handle_get_encoder(arg: usize) -> VfsResult<usize> {
     Ok(0)
 }
 
-fn handle_get_connector(arg: usize) -> VfsResult<usize> {
-    let ptr = arg as *mut DrmModeGetConnector;
-    let mut c: DrmModeGetConnector = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-    if c.connector_id != CONNECTOR_ID {
-        return Err(VfsError::InvalidInput);
+impl Card0 {
+    /// `GETCONNECTOR` — describe the connector. Returns encoder, mode, and
+    /// the `CRTC_ID` property (same set as `OBJ_GETPROPERTIES` for this
+    /// connector) so libdrm's `drmModeGetConnector()` sees a property
+    /// surface consistent with the atomic property enumeration.
+    fn handle_get_connector(&self, arg: usize) -> VfsResult<usize> {
+        let ptr = arg as *mut DrmModeGetConnector;
+        let mut c: DrmModeGetConnector =
+            ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        if c.connector_id != CONNECTOR_ID {
+            return Err(VfsError::InvalidInput);
+        }
+        c.encoder_id = ENCODER_ID;
+        c.connector_type = DRM_MODE_CONNECTOR_VIRTUAL;
+        c.connector_type_id = 1;
+        c.connection = DRM_MODE_CONNECTED;
+        let (w, h) = display_resolution();
+        c.mm_width = w;
+        c.mm_height = h;
+        c.subpixel = 0;
+
+        c.count_encoders = report_user_array(c.encoders_ptr, c.count_encoders, &[ENCODER_ID])?;
+
+        if c.modes_ptr != 0 && c.count_modes > 0 {
+            let p = c.modes_ptr as *mut DrmModeModeInfo;
+            p.vm_write(current_mode())
+                .map_err(|_| VfsError::BadAddress)?;
+        }
+        c.count_modes = 1;
+
+        let state = *self.state.lock();
+        let prop_vals = conn_prop_values(&state);
+        report_user_array(c.props_ptr, c.count_props, CONN_PROPS)?;
+        report_user_array(c.prop_values_ptr, c.count_props, &prop_vals)?;
+        c.count_props = CONN_PROPS.len() as u32;
+
+        ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
+        Ok(0)
     }
-    c.encoder_id = ENCODER_ID;
-    c.connector_type = DRM_MODE_CONNECTOR_VIRTUAL;
-    c.connector_type_id = 1;
-    c.connection = DRM_MODE_CONNECTED;
-    let (w, h) = display_resolution();
-    c.mm_width = w;
-    c.mm_height = h;
-    c.subpixel = 0;
-
-    c.count_encoders = report_user_array(c.encoders_ptr, c.count_encoders, &[ENCODER_ID])?;
-
-    if c.modes_ptr != 0 && c.count_modes > 0 {
-        let p = c.modes_ptr as *mut DrmModeModeInfo;
-        p.vm_write(current_mode())
-            .map_err(|_| VfsError::BadAddress)?;
-    }
-    c.count_modes = 1;
-    c.count_props = 0;
-
-    ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
-    Ok(0)
 }
 
 impl Card0 {
