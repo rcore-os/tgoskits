@@ -10,14 +10,16 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use anyhow::{Context, bail, ensure};
-use ostool::run::qemu::QemuConfig;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use super::build as case_builder;
+use crate::context::AppContext;
 
 const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
 const CASE_CACHE_DIR_NAME: &str = "cache";
@@ -685,6 +687,40 @@ pub(crate) fn apply_grouped_qemu_config(
     {
         qemu.fail_regex.push(config.fail_regex.clone());
     }
+}
+
+pub(crate) async fn run_qemu_with_prepared_case_assets(
+    app: &mut AppContext,
+    cargo: &Cargo,
+    qemu: QemuConfig,
+    qemu_config_path: &Path,
+    prepared_assets: PreparedCaseAssets,
+    prepare_elapsed: Duration,
+) -> anyhow::Result<()> {
+    println!(
+        "  prepare assets: {:.2?} (pipeline={}, cache={})",
+        prepare_elapsed,
+        prepared_assets.pipeline.as_str(),
+        if prepared_assets.cache_hit {
+            "hit"
+        } else {
+            "miss"
+        }
+    );
+    println!(
+        "  qemu config: {} (timeout={})",
+        qemu_config_path.display(),
+        super::qemu::qemu_timeout_summary(&qemu)
+    );
+    println!("  rootfs: {}", prepared_assets.rootfs_path.display());
+
+    let qemu_started = std::time::Instant::now();
+    let result = app.run_qemu(cargo, qemu).await;
+    println!("  qemu run: {:.2?}", qemu_started.elapsed());
+
+    remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
+    remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
+    result
 }
 
 pub(crate) fn write_grouped_case_runner_script(

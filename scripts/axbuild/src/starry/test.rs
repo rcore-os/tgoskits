@@ -985,38 +985,21 @@ impl Starry {
             asset_config.clone(),
         )
         .await?;
-        println!(
-            "  prepare assets: {:.2?} (pipeline={}, cache={})",
-            prepare_started.elapsed(),
-            prepared_assets.pipeline.as_str(),
-            if prepared_assets.cache_hit {
-                "hit"
-            } else {
-                "miss"
-            }
-        );
         rootfs::patch_rootfs(
             &mut qemu,
             &prepared_assets.rootfs_path,
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
-
-        println!(
-            "  qemu config: {} (timeout={})",
-            case.qemu_config_path.display(),
-            qemu_test::qemu_timeout_summary(&qemu)
-        );
-        println!("  rootfs: {}", prepared_assets.rootfs_path.display());
-        let qemu_started = Instant::now();
-        let result = self.app.run_qemu(cargo, qemu).await;
-        println!("  qemu run: {:.2?}", qemu_started.elapsed());
-        // Remove the per-case rootfs copy immediately after the run so disk
-        // usage stays bounded to ~1 active copy at a time rather than
-        // accumulating one copy per case.
-        case::remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
-        case::remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
-        result
+        case::run_qemu_with_prepared_case_assets(
+            &mut self.app,
+            cargo,
+            qemu,
+            &case.qemu_config_path,
+            prepared_assets,
+            prepare_started.elapsed(),
+        )
+        .await
     }
 }
 

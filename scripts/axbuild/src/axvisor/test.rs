@@ -708,31 +708,15 @@ impl Axvisor {
         let (qemu, prepared_assets) = self
             .load_qemu_case_config(request, case, asset_config)
             .await?;
-        println!(
-            "  prepare assets: {:.2?} (pipeline={}, cache={})",
+        test_case::run_qemu_with_prepared_case_assets(
+            &mut self.app,
+            cargo,
+            qemu,
+            &case.case.case.qemu_config_path,
+            prepared_assets,
             prepare_started.elapsed(),
-            prepared_assets.pipeline.as_str(),
-            if prepared_assets.cache_hit {
-                "hit"
-            } else {
-                "miss"
-            }
-        );
-        println!(
-            "  qemu config: {} (timeout={})",
-            case.case.case.qemu_config_path.display(),
-            test_qemu::qemu_timeout_summary(&qemu)
-        );
-        println!("  rootfs: {}", prepared_assets.rootfs_path.display());
-        let qemu_started = Instant::now();
-        let result = self.app.run_qemu(cargo, qemu).await;
-        println!("  qemu run: {:.2?}", qemu_started.elapsed());
-        // Remove the per-case rootfs copy immediately after the run so disk
-        // usage stays bounded to ~1 active copy at a time rather than
-        // accumulating one copy per case.
-        test_case::remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
-        test_case::remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
-        result
+        )
+        .await
     }
 }
 
