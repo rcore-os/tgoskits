@@ -61,9 +61,10 @@ fn load_build_info_with_makefile_features_and_metadata(
     makefile_features: &[String],
     metadata: Option<&Metadata>,
 ) -> anyhow::Result<ArceosBuildInfo> {
-    let mut build_info = build::load_or_create_build_info(&request.build_info_path, || {
+    build::ensure_build_info(&request.build_info_path, || {
         ArceosBuildInfo::default_for_target(&request.target)
     })?;
+    let mut build_info: ArceosBuildInfo = build::load_build_info(&request.build_info_path)?;
 
     if build_info.normalize_legacy_feature_aliases() {
         warn!(
@@ -102,19 +103,20 @@ fn load_build_info_with_makefile_features_and_metadata(
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
-    let metadata = build::workspace_metadata().context("failed to load workspace metadata")?;
+    let metadata =
+        build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let makefile_features = build::makefile_features_from_env();
     let build_info = load_build_info_with_makefile_features_and_metadata(
         request,
         &makefile_features,
-        Some(&metadata),
+        Some(metadata),
     )?;
 
     build_info.into_prepared_base_cargo_config_with_metadata(
         &request.package,
         &request.target,
         request.plat_dyn,
-        &metadata,
+        metadata,
     )
 }
 

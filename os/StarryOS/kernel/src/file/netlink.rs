@@ -14,6 +14,7 @@ use linux_raw_sys::{
 };
 use spin::Mutex;
 
+use super::packet::{ETH0_HWADDR, ETH0_IFINDEX};
 use crate::{
     file::{FileLike, IoDst, IoSrc},
     task::AsThread,
@@ -131,7 +132,7 @@ const LINKS: &[LinkInfo] = &[
         broadcast: [0; 6],
     },
     LinkInfo {
-        index: 2,
+        index: ETH0_IFINDEX,
         name: "eth0",
         ty: ARPHRD_ETHER,
         flags: IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_MULTICAST | IFF_LOWER_UP,
@@ -139,7 +140,7 @@ const LINKS: &[LinkInfo] = &[
         qlen: 1000,
         qdisc: "mq",
         operstate: IF_OPER_UP,
-        address: [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+        address: ETH0_HWADDR,
         broadcast: [0xff; 6],
     },
 ];
@@ -154,7 +155,7 @@ const ADDRS: &[AddrInfo] = &[
         broadcast: None,
     },
     AddrInfo {
-        index: 2,
+        index: ETH0_IFINDEX as u32,
         label: "eth0",
         prefix_len: 24,
         scope: RT_SCOPE_UNIVERSE,

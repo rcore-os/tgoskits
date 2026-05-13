@@ -2,7 +2,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::{ffi::c_long, sync::atomic::Ordering};
+use core::ffi::c_long;
 
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::TimeValue;
@@ -19,6 +19,9 @@ use super::{
     AsThread, Cred, FutexKey, ProcessData, TimerState, futex_table_for, send_signal_thread_inner,
     send_signal_to_process, send_signal_to_thread,
 };
+
+const FUTEX_OWNER_DIED: u32 = 0x40000000;
+const FUTEX_TID_MASK: u32 = 0x3fffffff;
 
 static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
 
@@ -271,6 +274,15 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
         .checked_add_signed(offset)
         .ok_or(AxError::InvalidInput)?;
     let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
+    let futex_word = address as *mut u32;
+    let owner_tid = current().id().as_u64() as u32;
+    let value = futex_word.vm_read()?;
+
+    if value & FUTEX_TID_MASK != owner_tid {
+        return Ok(());
+    }
+    futex_word.vm_write((value & !FUTEX_TID_MASK) | FUTEX_OWNER_DIED)?;
+
     let key = FutexKey::new_current_teardown(address);
 
     let futex_table = futex_table_for(&key);
@@ -278,7 +290,6 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
     let Some(futex) = futex_table.get(&key) else {
         return Ok(());
     };
-    futex.owner_dead.store(true, Ordering::SeqCst);
     futex.wq.wake(1, u32::MAX);
     Ok(())
 }

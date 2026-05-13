@@ -3,6 +3,7 @@ pub mod event;
 mod fs;
 mod net;
 pub mod netlink;
+mod packet;
 mod pidfd;
 mod pipe;
 pub mod signalfd;
@@ -27,6 +28,7 @@ use spin::RwLock;
 pub use self::{
     fs::{Directory, File, resolve_at, with_fs},
     net::Socket,
+    packet::{PacketSocket, SockAddrLl},
     pidfd::PidFd,
     pipe::Pipe,
 };

@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use anyhow::{Context, anyhow, bail};
@@ -114,21 +115,6 @@ impl BuildInfo {
         self.prepare_max_cpu_num_env()
             .expect("max_cpu_num validation should run before cargo config generation");
         self.into_base_cargo_config(package, target, args)
-    }
-
-    pub(crate) fn into_prepared_base_cargo_config(
-        self,
-        package: &str,
-        target: &str,
-        plat_dyn_override: Option<bool>,
-    ) -> anyhow::Result<Cargo> {
-        let metadata = workspace_metadata().context("failed to load workspace metadata")?;
-        self.into_prepared_base_cargo_config_with_metadata(
-            package,
-            target,
-            plat_dyn_override,
-            &metadata,
-        )
     }
 
     pub(crate) fn into_prepared_base_cargo_config_with_metadata(
@@ -333,29 +319,33 @@ impl Default for BuildInfo {
     }
 }
 
-pub(crate) fn load_or_create_build_info<T>(
-    path: &Path,
-    default: impl FnOnce() -> T,
-) -> anyhow::Result<T>
+pub(crate) fn ensure_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<()>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize,
 {
     println!("Using build config: {}", path.display());
 
     if path.exists() {
         info!("Found build config at {}", path.display());
-    } else {
-        info!(
-            "Build config not found at {}, writing default config",
-            path.display()
-        );
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let default = default();
-        std::fs::write(path, toml::to_string_pretty(&default)?)?;
+        return Ok(());
     }
 
+    info!(
+        "Build config not found at {}, writing default config",
+        path.display()
+    );
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let default = default();
+    std::fs::write(path, toml::to_string_pretty(&default)?)?;
+    Ok(())
+}
+
+pub(crate) fn load_build_info<T>(path: &Path) -> anyhow::Result<T>
+where
+    T: DeserializeOwned,
+{
     toml::from_str::<T>(&std::fs::read_to_string(path)?)
         .with_context(|| format!("failed to parse build info {}", path.display()))
 }
@@ -516,9 +506,31 @@ pub(crate) fn workspace_metadata() -> anyhow::Result<Metadata> {
     workspace_metadata_root_manifest(&manifest_path)
 }
 
+pub(crate) fn cached_workspace_metadata() -> anyhow::Result<&'static Metadata> {
+    static METADATA: OnceLock<anyhow::Result<Metadata, String>> = OnceLock::new();
+
+    cached_metadata_result(
+        METADATA.get_or_init(|| workspace_metadata().map_err(|err| format!("{err:#}"))),
+    )
+}
+
 fn workspace_metadata_with_deps() -> anyhow::Result<Metadata> {
     let manifest_path = workspace_manifest_path()?;
     crate::context::workspace_metadata_root_manifest_with_deps(&manifest_path)
+}
+
+pub(crate) fn cached_workspace_metadata_with_deps() -> anyhow::Result<&'static Metadata> {
+    static METADATA: OnceLock<anyhow::Result<Metadata, String>> = OnceLock::new();
+
+    cached_metadata_result(
+        METADATA.get_or_init(|| workspace_metadata_with_deps().map_err(|err| format!("{err:#}"))),
+    )
+}
+
+fn cached_metadata_result(
+    result: &'static anyhow::Result<Metadata, String>,
+) -> anyhow::Result<&'static Metadata> {
+    result.as_ref().map_err(|err| anyhow::anyhow!("{err}"))
 }
 
 fn workspace_package<'a>(metadata: &'a Metadata, package: &str) -> anyhow::Result<&'a Package> {
@@ -694,9 +706,9 @@ pub(crate) fn resolve_platform_config_by_package(
     platform_package: &str,
     metadata: &Metadata,
 ) -> anyhow::Result<ResolvedPlatformConfig> {
-    let deps_metadata = workspace_metadata_with_deps()
+    let deps_metadata = cached_workspace_metadata_with_deps()
         .context("failed to load dependency metadata for platform config resolution")?;
-    resolve_platform_config_by_package_with_metadata(platform_package, metadata, &deps_metadata)
+    resolve_platform_config_by_package_with_metadata(platform_package, metadata, deps_metadata)
 }
 
 pub(crate) fn resolve_platform_config_by_package_with_metadata(

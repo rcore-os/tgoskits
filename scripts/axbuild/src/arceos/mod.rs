@@ -194,9 +194,12 @@ impl ArceOS {
         uboot_config: Option<PathBuf>,
         persistence: SnapshotPersistence,
     ) -> anyhow::Result<ResolvedBuildRequest> {
-        let (request, snapshot) =
-            self.app
-                .prepare_arceos_request(args, qemu_config, uboot_config)?;
+        let (request, snapshot) = self.app.prepare_arceos_request(
+            args,
+            qemu_config,
+            uboot_config,
+            build::resolve_build_info_path,
+        )?;
         if persistence.should_store() {
             self.app.store_arceos_snapshot(&snapshot)?;
         }

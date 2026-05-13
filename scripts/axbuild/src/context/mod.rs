@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
@@ -31,7 +32,7 @@ pub(crate) use arch::{
     starry_default_platform_for_arch_checked, starry_target_for_arch_checked, supported_arches,
     supported_targets, validate_supported_target,
 };
-pub(crate) use resolve::snapshot_path_value;
+pub(crate) use resolve::{AxvisorRequestPaths, snapshot_path_value};
 pub use types::{
     ARCEOS_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE, ArceosCommandSnapshot, ArceosQemuSnapshot,
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
@@ -42,9 +43,9 @@ pub use types::{
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
-    axbuild_tmp_dir, find_workspace_root, workspace_manifest_path, workspace_member_dir,
-    workspace_metadata_root_manifest, workspace_metadata_root_manifest_with_deps,
-    workspace_root_path,
+    axbuild_tmp_dir, find_workspace_root, workspace_manifest_path,
+    workspace_member_dir as resolve_workspace_member_dir, workspace_metadata_root_manifest,
+    workspace_metadata_root_manifest_with_deps, workspace_root_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +72,7 @@ pub struct AppContext {
     tool: Tool,
     build_config_path: Option<PathBuf>,
     root: PathBuf,
-    axvisor_dir: Option<PathBuf>,
+    member_dirs: HashMap<String, PathBuf>,
     original_path: OsString,
     debug: bool,
 }
@@ -88,7 +89,7 @@ impl AppContext {
             tool,
             build_config_path: None,
             root: workspace_root,
-            axvisor_dir: None,
+            member_dirs: HashMap::new(),
             original_path: env::var_os("PATH").unwrap_or_default(),
             debug: false,
         })
@@ -102,16 +103,20 @@ impl AppContext {
         &mut self.tool
     }
 
-    pub(crate) fn axvisor_dir(&mut self) -> anyhow::Result<&Path> {
-        if self.axvisor_dir.is_none() {
-            let axvisor_dir = workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)?;
-            info!("Axvisor dir: {}", axvisor_dir.display());
-            self.axvisor_dir = Some(axvisor_dir);
+    pub(crate) fn workspace_member_dir(&mut self, package: &str) -> anyhow::Result<&Path> {
+        if !self.member_dirs.contains_key(package) {
+            let member_dir = resolve_workspace_member_dir(package)?;
+            info!(
+                "Workspace member dir for {package}: {}",
+                member_dir.display()
+            );
+            self.member_dirs.insert(package.to_string(), member_dir);
         }
 
-        self.axvisor_dir
-            .as_deref()
-            .context("axvisor_dir should be initialized")
+        self.member_dirs
+            .get(package)
+            .map(PathBuf::as_path)
+            .context("workspace member dir should be initialized")
     }
 
     pub(crate) async fn build(
@@ -243,7 +248,7 @@ impl Drop for PathRestoreGuard {
 }
 
 fn should_use_loongarch_lvz_for(package: &str, target: &str) -> bool {
-    package == crate::axvisor::build::AXVISOR_PACKAGE && target.contains("loongarch64")
+    package == "axvisor" && target.contains("loongarch64")
 }
 
 fn configure_loongarch_qemu_path(workspace_root: &Path) -> anyhow::Result<()> {

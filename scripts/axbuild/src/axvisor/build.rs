@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use ostool::build::config::Cargo;
 use serde::{Deserialize, Serialize};
 
@@ -112,23 +112,29 @@ pub(crate) fn default_build_info_path(axvisor_dir: &Path, target: &str) -> PathB
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<Cargo> {
-    to_cargo_config(load_build_config(request)?, request)
+    let metadata =
+        crate::build::cached_workspace_metadata().context("failed to load workspace metadata")?;
+    to_cargo_config(load_build_config(request)?, request, metadata)
 }
 
 fn to_cargo_config(
     mut config: LoadedAxvisorBuildConfig,
     request: &ResolvedAxvisorRequest,
+    metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
     let plat_dyn = config
         .build_info
         .effective_plat_dyn(&config.target, request.plat_dyn);
     normalize_axvisor_platform_features(&mut config.build_info.features, plat_dyn);
-    let mut cargo = config.build_info.into_prepared_base_cargo_config(
-        &request.package,
-        &config.target,
-        request.plat_dyn,
-    )?;
+    let mut cargo = config
+        .build_info
+        .into_prepared_base_cargo_config_with_metadata(
+            &request.package,
+            &config.target,
+            request.plat_dyn,
+            metadata,
+        )?;
     patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
     Ok(cargo)
 }
