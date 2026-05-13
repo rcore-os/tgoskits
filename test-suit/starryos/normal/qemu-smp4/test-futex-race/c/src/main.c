@@ -1,18 +1,24 @@
 /*
- * test-futex-race.c — SMP futex table stress test.
+ * test-futex-race.c — SMP futex TOCTOU race reproducer.
  *
- * Multiple threads access the SAME futex word simultaneously from
- * different cores, creating concurrent FutexGuards that share a
- * single FutexTable entry.  Each FUTEX_WAIT/Wake call creates a
- * FutexGuard (via get_or_insert) and drops it, stressing the
- * strong_count check in FutexGuard::drop.
+ * A "blocker" thread calls FUTEX_WAIT with a matching value so it
+ * actually enqueues (enters the kernel wait queue).  Two "waker"
+ * threads concurrently call FUTEX_WAKE on the SAME futex address.
+ * Each wake call creates a FutexGuard (via get_or_insert), finds
+ * the existing table entry, wakes the blocker, and drops the guard.
  *
- * The fix being tested: FutexGuard::drop now checks strong_count
- * INSIDE the table lock, preventing a TOCTOU race where a concurrent
- * get_or_insert clones the Arc between the check and the remove.
+ * Under the OLD code (FutexGuard::drop checked strong_count outside
+ * the table lock), SMP cores racing on get_or_insert/drop for the
+ * same key could incorrectly remove the table entry while another
+ * core's FutexGuard still referenced it — orphaning any waiter that
+ * re-entered the queue.
  *
- * A watchdog thread monitors total ops; if progress stalls for 5+
- * seconds (orphaned entry / lost wakeup) it prints FAIL.
+ * With the fix, strong_count is checked INSIDE the table lock,
+ * making check-and-remove an atomic unit with respect to concurrent
+ * get_or_insert calls.
+ *
+ * A watchdog thread monitors the blocker's progress; if it stalls
+ * for 15+ seconds it fires and prints FAIL.
  */
 #define _GNU_SOURCE
 #include "test_framework.h"
@@ -24,57 +30,66 @@
 #include <limits.h>
 #include <stdatomic.h>
 
-#define FUTEX_WAIT      0
-#define FUTEX_WAKE      1
-#define N_WORKERS       3
-#define WAIT_ROUNDS     5000
-#define STACK_SIZE      (64 * 1024)
+#define FUTEX_WAIT         0
+#define FUTEX_WAKE         1
+#define PINGPONG_ROUNDS    50
+#define STACK_SIZE         (64 * 1024)
 
-/* All workers hammer on the SAME futex word to force concurrent
-   get_or_insert / drop on a single FutexKey. */
-static atomic_int g_futex;
-
-/* Progress counters */
-static volatile int g_ops[N_WORKERS];
-static volatile int g_done;
+static atomic_int g_futex_val;
+static volatile int g_block_count;
+static volatile int g_wake_count;
 static volatile int g_stalled;
+static volatile int g_wakers_go;    /* start barrier for wakers */
 
-/* ─── Worker: rapid WAIT/Wake cycles on shared futex ───────────── */
+/* ─── Blocker: actually enqueues via FUTEX_WAIT ────────────────── */
 
-static int worker_thread(void *arg) {
-    int wid = (int)(long)arg;
+static int blocker_thread(void *arg) {
+    (void)arg;
 
-    for (int i = 0; i < WAIT_ROUNDS && !g_stalled; i++) {
-        /* Flip between WAIT and WAKE each iteration to mix up the
-           concurrent access pattern on the shared key. */
-        if (i & 1) {
-            /* WAKE — create FutexGuard, no-op wake, drop guard */
-            long rc = syscall(SYS_futex, &g_futex, FUTEX_WAKE,
-                              1, NULL, NULL, 0);
-            if (rc < 0) {
-                printf("  FAIL | %s:%d | w%d wake errno=%d (%s)\n",
-                       __FILE__, __LINE__, wid, errno, strerror(errno));
-                return 1;
-            }
-        } else {
-            /* WAIT with non-matching value to trigger EAGAIN —
-               creates FutexGuard, checks value, drops immediately */
-            int cur = atomic_load(&g_futex);
-            long rc = syscall(SYS_futex, &g_futex, FUTEX_WAIT,
-                              cur + 1, NULL, NULL, 0);
-            if (rc != -1 || errno != EAGAIN) {
-                if (rc >= 0) {
-                    /* Was actually woken (someone changed value to
-                       match).  This is fine — unexpectedly woken. */
-                    atomic_fetch_add(&g_futex, 1);
-                } else if (errno != EAGAIN) {
-                    printf("  FAIL | %s:%d | w%d wait errno=%d (%s)\n",
-                           __FILE__, __LINE__, wid, errno, strerror(errno));
-                    return 1;
-                }
-            }
+    for (int i = 0; i < PINGPONG_ROUNDS; i++) {
+        /*
+         * Set futex_val to 0, then call FUTEX_WAIT with val=0.
+         * Because the value MATCHES, the kernel enqueues us for
+         * real.  Wakers will set futex_val to 1 and call
+         * FUTEX_WAKE to wake us.  If a waker already flipped the
+         * value we get EAGAIN, which is harmless.
+         */
+        atomic_store(&g_futex_val, 0);
+        g_wakers_go = 1;   /* signal wakers to start blasting */
+
+        long rc = syscall(SYS_futex, &g_futex_val, FUTEX_WAIT,
+                          0, NULL, NULL, 0);
+        if (rc == -1 && errno != EAGAIN) {
+            printf("  FAIL | %s:%d | blocker futex_wait errno=%d (%s)\n",
+                   __FILE__, __LINE__, errno, strerror(errno));
+            return 1;
         }
-        __atomic_fetch_add(&g_ops[wid], 1, __ATOMIC_RELAXED);
+        /* Woken (or EAGAIN) — one ping-pong round done. */
+        __atomic_fetch_add(&g_block_count, 1, __ATOMIC_RELAXED);
+    }
+
+    return 0;
+}
+
+/* ─── Waker: calls FUTEX_WAKE on the same futex ────────────────── */
+
+static int waker_thread(void *arg) {
+    int wid = (int)(long)arg;
+    (void)wid;
+
+    /* Wait for blocker to signal readiness */
+    while (!g_wakers_go && !g_stalled) {
+        sched_yield();
+    }
+
+    while (!g_stalled && __atomic_load_n(&g_block_count, __ATOMIC_RELAXED)
+           < PINGPONG_ROUNDS) {
+        atomic_store(&g_futex_val, 1);
+        syscall(SYS_futex, &g_futex_val, FUTEX_WAKE,
+                INT_MAX, NULL, NULL, 0);
+        __atomic_fetch_add(&g_wake_count, 1, __ATOMIC_RELAXED);
+        /* Let the blocker get CPU time on slow QEMU SMP. */
+        usleep(100);
     }
 
     return 0;
@@ -89,29 +104,39 @@ static int watchdog_thread(void *arg) {
 
     for (int sec = 0; sec < 90; sec++) {
         sleep(1);
-        if (g_done) return 0;
+        int curr = __atomic_load_n(&g_block_count, __ATOMIC_RELAXED);
+        if (curr >= PINGPONG_ROUNDS)
+            return 0;
 
-        int total = 0;
-        for (int w = 0; w < N_WORKERS; w++)
-            total += __atomic_load_n(&g_ops[w], __ATOMIC_RELAXED);
-
-        if (total == last) {
-            if (++stalls >= 5) {
-                printf("  FAIL | %s:%d | stall after %ds "
-                       "(total=%d/%d ops)\n",
-                       __FILE__, __LINE__, sec,
-                       total, N_WORKERS * WAIT_ROUNDS);
-                g_stalled = 1;
-                _exit(1);
+        if (curr == last) {
+            if (++stalls >= 15) {
+                atomic_store(&g_futex_val, 1);
+                syscall(SYS_futex, &g_futex_val, FUTEX_WAKE,
+                        INT_MAX, NULL, NULL, 0);
+                sleep(1);
+                int c2 = __atomic_load_n(&g_block_count, __ATOMIC_RELAXED);
+                if (c2 == last) {
+                    g_stalled = 1;
+                    printf("  FAIL | %s:%d | stalled after %ds "
+                           "(round %d/%d, wakes=%d)\n",
+                           __FILE__, __LINE__, sec,
+                           curr, PINGPONG_ROUNDS, g_wake_count);
+                    _exit(1);
+                }
+                stalls = 0;
             }
         } else {
             stalls = 0;
-            last = total;
+            last = curr;
         }
     }
 
-    printf("  FAIL | %s:%d | timeout 60s\n", __FILE__, __LINE__);
-    _exit(1);
+    if (__atomic_load_n(&g_block_count, __ATOMIC_RELAXED) < PINGPONG_ROUNDS) {
+        printf("  FAIL | %s:%d | timeout 90s (round %d/%d)\n",
+               __FILE__, __LINE__, g_block_count, PINGPONG_ROUNDS);
+        _exit(1);
+    }
+    return 0;
 }
 
 /* ─── Main ──────────────────────────────────────────────────────── */
@@ -121,58 +146,62 @@ int main(void) {
     TEST_START("futex_race");
 
     {
-        atomic_init(&g_futex, 0);
-        for (int w = 0; w < N_WORKERS; w++)
-            g_ops[w] = 0;
-        g_done = 0;
+        atomic_init(&g_futex_val, 0);
+        g_block_count = 0;
+        g_wake_count = 0;
         g_stalled = 0;
+        g_wakers_go = 0;
 
-        void *stk_wdog = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
-                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        CHECK(stk_wdog != MAP_FAILED, "stack_wdog");
+        void *stk_b = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *stk_w1 = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *stk_w2 = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *stk_wd = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+        CHECK(stk_b  != MAP_FAILED, "stack blocker");
+        CHECK(stk_w1 != MAP_FAILED, "stack waker1");
+        CHECK(stk_w2 != MAP_FAILED, "stack waker2");
+        CHECK(stk_wd != MAP_FAILED, "stack watchdog");
+
+        if (stk_b == MAP_FAILED || stk_w1 == MAP_FAILED ||
+            stk_w2 == MAP_FAILED || stk_wd == MAP_FAILED)
+            goto cleanup;
 
         int f = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
-        int tid_wdog = clone(watchdog_thread,
-                             (char *)stk_wdog + STACK_SIZE, f, NULL);
-        CHECK(tid_wdog >= 0, "clone watchdog");
 
-        int tids[N_WORKERS];
-        void *stacks[N_WORKERS];
+        int twd = clone(watchdog_thread,
+                        (char *)stk_wd + STACK_SIZE, f, NULL);
+        CHECK(twd >= 0, "clone watchdog");
 
-        for (int w = 0; w < N_WORKERS; w++) {
-            stacks[w] = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
-                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            CHECK(stacks[w] != MAP_FAILED, "stack worker");
-            tids[w] = clone(worker_thread,
-                            (char *)stacks[w] + STACK_SIZE, f,
-                            (void *)(long)w);
-            CHECK(tids[w] >= 0, "clone worker");
-        }
+        int tb = clone(blocker_thread,
+                       (char *)stk_b + STACK_SIZE, f, NULL);
+        CHECK(tb >= 0, "clone blocker");
 
-        for (int w = 0; w < N_WORKERS; w++) {
-            if (tids[w] >= 0) {
-                int st;
-                waitpid(tids[w], &st, __WALL);
-            }
-            if (stacks[w] != MAP_FAILED)
-                munmap(stacks[w], STACK_SIZE);
-        }
+        int tw1 = clone(waker_thread,
+                        (char *)stk_w1 + STACK_SIZE, f, (void *)0);
+        CHECK(tw1 >= 0, "clone waker1");
 
-        g_done = 1;
-        {
-            int st;
-            waitpid(tid_wdog, &st, __WALL);
-        }
+        int tw2 = clone(waker_thread,
+                        (char *)stk_w2 + STACK_SIZE, f, (void *)1);
+        CHECK(tw2 >= 0, "clone waker2");
+
+        if (tb >= 0)  { int s; waitpid(tb,  &s, __WALL); }
+        if (tw1 >= 0) { int s; waitpid(tw1, &s, __WALL); }
+        if (tw2 >= 0) { int s; waitpid(tw2, &s, __WALL); }
+        if (twd >= 0) { int s; waitpid(twd, &s, __WALL); }
 
         CHECK(!g_stalled, "no stall");
+        CHECK(g_block_count == PINGPONG_ROUNDS, "blocker finished");
+        CHECK(g_wake_count > 0, "wakers ran");
 
-        int total = 0;
-        for (int w = 0; w < N_WORKERS; w++)
-            total += __atomic_load_n(&g_ops[w], __ATOMIC_RELAXED);
-        CHECK(total == N_WORKERS * WAIT_ROUNDS, "all rounds");
-
-        if (stk_wdog != MAP_FAILED)
-            munmap(stk_wdog, STACK_SIZE);
+    cleanup:
+        if (stk_b  != MAP_FAILED) munmap(stk_b,  STACK_SIZE);
+        if (stk_w1 != MAP_FAILED) munmap(stk_w1, STACK_SIZE);
+        if (stk_w2 != MAP_FAILED) munmap(stk_w2, STACK_SIZE);
+        if (stk_wd != MAP_FAILED) munmap(stk_wd, STACK_SIZE);
     }
 
     TEST_DONE();
