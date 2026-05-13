@@ -757,6 +757,9 @@ fn starry_snapshot_store_round_trips() {
         arch: Some(DEFAULT_STARRY_ARCH.into()),
         target: Some(DEFAULT_STARRY_TARGET.into()),
         smp: None,
+        config: Some(PathBuf::from(
+            "tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml",
+        )),
         qemu: StarryQemuSnapshot {
             qemu_config: Some(PathBuf::from("configs/qemu.toml")),
         },
@@ -827,6 +830,10 @@ uboot_config = "configs/snapshot-uboot.toml"
     );
     assert_eq!(snapshot.smp, Some(4));
     assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from("/tmp/starry-build.toml"))
+    );
+    assert_eq!(
         snapshot.qemu.qemu_config,
         Some(PathBuf::from("/tmp/qemu.toml"))
     );
@@ -868,6 +875,45 @@ qemu_config = "configs/qemu.toml"
     );
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_STARRY_ARCH));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_STARRY_TARGET));
+    assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from(
+            "tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml"
+        ))
+    );
+}
+
+#[test]
+fn prepare_starry_request_inherits_snapshot_config() {
+    let root = tempdir().unwrap();
+    prepare_starry_workspace(root.path());
+    write_snapshot_text(
+        root.path(),
+        STARRY_SNAPSHOT_FILE,
+        r#"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+config = "configs/custom-starry.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = app
+        .prepare_starry_request(StarryCliArgs::default(), None, None)
+        .unwrap();
+
+    assert_eq!(request.arch, "aarch64");
+    assert_eq!(request.target, "aarch64-unknown-none-softfloat");
+    assert_eq!(
+        request.build_info_path,
+        root.path().join("configs/custom-starry.toml")
+    );
+    assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from("configs/custom-starry.toml"))
+    );
 }
 
 #[test]

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-advisory-lock-dir C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-advisory-lock-dir src/main.c)
+target_compile_options(bug-advisory-lock-dir PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-advisory-lock-dir RUNTIME DESTINATION usr/bin)

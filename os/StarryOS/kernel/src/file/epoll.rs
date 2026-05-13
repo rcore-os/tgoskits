@@ -380,20 +380,19 @@ impl Epoll {
 
     pub fn poll_events(&self, out: &mut [epoll_event]) -> AxResult<usize> {
         trace!("Epoll: poll_events called, out.len()={}", out.len());
+
+        // Splice the entire ready_queue into a local txlist, mirroring
+        // Linux's ep_send_events. Visiting each interest at most once per
+        // epoll_wait prevents the LT path from re-feeding the same fd back
+        // into the loop and filling out[] with duplicates of one ready fd.
+        let txlist = core::mem::take(&mut *self.inner.ready_queue.lock());
         let mut count = 0;
-        loop {
-            let weak_interest = {
-                let mut queue = self.inner.ready_queue.lock();
-                queue.pop_front()
-            };
+        let mut keep: VecDeque<Weak<EpollInterest>> = VecDeque::new();
 
-            let Some(weak_interest) = weak_interest else {
-                break;
-            };
-
+        for weak_interest in txlist {
             if count >= out.len() {
-                self.inner.ready_queue.lock().push_front(weak_interest);
-                break;
+                keep.push_back(weak_interest);
+                continue;
             }
 
             let Some(interest) = weak_interest.upgrade() else {
@@ -419,10 +418,7 @@ impl Epoll {
                         data: event.user_data,
                     };
                     count += 1;
-                    self.inner
-                        .ready_queue
-                        .lock()
-                        .push_back(Arc::downgrade(&interest));
+                    keep.push_back(Arc::downgrade(&interest));
                 }
                 ConsumeResult::EventAndRemove(event) => {
                     out[count] = epoll_event {
@@ -435,9 +431,23 @@ impl Epoll {
                 }
                 ConsumeResult::NoEvent => {
                     interest.mark_not_in_queue();
-                    self.register_waker_only(&interest);
+                    // Events arriving between consume()'s poll and the new
+                    // register() would otherwise be lost: the old waker
+                    // CAS-fails (in_ready_queue still set), and a plain
+                    // register only fires on the next edge. Re-poll after
+                    // registering to recover them.
+                    self.check_and_register_waker(&interest);
                 }
             }
+        }
+
+        if !keep.is_empty() {
+            let mut queue = self.inner.ready_queue.lock();
+            for entry in keep {
+                queue.push_back(entry);
+            }
+            drop(queue);
+            self.inner.poll_ready.wake();
         }
 
         if count == 0 {

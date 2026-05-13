@@ -1,21 +1,18 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
+use cargo_metadata::Metadata;
 use ostool::build::config::Cargo;
 
-pub type StarryBuildInfo = crate::arceos::build::ArceosBuildInfo;
-pub use crate::arceos::build::LogLevel;
-use crate::context::{
-    ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked, workspace_manifest_path,
-    workspace_metadata_root_manifest,
-};
+pub type StarryBuildInfo = crate::build::BuildInfo;
+pub use crate::build::LogLevel;
+use crate::context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked};
 
-impl StarryBuildInfo {
-    pub fn default_starry_for_target(target: &str) -> Self {
-        let mut build_info = Self::default_for_target(target);
-        build_info.plat_dyn = false;
-        build_info.features = vec!["qemu".to_string()];
-        build_info
-    }
+pub(crate) fn default_starry_build_info_for_target(target: &str) -> StarryBuildInfo {
+    let mut build_info = StarryBuildInfo::default_for_target(target);
+    build_info.plat_dyn = false;
+    build_info.features = vec!["qemu".to_string()];
+    build_info
 }
 
 pub(crate) fn resolve_build_info_path(
@@ -28,28 +25,25 @@ pub(crate) fn resolve_build_info_path(
     }
 
     let _ = starry_arch_for_target_checked(target)?;
-    Ok(crate::arceos::build::default_build_info_path_in_workspace(
+    Ok(crate::build::default_build_info_path_in_workspace(
         workspace_root,
         STARRY_PACKAGE,
         target,
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
-    let makefile_features = crate::arceos::build::makefile_features_from_env();
+    let makefile_features = crate::build::makefile_features_from_env();
     let mut build_info = if let Some(build_info) = &request.build_info_override {
         build_info.clone()
     } else {
-        crate::arceos::build::load_or_create_build_info(&request.build_info_path, || {
-            StarryBuildInfo::default_starry_for_target(&request.target)
+        crate::build::load_or_create_build_info(&request.build_info_path, || {
+            default_starry_build_info_for_target(&request.target)
         })?
     };
 
-    crate::arceos::build::apply_makefile_features(
-        &mut build_info,
-        &request.package,
-        &makefile_features,
-    );
+    crate::build::apply_makefile_features(&mut build_info, &request.package, &makefile_features);
 
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
@@ -59,32 +53,46 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
-    to_cargo_config(load_build_info(request)?, request)
-}
-
-pub(crate) fn to_cargo_config(
-    build_info: StarryBuildInfo,
-    request: &ResolvedStarryRequest,
-) -> anyhow::Result<Cargo> {
-    let mut cargo = build_info.into_prepared_base_cargo_config(
+    let metadata =
+        crate::build::workspace_metadata().context("failed to load workspace metadata")?;
+    let makefile_features = crate::build::makefile_features_from_env();
+    let mut build_info = if let Some(build_info) = &request.build_info_override {
+        build_info.clone()
+    } else {
+        crate::build::load_or_create_build_info(&request.build_info_path, || {
+            default_starry_build_info_for_target(&request.target)
+        })?
+    };
+    crate::build::apply_makefile_features_with_metadata(
+        &mut build_info,
+        &request.package,
+        &makefile_features,
+        &metadata,
+    );
+    if let Some(smp) = request.smp {
+        build_info.max_cpu_num = Some(smp);
+    }
+    let mut cargo = build_info.into_prepared_base_cargo_config_with_metadata(
         &request.package,
         &request.target,
         request.plat_dyn,
+        &metadata,
     )?;
-    patch_starry_cargo_config(&mut cargo, request)?;
+    patch_starry_cargo_config(&mut cargo, request, &metadata)?;
     Ok(cargo)
 }
 
 fn patch_starry_cargo_config(
     cargo: &mut Cargo,
     request: &ResolvedStarryRequest,
+    metadata: &Metadata,
 ) -> anyhow::Result<()> {
     let platform = crate::context::starry_default_platform_for_arch_checked(&request.arch)?;
     let static_defplat = uses_static_default_platform(&cargo.features);
 
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
-    ensure_starry_bin_arg(&mut cargo.args, &request.package)?;
+    ensure_starry_bin_arg(&mut cargo.args, &request.package, metadata)?;
     remove_qemu_feature_for_dynamic_platform(cargo);
     if static_defplat {
         cargo.features.push("qemu".to_string());
@@ -143,12 +151,16 @@ fn uses_static_default_platform(features: &[String]) -> bool {
     has_defplat && !has_dynamic && !has_custom
 }
 
-fn ensure_starry_bin_arg(args: &mut Vec<String>, package: &str) -> anyhow::Result<()> {
+fn ensure_starry_bin_arg(
+    args: &mut Vec<String>,
+    package: &str,
+    metadata: &Metadata,
+) -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--bin") {
         return Ok(());
     }
 
-    if package_has_bin_named(package, package)? {
+    if package_has_bin_named(package, package, metadata)? {
         args.push("--bin".to_string());
         args.push(package.to_string());
     }
@@ -156,9 +168,11 @@ fn ensure_starry_bin_arg(args: &mut Vec<String>, package: &str) -> anyhow::Resul
     Ok(())
 }
 
-fn package_has_bin_named(package: &str, bin_name: &str) -> anyhow::Result<bool> {
-    let workspace_manifest = workspace_manifest_path()?;
-    let metadata = workspace_metadata_root_manifest(&workspace_manifest)?;
+fn package_has_bin_named(
+    package: &str,
+    bin_name: &str,
+    metadata: &Metadata,
+) -> anyhow::Result<bool> {
     let package_info = metadata
         .packages
         .iter()
@@ -285,7 +299,7 @@ mod tests {
 
         assert_eq!(
             build_info,
-            StarryBuildInfo::default_starry_for_target("aarch64-unknown-none-softfloat")
+            default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
         );
         assert!(path.exists());
         let persisted: StarryBuildInfo =
@@ -328,7 +342,7 @@ HELLO = "world"
         request.build_info_override = Some(StarryBuildInfo {
             log: LogLevel::Info,
             features: vec!["net".to_string()],
-            ..StarryBuildInfo::default_starry_for_target("aarch64-unknown-none-softfloat")
+            ..default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
         });
 
         let build_info = load_build_info(&request).unwrap();
@@ -358,7 +372,8 @@ HELLO = "world"
             request.target.clone(),
             vec![],
         );
-        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+        let metadata = crate::build::workspace_metadata().unwrap();
+        patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
         assert_eq!(cargo.package, STARRY_PACKAGE);
         assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
@@ -391,14 +406,15 @@ HELLO = "world"
             qemu_config: None,
             uboot_config: None,
         };
-        let build_info = StarryBuildInfo::default_starry_for_target("x86_64-unknown-none");
+        let build_info = default_starry_build_info_for_target("x86_64-unknown-none");
         let mut cargo = build_info.into_base_cargo_config_with_log(
             "placeholder".to_string(),
             request.target.clone(),
             vec![],
         );
 
-        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+        let metadata = crate::build::workspace_metadata().unwrap();
+        patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
         assert_eq!(cargo.package, STARRY_PACKAGE);
         assert_eq!(
@@ -435,7 +451,8 @@ HELLO = "world"
             StarryBuildInfo::build_cargo_args(&request.target, true),
         );
 
-        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+        let metadata = crate::build::workspace_metadata().unwrap();
+        patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
         assert!(
             cargo
@@ -478,7 +495,8 @@ HELLO = "world"
             StarryBuildInfo::build_cargo_args(&request.target, true),
         );
 
-        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+        let metadata = crate::build::workspace_metadata().unwrap();
+        patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
@@ -522,14 +540,15 @@ HELLO = "world"
             qemu_config: None,
             uboot_config: None,
         };
-        let build_info = StarryBuildInfo::default_starry_for_target(&request.target);
+        let build_info = default_starry_build_info_for_target(&request.target);
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
             request.target.clone(),
             StarryBuildInfo::build_cargo_args(&request.target, false),
         );
 
-        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+        let metadata = crate::build::workspace_metadata().unwrap();
+        patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
         assert!(
             cargo
@@ -543,7 +562,8 @@ HELLO = "world"
     fn ensure_starry_bin_arg_adds_bin_for_starryos_package() {
         let mut args = Vec::new();
 
-        ensure_starry_bin_arg(&mut args, "starryos").unwrap();
+        let metadata = crate::build::workspace_metadata().unwrap();
+        ensure_starry_bin_arg(&mut args, "starryos", &metadata).unwrap();
 
         assert_eq!(args, vec!["--bin".to_string(), "starryos".to_string()]);
     }
@@ -552,7 +572,8 @@ HELLO = "world"
     fn ensure_starry_bin_arg_keeps_existing_bin_arg() {
         let mut args = vec!["--bin".to_string(), "starryos".to_string()];
 
-        ensure_starry_bin_arg(&mut args, STARRY_PACKAGE).unwrap();
+        let metadata = crate::build::workspace_metadata().unwrap();
+        ensure_starry_bin_arg(&mut args, STARRY_PACKAGE, &metadata).unwrap();
 
         assert_eq!(args, vec!["--bin".to_string(), "starryos".to_string()]);
     }

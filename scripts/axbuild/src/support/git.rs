@@ -41,10 +41,14 @@ pub(crate) fn changed_paths_since(
     workspace_root: &Path,
     since: &str,
 ) -> anyhow::Result<Vec<PathBuf>> {
+    ensure_git_work_tree(workspace_root)?;
+
     let range = format!("{since}..HEAD");
     let output = Command::new("git")
+        .args(git_safe_directory_args(workspace_root))
+        .arg("-C")
+        .arg(workspace_root)
         .args(["diff", "--name-only", range.as_str(), "--"])
-        .current_dir(workspace_root)
         .output()
         .with_context(|| format!("failed to run git diff for `{range}`"))?;
     if !output.status.success() {
@@ -66,6 +70,47 @@ pub(crate) fn changed_paths_since(
         .filter(|line| !line.is_empty())
         .map(PathBuf::from)
         .collect())
+}
+
+fn ensure_git_work_tree(workspace_root: &Path) -> anyhow::Result<()> {
+    let output = Command::new("git")
+        .args(git_safe_directory_args(workspace_root))
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to check whether {} is a git work tree",
+                workspace_root.display()
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "{} is not a git work tree{}",
+            workspace_root.display(),
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim() != "true" {
+        bail!("{} is not inside a git work tree", workspace_root.display());
+    }
+
+    Ok(())
+}
+
+fn git_safe_directory_args(workspace_root: &Path) -> [String; 2] {
+    [
+        "-c".to_string(),
+        format!("safe.directory={}", workspace_root.display()),
+    ]
 }
 
 pub(crate) fn select_incremental_packages_for_paths<I>(

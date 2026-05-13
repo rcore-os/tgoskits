@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-flock-failed-upgrade C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-flock-failed-upgrade src/main.c)
+target_compile_options(bug-flock-failed-upgrade PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-flock-failed-upgrade RUNTIME DESTINATION usr/bin)

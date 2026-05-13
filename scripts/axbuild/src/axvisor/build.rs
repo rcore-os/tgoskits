@@ -8,22 +8,22 @@ use ostool::build::config::Cargo;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    arceos::build::ArceosBuildInfo,
     axvisor::board,
+    build::BuildInfo,
     context::{ResolvedAxvisorRequest, arch_for_target_checked},
 };
 
 mod x86;
 
-pub type AxvisorBuildInfo = crate::arceos::build::ArceosBuildInfo;
-pub use crate::arceos::build::LogLevel;
+pub type AxvisorBuildInfo = crate::build::BuildInfo;
+pub use crate::build::LogLevel;
 
 pub const AXVISOR_PACKAGE: &str = "axvisor";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct AxvisorBoardConfig {
     #[serde(flatten, default)]
-    pub(crate) arceos: ArceosBuildInfo,
+    pub(crate) build_info: BuildInfo,
     #[serde(default)]
     pub vm_configs: Vec<PathBuf>,
 }
@@ -53,18 +53,16 @@ impl AxvisorBoardFile {
     }
 }
 
-impl AxvisorBuildInfo {
-    pub fn default_axvisor_for_target(target: &str) -> Self {
-        let mut build_info = Self::default_for_target(target);
-        build_info.features.clear();
-        build_info
-    }
+pub(crate) fn default_axvisor_build_info_for_target(target: &str) -> AxvisorBuildInfo {
+    let mut build_info = AxvisorBuildInfo::default_for_target(target);
+    build_info.features.clear();
+    build_info
 }
 
 impl AxvisorBoardConfig {
     fn into_loaded(self, target: String) -> LoadedAxvisorBuildConfig {
         LoadedAxvisorBuildConfig {
-            build_info: self.arceos,
+            build_info: self.build_info,
             target,
             vm_configs: self.vm_configs,
         }
@@ -108,7 +106,7 @@ pub(crate) fn workspace_root_from_axvisor_dir(axvisor_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn default_build_info_path(axvisor_dir: &Path, target: &str) -> PathBuf {
-    crate::arceos::build::default_build_info_path_in_workspace(
+    crate::build::default_build_info_path_in_workspace(
         &workspace_root_from_axvisor_dir(axvisor_dir),
         AXVISOR_PACKAGE,
         target,
@@ -272,7 +270,7 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
             return Ok(loaded);
         }
 
-        let default_build_info = AxvisorBuildInfo::default_axvisor_for_target(&request.target);
+        let default_build_info = default_axvisor_build_info_for_target(&request.target);
         fs::write(
             &request.build_info_path,
             toml::to_string_pretty(&default_build_info)?,
@@ -304,31 +302,24 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
         return Ok(loaded);
     }
 
-    if request.build_info_path.exists() {
-        return toml::from_str::<AxvisorBuildInfo>(&content)
-            .map(|build_info| {
-                let mut loaded = LoadedAxvisorBuildConfig {
-                    build_info,
-                    target: request.target.clone(),
-                    vm_configs: Vec::new(),
-                };
-                if let Some(smp) = request.smp {
-                    loaded.build_info.max_cpu_num = Some(smp);
-                }
-                loaded
-            })
-            .map_err(|e| {
-                anyhow!(
-                    "failed to parse build info {}: {e}",
-                    request.build_info_path.display()
-                )
-            });
-    }
-
-    Err(anyhow!(
-        "failed to parse build info {}",
-        request.build_info_path.display()
-    ))
+    toml::from_str::<AxvisorBuildInfo>(&content)
+        .map(|build_info| {
+            let mut loaded = LoadedAxvisorBuildConfig {
+                build_info,
+                target: request.target.clone(),
+                vm_configs: Vec::new(),
+            };
+            if let Some(smp) = request.smp {
+                loaded.build_info.max_cpu_num = Some(smp);
+            }
+            loaded
+        })
+        .map_err(|e| {
+            anyhow!(
+                "failed to parse build info {}: {e}",
+                request.build_info_path.display()
+            )
+        })
 }
 
 #[cfg(test)]

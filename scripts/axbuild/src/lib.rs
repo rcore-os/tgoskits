@@ -8,7 +8,9 @@ use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
 pub mod arceos;
 pub mod axvisor;
 mod board;
+mod build;
 mod clippy;
+mod config;
 pub mod context;
 mod rootfs;
 pub mod starry;
@@ -55,6 +57,11 @@ enum Commands {
         #[command(subcommand)]
         command: board::Command,
     },
+    /// Config generation and inspection helpers
+    Config {
+        #[command(subcommand)]
+        command: config::Command,
+    },
     /// Axvisor host-side commands
     Axvisor {
         #[command(subcommand)]
@@ -83,6 +90,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
         Commands::Board { command } => board::execute(command).await,
+        Commands::Config { command } => config::execute(command),
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => Starry::new()?.execute(command).await,
