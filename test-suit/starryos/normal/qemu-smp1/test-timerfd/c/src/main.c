@@ -11,6 +11,8 @@
  */
 #include "test_framework.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <stdint.h>
 #include <sys/timerfd.h>
@@ -92,6 +94,56 @@ int main(void) {
           "REALTIME + ABSTIME read returned 8 bytes");
     CHECK(abs_expirations >= 1, "REALTIME + ABSTIME expiration count >= 1");
     close(rfd);
+
+    /* Regression: timerfd_settime() must clear accumulated expirations.
+     * Linux's man timerfd_read(2): "the number of expirations that have
+     * occurred ... since the last successful read or since the last
+     * timerfd_settime() that reset the timer." Without the reset, an
+     * unread rearm would let the next read return ticks from the old
+     * setting. */
+    int sfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    CHECK(sfd >= 0, "create MONOTONIC for settime-reset test");
+
+    struct itimerspec quick = {
+        .it_interval = {0, 0},
+        .it_value    = {0, 50 * 1000 * 1000},   /* 50 ms */
+    };
+    CHECK_RET(timerfd_settime(sfd, 0, &quick, NULL), 0, "settime quick");
+
+    /* Wait past the deadline so an expiration is queued, but do NOT read. */
+    usleep(150 * 1000);
+
+    /* Re-arm with a long (1 second) one-shot. After this settime the
+     * stale "1 expiration" from the quick timer must be discarded. */
+    struct itimerspec slow = {
+        .it_interval = {0, 0},
+        .it_value    = {1, 0},
+    };
+    CHECK_RET(timerfd_settime(sfd, 0, &slow, NULL), 0, "settime slow rearm");
+
+    /* Non-blocking read: the new timer has not fired yet, so the read
+     * must report EAGAIN. If the kernel kept the stale count, this
+     * read would succeed and return 1. */
+    int fl = fcntl(sfd, F_GETFL, 0);
+    CHECK(fl != -1, "F_GETFL on timerfd");
+    CHECK_RET(fcntl(sfd, F_SETFL, fl | O_NONBLOCK), 0, "F_SETFL O_NONBLOCK");
+
+    uint64_t after_rearm = 0;
+    errno = 0;
+    ssize_t rn = read(sfd, &after_rearm, sizeof(after_rearm));
+    CHECK(rn == -1 && (errno == EAGAIN || errno == EWOULDBLOCK),
+          "read after settime-rearm returns EAGAIN (stale ticks discarded)");
+
+    /* Disarm path: same contract. */
+    CHECK_RET(timerfd_settime(sfd, 0, &quick, NULL), 0, "settime quick (2)");
+    usleep(150 * 1000);
+    struct itimerspec disarm = {{0, 0}, {0, 0}};
+    CHECK_RET(timerfd_settime(sfd, 0, &disarm, NULL), 0, "settime disarm");
+    errno = 0;
+    rn = read(sfd, &after_rearm, sizeof(after_rearm));
+    CHECK(rn == -1 && (errno == EAGAIN || errno == EWOULDBLOCK),
+          "read after disarm returns EAGAIN (stale ticks discarded)");
+    close(sfd);
 
     TEST_DONE();
 }

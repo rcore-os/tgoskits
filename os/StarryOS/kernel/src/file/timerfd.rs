@@ -135,6 +135,18 @@ impl Timerfd {
             state.next_deadline = Some(deadline);
             state.interval = new_interval;
         }
+        // Clear any expirations that accumulated under the previous
+        // setting. man timerfd_read(2) is explicit: read returns the
+        // number of expirations since "the last successful read or the
+        // last timerfd_settime() that reset the timer". Without this
+        // reset a `settime` rearm-without-read would let the next
+        // `read` return stale ticks from the old timer.
+        //
+        // Done under `state` so the background task, which only adds
+        // expirations after re-acquiring `state` and confirming its
+        // observed deadline is still current, cannot race a stale
+        // fetch_add past this clear.
+        self.expire_count.store(0, Ordering::Release);
         drop(state);
 
         // Wake the background task so it picks up the new deadline.
@@ -239,25 +251,29 @@ async fn run_timer(weak: alloc::sync::Weak<Timerfd>) {
                     }
                 }
 
-                tfd.expire_count.fetch_add(expirations, Ordering::AcqRel);
-                tfd.poll_rx.wake();
-
-                // Publish next deadline (or clear for one-shot). Guard
-                // against concurrent `settime`: if the current
-                // next_deadline no longer matches the one we just fired,
-                // someone re-armed (or disarmed) while we were firing —
-                // do NOT clobber their write. The added `expire_count`
-                // stays; those were real expirations of the old timer.
+                // Publish next deadline (or clear for one-shot) AND add
+                // the expirations under the same state lock. If the
+                // current next_deadline no longer matches the one we
+                // just fired, someone re-armed (or disarmed) the timer
+                // while we were firing — those expirations belong to
+                // the now-gone timer setting, so drop them on the
+                // floor. settime clears expire_count under the same
+                // lock, so once we observe a stale deadline here the
+                // count has already been cleared and we must not
+                // re-add to it.
                 let mut state = tfd.state.lock();
                 if state.shutdown {
                     return;
                 }
                 if state.next_deadline == Some(dl) {
+                    tfd.expire_count.fetch_add(expirations, Ordering::AcqRel);
                     if interval.is_zero() {
                         state.next_deadline = None;
                     } else {
                         state.next_deadline = Some(next_deadline);
                     }
+                    drop(state);
+                    tfd.poll_rx.wake();
                 }
             }
         }
