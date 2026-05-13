@@ -18,8 +18,6 @@ use alloc::sync::Arc;
 use ax_errno::LinuxResult;
 use ax_fs::{FS_CONTEXT, FsContext};
 use ax_lazyinit::LazyInit;
-#[cfg(not(feature = "plat-dyn"))]
-use axfs_ng_vfs::path::{Path, PathBuf};
 use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 pub use tmp::MemoryFs;
 
