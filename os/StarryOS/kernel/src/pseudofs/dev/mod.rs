@@ -14,6 +14,8 @@ mod fb;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
+#[cfg(feature = "ext4")]
+pub use r#loop::LoopDevice;
 #[cfg(feature = "memtrack")]
 mod memtrack;
 pub mod tty;
@@ -322,9 +324,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         root.add("dri", SimpleDir::new_maker(fs.clone(), Arc::new(dri_dir)));
     }
 
-    // Loop devices
+    // Loop devices (major 7, minor = device index)
     for i in 0..16 {
-        let dev_id = DeviceId::new(7, 0);
+        let dev_id = DeviceId::new(7, i);
         root.add(
             format!("loop{i}"),
             Device::new(

@@ -43,7 +43,7 @@ path = "xtask/main.rs"
 [dependencies]
 ax-feat = { workspace = true, features = ["fs-ng-times", "irq"] }
 axplat-dyn = { workspace = true, optional = true }
-starry-kernel = { workspace = true, features = ["dev-log"] }
+starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
 [target.'cfg(any(windows,unix))'.dependencies]
 anyhow = "1.0"

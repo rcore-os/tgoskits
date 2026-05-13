@@ -8,7 +8,10 @@ use ostool::{
 
 use crate::{
     axvisor::context::AxvisorContext,
-    context::{AppContext, AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence},
+    context::{
+        AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest,
+        SnapshotPersistence,
+    },
 };
 
 pub mod board;
@@ -305,7 +308,10 @@ impl Axvisor {
 
     fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
         let workspace_root = self.app.workspace_root().to_path_buf();
-        let axvisor_dir = self.app.axvisor_dir()?.to_path_buf();
+        let axvisor_dir = self
+            .app
+            .workspace_member_dir(build::AXVISOR_PACKAGE)?
+            .to_path_buf();
         let path = config::write_defconfig(&workspace_root, &axvisor_dir, &args.board)?;
         println!("Generated {} for board {}", path.display(), args.board);
         Ok(())
@@ -314,7 +320,9 @@ impl Axvisor {
     fn config(&mut self, args: ArgsConfig) -> anyhow::Result<()> {
         match args.command {
             ConfigCommand::Ls => {
-                for board in config::available_board_names(self.app.axvisor_dir()?)? {
+                for board in config::available_board_names(
+                    self.app.workspace_member_dir(build::AXVISOR_PACKAGE)?,
+                )? {
                     println!("{board}");
                 }
             }
@@ -337,9 +345,21 @@ impl Axvisor {
         uboot_config: Option<PathBuf>,
         persistence: SnapshotPersistence,
     ) -> anyhow::Result<ResolvedAxvisorRequest> {
-        let (request, snapshot) =
-            self.app
-                .prepare_axvisor_request(args, qemu_config, uboot_config)?;
+        let axvisor_dir = self
+            .app
+            .workspace_member_dir(build::AXVISOR_PACKAGE)?
+            .to_path_buf();
+        let (request, snapshot) = self.app.prepare_axvisor_request(
+            args,
+            AxvisorRequestPaths {
+                package: build::AXVISOR_PACKAGE.to_string(),
+                axvisor_dir,
+                load_config_target: build::load_target_from_build_config,
+                resolve_build_info_path: build::resolve_build_info_path,
+            },
+            qemu_config,
+            uboot_config,
+        )?;
         if persistence.should_store() {
             self.app.store_axvisor_snapshot(&snapshot)?;
         }
@@ -407,7 +427,7 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::context::{workspace_member_dir, workspace_root_path};
+    use crate::context::{resolve_workspace_member_dir, workspace_root_path};
 
     #[test]
     fn context_resolves_workspace_root() {
@@ -418,7 +438,7 @@ mod tests {
         );
         assert_eq!(
             ctx.axvisor_dir(),
-            workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)
+            resolve_workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)
                 .unwrap()
                 .as_path()
         );

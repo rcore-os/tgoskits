@@ -268,8 +268,10 @@ function CapabilitySection() {
       <div className="feature-grid">
         {features.map((feature) => (
           <Link className="feature-card" key={feature.title} to={feature.to}>
-            <div className="feature-icon">{iconLibrary[feature.icon]}</div>
-            <h3>{feature.title}</h3>
+            <div className="feature-card__header">
+              <div className="feature-icon">{iconLibrary[feature.icon]}</div>
+              <h3>{feature.title}</h3>
+            </div>
             <p>{feature.desc}</p>
           </Link>
         ))}
@@ -279,18 +281,49 @@ function CapabilitySection() {
 }
 
 function ArchitectureSection() {
-  const metrics = [
-    { value: 'components/*', label: '可复用基础组件层' },
-    { value: 'os/*', label: '系统与虚拟化实现层' },
-    { value: 'platform/*', label: '平台适配与板级支撑' },
-    { value: 'test-suit/*', label: '系统级验证与回归' },
+  const architectureFlow = [
+    {
+      label: '场景入口',
+      items: ['ArceOS examples', 'StarryOS rootfs', 'Axvisor guests', 'board / VM configs'],
+    },
+    {
+      label: '系统形态',
+      items: ['ArceOS modular kernel', 'StarryOS Linux-compatible OS', 'Axvisor Type-I hypervisor'],
+    },
+    {
+      label: '共享组件',
+      items: ['memory / scheduler', 'fs / net / device', 'VM / vCPU / address space', 'driver core APIs'],
+    },
+    {
+      label: '平台与硬件',
+      items: ['axplat crates', 'axhal integration', 'QEMU targets', 'board platforms'],
+    },
   ];
 
-  const layers = [
-    { name: 'Applications & Guests', detail: 'examples / rootfs / guest images' },
-    { name: 'ArceOS · StarryOS · Axvisor', detail: '面向不同场景的系统实现路径' },
-    { name: 'Shared Components', detail: '内存、调度、虚拟化、驱动、I/O 等复用 crate' },
-    { name: 'Platform & Tooling', detail: 'platform / xtask / scripts / board config' },
+  const sideRails = [
+    {
+      title: '构建与配置',
+      items: ['cargo xtask', 'scripts/axbuild', 'platform configs', 'VM configs'],
+    },
+    {
+      title: '验证闭环',
+      items: ['clippy / fmt checks', 'ArceOS tests', 'StarryOS test-suit', 'Axvisor QEMU / board tests'],
+    },
+  ];
+
+  const notes = [
+    {
+      title: '系统层清晰分工',
+      desc: 'ArceOS 提供模块化内核底座，StarryOS 复用其能力扩展 Linux 兼容语义，Axvisor 在同一组件基础上组织虚拟化路径。',
+    },
+    {
+      title: '组件层承接复用',
+      desc: '内存、调度、文件系统、网络、虚拟化与驱动 crate 收敛在 components/，系统实现通过稳定接口组合能力。',
+    },
+    {
+      title: '平台层闭合验证',
+      desc: '平台适配、构建脚本与 test-suit 把 QEMU、物理板卡和 CI 检查串成反馈链路，让架构改动可验证、可回归。',
+    },
   ];
 
   return (
@@ -302,38 +335,101 @@ function ArchitectureSection() {
       description="仓库按 components / os / platform / test-suit 四层组织，从基础 crate 到系统实现再到平台适配形成清晰依赖关系。"
       framed={false}
     >
-      <div className="split-layout split-layout--architecture">
-        <div className="narrative-card">
-          <h3>统一工作区不只是把仓库放在一起</h3>
-          <p>
-            TGOSKits 将共享组件、系统实现、平台适配、测试套件和构建脚本放进同一个演进视角中，
-            使“改动会影响哪里”“该从哪个入口验证”这类问题更容易回答。
-          </p>
-          <div className="metric-strip">
-            {metrics.map((metric) => (
-              <div className="metric-chip" key={metric.label}>
-                <strong>{metric.value}</strong>
-                <span>{metric.label}</span>
-              </div>
+      <div className="architecture-map">
+        <div className="architecture-rail architecture-rail--left">
+          <h3>{sideRails[0].title}</h3>
+          <ul>
+            {sideRails[0].items.map((item) => (
+              <li key={item}>{item}</li>
             ))}
-          </div>
-          <div className="narrative-actions">
-            <Link className="button button--primary button--hero button--compact" to="/docs/introduction/overview">
-              查看项目概览
-            </Link>
-            <Link className="button button--outline button--hero button--compact" to="/docs/contributing/repo">
-              浏览仓库结构
-            </Link>
-          </div>
+          </ul>
         </div>
-        <div className="stack-visual" aria-hidden="true">
-          {layers.map((layer, index) => (
-            <div className="stack-layer" key={layer.name} style={{ '--stack-index': index }}>
-              <strong>{layer.name}</strong>
-              <span>{layer.detail}</span>
+
+        <div className="architecture-flow" aria-label="TGOSKits layered architecture">
+          {architectureFlow.map((layer, index) => (
+            <div className="architecture-layer" key={layer.label} style={{ '--layer-index': index }}>
+              <div className="architecture-layer__label">{layer.label}</div>
+              <div className="architecture-layer__items">
+                {layer.items.map((item) => (
+                  <span key={item}>{item}</span>
+                ))}
+              </div>
             </div>
           ))}
+          <div className="architecture-backbone" aria-hidden="true">
+            <span>shared workspace contracts</span>
+          </div>
         </div>
+
+        <div className="architecture-rail architecture-rail--right">
+          <h3>{sideRails[1].title}</h3>
+          <ul>
+            {sideRails[1].items.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <div className="architecture-notes">
+        {notes.map((note) => (
+          <article className="architecture-note" key={note.title}>
+            <h3>{note.title}</h3>
+            <p>{note.desc}</p>
+          </article>
+        ))}
+      </div>
+    </SectionShell>
+  );
+}
+
+function ComponentWorkspaceSection() {
+  const workspaceItems = [
+    {
+      title: '独立组件汇聚',
+      desc: 'components/ 下维护 60 多个可复用 crate，覆盖内存、调度、设备、虚拟化、文件系统、平台抽象等系统软件基础能力。',
+      tags: ['components/*', 'ax* crates', 'starry-*', 'arch backends'],
+    },
+    {
+      title: 'Subtree 同步工具',
+      desc: 'scripts/repo/repo.py 负责列出、拉取和推送组件仓库，让独立组件可以在统一工作区内集成验证后再同步回上游。',
+      tags: ['repo.py list', 'repo.py pull', 'repo.py push', 'repos.csv'],
+    },
+    {
+      title: '来源边界清晰',
+      desc: 'repos.csv 显式记录组件来源、目标路径、分类和分支信息，便于维护者判断哪些改动属于本仓库集成，哪些需要同步回组件仓库。',
+      tags: ['target_dir', 'category', 'branch', 'description'],
+    },
+  ];
+
+  return (
+    <SectionShell
+      id="component-workspace"
+      className="section-shell--component-workspace"
+      eyebrow="Component Workspace"
+      title="60 多个独立组件在一个工作区内集成、同步与来源管理"
+      description="TGOSKits 不只是普通 monorepo，而是通过 Git Subtree 管理独立组件仓库，用显式清单和维护脚本把组件来源、目标路径与同步动作收束到同一入口。"
+      framed={false}
+    >
+      <div className="workspace-grid">
+        {workspaceItems.map((item) => (
+          <article className="workspace-card" key={item.title}>
+            <h3>{item.title}</h3>
+            <p>{item.desc}</p>
+            <div className="workspace-tags">
+              {item.tags.map((tag) => (
+                <code key={tag}>{tag}</code>
+              ))}
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className="workspace-command-strip">
+        <code>python3 scripts/repo/repo.py list</code>
+        <span>查看组件仓库映射与同步状态</span>
+        <Link className="button button--outline button--hero button--compact" to="/docs/contributing/repo">
+          查看仓库维护说明
+        </Link>
       </div>
     </SectionShell>
   );
@@ -455,9 +551,9 @@ function WorkflowSection() {
             ))}
           </div>
           <div className="command-board__links">
-            <Link to="/docs/build/overview">构建系统说明</Link>
+            <Link to="/docs/quickstart/overview">快速开始</Link>
             <Link to="/docs/build/test/overview">验证策略</Link>
-            <Link to="/docs/build/overview">构建流程</Link>
+            <Link to="/docs/contributing/repo">仓库维护</Link>
           </div>
         </div>
       </div>
@@ -783,12 +879,13 @@ export default function Home() {
       <HeroBanner />
       <CapabilitySection />
       <ArchitectureSection />
-      <PlatformSection />
+      <ComponentWorkspaceSection />
       <SystemsSection />
+      <PlatformSection />
       <DriverSection />
       <WorkflowSection />
-      <DocsSection />
       <QualitySection />
+      <DocsSection />
       <CTASection />
     </Layout>
   );

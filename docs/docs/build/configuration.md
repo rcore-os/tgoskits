@@ -160,7 +160,7 @@ pub struct ArceosBuildInfo {
     pub features: Vec<String>,           // Cargo features
     pub log: LogLevel,                   // 日志级别
     pub max_cpu_num: Option<usize>,      // SMP 核数
-    pub axconfig_overrides: Vec<String>, // ax-config-gen 覆盖
+    pub axconfig_overrides: Vec<String>, // 配置值覆盖
     pub plat_dyn: bool,                  // 动态平台
 }
 ```
@@ -196,10 +196,10 @@ Build Info 的字段在编译时转换为以下环境变量：
 | `AX_LOG` | `log` | 日志级别 |
 | `SMP` | `max_cpu_num` | CPU 核数 |
 | `AX_IP` / `AX_GW` | `env` | 网络 |
-| `AX_CONFIG_PATH` | axconfig 生成 | 平台配置路径 |
+| `AX_CONFIG_PATH` | axbuild 生成 | 平台配置路径 |
 | `AX_PLATFORM` | 平台检测 | 平台名 |
 | `AX_ARCH` | arch 解析 | 架构名 |
 | `AX_TARGET` | target 解析 | target triple |
 | `AXVISOR_VM_CONFIGS` | `--vmconfigs` | VM 配置列表 |
 
-这些环境变量在 Cargo 编译时通过 `--env` 传递，被 OS 源码中的 `env!()` 宏在编译期读取。其中 `AX_LOG` 控制日志过滤级别，`SMP` 决定系统启动的 CPU 核数，`AX_CONFIG_PATH` 指向由 `ax-config-gen` 预生成的平台配置文件。各子系统还会额外注入自己的环境变量（如 Axvisor 的 `AXVISOR_VM_CONFIGS`）。
+这些环境变量在 Cargo 编译时通过 `--env` 传递，被 OS 源码中的 `env!()` 宏在编译期读取。其中 `AX_LOG` 控制日志过滤级别，`SMP` 决定系统启动的 CPU 核数，`AX_CONFIG_PATH` 指向由 `axbuild` 预生成的平台配置文件。各子系统还会额外注入自己的环境变量（如 Axvisor 的 `AXVISOR_VM_CONFIGS`）。

@@ -316,9 +316,6 @@ pub fn sys_unlink(path: *const c_char) -> AxResult<isize> {
 
 pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
     let size: usize = size.try_into().map_err(|_| AxError::BadAddress)?;
-    if buf.is_null() {
-        return Ok(0);
-    }
 
     let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
     debug!("sys_getcwd => cwd: {cwd}");
@@ -328,8 +325,7 @@ pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
 
     if cwd.len() <= size {
         vm_write_slice(buf, cwd)?;
-        // FIXME: it is said that this should return 0
-        Ok(buf.as_ptr() as _)
+        Ok(cwd.len() as _)
     } else {
         Err(AxError::OutOfRange)
     }

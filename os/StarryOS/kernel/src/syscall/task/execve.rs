@@ -97,7 +97,7 @@ pub fn sys_execve(
     // Switch the hardware page table now that the new aspace is installed.
     curr.switch_page_table(new_pt_root);
 
-    curr.set_name(new_name);
+    curr.set_name(&new_name);
     *proc_data.exe_path.write() = new_exe_path;
     *proc_data.cmdline.write() = Arc::new(args);
 

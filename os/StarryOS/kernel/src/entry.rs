@@ -29,7 +29,7 @@ pub fn init(args: &[String], envs: &[String]) {
     let path = loc
         .absolute_path()
         .expect("Failed to get executable absolute path");
-    let name = loc.name();
+    let name = loc.name().into_owned();
 
     let mut uspace = new_user_aspace_empty()
         .and_then(|mut it| {
@@ -42,7 +42,7 @@ pub fn init(args: &[String], envs: &[String]) {
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
-    let mut task = new_user_task(name, uctx, 0);
+    let mut task = new_user_task(&name, uctx, 0);
     task.ctx_mut().set_page_table_root(uspace.page_table_root());
 
     let pid = task.id().as_u64() as Pid;

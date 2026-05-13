@@ -1,12 +1,12 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::cell::OnceCell;
 
-use ax_driver::{AxBlockDevice, PartitionRegion};
+use ax_driver::{AxBlockDevice, PartitionRegion, prelude::BlockDriverOps};
 use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
-use rsext4::{Jbd2Dev, bmalloc::InodeNumber};
+use rsext4::{Jbd2Dev, bmalloc::InodeNumber, superblock::Ext4Superblock};
 
 use super::{Ext4Disk, Inode, util::into_vfs_err};
 
@@ -31,7 +31,16 @@ pub struct Ext4Filesystem {
 }
 
 impl Ext4Filesystem {
+    /// Create from a compile-time block device (e.g. VirtIO root device).
     pub fn new(dev: AxBlockDevice, region: PartitionRegion) -> VfsResult<Filesystem> {
+        Self::new_from_boxed(Box::new(dev) as Box<dyn BlockDriverOps>, region)
+    }
+
+    /// Create from a dynamic (boxed) block device (e.g. loop device).
+    pub fn new_from_boxed(
+        dev: Box<dyn BlockDriverOps>,
+        region: PartitionRegion,
+    ) -> VfsResult<Filesystem> {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, Ext4Disk::new(dev, region), true);
         let fs = rsext4::mount(&mut dev).map_err(into_vfs_err)?;
 
@@ -63,6 +72,9 @@ impl Ext4Filesystem {
         fs.datablock_cache.flush_all(dev).map_err(into_vfs_err)?;
         fs.bitmap_cache.flush_all(dev).map_err(into_vfs_err)?;
         fs.inodetable_cahce.flush_all(dev).map_err(into_vfs_err)?;
+        // Mark the filesystem clean before writing the superblock so the
+        // on-disk state reflects a clean sync / unmount.
+        fs.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
         fs.sync_superblock(dev).map_err(into_vfs_err)?;
         fs.sync_group_descriptors(dev).map_err(into_vfs_err)?;
         if dev.is_use_journal() {
