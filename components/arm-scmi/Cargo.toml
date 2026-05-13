@@ -5,7 +5,6 @@ version = "0.1.0"
 
 [dependencies]
 bitflags = "2"
-dma-api = {version = "0.5", features = ["alloc"]}
 log = "0.4"
 mbarrier = "0.1"
 smccc = "0.2"

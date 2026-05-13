@@ -21,7 +21,7 @@ tock_registers::register_bitfields![
     u32,
     ChannelStatus [
         STATUS OFFSET(0) NUMBITS(2) [
-            FREE = 0,
+            FREE = 0b01,
             ERROR = 0b10,
         ]
     ],
@@ -36,10 +36,18 @@ pub struct Shmem {
     pub size: usize,
 }
 
+// The mapped SCMI shared-memory window is accessed through volatile operations
+// and external synchronization supplied by the owning SCMI instance.
+unsafe impl Send for Shmem {}
+
 impl Shmem {
+    const PAYLOAD_OFFSET: usize = size_of::<ShmemHeader>();
+
     pub fn reset(&mut self) {
         trace!("Reset SHMEM at {:p}", self.address);
-        self.header().channel_status.set(0);
+        self.header()
+            .channel_status
+            .write(ChannelStatus::STATUS::FREE);
         self.header().flags.set(0);
         self.header().length.set(0);
         self.header().msg_header.set(0);
@@ -50,12 +58,7 @@ impl Shmem {
     }
     pub fn tx_prepare(&mut self, xfer: &Xfer) {
         self.header().channel_status.set(0);
-        // self.header().flags.set(0);
-        if xfer.hdr.poll_completion {
-            self.header().flags.modify(ShmemFlags::INTR_ENABLED::CLEAR);
-        } else {
-            self.header().flags.modify(ShmemFlags::INTR_ENABLED::SET);
-        }
+        self.header().flags.set(0);
         let len = size_of::<u32>() as u32 + xfer.tx.len() as u32;
         self.header().length.set(len);
         self.header().msg_header.set(xfer.hdr.pack());
@@ -65,14 +68,40 @@ impl Shmem {
             xfer.hdr,
             xfer.tx.len()
         );
-        /* Copy TX payload */
+        // Copy TX payload
         if !xfer.tx.is_empty() {
             self.write_payload(&xfer.tx);
         }
     }
 
+    pub(crate) fn write_message_header(
+        &mut self,
+        protocol_id: u32,
+        message_id: u8,
+        payload_len: u32,
+    ) {
+        self.header().channel_status.set(0);
+        self.header().flags.set(0);
+        self.header().length.set(4 + payload_len);
+        self.header()
+            .msg_header
+            .set(encode_message_header(protocol_id, message_id));
+    }
+
+    pub(crate) fn write_payload_u32(&mut self, offset: usize, value: u32) {
+        self.write_u32(Self::PAYLOAD_OFFSET + offset, value);
+    }
+
+    pub(crate) fn read_payload_u32(&self, offset: usize) -> u32 {
+        self.read_u32(Self::PAYLOAD_OFFSET + offset)
+    }
+
+    pub(crate) fn read_payload_i32(&self, offset: usize) -> i32 {
+        self.read_payload_u32(offset) as i32
+    }
+
     pub fn payload_ptr(&mut self) -> *mut u8 {
-        unsafe { self.address.as_ptr().add(size_of::<ShmemHeader>()) }
+        unsafe { self.address.as_ptr().add(Self::PAYLOAD_OFFSET) }
     }
 
     pub fn write_payload(&mut self, buff: &[u8]) {
@@ -94,8 +123,22 @@ impl Shmem {
         }
         rmb();
     }
+
+    fn write_u32(&mut self, offset: usize, value: u32) {
+        unsafe {
+            (self.address.as_ptr().add(offset) as *mut u32).write_volatile(value.to_le());
+        }
+    }
+
+    fn read_u32(&self, offset: usize) -> u32 {
+        unsafe { u32::from_le((self.address.as_ptr().add(offset) as *const u32).read_volatile()) }
+    }
 }
 
 impl Shmem {
     pub const COMPATIBLE: &str = "arm,scmi-shmem";
+}
+
+const fn encode_message_header(protocol_id: u32, message_id: u8) -> u32 {
+    ((protocol_id & 0xff) << 10) | (message_id as u32 & 0xff)
 }

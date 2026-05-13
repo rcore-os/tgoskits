@@ -1,4 +1,3 @@
-use smccc::{error::success_or_error_64, smc64};
 use tock_registers::interfaces::Readable;
 
 use crate::{Shmem, Transport, Xfer, err::ScmiError};
@@ -13,8 +12,10 @@ impl Smc {
         Smc { func_id, irq }
     }
 
-    fn call(&self) -> Result<(), smccc::psci::Error> {
-        success_or_error_64(smc64(self.func_id, [0; 17])[0])
+    pub(crate) fn call_sync(&self) {
+        full_system_barrier();
+        smc_call(self.func_id);
+        full_system_barrier();
     }
 }
 
@@ -30,8 +31,7 @@ impl Transport for Smc {
     fn send_message(&mut self, shmem: &mut Shmem, xfer: &Xfer) -> Result<(), ScmiError> {
         shmem.tx_prepare(xfer);
         trace!("Sending SMC message {:?}", xfer.hdr);
-        self.call().unwrap();
-
+        self.call_sync();
         Ok(())
     }
 
@@ -63,5 +63,30 @@ impl Transport for Smc {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn smc_call(func_id: u32) {
+    let mut ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "smc #0",
+            inlateout("x0") func_id as usize => ret,
+            in("x1") 0usize,
+            in("x2") 0usize,
+            in("x3") 0usize,
+        );
+    }
+    let _ = ret;
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn smc_call(_func_id: u32) {}
+
+fn full_system_barrier() {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
     }
 }

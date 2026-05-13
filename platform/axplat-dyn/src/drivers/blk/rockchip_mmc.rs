@@ -12,17 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{string::ToString, vec::Vec};
+use alloc::{format, string::ToString};
 use core::time::Duration;
 
+use dma_api::DeviceDma;
 use rdif_clk::ClockId;
 use rdrive::{
     Device, DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
 };
-use sdmmc::emmc::{self, EMmcHost};
+use sdhci_host::Sdhci;
+use sdmmc_protocol::{
+    Error,
+    error::{ErrorContext, Phase},
+    sdio::{DelayNs, SdioSdmmc},
+};
 use spin::Once;
 
-use crate::drivers::{blk::PlatformDeviceBlock, iomap};
+use crate::drivers::{DmaImpl, blk::PlatformDeviceBlock, iomap};
+
+const BLOCK_SIZE: usize = 512;
+const SDHCI_POWER_330: u8 = 0x0e;
+
+type RockchipSdhci = SdioSdmmc<Sdhci, AxDelay>;
 
 module_driver!(
     name: "Rockchip sdhci",
@@ -48,91 +59,165 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         )))?;
 
     let mmio_size = base_reg.size.unwrap_or(0x1000);
-
+    info!(
+        "rockchip-sdhci probe: node={}, addr={:#x}, size={:#x}",
+        info.node.name(),
+        base_reg.address as usize,
+        mmio_size
+    );
     let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
 
-    let clock: Vec<_> = info.node.clocks().into_iter().collect();
+    init_core_clock(&info)?;
 
-    info!("perparing to init emmc with clock");
-
-    for clk in &clock {
-        info!(
-            "clock: phandle {}, name: {:?}, cells: {:?}",
-            clk.phandle, clk.name, clk.cells
-        );
-
-        if clk.name == Some("core".to_string()) {
-            let id = info
-                .phandle_to_device_id(clk.phandle)
-                .expect("no device id");
-
-            let clk_dev = rdrive::get::<rdif_clk::Clk>(id).expect("clk not found");
-
-            let clk_dev = ClkDev {
-                inner: clk_dev,
-                id: (clk.select().unwrap_or(0) as usize).into(),
-                // TODO: verify the id
-                // id: 300.into(),
-            };
-            CLK_DEV.call_once(|| clk_dev);
-
-            emmc::clock::init_global_clk(CLK_DEV.wait());
-        }
+    let mut host = unsafe { Sdhci::new(mmio_base) };
+    if CLK_DEV.is_completed() {
+        info!("rockchip-sdhci: using external CRU clock");
+        host.set_external_clock(set_sdhci_clock);
+    } else {
+        warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
     }
+    info!("rockchip-sdhci: reset controller");
+    host.reset_all()
+        .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
+    host.set_power(SDHCI_POWER_330);
+    host.enable_interrupts();
+    host.set_dma(DeviceDma::new(u32::MAX as u64, &DmaImpl));
 
-    let mut emmc = EMmcHost::new(mmio_base.as_ptr() as usize);
-    emmc.init().map_err(|err| {
-        warn!(
-            "rockchip-emmc at {:#x} is not usable by sdmmc: {err:?}",
-            base_reg.address
-        );
-        OnProbeError::NotMatch
-    })?;
-    let info = emmc.get_card_info().map_err(|err| {
-        warn!(
-            "rockchip-emmc at {:#x} did not provide card info: {err:?}",
-            base_reg.address
-        );
-        OnProbeError::NotMatch
-    })?;
-    info!("eMMC card info: {:#?}", info);
+    info!("rockchip-sdhci: initialize card");
+    let mut card = SdioSdmmc::new(host, AxDelay);
+    let card_info = card
+        .init()
+        .map_err(|e| card_init_error(base_reg.address, mmio_size, e))?;
+    info!(
+        "SDHCI card: kind={:?} high_capacity={} rca={} ocr={:#010x} capacity_blocks={:?} cid={} \
+         ext_csd={}",
+        card_info.kind,
+        card_info.high_capacity,
+        card_info.rca,
+        card_info.ocr,
+        card_info.capacity_blocks,
+        card_info.cid.is_some(),
+        card_info.ext_csd.is_some()
+    );
 
-    let dev = BlockDivce { dev: Some(emmc) };
+    let dev = BlockDevice {
+        dev: Some(card),
+        capacity_blocks: card_info.capacity_blocks.unwrap_or(0),
+    };
     plat_dev.register_block(dev);
-    debug!("virtio block device registered successfully");
+    info!("rockchip-sdhci block device registered");
     Ok(())
 }
 
-struct BlockDivce {
-    dev: Option<EMmcHost>,
+fn init_error(address: u64, size: u64, err: Error) -> OnProbeError {
+    OnProbeError::other(format!(
+        "failed to initialize SDHCI device at [PA:{:?}, SZ:0x{:x}): {err:?}",
+        address, size
+    ))
+}
+
+fn card_init_error(address: u64, size: u64, err: Error) -> OnProbeError {
+    if is_absent_card_init_error(err) {
+        warn!(
+            "rockchip-sdhci: no responsive card at [PA:{:?}, SZ:0x{:x}); skipping controller: \
+             {err:?}",
+            address, size
+        );
+        return OnProbeError::NotMatch;
+    }
+
+    init_error(address, size, err)
+}
+
+fn is_absent_card_init_error(err: Error) -> bool {
+    match err {
+        Error::NoCard => true,
+        Error::Timeout(ctx) | Error::Crc(ctx) | Error::BadResponse(ctx) => {
+            ctx.cmd.is_some()
+                && matches!(
+                    ctx.phase,
+                    Phase::CommandSend | Phase::ResponseWait | Phase::Init
+                )
+        }
+        _ => false,
+    }
+}
+
+fn init_core_clock(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+    for clk in info.node.clocks() {
+        info!(
+            "rockchip-sdhci clock: phandle <{}>, name: {:?}, cells: {}",
+            clk.phandle, clk.name, clk.cells
+        );
+        if clk.name == Some("core".to_string()) {
+            let device_id = info.phandle_to_device_id(clk.phandle).ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] core clock phandle {} has no device id",
+                    info.node.name(),
+                    clk.phandle
+                ))
+            })?;
+            let clk_dev = rdrive::get::<rdif_clk::Clk>(device_id).map_err(|_| {
+                OnProbeError::other(format!(
+                    "[{}] core clock device {:?} is not registered",
+                    info.node.name(),
+                    device_id
+                ))
+            })?;
+            CLK_DEV.call_once(|| ClkDev {
+                inner: clk_dev,
+                id: (clk.select().unwrap_or(0) as usize).into(),
+            });
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn set_sdhci_clock(target_hz: u32) -> Result<(), Error> {
+    let clk = CLK_DEV.wait();
+    let mut clk_dev = clk.inner.lock().map_err(|_| clock_error())?;
+    clk_dev
+        .set_rate(clk.id, target_hz as u64)
+        .map_err(|_| clock_error())?;
+    let rate = clk_dev.get_rate(clk.id).map_err(|_| clock_error())?;
+    info!("rockchip-sdhci: core clock set to {} Hz", rate);
+    Ok(())
+}
+
+fn clock_error() -> Error {
+    Error::BusError(ErrorContext::new(Phase::Init))
+}
+
+struct BlockDevice {
+    dev: Option<RockchipSdhci>,
+    capacity_blocks: u64,
 }
 
 struct BlockQueue {
-    raw: EMmcHost,
+    raw: RockchipSdhci,
+    capacity_blocks: u64,
 }
 
-const MMC_IO_RETRIES: usize = 3;
-
-impl DriverGeneric for BlockDivce {
+impl DriverGeneric for BlockDevice {
     fn name(&self) -> &str {
-        "rockchip-emmc"
+        "rockchip-sdhci"
     }
 }
 
-impl rd_block::Interface for BlockDivce {
+impl rd_block::Interface for BlockDevice {
     fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rd_block::IQueue>> {
-        self.dev
-            .take()
-            .map(|dev| alloc::boxed::Box::new(BlockQueue { raw: dev }) as _)
+        self.dev.take().map(|dev| {
+            alloc::boxed::Box::new(BlockQueue {
+                raw: dev,
+                capacity_blocks: self.capacity_blocks,
+            }) as _
+        })
     }
 
-    fn enable_irq(&mut self) {
-        todo!()
-    }
+    fn enable_irq(&mut self) {}
 
-    fn disable_irq(&mut self) {
-        todo!()
-    }
+    fn disable_irq(&mut self) {}
 
     fn is_irq_enabled(&self) -> bool {
         false
@@ -145,11 +230,11 @@ impl rd_block::Interface for BlockDivce {
 
 impl rd_block::IQueue for BlockQueue {
     fn num_blocks(&self) -> usize {
-        self.raw.get_block_num() as _
+        self.capacity_blocks as usize
     }
 
     fn block_size(&self) -> usize {
-        self.raw.get_block_size()
+        BLOCK_SIZE
     }
 
     fn id(&self) -> usize {
@@ -159,8 +244,8 @@ impl rd_block::IQueue for BlockQueue {
     fn buff_config(&self) -> rd_block::BuffConfig {
         rd_block::BuffConfig {
             dma_mask: u64::MAX,
-            align: 0x1000,
-            size: self.block_size(),
+            align: BLOCK_SIZE,
+            size: BLOCK_SIZE,
         }
     }
 
@@ -168,71 +253,30 @@ impl rd_block::IQueue for BlockQueue {
         &mut self,
         request: rd_block::Request<'_>,
     ) -> Result<rd_block::RequestId, rd_block::BlkError> {
-        let id = request.block_id;
+        let start_block = request.block_id as u32;
         match request.kind {
             rd_block::RequestKind::Read(mut buffer) => {
-                let blocks = buffer.len() / self.block_size();
-                let mut attempt = 0;
-                loop {
-                    match self.raw.read_blocks(id as _, blocks as _, &mut buffer) {
-                        Ok(()) => break,
-                        Err(err) if is_retryable_dev_err(&err) && attempt < MMC_IO_RETRIES => {
-                            attempt += 1;
-                            warn!(
-                                "Rockchip eMMC read timeout, retrying: lba={} blocks={} bytes={} \
-                                 attempt={}/{} err={err:?}",
-                                id,
-                                blocks,
-                                buffer.len(),
-                                attempt,
-                                MMC_IO_RETRIES
-                            );
-                        }
-                        Err(err) => {
-                            warn!(
-                                "Rockchip eMMC read failed: lba={} blocks={} bytes={} err={err:?}",
-                                id,
-                                blocks,
-                                buffer.len()
-                            );
-                            return Err(maping_dev_err_to_blk_err(err));
-                        }
-                    }
+                if !buffer.len().is_multiple_of(BLOCK_SIZE) {
+                    return Err(rd_block::BlkError::Other(
+                        "read buffer is not block aligned".into(),
+                    ));
                 }
-                Ok(rd_block::RequestId::new(0))
+                self.raw
+                    .read_blocks_into(start_block, &mut buffer)
+                    .map_err(map_dev_err_to_blk_err)?;
             }
             rd_block::RequestKind::Write(items) => {
-                let blocks = items.len() / self.block_size();
-                let mut attempt = 0;
-                loop {
-                    match self.raw.write_blocks(id as _, blocks as _, items) {
-                        Ok(()) => break,
-                        Err(err) if is_retryable_dev_err(&err) && attempt < MMC_IO_RETRIES => {
-                            attempt += 1;
-                            warn!(
-                                "Rockchip eMMC write timeout, retrying: lba={} blocks={} bytes={} \
-                                 attempt={}/{} err={err:?}",
-                                id,
-                                blocks,
-                                items.len(),
-                                attempt,
-                                MMC_IO_RETRIES
-                            );
-                        }
-                        Err(err) => {
-                            warn!(
-                                "Rockchip eMMC write failed: lba={} blocks={} bytes={} err={err:?}",
-                                id,
-                                blocks,
-                                items.len()
-                            );
-                            return Err(maping_dev_err_to_blk_err(err));
-                        }
-                    }
+                if !items.len().is_multiple_of(BLOCK_SIZE) {
+                    return Err(rd_block::BlkError::Other(
+                        "write buffer is not block aligned".into(),
+                    ));
                 }
-                Ok(rd_block::RequestId::new(0))
+                self.raw
+                    .write_blocks_from(start_block, items)
+                    .map_err(map_dev_err_to_blk_err)?;
             }
         }
+        Ok(rd_block::RequestId::new(0))
     }
 
     fn poll_request(&mut self, _request: rd_block::RequestId) -> Result<(), rd_block::BlkError> {
@@ -240,53 +284,16 @@ impl rd_block::IQueue for BlockQueue {
     }
 }
 
-fn is_retryable_dev_err(err: &sdmmc::err::SdError) -> bool {
-    matches!(
-        err,
-        sdmmc::err::SdError::Timeout | sdmmc::err::SdError::DataTimeout
-    )
-}
-
-fn maping_dev_err_to_blk_err(err: sdmmc::err::SdError) -> rd_block::BlkError {
+fn map_dev_err_to_blk_err(err: Error) -> rd_block::BlkError {
     match err {
-        sdmmc::err::SdError::Timeout | sdmmc::err::SdError::DataTimeout => {
-            rd_block::BlkError::Other("SD/MMC timeout".into())
-        }
-        sdmmc::err::SdError::Crc
-        | sdmmc::err::SdError::DataCrc
-        | sdmmc::err::SdError::EndBit
-        | sdmmc::err::SdError::Index
-        | sdmmc::err::SdError::DataEndBit
-        | sdmmc::err::SdError::BadMessage
-        | sdmmc::err::SdError::InvalidResponse
-        | sdmmc::err::SdError::InvalidResponseType
-        | sdmmc::err::SdError::CommandError
-        | sdmmc::err::SdError::TransferError
-        | sdmmc::err::SdError::DataError
-        | sdmmc::err::SdError::CardError(..) => {
-            // CRC/response/transfer related errors => I/O error
-            rd_block::BlkError::Other("SD/MMC I/O error".into())
-        }
-        sdmmc::err::SdError::IoError => rd_block::BlkError::Other("I/O error".into()),
-        sdmmc::err::SdError::NoCard | sdmmc::err::SdError::UnsupportedCard => {
-            // No card or unsupported card — treat as not supported
+        Error::Timeout(_) => rd_block::BlkError::Retry,
+        Error::NoCard | Error::UnsupportedCommand | Error::CardLocked => {
             rd_block::BlkError::NotSupported
         }
-        sdmmc::err::SdError::BusPower
-        | sdmmc::err::SdError::Acmd12Error
-        | sdmmc::err::SdError::AdmaError
-        | sdmmc::err::SdError::CurrentLimit
-        | sdmmc::err::SdError::TuningFailed
-        | sdmmc::err::SdError::VoltageSwitchFailed
-        | sdmmc::err::SdError::BusWidth => {
-            rd_block::BlkError::Other("SD/MMC controller error".into())
+        Error::Misaligned | Error::InvalidArgument => {
+            rd_block::BlkError::Other("SD/MMC request is not block aligned".into())
         }
-        sdmmc::err::SdError::InvalidArgument => {
-            rd_block::BlkError::Other("Invalid argument".into())
-        }
-        sdmmc::err::SdError::BufferOverflow | sdmmc::err::SdError::MemoryError => {
-            rd_block::BlkError::NoMemory
-        }
+        _ => rd_block::BlkError::Other("SDHCI I/O error".into()),
     }
 }
 
@@ -297,28 +304,19 @@ struct ClkDev {
     id: ClockId,
 }
 
-impl emmc::clock::Clk for ClkDev {
-    fn emmc_get_clk(&self) -> Result<u64, emmc::clock::ClkError> {
-        let g = self.inner.lock().unwrap();
-        g.get_rate(self.id)
-            .map_err(|_| emmc::clock::ClkError::InvalidPeripheralId)
+#[derive(Clone, Copy)]
+struct AxDelay;
+
+impl DelayNs for AxDelay {
+    fn delay_ns(&mut self, ns: u32) {
+        axklib::time::busy_wait(Duration::from_nanos(ns as u64));
     }
 
-    fn emmc_set_clk(&self, rate: u64) -> Result<u64, emmc::clock::ClkError> {
-        let mut g = self.inner.lock().unwrap();
-        g.set_rate(self.id, rate)
-            .map_err(|_| emmc::clock::ClkError::InvalidPeripheralId)?;
-        g.get_rate(self.id)
-            .map_err(|_| emmc::clock::ClkError::InvalidPeripheralId)
+    fn delay_us(&mut self, us: u32) {
+        axklib::time::busy_wait(Duration::from_micros(us as u64));
     }
-}
 
-struct Osal {}
-
-impl sdmmc::Kernel for Osal {
-    fn sleep(us: u64) {
-        axklib::time::busy_wait(Duration::from_micros(us));
+    fn delay_ms(&mut self, ms: u32) {
+        axklib::time::busy_wait(Duration::from_millis(ms as u64));
     }
 }
-
-sdmmc::set_impl!(Osal);

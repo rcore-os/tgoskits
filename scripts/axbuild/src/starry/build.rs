@@ -469,7 +469,7 @@ HELLO = "world"
                 "ax-feat/driver-sdmmc".to_string(),
                 "ax-feat/plat-dyn".to_string(),
                 "axplat-dyn/rockchip-soc".to_string(),
-                "axplat-dyn/sdmmc".to_string(),
+                "axplat-dyn/rockchip-sdhci".to_string(),
             ],
             log: LogLevel::Info,
             max_cpu_num: Some(8),
@@ -490,7 +490,11 @@ HELLO = "world"
                 .features
                 .contains(&"axplat-dyn/rockchip-soc".to_string())
         );
-        assert!(cargo.features.contains(&"axplat-dyn/sdmmc".to_string()));
+        assert!(
+            cargo
+                .features
+                .contains(&"axplat-dyn/rockchip-sdhci".to_string())
+        );
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
         assert!(

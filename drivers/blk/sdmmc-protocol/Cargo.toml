@@ -1,0 +1,20 @@
+[package]
+name = "sdmmc-protocol"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "no_std SD/MMC protocol building blocks for embedded systems"
+documentation = "https://docs.rs/sdmmc-protocol"
+readme = "README.md"
+keywords = ["sd", "mmc", "sdio", "embedded", "no_std"]
+categories = ["embedded", "no-std", "hardware-support"]
+
+[dependencies]
+bitflags = "2"
+embedded-hal = "1"
+log = "0.4"
+
+[features]
+default = ["spi"]
+spi = []
+sdio = []

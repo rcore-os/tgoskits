@@ -8,6 +8,8 @@ extern crate bare_test;
 #[bare_test::tests]
 mod tests {
     use alloc::vec::Vec;
+
+    use arm_scmi::{Scmi, Shmem, Smc};
     use bare_test::{
         globals::{PlatformInfoKind, global_val},
         irq::Phandle,
@@ -17,7 +19,6 @@ mod tests {
     use log::info;
     use nb::block;
     use num_align::NumAlign;
-    use arm_scmi::{Scmi, Shmem, Smc};
 
     #[test]
     fn it_works() {

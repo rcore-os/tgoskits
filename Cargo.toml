@@ -14,6 +14,7 @@ lto = true
 resolver = "3"
 members = [
     "components/aarch64_sysreg",
+    "components/arm-scmi",
     "components/arm_pl011",
     "components/arm_pl031",
     "components/arm_vcpu",
@@ -117,7 +118,9 @@ members = [
     "drivers/blk/nvme-driver",
     "drivers/blk/ramdisk",
     "drivers/blk/rd-block",
-    "drivers/blk/simple-sdmmc",
+    "drivers/blk/dwmmc-host",
+    "drivers/blk/sdhci-host",
+    "drivers/blk/sdmmc-protocol",
     "drivers/examples/enumerate",
     "drivers/intc/arm-gic-driver",
     "drivers/interface/rdif-base",
@@ -215,6 +218,7 @@ members = [
 [workspace.dependencies]
 # Local workspace crates
 aarch64_sysreg = { version = "0.3.6", path = "components/aarch64_sysreg" }
+arm-scmi = { version = "0.1.0", path = "components/arm-scmi" }
 arceos-affinity = { version = "0.3.1", path = "test-suit/arceos/rust/task/affinity" }
 arceos-display = { version = "0.3.1", path = "test-suit/arceos/rust/display" }
 arceos-exception = { version = "0.3.1", path = "test-suit/arceos/rust/exception" }
@@ -381,7 +385,9 @@ rdrive = { version = "0.20", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.4.0", path = "components/rsext4" }
 scope-local = { version = "0.3.7", path = "components/scope-local" }
-simple-sdmmc = { version = "0.1.1", path = "drivers/blk/simple-sdmmc" }
+dwmmc-host = { version = "0.1.0", path = "drivers/blk/dwmmc-host" }
+sdhci-host = { version = "0.1.0", path = "drivers/blk/sdhci-host" }
+sdmmc-protocol = { version = "0.1.0", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
 smoltcp-fuzz = { version = "0.2.2", path = "components/starry-smoltcp/fuzz" }
 smp-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/smp-kernel" }

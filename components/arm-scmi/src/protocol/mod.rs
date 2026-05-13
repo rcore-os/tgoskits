@@ -1,6 +1,6 @@
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use alloc::vec::Vec;
 use mbarrier::smp_mb;
 use spin::Mutex;
 
@@ -97,14 +97,14 @@ impl<'a, T: Transport, R, F: Fn(&mut Xfer) -> Result<R, ScmiError>> FuturePoll
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScmiStdProtocol {
-    Base = 0x10,
-    Power = 0x11,
-    System = 0x12,
-    Perf = 0x13,
-    Clock = 0x14,
-    Sensor = 0x15,
-    Reset = 0x16,
-    Voltage = 0x17,
+    Base     = 0x10,
+    Power    = 0x11,
+    System   = 0x12,
+    Perf     = 0x13,
+    Clock    = 0x14,
+    Sensor   = 0x15,
+    Reset    = 0x16,
+    Voltage  = 0x17,
     Powercap = 0x18,
 }
 
@@ -185,9 +185,9 @@ impl MsgHeader {
 #[repr(u8)]
 pub enum MsgType {
     #[default]
-    Command = 0,
+    Command         = 0,
     DelayedResponse = 2,
-    Notification = 3,
+    Notification    = 3,
 }
 
 #[allow(dead_code)]
@@ -245,7 +245,7 @@ impl Drop for Xfer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum XferStatus {
     #[default]
-    Init = 0,
+    Init   = 0,
     SendOk = 1,
     RespOk = 2,
 }

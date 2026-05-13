@@ -8,9 +8,9 @@ use super::DmaImpl;
 
 #[cfg(feature = "phytium-blk")]
 mod phytium;
-#[cfg(feature = "sdmmc")]
+#[cfg(feature = "rockchip-sdhci")]
 mod rockchip_mmc;
-#[cfg(feature = "simple-sdmmc")]
+#[cfg(feature = "rockchip-dwmmc")]
 mod rockchip_sd;
 mod virtio;
 mod virtio_pci;

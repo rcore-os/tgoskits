@@ -1,0 +1,314 @@
+//! `Sdhci` core: MMIO accessors, reset, clock and bus-width setup.
+
+use core::ptr::NonNull;
+
+use dma_api::DeviceDma;
+use sdmmc_protocol::error::{Error, ErrorContext, Phase};
+
+use crate::regs::*;
+
+/// Cached state for a single pending data phase, populated by
+/// `prepare_data_transfer` and consumed by the next `send_command` call.
+#[derive(Clone, Copy)]
+pub(crate) struct PendingData {
+    pub direction: sdmmc_protocol::DataDirection,
+    pub block_size: u32,
+    pub block_count: u32,
+}
+
+/// Generic SD Host Controller (SDHCI) backend.
+///
+/// Owns the MMIO base address of one host controller instance and
+/// implements [`sdmmc_protocol::sdio::SdioHost`] so that the protocol
+/// driver in `sdmmc-protocol` can drive it. PIO data transfer only.
+///
+/// # Safety
+///
+/// `new` is `unsafe` because the caller must provide a valid, exclusive
+/// MMIO base address for an SDHCI v3.x compatible controller. Concurrent
+/// use of the same controller from multiple `Sdhci` instances is undefined.
+pub struct Sdhci {
+    base_addr: usize,
+    pub(crate) pending_data: Option<PendingData>,
+    /// When set, [`issue_command`] programs the controller's transfer mode
+    /// register with `DMA_ENABLE`. Set by the ADMA2 wrapper just before it
+    /// fires off a command; default `false` keeps the PIO `Sdhci` API
+    /// identical.
+    pub(crate) use_dma: bool,
+    /// Optional CRU-side clock callback. When set, the `SdioHost::set_clock`
+    /// impl will route requests to this hook (and program the controller
+    /// for 1:1 passthrough) instead of using the internal 10-bit divider.
+    /// Used on controllers whose internal divider is unusable.
+    pub(crate) ext_clock: Option<fn(target_hz: u32) -> Result<(), Error>>,
+    /// Command index for the data phase currently being drained by
+    /// `read_data` / `write_data`.
+    pub(crate) active_data_cmd: u8,
+    pub(crate) dma: Option<DeviceDma>,
+}
+
+impl Sdhci {
+    /// Construct a new Sdhci over an already-mapped MMIO register file.
+    ///
+    /// # Safety
+    ///
+    /// `base` must point to a memory-mapped SDHCI v3.x register file
+    /// that the caller has exclusive access to.
+    pub unsafe fn new(base: NonNull<u8>) -> Self {
+        Self {
+            base_addr: base.as_ptr() as usize,
+            pending_data: None,
+            use_dma: false,
+            ext_clock: None,
+            active_data_cmd: 0,
+            dma: None,
+        }
+    }
+
+    /// Construct a new Sdhci from a raw mapped MMIO address.
+    ///
+    /// Prefer [`Sdhci::new`] when OS glue already tracks the mapping as a
+    /// non-null pointer. This helper keeps legacy bring-up code explicit
+    /// about where the raw address crosses into the portable driver core.
+    ///
+    /// # Safety
+    ///
+    /// `base_addr` must be non-zero and point to a memory-mapped SDHCI v3.x
+    /// register file that the caller has exclusive access to.
+    pub unsafe fn new_from_addr(base_addr: usize) -> Self {
+        let base = NonNull::new(base_addr as *mut u8).expect("MMIO base address must be non-null");
+        unsafe { Self::new(base) }
+    }
+
+    /// Install a CRU-side clock callback so subsequent `set_clock` calls
+    /// retune the platform's reference clock instead of using the SDHCI
+    /// internal divider. The callback receives the desired SD bus
+    /// frequency in Hz; on success it must guarantee the controller's
+    /// input reference clock equals that value before returning.
+    ///
+    /// After installing the callback, the host runs in "external clock"
+    /// mode: the SDHCI internal divider stays at 1:1, all rate control
+    /// is delegated to the platform.
+    pub fn set_external_clock(&mut self, cb: fn(u32) -> Result<(), Error>) {
+        self.ext_clock = Some(cb);
+    }
+
+    /// Install a DMA capability used by the high-level data-transfer hooks.
+    ///
+    /// Once installed, `SdioHost::read_data` and `SdioHost::write_data` try
+    /// ADMA2 first for 512-byte block I/O and fall back to the PIO sequence
+    /// if ADMA2 cannot be used.
+    pub fn set_dma(&mut self, dma: DeviceDma) {
+        self.dma = Some(dma);
+    }
+
+    /// Reset the controller (CMD line + DAT line + state) by writing the
+    /// "Reset All" bit and waiting for it to clear.
+    pub fn reset_all(&mut self) -> Result<(), Error> {
+        self.reset_with_mask(RESET_ALL, Phase::Init)
+    }
+
+    /// Reset the CMD line state machine (clears any stuck CMD inhibit).
+    pub fn reset_cmd(&mut self) -> Result<(), Error> {
+        self.reset_with_mask(RESET_CMD, Phase::CommandSend)
+    }
+
+    /// Reset the DAT line state machine.
+    pub fn reset_dat(&mut self) -> Result<(), Error> {
+        self.reset_with_mask(RESET_DAT, Phase::DataRead)
+    }
+
+    fn reset_with_mask(&mut self, mask: u8, phase: Phase) -> Result<(), Error> {
+        self.write_u8(REG_SOFTWARE_RESET, mask);
+        for _ in 0..1000 {
+            if self.read_u8(REG_SOFTWARE_RESET) & mask == 0 {
+                return Ok(());
+            }
+            spin_loop();
+        }
+        Err(Error::Timeout(ErrorContext::new(phase)))
+    }
+
+    /// Bring the internal clock up. `base_clock_hz` is the controller's
+    /// reference clock (read from Capabilities or supplied externally) and
+    /// `target_hz` is the desired SD bus frequency.
+    ///
+    /// Uses the SDHCI v3.0 10-bit divided clock mode.
+    pub fn enable_clock(&mut self, base_clock_hz: u32, target_hz: u32) -> Result<(), Error> {
+        // 1. Disable SD clock so we can safely change the divider.
+        self.write_u16(REG_CLOCK_CONTROL, 0);
+
+        if target_hz == 0 {
+            return Ok(());
+        }
+
+        // 2. Pick the smallest divider such that base/2N ≤ target. SDHCI
+        //    v3.0 supports 10-bit divider in steps of 2 (so 2N ranges 2..1024).
+        let mut div = 0u16;
+        if base_clock_hz > target_hz {
+            for n in 1..=0x3FF {
+                if base_clock_hz / (2 * n as u32) <= target_hz {
+                    div = n;
+                    break;
+                }
+            }
+        }
+
+        // Encode divider: bits 15..8 hold low 8 bits, bits 7..6 hold the
+        // upper 2 bits of the 10-bit divider for v3.0 compatible hosts.
+        let clk_ctrl = ((div & 0xFF) << 8) | ((div & 0x300) >> 2) | CLOCK_INTERNAL_ENABLE;
+        self.write_u16(REG_CLOCK_CONTROL, clk_ctrl);
+
+        // 3. Wait for internal clock to stabilize.
+        for _ in 0..1000 {
+            if self.read_u16(REG_CLOCK_CONTROL) & CLOCK_INTERNAL_STABLE != 0 {
+                let stable = self.read_u16(REG_CLOCK_CONTROL) | CLOCK_SD_ENABLE;
+                self.write_u16(REG_CLOCK_CONTROL, stable);
+                return Ok(());
+            }
+            spin_loop();
+        }
+        Err(Error::Timeout(ErrorContext::new(Phase::Init)))
+    }
+
+    /// Bypass the internal divider and trust the platform-supplied ref
+    /// clock to already be at the SD bus frequency.
+    ///
+    /// Use this on controllers whose internal 10-bit divider is unusable
+    /// (e.g. DWC MSHC variants, or cores that report `BaseClockFreq = 0`
+    /// in Capabilities and require the SoC's CRU to do all the frequency
+    /// scaling). In that mode the caller is expected to:
+    ///
+    /// 1. Reprogram the SoC clock controller so the controller's input
+    ///    reference clock equals the desired SD bus frequency.
+    /// 2. Call `enable_clock_external()` to gate the SD clock on with a
+    ///    1:1 divider.
+    ///
+    /// If `target_hz` is 0 the SD clock is left disabled.
+    pub fn enable_clock_external(&mut self) -> Result<(), Error> {
+        // Disable, then re-enable with divider = 0 (== 1:1 passthrough).
+        self.write_u16(REG_CLOCK_CONTROL, 0);
+        let clk_ctrl = CLOCK_INTERNAL_ENABLE; // div=0
+        self.write_u16(REG_CLOCK_CONTROL, clk_ctrl);
+        for _ in 0..1000 {
+            if self.read_u16(REG_CLOCK_CONTROL) & CLOCK_INTERNAL_STABLE != 0 {
+                let stable = self.read_u16(REG_CLOCK_CONTROL) | CLOCK_SD_ENABLE;
+                self.write_u16(REG_CLOCK_CONTROL, stable);
+                return Ok(());
+            }
+            spin_loop();
+        }
+        Err(Error::Timeout(ErrorContext::new(Phase::Init)))
+    }
+
+    /// Disable the SD clock without reprogramming the divider. Use this
+    /// before reprogramming the external (CRU) clock so glitches don't
+    /// reach the card.
+    pub fn disable_sd_clock(&mut self) {
+        let cur = self.read_u16(REG_CLOCK_CONTROL);
+        self.write_u16(REG_CLOCK_CONTROL, cur & !CLOCK_SD_ENABLE);
+    }
+
+    /// Set bus power (e.g. 3.3 V) and the global power-on bit.
+    pub fn set_power(&mut self, power_byte: u8) {
+        self.write_u8(REG_POWER_CONTROL, power_byte | POWER_ON);
+    }
+
+    /// Enable normal + error interrupt status flags so command/data
+    /// completion is observable via the status registers (signal-level
+    /// IRQ delivery is NOT enabled — the driver polls).
+    pub fn enable_interrupts(&mut self) {
+        self.write_u16(REG_NORMAL_INT_STATUS_ENABLE, NORMAL_INT_CLEAR_ALL);
+        self.write_u16(REG_ERROR_INT_STATUS_ENABLE, ERROR_INT_CLEAR_ALL);
+        // Don't route to host CPU IRQ — leave Signal Enable cleared.
+        self.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, 0);
+        self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, 0);
+    }
+
+    /// Read the controller's base reference clock from Capabilities (Hz).
+    pub fn base_clock_hz(&self) -> u32 {
+        let caps_low = self.read_u32(REG_CAPABILITIES_LOW);
+        // SDHCI v3: bits 15..8 contain "Base Clock Frequency" in MHz.
+        // SDHCI v2: bits 13..8 contain it. Use the wider mask; QEMU
+        // sdhci-pci reports a v2 layout but the result is still right.
+        let mhz = (caps_low >> 8) & 0xFF;
+        mhz.saturating_mul(1_000_000)
+    }
+
+    /// Whether the controller advertises ADMA2 in the capabilities register.
+    pub fn supports_adma2(&self) -> bool {
+        self.read_u32(REG_CAPABILITIES_LOW) & CAPS_LOW_ADMA2_SUPPORTED != 0
+    }
+
+    /// Program the ADMA system address registers with the bus address of
+    /// the descriptor table. 32-bit ADMA2 only; the high half is zeroed
+    /// because controllers that don't implement v4 64-bit addressing
+    /// alias the high register to RO-zero anyway.
+    pub(crate) fn write_adma_addr(&self, addr: u32) {
+        self.write_u32(REG_ADMA_SYS_ADDR_LOW, addr);
+        self.write_u32(REG_ADMA_SYS_ADDR_HIGH, 0);
+    }
+
+    /// Pick 32-bit ADMA2 in HOST_CONTROL1's DMA select field.
+    pub(crate) fn select_adma2_32(&mut self) {
+        let mut ctrl = self.read_u8(REG_HOST_CONTROL1);
+        ctrl = (ctrl & !HOST_CTRL1_DMA_SEL_MASK) | HOST_CTRL1_DMA_SEL_ADMA2_32;
+        self.write_u8(REG_HOST_CONTROL1, ctrl);
+    }
+
+    /// Read raw 32-bit response slot.
+    pub(crate) fn response32(&self, slot: usize) -> u32 {
+        let off = REG_RESPONSE0 + slot * 4;
+        self.read_u32(off)
+    }
+
+    pub(crate) fn read_u32(&self, off: usize) -> u32 {
+        unsafe { core::ptr::read_volatile((self.base_addr + off) as *const u32) }
+    }
+
+    pub(crate) fn write_u32(&self, off: usize, val: u32) {
+        unsafe { core::ptr::write_volatile((self.base_addr + off) as *mut u32, val) }
+    }
+
+    pub(crate) fn read_u16(&self, off: usize) -> u16 {
+        unsafe { core::ptr::read_volatile((self.base_addr + off) as *const u16) }
+    }
+
+    pub(crate) fn write_u16(&self, off: usize, val: u16) {
+        unsafe { core::ptr::write_volatile((self.base_addr + off) as *mut u16, val) }
+    }
+
+    pub(crate) fn read_u8(&self, off: usize) -> u8 {
+        unsafe { core::ptr::read_volatile((self.base_addr + off) as *const u8) }
+    }
+
+    pub(crate) fn write_u8(&self, off: usize, val: u8) {
+        unsafe { core::ptr::write_volatile((self.base_addr + off) as *mut u8, val) }
+    }
+}
+
+#[inline]
+fn spin_loop() {
+    core::hint::spin_loop();
+}
+
+#[cfg(test)]
+mod tests {
+    use core::ptr::NonNull;
+
+    use super::*;
+
+    #[test]
+    fn constructs_from_mapped_mmio_pointer() {
+        let base = NonNull::new(0x1000_0000 as *mut u8).unwrap();
+        let host = unsafe { Sdhci::new(base) };
+
+        assert_eq!(host.base_addr, 0x1000_0000);
+    }
+
+    #[test]
+    fn legacy_addr_constructor_keeps_raw_mmio_boundary_explicit() {
+        let host = unsafe { Sdhci::new_from_addr(0x1000_0000) };
+
+        assert_eq!(host.base_addr, 0x1000_0000);
+    }
+}
