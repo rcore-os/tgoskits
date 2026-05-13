@@ -8,7 +8,7 @@ use log::{debug, error};
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber, LogicalBN},
-    checksum::verify_ext4_dirblock_checksum,
+    checksum::{verify_ext4_dirblock_checksum, *},
     config::runtime_block_size,
     disknode::*,
     endian::read_u32_le,
@@ -17,7 +17,6 @@ use crate::{
     ext4::*,
     extents_tree::*,
     hashtree::*,
-    checksum::*,
 };
 /// Number of direct data-block slots stored inline in `inode.i_block`.
 ///
