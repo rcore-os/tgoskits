@@ -75,6 +75,9 @@ struct InputAbsInfo {
     resolution: i32,
 }
 
+/// Maximum number of absolute axes Linux's EVIOCGABS encodes (0..0x3F).
+const ABS_MAX: usize = 0x40;
+
 pub struct EventDev {
     inner: Mutex<Inner>,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
@@ -85,6 +88,12 @@ pub struct EventDev {
     /// libinput would otherwise classify the tablet as a graphics tablet
     /// and suppress the cursor pending a never-firing `BTN_TOOL_PEN`.
     prop_bits: [u8; INPUT_PROP_CNT.div_ceil(8)],
+    /// Cached `EV_ABS` bitmap. Used by `EVIOCGABS` to refuse axes the
+    /// device doesn't advertise with `EINVAL`, matching Linux's
+    /// `evdev_handle_get_val` behavior. virtio-drivers reports the
+    /// underlying `Error::IoError` when the AbsInfo selector has size 0,
+    /// which would otherwise surface as EIO and confuse libinput.
+    abs_bits: [u8; ABS_MAX.div_ceil(8)],
 }
 
 impl EventDev {
@@ -117,6 +126,11 @@ impl EventDev {
             prop_bits[INPUT_PROP_POINTER / 8] |= 1 << (INPUT_PROP_POINTER % 8);
         }
 
+        let mut abs_bits = [0u8; ABS_MAX.div_ceil(8)];
+        if ev_bits.get(EventType::Absolute as usize) {
+            let _ = device.get_event_bits(EventType::Absolute, &mut abs_bits);
+        }
+
         Self {
             inner: Mutex::new(Inner {
                 device,
@@ -125,7 +139,16 @@ impl EventDev {
             }),
             ev_bits,
             prop_bits,
+            abs_bits,
         }
+    }
+
+    fn axis_supported(&self, axis: u8) -> bool {
+        let bit = axis as usize;
+        if bit >= ABS_MAX {
+            return false;
+        }
+        self.abs_bits[bit / 8] & (1 << (bit % 8)) != 0
     }
 
     fn get_event_bits(&self, arg: usize, size: usize, ty: u8) -> AxResult<usize> {
@@ -352,6 +375,14 @@ impl DeviceOps for EventDev {
                                 return Err(AxError::InvalidInput);
                             }
                             let axis = nr & (ABS_CNT - 1);
+                            // Linux's evdev returns EINVAL for any axis the
+                            // device does not advertise in its EV_ABS bitmap.
+                            // virtio-drivers surfaces the same as Error::IoError
+                            // (size==0 selector), so without this pre-check
+                            // userspace would see EIO and reject the device.
+                            if !self.axis_supported(axis) {
+                                return Err(AxError::InvalidInput);
+                            }
                             let info = match self.inner.lock().device.get_abs_info(axis) {
                                 Ok(info) => info,
                                 Err(err) => return Err(dev_error_to_ax_error(err)),
