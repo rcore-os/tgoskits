@@ -6,7 +6,7 @@ use bcm2835_sdhci::{
     SDHCIError,
 };
 
-use crate::BlockDriverOps;
+use crate::{BlockDriverOps, stats};
 
 /// BCM2835 SDHCI driver (Raspberry Pi SD card).
 pub struct SDHCIDriver(EmmcCtl);
@@ -57,9 +57,14 @@ impl BlockDriverOps for SDHCIDriver {
         if !prefix.is_empty() || !suffix.is_empty() {
             return Err(DevError::InvalidParam);
         }
-        self.0
+        let result = self
+            .0
             .read_block(block_id as u32, 1, aligned_buf)
-            .map_err(deal_sdhci_err)
+            .map_err(deal_sdhci_err);
+        if result.is_ok() {
+            stats::record_read(self.device_name(), BLOCK_SIZE);
+        }
+        result
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
@@ -70,9 +75,14 @@ impl BlockDriverOps for SDHCIDriver {
         if !prefix.is_empty() || !suffix.is_empty() {
             return Err(DevError::InvalidParam);
         }
-        self.0
+        let result = self
+            .0
             .write_block(block_id as u32, 1, aligned_buf)
-            .map_err(deal_sdhci_err)
+            .map_err(deal_sdhci_err);
+        if result.is_ok() {
+            stats::record_write(self.device_name(), BLOCK_SIZE);
+        }
+        result
     }
     fn flush(&mut self) -> DevResult {
         Ok(())

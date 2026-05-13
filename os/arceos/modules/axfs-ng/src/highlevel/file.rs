@@ -867,6 +867,13 @@ impl File {
         self.flags
     }
 
+    /// Returns the file's current read/write cursor, or `None` for stream
+    /// nodes (sockets / pipes / `STREAM`-flagged) that have no addressable
+    /// position. Read-only snapshot; does not move the cursor.
+    pub fn position(&self) -> Option<u64> {
+        self.position.as_ref().map(|m| *m.lock())
+    }
+
     /// Returns a reference to the underlying [`FileBackend`].
     pub fn backend(&self) -> VfsResult<&FileBackend> {
         self.access(FileFlags::empty())?;

@@ -194,6 +194,7 @@ pub fn init_drivers() -> AllDevices {
         for (i, dev) in all_devs.block.iter().enumerate() {
             assert_eq!(dev.device_type(), DeviceType::Block);
             debug!("  block device {}: {:?}", i, dev.device_name());
+            ax_driver_block::stats::register_device(dev.device_name());
         }
     }
     #[cfg(feature = "display")]

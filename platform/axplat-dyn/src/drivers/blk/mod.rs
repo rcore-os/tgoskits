@@ -1,5 +1,5 @@
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
-use ax_driver_block::BlockDriverOps;
+use ax_driver_block::{BlockDriverOps, stats};
 use rd_block::BlkError;
 use rdrive::Device;
 use spin::Mutex;
@@ -56,6 +56,7 @@ impl BlockDriverOps for Block {
             }
             chunk.copy_from_slice(&block);
         }
+        stats::record_read(self.device_name(), buf.len());
         Ok(())
     }
 
@@ -64,6 +65,7 @@ impl BlockDriverOps for Block {
         for block in blocks {
             block.map_err(maping_blk_err_to_dev_err)?;
         }
+        stats::record_write(self.device_name(), buf.len());
         Ok(())
     }
 }

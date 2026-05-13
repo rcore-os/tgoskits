@@ -19,6 +19,10 @@ pub use self::{
     time::*,
 };
 
+pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
+    !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
+}
+
 pub fn handle_syscall(uctx: &mut UserContext) {
     let Some(sysno) = Sysno::new(uctx.sysno()) else {
         warn!("Invalid syscall number: {}", uctx.sysno());
@@ -423,6 +427,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         }
         Sysno::sched_getparam => sys_sched_getparam(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::getpriority => sys_getpriority(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::setpriority => sys_setpriority(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
 
         // task ops
         Sysno::execve => sys_execve(uctx, uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),

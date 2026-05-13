@@ -69,27 +69,44 @@ static int count_cpu_fields(const char *stat)
     return fields;
 }
 
-static int diskstats_has_device_line(const char *diskstats)
+static int diskstats_has_real_device_line(const char *diskstats)
 {
     const char *line = diskstats;
 
     while (*line != '\0') {
-        int fields = 0;
-        const char *p = line;
+        int major;
+        int minor;
+        char name[64];
+        unsigned long long reads;
+        unsigned long long reads_merged;
+        unsigned long long sectors_read;
+        unsigned long long read_ms;
+        unsigned long long writes;
+        unsigned long long writes_merged;
+        unsigned long long sectors_written;
+        unsigned long long write_ms;
+        unsigned long long in_flight;
+        unsigned long long io_ms;
+        unsigned long long weighted_ms;
+        int fields;
 
-        while (*p != '\0' && *p != '\n') {
-            while (*p == ' ' || *p == '\t') {
-                p++;
-            }
-            if (*p == '\0' || *p == '\n') {
-                break;
-            }
-            fields++;
-            while (*p != '\0' && *p != '\n' && *p != ' ' && *p != '\t') {
-                p++;
-            }
-        }
-        if (fields >= 14) {
+        fields = sscanf(line,
+                        " %d %d %63s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                        &major,
+                        &minor,
+                        name,
+                        &reads,
+                        &reads_merged,
+                        &sectors_read,
+                        &read_ms,
+                        &writes,
+                        &writes_merged,
+                        &sectors_written,
+                        &write_ms,
+                        &in_flight,
+                        &io_ms,
+                        &weighted_ms);
+        if (fields >= 14 && strcmp(name, "loop0") != 0 && reads > 0 && sectors_read > 0) {
             return 1;
         }
 
@@ -110,7 +127,7 @@ int main(void)
     int cpu_fields;
 
     printf("=== bug-proc-stat-diskstats ===\n");
-    printf("Expected: /proc/stat starts with cpu counters and /proc/diskstats has a Linux device row\n\n");
+    printf("Expected: /proc/stat starts with cpu counters and /proc/diskstats reports real block I/O\n\n");
 
     if (read_file("/proc/stat", stat_buf, sizeof(stat_buf)) != 0) {
         printf("TEST FAILED\n");
@@ -131,13 +148,13 @@ int main(void)
         return 1;
     }
 
-    if (!diskstats_has_device_line(diskstats_buf)) {
-        printf("FAIL: /proc/diskstats lacks a device row with Linux diskstat fields\n");
+    if (!diskstats_has_real_device_line(diskstats_buf)) {
+        printf("FAIL: /proc/diskstats lacks a real device row with nonzero read counters\n");
         printf("First bytes: %.160s\n", diskstats_buf);
         printf("TEST FAILED\n");
         return 1;
     }
-    printf("PASS: /proc/diskstats has a Linux device row\n");
+    printf("PASS: /proc/diskstats has a real block device row\n");
 
     printf("TEST PASSED\n");
     return 0;

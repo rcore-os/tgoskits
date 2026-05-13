@@ -1,5 +1,5 @@
 use ax_driver_base::{BaseDriverOps, DevResult, DeviceType};
-use ax_driver_block::BlockDriverOps;
+use ax_driver_block::{BlockDriverOps, stats};
 use virtio_drivers::{Hal, device::blk::VirtIOBlk as InnerDev, transport::Transport};
 
 use crate::as_dev_err;
@@ -44,15 +44,25 @@ impl<H: Hal, T: Transport> BlockDriverOps for VirtIoBlkDev<H, T> {
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> DevResult {
-        self.inner
+        let result = self
+            .inner
             .read_blocks(block_id as _, buf)
-            .map_err(as_dev_err)
+            .map_err(as_dev_err);
+        if result.is_ok() {
+            stats::record_read(self.device_name(), buf.len());
+        }
+        result
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
-        self.inner
+        let result = self
+            .inner
             .write_blocks(block_id as _, buf)
-            .map_err(as_dev_err)
+            .map_err(as_dev_err);
+        if result.is_ok() {
+            stats::record_write(self.device_name(), buf.len());
+        }
+        result
     }
 
     fn flush(&mut self) -> DevResult {

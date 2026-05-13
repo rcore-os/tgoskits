@@ -32,6 +32,7 @@ ax-crate-interface
 ax-crate-interface-lite
 ax-display
 ax-dma
+ax-driver-block
 ax-driver-display
 ax-driver-virtio
 ax-errno
@@ -118,6 +119,7 @@ rsext4
 scope-local
 simple-sdmmc
 some-serial
+someboot
 starry-kernel
 starryos
 starry-process

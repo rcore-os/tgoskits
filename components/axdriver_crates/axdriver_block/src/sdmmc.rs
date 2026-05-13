@@ -3,7 +3,7 @@
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use simple_sdmmc::SdMmc;
 
-use crate::BlockDriverOps;
+use crate::{BlockDriverOps, stats};
 
 /// A SD/MMC driver.
 pub struct SdMmcDriver(SdMmc);
@@ -50,6 +50,7 @@ impl BlockDriverOps for SdMmcDriver {
             self.0.read_block(block_id as u32 + i as u32, block);
         }
 
+        stats::record_read(self.device_name(), buf.len());
         Ok(())
     }
 
@@ -64,6 +65,7 @@ impl BlockDriverOps for SdMmcDriver {
             self.0.write_block(block_id as u32 + i as u32, block);
         }
 
+        stats::record_write(self.device_name(), buf.len());
         Ok(())
     }
 

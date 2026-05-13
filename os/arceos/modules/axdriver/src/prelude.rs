@@ -10,6 +10,7 @@ pub use {
             PartitionBlockDevice, PartitionInfo, PartitionRegion, PartitionTable,
             PartitionTableKind, scan_partitions,
         },
+        stats as block_stats,
     },
 };
 #[cfg(feature = "display")]

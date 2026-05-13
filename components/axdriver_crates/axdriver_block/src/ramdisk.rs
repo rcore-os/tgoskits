@@ -11,7 +11,7 @@ use core::{
 
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 
-use crate::BlockDriverOps;
+use crate::{BlockDriverOps, stats};
 
 const BLOCK_SIZE: usize = 512;
 
@@ -101,7 +101,7 @@ impl BlockDriverOps for RamDisk {
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> DevResult {
-        if buf.len() % BLOCK_SIZE != 0 {
+        if !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(DevError::InvalidParam);
         }
         let offset = block_id as usize * BLOCK_SIZE;
@@ -109,11 +109,12 @@ impl BlockDriverOps for RamDisk {
             return Err(DevError::Io);
         }
         buf.copy_from_slice(&self[offset..offset + buf.len()]);
+        stats::record_read(self.device_name(), buf.len());
         Ok(())
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
-        if buf.len() % BLOCK_SIZE != 0 {
+        if !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(DevError::InvalidParam);
         }
         let offset = block_id as usize * BLOCK_SIZE;
@@ -121,6 +122,7 @@ impl BlockDriverOps for RamDisk {
             return Err(DevError::Io);
         }
         self[offset..offset + buf.len()].copy_from_slice(buf);
+        stats::record_write(self.device_name(), buf.len());
         Ok(())
     }
 

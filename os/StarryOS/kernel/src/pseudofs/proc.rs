@@ -14,6 +14,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ax_driver::prelude::block_stats;
 use ax_hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
@@ -242,8 +243,29 @@ fn render_stat() -> String {
     buf
 }
 
-fn render_diskstats() -> &'static str {
-    "7 0 loop0 1 0 8 0 1 0 8 0 0 0 0\n"
+fn render_diskstats() -> String {
+    let mut buf = String::new();
+    for stats in block_stats::snapshots() {
+        let _ = writeln!(
+            buf,
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            stats.major,
+            stats.minor,
+            stats.name,
+            stats.reads_completed,
+            stats.reads_merged,
+            stats.sectors_read,
+            stats.read_time_ms,
+            stats.writes_completed,
+            stats.writes_merged,
+            stats.sectors_written,
+            stats.write_time_ms,
+            stats.io_in_progress,
+            stats.io_time_ms,
+            stats.weighted_io_time_ms
+        );
+    }
+    buf
 }
 
 fn render_proc_net_arp() -> String {

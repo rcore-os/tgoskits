@@ -4,7 +4,7 @@ use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use simple_ahci::AhciDriver as SimpleAhciDriver;
 pub use simple_ahci::Hal as AhciHal;
 
-use crate::BlockDriverOps;
+use crate::{BlockDriverOps, stats};
 
 /// AHCI driver based on the `simple_ahci` crate.
 pub struct AhciDriver<H: AhciHal>(SimpleAhciDriver<H>);
@@ -44,13 +44,14 @@ impl<H: AhciHal> BlockDriverOps for AhciDriver<H> {
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> DevResult {
-        if buf.len() % self.block_size() != 0 {
+        if !buf.len().is_multiple_of(self.block_size()) {
             return Err(DevError::InvalidParam);
         }
-        if buf.as_ptr() as usize % 4 != 0 {
+        if !(buf.as_ptr() as usize).is_multiple_of(4) {
             return Err(DevError::InvalidParam);
         }
         if self.0.read(block_id, buf) {
+            stats::record_read(self.device_name(), buf.len());
             Ok(())
         } else {
             Err(DevError::Io)
@@ -58,13 +59,14 @@ impl<H: AhciHal> BlockDriverOps for AhciDriver<H> {
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
-        if buf.len() % self.block_size() != 0 {
+        if !buf.len().is_multiple_of(self.block_size()) {
             return Err(DevError::InvalidParam);
         }
-        if buf.as_ptr() as usize % 4 != 0 {
+        if !(buf.as_ptr() as usize).is_multiple_of(4) {
             return Err(DevError::InvalidParam);
         }
         if self.0.write(block_id, buf) {
+            stats::record_write(self.device_name(), buf.len());
             Ok(())
         } else {
             Err(DevError::Io)

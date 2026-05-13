@@ -21,6 +21,7 @@ pub mod ahci;
 pub mod partition;
 #[cfg(feature = "sdmmc")]
 pub mod sdmmc;
+pub mod stats;
 
 #[doc(no_inline)]
 pub use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
