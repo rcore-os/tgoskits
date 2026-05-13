@@ -45,7 +45,6 @@
 struct shared {
     pid_t worker_tids[NUM_WORKERS];
     atomic_int ready_count;
-    atomic_int faulter_armed;
     atomic_int observed_tid;
 };
 
@@ -79,29 +78,21 @@ static void *worker(void *arg)
     atomic_fetch_add(&g_sh->ready_count, 1);
 
     if (idx == FAULTING_IDX) {
-        /* Wait until every other worker is sitting in its idle loop —
-         * we want them all unmasked and reachable so the old bug had
-         * the maximum chance to misroute. */
+        /* Wait until every other worker is sitting in pause() — they're
+         * unmasked and reachable, so the old bug had the maximum chance
+         * to misroute. */
         while (atomic_load(&g_sh->ready_count) < NUM_WORKERS) {
             sched_yield();
         }
-        atomic_store(&g_sh->faulter_armed, 1);
         /* Deliberate null deref. */
         volatile int *p = (volatile int *)0;
         *p = 42;
     } else {
-        /* Idle cooperatively. The point of having multiple worker
-         * threads is that a buggy `raise_signal_fatal` could route the
-         * SIGSEGV to one of these idle threads instead of the faulter;
-         * the handler's tid comparison catches that misroute. We do
-         * NOT need to busy-spin against the faulter — on SMP=1 that
-         * would just starve it. */
-        while (!atomic_load(&g_sh->faulter_armed)) {
-            sched_yield();
-        }
-        for (;;) {
-            sched_yield();
-        }
+        /* Idle by blocking in pause(). Cooperative sched_yield on
+         * SMP=1 TCG can starve the faulting worker when N-1 peers are
+         * all runnable; blocking workers keeps exactly one thread on
+         * the runqueue (the faulter) until the fault fires. */
+        pause();
     }
     return NULL;
 }
