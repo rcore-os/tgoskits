@@ -21,6 +21,14 @@ pub const MOV_EBX_IMM32_OPCODE: u8 = 0xbb;
 /// This byte sequence is intentionally identical to the external
 /// `axvm-bios.bin` used by x86 NimbOS/ArceOS guests, so existing guest boot
 /// assumptions remain unchanged when `enable_bios = true` and `bios_path` is omitted.
+///
+/// Reproducibility:
+/// - Source archive:
+///   <https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.25/qemu_x86_64_nimbos.tar.gz>
+/// - Archive SHA-256:
+///   `766aee71072bed3a76fc29781cddd43d243228bd62144115b597f659d9ca8793`
+/// - Extract `./axvm-bios.bin`; its SHA-256 must be:
+///   `323e108956d8ab67b4b57259272c78df725053f7d7f0bd08ebe1f9eaaabfd4d4`
 pub const DEFAULT_BIOS_IMAGE: &[u8] = &[
     0xfa, 0xfc, 0x31, 0xc0, 0x8e, 0xd8, 0x8e, 0xc0, 0x8e, 0xd0, 0x0f, 0x01, 0x16, 0x68, 0x80, 0x0f,
     0x20, 0xc0, 0x66, 0x83, 0xc8, 0x01, 0x0f, 0x22, 0xc0, 0xea, 0x1e, 0x80, 0x08, 0x00, 0x66, 0xb8,

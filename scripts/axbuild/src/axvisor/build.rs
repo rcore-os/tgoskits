@@ -544,7 +544,7 @@ vm_configs = []
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
-features = ["ept-level-4", "fs"]
+features = ["ept-level-4", "fs", "vmx"]
 log = "Info"
 vm_configs = []
 "#,

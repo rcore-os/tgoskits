@@ -47,7 +47,10 @@ use super::{
         VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
     },
 };
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters, xstate::XState};
+use crate::{
+    ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag,
+    xstate::XState,
+};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
@@ -1135,14 +1138,6 @@ impl VmxVcpu {
 
     fn load_host_xstate(&mut self) {
         self.xstate.switch_to_host();
-    }
-}
-
-fn restore_host_interrupt_flag(host_rflags: u64) {
-    if host_rflags & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0 {
-        x86_64::instructions::interrupts::enable();
-    } else {
-        x86_64::instructions::interrupts::disable();
     }
 }
 

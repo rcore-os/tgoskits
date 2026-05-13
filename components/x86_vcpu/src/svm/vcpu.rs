@@ -22,7 +22,7 @@ use super::{
     structs::{IOPm, MSRPm, VmcbFrame},
     vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
 };
-use crate::{msr::Msr, regs::GeneralRegisters, xstate::XState};
+use crate::{msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag, xstate::XState};
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
@@ -118,12 +118,18 @@ impl VmLoadSaveStates {
 /// permission map.
 #[repr(C)]
 pub struct SvmVcpu {
+    // The order of `guest_regs`, `host_stack_top`, and `host_rflags` is
+    // mandatory. They must be the first three fields. If you want to change
+    // the order or the type of these fields, you must also change the assembly
+    // in this file.
     /// Guest general-purpose registers.
     guest_regs: GeneralRegisters,
     // Used by `svm_run()` assembly; keep immediately after `guest_regs`.
     host_stack_top: u64,
     /// Host RFLAGS captured immediately before VM entry.
     host_rflags: u64,
+
+    // The order of the following fields is not mandatory.
     /// Whether this VCPU has entered the guest at least once.
     launched: bool,
     /// The guest entry point.
@@ -697,14 +703,14 @@ impl SvmVcpu {
         // in this window may clobber the guest registers prepared for entry.
         unsafe {
             asm!(
-                "pushfq",
+                "pushfq", // save host RFLAGS, including IF
                 "pop qword ptr [rdi + {host_rflags}]",
                 save_regs_no_rax!(),
                 "mov [rdi + {host_stack_top}], rsp",
                 "mov rsp, rdi",
                 restore_regs_no_rax!(),
                 "vmrun rax",
-                "cli",
+                "cli", // keep host IRQs off until host xstate is restored
                 save_regs_no_rax!(),
                 "mov rdi, rsp",
                 "mov rsp, [rdi + {host_stack_top}]",
@@ -719,14 +725,6 @@ impl SvmVcpu {
         self.after_vmrun();
         self.load_host_xstate();
         restore_host_interrupt_flag(self.host_rflags);
-    }
-}
-
-fn restore_host_interrupt_flag(host_rflags: u64) {
-    if host_rflags & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0 {
-        x86_64::instructions::interrupts::enable();
-    } else {
-        x86_64::instructions::interrupts::disable();
     }
 }
 
