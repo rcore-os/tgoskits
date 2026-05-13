@@ -9,7 +9,7 @@ use alloc::sync::Arc;
 use core::any::Any;
 
 use ax_errno::AxError;
-use ax_hal::{mem::phys_to_virt, paging::PageSize};
+use ax_hal::{kcov::KCOV_GLOBAL_GATE, mem::phys_to_virt, paging::PageSize};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
@@ -51,27 +51,6 @@ pub const KCOV_TRACE_CMP: u32 = 0x200;
 
 /// Maximum number of coverage entries in the buffer.
 pub const KCOV_MAX_ENTRIES: usize = 64 * 1024;
-
-/// Safety gate: blocks the trace handler until a thread explicitly enables
-/// KCOV via the `KCOV_ENABLE` ioctl (which happens from userspace, long
-/// after boot).  Without this check, instrumented edges during early boot
-/// call `kcov_trace_pc_impl` → `ax_task::current()` before the scheduler
-/// has set the per-CPU task pointer (that happens at the end of
-/// `primary_init`, well after the first instrumented code runs).
-///
-/// `ax_task::current()` then panics with "current task is uninitialized".
-/// The panic handler tries `ax_println!`, but UART is not ready yet either:
-/// the platform init runs `init_trap` before `console::init_early`, so the
-/// UART `LazyInit` is still empty.  That is a double-panic, which rustc's
-/// abort guard turns into a `ud2` → #UD (unhandled) → #DF (unhandled) →
-/// triple fault → CPU reset → Seabios "Booting from ROM…" → boot again →
-/// same crash → infinite reset loop.
-///
-/// Setting this flag to 1 in `KCOV_ENABLE` is safe because by the time
-/// userspace can issue ioctls the boot is complete and all affected
-/// subsystems are live.
-#[used]
-static mut KCOV_ANY_ENABLED: u8 = 0;
 
 // ---- Types ----
 
@@ -191,7 +170,7 @@ impl DeviceOps for KcovDevice {
 
                 // Let the hot path know at least one thread is tracing.
                 unsafe {
-                    KCOV_ANY_ENABLED = 1;
+                    KCOV_GLOBAL_GATE = 1;
                 }
 
                 let task = ax_task::current();
@@ -276,7 +255,7 @@ impl DeviceOps for KcovDevice {
 extern "C" fn kcov_trace_pc_impl(pc: u64) {
     // Fast bail-out: skip all task/thread lookups when no thread has
     // enabled kcov (e.g. during boot, before the test starts tracing).
-    if unsafe { KCOV_ANY_ENABLED == 0 } {
+    if unsafe { KCOV_GLOBAL_GATE == 0 } {
         return;
     }
 
