@@ -21,17 +21,13 @@ rockchip-soc = ["dep:rockchip-soc"]
 rk3568-clk = ["dep:rk3568_clk"]
 rockchip-sdhci = [
     "dep:sdhci-host",
-    "sdhci-host/irq",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
-    "sdmmc-protocol/irq",
 ]
 rockchip-dwmmc = [
     "dep:dwmmc-host",
-    "dwmmc-host/irq",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/sdio",
-    "sdmmc-protocol/irq",
 ]
 rockchip-pm = ["dep:rockchip-pm"]
 usb = ["dep:crab-usb"]

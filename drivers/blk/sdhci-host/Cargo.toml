@@ -15,6 +15,4 @@ log = "0.4"
 dma-api.workspace = true
 
 [features]
-default = ["sync"]
-sync = ["sdmmc-protocol/sync"]
-irq = ["sdmmc-protocol/irq"]
+default = []

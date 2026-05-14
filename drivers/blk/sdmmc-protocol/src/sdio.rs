@@ -18,22 +18,86 @@ use crate::{
     },
 };
 
-fn wait_command_response_sync<E>(
-    poll: impl FnMut() -> Result<CommandResponsePoll, E>,
-) -> Result<Response, E> {
-    wait_operation_sync(poll, |poll| match poll {
-        CommandResponsePoll::Pending => OperationPoll::Pending,
-        CommandResponsePoll::Complete(response) => OperationPoll::Complete(response),
-    })
+/// Waiting strategy for protocol-level submit/poll operations.
+///
+/// The default [`SpinWait`] keeps the existing synchronous behavior. IRQ or
+/// async runtimes can provide their own implementation that calls the same
+/// poll closure once, parks the task on `Pending`, and retries after a host
+/// IRQ wakeup.
+pub trait ProtocolWait {
+    fn wait_command<E>(
+        &mut self,
+        poll: impl FnMut() -> Result<CommandResponsePoll, E>,
+    ) -> Result<Response, E>;
+
+    fn wait_data<E>(
+        &mut self,
+        poll: impl FnMut() -> Result<DataCommandPoll, E>,
+    ) -> Result<Response, E>;
 }
 
-fn wait_data_response_sync<E>(
-    poll: impl FnMut() -> Result<DataCommandPoll, E>,
-) -> Result<Response, E> {
-    wait_operation_sync(poll, |poll| match poll {
-        DataCommandPoll::Pending => OperationPoll::Pending,
-        DataCommandPoll::Complete(response) => OperationPoll::Complete(response),
-    })
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpinWait;
+
+impl ProtocolWait for SpinWait {
+    fn wait_command<E>(
+        &mut self,
+        poll: impl FnMut() -> Result<CommandResponsePoll, E>,
+    ) -> Result<Response, E> {
+        wait_operation_sync(poll, |poll| match poll {
+            CommandResponsePoll::Pending => OperationPoll::Pending,
+            CommandResponsePoll::Complete(response) => OperationPoll::Complete(response),
+        })
+    }
+
+    fn wait_data<E>(
+        &mut self,
+        poll: impl FnMut() -> Result<DataCommandPoll, E>,
+    ) -> Result<Response, E> {
+        wait_operation_sync(poll, |poll| match poll {
+            DataCommandPoll::Pending => OperationPoll::Pending,
+            DataCommandPoll::Complete(response) => OperationPoll::Complete(response),
+        })
+    }
+}
+
+/// Synchronous protocol waiter with a caller-provided `Pending` hook.
+///
+/// This is useful for runtimes that want to reuse the protocol state machine
+/// but replace `spin_loop` with another bounded wait action.
+pub struct PendingWait<F> {
+    on_pending: F,
+}
+
+impl<F> PendingWait<F> {
+    pub const fn new(on_pending: F) -> Self {
+        Self { on_pending }
+    }
+}
+
+impl<F> ProtocolWait for PendingWait<F>
+where
+    F: FnMut(),
+{
+    fn wait_command<E>(
+        &mut self,
+        poll: impl FnMut() -> Result<CommandResponsePoll, E>,
+    ) -> Result<Response, E> {
+        wait_operation_with_pending(poll, &mut self.on_pending, |poll| match poll {
+            CommandResponsePoll::Pending => OperationPoll::Pending,
+            CommandResponsePoll::Complete(response) => OperationPoll::Complete(response),
+        })
+    }
+
+    fn wait_data<E>(
+        &mut self,
+        poll: impl FnMut() -> Result<DataCommandPoll, E>,
+    ) -> Result<Response, E> {
+        wait_operation_with_pending(poll, &mut self.on_pending, |poll| match poll {
+            DataCommandPoll::Pending => OperationPoll::Pending,
+            DataCommandPoll::Complete(response) => OperationPoll::Complete(response),
+        })
+    }
 }
 
 fn wait_operation_sync<T, E, P, M, R>(mut poll: P, mut map: M) -> Result<T, E>
@@ -42,6 +106,18 @@ where
     M: FnMut(R) -> OperationPoll<T>,
 {
     block_on_poll(|| Ok(map(poll()?)), core::hint::spin_loop)
+}
+
+fn wait_operation_with_pending<T, E, P, M, R>(
+    mut poll: P,
+    on_pending: &mut impl FnMut(),
+    mut map: M,
+) -> Result<T, E>
+where
+    P: FnMut() -> Result<R, E>,
+    M: FnMut(R) -> OperationPoll<T>,
+{
+    block_on_poll(|| Ok(map(poll()?)), on_pending)
 }
 
 /// SDIO bus width
@@ -104,7 +180,6 @@ pub trait SdioHost {
     ///
     /// Portable host crates can expose their native event enum here. The
     /// protocol layer does not interpret it; OS glue maps it to runtime wakeups.
-    #[cfg(feature = "irq")]
     type Event: Default;
 
     /// Submit a command without waiting for its response.
@@ -178,7 +253,6 @@ pub trait SdioHost {
     ///
     /// Default is a no-op so polling-only hosts do not have to implement IRQ
     /// support.
-    #[cfg(feature = "irq")]
     fn enable_data_irq(&mut self) -> Result<(), Error> {
         Ok(())
     }
@@ -186,7 +260,6 @@ pub trait SdioHost {
     /// Mask host IRQ delivery while keeping the controller usable for polling.
     ///
     /// Default is a no-op for polling-only hosts.
-    #[cfg(feature = "irq")]
     fn disable_data_irq(&mut self) -> Result<(), Error> {
         Ok(())
     }
@@ -194,23 +267,20 @@ pub trait SdioHost {
     /// Acknowledge pending host IRQ status and return a hardware event summary.
     ///
     /// This must not block or perform OS wakeups.
-    #[cfg(feature = "irq")]
     fn handle_irq(&mut self) -> Self::Event {
         Self::Event::default()
     }
 }
 
 /// SDIO mode SD/MMC driver
-pub struct SdioSdmmc<H: SdioHost, D: DelayNs> {
+pub struct SdioSdmmc<H: SdioHost, D: DelayNs, W: ProtocolWait = SpinWait> {
     host: H,
-    #[cfg_attr(not(feature = "sync"), allow(dead_code))]
     delay: D,
+    waiter: W,
     rca: u16,
     high_capacity: bool,
-    #[cfg_attr(not(feature = "sync"), allow(dead_code))]
     bus_width: BusWidth,
     kind: CardKind,
-    #[cfg_attr(not(feature = "sync"), allow(dead_code))]
     sd_speed_selection_enabled: bool,
 }
 
@@ -261,11 +331,18 @@ impl SdAccessMode {
     }
 }
 
-impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
+impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D, SpinWait> {
     pub fn new(host: H, delay: D) -> Self {
+        Self::new_with_waiter(host, delay, SpinWait)
+    }
+}
+
+impl<H: SdioHost, D: DelayNs, W: ProtocolWait> SdioSdmmc<H, D, W> {
+    pub fn new_with_waiter(host: H, delay: D, waiter: W) -> Self {
         Self {
             host,
             delay,
+            waiter,
             rca: 0,
             high_capacity: false,
             bus_width: BusWidth::Bit1,
@@ -372,11 +449,12 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
 
     fn send_command_polling(&mut self, cmd: &Command) -> Result<Response, Error> {
         self.host.submit_command(cmd)?;
-        wait_command_response_sync(|| self.host.poll_command_response())
+        self.waiter
+            .wait_command(|| self.host.poll_command_response())
     }
 }
 
-impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
+impl<H: SdioHost, D: DelayNs, W: ProtocolWait> SdioSdmmc<H, D, W> {
     /// Maximum total time to wait for ACMD41 to report card power-up.
     const INIT_TIMEOUT_MS: u32 = 1_000;
     /// Interval between ACMD41 polls.
@@ -987,7 +1065,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     }
 }
 
-impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
+impl<H: SdioHost, D: DelayNs, W: ProtocolWait> SdioSdmmc<H, D, W> {
     fn read_data_polling(
         &mut self,
         cmd: &Command,
@@ -998,7 +1076,8 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         let mut request = self
             .host
             .submit_read_data(cmd, buf, block_size, block_count)?;
-        wait_data_response_sync(|| self.host.poll_data_request(&mut request))
+        self.waiter
+            .wait_data(|| self.host.poll_data_request(&mut request))
     }
 }
 
@@ -1143,7 +1222,6 @@ mod tests {
     }
 
     impl SdioHost for MockHost {
-        #[cfg(feature = "irq")]
         type Event = ();
         type DataRequest<'a> = MockDataRequest<'a>;
 
@@ -1250,7 +1328,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "irq")]
     #[test]
     fn sdio_host_irq_methods_default_to_noop() {
         let mut host = MockHost::new(Vec::new());
@@ -1324,6 +1401,87 @@ mod tests {
         status[13] = supported;
         status[16] = function & 0x0f;
         status
+    }
+
+    #[derive(Default)]
+    struct CountingWait {
+        command_waits: usize,
+        data_waits: usize,
+    }
+
+    impl ProtocolWait for CountingWait {
+        fn wait_command<E>(
+            &mut self,
+            mut poll: impl FnMut() -> Result<CommandResponsePoll, E>,
+        ) -> Result<Response, E> {
+            self.command_waits += 1;
+            loop {
+                match poll()? {
+                    CommandResponsePoll::Pending => {}
+                    CommandResponsePoll::Complete(response) => return Ok(response),
+                }
+            }
+        }
+
+        fn wait_data<E>(
+            &mut self,
+            mut poll: impl FnMut() -> Result<DataCommandPoll, E>,
+        ) -> Result<Response, E> {
+            self.data_waits += 1;
+            loop {
+                match poll()? {
+                    DataCommandPoll::Pending => {}
+                    DataCommandPoll::Complete(response) => return Ok(response),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn custom_waiter_drives_protocol_command_polling() {
+        let host = MockHost::new(std::vec![ok_r1()]);
+        let mut driver = SdioSdmmc::new_with_waiter(host, NullDelay, CountingWait::default());
+
+        driver.send_command_polling(&crate::cmd::CMD0).unwrap();
+
+        assert_eq!(driver.waiter.command_waits, 1);
+        assert_eq!(driver.waiter.data_waits, 0);
+    }
+
+    #[test]
+    fn custom_waiter_drives_protocol_data_polling() {
+        let mut host = MockHost::new(std::vec![ok_r1()]);
+        host.next_read_payload = Some(switch_status_payload(1, 0b10));
+        let mut driver = SdioSdmmc::new_with_waiter(host, NullDelay, CountingWait::default());
+
+        driver
+            .switch_function(&crate::cmd::cmd6_high_speed(false))
+            .unwrap();
+
+        assert_eq!(driver.waiter.command_waits, 0);
+        assert_eq!(driver.waiter.data_waits, 1);
+    }
+
+    #[test]
+    fn pending_wait_runs_hook_between_command_polls() {
+        let mut pending_hooks = 0;
+        let mut polls = 0;
+        {
+            let mut waiter = PendingWait::new(|| pending_hooks += 1);
+            waiter
+                .wait_command(|| {
+                    polls += 1;
+                    if polls == 1 {
+                        Ok::<_, Error>(CommandResponsePoll::Pending)
+                    } else {
+                        Ok(CommandResponsePoll::Complete(ok_r1()))
+                    }
+                })
+                .unwrap();
+        }
+
+        assert_eq!(polls, 2);
+        assert_eq!(pending_hooks, 1);
     }
 
     #[test]

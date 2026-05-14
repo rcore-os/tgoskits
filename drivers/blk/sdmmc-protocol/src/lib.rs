@@ -26,8 +26,6 @@
 //! |----------|---------|-------------------------------------------------|
 //! | `spi`    | yes     | Enables [`spi::SpiTransport`] and [`spi::SpiSdmmc`]. |
 //! | `sdio`   | no      | Enables the host trait and submit/poll data-command contract. |
-//! | `sync`   | yes     | Adds blocking initialization helpers to [`sdio`]. |
-//! | `irq`    | no      | Adds IRQ trait hooks for runtimes that wake pollers from controller interrupts. |
 //!
 //! Diagnostic output goes through the [`log`] crate; configure a logger in
 //! your application to capture it.

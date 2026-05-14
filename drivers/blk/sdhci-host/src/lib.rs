@@ -111,7 +111,6 @@ pub struct DataRequest<'a> {
 }
 
 impl SdioHost for Sdhci {
-    #[cfg(feature = "irq")]
     type Event = Event;
     type DataRequest<'a> = DataRequest<'a>;
 
@@ -355,19 +354,16 @@ impl SdioHost for Sdhci {
         )))
     }
 
-    #[cfg(feature = "irq")]
     fn enable_data_irq(&mut self) -> Result<(), Error> {
         Sdhci::enable_data_irq(self);
         Ok(())
     }
 
-    #[cfg(feature = "irq")]
     fn disable_data_irq(&mut self) -> Result<(), Error> {
         Sdhci::disable_data_irq(self);
         Ok(())
     }
 
-    #[cfg(feature = "irq")]
     fn handle_irq(&mut self) -> Self::Event {
         Sdhci::handle_irq(self)
     }

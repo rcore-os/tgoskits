@@ -121,7 +121,6 @@ pub(crate) const DWMMC_INT_ERROR_MASK: u32 = DWMMC_INT_RESPONSE_ERROR
     | DWMMC_INT_END_BIT_ERROR;
 
 impl SdioHost for DwMmc {
-    #[cfg(feature = "irq")]
     type Event = Event;
     type DataRequest<'a> = DataRequest<'a>;
 
@@ -214,19 +213,16 @@ impl SdioHost for DwMmc {
         self.set_signal_voltage(voltage)
     }
 
-    #[cfg(feature = "irq")]
     fn enable_data_irq(&mut self) -> Result<(), Error> {
         DwMmc::enable_data_irq(self);
         Ok(())
     }
 
-    #[cfg(feature = "irq")]
     fn disable_data_irq(&mut self) -> Result<(), Error> {
         DwMmc::disable_data_irq(self);
         Ok(())
     }
 
-    #[cfg(feature = "irq")]
     fn handle_irq(&mut self) -> Self::Event {
         DwMmc::handle_irq(self)
     }

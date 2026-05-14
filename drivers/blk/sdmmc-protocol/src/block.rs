@@ -188,25 +188,3 @@ where
         }
     }
 }
-
-/// Drive a non-blocking operation with a bounded synchronous poll budget.
-///
-/// The operation semantics remain submit/poll based; this helper only
-/// chooses the blocking wait strategy used by sync callers.
-pub fn block_on_poll_or_timeout<T, E, F>(
-    mut poll: F,
-    limit: u32,
-    mut on_pending: impl FnMut(),
-    timeout: impl FnOnce() -> E,
-) -> Result<T, E>
-where
-    F: FnMut() -> Result<OperationPoll<T>, E>,
-{
-    for _ in 0..limit {
-        match poll()? {
-            OperationPoll::Pending => on_pending(),
-            OperationPoll::Complete(value) => return Ok(value),
-        }
-    }
-    Err(timeout())
-}
