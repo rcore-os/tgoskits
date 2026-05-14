@@ -414,11 +414,9 @@ impl SocketOps for TcpSocket {
                 if register_bound {
                     self.bound_registered.store(true, Ordering::Release);
                 }
-                self.general
-                    .set_device_mask(get_service().device_mask_for(&IpListenEndpoint {
-                        addr: Some(remote_endpoint.addr),
-                        port: remote_endpoint.port,
-                    }));
+                self.general.set_device_mask(
+                    get_service().device_mask_for(&endpoint_from_ip_endpoint(remote_endpoint)),
+                );
                 Ok(())
             })?;
 
@@ -761,4 +759,34 @@ fn get_ephemeral_port() -> AxResult<u16> {
         tries += 1;
     }
     ax_bail!(AddrInUse, "no available ports");
+}
+
+#[cfg(test)]
+mod tests {
+    use core::net::{IpAddr, SocketAddr};
+
+    use super::*;
+    use crate::{
+        options::{Configurable, SetSocketOption},
+        test_support::{LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network},
+    };
+
+    #[test]
+    fn connect_uses_peer_route_for_device_mask() {
+        init_split_route_network();
+
+        let socket = TcpSocket::new();
+        let nonblocking = true;
+        socket
+            .set_option(SetSocketOption::NonBlocking(&nonblocking))
+            .unwrap();
+        socket
+            .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
+            .unwrap();
+        assert_eq!(socket.general.device_mask(), LOCAL_MASK);
+
+        let _ = socket.connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80)));
+
+        assert_eq!(socket.general.device_mask(), PEER_MASK);
+    }
 }
