@@ -679,6 +679,48 @@ impl CachedFile {
         Ok(())
     }
 
+    pub fn writeback(&self) -> VfsResult<()> {
+        if self.in_memory {
+            return Ok(());
+        }
+        let file = self.inner.entry().as_file()?;
+        let file_len = file.len()?;
+
+        let dirty_keys: alloc::vec::Vec<u32> = {
+            let guard = self.shared.page_cache.lock();
+            guard
+                .iter()
+                .filter_map(|(&pn, page)| {
+                    if page.dirty {
+                        let page_start = pn as u64 * PAGE_SIZE as u64;
+                        let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64);
+                        if len > 0 { Some(pn) } else { None }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        for pn in dirty_keys {
+            let mut guard = self.shared.page_cache.lock();
+            if let Some(page) = guard.get_mut(&pn)
+                && page.dirty
+            {
+                let page_start = pn as u64 * PAGE_SIZE as u64;
+                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
+                if len > 0 {
+                    file.write_at(&page.data()[..len], page_start)?;
+                }
+                page.dirty = false;
+            }
+            drop(guard);
+        }
+
+        file.sync(false)?;
+        Ok(())
+    }
+
     /// Flushes all cached pages back to disk.
     pub fn sync(&self, data_only: bool) -> VfsResult<()> {
         if self.in_memory {

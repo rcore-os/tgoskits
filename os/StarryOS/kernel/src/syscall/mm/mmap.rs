@@ -689,7 +689,7 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
         if let Backend::File(file_backend) = area.backend()
             && file_backend.is_shared()
         {
-            file_backend.cache().sync(false)?;
+            file_backend.cache().writeback()?;
         }
 
         cursor = area.end();
