@@ -367,7 +367,7 @@ pub fn sys_readlinkat(
     size: usize,
 ) -> AxResult<isize> {
     if size == 0 {
-        return Err(AxError::InvalidInput);
+        return Ok(0);
     }
 
     let path = vm_load_string(path)?;
