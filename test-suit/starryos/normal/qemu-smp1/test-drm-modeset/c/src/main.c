@@ -98,6 +98,7 @@ struct drm_event_vblank {
 };
 
 #define DRM_IOCTL_MODE_GETRESOURCES      _IOWR('d', 0xA0, struct drm_mode_card_res)
+#define DRM_IOCTL_MODE_GETCRTC           _IOWR('d', 0xA1, struct drm_mode_crtc)
 #define DRM_IOCTL_MODE_SETCRTC           _IOWR('d', 0xA2, struct drm_mode_crtc)
 #define DRM_IOCTL_MODE_GETCONNECTOR      _IOWR('d', 0xA7, struct drm_mode_get_connector)
 #define DRM_IOCTL_MODE_GETPROPERTY       _IOWR('d', 0xAA, struct drm_mode_get_property)
@@ -233,6 +234,33 @@ int main(void)
     bad_setcrtc.fb_id = 0xdeadbeef;
     CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_setcrtc), EINVAL,
               "SETCRTC with unknown fb_id rejected with EINVAL");
+
+    /* GETCRTC must read back the connector bound by the preceding
+     * SETCRTC. count_connectors reports the real bind count and
+     * set_connectors_ptr (when provided) is filled with the ids. */
+    uint32_t got_conns[2] = {0};
+    struct drm_mode_crtc getcrtc = {
+        .crtc_id = crtc_ids[0],
+        .set_connectors_ptr = (uint64_t)(uintptr_t)got_conns,
+        .count_connectors = 2,
+    };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &getcrtc), 0, "GETCRTC");
+    CHECK(getcrtc.count_connectors == 1,
+          "GETCRTC.count_connectors == 1 after SETCRTC");
+    CHECK(got_conns[0] == conn_ids[0],
+          "GETCRTC.set_connectors_ptr[0] == bound connector id");
+    CHECK(getcrtc.fb_id == fb.fb_id, "GETCRTC.fb_id == post-SETCRTC fb_id");
+    CHECK(getcrtc.mode_valid == 1, "GETCRTC.mode_valid == 1");
+
+    /* SETCRTC with an unknown connector id must fail EINVAL — Linux
+     * DRM rejects connector ids it can't look up. Accepting them
+     * silently would pollute the modeset surface. */
+    uint32_t bad_conns[1] = { 0xdeadbeef };
+    struct drm_mode_crtc bad_conn_setcrtc = setcrtc;
+    bad_conn_setcrtc.set_connectors_ptr = (uint64_t)(uintptr_t)bad_conns;
+    bad_conn_setcrtc.count_connectors = 1;
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_conn_setcrtc), EINVAL,
+              "SETCRTC with unknown connector id rejected with EINVAL");
 
     /* GETPLANE must reflect the current bind state produced by the
      * preceding SETCRTC, not a hard-coded zero. */
