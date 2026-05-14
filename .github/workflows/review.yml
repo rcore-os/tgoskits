@@ -149,8 +149,8 @@ jobs:
                         "description": "注释终止行在 PR head commit 文件中的行号（1-based）"
                       },
                       "start_line": {
-                        "type": "integer",
-                        "description": "多行注释起始行号（可选，省略则为单行）"
+                        "type": ["integer", "null"],
+                        "description": "多行注释起始行号；单行注释时为 null"
                       },
                       "side": {
                         "type": "string",
@@ -158,16 +158,16 @@ jobs:
                         "description": "RIGHT=新增行或上下文行；LEFT=删除行"
                       },
                       "start_side": {
-                        "type": "string",
-                        "enum": ["LEFT", "RIGHT"],
-                        "description": "多行注释的起始侧（可选，默认同 side）"
+                        "type": ["string", "null"],
+                        "enum": ["LEFT", "RIGHT", null],
+                        "description": "多行注释的起始侧；单行注释时为 null"
                       },
                       "body": {
                         "type": "string",
                         "description": "中文评论正文，修改建议明确时使用 ```suggestion 语法"
                       }
                     },
-                    "required": ["path", "line", "side", "body"]
+                    "required": ["path", "line", "start_line", "side", "start_side", "body"]
                   },
                   "description": "行级内联评论列表，优先针对 blocking 或可直接给出修改建议的问题"
                 },
@@ -266,7 +266,7 @@ jobs:
                   side: c.side === 'LEFT' ? 'LEFT' : 'RIGHT',
                   body: String(c.body),
                 };
-                if (c.start_line) {
+                if (Number.isInteger(c.start_line)) {
                   comment.start_line = Number(c.start_line);
                   comment.start_side = c.start_side === 'LEFT' ? 'LEFT' : 'RIGHT';
                 }
