@@ -5,7 +5,13 @@ sidebar_label: "参数与配置"
 
 # 参数与配置
 
-构建系统的配置涉及四类数据：**Arch/Target 映射**（架构与编译目标的对应关系）、**Snapshot**（最近一次命令参数的持久化）、**Build Info**（构建配置，含 features、环境变量和平台行为）、**axconfig**（平台硬件配置，如内存布局、设备地址）。三套子系统共享这套配置框架，但各有自己的默认值和定制行为。所有配置逻辑集中在 `scripts/axbuild/src/context/` 和 `scripts/axbuild/src/build.rs` 中。
+axbuild 管理三类配置文件，这三类配置文件按流水线顺序依次参与：Snapshot 为 CLI 提供参数回退 → Build Info 收敛构建参数 → axconfig 从平台包生成硬件配置供编译期使用。在构建管线的不同阶段生成和使用：
+
+1. **Snapshot**（`tmp/axbuild/.{os}.toml`）—— 最近一次命令参数的持久化，使短命令可以复用之前的 `--arch`、`--package` 等参数
+2. **Build Info**（`tmp/axbuild/config/<package>/build-<target>.toml`）—— 构建配置核心，描述 features、环境变量和平台行为
+3. **axconfig**（`tmp/axbuild/axconfig/<package>/<target>/.axconfig.toml`）—— 编译期硬件配置，如内存布局、设备地址
+
+此外，**Arch / Target 映射**是三类配置文件的共享基础，维护 arch ↔ target 的对应关系和子系统默认值。三套子系统共享这套配置框架，但各有自己的默认值和定制行为。所有配置逻辑集中在 `scripts/axbuild/src/context/` 和 `scripts/axbuild/src/build.rs` 中。
 
 ## Arch / Target 映射
 

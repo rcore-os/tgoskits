@@ -37,9 +37,11 @@ flowchart TD
     B --> C["set_build_config_path()"]
     C --> D{QEMU 配置获取方式?}
     D -->|显式 --qemu-config| E["read_qemu_config_from_path()"]
-    D -->|自动发现| F["ensure_qemu_config_for_cargo()"]
+    D -->|Axvisor/StarryOS 默认| F1["configs/qemu/qemu-{arch}.toml"]
+    D -->|ArceOS 自动发现| F2["ensure_qemu_config_for_cargo()"]
     E --> G[子系统补丁]
-    F --> G
+    F1 --> G
+    F2 --> G
     G --> H{子系统}
     H -->|StarryOS| I["注入 rootfs / 网络 / SMP"]
     H -->|ArceOS| J["预生成磁盘镜像 / rootfs 补丁"]
@@ -52,9 +54,10 @@ flowchart TD
 ### QEMU 配置获取
 
 1. **显式指定**：`--qemu-config <path>` → `Tool::read_qemu_config_from_path_for_cargo()`
-2. **自动发现**：ostool 根据包名和 target 自动查找 → `Tool::ensure_qemu_config_for_cargo()`
+2. **子系统默认模板**：Axvisor 使用 `os/axvisor/configs/qemu/qemu-{arch}.toml`，StarryOS 使用 `os/StarryOS/configs/qemu/qemu-{arch}.toml`
+3. **ostool 自动发现**：ArceOS 未指定时由 ostool 根据包名和 target 自动查找 → `Tool::ensure_qemu_config_for_cargo()`
 
-显式指定用于测试场景（每个测试用例有自己的 `qemu-{arch}.toml`），自动发现用于开发场景（ostool 在标准路径中搜索匹配的配置文件）。
+显式指定用于测试场景（每个测试用例有自己的 `qemu-{arch}.toml`）。Axvisor 和 StarryOS 在各自的 `configs/qemu/` 目录下预置了各架构的 QEMU 配置模板，未显式指定时自动使用对应模板。ArceOS 依赖 ostool 的标准路径搜索机制。
 
 ### LoongArch 特殊处理
 
