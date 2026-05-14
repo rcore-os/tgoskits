@@ -94,7 +94,7 @@
  * 测试覆盖一览
  * =====================================================================
  *
- *  sendto (11):
+ *  sendto (13):
  *    [S1] 基本 UDP sendto — 未连接 UDP, 正常发送
  *    [S2] 已连接 UDP sendto(NULL,0) — 等价 send()
  *    [S3] EBADF — 无效 fd
@@ -106,6 +106,8 @@
  *    [S9] 零长度发送 — 0 字节数据报
  *    [S10] MSG_DONTWAIT 发送 — 验证路径无异常（EAGAIN 由 R7 覆盖）
  *    [S11] MSG_MORE 目标固定 — 首段目标地址不变
+ *    [S12] NULL+nonzero addrlen — 未连接 EDESTADDRREQ, 已连接成功
+ *    [S13] MSG_MORE 超限 — EMSGSIZE
  *
  *  recvfrom (7):
  *    [R1] 基本 UDP recvfrom — 接收带源地址
@@ -126,13 +128,14 @@
  *    [SM7] MSG_MORE — UDP cork via sendmsg
  *    [SM8] MSG_NOSIGNAL — TCP 对端关闭不触发 SIGPIPE
  *
- *  recvmsg (6):
+ *  recvmsg (7):
  *    [RM1] 基本 UDP recvmsg — msg_name 返回源地址
  *    [RM2] scatter/gather — 多 iovec 接收
  *    [RM3] EBADF — 无效 fd
  *    [RM4] ENOTSOCK — fd 不是 socket
  *    [RM5] EAGAIN/EWOULDBLOCK — 非阻塞无数据
  *    [RM6] MSG_PEEK — 窥探, msg_flags 检查
+ *    [RM7] MSG_TRUNC — 截断时 msg_flags 含 MSG_TRUNC
  *
  * =====================================================================
  * 特殊说明
@@ -610,6 +613,110 @@ static void test_s11_sendto_msg_more_endpoint(void)
     close(client);
     close(server_a);
     close(server_b);
+}
+
+/*
+ * [S12] sendto addr==NULL && addrlen!=0
+ *
+ * 语义: Linux 对 sendto(NULL, nonzero_addrlen) 的处理与 sendto(NULL, 0)
+ *       不同——不是返回 EINVAL，而是按"无目标地址"处理：
+ *       - 未连接 UDP → EDESTADDRREQ
+ *       - 已连接 UDP → 发往 peer（成功）
+ * 预期: 未连接时返回 EDESTADDRREQ；已连接时发送成功。
+ */
+static void test_s12_sendto_null_nonzero_addrlen(void)
+{
+    /* 未连接场景 */
+    int fd = make_udp_sock();
+    if (fd < 0) return;
+    const char buf[] = "x";
+    /* 传 NULL + nonzero addrlen: 应等同 NULL+0, 返回 EDESTADDRREQ 而非 EINVAL */
+    CHECK_ERR(sendto(fd, buf, 1, 0, NULL, sizeof(struct sockaddr_in)),
+              EDESTADDRREQ,
+              "sendto(NULL, nonzero) 未连接 → EDESTADDRREQ");
+    close(fd);
+
+    /* 已连接场景 */
+    struct sockaddr_in srv_addr;
+    int server = bind_udp_loopback(&srv_addr);
+    if (server < 0) return;
+    int client = make_udp_sock();
+    if (client < 0) { close(server); return; }
+    if (connect(client, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0) {
+        close(client);
+        close(server);
+        return;
+    }
+    /* 已连接后 sendto(NULL, nonzero) 应等价于 send()，发往 peer */
+    errno = 0;
+    ssize_t nsent = sendto(client, buf, 1, 0, NULL,
+                           sizeof(struct sockaddr_in));
+    CHECK_RET(nsent, 1, "sendto(NULL, nonzero) 已连接 → 发送成功");
+
+    char rbuf[1] = {0};
+    ssize_t nrecv = recvfrom(server, rbuf, 1, 0, NULL, NULL);
+    CHECK_RET(nrecv, 1, "对端收到数据");
+
+    close(client);
+    close(server);
+}
+
+/*
+ * [S13] MSG_MORE 超过 cork 上限 → EMSGSIZE
+ *
+ * 语义: MSG_MORE cork 缓冲有上限（UDP TX buffer 大小，64 KiB）。
+ *       单次 len 超限或累积超限均应返回 EMSGSIZE，阻止无界内存分配。
+ * 预期: sendto(..., MSG_MORE) len > 64K → EMSGSIZE;
+ *       两次 MSG_MORE 累积 > 64K → 第二次返回 EMSGSIZE。
+ * 注意: Linux 上 EMSGSIZE 后 cork 可能被清空，因此不强制验证 flush
+ *       是否保留了第一次的数据（不同内核行为不同）。
+ */
+static void test_s13_sendto_msg_more_emsgsize(void)
+{
+    struct sockaddr_in srv_addr;
+    int server = bind_udp_loopback(&srv_addr);
+    if (server < 0) return;
+    int client = make_udp_sock();
+    if (client < 0) { close(server); return; }
+
+    /* 单次 len 超过上限 (64 KiB + 1)：用有效 buffer 避免 EFAULT */
+    char *big = malloc(65537);
+    if (big) {
+        memset(big, 0, 65537);
+        CHECK_ERR(sendto(client, big, 65537, MSG_MORE,
+                         (struct sockaddr *)&srv_addr, sizeof(srv_addr)),
+                  EMSGSIZE,
+                  "MSG_MORE len > 64K → EMSGSIZE");
+        free(big);
+    }
+
+    /* 累积超过上限: 两次 MSG_MORE, 第二次触发 EMSGSIZE */
+    char *buf32k = malloc(32768);
+    if (!buf32k) {
+        close(client);
+        close(server);
+        return;
+    }
+    memset(buf32k, 'A', 32768);
+    ssize_t n1 = sendto(client, buf32k, 32768, MSG_MORE,
+                        (struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    CHECK_RET(n1, 32768, "MSG_MORE 32K → 接受");
+
+    /* 第二次累积 32769 → total 65537 > 65536 → EMSGSIZE */
+    CHECK_ERR(sendto(client, buf32k, 32769, MSG_MORE,
+                     (struct sockaddr *)&srv_addr, sizeof(srv_addr)),
+              EMSGSIZE,
+              "MSG_MORE 累积 > 64K → EMSGSIZE");
+
+    /* flush 不应崩溃。cork 可能已清空（Linux）或保留（StarryOS）,
+       只验证 flush 调用本身成功 */
+    ssize_t nflush = sendto(client, "BB", 2, 0,
+                            (struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    CHECK(nflush >= 0, "flush 成功（不崩溃）");
+
+    free(buf32k);
+    close(client);
+    close(server);
 }
 
 /* =====================================================================
@@ -1310,6 +1417,49 @@ static void test_rm6_recvmsg_msg_peek(void)
     close(server);
 }
 
+/*
+ * [RM7] recvmsg MSG_TRUNC in msg_flags — 截断标志
+ *
+ * 语义: recvmsg 在接收 buffer 小于 datagram 时，应将 msg.msg_flags
+ *       设置为 MSG_TRUNC。
+ * 预期: 发送 100 字节，用 10 字节 buffer recvmsg → 返回 10 字节,
+ *       msg.msg_flags 含 MSG_TRUNC。
+ */
+static void test_rm7_recvmsg_msg_trunc_flags(void)
+{
+    struct sockaddr_in srv_addr;
+    int server = bind_udp_loopback(&srv_addr);
+    if (server < 0) return;
+    int client = make_udp_sock();
+    if (client < 0) { close(server); return; }
+
+    /* 发送 100 字节 */
+    char payload[100];
+    memset(payload, 'X', 100);
+    ssize_t nsent = sendto(client, payload, 100, 0,
+                           (struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    CHECK_RET(nsent, 100, "预先发送 100 字节");
+
+    /* 只用 10 字节 buffer 接收 — 应截断 */
+    char buf[10] = {0};
+    struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) };
+    struct msghdr msg = {
+        .msg_name    = NULL,
+        .msg_namelen = 0,
+        .msg_iov     = &iov,
+        .msg_iovlen  = 1,
+    };
+
+    errno = 0;
+    ssize_t nrecv = recvmsg(server, &msg, 0);
+    CHECK_RET(nrecv, 10, "recvmsg 只收到 10 字节 (截断)");
+    CHECK((msg.msg_flags & MSG_TRUNC) != 0,
+          "msg.msg_flags 含 MSG_TRUNC");
+
+    close(client);
+    close(server);
+}
+
 /* =====================================================================
  * main
  * ===================================================================== */
@@ -1318,7 +1468,7 @@ int main(void)
 {
     TEST_START("socket-dataplane");
 
-    /* ---- sendto (11) ---- */
+    /* ---- sendto (13) ---- */
     test_s1_sendto_udp_basic();
     test_s2_sendto_udp_connected_null();
     test_s3_sendto_ebadf();
@@ -1330,6 +1480,8 @@ int main(void)
     test_s9_sendto_zero_len();
     test_s10_sendto_msg_dontwait();
     test_s11_sendto_msg_more_endpoint();
+    test_s12_sendto_null_nonzero_addrlen();
+    test_s13_sendto_msg_more_emsgsize();
 
     /* ---- recvfrom (7) ---- */
     test_r1_recvfrom_udp_basic();
@@ -1350,13 +1502,14 @@ int main(void)
     test_sm7_sendmsg_msg_more();
     test_sm8_sendmsg_msg_nosignal();
 
-    /* ---- recvmsg (6) ---- */
+    /* ---- recvmsg (7) ---- */
     test_rm1_recvmsg_udp_basic();
     test_rm2_recvmsg_scatter_gather();
     test_rm3_recvmsg_ebadf();
     test_rm4_recvmsg_enotsock();
     test_rm5_recvmsg_eagain();
     test_rm6_recvmsg_msg_peek();
+    test_rm7_recvmsg_msg_trunc_flags();
 
     TEST_DONE();
 }

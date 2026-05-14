@@ -72,9 +72,12 @@ fn send_impl(
     }
 
     if let Ok(socket) = Socket::from_fd(fd) {
-        let addr = if addr.is_null() && addrlen == 0 {
+        let addr = if addr.is_null() {
+            // addr == NULL: treat as no address regardless of addrlen.
+            // Linux sendto(..., NULL, nonzero) sends to connected peer or
+            // returns EDESTADDRREQ on unconnected socket, never EINVAL.
             None
-        } else if addr.is_null() || addrlen == 0 {
+        } else if addrlen == 0 {
             return Err(AxError::InvalidInput);
         } else {
             Some(SocketAddrEx::read_from_user(addr, addrlen)?)
@@ -136,6 +139,7 @@ fn recv_impl(
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
     cmsg_builder: Option<CMsgBuilder>,
+    truncated_out: &mut bool,
 ) -> AxResult<isize> {
     debug!("sys_recv <= fd: {fd}, flags: {flags}");
 
@@ -187,6 +191,7 @@ fn recv_impl(
             from: remote_addr.as_mut(),
             flags: recv_flags,
             cmsg: Some(&mut cmsg),
+            truncated: Some(truncated_out),
         },
     )?;
 
@@ -230,12 +235,21 @@ pub fn sys_recvfrom(
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
 ) -> AxResult<isize> {
-    recv_impl(fd, VmBytesMut::new(buf, len), flags, addr, addrlen, None)
+    recv_impl(
+        fd,
+        VmBytesMut::new(buf, len),
+        flags,
+        addr,
+        addrlen,
+        None,
+        &mut false,
+    )
 }
 
 pub fn sys_recvmsg(fd: i32, msg: UserPtr<msghdr>, flags: u32) -> AxResult<isize> {
     let msg = msg.get_as_mut()?;
-    recv_impl(
+    let mut truncated = false;
+    let recv = recv_impl(
         fd,
         IoVectorBuf::new(msg.msg_iov as *mut IoVec, msg.msg_iovlen)?.into_io(),
         flags,
@@ -247,7 +261,13 @@ pub fn sys_recvmsg(fd: i32, msg: UserPtr<msghdr>, flags: u32) -> AxResult<isize>
                 &mut msg.msg_controllen,
             )
         }),
-    )
+        &mut truncated,
+    );
+    // Linux: on success, set msg.msg_flags to indicate truncation etc.
+    if recv.is_ok() {
+        msg.msg_flags = if truncated { MSG_TRUNC } else { 0 };
+    }
+    recv
 }
 
 /// Send multiple datagrams in one syscall.
@@ -333,6 +353,7 @@ pub fn sys_recvmmsg(
                     &mut msg.msg_hdr.msg_controllen,
                 )
             }),
+            &mut false,
         );
 
         match recv {

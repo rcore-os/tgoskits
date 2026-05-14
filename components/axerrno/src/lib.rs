@@ -120,6 +120,9 @@ pub enum AxErrorKind {
     /// Destination address required (sendto/sendmsg on unconnected socket
     /// without specifying a target address).
     DestAddrRequired,
+    /// Message too long (sendto/sendmsg with datagram exceeding socket
+    /// buffer or protocol size limit).
+    MessageTooLong,
     /// An error returned when an operation could not be completed because a
     /// call to `write()` returned [`Ok(0)`](Ok).
     WriteZero,
@@ -173,6 +176,7 @@ impl AxErrorKind {
             Unsupported => "Operation not supported",
             WouldBlock => "Operation would block",
             DestAddrRequired => "Destination address required",
+            MessageTooLong => "Message too long",
             WriteZero => "Write zero",
         }
     }
@@ -234,6 +238,7 @@ impl From<AxErrorKind> for LinuxError {
             NotASocket => ENOTSOCK,
             NotATty => ENOTTY,
             DestAddrRequired => EDESTADDRREQ,
+            MessageTooLong => EMSGSIZE,
             NotConnected => ENOTCONN,
             NotFound => ENOENT,
             OperationNotPermitted => EPERM,
@@ -286,6 +291,7 @@ impl TryFrom<LinuxError> for AxErrorKind {
             ENOTSOCK => NotASocket,
             ENOTTY => NotATty,
             EDESTADDRREQ => DestAddrRequired,
+            EMSGSIZE => MessageTooLong,
             ENOTCONN => NotConnected,
             ENOENT => NotFound,
             EPERM => OperationNotPermitted,
@@ -480,6 +486,7 @@ axerror_consts!(
     Unsupported,
     WouldBlock,
     DestAddrRequired,
+    MessageTooLong,
     WriteZero
 );
 
@@ -607,7 +614,7 @@ mod tests {
     #[test]
     fn test_try_from() {
         let max_code = AxErrorKind::COUNT as i32;
-        assert_eq!(max_code, 44);
+        assert_eq!(max_code, 45);
         assert_eq!(max_code, AxError::WriteZero.code());
 
         assert_eq!(AxError::AddrInUse.code(), 1);
