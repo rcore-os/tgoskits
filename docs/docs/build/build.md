@@ -177,9 +177,11 @@ Cargo {
 
 各子系统的额外补丁：
 - **StarryOS**：注入 `AX_ARCH`、`AX_TARGET`、`AX_PLATFORM`
-- **Axvisor**：注入 `AX_ARCH`、`AX_TARGET`、`AXVISOR_VM_CONFIGS`；`defplat` → `myplat`
+- **Axvisor**：注入 `AX_ARCH`、`AX_TARGET`、`AXVISOR_VM_CONFIGS`；额外执行 Axvisor 独有的 `defplat` → `myplat` 归一化
 
 此阶段将前面所有阶段的输出（Build Info 中的 features 和环境变量、arch 解析的 target、axconfig 的路径）组装为 ostool 能理解的 `Cargo` 配置结构体。链接器脚本的选择取决于平台模式：动态平台使用 `Taxplat.x`（支持运行时平台注册），静态平台使用 `Tlinker.x`（编译期绑定）。
+
+**Axvisor 平台 feature 归一化**：Axvisor 的 board 配置文件中通常声明 `ax-std/defplat`（表示"使用默认平台"），但 Cargo 编译时需要 `ax-std/myplat`（"使用自定义平台"）才能正确启用静态平台绑定。`axbuild` 通过 `normalize_axvisor_platform_features()` 在两个位置执行归一化——`BuildInfo` 解析后和 `patch_axvisor_cargo_config()` 最终组装时——将 `defplat` 替换为 `myplat`，并在既非动态平台又无任何平台 feature 时自动注入 `myplat`，确保 Axvisor 的静态平台编译始终正确。
 
 ## 8. 执行
 
