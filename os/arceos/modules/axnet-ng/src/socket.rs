@@ -108,6 +108,9 @@ bitflags! {
         /// the real size of the datagram, even when it is larger than the
         /// buffer.
         const TRUNCATE = 0x02;
+        /// Enables nonblocking operation; if the operation would block,
+        /// `EAGAIN` or `EWOULDBLOCK` is returned.
+        const DONTWAIT = 0x40;
     }
 }
 

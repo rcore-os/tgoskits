@@ -204,7 +204,7 @@ impl SocketOps for RawSocket {
         let local = self.local_address_for(remote);
         let payload_len = src.remaining();
 
-        self.general.send_poller(self, || {
+        self.general.send_poller(self, false, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.can_send() {
@@ -305,7 +305,7 @@ impl SocketOps for RawSocket {
         }
         let mut options = options;
 
-        self.general.recv_poller(self, || {
+        self.general.recv_poller(self, false, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 loop {
