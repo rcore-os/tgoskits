@@ -357,3 +357,111 @@ Current status:
   changes;
 - the lockdep cleanup should proceed separately from this possible
   `test-shm-deadlock` runtime race.
+
+## Follow-up: FAT32/VFS lockdep visibility gap
+
+There is another possible filesystem lock-order issue that is not currently
+covered by lockdep.
+
+The relevant FAT32 implementation uses the project-local kernel spin lock:
+
+```text
+os/arceos/modules/axfs-ng/src/fs/fat/fs.rs:
+  use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
+```
+
+So the FAT filesystem lock is visible to lockdep when `ax-kspin/lockdep` is
+enabled.
+
+However, the VFS layer still imports the third-party `spin` crate directly:
+
+```text
+components/axfs-ng-vfs/src/lib.rs:
+  use spin::{Mutex, MutexGuard};
+```
+
+That dependency was already present when `axfs-ng-vfs` was imported as a
+subtree:
+
+```text
+components/axfs-ng-vfs/Cargo.toml:
+  spin = { version = "0.10", default-features = false, features = ["mutex"] }
+```
+
+`ax-kspin` is related but not identical to this external `spin` crate. Its
+`BaseSpinLock` is explicitly based on `spin::Mutex`, but it is a separate
+project-local implementation that adds kernel guard semantics and, with the
+current lockdep work, lockdep acquire/release hooks.
+
+This creates a lockdep blind spot:
+
+- `ax_kspin::SpinNoPreempt` locks are visible to lockdep;
+- `spin::Mutex` locks in `axfs-ng-vfs` are not visible to lockdep;
+- any dependency edge involving a VFS `spin::Mutex` therefore cannot be
+  recorded.
+
+The suspected FAT32/VFS ordering is:
+
+```text
+DirNode.cache lock -> FAT filesystem lock
+FAT filesystem lock -> DirNode.cache lock
+```
+
+The first direction can happen through the VFS cached lookup path:
+
+```text
+DirNode::lookup()
+  -> self.cache.lock()
+  -> lookup_locked()
+  -> self.ops.lookup(name)
+  -> FAT lookup takes the FAT filesystem lock
+```
+
+The second direction can happen through FAT directory iteration:
+
+```text
+FatDirNode::read_dir()
+  -> self.fs.lock()
+  -> dir_node.lookup_cache(name) / dir_node.insert_cache(name, entry)
+  -> DirNode.cache lock
+```
+
+This is a real ABBA-shaped ordering risk, not a subclass problem like the tmpfs
+parent/child entry lock report. The reason current lockdep may not report it is
+that one side of the pair, `DirNode.cache`, is outside the lockdep-visible lock
+set.
+
+Current implication:
+
+- a missing lockdep report does not prove the FAT32/VFS ordering is safe;
+- the current lockdep coverage is incomplete for `axfs-ng-vfs` internals;
+- FAT32-specific testing may also be absent from the normal Starry QEMU path,
+  so the code path might not be exercised even if all locks were visible.
+
+Future work should consider migrating suitable `axfs-ng-vfs` internal locks
+from third-party `spin::Mutex` to `ax_kspin`.
+
+That migration should not be treated as a mechanical rename. The lock type must
+match the context:
+
+- `SpinNoPreempt` is probably the first candidate for VFS cache locks if they
+  are only used in task context;
+- `SpinNoIrq` may be needed only for locks that can be taken from IRQ-enabled
+  contexts where interrupt-side reentry is possible;
+- `SpinRaw` should remain reserved for contexts that already guarantee the
+  necessary preemption/IRQ state externally.
+
+Before changing the VFS lock type, the code paths that access `DirNode.cache`
+and `DirEntry` user data should be checked for:
+
+- use from interrupt context;
+- use while holding block-device or filesystem implementation locks;
+- nested VFS operations through callbacks such as directory-entry sinks;
+- layout or dependency impact on `axfs-ng-vfs`, which is a component crate and
+  not only a StarryOS-local module.
+
+After such a migration, the FAT32/VFS ordering should be retested with a
+targeted FAT32 case. If lockdep then reports the suspected ABBA, the fix should
+be a real ordering change, not a subclass annotation: either avoid holding the
+VFS cache lock across filesystem backend callbacks, or establish a single
+stable order between VFS cache locks and filesystem implementation locks.
