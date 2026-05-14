@@ -141,6 +141,8 @@ pub struct RecvOptions<'a> {
     pub flags: RecvFlags,
     /// If set, ancillary control messages are appended here.
     pub cmsg: Option<&'a mut Vec<CMsgData>>,
+    /// If set and the datagram was truncated, this is set to `true`.
+    pub truncated: Option<&'a mut bool>,
 }
 impl Debug for RecvOptions<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -211,6 +211,12 @@ impl SocketOps for UdpSocket {
         let more = options.flags.contains(SendFlags::MORE);
         if more {
             let len = src.remaining();
+            // Cap corked data to the UDP TX buffer size to prevent
+            // unbounded kernel memory allocation from user input.
+            const CORK_MAX: usize = UDP_TX_BUF_LEN;
+            if len > CORK_MAX {
+                ax_bail!(MessageTooLong);
+            }
             let mut tmp = alloc::vec![0u8; len];
             let read = src.read(&mut tmp)?;
             let mut cork = self.cork.lock();
@@ -221,6 +227,11 @@ impl SocketOps for UdpSocket {
                     source: source_addr,
                 });
             } else {
+                let prev = cork.as_ref().unwrap().buf.len();
+                let new_len = prev.checked_add(read).ok_or(AxError::MessageTooLong)?;
+                if new_len > CORK_MAX {
+                    ax_bail!(MessageTooLong);
+                }
                 cork.as_mut().unwrap().buf.extend_from_slice(&tmp[..read]);
             }
             return Ok(read);
@@ -235,12 +246,11 @@ impl SocketOps for UdpSocket {
             // Take the endpoint/source copies now (they are Copy), but
             // keep the cork data in place until the send succeeds so that
             // a WouldBlock retry preserves buffered data.
-            let (endpoint, local_addr, payload_len) =
-                if let Some(ref c) = *cork_guard {
-                    (c.remote, Some(c.source), c.buf.len() + src.remaining())
-                } else {
-                    (remote_addr, Some(source_addr), src.remaining())
-                };
+            let (endpoint, local_addr, payload_len) = if let Some(ref c) = *cork_guard {
+                (c.remote, Some(c.source), c.buf.len() + src.remaining())
+            } else {
+                (remote_addr, Some(source_addr), src.remaining())
+            };
             let result = self.with_smol_socket(|socket| {
                 if !socket.is_open() {
                     // not connected
@@ -307,7 +317,7 @@ impl SocketOps for UdpSocket {
         })
     }
 
-    fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
+    fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> AxResult<usize> {
         enum ExpectedRemote<'a> {
             Any(&'a mut SocketAddrEx),
             AnyDiscard,
@@ -356,6 +366,9 @@ impl SocketOps for UdpSocket {
                             let read = dst.write(src)?;
                             if read < src.len() {
                                 warn!("UDP message truncated: {} -> {} bytes", src.len(), read);
+                                if let Some(ref mut truncated) = options.truncated {
+                                    **truncated = true;
+                                }
                             }
 
                             Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
