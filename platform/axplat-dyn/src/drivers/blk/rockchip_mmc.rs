@@ -23,7 +23,7 @@ use rdrive::{
 };
 use sdhci_host::{BlockRequest, BlockRequestSlot, BlockTransferMode, RequestId, Sdhci};
 use sdmmc_protocol::{
-    Error,
+    BlockPoll, Error,
     error::{ErrorContext, Phase},
     sdio::{DelayNs, SdioHost, SdioSdmmc},
 };
@@ -239,8 +239,8 @@ impl rd_block::Interface for BlockDevice {
     fn enable_irq(&mut self) {
         if let Some(raw) = &self.raw {
             let mut raw = raw.lock();
-            if let Err(err) = SdioHost::enable_data_irq(raw.host_mut()) {
-                warn!("rockchip-sdhci: enable data IRQ failed: {:?}", err);
+            if let Err(err) = SdioHost::enable_completion_irq(raw.host_mut()) {
+                warn!("rockchip-sdhci: enable completion IRQ failed: {:?}", err);
                 return;
             }
             self.irq_enabled = true;
@@ -250,8 +250,8 @@ impl rd_block::Interface for BlockDevice {
     fn disable_irq(&mut self) {
         if let Some(raw) = &self.raw {
             let mut raw = raw.lock();
-            if let Err(err) = SdioHost::disable_data_irq(raw.host_mut()) {
-                warn!("rockchip-sdhci: disable data IRQ failed: {:?}", err);
+            if let Err(err) = SdioHost::disable_completion_irq(raw.host_mut()) {
+                warn!("rockchip-sdhci: disable completion IRQ failed: {:?}", err);
             }
         }
         self.irq_enabled = false;
@@ -379,15 +379,15 @@ impl BlockQueue {
         &mut self,
         request: rd_block::RequestId,
     ) -> Result<(), rd_block::BlkError> {
-        self.raw
-            .lock()
-            .host_mut()
-            .poll_block_request(
-                &mut self.pending,
-                RequestId::new(usize::from(request)),
-                &mut self.block_slot,
-            )
-            .map_err(map_dev_err_to_blk_err)
+        match self.raw.lock().host_mut().poll_block_request(
+            &mut self.pending,
+            RequestId::new(usize::from(request)),
+            &mut self.block_slot,
+        ) {
+            Ok(BlockPoll::Complete) => Ok(()),
+            Ok(BlockPoll::Pending) => Err(rd_block::BlkError::Retry),
+            Err(err) => Err(map_dev_err_to_blk_err(err)),
+        }
     }
 
     fn reap_pending_request(&mut self) -> Result<(), rd_block::BlkError> {
@@ -475,7 +475,6 @@ fn block_addr_for_card(block_id: usize, high_capacity: bool) -> Result<u32, rd_b
 
 fn map_dev_err_to_blk_err(err: Error) -> rd_block::BlkError {
     match err {
-        Error::Timeout(_) => rd_block::BlkError::Retry,
         Error::NoCard | Error::UnsupportedCommand | Error::CardLocked => {
             rd_block::BlkError::NotSupported
         }

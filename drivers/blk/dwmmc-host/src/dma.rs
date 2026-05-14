@@ -5,7 +5,7 @@ use log::warn;
 use sdmmc_protocol::{
     block::{
         BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
-        CommandPoll,
+        CommandPoll, DataCommandPoll,
     },
     cmd::{CMD12, Command, DataDirection, cmd17, cmd18, cmd24, cmd25},
     error::{Error, ErrorContext, Phase},
@@ -270,17 +270,16 @@ impl DwMmc {
     }
 
     /// Poll a previously submitted block request.
-    ///
-    /// `Ok(())` means complete. `Error::Timeout` means the request is still in
-    /// flight and platform glue maps it to `BlkError::Retry`.
     pub fn poll_block_request(
         &mut self,
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) -> Result<(), Error> {
-        self.poll_block_request_response(request, id, slot)
-            .map(|_| ())
+    ) -> Result<BlockPoll, Error> {
+        match self.poll_block_request_response(request, id, slot)? {
+            DataCommandPoll::Pending => Ok(BlockPoll::Pending),
+            DataCommandPoll::Complete(_) => Ok(BlockPoll::Complete),
+        }
     }
 
     pub fn poll_block_request_response(
@@ -288,7 +287,7 @@ impl DwMmc {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         let Some(active) = request.as_ref() else {
             return Err(Error::InvalidArgument);
         };
@@ -323,9 +322,7 @@ impl DwMmc {
 
         if stage == BlockRequestStage::Command {
             match self.poll_command() {
-                Ok(CommandPoll::Pending) => {
-                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
-                }
+                Ok(CommandPoll::Pending) => return Ok(DataCommandPoll::Pending),
                 Ok(CommandPoll::Complete) => {
                     let response = self.take_command_response()?;
                     if let Some(active) = request.as_mut() {
@@ -347,7 +344,7 @@ impl DwMmc {
                             | BlockRequestKind::FifoWrite { .. } => unreachable!(),
                         }
                     }
-                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
+                    return Ok(DataCommandPoll::Pending);
                 }
                 Err(err) => {
                     self.abort_block_request(request, id, slot, phase);
@@ -357,12 +354,12 @@ impl DwMmc {
         }
 
         if stage == BlockRequestStage::Stop {
-            return self.poll_block_stop(request, id, slot, cmd_index, phase);
+            return self.poll_block_stop(request, id, slot, phase);
         }
 
         match self.poll_dma_complete(cmd_index, phase) {
-            Ok(BlockPoll::Pending) => Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index))),
-            Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot, phase),
+            Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
+            Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot),
             Err(err) => {
                 self.abort_block_request(request, id, slot, phase);
                 Err(err)
@@ -667,7 +664,7 @@ impl DwMmc {
         self.regs.ctrl().update(|r| {
             r.with_use_internal_dmac(true)
                 .with_dma_enable(true)
-                .with_int_enable(self.data_irq_enabled)
+                .with_int_enable(self.completion_irq_enabled)
         });
         self.regs.bmod().write(BMOD_FB | BMOD_DE);
         self.regs.pldmnd().write(1);
@@ -725,8 +722,7 @@ impl DwMmc {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-        phase: Phase,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         let Some(active) = request.as_mut() else {
             return Err(Error::InvalidArgument);
         };
@@ -756,14 +752,14 @@ impl DwMmc {
 
         if stop_after_complete {
             self.submit_command(&CMD12)?;
-            return Err(Error::Timeout(ErrorContext::for_cmd(phase, CMD12.cmd)));
+            return Ok(DataCommandPoll::Pending);
         }
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
         self.finish_block_request(active)?;
         slot.complete(id)?;
-        Ok(response)
+        Ok(DataCommandPoll::Complete(response))
     }
 
     fn poll_block_stop(
@@ -771,20 +767,17 @@ impl DwMmc {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-        cmd_index: u8,
         phase: Phase,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         match self.poll_command() {
-            Ok(CommandPoll::Pending) => {
-                Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)))
-            }
+            Ok(CommandPoll::Pending) => Ok(DataCommandPoll::Pending),
             Ok(CommandPoll::Complete) => {
                 let _ = self.take_command_response()?;
                 let active = request.take().ok_or(Error::InvalidArgument)?;
                 let response = active.response().ok_or(Error::InvalidArgument)?;
                 self.finish_block_request(active)?;
                 slot.complete(id)?;
-                Ok(response)
+                Ok(DataCommandPoll::Complete(response))
             }
             Err(err) => {
                 self.abort_block_request(request, id, slot, phase);
@@ -798,7 +791,7 @@ impl DwMmc {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         let (cmd_index, phase, stage) = match request.as_ref().map(|request| &request.inner) {
             Some(BlockRequestKind::FifoRead {
                 cmd_index,
@@ -817,9 +810,7 @@ impl DwMmc {
 
         if stage == BlockRequestStage::Command {
             match self.poll_command() {
-                Ok(CommandPoll::Pending) => {
-                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
-                }
+                Ok(CommandPoll::Pending) => return Ok(DataCommandPoll::Pending),
                 Ok(CommandPoll::Complete) => {
                     let response = self.take_command_response()?;
                     if let Some(active) = request.as_mut() {
@@ -836,7 +827,7 @@ impl DwMmc {
                         }
                     }
                     set_fifo_stage(request, BlockRequestStage::Data)?;
-                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
+                    return Ok(DataCommandPoll::Pending);
                 }
                 Err(err) => {
                     self.abort_block_request(request, id, slot, phase);
@@ -851,12 +842,12 @@ impl DwMmc {
             _ => return Err(Error::InvalidArgument),
         };
         if stage == BlockRequestStage::Stop {
-            return self.poll_block_stop(request, id, slot, cmd_index, phase);
+            return self.poll_block_stop(request, id, slot, phase);
         }
 
         match self.poll_fifo_data_step(request, cmd_index, phase) {
-            Ok(BlockPoll::Pending) => Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index))),
-            Ok(BlockPoll::Complete) => self.finish_fifo_data(request, id, slot, phase),
+            Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
+            Ok(BlockPoll::Complete) => self.finish_fifo_data(request, id, slot),
             Err(err) => {
                 self.abort_block_request(request, id, slot, phase);
                 Err(err)
@@ -897,8 +888,7 @@ impl DwMmc {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-        phase: Phase,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         let Some(active) = request.as_mut() else {
             return Err(Error::InvalidArgument);
         };
@@ -920,7 +910,7 @@ impl DwMmc {
         };
         if stop_after_complete {
             self.submit_command(&CMD12)?;
-            return Err(Error::Timeout(ErrorContext::for_cmd(phase, CMD12.cmd)));
+            return Ok(DataCommandPoll::Pending);
         }
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
@@ -930,7 +920,7 @@ impl DwMmc {
         self.data_blocks_remaining = 0;
         self.data_cmd_index = 0;
         slot.complete(id)?;
-        Ok(response)
+        Ok(DataCommandPoll::Complete(response))
     }
 
     fn abort_block_request(

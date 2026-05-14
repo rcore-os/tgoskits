@@ -90,7 +90,7 @@ let mut request = Some(host.submit_read_blocks(
     &mut slot,
 )?);
 let id = RequestId::new(0);
-while host.poll_block_request(&mut request, id, &mut slot).is_err() {}
+while matches!(host.poll_block_request(&mut request, id, &mut slot), Ok(BlockPoll::Pending)) {}
 ```
 
 Platform code should implement `dma_api::DmaOp` and keep OS-specific mapping

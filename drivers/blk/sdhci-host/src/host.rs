@@ -230,8 +230,8 @@ impl Sdhci {
         self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, 0);
     }
 
-    /// Route data-completion and error status to the host CPU IRQ line.
-    pub fn enable_data_irq(&mut self) {
+    /// Route command/data-completion and error status to the host CPU IRQ line.
+    pub fn enable_completion_irq(&mut self) {
         self.write_u16(
             REG_NORMAL_INT_SIGNAL_ENABLE,
             NORMAL_INT_CMD_COMPLETE
@@ -247,12 +247,12 @@ impl Sdhci {
     }
 
     /// Mask host CPU IRQ delivery while keeping status bits observable.
-    pub fn disable_data_irq(&mut self) {
+    pub fn disable_completion_irq(&mut self) {
         self.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, 0);
         self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, 0);
     }
 
-    pub fn data_irq_enabled(&self) -> bool {
+    pub fn completion_irq_enabled(&self) -> bool {
         self.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE)
             & (NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR)
             != 0

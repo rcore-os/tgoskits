@@ -190,12 +190,7 @@ impl SdioHost for DwMmc {
         &mut self,
         request: &mut Self::DataRequest<'a>,
     ) -> Result<DataCommandPoll, Error> {
-        match self.poll_block_request_response(&mut request.request, request.id, &mut request.slot)
-        {
-            Ok(response) => Ok(DataCommandPoll::Complete(response)),
-            Err(Error::Timeout(_)) => Ok(DataCommandPoll::Pending),
-            Err(err) => Err(err),
-        }
+        self.poll_block_request_response(&mut request.request, request.id, &mut request.slot)
     }
 
     fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error> {
@@ -213,13 +208,13 @@ impl SdioHost for DwMmc {
         self.set_signal_voltage(voltage)
     }
 
-    fn enable_data_irq(&mut self) -> Result<(), Error> {
-        DwMmc::enable_data_irq(self);
+    fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        DwMmc::enable_completion_irq(self);
         Ok(())
     }
 
-    fn disable_data_irq(&mut self) -> Result<(), Error> {
-        DwMmc::disable_data_irq(self);
+    fn disable_completion_irq(&mut self) -> Result<(), Error> {
+        DwMmc::disable_completion_irq(self);
         Ok(())
     }
 

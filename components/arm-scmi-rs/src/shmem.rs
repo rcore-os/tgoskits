@@ -202,3 +202,29 @@ impl Shmem {
 const fn encode_message_header(protocol_id: u32, message_id: u8) -> u32 {
     ((protocol_id & 0xff) << 10) | (message_id as u32 & 0xff)
 }
+
+#[cfg(test)]
+mod tests {
+    use tock_registers::interfaces::{Readable, Writeable};
+
+    use super::*;
+
+    #[test]
+    fn reset_marks_channel_status_free() {
+        let mut buffer = [0u32; 8];
+        let address = NonNull::new(buffer.as_mut_ptr().cast::<u8>()).unwrap();
+        let mut shmem = unsafe { Shmem::new(address, 0, size_of_val(&buffer)) };
+
+        shmem
+            .header()
+            .channel_status
+            .write(ChannelStatus::STATUS::ERROR);
+
+        shmem.reset();
+
+        assert_eq!(
+            shmem.header().channel_status.read(ChannelStatus::STATUS),
+            ChannelStatus::STATUS::FREE.value
+        );
+    }
+}

@@ -54,7 +54,7 @@
 //!     &mut slot,
 //! )?);
 //! let id = RequestId::new(0);
-//! while host.poll_block_request(&mut request, id, &mut slot).is_err() {}
+//! while matches!(host.poll_block_request(&mut request, id, &mut slot), Ok(BlockPoll::Pending)) {}
 //! # Ok::<(), sdmmc_protocol::Error>(())
 //! ```
 //!
@@ -180,12 +180,7 @@ impl SdioHost for Sdhci {
         &mut self,
         request: &mut Self::DataRequest<'a>,
     ) -> Result<DataCommandPoll, Error> {
-        match self.poll_block_request_response(&mut request.request, request.id, &mut request.slot)
-        {
-            Ok(response) => Ok(DataCommandPoll::Complete(response)),
-            Err(Error::Timeout(_)) => Ok(DataCommandPoll::Pending),
-            Err(err) => Err(err),
-        }
+        self.poll_block_request_response(&mut request.request, request.id, &mut request.slot)
     }
 
     fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error> {
@@ -354,13 +349,13 @@ impl SdioHost for Sdhci {
         )))
     }
 
-    fn enable_data_irq(&mut self) -> Result<(), Error> {
-        Sdhci::enable_data_irq(self);
+    fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        Sdhci::enable_completion_irq(self);
         Ok(())
     }
 
-    fn disable_data_irq(&mut self) -> Result<(), Error> {
-        Sdhci::disable_data_irq(self);
+    fn disable_completion_irq(&mut self) -> Result<(), Error> {
+        Sdhci::disable_completion_irq(self);
         Ok(())
     }
 

@@ -25,7 +25,7 @@ use dma_api::{DArray, DeviceDma, DmaDirection, SArrayPtr};
 use sdmmc_protocol::{
     block::{
         BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
-        CommandPoll,
+        CommandPoll, DataCommandPoll,
     },
     cmd::{Command, DataDirection, cmd17, cmd18, cmd24, cmd25},
     error::{Error, ErrorContext, Phase},
@@ -337,17 +337,16 @@ impl Sdhci {
     }
 
     /// Poll a previously submitted block request.
-    ///
-    /// `Ok(())` means complete. `Error::Timeout` means the request is still in
-    /// flight and platform glue maps it to `BlkError::Retry`.
     pub fn poll_block_request(
         &mut self,
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) -> Result<(), Error> {
-        self.poll_block_request_response(request, id, slot)
-            .map(|_| ())
+    ) -> Result<BlockPoll, Error> {
+        match self.poll_block_request_response(request, id, slot)? {
+            DataCommandPoll::Pending => Ok(BlockPoll::Pending),
+            DataCommandPoll::Complete(_) => Ok(BlockPoll::Complete),
+        }
     }
 
     pub fn poll_block_request_response(
@@ -355,7 +354,7 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         let Some(active) = request.as_ref() else {
             return Err(Error::InvalidArgument);
         };
@@ -390,9 +389,7 @@ impl Sdhci {
 
         if stage == BlockRequestStage::Command {
             match self.poll_command() {
-                Ok(CommandPoll::Pending) => {
-                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
-                }
+                Ok(CommandPoll::Pending) => return Ok(DataCommandPoll::Pending),
                 Ok(CommandPoll::Complete) => {
                     let response = self.take_command_response()?;
                     if let Some(active) = request.as_mut() {
@@ -414,7 +411,7 @@ impl Sdhci {
                             | BlockRequestKind::FifoWrite { .. } => unreachable!(),
                         }
                     }
-                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
+                    return Ok(DataCommandPoll::Pending);
                 }
                 Err(err) => {
                     self.abort_block_request(request, id, slot);
@@ -424,12 +421,12 @@ impl Sdhci {
         }
 
         if stage == BlockRequestStage::Stop {
-            return self.poll_block_stop(request, id, slot, cmd_index, phase);
+            return self.poll_block_stop(request, id, slot);
         }
 
         match self.poll_data_complete_with_adma(cmd_index, phase) {
-            Ok(BlockPoll::Pending) => Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index))),
-            Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot, phase),
+            Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
+            Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot),
             Err(err) => {
                 self.abort_block_request(request, id, slot);
                 Err(err)
@@ -753,8 +750,7 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-        phase: Phase,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         let Some(active) = request.as_mut() else {
             return Err(Error::InvalidArgument);
         };
@@ -785,17 +781,14 @@ impl Sdhci {
 
         if stop_after_complete {
             self.submit_command(&sdmmc_protocol::cmd::CMD12)?;
-            return Err(Error::Timeout(ErrorContext::for_cmd(
-                phase,
-                sdmmc_protocol::cmd::CMD12.cmd,
-            )));
+            return Ok(DataCommandPoll::Pending);
         }
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
         self.finish_block_request(active)?;
         slot.complete(id)?;
-        Ok(response)
+        Ok(DataCommandPoll::Complete(response))
     }
 
     fn poll_block_stop(
@@ -803,20 +796,16 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-        cmd_index: u8,
-        phase: Phase,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         match self.poll_command() {
-            Ok(CommandPoll::Pending) => {
-                Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)))
-            }
+            Ok(CommandPoll::Pending) => Ok(DataCommandPoll::Pending),
             Ok(CommandPoll::Complete) => {
                 let _ = self.take_command_response()?;
                 let active = request.take().ok_or(Error::InvalidArgument)?;
                 let response = active.response().ok_or(Error::InvalidArgument)?;
                 self.finish_block_request(active)?;
                 slot.complete(id)?;
-                Ok(response)
+                Ok(DataCommandPoll::Complete(response))
             }
             Err(err) => {
                 self.abort_block_request(request, id, slot);
@@ -830,7 +819,7 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         let (cmd_index, phase, stage) = match request.as_ref().map(|request| &request.inner) {
             Some(BlockRequestKind::FifoRead {
                 cmd_index,
@@ -849,9 +838,7 @@ impl Sdhci {
 
         if stage == BlockRequestStage::Command {
             match self.poll_command() {
-                Ok(CommandPoll::Pending) => {
-                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
-                }
+                Ok(CommandPoll::Pending) => return Ok(DataCommandPoll::Pending),
                 Ok(CommandPoll::Complete) => {
                     let response = self.take_command_response()?;
                     if let Some(active) = request.as_mut() {
@@ -868,7 +855,7 @@ impl Sdhci {
                         }
                     }
                     set_fifo_stage(request, BlockRequestStage::Data)?;
-                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
+                    return Ok(DataCommandPoll::Pending);
                 }
                 Err(err) => {
                     self.abort_block_request(request, id, slot);
@@ -884,12 +871,12 @@ impl Sdhci {
         };
 
         if stage == BlockRequestStage::Stop {
-            return self.poll_block_stop(request, id, slot, cmd_index, phase);
+            return self.poll_block_stop(request, id, slot);
         }
 
         match self.poll_fifo_data_step(request, cmd_index, phase) {
-            Ok(BlockPoll::Pending) => Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index))),
-            Ok(BlockPoll::Complete) => self.finish_fifo_data(request, id, slot, phase),
+            Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
+            Ok(BlockPoll::Complete) => self.finish_fifo_data(request, id, slot),
             Err(err) => {
                 self.abort_block_request(request, id, slot);
                 Err(err)
@@ -930,8 +917,7 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-        phase: Phase,
-    ) -> Result<Response, Error> {
+    ) -> Result<DataCommandPoll, Error> {
         let Some(active) = request.as_mut() else {
             return Err(Error::InvalidArgument);
         };
@@ -954,17 +940,14 @@ impl Sdhci {
 
         if stop_after_complete {
             self.submit_command(&sdmmc_protocol::cmd::CMD12)?;
-            return Err(Error::Timeout(ErrorContext::for_cmd(
-                phase,
-                sdmmc_protocol::cmd::CMD12.cmd,
-            )));
+            return Ok(DataCommandPoll::Pending);
         }
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
         self.finish_block_request(active)?;
         slot.complete(id)?;
-        Ok(response)
+        Ok(DataCommandPoll::Complete(response))
     }
 
     fn abort_block_request(

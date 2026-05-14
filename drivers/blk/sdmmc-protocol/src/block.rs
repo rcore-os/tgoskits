@@ -170,21 +170,3 @@ impl From<BlockPoll> for OperationPoll<()> {
         }
     }
 }
-
-/// Drive a non-blocking operation to completion with a caller-provided
-/// pending strategy.
-///
-/// This is the synchronous executor for the submit/poll state machines. IRQ
-/// and async runtimes should not call it; they should call the same `poll`
-/// function once and arrange a wakeup when it returns [`OperationPoll::Pending`].
-pub fn block_on_poll<T, E, F>(mut poll: F, mut on_pending: impl FnMut()) -> Result<T, E>
-where
-    F: FnMut() -> Result<OperationPoll<T>, E>,
-{
-    loop {
-        match poll()? {
-            OperationPoll::Pending => on_pending(),
-            OperationPoll::Complete(value) => return Ok(value),
-        }
-    }
-}
