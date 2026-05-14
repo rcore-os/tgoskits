@@ -1,8 +1,9 @@
 use alloc::{
+    collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::{ffi::c_long, sync::atomic::Ordering};
+use core::ffi::c_long;
 
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::TimeValue;
@@ -10,19 +11,41 @@ use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
 use spin::RwLock;
-use starry_process::{Pid, ProcessGroup, Session};
+use starry_process::{Pid, Process, ProcessGroup, Session};
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 use weak_map::WeakMap;
 
 use super::{
-    AsThread, FutexKey, ProcessData, TimerState, futex_table_for, send_signal_thread_inner,
+    AsThread, Cred, FutexKey, ProcessData, TimerState, futex_table_for, send_signal_thread_inner,
     send_signal_to_process, send_signal_to_thread,
 };
+
+const FUTEX_OWNER_DIED: u32 = 0x40000000;
+const FUTEX_TID_MASK: u32 = 0x3fffffff;
 
 static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
 
 static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<ProcessData>>> = RwLock::new(WeakMap::new());
+
+/// Per-zombie data retained until `waitpid()` reaps the process.
+///
+/// - `proc`: keeps `getsid`, `getpgid`, `getpriority`, etc. working.
+/// - `cred`: snapshot of the exiting thread's final credentials, used by
+///   `check_kill_permission` when the task has already been GC'd.  On Linux
+///   the `task_struct` (and its `cred`) lives until the zombie is reaped;
+///   we replicate that guarantee here.
+struct ZombieEntry {
+    proc: Arc<Process>,
+    cred: Arc<Cred>,
+}
+
+/// Zombie processes: exited but not yet reaped by waitpid().
+///
+/// Maps PID → [`ZombieEntry`].  Inserted by `register_zombie` (called from
+/// `do_exit` before `process.exit()`), removed by `unregister_zombie` (called
+/// from `waitpid` after `child.free()`).
+static ZOMBIE_TABLE: RwLock<BTreeMap<Pid, ZombieEntry>> = RwLock::new(BTreeMap::new());
 
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
 
@@ -96,6 +119,82 @@ pub fn get_process_data(pid: Pid) -> AxResult<Arc<ProcessData>> {
         return Ok(current().as_thread().proc_data.clone());
     }
     PROCESS_TABLE.read().get(&pid).ok_or(AxError::NoSuchProcess)
+}
+
+/// Explicitly removes a process from the process table.
+///
+/// Called after [`Process::free`] to ensure `get_process_data(pid)` returns
+/// `NoSuchProcess` immediately, regardless of whether any other strong
+/// [`Arc<ProcessData>`] references (e.g. task objects) are still alive.
+pub fn remove_process(pid: Pid) {
+    PROCESS_TABLE.write().remove(&pid);
+}
+
+/// Records a PID as zombie (exited but not yet reaped).
+///
+/// Called from `do_exit` before `process.exit()`.  Stores both the
+/// `Arc<Process>` (for `getsid`/`getpgid`/etc.) and a snapshot of the
+/// exiting thread's final credentials (for `check_kill_permission` after
+/// the task has been GC'd).
+pub fn register_zombie(pid: Pid, proc: Arc<Process>, cred: Arc<Cred>) {
+    ZOMBIE_TABLE.write().insert(pid, ZombieEntry { proc, cred });
+}
+
+/// Removes a PID from the zombie table.
+///
+/// Called from `waitpid` after `child.free()`.  Drops the stored entry.
+pub fn unregister_zombie(pid: Pid) {
+    ZOMBIE_TABLE.write().remove(&pid);
+}
+
+/// Returns `true` if `pid` is a zombie (exited but not yet reaped).
+pub fn is_zombie_pid(pid: Pid) -> bool {
+    ZOMBIE_TABLE.read().contains_key(&pid)
+}
+
+/// Returns the `Arc<Process>` for a zombie PID, or `None` if not a zombie.
+///
+/// Used by syscalls that must return valid data for zombie processes
+/// (e.g. `getsid`, `getpgid`).
+pub fn get_zombie_process(pid: Pid) -> Option<Arc<Process>> {
+    ZOMBIE_TABLE.read().get(&pid).map(|e| e.proc.clone())
+}
+
+/// Returns the credential snapshot for a zombie PID, or `None` if not a zombie.
+///
+/// Used by `check_kill_permission` to authorise signals to zombies whose
+/// task has already been GC'd.  Mirrors Linux behaviour where `task_struct`
+/// (and its `cred`) lives until the zombie is reaped by `waitpid`.
+pub fn get_zombie_cred(pid: Pid) -> Option<Arc<Cred>> {
+    ZOMBIE_TABLE.read().get(&pid).map(|e| e.cred.clone())
+}
+
+/// Finds the process with the given PID.
+///
+/// A zombie process may no longer have live [`ProcessData`] after its last
+/// thread exits, but POSIX process-id queries such as `getpgid(pid)` and
+/// `kill(pid, 0)` must still see it until the parent reaps it.
+pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
+    if pid == 0 {
+        return Ok(current().as_thread().proc_data.proc.clone());
+    }
+    if let Ok(proc_data) = get_process_data(pid) {
+        return Ok(proc_data.proc.clone());
+    }
+    get_zombie_process(pid).ok_or(AxError::NoSuchProcess)
+}
+
+/// Finds the credentials for a process that may already be a zombie.
+pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
+    if pid == 0 {
+        return Ok(current().as_thread().cred());
+    }
+    if let Ok(task) = get_task(pid)
+        && let Some(thr) = task.try_as_thread()
+    {
+        return Ok(thr.cred());
+    }
+    get_zombie_cred(pid).ok_or(AxError::NoSuchProcess)
 }
 
 /// Finds the process group with the given PGID.
@@ -203,6 +302,15 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
         .checked_add_signed(offset)
         .ok_or(AxError::InvalidInput)?;
     let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
+    let futex_word = address as *mut u32;
+    let owner_tid = current().id().as_u64() as u32;
+    let value = futex_word.vm_read()?;
+
+    if value & FUTEX_TID_MASK != owner_tid {
+        return Ok(());
+    }
+    futex_word.vm_write((value & !FUTEX_TID_MASK) | FUTEX_OWNER_DIED)?;
+
     let key = FutexKey::new_current_teardown(address);
 
     let futex_table = futex_table_for(&key);
@@ -210,7 +318,6 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
     let Some(futex) = futex_table.get(&key) else {
         return Ok(());
     };
-    futex.owner_dead.store(true, Ordering::SeqCst);
     futex.wq.wake(1, u32::MAX);
     Ok(())
 }
@@ -278,10 +385,31 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // so parent processes blocking on pipe reads will receive EOF.
         crate::file::close_all_fds();
 
+        // Release all POSIX (fcntl) locks held by this pid. Linux releases
+        // them implicitly via fl_release_private when the last fd referring
+        // to the inode is closed; we track POSIX locks by pid rather than
+        // by fd, so the cleanup happens here at process-exit time. Without
+        // this, a child fork → F_SETLK → exit would permanently pin the
+        // record in FCNTL_LOCKS and block all later acquirers.
+        crate::syscall::release_pid_locks(process.pid());
+
         // Snapshot children BEFORE process.exit() reparents them to init
         // via mem::take. Otherwise process.children() returns an empty
         // list and pdeathsig never reaches the real children.
         let children_snapshot = process.children();
+
+        // Register the zombie BEFORE process.exit() publishes is_zombie=true.
+        // This closes a race where the parent's waitpid(WNOHANG) could observe
+        // is_zombie=true, complete the reap (free + unregister_zombie), and
+        // then this thread would late-insert a stale zombie entry that is
+        // never cleaned up.  By inserting first, any reap that sees
+        // is_zombie=true is guaranteed to find (and remove) the entry.
+        //
+        // Snapshot the exiting thread's final credentials so that
+        // check_kill_permission can still authorise signals to this zombie
+        // after the task has been GC'd (mirrors Linux task_struct lifetime).
+        let zombie_cred = thr.cred();
+        register_zombie(process.pid(), process.clone(), zombie_cred);
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {

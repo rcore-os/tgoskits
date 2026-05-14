@@ -118,14 +118,13 @@ pub fn iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
     let flags = MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE;
     let mut tb = kernel_aspace().lock();
     match tb.map_linear(virt_aligned, addr_aligned, size_aligned, flags) {
-        Err(AxError::AlreadyExists) => {}
+        Err(AxError::AlreadyExists) => {
+            tb.map_linear_overwrite(virt_aligned, addr_aligned, size_aligned, flags)?;
+        }
         Err(e) => {
             return Err(e);
         }
         Ok(_) => {}
     }
-    // flush TLB
-    // FIXME: remove this
-    tb.protect(virt_aligned, size_aligned, flags)?;
     Ok(virt)
 }

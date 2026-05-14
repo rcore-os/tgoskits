@@ -1,0 +1,369 @@
+#![no_std]
+
+extern crate alloc;
+
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
+use core::{alloc::Layout, cell::UnsafeCell};
+
+use dma_api::{DArrayPool, DBuff, DeviceDma, DmaDirection, DmaOp};
+use futures::task::AtomicWaker;
+pub use rdif_eth::*;
+
+fn other_error(msg: &'static str) -> NetError {
+    NetError::Other(Box::new(KError::Unknown(msg)))
+}
+
+struct QueueWakerMap(UnsafeCell<BTreeMap<usize, Arc<AtomicWaker>>>);
+
+impl QueueWakerMap {
+    fn new() -> Self {
+        Self(UnsafeCell::new(BTreeMap::new()))
+    }
+
+    fn register(&self, queue_id: usize) -> Arc<AtomicWaker> {
+        let waker = Arc::new(AtomicWaker::new());
+        unsafe { &mut *self.0.get() }.insert(queue_id, waker.clone());
+        waker
+    }
+
+    fn wake(&self, queue_id: usize) {
+        if let Some(waker) = unsafe { &*self.0.get() }.get(&queue_id) {
+            waker.wake();
+        }
+    }
+}
+
+struct NetInner {
+    interface: UnsafeCell<Box<dyn Interface>>,
+    dma_op: &'static dyn DmaOp,
+    tx_wakers: QueueWakerMap,
+    rx_wakers: QueueWakerMap,
+}
+
+unsafe impl Send for NetInner {}
+unsafe impl Sync for NetInner {}
+
+struct IrqGuard<'a> {
+    enabled: bool,
+    inner: &'a Net,
+}
+
+impl Drop for IrqGuard<'_> {
+    fn drop(&mut self) {
+        if self.enabled {
+            self.inner.interface().enable_irq();
+        }
+    }
+}
+
+pub struct Net {
+    inner: Arc<NetInner>,
+}
+
+impl Net {
+    pub fn new(interface: impl Interface, dma_op: &'static dyn DmaOp) -> Self {
+        Self {
+            inner: Arc::new(NetInner {
+                interface: UnsafeCell::new(Box::new(interface)),
+                dma_op,
+                tx_wakers: QueueWakerMap::new(),
+                rx_wakers: QueueWakerMap::new(),
+            }),
+        }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    fn interface(&self) -> &mut dyn Interface {
+        unsafe { &mut **self.inner.interface.get() }
+    }
+
+    fn irq_guard(&self) -> IrqGuard<'_> {
+        let enabled = self.interface().is_irq_enabled();
+        if enabled {
+            self.interface().disable_irq();
+        }
+        IrqGuard {
+            enabled,
+            inner: self,
+        }
+    }
+
+    pub fn mac_address(&self) -> [u8; 6] {
+        self.interface().mac_address()
+    }
+
+    pub fn create_tx_queue(&mut self) -> Result<TxQueue, NetError> {
+        let irq_guard = self.irq_guard();
+        let queue = self
+            .interface()
+            .create_tx_queue()
+            .ok_or_else(|| other_error("failed to create tx queue"))?;
+        let config = queue.config();
+        let pool = make_pool(self.inner.dma_op, config, DmaDirection::ToDevice)?;
+        let waker = self.inner.tx_wakers.register(queue.id());
+        drop(irq_guard);
+
+        Ok(TxQueue {
+            interface: queue,
+            pool,
+            inflight: BTreeMap::new(),
+            config,
+            _waker: waker,
+        })
+    }
+
+    pub fn create_rx_queue(&mut self) -> Result<RxQueue, NetError> {
+        let irq_guard = self.irq_guard();
+        let queue = self
+            .interface()
+            .create_rx_queue()
+            .ok_or_else(|| other_error("failed to create rx queue"))?;
+        let config = queue.config();
+        let pool = make_pool(self.inner.dma_op, config, DmaDirection::FromDevice)?;
+        let waker = self.inner.rx_wakers.register(queue.id());
+        drop(irq_guard);
+
+        let mut rx = RxQueue {
+            interface: queue,
+            pool,
+            inflight: BTreeMap::new(),
+            config,
+            _waker: waker,
+        };
+        rx.prefill()?;
+        Ok(rx)
+    }
+
+    pub fn irq_handler(&self) -> IrqHandler {
+        IrqHandler {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+fn make_pool(
+    dma_op: &'static dyn DmaOp,
+    config: QueueConfig,
+    direction: DmaDirection,
+) -> Result<DArrayPool, NetError> {
+    let layout = Layout::from_size_align(config.buf_size, config.align.max(1))
+        .map_err(|_| other_error("invalid queue layout"))?;
+    let dma = DeviceDma::new(config.dma_mask, dma_op);
+    Ok(dma.new_pool(layout, direction, config.ring_size))
+}
+
+pub struct IrqHandler {
+    inner: Arc<NetInner>,
+}
+
+unsafe impl Sync for IrqHandler {}
+
+impl IrqHandler {
+    pub fn handle(&self) {
+        let iface = unsafe { &mut **self.inner.interface.get() };
+        let event = iface.handle_irq();
+        for id in event.tx_queue.iter() {
+            self.inner.tx_wakers.wake(id);
+        }
+        for id in event.rx_queue.iter() {
+            self.inner.rx_wakers.wake(id);
+        }
+    }
+}
+
+pub struct TxQueue {
+    interface: Box<dyn ITxQueue>,
+    pool: DArrayPool,
+    inflight: BTreeMap<u64, DBuff>,
+    config: QueueConfig,
+    _waker: Arc<AtomicWaker>,
+}
+
+impl TxQueue {
+    fn capacity(&self) -> usize {
+        self.config.ring_size.saturating_sub(1)
+    }
+
+    fn reclaim_bounded(&mut self, limit: usize) -> Result<usize, NetError> {
+        let mut reclaimed = 0;
+        while reclaimed < limit {
+            let Some(bus_addr) = self.interface.reclaim() else {
+                break;
+            };
+            let Some(buff) = self.inflight.remove(&bus_addr) else {
+                return Err(other_error("reclaimed unknown tx buffer"));
+            };
+            drop(buff);
+            reclaimed += 1;
+        }
+        Ok(reclaimed)
+    }
+
+    pub fn id(&self) -> usize {
+        self.interface.id()
+    }
+
+    pub fn buf_size(&self) -> usize {
+        self.config.buf_size
+    }
+
+    pub fn prepare_send<R>(
+        &mut self,
+        len: usize,
+        f: impl FnOnce(&mut [u8]) -> R,
+    ) -> Result<(R, TxPending<'_>), NetError> {
+        if len > self.config.buf_size {
+            return Err(other_error("tx packet too large"));
+        }
+
+        self.reclaim_bounded(self.capacity().max(1))?;
+
+        let mut buff = self.pool.alloc()?;
+        let bus_addr = buff.dma_addr().as_u64();
+        let ret = buff.write_with(len, f);
+        Ok((
+            ret,
+            TxPending {
+                queue: self,
+                len,
+                bus_addr,
+                buff: Some(buff),
+            },
+        ))
+    }
+}
+
+pub struct TxPending<'a> {
+    queue: &'a mut TxQueue,
+    len: usize,
+    bus_addr: u64,
+    buff: Option<DBuff>,
+}
+
+impl TxPending<'_> {
+    pub fn bus_addr(&self) -> u64 {
+        self.bus_addr
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn try_submit(&mut self) -> Result<(), NetError> {
+        self.queue.reclaim_bounded(self.queue.capacity().max(1))?;
+        self.queue.interface.submit(self.bus_addr, self.len)?;
+        let buff = self
+            .buff
+            .take()
+            .expect("tx pending buffer should exist until submit succeeds");
+        self.queue.inflight.insert(self.bus_addr, buff);
+        Ok(())
+    }
+}
+
+pub struct RxQueue {
+    interface: Box<dyn IRxQueue>,
+    pool: DArrayPool,
+    inflight: BTreeMap<u64, DBuff>,
+    config: QueueConfig,
+    _waker: Arc<AtomicWaker>,
+}
+
+impl RxQueue {
+    fn capacity(&self) -> usize {
+        self.config.ring_size.saturating_sub(1)
+    }
+
+    fn prefill(&mut self) -> Result<(), NetError> {
+        while self.inflight.len() < self.capacity() {
+            let buff = self.pool.alloc()?;
+            if let Err(err) = self.submit_buffer(buff) {
+                if matches!(err, NetError::Retry) {
+                    break;
+                }
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    fn submit_buffer(&mut self, buff: DBuff) -> Result<(), NetError> {
+        let bus_addr = buff.dma_addr().as_u64();
+        let len = self.config.buf_size.min(buff.len());
+        self.interface.submit(bus_addr, len)?;
+        self.inflight.insert(bus_addr, buff);
+        Ok(())
+    }
+
+    fn reclaim_packet(&mut self) -> Result<Option<(DBuff, usize)>, NetError> {
+        let Some((bus_addr, len)) = self.interface.reclaim() else {
+            return Ok(None);
+        };
+        let Some(buff) = self.inflight.remove(&bus_addr) else {
+            return Err(other_error("reclaimed unknown rx buffer"));
+        };
+        let packet_len = len.min(self.config.buf_size).min(buff.len());
+        Ok(Some((buff, packet_len)))
+    }
+
+    pub fn id(&self) -> usize {
+        self.interface.id()
+    }
+
+    pub fn buf_size(&self) -> usize {
+        self.config.buf_size
+    }
+
+    pub fn try_receive(&mut self) -> Option<RxPacket<'_>> {
+        match self.reclaim_packet() {
+            Ok(Some((buff, len))) => Some(RxPacket {
+                queue: self,
+                len,
+                buff: Some(buff),
+            }),
+            Ok(None) | Err(_) => None,
+        }
+    }
+
+    pub fn receive<R>(&mut self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        let packet = self.try_receive()?;
+        Some(packet.consume(f))
+    }
+}
+
+pub struct RxPacket<'a> {
+    queue: &'a mut RxQueue,
+    len: usize,
+    buff: Option<DBuff>,
+}
+
+impl RxPacket<'_> {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn consume<R>(mut self, f: impl FnOnce(&[u8]) -> R) -> R {
+        let buff = self.buff.as_ref().expect("rx packet buffer should exist");
+        let ret = buff.read_with(self.len, f);
+        if let Some(buff) = self.buff.take() {
+            let _ = self.queue.submit_buffer(buff);
+        }
+        ret
+    }
+}
+
+impl Drop for RxPacket<'_> {
+    fn drop(&mut self) {
+        if let Some(buff) = self.buff.take() {
+            let _ = self.queue.submit_buffer(buff);
+        }
+    }
+}

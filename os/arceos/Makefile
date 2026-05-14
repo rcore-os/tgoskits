@@ -3,6 +3,9 @@
 #     - `ARCH`: Target architecture: x86_64, riscv64, aarch64, loongarch64
 #     - `MYPLAT`: Package name of the target platform crate.
 #     - `PLAT_CONFIG`: Path to the platform configuration file.
+#     - `AXCONFIG`: Config reader/generator command, default is ax-config-gen.
+#     - `AXPLAT_INSPECT`: Optional platform package resolver command, used only
+#       when PLAT_CONFIG is not set.
 #     - `SMP`: Number of CPUs. If not set, use the default value from platform config.
 #     - `MODE`: Build mode: release, debug
 #     - `LOG:` Logging level: warn, error, info, debug, trace
@@ -37,6 +40,13 @@
 ARCH ?= x86_64
 MYPLAT ?=
 PLAT_CONFIG ?=
+AXCONFIG ?= ax-config-gen
+TGOSKITS_ROOT ?= $(abspath $(CURDIR)/../..)
+ifneq ($(wildcard $(TGOSKITS_ROOT)/xtask/Cargo.toml),)
+  AXPLAT_INSPECT ?= cd "$(TGOSKITS_ROOT)" && cargo xtask config inspect --makefile
+else
+  AXPLAT_INSPECT ?=
+endif
 SMP ?=
 MODE ?= release
 LOG ?= warn
@@ -45,7 +55,7 @@ DWARF ?=
 LTO ?=
 TARGET_DIR ?= $(PWD)/target
 EXTRA_CONFIG ?=
-OUT_CONFIG ?= $(PWD)/.axconfig.toml
+OUT_CONFIG ?= $(CURDIR)/.axconfig.toml
 UIMAGE ?= n
 PLAT_DYN ?= n
 
@@ -87,9 +97,11 @@ endif
 ifneq ($(wildcard $(APP)/Cargo.toml),)
   APP_TYPE := rust
   AX_LIB ?= ax-std
+  CARGO_MANIFEST_DIR := $(abspath $(APP))
 else
   APP_TYPE := c
   AX_LIB ?= ax-libc
+  CARGO_MANIFEST_DIR := $(TGOSKITS_ROOT)
 endif
 
 .DEFAULT_GOAL := all
@@ -228,7 +240,7 @@ endif
 
 clean: clean_c
 	rm -rf $(APP)/*.bin $(APP)/*.elf $(OUT_CONFIG)
-	cargo clean
+	cargo clean --target-dir $(TARGET_DIR)
 
 clean_c::
 	rm -rf ulib/axlibc/build_*

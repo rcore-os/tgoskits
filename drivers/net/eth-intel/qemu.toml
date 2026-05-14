@@ -1,0 +1,15 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a53",
+    "-machine",
+    "virt,gic-version=3,virtualization=on",
+    "-device",
+    "e1000,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+success_regex = ["All tests passed"]
+fail_regex = ["Panicked:", "thread 'main' has overflowed its stack"]

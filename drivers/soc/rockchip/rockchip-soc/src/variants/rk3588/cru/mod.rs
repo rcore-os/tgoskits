@@ -1,8 +1,6 @@
 use core::fmt::Debug;
 
-use crate::{
-    Mmio, ResetRockchip, RstId, clock::ClkId, grf::GrfMmio, variants::rk3588::cru::gate::ClkType,
-};
+use crate::{Mmio, ResetRockchip, RstId, clock::ClkId, grf::GrfMmio};
 
 pub mod clock;
 mod consts;
@@ -273,11 +271,9 @@ impl Cru {
     /// cru.clk_enable(CLK_I2C1)?;
     /// ```
     pub fn clk_enable(&mut self, id: ClkId) -> ClockResult<()> {
-        let gate = self.find_clk_gate(id).ok_or(ClockError::unsupported(id))?;
-        if matches!(gate.kind, ClkType::Composite) {
-            return Ok(());
-        }
-
+        let Some(gate) = self.find_clk_gate(id) else {
+            return self.pcie_root_ref_enable(id);
+        };
         let offset = self.get_gate_reg_offset(gate);
 
         // Rockchip 写掩码机制：清除 bit
@@ -311,7 +307,9 @@ impl Cru {
     /// cru.clk_disable(CLK_I2C1)?;
     /// ```
     pub fn clk_disable(&mut self, id: ClkId) -> ClockResult<()> {
-        let gate = self.find_clk_gate(id).ok_or(ClockError::unsupported(id))?;
+        let Some(gate) = self.find_clk_gate(id) else {
+            return self.pcie_root_ref_disable(id);
+        };
         let offset = self.get_gate_reg_offset(gate);
 
         // Rockchip 写掩码机制：设置 bit
@@ -337,11 +335,9 @@ impl Cru {
     ///
     /// 返回 true 表示时钟已使能，false 表示已禁止，None 表示不支持
     pub fn clk_is_enabled(&self, id: ClkId) -> ClockResult<bool> {
-        let gate = self.find_clk_gate(id).ok_or(ClockError::unsupported(id))?;
-        if matches!(gate.kind, ClkType::Composite) {
-            return Ok(true);
-        }
-
+        let Some(gate) = self.find_clk_gate(id) else {
+            return self.pcie_root_ref_is_enabled(id);
+        };
         let offset = self.get_gate_reg_offset(gate);
 
         // 读取寄存器，检查 bit
@@ -408,7 +404,12 @@ impl Cru {
             return self.usb_get_rate(id);
         }
 
-        // 10. 根时钟
+        // 10. PCIe/PHP 时钟
+        if is_pcie_clk(id) {
+            return self.pcie_get_rate(id);
+        }
+
+        // 11. 根时钟
         if matches!(
             id,
             ACLK_BUS_ROOT
@@ -484,6 +485,11 @@ impl Cru {
         // 9. USB 时钟
         if is_usb_clk(id) {
             return self.usb_set_rate(id, rate_hz);
+        }
+
+        // 10. PCIe/PHP 时钟
+        if is_pcie_clk(id) {
+            return self.pcie_set_rate(id, rate_hz);
         }
 
         // 其他时钟类型暂不支持设置

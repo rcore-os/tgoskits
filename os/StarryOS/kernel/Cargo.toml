@@ -16,6 +16,7 @@ license.workspace = true
 [features]
 default = ["dynamic_debug"]
 dev-log = []
+ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
@@ -58,7 +59,7 @@ ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
 crab-usb = { version = "0.9", optional = true }
-rdrive = { version = "0.20", optional = true }
+rdrive = { workspace = true, optional = true }
 
 axbacktrace = { workspace = true }
 ax-errno = { workspace = true }

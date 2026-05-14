@@ -1,7 +1,8 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    thread,
 };
 
 use anyhow::{Context, anyhow, bail};
@@ -16,23 +17,39 @@ use syn::{
 };
 use walkdir::WalkDir;
 
-pub(crate) fn run_sync_lint_command() -> anyhow::Result<()> {
+pub(crate) fn run_sync_lint_command(args: &crate::SyncLintArgs) -> anyhow::Result<()> {
     let workspace_manifest = crate::context::workspace_manifest_path()?;
     let metadata = crate::context::workspace_metadata_root_manifest(&workspace_manifest)
         .context("failed to load cargo metadata")?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
     let packages = workspace_packages(&metadata);
+    let selection = select_sync_lint_files(&workspace_root, &packages, args.since.as_deref())?;
 
-    println!(
-        "running sync-lint for {} workspace package(s) from {}",
-        packages.len(),
-        workspace_root.display()
-    );
-
-    let mut findings = Vec::new();
-    for package in &packages {
-        findings.extend(package_findings(package)?);
+    match &selection {
+        SyncLintSelection::All { reason } => {
+            if let Some(reason) = reason {
+                println!("sync-lint fell back to full workspace scan: {reason}");
+            }
+            println!(
+                "running sync-lint for {} workspace package(s) from {}",
+                packages.len(),
+                workspace_root.display()
+            );
+        }
+        SyncLintSelection::Files(files) => {
+            println!(
+                "running incremental sync-lint for {} changed Rust file(s) from {}",
+                files.len(),
+                workspace_root.display()
+            );
+        }
     }
+
+    let files = match selection {
+        SyncLintSelection::All { .. } => workspace_rust_source_files(&packages)?,
+        SyncLintSelection::Files(files) => files,
+    };
+    let findings = files_findings(files)?;
 
     if findings.is_empty() {
         println!("all sync-lint checks passed");
@@ -62,6 +79,12 @@ pub(crate) fn run_sync_lint_command() -> anyhow::Result<()> {
     bail!("sync-lint found {} issue(s)", findings.len())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SyncLintSelection {
+    All { reason: Option<String> },
+    Files(Vec<PathBuf>),
+}
+
 fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
     let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
     let mut packages: Vec<_> = metadata
@@ -74,7 +97,7 @@ fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
     packages
 }
 
-fn package_findings(package: &Package) -> anyhow::Result<Vec<Finding>> {
+fn package_dir(package: &Package) -> anyhow::Result<PathBuf> {
     let package_dir = package
         .manifest_path
         .clone()
@@ -82,12 +105,133 @@ fn package_findings(package: &Package) -> anyhow::Result<Vec<Finding>> {
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow!("invalid manifest path for package `{}`", package.name))?;
+    Ok(package_dir)
+}
 
-    let mut findings = Vec::new();
-    for source_path in rust_source_files(&package_dir) {
-        findings.extend(file_findings(&source_path)?);
+fn workspace_rust_source_files(packages: &[Package]) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = BTreeSet::new();
+    for package in packages {
+        files.extend(rust_source_files(&package_dir(package)?));
     }
-    Ok(findings)
+    Ok(files.into_iter().collect())
+}
+
+fn select_sync_lint_files(
+    workspace_root: &Path,
+    packages: &[Package],
+    since: Option<&str>,
+) -> anyhow::Result<SyncLintSelection> {
+    let Some(since) = since else {
+        return Ok(SyncLintSelection::All { reason: None });
+    };
+
+    let changed_paths = match crate::support::git::changed_paths_since(workspace_root, since) {
+        Ok(paths) => paths,
+        Err(err) => {
+            return Ok(SyncLintSelection::All {
+                reason: Some(format!("failed to diff against `{since}`: {err:#}")),
+            });
+        }
+    };
+
+    select_sync_lint_files_for_paths(workspace_root, packages, changed_paths)
+}
+
+fn select_sync_lint_files_for_paths<I>(
+    workspace_root: &Path,
+    packages: &[Package],
+    changed_paths: I,
+) -> anyhow::Result<SyncLintSelection>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let package_dirs = workspace_package_dirs(workspace_root, packages)?;
+    let mut files = BTreeSet::new();
+
+    for path in changed_paths {
+        let path = normalize_changed_path(&path)?;
+        if path.as_os_str().is_empty() {
+            continue;
+        }
+        if !path.extension().is_some_and(|ext| ext == "rs") {
+            continue;
+        }
+        let Some(_package_dir) = package_dir_for_path(&package_dirs, &path) else {
+            return Ok(SyncLintSelection::All {
+                reason: Some(format!(
+                    "changed Rust path `{}` is outside any workspace package",
+                    path.display()
+                )),
+            });
+        };
+        let absolute = workspace_root.join(&path);
+        if absolute.is_file() {
+            files.insert(absolute);
+        }
+    }
+
+    Ok(SyncLintSelection::Files(files.into_iter().collect()))
+}
+
+fn workspace_package_dirs(
+    workspace_root: &Path,
+    packages: &[Package],
+) -> anyhow::Result<Vec<PathBuf>> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", workspace_root.display()))?;
+    let mut dirs = packages
+        .iter()
+        .map(|package| {
+            let manifest = package.manifest_path.clone().into_std_path_buf();
+            let dir = manifest
+                .parent()
+                .ok_or_else(|| anyhow!("invalid manifest path for package `{}`", package.name))?;
+            dir.strip_prefix(&workspace_root)
+                .map(Path::to_path_buf)
+                .with_context(|| {
+                    format!(
+                        "workspace package `{}` manifest {} is outside workspace root {}",
+                        package.name,
+                        manifest.display(),
+                        workspace_root.display()
+                    )
+                })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    dirs.sort_by(|left, right| {
+        right
+            .components()
+            .count()
+            .cmp(&left.components().count())
+            .then_with(|| left.cmp(right))
+    });
+    Ok(dirs)
+}
+
+fn package_dir_for_path<'a>(package_dirs: &'a [PathBuf], path: &Path) -> Option<&'a Path> {
+    package_dirs
+        .iter()
+        .find(|dir| path == dir.as_path() || path.starts_with(dir))
+        .map(PathBuf::as_path)
+}
+
+fn normalize_changed_path(path: &Path) -> anyhow::Result<PathBuf> {
+    if path.is_absolute() {
+        bail!(
+            "git diff returned absolute path `{}`; expected workspace-relative path",
+            path.display()
+        );
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            _ => bail!("invalid changed path `{}`", path.display()),
+        }
+    }
+    Ok(normalized)
 }
 
 fn rust_source_files(package_dir: &Path) -> Vec<PathBuf> {
@@ -112,6 +256,63 @@ fn file_findings(path: &Path) -> anyhow::Result<Vec<Finding>> {
     let syntax = syn::parse_file(&source)
         .with_context(|| format!("failed to parse Rust file {}", path.display()))?;
     Ok(analyze_file(path, &source, &syntax))
+}
+
+fn files_findings(files: Vec<PathBuf>) -> anyhow::Result<Vec<Finding>> {
+    let parallelism = thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(files.len());
+    if parallelism <= 1 || files.len() <= 1 {
+        return files_findings_sequential(files);
+    }
+
+    let chunk_size = files.len().div_ceil(parallelism);
+    let chunks = files
+        .chunks(chunk_size)
+        .map(|chunk| chunk.to_vec())
+        .collect::<Vec<_>>();
+
+    let mut findings = thread::scope(|scope| {
+        let handles = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut findings = Vec::new();
+                    for file in chunk {
+                        findings.extend(file_findings(&file)?);
+                    }
+                    Ok::<_, anyhow::Error>(findings)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut findings = Vec::new();
+        for handle in handles {
+            findings.extend(
+                handle
+                    .join()
+                    .map_err(|_| anyhow!("sync-lint worker thread panicked"))??,
+            );
+        }
+        Ok::<_, anyhow::Error>(findings)
+    })?;
+    findings.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.line.cmp(&right.line))
+            .then_with(|| left.column.cmp(&right.column))
+            .then_with(|| left.rule.label().cmp(right.rule.label()))
+            .then_with(|| left.message.cmp(&right.message))
+    });
+    Ok(findings)
+}
+
+fn files_findings_sequential(files: Vec<PathBuf>) -> anyhow::Result<Vec<Finding>> {
+    let mut findings = Vec::new();
+    for file in files {
+        findings.extend(file_findings(&file)?);
+    }
+    Ok(findings)
 }
 
 fn analyze_file(path: &Path, source: &str, syntax: &File) -> Vec<Finding> {
@@ -740,9 +941,134 @@ impl Visit<'_> for BlockingCallFinder {
 mod tests {
     use super::*;
 
+    fn package(root: &Path, name: &str) -> Package {
+        let value = serde_json::json!({
+            "name": name,
+            "version": "0.1.0",
+            "id": format!("{name} 0.1.0 (path+file://{}/crates/{name})", root.display()),
+            "license": null,
+            "license_file": null,
+            "description": null,
+            "source": null,
+            "dependencies": [],
+            "targets": [{
+                "kind": ["lib"],
+                "crate_types": ["lib"],
+                "name": name,
+                "src_path": format!("{}/crates/{name}/src/lib.rs", root.display()),
+                "edition": "2021",
+                "doc": true,
+                "doctest": true,
+                "test": true
+            }],
+            "features": serde_json::Map::new(),
+            "manifest_path": format!("{}/crates/{name}/Cargo.toml", root.display()),
+            "metadata": null,
+            "publish": null,
+            "authors": [],
+            "categories": [],
+            "keywords": [],
+            "readme": null,
+            "repository": null,
+            "homepage": null,
+            "documentation": null,
+            "edition": "2021",
+            "links": null,
+            "default_run": null,
+            "rust_version": null
+        });
+        serde_json::from_value(value).unwrap()
+    }
+
     fn findings(source: &str) -> Vec<Finding> {
         let syntax = syn::parse_file(source).unwrap();
         analyze_file(Path::new("test.rs"), source, &syntax)
+    }
+
+    #[test]
+    fn incremental_selection_keeps_changed_rust_files() {
+        let root = tempfile::tempdir().unwrap();
+        let src_dir = root.path().join("crates/alpha/src");
+        fs::create_dir_all(&src_dir).unwrap();
+        let lib = src_dir.join("lib.rs");
+        fs::write(&lib, "").unwrap();
+        let packages = vec![package(root.path(), "alpha")];
+
+        let selection = select_sync_lint_files_for_paths(
+            root.path(),
+            &packages,
+            [PathBuf::from("crates/alpha/src/lib.rs")],
+        )
+        .unwrap();
+
+        assert_eq!(selection, SyncLintSelection::Files(vec![lib]));
+    }
+
+    #[test]
+    fn incremental_selection_skips_changed_non_rust_package_files() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("crates/alpha/src")).unwrap();
+        let packages = vec![package(root.path(), "alpha")];
+
+        let selection = select_sync_lint_files_for_paths(
+            root.path(),
+            &packages,
+            [PathBuf::from("crates/alpha/README.md")],
+        )
+        .unwrap();
+
+        assert_eq!(selection, SyncLintSelection::Files(Vec::new()));
+    }
+
+    #[test]
+    fn incremental_selection_skips_changed_non_rust_global_files() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("crates/alpha/src")).unwrap();
+        let packages = vec![package(root.path(), "alpha")];
+
+        let selection =
+            select_sync_lint_files_for_paths(root.path(), &packages, [PathBuf::from("Cargo.lock")])
+                .unwrap();
+
+        assert_eq!(selection, SyncLintSelection::Files(Vec::new()));
+    }
+
+    #[test]
+    fn incremental_selection_falls_back_for_global_rust_files() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("crates/alpha/src")).unwrap();
+        fs::write(root.path().join("build.rs"), "").unwrap();
+        let packages = vec![package(root.path(), "alpha")];
+
+        let selection =
+            select_sync_lint_files_for_paths(root.path(), &packages, [PathBuf::from("build.rs")])
+                .unwrap();
+
+        assert!(matches!(
+            selection,
+            SyncLintSelection::All { reason: Some(reason) } if reason.contains("build.rs")
+        ));
+    }
+
+    #[test]
+    fn workspace_source_files_are_deduplicated_for_nested_packages() {
+        let root = tempfile::tempdir().unwrap();
+        let alpha_src = root.path().join("crates/alpha/src");
+        let beta_src = root.path().join("crates/alpha/beta/src");
+        fs::create_dir_all(&alpha_src).unwrap();
+        fs::create_dir_all(&beta_src).unwrap();
+        let alpha_lib = alpha_src.join("lib.rs");
+        let beta_lib = beta_src.join("lib.rs");
+        fs::write(&alpha_lib, "").unwrap();
+        fs::write(&beta_lib, "").unwrap();
+        let packages = vec![
+            package(root.path(), "alpha"),
+            package(root.path(), "alpha/beta"),
+        ];
+
+        let files = workspace_rust_source_files(&packages).unwrap();
+
+        assert_eq!(files, vec![beta_lib, alpha_lib]);
     }
 
     #[test]

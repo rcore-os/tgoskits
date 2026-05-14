@@ -110,6 +110,8 @@ pub struct MetadataUpdate {
     pub mode: Option<NodePermission>,
     /// The owner (uid, gid)
     pub owner: Option<(u32, u32)>,
+    /// Device ID (for char/block device nodes created via mknod)
+    pub rdev: Option<DeviceId>,
 
     /// Time of last access
     pub atime: Option<Duration>,

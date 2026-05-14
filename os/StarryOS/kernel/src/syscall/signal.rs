@@ -16,8 +16,8 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     task::{
-        AsThread, block_next_signal, check_signals, get_task, processes, send_signal_to_process,
-        send_signal_to_thread,
+        AsThread, block_next_signal, check_signals, get_process_cred, processes,
+        send_signal_to_process, send_signal_to_thread,
     },
     time::TimeValueLike,
 };
@@ -128,11 +128,7 @@ fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
     if target_pid == self_pid {
         return Ok(());
     }
-    let target_task = get_task(target_pid).map_err(|_| AxError::NoSuchProcess)?;
-    let target_cred = target_task
-        .try_as_thread()
-        .map(|t| t.cred())
-        .ok_or(AxError::NoSuchProcess)?;
+    let target_cred = get_process_cred(target_pid)?;
     // Linux checks: {sender.euid, sender.uid} × {target.uid, target.euid, target.suid}
     if sender.euid == target_cred.uid
         || sender.euid == target_cred.euid

@@ -14,7 +14,7 @@ use linux_raw_sys::{
 
 use super::addr::SocketAddrExt;
 use crate::{
-    file::{FileLike, Socket, add_file_like, get_file_like, netlink::NetlinkSocket},
+    file::{FileLike, PacketSocket, Socket, add_file_like, get_file_like, netlink::NetlinkSocket},
     mm::{IoVec, IoVectorBuf, UserConstPtr, UserPtr, VmBytes, VmBytesMut},
     syscall::net::{CMsg, CMsgBuilder},
     time::TimeValueLike,
@@ -66,6 +66,10 @@ fn send_impl(
     addrlen: socklen_t,
     cmsg: Vec<CMsgData>,
 ) -> AxResult<isize> {
+    if let Ok(packet) = PacketSocket::from_fd(fd) {
+        return Ok(packet.send_packet(&mut src)? as isize);
+    }
+
     if let Ok(socket) = Socket::from_fd(fd) {
         let addr = if addr.is_null() || addrlen == 0 {
             None
@@ -129,6 +133,17 @@ fn recv_impl(
     cmsg_builder: Option<CMsgBuilder>,
 ) -> AxResult<isize> {
     debug!("sys_recv <= fd: {fd}, flags: {flags}");
+
+    if let Ok(packet) = PacketSocket::from_fd(fd) {
+        let (recv, from) = packet.recv_packet(&mut dst)?;
+        if !addr.is_null() {
+            from.write_to_user(
+                addr.address().as_usize() as *mut sockaddr,
+                addrlen.get_as_mut()?,
+            )?;
+        }
+        return Ok(recv as isize);
+    }
 
     let Ok(socket) = Socket::from_fd(fd) else {
         if let Ok(netlink) = NetlinkSocket::from_fd(fd) {

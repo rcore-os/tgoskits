@@ -5,9 +5,13 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use ostool::run::qemu::QemuConfig;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
+use serde::Deserialize;
 
-use crate::{context::validate_supported_target, test::case::TestQemuCase};
+use crate::{
+    context::validate_supported_target,
+    test::case::{TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
+};
 
 const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
 
@@ -34,15 +38,78 @@ pub(crate) struct ListedQemuCase {
     pub(crate) archs: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListQemuCasesErrorKind {
+    EmptyGroup,
+    UnknownSelectedCase,
+    Unexpected,
+}
+
+#[derive(Debug)]
+pub(crate) struct ListQemuCasesError {
+    kind: ListQemuCasesErrorKind,
+    message: String,
+}
+
+impl ListQemuCasesError {
+    pub(crate) fn kind(&self) -> ListQemuCasesErrorKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for ListQemuCasesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(f)
+    }
+}
+
+impl std::error::Error for ListQemuCasesError {}
+
+impl From<anyhow::Error> for ListQemuCasesError {
+    fn from(err: anyhow::Error) -> Self {
+        list_qemu_cases_unexpected_error(err)
+    }
+}
+
+pub(crate) type ListQemuCasesResult<T> = Result<T, ListQemuCasesError>;
+
 pub(crate) struct QemuCaseGroup<'a, T> {
     pub(crate) build_group: &'a str,
     pub(crate) build_config_path: &'a Path,
     pub(crate) cases: Vec<&'a T>,
 }
 
+pub(crate) struct QemuCaseBuildGroup<'a, T, R> {
+    pub(crate) group: QemuCaseGroup<'a, T>,
+    pub(crate) request: R,
+    pub(crate) cargo: Cargo,
+}
+
 pub(crate) trait BuildConfigRef {
     fn build_group(&self) -> &str;
     fn build_config_path(&self) -> &Path;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WalkQemuCaseDir {
+    Descend,
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexedQemuCase {
+    name: String,
+    display_name: String,
+    case_dir: PathBuf,
+    qemu_configs: BTreeMap<String, PathBuf>,
+    build_group: String,
+    build_config_path: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct QemuCaseExtraConfig {
+    #[serde(default)]
+    test_commands: Vec<String>,
 }
 
 pub(crate) fn qemu_config_name(arch: &str) -> String {
@@ -93,102 +160,23 @@ fn arch_from_target_name(target: &str) -> Option<&str> {
     target.split_once('-').map(|(arch, _)| arch)
 }
 
-pub(crate) fn discover_build_wrappers(
-    test_group_dir: &Path,
-    target: &str,
-    suite_name: &str,
-    group_kind: &str,
-) -> anyhow::Result<Vec<TestBuildWrapper>> {
-    let mut wrappers = Vec::new();
-    let mut stack = fs::read_dir(test_group_dir)
-        .with_context(|| format!("failed to read {}", test_group_dir.display()))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    while let Some(entry) = stack.pop() {
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-
-        if let Some(build_config_path) = resolve_build_config_path(&dir, target)? {
-            wrappers.push(TestBuildWrapper {
-                name: relative_case_name(test_group_dir, &dir)?,
-                dir,
-                build_config_path,
-            });
-            continue;
-        }
-
-        if is_case_asset_dir(&dir) {
-            continue;
-        }
-
-        stack.extend(
-            fs::read_dir(&dir)
-                .with_context(|| format!("failed to read {}", dir.display()))?
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-
-    wrappers.sort_by(|left, right| left.name.cmp(&right.name));
-    if wrappers.is_empty() {
-        bail!(
-            "no {suite_name} {group_kind} build wrappers for target `{target}` found under {}; \
-             expected build-{target}.toml in a wrapper directory",
-            test_group_dir.display()
-        );
-    }
-
-    Ok(wrappers)
-}
-
 pub(crate) fn discover_all_qemu_cases(
     test_group_dir: &Path,
     selected_case: Option<&str>,
     suite_name: &str,
     group_label: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> ListQemuCasesResult<Vec<String>> {
     if let Some(case_name) = selected_case {
-        validate_selected_case_name(case_name, suite_name, group_label)?;
+        validate_selected_case_name(case_name, suite_name, group_label)
+            .map_err(list_qemu_cases_unexpected_error)?;
     }
 
-    let mut by_name = BTreeMap::new();
-    let mut stack = fs::read_dir(test_group_dir)
-        .with_context(|| format!("failed to read {}", test_group_dir.display()))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    while let Some(entry) = stack.pop() {
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-
-        let build_configs = build_config_paths(&dir)?;
-        if !build_configs.is_empty() {
-            collect_all_qemu_cases_in_build_wrapper(
-                &TestBuildWrapper {
-                    name: relative_case_name(test_group_dir, &dir)?,
-                    dir,
-                    build_config_path: build_configs[0].clone(),
-                },
-                selected_case,
-                &mut by_name,
-            )?;
-            continue;
-        }
-
-        if is_case_asset_dir(&dir) {
-            continue;
-        }
-
-        stack.extend(
-            fs::read_dir(&dir)
-                .with_context(|| format!("failed to read {}", dir.display()))?
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-
-    let cases = by_name.into_keys().collect::<Vec<_>>();
+    let cases = discover_qemu_case_index(test_group_dir, None, None)
+        .map_err(list_qemu_cases_unexpected_error)?
+        .into_iter()
+        .filter(|case| indexed_case_matches_selected(case, selected_case))
+        .map(|case| case.name)
+        .collect::<Vec<_>>();
     ensure_listed_qemu_cases_not_empty(
         &cases,
         selected_case,
@@ -204,7 +192,7 @@ pub(crate) fn discover_all_qemu_cases_with_archs(
     selected_case: Option<&str>,
     suite_name: &str,
     group_label: &str,
-) -> anyhow::Result<Vec<ListedQemuCase>> {
+) -> ListQemuCasesResult<Vec<ListedQemuCase>> {
     discover_all_qemu_cases_with_metadata(test_group_dir, selected_case, suite_name, group_label)
         .map(|cases| {
             cases
@@ -219,48 +207,23 @@ fn discover_all_qemu_cases_with_metadata(
     selected_case: Option<&str>,
     suite_name: &str,
     group_label: &str,
-) -> anyhow::Result<Vec<(String, Vec<String>)>> {
+) -> ListQemuCasesResult<Vec<(String, Vec<String>)>> {
     if let Some(case_name) = selected_case {
-        validate_selected_case_name(case_name, suite_name, group_label)?;
+        validate_selected_case_name(case_name, suite_name, group_label)
+            .map_err(list_qemu_cases_unexpected_error)?;
     }
 
-    let mut by_name = BTreeMap::new();
-    let mut stack = fs::read_dir(test_group_dir)
-        .with_context(|| format!("failed to read {}", test_group_dir.display()))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    while let Some(entry) = stack.pop() {
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-
-        let build_configs = build_config_paths(&dir)?;
-        if !build_configs.is_empty() {
-            collect_all_qemu_case_archs_in_build_wrapper(
-                &TestBuildWrapper {
-                    name: relative_case_name(test_group_dir, &dir)?,
-                    dir,
-                    build_config_path: build_configs[0].clone(),
-                },
-                selected_case,
-                &mut by_name,
-            )?;
-            continue;
-        }
-
-        if is_case_asset_dir(&dir) {
-            continue;
-        }
-
-        stack.extend(
-            fs::read_dir(&dir)
-                .with_context(|| format!("failed to read {}", dir.display()))?
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-
-    let cases = by_name.into_iter().collect::<Vec<_>>();
+    let cases = discover_qemu_case_index(test_group_dir, None, None)
+        .map_err(list_qemu_cases_unexpected_error)?
+        .into_iter()
+        .filter(|case| indexed_case_matches_selected(case, selected_case))
+        .map(|case| {
+            (
+                case.name,
+                case.qemu_configs.keys().cloned().collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
     ensure_listed_qemu_cases_not_empty(
         &cases,
         selected_case,
@@ -271,176 +234,69 @@ fn discover_all_qemu_cases_with_metadata(
     Ok(cases)
 }
 
+fn walk_qemu_case_dirs(
+    root: &Path,
+    mut visit: impl FnMut(&Path) -> anyhow::Result<WalkQemuCaseDir>,
+    read_error: impl Fn(&Path) -> String,
+) -> anyhow::Result<()> {
+    let mut stack = fs::read_dir(root)
+        .with_context(|| read_error(root))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    while let Some(entry) = stack.pop() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+
+        if matches!(visit(&dir)?, WalkQemuCaseDir::Skip) || is_case_asset_dir(&dir) {
+            continue;
+        }
+
+        stack.extend(
+            fs::read_dir(&dir)
+                .with_context(|| read_error(&dir))?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+
+    Ok(())
+}
+
 fn ensure_listed_qemu_cases_not_empty<T>(
     cases: &[T],
     selected_case: Option<&str>,
     suite_name: &str,
     group_label: &str,
     test_group_dir: &Path,
-) -> anyhow::Result<()> {
+) -> ListQemuCasesResult<()> {
     if !cases.is_empty() {
         return Ok(());
     }
     if let Some(case_name) = selected_case {
-        bail!(
-            "unknown {suite_name} {group_label} test case `{case_name}` under {}; cases are \
-             discovered from build wrapper directories with qemu-*.toml",
+        return Err(ListQemuCasesError {
+            kind: ListQemuCasesErrorKind::UnknownSelectedCase,
+            message: format!(
+                "unknown {suite_name} {group_label} test case `{case_name}` under {}; cases are \
+                 discovered from build wrapper directories with qemu-*.toml",
+                test_group_dir.display()
+            ),
+        });
+    }
+    Err(ListQemuCasesError {
+        kind: ListQemuCasesErrorKind::EmptyGroup,
+        message: format!(
+            "no {suite_name} {group_label} qemu test cases found under {}",
             test_group_dir.display()
-        );
-    }
-    bail!(
-        "no {suite_name} {group_label} qemu test cases found under {}",
-        test_group_dir.display()
-    )
+        ),
+    })
 }
 
-fn collect_all_qemu_cases_in_build_wrapper(
-    build_wrapper: &TestBuildWrapper,
-    selected_case: Option<&str>,
-    cases: &mut BTreeMap<String, ()>,
-) -> anyhow::Result<()> {
-    if dir_contains_qemu_config(&build_wrapper.dir)?
-        && selected_case.is_none_or(|case_name| case_name == build_wrapper.name)
-    {
-        cases.insert(build_wrapper.name.clone(), ());
+fn list_qemu_cases_unexpected_error(err: anyhow::Error) -> ListQemuCasesError {
+    ListQemuCasesError {
+        kind: ListQemuCasesErrorKind::Unexpected,
+        message: err.to_string(),
     }
-
-    let mut stack = fs::read_dir(&build_wrapper.dir)
-        .with_context(|| format!("failed to read {}", build_wrapper.dir.display()))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    while let Some(entry) = stack.pop() {
-        let case_dir = entry.path();
-        if !case_dir.is_dir() {
-            continue;
-        }
-
-        if !case_dir_matches_selected(&build_wrapper.dir, &case_dir, selected_case)? {
-            continue;
-        }
-
-        if !build_config_paths(&case_dir)?.is_empty() {
-            continue;
-        }
-
-        if dir_contains_qemu_config(&case_dir)? {
-            cases.insert(relative_case_name(&build_wrapper.dir, &case_dir)?, ());
-            continue;
-        }
-
-        if is_case_asset_dir(&case_dir) {
-            continue;
-        }
-
-        stack.extend(
-            fs::read_dir(&case_dir)
-                .with_context(|| format!("failed to read {}", case_dir.display()))?
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-
-    Ok(())
-}
-
-fn collect_all_qemu_case_archs_in_build_wrapper(
-    build_wrapper: &TestBuildWrapper,
-    selected_case: Option<&str>,
-    cases: &mut BTreeMap<String, Vec<String>>,
-) -> anyhow::Result<()> {
-    if selected_case.is_none_or(|case_name| case_name == build_wrapper.name) {
-        let archs = qemu_config_archs(&build_wrapper.dir)?;
-        if !archs.is_empty() {
-            cases.insert(build_wrapper.name.clone(), archs);
-        }
-    }
-
-    let mut stack = fs::read_dir(&build_wrapper.dir)
-        .with_context(|| format!("failed to read {}", build_wrapper.dir.display()))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    while let Some(entry) = stack.pop() {
-        let case_dir = entry.path();
-        if !case_dir.is_dir() {
-            continue;
-        }
-
-        if !case_dir_matches_selected(&build_wrapper.dir, &case_dir, selected_case)? {
-            continue;
-        }
-
-        if !build_config_paths(&case_dir)?.is_empty() {
-            continue;
-        }
-
-        let archs = qemu_config_archs(&case_dir)?;
-        if !archs.is_empty() {
-            cases.insert(relative_case_name(&build_wrapper.dir, &case_dir)?, archs);
-            continue;
-        }
-
-        if is_case_asset_dir(&case_dir) {
-            continue;
-        }
-
-        stack.extend(
-            fs::read_dir(&case_dir)
-                .with_context(|| format!("failed to read {}", case_dir.display()))?
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-
-    Ok(())
-}
-
-fn case_dir_matches_selected(
-    build_wrapper_dir: &Path,
-    case_dir: &Path,
-    selected_case: Option<&str>,
-) -> anyhow::Result<bool> {
-    let Some(selected_case) = selected_case else {
-        return Ok(true);
-    };
-    let case_name = relative_case_name(build_wrapper_dir, case_dir)?;
-    Ok(selected_case == case_name || selected_case.starts_with(&format!("{case_name}/")))
-}
-
-fn dir_contains_qemu_config(dir: &Path) -> anyhow::Result<bool> {
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() || path.extension().is_none_or(|ext| ext != "toml") {
-            continue;
-        }
-        if path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| stem.starts_with("qemu-"))
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn qemu_config_archs(dir: &Path) -> anyhow::Result<Vec<String>> {
-    let mut archs = Vec::new();
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() || path.extension().is_none_or(|ext| ext != "toml") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        if let Some(arch) = stem.strip_prefix("qemu-")
-            && !arch.starts_with("base-")
-        {
-            archs.push(arch.to_string());
-        }
-    }
-    archs.sort();
-    Ok(archs)
 }
 
 pub(crate) fn nearest_build_wrapper(
@@ -530,51 +386,24 @@ pub(crate) fn discover_qemu_cases(
     let config_name = qemu_config_name(arch);
     let mut cases = Vec::new();
     let mut selected_case_dirs_without_config = Vec::new();
-    let build_wrappers = discover_build_wrappers(test_suite_dir, target, suite_name, group_label)?;
-
-    for build_wrapper in &build_wrappers {
-        if let Some(case_name) = selected_case {
-            if case_name == build_wrapper.name {
-                let qemu_config_path = build_wrapper.dir.join(&config_name);
-                if qemu_config_path.is_file() {
-                    cases.push(discovered_qemu_root_case(build_wrapper, qemu_config_path));
-                } else if dir_contains_qemu_config(&build_wrapper.dir)? {
-                    selected_case_dirs_without_config
-                        .push((build_wrapper.name.clone(), qemu_config_path));
-                }
-                continue;
-            }
-
-            let case_dir = build_wrapper.dir.join(case_name);
-            if case_dir.is_dir() {
-                let qemu_config_path = case_dir.join(&config_name);
-                if qemu_config_path.is_file() {
-                    cases.push(discovered_qemu_case(
-                        build_wrapper,
-                        case_name.to_string(),
-                        case_dir,
-                        qemu_config_path,
-                    ));
-                } else {
-                    selected_case_dirs_without_config
-                        .push((build_wrapper.name.clone(), qemu_config_path));
-                }
-            }
+    for case in discover_qemu_case_index(test_suite_dir, Some(target), selected_case)? {
+        if !indexed_case_matches_selected(&case, selected_case) {
             continue;
         }
-
-        let root_qemu_config_path = build_wrapper.dir.join(&config_name);
-        if root_qemu_config_path.is_file() {
-            cases.push(discovered_qemu_root_case(
-                build_wrapper,
-                root_qemu_config_path,
-            ));
+        if let Some(qemu_config_path) = case.qemu_configs.get(arch) {
+            cases.push(DiscoveredQemuCase {
+                name: case.name,
+                display_name: case.display_name,
+                case_dir: case.case_dir,
+                qemu_config_path: qemu_config_path.clone(),
+                build_group: case.build_group,
+                build_config_path: case.build_config_path,
+            });
+        } else if selected_case.is_some() {
+            selected_case_dirs_without_config
+                .push((case.build_group, case.case_dir.join(&config_name)));
         }
-
-        discover_qemu_cases_in_build_wrapper(build_wrapper, &config_name, &mut cases)?;
     }
-
-    cases.sort_by(|left, right| left.display_name.cmp(&right.display_name));
 
     if cases.is_empty() {
         if let Some(case_name) = selected_case {
@@ -590,6 +419,7 @@ pub(crate) fn discover_qemu_cases(
                      {searched}"
                 );
             }
+
             bail!(
                 "unknown {suite_name} {group_label} test case `{case_name}` for arch `{arch}` \
                  under {}; cases are discovered from <build_group>/<case> directories with \
@@ -597,6 +427,7 @@ pub(crate) fn discover_qemu_cases(
                 test_suite_dir.display()
             );
         }
+
         bail!(
             "no {suite_name} {group_label} qemu test cases for arch `{arch}` found under {}",
             test_suite_dir.display()
@@ -606,54 +437,160 @@ pub(crate) fn discover_qemu_cases(
     Ok(cases)
 }
 
-fn discover_qemu_cases_in_build_wrapper(
-    build_wrapper: &TestBuildWrapper,
-    config_name: &str,
-    cases: &mut Vec<DiscoveredQemuCase>,
-) -> anyhow::Result<()> {
-    let mut stack = fs::read_dir(&build_wrapper.dir)
-        .with_context(|| format!("failed to read {}", build_wrapper.dir.display()))?
+fn discover_qemu_case_index(
+    test_group_dir: &Path,
+    target: Option<&str>,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<IndexedQemuCase>> {
+    let mut cases = Vec::new();
+    let mut build_wrappers = Vec::new();
+    let mut stack = fs::read_dir(test_group_dir)
+        .with_context(|| format!("failed to read {}", test_group_dir.display()))?
         .collect::<Result<Vec<_>, _>>()?;
 
     while let Some(entry) = stack.pop() {
-        let case_dir = entry.path();
-        if !case_dir.is_dir() {
+        let dir = entry.path();
+        if !dir.is_dir() {
             continue;
         }
 
-        if resolve_build_config_path(
-            &case_dir,
-            build_target_from_config_path(&build_wrapper.build_config_path)?,
-        )?
-        .is_some()
-        {
+        let build_config_path = match target {
+            Some(target) => resolve_build_config_path(&dir, target)?,
+            None => build_config_paths(&dir)?.into_iter().next(),
+        };
+
+        if let Some(build_config_path) = build_config_path {
+            build_wrappers.push(TestBuildWrapper {
+                name: relative_case_name(test_group_dir, &dir)?,
+                dir,
+                build_config_path,
+            });
             continue;
         }
 
-        let qemu_config_path = case_dir.join(config_name);
-        if qemu_config_path.is_file() {
-            let case_name = relative_case_name(&build_wrapper.dir, &case_dir)?;
-            cases.push(discovered_qemu_case(
-                build_wrapper,
-                case_name,
-                case_dir,
-                qemu_config_path,
-            ));
-            continue;
-        }
-
-        if is_case_asset_dir(&case_dir) {
+        if is_case_asset_dir(&dir) {
             continue;
         }
 
         stack.extend(
-            fs::read_dir(&case_dir)
-                .with_context(|| format!("failed to read {}", case_dir.display()))?
+            fs::read_dir(&dir)
+                .with_context(|| format!("failed to read {}", dir.display()))?
                 .collect::<Result<Vec<_>, _>>()?,
         );
     }
 
-    Ok(())
+    build_wrappers.sort_by(|left, right| left.name.cmp(&right.name));
+    for build_wrapper in &build_wrappers {
+        collect_qemu_cases_in_build_wrapper(build_wrapper, selected_case, &mut cases)?;
+    }
+    cases.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+    Ok(cases)
+}
+
+fn collect_qemu_cases_in_build_wrapper(
+    build_wrapper: &TestBuildWrapper,
+    selected_case: Option<&str>,
+    cases: &mut Vec<IndexedQemuCase>,
+) -> anyhow::Result<()> {
+    if let Some(qemu_configs) = qemu_configs_in_dir(&build_wrapper.dir)?
+        && !qemu_configs.is_empty()
+    {
+        cases.push(indexed_qemu_root_case(build_wrapper, qemu_configs));
+    }
+
+    walk_qemu_case_dirs(
+        &build_wrapper.dir,
+        |case_dir| {
+            if case_dir == build_wrapper.dir {
+                return Ok(WalkQemuCaseDir::Descend);
+            }
+            if !build_config_paths(case_dir)?.is_empty() {
+                return Ok(WalkQemuCaseDir::Skip);
+            }
+            if let Some(qemu_configs) = qemu_configs_in_dir(case_dir)?
+                && !qemu_configs.is_empty()
+            {
+                cases.push(indexed_qemu_case(
+                    build_wrapper,
+                    relative_case_name(&build_wrapper.dir, case_dir)?,
+                    case_dir.to_path_buf(),
+                    qemu_configs,
+                ));
+                return Ok(WalkQemuCaseDir::Skip);
+            }
+            if let Some(selected_case) = selected_case {
+                let case_name = relative_case_name(&build_wrapper.dir, case_dir)?;
+                if case_name == selected_case {
+                    cases.push(indexed_qemu_case(
+                        build_wrapper,
+                        case_name,
+                        case_dir.to_path_buf(),
+                        BTreeMap::new(),
+                    ));
+                    return Ok(WalkQemuCaseDir::Skip);
+                }
+            }
+            Ok(WalkQemuCaseDir::Descend)
+        },
+        |case_dir| format!("failed to read qemu case directory {}", case_dir.display()),
+    )
+}
+
+fn qemu_configs_in_dir(dir: &Path) -> anyhow::Result<Option<BTreeMap<String, PathBuf>>> {
+    let mut configs = BTreeMap::new();
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().is_none_or(|ext| ext != "toml") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if let Some(arch) = stem.strip_prefix("qemu-")
+            && !arch.starts_with("base-")
+        {
+            configs.insert(arch.to_string(), path);
+        }
+    }
+    Ok((!configs.is_empty()).then_some(configs))
+}
+
+fn indexed_case_matches_selected(case: &IndexedQemuCase, selected_case: Option<&str>) -> bool {
+    let Some(selected_case) = selected_case else {
+        return true;
+    };
+    case.name == selected_case || case.name.starts_with(&format!("{selected_case}/"))
+}
+
+fn indexed_qemu_case(
+    build_wrapper: &TestBuildWrapper,
+    name: String,
+    case_dir: PathBuf,
+    qemu_configs: BTreeMap<String, PathBuf>,
+) -> IndexedQemuCase {
+    IndexedQemuCase {
+        display_name: format!("{}/{}", build_wrapper.name, name),
+        name,
+        case_dir,
+        qemu_configs,
+        build_group: build_wrapper.name.clone(),
+        build_config_path: build_wrapper.build_config_path.clone(),
+    }
+}
+
+fn indexed_qemu_root_case(
+    build_wrapper: &TestBuildWrapper,
+    qemu_configs: BTreeMap<String, PathBuf>,
+) -> IndexedQemuCase {
+    IndexedQemuCase {
+        name: build_wrapper.name.clone(),
+        display_name: build_wrapper.name.clone(),
+        case_dir: build_wrapper.dir.clone(),
+        qemu_configs,
+        build_group: build_wrapper.name.clone(),
+        build_config_path: build_wrapper.build_config_path.clone(),
+    }
 }
 
 fn relative_case_name(root: &Path, case_dir: &Path) -> anyhow::Result<String> {
@@ -681,17 +618,6 @@ fn is_case_asset_dir(path: &Path) -> bool {
     )
 }
 
-fn build_target_from_config_path(path: &Path) -> anyhow::Result<&str> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .with_context(|| format!("invalid build config filename `{}`", path.display()))?;
-    file_name
-        .strip_prefix("build-")
-        .and_then(|name| name.strip_suffix(".toml"))
-        .with_context(|| format!("invalid build config filename `{}`", path.display()))
-}
-
 fn validate_selected_case_name(
     case_name: &str,
     suite_name: &str,
@@ -713,56 +639,47 @@ fn validate_selected_case_name(
     )
 }
 
-fn discovered_qemu_case(
-    build_wrapper: &TestBuildWrapper,
-    name: String,
-    case_dir: PathBuf,
-    qemu_config_path: PathBuf,
-) -> DiscoveredQemuCase {
-    DiscoveredQemuCase {
-        display_name: format!("{}/{}", build_wrapper.name, name),
-        name,
-        case_dir,
-        qemu_config_path,
-        build_group: build_wrapper.name.clone(),
-        build_config_path: build_wrapper.build_config_path.clone(),
-    }
-}
-
-fn discovered_qemu_root_case(
-    build_wrapper: &TestBuildWrapper,
-    qemu_config_path: PathBuf,
-) -> DiscoveredQemuCase {
-    DiscoveredQemuCase {
-        name: build_wrapper.name.clone(),
-        display_name: build_wrapper.name.clone(),
-        case_dir: build_wrapper.dir.clone(),
-        qemu_config_path,
-        build_group: build_wrapper.name.clone(),
-        build_config_path: build_wrapper.build_config_path.clone(),
-    }
-}
-
 pub(crate) fn group_cases_by_build_config<T: BuildConfigRef>(
     cases: &[T],
 ) -> Vec<QemuCaseGroup<'_, T>> {
     let mut groups: Vec<QemuCaseGroup<'_, T>> = Vec::new();
+    let mut indexes = BTreeMap::<&Path, usize>::new();
     for case in cases {
-        if let Some(group) = groups
-            .iter_mut()
-            .find(|group| group.build_config_path == case.build_config_path())
-        {
-            group.cases.push(case);
-        } else {
-            groups.push(QemuCaseGroup {
-                build_group: case.build_group(),
-                build_config_path: case.build_config_path(),
-                cases: vec![case],
-            });
+        if let Some(index) = indexes.get(case.build_config_path()).copied() {
+            groups[index].cases.push(case);
+            continue;
         }
+
+        let index = groups.len();
+        indexes.insert(case.build_config_path(), index);
+        groups.push(QemuCaseGroup {
+            build_group: case.build_group(),
+            build_config_path: case.build_config_path(),
+            cases: vec![case],
+        });
     }
 
     groups
+}
+
+pub(crate) fn prepare_case_build_groups<T, R>(
+    cases: &[T],
+    mut prepare_context: impl FnMut(&Path) -> anyhow::Result<(R, Cargo)>,
+) -> anyhow::Result<Vec<QemuCaseBuildGroup<'_, T, R>>>
+where
+    T: BuildConfigRef,
+{
+    group_cases_by_build_config(cases)
+        .into_iter()
+        .map(|group| {
+            let (request, cargo) = prepare_context(group.build_config_path)?;
+            Ok(QemuCaseBuildGroup {
+                group,
+                request,
+                cargo,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn normalize_qemu_test_commands<I, S>(
@@ -788,6 +705,75 @@ where
     Ok(test_commands)
 }
 
+pub(crate) fn load_test_qemu_case_fields(
+    display_name: String,
+    name: String,
+    case_dir: PathBuf,
+    qemu_config_path: PathBuf,
+    suite_name: &str,
+    discover_subcases: bool,
+) -> anyhow::Result<TestQemuCase> {
+    let test_commands = load_qemu_case_test_commands(&qemu_config_path, suite_name)?;
+    let subcases = if discover_subcases && !test_commands.is_empty() {
+        discover_qemu_subcases(&case_dir)?
+    } else {
+        Vec::new()
+    };
+    Ok(TestQemuCase {
+        display_name,
+        name,
+        case_dir,
+        qemu_config_path,
+        test_commands,
+        subcases,
+    })
+}
+
+fn load_qemu_case_test_commands(
+    qemu_config_path: &Path,
+    suite_name: &str,
+) -> anyhow::Result<Vec<String>> {
+    let content = fs::read_to_string(qemu_config_path)
+        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
+    let config: QemuCaseExtraConfig = toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
+    normalize_qemu_test_commands(qemu_config_path, config.test_commands, suite_name)
+}
+
+fn discover_qemu_subcases(case_dir: &Path) -> anyhow::Result<Vec<TestQemuSubcase>> {
+    let mut subcases = Vec::new();
+    for entry in
+        fs::read_dir(case_dir).with_context(|| format!("failed to read {}", case_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let kind = if path.join("c").is_dir() {
+            Some(TestQemuSubcaseKind::C)
+        } else if path.join("rust").is_dir() {
+            Some(TestQemuSubcaseKind::Rust)
+        } else {
+            None
+        };
+
+        if let Some(kind) = kind {
+            subcases.push(TestQemuSubcase {
+                name,
+                case_dir: path,
+                kind,
+            });
+        }
+    }
+    subcases.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(subcases)
+}
+
 pub(crate) fn validate_grouped_qemu_commands(
     qemu: &QemuConfig,
     case: &TestQemuCase,
@@ -808,25 +794,54 @@ pub(crate) fn validate_grouped_qemu_commands(
     Ok(())
 }
 
+struct QemuArgs<'a> {
+    args: &'a [String],
+}
+
+impl<'a> QemuArgs<'a> {
+    fn new(args: &'a [String]) -> Self {
+        Self { args }
+    }
+
+    fn option_value(&self, option: &str) -> Option<&str> {
+        let index = self.args.iter().position(|arg| arg == option)?;
+        self.args.get(index + 1).map(String::as_str)
+    }
+}
+
+struct QemuArgsMut<'a> {
+    args: &'a mut Vec<String>,
+}
+
+impl<'a> QemuArgsMut<'a> {
+    fn new(args: &'a mut Vec<String>) -> Self {
+        Self { args }
+    }
+
+    fn set_option_value(&mut self, option: &str, value: String) {
+        if let Some(index) = self.args.iter().position(|arg| arg == option)
+            && let Some(existing) = self.args.get_mut(index + 1)
+        {
+            *existing = value;
+            return;
+        }
+
+        self.args.push(option.to_string());
+        self.args.push(value);
+    }
+}
+
 pub(crate) fn apply_smp_qemu_arg(qemu: &mut QemuConfig, smp: Option<usize>) {
     let Some(cpu_num) = smp else {
         return;
     };
 
-    if let Some(index) = qemu.args.iter().position(|arg| arg == "-smp")
-        && let Some(value) = qemu.args.get_mut(index + 1)
-    {
-        *value = cpu_num.to_string();
-        return;
-    }
-
-    qemu.args.push("-smp".to_string());
-    qemu.args.push(cpu_num.to_string());
+    QemuArgsMut::new(&mut qemu.args).set_option_value("-smp", cpu_num.to_string());
 }
 
 pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {
-    let index = qemu.args.iter().position(|arg| arg == "-smp")?;
-    let value = qemu.args.get(index + 1)?;
+    let args = QemuArgs::new(&qemu.args);
+    let value = args.option_value("-smp")?;
     parse_smp_qemu_value(value)
 }
 
@@ -1108,6 +1123,23 @@ mod tests {
     }
 
     #[test]
+    fn discover_all_qemu_cases_allows_multi_target_wrapper() {
+        let root = tempfile::tempdir().unwrap();
+        let wrapper_dir = root.path().join("suite/wrapper");
+        let case_dir = wrapper_dir.join("case-a");
+        fs::create_dir_all(&case_dir).unwrap();
+        fs::write(wrapper_dir.join("build-aarch64-unknown-none.toml"), "").unwrap();
+        fs::write(wrapper_dir.join("build-x86_64-unknown-none.toml"), "").unwrap();
+        fs::write(case_dir.join("qemu-aarch64.toml"), "").unwrap();
+        fs::write(case_dir.join("qemu-x86_64.toml"), "").unwrap();
+
+        let cases =
+            discover_all_qemu_cases(&root.path().join("suite"), None, "test", "qemu").unwrap();
+
+        assert_eq!(cases, ["case-a"]);
+    }
+
+    #[test]
     fn discover_all_qemu_cases_rejects_unknown_selected_case() {
         let root = tempfile::tempdir().unwrap();
         let case_dir = root.path().join("suite/root-case");
@@ -1195,5 +1227,100 @@ mod tests {
 
         assert!(err.contains("invalid test qemu test case"));
         assert!(err.contains("path traversal"));
+    }
+
+    #[test]
+    fn selected_qemu_case_allows_same_name_in_later_wrapper() {
+        let root = tempfile::tempdir().unwrap();
+        let board_dir = root.path().join("suite/board-orangepi-5-plus/smoke");
+        fs::create_dir_all(&board_dir).unwrap();
+        fs::write(
+            root.path()
+                .join("suite/board-orangepi-5-plus/build-x86_64-unknown-none.toml"),
+            "",
+        )
+        .unwrap();
+        fs::write(board_dir.join("board-orangepi-5-plus.toml"), "").unwrap();
+
+        let qemu_dir = root.path().join("suite/qemu-smp1/smoke");
+        fs::create_dir_all(&qemu_dir).unwrap();
+        fs::write(
+            root.path()
+                .join("suite/qemu-smp1/build-x86_64-unknown-none.toml"),
+            "",
+        )
+        .unwrap();
+        let qemu_config = qemu_dir.join("qemu-x86_64.toml");
+        fs::write(&qemu_config, "").unwrap();
+
+        let cases = discover_qemu_cases(
+            root.path().join("suite").as_path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("smoke"),
+            "test",
+            "qemu",
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].build_group, "qemu-smp1");
+        assert_eq!(cases[0].qemu_config_path, qemu_config);
+    }
+
+    #[test]
+    fn selected_qemu_case_finds_wrapper_without_scanning_unrelated_broken_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let target_dir = root.path().join("suite/qemu-smp1/smoke");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(
+            root.path()
+                .join("suite/qemu-smp1/build-x86_64-unknown-none.toml"),
+            "",
+        )
+        .unwrap();
+        fs::write(target_dir.join("qemu-x86_64.toml"), "").unwrap();
+        fs::create_dir_all(root.path().join("suite/unrelated/broken")).unwrap();
+
+        let cases = discover_qemu_cases(
+            root.path().join("suite").as_path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("smoke"),
+            "test",
+            "qemu",
+        )
+        .unwrap();
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].build_group, "qemu-smp1");
+    }
+
+    #[test]
+    fn selected_qemu_case_reports_existing_case_without_requested_arch_config() {
+        let root = tempfile::tempdir().unwrap();
+        let target_dir = root.path().join("suite/wrapper/smoke");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(
+            root.path()
+                .join("suite/wrapper/build-x86_64-unknown-none.toml"),
+            "",
+        )
+        .unwrap();
+        fs::write(target_dir.join("qemu-riscv64.toml"), "").unwrap();
+
+        let err = discover_qemu_cases(
+            root.path().join("suite").as_path(),
+            "x86_64",
+            "x86_64-unknown-none",
+            Some("smoke"),
+            "test",
+            "qemu",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("exists under matching build group"));
+        assert!(err.contains("qemu-x86_64.toml"));
     }
 }

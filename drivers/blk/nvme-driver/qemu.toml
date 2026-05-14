@@ -1,0 +1,15 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a53",
+    "-machine",
+    "virt,gic-version=3,virtualization=on",
+    "-drive",
+    "file=../../../target/nvme.img,format=raw,if=none,id=nvm",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+]
+uefi = false
+to_bin = true
+success_regex = ["All tests passed"]
+fail_regex = ["Panicked:", "thread 'main' has overflowed its stack"]
