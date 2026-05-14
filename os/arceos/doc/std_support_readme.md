@@ -39,7 +39,7 @@ Supported targets used by examples:
 
 `examples/std/*/.cargo/config.toml` already provides:
 
-- linker args (`-no-pie`, `-Tlink.lds`)
+- linker args (`-no-pie`, `-Tlinker.x`)
 - per-arch QEMU runner
 - `build-std` settings for build standard library
 
