@@ -23,7 +23,7 @@ Prefer the GitHub MCP/connector for structured PR data. Use local `git` for fetc
 
 ## Intake
 
-1. Follow `github:github` to resolve repository identity, current user, PR number or URL, title, author, base/head refs, `headRefOid`, draft state, merge state, changed files, patch context, existing reviews/comments, and available checks.
+1. Follow `github:github` to resolve repository identity, current user, PR number or URL, title, body, author, base/head refs, `headRefOid`, draft state, merge state, changed files, patch context, commit messages, existing reviews/comments, and available checks.
 2. If the PR is authored by the current GitHub user, say so and ask before submitting a formal review.
 3. Include draft PRs unless the user explicitly says to skip drafts.
 4. Keep connector state and local checkout state aligned before creating the worktree.
@@ -33,7 +33,7 @@ Fallback only when the GitHub MCP/connector cannot provide the needed data:
    ```bash
    gh auth status
    gh repo view --json nameWithOwner,defaultBranchRef,url
-   gh pr view <pr> --json number,title,author,baseRefName,headRefName,headRefOid,headRepositoryOwner,isDraft,mergeStateStatus,maintainerCanModify,reviewDecision,url
+   gh pr view <pr> --json number,title,body,author,baseRefName,headRefName,headRefOid,headRepositoryOwner,isDraft,mergeStateStatus,maintainerCanModify,reviewDecision,url,commits
    gh pr diff <pr> --patch --color=never
    gh pr checks <pr> --watch=false
    gh api "repos/<owner>/<repo>/pulls/<pr>/reviews?per_page=100"
@@ -56,7 +56,29 @@ gh api graphql \
   -f threadId=<thread-id>
 ```
 
-For failing or suspicious GitHub Actions checks, follow `github:gh-fix-ci`: use the GitHub app/MCP for PR context and use `gh` for Actions check/log inspection because the connector does not expose that workflow end to end. Remote CI is evidence, not a substitute for local review and targeted validation.
+For failing, cancelled, missing, or suspicious GitHub Actions checks, follow `github:gh-fix-ci`: use the GitHub app/MCP for PR context and use `gh` for Actions check/log inspection because the connector does not expose that workflow end to end. Remote CI is evidence, not a substitute for local review and targeted validation.
+
+Always inspect CI failures before submitting the review:
+
+1. Fetch check summaries and enough logs to classify each non-passing required check:
+   ```bash
+   gh pr checks <pr> --repo <owner>/<repo> --watch=false
+   gh run view <run-id> --repo <owner>/<repo> --log-failed
+   ```
+2. Decide whether each CI failure is caused by this PR's changed surface, a likely unrelated pre-existing/infrastructure failure, or unclear.
+3. Treat CI as PR-related when the failing job exercises files, crates, cases, commands, platforms, or behavior changed by the PR; when the failure reproduces locally on the PR head but not on base; or when the new/modified tests, configs, or workflow steps cause the failure, hang, skip, or timeout.
+4. Treat CI as unrelated only when there is concrete evidence: the failure is outside the changed surface, known flaky/infrastructure behavior, already fails on base, or is tracked by an existing issue. Do not mark a failure unrelated merely because local focused validation passed.
+5. For unrelated CI failures, state that in the review body with the failing check name, observed failure, and why it is unrelated to this PR. Search for an existing issue before finishing:
+   ```bash
+   gh issue list --repo <owner>/<repo> --state open --search '<job name or distinctive error>'
+   ```
+   If no suitable open issue exists, create one with a neutral title and body describing the CI job, PR where it was observed, representative log excerpt, why it appears unrelated, and any reproduction or rerun evidence:
+   ```bash
+   gh issue create --repo <owner>/<repo> --title '<neutral CI issue title>' --body-file issue.md
+   ```
+   Link the existing or newly-created issue in the review body. Do not create duplicate issues.
+6. For PR-related CI failures, submit `REQUEST_CHANGES`. The review body and any inline comment must explain the failing check, the concrete failure mode, why it belongs to this PR, and the expected fix direction.
+7. When causality is unclear after reasonable log inspection, do not approve on CI alone. Either request changes with the concrete uncertainty and next debugging direction, or mark the review blocked/no-submit if the user asked for investigation only.
 
 ## Worktree
 
@@ -145,21 +167,31 @@ For StarryOS grouped QEMU cases, verify that new `test_commands` are actually di
 
 For bugfix tests in grouped cases, inspect the new test's assertions as well as running the case. A grouped case passing is not sufficient when the new test accepts both the fixed behavior and the broken behavior.
 
+When the PR does not add or modify a test case, inspect the PR body and commit messages for any claimed non-board validation method, such as QEMU, host unit tests, `cargo xtask`, `cargo test`, `cargo clippy`, shell scripts, emulators, or reproducible manual commands that do not require physical hardware:
+
+- If such validation is claimed, run it or an equivalent local command before approval. Compare the actual command, target, output, and pass/fail condition with the PR's claim.
+- If the claimed validation fails, is not reproducible as written, exercises a different target than claimed, silently skips the changed behavior, or cannot be run for an avoidable reason, submit `REQUEST_CHANGES`. Explain the mismatch and the expected fix direction: either make the validation true and reproducible, add an appropriate test, or correct the PR description.
+- If the claimed validation cannot be run because the environment is genuinely unavailable, record the exact limitation and do not treat the claim as proof. Require another reproducible non-board validation method or a test unless the user explicitly accepts the limitation.
+- If the PR has no test changes and neither the PR body nor commit messages describe a reproducible non-board validation method, do not approve. Request changes asking the author to add a test or document and provide a runnable validation command that covers the changed behavior.
+- Physical board-only validation may be useful evidence, but it does not satisfy this no-test fallback rule by itself unless the user explicitly scopes the review to board-only behavior.
+
 Use GitHub check status as required evidence, but not as the only review input:
 
 ```bash
 gh pr checks <pr> --watch=false
 ```
 
-Do not approve solely because remote CI passes. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, treat that as blocking unless there is a clear project-approved reason. A branch with no reported checks is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
+Do not approve solely because remote CI passes. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, inspect logs and classify the failure before deciding. Treat PR-related CI failures as blocking and request changes with the expected fix direction. If a CI failure is unrelated to the PR, it is not by itself a reason to request changes, but the review body must say why it is unrelated and link an existing or newly-created tracking issue. A branch with no reported checks is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
 
 ## Blocking Findings
 
 Treat these as blocking unless clearly non-blocking:
 
 - behavior differs from POSIX/Linux/RFC/VirtIO semantics;
-- targeted tests, formatting, clippy, or CI fail;
+- targeted tests, formatting, clippy, or PR-related CI fail;
 - new tests are not discovered by the project test runner or do not exercise the fixed ABI surface;
+- a PR has no test changes and lacks a reproducible non-board validation method in the PR body or commit messages;
+- a claimed non-board validation method is not actually reproducible or does not match the claimed coverage/result;
 - `success_regex` or `fail_regex` cannot reliably classify the intended StarryOS case result;
 - bug fixes lack meaningful reproduction coverage;
 - the implementation is a test-only or fake fix that does not implement the intended behavior;
@@ -211,6 +243,9 @@ Review body must explain in Chinese:
 - what the PR changed;
 - the implementation logic and why this approach is correct for the project semantics;
 - validation commands and results, including exact failure mode for failing tests;
+- when no tests are added, the PR body/commit-message validation claim that was checked, the command actually run, and whether it matched the claim;
+- CI status, including any unrelated failing checks, the evidence for unrelatedness, and the linked tracking issue;
+- for PR-related CI failures, the failing check, failure mode, and expected fix direction;
 - reproduction coverage status for bug fixes;
 - unresolved review conversations that were resolved, and conversations intentionally left open and why;
 - any behavior that remains unimplemented, partial, or should be completed in future work;
