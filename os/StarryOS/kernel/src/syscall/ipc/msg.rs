@@ -13,7 +13,7 @@ use super::{
     IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, MSG_INFO,
     MSG_STAT, has_ipc_permission, next_ipc_id,
 };
-use crate::task::AsThread;
+use crate::task::{AsThread, WaitQueue as MsgWaitQueue};
 
 /// Data structure describing a message queue.
 #[repr(C)]
@@ -73,6 +73,8 @@ pub struct Message {
     pub mtype: i64,
     /// message data
     pub data: Vec<u8>,
+    /// FIFO sequence number
+    pub seq: u64,
 }
 
 /// This struct is used to maintain the message queue in kernel.
@@ -83,6 +85,12 @@ pub struct MessageQueue {
     pub messages: BTreeMap<i64, Vec<Message>>, // mtype -> messages of that type
     /// Total bytes in queue
     pub total_bytes: usize,
+    /// Next FIFO sequence number
+    pub next_seq: u64,
+    /// Waiters blocked on send due to full queue
+    pub send_wait_queue: Arc<MsgWaitQueue>,
+    /// Waiters blocked on receive due to empty queue
+    pub recv_wait_queue: Arc<MsgWaitQueue>,
     /// Marked for removal
     pub mark_removed: bool,
 }
@@ -94,6 +102,9 @@ impl MessageQueue {
             msqid_ds: msqid_ds::new(key, mode, pid as __kernel_pid_t, uid, gid),
             messages: BTreeMap::new(),
             total_bytes: 0,
+            next_seq: 0,
+            send_wait_queue: Arc::new(MsgWaitQueue::new()),
+            recv_wait_queue: Arc::new(MsgWaitQueue::new()),
             mark_removed: false,
         }
     }
@@ -106,7 +117,9 @@ impl MessageQueue {
             return Err(AxError::from(LinuxError::ENOSPC)); // ENOSPC
         }
 
-        let message = Message { mtype, data };
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let message = Message { mtype, data, seq };
 
         self.messages.entry(mtype).or_default().push(message);
         self.total_bytes += data_len;
@@ -116,14 +129,32 @@ impl MessageQueue {
         Ok(())
     }
 
-    /// Find the first message (without removing)
-    pub fn find_first_message(&self) -> Option<(i64, &[u8])> {
+    fn find_fifo_message<F>(&self, filter: F) -> Option<(i64, &[u8])>
+    where
+        F: Fn(i64) -> bool,
+    {
+        let mut candidate: Option<&Message> = None;
+
         for (&mtype, messages) in &self.messages {
+            if !filter(mtype) {
+                continue;
+            }
             if let Some(message) = messages.first() {
-                return Some((mtype, &message.data[..]));
+                let should_pick = candidate
+                    .map(|current| message.seq < current.seq)
+                    .unwrap_or(true);
+                if should_pick {
+                    candidate = Some(message);
+                }
             }
         }
-        None
+
+        candidate.map(|message| (message.mtype, &message.data[..]))
+    }
+
+    /// Find the first message in FIFO order (without removing)
+    pub fn find_first_message(&self) -> Option<(i64, &[u8])> {
+        self.find_fifo_message(|_| true)
     }
 
     /// Find message by type (without removing)
@@ -134,17 +165,10 @@ impl MessageQueue {
             .map(|msg| (msgtyp, &msg.data[..]))
     }
 
-    /// Find the first message with a type not equal to the specified value
-    /// (without removing)
+    /// Find the first message with a type not equal to the specified value,
+    /// in FIFO order (without removing)
     pub fn find_message_not_equal(&self, msgtyp: i64) -> Option<(i64, &[u8])> {
-        for (&mtype, messages) in &self.messages {
-            if mtype != msgtyp
-                && let Some(message) = messages.first()
-            {
-                return Some((mtype, &message.data[..]));
-            }
-        }
-        None
+        self.find_fifo_message(|mtype| mtype != msgtyp)
     }
 
     /// Find the first message with a type less than or equal to |msgtyp|
@@ -178,18 +202,21 @@ impl MessageQueue {
         self.messages.values().map(|msgs| msgs.len()).sum()
     }
 
-    /// Get message by index (for MSG_COPY)
+    /// Get message by FIFO index (for MSG_COPY)
     pub fn get_message_by_index(&self, index: usize) -> Option<&Message> {
-        let mut current_index = 0;
-
-        // Iterate over all messages in order of message type
-        for messages in self.messages.values() {
-            if index < current_index + messages.len() {
-                return messages.get(index - current_index);
-            }
-            current_index += messages.len();
+        let total = self.get_total_message_count();
+        if index >= total {
+            return None;
         }
-        None
+
+        let mut ordered: Vec<&Message> = Vec::with_capacity(total);
+        for messages in self.messages.values() {
+            for message in messages {
+                ordered.push(message);
+            }
+        }
+        let (_, selected, _) = ordered.select_nth_unstable_by_key(index, |message| message.seq);
+        Some(*selected)
     }
 
     /// Remove the message by specified type and index
@@ -217,6 +244,35 @@ impl MessageQueue {
         }
 
         Err(AxError::from(LinuxError::ENOMSG)) // ENOMSG
+    }
+}
+
+fn queue_would_exceed(queue: &MessageQueue, data_len: usize) -> bool {
+    let would_exceed_bytes = queue.total_bytes + data_len > queue.msqid_ds.msg_qbytes as usize;
+    let would_exceed_messages =
+        (queue.msqid_ds.msg_qnum + 1) as usize > queue.msqid_ds.msg_qbytes as usize;
+    would_exceed_bytes || would_exceed_messages
+}
+
+fn find_matching_message<'a>(
+    queue: &'a MessageQueue,
+    msgtyp: i64,
+    flags: &MsgRcvFlags,
+) -> Option<(i64, &'a [u8])> {
+    match msgtyp {
+        0 => queue.find_first_message(),
+        typ if typ > 0 => {
+            if flags.contains(MsgRcvFlags::MSG_EXCEPT) {
+                queue.find_message_not_equal(typ)
+            } else {
+                queue.find_message_by_type(typ)
+            }
+        }
+        typ if typ < 0 => {
+            let abs_typ = typ.abs();
+            queue.find_message_less_equal(abs_typ)
+        }
+        _ => None,
     }
 }
 
@@ -311,9 +367,9 @@ bitflags::bitflags! {
         /// Truncate message if too long (instead of failing)
         const MSG_NOERROR = 0o10000;
         /// For internal use - mark as COPIED
-        const MSG_COPY = 0o20000;
+        const MSG_COPY = 0o40000;
         /// Receive any message except of specified type (Linux extension)
-        const MSG_EXCEPT = 0o2000;
+        const MSG_EXCEPT = 0o20000;
     }
 }
 
@@ -434,22 +490,26 @@ pub fn sys_msgsnd(
     let current_pid = proc_data.proc.pid();
     let flags = MsgSndFlags::from_bits_truncate(msgflg);
 
-    let msg_queue = {
+    let msg_queue_ref = {
         let msg_manager = MSG_MANAGER.lock();
         msg_manager
             .get_queue_by_msqid(msqid)
             .ok_or(AxError::from(LinuxError::EINVAL))? // EINVAL - queue does not exist
     };
 
-    let mut msg_queue = msg_queue.lock();
-
-    if !has_ipc_permission(
-        &msg_queue.msqid_ds.msg_perm,
-        current_uid as _,
-        current_gid as _,
-        true,
-    ) {
-        return Err(AxError::from(LinuxError::EACCES)); // EACCES
+    {
+        let msg_queue = msg_queue_ref.lock();
+        if !has_ipc_permission(
+            &msg_queue.msqid_ds.msg_perm,
+            current_uid as _,
+            current_gid as _,
+            true,
+        ) {
+            return Err(AxError::from(LinuxError::EACCES)); // EACCES
+        }
+        if msg_queue.mark_removed {
+            return Err(AxError::from(LinuxError::EIDRM)); // EIDRM
+        }
     }
 
     // read message from user space
@@ -463,50 +523,36 @@ pub fn sys_msgsnd(
     // read data part
     let mtext_ptr = unsafe { core::ptr::addr_of!((*msgp).mtext) };
     let data_vec = vm_load(mtext_ptr.cast::<u8>(), msgsz)?;
+    let data_len = data_vec.len();
 
-    // check if the message queue is marked for removal
-    // Note: According to Linux manpage, both byte count and message count
-    // are limited by msg_qbytes field (this appears to be the actual behavior)
-    let would_exceed_bytes =
-        msg_queue.total_bytes + data_vec.len() > msg_queue.msqid_ds.msg_qbytes as usize;
-    let would_exceed_messages =
-        (msg_queue.msqid_ds.msg_qnum + 1) as usize > msg_queue.msqid_ds.msg_qbytes as usize;
+    loop {
+        let mut msg_queue = msg_queue_ref.lock();
+        if msg_queue.mark_removed {
+            return Err(AxError::from(LinuxError::EIDRM)); // EIDRM
+        }
 
-    if would_exceed_bytes || would_exceed_messages {
-        // If the non-blocking flag is specified, return an error immediately
+        if !queue_would_exceed(&msg_queue, data_len) {
+            msg_queue.enqueue_message(mtype, data_vec)?;
+            msg_queue.msqid_ds.msg_lspid = current_pid as _;
+            msg_queue.msqid_ds.msg_stime = monotonic_time_nanos() as _;
+
+            let recv_wait_queue = msg_queue.recv_wait_queue.clone();
+            drop(msg_queue);
+            recv_wait_queue.wake(usize::MAX, u32::MAX);
+            return Ok(0);
+        }
+
         if flags.contains(MsgSndFlags::IPC_NOWAIT) {
             return Err(AxError::from(LinuxError::EAGAIN)); // EAGAIN
         }
 
-        // TODO:
-        warn!("sys_msgsnd: blocking send not implemented, returning EAGAIN");
-        // Otherwise, block and wait (blocking logic needs to be implemented
-        // here) In the actual implementation, this should:
-        // - Add the current task to the wait queue
-        // - Yield the CPU and wait to be woken up when there is space in the
-        //   queue
-        // - After being woken up, recheck the condition
-        // Note: It may be interrupted by a signal returning EINTR, or the queue
-        // may be deleted returning EIDRM
-
-        return Err(AxError::from(LinuxError::EAGAIN)); // EAGAIN
+        let send_wait_queue = msg_queue.send_wait_queue.clone();
+        drop(msg_queue);
+        let _ = send_wait_queue.wait_if(u32::MAX, None, || {
+            let msg_queue = msg_queue_ref.lock();
+            !msg_queue.mark_removed && queue_would_exceed(&msg_queue, data_len)
+        })?;
     }
-
-    msg_queue.enqueue_message(mtype, data_vec)?;
-
-    msg_queue.msqid_ds.msg_lspid = current_pid as _;
-
-    msg_queue.msqid_ds.msg_stime = monotonic_time_nanos() as _;
-
-    // note:msg_qnum and msg_cbytes updated in enqueue_message
-
-    // TODO:
-    warn!("sys_msgsnd: wakeup of waiting receivers not implemented");
-    // If there are processes waiting to receive messages, wake them up
-    // In the actual implementation, this should:
-    // - Check if there are tasks in the message queue's wait queue
-    // - If so, wake up these tasks
-    Ok(0)
 }
 
 pub fn sys_msgrcv(
@@ -518,7 +564,20 @@ pub fn sys_msgrcv(
 ) -> AxResult<isize> {
     // Parse flags and get current process information
 
-    let flags = MsgRcvFlags::from_bits_truncate(msgflg);
+    let mut flags = MsgRcvFlags::from_bits_truncate(msgflg);
+    const IPC_NOWAIT_RAW: i32 = 0o4000;
+    const MSG_NOERROR_RAW: i32 = 0o10000;
+    const MSG_EXCEPT_RAW: i32 = 0o20000;
+    const MSG_COPY_RAW: i32 = 0o40000;
+    let msg_copy = (msgflg & MSG_COPY_RAW) != 0;
+    let msg_except = (msgflg & MSG_EXCEPT_RAW) != 0;
+    let ipc_nowait = (msgflg & IPC_NOWAIT_RAW) != 0;
+    let msg_noerror = (msgflg & MSG_NOERROR_RAW) != 0;
+    if msg_except {
+        flags |= MsgRcvFlags::MSG_EXCEPT;
+    } else {
+        flags.remove(MsgRcvFlags::MSG_EXCEPT);
+    }
     let current = current();
     let thread = current.as_thread();
     let proc_data = &thread.proc_data;
@@ -528,24 +587,26 @@ pub fn sys_msgrcv(
     let current_pid = proc_data.proc.pid();
 
     // Check validity of flag combinations
-    if flags.contains(MsgRcvFlags::MSG_COPY) {
-        if !flags.contains(MsgRcvFlags::IPC_NOWAIT) {
+    if msg_copy {
+        if !ipc_nowait {
             return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - MSG_COPY must be used with IPC_NOWAIT
         }
-        if flags.contains(MsgRcvFlags::MSG_EXCEPT) {
+        if msg_except {
             return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - MSG_COPY and MSG_EXCEPT are mutually exclusive
         }
     }
-
+    if msgtyp == i64::MIN {
+        return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - invalid msgtyp (abs overflow)
+    }
     // Get the message queue
-    let msg_queue = {
+    let msg_queue_ref = {
         let msg_manager = MSG_MANAGER.lock();
         msg_manager
             .get_queue_by_msqid(msqid)
             .ok_or(AxError::from(LinuxError::EINVAL))? // EINVAL
     };
 
-    let mut msg_queue = msg_queue.lock();
+    let mut msg_queue = msg_queue_ref.lock();
 
     // Permission check
     if !has_ipc_permission(
@@ -562,9 +623,12 @@ pub fn sys_msgrcv(
     }
 
     // Message matching logic (distinguish between MSG_COPY and normal mode)
-    let (mtype, data_slice, index, should_remove) = if flags.contains(MsgRcvFlags::MSG_COPY) {
+    let (mtype, data_slice, index, should_remove) = if msg_copy {
         // MSG_COPY mode: msgtyp is the message index
-        let index = msgtyp as usize;
+        if msgtyp < 0 {
+            return Err(AxError::from(LinuxError::EINVAL)); // EINVAL - MSG_COPY requires non-negative index
+        }
+        let index = usize::try_from(msgtyp).map_err(|_| AxError::from(LinuxError::EINVAL))?; // EINVAL - index out of range
 
         // Check if the index is valid
         if index >= msg_queue.get_total_message_count() {
@@ -578,51 +642,36 @@ pub fn sys_msgrcv(
 
         (message.mtype, &message.data[..], index, false) // should_remove = false
     } else {
-        // Normal mode: msgtyp is the message type
-        let matched_message = match msgtyp {
-            0 => msg_queue.find_first_message(), // First message
-            typ if typ > 0 => {
-                if flags.contains(MsgRcvFlags::MSG_EXCEPT) {
-                    msg_queue.find_message_not_equal(typ) // Type not equal to msgtyp
-                } else {
-                    msg_queue.find_message_by_type(typ) // Type equal to msgtyp
-                }
+        loop {
+            if msg_queue.mark_removed {
+                return Err(AxError::from(LinuxError::EIDRM)); // EIDRM
             }
-            typ if typ < 0 => {
-                let abs_typ = typ.abs();
-                msg_queue.find_message_less_equal(abs_typ) // Type ≤ |msgtyp|
+
+            let matched_message = find_matching_message(&msg_queue, msgtyp, &flags);
+            if let Some((mtype, data_slice)) = matched_message {
+                // Index is always 0 in normal mode
+                let index = 0;
+                break (mtype, data_slice, index, true);
             }
-            _ => None,
-        };
 
-        // Index is always 0 in normal mode
-        let index = 0;
-
-        // Handle no message situation
-        let (mtype, data_slice) = match matched_message {
-            Some((mtype, data_slice)) => (mtype, data_slice),
-            None => {
-                if flags.contains(MsgRcvFlags::IPC_NOWAIT) {
-                    return Err(AxError::from(LinuxError::ENOMSG)); // ENOMSG
-                }
-
-                // TODO:
-                warn!("sys_msgrcv: blocking receive not implemented, returning ENOMSG");
-                // The complete implementation should:
-                // - Add the current task to the receive wait queue
-                // - Block and wait, possibly interrupted by signals (EINTR) or queue removal
-                //   (EIDRM)
-                // Simplified: blocking is not supported, directly return an error
+            if ipc_nowait {
                 return Err(AxError::from(LinuxError::ENOMSG)); // ENOMSG
             }
-        };
 
-        (mtype, data_slice, index, true) // should_remove = true
+            let recv_wait_queue = msg_queue.recv_wait_queue.clone();
+            drop(msg_queue);
+            let _ = recv_wait_queue.wait_if(u32::MAX, None, || {
+                let msg_queue = msg_queue_ref.lock();
+                !msg_queue.mark_removed
+                    && find_matching_message(&msg_queue, msgtyp, &flags).is_none()
+            })?;
+            msg_queue = msg_queue_ref.lock();
+        }
     };
 
     // Message size check
     if data_slice.len() > msgsz {
-        if flags.contains(MsgRcvFlags::MSG_NOERROR) {
+        if msg_noerror {
             // MSG_NOERROR: Truncate the message and continue
         } else {
             // Without MSG_NOERROR: return an error
@@ -650,17 +699,20 @@ pub fn sys_msgrcv(
     if should_remove {
         msg_queue.msqid_ds.msg_lrpid = current_pid as _;
         msg_queue.msqid_ds.msg_rtime = monotonic_time_nanos() as _;
-
-        // TODO:
-        warn!("sys_msgrcv: wakeup of waiting senders not implemented");
-        // Wake up waiting senders (Simplified: not implemented)
-        // while let Some(task) = msg_queue.send_wait_queue.pop_front() {
-        //     wakeup(task);
-        // }
     } else {
         // MSG_COPY mode: only update last receiver info, do not update queue statistics
         msg_queue.msqid_ds.msg_lrpid = current_pid as _;
         msg_queue.msqid_ds.msg_rtime = monotonic_time_nanos() as _;
+    }
+
+    let send_wait_queue = msg_queue.send_wait_queue.clone();
+    let should_cleanup = msg_queue.mark_removed && msg_queue.msqid_ds.msg_qnum == 0;
+    drop(msg_queue);
+    if should_remove {
+        send_wait_queue.wake(usize::MAX, u32::MAX);
+    }
+    if should_cleanup {
+        MSG_MANAGER.lock().remove_msqid(msqid);
     }
 
     Ok(copy_len as isize)
@@ -836,7 +888,8 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
         msg_queue.msqid_ds.msg_perm.mode = user_buf.msg_perm.mode & 0o777; // Only take permission bits
 
         // Update queue size limit (requires privilege check)
-        if user_buf.msg_qbytes != msg_queue.msqid_ds.msg_qbytes {
+        let old_qbytes = msg_queue.msqid_ds.msg_qbytes;
+        if user_buf.msg_qbytes != old_qbytes {
             if user_buf.msg_qbytes > MSGMNB as u64 && !is_privileged {
                 return Err(AxError::from(LinuxError::EPERM)); // EPERM - requires privilege to exceed MSGMNB
             }
@@ -846,33 +899,30 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
         // Update modification time
         msg_queue.msqid_ds.msg_ctime = monotonic_time_nanos() as _;
 
+        if user_buf.msg_qbytes > old_qbytes {
+            let send_wait_queue = msg_queue.send_wait_queue.clone();
+            drop(msg_queue);
+            send_wait_queue.wake(usize::MAX, u32::MAX);
+        }
+
         return Ok(0);
     }
     if cmd == IPC_RMID {
-        // Mark the queue as removed
         msg_queue.mark_removed = true;
-
-        // If the queue is empty, delete it immediately
-        if msg_queue.msqid_ds.msg_qnum == 0 {
-            drop(msg_queue); // Release the lock to avoid deadlock
-
-            MSG_MANAGER.lock().remove_msqid(msqid);
-
-            // TODO:
-            warn!(
-                "sys_msgctl[IPC_RMID]: wakeup of waiting processes after queue deletion not \
-                 implemented"
-            );
-            // Wake up all waiting processes (simplified: not implemented yet)
-            // According to man-page: wake up all waiting readers and writers (returning
-            // EIDRM error)
-
-            return Ok(0);
-        }
-
-        // If the queue is not empty, only mark it as removed and wait for all messages
-        // to be taken before automatic deletion Update modification time
         msg_queue.msqid_ds.msg_ctime = monotonic_time_nanos() as _;
+        // Note: Linux keeps queued messages until drained; we clear immediately.
+        msg_queue.messages.clear();
+        msg_queue.total_bytes = 0;
+        msg_queue.msqid_ds.msg_cbytes = 0;
+        msg_queue.msqid_ds.msg_qnum = 0;
+
+        let send_wait_queue = msg_queue.send_wait_queue.clone();
+        let recv_wait_queue = msg_queue.recv_wait_queue.clone();
+        drop(msg_queue);
+        MSG_MANAGER.lock().remove_msqid(msqid);
+
+        send_wait_queue.wake(usize::MAX, u32::MAX);
+        recv_wait_queue.wake(usize::MAX, u32::MAX);
 
         return Ok(0);
     }

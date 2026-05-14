@@ -325,9 +325,12 @@ impl Starry {
         uboot_config: Option<PathBuf>,
         persistence: SnapshotPersistence,
     ) -> anyhow::Result<ResolvedStarryRequest> {
-        let (request, snapshot) =
-            self.app
-                .prepare_starry_request(args, qemu_config, uboot_config)?;
+        let (request, snapshot) = self.app.prepare_starry_request(
+            args,
+            qemu_config,
+            uboot_config,
+            build::resolve_build_info_path,
+        )?;
         if persistence.should_store() {
             self.app.store_starry_snapshot(&snapshot)?;
         }
@@ -408,7 +411,7 @@ impl Starry {
 
         match action {
             quick_start::QuickQemuAction::Build => {
-                quick_start::refresh_qemu_configs(self.app.workspace_root(), platform)?;
+                quick_start::refresh_qemu_build_config(self.app.workspace_root(), platform)?;
                 rootfs::ensure_quick_start_qemu_rootfs(self.app.workspace_root(), arch).await?;
                 let request = self.prepare_request(
                     Self::quick_start_build_args(
@@ -425,7 +428,7 @@ impl Starry {
                 self.run_build_request(request).await
             }
             quick_start::QuickQemuAction::Run => {
-                quick_start::ensure_qemu_configs(self.app.workspace_root(), platform)?;
+                quick_start::ensure_qemu_build_config(self.app.workspace_root(), platform)?;
                 let request = self.prepare_request(
                     Self::quick_start_build_args(
                         arch,
@@ -434,10 +437,7 @@ impl Starry {
                             platform,
                         ),
                     ),
-                    Some(quick_start::tmp_qemu_run_config_path(
-                        self.app.workspace_root(),
-                        platform,
-                    )),
+                    None,
                     None,
                     SnapshotPersistence::Store,
                 )?;
@@ -482,6 +482,10 @@ impl Starry {
         )?;
         self.run_uboot_request(request).await
     }
+}
+
+pub(crate) fn default_qemu_config_template_path(workspace_root: &Path, arch: &str) -> PathBuf {
+    workspace_root.join(format!("os/StarryOS/configs/qemu/qemu-{arch}.toml"))
 }
 
 #[cfg(test)]

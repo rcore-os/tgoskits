@@ -149,6 +149,10 @@ impl<T> UserPtr<T> {
         VirtAddr::from_ptr_of(self.0)
     }
 
+    pub fn as_ptr(&self) -> *mut T {
+        self.0
+    }
+
     pub fn cast<U>(self) -> UserPtr<U> {
         UserPtr(self.0 as *mut U)
     }

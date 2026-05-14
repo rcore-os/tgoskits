@@ -1,4 +1,6 @@
 use ax_plat::console::ConsoleIf;
+#[cfg(feature = "irq")]
+use ax_plat::console::ConsoleIrqEvent;
 
 struct ConsoleIfImpl;
 
@@ -45,7 +47,7 @@ impl ConsoleIf for ConsoleIfImpl {
     fn set_input_irq_enabled(_enabled: bool) {}
 
     #[cfg(feature = "irq")]
-    fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
-        ax_plat::console::ConsoleIrqEvent::empty()
+    fn handle_irq() -> ConsoleIrqEvent {
+        ConsoleIrqEvent::empty()
     }
 }

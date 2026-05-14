@@ -46,6 +46,10 @@ impl Ext4FileSystem {
         self.reset_runtime_from_superblock(block_dev)
     }
 
+    fn clear_recovery_state(&mut self) {
+        self.superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+    }
+
     fn journal_blocks<B: BlockDevice>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
@@ -71,9 +75,9 @@ impl Ext4FileSystem {
 
         // Mount flow:
         // 1. read and verify the superblock,
-        // 2. load group descriptors and allocator state,
-        // 3. repair bootstrap directories if they are missing,
-        // 4. initialize journal replay state when journaling is enabled.
+        // 2. load only enough metadata to locate/replay the journal,
+        // 3. reload metadata from the recovered home blocks,
+        // 4. repair bootstrap directories if they are missing.
         let mut superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
 
         if superblock.s_magic != EXT4_SUPER_MAGIC {
@@ -134,10 +138,110 @@ impl Ext4FileSystem {
         // the logs.
         debug_super_and_desc(&fs.superblock, &fs);
 
+        // Journal bootstrap has two stages: ensure the journal inode exists,
+        // then load its superblock and enable replay on the device wrapper.
+        {
+            let needs_recovery = fs
+                .superblock
+                .has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER);
+
+            if fs.superblock.has_journal() {
+                let journal_inode_num = InodeNumber::new(JOURNAL_FILE_INODE as u32)?;
+                let journal_inode = fs
+                    .get_inode_by_num(block_dev, journal_inode_num)
+                    .inspect_err(|e| {
+                        error!("Failed to load journal inode {journal_inode_num}: {e}");
+                    })?;
+                let journal_exists = journal_inode.i_mode != 0;
+
+                if fs
+                    .superblock
+                    .has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL)
+                    && !journal_exists
+                {
+                    if needs_recovery {
+                        error!("Journal inode missing while filesystem needs recovery");
+                        return Err(Ext4Error::corrupted());
+                    }
+                    create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
+                }
+            }
+            if needs_recovery && !fs.superblock.has_journal() {
+                error!("Filesystem needs journal recovery, but no journal is present");
+                return Err(Ext4Error::corrupted());
+            }
+            if (block_dev.is_use_journal() || needs_recovery) && fs.superblock.has_journal() {
+                // By this point the journal inode must exist, so resolve its
+                // first data block and hand the loaded journal superblock to
+                // `Jbd2Dev`.
+                let mut j_inode = fs
+                    .get_inode_by_num(block_dev, InodeNumber::new(JOURNAL_FILE_INODE as u32)?)
+                    .expect("load journal inode failed");
+
+                let journal_blocks =
+                    fs.journal_blocks(block_dev, &mut j_inode)
+                        .inspect_err(|e| {
+                            error!("Failed to resolve journal blocks: {e}");
+                        })?;
+                let journal_first_block = journal_blocks.first().copied().ok_or_else(|| {
+                    error!("Journal has no mapped blocks");
+                    Ext4Error::corrupted()
+                })?;
+
+                fs.journal_sb_block_start = Some(journal_first_block);
+                let journal_data = fs
+                    .datablock_cache
+                    .get_or_load(block_dev, journal_first_block)
+                    .expect("load journal superblock block failed")
+                    .data
+                    .clone();
+
+                let j_sb = JournalSuperBllockS::from_disk_bytes(&journal_data);
+
+                block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks)?;
+
+                if needs_recovery {
+                    // Replay before touching ordinary filesystem metadata.
+                    // Until this completes, home blocks may be stale. A clean
+                    // filesystem with journaling enabled still needs JBD2
+                    // state initialized for future metadata writes, but it
+                    // must not force replay without the ext4 recovery bit.
+                    let original_journal_use = block_dev.is_use_journal();
+                    if !original_journal_use {
+                        info!("Filesystem needs journal recovery; enabling replay for mount");
+                        block_dev.set_journal_use(true);
+                    }
+                    let replay_status = block_dev.journal_replay_checked();
+                    block_dev.set_journal_use(original_journal_use);
+                    if replay_status != ReplayStatus::Complete {
+                        error!("Journal replay did not complete: status={replay_status:?}");
+                        return Err(Ext4Error::corrupted());
+                    }
+
+                    // Journal replay can update the superblock, group
+                    // descriptors, bitmaps, inode table, and directory blocks.
+                    // Drop all metadata read before replay and continue
+                    // mounting from the recovered on-disk state.
+                    fs.reload_after_journal_replay(block_dev)?;
+                    fs.clear_recovery_state();
+                }
+            }
+            // If the filesystem was created without a journal (e.g. small images
+            // where mkfs.ext4 omits it), disable journal_use so that metadata
+            // writes bypass the journal path instead of hitting the
+            // "system uninitialized" guard on every write.
+            if !fs.superblock.has_journal() {
+                block_dev.set_journal_use(false);
+            }
+        }
+
         // rootinode check !
         debug!("Checking root directory...");
         {
-            let root_inode = fs.get_root(block_dev).map_err(|_| Ext4Error::io())?;
+            let root_inode = fs.get_root(block_dev).map_err(|e| {
+                error!("Failed to load root inode: {e}");
+                Ext4Error::io()
+            })?;
             if root_inode.i_mode == 0 || !root_inode.is_dir() {
                 warn!(
                     "Root inode is uninitialized or not a directory, creating root and \
@@ -171,70 +275,10 @@ impl Ext4FileSystem {
                         warn!("/lost+found missing and create failed");
                     }
                 }
-                Err(err) => return Err(err),
-            }
-        }
-
-        // Journal bootstrap has two stages: ensure the journal inode exists,
-        // then load its superblock and enable replay on the device wrapper.
-        {
-            if fs.superblock.has_journal() {
-                let mut journal_exists = true;
-                fs.modify_inode(
-                    block_dev,
-                    InodeNumber::new(JOURNAL_FILE_INODE as u32)?,
-                    |ji| {
-                        journal_exists = ji.i_mode != 0;
-                    },
-                )
-                .expect("file system error panic!");
-
-                if fs
-                    .superblock
-                    .has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL)
-                    && !journal_exists
-                {
-                    create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
+                Err(err) => {
+                    error!("Failed to resolve /lost+found: {err}");
+                    return Err(err);
                 }
-            }
-            if block_dev.is_use_journal() && fs.superblock.has_journal() {
-                // By this point the journal inode must exist, so resolve its
-                // first data block and hand the loaded journal superblock to
-                // `Jbd2Dev`.
-                let mut j_inode = fs
-                    .get_inode_by_num(block_dev, InodeNumber::new(JOURNAL_FILE_INODE as u32)?)
-                    .expect("load journal inode failed");
-
-                let journal_blocks = fs.journal_blocks(block_dev, &mut j_inode)?;
-                let journal_first_block = journal_blocks
-                    .first()
-                    .copied()
-                    .ok_or_else(Ext4Error::corrupted)?;
-
-                fs.journal_sb_block_start = Some(journal_first_block);
-                let journal_data = fs
-                    .datablock_cache
-                    .get_or_load(block_dev, journal_first_block)
-                    .expect("load journal superblock block failed")
-                    .data
-                    .clone();
-
-                let j_sb = JournalSuperBllockS::from_disk_bytes(&journal_data);
-
-                block_dev.set_journal_superblock_with_mapping(j_sb, journal_blocks)?;
-
-                // Replay after reading the filesystem metadata. Superblock and
-                // descriptor writes are already forced to media to avoid stale
-                // reads during fast recovery.
-                if block_dev.journal_replay_checked() != ReplayStatus::Complete {
-                    return Err(Ext4Error::corrupted());
-                }
-
-                // Journal replay can update the superblock, group descriptors,
-                // bitmaps, inode table, and directory blocks. Drop all metadata
-                // read before replay and continue mounting from the recovered
-                // on-disk state.
-                fs.reload_after_journal_replay(block_dev)?;
             }
         }
 
@@ -272,7 +316,10 @@ impl Ext4FileSystem {
                     if expected_inode != stored_inode {
                         error!(
                             "Inode bitmap checksum mismatch group=0 expected={expected_inode:#x} \
-                             stored={stored_inode:#x}"
+                             stored={stored_inode:#x} inode_bitmap_block={inode_bitmap_blk} \
+                             inode_table_block={} flags={:#x}",
+                            g0.inode_table(),
+                            g0.bg_flags
                         );
                         return Err(Ext4Error::checksum());
                     }
@@ -285,7 +332,10 @@ impl Ext4FileSystem {
                     if expected_block != stored_block {
                         error!(
                             "Block bitmap checksum mismatch group=0 expected={expected_block:#x} \
-                             stored={stored_block:#x}"
+                             stored={stored_block:#x} block_bitmap_block={data_bitmap_blk} \
+                             inode_table_block={} flags={:#x}",
+                            g0.inode_table(),
+                            g0.bg_flags
                         );
                         return Err(Ext4Error::checksum());
                     }
@@ -334,19 +384,11 @@ impl Ext4FileSystem {
         info!("  - free blocks: {}", fs.superblock.free_blocks_count());
         info!("  - total inodes: {}", fs.superblock.s_inodes_count);
         info!("  - free inodes: {}", fs.superblock.s_free_inodes_count);
-        // Flush caches once at the end of mount so any bootstrap repairs are
-        // persisted before normal operation begins.
-        fs.datablock_cache
-            .flush_all(block_dev)
-            .expect("flush failed!");
-        fs.bitmap_cache.flush_all(block_dev).expect("flush failed!");
-        fs.inodetable_cahce
-            .flush_all(block_dev)
-            .expect("flush failed!");
-
-        // Write the superblock with EXT4_VALID_FS cleared so that a later mount
+        // Flush metadata once at the end of mount so any replay state changes
+        // or bootstrap repairs are persisted before normal operation begins.
+        // The superblock is written with EXT4_VALID_FS cleared so a later mount
         // can distinguish an unclean shutdown from a real EXT4_ERROR_FS state.
-        fs.sync_superblock(block_dev)?;
+        fs.sync_filesystem(block_dev)?;
 
         Ok(fs)
     }

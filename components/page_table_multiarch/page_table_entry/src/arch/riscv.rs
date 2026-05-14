@@ -22,34 +22,33 @@ bitflags::bitflags! {
         const U =   1 << 4;
         /// Designates a global mapping.
         const G =   1 << 5;
-        /// Indicates the virtual page has been read, written, or fetched from
-        /// since the last time the A bit was cleared.
+        /// Indicates the virtual page has been read, written, or fetched from since the last time the A bit was cleared.
+        /// When A is set 1, indicates the virtual page accessable. When A is set 0, accessing causes a page fault.
         const A =   1 << 6;
-        /// Indicates the virtual page has been written since the last time the
-        /// D bit was cleared.
+        /// Indicates the virtual page has been written since the last time the D bit was cleared.
+        /// When D is set 0, writing will cause a Page Fault (Store).
         const D =   1 << 7;
-        // xuantie-c9xx specific flags
-        // SO, C, B defined both in XuanTie-Openc910 and XuanTie-C906
-        // SH only defined in XuanTie-Openc910
-        /// SO – Strong ordered memory (1 << 63)
-        #[cfg(feature = "xuantie-c9xx")]
-        const SO =  (1 << 63);
-        /// C – Cacheable  (1 << 62)
-        #[cfg(feature = "xuantie-c9xx")]
-        const C =   (1 << 62);
-        /// B – Bufferable (1 << 61)
-        #[cfg(feature = "xuantie-c9xx")]
-        const B =   (1 << 61);
-        /// SH – Shareable  (1 << 60)
-        #[cfg(feature = "xuantie-c9xx")]
-        const SH =  (1 << 60);
 
-        /// xuantie-c9xx device memory flags
+        /// CPU T-Head XUANTIE-C9xx extended flags
+        /// Reference datasheet:
+        /// https://github.com/XUANTIE-RV/openc910/blob/main/doc/%E7%8E%84%E9%93%81C910%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C_20240627.pdf
+        ///
         #[cfg(feature = "xuantie-c9xx")]
-        const XUANTIE_C9XX_DEVICE = Self::SO.bits() | Self::B.bits();
-        /// xuantie-c9xx normal memory flags
+        /// Trustable
+        const SEC =   1 << 59;
         #[cfg(feature = "xuantie-c9xx")]
-        const XUANTIE_C9XX_NORMAL = Self::C.bits() | Self::B.bits() | Self::SH.bits();
+        /// Shareable
+        const  SH =   1 << 60;
+        #[cfg(feature = "xuantie-c9xx")]
+        /// Bufferable
+        const   B =   1 << 61;
+        #[cfg(feature = "xuantie-c9xx")]
+        /// Cacheable
+        const   C =   1 << 62;
+        #[cfg(feature = "xuantie-c9xx")]
+        /// Strong order (Device)
+        const  SO =   1 << 63;
+
     }
 }
 
@@ -80,7 +79,7 @@ impl From<MappingFlags> for PTEFlags {
         if f.is_empty() {
             return Self::empty();
         }
-        let mut ret = Self::V | Self::A | Self::D;
+        let mut ret = Self::V;
         if f.contains(MappingFlags::READ) {
             ret |= Self::R;
         }
@@ -93,14 +92,6 @@ impl From<MappingFlags> for PTEFlags {
         if f.contains(MappingFlags::USER) {
             ret |= Self::U;
         }
-
-        #[cfg(feature = "xuantie-c9xx")]
-        if f.contains(MappingFlags::DEVICE) {
-            ret |= Self::XUANTIE_C9XX_DEVICE;
-        } else {
-            ret |= Self::XUANTIE_C9XX_NORMAL;
-        }
-
         ret
     }
 }
@@ -118,17 +109,43 @@ impl Rv64PTE {
     pub const fn empty() -> Self {
         Self(0)
     }
+
+    /// Set CPU PTE extension flags
+    /// mflags is current PTE MappingFlags
+    /// extended_flags are all the extended flag bits that need to be set
+    #[allow(unused)]
+    pub fn set_extended_flags(&mut self, mflags: MappingFlags, extended_flags: u64) -> PTEFlags {
+        #[cfg(feature = "xuantie-c9xx")]
+        {
+            // CPU T-Head XUANTIE-C9xx extended flags:
+            // Memory: Shareable, Bufferable, Cacheable, Non-strong-order
+            // Device: Shareable, Non-bufferable, Non-cacheable, Strong-order
+            if mflags.contains(MappingFlags::DEVICE) {
+                self.0 |= (PTEFlags::SH | PTEFlags::SO).bits() as u64;
+            } else {
+                self.0 |= (PTEFlags::SH | PTEFlags::B | PTEFlags::C).bits() as u64;
+            }
+            if mflags.contains(MappingFlags::UNCACHED) {
+                self.0 &= !((PTEFlags::B | PTEFlags::C).bits() as u64);
+            }
+        }
+        self.0 |= (extended_flags & !Self::PHYS_ADDR_MASK);
+        PTEFlags::from_bits_truncate(self.0 as usize)
+    }
 }
 
 impl GenericPTE for Rv64PTE {
     fn new_page(paddr: PhysAddr, mflags: MappingFlags, _is_huge: bool) -> Self {
-        let flags = PTEFlags::from(mflags);
-        debug_assert!(flags.intersects(PTEFlags::R | PTEFlags::X));
-        Self(flags.bits() as u64 | ((paddr.as_usize() >> 2) as u64 & Self::PHYS_ADDR_MASK))
+        let mut page = Self((paddr.as_usize() >> 2) as u64 & Self::PHYS_ADDR_MASK);
+        page.set_flags(mflags, _is_huge);
+        page
     }
 
     fn new_table(paddr: PhysAddr) -> Self {
-        Self(PTEFlags::V.bits() as u64 | ((paddr.as_usize() >> 2) as u64 & Self::PHYS_ADDR_MASK))
+        let mut table = Self::new_page(paddr, MappingFlags::empty(), false);
+        // Default table flags: PTEFlags::V
+        table.0 = (table.0 & !0x3ff) | PTEFlags::V.bits() as u64;
+        table
     }
 
     fn paddr(&self) -> PhysAddr {
@@ -144,10 +161,11 @@ impl GenericPTE for Rv64PTE {
             | ((paddr.as_usize() as u64 >> 2) & Self::PHYS_ADDR_MASK);
     }
 
-    fn set_flags(&mut self, flags: MappingFlags, _is_huge: bool) {
-        let flags = PTEFlags::from(flags);
+    fn set_flags(&mut self, mflags: MappingFlags, _is_huge: bool) {
+        let flags = PTEFlags::from(mflags) | PTEFlags::A | PTEFlags::D;
         debug_assert!(flags.intersects(PTEFlags::R | PTEFlags::X));
         self.0 = (self.0 & Self::PHYS_ADDR_MASK) | flags.bits() as u64;
+        self.set_extended_flags(mflags, 0);
     }
 
     fn bits(self) -> usize {

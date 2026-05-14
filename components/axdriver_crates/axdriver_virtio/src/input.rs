@@ -1,7 +1,7 @@
 use alloc::{borrow::ToOwned, string::String};
 
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
-use ax_driver_input::{Event, EventType, InputDeviceId, InputDriverOps};
+use ax_driver_input::{AbsInfo, Event, EventType, InputDeviceId, InputDriverOps};
 use virtio_drivers::{
     Hal,
     device::input::{InputConfigSelect, VirtIOInput as InnerDev},
@@ -84,5 +84,23 @@ impl<H: Hal, T: Transport> InputDriverOps for VirtIoInputDev<H, T> {
                 value: e.value,
             })
             .ok_or(DevError::Again)
+    }
+
+    fn get_prop_bits(&mut self, out: &mut [u8]) -> DevResult<usize> {
+        let bits = self.inner.prop_bits().map_err(as_dev_err)?;
+        let len = bits.len().min(out.len());
+        out[..len].copy_from_slice(&bits[..len]);
+        Ok(len)
+    }
+
+    fn get_abs_info(&mut self, axis: u8) -> DevResult<AbsInfo> {
+        let info = self.inner.abs_info(axis).map_err(as_dev_err)?;
+        Ok(AbsInfo {
+            min: info.min,
+            max: info.max,
+            fuzz: info.fuzz,
+            flat: info.flat,
+            res: info.res,
+        })
     }
 }

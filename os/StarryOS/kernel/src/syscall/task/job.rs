@@ -3,11 +3,12 @@ use ax_task::current;
 use starry_process::Pid;
 
 use crate::task::{
-    AsThread, get_process_data, get_process_group, register_process_group, register_session,
+    AsThread, get_process, get_process_data, get_process_group, register_process_group,
+    register_session,
 };
 
 pub fn sys_getsid(pid: Pid) -> AxResult<isize> {
-    Ok(get_process_data(pid)?.proc.group().session().sid() as _)
+    Ok(get_process(pid)?.group().session().sid() as _)
 }
 
 pub fn sys_setsid() -> AxResult<isize> {
@@ -27,7 +28,7 @@ pub fn sys_setsid() -> AxResult<isize> {
 }
 
 pub fn sys_getpgid(pid: Pid) -> AxResult<isize> {
-    Ok(get_process_data(pid)?.proc.group().pgid() as _)
+    Ok(get_process(pid)?.group().pgid() as _)
 }
 
 #[cfg(target_arch = "x86_64")]
