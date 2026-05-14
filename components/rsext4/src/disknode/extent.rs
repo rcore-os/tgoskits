@@ -19,6 +19,7 @@ impl Default for Ext4ExtentHeader {
 impl Ext4ExtentHeader {
     pub const EXT4_EXT_MAGIC: u16 = 0xF30A;
 
+    #[inline(always)]
     pub fn new() -> Self {
         Self {
             eh_magic: Self::EXT4_EXT_MAGIC,
@@ -66,6 +67,7 @@ impl Ext4Extent {
     pub const EXT_UNINIT_MAX_LEN: u16 = 32767;
     pub const EXT_UNWRITTEN_FLAG: u16 = 0x8000;
 
+    #[inline(always)]
     pub fn new(logic_start: LogicalBN, start_phy_block: u64, len: u16) -> Self {
         let high = (start_phy_block >> 32) as u16;
         let low = (start_phy_block & 0xffff_ffff) as u32;
@@ -77,27 +79,33 @@ impl Ext4Extent {
         }
     }
 
+    #[inline(always)]
     pub fn start_block(&self) -> u64 {
         (self.ee_start_hi as u64) << 32 | self.ee_start_lo as u64
     }
 
     /// Returns the logical length encoded by ext4's initialized/unwritten extent format.
+    #[inline(always)]
     pub fn len(&self) -> u32 {
         Self::decode_len(self.ee_len)
     }
 
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    #[inline(always)]
     pub fn is_unwritten(&self) -> bool {
         self.ee_len > Self::EXT_UNWRITTEN_FLAG
     }
 
+    #[inline(always)]
     pub fn is_initialized(&self) -> bool {
         !self.is_unwritten()
     }
 
+    #[inline]
     pub fn encode_len(len: u32, unwritten: bool) -> Option<u16> {
         if len == 0 {
             return None;
@@ -120,6 +128,7 @@ impl Ext4Extent {
         }
     }
 
+    #[inline(always)]
     pub fn decode_len(raw_len: u16) -> u32 {
         if raw_len == Self::EXT_INIT_MAX_LEN {
             Self::EXT_INIT_MAX_LEN as u32
@@ -128,6 +137,7 @@ impl Ext4Extent {
         }
     }
 
+    #[inline(always)]
     pub fn build_len_like(&self, len: u32) -> Option<u16> {
         Self::encode_len(len, self.is_unwritten())
     }

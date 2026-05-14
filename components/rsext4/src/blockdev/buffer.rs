@@ -11,6 +11,7 @@ pub struct BlockBuffer {
 
 impl BlockBuffer {
     /// Creates a zero-initialized block buffer.
+    #[inline]
     pub fn new(block_size: usize) -> Self {
         Self {
             buffer: vec![0u8; block_size].into_boxed_slice(),
@@ -18,26 +19,31 @@ impl BlockBuffer {
     }
 
     /// Returns the buffer as an immutable byte slice.
+    #[inline(always)]
     pub fn as_slice(&self) -> &[u8] {
         &self.buffer
     }
 
     /// Returns the buffer as a mutable byte slice.
+    #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.buffer
     }
 
     /// Returns the number of bytes in the buffer.
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.buffer.len()
     }
 
     /// Returns whether the buffer is empty.
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 
     /// Fills the buffer with zeros.
+    #[inline(always)]
     pub fn clear(&mut self) {
         self.buffer.fill(0);
     }

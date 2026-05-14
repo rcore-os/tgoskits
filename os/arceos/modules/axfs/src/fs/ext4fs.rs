@@ -436,11 +436,14 @@ impl VfsNodeOps for FileWrapper {
             let data = match self.inner {
                 Ext4Inner::Disk(ref inner) => {
                     let mut inner = inner.lock();
-                    let _ = lseek(&mut inner, &mut fs, file, offset as i64, SeekWhence::Set);
+                    lseek(&mut inner, &mut fs, file, offset as i64, SeekWhence::Set)
+                        .map_err(|_| VfsError::Io)?;
                     read_at(&mut inner, &mut fs, file, buf.len()).map_err(|_| VfsError::Io)?
                 }
                 Ext4Inner::Partition(ref inner) => {
                     let mut inner = inner.lock();
+                    lseek(&mut inner, &mut fs, file, offset as i64, SeekWhence::Set)
+                        .map_err(|_| VfsError::Io)?;
                     read_at(&mut inner, &mut fs, file, buf.len()).map_err(|_| VfsError::Io)?
                 }
             };

@@ -83,8 +83,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
     inode.i_links_count = 2;
     inode.i_size_lo = fs.block_size as u32;
     inode.i_size_high = 0;
-    inode.i_blocks_lo = (fs.block_size / 512) as u32;
-    inode.l_i_blocks_high = 0;
+    inode.set_blocks_count_from_fs_blocks(&fs.superblock, 1);
     build_file_block_mapping_with_inode_num(
         fs,
         &mut inode,
@@ -194,8 +193,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
     lost_inode.i_links_count = 2;
     lost_inode.i_size_lo = fs.block_size as u32;
     lost_inode.i_size_high = 0;
-    lost_inode.i_blocks_lo = (fs.block_size / 512) as u32;
-    lost_inode.l_i_blocks_high = 0;
+    lost_inode.set_blocks_count_from_fs_blocks(&fs.superblock, 1);
     lost_inode.i_flags =
         Ext4Inode::mask_flags_for_mode(dir_mode, root_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED);
     build_file_block_mapping_with_inode_num(

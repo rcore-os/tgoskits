@@ -56,26 +56,31 @@ impl Ext4Superblock {
 
 impl Ext4Superblock {
     /// Returns whether a compatible feature bit is enabled.
+    #[inline(always)]
     pub fn has_feature_compat(&self, feature: u32) -> bool {
         self.s_feature_compat & feature != 0
     }
 
     /// Returns whether an incompatible feature bit is enabled.
+    #[inline(always)]
     pub fn has_feature_incompat(&self, feature: u32) -> bool {
         self.s_feature_incompat & feature != 0
     }
 
     /// Returns whether a read-only compatible feature bit is enabled.
+    #[inline(always)]
     pub fn has_feature_ro_compat(&self, feature: u32) -> bool {
         self.s_feature_ro_compat & feature != 0
     }
 
     /// Returns whether the extent feature is enabled.
+    #[inline(always)]
     pub fn has_extents(&self) -> bool {
         self.has_feature_incompat(Self::EXT4_FEATURE_INCOMPAT_EXTENTS)
     }
 
     /// Returns whether the journal feature is enabled.
+    #[inline(always)]
     pub fn has_journal(&self) -> bool {
         self.has_feature_compat(Self::EXT4_FEATURE_COMPAT_HAS_JOURNAL)
     }

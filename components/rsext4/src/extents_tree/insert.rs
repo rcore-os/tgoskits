@@ -70,7 +70,7 @@ impl<'a> ExtentTree<'a> {
                 // Root split: promote the old inline root into a real block and
                 // rebuild the inode root as an index node.
                 let new_left_block = fs.alloc_block(block_dev)?;
-                self.add_inode_sectors_for_block();
+                self.add_inode_sectors_for_block(&fs.superblock);
                 debug!(
                     "ExtentTree::insert_extent: root split occurred, new_left_block={} \
                      split_info={{start_block={}, phy_block={}}}",
@@ -285,7 +285,7 @@ impl<'a> ExtentTree<'a> {
 
                 // Allocate a new metadata block for the right half.
                 let new_phy_block = fs.alloc_block(block_dev)?;
-                self.add_inode_sectors_for_block();
+                self.add_inode_sectors_for_block(&fs.superblock);
                 debug!(
                     "insert_recursive: allocated new block for right leaf node: {new_phy_block}"
                 );
@@ -416,7 +416,7 @@ impl<'a> ExtentTree<'a> {
 
                     // Allocate a block for the new right-hand index node.
                     let new_phy_block = fs.alloc_block(block_dev)?;
-                    self.add_inode_sectors_for_block();
+                    self.add_inode_sectors_for_block(&fs.superblock);
                     debug!(
                         "insert_recursive: allocated new block for right index node: \
                          {new_phy_block}"

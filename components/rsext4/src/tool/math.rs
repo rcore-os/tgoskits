@@ -24,6 +24,7 @@ const EXT4_NDIR_BLOCKS: u128 = 12;
 const MAX_LFS_FILESIZE: u128 = i64::MAX as u128;
 
 /// Integer ceil division for positive integers.
+#[inline(always)]
 const fn div_ceil_u128(n: u128, d: u128) -> u128 {
     if d == 0 { 0 } else { n.div_ceil(d) }
 }

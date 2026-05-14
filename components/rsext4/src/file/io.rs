@@ -139,10 +139,10 @@ fn truncate_inode<B: BlockDevice>(
         let extent_tree_blocks = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
             .external_node_blocks(device)?
             .len() as u64;
-        let iblocks_used =
-            alloc_blocks.saturating_add(extent_tree_blocks) * (fs.block_size as u64 / 512);
-        inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
-        inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
+        inode.set_blocks_count_from_fs_blocks(
+            &fs.superblock,
+            alloc_blocks.saturating_add(extent_tree_blocks),
+        );
 
         fs.finalize_inode_update(
             device,
@@ -185,9 +185,7 @@ fn truncate_inode<B: BlockDevice>(
 
     inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
     inode.i_size_high = (truncate_size >> 32) as u32;
-    let iblocks_used = new_blocks.saturating_mul(fs.block_size as u64 / 512);
-    inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
-    inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
+    inode.set_blocks_count_from_fs_blocks(&fs.superblock, new_blocks);
 
     fs.finalize_inode_update(
         device,
@@ -431,11 +429,7 @@ fn write_inode_data<B: BlockDevice>(
                         tree.insert_extent(fs, ext, device)?;
                     }
 
-                    let current_iblocks =
-                        ((inode.l_i_blocks_high as u64) << 32) | u64::from(inode.i_blocks_lo);
-                    let next_iblocks = current_iblocks.saturating_add(fs.block_size as u64 / 512);
-                    inode.i_blocks_lo = next_iblocks as u32;
-                    inode.l_i_blocks_high = (next_iblocks >> 32) as u16;
+                    inode.add_one_fs_block_to_blocks_count(&fs.superblock);
 
                     new_phys
                 }

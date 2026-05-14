@@ -326,7 +326,7 @@ impl<'a> ExtentTree<'a> {
                 let off = within_off as u64;
                 for j in 0..(cut_len as u64) {
                     fs.free_block(dev, AbsoluteBN::new(base + off + j))?;
-                    tree.sub_inode_sectors_for_block();
+                    tree.sub_inode_sectors_for_block(&fs.superblock);
                 }
             }
 
@@ -444,7 +444,7 @@ impl<'a> ExtentTree<'a> {
                                     entries.remove(idx_pos);
                                     header.eh_entries = entries.len() as u16;
                                     fs.free_block(dev, child_phy)?;
-                                    tree.sub_inode_sectors_for_block();
+                                    tree.sub_inode_sectors_for_block(&fs.superblock);
                                 } else {
                                     entries[idx_pos].ei_block = child_res.first_key;
                                 }
@@ -580,7 +580,7 @@ impl<'a> ExtentTree<'a> {
                         self.store_root_to_inode(&child_node);
 
                         fs.free_block(block_dev, child_phy)?;
-                        self.sub_inode_sectors_for_block();
+                        self.sub_inode_sectors_for_block(&fs.superblock);
                         return Ok(());
                     }
                 }

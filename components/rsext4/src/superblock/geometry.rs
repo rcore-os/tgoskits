@@ -10,31 +10,37 @@ use crate::{
 
 impl Ext4Superblock {
     /// Returns whether the superblock magic is valid.
+    #[inline(always)]
     pub fn is_valid(&self) -> bool {
         self.s_magic == Self::EXT4_SUPER_MAGIC
     }
 
     /// Returns the filesystem block size in bytes.
+    #[inline(always)]
     pub fn block_size(&self) -> u64 {
         1024 << self.s_log_block_size
     }
 
     /// Returns the 64-bit block count.
+    #[inline(always)]
     pub fn blocks_count(&self) -> u64 {
         (self.s_blocks_count_hi as u64) << 32 | self.s_blocks_count_lo as u64
     }
 
     /// Returns the 64-bit free block count.
+    #[inline(always)]
     pub fn free_blocks_count(&self) -> u64 {
         (self.s_free_blocks_count_hi as u64) << 32 | self.s_free_blocks_count_lo as u64
     }
 
     /// Returns the 64-bit reserved block count.
+    #[inline(always)]
     pub fn reserved_blocks_count(&self) -> u64 {
         (self.s_r_blocks_count_hi as u64) << 32 | self.s_r_blocks_count_lo as u64
     }
 
     /// Returns the number of block groups.
+    #[inline]
     pub fn block_groups_count(&self) -> u32 {
         let blocks = self.blocks_count();
         let blocks_per_group = self.s_blocks_per_group as u64;
@@ -42,21 +48,25 @@ impl Ext4Superblock {
     }
 
     /// Returns the block count per group.
+    #[inline(always)]
     pub fn blocks_per_group(&self) -> u32 {
         self.s_blocks_per_group
     }
 
     /// Returns the inode count per group.
+    #[inline(always)]
     pub fn inodes_per_group(&self) -> u32 {
         self.s_inodes_per_group
     }
 
     /// Returns the inode size.
+    #[inline(always)]
     pub fn inode_size(&self) -> u16 {
         self.s_inode_size
     }
 
     /// Returns how many group descriptors fit in one block.
+    #[inline]
     pub fn descs_per_block(&self) -> u32 {
         let block_size = self.block_size() as u32;
         let desc_size = self.s_desc_size as u32;
@@ -64,6 +74,7 @@ impl Ext4Superblock {
     }
 
     /// Returns the on-disk group descriptor size in bytes.
+    #[inline]
     pub fn get_desc_size(&self) -> u16 {
         if self.s_desc_size == 0 {
             if self.has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT) {
@@ -76,6 +87,7 @@ impl Ext4Superblock {
     }
 
     /// Returns the inode table size in blocks per group.
+    #[inline]
     pub fn inode_table_blocks(&self) -> u32 {
         let block_size = self.block_size() as u32;
         let inode_size = self.s_inode_size as u32;

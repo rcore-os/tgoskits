@@ -43,7 +43,6 @@ impl Ext4Filesystem {
     ) -> VfsResult<Filesystem> {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, Ext4Disk::new(dev, region), true);
         let fs = rsext4::mount(&mut dev).map_err(into_vfs_err)?;
-
         let fs = Arc::new(Self {
             inner: Mutex::new(Ext4State { fs, dev }),
             root_dir: OnceCell::new(),

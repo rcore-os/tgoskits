@@ -13,6 +13,7 @@ use crate::{
 };
 
 /// Translates one ext4 logical-block request into backing-device block units.
+#[inline]
 fn ext4_to_device_request<B: BlockDevice>(
     dev: &B,
     block_id: AbsoluteBN,
@@ -119,6 +120,7 @@ pub(super) struct BlockDev<B: BlockDevice> {
 
 impl<B: BlockDevice> BlockDev<B> {
     /// Rebuilds the one-block scratch buffer if the runtime ext4 block size changed.
+    #[inline]
     fn ensure_buffer_size(&mut self) {
         let block_size = runtime_block_size();
         if self.buffer.len() == block_size {
@@ -134,6 +136,7 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// Creates a new cached block device wrapper.
+    #[inline]
     pub fn new(dev: B) -> Self {
         let block_size = runtime_block_size();
         Self {
@@ -159,11 +162,13 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// Opens the underlying device.
+    #[inline(always)]
     pub fn _open(&mut self) -> Ext4Result<()> {
         self.dev.open()
     }
 
     /// Flushes pending state and closes the underlying device.
+    #[inline]
     pub fn _close(&mut self) -> Ext4Result<()> {
         self.flush()?;
         self.dev.close()
@@ -226,11 +231,13 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// Returns the internal buffer.
+    #[inline(always)]
     pub fn buffer(&self) -> &[u8] {
         self.buffer.as_slice()
     }
 
     /// Returns the internal buffer as mutable and marks it dirty.
+    #[inline(always)]
     pub fn buffer_mut(&mut self) -> &mut [u8] {
         self.ensure_buffer_size();
         self.is_dirty = true;
@@ -248,6 +255,7 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// Returns the total number of ext4 logical blocks on the underlying device.
+    #[inline]
     pub fn total_blocks(&self) -> u64 {
         let dev_block_size = self.dev.dev_block_size() as u64;
         let ext4_block_size = runtime_block_size() as u64;
@@ -255,11 +263,13 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// Returns an immutable reference to the underlying device.
+    #[inline(always)]
     pub fn _device(&self) -> &B {
         &self.dev
     }
 
     /// Returns a mutable reference to the underlying device.
+    #[inline(always)]
     pub fn device_mut(&mut self) -> &mut B {
         &mut self.dev
     }

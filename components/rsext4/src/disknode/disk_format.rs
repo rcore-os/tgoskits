@@ -19,6 +19,7 @@ impl DiskFormat for Ext4ExtentHeader {
         write_u32_le(self.eh_generation, &mut bytes[8..12]);
     }
 
+    #[inline(always)]
     fn disk_size() -> usize {
         12
     }
@@ -41,6 +42,7 @@ impl DiskFormat for Ext4ExtentIdx {
         write_u16_le(self.ei_unused, &mut bytes[10..12]);
     }
 
+    #[inline(always)]
     fn disk_size() -> usize {
         12
     }
@@ -63,6 +65,7 @@ impl DiskFormat for Ext4Extent {
         write_u32_le(self.ee_start_lo, &mut bytes[8..12]);
     }
 
+    #[inline(always)]
     fn disk_size() -> usize {
         12
     }
@@ -166,6 +169,7 @@ impl DiskFormat for Ext4Inode {
         }
     }
 
+    #[inline(always)]
     fn disk_size() -> usize {
         Self::GOOD_OLD_INODE_SIZE as usize
     }

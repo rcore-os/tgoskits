@@ -39,6 +39,13 @@ pub fn runtime_block_size_u32() -> u32 {
     runtime_block_size() as u32
 }
 
+/// Default unit used by ext4 `i_blocks` accounting when huge-file encoding is
+/// not active.
+///
+/// On-disk ext4 stores `i_blocks` in 512-byte sectors unless both the
+/// filesystem and the inode opt into huge-file accounting.
+pub const INODE_BLOCK_COUNT_SECTOR_SIZE: u64 = 512;
+
 /// Updates the process-local ext4 block size after mount discovers geometry.
 pub(crate) fn set_runtime_block_size(block_size: usize) {
     debug_assert!(block_size.is_power_of_two());

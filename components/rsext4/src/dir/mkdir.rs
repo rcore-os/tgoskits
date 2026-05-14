@@ -152,8 +152,7 @@ fn mkdir_internal<B: BlockDevice>(
     new_inode.i_links_count = 2;
     new_inode.i_size_lo = fs.block_size as u32;
     new_inode.i_size_high = 0;
-    new_inode.i_blocks_lo = (fs.block_size / 512) as u32;
-    new_inode.l_i_blocks_high = 0;
+    new_inode.set_blocks_count_from_fs_blocks(&fs.superblock, 1);
     new_inode.i_flags = Ext4Inode::mask_flags_for_mode(
         dir_mode,
         parent_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED,

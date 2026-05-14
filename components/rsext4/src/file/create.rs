@@ -134,9 +134,7 @@ pub fn create_symbol_link<B: BlockDevice>(
         }
 
         let used_datablocks = data_blocks.len() as u64;
-        let iblocks_used = used_datablocks.saturating_mul(fs.block_size as u64 / 512) as u32;
-        new_inode.i_blocks_lo = iblocks_used;
-        new_inode.l_i_blocks_high = 0; // iblocks_used is u32, so high part is 0
+        new_inode.set_blocks_count_from_fs_blocks(&fs.superblock, used_datablocks);
 
         build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_ino, &data_blocks, device);
     }
@@ -297,13 +295,10 @@ pub fn mkfile<B: BlockDevice>(
 
     if !data_blocks.is_empty() {
         // File starts with allocated data blocks.
-        let used_databyte = data_blocks.len() as u64;
-        let iblocks_used = used_databyte.saturating_mul(fs.block_size as u64 / 512);
-        let used_blocks_lo = iblocks_used as u32;
+        let used_datablocks = data_blocks.len() as u64;
         new_inode.i_size_lo = size_lo;
         new_inode.i_size_high = size_hi;
-        new_inode.i_blocks_lo = used_blocks_lo;
-        new_inode.l_i_blocks_high = (iblocks_used >> 32) as u16;
+        new_inode.set_blocks_count_from_fs_blocks(&fs.superblock, used_datablocks);
 
         build_file_block_mapping_with_inode_num(
             fs,
