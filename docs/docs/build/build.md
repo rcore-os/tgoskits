@@ -41,7 +41,7 @@ pub struct AppContext {
 ```
 
 初始化步骤：
-1. 通过 `CARGO_MANIFEST_DIR` 向上两级定位 workspace root
+1. 通过编译期常量 `env!("CARGO_MANIFEST_DIR")` 获取 axbuild crate 所在目录，向上两级定位 workspace root。注意 `env!` 是编译期宏（非 `std::env::var`），路径在编译时即已固定
 2. `support::logging::init_logging()` 配置 tracing subscriber
 3. `Tool::new(ToolConfig::default())` 初始化 ostool 底层工具
 

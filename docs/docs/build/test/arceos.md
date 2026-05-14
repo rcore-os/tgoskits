@@ -100,3 +100,13 @@ flowchart TD
 5. **Strip**：去除调试信息生成最终二进制
 
 C 交叉编译使用与目标架构匹配的 musl 工具链（如 `aarch64-linux-musl-gcc`），编译标志包含 `-ffreestanding -nostdlib -static` 等裸机选项，以及来自 ax-libc 的头文件路径。
+
+### C 测试流程与 C 应用构建管线的关系
+
+ArceOS 的 C 测试涉及两套不同的构建流程：
+
+- **C 测试用例流程**（`test_cmd` + Makefile）：用于 `cargo xtask arceos test qemu --test-group c`，通过 `test_cmd` 文件定义编译-运行-比对序列，使用传统的 Makefile 构建系统。每条 `test_one` 指令指定编译参数和预期输出文件，由 Makefile 驱动 `defconfig` → `build` → `justrun` 流程。
+
+- **C 应用构建管线**（`cbuild.rs` + CMake）：独立的 C 应用构建能力，通过 `ax-libc` 包提供 C 语言运行时支持，使用 CMake + musl 交叉编译工具链将用户 C 源码编译为可在 ArceOS 上运行的 ELF 可执行文件。此管线不依赖测试框架，可独立使用。
+
+两者的核心区别在于：C 测试流程是测试框架的一部分，负责"编译 → 运行 → 比对"的完整测试循环；C 应用构建管线是纯构建能力，仅负责将 C 源码编译为 ArceOS 可执行文件。

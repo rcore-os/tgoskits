@@ -131,7 +131,9 @@ cargo xtask starry <subcommand> [options]
 
 **Board 额外参数**：`--board-config`、`--board-type`、`--server`、`--port`
 
-**测试参数**：`--test-group`、`--test-case`、`--stress`、`--list`
+**测试参数**（`test qemu`）：`--test-group`、`--test-case`、`--stress`、`--list`
+
+**测试参数**（`test board`）：`--test-group`、`--test-case`、`--board`、`--board-type`、`--server`、`--port`、`--list`
 
 **示例参数**（`example board`）：`--test-case`（必需）、`--board-config`、`--board-type`、`--server`、`--port`、`--debug`
 
@@ -169,13 +171,19 @@ cargo xtask axvisor <subcommand> [options]
 
 **QEMU 额外参数**：`--qemu-config`、`--rootfs`
 
-**测试参数**：`--test-group`、`--test-case`、`--list`
+**Board 额外参数**：`--board-config`、`--board-type`、`--server`、`--port`
 
-**U-Boot 测试参数**：`--board`（必需）、`--guest`、`--uboot-config`
+**测试参数**（`test qemu`）：`--test-group`、`--test-case`、`--list`
+
+**测试参数**（`test board`）：`--test-group`、`--test-case`、`--board`、`--board-type`、`--server`、`--port`、`--list`
+
+**U-Boot 测试参数**（`test uboot`）：`--board`（必需）、`--guest`、`--uboot-config`
 
 在 loongarch64 架构上运行时，axbuild 会自动搜索 LVZ 扩展版 QEMU。
 
-### 镜像管理（`image`）
+### 镜像管理
+
+Axvisor 的 `image` 子命令管理 Guest 虚拟机镜像。镜像名称格式为 `<name>:<tag>`（如 `linux:riscv64`），从 `arceos-hypervisor/axvisor-guest` 仓库拉取。
 
 | 子命令 | 说明 |
 |--------|------|
@@ -183,8 +191,6 @@ cargo xtask axvisor <subcommand> [options]
 | `image pull <IMAGE> [-o DIR] [--no-extract]` | 拉取 Guest 镜像到本地存储，默认自动解压 |
 
 全局选项：`-S/--local-storage`（本地存储路径）、`-R/--registry`（镜像仓库地址）、`-N/--no-auto-sync`（禁用自动同步）、`--auto-sync-threshold`（自动同步阈值）
-
-镜像名称格式为 `<name>:<tag>`（如 `linux:riscv64`）。镜像从 `arceos-hypervisor/axvisor-guest` 仓库拉取。
 
 ---
 

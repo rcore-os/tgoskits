@@ -230,3 +230,36 @@ Build Info 的字段在编译时转换为以下环境变量：
 这些环境变量在 Cargo 编译时通过 `--env` 传递，被 OS 源码中的 `env!()` 宏在编译期读取。其中 `AX_LOG` 控制日志过滤级别，`SMP` 决定系统启动的 CPU 核数，`AX_CONFIG_PATH` 指向由 `axbuild` 预生成的平台配置文件。各子系统还会额外注入自己的环境变量（如 Axvisor 的 `AXVISOR_VM_CONFIGS`）。
 
 `FEATURES` 环境变量提供与传统 Makefile 工作流的兼容性：`makefile_features_from_env()` 解析逗号/空格分隔的 feature 列表，自动添加前缀族前缀后合并到 BuildInfo。
+
+---
+
+## 环境变量速查表
+
+axbuild 在编译期和运行时使用多个环境变量，分布在配置、运行和测试各阶段。下表按类别汇总所有环境变量。
+
+### 编译期注入
+
+这些环境变量在 Cargo 编译时通过 `--env` 传递，被 OS 源码中的 `env!()` 宏在编译期读取。
+
+| 变量 | 来源 | 说明 |
+|------|------|------|
+| `AX_LOG` | `BuildInfo.log` | 日志过滤级别 |
+| `SMP` | `BuildInfo.max_cpu_num` | 启动 CPU 核数 |
+| `AX_IP` / `AX_GW` | `BuildInfo.env` | QEMU slirp 网络 IP / 网关 |
+| `AX_CONFIG_PATH` | axbuild 生成 | `.axconfig.toml` 路径（仅 `plat_dyn = false`） |
+| `AX_PLATFORM` | 平台检测 | 平台名（如 `aarch64-qemu-virt`） |
+| `AX_ARCH` | arch 解析 | CPU 架构名 |
+| `AX_TARGET` | target 解析 | target triple |
+| `AXVISOR_VM_CONFIGS` | `--vmconfigs` | VM 配置文件列表（仅 Axvisor） |
+| `FEATURES` | 外部环境变量 | Makefile 兼容 feature 注入（逗号/空格分隔） |
+
+### 运行时行为控制
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `AXBUILD_NO_SNAPSHOT` | — | 设为 `1` 禁用 Snapshot 读写（CI 场景），跳过加载和写回 |
+| `AXBUILD_QEMU_SYSTEM_LOONGARCH64` | — | 指定 LVZ 扩展版 QEMU 可执行文件路径（仅 Axvisor loongarch64） |
+| `AXBUILD_QEMU_DIR` | — | 指定 LVZ 扩展版 QEMU 所在目录（仅 Axvisor loongarch64） |
+| `AXBUILD_TEST_TIMEOUT_SCALE` | `1.0` | 线性缩放所有测试用例超时值（CI 慢环境） |
+| `STARRY_APK_REGION` | `china` | StarryOS APK 镜像源区域：`china`/`cn`（`mirrors.cernet.edu.cn`）或 `us`/`usa`（`dl-cdn.alpinelinux.org`） |
+| `AXVISOR_IMAGE_LOCAL_STORAGE` | `$TMPDIR/.axvisor-images` | Axvisor Guest 镜像本地存储路径 |
