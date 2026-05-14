@@ -56,7 +56,29 @@ gh api graphql \
   -f threadId=<thread-id>
 ```
 
-For failing or suspicious GitHub Actions checks, follow `github:gh-fix-ci`: use the GitHub app/MCP for PR context and use `gh` for Actions check/log inspection because the connector does not expose that workflow end to end. Remote CI is evidence, not a substitute for local review and targeted validation.
+For failing, cancelled, missing, or suspicious GitHub Actions checks, follow `github:gh-fix-ci`: use the GitHub app/MCP for PR context and use `gh` for Actions check/log inspection because the connector does not expose that workflow end to end. Remote CI is evidence, not a substitute for local review and targeted validation.
+
+Always inspect CI failures before submitting the review:
+
+1. Fetch check summaries and enough logs to classify each non-passing required check:
+   ```bash
+   gh pr checks <pr> --repo <owner>/<repo> --watch=false
+   gh run view <run-id> --repo <owner>/<repo> --log-failed
+   ```
+2. Decide whether each CI failure is caused by this PR's changed surface, a likely unrelated pre-existing/infrastructure failure, or unclear.
+3. Treat CI as PR-related when the failing job exercises files, crates, cases, commands, platforms, or behavior changed by the PR; when the failure reproduces locally on the PR head but not on base; or when the new/modified tests, configs, or workflow steps cause the failure, hang, skip, or timeout.
+4. Treat CI as unrelated only when there is concrete evidence: the failure is outside the changed surface, known flaky/infrastructure behavior, already fails on base, or is tracked by an existing issue. Do not mark a failure unrelated merely because local focused validation passed.
+5. For unrelated CI failures, state that in the review body with the failing check name, observed failure, and why it is unrelated to this PR. Search for an existing issue before finishing:
+   ```bash
+   gh issue list --repo <owner>/<repo> --state open --search '<job name or distinctive error>'
+   ```
+   If no suitable open issue exists, create one with a neutral title and body describing the CI job, PR where it was observed, representative log excerpt, why it appears unrelated, and any reproduction or rerun evidence:
+   ```bash
+   gh issue create --repo <owner>/<repo> --title '<neutral CI issue title>' --body-file issue.md
+   ```
+   Link the existing or newly-created issue in the review body. Do not create duplicate issues.
+6. For PR-related CI failures, submit `REQUEST_CHANGES`. The review body and any inline comment must explain the failing check, the concrete failure mode, why it belongs to this PR, and the expected fix direction.
+7. When causality is unclear after reasonable log inspection, do not approve on CI alone. Either request changes with the concrete uncertainty and next debugging direction, or mark the review blocked/no-submit if the user asked for investigation only.
 
 ## Worktree
 
@@ -151,14 +173,14 @@ Use GitHub check status as required evidence, but not as the only review input:
 gh pr checks <pr> --watch=false
 ```
 
-Do not approve solely because remote CI passes. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, treat that as blocking unless there is a clear project-approved reason. A branch with no reported checks is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
+Do not approve solely because remote CI passes. Conversely, if required checks are failing, cancelled, or missing for a branch that needs CI coverage, inspect logs and classify the failure before deciding. Treat PR-related CI failures as blocking and request changes with the expected fix direction. If a CI failure is unrelated to the PR, it is not by itself a reason to request changes, but the review body must say why it is unrelated and link an existing or newly-created tracking issue. A branch with no reported checks is not equivalent to passing; require targeted local validation before approving, and request changes when the changed surface is too large or risky to validate locally.
 
 ## Blocking Findings
 
 Treat these as blocking unless clearly non-blocking:
 
 - behavior differs from POSIX/Linux/RFC/VirtIO semantics;
-- targeted tests, formatting, clippy, or CI fail;
+- targeted tests, formatting, clippy, or PR-related CI fail;
 - new tests are not discovered by the project test runner or do not exercise the fixed ABI surface;
 - `success_regex` or `fail_regex` cannot reliably classify the intended StarryOS case result;
 - bug fixes lack meaningful reproduction coverage;
@@ -211,6 +233,8 @@ Review body must explain in Chinese:
 - what the PR changed;
 - the implementation logic and why this approach is correct for the project semantics;
 - validation commands and results, including exact failure mode for failing tests;
+- CI status, including any unrelated failing checks, the evidence for unrelatedness, and the linked tracking issue;
+- for PR-related CI failures, the failing check, failure mode, and expected fix direction;
 - reproduction coverage status for bug fixes;
 - unresolved review conversations that were resolved, and conversations intentionally left open and why;
 - any behavior that remains unimplemented, partial, or should be completed in future work;
