@@ -230,14 +230,17 @@ impl SocketOps for UdpSocket {
         self.general.send_poller(self, per_call_nonblock, || {
             poll_interfaces();
             let mut cork_guard = self.cork.lock();
-            let cork = cork_guard.take();
             // When flushing corked data, always use the endpoint captured
             // at the first MSG_MORE call (matching Linux semantics).
-            let (endpoint, local_addr) = if let Some(ref c) = cork {
-                (c.remote, Some(c.source))
-            } else {
-                (remote_addr, Some(source_addr))
-            };
+            // Take the endpoint/source copies now (they are Copy), but
+            // keep the cork data in place until the send succeeds so that
+            // a WouldBlock retry preserves buffered data.
+            let (endpoint, local_addr, payload_len) =
+                if let Some(ref c) = *cork_guard {
+                    (c.remote, Some(c.source), c.buf.len() + src.remaining())
+                } else {
+                    (remote_addr, Some(source_addr), src.remaining())
+                };
             let result = self.with_smol_socket(|socket| {
                 if !socket.is_open() {
                     // not connected
@@ -245,11 +248,6 @@ impl SocketOps for UdpSocket {
                 } else if !socket.can_send() {
                     Err(AxError::WouldBlock)
                 } else {
-                    let payload_len = if let Some(ref c) = cork {
-                        c.buf.len() + src.remaining()
-                    } else {
-                        src.remaining()
-                    };
                     // UDP allows zero-length payloads (IP header + UDP header only).
                     if payload_len == 0 {
                         socket
@@ -267,6 +265,7 @@ impl SocketOps for UdpSocket {
                                     ax_err_type!(ConnectionRefused, "unaddressable")
                                 }
                             })?;
+                        *cork_guard = None;
                         return Ok(0);
                     }
                     let buf = socket
@@ -286,7 +285,7 @@ impl SocketOps for UdpSocket {
                         })?;
                     let mut total_written = 0;
                     let mut cur_read = 0;
-                    if let Some(c) = cork {
+                    if let Some(ref c) = *cork_guard {
                         let n = c.buf.len().min(buf.len());
                         buf[..n].copy_from_slice(&c.buf[..n]);
                         total_written += n;
@@ -296,6 +295,8 @@ impl SocketOps for UdpSocket {
                         total_written += cur_read;
                     }
                     assert_eq!(total_written, buf.len());
+                    // Success — clear cork state.
+                    *cork_guard = None;
                     // Return only bytes consumed from the *current* user buffer.
                     Ok(cur_read)
                 }
