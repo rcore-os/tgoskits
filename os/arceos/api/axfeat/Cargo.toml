@@ -109,6 +109,7 @@ driver-bcm2835-sdhci = ["ax-driver?/bcm2835-sdhci"]
 driver-ahci = ["ax-driver?/ahci"]
 
 # Backtrace
+backtrace = ["alloc", "axbacktrace/alloc"]
 dwarf = ["alloc", "axbacktrace/dwarf"]
 
 [dependencies]
