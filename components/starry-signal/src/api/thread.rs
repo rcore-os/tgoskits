@@ -301,7 +301,17 @@ impl ThreadSignalManager {
         // Lock by `actions`
         let actions = self.proc.actions.lock();
         debug!("signal: {signo:?}");
-        if actions[signo].is_ignore(signo) {
+
+        // Skip is_ignore() when the signal is blocked in this thread OR when
+        // this thread is inside rt_sigtimedwait/sigwaitinfo waiting for it.
+        // POSIX requires that a blocked signal is queued as pending even if
+        // its default disposition is to ignore it, so that sigtimedwait() can
+        // synchronously consume it.  tgkill/tkill target a specific thread, so
+        // we must apply the same exemption here as ProcessSignalManager does
+        // for the process-level path.
+        let blocked = self.signal_blocked(signo);
+        let in_sigwait = self.sigwait_set.lock().is_some_and(|s| s.has(signo));
+        if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
             return false;
         }
 
