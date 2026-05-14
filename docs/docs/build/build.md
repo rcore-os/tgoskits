@@ -210,7 +210,7 @@ Cargo {
 
 ## 8. 执行
 
-`AppContext::build()` 调用 `Tool::cargo_build()` 完成编译，产出 ELF / BIN 等产物。
+最终执行阶段将组装好的 `Cargo` 配置传给 ostool 的 `cargo_build()`。ostool 负责设置环境变量（`AX_LOG`、`SMP`、`AX_CONFIG_PATH` 等）、构建 `cargo build` 命令行（`--target`、`--features`、链接器参数等）、处理输出流和退出码。`AppContext::build()` 调用 `Tool::cargo_build()` 完成编译，产出 ELF / BIN 等产物。
 
 ```mermaid
 flowchart TD
@@ -222,7 +222,5 @@ flowchart TD
     F -->|"to_bin = true<br/>(aarch64, riscv64, loongarch64)"| G["ELF → raw binary<br/>(llvm-objcopy)"]
     F -->|"to_bin = false<br/>(x86_64)"| H["ELF 直接使用"]
 ```
-
-最终执行阶段将组装好的 `Cargo` 配置传给 ostool 的 `cargo_build()`。ostool 负责设置环境变量（`AX_LOG`、`SMP`、`AX_CONFIG_PATH` 等）、构建 `cargo build` 命令行（`--target`、`--features`、链接器参数等）、处理输出流和退出码。
 
 编译成功后，产物位于 `target/{target}/release/` 或 `target/{target}/debug/` 目录下。对于 aarch64、riscv64、loongarch64（`to_bin = true`），还会调用 `llvm-objcopy` 将 ELF 转为 raw binary，因为裸机环境需要纯二进制格式；x86_64 直接使用 ELF 产物。编译产物供后续的运行（QEMU / U-Boot / Board）或测试阶段使用。
