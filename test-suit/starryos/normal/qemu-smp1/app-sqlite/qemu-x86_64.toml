@@ -1,0 +1,41 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+apk update && \
+apk add sqlite && \
+echo "=== T1: memory db ===" && \
+sqlite3 :memory: "SELECT 1 + 1;" && \
+echo "=== T2: file db + transaction ===" && \
+sqlite3 /tmp/test.db "PRAGMA journal_mode=DELETE; CREATE TABLE t1(id INTEGER PRIMARY KEY, v TEXT); BEGIN; INSERT INTO t1(v) VALUES('hello'); INSERT INTO t1(v) VALUES('starry'); COMMIT; SELECT v FROM t1;" && \
+echo "=== T3: rollback ===" && \
+sqlite3 /tmp/test.db "BEGIN; INSERT INTO t1(v) VALUES('temp'); SELECT count(*) FROM t1; ROLLBACK; SELECT count(*) FROM t1;" && \
+echo "=== T4: WAL mode ===" && \
+sqlite3 /tmp/wal.db "PRAGMA journal_mode=WAL; CREATE TABLE w(id INTEGER PRIMARY KEY, d TEXT); INSERT INTO w(d) VALUES('wal-test'); SELECT d FROM w; PRAGMA journal_mode=DELETE;" && \
+echo "=== T5: index + bulk insert ===" && \
+sqlite3 /tmp/bulk.db "CREATE TABLE b(id INTEGER PRIMARY KEY, v TEXT); CREATE INDEX idx_b ON b(v); BEGIN; WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<200) INSERT INTO b(v) SELECT 'row-'||x FROM c; COMMIT; SELECT count(*) FROM b; SELECT v FROM b WHERE v='row-100';" && \
+echo "=== T6: attach db ===" && \
+sqlite3 /tmp/att.db "CREATE TABLE a(x); ATTACH '/tmp/test.db' AS other; INSERT INTO a SELECT v FROM other.t1; SELECT x FROM a;" && \
+echo "=== T7: integrity ===" && \
+sqlite3 /tmp/test.db "PRAGMA integrity_check;" && \
+sqlite3 /tmp/bulk.db "PRAGMA integrity_check;" && \
+echo "=== T8: aggregate ===" && \
+sqlite3 /tmp/bulk.db "SELECT count(*), min(id), max(id) FROM b;" && \
+echo "All tests passed!"
+'''
+success_regex = ["(?m)^All tests passed!\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b']
+timeout = 120
