@@ -23,7 +23,9 @@ flowchart LR
     D --> G["Axvisor → Axvisor::execute()"]
     D --> H["Test → std::run_std_test()"]
     D --> I["Clippy → run_workspace_clippy()"]
-    D --> J["Board → board::execute()"]
+    D --> J["SyncLint → run_sync_lint()"]
+    D --> K["Board → board::execute()"]
+    D --> L["Config → config::execute()"]
 ```
 
 `xtask/src/main.rs` 仅调用 `axbuild::run()` 并映射退出码，所有业务逻辑封装在 `scripts/axbuild` 中，这使得 axbuild 既可以作为 xtask 的后端使用，也可以作为独立库被其他工具集成。
@@ -68,6 +70,8 @@ graph TD
         ROOTFS["rootfs/<br/>rootfs 管理"]
         BOARD["board.rs<br/>板卡管理"]
         CLIPPY["clippy.rs<br/>静态检查"]
+        SYNC_LINT["sync_lint.rs<br/>原子序检查"]
+        CONFIG["config.rs<br/>配置生成/检查"]
         SUPPORT["support/<br/>日志/命令/下载"]
     end
 

@@ -56,6 +56,10 @@ pub fn irq_has_link_change(value: u32) -> bool {
     value & INTR::LINK_CHANGE::SET.value != 0
 }
 
+pub fn irq_has_rx_overflow(value: u32) -> bool {
+    value & (INTR::RX_OVERFLOW::SET.value | INTR::RX_FIFO_OVERFLOW::SET.value) != 0
+}
+
 register_structs! {
     Registers {
         (0x0000 => mac0: ReadWrite<u32>),
@@ -81,6 +85,8 @@ register_structs! {
         (0x0055 => _reserved5),
         (0x0056 => config5: ReadWrite<u8, CONFIG5::Register>),
         (0x0057 => _reserved6),
+        (0x0064 => csidr: ReadWrite<u32>),
+        (0x0068 => csiar: ReadWrite<u32, CSIAR::Register>),
         (0x006c => phy_status: ReadWrite<u8, PHY_STATUS::Register>),
         (0x006d => _reserved7),
         (0x0080 => ephyar: ReadWrite<u32, EPHYAR::Register>),
@@ -149,6 +155,12 @@ register_bitfields! {u16,
 }
 
 register_bitfields! {u32,
+    CSIAR [
+        FLAG OFFSET(31) NUMBITS(1) [],
+        BYTE_ENABLE OFFSET(12) NUMBITS(4) [],
+        FUNCTION OFFSET(16) NUMBITS(3) [],
+        ADDR OFFSET(0) NUMBITS(12) []
+    ],
     INTR [
         TX_DESC_UNAVAILABLE OFFSET(7) NUMBITS(1) [],
         RX_FIFO_OVERFLOW OFFSET(6) NUMBITS(1) [],
@@ -165,6 +177,7 @@ register_bitfields! {u32,
     ],
     RX_CONFIG [
         FETCH_DFLT OFFSET(27) NUMBITS(4) [],
+        PAUSE_SLOT_ON OFFSET(11) NUMBITS(1) [],
         DMA_BURST OFFSET(8) NUMBITS(3) [],
         ACCEPT_BROADCAST OFFSET(3) NUMBITS(1) [],
         ACCEPT_MULTICAST OFFSET(2) NUMBITS(1) [],
@@ -293,6 +306,36 @@ impl Regs {
         self.regs().phy_status.get()
     }
 
+    pub fn csi_read(&self, addr: u32) -> Option<u32> {
+        self.regs().csiar.write(
+            CSIAR::ADDR.val(addr & 0x0fff) + CSIAR::FUNCTION.val(0) + CSIAR::BYTE_ENABLE.val(0x0f),
+        );
+        for _ in 0..1_000 {
+            if self.regs().csiar.is_set(CSIAR::FLAG) {
+                return Some(self.regs().csidr.get());
+            }
+            core::hint::spin_loop();
+        }
+        None
+    }
+
+    pub fn csi_write(&self, addr: u32, value: u32) -> bool {
+        self.regs().csidr.set(value);
+        self.regs().csiar.write(
+            CSIAR::FLAG::SET
+                + CSIAR::ADDR.val(addr & 0x0fff)
+                + CSIAR::FUNCTION.val(0)
+                + CSIAR::BYTE_ENABLE.val(0x0f),
+        );
+        for _ in 0..1_000 {
+            if !self.regs().csiar.is_set(CSIAR::FLAG) {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
+
     pub fn link_up(&self) -> bool {
         self.regs().phy_status.is_set(PHY_STATUS::LINK_UP)
     }
@@ -337,8 +380,22 @@ impl Regs {
     }
 
     pub fn write_default_rx_config(&self) {
+        self.write_rx_config(false);
+    }
+
+    pub fn write_rx_config(&self, pause_slot_on: bool) {
+        let mut value = RX_CONFIG::FETCH_DFLT.val(RX_FETCH_DFLT_8125_VALUE)
+            + RX_CONFIG::DMA_BURST.val(RX_DMA_BURST_UNLIMITED);
+        if pause_slot_on {
+            value += RX_CONFIG::PAUSE_SLOT_ON::SET;
+        }
+        self.regs().rx_config.write(value);
+    }
+
+    pub fn write_default_rx_config_8125b(&self) {
         self.regs().rx_config.write(
             RX_CONFIG::FETCH_DFLT.val(RX_FETCH_DFLT_8125_VALUE)
+                + RX_CONFIG::PAUSE_SLOT_ON::SET
                 + RX_CONFIG::DMA_BURST.val(RX_DMA_BURST_UNLIMITED),
         );
     }
@@ -381,6 +438,11 @@ impl Regs {
     pub fn write_rx_desc_base(&self, base: u64) {
         self.regs().rx_desc_addr_high.set((base >> 32) as u32);
         self.regs().rx_desc_addr_low.set(base as u32);
+    }
+
+    pub fn read_rx_desc_base(&self) -> u64 {
+        (u64::from(self.regs().rx_desc_addr_high.get()) << 32)
+            | u64::from(self.regs().rx_desc_addr_low.get())
     }
 
     pub fn poll_tx(&self) {

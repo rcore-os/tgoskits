@@ -24,6 +24,8 @@ use crate::vmm::VMRef;
 use crate::vmm::config::{config, get_vm_dtb_arc};
 
 mod linux;
+#[cfg(target_arch = "x86_64")]
+mod x86_boot;
 
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
@@ -146,12 +148,81 @@ impl ImageLoader {
             }
         }
 
-        // Load BIOS image
-        if let Some(buffer) = vm_imags.bios {
-            load_vm_image_from_memory(buffer, self.bios_load_gpa.unwrap(), self.vm.clone())
-                .expect("Failed to load BIOS images");
+        self.load_boot_image_from_memory(vm_imags.bios)?;
+
+        Ok(())
+    }
+
+    fn load_boot_image_from_memory(&self, bios: Option<&[u8]>) -> AxResult {
+        if !self.config.kernel.enable_bios {
+            return Ok(());
         }
 
+        if let Some(buffer) = bios {
+            let load_gpa = self
+                .bios_load_gpa
+                .expect("BIOS image present but BIOS load addr is missed");
+            load_vm_image_from_memory(buffer, load_gpa, self.vm.clone())
+                .expect("Failed to load BIOS images");
+            #[cfg(target_arch = "x86_64")]
+            self.load_x86_multiboot_info(buffer, load_gpa)?;
+            return Ok(());
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if self.should_load_default_x86_boot_image() {
+            let bios_load_gpa = builtin_x86_bios_load_gpa(self.bios_load_gpa)?;
+            info!(
+                "Loading built-in x86 boot image at GPA {:#x}",
+                bios_load_gpa.as_usize()
+            );
+            load_vm_image_from_memory(x86_boot::DEFAULT_BIOS_IMAGE, bios_load_gpa, self.vm.clone())
+                .expect("Failed to load built-in x86 boot image");
+            #[cfg(target_arch = "x86_64")]
+            self.load_x86_multiboot_info(x86_boot::DEFAULT_BIOS_IMAGE, bios_load_gpa)?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn should_load_default_x86_boot_image(&self) -> bool {
+        self.config.kernel.enable_bios && self.config.kernel.bios_path.is_none()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn load_x86_multiboot_info(&self, bios_image: &[u8], bios_load_gpa: GuestPhysAddr) -> AxResult {
+        const MULTIBOOT_INFO_GPA: usize = 0x6000;
+        const MULTIBOOT_MMAP_GPA: usize = 0x6040;
+        const MULTIBOOT_INFO_FLAGS: u32 = (1 << 0) | (1 << 6);
+        const MULTIBOOT_MEMORY_AVAILABLE: u32 = 1;
+
+        let mem_base = self.main_memory.gpa.as_usize() as u64;
+        let mem_size = self.main_memory.size() as u64;
+        let mem_upper_kb = mem_size.saturating_sub(0x100000) / 1024;
+
+        let mut mbi = [0u8; 52];
+        write_u32(&mut mbi, 0, MULTIBOOT_INFO_FLAGS);
+        write_u32(&mut mbi, 4, 639);
+        write_u32(&mut mbi, 8, mem_upper_kb as u32);
+        write_u32(&mut mbi, 44, 24);
+        write_u32(&mut mbi, 48, MULTIBOOT_MMAP_GPA as u32);
+
+        let mut mmap = [0u8; 24];
+        write_u32(&mut mmap, 0, 20);
+        write_u64(&mut mmap, 4, mem_base);
+        write_u64(&mut mmap, 12, mem_size);
+        write_u32(&mut mmap, 20, MULTIBOOT_MEMORY_AVAILABLE);
+
+        let mbi_gpa = (MULTIBOOT_INFO_GPA as u32).to_le_bytes();
+        validate_x86_bios_patch_region(bios_image)?;
+        load_vm_image_from_memory(&mbi, MULTIBOOT_INFO_GPA.into(), self.vm.clone())?;
+        load_vm_image_from_memory(&mmap, MULTIBOOT_MMAP_GPA.into(), self.vm.clone())?;
+        load_vm_image_from_memory(
+            &mbi_gpa,
+            (bios_load_gpa.as_usize() + x86_boot::AXVM_BIOS_EBX_IMM_OFFSET).into(),
+            self.vm.clone(),
+        )?;
         Ok(())
     }
 
@@ -248,7 +319,6 @@ pub fn load_vm_image_from_memory(
 #[cfg(feature = "fs")]
 pub mod fs {
     use super::*;
-    use crate::hal::CacheOp;
     use ax_errno::{AxResult, ax_err, ax_err_type};
     use std::{fs::File, vec::Vec};
 
@@ -293,13 +363,40 @@ pub mod fs {
             loader.vm.clone(),
         )?;
         // Load BIOS image if needed.
-        if let Some(bios_path) = &loader.config.kernel.bios_path {
+        if loader.config.kernel.enable_bios
+            && let Some(bios_path) = &loader.config.kernel.bios_path
+        {
             if let Some(bios_load_addr) = loader.bios_load_gpa {
+                #[cfg(target_arch = "x86_64")]
+                let bios_image = read_image_file(bios_path)?;
+                #[cfg(target_arch = "x86_64")]
+                {
+                    validate_x86_bios_patch_region(&bios_image)?;
+                    load_vm_image_from_memory(&bios_image, bios_load_addr, loader.vm.clone())?;
+                    loader.load_x86_multiboot_info(&bios_image, bios_load_addr)?;
+                }
+                #[cfg(not(target_arch = "x86_64"))]
                 load_vm_image(bios_path, bios_load_addr, loader.vm.clone())?;
             } else {
                 return ax_err!(NotFound, "BIOS load addr is missed");
             }
         };
+        #[cfg(target_arch = "x86_64")]
+        if loader.should_load_default_x86_boot_image() {
+            let bios_load_gpa = builtin_x86_bios_load_gpa(loader.bios_load_gpa)?;
+            info!(
+                "Loading built-in x86 boot image at GPA {:#x}",
+                bios_load_gpa.as_usize()
+            );
+            load_vm_image_from_memory(
+                x86_boot::DEFAULT_BIOS_IMAGE,
+                bios_load_gpa,
+                loader.vm.clone(),
+            )
+            .expect("Failed to load built-in x86 boot image");
+            #[cfg(target_arch = "x86_64")]
+            loader.load_x86_multiboot_info(x86_boot::DEFAULT_BIOS_IMAGE, bios_load_gpa)?;
+        }
         // Load Ramdisk image if needed.
         if let Some(ramdisk_path) = &loader.config.kernel.ramdisk_path {
             loader.load_ramdisk_from_filesystem(ramdisk_path)?;
@@ -352,6 +449,22 @@ pub mod fs {
         Ok(())
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn read_image_file(image_path: &str) -> AxResult<Vec<u8>> {
+        use std::io::{BufReader, Read};
+        let (image_file, image_size) = open_image_file(image_path)?;
+        let mut image = vec![0; image_size];
+        BufReader::new(image_file)
+            .read_exact(&mut image)
+            .map_err(|err| {
+                ax_err_type!(
+                    Io,
+                    format!("Failed in reading from file {}, err {:?}", image_path, err)
+                )
+            })?;
+        Ok(image)
+    }
+
     pub fn open_image_file(file_name: &str) -> AxResult<(File, usize)> {
         let file = File::open(file_name).map_err(|err| {
             ax_err_type!(
@@ -375,5 +488,90 @@ pub mod fs {
             })?
             .size() as usize;
         Ok((file, file_size))
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn builtin_x86_bios_load_gpa(configured_gpa: Option<GuestPhysAddr>) -> AxResult<GuestPhysAddr> {
+    let default_gpa = GuestPhysAddr::from(x86_boot::DEFAULT_BIOS_LOAD_GPA);
+    match configured_gpa {
+        Some(gpa) if gpa != default_gpa => Err(ax_errno::ax_err_type!(
+            InvalidInput,
+            format!(
+                "built-in x86 BIOS must be loaded at GPA {:#x}, but bios_load_addr is {:#x}; set bios_path to use a relocatable external BIOS image",
+                default_gpa.as_usize(),
+                gpa.as_usize()
+            )
+        )),
+        Some(gpa) => Ok(gpa),
+        None => Ok(default_gpa),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn validate_x86_bios_patch_region(bios_image: &[u8]) -> AxResult {
+    let patch_end = x86_boot::AXVM_BIOS_EBX_IMM_OFFSET + core::mem::size_of::<u32>();
+    if bios_image.len() < patch_end {
+        return Err(ax_errno::ax_err_type!(
+            InvalidInput,
+            format!(
+                "x86 BIOS image is too small for multiboot info patch: size {}, need at least {} bytes for EBX immediate at offset {:#x}",
+                bios_image.len(),
+                patch_end,
+                x86_boot::AXVM_BIOS_EBX_IMM_OFFSET
+            )
+        ));
+    }
+
+    if bios_image[x86_boot::AXVM_BIOS_EBX_IMM_OFFSET - 1] != x86_boot::MOV_EBX_IMM32_OPCODE {
+        return Err(ax_errno::ax_err_type!(
+            InvalidInput,
+            format!(
+                "x86 BIOS image does not match axvm-bios layout: expected mov ebx, imm32 opcode at offset {:#x}",
+                x86_boot::AXVM_BIOS_EBX_IMM_OFFSET - 1
+            )
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
+    buffer[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(target_arch = "x86_64")]
+fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
+    buffer[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn built_in_x86_bios_uses_default_gpa_when_unspecified() {
+        assert_eq!(
+            builtin_x86_bios_load_gpa(None).unwrap(),
+            GuestPhysAddr::from(x86_boot::DEFAULT_BIOS_LOAD_GPA)
+        );
+    }
+
+    #[test]
+    fn built_in_x86_bios_accepts_explicit_default_gpa() {
+        let default_gpa = GuestPhysAddr::from(x86_boot::DEFAULT_BIOS_LOAD_GPA);
+
+        assert_eq!(
+            builtin_x86_bios_load_gpa(Some(default_gpa)).unwrap(),
+            default_gpa
+        );
+    }
+
+    #[test]
+    fn built_in_x86_bios_rejects_non_default_gpa() {
+        let invalid_gpa = GuestPhysAddr::from(x86_boot::DEFAULT_BIOS_LOAD_GPA + 0x1000);
+
+        assert!(builtin_x86_bios_load_gpa(Some(invalid_gpa)).is_err());
     }
 }

@@ -15,7 +15,8 @@ use crate::{AxDeviceEnum, drivers::DriverProbe};
 
 cfg_if! {
     if #[cfg(bus = "pci")] {
-        use ax_driver_pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
+        #[cfg(feature = "bus-pci")]
+        use ax_driver_virtio::pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
         type VirtIoTransport = ax_driver_virtio::PciTransport;
     } else if #[cfg(bus =  "mmio")] {
         type VirtIoTransport = ax_driver_virtio::MmioTransport;
@@ -138,7 +139,7 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
         None
     }
 
-    #[cfg(bus = "pci")]
+    #[cfg(all(bus = "pci", feature = "bus-pci"))]
     fn probe_pci<C: ConfigurationAccess>(
         root: &mut PciRoot<C>,
         bdf: DeviceFunction,
@@ -156,11 +157,11 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
             _ => return None,
         }
 
-        if let Some((ty, transport, irq)) =
+        if let Some((ty, transport)) =
             ax_driver_virtio::probe_pci_device::<VirtIoHalImpl, C>(root, bdf, dev_info)
             && ty == D::DEVICE_TYPE
         {
-            let irq = pci_irq_vector(bdf, irq);
+            let irq = pci_irq_vector(bdf);
             match D::try_new(transport, Some(irq)) {
                 Ok(dev) => return Some(dev),
                 Err(e) => {
@@ -173,11 +174,12 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
     }
 }
 
-#[cfg(all(bus = "pci", target_arch = "x86_64"))]
-fn pci_irq_vector(bdf: DeviceFunction, fallback: usize) -> usize {
+#[cfg(all(bus = "pci", feature = "bus-pci", target_arch = "x86_64"))]
+fn pci_irq_vector(bdf: DeviceFunction) -> usize {
     const PCI_INTERRUPT_REG: usize = 0x3c;
     const IO_APIC_VECTOR_OFFSET: usize = 0x20;
 
+    let fallback = pci_legacy_irq_fallback(bdf);
     let config_offset = ((bdf.bus as usize) << 20)
         | ((bdf.device as usize) << 15)
         | ((bdf.function as usize) << 12)
@@ -198,15 +200,76 @@ fn pci_irq_vector(bdf: DeviceFunction, fallback: usize) -> usize {
     }
 }
 
-#[cfg(all(bus = "pci", not(target_arch = "x86_64")))]
-fn pci_irq_vector(_bdf: DeviceFunction, fallback: usize) -> usize {
-    fallback
+#[cfg(all(bus = "pci", feature = "bus-pci", not(target_arch = "x86_64")))]
+fn pci_irq_vector(bdf: DeviceFunction) -> usize {
+    pci_legacy_irq_fallback(bdf)
+}
+
+#[cfg(all(bus = "pci", feature = "bus-pci"))]
+const fn pci_irq_base() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        0x20
+    }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        0x10
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        0x23
+    }
+}
+
+#[cfg(all(bus = "pci", feature = "bus-pci"))]
+const fn pci_legacy_irq_fallback(bdf: DeviceFunction) -> usize {
+    pci_irq_base() + (bdf.device & 3) as usize
 }
 
 #[cfg(virtio_dev)]
 pub struct VirtIoHalImpl;
 
-#[cfg(virtio_dev)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HalAddress {
+    addr: usize,
+}
+
+impl HalAddress {
+    const fn new(addr: usize) -> Self {
+        Self { addr }
+    }
+
+    const fn addr(self) -> usize {
+        self.addr
+    }
+}
+
+#[inline]
+fn nonnull_from_addr(addr: usize, context: &str) -> NonNull<u8> {
+    assert_ne!(addr, 0, "{context} returned a null address");
+    // SAFETY: The assertion above guarantees the pointer is non-null.
+    unsafe { NonNull::new_unchecked(addr as *mut u8) }
+}
+
+#[inline]
+fn nonnull_from_hal_address(addr: HalAddress, context: &str) -> NonNull<u8> {
+    nonnull_from_addr(addr.addr(), context)
+}
+
+#[inline]
+fn hal_phys_to_virt_addr(paddr: PhysAddr) -> HalAddress {
+    HalAddress::new(phys_to_virt((paddr as usize).into()).as_mut_ptr() as usize)
+}
+
+#[inline]
+fn hal_virt_to_phys_addr(vaddr: usize) -> PhysAddr {
+    virt_to_phys(vaddr.into()).as_usize() as PhysAddr
+}
+
 unsafe impl VirtIoHal for VirtIoHalImpl {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
         let vaddr = if let Ok(vaddr) = global_allocator().alloc_pages(pages, 0x1000, UsageKind::Dma)
@@ -215,9 +278,9 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
         } else {
             return (0, NonNull::dangling());
         };
-        let paddr = virt_to_phys(vaddr.into());
-        let ptr = NonNull::new(vaddr as _).unwrap();
-        (paddr.as_usize() as PhysAddr, ptr)
+        let paddr = hal_virt_to_phys_addr(vaddr);
+        let ptr = nonnull_from_hal_address(HalAddress::new(vaddr), "dma_alloc");
+        (paddr, ptr)
     }
 
     unsafe fn dma_dealloc(_paddr: PhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
@@ -227,13 +290,14 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
 
     #[inline]
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
-        NonNull::new(phys_to_virt((paddr as usize).into()).as_mut_ptr()).unwrap()
+        let vaddr = hal_phys_to_virt_addr(paddr);
+        nonnull_from_hal_address(vaddr, "mmio_phys_to_virt")
     }
 
     #[inline]
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
         let vaddr = buffer.as_ptr() as *mut u8 as usize;
-        virt_to_phys(vaddr.into()).as_usize() as PhysAddr
+        hal_virt_to_phys_addr(vaddr)
     }
 
     #[inline]
