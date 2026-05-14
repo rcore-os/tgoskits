@@ -98,6 +98,10 @@ impl ax_kspin::lockdep::KspinLockdepIf for KspinLockdepIfImpl {
     fn console_write_str(s: &str) {
         ax_hal::console::write_bytes(s.as_bytes());
     }
+
+    fn fatal() -> ! {
+        ax_hal::power::system_off()
+    }
 }
 
 /// Gets the current task, or returns [`None`] if the current task is not

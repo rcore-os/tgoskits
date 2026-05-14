@@ -88,32 +88,35 @@ impl HeldLockStack {
     }
 
     pub fn push(&mut self, held: HeldLock) {
-        assert!(
-            !self.contains_addr(held.addr),
-            "lockdep: duplicate held lock push while acquiring {:?}; stack {:?}",
-            held,
-            self
-        );
-        assert!(
-            self.depth < MAX_HELD_LOCKS,
-            "lockdep: held lock stack overflow while acquiring {:?}",
-            held
-        );
+        if self.contains_addr(held.addr) {
+            lockdep_fatal(format_args!(
+                "lockdep: duplicate held lock push while acquiring {:?}; stack {:?}",
+                held, self
+            ));
+        }
+        if self.depth >= MAX_HELD_LOCKS {
+            lockdep_fatal(format_args!(
+                "lockdep: held lock stack overflow while acquiring {:?}",
+                held
+            ));
+        }
         self.entries[self.depth] = held;
         self.depth += 1;
     }
 
     pub fn pop_checked(&mut self, addr: usize) {
-        assert!(
-            self.depth != 0,
-            "lockdep: releasing lock {addr:#x} with empty held lock stack"
-        );
+        if self.depth == 0 {
+            lockdep_fatal(format_args!(
+                "lockdep: releasing lock {addr:#x} with empty held lock stack"
+            ));
+        }
         let top = self.entries[self.depth - 1];
-        assert_eq!(
-            top.addr, addr,
-            "lockdep: unlock order violation, releasing addr={:#x} while top of stack is {:?}",
-            addr, top
-        );
+        if top.addr != addr {
+            lockdep_fatal(format_args!(
+                "lockdep: unlock order violation, releasing addr={:#x} while top of stack is {:?}",
+                addr, top
+            ));
+        }
         self.depth -= 1;
     }
 }
@@ -169,11 +172,12 @@ impl HeldLockSnapshot {
             return;
         }
 
-        assert!(
-            self.depth < MAX_HELD_LOCK_SNAPSHOT,
-            "lockdep: combined held lock snapshot overflow while acquiring {:?}",
-            held
-        );
+        if self.depth >= MAX_HELD_LOCK_SNAPSHOT {
+            lockdep_fatal(format_args!(
+                "lockdep: combined held lock snapshot overflow while acquiring {:?}",
+                held
+            ));
+        }
         self.entries[self.depth] = held;
         self.depth += 1;
     }
@@ -271,6 +275,7 @@ pub trait KspinLockdepIf {
     fn push_current_task_held_lock(held: HeldLock);
     fn pop_current_task_held_lock(lock_addr: usize);
     fn console_write_str(s: &str);
+    fn fatal() -> !;
 }
 
 pub struct LockdepMap {
@@ -356,10 +361,11 @@ impl ClassRegistry {
         }
 
         let new_id = NEXT_CLASS_ID.fetch_add(1, Ordering::AcqRel);
-        assert!(
-            (new_id as usize) < MAX_LOCK_CLASSES,
-            "lockdep: exceeded maximum tracked lock classes ({MAX_LOCK_CLASSES})"
-        );
+        if (new_id as usize) >= MAX_LOCK_CLASSES {
+            lockdep_fatal(format_args!(
+                "lockdep: exceeded maximum tracked lock classes ({MAX_LOCK_CLASSES})"
+            ));
+        }
 
         self.keys[new_id as usize] = key;
         new_id
@@ -397,6 +403,12 @@ impl LockGraph {
     }
 
     fn add_order(&mut self, before: u32, after: u32, max_id: u32) {
+        if before as usize >= MAX_LOCK_CLASSES || after as usize >= MAX_LOCK_CLASSES {
+            lockdep_fatal(format_args!(
+                "lockdep: invalid class edge {} -> {} exceeds maximum tracked lock classes ({})",
+                before, after, MAX_LOCK_CLASSES
+            ));
+        }
         let mut closure = self.reachability[after as usize];
         let word = (after as usize) / 64;
         let bit = (after as usize) % 64;
@@ -554,16 +566,17 @@ fn ensure_class(
 fn pack_class_key(class_key: *const Location<'static>, subclass: LockSubclass) -> usize {
     let key = class_key as usize;
     let subclass = subclass as usize;
-    assert!(
-        subclass <= LOCK_SUBCLASS_MASK,
-        "lockdep: subclass {subclass} exceeds maximum {}",
-        LOCK_SUBCLASS_MASK
-    );
-    assert_eq!(
-        key & LOCK_SUBCLASS_MASK,
-        0,
-        "lockdep: class key {key:#x} is not aligned enough to encode subclasses"
-    );
+    if subclass > LOCK_SUBCLASS_MASK {
+        lockdep_fatal(format_args!(
+            "lockdep: subclass {subclass} exceeds maximum {}",
+            LOCK_SUBCLASS_MASK
+        ));
+    }
+    if key & LOCK_SUBCLASS_MASK != 0 {
+        lockdep_fatal(format_args!(
+            "lockdep: class key {key:#x} is not aligned enough to encode subclasses"
+        ));
+    }
     key | subclass
 }
 
@@ -654,6 +667,56 @@ fn pop_current_task_held_lock(lock_addr: usize) {
     with_current_task_held_locks_mut(|stack| stack.pop_checked(lock_addr));
 }
 
+#[cfg(all(feature = "task-context", not(any(test, doctest))))]
+fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
+    struct ConsoleWriter;
+
+    impl fmt::Write for ConsoleWriter {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            emergency_write_str(s);
+            Ok(())
+        }
+    }
+
+    let mut writer = ConsoleWriter;
+    let _ = fmt::Write::write_fmt(&mut writer, message);
+    let _ = fmt::Write::write_str(&mut writer, "\n");
+    emergency_write_str("lockdep fatal violation\n");
+    call_interface!(KspinLockdepIf::fatal)
+}
+
+#[cfg(all(
+    feature = "task-context",
+    not(any(test, doctest)),
+    target_arch = "riscv64"
+))]
+fn emergency_write_str(s: &str) {
+    for &byte in s.as_bytes() {
+        #[allow(deprecated)]
+        {
+            sbi_rt::legacy::console_putchar(byte as usize);
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "task-context",
+    not(any(test, doctest)),
+    not(target_arch = "riscv64")
+))]
+fn emergency_write_str(s: &str) {
+    call_interface!(KspinLockdepIf::console_write_str, s);
+}
+
+#[cfg(any(
+    test,
+    doctest,
+    all(not(target_os = "none"), not(feature = "task-context"))
+))]
+fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
+    panic!("{message}")
+}
+
 pub fn current_task_held_lock_snapshot() -> HeldLockSnapshot {
     let mut snapshot = HeldLockSnapshot::new();
     collect_current_task_held_locks(&mut snapshot);
@@ -686,7 +749,7 @@ pub fn prepare_acquire_with_snapshot_nested(
     subclass: LockSubclass,
 ) -> PreparedAcquire {
     prepare_acquire_with_snapshot_result(map, addr, caller, held_before, subclass).unwrap_or_else(
-        |(err, state)| panic_on_lockdep_error(err, lock_kind, state, addr, &held_before),
+        |(err, state)| fatal_on_lockdep_error(err, lock_kind, state, addr, &held_before),
     )
 }
 
@@ -733,7 +796,7 @@ fn prepare_acquire_with_snapshot_result(
     Ok(PreparedAcquire { state, held_before })
 }
 
-fn panic_on_lockdep_error(
+fn fatal_on_lockdep_error(
     err: LockdepCheckError,
     lock_kind: &str,
     state: LockdepState,
@@ -745,13 +808,12 @@ fn panic_on_lockdep_error(
     let held_subclasses = held_lock_subclass_snapshot(held_before);
     match err {
         LockdepCheckError::Recursive => {
-            let (held_index, held) = held_before
-                .iter()
-                .enumerate()
-                .find(|(_, held)| held.addr == addr)
-                .or_else(|| held_before.iter().enumerate().next())
-                .expect("held lock snapshot unexpectedly empty");
-            panic!(
+            let (held_index, held) = conflicting_held_lock(
+                held_before,
+                |held| held.addr == addr,
+                "lockdep: recursive acquire without held lock snapshot",
+            );
+            lockdep_fatal(format_args!(
                 "lockdep: recursive {lock_kind} acquisition detected\nrequested:\n  class={} \
                  subclass={} addr={:#x} acquire_at={}\nalready held:\n  {}\nheld stack:\n{}",
                 requested_class,
@@ -766,17 +828,15 @@ fn panic_on_lockdep_error(
                     snapshot: held_before,
                     subclasses: &held_subclasses,
                 }
-            )
+            ))
         }
         LockdepCheckError::OrderInversion => {
-            emit_lockdep_marker("lockdep: lock order inversion detected\n");
-            let (held_index, held) = held_before
-                .iter()
-                .enumerate()
-                .find(|(_, held)| with_graph(|graph| graph.reaches(requested_class, held.class_id)))
-                .or_else(|| held_before.iter().enumerate().next())
-                .expect("held lock snapshot unexpectedly empty");
-            panic!(
+            let (held_index, held) = conflicting_held_lock(
+                held_before,
+                |held| with_graph(|graph| graph.reaches(requested_class, held.class_id)),
+                "lockdep: order inversion without held lock snapshot",
+            );
+            lockdep_fatal(format_args!(
                 "lockdep: lock order inversion detected\nrequested:\n  kind={} class={} \
                  subclass={} addr={:#x} acquire_at={}\nconflicting held lock:\n  {}\nheld \
                  stack:\n{}",
@@ -793,23 +853,27 @@ fn panic_on_lockdep_error(
                     snapshot: held_before,
                     subclasses: &held_subclasses,
                 }
-            );
+            ));
         }
     }
 }
 
-#[cfg(all(feature = "task-context", not(any(test, doctest))))]
-fn emit_lockdep_marker(s: &str) {
-    call_interface!(KspinLockdepIf::console_write_str, s);
-}
+fn conflicting_held_lock(
+    held_before: &HeldLockSnapshot,
+    matches: impl Fn(HeldLock) -> bool,
+    empty_message: &'static str,
+) -> (usize, HeldLock) {
+    for (index, held) in held_before.iter().enumerate() {
+        if matches(held) {
+            return (index, held);
+        }
+    }
 
-#[cfg(any(
-    test,
-    doctest,
-    all(not(target_os = "none"), not(feature = "task-context"))
-))]
-fn emit_lockdep_marker(s: &str) {
-    std::eprint!("{s}");
+    if let Some((index, held)) = held_before.iter().enumerate().next() {
+        return (index, held);
+    }
+
+    lockdep_fatal(format_args!("{empty_message}"))
 }
 
 pub fn finish_acquire_with_stack(
