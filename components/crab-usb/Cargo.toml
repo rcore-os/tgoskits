@@ -1,0 +1,21 @@
+[workspace]
+members = ["test_crates/*", "usb-device/hid/keyboard", "usb-device/uvc", "usb-host", "usb-if", "utils/ktest-helper", "utils/uvc-frame-parser"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/drivercraft/CrabUSB"
+
+[workspace.dependencies]
+crab-usb = {path = "usb-host", version = "0.9" }
+futures = {version = "0.3", default-features = false}
+log = "0.4"
+thiserror = {version = "2", default-features = false}
+usb-if = {path = "usb-if", version = "0.7" }
+crab-uvc = {path = "usb-device/uvc", version = "0.1" }
+tock-registers = "0.10"
+bare-test = {version = "0.7"}
+rockchip-pm = "0.4"
+rockchip-soc = "0.1"
+ktest-helper = {path = "utils/ktest-helper", version = "0.1" }

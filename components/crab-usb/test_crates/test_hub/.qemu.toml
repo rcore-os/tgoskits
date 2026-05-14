@@ -1,0 +1,20 @@
+# QEMU USB Hub 单层测试配置
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a53",
+  "-usb", # xHCI 控制器
+  "-device",
+  "qemu-xhci,id=xhci", # Level 1 Hub
+  "-device",
+  "usb-hub,bus=xhci.0,port=1",
+  "-drive",
+  "if=none,id=stick,format=raw,file=test.img",
+  "-device",
+  "usb-storage,bus=xhci.0,port=1.4,drive=stick",
+]
+
+fail_regex = []
+success_regex = []
+to_bin = true
+uefi = false

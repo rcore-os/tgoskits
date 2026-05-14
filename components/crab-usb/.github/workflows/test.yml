@@ -1,0 +1,47 @@
+name: Test
+
+on: [push, pull_request]
+
+env:
+  qemu-version: 9.2.4
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-bin-cache
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/dev') }}
+      - run: cargo install cargo-binutils
+      - uses: arceos-org/setup-qemu@v1
+        with:
+          version: ${{ env.qemu-version }}
+          arch_list: aarch64
+      - name: Set up libudev
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libudev-dev
+          version: 1.0
+
+      - name: Set up ffmpeg
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: ffmpeg libavutil-dev libavformat-dev libavfilter-dev libavdevice-dev libavcodec-dev
+      - name: Build Workspace
+        run: cargo build --workspace
+      - name: Build Workspace (no-std)
+        run: cargo build --target aarch64-unknown-none-softfloat --workspace --exclude uvc-frame-parser --exclude test_libusb_uvc
+
+      - name: Build usb-keyboard example
+        working-directory: usb-device/hid/keyboard
+        run: cargo build --example keyboard --features=crab-usb/libusb
+
+      - run: cargo install ostool
+      - name: Test no-std
+        run: cargo test-hub

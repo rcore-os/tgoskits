@@ -1,0 +1,28 @@
+# QEMU USB Hub Transaction Translator 测试
+# 测试高速 Hub 与低速/全速设备的通信
+args = [
+  "-nographic",
+  "-cpu", "cortex-a53",
+  "-usb",
+
+  # xHCI 控制器
+  "-device", "qemu-xhci,id=xhci",
+
+  # 高速 Hub (USB 2.0 Hub 默认就是高速)
+  "-device", "usb-hub,bus=xhci.0,id=hub_hi",
+
+  # 低速设备 (键盘) - 需要 TT
+  "-device", "usb-kbd",
+
+  # 全速设备 (鼠标) - 需要 TT
+  "-device", "usb-mouse",
+
+  # 高速设备 - 不需要 TT
+  # "-device", "usb-storage,bus=xhci.0,drive=stick",
+  # "-drive", "if=none,id=stick,format=raw,file=test.img",
+]
+
+fail_regex = []
+success_regex = []
+to_bin = true
+uefi = false

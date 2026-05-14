@@ -1,0 +1,10 @@
+{
+    // "rust-analyzer.cargo.target": "aarch64-unknown-none-softfloat",
+    "rust-analyzer.cargo.allTargets": false,
+    "rust-analyzer.cargo.features": [
+        // "libusb"
+    ],
+    "lldb.displayFormat": "auto",
+    "lldb.dereferencePointers": true,
+    "lldb.consoleMode": "commands",
+}

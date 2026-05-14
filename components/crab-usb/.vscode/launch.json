@@ -1,0 +1,33 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "cppdbg",
+            "name": "KDebug cppdbg",
+            "request": "launch",
+            "miDebuggerServerAddress": "localhost:1234",
+            "program": "${workspaceFolder}/target/aarch64-unknown-none/debug/deps/test.elf",
+            "miDebuggerPath": "gdb-multiarch",
+            "cwd": "${workspaceRoot}",
+            "preLaunchTask": "debug test"
+        },
+        // {
+        //     "name": "Debug test",
+        //     "type": "lldb",
+        //     "request": "custom",
+        //     "initCommands": [
+        //         "platform select remote-gdb-server"
+        //     ],
+        //     "targetCreateCommands": [
+        //         "target create ${workspaceFolder}/target/aarch64-unknown-none/debug/deps/test.elf"
+        //     ],
+        //     "processCreateCommands": [
+        //         "gdb-remote localhost:1234" // Connect to the GDB Server
+        //     ],
+        //     "preLaunchTask": "debug test"
+        // }
+    ]
+}
