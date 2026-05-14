@@ -63,9 +63,10 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
 
     use crate::WaitQueue;
 
-    /// Maximum IRQ number we track in the pending-bit array. Anything
-    /// larger falls back to the lock + map check; that path is fine in
-    /// task context.
+    /// Maximum IRQ number we track in the pending-bit array. The drain
+    /// task scans IRQ_PENDING by index, so IRQs outside this range have
+    /// no observable pending bit and the waker would never fire. We
+    /// reject those at registration rather than silently dropping them.
     const MAX_TRACKED_IRQ: usize = 256;
 
     static IRQ_PENDING: [AtomicBool; MAX_TRACKED_IRQ] =
@@ -73,6 +74,7 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     static ANY_PENDING: AtomicBool = AtomicBool::new(false);
     static DRAIN_WQ: WaitQueue = WaitQueue::new();
     static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);
+    static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
     static POLL_IRQ: SpinNoIrq<BTreeMap<usize, Arc<PollSet>>> = SpinNoIrq::new(BTreeMap::new());
 
     fn irq_hook(irq: usize) {
@@ -81,12 +83,17 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         // replacement.
         if irq < MAX_TRACKED_IRQ {
             IRQ_PENDING[irq].store(true, Ordering::Release);
+            ANY_PENDING.store(true, Ordering::Release);
+            // `resched = false` because we cannot preempt from an IRQ
+            // hook — let the scheduler run the drain task when the
+            // current task next yields or reschedules.
+            DRAIN_WQ.notify_one(false);
         }
-        ANY_PENDING.store(true, Ordering::Release);
-        // `resched = false` because we cannot preempt from an IRQ
-        // hook — let the scheduler run the drain task when the
-        // current task next yields or reschedules.
-        DRAIN_WQ.notify_one(false);
+        // IRQs >= MAX_TRACKED_IRQ are intentionally not tracked here.
+        // register_irq_waker rejects those at registration, so reaching
+        // this path means some other subsystem installed a handler on a
+        // high IRQ — leave it alone instead of setting ANY_PENDING and
+        // making the drain task spin.
     }
 
     fn ensure_drain_spawned() {
@@ -130,8 +137,34 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         );
     }
 
+    if irq >= MAX_TRACKED_IRQ {
+        warn!(
+            "register_irq_waker: IRQ {irq} exceeds MAX_TRACKED_IRQ={MAX_TRACKED_IRQ}; ignoring \
+             registration to avoid silently dropping wakeups"
+        );
+        return;
+    }
+
     ensure_drain_spawned();
-    ax_hal::irq::register_irq_hook(irq_hook);
+
+    // The post-IRQ hook is a single global slot in axhal. Only the
+    // first caller across the kernel may install it; subsequent calls
+    // would return false and silently no-op (leaving wakers waiting on
+    // an unfed pending array). Race the install via `HOOK_INSTALLED`
+    // and panic if the hook slot was already taken by something else,
+    // since that means another subsystem installed an incompatible
+    // hook and our waker bridge cannot function.
+    if HOOK_INSTALLED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        assert!(
+            ax_hal::irq::register_irq_hook(irq_hook),
+            "axtask IRQ-waker bridge could not install its post-IRQ hook: axhal's single hook \
+             slot is already claimed by another subsystem. Wakers registered here would never \
+             fire."
+        );
+    }
 
     POLL_IRQ
         .lock()
