@@ -182,11 +182,13 @@ pub fn sys_mmap(
         Some(get_file_like(fd)?)
     };
 
+    let mut mapping_flags: MappingFlags = permission_flags.into();
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
             if let Some(ref file) = file {
                 match file.device_mmap(offset as u64) {
                     Ok(DeviceMmap::Physical(mut range)) => {
+                        mapping_flags |= MappingFlags::UNCACHED;
                         range.start += offset;
                         if range.is_empty() {
                             return Err(AxError::InvalidInput);
@@ -237,6 +239,7 @@ pub fn sys_mmap(
                                         return Err(AxError::NoSuchDevice);
                                     }
                                     DeviceMmap::Physical(range) => {
+                                        mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
                                             return Err(AxError::InvalidInput);
                                         }
@@ -285,7 +288,7 @@ pub fn sys_mmap(
     };
 
     let populate = map_flags.contains(MmapFlags::POPULATE);
-    aspace.map(start, length, permission_flags.into(), populate, backend)?;
+    aspace.map(start, length, mapping_flags, populate, backend)?;
 
     Ok(start.as_usize() as _)
 }

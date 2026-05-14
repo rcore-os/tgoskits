@@ -120,6 +120,10 @@ impl Rknpu {
         &self.dma
     }
 
+    pub fn mem_sync(&mut self, args: &mut ioctrl::RknpuMemSync) -> Result<(), RknpuError> {
+        self.gem.sync(args)
+    }
+
     pub fn open(&mut self) -> Result<(), RknpuError> {
         Ok(())
     }
