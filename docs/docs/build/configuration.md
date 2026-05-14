@@ -204,12 +204,12 @@ flowchart TD
     B -->|否| D["使用默认模板"]
     D --> E["写入文件"]
     E --> F{子系统?}
-    F -->|Axvisor| G["尝试复制 board 默认配置"]
+    F -->|Axvisor / StarryOS| G["尝试复制 board 默认配置"]
     C --> H["返回 BuildInfo"]
     G --> H
 ```
 
-对于 Axvisor，首次创建 Build Info 时还会尝试从 `os/axvisor/configs/board/` 目录复制与板卡名匹配的默认配置，这使得 Axvisor 的 `defconfig` 流程能直接提供可用的初始配置。
+对于 Axvisor 和 StarryOS，当 Build Info 文件不存在时，`axbuild` 会尝试从各自的 board 配置目录（`os/axvisor/configs/board/` 或 `os/StarryOS/configs/board/`）复制与当前 target 匹配的默认板卡配置。这使得 `defconfig` 流程和首次构建都能直接获得可用的初始配置，无需用户手动编写。
 
 ### 环境变量注入
 
