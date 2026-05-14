@@ -17,6 +17,55 @@ use axklib::{AxResult, IrqHandler, Klib, PhysAddr, VirtAddr, impl_trait};
 
 struct KlibImpl;
 
+fn dma_coherent_range(addr: VirtAddr, size: usize) -> Option<(VirtAddr, usize)> {
+    if size == 0 {
+        return None;
+    }
+
+    let start = addr.align_down_4k();
+    let end = (addr + size).align_up_4k();
+    Some((start, end - start))
+}
+
+#[cfg(target_arch = "aarch64")]
+fn clean_invalidate_dcache_to_poc(addr: VirtAddr, size: usize) {
+    use core::arch::asm;
+
+    if size == 0 {
+        return;
+    }
+
+    let line_size = ax_hal::asm::dcache_line_size_from_ctr();
+    let start = addr.as_usize() & !(line_size - 1);
+    let end = (addr.as_usize() + size + line_size - 1) & !(line_size - 1);
+    for line in (start..end).step_by(line_size) {
+        unsafe { asm!("dc civac, {0:x}", in(reg) line) };
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn clean_invalidate_dcache_to_poc(_addr: VirtAddr, _size: usize) {}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn dsb_sy() {
+    unsafe { core::arch::asm!("dsb sy") };
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn dsb_sy() {}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn isb_sy() {
+    unsafe { core::arch::asm!("isb") };
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn isb_sy() {}
+
 impl_trait! {
     impl Klib for KlibImpl {
         /// Map a physical region by delegating to the memory manager (`axmm`).
@@ -28,20 +77,40 @@ impl_trait! {
             ax_mm::iomap(addr, size)
         }
 
-        fn mem_set_dma_coherent(addr: VirtAddr, size: usize, uncached: bool) -> AxResult {
-            if size == 0 {
+        fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> AxResult {
+            let Some((start, size)) = dma_coherent_range(addr, size) else {
                 return Ok(());
-            }
+            };
 
-            let start = addr.align_down_4k();
-            let end = (addr + size).align_up_4k();
-            let mut flags = ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE;
-            if uncached {
-                flags |= ax_hal::paging::MappingFlags::UNCACHED;
-            }
-
-            ax_mm::kernel_aspace().lock().protect(start, end - start, flags)?;
+            clean_invalidate_dcache_to_poc(start, size);
+            dsb_sy();
+            ax_mm::kernel_aspace().lock().protect(
+                start,
+                size,
+                ax_hal::paging::MappingFlags::READ
+                    | ax_hal::paging::MappingFlags::WRITE
+                    | ax_hal::paging::MappingFlags::UNCACHED,
+            )?;
             ax_hal::asm::flush_tlb(None);
+            dsb_sy();
+            isb_sy();
+            Ok(())
+        }
+
+        fn mem_restore_dma_cached(addr: VirtAddr, size: usize) -> AxResult {
+            let Some((start, size)) = dma_coherent_range(addr, size) else {
+                return Ok(());
+            };
+
+            dsb_sy();
+            ax_mm::kernel_aspace().lock().protect(
+                start,
+                size,
+                ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE,
+            )?;
+            ax_hal::asm::flush_tlb(None);
+            dsb_sy();
+            isb_sy();
             Ok(())
         }
 
