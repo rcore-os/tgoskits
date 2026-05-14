@@ -51,7 +51,7 @@ uart-paddr = 0xFE20_1000        # uint
 # UART IRQ number (SPI, 0x79)
 uart-irq = 0x99                 # uint
 # Timer interrupt num (PPI, virtual timer / CNTV = PPI 11 = IRQ 27).
-timer-irq = 27                  # uint
+timer-irq = 30                  # uint
 # IPI interrupt num
 ipi-irq = 1                     # uint
 

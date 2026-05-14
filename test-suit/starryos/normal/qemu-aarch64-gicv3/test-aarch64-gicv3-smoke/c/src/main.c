@@ -17,6 +17,11 @@
 
 int main(void)
 {
+    // Run with line-unbuffered stdout so the success line is observable
+    // from the harness even if our libc decides serial output is block-
+    // buffered (TCG can race the harness's grep on the success regex).
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
     struct utsname uts;
     if (uname(&uts) != 0) {
         fprintf(stderr, "uname() failed\n");
@@ -26,5 +31,6 @@ int main(void)
     printf("uname.machine = %s\n", uts.machine);
     printf("userspace alive on GICv3\n");
     printf("DONE: 1 pass, 0 fail\n");
+    fflush(stdout);
     return 0;
 }
