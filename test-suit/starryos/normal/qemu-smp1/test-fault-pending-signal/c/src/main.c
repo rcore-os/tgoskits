@@ -1,7 +1,7 @@
 /*
  * test-fault-pending-signal: a synchronous SIGSEGV must still terminate
  * the process when a lower-numbered signal is concurrently pending on
- * the same thread.
+ * the same thread's *thread-level* pending queue.
  *
  * The kernel binds a fault-dump request to the faulting signo via
  * `fault_dump_signo` (an AtomicU8 set by `raise_signal_fatal`).
@@ -9,17 +9,19 @@
  * matches, using `compare_exchange(signo, 0)`. The previous
  * `AtomicBool` design risked having a lower-numbered queued signal
  * (e.g. SIGUSR1) consume the dump flag during its handler-only delivery
- * before the real fault signal got its turn. This regression test
- * constructs that ordering: a peer thread keeps SIGUSR1 firing at the
- * main thread while main eventually dereferences NULL. The visible
- * contract is that the process terminates with SIGSEGV — neither
- * SIGUSR1's handler nor signal queue ordering should mask the fault.
+ * before the real fault signal got its turn.
  *
- * The kernel-side `compare_exchange` guarantees the dump tag survives
- * any number of unrelated handler-only deliveries; this test exercises
- * the path. The dump's printed register state is visible in the QEMU
- * serial log captured by CI but is not asserted here (no userspace
- * facility to read kernel logs).
+ * `check_signals_slow_with` drains the *thread-level* `self.pending`
+ * queue before the process-level queue, so to truly exercise the
+ * ordering we must place SIGUSR1 in the thread-level queue. The way
+ * to do that from userspace is `tgkill(tgid, tid, SIGUSR1)`. Plain
+ * `kill(pid, SIGUSR1)` routes through `send_signal_to_process()` and
+ * lands in the process-level queue instead, which does not exercise
+ * the race.
+ *
+ * The dump's printed register state is visible in the QEMU serial log
+ * captured by CI but is not asserted here (no userspace facility to
+ * read kernel logs).
  */
 
 #define _GNU_SOURCE
@@ -32,13 +34,25 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 static atomic_int g_usr1_count;
 static atomic_int g_stop_peer;
+static pid_t g_main_pid;
 static pid_t g_main_tid;
+
+static pid_t my_gettid(void)
+{
+    return (pid_t)syscall(SYS_gettid);
+}
+
+static int my_tgkill(pid_t tgid, pid_t tid, int sig)
+{
+    return (int)syscall(SYS_tgkill, tgid, tid, sig);
+}
 
 static void usr1_handler(int sig)
 {
@@ -49,13 +63,14 @@ static void usr1_handler(int sig)
 static void *peer_signaler(void *arg)
 {
     (void)arg;
-    /* Hammer SIGUSR1 at the main thread so the pending set very
-     * likely holds SIGUSR1 at the moment SIGSEGV is delivered. We do
-     * not need a perfect interleaving — the kernel invariant under
-     * test is that even one such pre-existing pending signal cannot
-     * consume the fault-dump tag. */
+    /* Hammer SIGUSR1 at the main thread's *thread-level* pending
+     * queue via tgkill, so it is dequeued ahead of (or interleaved
+     * with) the synchronous SIGSEGV the main thread is about to
+     * raise. The kernel invariant under test is that even a stream of
+     * such handler-only deliveries cannot consume the fault-dump tag
+     * that `raise_signal_fatal` bound to SIGSEGV. */
     while (!atomic_load(&g_stop_peer)) {
-        kill(g_main_tid, SIGUSR1);
+        my_tgkill(g_main_pid, g_main_tid, SIGUSR1);
         /* tiny pause to let the handler run and re-arm the pending
          * set, instead of hard-spinning the cpu */
         struct timespec ts = {0, 1000};
@@ -79,7 +94,7 @@ int main(void)
          * the NoFurtherAction path in `check_signals` rather than
          * terminating us. SA_NODEFER + SA_RESTART keep the kernel from
          * masking SIGUSR1 during its own handler so the next
-         * pthread_kill can land again. */
+         * tgkill can land again. */
         struct sigaction sa = {0};
         sa.sa_handler = usr1_handler;
         sa.sa_flags   = SA_NODEFER | SA_RESTART;
@@ -88,7 +103,8 @@ int main(void)
             _exit(99);
         }
 
-        g_main_tid = getpid();
+        g_main_pid = getpid();
+        g_main_tid = my_gettid();
 
         pthread_t peer;
         if (pthread_create(&peer, NULL, peer_signaler, NULL) != 0) {
@@ -96,7 +112,8 @@ int main(void)
         }
 
         /* Let the peer get a few SIGUSR1s in so at least one is
-         * pending or actively delivering when we fault. */
+         * pending or actively delivering on this thread's
+         * thread-level queue when we fault. */
         for (int i = 0; i < 200; ++i) {
             if (atomic_load(&g_usr1_count) >= 8) break;
             struct timespec ts = {0, 1000 * 1000};
@@ -105,7 +122,8 @@ int main(void)
 
         /* Trigger the synchronous fault. The kernel must:
          *   1. raise_signal_fatal stores SIGSEGV in fault_dump_signo
-         *   2. check_signals dequeues either SIGUSR1 or SIGSEGV first
+         *   2. check_signals_slow_with drains thread-level pending
+         *      (SIGUSR1 from tgkill) before process-level
          *   3. SIGUSR1 delivery (NoFurtherAction) leaves the slot alone
          *      because the compare_exchange compares against SIGUSR1,
          *      not SIGSEGV
