@@ -655,6 +655,34 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
 pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     debug!("sys_msync <= addr: {addr:#x}, length: {length:x}, flags: {flags:#x}");
 
+    let valid_flags = MS_SYNC | MS_ASYNC | MS_INVALIDATE;
+    if flags & !valid_flags != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    if length == 0 {
+        return Ok(0);
+    }
+
+    let addr = align_up_4k(addr);
+    if addr == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let curr = current();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let aspace = aspace_arc.lock();
+
+    let area = aspace
+        .find_area(VirtAddr::from(addr))
+        .ok_or(AxError::InvalidInput)?;
+
+    if let Backend::File(file_backend) = area.backend()
+        && file_backend.is_shared()
+    {
+        file_backend.cache().sync(false)?;
+    }
+
     Ok(0)
 }
 

@@ -131,6 +131,14 @@ impl FileBackend {
         Arc::downgrade(&self.0.futex_handle)
     }
 
+    pub fn is_shared(&self) -> bool {
+        self.0.shared
+    }
+
+    pub fn cache(&self) -> &CachedFile {
+        &self.0.cache
+    }
+
     pub fn file_info(&self) -> AxResult<BackendFileInfo> {
         let loc = self.0.cache.location();
         let name = loc.absolute_path().map(|pb| pb.to_string())?;
