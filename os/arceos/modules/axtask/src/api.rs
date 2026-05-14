@@ -88,10 +88,10 @@ impl ax_kspin::lockdep::KspinLockdepIf for KspinLockdepIfImpl {
         }
     }
 
-    fn pop_current_task_held_lock(lock_id: u32) {
+    fn pop_current_task_held_lock(lock_addr: usize) {
         let _lockdep_irq_guard = IrqSave::new();
         if let Some(curr) = current_may_uninit() {
-            curr.with_held_locks(|stack| stack.pop_checked(lock_id));
+            curr.with_held_locks(|stack| stack.pop_checked(lock_addr));
         }
     }
 

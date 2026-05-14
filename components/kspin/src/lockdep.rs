@@ -13,7 +13,6 @@ use crate::base::BaseSpinLock;
 #[derive(Clone, Copy)]
 pub(crate) struct Lockdep {
     addr: usize,
-    lock_id: Option<u32>,
     inner: ax_lockdep::Lockdep,
     prepared: Option<ax_lockdep::PreparedAcquire>,
 }
@@ -39,7 +38,6 @@ impl Lockdep {
         };
         Self {
             addr,
-            lock_id: prepared.map(ax_lockdep::PreparedAcquire::lock_id),
             inner: ax_lockdep::Lockdep::prepare(
                 "spin",
                 addr,
@@ -62,25 +60,20 @@ impl Lockdep {
     pub(crate) fn lock_addr(&self) -> usize {
         self.addr
     }
-
-    #[inline(always)]
-    pub(crate) fn lock_id(&self) -> Option<u32> {
-        self.lock_id
-    }
 }
 
 #[inline(always)]
-pub(crate) fn release<G: BaseGuard>(lock_id: Option<u32>, addr: usize) {
+pub(crate) fn release<G: BaseGuard>(addr: usize) {
     if tracks_task_locks::<G>() {
-        ax_lockdep::release_task(lock_id);
+        ax_lockdep::release_task(addr);
     }
     ax_lockdep::Lockdep::release("spin", addr, Some(core::any::type_name::<G>()));
 }
 
 #[inline(always)]
-pub(crate) fn force_release<G: BaseGuard>(map: &LockdepMap, addr: usize) {
+pub(crate) fn force_release<G: BaseGuard>(addr: usize) {
     if tracks_task_locks::<G>() {
-        ax_lockdep::force_release_task(map);
+        ax_lockdep::force_release_task(addr);
     }
     ax_lockdep::Lockdep::release("spin", addr, Some(core::any::type_name::<G>()));
 }

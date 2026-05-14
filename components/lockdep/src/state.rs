@@ -15,10 +15,10 @@ use std::cell::RefCell;
 #[cfg(feature = "task-context")]
 use ax_crate_interface::call_interface;
 
-const MAX_LOCKS: usize = 1024;
+const MAX_LOCK_CLASSES: usize = 1024;
 const MAX_HELD_LOCKS: usize = 32;
 const MAX_HELD_LOCK_SNAPSHOT: usize = MAX_HELD_LOCKS;
-const WORDS_PER_ROW: usize = MAX_LOCKS.div_ceil(64);
+const WORDS_PER_ROW: usize = MAX_LOCK_CLASSES.div_ceil(64);
 const LOCK_SUBCLASS_BITS: usize = 3;
 const LOCK_SUBCLASS_MASK: usize = (1 << LOCK_SUBCLASS_BITS) - 1;
 
@@ -27,7 +27,6 @@ pub const DEFAULT_LOCK_SUBCLASS: LockSubclass = 0;
 
 #[derive(Clone, Copy)]
 pub struct HeldLock {
-    pub id: u32,
     pub class_id: u32,
     pub addr: usize,
     pub caller: &'static Location<'static>,
@@ -37,7 +36,6 @@ impl HeldLock {
     #[track_caller]
     const fn placeholder() -> Self {
         Self {
-            id: 0,
             class_id: 0,
             addr: 0,
             caller: Location::caller(),
@@ -48,7 +46,6 @@ impl HeldLock {
 impl fmt::Debug for HeldLock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HeldLock")
-            .field("id", &self.id)
             .field("class_id", &self.class_id)
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("caller", &self.caller)
@@ -60,8 +57,8 @@ impl fmt::Display for HeldLock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "id={} class={} addr={:#x} acquired_at={}",
-            self.id, self.class_id, self.addr, self.caller
+            "class={} addr={:#x} acquired_at={}",
+            self.class_id, self.addr, self.caller
         )
     }
 }
@@ -86,13 +83,13 @@ impl HeldLockStack {
 
     // The live held-lock stack must preserve exact acquisition state; callers
     // use this for checks, but push/pop must not silently deduplicate entries.
-    pub fn contains(&self, id: u32) -> bool {
-        self.iter().any(|held| held.id == id)
+    pub fn contains_addr(&self, addr: usize) -> bool {
+        self.iter().any(|held| held.addr == addr)
     }
 
     pub fn push(&mut self, held: HeldLock) {
         assert!(
-            !self.contains(held.id),
+            !self.contains_addr(held.addr),
             "lockdep: duplicate held lock push while acquiring {:?}; stack {:?}",
             held,
             self
@@ -106,16 +103,16 @@ impl HeldLockStack {
         self.depth += 1;
     }
 
-    pub fn pop_checked(&mut self, id: u32) {
+    pub fn pop_checked(&mut self, addr: usize) {
         assert!(
             self.depth != 0,
-            "lockdep: releasing lock {id} with empty held lock stack"
+            "lockdep: releasing lock {addr:#x} with empty held lock stack"
         );
         let top = self.entries[self.depth - 1];
         assert_eq!(
-            top.id, id,
-            "lockdep: unlock order violation, releasing id={} while top of stack is {:?}",
-            id, top
+            top.addr, addr,
+            "lockdep: unlock order violation, releasing addr={:#x} while top of stack is {:?}",
+            addr, top
         );
         self.depth -= 1;
     }
@@ -156,9 +153,9 @@ impl HeldLockSnapshot {
     }
 
     // A snapshot is a temporary set-like view used for acquire checks, so
-    // duplicate lock ids are filtered out when extending/pushing into it.
-    pub fn contains(&self, id: u32) -> bool {
-        self.iter().any(|held| held.id == id)
+    // duplicate lock addresses are filtered out when extending/pushing into it.
+    pub fn contains_addr(&self, addr: usize) -> bool {
+        self.iter().any(|held| held.addr == addr)
     }
 
     pub fn extend(&mut self, stack: &HeldLockStack) {
@@ -168,7 +165,7 @@ impl HeldLockSnapshot {
     }
 
     pub fn push(&mut self, held: HeldLock) {
-        if self.contains(held.id) {
+        if self.contains_addr(held.addr) {
             return;
         }
 
@@ -221,8 +218,8 @@ impl fmt::Display for HeldLockDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "id={} class={} subclass={} addr={:#x} acquired_at={}",
-            self.held.id, self.held.class_id, self.subclass, self.held.addr, self.held.caller
+            "class={} subclass={} addr={:#x} acquired_at={}",
+            self.held.class_id, self.subclass, self.held.addr, self.held.caller
         )
     }
 }
@@ -272,12 +269,11 @@ std::thread_local! {
 pub trait KspinLockdepIf {
     fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot);
     fn push_current_task_held_lock(held: HeldLock);
-    fn pop_current_task_held_lock(lock_id: u32);
+    fn pop_current_task_held_lock(lock_addr: usize);
     fn console_write_str(s: &str);
 }
 
 pub struct LockdepMap {
-    instance_id: AtomicU32,
     class_id: AtomicU32,
     class_key: AtomicPtr<Location<'static>>,
 }
@@ -294,16 +290,8 @@ impl LockdepMap {
 
     const fn new_with_class_key(class_key: *const Location<'static>) -> Self {
         Self {
-            instance_id: AtomicU32::new(0),
             class_id: AtomicU32::new(0),
             class_key: AtomicPtr::new(class_key as *mut Location<'static>),
-        }
-    }
-
-    pub fn lock_id(&self) -> Option<u32> {
-        match self.instance_id.load(Ordering::Acquire) {
-            0 => None,
-            id => Some(id),
         }
     }
 
@@ -328,10 +316,6 @@ pub struct PreparedAcquire {
 }
 
 impl PreparedAcquire {
-    pub fn lock_id(self) -> u32 {
-        self.state.instance_id
-    }
-
     pub fn class_id(self) -> u32 {
         self.state.class_id
     }
@@ -339,7 +323,6 @@ impl PreparedAcquire {
 
 #[derive(Clone, Copy)]
 struct LockdepState {
-    instance_id: u32,
     class_id: u32,
     caller: &'static Location<'static>,
 }
@@ -351,18 +334,20 @@ pub enum LockdepCheckError {
 }
 
 struct ClassRegistry {
-    keys: [usize; MAX_LOCKS],
+    keys: [usize; MAX_LOCK_CLASSES],
 }
 
 impl ClassRegistry {
     const fn new() -> Self {
         Self {
-            keys: [0; MAX_LOCKS],
+            keys: [0; MAX_LOCK_CLASSES],
         }
     }
 
     fn find_or_register(&mut self, key: usize) -> u32 {
-        let max_id = NEXT_CLASS_ID.load(Ordering::Acquire).min(MAX_LOCKS as u32);
+        let max_id = NEXT_CLASS_ID
+            .load(Ordering::Acquire)
+            .min(MAX_LOCK_CLASSES as u32);
 
         for class_id in 1..max_id {
             if self.keys[class_id as usize] == key {
@@ -372,8 +357,8 @@ impl ClassRegistry {
 
         let new_id = NEXT_CLASS_ID.fetch_add(1, Ordering::AcqRel);
         assert!(
-            (new_id as usize) < MAX_LOCKS,
-            "lockdep: exceeded maximum tracked lock classes ({MAX_LOCKS})"
+            (new_id as usize) < MAX_LOCK_CLASSES,
+            "lockdep: exceeded maximum tracked lock classes ({MAX_LOCK_CLASSES})"
         );
 
         self.keys[new_id as usize] = key;
@@ -391,13 +376,13 @@ impl ClassRegistry {
 }
 
 struct LockGraph {
-    reachability: [[u64; WORDS_PER_ROW]; MAX_LOCKS],
+    reachability: [[u64; WORDS_PER_ROW]; MAX_LOCK_CLASSES],
 }
 
 impl LockGraph {
     const fn new() -> Self {
         Self {
-            reachability: [[0; WORDS_PER_ROW]; MAX_LOCKS],
+            reachability: [[0; WORDS_PER_ROW]; MAX_LOCK_CLASSES],
         }
     }
 
@@ -429,10 +414,10 @@ impl LockGraph {
     fn check_can_acquire(
         &self,
         held_locks: &HeldLockSnapshot,
-        instance_id: u32,
+        addr: usize,
         class_id: u32,
     ) -> Result<(), LockdepCheckError> {
-        if held_locks.contains(instance_id) {
+        if held_locks.contains_addr(addr) {
             return Err(LockdepCheckError::Recursive);
         }
 
@@ -445,7 +430,9 @@ impl LockGraph {
     }
 
     fn record_edges(&mut self, held_before: &HeldLockSnapshot, class_id: u32) {
-        let max_id = NEXT_CLASS_ID.load(Ordering::Acquire).min(MAX_LOCKS as u32);
+        let max_id = NEXT_CLASS_ID
+            .load(Ordering::Acquire)
+            .min(MAX_LOCK_CLASSES as u32);
 
         for held in held_before.iter() {
             self.add_order(held.class_id, class_id, max_id);
@@ -461,7 +448,6 @@ impl LockGraph {
     ) {
         self.record_edges(held_before, state.class_id);
         held_locks.push(HeldLock {
-            id: state.instance_id,
             class_id: state.class_id,
             addr,
             caller: state.caller,
@@ -500,7 +486,6 @@ impl Drop for GraphGuard {
     }
 }
 
-static NEXT_INSTANCE_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(1);
 
 static GRAPH_STATE: GraphState = GraphState {
@@ -517,35 +502,20 @@ fn with_graph<R>(f: impl FnOnce(&mut LockGraph) -> R) -> R {
     f(graph)
 }
 
-fn ensure_ids(
+fn ensure_class(
     map: &LockdepMap,
     class_key: *const Location<'static>,
     subclass: LockSubclass,
 ) -> LockdepState {
-    let existing_instance = map.instance_id.load(Ordering::Acquire);
     let existing_class = map.class_id.load(Ordering::Acquire);
-    if subclass == DEFAULT_LOCK_SUBCLASS && existing_instance != 0 && existing_class != 0 {
+    if subclass == DEFAULT_LOCK_SUBCLASS && existing_class != 0 {
         return LockdepState {
-            instance_id: existing_instance,
             class_id: existing_class,
             caller: class_key_to_location(class_key),
         };
     }
 
     let _guard = GraphGuard::acquire();
-
-    let instance_id = match map.instance_id.load(Ordering::Acquire) {
-        0 => {
-            let new_id = NEXT_INSTANCE_ID.fetch_add(1, Ordering::AcqRel);
-            assert!(
-                (new_id as usize) < MAX_LOCKS,
-                "lockdep: exceeded maximum tracked lock instances ({MAX_LOCKS})"
-            );
-            map.instance_id.store(new_id, Ordering::Release);
-            new_id
-        }
-        id => id,
-    };
 
     let key = match map.class_key.load(Ordering::Acquire) {
         ptr if ptr.is_null() => {
@@ -576,7 +546,6 @@ fn ensure_ids(
     };
 
     LockdepState {
-        instance_id,
         class_id,
         caller: class_key_to_location(class_key),
     }
@@ -672,8 +641,8 @@ fn push_current_task_held_lock(held: HeldLock) {
 }
 
 #[cfg(all(feature = "task-context", not(any(test, doctest))))]
-fn pop_current_task_held_lock(lock_id: u32) {
-    call_interface!(KspinLockdepIf::pop_current_task_held_lock, lock_id);
+fn pop_current_task_held_lock(lock_addr: usize) {
+    call_interface!(KspinLockdepIf::pop_current_task_held_lock, lock_addr);
 }
 
 #[cfg(any(
@@ -681,8 +650,8 @@ fn pop_current_task_held_lock(lock_id: u32) {
     doctest,
     all(not(target_os = "none"), not(feature = "task-context"))
 ))]
-fn pop_current_task_held_lock(lock_id: u32) {
-    with_current_task_held_locks_mut(|stack| stack.pop_checked(lock_id));
+fn pop_current_task_held_lock(lock_addr: usize) {
+    with_current_task_held_locks_mut(|stack| stack.pop_checked(lock_addr));
 }
 
 pub fn current_task_held_lock_snapshot() -> HeldLockSnapshot {
@@ -716,7 +685,7 @@ pub fn prepare_acquire_with_snapshot_nested(
     held_before: HeldLockSnapshot,
     subclass: LockSubclass,
 ) -> PreparedAcquire {
-    prepare_acquire_with_snapshot_result(map, caller, held_before, subclass).unwrap_or_else(
+    prepare_acquire_with_snapshot_result(map, addr, caller, held_before, subclass).unwrap_or_else(
         |(err, state)| panic_on_lockdep_error(err, lock_kind, state, addr, &held_before),
     )
 }
@@ -724,14 +693,14 @@ pub fn prepare_acquire_with_snapshot_nested(
 pub fn prepare_acquire_with_snapshot_checked(
     map: &LockdepMap,
     _lock_kind: &'static str,
-    _addr: usize,
+    addr: usize,
     caller: &'static Location<'static>,
     held_before: HeldLockSnapshot,
 ) -> Result<PreparedAcquire, LockdepCheckError> {
     prepare_acquire_with_snapshot_checked_nested(
         map,
         _lock_kind,
-        _addr,
+        addr,
         caller,
         held_before,
         DEFAULT_LOCK_SUBCLASS,
@@ -741,24 +710,25 @@ pub fn prepare_acquire_with_snapshot_checked(
 pub fn prepare_acquire_with_snapshot_checked_nested(
     map: &LockdepMap,
     _lock_kind: &'static str,
-    _addr: usize,
+    addr: usize,
     caller: &'static Location<'static>,
     held_before: HeldLockSnapshot,
     subclass: LockSubclass,
 ) -> Result<PreparedAcquire, LockdepCheckError> {
-    prepare_acquire_with_snapshot_result(map, caller, held_before, subclass)
+    prepare_acquire_with_snapshot_result(map, addr, caller, held_before, subclass)
         .map_err(|(err, _state)| err)
 }
 
 fn prepare_acquire_with_snapshot_result(
     map: &LockdepMap,
+    addr: usize,
     caller: &'static Location<'static>,
     held_before: HeldLockSnapshot,
     subclass: LockSubclass,
 ) -> Result<PreparedAcquire, (LockdepCheckError, LockdepState)> {
     let class_key = caller as *const Location<'static>;
-    let state = ensure_ids(map, class_key, subclass);
-    with_graph(|graph| graph.check_can_acquire(&held_before, state.instance_id, state.class_id))
+    let state = ensure_class(map, class_key, subclass);
+    with_graph(|graph| graph.check_can_acquire(&held_before, addr, state.class_id))
         .map_err(|err| (err, state))?;
     Ok(PreparedAcquire { state, held_before })
 }
@@ -770,7 +740,6 @@ fn panic_on_lockdep_error(
     addr: usize,
     held_before: &HeldLockSnapshot,
 ) -> ! {
-    let requested_id = state.instance_id;
     let requested_class = state.class_id;
     let requested_subclass = class_subclass(requested_class);
     let held_subclasses = held_lock_subclass_snapshot(held_before);
@@ -779,14 +748,12 @@ fn panic_on_lockdep_error(
             let (held_index, held) = held_before
                 .iter()
                 .enumerate()
-                .find(|(_, held)| held.id == requested_id)
+                .find(|(_, held)| held.addr == addr)
                 .or_else(|| held_before.iter().enumerate().next())
                 .expect("held lock snapshot unexpectedly empty");
             panic!(
-                "lockdep: recursive {lock_kind} acquisition detected\nrequested:\n  id={} \
-                 class={} subclass={} addr={:#x} acquire_at={}\nalready held:\n  {}\nheld \
-                 stack:\n{}",
-                requested_id,
+                "lockdep: recursive {lock_kind} acquisition detected\nrequested:\n  class={} \
+                 subclass={} addr={:#x} acquire_at={}\nalready held:\n  {}\nheld stack:\n{}",
                 requested_class,
                 requested_subclass,
                 addr,
@@ -810,11 +777,10 @@ fn panic_on_lockdep_error(
                 .or_else(|| held_before.iter().enumerate().next())
                 .expect("held lock snapshot unexpectedly empty");
             panic!(
-                "lockdep: lock order inversion detected\nrequested:\n  kind={} id={} class={} \
+                "lockdep: lock order inversion detected\nrequested:\n  kind={} class={} \
                  subclass={} addr={:#x} acquire_at={}\nconflicting held lock:\n  {}\nheld \
                  stack:\n{}",
                 lock_kind,
-                requested_id,
                 requested_class,
                 requested_subclass,
                 addr,
@@ -859,27 +825,22 @@ pub fn finish_acquire_with_stack(
 pub fn finish_acquire_task(prepared: PreparedAcquire, addr: usize) {
     with_graph(|graph| graph.record_edges(&prepared.held_before, prepared.state.class_id));
     push_current_task_held_lock(HeldLock {
-        id: prepared.state.instance_id,
         class_id: prepared.state.class_id,
         addr,
         caller: prepared.state.caller,
     });
 }
 
-pub fn release_from_stack(lock_id: Option<u32>, held_locks: &mut HeldLockStack) {
-    if let Some(lock_id) = lock_id {
-        held_locks.pop_checked(lock_id);
-    }
+pub fn release_from_stack(lock_addr: usize, held_locks: &mut HeldLockStack) {
+    held_locks.pop_checked(lock_addr);
 }
 
-pub fn release_task(lock_id: Option<u32>) {
-    if let Some(lock_id) = lock_id {
-        pop_current_task_held_lock(lock_id);
-    }
+pub fn release_task(lock_addr: usize) {
+    pop_current_task_held_lock(lock_addr);
 }
 
-pub fn force_release_task(map: &LockdepMap) {
-    release_task(map.lock_id());
+pub fn force_release_task(lock_addr: usize) {
+    release_task(lock_addr);
 }
 
 #[cfg(test)]
@@ -887,15 +848,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn held_lock_display_includes_id_class_addr_and_location() {
+    fn held_lock_display_includes_class_addr_and_location() {
         let held = HeldLock {
-            id: 7,
             class_id: 3,
             addr: 0x1234,
             caller: Location::caller(),
         };
         let rendered = held.to_string();
-        assert!(rendered.contains("id=7"));
         assert!(rendered.contains("class=3"));
         assert!(rendered.contains("addr=0x1234"));
         assert!(rendered.contains("acquired_at="));
@@ -915,13 +874,11 @@ mod tests {
         let caller = Location::caller();
         let mut snapshot = HeldLockSnapshot::new();
         snapshot.push(HeldLock {
-            id: 1,
             class_id: 2,
             addr: 0x10,
             caller,
         });
         snapshot.push(HeldLock {
-            id: 2,
             class_id: 3,
             addr: 0x20,
             caller,
@@ -934,8 +891,27 @@ mod tests {
             },
         }
         .to_string();
-        assert!(rendered.contains("[0] held: id=1"));
-        assert!(rendered.contains("[1] top: id=2"));
+        assert!(rendered.contains("[0] held: class=2"));
+        assert!(rendered.contains("[1] top: class=3"));
+    }
+
+    #[test]
+    fn dynamic_lock_instances_do_not_consume_class_slots() {
+        let locks: Vec<_> = (0..(MAX_LOCK_CLASSES + 128))
+            .map(|_| LockdepMap::new_dynamic())
+            .collect();
+
+        for lock in &locks {
+            let prepared = prepare_acquire_with_snapshot_checked(
+                lock,
+                "test lock",
+                lock as *const _ as usize,
+                Location::caller(),
+                HeldLockSnapshot::new(),
+            )
+            .unwrap();
+            assert_ne!(prepared.class_id(), 0);
+        }
     }
 
     #[test]
@@ -968,7 +944,6 @@ mod tests {
                 entries: {
                     let mut entries = [HeldLock::placeholder(); MAX_HELD_LOCK_SNAPSHOT];
                     entries[0] = HeldLock {
-                        id: parent_acquire.lock_id(),
                         class_id: parent_class,
                         addr: &parent as *const _ as usize,
                         caller: Location::caller(),
@@ -988,15 +963,14 @@ mod tests {
             &mut held_locks,
         );
         finish_acquire_with_stack(child_acquire, &child as *const _ as usize, &mut held_locks);
-        release_from_stack(child.lock_id(), &mut held_locks);
-        release_from_stack(parent.lock_id(), &mut held_locks);
+        release_from_stack(&child as *const _ as usize, &mut held_locks);
+        release_from_stack(&parent as *const _ as usize, &mut held_locks);
 
         let nested_held = HeldLockSnapshot {
             depth: 1,
             entries: {
                 let mut entries = [HeldLock::placeholder(); MAX_HELD_LOCK_SNAPSHOT];
                 entries[0] = HeldLock {
-                    id: child_acquire.lock_id(),
                     class_id: child_acquire.class_id(),
                     addr: &child as *const _ as usize,
                     caller: Location::caller(),

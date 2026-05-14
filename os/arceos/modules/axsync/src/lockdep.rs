@@ -47,7 +47,7 @@ impl LockdepAcquire {
 
 #[inline(always)]
 pub(crate) fn release(lock: &RawMutex) {
-    common::release_task(lock.lockdep.lock_id());
     let addr = lock as *const _ as *const () as usize;
+    common::release_task(addr);
     ax_lockdep::Lockdep::release("mutex", addr, None);
 }

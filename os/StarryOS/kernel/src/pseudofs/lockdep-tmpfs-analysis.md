@@ -214,7 +214,8 @@ A first subclass prototype was implemented with the following shape:
 
 - `components/lockdep` accepts an acquire-time subclass and uses `(base class key, subclass)` as the effective dependency graph node.
 - `HeldLock`, `HeldLockStack`, `HeldLockSnapshot`, and `PreparedAcquire` do not store a separate subclass field; they continue to carry the effective dense `class_id`.
-- The class registry remains `[usize; MAX_LOCKS]`; subclass values are encoded in the low bits of the packed class key.
+- The class registry remains a fixed class table; subclass values are encoded
+  in the low bits of the packed class key.
 - Panic diagnostics recover subclass values from the class registry only for the requested lock and the held-lock snapshot being printed; the hot-path held-lock structures do not grow.
 - Existing lockdep acquire APIs remain default-subclass wrappers.
 - `ax-sync` exposes `LockdepMutexExt::lock_nested(subclass)`, which degrades to a normal lock when the `lockdep` feature is disabled.
@@ -283,3 +284,76 @@ stack=[0xffffffc080520000..0xffffffc080524000), expected magic=0x57acce1157acce1
 That is no longer a lockdep order report. It points at the 16 KiB primary idle
 task stack in `os/arceos/modules/axtask/src/run_queue.rs`. Further work should
 separate that stack-canary issue from the subclass implementation.
+
+## Instance identity cleanup
+
+The first lockdep implementation also assigned each `LockdepMap` a global
+monotonic `instance_id`. That was intended to model Linux lockdep's lock
+instance identity, but it is not equivalent to Linux's representation.
+
+Linux stores the actual `lockdep_map *` in each held lock and compares that
+pointer to match a concrete lock object. It does not allocate a finite global
+ID for every lock object. The previous Starry/ArceOS implementation therefore
+made dynamic lock objects consume the same `MAX_LOCKS` capacity used by lock
+classes and could panic after enough dynamic lock instances were observed.
+
+The revised implementation keeps instance identity but uses the lock object's
+address directly:
+
+- held-lock entries retain the concrete lock address;
+- recursive acquisition detection compares the requested lock address with
+  addresses already held by the task;
+- release tracking pops by lock address;
+- `LockdepMap` now stores only class-related state.
+
+This removes the artificial tracked-instance limit without increasing the
+held-lock stack or snapshot size. A regression test creates more dynamic lock
+objects than the class table size and verifies that they do not consume class
+slots merely by existing as distinct instances.
+
+## Follow-up: intermittent `test-shm-deadlock` timeout
+
+After the tmpfs and `starry-process` lockdep reports were fixed, another
+targeted QEMU run was observed to intermittently time out:
+
+```text
+TMPDIR=/tmp FEATURES=lockdep cargo xtask starry test qemu --arch riscv64 -g normal -c test-shm-deadlock
+```
+
+The reproduced failure pattern is:
+
+- the test prints the first seven PASS lines through `clone shmget_thread`;
+- it does not print the final `no deadlock detected` PASS line;
+- it does not print a lockdep report;
+- it does not print a panic or stack-canary diagnostic;
+- the QEMU harness eventually reports `QEMU timed out after 120s`.
+
+The relevant C test code is:
+
+```text
+usleep(SHM_RACE_USEC);
+g_running = 0;
+waitpid(tid1, &status, __WALL);
+waitpid(tid2, &status, __WALL);
+waitpid(tid3, &status, __WALL);
+CHECK(!g_deadlock_detected, "no deadlock detected");
+```
+
+This means the timeout happens before the final CHECK and most likely while the
+main test thread is waiting for one of the cloned workers to exit. The watchdog
+thread is not conclusive in this phase: once the main thread sets
+`g_running = 0`, the watchdog exits cleanly, so a worker stuck in the kernel can
+still lead to a harness timeout without printing the test's `FAIL` line.
+
+Two non-lockdep control runs of the same command without `FEATURES=lockdep`
+completed successfully. That is useful data, but not enough to prove that
+lockdep itself is the cause; enabling lockdep changes timing and can expose an
+existing SMP race or an exit/SHM cleanup issue.
+
+Current status:
+
+- this intermittent timeout is recorded as an unresolved follow-up;
+- it is not currently attributed to the lockdep subclass or instance-identity
+  changes;
+- the lockdep cleanup should proceed separately from this possible
+  `test-shm-deadlock` runtime race.
