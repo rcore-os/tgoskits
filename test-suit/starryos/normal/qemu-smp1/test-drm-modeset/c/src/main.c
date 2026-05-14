@@ -16,6 +16,7 @@
 
 #define _GNU_SOURCE
 #include "test_framework.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdint.h>
@@ -224,6 +225,23 @@ int main(void)
         .count_connectors = 1,
     };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &setcrtc), 0, "SETCRTC");
+
+    /* SETCRTC must reject an unknown fb_id with EINVAL — Linux DRM
+     * looks up the fb in the per-card table and fails the modeset
+     * if the lookup misses. */
+    struct drm_mode_crtc bad_setcrtc = setcrtc;
+    bad_setcrtc.fb_id = 0xdeadbeef;
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_setcrtc), EINVAL,
+              "SETCRTC with unknown fb_id rejected with EINVAL");
+
+    /* GETPLANE must reflect the current bind state produced by the
+     * preceding SETCRTC, not a hard-coded zero. */
+    struct drm_mode_get_plane pl_bound = { .plane_id = pl.plane_id };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &pl_bound), 0,
+              "GETPLANE after SETCRTC");
+    CHECK(pl_bound.fb_id == fb.fb_id, "GETPLANE.fb_id == post-SETCRTC fb_id");
+    CHECK(pl_bound.crtc_id == crtc_ids[0],
+          "GETPLANE.crtc_id == post-SETCRTC crtc_id");
 
     /* --- page flip with event --- */
     struct drm_mode_crtc_page_flip flip = {

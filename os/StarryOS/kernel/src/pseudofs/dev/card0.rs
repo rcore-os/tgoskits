@@ -391,7 +391,7 @@ impl DeviceOps for Card0 {
             DRM_IOCTL_MODE_DESTROY_DUMB => self.handle_destroy_dumb(arg),
 
             DRM_IOCTL_MODE_GETPLANERESOURCES => handle_get_plane_resources(arg),
-            DRM_IOCTL_MODE_GETPLANE => handle_get_plane(arg),
+            DRM_IOCTL_MODE_GETPLANE => self.handle_get_plane(arg),
             DRM_IOCTL_MODE_OBJ_GETPROPERTIES => self.handle_obj_get_properties(arg),
             DRM_IOCTL_MODE_GETPROPERTY => handle_get_property(arg),
             DRM_IOCTL_MODE_PAGE_FLIP => self.handle_page_flip(arg),
@@ -639,11 +639,16 @@ impl Card0 {
     /// `SETCRTC` — legacy modeset entry point. Mirror the post-commit
     /// state into `ModesetState` so `GETCRTC`, `OBJ_GETPROPERTIES`, and
     /// connector queries all see the same configuration. A zero `fb_id`
-    /// is a disable request.
+    /// is a disable request. Non-zero `fb_id` must reference a
+    /// framebuffer created via `ADDFB2`; an unknown id is rejected with
+    /// `EINVAL` to match the Linux DRM contract.
     fn handle_set_crtc(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCrtc;
         let c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
         if c.crtc_id != CRTC_ID {
+            return Err(VfsError::InvalidInput);
+        }
+        if c.fb_id != 0 && !self.fbs.lock().contains_key(&c.fb_id) {
             return Err(VfsError::InvalidInput);
         }
         {
@@ -766,20 +771,28 @@ fn handle_get_plane_resources(arg: usize) -> VfsResult<usize> {
     Ok(0)
 }
 
-fn handle_get_plane(arg: usize) -> VfsResult<usize> {
-    let ptr = arg as *mut DrmModeGetPlane;
-    let mut p: DrmModeGetPlane = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-    if p.plane_id != PLANE_ID {
-        return Err(VfsError::InvalidInput);
+impl Card0 {
+    /// `GETPLANE` — report the current bind state of the (single) plane.
+    /// `crtc_id` and `fb_id` reflect the post-commit `ModesetState`
+    /// produced by the last `SETCRTC` / atomic commit / `PAGE_FLIP`,
+    /// matching what `OBJ_GETPROPERTIES` exposes. A plane that is not
+    /// bound to any CRTC reports both fields as 0.
+    fn handle_get_plane(&self, arg: usize) -> VfsResult<usize> {
+        let ptr = arg as *mut DrmModeGetPlane;
+        let mut p: DrmModeGetPlane = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        if p.plane_id != PLANE_ID {
+            return Err(VfsError::InvalidInput);
+        }
+        let state = *self.state.lock();
+        p.crtc_id = state.plane_crtc_id;
+        p.fb_id = state.plane_fb_id;
+        p.possible_crtcs = 1;
+        p.gamma_size = 0;
+        p.count_format_types =
+            report_user_array(p.format_type_ptr, p.count_format_types, SUPPORTED_FORMATS)?;
+        ptr.vm_write(p).map_err(|_| VfsError::BadAddress)?;
+        Ok(0)
     }
-    p.crtc_id = CRTC_ID;
-    p.fb_id = 0;
-    p.possible_crtcs = 1;
-    p.gamma_size = 0;
-    p.count_format_types =
-        report_user_array(p.format_type_ptr, p.count_format_types, SUPPORTED_FORMATS)?;
-    ptr.vm_write(p).map_err(|_| VfsError::BadAddress)?;
-    Ok(0)
 }
 
 impl Card0 {
