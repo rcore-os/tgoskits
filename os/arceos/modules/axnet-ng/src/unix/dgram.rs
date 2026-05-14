@@ -218,7 +218,7 @@ impl TransportOps for DgramTransport {
     }
 
     fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> AxResult<usize> {
-        self.general.recv_poller(self, move || {
+        self.general.recv_poller(self, false, move || {
             let mut guard = self.data_rx.lock();
             let Some((rx, _)) = guard.as_mut() else {
                 return Err(AxError::NotConnected);

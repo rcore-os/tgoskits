@@ -423,7 +423,7 @@ impl SocketOps for TcpSocket {
         ax_task::yield_now();
 
         // Here our state must be `CONNECTING`, and only one thread can run here.
-        self.general.send_poller(self, || {
+        self.general.send_poller(self, false, || {
             poll_interfaces();
             let events = self.poll_connect();
             if !events.contains(IoEvents::OUT) {
@@ -474,7 +474,7 @@ impl SocketOps for TcpSocket {
         }
 
         let bound_port = self.bound_endpoint()?.port;
-        self.general.recv_poller(self, || {
+        self.general.recv_poller(self, false, || {
             poll_interfaces();
             let handle = {
                 let sockets = SOCKET_SET.inner.lock();
@@ -494,7 +494,7 @@ impl SocketOps for TcpSocket {
 
     fn send(&self, mut src: impl Read, _options: SendOptions) -> AxResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
-        let result = self.general.send_poller(self, || {
+        let result = self.general.send_poller(self, false, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
@@ -527,7 +527,7 @@ impl SocketOps for TcpSocket {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(AxError::NotConnected);
         }
-        self.general.recv_poller(self, || {
+        self.general.recv_poller(self, false, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {

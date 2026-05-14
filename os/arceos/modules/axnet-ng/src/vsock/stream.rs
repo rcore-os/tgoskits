@@ -107,7 +107,7 @@ impl VsockTransportOps for VsockStreamTransport {
         let local_port = conn.lock().local_addr().port;
 
         // wait for connection
-        self.general.recv_poller(self, || {
+        self.general.recv_poller(self, false, || {
             let mut manager = VSOCK_CONN_MANAGER.lock();
 
             if !manager.can_accept(local_port) {
@@ -189,7 +189,7 @@ impl VsockTransportOps for VsockStreamTransport {
         })?;
 
         // wait for connection established
-        self.general.send_poller(self, || {
+        self.general.send_poller(self, false, || {
             let conn = self.get_connection()?;
             let state = conn.lock().state();
             match state {
@@ -224,7 +224,7 @@ impl VsockTransportOps for VsockStreamTransport {
     fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
         let conn = self.get_connection()?;
 
-        self.general.recv_poller(self, || {
+        self.general.recv_poller(self, false, || {
             let mut conn_guard = conn.lock();
 
             if conn_guard.rx_closed() && conn_guard.rx_buffer_used() == 0 {

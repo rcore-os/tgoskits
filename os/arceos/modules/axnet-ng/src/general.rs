@@ -76,22 +76,26 @@ impl GeneralOptions {
     pub fn send_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
         &self,
         pollable: &P,
+        per_call_nonblock: bool,
         f: F,
     ) -> AxResult<T> {
+        let nonblock = self.nonblocking() || per_call_nonblock;
         block_on(timeout(
             self.send_timeout(),
-            poll_io(pollable, IoEvents::OUT, self.nonblocking(), f),
+            poll_io(pollable, IoEvents::OUT, nonblock, f),
         ))?
     }
 
     pub fn recv_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
         &self,
         pollable: &P,
+        per_call_nonblock: bool,
         f: F,
     ) -> AxResult<T> {
+        let nonblock = self.nonblocking() || per_call_nonblock;
         block_on(timeout(
             self.recv_timeout(),
-            poll_io(pollable, IoEvents::IN, self.nonblocking(), f),
+            poll_io(pollable, IoEvents::IN, nonblock, f),
         ))?
     }
 }

@@ -222,7 +222,7 @@ impl TransportOps for StreamTransport {
         let size = src.remaining();
         let mut total = 0;
         let non_blocking = self.general.nonblocking();
-        self.general.send_poller(self, || {
+        self.general.send_poller(self, false, || {
             let mut guard = self.channel.lock();
             let Some(chan) = guard.as_mut() else {
                 return Err(AxError::NotConnected);
@@ -254,7 +254,7 @@ impl TransportOps for StreamTransport {
     }
 
     fn recv(&self, mut dst: impl Write, _options: RecvOptions) -> AxResult<usize> {
-        self.general.recv_poller(self, || {
+        self.general.recv_poller(self, false, || {
             let mut guard = self.channel.lock();
             let Some(chan) = guard.as_mut() else {
                 return Err(AxError::NotConnected);

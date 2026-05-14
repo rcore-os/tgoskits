@@ -26,6 +26,16 @@ use crate::{
     poll_interfaces,
 };
 
+/// Buffered state for MSG_MORE corking: captures the target endpoint
+/// and source address at the first MSG_MORE call so the merged datagram
+/// is always delivered to the correct peer regardless of subsequent
+/// calls' addresses.
+struct CorkState {
+    buf: Vec<u8>,
+    remote: IpEndpoint,
+    source: IpAddress,
+}
+
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
     // TODO(mivik): buffer size
     smol::Socket::new(
@@ -41,9 +51,9 @@ pub struct UdpSocket {
     peer_addr: RwLock<Option<(IpEndpoint, IpAddress)>>,
 
     general: GeneralOptions,
-    /// Buffer for MSG_MORE corking: accumulates data across multiple
-    /// send calls with MSG_MORE set.
-    cork_buf: Mutex<Vec<u8>>,
+    /// MSG_MORE corking state: captures endpoint at first MSG_MORE
+    /// so the merged datagram always goes to the correct peer.
+    cork: Mutex<Option<CorkState>>,
 }
 
 impl UdpSocket {
@@ -59,7 +69,7 @@ impl UdpSocket {
             peer_addr: RwLock::new(None),
 
             general: GeneralOptions::new(),
-            cork_buf: Mutex::new(Vec::new()),
+            cork: Mutex::new(None),
         }
     }
 
@@ -203,14 +213,31 @@ impl SocketOps for UdpSocket {
             let len = src.remaining();
             let mut tmp = alloc::vec![0u8; len];
             let read = src.read(&mut tmp)?;
-            self.cork_buf.lock().extend_from_slice(&tmp[..read]);
+            let mut cork = self.cork.lock();
+            if cork.is_none() {
+                *cork = Some(CorkState {
+                    buf: tmp[..read].to_vec(),
+                    remote: remote_addr,
+                    source: source_addr,
+                });
+            } else {
+                cork.as_mut().unwrap().buf.extend_from_slice(&tmp[..read]);
+            }
             return Ok(read);
         }
 
-        self.general.send_poller(self, || {
+        let per_call_nonblock = options.flags.contains(SendFlags::DONTWAIT);
+        self.general.send_poller(self, per_call_nonblock, || {
             poll_interfaces();
-            let mut cork = self.cork_buf.lock();
-            let has_cork = !cork.is_empty();
+            let mut cork_guard = self.cork.lock();
+            let cork = cork_guard.take();
+            // When flushing corked data, always use the endpoint captured
+            // at the first MSG_MORE call (matching Linux semantics).
+            let (endpoint, local_addr) = if let Some(ref c) = cork {
+                (c.remote, Some(c.source))
+            } else {
+                (remote_addr, Some(source_addr))
+            };
             let result = self.with_smol_socket(|socket| {
                 if !socket.is_open() {
                     // not connected
@@ -218,8 +245,8 @@ impl SocketOps for UdpSocket {
                 } else if !socket.can_send() {
                     Err(AxError::WouldBlock)
                 } else {
-                    let payload_len = if has_cork {
-                        cork.len() + src.remaining()
+                    let payload_len = if let Some(ref c) = cork {
+                        c.buf.len() + src.remaining()
                     } else {
                         src.remaining()
                     };
@@ -229,8 +256,8 @@ impl SocketOps for UdpSocket {
                             .send(
                                 0,
                                 UdpMetadata {
-                                    endpoint: remote_addr,
-                                    local_address: Some(source_addr),
+                                    endpoint,
+                                    local_address: local_addr,
                                     meta: PacketMeta::default(),
                                 },
                             )
@@ -240,15 +267,14 @@ impl SocketOps for UdpSocket {
                                     ax_err_type!(ConnectionRefused, "unaddressable")
                                 }
                             })?;
-                        cork.clear();
                         return Ok(0);
                     }
                     let buf = socket
                         .send(
                             payload_len,
                             UdpMetadata {
-                                endpoint: remote_addr,
-                                local_address: Some(source_addr),
+                                endpoint,
+                                local_address: local_addr,
                                 meta: PacketMeta::default(),
                             },
                         )
@@ -260,11 +286,10 @@ impl SocketOps for UdpSocket {
                         })?;
                     let mut total_written = 0;
                     let mut cur_read = 0;
-                    if has_cork {
-                        let n = cork.len().min(buf.len());
-                        buf[..n].copy_from_slice(&cork[..n]);
+                    if let Some(c) = cork {
+                        let n = c.buf.len().min(buf.len());
+                        buf[..n].copy_from_slice(&c.buf[..n]);
                         total_written += n;
-                        cork.clear();
                     }
                     if total_written < buf.len() {
                         cur_read = src.read(&mut buf[total_written..])?;
@@ -295,7 +320,8 @@ impl SocketOps for UdpSocket {
             },
         };
 
-        self.general.recv_poller(self, || {
+        let per_call_nonblock = options.flags.contains(RecvFlags::DONTWAIT);
+        self.general.recv_poller(self, per_call_nonblock, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.can_recv() {
