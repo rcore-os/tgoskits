@@ -1,0 +1,27 @@
+# Default reviewers for repository-wide changes.
+* @ZR233 @ZCShou @AsakuraMizu
+
+# Repository automation and project-level policy changes.
+/.cargo/ @ZR233 @ZCShou
+/.claude/ @ZR233 @ZCShou
+/.devcontainer/ @ZR233 @ZCShou
+/.github/ @ZR233 @ZCShou
+/scripts/ @ZR233 @ZCShou
+/xtask/ @ZR233 @ZCShou
+/Cargo.toml @ZR233 @ZCShou
+/Cargo.lock @ZR233 @ZCShou
+/rust-toolchain.toml @ZR233 @ZCShou
+
+# Documentation is one of the most active change areas in recent history.
+/docs/ @ZCShou @ZR233
+/*.md @ZCShou @ZR233
+
+# Modular ArceOS/Axvisor/StarryOS components and drivers.
+/components/ @ZR233 @AsakuraMizu @ZCShou
+/drivers/ @ZR233 @AsakuraMizu @ZCShou
+/platform/ @ZR233 @ZCShou
+/os/ @ZR233 @AsakuraMizu @ZCShou
+
+# Test suites and examples often need reviewers familiar with project runners.
+/test-suit/ @ZR233 @ZCShou
+/examples/ @ZR233 @ZCShou
