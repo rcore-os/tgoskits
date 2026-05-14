@@ -8,7 +8,7 @@ Examples are under `examples/std`.
 
 ### Disk image preparation
 
-Examples expect `disk.img` in `examples/std` directory. Both ext4 and FAT32 filesystems are supported. 
+Examples expect `disk.img` in `examples/std` directory. Both ext4 and FAT32 filesystems are supported.
 
 Recommended commands:
 

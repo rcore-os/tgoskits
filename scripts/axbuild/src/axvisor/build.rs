@@ -13,6 +13,8 @@ use crate::{
     context::{ResolvedAxvisorRequest, arch_for_target_checked},
 };
 
+mod x86;
+
 pub type AxvisorBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
 
@@ -174,6 +176,9 @@ fn patch_axvisor_cargo_config(
 
     let cargo_uses_plat_dyn = cargo.features.iter().any(|f| f == "ax-std/plat-dyn");
     normalize_axvisor_platform_features(&mut cargo.features, cargo_uses_plat_dyn);
+    if request.arch == "x86_64" {
+        x86::normalize_backend_features(&mut cargo.features)?;
+    }
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
@@ -536,7 +541,7 @@ vm_configs = []
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
-features = ["ept-level-4", "fs"]
+features = ["ept-level-4", "fs", "vmx"]
 log = "Info"
 vm_configs = []
 "#,
@@ -564,6 +569,7 @@ vm_configs = []
         );
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
         assert!(cargo.features.contains(&"fs".to_string()));
+        assert!(cargo.features.contains(&"vmx".to_string()));
         assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
         assert!(cargo.features.contains(&"ax-std/myplat".to_string()));

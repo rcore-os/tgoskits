@@ -150,6 +150,10 @@ impl AllDevices {
                 }
             });
 
+            #[cfg(any(
+                all(bus = "mmio", feature = "bus-mmio"),
+                all(bus = "pci", feature = "bus-pci")
+            ))]
             self.probe_bus_devices();
         }
     }

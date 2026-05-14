@@ -1,0 +1,18 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''
+echo UVC_RKNN_STREAM_BEGIN && cd /rknn_yolov8_image && ./rknn_yolov8_stream --fps 10 --infer-every 8 --log-every 5 --min-confidence 25 --http-port 8080 --http-fps 2 --publish-width 0 --publish-height 0 --jpeg-quality 70
+'''
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^uvc-fps: error: .*$",
+  "(?m)^uvc-fps: save error: .*$",
+  "(?m)^rknn_init fail!.*$",
+  "(?m)^read_image fail!.*$",
+  "(?m)^inference_yolov8_model fail!.*$",
+  "(?m)^(uvc_init|uvc_open|uvc_start_streaming|uvc_get_device_list) failed: .*$",
+  "(?m)^dlopen libuvc\\.so failed: .*$",
+  "(?i)error while loading shared libraries",
+  "(?i)(uvc-fps|rknn_yolov8_image|rknn_yolov8_stream|sh): .*not found",
+]
+timeout = 86400

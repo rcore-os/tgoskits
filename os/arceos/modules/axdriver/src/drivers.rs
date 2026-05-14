@@ -21,7 +21,7 @@ pub trait DriverProbe {
         None
     }
 
-    #[cfg(bus = "pci")]
+    #[cfg(all(bus = "pci", feature = "bus-pci"))]
     fn probe_pci<C: ConfigurationAccess>(
         _root: &mut PciRoot<C>,
         _bdf: DeviceFunction,
@@ -141,7 +141,7 @@ cfg_if::cfg_if! {
         pub struct IxgbeDriver;
         register_net_driver!(IxgbeDriver, ax_driver_net::ixgbe::IxgbeNic<IxgbeHalImpl, 1024, 1>);
         impl DriverProbe for IxgbeDriver {
-            #[cfg(bus = "pci")]
+            #[cfg(all(bus = "pci", feature = "bus-pci"))]
             fn probe_pci<C: ax_driver_pci::ConfigurationAccess>(
                 root: &mut ax_driver_pci::PciRoot<C>,
                 bdf: ax_driver_pci::DeviceFunction,

@@ -1583,6 +1583,7 @@ dependencies = [
  "ostool",
  "proc-macro2",
  "quote",
+ "raw-cpuid 11.6.0",
  "regex",
  "reqwest",
  "schemars",
@@ -1752,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-riscv64-visionfive2"
-version = "0.1.0-pre.3"
+version = "0.1.1"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
