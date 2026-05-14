@@ -40,8 +40,13 @@ struct ConsoleIfImpl;
 impl ConsoleIf for ConsoleIfImpl {
     /// Writes given bytes to the console.
     fn write_bytes(bytes: &[u8]) {
-        for c in bytes {
-            putchar(*c);
+        // Hold the lock for the entire write so that a single logical output
+        // (e.g. one full TUI frame) is never interleaved with output from
+        // another task.  This also cuts lock-acquire overhead from O(N) to
+        // O(1) per write() syscall, which matters for large ANSI frame dumps.
+        let mut com = COM1.lock();
+        for &c in bytes {
+            com.send(c);
         }
     }
 

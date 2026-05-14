@@ -149,6 +149,7 @@ impl<T> UserPtr<T> {
         VirtAddr::from_ptr_of(self.0)
     }
 
+    #[allow(dead_code)]
     pub fn as_ptr(&self) -> *mut T {
         self.0
     }

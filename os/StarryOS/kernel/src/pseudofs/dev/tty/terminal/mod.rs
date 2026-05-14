@@ -30,8 +30,8 @@ impl Default for Terminal {
         Self {
             job_control: job::JobControl::new(),
             window_size: SpinNoPreempt::new(WindowSize {
-                ws_row: 28,
-                ws_col: 110,
+                ws_row: 24,
+                ws_col: 80,
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             }),

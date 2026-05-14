@@ -22,7 +22,13 @@ use starry_signal::SignalInfo;
 use super::{Terminal, termios::Termios2};
 use crate::task::send_signal_to_process_group;
 
-const BUF_SIZE: usize = 80;
+// Keep input line-processing buffer small (one line is rarely > 80 chars), but
+// give the ring buffer itself 4096 bytes so that a PTY passive-read can drain
+// the full slave_to_master ring (also 4096) in a single poll_read() call.
+// Without this, a 500-byte shell output generates ⌈500/80⌉ = 7 epoll round-trips
+// with Tokio's EPOLLET reactor; with 4096 the same burst needs only one.
+const LINE_BUF_SIZE: usize = 128;
+const BUF_SIZE: usize = 4096;
 
 type ReadBuf = Arc<ringbuf::StaticRb<u8, BUF_SIZE>>;
 
@@ -64,19 +70,19 @@ pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf
         return;
     }
 
-    let mut start = 0;
-    for (i, &byte) in buf.iter().enumerate() {
+    // Collect output with \n→\r\n translation into a single buffer so we
+    // make exactly one writer.write() call instead of one per newline.
+    // This prevents partial-frame writes to the UART that cause visible
+    // line-by-line flicker on serial-connected terminal emulators.
+    let extra = buf.iter().filter(|&&b| b == b'\n').count();
+    let mut out = alloc::vec::Vec::with_capacity(buf.len() + extra);
+    for &byte in buf {
         if byte == b'\n' {
-            if start < i {
-                writer.write(&buf[start..i]);
-            }
-            writer.write(b"\r\n");
-            start = i + 1;
+            out.push(b'\r');
         }
+        out.push(byte);
     }
-    if start < buf.len() {
-        writer.write(&buf[start..]);
-    }
+    writer.write(&out);
 }
 
 struct InputReader<R, W> {
@@ -86,7 +92,7 @@ struct InputReader<R, W> {
     writer: W,
 
     buf_tx: CachingProd<ReadBuf>,
-    read_buf: [u8; BUF_SIZE],
+    read_buf: [u8; LINE_BUF_SIZE],
     read_range: Range<usize>,
 
     line_buf: Vec<u8>,
@@ -230,13 +236,28 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
 
 struct SimpleReader<R> {
     reader: R,
-    read_buf: [u8; BUF_SIZE],
+    read_buf: [u8; LINE_BUF_SIZE],
     buf_tx: CachingProd<ReadBuf>,
 }
 impl<R: TtyRead> SimpleReader<R> {
     pub fn poll(&mut self) {
-        let read = self.reader.read(&mut self.read_buf);
-        let _ = self.buf_tx.push_slice(&self.read_buf[..read]);
+        // Drain all available data from the underlying source into buf_rx.
+        // Looping ensures that a burst larger than LINE_BUF_SIZE (the scratch
+        // chunk) still reaches the ring buffer in a single poll() call as long
+        // as there is room in buf_rx (BUF_SIZE = 4096).
+        loop {
+            if self.buf_tx.vacant_len() == 0 {
+                break;
+            }
+            let read = self.reader.read(&mut self.read_buf);
+            if read == 0 {
+                break;
+            }
+            let pushed = self.buf_tx.push_slice(&self.read_buf[..read]);
+            if pushed < read {
+                break; // buf_rx full
+            }
+        }
     }
 }
 
@@ -343,7 +364,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             writer: config.writer,
 
             buf_tx,
-            read_buf: [0; BUF_SIZE],
+            read_buf: [0; LINE_BUF_SIZE],
             read_range: 0..0,
 
             line_buf: Vec::new(),
@@ -373,7 +394,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                 Processor::Passive(
                     SimpleReader {
                         reader,
-                        read_buf: [0; BUF_SIZE],
+                        read_buf: [0; LINE_BUF_SIZE],
                         buf_tx,
                     },
                     poll_rx,
@@ -480,7 +501,7 @@ mod tests {
 
     use ringbuf::traits::{Observer, Split};
 
-    use super::{BUF_SIZE, InputReader, ReadBuf, TtyRead, TtyWrite};
+    use super::{InputReader, LINE_BUF_SIZE, ReadBuf, TtyRead, TtyWrite};
     use crate::pseudofs::dev::tty::terminal::Terminal;
 
     struct MockReader {
@@ -519,7 +540,7 @@ mod tests {
             reader: MockReader::new(data),
             writer: MockWriter,
             buf_tx,
-            read_buf: [0; BUF_SIZE],
+            read_buf: [0; LINE_BUF_SIZE],
             read_range: 0..0,
             line_buf: Vec::new(),
             line_read: None,
@@ -529,23 +550,23 @@ mod tests {
         (reader, buf_rx)
     }
 
-    /// Regression test: a canonical-mode input longer than BUF_SIZE characters
+    /// Regression test: a canonical-mode input longer than LINE_BUF_SIZE characters
     /// (with no newline in the first chunk) must not stall drain_source_into_line_buffer.
     ///
     /// Before the fix, the function returned `sent > 0` which was false after the
-    /// first BUF_SIZE bytes were consumed into line_buf (no newline yet), causing
+    /// first LINE_BUF_SIZE bytes were consumed into line_buf (no newline yet), causing
     /// drive_input() to stop looping and the remaining input (including the newline)
     /// to be silently dropped.  The board CI symptom was shell commands being
-    /// truncated to the first BUF_SIZE characters (e.g. "sleep 5; ..." → "leep 5; ...").
+    /// truncated to the first LINE_BUF_SIZE characters.
     #[test]
     fn canonical_long_line_drain_continues_past_buf_size() {
-        // BUF_SIZE ordinary chars followed by '\n' — total BUF_SIZE+1 bytes.
-        let mut data: Vec<u8> = (0..BUF_SIZE).map(|_| b'a').collect();
+        // LINE_BUF_SIZE ordinary chars followed by '\n' — total LINE_BUF_SIZE+1 bytes.
+        let mut data: Vec<u8> = (0..LINE_BUF_SIZE).map(|_| b'a').collect();
         data.push(b'\n');
 
         let (mut reader, mut rx) = make_reader(data);
 
-        // First drain: reads the BUF_SIZE 'a' bytes into line_buf; no newline yet,
+        // First drain: reads the LINE_BUF_SIZE 'a' bytes into line_buf; no newline yet,
         // so nothing reaches buf_rx.  Must still return true (progress was made).
         assert!(
             reader.drain_source_into_line_buffer(),

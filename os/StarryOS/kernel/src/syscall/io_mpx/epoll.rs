@@ -109,7 +109,10 @@ fn do_epoll_wait(
         || match block_on(future::timeout(
             timeout,
             poll_io(epoll.as_ref(), IoEvents::IN, false, || {
-                epoll.poll_events(&mut kevents)
+                epoll.poll_events_with(maxevents, |index, event| {
+                    kevents[index] = event;
+                    Ok(())
+                })
             }),
         )) {
             Ok(r) => r.map(|n| n as isize),

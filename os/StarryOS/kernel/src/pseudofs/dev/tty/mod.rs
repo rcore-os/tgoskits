@@ -13,6 +13,7 @@ use ax_task::current;
 use axfs_ng_vfs::NodeFlags;
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
+use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
 use self::terminal::{
@@ -28,7 +29,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::DeviceOps,
-    task::{AsThread, get_process_group},
+    task::{AsThread, get_process_group, send_signal_to_process_group},
 };
 
 /// Tty device
@@ -143,7 +144,22 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             }
             TIOCSWINSZ => {
                 let window_size = (arg as *const WindowSize).vm_read()?;
-                *self.terminal.window_size.lock() = window_size;
+                let old = {
+                    let mut guard = self.terminal.window_size.lock();
+                    let old = *guard;
+                    *guard = window_size;
+                    old
+                };
+                // Send SIGWINCH to the foreground process group when the
+                // terminal dimensions change, matching Linux tty_do_resize().
+                if old.ws_row != window_size.ws_row || old.ws_col != window_size.ws_col {
+                    if let Some(pg) = self.terminal.job_control.foreground() {
+                        let _ = send_signal_to_process_group(
+                            pg.pgid(),
+                            Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
+                        );
+                    }
+                }
             }
             TIOCSPTLCK => {}
             TIOCGPTN => {
