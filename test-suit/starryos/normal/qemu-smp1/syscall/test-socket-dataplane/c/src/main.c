@@ -94,7 +94,7 @@
  * 测试覆盖一览
  * =====================================================================
  *
- *  sendto (9):
+ *  sendto (11):
  *    [S1] 基本 UDP sendto — 未连接 UDP, 正常发送
  *    [S2] 已连接 UDP sendto(NULL,0) — 等价 send()
  *    [S3] EBADF — 无效 fd
@@ -104,14 +104,17 @@
  *    [S7] EOPNOTSUPP — MSG_OOB 不适用 UDP
  *    [S8] MSG_MORE — UDP cork 合并数据报
  *    [S9] 零长度发送 — 0 字节数据报
+ *    [S10] MSG_DONTWAIT 发送 — 验证路径无异常（EAGAIN 由 R7 覆盖）
+ *    [S11] MSG_MORE 目标固定 — 首段目标地址不变
  *
- *  recvfrom (6):
+ *  recvfrom (7):
  *    [R1] 基本 UDP recvfrom — 接收带源地址
  *    [R2] NULL src/alen — 等价 recv()
  *    [R3] EBADF — 无效 fd
  *    [R4] ENOTSOCK — fd 不是 socket
  *    [R5] EAGAIN/EWOULDBLOCK — 非阻塞无数据
  *    [R6] MSG_PEEK — 窥探不消费数据
+ *    [R7] MSG_DONTWAIT 接收 — 单次非阻塞 recv
  *
  *  sendmsg (8):
  *    [SM1] 基本 UDP sendmsg — msg_name 指定目标
@@ -514,6 +517,101 @@ static void test_s9_sendto_zero_len(void)
     close(server);
 }
 
+/*
+ * [S10] sendto MSG_DONTWAIT — 单次非阻塞发送
+ *
+ * 语义: MSG_DONTWAIT 在本次调用临时启用非阻塞模式。
+ * 注意: 单线程 UDP loopback 上 TX buffer 极难填满（send 路径每次都会
+ *       poll_interfaces 排空），因此本测试仅验证 MSG_DONTWAIT 发送路径
+ *       无异常错误。MSG_DONTWAIT 的 EAGAIN 验证由 [R7] 覆盖。
+ */
+static void test_s10_sendto_msg_dontwait(void)
+{
+    struct sockaddr_in srv_addr;
+    int server = bind_udp_loopback(&srv_addr);
+    if (server < 0) return;
+    int client = make_udp_sock();
+    if (client < 0) { close(server); return; }
+
+    const char *payload = "dontwait";
+    errno = 0;
+    ssize_t nsent = sendto(client, payload, 8, MSG_DONTWAIT,
+                           (struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    CHECK_RET(nsent, 8, "sendto MSG_DONTWAIT 正常发送");
+
+    char buf[16] = {0};
+    ssize_t nrecv = recvfrom(server, buf, sizeof(buf), 0, NULL, NULL);
+    CHECK_RET(nrecv, 8, "对端收到数据");
+    CHECK(memcmp(buf, payload, 8) == 0, "内容一致");
+
+    close(client);
+    close(server);
+}
+
+/*
+ * [S11] MSG_MORE cork 目标地址固定在首段目标
+ *
+ * 语义: Linux UDP corking 使用首次 MSG_MORE 调用确定的目标地址，
+ *       后续调用（包括最终触发发送的调用）即使传入不同地址也应发送到
+ *       首次确定的目标。
+ * 预期: sendto(A, MSG_MORE) + sendto(A, MSG_MORE) + sendto(B, 0)
+ *       → A 收到 "AAABBBCCC", B 无数据。
+ */
+static void test_s11_sendto_msg_more_endpoint(void)
+{
+    struct sockaddr_in srv_a, srv_b;
+    int server_a = bind_udp_loopback(&srv_a);
+    if (server_a < 0) return;
+    int server_b = bind_udp_loopback(&srv_b);
+    if (server_b < 0) { close(server_a); return; }
+    int client = make_udp_sock();
+    if (client < 0) { close(server_a); close(server_b); return; }
+
+    /* MSG_MORE 到 A (首次确定目标) */
+    ssize_t n1 = sendto(client, "AAA", 3, MSG_MORE,
+                        (struct sockaddr *)&srv_a, sizeof(srv_a));
+    CHECK_RET(n1, 3, "MSG_MORE 第1段 → A");
+
+    /* MSG_MORE 到 A (继续追加) */
+    ssize_t n2 = sendto(client, "BBB", 3, MSG_MORE,
+                        (struct sockaddr *)&srv_a, sizeof(srv_a));
+    CHECK_RET(n2, 3, "MSG_MORE 第2段 → A");
+
+    /* 最终触发发送 — 故意传 B 的地址，但内核应发到 A */
+    ssize_t n3 = sendto(client, "CCC", 3, 0,
+                        (struct sockaddr *)&srv_b, sizeof(srv_b));
+    CHECK_RET(n3, 3, "最终 sendto → B (但应发到 A)");
+
+    /* A 应收到完整合并数据报 */
+    {
+        int flags_a = fcntl(server_a, F_GETFL, 0);
+        fcntl(server_a, F_SETFL, flags_a | O_NONBLOCK);
+        char buf[64] = {0};
+        ssize_t nr = recvfrom(server_a, buf, sizeof(buf), 0, NULL, NULL);
+        fcntl(server_a, F_SETFL, flags_a);
+        CHECK_RET(nr, 9, "A 收到 9 字节合并数据报");
+        if (nr == 9) {
+            CHECK(memcmp(buf, "AAABBBCCC", 9) == 0, "内容 = AAABBBCCC");
+        }
+    }
+
+    /* B 应无数据可收 */
+    {
+        int flags_b = fcntl(server_b, F_GETFL, 0);
+        fcntl(server_b, F_SETFL, flags_b | O_NONBLOCK);
+        char buf[64] = {0};
+        errno = 0;
+        ssize_t nr = recvfrom(server_b, buf, sizeof(buf), 0, NULL, NULL);
+        fcntl(server_b, F_SETFL, flags_b);
+        CHECK(nr == -1 && (errno == EAGAIN || errno == EWOULDBLOCK),
+              "B 无数据 (EAGAIN)");
+    }
+
+    close(client);
+    close(server_a);
+    close(server_b);
+}
+
 /* =====================================================================
  * recvfrom 测试
  * ===================================================================== */
@@ -677,6 +775,40 @@ static void test_r6_recvfrom_msg_peek(void)
 
     close(client);
     close(server);
+}
+
+/*
+ * [R7] recvfrom MSG_DONTWAIT — 单次非阻塞接收
+ *
+ * 语义: MSG_DONTWAIT 在本次调用临时启用非阻塞模式，无数据时立即返回
+ *       EAGAIN/EWOULDBLOCK，而不是阻塞等待。
+ * 预期: 阻塞 socket 无数据时 recvfrom(..., MSG_DONTWAIT) 返回 -1
+ *       且 errno = EAGAIN/EWOULDBLOCK。
+ */
+static void test_r7_recvfrom_msg_dontwait(void)
+{
+    int fd = make_udp_sock();
+    if (fd < 0) return;
+
+    /* 绑定以便接收（未 bind 时 Linux 也允许 recvfrom） */
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port        = 0;
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return;
+    }
+
+    char buf[1];
+    errno = 0;
+    ssize_t ret = recvfrom(fd, buf, 1, MSG_DONTWAIT, NULL, NULL);
+    CHECK(ret == -1, "MSG_DONTWAIT recvfrom 返回 -1");
+    CHECK(errno == EAGAIN || errno == EWOULDBLOCK,
+          "errno = EAGAIN 或 EWOULDBLOCK");
+
+    close(fd);
 }
 
 /* =====================================================================
@@ -1186,7 +1318,7 @@ int main(void)
 {
     TEST_START("socket-dataplane");
 
-    /* ---- sendto (9) ---- */
+    /* ---- sendto (11) ---- */
     test_s1_sendto_udp_basic();
     test_s2_sendto_udp_connected_null();
     test_s3_sendto_ebadf();
@@ -1196,14 +1328,17 @@ int main(void)
     test_s7_sendto_eopnotsupp();
     test_s8_sendto_msg_more();
     test_s9_sendto_zero_len();
+    test_s10_sendto_msg_dontwait();
+    test_s11_sendto_msg_more_endpoint();
 
-    /* ---- recvfrom (6) ---- */
+    /* ---- recvfrom (7) ---- */
     test_r1_recvfrom_udp_basic();
     test_r2_recvfrom_null_src();
     test_r3_recvfrom_ebadf();
     test_r4_recvfrom_enotsock();
     test_r5_recvfrom_eagain();
     test_r6_recvfrom_msg_peek();
+    test_r7_recvfrom_msg_dontwait();
 
     /* ---- sendmsg (8) ---- */
     test_sm1_sendmsg_udp_basic();
