@@ -164,19 +164,19 @@ impl Memfd {
         if seals & F_SEAL_GROW == 0 {
             return f.write_at(data, offset);
         }
-        // F_SEAL_GROW: clip the write at the current EOF and short-write
-        // the part that fits. Linux's shmem_write_check_limits matches:
-        // a 10-byte pwrite that crosses EOF returns the in-range byte
-        // count (e.g. 6), and a fully-past-EOF write returns 0 rather
-        // than EPERM. EPERM is reserved for writes when F_SEAL_WRITE is
-        // set, which this branch already handled above.
+        // F_SEAL_GROW Linux semantics (verified against memfd_create +
+        // F_ADD_SEALS(F_SEAL_GROW) on a stock host):
+        //   - cross-EOF write: short-write the bytes that fit before EOF,
+        //   - at-EOF or past-EOF write: -1 EPERM.
+        // EPERM here is distinct from the F_SEAL_WRITE path above which
+        // rejects every write; F_SEAL_GROW only rejects growth.
         let cur_len = self.inner.inner().backend()?.location().len()?;
         if offset >= cur_len {
-            return Ok(0);
+            return Err(AxError::OperationNotPermitted);
         }
         let writable = (cur_len - offset).min(data.len() as u64) as usize;
         if writable == 0 {
-            return Ok(0);
+            return Err(AxError::OperationNotPermitted);
         }
         f.write_at(&data[..writable], offset)
     }
