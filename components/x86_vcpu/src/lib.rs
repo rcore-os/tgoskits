@@ -70,3 +70,12 @@ pub use vendor::has_hardware_support;
 pub fn has_hardware_support() -> bool {
     false
 }
+
+#[cfg(any(feature = "vmx", feature = "svm"))]
+pub(crate) fn restore_host_interrupt_flag(host_rflags: u64) {
+    if host_rflags & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0 {
+        x86_64::instructions::interrupts::enable();
+    } else {
+        x86_64::instructions::interrupts::disable();
+    }
+}

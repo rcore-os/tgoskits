@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "ax-cpu"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-lazyinit",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1583,6 +1583,7 @@ dependencies = [
  "ostool",
  "proc-macro2",
  "quote",
+ "raw-cpuid 11.6.0",
  "regex",
  "reqwest",
  "schemars",
@@ -1752,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-riscv64-visionfive2"
-version = "0.1.0-pre.3"
+version = "0.1.1"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",

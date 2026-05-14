@@ -66,7 +66,7 @@ fn handle_ethernet_irq(slot: usize) {
     };
 
     let events = state.handle_irq();
-    if events.intersects(NetIrqEvent::RX_READY | NetIrqEvent::RX_ERROR) {
+    if events.intersects(NetIrqEvent::RX_READY | NetIrqEvent::RX_ERROR | NetIrqEvent::TX_DONE) {
         state.poll_ready.wake();
     }
 }
