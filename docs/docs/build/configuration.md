@@ -5,7 +5,7 @@ sidebar_label: "参数与配置"
 
 # 参数与配置
 
-构建系统的配置涉及三类数据：**Arch/Target 映射**（架构与编译目标的对应关系）、**Snapshot**（最近一次命令参数的持久化）、**Build Info**（构建配置，含 features、环境变量和平台行为）。三套子系统共享这套配置框架，但各有自己的默认值和定制行为。所有配置逻辑集中在 `scripts/axbuild/src/context/` 目录中。
+构建系统的配置涉及四类数据：**Arch/Target 映射**（架构与编译目标的对应关系）、**Snapshot**（最近一次命令参数的持久化）、**Build Info**（构建配置，含 features、环境变量和平台行为）、**axconfig**（平台硬件配置，如内存布局、设备地址）。三套子系统共享这套配置框架，但各有自己的默认值和定制行为。所有配置逻辑集中在 `scripts/axbuild/src/context/` 和 `scripts/axbuild/src/build.rs` 中。
 
 ## Arch / Target 映射
 
@@ -230,6 +230,87 @@ Build Info 的字段在编译时转换为以下环境变量：
 这些环境变量在 Cargo 编译时通过 `--env` 传递，被 OS 源码中的 `env!()` 宏在编译期读取。其中 `AX_LOG` 控制日志过滤级别，`SMP` 决定系统启动的 CPU 核数，`AX_CONFIG_PATH` 指向由 `axbuild` 预生成的平台配置文件。各子系统还会额外注入自己的环境变量（如 Axvisor 的 `AXVISOR_VM_CONFIGS`）。
 
 `FEATURES` 环境变量提供与传统 Makefile 工作流的兼容性：`makefile_features_from_env()` 解析逗号/空格分隔的 feature 列表，自动添加前缀族前缀后合并到 BuildInfo。
+
+---
+
+## axconfig 平台配置
+
+axconfig 是 OS 的**编译期硬件配置文件**（`.axconfig.toml`），由 axbuild 在构建前自动生成。它描述了目标平台的所有硬件参数（内存布局、串口地址、中断控制器地址、VirtIO 设备范围等），OS 源码通过 `include!(concat!(env!("AX_CONFIG_PATH")))` 在编译期读取这些配置值。
+
+### 生成时机
+
+axconfig 仅在**静态平台模式**（`plat_dyn = false`）下生成。动态平台模式下，硬件配置由运行时动态加载，无需预生成文件。三套子系统对 axconfig 的使用方式不同：
+
+| 子系统 | 默认 plat_dyn | 是否生成 axconfig |
+|--------|-------------|-----------------|
+| ArceOS | `true`（aarch64）/ `false`（其他） | 仅 `plat_dyn = false` 时 |
+| StarryOS | `false` | 始终生成 |
+| Axvisor | `true`（aarch64）/ `false`（其他） | 仅 `plat_dyn = false` 时 |
+
+### 生成流程
+
+```mermaid
+flowchart TD
+    A["plat_dyn = false"] --> B["resolve_platform_package()<br/>定位平台依赖包"]
+    B --> C["resolve_platform_config_path()<br/>查找平台包的 axconfig.toml"]
+    C --> D["generate_axconfig()<br/>合并 defconfig + 平台配置"]
+    D --> E["写入 tmp/axbuild/axconfig/&lt;pkg&gt;/&lt;target&gt;/.axconfig.toml"]
+    E --> F["注入 AX_CONFIG_PATH 环境变量"]
+```
+
+生成步骤：
+
+1. **定位平台包**：从目标包的 `Cargo.toml` 依赖中查找名称匹配 `ax-plat-*` 的平台包（如 `ax-plat-aarch64-qemu-virt`）
+2. **查找配置规格**：在平台包的 `Cargo.toml` 同目录下查找 `axconfig.toml` 配置规格文件
+3. **合并生成**：调用 `ax_config_gen` 配置引擎，将全局 `defconfig.toml`（`os/arceos/configs/defconfig.toml`）与平台 `axconfig.toml` 合并，同时注入自动生成的字段和用户覆盖值
+4. **写入产物**：输出到 `tmp/axbuild/axconfig/<package>/<target>/.axconfig.toml`
+5. **注入环境变量**：将 `AX_CONFIG_PATH`（配置文件路径）和 `AX_PLATFORM`（平台名）写入 Build Info 的环境变量
+
+### 配置来源
+
+`.axconfig.toml` 的内容由三层配置合并而成：
+
+| 来源 | 路径 | 说明 |
+|------|------|------|
+| **defconfig** | `os/arceos/configs/defconfig.toml` | 全局默认值（如 `task-stack-size`、`ticks-per-sec`） |
+| **平台配置** | 平台包目录下的 `axconfig.toml` | 平台特有值（如 `uart-paddr`、`mmio-ranges`、`virtio-mmio-ranges`） |
+| **覆盖值** | Build Info 的 `axconfig_overrides` | 用户自定义覆盖（格式：`table.key=value`） |
+
+自动注入的字段（不来自配置文件）：
+
+| 字段 | 值 |
+|------|-----|
+| `arch` | 从 target triple 提取的架构名 |
+| `platform` | 平台包名（如 `riscv64-qemu-virt`） |
+| `plat.max-cpu-num` | `--smp` 参数值（仅 `max_cpu_num > 1` 时注入） |
+
+### 配置内容示例
+
+以下是一个 riscv64 QEMU 平台的 `.axconfig.toml` 生成产物示例：
+
+```toml
+arch = "riscv64"
+platform = "riscv64-qemu-virt"
+task-stack-size = 0x40000
+ticks-per-sec = 100
+
+[devices]
+mmio-ranges = [[0x0010_1000, 0x1000], [0x0c00_0000, 0x21_0000], ...]
+plic-paddr = 0x0c00_0000
+uart-paddr = 0x1000_0000
+uart-irq = 0x0a
+virtio-mmio-ranges = [[0x1000_1000, 0x1000], ...]
+```
+
+### 配置发现路径
+
+`resolve_platform_config_path()` 按以下顺序查找平台配置：
+
+1. 包在 workspace `Cargo.toml` 中的 manifest 路径旁查找 `axconfig.toml`
+2. `components/axplat_crates/platforms/<platform-dir>/axconfig.toml`（组件目录约定）
+3. 在完整依赖元数据中重新查找（支持平台包位于 workspace 外部的场景）
+
+如果所有路径都未找到配置文件，构建会报错终止，提示用户确保平台包包含 `axconfig.toml`。
 
 ---
 

@@ -1,13 +1,13 @@
 ---
 sidebar_position: 4
-sidebar_label: "构建管线"
+sidebar_label: "构建过程"
 ---
 
-# 构建管线
+# 构建过程
 
-从用户输入 `cargo xtask <os> build` 到编译产物的完整管线。构建过程分为八个阶段，依次完成上下文初始化、参数解析、架构映射、配置加载、Feature 解析、平台配置生成、Cargo 参数组装和最终编译执行。构建配置细节见 [配置](/docs/build/configuration)，底层执行见 [运行](/docs/build/run)。
+从用户输入 `cargo xtask <os> build` 到编译产物的完整过程。构建过程分为八个阶段，依次完成上下文初始化、参数解析、架构映射、配置加载、Feature 解析、平台配置生成、Cargo 参数组装和最终编译执行。构建配置细节见 [配置](/docs/build/configuration)，底层执行见 [运行](/docs/build/run)。
 
-构建管线的核心目标是**将用户友好的高层参数（如 `--arch aarch64`、`--smp 4`）转换为 Cargo 能理解的底层编译参数（target triple、features、环境变量、链接器脚本等）**。三套子系统共享前四个阶段的逻辑，在 Feature 解析和 axconfig 生成阶段开始分化，最终都汇聚到统一的 ostool `cargo_build()` 调用。
+构建过程的核心目标是**将用户友好的高层参数（如 `--arch aarch64`、`--smp 4`）转换为 Cargo 能理解的底层编译参数（target triple、features、环境变量、链接器脚本等）**。三套子系统共享前四个阶段的逻辑，在 Feature 解析和 axconfig 生成阶段开始分化，最终都汇聚到统一的 ostool `cargo_build()` 调用。
 
 ## 流程总览
 
@@ -91,7 +91,7 @@ flowchart TD
     G -->|Axvisor| H["额外尝试复制<br/>os/axvisor/configs/board/ 默认配置"]
 ```
 
-Build Info 加载是构建管线中与用户交互最密切的环节。用户可以通过 `--config` 指定自定义路径，也可以直接编辑自动生成的 TOML 文件来调整 features 和环境变量。对于 Axvisor，首次加载时还会从预设配置目录复制板卡默认配置，简化初始配置流程。
+Build Info 加载是构建过程中与用户交互最密切的环节。用户可以通过 `--config` 指定自定义路径，也可以直接编辑自动生成的 TOML 文件来调整 features 和环境变量。对于 Axvisor，首次加载时还会从预设配置目录复制板卡默认配置，简化初始配置流程。
 
 ## 5. Feature 解析
 
@@ -134,7 +134,7 @@ flowchart TD
     J --> K
 ```
 
-Feature 解析是构建管线中最复杂的阶段之一。它需要处理多个维度：feature 前缀族（通过分析包的 Cargo.toml 依赖关系确定使用 `ax-std` 还是 `ax-feat` 前缀）、平台类型（动态/静态/自定义）、以及 SMP 支持。
+Feature 解析是构建过程中最复杂的阶段之一。它需要处理多个维度：feature 前缀族（通过分析包的 Cargo.toml 依赖关系确定使用 `ax-std` 还是 `ax-feat` 前缀）、平台类型（动态/静态/自定义）、以及 SMP 支持。
 
 **前缀族检测**通过检查包的直接依赖来确定：如果包依赖 `ax-std` 则使用 `ax-std/` 前缀，依赖 `ax-feat` 则使用 `ax-feat/` 前缀。当检测失败（包不直接依赖两者）时，会回退到已有 features 列表中的前缀线索，最终默认使用 `ax-std`。
 
