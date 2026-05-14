@@ -478,6 +478,25 @@ fn copy_user_iov_read_buf(iov: *const IoVec, iovcnt: usize) -> AxResult<Vec<u8>>
 enum SendFile {
     Direct(Arc<dyn FileLike>),
     Offset(Arc<File>, *mut u64),
+    /// Memfd output with an explicit offset. Routed through
+    /// `Memfd::write_at` so `F_SEAL_WRITE` / `F_SEAL_GROW` are enforced
+    /// the same way as `pwrite`; the plain `Offset` variant unwraps the
+    /// memfd to its inner `File` and would silently bypass the seal
+    /// check by calling `File::write_at` directly.
+    OffsetMemfd(Arc<crate::file::memfd::Memfd>, *mut u64),
+}
+
+/// Build the `SendFile` for the *output* end of sendfile / copy_file_range /
+/// splice with an explicit offset. When the fd points at a memfd, route
+/// writes through the seal-aware [`crate::file::memfd::Memfd`] wrapper
+/// instead of unwrapping it to its inner `File` (which would bypass
+/// `F_SEAL_WRITE` and `F_SEAL_GROW`).
+fn send_offset_out(fd: c_int, offset: *mut u64) -> AxResult<SendFile> {
+    let fl = get_file_like(fd)?;
+    if let Ok(memfd) = fl.clone().downcast_arc::<crate::file::memfd::Memfd>() {
+        return Ok(SendFile::OffsetMemfd(memfd, offset));
+    }
+    Ok(SendFile::Offset(File::from_fd(fd)?, offset))
 }
 
 impl SendFile {
@@ -485,6 +504,7 @@ impl SendFile {
         match self {
             SendFile::Direct(file) => file.poll(),
             SendFile::Offset(file, ..) => file.poll(),
+            SendFile::OffsetMemfd(memfd, ..) => memfd.poll(),
         }
         .contains(IoEvents::IN)
     }
@@ -498,6 +518,12 @@ impl SendFile {
                 offset.vm_write(off + bytes_read as u64)?;
                 Ok(bytes_read)
             }
+            SendFile::OffsetMemfd(memfd, offset) => {
+                let off = offset.vm_read()?;
+                let bytes_read = memfd.inner().inner().read_at(&mut buf, off)?;
+                offset.vm_write(off + bytes_read as u64)?;
+                Ok(bytes_read)
+            }
         }
     }
 
@@ -507,6 +533,12 @@ impl SendFile {
             SendFile::Offset(file, offset) => {
                 let off = offset.vm_read()?;
                 let bytes_written = file.inner().write_at(buf, off)?;
+                offset.vm_write(off + bytes_written as u64)?;
+                Ok(bytes_written)
+            }
+            SendFile::OffsetMemfd(memfd, offset) => {
+                let off = offset.vm_read()?;
+                let bytes_written = memfd.write_at(buf, off)?;
                 offset.vm_write(off + bytes_written as u64)?;
                 Ok(bytes_written)
             }
@@ -632,10 +664,14 @@ pub fn sys_copy_file_range(
         SendFile::Direct(file_in)
     };
 
+    // Output offset: when fd_out is a memfd, the regular `Offset`
+    // variant would unwrap to the inner `File` and bypass seal checks.
+    // `send_offset_out` keeps the `Memfd` wrapper so `Memfd::write_at`
+    // enforces `F_SEAL_WRITE` / `F_SEAL_GROW`.
     let dst = if !off_out.is_null() {
-        SendFile::Offset(file_out, off_out)
+        send_offset_out(fd_out, off_out)?
     } else {
-        SendFile::Direct(file_out)
+        SendFile::Direct(get_file_like(fd_out)?)
     };
 
     do_send(src, dst, len).map(|n| n as _)
@@ -689,7 +725,9 @@ pub fn sys_splice(
         if off_out.vm_read()? < 0 {
             return Err(AxError::InvalidInput);
         }
-        SendFile::Offset(File::from_fd(fd_out)?, off_out.cast())
+        // Route memfd output through the seal-aware wrapper rather
+        // than `File::from_fd`'s auto-unwrap.
+        send_offset_out(fd_out, off_out.cast())?
     } else {
         if let Ok(dst) = Pipe::from_fd(fd_out) {
             if !dst.is_write() {

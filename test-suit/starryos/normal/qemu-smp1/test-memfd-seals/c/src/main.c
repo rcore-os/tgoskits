@@ -103,6 +103,25 @@ int main(void) {
         CHECK(pwn == (ssize_t)sizeof(buf),
               "in-bounds pwrite still allowed under F_SEAL_GROW");
 
+        /* Sequential write(2) at the cursor must follow the same
+         * Linux semantics: cross-EOF short-writes the in-range bytes,
+         * at/past-EOF returns -1 EPERM. Exercises the cursor-aware
+         * code path. */
+        CHECK_RET(lseek(gfd, 4090, SEEK_SET), 4090,
+                  "lseek to 4090 for cross-EOF write");
+        ssize_t wn = write(gfd, buf, sizeof(buf));
+        CHECK(wn == 6, "write cross-EOF returns partial 6 under F_SEAL_GROW");
+        /* Cursor must have advanced by 6, sitting at EOF now. */
+        off_t pos = lseek(gfd, 0, SEEK_CUR);
+        CHECK(pos == 4096, "write cross-EOF advanced cursor to EOF");
+        errno = 0;
+        wn = write(gfd, buf, sizeof(buf));
+        CHECK(wn == -1 && errno == EPERM,
+              "write at EOF rejected with EPERM under F_SEAL_GROW");
+        /* And the cursor should not have moved beyond EOF. */
+        pos = lseek(gfd, 0, SEEK_CUR);
+        CHECK(pos == 4096, "rejected write left cursor at EOF");
+
         /* fallocate that would extend the file past EOF is forbidden
          * under F_SEAL_GROW; an in-range fallocate is still allowed. */
         errno = 0;

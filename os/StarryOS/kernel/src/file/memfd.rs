@@ -30,6 +30,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FileFlags;
+use ax_io::{IoBuf, Read, SeekFrom};
 use ax_sync::Mutex;
 use axpoll::{IoEvents, Pollable};
 
@@ -188,11 +189,11 @@ impl FileLike for Memfd {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        // Hold `truncate_mtx` across the seal read and the write so
-        // a concurrent `add_seals(F_SEAL_GROW)` cannot publish in
-        // between and let an unsealed write grow the file after the
-        // seal was supposed to land. `add_seals` also takes this
-        // lock when publishing.
+        // Hold `truncate_mtx` across the seal read and the write so a
+        // concurrent `add_seals(F_SEAL_GROW)` cannot publish in between
+        // and let an unsealed write grow the file after the seal was
+        // supposed to land. `add_seals` also takes this lock when
+        // publishing.
         let _guard = self.truncate_mtx.lock();
         let seals = self.get_seals();
         if seals & F_SEAL_WRITE != 0 {
@@ -201,21 +202,40 @@ impl FileLike for Memfd {
         if seals & F_SEAL_GROW == 0 {
             return self.inner.write(src);
         }
-        // F_SEAL_GROW: the inner File owns the cursor privately, so
-        // we can't pre-check "would-extend" by computing
-        // `pos + len > size`. Perform the write under the lock,
-        // then snap back to the pre-write size if it grew. Observable
-        // contract matches Linux's shmem_write_check_limits: file
-        // size never grows under the seal, and the call reports
-        // EPERM.
-        let pre_len = self.inner.inner().backend()?.location().len()?;
-        let written = self.inner.write(src)?;
-        let post_len = self.inner.inner().backend()?.location().len()?;
-        if post_len > pre_len {
-            if let Ok(f) = self.inner.inner().access(FileFlags::WRITE) {
-                let _ = f.set_len(pre_len);
-            }
+        // F_SEAL_GROW Linux semantics, verified against
+        // memfd_create + F_ADD_SEALS(F_SEAL_GROW) on a stock host:
+        //   - cross-EOF write/writev short-writes the bytes that fit
+        //     before EOF and reports that partial count.
+        //   - write starting at or past EOF returns -1 EPERM and
+        //     leaves the file untouched.
+        // The previous "write-then-rollback" approach modified in-EOF
+        // bytes before reporting failure and lost the partial-write
+        // semantics. Drain only the in-range bytes into a buffer and
+        // route them through `write_at` at the current cursor; then
+        // advance the inner cursor manually so the next sequential
+        // write picks up correctly.
+        let cur_len = self.inner.inner().backend()?.location().len()?;
+        let cursor = self.inner.inner().seek(SeekFrom::Current(0))?;
+        if cursor >= cur_len {
             return Err(AxError::OperationNotPermitted);
+        }
+        let max_writable = (cur_len - cursor) as usize;
+        let want = src.remaining().min(max_writable);
+        if want == 0 {
+            return Ok(0);
+        }
+        let f = self.inner.inner().access(FileFlags::WRITE)?;
+        let mut buf = alloc::vec![0u8; want];
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            return Ok(0);
+        }
+        let written = f.write_at(&buf[..n], cursor)?;
+        if written > 0 {
+            // Advance the inner cursor to match the sequential
+            // semantics expected by the caller (write(2) leaves the
+            // cursor positioned after the last byte written).
+            let _ = self.inner.inner().seek(SeekFrom::Current(written as i64));
         }
         Ok(written)
     }
