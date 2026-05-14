@@ -28,7 +28,9 @@ pub(crate) fn init_early() {
             unsafe { Uart16550::new_mmio((UART_PADDR + PHYS_VIRT_OFFSET) as *mut u8, 1) }.unwrap();
         uart.init(uart_config(false))
             .expect("Failed to initialize UART");
-        uart.test_loopback().expect("Failed to test UART loopback");
+        // Under AxVisor the guest may share the passthrough UART with the host.
+        // The loopback self-test is not safe in that configuration and can stall
+        // early guest bring-up before any output is visible.
         SpinNoIrq::new(uart)
     });
 }
