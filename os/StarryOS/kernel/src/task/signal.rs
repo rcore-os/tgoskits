@@ -103,13 +103,26 @@ pub fn check_signals(
 
     let signo = sig.signo();
 
+    // Only dump register state when the terminating signal originated as a
+    // synchronous fault delivered to the current thread. Group-exit SIGKILL
+    // sent to peer threads (and any other externally-injected fatal
+    // signal) leaves `fault_dump_pending` cleared, so peers terminate
+    // silently and the dump remains the faulting thread's signal.
+    let dump_on_terminate = thr
+        .fault_dump_pending
+        .swap(false, core::sync::atomic::Ordering::AcqRel);
+
     match os_action {
         SignalOSAction::Terminate => {
-            dump_user_crash_context(uctx);
+            if dump_on_terminate {
+                dump_user_crash_context(uctx);
+            }
             do_exit(signo as i32, true);
         }
         SignalOSAction::CoreDump => {
-            dump_user_crash_context(uctx);
+            if dump_on_terminate {
+                dump_user_crash_context(uctx);
+            }
             do_exit(128 + signo as i32, true);
         }
         SignalOSAction::Stop => do_exit(1, true),
@@ -246,6 +259,15 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
         mask.remove(signo);
         thread.signal.set_blocked(mask);
     }
+
+    // Mark this thread so the next `check_signals` consumes the dump
+    // alongside the terminating disposition. Group-exit SIGKILLs sent
+    // to peers via `send_signal_to_process` skip this path and leave
+    // the flag clear, so they terminate without printing a dump.
+    thread
+        .fault_dump_pending
+        .store(true, core::sync::atomic::Ordering::Release);
+
     if thread.signal.send_signal(sig) {
         curr.interrupt();
     } else {
@@ -253,6 +275,9 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
         // (already pending). Either way the faulting thread is the
         // right one to terminate, so dump and exit here directly so
         // userspace cannot lose the register state.
+        thread
+            .fault_dump_pending
+            .store(false, core::sync::atomic::Ordering::Release);
         dump_user_crash_context(uctx);
         do_exit(signo as i32, true);
     }

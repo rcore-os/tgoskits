@@ -121,6 +121,14 @@ pub struct Thread {
 
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
+
+    /// Set by [`raise_signal_fatal`] to mark the next consumed signal as
+    /// originating from a synchronous user-mode fault (page fault, illegal
+    /// instruction, etc.). [`check_signals`] reads and clears this flag
+    /// when the signal terminates the thread, so only the faulting thread
+    /// emits a register dump — group-exit SIGKILLs delivered to peer
+    /// threads remain silent.
+    pub fault_dump_pending: AtomicBool,
 }
 
 impl Thread {
@@ -144,6 +152,7 @@ impl Thread {
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
             cred: SpinNoIrq::new(cred),
+            fault_dump_pending: AtomicBool::new(false),
         })
     }
 
