@@ -30,7 +30,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::FileFlags;
-use ax_io::{IoBuf, Read, SeekFrom};
+use ax_io::{IoBuf, SeekFrom, prelude::*};
 use ax_sync::Mutex;
 use axpoll::{IoEvents, Pollable};
 
