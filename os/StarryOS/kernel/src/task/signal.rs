@@ -103,14 +103,24 @@ pub fn check_signals(
 
     let signo = sig.signo();
 
-    // Only dump register state when the terminating signal originated as a
-    // synchronous fault delivered to the current thread. Group-exit SIGKILL
-    // sent to peer threads (and any other externally-injected fatal
-    // signal) leaves `fault_dump_pending` cleared, so peers terminate
-    // silently and the dump remains the faulting thread's signal.
+    // Only dump register state when the terminating signal is the same
+    // synchronous fault signo that raise_signal_fatal force-delivered to
+    // this thread. Matching by signo prevents a low-numbered pending
+    // signal (e.g. a queued SIGTERM that landed before the SIGSEGV from
+    // a page fault) from consuming the flag and either dumping in the
+    // wrong context or swallowing the dump entirely when it had a user
+    // handler. `compare_exchange` clears the slot only on a match, so
+    // unrelated signals leave the flag intact for the real fault
+    // signal that follows.
     let dump_on_terminate = thr
-        .fault_dump_pending
-        .swap(false, core::sync::atomic::Ordering::AcqRel);
+        .fault_dump_signo
+        .compare_exchange(
+            signo as u8,
+            0,
+            core::sync::atomic::Ordering::AcqRel,
+            core::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok();
 
     match os_action {
         SignalOSAction::Terminate => {
@@ -260,13 +270,15 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
         thread.signal.set_blocked(mask);
     }
 
-    // Mark this thread so the next `check_signals` consumes the dump
-    // alongside the terminating disposition. Group-exit SIGKILLs sent
-    // to peers via `send_signal_to_process` skip this path and leave
-    // the flag clear, so they terminate without printing a dump.
+    // Tag the dump request with the specific fault signo so a later
+    // `check_signals` only consumes it when that signal is the one
+    // being delivered. Group-exit SIGKILLs sent to peers via
+    // `send_signal_to_process` skip this path and leave the slot at
+    // zero, so peers terminate silently. Storing 0 elsewhere is the
+    // "no dump" sentinel — signo values start at 1.
     thread
-        .fault_dump_pending
-        .store(true, core::sync::atomic::Ordering::Release);
+        .fault_dump_signo
+        .store(signo as u8, core::sync::atomic::Ordering::Release);
 
     if thread.signal.send_signal(sig) {
         curr.interrupt();
@@ -276,8 +288,8 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
         // right one to terminate, so dump and exit here directly so
         // userspace cannot lose the register state.
         thread
-            .fault_dump_pending
-            .store(false, core::sync::atomic::Ordering::Release);
+            .fault_dump_signo
+            .store(0, core::sync::atomic::Ordering::Release);
         dump_user_crash_context(uctx);
         do_exit(signo as i32, true);
     }
