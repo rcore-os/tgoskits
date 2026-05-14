@@ -17,13 +17,13 @@ use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
 use ax_kspin::SpinNoIrq;
 use dma_api::DeviceDma;
-use dwmmc_host::{AsyncDmaRequest, AsyncRequestSlot, DwMmc, RequestId};
+use dwmmc_host::{BlockRequest, BlockRequestSlot, BlockTransferMode, DwMmc, RequestId};
 use rdif_clk::ClockId;
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
 };
 use sdmmc_protocol::{
-    Error,
+    DataCommandPoll, Error,
     error::Phase,
     sdio::{DelayNs, SdioHost, SdioSdmmc},
 };
@@ -293,11 +293,11 @@ fn tune_rk3588_sdmmc_sample_phase(sd: &mut RockchipDwMmc, parent_rate: u32) {
         set_rk3588_mmc_phase(cru, RK3588_SDMMC_CON1, parent_rate, sample_phase);
 
         let mut block0 = [0; BLOCK_SIZE];
-        let block0_result = sd.read_block(0, &mut block0);
+        let block0_result = read_block_sync(sd, 0, &mut block0);
         let block0_valid = block0_result.is_ok() && has_mbr_signature(&block0);
 
         let mut block1 = [0; BLOCK_SIZE];
-        let block1_result = sd.read_block(1, &mut block1);
+        let block1_result = read_block_sync(sd, 1, &mut block1);
         let block1_valid = block1_result.is_ok() && has_gpt_header(&block1);
 
         info!(
@@ -332,6 +332,20 @@ fn tune_rk3588_sdmmc_sample_phase(sd: &mut RockchipDwMmc, parent_rate: u32) {
         "rockchip-dwmmc: no valid RK3588 SDMMC sample phase found; restored {}deg",
         RK3588_SDMMC_SAMPLE_PHASE_DEG
     );
+}
+
+fn read_block_sync(
+    sd: &mut RockchipDwMmc,
+    addr: u32,
+    buf: &mut [u8; BLOCK_SIZE],
+) -> Result<(), Error> {
+    let mut request = sd.submit_read_blocks_into(addr, buf)?;
+    loop {
+        match sd.poll_data_request(&mut request)? {
+            DataCommandPoll::Pending => core::hint::spin_loop(),
+            DataCommandPoll::Complete(_) => return Ok(()),
+        }
+    }
 }
 
 fn set_rk3588_mmc_phase(cru: NonNull<u8>, offset: usize, parent_rate: u32, degrees: u32) {
@@ -394,8 +408,8 @@ struct SdBlockDevice {
 struct SdBlockQueue {
     raw: Arc<SpinNoIrq<RockchipDwMmc>>,
     capacity_blocks: u64,
-    async_slot: AsyncRequestSlot,
-    pending: Option<AsyncDmaRequest>,
+    block_slot: BlockRequestSlot,
+    pending: Option<BlockRequest>,
     completed: Vec<rd_block::RequestId>,
 }
 
@@ -415,7 +429,7 @@ impl rd_block::Interface for SdBlockDevice {
             alloc::boxed::Box::new(SdBlockQueue {
                 raw: dev.clone(),
                 capacity_blocks: self.capacity_blocks,
-                async_slot: AsyncRequestSlot::default(),
+                block_slot: BlockRequestSlot::default(),
                 pending: None,
                 completed: Vec::new(),
             }) as _
@@ -458,12 +472,17 @@ impl rd_block::Interface for SdBlockDevice {
 
 fn block_event_from_dwmmc_irq(irq_event: dwmmc_host::Event) -> rd_block::Event {
     match irq_event {
-        dwmmc_host::Event::TransferComplete | dwmmc_host::Event::Error { .. } => {
+        dwmmc_host::Event::None => rd_block::Event::none(),
+        dwmmc_host::Event::CommandComplete
+        | dwmmc_host::Event::TransferComplete
+        | dwmmc_host::Event::ReceiveReady
+        | dwmmc_host::Event::TransmitReady
+        | dwmmc_host::Event::Error { .. }
+        | dwmmc_host::Event::Other { .. } => {
             let mut event = rd_block::Event::none();
             event.queue.insert(0);
             event
         }
-        _ => rd_block::Event::none(),
     }
 }
 
@@ -495,9 +514,9 @@ impl rd_block::IQueue for SdBlockQueue {
         self.reap_pending_request()?;
         let mut raw = self.raw.lock();
         let start_block = block_addr_for_card(request.block_id, raw.is_high_capacity())?;
-        // Block I/O uses the host crate's submit/poll DMA API so completions
-        // can be driven by IRQ wakeups. The SdioHost read_data/write_data
-        // methods remain the synchronous protocol path, with PIO fallback.
+        // Block I/O uses the host crate's submit/poll request API so
+        // completions can be driven by IRQ wakeups. Protocol data commands
+        // use the same submit/poll contract through SdioHost.
         match request.kind {
             rd_block::RequestKind::Read(buffer) => {
                 if !buffer.len().is_multiple_of(BLOCK_SIZE) {
@@ -510,16 +529,14 @@ impl rd_block::IQueue for SdBlockQueue {
                 })?;
                 let size = NonZeroUsize::new(buffer.len())
                     .ok_or_else(|| rd_block::BlkError::Other("read buffer is empty".into()))?;
-                let request = raw
-                    .host_mut()
-                    .submit_dma_read_blocks(
-                        start_block,
-                        ptr,
-                        size,
-                        &DeviceDma::new(u32::MAX as u64, &DmaImpl),
-                        &mut self.async_slot,
-                    )
-                    .map_err(map_dev_err_to_blk_err)?;
+                let request = submit_read_with_dma_fifo_fallback(
+                    raw.host_mut(),
+                    start_block,
+                    ptr,
+                    size,
+                    &mut self.block_slot,
+                )
+                .map_err(map_dev_err_to_blk_err)?;
                 let id = request.id();
                 self.pending = Some(request);
                 Ok(rd_block::RequestId::new(usize::from(id)))
@@ -535,16 +552,14 @@ impl rd_block::IQueue for SdBlockQueue {
                 })?;
                 let size = NonZeroUsize::new(items.len())
                     .ok_or_else(|| rd_block::BlkError::Other("write buffer is empty".into()))?;
-                let request = raw
-                    .host_mut()
-                    .submit_dma_write_blocks(
-                        start_block,
-                        ptr,
-                        size,
-                        &DeviceDma::new(u32::MAX as u64, &DmaImpl),
-                        &mut self.async_slot,
-                    )
-                    .map_err(map_dev_err_to_blk_err)?;
+                let request = submit_write_with_dma_fifo_fallback(
+                    raw.host_mut(),
+                    start_block,
+                    ptr,
+                    size,
+                    &mut self.block_slot,
+                )
+                .map_err(map_dev_err_to_blk_err)?;
                 let id = request.id();
                 self.pending = Some(request);
                 Ok(rd_block::RequestId::new(usize::from(id)))
@@ -569,10 +584,10 @@ impl SdBlockQueue {
         self.raw
             .lock()
             .host_mut()
-            .poll_async_dma_request(
+            .poll_block_request(
                 &mut self.pending,
                 RequestId::new(usize::from(request)),
-                &mut self.async_slot,
+                &mut self.block_slot,
             )
             .map_err(map_dev_err_to_blk_err)
     }
@@ -591,6 +606,61 @@ impl SdBlockQueue {
             Err(err) => Err(err),
         }
     }
+}
+
+fn submit_read_with_dma_fifo_fallback(
+    host: &mut DwMmc,
+    start_block: u32,
+    ptr: NonNull<u8>,
+    size: NonZeroUsize,
+    slot: &mut BlockRequestSlot,
+) -> Result<BlockRequest, Error> {
+    let dma = DeviceDma::new(u32::MAX as u64, &DmaImpl);
+    match host.submit_read_blocks(
+        start_block,
+        ptr,
+        size,
+        Some(&dma),
+        BlockTransferMode::Dma,
+        slot,
+    ) {
+        Ok(request) => Ok(request),
+        Err(err) if can_fallback_to_fifo(err) => {
+            host.submit_read_blocks(start_block, ptr, size, None, BlockTransferMode::Fifo, slot)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn submit_write_with_dma_fifo_fallback(
+    host: &mut DwMmc,
+    start_block: u32,
+    ptr: NonNull<u8>,
+    size: NonZeroUsize,
+    slot: &mut BlockRequestSlot,
+) -> Result<BlockRequest, Error> {
+    let dma = DeviceDma::new(u32::MAX as u64, &DmaImpl);
+    match host.submit_write_blocks(
+        start_block,
+        ptr,
+        size,
+        Some(&dma),
+        BlockTransferMode::Dma,
+        slot,
+    ) {
+        Ok(request) => Ok(request),
+        Err(err) if can_fallback_to_fifo(err) => {
+            host.submit_write_blocks(start_block, ptr, size, None, BlockTransferMode::Fifo, slot)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn can_fallback_to_fifo(err: Error) -> bool {
+    matches!(
+        err,
+        Error::UnsupportedCommand | Error::InvalidArgument | Error::Misaligned
+    )
 }
 
 fn block_addr_for_card(block_id: usize, high_capacity: bool) -> Result<u32, rd_block::BlkError> {

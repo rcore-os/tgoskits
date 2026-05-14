@@ -8,15 +8,41 @@ pub use embedded_hal::delay::DelayNs;
 use log::{debug, info, warn};
 
 pub use crate::cmd::DataDirection;
-#[allow(unused_imports)]
-use crate::error::{Error, ErrorContext, Phase};
 use crate::{
+    block::{CommandResponsePoll, DataCommandPoll, OperationPoll, block_on_poll},
     cmd::Command,
     common::block_addr_of,
+    error::{Error, ErrorContext, Phase},
     response::{
         CardState, CidResponse, CsdResponse, OcrResponse, Response, ResponseType, SwitchStatus,
     },
 };
+
+fn wait_command_response_sync<E>(
+    poll: impl FnMut() -> Result<CommandResponsePoll, E>,
+) -> Result<Response, E> {
+    wait_operation_sync(poll, |poll| match poll {
+        CommandResponsePoll::Pending => OperationPoll::Pending,
+        CommandResponsePoll::Complete(response) => OperationPoll::Complete(response),
+    })
+}
+
+fn wait_data_response_sync<E>(
+    poll: impl FnMut() -> Result<DataCommandPoll, E>,
+) -> Result<Response, E> {
+    wait_operation_sync(poll, |poll| match poll {
+        DataCommandPoll::Pending => OperationPoll::Pending,
+        DataCommandPoll::Complete(response) => OperationPoll::Complete(response),
+    })
+}
+
+fn wait_operation_sync<T, E, P, M, R>(mut poll: P, mut map: M) -> Result<T, E>
+where
+    P: FnMut() -> Result<R, E>,
+    M: FnMut(R) -> OperationPoll<T>,
+{
+    block_on_poll(|| Ok(map(poll()?)), core::hint::spin_loop)
+}
 
 /// SDIO bus width
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,68 +104,48 @@ pub trait SdioHost {
     ///
     /// Portable host crates can expose their native event enum here. The
     /// protocol layer does not interpret it; OS glue maps it to runtime wakeups.
+    #[cfg(feature = "irq")]
     type Event: Default;
 
-    /// Send a command and receive the response
-    fn send_command(&mut self, cmd: &Command) -> Result<Response, Error>;
+    /// Submit a command without waiting for its response.
+    fn submit_command(&mut self, cmd: &Command) -> Result<(), Error>;
 
-    /// Issue a read-data command and complete its data phase synchronously.
-    ///
-    /// This protocol-facing method must not return until the data phase has
-    /// completed or failed. Host implementations may use blocking DMA or PIO
-    /// internally. IRQ-driven block queues should expose a separate submit/poll
-    /// interface instead of modelling pending completion through this method.
-    fn read_data(
+    /// Advance a submitted command and harvest the response when complete.
+    fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error>;
+
+    type DataRequest<'a>
+    where
+        Self: 'a;
+
+    /// Submit a read-data command without waiting for its data phase.
+    fn submit_read_data<'a>(
         &mut self,
         cmd: &Command,
-        buf: &mut [u8],
+        buf: &'a mut [u8],
         block_size: u32,
         block_count: u32,
-    ) -> Result<Response, Error>;
+    ) -> Result<Self::DataRequest<'a>, Error>;
 
-    /// Issue a write-data command and complete its data phase synchronously.
-    ///
-    /// This has the same completion contract as [`SdioHost::read_data`]: it is
-    /// a blocking protocol operation, not the block queue's async request API.
-    fn write_data(
+    /// Submit a write-data command without waiting for its data phase.
+    fn submit_write_data<'a>(
         &mut self,
         cmd: &Command,
-        buf: &[u8],
+        buf: &'a [u8],
         block_size: u32,
         block_count: u32,
-    ) -> Result<Response, Error>;
+    ) -> Result<Self::DataRequest<'a>, Error>;
+
+    /// Advance a previously submitted data command without blocking.
+    fn poll_data_request<'a>(
+        &mut self,
+        request: &mut Self::DataRequest<'a>,
+    ) -> Result<DataCommandPoll, Error>;
 
     /// Set the bus width
     fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error>;
 
     /// Set the clock speed
     fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error>;
-
-    /// Tell the host how many data blocks the next multi-block transfer will
-    /// move (CMD18 read or CMD25 write). Single-block commands always pass 1
-    /// — hosts can ignore this for that case. Default is a no-op for hosts
-    /// that derive the count internally.
-    fn set_block_count(&mut self, _count: u32) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Tell the host the shape of the data phase that the *next* command
-    /// will trigger.
-    ///
-    /// This is needed because some commands (notably CMD6, which is reused
-    /// for ACMD6 SET_BUS_WIDTH and CMD6 SWITCH_FUNC) can't be classified
-    /// from the index alone. The driver always calls this before issuing a
-    /// data-bearing command and passes `direction = None` to clear any
-    /// previous hint. Default is a no-op for hosts that derive the data
-    /// shape from the command index themselves.
-    fn prepare_data_transfer(
-        &mut self,
-        _direction: DataDirection,
-        _block_size: u32,
-        _block_count: u32,
-    ) -> Result<(), Error> {
-        Ok(())
-    }
 
     /// Switch the bus signaling voltage (typically 3.3 V → 1.8 V for
     /// UHS-I or HS200 entry). The protocol layer issues CMD11 *before*
@@ -172,6 +178,7 @@ pub trait SdioHost {
     ///
     /// Default is a no-op so polling-only hosts do not have to implement IRQ
     /// support.
+    #[cfg(feature = "irq")]
     fn enable_data_irq(&mut self) -> Result<(), Error> {
         Ok(())
     }
@@ -179,6 +186,7 @@ pub trait SdioHost {
     /// Mask host IRQ delivery while keeping the controller usable for polling.
     ///
     /// Default is a no-op for polling-only hosts.
+    #[cfg(feature = "irq")]
     fn disable_data_irq(&mut self) -> Result<(), Error> {
         Ok(())
     }
@@ -186,6 +194,7 @@ pub trait SdioHost {
     /// Acknowledge pending host IRQ status and return a hardware event summary.
     ///
     /// This must not block or perform OS wakeups.
+    #[cfg(feature = "irq")]
     fn handle_irq(&mut self) -> Self::Event {
         Self::Event::default()
     }
@@ -194,12 +203,21 @@ pub trait SdioHost {
 /// SDIO mode SD/MMC driver
 pub struct SdioSdmmc<H: SdioHost, D: DelayNs> {
     host: H,
+    #[cfg_attr(not(feature = "sync"), allow(dead_code))]
     delay: D,
     rca: u16,
     high_capacity: bool,
+    #[cfg_attr(not(feature = "sync"), allow(dead_code))]
     bus_width: BusWidth,
     kind: CardKind,
+    #[cfg_attr(not(feature = "sync"), allow(dead_code))]
     sd_speed_selection_enabled: bool,
+}
+
+pub struct SdioDataRequest<'a, H: SdioHost + 'a> {
+    inner: H::DataRequest<'a>,
+    stop_after_complete: bool,
+    stop_sent: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -244,11 +262,6 @@ impl SdAccessMode {
 }
 
 impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
-    /// Maximum total time to wait for ACMD41 to report card power-up.
-    const INIT_TIMEOUT_MS: u32 = 1_000;
-    /// Interval between ACMD41 polls.
-    const INIT_POLL_MS: u32 = 10;
-
     pub fn new(host: H, delay: D) -> Self {
         Self {
             host,
@@ -292,6 +305,83 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         self.rca
     }
 
+    pub fn submit_read_blocks_into<'a>(
+        &mut self,
+        addr: u32,
+        buf: &'a mut [u8],
+    ) -> Result<SdioDataRequest<'a, H>, Error>
+    where
+        H: 'a,
+    {
+        let count = block_count_from_len(buf.len())?;
+        let block_addr = block_addr_of(addr, self.high_capacity);
+        let cmd = if count == 1 {
+            crate::cmd::cmd17(block_addr)
+        } else {
+            crate::cmd::cmd18(block_addr)
+        };
+        let inner = self.host.submit_read_data(&cmd, buf, 512, count)?;
+        Ok(SdioDataRequest {
+            inner,
+            stop_after_complete: count > 1,
+            stop_sent: false,
+        })
+    }
+
+    pub fn submit_write_blocks_from<'a>(
+        &mut self,
+        addr: u32,
+        buf: &'a [u8],
+    ) -> Result<SdioDataRequest<'a, H>, Error>
+    where
+        H: 'a,
+    {
+        let count = block_count_from_len(buf.len())?;
+        let block_addr = block_addr_of(addr, self.high_capacity);
+        let cmd = if count == 1 {
+            crate::cmd::cmd24(block_addr)
+        } else {
+            crate::cmd::cmd25(block_addr)
+        };
+        let inner = self.host.submit_write_data(&cmd, buf, 512, count)?;
+        Ok(SdioDataRequest {
+            inner,
+            stop_after_complete: count > 1,
+            stop_sent: false,
+        })
+    }
+
+    pub fn poll_data_request<'a>(
+        &mut self,
+        request: &mut SdioDataRequest<'a, H>,
+    ) -> Result<DataCommandPoll, Error>
+    where
+        H: 'a,
+    {
+        match self.host.poll_data_request(&mut request.inner)? {
+            DataCommandPoll::Pending => Ok(DataCommandPoll::Pending),
+            DataCommandPoll::Complete(response) => {
+                if request.stop_after_complete && !request.stop_sent {
+                    self.send_command_polling(&crate::cmd::CMD12)?;
+                    request.stop_sent = true;
+                }
+                Ok(DataCommandPoll::Complete(response))
+            }
+        }
+    }
+
+    fn send_command_polling(&mut self, cmd: &Command) -> Result<Response, Error> {
+        self.host.submit_command(cmd)?;
+        wait_command_response_sync(|| self.host.poll_command_response())
+    }
+}
+
+impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
+    /// Maximum total time to wait for ACMD41 to report card power-up.
+    const INIT_TIMEOUT_MS: u32 = 1_000;
+    /// Interval between ACMD41 polls.
+    const INIT_POLL_MS: u32 = 10;
+
     /// Initialize the card in SDIO mode.
     ///
     /// Detects SD vs eMMC at runtime:
@@ -313,7 +403,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
 
         // CMD0: reset
         info!("sdio: CMD0 reset");
-        self.host.send_command(&crate::cmd::CMD0)?;
+        self.send_command_polling(&crate::cmd::CMD0)?;
 
         // CMD8: detect SD v2. eMMC ignores CMD8 (or times out depending on
         // host); we treat any non-success as "not SD v2" and let ACMD41
@@ -336,7 +426,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
 
         // CMD2: get CID (identical for SD and MMC)
         info!("sdio: CMD2 read CID");
-        let cid = match self.host.send_command(&crate::cmd::CMD2)? {
+        let cid = match self.send_command_polling(&crate::cmd::CMD2)? {
             Response::R2(raw) => Some(CidResponse::from_raw(raw)),
             _ => None,
         };
@@ -354,7 +444,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         // CMD9: get CSD → derive capacity
         info!("sdio: CMD9 read CSD");
         let cmd9 = crate::cmd::cmd9(self.rca);
-        let csd_response = self.host.send_command(&cmd9)?;
+        let csd_response = self.send_command_polling(&cmd9)?;
         let mut capacity_blocks = match csd_response {
             Response::R2(raw) => CsdResponse::from_raw(raw).capacity_blocks(),
             _ => None,
@@ -364,7 +454,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         // CMD7: select card
         info!("sdio: CMD7 select card");
         let cmd7 = crate::cmd::cmd7(self.rca);
-        self.host.send_command(&cmd7)?;
+        self.send_command_polling(&cmd7)?;
 
         // OCR bit 30 means "high capacity" on both SD (CCS) and MMC
         // (sector mode), so the same accessor works.
@@ -458,7 +548,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     /// ACMD41 / CMD1; only catastrophic bus errors propagate.
     fn check_cmd8(&mut self) -> Result<bool, Error> {
         let cmd = crate::cmd::cmd8(0x01, 0xAA);
-        match self.host.send_command(&cmd) {
+        match self.send_command_polling(&cmd) {
             Ok(Response::R7(resp)) => Ok(resp.verify(0x01, 0xAA)),
             Ok(_) => Ok(false),
             Err(Error::Timeout(_)) | Err(Error::BadResponse(_)) | Err(Error::Crc(_)) => {
@@ -477,10 +567,10 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         loop {
             debug!("sdio: CMD55 before ACMD41 elapsed={}ms", elapsed);
             let cmd55 = crate::cmd::cmd55(0);
-            self.host.send_command(&cmd55)?;
+            self.send_command_polling(&cmd55)?;
 
             let acmd41 = crate::cmd::cmd41_with_s18r(sd_v2, 0xFF8000, request_1v8);
-            match self.host.send_command(&acmd41)? {
+            match self.send_command_polling(&acmd41)? {
                 Response::R3(ocr) => {
                     debug!(
                         "sdio: ACMD41 ocr={:#010x} ready={}",
@@ -514,7 +604,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         const MMC_VOLTAGE_MASK: u32 = 0x00FF_8000;
         const MMC_ACCESS_MODE_MASK: u32 = 0x6000_0000;
 
-        let first = match self.host.send_command(&crate::cmd::cmd1(0))? {
+        let first = match self.send_command_polling(&crate::cmd::cmd1(0))? {
             Response::R3(ocr) => {
                 info!("sdio: CMD1 initial ocr={:#010x}", ocr.raw);
                 ocr
@@ -535,7 +625,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         loop {
             debug!("sdio: CMD1 arg={:#010x} elapsed={}ms", ocr_arg, elapsed);
             let cmd1 = crate::cmd::cmd1(ocr_arg);
-            match self.host.send_command(&cmd1)? {
+            match self.send_command_polling(&cmd1)? {
                 Response::R3(ocr) => {
                     debug!(
                         "sdio: CMD1 ocr={:#010x} ready={}",
@@ -560,7 +650,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
 
     /// CMD3 (SD): card publishes its RCA via R6.
     fn get_rca_sd(&mut self) -> Result<u16, Error> {
-        match self.host.send_command(&crate::cmd::CMD3_SD)? {
+        match self.send_command_polling(&crate::cmd::CMD3_SD)? {
             Response::R6(resp) => Ok(resp.rca()),
             _ => Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 3))),
         }
@@ -569,7 +659,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     /// CMD3 (MMC): host assigns the RCA, card returns R1.
     fn assign_rca_mmc(&mut self, rca: u16) -> Result<u16, Error> {
         let cmd = crate::cmd::cmd3_mmc(rca);
-        match self.host.send_command(&cmd)? {
+        match self.send_command_polling(&cmd)? {
             Response::R1(_) => Ok(rca),
             _ => Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 3))),
         }
@@ -578,15 +668,13 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     /// Read the 512-byte EXT_CSD via MMC `CMD8 SEND_EXT_CSD`.
     ///
     /// Caller must have selected the card (CMD7) before this. The data
-    /// phase is read-only; the host is informed via
-    /// [`SdioHost::read_data`] so the controller can set up the right
-    /// transfer mode before issuing the command.
+    /// phase is driven through the host's submit/poll data-command state
+    /// machine so runtimes can complete it either synchronously or from IRQ
+    /// wakeups.
     fn read_ext_csd(&mut self) -> Result<crate::ext_csd::ExtCsd, Error> {
         info!("sdio: prepare EXT_CSD read");
         let mut buf = [0u8; 512];
-        let _r1 = self
-            .host
-            .read_data(&crate::cmd::CMD8_MMC, &mut buf, 512, 1)?;
+        self.read_data_polling(&crate::cmd::CMD8_MMC, &mut buf, 512, 1)?;
         Ok(crate::ext_csd::ExtCsd::from_bytes(buf))
     }
 
@@ -603,7 +691,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     /// CMD13 reports `SWITCH_ERROR`.
     fn mmc_switch(&mut self, access: u8, index: u8, value: u8) -> Result<(), Error> {
         let cmd = crate::cmd::cmd6_mmc_switch(access, index, value);
-        self.host.send_command(&cmd)?;
+        self.send_command_polling(&cmd)?;
 
         // Poll CMD13 for busy clear + SWITCH_ERROR check. The MMC spec
         // bounds programming time at 100 ms in the worst case; we're a
@@ -612,7 +700,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         const SWITCH_TIMEOUT_MS: u32 = 250;
         let mut elapsed = 0u32;
         loop {
-            let r = self.host.send_command(&crate::cmd::cmd13(self.rca))?;
+            let r = self.send_command_polling(&crate::cmd::cmd13(self.rca))?;
             if let Response::R1(r1) = r {
                 if r1.switch_error() {
                     warn!("sdio: SWITCH_ERROR after CMD6 idx={} val={}", index, value);
@@ -721,7 +809,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         // 4. Verify the card actually came along — a successful tuning
         //    plus CMD13 returning `tran` is the canonical "we're in
         //    HS200" check.
-        let r = self.host.send_command(&crate::cmd::cmd13(self.rca))?;
+        let r = self.send_command_polling(&crate::cmd::cmd13(self.rca))?;
         if let Response::R1(r1) = r
             && r1.ready_for_data()
             && matches!(r1.current_state(), crate::response::CardState::Transfer)
@@ -748,7 +836,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     fn set_bus_width_sd(&mut self, width: BusWidth) -> Result<(), Error> {
         // CMD55
         let cmd55 = crate::cmd::cmd55(self.rca);
-        self.host.send_command(&cmd55)?;
+        self.send_command_polling(&cmd55)?;
 
         // ACMD6: set bus width — ACMD6 only encodes 1-bit or 4-bit. 8-bit
         // bus configuration on eMMC is done through MMC CMD6 (SWITCH) and is
@@ -759,7 +847,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
             BusWidth::Bit8 => return Err(Error::UnsupportedCommand),
         };
         let acmd6 = Command::new(6, arg, ResponseType::R1);
-        self.host.send_command(&acmd6)?;
+        self.send_command_polling(&acmd6)?;
 
         self.host.set_bus_width(width)?;
         self.bus_width = width;
@@ -818,7 +906,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     }
 
     fn try_sd_uhs_mode(&mut self, mode: SdAccessMode) -> Result<(), Error> {
-        self.host.send_command(&crate::cmd::CMD11)?;
+        self.send_command_polling(&crate::cmd::CMD11)?;
         self.host.switch_voltage(SignalVoltage::V180)?;
         self.try_sd_access_mode(mode)?;
         if mode.needs_tuning() {
@@ -842,114 +930,25 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         }
     }
 
-    // ── Data Transfer ───────────────────────────────────────────
-
-    /// Read a single 512-byte block
-    pub fn read_block(&mut self, addr: u32, buf: &mut [u8; 512]) -> Result<(), Error> {
-        let block_addr = block_addr_of(addr, self.high_capacity);
-        let cmd = crate::cmd::cmd17(block_addr);
-        self.host.read_data(&cmd, buf, 512, 1)?;
-        Ok(())
-    }
-
-    /// Write a single 512-byte block
-    pub fn write_block(&mut self, addr: u32, buf: &[u8; 512]) -> Result<(), Error> {
-        let block_addr = block_addr_of(addr, self.high_capacity);
-        let cmd = crate::cmd::cmd24(block_addr);
-        self.host.write_data(&cmd, buf, 512, 1)?;
-        Ok(())
-    }
-
-    /// Read multiple blocks
-    pub fn read_blocks<F>(&mut self, addr: u32, count: u32, mut handler: F) -> Result<(), Error>
-    where
-        F: FnMut(u32, &[u8; 512]),
-    {
-        let mut buf = [0u8; 512];
-        for i in 0..count {
-            self.read_block(addr + i, &mut buf)?;
-            handler(addr + i, &buf);
-        }
-        Ok(())
-    }
-
-    /// Read one or more 512-byte blocks into a contiguous caller buffer.
-    ///
-    /// `buf.len()` must be a non-zero multiple of 512 bytes. For multi-block
-    /// reads the complete buffer is handed to the host in one data phase, so
-    /// host backends can use a single PIO/DMA setup instead of bouncing
-    /// through a temporary `[u8; 512]` per block.
-    pub fn read_blocks_into(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), Error> {
-        let count = block_count_from_len(buf.len())?;
-        let block_addr = block_addr_of(addr, self.high_capacity);
-        let cmd = if count == 1 {
-            crate::cmd::cmd17(block_addr)
-        } else {
-            crate::cmd::cmd18(block_addr)
-        };
-        self.host.read_data(&cmd, buf, 512, count)?;
-        if count > 1 {
-            self.host.send_command(&crate::cmd::CMD12)?;
-        }
-        Ok(())
-    }
-
-    /// Write multiple blocks
-    pub fn write_blocks(&mut self, addr: u32, blocks: &[[u8; 512]]) -> Result<(), Error> {
-        if blocks.is_empty() {
-            return Err(Error::InvalidArgument);
-        }
-        if blocks.len() == 1 {
-            return self.write_block(addr, &blocks[0]);
-        }
-
-        let block_addr = block_addr_of(addr, self.high_capacity);
-        let count = blocks.len() as u32;
-        let cmd = crate::cmd::cmd25(block_addr);
-        let buf = blocks.as_flattened();
-        self.host.write_data(&cmd, buf, 512, count)?;
-        self.host.send_command(&crate::cmd::CMD12)?;
-        Ok(())
-    }
-
-    /// Write one or more 512-byte blocks from a contiguous caller buffer.
-    ///
-    /// `buf.len()` must be a non-zero multiple of 512 bytes. For multi-block
-    /// writes the complete buffer is handed to the host in one data phase.
-    pub fn write_blocks_from(&mut self, addr: u32, buf: &[u8]) -> Result<(), Error> {
-        let count = block_count_from_len(buf.len())?;
-        let block_addr = block_addr_of(addr, self.high_capacity);
-        let cmd = if count == 1 {
-            crate::cmd::cmd24(block_addr)
-        } else {
-            crate::cmd::cmd25(block_addr)
-        };
-        self.host.write_data(&cmd, buf, 512, count)?;
-        if count > 1 {
-            self.host.send_command(&crate::cmd::CMD12)?;
-        }
-        Ok(())
-    }
-
     /// Erase a range of blocks
     pub fn erase(&mut self, start: u32, end: u32) -> Result<(), Error> {
         let start_addr = block_addr_of(start, self.high_capacity);
         let end_addr = block_addr_of(end, self.high_capacity);
 
         let cmd32 = crate::cmd::cmd32(start_addr);
-        self.host.send_command(&cmd32)?;
+        self.send_command_polling(&cmd32)?;
 
         let cmd33 = crate::cmd::cmd33(end_addr);
-        self.host.send_command(&cmd33)?;
+        self.send_command_polling(&cmd33)?;
 
-        self.host.send_command(&crate::cmd::CMD38)?;
+        self.send_command_polling(&crate::cmd::CMD38)?;
         Ok(())
     }
 
     /// Get card status
     pub fn status(&mut self) -> Result<CardState, Error> {
         let cmd13 = crate::cmd::cmd13(self.rca);
-        match self.host.send_command(&cmd13)? {
+        match self.send_command_polling(&cmd13)? {
             Response::R1(r1) => Ok(r1.current_state()),
             _ => Err(Error::BadResponse(ErrorContext::for_cmd(
                 Phase::ResponseWait,
@@ -965,7 +964,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     /// raw [`SwitchStatus`] for callers that need to inspect other groups.
     pub fn switch_function(&mut self, cmd: &Command) -> Result<SwitchStatus, Error> {
         let mut buf = [0u8; 64];
-        self.host.read_data(cmd, &mut buf, 64, 1)?;
+        self.read_data_polling(cmd, &mut buf, 64, 1)?;
         Ok(SwitchStatus::from_raw(buf))
     }
 
@@ -985,6 +984,21 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
             warn!("sdio: high-speed switch did not take effect");
         }
         Ok(active)
+    }
+}
+
+impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
+    fn read_data_polling(
+        &mut self,
+        cmd: &Command,
+        buf: &mut [u8],
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<Response, Error> {
+        let mut request = self
+            .host
+            .submit_read_data(cmd, buf, block_size, block_count)?;
+        wait_data_response_sync(|| self.host.poll_data_request(&mut request))
     }
 }
 
@@ -1057,7 +1071,7 @@ mod tests {
         replies: Vec<Result<Response, Error>>,
         commands: Vec<Command>,
         bus_width: Option<BusWidth>,
-        prepared_transfers: Vec<(DataDirection, u32, u32)>,
+        data_requests: Vec<(DataDirection, u32, u32)>,
         next_read_payload: Option<Vec<u8>>,
         read_payloads: Vec<Vec<u8>>,
         writes: Vec<Vec<u8>>,
@@ -1083,13 +1097,18 @@ mod tests {
         last_tuning_cmd: Option<u8>,
     }
 
+    struct MockDataRequest<'a> {
+        response: Option<Response>,
+        _marker: core::marker::PhantomData<&'a ()>,
+    }
+
     impl MockHost {
         fn new(replies: Vec<Response>) -> Self {
             Self {
                 replies: replies.into_iter().map(Ok).collect(),
                 commands: Vec::new(),
                 bus_width: None,
-                prepared_transfers: Vec::new(),
+                data_requests: Vec::new(),
                 next_read_payload: None,
                 read_payloads: Vec::new(),
                 writes: Vec::new(),
@@ -1109,7 +1128,7 @@ mod tests {
                 replies,
                 commands: Vec::new(),
                 bus_width: None,
-                prepared_transfers: Vec::new(),
+                data_requests: Vec::new(),
                 next_read_payload: None,
                 read_payloads: Vec::new(),
                 writes: Vec::new(),
@@ -1124,26 +1143,35 @@ mod tests {
     }
 
     impl SdioHost for MockHost {
+        #[cfg(feature = "irq")]
         type Event = ();
+        type DataRequest<'a> = MockDataRequest<'a>;
 
-        fn send_command(&mut self, cmd: &Command) -> Result<Response, Error> {
+        fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
             self.commands.push(*cmd);
+            Ok(())
+        }
+
+        fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
             if self.replies.is_empty() {
                 return Err(Error::Timeout(ErrorContext::default()));
             }
-            self.replies.remove(0)
+            self.replies.remove(0).map(CommandResponsePoll::Complete)
         }
 
-        fn read_data(
+        fn submit_read_data<'a>(
             &mut self,
             cmd: &Command,
-            buf: &mut [u8],
+            buf: &'a mut [u8],
             block_size: u32,
             block_count: u32,
-        ) -> Result<Response, Error> {
-            self.prepared_transfers
+        ) -> Result<Self::DataRequest<'a>, Error> {
+            self.data_requests
                 .push((DataDirection::Read, block_size, block_count));
-            let response = self.send_command(cmd)?;
+            self.submit_command(cmd)?;
+            let CommandResponsePoll::Complete(response) = self.poll_command_response()? else {
+                return Err(Error::Timeout(ErrorContext::default()));
+            };
             let payload = if self.read_payloads.is_empty() {
                 self.next_read_payload.take()
             } else {
@@ -1152,24 +1180,44 @@ mod tests {
             match payload {
                 Some(data) if data.len() == buf.len() => {
                     buf.copy_from_slice(&data);
-                    Ok(response)
+                    Ok(MockDataRequest {
+                        response: Some(response),
+                        _marker: core::marker::PhantomData,
+                    })
                 }
                 _ => Err(Error::UnsupportedCommand),
             }
         }
 
-        fn write_data(
+        fn submit_write_data<'a>(
             &mut self,
             cmd: &Command,
-            buf: &[u8],
+            buf: &'a [u8],
             block_size: u32,
             block_count: u32,
-        ) -> Result<Response, Error> {
-            self.prepared_transfers
+        ) -> Result<Self::DataRequest<'a>, Error> {
+            self.data_requests
                 .push((DataDirection::Write, block_size, block_count));
-            let response = self.send_command(cmd)?;
+            self.submit_command(cmd)?;
+            let CommandResponsePoll::Complete(response) = self.poll_command_response()? else {
+                return Err(Error::Timeout(ErrorContext::default()));
+            };
             self.writes.push(buf.to_vec());
-            Ok(response)
+            Ok(MockDataRequest {
+                response: Some(response),
+                _marker: core::marker::PhantomData,
+            })
+        }
+
+        fn poll_data_request<'a>(
+            &mut self,
+            request: &mut Self::DataRequest<'a>,
+        ) -> Result<DataCommandPoll, Error> {
+            request
+                .response
+                .take()
+                .map(DataCommandPoll::Complete)
+                .ok_or(Error::InvalidArgument)
         }
 
         fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error> {
@@ -1182,17 +1230,6 @@ mod tests {
 
         fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error> {
             self.last_clock = Some(speed);
-            Ok(())
-        }
-
-        fn prepare_data_transfer(
-            &mut self,
-            direction: DataDirection,
-            block_size: u32,
-            block_count: u32,
-        ) -> Result<(), Error> {
-            self.prepared_transfers
-                .push((direction, block_size, block_count));
             Ok(())
         }
 
@@ -1213,6 +1250,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "irq")]
     #[test]
     fn sdio_host_irq_methods_default_to_noop() {
         let mut host = MockHost::new(Vec::new());
@@ -1724,7 +1762,7 @@ mod tests {
     }
 
     #[test]
-    fn read_blocks_into_uses_one_multi_block_transfer_for_contiguous_buffer() {
+    fn submit_read_blocks_into_uses_one_multi_block_transfer_for_contiguous_buffer() {
         let mut host = MockHost::new(std::vec![ok_r1(), ok_r1()]);
         let expected: Vec<u8> = (0..1024).map(|i| (i % 251) as u8).collect();
         host.next_read_payload = Some(expected.clone());
@@ -1733,11 +1771,15 @@ mod tests {
         driver.high_capacity = true;
         let mut buf = [0u8; 1024];
 
-        driver.read_blocks_into(7, &mut buf).unwrap();
+        let mut request = driver.submit_read_blocks_into(7, &mut buf).unwrap();
+        assert!(matches!(
+            driver.poll_data_request(&mut request).unwrap(),
+            DataCommandPoll::Complete(_)
+        ));
 
         assert_eq!(&buf[..], &expected[..]);
         assert_eq!(
-            driver.host.prepared_transfers,
+            driver.host.data_requests,
             std::vec![(DataDirection::Read, 512, 2)]
         );
         assert_eq!(
@@ -1753,16 +1795,20 @@ mod tests {
     }
 
     #[test]
-    fn write_blocks_from_uses_one_multi_block_transfer_for_contiguous_buffer() {
+    fn submit_write_blocks_from_uses_one_multi_block_transfer_for_contiguous_buffer() {
         let host = MockHost::new(std::vec![ok_r1(), ok_r1()]);
         let mut driver = SdioSdmmc::new(host, NullDelay);
         driver.high_capacity = true;
         let buf = [0x5au8; 1024];
 
-        driver.write_blocks_from(11, &buf).unwrap();
+        let mut request = driver.submit_write_blocks_from(11, &buf).unwrap();
+        assert!(matches!(
+            driver.poll_data_request(&mut request).unwrap(),
+            DataCommandPoll::Complete(_)
+        ));
 
         assert_eq!(
-            driver.host.prepared_transfers,
+            driver.host.data_requests,
             std::vec![(DataDirection::Write, 512, 2)]
         );
         assert_eq!(
@@ -1779,18 +1825,18 @@ mod tests {
     }
 
     #[test]
-    fn contiguous_multi_block_io_rejects_misaligned_buffers() {
+    fn submit_block_io_rejects_misaligned_buffers() {
         let host = MockHost::new(std::vec![]);
         let mut driver = SdioSdmmc::new(host, NullDelay);
         let mut read_buf = [0u8; 513];
         let write_buf = [0u8; 513];
 
         assert_eq!(
-            driver.read_blocks_into(0, &mut read_buf),
+            driver.submit_read_blocks_into(0, &mut read_buf).map(|_| ()),
             Err(Error::Misaligned)
         );
         assert_eq!(
-            driver.write_blocks_from(0, &write_buf),
+            driver.submit_write_blocks_from(0, &write_buf).map(|_| ()),
             Err(Error::Misaligned)
         );
         assert!(driver.host.commands.is_empty());

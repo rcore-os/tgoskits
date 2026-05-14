@@ -15,6 +15,11 @@ embedded-hal = "1"
 log = "0.4"
 
 [features]
-default = ["spi"]
+default = ["spi", "sync"]
 spi = []
 sdio = []
+# `sdio` exposes the host trait and submit/poll data-command contract.
+# `sync` adds blocking init + block I/O helpers; `irq` adds IRQ trait hooks
+# for runtimes that wake pollers from controller interrupts.
+sync = []
+irq = []

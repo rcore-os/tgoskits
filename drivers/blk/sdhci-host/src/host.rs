@@ -5,11 +5,11 @@ use core::ptr::NonNull;
 use dma_api::DeviceDma;
 use sdmmc_protocol::error::{Error, ErrorContext, Phase};
 
-use crate::regs::*;
+use crate::{command::CommandState, regs::*};
 
-/// Cached state for a single pending data phase, populated by
-/// `prepare_data_transfer` and consumed by the next `send_command` call.
-#[derive(Clone, Copy)]
+/// Cached state for a single pending data phase, populated by the
+/// data-command submit path and consumed when that path issues the command.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingData {
     pub direction: sdmmc_protocol::DataDirection,
     pub block_size: u32,
@@ -20,7 +20,8 @@ pub(crate) struct PendingData {
 ///
 /// Owns the MMIO base address of one host controller instance and
 /// implements [`sdmmc_protocol::sdio::SdioHost`] so that the protocol
-/// driver in `sdmmc-protocol` can drive it. PIO data transfer only.
+/// driver in `sdmmc-protocol` can drive it. Data transfers can use either
+/// the controller FIFO or the ADMA2 state machine.
 ///
 /// # Safety
 ///
@@ -29,19 +30,19 @@ pub(crate) struct PendingData {
 /// use of the same controller from multiple `Sdhci` instances is undefined.
 pub struct Sdhci {
     base_addr: usize,
+    pub(crate) command_state: CommandState,
     pub(crate) pending_data: Option<PendingData>,
-    /// When set, [`issue_command`] programs the controller's transfer mode
+    /// When set, command submission programs the controller's transfer mode
     /// register with `DMA_ENABLE`. Set by the ADMA2 wrapper just before it
-    /// fires off a command; default `false` keeps the PIO `Sdhci` API
-    /// identical.
+    /// fires off a command; default `false` keeps the FIFO path active.
     pub(crate) use_dma: bool,
     /// Optional CRU-side clock callback. When set, the `SdioHost::set_clock`
     /// impl will route requests to this hook (and program the controller
     /// for 1:1 passthrough) instead of using the internal 10-bit divider.
     /// Used on controllers whose internal divider is unusable.
     pub(crate) ext_clock: Option<fn(target_hz: u32) -> Result<(), Error>>,
-    /// Command index for the data phase currently being drained by
-    /// `read_data` / `write_data`.
+    /// Command index for the data phase currently being drained by the
+    /// submit/poll data-command state machine.
     pub(crate) active_data_cmd: u8,
     pub(crate) dma: Option<DeviceDma>,
     pub(crate) irq_pending_normal: u16,
@@ -58,6 +59,7 @@ impl Sdhci {
     pub unsafe fn new(base: NonNull<u8>) -> Self {
         Self {
             base_addr: base.as_ptr() as usize,
+            command_state: CommandState::Idle,
             pending_data: None,
             use_dma: false,
             ext_clock: None,
@@ -98,9 +100,9 @@ impl Sdhci {
 
     /// Install a DMA capability used by the high-level data-transfer hooks.
     ///
-    /// Once installed, `SdioHost::read_data` and `SdioHost::write_data` try
-    /// ADMA2 first for 512-byte block I/O and fall back to the PIO sequence
-    /// if ADMA2 cannot be used.
+    /// Once installed, `SdioHost::submit_read_data` and
+    /// `SdioHost::submit_write_data` try ADMA2 first for 512-byte block I/O
+    /// and fall back to the FIFO state machine if ADMA2 cannot be used.
     pub fn set_dma(&mut self, dma: DeviceDma) {
         self.dma = Some(dma);
     }
@@ -232,9 +234,16 @@ impl Sdhci {
     pub fn enable_data_irq(&mut self) {
         self.write_u16(
             REG_NORMAL_INT_SIGNAL_ENABLE,
-            NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR,
+            NORMAL_INT_CMD_COMPLETE
+                | NORMAL_INT_XFER_COMPLETE
+                | NORMAL_INT_BUFFER_WRITE_READY
+                | NORMAL_INT_BUFFER_READ_READY
+                | NORMAL_INT_ERROR,
         );
-        self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, ERROR_INT_DATA_OR_ADMA_MASK);
+        self.write_u16(
+            REG_ERROR_INT_SIGNAL_ENABLE,
+            ERROR_INT_CMD_LINE_MASK | ERROR_INT_DATA_OR_ADMA_MASK,
+        );
     }
 
     /// Mask host CPU IRQ delivery while keeping status bits observable.
@@ -244,7 +253,8 @@ impl Sdhci {
     }
 
     pub fn data_irq_enabled(&self) -> bool {
-        self.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & (NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR)
+        self.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE)
+            & (NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR)
             != 0
     }
 

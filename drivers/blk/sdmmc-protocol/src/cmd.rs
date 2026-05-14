@@ -60,7 +60,7 @@ impl Command {
     /// returns `None` for it. CMD6 is also returned as `None` because the
     /// same command index is reused for ACMD6 (SET_BUS_WIDTH, no data phase)
     /// and CMD6 SWITCH_FUNC (64-byte read). Drivers that issue SWITCH_FUNC
-    /// inform the host explicitly via [`crate::sdio::SdioHost::prepare_data_transfer`].
+    /// choose the read-data submit path explicitly.
     pub const fn data_direction(&self) -> DataDirection {
         match self.cmd {
             17 | 18 => DataDirection::Read,

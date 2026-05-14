@@ -3,9 +3,9 @@
 //!
 //! This module owns the register block and implements reset, clock
 //! programming, FIFO threshold setup, and bus-width selection. Higher-
-//! level command issue lives in [`crate::command`]; PIO data transfer
-//! lives in [`crate::data`]; the [`SdioHost`] wiring lives in
-//! [`crate::lib`].
+//! level command issue lives in [`crate::command`]; FIFO and IDMAC data
+//! transfer state machines live in [`crate::dma`]; the [`SdioHost`] wiring
+//! lives in [`crate::lib`].
 //!
 //! [`SdioHost`]: sdmmc_protocol::sdio::SdioHost
 
@@ -20,6 +20,7 @@ use volatile::VolatilePtr;
 
 use crate::{
     UhsBits,
+    command::CommandState,
     regs::{
         BlkSiz, CType, ClkDiv, ClkEna, Cmd, RIntSts, RegisterBlock,
         RegisterBlockVolatileFieldAccess,
@@ -33,7 +34,7 @@ use crate::{
 pub const DEFAULT_FIFO_OFFSET: usize = 0x200;
 
 /// Cached state for a pending data phase.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingData {
     pub direction: sdmmc_protocol::DataDirection,
     pub block_size: u32,
@@ -42,10 +43,8 @@ pub(crate) struct PendingData {
 
 /// DesignWare Mobile Storage Host Controller backend.
 ///
-/// Implements [`sdmmc_protocol::sdio::SdioHost`] using PIO over the
-/// controller's data FIFO. ADMA / IDMAC paths are explicitly disabled
-/// — internal DMAC and DMA-enable bits in the control register are
-/// cleared during [`DwMmc::reset_and_init`].
+/// Implements [`sdmmc_protocol::sdio::SdioHost`] using either the
+/// controller FIFO or the internal DMAC (IDMAC) state machine.
 ///
 /// # Safety
 ///
@@ -59,6 +58,7 @@ pub struct DwMmc {
     pub(crate) fifo_offset: usize,
     pub(crate) ref_clock_hz: u32,
     pub(crate) pending_data: Option<PendingData>,
+    pub(crate) command_state: CommandState,
     pub(crate) data_blocks_remaining: u32,
     pub(crate) data_cmd_index: u8,
     pub(crate) dma: Option<DeviceDma>,
@@ -96,6 +96,7 @@ impl DwMmc {
             fifo_offset,
             ref_clock_hz: 0,
             pending_data: None,
+            command_state: CommandState::Idle,
             data_blocks_remaining: 0,
             data_cmd_index: 0,
             dma: None,
@@ -143,9 +144,10 @@ impl DwMmc {
 
     /// Install a DMA capability used by high-level data-transfer hooks.
     ///
-    /// Once installed, `SdioHost::read_data` and `SdioHost::write_data` try
-    /// the internal IDMAC for 512-byte block I/O and fall back to PIO if it
-    /// cannot be used.
+    /// Once installed, `SdioHost::submit_read_data` and
+    /// `SdioHost::submit_write_data` try the internal IDMAC first for
+    /// 512-byte block I/O and fall back to the FIFO state machine if it cannot
+    /// be used.
     pub fn set_dma(&mut self, dma: DeviceDma) {
         self.dma = Some(dma);
     }
@@ -285,6 +287,8 @@ impl DwMmc {
         self.regs.intmask().write(
             crate::DWMMC_INT_DATA_TRANSFER_OVER
                 | crate::DWMMC_INT_COMMAND_DONE
+                | crate::DWMMC_INT_RXDR
+                | crate::DWMMC_INT_TXDR
                 | crate::DWMMC_INT_ERROR_MASK,
         );
         self.regs.ctrl().update(|r| r.with_int_enable(true));
@@ -384,8 +388,7 @@ impl DwMmc {
         }
     }
 
-    /// Raw pointer at `base + fifo_offset`, used for 64-bit FIFO
-    /// accesses in [`crate::data`].
+    /// Raw pointer at `base + fifo_offset`, used for FIFO data accesses.
     pub(crate) fn fifo_ptr(&self) -> *mut u64 {
         (self.base_addr + self.fifo_offset) as *mut u64
     }

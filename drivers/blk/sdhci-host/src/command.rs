@@ -8,6 +8,7 @@
 //! [`Phase::ResponseWait`] so callers can pinpoint failures.
 
 use sdmmc_protocol::{
+    CommandPoll, CommandResponsePoll, DataDirection,
     cmd::Command,
     error::{Error, ErrorContext, Phase},
     response::{IfCondResponse, OcrResponse, R1Response, RcaResponse, Response, ResponseType},
@@ -15,112 +16,139 @@ use sdmmc_protocol::{
 
 use crate::{host::Sdhci, regs::*};
 
-const POLL_LIMIT: u32 = 1_000_000;
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CommandState {
+    Idle,
+    WaitingInhibit {
+        cmd: Command,
+        data: Option<crate::host::PendingData>,
+        use_dma: bool,
+    },
+    Issued {
+        cmd: Command,
+        data_line: bool,
+    },
+    Complete {
+        response: Response,
+    },
+    Failed {
+        error: Error,
+    },
+}
 
 impl Sdhci {
-    /// Issue a single command. Caller must have populated `pending_data`
-    /// (the `SdioHost::prepare_data_transfer` impl does this) when the
-    /// command carries a data phase.
-    pub fn issue_command(&mut self, cmd: &Command) -> Result<Response, Error> {
+    pub fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
+        match self.poll_command() {
+            Ok(CommandPoll::Pending) => Ok(CommandResponsePoll::Pending),
+            Ok(CommandPoll::Complete) => self
+                .take_command_response()
+                .map(CommandResponsePoll::Complete),
+            Err(_) => self
+                .take_command_response()
+                .map(CommandResponsePoll::Complete),
+        }
+    }
+
+    /// Program the command register and leave completion to
+    /// [`Sdhci::poll_command`].
+    pub fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
+        if !matches!(self.command_state, CommandState::Idle) {
+            return Err(Error::UnsupportedCommand);
+        }
         let data = self.pending_data.take();
-        let has_data = data.is_some();
         info_command_start(self, cmd, data);
 
-        // 1. Wait for the controller's own pipeline to drain.
-        self.wait_inhibit(has_data, cmd.cmd)?;
+        self.command_state = CommandState::WaitingInhibit {
+            cmd: *cmd,
+            data,
+            use_dma: self.use_dma,
+        };
+        if let Err(err) = self.poll_command() {
+            self.command_state = CommandState::Idle;
+            return Err(err);
+        }
+        Ok(())
+    }
 
-        // 2. Clear any leftover interrupt bits.
-        self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
-        self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
-
-        // 3. Configure the data phase (block size + count + transfer mode).
-        if let Some(d) = data {
-            self.configure_data_phase(d.direction, d.block_size, d.block_count, self.use_dma);
-        } else {
-            self.write_u16(REG_TRANSFER_MODE, 0);
+    /// Advance the currently submitted command without blocking.
+    pub fn poll_command(&mut self) -> Result<CommandPoll, Error> {
+        match self.command_state {
+            CommandState::WaitingInhibit { cmd, data, use_dma } => {
+                if !self.command_can_issue(&cmd, data.is_some()) {
+                    return Ok(CommandPoll::Pending);
+                }
+                self.program_command(&cmd, data, use_dma)?;
+                return Ok(CommandPoll::Pending);
+            }
+            CommandState::Issued { .. } => {}
+            CommandState::Complete { .. } => return Ok(CommandPoll::Complete),
+            CommandState::Failed { error, .. } => return Err(error),
+            CommandState::Idle => return Err(Error::InvalidArgument),
         }
 
-        // 4. Push the argument and command-register encoding.
-        self.write_u32(REG_ARGUMENT, cmd.arg);
-        let cmd_reg = encode_command(cmd, has_data)?;
-        self.write_u16(REG_COMMAND, cmd_reg);
-        if has_data {
-            self.active_data_cmd = cmd.cmd;
-        }
-        self.log_status("issued", cmd.cmd);
+        let CommandState::Issued { cmd, data_line } = self.command_state else {
+            unreachable!();
+        };
 
-        // 5. Block until the response arrives (or the controller flags
-        //    a CMD-line error).
-        if let Err(err) = self.wait_for(NORMAL_INT_CMD_COMPLETE, ERROR_INT_CMD_LINE_MASK, cmd.cmd) {
+        let (normal, error) = self.take_command_irq_status();
+        if normal & NORMAL_INT_CMD_COMPLETE != 0 {
+            let response = decode_response(self, cmd.resp_type)?;
+            log::debug!("sdhci: CMD{} response {:?}", cmd.cmd, response);
+            self.command_state = CommandState::Complete { response };
+            Ok(CommandPoll::Complete)
+        } else if normal & NORMAL_INT_ERROR != 0 {
             self.log_status("command wait failed", cmd.cmd);
             self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
             self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
             let _ = self.reset_cmd();
-            if has_data {
+            if data_line {
                 let _ = self.reset_dat();
             }
-            return Err(err);
+            let err = self.translate_error_bits(error & ERROR_INT_CMD_LINE_MASK, cmd.cmd);
+            self.command_state = CommandState::Failed { error: err };
+            Err(err)
+        } else {
+            Ok(CommandPoll::Pending)
         }
-
-        // 6. Acknowledge command completion.
-        self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
-
-        let response = decode_response(self, cmd.resp_type)?;
-        log::debug!("sdhci: CMD{} response {:?}", cmd.cmd, response);
-        Ok(response)
     }
 
-    /// Block until the next data phase finishes (Transfer Complete) or
-    /// the controller raises a DAT-line error.
-    pub fn wait_data_complete(&mut self, cmd_index: u8) -> Result<(), Error> {
-        if let Err(err) = self.wait_for(
-            NORMAL_INT_XFER_COMPLETE,
-            ERROR_INT_DATA_LINE_MASK,
-            cmd_index,
-        ) {
-            self.log_status("data wait failed", cmd_index);
-            self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
-            self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
-            let _ = self.reset_cmd();
-            let _ = self.reset_dat();
-            return Err(err);
+    fn take_command_irq_status(&mut self) -> (u16, u16) {
+        let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
+        let error_hw = if normal_hw & NORMAL_INT_ERROR != 0 {
+            self.read_u16(REG_ERROR_INT_STATUS)
+        } else {
+            0
+        };
+        let consume_normal = normal_hw & (NORMAL_INT_CMD_COMPLETE | NORMAL_INT_ERROR);
+        if consume_normal != 0 {
+            self.write_u16(REG_NORMAL_INT_STATUS, consume_normal);
         }
-        self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_XFER_COMPLETE);
-        self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
-        Ok(())
+        if error_hw != 0 {
+            self.write_u16(REG_ERROR_INT_STATUS, error_hw);
+        }
+
+        let normal = self.irq_pending_normal | normal_hw;
+        let error = self.irq_pending_error | error_hw;
+        self.irq_pending_normal &= !(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_ERROR);
+        if error != 0 {
+            self.irq_pending_error = 0;
+        }
+        (normal, error)
     }
 
-    /// Same as [`wait_data_complete`] but also surfaces ADMA-engine
-    /// errors. Used by the DMA data path.
-    pub fn wait_data_complete_with_adma(
-        &mut self,
-        cmd_index: u8,
-        phase: Phase,
-    ) -> Result<(), Error> {
-        for _ in 0..POLL_LIMIT {
-            let (status, err) = self.take_data_irq_status();
-            if status & NORMAL_INT_XFER_COMPLETE != 0 {
-                return Ok(());
+    pub fn take_command_response(&mut self) -> Result<Response, Error> {
+        match self.command_state {
+            CommandState::Complete { response, .. } => {
+                self.command_state = CommandState::Idle;
+                Ok(response)
             }
-            if status & NORMAL_INT_ERROR != 0 {
-                let ctx = ErrorContext::for_cmd(phase, cmd_index);
-                return Err(if err & ERROR_INT_ADMA != 0 {
-                    // ADMA engine raised an error — treat as misaligned
-                    // descriptor / address overrun.
-                    Error::Misaligned
-                } else if err & (ERROR_INT_DATA_TIMEOUT | ERROR_INT_CMD_TIMEOUT) != 0 {
-                    Error::Timeout(ctx)
-                } else if err & (ERROR_INT_DATA_CRC | ERROR_INT_CMD_CRC) != 0 {
-                    Error::Crc(ctx)
-                } else if matches!(phase, Phase::DataRead) {
-                    Error::ReadError(ctx)
-                } else {
-                    Error::WriteError(ctx)
-                });
+            CommandState::Failed { error, .. } => {
+                self.command_state = CommandState::Idle;
+                Err(error)
             }
-            core::hint::spin_loop();
+            CommandState::Idle | CommandState::Issued { .. } => Err(Error::InvalidArgument),
+            CommandState::WaitingInhibit { .. } => Err(Error::InvalidArgument),
         }
-        Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)))
     }
 
     pub(crate) fn take_data_irq_status(&mut self) -> (u16, u16) {
@@ -130,8 +158,9 @@ impl Sdhci {
         } else {
             0
         };
-        if normal_hw != 0 {
-            self.write_u16(REG_NORMAL_INT_STATUS, normal_hw);
+        let consume_normal = normal_hw & (NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR);
+        if consume_normal != 0 {
+            self.write_u16(REG_NORMAL_INT_STATUS, consume_normal);
         }
         if error_hw != 0 {
             self.write_u16(REG_ERROR_INT_STATUS, error_hw);
@@ -146,48 +175,7 @@ impl Sdhci {
         (normal, error)
     }
 
-    fn wait_inhibit(&self, has_data: bool, cmd_index: u8) -> Result<(), Error> {
-        let mask = if has_data {
-            PRESENT_CMD_INHIBIT | PRESENT_DAT_INHIBIT
-        } else {
-            PRESENT_CMD_INHIBIT
-        };
-        for _ in 0..POLL_LIMIT {
-            if self.read_u32(REG_PRESENT_STATE) & mask == 0 {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        self.log_status("inhibit wait timed out", cmd_index);
-        Err(Error::Timeout(ErrorContext::for_cmd(
-            Phase::CommandSend,
-            cmd_index,
-        )))
-    }
-
-    fn wait_for(&self, success_mask: u16, error_mask: u16, cmd_index: u8) -> Result<(), Error> {
-        for _ in 0..POLL_LIMIT {
-            let status = self.read_u16(REG_NORMAL_INT_STATUS);
-            if status & success_mask != 0 {
-                return Ok(());
-            }
-            if status & NORMAL_INT_ERROR != 0 {
-                self.log_status("interrupt error", cmd_index);
-                return Err(self.translate_error(error_mask, cmd_index));
-            }
-            core::hint::spin_loop();
-        }
-        self.log_status("interrupt wait timed out", cmd_index);
-        Err(Error::Timeout(ErrorContext::for_cmd(
-            Phase::ResponseWait,
-            cmd_index,
-        )))
-    }
-
-    fn translate_error(&self, mask: u16, cmd_index: u8) -> Error {
-        let err = self.read_u16(REG_ERROR_INT_STATUS) & mask;
-        // Acknowledge so the next command starts from a clean slate.
-        self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+    fn translate_error_bits(&self, err: u16, cmd_index: u8) -> Error {
         let ctx = ErrorContext::for_cmd(Phase::ResponseWait, cmd_index);
         if err & (ERROR_INT_CMD_TIMEOUT | ERROR_INT_DATA_TIMEOUT) != 0 {
             Error::Timeout(ctx)
@@ -245,7 +233,7 @@ impl Sdhci {
 
     fn configure_data_phase(
         &mut self,
-        direction: sdmmc_protocol::DataDirection,
+        direction: DataDirection,
         block_size: u32,
         block_count: u32,
         use_dma: bool,
@@ -259,20 +247,71 @@ impl Sdhci {
         self.write_u8(REG_TIMEOUT_CONTROL, 0x0E);
         self.write_u16(REG_TRANSFER_MODE, mode);
     }
+
+    fn command_can_issue(&self, cmd: &Command, has_data: bool) -> bool {
+        self.read_u32(REG_PRESENT_STATE) & command_inhibit_mask(cmd, has_data) == 0
+    }
+
+    fn program_command(
+        &mut self,
+        cmd: &Command,
+        data: Option<crate::host::PendingData>,
+        use_dma: bool,
+    ) -> Result<(), Error> {
+        let has_data = data.is_some();
+        let data_line = command_uses_data_line(cmd, has_data);
+
+        self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
+        self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+
+        if let Some(d) = data {
+            self.configure_data_phase(d.direction, d.block_size, d.block_count, use_dma);
+        } else {
+            self.write_u16(REG_TRANSFER_MODE, 0);
+        }
+
+        self.write_u32(REG_ARGUMENT, cmd.arg);
+        let cmd_reg = encode_command(cmd, has_data)?;
+        self.write_u16(REG_COMMAND, cmd_reg);
+        if has_data {
+            self.active_data_cmd = cmd.cmd;
+        }
+        self.log_status("issued", cmd.cmd);
+        self.command_state = CommandState::Issued {
+            cmd: *cmd,
+            data_line,
+        };
+        Ok(())
+    }
 }
 
-fn transfer_mode(direction: sdmmc_protocol::DataDirection, block_count: u32, use_dma: bool) -> u16 {
+fn transfer_mode(direction: DataDirection, block_count: u32, use_dma: bool) -> u16 {
     let mut mode = XFER_MODE_BLOCK_COUNT_ENABLE;
     if block_count > 1 {
         mode |= XFER_MODE_MULTI_BLOCK;
     }
-    if matches!(direction, sdmmc_protocol::DataDirection::Read) {
+    if matches!(direction, DataDirection::Read) {
         mode |= XFER_MODE_READ;
     }
     if use_dma {
         mode |= XFER_MODE_DMA_ENABLE;
     }
     mode
+}
+
+fn command_inhibit_mask(cmd: &Command, has_data: bool) -> u32 {
+    let mut mask = PRESENT_CMD_INHIBIT;
+    if command_uses_data_line(cmd, has_data) {
+        mask |= PRESENT_DAT_INHIBIT;
+    }
+    if cmd.cmd == sdmmc_protocol::cmd::CMD12.cmd {
+        mask &= !PRESENT_DAT_INHIBIT;
+    }
+    mask
+}
+
+fn command_uses_data_line(cmd: &Command, has_data: bool) -> bool {
+    has_data || matches!(cmd.resp_type, ResponseType::R1b)
 }
 
 fn info_command_start(host: &Sdhci, cmd: &Command, data: Option<crate::host::PendingData>) {

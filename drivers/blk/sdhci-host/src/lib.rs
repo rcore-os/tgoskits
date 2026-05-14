@@ -28,21 +28,33 @@
 //! // card.init()?;
 //! ```
 //!
-//! For ADMA2 request I/O, pass a `dma_api::DeviceDma` capability into
-//! [`Sdhci::dma_read_blocks_into`]. The driver core maps the request
-//! buffer, allocates the ADMA2 descriptor table, and performs cache sync:
+//! For block request I/O, use [`Sdhci::submit_read_blocks`] or
+//! [`Sdhci::submit_write_blocks`] and complete the returned request with
+//! [`Sdhci::poll_block_request`]. `BlockTransferMode::Dma` maps the request
+//! buffer and builds the ADMA2 descriptor table; `BlockTransferMode::Fifo`
+//! uses the controller FIFO with the same submit/poll contract:
 //!
 //! ```ignore
 //! use core::{num::NonZeroUsize, ptr::NonNull};
 //! use dma_api::DeviceDma;
-//! use sdhci_host::Sdhci;
+//! use sdhci_host::{BlockRequestSlot, BlockTransferMode, RequestId, Sdhci};
 //!
 //! # use platform::DmaImpl;
 //! let dma = DeviceDma::new(u32::MAX as u64, &DmaImpl);
 //! let mut host = unsafe { Sdhci::new_from_addr(0xFE31_0000) };
 //! let mut block = [0u8; 512];
 //! let ptr = NonNull::new(block.as_mut_ptr()).unwrap();
-//! host.dma_read_blocks_into(0, ptr, NonZeroUsize::new(block.len()).unwrap(), &dma)?;
+//! let mut slot = BlockRequestSlot::default();
+//! let mut request = Some(host.submit_read_blocks(
+//!     0,
+//!     ptr,
+//!     NonZeroUsize::new(block.len()).unwrap(),
+//!     Some(&dma),
+//!     BlockTransferMode::Dma,
+//!     &mut slot,
+//! )?);
+//! let id = RequestId::new(0);
+//! while host.poll_block_request(&mut request, id, &mut slot).is_err() {}
 //! # Ok::<(), sdmmc_protocol::Error>(())
 //! ```
 //!
@@ -54,22 +66,26 @@
 #![no_std]
 #![allow(clippy::missing_safety_doc)]
 
+use core::{marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
+
 mod command;
-mod data;
 mod dma;
 mod host;
 mod regs;
 
-pub use dma::{ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, AsyncDmaRequest, AsyncRequestSlot, RequestId};
+pub use dma::{ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, BlockRequest, BlockRequestSlot, RequestId};
 pub use host::Sdhci;
+pub use sdmmc_protocol::block::{
+    BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
+};
 use sdmmc_protocol::{
+    DataCommandPoll,
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
-    response::Response,
     sdio::{BusWidth, ClockSpeed, SdioHost, SignalVoltage},
 };
 
-use crate::{host::PendingData, regs::*};
+use crate::regs::*;
 
 /// Stable controller event extracted from SDHCI interrupt-status registers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,79 +103,89 @@ pub enum Event {
     Other { normal: u16, error: u16 },
 }
 
+pub struct DataRequest<'a> {
+    id: RequestId,
+    request: Option<BlockRequest>,
+    slot: BlockRequestSlot,
+    _buffer: PhantomData<&'a [u8]>,
+}
+
 impl SdioHost for Sdhci {
+    #[cfg(feature = "irq")]
     type Event = Event;
+    type DataRequest<'a> = DataRequest<'a>;
 
-    fn send_command(&mut self, cmd: &Command) -> Result<Response, Error> {
-        self.issue_command(cmd)
+    fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
+        Sdhci::submit_command(self, cmd)
     }
 
-    fn read_data(
-        &mut self,
-        cmd: &Command,
-        buf: &mut [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Response, Error> {
-        match self.try_blocking_adma2_read_transfer(cmd, buf, block_size, block_count) {
-            Ok(response) => Ok(response),
-            Err(err) if err.can_fallback_to_pio() => {
-                let err = err.into_error();
-                log::debug!("sdhci: ADMA2 read transfer unavailable/failed: {:?}", err);
-                <Self as SdioHost>::prepare_data_transfer(
-                    self,
-                    DataDirection::Read,
-                    block_size,
-                    block_count,
-                )?;
-                <Self as SdioHost>::set_block_count(self, block_count)?;
-                let response = self.send_command(cmd)?;
-                self.pio_read(buf, block_size, self.active_data_cmd)?;
-                Ok(response)
-            }
-            Err(err) => {
-                let err = err.into_error();
-                log::warn!(
-                    "sdhci: ADMA2 read transfer failed after submit; not falling back to PIO: {:?}",
-                    err
-                );
-                Err(err)
-            }
-        }
+    fn poll_command_response(&mut self) -> Result<sdmmc_protocol::CommandResponsePoll, Error> {
+        Sdhci::poll_command_response(self)
     }
 
-    fn write_data(
+    fn submit_read_data<'a>(
         &mut self,
         cmd: &Command,
-        buf: &[u8],
+        buf: &'a mut [u8],
         block_size: u32,
         block_count: u32,
-    ) -> Result<Response, Error> {
-        match self.try_blocking_adma2_write_transfer(cmd, buf, block_size, block_count) {
-            Ok(response) => Ok(response),
-            Err(err) if err.can_fallback_to_pio() => {
-                let err = err.into_error();
-                log::debug!("sdhci: ADMA2 write transfer unavailable/failed: {:?}", err);
-                <Self as SdioHost>::prepare_data_transfer(
-                    self,
-                    DataDirection::Write,
-                    block_size,
-                    block_count,
-                )?;
-                <Self as SdioHost>::set_block_count(self, block_count)?;
-                let response = self.send_command(cmd)?;
-                self.pio_write(buf, block_size, self.active_data_cmd)?;
-                Ok(response)
-            }
-            Err(err) => {
-                let err = err.into_error();
-                log::warn!(
-                    "sdhci: ADMA2 write transfer failed after submit; not falling back to PIO: \
-                     {:?}",
-                    err
-                );
-                Err(err)
-            }
+    ) -> Result<Self::DataRequest<'a>, Error> {
+        let buffer = NonNull::new(buf.as_mut_ptr()).ok_or(Error::InvalidArgument)?;
+        let mut slot = BlockRequestSlot::default();
+        let request = submit_read_with_dma_fifo_fallback(
+            self,
+            cmd,
+            buffer,
+            buf.len(),
+            block_size,
+            block_count,
+            &mut slot,
+        )?;
+        let id = request.id();
+        Ok(DataRequest {
+            id,
+            request: Some(request),
+            slot,
+            _buffer: PhantomData,
+        })
+    }
+
+    fn submit_write_data<'a>(
+        &mut self,
+        cmd: &Command,
+        buf: &'a [u8],
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<Self::DataRequest<'a>, Error> {
+        let buffer = NonNull::new(buf.as_ptr() as *mut u8).ok_or(Error::InvalidArgument)?;
+        let mut slot = BlockRequestSlot::default();
+        let request = submit_write_with_dma_fifo_fallback(
+            self,
+            cmd,
+            buffer,
+            buf.len(),
+            block_size,
+            block_count,
+            &mut slot,
+        )?;
+        let id = request.id();
+        Ok(DataRequest {
+            id,
+            request: Some(request),
+            slot,
+            _buffer: PhantomData,
+        })
+    }
+
+    fn poll_data_request<'a>(
+        &mut self,
+        request: &mut Self::DataRequest<'a>,
+    ) -> Result<DataCommandPoll, Error> {
+        match self.poll_block_request_response(&mut request.request, request.id, &mut request.slot)
+        {
+            Ok(response) => Ok(DataCommandPoll::Complete(response)),
+            Err(Error::Timeout(_)) => Ok(DataCommandPoll::Pending),
+            Err(err) => Err(err),
         }
     }
 
@@ -216,33 +242,6 @@ impl SdioHost for Sdhci {
             return Err(Error::BadResponse(ErrorContext::new(Phase::Init)));
         }
         self.enable_clock(base, target_hz)
-    }
-
-    fn set_block_count(&mut self, _count: u32) -> Result<(), Error> {
-        // We push BLOCK_COUNT in `configure_data_phase` once we know both
-        // the count and the direction, so this hint is intentionally a
-        // no-op.
-        Ok(())
-    }
-
-    fn prepare_data_transfer(
-        &mut self,
-        direction: DataDirection,
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<(), Error> {
-        // Plain PIO: never set the DMA bit in the transfer-mode register.
-        self.use_dma = false;
-        if direction.is_none() {
-            self.pending_data = None;
-        } else {
-            self.pending_data = Some(PendingData {
-                direction,
-                block_size,
-                block_count,
-            });
-        }
-        Ok(())
     }
 
     fn switch_voltage(&mut self, voltage: SignalVoltage) -> Result<(), Error> {
@@ -356,19 +355,118 @@ impl SdioHost for Sdhci {
         )))
     }
 
+    #[cfg(feature = "irq")]
     fn enable_data_irq(&mut self) -> Result<(), Error> {
         Sdhci::enable_data_irq(self);
         Ok(())
     }
 
+    #[cfg(feature = "irq")]
     fn disable_data_irq(&mut self) -> Result<(), Error> {
         Sdhci::disable_data_irq(self);
         Ok(())
     }
 
+    #[cfg(feature = "irq")]
     fn handle_irq(&mut self) -> Self::Event {
         Sdhci::handle_irq(self)
     }
+}
+
+fn submit_read_with_dma_fifo_fallback(
+    host: &mut Sdhci,
+    cmd: &Command,
+    buffer: NonNull<u8>,
+    len: usize,
+    block_size: u32,
+    block_count: u32,
+    slot: &mut BlockRequestSlot,
+) -> Result<BlockRequest, Error> {
+    if should_try_dma(cmd, block_size, block_count, len, DataDirection::Read)
+        && let Some(dma) = host.dma.clone()
+    {
+        match host.submit_read_blocks(
+            cmd.arg,
+            buffer,
+            NonZeroUsize::new(len).ok_or(Error::InvalidArgument)?,
+            Some(&dma),
+            BlockTransferMode::Dma,
+            slot,
+        ) {
+            Ok(request) => return Ok(request),
+            Err(err) if can_fallback_to_fifo(err) => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    host.submit_fifo_data_request(
+        cmd,
+        buffer,
+        len,
+        block_size,
+        block_count,
+        DataDirection::Read,
+        slot,
+    )
+}
+
+fn submit_write_with_dma_fifo_fallback(
+    host: &mut Sdhci,
+    cmd: &Command,
+    buffer: NonNull<u8>,
+    len: usize,
+    block_size: u32,
+    block_count: u32,
+    slot: &mut BlockRequestSlot,
+) -> Result<BlockRequest, Error> {
+    if should_try_dma(cmd, block_size, block_count, len, DataDirection::Write)
+        && let Some(dma) = host.dma.clone()
+    {
+        match host.submit_write_blocks(
+            cmd.arg,
+            buffer,
+            NonZeroUsize::new(len).ok_or(Error::InvalidArgument)?,
+            Some(&dma),
+            BlockTransferMode::Dma,
+            slot,
+        ) {
+            Ok(request) => return Ok(request),
+            Err(err) if can_fallback_to_fifo(err) => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    host.submit_fifo_data_request(
+        cmd,
+        buffer,
+        len,
+        block_size,
+        block_count,
+        DataDirection::Write,
+        slot,
+    )
+}
+
+fn should_try_dma(
+    cmd: &Command,
+    block_size: u32,
+    block_count: u32,
+    len: usize,
+    direction: DataDirection,
+) -> bool {
+    block_size == 512
+        && len == block_count as usize * 512
+        && matches!(
+            (direction, cmd.cmd),
+            (DataDirection::Read, 17 | 18) | (DataDirection::Write, 24 | 25)
+        )
+}
+
+fn can_fallback_to_fifo(err: Error) -> bool {
+    matches!(
+        err,
+        Error::UnsupportedCommand | Error::InvalidArgument | Error::Misaligned
+    )
 }
 
 pub(crate) fn event_from_status(normal: u16, error: u16) -> Event {

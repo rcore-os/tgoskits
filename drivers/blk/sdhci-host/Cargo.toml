@@ -13,3 +13,8 @@ sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio
 embedded-hal = "1"
 log = "0.4"
 dma-api.workspace = true
+
+[features]
+default = ["sync"]
+sync = ["sdmmc-protocol/sync"]
+irq = ["sdmmc-protocol/irq"]

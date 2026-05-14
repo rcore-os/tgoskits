@@ -385,8 +385,8 @@ rdrive = { version = "0.20", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.4.0", path = "components/rsext4" }
 scope-local = { version = "0.3.7", path = "components/scope-local" }
-dwmmc-host = { version = "0.1.0", path = "drivers/blk/dwmmc-host" }
-sdhci-host = { version = "0.1.0", path = "drivers/blk/sdhci-host" }
+dwmmc-host = { version = "0.1.0", path = "drivers/blk/dwmmc-host", default-features = false }
+sdhci-host = { version = "0.1.0", path = "drivers/blk/sdhci-host", default-features = false }
 sdmmc-protocol = { version = "0.1.0", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
 smoltcp-fuzz = { version = "0.2.2", path = "components/starry-smoltcp/fuzz" }

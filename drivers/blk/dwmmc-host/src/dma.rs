@@ -3,6 +3,10 @@ use core::{num::NonZeroUsize, ptr::NonNull};
 use dma_api::{DArray, DeviceDma, DmaDirection, SArrayPtr};
 use log::warn;
 use sdmmc_protocol::{
+    block::{
+        BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
+        CommandPoll,
+    },
     cmd::{CMD12, Command, DataDirection, cmd17, cmd18, cmd24, cmd25},
     error::{Error, ErrorContext, Phase},
     response::Response,
@@ -28,91 +32,90 @@ pub const IDMAC_DESC_ALIGN: usize = 16;
 pub const IDMAC_DESC_SIZE: usize = core::mem::size_of::<IdmacDesc>();
 const BLOCK_SIZE: usize = 512;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum IdmacAttemptError {
-    Fallback(Error),
-    Fatal(Error),
-}
-
-impl IdmacAttemptError {
-    pub(crate) const fn fallback(err: Error) -> Self {
-        Self::Fallback(err)
-    }
-
-    const fn fatal(err: Error) -> Self {
-        Self::Fatal(err)
-    }
-
-    pub(crate) const fn can_fallback_to_pio(self) -> bool {
-        matches!(self, Self::Fallback(_))
-    }
-
-    pub(crate) const fn into_error(self) -> Error {
-        match self {
-            Self::Fallback(err) | Self::Fatal(err) => err,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RequestId(usize);
-
-impl RequestId {
-    pub const fn new(id: usize) -> Self {
-        Self(id)
-    }
-}
-
-impl From<RequestId> for usize {
-    fn from(value: RequestId) -> Self {
-        value.0
-    }
-}
+pub type RequestId = BlockRequestId;
 
 #[derive(Default)]
-pub struct AsyncRequestSlot {
+pub struct BlockRequestSlot {
     next: usize,
-    active: Option<RequestId>,
+    state: BlockTransferState,
 }
 
-impl AsyncRequestSlot {
-    pub fn start(&mut self) -> Result<RequestId, Error> {
-        if self.active.is_some() {
+impl BlockRequestSlot {
+    pub fn start(
+        &mut self,
+        mode: BlockTransferMode,
+        direction: BlockTransferDirection,
+    ) -> Result<RequestId, Error> {
+        if !matches!(self.state, BlockTransferState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
         let id = RequestId::new(self.next);
         self.next = self.next.wrapping_add(1);
-        self.active = Some(id);
+        self.state = BlockTransferState::Submitted {
+            id,
+            mode,
+            direction,
+        };
         Ok(id)
     }
 
     pub fn complete(&mut self, id: RequestId) -> Result<(), Error> {
-        if self.active != Some(id) {
+        if self.state.id() != Some(id) {
             return Err(Error::InvalidArgument);
         }
-        self.active = None;
+        self.state = BlockTransferState::Idle;
         Ok(())
+    }
+
+    pub fn state(&self) -> BlockTransferState {
+        self.state
     }
 }
 
-pub struct AsyncDmaRequest {
-    inner: AsyncDmaRequestKind,
+pub struct BlockRequest {
+    inner: BlockRequestKind,
 }
 
-// `AsyncDmaRequest` owns the DMA mappings and descriptor buffer for one
+// `BlockRequest` owns the DMA mappings and descriptor buffer for one
 // submitted transfer. Moving that ownership to another queue thread does not
 // grant shared access to the mapped memory; completion still requires a
 // mutable `DwMmc` reference and consumes the request.
-unsafe impl Send for AsyncDmaRequest {}
+unsafe impl Send for BlockRequest {}
 
-enum AsyncDmaRequestKind {
+enum BlockRequestKind {
+    FifoRead {
+        id: RequestId,
+        buffer: NonNull<u8>,
+        len: usize,
+        block_size: usize,
+        offset: usize,
+        cmd_index: u8,
+        phase: Phase,
+        stage: BlockRequestStage,
+        stop_after_complete: bool,
+        response: Option<Response>,
+    },
+    FifoWrite {
+        id: RequestId,
+        buffer: NonNull<u8>,
+        len: usize,
+        block_size: usize,
+        offset: usize,
+        cmd_index: u8,
+        phase: Phase,
+        stage: BlockRequestStage,
+        stop_after_complete: bool,
+        response: Option<Response>,
+    },
     Read {
         id: RequestId,
         map: SArrayPtr<u8>,
         _desc: DArray<IdmacDesc>,
         cmd_index: u8,
         phase: Phase,
+        stage: BlockRequestStage,
         stop_after_complete: bool,
+        response: Option<Response>,
     },
     Write {
         id: RequestId,
@@ -120,14 +123,60 @@ enum AsyncDmaRequestKind {
         _desc: DArray<IdmacDesc>,
         cmd_index: u8,
         phase: Phase,
+        stage: BlockRequestStage,
         stop_after_complete: bool,
+        response: Option<Response>,
     },
 }
 
-impl AsyncDmaRequest {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockRequestStage {
+    Command,
+    Data,
+    Stop,
+}
+
+impl BlockRequest {
     pub fn id(&self) -> RequestId {
         match &self.inner {
-            AsyncDmaRequestKind::Read { id, .. } | AsyncDmaRequestKind::Write { id, .. } => *id,
+            BlockRequestKind::FifoRead { id, .. }
+            | BlockRequestKind::FifoWrite { id, .. }
+            | BlockRequestKind::Read { id, .. }
+            | BlockRequestKind::Write { id, .. } => *id,
+        }
+    }
+
+    pub fn state(&self) -> BlockTransferState {
+        match &self.inner {
+            BlockRequestKind::FifoRead { id, .. } => BlockTransferState::Submitted {
+                id: *id,
+                mode: BlockTransferMode::Fifo,
+                direction: BlockTransferDirection::Read,
+            },
+            BlockRequestKind::FifoWrite { id, .. } => BlockTransferState::Submitted {
+                id: *id,
+                mode: BlockTransferMode::Fifo,
+                direction: BlockTransferDirection::Write,
+            },
+            BlockRequestKind::Read { id, .. } => BlockTransferState::Submitted {
+                id: *id,
+                mode: BlockTransferMode::Dma,
+                direction: BlockTransferDirection::Read,
+            },
+            BlockRequestKind::Write { id, .. } => BlockTransferState::Submitted {
+                id: *id,
+                mode: BlockTransferMode::Dma,
+                direction: BlockTransferDirection::Write,
+            },
+        }
+    }
+
+    fn response(&self) -> Option<Response> {
+        match &self.inner {
+            BlockRequestKind::FifoRead { response, .. }
+            | BlockRequestKind::FifoWrite { response, .. }
+            | BlockRequestKind::Read { response, .. }
+            | BlockRequestKind::Write { response, .. } => *response,
         }
     }
 }
@@ -139,14 +188,6 @@ pub struct IdmacDesc {
     des1: u32,
     des2: u32,
     des3: u32,
-}
-
-pub struct IdmacRead<'a, F> {
-    pub buffer_dma: u64,
-    pub desc_dma: u64,
-    pub desc_count: usize,
-    pub desc_virt: *mut u8,
-    pub flush_desc: &'a mut F,
 }
 
 impl IdmacDesc {
@@ -168,121 +209,29 @@ impl IdmacDesc {
 }
 
 impl DwMmc {
-    pub(crate) fn try_blocking_idmac_read_transfer(
-        &mut self,
-        cmd: &Command,
-        buf: &mut [u8],
-        block_size: u32,
-        expected_block_count: u32,
-    ) -> Result<Response, IdmacAttemptError> {
-        if block_size as usize != BLOCK_SIZE || buf.is_empty() {
-            return Err(IdmacAttemptError::fallback(Error::UnsupportedCommand));
-        }
-        let dma = self
-            .dma
-            .clone()
-            .ok_or_else(|| IdmacAttemptError::fallback(Error::UnsupportedCommand))?;
-        let size = NonZeroUsize::new(buf.len())
-            .ok_or_else(|| IdmacAttemptError::fallback(Error::InvalidArgument))?;
-        let block_count = dma_read_block_count(size).map_err(IdmacAttemptError::fallback)?;
-        if block_count != expected_block_count {
-            return Err(IdmacAttemptError::fallback(Error::InvalidArgument));
-        }
-        let map = dma
-            .map_single_array(buf, BLOCK_SIZE, DmaDirection::FromDevice)
-            .map_err(|err| IdmacAttemptError::fallback(map_dma_error(err, Phase::DataRead)))?;
-        let mut desc = dma
-            .array_zero_with_align::<IdmacDesc>(
-                block_count as usize,
-                IDMAC_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
-            .map_err(|err| IdmacAttemptError::fallback(map_dma_error(err, Phase::DataRead)))?;
-
-        let response = self
-            .idmac_transfer_mapped(cmd, block_count, map.dma_addr().as_u64(), &mut desc)
-            .map_err(IdmacAttemptError::fatal)?;
-        map.prepare_read_all();
-        Ok(response)
-    }
-
-    pub(crate) fn try_blocking_idmac_write_transfer(
-        &mut self,
-        cmd: &Command,
-        buf: &[u8],
-        block_size: u32,
-        expected_block_count: u32,
-    ) -> Result<Response, IdmacAttemptError> {
-        if block_size as usize != BLOCK_SIZE || buf.is_empty() {
-            return Err(IdmacAttemptError::fallback(Error::UnsupportedCommand));
-        }
-        let dma = self
-            .dma
-            .clone()
-            .ok_or_else(|| IdmacAttemptError::fallback(Error::UnsupportedCommand))?;
-        let size = NonZeroUsize::new(buf.len())
-            .ok_or_else(|| IdmacAttemptError::fallback(Error::InvalidArgument))?;
-        let block_count = dma_write_block_count(size).map_err(IdmacAttemptError::fallback)?;
-        if block_count != expected_block_count {
-            return Err(IdmacAttemptError::fallback(Error::InvalidArgument));
-        }
-        let map = dma
-            .map_single_array(buf, BLOCK_SIZE, DmaDirection::ToDevice)
-            .map_err(|err| IdmacAttemptError::fallback(map_dma_error(err, Phase::DataWrite)))?;
-        map.confirm_write_all();
-
-        let mut desc = dma
-            .array_zero_with_align::<IdmacDesc>(
-                block_count as usize,
-                IDMAC_DESC_ALIGN,
-                DmaDirection::ToDevice,
-            )
-            .map_err(|err| IdmacAttemptError::fallback(map_dma_error(err, Phase::DataWrite)))?;
-
-        self.idmac_transfer_mapped(cmd, block_count, map.dma_addr().as_u64(), &mut desc)
-            .map_err(IdmacAttemptError::fatal)
-    }
-
-    pub fn dma_read_blocks_into(
-        &mut self,
-        start_block: u32,
-        buffer: NonNull<u8>,
-        size: NonZeroUsize,
-        dma: &DeviceDma,
-    ) -> Result<(), Error> {
-        let mut slot = AsyncRequestSlot::default();
-        let request = self.submit_dma_read_blocks(start_block, buffer, size, dma, &mut slot)?;
-        self.wait_async_dma_request(request, &mut slot)?;
-        Ok(())
-    }
-
-    pub fn dma_write_blocks_from(
-        &mut self,
-        start_block: u32,
-        buffer: NonNull<u8>,
-        size: NonZeroUsize,
-        dma: &DeviceDma,
-    ) -> Result<(), Error> {
-        let mut slot = AsyncRequestSlot::default();
-        let request = self.submit_dma_write_blocks(start_block, buffer, size, dma, &mut slot)?;
-        self.wait_async_dma_request(request, &mut slot)
-    }
-
-    /// Submit one IDMAC read request for an external block queue.
+    /// Submit one block read using the requested transfer engine.
     ///
-    /// The request remains active after this method returns. Callers complete
-    /// it by calling [`DwMmc::poll_async_dma_request`], typically after OS glue
-    /// observes the controller IRQ and wakes the queue/future.
-    pub fn submit_dma_read_blocks(
+    /// Both `BlockTransferMode::Dma` and `BlockTransferMode::Fifo` use the
+    /// same submit/poll queue contract. Runtimes that cannot use DMA can
+    /// submit FIFO requests without changing the external block queue shape.
+    pub fn submit_read_blocks(
         &mut self,
         start_block: u32,
         buffer: NonNull<u8>,
         size: NonZeroUsize,
-        dma: &DeviceDma,
-        slot: &mut AsyncRequestSlot,
-    ) -> Result<AsyncDmaRequest, Error> {
-        let id = slot.start()?;
-        match self.build_dma_read_request(start_block, buffer, size, dma, id) {
+        dma: Option<&DeviceDma>,
+        mode: BlockTransferMode,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, Error> {
+        let id = slot.start(mode, BlockTransferDirection::Read)?;
+        let result = match mode {
+            BlockTransferMode::Dma => {
+                let dma = dma.ok_or(Error::UnsupportedCommand)?;
+                self.build_dma_read_request(start_block, buffer, size, dma, id)
+            }
+            BlockTransferMode::Fifo => self.build_fifo_read_request(start_block, buffer, size, id),
+        };
+        match result {
             Ok(request) => Ok(request),
             Err(err) => {
                 let _ = slot.complete(id);
@@ -291,20 +240,27 @@ impl DwMmc {
         }
     }
 
-    /// Submit one IDMAC write request for an external block queue.
+    /// Submit one block write using the requested transfer engine.
     ///
-    /// This is the async counterpart to the synchronous
-    /// [`SdioHost::write_data`] protocol method.
-    pub fn submit_dma_write_blocks(
+    /// See [`DwMmc::submit_read_blocks`] for the completion contract.
+    pub fn submit_write_blocks(
         &mut self,
         start_block: u32,
         buffer: NonNull<u8>,
         size: NonZeroUsize,
-        dma: &DeviceDma,
-        slot: &mut AsyncRequestSlot,
-    ) -> Result<AsyncDmaRequest, Error> {
-        let id = slot.start()?;
-        match self.build_dma_write_request(start_block, buffer, size, dma, id) {
+        dma: Option<&DeviceDma>,
+        mode: BlockTransferMode,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, Error> {
+        let id = slot.start(mode, BlockTransferDirection::Write)?;
+        let result = match mode {
+            BlockTransferMode::Dma => {
+                let dma = dma.ok_or(Error::UnsupportedCommand)?;
+                self.build_dma_write_request(start_block, buffer, size, dma, id)
+            }
+            BlockTransferMode::Fifo => self.build_fifo_write_request(start_block, buffer, size, id),
+        };
+        match result {
             Ok(request) => Ok(request),
             Err(err) => {
                 let _ = slot.complete(id);
@@ -313,16 +269,26 @@ impl DwMmc {
         }
     }
 
-    /// Poll a previously submitted IDMAC block request.
+    /// Poll a previously submitted block request.
     ///
     /// `Ok(())` means complete. `Error::Timeout` means the request is still in
     /// flight and platform glue maps it to `BlkError::Retry`.
-    pub fn poll_async_dma_request(
+    pub fn poll_block_request(
         &mut self,
-        request: &mut Option<AsyncDmaRequest>,
+        request: &mut Option<BlockRequest>,
         id: RequestId,
-        slot: &mut AsyncRequestSlot,
+        slot: &mut BlockRequestSlot,
     ) -> Result<(), Error> {
+        self.poll_block_request_response(request, id, slot)
+            .map(|_| ())
+    }
+
+    pub fn poll_block_request_response(
+        &mut self,
+        request: &mut Option<BlockRequest>,
+        id: RequestId,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<Response, Error> {
         let Some(active) = request.as_ref() else {
             return Err(Error::InvalidArgument);
         };
@@ -330,214 +296,78 @@ impl DwMmc {
             return Err(Error::InvalidArgument);
         }
 
-        let (cmd_index, phase) = match &active.inner {
-            AsyncDmaRequestKind::Read {
-                cmd_index, phase, ..
+        if matches!(
+            active.inner,
+            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. }
+        ) {
+            return self.poll_fifo_request(request, id, slot);
+        }
+
+        let (cmd_index, phase, stage) = match &active.inner {
+            BlockRequestKind::Read {
+                cmd_index,
+                phase,
+                stage,
+                ..
             }
-            | AsyncDmaRequestKind::Write {
-                cmd_index, phase, ..
-            } => (*cmd_index, *phase),
+            | BlockRequestKind::Write {
+                cmd_index,
+                phase,
+                stage,
+                ..
+            } => (*cmd_index, *phase, *stage),
+            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {
+                unreachable!()
+            }
         };
 
-        match self.poll_dma_complete(cmd_index, phase) {
-            Ok(PollResult::Pending) => Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index))),
-            Ok(PollResult::Complete) => {
-                let active = request.take().ok_or(Error::InvalidArgument)?;
-                self.finish_async_dma_request(active)?;
-                slot.complete(id)
+        if stage == BlockRequestStage::Command {
+            match self.poll_command() {
+                Ok(CommandPoll::Pending) => {
+                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
+                }
+                Ok(CommandPoll::Complete) => {
+                    let response = self.take_command_response()?;
+                    if let Some(active) = request.as_mut() {
+                        match &mut active.inner {
+                            BlockRequestKind::Read {
+                                stage,
+                                response: stored_response,
+                                ..
+                            }
+                            | BlockRequestKind::Write {
+                                stage,
+                                response: stored_response,
+                                ..
+                            } => {
+                                *stage = BlockRequestStage::Data;
+                                *stored_response = Some(response);
+                            }
+                            BlockRequestKind::FifoRead { .. }
+                            | BlockRequestKind::FifoWrite { .. } => unreachable!(),
+                        }
+                    }
+                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
+                }
+                Err(err) => {
+                    self.abort_block_request(request, id, slot, phase);
+                    return Err(err);
+                }
             }
+        }
+
+        if stage == BlockRequestStage::Stop {
+            return self.poll_block_stop(request, id, slot, cmd_index, phase);
+        }
+
+        match self.poll_dma_complete(cmd_index, phase) {
+            Ok(BlockPoll::Pending) => Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index))),
+            Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot, phase),
             Err(err) => {
-                self.abort_async_dma_request(request, id, slot, phase);
+                self.abort_block_request(request, id, slot, phase);
                 Err(err)
             }
         }
-    }
-
-    pub fn dma_read_blocks<F>(
-        &mut self,
-        start_block: u32,
-        block_count: u32,
-        request: IdmacRead<'_, F>,
-    ) -> Result<(), Error>
-    where
-        F: FnMut(*mut u8, usize),
-    {
-        if block_count == 0 {
-            return Err(Error::InvalidArgument);
-        }
-        let byte_count = block_count.checked_mul(512).ok_or(Error::InvalidArgument)?;
-        let transfer_end = request
-            .buffer_dma
-            .checked_add(byte_count as u64)
-            .ok_or(Error::InvalidArgument)?;
-        let desc_bytes = (block_count as usize)
-            .checked_mul(IDMAC_DESC_SIZE)
-            .ok_or(Error::InvalidArgument)?;
-        let desc_end = request
-            .desc_dma
-            .checked_add(desc_bytes as u64)
-            .ok_or(Error::InvalidArgument)?;
-        if transfer_end > u32::MAX as u64 + 1
-            || desc_end > u32::MAX as u64 + 1
-            || request.desc_count < block_count as usize
-            || request.desc_virt.is_null()
-        {
-            return Err(Error::InvalidArgument);
-        }
-
-        unsafe {
-            let descs = request.desc_virt as *mut IdmacDesc;
-            for index in 0..block_count as usize {
-                let last = index + 1 == block_count as usize;
-                let next = if last {
-                    0
-                } else {
-                    (request.desc_dma as u32) + ((index + 1) * IDMAC_DESC_SIZE) as u32
-                };
-                descs.add(index).write_volatile(IdmacDesc::chained(
-                    (request.buffer_dma as u32) + (index * 512) as u32,
-                    512,
-                    next,
-                    index == 0,
-                    last,
-                ));
-            }
-        }
-        (request.flush_desc)(request.desc_virt, desc_bytes);
-
-        self.clear_all_int_status();
-        self.program_data_phase(512, block_count);
-        self.reset_dma()?;
-
-        self.regs.dbaddr().write(request.desc_dma as u32);
-        self.regs.ctrl().update(|r| {
-            r.with_use_internal_dmac(true)
-                .with_dma_enable(true)
-                .with_int_enable(self.data_irq_enabled)
-        });
-        self.regs.bmod().write(BMOD_FB | BMOD_DE);
-        self.regs.pldmnd().write(1);
-
-        self.pending_data = Some(PendingData {
-            direction: DataDirection::Read,
-            block_size: 512,
-            block_count,
-        });
-        self.data_blocks_remaining = block_count;
-        let cmd = if block_count == 1 {
-            cmd17(start_block)
-        } else {
-            cmd18(start_block)
-        };
-        if let Err(err) = self.issue_command(&cmd) {
-            self.disable_idmac();
-            self.recover_after_idmac_read_error();
-            self.clear_all_int_status();
-            return Err(err);
-        }
-
-        let result = self.wait_dma_read_complete(cmd.cmd);
-        if result.is_ok() && block_count > 1 {
-            let _ = self.issue_command(&CMD12);
-        }
-        self.disable_idmac();
-        if result.is_err() {
-            self.recover_after_idmac_read_error();
-        }
-        self.clear_all_int_status();
-        result
-    }
-
-    fn idmac_transfer_mapped(
-        &mut self,
-        cmd: &Command,
-        block_count: u32,
-        buffer_dma: u64,
-        desc: &mut dma_api::DArray<IdmacDesc>,
-    ) -> Result<Response, Error> {
-        if block_count == 0 {
-            return Err(Error::InvalidArgument);
-        }
-        let direction = cmd.data_direction();
-        let phase = match direction {
-            DataDirection::Read => Phase::DataRead,
-            DataDirection::Write => Phase::DataWrite,
-            DataDirection::None => return Err(Error::InvalidArgument),
-        };
-        let byte_count = block_count
-            .checked_mul(BLOCK_SIZE as u32)
-            .ok_or(Error::InvalidArgument)?;
-        let transfer_end = buffer_dma
-            .checked_add(byte_count as u64)
-            .ok_or(Error::InvalidArgument)?;
-        let desc_bytes = (block_count as usize)
-            .checked_mul(IDMAC_DESC_SIZE)
-            .ok_or(Error::InvalidArgument)?;
-        let desc_dma = desc.dma_addr().as_u64();
-        let desc_end = desc_dma
-            .checked_add(desc_bytes as u64)
-            .ok_or(Error::InvalidArgument)?;
-        if transfer_end > u32::MAX as u64 + 1
-            || desc_end > u32::MAX as u64 + 1
-            || desc.len() < block_count as usize
-        {
-            return Err(Error::InvalidArgument);
-        }
-
-        desc.write_with(block_count as usize, |descs| {
-            for (index, desc) in descs.iter_mut().enumerate() {
-                let last = index + 1 == block_count as usize;
-                let next = if last {
-                    0
-                } else {
-                    (desc_dma as u32) + ((index + 1) * IDMAC_DESC_SIZE) as u32
-                };
-                *desc = IdmacDesc::chained(
-                    (buffer_dma as u32) + (index * BLOCK_SIZE) as u32,
-                    BLOCK_SIZE as u32,
-                    next,
-                    index == 0,
-                    last,
-                );
-            }
-        });
-
-        self.clear_all_int_status();
-        self.program_data_phase(BLOCK_SIZE as u32, block_count);
-        self.reset_dma_for_phase(phase)?;
-
-        self.regs.dbaddr().write(desc_dma as u32);
-        self.regs.ctrl().update(|r| {
-            r.with_use_internal_dmac(true)
-                .with_dma_enable(true)
-                .with_int_enable(self.data_irq_enabled)
-        });
-        self.regs.bmod().write(BMOD_FB | BMOD_DE);
-        self.regs.pldmnd().write(1);
-
-        self.pending_data = Some(PendingData {
-            direction,
-            block_size: BLOCK_SIZE as u32,
-            block_count,
-        });
-        self.data_blocks_remaining = block_count;
-        let response = match self.issue_command(cmd) {
-            Ok(response) => response,
-            Err(err) => {
-                self.disable_idmac();
-                self.recover_after_idmac_error(phase);
-                self.clear_all_int_status();
-                return Err(err);
-            }
-        };
-
-        let result = self.wait_dma_complete(cmd.cmd, phase);
-        self.disable_idmac();
-        if result.is_err() {
-            self.recover_after_idmac_error(phase);
-        }
-        self.clear_all_int_status();
-        result.map(|_| response)
     }
 
     fn build_dma_read_request(
@@ -547,7 +377,7 @@ impl DwMmc {
         size: NonZeroUsize,
         dma: &DeviceDma,
         id: RequestId,
-    ) -> Result<AsyncDmaRequest, Error> {
+    ) -> Result<BlockRequest, Error> {
         let block_count = dma_read_block_count(size)?;
         let map = dma
             .map_single_array(
@@ -569,14 +399,16 @@ impl DwMmc {
             cmd18(start_block)
         };
         self.submit_idmac_transfer_mapped(&cmd, block_count, map.dma_addr().as_u64(), &mut desc)?;
-        Ok(AsyncDmaRequest {
-            inner: AsyncDmaRequestKind::Read {
+        Ok(BlockRequest {
+            inner: BlockRequestKind::Read {
                 id,
                 map,
                 _desc: desc,
                 cmd_index: cmd.cmd,
                 phase: Phase::DataRead,
+                stage: BlockRequestStage::Command,
                 stop_after_complete: block_count > 1,
+                response: None,
             },
         })
     }
@@ -588,7 +420,7 @@ impl DwMmc {
         size: NonZeroUsize,
         dma: &DeviceDma,
         id: RequestId,
-    ) -> Result<AsyncDmaRequest, Error> {
+    ) -> Result<BlockRequest, Error> {
         let block_count = dma_write_block_count(size)?;
         let map = dma
             .map_single_array(
@@ -611,16 +443,165 @@ impl DwMmc {
             cmd25(start_block)
         };
         self.submit_idmac_transfer_mapped(&cmd, block_count, map.dma_addr().as_u64(), &mut desc)?;
-        Ok(AsyncDmaRequest {
-            inner: AsyncDmaRequestKind::Write {
+        Ok(BlockRequest {
+            inner: BlockRequestKind::Write {
                 id,
                 _map: map,
                 _desc: desc,
                 cmd_index: cmd.cmd,
                 phase: Phase::DataWrite,
+                stage: BlockRequestStage::Command,
                 stop_after_complete: block_count > 1,
+                response: None,
             },
         })
+    }
+
+    fn build_fifo_read_request(
+        &mut self,
+        start_block: u32,
+        buffer: NonNull<u8>,
+        size: NonZeroUsize,
+        id: RequestId,
+    ) -> Result<BlockRequest, Error> {
+        let block_count = dma_read_block_count(size)?;
+        let cmd = if block_count == 1 {
+            cmd17(start_block)
+        } else {
+            cmd18(start_block)
+        };
+        self.build_fifo_data_request(
+            &cmd,
+            buffer,
+            size.get(),
+            BLOCK_SIZE as u32,
+            block_count,
+            id,
+            DataDirection::Read,
+            block_count > 1,
+        )
+    }
+
+    fn build_fifo_write_request(
+        &mut self,
+        start_block: u32,
+        buffer: NonNull<u8>,
+        size: NonZeroUsize,
+        id: RequestId,
+    ) -> Result<BlockRequest, Error> {
+        let block_count = dma_write_block_count(size)?;
+        let cmd = if block_count == 1 {
+            cmd24(start_block)
+        } else {
+            cmd25(start_block)
+        };
+        self.build_fifo_data_request(
+            &cmd,
+            buffer,
+            size.get(),
+            BLOCK_SIZE as u32,
+            block_count,
+            id,
+            DataDirection::Write,
+            block_count > 1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_fifo_data_request(
+        &mut self,
+        cmd: &Command,
+        buffer: NonNull<u8>,
+        len: usize,
+        block_size: u32,
+        block_count: u32,
+        direction: DataDirection,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, Error> {
+        let transfer_direction = match direction {
+            DataDirection::Read => BlockTransferDirection::Read,
+            DataDirection::Write => BlockTransferDirection::Write,
+            DataDirection::None => return Err(Error::InvalidArgument),
+        };
+        let id = slot.start(BlockTransferMode::Fifo, transfer_direction)?;
+        match self.build_fifo_data_request(
+            cmd,
+            buffer,
+            len,
+            block_size,
+            block_count,
+            id,
+            direction,
+            false,
+        ) {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_fifo_data_request(
+        &mut self,
+        cmd: &Command,
+        buffer: NonNull<u8>,
+        len: usize,
+        block_size: u32,
+        block_count: u32,
+        id: RequestId,
+        direction: DataDirection,
+        stop_after_complete: bool,
+    ) -> Result<BlockRequest, Error> {
+        let block_size_usize = usize::try_from(block_size).map_err(|_| Error::InvalidArgument)?;
+        let block_count_usize = usize::try_from(block_count).map_err(|_| Error::InvalidArgument)?;
+        if block_size_usize == 0
+            || block_count_usize == 0
+            || len != block_size_usize.saturating_mul(block_count_usize)
+        {
+            return Err(Error::InvalidArgument);
+        }
+        let phase = match direction {
+            DataDirection::Read => Phase::DataRead,
+            DataDirection::Write => Phase::DataWrite,
+            DataDirection::None => return Err(Error::InvalidArgument),
+        };
+        self.pending_data = Some(PendingData {
+            direction,
+            block_size,
+            block_count,
+        });
+        self.data_blocks_remaining = block_count;
+        self.submit_command(cmd)?;
+        let inner = match direction {
+            DataDirection::Read => BlockRequestKind::FifoRead {
+                id,
+                buffer,
+                len,
+                block_size: block_size_usize,
+                offset: 0,
+                cmd_index: cmd.cmd,
+                phase,
+                stage: BlockRequestStage::Command,
+                stop_after_complete,
+                response: None,
+            },
+            DataDirection::Write => BlockRequestKind::FifoWrite {
+                id,
+                buffer,
+                len,
+                block_size: block_size_usize,
+                offset: 0,
+                cmd_index: cmd.cmd,
+                phase,
+                stage: BlockRequestStage::Command,
+                stop_after_complete,
+                response: None,
+            },
+            DataDirection::None => return Err(Error::InvalidArgument),
+        };
+        Ok(BlockRequest { inner })
     }
 
     fn submit_idmac_transfer_mapped(
@@ -629,7 +610,7 @@ impl DwMmc {
         block_count: u32,
         buffer_dma: u64,
         desc: &mut DArray<IdmacDesc>,
-    ) -> Result<Response, Error> {
+    ) -> Result<(), Error> {
         if block_count == 0 {
             return Err(Error::InvalidArgument);
         }
@@ -678,6 +659,7 @@ impl DwMmc {
         });
 
         self.clear_all_int_status();
+        self.irq_pending_status = 0;
         self.program_data_phase(BLOCK_SIZE as u32, block_count);
         self.reset_dma_for_phase(phase)?;
 
@@ -696,8 +678,8 @@ impl DwMmc {
             block_count,
         });
         self.data_blocks_remaining = block_count;
-        match self.issue_command(cmd) {
-            Ok(response) => Ok(response),
+        match self.submit_command(cmd) {
+            Ok(()) => Ok(()),
             Err(err) => {
                 self.disable_idmac();
                 self.recover_after_idmac_error(phase);
@@ -707,47 +689,26 @@ impl DwMmc {
         }
     }
 
-    fn wait_async_dma_request(
-        &mut self,
-        request: AsyncDmaRequest,
-        slot: &mut AsyncRequestSlot,
-    ) -> Result<(), Error> {
-        let id = request.id();
-        let mut request = Some(request);
-        loop {
-            match self.poll_async_dma_request(&mut request, id, slot) {
-                Err(Error::Timeout(_)) => core::hint::spin_loop(),
-                result => return result,
-            }
-        }
-    }
-
-    fn finish_async_dma_request(&mut self, request: AsyncDmaRequest) -> Result<(), Error> {
+    fn finish_block_request(&mut self, request: BlockRequest) -> Result<(), Error> {
         match request.inner {
-            AsyncDmaRequestKind::Read {
-                map,
-                stop_after_complete,
-                phase,
-                ..
-            } => {
-                map.prepare_read_all();
-                if stop_after_complete {
-                    let _ = self.issue_command(&CMD12);
+            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {
+                self.pending_data = None;
+                self.data_blocks_remaining = 0;
+                self.data_cmd_index = 0;
+            }
+            BlockRequestKind::Read { stage, .. } => {
+                if stage == BlockRequestStage::Command {
+                    let _ = self.take_command_response();
                 }
                 self.disable_idmac();
                 self.clear_all_int_status();
                 self.pending_data = None;
                 self.data_blocks_remaining = 0;
-                if matches!(phase, Phase::DataRead) {
-                    self.data_cmd_index = 0;
-                }
+                self.data_cmd_index = 0;
             }
-            AsyncDmaRequestKind::Write {
-                stop_after_complete,
-                ..
-            } => {
-                if stop_after_complete {
-                    let _ = self.issue_command(&CMD12);
+            BlockRequestKind::Write { stage, .. } => {
+                if stage == BlockRequestStage::Command {
+                    let _ = self.take_command_response();
                 }
                 self.disable_idmac();
                 self.clear_all_int_status();
@@ -759,11 +720,224 @@ impl DwMmc {
         Ok(())
     }
 
-    fn abort_async_dma_request(
+    fn finish_dma_data(
         &mut self,
-        request: &mut Option<AsyncDmaRequest>,
+        request: &mut Option<BlockRequest>,
         id: RequestId,
-        slot: &mut AsyncRequestSlot,
+        slot: &mut BlockRequestSlot,
+        phase: Phase,
+    ) -> Result<Response, Error> {
+        let Some(active) = request.as_mut() else {
+            return Err(Error::InvalidArgument);
+        };
+        let stop_after_complete = match &mut active.inner {
+            BlockRequestKind::Read {
+                map,
+                stage,
+                stop_after_complete,
+                ..
+            } => {
+                map.prepare_read_all();
+                *stage = BlockRequestStage::Stop;
+                *stop_after_complete
+            }
+            BlockRequestKind::Write {
+                stage,
+                stop_after_complete,
+                ..
+            } => {
+                *stage = BlockRequestStage::Stop;
+                *stop_after_complete
+            }
+            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {
+                return Err(Error::InvalidArgument);
+            }
+        };
+
+        if stop_after_complete {
+            self.submit_command(&CMD12)?;
+            return Err(Error::Timeout(ErrorContext::for_cmd(phase, CMD12.cmd)));
+        }
+
+        let active = request.take().ok_or(Error::InvalidArgument)?;
+        let response = active.response().ok_or(Error::InvalidArgument)?;
+        self.finish_block_request(active)?;
+        slot.complete(id)?;
+        Ok(response)
+    }
+
+    fn poll_block_stop(
+        &mut self,
+        request: &mut Option<BlockRequest>,
+        id: RequestId,
+        slot: &mut BlockRequestSlot,
+        cmd_index: u8,
+        phase: Phase,
+    ) -> Result<Response, Error> {
+        match self.poll_command() {
+            Ok(CommandPoll::Pending) => {
+                Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)))
+            }
+            Ok(CommandPoll::Complete) => {
+                let _ = self.take_command_response()?;
+                let active = request.take().ok_or(Error::InvalidArgument)?;
+                let response = active.response().ok_or(Error::InvalidArgument)?;
+                self.finish_block_request(active)?;
+                slot.complete(id)?;
+                Ok(response)
+            }
+            Err(err) => {
+                self.abort_block_request(request, id, slot, phase);
+                Err(err)
+            }
+        }
+    }
+
+    fn poll_fifo_request(
+        &mut self,
+        request: &mut Option<BlockRequest>,
+        id: RequestId,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<Response, Error> {
+        let (cmd_index, phase, stage) = match request.as_ref().map(|request| &request.inner) {
+            Some(BlockRequestKind::FifoRead {
+                cmd_index,
+                phase,
+                stage,
+                ..
+            })
+            | Some(BlockRequestKind::FifoWrite {
+                cmd_index,
+                phase,
+                stage,
+                ..
+            }) => (*cmd_index, *phase, *stage),
+            _ => return Err(Error::InvalidArgument),
+        };
+
+        if stage == BlockRequestStage::Command {
+            match self.poll_command() {
+                Ok(CommandPoll::Pending) => {
+                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
+                }
+                Ok(CommandPoll::Complete) => {
+                    let response = self.take_command_response()?;
+                    if let Some(active) = request.as_mut() {
+                        match &mut active.inner {
+                            BlockRequestKind::FifoRead {
+                                response: stored_response,
+                                ..
+                            }
+                            | BlockRequestKind::FifoWrite {
+                                response: stored_response,
+                                ..
+                            } => *stored_response = Some(response),
+                            _ => return Err(Error::InvalidArgument),
+                        }
+                    }
+                    set_fifo_stage(request, BlockRequestStage::Data)?;
+                    return Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)));
+                }
+                Err(err) => {
+                    self.abort_block_request(request, id, slot, phase);
+                    return Err(err);
+                }
+            }
+        }
+
+        let stage = match request.as_ref().map(|request| &request.inner) {
+            Some(BlockRequestKind::FifoRead { stage, .. })
+            | Some(BlockRequestKind::FifoWrite { stage, .. }) => *stage,
+            _ => return Err(Error::InvalidArgument),
+        };
+        if stage == BlockRequestStage::Stop {
+            return self.poll_block_stop(request, id, slot, cmd_index, phase);
+        }
+
+        match self.poll_fifo_data_step(request, cmd_index, phase) {
+            Ok(BlockPoll::Pending) => Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index))),
+            Ok(BlockPoll::Complete) => self.finish_fifo_data(request, id, slot, phase),
+            Err(err) => {
+                self.abort_block_request(request, id, slot, phase);
+                Err(err)
+            }
+        }
+    }
+
+    fn poll_fifo_data_step(
+        &mut self,
+        request: &mut Option<BlockRequest>,
+        cmd_index: u8,
+        phase: Phase,
+    ) -> Result<BlockPoll, Error> {
+        let Some(active) = request.as_mut() else {
+            return Err(Error::InvalidArgument);
+        };
+        match &mut active.inner {
+            BlockRequestKind::FifoRead {
+                buffer,
+                len,
+                block_size,
+                offset,
+                ..
+            } => poll_fifo_read_step(self, *buffer, *len, *block_size, offset, cmd_index, phase),
+            BlockRequestKind::FifoWrite {
+                buffer,
+                len,
+                block_size,
+                offset,
+                ..
+            } => poll_fifo_write_step(self, *buffer, *len, *block_size, offset, cmd_index, phase),
+            _ => Err(Error::InvalidArgument),
+        }
+    }
+
+    fn finish_fifo_data(
+        &mut self,
+        request: &mut Option<BlockRequest>,
+        id: RequestId,
+        slot: &mut BlockRequestSlot,
+        phase: Phase,
+    ) -> Result<Response, Error> {
+        let Some(active) = request.as_mut() else {
+            return Err(Error::InvalidArgument);
+        };
+        let stop_after_complete = match &mut active.inner {
+            BlockRequestKind::FifoRead {
+                stage,
+                stop_after_complete,
+                ..
+            }
+            | BlockRequestKind::FifoWrite {
+                stage,
+                stop_after_complete,
+                ..
+            } => {
+                *stage = BlockRequestStage::Stop;
+                *stop_after_complete
+            }
+            _ => return Err(Error::InvalidArgument),
+        };
+        if stop_after_complete {
+            self.submit_command(&CMD12)?;
+            return Err(Error::Timeout(ErrorContext::for_cmd(phase, CMD12.cmd)));
+        }
+
+        let active = request.take().ok_or(Error::InvalidArgument)?;
+        let response = active.response().ok_or(Error::InvalidArgument)?;
+        self.finish_block_request(active)?;
+        self.pending_data = None;
+        self.data_blocks_remaining = 0;
+        self.data_cmd_index = 0;
+        slot.complete(id)?;
+        Ok(response)
+    }
+
+    fn abort_block_request(
+        &mut self,
+        request: &mut Option<BlockRequest>,
+        id: RequestId,
+        slot: &mut BlockRequestSlot,
         phase: Phase,
     ) {
         let _ = request.take();
@@ -780,10 +954,6 @@ impl DwMmc {
                 .with_int_enable(false)
         });
         self.regs.bmod().write(0);
-    }
-
-    fn recover_after_idmac_read_error(&mut self) {
-        self.recover_after_idmac_error(Phase::DataRead);
     }
 
     fn recover_after_idmac_error(&mut self, phase: Phase) {
@@ -830,38 +1000,28 @@ impl DwMmc {
         Err(Error::Timeout(ErrorContext::new(phase)))
     }
 
-    fn wait_dma_read_complete(&mut self, cmd_index: u8) -> Result<(), Error> {
-        self.wait_dma_complete(cmd_index, Phase::DataRead)
-    }
-
-    fn wait_dma_complete(&mut self, cmd_index: u8, phase: Phase) -> Result<(), Error> {
-        for _ in 0..DMA_POLL_LIMIT {
-            match self.poll_dma_complete(cmd_index, phase)? {
-                PollResult::Pending => core::hint::spin_loop(),
-                PollResult::Complete => return Ok(()),
-            }
-        }
-        Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)))
-    }
-
-    fn poll_dma_complete(&mut self, cmd_index: u8, phase: Phase) -> Result<PollResult, Error> {
+    fn poll_dma_complete(&mut self, cmd_index: u8, phase: Phase) -> Result<BlockPoll, Error> {
         let raw_status = self.take_data_irq_status();
         let rintsts = crate::regs::RIntSts::from_bits(raw_status);
         if rintsts.error() {
             return Err(self.translate_int_error(rintsts, phase, cmd_index));
         }
         if rintsts.data_transfer_over() {
-            return Ok(PollResult::Complete);
+            return Ok(BlockPoll::Complete);
         }
-        Ok(PollResult::Pending)
+        Ok(BlockPoll::Pending)
     }
 
     fn take_data_irq_status(&mut self) -> u32 {
         let raw_status = self.regs.rintsts().read().into_bits();
-        if raw_status != 0 {
+        let consume = raw_status
+            & (crate::DWMMC_INT_DATA_TRANSFER_OVER
+                | crate::DWMMC_INT_COMMAND_DONE
+                | crate::DWMMC_INT_ERROR_MASK);
+        if consume != 0 {
             self.regs
                 .rintsts()
-                .write(crate::regs::RIntSts::from_bits(raw_status));
+                .write(crate::regs::RIntSts::from_bits(consume));
         }
         let status = self.irq_pending_status | raw_status;
         self.irq_pending_status &= !(crate::DWMMC_INT_DATA_TRANSFER_OVER
@@ -871,10 +1031,89 @@ impl DwMmc {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PollResult {
-    Pending,
-    Complete,
+fn set_fifo_stage(
+    request: &mut Option<BlockRequest>,
+    next: BlockRequestStage,
+) -> Result<(), Error> {
+    let Some(active) = request.as_mut() else {
+        return Err(Error::InvalidArgument);
+    };
+    match &mut active.inner {
+        BlockRequestKind::FifoRead { stage, .. } | BlockRequestKind::FifoWrite { stage, .. } => {
+            *stage = next;
+            Ok(())
+        }
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+fn poll_fifo_read_step(
+    host: &mut DwMmc,
+    buffer: NonNull<u8>,
+    len: usize,
+    _block_size: usize,
+    offset: &mut usize,
+    cmd_index: u8,
+    phase: Phase,
+) -> Result<BlockPoll, Error> {
+    let raw_status = host.take_data_irq_status();
+    let rintsts = crate::regs::RIntSts::from_bits(raw_status);
+    if rintsts.error() {
+        let err = host.translate_int_error(rintsts, phase, cmd_index);
+        let _ = host.reset_fifo();
+        return Err(err);
+    }
+
+    let fifo = host.fifo_ptr();
+    let mut status = host.regs.status().read();
+    while *offset < len && status.fifo_count() >= 2 {
+        let value = unsafe { fifo.read_volatile() };
+        let end = (*offset + 8).min(len);
+        let block =
+            unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr().add(*offset), end - *offset) };
+        block.copy_from_slice(&value.to_le_bytes()[..block.len()]);
+        *offset = end;
+        status = host.regs.status().read();
+    }
+
+    if *offset >= len && rintsts.data_transfer_over() {
+        return Ok(BlockPoll::Complete);
+    }
+    Ok(BlockPoll::Pending)
+}
+
+fn poll_fifo_write_step(
+    host: &mut DwMmc,
+    buffer: NonNull<u8>,
+    len: usize,
+    _block_size: usize,
+    offset: &mut usize,
+    cmd_index: u8,
+    phase: Phase,
+) -> Result<BlockPoll, Error> {
+    let raw_status = host.take_data_irq_status();
+    let rintsts = crate::regs::RIntSts::from_bits(raw_status);
+    if rintsts.error() {
+        let err = host.translate_int_error(rintsts, phase, cmd_index);
+        let _ = host.reset_fifo();
+        return Err(err);
+    }
+
+    let fifo = host.fifo_ptr();
+    while *offset < len && !host.regs.status().read().fifo_full() {
+        let end = (*offset + 8).min(len);
+        let block =
+            unsafe { core::slice::from_raw_parts(buffer.as_ptr().add(*offset), end - *offset) };
+        let mut bytes = [0u8; 8];
+        bytes[..block.len()].copy_from_slice(block);
+        unsafe { fifo.write_volatile(u64::from_le_bytes(bytes)) };
+        *offset = end;
+    }
+
+    if *offset >= len && rintsts.data_transfer_over() {
+        return Ok(BlockPoll::Complete);
+    }
+    Ok(BlockPoll::Pending)
 }
 
 fn dma_read_block_count(size: NonZeroUsize) -> Result<u32, Error> {
@@ -947,41 +1186,32 @@ mod tests {
     }
 
     #[test]
-    fn async_request_slot_rejects_second_request_until_completed() {
-        let mut slot = AsyncRequestSlot::default();
-        let first = slot.start().unwrap();
+    fn block_request_slot_rejects_second_request_until_completed() {
+        let mut slot = BlockRequestSlot::default();
+        let first = slot
+            .start(BlockTransferMode::Dma, BlockTransferDirection::Read)
+            .unwrap();
 
-        assert_eq!(slot.start(), Err(Error::UnsupportedCommand));
+        assert_eq!(
+            slot.start(BlockTransferMode::Dma, BlockTransferDirection::Read),
+            Err(Error::UnsupportedCommand)
+        );
         assert_eq!(
             slot.complete(RequestId::new(usize::from(first) + 1)),
             Err(Error::InvalidArgument)
         );
         assert_eq!(slot.complete(first), Ok(()));
-        assert!(slot.start().is_ok());
+        assert!(
+            slot.start(BlockTransferMode::Dma, BlockTransferDirection::Read)
+                .is_ok()
+        );
     }
 
     #[test]
-    fn async_dma_request_can_cross_queue_thread_boundary() {
+    fn block_request_can_cross_queue_thread_boundary() {
         fn assert_send<T: Send>() {}
 
-        assert_send::<AsyncDmaRequest>();
-        assert_send::<AsyncRequestSlot>();
-    }
-
-    #[test]
-    fn idmac_presubmit_errors_allow_pio_fallback() {
-        let err = IdmacAttemptError::fallback(Error::UnsupportedCommand);
-
-        assert!(err.can_fallback_to_pio());
-        assert_eq!(err.into_error(), Error::UnsupportedCommand);
-    }
-
-    #[test]
-    fn idmac_postsubmit_errors_do_not_allow_pio_fallback() {
-        let err =
-            IdmacAttemptError::fatal(Error::Timeout(ErrorContext::for_cmd(Phase::DataRead, 18)));
-
-        assert!(!err.can_fallback_to_pio());
-        assert!(matches!(err.into_error(), Error::Timeout(_)));
+        assert_send::<BlockRequest>();
+        assert_send::<BlockRequestSlot>();
     }
 }

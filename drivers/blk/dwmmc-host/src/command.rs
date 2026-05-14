@@ -5,8 +5,9 @@
 //! 32-bit response slots back into [`Response`].
 
 use sdmmc_protocol::{
+    CommandPoll, CommandResponsePoll,
     cmd::{Command as ProtoCmd, DataDirection},
-    error::{Error, ErrorContext, Phase},
+    error::{Error, Phase},
     response::{
         IfCondResponse, OcrResponse, R1Response, RcaResponse, Response, ResponseType,
         SdioOcrResponse, SdioRwResponse,
@@ -18,122 +19,152 @@ use crate::{
     regs::{Cmd, RegisterBlockVolatileFieldAccess},
 };
 
-const POLL_LIMIT: u32 = 1_000_000;
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CommandState {
+    Idle,
+    WaitingInhibit {
+        cmd: ProtoCmd,
+        data: Option<crate::host::PendingData>,
+    },
+    WaitingStart {
+        cmd: ProtoCmd,
+    },
+    Issued {
+        cmd: ProtoCmd,
+    },
+    Complete {
+        response: Response,
+    },
+    Failed {
+        error: Error,
+    },
+}
 
 impl DwMmc {
-    /// Issue one command and decode its response.
-    ///
-    /// When the protocol layer has armed a data phase via
-    /// `prepare_data_transfer` on the trait surface, the command is
-    /// issued with `data_expected` set and the BLKSIZ/BYTCNT registers
-    /// pre-programmed; the data phase itself is then driven through
-    /// the FIFO by `pio_read` / `pio_write`.
-    pub fn issue_command(&mut self, cmd: &ProtoCmd) -> Result<Response, Error> {
+    pub fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
+        match self.poll_command() {
+            Ok(CommandPoll::Pending) => Ok(CommandResponsePoll::Pending),
+            Ok(CommandPoll::Complete) => self
+                .take_command_response()
+                .map(CommandResponsePoll::Complete),
+            Err(_) => self
+                .take_command_response()
+                .map(CommandResponsePoll::Complete),
+        }
+    }
+
+    pub fn submit_command(&mut self, cmd: &ProtoCmd) -> Result<(), Error> {
+        if !matches!(self.command_state, CommandState::Idle) {
+            return Err(Error::UnsupportedCommand);
+        }
         let data = self.pending_data.take();
+        self.command_state = CommandState::WaitingInhibit { cmd: *cmd, data };
+        if let Err(err) = self.poll_command() {
+            self.command_state = CommandState::Idle;
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    pub fn poll_command(&mut self) -> Result<CommandPoll, Error> {
+        match self.command_state {
+            CommandState::WaitingInhibit { cmd, data } => {
+                if !self.command_can_issue(data.is_some()) {
+                    return Ok(CommandPoll::Pending);
+                }
+                self.program_command(&cmd, data);
+                return Ok(CommandPoll::Pending);
+            }
+            CommandState::WaitingStart { cmd } => {
+                if self.regs.cmd().read().start_cmd() {
+                    return Ok(CommandPoll::Pending);
+                }
+                self.command_state = CommandState::Issued { cmd };
+                return Ok(CommandPoll::Pending);
+            }
+            CommandState::Issued { .. } => {}
+            CommandState::Complete { .. } => return Ok(CommandPoll::Complete),
+            CommandState::Failed { error } => return Err(error),
+            CommandState::Idle => return Err(Error::InvalidArgument),
+        }
+
+        let CommandState::Issued { cmd } = self.command_state else {
+            unreachable!();
+        };
+        let raw_status = self.take_command_irq_status();
+        let status = crate::regs::RIntSts::from_bits(raw_status);
+        if status.error() {
+            let err = self.translate_int_error(status, Phase::ResponseWait, cmd.cmd);
+            self.command_state = CommandState::Failed { error: err };
+            return Err(err);
+        }
+        if status.command_done() {
+            let response = decode_response(self, cmd.resp_type)?;
+            self.command_state = CommandState::Complete { response };
+            return Ok(CommandPoll::Complete);
+        }
+        Ok(CommandPoll::Pending)
+    }
+
+    pub fn take_command_response(&mut self) -> Result<Response, Error> {
+        match self.command_state {
+            CommandState::Complete { response } => {
+                self.command_state = CommandState::Idle;
+                Ok(response)
+            }
+            CommandState::Failed { error } => {
+                self.command_state = CommandState::Idle;
+                Err(error)
+            }
+            CommandState::Idle
+            | CommandState::WaitingInhibit { .. }
+            | CommandState::WaitingStart { .. }
+            | CommandState::Issued { .. } => Err(Error::InvalidArgument),
+        }
+    }
+
+    fn command_can_issue(&self, has_data: bool) -> bool {
+        let cmd_busy = self.regs.cmd().read().start_cmd();
+        let data_busy = has_data && self.regs.status().read().data_busy();
+        !cmd_busy && !data_busy
+    }
+
+    fn program_command(&mut self, cmd: &ProtoCmd, data: Option<crate::host::PendingData>) {
         if data.is_some() {
             self.data_cmd_index = cmd.cmd;
         }
-
-        // 1. Wait for the CIU's command FSM to be idle. If a data
-        //    phase is pending we also block on the data line, which
-        //    matches the `wait_prvdata_complete` semantics the CMD
-        //    register already enforces — but the pre-check makes the
-        //    failure mode (timeout vs. hardware-locked) easier to
-        //    distinguish.
-        self.wait_inhibit(data.is_some(), cmd.cmd)?;
-
-        // 2. Clear any leftover RINTSTS bits so the polls below only
-        //    fire on this command's events.
-        self.clear_all_int_status();
-
-        // 3. If data is pending, program the data-phase registers
-        //    *before* writing CMD. The CIU latches BLKSIZ/BYTCNT at
-        //    start_cmd time.
+        self.clear_command_int_status();
         let data_dir = data.map(|d| {
             self.program_data_phase(d.block_size, d.block_count);
             d.direction
         });
-
-        // 4. Argument first, then CMD — start_cmd in CMD is what
-        //    actually fires the transaction.
         self.regs.cmdarg().write(cmd.arg);
-        let encoded = encode_command(cmd, data_dir);
-        self.regs.cmd().write(encoded);
-
-        // 5. Wait for start_cmd to clear (CIU accepted the command).
-        for _ in 0..POLL_LIMIT {
-            if !self.regs.cmd().read().start_cmd() {
-                break;
-            }
-            core::hint::spin_loop();
-        }
-
-        // 6. Wait for command_done (or an error). `R1b` and data-bearing
-        //    commands have additional waits but those happen in the data
-        //    path; here we only block on the response.
-        if matches!(cmd.resp_type, ResponseType::None) {
-            // No response: still wait for command_done so we know the
-            // CIU finished clocking out the command frame.
-            self.wait_command_done(cmd.cmd)?;
-        } else {
-            self.wait_command_done(cmd.cmd)?;
-        }
-
-        decode_response(self, cmd.resp_type)
+        self.regs.cmd().write(encode_command(cmd, data_dir));
+        self.command_state = CommandState::WaitingStart { cmd: *cmd };
     }
 
-    /// Block until [`crate::regs::RIntSts::data_transfer_over`] fires (or
-    /// an error). Used by [`crate::data`] after the last block has been
-    /// drained / pushed.
-    pub(crate) fn wait_data_transfer_over(&self, cmd_index: u8, phase: Phase) -> Result<(), Error> {
-        for _ in 0..POLL_LIMIT {
-            let s = self.regs.rintsts().read();
-            if s.error() {
-                return Err(self.translate_int_error(s, phase, cmd_index));
-            }
-            if s.data_transfer_over() {
-                return Ok(());
-            }
-            core::hint::spin_loop();
+    fn take_command_irq_status(&mut self) -> u32 {
+        let raw_status = self.regs.rintsts().read().into_bits();
+        let consume = raw_status & (crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
+        if consume != 0 {
+            self.regs
+                .rintsts()
+                .write(crate::regs::RIntSts::from_bits(consume));
         }
-        Err(Error::Timeout(ErrorContext::for_cmd(phase, cmd_index)))
+        let status = self.irq_pending_status | raw_status;
+        self.irq_pending_status &= !(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
+        status
     }
 
-    fn wait_inhibit(&self, has_data: bool, cmd_index: u8) -> Result<(), Error> {
-        for _ in 0..POLL_LIMIT {
-            let cmd_busy = self.regs.cmd().read().start_cmd();
-            let data_busy = has_data && self.regs.status().read().data_busy();
-            if !cmd_busy && !data_busy {
-                return Ok(());
-            }
-            core::hint::spin_loop();
+    fn clear_command_int_status(&mut self) {
+        let raw_status = self.regs.rintsts().read().into_bits()
+            & (crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
+        if raw_status != 0 {
+            self.regs
+                .rintsts()
+                .write(crate::regs::RIntSts::from_bits(raw_status));
         }
-        Err(Error::Timeout(ErrorContext::for_cmd(
-            Phase::CommandSend,
-            cmd_index,
-        )))
-    }
-
-    fn wait_command_done(&self, cmd_index: u8) -> Result<(), Error> {
-        for _ in 0..POLL_LIMIT {
-            let s = self.regs.rintsts().read();
-            if s.error() {
-                return Err(self.translate_int_error(s, Phase::ResponseWait, cmd_index));
-            }
-            if s.command_done() {
-                // Acknowledge command_done so the next command starts
-                // clean. RXDR/TXDR/DTO bits stay armed for the data path.
-                let mut ack = crate::regs::RIntSts::new();
-                ack.set_command_done(true);
-                self.regs.rintsts().write(ack);
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::Timeout(ErrorContext::for_cmd(
-            Phase::ResponseWait,
-            cmd_index,
-        )))
+        self.irq_pending_status &= !(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
     }
 }
 
@@ -189,12 +220,11 @@ fn encode_command(cmd: &ProtoCmd, data_dir: Option<DataDirection>) -> Cmd {
 
     if let Some(dir) = data_dir {
         c = c.with_data_expected(true);
-        // The protocol layer signals direction explicitly via
-        // `prepare_data_transfer` because some indices are
-        // overloaded (CMD6 = ACMD6 SET_BUS_WIDTH no-data /
+        // The data-command submit path carries direction explicitly because
+        // some indices are overloaded (CMD6 = ACMD6 SET_BUS_WIDTH no-data /
         // SWITCH_FUNC read; CMD8 = SEND_IF_COND no-data on SD /
-        // SEND_EXT_CSD read on MMC). We trust that signal here
-        // rather than inferring from `cmd.cmd`.
+        // SEND_EXT_CSD read on MMC). We trust that signal here rather than
+        // inferring from `cmd.cmd`.
         if matches!(dir, DataDirection::Write) {
             c = c.with_read_write(true);
         }

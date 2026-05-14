@@ -25,7 +25,9 @@
 //! | Feature  | Default | Purpose                                         |
 //! |----------|---------|-------------------------------------------------|
 //! | `spi`    | yes     | Enables [`spi::SpiTransport`] and [`spi::SpiSdmmc`]. |
-//! | `sdio`   | no      | Enables [`sdio::SdioHost`] and [`sdio::SdioSdmmc`].  |
+//! | `sdio`   | no      | Enables the host trait and submit/poll data-command contract. |
+//! | `sync`   | yes     | Adds blocking initialization helpers to [`sdio`]. |
+//! | `irq`    | no      | Adds IRQ trait hooks for runtimes that wake pollers from controller interrupts. |
 //!
 //! Diagnostic output goes through the [`log`] crate; configure a logger in
 //! your application to capture it.
@@ -69,6 +71,7 @@
 
 #![no_std]
 
+pub mod block;
 pub mod cmd;
 mod common;
 pub mod error;
@@ -81,6 +84,11 @@ pub mod spi;
 #[cfg(feature = "sdio")]
 pub mod sdio;
 
+pub use block::{
+    BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
+    CommandPoll, CommandResponsePoll, DataCommandDirection, DataCommandPoll, DataCommandState,
+    OperationPoll,
+};
 pub use cmd::{Command, DataDirection};
 pub use error::{Error, ErrorContext, Phase};
 pub use response::{CidResponse, CsdResponse, Response, SwitchStatus};

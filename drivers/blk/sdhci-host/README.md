@@ -61,23 +61,36 @@ Construction is `unsafe` because the caller must guarantee that the supplied
 address is a valid, exclusively-owned SDHCI register file for the lifetime of
 the driver.
 
-## ADMA2 Usage
+## Block Request Usage
 
-For ADMA2 request I/O, pass a `dma_api::DeviceDma` capability to
-`Sdhci::dma_read_blocks_into`. The host crate owns request-buffer mapping,
-ADMA2 descriptor allocation, descriptor cache sync, and completion sync.
+Use `Sdhci::submit_read_blocks` / `Sdhci::submit_write_blocks`, then drive
+completion with `Sdhci::poll_block_request`. `BlockTransferMode::Dma` uses
+ADMA2 and owns request-buffer mapping, descriptor allocation, descriptor
+cache sync, and completion sync. `BlockTransferMode::Fifo` uses the FIFO
+path with the same submit/poll shape, so platform code can fall back when DMA
+is unavailable.
 
 ```rust,ignore
 use core::{num::NonZeroUsize, ptr::NonNull};
 use dma_api::DeviceDma;
-use sdhci_host::Sdhci;
+use sdhci_host::{BlockRequestSlot, BlockTransferMode, RequestId, Sdhci};
 
 # use platform::DmaImpl;
 let dma = DeviceDma::new(u32::MAX as u64, &DmaImpl);
 let mut host = unsafe { Sdhci::new_from_addr(0xFE31_0000) };
 let mut block = [0u8; 512];
 let ptr = NonNull::new(block.as_mut_ptr()).unwrap();
-host.dma_read_blocks_into(0, ptr, NonZeroUsize::new(block.len()).unwrap(), &dma)?;
+let mut slot = BlockRequestSlot::default();
+let mut request = Some(host.submit_read_blocks(
+    0,
+    ptr,
+    NonZeroUsize::new(block.len()).unwrap(),
+    Some(&dma),
+    BlockTransferMode::Dma,
+    &mut slot,
+)?);
+let id = RequestId::new(0);
+while host.poll_block_request(&mut request, id, &mut slot).is_err() {}
 ```
 
 Platform code should implement `dma_api::DmaOp` and keep OS-specific mapping
