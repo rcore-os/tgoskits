@@ -1,4 +1,4 @@
-use alloc::vec;
+use alloc::{vec, vec::Vec};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     task::Context,
@@ -18,7 +18,7 @@ use smoltcp::{
 use spin::RwLock;
 
 use crate::{
-    RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
@@ -41,6 +41,9 @@ pub struct UdpSocket {
     peer_addr: RwLock<Option<(IpEndpoint, IpAddress)>>,
 
     general: GeneralOptions,
+    /// Buffer for MSG_MORE corking: accumulates data across multiple
+    /// send calls with MSG_MORE set.
+    cork_buf: Mutex<Vec<u8>>,
 }
 
 impl UdpSocket {
@@ -56,6 +59,7 @@ impl UdpSocket {
             peer_addr: RwLock::new(None),
 
             general: GeneralOptions::new(),
+            cork_buf: Mutex::new(Vec::new()),
         }
     }
 
@@ -167,13 +171,21 @@ impl SocketOps for UdpSocket {
     }
 
     fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+        // MSG_OOB is only valid on stream sockets (SOCK_STREAM), not DGRAM.
+        if options.flags.contains(SendFlags::OOB) {
+            ax_bail!(OperationNotSupported);
+        }
+
         let (remote_addr, source_addr) = match options.to {
             Some(addr) => {
                 let addr = IpEndpoint::from(addr.into_ip()?);
                 let src = get_service().get_source_address(&addr.addr);
                 (addr, src)
             }
-            None => self.remote_endpoint()?,
+            None => match self.remote_endpoint() {
+                Ok((endpoint, src)) => (endpoint, src),
+                Err(_) => ax_bail!(DestAddrRequired),
+            },
         };
         if remote_addr.port == 0 || remote_addr.addr.is_unspecified() {
             ax_bail!(InvalidInput, "invalid address");
@@ -185,18 +197,55 @@ impl SocketOps for UdpSocket {
                 0,
             )))?;
         }
-        let result = self.general.send_poller(self, || {
+        // MSG_MORE corking: buffer data instead of sending immediately.
+        let more = options.flags.contains(SendFlags::MORE);
+        if more {
+            let len = src.remaining();
+            let mut tmp = alloc::vec![0u8; len];
+            let read = src.read(&mut tmp)?;
+            self.cork_buf.lock().extend_from_slice(&tmp[..read]);
+            return Ok(read);
+        }
+
+        self.general.send_poller(self, || {
             poll_interfaces();
-            self.with_smol_socket(|socket| {
+            let mut cork = self.cork_buf.lock();
+            let has_cork = !cork.is_empty();
+            let result = self.with_smol_socket(|socket| {
                 if !socket.is_open() {
                     // not connected
                     Err(ax_err_type!(NotConnected))
                 } else if !socket.can_send() {
                     Err(AxError::WouldBlock)
                 } else {
+                    let payload_len = if has_cork {
+                        cork.len() + src.remaining()
+                    } else {
+                        src.remaining()
+                    };
+                    // UDP allows zero-length payloads (IP header + UDP header only).
+                    if payload_len == 0 {
+                        socket
+                            .send(
+                                0,
+                                UdpMetadata {
+                                    endpoint: remote_addr,
+                                    local_address: Some(source_addr),
+                                    meta: PacketMeta::default(),
+                                },
+                            )
+                            .map_err(|e| match e {
+                                smol::SendError::BufferFull => AxError::WouldBlock,
+                                smol::SendError::Unaddressable => {
+                                    ax_err_type!(ConnectionRefused, "unaddressable")
+                                }
+                            })?;
+                        cork.clear();
+                        return Ok(0);
+                    }
                     let buf = socket
                         .send(
-                            src.remaining(),
+                            payload_len,
                             UdpMetadata {
                                 endpoint: remote_addr,
                                 local_address: Some(source_addr),
@@ -209,23 +258,30 @@ impl SocketOps for UdpSocket {
                                 ax_err_type!(ConnectionRefused, "unaddressable")
                             }
                         })?;
-                    let read = src.read(buf)?;
-                    assert_eq!(read, buf.len());
-                    Ok(read)
+                    let mut total_written = 0;
+                    let mut cur_read = 0;
+                    if has_cork {
+                        let n = cork.len().min(buf.len());
+                        buf[..n].copy_from_slice(&cork[..n]);
+                        total_written += n;
+                        cork.clear();
+                    }
+                    if total_written < buf.len() {
+                        cur_read = src.read(&mut buf[total_written..])?;
+                        total_written += cur_read;
+                    }
+                    assert_eq!(total_written, buf.len());
+                    // Return only bytes consumed from the *current* user buffer.
+                    Ok(cur_read)
                 }
-            })
-        });
-        // Dispatch the packet through the network stack (needed for loopback
-        // delivery to wake epoll waiters on the receiving socket).
-        poll_interfaces();
-        result
+            })?;
+            // Flush TX so loopback packets reach the receiver immediately.
+            poll_interfaces();
+            Ok(result)
+        })
     }
 
     fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
-        if self.local_addr.read().is_none() {
-            ax_bail!(NotConnected);
-        }
-
         enum ExpectedRemote<'a> {
             Any(&'a mut SocketAddrEx),
             AnyDiscard,
@@ -242,10 +298,7 @@ impl SocketOps for UdpSocket {
         self.general.recv_poller(self, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
-                if !socket.is_open() {
-                    // not bound
-                    Err(ax_err_type!(NotConnected))
-                } else if !socket.can_recv() {
+                if !socket.can_recv() {
                     Err(AxError::WouldBlock)
                 } else {
                     let result = if options.flags.contains(RecvFlags::PEEK) {

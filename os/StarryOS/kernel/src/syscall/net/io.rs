@@ -71,19 +71,23 @@ fn send_impl(
     }
 
     if let Ok(socket) = Socket::from_fd(fd) {
-        let addr = if addr.is_null() || addrlen == 0 {
+        let addr = if addr.is_null() && addrlen == 0 {
             None
+        } else if addr.is_null() || addrlen == 0 {
+            return Err(AxError::InvalidInput);
         } else {
             Some(SocketAddrEx::read_from_user(addr, addrlen)?)
         };
 
-        debug!("sys_send <= fd: {fd}, flags: {flags}, addr: {addr:?}");
+        let send_flags = SendFlags::from_bits_retain(flags);
+
+        debug!("sys_send <= fd: {fd}, flags: {flags:#x}, addr: {addr:?}");
 
         let sent = socket.send(
             &mut src,
             SendOptions {
                 to: addr,
-                flags: SendFlags::default(),
+                flags: send_flags,
                 cmsg,
             },
         )?;
