@@ -95,8 +95,22 @@ jobs:
         if: steps.pr.outputs.is_draft == 'true'
         run: echo "PR #${{ steps.pr.outputs.number }} is draft; skipping review."
 
-      - name: Review pull request
+      - name: Check OpenAI API key
+        id: openai_api_key
         if: steps.pr.outputs.is_draft == 'false'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Missing OPENAI_API_KEY::Repository secret OPENAI_API_KEY is not configured or is unavailable to this workflow; skipping AI review."
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review pull request
+        if: steps.pr.outputs.is_draft == 'false' && steps.openai_api_key.outputs.available == 'true'
         uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1 # v1.8
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -222,7 +236,7 @@ jobs:
             }
 
       - name: Submit pull request review
-        if: steps.pr.outputs.is_draft == 'false'
+        if: steps.pr.outputs.is_draft == 'false' && steps.openai_api_key.outputs.available == 'true'
         uses: actions/github-script@v8
         with:
           script: |
@@ -271,7 +285,7 @@ jobs:
             core.info(`Review submitted: verdict=${event}, inline_comments=${comments.length}`);
 
       - name: Request human reviewers
-        if: success() && steps.pr.outputs.is_draft == 'false'
+        if: success() && steps.pr.outputs.is_draft == 'false' && steps.openai_api_key.outputs.available == 'true'
         uses: actions/github-script@v8
         with:
           script: |
