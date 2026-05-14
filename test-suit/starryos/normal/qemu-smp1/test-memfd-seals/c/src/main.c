@@ -83,20 +83,18 @@ int main(void) {
         CHECK_RET(ftruncate(gfd, 4096), 0, "ftruncate same-size still allowed under GROW");
 
         /* pwrite that straddles EOF returns a short write of the
-         * in-EOF bytes (Linux shmem_write_check_limits) — only a
-         * pwrite that starts at or past EOF is rejected with EPERM. */
+         * in-EOF bytes; pwrite that starts at or past EOF returns 0
+         * (no bytes written) rather than EPERM. Linux's
+         * shmem_write_check_limits clips the write at i_size; EPERM is
+         * reserved for F_SEAL_WRITE. */
         char buf[64];
         memset(buf, 'A', sizeof(buf));
         ssize_t pwn = pwrite(gfd, buf, sizeof(buf), 4090);
         CHECK(pwn == 6, "pwrite cross-EOF returns partial 6 bytes under F_SEAL_GROW");
-        errno = 0;
         pwn = pwrite(gfd, buf, sizeof(buf), 4096);
-        CHECK(pwn == -1 && errno == EPERM,
-              "pwrite at EOF rejected with EPERM under F_SEAL_GROW");
-        errno = 0;
+        CHECK(pwn == 0, "pwrite at EOF returns 0 under F_SEAL_GROW");
         pwn = pwrite(gfd, buf, sizeof(buf), 8192);
-        CHECK(pwn == -1 && errno == EPERM,
-              "pwrite past EOF rejected with EPERM under F_SEAL_GROW");
+        CHECK(pwn == 0, "pwrite past EOF returns 0 under F_SEAL_GROW");
 
         /* pwrite that stays within current size is still allowed. */
         pwn = pwrite(gfd, buf, sizeof(buf), 0);
