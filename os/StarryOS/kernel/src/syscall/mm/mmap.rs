@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FileBackend, FileFlags};
 use ax_hal::paging::{MappingFlags, PageSize};
-use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_task::current;
 use linux_raw_sys::general::*;
 
@@ -655,8 +655,15 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
 pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     debug!("sys_msync <= addr: {addr:#x}, length: {length:x}, flags: {flags:#x}");
 
+    if !addr.is_multiple_of(PAGE_SIZE_4K) {
+        return Err(AxError::InvalidInput);
+    }
+
     let valid_flags = MS_SYNC | MS_ASYNC | MS_INVALIDATE;
     if flags & !valid_flags != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if flags & MS_SYNC != 0 && flags & MS_ASYNC != 0 {
         return Err(AxError::InvalidInput);
     }
 
@@ -664,23 +671,28 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
         return Ok(0);
     }
 
-    let addr = align_up_4k(addr);
-    if addr == 0 {
-        return Err(AxError::InvalidInput);
-    }
+    let start = VirtAddr::from(addr);
+    let end_val = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
+    let end = VirtAddr::from(end_val);
 
     let curr = current();
     let aspace_arc = curr.as_thread().proc_data.aspace();
     let aspace = aspace_arc.lock();
 
-    let area = aspace
-        .find_area(VirtAddr::from(addr))
-        .ok_or(AxError::InvalidInput)?;
+    let mut cursor = start;
+    while cursor < end {
+        let area = match aspace.find_area(cursor) {
+            Some(a) => a,
+            None => return Err(AxError::NoMemory),
+        };
 
-    if let Backend::File(file_backend) = area.backend()
-        && file_backend.is_shared()
-    {
-        file_backend.cache().sync(false)?;
+        if let Backend::File(file_backend) = area.backend()
+            && file_backend.is_shared()
+        {
+            file_backend.cache().sync(false)?;
+        }
+
+        cursor = area.end();
     }
 
     Ok(0)
