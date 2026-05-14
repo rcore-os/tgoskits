@@ -2,9 +2,10 @@ use core::{any::type_name, panic::Location};
 
 use ax_kernel_guard::BaseGuard;
 pub use ax_lockdep::{
-    HeldLock, HeldLockSnapshot, HeldLockStack, KspinLockdepIf, LockdepMap, PreparedAcquire,
-    current_task_held_lock_snapshot, finish_acquire_task, finish_acquire_with_stack,
-    force_release_task, prepare_acquire_with_snapshot, release_from_stack, release_task,
+    HeldLock, HeldLockSnapshot, HeldLockStack, KspinLockdepIf, LockSubclass, LockdepMap,
+    PreparedAcquire, current_task_held_lock_snapshot, finish_acquire_task,
+    finish_acquire_with_stack, force_release_task, prepare_acquire_with_snapshot,
+    prepare_acquire_with_snapshot_nested, release_from_stack, release_task,
 };
 
 use crate::base::BaseSpinLock;
