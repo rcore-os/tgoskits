@@ -110,6 +110,7 @@ the published RCA itself, so hosts no longer need to snoop R6 responses:
 ```rust
 use embedded_hal::delay::DelayNs;
 use sdmmc_protocol::{Command, CommandResponsePoll, DataCommandPoll, Error, Response};
+use core::task::Waker;
 use sdmmc_protocol::sdio::{BusWidth, ClockSpeed, SdioHost, SdioSdmmc};
 
 struct MySdioHost;
@@ -167,6 +168,12 @@ impl SdioHost for MySdioHost {
         let _ = speed;
         todo!()
     }
+
+    fn register_waker(&mut self, waker: &Waker) {
+        let _ = waker;
+        // Optional: IRQ-driven hosts store this waker and wake it from
+        // their OS glue after handle_irq() reports command/data progress.
+    }
 }
 
 fn example<D: DelayNs>(host: MySdioHost, delay: D) -> Result<(), Error> {
@@ -181,6 +188,11 @@ fn example<D: DelayNs>(host: MySdioHost, delay: D) -> Result<(), Error> {
 `SdioSdmmc` detects SD versus eMMC during initialization. SD cards are widened
 through ACMD6; eMMC bus widening is intentionally left to host/platform code
 until the CMD6 SWITCH plus EXT_CSD flow is wired into the protocol layer.
+
+`SdioHost` follows a submit/poll model. `CommandFuture` and `DataFuture` adapt
+that model to `core::future::Future`: when a host returns `Pending`, the future
+calls `register_waker()` and yields `Poll::Pending`. Polling-only users can keep
+the default no-op waker registration and use the synchronous `SdioSdmmc` APIs.
 
 ## Command Helpers
 

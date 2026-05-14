@@ -12,7 +12,7 @@ categories = ["embedded", "no-std", "hardware-support"]
 [dependencies]
 bitflags = "2"
 embedded-hal = "1"
-log = "0.4"
+log.workspace = true
 
 [features]
 default = ["spi"]

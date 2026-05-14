@@ -11,7 +11,7 @@ categories = ["embedded", "no-std", "hardware-support"]
 [dependencies]
 sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
 embedded-hal = "1"
-log = "0.4"
+log.workspace = true
 dma-api.workspace = true
 mmio-api.workspace = true
 
