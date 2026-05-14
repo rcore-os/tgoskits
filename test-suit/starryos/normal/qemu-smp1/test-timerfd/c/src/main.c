@@ -238,8 +238,8 @@ int main(void) {
     };
     CHECK_RET(timerfd_settime(cfd, 0, &cspec, NULL), 0,
               "settime periodic 10ms for concurrency");
-    struct timespec sleep_for = {.tv_sec = 0, .tv_nsec = 80 * 1000 * 1000};
-    nanosleep(&sleep_for, NULL);
+    struct timespec accum_sleep = {.tv_sec = 0, .tv_nsec = 80 * 1000 * 1000};
+    nanosleep(&accum_sleep, NULL);
 
     int pipefd[2];
     CHECK_RET(pipe(pipefd), 0, "pipe for concurrent-reader coordination");
@@ -272,8 +272,8 @@ int main(void) {
     CHECK(parent_got == 0 || child_got == 0,
           "single-consumer: only one reader observed the batch");
     /* Disarm before close so any deferred timer task stops touching cfd. */
-    struct itimerspec disarm = {.it_interval = {0, 0}, .it_value = {0, 0}};
-    timerfd_settime(cfd, 0, &disarm, NULL);
+    struct itimerspec cdisarm = {.it_interval = {0, 0}, .it_value = {0, 0}};
+    timerfd_settime(cfd, 0, &cdisarm, NULL);
     close(cfd);
 
     TEST_DONE();
