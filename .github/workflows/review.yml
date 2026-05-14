@@ -1,4 +1,4 @@
-# AI PR Review Workflow
+# Review PR with DeepSeek
 #
 # 功能概述：
 #   手动输入 PR 编号后，使用 DeepSeek 对非草稿 PR 进行代码审查，并将中文审查评论发布到 PR，
@@ -20,7 +20,7 @@
 # 并发策略：
 #   同一 PR 上若有新 push，会取消正在运行的旧审查任务，避免评论堆积。
 #
-name: AI PR Review
+name: Review PR with DeepSeek
 
 on:
   workflow_dispatch:
