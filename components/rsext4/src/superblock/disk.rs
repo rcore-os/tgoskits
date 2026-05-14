@@ -349,6 +349,7 @@ impl DiskFormat for Ext4Superblock {
         let _ = offset;
     }
 
+    #[inline(always)]
     fn disk_size() -> usize {
         Self::SUPERBLOCK_SIZE
     }

@@ -754,8 +754,7 @@ pub fn create_journal_entry<B: BlockDevice>(
     let inode_size: usize = runtime_block_size() * free_block.len();
     jour_inode.i_size_lo = inode_size as u32;
     jour_inode.i_size_high = 0;
-    jour_inode.i_blocks_lo = (inode_size / 512) as u32;
-    jour_inode.l_i_blocks_high = 0;
+    jour_inode.set_blocks_count_from_fs_blocks(&fs.superblock, free_block.len() as u64);
     jour_inode.write_extend_header();
     build_file_block_mapping_with_inode_num(
         fs,

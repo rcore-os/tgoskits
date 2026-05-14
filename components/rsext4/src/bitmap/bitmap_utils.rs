@@ -1,11 +1,13 @@
 //! Shared bitmap utility helpers.
 
 /// Returns the number of bytes required to store `bits` bits.
+#[inline(always)]
 pub fn bytes_for_bits(bits: u32) -> usize {
     bits.div_ceil(8) as usize
 }
 
 /// Returns the number of set bits in a byte.
+#[inline(always)]
 pub fn count_set_bits(byte: u8) -> u32 {
     byte.count_ones()
 }
@@ -29,6 +31,7 @@ pub fn count_set_bits_in_bitmap(data: &[u8], max_bits: u32) -> u32 {
 }
 
 /// Sets a bit in-place. Returns `false` if the bit is out of range.
+#[inline(always)]
 pub fn set_bit(data: &mut [u8], bit_idx: u32) -> bool {
     let byte_idx = (bit_idx / 8) as usize;
     let bit_pos = (bit_idx % 8) as u8;
@@ -42,6 +45,7 @@ pub fn set_bit(data: &mut [u8], bit_idx: u32) -> bool {
 }
 
 /// Clears a bit in-place. Returns `false` if the bit is out of range.
+#[inline(always)]
 pub fn clear_bit(data: &mut [u8], bit_idx: u32) -> bool {
     let byte_idx = (bit_idx / 8) as usize;
     let bit_pos = (bit_idx % 8) as u8;
@@ -55,6 +59,7 @@ pub fn clear_bit(data: &mut [u8], bit_idx: u32) -> bool {
 }
 
 /// Tests a bit and returns `None` when the bit is out of range.
+#[inline(always)]
 pub fn test_bit(data: &[u8], bit_idx: u32) -> Option<bool> {
     let byte_idx = (bit_idx / 8) as usize;
     let bit_pos = (bit_idx % 8) as u8;
@@ -67,6 +72,7 @@ pub fn test_bit(data: &[u8], bit_idx: u32) -> Option<bool> {
 }
 
 /// Toggles a bit in-place. Returns `false` if the bit is out of range.
+#[inline(always)]
 pub fn toggle_bit(data: &mut [u8], bit_idx: u32) -> bool {
     let byte_idx = (bit_idx / 8) as usize;
     let bit_pos = (bit_idx % 8) as u8;

@@ -185,11 +185,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     let new_size = total_size + block_bytes;
     parent_inode.i_size_lo = new_size as u32;
     parent_inode.i_size_high = ((new_size as u64) >> 32) as u32;
-    let cur = parent_inode.blocks_count();
-    let add_sectors = fs.block_size as u64 / 512;
-    let newv = cur.saturating_add(add_sectors);
-    parent_inode.i_blocks_lo = (newv & 0xffff_ffff) as u32;
-    parent_inode.l_i_blocks_high = ((newv >> 32) & 0xffff) as u16;
+    parent_inode.add_one_fs_block_to_blocks_count(&fs.superblock);
 
     fs.datablock_cache.modify(device, new_block, |data| {
         for b in data.iter_mut() {

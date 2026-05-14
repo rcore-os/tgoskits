@@ -70,6 +70,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Creates a new JBD2 block device proxy.
+    #[inline]
     pub fn initial_jbd2dev(_mode: u8, block_dev: B, use_journal: bool) -> Self {
         let block_dev = BlockDev::new(block_dev);
         Self {
@@ -83,11 +84,13 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Returns whether journal support is enabled.
+    #[inline(always)]
     pub fn is_use_journal(&self) -> bool {
         self.journal_use
     }
 
     /// Returns the current journal transaction sequence if journal is active.
+    #[inline(always)]
     pub fn journal_sequence(&self) -> Option<u32> {
         self.system.as_ref().map(|s| s.sequence)
     }
@@ -118,6 +121,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Enables or disables journal use at runtime.
+    #[inline(always)]
     pub fn set_journal_use(&mut self, use_journal: bool) {
         self.journal_use = use_journal;
     }
@@ -187,16 +191,19 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Reads one block through the cached inner device.
+    #[inline(always)]
     pub fn read_block(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
         self.inner.read_block(block_id)
     }
 
     /// Returns the cached block buffer.
+    #[inline(always)]
     pub fn buffer(&self) -> &[u8] {
         self.inner.buffer()
     }
 
     /// Returns the cached block buffer mutably.
+    #[inline(always)]
     pub fn buffer_mut(&mut self) -> &mut [u8] {
         self.inner.buffer_mut()
     }
@@ -251,21 +258,25 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Flushes the inner cached device.
+    #[inline(always)]
     pub fn cantflush(&mut self) -> Ext4Result<()> {
         self.inner.flush()
     }
 
     /// Returns the total number of device blocks.
+    #[inline(always)]
     pub fn total_blocks(&self) -> u64 {
         self.inner.total_blocks()
     }
 
     /// Returns the current ext4 logical block size.
+    #[inline(always)]
     pub fn block_size(&self) -> u32 {
         runtime_block_size_u32()
     }
 
     /// Returns the backing-device block size.
+    #[inline(always)]
     pub fn dev_block_size(&self) -> u32 {
         self.inner._device().dev_block_size()
     }
@@ -276,6 +287,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Returns the current timestamp from the underlying device.
+    #[inline(always)]
     pub fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
         self.inner._device().current_time()
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::{config::INODE_BLOCK_COUNT_SECTOR_SIZE, superblock::Ext4Superblock};
 
 /// On-disk ext4 inode layout.
 ///
@@ -109,71 +110,133 @@ impl Ext4Inode {
     pub const FIELD_END_I_PROJID: u16 = 160;
 
     /// Returns the full 64-bit file size.
+    #[inline(always)]
     pub fn size(&self) -> u64 {
         (self.i_size_high as u64) << 32 | self.i_size_lo as u64
     }
 
     /// Returns the full 48-bit block count.
+    #[inline(always)]
     pub fn blocks_count(&self) -> u64 {
         (self.l_i_blocks_high as u64) << 32 | self.i_blocks_lo as u64
     }
 
+    /// Returns whether this inode uses ext4 huge-file `i_blocks` encoding.
+    #[inline(always)]
+    pub fn uses_huge_file_blocks(&self, sb: &Ext4Superblock) -> bool {
+        sb.has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE)
+            && self.i_flags & Self::EXT4_HUGE_FILE_FL != 0
+    }
+
+    /// Returns the on-disk accounting unit, in bytes, used by `i_blocks`.
+    #[inline(always)]
+    pub fn blocks_count_unit_bytes(&self, sb: &Ext4Superblock) -> u64 {
+        if self.uses_huge_file_blocks(sb) {
+            sb.block_size()
+        } else {
+            INODE_BLOCK_COUNT_SECTOR_SIZE
+        }
+    }
+
+    /// Stores a raw on-disk `i_blocks` value into the split inode fields.
+    #[inline(always)]
+    pub fn set_blocks_count_raw(&mut self, raw: u64) {
+        self.i_blocks_lo = (raw & 0xffff_ffff) as u32;
+        self.l_i_blocks_high = ((raw >> 32) & 0xffff) as u16;
+    }
+
+    /// Recomputes `i_blocks` from the number of allocated ext4 logical blocks.
+    #[inline(always)]
+    pub fn set_blocks_count_from_fs_blocks(&mut self, sb: &Ext4Superblock, fs_blocks: u64) {
+        let units_per_fs_block = sb.block_size() / self.blocks_count_unit_bytes(sb);
+        self.set_blocks_count_raw(fs_blocks.saturating_mul(units_per_fs_block));
+    }
+
+    /// Adds one allocated ext4 logical block to `i_blocks`.
+    #[inline(always)]
+    pub fn add_one_fs_block_to_blocks_count(&mut self, sb: &Ext4Superblock) {
+        let units_per_fs_block = sb.block_size() / self.blocks_count_unit_bytes(sb);
+        let next = self.blocks_count().saturating_add(units_per_fs_block);
+        self.set_blocks_count_raw(next);
+    }
+
+    /// Subtracts one allocated ext4 logical block from `i_blocks`.
+    #[inline(always)]
+    pub fn sub_one_fs_block_from_blocks_count(&mut self, sb: &Ext4Superblock) {
+        let units_per_fs_block = sb.block_size() / self.blocks_count_unit_bytes(sb);
+        let next = self.blocks_count().saturating_sub(units_per_fs_block);
+        self.set_blocks_count_raw(next);
+    }
+
     /// Returns the merged 32-bit UID.
+    #[inline(always)]
     pub fn uid(&self) -> u32 {
         (self.l_i_uid_high as u32) << 16 | self.i_uid as u32
     }
 
     /// Returns the merged 32-bit GID.
+    #[inline(always)]
     pub fn gid(&self) -> u32 {
         (self.l_i_gid_high as u32) << 16 | self.i_gid as u32
     }
 
+    #[inline(always)]
     pub fn set_uid(&mut self, uid: u32) {
         self.i_uid = (uid & 0xFFFF) as u16;
         self.l_i_uid_high = ((uid >> 16) & 0xFFFF) as u16;
     }
 
+    #[inline(always)]
     pub fn set_gid(&mut self, gid: u32) {
         self.i_gid = (gid & 0xFFFF) as u16;
         self.l_i_gid_high = ((gid >> 16) & 0xFFFF) as u16;
     }
 
     /// Returns the merged 48-bit extended-attribute block pointer.
+    #[inline(always)]
     pub fn file_acl(&self) -> u64 {
         (self.l_i_file_acl_high as u64) << 32 | self.i_file_acl_lo as u64
     }
 
     /// Returns true when the inode type is directory.
+    #[inline(always)]
     pub fn is_dir(&self) -> bool {
         self.i_mode & Self::S_IFMT == Self::S_IFDIR
     }
 
     /// Returns true when the inode type is regular file.
+    #[inline(always)]
     pub fn is_file(&self) -> bool {
         self.i_mode & Self::S_IFMT == Self::S_IFREG
     }
 
     /// Returns true when the inode type is symbolic link.
+    #[inline(always)]
     pub fn is_symlink(&self) -> bool {
         self.i_mode & Self::S_IFMT == Self::S_IFLNK
     }
 
+    #[inline(always)]
     pub fn permissions(&self) -> u16 {
         self.i_mode & !Self::S_IFMT
     }
 
+    #[inline(always)]
     pub fn set_mode_preserve_type(&mut self, mode: u16) {
         self.i_mode = (self.i_mode & Self::S_IFMT) | (mode & !Self::S_IFMT);
     }
 
+    #[inline(always)]
     pub fn set_mode_full(&mut self, mode: u16) {
         self.i_mode = mode;
     }
 
+    #[inline(always)]
     pub fn is_executable(&self) -> bool {
         self.i_mode & (Self::S_IXUSR | Self::S_IXGRP | Self::S_IXOTH) != 0
     }
 
+    #[inline(always)]
     pub fn clear_setid_bits_for_content_change(&mut self) {
         self.i_mode &= !Self::S_ISUID;
         if self.is_executable() {
@@ -181,6 +244,7 @@ impl Ext4Inode {
         }
     }
 
+    #[inline(always)]
     pub fn clear_setid_bits_for_chown(&mut self) {
         self.i_mode &= !(Self::S_ISUID | Self::S_ISGID);
     }

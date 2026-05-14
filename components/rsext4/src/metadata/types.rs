@@ -67,6 +67,7 @@ impl Default for Ext4InodeMetadataUpdate {
 }
 
 impl Ext4InodeMetadataUpdate {
+    #[inline(always)]
     pub(crate) fn create(mode: u16) -> Self {
         Self {
             reason: Ext4MetadataReason::Create,
@@ -80,6 +81,7 @@ impl Ext4InodeMetadataUpdate {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn read_access() -> Self {
         Self {
             reason: Ext4MetadataReason::Read,
@@ -88,6 +90,7 @@ impl Ext4InodeMetadataUpdate {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn write_access() -> Self {
         Self {
             reason: Ext4MetadataReason::Write,
@@ -98,6 +101,7 @@ impl Ext4InodeMetadataUpdate {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn truncate_access() -> Self {
         Self {
             reason: Ext4MetadataReason::Truncate,
@@ -108,6 +112,7 @@ impl Ext4InodeMetadataUpdate {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn chmod(mode: u16) -> Self {
         Self {
             reason: Ext4MetadataReason::Chmod,
@@ -117,6 +122,7 @@ impl Ext4InodeMetadataUpdate {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn chown(uid: Option<u32>, gid: Option<u32>) -> Self {
         Self {
             reason: Ext4MetadataReason::Chown,
@@ -128,6 +134,7 @@ impl Ext4InodeMetadataUpdate {
         }
     }
 
+    #[inline]
     pub(crate) fn utimens(atime: Ext4TimeSpec, mtime: Ext4TimeSpec) -> Self {
         let ctime = if matches!(atime, Ext4TimeSpec::Omit) && matches!(mtime, Ext4TimeSpec::Omit) {
             None
@@ -144,6 +151,7 @@ impl Ext4InodeMetadataUpdate {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn link_count_change() -> Self {
         Self {
             reason: Ext4MetadataReason::LinkCount,
@@ -152,6 +160,7 @@ impl Ext4InodeMetadataUpdate {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn parent_dir_change() -> Self {
         Self {
             reason: Ext4MetadataReason::ParentDir,

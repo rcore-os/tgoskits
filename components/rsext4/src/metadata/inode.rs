@@ -12,6 +12,7 @@ use crate::{
 };
 
 impl Ext4FileSystem {
+    #[inline(always)]
     pub(crate) fn inode_disk_size(&self) -> u16 {
         match self.superblock.s_inode_size {
             0 => Ext4Inode::LARGE_INODE_SIZE,
@@ -19,6 +20,7 @@ impl Ext4FileSystem {
         }
     }
 
+    #[inline]
     pub(crate) fn default_inode_extra_isize(&self) -> u16 {
         let max_extra = Ext4Inode::max_extra_isize(self.inode_disk_size());
         let mut extra = core::cmp::min(self.superblock.s_want_extra_isize, max_extra);
@@ -26,6 +28,7 @@ impl Ext4FileSystem {
         extra
     }
 
+    #[inline]
     fn try_expand_extra_isize_for_field(&self, inode: &mut Ext4Inode, field_end: u16) -> bool {
         let inode_size = self.inode_disk_size();
         let max_extra = Ext4Inode::max_extra_isize(inode_size);
@@ -47,6 +50,7 @@ impl Ext4FileSystem {
         true
     }
 
+    #[inline]
     pub(crate) fn ensure_extra_isize_for_field(
         &self,
         inode: &mut Ext4Inode,

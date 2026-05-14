@@ -9,6 +9,7 @@ impl Ext4Timestamp {
     pub const UNIX_EPOCH: Self = Self { sec: 0, nsec: 0 };
     pub const MAX_NSEC: u32 = 999_999_999;
 
+    #[inline(always)]
     pub fn new(sec: i64, nsec: u32) -> Self {
         Self {
             sec,

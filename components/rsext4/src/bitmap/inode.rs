@@ -13,6 +13,7 @@ pub struct InodeBitmap<'a> {
 
 impl<'a> InodeBitmap<'a> {
     /// Creates a new inode bitmap view.
+    #[inline(always)]
     pub fn new(data: &'a mut [u8], inodes_per_group: u32) -> Self {
         Self {
             data,
@@ -21,6 +22,7 @@ impl<'a> InodeBitmap<'a> {
     }
 
     /// Returns whether the inode is allocated.
+    #[inline]
     pub fn is_allocated(&self, inode_idx: u32) -> Option<bool> {
         if inode_idx >= self.inodes_per_group {
             return None;
@@ -37,6 +39,7 @@ impl<'a> InodeBitmap<'a> {
     }
 
     /// Returns whether the inode is free.
+    #[inline(always)]
     pub fn is_free(&self, inode_idx: u32) -> Option<bool> {
         self.is_allocated(inode_idx).map(|allocated| !allocated)
     }
@@ -72,6 +75,7 @@ impl<'a> InodeBitmap<'a> {
     }
 
     /// Counts allocated inodes in the group.
+    #[inline(always)]
     pub fn count_allocated(&self) -> u32 {
         self.inodes_per_group - self.count_free()
     }

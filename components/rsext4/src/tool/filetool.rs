@@ -53,6 +53,7 @@ pub fn debug_super_and_desc(superblock: &Ext4Superblock, fs: &Ext4FileSystem) {
 }
 
 /// Returns whether this group should carry a sparse-super backup copy.
+#[inline]
 pub fn need_redundant_backup(gid: u32) -> bool {
     if gid == 0 || gid == 1 {
         return true;
@@ -68,6 +69,7 @@ pub fn need_redundant_backup(gid: u32) -> bool {
 }
 
 /// Returns whether `number` is an exact power of `base`.
+#[inline]
 pub fn is_numbers_power(number: usize, base: usize) -> bool {
     if base < 2 {
         return number == 1;

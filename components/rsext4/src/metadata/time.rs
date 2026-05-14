@@ -6,6 +6,7 @@ use crate::{
     error::Ext4Result,
 };
 
+#[inline(always)]
 pub(crate) fn get_now<B: BlockDevice>(
     device: &Jbd2Dev<B>,
     now_cache: &mut Option<Ext4Timestamp>,
@@ -19,6 +20,7 @@ pub(crate) fn get_now<B: BlockDevice>(
     Ok(now)
 }
 
+#[inline(always)]
 pub(crate) fn resolve_time_spec<B: BlockDevice>(
     device: &Jbd2Dev<B>,
     spec: Ext4TimeSpec,

@@ -1,7 +1,6 @@
 use super::*;
 use crate::{
     bmalloc::InodeNumber,
-    config::runtime_block_size,
     crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
     superblock::Ext4Superblock,
 };
@@ -42,20 +41,12 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
-    pub(super) fn add_inode_sectors_for_block(&mut self) {
-        let add_sectors = (runtime_block_size() / 512) as u64;
-        let cur = ((self.inode.l_i_blocks_high as u64) << 32) | (self.inode.i_blocks_lo as u64);
-        let newv = cur.saturating_add(add_sectors);
-        self.inode.i_blocks_lo = (newv & 0xFFFF_FFFF) as u32;
-        self.inode.l_i_blocks_high = ((newv >> 32) & 0xFFFF) as u16;
+    pub(super) fn add_inode_sectors_for_block(&mut self, superblock: &Ext4Superblock) {
+        self.inode.add_one_fs_block_to_blocks_count(superblock);
     }
 
-    pub(super) fn sub_inode_sectors_for_block(&mut self) {
-        let sub_sectors = (runtime_block_size() / 512) as u64;
-        let cur = ((self.inode.l_i_blocks_high as u64) << 32) | (self.inode.i_blocks_lo as u64);
-        let newv = cur.saturating_sub(sub_sectors);
-        self.inode.i_blocks_lo = (newv & 0xFFFF_FFFF) as u32;
-        self.inode.l_i_blocks_high = ((newv >> 32) & 0xFFFF) as u16;
+    pub(super) fn sub_inode_sectors_for_block(&mut self, superblock: &Ext4Superblock) {
+        self.inode.sub_one_fs_block_from_blocks_count(superblock);
     }
 
     /// Walks all extent-tree blocks that live outside the inode's inline root.

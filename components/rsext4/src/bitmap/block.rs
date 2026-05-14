@@ -13,6 +13,7 @@ pub struct BlockBitmap<'a> {
 
 impl<'a> BlockBitmap<'a> {
     /// Creates a new block bitmap view.
+    #[inline(always)]
     pub fn new(data: &'a mut [u8], blocks_per_group: u32) -> Self {
         Self {
             data,
@@ -21,6 +22,7 @@ impl<'a> BlockBitmap<'a> {
     }
 
     /// Returns whether the block is allocated.
+    #[inline]
     pub fn is_allocated(&self, block_idx: u32) -> Option<bool> {
         if block_idx >= self.blocks_per_group {
             return None;
@@ -37,6 +39,7 @@ impl<'a> BlockBitmap<'a> {
     }
 
     /// Returns whether the block is free.
+    #[inline(always)]
     pub fn is_free(&self, block_idx: u32) -> Option<bool> {
         self.is_allocated(block_idx).map(|allocated| !allocated)
     }
@@ -98,6 +101,7 @@ impl<'a> BlockBitmap<'a> {
     }
 
     /// Counts allocated blocks in the group.
+    #[inline(always)]
     pub fn count_allocated(&self) -> u32 {
         self.blocks_per_group - self.count_free()
     }
