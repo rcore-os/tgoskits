@@ -95,6 +95,11 @@ const ABS_MAX: usize = 0x40;
 
 pub struct EventDev {
     inner: Mutex<Inner>,
+    /// IRQ line the underlying driver delivers buffered events on, when
+    /// the driver advertises one. `Pollable::register` wires the caller's
+    /// waker to this IRQ so virtio-input wakes its consumer in
+    /// microseconds rather than waiting for the next safety-net tick.
+    irq: Option<usize>,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
     /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
     /// raw bits with a synthesized `INPUT_PROP_POINTER` for absolute or
@@ -146,12 +151,14 @@ impl EventDev {
             let _ = device.get_event_bits(EventType::Absolute, &mut abs_bits);
         }
 
+        let irq = device.irq_num();
         Self {
             inner: Mutex::new(Inner {
                 device,
                 read_ahead: None,
                 key_state: Bitmap::new(),
             }),
+            irq,
             ev_bits,
             prop_bits,
             abs_bits,
@@ -434,7 +441,24 @@ impl Pollable for EventDev {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if events.contains(IoEvents::IN) {
+        if !events.contains(IoEvents::IN) {
+            return;
+        }
+        // If the driver advertises an IRQ, route the caller's waker
+        // through the per-IRQ waker list so the next virtio-input
+        // notification wakes the consumer directly. The unconditional
+        // wake the previous implementation issued here turned epoll
+        // (level-triggered) into a register → wake → consume-empty →
+        // re-register loop spinning at ~500 Hz; that hot loop is what
+        // libinput saw as continuous activity.
+        if let Some(irq) = self.irq {
+            ax_task::future::register_irq_waker(irq, context.waker());
+        }
+        // No IRQ advertised: fall back to an immediate wake so the
+        // caller doesn't sleep forever on devices that never deliver
+        // an IRQ at all (observed for QEMU virtio-keyboard-pci on
+        // aarch64 HVF). For these the consumer effectively polls.
+        else if self.inner.lock().has_event() {
             context.waker().wake_by_ref();
         }
     }
