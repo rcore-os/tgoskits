@@ -235,12 +235,11 @@ impl SocketOps for UdpSocket {
             // Take the endpoint/source copies now (they are Copy), but
             // keep the cork data in place until the send succeeds so that
             // a WouldBlock retry preserves buffered data.
-            let (endpoint, local_addr, payload_len) =
-                if let Some(ref c) = *cork_guard {
-                    (c.remote, Some(c.source), c.buf.len() + src.remaining())
-                } else {
-                    (remote_addr, Some(source_addr), src.remaining())
-                };
+            let (endpoint, local_addr, payload_len) = if let Some(ref c) = *cork_guard {
+                (c.remote, Some(c.source), c.buf.len() + src.remaining())
+            } else {
+                (remote_addr, Some(source_addr), src.remaining())
+            };
             let result = self.with_smol_socket(|socket| {
                 if !socket.is_open() {
                     // not connected
