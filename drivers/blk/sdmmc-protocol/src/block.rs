@@ -5,6 +5,8 @@
 //! drivers expose upward: submit one block transfer, advance it by polling or
 //! IRQ wakeups, and keep the concrete FIFO/DMA engine visible.
 
+use core::num::NonZeroUsize;
+
 /// Stable identifier returned by a host block queue after submission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockRequestId(usize);
@@ -28,6 +30,27 @@ pub enum BlockTransferMode {
     Fifo,
     /// Host-controller DMA engine (SDHCI ADMA2, DW_mshc IDMAC, etc.).
     Dma,
+}
+
+/// Buffer and address constraints exposed by a host block queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockBufferConfig {
+    /// Logical block size accepted by the queue.
+    pub block_size: NonZeroUsize,
+    /// Required CPU-buffer alignment in bytes.
+    pub align: usize,
+    /// Device-visible DMA address mask, when the queue uses DMA.
+    pub dma_mask: Option<u64>,
+}
+
+impl BlockBufferConfig {
+    pub const fn new(block_size: NonZeroUsize, align: usize, dma_mask: Option<u64>) -> Self {
+        Self {
+            block_size,
+            align,
+            dma_mask,
+        }
+    }
 }
 
 /// Direction of a block request.

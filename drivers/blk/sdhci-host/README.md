@@ -94,7 +94,9 @@ while matches!(host.poll_block_request(&mut request, id, &mut slot), Ok(BlockPol
 ```
 
 Platform code should implement `dma_api::DmaOp` and keep OS-specific mapping
-and cache maintenance there.
+and cache maintenance there. `Sdhci::block_buffer_config` exposes the FIFO or
+ADMA2 queue constraints so adapters can translate them into their runtime's
+block-buffer contract.
 
 ### Bring-up checklist
 
@@ -112,10 +114,10 @@ and cache maintenance there.
 7. Build `SdioSdmmc::new(host, delay)` and call `init()`. The driver
    will ramp the clock up to 25 MHz / 50 MHz via `set_clock` for you.
 
-If the SoC requires external clock-tree programming for each SD speed, register
-it with `Sdhci::set_external_clock`; the driver will gate the SD clock, call
-the platform callback with the target frequency, and re-enable external-clock
-mode.
+If the SoC requires external clock-tree programming for each SD speed, implement
+`sdhci_host::HostClock` in platform glue and register it with
+`Sdhci::set_external_clock`; the driver will gate the SD clock, call that clock
+capability with the target frequency, and re-enable external-clock mode.
 
 ## Testing
 

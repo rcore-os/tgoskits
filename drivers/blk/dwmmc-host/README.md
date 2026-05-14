@@ -36,13 +36,15 @@ DMA cache policy to platform glue.
 | Configurable FIFO offset | ✅     |
 | 1.8 V signaling register path | ✅ (board validation required) |
 | DDR50 register bit path | ✅ (board validation required) |
-| IDMAC descriptor helpers | partial helper API |
-| SdioHost IDMAC data path | ❌ |
+| IDMAC descriptor read / write | ✅ |
+| SdioHost IDMAC data path | ✅ (FIFO fallback) |
 | External-DMA data path | ❌ |
 | Controller-specific DLL/strobe/tuning windows | ❌ |
 
-`DwMmc::reset_and_init` disables the controller's internal DMAC. The `SdioHost`
-implementation currently moves card data through the FIFO in PIO mode.
+The `SdioHost` implementation tries IDMAC for 512-byte CMD17/CMD18/CMD24/CMD25
+block I/O when a `dma_api::DeviceDma` capability is installed with
+`DwMmc::set_dma`; otherwise it uses the FIFO path. `DwMmc::block_buffer_config`
+exposes the selected queue constraints for block-device adapters.
 
 ## Usage
 

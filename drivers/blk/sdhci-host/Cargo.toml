@@ -3,7 +3,7 @@ name = "sdhci-host"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "SDHCI host controller backend for sdmmc-protocol (no_std, PIO)"
+description = "SDHCI host controller backend for sdmmc-protocol (no_std, FIFO/ADMA2)"
 readme = "README.md"
 keywords = ["sd", "sdhci", "embedded", "no_std"]
 categories = ["embedded", "no-std", "hardware-support"]
@@ -13,6 +13,7 @@ sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio
 embedded-hal = "1"
 log = "0.4"
 dma-api.workspace = true
+mmio-api.workspace = true
 
 [features]
 default = []

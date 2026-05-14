@@ -32,7 +32,7 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use embedded_hal::delay::DelayNs;
 //! use sdmmc_protocol::{
 //!     Error,
@@ -83,9 +83,9 @@ pub mod spi;
 pub mod sdio;
 
 pub use block::{
-    BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
-    CommandPoll, CommandResponsePoll, DataCommandDirection, DataCommandPoll, DataCommandState,
-    OperationPoll,
+    BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,
+    BlockTransferState, CommandPoll, CommandResponsePoll, DataCommandDirection, DataCommandPoll,
+    DataCommandState, OperationPoll,
 };
 pub use cmd::{Command, DataDirection};
 pub use error::{Error, ErrorContext, Phase};

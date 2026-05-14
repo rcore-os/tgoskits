@@ -12,6 +12,7 @@
 use core::ptr::NonNull;
 
 use dma_api::DeviceDma;
+use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
     sdio::{ClockSpeed, SignalVoltage},
@@ -62,6 +63,7 @@ pub struct DwMmc {
     pub(crate) data_blocks_remaining: u32,
     pub(crate) data_cmd_index: u8,
     pub(crate) dma: Option<DeviceDma>,
+    pub(crate) dma_mask: u64,
     pub(crate) irq_pending_status: u32,
     pub(crate) completion_irq_enabled: bool,
 }
@@ -100,9 +102,33 @@ impl DwMmc {
             data_blocks_remaining: 0,
             data_cmd_index: 0,
             dma: None,
+            dma_mask: u32::MAX as u64,
             irq_pending_status: 0,
             completion_irq_enabled: false,
         }
+    }
+
+    /// Construct a `DwMmc` over an already-mapped MMIO capability.
+    ///
+    /// The OS/platform glue still owns mapping lifetime; this helper keeps the
+    /// portable driver boundary typed as `mmio-api` instead of a raw address.
+    ///
+    /// # Safety
+    ///
+    /// `mmio` must cover a valid, exclusively-owned DW_mshc register file.
+    pub unsafe fn new_from_mmio_raw(mmio: &MmioRaw) -> Self {
+        unsafe { Self::new(mmio.as_nonnull_ptr()) }
+    }
+
+    /// Construct a `DwMmc` over an already-mapped MMIO capability and explicit
+    /// FIFO offset.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`DwMmc::new_from_mmio_raw`]; `fifo_offset` must match
+    /// the hardware integration.
+    pub unsafe fn new_from_mmio_raw_with_fifo_offset(mmio: &MmioRaw, fifo_offset: usize) -> Self {
+        unsafe { Self::new_with_fifo_offset(mmio.as_nonnull_ptr(), fifo_offset) }
     }
 
     /// Construct a `DwMmc` from a raw mapped MMIO address.
@@ -149,6 +175,7 @@ impl DwMmc {
     /// 512-byte block I/O and fall back to the FIFO state machine if it cannot
     /// be used.
     pub fn set_dma(&mut self, dma: DeviceDma) {
+        self.dma_mask = dma.dma_mask();
         self.dma = Some(dma);
     }
 

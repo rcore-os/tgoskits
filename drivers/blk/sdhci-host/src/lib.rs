@@ -73,16 +73,21 @@ mod dma;
 mod host;
 mod regs;
 
-pub use dma::{ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, BlockRequest, BlockRequestSlot, RequestId};
-pub use host::Sdhci;
+pub use dma::{
+    ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, BlockQueue, BlockRequest, BlockRequestSlot, RequestId,
+};
+pub use host::{HostClock, Sdhci};
 pub use sdmmc_protocol::block::{
-    BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
+    BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,
+    BlockTransferState,
 };
 use sdmmc_protocol::{
     DataCommandPoll,
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
-    sdio::{BusWidth, ClockSpeed, SdioHost, SignalVoltage},
+    sdio::{
+        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioHost, SignalVoltage,
+    },
 };
 
 use crate::regs::*;
@@ -227,7 +232,7 @@ impl SdioHost for Sdhci {
         // retune the reference clock, then bring SD clock back up at 1:1.
         if let Some(cb) = self.ext_clock {
             self.disable_sd_clock();
-            cb(target_hz)?;
+            cb.set_clock(target_hz)?;
             return self.enable_clock_external();
         }
 
@@ -474,7 +479,49 @@ pub(crate) fn event_from_status(normal: u16, error: u16) -> Event {
     }
 }
 
+impl HostEvent for Event {
+    fn kind(&self) -> HostEventKind {
+        match self {
+            Event::None => HostEventKind::None,
+            Event::CommandComplete => HostEventKind::CommandComplete,
+            Event::TransferComplete => HostEventKind::TransferComplete,
+            Event::Error { .. } => HostEventKind::Error,
+            Event::Other { .. } => HostEventKind::Other,
+        }
+    }
+
+    fn source(&self) -> HostEventSource {
+        match self {
+            Event::CommandComplete => HostEventSource::Command,
+            Event::TransferComplete => HostEventSource::Data,
+            Event::None | Event::Error { .. } | Event::Other { .. } => HostEventSource::Controller,
+        }
+    }
+
+    fn queue_id(&self) -> Option<BlockRequestId> {
+        match self {
+            Event::TransferComplete => Some(BlockRequestId::new(0)),
+            Event::None | Event::CommandComplete | Event::Error { .. } | Event::Other { .. } => {
+                None
+            }
+        }
+    }
+}
+
 impl Sdhci {
+    pub fn block_buffer_config(&self, mode: BlockTransferMode) -> BlockBufferConfig {
+        match mode {
+            BlockTransferMode::Fifo => {
+                BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 1, None)
+            }
+            BlockTransferMode::Dma => BlockBufferConfig::new(
+                NonZeroUsize::new(512).unwrap(),
+                ADMA2_DESC_ALIGN,
+                Some(self.dma_mask),
+            ),
+        }
+    }
+
     /// Read and acknowledge pending controller status, returning a stable
     /// event for OS glue to translate into wakeups or worker scheduling.
     pub fn handle_irq(&mut self) -> Event {
@@ -527,5 +574,26 @@ mod tests {
                 error: ERROR_INT_DATA_TIMEOUT,
             }
         );
+    }
+
+    #[test]
+    fn event_reports_data_completion_source_for_runtime_wakeup() {
+        use sdmmc_protocol::sdio::{HostEvent, HostEventKind, HostEventSource};
+
+        let event = event_from_status(NORMAL_INT_XFER_COMPLETE, 0);
+
+        assert_eq!(event.kind(), HostEventKind::TransferComplete);
+        assert_eq!(event.source(), HostEventSource::Data);
+        assert_eq!(event.queue_id(), Some(BlockRequestId::new(0)));
+    }
+
+    #[test]
+    fn exposes_block_buffer_constraints() {
+        let host = unsafe { Sdhci::new_from_addr(0x1000_0000) };
+
+        let dma = host.block_buffer_config(BlockTransferMode::Dma);
+        assert_eq!(dma.block_size.get(), 512);
+        assert_eq!(dma.align, ADMA2_DESC_ALIGN);
+        assert_eq!(dma.dma_mask, Some(u32::MAX as u64));
     }
 }

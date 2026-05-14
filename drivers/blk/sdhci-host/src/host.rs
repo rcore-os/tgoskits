@@ -3,6 +3,7 @@
 use core::ptr::NonNull;
 
 use dma_api::DeviceDma;
+use mmio_api::MmioRaw;
 use sdmmc_protocol::error::{Error, ErrorContext, Phase};
 
 use crate::{command::CommandState, regs::*};
@@ -40,11 +41,12 @@ pub struct Sdhci {
     /// impl will route requests to this hook (and program the controller
     /// for 1:1 passthrough) instead of using the internal 10-bit divider.
     /// Used on controllers whose internal divider is unusable.
-    pub(crate) ext_clock: Option<fn(target_hz: u32) -> Result<(), Error>>,
+    pub(crate) ext_clock: Option<&'static dyn HostClock>,
     /// Command index for the data phase currently being drained by the
     /// submit/poll data-command state machine.
     pub(crate) active_data_cmd: u8,
     pub(crate) dma: Option<DeviceDma>,
+    pub(crate) dma_mask: u64,
     pub(crate) irq_pending_normal: u16,
     pub(crate) irq_pending_error: u16,
 }
@@ -65,9 +67,22 @@ impl Sdhci {
             ext_clock: None,
             active_data_cmd: 0,
             dma: None,
+            dma_mask: u32::MAX as u64,
             irq_pending_normal: 0,
             irq_pending_error: 0,
         }
+    }
+
+    /// Construct a new Sdhci over an already-mapped MMIO capability.
+    ///
+    /// The OS/platform glue still owns mapping lifetime; this helper keeps the
+    /// portable driver boundary typed as `mmio-api` instead of a raw address.
+    ///
+    /// # Safety
+    ///
+    /// `mmio` must cover a valid, exclusively-owned SDHCI v3.x register file.
+    pub unsafe fn new_from_mmio_raw(mmio: &MmioRaw) -> Self {
+        unsafe { Self::new(mmio.as_nonnull_ptr()) }
     }
 
     /// Construct a new Sdhci from a raw mapped MMIO address.
@@ -94,8 +109,11 @@ impl Sdhci {
     /// After installing the callback, the host runs in "external clock"
     /// mode: the SDHCI internal divider stays at 1:1, all rate control
     /// is delegated to the platform.
-    pub fn set_external_clock(&mut self, cb: fn(u32) -> Result<(), Error>) {
-        self.ext_clock = Some(cb);
+    pub fn set_external_clock<C>(&mut self, clock: &'static C)
+    where
+        C: HostClock + 'static,
+    {
+        self.ext_clock = Some(clock);
     }
 
     /// Install a DMA capability used by the high-level data-transfer hooks.
@@ -104,6 +122,7 @@ impl Sdhci {
     /// `SdioHost::submit_write_data` try ADMA2 first for 512-byte block I/O
     /// and fall back to the FIFO state machine if ADMA2 cannot be used.
     pub fn set_dma(&mut self, dma: DeviceDma) {
+        self.dma_mask = dma.dma_mask();
         self.dma = Some(dma);
     }
 
@@ -318,6 +337,15 @@ impl Sdhci {
     pub(crate) fn write_u8(&self, off: usize, val: u8) {
         unsafe { core::ptr::write_volatile((self.base_addr + off) as *mut u8, val) }
     }
+}
+
+/// Platform clock capability for hosts whose controller divider is unusable.
+///
+/// OS glue implements this boundary and installs it with
+/// [`Sdhci::set_external_clock`]. The driver core only knows that the
+/// callback retunes the controller input clock to the requested SD bus rate.
+pub trait HostClock: Sync {
+    fn set_clock(&self, target_hz: u32) -> Result<(), Error>;
 }
 
 #[inline]

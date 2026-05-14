@@ -53,18 +53,23 @@ mod host;
 mod regs;
 
 pub use sdmmc_protocol::block::{
-    BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
+    BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,
+    BlockTransferState,
 };
 use sdmmc_protocol::{
     DataCommandPoll,
     cmd::{Command, DataDirection},
     error::Error,
-    sdio::{BusWidth, ClockSpeed, SdioHost, SignalVoltage},
+    sdio::{
+        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioHost, SignalVoltage,
+    },
 };
 
 use crate::regs::RegisterBlockVolatileFieldAccess;
 pub use crate::{
-    dma::{BlockRequest, BlockRequestSlot, IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE, RequestId},
+    dma::{
+        BlockQueue, BlockRequest, BlockRequestSlot, IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE, RequestId,
+    },
     host::{DEFAULT_FIFO_OFFSET, DwMmc},
 };
 
@@ -338,7 +343,55 @@ pub(crate) fn event_from_raw_status(raw_status: u32) -> Event {
     }
 }
 
+impl HostEvent for Event {
+    fn kind(&self) -> HostEventKind {
+        match self {
+            Event::None => HostEventKind::None,
+            Event::CommandComplete => HostEventKind::CommandComplete,
+            Event::TransferComplete => HostEventKind::TransferComplete,
+            Event::ReceiveReady => HostEventKind::ReceiveReady,
+            Event::TransmitReady => HostEventKind::TransmitReady,
+            Event::Error { .. } => HostEventKind::Error,
+            Event::Other { .. } => HostEventKind::Other,
+        }
+    }
+
+    fn source(&self) -> HostEventSource {
+        match self {
+            Event::CommandComplete => HostEventSource::Command,
+            Event::TransferComplete | Event::ReceiveReady | Event::TransmitReady => {
+                HostEventSource::Data
+            }
+            Event::None | Event::Error { .. } | Event::Other { .. } => HostEventSource::Controller,
+        }
+    }
+
+    fn queue_id(&self) -> Option<BlockRequestId> {
+        match self {
+            Event::TransferComplete | Event::ReceiveReady | Event::TransmitReady => {
+                Some(BlockRequestId::new(0))
+            }
+            Event::None | Event::CommandComplete | Event::Error { .. } | Event::Other { .. } => {
+                None
+            }
+        }
+    }
+}
+
 impl DwMmc {
+    pub fn block_buffer_config(&self, mode: BlockTransferMode) -> BlockBufferConfig {
+        match mode {
+            BlockTransferMode::Fifo => {
+                BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 1, None)
+            }
+            BlockTransferMode::Dma => BlockBufferConfig::new(
+                NonZeroUsize::new(512).unwrap(),
+                IDMAC_DESC_ALIGN,
+                Some(self.dma_mask),
+            ),
+        }
+    }
+
     /// Read and acknowledge pending controller status, returning a stable
     /// event for OS glue to translate into wakeups or worker scheduling.
     pub fn handle_irq(&mut self) -> Event {
@@ -431,6 +484,30 @@ mod tests {
             .into_bits();
 
         assert_eq!(event_from_raw_status(raw), Event::Error { raw_status: raw });
+    }
+
+    #[test]
+    fn event_reports_data_completion_source_for_runtime_wakeup() {
+        use sdmmc_protocol::sdio::{HostEvent, HostEventKind, HostEventSource};
+
+        let raw = crate::regs::RIntSts::new()
+            .with_data_transfer_over(true)
+            .into_bits();
+        let event = event_from_raw_status(raw);
+
+        assert_eq!(event.kind(), HostEventKind::TransferComplete);
+        assert_eq!(event.source(), HostEventSource::Data);
+        assert_eq!(event.queue_id(), Some(BlockRequestId::new(0)));
+    }
+
+    #[test]
+    fn exposes_block_buffer_constraints() {
+        let host = unsafe { DwMmc::new_from_addr(0x1000_0000) };
+
+        let dma = host.block_buffer_config(BlockTransferMode::Dma);
+        assert_eq!(dma.block_size.get(), 512);
+        assert_eq!(dma.align, IDMAC_DESC_ALIGN);
+        assert_eq!(dma.dma_mask, Some(u32::MAX as u64));
     }
 
     #[test]

@@ -109,24 +109,52 @@ the published RCA itself, so hosts no longer need to snoop R6 responses:
 
 ```rust
 use embedded_hal::delay::DelayNs;
-use sdmmc_protocol::{Command, Error, Response};
+use sdmmc_protocol::{Command, CommandResponsePoll, DataCommandPoll, Error, Response};
 use sdmmc_protocol::sdio::{BusWidth, ClockSpeed, SdioHost, SdioSdmmc};
 
 struct MySdioHost;
+struct MyDataRequest<'a>(&'a mut [u8]);
 
 impl SdioHost for MySdioHost {
-    fn send_command(&mut self, cmd: &Command) -> Result<Response, Error> {
+    type Event = ();
+    type DataRequest<'a> = MyDataRequest<'a>;
+
+    fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
         let _ = cmd;
         todo!()
     }
 
-    fn read_data(&mut self, buf: &mut [u8], block_size: u32) -> Result<(), Error> {
-        let _ = (buf, block_size);
+    fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
         todo!()
     }
 
-    fn write_data(&mut self, buf: &[u8], block_size: u32) -> Result<(), Error> {
-        let _ = (buf, block_size);
+    fn submit_read_data<'a>(
+        &mut self,
+        cmd: &Command,
+        buf: &'a mut [u8],
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<Self::DataRequest<'a>, Error> {
+        let _ = (cmd, block_size, block_count);
+        Ok(MyDataRequest(buf))
+    }
+
+    fn submit_write_data<'a>(
+        &mut self,
+        cmd: &Command,
+        buf: &'a [u8],
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<Self::DataRequest<'a>, Error> {
+        let _ = (cmd, buf, block_size, block_count);
+        todo!()
+    }
+
+    fn poll_data_request<'a>(
+        &mut self,
+        request: &mut Self::DataRequest<'a>,
+    ) -> Result<DataCommandPoll, Error> {
+        let _ = request;
         todo!()
     }
 

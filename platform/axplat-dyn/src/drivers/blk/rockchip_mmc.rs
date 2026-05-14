@@ -21,7 +21,7 @@ use rdif_clk::ClockId;
 use rdrive::{
     Device, DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
 };
-use sdhci_host::{BlockRequest, BlockRequestSlot, BlockTransferMode, RequestId, Sdhci};
+use sdhci_host::{BlockQueue as SdhciBlockQueue, HostClock, RequestId, Sdhci};
 use sdmmc_protocol::{
     BlockPoll, Error,
     error::{ErrorContext, Phase},
@@ -37,8 +37,17 @@ use crate::drivers::{
 
 const BLOCK_SIZE: usize = 512;
 const SDHCI_POWER_330: u8 = 0x0e;
+static SDHCI_CLOCK: RockchipSdhciClock = RockchipSdhciClock;
 
 type RockchipSdhci = SdioSdmmc<Sdhci, AxDelay>;
+
+struct RockchipSdhciClock;
+
+impl HostClock for RockchipSdhciClock {
+    fn set_clock(&self, target_hz: u32) -> Result<(), Error> {
+        set_sdhci_clock(target_hz)
+    }
+}
 
 module_driver!(
     name: "Rockchip sdhci",
@@ -77,7 +86,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     let mut host = unsafe { Sdhci::new(mmio_base) };
     if CLK_DEV.is_completed() {
         info!("rockchip-sdhci: using external CRU clock");
-        host.set_external_clock(set_sdhci_clock);
+        host.set_external_clock(&SDHCI_CLOCK);
     } else {
         warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
     }
@@ -208,8 +217,7 @@ struct BlockDevice {
 struct BlockQueue {
     raw: Arc<SpinNoIrq<RockchipSdhci>>,
     capacity_blocks: u64,
-    block_slot: BlockRequestSlot,
-    pending: Option<BlockRequest>,
+    queue: SdhciBlockQueue,
     completed: Vec<rd_block::RequestId>,
 }
 
@@ -229,8 +237,7 @@ impl rd_block::Interface for BlockDevice {
             alloc::boxed::Box::new(BlockQueue {
                 raw: dev.clone(),
                 capacity_blocks: self.capacity_blocks,
-                block_slot: BlockRequestSlot::default(),
-                pending: None,
+                queue: SdhciBlockQueue::with_dma(0, DeviceDma::new(u32::MAX as u64, &DmaImpl)),
                 completed: Vec::new(),
             }) as _
         })
@@ -294,14 +301,15 @@ impl rd_block::IQueue for BlockQueue {
     }
 
     fn id(&self) -> usize {
-        0
+        self.queue.id()
     }
 
     fn buff_config(&self) -> rd_block::BuffConfig {
+        let config = self.queue.buff_config();
         rd_block::BuffConfig {
-            dma_mask: u64::MAX,
-            align: BLOCK_SIZE,
-            size: BLOCK_SIZE,
+            dma_mask: config.dma_mask.unwrap_or(u64::MAX),
+            align: config.align,
+            size: config.block_size.get(),
         }
     }
 
@@ -327,16 +335,10 @@ impl rd_block::IQueue for BlockQueue {
                 })?;
                 let size = NonZeroUsize::new(buffer.len())
                     .ok_or_else(|| rd_block::BlkError::Other("read buffer is empty".into()))?;
-                let request = submit_read_with_dma_fifo_fallback(
-                    raw.host_mut(),
-                    start_block,
-                    ptr,
-                    size,
-                    &mut self.block_slot,
-                )
-                .map_err(map_dev_err_to_blk_err)?;
-                let id = request.id();
-                self.pending = Some(request);
+                let id = self
+                    .queue
+                    .submit_read_request(raw.host_mut(), start_block, ptr, size)
+                    .map_err(map_dev_err_to_blk_err)?;
                 Ok(rd_block::RequestId::new(usize::from(id)))
             }
             rd_block::RequestKind::Write(items) => {
@@ -350,16 +352,10 @@ impl rd_block::IQueue for BlockQueue {
                 })?;
                 let size = NonZeroUsize::new(items.len())
                     .ok_or_else(|| rd_block::BlkError::Other("write buffer is empty".into()))?;
-                let request = submit_write_with_dma_fifo_fallback(
-                    raw.host_mut(),
-                    start_block,
-                    ptr,
-                    size,
-                    &mut self.block_slot,
-                )
-                .map_err(map_dev_err_to_blk_err)?;
-                let id = request.id();
-                self.pending = Some(request);
+                let id = self
+                    .queue
+                    .submit_write_request(raw.host_mut(), start_block, ptr, size)
+                    .map_err(map_dev_err_to_blk_err)?;
                 Ok(rd_block::RequestId::new(usize::from(id)))
             }
         }
@@ -379,10 +375,9 @@ impl BlockQueue {
         &mut self,
         request: rd_block::RequestId,
     ) -> Result<(), rd_block::BlkError> {
-        match self.raw.lock().host_mut().poll_block_request(
-            &mut self.pending,
+        match self.queue.poll_request(
+            self.raw.lock().host_mut(),
             RequestId::new(usize::from(request)),
-            &mut self.block_slot,
         ) {
             Ok(BlockPoll::Complete) => Ok(()),
             Ok(BlockPoll::Pending) => Err(rd_block::BlkError::Retry),
@@ -391,10 +386,10 @@ impl BlockQueue {
     }
 
     fn reap_pending_request(&mut self) -> Result<(), rd_block::BlkError> {
-        let Some(active) = self.pending.as_ref() else {
+        let Some(active) = self.queue.pending_id() else {
             return Ok(());
         };
-        let id = rd_block::RequestId::new(usize::from(active.id()));
+        let id = rd_block::RequestId::new(usize::from(active));
         match self.poll_active_request(id) {
             Ok(()) => {
                 self.completed.push(id);
@@ -404,61 +399,6 @@ impl BlockQueue {
             Err(err) => Err(err),
         }
     }
-}
-
-fn submit_read_with_dma_fifo_fallback(
-    host: &mut Sdhci,
-    start_block: u32,
-    ptr: NonNull<u8>,
-    size: NonZeroUsize,
-    slot: &mut BlockRequestSlot,
-) -> Result<BlockRequest, Error> {
-    let dma = DeviceDma::new(u32::MAX as u64, &DmaImpl);
-    match host.submit_read_blocks(
-        start_block,
-        ptr,
-        size,
-        Some(&dma),
-        BlockTransferMode::Dma,
-        slot,
-    ) {
-        Ok(request) => Ok(request),
-        Err(err) if can_fallback_to_fifo(err) => {
-            host.submit_read_blocks(start_block, ptr, size, None, BlockTransferMode::Fifo, slot)
-        }
-        Err(err) => Err(err),
-    }
-}
-
-fn submit_write_with_dma_fifo_fallback(
-    host: &mut Sdhci,
-    start_block: u32,
-    ptr: NonNull<u8>,
-    size: NonZeroUsize,
-    slot: &mut BlockRequestSlot,
-) -> Result<BlockRequest, Error> {
-    let dma = DeviceDma::new(u32::MAX as u64, &DmaImpl);
-    match host.submit_write_blocks(
-        start_block,
-        ptr,
-        size,
-        Some(&dma),
-        BlockTransferMode::Dma,
-        slot,
-    ) {
-        Ok(request) => Ok(request),
-        Err(err) if can_fallback_to_fifo(err) => {
-            host.submit_write_blocks(start_block, ptr, size, None, BlockTransferMode::Fifo, slot)
-        }
-        Err(err) => Err(err),
-    }
-}
-
-fn can_fallback_to_fifo(err: Error) -> bool {
-    matches!(
-        err,
-        Error::UnsupportedCommand | Error::InvalidArgument | Error::Misaligned
-    )
 }
 
 fn block_addr_for_card(block_id: usize, high_capacity: bool) -> Result<u32, rd_block::BlkError> {

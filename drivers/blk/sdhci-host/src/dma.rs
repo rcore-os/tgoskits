@@ -24,8 +24,8 @@ use core::{num::NonZeroUsize, ptr::NonNull};
 use dma_api::{DArray, DeviceDma, DmaDirection, SArrayPtr};
 use sdmmc_protocol::{
     block::{
-        BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
-        CommandPoll, DataCommandPoll,
+        BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,
+        BlockTransferState, CommandPoll, DataCommandPoll,
     },
     cmd::{Command, DataDirection, cmd17, cmd18, cmd24, cmd25},
     error::{Error, ErrorContext, Phase},
@@ -94,6 +94,132 @@ pub struct BlockRequest {
 // grant shared access to the mapped memory; completion still requires a
 // mutable `Sdhci` reference and consumes the request.
 unsafe impl Send for BlockRequest {}
+
+pub struct BlockQueue {
+    id: usize,
+    dma: Option<DeviceDma>,
+    slot: BlockRequestSlot,
+    pending: Option<BlockRequest>,
+}
+
+impl BlockQueue {
+    pub fn new(id: usize) -> Self {
+        Self {
+            id,
+            dma: None,
+            slot: BlockRequestSlot::default(),
+            pending: None,
+        }
+    }
+
+    pub fn with_dma(id: usize, dma: DeviceDma) -> Self {
+        Self {
+            id,
+            dma: Some(dma),
+            slot: BlockRequestSlot::default(),
+            pending: None,
+        }
+    }
+
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    pub fn buff_config(&self) -> BlockBufferConfig {
+        if let Some(dma) = &self.dma {
+            BlockBufferConfig::new(
+                NonZeroUsize::new(BLOCK_SIZE).unwrap(),
+                ADMA2_DESC_ALIGN,
+                Some(dma.dma_mask()),
+            )
+        } else {
+            BlockBufferConfig::new(NonZeroUsize::new(BLOCK_SIZE).unwrap(), 1, None)
+        }
+    }
+
+    pub fn pending_id(&self) -> Option<RequestId> {
+        self.pending.as_ref().map(BlockRequest::id)
+    }
+
+    pub fn submit_read_request(
+        &mut self,
+        host: &mut Sdhci,
+        start_block: u32,
+        buffer: NonNull<u8>,
+        size: NonZeroUsize,
+    ) -> Result<RequestId, Error> {
+        if self.pending.is_some() {
+            return Err(Error::UnsupportedCommand);
+        }
+        let request = match host.submit_read_blocks(
+            start_block,
+            buffer,
+            size,
+            self.dma.as_ref(),
+            BlockTransferMode::Dma,
+            &mut self.slot,
+        ) {
+            Ok(request) => request,
+            Err(err) if can_fallback_to_fifo(err) => host.submit_read_blocks(
+                start_block,
+                buffer,
+                size,
+                None,
+                BlockTransferMode::Fifo,
+                &mut self.slot,
+            )?,
+            Err(err) => return Err(err),
+        };
+        let id = request.id();
+        self.pending = Some(request);
+        Ok(id)
+    }
+
+    pub fn submit_write_request(
+        &mut self,
+        host: &mut Sdhci,
+        start_block: u32,
+        buffer: NonNull<u8>,
+        size: NonZeroUsize,
+    ) -> Result<RequestId, Error> {
+        if self.pending.is_some() {
+            return Err(Error::UnsupportedCommand);
+        }
+        let request = match host.submit_write_blocks(
+            start_block,
+            buffer,
+            size,
+            self.dma.as_ref(),
+            BlockTransferMode::Dma,
+            &mut self.slot,
+        ) {
+            Ok(request) => request,
+            Err(err) if can_fallback_to_fifo(err) => host.submit_write_blocks(
+                start_block,
+                buffer,
+                size,
+                None,
+                BlockTransferMode::Fifo,
+                &mut self.slot,
+            )?,
+            Err(err) => return Err(err),
+        };
+        let id = request.id();
+        self.pending = Some(request);
+        Ok(id)
+    }
+
+    pub fn poll_request(&mut self, host: &mut Sdhci, id: RequestId) -> Result<BlockPoll, Error> {
+        host.poll_block_request(&mut self.pending, id, &mut self.slot)
+    }
+}
+
+fn can_fallback_to_fifo(err: Error) -> bool {
+    matches!(
+        err,
+        Error::UnsupportedCommand | Error::InvalidArgument | Error::Misaligned
+    )
+}
 
 enum BlockRequestKind {
     FifoRead {
@@ -1244,6 +1370,33 @@ mod tests {
         assert!(
             slot.start(BlockTransferMode::Dma, BlockTransferDirection::Read)
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn block_queue_rejects_second_request_until_completion() {
+        let mut queue = BlockQueue::new(0);
+        let mut host = unsafe { Sdhci::new_from_addr(0x1000_0000) };
+        let ptr = NonNull::dangling();
+        let size = NonZeroUsize::new(BLOCK_SIZE).unwrap();
+        queue.pending = Some(BlockRequest {
+            inner: BlockRequestKind::FifoRead {
+                id: RequestId::new(0),
+                buffer: ptr,
+                len: BLOCK_SIZE,
+                block_size: BLOCK_SIZE,
+                offset: 0,
+                cmd_index: 17,
+                phase: Phase::DataRead,
+                stage: BlockRequestStage::Command,
+                stop_after_complete: false,
+                response: None,
+            },
+        });
+
+        assert_eq!(
+            queue.submit_read_request(&mut host, 1, ptr, size),
+            Err(Error::UnsupportedCommand)
         );
     }
 

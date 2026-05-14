@@ -9,7 +9,7 @@ use log::{debug, info, warn};
 
 pub use crate::cmd::DataDirection;
 use crate::{
-    block::{CommandResponsePoll, DataCommandPoll, OperationPoll},
+    block::{BlockRequestId, CommandResponsePoll, DataCommandPoll, OperationPoll},
     cmd::Command,
     common::block_addr_of,
     error::{Error, ErrorContext, Phase},
@@ -17,6 +17,57 @@ use crate::{
         CardState, CidResponse, CsdResponse, OcrResponse, Response, ResponseType, SwitchStatus,
     },
 };
+
+/// Host IRQ event category returned by portable controller cores.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HostEventKind {
+    /// No runtime action is required.
+    #[default]
+    None,
+    /// A command response is ready.
+    CommandComplete,
+    /// A data transfer has completed.
+    TransferComplete,
+    /// Receive-side FIFO or buffer data is ready.
+    ReceiveReady,
+    /// Transmit-side FIFO or buffer space is ready.
+    TransmitReady,
+    /// Hardware reported an error condition.
+    Error,
+    /// Status is pending but has no stable protocol-level category.
+    Other,
+}
+
+/// Hardware engine affected by a host IRQ event.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HostEventSource {
+    /// Whole controller or unknown source.
+    #[default]
+    Controller,
+    /// Command engine.
+    Command,
+    /// Data engine or block queue.
+    Data,
+}
+
+/// Stable event summary extracted by a host controller IRQ handler.
+pub trait HostEvent {
+    fn kind(&self) -> HostEventKind;
+
+    fn source(&self) -> HostEventSource {
+        HostEventSource::Controller
+    }
+
+    fn queue_id(&self) -> Option<BlockRequestId> {
+        None
+    }
+}
+
+impl HostEvent for () {
+    fn kind(&self) -> HostEventKind {
+        HostEventKind::None
+    }
+}
 
 /// Waiting strategy for protocol-level submit/poll operations.
 ///
@@ -190,7 +241,7 @@ pub trait SdioHost {
     ///
     /// Portable host crates can expose their native event enum here. The
     /// protocol layer does not interpret it; OS glue maps it to runtime wakeups.
-    type Event: Default;
+    type Event: HostEvent + Default;
 
     /// Submit a command without waiting for its response.
     fn submit_command(&mut self, cmd: &Command) -> Result<(), Error>;
@@ -1345,6 +1396,15 @@ mod tests {
         assert_eq!(host.enable_completion_irq(), Ok(()));
         assert_eq!(host.disable_completion_irq(), Ok(()));
         assert_eq!(host.handle_irq(), ());
+    }
+
+    #[test]
+    fn unit_irq_event_reports_no_runtime_action() {
+        let event = ();
+
+        assert_eq!(event.kind(), HostEventKind::None);
+        assert_eq!(event.source(), HostEventSource::Controller);
+        assert_eq!(event.queue_id(), None);
     }
 
     fn ok_r1() -> Response {
