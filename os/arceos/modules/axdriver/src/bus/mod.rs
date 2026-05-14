@@ -2,3 +2,8 @@
 mod mmio;
 #[cfg(bus = "pci")]
 mod pci;
+
+#[cfg(not(any(bus = "mmio", bus = "pci")))]
+impl crate::AllDevices {
+    pub(crate) fn probe_bus_devices(&mut self) {}
+}

@@ -28,4 +28,8 @@
 - For PRs, issues, review replies, discussions, and similar project-facing submissions, keep the language neutral and project-focused.
 - For PR titles, follow `type(scope): content` in Conventional Commits style. Prefer the main affected crate name as `scope` when one crate clearly dominates the change; for cross-cutting or infrastructure work, broader scopes such as `ci`, `repo`, or `docs` are acceptable.
 - PR title examples: `feat(axbuild): add Starry remote board test flow`, `fix(starry-process): correct tty session cleanup`, `chore(ci): split Starry self-hosted board matrix`.
+- When submitting a PR, write the title in English and the body in Chinese.
+- PR descriptions must clearly cover: the problem being solved, what was changed to solve it, and the logic behind each step of the solution.
+- Before submitting a PR, locally validate the CI flow as much as practical, excluding only physical board tests and self-hosted test flows unless the user explicitly asks to run them. Changes unrelated to building or testing, such as documentation-only updates, do not require local CI validation.
+- After adding or changing commits on a PR branch, update the PR description so it stays synchronized with the committed changes.
 - Do not insert agent-related labels, signatures, branding, or other advertisement-style wording such as `codex`, `agent`, `AI`, or similar self-promotional tags unless the user explicitly requests it.
