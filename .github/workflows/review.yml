@@ -1,3 +1,29 @@
+# AI PR Review Workflow
+#
+# 功能概述：
+#   每当有非草稿 PR 被打开、重新打开、推送新提交或标记为 ready_for_review 时，
+#   自动使用 OpenAI Codex 对 PR 进行代码审查，并将中文审查评论发布到 PR，
+#   同时根据改动内容推荐并请求合适的人工 reviewer。
+#
+# 前置配置（仓库 Secrets）：
+#   OPENAI_API_KEY  —— OpenAI API 密钥，需有 gpt-5.2 模型访问权限。
+#
+# 审查范围与限制：
+#   - 基于 PR 元数据、diff（.codex-pr-review/pr.diff）和 base 分支文件进行审查。
+#   - 不会 checkout、构建或执行 PR 分支代码（pull_request_target 安全模型）。
+#   - 只发布修改建议和风险说明；不自动 APPROVE 或 REQUEST_CHANGES。
+#
+# 推荐 reviewer 候选人（见 .github/CODEOWNERS）：
+#   ZR233       —— 核心组件、OS、drivers、test-suit、CI/xtask/scripts、跨模块改动
+#   ZCShou      —— docs、build/config、workflow、scripts/xtask、platform、仓库维护
+#   AsakuraMizu —— components、drivers、os、crates、模块化内核和设备相关改动
+#
+# 并发策略：
+#   同一 PR 上若有新 push，会取消正在运行的旧审查任务，避免评论堆积。
+#
+# 升级 codex-action 版本时，请同步更新下方 SHA（固定到具体 commit 以防供应链攻击）：
+#   uses: openai/codex-action@<new-sha> # vX.Y
+
 name: AI PR Review
 
 on:
