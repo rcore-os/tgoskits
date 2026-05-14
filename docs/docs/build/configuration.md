@@ -189,6 +189,10 @@ pub struct BuildInfo {
 - `max_cpu_num`：值为 0 时报错（必须大于 0）
 - `plat_dyn`：仅 `aarch64-*` target 真正支持，其他架构即使配置为 `true` 也会被 `supports_platform_dynamic()` 强制回退为 `false`
 
+### `axconfig_overrides` 用途
+
+`axconfig_overrides` 字段允许用户通过 Build Info 覆盖平台配置生成时的特定值，格式为 `table.key=value`（如 `memory.size=0x8000000`）。在静态平台模式下（`plat_dyn = false`），`generate_axconfig()` 将这些覆盖值传入配置引擎的 `GenerateOptions.writes`，与平台包的默认配置规格合并后生成 `.axconfig.toml`。这使得用户无需修改平台源码即可微调内存布局、设备地址等编译期参数。
+
 ### 加载流程
 
 `load_or_create_build_info()` 按以下逻辑获取或创建 Build Info 文件：
@@ -219,10 +223,10 @@ Build Info 的字段在编译时转换为以下环境变量：
 | `AX_CONFIG_PATH` | axbuild 生成 | 平台配置路径 |
 | `AX_PLATFORM` | 平台检测 | 平台名 |
 | `FEATURES` | 外部环境变量 | Makefile 兼容的 feature 注入（逗号/空格分隔） |
-
-`FEATURES` 环境变量提供与传统 Makefile 工作流的兼容性：`makefile_features_from_env()` 解析其中的 feature 列表，自动添加前缀族前缀后合并到 BuildInfo。
 | `AX_ARCH` | arch 解析 | 架构名 |
 | `AX_TARGET` | target 解析 | target triple |
 | `AXVISOR_VM_CONFIGS` | `--vmconfigs` | VM 配置列表 |
 
 这些环境变量在 Cargo 编译时通过 `--env` 传递，被 OS 源码中的 `env!()` 宏在编译期读取。其中 `AX_LOG` 控制日志过滤级别，`SMP` 决定系统启动的 CPU 核数，`AX_CONFIG_PATH` 指向由 `axbuild` 预生成的平台配置文件。各子系统还会额外注入自己的环境变量（如 Axvisor 的 `AXVISOR_VM_CONFIGS`）。
+
+`FEATURES` 环境变量提供与传统 Makefile 工作流的兼容性：`makefile_features_from_env()` 解析逗号/空格分隔的 feature 列表，自动添加前缀族前缀后合并到 BuildInfo。

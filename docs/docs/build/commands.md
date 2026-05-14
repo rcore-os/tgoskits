@@ -110,6 +110,19 @@ cargo xtask starry <subcommand> [options]
 | `defconfig` | 生成默认板卡配置 |
 | `config ls` | 列出可用板卡名称 |
 
+`quick-start` 提供常见 QEMU 平台和 Orange Pi 5 Plus 的简化工作流，每个平台包含 `build` 和 `run` 两阶段：
+
+| 子命令 | 说明 |
+|--------|------|
+| `quick-start list` | 列出所有支持的 quick-start 平台 |
+| `quick-start qemu-aarch64 {build,run}` | aarch64 QEMU 平台的构建/运行 |
+| `quick-start qemu-riscv64 {build,run}` | riscv64 QEMU 平台的构建/运行 |
+| `quick-start qemu-loongarch64 {build,run}` | loongarch64 QEMU 平台的构建/运行 |
+| `quick-start qemu-x86_64 {build,run}` | x86_64 QEMU 平台的构建/运行 |
+| `quick-start orangepi-5-plus {build,run}` | Orange Pi 5 Plus 板卡的构建/运行，run 支持 `--serial`/`--baud`/`--dtb` 参数覆盖 |
+
+`example board` 从 `examples/starry/<case>/` 目录中按名称发现用例，每个用例目录包含 `init.sh` 启动脚本（定义板卡上执行的命令）以及自动发现的 `board-*.toml` 和 `build-*.toml` 配置文件，无需手动指定所有配置路径。
+
 ### 参数
 
 **通用参数**：`--arch`、`--target`、`--config`、`--smp`、`--debug`

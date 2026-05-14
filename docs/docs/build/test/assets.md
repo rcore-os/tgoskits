@@ -169,7 +169,10 @@ Grouped Pipeline 的设计动机是支持一个用例内执行多条命令并分
 C 用例通过 CMake 交叉编译，并将产物注入到 rootfs。完整流程为：
 
 1. `extract_rootfs(rootfs_img, staging_root)` — 用 `debugfs rdump` 将 rootfs 提取到 staging 目录
-2. `prepare_staging_root(staging_root)` — 子系统钩子（StarryOS 注入 DNS/AKP 配置，ArceOS 跳过）
+2. `prepare_staging_root(staging_root)` — 子系统钩子。StarryOS 执行两步操作：
+   - **DNS 注入**（`starry/resolver.rs`）：读取宿主 DNS 配置写入 staging `/etc/resolv.conf`。依次尝试 `/run/systemd/resolve/resolv.conf` → `/etc/resolv.conf` → 默认 `1.1.1.1, 8.8.8.8`，自动过滤 loopback（`127.0.0.x`）和 QEMU slirp 地址（`10.0.2.3`），确保 staging 环境有可用的外网 DNS
+   - **APK 区域配置**（`starry/apk.rs`）：根据 `STARRY_APK_REGION` 环境变量重写 staging 中 `/etc/apk/repositories` 的镜像源地址，支持 `china`/`cn`（默认，使用 `mirrors.cernet.edu.cn/alpine`）和 `us`/`usa`（使用 `dl-cdn.alpinelinux.org/alpine`）
+   - ArceOS 和 Axvisor 跳过此步骤（`|_| Ok(())`）
 3. `write_musl_loader_search_path(arch, staging_root)` — 写入 `/etc/ld-musl-{arch}.path` 配置动态链接器搜索路径
 4. 可选 `prebuild.sh` — 如果 `c/prebuild.sh` 存在，在 qemu-user 环境下执行（用于需要 guest 环境的构建步骤）
 5. `prepare_host_cross_build_env(arch, layout, qemu_runner)` — 生成 `cmake-toolchain.cmake`（含 CC、CXX、AR、RANLIB、SYSROOT、CMAKE_SYSTEM_PROCESSOR）
