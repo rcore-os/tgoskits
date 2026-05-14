@@ -96,6 +96,15 @@ Run the StarryOS board example:
 cargo starry example board -t orangepi-5-plus-uvc-rknn
 ```
 
+The default example command uses `board-orangepi-5-plus.toml`, which runs a
+bounded smoke test and exits after the success marker is printed. For continuous
+manual testing with browser preview, pass the long-run board config explicitly:
+
+```bash
+cargo starry example board -t orangepi-5-plus-uvc-rknn \
+  --board-config configs/board-orangepi-5-plus-long-run.toml
+```
+
 For the current shared board, pass the concrete board lease endpoint:
 
 ```bash
@@ -105,9 +114,9 @@ cargo starry example board -t orangepi-5-plus-uvc-rknn \
   --port 2999
 ```
 
-The same continuous stream command is also stored in
-`board-orangepi-5-plus.toml`, so this direct board command starts the preview as
-well:
+The same bounded smoke-test command is also stored in
+`board-orangepi-5-plus.toml`, so this direct board command runs the default
+example as well:
 
 ```bash
 cargo starry board \
@@ -119,7 +128,9 @@ cargo starry board \
   --port 2999
 ```
 
-The Starry command is intentionally continuous. Keep it running while viewing
-the stream, and stop it with `Ctrl+C` when done. StarryOS uses DHCP by default;
-use the `eth0: DHCP acquired address ...` boot log as `<starry-board-ip>`, then
-open `http://<starry-board-ip>:8080/stream.mjpg`.
+For the direct long-run command, switch `--board-config` to
+`examples/starry/orangepi-5-plus-uvc-rknn/configs/board-orangepi-5-plus-long-run.toml`.
+Keep the long-run command running while viewing the stream, and stop it with
+`Ctrl+C` when done. StarryOS uses DHCP by default; use the `eth0: DHCP acquired
+address ...` boot log as `<starry-board-ip>`, then open
+`http://<starry-board-ip>:8080/stream.mjpg`.
