@@ -323,11 +323,11 @@ pub fn sys_pwrite64(
         return Err(AxError::InvalidInput);
     }
     let f = file_or_espipe_write(fd)?;
-    let file_like = get_file_like(fd)?;
     if len == 0 {
-        memfd_check_write_seal(&file_like)?;
+        // Linux: 0-byte pwrite is a no-op and must not fail with F_SEAL_WRITE.
         return Ok(0);
     }
+    let file_like = get_file_like(fd)?;
     let data = copy_user_read_buf(buf, len)?;
     memfd_checks_before_write_at(&file_like, offset as u64, len as u64)?;
     let write = f.inner().write_at(data.as_slice(), offset as _)?;

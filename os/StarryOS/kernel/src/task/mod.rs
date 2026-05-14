@@ -497,6 +497,21 @@ impl ProcessData {
         self.aspace.lock().clone()
     }
 
+    /// Returns a clone of the address-space [`Arc`] only when this process is the sole
+    /// strong-reference holder (last `CLONE_VM` co-owner).
+    ///
+    /// Used from [`crate::task::ops::do_exit`] to run [`AddrSpace::clear`] **outside**
+    /// the [`SpinNoIrq`] guard on [`Self::aspace`]. The `vm_aspace_shared` flag must not
+    /// influence this decision (see `CLONE_VM` multi-holder teardown).
+    pub(crate) fn aspace_for_unique_owner_teardown(&self) -> Option<Arc<Mutex<AddrSpace>>> {
+        let guard = self.aspace.lock();
+        if Arc::strong_count(&*guard) == 1 {
+            Some(guard.clone())
+        } else {
+            None
+        }
+    }
+
     /// Replace this process's address space with a new one.
     ///
     /// # Why `mem::replace` instead of `*guard = new_aspace`

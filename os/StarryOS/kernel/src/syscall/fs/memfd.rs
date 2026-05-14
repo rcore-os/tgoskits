@@ -112,10 +112,11 @@ pub fn memfd_checks_before_stream_write(
     file_like: &Arc<dyn FileLike>,
     write_len: u64,
 ) -> AxResult<()> {
-    memfd_check_write_seal(file_like)?;
+    // Linux: 0-byte writes succeed even when `F_SEAL_WRITE` is set (no content mutation).
     if write_len == 0 {
         return Ok(());
     }
+    memfd_check_write_seal(file_like)?;
     let Some(file) = file_like.downcast_ref::<File>() else {
         return Ok(());
     };
@@ -136,10 +137,10 @@ pub fn memfd_checks_before_write_at(
     offset: u64,
     write_len: u64,
 ) -> AxResult<()> {
-    memfd_check_write_seal(file_like)?;
     if write_len == 0 {
         return Ok(());
     }
+    memfd_check_write_seal(file_like)?;
     let Some(file) = file_like.downcast_ref::<File>() else {
         return Ok(());
     };

@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <signal.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -707,6 +708,114 @@ static void test_memfd_seal_enforcement(void)
     }
 }
 
+/* Linux: F_SEAL_WRITE blocks non-zero writes; 0-byte write / pwrite succeed. */
+static void test_memfd_sealed_zero_byte_write(void)
+{
+    printf("--- memfd F_SEAL_WRITE: 0-byte write / pwrite succeed (Linux) ---\n");
+
+    errno = 0;
+    int fd = memfd_create("seal_zero_len", MFD_ALLOW_SEALING);
+    CHECK(fd >= 0, "memfd_create(seal_zero_len)");
+    if (fd < 0) {
+        return;
+    }
+    CHECK_RET(ftruncate(fd, 4096), 0, "ftruncate 4KiB");
+    CHECK_RET(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "ADD_SEALS(F_SEAL_WRITE)");
+
+    errno = 0;
+    ssize_t z = write(fd, "", 0);
+    CHECK(z == 0, "F_SEAL_WRITE 后 write(..., 0) 成功");
+
+    errno = 0;
+    z = pwrite(fd, "", 0, 0);
+    CHECK(z == 0, "F_SEAL_WRITE 后 pwrite(..., 0) 成功");
+
+    errno = 0;
+    z = write(fd, "x", 1);
+    CHECK(z == -1 && errno == EPERM, "F_SEAL_WRITE 后非零 write 仍 -> EPERM");
+
+    CHECK_RET(close(fd), 0, "close memfd (zero-byte seal case)");
+}
+
+#define CLONE_VM_TEST_STACK (64u * 1024u)
+
+/* Shared page layout: [0..3] ready (int), [4..7] done pipe write fd (int), [8] probe byte. */
+static int clone_vm_child_fn(void *arg)
+{
+    unsigned char *page = (unsigned char *)arg;
+    volatile int *ready = (volatile int *)page;
+    int done_wr = ((int *)page)[1];
+
+    while (*ready == 0) {
+        (void)sched_yield();
+    }
+    page[8] = (unsigned char)0x5a;
+    char b = 1;
+    if (write(done_wr, &b, 1) != 1) {
+        _exit(41);
+    }
+    _exit(0);
+}
+
+/* fork 出中间进程：其 `vm_aspace_shared` 为 false，再 `clone(CLONE_VM)` 子进程后先退出。 */
+static void test_clone_vm_mid_exits_first(void)
+{
+    printf("--- CLONE_VM: intermediate exits first; child still uses shared mmap ---\n");
+
+    int done_pipe[2];
+    CHECK_RET(pipe(done_pipe), 0, "pipe (clone child -> parent done)");
+
+    pid_t mid = fork();
+    if (mid < 0) {
+        perror("fork");
+        CHECK(0, "fork intermediate");
+        close(done_pipe[0]);
+        close(done_pipe[1]);
+        return;
+    }
+    if (mid == 0) {
+        close(done_pipe[0]);
+        void *stk = mmap(NULL, CLONE_VM_TEST_STACK, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (stk == MAP_FAILED) {
+            _exit(10);
+        }
+        void *shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                            MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        if (shared == MAP_FAILED) {
+            munmap(stk, CLONE_VM_TEST_STACK);
+            _exit(11);
+        }
+        memset(shared, 0, 4096);
+        int *hdr = (int *)shared;
+        hdr[0] = 0;
+        hdr[1] = done_pipe[1];
+
+        long clone_flags = (long)(CLONE_VM | SIGCHLD);
+        pid_t cpid = clone(clone_vm_child_fn, (char *)stk + CLONE_VM_TEST_STACK, clone_flags, shared);
+        if (cpid < 0) {
+            munmap(shared, 4096);
+            munmap(stk, CLONE_VM_TEST_STACK);
+            _exit(12);
+        }
+        (void)cpid;
+        hdr[0] = 1;
+        /* Do not munmap `stk` / `shared`: clone child still runs in this address space. */
+        _exit(0);
+    }
+
+    close(done_pipe[1]);
+
+    int st = 0;
+    CHECK_RET(waitpid(mid, &st, 0), mid, "waitpid intermediate");
+    CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 0, "intermediate _exit(0)");
+
+    char ack = 0;
+    ssize_t nr = read(done_pipe[0], &ack, 1);
+    close(done_pipe[0]);
+    CHECK(nr == 1 && ack == 1, "CLONE_VM child completed (pipe ack)");
+}
+
 static void test_memfd_seal_more_syscalls(void)
 {
     printf("--- memfd seals: writev/pwritev/fallocate/sendfile/copy_file_range ---\n");
@@ -1027,6 +1136,8 @@ int main(void)
     test_memfd_seal_fork();
     test_memfd_seal_fork_busy_write_seal();
     test_memfd_seal_enforcement();
+    test_memfd_sealed_zero_byte_write();
+    test_clone_vm_mid_exits_first();
     test_memfd_seal_more_syscalls();
     test_memfd_hugetlb_and_reserved_flags();
 
