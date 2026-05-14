@@ -310,17 +310,33 @@ impl FileLike for Timerfd {
             return Err(AxError::InvalidInput);
         }
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let n = self.expire_count.load(Ordering::Acquire);
-            if n == 0 {
-                return Err(AxError::WouldBlock);
+            // Race-free read: atomically claim the entire `expire_count`
+            // snapshot via CAS so concurrent readers can't both observe
+            // and copy the same ticks. Linux's `timerfd_read(2)` holds
+            // the timerfd spinlock across the load + clear; we get the
+            // same single-consumer guarantee from the CAS loop. A
+            // simultaneous `fetch_add` from the timer task raises the
+            // count past `n`, the CAS fails, and we re-snapshot before
+            // copying — so newly-arrived ticks aren't dropped either.
+            let n = loop {
+                let observed = self.expire_count.load(Ordering::Acquire);
+                if observed == 0 {
+                    return Err(AxError::WouldBlock);
+                }
+                if self
+                    .expire_count
+                    .compare_exchange(observed, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    break observed;
+                }
+            };
+            // Linux's timerfd_read(2): a failed read does not discard
+            // expirations. Restore the claimed count on copyout failure.
+            if let Err(e) = dst.write(&n.to_ne_bytes()) {
+                self.expire_count.fetch_add(n, Ordering::AcqRel);
+                return Err(e);
             }
-            // Consume only after the copyout succeeds. Linux's
-            // timerfd_read(2) is explicit: a failed read does not
-            // discard the expirations. Using `fetch_sub(n)` (rather
-            // than `swap(0)`) also preserves any ticks the timer
-            // task added between our `load` above and this point.
-            dst.write(&n.to_ne_bytes())?;
-            self.expire_count.fetch_sub(n, Ordering::AcqRel);
             Ok(core::mem::size_of::<u64>())
         }))
     }
