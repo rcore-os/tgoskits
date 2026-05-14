@@ -123,7 +123,7 @@ sequenceDiagram
     Snap->>FS: "写入 tmp/axbuild/.{os}.toml"
 ```
 
-每次命令执行时，`resolve.rs` 先从文件系统加载 Snapshot，然后将 CLI 参数与 Snapshot 合并（CLI 显式指定的参数优先），最终得到完整的 `ResolvedRequest`。命令执行成功后，合并后的参数会写回 Snapshot 文件。设置环境变量 `AXBUILD_NO_SNAPSHOT=1` 可跳过 Snapshot 的读写，在 CI 等需要每次使用默认参数的场景中很有用。
+每次命令执行时，`resolve.rs` 先从文件系统加载 Snapshot，然后将 CLI 参数与 Snapshot 合并（CLI 显式指定的参数优先），最终得到完整的 `ResolvedRequest`。**合并后的参数在构建开始前即写回 Snapshot 文件**（而非构建成功后），由 `SnapshotPersistence` 控制是否写回。设置环境变量 `AXBUILD_NO_SNAPSHOT=1` 可跳过 Snapshot 的读写，在 CI 等需要每次使用默认参数的场景中很有用。
 
 `SnapshotPersistence` 枚举控制是否写回：用户手动调用的命令使用 `Store`（保留参数供下次复用），测试套件使用 `Discard`（不污染用户的 Snapshot 文件）。
 

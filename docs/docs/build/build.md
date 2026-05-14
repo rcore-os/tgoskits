@@ -11,19 +11,30 @@ sidebar_label: "构建过程"
 
 ## 流程总览
 
-八个阶段从前到后构成一条连续的流水线，每阶段以上一阶段的输出为输入：
+八个阶段从前到后构成一条连续的流水线，每阶段以上一阶段的输出为输入。以下展示**初次构建**（无任何已有配置文件）的完整流程：
 
 ```mermaid
 flowchart TD
-    A["cargo xtask &lt;os&gt; build"] --> B[1. 初始化 AppContext]
-    B --> C["2. 参数解析 (CLI → ResolvedRequest)"]
-    C --> D["3. Arch / Target 解析"]
-    D --> E["4. Build Info 加载"]
-    E --> F["5. Feature 解析"]
-    F --> G["6. axconfig 生成 (非 plat_dyn)"]
-    G --> H["7. Cargo 配置组装"]
+    A["cargo xtask arceos build<br/>--package ax-helloworld"] --> B[1. 初始化 AppContext]
+    B --> C["2. 参数解析"]
+    C --> C1["Snapshot 不存在 → 空 Snapshot<br/>CLI 参数 + 子系统默认值"]
+    C1 --> C2["创建并写回 Snapshot<br/>(tmp/axbuild/.arceos.toml)"]
+    C2 --> D["3. Arch / Target 解析<br/>→ aarch64 + target"]
+    D --> E["4. Build Info 创建"]
+    E --> E1["文件不存在 → 默认模板<br/>写入 tmp/axbuild/config/&lt;pkg&gt;/build-&lt;target&gt;.toml"]
+    E1 --> F["5. Feature 解析"]
+    F --> G["6. axconfig 生成"]
+    G --> G1["定位平台包 → 合并配置<br/>写入 tmp/axbuild/axconfig/&lt;pkg&gt;/&lt;target&gt;/.axconfig.toml"]
+    G1 --> H["7. Cargo 配置组装"]
     H --> I["8. ostool 执行 (cargo build)"]
 ```
+
+**后续构建**时，三类配置文件均已存在，流程简化为：
+- **阶段 2**：从已有 Snapshot 加载参数，与 CLI 合并
+- **阶段 4**：直接 TOML 反序列化已有 Build Info 文件（用户可手动编辑该文件调整配置）
+- **阶段 6**：axconfig 重新生成（每次构建都会重新生成，确保与平台包配置同步）
+
+三类配置文件的详细说明见 [参数与配置](/docs/build/configuration)，底层执行见 [运行](/docs/build/run)。
 
 ## 1. 初始化 AppContext
 
@@ -55,28 +66,35 @@ CLI 参数经 clap 解析后，由 `context/resolve.rs` 转化为 `ResolvedXxxRe
 flowchart LR
     A[ArgsBuild<br/>clap] --> B[BuildCliArgs]
     B --> C["prepare_arceos_request()"]
-    C --> D[加载 snapshot]
-    D --> E[合并 CLI + snapshot]
+    C --> D["加载 Snapshot<br/>(tmp/axbuild/.arceos.toml)"]
+    D --> E[合并 CLI + Snapshot]
     E --> F["(ResolvedBuildRequest,<br/>ArceosCommandSnapshot)"]
+    F --> G["写回 Snapshot<br/>(SnapshotPersistence::Store)"]
 ```
 
 合并规则：
 
 | 参数 | 合并策略 |
 |------|---------|
-| `package`、`arch`、`target` | CLI 优先，回退 snapshot |
-| `smp`、`plat_dyn` | CLI 覆盖 snapshot |
-| `qemu_config`、`uboot_config` | 仅完全继承 snapshot 时复用 |
+| `package`、`arch`、`target` | CLI 优先，回退 Snapshot |
+| `smp`、`plat_dyn` | CLI 覆盖 Snapshot |
+| `qemu_config`、`uboot_config` | 仅完全继承 Snapshot 时复用 |
 
-clap 解析得到原始 CLI 结构体后，`prepare_*_request()` 函数加载 Snapshot 并执行合并。合并策略的核心原则是**用户显式指定的参数永远优先**——即使 Snapshot 中有不同值。这保证了用户可以通过在命令行上添加参数来覆盖 Snapshot 的设置，而不会因为遗忘清空 Snapshot 而得到意外行为。
+clap 解析得到原始 CLI 结构体后，`prepare_*_request()` 函数加载 Snapshot 文件并执行合并。Snapshot 文件位于 `tmp/axbuild/.{os}.toml`（ArceOS → `.arceos.toml`，StarryOS → `.starry.toml`，Axvisor → `.axvisor.toml`），保存最近一次命令的参数状态。
+
+合并策略的核心原则是**用户显式指定的参数永远优先**。此外，`arch` 和 `target` 之间存在交叉抑制：当 CLI 指定了 `--arch` 时不会从 Snapshot 继承 `target`（反之亦然），确保两者始终来自同一来源。`qemu_config` 和 `uboot_config` 仅在 `package`、`arch`、`target` 三者都从 Snapshot 继承时才复用，避免将测试场景的配置意外带入正常开发流程。
+
+合并完成后，`ResolvedRequest` 和新的 `CommandSnapshot` 一并产出。**Snapshot 在构建开始前即写回文件**（而非构建成功后），由 `SnapshotPersistence` 枚举控制：用户手动调用的命令使用 `Store`（保留参数供下次复用），测试套件使用 `Discard`（不污染用户的 Snapshot 文件）。设置环境变量 `AXBUILD_NO_SNAPSHOT=1` 可完全跳过 Snapshot 的读写。
 
 ## 3. Arch / Target 解析
 
-由 `context/arch.rs` 维护统一映射表（详见 [配置](/docs/build/configuration#arch--target-映射)）。
+由 `context/arch.rs` 的 `resolve_arch_and_target()` 维护统一映射表（详见 [配置](/docs/build/configuration#arch--target-映射)）。
 
-此阶段将合并后的 `arch` 和 `target` 参数解析为确定值。如果两者都未指定，使用子系统的默认值（ArceOS → aarch64，StarryOS → riscv64，Axvisor → aarch64）。
+此阶段将合并后的 `arch` 和 `target` 参数解析为确定值。解析优先级：用户显式指定 → Snapshot 回退 → 子系统默认值。当两者都未指定时，使用子系统默认值（ArceOS → aarch64，StarryOS → riscv64，Axvisor → aarch64）。
 
-## 4. Build Info 加载
+解析完成后，`ResolvedRequest` 中的 `arch` 和 `target` 字段即为确定值，后续所有阶段（Build Info 路径、axconfig 生成、Cargo target）均使用此结果。此阶段还会根据 target 判断是否支持动态平台（仅 `aarch64-*` 支持 `plat_dyn`），其他架构的 `plat_dyn` 会被强制回退为 `false`。
+
+## 4. Build Info 加载或创建
 
 构建配置存放在 `tmp/axbuild/config/<package>/build-<target>.toml`，由 `BuildInfo` 描述（详见 [配置](/docs/build/configuration#build-info)）。
 
@@ -84,14 +102,21 @@ clap 解析得到原始 CLI 结构体后，`prepare_*_request()` 函数加载 Sn
 flowchart TD
     A{--config 指定路径?} -->|是| B[使用指定路径]
     A -->|否| C["tmp/axbuild/config/&lt;pkg&gt;/build-&lt;target&gt;.toml"]
-    C --> D{文件存在?}
-    D -->|是| E[TOML 反序列化]
-    D -->|否| F[默认模板创建并写入]
+    B --> D{文件存在?}
+    C --> D
+    D -->|是：后续构建| E["TOML 反序列化<br/>(用户可手动编辑此文件)"]
+    D -->|否：初次构建| F["使用默认模板创建"]
     F --> G{子系统?}
-    G -->|Axvisor| H["额外尝试复制<br/>os/axvisor/configs/board/ 默认配置"]
+    G -->|Axvisor / StarryOS| H["优先复制<br/>configs/board/ 板卡配置"]
+    G -->|ArceOS| I["写入 BuildInfo::default_for_target()"]
+    H --> J{找到匹配 board?}
+    J -->|是| K["复制到 Build Info 路径"]
+    J -->|否| I
 ```
 
-Build Info 加载是构建过程中与用户交互最密切的环节。用户可以通过 `--config` 指定自定义路径，也可以直接编辑自动生成的 TOML 文件来调整 features 和环境变量。对于 Axvisor，首次加载时还会从预设配置目录复制板卡默认配置，简化初始配置流程。
+**初次构建**时文件不存在，`ensure_build_info()` 用默认模板创建并写入。对于 Axvisor 和 StarryOS，优先从各自的 `configs/board/` 目录中查找与当前 target 匹配的默认板卡配置（如 `qemu-aarch64.toml`），找到则直接复制为 Build Info 文件，无需手动编写；未找到时回退到通用默认模板。ArceOS 直接使用 `BuildInfo::default_for_target()` 生成默认值。
+
+**后续构建**时文件已存在，直接 TOML 反序列化。用户可以在两次构建之间手动编辑该文件来调整 features、环境变量等配置（如添加 `paging` feature 或修改 `AX_LOG` 级别），修改会在下次构建时生效。
 
 ## 5. Feature 解析
 
@@ -187,4 +212,17 @@ Cargo {
 
 `AppContext::build()` 调用 `Tool::cargo_build()` 完成编译，产出 ELF / BIN 等产物。
 
-最终执行阶段将组装好的 `Cargo` 配置传给 ostool 的 `cargo_build()`。ostool 负责设置环境变量、构建 `cargo build` 命令行、处理输出流和退出码。编译成功后，产物（ELF 文件或 raw binary）位于 `target/{target}/release/` 或 `target/{target}/debug/` 目录下，供后续的运行或测试阶段使用。
+```mermaid
+flowchart TD
+    A["Cargo 配置结构体"] --> B["ostool cargo_build()"]
+    B --> C["设置环境变量"]
+    C --> D["构建 cargo build 命令行<br/>(target, features, args)"]
+    D --> E["执行编译"]
+    E --> F{产物类型?}
+    F -->|"to_bin = true<br/>(aarch64, riscv64, loongarch64)"| G["ELF → raw binary<br/>(llvm-objcopy)"]
+    F -->|"to_bin = false<br/>(x86_64)"| H["ELF 直接使用"]
+```
+
+最终执行阶段将组装好的 `Cargo` 配置传给 ostool 的 `cargo_build()`。ostool 负责设置环境变量（`AX_LOG`、`SMP`、`AX_CONFIG_PATH` 等）、构建 `cargo build` 命令行（`--target`、`--features`、链接器参数等）、处理输出流和退出码。
+
+编译成功后，产物位于 `target/{target}/release/` 或 `target/{target}/debug/` 目录下。对于 aarch64、riscv64、loongarch64（`to_bin = true`），还会调用 `llvm-objcopy` 将 ELF 转为 raw binary，因为裸机环境需要纯二进制格式；x86_64 直接使用 ELF 产物。编译产物供后续的运行（QEMU / U-Boot / Board）或测试阶段使用。
