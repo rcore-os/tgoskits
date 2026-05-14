@@ -8,7 +8,7 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use ax_task::current;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -17,7 +17,7 @@ use crate::{
         Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
         with_fs,
     },
-    mm::{UserPtr, vm_load_string},
+    mm::vm_load_string,
     pseudofs::{Device, dev::tty},
     task::AsThread,
 };
@@ -44,7 +44,10 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     if flags & O_PATH != 0 {
         options.path(true);
     }
-    if flags & O_EXCL != 0 {
+    // O_EXCL only makes sense with O_CREAT (POSIX). Without O_CREAT, Linux
+    // ignores O_EXCL for existing files — busybox blkdiscard opens block
+    // devices with O_RDWR|O_EXCL (no O_CREAT).
+    if flags & O_EXCL != 0 && flags & O_CREAT != 0 {
         options.create_new(true);
     }
     if flags & O_DIRECTORY != 0 {
@@ -64,6 +67,13 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
         OpenResult::File(mut file) => {
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
+                // Block device exclusive open (O_EXCL without O_CREAT).
+                if let Ok(meta) = device.metadata()
+                    && meta.node_type == NodeType::BlockDevice
+                    && flags & O_EXCL != 0
+                {
+                    device.inner().open(true)?;
+                }
                 let inner = device.inner().as_any();
                 #[cfg(feature = "plat-dyn")]
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {
@@ -185,8 +195,8 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
                 if let Some(f) = fd_table.get_mut(fd as _) {
                     f.cloexec = true;
                 }
-            } else {
-                fd_table.remove(fd as _);
+            } else if let Some(f) = fd_table.remove(fd as _) {
+                crate::file::release_locks_on_close(f);
             }
         }
     }
@@ -236,7 +246,9 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
         .ok_or(AxError::BadFileDescriptor)?;
     f.cloexec = flags.contains(Dup3Flags::O_CLOEXEC);
 
-    fd_table.remove(new_fd as _);
+    if let Some(prev) = fd_table.remove(new_fd as _) {
+        crate::file::release_locks_on_close(prev);
+    }
     fd_table
         .add_at(new_fd as _, f)
         .map_err(|_| AxError::BadFileDescriptor)?;
@@ -247,16 +259,13 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
 pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     debug!("sys_fcntl <= fd: {fd} cmd: {cmd} arg: {arg}");
 
+    if let Some(r) = super::lock::dispatch_fcntl(fd, cmd, arg) {
+        return r;
+    }
+
     match cmd as u32 {
         F_DUPFD => dup_fd(fd, false),
         F_DUPFD_CLOEXEC => dup_fd(fd, true),
-        F_SETLK | F_SETLKW => Ok(0),
-        F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
-        F_GETLK | F_OFD_GETLK => {
-            let arg = UserPtr::<flock64>::from(arg);
-            arg.get_as_mut()?.l_type = F_UNLCK as _;
-            Ok(0)
-        }
         F_SETFL => {
             get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
             Ok(0)
@@ -306,6 +315,5 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
 
 pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
     debug!("flock <= fd: {fd}, operation: {operation}");
-    // TODO: flock
-    Ok(0)
+    super::lock::flock_op(fd, operation)
 }

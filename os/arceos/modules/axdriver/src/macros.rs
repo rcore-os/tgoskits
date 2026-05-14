@@ -46,13 +46,7 @@ macro_rules! for_each_drivers {
     (type $drv_type:ident, $code:block) => {{
         #[allow(unused_imports)]
         use crate::drivers::DriverProbe;
-        #[cfg(any(
-            feature = "virtio-blk",
-            feature = "virtio-net",
-            feature = "virtio-gpu",
-            feature = "virtio-input",
-            feature = "virtio-socket"
-        ))]
+        #[cfg(virtio_dev)]
         #[allow(unused_imports)]
         use crate::virtio::{self, VirtIoDevMeta};
 
@@ -89,6 +83,11 @@ macro_rules! for_each_drivers {
         #[cfg(block_dev = "sdmmc")]
         {
             type $drv_type = crate::drivers::SdMmcDriver;
+            $code
+        }
+        #[cfg(block_dev = "cvsd")]
+        {
+            type $drv_type = crate::drivers::CvsdMmc;
             $code
         }
         #[cfg(block_dev = "bcm2835-sdhci")]

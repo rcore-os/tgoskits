@@ -162,17 +162,71 @@ jobs:
           - name: Run clippy
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask clippy
+            command: |
+              set -eux
+              git_cmd() {
+                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
+              }
+              ensure_since_ref() {
+                ref="$1"
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
+                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
+              }
+
+              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+                cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
+              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                before="${{ github.event.before }}"
+                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
+                  cargo xtask clippy
+                elif ensure_since_ref "${before}"; then
+                  cargo xtask clippy --since "${before}"
+                else
+                  echo "::notice::before commit ${before} is unavailable; running full clippy"
+                  cargo xtask clippy
+                fi
+              else
+                cargo xtask clippy
+              fi
             cache_key: clippy
             container_image: base
+            fetch_depth: full
             required_repository_owner: ""
             main_pr_only: false
           - name: Run sync-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask sync-lint
+            command: |
+              set -eux
+              git_cmd() {
+                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
+              }
+              ensure_since_ref() {
+                ref="$1"
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
+                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
+              }
+
+              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+                cargo xtask sync-lint --since "${{ github.event.pull_request.base.sha }}"
+              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                before="${{ github.event.before }}"
+                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
+                  cargo xtask sync-lint
+                elif ensure_since_ref "${before}"; then
+                  cargo xtask sync-lint --since "${before}"
+                else
+                  echo "::notice::before commit ${before} is unavailable; running full sync-lint"
+                  cargo xtask sync-lint
+                fi
+              else
+                cargo xtask sync-lint
+              fi
             cache_key: sync-lint
             container_image: base
+            fetch_depth: full
             required_repository_owner: ""
             main_pr_only: false
           - name: Test with std
@@ -189,6 +243,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch aarch64
             cache_key: test-axvisor-aarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor riscv64 qemu
@@ -197,6 +252,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch riscv64
             cache_key: test-axvisor-riscv64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor loongarch64 qemu
@@ -205,6 +261,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch loongarch64
             cache_key: test-axvisor-loongarch64
             container_image: axvisor-lvz
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
@@ -213,6 +270,7 @@ jobs:
             command: cargo xtask starry test qemu --arch riscv64
             cache_key: test-starry-riscv64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry aarch64 qemu
@@ -221,6 +279,7 @@ jobs:
             command: cargo xtask starry test qemu --arch aarch64
             cache_key: test-starry-aarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry loongarch64 qemu
@@ -229,6 +288,7 @@ jobs:
             command: cargo xtask starry test qemu --arch loongarch64
             cache_key: test-starry-loongarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry x86_64 qemu
@@ -237,6 +297,7 @@ jobs:
             command: cargo xtask starry test qemu --arch x86_64
             cache_key: test-starry-x86_64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos x86_64 qemu
@@ -245,6 +306,7 @@ jobs:
             command: cargo xtask arceos test qemu --arch x86_64
             cache_key: test-arceos-x86_64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos riscv64 qemu
@@ -253,6 +315,7 @@ jobs:
             command: cargo xtask arceos test qemu --arch riscv64
             cache_key: test-arceos-riscv64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos aarch64 qemu
@@ -261,6 +324,7 @@ jobs:
             command: cargo xtask arceos test qemu --arch aarch64
             cache_key: test-arceos-aarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos loongarch64 qemu
@@ -269,40 +333,46 @@ jobs:
             command: cargo xtask arceos test qemu --arch loongarch64
             cache_key: test-arceos-loongarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
-          - name: Stress starry aarch64
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: echo "TODO!"
-            cache_key: test-starry-stress-aarch64
-            container_image: base
-            required_repository_owner: ""
-            main_pr_only: true
-          - name: Stress starry riscv64
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: echo "TODO!"
-            cache_key: test-starry-stress-riscv64
-            container_image: base
-            required_repository_owner: ""
-            main_pr_only: true
-          - name: Stress starry loongarch64
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: echo "TODO!"
-            cache_key: test-starry-stress-loongarch64
-            container_image: base
-            required_repository_owner: ""
-            main_pr_only: true
-          - name: Stress starry x86_64
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: echo "TODO!"
-            cache_key: test-starry-stress-x86_64
-            container_image: base
-            required_repository_owner: ""
-            main_pr_only: true
+          # Stress tests: uncomment to enable (runs only on PRs targeting main).
+          # - name: Stress starry aarch64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: cargo xtask starry test qemu --arch aarch64 --test-group stress
+          #   cache_key: test-starry-stress-aarch64
+          #   container_image: base
+          #   apk_region: us
+          #   required_repository_owner: ""
+          #   main_pr_only: true
+          # - name: Stress starry riscv64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: cargo xtask starry test qemu --arch riscv64 --test-group stress
+          #   cache_key: test-starry-stress-riscv64
+          #   container_image: base
+          #   apk_region: us
+          #   required_repository_owner: ""
+          #   main_pr_only: true
+          # - name: Stress starry loongarch64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: cargo xtask starry test qemu --arch loongarch64 --test-group stress
+          #   cache_key: test-starry-stress-loongarch64
+          #   container_image: base
+          #   apk_region: us
+          #   required_repository_owner: ""
+          #   main_pr_only: true
+          # - name: Stress starry x86_64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: cargo xtask starry test qemu --arch x86_64 --test-group stress
+          #   cache_key: test-starry-stress-x86_64
+          #   container_image: base
+          #   apk_region: us
+          #   required_repository_owner: ""
+          #   main_pr_only: true
           - name: Test axvisor self-hosted x86_64
             use_container: false
             runs_on: '["self-hosted","linux","intel"]'
@@ -341,22 +411,10 @@ jobs:
           && format('{0}:latest', needs.detect_changes.outputs.axvisor_lvz_container_image)
           || matrix.container_image
         }}
-      apk_region: >-
-        ${{
-          (
-            matrix.use_container
-            && (
-              startsWith(matrix.command, 'cargo xtask starry test qemu --arch')
-              || startsWith(matrix.command, 'cargo xtask axvisor test qemu --arch')
-              || startsWith(matrix.command, 'cargo xtask arceos test qemu --arch')
-              || startsWith(matrix.name, 'Stress starry ')
-            )
-          )
-          && 'us'
-          || 'china'
-        }}
+      apk_region: ${{ matrix.apk_region || 'china' }}
       required_repository_owner: ${{ matrix.required_repository_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
+      fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
 
   skip_non_test_changes:
     name: Skip CI checks for non-test changes

@@ -354,10 +354,25 @@ pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
 }
 
 pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
-    // FIXME: Zeroable
     let mut kinfo: sysinfo = unsafe { core::mem::zeroed() };
+
+    let total = ax_hal::mem::total_ram_size();
+    let usages = ax_alloc::global_allocator().usages();
+    let used = usages.get(ax_alloc::UsageKind::RustHeap)
+        + usages.get(ax_alloc::UsageKind::VirtMem)
+        + usages.get(ax_alloc::UsageKind::PageCache)
+        + usages.get(ax_alloc::UsageKind::PageTable)
+        + usages.get(ax_alloc::UsageKind::Dma)
+        + usages.get(ax_alloc::UsageKind::Global);
+    let free = total.saturating_sub(used);
+    let uptime = ax_hal::time::monotonic_time();
+
+    kinfo.uptime = uptime.as_secs() as _;
+    kinfo.totalram = total as _;
+    kinfo.freeram = free as _;
     kinfo.procs = processes().len() as _;
     kinfo.mem_unit = 1;
+
     info.vm_write(kinfo)?;
     Ok(0)
 }

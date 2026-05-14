@@ -1,8 +1,13 @@
-use core::{marker::PhantomData, ptr::NonNull};
+use core::marker::PhantomData;
+#[cfg(virtio_dev)]
+use core::ptr::NonNull;
 
+#[cfg(virtio_dev)]
 use ax_alloc::{UsageKind, global_allocator};
 use ax_driver_base::{BaseDriverOps, DevResult, DeviceType};
+#[cfg(virtio_dev)]
 use ax_driver_virtio::{BufferDirection, PhysAddr, VirtIoHal};
+#[cfg(virtio_dev)]
 use ax_hal::mem::{phys_to_virt, virt_to_phys};
 use cfg_if::cfg_if;
 
@@ -14,6 +19,8 @@ cfg_if! {
         use ax_driver_virtio::pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
         type VirtIoTransport = ax_driver_virtio::PciTransport;
     } else if #[cfg(bus =  "mmio")] {
+        type VirtIoTransport = ax_driver_virtio::MmioTransport;
+    } else {
         type VirtIoTransport = ax_driver_virtio::MmioTransport;
     }
 }
@@ -223,6 +230,7 @@ const fn pci_legacy_irq_fallback(bdf: DeviceFunction) -> usize {
     pci_irq_base() + (bdf.device & 3) as usize
 }
 
+#[cfg(virtio_dev)]
 pub struct VirtIoHalImpl;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

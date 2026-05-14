@@ -1,5 +1,4 @@
 ---
-sidebar_position: 4
 sidebar_label: "同步内存序检查"
 ---
 

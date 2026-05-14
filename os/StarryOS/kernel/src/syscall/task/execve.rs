@@ -97,7 +97,7 @@ pub fn sys_execve(
     // Switch the hardware page table now that the new aspace is installed.
     curr.switch_page_table(new_pt_root);
 
-    curr.set_name(new_name);
+    curr.set_name(&new_name);
     *proc_data.exe_path.write() = new_exe_path;
     *proc_data.cmdline.write() = Arc::new(args);
 
@@ -109,10 +109,14 @@ pub fn sys_execve(
     // Clear set_child_tid after exec since the original address is no longer valid
     curr.as_thread().set_clear_child_tid(0);
 
-    // Close CLOEXEC file descriptors.
+    // Close CLOEXEC file descriptors. Match Linux POSIX
+    // "close-eats-locks" by releasing per-inode POSIX record locks held
+    // by this pid for each fd we drop here.
     let mut fd_table = FD_TABLE.write();
     for fd in cloexec_fds {
-        fd_table.remove(fd);
+        if let Some(f) = fd_table.remove(fd) {
+            crate::file::release_locks_on_close(f);
+        }
     }
     drop(fd_table);
 

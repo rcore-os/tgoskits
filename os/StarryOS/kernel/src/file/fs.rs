@@ -12,10 +12,13 @@ use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_EXCL};
 
 use super::{FileLike, Kstat, get_file_like};
-use crate::file::{IoDst, IoSrc};
+use crate::{
+    file::{IoDst, IoSrc},
+    pseudofs::Device,
+};
 
 pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
     let mut fs = FS_CONTEXT.lock();
@@ -115,7 +118,19 @@ impl File {
     pub fn inner(&self) -> &ax_fs::File {
         &self.inner
     }
+}
 
+impl Drop for File {
+    fn drop(&mut self) {
+        if self.open_flags & O_EXCL != 0
+            && let Ok(device) = self.inner.location().entry().downcast::<Device>()
+        {
+            device.inner().close(true);
+        }
+    }
+}
+
+impl File {
     fn is_blocking(&self) -> bool {
         self.inner.location().flags().contains(NodeFlags::BLOCKING)
     }
@@ -151,6 +166,11 @@ impl FileLike for File {
 
     fn stat(&self) -> AxResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner().location().metadata()?))
+    }
+
+    fn inode_key(&self) -> Option<(u64, u64)> {
+        let m = self.inner().location().metadata().ok()?;
+        Some((m.device, m.inode))
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
@@ -235,6 +255,11 @@ impl FileLike for Directory {
 
     fn stat(&self) -> AxResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner.metadata()?))
+    }
+
+    fn inode_key(&self) -> Option<(u64, u64)> {
+        let m = self.inner.metadata().ok()?;
+        Some((m.device, m.inode))
     }
 
     fn path(&self) -> Cow<'_, str> {

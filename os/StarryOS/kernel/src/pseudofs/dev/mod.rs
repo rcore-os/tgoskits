@@ -9,14 +9,15 @@ mod dma_heap;
 #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod drm;
 #[cfg(feature = "input")]
-mod event;
+pub mod event;
 mod fb;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
+#[cfg(feature = "ext4")]
+pub use r#loop::LoopDevice;
 #[cfg(feature = "memtrack")]
 mod memtrack;
-mod rtc;
 pub mod tty;
 
 use alloc::{format, sync::Arc};
@@ -197,15 +198,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(Random::new()),
         ),
     );
-    root.add(
-        "rtc0",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            rtc::RTC0_DEVICE_ID,
-            Arc::new(rtc::Rtc),
-        ),
-    );
     if ax_display::has_display() {
         root.add(
             "fb0",
@@ -332,9 +324,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         root.add("dri", SimpleDir::new_maker(fs.clone(), Arc::new(dri_dir)));
     }
 
-    // Loop devices
+    // Loop devices (major 7, minor = device index)
     for i in 0..16 {
-        let dev_id = DeviceId::new(7, 0);
+        let dev_id = DeviceId::new(7, i);
         root.add(
             format!("loop{i}"),
             Device::new(

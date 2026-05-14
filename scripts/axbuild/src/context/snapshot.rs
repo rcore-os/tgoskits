@@ -11,7 +11,7 @@ pub(crate) fn load_snapshot<S>(root: &Path) -> anyhow::Result<S>
 where
     S: CommandSnapshotFile,
 {
-    let path = root.join(S::FILE_NAME);
+    let path = snapshot_path::<S>(root);
     if !path.exists() {
         return Ok(S::default());
     }
@@ -24,10 +24,17 @@ pub(crate) fn store_snapshot<S>(root: &Path, snapshot: &S) -> anyhow::Result<Pat
 where
     S: CommandSnapshotFile,
 {
-    let path = root.join(S::FILE_NAME);
+    let path = snapshot_path::<S>(root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&path, toml::to_string_pretty(snapshot)?)?;
     Ok(path)
+}
+
+pub(crate) fn snapshot_path<S>(root: &Path) -> PathBuf
+where
+    S: CommandSnapshotFile,
+{
+    crate::context::axbuild_tmp_dir(root).join(S::FILE_NAME)
 }

@@ -40,7 +40,7 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
-use alloc::{borrow::ToOwned, boxed::Box};
+use alloc::{borrow::ToOwned, boxed::Box, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -51,7 +51,6 @@ use ax_sync::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
 
-pub use self::socket::*;
 use self::{
     consts::{GATEWAY, IP, IP_PREFIX},
     device::{EthernetDevice, LoopbackDevice},
@@ -60,6 +59,7 @@ use self::{
     service::Service,
     wrapper::SocketSetWrapper,
 };
+pub use self::{device::ArpEntry, socket::*};
 
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
 static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
@@ -190,6 +190,10 @@ pub fn poll_interfaces() {
             return;
         }
     }
+}
+
+pub fn arp_entries() -> Vec<ArpEntry> {
+    get_service().arp_entries()
 }
 
 fn dhcp_bootstrap() {

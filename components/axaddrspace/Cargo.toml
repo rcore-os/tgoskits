@@ -16,6 +16,8 @@ license = "Apache-2.0"
 [features]
 arm-el2 = ["ax-page-table-entry/arm-el2"]
 default = ["arm-el2"]
+svm = []
+vmx = []
 
 [dependencies]
 bit_field = "0.10"

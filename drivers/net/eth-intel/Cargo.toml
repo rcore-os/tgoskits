@@ -1,0 +1,30 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["embedded", "no-std"]
+description = "Intel e1000 ethernet driver"
+edition.workspace = true
+autotests = false
+keywords = ["os", "driver", "ethernet", "intel"]
+license = "MIT"
+name = "eth-intel"
+repository.workspace = true
+version = "0.1.2"
+
+[dependencies]
+dma-api.workspace = true
+log = "0.4"
+mmio-api.workspace = true
+rdif-eth.workspace = true
+thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+fdt-edit.workspace = true
+pcie.workspace = true
+
+[lib]
+test = false
+
+# bare-test integration test is temporarily disabled.
+# [[test]]
+# name = "test_e1000"
+# harness = false

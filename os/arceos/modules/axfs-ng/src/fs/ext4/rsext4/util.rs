@@ -37,15 +37,17 @@ pub fn dir_entry_type_to_vfs(file_type: u8) -> NodeType {
     }
 }
 
-pub fn inode_to_vfs_type(is_dir: bool, is_file: bool, is_symlink: bool) -> NodeType {
-    if is_dir {
-        NodeType::Directory
-    } else if is_file {
-        NodeType::RegularFile
-    } else if is_symlink {
-        NodeType::Symlink
-    } else {
-        NodeType::Unknown
+pub fn inode_to_vfs_type(i_mode: u16) -> NodeType {
+    use rsext4::disknode::Ext4Inode;
+    match i_mode & Ext4Inode::S_IFMT {
+        Ext4Inode::S_IFDIR => NodeType::Directory,
+        Ext4Inode::S_IFREG => NodeType::RegularFile,
+        Ext4Inode::S_IFLNK => NodeType::Symlink,
+        Ext4Inode::S_IFCHR => NodeType::CharacterDevice,
+        Ext4Inode::S_IFBLK => NodeType::BlockDevice,
+        Ext4Inode::S_IFIFO => NodeType::Fifo,
+        Ext4Inode::S_IFSOCK => NodeType::Socket,
+        _ => NodeType::Unknown,
     }
 }
 

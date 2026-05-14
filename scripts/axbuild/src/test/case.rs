@@ -7,17 +7,19 @@
 
 use std::{
     fs,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use anyhow::{Context, bail, ensure};
-use ostool::run::qemu::QemuConfig;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use super::build as case_builder;
+use crate::context::AppContext;
 
 const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
 const CASE_CACHE_DIR_NAME: &str = "cache";
@@ -35,6 +37,7 @@ const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_SH_DIR_NAME: &str = "sh";
 const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
 const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-v1";
+const RUST_PIPELINE_CACHE_VERSION: &str = "rust-cross-v1";
 /// QEMU global snapshot flag — all disk writes go to a temporary file and are
 /// never committed back to the image, keeping the source image pristine.
 const QEMU_SNAPSHOT_ARG: &str = "-snapshot";
@@ -136,6 +139,7 @@ pub(crate) enum CasePipeline {
     C,
     Sh,
     Python,
+    Rust,
 }
 
 impl CasePipeline {
@@ -146,6 +150,7 @@ impl CasePipeline {
             Self::C => "c",
             Self::Sh => "sh",
             Self::Python => "python",
+            Self::Rust => "rust",
         }
     }
 }
@@ -369,16 +374,14 @@ pub(crate) fn prepare_case_assets_sync(
                 CasePipeline::Python => {
                     case_builder::prepare_python_case_assets_sync(arch, case, copy, layout, config)?
                 }
+                CasePipeline::Rust => {
+                    case_builder::prepare_rust_case_assets_sync(arch, case, copy, layout, config)?
+                }
                 CasePipeline::Plain => unreachable!("plain cases do not prepare injection assets"),
             }
             // Save the post-injection rootfs to cache so future runs can skip
             // the overlay build and inject_overlay steps entirely.
-            if let Some(parent) = rootfs_cache_img.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create rootfs cache dir {}", parent.display())
-                })?;
-            }
-            copy_file_fast(&layout.case_rootfs_copy, &rootfs_cache_img)?;
+            save_rootfs_cache_image(&layout.case_rootfs_copy, &rootfs_cache_img)?;
             false
         };
 
@@ -425,6 +428,9 @@ pub(crate) fn resolve_case_pipeline(case: &TestQemuCase) -> anyhow::Result<CaseP
     if case_python_source_dir(case).is_dir() {
         pipelines.push(CasePipeline::Python);
     }
+    if case_builder::case_rust_source_dir(case).is_dir() {
+        pipelines.push(CasePipeline::Rust);
+    }
 
     if pipelines.len() > 1 {
         bail!(
@@ -457,6 +463,40 @@ fn rootfs_cache_image_path(
 ) -> anyhow::Result<PathBuf> {
     let key = case_asset_cache_key(arch, target, pipeline, case, shared_rootfs, config)?;
     Ok(layout.rootfs_cache_dir.join(format!("{key}.img")))
+}
+
+fn save_rootfs_cache_image(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    let parent = dst
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("rootfs cache path has no parent: {}", dst.display()))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create rootfs cache dir {}", parent.display()))?;
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        dst.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("rootfs-cache"),
+        next_case_run_id()
+    ));
+    copy_file_fast(src, &temp)?;
+    match fs::rename(&temp, dst) {
+        Ok(()) => Ok(()),
+        Err(err) if dst.is_file() => {
+            let _ = fs::remove_file(&temp);
+            if is_valid_rootfs_cache_image(dst) {
+                Ok(())
+            } else {
+                Err(err).with_context(|| {
+                    format!("failed to install rootfs cache image {}", dst.display())
+                })
+            }
+        }
+        Err(err) => {
+            let _ = fs::remove_file(&temp);
+            Err(err)
+                .with_context(|| format!("failed to install rootfs cache image {}", dst.display()))
+        }
+    }
 }
 
 /// Returns `true` when a rootfs cache image file exists and has a plausible
@@ -514,7 +554,7 @@ fn case_asset_cache_key(
     config: &CaseAssetConfig,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
-    hash_token(&mut hasher, "v2");
+    hash_token(&mut hasher, "v3");
     hash_token(&mut hasher, arch);
     hash_token(&mut hasher, target);
     hash_token(&mut hasher, case.display_name.as_str());
@@ -532,8 +572,11 @@ fn case_asset_cache_key(
     if pipeline == CasePipeline::Python {
         hash_token(&mut hasher, PYTHON_PIPELINE_CACHE_VERSION);
     }
+    if pipeline == CasePipeline::Rust {
+        hash_token(&mut hasher, RUST_PIPELINE_CACHE_VERSION);
+    }
 
-    hash_file_metadata(&mut hasher, shared_rootfs)?;
+    hash_rootfs_fingerprint(&mut hasher, shared_rootfs)?;
     hash_tree(&mut hasher, &case.case_dir)?;
     if !case.qemu_config_path.starts_with(&case.case_dir) && case.qemu_config_path.is_file() {
         hash_file(&mut hasher, &case.qemu_config_path)?;
@@ -562,17 +605,46 @@ fn hash_tree(hasher: &mut Sha256, root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn hash_file_metadata(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
+fn hash_rootfs_fingerprint(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
     let metadata =
         fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
-    // Hash only the file size, not mtime.  mtime is unreliable in Docker
-    // volumes, NFS mounts, and many CI environments (files copied from a
-    // container or extracted from a tarball often have synthetic timestamps).
-    // The size alone is a sufficient signal that the rootfs has been replaced;
-    // a rootfs update that produces a same-size image would normally also
-    // change case source files (hashed via hash_tree) so false cache hits are
-    // very unlikely in practice.
-    hash_token(hasher, &metadata.len().to_string());
+    let len = metadata.len();
+    hash_token(hasher, &len.to_string());
+
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    hash_file_window(hasher, &mut file, 0, len)?;
+    if len > 0 {
+        hash_file_window(hasher, &mut file, len / 2, len)?;
+        hash_file_window(hasher, &mut file, len.saturating_sub(1024 * 1024), len)?;
+    }
+    Ok(())
+}
+
+fn hash_file_window(
+    hasher: &mut Sha256,
+    file: &mut fs::File,
+    offset: u64,
+    file_len: u64,
+) -> anyhow::Result<()> {
+    let read_len = (file_len.saturating_sub(offset)).min(1024 * 1024);
+    hash_token(hasher, &format!("{offset}:{read_len}"));
+    file.seek(SeekFrom::Start(offset))
+        .with_context(|| format!("failed to seek rootfs fingerprint window at offset {offset}"))?;
+
+    let mut remaining = read_len;
+    let mut buf = [0_u8; 8192];
+    while remaining > 0 {
+        let limit = remaining.min(buf.len() as u64) as usize;
+        let read = file
+            .read(&mut buf[..limit])
+            .context("failed to read rootfs fingerprint window")?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+        remaining -= read as u64;
+    }
     Ok(())
 }
 
@@ -615,6 +687,40 @@ pub(crate) fn apply_grouped_qemu_config(
     {
         qemu.fail_regex.push(config.fail_regex.clone());
     }
+}
+
+pub(crate) async fn run_qemu_with_prepared_case_assets(
+    app: &mut AppContext,
+    cargo: &Cargo,
+    qemu: QemuConfig,
+    qemu_config_path: &Path,
+    prepared_assets: PreparedCaseAssets,
+    prepare_elapsed: Duration,
+) -> anyhow::Result<()> {
+    println!(
+        "  prepare assets: {:.2?} (pipeline={}, cache={})",
+        prepare_elapsed,
+        prepared_assets.pipeline.as_str(),
+        if prepared_assets.cache_hit {
+            "hit"
+        } else {
+            "miss"
+        }
+    );
+    println!(
+        "  qemu config: {} (timeout={})",
+        qemu_config_path.display(),
+        super::qemu::qemu_timeout_summary(&qemu)
+    );
+    println!("  rootfs: {}", prepared_assets.rootfs_path.display());
+
+    let qemu_started = std::time::Instant::now();
+    let result = app.run_qemu(cargo, qemu).await;
+    println!("  qemu run: {:.2?}", qemu_started.elapsed());
+
+    remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
+    remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
+    result
 }
 
 pub(crate) fn write_grouped_case_runner_script(
@@ -786,7 +892,7 @@ mod tests {
     async fn prepare_case_assets_plain_case_uses_shared_rootfs_with_snapshot() {
         let root = tempdir().unwrap();
         let target_dir = root.path().join("target/x86_64-unknown-none");
-        let rootfs_dir = root.path().join("target/rootfs");
+        let rootfs_dir = root.path().join("tmp/axbuild/rootfs");
         fs::create_dir_all(&target_dir).unwrap();
         fs::create_dir_all(&rootfs_dir).unwrap();
         let shared_img = rootfs_dir.join("rootfs-x86_64-alpine.img");

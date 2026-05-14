@@ -1,7 +1,7 @@
 use alloc::{vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
-    sync::atomic::{AtomicBool, AtomicI32, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
     task::Context,
 };
 
@@ -36,6 +36,14 @@ pub(crate) fn new_tcp_socket() -> smol::Socket<'static> {
     )
 }
 
+const TCP_KEEPIDLE_DEFAULT_SECS: u32 = 7200;
+const TCP_KEEPINTVL_DEFAULT_SECS: u32 = 75;
+const TCP_KEEPCNT_DEFAULT: u32 = 9;
+const TCP_USER_TIMEOUT_DEFAULT_MS: u32 = 0;
+const TCP_KEEPIDLE_MAX_SECS: u32 = 32767;
+const TCP_KEEPINTVL_MAX_SECS: u32 = 32767;
+const TCP_KEEPCNT_MAX: u32 = 127;
+
 /// A TCP socket that provides POSIX-like APIs.
 pub struct TcpSocket {
     state: StateLock,
@@ -45,6 +53,10 @@ pub struct TcpSocket {
 
     general: GeneralOptions,
     pending_error: AtomicI32,
+    keep_idle_secs: AtomicU32,
+    keep_interval_secs: AtomicU32,
+    keep_count: AtomicU32,
+    user_timeout_millis: AtomicU32,
     rx_closed: AtomicBool,
     poll_rx_closed: PollSet,
 }
@@ -62,6 +74,10 @@ impl TcpSocket {
 
             general: GeneralOptions::new(),
             pending_error: AtomicI32::new(0),
+            keep_idle_secs: AtomicU32::new(TCP_KEEPIDLE_DEFAULT_SECS),
+            keep_interval_secs: AtomicU32::new(TCP_KEEPINTVL_DEFAULT_SECS),
+            keep_count: AtomicU32::new(TCP_KEEPCNT_DEFAULT),
+            user_timeout_millis: AtomicU32::new(TCP_USER_TIMEOUT_DEFAULT_MS),
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
         }
@@ -77,6 +93,10 @@ impl TcpSocket {
 
             general: GeneralOptions::new(),
             pending_error: AtomicI32::new(0),
+            keep_idle_secs: AtomicU32::new(TCP_KEEPIDLE_DEFAULT_SECS),
+            keep_interval_secs: AtomicU32::new(TCP_KEEPINTVL_DEFAULT_SECS),
+            keep_count: AtomicU32::new(TCP_KEEPCNT_DEFAULT),
+            user_timeout_millis: AtomicU32::new(TCP_USER_TIMEOUT_DEFAULT_MS),
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
         };
@@ -108,6 +128,10 @@ impl TcpSocket {
 
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
+    }
+
+    fn keep_alive_interval(&self) -> Duration {
+        Duration::from_secs(self.keep_idle_secs.load(Ordering::Relaxed) as u64)
     }
 
     fn bound_endpoint(&self) -> AxResult<IpListenEndpoint> {
@@ -215,6 +239,18 @@ impl Configurable for TcpSocket {
                 // TODO(mivik): get actual MSS
                 **max_segment = 1460;
             }
+            O::TcpKeepIdle(keep_idle) => {
+                **keep_idle = self.keep_idle_secs.load(Ordering::Relaxed);
+            }
+            O::TcpKeepInterval(keep_interval) => {
+                **keep_interval = self.keep_interval_secs.load(Ordering::Relaxed);
+            }
+            O::TcpKeepCount(keep_count) => {
+                **keep_count = self.keep_count.load(Ordering::Relaxed);
+            }
+            O::TcpUserTimeout(user_timeout) => {
+                **user_timeout = self.user_timeout_millis.load(Ordering::Relaxed);
+            }
             O::SendBuffer(size) => {
                 **size = TCP_TX_BUF_LEN;
             }
@@ -243,9 +279,39 @@ impl Configurable for TcpSocket {
                 });
             }
             O::KeepAlive(keep_alive) => {
+                let interval = self.keep_alive_interval();
                 self.with_smol_socket(|socket| {
-                    socket.set_keep_alive(keep_alive.then(|| Duration::from_secs(75)));
+                    socket.set_keep_alive(keep_alive.then_some(interval));
                 });
+            }
+            O::TcpKeepIdle(keep_idle) => {
+                if *keep_idle == 0 || *keep_idle > TCP_KEEPIDLE_MAX_SECS {
+                    return Err(AxError::InvalidInput);
+                }
+                self.keep_idle_secs.store(*keep_idle, Ordering::Relaxed);
+                let interval = Duration::from_secs(*keep_idle as u64);
+                self.with_smol_socket(|socket| {
+                    if socket.keep_alive().is_some() {
+                        socket.set_keep_alive(Some(interval));
+                    }
+                });
+            }
+            O::TcpKeepInterval(keep_interval) => {
+                if *keep_interval == 0 || *keep_interval > TCP_KEEPINTVL_MAX_SECS {
+                    return Err(AxError::InvalidInput);
+                }
+                self.keep_interval_secs
+                    .store(*keep_interval, Ordering::Relaxed);
+            }
+            O::TcpKeepCount(keep_count) => {
+                if *keep_count == 0 || *keep_count > TCP_KEEPCNT_MAX {
+                    return Err(AxError::InvalidInput);
+                }
+                self.keep_count.store(*keep_count, Ordering::Relaxed);
+            }
+            O::TcpUserTimeout(user_timeout) => {
+                self.user_timeout_millis
+                    .store(*user_timeout, Ordering::Relaxed);
             }
             _ => return Ok(false),
         }
@@ -263,11 +329,8 @@ impl SocketOps for TcpSocket {
                 if local_addr.port() == 0 {
                     local_addr.set_port(get_ephemeral_port()?);
                 }
-                if !self.general.reuse_address() {
-                    SOCKET_SET.bind_check(local_addr.ip().into(), local_addr.port())?;
-                    if !LISTEN_TABLE.can_listen(local_addr.port()) {
-                        return Err(AxError::AddrInUse);
-                    }
+                if !self.general.reuse_address() && !LISTEN_TABLE.can_listen(local_addr.port()) {
+                    return Err(AxError::AddrInUse);
                 }
 
                 let endpoint = IpListenEndpoint {
@@ -431,7 +494,7 @@ impl SocketOps for TcpSocket {
 
     fn send(&self, mut src: impl Read, _options: SendOptions) -> AxResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
-        self.general.send_poller(self, || {
+        let result = self.general.send_poller(self, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
@@ -450,7 +513,14 @@ impl SocketOps for TcpSocket {
                     Ok(len)
                 }
             })
-        })
+        });
+        // Poll again after writing so the data is transmitted through the
+        // network stack immediately. For loopback, this causes loopback.send()
+        // to run, which wakes any epoll wakers registered on the peer socket.
+        if result.is_ok() {
+            poll_interfaces();
+        }
+        result
     }
 
     fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
