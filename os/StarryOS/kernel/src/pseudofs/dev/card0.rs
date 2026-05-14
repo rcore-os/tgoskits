@@ -617,7 +617,8 @@ impl Card0 {
     /// `SETCRTC` or atomic commit. `fb_id` mirrors the plane's bound fb so
     /// `drmModeGetCrtc()` retrieves a coherent post-commit view. With one
     /// connector wired to one CRTC, `count_connectors` is 1 whenever the
-    /// CRTC is active.
+    /// CRTC is active, and `set_connectors_ptr` (if non-NULL) is filled
+    /// with the bound connector id truncated to the user-provided count.
     fn handle_get_crtc(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCrtc;
         let mut c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
@@ -631,7 +632,12 @@ impl Card0 {
         c.gamma_size = 0;
         c.mode_valid = if state.crtc_active != 0 { 1 } else { 0 };
         c.mode = current_mode();
-        c.count_connectors = if state.crtc_active != 0 { 1 } else { 0 };
+        let bound: &[u32] = if state.conn_crtc_id == CRTC_ID {
+            &[CONNECTOR_ID]
+        } else {
+            &[]
+        };
+        c.count_connectors = report_user_array(c.set_connectors_ptr, c.count_connectors, bound)?;
         ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
@@ -640,8 +646,10 @@ impl Card0 {
     /// state into `ModesetState` so `GETCRTC`, `OBJ_GETPROPERTIES`, and
     /// connector queries all see the same configuration. A zero `fb_id`
     /// is a disable request. Non-zero `fb_id` must reference a
-    /// framebuffer created via `ADDFB2`; an unknown id is rejected with
-    /// `EINVAL` to match the Linux DRM contract.
+    /// framebuffer created via `ADDFB2`. The supplied connector list
+    /// (`set_connectors_ptr` / `count_connectors`) is validated against
+    /// the fixed connector id; any unknown id is rejected with `EINVAL`
+    /// to match the Linux DRM contract.
     fn handle_set_crtc(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCrtc;
         let c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
@@ -651,6 +659,33 @@ impl Card0 {
         if c.fb_id != 0 && !self.fbs.lock().contains_key(&c.fb_id) {
             return Err(VfsError::InvalidInput);
         }
+        // Validate the connector list. A disable (`fb_id == 0`) is allowed
+        // to pass an empty list; an enable must reference exactly the one
+        // connector we expose. Linux's DRM core rejects unknown ids with
+        // EINVAL — accepting them silently would let userspace corrupt
+        // the modeset surface seen by GETCRTC / GETCONNECTOR.
+        if c.count_connectors > 0 {
+            if c.set_connectors_ptr == 0 {
+                return Err(VfsError::InvalidInput);
+            }
+            // Cap the array read to keep a wild count from blowing up
+            // the kernel allocator. One connector is all this driver
+            // ever exposes; anything beyond that is by definition bogus.
+            if c.count_connectors > 16 {
+                return Err(VfsError::InvalidInput);
+            }
+            let ids: Vec<u32> = vm_load(
+                c.set_connectors_ptr as *const u32,
+                c.count_connectors as usize,
+            )
+            .map_err(|_| VfsError::BadAddress)?;
+            for id in &ids {
+                if *id != CONNECTOR_ID {
+                    return Err(VfsError::InvalidInput);
+                }
+            }
+        }
+        let connector_bound = c.fb_id != 0 && c.count_connectors > 0;
         {
             let mut state = self.state.lock();
             if c.fb_id == 0 {
@@ -660,7 +695,7 @@ impl Card0 {
                 state.plane_crtc_id = 0;
             } else {
                 state.crtc_active = 1;
-                state.conn_crtc_id = CRTC_ID;
+                state.conn_crtc_id = if connector_bound { CRTC_ID } else { 0 };
                 state.plane_fb_id = c.fb_id;
                 state.plane_crtc_id = CRTC_ID;
             }
