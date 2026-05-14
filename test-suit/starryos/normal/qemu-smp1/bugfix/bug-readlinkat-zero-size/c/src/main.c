@@ -49,11 +49,11 @@ int main(void)
 
     memset(buf, 0x5a, sizeof(buf));
     ssize_t ret = raw_readlinkat(AT_FDCWD, link_path, buf, 0);
-    check(ret == 0 && errno == 0, "readlinkat symlink with size 0 returns 0");
+    check(ret == -1 && errno == EINVAL, "readlinkat symlink with size 0 fails EINVAL");
     check(buf[0] == 0x5a, "size 0 readlinkat leaves destination buffer unchanged");
 
     ret = raw_readlinkat(AT_FDCWD, link_path, NULL, 0);
-    check(ret == 0 && errno == 0, "readlinkat NULL buffer with size 0 returns 0");
+    check(ret == -1 && errno == EINVAL, "readlinkat NULL buffer with size 0 fails EINVAL");
 
     memset(buf, 0, sizeof(buf));
     ret = raw_readlinkat(AT_FDCWD, link_path, buf, 4);
