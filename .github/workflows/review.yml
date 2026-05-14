@@ -110,7 +110,9 @@ jobs:
           fi
 
       - name: Review pull request
+        id: codex_review
         if: steps.pr.outputs.is_draft == 'false' && steps.openai_api_key.outputs.available == 'true'
+        continue-on-error: true
         uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1 # v1.8
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -227,7 +229,9 @@ jobs:
                 {
                   "path": "src/lib.rs",
                   "line": 42,
+                  "start_line": null,
                   "side": "RIGHT",
+                  "start_side": null,
                   "body": "建议将此处改为 ...\n```suggestion\n// 修改后代码\n```"
                 }
               ],
@@ -235,8 +239,12 @@ jobs:
               "reviewer_reason": "选择这些人工 reviewers 的简短原因"
             }
 
+      - name: Skip failed AI review
+        if: steps.pr.outputs.is_draft == 'false' && steps.openai_api_key.outputs.available == 'true' && steps.codex_review.outcome == 'failure'
+        run: echo "::notice title=AI review skipped::Codex review failed, likely because the OpenAI quota is exhausted or the API request was rejected."
+
       - name: Submit pull request review
-        if: steps.pr.outputs.is_draft == 'false' && steps.openai_api_key.outputs.available == 'true'
+        if: steps.pr.outputs.is_draft == 'false' && steps.openai_api_key.outputs.available == 'true' && steps.codex_review.outcome == 'success'
         uses: actions/github-script@v8
         with:
           script: |
@@ -285,7 +293,7 @@ jobs:
             core.info(`Review submitted: verdict=${event}, inline_comments=${comments.length}`);
 
       - name: Request human reviewers
-        if: success() && steps.pr.outputs.is_draft == 'false' && steps.openai_api_key.outputs.available == 'true'
+        if: success() && steps.pr.outputs.is_draft == 'false' && steps.openai_api_key.outputs.available == 'true' && steps.codex_review.outcome == 'success'
         uses: actions/github-script@v8
         with:
           script: |
