@@ -431,3 +431,5 @@ fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
 x86 = "0.52"
+[patch.crates-io]
+ostool = { path = "scripts/ostool-patched" }

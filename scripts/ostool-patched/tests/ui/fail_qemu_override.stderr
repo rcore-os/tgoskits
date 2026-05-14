@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `ostool::build::CargoQemuOverrideArgs`
+ --> tests/ui/fail_qemu_override.rs:1:5
+  |
+1 | use ostool::build::CargoQemuOverrideArgs;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `CargoQemuOverrideArgs` in `build`

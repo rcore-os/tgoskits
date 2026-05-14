@@ -1,0 +1,11 @@
+error[E0603]: module `cargo_builder` is private
+ --> tests/ui/fail_cargo_builder.rs:1:20
+  |
+1 | use ostool::build::cargo_builder::CargoBuilder;
+  |                    ^^^^^^^^^^^^^ private module
+  |
+note: the module `cargo_builder` is defined here
+ --> src/build/mod.rs
+  |
+  | mod cargo_builder;
+  | ^^^^^^^^^^^^^^^^^

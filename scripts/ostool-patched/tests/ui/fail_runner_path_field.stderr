@@ -1,0 +1,7 @@
+error[E0560]: struct `CargoQemuRunnerArgs` has no field named `qemu_config`
+ --> tests/ui/fail_runner_path_field.rs:5:9
+  |
+5 |         qemu_config: None,
+  |         ^^^^^^^^^^^ `CargoQemuRunnerArgs` does not have this field
+  |
+  = note: available fields are: `qemu`

@@ -152,13 +152,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 };
                 // Send SIGWINCH to the foreground process group when the
                 // terminal dimensions change, matching Linux tty_do_resize().
-                if old.ws_row != window_size.ws_row || old.ws_col != window_size.ws_col {
-                    if let Some(pg) = self.terminal.job_control.foreground() {
-                        let _ = send_signal_to_process_group(
-                            pg.pgid(),
-                            Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
-                        );
-                    }
+                if (old.ws_row != window_size.ws_row || old.ws_col != window_size.ws_col)
+                    && let Some(pg) = self.terminal.job_control.foreground()
+                {
+                    let _ = send_signal_to_process_group(
+                        pg.pgid(),
+                        Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
+                    );
                 }
             }
             TIOCSPTLCK => {}
