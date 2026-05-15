@@ -696,13 +696,12 @@ pub(crate) fn init() {
 
     // Create the `idle` task (not current task).
     // The idle task will run when there is no other runnable task.
-    // The idle task also runs trap/IRQ handling on architectures without a
-    // separate IRQ stack, so keep it aligned with regular task stack sizing.
-    let idle_task = TaskInner::new(
-        || crate::run_idle(),
-        "idle".into(),
-        ax_config::TASK_STACK_SIZE,
-    );
+    #[cfg(feature = "lockdep")]
+    const IDLE_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
+    // TODO: Consider unifying the non-lockdep idle stack size with the task stack configuration.
+    #[cfg(not(feature = "lockdep"))]
+    const IDLE_TASK_STACK_SIZE: usize = 16384;
+    let idle_task = TaskInner::new(|| crate::run_idle(), "idle".into(), IDLE_TASK_STACK_SIZE);
     // idle task should be pinned to the current CPU.
     idle_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
     IDLE_TASK.with_current(|i| {
