@@ -515,7 +515,8 @@ pub fn sys_renameat2(
 }
 
 pub fn sys_sync() -> AxResult<isize> {
-    warn!("dummy sys_sync");
+    debug!("sys_sync");
+    FS_CONTEXT.lock().root_dir().sync(false)?;
     Ok(0)
 }
 
