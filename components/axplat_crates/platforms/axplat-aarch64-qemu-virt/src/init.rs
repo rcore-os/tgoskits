@@ -20,7 +20,8 @@ use crate::config::plat::PSCI_METHOD;
 #[cfg(feature = "gic-v3")]
 const _: () = assert!(
     TIMER_IRQ == 27,
-    "gic-v3 feature requires devices.timer-irq=27 (CNTV PPI 11); apply axconfig_overrides=[\"devices.timer-irq=27\"]"
+    "gic-v3 feature requires devices.timer-irq=27 (CNTV PPI 11); apply \
+     axconfig_overrides=[\"devices.timer-irq=27\"]"
 );
 
 struct InitIfImpl;
