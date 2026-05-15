@@ -296,6 +296,386 @@ where
     }
 }
 
+enum Acmd41State {
+    SubmitCmd55,
+    PollCmd55,
+    SubmitAcmd41,
+    PollAcmd41,
+}
+
+/// Future that polls ACMD41 until an SD card reports power-up complete.
+pub struct Acmd41Future<'a, H: SdioHost, D: DelayNs> {
+    host: &'a mut H,
+    delay: &'a mut D,
+    sd_v2: bool,
+    request_1v8: bool,
+    elapsed_ms: u32,
+    state: Acmd41State,
+}
+
+impl<'a, H: SdioHost, D: DelayNs> Acmd41Future<'a, H, D> {
+    pub fn new(host: &'a mut H, delay: &'a mut D, sd_v2: bool, request_1v8: bool) -> Self {
+        Self {
+            host,
+            delay,
+            sd_v2,
+            request_1v8,
+            elapsed_ms: 0,
+            state: Acmd41State::SubmitCmd55,
+        }
+    }
+}
+
+impl<H: SdioHost, D: DelayNs> Future for Acmd41Future<'_, H, D> {
+    type Output = Result<OcrResponse, Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: the future does not move pinned fields; it only mutates the
+        // state machine and calls host/delay through stable mutable references.
+        let this = unsafe { self.get_unchecked_mut() };
+
+        match this.state {
+            Acmd41State::SubmitCmd55 => {
+                debug!("sdio: CMD55 before ACMD41 elapsed={}ms", this.elapsed_ms);
+                let cmd55 = crate::cmd::cmd55(0);
+                if let Err(err) = this.host.submit_command(&cmd55) {
+                    return Poll::Ready(Err(err));
+                }
+                this.state = Acmd41State::PollCmd55;
+                this.host.register_waker(cx.waker());
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            Acmd41State::PollCmd55 => match this.host.poll_command_response() {
+                Ok(CommandResponsePoll::Pending) => {
+                    this.host.register_waker(cx.waker());
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(_)) => {
+                    this.state = Acmd41State::SubmitAcmd41;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
+            Acmd41State::SubmitAcmd41 => {
+                let acmd41 = crate::cmd::cmd41_with_s18r(this.sd_v2, 0xFF8000, this.request_1v8);
+                if let Err(err) = this.host.submit_command(&acmd41) {
+                    return Poll::Ready(Err(err));
+                }
+                this.state = Acmd41State::PollAcmd41;
+                this.host.register_waker(cx.waker());
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            Acmd41State::PollAcmd41 => match this.host.poll_command_response() {
+                Ok(CommandResponsePoll::Pending) => {
+                    this.host.register_waker(cx.waker());
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(Response::R3(ocr))) => {
+                    debug!(
+                        "sdio: ACMD41 ocr={:#010x} ready={}",
+                        ocr.raw,
+                        ocr.card_powered_up()
+                    );
+                    if ocr.card_powered_up() {
+                        return Poll::Ready(Ok(ocr));
+                    }
+                    if this.elapsed_ms >= SdioInitTiming::TIMEOUT_MS {
+                        warn!("sdio: ACMD41 timed out after {}ms", this.elapsed_ms);
+                        return Poll::Ready(Err(Error::Timeout(ErrorContext::for_cmd(
+                            Phase::Init,
+                            41,
+                        ))));
+                    }
+                    this.delay.delay_ms(SdioInitTiming::POLL_MS);
+                    this.elapsed_ms = this.elapsed_ms.saturating_add(SdioInitTiming::POLL_MS);
+                    this.state = Acmd41State::SubmitCmd55;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(_)) => Poll::Ready(Err(Error::BadResponse(
+                    ErrorContext::for_cmd(Phase::Init, 41),
+                ))),
+                Err(err) => Poll::Ready(Err(err)),
+            },
+        }
+    }
+}
+
+enum MmcReadyState {
+    SubmitInitial,
+    PollInitial,
+    SubmitReady,
+    PollReady,
+}
+
+/// Future that polls CMD1 until an MMC card reports power-up complete.
+pub struct MmcReadyFuture<'a, H: SdioHost, D: DelayNs> {
+    host: &'a mut H,
+    delay: &'a mut D,
+    elapsed_ms: u32,
+    ocr_arg: u32,
+    state: MmcReadyState,
+}
+
+impl<'a, H: SdioHost, D: DelayNs> MmcReadyFuture<'a, H, D> {
+    pub fn new(host: &'a mut H, delay: &'a mut D) -> Self {
+        Self {
+            host,
+            delay,
+            elapsed_ms: 0,
+            ocr_arg: 0,
+            state: MmcReadyState::SubmitInitial,
+        }
+    }
+}
+
+impl<H: SdioHost, D: DelayNs> Future for MmcReadyFuture<'_, H, D> {
+    type Output = Result<OcrResponse, Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        const MMC_HCS: u32 = 1 << 30;
+        const MMC_VOLTAGE_MASK: u32 = 0x00FF_8000;
+        const MMC_ACCESS_MODE_MASK: u32 = 0x6000_0000;
+
+        // SAFETY: the future does not move pinned fields; it only advances its
+        // state and uses the host/delay mutable references in place.
+        let this = unsafe { self.get_unchecked_mut() };
+
+        match this.state {
+            MmcReadyState::SubmitInitial => {
+                let cmd = crate::cmd::cmd1(0);
+                if let Err(err) = this.host.submit_command(&cmd) {
+                    return Poll::Ready(Err(err));
+                }
+                this.state = MmcReadyState::PollInitial;
+                this.host.register_waker(cx.waker());
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            MmcReadyState::PollInitial => match this.host.poll_command_response() {
+                Ok(CommandResponsePoll::Pending) => {
+                    this.host.register_waker(cx.waker());
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(Response::R3(ocr))) => {
+                    info!("sdio: CMD1 initial ocr={:#010x}", ocr.raw);
+                    if ocr.card_powered_up() {
+                        return Poll::Ready(Ok(ocr));
+                    }
+                    let voltage = ocr.raw & MMC_VOLTAGE_MASK;
+                    let voltage = if voltage == 0 {
+                        MMC_VOLTAGE_MASK
+                    } else {
+                        voltage
+                    };
+                    this.ocr_arg = MMC_HCS | voltage | (ocr.raw & MMC_ACCESS_MODE_MASK);
+                    this.state = MmcReadyState::SubmitReady;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(_)) => Poll::Ready(Err(Error::BadResponse(
+                    ErrorContext::for_cmd(Phase::Init, 1),
+                ))),
+                Err(err) => Poll::Ready(Err(err)),
+            },
+            MmcReadyState::SubmitReady => {
+                debug!(
+                    "sdio: CMD1 arg={:#010x} elapsed={}ms",
+                    this.ocr_arg, this.elapsed_ms
+                );
+                let cmd = crate::cmd::cmd1(this.ocr_arg);
+                if let Err(err) = this.host.submit_command(&cmd) {
+                    return Poll::Ready(Err(err));
+                }
+                this.state = MmcReadyState::PollReady;
+                this.host.register_waker(cx.waker());
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            MmcReadyState::PollReady => match this.host.poll_command_response() {
+                Ok(CommandResponsePoll::Pending) => {
+                    this.host.register_waker(cx.waker());
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(Response::R3(ocr))) => {
+                    debug!(
+                        "sdio: CMD1 ocr={:#010x} ready={}",
+                        ocr.raw,
+                        ocr.card_powered_up()
+                    );
+                    if ocr.card_powered_up() {
+                        return Poll::Ready(Ok(ocr));
+                    }
+                    if this.elapsed_ms >= SdioInitTiming::TIMEOUT_MS {
+                        warn!("sdio: CMD1 timed out after {}ms", this.elapsed_ms);
+                        return Poll::Ready(Err(Error::Timeout(ErrorContext::for_cmd(
+                            Phase::Init,
+                            1,
+                        ))));
+                    }
+                    this.delay.delay_ms(SdioInitTiming::POLL_MS);
+                    this.elapsed_ms = this.elapsed_ms.saturating_add(SdioInitTiming::POLL_MS);
+                    this.state = MmcReadyState::SubmitReady;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(_)) => Poll::Ready(Err(Error::BadResponse(
+                    ErrorContext::for_cmd(Phase::Init, 1),
+                ))),
+                Err(err) => Poll::Ready(Err(err)),
+            },
+        }
+    }
+}
+
+enum MmcSwitchState {
+    SubmitSwitch,
+    PollSwitch,
+    SubmitStatus,
+    PollStatus,
+}
+
+/// Future that waits for an MMC CMD6 SWITCH to leave the busy/programming state.
+pub struct MmcSwitchFuture<'a, H: SdioHost, D: DelayNs> {
+    host: &'a mut H,
+    delay: &'a mut D,
+    rca: u16,
+    access: u8,
+    index: u8,
+    value: u8,
+    elapsed_ms: u32,
+    state: MmcSwitchState,
+}
+
+impl<'a, H: SdioHost, D: DelayNs> MmcSwitchFuture<'a, H, D> {
+    pub fn new(
+        host: &'a mut H,
+        delay: &'a mut D,
+        rca: u16,
+        access: u8,
+        index: u8,
+        value: u8,
+    ) -> Self {
+        Self {
+            host,
+            delay,
+            rca,
+            access,
+            index,
+            value,
+            elapsed_ms: 0,
+            state: MmcSwitchState::SubmitSwitch,
+        }
+    }
+}
+
+impl<H: SdioHost, D: DelayNs> Future for MmcSwitchFuture<'_, H, D> {
+    type Output = Result<(), Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: the future only mutates its state fields and calls host/delay
+        // through pinned-in-place mutable references.
+        let this = unsafe { self.get_unchecked_mut() };
+
+        match this.state {
+            MmcSwitchState::SubmitSwitch => {
+                let cmd = crate::cmd::cmd6_mmc_switch(this.access, this.index, this.value);
+                if let Err(err) = this.host.submit_command(&cmd) {
+                    return Poll::Ready(Err(err));
+                }
+                this.state = MmcSwitchState::PollSwitch;
+                this.host.register_waker(cx.waker());
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            MmcSwitchState::PollSwitch => match this.host.poll_command_response() {
+                Ok(CommandResponsePoll::Pending) => {
+                    this.host.register_waker(cx.waker());
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(_)) => {
+                    this.state = MmcSwitchState::SubmitStatus;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
+            MmcSwitchState::SubmitStatus => {
+                let cmd = crate::cmd::cmd13(this.rca);
+                if let Err(err) = this.host.submit_command(&cmd) {
+                    return Poll::Ready(Err(err));
+                }
+                this.state = MmcSwitchState::PollStatus;
+                this.host.register_waker(cx.waker());
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            MmcSwitchState::PollStatus => match this.host.poll_command_response() {
+                Ok(CommandResponsePoll::Pending) => {
+                    this.host.register_waker(cx.waker());
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(Response::R1(r1))) => {
+                    if r1.switch_error() {
+                        warn!(
+                            "sdio: SWITCH_ERROR after CMD6 idx={} val={}",
+                            this.index, this.value
+                        );
+                        return Poll::Ready(Err(Error::CardError(
+                            crate::error::CardError::IllegalCommand,
+                        )));
+                    }
+                    if r1.ready_for_data() && matches!(r1.current_state(), CardState::Transfer) {
+                        return Poll::Ready(Ok(()));
+                    }
+                    if this.elapsed_ms >= MmcSwitchTiming::TIMEOUT_MS {
+                        return Poll::Ready(Err(Error::Timeout(ErrorContext::for_cmd(
+                            Phase::Init,
+                            6,
+                        ))));
+                    }
+                    this.delay.delay_ms(MmcSwitchTiming::POLL_MS);
+                    this.elapsed_ms = this.elapsed_ms.saturating_add(MmcSwitchTiming::POLL_MS);
+                    this.state = MmcSwitchState::SubmitStatus;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Ok(CommandResponsePoll::Complete(_)) => {
+                    if this.elapsed_ms >= MmcSwitchTiming::TIMEOUT_MS {
+                        return Poll::Ready(Err(Error::Timeout(ErrorContext::for_cmd(
+                            Phase::Init,
+                            6,
+                        ))));
+                    }
+                    this.delay.delay_ms(MmcSwitchTiming::POLL_MS);
+                    this.elapsed_ms = this.elapsed_ms.saturating_add(MmcSwitchTiming::POLL_MS);
+                    this.state = MmcSwitchState::SubmitStatus;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
+        }
+    }
+}
+
+struct SdioInitTiming;
+
+impl SdioInitTiming {
+    const TIMEOUT_MS: u32 = 1_000;
+    const POLL_MS: u32 = 10;
+}
+
+struct MmcSwitchTiming;
+
+impl MmcSwitchTiming {
+    const TIMEOUT_MS: u32 = 250;
+    const POLL_MS: u32 = SdioInitTiming::POLL_MS;
+}
+
 fn spin_on_future<F: Future>(future: F) -> F::Output {
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
@@ -322,8 +702,21 @@ pub struct SdioSdmmc<H: SdioHost, D: DelayNs> {
 
 pub struct SdioDataRequest<'a, H: SdioHost + 'a> {
     inner: H::DataRequest<'a>,
-    stop_after_complete: bool,
-    stop_sent: bool,
+    stop_state: StopTransmissionState,
+    data_response: Option<Response>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopTransmissionState {
+    NotRequired,
+    PendingSubmit,
+    Polling,
+}
+
+impl<'a, H: SdioHost + 'a> SdioDataRequest<'a, H> {
+    fn response_after_stop(&mut self) -> Result<Response, Error> {
+        self.data_response.take().ok_or(Error::InvalidArgument)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -429,8 +822,12 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         let inner = self.host.submit_read_data(&cmd, buf, 512, count)?;
         Ok(SdioDataRequest {
             inner,
-            stop_after_complete: count > 1,
-            stop_sent: false,
+            stop_state: if count > 1 {
+                StopTransmissionState::PendingSubmit
+            } else {
+                StopTransmissionState::NotRequired
+            },
+            data_response: None,
         })
     }
 
@@ -452,8 +849,12 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
         let inner = self.host.submit_write_data(&cmd, buf, 512, count)?;
         Ok(SdioDataRequest {
             inner,
-            stop_after_complete: count > 1,
-            stop_sent: false,
+            stop_state: if count > 1 {
+                StopTransmissionState::PendingSubmit
+            } else {
+                StopTransmissionState::NotRequired
+            },
+            data_response: None,
         })
     }
 
@@ -464,14 +865,29 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     where
         H: 'a,
     {
-        match self.host.poll_data_request(&mut request.inner)? {
-            DataCommandPoll::Pending => Ok(DataCommandPoll::Pending),
-            DataCommandPoll::Complete(response) => {
-                if request.stop_after_complete && !request.stop_sent {
-                    self.issue_command(&crate::cmd::CMD12)?;
-                    request.stop_sent = true;
+        match request.stop_state {
+            StopTransmissionState::Polling => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(DataCommandPoll::Pending),
+                CommandResponsePoll::Complete(_) => {
+                    request.stop_state = StopTransmissionState::NotRequired;
+                    let response = request.response_after_stop()?;
+                    Ok(DataCommandPoll::Complete(response))
                 }
-                Ok(DataCommandPoll::Complete(response))
+            },
+            StopTransmissionState::NotRequired | StopTransmissionState::PendingSubmit => {
+                match self.host.poll_data_request(&mut request.inner)? {
+                    DataCommandPoll::Pending => Ok(DataCommandPoll::Pending),
+                    DataCommandPoll::Complete(response) => {
+                        if request.stop_state == StopTransmissionState::PendingSubmit {
+                            self.host.submit_command(&crate::cmd::CMD12)?;
+                            request.stop_state = StopTransmissionState::Polling;
+                            request.data_response = Some(response);
+                            Ok(DataCommandPoll::Pending)
+                        } else {
+                            Ok(DataCommandPoll::Complete(response))
+                        }
+                    }
+                }
             }
         }
     }
@@ -483,11 +899,6 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
 }
 
 impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
-    /// Maximum total time to wait for ACMD41 to report card power-up.
-    const INIT_TIMEOUT_MS: u32 = 1_000;
-    /// Interval between ACMD41 polls.
-    const INIT_POLL_MS: u32 = 10;
-
     /// Initialize the card in SDIO mode.
     ///
     /// Detects SD vs eMMC at runtime:
@@ -669,34 +1080,12 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
 
     /// Send ACMD41 until card is ready (SD path).
     fn wait_ready_sd(&mut self, sd_v2: bool, request_1v8: bool) -> Result<OcrResponse, Error> {
-        let mut elapsed = 0u32;
-        loop {
-            debug!("sdio: CMD55 before ACMD41 elapsed={}ms", elapsed);
-            let cmd55 = crate::cmd::cmd55(0);
-            self.issue_command(&cmd55)?;
-
-            let acmd41 = crate::cmd::cmd41_with_s18r(sd_v2, 0xFF8000, request_1v8);
-            match self.issue_command(&acmd41)? {
-                Response::R3(ocr) => {
-                    debug!(
-                        "sdio: ACMD41 ocr={:#010x} ready={}",
-                        ocr.raw,
-                        ocr.card_powered_up()
-                    );
-                    if ocr.card_powered_up() {
-                        return Ok(ocr);
-                    }
-                }
-                _ => return Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 41))),
-            }
-
-            if elapsed >= Self::INIT_TIMEOUT_MS {
-                warn!("sdio: ACMD41 timed out after {}ms", elapsed);
-                return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 41)));
-            }
-            self.delay.delay_ms(Self::INIT_POLL_MS);
-            elapsed = elapsed.saturating_add(Self::INIT_POLL_MS);
-        }
+        spin_on_future(Acmd41Future::new(
+            &mut self.host,
+            &mut self.delay,
+            sd_v2,
+            request_1v8,
+        ))
     }
 
     /// Send CMD1 until the eMMC reports power-up complete (MMC path).
@@ -706,52 +1095,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     /// SD's HCS bit in ACMD41. Bits 23..15 cover the standard 2.7–3.6 V
     /// window.
     fn wait_ready_mmc(&mut self) -> Result<OcrResponse, Error> {
-        const MMC_HCS: u32 = 1 << 30;
-        const MMC_VOLTAGE_MASK: u32 = 0x00FF_8000;
-        const MMC_ACCESS_MODE_MASK: u32 = 0x6000_0000;
-
-        let first = match self.issue_command(&crate::cmd::cmd1(0))? {
-            Response::R3(ocr) => {
-                info!("sdio: CMD1 initial ocr={:#010x}", ocr.raw);
-                ocr
-            }
-            _ => return Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 1))),
-        };
-        if first.card_powered_up() {
-            return Ok(first);
-        }
-        let voltage = first.raw & MMC_VOLTAGE_MASK;
-        let voltage = if voltage == 0 {
-            MMC_VOLTAGE_MASK
-        } else {
-            voltage
-        };
-        let ocr_arg = MMC_HCS | voltage | (first.raw & MMC_ACCESS_MODE_MASK);
-        let mut elapsed = 0u32;
-        loop {
-            debug!("sdio: CMD1 arg={:#010x} elapsed={}ms", ocr_arg, elapsed);
-            let cmd1 = crate::cmd::cmd1(ocr_arg);
-            match self.issue_command(&cmd1)? {
-                Response::R3(ocr) => {
-                    debug!(
-                        "sdio: CMD1 ocr={:#010x} ready={}",
-                        ocr.raw,
-                        ocr.card_powered_up()
-                    );
-                    if ocr.card_powered_up() {
-                        return Ok(ocr);
-                    }
-                }
-                _ => return Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 1))),
-            }
-
-            if elapsed >= Self::INIT_TIMEOUT_MS {
-                warn!("sdio: CMD1 timed out after {}ms", elapsed);
-                return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 1)));
-            }
-            self.delay.delay_ms(Self::INIT_POLL_MS);
-            elapsed = elapsed.saturating_add(Self::INIT_POLL_MS);
-        }
+        spin_on_future(MmcReadyFuture::new(&mut self.host, &mut self.delay))
     }
 
     /// CMD3 (SD): card publishes its RCA via R6.
@@ -796,34 +1140,14 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     /// Surfaces `Error::CardError(IllegalCommand)` if the post-switch
     /// CMD13 reports `SWITCH_ERROR`.
     fn mmc_switch(&mut self, access: u8, index: u8, value: u8) -> Result<(), Error> {
-        let cmd = crate::cmd::cmd6_mmc_switch(access, index, value);
-        self.issue_command(&cmd)?;
-
-        // Poll CMD13 for busy clear + SWITCH_ERROR check. The MMC spec
-        // bounds programming time at 100 ms in the worst case; we're a
-        // little more generous (250 ms) and use the same poll cadence
-        // as ACMD41 to keep the bring-up path simple.
-        const SWITCH_TIMEOUT_MS: u32 = 250;
-        let mut elapsed = 0u32;
-        loop {
-            let r = self.issue_command(&crate::cmd::cmd13(self.rca))?;
-            if let Response::R1(r1) = r {
-                if r1.switch_error() {
-                    warn!("sdio: SWITCH_ERROR after CMD6 idx={} val={}", index, value);
-                    return Err(Error::CardError(crate::error::CardError::IllegalCommand));
-                }
-                if r1.ready_for_data()
-                    && matches!(r1.current_state(), crate::response::CardState::Transfer)
-                {
-                    return Ok(());
-                }
-            }
-            if elapsed >= SWITCH_TIMEOUT_MS {
-                return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
-            }
-            self.delay.delay_ms(Self::INIT_POLL_MS);
-            elapsed = elapsed.saturating_add(Self::INIT_POLL_MS);
-        }
+        spin_on_future(MmcSwitchFuture::new(
+            &mut self.host,
+            &mut self.delay,
+            self.rca,
+            access,
+            index,
+            value,
+        ))
     }
 
     /// Convenience over [`mmc_switch`](Self::mmc_switch) using the most
@@ -1169,6 +1493,17 @@ mod tests {
 
     impl DelayNs for NullDelay {
         fn delay_ns(&mut self, _ns: u32) {}
+    }
+
+    #[derive(Default)]
+    struct CountingDelay {
+        ns_calls: Vec<u32>,
+    }
+
+    impl DelayNs for CountingDelay {
+        fn delay_ns(&mut self, ns: u32) {
+            self.ns_calls.push(ns);
+        }
     }
 
     /// Mock host that replays canned responses in order. Used to verify the
@@ -1525,6 +1860,81 @@ mod tests {
         }
     }
 
+    struct Acmd41Host {
+        command_responses: Vec<CommandResponsePoll>,
+        commands: Vec<u8>,
+        command_args: Vec<u32>,
+        waker_registrations: usize,
+    }
+
+    impl Acmd41Host {
+        fn new(command_responses: Vec<CommandResponsePoll>) -> Self {
+            Self {
+                command_responses,
+                commands: Vec::new(),
+                command_args: Vec::new(),
+                waker_registrations: 0,
+            }
+        }
+    }
+
+    impl SdioHost for Acmd41Host {
+        type Event = ();
+        type DataRequest<'a> = PendingDataRequest<'a>;
+
+        fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
+            self.commands.push(cmd.cmd);
+            self.command_args.push(cmd.arg);
+            Ok(())
+        }
+
+        fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
+            if self.command_responses.is_empty() {
+                return Err(Error::Timeout(ErrorContext::default()));
+            }
+            Ok(self.command_responses.remove(0))
+        }
+
+        fn submit_read_data<'a>(
+            &mut self,
+            _cmd: &Command,
+            _buf: &'a mut [u8],
+            _block_size: u32,
+            _block_count: u32,
+        ) -> Result<Self::DataRequest<'a>, Error> {
+            Err(Error::UnsupportedCommand)
+        }
+
+        fn submit_write_data<'a>(
+            &mut self,
+            _cmd: &Command,
+            _buf: &'a [u8],
+            _block_size: u32,
+            _block_count: u32,
+        ) -> Result<Self::DataRequest<'a>, Error> {
+            Err(Error::UnsupportedCommand)
+        }
+
+        fn poll_data_request<'a>(
+            &mut self,
+            _request: &mut Self::DataRequest<'a>,
+        ) -> Result<DataCommandPoll, Error> {
+            Err(Error::UnsupportedCommand)
+        }
+
+        fn set_bus_width(&mut self, _width: BusWidth) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn set_clock(&mut self, _speed: ClockSpeed) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn register_waker(&mut self, _waker: &Waker) {
+            self.waker_registrations += 1;
+        }
+    }
+
     #[test]
     fn command_future_registers_waker_on_pending_and_completes() {
         let mut host = PendingHost::new();
@@ -1533,7 +1943,10 @@ mod tests {
         let mut future = core::pin::pin!(CommandFuture::new(&mut host));
 
         assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert_eq!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(ok_r1())));
+        assert!(matches!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(Response::R1(_)))
+        ));
 
         drop(future);
         assert_eq!(host.command_polls, 2);
@@ -1551,11 +1964,123 @@ mod tests {
         let mut future = core::pin::pin!(DataFuture::new(&mut host, request));
 
         assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert_eq!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(ok_r1())));
+        assert!(matches!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(Response::R1(_)))
+        ));
 
         drop(future);
         assert_eq!(host.data_polls, 2);
         assert_eq!(host.waker_registrations, 1);
+    }
+
+    #[test]
+    fn acmd41_future_uses_submit_poll_sequence_and_waker() {
+        let mut host = Acmd41Host::new(std::vec![
+            CommandResponsePoll::Pending,
+            CommandResponsePoll::Complete(ok_r1()),
+            CommandResponsePoll::Complete(Response::R3(OcrResponse::from_raw(0x00FF_8000))),
+            CommandResponsePoll::Pending,
+            CommandResponsePoll::Complete(ok_r1()),
+            CommandResponsePoll::Complete(ocr_ready_sdhc()),
+        ]);
+        let mut delay = CountingDelay::default();
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut future = core::pin::pin!(Acmd41Future::new(&mut host, &mut delay, true, true));
+
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        let ocr = match future.as_mut().poll(&mut cx) {
+            Poll::Ready(Ok(ocr)) => ocr,
+            other => panic!("unexpected ACMD41 poll result: {other:?}"),
+        };
+
+        assert!(ocr.card_powered_up());
+        drop(future);
+        assert_eq!(host.commands, std::vec![55, 41, 55, 41]);
+        assert_eq!(host.waker_registrations, 6);
+        assert_eq!(
+            delay.ns_calls,
+            std::vec![SdioInitTiming::POLL_MS * 1_000_000]
+        );
+    }
+
+    #[test]
+    fn mmc_ready_future_uses_submit_poll_sequence_and_waker() {
+        let mut host = Acmd41Host::new(std::vec![
+            CommandResponsePoll::Pending,
+            CommandResponsePoll::Complete(Response::R3(OcrResponse::from_raw(0x00FF_8000))),
+            CommandResponsePoll::Pending,
+            CommandResponsePoll::Complete(ocr_ready_mmc_sector()),
+        ]);
+        let mut delay = CountingDelay::default();
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut future = core::pin::pin!(MmcReadyFuture::new(&mut host, &mut delay));
+
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        let ocr = match future.as_mut().poll(&mut cx) {
+            Poll::Ready(Ok(ocr)) => ocr,
+            other => panic!("unexpected CMD1 poll result: {other:?}"),
+        };
+
+        assert!(ocr.card_powered_up());
+        drop(future);
+        assert_eq!(host.commands, std::vec![1, 1]);
+        assert_eq!(host.command_args, std::vec![0, 0x40FF_8000]);
+        assert_eq!(host.waker_registrations, 4);
+        assert!(delay.ns_calls.is_empty());
+    }
+
+    #[test]
+    fn mmc_switch_future_uses_submit_poll_sequence_and_waker() {
+        let mut host = Acmd41Host::new(std::vec![
+            CommandResponsePoll::Pending,
+            CommandResponsePoll::Complete(ok_r1()),
+            CommandResponsePoll::Complete(ok_r1()),
+            CommandResponsePoll::Pending,
+            CommandResponsePoll::Complete(r1_tran_ready()),
+        ]);
+        let mut delay = CountingDelay::default();
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut future = core::pin::pin!(MmcSwitchFuture::new(
+            &mut host,
+            &mut delay,
+            1,
+            0b11,
+            crate::cmd::ext_csd::HS_TIMING as u8,
+            1,
+        ));
+
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert_eq!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(())));
+
+        drop(future);
+        assert_eq!(host.commands, std::vec![6, 13, 13]);
+        assert_eq!(host.waker_registrations, 5);
+        assert_eq!(
+            delay.ns_calls,
+            std::vec![MmcSwitchTiming::POLL_MS * 1_000_000]
+        );
     }
 
     #[test]
@@ -2006,6 +2531,10 @@ mod tests {
         let mut request = driver.submit_read_blocks_into(7, &mut buf).unwrap();
         assert!(matches!(
             driver.poll_data_request(&mut request).unwrap(),
+            DataCommandPoll::Pending
+        ));
+        assert!(matches!(
+            driver.poll_data_request(&mut request).unwrap(),
             DataCommandPoll::Complete(_)
         ));
 
@@ -2034,6 +2563,10 @@ mod tests {
         let buf = [0x5au8; 1024];
 
         let mut request = driver.submit_write_blocks_from(11, &buf).unwrap();
+        assert!(matches!(
+            driver.poll_data_request(&mut request).unwrap(),
+            DataCommandPoll::Pending
+        ));
         assert!(matches!(
             driver.poll_data_request(&mut request).unwrap(),
             DataCommandPoll::Complete(_)
