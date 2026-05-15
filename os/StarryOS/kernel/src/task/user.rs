@@ -37,8 +37,11 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                     ReturnReason::PageFault(addr, flags) => {
                         if !thr.proc_data.aspace().lock().handle_page_fault(addr, flags) {
                             info!(
-                                "{:?}: segmentation fault at {:#x} {:?}",
-                                thr.proc_data.proc, addr, flags
+                                "{:?}: segmentation fault at {:#x} {:?}\n{}",
+                                thr.proc_data.proc,
+                                addr,
+                                flags,
+                                uctx.backtrace()
                             );
                             raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV))
                                 .expect("Failed to send SIGSEGV");
@@ -47,18 +50,18 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                     ReturnReason::Interrupt => {}
                     #[allow(unused_labels)]
                     ReturnReason::Exception(exc_info) => 'exc: {
-                        // TODO: detailed handling
                         let kind = exc_info.kind();
                         warn!(
                             "user exception: ip={:#x}, fault_addr={:#x}, kind={:?}, esr={:#x}, \
-                             ec={:#x}, iss={:#x}, info={:?}",
+                             ec={:#x}, iss={:#x}, info={:?}\n{}",
                             uctx.ip(),
                             exception_fault_addr(&exc_info),
                             kind,
                             exception_esr_value(&exc_info),
                             exception_ec_value(&exc_info),
                             exception_iss_value(&exc_info),
-                            exc_info
+                            exc_info,
+                            uctx.backtrace()
                         );
                         let signo = match kind {
                             ExceptionKind::Misaligned => {

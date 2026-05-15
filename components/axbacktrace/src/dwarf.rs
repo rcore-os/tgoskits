@@ -1,5 +1,5 @@
 use alloc::borrow::Cow;
-use core::{fmt, slice};
+use core::{cell::UnsafeCell, fmt, slice};
 
 use addr2line::Context;
 use log::{error, info};
@@ -7,7 +7,11 @@ use paste::paste;
 
 pub type DwarfReader = gimli::EndianSlice<'static, gimli::RunTimeEndian>;
 
-static mut CONTEXT: Option<Context<DwarfReader>> = None;
+struct ContextCell(UnsafeCell<Option<Context<DwarfReader>>>);
+
+unsafe impl Sync for ContextCell {}
+
+static CONTEXT: ContextCell = ContextCell(UnsafeCell::new(None));
 
 macro_rules! generate_sections {
     ($($name:ident),*) => {
@@ -69,7 +73,7 @@ pub fn init() {
     ) {
         Ok(ctx) => {
             unsafe {
-                CONTEXT = Some(ctx);
+                *CONTEXT.0.get() = Some(ctx);
             }
             info!("Initialized addr2line context successfully.");
         }
@@ -100,8 +104,7 @@ impl Iterator for FrameIter<'_> {
     type Item = (crate::Frame, addr2line::Frame<'static, DwarfReader>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        #[allow(static_mut_refs)]
-        let ctx = unsafe { CONTEXT.as_ref()? };
+        let ctx = unsafe { &*CONTEXT.0.get() }.as_ref()?;
 
         loop {
             if let Some((raw, inner)) = &mut self.inner
@@ -153,8 +156,7 @@ fn fmt_frame<R: gimli::Reader>(
 }
 
 pub(crate) fn fmt_frames(f: &mut fmt::Formatter<'_>, frames: &[crate::Frame]) -> fmt::Result {
-    #[allow(static_mut_refs)]
-    if unsafe { CONTEXT.is_none() } {
+    if unsafe { (*CONTEXT.0.get()).is_none() } {
         return write!(f, "Backtracing is not initialized.");
     }
     for (i, (raw, frame)) in FrameIter::new(frames).enumerate() {
