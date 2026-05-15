@@ -392,63 +392,44 @@ jobs:
             const severityBadge = severityBadges[json.severity] || '';
             const body = severityBadge ? `${severityBadge}\n\n${summary}` : summary;
 
-            function collectReviewableLines(diffText) {
+            // Use pulls.listFiles instead of parsing the raw patch text:
+            // - filenames are already decoded (no octal escapes, no quoting issues)
+            // - renamed files expose previous_filename for LEFT-side path resolution
+            // - deleted/binary files are handled naturally (no patch → skip)
+            async function collectReviewableLines() {
               const reviewable = new Map();
-              let path = null;
-              let oldLine = 0;
-              let newLine = 0;
-
-              const addLine = (side, line) => {
-                if (!path || !Number.isInteger(line) || line <= 0) {
-                  return;
-                }
-                const key = `${path}\0${side}`;
-                if (!reviewable.has(key)) {
-                  reviewable.set(key, new Set());
-                }
-                reviewable.get(key).add(line);
-              };
-
-              for (const line of diffText.split('\n')) {
-                if (line.startsWith('diff --git ')) {
-                  path = null;
-                  continue;
-                }
-                if (line.startsWith('+++ b/')) {
-                  path = line.slice('+++ b/'.length);
-                  continue;
-                }
-                if (line.startsWith('+++ /dev/null')) {
-                  path = null;
-                  continue;
-                }
-                const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-                if (hunk) {
-                  oldLine = Number(hunk[1]);
-                  newLine = Number(hunk[2]);
-                  continue;
-                }
-                if (!path || line.startsWith('\\ No newline at end of file')) {
-                  continue;
-                }
-                if (line.startsWith('+') && !line.startsWith('+++')) {
-                  addLine('RIGHT', newLine);
-                  newLine += 1;
-                } else if (line.startsWith('-') && !line.startsWith('---')) {
-                  addLine('LEFT', oldLine);
-                  oldLine += 1;
-                } else if (line.startsWith(' ')) {
-                  addLine('RIGHT', newLine);
-                  addLine('LEFT', oldLine);
-                  oldLine += 1;
-                  newLine += 1;
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullNumber,
+                per_page: 100,
+              });
+              for (const file of files) {
+                if (!file.patch) continue; // binary or GitHub-truncated large files
+                // RIGHT side (new/context lines) → new filename; LEFT side (deleted lines) → old filename
+                const newPath = file.filename;
+                const oldPath = file.previous_filename || file.filename;
+                let oldLine = 0;
+                let newLine = 0;
+                const addLine = (filePath, side, lineNum) => {
+                  if (!Number.isInteger(lineNum) || lineNum <= 0) return;
+                  const key = `${filePath}\0${side}`;
+                  if (!reviewable.has(key)) reviewable.set(key, new Set());
+                  reviewable.get(key).add(lineNum);
+                };
+                for (const ln of file.patch.split('\n')) {
+                  if (ln.startsWith('\\ No newline at end of file')) continue;
+                  const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(ln);
+                  if (hunk) { oldLine = Number(hunk[1]); newLine = Number(hunk[2]); continue; }
+                  if (ln.startsWith('+')) { addLine(newPath, 'RIGHT', newLine++); }
+                  else if (ln.startsWith('-')) { addLine(oldPath, 'LEFT', oldLine++); }
+                  else { addLine(newPath, 'RIGHT', newLine++); addLine(oldPath, 'LEFT', oldLine++); }
                 }
               }
-
               return reviewable;
             }
 
-            const reviewableLines = collectReviewableLines(fs.readFileSync('.deepseek-pr-review/pr.diff', 'utf8'));
+            const reviewableLines = await collectReviewableLines();
             const isReviewable = (comment) => {
               const side = comment.side === 'LEFT' ? 'LEFT' : 'RIGHT';
               const lines = reviewableLines.get(`${comment.path}\0${side}`);
