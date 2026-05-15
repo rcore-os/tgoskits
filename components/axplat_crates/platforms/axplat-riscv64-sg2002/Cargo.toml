@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-riscv64-sg2002"
-version = "0.3.1"
+version = "0.3.2"
 authors = [
     "Luoyuan Xiao <xiaoluoyuan@163.com>",
     "Zechen Peng <927068267@qq.com>",
