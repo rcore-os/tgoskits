@@ -226,6 +226,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-backtrace-panic"
+version = "0.3.1"
+dependencies = [
+ "ax-std",
+ "axbacktrace",
+]
+
+[[package]]
 name = "arceos-display"
 version = "0.3.1"
 dependencies = [

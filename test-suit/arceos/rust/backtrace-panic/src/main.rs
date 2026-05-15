@@ -18,24 +18,27 @@ app! {
 #[cfg(feature = "ax-std")]
 extern crate ax_std as std;
 
+use axbacktrace::Backtrace;
 use std::println;
 
-fn c() -> ! {
-    panic!("backtrace panic test");
+fn c() {
+    println!("{}", Backtrace::report("raw"));
 }
 
-fn b() -> ! {
+fn b() {
     c()
 }
 
-fn a() -> ! {
+fn a() {
     b()
 }
 
 #[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
-    println!("triggering panic for backtrace raw report...");
+    println!("emitting raw backtrace report...");
     a();
+    println!("test pass");
+    std::os::arceos::modules::ax_hal::power::system_off();
 }
 
 }

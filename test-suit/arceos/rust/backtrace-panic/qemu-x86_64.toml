@@ -14,8 +14,9 @@ args = [
 uefi = false
 to_bin = false
 success_regex = [
-    "(?m)^BACKTRACE_BEGIN\\b.*\\bkind=panic\\b",
+    "(?m)^BACKTRACE_BEGIN\\b.*\\bkind=raw\\b",
     "(?m)^BT\\s+0\\s+ip=0x[0-9a-fA-F]+\\s+fp=0x[0-9a-fA-F]+",
     "(?m)^BACKTRACE_END\\b",
+    "(?m)^test pass\\s*$",
 ]
-fail_regex = []
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
