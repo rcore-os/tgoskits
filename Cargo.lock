@@ -6542,7 +6542,7 @@ dependencies = [
 
 [[package]]
 name = "riscv_vplic"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "ax-errno",
  "axaddrspace",
