@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 use core::ffi::{c_char, c_void};
 
@@ -70,7 +71,11 @@ pub fn sys_mount(
 ) -> AxResult<isize> {
     let source = vm_load_string(source)?;
     let target = vm_load_string(target)?;
-    let fs_type = vm_load_string(fs_type)?;
+    let fs_type = if fs_type.is_null() {
+        String::new()
+    } else {
+        vm_load_string(fs_type)?
+    };
     debug!("sys_mount <= source: {source:?}, target: {target:?}, fs_type: {fs_type:?}");
 
     let propagation = flags & PROPAGATION_FLAGS;
@@ -128,6 +133,7 @@ pub fn sys_mount(
             mp.set_readonly(true);
         }
         return Ok(0);
+    }
     }
 
     match fs_type.as_str() {
