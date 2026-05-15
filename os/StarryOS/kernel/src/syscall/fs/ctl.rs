@@ -659,7 +659,10 @@ pub fn sys_sync() -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_syncfs(_fd: i32) -> AxResult<isize> {
-    warn!("dummy sys_syncfs");
+pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
+    debug!("sys_syncfs <= fd: {fd}");
+    let f = crate::file::File::from_fd(fd)?;
+    let root = f.inner().location().mountpoint().root_location();
+    root.sync(false)?;
     Ok(0)
 }
