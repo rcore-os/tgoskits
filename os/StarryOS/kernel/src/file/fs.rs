@@ -8,11 +8,12 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
+use ax_io::{Seek, SeekFrom};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_EXCL};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
 
 use super::{FileLike, Kstat, get_file_like};
 use crate::{
@@ -104,6 +105,7 @@ pub struct File {
     inner: ax_fs::File,
     open_flags: u32,
     nonblock: AtomicBool,
+    append: AtomicBool,
 }
 
 impl File {
@@ -112,6 +114,7 @@ impl File {
             inner,
             open_flags,
             nonblock: AtomicBool::new(false),
+            append: AtomicBool::new(open_flags & O_APPEND != 0),
         }
     }
 
@@ -154,7 +157,10 @@ impl FileLike for File {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        let inner = self.inner();
+        let mut inner = self.inner();
+        if self.append() {
+            inner.seek(SeekFrom::End(0))?;
+        }
         if likely(self.is_blocking()) {
             inner.write(src)
         } else {
@@ -183,6 +189,15 @@ impl FileLike for File {
 
     fn nonblocking(&self) -> bool {
         self.nonblock.load(Ordering::Acquire)
+    }
+
+    fn append(&self) -> bool {
+        self.append.load(Ordering::Acquire)
+    }
+
+    fn set_append(&self, flag: bool) -> AxResult {
+        self.append.store(flag, Ordering::Release);
+        Ok(())
     }
 
     fn open_flags(&self) -> u32 {
