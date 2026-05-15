@@ -189,21 +189,6 @@ impl SocketOps for UdpSocket {
             ax_bail!(OperationNotSupported);
         }
 
-        let (remote_addr, source_addr) = match options.to {
-            Some(addr) => {
-                let addr = IpEndpoint::from(addr.into_ip()?);
-                let src = get_service().get_source_address(&addr.addr);
-                (addr, src)
-            }
-            None => match self.remote_endpoint() {
-                Ok((endpoint, src)) => (endpoint, src),
-                Err(_) => ax_bail!(DestAddrRequired),
-            },
-        };
-        if remote_addr.port == 0 || remote_addr.addr.is_unspecified() {
-            ax_bail!(InvalidInput, "invalid address");
-        }
-
         if self.local_addr.read().is_none() {
             self.bind(SocketAddrEx::Ip(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -215,7 +200,22 @@ impl SocketOps for UdpSocket {
         // unbounded kernel memory allocation from user input.
         const CORK_MAX: usize = UDP_TX_BUF_LEN;
         let more = options.flags.contains(SendFlags::MORE);
+
         if more {
+            let (remote_addr, source_addr) = match options.to {
+                Some(addr) => {
+                    let addr = IpEndpoint::from(addr.into_ip()?);
+                    let src = get_service().get_source_address(&addr.addr);
+                    (addr, src)
+                }
+                None => match self.remote_endpoint() {
+                    Ok((endpoint, src)) => (endpoint, src),
+                    Err(_) => ax_bail!(DestAddrRequired),
+                },
+            };
+            if remote_addr.port == 0 || remote_addr.addr.is_unspecified() {
+                ax_bail!(InvalidInput, "invalid address");
+            }
             let len = src.remaining();
             if len > CORK_MAX {
                 ax_bail!(MessageTooLong);
@@ -240,15 +240,24 @@ impl SocketOps for UdpSocket {
             return Ok(read);
         }
 
+        // Resolve destination for direct send or cork flush.
+        // None means unconnected socket without explicit destination;
+        // the poller closure checks cork before demanding an address.
+        let resolved = match options.to {
+            Some(addr) => {
+                let addr = IpEndpoint::from(addr.into_ip()?);
+                let src = get_service().get_source_address(&addr.addr);
+                Some((addr, src))
+            }
+            None => self.remote_endpoint().ok(),
+        };
+
         let per_call_nonblock = options.flags.contains(SendFlags::DONTWAIT);
         self.general.send_poller(self, per_call_nonblock, || {
             poll_interfaces();
             let mut cork_guard = self.cork.lock();
             // When flushing corked data, always use the endpoint captured
             // at the first MSG_MORE call (matching Linux semantics).
-            // Take the endpoint/source copies now (they are Copy), but
-            // keep the cork data in place until the send succeeds so that
-            // a WouldBlock retry preserves buffered data.
             let (endpoint, local_addr, payload_len) = if let Some(ref c) = *cork_guard {
                 let total = c
                     .buf
@@ -260,7 +269,15 @@ impl SocketOps for UdpSocket {
                 }
                 (c.remote, Some(c.source), total)
             } else {
-                (remote_addr, Some(source_addr), src.remaining())
+                match resolved {
+                    Some((remote, source)) => {
+                        if remote.port == 0 || remote.addr.is_unspecified() {
+                            ax_bail!(InvalidInput, "invalid address");
+                        }
+                        (remote, Some(source), src.remaining())
+                    }
+                    None => ax_bail!(DestAddrRequired),
+                }
             };
             let result = self.with_smol_socket(|socket| {
                 if !socket.is_open() {

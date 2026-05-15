@@ -768,6 +768,42 @@ static void test_s14_sendto_msg_more_flush_overflow(void)
     close(server);
 }
 
+/*
+ * [S15] MSG_MORE cork flush without destination address
+ *
+ * 语义: 未连接 UDP socket 通过 sendto(..., MSG_MORE, dest) 建立 cork 后，
+ *       后续 send()/sendto(NULL, 0) 不带目标地址也能 flush 到首次捕获的 dest。
+ * 预期: sendto(MSG_MORE, dest) + send() flush → 合并数据报成功送达。
+ */
+static void test_s15_sendto_msg_more_flush_no_dest(void)
+{
+    struct sockaddr_in srv_addr;
+    int server = bind_udp_loopback(&srv_addr);
+    if (server < 0) return;
+    int client = make_udp_sock();
+    if (client < 0) { close(server); return; }
+
+    /* 第 1 块: sendto(..., MSG_MORE, dest) 建立 cork */
+    const char *chunk1 = "Hello";
+    ssize_t n1 = sendto(client, chunk1, 5, MSG_MORE,
+                        (struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    CHECK_RET(n1, 5, "MSG_MORE chunk 1 → cork 建立");
+
+    /* 第 2 块: send() 不带地址 flush — 应使用 cork 捕获的 dest */
+    const char *chunk2 = "World";
+    ssize_t n2 = send(client, chunk2, 5, 0);
+    CHECK_RET(n2, 5, "send() flush 不带地址 → 使用 cork dest");
+
+    /* 验证: 接收端收到合并的 "HelloWorld" */
+    char rbuf[16] = {0};
+    ssize_t nr = recvfrom(server, rbuf, sizeof(rbuf), 0, NULL, NULL);
+    CHECK_RET(nr, 10, "接收合并数据报长度 10");
+    CHECK(memcmp(rbuf, "HelloWorld", 10) == 0, "内容为 'HelloWorld'");
+
+    close(client);
+    close(server);
+}
+
 /* =====================================================================
  * recvfrom 测试
  * ===================================================================== */
@@ -1532,6 +1568,7 @@ int main(void)
     test_s12_sendto_null_nonzero_addrlen();
     test_s13_sendto_msg_more_emsgsize();
     test_s14_sendto_msg_more_flush_overflow();
+    test_s15_sendto_msg_more_flush_no_dest();
 
     /* ---- recvfrom (7) ---- */
     test_r1_recvfrom_udp_basic();
