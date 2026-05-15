@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.5.12...ax-dma-v0.5.13) - 2026-05-15
+
+### Other
+
+- updated the following local packages: ax-allocator, ax-kspin, ax-alloc, ax-config, ax-hal, ax-mm
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.5.11...ax-dma-v0.5.12) - 2026-04-27
 
 ### Fixed

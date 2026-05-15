@@ -7,7 +7,7 @@ use ax_driver_block::BlockDriverOps;
 #[cfg(feature = "net")]
 use ax_driver_net::NetDriverOps;
 use ax_errno::AxError;
-use ax_memory_addr::PAGE_SIZE_4K;
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_plat::mem::PhysAddr;
 use heapless::Vec;
 use rdrive::probe::OnProbeError;
@@ -123,6 +123,7 @@ pub(crate) struct DmaImpl;
 struct DmaPages {
     cpu_addr: NonNull<u8>,
     dma_addr: u64,
+    num_pages: usize,
 }
 
 impl DmaPages {
@@ -139,6 +140,7 @@ impl DmaPages {
             return Ok(Self {
                 cpu_addr: NonNull::dangling(),
                 dma_addr: 0,
+                num_pages: 0,
             });
         }
 
@@ -172,7 +174,11 @@ impl DmaPages {
             });
         }
 
-        Ok(Self { cpu_addr, dma_addr })
+        Ok(Self {
+            cpu_addr,
+            dma_addr,
+            num_pages,
+        })
     }
 
     unsafe fn dealloc_pages(cpu_addr: NonNull<u8>, num_pages: usize) {
@@ -184,6 +190,43 @@ impl DmaPages {
             num_pages,
             ax_alloc::UsageKind::Dma,
         );
+    }
+}
+
+struct CoherentDmaPolicy;
+
+impl CoherentDmaPolicy {
+    /// Converts freshly allocated `alloc_coherent` pages to uncached DMA pages.
+    ///
+    /// Streaming mappings created by `map_single` remain cacheable and must use
+    /// `confirm_write`/`prepare_read` for cache maintenance. The kernel helper
+    /// owns the cache/TLB/barrier sequence for this mapping transition.
+    fn make_uncached(pages: &DmaPages, layout: Layout) -> Result<(), dma_api::DmaError> {
+        if pages.num_pages == 0 {
+            return Ok(());
+        }
+
+        let range_size = pages.num_pages * PAGE_SIZE_4K;
+        let start = VirtAddr::from_usize(pages.cpu_addr.as_ptr() as usize).align_down_4k();
+        axklib::mem::make_dma_coherent_uncached(start, range_size)
+            .map_err(|_| dma_api::DmaError::NoMemory)?;
+        unsafe {
+            pages.cpu_addr.as_ptr().write_bytes(0, layout.size());
+        }
+        Ok(())
+    }
+
+    /// Restores pages before returning them to the general DMA page allocator.
+    ///
+    /// The caller must ensure the device no longer owns or accesses the buffer.
+    fn restore_cached(pages: NonNull<u8>, num_pages: usize) -> Result<(), dma_api::DmaError> {
+        if num_pages == 0 {
+            return Ok(());
+        }
+
+        let start = VirtAddr::from_usize(pages.as_ptr() as usize).align_down_4k();
+        axklib::mem::restore_dma_cached(start, num_pages * PAGE_SIZE_4K)
+            .map_err(|_| dma_api::DmaError::NoMemory)
     }
 }
 
@@ -257,6 +300,37 @@ impl dma_api::DmaOp for DmaImpl {
         }
     }
 
+    fn prepare_read(
+        &self,
+        handle: &dma_api::DmaMapHandle,
+        offset: usize,
+        size: usize,
+        direction: dma_api::DmaDirection,
+    ) {
+        if !matches!(
+            direction,
+            dma_api::DmaDirection::FromDevice | dma_api::DmaDirection::Bidirectional
+        ) {
+            return;
+        }
+
+        let target = unsafe { handle.as_ptr().add(offset) };
+        if let Some(map_virt) = handle.alloc_virt()
+            && map_virt != handle.as_ptr()
+        {
+            let source = unsafe { map_virt.add(offset) };
+            self.invalidate(source, size);
+            unsafe {
+                target
+                    .as_ptr()
+                    .copy_from_nonoverlapping(source.as_ptr(), size);
+            }
+            return;
+        }
+
+        self.invalidate(target, size);
+    }
+
     fn confirm_write(
         &self,
         handle: &dma_api::DmaMapHandle,
@@ -290,8 +364,9 @@ impl dma_api::DmaOp for DmaImpl {
 
     unsafe fn alloc_coherent(&self, dma_mask: u64, layout: Layout) -> Option<dma_api::DmaHandle> {
         let pages = unsafe { DmaPages::alloc_for_layout(dma_mask, layout).ok()? };
-        unsafe {
-            pages.cpu_addr.as_ptr().write_bytes(0, layout.size());
+        if CoherentDmaPolicy::make_uncached(&pages, layout).is_err() {
+            unsafe { DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages) };
+            return None;
         }
 
         Some(unsafe { dma_api::DmaHandle::new(pages.cpu_addr, pages.dma_addr.into(), layout) })
@@ -299,6 +374,14 @@ impl dma_api::DmaOp for DmaImpl {
 
     unsafe fn dealloc_coherent(&self, handle: dma_api::DmaHandle) {
         let num_pages = DmaPages::layout_pages(handle.layout());
+        if CoherentDmaPolicy::restore_cached(handle.as_ptr(), num_pages).is_err() {
+            error!(
+                "failed to restore coherent DMA pages to cached mapping; leaking {} pages at {:p}",
+                num_pages,
+                handle.as_ptr().as_ptr(),
+            );
+            return;
+        }
         unsafe { DmaPages::dealloc_pages(handle.as_ptr(), num_pages) };
     }
 }
