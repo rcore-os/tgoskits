@@ -35,7 +35,7 @@ else ifneq ($(filter $(or $(MAKECMDGOALS), $(.DEFAULT_GOAL)), all build run just
     RUSTFLAGS += $(RUSTFLAGS_LINK_ARGS)
   endif
   ifeq ($(DWARF), y)
-    RUSTFLAGS += -C force-frame-pointers -C debuginfo=2 -C strip=none
+    RUSTFLAGS += -C force-frame-pointers=yes -C debuginfo=2 -C strip=none
   endif
   $(if $(V), $(info RUSTFLAGS: "$(RUSTFLAGS)"))
   export RUSTFLAGS
