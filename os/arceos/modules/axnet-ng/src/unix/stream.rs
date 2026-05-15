@@ -327,6 +327,7 @@ impl TransportOps for StreamTransport {
 
     fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> AxResult<usize> {
         let dontwait = options.flags.contains(crate::RecvFlags::DONTWAIT);
+        let peek = options.flags.contains(crate::RecvFlags::PEEK);
         let recv_count = self.general.recv_poller_with(self, dontwait, || {
             let mut guard = self.channel.lock();
             let Some(chan) = guard.as_mut() else {
@@ -356,12 +357,16 @@ impl TransportOps for StreamTransport {
                     let right_cap = right.len().min(remaining_cap);
                     count += dst.write(&right[..right_cap])?;
                 }
-                unsafe { chan.rx.advance_read_index(count) };
+                if !peek {
+                    unsafe { chan.rx.advance_read_index(count) };
+                }
                 count
             };
             if count > 0 {
-                chan.rx_bytes_total = chan.rx_bytes_total.saturating_add(count as u64);
-                chan.poll_update.wake();
+                if !peek {
+                    chan.rx_bytes_total = chan.rx_bytes_total.saturating_add(count as u64);
+                    chan.poll_update.wake();
+                }
                 Ok(count)
             } else if !chan.rx.write_is_held() {
                 // Peer dropped its sender end and the ring is empty: EOF.
@@ -370,6 +375,15 @@ impl TransportOps for StreamTransport {
                 Err(AxError::WouldBlock)
             }
         })?;
+
+        if peek {
+            // MSG_PEEK must not advance the cmsg byte-mark queue. Ancillary
+            // data is attached to the first byte of the carrying message;
+            // delivering and popping it on PEEK would consume the cmsg and
+            // (for SCM_RIGHTS) duplicate file descriptors. A later non-PEEK
+            // recv that actually consumes those bytes will deliver the cmsg.
+            return Ok(recv_count);
+        }
 
         // Drain every cmsg whose attached message's first byte has been
         // consumed by this recv. Linux's man recvmsg(2) is explicit:
