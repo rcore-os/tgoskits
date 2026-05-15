@@ -945,24 +945,12 @@ pub(crate) struct QemuTestSummary {
 }
 
 impl QemuTestSummary {
-    pub(crate) fn pass(&mut self, name: impl Into<String>) {
-        self.record(QemuTestOutcome::Passed, name, None);
-    }
-
-    pub(crate) fn fail(&mut self, name: impl Into<String>) {
-        self.record(QemuTestOutcome::Failed, name, None);
-    }
-
     pub(crate) fn pass_with_detail(&mut self, name: impl Into<String>, detail: impl Into<String>) {
         self.record(QemuTestOutcome::Passed, name, Some(detail.into()));
     }
 
     pub(crate) fn fail_with_detail(&mut self, name: impl Into<String>, detail: impl Into<String>) {
         self.record(QemuTestOutcome::Failed, name, Some(detail.into()));
-    }
-
-    pub(crate) fn finish(&self, suite_name: &str, unit: &str) -> anyhow::Result<()> {
-        self.finish_with_total_detail(suite_name, unit, None)
     }
 
     pub(crate) fn finish_with_total_detail(
@@ -1154,11 +1142,13 @@ mod tests {
     #[test]
     fn qemu_failure_summary_is_aggregated() {
         let mut summary = QemuTestSummary::default();
-        summary.pass("pkg-a");
-        summary.fail("pkg-b");
-        summary.fail("pkg-c");
+        summary.pass_with_detail("pkg-a", "0.10s");
+        summary.fail_with_detail("pkg-b", "0.20s");
+        summary.fail_with_detail("pkg-c", "0.30s");
 
-        let err = summary.finish("arceos", "package").unwrap_err();
+        let err = summary
+            .finish_with_total_detail("arceos", "package", Some("0.60s"))
+            .unwrap_err();
 
         assert!(
             err.to_string()

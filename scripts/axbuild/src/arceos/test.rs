@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use anyhow::{Context, bail};
@@ -270,6 +271,7 @@ async fn test_rust_qemu(
     let total = prepared.len();
 
     let build_groups = group_arceos_qemu_cases_by_build_identity(&prepared);
+    let suite_started = Instant::now();
     let mut summary = qemu_test::QemuTestSummary::default();
     let mut completed = 0;
     for build_group in &build_groups {
@@ -294,23 +296,26 @@ async fn test_rust_qemu(
             completed += 1;
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] arceos rust qemu {case_name}");
-            match run_rust_qemu_case(arceos, case)
+            let case_started = Instant::now();
+            let result = run_rust_qemu_case(arceos, case)
                 .await
-                .with_context(|| format!("arceos rust qemu test failed for case `{case_name}`"))
-            {
+                .with_context(|| format!("arceos rust qemu test failed for case `{case_name}`"));
+            let duration = case_started.elapsed();
+            match result {
                 Ok(()) => {
-                    println!("ok: {}", case_name);
-                    summary.pass(case_name);
+                    println!("ok: {case_name} ({duration:.2?})");
+                    summary.pass_with_detail(case_name, format!("{duration:.2?}"));
                 }
                 Err(err) => {
                     eprintln!("failed: {}: {:#}", case_name, err);
-                    summary.fail(case_name);
+                    summary.fail_with_detail(case_name, format!("{duration:.2?}"));
                 }
             }
         }
     }
 
-    summary.finish("arceos rust", "case")
+    let total_duration = format!("{:.2?}", suite_started.elapsed());
+    summary.finish_with_total_detail("arceos rust", "case", Some(total_duration.as_str()))
 }
 
 async fn test_c_qemu(
@@ -349,6 +354,7 @@ async fn run_generic_qemu_by_build_group(
     total: usize,
 ) -> anyhow::Result<()> {
     let build_groups = group_arceos_qemu_cases_by_build_identity(prepared);
+    let suite_started = Instant::now();
     let mut summary = qemu_test::QemuTestSummary::default();
     let mut completed = 0;
     for build_group in &build_groups {
@@ -373,22 +379,25 @@ async fn run_generic_qemu_by_build_group(
             completed += 1;
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] {group_label} qemu {case_name}");
-            match run_rust_qemu_case(arceos, case)
+            let case_started = Instant::now();
+            let result = run_rust_qemu_case(arceos, case)
                 .await
-                .with_context(|| format!("{group_label} qemu test failed for case `{case_name}`"))
-            {
+                .with_context(|| format!("{group_label} qemu test failed for case `{case_name}`"));
+            let duration = case_started.elapsed();
+            match result {
                 Ok(()) => {
-                    println!("ok: {case_name}");
-                    summary.pass(case_name);
+                    println!("ok: {case_name} ({duration:.2?})");
+                    summary.pass_with_detail(case_name, format!("{duration:.2?}"));
                 }
                 Err(err) => {
                     eprintln!("failed: {case_name}: {err:#}");
-                    summary.fail(case_name);
+                    summary.fail_with_detail(case_name, format!("{duration:.2?}"));
                 }
             }
         }
     }
-    summary.finish(group_label, "case")
+    let total_duration = format!("{:.2?}", suite_started.elapsed());
+    summary.finish_with_total_detail(group_label, "case", Some(total_duration.as_str()))
 }
 
 fn group_arceos_qemu_cases_by_build_identity(
@@ -957,8 +966,10 @@ async fn test_c_qemu_axbuild(
 
     let mut summary = qemu_test::QemuTestSummary::default();
     let total = c_tests.len();
+    let suite_started = Instant::now();
     for (index, c_test) in c_tests.into_iter().enumerate() {
         println!("[{}/{}] arceos c qemu {}", index + 1, total, c_test.name);
+        let case_started = Instant::now();
         let result = build_and_run_c_test(arceos, target, arch, &c_test)
             .await
             .with_context(|| {
@@ -968,16 +979,18 @@ async fn test_c_qemu_axbuild(
                     c_test_display_suffix(&c_test.qemu_config_path)
                 )
             });
+        let duration = case_started.elapsed();
         if let Err(err) = result {
             eprintln!("failed: c/{}: {err:#}", c_test.name);
-            summary.fail(format!("c/{}", c_test.name));
+            summary.fail_with_detail(format!("c/{}", c_test.name), format!("{duration:.2?}"));
         } else {
-            println!("ok: c/{}", c_test.name);
-            summary.pass(format!("c/{}", c_test.name));
+            println!("ok: c/{} ({duration:.2?})", c_test.name);
+            summary.pass_with_detail(format!("c/{}", c_test.name), format!("{duration:.2?}"));
         }
     }
 
-    summary.finish("arceos c", "test")
+    let total_duration = format!("{:.2?}", suite_started.elapsed());
+    summary.finish_with_total_detail("arceos c", "test", Some(total_duration.as_str()))
 }
 
 async fn build_and_run_c_test(
