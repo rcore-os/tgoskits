@@ -67,14 +67,21 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<Reso
                 ResolveAtResult::Other(file_like)
             })
         }
-        Some(path) => with_fs(dirfd, |fs| {
-            if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                fs.resolve_no_follow(path)
+        Some(path) => {
+            let dirfd = if path.starts_with('/') {
+                AT_FDCWD
             } else {
-                fs.resolve(path)
-            }
-            .map(ResolveAtResult::File)
-        }),
+                dirfd
+            };
+            with_fs(dirfd, |fs| {
+                if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                    fs.resolve_no_follow(path)
+                } else {
+                    fs.resolve(path)
+                }
+                .map(ResolveAtResult::File)
+            })
+        }
     }
 }
 

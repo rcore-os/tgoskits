@@ -66,8 +66,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use rustsbi::Pmu;
-use sbi_spec::{binary::SbiRet, pmu};
+use rustsbi::{Pmu, SbiRet};
+use sbi_spec::pmu;
 
 /// Per-vCPU virtual implementation of the SBI PMU extension.
 ///

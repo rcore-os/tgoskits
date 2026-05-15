@@ -162,6 +162,9 @@ impl SocketOps for UdpSocket {
         let remote_addr = IpEndpoint::from(remote_addr);
         let src = get_service().get_source_address(&remote_addr.addr);
         *guard = Some((remote_addr, src));
+        self.general.set_device_mask(
+            get_service().device_mask_for(&endpoint_from_ip_endpoint(remote_addr)),
+        );
         debug!("UDP socket {}: connected to {}", self.handle, remote_addr);
         Ok(())
     }
@@ -351,6 +354,13 @@ impl Drop for UdpSocket {
     }
 }
 
+fn endpoint_from_ip_endpoint(endpoint: IpEndpoint) -> IpListenEndpoint {
+    IpListenEndpoint {
+        addr: Some(endpoint.addr),
+        port: endpoint.port,
+    }
+}
+
 fn get_ephemeral_port() -> AxResult<u16> {
     const PORT_START: u16 = 0xc000;
     const PORT_END: u16 = 0xffff;
@@ -364,4 +374,31 @@ fn get_ephemeral_port() -> AxResult<u16> {
         *curr += 1;
     }
     Ok(port)
+}
+
+#[cfg(test)]
+mod tests {
+    use core::net::{IpAddr, SocketAddr};
+
+    use super::*;
+    use crate::test_support::{
+        LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network,
+    };
+
+    #[test]
+    fn connect_uses_peer_route_for_device_mask() {
+        init_split_route_network();
+
+        let socket = UdpSocket::new();
+        socket
+            .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
+            .unwrap();
+        assert_eq!(socket.general.device_mask(), LOCAL_MASK);
+
+        socket
+            .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
+            .unwrap();
+
+        assert_eq!(socket.general.device_mask(), PEER_MASK);
+    }
 }

@@ -330,6 +330,9 @@ pub struct VMKernelConfig {
     pub kernel_path: String,
     /// The load address of the kernel image.
     pub kernel_load_addr: usize,
+    /// Whether to enable BIOS boot flow for this VM.
+    #[serde(default)]
+    pub enable_bios: bool,
     /// The file path of the BIOS image, `None` if not used.
     pub bios_path: Option<String>,
     /// The load address of the BIOS image, `None` if not used.

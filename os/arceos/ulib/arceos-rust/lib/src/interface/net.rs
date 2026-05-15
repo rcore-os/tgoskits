@@ -65,8 +65,8 @@ pub fn sys_connect(socket_fd: i32, name: *const sockaddr, namelen: socklen_t) ->
     // POSIX: non-blocking connect returns EINPROGRESS, not EAGAIN.
     // ArceOS's TcpSocket::connect() returns WouldBlock (→ EAGAIN) when
     // nonblocking, but hermit std's connect_timeout() expects EINPROGRESS.
-    if ret == -(ax_errno::LinuxError::EAGAIN.code() as i32) {
-        -(ax_errno::LinuxError::EINPROGRESS.code() as i32)
+    if ret == -ax_errno::LinuxError::EAGAIN.code() {
+        -ax_errno::LinuxError::EINPROGRESS.code()
     } else {
         ret
     }
@@ -155,7 +155,7 @@ pub fn sys_ioctl(fd: i32, cmd: i32, argp: *mut c_void) -> i32 {
     info!("[sys_ioctl] fd: {}, cmd: {:#x}", fd, cmd);
     if cmd == FIONBIO {
         if argp.is_null() {
-            return -(ax_errno::LinuxError::EFAULT.code() as i32);
+            return -ax_errno::LinuxError::EFAULT.code();
         }
         let val = unsafe { *(argp as *const c_int) };
         let nonblocking = val != 0;
@@ -174,7 +174,7 @@ pub fn sys_ioctl(fd: i32, cmd: i32, argp: *mut c_void) -> i32 {
         }
     } else {
         info!("[sys_ioctl] unsupported cmd: {:#x}", cmd);
-        -(ax_errno::LinuxError::EINVAL.code() as i32)
+        -ax_errno::LinuxError::EINVAL.code()
     }
 }
 
@@ -223,7 +223,7 @@ pub fn sys_getsockopt(
     );
 
     if optval.is_null() || optlen.is_null() {
-        return -(ax_errno::LinuxError::EFAULT.code() as i32);
+        return -ax_errno::LinuxError::EFAULT.code();
     }
 
     // For most options we return sensible defaults since ArceOS's
@@ -265,7 +265,7 @@ pub fn sys_getsockopt(
             "[sys_getsockopt] unsupported: level={}, optname={:#x}",
             level, optname
         );
-        -(ax_errno::LinuxError::ENOPROTOOPT.code() as i32)
+        -ax_errno::LinuxError::ENOPROTOOPT.code()
     }
 }
 
@@ -274,7 +274,7 @@ fn write_sockopt<T: Copy>(optval: *mut c_void, optlen: *mut socklen_t, val: &T) 
     let len = size_of::<T>();
     unsafe {
         if (*optlen as usize) < len {
-            return -(ax_errno::LinuxError::EINVAL.code() as i32);
+            return -ax_errno::LinuxError::EINVAL.code();
         }
         core::ptr::copy_nonoverlapping(val as *const T as *const u8, optval as *mut u8, len);
         *optlen = len as socklen_t;
