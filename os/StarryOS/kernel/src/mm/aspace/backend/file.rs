@@ -146,33 +146,65 @@ impl FileBackend {
         range_end: VirtAddr,
         area_flags: MappingFlags,
     ) -> AxResult {
-        let dirty_pns = self.0.cache.writeback().map_err(|_| AxError::Io)?;
+        let file_data = self.0.file_data.lock();
 
-        if !dirty_pns.is_empty() {
-            let file_data = self.0.file_data.lock();
+        let offset_page = file_data.offset_page;
+        let mapping_start = file_data.start;
+        let mapping_size = (range_end - range_start).min(
+            range_end
+                .as_usize()
+                .saturating_sub(mapping_start.as_usize()),
+        );
+        let local_start = range_start
+            .as_usize()
+            .saturating_sub(mapping_start.as_usize());
+        let local_end = local_start + mapping_size;
+
+        let start_pn = offset_page + (local_start / PAGE_SIZE_4K) as u32;
+        let end_pn = offset_page + local_end.div_ceil(PAGE_SIZE_4K) as u32;
+
+        let dirty_pns = self.0.cache.dirty_pages_in_range(start_pn, end_pn);
+
+        if dirty_pns.is_empty() {
+            return Ok(());
+        }
+
+        self.0
+            .cache
+            .writeback_pages(&dirty_pns)
+            .map_err(|_| AxError::Io)?;
+
+        let mut protected_pns = Vec::new();
+        {
             let pt = aspace.page_table_mut();
             let mut pt_cursor = pt.cursor();
             for pn in &dirty_pns {
-                let vaddr =
-                    file_data.start + ((*pn - file_data.offset_page) as usize) * PAGE_SIZE_4K;
+                let Some(local_pn) = pn.checked_sub(offset_page) else {
+                    continue;
+                };
+                let vaddr = mapping_start + (local_pn as usize) * PAGE_SIZE_4K;
                 if vaddr < range_start || vaddr >= range_end {
                     continue;
                 }
                 if let Ok((paddr, ..)) = pt_cursor.query(vaddr) {
                     let ro_flags = area_flags - MappingFlags::WRITE;
                     match pt_cursor.remap(vaddr, paddr, ro_flags) {
-                        Ok(_) | Err(PagingError::NotMapped) => {}
+                        Ok(_) => {
+                            protected_pns.push(*pn);
+                        }
+                        Err(PagingError::NotMapped) => {
+                            protected_pns.push(*pn);
+                        }
                         Err(err) => {
                             warn!("msync remap failed for {:?}: {:?}", vaddr, err);
                         }
                     }
                 }
             }
-            drop(pt_cursor);
-            drop(file_data);
-
-            self.0.cache.clear_dirty(&dirty_pns);
         }
+
+        self.0.cache.clear_dirty_pages(&protected_pns);
+
         Ok(())
     }
 

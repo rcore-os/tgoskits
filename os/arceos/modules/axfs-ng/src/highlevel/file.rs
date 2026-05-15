@@ -720,7 +720,46 @@ impl CachedFile {
         Ok(dirty_keys)
     }
 
-    pub fn clear_dirty(&self, pns: &[u32]) {
+    pub fn writeback_pages(&self, pns: &[u32]) -> VfsResult<()> {
+        if self.in_memory {
+            return Ok(());
+        }
+        let file = self.inner.entry().as_file()?;
+        let file_len = file.len()?;
+
+        for pn in pns {
+            let mut guard = self.shared.page_cache.lock();
+            if let Some(page) = guard.get_mut(pn)
+                && page.dirty
+            {
+                let page_start = *pn as u64 * PAGE_SIZE as u64;
+                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
+                if len > 0 {
+                    file.write_at(&page.data()[..len], page_start)?;
+                }
+            }
+            drop(guard);
+        }
+
+        file.sync(false)?;
+        Ok(())
+    }
+
+    pub fn dirty_pages_in_range(&self, start_pn: u32, end_pn: u32) -> alloc::vec::Vec<u32> {
+        let guard = self.shared.page_cache.lock();
+        guard
+            .iter()
+            .filter_map(|(&pn, page)| {
+                if page.dirty && pn >= start_pn && pn < end_pn {
+                    Some(pn)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn clear_dirty_pages(&self, pns: &[u32]) {
         let mut guard = self.shared.page_cache.lock();
         for pn in pns {
             if let Some(page) = guard.get_mut(pn) {

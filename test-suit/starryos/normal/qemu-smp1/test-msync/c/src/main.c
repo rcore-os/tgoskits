@@ -257,6 +257,66 @@ int main(void) {
         }
     }
 
+    /* ---- T9: Two MAP_SHARED mappings, partial msync ---- */
+    printf("\n--- T9: Two MAP_SHARED mappings, partial msync ---\n"); fflush(stdout);
+    {
+        unlink(tmpfile);
+        size_t big_size = 16384;
+        int fd = create_temp_file(tmpfile, big_size);
+        CHECK(fd >= 0, "create big temp file");
+        if (fd >= 0) {
+            void *p1 = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, fd, 0);
+            void *p2 = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, fd, 4096);
+            close(fd);
+            CHECK(p1 != MAP_FAILED, "mmap first page");
+            CHECK(p2 != MAP_FAILED, "mmap second page");
+            if (p1 != MAP_FAILED && p2 != MAP_FAILED) {
+                memset(p1, 0xAA, 4096);
+                memset(p2, 0xBB, 4096);
+
+                errno = 0;
+                int rc = msync(p1, 4096, MS_SYNC);
+                CHECK(rc == 0, "msync first page only");
+
+                memset(p1, 0x11, 4096);
+                memset(p2, 0x22, 4096);
+
+                errno = 0;
+                rc = msync(p1, 4096, MS_SYNC);
+                CHECK(rc == 0, "msync first page again after rewrite");
+
+                errno = 0;
+                rc = msync(p2, 4096, MS_SYNC);
+                CHECK(rc == 0, "msync second page");
+
+                munmap(p1, 4096);
+                munmap(p2, 4096);
+
+                fd = open(tmpfile, O_RDONLY);
+                CHECK(fd >= 0, "reopen for verification");
+                if (fd >= 0) {
+                    unsigned char buf1[4096], buf2[4096];
+                    ssize_t n1 = read(fd, buf1, 4096);
+                    ssize_t n2 = read(fd, buf2, 4096);
+                    close(fd);
+
+                    CHECK(n1 == 4096, "read page 1");
+                    CHECK(n2 == 4096, "read page 2");
+
+                    int page1_ok = 1, page2_ok = 1;
+                    for (int i = 0; i < 4096; i++) {
+                        if (buf1[i] != 0x11) page1_ok = 0;
+                        if (buf2[i] != 0x22) page2_ok = 0;
+                    }
+                    CHECK(page1_ok, "page 1 data matches 0x11");
+                    CHECK(page2_ok, "page 2 data matches 0x22");
+                }
+            }
+        }
+    }
+
     unlink(tmpfile);
 
     printf("------------------------------------------------\n");
