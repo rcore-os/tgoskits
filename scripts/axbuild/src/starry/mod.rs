@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use ostool::{
     board::{RunBoardOptions, config::BoardRunConfig},
     build::config::Cargo,
@@ -13,6 +13,7 @@ pub mod board;
 pub mod build;
 pub mod config;
 pub mod example;
+pub mod perf;
 pub mod quick_start;
 pub(crate) mod resolver;
 pub mod rootfs;
@@ -29,6 +30,8 @@ pub enum Command {
     Defconfig(ArgsDefconfig),
     /// StarryOS board config helpers
     Config(ArgsConfig),
+    /// Build and profile StarryOS with qperf
+    Perf(ArgsPerf),
     /// Run StarryOS test suites
     Test(test::ArgsTest),
     /// Run StarryOS runnable examples
@@ -71,6 +74,30 @@ pub struct ArgsQemu {
     /// Override the rootfs disk image path (skips auto-download).
     #[arg(long, value_name = "IMAGE")]
     pub rootfs: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsPerf {
+    #[arg(long)]
+    pub arch: Option<String>,
+    #[arg(long, default_value_t = 99)]
+    pub freq: u32,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = PerfFormat::All)]
+    pub format: PerfFormat,
+    #[arg(long, default_value_t = 64)]
+    pub max_depth: usize,
+    #[arg(long, value_name = "SECONDS", default_value_t = 20)]
+    pub timeout: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PerfFormat {
+    Folded,
+    Svg,
+    Pprof,
+    All,
 }
 
 #[derive(Args)]
@@ -145,6 +172,7 @@ impl Starry {
             Command::Qemu(args) => self.qemu(args).await,
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args),
+            Command::Perf(args) => self.perf(args).await,
             Command::Rootfs(args) => self.rootfs(args).await,
             Command::QuickStart(args) => self.quick_start(args).await,
             Command::Uboot(args) => self.uboot(args).await,
@@ -187,6 +215,10 @@ impl Starry {
 
     async fn rootfs(&mut self, args: rootfs::ArgsRootfs) -> anyhow::Result<()> {
         rootfs::rootfs(self, args).await
+    }
+
+    async fn perf(&mut self, args: ArgsPerf) -> anyhow::Result<()> {
+        perf::run(self, args).await
     }
 
     fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
