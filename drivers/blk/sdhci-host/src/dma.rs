@@ -1045,11 +1045,10 @@ fn poll_fifo_read_step(
         return host.poll_data_complete_with_adma(cmd_index, phase);
     }
 
-    let status = host.read_u16(REG_NORMAL_INT_STATUS);
+    let status = host.take_fifo_irq_status(NORMAL_INT_BUFFER_READ_READY | NORMAL_INT_ERROR);
     if status & NORMAL_INT_BUFFER_READ_READY == 0 {
         return poll_fifo_status(host, status, cmd_index, phase, true);
     }
-    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_BUFFER_READ_READY);
 
     let end = (*offset + block_size).min(len);
     let block =
@@ -1078,11 +1077,10 @@ fn poll_fifo_write_step(
         return host.poll_data_complete_with_adma(cmd_index, phase);
     }
 
-    let status = host.read_u16(REG_NORMAL_INT_STATUS);
+    let status = host.take_fifo_irq_status(NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_ERROR);
     if status & NORMAL_INT_BUFFER_WRITE_READY == 0 {
         return poll_fifo_status(host, status, cmd_index, phase, false);
     }
-    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_BUFFER_WRITE_READY);
 
     let end = (*offset + block_size).min(len);
     let block = unsafe { core::slice::from_raw_parts(buffer.as_ptr().add(*offset), end - *offset) };

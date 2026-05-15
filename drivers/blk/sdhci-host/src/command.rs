@@ -175,6 +175,16 @@ impl Sdhci {
         (normal, error)
     }
 
+    pub(crate) fn take_fifo_irq_status(&mut self, mask: u16) -> u16 {
+        let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
+        let consume_normal = normal_hw & mask;
+        if consume_normal != 0 {
+            self.write_u16(REG_NORMAL_INT_STATUS, consume_normal);
+        }
+
+        take_cached_irq_status(&mut self.irq_pending_normal, normal_hw, mask)
+    }
+
     fn translate_error_bits(&self, err: u16, cmd_index: u8) -> Error {
         let ctx = ErrorContext::for_cmd(Phase::ResponseWait, cmd_index);
         if err & (ERROR_INT_CMD_TIMEOUT | ERROR_INT_DATA_TIMEOUT) != 0 {
@@ -283,6 +293,12 @@ impl Sdhci {
         };
         Ok(())
     }
+}
+
+fn take_cached_irq_status(pending: &mut u16, hw: u16, mask: u16) -> u16 {
+    let normal = *pending | hw;
+    *pending &= !mask;
+    normal
 }
 
 fn transfer_mode(direction: DataDirection, block_count: u32, use_dma: bool) -> u16 {
@@ -412,5 +428,28 @@ mod tests {
 
         assert_ne!(mode & XFER_MODE_MULTI_BLOCK, 0);
         assert_eq!(mode & XFER_MODE_AUTO_CMD12, 0);
+    }
+
+    #[test]
+    fn fifo_status_consumes_irq_cached_buffer_ready() {
+        let mut pending = NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_XFER_COMPLETE;
+
+        let status = take_cached_irq_status(
+            &mut pending,
+            0,
+            NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_ERROR,
+        );
+
+        assert_ne!(status & NORMAL_INT_BUFFER_WRITE_READY, 0);
+        assert_eq!(
+            pending & NORMAL_INT_BUFFER_WRITE_READY,
+            0,
+            "FIFO ready must be consumed after the data step handles it"
+        );
+        assert_ne!(
+            pending & NORMAL_INT_XFER_COMPLETE,
+            0,
+            "transfer completion belongs to the data-complete poll step"
+        );
     }
 }

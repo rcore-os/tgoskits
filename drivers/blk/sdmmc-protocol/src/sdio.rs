@@ -1090,16 +1090,14 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     request.mmc_hs200_attempted = true;
                     match self.host.switch_voltage(SignalVoltage::V180) {
                         Ok(()) | Err(Error::UnsupportedCommand) => {
-                            if self.host.set_clock(ClockSpeed::Hs200).is_ok() {
-                                let switch_request = self.submit_mmc_switch(
-                                    0b11,
-                                    crate::cmd::ext_csd::HS_TIMING as u8,
-                                    0x02,
-                                )?;
-                                request.mmc_switch_request = Some(switch_request);
-                                request.state = SdioInitState::PollMmcHs200Switch;
-                                return Ok(OperationPoll::Pending);
-                            }
+                            let switch_request = self.submit_mmc_switch(
+                                0b11,
+                                crate::cmd::ext_csd::HS_TIMING as u8,
+                                0x02,
+                            )?;
+                            request.mmc_switch_request = Some(switch_request);
+                            request.state = SdioInitState::PollMmcHs200Switch;
+                            return Ok(OperationPoll::Pending);
                         }
                         Err(err) => debug!("sdio: switch_voltage(V180) failed ({:?})", err),
                     }
@@ -1124,7 +1122,9 @@ impl<H: SdioHost> SdioSdmmc<H> {
                     Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
                     Ok(OperationPoll::Complete(())) => {
                         request.mmc_switch_request = None;
-                        if self.host.execute_tuning(21).is_ok() {
+                        if self.host.set_clock(ClockSpeed::Hs200).is_ok()
+                            && self.host.execute_tuning(21).is_ok()
+                        {
                             let status_request = self.submit_status()?;
                             request.status_request = Some(status_request);
                             request.state = SdioInitState::PollMmcHs200Status;
@@ -1495,11 +1495,18 @@ mod tests {
     use super::*;
     use crate::response::{IfCondResponse, OcrResponse, R1Response, RcaResponse};
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum MockEvent {
+        Command(Command),
+        Clock(ClockSpeed),
+    }
+
     /// Mock host that replays canned responses in order. Used to verify the
     /// init sequence and that the driver tracks RCA on its own.
     struct MockHost {
         replies: Vec<Result<Response, Error>>,
         commands: Vec<Command>,
+        events: Vec<MockEvent>,
         bus_width: Option<BusWidth>,
         data_requests: Vec<(DataDirection, u32, u32)>,
         next_read_payload: Option<Vec<u8>>,
@@ -1538,6 +1545,7 @@ mod tests {
             Self {
                 replies: replies.into_iter().map(Ok).collect(),
                 commands: Vec::new(),
+                events: Vec::new(),
                 bus_width: None,
                 data_requests: Vec::new(),
                 next_read_payload: None,
@@ -1559,6 +1567,7 @@ mod tests {
             Self {
                 replies,
                 commands: Vec::new(),
+                events: Vec::new(),
                 bus_width: None,
                 data_requests: Vec::new(),
                 next_read_payload: None,
@@ -1581,6 +1590,7 @@ mod tests {
 
         fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
             self.commands.push(*cmd);
+            self.events.push(MockEvent::Command(*cmd));
             Ok(())
         }
 
@@ -1666,6 +1676,7 @@ mod tests {
 
         fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error> {
             self.last_clock = Some(speed);
+            self.events.push(MockEvent::Clock(speed));
             Ok(())
         }
 
@@ -2433,6 +2444,32 @@ mod tests {
         assert_eq!(driver.host.last_voltage, Some(SignalVoltage::V180));
         assert_eq!(driver.host.last_clock, Some(ClockSpeed::Hs200));
         assert_eq!(driver.host.last_tuning_cmd, Some(21));
+
+        let hs200_clock_pos = driver
+            .host
+            .events
+            .iter()
+            .position(|event| matches!(event, MockEvent::Clock(ClockSpeed::Hs200)))
+            .expect("host clock is raised to HS200");
+        let hs200_switch_pos = driver
+            .host
+            .events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    MockEvent::Command(Command {
+                        cmd: 6,
+                        arg,
+                        ..
+                    }) if *arg == hs_timing_arg
+                )
+            })
+            .expect("HS_TIMING=2 is programmed");
+        assert!(
+            hs200_switch_pos < hs200_clock_pos,
+            "EXT_CSD HS_TIMING=2 must be programmed before raising host clock to HS200"
+        );
     }
 
     #[test]
