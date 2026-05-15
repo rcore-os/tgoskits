@@ -48,13 +48,13 @@ ax-alloc.workspace = true
 ax-config.workspace = true
 ax-display.workspace = true
 ax-driver.workspace = true
-ax-fs = { path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
+ax-fs = { version = "0.5.13", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
-axnet = { path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
+axnet = { version = "0.5.13", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
 axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true

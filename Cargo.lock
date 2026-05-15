@@ -586,7 +586,6 @@ dependencies = [
 name = "ax-allocator"
 version = "0.5.0"
 dependencies = [
- "ax-allocator",
  "ax-errno",
  "ax_slab_allocator",
  "bitmap-allocator",
@@ -1097,7 +1096,6 @@ version = "0.5.12"
 dependencies = [
  "ax-crate-interface",
  "ax-kspin",
- "ax-log",
  "axpanic",
  "cfg-if",
  "chrono",
@@ -1482,7 +1480,6 @@ version = "0.5.13"
 dependencies = [
  "ax-kspin",
  "ax-lockdep",
- "ax-sync",
  "ax-task",
  "fastrand",
  "lock_api",
@@ -1504,7 +1501,6 @@ dependencies = [
  "ax-memory-addr",
  "ax-percpu",
  "ax-sched",
- "ax-task",
  "ax-timer-list",
  "axpoll",
  "cfg-if",
