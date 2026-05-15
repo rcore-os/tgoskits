@@ -23,7 +23,13 @@ rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
 plat-dyn = ["dep:axplat-dyn", "axplat-dyn/usb", "dep:crab-usb", "dep:rdrive"]
 vsock = ["ax-feat/vsock"]
 dynamic_debug = ["ax-feat/ipi"]
-sg2002 = ["dep:ax-dma", "dep:sg2002-tpu"]
+sg2002 = [
+    "dep:ax-dma",
+    "dep:sg2002-tpu",
+    "dep:dw_apb_uart",
+    "dep:sg200x-bsp",
+    "dep:tock-registers",
+]
 
 [dependencies]
 ax-feat = { workspace = true, features = [
@@ -120,6 +126,9 @@ zerocopy = { version = "0.8", features = ["derive"] }
 ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
+dw_apb_uart = { path = "../../../components/dw_apb_uart", default-features = false, features = ["sg2002"], optional = true }
+sg200x-bsp = { git = "https://github.com/pengzechen/sg200x-bsp.git", branch = "main", optional = true }
+tock-registers = { version = "0.9", optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

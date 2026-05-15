@@ -4,7 +4,7 @@ use core::{any::Any, time::Duration};
 
 use ax_errno::{AxError, LinuxError};
 use ax_hal::mem::phys_to_virt;
-use ax_sync::Mutex;
+use spin::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use ax_task::sleep;
 use ax_memory_addr::PhysAddr;
@@ -149,9 +149,15 @@ impl<T: UartTransport> CameraProtocol<T> {
     }
 
     fn read_slip_frame(&mut self, timeout_ms: u64) -> Result<Vec<u8>, CameraError> {
+        use ax_hal::time::wall_time;
+        use core::time::Duration;
+        let deadline = wall_time() + Duration::from_millis(timeout_ms);
         let mut tmp = [0u8; 0x1200];
         loop {
             if let Some(frame) = self.try_extract_frame() { return Ok(frame); }
+            if wall_time() >= deadline {
+                return Err(CameraError::Timeout);
+            }
             let n = self.transport.read_bytes(&mut tmp, timeout_ms)?;
             if n > 0 { self.rx_buf.extend_from_slice(&tmp[..n]); }
         }
@@ -209,7 +215,7 @@ struct Uart3;
 
 impl UartTransport for Uart3 {
     fn write_all(&mut self, data: &[u8]) -> Result<(), CameraError> {
-        let mut uart3 = dw_uart_rs::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
+        let mut uart3 = dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
         data.iter().for_each(|x| uart3.putchar(*x));
         Ok(())
     }
@@ -217,12 +223,21 @@ impl UartTransport for Uart3 {
     fn read_bytes(&mut self, buf: &mut [u8], _timeout_ms: u64) -> Result<usize, CameraError> {
         sleep(Duration::from_millis(3));
         ax_hal::irq::set_enable(47, false);
-        let mut cache_buf = CAMERA_UART_BUF.lock();
-        let n = cache_buf.len().min(buf.len());
-        if n == 0 { drop(cache_buf); sleep(Duration::from_millis(1)); return Ok(0); }
-        cache_buf.drain(..n).enumerate().for_each(|(i, x)| buf[i] = x);
-        drop(cache_buf);
+        let n = {
+            let mut cache_buf = CAMERA_UART_BUF.lock();
+            let n = cache_buf.len().min(buf.len());
+            if n > 0 {
+                cache_buf.drain(..n).enumerate().for_each(|(i, x)| buf[i] = x);
+            }
+            n
+        };
+        // Always re-enable the IRQ before returning, otherwise the ESP32's
+        // reply traffic stops landing in CAMERA_UART_BUF and every subsequent
+        // poll sees an empty queue forever.
         ax_hal::irq::set_enable(47, true);
+        if n == 0 {
+            sleep(Duration::from_millis(1));
+        }
         Ok(n)
     }
 }
@@ -246,11 +261,11 @@ impl CviCamera {
         pinmux.fmux().sd1_d2.write(FMUX_SD1_D2::FSEL::UART3_TX);
         pinmux.fmux().sd1_d1.write(FMUX_SD1_D1::FSEL::UART3_RX);
 
-        let mut uart3 = dw_uart_rs::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
-        uart3.ns16550_init(25_000_000, 1500000);
+        let mut uart3 = dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
+        uart3.init_with_baud(1500000);
         uart3.set_ier(true);
         ax_hal::irq::register(47, |_irq| {
-            let mut uart3 = dw_uart_rs::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
+            let mut uart3 = dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
             let mut buf = CAMERA_UART_BUF.lock();
             loop {
                 if let Some(c) = uart3.getchar() { buf.push_back(c); continue; }
@@ -273,15 +288,33 @@ impl DeviceOps for CviCamera {
         let cmd = CviCameraArgs::try_from(cmd as u8).map_err(|_| AxError::InvalidInput)?;
         match cmd {
             CviCameraArgs::INIT => {
-                self.inner.lock().init_camera().map_err(|_| LinuxError::EBADF)?;
-                self.inner.lock().ping().map_err(|_| LinuxError::EBADF)?;
+                if let Err(e) = self.inner.lock().init_camera() {
+                    warn!("cvi-camera INIT (init_camera) failed: {:?}", e);
+                    return Err(LinuxError::EBADF.into());
+                }
+                if let Err(e) = self.inner.lock().ping() {
+                    warn!("cvi-camera INIT (ping) failed: {:?}", e);
+                    return Err(LinuxError::EBADF.into());
+                }
             }
             CviCameraArgs::GetInfo => {
-                let info = self.inner.lock().get_camera_info().map_err(|_| LinuxError::EBADF)?;
+                let info = match self.inner.lock().get_camera_info() {
+                    Ok(i) => i,
+                    Err(e) => {
+                        warn!("cvi-camera GET_INFO failed: {:?}", e);
+                        return Err(LinuxError::EBADF.into());
+                    }
+                };
                 (arg as *mut CameraInfo).vm_write(info)?;
             }
             CviCameraArgs::GetFrame => {
-                let frame = self.inner.lock().get_frame().map_err(|_| LinuxError::EBADF)?;
+                let frame = match self.inner.lock().get_frame() {
+                    Ok(f) => f,
+                    Err(e) => {
+                        warn!("cvi-camera GET_FRAME failed: {:?}", e);
+                        return Err(LinuxError::EBADF.into());
+                    }
+                };
                 vm_write_slice(arg as *mut u8, frame.as_slice())?;
                 return Ok(frame.len());
             }

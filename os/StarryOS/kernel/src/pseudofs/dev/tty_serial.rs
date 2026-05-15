@@ -8,7 +8,7 @@ use axfs_ng_vfs::{NodeFlags, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use ax_task::future::{block_on, poll_io};
 use bytemuck::AnyBitPattern;
-use dw_uart_rs::DW8250;
+use dw_apb_uart::DW8250;
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{PhysAddr, pa};
 use sg200x_bsp::pinmux::Pinmux;
@@ -108,7 +108,7 @@ impl TtySerial {
     ) -> Self {
         let vaddr = phys_to_virt(paddr).as_usize();
         let mut uart = DW8250::new(vaddr);
-        uart.ns16550_init(25_000_000, baud);
+        uart.init_with_baud(baud);
         uart.set_ier(true);
         ax_hal::irq::register(irq, irq_handler);
         ax_hal::irq::set_enable(irq, true);
@@ -124,7 +124,7 @@ impl TtySerial {
     fn set_baud(&self, baud: u32) {
         let vaddr = phys_to_virt(self.paddr).as_usize();
         let mut uart = DW8250::new(vaddr);
-        uart.ns16550_init(25_000_000, baud);
+        uart.init_with_baud(baud);
         uart.set_ier(true);
         ax_hal::irq::set_enable(self.irq, true);
     }
@@ -220,9 +220,13 @@ pub fn new_tty_s1(baud: u32) -> TtySerial {
 }
 
 pub fn new_tty_s2(baud: u32) -> TtySerial {
-    use sg200x_bsp::pinmux::{FMUX_PWR_GPIO0, FMUX_PWR_GPIO1};
+    use sg200x_bsp::pinmux::{FMUX_IIC0_SCL, FMUX_IIC0_SDA};
     let pinmux = Pinmux::new_with_offset(ax_config::plat::PHYS_VIRT_OFFSET);
-    pinmux.set_pwr_gpio0_func(FMUX_PWR_GPIO0::FSEL::Value::UART2_TX);
-    pinmux.set_pwr_gpio1_func(FMUX_PWR_GPIO1::FSEL::Value::UART2_RX);
+    // Wire UART2 to IIC0_SCL/SDA (0x03001070/74), matching the
+    // original StarryOS sg2002 board layout: SCL → UART2_TX,
+    // SDA → UART2_RX. Wrong pinmux (e.g. pwr_gpio0/1) sends bytes
+    // to floating pads and the connected device never sees them.
+    pinmux.set_iic0_scl_func(FMUX_IIC0_SCL::FSEL::Value::UART2_TX);
+    pinmux.set_iic0_sda_func(FMUX_IIC0_SDA::FSEL::Value::UART2_RX);
     TtySerial::new(UART2_PADDR, UART2_IRQ, baud, &UART2_RX_BUF, &UART2_POLL, uart2_irq_handler)
 }
