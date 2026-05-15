@@ -334,7 +334,7 @@ axvisor = { version = "0.5.6", path = "os/axvisor" }
 axvisor_api = { version = "0.5.8", path = "components/axvisor_api" }
 axvisor_api_proc = { version = "0.5.7", path = "components/axvisor_api/axvisor_api_proc" }
 axvm = { version = "0.5.7", path = "components/axvm", default-features = false }
-axvmconfig = { version = "0.5.0", path = "components/axvmconfig" }
+axvmconfig = { version = "0.5.0", path = "components/axvmconfig", default-features = false }
 bitmap-allocator = { version = "0.4.5", path = "components/bitmap-allocator" }
 bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
