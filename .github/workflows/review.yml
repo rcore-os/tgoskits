@@ -521,7 +521,7 @@ jobs:
             const pullNumber = Number('${{ steps.pr.outputs.number }}');
 
             // Fetch PR state and changed files in parallel.
-            const [{ data: pr }, { data: existingReviews }, changedFiles] = await Promise.all([
+            const [{ data: pr }, existingReviews, changedFiles] = await Promise.all([
               github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber }),
               github.paginate(github.rest.pulls.listReviews, { owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber, per_page: 100 }),
               github.paginate(github.rest.pulls.listFiles, { owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber, per_page: 100 }),
