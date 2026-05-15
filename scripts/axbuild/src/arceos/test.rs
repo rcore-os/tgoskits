@@ -270,7 +270,7 @@ async fn test_rust_qemu(
     let total = prepared.len();
 
     let build_groups = group_arceos_qemu_cases_by_build_identity(&prepared);
-    let mut failed = Vec::new();
+    let mut summary = qemu_test::QemuTestSummary::default();
     let mut completed = 0;
     for build_group in &build_groups {
         arceos
@@ -298,16 +298,19 @@ async fn test_rust_qemu(
                 .await
                 .with_context(|| format!("arceos rust qemu test failed for case `{case_name}`"))
             {
-                Ok(()) => println!("ok: {}", case_name),
+                Ok(()) => {
+                    println!("ok: {}", case_name);
+                    summary.pass(case_name);
+                }
                 Err(err) => {
                     eprintln!("failed: {}: {:#}", case_name, err);
-                    failed.push(case_name.clone());
+                    summary.fail(case_name);
                 }
             }
         }
     }
 
-    qemu_test::finalize_qemu_test_run("arceos rust", "case", &failed)
+    summary.finish("arceos rust", "case")
 }
 
 async fn test_c_qemu(
@@ -346,7 +349,7 @@ async fn run_generic_qemu_by_build_group(
     total: usize,
 ) -> anyhow::Result<()> {
     let build_groups = group_arceos_qemu_cases_by_build_identity(prepared);
-    let mut failed = Vec::new();
+    let mut summary = qemu_test::QemuTestSummary::default();
     let mut completed = 0;
     for build_group in &build_groups {
         arceos
@@ -374,15 +377,18 @@ async fn run_generic_qemu_by_build_group(
                 .await
                 .with_context(|| format!("{group_label} qemu test failed for case `{case_name}`"))
             {
-                Ok(()) => println!("ok: {case_name}"),
+                Ok(()) => {
+                    println!("ok: {case_name}");
+                    summary.pass(case_name);
+                }
                 Err(err) => {
                     eprintln!("failed: {case_name}: {err:#}");
-                    failed.push(case_name.clone());
+                    summary.fail(case_name);
                 }
             }
         }
     }
-    qemu_test::finalize_qemu_test_run(group_label, "case", &failed)
+    summary.finish(group_label, "case")
 }
 
 fn group_arceos_qemu_cases_by_build_identity(
@@ -949,7 +955,7 @@ async fn test_c_qemu_axbuild(
         arch
     );
 
-    let mut failed = Vec::new();
+    let mut summary = qemu_test::QemuTestSummary::default();
     let total = c_tests.len();
     for (index, c_test) in c_tests.into_iter().enumerate() {
         println!("[{}/{}] arceos c qemu {}", index + 1, total, c_test.name);
@@ -964,13 +970,14 @@ async fn test_c_qemu_axbuild(
             });
         if let Err(err) = result {
             eprintln!("failed: c/{}: {err:#}", c_test.name);
-            failed.push(c_test.name);
+            summary.fail(format!("c/{}", c_test.name));
         } else {
             println!("ok: c/{}", c_test.name);
+            summary.pass(format!("c/{}", c_test.name));
         }
     }
 
-    qemu_test::finalize_qemu_test_run("arceos c", "test", &failed)
+    summary.finish("arceos c", "test")
 }
 
 async fn build_and_run_c_test(
