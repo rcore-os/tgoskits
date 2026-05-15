@@ -184,7 +184,7 @@ impl DeviceOps for Card1 {
     }
 
     /// Maps an exported GEM buffer selected by `handle << PAGE_SHIFT`.
-    fn mmap(&self, offset: u64) -> DeviceMmap {
+    fn mmap(&self, offset: u64, _length: u64) -> DeviceMmap {
         let Some(handle) = map_handle_from_offset(offset) else {
             warn!("card1: mmap received invalid offset {offset:#x}");
             return DeviceMmap::None;

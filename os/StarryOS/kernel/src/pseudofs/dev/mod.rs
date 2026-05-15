@@ -14,12 +14,16 @@ mod log;
 mod r#loop;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
+#[cfg(feature = "sg2002")]
+pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
 #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod rknpu_card;
 #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
 mod rknpu_drm;
+#[cfg(feature = "sg2002")]
+pub mod tpu;
 pub mod tty;
 
 use alloc::{format, sync::Arc};
@@ -28,6 +32,11 @@ use core::any::Any;
 use ax_errno::AxError;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
+#[cfg(feature = "sg2002")]
+use spin::Once;
+
+#[cfg(feature = "sg2002")]
+pub static ION_DEVICE: Once<Arc<ion::IonDevice>> = Once::new();
 #[cfg(feature = "dev-log")]
 pub use log::bind_dev_log;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
@@ -360,6 +369,30 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "input",
         SimpleDir::new_maker(fs.clone(), Arc::new(event::input_devices(fs.clone()))),
     );
+
+    #[cfg(feature = "sg2002")]
+    {
+        root.add(
+            "cvi-tpu0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(240, 0),
+                Arc::new(unsafe { tpu::TpuDevice::new() }),
+            ),
+        );
+        let ion_device = Arc::new(ion::IonDevice::new());
+        ION_DEVICE.call_once(|| ion_device.clone());
+        root.add(
+            "ion",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(10, 56),
+                ion_device,
+            ),
+        );
+    }
 
     SimpleDir::new_maker(fs, Arc::new(root))
 }

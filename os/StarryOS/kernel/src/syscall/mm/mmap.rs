@@ -182,6 +182,55 @@ pub fn sys_mmap(
         Some(get_file_like(fd)?)
     };
 
+    // IonBufferFile 特殊处理：直接线性映射物理地址，跳过通用 file_mmap/device_mmap 路径。
+    // 这样可以避免通用路径中 `range.start += offset` 对 Ion buffer 的错误偏移。
+    #[cfg(feature = "sg2002")]
+    if let Some(ref file) = file {
+        use crate::file::ion::IonBufferFile;
+        if let Some(ion_file) = file.downcast_ref::<IonBufferFile>() {
+            let range = ion_file.phys_range();
+            let buffer_len = range.size().align_up(page_size);
+            let map_length = length.align_up(page_size);
+            info!(
+                "Ion buffer mmap: phys_addr=0x{:x}, buffer_size={}, requested_length={}, \
+                 map_length={}",
+                range.start.as_usize(),
+                range.size(),
+                length,
+                map_length
+            );
+            if map_length == 0 {
+                warn!("Ion buffer mmap: map_length is 0, this should not happen");
+                return Err(AxError::InvalidInput);
+            }
+            // 不允许越过 buffer 物理边界：否则 Backend::new_linear 会按线性偏移把
+            // `range.start + range.size()` 之后的物理页映射进进程地址空间。
+            if map_length > buffer_len {
+                warn!(
+                    "Ion buffer mmap: requested length {} exceeds buffer size {}",
+                    map_length, buffer_len
+                );
+                return Err(AxError::InvalidInput);
+            }
+            let mut ion_mapping_flags: MappingFlags = permission_flags.into();
+            ion_mapping_flags |= MappingFlags::UNCACHED;
+            let backend = Backend::new_linear_anchored(
+                start,
+                start.as_usize() as isize - range.start.as_usize() as isize,
+                true,
+                ion_file.buffer().clone(),
+            );
+            let populate = map_flags.contains(MmapFlags::POPULATE);
+            aspace.map(start, map_length, ion_mapping_flags, populate, backend)?;
+            info!(
+                "Ion buffer mmap success: vaddr=0x{:x}, length={}",
+                start.as_usize(),
+                map_length
+            );
+            return Ok(start.as_usize() as _);
+        }
+    }
+
     let mut mapping_flags: MappingFlags = permission_flags.into();
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
@@ -234,7 +283,7 @@ pub fn sys_mmap(
                                     .downcast::<Device>()
                                     .map_err(|_| AxError::NoSuchDevice)?;
 
-                                match device.mmap(offset as u64) {
+                                match device.mmap(offset as u64, length as u64) {
                                     DeviceMmap::None => {
                                         return Err(AxError::NoSuchDevice);
                                     }

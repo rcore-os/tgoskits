@@ -64,6 +64,32 @@ pub unsafe fn dealloc_coherent(dma: DMAInfo, layout: Layout) {
     unsafe { ALLOCATOR.lock().dealloc_coherent(dma, layout) }
 }
 
+/// Releases pages previously allocated via [`alloc_coherent_pages`].
+///
+/// This always uses the page-allocator path, matching the allocation side.
+/// Use this in pair with [`alloc_coherent_pages`] to avoid mis-routing into the
+/// slab allocator for sub-page-sized layouts.
+///
+/// # Safety
+///
+/// Same safety requirements as [`dealloc_coherent`].
+pub unsafe fn dealloc_coherent_pages(dma: DMAInfo, layout: Layout) {
+    unsafe { ALLOCATOR.lock().dealloc_coherent_pages(dma, layout) }
+}
+
+/// Allocates contiguous physical pages suitable for DMA, bypassing the slab
+/// byte allocator. The allocated region is mapped as uncached.
+///
+/// Use this when the allocation is known to be page-sized or larger and you
+/// want to skip the byte-allocator path entirely.
+///
+/// # Safety
+///
+/// Same safety requirements as [`alloc_coherent`].
+pub unsafe fn alloc_coherent_pages(layout: Layout) -> AllocResult<DMAInfo> {
+    ALLOCATOR.lock().alloc_coherent_pages(layout)
+}
+
 /// A bus memory address.
 ///
 /// It's a wrapper type around an [`u64`].

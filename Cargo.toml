@@ -140,6 +140,7 @@ members = [
     "drivers/rdrive",
     "drivers/rdrive-macros",
     "drivers/serial/some-serial",
+    "drivers/tpu/sg2002-tpu",
     "drivers/soc/rockchip/rockchip-pm",
     "drivers/soc/rockchip/rockchip-soc",
     "os/StarryOS/kernel",
@@ -285,7 +286,7 @@ ax-input = { version = "0.5.12", path = "os/arceos/modules/axinput" }
 ax-int-ratio = { version = "0.3.7", path = "components/int_ratio" }
 ax-io = { version = "0.5.5", path = "components/axio" }
 ax-ipi = { version = "0.5.12", path = "os/arceos/modules/axipi" }
-ax-kernel-guard = { version = "0.3.8", path = "components/kernel_guard" }
+ax-kernel-guard = { version = "0.3.10", path = "components/kernel_guard" }
 ax-lockdep = { version = "0.1.0", path = "components/lockdep" }
 ax-kspin = { version = "0.3.8", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.6", path = "components/ax-lazyinit" }
@@ -300,7 +301,7 @@ ax-net = { version = "0.5.12", path = "os/arceos/modules/axnet" }
 ax-net-ng = { version = "0.5.13", path = "os/arceos/modules/axnet-ng" }
 ax-page-table-entry = { version = "0.8.8", path = "components/page_table_multiarch/page_table_entry" }
 ax-page-table-multiarch = { version = "0.8.8", path = "components/page_table_multiarch/page_table_multiarch" }
-ax-percpu = { version = "0.4.9", path = "components/percpu/percpu" }
+ax-percpu = { version = "0.4.11", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.9", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.5.8", path = "components/axplat_crates/axplat" }
 ax-plat-aarch64-bsta1000b = { version = "0.5.8", path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
@@ -340,7 +341,7 @@ axvisor = { version = "0.5.6", path = "os/axvisor" }
 axvisor_api = { version = "0.5.8", path = "components/axvisor_api" }
 axvisor_api_proc = { version = "0.5.7", path = "components/axvisor_api/axvisor_api_proc" }
 axvm = { version = "0.5.7", path = "components/axvm", default-features = false }
-axvmconfig = { version = "0.5.0", path = "components/axvmconfig" }
+axvmconfig = { version = "0.5.0", path = "components/axvmconfig", default-features = false }
 bitmap-allocator = { version = "0.4.5", path = "components/bitmap-allocator" }
 bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
@@ -382,6 +383,7 @@ rockchip-npu = { version = "0.2", path = "drivers/npu/rockchip-npu" }
 realtek-rtl8125 = { version = "0.2", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.2", path = "drivers/soc/rockchip/rockchip-soc" }
+sg2002-tpu = { version = "0.1", path = "drivers/tpu/sg2002-tpu" }
 rdrive = { version = "0.20", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.4.0", path = "components/rsext4" }
