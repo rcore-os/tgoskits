@@ -49,10 +49,13 @@ pub const KCOV_TRACE_PC: u32 = 0;
 pub const KCOV_TRACE_CMP: u32 = 1;
 
 // Internal mode constants (stored in KcovThreadState.mode).
-/// Initial state — no buffer allocated.
-pub const KCOV_MODE_DISABLED: u32 = 0;
 /// After INIT_TRACE — buffer allocated, waiting for ENABLE.
 pub const KCOV_MODE_INIT: u32 = 1;
+/// After ENABLE(KCOV_TRACE_PC) — actively recording PCs.
+pub const KCOV_MODE_TRACE_PC: u32 = 2;
+/// After ENABLE(KCOV_TRACE_CMP) — reserved, not yet implemented.
+#[expect(unused)]
+pub const KCOV_MODE_TRACE_CMP: u32 = 3;
 
 /// Maximum number of coverage entries in the buffer.
 pub const KCOV_MAX_ENTRIES: usize = 64 * 1024;
@@ -244,7 +247,7 @@ impl DeviceOps for KcovDevice {
         }
     }
 
-    fn mmap(&self, offset: u64) -> DeviceMmap {
+    fn mmap(&self, offset: u64, _length: u64) -> DeviceMmap {
         // Linux kcov requires vm_pgoff == 0; non-zero offset is rejected.
         if offset != 0 {
             return DeviceMmap::NotConfigured;
