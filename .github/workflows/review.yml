@@ -1,4 +1,4 @@
-# Review PR with DeepSeek
+# Review PR
 #
 # 功能概述：
 #   手动输入 PR 编号后，使用 DeepSeek 对非草稿 PR 进行代码审查，并将中文审查评论发布到 PR，
@@ -13,14 +13,15 @@
 #   - 支持行级内联注释（含 ```suggestion 一键修改块），并始终以 COMMENT review 发布。
 #
 # 推荐 reviewer 候选人（见 .github/CODEOWNERS）：
-#   ZR233       —— 核心组件、OS、drivers、test-suit、CI/xtask/scripts、跨模块改动
-#   ZCShou      —— docs、build/config、workflow、scripts/xtask、platform、仓库维护
-#   AsakuraMizu —— components、drivers、os、crates、模块化内核和设备相关改动
+#   ZR233             —— ArceOS/AxVisor 核心组件、跨模块改动
+#   ZCShou            —— docs、build/config、workflow、scripts/xtask、test-suit、platform、drivers、仓库维护
+#   AsakuraMizu       —— StarryOS 及 Starry-OS 来源组件
+#   shilei-massclouds —— ArceOS 调度、任务处理 BUG 修复
 #
 # 并发策略：
 #   同一 PR 上若有新 push，会取消正在运行的旧审查任务，避免评论堆积。
 #
-name: Review PR with DeepSeek
+name: Review PR
 
 on:
   workflow_dispatch:
@@ -49,7 +50,7 @@ concurrency:
 
 jobs:
   review:
-    name: Review PR with DeepSeek
+    name: Review PR
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Skip fork PRs: pull_request_target has access to secrets; prevent quota drain
@@ -208,7 +209,7 @@ jobs:
                       "type": "array",
                       "items": {
                           "type": "string",
-                          "enum": ["ZR233", "ZCShou", "AsakuraMizu"],
+                          "enum": ["ZR233", "ZCShou", "AsakuraMizu", "shilei-massclouds"],
                       },
                       "minItems": 0,
                       "maxItems": 2,
@@ -242,9 +243,10 @@ jobs:
           - 不要修改文件，不要创建 commit，不要 push。
           - 同时根据 PR 修改内容推荐 1 到 2 个合适的人工 reviewers。
           - Reviewer 只能从以下候选人中选择，不要输出其他账号：
-            - ZR233：核心组件、OS、drivers、test-suit、CI/xtask/scripts、跨模块改动。
-            - ZCShou：docs、build/config、workflow、scripts/xtask、platform、仓库维护和跨模块改动。
-            - AsakuraMizu：components、drivers、os、crates、模块化内核和设备相关改动。
+            - ZR233：ArceOS/AxVisor 核心组件、跨模块改动。
+            - ZCShou：docs、build/config、workflow、scripts/xtask、test-suit、platform、drivers、仓库维护。
+            - AsakuraMizu：StarryOS 及 Starry-OS 来源组件。
+            - shilei-massclouds：ArceOS 调度、任务处理 BUG 修复。
           - 不要推荐 PR 作者本人作为 reviewer。
           - 如果 diff 末尾包含 "[Diff truncated"，在 summary 的第一句明确声明此次审查仅覆盖 diff 的前一部分，超出部分未审查。
 
@@ -502,38 +504,114 @@ jobs:
             core.setOutput('review_posted', 'true');
 
       - name: Request human reviewers
-        if: success() && steps.submit_review.outputs.review_posted == 'true' && steps.pr.outputs.is_draft == 'false' && steps.deepseek_api_key.outputs.available == 'true' && steps.deepseek_review.outcome == 'success'
+        if: success() && steps.pr.outputs.is_draft == 'false'
         uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');
-            const raw = fs.readFileSync('.deepseek-pr-review/review.json', 'utf8').trim();
-            const json = JSON.parse(raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim());
+            let json = {};
+            if (fs.existsSync('.deepseek-pr-review/review.json')) {
+              const raw = fs.readFileSync('.deepseek-pr-review/review.json', 'utf8').trim();
+              json = JSON.parse(raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim());
+            }
 
-            const allowed = new Set(['ZR233', 'ZCShou', 'AsakuraMizu']);
+            const allowed = new Set(['ZR233', 'ZCShou', 'AsakuraMizu', 'shilei-massclouds']);
             const prData = JSON.parse(fs.readFileSync('.deepseek-pr-review/pr.json', 'utf8'));
             const author = String(prData.author?.login || '').toLowerCase();
-            const aiReviewers = Array.isArray(json.reviewers) ? json.reviewers : [];
-            const normalized = aiReviewers
-              .map((name) => String(name).replace(/^@/, '').trim())
-              .filter((name) => allowed.has(name))
-              .filter((name) => name.toLowerCase() !== author);
-
             const pullNumber = Number('${{ steps.pr.outputs.number }}');
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pullNumber,
-            });
-            const { data: existingReviews } = await github.rest.pulls.listReviews({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pullNumber,
-            });
-            const alreadyRequested = new Set((pr.requested_reviewers || []).map((user) => user.login));
-            const alreadyReviewed = new Set(existingReviews.map((r) => r.user?.login).filter(Boolean));
-            const reviewers = [...new Set(normalized)]
-              .filter((name) => !alreadyRequested.has(name) && !alreadyReviewed.has(name))
+
+            // Fetch PR state and changed files in parallel.
+            const [{ data: pr }, { data: existingReviews }, changedFiles] = await Promise.all([
+              github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber }),
+              github.paginate(github.rest.pulls.listReviews, { owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber, per_page: 100 }),
+              github.paginate(github.rest.pulls.listFiles, { owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber, per_page: 100 }),
+            ]);
+
+            // --- CODEOWNERS-based owner resolution ---
+            // Parse .github/CODEOWNERS (last matching rule wins, GitHub semantics).
+            function parseCODEOWNERS(content) {
+              const rules = [];
+              for (const line of content.split('\n')) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#')) continue;
+                const parts = trimmed.split(/\s+/);
+                const owners = parts.slice(1).map((o) => o.replace(/^@/, '').trim()).filter(Boolean);
+                if (owners.length > 0) rules.push({ pattern: parts[0], owners });
+              }
+              return rules;
+            }
+
+            function fileMatchesPattern(filePath, pattern) {
+              let p = pattern.startsWith('/') ? pattern.slice(1) : pattern;
+              if (p === '*' || p === '**') return true;
+              const isDir = p.endsWith('/');
+              if (isDir) p = p.slice(0, -1);
+              const regexStr = p
+                .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                .replace(/\*\*/g, '\u0000')
+                .replace(/\*/g, '[^/]*')
+                .replace(/\u0000/g, '.*')
+                .replace(/\?/g, '[^/]');
+              const re = isDir
+                ? new RegExp(`^${regexStr}(/|$)`)
+                : new RegExp(`^${regexStr}(/.*)?$`);
+              return re.test(filePath);
+            }
+
+            const codeownersContent = fs.existsSync('.github/CODEOWNERS')
+              ? fs.readFileSync('.github/CODEOWNERS', 'utf8')
+              : '';
+            const codeownersRules = parseCODEOWNERS(codeownersContent);
+
+            // Count how many changed files each owner is responsible for.
+            // Preserve CODEOWNERS owner order as the primary/secondary reviewer
+            // preference instead of treating all owners on a rule as equal.
+            const ownerScore = new Map();
+            const addOwnerScore = (owner, ownerIndex) => {
+              if (!allowed.has(owner)) return;
+              if (!ownerScore.has(owner)) {
+                ownerScore.set(owner, { primary: 0, total: 0, order: ownerIndex });
+              }
+              const score = ownerScore.get(owner);
+              score.total += 1;
+              if (ownerIndex === 0) score.primary += 1;
+              score.order = Math.min(score.order, ownerIndex);
+            };
+            for (const file of changedFiles) {
+              let matchedOwners = [];
+              for (const rule of codeownersRules) {
+                if (fileMatchesPattern(file.filename, rule.pattern)) {
+                  matchedOwners = rule.owners;
+                }
+              }
+              matchedOwners.forEach(addOwnerScore);
+            }
+            core.info(`CODEOWNERS coverage scores: ${JSON.stringify(Object.fromEntries(ownerScore))}`);
+
+            // Rank by primary ownership first, then total coverage, then
+            // CODEOWNERS order, then name for deterministic ordering.
+            const codeownersCandidates = [...ownerScore.entries()]
+              .sort((a, b) => (
+                b[1].primary - a[1].primary
+                || b[1].total - a[1].total
+                || a[1].order - b[1].order
+                || a[0].localeCompare(b[0])
+              ))
+              .map(([name]) => name);
+
+            // Fall back to DeepSeek's recommendations only when CODEOWNERS yields nothing
+            // (e.g. new top-level path not yet covered by any rule).
+            const aiReviewers = Array.isArray(json.reviewers) ? json.reviewers : [];
+            const aiCandidates = aiReviewers
+              .map((n) => String(n).replace(/^@/, '').trim())
+              .filter((n) => allowed.has(n));
+            const candidates = codeownersCandidates.length > 0 ? codeownersCandidates : aiCandidates;
+
+            const alreadyRequested = new Set((pr.requested_reviewers || []).map((user) => user.login?.toLowerCase()).filter(Boolean));
+            const alreadyReviewed = new Set(existingReviews.map((r) => r.user?.login?.toLowerCase()).filter(Boolean));
+            const reviewers = candidates
+              .filter((name) => name.toLowerCase() !== author)
+              .filter((name) => !alreadyRequested.has(name.toLowerCase()) && !alreadyReviewed.has(name.toLowerCase()))
               .slice(0, 2);
 
             if (reviewers.length === 0) {
@@ -545,7 +623,7 @@ jobs:
               await github.rest.pulls.requestReviewers({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: Number('${{ steps.pr.outputs.number }}'),
+                pull_number: pullNumber,
                 reviewers,
               });
               core.info(`Requested reviewers: ${reviewers.join(', ')}`);
