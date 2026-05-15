@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "arceos-rust"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "arceos-rust-interface"
@@ -1049,7 +1049,7 @@ dependencies = [
 
 [[package]]
 name = "ax-kernel-guard"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "ax-crate-interface",
  "cfg-if",
@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "ax-percpu"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "ax-kernel-guard",
  "ax-percpu-macros",
