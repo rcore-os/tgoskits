@@ -278,7 +278,7 @@ ax-input = { version = "0.5.12", path = "os/arceos/modules/axinput" }
 ax-int-ratio = { version = "0.3.7", path = "components/int_ratio" }
 ax-io = { version = "0.5.5", path = "components/axio" }
 ax-ipi = { version = "0.5.12", path = "os/arceos/modules/axipi" }
-ax-kernel-guard = { version = "0.3.8", path = "components/kernel_guard" }
+ax-kernel-guard = { version = "0.3.10", path = "components/kernel_guard" }
 ax-lockdep = { version = "0.1.0", path = "components/lockdep" }
 ax-kspin = { version = "0.3.8", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.6", path = "components/ax-lazyinit" }
@@ -293,7 +293,7 @@ ax-net = { version = "0.5.12", path = "os/arceos/modules/axnet" }
 ax-net-ng = { version = "0.5.13", path = "os/arceos/modules/axnet-ng" }
 ax-page-table-entry = { version = "0.8.8", path = "components/page_table_multiarch/page_table_entry" }
 ax-page-table-multiarch = { version = "0.8.8", path = "components/page_table_multiarch/page_table_multiarch" }
-ax-percpu = { version = "0.4.9", path = "components/percpu/percpu" }
+ax-percpu = { version = "0.4.11", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.9", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.5.8", path = "components/axplat_crates/axplat" }
 ax-plat-aarch64-bsta1000b = { version = "0.5.8", path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
