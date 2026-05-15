@@ -248,19 +248,23 @@ impl FileNodeOps for Inode {
                 continue;
             }
 
-            if let Some(phys) = rsext4::loopfile::resolve_inode_block(dev, &mut inode, lbn as u32)
+            match rsext4::loopfile::resolve_inode_block(dev, &mut inode, lbn as u32)
                 .map_err(into_vfs_err)?
             {
-                let cached = fs
-                    .datablock_cache
-                    .get_or_load(dev, phys)
-                    .map_err(into_vfs_err)?;
-                let data = &cached.data[..block_bytes as usize];
-                buf[written..written + copy_len as usize]
-                    .copy_from_slice(&data[copy_start as usize..(copy_start + copy_len) as usize]);
-            } else {
-                for b in &mut buf[written..written + copy_len as usize] {
-                    *b = 0;
+                rsext4::loopfile::BlockState::Data(phys) => {
+                    let cached = fs
+                        .datablock_cache
+                        .get_or_load(dev, phys)
+                        .map_err(into_vfs_err)?;
+                    let data = &cached.data[..block_bytes as usize];
+                    buf[written..written + copy_len as usize].copy_from_slice(
+                        &data[copy_start as usize..(copy_start + copy_len) as usize],
+                    );
+                }
+                rsext4::loopfile::BlockState::Hole | rsext4::loopfile::BlockState::Unwritten(_) => {
+                    for b in &mut buf[written..written + copy_len as usize] {
+                        *b = 0;
+                    }
                 }
             }
 
@@ -341,7 +345,13 @@ impl FileNodeOps for Inode {
 
             if let Ok(blocks) = rsext4::loopfile::resolve_inode_block_allextend(dev, &mut inode) {
                 for blk in blocks.values() {
-                    let _ = fs.free_block(dev, *blk);
+                    match *blk {
+                        rsext4::loopfile::BlockState::Data(phys)
+                        | rsext4::loopfile::BlockState::Unwritten(phys) => {
+                            let _ = fs.free_block(dev, phys);
+                        }
+                        rsext4::loopfile::BlockState::Hole => {}
+                    }
                 }
             }
 
@@ -435,6 +445,12 @@ impl DirNodeOps for Inode {
         let mut idx = 0u64;
         let mut count = 0usize;
         for &phys in blocks.values() {
+            let phys = match phys {
+                rsext4::loopfile::BlockState::Data(phys) => phys,
+                rsext4::loopfile::BlockState::Hole | rsext4::loopfile::BlockState::Unwritten(_) => {
+                    return Err(VfsError::InvalidData);
+                }
+            };
             let cached = fs
                 .datablock_cache
                 .get_or_load(dev, phys)

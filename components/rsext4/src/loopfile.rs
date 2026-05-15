@@ -40,6 +40,17 @@ enum ClassicBlockPath {
     Triple(usize, usize, usize),
 }
 
+/// Logical-block resolution state returned by inode block walkers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockState {
+    /// No block is allocated for this logical block.
+    Hole,
+    /// A block is allocated but currently marked as unwritten.
+    Unwritten(AbsoluteBN),
+    /// A block is allocated and contains initialized file data.
+    Data(AbsoluteBN),
+}
+
 /// Returns how many `u32` block pointers fit in one filesystem block.
 ///
 /// Classic indirect blocks are plain arrays of little-endian `u32` physical
@@ -180,7 +191,7 @@ fn resolve_classic_path<B: BlockDevice>(
 fn resolve_classic_block_map<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
-) -> Ext4Result<BTreeMap<LogicalBN, AbsoluteBN>> {
+) -> Ext4Result<BTreeMap<LogicalBN, BlockState>> {
     let block_size = runtime_block_size() as u64;
     if block_size == 0 {
         return Ok(BTreeMap::new());
@@ -191,8 +202,8 @@ fn resolve_classic_block_map<B: BlockDevice>(
     let mut out = BTreeMap::new();
 
     for lbn in 0..total_blocks {
-        if let Some(phys) = resolve_inode_block(block_dev, inode, lbn)? {
-            out.insert(LogicalBN::new(lbn), phys);
+        if let BlockState::Data(phys) = resolve_inode_block(block_dev, inode, lbn)? {
+            out.insert(LogicalBN::new(lbn), BlockState::Data(phys));
         }
     }
 
@@ -205,13 +216,14 @@ fn resolve_classic_block_map<B: BlockDevice>(
 ///
 /// Extent inodes and classic indirect-block inodes deliberately share the same
 /// outward contract here:
-/// - `Some(phys)` for a mapped initialized data block
-/// - `None` for a hole, an unwritten extent, or an unmapped classic slot
+/// - `BlockState::Data(phys)` for a mapped initialized data block
+/// - `BlockState::Unwritten(phys)` for a mapped unwritten extent
+/// - `BlockState::Hole` for a hole or an unmapped classic slot
 pub fn resolve_inode_block<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
     logical_block: u32,
-) -> Ext4Result<Option<AbsoluteBN>> {
+) -> Ext4Result<BlockState> {
     if inode.have_extend_header_and_use_extend() {
         let mut tree = ExtentTree::new(inode);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
@@ -223,67 +235,74 @@ pub fn resolve_inode_block<B: BlockDevice>(
             let len = Ext4Extent::decode_len(raw_len);
 
             if len == 0 {
-                return Ok(None);
+                return Ok(BlockState::Hole);
             }
 
             let start_lbn = ext.ee_block;
             if logical_block < start_lbn || logical_block >= start_lbn.saturating_add(len) {
-                return Ok(None);
-            }
-
-            if is_unwritten {
-                return Ok(None);
+                return Ok(BlockState::Hole);
             }
 
             let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
             let phys = base + (logical_block - start_lbn) as u64;
-            return Ok(Some(AbsoluteBN::new(phys)));
+            let phys = AbsoluteBN::new(phys);
+            return Ok(if is_unwritten {
+                BlockState::Unwritten(phys)
+            } else {
+                BlockState::Data(phys)
+            });
         }
-        Ok(None)
+        Ok(BlockState::Hole)
     } else {
         let pointers_per_block = pointers_per_block()?;
         let Some(path) = decode_classic_block_path(logical_block, pointers_per_block) else {
-            return Ok(None);
+            return Ok(BlockState::Hole);
         };
-        resolve_classic_path(block_dev, inode, path)
+        Ok(match resolve_classic_path(block_dev, inode, path)? {
+            Some(phys) => BlockState::Data(phys),
+            None => BlockState::Hole,
+        })
     }
 }
 
 /// Builds a full logical-block to physical-block map for one inode.
 ///
 /// The historical function name mentions extents, but the helper now serves
-/// both extent and classic indirect-block inodes. Callers use it as a unified
-/// "where is initialized data?" view.
+/// both extent and classic indirect-block inodes. The returned map includes
+/// all allocated logical blocks and preserves whether each block is initialized
+/// data or an unwritten extent. Holes are represented by missing entries.
 pub fn resolve_inode_block_allextend<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
-) -> Ext4Result<BTreeMap<LogicalBN, AbsoluteBN>> {
+) -> Ext4Result<BTreeMap<LogicalBN, BlockState>> {
     if !inode.have_extend_header_and_use_extend() {
         return resolve_classic_block_map(block_dev, inode);
     }
 
-    fn push_extent_blocks(out: &mut Vec<(LogicalBN, AbsoluteBN)>, ext: &Ext4Extent) {
-        let raw_len = ext.ee_len as u32;
-        // Skip unwritten extents so the resulting map only represents blocks
-        // that currently contain initialized file data.
-        if (raw_len & 0x8000) != 0 {
-            return;
-        }
-        let len = raw_len;
+    fn push_extent_blocks(out: &mut Vec<(LogicalBN, BlockState)>, ext: &Ext4Extent) {
+        let len = ext.len();
         if len == 0 {
             return;
         }
         let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
         for i in 0..len {
             let lbn = LogicalBN::new(ext.ee_block.saturating_add(i));
-            out.push((lbn, AbsoluteBN::new(base + i as u64)));
+            let phys = AbsoluteBN::new(base + i as u64);
+            out.push((
+                lbn,
+                if ext.is_unwritten() {
+                    BlockState::Unwritten(phys)
+                } else {
+                    BlockState::Data(phys)
+                },
+            ));
         }
     }
 
     fn walk_node<B: BlockDevice>(
         dev: &mut Jbd2Dev<B>,
         node: &ExtentNode,
-        out: &mut Vec<(LogicalBN, AbsoluteBN)>,
+        out: &mut Vec<(LogicalBN, BlockState)>,
     ) -> Ext4Result<()> {
         match node {
             ExtentNode::Leaf { entries, .. } => {
@@ -313,14 +332,14 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
         None => return Ok(BTreeMap::new()),
     };
 
-    let mut blocks: Vec<(LogicalBN, AbsoluteBN)> = Vec::new();
+    let mut blocks: Vec<(LogicalBN, BlockState)> = Vec::new();
     walk_node(block_dev, &root, &mut blocks)?;
     blocks.sort_unstable_by_key(|(lbn, _)| *lbn);
     blocks.dedup_by_key(|(lbn, _)| *lbn);
 
     let mut out = BTreeMap::new();
-    for (lbn, phys) in blocks {
-        out.insert(lbn, phys);
+    for (lbn, state) in blocks {
+        out.insert(lbn, state);
     }
     Ok(out)
 }
@@ -386,9 +405,13 @@ pub fn get_file_inode<B: BlockDevice>(
                     &blocks.len()
                 );
 
-                for (idx, phys) in blocks.iter().enumerate() {
-                    debug!("Scan dir block idx {} phys {}", &idx, phys.1);
-                    let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
+                for (idx, (_lbn, state)) in blocks.iter().enumerate() {
+                    let phys = match *state {
+                        BlockState::Data(phys) => phys,
+                        BlockState::Hole | BlockState::Unwritten(_) => continue,
+                    };
+                    debug!("Scan dir block idx {} phys {}", &idx, phys);
+                    let cached_block = fs.datablock_cache.get_or_load(block_dev, phys)?;
                     let block_data = &cached_block.data[..block_bytes];
 
                     let checksum_ok = if current_inode.is_htree_indexed() {
@@ -418,7 +441,7 @@ pub fn get_file_inode<B: BlockDevice>(
                     if !checksum_ok {
                         error!(
                             "dir block checksum mismatch: ino={} blk_idx={} phys={}",
-                            current_ino_num, idx, phys.1
+                            current_ino_num, idx, phys
                         );
                     }
 

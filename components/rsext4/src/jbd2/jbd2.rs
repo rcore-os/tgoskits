@@ -712,9 +712,10 @@ pub fn dump_journal_inode<B: BlockDevice>(fs: &mut Ext4FileSystem, block_dev: &m
     let mut indo = fs
         .get_inode_by_num(block_dev, journal_ino)
         .expect("journal");
-    let datablock = resolve_inode_block(block_dev, &mut indo, 0)
-        .unwrap()
-        .unwrap();
+    let datablock = match resolve_inode_block(block_dev, &mut indo, 0).unwrap() {
+        BlockState::Data(datablock) => datablock,
+        BlockState::Hole | BlockState::Unwritten(_) => panic!("journal root block is not data"),
+    };
     let journal_data = fs
         .datablock_cache
         .get_or_load(block_dev, datablock)

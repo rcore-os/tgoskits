@@ -60,10 +60,17 @@ pub fn insert_dir_entry<B: BlockDevice>(
         }
 
         let phys = match blocks.get(&LogicalBN::new(lbn as u32)) {
-            Some(&b) => b,
+            Some(&BlockState::Data(b)) => b,
             None => {
                 error!(
                     "insert_dir_entry: missing extent mapping for parent_ino={parent_ino_num} \
+                     lbn={lbn} name={child_name:?}"
+                );
+                return Err(Ext4Error::corrupted());
+            }
+            Some(BlockState::Hole | BlockState::Unwritten(_)) => {
+                error!(
+                    "insert_dir_entry: invalid non-data mapping for parent_ino={parent_ino_num} \
                      lbn={lbn} name={child_name:?}"
                 );
                 return Err(Ext4Error::corrupted());

@@ -30,7 +30,7 @@ use rsext4::{
     dir::{get_inode_with_num, mkdir},
     entries::classic_dir::list_entries,
     file::{delete_dir, mkfile, mv, truncate, unlink, write_file},
-    loopfile::resolve_inode_block_allextend,
+    loopfile::{BlockState, resolve_inode_block_allextend},
 };
 use spin::Mutex;
 
@@ -335,7 +335,11 @@ impl VfsNodeOps for FileWrapper {
         };
 
         let mut data = Vec::new();
-        for (_, phys_block) in blocks {
+        for (_, block_state) in blocks {
+            let phys_block = match block_state {
+                BlockState::Data(phys_block) => phys_block,
+                BlockState::Hole | BlockState::Unwritten(_) => return Err(VfsError::Io),
+            };
             let cached = match self.inner {
                 Ext4Inner::Disk(ref inner) => {
                     let mut inner = inner.lock();

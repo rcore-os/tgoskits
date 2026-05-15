@@ -8,6 +8,10 @@ fn free_inode_with_dtime<B: BlockDevice>(
 ) -> Ext4Result<()> {
     let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_block_allextend(block_dev, inode)?
         .into_values()
+        .filter_map(|state| match state {
+            BlockState::Data(phys) | BlockState::Unwritten(phys) => Some(phys),
+            BlockState::Hole => None,
+        })
         .collect();
     if inode.have_extend_header_and_use_extend() {
         used_blocks.extend(
@@ -72,7 +76,11 @@ pub fn unlink<B: BlockDevice>(
     let mut target_ino: Option<InodeNumber> = None;
     let blocks = resolve_inode_block_allextend(block_dev, &mut parent_inode)?;
 
-    for &phys in blocks.values() {
+    for state in blocks.values() {
+        let phys = match *state {
+            BlockState::Data(phys) => phys,
+            BlockState::Hole | BlockState::Unwritten(_) => continue,
+        };
         let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
             Ok(v) => v,
             Err(_) => continue,
@@ -153,7 +161,7 @@ pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
             break;
         }
         let phys = match resolve_inode_block(block_dev, &mut parent_inode, lbn as u32) {
-            Ok(Some(b)) => b,
+            Ok(BlockState::Data(b)) => b,
             _ => continue,
         };
         let _ = fs.datablock_cache.modify(block_dev, phys, |data| {
@@ -305,7 +313,11 @@ pub fn delete_dir<B: BlockDevice>(
             )> = Vec::new();
             let mut removed_child_dirs: u16 = 0;
 
-            for &phys in dir_blocks.values() {
+            for state in dir_blocks.values() {
+                let phys = match *state {
+                    BlockState::Data(phys) => phys,
+                    BlockState::Hole | BlockState::Unwritten(_) => continue,
+                };
                 // Collect child entries first to avoid nested mutable borrows of
                 // `fs` while the data-block cache entry is live.
                 let mut child_entries: Vec<(InodeNumber, alloc::string::String)> = Vec::new();

@@ -97,46 +97,31 @@ pub fn create_symbol_link<B: BlockDevice>(
         new_inode.i_blocks_lo = 0;
         new_inode.l_i_blocks_high = 0;
     } else {
-        // Long symlink: spill the target path into data blocks.
-        let mut data_blocks: Vec<AbsoluteBN> = Vec::new();
-        let mut remaining = target_len;
-        let mut src_off = 0usize;
-
-        while remaining > 0 {
-            if !fs.superblock.has_extents() && data_blocks.len() >= 12 {
-                discard_unpublished_inode(fs, device, new_ino, &data_blocks);
-                return Err(Ext4Error::unsupported());
-            }
-
-            let blk = fs.alloc_block(device)?;
-            let write_len = core::cmp::min(remaining, fs.block_size);
-            if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
-                for b in data.iter_mut() {
-                    *b = 0;
-                }
-                let end = src_off + write_len;
-                data[..write_len].copy_from_slice(&target_bytes[src_off..end]);
-            }) {
-                fs.datablock_cache.invalidate(blk);
-                if let Err(free_err) = fs.free_block(device, blk) {
-                    warn!(
-                        "discard failed symlink block failed block={blk} err={free_err:?} \
-                         ({free_err})"
-                    );
-                }
-                discard_unpublished_inode(fs, device, new_ino, &data_blocks);
-                return Err(e);
-            }
-
-            data_blocks.push(blk);
-            remaining -= write_len;
-            src_off += write_len;
+        // Linux ext4 stores non-fast symlink payloads in a single data block so
+        // the target must leave room for a trailing NUL in that block.
+        if target_len > fs.block_size.saturating_sub(1) {
+            return Err(Ext4Error::new(Errno::ENAMETOOLONG));
         }
 
-        let used_datablocks = data_blocks.len() as u64;
-        new_inode.set_blocks_count_from_fs_blocks(&fs.superblock, used_datablocks);
+        let blk = fs.alloc_block(device)?;
+        if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
+            for b in data.iter_mut() {
+                *b = 0;
+            }
+            data[..target_len].copy_from_slice(target_bytes);
+        }) {
+            fs.datablock_cache.invalidate(blk);
+            if let Err(free_err) = fs.free_block(device, blk) {
+                warn!(
+                    "discard failed symlink block failed block={blk} err={free_err:?} ({free_err})"
+                );
+            }
+            discard_unpublished_inode(fs, device, new_ino, &[]);
+            return Err(e);
+        }
 
-        build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_ino, &data_blocks, device);
+        new_inode.set_blocks_count_from_fs_blocks(&fs.superblock, 1);
+        build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_ino, &[blk], device);
     }
 
     let mut create_update = Ext4InodeMetadataUpdate::create(symlink_mode);
