@@ -8,7 +8,7 @@ use clap::{Args, Subcommand};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
 
-use super::{ArceOS, build, cbuild, ensure_package_runtime_assets};
+use super::{ArceOS, build, cbuild, ensure_qemu_runtime_assets};
 use crate::{
     context::{BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
     test::{case::TestQemuCase, qemu as qemu_test, suite as test_suite},
@@ -95,6 +95,15 @@ struct PreparedArceosRustQemuCase {
     request: ResolvedBuildRequest,
     cargo: Cargo,
     qemu: QemuConfig,
+}
+
+struct ArceosQemuBuildGroup<'a> {
+    build_group: &'a str,
+    build_config_path: &'a Path,
+    package: &'a str,
+    request: ResolvedBuildRequest,
+    cargo: Cargo,
+    cases: Vec<&'a PreparedArceosRustQemuCase>,
 }
 
 impl qemu_test::BuildConfigRef for PreparedArceosRustQemuCase {
@@ -260,13 +269,7 @@ async fn test_rust_qemu(
     let prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     let total = prepared.len();
 
-    let build_groups = qemu_test::prepare_case_build_groups(&prepared, |build_config_path| {
-        let first_case = prepared
-            .iter()
-            .find(|case| case.case.build_config_path == build_config_path)
-            .context("empty ArceOS Rust qemu build group")?;
-        Ok((first_case.request.clone(), first_case.cargo.clone()))
-    })?;
+    let build_groups = group_arceos_qemu_cases_by_build_identity(&prepared);
     let mut failed = Vec::new();
     let mut completed = 0;
     for build_group in &build_groups {
@@ -279,13 +282,15 @@ async fn test_rust_qemu(
             .await
             .with_context(|| {
                 format!(
-                    "failed to build ArceOS rust qemu test artifact for build group `{}` ({})",
-                    build_group.group.build_group,
-                    build_group.group.build_config_path.display()
+                    "failed to build ArceOS rust qemu test artifact for package `{}` in build \
+                     group `{}` ({})",
+                    build_group.package,
+                    build_group.build_group,
+                    build_group.build_config_path.display()
                 )
             })?;
 
-        for case in &build_group.group.cases {
+        for case in &build_group.cases {
             completed += 1;
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] arceos rust qemu {case_name}");
@@ -330,13 +335,17 @@ async fn test_generic_qemu(
     let prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     let total = prepared.len();
 
-    let build_groups = qemu_test::prepare_case_build_groups(&prepared, |build_config_path| {
-        let first_case = prepared
-            .iter()
-            .find(|case| case.case.build_config_path == build_config_path)
-            .with_context(|| format!("empty ArceOS {group} qemu build group"))?;
-        Ok((first_case.request.clone(), first_case.cargo.clone()))
-    })?;
+    run_generic_qemu_by_build_group(arceos, group, &group_label, &prepared, total).await
+}
+
+async fn run_generic_qemu_by_build_group(
+    arceos: &mut ArceOS,
+    group: &str,
+    group_label: &str,
+    prepared: &[PreparedArceosRustQemuCase],
+    total: usize,
+) -> anyhow::Result<()> {
+    let build_groups = group_arceos_qemu_cases_by_build_identity(prepared);
     let mut failed = Vec::new();
     let mut completed = 0;
     for build_group in &build_groups {
@@ -349,13 +358,15 @@ async fn test_generic_qemu(
             .await
             .with_context(|| {
                 format!(
-                    "failed to build ArceOS {group} qemu test artifact for build group `{}` ({})",
-                    build_group.group.build_group,
-                    build_group.group.build_config_path.display()
+                    "failed to build ArceOS {group} qemu test artifact for package `{}` in build \
+                     group `{}` ({})",
+                    build_group.package,
+                    build_group.build_group,
+                    build_group.build_config_path.display()
                 )
             })?;
 
-        for case in &build_group.group.cases {
+        for case in &build_group.cases {
             completed += 1;
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] {group_label} qemu {case_name}");
@@ -371,7 +382,32 @@ async fn test_generic_qemu(
             }
         }
     }
-    qemu_test::finalize_qemu_test_run(&group_label, "case", &failed)
+    qemu_test::finalize_qemu_test_run(group_label, "case", &failed)
+}
+
+fn group_arceos_qemu_cases_by_build_identity(
+    cases: &[PreparedArceosRustQemuCase],
+) -> Vec<ArceosQemuBuildGroup<'_>> {
+    let mut groups = Vec::<ArceosQemuBuildGroup<'_>>::new();
+    for case in cases {
+        if let Some(group) = groups.iter_mut().find(|group| {
+            group.build_config_path == case.case.build_config_path
+                && group.package == case.case.package
+        }) {
+            group.cases.push(case);
+            continue;
+        }
+
+        groups.push(ArceosQemuBuildGroup {
+            build_group: &case.case.build_group,
+            build_config_path: &case.case.build_config_path,
+            package: &case.case.package,
+            request: case.request.clone(),
+            cargo: case.cargo.clone(),
+            cases: vec![case],
+        });
+    }
+    groups
 }
 
 fn test_build_args(package: &str, target: &str, config: &Path) -> BuildCliArgs {
@@ -450,7 +486,6 @@ async fn prepare_rust_qemu_cases(
 ) -> anyhow::Result<Vec<PreparedArceosRustQemuCase>> {
     let mut prepared = Vec::with_capacity(cases.len());
     for case in cases {
-        ensure_package_runtime_assets(&case.package)?;
         let request = arceos.prepare_request(
             test_build_args(&case.package, target, &case.build_config_path),
             Some(case.case.qemu_config_path.clone()),
@@ -467,6 +502,7 @@ async fn prepare_rust_qemu_cases(
                     case.case.display_name
                 )
             })?;
+        ensure_qemu_runtime_assets(arceos.app.workspace_root(), &qemu)?;
         prepared.push(PreparedArceosRustQemuCase {
             case,
             request,
@@ -977,6 +1013,7 @@ async fn build_and_run_c_test(
     };
     let output = cbuild::build_c_app(&workspace_root, &request, &input)?;
     let qemu = qemu_config;
+    ensure_qemu_runtime_assets(arceos.app.workspace_root(), &qemu)?;
     arceos
         .app
         .prepare_elf_artifact(output.elf_path, qemu.to_bin)
@@ -1416,5 +1453,69 @@ mod tests {
         assert_eq!(args.config, Some(build_config));
         assert_eq!(args.package.as_deref(), Some("arceos-lockdep"));
         assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
+    }
+
+    #[test]
+    fn arceos_qemu_build_identity_includes_package() {
+        let build_config = PathBuf::from("/tmp/arceos/build-x86_64-unknown-none.toml");
+        let cases = vec![
+            prepared_arceos_qemu_case("one", "test-arceos-std-one", &build_config),
+            prepared_arceos_qemu_case("two", "test-arceos-std-two", &build_config),
+            prepared_arceos_qemu_case("one/again", "test-arceos-std-one", &build_config),
+        ];
+
+        let groups = group_arceos_qemu_cases_by_build_identity(&cases);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].package, "test-arceos-std-one");
+        assert_eq!(groups[0].cases.len(), 2);
+        assert_eq!(groups[1].package, "test-arceos-std-two");
+        assert_eq!(groups[1].cases.len(), 1);
+    }
+
+    fn prepared_arceos_qemu_case(
+        name: &str,
+        package: &str,
+        build_config_path: &Path,
+    ) -> PreparedArceosRustQemuCase {
+        PreparedArceosRustQemuCase {
+            case: ArceosRustQemuCase {
+                case: TestQemuCase {
+                    name: name.to_string(),
+                    display_name: name.to_string(),
+                    case_dir: PathBuf::from(format!("/tmp/{name}")),
+                    qemu_config_path: PathBuf::from(format!("/tmp/{name}/qemu-x86_64.toml")),
+                    test_commands: Vec::new(),
+                    subcases: Vec::new(),
+                },
+                build_group: "std".to_string(),
+                build_config_path: build_config_path.to_path_buf(),
+                package: package.to_string(),
+            },
+            request: ResolvedBuildRequest {
+                package: package.to_string(),
+                arch: "x86_64".to_string(),
+                target: "x86_64-unknown-none".to_string(),
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                build_info_path: build_config_path.to_path_buf(),
+                qemu_config: None,
+                uboot_config: None,
+            },
+            cargo: Cargo {
+                env: Default::default(),
+                target: "x86_64-unknown-none".to_string(),
+                package: package.to_string(),
+                features: Vec::new(),
+                log: None,
+                extra_config: None,
+                args: Vec::new(),
+                pre_build_cmds: Vec::new(),
+                post_build_cmds: Vec::new(),
+                to_bin: false,
+            },
+            qemu: QemuConfig::default(),
+        }
     }
 }

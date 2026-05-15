@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest};
 
+const LOONGARCH64_HERMIT_JSON: &str =
+    include_str!("../../../os/arceos/examples/std/loongarch64-unknown-hermit.json");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
     AxStd,
@@ -48,6 +51,9 @@ pub struct BuildInfo {
     /// Whether to use the dynamic platform linker flow when supported.
     #[serde(default, skip_serializing_if = "is_false")]
     pub plat_dyn: bool,
+    /// Build this package as an ArceOS std/Hermit application.
+    #[serde(default, rename = "std", skip_serializing_if = "is_false")]
+    pub std_build: bool,
 }
 
 impl BuildInfo {
@@ -124,6 +130,20 @@ impl BuildInfo {
         plat_dyn_override: Option<bool>,
         metadata: &Metadata,
     ) -> anyhow::Result<Cargo> {
+        if self.std_build {
+            self.validated_max_cpu_num()?;
+            let std_target = std_build_target_for(target)?;
+            let mut cargo = self.into_base_cargo_config_with_log(
+                package.to_string(),
+                std_target.target,
+                std_target.cargo_args,
+            );
+            cargo.env.extend(std_target.env);
+            cargo.extra_config = Some(std_cargo_config_path()?.display().to_string());
+            cargo.to_bin = false;
+            return Ok(cargo);
+        }
+
         let plat_dyn = self.effective_plat_dyn(target, plat_dyn_override);
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
@@ -315,8 +335,96 @@ impl Default for BuildInfo {
             max_cpu_num: None,
             axconfig_overrides: Vec::new(),
             plat_dyn: false,
+            std_build: false,
         }
     }
+}
+
+struct StdBuildTarget {
+    target: String,
+    cargo_args: Vec<String>,
+    env: HashMap<String, String>,
+}
+
+fn std_build_target_for(target: &str) -> anyhow::Result<StdBuildTarget> {
+    if target.starts_with("x86_64-") {
+        Ok(StdBuildTarget {
+            target: "x86_64-unknown-hermit".to_string(),
+            cargo_args: Vec::new(),
+            env: HashMap::new(),
+        })
+    } else if target.starts_with("aarch64-") {
+        Ok(StdBuildTarget {
+            target: "aarch64-unknown-hermit".to_string(),
+            cargo_args: Vec::new(),
+            env: HashMap::new(),
+        })
+    } else if target.starts_with("riscv64") {
+        Ok(StdBuildTarget {
+            target: "riscv64gc-unknown-hermit".to_string(),
+            cargo_args: Vec::new(),
+            env: HashMap::new(),
+        })
+    } else if target.starts_with("loongarch64-") {
+        let path = std_loongarch64_target_json_path()?;
+        Ok(StdBuildTarget {
+            target: path.display().to_string(),
+            cargo_args: vec!["-Z".to_string(), "json-target-spec".to_string()],
+            env: [(
+                "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
+                "true".to_string(),
+            )]
+            .into(),
+        })
+    } else {
+        bail!("unsupported ArceOS std target triple `{target}`")
+    }
+}
+
+fn std_cargo_config_path() -> anyhow::Result<PathBuf> {
+    let path = std_build_dir()?.join("config.toml");
+    write_if_changed(
+        &path,
+        r#"[unstable]
+build-std = ["std", "panic_abort"]
+build-std-features = []
+
+[profile.release]
+lto = false
+panic = "abort"
+
+[target.'cfg(target_os = "hermit")']
+rustflags = [
+    "-C", "link-arg=-no-pie",
+    "-C", "link-arg=-Tlinker.x",
+]
+"#,
+    )?;
+    Ok(path)
+}
+
+fn std_loongarch64_target_json_path() -> anyhow::Result<PathBuf> {
+    let path = std_build_dir()?.join("loongarch64-unknown-hermit.json");
+    write_if_changed(&path, LOONGARCH64_HERMIT_JSON)?;
+    Ok(path)
+}
+
+fn std_build_dir() -> anyhow::Result<PathBuf> {
+    let dir = axbuild_tmp_dir(&crate::context::workspace_root_path()?).join("std");
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create std build dir {}", dir.display()))?;
+    Ok(dir)
+}
+
+fn write_if_changed(path: &Path, contents: &str) -> anyhow::Result<()> {
+    if fs::read_to_string(path).is_ok_and(|existing| existing == contents) {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent dir {}", parent.display()))?;
+    }
+    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
 }
 
 pub(crate) fn ensure_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<()>

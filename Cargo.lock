@@ -7875,6 +7875,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-arceos-std-arce_agent"
+version = "0.2.0"
+dependencies = [
+ "arceos-rust",
+ "env_logger",
+ "log",
+ "minreq",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "test-arceos-std-helloworld"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-httpclient"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-httpserver"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-io_test"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-thread_test"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-tokio_test"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+ "tokio",
+]
+
+[[package]]
 name = "test-simple"
 version = "0.3.4"
 dependencies = [

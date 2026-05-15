@@ -208,6 +208,13 @@ members = [
     "test-suit/arceos/rust/task/tls",
     "test-suit/arceos/rust/task/wait_queue",
     "test-suit/arceos/rust/task/yield",
+    "test-suit/arceos/std/qemu-smp1/arce_agent",
+    "test-suit/arceos/std/qemu-smp1/helloworld",
+    "test-suit/arceos/std/qemu-smp1/httpclient",
+    "test-suit/arceos/std/qemu-smp1/httpserver",
+    "test-suit/arceos/std/qemu-smp1/io_test",
+    "test-suit/arceos/std/qemu-smp1/thread_test",
+    "test-suit/arceos/std/qemu-smp1/tokio_test",
     "xtask",
 ]
 
@@ -233,6 +240,13 @@ arceos-sleep = { version = "0.3.1", path = "test-suit/arceos/rust/task/sleep" }
 arceos-tls = { version = "0.3.1", path = "test-suit/arceos/rust/task/tls" }
 arceos-wait-queue = { version = "0.3.1", path = "test-suit/arceos/rust/task/wait_queue" }
 arceos-yield = { version = "0.3.1", path = "test-suit/arceos/rust/task/yield" }
+test-arceos-std-arce_agent = { version = "0.2.0", path = "test-suit/arceos/std/qemu-smp1/arce_agent" }
+test-arceos-std-helloworld = { version = "0.1.0", path = "test-suit/arceos/std/qemu-smp1/helloworld" }
+test-arceos-std-httpclient = { version = "0.1.0", path = "test-suit/arceos/std/qemu-smp1/httpclient" }
+test-arceos-std-httpserver = { version = "0.1.0", path = "test-suit/arceos/std/qemu-smp1/httpserver" }
+test-arceos-std-io_test = { version = "0.1.0", path = "test-suit/arceos/std/qemu-smp1/io_test" }
+test-arceos-std-thread_test = { version = "0.1.0", path = "test-suit/arceos/std/qemu-smp1/thread_test" }
+test-arceos-std-tokio_test = { version = "0.1.0", path = "test-suit/arceos/std/qemu-smp1/tokio_test" }
 arm_vcpu = { version = "0.5.5", path = "components/arm_vcpu" }
 arm_vgic = { version = "0.4.6", path = "components/arm_vgic" }
 ax-alloc = { version = "0.6.0", path = "os/arceos/modules/axalloc" }
