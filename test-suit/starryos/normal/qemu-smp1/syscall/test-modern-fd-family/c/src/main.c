@@ -89,6 +89,17 @@ static ssize_t my_copy_file_range(int fd_in, off_t *off_in, int fd_out, off_t *o
     return syscall(SYS_copy_file_range, fd_in, off_in, fd_out, off_out, len, flags);
 }
 
+/* Unmapped user address for access_ok/EFAULT probes (independent of mmap_min_addr). */
+static void *unmapped_user_addr(void)
+{
+    void *page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED) {
+        return NULL;
+    }
+    (void)munmap(page, 4096);
+    return page;
+}
+
 /* ---- memfd_create ---- */
 
 static int get_cloexec(int fd)
@@ -877,6 +888,10 @@ static void test_memfd_seal_more_syscalls(void)
         close(fd);
     }
 
+    /*
+     * ABI: sendfile EPERM must not advance the user-visible source offset (*off_in).
+     * Keep these assertions when refactoring I/O ordering.
+     */
     /* F_SEAL_WRITE + sendfile (out_fd sealed) */
     errno = 0;
     int out_fd = memfd_create("seal_sf_out", MFD_ALLOW_SEALING);
@@ -888,9 +903,11 @@ static void test_memfd_seal_more_syscalls(void)
         CHECK_RET(write(in_fd, "Z", 1), 1, "sendfile: in write 1 byte");
         CHECK_RET(lseek(in_fd, 0, SEEK_SET), 0, "sendfile: in lseek 0");
         CHECK_RET(fcntl(out_fd, F_ADD_SEALS, F_SEAL_WRITE), 0, "sendfile: out ADD_SEALS");
+        off_t off_in = 0;
         errno = 0;
-        ssize_t sf = sendfile(out_fd, in_fd, NULL, 1);
+        ssize_t sf = sendfile(out_fd, in_fd, &off_in, 1);
         CHECK(sf == -1 && errno == EPERM, "sendfile 写入 sealed memfd -> EPERM");
+        CHECK(off_in == 0, "sendfile EPERM: 用户可见 in_fd offset 不变");
         close(out_fd);
         close(in_fd);
     } else {
@@ -902,6 +919,10 @@ static void test_memfd_seal_more_syscalls(void)
         }
     }
 
+    /*
+     * ABI: copy_file_range EPERM must not advance user-visible off_in/off_out.
+     * Keep these assertions when refactoring I/O ordering.
+     */
     /* F_SEAL_WRITE + copy_file_range (into sealed memfd) */
     errno = 0;
     int src_fd = memfd_create("seal_cfr_in", 0);
@@ -918,6 +939,8 @@ static void test_memfd_seal_more_syscalls(void)
         errno = 0;
         ssize_t cfr = my_copy_file_range(src_fd, &off_in, dst_fd, &off_out, 1, 0);
         CHECK(cfr == -1 && errno == EPERM, "copy_file_range 写入 sealed memfd -> EPERM");
+        CHECK(off_in == 0 && off_out == 0,
+              "copy_file_range EPERM: 用户可见 off_in/off_out 不变");
         close(src_fd);
         close(dst_fd);
     } else {
@@ -927,6 +950,122 @@ static void test_memfd_seal_more_syscalls(void)
         if (dst_fd >= 0) {
             close(dst_fd);
         }
+    }
+}
+
+/*
+ * Sealed memfd / MAP_FIXED ordering: EFAULT vs EPERM, EACCES before destructive unmap,
+ * sendfile/copy_file_range user offsets unchanged on failure.
+ */
+static void test_memfd_seal_syscall_ordering_regressions(void)
+{
+    printf("--- memfd seal: EFAULT/EACCES/EPERM ordering + MAP_FIXED no teardown + offsets ---\n");
+
+    void *bad_addr = unmapped_user_addr();
+
+    /* writev: bad iovec buffer on sealed memfd -> EFAULT (access_ok before seal denial). */
+    errno = 0;
+    int sealed = memfd_create("seal_order_writev", MFD_ALLOW_SEALING);
+    CHECK(sealed >= 0, "memfd_create(seal_order_writev)");
+    if (sealed >= 0) {
+        CHECK_RET(ftruncate(sealed, 4096), 0, "ftruncate");
+        CHECK_RET(fcntl(sealed, F_ADD_SEALS, F_SEAL_WRITE), 0, "ADD_SEALS(F_SEAL_WRITE)");
+        struct iovec bad_iov;
+        bad_iov.iov_base = bad_addr;
+        bad_iov.iov_len = 1;
+        errno = 0;
+        ssize_t w = writev(sealed, &bad_iov, 1);
+        CHECK(w == -1 && errno == EFAULT, "sealed memfd + 坏 iov -> EFAULT");
+        CHECK_RET(close(sealed), 0, "close sealed memfd (writev case)");
+    }
+
+    /* write: bad user buffer on sealed memfd -> EFAULT. */
+    errno = 0;
+    sealed = memfd_create("seal_order_write", MFD_ALLOW_SEALING);
+    CHECK(sealed >= 0, "memfd_create(seal_order_write)");
+    if (sealed >= 0) {
+        CHECK_RET(ftruncate(sealed, 4096), 0, "ftruncate");
+        CHECK_RET(fcntl(sealed, F_ADD_SEALS, F_SEAL_WRITE), 0, "ADD_SEALS(F_SEAL_WRITE)");
+        errno = 0;
+        ssize_t ww = write(sealed, bad_addr, 1);
+        CHECK(ww == -1 && errno == EFAULT, "sealed memfd + 坏 buf -> EFAULT");
+        CHECK_RET(close(sealed), 0, "close sealed memfd (write case)");
+    }
+
+    /* Valid user buffer on sealed memfd -> EPERM; file content and offset unchanged. */
+    errno = 0;
+    sealed = memfd_create("seal_order_valid", MFD_ALLOW_SEALING);
+    CHECK(sealed >= 0, "memfd_create(seal_order_valid)");
+    if (sealed >= 0) {
+        const char seed = 'A';
+        const char payload = 'B';
+        CHECK_RET(ftruncate(sealed, 4096), 0, "ftruncate");
+        CHECK_RET(write(sealed, &seed, 1), 1, "write seed byte");
+        CHECK_RET(lseek(sealed, 0, SEEK_SET), 0, "lseek 0 after seed");
+        CHECK_RET(fcntl(sealed, F_ADD_SEALS, F_SEAL_WRITE), 0, "ADD_SEALS(F_SEAL_WRITE)");
+        off_t pos_before = lseek(sealed, 0, SEEK_CUR);
+        CHECK(pos_before == 0, "offset before sealed write is 0");
+        errno = 0;
+        ssize_t wv = write(sealed, &payload, 1);
+        CHECK(wv == -1 && errno == EPERM, "sealed memfd + 合法 buf write -> EPERM");
+        off_t pos_after = lseek(sealed, 0, SEEK_CUR);
+        CHECK(pos_after == pos_before, "sealed write EPERM: file offset unchanged");
+        CHECK_RET(lseek(sealed, 0, SEEK_SET), 0, "lseek 0 for readback");
+        char got = 0;
+        CHECK_RET(read(sealed, &got, 1), 1, "read back one byte");
+        CHECK(got == seed, "sealed write EPERM: file content unchanged");
+        struct iovec good_iov;
+        good_iov.iov_base = (void *)&payload;
+        good_iov.iov_len = 1;
+        errno = 0;
+        ssize_t wvi = writev(sealed, &good_iov, 1);
+        CHECK(wvi == -1 && errno == EPERM, "sealed memfd + 合法 iov writev -> EPERM");
+        CHECK_RET(lseek(sealed, 0, SEEK_SET), 0, "lseek 0 after writev");
+        got = 0;
+        CHECK_RET(read(sealed, &got, 1), 1, "read back after writev");
+        CHECK(got == seed, "sealed writev EPERM: file content unchanged");
+        CHECK_RET(close(sealed), 0, "close sealed memfd (valid buf case)");
+    }
+
+    /* MAP_FIXED + MAP_SHARED|PROT_WRITE on O_RDONLY file -> EACCES; prior anon map intact. */
+    errno = 0;
+    int ro = open("/proc/self/exe", O_RDONLY);
+    CHECK(ro >= 0, "open /proc/self/exe O_RDONLY");
+    if (ro >= 0) {
+        void *slot = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(slot != MAP_FAILED, "anon mmap for MAP_FIXED probe");
+        if (slot != MAP_FAILED) {
+            *(volatile unsigned char *)slot = 0x5a;
+            errno = 0;
+            void *bad = mmap(slot, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, ro, 0);
+            CHECK(bad == MAP_FAILED && errno == EACCES,
+                  "MAP_FIXED shared-writable 只读 fd -> EACCES");
+            CHECK(*(unsigned char *)slot == 0x5a, "MAP_FIXED EACCES 后旧映射未被破坏");
+            CHECK_RET(munmap(slot, 4096), 0, "munmap probe");
+        }
+        CHECK_RET(close(ro), 0, "close ro exe");
+    }
+
+    /* MAP_FIXED + sealed memfd shared writable -> EPERM; prior anon map intact. */
+    errno = 0;
+    int mfd = memfd_create("seal_order_mmap", MFD_ALLOW_SEALING);
+    CHECK(mfd >= 0, "memfd_create(seal_order_mmap)");
+    if (mfd >= 0) {
+        CHECK_RET(ftruncate(mfd, 4096), 0, "ftruncate memfd");
+        CHECK_RET(fcntl(mfd, F_ADD_SEALS, F_SEAL_WRITE), 0, "ADD_SEALS(F_SEAL_WRITE)");
+        void *slot2 = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(slot2 != MAP_FAILED, "anon mmap for MAP_FIXED seal probe");
+        if (slot2 != MAP_FAILED) {
+            *(volatile unsigned char *)slot2 = 0xa7;
+            errno = 0;
+            void *bad2 =
+                mmap(slot2, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, mfd, 0);
+            CHECK(bad2 == MAP_FAILED && errno == EPERM,
+                  "MAP_FIXED shared-writable sealed memfd -> EPERM");
+            CHECK(*(unsigned char *)slot2 == 0xa7, "MAP_FIXED EPERM 后旧映射未被破坏");
+            CHECK_RET(munmap(slot2, 4096), 0, "munmap seal probe");
+        }
+        CHECK_RET(close(mfd), 0, "close sealed memfd (mmap case)");
     }
 }
 
@@ -1139,6 +1278,7 @@ int main(void)
     test_memfd_sealed_zero_byte_write();
     test_clone_vm_mid_exits_first();
     test_memfd_seal_more_syscalls();
+    test_memfd_seal_syscall_ordering_regressions();
     test_memfd_hugetlb_and_reserved_flags();
 
     test_pidfd_open_self();
