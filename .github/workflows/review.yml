@@ -45,7 +45,7 @@ permissions:
   statuses: read
 
 concurrency:
-  group: ai-pr-review-${{ inputs.pr_number || github.event.pull_request.number }}
+  group: review-pr-${{ inputs.pr_number || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -294,7 +294,7 @@ jobs:
           """
 
           request_body = {
-              "model": "deepseek-reasoner",
+              "model": "deepseek-v4-pro",
               "messages": [
                   {
                       "role": "system",
