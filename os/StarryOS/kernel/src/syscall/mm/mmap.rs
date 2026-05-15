@@ -149,12 +149,44 @@ pub fn sys_mmap(
         PageSize::Size4K
     };
 
-    let start = addr.align_down(page_size);
+    let aligned = addr.align_down(page_size);
     let end = (addr + length).align_up(page_size);
-    let mut length = end - start;
+    let mut length = end - aligned;
+
+    let file = if anonymous {
+        None
+    } else {
+        Some(get_file_like(fd)?)
+    };
+
+    // File-backed `MAP_FIXED`: validate fd mode and memfd seals before any
+    // destructive unmap (Linux `do_mmap` ordering; avoids tearing down the
+    // old mapping on `EACCES` / `EPERM`).
+    if !anonymous && let Some(ref fl) = file {
+        // Ok(None) and Err(_) both mean "fall back to file_mmap" (memfd, regular
+        // files). Only Ok(Physical/Cache) skip file permission/seal checks.
+        let needs_file_mmap_checks = match fl.device_mmap(offset as u64) {
+            Ok(DeviceMmap::Physical(_)) | Ok(DeviceMmap::Cache(_)) => false,
+            Ok(DeviceMmap::None) | Err(_) => true,
+        };
+        if needs_file_mmap_checks {
+            let (_backend, flags) = fl.file_mmap()?;
+            if !flags.contains(FileFlags::READ) {
+                return Err(AxError::PermissionDenied);
+            }
+            if map_type == MmapFlags::SHARED && permission_flags.contains(MmapProt::WRITE) {
+                if !flags.contains(FileFlags::WRITE) {
+                    return Err(AxError::PermissionDenied);
+                }
+                // Linux: F_SEAL_WRITE forbids shared writable mappings, but still allows
+                // MAP_PRIVATE|PROT_WRITE because it does not modify the underlying file.
+                memfd_check_write_seal(fl)?;
+            }
+        }
+    }
 
     let start = if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
-        let dst_addr = VirtAddr::from(start);
+        let dst_addr = VirtAddr::from(aligned);
         if !map_flags.contains(MmapFlags::FIXED_NOREPLACE) {
             aspace.unmap(dst_addr, length)?;
         }
@@ -163,7 +195,7 @@ pub fn sys_mmap(
         let align = page_size as usize;
         aspace
             .find_free_area(
-                VirtAddr::from(start),
+                VirtAddr::from(aligned),
                 length,
                 VirtAddrRange::new(aspace.base(), aspace.end()),
                 align,
@@ -176,20 +208,6 @@ pub fn sys_mmap(
             ))
             .ok_or(AxError::NoMemory)?
     };
-
-    let file = if anonymous {
-        None
-    } else {
-        Some(get_file_like(fd)?)
-    };
-    if let Some(ref file_like) = file
-        && map_type == MmapFlags::SHARED
-        && permission_flags.contains(MmapProt::WRITE)
-    {
-        // Linux: F_SEAL_WRITE forbids shared writable mappings, but still allows
-        // MAP_PRIVATE|PROT_WRITE because it does not modify the underlying file.
-        memfd_check_write_seal(file_like)?;
-    }
 
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
