@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1490,7 +1490,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "ax-config",
  "ax-cpumask",
@@ -1675,7 +1675,7 @@ dependencies = [
 
 [[package]]
 name = "axklib"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "ax-errno",
  "ax-memory-addr",
