@@ -1,6 +1,6 @@
 [package]
 name = "ax-allocator"
-version = "0.4.4"
+version = "0.5.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [

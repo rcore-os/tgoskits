@@ -9,7 +9,7 @@ keywords.workspace = true
 license.workspace = true
 name = "arceos-rust-interface"
 repository.workspace = true
-version = "1.0.0"
+version = "1.0.1"
 
 [lib]
 crate-type = ["staticlib"]

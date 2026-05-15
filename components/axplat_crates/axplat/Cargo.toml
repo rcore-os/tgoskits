@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat"
-version = "0.5.7"
+version = "0.5.8"
 repository = "https://github.com/rcore-os/tgoskits"
 description = "This crate provides a unified abstraction layer for diverse hardware platforms."
 keywords = ["arceos", "os", "hal", "embedded"]
