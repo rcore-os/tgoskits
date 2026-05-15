@@ -1,27 +1,92 @@
-# Default reviewers for repository-wide changes.
+# CODEOWNERS is path-based. Put broad defaults first and more specific
+# ownership rules later, because the last matching rule wins.
+
+# Repository-wide fallback.
 * @ZR233 @ZCShou @AsakuraMizu
 
-# Repository automation and project-level policy changes.
-/.cargo/ @ZR233 @ZCShou
-/.claude/ @ZR233 @ZCShou
-/.devcontainer/ @ZR233 @ZCShou
-/.github/ @ZR233 @ZCShou
-/scripts/ @ZR233 @ZCShou
-/xtask/ @ZR233 @ZCShou
-/Cargo.toml @ZR233 @ZCShou
-/Cargo.lock @ZR233 @ZCShou
-/rust-toolchain.toml @ZR233 @ZCShou
+# CI, test, build tooling, docs, and repository environment.
+/.cargo/ @ZCShou
+/.claude/ @ZCShou
+/.devcontainer/ @ZCShou
+/.github/ @ZCShou
+/container/ @ZCShou
+/docs/ @ZCShou
+/scripts/ @ZCShou
+/scripts/axbuild/ @ZCShou
+/scripts/test/ @ZCShou
+/test-suit/ @ZCShou
+/xtask/ @ZCShou
+/*.md @ZCShou
+/Cargo.toml @ZCShou
+/Cargo.lock @ZCShou
+/release-plz.toml @ZCShou
+/rust-toolchain.toml @ZCShou
+/rustfmt.toml @ZCShou
 
-# Documentation is one of the most active change areas in recent history.
-/docs/ @ZCShou @ZR233
-/*.md @ZCShou @ZR233
+# ArceOS-related content.
+/components/range-alloc-arceos/ @ZR233 @shilei-massclouds
+/os/arceos/ @ZR233 @shilei-massclouds
 
-# Modular ArceOS/Axvisor/StarryOS components and drivers.
-/components/ @ZR233 @AsakuraMizu @ZCShou
-/drivers/ @ZR233 @AsakuraMizu @ZCShou
-/platform/ @ZR233 @ZCShou
-/os/ @ZR233 @AsakuraMizu @ZCShou
+# ArceOS scheduling, task handling, and task-related bug fixes.
+/components/axsched/ @shilei-massclouds
+/os/arceos/modules/axtask/ @shilei-massclouds
+/os/arceos/ulib/axstd/src/thread/ @shilei-massclouds
 
-# Test suites and examples often need reviewers familiar with project runners.
-/test-suit/ @ZR233 @ZCShou
-/examples/ @ZR233 @ZCShou
+# AxVisor-related content.
+/components/arm_vcpu/ @ZR233 @ZCShou
+/components/arm_vgic/ @ZR233 @ZCShou
+/components/axhvc/ @ZR233 @ZCShou
+/components/axvcpu/ @ZR233 @ZCShou
+/components/axvisor_api/ @ZR233 @ZCShou
+/components/axvm/ @ZR233 @ZCShou
+/components/axvmconfig/ @ZR233 @ZCShou
+/components/loongarch_vcpu/ @ZR233 @ZCShou
+/components/riscv-h/ @ZR233 @ZCShou
+/components/riscv_vcpu/ @ZR233 @ZCShou
+/components/riscv_vplic/ @ZR233 @ZCShou
+/components/x86_vcpu/ @ZR233 @ZCShou
+/components/x86_vlapic/ @ZR233 @ZCShou
+/os/axvisor/ @ZR233 @ZCShou
+
+# File systems, boards, platforms, and drivers.
+/components/arm_pl011/ @ZCShou @ZR233
+/components/arm_pl031/ @ZCShou @ZR233
+/components/axdevice/ @ZCShou @ZR233
+/components/axdevice_base/ @ZCShou @ZR233
+/components/axdriver_crates/ @ZCShou @ZR233
+/components/axfs-ng-vfs/ @ZCShou @ZR233
+/components/axfs_crates/ @ZCShou @ZR233
+/components/fxmac_rs/ @ZCShou @ZR233
+/components/riscv_plic/ @ZCShou @ZR233
+/components/rsext4/ @ZCShou @ZR233
+/components/someboot/ @ZCShou @ZR233
+/drivers/ @ZCShou @ZR233
+/platform/ @ZCShou @ZR233
+/os/arceos/configs/ @ZCShou @ZR233
+/os/arceos/modules/axdriver/ @ZCShou @ZR233
+/os/arceos/modules/axfs/ @ZCShou @ZR233
+/os/arceos/modules/axfs-ng/ @ZCShou @ZR233
+/os/arceos/modules/axhal/ @ZCShou @ZR233
+/os/arceos/ulib/axstd/src/fs/ @ZCShou @ZR233
+/os/arceos/tools/bsta1000b/ @ZCShou @ZR233
+/os/arceos/tools/phytium_pi/ @ZCShou @ZR233
+/os/arceos/tools/raspi4/ @ZCShou @ZR233
+/os/axvisor/configs/board/ @ZCShou @ZR233
+
+# Repositories imported from https://github.com/Starry-OS in scripts/repo/repos.csv.
+/components/axbacktrace/ @AsakuraMizu
+/components/axpoll/ @AsakuraMizu
+/components/axfs-ng-vfs/ @AsakuraMizu
+/components/rsext4/ @AsakuraMizu
+/components/scope-local/ @AsakuraMizu
+/components/starry-process/ @AsakuraMizu
+/components/starry-signal/ @AsakuraMizu
+/components/starry-vm/ @AsakuraMizu
+/components/starry-smoltcp/ @AsakuraMizu
+/drivers/blk/simple-sdmmc/ @AsakuraMizu
+/os/StarryOS/ @AsakuraMizu
+
+# Keep all docs, axbuild, and test-suit changes owned by the build/test/docs maintainer.
+/docs/ @ZCShou
+/scripts/axbuild/ @ZCShou
+/test-suit/ @ZCShou
