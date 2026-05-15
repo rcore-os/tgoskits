@@ -406,7 +406,7 @@ impl DeviceOps for Card0 {
         }
     }
 
-    fn mmap(&self, _offset: u64) -> DeviceMmap {
+    fn mmap(&self, _offset: u64, _length: u64) -> DeviceMmap {
         // Map the whole axdisplay scanout region. All dumb buffers
         // share this backing in the F+G+H+I scope.
         if !ax_display::has_display() {
