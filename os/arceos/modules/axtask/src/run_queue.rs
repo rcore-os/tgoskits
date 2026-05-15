@@ -55,16 +55,8 @@ const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::un
 
 #[cfg(target_os = "none")]
 fn main_task_stack() -> TaskStack {
-    unsafe extern "C" {
-        fn boot_stack();
-        fn boot_stack_top();
-    }
-
-    TaskStack::borrowed(
-        VirtAddr::from(boot_stack as *const () as usize),
-        (boot_stack_top as *const () as usize) - (boot_stack as *const () as usize),
-        TASK_STACK_ALIGN,
-    )
+    let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
+    TaskStack::borrowed(stack_ptr, stack_size, TASK_STACK_ALIGN)
 }
 
 #[cfg(not(target_os = "none"))]
