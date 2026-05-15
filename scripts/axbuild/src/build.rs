@@ -149,7 +149,8 @@ impl BuildInfo {
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
         self.resolve_features_with_metadata(package, plat_dyn, metadata);
-        let args = Self::build_cargo_args(target, plat_dyn);
+        let extra_rustflags = toolchain_rustflags(&self.env);
+        let args = Self::build_cargo_args(target, plat_dyn, &extra_rustflags);
 
         Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
     }
@@ -308,17 +309,32 @@ impl BuildInfo {
         }
     }
 
-    pub(crate) fn build_cargo_args(target: &str, plat_dyn: bool) -> Vec<String> {
+    pub(crate) fn build_cargo_args(
+        target: &str,
+        plat_dyn: bool,
+        extra_rustflags: &[String],
+    ) -> Vec<String> {
         let mut args = Vec::new();
         args.push("--config".to_string());
-        args.push(if plat_dyn {
-            format!("target.{target}.rustflags=[\"-Clink-arg=-Taxplat.x\"]")
+        let mut rustflags: Vec<String> = Vec::new();
+        rustflags.extend(extra_rustflags.iter().cloned());
+        if plat_dyn {
+            rustflags.push("-Clink-arg=-Taxplat.x".to_string());
         } else {
-            format!(
-                "target.{target}.rustflags=[\"-Clink-arg=-Tlinker.x\",\"-Clink-arg=-no-pie\",\"\
-                 -Clink-arg=-znostart-stop-gc\"]"
-            )
-        });
+            rustflags.push("-Clink-arg=-Tlinker.x".to_string());
+            rustflags.push("-Clink-arg=-no-pie".to_string());
+            rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
+        }
+
+        let mut rendered = format!("target.{target}.rustflags=[");
+        for (i, flag) in rustflags.iter().enumerate() {
+            if i > 0 {
+                rendered.push(',');
+            }
+            rendered.push_str(&format!("{flag:?}"));
+        }
+        rendered.push(']');
+        args.push(rendered);
         args
     }
 }
