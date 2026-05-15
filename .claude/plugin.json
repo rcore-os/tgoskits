@@ -1,0 +1,22 @@
+{
+  "name": "tgoskits",
+  "description": "TGOSKits project-local plugin — local CI, PR workflow, feature implementation, bug hunting, and driver auditing for OS/kernel development",
+  "version": "0.1.0",
+  "commands": [
+    "commands/test.md",
+    "commands/pr-prep.md",
+    "commands/impl.md",
+    "commands/self-evolve.md"
+  ],
+  "agents": [
+    "agents/pr-review.md",
+    "agents/test-gen.md",
+    "agents/bug-hunt.md",
+    "agents/driver-audit.md",
+    "agents/impl.md",
+    "agents/self-evolve.md"
+  ],
+  "hooks": [
+    "hooks/hooks.json"
+  ]
+}
