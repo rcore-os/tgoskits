@@ -16,6 +16,32 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest};
 
+fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
+    env.get(key).is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes" | "1" | "true" | "on"
+        )
+    })
+}
+
+fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
+    let mut flags = Vec::new();
+    let dwarf = env_truthy(env, "DWARF");
+    let backtrace = env_truthy(env, "BACKTRACE") || dwarf;
+
+    if dwarf {
+        flags.push("-Cdebuginfo=2".to_string());
+        flags.push("-Cstrip=none".to_string());
+    }
+
+    if backtrace {
+        flags.push("-Cforce-frame-pointers=yes".to_string());
+    }
+
+    flags
+}
+
 const LOONGARCH64_HERMIT_JSON: &str =
     include_str!("../../../os/arceos/examples/std/loongarch64-unknown-hermit.json");
 
@@ -1060,6 +1086,20 @@ mod tests {
             ),
         )?;
         Ok(())
+    }
+
+    #[test]
+    fn toolchain_rustflags_preserves_debug_and_backtrace_env() {
+        let env = HashMap::from([("DWARF".to_string(), "1".to_string())]);
+
+        assert_eq!(
+            toolchain_rustflags(&env),
+            vec![
+                "-Cdebuginfo=2".to_string(),
+                "-Cstrip=none".to_string(),
+                "-Cforce-frame-pointers=yes".to_string(),
+            ]
+        );
     }
 
     #[test]

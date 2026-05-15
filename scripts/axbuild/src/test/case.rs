@@ -833,16 +833,16 @@ fn write_executable_script(path: &Path, body: &str) -> anyhow::Result<()> {
     make_executable(path)
 }
 
-fn make_executable(path: &Path) -> anyhow::Result<()> {
+fn make_executable(_path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(path)
-            .with_context(|| format!("failed to stat {}", path.display()))?
+        let mut perms = fs::metadata(_path)
+            .with_context(|| format!("failed to stat {}", _path.display()))?
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms)
-            .with_context(|| format!("failed to chmod {}", path.display()))?;
+        fs::set_permissions(_path, perms)
+            .with_context(|| format!("failed to chmod {}", _path.display()))?;
     }
     Ok(())
 }
