@@ -45,9 +45,9 @@ pub const KCOV_DISABLE: u32 = _io(b'c', 101);
 /// Coverage is disabled.
 pub const KCOV_MODE_DISABLED: u32 = 0;
 /// Trace program counters (PCs).
-pub const KCOV_TRACE_PC: u32 = 0x100;
+pub const KCOV_TRACE_PC: u32 = 0;
 /// Trace comparison operations (not yet implemented).
-pub const KCOV_TRACE_CMP: u32 = 0x200;
+pub const KCOV_TRACE_CMP: u32 = 1;
 
 /// Maximum number of coverage entries in the buffer.
 pub const KCOV_MAX_ENTRIES: usize = 64 * 1024;
