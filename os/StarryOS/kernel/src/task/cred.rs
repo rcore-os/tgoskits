@@ -60,6 +60,12 @@ impl Cred {
         self.euid == 0
     }
 
+    /// Check whether this credential may raise scheduling priority
+    /// (equivalent to `CAP_SYS_NICE` — approximated as euid == 0).
+    pub fn has_cap_sys_nice(&self) -> bool {
+        self.euid == 0
+    }
+
     /// Check whether this credential has the privilege to change file
     /// ownership (equivalent to `CAP_CHOWN` — approximated as fsuid == 0,
     /// since this is a filesystem capability).

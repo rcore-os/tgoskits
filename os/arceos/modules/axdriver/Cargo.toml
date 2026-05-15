@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.5.12"
+version = "0.5.14"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -31,6 +31,7 @@ virtio-socket = ["vsock", "virtio", "ax-driver-virtio/socket"]
 ramdisk = ["block", "ax-driver-block/ramdisk"]
 bcm2835-sdhci = ["block", "ax-driver-block/bcm2835-sdhci"]
 sdmmc = ["block", "ax-driver-block/sdmmc", "dep:ax-hal", "dep:ax-config"]
+cvsd = ["block", "ax-driver-block/cvsd", "dep:ax-hal", "dep:ax-config"]
 ahci = ["block", "ax-driver-block/ahci", "dep:ax-hal", "dep:ax-config"]
 ixgbe = ["net", "ax-driver-net/ixgbe", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]
 fxmac = ["net", "ax-driver-net/fxmac", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]

@@ -332,13 +332,13 @@ cd docs
 yarn install
 ```
 
-### Q: 修改了 `_category_.json` 但 sidebar 没变化？
+### Q: 修改了 sidebar 但页面没变化？
 
 重启开发服务器：`Ctrl+C` 然后 `yarn start`。
 
-### Q: 构建时出现 broken links 警告？
+### Q: 构建时出现 broken links 错误？
 
-当前配置为 `onBrokenLinks: 'warn'`（仅警告不阻断）。建议修复所有 broken links 以保持文档质量。可通过 `yarn build` 的输出定位问题链接。
+当前配置会在发现 broken links 时阻断构建。请根据 `yarn build` 的输出定位并修复问题链接。
 
 ### Q: 如何更新 Docusaurus 版本？
 

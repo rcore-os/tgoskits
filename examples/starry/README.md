@@ -1,11 +1,11 @@
 # Starry Examples
 
-`examples/starry/` contains runnable StarryOS scenarios. Each direct child
-directory is a case selected by `cargo starry example board -t <case>`.
+`examples/starry/` contains runnable StarryOS scenarios. Most direct child
+directories are board cases selected by `cargo starry example board -t <case>`;
+some x86_64 QEMU demos provide their own `cargo xtask starry qemu` commands.
 
 Cases are intentionally separate from `test-suit/starryos`: examples are
-operator-facing board workflows, while the test suit remains CI-oriented
-coverage.
+operator-facing workflows, while the test suit remains CI-oriented coverage.
 
 ## Case Layout
 

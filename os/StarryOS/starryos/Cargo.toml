@@ -11,7 +11,7 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.9"
+version = "0.5.10"
 
 [features]
 default = []
@@ -29,6 +29,8 @@ qemu = [
 ]
 smp = ["ax-feat/smp", "axplat-dyn?/smp", "axplat-riscv64-visionfive2?/smp"]
 
+sg2002 = ["ax-plat-riscv64-sg2002", "ax-feat/driver-cvsd", "starry-kernel/sg2002"]
+
 rknpu = ["dep:axplat-dyn", "starry-kernel/rknpu", "axplat-dyn/rknpu"]
 vf2 = ["dep:axplat-riscv64-visionfive2", "ax-feat/driver-sdmmc"]
 
@@ -43,7 +45,12 @@ path = "xtask/main.rs"
 [dependencies]
 ax-feat = { workspace = true, features = ["fs-ng-times", "irq"] }
 axplat-dyn = { workspace = true, optional = true }
-starry-kernel = { workspace = true, features = ["dev-log"] }
+starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
+
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies.ax-plat-riscv64-sg2002]
+workspace = true
+features = ["fp-simd", "irq", "rtc"]
+optional = true
 
 [target.'cfg(any(windows,unix))'.dependencies]
 anyhow = "1.0"

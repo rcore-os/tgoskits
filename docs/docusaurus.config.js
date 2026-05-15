@@ -1,5 +1,20 @@
 import {themes as prismThemes} from 'prism-react-renderer';
 
+const routes = {
+  docsOverview: '/docs/introduction/overview',
+  quickstart: '/docs/quickstart/overview',
+  architecture: '/docs/architecture/overview',
+  build: '/docs/build/overview',
+  components: '/docs/components',
+  arceos: '/docs/development/arceos',
+  starryos: '/docs/development/starryos',
+  axvisor: '/docs/development/axvisor',
+  componentGraph: '/docs/development/components',
+  blog: '/blog',
+  community: '/community/introduction',
+  github: 'https://github.com/rcore-os/tgoskits',
+};
+
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'TGOSKits',
@@ -11,10 +26,10 @@ const config = {
   organizationName: 'rcore-os',
   projectName: 'tgoskits',
   deploymentBranch: 'gh-pages',
-  onBrokenLinks: 'warn',
+  onBrokenLinks: 'throw',
   markdown: {
     hooks: {
-      onBrokenMarkdownLinks: 'warn',
+      onBrokenMarkdownLinks: 'throw',
     },
     mermaid: true,
   },
@@ -102,19 +117,19 @@ const config = {
           label: 'Document',
         },
         {
-          to: '/blog',
+          to: routes.blog,
           activeBasePath: 'blog',
           label: 'Blog',
           position: 'left',
         },
         {
-          to: '/community/introduction',
+          to: routes.community,
           activeBasePath: 'community',
           label: 'Community',
           position: 'left',
         },
         {
-          href: 'https://github.com/rcore-os/tgoskits',
+          href: routes.github,
           position: 'right',
           label: 'GitHub',
         },
@@ -126,29 +141,29 @@ const config = {
         {
           title: '文档',
           items: [
-            {label: '项目概览', to: '/docs/introduction/overview'},
-            {label: '快速开始', to: '/docs/quickstart/overview'},
-            {label: '架构设计', to: '/docs/architecture/overview'},
-            {label: '构建与运行', to: '/docs/build/overview'},
+            {label: '项目概览', to: routes.docsOverview},
+            {label: '快速开始', to: routes.quickstart},
+            {label: '架构设计', to: routes.architecture},
+            {label: '构建与运行', to: routes.build},
           ],
         },
         {
           title: '系统',
           items: [
-            {label: 'ArceOS', to: '/docs/development/arceos'},
-            {label: 'StarryOS', to: '/docs/development/starryos'},
-            {label: 'Axvisor', to: '/docs/development/axvisor'},
-            {label: '组件库', to: '/docs/components'},
+            {label: 'ArceOS', to: routes.arceos},
+            {label: 'StarryOS', to: routes.starryos},
+            {label: 'Axvisor', to: routes.axvisor},
+            {label: '组件库', to: routes.components},
           ],
         },
         {
           title: '资源',
           items: [
-            {label: 'GitHub 仓库', href: 'https://github.com/rcore-os/tgoskits'},
-            {label: '构建系统', to: '/docs/build/overview'},
-            {label: '组件依赖图', to: '/docs/development/components'},
-            {label: 'Blog', to: '/blog'},
-            {label: 'Community', to: '/community/introduction'},
+            {label: 'GitHub 仓库', href: routes.github},
+            {label: '构建系统', to: routes.build},
+            {label: '组件依赖图', to: routes.componentGraph},
+            {label: 'Blog', to: routes.blog},
+            {label: 'Community', to: routes.community},
           ],
         },
       ],

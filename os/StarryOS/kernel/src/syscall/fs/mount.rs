@@ -1,9 +1,46 @@
+use alloc::sync::Arc;
 use core::ffi::{c_char, c_void};
 
-use ax_errno::{AxError, AxResult};
-use ax_fs::FS_CONTEXT;
+use ax_errno::{AxError, AxResult, LinuxError};
+use ax_fs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
 
-use crate::{mm::vm_load_string, pseudofs::MemoryFs};
+use crate::{
+    file::{Directory, FD_TABLE, File, FileLike},
+    mm::vm_load_string,
+    pseudofs::MemoryFs,
+    task::{AsThread, tasks},
+};
+
+fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
+    fd.downcast_ref::<File>()
+        .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
+        || fd
+            .downcast_ref::<Directory>()
+            .is_some_and(|d| Arc::ptr_eq(d.inner().mountpoint(), mp))
+}
+
+fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
+    if fs_is_mount_busy(mp) {
+        return true;
+    }
+    for task in tasks() {
+        let Some(thread) = task.try_as_thread() else {
+            continue;
+        };
+        let scope = thread.proc_data.scope.read();
+        let fd_table = FD_TABLE.scope(&scope).clone();
+        drop(scope);
+        let table = fd_table.read();
+        if table.ids().any(|id| {
+            table
+                .get(id)
+                .is_some_and(|fd| fd_points_to_mount(&*fd.inner, mp))
+        }) {
+            return true;
+        }
+    }
+    false
+}
 
 pub fn sys_mount(
     source: *const c_char,
@@ -17,22 +54,196 @@ pub fn sys_mount(
     let fs_type = vm_load_string(fs_type)?;
     debug!("sys_mount <= source: {source:?}, target: {target:?}, fs_type: {fs_type:?}");
 
-    if fs_type != "tmpfs" {
-        return Err(AxError::NoSuchDevice);
+    match fs_type.as_str() {
+        "tmpfs" => {
+            let fs = MemoryFs::new();
+            let target = FS_CONTEXT.lock().resolve(target)?;
+            target.mount(&fs)?;
+        }
+        #[cfg(feature = "ext4")]
+        "ext4" => {
+            mount_ext4(&source, &target)?;
+        }
+        _ => return Err(AxError::NoSuchDevice),
     }
-
-    let fs = MemoryFs::new();
-
-    let target = FS_CONTEXT.lock().resolve(target)?;
-    target.mount(&fs)?;
 
     Ok(0)
 }
 
+#[cfg(feature = "ext4")]
+fn mount_ext4(source: &str, target: &str) -> AxResult<()> {
+    use alloc::{boxed::Box, sync::Arc};
+
+    use ax_driver::prelude::BlockDriverOps;
+
+    let ctx = FS_CONTEXT.lock();
+
+    // Resolve source device path (e.g., "/dev/loop0") to a block device
+    let source_loc = ctx.resolve(source)?;
+    let device = source_loc
+        .entry()
+        .downcast::<crate::pseudofs::Device>()
+        .map_err(|_| {
+            warn!("mount_ext4: {:?} is not a device", source);
+            AxError::NoSuchDevice
+        })?;
+    let loop_dev = device
+        .inner()
+        .as_any()
+        .downcast_ref::<crate::pseudofs::dev::LoopDevice>()
+        .ok_or_else(|| {
+            warn!("mount_ext4: {:?} is not a loop device", source);
+            AxError::NoSuchDevice
+        })?;
+    let block_dev = loop_dev.as_dyn_block_device().inspect_err(|e| {
+        warn!(
+            "mount_ext4: loop device as_dyn_block_device failed: {:?}",
+            e
+        );
+    })?;
+
+    let num_blocks = block_dev.num_blocks();
+    let region = ax_driver::PartitionRegion::from_num_blocks(num_blocks);
+
+    // Create ext4 filesystem from the dynamic block device
+    let fs = ax_fs::new_filesystem_from_dyn(block_dev, region).map_err(|e| {
+        warn!("mount_ext4: failed to create ext4 filesystem: {:?}", e);
+        AxError::Io
+    })?;
+
+    // Mount at the target location
+    let target_loc = ctx.resolve(target)?;
+    target_loc.mount(&fs).map_err(|e| {
+        warn!("mount_ext4: failed to mount at {:?}: {:?}", target, e);
+        AxError::Io
+    })?;
+
+    // Store a writeback callback in the mount root's user_data so that
+    // sys_umount2 can flush the loop device's block cache to the backing
+    // file after the filesystem is unmounted.
+    let ops: Arc<dyn crate::pseudofs::DeviceOps> = device.inner().clone();
+    {
+        let mount_root = ctx.resolve(target)?;
+        mount_root.user_data().insert(Box::new(move || {
+            if let Some(ld) = ops
+                .as_any()
+                .downcast_ref::<crate::pseudofs::dev::LoopDevice>()
+            {
+                ld.flush_cache_to_file()
+            } else {
+                Ok(())
+            }
+        }) as Box<dyn Fn() -> AxResult<()> + Send + Sync>);
+    }
+
+    Ok(())
+}
+
 pub fn sys_umount2(target: *const c_char, _flags: i32) -> AxResult<isize> {
+    use alloc::boxed::Box;
+
     let target = vm_load_string(target)?;
     debug!("sys_umount2 <= target: {target:?}");
     let target = FS_CONTEXT.lock().resolve(target)?;
+
+    // Linux umount2 returns EINVAL for paths that are not mount points.
+    if !target.is_root_of_mount() {
+        return Err(AxError::InvalidInput);
+    }
+
+    // Linux umount2 returns EBUSY if any task has cwd/root or open fd
+    // inside the mount.
+    if is_mount_busy(target.mountpoint()) {
+        return Err(AxError::from(LinuxError::EBUSY));
+    }
+
+    // Retrieve the writeback callback (if any) before unmount tears down
+    // the mount.  For ext4-on-loop mounts this flushes the block device
+    // cache to the backing file after the filesystem is unmounted; for
+    // other filesystem types (tmpfs) the callback is absent.
+    let writeback = {
+        let ud = target.user_data();
+        ud.get::<Box<dyn Fn() -> AxResult<()> + Send + Sync>>()
+    }; // user_data lock released
+
     target.unmount()?;
+
+    // After unmount the SpinNoPreempt lock inside ext4 is released; safe
+    // to do VFS I/O here.  Propagate writeback errors so userspace sees
+    // EIO when dirty data could not be persisted to the backing file.
+    if let Some(cb) = writeback {
+        cb()?;
+    }
+
+    Ok(0)
+}
+
+pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResult<isize> {
+    let new_root = vm_load_string(new_root)?;
+    let put_old = vm_load_string(put_old)?;
+    debug!(
+        "sys_pivot_root <= new_root: {:?}, put_old: {:?}",
+        new_root, put_old
+    );
+
+    // Validate: put_old must be at or under new_root (path-separator-aware
+    // so that "/new" does not falsely match "/newroot/old").
+    let nr = new_root.trim_end_matches('/');
+    let nr_slash = alloc::format!("{}/", nr);
+    if !(put_old == nr || put_old.starts_with(&nr_slash)) {
+        return Err(AxError::InvalidInput);
+    }
+    // new_root cannot be "/"
+    if new_root == "/" {
+        return Err(AxError::InvalidInput);
+    }
+
+    let mut ctx = FS_CONTEXT.lock();
+
+    // The caller's current root must itself be a mount point (Linux
+    // EINVAL if e.g. the process chroot'd into a subdirectory).
+    if !ctx.root_dir().is_root_of_mount() {
+        return Err(AxError::InvalidInput);
+    }
+
+    // Resolve paths
+    let new_root_loc = ctx.resolve(&new_root)?;
+
+    // Both must be directories
+    new_root_loc.check_is_dir()?;
+    let put_old_loc = ctx.resolve(&put_old)?;
+    put_old_loc.check_is_dir()?;
+
+    // new_root must be the root of a non-root mount (i.e. the root of a
+    // filesystem mounted somewhere, not the global root).  Because path
+    // resolution crosses mount boundaries transparently, the resolved
+    // Location is the *root entry* of the mounted filesystem, so we check
+    // is_root_of_mount + the mountpoint is not the global root.
+    if !(new_root_loc.is_root_of_mount() && !new_root_loc.mountpoint().is_root()) {
+        warn!(
+            "sys_pivot_root: new_root {:?} is not the root of a mounted filesystem",
+            new_root
+        );
+        return Err(AxError::InvalidInput);
+    }
+
+    // Capture the old root Location BEFORE the pivot, so that we can
+    // propagate the change to every other task afterwards (Linux
+    // chroot_fs_refs semantics).  We save the full Location (mountpoint +
+    // dentry) rather than just the mountpoint, so that tasks chroot'd
+    // into a subdirectory of the old root are not incorrectly updated.
+    let old_root = ctx.root_dir().clone();
+
+    // Perform pivot: swap the root mount (updates this task's FsContext).
+    ctx.pivot_root(new_root_loc, put_old_loc)?;
+
+    let new_root_loc = ctx.root_dir().clone();
+    drop(ctx); // Release this task's lock before touching others.
+
+    // Propagate root / cwd to all other tasks whose root_dir or current_dir
+    // exactly matches the old root Location — mirroring Linux
+    // chroot_fs_refs() in fs/namespace.c.
+    ax_fs::FsContext::propagate_pivot_root(&old_root, &new_root_loc);
+
     Ok(0)
 }

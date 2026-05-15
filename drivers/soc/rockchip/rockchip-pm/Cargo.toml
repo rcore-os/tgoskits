@@ -1,7 +1,7 @@
 [package]
 edition.workspace = true
 name = "rockchip-pm"
-version = "0.4.2"
+version = "0.4.3"
 autotests = false
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "no-std"]

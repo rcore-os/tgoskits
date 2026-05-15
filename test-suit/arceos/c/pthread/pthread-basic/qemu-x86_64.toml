@@ -1,0 +1,6 @@
+args = ["-nographic", "-smp", "4"]
+uefi = false
+to_bin = false
+success_regex = ['\(C\)Pthread basic tests run OK!']
+fail_regex = ['(?i)\bpanic(?:ked)?\b']
+timeout = 120
