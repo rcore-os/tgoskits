@@ -19,8 +19,8 @@ use smoltcp::{
 use spin::Lazy;
 
 use crate::{
-    LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
-    SocketOps,
+    LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, Socket,
+    SocketAddrEx, SocketOps,
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
@@ -430,9 +430,11 @@ impl SocketOps for TcpSocket {
         })
     }
 
-    fn send(&self, mut src: impl Read, _options: SendOptions) -> AxResult<usize> {
+    fn send(&self, mut src: impl Read, options: SendOptions) -> AxResult<usize> {
+        // TODO: MSG_MORE should set TCP_CORK to coalesce sends.
+        let per_call_nonblock = options.flags.contains(SendFlags::DONTWAIT);
         // SAFETY: `self.handle` should be initialized in a connected socket.
-        let result = self.general.send_poller(self, false, || {
+        let result = self.general.send_poller(self, per_call_nonblock, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
@@ -465,7 +467,8 @@ impl SocketOps for TcpSocket {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(AxError::NotConnected);
         }
-        self.general.recv_poller(self, false, || {
+        let per_call_nonblock = options.flags.contains(RecvFlags::DONTWAIT);
+        self.general.recv_poller(self, per_call_nonblock, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {

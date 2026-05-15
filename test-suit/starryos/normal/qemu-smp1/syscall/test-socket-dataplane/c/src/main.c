@@ -94,7 +94,7 @@
  * 测试覆盖一览
  * =====================================================================
  *
- *  sendto (13):
+ *  sendto (14):
  *    [S1] 基本 UDP sendto — 未连接 UDP, 正常发送
  *    [S2] 已连接 UDP sendto(NULL,0) — 等价 send()
  *    [S3] EBADF — 无效 fd
@@ -108,6 +108,7 @@
  *    [S11] MSG_MORE 目标固定 — 首段目标地址不变
  *    [S12] NULL+nonzero addrlen — 未连接 EDESTADDRREQ, 已连接成功
  *    [S13] MSG_MORE 超限 — EMSGSIZE
+ *    [S14] MSG_MORE flush 超限 — EMSGSIZE + cork 保留
  *
  *  recvfrom (7):
  *    [R1] 基本 UDP recvfrom — 接收带源地址
@@ -715,6 +716,54 @@ static void test_s13_sendto_msg_more_emsgsize(void)
     CHECK(nflush >= 0, "flush 成功（不崩溃）");
 
     free(buf32k);
+    close(client);
+    close(server);
+}
+
+/*
+ * [S14] MSG_MORE cork + final flush 总长超限 → EMSGSIZE
+ *
+ * 语义: 即使 MSG_MORE 阶段累计未超上限，若最终不带 MSG_MORE 的 flush
+ *       调用传入额外数据使总量超过 CORK_MAX (UDP_TX_BUF_LEN)，
+ *       也应返回 EMSGSIZE。
+ * 预期: MSG_MORE 累计未超限（32768 ≤ 65536），
+ *       final flush 追加 32769 → 总量 65537 > 65536 → EMSGSIZE。
+ * 注意: 不同平台 MSG_MORE 单次上限不同（取决于 SO_SNDBUF），
+ *       因此基础值用已验证可行的 32768；若平台拒绝，跳过测试。
+ */
+static void test_s14_sendto_msg_more_flush_overflow(void)
+{
+    struct sockaddr_in srv_addr;
+    int server = bind_udp_loopback(&srv_addr);
+    if (server < 0) return;
+    int client = make_udp_sock();
+    if (client < 0) { close(server); return; }
+
+    /* 先发一个已知可行的 MSG_MORE 块 */
+    int base = 32768;
+    char *buf = malloc(base);
+    if (!buf) { close(client); close(server); return; }
+    memset(buf, 'A', base);
+    errno = 0;
+    ssize_t n1 = sendto(client, buf, base, MSG_MORE,
+                        (struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    /* 若平台连 base 都拒绝，跳过测试 */
+    if (n1 < 0) {
+        free(buf);
+        close(client);
+        close(server);
+        return;
+    }
+    CHECK_RET(n1, base, "MSG_MORE → 接受基础块 (未超限)");
+
+    /* flush 追加 extra 使总长 base + extra > 65536 → EMSGSIZE */
+    int extra = 65536 - base + 1; /* 32769 */
+    CHECK_ERR(sendto(client, buf, extra, 0,
+                     (struct sockaddr *)&srv_addr, sizeof(srv_addr)),
+              EMSGSIZE,
+              "flush 追加 → 总量 65537 > 64 KiB → EMSGSIZE");
+
+    free(buf);
     close(client);
     close(server);
 }
@@ -1468,7 +1517,7 @@ int main(void)
 {
     TEST_START("socket-dataplane");
 
-    /* ---- sendto (13) ---- */
+    /* ---- sendto (14) ---- */
     test_s1_sendto_udp_basic();
     test_s2_sendto_udp_connected_null();
     test_s3_sendto_ebadf();
@@ -1482,6 +1531,7 @@ int main(void)
     test_s11_sendto_msg_more_endpoint();
     test_s12_sendto_null_nonzero_addrlen();
     test_s13_sendto_msg_more_emsgsize();
+    test_s14_sendto_msg_more_flush_overflow();
 
     /* ---- recvfrom (7) ---- */
     test_r1_recvfrom_udp_basic();

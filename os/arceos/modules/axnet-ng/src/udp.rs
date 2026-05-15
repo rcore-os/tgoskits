@@ -211,12 +211,12 @@ impl SocketOps for UdpSocket {
             )))?;
         }
         // MSG_MORE corking: buffer data instead of sending immediately.
+        // Cap corked data to the UDP TX buffer size to prevent
+        // unbounded kernel memory allocation from user input.
+        const CORK_MAX: usize = UDP_TX_BUF_LEN;
         let more = options.flags.contains(SendFlags::MORE);
         if more {
             let len = src.remaining();
-            // Cap corked data to the UDP TX buffer size to prevent
-            // unbounded kernel memory allocation from user input.
-            const CORK_MAX: usize = UDP_TX_BUF_LEN;
             if len > CORK_MAX {
                 ax_bail!(MessageTooLong);
             }
@@ -250,7 +250,15 @@ impl SocketOps for UdpSocket {
             // keep the cork data in place until the send succeeds so that
             // a WouldBlock retry preserves buffered data.
             let (endpoint, local_addr, payload_len) = if let Some(ref c) = *cork_guard {
-                (c.remote, Some(c.source), c.buf.len() + src.remaining())
+                let total = c
+                    .buf
+                    .len()
+                    .checked_add(src.remaining())
+                    .ok_or(AxError::MessageTooLong)?;
+                if total > CORK_MAX {
+                    ax_bail!(MessageTooLong);
+                }
+                (c.remote, Some(c.source), total)
             } else {
                 (remote_addr, Some(source_addr), src.remaining())
             };
