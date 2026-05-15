@@ -6535,8 +6535,8 @@ dependencies = [
  "riscv-decode",
  "riscv-h",
  "rustsbi",
- "sbi-rt 0.0.3",
- "sbi-spec 0.0.7",
+ "sbi-rt 0.0.4",
+ "sbi-spec 0.0.9",
  "tock-registers 0.10.1",
 ]
 
