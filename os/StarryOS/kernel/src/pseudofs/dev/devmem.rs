@@ -43,7 +43,7 @@ impl DeviceOps for DevMem {
         let width = parts.next().ok_or(AxError::InvalidInput)?;
         let value = parts.next().ok_or(AxError::InvalidInput)?;
         if parts.next().is_some() {
-            return Err(AxError::InvalidInput.into());
+            return Err(AxError::InvalidInput);
         }
 
         let addr = Self::normalize_addr(Self::parse_u64(addr)?);
@@ -52,17 +52,19 @@ impl DeviceOps for DevMem {
 
         unsafe {
             match width {
-                8  => core::ptr::write_volatile(addr as *mut u8,  value as u8),
+                8 => core::ptr::write_volatile(addr as *mut u8, value as u8),
                 16 => core::ptr::write_volatile(addr as *mut u16, value as u16),
                 32 => core::ptr::write_volatile(addr as *mut u32, value as u32),
-                _  => return Err(AxError::InvalidInput.into()),
+                _ => return Err(AxError::InvalidInput),
             }
         }
 
         Ok(buf.len())
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM

@@ -4,15 +4,15 @@ use core::{any::Any, time::Duration};
 
 use ax_errno::{AxError, LinuxError};
 use ax_hal::mem::phys_to_virt;
-use spin::Mutex;
-use axfs_ng_vfs::{NodeFlags, VfsResult};
-use ax_task::sleep;
 use ax_memory_addr::PhysAddr;
+use ax_task::sleep;
+use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::pinmux::{FMUX_SD1_D1, FMUX_SD1_D2, Pinmux};
+use spin::Mutex;
+use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 
 use crate::pseudofs::DeviceOps;
-use starry_vm::{VmMutPtr, vm_write_slice};
 
 pub const CMD_INIT: u8 = 0x01;
 pub const CMD_GET_CAMERA_INFO: u8 = 0x02;
@@ -31,11 +31,15 @@ const SLIP_ESC_ESC: u8 = 0xDD;
 
 #[derive(Debug)]
 pub enum CameraError {
-    Timeout, SlipEscapeAtEnd, InvalidSlipEscape(u8),
-    PacketTooShort, PacketLengthMismatch,
+    Timeout,
+    SlipEscapeAtEnd,
+    InvalidSlipEscape(u8),
+    PacketTooShort,
+    PacketLengthMismatch,
     CrcMismatch { expected: u16, actual: u16 },
     UnexpectedResponse { ptype: u8, seq: u8 },
-    InvalidFrameLength(u32), TransportError,
+    InvalidFrameLength(u32),
+    TransportError,
 }
 
 pub trait UartTransport {
@@ -48,7 +52,11 @@ pub fn crc16_ccitt_false(data: &[u8]) -> u16 {
     for &b in data {
         crc ^= (b as u16) << 8;
         for _ in 0..8 {
-            if crc & 0x8000 != 0 { crc = (crc << 1) ^ 0x1021; } else { crc <<= 1; }
+            if crc & 0x8000 != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
         }
     }
     crc
@@ -59,8 +67,14 @@ pub fn slip_encode(payload: &[u8]) -> Vec<u8> {
     out.push(SLIP_END);
     for &b in payload {
         match b {
-            SLIP_END => { out.push(SLIP_ESC); out.push(SLIP_ESC_END); }
-            SLIP_ESC => { out.push(SLIP_ESC); out.push(SLIP_ESC_ESC); }
+            SLIP_END => {
+                out.push(SLIP_ESC);
+                out.push(SLIP_ESC_END);
+            }
+            SLIP_ESC => {
+                out.push(SLIP_ESC);
+                out.push(SLIP_ESC_ESC);
+            }
             _ => out.push(b),
         }
     }
@@ -73,24 +87,34 @@ pub fn slip_decode(frame: &[u8]) -> Result<Vec<u8>, CameraError> {
     let mut i = 0;
     while i < frame.len() {
         if frame[i] == SLIP_ESC {
-            if i + 1 >= frame.len() { return Err(CameraError::SlipEscapeAtEnd); }
+            if i + 1 >= frame.len() {
+                return Err(CameraError::SlipEscapeAtEnd);
+            }
             match frame[i + 1] {
                 SLIP_ESC_END => out.push(SLIP_END),
                 SLIP_ESC_ESC => out.push(SLIP_ESC),
                 n => return Err(CameraError::InvalidSlipEscape(n)),
             }
             i += 2;
-        } else { out.push(frame[i]); i += 1; }
+        } else {
+            out.push(frame[i]);
+            i += 1;
+        }
     }
     Ok(out)
 }
 
-pub struct Packet { pub ptype: u8, pub seq: u8, pub payload: Vec<u8> }
+pub struct Packet {
+    pub ptype: u8,
+    pub seq: u8,
+    pub payload: Vec<u8>,
+}
 
 fn build_packet(ptype: u8, seq: u8, payload: &[u8]) -> Vec<u8> {
     let plen = payload.len() as u16;
     let mut pkt = Vec::with_capacity(4 + payload.len() + 2);
-    pkt.push(ptype); pkt.push(seq);
+    pkt.push(ptype);
+    pkt.push(seq);
     pkt.extend_from_slice(&plen.to_le_bytes());
     pkt.extend_from_slice(payload);
     let crc = crc16_ccitt_false(&pkt);
@@ -99,31 +123,64 @@ fn build_packet(ptype: u8, seq: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 fn parse_packet(raw: &[u8]) -> Result<Packet, CameraError> {
-    if raw.len() < 6 { return Err(CameraError::PacketTooShort); }
-    let ptype = raw[0]; let seq = raw[1];
+    if raw.len() < 6 {
+        return Err(CameraError::PacketTooShort);
+    }
+    let ptype = raw[0];
+    let seq = raw[1];
     let plen = u16::from_le_bytes([raw[2], raw[3]]) as usize;
-    if raw.len() != 4 + plen + 2 { return Err(CameraError::PacketLengthMismatch); }
+    if raw.len() != 4 + plen + 2 {
+        return Err(CameraError::PacketLengthMismatch);
+    }
     let payload = raw[4..4 + plen].to_vec();
     let recv_crc = u16::from_le_bytes([raw[4 + plen], raw[5 + plen]]);
     let calc_crc = crc16_ccitt_false(&raw[..4 + plen]);
-    if recv_crc != calc_crc { return Err(CameraError::CrcMismatch { expected: calc_crc, actual: recv_crc }); }
-    Ok(Packet { ptype, seq, payload })
+    if recv_crc != calc_crc {
+        return Err(CameraError::CrcMismatch {
+            expected: calc_crc,
+            actual: recv_crc,
+        });
+    }
+    Ok(Packet {
+        ptype,
+        seq,
+        payload,
+    })
 }
 
 #[derive(Debug)]
-pub struct CameraInfo { pub width: u16, pub height: u16, pub format: u8, pub connected: u8 }
+pub struct CameraInfo {
+    pub width: u16,
+    pub height: u16,
+    pub format: u8,
+    pub connected: u8,
+}
 
 pub struct CameraProtocol<T: UartTransport> {
-    transport: T, rx_buf: Vec<u8>, seq: u8, timeout_ms: u64,
+    transport: T,
+    rx_buf: Vec<u8>,
+    seq: u8,
+    timeout_ms: u64,
 }
 
 impl<T: UartTransport> CameraProtocol<T> {
     pub fn new(transport: T, timeout_ms: u64) -> Self {
-        Self { transport, rx_buf: Vec::new(), seq: 0, timeout_ms }
+        Self {
+            transport,
+            rx_buf: Vec::new(),
+            seq: 0,
+            timeout_ms,
+        }
     }
-    pub fn new_default(transport: T) -> Self { Self::new(transport, DEFAULT_TIMEOUT_MS) }
+    pub fn new_default(transport: T) -> Self {
+        Self::new(transport, DEFAULT_TIMEOUT_MS)
+    }
 
-    fn next_seq(&mut self) -> u8 { let s = self.seq; self.seq = self.seq.wrapping_add(1); s }
+    fn next_seq(&mut self) -> u8 {
+        let s = self.seq;
+        self.seq = self.seq.wrapping_add(1);
+        s
+    }
 
     pub fn send_packet(&mut self, ptype: u8, payload: &[u8]) -> Result<u8, CameraError> {
         let seq = self.next_seq();
@@ -138,50 +195,76 @@ impl<T: UartTransport> CameraProtocol<T> {
         parse_packet(&slip_decode(&raw)?)
     }
 
-    pub fn request(&mut self, cmd: u8, payload: &[u8], timeout_ms: Option<u64>) -> Result<Vec<u8>, CameraError> {
+    pub fn request(
+        &mut self,
+        cmd: u8,
+        payload: &[u8],
+        timeout_ms: Option<u64>,
+    ) -> Result<Vec<u8>, CameraError> {
         let seq = self.send_packet(cmd, payload)?;
         let pkt = self.recv_packet(timeout_ms)?;
         let expected_rsp = cmd | RESP_MASK;
         if pkt.ptype != expected_rsp || pkt.seq != seq {
-            return Err(CameraError::UnexpectedResponse { ptype: pkt.ptype, seq: pkt.seq });
+            return Err(CameraError::UnexpectedResponse {
+                ptype: pkt.ptype,
+                seq: pkt.seq,
+            });
         }
         Ok(pkt.payload)
     }
 
     fn read_slip_frame(&mut self, timeout_ms: u64) -> Result<Vec<u8>, CameraError> {
-        use ax_hal::time::wall_time;
         use core::time::Duration;
+
+        use ax_hal::time::wall_time;
         let deadline = wall_time() + Duration::from_millis(timeout_ms);
         let mut tmp = [0u8; 0x1200];
         loop {
-            if let Some(frame) = self.try_extract_frame() { return Ok(frame); }
+            if let Some(frame) = self.try_extract_frame() {
+                return Ok(frame);
+            }
             if wall_time() >= deadline {
                 return Err(CameraError::Timeout);
             }
             let n = self.transport.read_bytes(&mut tmp, timeout_ms)?;
-            if n > 0 { self.rx_buf.extend_from_slice(&tmp[..n]); }
+            if n > 0 {
+                self.rx_buf.extend_from_slice(&tmp[..n]);
+            }
         }
     }
 
     fn try_extract_frame(&mut self) -> Option<Vec<u8>> {
-        let start = self.rx_buf.iter().position(|&b| b != SLIP_END).unwrap_or(self.rx_buf.len());
-        if start > 0 { self.rx_buf.drain(..start); }
+        let start = self
+            .rx_buf
+            .iter()
+            .position(|&b| b != SLIP_END)
+            .unwrap_or(self.rx_buf.len());
+        if start > 0 {
+            self.rx_buf.drain(..start);
+        }
         let pos = self.rx_buf.iter().position(|&b| b == SLIP_END)?;
         let frame: Vec<u8> = self.rx_buf[..pos].to_vec();
         self.rx_buf.drain(..=pos);
         if frame.is_empty() { None } else { Some(frame) }
     }
 
-    pub fn ping(&mut self) -> Result<Vec<u8>, CameraError> { self.request(CMD_PING, b"ping", None) }
-    pub fn init_camera(&mut self) -> Result<Vec<u8>, CameraError> { self.request(CMD_INIT, &[], None) }
+    pub fn ping(&mut self) -> Result<Vec<u8>, CameraError> {
+        self.request(CMD_PING, b"ping", None)
+    }
+    pub fn init_camera(&mut self) -> Result<Vec<u8>, CameraError> {
+        self.request(CMD_INIT, &[], None)
+    }
 
     pub fn get_camera_info(&mut self) -> Result<CameraInfo, CameraError> {
         let rsp = self.request(CMD_GET_CAMERA_INFO, &[], None)?;
-        if rsp.len() < 6 { return Err(CameraError::PacketTooShort); }
+        if rsp.len() < 6 {
+            return Err(CameraError::PacketTooShort);
+        }
         Ok(CameraInfo {
             width: u16::from_le_bytes([rsp[0], rsp[1]]),
             height: u16::from_le_bytes([rsp[2], rsp[3]]),
-            format: rsp[4], connected: rsp[5],
+            format: rsp[4],
+            connected: rsp[5],
         })
     }
 
@@ -189,17 +272,29 @@ impl<T: UartTransport> CameraProtocol<T> {
         self.get_frame_with_timeout(FRAME_CHUNK_TIMEOUT_MS)
     }
 
-    pub fn get_frame_with_timeout(&mut self, chunk_timeout_ms: u64) -> Result<Vec<u8>, CameraError> {
+    pub fn get_frame_with_timeout(
+        &mut self,
+        chunk_timeout_ms: u64,
+    ) -> Result<Vec<u8>, CameraError> {
         let rsp = self.request(CMD_GET_CAMERA_FRAME, &[], None)?;
-        if rsp.len() < 4 { return Err(CameraError::PacketTooShort); }
+        if rsp.len() < 4 {
+            return Err(CameraError::PacketTooShort);
+        }
         let frame_len = u32::from_le_bytes([rsp[0], rsp[1], rsp[2], rsp[3]]) as usize;
-        if frame_len == 0 || frame_len > MAX_FRAME_SIZE { return Err(CameraError::InvalidFrameLength(frame_len as u32)); }
+        if frame_len == 0 || frame_len > MAX_FRAME_SIZE {
+            return Err(CameraError::InvalidFrameLength(frame_len as u32));
+        }
         let mut data = Vec::with_capacity(frame_len);
-        if rsp.len() > 4 { data.extend_from_slice(&rsp[4..]); }
+        if rsp.len() > 4 {
+            data.extend_from_slice(&rsp[4..]);
+        }
         while data.len() < frame_len {
             let pkt = self.recv_packet(Some(chunk_timeout_ms))?;
             if pkt.ptype != RESP_FRAME_CHUNK {
-                return Err(CameraError::UnexpectedResponse { ptype: pkt.ptype, seq: pkt.seq });
+                return Err(CameraError::UnexpectedResponse {
+                    ptype: pkt.ptype,
+                    seq: pkt.seq,
+                });
             }
             data.extend_from_slice(&pkt.payload);
         }
@@ -215,7 +310,8 @@ struct Uart3;
 
 impl UartTransport for Uart3 {
     fn write_all(&mut self, data: &[u8]) -> Result<(), CameraError> {
-        let mut uart3 = dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
+        let mut uart3 =
+            dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
         data.iter().for_each(|x| uart3.putchar(*x));
         Ok(())
     }
@@ -227,7 +323,10 @@ impl UartTransport for Uart3 {
             let mut cache_buf = CAMERA_UART_BUF.lock();
             let n = cache_buf.len().min(buf.len());
             if n > 0 {
-                cache_buf.drain(..n).enumerate().for_each(|(i, x)| buf[i] = x);
+                cache_buf
+                    .drain(..n)
+                    .enumerate()
+                    .for_each(|(i, x)| buf[i] = x);
             }
             n
         };
@@ -249,7 +348,7 @@ pub struct CviCamera {
 #[repr(u8)]
 #[derive(num_enum::TryFromPrimitive)]
 enum CviCameraArgs {
-    INIT     = 1,
+    Init     = 1,
     GetInfo  = 2,
     GetFrame = 3,
 }
@@ -261,33 +360,48 @@ impl CviCamera {
         pinmux.fmux().sd1_d2.write(FMUX_SD1_D2::FSEL::UART3_TX);
         pinmux.fmux().sd1_d1.write(FMUX_SD1_D1::FSEL::UART3_RX);
 
-        let mut uart3 = dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
+        let mut uart3 =
+            dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
         uart3.init_with_baud(1500000);
         uart3.set_ier(true);
         ax_hal::irq::register(47, |_irq| {
-            let mut uart3 = dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
+            let mut uart3 =
+                dw_apb_uart::DW8250::new(phys_to_virt(PhysAddr::from(UART3_ADDR)).as_usize());
             let mut buf = CAMERA_UART_BUF.lock();
             loop {
-                if let Some(c) = uart3.getchar() { buf.push_back(c); continue; }
+                if let Some(c) = uart3.getchar() {
+                    buf.push_back(c);
+                    continue;
+                }
                 break;
             }
             uart3.set_ier(true);
         });
         ax_hal::irq::set_enable(47, true);
-        Self { inner: Mutex::new(CameraProtocol::new_default(Uart3)) }
+        Self {
+            inner: Mutex::new(CameraProtocol::new_default(Uart3)),
+        }
     }
 }
 
 impl DeviceOps for CviCamera {
-    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> { Ok(0) }
-    fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> { Ok(buf.len()) }
-    fn as_any(&self) -> &dyn Any { self }
-    fn flags(&self) -> NodeFlags { NodeFlags::NON_CACHEABLE | NodeFlags::STREAM }
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        Ok(0)
+    }
+    fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Ok(buf.len())
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+    }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         let cmd = CviCameraArgs::try_from(cmd as u8).map_err(|_| AxError::InvalidInput)?;
         match cmd {
-            CviCameraArgs::INIT => {
+            CviCameraArgs::Init => {
                 if let Err(e) = self.inner.lock().init_camera() {
                     warn!("cvi-camera INIT (init_camera) failed: {:?}", e);
                     return Err(LinuxError::EBADF.into());
