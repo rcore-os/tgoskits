@@ -215,15 +215,13 @@ pub fn resolve_inode_block<B: BlockDevice>(
     if inode.have_extend_header_and_use_extend() {
         let mut tree = ExtentTree::new(inode);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
-            let raw_len = ext.ee_len as u32;
+            let raw_len = ext.ee_len;
             // ext4 encodes unwritten extents by setting the high bit in
             // `ee_len`. They reserve space but do not expose initialized data,
             // so callers that care about holes should treat them as absent.
-            let is_unwritten = raw_len > 0x8000;
-            let mut len = raw_len;
-            if (len & 0x8000) != 0 {
-                len &= 0x7FFF;
-            }
+            let is_unwritten = ext.is_unwritten();
+            let len = Ext4Extent::decode_len(raw_len);
+
             if len == 0 {
                 return Ok(None);
             }
