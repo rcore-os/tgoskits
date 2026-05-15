@@ -41,7 +41,7 @@ fn panic_message(info: &PanicInfo) {
 
 fn panic_backtrace() {
     if should_print_panic_backtrace() {
-        ax_println!("{}", axbacktrace::Backtrace::capture());
+        ax_println!("{}", axbacktrace::Backtrace::report("panic"));
     }
 }
 

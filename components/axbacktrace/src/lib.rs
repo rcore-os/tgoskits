@@ -41,14 +41,11 @@ pub struct Frame {
 }
 
 impl Frame {
-    #[cfg(feature = "alloc")]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     const OFFSET: usize = 0;
-    #[cfg(feature = "alloc")]
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     const OFFSET: usize = 1;
 
-    #[cfg(feature = "alloc")]
     fn read(fp: usize) -> Option<Self> {
         if fp == 0 || !fp.is_multiple_of(core::mem::align_of::<Frame>()) {
             return None;
@@ -149,24 +146,11 @@ impl Backtrace {
         }
         #[cfg(feature = "dwarf")]
         {
-            use core::arch::asm;
-
-            let fp: usize;
-            cfg_if::cfg_if! {
-                if #[cfg(target_arch = "x86_64")] {
-                    unsafe { asm!("mov {ptr}, rbp", ptr = out(reg) fp) };
-                } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
-                    unsafe { asm!("addi {ptr}, s0, 0", ptr = out(reg) fp) };
-                } else if #[cfg(target_arch = "aarch64")] {
-                    unsafe { asm!("mov {ptr}, x29", ptr = out(reg) fp) };
-                } else if #[cfg(target_arch = "loongarch64")] {
-                    unsafe { asm!("move {ptr}, $fp", ptr = out(reg) fp) };
-                } else {
-                    return Self {
-                        inner: Inner::Unsupported,
-                    };
-                }
-            }
+            let Some(fp) = read_current_fp() else {
+                return Self {
+                    inner: Inner::Unsupported,
+                };
+            };
 
             let frames = unwind_stack(fp);
 
@@ -223,6 +207,10 @@ impl Backtrace {
 
         Some(FrameIter::new(capture))
     }
+
+    pub fn report(kind: &str) -> BacktraceReport<'_> {
+        BacktraceReport { kind, fp: None }
+    }
 }
 
 impl fmt::Display for Backtrace {
@@ -247,4 +235,199 @@ impl fmt::Debug for Backtrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
+}
+
+pub struct BacktraceReport<'a> {
+    kind: &'a str,
+    fp: Option<usize>,
+}
+
+impl fmt::Display for BacktraceReport<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "BACKTRACE_BEGIN kind={} arch={} alloc={} dwarf={}",
+            self.kind,
+            arch_name(),
+            cfg!(feature = "alloc"),
+            cfg!(feature = "dwarf")
+        )?;
+
+        let Some(fp_range) = FP_RANGE.get() else {
+            writeln!(f, "BT_ERROR not_initialized")?;
+            return writeln!(f, "BACKTRACE_END");
+        };
+
+        let Some(mut fp) = self.fp.or_else(read_current_fp) else {
+            writeln!(f, "BT_ERROR unsupported_arch")?;
+            return writeln!(f, "BACKTRACE_END");
+        };
+
+        if !fp_range.contains(&fp) {
+            writeln!(f, "BT_ERROR fp_out_of_range")?;
+            return writeln!(f, "BACKTRACE_END");
+        }
+
+        let mut depth = 0usize;
+        let max_depth = max_depth();
+
+        while fp_range.contains(&fp) && depth < max_depth {
+            let Some(frame) = Frame::read(fp) else {
+                writeln!(f, "BT_ERROR invalid_fp")?;
+                break;
+            };
+
+            writeln!(f, "BT {} ip=0x{:x} fp=0x{:x}", depth, frame.ip, frame.fp)?;
+
+            if frame.fp == 0 {
+                break;
+            }
+
+            if frame.fp <= fp {
+                writeln!(f, "BT_ERROR non_monotonic_fp")?;
+                break;
+            }
+
+            if let Some(large_stack_end) = fp.checked_add(8 * 1024 * 1024)
+                && frame.fp >= large_stack_end
+            {
+                writeln!(f, "BT_ERROR fp_jump_too_large")?;
+                break;
+            }
+
+            fp = frame.fp;
+            depth += 1;
+        }
+
+        if depth >= max_depth {
+            writeln!(f, "BT_ERROR max_depth")?;
+        }
+
+        writeln!(f, "BACKTRACE_END")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use core::fmt::Write;
+
+    use super::*;
+
+    fn init_ranges_for_tests() {
+        init(0..usize::MAX, 0..usize::MAX);
+    }
+
+    fn report_from_fp<'a>(kind: &'a str, fp: usize) -> BacktraceReport<'a> {
+        BacktraceReport { kind, fp: Some(fp) }
+    }
+
+    #[test]
+    fn report_emits_frames_from_fp_chain() {
+        init_ranges_for_tests();
+
+        let mut frames = std::vec::Vec::from([
+            Frame { fp: 0, ip: 0x1111 },
+            Frame { fp: 0, ip: 0x2222 },
+            Frame { fp: 0, ip: 0x3333 },
+        ]);
+
+        let f0 = frames.as_mut_ptr().wrapping_add(0) as usize;
+        let f1 = frames.as_mut_ptr().wrapping_add(1) as usize;
+        let f2 = frames.as_mut_ptr().wrapping_add(2) as usize;
+
+        frames[0].fp = f1;
+        frames[1].fp = f2;
+        frames[2].fp = 0;
+
+        let fp0 = unsafe { (f0 as *const Frame).add(Frame::OFFSET) } as usize;
+
+        let mut output = std::string::String::new();
+        write!(&mut output, "{}", report_from_fp("panic", fp0)).unwrap();
+        assert!(output.contains("BACKTRACE_BEGIN kind=panic"));
+        assert!(output.contains("BT 0 ip=0x1111 fp=0x"));
+        assert!(output.contains("BT 1 ip=0x2222 fp=0x"));
+        assert!(output.contains("BT 2 ip=0x3333 fp=0x0"));
+        assert!(output.contains("BACKTRACE_END"));
+    }
+
+    #[test]
+    fn report_flags_invalid_fp() {
+        init_ranges_for_tests();
+        let mut output = std::string::String::new();
+        write!(&mut output, "{}", report_from_fp("panic", 3)).unwrap();
+        assert!(output.contains("BT_ERROR invalid_fp"));
+    }
+
+    #[test]
+    fn report_flags_fp_jump_too_large() {
+        init_ranges_for_tests();
+
+        let mut frames = std::vec::Vec::from([Frame { fp: 0, ip: 0x1111 }]);
+        let f0 = frames.as_mut_ptr().wrapping_add(0) as usize;
+        let fp0 = unsafe { (f0 as *const Frame).add(Frame::OFFSET) } as usize;
+
+        frames[0].fp = fp0 + 9 * 1024 * 1024;
+
+        let mut output = std::string::String::new();
+        write!(&mut output, "{}", report_from_fp("panic", fp0)).unwrap();
+        assert!(output.contains("BT_ERROR fp_jump_too_large"));
+    }
+
+    #[test]
+    fn report_flags_non_monotonic_fp() {
+        init_ranges_for_tests();
+
+        let mut frames = std::vec::Vec::from([Frame { fp: 0, ip: 0x1111 }]);
+        let f0 = frames.as_mut_ptr().wrapping_add(0) as usize;
+        let fp0 = unsafe { (f0 as *const Frame).add(Frame::OFFSET) } as usize;
+
+        frames[0].fp = fp0;
+
+        let mut output = std::string::String::new();
+        write!(&mut output, "{}", report_from_fp("panic", fp0)).unwrap();
+        assert!(output.contains("BT_ERROR non_monotonic_fp"));
+    }
+}
+
+fn arch_name() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    return "x86_64";
+    #[cfg(target_arch = "aarch64")]
+    return "aarch64";
+    #[cfg(target_arch = "loongarch64")]
+    return "loongarch64";
+    #[cfg(target_arch = "riscv64")]
+    return "riscv64";
+    #[cfg(target_arch = "riscv32")]
+    return "riscv32";
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64",
+        target_arch = "riscv32"
+    )))]
+    return "unknown";
+}
+
+fn read_current_fp() -> Option<usize> {
+    use core::arch::asm;
+
+    let fp: usize;
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "x86_64")] {
+            unsafe { asm!("mov {ptr}, rbp", ptr = out(reg) fp) };
+        } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
+            unsafe { asm!("addi {ptr}, s0, 0", ptr = out(reg) fp) };
+        } else if #[cfg(target_arch = "aarch64")] {
+            unsafe { asm!("mov {ptr}, x29", ptr = out(reg) fp) };
+        } else if #[cfg(target_arch = "loongarch64")] {
+            unsafe { asm!("move {ptr}, $fp", ptr = out(reg) fp) };
+        } else {
+            return None;
+        }
+    }
+    Some(fp)
 }
