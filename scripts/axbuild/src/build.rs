@@ -139,6 +139,7 @@ impl BuildInfo {
                 std_target.cargo_args,
             );
             cargo.env.extend(std_target.env);
+            prepare_std_build_env(&mut cargo.env, target, metadata)?;
             cargo.extra_config = Some(std_cargo_config_path()?.display().to_string());
             cargo.to_bin = false;
             return Ok(cargo);
@@ -379,6 +380,21 @@ fn std_build_target_for(target: &str) -> anyhow::Result<StdBuildTarget> {
     } else {
         bail!("unsupported ArceOS std target triple `{target}`")
     }
+}
+
+fn prepare_std_build_env(
+    envs: &mut HashMap<String, String>,
+    target: &str,
+    metadata: &Metadata,
+) -> anyhow::Result<()> {
+    let arch = target_arch_name(target)?;
+    let platform_package = default_platform_package(arch);
+    let platform_config = resolve_platform_config_by_package(platform_package, metadata)?;
+    envs.insert(
+        "ARCEOS_RUST_PLATFORM_CONFIG".to_string(),
+        platform_config.config_path.display().to_string(),
+    );
+    Ok(())
 }
 
 fn std_cargo_config_path() -> anyhow::Result<PathBuf> {

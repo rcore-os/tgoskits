@@ -54,8 +54,34 @@ fn generate_config(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
     let template = manifest_dir.join("defconfig.toml");
     let arch = get_arch();
     let platform = get_platform();
+    let platform_config_path = get_platform_config_path(platform);
+    let out_config_path = out_dir.join("axconfig.toml");
 
-    // get platform config path
+    let command = Command::new("axconfig-gen")
+        .arg(&template)
+        .arg(platform_config_path)
+        .arg("-w")
+        .arg(format!(r#"arch="{}""#, &arch))
+        .arg("-w")
+        .arg(format!(r#"platform="{}""#, get_platform()))
+        .arg("-o")
+        .arg(&out_config_path)
+        .status()
+        .expect("Failed to generate configuration file.");
+
+    if !command.success() {
+        panic!("Failed to generate configuration file.");
+    }
+
+    out_config_path
+}
+
+fn get_platform_config_path(platform: &str) -> PathBuf {
+    if let Ok(path) = env::var("ARCEOS_RUST_PLATFORM_CONFIG") {
+        return PathBuf::from(path);
+    }
+
+    // Fallback for direct upstream usage without axbuild.
     let output = Command::new(cargo())
         .arg("axplat")
         .arg("info")
@@ -73,26 +99,7 @@ fn generate_config(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
         panic!("Failed to get platform config path.");
     }
 
-    let platform_config_path = String::from_utf8_lossy(&output.stdout);
-    let out_config_path = out_dir.join("axconfig.toml");
-
-    let command = Command::new("axconfig-gen")
-        .arg(&template)
-        .arg(platform_config_path.trim())
-        .arg("-w")
-        .arg(format!(r#"arch="{}""#, &arch))
-        .arg("-w")
-        .arg(format!(r#"platform="{}""#, get_platform()))
-        .arg("-o")
-        .arg(&out_config_path)
-        .status()
-        .expect("Failed to generate configuration file.");
-
-    if !command.success() {
-        panic!("Failed to generate configuration file.");
-    }
-
-    out_config_path
+    PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
 }
 
 fn compile_project(lib_dir: &PathBuf, out_dir: &PathBuf, config_path: &PathBuf) -> PathBuf {
