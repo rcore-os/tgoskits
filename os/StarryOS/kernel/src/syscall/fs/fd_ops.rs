@@ -8,15 +8,14 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use ax_task::current;
-
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like,
-        close_file_like, get_file_like, with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like, close_file_like,
+        get_file_like, with_fs,
     },
     mm::vm_load_string,
     pseudofs::{Device, dev::tty},
