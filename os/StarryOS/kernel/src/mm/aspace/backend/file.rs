@@ -140,6 +140,8 @@ impl FileBackend {
     /// Location of the backing file (used by memfd seal accounting).
     pub(crate) fn cache_location(&self) -> &Location {
         self.0.cache.location()
+    }
+
     pub fn is_shared(&self) -> bool {
         self.0.shared
     }
