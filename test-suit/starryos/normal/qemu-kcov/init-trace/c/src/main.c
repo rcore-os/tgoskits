@@ -25,18 +25,12 @@ int main(void) {
     CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 64), 0, "size=64 accepted");
     close(fd);
 
-    /* Second INIT_TRACE: Linux returns EBUSY.
-     * StarryOS currently replaces the buffer instead. */
+    /* Second INIT_TRACE: Linux returns EBUSY. */
     {
         int fd2 = open("/dev/kcov", O_RDWR);
         CHECK_RET(ioctl(fd2, KCOV_INIT_TRACE, 128), 0, "first INIT_TRACE");
-        int rc = ioctl(fd2, KCOV_INIT_TRACE, 256);
-        if (rc == 0) {
-            printf("  INFO: second INIT_TRACE replaces buffer "
-                   "(Linux: EBUSY)\n");
-        } else {
-            CHECK(errno == EBUSY, "second INIT_TRACE → EBUSY (Linux spec)");
-        }
+        CHECK_ERR(ioctl(fd2, KCOV_INIT_TRACE, 256), EBUSY,
+                  "second INIT_TRACE → EBUSY (Linux spec)");
         close(fd2);
     }
 

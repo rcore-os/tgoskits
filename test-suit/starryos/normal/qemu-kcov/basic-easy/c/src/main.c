@@ -32,8 +32,8 @@
 #define KCOV_ENABLE _IO('c', 100)
 #define KCOV_DISABLE _IO('c', 101)
 
-#define KCOV_TRACE_PC 0x100
-#define KCOV_TRACE_CMP 0x200
+#define KCOV_TRACE_PC 0
+#define KCOV_TRACE_CMP 1
 
 /* ---- Test ---- */
 
@@ -57,9 +57,11 @@ int main(void) {
     /* mmap the kcov fd: must succeed, return writable memory */
     /*
      * Buffer layout: [count: u64 | pc[0]: u64 | ... | pc[N-1]: u64]
-     * Total size = (1 + cover_size) * 8 bytes.
+     * Total entries = cover_size (matching Linux: cover_size includes the count word).
+     * Available PC slots = cover_size - 1.
+     * mmap size = cover_size * sizeof(uint64_t).
      */
-    size_t buf_size = (1 + cover_size) * sizeof(uint64_t);
+    size_t buf_size = cover_size * sizeof(uint64_t);
     uint64_t *buf =
         mmap(NULL, buf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     CHECK(buf != MAP_FAILED, "mmap(MAP_SHARED) of kcov fd succeeds");

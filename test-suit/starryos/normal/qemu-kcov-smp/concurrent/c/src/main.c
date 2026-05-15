@@ -38,7 +38,7 @@
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
 #define KCOV_ENABLE     _IO('c', 100)
 #define KCOV_DISABLE    _IO('c', 101)
-#define KCOV_TRACE_PC   0x100
+#define KCOV_TRACE_PC   0
 
 #define ROUNDS      20
 #define WORK_LOOPS  500
@@ -70,7 +70,7 @@ static uint64_t run_sequential(int cpu, uint64_t iterations) {
         return UINT64_MAX;
     }
 
-    size_t sz = (1 + BUF_ENTRIES) * sizeof(uint64_t);
+    size_t sz = BUF_ENTRIES * sizeof(uint64_t);
     uint64_t *buf = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (buf == MAP_FAILED) {
         close(fd);
@@ -120,7 +120,7 @@ static void *thread_concurrent(void *arg) {
         return NULL;
     }
 
-    size_t sz = (1 + BUF_ENTRIES) * sizeof(uint64_t);
+    size_t sz = BUF_ENTRIES * sizeof(uint64_t);
     uint64_t *buf = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (buf == MAP_FAILED) {
         close(fd);

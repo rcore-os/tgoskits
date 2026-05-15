@@ -28,8 +28,8 @@
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
 #define KCOV_ENABLE _IO('c', 100)
 #define KCOV_DISABLE _IO('c', 101)
-#define KCOV_TRACE_PC 0x100
-#define KCOV_TRACE_CMP 0x200
+#define KCOV_TRACE_PC 0
+#define KCOV_TRACE_CMP 1
 
 static int open_kcov(void) {
     int fd = open("/dev/kcov", O_RDWR);
@@ -179,23 +179,26 @@ static void stress_many_threads(void) {
 #undef N
 }
 
-/* §5: Repeated buffer init/replace — 100 cycles */
+/* §5: Open/init/mmap/enable/disable/close cycles — 100 iterations.
+ * Each iteration uses a fresh fd (Linux: KCOV_INIT_TRACE is one-shot per fd). */
 static void stress_buffer_replace(void) {
-    int fd = open_kcov();
     for (int i = 0; i < 100; i++) {
+        int fd = open_kcov();
         size_t sz = (64 + (i % 4) * 64) * sizeof(uint64_t);
         CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 64 + (i % 4) * 64), 0, "INIT");
         uint64_t *buf =
             mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         CHECK_PTR(buf, 1, "mmap");
-        CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE");
-        for (volatile int j = 0; j < 100; j++)
-            getpid();
-        CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE");
-        munmap(buf, sz);
+        if (buf != MAP_FAILED) {
+            CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE");
+            for (volatile int j = 0; j < 100; j++)
+                getpid();
+            CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE");
+            munmap(buf, sz);
+        }
+        close(fd);
     }
-    close(fd);
-    printf("  INFO: 100 buffer replace cycles OK\n");
+    printf("  INFO: 100 open/init/enable/close cycles OK\n");
 }
 
 /* §6: Heavy syscall storm — 1K burst */

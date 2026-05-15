@@ -10,6 +10,7 @@ uefi = false
 to_bin = false
 shell_prefix = "root@starry:"
 test_commands = [
+    "/usr/bin/test-kcov-linux-doc",
     "/usr/bin/test-kcov-basic-easy",
     "/usr/bin/test-kcov-stress",
     "/usr/bin/test-kcov-open",

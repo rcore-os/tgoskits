@@ -11,8 +11,8 @@
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
 #define KCOV_ENABLE _IO('c', 100)
 #define KCOV_DISABLE _IO('c', 101)
-#define KCOV_TRACE_PC 0x100
-#define KCOV_TRACE_CMP 0x200
+#define KCOV_TRACE_PC 0
+#define KCOV_TRACE_CMP 1
 
 static void burst(int n) {
     for (volatile int i = 0; i < n; i++) {
