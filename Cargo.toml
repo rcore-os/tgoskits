@@ -190,7 +190,7 @@ members = [
     "platform/riscv64-qemu-virt",
     "platform/x86-qemu-q35",
     "scripts/axbuild",
-    "test-suit/arceos/rust/backtrace-panic",
+    "test-suit/arceos/rust/backtrace-raw-basic",
     "test-suit/arceos/rust/display",
     "test-suit/arceos/rust/exception",
     "test-suit/arceos/rust/fs/shell",
@@ -216,7 +216,7 @@ members = [
 # Local workspace crates
 aarch64_sysreg = { version = "0.3.6", path = "components/aarch64_sysreg" }
 arceos-affinity = { version = "0.3.1", path = "test-suit/arceos/rust/task/affinity" }
-arceos-backtrace-panic = { version = "0.3.1", path = "test-suit/arceos/rust/backtrace-panic" }
+arceos-backtrace-raw-basic = { version = "0.3.1", path = "test-suit/arceos/rust/backtrace-raw-basic" }
 arceos-display = { version = "0.3.1", path = "test-suit/arceos/rust/display" }
 arceos-exception = { version = "0.3.1", path = "test-suit/arceos/rust/exception" }
 arceos-fs-shell = { version = "0.3.1", path = "test-suit/arceos/rust/fs/shell" }

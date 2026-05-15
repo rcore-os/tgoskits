@@ -16,6 +16,32 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest};
 
+fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
+    env.get(key).is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes" | "1" | "true" | "on"
+        )
+    })
+}
+
+fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
+    let mut flags = Vec::new();
+    let dwarf = env_truthy(env, "DWARF");
+    let backtrace = env_truthy(env, "BACKTRACE") || dwarf;
+
+    if dwarf {
+        flags.push("-Cdebuginfo=2".to_string());
+        flags.push("-Cstrip=none".to_string());
+    }
+
+    if backtrace {
+        flags.push("-Cforce-frame-pointers=yes".to_string());
+    }
+
+    flags
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
     AxStd,
@@ -128,7 +154,8 @@ impl BuildInfo {
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
         self.resolve_features_with_metadata(package, plat_dyn, metadata);
-        let args = Self::build_cargo_args(target, plat_dyn);
+        let extra_rustflags = toolchain_rustflags(&self.env);
+        let args = Self::build_cargo_args(target, plat_dyn, &extra_rustflags);
 
         Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
     }
@@ -287,17 +314,41 @@ impl BuildInfo {
         }
     }
 
-    pub(crate) fn build_cargo_args(target: &str, plat_dyn: bool) -> Vec<String> {
+    pub(crate) fn build_cargo_args(
+        target: &str,
+        plat_dyn: bool,
+        extra_rustflags: &[String],
+    ) -> Vec<String> {
+        let mut rustflags = Vec::new();
+        if plat_dyn {
+            rustflags.push("-Clink-arg=-Taxplat.x".to_string());
+        } else {
+            rustflags.push("-Clink-arg=-Tlinker.x".to_string());
+            rustflags.push("-Clink-arg=-no-pie".to_string());
+            rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
+        }
+        rustflags.extend(extra_rustflags.iter().cloned());
+
+        let mut rustflags_config = format!("target.{target}.rustflags=[");
+        for (index, flag) in rustflags.iter().enumerate() {
+            if index > 0 {
+                rustflags_config.push(',');
+            }
+            rustflags_config.push('"');
+            for ch in flag.chars() {
+                match ch {
+                    '\\' => rustflags_config.push_str("\\\\"),
+                    '"' => rustflags_config.push_str("\\\""),
+                    _ => rustflags_config.push(ch),
+                }
+            }
+            rustflags_config.push('"');
+        }
+        rustflags_config.push(']');
+
         let mut args = Vec::new();
         args.push("--config".to_string());
-        args.push(if plat_dyn {
-            format!("target.{target}.rustflags=[\"-Clink-arg=-Taxplat.x\"]")
-        } else {
-            format!(
-                "target.{target}.rustflags=[\"-Clink-arg=-Tlinker.x\",\"-Clink-arg=-no-pie\",\"\
-                 -Clink-arg=-znostart-stop-gc\"]"
-            )
-        });
+        args.push(rustflags_config);
         args
     }
 }
