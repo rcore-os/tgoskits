@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "ax-alloc",
  "ax-config",
