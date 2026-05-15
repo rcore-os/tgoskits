@@ -121,6 +121,7 @@ scope-local
 simple-sdmmc
 some-serial
 someboot
+sg2002-tpu
 starry-kernel
 starryos
 starry-process

@@ -140,6 +140,50 @@ impl FileBackend {
     /// Location of the backing file (used by memfd seal accounting).
     pub(crate) fn cache_location(&self) -> &Location {
         self.0.cache.location()
+    pub fn is_shared(&self) -> bool {
+        self.0.shared
+    }
+
+    pub fn cache(&self) -> &CachedFile {
+        &self.0.cache
+    }
+
+    pub fn writeback_and_protect(
+        &self,
+        _aspace: &mut AddrSpace,
+        range_start: VirtAddr,
+        range_end: VirtAddr,
+        _area_flags: MappingFlags,
+    ) -> AxResult {
+        let file_data = self.0.file_data.lock();
+
+        let offset_page = file_data.offset_page;
+        let mapping_start = file_data.start;
+        let mapping_size = (range_end - range_start).min(
+            range_end
+                .as_usize()
+                .saturating_sub(mapping_start.as_usize()),
+        );
+        let local_start = range_start
+            .as_usize()
+            .saturating_sub(mapping_start.as_usize());
+        let local_end = local_start + mapping_size;
+
+        let start_pn = offset_page + (local_start / PAGE_SIZE_4K) as u32;
+        let end_pn = offset_page + local_end.div_ceil(PAGE_SIZE_4K) as u32;
+
+        let dirty_pns = self.0.cache.dirty_pages_in_range(start_pn, end_pn);
+
+        if dirty_pns.is_empty() {
+            return Ok(());
+        }
+
+        self.0
+            .cache
+            .writeback_pages(&dirty_pns)
+            .map_err(|_| AxError::Io)?;
+
+        Ok(())
     }
 
     pub fn file_info(&self) -> AxResult<BackendFileInfo> {

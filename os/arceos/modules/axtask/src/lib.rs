@@ -34,7 +34,7 @@
     test_runner(crate::bare_metal_test_runner)
 )]
 
-#[cfg(all(test, not(target_os = "none")))]
+#[cfg(all(test, not(target_os = "none"), feature = "multitask"))]
 mod tests;
 
 #[cfg(all(test, target_os = "none"))]

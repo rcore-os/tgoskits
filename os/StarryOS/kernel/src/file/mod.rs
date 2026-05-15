@@ -1,6 +1,8 @@
 pub mod epoll;
 pub mod event;
 mod fs;
+#[cfg(feature = "sg2002")]
+pub mod ion;
 mod net;
 pub mod netlink;
 mod packet;
