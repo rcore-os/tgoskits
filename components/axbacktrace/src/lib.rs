@@ -22,6 +22,25 @@ pub use dwarf::{DwarfReader, FrameIter};
 static IP_RANGE: Once<Range<usize>> = Once::new();
 static FP_RANGE: Once<Range<usize>> = Once::new();
 
+#[cfg(target_arch = "x86_64")]
+const TARGET_ARCH: &str = "x86_64";
+#[cfg(target_arch = "aarch64")]
+const TARGET_ARCH: &str = "aarch64";
+#[cfg(target_arch = "riscv64")]
+const TARGET_ARCH: &str = "riscv64";
+#[cfg(target_arch = "riscv32")]
+const TARGET_ARCH: &str = "riscv32";
+#[cfg(target_arch = "loongarch64")]
+const TARGET_ARCH: &str = "loongarch64";
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "riscv32",
+    target_arch = "loongarch64"
+)))]
+const TARGET_ARCH: &str = "unknown";
+
 /// Initializes the backtrace library.
 pub fn init(ip_range: Range<usize>, fp_range: Range<usize>) {
     IP_RANGE.call_once(|| ip_range);
@@ -233,19 +252,7 @@ impl Backtrace {
 
 impl fmt::Display for BacktraceReport<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let arch = if cfg!(target_arch = "x86_64") {
-            "x86_64"
-        } else if cfg!(target_arch = "aarch64") {
-            "aarch64"
-        } else if cfg!(target_arch = "riscv64") {
-            "riscv64"
-        } else if cfg!(target_arch = "riscv32") {
-            "riscv32"
-        } else if cfg!(target_arch = "loongarch64") {
-            "loongarch64"
-        } else {
-            "unknown"
-        };
+        let arch = TARGET_ARCH;
 
         writeln!(
             f,
