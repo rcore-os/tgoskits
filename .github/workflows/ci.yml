@@ -49,6 +49,7 @@ jobs:
       pull-requests: read
     outputs:
       ci_checks: ${{ steps.outputs.outputs.ci_checks }}
+      skip_duplicate_push_ci: ${{ steps.outputs.outputs.skip_duplicate_push_ci }}
       base_container_publish: ${{ steps.outputs.outputs.base_container_publish }}
       axvisor_lvz_container_publish: ${{ steps.outputs.outputs.axvisor_lvz_container_publish }}
       base_container_image: ${{ steps.outputs.outputs.base_container_image }}
@@ -98,10 +99,29 @@ jobs:
           FILTER_CI_CHECKS: ${{ steps.filter.outputs.ci_checks }}
           FILTER_BASE_CONTAINER_PUBLISH: ${{ steps.filter.outputs.base_container_publish }}
           FILTER_AXVISOR_LVZ_CONTAINER_PUBLISH: ${{ steps.filter.outputs.axvisor_lvz_container_publish }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           repository="$(printf '%s' "$GITHUB_REPOSITORY" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
           base_container_image="ghcr.io/${repository}-container"
           axvisor_lvz_container_image="ghcr.io/${repository}-container-axvisor-lvz"
+          skip_duplicate_push_ci=false
+
+          if [ "$EVENT_NAME" = "push" ] \
+            && [ "$REF_NAME" != "main" ] \
+            && [ "$REF_NAME" != "dev" ]; then
+            open_pr_count="$(
+              gh pr list \
+                --repo "$GITHUB_REPOSITORY" \
+                --head "$REF_NAME" \
+                --state open \
+                --json number \
+                --jq 'length'
+            )"
+
+            if [ "$open_pr_count" != "0" ]; then
+              skip_duplicate_push_ci=true
+            fi
+          fi
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             ci_checks=false
@@ -123,6 +143,10 @@ jobs:
                 exit 1
                 ;;
             esac
+          elif [ "$skip_duplicate_push_ci" = "true" ]; then
+            ci_checks=false
+            base_container_publish=false
+            axvisor_lvz_container_publish=false
           else
             if [ "$EVENT_NAME" = "push" ] && { [ "$REF_NAME" = "main" ] || [ "$REF_NAME" = "dev" ]; }; then
               ci_checks=true
@@ -135,6 +159,7 @@ jobs:
 
           {
             echo "ci_checks=${ci_checks}"
+            echo "skip_duplicate_push_ci=${skip_duplicate_push_ci}"
             echo "base_container_publish=${base_container_publish}"
             echo "axvisor_lvz_container_publish=${axvisor_lvz_container_publish}"
             echo "base_container_image=${base_container_image}"
@@ -417,7 +442,7 @@ jobs:
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
 
   skip_non_test_changes:
-    name: Skip CI checks for non-test changes
+    name: Skip CI checks
     if: needs.detect_changes.outputs.ci_checks != 'true'
     needs: detect_changes
     runs-on: ubuntu-latest
@@ -425,11 +450,14 @@ jobs:
       - name: Summarize skip reason
         env:
           EVENT_NAME: ${{ github.event_name }}
+          SKIP_DUPLICATE_PUSH_CI: ${{ needs.detect_changes.outputs.skip_duplicate_push_ci }}
         run: |
           echo "## CI checks skipped" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "This manual run is scoped to container publishing, so fmt and follow-up CI checks were skipped." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$SKIP_DUPLICATE_PUSH_CI" = "true" ]; then
+            echo "This branch already has an open pull request. The duplicate push CI was skipped; the pull_request CI run will validate the same commit." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Changed files do not match the test-relevant path set, so fmt and follow-up checks were skipped." >> "$GITHUB_STEP_SUMMARY"
           fi

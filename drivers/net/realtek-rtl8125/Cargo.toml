@@ -1,6 +1,6 @@
 [package]
 name = "realtek-rtl8125"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "hardware-support", "no-std"]
 description = "Minimal Realtek RTL8125 PCIe Ethernet driver"

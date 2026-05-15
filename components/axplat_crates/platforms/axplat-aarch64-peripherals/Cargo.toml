@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-aarch64-peripherals"
-version = "0.5.7"
+version = "0.5.8"
 repository = "https://github.com/rcore-os/tgoskits"
 description = "ARM64 common peripheral drivers with `axplat` compatibility"
 keywords = ["arceos", "os", "hal", "peripheral", "aarch64"]

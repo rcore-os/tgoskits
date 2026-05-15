@@ -1,7 +1,7 @@
 [package]
 name = "ax-driver-virtio"
 edition.workspace = true
-version = "0.3.11"
+version = "0.3.12"
 repository = "https://github.com/rcore-os/tgoskits"
 authors = ["Yuekai Jia <equation618@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>", "Yu Chen <yuchen@tsinghua.edu.cn>"]
 description = "Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `ax-driver-base` series crates"
