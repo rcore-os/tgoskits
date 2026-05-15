@@ -18,7 +18,7 @@ fn main() {
     let lib_dir = manifest_dir.join("lib");
 
     // generate configuration file
-    let config_path = generate_config(&manifest_dir, &out_dir);
+    let config_path = get_config_path(&manifest_dir, &out_dir);
     println!("cargo:warning=config path: {}", config_path.display());
     // build the ArceOS library
     let artifact_path = compile_project(&lib_dir, &out_dir, &config_path);
@@ -48,6 +48,16 @@ fn main() {
     // Trick: specify a non-existent path to always trigger a rebuild
     // See https://doc.rust-lang.org/cargo/faq.html#why-is-cargo-rebuilding-my-code
     println!("cargo:rerun-if-changed=always");
+}
+
+fn get_config_path(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
+    if let Ok(path) = env::var("ARCEOS_RUST_CONFIG")
+        && !path.trim().is_empty()
+    {
+        return PathBuf::from(path);
+    }
+
+    generate_config(manifest_dir, out_dir)
 }
 
 fn generate_config(manifest_dir: &Path, out_dir: &Path) -> PathBuf {

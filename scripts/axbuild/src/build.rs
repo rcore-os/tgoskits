@@ -390,9 +390,24 @@ fn prepare_std_build_env(
     let arch = target_arch_name(target)?;
     let platform_package = default_platform_package(arch);
     let platform_config = resolve_platform_config_by_package(platform_package, metadata)?;
+    let out_config = generated_axconfig_path("arceos-rust", target)?;
+    generate_axconfig(
+        &crate::context::workspace_root_path()?,
+        target,
+        &platform_config.name,
+        &platform_config.config_path,
+        &out_config,
+        envs.get("SMP")
+            .map(|smp| {
+                smp.parse()
+                    .with_context(|| format!("invalid SMP value `{smp}`"))
+            })
+            .transpose()?,
+        &[],
+    )?;
     envs.insert(
-        "ARCEOS_RUST_PLATFORM_CONFIG".to_string(),
-        platform_config.config_path.display().to_string(),
+        "ARCEOS_RUST_CONFIG".to_string(),
+        out_config.display().to_string(),
     );
     Ok(())
 }
