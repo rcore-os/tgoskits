@@ -122,10 +122,8 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        if self.open_flags & O_EXCL != 0
-            && let Ok(device) = self.inner.location().entry().downcast::<Device>()
-        {
-            device.inner().close(true);
+        if let Ok(device) = self.inner.location().entry().downcast::<Device>() {
+            device.inner().close(self.open_flags & O_EXCL != 0);
         }
     }
 }

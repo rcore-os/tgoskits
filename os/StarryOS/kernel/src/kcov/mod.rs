@@ -42,12 +42,17 @@ pub const KCOV_ENABLE: u32 = _io(b'c', 100);
 /// Disable coverage collection for the current thread.
 pub const KCOV_DISABLE: u32 = _io(b'c', 101);
 
-/// Coverage is disabled.
-pub const KCOV_MODE_DISABLED: u32 = 0;
+// Userspace ABI constants (ioctl arguments — match Linux uapi).
 /// Trace program counters (PCs).
 pub const KCOV_TRACE_PC: u32 = 0;
 /// Trace comparison operations (not yet implemented).
 pub const KCOV_TRACE_CMP: u32 = 1;
+
+// Internal mode constants (stored in KcovThreadState.mode).
+/// Initial state — no buffer allocated.
+pub const KCOV_MODE_DISABLED: u32 = 0;
+/// After INIT_TRACE — buffer allocated, waiting for ENABLE.
+pub const KCOV_MODE_INIT: u32 = 1;
 
 /// Maximum number of coverage entries in the buffer.
 pub const KCOV_MAX_ENTRIES: usize = 64 * 1024;
@@ -65,35 +70,41 @@ pub struct KcovThreadState {
     pub mode: u32,
 }
 
-/// Global state for `/dev/kcov`, keyed by thread ID.
-pub struct KcovDeviceState {
-    /// Per-thread KCOV buffers.
-    per_thread: Mutex<Slab<KcovThreadState>>,
-    /// TID → slab slot index for fast lookup/removal.
-    tid_to_slot: Mutex<HashMap<u32, usize>>,
+/// Global state for `/dev/kcov`.
+struct KcovDeviceState {
+    /// All KCOV instances, each created by a KCOV_INIT_TRACE call.
+    instances: Slab<KcovThreadState>,
+    /// TID → instance slot index (at most one per TID, matching Linux kcov).
+    tid_to_instances: HashMap<u32, usize>,
 }
 
 impl KcovDeviceState {
     fn new() -> Self {
         Self {
-            per_thread: Mutex::new(Slab::new()),
-            tid_to_slot: Mutex::new(HashMap::new()),
+            instances: Slab::new(),
+            tid_to_instances: HashMap::new(),
         }
     }
 }
 
 lazy_static! {
-    /// Global KCOV state singleton.
-    static ref KCOV_STATE: KcovDeviceState = KcovDeviceState::new();
+    /// Serializes access to all KCOV state.
+    static ref KCOV_STATE: Mutex<KcovDeviceState> = Mutex::new(KcovDeviceState::new());
 }
 
-/// Remove the KCOV state for a given thread (called on thread exit).
+/// Remove ALL KCOV instances for the given thread (called on thread exit).
 pub fn disable_for_thread(tid: u32) {
-    let mut map = KCOV_STATE.per_thread.lock();
-    let mut rev = KCOV_STATE.tid_to_slot.lock();
-    if let Some(slot) = rev.remove(&tid) {
-        map.remove(slot);
+    let mut state = KCOV_STATE.lock();
+    if let Some(slot) = state.tid_to_instances.remove(&tid) {
+        state.instances.remove(slot);
     }
+}
+
+/// Ensure the child starts with kcov disabled after fork.
+///
+/// Linux kcov(1): "Coverage collection is disabled in the child after fork()."
+pub fn on_fork(child_tid: u32) {
+    disable_for_thread(child_tid);
 }
 
 // ---- /dev/kcov device ----
@@ -108,6 +119,18 @@ impl DeviceOps for KcovDevice {
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Err(AxError::InvalidInput)
+    }
+
+    /// Called when the last file descriptor to `/dev/kcov` is closed.
+    ///
+    /// Cleans up the kcov instance for the current thread so that a subsequent
+    /// open+INIT_TRACE creates a fresh one (matching Linux: one INIT_TRACE per
+    /// fd, but a new fd may INIT_TRACE again).  Any outstanding mmap'd buffer
+    /// remains valid through the Arc<SharedPages> held by the VMA.
+    fn close(&self, _exclusive: bool) {
+        let task = ax_task::current();
+        let tid = task.id().as_u64() as u32;
+        disable_for_thread(tid);
     }
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
@@ -134,53 +157,59 @@ impl DeviceOps for KcovDevice {
                     core::ptr::write_volatile(base_vaddr.as_mut_ptr_of::<u64>(), 0u64);
                 }
 
-                let state = KcovThreadState {
-                    buf_pages: pages,
-                    buf_entries: cover_size,
-                    mode: KCOV_MODE_DISABLED,
-                };
-
                 let task = ax_task::current();
                 let tid = task.id().as_u64() as u32;
 
-                let mut map = KCOV_STATE.per_thread.lock();
-                let mut rev = KCOV_STATE.tid_to_slot.lock();
-                if let Some(&slot) = rev.get(&tid) {
-                    map[slot] = state;
-                } else {
-                    let slot = map.insert(state);
-                    rev.insert(tid, slot);
+                let mut global = KCOV_STATE.lock();
+                // Linux kcov(1): only one INIT_TRACE per TID, second call returns EBUSY.
+                if global.tid_to_instances.contains_key(&tid) {
+                    return Err(AxError::ResourceBusy);
                 }
+
+                let state = KcovThreadState {
+                    buf_pages: pages,
+                    buf_entries: cover_size,
+                    mode: KCOV_MODE_INIT,
+                };
+                let slot = global.instances.insert(state);
+                global.tid_to_instances.insert(tid, slot);
                 Ok(0)
             }
 
             KCOV_ENABLE => {
-                let mode = arg as u32;
-                // KCOV_TRACE_CMP (comparison instrumentation) is accepted at the
-                // ioctl layer but the actual comparison hooks have not yet been
-                // implemented.  Until then, accept only TRACE_PC to avoid
-                // silently giving userspace no data.
-                if mode == KCOV_TRACE_CMP {
-                    // To be implemented!
-                    return Err(AxError::InvalidInput);
-                }
-                if mode != KCOV_TRACE_PC {
-                    return Err(AxError::InvalidInput);
-                }
+                let mode_arg = arg as u32;
+                // Map userspace ABI constant to internal mode.
+                let internal_mode = match mode_arg {
+                    KCOV_TRACE_PC => KCOV_MODE_TRACE_PC,
+                    KCOV_TRACE_CMP => {
+                        // KCOV_TRACE_CMP hooks not yet implemented.
+                        return Err(AxError::InvalidInput);
+                    }
+                    _ => return Err(AxError::InvalidInput),
+                };
+
+                let task = ax_task::current();
+                let tid = task.id().as_u64() as u32;
 
                 // Let the hot path know at least one thread is tracing.
                 unsafe {
                     KCOV_GLOBAL_GATE = 1;
                 }
 
-                let task = ax_task::current();
-                let tid = task.id().as_u64() as u32;
+                let mut global = KCOV_STATE.lock();
+                let slot = global
+                    .tid_to_instances
+                    .get(&tid)
+                    .copied()
+                    .ok_or(VfsError::InvalidInput)?;
+                let kcov_state = &mut global.instances[slot];
 
-                let mut map = KCOV_STATE.per_thread.lock();
-                let rev = KCOV_STATE.tid_to_slot.lock();
-                let slot = rev.get(&tid).ok_or(VfsError::InvalidInput)?;
-                let kcov_state = &mut map[*slot];
-                kcov_state.mode = mode;
+                // Linux kcov(1): "A thread can have at most one kcov instance
+                // enabled at a time."  Must be in INIT mode to enable.
+                if kcov_state.mode != KCOV_MODE_INIT {
+                    return Err(AxError::ResourceBusy);
+                }
+                kcov_state.mode = internal_mode;
 
                 // Store in Thread for lock-free access from coverage hook
                 if let Some(thr) = task.try_as_thread() {
@@ -193,14 +222,15 @@ impl DeviceOps for KcovDevice {
             KCOV_DISABLE => {
                 // Stop recording but keep the buffer in the global map so
                 // mmap still works after disable (matching Linux kcov).
-                // Cleanup (disable_for_thread) is called only on thread exit.
+                // The mode returns to INIT so the same instance can be
+                // re-enabled later.  Cleanup (disable_for_thread) is called
+                // only on thread exit.
                 let task = ax_task::current();
                 let tid = task.id().as_u64() as u32;
 
-                let mut map = KCOV_STATE.per_thread.lock();
-                let rev = KCOV_STATE.tid_to_slot.lock();
-                if let Some(&slot) = rev.get(&tid) {
-                    map[slot].mode = KCOV_MODE_DISABLED;
+                let mut global = KCOV_STATE.lock();
+                if let Some(&slot) = global.tid_to_instances.get(&tid) {
+                    global.instances[slot].mode = KCOV_MODE_INIT;
                 }
 
                 if let Some(thr) = task.try_as_thread() {
@@ -223,13 +253,10 @@ impl DeviceOps for KcovDevice {
         let task = ax_task::current();
         let tid = task.id().as_u64() as u32;
 
-        let map = KCOV_STATE.per_thread.lock();
-        let rev = KCOV_STATE.tid_to_slot.lock();
-        if let Some(&slot) = rev.get(&tid) {
-            let state = &map[slot];
-            DeviceMmap::SharedPages(state.buf_pages.clone())
-        } else {
-            DeviceMmap::NotConfigured
+        let global = KCOV_STATE.lock();
+        match global.tid_to_instances.get(&tid).copied() {
+            Some(slot) => DeviceMmap::SharedPages(global.instances[slot].buf_pages.clone()),
+            None => DeviceMmap::NotConfigured,
         }
     }
 
@@ -266,7 +293,7 @@ extern "C" fn kcov_trace_pc_impl(pc: u64) {
     let Some(ref kcov) = thr.kcov() else {
         return;
     };
-    if kcov.mode != KCOV_TRACE_PC {
+    if kcov.mode != KCOV_MODE_TRACE_PC {
         return;
     }
 
