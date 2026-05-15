@@ -257,7 +257,7 @@ pub fn sys_mmap(
             return Ok(start.as_usize() as _);
         }
     }
-  
+
     let mut mapping_flags: MappingFlags = permission_flags.into();
 
     let backend = match map_type {
