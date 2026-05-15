@@ -18,7 +18,3 @@ chrono = { workspace = true, default-features = true, optional = true }
 ax-crate-interface.workspace = true
 ax-kspin.workspace = true
 log.workspace = true
-
-# [dev-dependencies]
-[target.'cfg(not(target_os="none"))'.dev-dependencies]
-ax-log = { workspace = true, features = ["std"] }

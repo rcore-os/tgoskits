@@ -71,4 +71,3 @@ spin = {workspace = true, optional = true}
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-hal = { workspace = true, features = ["fp-simd"] }
-ax-task = { workspace = true, features = ["test", "multitask"] }

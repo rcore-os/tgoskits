@@ -16,5 +16,5 @@ features = [
   "rknpu",
 ]
 log = "Info"
-max_cpu_num = 8
+max_cpu_num = 1
 plat_dyn = true
