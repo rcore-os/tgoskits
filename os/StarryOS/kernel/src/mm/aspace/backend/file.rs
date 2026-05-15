@@ -139,6 +139,43 @@ impl FileBackend {
         &self.0.cache
     }
 
+    pub fn writeback_and_protect(
+        &self,
+        aspace: &mut AddrSpace,
+        range_start: VirtAddr,
+        range_end: VirtAddr,
+        area_flags: MappingFlags,
+    ) -> AxResult {
+        let dirty_pns = self.0.cache.writeback().map_err(|_| AxError::Io)?;
+
+        if !dirty_pns.is_empty() {
+            let file_data = self.0.file_data.lock();
+            let pt = aspace.page_table_mut();
+            let mut pt_cursor = pt.cursor();
+            for pn in &dirty_pns {
+                let vaddr =
+                    file_data.start + ((*pn - file_data.offset_page) as usize) * PAGE_SIZE_4K;
+                if vaddr < range_start || vaddr >= range_end {
+                    continue;
+                }
+                if let Ok((paddr, ..)) = pt_cursor.query(vaddr) {
+                    let ro_flags = area_flags - MappingFlags::WRITE;
+                    match pt_cursor.remap(vaddr, paddr, ro_flags) {
+                        Ok(_) | Err(PagingError::NotMapped) => {}
+                        Err(err) => {
+                            warn!("msync remap failed for {:?}: {:?}", vaddr, err);
+                        }
+                    }
+                }
+            }
+            drop(pt_cursor);
+            drop(file_data);
+
+            self.0.cache.clear_dirty(&dirty_pns);
+        }
+        Ok(())
+    }
+
     pub fn file_info(&self) -> AxResult<BackendFileInfo> {
         let loc = self.0.cache.location();
         let name = loc.absolute_path().map(|pb| pb.to_string())?;

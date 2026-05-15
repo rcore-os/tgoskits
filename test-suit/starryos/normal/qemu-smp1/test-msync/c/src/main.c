@@ -22,14 +22,6 @@ static int __fail = 0;
     fflush(stdout);                                                     \
 } while(0)
 
-#define CHECK_ERRNO(call, exp_errno, msg) do {                         \
-    errno = 0;                                                         \
-    call;                                                               \
-    CHECK(errno == (exp_errno),                                        \
-          msg " (expected errno=" #exp_errno ", got "                  \
-          "errno=" "0" ")");                                           \
-} while(0)
-
 static int create_temp_file(const char *path, size_t size) {
     int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return -1;
@@ -214,6 +206,53 @@ int main(void) {
                 CHECK(rc == 0, "msync(MAP_PRIVATE) succeeds");
 
                 munmap(p, file_size);
+            }
+        }
+    }
+
+    /* ---- T8: Repeated write-msync cycle data persistence ---- */
+    printf("\n--- T8: Repeated write-msync cycle data persistence ---\n"); fflush(stdout);
+    {
+        int fd = create_temp_file(tmpfile, file_size);
+        CHECK(fd >= 0, "create temp file");
+        if (fd >= 0) {
+            void *p = mmap(NULL, file_size, PROT_READ | PROT_WRITE,
+                           MAP_SHARED, fd, 0);
+            close(fd);
+            CHECK(p != MAP_FAILED, "mmap MAP_SHARED");
+            if (p != MAP_FAILED) {
+                memset(p, 0x11, file_size);
+                errno = 0;
+                int rc = msync(p, file_size, MS_SYNC);
+                CHECK(rc == 0, "first msync succeeds");
+
+                memset(p, 0x22, file_size);
+                errno = 0;
+                rc = msync(p, file_size, MS_SYNC);
+                CHECK(rc == 0, "second msync succeeds");
+
+                memset(p, 0x33, file_size);
+                errno = 0;
+                rc = msync(p, file_size, MS_SYNC);
+                CHECK(rc == 0, "third msync succeeds");
+
+                munmap(p, file_size);
+
+                fd = open(tmpfile, O_RDONLY);
+                CHECK(fd >= 0, "reopen file for verification");
+                if (fd >= 0) {
+                    unsigned char buf[4096];
+                    ssize_t n = read(fd, buf, sizeof(buf));
+                    CHECK(n == (ssize_t)sizeof(buf), "read back first page");
+
+                    int all_match = 1;
+                    for (int i = 0; i < (int)sizeof(buf); i++) {
+                        if (buf[i] != 0x33) { all_match = 0; break; }
+                    }
+                    CHECK(all_match, "data matches third write (0x33)");
+
+                    close(fd);
+                }
             }
         }
     }

@@ -677,22 +677,30 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
 
     let curr = current();
     let aspace_arc = curr.as_thread().proc_data.aspace();
-    let aspace = aspace_arc.lock();
+    let mut aspace = aspace_arc.lock();
 
     let mut cursor = start;
     while cursor < end {
-        let area = match aspace.find_area(cursor) {
-            Some(a) => a,
-            None => return Err(AxError::NoMemory),
+        let (area_end, fb_info) = {
+            let area = match aspace.find_area(cursor) {
+                Some(a) => a,
+                None => return Err(AxError::NoMemory),
+            };
+            let fb_info = if let Backend::File(file_backend) = area.backend()
+                && file_backend.is_shared()
+            {
+                Some((file_backend.clone(), area.flags()))
+            } else {
+                None
+            };
+            (area.end(), fb_info)
         };
 
-        if let Backend::File(file_backend) = area.backend()
-            && file_backend.is_shared()
-        {
-            file_backend.cache().writeback()?;
+        if let Some((file_backend, area_flags)) = fb_info {
+            file_backend.writeback_and_protect(&mut aspace, start, end, area_flags)?;
         }
 
-        cursor = area.end();
+        cursor = area_end;
     }
 
     Ok(0)
