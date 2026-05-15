@@ -89,7 +89,8 @@ impl ThreadSignalManager {
         let signo = sig.signo();
         debug!("Handle signal: {signo:?}");
         let action = {
-            let mut actions = self.proc.actions.lock();
+            let actions_arc = self.proc.actions();
+            let mut actions = actions_arc.lock();
             let action = actions[signo].clone();
             if action.flags.contains(SignalActionFlags::RESETHAND) {
                 actions[signo] = SignalAction::default();
@@ -289,7 +290,8 @@ impl ThreadSignalManager {
         let signo = sig.signo();
 
         // Lock by `actions`
-        let actions = self.proc.actions.lock();
+        let actions_arc = self.proc.actions();
+        let actions = actions_arc.lock();
         debug!("signal: {signo:?}");
         if actions[signo].is_ignore(signo) {
             return false;
@@ -309,7 +311,8 @@ impl ThreadSignalManager {
     /// Sets the blocked signals. Return the old value.
     pub fn set_blocked(&self, mut set: SignalSet) -> SignalSet {
         // Lock by `actions`
-        let _actions = self.proc.actions.lock();
+        let actions_arc = self.proc.actions();
+        let _actions = actions_arc.lock();
 
         set.remove(Signo::SIGKILL);
         set.remove(Signo::SIGSTOP);

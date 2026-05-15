@@ -19,7 +19,7 @@ use core::{
 
 use ax_hal::time::TimeValue;
 use ax_sync::{Mutex, spin::SpinNoIrq};
-use ax_task::{TaskExt, TaskInner, WaitQueue};
+use ax_task::{TaskExt, TaskInner};
 use axpoll::PollSet;
 use extern_trait::extern_trait;
 use scope_local::{ActiveScope, Scope};
@@ -234,6 +234,13 @@ impl Thread {
         self.exit_request.swap(false, Ordering::AcqRel)
     }
 
+    /// Non-consuming probe for a pending thread-only exit request. Used
+    /// by in-kernel wait loops that want to abort cooperatively without
+    /// stealing the flag from the user-return `check_signals` path.
+    pub fn has_exit_request(&self) -> bool {
+        self.exit_request.load(Ordering::Acquire)
+    }
+
     /// Request a thread-only exit. Honored by `check_signals` on the next
     /// return to user space, where it routes to `do_exit(0, false)`.
     pub fn set_exit_request(&self) {
@@ -355,16 +362,22 @@ impl AsThread for TaskInner {
 /// A one-shot completion for vfork synchronization.
 ///
 /// This avoids lost-wakeup races by recording the "done" state under the same
-/// lock as the wait queue. If the child completes before the parent enters the
+/// lock as the waker set. If the child completes before the parent enters the
 /// wait, the parent will see `done == true` and skip waiting.
+///
+/// We use [`PollSet`] (not `WaitQueue`) so the parent's wait can run inside
+/// `block_on(interruptible(...))`: a sibling thread that does `execve` will
+/// zap us via `task.interrupt()`, which only wakes futures-based polls, not
+/// `WaitQueue::wait_until`. Without this, the execve initiator would deadlock
+/// in its sibling-teardown loop waiting for us to exit.
 pub struct VforkDone {
     done: bool,
-    wq: Arc<WaitQueue>,
+    poll: Arc<PollSet>,
 }
 
 impl VforkDone {
-    pub fn new(wq: Arc<WaitQueue>) -> Self {
-        Self { done: false, wq }
+    pub fn new(poll: Arc<PollSet>) -> Self {
+        Self { done: false, poll }
     }
 }
 
@@ -545,47 +558,85 @@ impl ProcessData {
 
     /// Set the vfork completion (called on the child after a vfork,
     /// before the child task is spawned).
-    pub fn set_vfork_done(&self, wq: Arc<WaitQueue>) {
-        *self.vfork_done.lock() = Some(VforkDone::new(wq));
+    pub fn set_vfork_done(&self, poll: Arc<PollSet>) {
+        *self.vfork_done.lock() = Some(VforkDone::new(poll));
     }
 
     /// Wait for vfork completion. Returns immediately if already done.
     /// This should be called by the parent after spawning the vfork child.
+    ///
+    /// The wait is killable but not arbitrarily signal-interruptible
+    /// (mirroring Linux's `wait_for_completion_killable`):
+    ///
+    ///   - If the child notifies (exec or exit), we return normally.
+    ///   - If another thread in this parent process does `execve` it will
+    ///     zap us by setting `exit_request`. We bail and let the user-
+    ///     return path consume `exit_request` and route to
+    ///     `do_exit(0, false)`. Without this, `WaitQueue::wait_until`
+    ///     would never observe the zap and the execve initiator would
+    ///     deadlock in its sibling-teardown loop.
+    ///   - Non-fatal signal wakeups must not unblock us: returning early
+    ///     while the child still shares our address space would violate
+    ///     the vfork contract. We re-enter the wait in that case.
     pub fn wait_vfork_done(&self) {
-        let wq = {
+        let poll = {
             let guard = self.vfork_done.lock();
             match guard.as_ref() {
-                Some(vfork) => vfork.wq.clone(),
+                Some(vfork) => vfork.poll.clone(),
                 None => return, // No vfork, shouldn't happen but be safe.
             }
         };
-        // Wait until done. The condition is checked under lock in wait_until.
-        wq.wait_until(|| {
-            self.vfork_done
-                .lock()
-                .as_ref()
-                .map(|v| v.done)
-                .unwrap_or(true)
-        });
+        let curr_task = ax_task::current();
+        let curr_thr = curr_task.as_thread();
+        loop {
+            let result = ax_task::future::block_on(ax_task::future::interruptible(
+                core::future::poll_fn(|cx| {
+                    // Register before re-checking so a notify that fires
+                    // between our last check and this register isn't lost.
+                    poll.register(cx.waker());
+                    let done = self
+                        .vfork_done
+                        .lock()
+                        .as_ref()
+                        .map(|v| v.done)
+                        .unwrap_or(true);
+                    if done {
+                        core::task::Poll::Ready(())
+                    } else {
+                        core::task::Poll::Pending
+                    }
+                }),
+            ));
+            match result {
+                Ok(()) => return,
+                Err(_) => {
+                    if curr_thr.has_exit_request() {
+                        return;
+                    }
+                    // Spurious wake from a non-fatal signal; keep waiting.
+                    continue;
+                }
+            }
+        }
     }
 
     /// Notify the vfork parent that this child has exec'd or exited.
     /// No-op if this process was not created by vfork.
     pub fn notify_vfork_done(&self) {
         // Set done under the lock, then drop the lock before notifying
-        // to avoid lock-order inversion with the wait-queue internal lock.
-        let wq = {
+        // to avoid lock-order inversion with the poll-set internal lock.
+        let poll = {
             let mut guard = self.vfork_done.lock();
             match guard.as_mut() {
                 Some(vfork) => {
                     vfork.done = true;
-                    vfork.wq.clone()
+                    vfork.poll.clone()
                 }
                 None => return,
             }
             // guard dropped here
         };
-        wq.notify_one(true);
+        poll.wake();
     }
 }
 

@@ -5,7 +5,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_hal::uspace::UserContext;
 use ax_sync::Mutex;
-use ax_task::{current, future::block_on};
+use ax_task::{current, future::block_on, yield_now};
 use starry_process::Pid;
 use starry_vm::vm_load_until_nul;
 
@@ -60,9 +60,39 @@ pub fn sys_execve(
     let my_tid = thr.tid();
     let tgid = proc_data.proc.pid();
 
-    // Serialize concurrent execve from sibling threads. The loser of the
-    // race returns EINTR and is about to be zapped by the winner anyway.
-    let _exec_guard = proc_data.exec_lock.try_lock().ok_or(AxError::Interrupted)?;
+    // Serialize concurrent execve from sibling threads.
+    //
+    // `try_lock` alone would let a loser fail with EINTR even while the
+    // holder is still in the *fallible* phase (path resolve / ELF load):
+    // if the holder then errored out and released the lock, the loser
+    // would have wrongly given up on an execve that could have succeeded
+    // on its own image. We wait for the lock instead, and only bail when
+    // the holder has crossed into irreversible teardown — which we observe
+    // by `zap_thread` setting our `exit_request`.
+    //
+    // We can't use `ax_sync::Mutex::lock` directly: it sleeps on
+    // `WaitQueue::wait_until`, which is not awakened by zap's
+    // `task.interrupt()`, and (worse) on release the loser would acquire
+    // the mutex and proceed with execve on top of the holder's already-
+    // committed new image. Busy-yield with an `exit_request` probe gives
+    // us:
+    //   - fall-through to acquisition if the holder fails before commit,
+    //   - cooperative exit (EINTR → user-return → `do_exit(0, false)`) if
+    //     the holder zaps us during its sibling-teardown loop,
+    // without consuming any flag the user-return `check_signals` needs.
+    //
+    // Note: we deliberately do *not* abort on generic `task.interrupt()`
+    // (signal wakeups). Linux's execve is killable but not arbitrarily
+    // signal-interruptible while it serializes through `cred_guard_mutex`.
+    let _exec_guard = loop {
+        if let Some(g) = proc_data.exec_lock.try_lock() {
+            break g;
+        }
+        if thr.has_exit_request() {
+            return Err(AxError::Interrupted);
+        }
+        yield_now();
+    };
 
     // Resolve the path and collect metadata before touching anything.
     let loc = FS_CONTEXT.lock().resolve(&path)?;
@@ -81,15 +111,6 @@ pub fn sys_execve(
     copy_from_kernel(&mut new_aspace)?;
     let (entry_point, user_stack_base) =
         load_user_app(&mut new_aspace, Some(path.as_str()), &args, &envs)?;
-
-    // Collect CLOEXEC fds to close (read-only scan, no mutation yet).
-    let cloexec_fds: Vec<_> = {
-        let fd_table = FD_TABLE.read();
-        fd_table
-            .ids()
-            .filter(|it| fd_table.get(*it).unwrap().cloexec)
-            .collect()
-    };
 
     // ----------------------------------------------------------------
     // Sibling teardown (multi-thread only).
@@ -155,6 +176,19 @@ pub fn sys_execve(
         }));
     }
 
+    // Collect CLOEXEC fds to close *after* sibling teardown. Snapshotting
+    // before teardown would miss any fd a sibling promoted to CLOEXEC (via
+    // `open(... O_CLOEXEC)`, `fcntl(F_SETFD)`, or `close_range(..., CLOEXEC)`)
+    // between our snapshot and its own exit, leaking those fds into the new
+    // image. Once all siblings are reaped, the snapshot reflects the final
+    // post-quiescence table. The close pass below runs under the same
+    // `FD_TABLE.write()` guard so no new fds appear between scan and close.
+    let mut fd_table = FD_TABLE.write();
+    let cloexec_fds: Vec<_> = fd_table
+        .ids()
+        .filter(|it| fd_table.get(*it).unwrap().cloexec)
+        .collect();
+
     // ----------------------------------------------------------------
     // Phase 2: point of no return — commit all changes.
     // Nothing below may fail; errors here would leave the process broken.
@@ -201,8 +235,9 @@ pub fn sys_execve(
     thr.set_robust_list_head(0);
     thr.set_rseq_area(0);
 
-    // Close CLOEXEC file descriptors.
-    let mut fd_table = FD_TABLE.write();
+    // Close CLOEXEC file descriptors under the same write guard we took
+    // for the post-teardown snapshot — no fd can be added or have its
+    // CLOEXEC bit flipped between scan and close.
     for fd in cloexec_fds {
         fd_table.remove(fd);
     }

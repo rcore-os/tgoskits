@@ -44,8 +44,14 @@ pub struct ProcessSignalManager {
     /// The process-level shared pending signals
     pending: SpinNoIrq<PendingSignals>,
 
-    /// The signal actions
-    pub actions: Arc<SpinNoIrq<SignalActions>>,
+    /// The signal actions. Held in a swappable slot because `CLONE_SIGHAND`
+    /// hands the inner `Arc` to a peer process; `execve` must be able to
+    /// detach this manager from that shared inner table (to reset handlers
+    /// for the new image) without mutating the table the peer still uses.
+    /// Outside of exec, callers should obtain the current table via
+    /// [`Self::actions`] which clones the strong reference under the slot
+    /// lock for the duration of one operation.
+    actions_slot: SpinNoIrq<Arc<SpinNoIrq<SignalActions>>>,
 
     /// The default restorer function.
     pub(crate) default_restorer: usize,
@@ -61,11 +67,19 @@ impl ProcessSignalManager {
     pub fn new(actions: Arc<SpinNoIrq<SignalActions>>, default_restorer: usize) -> Self {
         Self {
             pending: SpinNoIrq::new(PendingSignals::default()),
-            actions,
+            actions_slot: SpinNoIrq::new(actions),
             default_restorer,
             children: SpinNoIrq::new(Vec::new()),
             possibly_has_signal: AtomicBool::new(false),
         }
+    }
+
+    /// Returns a strong reference to the currently-installed signal action
+    /// table. The slot lock is held only for the duration of the clone, so
+    /// callers can freely lock the returned inner mutex without blocking
+    /// concurrent `execve` swap.
+    pub fn actions(&self) -> Arc<SpinNoIrq<SignalActions>> {
+        self.actions_slot.lock().clone()
     }
 
     pub(crate) fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
@@ -87,7 +101,8 @@ impl ProcessSignalManager {
         let signo = sig.signo();
 
         // Lock by `actions`
-        let actions = self.actions.lock();
+        let actions_arc = self.actions();
+        let actions = actions_arc.lock();
         if actions[signo].is_ignore(signo) {
             return None;
         }
@@ -116,7 +131,7 @@ impl ProcessSignalManager {
 
     /// Resets actions to empty.
     pub fn reset_actions(&self) {
-        *self.actions.lock() = Default::default();
+        *self.actions().lock() = Default::default();
     }
 
     /// Resets actions across `execve` per POSIX/Linux semantics.
@@ -131,13 +146,22 @@ impl ProcessSignalManager {
     ///   default action happens to be Ignore (e.g. `SIGCHLD`, `SIGURG`,
     ///   `SIGWINCH`), so a post-exec `sigaction` query observes the
     ///   real disposition the kernel installed.
+    ///
+    /// The actions slot is **detached** before reset: with `CLONE_SIGHAND`
+    /// the inner `Arc<SignalActions>` is shared with one or more peer
+    /// processes. Mirror Linux's `unshare_sighand()` — build a fresh
+    /// private copy seeded from the current contents and atomically swap
+    /// the slot, so the peer's table is left untouched.
     pub fn reset_actions_for_exec(&self) {
-        let mut actions = self.actions.lock();
+        let mut new_actions = {
+            let current = self.actions();
+            current.lock().clone()
+        };
         for signo_idx in 0..64u8 {
             let Some(signo) = Signo::from_repr(signo_idx + 1) else {
                 continue;
             };
-            let action = &mut actions[signo];
+            let action = &mut new_actions[signo];
             if matches!(action.disposition, crate::SignalDisposition::Ignore) {
                 *action = SignalAction {
                     disposition: crate::SignalDisposition::Ignore,
@@ -147,6 +171,7 @@ impl ProcessSignalManager {
                 *action = SignalAction::default();
             }
         }
+        *self.actions_slot.lock() = Arc::new(SpinNoIrq::new(new_actions));
     }
 
     /// Updates a thread's TID in the children registration. Called by
@@ -178,7 +203,8 @@ impl ProcessSignalManager {
         };
 
         let old_action = {
-            let mut actions = self.actions.lock();
+            let actions_arc = self.actions();
+            let mut actions = actions_arc.lock();
             let old = actions[signo].clone();
             if let Some(act) = new_action {
                 actions[signo] = act;

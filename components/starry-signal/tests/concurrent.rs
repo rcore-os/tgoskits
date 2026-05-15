@@ -88,7 +88,7 @@ fn concurrent_check_signals() {
     let (proc, thr) = new_test_env();
 
     unsafe extern "C" fn test_handler(_: i32) {}
-    proc.actions.lock()[Signo::SIGTERM].disposition = SignalDisposition::Handler(test_handler);
+    proc.actions().lock()[Signo::SIGTERM].disposition = SignalDisposition::Handler(test_handler);
 
     let mut uctx = UserContext::new(0, initial_sp().into(), 0);
 
