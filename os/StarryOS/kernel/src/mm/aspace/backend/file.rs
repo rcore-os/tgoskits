@@ -141,10 +141,10 @@ impl FileBackend {
 
     pub fn writeback_and_protect(
         &self,
-        aspace: &mut AddrSpace,
+        _aspace: &mut AddrSpace,
         range_start: VirtAddr,
         range_end: VirtAddr,
-        area_flags: MappingFlags,
+        _area_flags: MappingFlags,
     ) -> AxResult {
         let file_data = self.0.file_data.lock();
 
@@ -173,37 +173,6 @@ impl FileBackend {
             .cache
             .writeback_pages(&dirty_pns)
             .map_err(|_| AxError::Io)?;
-
-        let mut protected_pns = Vec::new();
-        {
-            let pt = aspace.page_table_mut();
-            let mut pt_cursor = pt.cursor();
-            for pn in &dirty_pns {
-                let Some(local_pn) = pn.checked_sub(offset_page) else {
-                    continue;
-                };
-                let vaddr = mapping_start + (local_pn as usize) * PAGE_SIZE_4K;
-                if vaddr < range_start || vaddr >= range_end {
-                    continue;
-                }
-                if let Ok((paddr, ..)) = pt_cursor.query(vaddr) {
-                    let ro_flags = area_flags - MappingFlags::WRITE;
-                    match pt_cursor.remap(vaddr, paddr, ro_flags) {
-                        Ok(_) => {
-                            protected_pns.push(*pn);
-                        }
-                        Err(PagingError::NotMapped) => {
-                            protected_pns.push(*pn);
-                        }
-                        Err(err) => {
-                            warn!("msync remap failed for {:?}: {:?}", vaddr, err);
-                        }
-                    }
-                }
-            }
-        }
-
-        self.0.cache.clear_dirty_pages(&protected_pns);
 
         Ok(())
     }

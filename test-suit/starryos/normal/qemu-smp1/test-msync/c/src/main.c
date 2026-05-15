@@ -257,7 +257,7 @@ int main(void) {
         }
     }
 
-    /* ---- T9: Two MAP_SHARED mappings, partial msync ---- */
+    /* ---- T9: Two MAP_SHARED mappings (different pages), partial msync ---- */
     printf("\n--- T9: Two MAP_SHARED mappings, partial msync ---\n"); fflush(stdout);
     {
         unlink(tmpfile);
@@ -312,6 +312,62 @@ int main(void) {
                     }
                     CHECK(page1_ok, "page 1 data matches 0x11");
                     CHECK(page2_ok, "page 2 data matches 0x22");
+                }
+            }
+        }
+    }
+
+    /* ---- T10: Same file page mapped twice (alias), write through both ---- */
+    printf("\n--- T10: Same file page dual alias write+msync ---\n"); fflush(stdout);
+    {
+        unlink(tmpfile);
+        int fd = create_temp_file(tmpfile, 4096);
+        CHECK(fd >= 0, "create temp file");
+        if (fd >= 0) {
+            void *p1 = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, fd, 0);
+            void *p2 = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, fd, 0);
+            close(fd);
+            CHECK(p1 != MAP_FAILED, "mmap alias 1");
+            CHECK(p2 != MAP_FAILED, "mmap alias 2");
+            if (p1 != MAP_FAILED && p2 != MAP_FAILED) {
+                memset(p1, 0xAA, 4096);
+                errno = 0;
+                int rc = msync(p1, 4096, MS_SYNC);
+                CHECK(rc == 0, "msync alias 1 after p1 write");
+
+                memset(p2, 0xBB, 4096);
+                errno = 0;
+                rc = msync(p2, 4096, MS_SYNC);
+                CHECK(rc == 0, "msync alias 2 after p2 write");
+
+                memset(p1, 0x11, 4096);
+                errno = 0;
+                rc = msync(p1, 4096, MS_SYNC);
+                CHECK(rc == 0, "msync alias 1 after p1 rewrite");
+
+                memset(p2, 0x22, 4096);
+                errno = 0;
+                rc = msync(p2, 4096, MS_SYNC);
+                CHECK(rc == 0, "msync alias 2 after p2 rewrite");
+
+                munmap(p1, 4096);
+                munmap(p2, 4096);
+
+                fd = open(tmpfile, O_RDONLY);
+                CHECK(fd >= 0, "reopen for verification");
+                if (fd >= 0) {
+                    unsigned char buf[4096];
+                    ssize_t n = read(fd, buf, 4096);
+                    close(fd);
+                    CHECK(n == 4096, "read back page");
+
+                    int all_0x22 = 1;
+                    for (int i = 0; i < 4096; i++) {
+                        if (buf[i] != 0x22) { all_0x22 = 0; break; }
+                    }
+                    CHECK(all_0x22, "data matches last alias write (0x22)");
                 }
             }
         }
