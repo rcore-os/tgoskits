@@ -345,11 +345,7 @@ impl BuildInfo {
             rustflags_config.push('"');
         }
         rustflags_config.push(']');
-
-        let mut args = Vec::new();
-        args.push("--config".to_string());
-        args.push(rustflags_config);
-        args
+        vec!["--config".to_string(), rustflags_config]
     }
 }
 
