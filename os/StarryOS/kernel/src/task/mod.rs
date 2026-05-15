@@ -379,6 +379,10 @@ pub struct ProcessData {
     /// `false` for normal `fork()` children and after a successful `execve`
     /// installs a private address space.
     vm_aspace_shared: AtomicBool,
+
+    /// Set after [`Self::release_aspace_slot_if_needed`] runs so `Drop` does not
+    /// double-decrement [`AddrSpace::process_slots`].
+    aspace_slot_released: AtomicBool,
 }
 
 impl ProcessData {
@@ -392,7 +396,7 @@ impl ProcessData {
         exit_signal: Option<Signo>,
         vm_aspace_shared: bool,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let this = Arc::new(Self {
             proc,
             exe_path: RwLock::new(exe_path),
             cmdline: RwLock::new(cmdline),
@@ -423,7 +427,15 @@ impl ProcessData {
             posix_timers: Arc::new(PosixTimerTable::default()),
 
             vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
-        })
+            aspace_slot_released: AtomicBool::new(false),
+        });
+        // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
+        // from `lock()` lives until the end of the statement, so calling
+        // `attach_process_slot` (which locks `Mutex<AddrSpace>`) in the same
+        // expression would nest a sleepable lock inside atomic context.
+        let aspace_arc = this.aspace.lock().clone();
+        crate::mm::attach_process_slot(&aspace_arc);
+        this
     }
 
     /// Whether this process shares its VM address space (`CLONE_VM`).
@@ -437,6 +449,21 @@ impl ProcessData {
     #[inline]
     pub fn mark_vm_aspace_private_after_exec(&self) {
         self.vm_aspace_shared.store(false, Ordering::Release);
+    }
+
+    /// Release this process's [`AddrSpace::process_slots`] entry.
+    ///
+    /// Invoked from the last-thread exit path so inode-scoped accounting (memfd
+    /// shared-writable counts, etc.) is torn down before `waitpid` returns, and
+    /// again from `Drop` if not already run. Uses reference counting: only the
+    /// last slot holder triggers [`AddrSpace::clear`], so `CLONE_VM` co-owners
+    /// are unaffected.
+    pub fn release_aspace_slot_if_needed(&self) {
+        if self.aspace_slot_released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let aspace = self.aspace.lock().clone();
+        crate::mm::release_process_slot(&aspace);
     }
 
     /// Get the top address of the user heap.
@@ -497,21 +524,6 @@ impl ProcessData {
         self.aspace.lock().clone()
     }
 
-    /// Returns a clone of the address-space [`Arc`] only when this process is the sole
-    /// strong-reference holder (last `CLONE_VM` co-owner).
-    ///
-    /// Used from [`crate::task::ops::do_exit`] to run [`AddrSpace::clear`] **outside**
-    /// the [`SpinNoIrq`] guard on [`Self::aspace`]. The `vm_aspace_shared` flag must not
-    /// influence this decision (see `CLONE_VM` multi-holder teardown).
-    pub(crate) fn aspace_for_unique_owner_teardown(&self) -> Option<Arc<Mutex<AddrSpace>>> {
-        let guard = self.aspace.lock();
-        if Arc::strong_count(&*guard) == 1 {
-            Some(guard.clone())
-        } else {
-            None
-        }
-    }
-
     /// Replace this process's address space with a new one.
     ///
     /// # Why `mem::replace` instead of `*guard = new_aspace`
@@ -534,11 +546,13 @@ impl ProcessData {
     /// `mem::replace` moves the old Arc out of the guard so it is dropped
     /// **after** the `SpinNoIrq` guard, in normal preemptible context.
     pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
-        let _old = {
+        let old = {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)
         };
-        // `_old` drops here — SpinNoIrq already released, IRQs re-enabled.
+        crate::mm::release_process_slot(&old);
+        let aspace_arc = self.aspace.lock().clone();
+        crate::mm::attach_process_slot(&aspace_arc);
     }
 
     /// Set the vfork completion (called on the child after a vfork,
@@ -584,6 +598,12 @@ impl ProcessData {
             // guard dropped here
         };
         wq.notify_one(true);
+    }
+}
+
+impl Drop for ProcessData {
+    fn drop(&mut self) {
+        self.release_aspace_slot_if_needed();
     }
 }
 

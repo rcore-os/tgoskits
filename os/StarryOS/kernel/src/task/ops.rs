@@ -441,14 +441,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
         crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
 
-        // On SMP, `waitpid` can return before this task's `ProcessData` is dropped.
-        // Tear down the address space here when this process is the last holder of
-        // its `Arc<Mutex<AddrSpace>>`, so inode-scoped accounting (e.g. memfd
-        // `shared_writable_mmap_count`) is released before the parent observes the
-        // reap — without clearing while `CLONE_VM` siblings still share the same `Arc`.
-        if let Some(aspace) = thr.proc_data.aspace_for_unique_owner_teardown() {
-            aspace.lock().clear();
-        }
+        // Drop memfd inode accounting before waitpid returns (SMP); use
+        // process_slots refcounting — not vm_aspace_shared + clear().
+        thr.proc_data.release_aspace_slot_if_needed();
     }
     thr.exit_event.wake();
 

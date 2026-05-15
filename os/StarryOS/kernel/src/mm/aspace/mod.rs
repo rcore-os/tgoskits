@@ -1,5 +1,9 @@
 use alloc::sync::Arc;
-use core::{fmt, ops::DerefMut};
+use core::{
+    fmt,
+    ops::DerefMut,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ax_errno::{AxError, AxResult, ax_bail};
 use ax_hal::{
@@ -35,6 +39,14 @@ pub struct AddrSpace {
     va_range: VirtAddrRange,
     areas: MemorySet<Backend>,
     pt: PageTable,
+    /// Number of live [`crate::task::ProcessData`] instances that reference this
+    /// address space (each `fork`/`clone` / `execve` slot that holds the
+    /// `Arc<Mutex<AddrSpace>>`).
+    ///
+    /// This must **not** be confused with `Arc::strong_count`, which also counts
+    /// transient clones from `ProcessData::aspace()` and is not reliable for
+    /// SMP teardown decisions.
+    pub(crate) process_slots: AtomicUsize,
 }
 
 impl AddrSpace {
@@ -79,6 +91,7 @@ impl AddrSpace {
             va_range: VirtAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
             pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
+            process_slots: AtomicUsize::new(0),
         })
     }
 
@@ -516,12 +529,31 @@ impl AddrSpace {
     }
 }
 
+/// Increment how many [`crate::task::ProcessData`] slots refer to `aspace`.
+pub(crate) fn attach_process_slot(aspace: &Arc<Mutex<AddrSpace>>) {
+    aspace.lock().process_slots.fetch_add(1, Ordering::AcqRel);
+}
+
+/// One [`crate::task::ProcessData`] releases its logical slot. When the last slot
+/// is dropped while holding [`Mutex`]`<`[`AddrSpace`]`>`, run [`AddrSpace::clear`]
+/// so inode-scoped accounting (memfd, etc.) is torn down before the page table
+/// is reclaimed.
+pub(crate) fn release_process_slot(aspace: &Arc<Mutex<AddrSpace>>) {
+    let mut guard = aspace.lock();
+    let prev = guard.process_slots.fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(prev >= 1, "AddrSpace::process_slots underflow");
+    if prev == 1 {
+        guard.clear();
+    }
+}
+
 impl fmt::Debug for AddrSpace {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("AddrSpace")
             .field("va_range", &self.va_range)
             .field("page_table_root", &self.pt.root_paddr())
             .field("areas", &self.areas)
+            .field("process_slots", &self.process_slots.load(Ordering::Relaxed))
             .finish()
     }
 }
