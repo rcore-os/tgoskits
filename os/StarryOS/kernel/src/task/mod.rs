@@ -382,6 +382,10 @@ pub struct ProcessData {
 
     /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
     pub posix_timers: Arc<PosixTimerTable>,
+
+    /// Set after [`Self::release_aspace_slot_if_needed`] runs so `Drop` does not
+    /// double-decrement [`AddrSpace::process_slots`].
+    aspace_slot_released: AtomicBool,
 }
 
 impl ProcessData {
@@ -394,7 +398,7 @@ impl ProcessData {
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let this = Arc::new(Self {
             proc,
             exe_path: RwLock::new(exe_path),
             cmdline: RwLock::new(cmdline),
@@ -423,7 +427,30 @@ impl ProcessData {
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
 
             posix_timers: Arc::new(PosixTimerTable::default()),
-        })
+
+            aspace_slot_released: AtomicBool::new(false),
+        });
+        // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
+        // from `lock()` lives until the end of the statement, so calling
+        // `attach_process_slot` (which locks `Mutex<AddrSpace>`) in the same
+        // expression would nest a sleepable lock inside atomic context.
+        let aspace_arc = this.aspace.lock().clone();
+        crate::mm::attach_process_slot(&aspace_arc);
+        this
+    }
+
+    /// Release this process's [`AddrSpace::process_slots`] entry.
+    ///
+    /// Invoked from the last-thread exit path so VMA-backed inode accounting is
+    /// torn down before `waitpid` returns, and again from `Drop` if not already
+    /// run. Only the last slot holder triggers [`AddrSpace::clear`], so
+    /// `CLONE_VM` co-owners are unaffected.
+    pub fn release_aspace_slot_if_needed(&self) {
+        if self.aspace_slot_released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let aspace = self.aspace.lock().clone();
+        crate::mm::release_process_slot(&aspace);
     }
 
     /// Get the top address of the user heap.
@@ -506,11 +533,13 @@ impl ProcessData {
     /// `mem::replace` moves the old Arc out of the guard so it is dropped
     /// **after** the `SpinNoIrq` guard, in normal preemptible context.
     pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
-        let _old = {
+        let old = {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)
         };
-        // `_old` drops here — SpinNoIrq already released, IRQs re-enabled.
+        crate::mm::release_process_slot(&old);
+        let aspace_arc = self.aspace.lock().clone();
+        crate::mm::attach_process_slot(&aspace_arc);
     }
 
     /// Set the vfork completion (called on the child after a vfork,
@@ -556,6 +585,12 @@ impl ProcessData {
             // guard dropped here
         };
         wq.notify_one(true);
+    }
+}
+
+impl Drop for ProcessData {
+    fn drop(&mut self) {
+        self.release_aspace_slot_if_needed();
     }
 }
 

@@ -440,6 +440,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         thr.proc_data.notify_vfork_done();
 
         crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
+
+        // Tear down this process's address-space slot before waitpid returns on
+        // SMP; only the last slot holder runs AddrSpace::clear.
+        thr.proc_data.release_aspace_slot_if_needed();
     }
     thr.exit_event.wake();
 
