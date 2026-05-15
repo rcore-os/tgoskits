@@ -190,7 +190,9 @@ fn test_atomic_operations() {
         handle.join().unwrap();
     }
 
-    println!("原子计数器结果: {}", counter.load(Ordering::SeqCst));
+    let final_value = counter.load(Ordering::SeqCst);
+    println!("原子计数器结果: {}", final_value);
+    assert_eq!(final_value, 100);
     println!("原子操作测试完成\n");
 }
 

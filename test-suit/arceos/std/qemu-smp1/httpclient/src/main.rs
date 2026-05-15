@@ -34,11 +34,7 @@ fn client() -> io::Result<()> {
 
 fn main() {
     println!("Hello, simple http client!");
-    match client() {
-        Ok(()) => {}
-        Err(err) => {
-            println!("HTTP client remote request skipped: {err}");
-            println!("HTTP client tests run OK!");
-        }
+    if let Err(err) = client() {
+        panic!("HTTP client remote request failed: {err}");
     }
 }

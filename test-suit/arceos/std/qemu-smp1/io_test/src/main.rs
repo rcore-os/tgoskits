@@ -92,7 +92,7 @@ fn append_to_file() -> io::Result<()> {
     fs::write(filename, "Initial content\n")?;
 
     // 追加写入
-    let mut file = OpenOptions::new().write(true).append(true).open(filename)?;
+    let mut file = OpenOptions::new().append(true).open(filename)?;
 
     file.write_all(b"First appended line\n")?;
     file.write_all(b"Second appended line\n")?;
@@ -225,7 +225,12 @@ fn error_handling() -> io::Result<()> {
     // 尝试打开不存在的文件
     println!("  测试打开不存在的文件:");
     match File::open("nonexistent_file.txt") {
-        Ok(_) => println!("    Error: File should not exist"),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "nonexistent_file.txt unexpectedly exists",
+            ));
+        }
         Err(e) => println!("    Expected error: {}", e),
     }
 
@@ -238,7 +243,12 @@ fn error_handling() -> io::Result<()> {
         .open("another_nonexistent.txt");
 
     match result {
-        Ok(_) => println!("    Error: File should not exist"),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "another_nonexistent.txt unexpectedly exists",
+            ));
+        }
         Err(e) => println!("    Expected error: {}", e),
     }
 
