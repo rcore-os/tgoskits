@@ -407,7 +407,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn multi_block_transfer_mode_leaves_stop_command_to_protocol_layer() {
+    fn multi_block_transfer_mode_leaves_stop_command_to_request_state_machine() {
         let mode = transfer_mode(DataDirection::Read, 4, false);
 
         assert_ne!(mode & XFER_MODE_MULTI_BLOCK, 0);

@@ -50,10 +50,9 @@ exposes the selected queue constraints for block-device adapters.
 
 ```rust,no_run
 use core::ptr::NonNull;
-use sdmmc_protocol::sdio::{DelayNs, SdioSdmmc};
+use sdmmc_protocol::{OperationPoll, sdio::{SdioInitScratch, SdioSdmmc}};
 use dwmmc_host::DwMmc;
 
-# fn make_delay() -> impl DelayNs { struct N; impl DelayNs for N { fn delay_ns(&mut self, _: u32) {} } N }
 // SAFETY: 0xFE2B_0000 must point at a valid DW_mshc register file the
 // caller has exclusive access to.
 let mmio = NonNull::new(0xFE2B_0000 as *mut u8).unwrap();
@@ -61,8 +60,13 @@ let mut host = unsafe { DwMmc::new(mmio) };
 host.set_reference_clock(50_000_000);
 host.reset_and_init().expect("controller reset");
 
-let mut card = SdioSdmmc::new(host, make_delay());
-// card.init()?;
+let mut card = SdioSdmmc::new(host);
+let mut scratch = SdioInitScratch::new();
+let mut request = card.submit_init(&mut scratch)?;
+while let OperationPoll::Pending = card.poll_init_request(&mut request)? {
+    // Runtime policy belongs here: spin, yield, wait for IRQ, or sleep/timer
+    // when request.take_needs_pace() is set.
+}
 # Ok::<(), sdmmc_protocol::Error>(())
 ```
 
@@ -81,8 +85,10 @@ the driver.
    programmed by `set_clock` lands on the right frequency.
 4. `host.reset_and_init()?` — clears the controller / FIFO / DMA
    state and arms a 400 kHz ID-mode clock.
-5. Build `SdioSdmmc::new(host, delay)` and call `init()`. The
-   protocol layer will ramp the clock up via `set_clock`.
+5. Build `SdioSdmmc::new(host)`, submit initialization with
+   `submit_init`, and drive it with `poll_init_request`. The
+   protocol layer will ramp the clock up via `set_clock`; platform/runtime
+   code chooses whether pending work spins, yields, or waits for an IRQ.
 6. Add board-specific tuning before relying on SDR50, SDR104, DDR50, or HS200
    modes.
 

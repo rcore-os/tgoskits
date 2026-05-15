@@ -23,10 +23,10 @@
 //!
 //! ```rust,no_run
 //! use core::ptr::NonNull;
-//! use sdmmc_protocol::sdio::{DelayNs, SdioSdmmc};
-//! use dwmmc_host::DwMmc;
 //!
-//! # fn make_delay() -> impl DelayNs { struct N; impl DelayNs for N { fn delay_ns(&mut self, _: u32) {} } N }
+//! use dwmmc_host::DwMmc;
+//! use sdmmc_protocol::sdio::{SdioInitScratch, SdioSdmmc};
+//!
 //! // SAFETY: 0xFE2B_0000 must point at a valid DW_mshc register file
 //! // the caller has exclusive access to.
 //! let mmio = NonNull::new(0xFE2B_0000 as *mut u8).unwrap();
@@ -34,8 +34,18 @@
 //! host.set_reference_clock(50_000_000);
 //! host.reset_and_init().expect("controller reset");
 //!
-//! let mut card = SdioSdmmc::new(host, make_delay());
-//! // card.init()?;
+//! let mut card = SdioSdmmc::new(host);
+//! let mut scratch = SdioInitScratch::new();
+//! let mut request = card.submit_init(&mut scratch)?;
+//! // Poll request here. Runtime code chooses spin, yield, IRQ wait, or timer.
+//! # Ok::<(), sdmmc_protocol::Error>(())
+//! ```
+//!
+//! The runtime block queue adapter belongs in OS/platform glue. The reusable
+//! driver crate exposes request state and host submit/poll primitives instead:
+//!
+//! ```compile_fail
+//! use dwmmc_host::BlockQueue;
 //! ```
 //!
 //! Construction is `unsafe` because the caller must guarantee that
@@ -67,9 +77,7 @@ use sdmmc_protocol::{
 
 use crate::regs::RegisterBlockVolatileFieldAccess;
 pub use crate::{
-    dma::{
-        BlockQueue, BlockRequest, BlockRequestSlot, IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE, RequestId,
-    },
+    dma::{BlockRequest, BlockRequestSlot, IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE, RequestId},
     host::{DEFAULT_FIFO_OFFSET, DwMmc},
 };
 
@@ -384,11 +392,9 @@ impl DwMmc {
             BlockTransferMode::Fifo => {
                 BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 1, None)
             }
-            BlockTransferMode::Dma => BlockBufferConfig::new(
-                NonZeroUsize::new(512).unwrap(),
-                IDMAC_DESC_ALIGN,
-                Some(self.dma_mask),
-            ),
+            BlockTransferMode::Dma => {
+                BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 512, Some(self.dma_mask))
+            }
         }
     }
 
@@ -506,7 +512,7 @@ mod tests {
 
         let dma = host.block_buffer_config(BlockTransferMode::Dma);
         assert_eq!(dma.block_size.get(), 512);
-        assert_eq!(dma.align, IDMAC_DESC_ALIGN);
+        assert_eq!(dma.align, 512);
         assert_eq!(dma.dma_mask, Some(u32::MAX as u64));
     }
 

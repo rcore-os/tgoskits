@@ -108,10 +108,9 @@ The SDIO path expects the platform to implement `SdioHost`. The driver tracks
 the published RCA itself, so hosts no longer need to snoop R6 responses:
 
 ```rust
-use embedded_hal::delay::DelayNs;
-use sdmmc_protocol::{Command, CommandResponsePoll, DataCommandPoll, Error, Response};
+use sdmmc_protocol::{Command, CommandResponsePoll, DataCommandPoll, Error, OperationPoll, Response};
 use core::task::Waker;
-use sdmmc_protocol::sdio::{BusWidth, ClockSpeed, SdioHost, SdioSdmmc};
+use sdmmc_protocol::sdio::{BusWidth, ClockSpeed, SdioHost, SdioInitScratch, SdioSdmmc};
 
 struct MySdioHost;
 struct MyDataRequest<'a>(&'a mut [u8]);
@@ -176,9 +175,19 @@ impl SdioHost for MySdioHost {
     }
 }
 
-fn example<D: DelayNs>(host: MySdioHost, delay: D) -> Result<(), Error> {
-    let mut card = SdioSdmmc::new(host, delay);
-    let info = card.init()?;
+fn example(host: MySdioHost) -> Result<(), Error> {
+    let mut card = SdioSdmmc::new(host);
+    let mut scratch = SdioInitScratch::new();
+    let mut request = card.submit_init(&mut scratch)?;
+    let info = loop {
+        match card.poll_init_request(&mut request)? {
+            OperationPoll::Pending => {
+                // Runtime policy belongs here: spin, yield, wait for IRQ, or
+                // sleep/timer when request.take_needs_pace() is set.
+            }
+            OperationPoll::Complete(info) => break info,
+        }
+    };
     let _rca = info.rca;
     let _capacity_blocks = info.capacity_blocks;
     Ok(())
@@ -186,13 +195,15 @@ fn example<D: DelayNs>(host: MySdioHost, delay: D) -> Result<(), Error> {
 ```
 
 `SdioSdmmc` detects SD versus eMMC during initialization. SD cards are widened
-through ACMD6; eMMC bus widening is intentionally left to host/platform code
-until the CMD6 SWITCH plus EXT_CSD flow is wired into the protocol layer.
+through ACMD6; eMMC cards use EXT_CSD plus CMD6 SWITCH to negotiate bus width
+and timing where the host supports those modes.
 
-`SdioHost` follows a submit/poll model. `CommandFuture` and `DataFuture` adapt
-that model to `core::future::Future`: when a host returns `Pending`, the future
-calls `register_waker()` and yields `Poll::Pending`. Polling-only users can keep
-the default no-op waker registration and use the synchronous `SdioSdmmc` APIs.
+`SdioHost` follows a submit/poll model. Protocol operations such as card
+initialization, command status, EXT_CSD reads, MMC switches, switch-function
+reads, and block I/O expose request objects that
+callers can poll from a blocking loop, an IRQ wakeup path, a worker, or an async
+runtime wrapper. `SdioSdmmc` does not choose the waiting policy; the caller owns
+whether pending work spins, yields, sleeps, waits for an IRQ, or uses a timer.
 
 ## Command Helpers
 

@@ -17,15 +17,17 @@
 //!
 //! ```no_run
 //! use core::ptr::NonNull;
-//! use sdmmc_protocol::sdio::{DelayNs, SdioSdmmc};
-//! use sdhci_host::Sdhci;
 //!
-//! # fn make_delay() -> impl DelayNs { struct N; impl DelayNs for N { fn delay_ns(&mut self, _: u32) {} } N }
+//! use sdhci_host::Sdhci;
+//! use sdmmc_protocol::sdio::{SdioInitScratch, SdioSdmmc};
+//!
 //! let mmio = NonNull::new(0xFE31_0000 as *mut u8).unwrap();
 //! let host = unsafe { Sdhci::new(mmio) };
-//! let delay = make_delay();
-//! let mut card = SdioSdmmc::new(host, delay);
-//! // card.init()?;
+//! let mut card = SdioSdmmc::new(host);
+//! let mut scratch = SdioInitScratch::new();
+//! let mut request = card.submit_init(&mut scratch)?;
+//! // Poll request here. Runtime code chooses spin, yield, IRQ wait, or timer.
+//! # Ok::<(), sdmmc_protocol::Error>(())
 //! ```
 //!
 //! For block request I/O, use [`Sdhci::submit_read_blocks`] or
@@ -73,9 +75,7 @@ mod dma;
 mod host;
 mod regs;
 
-pub use dma::{
-    ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, BlockQueue, BlockRequest, BlockRequestSlot, RequestId,
-};
+pub use dma::{ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, BlockRequest, BlockRequestSlot, RequestId};
 pub use host::{HostClock, Sdhci};
 pub use sdmmc_protocol::block::{
     BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,
@@ -514,11 +514,9 @@ impl Sdhci {
             BlockTransferMode::Fifo => {
                 BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 1, None)
             }
-            BlockTransferMode::Dma => BlockBufferConfig::new(
-                NonZeroUsize::new(512).unwrap(),
-                ADMA2_DESC_ALIGN,
-                Some(self.dma_mask),
-            ),
+            BlockTransferMode::Dma => {
+                BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 512, Some(self.dma_mask))
+            }
         }
     }
 
@@ -593,7 +591,7 @@ mod tests {
 
         let dma = host.block_buffer_config(BlockTransferMode::Dma);
         assert_eq!(dma.block_size.get(), 512);
-        assert_eq!(dma.align, ADMA2_DESC_ALIGN);
+        assert_eq!(dma.align, 512);
         assert_eq!(dma.dma_mask, Some(u32::MAX as u64));
     }
 }

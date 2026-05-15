@@ -1,21 +1,16 @@
 //! SDIO (Secure Digital Input Output) mode transport layer
 //!
 //! SDIO mode uses a dedicated host controller with 1-bit or 4-bit data bus.
-//! Implement [`SdioHost`] for your platform's SDIO peripheral, and supply a
-//! [`DelayNs`] implementation so the driver can apply wall-clock timeouts.
+//! Implement [`SdioHost`] for your platform's SDIO peripheral; the host
+//! implementation controls command/data progress.
 
-use core::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll, Waker},
-};
+use core::task::Waker;
 
-pub use embedded_hal::delay::DelayNs;
 use log::{debug, info, warn};
 
 pub use crate::cmd::DataDirection;
 use crate::{
-    block::{BlockRequestId, CommandResponsePoll, DataCommandPoll},
+    block::{BlockRequestId, CommandResponsePoll, DataCommandPoll, OperationPoll},
     cmd::Command,
     common::block_addr_of,
     error::{Error, ErrorContext, Phase},
@@ -231,437 +226,6 @@ pub trait SdioHost {
     fn register_waker(&mut self, _waker: &Waker) {}
 }
 
-/// Future that completes a command response previously submitted to a host.
-pub struct CommandFuture<'a, H: SdioHost> {
-    host: &'a mut H,
-}
-
-impl<'a, H: SdioHost> CommandFuture<'a, H> {
-    pub fn new(host: &'a mut H) -> Self {
-        Self { host }
-    }
-}
-
-impl<H: SdioHost> Future for CommandFuture<'_, H> {
-    type Output = Result<Response, Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: `CommandFuture` never moves fields out of the pinned value;
-        // it only projects a mutable reference to the host.
-        let this = unsafe { self.get_unchecked_mut() };
-        match this.host.poll_command_response() {
-            Ok(CommandResponsePoll::Pending) => {
-                this.host.register_waker(cx.waker());
-                Poll::Pending
-            }
-            Ok(CommandResponsePoll::Complete(response)) => Poll::Ready(Ok(response)),
-            Err(err) => Poll::Ready(Err(err)),
-        }
-    }
-}
-
-/// Future that completes a submitted SD/MMC data command.
-pub struct DataFuture<'host, 'buf, H: SdioHost + 'buf> {
-    host: &'host mut H,
-    request: H::DataRequest<'buf>,
-}
-
-impl<'host, 'buf, H> DataFuture<'host, 'buf, H>
-where
-    H: SdioHost + 'buf,
-{
-    pub fn new(host: &'host mut H, request: H::DataRequest<'buf>) -> Self {
-        Self { host, request }
-    }
-}
-
-impl<'buf, H> Future for DataFuture<'_, 'buf, H>
-where
-    H: SdioHost + 'buf,
-{
-    type Output = Result<Response, Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: `DataFuture` keeps the host and request in place and only
-        // passes mutable references to the host polling API.
-        let this = unsafe { self.get_unchecked_mut() };
-        match this.host.poll_data_request(&mut this.request) {
-            Ok(DataCommandPoll::Pending) => {
-                this.host.register_waker(cx.waker());
-                Poll::Pending
-            }
-            Ok(DataCommandPoll::Complete(response)) => Poll::Ready(Ok(response)),
-            Err(err) => Poll::Ready(Err(err)),
-        }
-    }
-}
-
-enum Acmd41State {
-    SubmitCmd55,
-    PollCmd55,
-    SubmitAcmd41,
-    PollAcmd41,
-}
-
-/// Future that polls ACMD41 until an SD card reports power-up complete.
-pub struct Acmd41Future<'a, H: SdioHost, D: DelayNs> {
-    host: &'a mut H,
-    delay: &'a mut D,
-    sd_v2: bool,
-    request_1v8: bool,
-    elapsed_ms: u32,
-    state: Acmd41State,
-}
-
-impl<'a, H: SdioHost, D: DelayNs> Acmd41Future<'a, H, D> {
-    pub fn new(host: &'a mut H, delay: &'a mut D, sd_v2: bool, request_1v8: bool) -> Self {
-        Self {
-            host,
-            delay,
-            sd_v2,
-            request_1v8,
-            elapsed_ms: 0,
-            state: Acmd41State::SubmitCmd55,
-        }
-    }
-}
-
-impl<H: SdioHost, D: DelayNs> Future for Acmd41Future<'_, H, D> {
-    type Output = Result<OcrResponse, Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: the future does not move pinned fields; it only mutates the
-        // state machine and calls host/delay through stable mutable references.
-        let this = unsafe { self.get_unchecked_mut() };
-
-        match this.state {
-            Acmd41State::SubmitCmd55 => {
-                debug!("sdio: CMD55 before ACMD41 elapsed={}ms", this.elapsed_ms);
-                let cmd55 = crate::cmd::cmd55(0);
-                if let Err(err) = this.host.submit_command(&cmd55) {
-                    return Poll::Ready(Err(err));
-                }
-                this.state = Acmd41State::PollCmd55;
-                this.host.register_waker(cx.waker());
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Acmd41State::PollCmd55 => match this.host.poll_command_response() {
-                Ok(CommandResponsePoll::Pending) => {
-                    this.host.register_waker(cx.waker());
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(_)) => {
-                    this.state = Acmd41State::SubmitAcmd41;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Err(err) => Poll::Ready(Err(err)),
-            },
-            Acmd41State::SubmitAcmd41 => {
-                let acmd41 = crate::cmd::cmd41_with_s18r(this.sd_v2, 0xFF8000, this.request_1v8);
-                if let Err(err) = this.host.submit_command(&acmd41) {
-                    return Poll::Ready(Err(err));
-                }
-                this.state = Acmd41State::PollAcmd41;
-                this.host.register_waker(cx.waker());
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Acmd41State::PollAcmd41 => match this.host.poll_command_response() {
-                Ok(CommandResponsePoll::Pending) => {
-                    this.host.register_waker(cx.waker());
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(Response::R3(ocr))) => {
-                    debug!(
-                        "sdio: ACMD41 ocr={:#010x} ready={}",
-                        ocr.raw,
-                        ocr.card_powered_up()
-                    );
-                    if ocr.card_powered_up() {
-                        return Poll::Ready(Ok(ocr));
-                    }
-                    if this.elapsed_ms >= SdioInitTiming::TIMEOUT_MS {
-                        warn!("sdio: ACMD41 timed out after {}ms", this.elapsed_ms);
-                        return Poll::Ready(Err(Error::Timeout(ErrorContext::for_cmd(
-                            Phase::Init,
-                            41,
-                        ))));
-                    }
-                    this.delay.delay_ms(SdioInitTiming::POLL_MS);
-                    this.elapsed_ms = this.elapsed_ms.saturating_add(SdioInitTiming::POLL_MS);
-                    this.state = Acmd41State::SubmitCmd55;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(_)) => Poll::Ready(Err(Error::BadResponse(
-                    ErrorContext::for_cmd(Phase::Init, 41),
-                ))),
-                Err(err) => Poll::Ready(Err(err)),
-            },
-        }
-    }
-}
-
-enum MmcReadyState {
-    SubmitInitial,
-    PollInitial,
-    SubmitReady,
-    PollReady,
-}
-
-/// Future that polls CMD1 until an MMC card reports power-up complete.
-pub struct MmcReadyFuture<'a, H: SdioHost, D: DelayNs> {
-    host: &'a mut H,
-    delay: &'a mut D,
-    elapsed_ms: u32,
-    ocr_arg: u32,
-    state: MmcReadyState,
-}
-
-impl<'a, H: SdioHost, D: DelayNs> MmcReadyFuture<'a, H, D> {
-    pub fn new(host: &'a mut H, delay: &'a mut D) -> Self {
-        Self {
-            host,
-            delay,
-            elapsed_ms: 0,
-            ocr_arg: 0,
-            state: MmcReadyState::SubmitInitial,
-        }
-    }
-}
-
-impl<H: SdioHost, D: DelayNs> Future for MmcReadyFuture<'_, H, D> {
-    type Output = Result<OcrResponse, Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        const MMC_HCS: u32 = 1 << 30;
-        const MMC_VOLTAGE_MASK: u32 = 0x00FF_8000;
-        const MMC_ACCESS_MODE_MASK: u32 = 0x6000_0000;
-
-        // SAFETY: the future does not move pinned fields; it only advances its
-        // state and uses the host/delay mutable references in place.
-        let this = unsafe { self.get_unchecked_mut() };
-
-        match this.state {
-            MmcReadyState::SubmitInitial => {
-                let cmd = crate::cmd::cmd1(0);
-                if let Err(err) = this.host.submit_command(&cmd) {
-                    return Poll::Ready(Err(err));
-                }
-                this.state = MmcReadyState::PollInitial;
-                this.host.register_waker(cx.waker());
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            MmcReadyState::PollInitial => match this.host.poll_command_response() {
-                Ok(CommandResponsePoll::Pending) => {
-                    this.host.register_waker(cx.waker());
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(Response::R3(ocr))) => {
-                    info!("sdio: CMD1 initial ocr={:#010x}", ocr.raw);
-                    if ocr.card_powered_up() {
-                        return Poll::Ready(Ok(ocr));
-                    }
-                    let voltage = ocr.raw & MMC_VOLTAGE_MASK;
-                    let voltage = if voltage == 0 {
-                        MMC_VOLTAGE_MASK
-                    } else {
-                        voltage
-                    };
-                    this.ocr_arg = MMC_HCS | voltage | (ocr.raw & MMC_ACCESS_MODE_MASK);
-                    this.state = MmcReadyState::SubmitReady;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(_)) => Poll::Ready(Err(Error::BadResponse(
-                    ErrorContext::for_cmd(Phase::Init, 1),
-                ))),
-                Err(err) => Poll::Ready(Err(err)),
-            },
-            MmcReadyState::SubmitReady => {
-                debug!(
-                    "sdio: CMD1 arg={:#010x} elapsed={}ms",
-                    this.ocr_arg, this.elapsed_ms
-                );
-                let cmd = crate::cmd::cmd1(this.ocr_arg);
-                if let Err(err) = this.host.submit_command(&cmd) {
-                    return Poll::Ready(Err(err));
-                }
-                this.state = MmcReadyState::PollReady;
-                this.host.register_waker(cx.waker());
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            MmcReadyState::PollReady => match this.host.poll_command_response() {
-                Ok(CommandResponsePoll::Pending) => {
-                    this.host.register_waker(cx.waker());
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(Response::R3(ocr))) => {
-                    debug!(
-                        "sdio: CMD1 ocr={:#010x} ready={}",
-                        ocr.raw,
-                        ocr.card_powered_up()
-                    );
-                    if ocr.card_powered_up() {
-                        return Poll::Ready(Ok(ocr));
-                    }
-                    if this.elapsed_ms >= SdioInitTiming::TIMEOUT_MS {
-                        warn!("sdio: CMD1 timed out after {}ms", this.elapsed_ms);
-                        return Poll::Ready(Err(Error::Timeout(ErrorContext::for_cmd(
-                            Phase::Init,
-                            1,
-                        ))));
-                    }
-                    this.delay.delay_ms(SdioInitTiming::POLL_MS);
-                    this.elapsed_ms = this.elapsed_ms.saturating_add(SdioInitTiming::POLL_MS);
-                    this.state = MmcReadyState::SubmitReady;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(_)) => Poll::Ready(Err(Error::BadResponse(
-                    ErrorContext::for_cmd(Phase::Init, 1),
-                ))),
-                Err(err) => Poll::Ready(Err(err)),
-            },
-        }
-    }
-}
-
-enum MmcSwitchState {
-    SubmitSwitch,
-    PollSwitch,
-    SubmitStatus,
-    PollStatus,
-}
-
-/// Future that waits for an MMC CMD6 SWITCH to leave the busy/programming state.
-pub struct MmcSwitchFuture<'a, H: SdioHost, D: DelayNs> {
-    host: &'a mut H,
-    delay: &'a mut D,
-    rca: u16,
-    access: u8,
-    index: u8,
-    value: u8,
-    elapsed_ms: u32,
-    state: MmcSwitchState,
-}
-
-impl<'a, H: SdioHost, D: DelayNs> MmcSwitchFuture<'a, H, D> {
-    pub fn new(
-        host: &'a mut H,
-        delay: &'a mut D,
-        rca: u16,
-        access: u8,
-        index: u8,
-        value: u8,
-    ) -> Self {
-        Self {
-            host,
-            delay,
-            rca,
-            access,
-            index,
-            value,
-            elapsed_ms: 0,
-            state: MmcSwitchState::SubmitSwitch,
-        }
-    }
-}
-
-impl<H: SdioHost, D: DelayNs> Future for MmcSwitchFuture<'_, H, D> {
-    type Output = Result<(), Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: the future only mutates its state fields and calls host/delay
-        // through pinned-in-place mutable references.
-        let this = unsafe { self.get_unchecked_mut() };
-
-        match this.state {
-            MmcSwitchState::SubmitSwitch => {
-                let cmd = crate::cmd::cmd6_mmc_switch(this.access, this.index, this.value);
-                if let Err(err) = this.host.submit_command(&cmd) {
-                    return Poll::Ready(Err(err));
-                }
-                this.state = MmcSwitchState::PollSwitch;
-                this.host.register_waker(cx.waker());
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            MmcSwitchState::PollSwitch => match this.host.poll_command_response() {
-                Ok(CommandResponsePoll::Pending) => {
-                    this.host.register_waker(cx.waker());
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(_)) => {
-                    this.state = MmcSwitchState::SubmitStatus;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Err(err) => Poll::Ready(Err(err)),
-            },
-            MmcSwitchState::SubmitStatus => {
-                let cmd = crate::cmd::cmd13(this.rca);
-                if let Err(err) = this.host.submit_command(&cmd) {
-                    return Poll::Ready(Err(err));
-                }
-                this.state = MmcSwitchState::PollStatus;
-                this.host.register_waker(cx.waker());
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            MmcSwitchState::PollStatus => match this.host.poll_command_response() {
-                Ok(CommandResponsePoll::Pending) => {
-                    this.host.register_waker(cx.waker());
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(Response::R1(r1))) => {
-                    if r1.switch_error() {
-                        warn!(
-                            "sdio: SWITCH_ERROR after CMD6 idx={} val={}",
-                            this.index, this.value
-                        );
-                        return Poll::Ready(Err(Error::CardError(
-                            crate::error::CardError::IllegalCommand,
-                        )));
-                    }
-                    if r1.ready_for_data() && matches!(r1.current_state(), CardState::Transfer) {
-                        return Poll::Ready(Ok(()));
-                    }
-                    if this.elapsed_ms >= MmcSwitchTiming::TIMEOUT_MS {
-                        return Poll::Ready(Err(Error::Timeout(ErrorContext::for_cmd(
-                            Phase::Init,
-                            6,
-                        ))));
-                    }
-                    this.delay.delay_ms(MmcSwitchTiming::POLL_MS);
-                    this.elapsed_ms = this.elapsed_ms.saturating_add(MmcSwitchTiming::POLL_MS);
-                    this.state = MmcSwitchState::SubmitStatus;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Ok(CommandResponsePoll::Complete(_)) => {
-                    if this.elapsed_ms >= MmcSwitchTiming::TIMEOUT_MS {
-                        return Poll::Ready(Err(Error::Timeout(ErrorContext::for_cmd(
-                            Phase::Init,
-                            6,
-                        ))));
-                    }
-                    this.delay.delay_ms(MmcSwitchTiming::POLL_MS);
-                    this.elapsed_ms = this.elapsed_ms.saturating_add(MmcSwitchTiming::POLL_MS);
-                    this.state = MmcSwitchState::SubmitStatus;
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Err(err) => Poll::Ready(Err(err)),
-            },
-        }
-    }
-}
-
 struct SdioInitTiming;
 
 impl SdioInitTiming {
@@ -676,23 +240,9 @@ impl MmcSwitchTiming {
     const POLL_MS: u32 = SdioInitTiming::POLL_MS;
 }
 
-fn spin_on_future<F: Future>(future: F) -> F::Output {
-    let waker = Waker::noop();
-    let mut cx = Context::from_waker(waker);
-    let mut future = core::pin::pin!(future);
-
-    loop {
-        match future.as_mut().poll(&mut cx) {
-            Poll::Ready(value) => return value,
-            Poll::Pending => core::hint::spin_loop(),
-        }
-    }
-}
-
 /// SDIO mode SD/MMC driver
-pub struct SdioSdmmc<H: SdioHost, D: DelayNs> {
+pub struct SdioSdmmc<H: SdioHost> {
     host: H,
-    delay: D,
     rca: u16,
     high_capacity: bool,
     bus_width: BusWidth,
@@ -702,21 +252,169 @@ pub struct SdioSdmmc<H: SdioHost, D: DelayNs> {
 
 pub struct SdioDataRequest<'a, H: SdioHost + 'a> {
     inner: H::DataRequest<'a>,
-    stop_state: StopTransmissionState,
-    data_response: Option<Response>,
+}
+
+/// Submitted SDIO command transaction.
+pub struct SdioCommandRequest;
+
+/// Submitted `CMD13 SEND_STATUS` transaction.
+pub struct SdioStatusRequest {
+    inner: SdioCommandRequest,
+}
+
+/// Submitted MMC `CMD8 SEND_EXT_CSD` data transaction.
+pub struct ExtCsdRequest<'a, H: SdioHost + 'a> {
+    inner: SdioDataRequest<'a, H>,
+}
+
+/// Submitted SD `CMD6 SWITCH_FUNC` data transaction.
+pub struct SwitchFunctionRequest<'a, H: SdioHost + 'a> {
+    inner: SdioDataRequest<'a, H>,
+}
+
+/// Submitted MMC `CMD6 SWITCH` transaction.
+pub struct MmcSwitchRequest {
+    rca: u16,
+    index: u8,
+    value: u8,
+    elapsed_ms: u32,
+    state: MmcSwitchRequestState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StopTransmissionState {
-    NotRequired,
-    PendingSubmit,
-    Polling,
+enum MmcSwitchRequestState {
+    PollSwitch,
+    PollStatus,
 }
 
-impl<'a, H: SdioHost + 'a> SdioDataRequest<'a, H> {
-    fn response_after_stop(&mut self) -> Result<Response, Error> {
-        self.data_response.take().ok_or(Error::InvalidArgument)
+/// Card initialization probe order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardInitPreference {
+    /// Probe SD first, then fall back to MMC.
+    SdFirst,
+    /// Probe MMC first. Use this for controller instances wired to eMMC.
+    MmcFirst,
+}
+
+/// Caller-owned scratch buffers for SD/MMC initialization data commands.
+pub struct SdioInitScratch {
+    ext_csd: [u8; 512],
+    switch_status: [u8; 64],
+}
+
+impl SdioInitScratch {
+    pub const fn new() -> Self {
+        Self {
+            ext_csd: [0; 512],
+            switch_status: [0; 64],
+        }
     }
+}
+
+impl Default for SdioInitScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Submitted SDIO initialization transaction.
+pub struct SdioInitRequest<'a, H: SdioHost + 'a> {
+    state: SdioInitState,
+    preference: CardInitPreference,
+    sd_v2: bool,
+    kind: Option<CardKind>,
+    ocr: Option<OcrResponse>,
+    cid: Option<CidResponse>,
+    capacity_blocks: Option<u64>,
+    parsed_ext_csd: Option<crate::ext_csd::ExtCsd>,
+    acmd41_elapsed_ms: u32,
+    mmc_elapsed_ms: u32,
+    mmc_ocr_arg: u32,
+    needs_pace: bool,
+    ext_csd_buf: core::ptr::NonNull<[u8; 512]>,
+    switch_status_buf: core::ptr::NonNull<[u8; 64]>,
+    ext_csd_request: Option<ExtCsdRequest<'a, H>>,
+    switch_function_request: Option<SwitchFunctionRequest<'a, H>>,
+    mmc_switch_request: Option<MmcSwitchRequest>,
+    status_request: Option<SdioStatusRequest>,
+    command_request: Option<SdioCommandRequest>,
+    current_bus_width: BusWidth,
+    current_access_mode: Option<SdAccessMode>,
+    sd_access_index: usize,
+    mmc_hs200_attempted: bool,
+    _scratch: core::marker::PhantomData<&'a mut SdioInitScratch>,
+}
+
+impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
+    fn new(preference: CardInitPreference, scratch: &'a mut SdioInitScratch) -> Self {
+        Self {
+            state: SdioInitState::PollCmd0,
+            preference,
+            sd_v2: false,
+            kind: None,
+            ocr: None,
+            cid: None,
+            capacity_blocks: None,
+            parsed_ext_csd: None,
+            acmd41_elapsed_ms: 0,
+            mmc_elapsed_ms: 0,
+            mmc_ocr_arg: 0,
+            needs_pace: false,
+            ext_csd_buf: core::ptr::NonNull::from(&mut scratch.ext_csd),
+            switch_status_buf: core::ptr::NonNull::from(&mut scratch.switch_status),
+            ext_csd_request: None,
+            switch_function_request: None,
+            mmc_switch_request: None,
+            status_request: None,
+            command_request: None,
+            current_bus_width: BusWidth::Bit1,
+            current_access_mode: None,
+            sd_access_index: 0,
+            mmc_hs200_attempted: false,
+            _scratch: core::marker::PhantomData,
+        }
+    }
+
+    /// Consume the pending power-up pacing hint for blocking runtimes.
+    ///
+    /// `poll_init_request` sets this when the card answered ACMD41/CMD1 but
+    /// has not completed power-up yet. Runtime glue can translate it into a
+    /// sleep, yield, timer wait, or busy wait. Ordinary command/data pending
+    /// states do not set this hint.
+    pub fn take_needs_pace(&mut self) -> bool {
+        let needs_pace = self.needs_pace;
+        self.needs_pace = false;
+        needs_pace
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SdioInitState {
+    PollCmd0,
+    PollCmd8,
+    PollAcmd41Cmd55,
+    PollAcmd41,
+    PollMmcInitial,
+    PollMmcReady,
+    PollCmd2,
+    PollCmd3,
+    PollCmd9,
+    PollCmd7,
+    PollSdBusWidthCmd55,
+    PollSdBusWidthAcmd6,
+    FinishCardSetup,
+    PollMmcExtCsd,
+    PollMmcBusWidth,
+    PrepareMmcSpeed,
+    PollMmcHs200Switch,
+    PollMmcHs200Status,
+    PollMmcHs52Switch,
+    PrepareSdSpeed,
+    PollSdSwitchFunctionCheck,
+    PollSdVoltageSwitch,
+    PollSdSetAccessMode,
+    PollSdStatus,
+    Complete,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -746,10 +444,6 @@ impl SdAccessMode {
         }
     }
 
-    fn needs_tuning(self) -> bool {
-        matches!(self, Self::Sdr50 | Self::Sdr104)
-    }
-
     const fn name(self) -> &'static str {
         match self {
             Self::HighSpeed => "HighSpeed",
@@ -760,11 +454,10 @@ impl SdAccessMode {
     }
 }
 
-impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
-    pub fn new(host: H, delay: D) -> Self {
+impl<H: SdioHost> SdioSdmmc<H> {
+    pub fn new(host: H) -> Self {
         Self {
             host,
-            delay,
             rca: 0,
             high_capacity: false,
             bus_width: BusWidth::Bit1,
@@ -820,15 +513,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
             crate::cmd::cmd18(block_addr)
         };
         let inner = self.host.submit_read_data(&cmd, buf, 512, count)?;
-        Ok(SdioDataRequest {
-            inner,
-            stop_state: if count > 1 {
-                StopTransmissionState::PendingSubmit
-            } else {
-                StopTransmissionState::NotRequired
-            },
-            data_response: None,
-        })
+        Ok(SdioDataRequest { inner })
     }
 
     pub fn submit_write_blocks_from<'a>(
@@ -847,15 +532,7 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
             crate::cmd::cmd25(block_addr)
         };
         let inner = self.host.submit_write_data(&cmd, buf, 512, count)?;
-        Ok(SdioDataRequest {
-            inner,
-            stop_state: if count > 1 {
-                StopTransmissionState::PendingSubmit
-            } else {
-                StopTransmissionState::NotRequired
-            },
-            data_response: None,
-        })
+        Ok(SdioDataRequest { inner })
     }
 
     pub fn poll_data_request<'a>(
@@ -865,390 +542,797 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     where
         H: 'a,
     {
-        match request.stop_state {
-            StopTransmissionState::Polling => match self.host.poll_command_response()? {
-                CommandResponsePoll::Pending => Ok(DataCommandPoll::Pending),
-                CommandResponsePoll::Complete(_) => {
-                    request.stop_state = StopTransmissionState::NotRequired;
-                    let response = request.response_after_stop()?;
-                    Ok(DataCommandPoll::Complete(response))
-                }
-            },
-            StopTransmissionState::NotRequired | StopTransmissionState::PendingSubmit => {
-                match self.host.poll_data_request(&mut request.inner)? {
-                    DataCommandPoll::Pending => Ok(DataCommandPoll::Pending),
-                    DataCommandPoll::Complete(response) => {
-                        if request.stop_state == StopTransmissionState::PendingSubmit {
-                            self.host.submit_command(&crate::cmd::CMD12)?;
-                            request.stop_state = StopTransmissionState::Polling;
-                            request.data_response = Some(response);
-                            Ok(DataCommandPoll::Pending)
-                        } else {
-                            Ok(DataCommandPoll::Complete(response))
-                        }
-                    }
-                }
+        self.host.poll_data_request(&mut request.inner)
+    }
+
+    pub fn submit_command_request(&mut self, cmd: &Command) -> Result<SdioCommandRequest, Error> {
+        self.host.submit_command(cmd)?;
+        Ok(SdioCommandRequest)
+    }
+
+    pub fn poll_command_request(
+        &mut self,
+        _request: &mut SdioCommandRequest,
+    ) -> Result<CommandResponsePoll, Error> {
+        self.host.poll_command_response()
+    }
+
+    pub fn submit_status(&mut self) -> Result<SdioStatusRequest, Error> {
+        let cmd = crate::cmd::cmd13(self.rca);
+        let inner = self.submit_command_request(&cmd)?;
+        Ok(SdioStatusRequest { inner })
+    }
+
+    pub fn poll_status_request(
+        &mut self,
+        request: &mut SdioStatusRequest,
+    ) -> Result<OperationPoll<CardState>, Error> {
+        match self.poll_command_request(&mut request.inner)? {
+            CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+            CommandResponsePoll::Complete(Response::R1(r1)) => {
+                Ok(OperationPoll::Complete(r1.current_state()))
             }
+            CommandResponsePoll::Complete(_) => Err(Error::BadResponse(ErrorContext::for_cmd(
+                Phase::ResponseWait,
+                13,
+            ))),
         }
     }
 
-    fn issue_command(&mut self, cmd: &Command) -> Result<Response, Error> {
-        self.host.submit_command(cmd)?;
-        spin_on_future(CommandFuture::new(&mut self.host))
+    pub fn submit_read_data_command<'a>(
+        &mut self,
+        cmd: &Command,
+        buf: &'a mut [u8],
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<SdioDataRequest<'a, H>, Error>
+    where
+        H: 'a,
+    {
+        let inner = self
+            .host
+            .submit_read_data(cmd, buf, block_size, block_count)?;
+        Ok(SdioDataRequest { inner })
+    }
+
+    pub fn submit_read_ext_csd<'a>(
+        &mut self,
+        buf: &'a mut [u8; 512],
+    ) -> Result<ExtCsdRequest<'a, H>, Error>
+    where
+        H: 'a,
+    {
+        let inner = self.submit_read_data_command(&crate::cmd::CMD8_MMC, buf, 512, 1)?;
+        Ok(ExtCsdRequest { inner })
+    }
+
+    pub fn poll_ext_csd_request<'a>(
+        &mut self,
+        request: &mut ExtCsdRequest<'a, H>,
+    ) -> Result<OperationPoll<()>, Error>
+    where
+        H: 'a,
+    {
+        match self.poll_data_request(&mut request.inner)? {
+            DataCommandPoll::Pending => Ok(OperationPoll::Pending),
+            DataCommandPoll::Complete(_) => Ok(OperationPoll::Complete(())),
+        }
+    }
+
+    pub fn submit_switch_function<'a>(
+        &mut self,
+        cmd: &Command,
+        buf: &'a mut [u8; 64],
+    ) -> Result<SwitchFunctionRequest<'a, H>, Error>
+    where
+        H: 'a,
+    {
+        let inner = self.submit_read_data_command(cmd, buf, 64, 1)?;
+        Ok(SwitchFunctionRequest { inner })
+    }
+
+    pub fn poll_switch_function_request<'a>(
+        &mut self,
+        request: &mut SwitchFunctionRequest<'a, H>,
+    ) -> Result<OperationPoll<()>, Error>
+    where
+        H: 'a,
+    {
+        match self.poll_data_request(&mut request.inner)? {
+            DataCommandPoll::Pending => Ok(OperationPoll::Pending),
+            DataCommandPoll::Complete(_) => Ok(OperationPoll::Complete(())),
+        }
+    }
+
+    pub fn submit_mmc_switch(
+        &mut self,
+        access: u8,
+        index: u8,
+        value: u8,
+    ) -> Result<MmcSwitchRequest, Error> {
+        let cmd = crate::cmd::cmd6_mmc_switch(access, index, value);
+        self.host.submit_command(&cmd)?;
+        Ok(MmcSwitchRequest {
+            rca: self.rca,
+            index,
+            value,
+            elapsed_ms: 0,
+            state: MmcSwitchRequestState::PollSwitch,
+        })
+    }
+
+    pub fn poll_mmc_switch_request(
+        &mut self,
+        request: &mut MmcSwitchRequest,
+    ) -> Result<OperationPoll<()>, Error> {
+        match request.state {
+            MmcSwitchRequestState::PollSwitch => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(_) => {
+                    let cmd = crate::cmd::cmd13(request.rca);
+                    self.host.submit_command(&cmd)?;
+                    request.state = MmcSwitchRequestState::PollStatus;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            MmcSwitchRequestState::PollStatus => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(Response::R1(r1)) => {
+                    if r1.switch_error() {
+                        warn!(
+                            "sdio: SWITCH_ERROR after CMD6 idx={} val={}",
+                            request.index, request.value
+                        );
+                        return Err(Error::CardError(crate::error::CardError::IllegalCommand));
+                    }
+                    if r1.ready_for_data() && matches!(r1.current_state(), CardState::Transfer) {
+                        return Ok(OperationPoll::Complete(()));
+                    }
+                    if request.elapsed_ms >= MmcSwitchTiming::TIMEOUT_MS {
+                        return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
+                    }
+                    request.elapsed_ms =
+                        request.elapsed_ms.saturating_add(MmcSwitchTiming::POLL_MS);
+                    let cmd = crate::cmd::cmd13(request.rca);
+                    self.host.submit_command(&cmd)?;
+                    Ok(OperationPoll::Pending)
+                }
+                CommandResponsePoll::Complete(_) => {
+                    if request.elapsed_ms >= MmcSwitchTiming::TIMEOUT_MS {
+                        return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
+                    }
+                    request.elapsed_ms =
+                        request.elapsed_ms.saturating_add(MmcSwitchTiming::POLL_MS);
+                    let cmd = crate::cmd::cmd13(request.rca);
+                    self.host.submit_command(&cmd)?;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+        }
     }
 }
 
-impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
-    /// Initialize the card in SDIO mode.
-    ///
-    /// Detects SD vs eMMC at runtime:
-    ///
-    /// 1. CMD0 — global reset
-    /// 2. CMD8 — if it echoes back, the card is SD v2 (SDHC/SDXC); if it
-    ///    times out, the card is either SD v1 or eMMC
-    /// 3. ACMD41 — if it powers the card up, that confirms SD; if it
-    ///    fails too, fall back to CMD1 (MMC SEND_OP_COND)
-    /// 4. CMD2 / CMD3 — get CID, publish RCA. SD has the card pick the
-    ///    RCA via R6; MMC has the host assign it via R1.
-    /// 5. CMD9 / CMD7 — read CSD, then select the card
-    /// 6. SD only: ACMD6 to switch to 4-bit. eMMC bus widening is left
-    ///    to a follow-up that wires CMD6 SWITCH + EXT_CSD.
-    pub fn init(&mut self) -> Result<CardInfo, Error> {
+impl<H: SdioHost> SdioSdmmc<H> {
+    /// Submit SD/MMC card initialization without waiting for completion.
+    pub fn submit_init<'a>(
+        &mut self,
+        scratch: &'a mut SdioInitScratch,
+    ) -> Result<SdioInitRequest<'a, H>, Error>
+    where
+        H: 'a,
+    {
+        self.submit_init_with_preference(CardInitPreference::SdFirst, scratch)
+    }
+
+    /// Submit SD/MMC card initialization with a caller-selected probe order.
+    pub fn submit_init_with_preference<'a>(
+        &mut self,
+        preference: CardInitPreference,
+        scratch: &'a mut SdioInitScratch,
+    ) -> Result<SdioInitRequest<'a, H>, Error>
+    where
+        H: 'a,
+    {
         info!("sdio: init starting");
         self.host.set_bus_width(BusWidth::Bit1)?;
         self.host.set_clock(ClockSpeed::Identification)?;
 
-        // CMD0: reset
         info!("sdio: CMD0 reset");
-        self.issue_command(&crate::cmd::CMD0)?;
+        self.host.submit_command(&crate::cmd::CMD0)?;
+        Ok(SdioInitRequest::new(preference, scratch))
+    }
 
-        // CMD8: detect SD v2. eMMC ignores CMD8 (or times out depending on
-        // host); we treat any non-success as "not SD v2" and let ACMD41
-        // arbitrate further.
-        let sd_v2 = self.check_cmd8().unwrap_or(false);
-        info!("sdio: CMD8 sd_v2={}", sd_v2);
+    /// Advance a submitted initialization request without blocking.
+    pub fn poll_init_request<'a>(
+        &mut self,
+        request: &mut SdioInitRequest<'a, H>,
+    ) -> Result<OperationPoll<CardInfo>, Error> {
+        const MMC_HCS: u32 = 1 << 30;
+        const MMC_VOLTAGE_MASK: u32 = 0x00FF_8000;
+        const MMC_ACCESS_MODE_MASK: u32 = 0x6000_0000;
 
-        // ACMD41 first; if the card never responds at all (typical eMMC),
-        // try CMD1 instead.
-        let (kind, ocr) = match self.wait_ready_sd(sd_v2, true) {
-            Ok(ocr) => (CardKind::Sd, ocr),
-            Err(_sd_err) => {
-                info!("sdio: ACMD41 failed ({:?}), trying MMC CMD1", _sd_err);
-                let ocr = self.wait_ready_mmc()?;
-                (CardKind::Mmc, ocr)
-            }
-        };
-        self.kind = kind;
-        info!("sdio: detected {:?} ocr={:#010x}", kind, ocr.raw);
-
-        // CMD2: get CID (identical for SD and MMC)
-        info!("sdio: CMD2 read CID");
-        let cid = match self.issue_command(&crate::cmd::CMD2)? {
-            Response::R2(raw) => Some(CidResponse::from_raw(raw)),
-            _ => None,
-        };
-
-        // CMD3: get RCA — SD lets the card pick (R6); MMC has the host
-        // assign one and the card just acks with R1. We pick `1` as a
-        // sensible default; drivers that want to talk to multiple eMMC
-        // devices on the same bus would need to extend this.
-        self.rca = match kind {
-            CardKind::Sd => self.get_rca_sd()?,
-            CardKind::Mmc => self.assign_rca_mmc(1)?,
-        };
-        info!("sdio: CMD3 rca={:#x}", self.rca);
-
-        // CMD9: get CSD → derive capacity
-        info!("sdio: CMD9 read CSD");
-        let cmd9 = crate::cmd::cmd9(self.rca);
-        let csd_response = self.issue_command(&cmd9)?;
-        let mut capacity_blocks = match csd_response {
-            Response::R2(raw) => CsdResponse::from_raw(raw).capacity_blocks(),
-            _ => None,
-        };
-        info!("sdio: CSD capacity_blocks={:?}", capacity_blocks);
-
-        // CMD7: select card
-        info!("sdio: CMD7 select card");
-        let cmd7 = crate::cmd::cmd7(self.rca);
-        self.issue_command(&cmd7)?;
-
-        // OCR bit 30 means "high capacity" on both SD (CCS) and MMC
-        // (sector mode), so the same accessor works.
-        self.high_capacity = ocr.ccs();
-
-        // Bus widening + speed switch:
-        //   SD: ACMD6 → 4-bit, well-supported and required for any decent
-        //       throughput.
-        //   MMC: read EXT_CSD, write BUS_WIDTH = 8-bit (with 4-bit
-        //       fallback if the host refuses 8-bit), then opt into HS @
-        //       52 MHz when the card advertises it. The EXT_CSD also
-        //       provides the authoritative sector count, which we
-        //       prefer over the legacy CSD value for ≥ 2 GB devices.
-        let mut ext_csd = None;
-        match kind {
-            CardKind::Sd => {
-                info!("sdio: switch SD bus width to 4-bit");
-                self.set_bus_width_sd(BusWidth::Bit4)?;
-                if self.sd_speed_selection_enabled {
-                    self.try_sd_best_speed(ocr);
-                } else {
-                    self.host.set_clock(ClockSpeed::Default)?;
-                    info!("sdio: SD speed selection disabled; staying at default speed");
+        match request.state {
+            SdioInitState::PollCmd0 => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(_) => {
+                    match request.preference {
+                        CardInitPreference::SdFirst => {
+                            let cmd = crate::cmd::cmd8(0x01, 0xAA);
+                            self.host.submit_command(&cmd)?;
+                            request.state = SdioInitState::PollCmd8;
+                        }
+                        CardInitPreference::MmcFirst => {
+                            info!("sdio: MMC-first init, trying CMD1");
+                            self.host.submit_command(&crate::cmd::cmd1(0))?;
+                            request.state = SdioInitState::PollMmcInitial;
+                        }
+                    }
+                    Ok(OperationPoll::Pending)
                 }
-            }
-            CardKind::Mmc => {
-                info!("sdio: read MMC EXT_CSD");
-                let csd = self.read_ext_csd()?;
-
-                if let Some(sectors) = csd.sector_count() {
-                    capacity_blocks = Some(sectors as u64);
-                    info!("sdio: EXT_CSD sector_count={}", sectors);
+            },
+            SdioInitState::PollCmd8 => match self.host.poll_command_response() {
+                Ok(CommandResponsePoll::Pending) => Ok(OperationPoll::Pending),
+                Ok(CommandResponsePoll::Complete(Response::R7(resp))) => {
+                    request.sd_v2 = resp.verify(0x01, 0xAA);
+                    info!("sdio: CMD8 sd_v2={}", request.sd_v2);
+                    let cmd55 = crate::cmd::cmd55(0);
+                    self.host.submit_command(&cmd55)?;
+                    request.state = SdioInitState::PollAcmd41Cmd55;
+                    Ok(OperationPoll::Pending)
                 }
-
-                // Prefer 8-bit; fall back to 4-bit if the host can't
-                // (e.g. SDHCI MVP rejects Bit8). 1-bit is the last
-                // resort and matches the controller's reset default.
-                if let Err(_e8) = self.set_bus_width_mmc(BusWidth::Bit8) {
-                    info!("sdio: 8-bit refused ({:?}), trying 4-bit", _e8);
-                    if let Err(_e4) = self.set_bus_width_mmc(BusWidth::Bit4) {
-                        info!("sdio: 4-bit refused ({:?}), staying at 1-bit", _e4);
+                Ok(CommandResponsePoll::Complete(_))
+                | Err(Error::Timeout(_))
+                | Err(Error::BadResponse(_))
+                | Err(Error::Crc(_)) => {
+                    request.sd_v2 = false;
+                    info!("sdio: CMD8 sd_v2=false");
+                    let cmd55 = crate::cmd::cmd55(0);
+                    self.host.submit_command(&cmd55)?;
+                    request.state = SdioInitState::PollAcmd41Cmd55;
+                    Ok(OperationPoll::Pending)
+                }
+                Err(e) => Err(e),
+            },
+            SdioInitState::PollAcmd41Cmd55 => match self.host.poll_command_response() {
+                Ok(CommandResponsePoll::Pending) => Ok(OperationPoll::Pending),
+                Ok(CommandResponsePoll::Complete(_)) => {
+                    let acmd41 = crate::cmd::cmd41_with_s18r(request.sd_v2, 0xFF8000, true);
+                    self.host.submit_command(&acmd41)?;
+                    request.state = SdioInitState::PollAcmd41;
+                    Ok(OperationPoll::Pending)
+                }
+                Err(_sd_err) => {
+                    info!(
+                        "sdio: ACMD41 prologue failed ({:?}), trying MMC CMD1",
+                        _sd_err
+                    );
+                    self.host.submit_command(&crate::cmd::cmd1(0))?;
+                    request.state = SdioInitState::PollMmcInitial;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::PollAcmd41 => match self.host.poll_command_response() {
+                Ok(CommandResponsePoll::Pending) => Ok(OperationPoll::Pending),
+                Ok(CommandResponsePoll::Complete(Response::R3(ocr))) => {
+                    if ocr.card_powered_up() {
+                        request.kind = Some(CardKind::Sd);
+                        request.ocr = Some(ocr);
+                        self.kind = CardKind::Sd;
+                        info!("sdio: detected {:?} ocr={:#010x}", CardKind::Sd, ocr.raw);
+                        self.host.submit_command(&crate::cmd::CMD2)?;
+                        request.state = SdioInitState::PollCmd2;
+                    } else {
+                        if request.acmd41_elapsed_ms >= SdioInitTiming::TIMEOUT_MS {
+                            warn!(
+                                "sdio: ACMD41 timed out after {}ms, trying MMC CMD1",
+                                request.acmd41_elapsed_ms
+                            );
+                            self.host.submit_command(&crate::cmd::cmd1(0))?;
+                            request.state = SdioInitState::PollMmcInitial;
+                            return Ok(OperationPoll::Pending);
+                        }
+                        request.acmd41_elapsed_ms = request
+                            .acmd41_elapsed_ms
+                            .saturating_add(SdioInitTiming::POLL_MS);
+                        let cmd55 = crate::cmd::cmd55(0);
+                        self.host.submit_command(&cmd55)?;
+                        request.state = SdioInitState::PollAcmd41Cmd55;
+                        request.needs_pace = true;
+                    }
+                    Ok(OperationPoll::Pending)
+                }
+                Ok(CommandResponsePoll::Complete(_)) => {
+                    info!("sdio: ACMD41 returned bad response, trying MMC CMD1");
+                    self.host.submit_command(&crate::cmd::cmd1(0))?;
+                    request.state = SdioInitState::PollMmcInitial;
+                    Ok(OperationPoll::Pending)
+                }
+                Err(_sd_err) => {
+                    info!("sdio: ACMD41 failed ({:?}), trying MMC CMD1", _sd_err);
+                    self.host.submit_command(&crate::cmd::cmd1(0))?;
+                    request.state = SdioInitState::PollMmcInitial;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::PollMmcInitial => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(Response::R3(ocr)) => {
+                    if ocr.card_powered_up() {
+                        request.kind = Some(CardKind::Mmc);
+                        request.ocr = Some(ocr);
+                        self.kind = CardKind::Mmc;
+                        info!("sdio: detected {:?} ocr={:#010x}", CardKind::Mmc, ocr.raw);
+                        self.host.submit_command(&crate::cmd::CMD2)?;
+                        request.state = SdioInitState::PollCmd2;
+                    } else {
+                        let voltage = ocr.raw & MMC_VOLTAGE_MASK;
+                        let voltage = if voltage == 0 {
+                            MMC_VOLTAGE_MASK
+                        } else {
+                            voltage
+                        };
+                        request.mmc_ocr_arg = MMC_HCS | voltage | (ocr.raw & MMC_ACCESS_MODE_MASK);
+                        let cmd = crate::cmd::cmd1(request.mmc_ocr_arg);
+                        self.host.submit_command(&cmd)?;
+                        request.state = SdioInitState::PollMmcReady;
+                    }
+                    Ok(OperationPoll::Pending)
+                }
+                CommandResponsePoll::Complete(_) => {
+                    Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 1)))
+                }
+            },
+            SdioInitState::PollMmcReady => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(Response::R3(ocr)) => {
+                    if ocr.card_powered_up() {
+                        request.kind = Some(CardKind::Mmc);
+                        request.ocr = Some(ocr);
+                        self.kind = CardKind::Mmc;
+                        info!("sdio: detected {:?} ocr={:#010x}", CardKind::Mmc, ocr.raw);
+                        self.host.submit_command(&crate::cmd::CMD2)?;
+                        request.state = SdioInitState::PollCmd2;
+                    } else {
+                        if request.mmc_elapsed_ms >= SdioInitTiming::TIMEOUT_MS {
+                            warn!("sdio: CMD1 timed out after {}ms", request.mmc_elapsed_ms);
+                            return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 1)));
+                        }
+                        request.mmc_elapsed_ms = request
+                            .mmc_elapsed_ms
+                            .saturating_add(SdioInitTiming::POLL_MS);
+                        let cmd = crate::cmd::cmd1(request.mmc_ocr_arg);
+                        self.host.submit_command(&cmd)?;
+                        request.needs_pace = true;
+                    }
+                    Ok(OperationPoll::Pending)
+                }
+                CommandResponsePoll::Complete(_) => {
+                    Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 1)))
+                }
+            },
+            SdioInitState::PollCmd2 => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(response) => {
+                    if let Response::R2(raw) = response {
+                        request.cid = Some(CidResponse::from_raw(raw));
+                    } else {
+                        request.cid = None;
+                    }
+                    match request.kind.ok_or(Error::InvalidArgument)? {
+                        CardKind::Sd => self.host.submit_command(&crate::cmd::CMD3_SD)?,
+                        CardKind::Mmc => self.host.submit_command(&crate::cmd::cmd3_mmc(1))?,
+                    }
+                    request.state = SdioInitState::PollCmd3;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::PollCmd3 => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(response) => {
+                    self.rca = match (request.kind.ok_or(Error::InvalidArgument)?, response) {
+                        (CardKind::Sd, Response::R6(resp)) => resp.rca(),
+                        (CardKind::Mmc, Response::R1(_)) => 1,
+                        _ => {
+                            return Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 3)));
+                        }
+                    };
+                    info!("sdio: CMD3 rca={:#x}", self.rca);
+                    let cmd9 = crate::cmd::cmd9(self.rca);
+                    self.host.submit_command(&cmd9)?;
+                    request.state = SdioInitState::PollCmd9;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::PollCmd9 => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(response) => {
+                    request.capacity_blocks = match response {
+                        Response::R2(raw) => CsdResponse::from_raw(raw).capacity_blocks(),
+                        _ => None,
+                    };
+                    info!("sdio: CSD capacity_blocks={:?}", request.capacity_blocks);
+                    let cmd7 = crate::cmd::cmd7(self.rca);
+                    self.host.submit_command(&cmd7)?;
+                    request.state = SdioInitState::PollCmd7;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::PollCmd7 => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(_) => {
+                    let ocr = request.ocr.ok_or(Error::InvalidArgument)?;
+                    self.high_capacity = ocr.ccs();
+                    match request.kind.ok_or(Error::InvalidArgument)? {
+                        CardKind::Sd => {
+                            info!("sdio: switch SD bus width to 4-bit");
+                            let cmd55 = crate::cmd::cmd55(self.rca);
+                            self.host.submit_command(&cmd55)?;
+                            request.state = SdioInitState::PollSdBusWidthCmd55;
+                        }
+                        CardKind::Mmc => {
+                            request.state = SdioInitState::FinishCardSetup;
+                        }
+                    }
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::PollSdBusWidthCmd55 => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(_) => {
+                    let acmd6 = Command::new(6, sd_acmd6_arg(BusWidth::Bit4)?, ResponseType::R1);
+                    self.host.submit_command(&acmd6)?;
+                    request.state = SdioInitState::PollSdBusWidthAcmd6;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::PollSdBusWidthAcmd6 => match self.host.poll_command_response()? {
+                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                CommandResponsePoll::Complete(_) => {
+                    self.host.set_bus_width(BusWidth::Bit4)?;
+                    self.bus_width = BusWidth::Bit4;
+                    request.state = SdioInitState::FinishCardSetup;
+                    Ok(OperationPoll::Pending)
+                }
+            },
+            SdioInitState::FinishCardSetup => {
+                let kind = request.kind.ok_or(Error::InvalidArgument)?;
+                match kind {
+                    CardKind::Sd => {
+                        if self.sd_speed_selection_enabled {
+                            request.state = SdioInitState::PrepareSdSpeed;
+                        } else {
+                            self.host.set_clock(ClockSpeed::Default)?;
+                            info!("sdio: SD speed selection disabled; staying at default speed");
+                            request.state = SdioInitState::Complete;
+                        }
+                        Ok(OperationPoll::Pending)
+                    }
+                    CardKind::Mmc => {
+                        info!("sdio: read MMC EXT_CSD");
+                        let ext_csd = unsafe { request.ext_csd_buf.as_mut() };
+                        request.ext_csd_request = Some(self.submit_read_ext_csd(ext_csd)?);
+                        request.state = SdioInitState::PollMmcExtCsd;
+                        Ok(OperationPoll::Pending)
                     }
                 }
-
-                // Speed selection ladder, fastest-first:
-                //   1. HS200 (200 MHz, 1.8 V, requires tuning)
-                //   2. HS @ 52 MHz (no tuning, no voltage switch)
-                //   3. Default speed (no work needed)
-                //
-                // Each step probes the *card* via DEVICE_TYPE first and
-                // then asks the host whether it can drive the timing.
-                // Any host-side rejection drops to the next step rather
-                // than failing init, so a card on a PIO-only controller
-                // still comes up at default speed.
+            }
+            SdioInitState::PollMmcExtCsd => {
+                let ext_request = request
+                    .ext_csd_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                match self.poll_ext_csd_request(ext_request)? {
+                    OperationPoll::Pending => Ok(OperationPoll::Pending),
+                    OperationPoll::Complete(()) => {
+                        request.ext_csd_request = None;
+                        let csd = crate::ext_csd::ExtCsd::from_bytes(unsafe {
+                            *request.ext_csd_buf.as_ref()
+                        });
+                        if let Some(sectors) = csd.sector_count() {
+                            request.capacity_blocks = Some(sectors as u64);
+                            info!("sdio: EXT_CSD sector_count={}", sectors);
+                        }
+                        request.parsed_ext_csd = Some(csd);
+                        submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit8)
+                    }
+                }
+            }
+            SdioInitState::PollMmcBusWidth => {
+                let switch_request = request
+                    .mmc_switch_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                match self.poll_mmc_switch_request(switch_request) {
+                    Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(OperationPoll::Complete(())) => {
+                        request.mmc_switch_request = None;
+                        match self.host.set_bus_width(request.current_bus_width) {
+                            Ok(()) => {
+                                self.bus_width = request.current_bus_width;
+                                request.state = SdioInitState::PrepareMmcSpeed;
+                                Ok(OperationPoll::Pending)
+                            }
+                            Err(err) if matches!(request.current_bus_width, BusWidth::Bit8) => {
+                                info!("sdio: 8-bit refused ({:?}), trying 4-bit", err);
+                                submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit4)
+                            }
+                            Err(err) if matches!(request.current_bus_width, BusWidth::Bit4) => {
+                                info!("sdio: 4-bit refused ({:?}), staying at 1-bit", err);
+                                request.state = SdioInitState::PrepareMmcSpeed;
+                                Ok(OperationPoll::Pending)
+                            }
+                            Err(err) => Err(err),
+                        }
+                    }
+                    Err(err) if matches!(request.current_bus_width, BusWidth::Bit8) => {
+                        request.mmc_switch_request = None;
+                        info!("sdio: 8-bit refused ({:?}), trying 4-bit", err);
+                        submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit4)
+                    }
+                    Err(err) if matches!(request.current_bus_width, BusWidth::Bit4) => {
+                        request.mmc_switch_request = None;
+                        info!("sdio: 4-bit refused ({:?}), staying at 1-bit", err);
+                        request.state = SdioInitState::PrepareMmcSpeed;
+                        Ok(OperationPoll::Pending)
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            SdioInitState::PrepareMmcSpeed => {
+                let Some(csd) = request.parsed_ext_csd.as_ref() else {
+                    return Err(Error::InvalidArgument);
+                };
                 let dt = csd.device_type();
-                let want_hs200 = dt.supports_hs200() && self.try_hs200(self.bus_width).is_ok();
-                if !want_hs200 && dt.supports_hs_52() {
-                    // EXT_CSD.HS_TIMING = 1 (high speed)
-                    if let Err(_e) =
-                        self.mmc_switch_write_byte(crate::cmd::ext_csd::HS_TIMING as u8, 1)
-                    {
-                        info!("sdio: MMC HS_TIMING switch refused ({:?})", _e);
-                    } else if let Err(_e) = self.host.set_clock(ClockSpeed::HighSpeed) {
-                        info!("sdio: host refused HighSpeed clock ({:?})", _e);
+                if !request.mmc_hs200_attempted
+                    && !matches!(self.bus_width, BusWidth::Bit1)
+                    && dt.supports_hs200()
+                {
+                    request.mmc_hs200_attempted = true;
+                    match self.host.switch_voltage(SignalVoltage::V180) {
+                        Ok(()) | Err(Error::UnsupportedCommand) => {
+                            if self.host.set_clock(ClockSpeed::Hs200).is_ok() {
+                                let switch_request = self.submit_mmc_switch(
+                                    0b11,
+                                    crate::cmd::ext_csd::HS_TIMING as u8,
+                                    0x02,
+                                )?;
+                                request.mmc_switch_request = Some(switch_request);
+                                request.state = SdioInitState::PollMmcHs200Switch;
+                                return Ok(OperationPoll::Pending);
+                            }
+                        }
+                        Err(err) => debug!("sdio: switch_voltage(V180) failed ({:?})", err),
+                    }
+                    self.rollback_to_hs_compat();
+                }
+                if dt.supports_hs_52() {
+                    let switch_request =
+                        self.submit_mmc_switch(0b11, crate::cmd::ext_csd::HS_TIMING as u8, 1)?;
+                    request.mmc_switch_request = Some(switch_request);
+                    request.state = SdioInitState::PollMmcHs52Switch;
+                } else {
+                    request.state = SdioInitState::Complete;
+                }
+                Ok(OperationPoll::Pending)
+            }
+            SdioInitState::PollMmcHs200Switch => {
+                let switch_request = request
+                    .mmc_switch_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                match self.poll_mmc_switch_request(switch_request) {
+                    Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(OperationPoll::Complete(())) => {
+                        request.mmc_switch_request = None;
+                        if self.host.execute_tuning(21).is_ok() {
+                            let status_request = self.submit_status()?;
+                            request.status_request = Some(status_request);
+                            request.state = SdioInitState::PollMmcHs200Status;
+                        } else {
+                            self.rollback_to_hs_compat();
+                            request.state = SdioInitState::PrepareMmcSpeed;
+                        }
+                        Ok(OperationPoll::Pending)
+                    }
+                    Err(err) => {
+                        request.mmc_switch_request = None;
+                        debug!("sdio: MMC HS200 switch refused ({:?})", err);
+                        self.rollback_to_hs_compat();
+                        request.state = SdioInitState::PrepareMmcSpeed;
+                        Ok(OperationPoll::Pending)
                     }
                 }
-
-                ext_csd = Some(csd);
+            }
+            SdioInitState::PollMmcHs200Status => {
+                let status_request = request
+                    .status_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                match self.poll_status_request(status_request)? {
+                    OperationPoll::Pending => Ok(OperationPoll::Pending),
+                    OperationPoll::Complete(CardState::Transfer) => {
+                        request.status_request = None;
+                        info!("sdio: HS200 entry succeeded");
+                        request.state = SdioInitState::Complete;
+                        Ok(OperationPoll::Pending)
+                    }
+                    OperationPoll::Complete(_) => {
+                        request.status_request = None;
+                        self.rollback_to_hs_compat();
+                        request.state = SdioInitState::PrepareMmcSpeed;
+                        Ok(OperationPoll::Pending)
+                    }
+                }
+            }
+            SdioInitState::PollMmcHs52Switch => {
+                let switch_request = request
+                    .mmc_switch_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                match self.poll_mmc_switch_request(switch_request) {
+                    Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(OperationPoll::Complete(())) => {
+                        request.mmc_switch_request = None;
+                        if let Err(_e) = self.host.set_clock(ClockSpeed::HighSpeed) {
+                            info!("sdio: host refused HighSpeed clock ({:?})", _e);
+                        }
+                        request.state = SdioInitState::Complete;
+                        Ok(OperationPoll::Pending)
+                    }
+                    Err(_e) => {
+                        request.mmc_switch_request = None;
+                        info!("sdio: MMC HS_TIMING switch refused ({:?})", _e);
+                        request.state = SdioInitState::Complete;
+                        Ok(OperationPoll::Pending)
+                    }
+                }
+            }
+            SdioInitState::PrepareSdSpeed => {
+                let buf = unsafe { request.switch_status_buf.as_mut() };
+                let switch_request =
+                    self.submit_switch_function(&crate::cmd::cmd6_sd_access_mode(false, 0), buf)?;
+                request.switch_function_request = Some(switch_request);
+                request.state = SdioInitState::PollSdSwitchFunctionCheck;
+                Ok(OperationPoll::Pending)
+            }
+            SdioInitState::PollSdSwitchFunctionCheck => {
+                let switch_request = request
+                    .switch_function_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                match self.poll_switch_function_request(switch_request) {
+                    Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(OperationPoll::Complete(())) => {
+                        request.switch_function_request = None;
+                        let status =
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
+                        info!(
+                            "sdio: SD access mode support hs={} sdr50={} sdr104={} ddr50={} \
+                             s18a={}",
+                            status.access_mode_supported(SdAccessMode::HighSpeed.function()),
+                            status.access_mode_supported(SdAccessMode::Sdr50.function()),
+                            status.access_mode_supported(SdAccessMode::Sdr104.function()),
+                            status.access_mode_supported(SdAccessMode::Ddr50.function()),
+                            request.ocr.ok_or(Error::InvalidArgument)?.s18a()
+                        );
+                        request.sd_access_index = 0;
+                        submit_next_sd_access_mode(self, request, status)
+                    }
+                    Err(err) => {
+                        request.switch_function_request = None;
+                        warn!("sdio: SD speed selection skipped ({:?})", err);
+                        request.state = SdioInitState::Complete;
+                        Ok(OperationPoll::Pending)
+                    }
+                }
+            }
+            SdioInitState::PollSdVoltageSwitch => {
+                let cmd = request
+                    .command_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
+                match self.poll_command_request(cmd) {
+                    Ok(CommandResponsePoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(CommandResponsePoll::Complete(_)) => {
+                        request.command_request = None;
+                        match self.host.switch_voltage(SignalVoltage::V180) {
+                            Ok(()) => submit_sd_access_mode_switch(self, request, mode),
+                            Err(err) => {
+                                warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                                let status = SwitchStatus::from_raw(unsafe {
+                                    *request.switch_status_buf.as_ref()
+                                });
+                                submit_next_sd_access_mode(self, request, status)
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        request.command_request = None;
+                        warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                        let status =
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
+                        submit_next_sd_access_mode(self, request, status)
+                    }
+                }
+            }
+            SdioInitState::PollSdSetAccessMode => {
+                let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
+                let switch_request = request
+                    .switch_function_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                match self.poll_switch_function_request(switch_request) {
+                    Ok(OperationPoll::Pending) => Ok(OperationPoll::Pending),
+                    Ok(OperationPoll::Complete(())) => {
+                        request.switch_function_request = None;
+                        let status =
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
+                        if status.selected_function(1) != mode.function() {
+                            warn!("sdio: SD {} failed (function mismatch)", mode.name());
+                            submit_next_sd_access_mode(self, request, status)
+                        } else {
+                            self.host.set_clock(mode.clock())?;
+                            if matches!(mode, SdAccessMode::Sdr50 | SdAccessMode::Sdr104) {
+                                self.host.execute_tuning(19)?;
+                            }
+                            let status_request = self.submit_status()?;
+                            request.status_request = Some(status_request);
+                            request.state = SdioInitState::PollSdStatus;
+                            Ok(OperationPoll::Pending)
+                        }
+                    }
+                    Err(err) => {
+                        request.switch_function_request = None;
+                        warn!("sdio: SD {} failed ({:?})", mode.name(), err);
+                        let status =
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
+                        submit_next_sd_access_mode(self, request, status)
+                    }
+                }
+            }
+            SdioInitState::PollSdStatus => {
+                let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
+                let status_request = request
+                    .status_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                match self.poll_status_request(status_request)? {
+                    OperationPoll::Pending => Ok(OperationPoll::Pending),
+                    OperationPoll::Complete(CardState::Transfer) => {
+                        request.status_request = None;
+                        info!("sdio: SD speed selected {:?}", mode.clock());
+                        request.state = SdioInitState::Complete;
+                        Ok(OperationPoll::Pending)
+                    }
+                    OperationPoll::Complete(_) => {
+                        request.status_request = None;
+                        warn!("sdio: SD {} failed (bad status)", mode.name());
+                        let status =
+                            SwitchStatus::from_raw(unsafe { *request.switch_status_buf.as_ref() });
+                        submit_next_sd_access_mode(self, request, status)
+                    }
+                }
+            }
+            SdioInitState::Complete => {
+                let kind = request.kind.ok_or(Error::InvalidArgument)?;
+                let ocr = request.ocr.ok_or(Error::InvalidArgument)?;
+                info!(
+                    "sdio: init done kind={:?} sd_v2={} high_capacity={} rca={:#x} ocr={:#x}",
+                    kind, request.sd_v2, self.high_capacity, self.rca, ocr.raw
+                );
+                Ok(OperationPoll::Complete(CardInfo {
+                    kind,
+                    sd_v2: request.sd_v2,
+                    high_capacity: self.high_capacity,
+                    ocr: ocr.raw,
+                    rca: self.rca,
+                    capacity_blocks: request.capacity_blocks,
+                    cid: request.cid,
+                    ext_csd: request.parsed_ext_csd.take(),
+                }))
             }
         }
-
-        info!(
-            "sdio: init done kind={:?} sd_v2={} high_capacity={} rca={:#x} ocr={:#x}",
-            kind, sd_v2, self.high_capacity, self.rca, ocr.raw
-        );
-        Ok(CardInfo {
-            kind,
-            sd_v2,
-            high_capacity: self.high_capacity,
-            ocr: ocr.raw,
-            rca: self.rca,
-            capacity_blocks,
-            cid,
-            ext_csd,
-        })
-    }
-
-    /// Check CMD8 response. Returns `Ok(true)` when the card echoes the
-    /// expected check pattern (SD v2). Any timeout / bad response /
-    /// mismatch returns `Ok(false)` so the caller can fall through to
-    /// ACMD41 / CMD1; only catastrophic bus errors propagate.
-    fn check_cmd8(&mut self) -> Result<bool, Error> {
-        let cmd = crate::cmd::cmd8(0x01, 0xAA);
-        match self.issue_command(&cmd) {
-            Ok(Response::R7(resp)) => Ok(resp.verify(0x01, 0xAA)),
-            Ok(_) => Ok(false),
-            Err(Error::Timeout(_)) | Err(Error::BadResponse(_)) | Err(Error::Crc(_)) => {
-                // No response / garbage CRC is the canonical "not SD v2"
-                // signal. Don't propagate so `init` can try ACMD41 anyway
-                // (SD v1 cards behave this way too).
-                Ok(false)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Send ACMD41 until card is ready (SD path).
-    fn wait_ready_sd(&mut self, sd_v2: bool, request_1v8: bool) -> Result<OcrResponse, Error> {
-        spin_on_future(Acmd41Future::new(
-            &mut self.host,
-            &mut self.delay,
-            sd_v2,
-            request_1v8,
-        ))
-    }
-
-    /// Send CMD1 until the eMMC reports power-up complete (MMC path).
-    ///
-    /// Sets the HCS bit (bit 30) in the operating-condition argument so
-    /// cards larger than 2 GB switch to sector addressing — same idea as
-    /// SD's HCS bit in ACMD41. Bits 23..15 cover the standard 2.7–3.6 V
-    /// window.
-    fn wait_ready_mmc(&mut self) -> Result<OcrResponse, Error> {
-        spin_on_future(MmcReadyFuture::new(&mut self.host, &mut self.delay))
-    }
-
-    /// CMD3 (SD): card publishes its RCA via R6.
-    fn get_rca_sd(&mut self) -> Result<u16, Error> {
-        match self.issue_command(&crate::cmd::CMD3_SD)? {
-            Response::R6(resp) => Ok(resp.rca()),
-            _ => Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 3))),
-        }
-    }
-
-    /// CMD3 (MMC): host assigns the RCA, card returns R1.
-    fn assign_rca_mmc(&mut self, rca: u16) -> Result<u16, Error> {
-        let cmd = crate::cmd::cmd3_mmc(rca);
-        match self.issue_command(&cmd)? {
-            Response::R1(_) => Ok(rca),
-            _ => Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 3))),
-        }
-    }
-
-    /// Read the 512-byte EXT_CSD via MMC `CMD8 SEND_EXT_CSD`.
-    ///
-    /// Caller must have selected the card (CMD7) before this. The data
-    /// phase is driven through the host's submit/poll data-command state
-    /// machine so runtimes can complete it either synchronously or from IRQ
-    /// wakeups.
-    fn read_ext_csd(&mut self) -> Result<crate::ext_csd::ExtCsd, Error> {
-        info!("sdio: prepare EXT_CSD read");
-        let mut buf = [0u8; 512];
-        self.issue_read_data(&crate::cmd::CMD8_MMC, &mut buf, 512, 1)?;
-        Ok(crate::ext_csd::ExtCsd::from_bytes(buf))
-    }
-
-    /// Issue MMC `CMD6 SWITCH` to write `value` into EXT_CSD byte
-    /// `index`, then poll CMD13 until the card returns to `tran` state.
-    ///
-    /// `access` selects the SWITCH access mode (`0b11` = WRITE_BYTE,
-    /// `0b10` = SET_BITS, `0b01` = CLEAR_BITS). For most use cases —
-    /// flipping a single byte to a known value — `WRITE_BYTE` is what
-    /// you want; this is what [`mmc_switch_write_byte`](Self::mmc_switch_write_byte)
-    /// exposes.
-    ///
-    /// Surfaces `Error::CardError(IllegalCommand)` if the post-switch
-    /// CMD13 reports `SWITCH_ERROR`.
-    fn mmc_switch(&mut self, access: u8, index: u8, value: u8) -> Result<(), Error> {
-        spin_on_future(MmcSwitchFuture::new(
-            &mut self.host,
-            &mut self.delay,
-            self.rca,
-            access,
-            index,
-            value,
-        ))
-    }
-
-    /// Convenience over [`mmc_switch`](Self::mmc_switch) using the most
-    /// common access mode (`WRITE_BYTE`).
-    fn mmc_switch_write_byte(&mut self, index: u8, value: u8) -> Result<(), Error> {
-        self.mmc_switch(0b11, index, value)
-    }
-
-    /// Switch the eMMC bus width through CMD6 SWITCH (writes
-    /// `EXT_CSD.BUS_WIDTH`) after the host accepts the requested width.
-    fn set_bus_width_mmc(&mut self, width: BusWidth) -> Result<(), Error> {
-        let value: u8 = match width {
-            BusWidth::Bit1 => 0,
-            BusWidth::Bit4 => 1,
-            BusWidth::Bit8 => 2,
-        };
-        self.host.set_bus_width(width)?;
-        self.mmc_switch_write_byte(crate::cmd::ext_csd::BUS_WIDTH as u8, value)?;
-        self.bus_width = width;
-        Ok(())
-    }
-
-    /// Try to bring the eMMC up in HS200 mode at the current bus width.
-    ///
-    /// Sequence (JEDEC eMMC 5.0 §6.6.4):
-    ///
-    /// 1. **Voltage**: ensure the bus is at 1.8 V. Most platforms wire
-    ///    eMMC permanently at 1.8 V; we still call `switch_voltage` so
-    ///    hosts that *do* manage the IO domain can flip it. eMMC has no
-    ///    CMD11 — the protocol layer skips it, only the host moves.
-    /// 2. **Timing select**: write `EXT_CSD.HS_TIMING = 0x02`
-    ///    (low nibble = HS200, upper nibble = driver strength 0). After
-    ///    this write the card immediately drives the bus at HS200
-    ///    timings, so the host clock must follow within the spec's
-    ///    transition window.
-    /// 3. **Clock**: `host.set_clock(Hs200)` — bring the controller to
-    ///    200 MHz with HS200 IO timing.
-    /// 4. **Tuning**: `host.execute_tuning(21)` — the controller
-    ///    iterates CMD21 to find a stable sampling phase.
-    /// 5. **Verify**: CMD13 must report `tran` + READY_FOR_DATA so we
-    ///    know the card is responsive at the new timings.
-    ///
-    /// Any step returning an error rolls the speed back to default
-    /// (the caller then drops to HS @ 52 MHz). `width` must already be
-    /// 4-bit or 8-bit — HS200 is undefined for 1-bit.
-    fn try_hs200(&mut self, width: BusWidth) -> Result<(), Error> {
-        if matches!(width, BusWidth::Bit1) {
-            return Err(Error::UnsupportedCommand);
-        }
-
-        // 1. Ask the host to make sure we're at 1.8 V. Hosts that hard-wire
-        //    1.8 V can no-op; hosts without IO-domain control return
-        //    UnsupportedCommand and we abort HS200.
-        match self.host.switch_voltage(SignalVoltage::V180) {
-            Ok(()) => {}
-            Err(Error::UnsupportedCommand) => {
-                // Caller (the SoC integrator) is on the hook to have
-                // wired eMMC at 1.8 V at boot. We can't verify, so just
-                // proceed — if the IO domain is still 3.3 V, tuning will
-                // fail and we'll roll back.
-                debug!("sdio: switch_voltage(V180) unsupported, proceeding");
-            }
-            Err(e) => {
-                debug!("sdio: switch_voltage(V180) failed ({:?})", e);
-                return Err(e);
-            }
-        }
-
-        // 2. EXT_CSD.HS_TIMING = 0x02 (HS200 in low nibble, drv str 0).
-        self.mmc_switch_write_byte(crate::cmd::ext_csd::HS_TIMING as u8, 0x02)?;
-
-        // 3. Spin the controller up to 200 MHz, then run tuning. On
-        //    failure of either step we have to roll the card back to
-        //    a safe timing — HS_TIMING=2 means it's expecting HS200
-        //    timings, which won't work if the controller couldn't tune
-        //    in. Roll the card back to HS @ 52 MHz timing first, then
-        //    drop the controller clock with it; the outer `init` will
-        //    repeat the HS_TIMING=1 write through the HS-fallback
-        //    branch but writing the same value twice is harmless.
-        if let Err(e) = self.host.set_clock(ClockSpeed::Hs200) {
-            self.rollback_to_hs_compat();
-            return Err(e);
-        }
-        if let Err(e) = self.host.execute_tuning(21) {
-            self.rollback_to_hs_compat();
-            return Err(e);
-        }
-
-        // 4. Verify the card actually came along — a successful tuning
-        //    plus CMD13 returning `tran` is the canonical "we're in
-        //    HS200" check.
-        let r = self.issue_command(&crate::cmd::cmd13(self.rca))?;
-        if let Response::R1(r1) = r
-            && r1.ready_for_data()
-            && matches!(r1.current_state(), crate::response::CardState::Transfer)
-        {
-            info!("sdio: HS200 entry succeeded");
-            return Ok(());
-        }
-        self.rollback_to_hs_compat();
-        Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 13)))
     }
 
     /// Best-effort rollback after a failed HS200 attempt. Drops the
@@ -1260,176 +1344,90 @@ impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
     fn rollback_to_hs_compat(&mut self) {
         let _ = self.host.set_clock(ClockSpeed::Default);
     }
-
-    /// Switch SD bus width via ACMD6. eMMC must use CMD6 SWITCH instead;
-    /// see the discussion above [`SdioSdmmc::init`].
-    fn set_bus_width_sd(&mut self, width: BusWidth) -> Result<(), Error> {
-        // CMD55
-        let cmd55 = crate::cmd::cmd55(self.rca);
-        self.issue_command(&cmd55)?;
-
-        // ACMD6: set bus width — ACMD6 only encodes 1-bit or 4-bit. 8-bit
-        // bus configuration on eMMC is done through MMC CMD6 (SWITCH) and is
-        // not part of this driver's ACMD6 path.
-        let arg = match width {
-            BusWidth::Bit1 => 0,
-            BusWidth::Bit4 => 2,
-            BusWidth::Bit8 => return Err(Error::UnsupportedCommand),
-        };
-        let acmd6 = Command::new(6, arg, ResponseType::R1);
-        self.issue_command(&acmd6)?;
-
-        self.host.set_bus_width(width)?;
-        self.bus_width = width;
-        Ok(())
-    }
-
-    fn try_sd_best_speed(&mut self, ocr: OcrResponse) {
-        match self.try_sd_best_speed_inner(ocr) {
-            Ok(Some(speed)) => info!("sdio: SD speed selected {:?}", speed),
-            Ok(None) => info!("sdio: SD card stayed at default speed"),
-            Err(e) => warn!("sdio: SD speed selection skipped ({:?})", e),
-        }
-    }
-
-    fn try_sd_best_speed_inner(&mut self, ocr: OcrResponse) -> Result<Option<ClockSpeed>, Error> {
-        let status = self.switch_function(&crate::cmd::cmd6_sd_access_mode(false, 0))?;
-        info!(
-            "sdio: SD access mode support hs={} sdr50={} sdr104={} ddr50={} s18a={}",
-            status.access_mode_supported(SdAccessMode::HighSpeed.function()),
-            status.access_mode_supported(SdAccessMode::Sdr50.function()),
-            status.access_mode_supported(SdAccessMode::Sdr104.function()),
-            status.access_mode_supported(SdAccessMode::Ddr50.function()),
-            ocr.s18a()
-        );
-
-        if ocr.s18a() {
-            for candidate in [
-                SdAccessMode::Sdr104,
-                SdAccessMode::Sdr50,
-                SdAccessMode::Ddr50,
-            ] {
-                if !status.access_mode_supported(candidate.function()) {
-                    continue;
-                }
-                info!("sdio: trying SD {}", candidate.name());
-                match self.try_sd_uhs_mode(candidate) {
-                    Ok(()) => return Ok(Some(candidate.clock())),
-                    Err(e) => warn!("sdio: SD {} failed ({:?})", candidate.name(), e),
-                }
-            }
-        } else {
-            info!("sdio: SD UHS-I skipped because ACMD41 did not report S18A");
-        }
-
-        if status.access_mode_supported(SdAccessMode::HighSpeed.function()) {
-            info!("sdio: trying SD HighSpeed");
-            match self.try_sd_access_mode(SdAccessMode::HighSpeed) {
-                Ok(()) => return Ok(Some(ClockSpeed::HighSpeed)),
-                Err(e) => warn!("sdio: SD HighSpeed failed ({:?})", e),
-            }
-        } else {
-            info!("sdio: SD HighSpeed unsupported by CMD6 status");
-        }
-
-        Ok(None)
-    }
-
-    fn try_sd_uhs_mode(&mut self, mode: SdAccessMode) -> Result<(), Error> {
-        self.issue_command(&crate::cmd::CMD11)?;
-        self.host.switch_voltage(SignalVoltage::V180)?;
-        self.try_sd_access_mode(mode)?;
-        if mode.needs_tuning() {
-            self.host.execute_tuning(19)?;
-        }
-        Ok(())
-    }
-
-    fn try_sd_access_mode(&mut self, mode: SdAccessMode) -> Result<(), Error> {
-        let status =
-            self.switch_function(&crate::cmd::cmd6_sd_access_mode(true, mode.function()))?;
-        if status.selected_function(1) != mode.function() {
-            return Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 6)));
-        }
-        self.host.set_clock(mode.clock())?;
-        let status = self.status()?;
-        if matches!(status, CardState::Transfer) {
-            Ok(())
-        } else {
-            Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 13)))
-        }
-    }
-
-    /// Erase a range of blocks
-    pub fn erase(&mut self, start: u32, end: u32) -> Result<(), Error> {
-        let start_addr = block_addr_of(start, self.high_capacity);
-        let end_addr = block_addr_of(end, self.high_capacity);
-
-        let cmd32 = crate::cmd::cmd32(start_addr);
-        self.issue_command(&cmd32)?;
-
-        let cmd33 = crate::cmd::cmd33(end_addr);
-        self.issue_command(&cmd33)?;
-
-        self.issue_command(&crate::cmd::CMD38)?;
-        Ok(())
-    }
-
-    /// Get card status
-    pub fn status(&mut self) -> Result<CardState, Error> {
-        let cmd13 = crate::cmd::cmd13(self.rca);
-        match self.issue_command(&cmd13)? {
-            Response::R1(r1) => Ok(r1.current_state()),
-            _ => Err(Error::BadResponse(ErrorContext::for_cmd(
-                Phase::ResponseWait,
-                13,
-            ))),
-        }
-    }
-
-    /// Issue a CMD6 SWITCH_FUNC and read back the 64-byte status block.
-    ///
-    /// Use [`SdioSdmmc::switch_to_high_speed`] for the most common case
-    /// (group 1 → high-speed). This lower-level entry point exposes the
-    /// raw [`SwitchStatus`] for callers that need to inspect other groups.
-    pub fn switch_function(&mut self, cmd: &Command) -> Result<SwitchStatus, Error> {
-        let mut buf = [0u8; 64];
-        self.issue_read_data(cmd, &mut buf, 64, 1)?;
-        Ok(SwitchStatus::from_raw(buf))
-    }
-
-    /// Switch the card to high-speed (50 MHz) by issuing CMD6 with mode=1
-    /// and group 1 = 1. Returns `Ok(true)` if the card reports high-speed
-    /// active; `Ok(false)` if it acknowledged the command but didn't switch
-    /// (e.g. unsupported); `Err` if the bus transaction itself failed.
-    ///
-    /// The host is responsible for actually raising the bus clock after this
-    /// returns success; this driver only handles the protocol-level switch.
-    pub fn switch_to_high_speed(&mut self) -> Result<bool, Error> {
-        let status = self.switch_function(&crate::cmd::cmd6_high_speed(true))?;
-        let active = status.high_speed_active();
-        if active {
-            info!("sdio: switched to high-speed mode");
-        } else {
-            warn!("sdio: high-speed switch did not take effect");
-        }
-        Ok(active)
-    }
 }
 
-impl<H: SdioHost, D: DelayNs> SdioSdmmc<H, D> {
-    fn issue_read_data(
-        &mut self,
-        cmd: &Command,
-        buf: &mut [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Response, Error> {
-        let request = self
-            .host
-            .submit_read_data(cmd, buf, block_size, block_count)?;
-        spin_on_future(DataFuture::new(&mut self.host, request))
+fn submit_mmc_bus_width_or_continue<'a, H: SdioHost + 'a>(
+    driver: &mut SdioSdmmc<H>,
+    request: &mut SdioInitRequest<'a, H>,
+    width: BusWidth,
+) -> Result<OperationPoll<CardInfo>, Error> {
+    let value: u8 = match width {
+        BusWidth::Bit1 => 0,
+        BusWidth::Bit4 => 1,
+        BusWidth::Bit8 => 2,
+    };
+    request.current_bus_width = width;
+    request.mmc_switch_request =
+        Some(driver.submit_mmc_switch(0b11, crate::cmd::ext_csd::BUS_WIDTH as u8, value)?);
+    request.state = SdioInitState::PollMmcBusWidth;
+    Ok(OperationPoll::Pending)
+}
+
+fn submit_next_sd_access_mode<'a, H: SdioHost + 'a>(
+    driver: &mut SdioSdmmc<H>,
+    request: &mut SdioInitRequest<'a, H>,
+    status: SwitchStatus,
+) -> Result<OperationPoll<CardInfo>, Error> {
+    let ocr = request.ocr.ok_or(Error::InvalidArgument)?;
+    let candidates = if ocr.s18a() {
+        &[
+            SdAccessMode::Sdr104,
+            SdAccessMode::Sdr50,
+            SdAccessMode::Ddr50,
+            SdAccessMode::HighSpeed,
+        ][..]
+    } else {
+        &[SdAccessMode::HighSpeed][..]
+    };
+
+    while request.sd_access_index < candidates.len() {
+        let mode = candidates[request.sd_access_index];
+        request.sd_access_index += 1;
+        if !status.access_mode_supported(mode.function()) {
+            continue;
+        }
+        if matches!(mode, SdAccessMode::HighSpeed) {
+            info!("sdio: trying SD HighSpeed");
+        } else {
+            info!("sdio: trying SD {}", mode.name());
+        }
+        return submit_sd_access_mode(driver, request, mode);
     }
+
+    info!("sdio: SD card stayed at default speed");
+    request.state = SdioInitState::Complete;
+    Ok(OperationPoll::Pending)
+}
+
+fn submit_sd_access_mode<'a, H: SdioHost + 'a>(
+    driver: &mut SdioSdmmc<H>,
+    request: &mut SdioInitRequest<'a, H>,
+    mode: SdAccessMode,
+) -> Result<OperationPoll<CardInfo>, Error> {
+    request.current_access_mode = Some(mode);
+    if !matches!(mode, SdAccessMode::HighSpeed) && request.ocr.ok_or(Error::InvalidArgument)?.s18a()
+    {
+        let cmd = crate::cmd::CMD11;
+        request.command_request = Some(driver.submit_command_request(&cmd)?);
+        request.state = SdioInitState::PollSdVoltageSwitch;
+        return Ok(OperationPoll::Pending);
+    }
+
+    submit_sd_access_mode_switch(driver, request, mode)
+}
+
+fn submit_sd_access_mode_switch<'a, H: SdioHost + 'a>(
+    driver: &mut SdioSdmmc<H>,
+    request: &mut SdioInitRequest<'a, H>,
+    mode: SdAccessMode,
+) -> Result<OperationPoll<CardInfo>, Error> {
+    let buf = unsafe { request.switch_status_buf.as_mut() };
+    request.switch_function_request = Some(
+        driver
+            .submit_switch_function(&crate::cmd::cmd6_sd_access_mode(true, mode.function()), buf)?,
+    );
+    request.state = SdioInitState::PollSdSetAccessMode;
+    Ok(OperationPoll::Pending)
 }
 
 fn block_count_from_len(len: usize) -> Result<u32, Error> {
@@ -1437,6 +1435,14 @@ fn block_count_from_len(len: usize) -> Result<u32, Error> {
         return Err(Error::Misaligned);
     }
     u32::try_from(len / 512).map_err(|_| Error::InvalidArgument)
+}
+
+fn sd_acmd6_arg(width: BusWidth) -> Result<u32, Error> {
+    match width {
+        BusWidth::Bit1 => Ok(0),
+        BusWidth::Bit4 => Ok(2),
+        BusWidth::Bit8 => Err(Error::UnsupportedCommand),
+    }
 }
 
 /// Card information obtained during SDIO initialization
@@ -1489,23 +1495,6 @@ mod tests {
     use super::*;
     use crate::response::{IfCondResponse, OcrResponse, R1Response, RcaResponse};
 
-    struct NullDelay;
-
-    impl DelayNs for NullDelay {
-        fn delay_ns(&mut self, _ns: u32) {}
-    }
-
-    #[derive(Default)]
-    struct CountingDelay {
-        ns_calls: Vec<u32>,
-    }
-
-    impl DelayNs for CountingDelay {
-        fn delay_ns(&mut self, ns: u32) {
-            self.ns_calls.push(ns);
-        }
-    }
-
     /// Mock host that replays canned responses in order. Used to verify the
     /// init sequence and that the driver tracks RCA on its own.
     struct MockHost {
@@ -1536,6 +1525,7 @@ mod tests {
         /// Records the cmd_index passed to the most recent
         /// `execute_tuning` call.
         last_tuning_cmd: Option<u8>,
+        pending_polls: usize,
     }
 
     struct MockDataRequest<'a> {
@@ -1559,6 +1549,7 @@ mod tests {
                 voltage_switch_result: None,
                 tuning_result: None,
                 last_tuning_cmd: None,
+                pending_polls: 0,
             }
         }
 
@@ -1579,6 +1570,7 @@ mod tests {
                 voltage_switch_result: None,
                 tuning_result: None,
                 last_tuning_cmd: None,
+                pending_polls: 0,
             }
         }
     }
@@ -1593,6 +1585,10 @@ mod tests {
         }
 
         fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
+            if self.pending_polls > 0 {
+                self.pending_polls -= 1;
+                return Ok(CommandResponsePoll::Pending);
+            }
             if self.replies.is_empty() {
                 return Err(Error::Timeout(ErrorContext::default()));
             }
@@ -1752,6 +1748,10 @@ mod tests {
         sd_init_replies_with_ocr(ocr_ready_sdhc())
     }
 
+    fn disable_speed_selection(driver: &mut SdioSdmmc<MockHost>) {
+        driver.set_sd_speed_selection_enabled(false);
+    }
+
     fn sd_init_replies_with_ocr(ocr: Response) -> Vec<Result<Response, Error>> {
         std::vec![
             Ok(ok_r1()),                                             // CMD0
@@ -1774,321 +1774,31 @@ mod tests {
         status
     }
 
-    struct PendingHost {
-        command_polls: usize,
-        data_polls: usize,
-        waker_registrations: usize,
+    fn poll_init_to_completion<H: SdioHost>(driver: &mut SdioSdmmc<H>) -> Result<CardInfo, Error> {
+        poll_init_to_completion_with_preference(driver, CardInitPreference::SdFirst)
     }
 
-    struct PendingDataRequest<'a> {
-        _marker: core::marker::PhantomData<&'a ()>,
-    }
-
-    impl PendingHost {
-        fn new() -> Self {
-            Self {
-                command_polls: 0,
-                data_polls: 0,
-                waker_registrations: 0,
+    fn poll_init_to_completion_with_preference<H: SdioHost>(
+        driver: &mut SdioSdmmc<H>,
+        preference: CardInitPreference,
+    ) -> Result<CardInfo, Error> {
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init_with_preference(preference, &mut scratch)?;
+        loop {
+            match driver.poll_init_request(&mut request)? {
+                OperationPoll::Pending => {}
+                OperationPoll::Complete(info) => return Ok(info),
             }
         }
-    }
-
-    impl SdioHost for PendingHost {
-        type Event = ();
-        type DataRequest<'a> = PendingDataRequest<'a>;
-
-        fn submit_command(&mut self, _cmd: &Command) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
-            self.command_polls += 1;
-            if self.command_polls == 1 {
-                Ok(CommandResponsePoll::Pending)
-            } else {
-                Ok(CommandResponsePoll::Complete(ok_r1()))
-            }
-        }
-
-        fn submit_read_data<'a>(
-            &mut self,
-            _cmd: &Command,
-            _buf: &'a mut [u8],
-            _block_size: u32,
-            _block_count: u32,
-        ) -> Result<Self::DataRequest<'a>, Error> {
-            Ok(PendingDataRequest {
-                _marker: core::marker::PhantomData,
-            })
-        }
-
-        fn submit_write_data<'a>(
-            &mut self,
-            _cmd: &Command,
-            _buf: &'a [u8],
-            _block_size: u32,
-            _block_count: u32,
-        ) -> Result<Self::DataRequest<'a>, Error> {
-            Ok(PendingDataRequest {
-                _marker: core::marker::PhantomData,
-            })
-        }
-
-        fn poll_data_request<'a>(
-            &mut self,
-            _request: &mut Self::DataRequest<'a>,
-        ) -> Result<DataCommandPoll, Error> {
-            self.data_polls += 1;
-            if self.data_polls == 1 {
-                Ok(DataCommandPoll::Pending)
-            } else {
-                Ok(DataCommandPoll::Complete(ok_r1()))
-            }
-        }
-
-        fn set_bus_width(&mut self, _width: BusWidth) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn set_clock(&mut self, _speed: ClockSpeed) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn register_waker(&mut self, _waker: &Waker) {
-            self.waker_registrations += 1;
-        }
-    }
-
-    struct Acmd41Host {
-        command_responses: Vec<CommandResponsePoll>,
-        commands: Vec<u8>,
-        command_args: Vec<u32>,
-        waker_registrations: usize,
-    }
-
-    impl Acmd41Host {
-        fn new(command_responses: Vec<CommandResponsePoll>) -> Self {
-            Self {
-                command_responses,
-                commands: Vec::new(),
-                command_args: Vec::new(),
-                waker_registrations: 0,
-            }
-        }
-    }
-
-    impl SdioHost for Acmd41Host {
-        type Event = ();
-        type DataRequest<'a> = PendingDataRequest<'a>;
-
-        fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
-            self.commands.push(cmd.cmd);
-            self.command_args.push(cmd.arg);
-            Ok(())
-        }
-
-        fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
-            if self.command_responses.is_empty() {
-                return Err(Error::Timeout(ErrorContext::default()));
-            }
-            Ok(self.command_responses.remove(0))
-        }
-
-        fn submit_read_data<'a>(
-            &mut self,
-            _cmd: &Command,
-            _buf: &'a mut [u8],
-            _block_size: u32,
-            _block_count: u32,
-        ) -> Result<Self::DataRequest<'a>, Error> {
-            Err(Error::UnsupportedCommand)
-        }
-
-        fn submit_write_data<'a>(
-            &mut self,
-            _cmd: &Command,
-            _buf: &'a [u8],
-            _block_size: u32,
-            _block_count: u32,
-        ) -> Result<Self::DataRequest<'a>, Error> {
-            Err(Error::UnsupportedCommand)
-        }
-
-        fn poll_data_request<'a>(
-            &mut self,
-            _request: &mut Self::DataRequest<'a>,
-        ) -> Result<DataCommandPoll, Error> {
-            Err(Error::UnsupportedCommand)
-        }
-
-        fn set_bus_width(&mut self, _width: BusWidth) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn set_clock(&mut self, _speed: ClockSpeed) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn register_waker(&mut self, _waker: &Waker) {
-            self.waker_registrations += 1;
-        }
-    }
-
-    #[test]
-    fn command_future_registers_waker_on_pending_and_completes() {
-        let mut host = PendingHost::new();
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-        let mut future = core::pin::pin!(CommandFuture::new(&mut host));
-
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(
-            future.as_mut().poll(&mut cx),
-            Poll::Ready(Ok(Response::R1(_)))
-        ));
-
-        drop(future);
-        assert_eq!(host.command_polls, 2);
-        assert_eq!(host.waker_registrations, 1);
-    }
-
-    #[test]
-    fn data_future_registers_waker_on_pending_and_completes() {
-        let mut host = PendingHost::new();
-        let request = PendingDataRequest {
-            _marker: core::marker::PhantomData,
-        };
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-        let mut future = core::pin::pin!(DataFuture::new(&mut host, request));
-
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(
-            future.as_mut().poll(&mut cx),
-            Poll::Ready(Ok(Response::R1(_)))
-        ));
-
-        drop(future);
-        assert_eq!(host.data_polls, 2);
-        assert_eq!(host.waker_registrations, 1);
-    }
-
-    #[test]
-    fn acmd41_future_uses_submit_poll_sequence_and_waker() {
-        let mut host = Acmd41Host::new(std::vec![
-            CommandResponsePoll::Pending,
-            CommandResponsePoll::Complete(ok_r1()),
-            CommandResponsePoll::Complete(Response::R3(OcrResponse::from_raw(0x00FF_8000))),
-            CommandResponsePoll::Pending,
-            CommandResponsePoll::Complete(ok_r1()),
-            CommandResponsePoll::Complete(ocr_ready_sdhc()),
-        ]);
-        let mut delay = CountingDelay::default();
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-        let mut future = core::pin::pin!(Acmd41Future::new(&mut host, &mut delay, true, true));
-
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        let ocr = match future.as_mut().poll(&mut cx) {
-            Poll::Ready(Ok(ocr)) => ocr,
-            other => panic!("unexpected ACMD41 poll result: {other:?}"),
-        };
-
-        assert!(ocr.card_powered_up());
-        drop(future);
-        assert_eq!(host.commands, std::vec![55, 41, 55, 41]);
-        assert_eq!(host.waker_registrations, 6);
-        assert_eq!(
-            delay.ns_calls,
-            std::vec![SdioInitTiming::POLL_MS * 1_000_000]
-        );
-    }
-
-    #[test]
-    fn mmc_ready_future_uses_submit_poll_sequence_and_waker() {
-        let mut host = Acmd41Host::new(std::vec![
-            CommandResponsePoll::Pending,
-            CommandResponsePoll::Complete(Response::R3(OcrResponse::from_raw(0x00FF_8000))),
-            CommandResponsePoll::Pending,
-            CommandResponsePoll::Complete(ocr_ready_mmc_sector()),
-        ]);
-        let mut delay = CountingDelay::default();
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-        let mut future = core::pin::pin!(MmcReadyFuture::new(&mut host, &mut delay));
-
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        let ocr = match future.as_mut().poll(&mut cx) {
-            Poll::Ready(Ok(ocr)) => ocr,
-            other => panic!("unexpected CMD1 poll result: {other:?}"),
-        };
-
-        assert!(ocr.card_powered_up());
-        drop(future);
-        assert_eq!(host.commands, std::vec![1, 1]);
-        assert_eq!(host.command_args, std::vec![0, 0x40FF_8000]);
-        assert_eq!(host.waker_registrations, 4);
-        assert!(delay.ns_calls.is_empty());
-    }
-
-    #[test]
-    fn mmc_switch_future_uses_submit_poll_sequence_and_waker() {
-        let mut host = Acmd41Host::new(std::vec![
-            CommandResponsePoll::Pending,
-            CommandResponsePoll::Complete(ok_r1()),
-            CommandResponsePoll::Complete(ok_r1()),
-            CommandResponsePoll::Pending,
-            CommandResponsePoll::Complete(r1_tran_ready()),
-        ]);
-        let mut delay = CountingDelay::default();
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-        let mut future = core::pin::pin!(MmcSwitchFuture::new(
-            &mut host,
-            &mut delay,
-            1,
-            0b11,
-            crate::cmd::ext_csd::HS_TIMING as u8,
-            1,
-        ));
-
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert_eq!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(())));
-
-        drop(future);
-        assert_eq!(host.commands, std::vec![6, 13, 13]);
-        assert_eq!(host.waker_registrations, 5);
-        assert_eq!(
-            delay.ns_calls,
-            std::vec![MmcSwitchTiming::POLL_MS * 1_000_000]
-        );
     }
 
     #[test]
     fn init_records_rca_in_driver_state() {
         let replies = sd_init_replies();
         let host = MockHost::with_results(replies);
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        let info = driver.init().unwrap();
+        let mut driver = SdioSdmmc::new(host);
+        disable_speed_selection(&mut driver);
+        let info = poll_init_to_completion(&mut driver).unwrap();
 
         assert_eq!(info.rca, 0x1234);
         assert_eq!(driver.rca(), 0x1234);
@@ -2111,6 +1821,307 @@ mod tests {
     }
 
     #[test]
+    fn submit_init_starts_request_without_spinning_past_pending_cmd0() {
+        let mut host = MockHost::with_results(std::vec![Ok(ok_r1())]);
+        host.pending_polls = 1;
+        let mut driver = SdioSdmmc::new(host);
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![0]
+        );
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![0]
+        );
+    }
+
+    #[test]
+    fn poll_init_request_returns_after_submitting_next_command() {
+        let mut driver = SdioSdmmc::new(MockHost::with_results(std::vec![
+            Ok(ok_r1()),                                             // CMD0
+            Ok(Response::R7(IfCondResponse::from_raw(0x0000_01AA))), // CMD8
+        ]));
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![0, 8]
+        );
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![0, 8, 55]
+        );
+    }
+
+    #[test]
+    fn poll_init_request_falls_back_to_cmd1_after_acmd41_not_ready_timeout() {
+        let mut driver = SdioSdmmc::new(MockHost::with_results(std::vec![
+            Ok(Response::R3(OcrResponse::from_raw(0x00FF_8000))),
+            Ok(ok_r1()),
+        ]));
+        let mut scratch = SdioInitScratch::new();
+        let mut request = SdioInitRequest::new(CardInitPreference::SdFirst, &mut scratch);
+        request.state = SdioInitState::PollAcmd41;
+        request.sd_v2 = false;
+        request.acmd41_elapsed_ms = SdioInitTiming::TIMEOUT_MS;
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![1]
+        );
+    }
+
+    #[test]
+    fn submit_init_with_mmc_preference_skips_sd_probe_after_cmd0() {
+        let mut driver = SdioSdmmc::new(MockHost::with_results(std::vec![Ok(ok_r1())]));
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver
+            .submit_init_with_preference(CardInitPreference::MmcFirst, &mut scratch)
+            .unwrap();
+
+        assert!(matches!(
+            driver.poll_init_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn submit_mmc_switch_returns_before_polling_status() {
+        let mut driver = SdioSdmmc::new(MockHost::with_results(std::vec![
+            Ok(ok_r1()),         // CMD6
+            Ok(r1_tran_ready()), // CMD13
+        ]));
+        driver.rca = 1;
+
+        let mut request = driver
+            .submit_mmc_switch(0b11, crate::cmd::ext_csd::HS_TIMING as u8, 1)
+            .unwrap();
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![6]
+        );
+
+        assert!(matches!(
+            driver.poll_mmc_switch_request(&mut request).unwrap(),
+            OperationPoll::Pending
+        ));
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![6, 13]
+        );
+
+        assert!(matches!(
+            driver.poll_mmc_switch_request(&mut request).unwrap(),
+            OperationPoll::Complete(())
+        ));
+    }
+
+    #[test]
+    fn submit_status_returns_before_polling_cmd13_response() {
+        let mut driver = SdioSdmmc::new(MockHost::with_results(std::vec![Ok(r1_tran_ready())]));
+        driver.rca = 0x1234;
+
+        let mut request = driver.submit_status().unwrap();
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![13]
+        );
+        assert_eq!(driver.host.commands[0].arg, 0x1234 << 16);
+
+        assert!(matches!(
+            driver.poll_status_request(&mut request).unwrap(),
+            OperationPoll::Complete(CardState::Transfer)
+        ));
+    }
+
+    #[test]
+    fn submit_read_ext_csd_uses_caller_buffer_and_poll_completion() {
+        let mut host = MockHost::new(std::vec![ok_r1()]);
+        let payload = ext_csd_blob();
+        host.next_read_payload = Some(payload.clone());
+        let mut driver = SdioSdmmc::new(host);
+        let mut buf = [0u8; 512];
+
+        let mut request = driver.submit_read_ext_csd(&mut buf).unwrap();
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![8]
+        );
+
+        assert!(matches!(
+            driver.poll_ext_csd_request(&mut request).unwrap(),
+            OperationPoll::Complete(())
+        ));
+        drop(request);
+        assert_eq!(&buf[..], payload.as_slice());
+    }
+
+    #[test]
+    fn submit_switch_function_uses_caller_buffer_and_poll_completion() {
+        let mut host = MockHost::new(std::vec![ok_r1()]);
+        let payload = switch_status_payload(1, 1 << 1);
+        host.next_read_payload = Some(payload.clone());
+        let mut driver = SdioSdmmc::new(host);
+        let mut buf = [0u8; 64];
+
+        let mut request = driver
+            .submit_switch_function(&crate::cmd::cmd6_high_speed(true), &mut buf)
+            .unwrap();
+        assert_eq!(
+            driver
+                .host
+                .commands
+                .iter()
+                .map(|cmd| cmd.cmd)
+                .collect::<Vec<_>>(),
+            std::vec![6]
+        );
+
+        assert!(matches!(
+            driver.poll_switch_function_request(&mut request).unwrap(),
+            OperationPoll::Complete(())
+        ));
+        drop(request);
+        assert_eq!(&buf[..], payload.as_slice());
+    }
+
+    #[test]
+    fn poll_init_request_skips_pace_hint_on_ready_path() {
+        let replies = sd_init_replies();
+        let host = MockHost::with_results(replies);
+        let mut driver = SdioSdmmc::new(host);
+        disable_speed_selection(&mut driver);
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+        let mut pace_hints = 0;
+        let info = loop {
+            match driver.poll_init_request(&mut request).unwrap() {
+                OperationPoll::Pending => {
+                    if request.take_needs_pace() {
+                        pace_hints += 1;
+                    }
+                }
+                OperationPoll::Complete(info) => break info,
+            }
+        };
+
+        assert_eq!(info.rca, 0x1234);
+        assert_eq!(pace_hints, 0);
+    }
+
+    #[test]
+    fn poll_init_request_sets_pace_hint_for_power_up_retry() {
+        let replies = std::vec![
+            Ok(ok_r1()),                                             // CMD0
+            Ok(Response::R7(IfCondResponse::from_raw(0x0000_01AA))), // CMD8
+            Ok(ok_r1()),                                             // CMD55
+            Ok(Response::R3(OcrResponse::from_raw(0x00FF_8000))),    // ACMD41 not ready
+            Ok(ok_r1()),                                             // CMD55
+            Ok(ocr_ready_sdhc()),                                    // ACMD41 ready
+            Ok(cid_response()),                                      // CMD2
+            Ok(rca_response(0x1234)),                                // CMD3
+            Ok(csd_v2_response()),                                   // CMD9
+            Ok(ok_r1()),                                             // CMD7
+            Ok(ok_r1()),                                             // CMD55
+            Ok(ok_r1()),                                             // ACMD6
+        ];
+        let host = MockHost::with_results(replies);
+        let mut driver = SdioSdmmc::new(host);
+        disable_speed_selection(&mut driver);
+        let mut scratch = SdioInitScratch::new();
+        let mut request = driver.submit_init(&mut scratch).unwrap();
+        let mut power_up_retries = 0;
+        let info = loop {
+            match driver.poll_init_request(&mut request).unwrap() {
+                OperationPoll::Pending => {
+                    if request.take_needs_pace() {
+                        power_up_retries += 1;
+                    }
+                }
+                OperationPoll::Complete(info) => break info,
+            }
+        };
+
+        assert_eq!(info.rca, 0x1234);
+        assert_eq!(power_up_retries, 1);
+    }
+
+    #[test]
     fn sd_init_automatically_selects_sdr104_when_card_and_host_agree() {
         let mut replies = sd_init_replies_with_ocr(ocr_ready_sdhc_s18a());
         replies.extend([
@@ -2125,8 +2136,8 @@ mod tests {
             switch_status_payload(3, 1 << 3),
         ];
 
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        driver.init().expect("SD init succeeds with SDR104");
+        let mut driver = SdioSdmmc::new(host);
+        poll_init_to_completion(&mut driver).expect("SD init succeeds with SDR104");
 
         assert_eq!(driver.host.last_voltage, Some(SignalVoltage::V180));
         assert_eq!(driver.host.last_clock, Some(ClockSpeed::Sdr104));
@@ -2161,9 +2172,8 @@ mod tests {
         ];
         host.voltage_switch_result = Some(Error::UnsupportedCommand);
 
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        driver
-            .init()
+        let mut driver = SdioSdmmc::new(host);
+        poll_init_to_completion(&mut driver)
             .expect("SD init falls back when UHS voltage switch fails");
 
         assert_eq!(driver.host.last_voltage, Some(SignalVoltage::V180));
@@ -2183,11 +2193,10 @@ mod tests {
     fn sd_speed_selection_can_be_disabled_for_default_speed_bringup() {
         let replies = sd_init_replies_with_ocr(ocr_ready_sdhc_s18a());
         let host = MockHost::with_results(replies);
-        let mut driver = SdioSdmmc::new(host, NullDelay);
+        let mut driver = SdioSdmmc::new(host);
         driver.set_sd_speed_selection_enabled(false);
 
-        driver
-            .init()
+        poll_init_to_completion(&mut driver)
             .expect("SD init succeeds without CMD6 speed switching");
 
         assert_eq!(driver.host.bus_width, Some(BusWidth::Bit4));
@@ -2272,8 +2281,8 @@ mod tests {
         ];
         let mut host = MockHost::with_results(replies);
         host.next_read_payload = Some(ext_csd_blob());
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        let info = driver.init().expect("eMMC init succeeds");
+        let mut driver = SdioSdmmc::new(host);
+        let info = poll_init_to_completion(&mut driver).expect("eMMC init succeeds");
 
         assert_eq!(info.kind, CardKind::Mmc);
         assert_eq!(driver.kind(), CardKind::Mmc);
@@ -2334,10 +2343,9 @@ mod tests {
         let mut host = MockHost::with_results(replies);
         host.next_read_payload = Some(ext_csd_blob());
         host.reject_bit8 = true;
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        let _info = driver
-            .init()
-            .expect("eMMC init succeeds with 4-bit fallback");
+        let mut driver = SdioSdmmc::new(host);
+        let _info =
+            poll_init_to_completion(&mut driver).expect("eMMC init succeeds with 4-bit fallback");
 
         assert_eq!(driver.host.bus_width, Some(BusWidth::Bit4));
     }
@@ -2361,8 +2369,9 @@ mod tests {
             Ok(ok_r1()),              // ACMD6
         ];
         let host = MockHost::with_results(replies);
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        let info = driver.init().expect("SD v1 init succeeds");
+        let mut driver = SdioSdmmc::new(host);
+        disable_speed_selection(&mut driver);
+        let info = poll_init_to_completion(&mut driver).expect("SD v1 init succeeds");
 
         assert_eq!(info.kind, CardKind::Sd, "ACMD41 success → SD, not MMC");
         assert!(!info.sd_v2);
@@ -2410,8 +2419,8 @@ mod tests {
         ];
         let mut host = MockHost::with_results(replies);
         host.next_read_payload = Some(ext_csd_blob_hs200());
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        let _info = driver.init().expect("HS200 init succeeds");
+        let mut driver = SdioSdmmc::new(host);
+        let _info = poll_init_to_completion(&mut driver).expect("HS200 init succeeds");
 
         // HS_TIMING write should carry value 0x02, not 0x01.
         let cmd6s: Vec<&Command> = driver.host.commands.iter().filter(|c| c.cmd == 6).collect();
@@ -2456,9 +2465,8 @@ mod tests {
         let mut host = MockHost::with_results(replies);
         host.next_read_payload = Some(ext_csd_blob_hs200());
         host.tuning_result = Some(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 21)));
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        let _info = driver
-            .init()
+        let mut driver = SdioSdmmc::new(host);
+        let _info = poll_init_to_completion(&mut driver)
             .expect("init succeeds even when HS200 tuning fails");
 
         // We *did* attempt HS200 — voltage switched, tuning called.
@@ -2481,58 +2489,20 @@ mod tests {
 
     #[test]
     fn set_bus_width_bit8_is_unsupported_via_acmd6() {
-        let mut driver = SdioSdmmc::new(MockHost::new(std::vec![ok_r1()]), NullDelay);
-        driver.rca = 0x1;
-        assert_eq!(
-            driver.set_bus_width_sd(BusWidth::Bit8),
-            Err(Error::UnsupportedCommand)
-        );
+        assert_eq!(sd_acmd6_arg(BusWidth::Bit8), Err(Error::UnsupportedCommand));
     }
 
     #[test]
-    fn switch_to_high_speed_returns_true_when_status_confirms() {
+    fn submit_read_blocks_into_leaves_multi_block_stop_to_host_request() {
         let mut host = MockHost::new(std::vec![ok_r1()]);
-        // Stage the 64-byte status block where group 1 reports HS active.
-        let mut status = std::vec![0u8; 64];
-        status[16] = 0x01;
-        host.next_read_payload = Some(status);
-
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        let active = driver.switch_to_high_speed().unwrap();
-        assert!(active);
-        let cmd6 = driver
-            .host
-            .commands
-            .iter()
-            .find(|c| c.cmd == 6)
-            .expect("CMD6 issued");
-        assert_eq!(cmd6.arg, 0x80FF_FFF1);
-    }
-
-    #[test]
-    fn switch_to_high_speed_returns_false_when_card_keeps_default() {
-        let mut host = MockHost::new(std::vec![ok_r1()]);
-        host.next_read_payload = Some(std::vec![0u8; 64]); // group 1 = 0
-        let mut driver = SdioSdmmc::new(host, NullDelay);
-        let active = driver.switch_to_high_speed().unwrap();
-        assert!(!active);
-    }
-
-    #[test]
-    fn submit_read_blocks_into_uses_one_multi_block_transfer_for_contiguous_buffer() {
-        let mut host = MockHost::new(std::vec![ok_r1(), ok_r1()]);
         let expected: Vec<u8> = (0..1024).map(|i| (i % 251) as u8).collect();
         host.next_read_payload = Some(expected.clone());
 
-        let mut driver = SdioSdmmc::new(host, NullDelay);
+        let mut driver = SdioSdmmc::new(host);
         driver.high_capacity = true;
         let mut buf = [0u8; 1024];
 
         let mut request = driver.submit_read_blocks_into(7, &mut buf).unwrap();
-        assert!(matches!(
-            driver.poll_data_request(&mut request).unwrap(),
-            DataCommandPoll::Pending
-        ));
         assert!(matches!(
             driver.poll_data_request(&mut request).unwrap(),
             DataCommandPoll::Complete(_)
@@ -2550,23 +2520,19 @@ mod tests {
                 .iter()
                 .map(|c| c.cmd)
                 .collect::<Vec<_>>(),
-            std::vec![18, 12]
+            std::vec![18]
         );
         assert_eq!(driver.host.commands[0].arg, 7);
     }
 
     #[test]
-    fn submit_write_blocks_from_uses_one_multi_block_transfer_for_contiguous_buffer() {
-        let host = MockHost::new(std::vec![ok_r1(), ok_r1()]);
-        let mut driver = SdioSdmmc::new(host, NullDelay);
+    fn submit_write_blocks_from_leaves_multi_block_stop_to_host_request() {
+        let host = MockHost::new(std::vec![ok_r1()]);
+        let mut driver = SdioSdmmc::new(host);
         driver.high_capacity = true;
         let buf = [0x5au8; 1024];
 
         let mut request = driver.submit_write_blocks_from(11, &buf).unwrap();
-        assert!(matches!(
-            driver.poll_data_request(&mut request).unwrap(),
-            DataCommandPoll::Pending
-        ));
         assert!(matches!(
             driver.poll_data_request(&mut request).unwrap(),
             DataCommandPoll::Complete(_)
@@ -2583,7 +2549,7 @@ mod tests {
                 .iter()
                 .map(|c| c.cmd)
                 .collect::<Vec<_>>(),
-            std::vec![25, 12]
+            std::vec![25]
         );
         assert_eq!(driver.host.commands[0].arg, 11);
         assert_eq!(driver.host.writes, std::vec![buf.to_vec()]);
@@ -2592,7 +2558,7 @@ mod tests {
     #[test]
     fn submit_block_io_rejects_misaligned_buffers() {
         let host = MockHost::new(std::vec![]);
-        let mut driver = SdioSdmmc::new(host, NullDelay);
+        let mut driver = SdioSdmmc::new(host);
         let mut read_buf = [0u8; 513];
         let write_buf = [0u8; 513];
 

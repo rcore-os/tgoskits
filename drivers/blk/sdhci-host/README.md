@@ -38,10 +38,9 @@ tree setup, power rails, pinmux, IRQ routing, and DMA cache coherency.
 
 ```rust,no_run
 use core::ptr::NonNull;
-use sdmmc_protocol::sdio::{DelayNs, SdioSdmmc};
+use sdmmc_protocol::{OperationPoll, sdio::{SdioInitScratch, SdioSdmmc}};
 use sdhci_host::Sdhci;
 
-# fn make_delay() -> impl DelayNs { struct N; impl DelayNs for N { fn delay_ns(&mut self, _: u32) {} } N }
 // SAFETY: 0xFE31_0000 must point at a valid SDHCI register file the
 // caller has exclusive access to.
 let mmio = NonNull::new(0xFE31_0000 as *mut u8).unwrap();
@@ -51,9 +50,13 @@ host.set_power(0x0f);
 host.enable_interrupts();
 host.enable_clock(150_000_000, 400_000)?;
 
-let delay = make_delay();
-let mut card = SdioSdmmc::new(host, delay);
-// card.init()?;
+let mut card = SdioSdmmc::new(host);
+let mut scratch = SdioInitScratch::new();
+let mut request = card.submit_init(&mut scratch)?;
+while let OperationPoll::Pending = card.poll_init_request(&mut request)? {
+    // Runtime policy belongs here: spin, yield, wait for IRQ, or sleep/timer
+    // when request.take_needs_pace() is set.
+}
 # Ok::<(), sdmmc_protocol::Error>(())
 ```
 
@@ -111,8 +114,11 @@ block-buffer contract.
    it does NOT enable signal-level IRQ delivery.
 6. `host.enable_clock(base_hz, 400_000)` — start at 400 kHz for
    identification.
-7. Build `SdioSdmmc::new(host, delay)` and call `init()`. The driver
-   will ramp the clock up to 25 MHz / 50 MHz via `set_clock` for you.
+7. Build `SdioSdmmc::new(host)`, submit initialization with
+   `submit_init`, and drive it with `poll_init_request`. The protocol
+   layer will ramp the clock up to 25 MHz / 50 MHz via `set_clock`;
+   platform/runtime code chooses whether pending work spins, yields, or
+   waits for an IRQ.
 
 If the SoC requires external clock-tree programming for each SD speed, implement
 `sdhci_host::HostClock` in platform glue and register it with
