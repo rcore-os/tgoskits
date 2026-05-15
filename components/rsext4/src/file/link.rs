@@ -74,7 +74,11 @@ pub fn link<B: BlockDevice>(
         .flatten()
         && let Ok(blocks) = resolve_inode_block_allextend(block_dev, &mut lp_inode)
     {
-        for &phys in blocks.values() {
+        for state in blocks.values() {
+            let phys = match *state {
+                BlockState::Data(phys) => phys,
+                BlockState::Hole | BlockState::Unwritten(_) => continue,
+            };
             let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
                 Ok(v) => v,
                 Err(_) => continue,

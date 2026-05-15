@@ -142,3 +142,20 @@ impl Ext4Extent {
         Self::encode_len(len, self.is_unwritten())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialized_extent_len_keeps_exact_0x8000_boundary() {
+        let ext = Ext4Extent::new(LogicalBN::new(0), 123, Ext4Extent::EXT_INIT_MAX_LEN);
+
+        assert_eq!(ext.ee_len, 0x8000);
+        assert_eq!(ext.len(), 0x8000);
+        assert!(ext.is_initialized());
+        assert!(!ext.is_unwritten());
+        assert_eq!(Ext4Extent::encode_len(0x8000, false), Some(0x8000));
+        assert_eq!(Ext4Extent::decode_len(0x8000), 0x8000);
+    }
+}

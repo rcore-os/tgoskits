@@ -2,7 +2,7 @@ use crate::{
     BlockDevice, Ext4Error, Ext4FileSystem, Ext4Result, Jbd2Dev,
     api::{OpenFile, Vec, refresh_open_file_inode_by_num},
     config::runtime_block_size,
-    loopfile::resolve_inode_block,
+    loopfile::{BlockState, resolve_inode_block},
     read_file,
 };
 /// Read a whole file into memory.
@@ -71,13 +71,16 @@ pub fn read_at<B: BlockDevice>(
             continue;
         }
 
-        if let Some(phys) = resolve_inode_block(dev, &mut file.inode, lbn as u32)? {
-            let cached = fs.datablock_cache.get_or_load(dev, phys)?;
-            let data = &cached.data[..block_bytes as usize];
-            out.extend_from_slice(&data[copy_start as usize..(copy_start + copy_len) as usize]);
-        } else {
-            // Sparse holes read back as zeroes for the requested logical range.
-            out.extend(core::iter::repeat_n(0u8, copy_len as usize));
+        match resolve_inode_block(dev, &mut file.inode, lbn as u32)? {
+            BlockState::Data(phys) => {
+                let cached = fs.datablock_cache.get_or_load(dev, phys)?;
+                let data = &cached.data[..block_bytes as usize];
+                out.extend_from_slice(&data[copy_start as usize..(copy_start + copy_len) as usize]);
+            }
+            BlockState::Hole | BlockState::Unwritten(_) => {
+                // Sparse holes and unwritten extents read back as zeroes.
+                out.extend(core::iter::repeat_n(0u8, copy_len as usize));
+            }
         }
 
         if out.len() as u64 >= to_read {

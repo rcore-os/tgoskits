@@ -66,10 +66,10 @@ impl Ext4FileSystem {
         let mut journal_blocks = Vec::new();
         for logical in 0..journal_block_count {
             let logical = u32::try_from(logical).map_err(|_| Ext4Error::corrupted())?;
-            let phys = journal_block_map
-                .get(&LogicalBN::new(logical))
-                .copied()
-                .ok_or_else(Ext4Error::corrupted)?;
+            let phys = match journal_block_map.get(&LogicalBN::new(logical)).copied() {
+                Some(BlockState::Data(phys)) => phys,
+                _ => return Err(Ext4Error::corrupted()),
+            };
             journal_blocks.push(phys);
         }
         Ok(journal_blocks)

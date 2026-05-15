@@ -13,7 +13,7 @@ use crate::{
     disknode::Ext4Inode,
     entries::{DirEntryIterator, Ext4DirEntryInfo, Ext4DxEntry, classic_dir, htree_dir},
     ext4::Ext4FileSystem,
-    loopfile::{resolve_inode_block, resolve_inode_block_allextend},
+    loopfile::{BlockState, resolve_inode_block, resolve_inode_block_allextend},
 };
 pub(super) fn lookup<B: BlockDevice>(
     manager: &HashTreeManager,
@@ -62,8 +62,8 @@ impl HashTreeManager {
         dir_inode: &Ext4Inode,
     ) -> Result<AbsoluteBN, HashTreeError> {
         match resolve_inode_block(block_dev, &mut dir_inode.clone(), 0) {
-            Ok(Some(block)) => Ok(block),
-            Ok(None) => Err(HashTreeError::InvalidHashTree),
+            Ok(BlockState::Data(block)) => Ok(block),
+            Ok(BlockState::Hole | BlockState::Unwritten(_)) => Err(HashTreeError::InvalidHashTree),
             Err(_) => Err(HashTreeError::BlockOutOfRange),
         }
     }
@@ -127,9 +127,14 @@ impl HashTreeManager {
         }
 
         let entry = selected_entry.ok_or(HashTreeError::EntryNotFound)?;
-        let block_num = resolve_inode_block(block_dev, &mut dir_inode.clone(), entry.block)
+        let block_num = match resolve_inode_block(block_dev, &mut dir_inode.clone(), entry.block)
             .map_err(|_| HashTreeError::BlockOutOfRange)?
-            .ok_or(HashTreeError::BlockOutOfRange)?;
+        {
+            BlockState::Data(block_num) => block_num,
+            BlockState::Hole | BlockState::Unwritten(_) => {
+                return Err(HashTreeError::BlockOutOfRange);
+            }
+        };
         let block_data = self.read_block_data(fs, block_dev, block_num)?;
 
         if level >= self.indirect_levels as u32 {
@@ -210,8 +215,9 @@ impl HashTreeManager {
 
             for lbn in 0..total_blocks {
                 let phys = match blocks_map.get(&(LogicalBN::new(lbn as u32))) {
-                    Some(block) => *block,
+                    Some(BlockState::Data(block)) => *block,
                     None => continue,
+                    Some(BlockState::Hole | BlockState::Unwritten(_)) => continue,
                 };
 
                 let cached_block = match fs.datablock_cache.get_or_load(block_dev, phys) {

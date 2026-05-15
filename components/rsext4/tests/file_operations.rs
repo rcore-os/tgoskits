@@ -388,6 +388,56 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
+    /// Verifies long symlink targets still resolve when they spill out of the
+    /// inode body but remain within Linux ext4's single-block symlink limit.
+    #[test]
+    fn test_long_symbolic_link_single_block() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024); // 100MB
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+
+        mkdir(&mut jbd2_dev, &mut fs, "/symlinktest").expect("mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/symlinktest/segment_aaaaaaaa").expect("mkdir failed");
+        mkdir(
+            &mut jbd2_dev,
+            &mut fs,
+            "/symlinktest/segment_aaaaaaaa/segment_bbbbbbbb",
+        )
+        .expect("mkdir failed");
+        mkdir(
+            &mut jbd2_dev,
+            &mut fs,
+            "/symlinktest/segment_aaaaaaaa/segment_bbbbbbbb/segment_cccccccc",
+        )
+        .expect("mkdir failed");
+
+        let target_path =
+            "/symlinktest/segment_aaaaaaaa/segment_bbbbbbbb/segment_cccccccc/original";
+        assert!(
+            target_path.len() > 60,
+            "test target must force a long symlink"
+        );
+
+        let test_data = b"Data for long symbolic link test";
+        mkfile(&mut jbd2_dev, &mut fs, target_path, Some(test_data), None).expect("mkfile failed");
+
+        create_symbol_link(
+            &mut jbd2_dev,
+            &mut fs,
+            target_path,
+            "/symlinktest/longsymlink",
+        )
+        .expect("create_symbol_link failed");
+
+        let link_data = read_file(&mut jbd2_dev, &mut fs, "/symlinktest/longsymlink")
+            .expect("read_file failed");
+        assert_eq!(link_data, test_data.to_vec());
+
+        umount(fs, &mut jbd2_dev).expect("umount failed");
+    }
+
     /// Documents current error semantics for missing paths, implicit parent
     /// creation, and deleting entries that are already gone.
     #[test]

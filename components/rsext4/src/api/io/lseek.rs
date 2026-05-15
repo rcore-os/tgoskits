@@ -4,10 +4,10 @@ use crate::{
     Ext4Result,
     api::{OpenFile, refresh_open_file_inode_by_num},
     blockdev::{BlockDevice, Jbd2Dev},
-    bmalloc::{AbsoluteBN, LogicalBN},
+    bmalloc::LogicalBN,
     error::{Errno, Ext4Error},
     ext4::Ext4FileSystem,
-    loopfile::resolve_inode_block_allextend,
+    loopfile::{BlockState, resolve_inode_block_allextend},
     tool::ext4_get_maxbytes,
 };
 
@@ -66,17 +66,19 @@ fn validate_new_pos(candidate_abs_pos: i128, maxbytes: u64) -> Ext4Result<u64> {
 /// returns the start of the next mapped block. Returns `None` if no data exists
 /// before EOF.
 fn seek_data_in_map(
-    extent_map: &BTreeMap<LogicalBN, AbsoluteBN>,
+    extent_map: &BTreeMap<LogicalBN, BlockState>,
     start_off: u64,
     file_size: u64,
     block_bytes: u64,
 ) -> Option<u64> {
     let start_lbn = LogicalBN::new(u32::try_from(start_off / block_bytes).ok()?);
-    if extent_map.contains_key(&start_lbn) {
+    if matches!(extent_map.get(&start_lbn), Some(BlockState::Data(_))) {
         return Some(start_off);
     }
 
-    let next_lbn = extent_map.range(start_lbn..).next().map(|(lbn, _)| *lbn)?;
+    let next_lbn = extent_map
+        .range(start_lbn..)
+        .find_map(|(lbn, state)| matches!(state, BlockState::Data(_)).then_some(*lbn))?;
     let next_off = u64::from(next_lbn.raw()) * block_bytes;
     if next_off < file_size {
         Some(next_off)
@@ -91,22 +93,25 @@ fn seek_data_in_map(
 /// of the next hole. If there are no holes before EOF, returns `file_size`
 /// (the virtual hole at EOF).
 fn seek_hole_in_map(
-    extent_map: &BTreeMap<LogicalBN, AbsoluteBN>,
+    extent_map: &BTreeMap<LogicalBN, BlockState>,
     start_off: u64,
     file_size: u64,
     block_bytes: u64,
 ) -> Option<u64> {
     let start_lbn = LogicalBN::new(u32::try_from(start_off / block_bytes).ok()?);
-    if !extent_map.contains_key(&start_lbn) {
+    if !matches!(extent_map.get(&start_lbn), Some(BlockState::Data(_))) {
         return Some(start_off);
     }
 
     let eof_lbn = LogicalBN::new(u32::try_from((file_size - 1) / block_bytes).ok()?);
     let mut expected = start_lbn;
 
-    for (&lbn, _) in extent_map.range(start_lbn..) {
+    for (&lbn, state) in extent_map.range(start_lbn..) {
         if lbn > eof_lbn {
             break;
+        }
+        if !matches!(state, BlockState::Data(_)) {
+            continue;
         }
         if lbn > expected {
             return Some(u64::from(expected.raw()) * block_bytes);

@@ -216,34 +216,18 @@ fn read_symlink_target<B: BlockDevice>(
     }
 
     let block_bytes = fs.block_size;
-    let total_blocks = size.div_ceil(block_bytes);
-    let mut buf = Vec::with_capacity(size);
-
-    if inode.have_extend_header_and_use_extend() {
-        let blocks = resolve_inode_block_allextend(device, inode)?;
-        for &phys in blocks.values() {
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data[..block_bytes];
-            buf.extend_from_slice(data);
-            if buf.len() >= size {
-                break;
-            }
-        }
-    } else {
-        for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(device, inode, lbn as u32)? {
-                Some(b) => b,
-                None => break,
-            };
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data[..block_bytes];
-            buf.extend_from_slice(data);
-        }
+    // Linux ext4 stores non-fast symlink targets in exactly one filesystem
+    // block and treats a missing first block as a bad symlink.
+    if size > block_bytes.saturating_sub(1) {
+        return Err(Ext4Error::corrupted());
     }
 
-    buf.truncate(size);
-
-    Ok(buf)
+    let phys = match resolve_inode_block(device, inode, 0)? {
+        BlockState::Data(phys) => phys,
+        BlockState::Hole | BlockState::Unwritten(_) => return Err(Ext4Error::corrupted()),
+    };
+    let cached = fs.datablock_cache.get_or_load(device, phys)?;
+    Ok(cached.data[..size].to_vec())
 }
 
 fn resolve_symlink_path(current_path: &str, target: &str) -> String {
@@ -312,26 +296,23 @@ fn read_file_follow<B: BlockDevice>(
 
     let mut buf = Vec::with_capacity(size);
 
-    if inode.have_extend_header_and_use_extend() {
-        let blocks = resolve_inode_block_allextend(device, &mut inode)?;
-        for &phys in blocks.values() {
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data[..block_bytes];
-            buf.extend_from_slice(data);
-            if buf.len() >= size {
-                break;
-            }
+    for lbn in 0..total_blocks {
+        let remaining = size.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
         }
-    } else {
-        for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(device, &mut inode, lbn as u32)? {
-                Some(b) => b,
-                None => break,
-            };
+        let chunk_len = core::cmp::min(block_bytes, remaining);
 
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data[..block_bytes];
-            buf.extend_from_slice(data);
+        match resolve_inode_block(device, &mut inode, lbn as u32)? {
+            BlockState::Data(phys) => {
+                let cached = fs.datablock_cache.get_or_load(device, phys)?;
+                let data = &cached.data[..chunk_len];
+                buf.extend_from_slice(data);
+            }
+            BlockState::Hole | BlockState::Unwritten(_) => {
+                // Holes and unwritten extents read back as zero-filled bytes.
+                buf.extend(core::iter::repeat_n(0u8, chunk_len));
+            }
         }
     }
 
@@ -414,8 +395,8 @@ fn write_inode_data<B: BlockDevice>(
     for lbn in start_lbn..=end_lbn {
         let phys = if inode.have_extend_header_and_use_extend() {
             match resolve_inode_block(device, &mut inode, lbn as u32)? {
-                Some(b) => b,
-                None => {
+                BlockState::Data(b) => b,
+                BlockState::Hole | BlockState::Unwritten(_) => {
                     let new_phys = fs.alloc_block(device)?;
                     fs.datablock_cache.modify_new(device, new_phys, |blk| {
                         for b in blk.iter_mut() {
@@ -436,8 +417,8 @@ fn write_inode_data<B: BlockDevice>(
             }
         } else {
             match resolve_inode_block(device, &mut inode, lbn as u32)? {
-                Some(b) => b,
-                None => return Err(Ext4Error::unsupported()),
+                BlockState::Data(b) => b,
+                BlockState::Hole | BlockState::Unwritten(_) => return Err(Ext4Error::unsupported()),
             }
         };
 

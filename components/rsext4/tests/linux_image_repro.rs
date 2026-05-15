@@ -511,6 +511,109 @@ fn e2fsck_clean_after_exact_32768_block_extent() {
 }
 
 #[test]
+fn long_symbolic_link_single_block_keeps_fsck_clean() {
+    for tool in ["mkfs.ext4", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-long-symlink-repro", "64M");
+    let link_path = "/symlinktest/longsymlink";
+    let target_path = "/symlinktest/segment_aaaaaaaa/segment_bbbbbbbb/segment_cccccccc/original";
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount image");
+
+        mkdir(&mut dev, &mut fs, "/symlinktest").expect("mkdir failed");
+        mkdir(&mut dev, &mut fs, "/symlinktest/segment_aaaaaaaa").expect("mkdir failed");
+        mkdir(
+            &mut dev,
+            &mut fs,
+            "/symlinktest/segment_aaaaaaaa/segment_bbbbbbbb",
+        )
+        .expect("mkdir failed");
+        mkdir(
+            &mut dev,
+            &mut fs,
+            "/symlinktest/segment_aaaaaaaa/segment_bbbbbbbb/segment_cccccccc",
+        )
+        .expect("mkdir failed");
+
+        assert!(
+            target_path.len() > 60,
+            "test target must force a long symlink"
+        );
+        assert!(
+            target_path.len() <= IMAGE_BLOCK_SIZE - 1,
+            "test target must stay within a single ext4 block"
+        );
+
+        let test_data = b"Data for long symbolic link test";
+        mkfile(&mut dev, &mut fs, target_path, Some(test_data), None).expect("mkfile failed");
+        create_symbol_link(&mut dev, &mut fs, target_path, link_path)
+            .expect("create_symbol_link failed");
+
+        let link_data = read_file(&mut dev, &mut fs, link_path).expect("read_file failed");
+        assert_eq!(link_data, test_data.to_vec());
+
+        umount(fs, &mut dev).expect("umount image");
+    }
+
+    e2fsck_readonly_clean(&image, "long single-block symlink");
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
+fn read_unwritten_extent_file_keeps_size_and_fsck_clean() {
+    for tool in ["mkfs.ext4", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+
+    let (temp_dir, image) = create_ext4_test_image("rsext4-unwritten-extent-repro", "64M");
+    let path = "/unwritten.bin";
+    let unwritten_blocks = 16u64;
+    let unwritten_size = unwritten_blocks * IMAGE_BLOCK_SIZE as u64;
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("mount image");
+        mkfile(&mut dev, &mut fs, path, None, None).expect("create empty file");
+        umount(fs, &mut dev).expect("umount image");
+    }
+
+    run_debugfs_script(
+        &image,
+        &format!(
+            "fallocate {path} 0 {}\nset_inode_field {path} size {unwritten_size}\nclose\n",
+            unwritten_blocks - 1
+        ),
+        "build unwritten extent file",
+    );
+
+    {
+        let dev = FileBlockDevice::open(image.clone());
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
+        let mut fs = mount(&mut dev).expect("remount image");
+
+        let content = read_file(&mut dev, &mut fs, path).expect("read unwritten extent file");
+        assert_eq!(content.len(), unwritten_size as usize);
+        assert!(content.iter().all(|&byte| byte == 0));
+
+        umount(fs, &mut dev).expect("umount image");
+    }
+
+    let stat_output = debugfs_query(&image, &format!("stat {path}"));
+    assert!(
+        stat_output.contains("Size: 65536"),
+        "debugfs stat did not report expected size for unwritten file\n{stat_output}"
+    );
+    e2fsck_readonly_clean(&image, "unwritten extent file");
+    fs::remove_dir_all(temp_dir).expect("remove temp dir");
+}
+
+#[test]
 #[ignore = "requires a Linux-created ext4 rootfs image"]
 fn repro_linux_image_create_write_rename_then_e2fsck() {
     let src_from_env = std::env::var_os("RSEXT4_TEST_IMAGE").map(PathBuf::from);

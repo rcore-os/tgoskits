@@ -113,8 +113,12 @@ pub fn mv<B: BlockDevice>(
     let mut src_ino: Option<InodeNumber> = None;
     let mut src_ft: Option<u8> = None;
     if let Ok(blocks) = resolve_inode_block_allextend(block_dev, &mut old_parent_inode) {
-        for phys in blocks {
-            let cached = match fs.datablock_cache.get_or_load(block_dev, phys.1) {
+        for (_lbn, state) in blocks {
+            let phys = match state {
+                BlockState::Data(phys) => phys,
+                BlockState::Hole | BlockState::Unwritten(_) => continue,
+            };
+            let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
@@ -146,7 +150,7 @@ pub fn mv<B: BlockDevice>(
         };
         for lbn in 0..total_blocks {
             let phys = match resolve_inode_block(block_dev, &mut old_parent_inode, lbn as u32) {
-                Ok(Some(b)) => b,
+                Ok(BlockState::Data(b)) => b,
                 _ => continue,
             };
             let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
@@ -278,7 +282,7 @@ pub fn mv<B: BlockDevice>(
 
             // Rewrite the `..` entry inside the moved directory's first block.
             let first_blk = match resolve_inode_block(block_dev, &mut moved_inode, 0) {
-                Ok(Some(b)) => b,
+                Ok(BlockState::Data(b)) => b,
                 _ => {
                     error!("mv resolve_inode_block failed for moved dir ino={src_ino}");
                     return Err(Ext4Error::corrupted());
