@@ -26,16 +26,46 @@
  *          before unblocking — at which point default-action Terminate
  *          delivers SIGUSR1 and kills the child. The driver waits and
  *          gates the phase on `WIFSIGNALED && WTERMSIG == SIGUSR1`.
- * Phase 4: a successful execve from the leader of a multi-threaded
+ * Phase 4 (concurrent execve): when several sibling threads race to
+ *          enter `execve` simultaneously, the kernel must serialize them
+ *          so that a loser only fails when the winner has crossed into
+ *          irreversible teardown. A `try_lock`-style serializer wrongly
+ *          returns `EINTR` to the loser while the winner is still in the
+ *          fallible path-resolve / ELF-load phase; if the winner then
+ *          errors out, a loser that could have succeeded has been falsely
+ *          aborted. We assert this by spawning N "bad-path execve spam"
+ *          threads alongside one "good execve" thread: if the good thread
+ *          ever observes `EINTR` from execve we trip a FAIL line; with the
+ *          fix the good thread always either succeeds or sees a non-EINTR
+ *          error.
+ * Phase 5 (CLOEXEC race): an fd promoted to CLOEXEC by a sibling thread
+ *          between the execve initiator's snapshot and the sibling's zap
+ *          must still be closed in the new image. A pre-teardown snapshot
+ *          could miss late `fcntl(F_SETFD, FD_CLOEXEC)` updates and leak
+ *          fds across exec. We spawn a sibling that continuously toggles
+ *          CLOEXEC on a fixed set of pipe fds and exec while the sibling
+ *          is still running; the post-exec image then asserts every fd in
+ *          the set is closed.
+ * Phase 6 (vfork-blocked sibling vs execve): a sibling thread blocked in
+ *          `wait_vfork_done` (its vfork child still alive) must be
+ *          reapable by `zap_thread` when another thread does `execve`.
+ *          The kernel wait must be killable; otherwise the execve
+ *          initiator's sibling-teardown loop deadlocks waiting for the
+ *          vfork-blocked sibling to exit. We arrange exactly this race
+ *          (vfork child loops forever, a second thread does a good execve)
+ *          and gate the phase on the new image's clean exit; a deadlock
+ *          surfaces as a runner-timeout (no LEADER_CHILD_OK).
+ * Phase 7: a successful execve from the leader of a multi-threaded
  *          process must tear down the sibling threads and run the new
  *          image; the new image must observe gettid() == getpid(), and
  *          prints the final success marker LEADER_CHILD_OK. The runner's
  *          single-success regex matches only that marker — every earlier
- *          phase must pass for control to reach Phase 4.
+ *          phase must pass for control to reach Phase 7.
  */
 
 #include "test_framework.h"
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -122,6 +152,112 @@ static void *nonleader_pending_sig_exec_thread(void *arg)
     char *av[] = { self, (char *)"pending-sig-child", NULL };
     char *ev[] = { NULL };
     execve(self, av, ev);
+    return NULL;
+}
+
+/* Phase 4 spam-thread body. Tries a bad-path execve in a tight loop so
+ * it holds the per-process exec serializer briefly each iteration. The
+ * goal is to maximize the chance that the racing "good execve" thread
+ * encounters a held lock during its single attempt. The fix turns that
+ * encounter into a wait; a regressed try_lock turns it into EINTR. */
+static void *spam_bad_execve_thread(void *arg)
+{
+    (void)arg;
+    char *av[] = { NULL };
+    char *ev[] = { NULL };
+    for (int i = 0; i < 5000; i++) {
+        execve("/this/path/does/not/exist/mt-execve", av, ev);
+        /* Bad path -> ENOENT. EINTR would mean we were zapped (the
+         * good execve already committed). Either way, keep spinning;
+         * we'll exit cleanly when the next syscall return hits
+         * check_signals on user-return. */
+    }
+    return NULL;
+}
+
+/* Phase 4 good-execve thread. We must NOT observe EINTR: with the fix
+ * an exec_lock loser waits for the holder to either fail-and-release
+ * or commit-and-zap us. EINTR (from the lock itself) would mean the
+ * regression is back. */
+static void *good_execve_thread(void *arg)
+{
+    char *self = (char *)arg;
+    char *av[] = { self, (char *)"nonleader-child", NULL };
+    char *ev[] = { NULL };
+    execve(self, av, ev);
+    /* Only reached on failure. */
+    if (errno == EINTR) {
+        fprintf(stderr, "FAIL: good execve returned EINTR (concurrent race)\n");
+    } else {
+        fprintf(stderr, "FAIL: good execve failed errno=%d (%s)\n",
+                errno, strerror(errno));
+    }
+    return NULL;
+}
+
+/* Phase 5 (CLOEXEC race). The setter thread continuously promotes a
+ * fixed set of fds to CLOEXEC. The exec'ing main thread races ahead;
+ * a pre-teardown snapshot of the FD table could miss late updates,
+ * leaving non-closed fds in the new image. With the snapshot taken
+ * post-teardown the setter's last-committed state is always observed. */
+#define CLOEXEC_RACE_FDS 5
+#define CLOEXEC_RACE_BASE_FD 20
+static volatile int g_cloexec_setter_run;
+static void *cloexec_setter_thread(void *arg)
+{
+    (void)arg;
+    while (g_cloexec_setter_run) {
+        for (int i = 0; i < CLOEXEC_RACE_FDS; i++) {
+            (void)fcntl(CLOEXEC_RACE_BASE_FD + i, F_SETFD, FD_CLOEXEC);
+        }
+    }
+    return NULL;
+}
+
+/* Re-entry body for Phase 5: verify every fd in the racing set is
+ * closed (EBADF) in the new image. */
+static int run_cloexec_check_child(void)
+{
+    int leaked = 0;
+    for (int i = 0; i < CLOEXEC_RACE_FDS; i++) {
+        int fd = CLOEXEC_RACE_BASE_FD + i;
+        char buf;
+        errno = 0;
+        ssize_t n = read(fd, &buf, 1);
+        if (n >= 0 || errno != EBADF) {
+            fprintf(stderr,
+                    "FAIL: fd %d still open after execve "
+                    "(CLOEXEC leaked across exec, n=%zd errno=%d)\n",
+                    fd, n, errno);
+            leaked = 1;
+        }
+    }
+    if (leaked) return 21;
+    return 0;
+}
+
+/* Phase 6 (vfork-blocked sibling vs execve). The sibling thread calls
+ * vfork(); the vfork child loops in pause() so the parent thread stays
+ * blocked in `wait_vfork_done`. With the fix that wait is killable —
+ * `zap_thread` will unblock it during another thread's execve teardown.
+ * Without the fix the execve initiator hangs in its sibling-teardown
+ * loop and we surface that as a runner timeout (no marker emitted). */
+static void *vfork_blocker_thread(void *arg)
+{
+    (void)arg;
+    pid_t v = vfork();
+    if (v == 0) {
+        /* vfork child: do not exit / exec so the parent thread stays
+         * blocked in `wait_vfork_done`. The pause loop will end when
+         * QEMU shuts down at end of test. */
+        while (1) pause();
+        _exit(0); /* unreachable */
+    }
+    /* Parent thread of vfork: blocked here until the child exits or
+     * execs. Another thread of *our* process will execve and zap us;
+     * our wait must wake on zap. If it does we fall through to return,
+     * the syscall return path consumes `exit_request` and does
+     * `do_exit(0, false)`. If it doesn't, we deadlock here. */
     return NULL;
 }
 
@@ -234,6 +370,10 @@ int main(int argc, char *argv[])
     /* Re-entry from the pending-signal phase inside its fork child. */
     if (argc >= 2 && strcmp(argv[1], "pending-sig-child") == 0) {
         return run_pending_sig_child();
+    }
+    /* Re-entry from the CLOEXEC-race phase inside its fork child. */
+    if (argc >= 2 && strcmp(argv[1], "cloexec-check-child") == 0) {
+        return run_cloexec_check_child();
     }
     /* Re-entry from the final leader-exec phase. */
     if (argc >= 2 && strcmp(argv[1], "leader-child") == 0) {
@@ -433,7 +573,170 @@ int main(int argc, char *argv[])
 
     printf("PHASE3_OK\n");
 
-    /* Phase 4: successful execve from the leader of a multi-threaded
+    /* Phase 4: concurrent execve (bad-path spam + one good execve).
+     * With the exec_lock fix the good thread must never observe EINTR
+     * from execve itself: it waits for the spammer to release the lock
+     * (which the spammer does at every failed iteration) and then either
+     * acquires the lock and succeeds, or is zapped by another thread
+     * that commits ahead of it. */
+    pid_t crpid = fork();
+    CHECK(crpid != -1, "fork for concurrent-exec test");
+    if (crpid == 0) {
+        pthread_t spam[3];
+        for (size_t i = 0; i < sizeof(spam) / sizeof(spam[0]); i++) {
+            if (pthread_create(&spam[i], NULL, spam_bad_execve_thread,
+                               NULL) != 0) {
+                fprintf(stderr, "FAIL: spawn bad-exec spam thread\n");
+                _exit(2);
+            }
+        }
+        /* Let the spammers spin up a bit so they hold the lock for
+         * meaningful portions of the good thread's wait window. */
+        struct timespec ramp = { 0, 10000000 }; /* 10ms */
+        nanosleep(&ramp, NULL);
+
+        pthread_t gt;
+        if (pthread_create(&gt, NULL, good_execve_thread, argv[0]) != 0) {
+            fprintf(stderr, "FAIL: spawn good-exec thread\n");
+            _exit(2);
+        }
+        /* Wait to be zapped by the good thread's successful exec. */
+        for (int i = 0; i < 5000; i++) {
+            struct timespec ts = { 0, 1000000 };
+            nanosleep(&ts, NULL);
+        }
+        fprintf(stderr, "FAIL: concurrent-exec child leader survived\n");
+        _exit(3);
+    }
+
+    int crstatus = 0;
+    pid_t crwaited = waitpid(crpid, &crstatus, 0);
+    CHECK(crwaited == crpid, "waitpid returned the concurrent-exec child");
+    CHECK(WIFEXITED(crstatus),
+          "concurrent-exec child exited normally (not via signal)");
+    CHECK(WIFEXITED(crstatus) && WEXITSTATUS(crstatus) == 0,
+          "concurrent-exec child exited with status 0");
+
+    if (__fail > 0) {
+        TEST_DONE();
+    }
+
+    printf("PHASE4_OK\n");
+
+    /* Phase 5: CLOEXEC race. A sibling thread continuously promotes a
+     * fixed set of pipe-read fds to CLOEXEC while the main thread races
+     * ahead into execve. With the snapshot taken *after* sibling
+     * teardown the new image must see every racing fd closed. */
+    pid_t cxpid = fork();
+    CHECK(cxpid != -1, "fork for cloexec-race test");
+    if (cxpid == 0) {
+        for (int i = 0; i < CLOEXEC_RACE_FDS; i++) {
+            int p[2];
+            if (pipe(p) != 0) {
+                fprintf(stderr, "FAIL: pipe(): %s\n", strerror(errno));
+                _exit(2);
+            }
+            int target = CLOEXEC_RACE_BASE_FD + i;
+            if (dup2(p[0], target) == -1) {
+                fprintf(stderr,
+                        "FAIL: dup2(p[0]=%d, %d): %s\n",
+                        p[0], target, strerror(errno));
+                _exit(2);
+            }
+            close(p[0]);
+            close(p[1]);
+            /* Make sure CLOEXEC starts unset so the sibling has work
+             * to do (and so a regression that snapshots before
+             * teardown could miss the late update). */
+            int fl = fcntl(target, F_GETFD);
+            if (fl == -1 || (fl & FD_CLOEXEC)) {
+                fprintf(stderr,
+                        "FAIL: pre-race fd %d has FD_CLOEXEC set\n",
+                        target);
+                _exit(2);
+            }
+        }
+
+        g_cloexec_setter_run = 1;
+        pthread_t st;
+        if (pthread_create(&st, NULL, cloexec_setter_thread, NULL) != 0) {
+            fprintf(stderr, "FAIL: spawn cloexec setter thread\n");
+            _exit(2);
+        }
+
+        /* Give the setter a moment to start fcntl'ing, then race
+         * straight into execve. */
+        struct timespec ramp = { 0, 1000000 }; /* 1ms */
+        nanosleep(&ramp, NULL);
+
+        char *av[] = { argv[0], (char *)"cloexec-check-child", NULL };
+        char *ev[] = { NULL };
+        execve(argv[0], av, ev);
+        fprintf(stderr, "FAIL: cloexec-race execve returned errno=%d (%s)\n",
+                errno, strerror(errno));
+        _exit(3);
+    }
+
+    int cxstatus = 0;
+    pid_t cxwaited = waitpid(cxpid, &cxstatus, 0);
+    CHECK(cxwaited == cxpid, "waitpid returned the cloexec-race child");
+    CHECK(WIFEXITED(cxstatus),
+          "cloexec-race child exited normally (not via signal)");
+    CHECK(WIFEXITED(cxstatus) && WEXITSTATUS(cxstatus) == 0,
+          "cloexec-race child exited with status 0");
+
+    if (__fail > 0) {
+        TEST_DONE();
+    }
+
+    printf("PHASE5_OK\n");
+
+    /* Phase 6: a sibling thread blocked in `wait_vfork_done` must be
+     * unblocked when another thread's execve zaps it. Without the fix
+     * the wait sleeps on a non-interruptible primitive and the execve
+     * initiator's sibling-teardown loop deadlocks; that surfaces as
+     * the runner-level timeout for this whole test rather than a
+     * waitpid-observable failure. */
+    pid_t vfpid = fork();
+    CHECK(vfpid != -1, "fork for vfork-deadlock test");
+    if (vfpid == 0) {
+        pthread_t blocker;
+        if (pthread_create(&blocker, NULL, vfork_blocker_thread, NULL) != 0) {
+            fprintf(stderr, "FAIL: spawn vfork blocker thread\n");
+            _exit(2);
+        }
+        /* Give the blocker enough time to enter `wait_vfork_done`. */
+        struct timespec ramp = { 0, 50000000 }; /* 50ms */
+        nanosleep(&ramp, NULL);
+
+        pthread_t et;
+        if (pthread_create(&et, NULL, nonleader_exec_thread, argv[0]) != 0) {
+            fprintf(stderr, "FAIL: spawn vfork-deadlock exec thread\n");
+            _exit(2);
+        }
+        for (int i = 0; i < 5000; i++) {
+            struct timespec ts = { 0, 1000000 };
+            nanosleep(&ts, NULL);
+        }
+        fprintf(stderr, "FAIL: vfork-deadlock child leader survived\n");
+        _exit(3);
+    }
+
+    int vfstatus = 0;
+    pid_t vfwaited = waitpid(vfpid, &vfstatus, 0);
+    CHECK(vfwaited == vfpid, "waitpid returned the vfork-deadlock child");
+    CHECK(WIFEXITED(vfstatus),
+          "vfork-deadlock child exited normally (not via signal)");
+    CHECK(WIFEXITED(vfstatus) && WEXITSTATUS(vfstatus) == 0,
+          "vfork-deadlock child exited with status 0");
+
+    if (__fail > 0) {
+        TEST_DONE();
+    }
+
+    printf("PHASE6_OK\n");
+
+    /* Phase 7: successful execve from the leader of a multi-threaded
      * process. Siblings block in pause() and are zapped during sibling
      * teardown; control then jumps into the new image. */
     sibling_ready = 0;
