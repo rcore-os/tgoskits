@@ -9,6 +9,10 @@ pub type DwarfReader = gimli::EndianSlice<'static, gimli::RunTimeEndian>;
 
 struct ContextCell(UnsafeCell<Option<Context<DwarfReader>>>);
 
+// SAFETY: `CONTEXT` is written exactly once during `init()` at startup
+// (single-threaded boot). After initialization all access is read-only.
+// `addr2line::FrameIter` borrows `Context` across iterator `next()` calls,
+// which makes lock-based approaches (Mutex/OnceCell) unworkable.
 unsafe impl Sync for ContextCell {}
 
 static CONTEXT: ContextCell = ContextCell(UnsafeCell::new(None));
@@ -72,6 +76,7 @@ pub fn init() {
         default_section,
     ) {
         Ok(ctx) => {
+            // SAFETY: single-threaded boot; no concurrent access possible.
             unsafe {
                 *CONTEXT.0.get() = Some(ctx);
             }
@@ -104,6 +109,7 @@ impl Iterator for FrameIter<'_> {
     type Item = (crate::Frame, addr2line::Frame<'static, DwarfReader>);
 
     fn next(&mut self) -> Option<Self::Item> {
+        // SAFETY: see `ContextCell` — read-only after `init()`.
         let ctx = unsafe { &*CONTEXT.0.get() }.as_ref()?;
 
         loop {
@@ -156,6 +162,7 @@ fn fmt_frame<R: gimli::Reader>(
 }
 
 pub(crate) fn fmt_frames(f: &mut fmt::Formatter<'_>, frames: &[crate::Frame]) -> fmt::Result {
+    // SAFETY: see `ContextCell` — read-only after `init()`.
     if unsafe { (*CONTEXT.0.get()).is_none() } {
         return write!(f, "Backtracing is not initialized.");
     }
