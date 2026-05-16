@@ -38,10 +38,11 @@ int main(void) {
     /* §5: TRACE_CMP is rejected with EINVAL until CMP hooks are implemented */
     CHECK_ERR(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_CMP), EINVAL,
               "ENABLE TRACE_CMP rejected (not yet implemented)");
-    CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE");
+    /* After failed ENABLE, mode is still INIT. DISABLE from INIT → EINVAL. */
+    CHECK_ERR(ioctl(fd, KCOV_DISABLE, 0), EINVAL, "DISABLE after failed TRACE_CMP → EINVAL");
 
-    /* §6: DISABLE before ENABLE is no-op */
-    CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE before ENABLE (no-op)");
+    /* §6: DISABLE before ENABLE → EINVAL (Linux: current->kcov != kcov) */
+    CHECK_ERR(ioctl(fd, KCOV_DISABLE, 0), EINVAL, "DISABLE before ENABLE → EINVAL");
 
     /* §6: "After this call coverage can be enabled" — re-enable same thread */
     for (int cycle = 1; cycle <= 3; cycle++) {

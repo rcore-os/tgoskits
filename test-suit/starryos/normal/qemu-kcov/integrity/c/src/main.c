@@ -1,5 +1,6 @@
 /* kcov-spec §9: Integrity — close while active, overflow, state machine */
 #include "test_framework.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -10,6 +11,7 @@
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
 #define KCOV_ENABLE _IO('c', 100)
 #define KCOV_DISABLE _IO('c', 101)
+#define KCOV_RESET_TRACE _IO('c', 104)
 #define KCOV_TRACE_PC 0
 
 static void burst(int n) {
@@ -71,7 +73,8 @@ int main(void) {
         uint64_t *buf =
             mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         CHECK_PTR(buf, 1, "mmap");
-        CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE before ENABLE");
+        // Linux: DISABLE before ENABLE (from INIT) → EINVAL
+        CHECK_ERR(ioctl(fd, KCOV_DISABLE, 0), EINVAL, "DISABLE before ENABLE → EINVAL");
         for (int c = 1; c <= 3; c++) {
             CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE");
             burst(30);
@@ -79,6 +82,29 @@ int main(void) {
         }
         CHECK(buf[0] >= 3, "accumulated across 3 cycles");
         munmap(buf, sz);
+        close(fd);
+    }
+
+    /* DISABLE with non-zero arg → EINVAL (Linux KCOV_DISABLE semantics) */
+    {
+        int fd = open("/dev/kcov", O_RDWR);
+        CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 64), 0, "INIT_TRACE");
+        CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE");
+        CHECK_ERR(ioctl(fd, KCOV_DISABLE, 1), EINVAL, "DISABLE with arg=1 → EINVAL");
+        // After failed DISABLE, tracing is still active — verify and then disable properly.
+        burst(10);
+        CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE with arg=0 after failed attempt");
+        close(fd);
+    }
+
+    /* RESET_TRACE with non-zero arg → EINVAL */
+    {
+        int fd = open("/dev/kcov", O_RDWR);
+        CHECK_RET(ioctl(fd, KCOV_INIT_TRACE, 64), 0, "INIT_TRACE");
+        CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE");
+        burst(10);
+        CHECK_ERR(ioctl(fd, KCOV_RESET_TRACE, 1), EINVAL, "RESET_TRACE with arg=1 → EINVAL");
+        CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE after failed RESET_TRACE");
         close(fd);
     }
 

@@ -88,11 +88,12 @@ int main(void) {
         /* Child: kcov should be disabled on our thread after fork */
         int r;
 
-        /* KCOV_DISABLE on the inherited fd should succeed as no-op */
+        /* Linux: DISABLE from a non-tracing state → EINVAL.
+         * fd1 was disabled earlier (mode=INIT, tracer_tid=None). */
         r = ioctl(fd1, KCOV_DISABLE, 0);
-        if (r != 0) _exit(10);
+        if (r != -1 || errno != EINVAL) _exit(10);
 
-        /* Child can enable on fd1 since no kcov active on this thread */
+        /* Child can enable on fd1 (still in INIT mode) */
         r = ioctl(fd1, KCOV_ENABLE, KCOV_TRACE_PC);
         if (r != 0) _exit(11);
         burst(10);

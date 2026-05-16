@@ -1,21 +1,23 @@
-/* Test: KCOV_DISABLE thread ownership check.
+/* Test: KCOV DISABLE/RESET_TRACE thread ownership check.
  *
- * Verifies that DISABLE and close() from a thread that did NOT enable kcov
- * are handled correctly, matching Linux semantics:
+ * Verifies that DISABLE, RESET_TRACE, and close() from a thread that did NOT
+ * enable kcov are handled correctly, matching Linux semantics:
  *
- *   1. DISABLE from a non-tracing state (INIT) is a no-op success.
+ *   1. DISABLE from a non-tracing state (INIT) → EINVAL.
  *   2. DISABLE from a different thread → EINVAL.
  *   3. The tracer thread can still DISABLE after a rogue DISABLE attempt.
  *   4. close() from the tracer thread cleans up correctly.
  *   5. close() from a non-tracer thread does not clear the tracer's state.
- *   6. DISABLE from INIT is idempotent.
+ *   6. DISABLE from INIT always returns EINVAL (idempotent in error).
+ *   7. RESET_TRACE from a different thread → EINVAL.
  *
  * These tests use fork() to create a second task that shares the fd but has
- * a different TID, exercising the tracer_tid check in KCOV_DISABLE.
+ * a different TID, exercising the tracer_tid check in KCOV ioctls.
  *
- * Ordering note: test §5 (close from non-tracer) must run LAST because
- * it intentionally leaves the thread's kcov state active after the fd
- * is torn down.  All other tests clean up their per-thread kcov state.
+ * Ordering note: test §5 (close from non-tracer) must run last among the
+ * original set because it intentionally leaves the thread's kcov state
+ * active.  §7 (RESET_TRACE ownership) runs before §5 since it cleans up
+ * properly.
  */
 #include "test_framework.h"
 #include <errno.h>
@@ -31,6 +33,7 @@
 #define KCOV_INIT_TRACE  _IOR('c', 1, unsigned long)
 #define KCOV_ENABLE      _IO('c', 100)
 #define KCOV_DISABLE     _IO('c', 101)
+#define KCOV_RESET_TRACE _IO('c', 104)
 #define KCOV_TRACE_PC    0
 
 /* Large buffer to avoid overflow during test bursts. */
@@ -67,7 +70,7 @@ static void kcov_teardown(int fd, uint64_t *buf, size_t sz) {
  *  the fd is in TRACE_PC / TRACE_CMP mode).
  * ================================================================ */
 static void disable_from_init_is_noop(void) {
-    printf("\n  --- §1: DISABLE from INIT mode is no-op ---\n");
+    printf("\n  --- §1: DISABLE from INIT mode returns EINVAL (Linux semantics) ---\n");
 
     uint64_t *buf;
     size_t sz;
@@ -78,15 +81,16 @@ static void disable_from_init_is_noop(void) {
     pid_t pid = fork();
     if (pid == 0) {
         /* Child: fd inherited, mode=INIT, tracer_tid=None.
-         * DISABLE from INIT must succeed (TID check skipped). */
+         * Linux: DISABLE before ENABLE → EINVAL (current->kcov != kcov). */
         int r = ioctl(fd, KCOV_DISABLE, 0);
-        _exit(r == 0 ? 0 : 10);
+        _exit(r == -1 && errno == EINVAL ? 0 : 10);
     }
 
     int wstatus;
     CHECK_RET(waitpid(pid, &wstatus, 0), pid, "waitpid §1");
     CHECK(WIFEXITED(wstatus), "§1 child exited");
-    CHECK_RET(WEXITSTATUS(wstatus), 0, "§1 child DISABLE from INIT succeeded");
+    CHECK_RET(WEXITSTATUS(wstatus), 0,
+              "§1 child DISABLE from INIT → EINVAL (matching Linux)");
 
     kcov_teardown(fd, buf, sz);
 }
@@ -210,15 +214,14 @@ static void close_from_tracer_stops_tracing(void) {
  *  §5: close() from a non-tracer thread does NOT clear the tracer's
  *      thread state — the tracer continues tracing.
  *
- *  The child closes its inherited fd.  Since the child's TID does
- *  not match tracer_tid, on_close skips clearing the parent's
- *  thread state.  The parent then calls DISABLE which acts as a
- *  safety-net cleanup (DISABLE from DISABLED mode clears thread
- *  state unconditionally), allowing the test to exit cleanly.
+ *  The child closes its inherited fd.  Since the fd is shared via
+ *  Arc<File>, the child's close merely drops its Arc reference —
+ *  on_close is NOT called.  The parent's fd state (mode=TRACE_PC,
+ *  tracer_tid=parent) remains intact, and the parent can DISABLE
+ *  normally.
  *
- *  This test MUST run last because it temporarily leaves the
- *  thread's kcov state active while the fd is in DISABLED mode
- *  (corner case only reachable from a rogue close on the fd).
+ *  This test MUST run last because it tests a corner case where
+ *  the child holds an Arc reference to the shared File.
  * ================================================================ */
 static void close_from_wrong_thread_does_not_stop_tracer(void) {
     printf("\n  --- §5: close() from wrong thread does not stop tracer ---\n");
@@ -233,9 +236,10 @@ static void close_from_wrong_thread_does_not_stop_tracer(void) {
 
     pid_t pid = fork();
     if (pid == 0) {
-        /* Child closes the inherited fd.  KcovFdState::on_close runs in
-         * the child's context: TID mismatch → thread state NOT cleared,
-         * but fd state IS reset (mode=DISABLED, buf_pages=None). */
+        /* Child closes the inherited fd.  The child drops its Arc reference
+         * to the shared File, but the parent's reference keeps the File alive
+         * so on_close is NOT called.  The fd state (mode=TRACE_PC, tracer_tid
+         * =parent) remains intact on the shared file description. */
         close(fd);
         _exit(0);
     }
@@ -245,12 +249,10 @@ static void close_from_wrong_thread_does_not_stop_tracer(void) {
     CHECK(WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0,
           "§5 child close succeeded");
 
-    /* The parent's fd is still open (file-description refcount) but its
-     * mode is DISABLED and buf_pages is None.  The parent's THREAD state
-     * (KcovThreadState) is still active — on_close only resets the fd.
-     *
-     * Verify the thread is still tracing by doing more work and checking
-     * that the count increased. */
+    /* The parent's fd is still in TRACE_PC mode (child's close only drops
+     * its Arc reference — the shared file description is not torn down
+     * until all references are released).  Verify the thread is still
+     * tracing by checking that coverage continued to increase. */
     uint64_t prev = buf[0];
     burst(50);
     uint64_t after = buf[0];
@@ -258,12 +260,13 @@ static void close_from_wrong_thread_does_not_stop_tracer(void) {
           "§5 coverage increased after child's close (thread still tracing)");
     printf("  INFO: §5 coverage: %lu → %lu\n", prev, after);
 
-    /* The fd is in DISABLED mode.  Calling DISABLE here acts as a safety
-     * net: DISABLE from a non-tracing mode always clears the thread's
-     * kcov state, allowing clean exit. */
+    /* The fd is still in TRACE_PC mode (child's close drops its Arc but the
+     * shared file descriptor is not torn down — on_close only runs when the
+     * last reference is dropped).  The parent can DISABLE normally. */
     CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0,
-              "§5 DISABLE recovers thread state after rogue close");
+              "§5 parent DISABLE after child's close (still tracing)");
 
+    /* Thread kcov is now clean — parent can exit. */
     munmap(buf, sz);
     close(fd);
 }
@@ -272,21 +275,65 @@ static void close_from_wrong_thread_does_not_stop_tracer(void) {
  *  §6: Double DISABLE (idempotent) — DISABLE from INIT mode is fine.
  * ================================================================ */
 static void disable_from_init_is_idempotent(void) {
-    printf("\n  --- §6: DISABLE from INIT is idempotent ---\n");
+    printf("\n  --- §6: DISABLE from INIT always returns EINVAL ---\n");
 
     uint64_t *buf;
     size_t sz;
     int fd = kcov_setup(&buf, &sz);
     CHECK(fd >= 0, "setup fd for §6");
 
-    /* DISABLE from INIT (never enabled) */
-    CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "first DISABLE (INIT)");
-    CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "second DISABLE (INIT, still fine)");
+    /* DISABLE from INIT (never enabled) — both return EINVAL (Linux semantics). */
+    CHECK_ERR(ioctl(fd, KCOV_DISABLE, 0), EINVAL, "first DISABLE (INIT) → EINVAL");
+    CHECK_ERR(ioctl(fd, KCOV_DISABLE, 0), EINVAL, "second DISABLE (INIT) → EINVAL");
 
-    /* ENABLE then DISABLE normally still works */
+    /* ENABLE still works after failed DISABLE (state unchanged: INIT). */
     CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "ENABLE after DISABLE");
-    CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE after ENABLE");
+    CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "DISABLE after ENABLE (from tracer)");
 
+    kcov_teardown(fd, buf, sz);
+}
+
+/* ================================================================
+ *  §7: RESET_TRACE from a non-tracer thread → EINVAL.
+ *
+ *  Only the thread that called KCOV_ENABLE may issue KCOV_RESET_TRACE.
+ *  A child that inherits the fd via fork must get EINVAL.
+ *
+ *  Parent ENABLEs → forks → child tries RESET_TRACE → EINVAL.
+ *  Parent can still RESET_TRACE and DISABLE normally afterwards.
+ * ================================================================ */
+static void reset_trace_from_wrong_thread_returns_einval(void) {
+    printf("\n  --- §7: RESET_TRACE from wrong thread → EINVAL ---\n");
+
+    uint64_t *buf;
+    size_t sz;
+    int fd = kcov_setup(&buf, &sz);
+    CHECK(fd >= 0, "setup fd for §7");
+
+    CHECK_RET(ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC), 0, "parent ENABLE");
+    burst(20);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child: inherited fd, parent is tracer. RESET_TRACE must fail. */
+        int r = ioctl(fd, KCOV_RESET_TRACE, 0);
+        _exit(r == -1 && errno == EINVAL ? 0 : 10);
+    }
+
+    int wstatus;
+    CHECK_RET(waitpid(pid, &wstatus, 0), pid, "waitpid §7");
+    CHECK(WIFEXITED(wstatus), "§7 child exited");
+    CHECK_RET(WEXITSTATUS(wstatus), 0,
+              "§7 child RESET_TRACE → EINVAL (matching Linux)");
+
+    /* Parent's tracing is unaffected; verify and clean up. */
+    burst(10);
+    uint64_t before = buf[0];
+    CHECK(before > 0, "§7 parent still tracing after child's failed RESET");
+
+    CHECK_RET(ioctl(fd, KCOV_RESET_TRACE, 0), 0,
+              "§7 parent RESET_TRACE succeeds");
+    CHECK_RET(ioctl(fd, KCOV_DISABLE, 0), 0, "§7 parent DISABLE");
     kcov_teardown(fd, buf, sz);
 }
 
@@ -300,8 +347,9 @@ int main(void) {
     parent_can_disable_after_child_fail();
     close_from_tracer_stops_tracing();
     disable_from_init_is_idempotent();
+    reset_trace_from_wrong_thread_returns_einval();
     /* §5 (close from non-tracer) intentionally leaves the thread's kcov
-     * state active while the fd is in DISABLED mode.  It must run last. */
+     * state active.  It must run last. */
     close_from_wrong_thread_does_not_stop_tracer();
 
     TEST_DONE();

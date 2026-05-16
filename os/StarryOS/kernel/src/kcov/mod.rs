@@ -194,20 +194,17 @@ impl KcovFdState {
             }
 
             KCOV_DISABLE => {
+                // Linux: arg must be 0, else EINVAL.
+                if arg != 0 {
+                    return Err(VfsError::InvalidInput);
+                }
+
                 let task = ax_task::current();
                 let mut inner = self.inner.lock();
 
-                // Linux returns 0 (no-op) when DISABLE is called from a
-                // non-tracing state (INIT / DISABLED).
-                if inner.mode != KCOV_MODE_TRACE_PC && inner.mode != KCOV_MODE_TRACE_CMP {
-                    if let Some(thr) = task.try_as_thread() {
-                        thr.set_kcov(None);
-                    }
-                    return Ok(0);
-                }
-
-                // Linux: verify the calling thread is the tracer.
-                // Return EINVAL if a different thread tries to disable.
+                // Linux: current->kcov != kcov → EINVAL.
+                // Catches DISABLE before ENABLE, DISABLE from wrong thread,
+                // and DISABLE after DISABLE (all non-tracing states).
                 if inner.tracer_tid != Some(task.id().as_u64()) {
                     return Err(VfsError::InvalidInput);
                 }
@@ -223,12 +220,17 @@ impl KcovFdState {
             }
 
             KCOV_RESET_TRACE => {
-                // Linux: arg must be 0, and the fd must be actively tracing.
+                // Linux: arg must be 0, fd must be active, and caller must be tracer.
                 if arg != 0 {
                     return Err(VfsError::InvalidInput);
                 }
+                let task = ax_task::current();
                 let inner = self.inner.lock();
                 if inner.mode != KCOV_MODE_TRACE_PC && inner.mode != KCOV_MODE_TRACE_CMP {
+                    return Err(VfsError::InvalidInput);
+                }
+                // Upcoming Linux KCOV_RESET_TRACE patch: only the tracer may reset.
+                if inner.tracer_tid != Some(task.id().as_u64()) {
                     return Err(VfsError::InvalidInput);
                 }
                 if let Some(ref pages) = inner.buf_pages {
@@ -259,22 +261,33 @@ impl KcovFdState {
 
     /// Called when the fd is closed.
     ///
-    /// Clears the thread's kcov reference if this instance was enabled,
-    /// matching Linux behavior where close() disables coverage for the thread.
+    /// Clears the thread's kcov reference if this instance was enabled
+    /// and the calling thread is the tracer.  A non-tracer close (e.g. a
+    /// child after fork) leaves the fd state intact so the tracer can
+    /// still DISABLE via its own reference to this file description.
+    /// Matches Linux behavior where kcov close only drops a refcount
+    /// and the task's kcov reference keeps the session alive.
     pub fn on_close(&self) {
         let mut inner = self.inner.lock();
         if inner.mode == KCOV_MODE_TRACE_PC || inner.mode == KCOV_MODE_TRACE_CMP {
-            // Only clear the thread's kcov state if this thread is the tracer.
+            // Only the tracer may tear down an active session.
             if inner.tracer_tid == Some(ax_task::current().id().as_u64()) {
                 if let Some(thr) = ax_task::current().try_as_thread() {
                     thr.set_kcov(None);
                 }
+                inner.mode = KCOV_MODE_INIT;
+                inner.buf_pages = None;
+                inner.buf_entries = 0;
+                inner.tracer_tid = None;
             }
+            // Non-tracer close: fd state stays intact so the tracer
+            // can still DISABLE via its own reference.
+        } else {
+            inner.mode = KCOV_MODE_DISABLED;
+            inner.buf_pages = None;
+            inner.buf_entries = 0;
+            inner.tracer_tid = None;
         }
-        inner.mode = KCOV_MODE_DISABLED;
-        inner.buf_pages = None;
-        inner.buf_entries = 0;
-        inner.tracer_tid = None;
     }
 }
 
