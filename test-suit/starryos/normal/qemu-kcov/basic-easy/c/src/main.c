@@ -112,9 +112,12 @@ int main(void) {
         }
 
         CHECK(count > 0, "coverage count>=1");
+        CHECK(count < cover_size, "coverage count<cover_size");
         buf[1] = 0xDEADBEEFCAFE;
         CHECK(buf[1] == (uint64_t)0xDEADBEEFCAFE,
               "mmap'd buffer writable after KCOV_DISABLE");
+    }else{
+        exit(1);
     }
 
     /* Cleanup */
