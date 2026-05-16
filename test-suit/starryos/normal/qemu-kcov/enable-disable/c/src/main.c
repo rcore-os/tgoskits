@@ -52,6 +52,7 @@ int main(void) {
 
     /* §6: coverage accumulated across cycles */
     CHECK(buf[0] >= 3, "accumulated coverage across 3 cycles");
+    CHECK(buf[0] < 256, "accumulated coverage across 3 cycles");
 
     /* §6: after DISABLE, collection stops */
     uint64_t saved = buf[0];

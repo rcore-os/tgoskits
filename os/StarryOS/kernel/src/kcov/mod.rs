@@ -70,7 +70,8 @@ pub const KCOV_MAX_ENTRIES: usize = 1024 * 1024;
 pub struct KcovThreadState {
     /// Physical pages backing the shared coverage buffer.
     pub buf_pages: Arc<SharedPages>,
-    /// Number of `u64` entries (excluding the leading count word).
+    /// Total number of u64 entries in the buffer, including the leading count word.
+    /// Maximum PCs = buf_entries - 1. Matches Linux `kcov->size`.
     pub buf_entries: usize,
     /// Current trace mode (`KCOV_TRACE_PC`, etc.).
     pub mode: u32,
@@ -107,7 +108,7 @@ impl KcovFdState {
         match cmd {
             KCOV_INIT_TRACE => {
                 let cover_size = arg;
-                if cover_size == 0 || cover_size > KCOV_MAX_ENTRIES {
+                if cover_size < 2 || cover_size > KCOV_MAX_ENTRIES {
                     return Err(VfsError::InvalidInput);
                 }
 
@@ -118,7 +119,7 @@ impl KcovFdState {
                 }
 
                 // Buffer layout: [count: u64 | pc[0]: u64 | ... | pc[N-1]: u64]
-                let total_entries = 1 + cover_size;
+                let total_entries = cover_size;
                 let buf_byte_size = total_entries * core::mem::size_of::<u64>();
                 let num_pages = buf_byte_size.div_ceil(PAGE_SIZE_4K);
                 let aligned_size = num_pages * PAGE_SIZE_4K;
@@ -135,7 +136,7 @@ impl KcovFdState {
 
                 inner.mode = KCOV_MODE_INIT;
                 inner.buf_pages = Some(pages);
-                inner.buf_entries = cover_size;
+                inner.buf_entries = total_entries - 1;
                 Ok(0)
             }
 
