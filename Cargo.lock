@@ -258,6 +258,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-backtrace-raw-badfp"
+version = "0.3.1"
+dependencies = [
+ "ax-std",
+ "axbacktrace",
+]
+
+[[package]]
+name = "arceos-backtrace-raw-basic"
+version = "0.3.1"
+dependencies = [
+ "ax-std",
+ "axbacktrace",
+]
+
+[[package]]
+name = "arceos-backtrace-raw-normal"
+version = "0.3.1"
+dependencies = [
+ "ax-std",
+ "axbacktrace",
+]
+
+[[package]]
 name = "arceos-display"
 version = "0.3.1"
 dependencies = [

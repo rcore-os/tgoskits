@@ -25,7 +25,8 @@ use std::println;
 fn emit_invalid_fp_report() {
     let anchor = 0usize;
     let fp = (&anchor as *const usize as usize).wrapping_add(1);
-    println!("{}", Backtrace::report_from_fp("raw", fp));
+    let bt = Backtrace::capture_trap(fp, 0, 0);
+    println!("{}", bt.report("raw"));
 }
 
 #[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
