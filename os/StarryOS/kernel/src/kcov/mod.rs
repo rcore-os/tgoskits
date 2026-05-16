@@ -335,9 +335,9 @@ extern "C" fn kcov_trace_pc_impl(pc: u64) {
         let entry_vaddr = phys_to_virt(pages[page_idx]);
         unsafe {
             let entry_ptr = entry_vaddr.as_mut_ptr().add(page_off) as *mut u64;
-            core::ptr::write_volatile(entry_ptr, pc);
             // Publish: increment count so userspace sees the new entry
             core::ptr::write_volatile(count_ptr, idx + 1);
+            core::ptr::write_volatile(entry_ptr, pc);
         }
     }
 }
