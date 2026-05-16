@@ -268,10 +268,10 @@ impl Service {
                 let Some(state) = &mut self.dhcp else {
                     return;
                 };
-                info!("eth0: DHCP acquired address {address}");
+                warn!("eth0: DHCP acquired address {address}");
                 match router {
-                    Some(router) => info!("eth0: DHCP router {router}"),
-                    None => info!("eth0: DHCP router not provided"),
+                    Some(router) => warn!("eth0: DHCP router {router}"),
+                    None => warn!("eth0: DHCP router not provided"),
                 }
                 for dns in &dns_servers {
                     info!("eth0: DHCP DNS {dns}");

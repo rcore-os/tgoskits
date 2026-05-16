@@ -405,6 +405,11 @@ pub fn sys_fchownat(
     gid: i32,
     flags: u32,
 ) -> AxResult<isize> {
+    const FCHOWNAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !FCHOWNAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()

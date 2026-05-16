@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.4.7...axdevice_base-v0.4.8) - 2026-05-15
+
+### Other
+
+- *(axdevice-base)* inherit workspace dependencies
+
 ## [0.1.0] - 2026-01-24
 
 ### Added

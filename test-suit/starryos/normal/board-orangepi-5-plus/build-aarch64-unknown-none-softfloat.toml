@@ -11,10 +11,10 @@ features = [
   "axplat-dyn/realtek-rtl8125",
   "axplat-dyn/rockchip-soc",
   "axplat-dyn/rockchip-dwc-xhci",
-  "axplat-dyn/sdmmc",
-  "axplat-dyn/simple-sdmmc",
+  "axplat-dyn/rockchip-sdhci",
+  "axplat-dyn/rockchip-dwmmc",
   "rknpu",
 ]
 log = "Info"
-max_cpu_num = 8
+max_cpu_num = 1
 plat_dyn = true

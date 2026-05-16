@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-aarch64-raspi"
-version = "0.5.8"
+version = "0.5.9"
 repository = "https://github.com/rcore-os/tgoskits"
 description = "Implementation of `axplat` hardware abstraction layer for Raspberry Pi 4B board."
 keywords = ["arceos", "os", "hal", "aarch64", "raspi"]

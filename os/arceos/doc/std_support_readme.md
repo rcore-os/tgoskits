@@ -8,7 +8,7 @@ Examples are under `examples/std`.
 
 ### Disk image preparation
 
-Examples expect `disk.img` in `examples/std` directory. Both ext4 and FAT32 filesystems are supported. 
+Examples expect `disk.img` in `examples/std` directory. Both ext4 and FAT32 filesystems are supported.
 
 Recommended commands:
 
@@ -39,7 +39,7 @@ Supported targets used by examples:
 
 `examples/std/*/.cargo/config.toml` already provides:
 
-- linker args (`-no-pie`, `-Tlink.lds`)
+- linker args (`-no-pie`, `-Tlinker.x`)
 - per-arch QEMU runner
 - `build-std` settings for build standard library
 
