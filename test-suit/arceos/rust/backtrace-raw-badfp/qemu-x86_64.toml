@@ -1,0 +1,19 @@
+args = [
+    "-machine",
+    "q35",
+    "-cpu",
+    "max",
+    "-m",
+    "128M",
+    "-smp",
+    "1",
+    "-nographic",
+    "-serial",
+    "mon:stdio",
+]
+uefi = false
+to_bin = false
+success_regex = [
+    "(?ms)^emitting raw backtrace report \\(corrupted fp\\)\\.\\.\\.$.*^BACKTRACE_BEGIN\\b.*\\bkind=raw\\b.*^BT_ERROR\\s+invalid_fp\\b.*^BACKTRACE_END\\b.*^test pass\\s*$",
+]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
