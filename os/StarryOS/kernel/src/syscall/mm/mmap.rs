@@ -252,6 +252,8 @@ pub fn sys_mmap(
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
                     #[cfg(feature = "kcov")]
                     Ok(DeviceMmap::NotConfigured) => return Err(AxError::InvalidInput),
+                    #[cfg(feature = "kcov")]
+                    Ok(DeviceMmap::SharedPages(pages)) => Backend::new_shared(start, pages),
                     Ok(_) => return Err(AxError::InvalidInput),
                     Err(_) => {
                         // Fall through to file-backed mmap
