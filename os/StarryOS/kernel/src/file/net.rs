@@ -192,9 +192,16 @@ impl FileLike for Socket {
                 };
                 write_ifreq_data(arg, &flags.to_ne_bytes())?;
             }
-            SIOCGIFADDR | SIOCGIFDSTADDR => {
+            SIOCGIFADDR => {
                 let addr = match read_ifreq_interface(arg)? {
                     NetInterface::Eth0 => configured_eth0_ipv4(),
+                    NetInterface::Loopback => [127, 0, 0, 1],
+                };
+                write_ifreq_sockaddr(arg, addr)?;
+            }
+            SIOCGIFDSTADDR => {
+                let addr = match read_ifreq_interface(arg)? {
+                    NetInterface::Eth0 => [0, 0, 0, 0],
                     NetInterface::Loopback => [127, 0, 0, 1],
                 };
                 write_ifreq_sockaddr(arg, addr)?;

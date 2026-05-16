@@ -362,22 +362,20 @@ impl SocketOps for RawSocket {
                     } else {
                         self.loopback_rx.lock().take()
                     } {
-                        if let Some(peer) = *self.peer_addr.read()
-                            && source != peer
-                        {
-                            continue;
-                        }
+                        let peer_mismatch =
+                            matches!(*self.peer_addr.read(), Some(peer) if source != peer);
+                        if !peer_mismatch {
+                            if let Some(from) = options.from.as_deref_mut() {
+                                *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
+                            }
 
-                        if let Some(from) = options.from.as_deref_mut() {
-                            *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
+                            let written = dst.write(&packet)?;
+                            return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+                                packet.len()
+                            } else {
+                                written
+                            });
                         }
-
-                        let written = dst.write(&packet)?;
-                        return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                            packet.len()
-                        } else {
-                            written
-                        });
                     }
 
                     let packet = if options.flags.contains(RecvFlags::PEEK) {
