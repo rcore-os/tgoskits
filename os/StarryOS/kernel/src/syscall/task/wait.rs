@@ -11,7 +11,7 @@ use linux_raw_sys::general::{__WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WNOHANG,
 use starry_process::{Pid, Process};
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::{AsThread, get_task};
+use crate::task::{AsThread, get_task, remove_process, unregister_zombie};
 
 bitflags! {
     #[derive(Debug)]
@@ -94,6 +94,8 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
                 }
             }
             child.free();
+            remove_process(child.pid());
+            unregister_zombie(child.pid());
             if let Some(exit_code) = exit_code.nullable() {
                 exit_code.vm_write(child.exit_code())?;
             }

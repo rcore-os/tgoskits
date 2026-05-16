@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
-use rockchip_pm::{RkBoard, RockchipPM};
+use rockchip_pm::{PowerDomain, RkBoard, RockchipPM};
 
 use crate::drivers::iomap;
 
@@ -49,4 +49,15 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     plat_dev.register(pm);
     info!("Rockchip power manager registered successfully");
     Ok(())
+}
+
+pub(crate) fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
+    let pm = rdrive::get_one::<RockchipPM>()
+        .ok_or_else(|| alloc::format!("RockchipPM not found for power domain {domain}"))?;
+    let mut pm = pm
+        .lock()
+        .map_err(|err| alloc::format!("failed to lock RockchipPM: {err}"))?;
+
+    pm.power_domain_on(PowerDomain(domain))
+        .map_err(|err| alloc::format!("{err:?}"))
 }

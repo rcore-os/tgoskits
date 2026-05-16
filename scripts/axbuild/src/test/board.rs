@@ -5,6 +5,8 @@ use std::{
 
 use anyhow::{Context, anyhow, bail};
 
+use crate::test::qemu;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BoardRuntimeConfig {
     pub(crate) case_dir: PathBuf,
@@ -15,6 +17,21 @@ pub(crate) struct BoardRuntimeConfig {
 pub(crate) trait BoardTestGroupInfo {
     fn name(&self) -> &str;
     fn board_name(&self) -> &str;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoardCaseBuildInfo {
+    pub(crate) name: String,
+    pub(crate) board_name: String,
+    pub(crate) build_config_path: PathBuf,
+    pub(crate) board_test_config_path: PathBuf,
+}
+
+pub(crate) fn labeled_board_cases<T: BoardTestGroupInfo>(groups: Vec<T>) -> Vec<(String, String)> {
+    groups
+        .into_iter()
+        .map(|group| (group.name().to_string(), group.board_name().to_string()))
+        .collect()
 }
 
 pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
@@ -31,6 +48,9 @@ pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
     });
 
     if let Some(case_name) = selected_case {
+        if groups.is_empty() {
+            bail!("{}", empty_message());
+        }
         let available = available_values(groups.iter().map(BoardTestGroupInfo::name));
         groups.retain(|group| group.name() == case_name);
         if groups.is_empty() {
@@ -42,6 +62,9 @@ pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
     }
 
     if let Some(board_name) = selected_board {
+        if groups.is_empty() {
+            bail!("{}", empty_message());
+        }
         let available = available_values(groups.iter().map(BoardTestGroupInfo::board_name));
         groups.retain(|group| group.board_name() == board_name);
         if groups.is_empty() {
@@ -105,6 +128,25 @@ pub(crate) fn discover_board_runtime_configs(
     Ok(configs)
 }
 
+pub(crate) fn discover_board_case_build_infos(
+    test_group_dir: &Path,
+    suite_name: &str,
+) -> anyhow::Result<Vec<BoardCaseBuildInfo>> {
+    let mut groups = Vec::new();
+    for config in discover_board_runtime_configs(test_group_dir)? {
+        let wrapper =
+            qemu::nearest_build_wrapper(test_group_dir, &config.case_dir, suite_name, "board")?;
+        groups.push(BoardCaseBuildInfo {
+            name: qemu::case_name_from_wrapper(test_group_dir, &wrapper, &config.case_dir)?,
+            board_name: config.board_name,
+            build_config_path: wrapper.build_config_path,
+            board_test_config_path: config.config_path,
+        });
+    }
+
+    Ok(groups)
+}
+
 fn available_values<'a>(values: impl Iterator<Item = &'a str>) -> String {
     let available = values
         .collect::<std::collections::BTreeSet<_>>()
@@ -128,6 +170,47 @@ pub(crate) fn finalize_board_test_run(suite_name: &str, failed: &[String]) -> an
             failed.len(),
             failed.join(", ")
         )
+    }
+}
+
+pub(crate) struct BoardTestRunState<'a> {
+    suite_name: &'a str,
+    total: usize,
+    failed: Vec<String>,
+}
+
+impl<'a> BoardTestRunState<'a> {
+    pub(crate) fn new(suite_name: &'a str, total: usize) -> Self {
+        Self {
+            suite_name,
+            total,
+            failed: Vec::new(),
+        }
+    }
+
+    pub(crate) fn start_group<T: BoardTestGroupInfo>(&self, index: usize, group: &T) -> String {
+        let group_label = format!("{}/{}", group.name(), group.board_name());
+        println!(
+            "[{}/{}] {} board {}",
+            index + 1,
+            self.total,
+            self.suite_name,
+            group_label
+        );
+        group_label
+    }
+
+    pub(crate) fn pass_group(&self, group_label: &str) {
+        println!("ok: {group_label}");
+    }
+
+    pub(crate) fn fail_group(&mut self, group_label: String, err: anyhow::Error) {
+        eprintln!("failed: {}: {:#}", group_label, err);
+        self.failed.push(group_label);
+    }
+
+    pub(crate) fn finish(self) -> anyhow::Result<()> {
+        finalize_board_test_run(self.suite_name, &self.failed)
     }
 }
 
@@ -158,5 +241,36 @@ mod tests {
         );
         assert_eq!(configs[0].case_dir, case_dir);
         assert_eq!(configs[1].case_dir, nested_case_dir);
+    }
+
+    #[test]
+    fn filter_selected_board_on_empty_group_reports_empty_group() {
+        let err = filter_board_test_groups(
+            Vec::<TestBoardGroup>::new(),
+            None,
+            Some("orangepi-5-plus"),
+            "Starry",
+            || "no Starry board test groups found under /tmp/stress".to_string(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(err, "no Starry board test groups found under /tmp/stress");
+    }
+
+    #[derive(Debug)]
+    struct TestBoardGroup {
+        name: String,
+        board_name: String,
+    }
+
+    impl BoardTestGroupInfo for TestBoardGroup {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn board_name(&self) -> &str {
+            &self.board_name
+        }
     }
 }

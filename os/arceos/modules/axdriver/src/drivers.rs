@@ -8,7 +8,7 @@ use ax_driver_pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, Pci
 
 pub use super::dummy::*;
 use crate::AxDeviceEnum;
-#[cfg(feature = "virtio")]
+#[cfg(virtio_dev)]
 use crate::virtio::{self, VirtIoDevMeta};
 
 pub trait DriverProbe {
@@ -21,7 +21,7 @@ pub trait DriverProbe {
         None
     }
 
-    #[cfg(bus = "pci")]
+    #[cfg(all(bus = "pci", feature = "bus-pci"))]
     fn probe_pci<C: ConfigurationAccess>(
         _root: &mut PciRoot<C>,
         _bdf: DeviceFunction,
@@ -96,6 +96,30 @@ cfg_if::cfg_if! {
 }
 
 cfg_if::cfg_if! {
+    if #[cfg(block_dev = "cvsd")] {
+        use ax_driver_block::cvsd::CvsdDriver;
+        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+        use ax_hal::mem::phys_to_virt;
+
+        pub struct CvsdMmc;
+        register_block_driver!(CvsdMmc, CvsdDriver);
+
+        impl DriverProbe for CvsdMmc {
+            #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+            fn probe_global() -> Option<AxDeviceEnum> {
+                info!("Probe CV SD Bootable Part @ {:#x}", ax_config::devices::CVSD_PADDR);
+
+                let sdmmc = CvsdDriver::new(
+                    phys_to_virt(ax_config::devices::CVSD_PADDR.into()).into(),
+                    phys_to_virt(ax_config::devices::SYSCON_PADDR.into()).into(),
+                    ).expect("CVSD init failed");
+                Some(AxDeviceEnum::from_block(sdmmc))
+            }
+        }
+    }
+}
+
+cfg_if::cfg_if! {
     if #[cfg(block_dev = "bcm2835-sdhci")]{
         pub struct BcmSdhciDriver;
         register_block_driver!(BcmSdhciDriver, ax_driver_block::bcm2835sdhci::SDHCIDriver);
@@ -117,7 +141,7 @@ cfg_if::cfg_if! {
         pub struct IxgbeDriver;
         register_net_driver!(IxgbeDriver, ax_driver_net::ixgbe::IxgbeNic<IxgbeHalImpl, 1024, 1>);
         impl DriverProbe for IxgbeDriver {
-            #[cfg(bus = "pci")]
+            #[cfg(all(bus = "pci", feature = "bus-pci"))]
             fn probe_pci<C: ax_driver_pci::ConfigurationAccess>(
                 root: &mut ax_driver_pci::PciRoot<C>,
                 bdf: ax_driver_pci::DeviceFunction,
@@ -185,7 +209,7 @@ cfg_if::cfg_if! {
                 global_allocator().dealloc_pages(vaddr, pages, UsageKind::Dma);
             }
 
-            fn dma_request_irq(_irq: usize, _handler: fn()) {
+            fn dma_request_irq(_irq: usize, _handler: fn(usize)) {
                 warn!("unimplemented dma_request_irq for fxmax");
             }
         }

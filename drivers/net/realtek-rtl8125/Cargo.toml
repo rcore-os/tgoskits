@@ -1,6 +1,6 @@
 [package]
 name = "realtek-rtl8125"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "hardware-support", "no-std"]
 description = "Minimal Realtek RTL8125 PCIe Ethernet driver"
@@ -13,7 +13,7 @@ repository.workspace = true
 dma-api.workspace = true
 log.workspace = true
 mmio-api.workspace = true
-rdif-eth = "0.2"
+rdif-eth.workspace = true
 spin.workspace = true
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"

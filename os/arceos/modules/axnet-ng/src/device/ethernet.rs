@@ -2,6 +2,7 @@ use alloc::{
     string::String,
     sync::{Arc, Weak},
     vec,
+    vec::Vec,
 };
 use core::task::Waker;
 
@@ -20,7 +21,7 @@ use smoltcp::{
 
 use crate::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
-    device::Device,
+    device::{ArpEntry, Device},
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
@@ -65,16 +66,16 @@ fn handle_ethernet_irq(slot: usize) {
     };
 
     let events = state.handle_irq();
-    if events.intersects(NetIrqEvent::RX_READY | NetIrqEvent::RX_ERROR) {
+    if events.intersects(NetIrqEvent::RX_READY | NetIrqEvent::RX_ERROR | NetIrqEvent::TX_DONE) {
         state.poll_ready.wake();
     }
 }
 
-fn handle_ethernet_irq_slot<const SLOT: usize>() {
+fn handle_ethernet_irq_slot<const SLOT: usize>(_: usize) {
     handle_ethernet_irq(SLOT);
 }
 
-const ETHERNET_IRQ_HANDLERS: [fn(); ETHERNET_IRQ_SLOTS] = [
+const ETHERNET_IRQ_HANDLERS: [fn(usize); ETHERNET_IRQ_SLOTS] = [
     handle_ethernet_irq_slot::<0>,
     handle_ethernet_irq_slot::<1>,
     handle_ethernet_irq_slot::<2>,
@@ -487,6 +488,27 @@ impl Device for EthernetDevice {
         self.ip = addr;
         self.neighbors.clear();
         self.pending_neighbors.clear();
+    }
+
+    fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {
+        self.neighbors
+            .iter()
+            .filter_map(|(ip_addr, neighbor)| {
+                if neighbor.expires_at <= timestamp {
+                    return None;
+                }
+                let IpAddress::Ipv4(ip_addr) = ip_addr else {
+                    return None;
+                };
+                Some(ArpEntry {
+                    ip_addr: ip_addr.octets(),
+                    hw_type: 1,
+                    flags: 2,
+                    hw_addr: neighbor.hardware_address.0,
+                    device: self.name.clone(),
+                })
+            })
+            .collect()
     }
 
     fn register_waker(&self, waker: &Waker) {

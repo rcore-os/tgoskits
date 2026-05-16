@@ -69,47 +69,49 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> AxResult<isize> 
     // Calculate number of pages to check
     let page_count = length.div_ceil(PAGE_SIZE_4K);
 
-    // Get current address space
-    let curr = current();
-    let aspace_arc = curr.as_thread().proc_data.aspace();
-    let aspace = aspace_arc.lock();
-
     let mut result = vec![0u8; page_count];
-    let mut i = 0;
 
-    while i < page_count {
-        let addr = start_addr + i * PAGE_SIZE_4K;
+    {
+        // Get current address space
+        let curr = current();
+        let aspace_arc = curr.as_thread().proc_data.aspace();
+        let aspace = aspace_arc.lock();
+        let mut i = 0;
 
-        // ENOMEM: Check if this page is within a valid VMA
-        let area = aspace.find_area(addr).ok_or(AxError::NoMemory)?;
+        while i < page_count {
+            let addr = start_addr + i * PAGE_SIZE_4K;
 
-        // Verify we have at least USER access permission
-        if !area.flags().contains(MappingFlags::USER) {
-            return Err(AxError::NoMemory);
-        }
+            // ENOMEM: Check if this page is within a valid VMA
+            let area = aspace.find_area(addr).ok_or(AxError::NoMemory)?;
 
-        // Query page table with batch awareness
-        let (is_resident, size) = match aspace.page_table().query(addr) {
-            Ok((_, _, size)) => {
-                // Physical page exists and is resident
-                // page_size tells us how many contiguous pages have the same status
-                (true, size as _)
+            // Verify we have at least USER access permission
+            if !area.flags().contains(MappingFlags::USER) {
+                return Err(AxError::NoMemory);
             }
-            Err(_) => {
-                // Page is mapped but not populated (lazy allocation)
-                // We need to determine how many contiguous pages are also not populated
-                // For safety, we check the next page or use PAGE_SIZE_4K as minimum step
-                (false, PAGE_SIZE_4K)
+
+            // Query page table with batch awareness
+            let (is_resident, size) = match aspace.page_table().query(addr) {
+                Ok((_, _, size)) => {
+                    // Physical page exists and is resident
+                    // page_size tells us how many contiguous pages have the same status
+                    (true, size as _)
+                }
+                Err(_) => {
+                    // Page is mapped but not populated (lazy allocation)
+                    // We need to determine how many contiguous pages are also not populated
+                    // For safety, we check the next page or use PAGE_SIZE_4K as minimum step
+                    (false, PAGE_SIZE_4K)
+                }
+            };
+            let n = size / PAGE_SIZE_4K;
+
+            if is_resident {
+                let end = (i + n).min(page_count);
+                result[i..end].fill(1);
             }
-        };
-        let n = size / PAGE_SIZE_4K;
 
-        if is_resident {
-            let end = (i + n).min(page_count);
-            result[i..end].fill(1);
+            i += n;
         }
-
-        i += n;
     }
 
     // EFAULT: Write result to user space

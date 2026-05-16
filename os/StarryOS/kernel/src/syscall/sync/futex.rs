@@ -1,6 +1,4 @@
-use core::sync::atomic::Ordering;
-
-use ax_errno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult};
 use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_task::current;
 use linux_raw_sys::general::{
@@ -63,6 +61,10 @@ pub fn sys_futex(
     let futex_table = futex_table_for(&key);
 
     let command = futex_op & (FUTEX_CMD_MASK as u32);
+    if matches!(command, FUTEX_WAIT_BITSET | FUTEX_WAKE_BITSET) && value3 == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     match command {
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
             // Fast path
@@ -87,11 +89,7 @@ pub fn sys_futex(
                 return Err(AxError::WouldBlock);
             }
 
-            if futex.owner_dead.swap(false, Ordering::SeqCst) {
-                Err(AxError::from(LinuxError::EOWNERDEAD))
-            } else {
-                Ok(0)
-            }
+            Ok(0)
         }
         FUTEX_WAKE | FUTEX_WAKE_BITSET => {
             let futex = futex_table.get(&key);

@@ -7,7 +7,7 @@ use log::{debug, error};
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
-    checksum::verify_ext4_dirblock_checksum,
+    checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
     config::*,
     disknode::*,
     entries::*,
@@ -189,12 +189,31 @@ pub fn get_file_inode<B: BlockDevice>(
                     let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
                     let block_data = &cached_block.data[..block_bytes];
 
-                    if !verify_ext4_dirblock_checksum(
-                        &fs.superblock,
-                        current_ino_num.raw(),
-                        current_inode.i_generation,
-                        block_data,
-                    ) {
+                    let checksum_ok = if current_inode.is_htree_indexed() {
+                        verify_ext4_dx_checksum(
+                            &fs.superblock,
+                            current_ino_num.raw(),
+                            current_inode.i_generation,
+                            block_data,
+                        )
+                        .unwrap_or_else(|| {
+                            verify_ext4_dirblock_checksum(
+                                &fs.superblock,
+                                current_ino_num.raw(),
+                                current_inode.i_generation,
+                                block_data,
+                            )
+                        })
+                    } else {
+                        verify_ext4_dirblock_checksum(
+                            &fs.superblock,
+                            current_ino_num.raw(),
+                            current_inode.i_generation,
+                            block_data,
+                        )
+                    };
+
+                    if !checksum_ok {
                         error!(
                             "dir block checksum mismatch: ino={} blk_idx={} phys={}",
                             current_ino_num, idx, phys.1

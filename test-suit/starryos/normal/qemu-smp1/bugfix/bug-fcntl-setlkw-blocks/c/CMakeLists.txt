@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-fcntl-setlkw-blocks C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-fcntl-setlkw-blocks src/main.c)
+target_compile_options(bug-fcntl-setlkw-blocks PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-fcntl-setlkw-blocks RUNTIME DESTINATION usr/bin)

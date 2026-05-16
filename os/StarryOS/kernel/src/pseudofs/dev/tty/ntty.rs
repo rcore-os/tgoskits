@@ -29,7 +29,7 @@ lazy_static! {
     static ref CONSOLE_INPUT_SOURCE: Arc<PollSet> = Arc::new(PollSet::new());
 }
 
-fn handle_console_input_irq() {
+fn handle_console_input_irq(_irq_num: usize) {
     let events = ax_hal::console::handle_irq();
     if events.intersects(
         ax_hal::console::ConsoleIrqEvent::RX_READY
@@ -54,7 +54,7 @@ fn new_n_tty() -> Arc<NTtyDriver> {
 fn console_irq_mode() -> Option<ProcessMode> {
     let irq = ax_hal::console::irq_num()?;
     if !ax_hal::irq::register(irq, handle_console_input_irq) {
-        warn!("Failed to register console IRQ handler for irq {irq}, falling back to manual mode");
+        warn!("Failed to register console IRQ handler for irq {irq}, falling back to polling mode");
         return None;
     }
 

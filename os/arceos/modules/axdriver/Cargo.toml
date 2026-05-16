@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.5.12"
+version = "0.5.14"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -24,13 +24,14 @@ virtio = ["dep:ax-driver-virtio", "dep:ax-alloc", "dep:ax-hal", "dep:ax-config"]
 
 # various types of drivers
 virtio-blk = ["block", "virtio", "ax-driver-virtio/block"]
-virtio-net = ["net", "virtio", "ax-driver-virtio/net"]
+virtio-net = ["net", "virtio", "ax-driver-virtio/net", "axplat-dyn?/virtio-net-pci"]
 virtio-gpu = ["display", "virtio", "ax-driver-virtio/gpu"]
 virtio-input = ["input", "virtio", "ax-driver-virtio/input"]
 virtio-socket = ["vsock", "virtio", "ax-driver-virtio/socket"]
 ramdisk = ["block", "ax-driver-block/ramdisk"]
 bcm2835-sdhci = ["block", "ax-driver-block/bcm2835-sdhci"]
 sdmmc = ["block", "ax-driver-block/sdmmc", "dep:ax-hal", "dep:ax-config"]
+cvsd = ["block", "ax-driver-block/cvsd", "dep:ax-hal", "dep:ax-config"]
 ahci = ["block", "ax-driver-block/ahci", "dep:ax-hal", "dep:ax-config"]
 ixgbe = ["net", "ax-driver-net/ixgbe", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]
 fxmac = ["net", "ax-driver-net/fxmac", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]

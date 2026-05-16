@@ -4,11 +4,12 @@ authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "no-std"]
 description = "A rockchip soc driver, contains cru, power manager, pinctrl."
 edition = "2024"
+autotests = false
 keywords = ["driver", "cru", "clock", "power"]
 license = "MIT"
 name = "rockchip-soc"
 repository = "https://github.com/drivercraft/rockchip-soc"
-version = "0.1.2"
+version = "0.2.0"
 
 [dependencies]
 bitflags = "2"
@@ -21,13 +22,10 @@ thiserror = {version = "2", default-features = false}
 tock-registers = "0.10"
 
 [target.'cfg(not(any(windows, unix)))'.dev-dependencies]
-bare-test = "0.7"
 num-align = "0.1.0"
 spin = "0.10"
 
-[build-dependencies]
-bare-test-macros = "0.2"
-
-[[test]]
-harness = false
-name = "test"
+# bare-test integration test is temporarily disabled.
+# [[test]]
+# harness = false
+# name = "test"

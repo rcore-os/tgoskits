@@ -1,0 +1,14 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+success_regex = [
+  '(?m)^uvc-fps: done duration_sec=10\.[0-9] frames=[1-9][0-9]* avg_fps=[1-9][0-9]*(?:\.[0-9]+)? bytes=[1-9][0-9]* saved=1 save_errors=0 avg_throughput_mib_s=[0-9]+(?:\.[0-9]+)?$',
+  '(?m)^-.*frame-000001\.jpg$'
+  ]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?m)^uvc-fps: error: .*$',
+  '(?m)^uvc-fps: save error: .*$',
+  '(?m)^unable to initialize libusb: .*$',
+  '(?i)(uvc-fps|sh): .*not found',
+]
+timeout = 300

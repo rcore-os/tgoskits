@@ -156,6 +156,7 @@ impl CloneArgs {
         };
 
         let mut new_uctx = *uctx;
+        new_uctx.prepare_clone_child_return_state();
         if stack != 0 {
             new_uctx.set_sp(stack);
         }
@@ -197,8 +198,7 @@ impl CloneArgs {
                 old_proc_data.aspace()
             } else {
                 let aspace_arc = old_proc_data.aspace();
-                let mut aspace = aspace_arc.lock();
-                let aspace = aspace.try_clone()?;
+                let aspace = aspace_arc.lock().try_clone()?;
                 copy_from_kernel(&mut aspace.lock())?;
                 aspace
             };
@@ -223,11 +223,16 @@ impl CloneArgs {
                 exit_signal,
             );
             proc_data.set_umask(old_proc_data.umask());
+            proc_data.set_nice(old_proc_data.nice());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
 
             {
                 let mut scope = proc_data.scope.write();
                 if flags.contains(CloneFlags::FILES) {
+                    // Synchronize with close_all_fds: holding a read lock
+                    // ensures close_all_fds either observes our strong_count
+                    // increment or blocks on write lock until we release.
+                    let _guard = FD_TABLE.read();
                     FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
                 } else {
                     FD_TABLE

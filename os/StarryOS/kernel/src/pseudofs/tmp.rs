@@ -1,6 +1,7 @@
 use alloc::{borrow::ToOwned, string::String, sync::Arc};
 use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
+use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
@@ -52,7 +53,9 @@ impl Borrow<str> for FileName {
 
 /// A simple in-memory filesystem that supports basic file operations.
 pub struct MemoryFs {
-    inodes: Mutex<Slab<Arc<Inode>>>,
+    // Inodes may be released from atomic cleanup paths, so the slab and
+    // metadata locks must not sleep.
+    inodes: SpinNoIrq<Slab<Arc<Inode>>>,
     root: Mutex<Option<DirEntry>>,
 }
 
@@ -61,7 +64,7 @@ impl MemoryFs {
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> Filesystem {
         let fs = Arc::new(Self {
-            inodes: Mutex::new(Slab::new()),
+            inodes: SpinNoIrq::new(Slab::new()),
             root: Mutex::default(),
         });
         let root_ino = Inode::new(
@@ -127,7 +130,7 @@ enum NodeContent {
 
 struct Inode {
     ino: u64,
-    metadata: Mutex<Metadata>,
+    metadata: SpinNoIrq<Metadata>,
     content: NodeContent,
 }
 
@@ -165,7 +168,7 @@ impl Inode {
         };
         let result = Arc::new(Self {
             ino,
-            metadata: Mutex::new(metadata),
+            metadata: SpinNoIrq::new(metadata),
             content,
         });
         entry.insert(result.clone());
@@ -248,6 +251,15 @@ impl MemoryNode {
             )
         })
     }
+
+    fn clear_dir_entries(inode: &Inode) {
+        // Do this from unlink/rename paths while still in normal syscall
+        // context. MemoryNode::drop may run during task cleanup, where a
+        // blocking directory-entry mutex would panic in might_sleep().
+        if let NodeContent::Dir(dir) = &inode.content {
+            dir.entries.lock().clear();
+        }
+    }
 }
 
 impl NodeOps for MemoryNode {
@@ -276,6 +288,9 @@ impl NodeOps for MemoryNode {
         if let Some((uid, gid)) = update.owner {
             metadata.uid = uid;
             metadata.gid = gid;
+        }
+        if let Some(rdev) = update.rdev {
+            metadata.rdev = rdev;
         }
         if let Some(atime) = update.atime {
             metadata.atime = atime;
@@ -412,17 +427,24 @@ impl DirNodeOps for MemoryNode {
 
     fn unlink(&self, name: &str) -> VfsResult<()> {
         let dir = self.inode.as_dir()?;
-        let mut entries = dir.entries.lock();
 
-        let Some(entry) = entries.get(name) else {
-            return Err(VfsError::NotFound);
+        let (entry, inode) = {
+            let mut entries = dir.entries.lock();
+            let Some(entry) = entries.get(name) else {
+                return Err(VfsError::NotFound);
+            };
+            let inode = entry.get();
+            if let NodeContent::Dir(DirContent { entries }) = &inode.content
+                && entries.lock().len() > 2
+            {
+                return Err(VfsError::DirectoryNotEmpty);
+            }
+            let entry = entries.remove(name).ok_or(VfsError::NotFound)?;
+            (entry, inode)
         };
-        if let NodeContent::Dir(DirContent { entries }) = &entry.get().content
-            && entries.lock().len() > 2
-        {
-            return Err(VfsError::DirectoryNotEmpty);
-        }
-        entries.remove(name);
+
+        Self::clear_dir_entries(&inode);
+        drop(entry);
 
         Ok(())
     }
@@ -437,28 +459,24 @@ impl DirNodeOps for MemoryNode {
             }
         }
 
-        let src_entry = self
-            .inode
-            .as_dir()?
-            .entries
-            .lock()
-            .remove(src_name)
-            .ok_or(VfsError::NotFound)?;
-        dst_node
-            .inode
-            .as_dir()?
-            .entries
-            .lock()
-            .insert(dst_name.into(), src_entry);
+        let src_entry = {
+            let mut entries = self.inode.as_dir()?.entries.lock();
+            entries.remove(src_name).ok_or(VfsError::NotFound)?
+        };
+        let overwritten = {
+            let mut entries = dst_node.inode.as_dir()?.entries.lock();
+            entries.insert(dst_name.into(), src_entry)
+        };
+        if let Some(entry) = overwritten {
+            Self::clear_dir_entries(&entry.get());
+            drop(entry);
+        }
         Ok(())
     }
 }
 
 impl Drop for MemoryNode {
     fn drop(&mut self) {
-        if let NodeContent::Dir(dir) = &self.inode.content {
-            dir.entries.lock().clear();
-        }
         release_inode(&self.fs, &self.inode, 0);
     }
 }

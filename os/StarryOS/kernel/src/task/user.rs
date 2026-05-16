@@ -8,7 +8,7 @@ use super::{
     AsThread, SyscallRestartInfo, TimerState, check_signals, raise_signal_fatal, set_timer_state,
     unblock_next_signal,
 };
-use crate::syscall::handle_syscall;
+use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
 
 /// Create a new user task.
 pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) -> TaskInner {
@@ -84,7 +84,10 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
 
                 if !unblock_next_signal() {
                     let eintr_code = -(ax_errno::LinuxError::EINTR.code() as isize);
-                    let restart = if is_syscall && (uctx.retval() as isize) == eintr_code {
+                    let restart = if is_syscall
+                        && (uctx.retval() as isize) == eintr_code
+                        && syscall_allows_signal_restart(saved_sysno)
+                    {
                         Some(SyscallRestartInfo {
                             saved_a0,
                             saved_sysno,

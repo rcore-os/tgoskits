@@ -1,6 +1,6 @@
 [package]
 name = "riscv-h"
-version = "0.4.6"
+version = "0.4.7"
 edition.workspace = true
 authors = [
     "Jinquan Yang <yjq980314@outlook.com>",

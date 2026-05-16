@@ -17,7 +17,7 @@ use smoltcp::{
     },
 };
 
-use crate::{SOCKET_SET, consts::STANDARD_MTU, router::Router};
+use crate::{SOCKET_SET, consts::STANDARD_MTU, device::ArpEntry, router::Router};
 
 fn now() -> Instant {
     Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)
@@ -268,10 +268,10 @@ impl Service {
                 let Some(state) = &mut self.dhcp else {
                     return;
                 };
-                info!("eth0: DHCP acquired address {address}");
+                warn!("eth0: DHCP acquired address {address}");
                 match router {
-                    Some(router) => info!("eth0: DHCP router {router}"),
-                    None => info!("eth0: DHCP router not provided"),
+                    Some(router) => warn!("eth0: DHCP router {router}"),
+                    None => warn!("eth0: DHCP router not provided"),
                 }
                 for dns in &dns_servers {
                     info!("eth0: DHCP DNS {dns}");
@@ -321,6 +321,10 @@ impl Service {
             panic!("no route to destination: {dst_addr}");
         };
         rule.src
+    }
+
+    pub fn arp_entries(&self) -> Vec<ArpEntry> {
+        self.router.arp_entries(now())
     }
 
     pub fn device_mask_for(&self, endpoint: &IpListenEndpoint) -> u32 {

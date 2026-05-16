@@ -3,7 +3,7 @@
 //! Main responsibilities:
 //! - Define default naming rules for workspace-managed rootfs images
 //! - Resolve user-facing `--rootfs` values into concrete image paths
-//! - Manage image files and cached archives under `target/rootfs/`
+//! - Manage image files and cached archives under `tmp/axbuild/rootfs/`
 //! - Download and extract rootfs archives on demand so images are available
 //!   locally
 
@@ -20,18 +20,12 @@ const TGOSIMAGES_ROOTFS_RELEASE: &str = "v0.0.5";
 
 /// Returns the default managed rootfs image filename for a given architecture.
 pub(crate) fn default_rootfs_image(arch: &str) -> Option<&'static str> {
-    match arch {
-        "aarch64" => Some("rootfs-aarch64-alpine.img"),
-        "riscv64" => Some("rootfs-riscv64-alpine.img"),
-        "x86_64" => Some("rootfs-x86_64-alpine.img"),
-        "loongarch64" => Some("rootfs-loongarch64-alpine.img"),
-        _ => None,
-    }
+    crate::context::default_rootfs_image_for_arch(arch)
 }
 
 /// Returns the workspace directory that stores managed rootfs images.
 pub(crate) fn rootfs_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("target").join("rootfs")
+    crate::context::axbuild_tmp_dir(workspace_root).join("rootfs")
 }
 
 /// Resolves a user-facing rootfs argument into a concrete image path.
@@ -160,28 +154,19 @@ async fn ensure_rootfs_image(workspace_root: &Path, image_name: &str) -> anyhow:
     let rootfs_dir = rootfs_dir(workspace_root);
     let image_path = rootfs_dir.join(image_name);
 
-    if let Ok(metadata) = tokio_fs::metadata(&image_path).await {
-        if metadata.len() >= MIN_ROOTFS_IMAGE_SIZE {
-            return Ok(image_path);
-        }
-        // File exists but is too small — likely a truncated or empty file from
-        // a previously interrupted download/extraction.  Remove it so that the
-        // download+extraction path below runs cleanly.
-        eprintln!(
-            "managed rootfs image `{}` is too small ({} bytes, expected >= {} bytes), removing \
-             and re-downloading",
-            image_path.display(),
-            metadata.len(),
-            MIN_ROOTFS_IMAGE_SIZE
-        );
-        tokio_fs::remove_file(&image_path)
-            .await
-            .with_context(|| format!("failed to remove corrupt image {}", image_path.display()))?;
+    if rootfs_image_is_ready(&image_path).await? {
+        return Ok(image_path);
     }
 
     tokio_fs::create_dir_all(&rootfs_dir)
         .await
         .with_context(|| format!("failed to create {}", rootfs_dir.display()))?;
+
+    let _lock = crate::support::download::acquire_path_lock(&image_path).await?;
+    if rootfs_image_is_ready(&image_path).await? {
+        return Ok(image_path);
+    }
+    remove_incomplete_rootfs_image(&image_path).await?;
 
     let archive_path = archive_path(workspace_root, image_name);
     let client = crate::support::download::http_client()?;
@@ -204,6 +189,37 @@ async fn ensure_rootfs_image(workspace_root: &Path, image_name: &str) -> anyhow:
     }
 
     Ok(image_path)
+}
+
+async fn rootfs_image_is_ready(image_path: &Path) -> anyhow::Result<bool> {
+    match tokio_fs::metadata(image_path).await {
+        Ok(metadata) if metadata.len() >= MIN_ROOTFS_IMAGE_SIZE => Ok(true),
+        Ok(_) => Ok(false),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err)
+            .with_context(|| format!("failed to read metadata for {}", image_path.display())),
+    }
+}
+
+async fn remove_incomplete_rootfs_image(image_path: &Path) -> anyhow::Result<()> {
+    let metadata = match tokio_fs::metadata(image_path).await {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to read metadata for {}", image_path.display()));
+        }
+    };
+    eprintln!(
+        "managed rootfs image `{}` is too small ({} bytes, expected >= {} bytes), removing and \
+         re-downloading",
+        image_path.display(),
+        metadata.len(),
+        MIN_ROOTFS_IMAGE_SIZE
+    );
+    tokio_fs::remove_file(image_path)
+        .await
+        .with_context(|| format!("failed to remove corrupt image {}", image_path.display()))
 }
 
 /// Downloads the archive for a managed rootfs image if it is not cached yet.
@@ -260,11 +276,21 @@ fn unpack_image(archive_path: &Path, image_name: &str, out_dir: &Path) -> anyhow
             continue;
         }
         let dest = out_dir.join(name);
-        if !dest.exists() {
-            entry
-                .unpack(&dest)
-                .with_context(|| format!("failed to extract `{name}` to {}", dest.display()))?;
+        let temp_dest = temporary_rootfs_image_path(&dest);
+        if temp_dest.exists() {
+            fs::remove_file(&temp_dest)
+                .with_context(|| format!("failed to remove {}", temp_dest.display()))?;
         }
+        entry
+            .unpack(&temp_dest)
+            .with_context(|| format!("failed to extract `{name}` to {}", temp_dest.display()))?;
+        fs::rename(&temp_dest, &dest).with_context(|| {
+            format!(
+                "failed to move extracted image {} to {}",
+                temp_dest.display(),
+                dest.display()
+            )
+        })?;
         return Ok(());
     }
 
@@ -272,6 +298,15 @@ fn unpack_image(archive_path: &Path, image_name: &str, out_dir: &Path) -> anyhow
         "archive {} did not contain expected rootfs image `{image_name}`",
         archive_path.display()
     ))
+}
+
+fn temporary_rootfs_image_path(path: &Path) -> PathBuf {
+    let mut file_name = path
+        .file_name()
+        .expect("rootfs image path must have a file name")
+        .to_os_string();
+    file_name.push(".tmp");
+    path.with_file_name(file_name)
 }
 
 #[cfg(test)]

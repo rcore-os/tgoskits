@@ -1,0 +1,14 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["embedded", "no-std"]
+description = "Driver Interface of interrupt controller."
+edition.workspace = true
+keywords = ["os", "driver"]
+license = "MIT"
+name = "rdif-intc"
+repository.workspace = true
+version = "0.14.1"
+
+[dependencies]
+cfg-if = "1.0"
+rdif-base = {workspace = true}

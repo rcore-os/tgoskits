@@ -48,9 +48,8 @@ use trait_ffi::*;
 
 /// A simple IRQ handler function pointer type.
 ///
-/// This is a function that takes no arguments and returns nothing,
-/// used for handling interrupt requests (IRQs) in the kernel.
-pub type IrqHandler = fn();
+/// The handler receives the IRQ number that triggered it.
+pub type IrqHandler = fn(usize);
 
 /// The kernel helper trait that platform implementations must provide.
 #[def_extern_trait]
@@ -73,6 +72,25 @@ pub trait Klib {
     ///   treat this as an allocation-like operation and ensure the mapping
     ///   is later cleaned up if the platform/ABI requires it.
     fn mem_iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr>;
+
+    /// Converts newly allocated DMA-coherent pages to an uncached kernel mapping.
+    ///
+    /// This is not a general-purpose memory attribute switching API. Callers
+    /// must only use it for pages that were just allocated for
+    /// `alloc_coherent`, are page-owned by that allocation, and have not been
+    /// exposed to another CPU, mapping, or device.
+    ///
+    /// Implementations must perform the required cache maintenance, TLB
+    /// invalidation, and ordering barriers internally.
+    fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> AxResult;
+
+    /// Restores DMA-coherent pages to a normal cacheable kernel mapping.
+    ///
+    /// The caller must ensure the device no longer owns or accesses the pages.
+    /// Implementations must perform the required TLB invalidation and ordering
+    /// barriers internally before the pages are returned to the normal page
+    /// allocator.
+    fn mem_restore_dma_cached(addr: VirtAddr, size: usize) -> AxResult;
 
     /// Busy-wait the current execution context for the provided duration.
     ///
@@ -100,7 +118,10 @@ pub trait Klib {
 
 /// Convenience re-export for memory IO mapping.
 pub mod mem {
-    pub use super::klib::mem_iomap as iomap;
+    pub use super::klib::{
+        mem_iomap as iomap, mem_make_dma_coherent_uncached as make_dma_coherent_uncached,
+        mem_restore_dma_cached as restore_dma_cached,
+    };
 }
 
 /// Convenience re-export for busy-wait timing.
