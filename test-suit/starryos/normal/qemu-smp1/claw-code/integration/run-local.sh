@@ -1,17 +1,15 @@
+#!/usr/bin/env bash
 # Download claw binary from GitHub, inject into rootfs, and boot StarryOS.
 # Usage: docker run --rm -v "$(pwd)":/workspace -w /workspace starryos-dev:ubuntu-qemu10.2.1 \
 #   bash test-suit/starryos/normal/qemu-smp1/claw-code/integration/run-local.sh
 set -eu
 
-SCRIPT_DIR="test-suit/starryos/normal/qemu-smp1/claw-code/integration"
 CLAW_URL="https://github.com/MuZhao2333/tgoskits/releases/download/claw-code-binary/claw"
-ROOTFS="/workspace/target/rootfs/rootfs-x86_64-alpine.img"
-ROOTFS_CACHE="/workspace/target/rootfs/rootfs-x86_64-alpine.img.tar.xz"
+ROOTFS="/workspace/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
 CLAW_BIN="/tmp/claw"
 
-echo "=== 1. Reset rootfs to clean state ==="
-tar -xJf "$ROOTFS_CACHE" -C "$(dirname "$ROOTFS")"
-echo "Rootfs reset from cache"
+echo "=== 1. Build StarryOS (ensures rootfs exists) ==="
+cargo xtask starry quick-start qemu-x86_64 build
 
 echo "=== 2. Download claw binary ==="
 if [ ! -f "$CLAW_BIN" ]; then
@@ -30,4 +28,3 @@ echo "Injected claw into rootfs"
 
 echo "=== 4. Boot StarryOS ==="
 cargo xtask starry quick-start qemu-x86_64 run
-
