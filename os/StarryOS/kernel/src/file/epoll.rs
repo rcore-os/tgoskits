@@ -449,17 +449,45 @@ impl Epoll {
                         keep.push_back(Arc::downgrade(&interest));
                     } else {
                         interest.mark_not_in_queue();
+                        // EPOLLET: install a fresh waker so the next edge
+                        // transition is captured.  The race window between
+                        // mark_not_in_queue() and register_waker_only() is
+                        // handled below: if data arrived while chan.poll_update
+                        // was empty (old waker consumed by the preceding wake),
+                        // the InterestWaker had no slot to land in and the
+                        // notification was silently dropped.  Re-check after
+                        // registering and re-queue if IN data is already present.
+                        // EPOLLOUT is intentionally excluded: it is always ready
+                        // for writable sockets and would cause a busy-loop.
                         self.register_waker_only(&interest);
+                        let in_mask = interest.event.events
+                            & (IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP);
+                        if !in_mask.is_empty()
+                            && let Some(f) = interest.key.get_file()
+                            && !(f.poll() & in_mask).is_empty()
+                            && interest.try_mark_in_queue()
+                        {
+                            self.inner
+                                .ready_queue
+                                .lock()
+                                .push_back(Arc::downgrade(&interest));
+                            self.inner.poll_ready.wake();
+                        }
                     }
                 }
                 ConsumeResult::NoEvent => {
+                    // Spurious wakeup: the waker fired but file.poll() had no
+                    // matching events (e.g. a shared PollSet wake when only
+                    // EPOLLOUT is ready but the interest is for EPOLLIN).
+                    // Re-arm with a plain waker registration — do NOT call
+                    // check_and_register_waker here.  That helper immediately
+                    // calls waker.wake_by_ref() when file.poll() is non-empty,
+                    // which creates a tight re-queue loop for connected TCP
+                    // sockets (always EPOLLOUT-ready), filling the ready_queue
+                    // with phantom events and blocking Tokio from confirming
+                    // connection establishment.
                     interest.mark_not_in_queue();
-                    // Events arriving between consume()'s poll and the new
-                    // register() would otherwise be lost: the old waker
-                    // CAS-fails (in_ready_queue still set), and a plain
-                    // register only fires on the next edge. Re-poll after
-                    // registering to recover them.
-                    self.check_and_register_waker(&interest);
+                    self.register_waker_only(&interest);
                 }
             }
         }
