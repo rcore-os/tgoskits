@@ -1,5 +1,4 @@
-use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc};
 use core::ffi::{c_char, c_void};
 
 use ax_errno::{AxError, AxResult, LinuxError};
