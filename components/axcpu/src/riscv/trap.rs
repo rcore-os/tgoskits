@@ -35,13 +35,14 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     if tf.fixup_exception() {
         return;
     }
+    let bt = tf.backtrace();
     panic!(
         "Unhandled Supervisor Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
         tf.sepc,
         vaddr,
         access_flags,
         tf,
-        tf.backtrace()
+        bt.report("trap")
     );
 }
 
@@ -60,23 +61,25 @@ fn riscv_trap_handler(tf: &mut TrapFrame) {
                 crate::trap::irq_handler(scause.bits());
             }
             _ => {
+                let bt = tf.backtrace();
                 panic!(
                     "Unhandled trap {:?} @ {:#x}, stval={:#x}:\n{:#x?}\n{}",
                     cause,
                     tf.sepc,
                     stval::read(),
                     tf,
-                    tf.backtrace()
+                    bt.report("trap")
                 );
             }
         }
     } else {
+        let bt = tf.backtrace();
         panic!(
             "Unknown trap {:#x?} @ {:#x}:\n{:#x?}\n{}",
             scause.cause(),
             tf.sepc,
             tf,
-            tf.backtrace()
+            bt.report("trap")
         );
     }
 

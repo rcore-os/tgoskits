@@ -411,12 +411,7 @@ pub fn sys_fchownat(
     }
 
     let path = path.nullable().map(vm_load_string).transpose()?;
-    let lookup_dirfd = if path.as_deref().is_some_and(|path| path.starts_with('/')) {
-        AT_FDCWD
-    } else {
-        dirfd
-    };
-    let loc = resolve_at(lookup_dirfd, path.as_deref(), flags)?
+    let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
     let meta = loc.metadata()?;

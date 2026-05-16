@@ -10,7 +10,7 @@ edition.workspace = true
 keywords = ["hypervisor", "address-space"]
 name = "axaddrspace"
 repository = "https://github.com/arceos-hypervisor/axaddrspace"
-version = "0.5.7"
+version = "0.5.8"
 license = "Apache-2.0"
 
 [features]

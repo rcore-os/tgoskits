@@ -22,6 +22,8 @@
 //! # Examples
 //!
 //! ```
+//! # #[cfg(feature = "std")]
+//! # {
 //! use ax_log::{debug, error, info, trace, warn};
 //!
 //! // Initialize the logger.
@@ -37,6 +39,7 @@
 //! // The following logs will not be printed.
 //! debug!("debug");
 //! trace!("trace");
+//! # }
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]

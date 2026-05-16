@@ -1,6 +1,6 @@
 [package]
 name = "ax-linked-list-r4l"
-version = "0.5.4"
+version = "0.5.5"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Wedson Almeida Filho <wedsonaf@google.com>", "WeiKang Guo <guoweikang.kernel@gmail.com>"]
