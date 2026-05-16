@@ -1,0 +1,13 @@
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+features = [
+  "qemu",
+  "gic-v3",
+]
+# CNTV PPI 11 = IRQ 27 — the kernel's gic-v3 path programs the
+# virtual-timer registers and the GIC has to subscribe IRQ 27 instead
+# of the GICv2 + CNTP default of 30. ax-config-gen merges this -w
+# override over the platform's default axconfig.
+axconfig_overrides = ["devices.timer-irq=27"]
+log = "Warn"
+plat_dyn = false
+target = "aarch64-unknown-none-softfloat"
