@@ -17,7 +17,17 @@ use starry_vm::VmMutPtr;
 use super::{FileLike, Kstat};
 use crate::file::{IoDst, IoSrc, get_file_like};
 
-pub struct Socket(pub SocketInner);
+pub struct Socket(pub SocketInner, u32);
+
+impl Socket {
+    pub fn new(inner: SocketInner, ip_domain: u32) -> Self {
+        Self(inner, ip_domain)
+    }
+
+    pub fn ip_domain(&self) -> u32 {
+        self.1
+    }
+}
 
 impl Deref for Socket {
     type Target = SocketInner;
