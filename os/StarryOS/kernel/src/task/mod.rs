@@ -222,19 +222,18 @@ impl Thread {
         self.pdeathsig.store(sig, Ordering::Relaxed);
     }
 
-    /// Get the current KCOV state for this thread.
+    /// Run a closure with a borrow of the current KCOV state for this thread.
     ///
     /// Uses `try_borrow` so that a trace call inside `set_kcov`'s
     /// `borrow_mut` does not panic when the instrumented hot path
-    /// re-enters here.
+    /// re-enters here. Avoids cloning the `Arc<SharedPages>` on every
+    /// hot-path invocation.
     #[cfg(feature = "kcov")]
-    pub fn kcov(&self) -> Option<KcovThreadState> {
-        self.kcov
-            .0
-            .try_borrow()
-            .ok()
-            .as_deref()
-            .and_then(|r| r.clone())
+    pub fn with_kcov<R>(&self, f: impl FnOnce(Option<&KcovThreadState>) -> R) -> R {
+        match self.kcov.0.try_borrow() {
+            Ok(borrow) => f(borrow.as_ref()),
+            Err(_) => f(None),
+        }
     }
 
     /// Set the KCOV state for this thread.

@@ -94,6 +94,9 @@ struct KcovFdInner {
     mode: u32,
     buf_pages: Option<Arc<SharedPages>>,
     buf_entries: usize,
+    /// TID of the thread that enabled kcov on this fd.
+    /// Linux stores `kcov->t = current` and verifies on DISABLE.
+    tracer_tid: Option<u64>,
 }
 
 impl KcovFdState {
@@ -104,6 +107,7 @@ impl KcovFdState {
                 mode: KCOV_MODE_DISABLED,
                 buf_pages: None,
                 buf_entries: 0,
+                tracer_tid: None,
             }),
         }
     }
@@ -163,12 +167,13 @@ impl KcovFdState {
                 // Check thread is not already tracing with another fd instance.
                 // Linux: a thread can have at most one kcov instance enabled.
                 if let Some(thr) = task.try_as_thread() {
-                    if thr.kcov().is_some() {
+                    if thr.with_kcov(|k| k.is_some()) {
                         return Err(VfsError::ResourceBusy);
                     }
                 }
 
                 inner.mode = internal_mode;
+                inner.tracer_tid = Some(task.id().as_u64());
 
                 // Let the hot path know at least one thread is tracing.
                 unsafe {
@@ -191,7 +196,24 @@ impl KcovFdState {
             KCOV_DISABLE => {
                 let task = ax_task::current();
                 let mut inner = self.inner.lock();
+
+                // Linux returns 0 (no-op) when DISABLE is called from a
+                // non-tracing state (INIT / DISABLED).
+                if inner.mode != KCOV_MODE_TRACE_PC && inner.mode != KCOV_MODE_TRACE_CMP {
+                    if let Some(thr) = task.try_as_thread() {
+                        thr.set_kcov(None);
+                    }
+                    return Ok(0);
+                }
+
+                // Linux: verify the calling thread is the tracer.
+                // Return EINVAL if a different thread tries to disable.
+                if inner.tracer_tid != Some(task.id().as_u64()) {
+                    return Err(VfsError::InvalidInput);
+                }
+
                 inner.mode = KCOV_MODE_INIT;
+                inner.tracer_tid = None;
 
                 if let Some(thr) = task.try_as_thread() {
                     thr.set_kcov(None);
@@ -242,13 +264,17 @@ impl KcovFdState {
     pub fn on_close(&self) {
         let mut inner = self.inner.lock();
         if inner.mode == KCOV_MODE_TRACE_PC || inner.mode == KCOV_MODE_TRACE_CMP {
-            if let Some(thr) = ax_task::current().try_as_thread() {
-                thr.set_kcov(None);
+            // Only clear the thread's kcov state if this thread is the tracer.
+            if inner.tracer_tid == Some(ax_task::current().id().as_u64()) {
+                if let Some(thr) = ax_task::current().try_as_thread() {
+                    thr.set_kcov(None);
+                }
             }
         }
         inner.mode = KCOV_MODE_DISABLED;
         inner.buf_pages = None;
         inner.buf_entries = 0;
+        inner.tracer_tid = None;
     }
 }
 
@@ -330,42 +356,47 @@ extern "C" fn kcov_trace_pc_impl(pc: u64) {
     let Some(thr) = task.try_as_thread() else {
         return;
     };
-    let Some(ref kcov) = thr.kcov() else {
-        return;
-    };
-    if kcov.mode != KCOV_MODE_TRACE_PC {
-        return;
-    }
 
-    let pages = &kcov.buf_pages.phys_pages;
-    let entries = kcov.buf_entries;
-
-    // Buffer layout: page 0 starts with [count: u64 | pc[0]: u64 | ...]
-    let count_vaddr = phys_to_virt(pages[0]);
-    let count_ptr = count_vaddr.as_mut_ptr_of::<u64>();
-
-    // Read current count (userspace may be reading concurrently)
-    let idx = unsafe { core::ptr::read_volatile(count_ptr) };
-    if idx >= entries as u64 {
-        return; // buffer full
-    }
-
-    // Write PC to buffer at offset (1 + idx)
-    let target_byte_offset = (1 + idx as usize) * core::mem::size_of::<u64>();
-    let page_idx = target_byte_offset / PAGE_SIZE_4K;
-    let page_off = target_byte_offset % PAGE_SIZE_4K;
-
-    if page_idx < pages.len() {
-        let entry_vaddr = phys_to_virt(pages[page_idx]);
-        unsafe {
-            let entry_ptr = entry_vaddr.as_mut_ptr().add(page_off) as *mut u64;
-            // Linux kcov ordering: write PC first, then smp_wmb(), then
-            // publish the count.  Without the barrier a reader on another
-            // core sees the new count but stale PC data on weakly-ordered
-            // architectures (aarch64, riscv64, loongarch64).
-            core::ptr::write_volatile(count_ptr, idx + 1);
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-            core::ptr::write_volatile(entry_ptr, pc);
+    // Borrow the KCOV state through a closure to avoid cloning
+    // Arc<SharedPages> on every traced basic block.
+    thr.with_kcov(|kcov| {
+        let Some(kcov) = kcov else {
+            return;
+        };
+        if kcov.mode != KCOV_MODE_TRACE_PC {
+            return;
         }
-    }
+
+        let pages = &kcov.buf_pages.phys_pages;
+        let entries = kcov.buf_entries;
+
+        // Buffer layout: page 0 starts with [count: u64 | pc[0]: u64 | ...]
+        let count_vaddr = phys_to_virt(pages[0]);
+        let count_ptr = count_vaddr.as_mut_ptr_of::<u64>();
+
+        // Read current count (userspace may be reading concurrently)
+        let idx = unsafe { core::ptr::read_volatile(count_ptr) };
+        if idx >= entries as u64 {
+            return; // buffer full
+        }
+
+        // Write PC to buffer at offset (1 + idx)
+        let target_byte_offset = (1 + idx as usize) * core::mem::size_of::<u64>();
+        let page_idx = target_byte_offset / PAGE_SIZE_4K;
+        let page_off = target_byte_offset % PAGE_SIZE_4K;
+
+        if page_idx < pages.len() {
+            let entry_vaddr = phys_to_virt(pages[page_idx]);
+            unsafe {
+                let entry_ptr = entry_vaddr.as_mut_ptr().add(page_off) as *mut u64;
+                // Ordering: write PC first, then smp_wmb(), then publish the
+                // count.  Without the barrier a reader on another core sees
+                // the new count but stale PC data on weakly-ordered
+                // architectures (aarch64, riscv64, loongarch64).
+                core::ptr::write_volatile(entry_ptr, pc);
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                core::ptr::write_volatile(count_ptr, idx + 1);
+            }
+        }
+    });
 }

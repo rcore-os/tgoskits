@@ -23,6 +23,7 @@ test_commands = [
     "/usr/bin/test-kcov-integrity",
     "/usr/bin/test-kcov-guard",
     "/usr/bin/test-kcov-per-fd-state",
+    "/usr/bin/test-kcov-disable-thread-check",
     "/usr/bin/test-kcov-syzkaller-emulation",
     "/usr/bin/test-kcov-buffer-boundary",
 ]
