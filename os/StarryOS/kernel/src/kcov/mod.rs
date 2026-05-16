@@ -259,19 +259,23 @@ impl KcovFdState {
         }
     }
 
-    /// Called when the fd is closed.
+    /// Called when the last `File` reference to this fd is dropped.
     ///
-    /// Clears the thread's kcov reference if this instance was enabled
-    /// and the calling thread is the tracer.  A non-tracer close (e.g. a
-    /// child after fork) leaves the fd state intact so the tracer can
-    /// still DISABLE via its own reference to this file description.
-    /// Matches Linux behavior where kcov close only drops a refcount
-    /// and the task's kcov reference keeps the session alive.
+    /// The shared fd state (buf_pages, mode, tracer_tid) is always torn
+    /// down — this is the final close.  Per-thread kcov state is cleared
+    /// *only* when the calling thread is the tracer, preventing a non-
+    /// tracer final close (e.g. a child after fork that outlives the
+    /// parent) from writing to an unreachable buffer.  Matches Linux
+    /// close semantics where a task's `kcov` reference keeps coverage
+    /// alive independently of the fd's lifetime.
     pub fn on_close(&self) {
         let mut inner = self.inner.lock();
         if inner.mode == KCOV_MODE_TRACE_PC || inner.mode == KCOV_MODE_TRACE_CMP {
-            // Only the tracer may tear down an active session.
-
+            // Clear per-thread state only if the closing thread is the tracer.
+            // If a non-tracer drops the last File ref (e.g. a forked child
+            // outliving its parent), the tracer's thread still holds its own
+            // Arc<SharedPages> and will keep writing — but userspace can no
+            // longer read the buffer since the fd is gone.
             if inner.tracer_tid == Some(ax_task::current().id().as_u64())
                 && let Some(thr) = ax_task::current().try_as_thread()
             {
@@ -281,9 +285,6 @@ impl KcovFdState {
             inner.buf_pages = None;
             inner.buf_entries = 0;
             inner.tracer_tid = None;
-
-            // Non-tracer close: fd state stays intact so the tracer
-            // can still DISABLE via its own reference.
         } else {
             inner.mode = KCOV_MODE_DISABLED;
             inner.buf_pages = None;
