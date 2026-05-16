@@ -537,7 +537,7 @@ impl Device for EthernetDevice {
 
     fn register_waker(&self, waker: &Waker) {
         if let Some(irq) = self.inner.irq_num {
-            warn!("EthernetDevice: register_waker on IRQ={irq}");
+            debug!("EthernetDevice: register_waker on IRQ={irq}");
             self.inner.poll_ready.register(waker);
         } else {
             warn!(

@@ -364,7 +364,7 @@ impl Service {
 
         for (i, device) in self.router.devices.iter().enumerate() {
             if mask & (1 << i) != 0 {
-                warn!("Service::register_waker: registering on device[{i}]");
+                debug!("Service::register_waker: registering on device[{i}]");
                 device.register_waker(waker);
             }
         }
