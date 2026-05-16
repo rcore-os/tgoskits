@@ -216,7 +216,7 @@ impl SignalInfo {
         result
     }
 
-    pub fn new_user(signo: Signo, code: i32, pid: u32) -> Self {
+    pub fn new_user(signo: Signo, code: i32, pid: u32, uid: u32) -> Self {
         // FIXME: Zeroable
         let mut result: Self = unsafe { mem::zeroed() };
         result.set_signo(signo);
@@ -229,6 +229,25 @@ impl SignalInfo {
             ._sigchld
             ._pid = pid as _;
         result
+            .0
+            .__bindgen_anon_1
+            .__bindgen_anon_1
+            ._sifields
+            ._sigchld
+            ._uid = uid as _;
+        result
+    }
+
+    pub fn pid(&self) -> u32 {
+        // SAFETY: _sigchld._pid and _kill._pid share the same offset in
+        // the sifields union.
+        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1._sifields._sigchld._pid as u32 }
+    }
+
+    pub fn uid(&self) -> u32 {
+        // SAFETY: _sigchld._uid and _kill._uid share the same offset in
+        // the sifields union.
+        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1._sifields._sigchld._uid as u32 }
     }
 
     /// Construct a SignalInfo for a POSIX timer expiry.

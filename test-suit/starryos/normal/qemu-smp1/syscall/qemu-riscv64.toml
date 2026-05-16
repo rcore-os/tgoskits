@@ -25,6 +25,7 @@ test_commands = [
     "/usr/bin/test-copy-file-range",
     "/usr/bin/test-credentials",
     "/usr/bin/test-epoll-pwait-sigsetsize",
+    "/usr/bin/test-signalfd4",
     "/usr/bin/test-faccessat",
     "/usr/bin/test-fchmod",
     "/usr/bin/test-fchmodat",

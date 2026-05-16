@@ -101,10 +101,13 @@ fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
         return Ok(None);
     }
     let signo = parse_signo(signo)?;
+    let curr = current();
+    let thread = curr.as_thread();
     Ok(Some(SignalInfo::new_user(
         signo,
         code,
-        current().as_thread().proc_data.proc.pid(),
+        thread.proc_data.proc.pid(),
+        thread.cred().uid,
     )))
 }
 
