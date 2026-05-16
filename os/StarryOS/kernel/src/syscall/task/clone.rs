@@ -155,6 +155,8 @@ impl CloneArgs {
             None
         };
 
+        let needs_vfork_block = flags.contains(CloneFlags::VFORK) && stack == 0;
+
         let mut new_uctx = *uctx;
         new_uctx.prepare_clone_child_return_state();
         if stack != 0 {
@@ -275,8 +277,11 @@ impl CloneArgs {
         }
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
-        // CLONE_VFORK: wire a shared WaitQueue to the child so it can wake us.
-        if flags.contains(CloneFlags::VFORK) {
+        // Bare vfork(2) reuses the parent's user stack, so the parent must
+        // sleep until the child execs or exits. posix_spawn-style clones pass
+        // a private child stack with CLONE_VM|CLONE_VFORK and synchronize in
+        // user space; blocking here can deadlock that handshake.
+        if needs_vfork_block {
             let wq = Arc::new(WaitQueue::new());
             new_proc_data.set_vfork_done(wq);
         }
@@ -285,7 +290,7 @@ impl CloneArgs {
         add_task_to_table(&task);
 
         // Block the parent until the child exec's or exits.
-        if flags.contains(CloneFlags::VFORK) {
+        if needs_vfork_block {
             new_proc_data.wait_vfork_done();
         }
 
