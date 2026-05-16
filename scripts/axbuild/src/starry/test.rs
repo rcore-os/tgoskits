@@ -293,25 +293,11 @@ fn load_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<StarryQ
 }
 
 pub(crate) fn finalize_qemu_case_run(report: &StarryQemuRunReport) -> anyhow::Result<()> {
-    println!("{}", render_qemu_case_summary(report));
-
-    let failed = report
-        .cases
-        .iter()
-        .filter(|case| case.outcome == StarryQemuCaseOutcome::Failed)
-        .map(|case| case.name.clone())
-        .collect::<Vec<_>>();
-
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        bail!(
-            "starry {} qemu tests failed for {} case(s): {}",
-            report.group.as_str(),
-            failed.len(),
-            failed.join(", ")
-        )
-    }
+    starry_qemu_summary(report).finish_with_total_detail(
+        &starry_qemu_suite_name(report),
+        "case",
+        Some(&format_duration(report.total_duration)),
+    )
 }
 
 pub(crate) fn discover_board_test_groups(
@@ -360,44 +346,32 @@ fn discover_all_qemu_cases_with_archs_in_group(
     qemu_test::discover_all_qemu_cases_with_archs(&test_suite_dir, selected_case, "Starry", group)
 }
 
+#[cfg(test)]
 fn render_qemu_case_summary(report: &StarryQemuRunReport) -> String {
-    let passed = report
-        .cases
-        .iter()
-        .filter(|case| case.outcome == StarryQemuCaseOutcome::Passed)
-        .collect::<Vec<_>>();
-    let failed = report
-        .cases
-        .iter()
-        .filter(|case| case.outcome == StarryQemuCaseOutcome::Failed)
-        .collect::<Vec<_>>();
+    starry_qemu_summary(report).render(
+        &starry_qemu_suite_name(report),
+        "case",
+        Some(&format_duration(report.total_duration)),
+    )
+}
 
-    let mut lines = Vec::new();
-    lines.push(format!("starry {} qemu summary:", report.group));
-    lines.push(format!("passed ({}):", passed.len()));
-    if passed.is_empty() {
-        lines.push("  <none>".to_string());
-    } else {
-        lines.extend(
-            passed
-                .iter()
-                .map(|case| format!("  {} ({})", case.name, format_duration(case.duration))),
-        );
+fn starry_qemu_summary(report: &StarryQemuRunReport) -> qemu_test::QemuTestSummary {
+    let mut summary = qemu_test::QemuTestSummary::default();
+    for case in &report.cases {
+        match case.outcome {
+            StarryQemuCaseOutcome::Passed => {
+                summary.pass_with_detail(&case.name, format_duration(case.duration));
+            }
+            StarryQemuCaseOutcome::Failed => {
+                summary.fail_with_detail(&case.name, format_duration(case.duration));
+            }
+        }
     }
+    summary
+}
 
-    lines.push(format!("failed ({}):", failed.len()));
-    if failed.is_empty() {
-        lines.push("  <none>".to_string());
-    } else {
-        lines.extend(
-            failed
-                .iter()
-                .map(|case| format!("  {} ({})", case.name, format_duration(case.duration))),
-        );
-    }
-
-    lines.push(format!("total: {}", format_duration(report.total_duration)));
-    lines.join("\n")
+fn starry_qemu_suite_name(report: &StarryQemuRunReport) -> String {
+    format!("starry {}", report.group)
 }
 
 fn qemu_list_error_is_ignorable(kind: qemu_test::ListQemuCasesErrorKind) -> bool {
@@ -1785,9 +1759,10 @@ mod tests {
 
         let summary = render_qemu_case_summary(&report);
 
-        assert!(summary.contains("starry normal qemu summary:"));
-        assert!(summary.contains("smoke (0.50s)"));
-        assert!(summary.contains("usb (2.00s)"));
+        assert!(summary.contains("starry normal qemu test summary:"));
+        assert!(summary.contains("  PASS smoke (0.50s)"));
+        assert!(summary.contains("  FAIL usb (2.00s)"));
+        assert!(summary.contains("result: 1/2 case(s) passed"));
         assert!(summary.contains("total: 3.00s"));
     }
 
