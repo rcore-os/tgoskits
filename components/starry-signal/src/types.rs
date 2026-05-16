@@ -241,13 +241,27 @@ impl SignalInfo {
     pub fn pid(&self) -> u32 {
         // SAFETY: _sigchld._pid and _kill._pid share the same offset in
         // the sifields union.
-        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1._sifields._sigchld._pid as u32 }
+        unsafe {
+            self.0
+                .__bindgen_anon_1
+                .__bindgen_anon_1
+                ._sifields
+                ._sigchld
+                ._pid as u32
+        }
     }
 
     pub fn uid(&self) -> u32 {
         // SAFETY: _sigchld._uid and _kill._uid share the same offset in
         // the sifields union.
-        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1._sifields._sigchld._uid as u32 }
+        unsafe {
+            self.0
+                .__bindgen_anon_1
+                .__bindgen_anon_1
+                ._sifields
+                ._sigchld
+                ._uid as u32
+        }
     }
 
     /// Construct a SignalInfo for a POSIX timer expiry.
