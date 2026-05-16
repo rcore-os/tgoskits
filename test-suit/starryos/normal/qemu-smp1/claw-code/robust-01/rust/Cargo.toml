@@ -1,0 +1,10 @@
+[workspace]
+
+[package]
+name = "claw-robust-01"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "claw-robust-01"
+path = "src/main.rs"
