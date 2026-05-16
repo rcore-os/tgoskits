@@ -118,7 +118,12 @@ fn release_ethernet_irq_slot(slot: usize, state: &Arc<EthernetIrqState>) {
 }
 
 impl EthernetDevice {
-    const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
+    /// ARP cache lifetime.  60 s was too short: if a streaming AI response
+    /// takes longer than 60 s (cold-start server + API latency), the gateway
+    /// ARP entry expires mid-transfer, causing a burst of TCP ACKs to queue
+    /// for re-resolution and overflow the pending buffer.  300 s matches the
+    /// Linux kernel default for unicast neighbor entries.
+    const NEIGHBOR_TTL: Duration = Duration::from_secs(300);
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
     pub fn new(name: String, inner: AxNetDevice, ip: Option<Ipv4Cidr>) -> Self {
@@ -357,38 +362,56 @@ impl EthernetDevice {
                 );
             }
 
-            if self
-                .pending_packets
-                .peek()
-                .is_ok_and(|it| it.0 == &IpAddress::Ipv4(source_protocol_addr))
-            {
-                while let Ok((&next_hop, buf)) = self.pending_packets.peek() {
-                    // TODO: optimize logic such that one long-pending ARP
-                    // request does not block all other packets
+            // Drain all pending packets whose next-hop is now resolvable.
+            // The old code stopped at the first packet whose next-hop differed
+            // from the just-resolved address (head-of-line blocking): packets
+            // for other resolved hosts queued behind an unresolved host were
+            // never sent.  Scan the full queue instead: send what is
+            // resolvable, re-enqueue what is not.
+            let mut kept: Vec<(IpAddress, Vec<u8>)> = Vec::new();
+            for _ in 0..ETHERNET_MAX_PENDING_PACKETS {
+                let Ok((&next_hop, buf)) = self.pending_packets.peek() else {
+                    break;
+                };
+                let packet = buf.to_vec();
+                let _ = self.pending_packets.dequeue();
 
-                    let Some(neighbor) = self.neighbors.get(&next_hop) else {
-                        break;
-                    };
-                    if neighbor.expires_at <= now {
-                        // Neighbor is expired, we need to request ARP again
+                match self.neighbors.get(&next_hop) {
+                    Some(neighbor) if neighbor.expires_at > now => {
+                        let mut inner = self.inner.driver.lock();
+                        trace!(
+                            "{}: sending pending IPv4 packet to {} via {}",
+                            self.name, next_hop, neighbor.hardware_address
+                        );
+                        Self::send_to(
+                            &mut inner,
+                            neighbor.hardware_address,
+                            packet.len(),
+                            |b| b.copy_from_slice(&packet),
+                            EthernetProtocol::Ipv4,
+                        );
+                    }
+                    Some(_) => {
+                        // ARP entry expired while packet was queued; re-request.
                         self.neighbors.remove(&next_hop);
                         let _ = self.request_arp(next_hop, now);
-                        break;
+                        kept.push((next_hop, packet));
                     }
-
-                    let mut inner = self.inner.driver.lock();
-                    info!(
-                        "{}: sending pending IPv4 packet to {} via {}",
-                        self.name, next_hop, neighbor.hardware_address
+                    None => {
+                        kept.push((next_hop, packet));
+                    }
+                }
+            }
+            for (next_hop, packet) in kept {
+                if self.pending_packets.is_full() {
+                    warn!(
+                        "{}: pending buffer full after ARP drain, dropping packet",
+                        self.name
                     );
-                    Self::send_to(
-                        &mut inner,
-                        neighbor.hardware_address,
-                        buf.len(),
-                        |b| b.copy_from_slice(buf),
-                        EthernetProtocol::Ipv4,
-                    );
-                    let _ = self.pending_packets.dequeue();
+                    break;
+                }
+                if let Ok(dst) = self.pending_packets.enqueue(packet.len(), next_hop) {
+                    dst.copy_from_slice(&packet);
                 }
             }
         }
