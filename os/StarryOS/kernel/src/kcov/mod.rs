@@ -363,9 +363,9 @@ extern "C" fn kcov_trace_pc_impl(pc: u64) {
             // publish the count.  Without the barrier a reader on another
             // core sees the new count but stale PC data on weakly-ordered
             // architectures (aarch64, riscv64, loongarch64).
-            core::ptr::write_volatile(entry_ptr, pc);
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
             core::ptr::write_volatile(count_ptr, idx + 1);
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            core::ptr::write_volatile(entry_ptr, pc);
         }
     }
 }
