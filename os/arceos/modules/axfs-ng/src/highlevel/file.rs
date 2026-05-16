@@ -3,9 +3,12 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-#[cfg(feature = "times")]
-use core::sync::atomic::{AtomicU8, Ordering};
-use core::{num::NonZeroUsize, ops::Range, task::Context};
+use core::{
+    num::NonZeroUsize,
+    ops::Range,
+    sync::atomic::{AtomicU8, Ordering},
+    task::Context,
+};
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys};
