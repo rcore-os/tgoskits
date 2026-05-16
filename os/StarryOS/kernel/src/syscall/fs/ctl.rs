@@ -102,16 +102,20 @@ ktracepoint::define_event_trace!(
         mode: mode,
         path: {
             let mut buf = [0u8; 64];
-            let path = path.as_bytes();
-            let len = path.len().min(63);
-            buf[..len].copy_from_slice(&path[..len]);
+            let bytes = path.as_bytes();
+            let mut len = bytes.len().min(63);
+            while !path.is_char_boundary(len) {
+                len -= 1;
+            }
+            buf[..len].copy_from_slice(&bytes[..len]);
             buf[len] = 0; // null-terminate
             buf
         },
     },
     TP_ident(__entry),
     TP_printk({
-        let path = core::str::from_utf8(&__entry.path).unwrap_or("invalid utf8");
+        let nul = __entry.path.iter().position(|&b| b == 0).unwrap_or(__entry.path.len());
+        let path = core::str::from_utf8(&__entry.path[..nul]).unwrap_or("invalid utf8");
         let mode = __entry.mode;
         let mode = NodePermission::from_bits_truncate(mode);
         alloc::format!("mkdir at {path} with mode {mode:?}")

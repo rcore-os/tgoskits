@@ -186,9 +186,9 @@ pub struct SpecialFsFile<T: Send + Sync + 'static> {
 }
 
 pub trait DirectRwFsFileOps: Send + Sync + 'static {
-    /// Reads the entire content of the file.
+    /// Reads a number of bytes starting from a given offset.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
-    /// Writes data to the file, replacing its entire content.
+    /// Writes a number of bytes starting from a given offset.
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Err(VfsError::InvalidInput)
     }
@@ -304,9 +304,9 @@ impl DirectRwFsFileOps for SeqObject {
 }
 
 impl SeqObject {
-    /// Creates a new `SeqFile` instance with given file operations.
+    /// Creates a new `SeqObject` instance with given file operations.
     /// Now, we just reuse `SimpleFileOps` for simplicity, but we will likely
-    /// need a separate trait for `SeqFile` in the future when we want to support
+    /// need a separate trait for `SeqObject` in the future when we want to support
     /// more features like iterating content.
     pub fn new(ops: impl SimpleFileOps) -> Self {
         Self {

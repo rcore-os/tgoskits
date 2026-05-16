@@ -42,11 +42,17 @@ impl DirectRwFsFileOps for EventEnableObj {
         if buf.is_empty() {
             return Err(VfsError::InvalidInput);
         }
-        if buf[0] != b'0' && buf[0] != b'1' {
-            return Err(VfsError::InvalidInput);
-        }
+        let value = match core::str::from_utf8(buf)
+            .map_err(|_| VfsError::InvalidInput)?
+            .trim()
+        {
+            "0" => '0',
+            "1" => '1',
+            _ => return Err(VfsError::InvalidInput),
+        };
+
         let mut ext_tp = self.ext_tp.lock();
-        self.file.write(&mut ext_tp, buf[0] as _);
+        self.file.write(&mut ext_tp, value);
         Ok(buf.len())
     }
 }
@@ -109,7 +115,10 @@ impl DirectRwFsFileOps for TraceCmdLineSizeObj {
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         let max_record_str = core::str::from_utf8(buf).map_err(|_| VfsError::InvalidInput)?;
-        let max_record = max_record_str.parse().map_err(|_| VfsError::InvalidInput)?;
+        let max_record = max_record_str
+            .trim_ascii()
+            .parse()
+            .map_err(|_| VfsError::InvalidInput)?;
         super::TRACE_CMDLINE_CACHE.lock().set_max_record(max_record);
         Ok(buf.len())
     }
