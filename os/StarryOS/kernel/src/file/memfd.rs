@@ -156,6 +156,14 @@ impl Memfd {
     /// the unsealed fast path could escape into a write that grows
     /// the file after the seal landed.
     pub fn write_at(&self, data: &[u8], offset: u64) -> AxResult<usize> {
+        // Zero-length pwrite/pwritev succeeds unconditionally on Linux,
+        // even on a sealed memfd, and does not advance the file size.
+        // Short-circuit before any seal check (verified against
+        // memfd_create + F_ADD_SEALS(F_SEAL_WRITE / F_SEAL_GROW) on a
+        // stock host: pwrite(fd, _, 0, _) returns 0 in both cases).
+        if data.is_empty() {
+            return Ok(0);
+        }
         let f = self.inner.inner().access(FileFlags::WRITE)?;
         let _guard = self.truncate_mtx.lock();
         let seals = self.get_seals();
@@ -189,6 +197,16 @@ impl FileLike for Memfd {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+        // Zero-length write(2)/writev(2) (including pwritev2 with an
+        // empty iov, sys_splice's zero-byte output probe, and similar)
+        // succeeds unconditionally on Linux even against a sealed memfd
+        // and never advances the file. Short-circuit before any seal
+        // check so a count==0 write returns 0 rather than synthesizing
+        // EPERM. Verified on a stock host against F_SEAL_WRITE and
+        // F_SEAL_GROW.
+        if src.remaining() == 0 {
+            return Ok(0);
+        }
         // Hold `truncate_mtx` across the seal read and the write so a
         // concurrent `add_seals(F_SEAL_GROW)` cannot publish in between
         // and let an unsealed write grow the file after the seal was

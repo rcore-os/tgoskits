@@ -132,6 +132,22 @@ int main(void) {
         frc = fallocate(gfd, 0, 0, 4096);
         CHECK(frc == 0, "fallocate within current size still allowed under F_SEAL_GROW");
 
+        /* Zero-length writes succeed unconditionally on Linux under
+         * any seal, including at and past EOF — verified against
+         * memfd_create + F_ADD_SEALS(F_SEAL_GROW) on a stock host. */
+        errno = 0;
+        pwn = pwrite(gfd, buf, 0, 4096);
+        CHECK(pwn == 0 && errno == 0,
+              "zero-length pwrite at EOF returns 0 under F_SEAL_GROW");
+        errno = 0;
+        pwn = pwrite(gfd, buf, 0, 8192);
+        CHECK(pwn == 0 && errno == 0,
+              "zero-length pwrite past EOF returns 0 under F_SEAL_GROW");
+        errno = 0;
+        ssize_t zwn = write(gfd, buf, 0);
+        CHECK(zwn == 0 && errno == 0,
+              "zero-length write at EOF returns 0 under F_SEAL_GROW");
+
         close(gfd);
     }
 
@@ -152,6 +168,20 @@ int main(void) {
         void *pr = mmap(NULL, 4096, PROT_READ, MAP_SHARED, wfd, 0);
         CHECK(pr != MAP_FAILED, "mmap(PROT_READ|MAP_SHARED) still allowed under F_SEAL_WRITE");
         if (pr != MAP_FAILED) munmap(pr, 4096);
+
+        /* Zero-length write(2)/pwrite(2) under F_SEAL_WRITE must
+         * still return 0 — Linux does not synthesize EPERM for a
+         * count==0 write, even on a fully-sealed fd. */
+        char zbuf[1];
+        errno = 0;
+        ssize_t zpw = pwrite(wfd, zbuf, 0, 0);
+        CHECK(zpw == 0 && errno == 0,
+              "zero-length pwrite returns 0 under F_SEAL_WRITE");
+        errno = 0;
+        ssize_t zwn2 = write(wfd, zbuf, 0);
+        CHECK(zwn2 == 0 && errno == 0,
+              "zero-length write returns 0 under F_SEAL_WRITE");
+
         close(wfd);
     }
 
