@@ -1,0 +1,5 @@
+features = ["ax-std", "ax-std/backtrace"]
+log = "Info"
+
+[env]
+BACKTRACE = "y"

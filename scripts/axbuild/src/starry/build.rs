@@ -469,18 +469,17 @@ HELLO = "world"
                 "ax-feat/driver-sdmmc".to_string(),
                 "ax-feat/plat-dyn".to_string(),
                 "axplat-dyn/rockchip-soc".to_string(),
-                "axplat-dyn/sdmmc".to_string(),
+                "axplat-dyn/rockchip-sdhci".to_string(),
             ],
             log: LogLevel::Info,
             max_cpu_num: Some(8),
             axconfig_overrides: Vec::new(),
             plat_dyn: true,
         };
-        let features = build_info.features.clone();
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, true, &features),
+            StarryBuildInfo::build_cargo_args(&request.target, true, &[]),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -491,7 +490,11 @@ HELLO = "world"
                 .features
                 .contains(&"axplat-dyn/rockchip-soc".to_string())
         );
-        assert!(cargo.features.contains(&"axplat-dyn/sdmmc".to_string()));
+        assert!(
+            cargo
+                .features
+                .contains(&"axplat-dyn/rockchip-sdhci".to_string())
+        );
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
         assert!(
@@ -521,11 +524,10 @@ HELLO = "world"
             axconfig_overrides: Vec::new(),
             plat_dyn: true,
         };
-        let features = build_info.features.clone();
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, true, &features),
+            StarryBuildInfo::build_cargo_args(&request.target, true, &[]),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -574,11 +576,10 @@ HELLO = "world"
             uboot_config: None,
         };
         let build_info = default_starry_build_info_for_target(&request.target);
-        let features = build_info.features.clone();
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, false, &features),
+            StarryBuildInfo::build_cargo_args(&request.target, false, &[]),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
