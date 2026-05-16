@@ -209,6 +209,7 @@ impl FileLike for File {
 
     fn set_append(&self, flag: bool) -> AxResult {
         self.append.store(flag, Ordering::Release);
+        self.inner().set_flag(FileFlags::APPEND, flag);
         Ok(())
     }
 
