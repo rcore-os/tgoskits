@@ -327,29 +327,41 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
 
     let mut limit = ROBUST_LIST_LIMIT;
 
-    let end_ptr = unsafe { &raw const (*head).list };
+    let end_ptr = head.cast::<RobustList>() as *mut RobustList;
     let head = head.vm_read()?;
     let mut entry = head.list.next;
     let offset = head.futex_offset;
     let pending = head.list_op_pending;
 
     while !core::ptr::eq(entry, end_ptr) {
-        let next_entry = entry.vm_read()?.next;
+        if entry.is_null() {
+            break;
+        }
+        let Ok(node) = entry.vm_read() else {
+            debug!("robust list: failed to read entry {entry:?}");
+            break;
+        };
+        let next_entry = node.next;
         if entry != pending {
-            handle_futex_death(entry, offset)?;
+            if let Err(err) = handle_futex_death(entry, offset) {
+                debug!("robust list: failed to clean entry {entry:?}: {err:?}");
+            }
         }
         entry = next_entry;
 
         limit -= 1;
         if limit == 0 {
-            return Err(AxError::FilesystemLoop);
+            debug!("robust list: entry limit reached");
+            break;
         }
         ax_task::yield_now();
     }
 
     // Process the pending entry that was skipped in the loop
-    if !pending.is_null() {
-        handle_futex_death(pending, offset)?;
+    if !pending.is_null() && !core::ptr::eq(pending, end_ptr) {
+        if let Err(err) = handle_futex_death(pending, offset) {
+            debug!("robust list: failed to clean pending entry {pending:?}: {err:?}");
+        }
     }
 
     Ok(())
