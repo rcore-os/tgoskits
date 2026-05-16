@@ -28,6 +28,7 @@
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
 #define KCOV_ENABLE _IO('c', 100)
 #define KCOV_DISABLE _IO('c', 101)
+#define KCOV_RESET_TRACE _IO('c', 104)
 #define KCOV_TRACE_PC 0
 #define KCOV_TRACE_CMP 1
 
@@ -329,7 +330,41 @@ static void syz_worker_fork(void) {
     cover_close(&parent_cov);
 }
 
-/* §8: Multiple syzkaller-like workers (threads).
+/* §8: KCOV_RESET_TRACE ioctl (alternative reset path for read-only coverage).
+ *      Syzkaller uses this when `flag_read_only_coverage` is set, instead of
+ *      writing 0 to buf[0] directly.  Our implementation supports both paths. */
+static void syz_reset_trace_ioctl(void) {
+    cover_t cov;
+    cover_open(&cov, 4096);
+    cover_enable(&cov);
+
+    /* Generate initial coverage. */
+    burst(100);
+    cover_collect(&cov);
+    CHECK(cov.collected >= 1, "reset-trace: pre-reset coverage > 0");
+    uint64_t before = cov.collected;
+
+    /* KCOV_RESET_TRACE — the kernel zeroes buf[0] then immediately the ioctl
+     * return path (which is itself instrumented) records a few new PCs, so
+     * buf[0] will be non-zero but very small.  Linux semantics: tracing
+     * continues after reset (no DISABLE). */
+    if (ioctl(cov.fd, KCOV_RESET_TRACE, 0) != 0) {
+        printf("FATAL: KCOV_RESET_TRACE failed (errno=%d)\n", errno);
+        exit(1);
+    }
+    CHECK(cov.data[0] < 100, "reset-trace: count near 0 after RESET_TRACE (ioctl return path may add a few)");
+
+    /* Generate more coverage — should accumulate again. */
+    burst(50);
+    cover_collect(&cov);
+    CHECK(cov.collected > 100, "reset-trace: post-reset new coverage > 100");
+    printf("  INFO: RESET_TRACE cycle: %lu → 0 → %u\n", before, cov.collected);
+
+    cover_disable(&cov);
+    cover_close(&cov);
+}
+
+/* §9: Multiple syzkaller-like workers (threads).
  *      Each worker has its own kcov fd, independent coverage. */
 typedef struct {
     int id;
@@ -389,6 +424,7 @@ int main(void) {
     syz_pc_validation();
     syz_reuse_fd();
     syz_worker_fork();
+    syz_reset_trace_ioctl();
     syz_worker_threads();
 
     TEST_DONE();

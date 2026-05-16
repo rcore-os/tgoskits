@@ -38,6 +38,10 @@ pub const KCOV_INIT_TRACE: u32 = _ior(b'c', 1, core::mem::size_of::<u64>());
 pub const KCOV_ENABLE: u32 = _io(b'c', 100);
 /// Disable coverage collection for the current thread.
 pub const KCOV_DISABLE: u32 = _io(b'c', 101);
+/// Reset coverage collection (zero the count word). Used by syzkaller in
+/// read-only coverage mode; for writable buffers userspace writes 0 to
+/// `buf[0]` directly.
+pub const KCOV_RESET_TRACE: u32 = _io(b'c', 104);
 
 // Userspace ABI constants (ioctl arguments — match Linux uapi).
 /// Trace program counters (PCs).
@@ -70,8 +74,9 @@ pub const KCOV_MAX_ENTRIES: usize = 1024 * 1024;
 pub struct KcovThreadState {
     /// Physical pages backing the shared coverage buffer.
     pub buf_pages: Arc<SharedPages>,
-    /// Total number of u64 entries in the buffer, including the leading count word.
-    /// Maximum PCs = buf_entries - 1. Matches Linux `kcov->size`.
+    /// Maximum count value: when `buf[0]` reaches this, the buffer is full.
+    /// Equals `cover_size - 1` (i.e. the number of available PC slots).
+    /// Matches Linux `kcov->size` semantics where the count stops at `size - 1`.
     pub buf_entries: usize,
     /// Current trace mode (`KCOV_TRACE_PC`, etc.).
     pub mode: u32,
@@ -192,6 +197,24 @@ impl KcovFdState {
                     thr.set_kcov(None);
                 }
 
+                Ok(0)
+            }
+
+            KCOV_RESET_TRACE => {
+                // Linux: arg must be 0, and the fd must be actively tracing.
+                if arg != 0 {
+                    return Err(VfsError::InvalidInput);
+                }
+                let inner = self.inner.lock();
+                if inner.mode != KCOV_MODE_TRACE_PC && inner.mode != KCOV_MODE_TRACE_CMP {
+                    return Err(VfsError::InvalidInput);
+                }
+                if let Some(ref pages) = inner.buf_pages {
+                    let count_vaddr = phys_to_virt(pages.phys_pages[0]);
+                    unsafe {
+                        core::ptr::write_volatile(count_vaddr.as_mut_ptr_of::<u64>(), 0u64);
+                    }
+                }
                 Ok(0)
             }
 
@@ -336,9 +359,13 @@ extern "C" fn kcov_trace_pc_impl(pc: u64) {
         let entry_vaddr = phys_to_virt(pages[page_idx]);
         unsafe {
             let entry_ptr = entry_vaddr.as_mut_ptr().add(page_off) as *mut u64;
-            // Publish: increment count so userspace sees the new entry
-            core::ptr::write_volatile(count_ptr, idx + 1);
+            // Linux kcov ordering: write PC first, then smp_wmb(), then
+            // publish the count.  Without the barrier a reader on another
+            // core sees the new count but stale PC data on weakly-ordered
+            // architectures (aarch64, riscv64, loongarch64).
             core::ptr::write_volatile(entry_ptr, pc);
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            core::ptr::write_volatile(count_ptr, idx + 1);
         }
     }
 }
