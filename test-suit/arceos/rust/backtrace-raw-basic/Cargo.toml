@@ -9,5 +9,5 @@ ax-std = ["dep:ax-std"]
 panic-path = []
 
 [dependencies]
-ax-std = { workspace = true, optional = true, features = ["paging"] }
+ax-std = { workspace = true, optional = true, features = ["paging", "backtrace"] }
 axbacktrace = { workspace = true }
