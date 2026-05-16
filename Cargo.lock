@@ -832,7 +832,7 @@ version = "0.3.12"
 
 [[package]]
 name = "ax-driver-block"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "ax-driver-base",
  "bcm2835-sdhci",

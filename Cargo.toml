@@ -268,7 +268,7 @@ ax-display = { version = "0.5.12", path = "os/arceos/modules/axdisplay" }
 ax-dma = { version = "0.5.13", path = "os/arceos/modules/axdma" }
 ax-driver = { version = "0.5.14", path = "os/arceos/modules/axdriver" }
 ax-driver-base = { version = "0.3.12", path = "components/axdriver_crates/axdriver_base" }
-ax-driver-block = { version = "0.3.12", path = "components/axdriver_crates/axdriver_block" }
+ax-driver-block = { version = "0.3.13", path = "components/axdriver_crates/axdriver_block" }
 ax-driver-display = { version = "0.3.12", path = "components/axdriver_crates/axdriver_display" }
 ax-driver-input = { version = "0.3.13", path = "components/axdriver_crates/axdriver_input" }
 ax-driver-net = { version = "0.3.12", path = "components/axdriver_crates/axdriver_net" }
