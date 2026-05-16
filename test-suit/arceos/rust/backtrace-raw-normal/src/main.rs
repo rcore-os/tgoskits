@@ -25,18 +25,21 @@ use std::println;
 fn c() {
     let bt = Backtrace::capture();
     println!("{}", bt.report("raw"));
+    core::hint::black_box(());
 }
 
 #[inline(never)]
 fn b() {
     let f: fn() = c;
     f();
+    core::hint::black_box(());
 }
 
 #[inline(never)]
 fn a() {
     let f: fn() = b;
     f();
+    core::hint::black_box(());
 }
 
 #[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
