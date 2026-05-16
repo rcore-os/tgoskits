@@ -109,8 +109,9 @@ impl Iterator for FrameIter<'_> {
     type Item = (crate::Frame, addr2line::Frame<'static, DwarfReader>);
 
     fn next(&mut self) -> Option<Self::Item> {
+        let ptr = CONTEXT.0.get();
         // SAFETY: see `ContextCell` — read-only after `init()`.
-        let ctx = unsafe { &*CONTEXT.0.get() }.as_ref()?;
+        let ctx = unsafe { &*ptr }.as_ref()?;
 
         loop {
             if let Some((raw, inner)) = &mut self.inner
