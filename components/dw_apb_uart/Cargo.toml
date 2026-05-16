@@ -20,4 +20,4 @@ sg2002 = []
 rk3588 = []
 
 [dependencies]
-tock-registers = "0.8"
+tock-registers = "0.10"

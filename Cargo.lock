@@ -783,7 +783,7 @@ dependencies = [
  "bcm2835-sdhci",
  "gpt_disk_io",
  "log",
- "sg200x-bsp 0.5.4",
+ "sg200x-bsp",
  "simple-ahci",
  "simple-sdmmc",
 ]
@@ -3321,7 +3321,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 name = "dw_apb_uart"
 version = "0.1.0"
 dependencies = [
- "tock-registers 0.8.1",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]
@@ -7152,16 +7152,6 @@ dependencies = [
 
 [[package]]
 name = "sg200x-bsp"
-version = "0.4.0"
-source = "git+https://github.com/pengzechen/sg200x-bsp.git?branch=main#d0e6103c32e134b2146ce3825cf2c41c91d22343"
-dependencies = [
- "bit-struct",
- "log",
- "tock-registers 0.9.0",
-]
-
-[[package]]
-name = "sg200x-bsp"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "286c45286f82b7c44def11337f86aa34245f9400ed4d5f8bc901a0c3efdb4388"
@@ -7603,7 +7593,7 @@ dependencies = [
  "riscv 0.16.0",
  "scope-local",
  "sg2002-tpu",
- "sg200x-bsp 0.4.0",
+ "sg200x-bsp",
  "slab",
  "spin 0.10.0",
  "starry-process",

@@ -29,7 +29,7 @@ pub mod tty;
 #[cfg(feature = "sg2002")]
 mod cvi_camera;
 #[cfg(feature = "sg2002")]
-mod devmem;
+mod pinmux;
 #[cfg(feature = "sg2002")]
 pub(super) mod pwm;
 #[cfg(feature = "sg2002")]
@@ -429,12 +429,12 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             ),
         );
         root.add(
-            "devmem",
+            "pinmux",
             Device::new(
                 fs.clone(),
                 NodeType::CharacterDevice,
                 DeviceId::new(1, 1),
-                Arc::new(devmem::DevMem),
+                Arc::new(pinmux::PinmuxDev),
             ),
         );
     }
