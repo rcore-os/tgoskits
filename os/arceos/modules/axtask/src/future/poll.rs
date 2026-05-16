@@ -23,10 +23,16 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
     super::interruptible(poll_fn(move |cx| match f() {
         Ok(value) => Poll::Ready(Ok(value)),
         Err(AxError::WouldBlock) => {
+            // Register the waker unconditionally before returning WouldBlock.
+            // A non-blocking connect(2) returns EINPROGRESS; the caller then
+            // uses epoll to wait for EPOLLOUT (connection complete).  If we
+            // skip registration for non-blocking callers, the TCP stack has
+            // no waker to call when the handshake finishes, so epoll never
+            // receives the EPOLLOUT notification and the connection stalls.
+            pollable.register(cx, events);
             if non_blocking {
                 return Poll::Ready(Err(AxError::WouldBlock));
             }
-            pollable.register(cx, events);
             match f() {
                 Ok(value) => Poll::Ready(Ok(value)),
                 Err(AxError::WouldBlock) => Poll::Pending,

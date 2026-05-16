@@ -13,17 +13,27 @@ impl Ext4FileSystem {
 
         trace!("alloc_blocks: request count={count} (will scan groups for free space)");
 
-        for (idx, desc) in self.group_descs.iter().enumerate() {
+        for idx in 0..self.group_descs.len() {
             let group_idx =
                 BGIndex::new(u32::try_from(idx).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?);
-            let free = desc.free_blocks_count();
+            // Extract all fields we need from the immutable descriptor in a
+            // scoped block so the shared borrow of group_descs ends before we
+            // call get_group_desc_mut() further below.
+            let (free, bitmap_block, is_bitmap_uninit, bitmap_csum) = {
+                let desc = &self.group_descs[idx];
+                (
+                    desc.free_blocks_count(),
+                    AbsoluteBN::new(desc.block_bitmap()),
+                    desc.is_block_bitmap_uninit(),
+                    desc.block_bitmap_csum(),
+                )
+            };
 
             trace!("alloc_blocks: inspect group={group_idx} free_blocks={free} need={count}");
             if free < count {
                 continue;
             }
 
-            let bitmap_block = AbsoluteBN::new(desc.block_bitmap());
             let cache_key = CacheKey::new_block(group_idx);
             let mut alloc_res: Result<BlockAlloc, Ext4Error> = Err(Ext4Error::no_space());
 
@@ -32,15 +42,14 @@ impl Ext4FileSystem {
                  contiguous allocation of {count} blocks"
             );
 
-            if ext4_superblock_has_metadata_csum(&self.superblock) && !desc.is_block_bitmap_uninit()
-            {
+            if ext4_superblock_has_metadata_csum(&self.superblock) && !is_bitmap_uninit {
                 // Validate the current bitmap contents before mutating them so
                 // checksum-protected filesystems fail fast on corruption.
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
-                let stored = desc.block_bitmap_csum();
+                let stored = bitmap_csum;
                 if expected != stored {
                     error!(
                         "alloc_blocks: block bitmap checksum mismatch group={group_idx} \
@@ -73,7 +82,22 @@ impl Ext4FileSystem {
                 desc_mut.update_checksum(&sb, group_idx.raw(), Some(&updated_data), None);
             }
 
-            let alloc = alloc_res?;
+            // Check the allocation result *before* doing any mutable descriptor
+            // work. If the bitmap had no free block despite the descriptor claiming
+            // otherwise, the group is stale/inconsistent (e.g. dirty unmount with
+            // lazy initialisation). Skip to the next group instead of failing
+            // immediately so that groups with consistent bitmaps are still tried.
+            let alloc = match alloc_res {
+                Ok(a) => a,
+                Err(e) if e.code == Errno::ENOSPC => {
+                    warn!(
+                        "alloc_blocks: group={group_idx} descriptor claims {free} free blocks but \
+                         bitmap has none — descriptor/bitmap inconsistency, skipping group"
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
 
             if let Some(desc_mut) = self.get_group_desc_mut(group_idx) {
                 let before = desc_mut.free_blocks_count();
