@@ -244,16 +244,7 @@ impl SocketOps for RawSocket {
         let remote = self.remote_address(&options)?;
         let local = self.local_address_for(remote);
         let payload_len = src.remaining();
-
-        if self.ip_version == IpVersion::Ipv4 && is_loopback_address(remote) {
-            let mut packet = vec![0; payload_len];
-            let written = src.read(&mut packet)?;
-            packet.truncate(written);
-            if let Some(reply) = build_loopback_icmp_reply(&packet) {
-                *self.loopback_rx.lock() = Some((local, reply));
-            }
-            return Ok(written);
-        }
+        let loopback_ipv4 = self.ip_version == IpVersion::Ipv4 && is_loopback_address(remote);
 
         self.general.send_poller(self, || {
             poll_interfaces();
@@ -344,6 +335,12 @@ impl SocketOps for RawSocket {
                     };
                     Icmpv6Packet::new_unchecked(&mut buf[header_len..])
                         .fill_checksum(&src_addr, &dst_addr);
+                }
+                if let Some(reply) = loopback_ipv4
+                    .then(|| build_loopback_icmp_reply(&buf[header_len..header_len + written]))
+                    .flatten()
+                {
+                    *self.loopback_rx.lock() = Some((local, reply));
                 }
                 Ok(written)
             })
