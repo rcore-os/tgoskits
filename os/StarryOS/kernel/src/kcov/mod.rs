@@ -56,7 +56,11 @@ pub const KCOV_MODE_TRACE_PC: u32 = 2;
 pub const KCOV_MODE_TRACE_CMP: u32 = 3;
 
 /// Maximum number of coverage entries in the buffer.
-pub const KCOV_MAX_ENTRIES: usize = 64 * 1024;
+///
+/// Must be at least 512K (syzkaller's default `kCoverSize`). The Linux
+/// kernel defines `KCOV_MAX_ENTRIES = 1 << 24` on 64-bit; 1M gives us
+/// an 8 MB buffer ceiling with headroom for fuzzing workloads.
+pub const KCOV_MAX_ENTRIES: usize = 1024 * 1024;
 
 // ---- Types ----
 
