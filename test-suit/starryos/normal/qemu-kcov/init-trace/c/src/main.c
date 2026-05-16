@@ -7,7 +7,7 @@
 #include <unistd.h>
 
 #define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
-#define KCOV_MAX_ENTRIES 65536
+#define KCOV_MAX_ENTRIES (1024 * 1024)
 
 int main(void) {
     TEST_START("KCOV §2: INIT_TRACE size bounds and repeat");
