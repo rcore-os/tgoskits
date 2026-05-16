@@ -117,7 +117,7 @@ impl KcovFdState {
         match cmd {
             KCOV_INIT_TRACE => {
                 let cover_size = arg;
-                if cover_size < 2 || cover_size > KCOV_MAX_ENTRIES {
+                if !(2..=KCOV_MAX_ENTRIES).contains(&cover_size) {
                     return Err(VfsError::InvalidInput);
                 }
 
@@ -166,10 +166,10 @@ impl KcovFdState {
 
                 // Check thread is not already tracing with another fd instance.
                 // Linux: a thread can have at most one kcov instance enabled.
-                if let Some(thr) = task.try_as_thread() {
-                    if thr.with_kcov(|k| k.is_some()) {
-                        return Err(VfsError::ResourceBusy);
-                    }
+                if let Some(thr) = task.try_as_thread()
+                    && thr.with_kcov(|k| k.is_some())
+                {
+                    return Err(VfsError::ResourceBusy);
                 }
 
                 inner.mode = internal_mode;
@@ -271,15 +271,17 @@ impl KcovFdState {
         let mut inner = self.inner.lock();
         if inner.mode == KCOV_MODE_TRACE_PC || inner.mode == KCOV_MODE_TRACE_CMP {
             // Only the tracer may tear down an active session.
-            if inner.tracer_tid == Some(ax_task::current().id().as_u64()) {
-                if let Some(thr) = ax_task::current().try_as_thread() {
-                    thr.set_kcov(None);
-                }
-                inner.mode = KCOV_MODE_INIT;
-                inner.buf_pages = None;
-                inner.buf_entries = 0;
-                inner.tracer_tid = None;
+
+            if inner.tracer_tid == Some(ax_task::current().id().as_u64())
+                && let Some(thr) = ax_task::current().try_as_thread()
+            {
+                thr.set_kcov(None);
             }
+            inner.mode = KCOV_MODE_INIT;
+            inner.buf_pages = None;
+            inner.buf_entries = 0;
+            inner.tracer_tid = None;
+
             // Non-tracer close: fd state stays intact so the tracer
             // can still DISABLE via its own reference.
         } else {
