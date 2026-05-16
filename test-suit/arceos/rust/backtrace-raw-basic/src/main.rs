@@ -28,7 +28,8 @@ fn panic_path() {
 }
 
 fn c() {
-    println!("{}", Backtrace::report("raw"));
+    let bt = Backtrace::capture();
+    println!("{}", bt.report("raw"));
 }
 
 fn b() {

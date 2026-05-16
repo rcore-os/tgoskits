@@ -22,7 +22,8 @@ use axbacktrace::Backtrace;
 use std::println;
 
 fn c() {
-    println!("{}", Backtrace::report("raw"));
+    let bt = Backtrace::capture();
+    println!("{}", bt.report("raw"));
 }
 
 fn b() {
