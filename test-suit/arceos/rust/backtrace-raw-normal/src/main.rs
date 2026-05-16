@@ -21,17 +21,22 @@ extern crate ax_std as std;
 use axbacktrace::Backtrace;
 use std::println;
 
+#[inline(never)]
 fn c() {
     let bt = Backtrace::capture();
     println!("{}", bt.report("raw"));
 }
 
+#[inline(never)]
 fn b() {
-    c()
+    let f: fn() = c;
+    f();
 }
 
+#[inline(never)]
 fn a() {
-    b()
+    let f: fn() = b;
+    f();
 }
 
 #[cfg_attr(feature = "ax-std", unsafe(no_mangle))]

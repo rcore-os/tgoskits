@@ -23,21 +23,27 @@ use std::println;
 
 fn panic_path() {
     println!("triggering panic to exercise panic backtrace path...");
-    a();
+    let f: fn() = a;
+    f();
     panic!("backtrace panic-path smoke test");
 }
 
+#[inline(never)]
 fn c() {
     let bt = Backtrace::capture();
     println!("{}", bt.report("raw"));
 }
 
+#[inline(never)]
 fn b() {
-    c()
+    let f: fn() = c;
+    f();
 }
 
+#[inline(never)]
 fn a() {
-    b()
+    let f: fn() = b;
+    f();
 }
 
 #[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
