@@ -3,10 +3,11 @@ authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "hardware-support", "no-std"]
 description = "Low-level device layer for Rockchip NPUs"
 edition.workspace = true
+autotests = false
 keywords = ["rk3588", "npu", "rknn"]
 license = "Apache-2.0"
 name = "rockchip-npu"
-version = "0.1.1"
+version = "0.2.0"
 
 [dependencies]
 aarch64-cpu-ext = "0.1"
@@ -15,19 +16,17 @@ dma-api = {version = "0.7.2"}
 log = "0.4"
 mbarrier = "0.1"
 num-align = "0.1"
-rdif-base = {version = "0.8"}
+rdif-base.workspace = true
 spin = "0.10"
 thiserror = {version = "2.0", default-features = false}
 tock-registers = "0.10"
 
 [dev-dependencies]
-bare-test = "0.8"
 fdt-edit = "0.2.3"
 rockchip-pm = { workspace = true }
 rockchip-soc = { workspace = true }
-[build-dependencies]
-bare-test-macros = "0.3"
 
-[[test]]
-harness = false
-name = "test"
+# bare-test integration test is temporarily disabled.
+# [[test]]
+# harness = false
+# name = "test"

@@ -1,0 +1,33 @@
+[package]
+name = "pcie"
+version = "0.6.1"
+edition.workspace = true
+autotests = false
+authors = ["周睿 <zrufo747@outlook.com>"]
+repository.workspace = true
+license = "MIT"
+description = "A simple PCIE driver for enumerating devices."
+keywords = ["os", "pci", "pcie", "driver"]
+categories = ["embedded", "no-std"]
+
+
+[dependencies]
+log = "0.4"
+bit_field = "0.10"
+bitflags = "2"
+pci_types = "0.10"
+mmio-api.workspace = true
+thiserror = { version = "2", default-features = false }
+
+rdif-pcie = { workspace = true }
+
+[dev-dependencies]
+fdt-edit.workspace = true
+
+[lib]
+test = false
+
+# bare-test integration test is temporarily disabled.
+# [[test]]
+# name = "test"
+# harness = false

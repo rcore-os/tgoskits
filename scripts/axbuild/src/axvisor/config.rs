@@ -107,7 +107,7 @@ vm_configs = []
         assert_eq!(
             path,
             root.path()
-                .join("target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
+                .join("tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
         );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -118,7 +118,7 @@ vm_configs = []
         assert_eq!(
             snapshot.config,
             Some(PathBuf::from(
-                "target/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
+                "tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
             ))
         );
         assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));

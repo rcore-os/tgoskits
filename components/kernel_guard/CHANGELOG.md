@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10](https://github.com/rcore-os/tgoskits/compare/ax-kernel-guard-v0.3.9...ax-kernel-guard-v0.3.10) - 2026-05-15
+
+### Other
+
+- release ([#641](https://github.com/rcore-os/tgoskits/pull/641))
+
 ## [0.3.8](https://github.com/rcore-os/tgoskits/compare/ax-kernel-guard-v0.3.7...ax-kernel-guard-v0.3.8) - 2026-04-27
 
 ### Other

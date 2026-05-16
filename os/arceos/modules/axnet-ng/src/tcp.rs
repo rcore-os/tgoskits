@@ -1,7 +1,7 @@
 use alloc::{vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
-    sync::atomic::{AtomicBool, AtomicI32, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
     task::Context,
 };
 
@@ -36,6 +36,14 @@ pub(crate) fn new_tcp_socket() -> smol::Socket<'static> {
     )
 }
 
+const TCP_KEEPIDLE_DEFAULT_SECS: u32 = 7200;
+const TCP_KEEPINTVL_DEFAULT_SECS: u32 = 75;
+const TCP_KEEPCNT_DEFAULT: u32 = 9;
+const TCP_USER_TIMEOUT_DEFAULT_MS: u32 = 0;
+const TCP_KEEPIDLE_MAX_SECS: u32 = 32767;
+const TCP_KEEPINTVL_MAX_SECS: u32 = 32767;
+const TCP_KEEPCNT_MAX: u32 = 127;
+
 /// A TCP socket that provides POSIX-like APIs.
 pub struct TcpSocket {
     state: StateLock,
@@ -45,6 +53,10 @@ pub struct TcpSocket {
 
     general: GeneralOptions,
     pending_error: AtomicI32,
+    keep_idle_secs: AtomicU32,
+    keep_interval_secs: AtomicU32,
+    keep_count: AtomicU32,
+    user_timeout_millis: AtomicU32,
     rx_closed: AtomicBool,
     poll_rx_closed: PollSet,
 }
@@ -62,6 +74,10 @@ impl TcpSocket {
 
             general: GeneralOptions::new(),
             pending_error: AtomicI32::new(0),
+            keep_idle_secs: AtomicU32::new(TCP_KEEPIDLE_DEFAULT_SECS),
+            keep_interval_secs: AtomicU32::new(TCP_KEEPINTVL_DEFAULT_SECS),
+            keep_count: AtomicU32::new(TCP_KEEPCNT_DEFAULT),
+            user_timeout_millis: AtomicU32::new(TCP_USER_TIMEOUT_DEFAULT_MS),
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
         }
@@ -77,6 +93,10 @@ impl TcpSocket {
 
             general: GeneralOptions::new(),
             pending_error: AtomicI32::new(0),
+            keep_idle_secs: AtomicU32::new(TCP_KEEPIDLE_DEFAULT_SECS),
+            keep_interval_secs: AtomicU32::new(TCP_KEEPINTVL_DEFAULT_SECS),
+            keep_count: AtomicU32::new(TCP_KEEPCNT_DEFAULT),
+            user_timeout_millis: AtomicU32::new(TCP_USER_TIMEOUT_DEFAULT_MS),
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
         };
@@ -108,6 +128,10 @@ impl TcpSocket {
 
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
+    }
+
+    fn keep_alive_interval(&self) -> Duration {
+        Duration::from_secs(self.keep_idle_secs.load(Ordering::Relaxed) as u64)
     }
 
     fn bound_endpoint(&self) -> AxResult<IpListenEndpoint> {
@@ -215,6 +239,18 @@ impl Configurable for TcpSocket {
                 // TODO(mivik): get actual MSS
                 **max_segment = 1460;
             }
+            O::TcpKeepIdle(keep_idle) => {
+                **keep_idle = self.keep_idle_secs.load(Ordering::Relaxed);
+            }
+            O::TcpKeepInterval(keep_interval) => {
+                **keep_interval = self.keep_interval_secs.load(Ordering::Relaxed);
+            }
+            O::TcpKeepCount(keep_count) => {
+                **keep_count = self.keep_count.load(Ordering::Relaxed);
+            }
+            O::TcpUserTimeout(user_timeout) => {
+                **user_timeout = self.user_timeout_millis.load(Ordering::Relaxed);
+            }
             O::SendBuffer(size) => {
                 **size = TCP_TX_BUF_LEN;
             }
@@ -243,9 +279,39 @@ impl Configurable for TcpSocket {
                 });
             }
             O::KeepAlive(keep_alive) => {
+                let interval = self.keep_alive_interval();
                 self.with_smol_socket(|socket| {
-                    socket.set_keep_alive(keep_alive.then(|| Duration::from_secs(75)));
+                    socket.set_keep_alive(keep_alive.then_some(interval));
                 });
+            }
+            O::TcpKeepIdle(keep_idle) => {
+                if *keep_idle == 0 || *keep_idle > TCP_KEEPIDLE_MAX_SECS {
+                    return Err(AxError::InvalidInput);
+                }
+                self.keep_idle_secs.store(*keep_idle, Ordering::Relaxed);
+                let interval = Duration::from_secs(*keep_idle as u64);
+                self.with_smol_socket(|socket| {
+                    if socket.keep_alive().is_some() {
+                        socket.set_keep_alive(Some(interval));
+                    }
+                });
+            }
+            O::TcpKeepInterval(keep_interval) => {
+                if *keep_interval == 0 || *keep_interval > TCP_KEEPINTVL_MAX_SECS {
+                    return Err(AxError::InvalidInput);
+                }
+                self.keep_interval_secs
+                    .store(*keep_interval, Ordering::Relaxed);
+            }
+            O::TcpKeepCount(keep_count) => {
+                if *keep_count == 0 || *keep_count > TCP_KEEPCNT_MAX {
+                    return Err(AxError::InvalidInput);
+                }
+                self.keep_count.store(*keep_count, Ordering::Relaxed);
+            }
+            O::TcpUserTimeout(user_timeout) => {
+                self.user_timeout_millis
+                    .store(*user_timeout, Ordering::Relaxed);
             }
             _ => return Ok(false),
         }
@@ -263,11 +329,8 @@ impl SocketOps for TcpSocket {
                 if local_addr.port() == 0 {
                     local_addr.set_port(get_ephemeral_port()?);
                 }
-                if !self.general.reuse_address() {
-                    SOCKET_SET.bind_check(local_addr.ip().into(), local_addr.port())?;
-                    if !LISTEN_TABLE.can_listen(local_addr.port()) {
-                        return Err(AxError::AddrInUse);
-                    }
+                if !self.general.reuse_address() && !LISTEN_TABLE.can_listen(local_addr.port()) {
+                    return Err(AxError::AddrInUse);
                 }
 
                 let endpoint = IpListenEndpoint {
@@ -292,69 +355,7 @@ impl SocketOps for TcpSocket {
 
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
         let remote_addr = remote_addr.into_ip()?;
-        self.state
-            .lock(State::Idle)
-            .map_err(|state| {
-                if state == State::Connecting {
-                    AxError::InProgress
-                } else {
-                    // TODO(mivik): error code
-                    ax_err_type!(AlreadyConnected)
-                }
-            })?
-            .transit(State::Connecting, || {
-                self.clear_pending_error();
-                // TODO: check remote addr unreachable
-                // let (bound_endpoint, remote_endpoint) = self.get_endpoint_pair(remote_addr)?;
-                let remote_endpoint = IpEndpoint::from(remote_addr);
-                let mut bound_endpoint = *self.bound_endpoint.lock();
-                if bound_endpoint.addr.is_none() {
-                    bound_endpoint.addr =
-                        Some(get_service().get_source_address(&remote_endpoint.addr));
-                }
-                if bound_endpoint.port == 0 {
-                    bound_endpoint.port = get_ephemeral_port()?;
-                }
-                info!(
-                    "TCP connection from {} to {}",
-                    bound_endpoint, remote_endpoint
-                );
-                let register_bound = !self.bound_registered.load(Ordering::Acquire);
-                if register_bound {
-                    register_tcp_bound(bound_endpoint)?;
-                }
-
-                let result = {
-                    let mut service = get_service();
-                    let context = service.iface.context();
-                    self.with_smol_socket(|socket| {
-                        socket
-                            .connect(context, remote_endpoint, bound_endpoint)
-                            .map_err(|e| match e {
-                                smol::ConnectError::InvalidState => {
-                                    ax_err_type!(AlreadyConnected)
-                                }
-                                smol::ConnectError::Unaddressable => {
-                                    ax_err_type!(ConnectionRefused, "unaddressable")
-                                }
-                            })?;
-                        Ok::<(), AxError>(())
-                    })
-                };
-                if let Err(err) = result {
-                    if register_bound {
-                        unregister_tcp_bound(bound_endpoint);
-                    }
-                    return Err(err);
-                }
-                *self.bound_endpoint.lock() = bound_endpoint;
-                if register_bound {
-                    self.bound_registered.store(true, Ordering::Release);
-                }
-                self.general
-                    .set_device_mask(get_service().device_mask_for(&bound_endpoint));
-                Ok(())
-            })?;
+        self.start_connect(remote_addr)?;
 
         // Hack: let the server listen
         ax_task::yield_now();
@@ -614,6 +615,73 @@ fn socket_bound_endpoint(socket: &smol::Socket<'_>) -> IpListenEndpoint {
 }
 
 impl TcpSocket {
+    fn start_connect(&self, remote_addr: SocketAddr) -> AxResult {
+        self.state
+            .lock(State::Idle)
+            .map_err(|state| {
+                if state == State::Connecting {
+                    AxError::InProgress
+                } else {
+                    // TODO(mivik): error code
+                    ax_err_type!(AlreadyConnected)
+                }
+            })?
+            .transit(State::Connecting, || {
+                self.clear_pending_error();
+                // TODO: check remote addr unreachable
+                // let (bound_endpoint, remote_endpoint) = self.get_endpoint_pair(remote_addr)?;
+                let remote_endpoint = IpEndpoint::from(remote_addr);
+                let mut bound_endpoint = *self.bound_endpoint.lock();
+                if bound_endpoint.addr.is_none() {
+                    bound_endpoint.addr =
+                        Some(get_service().get_source_address(&remote_endpoint.addr));
+                }
+                if bound_endpoint.port == 0 {
+                    bound_endpoint.port = get_ephemeral_port()?;
+                }
+                info!(
+                    "TCP connection from {} to {}",
+                    bound_endpoint, remote_endpoint
+                );
+                let register_bound = !self.bound_registered.load(Ordering::Acquire);
+                if register_bound {
+                    register_tcp_bound(bound_endpoint)?;
+                }
+
+                let result = {
+                    let mut service = get_service();
+                    let context = service.iface.context();
+                    self.with_smol_socket(|socket| {
+                        socket
+                            .connect(context, remote_endpoint, bound_endpoint)
+                            .map_err(|e| match e {
+                                smol::ConnectError::InvalidState => {
+                                    ax_err_type!(AlreadyConnected)
+                                }
+                                smol::ConnectError::Unaddressable => {
+                                    ax_err_type!(ConnectionRefused, "unaddressable")
+                                }
+                            })?;
+                        Ok::<(), AxError>(())
+                    })
+                };
+                if let Err(err) = result {
+                    if register_bound {
+                        unregister_tcp_bound(bound_endpoint);
+                    }
+                    return Err(err);
+                }
+                *self.bound_endpoint.lock() = bound_endpoint;
+                if register_bound {
+                    self.bound_registered.store(true, Ordering::Release);
+                }
+                self.general.set_device_mask(
+                    get_service().device_mask_for(&endpoint_from_ip_endpoint(remote_endpoint)),
+                );
+                Ok(())
+            })
+    }
+
     fn register_bound_endpoint(&self, endpoint: IpListenEndpoint) -> AxResult {
         if !self.bound_registered.load(Ordering::Acquire) {
             register_tcp_bound(endpoint)?;
@@ -695,4 +763,36 @@ fn get_ephemeral_port() -> AxResult<u16> {
         tries += 1;
     }
     ax_bail!(AddrInUse, "no available ports");
+}
+
+#[cfg(test)]
+mod tests {
+    use core::net::{IpAddr, SocketAddr};
+
+    use super::*;
+    use crate::{
+        options::{Configurable, SetSocketOption},
+        test_support::{LOCAL_ADDR, LOCAL_MASK, PEER_ADDR, PEER_MASK, init_split_route_network},
+    };
+
+    #[test]
+    fn connect_uses_peer_route_for_device_mask() {
+        init_split_route_network();
+
+        let socket = TcpSocket::new();
+        let nonblocking = true;
+        socket
+            .set_option(SetSocketOption::NonBlocking(&nonblocking))
+            .unwrap();
+        socket
+            .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
+            .unwrap();
+        assert_eq!(socket.general.device_mask(), LOCAL_MASK);
+
+        socket
+            .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
+            .unwrap();
+
+        assert_eq!(socket.general.device_mask(), PEER_MASK);
+    }
 }

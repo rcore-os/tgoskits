@@ -1,0 +1,6 @@
+args = ["-machine", "q35", "-cpu", "max", "-m", "128M", "-smp", "1", "-nographic", "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0", "-serial", "mon:stdio"]
+uefi = false
+to_bin = false
+success_regex = ["HTTP client tests run OK!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 60

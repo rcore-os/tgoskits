@@ -2,7 +2,7 @@ use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
 use ax_task::current;
-use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct};
+use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, CAP_LAST_CAP};
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
@@ -79,7 +79,7 @@ pub fn sys_capset(
 
 pub fn sys_umask(mask: u32) -> AxResult<isize> {
     let curr = current();
-    let old = curr.as_thread().proc_data.replace_umask(mask);
+    let old = curr.as_thread().proc_data.replace_umask(mask & 0o777);
     Ok(old as isize)
 }
 
@@ -135,6 +135,12 @@ pub fn sys_prctl(
         PR_GET_PDEATHSIG => {
             let sig = current().as_thread().pdeathsig() as i32;
             (arg2 as *mut i32).vm_write(sig)?;
+        }
+        PR_CAPBSET_READ => {
+            if arg2 > CAP_LAST_CAP as usize {
+                return Err(AxError::InvalidInput);
+            }
+            return Ok(1);
         }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}

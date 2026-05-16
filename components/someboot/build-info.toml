@@ -1,0 +1,35 @@
+[aarch64-unknown-none]
+rustflags = [
+    "-C",
+    "relocation-model=pic",
+    "-Clink-args=-pie",
+    "-Clink-args=-znostart-stop-gc",
+]
+cargoargs = ["-Z", "build-std=core,alloc"]
+
+[loongarch64-unknown-none]
+rustflags = [
+    "-C",
+    "relocation-model=pic",
+    "-Clink-args=-pie",
+    "-Clink-args=-znostart-stop-gc",
+]
+cargoargs = ["-Z", "build-std=core,alloc"]
+
+[x86_64-unknown-none]
+rustflags = [
+    "-C",
+    "relocation-model=pic",
+    "-Clink-args=-pie",
+    "-Clink-args=-znostart-stop-gc",
+]
+cargoargs = ["-Z", "build-std=core,alloc"]
+
+[riscv64gc-unknown-none-elf]
+rustflags = [
+    "-C",
+    "relocation-model=pic",
+    "-Clink-args=-pie",
+    "-Clink-args=-znostart-stop-gc",
+]
+cargoargs = ["-Z", "build-std=core,alloc"]

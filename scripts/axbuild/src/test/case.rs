@@ -7,17 +7,19 @@
 
 use std::{
     fs,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use anyhow::{Context, bail, ensure};
-use ostool::run::qemu::QemuConfig;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use super::build as case_builder;
+use crate::context::AppContext;
 
 const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
 const CASE_CACHE_DIR_NAME: &str = "cache";
@@ -266,13 +268,7 @@ pub(crate) fn copy_shared_rootfs_for_case(
     shared_rootfs: &Path,
     layout: &CaseAssetLayout,
 ) -> anyhow::Result<()> {
-    fs::copy(shared_rootfs, &layout.case_rootfs_copy).with_context(|| {
-        format!(
-            "failed to copy rootfs {} to {}",
-            shared_rootfs.display(),
-            layout.case_rootfs_copy.display()
-        )
-    })?;
+    copy_file_fast(shared_rootfs, &layout.case_rootfs_copy)?;
     Ok(())
 }
 
@@ -379,12 +375,7 @@ pub(crate) fn prepare_case_assets_sync(
             }
             // Save the post-injection rootfs to cache so future runs can skip
             // the overlay build and inject_overlay steps entirely.
-            if let Some(parent) = rootfs_cache_img.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create rootfs cache dir {}", parent.display())
-                })?;
-            }
-            copy_file_fast(&layout.case_rootfs_copy, &rootfs_cache_img)?;
+            save_rootfs_cache_image(&layout.case_rootfs_copy, &rootfs_cache_img)?;
             false
         };
 
@@ -468,6 +459,65 @@ fn rootfs_cache_image_path(
     Ok(layout.rootfs_cache_dir.join(format!("{key}.img")))
 }
 
+fn rootfs_cache_write_enabled() -> bool {
+    if std::env::var_os("AXBUILD_DISABLE_ROOTFS_CACHE").is_some() {
+        return false;
+    }
+    std::env::var_os("CI").is_none()
+}
+
+fn is_no_space_left(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(|e| e.raw_os_error())
+            == Some(28)
+    })
+}
+
+fn save_rootfs_cache_image(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    if !rootfs_cache_write_enabled() {
+        return Ok(());
+    }
+    let parent = dst
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("rootfs cache path has no parent: {}", dst.display()))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create rootfs cache dir {}", parent.display()))?;
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        dst.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("rootfs-cache"),
+        next_case_run_id()
+    ));
+    if let Err(err) = copy_file_fast(src, &temp) {
+        let _ = fs::remove_file(&temp);
+        if is_no_space_left(&err) {
+            return Ok(());
+        }
+        return Err(err);
+    }
+    match fs::rename(&temp, dst) {
+        Ok(()) => Ok(()),
+        Err(err) if dst.is_file() => {
+            let _ = fs::remove_file(&temp);
+            if is_valid_rootfs_cache_image(dst) {
+                Ok(())
+            } else {
+                Err(err).with_context(|| {
+                    format!("failed to install rootfs cache image {}", dst.display())
+                })
+            }
+        }
+        Err(err) => {
+            let _ = fs::remove_file(&temp);
+            Err(err)
+                .with_context(|| format!("failed to install rootfs cache image {}", dst.display()))
+        }
+    }
+}
+
 /// Returns `true` when a rootfs cache image file exists and has a plausible
 /// size.  Files smaller than 1 MiB are treated as corrupt/incomplete and will
 /// trigger a cache-miss rebuild.
@@ -523,7 +573,7 @@ fn case_asset_cache_key(
     config: &CaseAssetConfig,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
-    hash_token(&mut hasher, "v2");
+    hash_token(&mut hasher, "v3");
     hash_token(&mut hasher, arch);
     hash_token(&mut hasher, target);
     hash_token(&mut hasher, case.display_name.as_str());
@@ -545,7 +595,7 @@ fn case_asset_cache_key(
         hash_token(&mut hasher, RUST_PIPELINE_CACHE_VERSION);
     }
 
-    hash_file_metadata(&mut hasher, shared_rootfs)?;
+    hash_rootfs_fingerprint(&mut hasher, shared_rootfs)?;
     hash_tree(&mut hasher, &case.case_dir)?;
     if !case.qemu_config_path.starts_with(&case.case_dir) && case.qemu_config_path.is_file() {
         hash_file(&mut hasher, &case.qemu_config_path)?;
@@ -574,17 +624,46 @@ fn hash_tree(hasher: &mut Sha256, root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn hash_file_metadata(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
+fn hash_rootfs_fingerprint(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
     let metadata =
         fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
-    // Hash only the file size, not mtime.  mtime is unreliable in Docker
-    // volumes, NFS mounts, and many CI environments (files copied from a
-    // container or extracted from a tarball often have synthetic timestamps).
-    // The size alone is a sufficient signal that the rootfs has been replaced;
-    // a rootfs update that produces a same-size image would normally also
-    // change case source files (hashed via hash_tree) so false cache hits are
-    // very unlikely in practice.
-    hash_token(hasher, &metadata.len().to_string());
+    let len = metadata.len();
+    hash_token(hasher, &len.to_string());
+
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    hash_file_window(hasher, &mut file, 0, len)?;
+    if len > 0 {
+        hash_file_window(hasher, &mut file, len / 2, len)?;
+        hash_file_window(hasher, &mut file, len.saturating_sub(1024 * 1024), len)?;
+    }
+    Ok(())
+}
+
+fn hash_file_window(
+    hasher: &mut Sha256,
+    file: &mut fs::File,
+    offset: u64,
+    file_len: u64,
+) -> anyhow::Result<()> {
+    let read_len = (file_len.saturating_sub(offset)).min(1024 * 1024);
+    hash_token(hasher, &format!("{offset}:{read_len}"));
+    file.seek(SeekFrom::Start(offset))
+        .with_context(|| format!("failed to seek rootfs fingerprint window at offset {offset}"))?;
+
+    let mut remaining = read_len;
+    let mut buf = [0_u8; 8192];
+    while remaining > 0 {
+        let limit = remaining.min(buf.len() as u64) as usize;
+        let read = file
+            .read(&mut buf[..limit])
+            .context("failed to read rootfs fingerprint window")?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+        remaining -= read as u64;
+    }
     Ok(())
 }
 
@@ -627,6 +706,40 @@ pub(crate) fn apply_grouped_qemu_config(
     {
         qemu.fail_regex.push(config.fail_regex.clone());
     }
+}
+
+pub(crate) async fn run_qemu_with_prepared_case_assets(
+    app: &mut AppContext,
+    cargo: &Cargo,
+    qemu: QemuConfig,
+    qemu_config_path: &Path,
+    prepared_assets: PreparedCaseAssets,
+    prepare_elapsed: Duration,
+) -> anyhow::Result<()> {
+    println!(
+        "  prepare assets: {:.2?} (pipeline={}, cache={})",
+        prepare_elapsed,
+        prepared_assets.pipeline.as_str(),
+        if prepared_assets.cache_hit {
+            "hit"
+        } else {
+            "miss"
+        }
+    );
+    println!(
+        "  qemu config: {} (timeout={})",
+        qemu_config_path.display(),
+        super::qemu::qemu_timeout_summary(&qemu)
+    );
+    println!("  rootfs: {}", prepared_assets.rootfs_path.display());
+
+    let qemu_started = std::time::Instant::now();
+    let result = app.run_qemu(cargo, qemu).await;
+    println!("  qemu run: {:.2?}", qemu_started.elapsed());
+
+    remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
+    remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
+    result
 }
 
 pub(crate) fn write_grouped_case_runner_script(
@@ -720,16 +833,16 @@ fn write_executable_script(path: &Path, body: &str) -> anyhow::Result<()> {
     make_executable(path)
 }
 
-fn make_executable(path: &Path) -> anyhow::Result<()> {
+fn make_executable(_path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(path)
-            .with_context(|| format!("failed to stat {}", path.display()))?
+        let mut perms = fs::metadata(_path)
+            .with_context(|| format!("failed to stat {}", _path.display()))?
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms)
-            .with_context(|| format!("failed to chmod {}", path.display()))?;
+        fs::set_permissions(_path, perms)
+            .with_context(|| format!("failed to chmod {}", _path.display()))?;
     }
     Ok(())
 }
@@ -740,11 +853,54 @@ fn shell_single_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        env,
+        ffi::{OsStr, OsString},
+        fs,
+        sync::{LazyLock, Mutex},
+    };
 
     use tempfile::tempdir;
 
     use super::*;
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct TempEnvVar {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl TempEnvVar {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = env::var_os(key);
+            unsafe {
+                env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = env::var_os(key);
+            unsafe {
+                env::remove_var(key);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for TempEnvVar {
+        fn drop(&mut self) {
+            match self.original.as_ref() {
+                Some(value) => unsafe {
+                    env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    env::remove_var(self.key);
+                },
+            }
+        }
+    }
 
     fn fake_config() -> CaseAssetConfig {
         CaseAssetConfig {
@@ -798,7 +954,7 @@ mod tests {
     async fn prepare_case_assets_plain_case_uses_shared_rootfs_with_snapshot() {
         let root = tempdir().unwrap();
         let target_dir = root.path().join("target/x86_64-unknown-none");
-        let rootfs_dir = root.path().join("target/rootfs");
+        let rootfs_dir = root.path().join("tmp/axbuild/rootfs");
         fs::create_dir_all(&target_dir).unwrap();
         fs::create_dir_all(&rootfs_dir).unwrap();
         let shared_img = rootfs_dir.join("rootfs-x86_64-alpine.img");
@@ -844,5 +1000,36 @@ mod tests {
         assert!(content.contains("SUITE_GROUPED_TEST_BEGIN: /usr/bin/alpha"));
         assert!(content.contains("SUITE_GROUPED_TEST_FAILED: /usr/bin/beta --flag"));
         assert!(content.contains("SUITE_GROUPED_TESTS_PASSED"));
+    }
+
+    #[test]
+    fn save_rootfs_cache_image_is_noop_in_ci() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _ci = TempEnvVar::set("CI", "1");
+        let _disable = TempEnvVar::unset("AXBUILD_DISABLE_ROOTFS_CACHE");
+
+        let root = tempdir().unwrap();
+        let src = root.path().join("src.img");
+        let dst = root.path().join("cache/rootfs.img");
+        fs::write(&src, vec![0_u8; 1024 * 1024]).unwrap();
+
+        save_rootfs_cache_image(&src, &dst).unwrap();
+        assert!(!dst.exists());
+    }
+
+    #[test]
+    fn save_rootfs_cache_image_writes_when_enabled() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _ci = TempEnvVar::unset("CI");
+        let _disable = TempEnvVar::unset("AXBUILD_DISABLE_ROOTFS_CACHE");
+
+        let root = tempdir().unwrap();
+        let src = root.path().join("src.img");
+        let dst = root.path().join("cache/rootfs.img");
+        fs::write(&src, vec![1_u8; 1024 * 1024]).unwrap();
+
+        save_rootfs_cache_image(&src, &dst).unwrap();
+        assert!(dst.is_file());
+        assert_eq!(fs::read(&dst).unwrap().len(), 1024 * 1024);
     }
 }

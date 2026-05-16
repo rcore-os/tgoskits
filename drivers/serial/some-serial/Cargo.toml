@@ -1,0 +1,43 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+categories = ["embedded", "hardware-support", "no-std"]
+description = "Unified serial driver collection for embedded and bare-metal environments"
+documentation = "https://docs.rs/some-serial"
+edition.workspace = true
+autotests = false
+keywords = ["serial", "uart", "embedded", "bare-metal"]
+license = "MIT OR Apache-2.0"
+name = "some-serial"
+repository.workspace = true
+version = "0.4.1"
+
+[dependencies]
+bitflags.workspace = true
+enum_dispatch.workspace = true
+heapless.workspace = true
+log.workspace = true
+rdif-serial.workspace = true
+thiserror.workspace = true
+tock-registers.workspace = true
+
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
+x86.workspace = true
+
+[target.'cfg(target_os = "none")'.dev-dependencies]
+fdt-edit.workspace = true
+rdif-intc.workspace = true
+rdrive.workspace = true
+spin.workspace = true
+
+# bare-test integration test is temporarily disabled.
+# [[test]]
+# harness = false
+# name = "test"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["aarch64-unknown-none-softfloat", "x86_64-unknown-none"]
+
+[package.metadata.playground]
+all-features = true

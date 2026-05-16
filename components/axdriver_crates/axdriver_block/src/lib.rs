@@ -5,10 +5,16 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 use alloc::boxed::Box;
 
 #[cfg(feature = "bcm2835-sdhci")]
 pub mod bcm2835sdhci;
+
+#[cfg(feature = "cvsd")]
+pub mod cvsd;
 
 #[cfg(feature = "ramdisk")]
 pub mod ramdisk;

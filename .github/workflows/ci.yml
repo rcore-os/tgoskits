@@ -49,6 +49,7 @@ jobs:
       pull-requests: read
     outputs:
       ci_checks: ${{ steps.outputs.outputs.ci_checks }}
+      skip_duplicate_push_ci: ${{ steps.outputs.outputs.skip_duplicate_push_ci }}
       base_container_publish: ${{ steps.outputs.outputs.base_container_publish }}
       axvisor_lvz_container_publish: ${{ steps.outputs.outputs.axvisor_lvz_container_publish }}
       base_container_image: ${{ steps.outputs.outputs.base_container_image }}
@@ -98,10 +99,29 @@ jobs:
           FILTER_CI_CHECKS: ${{ steps.filter.outputs.ci_checks }}
           FILTER_BASE_CONTAINER_PUBLISH: ${{ steps.filter.outputs.base_container_publish }}
           FILTER_AXVISOR_LVZ_CONTAINER_PUBLISH: ${{ steps.filter.outputs.axvisor_lvz_container_publish }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           repository="$(printf '%s' "$GITHUB_REPOSITORY" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
           base_container_image="ghcr.io/${repository}-container"
           axvisor_lvz_container_image="ghcr.io/${repository}-container-axvisor-lvz"
+          skip_duplicate_push_ci=false
+
+          if [ "$EVENT_NAME" = "push" ] \
+            && [ "$REF_NAME" != "main" ] \
+            && [ "$REF_NAME" != "dev" ]; then
+            open_pr_count="$(
+              gh pr list \
+                --repo "$GITHUB_REPOSITORY" \
+                --head "$REF_NAME" \
+                --state open \
+                --json number \
+                --jq 'length'
+            )"
+
+            if [ "$open_pr_count" != "0" ]; then
+              skip_duplicate_push_ci=true
+            fi
+          fi
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             ci_checks=false
@@ -123,6 +143,10 @@ jobs:
                 exit 1
                 ;;
             esac
+          elif [ "$skip_duplicate_push_ci" = "true" ]; then
+            ci_checks=false
+            base_container_publish=false
+            axvisor_lvz_container_publish=false
           else
             if [ "$EVENT_NAME" = "push" ] && { [ "$REF_NAME" = "main" ] || [ "$REF_NAME" = "dev" ]; }; then
               ci_checks=true
@@ -135,6 +159,7 @@ jobs:
 
           {
             echo "ci_checks=${ci_checks}"
+            echo "skip_duplicate_push_ci=${skip_duplicate_push_ci}"
             echo "base_container_publish=${base_container_publish}"
             echo "axvisor_lvz_container_publish=${axvisor_lvz_container_publish}"
             echo "base_container_image=${base_container_image}"
@@ -162,17 +187,71 @@ jobs:
           - name: Run clippy
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask clippy
+            command: |
+              set -eux
+              git_cmd() {
+                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
+              }
+              ensure_since_ref() {
+                ref="$1"
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
+                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
+              }
+
+              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+                cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
+              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                before="${{ github.event.before }}"
+                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
+                  cargo xtask clippy
+                elif ensure_since_ref "${before}"; then
+                  cargo xtask clippy --since "${before}"
+                else
+                  echo "::notice::before commit ${before} is unavailable; running full clippy"
+                  cargo xtask clippy
+                fi
+              else
+                cargo xtask clippy
+              fi
             cache_key: clippy
             container_image: base
+            fetch_depth: full
             required_repository_owner: ""
             main_pr_only: false
           - name: Run sync-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
-            command: cargo xtask sync-lint
+            command: |
+              set -eux
+              git_cmd() {
+                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
+              }
+              ensure_since_ref() {
+                ref="$1"
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
+                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
+              }
+
+              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+                cargo xtask sync-lint --since "${{ github.event.pull_request.base.sha }}"
+              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                before="${{ github.event.before }}"
+                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
+                  cargo xtask sync-lint
+                elif ensure_since_ref "${before}"; then
+                  cargo xtask sync-lint --since "${before}"
+                else
+                  echo "::notice::before commit ${before} is unavailable; running full sync-lint"
+                  cargo xtask sync-lint
+                fi
+              else
+                cargo xtask sync-lint
+              fi
             cache_key: sync-lint
             container_image: base
+            fetch_depth: full
             required_repository_owner: ""
             main_pr_only: false
           - name: Test with std
@@ -189,6 +268,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch aarch64
             cache_key: test-axvisor-aarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor riscv64 qemu
@@ -197,6 +277,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch riscv64
             cache_key: test-axvisor-riscv64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor loongarch64 qemu
@@ -205,6 +286,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch loongarch64
             cache_key: test-axvisor-loongarch64
             container_image: axvisor-lvz
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
@@ -213,6 +295,7 @@ jobs:
             command: cargo xtask starry test qemu --arch riscv64
             cache_key: test-starry-riscv64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry aarch64 qemu
@@ -221,6 +304,7 @@ jobs:
             command: cargo xtask starry test qemu --arch aarch64
             cache_key: test-starry-aarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry loongarch64 qemu
@@ -229,6 +313,7 @@ jobs:
             command: cargo xtask starry test qemu --arch loongarch64
             cache_key: test-starry-loongarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry x86_64 qemu
@@ -237,6 +322,7 @@ jobs:
             command: cargo xtask starry test qemu --arch x86_64
             cache_key: test-starry-x86_64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos x86_64 qemu
@@ -245,6 +331,7 @@ jobs:
             command: cargo xtask arceos test qemu --arch x86_64
             cache_key: test-arceos-x86_64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos riscv64 qemu
@@ -253,6 +340,7 @@ jobs:
             command: cargo xtask arceos test qemu --arch riscv64
             cache_key: test-arceos-riscv64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos aarch64 qemu
@@ -261,6 +349,7 @@ jobs:
             command: cargo xtask arceos test qemu --arch aarch64
             cache_key: test-arceos-aarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos loongarch64 qemu
@@ -269,40 +358,46 @@ jobs:
             command: cargo xtask arceos test qemu --arch loongarch64
             cache_key: test-arceos-loongarch64
             container_image: base
+            apk_region: us
             required_repository_owner: ""
             main_pr_only: false
-          - name: Stress starry aarch64
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: echo "TODO!"
-            cache_key: test-starry-stress-aarch64
-            container_image: base
-            required_repository_owner: ""
-            main_pr_only: true
-          - name: Stress starry riscv64
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: echo "TODO!"
-            cache_key: test-starry-stress-riscv64
-            container_image: base
-            required_repository_owner: ""
-            main_pr_only: true
-          - name: Stress starry loongarch64
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: echo "TODO!"
-            cache_key: test-starry-stress-loongarch64
-            container_image: base
-            required_repository_owner: ""
-            main_pr_only: true
-          - name: Stress starry x86_64
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: echo "TODO!"
-            cache_key: test-starry-stress-x86_64
-            container_image: base
-            required_repository_owner: ""
-            main_pr_only: true
+          # Stress tests: uncomment to enable (runs only on PRs targeting main).
+          # - name: Stress starry aarch64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: cargo xtask starry test qemu --arch aarch64 --test-group stress
+          #   cache_key: test-starry-stress-aarch64
+          #   container_image: base
+          #   apk_region: us
+          #   required_repository_owner: ""
+          #   main_pr_only: true
+          # - name: Stress starry riscv64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: cargo xtask starry test qemu --arch riscv64 --test-group stress
+          #   cache_key: test-starry-stress-riscv64
+          #   container_image: base
+          #   apk_region: us
+          #   required_repository_owner: ""
+          #   main_pr_only: true
+          # - name: Stress starry loongarch64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: cargo xtask starry test qemu --arch loongarch64 --test-group stress
+          #   cache_key: test-starry-stress-loongarch64
+          #   container_image: base
+          #   apk_region: us
+          #   required_repository_owner: ""
+          #   main_pr_only: true
+          # - name: Stress starry x86_64
+          #   use_container: true
+          #   runs_on: '["ubuntu-latest"]'
+          #   command: cargo xtask starry test qemu --arch x86_64 --test-group stress
+          #   cache_key: test-starry-stress-x86_64
+          #   container_image: base
+          #   apk_region: us
+          #   required_repository_owner: ""
+          #   main_pr_only: true
           - name: Test axvisor self-hosted x86_64
             use_container: false
             runs_on: '["self-hosted","linux","intel"]'
@@ -310,18 +405,6 @@ jobs:
             cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
-            main_pr_only: false
-          - name: Test axvisor x86_64 svm hosted
-            use_container: false
-            runs_on: '["ubuntu-latest"]'
-            command: |
-              sudo apt-get update
-              sudo apt-get install -y libudev-dev pkg-config qemu-system-x86
-              sudo usermod -aG kvm $USER
-              newgrp kvm <<< "cargo xtask axvisor test qemu --arch x86_64 --test-group svm --test-case smoke"
-            cache_key: ""
-            container_image: ""
-            required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor self-hosted board orangepi-5-plus-linux
             use_container: false
@@ -353,25 +436,13 @@ jobs:
           && format('{0}:latest', needs.detect_changes.outputs.axvisor_lvz_container_image)
           || matrix.container_image
         }}
-      apk_region: >-
-        ${{
-          (
-            matrix.use_container
-            && (
-              startsWith(matrix.command, 'cargo xtask starry test qemu --arch')
-              || startsWith(matrix.command, 'cargo xtask axvisor test qemu --arch')
-              || startsWith(matrix.command, 'cargo xtask arceos test qemu --arch')
-              || startsWith(matrix.name, 'Stress starry ')
-            )
-          )
-          && 'us'
-          || 'china'
-        }}
+      apk_region: ${{ matrix.apk_region || 'china' }}
       required_repository_owner: ${{ matrix.required_repository_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
+      fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
 
   skip_non_test_changes:
-    name: Skip CI checks for non-test changes
+    name: Skip CI checks
     if: needs.detect_changes.outputs.ci_checks != 'true'
     needs: detect_changes
     runs-on: ubuntu-latest
@@ -379,11 +450,14 @@ jobs:
       - name: Summarize skip reason
         env:
           EVENT_NAME: ${{ github.event_name }}
+          SKIP_DUPLICATE_PUSH_CI: ${{ needs.detect_changes.outputs.skip_duplicate_push_ci }}
         run: |
           echo "## CI checks skipped" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "This manual run is scoped to container publishing, so fmt and follow-up CI checks were skipped." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$SKIP_DUPLICATE_PUSH_CI" = "true" ]; then
+            echo "This branch already has an open pull request. The duplicate push CI was skipped; the pull_request CI run will validate the same commit." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Changed files do not match the test-relevant path set, so fmt and follow-up checks were skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -449,62 +523,3 @@ jobs:
     permissions:
       contents: read
       packages: write
-
-  release_publish:
-    name: Publish releases
-    if: >-
-      ${{
-        always()
-        && github.repository == 'rcore-os/tgoskits'
-        && github.event_name == 'push'
-        && github.ref_name == 'dev'
-        && needs.detect_changes.outputs.ci_checks == 'true'
-        && needs.fmt.result == 'success'
-        && needs.post_fmt_checks.result == 'success'
-      }}
-    needs:
-      - detect_changes
-      - fmt
-      - post_fmt_checks
-    runs-on: ubuntu-latest
-    concurrency:
-      group: release-plz-release-${{ github.ref_name }}
-      cancel-in-progress: false
-    permissions:
-      contents: write
-      pull-requests: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Attach checkout to dev branch
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git fetch --prune origin +refs/heads/dev:refs/remotes/origin/dev
-          origin_dev="$(git rev-parse origin/dev)"
-          if [ "${origin_dev}" != "${GITHUB_SHA}" ]; then
-            echo "origin/dev (${origin_dev}) does not match this CI commit (${GITHUB_SHA}); skipping release publish." >&2
-            exit 1
-          fi
-
-          git switch -C dev "${GITHUB_SHA}"
-          git branch --set-upstream-to=origin/dev dev
-          git status --short --branch
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run release-plz release
-        uses: release-plz/action@v0.5
-        with:
-          command: release
-          config: release-plz.toml
-          token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-fcntl-partial-wake C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-fcntl-partial-wake src/main.c)
+target_compile_options(bug-fcntl-partial-wake PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-fcntl-partial-wake RUNTIME DESTINATION usr/bin)
