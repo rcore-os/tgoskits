@@ -15,7 +15,7 @@ use linux_raw_sys::general::*;
 use crate::{
     file::{
         Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like, close_file_like,
-        get_file_like, with_fs,
+        get_file_like, memfd::Memfd, with_fs,
     },
     mm::vm_load_string,
     pseudofs::{Device, dev::tty},
@@ -328,6 +328,15 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         F_SETPIPE_SZ => {
             let pipe = Pipe::from_fd(fd)?;
             pipe.resize(arg)?;
+            Ok(0)
+        }
+        F_GET_SEALS => {
+            let memfd = Memfd::from_fd(fd)?;
+            Ok(memfd.get_seals() as _)
+        }
+        F_ADD_SEALS => {
+            let memfd = Memfd::from_fd(fd)?;
+            memfd.add_seals(arg as u32)?;
             Ok(0)
         }
         _ => {

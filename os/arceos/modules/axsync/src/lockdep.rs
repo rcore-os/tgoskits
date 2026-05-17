@@ -1,7 +1,7 @@
 use core::panic::Location;
 
-pub(crate) use ax_kspin::lockdep::LockdepMap;
 use ax_kspin::lockdep::{self as common, HeldLockSnapshot, PreparedAcquire};
+pub(crate) use ax_kspin::lockdep::{LockSubclass, LockdepMap};
 
 use crate::mutex::RawMutex;
 
@@ -18,14 +18,15 @@ pub(crate) struct LockdepAcquire {
 impl LockdepAcquire {
     #[inline(always)]
     #[track_caller]
-    pub(crate) fn prepare(lock: &RawMutex, is_try: bool) -> Self {
+    pub(crate) fn prepare_nested(lock: &RawMutex, is_try: bool, subclass: LockSubclass) -> Self {
         let addr = lock as *const _ as *const () as usize;
-        let prepared = common::prepare_acquire_with_snapshot(
+        let prepared = common::prepare_acquire_with_snapshot_nested(
             &lock.lockdep,
             "mutex",
             addr,
             Location::caller(),
             current_held_locks(),
+            subclass,
         );
         let inner = ax_lockdep::Lockdep::prepare("mutex", addr, is_try, None);
         Self {
@@ -46,7 +47,7 @@ impl LockdepAcquire {
 
 #[inline(always)]
 pub(crate) fn release(lock: &RawMutex) {
-    common::release_task(lock.lockdep.lock_id());
     let addr = lock as *const _ as *const () as usize;
+    common::release_task(addr);
     ax_lockdep::Lockdep::release("mutex", addr, None);
 }

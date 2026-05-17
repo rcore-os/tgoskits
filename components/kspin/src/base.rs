@@ -63,8 +63,6 @@ pub struct BaseSpinLockGuard<'a, G: BaseGuard, T: ?Sized + 'a> {
     _phantom: &'a PhantomData<G>,
     irq_state: G::State,
     #[cfg(feature = "lockdep")]
-    lock_id: Option<u32>,
-    #[cfg(feature = "lockdep")]
     lock_addr: usize,
     data: *mut T,
     #[cfg(feature = "smp")]
@@ -198,8 +196,6 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
             _phantom: &PhantomData,
             irq_state,
             #[cfg(feature = "lockdep")]
-            lock_id: lockdep.lock_id(),
-            #[cfg(feature = "lockdep")]
             lock_addr: lockdep.lock_addr(),
             data: unsafe { &mut *self.data.get() },
             #[cfg(feature = "smp")]
@@ -241,8 +237,6 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
                 _phantom: &PhantomData,
                 irq_state,
                 #[cfg(feature = "lockdep")]
-                lock_id: lockdep.lock_id(),
-                #[cfg(feature = "lockdep")]
                 lock_addr: lockdep.lock_addr(),
                 data: unsafe { &mut *self.data.get() },
                 #[cfg(feature = "smp")]
@@ -268,7 +262,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
         #[cfg(feature = "lockdep")]
         {
             let addr = self as *const _ as *const () as usize;
-            crate::lockdep::force_release::<G>(&self.lockdep, addr);
+            crate::lockdep::force_release::<G>(addr);
         }
         #[cfg(feature = "smp")]
         self.lock.store(false, Ordering::Release);
@@ -338,7 +332,7 @@ impl<G: BaseGuard, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
             let _lockdep_irq_guard = IrqSave::new();
 
             #[cfg(feature = "lockdep")]
-            crate::lockdep::release::<G>(self.lock_id, self.lock_addr);
+            crate::lockdep::release::<G>(self.lock_addr);
             #[cfg(feature = "smp")]
             self.lock.store(false, Ordering::Release);
         }

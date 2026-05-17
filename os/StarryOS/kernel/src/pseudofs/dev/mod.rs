@@ -26,6 +26,15 @@ mod rknpu_drm;
 pub mod tpu;
 pub mod tty;
 
+#[cfg(feature = "sg2002")]
+mod cvi_camera;
+#[cfg(feature = "sg2002")]
+mod pinmux;
+#[cfg(feature = "sg2002")]
+pub(super) mod pwm;
+#[cfg(feature = "sg2002")]
+mod tty_serial;
+
 use alloc::{format, sync::Arc};
 use core::any::Any;
 
@@ -280,6 +289,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         ),
     );
 
+    #[cfg(feature = "kcov")]
+    root.add(
+        "kcov",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(10, 57),
+            Arc::new(crate::kcov::KcovDevice),
+        ),
+    );
+
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
         "shm",
@@ -390,6 +410,42 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 NodeType::CharacterDevice,
                 DeviceId::new(10, 56),
                 ion_device,
+            ),
+        );
+        root.add(
+            "ttyS1",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(4, 65),
+                Arc::new(tty_serial::new_tty_s1(115200)),
+            ),
+        );
+        root.add(
+            "ttyS2",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(4, 66),
+                Arc::new(tty_serial::new_tty_s2(115200)),
+            ),
+        );
+        root.add(
+            "cvi-camera0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(10, 201),
+                Arc::new(cvi_camera::CviCamera::new()),
+            ),
+        );
+        root.add(
+            "pinmux",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(1, 1),
+                Arc::new(pinmux::PinmuxDev),
             ),
         );
     }
