@@ -65,7 +65,6 @@ impl ax_plat::time::TimeIf for GenericTimer {
         }
     }
     /// Returns the IRQ number for the timer interrupt.
-    #[cfg(feature = "irq")]
     fn irq_num() -> usize {
         somehal::irq::systick_irq().into()
     }
@@ -73,7 +72,6 @@ impl ax_plat::time::TimeIf for GenericTimer {
     ///
     /// A timer interrupt will be triggered at the specified monotonic time
     /// deadline (in nanoseconds).
-    #[cfg(feature = "irq")]
     fn set_oneshot_timer(deadline_ns: u64) {
         let cnptct = somehal::timer::ticks() as u64;
         let deadline = GenericTimer::nanos_to_ticks(deadline_ns);

@@ -65,6 +65,7 @@ bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl", "derive"] }
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
 downcast-rs = { version = "2.0", default-features = false, features = ["sync"] }
+dw_apb_uart = { workspace = true }
 enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
 extern-trait = "0.4"

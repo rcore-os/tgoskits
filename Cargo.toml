@@ -80,6 +80,7 @@ members = [
     "components/crate_interface/test_crates/test-simple",
     "components/crate_interface/test_crates/test-weak",
     "components/crate_interface/test_crates/test-weak-partial",
+    "components/dw_apb_uart",
     "components/ctor_bare/ctor_bare",
     "components/ctor_bare/ctor_bare_macros",
     "components/fxmac_rs",
@@ -297,6 +298,7 @@ cargo-axplat = { version = "0.4.9", path = "components/axplat_crates/cargo-axpla
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }
 deptool = { version = "0.3.1", path = "os/arceos/tools/deptool" }
+dw_apb_uart = { path = "components/dw_apb_uart" }
 fxmac_rs = { version = "0.4.8", path = "components/fxmac_rs" }
 hello-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/hello-kernel" }
 impl-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-simple-traits" }
@@ -341,6 +343,7 @@ chrono = { version = "0.4", default-features = false }
 env_logger = "0.11"
 event-listener = { version = "5.4.0", default-features = false }
 schemars = "1.2.1"
+tock-registers = "0.8"
 toml = "1"
 dma-api = { version = "0.7.2" }
 mmio-api = "0.2.1"

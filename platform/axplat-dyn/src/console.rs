@@ -36,15 +36,12 @@ impl ConsoleIf for ConsoleIfImpl {
     /// Returns the IRQ number for the console input interrupt.
     ///
     /// Returns `None` if input interrupt is not supported.
-    #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
         None
     }
 
-    #[cfg(feature = "irq")]
     fn set_input_irq_enabled(_enabled: bool) {}
 
-    #[cfg(feature = "irq")]
     fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
         ax_plat::console::ConsoleIrqEvent::empty()
     }

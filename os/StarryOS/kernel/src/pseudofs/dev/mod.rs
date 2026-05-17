@@ -16,8 +16,8 @@ mod log;
 mod r#loop;
 #[cfg(feature = "memtrack")]
 mod memtrack;
-mod rtc;
 pub mod tty;
+mod tty_serial;
 
 use alloc::{format, sync::Arc};
 use core::any::Any;
@@ -197,15 +197,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(Random::new()),
         ),
     );
-    root.add(
-        "rtc0",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            rtc::RTC0_DEVICE_ID,
-            Arc::new(rtc::Rtc),
-        ),
-    );
     if ax_display::has_display() {
         root.add(
             "fb0",
@@ -277,11 +268,59 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         ),
     );
 
+
+    // ── Serial TTY透传设备 ─────────────────────────────────────────────────────
+    // Linux 标准：major=4，minor=64+n（ttyS0=64, ttyS1=65, ttyS3=67, …）
+    //
+    // 板卡：OrangePi 5 Plus (RK3588)
+    //
+    // /dev/ttyS1 → UART1 @ 0xFEB40000, IRQ 364
+    //   pinmux uart1m1-xfer:
+    //     GPIO1_B7 → UART1_TX  40-pin header Pin  8  → 接对端 RX
+    //     GPIO1_B6 → UART1_RX  40-pin header Pin 10  → 接对端 TX
+    //     GND                  40-pin header Pin  6
+    //
+    // /dev/ttyS3 → UART3 @ 0xFEB60000, IRQ 366
+    //   pinmux uart3m1-xfer:
+    //     GPIO3_B6 → UART3_TX  40-pin header Pin 32  → 接对端 RX
+    //     GPIO3_B5 → UART3_RX  40-pin header Pin 33  → 接对端 TX
+    //
+    // !! UART2 (0xFEB50000) 已被板载 Type-C debug 口占用，不可使用 !!
+    let tty_s1 = Arc::new(tty_serial::new_tty_s1(115200));
+    root.add(
+        "ttyS1",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(4, 65),
+            tty_s1,
+        ),
+    );
+
+    let tty_s3 = Arc::new(tty_serial::new_tty_s3(115200));
+    root.add(
+        "ttyS3",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(4, 67),
+            tty_s3,
+        ),
+    );
+
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
         "shm",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
     );
+    {
+        let mut bus_dir = DirMapping::new();
+        bus_dir.add(
+            "usb",
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        );
+        root.add("bus", SimpleDir::new_maker(fs.clone(), Arc::new(bus_dir)));
+    }
 
     #[cfg(all(feature = "rknpu", not(any(windows, unix))))]
     {
