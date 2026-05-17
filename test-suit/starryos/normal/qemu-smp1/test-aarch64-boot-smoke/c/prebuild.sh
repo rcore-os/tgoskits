@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 
-apk add binutils gcc musl-dev
+apk add --no-cache binutils gcc musl-dev
