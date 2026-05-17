@@ -102,6 +102,86 @@ static unsigned short get_bound_port(int fd)
     return ntohs(addr->sin6_port);
 }
 
+static void check_v4mapped_loopback_sockaddr(const struct sockaddr_storage *storage,
+                                             const char *family_msg,
+                                             const char *addr_msg)
+{
+    CHECK(storage->ss_family == AF_INET6, family_msg);
+    struct sockaddr_in6 *addr = (struct sockaddr_in6 *)storage;
+    CHECK(is_v4mapped_loopback(&addr->sin6_addr), addr_msg);
+}
+
+static void test_tcp_accept_v4mapped_peer(void)
+{
+    int listener = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    CHECK(listener >= 0, "create AF_INET6 TCP listener");
+    if (listener < 0) {
+        return;
+    }
+
+    struct sockaddr_in6 loopback = in6_addr_loopback(0);
+    errno = 0;
+    int rc = bind(listener, (struct sockaddr *)&loopback, sizeof(loopback));
+    CHECK(rc == 0, "bind AF_INET6 TCP listener to ::1");
+    if (rc != 0) {
+        close(listener);
+        return;
+    }
+    unsigned short port = get_bound_port(listener);
+
+    errno = 0;
+    rc = listen(listener, 1);
+    CHECK(rc == 0, "listen on AF_INET6 TCP socket");
+    if (rc != 0) {
+        close(listener);
+        return;
+    }
+
+    int client = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    CHECK(client >= 0, "create AF_INET6 TCP client");
+    if (client < 0) {
+        close(listener);
+        return;
+    }
+
+    struct sockaddr_in6 mapped = in6_addr_v4mapped_loopback(port);
+    errno = 0;
+    rc = connect(client, (struct sockaddr *)&mapped, sizeof(mapped));
+    CHECK(rc == 0, "connect AF_INET6 TCP client to ::ffff:127.0.0.1");
+    if (rc != 0) {
+        close(client);
+        close(listener);
+        return;
+    }
+
+    struct sockaddr_storage accepted_peer;
+    socklen_t accepted_peer_len = sizeof(accepted_peer);
+    memset(&accepted_peer, 0, sizeof(accepted_peer));
+    errno = 0;
+    int accepted =
+        accept(listener, (struct sockaddr *)&accepted_peer, &accepted_peer_len);
+    CHECK(accepted >= 0, "accept AF_INET6 TCP connection");
+    if (accepted >= 0) {
+        check_v4mapped_loopback_sockaddr(
+            &accepted_peer, "accept reports AF_INET6 peer",
+            "accept returns IPv4-mapped loopback peer");
+
+        struct sockaddr_storage peer_storage;
+        socklen_t peer_len = sizeof(peer_storage);
+        memset(&peer_storage, 0, sizeof(peer_storage));
+        errno = 0;
+        CHECK(getpeername(accepted, (struct sockaddr *)&peer_storage, &peer_len) == 0,
+              "getpeername on accepted AF_INET6 TCP socket");
+        check_v4mapped_loopback_sockaddr(
+            &peer_storage, "accepted getpeername reports AF_INET6",
+            "accepted getpeername returns IPv4-mapped loopback");
+        close(accepted);
+    }
+
+    close(client);
+    close(listener);
+}
+
 int main(void)
 {
     TEST_START("AF_INET6 IPv4-mapped compatibility");
@@ -159,5 +239,6 @@ int main(void)
     }
 
     close(udp_fd);
+    test_tcp_accept_v4mapped_peer();
     TEST_DONE();
 }

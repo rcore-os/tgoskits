@@ -23,7 +23,9 @@ use linux_raw_sys::{
     netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE},
 };
 
-use super::addr::{SocketAddrExt, normalize_socket_addr_ex_for_ip_stack};
+use super::addr::{
+    SocketAddrExt, normalize_socket_addr_ex_for_ip_stack, socket_addr_ex_for_user_name,
+};
 use crate::{
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
@@ -224,7 +226,7 @@ pub fn sys_accept4(
         socket.set_nonblocking(true)?;
     }
 
-    let remote_addr = socket.peer_addr()?;
+    let remote_addr = socket_addr_ex_for_user_name(socket.ip_domain(), socket.peer_addr()?);
     let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
     debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
 

@@ -15,9 +15,6 @@ use linux_raw_sys::{net::*, netlink::sockaddr_nl};
 
 use crate::mm::{UserConstPtr, UserPtr};
 
-pub const IPPROTO_IPV6: u32 = 41;
-pub const IPV6_V6ONLY: u32 = 26;
-
 pub fn normalize_socket_addr_ex_for_ip_stack(
     addr: SocketAddrEx,
     is_bind: bool,
