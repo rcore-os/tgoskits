@@ -985,6 +985,21 @@ if [ "$_printf" = "61 0a 62" ]; then echo "PASS: busybox_printf_escape"; PASS=$(
 _t=$({ timeout 10 sh -c "busybox sh -c 'export BB_SEM_ENV=ok; cd /tmp && [ \"\$BB_SEM_ENV:\$PWD\" = \"ok:/tmp\" ] && command -v busybox >/dev/null && busybox echo sh_env_cd_ok' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qxF "sh_env_cd_ok"; then echo "PASS: busybox_sh_env_cd"; PASS=$((PASS+1)); else echo "FAIL: busybox_sh_env_cd"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
+# busybox_acpid — applet wiring sanity check.
+# Without -f, acpid would daemonize and close stdio (Issue #13's `[ -n "$_t" ]`
+# only succeeds if something is printed before fork). We pass an unknown flag
+# `-h` so getopt32 reaches bb_show_usage, which writes the applet banner to
+# stderr — confirming the applet table contains acpid and busybox can run it.
+_t=$({ timeout 10 sh -c "busybox acpid -h 2>&1"; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if echo "$_t" | grep -qF "Usage:" && echo "$_t" | grep -qF "acpid"; then
+    echo "PASS: busybox_acpid"; PASS=$((PASS+1))
+else
+    echo "FAIL: busybox_acpid (rc=$_rc)"; echo "$_t"
+    FAIL=$((FAIL+1))
+fi
+
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
 _m1="Test"; _m2="run"; _m3="completed"; echo "$_m1 $_m2 $_m3"
