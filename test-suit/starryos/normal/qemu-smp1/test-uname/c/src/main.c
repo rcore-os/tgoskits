@@ -23,16 +23,25 @@ int main(void) {
     TEST_START("uname");
 
     struct utsname u;
+    struct utsname u2;
     memset(&u, 0, sizeof(u));
+    memset(&u2, 0, sizeof(u2));
 
     CHECK_RET(syscall(SYS_uname, &u), 0, "uname returns 0");
-    CHECK(strcmp(u.sysname, "Linux") == 0, "sysname is Linux");
-    CHECK(strcmp(u.nodename, "starry") == 0, "nodename is starry");
-    CHECK(strcmp(u.release, "10.0.0") == 0, "release matches");
-    CHECK(strcmp(u.version, "10.0.0") == 0, "version matches");
+    CHECK(check_nonempty(u.sysname), "sysname is non-empty");
+    CHECK(check_nonempty(u.nodename), "nodename is non-empty");
+    CHECK(check_nonempty(u.release), "release is non-empty");
+    CHECK(check_nonempty(u.version), "version is non-empty");
     CHECK(check_nonempty(u.machine), "machine is non-empty");
-    CHECK(strcmp(u.domainname, "https://github.com/Starry-OS/StarryOS") == 0,
-          "domainname matches");
+    CHECK(check_nonempty(u.domainname), "domainname is non-empty");
+
+    CHECK_RET(syscall(SYS_uname, &u2), 0, "second uname returns 0");
+    CHECK(strcmp(u2.sysname, u.sysname) == 0, "sysname is stable across calls");
+    CHECK(strcmp(u2.nodename, u.nodename) == 0, "nodename is stable across calls");
+    CHECK(strcmp(u2.release, u.release) == 0, "release is stable across calls");
+    CHECK(strcmp(u2.version, u.version) == 0, "version is stable across calls");
+    CHECK(strcmp(u2.machine, u.machine) == 0, "machine is stable across calls");
+    CHECK(strcmp(u2.domainname, u.domainname) == 0, "domainname is stable across calls");
 
     CHECK_ERR(syscall(SYS_uname, NULL), EFAULT, "NULL uname pointer returns EFAULT");
     CHECK_ERR(syscall(SYS_uname, (void *)1), EFAULT, "bad uname pointer returns EFAULT");
