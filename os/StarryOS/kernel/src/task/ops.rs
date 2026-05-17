@@ -303,7 +303,7 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
         .ok_or(AxError::InvalidInput)?;
     let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
     let futex_word = address as *mut u32;
-    let owner_tid = current().id().as_u64() as u32;
+    let owner_tid = (current().id().as_u64() as u32) & FUTEX_TID_MASK;
     let value = futex_word.vm_read()?;
 
     if value & FUTEX_TID_MASK != owner_tid {
@@ -331,7 +331,9 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
     let head = head.vm_read()?;
     let mut entry = head.list.next;
     let offset = head.futex_offset;
-    let pending = head.list_op_pending;
+    // Keep the entry address aligned in case user-space leaves low-bit markers
+    // in `list_op_pending` during robust-futex list operations.
+    let pending = (head.list_op_pending as usize & !0x3) as *mut RobustList;
 
     while !core::ptr::eq(entry, end_ptr) {
         if entry.is_null() {

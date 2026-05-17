@@ -2,8 +2,8 @@ use ax_errno::{AxError, AxResult};
 use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_task::current;
 use linux_raw_sys::general::{
-    FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT,
-    FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, robust_list_head, timespec,
+    FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE,
+    FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, robust_list_head, timespec,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -43,6 +43,14 @@ fn futex_wait_timeout(
     Ok(Some(timeout.saturating_sub(now)))
 }
 
+fn futex_key(address: usize, futex_op: u32) -> FutexKey {
+    if futex_op & FUTEX_PRIVATE_FLAG != 0 {
+        FutexKey::Private { address }
+    } else {
+        FutexKey::new_current(address)
+    }
+}
+
 pub fn sys_futex(
     uaddr: *const u32,
     futex_op: u32,
@@ -56,7 +64,7 @@ pub fn sys_futex(
          value3: {value3}",
     );
 
-    let key = FutexKey::new_current(uaddr.addr());
+    let key = futex_key(uaddr.addr(), futex_op);
 
     let futex_table = futex_table_for(&key);
 
@@ -113,7 +121,7 @@ pub fn sys_futex(
             let value2 = assert_unsigned(timeout.addr() as u32)?;
 
             let futex = futex_table.get(&key);
-            let key2 = FutexKey::new_current(uaddr2.addr());
+            let key2 = futex_key(uaddr2.addr(), futex_op);
             let table2 = futex_table_for(&key2);
             let futex2 = table2.get_or_insert(&key2);
 
