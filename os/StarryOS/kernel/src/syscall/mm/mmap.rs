@@ -8,7 +8,7 @@ use ax_task::current;
 use linux_raw_sys::general::*;
 
 use crate::{
-    file::get_file_like,
+    file::{FileLike, get_file_like, memfd::Memfd},
     mm::{Backend, BackendOps, SharedPages},
     pseudofs::{Device, DeviceMmap},
     task::AsThread,
@@ -179,6 +179,17 @@ pub fn sys_mmap(
     let file = if anonymous {
         None
     } else {
+        // Honor F_SEAL_WRITE on `MAP_SHARED|PROT_WRITE` at map-creation
+        // time — Linux rejects this combination on a sealed memfd with
+        // EPERM. Post-mmap revoke (downgrading already-installed VMAs
+        // when F_SEAL_WRITE is later applied) is not yet implemented.
+        if (map_type == MmapFlags::SHARED || map_type == MmapFlags::SHARED_VALIDATE)
+            && permission_flags.contains(MmapProt::WRITE)
+            && let Ok(memfd) = Memfd::from_fd(fd)
+            && memfd.get_seals() & crate::file::memfd::F_SEAL_WRITE != 0
+        {
+            return Err(AxError::OperationNotPermitted);
+        }
         Some(get_file_like(fd)?)
     };
 
