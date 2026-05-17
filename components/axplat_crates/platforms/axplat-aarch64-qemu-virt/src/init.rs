@@ -13,11 +13,15 @@ use crate::config::plat::PSCI_METHOD;
 // timer to CNTV, whose PPI is 11 -> IRQ 27 in the GIC distributor.
 // The axconfig must advertise that IRQ instead of the CNTP default
 // of 30, otherwise the timer is programmed but never delivered.
-// Catch the silent misconfiguration at compile time so a stray
-// `FEATURES=starryos/gic-v3 cargo xtask starry build --arch aarch64`
-// (which composes `cntv-timer` for the HVF profile) without a
-// matching axconfig_overrides cannot produce a boot-image that
-// races on every timer tick.
+// Catch the silent misconfiguration at compile time so a build that
+// enables `cntv-timer` without `devices.timer-irq=27` cannot produce
+// a boot-image that races on every timer tick. The feature is
+// reachable from StarryOS via either the umbrella feature
+// `FEATURES=starryos/aarch64-hvf cargo xtask starry build --arch aarch64`
+// or the explicit two-feature form
+// `FEATURES=starryos/cntv-timer,starryos/gic-v3 cargo xtask starry build --arch aarch64`;
+// `cntv-timer` and `gic-v3` are orthogonal and neither composes the
+// other.
 #[cfg(feature = "cntv-timer")]
 const _: () = assert!(
     TIMER_IRQ == 27,
