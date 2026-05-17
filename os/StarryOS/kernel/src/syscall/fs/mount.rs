@@ -16,6 +16,14 @@ const MNT_DETACH: i32 = 2;
 const MNT_EXPIRE: i32 = 4;
 const UMOUNT_NOFOLLOW: i32 = 8;
 
+const MS_REC: i32 = 1 << 14;
+const MS_SILENT: i32 = 1 << 15;
+const MS_UNBINDABLE: i32 = 1 << 17;
+const MS_PRIVATE: i32 = 1 << 18;
+const MS_SLAVE: i32 = 1 << 19;
+const MS_SHARED: i32 = 1 << 20;
+
+const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
 
 fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
@@ -53,13 +61,26 @@ pub fn sys_mount(
     source: *const c_char,
     target: *const c_char,
     fs_type: *const c_char,
-    _flags: i32,
+    flags: i32,
     _data: *const c_void,
 ) -> AxResult<isize> {
     let source = vm_load_string(source)?;
     let target = vm_load_string(target)?;
     let fs_type = vm_load_string(fs_type)?;
     debug!("sys_mount <= source: {source:?}, target: {target:?}, fs_type: {fs_type:?}");
+
+    let propagation = flags & PROPAGATION_FLAGS;
+
+    if propagation.count_ones() > 1 {
+        return Err(AxError::InvalidInput);
+    }
+
+    if propagation != 0 {
+        let allowed = propagation | MS_REC | MS_SILENT;
+        if flags & !allowed != 0 {
+            return Err(AxError::InvalidInput);
+        }
+    }
 
     match fs_type.as_str() {
         "tmpfs" => {
