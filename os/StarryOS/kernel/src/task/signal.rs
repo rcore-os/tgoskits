@@ -19,6 +19,54 @@ pub struct SyscallRestartInfo {
     pub saved_sysno: usize,
 }
 
+/// Dump user-mode register state once the signal disposition really terminates.
+fn dump_user_crash_context(uctx: &UserContext) {
+    #[cfg(target_arch = "riscv64")]
+    {
+        let r = &uctx.regs;
+        warn!(
+            "user register dump:\n  pc(sepc)={:#018x} ra={:#018x} sp={:#018x}\n  gp={:#018x}  \
+             tp={:#018x}  s0={:#018x}\n  a0={:#018x} a1={:#018x} a2={:#018x} a3={:#018x}\n  \
+             a4={:#018x} a5={:#018x} a6={:#018x} a7={:#018x}",
+            uctx.sepc, r.ra, r.sp, r.gp, r.tp, r.s0, r.a0, r.a1, r.a2, r.a3, r.a4, r.a5, r.a6, r.a7,
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        warn!(
+            "user register dump:\n  pc(elr)={:#018x} spsr={:#018x}\n  x0={:#018x} x1={:#018x} \
+             x2={:#018x} x3={:#018x}\n  x29(fp)={:#018x} x30(lr)={:#018x}",
+            uctx.elr, uctx.spsr, uctx.x[0], uctx.x[1], uctx.x[2], uctx.x[3], uctx.x[29], uctx.x[30],
+        );
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        warn!(
+            "user register dump:\n  rip={:#018x} rsp={:#018x} rflags={:#018x}\n  rax={:#018x} \
+             rdi={:#018x} rsi={:#018x} rdx={:#018x}",
+            uctx.rip, uctx.rsp, uctx.rflags, uctx.rax, uctx.rdi, uctx.rsi, uctx.rdx,
+        );
+    }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        let r = &uctx.regs;
+        warn!(
+            "user register dump:\n  era={:#018x} ra={:#018x} sp={:#018x} tp={:#018x}\n  \
+             a0={:#018x} a1={:#018x} a2={:#018x} a3={:#018x}",
+            uctx.era, r.ra, r.sp, r.tp, r.a0, r.a1, r.a2, r.a3,
+        );
+    }
+    #[cfg(not(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64",
+    )))]
+    {
+        warn!("user register dump: not implemented for this arch");
+    }
+}
+
 pub fn check_signals(
     thr: &Thread,
     uctx: &mut UserContext,
@@ -56,9 +104,38 @@ pub fn check_signals(
 
     let signo = sig.signo();
 
+    // Only dump register state when the terminating signal is the same
+    // synchronous fault signo that raise_signal_fatal force-delivered to
+    // this thread. Matching by signo prevents a low-numbered pending
+    // signal (e.g. a queued SIGTERM that landed before the SIGSEGV from
+    // a page fault) from consuming the flag and either dumping in the
+    // wrong context or swallowing the dump entirely when it had a user
+    // handler. `compare_exchange` clears the slot only on a match, so
+    // unrelated signals leave the flag intact for the real fault
+    // signal that follows.
+    let dump_on_terminate = thr
+        .fault_dump_signo
+        .compare_exchange(
+            signo as u8,
+            0,
+            core::sync::atomic::Ordering::AcqRel,
+            core::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok();
+
     match os_action {
-        SignalOSAction::Terminate => do_exit(signo as i32, true),
-        SignalOSAction::CoreDump => do_exit(128 + signo as i32, true),
+        SignalOSAction::Terminate => {
+            if dump_on_terminate {
+                dump_user_crash_context(uctx);
+            }
+            do_exit(signo as i32, true);
+        }
+        SignalOSAction::CoreDump => {
+            if dump_on_terminate {
+                dump_user_crash_context(uctx);
+            }
+            do_exit(128 + signo as i32, true);
+        }
         SignalOSAction::Stop => do_exit(1, true),
         SignalOSAction::Continue => {}
         SignalOSAction::NoFurtherAction => {}
@@ -161,19 +238,79 @@ pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> AxRes
     Ok(())
 }
 
-/// Sends a fatal signal to the current process.
-pub fn raise_signal_fatal(sig: SignalInfo) -> AxResult<()> {
+/// Deliver a fatal signal raised by a synchronous exception (page
+/// fault, illegal instruction, divide-by-zero, etc.) on the current
+/// thread. Linux's `force_sig_info` semantics: the signal is bound to
+/// the faulting thread and cannot be masked, so the register dump
+/// printed during termination always describes the thread that took
+/// the exception rather than an arbitrary peer that happened to have
+/// the signal unblocked.
+///
+/// Process-wide fatal signals (signals raised on someone else's
+/// behalf) still go through [`send_signal_to_process`] and can land
+/// on any unmasked thread.
+pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
     let curr = current();
-    let proc_data = &curr.as_thread().proc_data;
-
+    let thread = curr.as_thread();
     let signo = sig.signo();
-    info!("Send fatal signal {signo:?} to the current process");
-    if let Some(tid) = proc_data.signal.send_signal(sig)
-        && let Ok(task) = get_task(tid)
+    info!(
+        "Synchronous-exception fatal signal {:?} on tid={}",
+        signo,
+        thread.proc_data.proc.pid()
+    );
+
+    // Force-deliver to the faulting thread. Mirrors Linux's
+    //   force_sig_info():
+    //     - Reset SIG_IGN to SIG_DFL so the signal cannot be silently
+    //       swallowed: a synchronous SIGSEGV/SIGILL/SIGBUS on an
+    //       address the user-space program told us to ignore would
+    //       otherwise loop on the same fault forever.
+    //     - Clear the per-thread mask bit so a thread that blocked
+    //       the signal still terminates on a sync fault.
+    //     - Then enqueue normally. If the disposition was a user
+    //       handler, it still gets to run; the bypass only flips
+    //       Ignore.
     {
-        task.interrupt();
+        use starry_signal::SignalDisposition;
+        let mut actions = thread.proc_data.signal.actions.lock();
+        let act = &mut actions[signo];
+        let force_default = matches!(act.disposition, SignalDisposition::Ignore)
+            || (matches!(act.disposition, SignalDisposition::Default)
+                && matches!(
+                    signo.default_action(),
+                    starry_signal::DefaultSignalAction::Ignore
+                ));
+        if force_default {
+            *act = starry_signal::SignalAction::default();
+        }
+    }
+    let mut mask = thread.signal.blocked();
+    if mask.has(signo) {
+        mask.remove(signo);
+        thread.signal.set_blocked(mask);
+    }
+
+    // Tag the dump request with the specific fault signo so a later
+    // `check_signals` only consumes it when that signal is the one
+    // being delivered. Group-exit SIGKILLs sent to peers via
+    // `send_signal_to_process` skip this path and leave the slot at
+    // zero, so peers terminate silently. Storing 0 elsewhere is the
+    // "no dump" sentinel — signo values start at 1.
+    thread
+        .fault_dump_signo
+        .store(signo as u8, core::sync::atomic::Ordering::Release);
+
+    if thread.signal.send_signal(sig) {
+        curr.interrupt();
     } else {
-        // No task wants to handle the signal, abort the task
+        // send_signal returning false means the signal was rejected
+        // (already pending). Either way the faulting thread is the
+        // right one to terminate, so dump and exit here directly so
+        // userspace cannot lose the register state.
+        thread
+            .fault_dump_signo
+            .store(0, core::sync::atomic::Ordering::Release);
+        dump_user_crash_context(uctx);
         do_exit(signo as i32, true);
     }
 
