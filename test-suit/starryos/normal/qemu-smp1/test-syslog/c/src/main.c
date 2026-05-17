@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef SYS_syslog
@@ -23,6 +25,53 @@
 #define SYSLOG_ACTION_CONSOLE_LEVEL 8
 #define SYSLOG_ACTION_SIZE_UNREAD 9
 #define SYSLOG_ACTION_SIZE_BUFFER 10
+
+#ifndef SYS_setresuid
+#define SYS_setresuid 147
+#endif
+
+static int run_in_child(void (*func)(void)) {
+    pid_t pid = fork();
+    if (pid < 0)
+        return 0;
+    if (pid == 0) {
+        func();
+        _exit(__fail > 0 ? 1 : 0);
+    }
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited == -1 && errno == EINTR);
+    if (waited == -1)
+        return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static void child_syslog_eperm(void) {
+    char tmp[16];
+    syscall(SYS_setresuid, 1000, 1000, 1000);
+
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ, tmp, (int)sizeof(tmp)),
+              EPERM, "non-root READ returns EPERM");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ_ALL, tmp, (int)sizeof(tmp)),
+              EPERM, "non-root READ_ALL returns EPERM");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ_CLEAR, tmp, (int)sizeof(tmp)),
+              EPERM, "non-root READ_CLEAR returns EPERM");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_CLEAR, NULL, 0),
+              EPERM, "non-root CLEAR returns EPERM");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_OFF, NULL, 0),
+              EPERM, "non-root CONSOLE_OFF returns EPERM");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_ON, NULL, 0),
+              EPERM, "non-root CONSOLE_ON returns EPERM");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_LEVEL, NULL, 3),
+              EPERM, "non-root CONSOLE_LEVEL returns EPERM");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_SIZE_UNREAD, NULL, 0),
+              EPERM, "non-root SIZE_UNREAD returns EPERM");
+
+    long sb = syscall(SYS_syslog, SYSLOG_ACTION_SIZE_BUFFER, NULL, 0);
+    CHECK(sb > 0, "non-root SIZE_BUFFER succeeds (no privilege required)");
+}
 
 int main(void) {
     TEST_START("syslog");
@@ -101,6 +150,9 @@ int main(void) {
 
     CHECK_ERR(syscall(SYS_syslog, 99, NULL, 0), EINVAL,
               "unknown action returns EINVAL");
+
+    CHECK(run_in_child(child_syslog_eperm),
+          "non-root privilege denial (child process)");
 
     TEST_DONE();
 }
