@@ -9,6 +9,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, PollSet, Pollable};
+use starry_process::Pid;
 
 use crate::{
     file::FileLike,
@@ -19,6 +20,7 @@ pub struct PidFd {
     proc_data: Weak<ProcessData>,
     exit_event: Arc<PollSet>,
     thread_exit: Option<Arc<AtomicBool>>,
+    tid: Option<Pid>,
 
     non_blocking: AtomicBool,
 }
@@ -28,19 +30,29 @@ impl PidFd {
             proc_data: Arc::downgrade(proc_data),
             exit_event: proc_data.exit_event.clone(),
             thread_exit: None,
+            tid: None,
 
             non_blocking: AtomicBool::new(false),
         }
     }
 
-    pub fn new_thread(thread: &Thread) -> Self {
+    pub fn new_thread(thread: &Thread, tid: Pid) -> Self {
         Self {
             proc_data: Arc::downgrade(&thread.proc_data),
             exit_event: thread.exit_event.clone(),
             thread_exit: Some(thread.exit.clone()),
+            tid: Some(tid),
 
             non_blocking: AtomicBool::new(false),
         }
+    }
+
+    pub fn is_thread(&self) -> bool {
+        self.tid.is_some()
+    }
+
+    pub fn tid(&self) -> Option<Pid> {
+        self.tid
     }
 
     pub fn process_data(&self) -> AxResult<Arc<ProcessData>> {
