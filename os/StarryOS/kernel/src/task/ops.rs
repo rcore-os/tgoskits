@@ -343,9 +343,9 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
         };
         let next_entry = node.next;
         if entry != pending {
-            if let Err(err) = handle_futex_death(entry, offset) {
+            handle_futex_death(entry, offset).unwrap_or_else(|err| {
                 debug!("robust list: failed to clean entry {entry:?}: {err:?}");
-            }
+            });
         }
         entry = next_entry;
 
@@ -359,9 +359,9 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
 
     // Process the pending entry that was skipped in the loop
     if !pending.is_null() && !core::ptr::eq(pending, end_ptr) {
-        if let Err(err) = handle_futex_death(pending, offset) {
+        handle_futex_death(pending, offset).unwrap_or_else(|err| {
             debug!("robust list: failed to clean pending entry {pending:?}: {err:?}");
-        }
+        });
     }
 
     Ok(())
