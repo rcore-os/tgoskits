@@ -38,9 +38,10 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
     let mut build_info = if let Some(build_info) = &request.build_info_override {
         build_info.clone()
     } else {
-        crate::build::load_or_create_build_info(&request.build_info_path, || {
+        crate::build::ensure_build_info(&request.build_info_path, || {
             default_starry_build_info_for_target(&request.target)
-        })?
+        })?;
+        crate::build::load_build_info(&request.build_info_path)?
     };
 
     crate::build::apply_makefile_features(&mut build_info, &request.package, &makefile_features);
@@ -54,20 +55,21 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
 
 pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
     let metadata =
-        crate::build::workspace_metadata().context("failed to load workspace metadata")?;
+        crate::build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let makefile_features = crate::build::makefile_features_from_env();
     let mut build_info = if let Some(build_info) = &request.build_info_override {
         build_info.clone()
     } else {
-        crate::build::load_or_create_build_info(&request.build_info_path, || {
+        crate::build::ensure_build_info(&request.build_info_path, || {
             default_starry_build_info_for_target(&request.target)
-        })?
+        })?;
+        crate::build::load_build_info(&request.build_info_path)?
     };
     crate::build::apply_makefile_features_with_metadata(
         &mut build_info,
         &request.package,
         &makefile_features,
-        &metadata,
+        metadata,
     );
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
@@ -76,9 +78,9 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         &request.package,
         &request.target,
         request.plat_dyn,
-        &metadata,
+        metadata,
     )?;
-    patch_starry_cargo_config(&mut cargo, request, &metadata)?;
+    patch_starry_cargo_config(&mut cargo, request, metadata)?;
     Ok(cargo)
 }
 
@@ -113,6 +115,35 @@ fn patch_starry_cargo_config(
             .or_insert_with(|| platform.to_string());
     }
 
+    if cargo.env.get("UIMAGE").map(|v| v.as_str()) == Some("y") {
+        inject_uimage_post_build_cmd(cargo, &request.arch)?;
+    }
+
+    Ok(())
+}
+
+fn uimg_arch_for(arch: &str) -> String {
+    match arch {
+        "aarch64" => "arm64".to_string(),
+        "riscv64" => "riscv".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn inject_uimage_post_build_cmd(cargo: &mut Cargo, arch: &str) -> anyhow::Result<()> {
+    let uimg_arch = uimg_arch_for(arch);
+    let config_path = cargo
+        .env
+        .get("AX_CONFIG_PATH")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("AX_CONFIG_PATH is required for UIMAGE generation"))?;
+
+    let cmd = format!(
+        "paddr=$(ax-config-gen {config_path} -r plat.kernel-base-paddr | tr -d _) && \
+         bin=${{KERNEL_ELF%.elf}}.bin && mkimage -A {uimg_arch} -O linux -T kernel -C none -a \
+         \"$paddr\" -d \"$bin\" \"${{bin%.bin}}.uimg\""
+    );
+    cargo.post_build_cmds.push(cmd);
     Ok(())
 }
 
@@ -438,7 +469,7 @@ HELLO = "world"
                 "ax-feat/driver-sdmmc".to_string(),
                 "ax-feat/plat-dyn".to_string(),
                 "axplat-dyn/rockchip-soc".to_string(),
-                "axplat-dyn/sdmmc".to_string(),
+                "axplat-dyn/rockchip-sdhci".to_string(),
             ],
             log: LogLevel::Info,
             max_cpu_num: Some(8),
@@ -448,7 +479,7 @@ HELLO = "world"
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, true),
+            StarryBuildInfo::build_cargo_args(&request.target, true, &[]),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -459,7 +490,11 @@ HELLO = "world"
                 .features
                 .contains(&"axplat-dyn/rockchip-soc".to_string())
         );
-        assert!(cargo.features.contains(&"axplat-dyn/sdmmc".to_string()));
+        assert!(
+            cargo
+                .features
+                .contains(&"axplat-dyn/rockchip-sdhci".to_string())
+        );
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
         assert!(
@@ -492,7 +527,7 @@ HELLO = "world"
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, true),
+            StarryBuildInfo::build_cargo_args(&request.target, true, &[]),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();
@@ -544,7 +579,7 @@ HELLO = "world"
         let mut cargo = build_info.into_base_cargo_config_with_log(
             request.package.clone(),
             request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, false),
+            StarryBuildInfo::build_cargo_args(&request.target, false, &[]),
         );
 
         let metadata = crate::build::workspace_metadata().unwrap();

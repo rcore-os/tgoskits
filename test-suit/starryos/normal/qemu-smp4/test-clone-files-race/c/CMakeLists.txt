@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-clone-files-race C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-clone-files-race src/main.c)
+target_compile_options(test-clone-files-race PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-clone-files-race RUNTIME DESTINATION usr/bin)

@@ -1,8 +1,9 @@
 use alloc::{
+    collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::{ffi::c_long, sync::atomic::Ordering};
+use core::ffi::c_long;
 
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::TimeValue;
@@ -19,6 +20,9 @@ use super::{
     AsThread, Cred, FutexKey, ProcessData, TimerState, futex_table_for, send_signal_thread_inner,
     send_signal_to_process, send_signal_to_thread,
 };
+
+const FUTEX_OWNER_DIED: u32 = 0x40000000;
+const FUTEX_TID_MASK: u32 = 0x3fffffff;
 
 static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
 
@@ -41,8 +45,7 @@ struct ZombieEntry {
 /// Maps PID → [`ZombieEntry`].  Inserted by `register_zombie` (called from
 /// `do_exit` before `process.exit()`), removed by `unregister_zombie` (called
 /// from `waitpid` after `child.free()`).
-static ZOMBIE_TABLE: RwLock<alloc::collections::BTreeMap<Pid, ZombieEntry>> =
-    RwLock::new(alloc::collections::BTreeMap::new());
+static ZOMBIE_TABLE: RwLock<BTreeMap<Pid, ZombieEntry>> = RwLock::new(BTreeMap::new());
 
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
 
@@ -166,6 +169,34 @@ pub fn get_zombie_cred(pid: Pid) -> Option<Arc<Cred>> {
     ZOMBIE_TABLE.read().get(&pid).map(|e| e.cred.clone())
 }
 
+/// Finds the process with the given PID.
+///
+/// A zombie process may no longer have live [`ProcessData`] after its last
+/// thread exits, but POSIX process-id queries such as `getpgid(pid)` and
+/// `kill(pid, 0)` must still see it until the parent reaps it.
+pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
+    if pid == 0 {
+        return Ok(current().as_thread().proc_data.proc.clone());
+    }
+    if let Ok(proc_data) = get_process_data(pid) {
+        return Ok(proc_data.proc.clone());
+    }
+    get_zombie_process(pid).ok_or(AxError::NoSuchProcess)
+}
+
+/// Finds the credentials for a process that may already be a zombie.
+pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
+    if pid == 0 {
+        return Ok(current().as_thread().cred());
+    }
+    if let Ok(task) = get_task(pid)
+        && let Some(thr) = task.try_as_thread()
+    {
+        return Ok(thr.cred());
+    }
+    get_zombie_cred(pid).ok_or(AxError::NoSuchProcess)
+}
+
 /// Finds the process group with the given PGID.
 pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
     PROCESS_GROUP_TABLE
@@ -271,6 +302,15 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
         .checked_add_signed(offset)
         .ok_or(AxError::InvalidInput)?;
     let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
+    let futex_word = address as *mut u32;
+    let owner_tid = current().id().as_u64() as u32;
+    let value = futex_word.vm_read()?;
+
+    if value & FUTEX_TID_MASK != owner_tid {
+        return Ok(());
+    }
+    futex_word.vm_write((value & !FUTEX_TID_MASK) | FUTEX_OWNER_DIED)?;
+
     let key = FutexKey::new_current_teardown(address);
 
     let futex_table = futex_table_for(&key);
@@ -278,7 +318,6 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
     let Some(futex) = futex_table.get(&key) else {
         return Ok(());
     };
-    futex.owner_dead.store(true, Ordering::SeqCst);
     futex.wq.wake(1, u32::MAX);
     Ok(())
 }
@@ -339,12 +378,23 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         warn!("exit robust list failed: {err:?}");
     }
 
+    #[cfg(feature = "kcov")]
+    crate::kcov::disable_for_thread(curr.id().as_u64() as u32);
+
     let process = &thr.proc_data.proc;
     if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
         // Close all file descriptors before marking the process as exited.
         // This ensures pipe write ends and other resources are properly released,
         // so parent processes blocking on pipe reads will receive EOF.
         crate::file::close_all_fds();
+
+        // Release all POSIX (fcntl) locks held by this pid. Linux releases
+        // them implicitly via fl_release_private when the last fd referring
+        // to the inode is closed; we track POSIX locks by pid rather than
+        // by fd, so the cleanup happens here at process-exit time. Without
+        // this, a child fork → F_SETLK → exit would permanently pin the
+        // record in FCNTL_LOCKS and block all later acquirers.
+        crate::syscall::release_pid_locks(process.pid());
 
         // Snapshot children BEFORE process.exit() reparents them to init
         // via mem::take. Otherwise process.children() returns an empty

@@ -1,5 +1,6 @@
 mod device;
 mod gpt;
+mod mbr;
 
 use alloc::{string::String, vec::Vec};
 
@@ -39,6 +40,7 @@ pub struct PartitionInfo {
     pub region: PartitionRegion,
     pub name: Option<String>,
     pub part_uuid: Option<String>,
+    pub bootable: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +60,9 @@ impl PartitionTable {
 
 pub fn scan_partitions<T: BlockDriverOps + ?Sized>(inner: &mut T) -> DevResult<PartitionTable> {
     if let Some(table) = gpt::scan_gpt_partitions(inner)? {
+        return Ok(table);
+    }
+    if let Some(table) = mbr::scan_mbr_partitions(inner)? {
         return Ok(table);
     }
 

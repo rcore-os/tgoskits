@@ -14,6 +14,12 @@ _status=$(printf '%s\n' "$_t" | sed -n 's/^BUSYBOX_ARP_STATUS://p')
 _t=$(printf '%s\n' "$_t" | sed '/^BUSYBOX_ARP_STATUS:/d')
 if [ "$_status" = 0 ] && { [ -z "$_t" ] || echo "$_t" | grep -qF "HWtype" || echo "$_t" | grep -qF "[ether]"; }; then echo "PASS: busybox_arp"; PASS=$((PASS+1)); else echo "FAIL: busybox_arp"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
+_t=$({ timeout 10 sh -c "busybox arping -c 1 10.0.2.2 2>&1"; echo "ARPING_STATUS:$?"; } 2>&1)
+if echo "$_t" | grep -qF "ARPING_STATUS:0" && echo "$_t" | grep -Eq "Received [1-9][0-9]* response[(]s[)]|Unicast reply"; then echo "PASS: busybox_arping"; PASS=$((PASS+1)); else echo "FAIL: busybox_arping"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 5 sh -c "busybox arping -c 1 -w 1 127.0.0.1 2>&1"; echo "ARPING_LOOPBACK_STATUS:$?"; } 2>&1)
+if ! echo "$_t" | grep -Eq "Received [1-9][0-9]* response[(]s[)]|Unicast reply"; then echo "PASS: busybox_arping_loopback_negative"; PASS=$((PASS+1)); else echo "FAIL: busybox_arping_loopback_negative"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 _t=$({ timeout 10 sh -c "busybox ash -c 'echo ash_ok' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "ash_ok"; then echo "PASS: busybox_ash"; PASS=$((PASS+1)); else echo "FAIL: busybox_ash"; FAIL=$((FAIL+1)); fi
 
@@ -430,6 +436,9 @@ if echo "$_t" | grep -qF "Usage: nc"; then echo "PASS: busybox_nc"; PASS=$((PASS
 
 _t=$({ timeout 10 sh -c "busybox netstat -a 2>&1; busybox echo netstat_ok"; } 2>&1)
 if echo "$_t" | grep -qF "netstat_ok"; then echo "PASS: busybox_netstat"; PASS=$((PASS+1)); else echo "FAIL: busybox_netstat"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox nice -n 10 busybox echo nice_ok 2>&1"; } 2>&1)
+if echo "$_t" | grep -qF "nice_ok"; then echo "PASS: busybox_nice"; PASS=$((PASS+1)); else echo "FAIL: busybox_nice"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox nl -ba /etc/passwd 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "root:"; then echo "PASS: busybox_nl"; PASS=$((PASS+1)); else echo "FAIL: busybox_nl"; FAIL=$((FAIL+1)); fi

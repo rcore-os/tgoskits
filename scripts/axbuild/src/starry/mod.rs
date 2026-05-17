@@ -325,9 +325,12 @@ impl Starry {
         uboot_config: Option<PathBuf>,
         persistence: SnapshotPersistence,
     ) -> anyhow::Result<ResolvedStarryRequest> {
-        let (request, snapshot) =
-            self.app
-                .prepare_starry_request(args, qemu_config, uboot_config)?;
+        let (request, snapshot) = self.app.prepare_starry_request(
+            args,
+            qemu_config,
+            uboot_config,
+            build::resolve_build_info_path,
+        )?;
         if persistence.should_store() {
             self.app.store_starry_snapshot(&snapshot)?;
         }

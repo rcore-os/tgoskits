@@ -1,6 +1,6 @@
 [package]
 name = "riscv_vcpu"
-version = "0.5.6"
+version = "0.5.7"
 edition.workspace = true
 authors = [
     "KeYang Hu <keyang.hu@qq.com>",
@@ -32,8 +32,8 @@ riscv = { version = "0.14.0", features = ["s-mode"] }
 riscv-h = { workspace = true }
 riscv-decode = "0.2.3"
 rustsbi = { version = "0.4.0", features = ["forward"] }
-sbi-rt = { version = "0.0.3", features = ["integer-impls"] }
-sbi-spec = { version = "0.0.7", features = ["legacy"] }
+sbi-rt = { version = "0.0.4", features = ["integer-impls"] }
+sbi-spec = { version = "0.0.9", features = ["legacy"] }
 tock-registers = "0.10"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 

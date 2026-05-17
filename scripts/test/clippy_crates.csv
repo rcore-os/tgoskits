@@ -1,5 +1,6 @@
 package
 aarch64_sysreg
+arm-scmi-rs
 arceos-affinity
 arceos-display
 arceos-exception
@@ -33,6 +34,7 @@ ax-crate-interface-lite
 ax-display
 ax-dma
 ax-driver-display
+ax-driver-block
 ax-driver-virtio
 ax-errno
 ax-fs
@@ -57,6 +59,7 @@ ax-memory-set
 axpanic
 ax-plat
 ax-plat-aarch64-peripherals
+ax-plat-riscv64-sg2002
 ax-plat-x86-pc
 ax-percpu
 ax-percpu-macros
@@ -84,6 +87,7 @@ axplat-x86-qemu-q35
 axvm
 axvmconfig
 bitmap-allocator
+dwmmc-host
 enumerate
 eth-intel
 fxmac_rs
@@ -116,8 +120,11 @@ rdrive
 rdrive-macros
 rsext4
 scope-local
-simple-sdmmc
+sdhci-host
+sdmmc-protocol
 some-serial
+someboot
+sg2002-tpu
 starry-kernel
 starryos
 starry-process

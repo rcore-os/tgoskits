@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use ostool::build::config::Cargo;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,8 @@ use crate::{
     build::BuildInfo,
     context::{ResolvedAxvisorRequest, arch_for_target_checked},
 };
+
+mod x86;
 
 pub type AxvisorBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
@@ -112,23 +114,29 @@ pub(crate) fn default_build_info_path(axvisor_dir: &Path, target: &str) -> PathB
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<Cargo> {
-    to_cargo_config(load_build_config(request)?, request)
+    let metadata =
+        crate::build::cached_workspace_metadata().context("failed to load workspace metadata")?;
+    to_cargo_config(load_build_config(request)?, request, metadata)
 }
 
 fn to_cargo_config(
     mut config: LoadedAxvisorBuildConfig,
     request: &ResolvedAxvisorRequest,
+    metadata: &cargo_metadata::Metadata,
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
     let plat_dyn = config
         .build_info
         .effective_plat_dyn(&config.target, request.plat_dyn);
     normalize_axvisor_platform_features(&mut config.build_info.features, plat_dyn);
-    let mut cargo = config.build_info.into_prepared_base_cargo_config(
-        &request.package,
-        &config.target,
-        request.plat_dyn,
-    )?;
+    let mut cargo = config
+        .build_info
+        .into_prepared_base_cargo_config_with_metadata(
+            &request.package,
+            &config.target,
+            request.plat_dyn,
+            metadata,
+        )?;
     patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
     Ok(cargo)
 }
@@ -168,6 +176,9 @@ fn patch_axvisor_cargo_config(
 
     let cargo_uses_plat_dyn = cargo.features.iter().any(|f| f == "ax-std/plat-dyn");
     normalize_axvisor_platform_features(&mut cargo.features, cargo_uses_plat_dyn);
+    if request.arch == "x86_64" {
+        x86::normalize_backend_features(&mut cargo.features)?;
+    }
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
@@ -530,7 +541,7 @@ vm_configs = []
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "x86_64-unknown-none"
-features = ["ept-level-4", "fs"]
+features = ["ept-level-4", "fs", "vmx"]
 log = "Info"
 vm_configs = []
 "#,
@@ -558,6 +569,7 @@ vm_configs = []
         );
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
         assert!(cargo.features.contains(&"fs".to_string()));
+        assert!(cargo.features.contains(&"vmx".to_string()));
         assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
         assert!(cargo.features.contains(&"ax-std/myplat".to_string()));

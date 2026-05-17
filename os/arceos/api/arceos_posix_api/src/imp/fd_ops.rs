@@ -116,6 +116,7 @@ pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> c_int {
 pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> c_int {
     debug!("sys_fcntl <= fd: {fd} cmd: {cmd} arg: {arg}");
     syscall_body!(sys_fcntl, {
+        #[allow(unreachable_patterns)]
         match cmd as u32 {
             ctypes::F_DUPFD => dup_fd(fd),
             ctypes::F_DUPFD_CLOEXEC => {

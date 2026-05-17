@@ -1,0 +1,32 @@
+args = [
+    "-nographic",
+    "-m", "512M",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+test_commands = [
+    "/usr/bin/test-kcov-linux-doc",
+    "/usr/bin/test-kcov-basic-easy",
+    "/usr/bin/test-kcov-stress",
+    "/usr/bin/test-kcov-open",
+    "/usr/bin/test-kcov-pre-init-reject",
+    "/usr/bin/test-kcov-init-trace",
+    "/usr/bin/test-kcov-mmap-buffer",
+    "/usr/bin/test-kcov-enable-disable",
+    "/usr/bin/test-kcov-pc-values",
+    "/usr/bin/test-kcov-threading",
+    "/usr/bin/test-kcov-integrity",
+    "/usr/bin/test-kcov-guard",
+    "/usr/bin/test-kcov-per-fd-state",
+    "/usr/bin/test-kcov-disable-thread-check",
+    "/usr/bin/test-kcov-syzkaller-emulation",
+    "/usr/bin/test-kcov-buffer-boundary",
+]
+success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 120

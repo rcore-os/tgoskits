@@ -1,6 +1,6 @@
 [package]
 name = "axplat-riscv64-visionfive2"
-version = "0.1.0-pre.3"
+version = "0.1.2"
 edition.workspace = true
 authors = ["朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Implementation of axplat hardware abstraction layer for RISC-V VisionFive2 board"

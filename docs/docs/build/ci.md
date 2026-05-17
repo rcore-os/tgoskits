@@ -44,7 +44,7 @@ flowchart TB
 | 系统基础 | `build-essential`、`clang`、`cmake`、`make`、`meson`、`ninja-build`、`pkg-config`、`python3` |
 | 文件系统/镜像工具 | `dosfstools`、`e2fsprogs`、`xz-utils` |
 | QEMU | 源码构建 `QEMU_VERSION=10.2.1`，覆盖 `aarch64`、`riscv64`、`x86_64`、`loongarch64` |
-| Rust 环境 | 依据 `rust-toolchain.toml` 安装 toolchain + `cargo-binutils`、`axconfig-gen`、`cargo-axplat` |
+| Rust 环境 | 依据 `rust-toolchain.toml` 安装 toolchain + `cargo-binutils`；配置生成由 `scripts/axbuild` 内部处理 |
 | 交叉编译工具链 | `aarch64`、`riscv64`、`x86_64`、`loongarch64` 的 musl 交叉编译器 |
 
 基础镜像从源码编译 QEMU（而非使用发行版包）以确保所有目标架构的支持和版本一致性。Rust 工具链版本通过 `rust-toolchain.toml` 固定，CI 构建时自动读取该文件安装对应版本。交叉编译器使用 musl libc 变体，与 ArceOS 和 StarryOS 的用户态测试环境匹配。
@@ -193,5 +193,3 @@ docker run -it --rm \
 | `aarch64` | `aarch64-unknown-none-softfloat` |
 | `riscv64` | `riscv64gc-unknown-none-elf` |
 | `loongarch64` | `loongarch64-unknown-none-softfloat` |
-
-

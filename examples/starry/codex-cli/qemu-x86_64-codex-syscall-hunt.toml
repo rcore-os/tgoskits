@@ -1,0 +1,124 @@
+# Example only: this online flow is opt-in and is not part of test-suit or CI.
+# Prepare tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img with
+# prepare_codex_rootfs.sh --auth-json ... before running it.
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "2G",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-snapshot",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+export HOME=/root
+export USER=root
+export SHELL=/bin/sh
+export TERM=xterm-256color
+export PATH=/usr/local/bin:/usr/bin:/bin:/sbin
+export CODEX_HOME=/root/.codex
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+if [ -f "$CODEX_HOME/starry-online-env" ]; then
+    . "$CODEX_HOME/starry-online-env"
+fi
+set -e
+echo "STARRY_TGOSKITS_SYSCALL_HUNT_ENV_READY"
+
+if [ ! -s "$CODEX_HOME/auth.json" ]; then
+    echo "STARRY_TGOSKITS_SYSCALL_HUNT_MISSING_AUTH_JSON"
+    echo "Run examples/starry/codex-cli/prepare_codex_rootfs.sh with --auth-json first."
+    exit 1
+fi
+
+command -v git
+command -v rg
+command -v codex
+codex --version
+codex login status -c 'cli_auth_credentials_store="file"'
+
+if [ ! -d /tmp/tgoskits-syscall-hunt/repo/.git ]; then
+    rm -rf /tmp/tgoskits-syscall-hunt
+    mkdir -p /tmp/tgoskits-syscall-hunt
+    cd /tmp/tgoskits-syscall-hunt
+    clone_ok=0
+    for attempt in 1 2 3; do
+        echo "clone attempt ${attempt}/3"
+        rm -rf repo
+        if time git clone --quiet --depth 1 --branch dev https://github.com/rcore-os/tgoskits.git repo; then
+            clone_ok=1
+            break
+        fi
+        sleep 2
+    done
+    test "$clone_ok" = "1"
+fi
+
+cd /tmp/tgoskits-syscall-hunt/repo
+git config user.name 'StarryOS Codex Syscall Hunt'
+git config user.email 'codex-syscall-hunt@example.invalid'
+test -f AGENTS.md
+test -d os/StarryOS/kernel
+test -d test-suit/starryos
+git status --short
+echo "STARRY_TGOSKITS_SYSCALL_HUNT_REPO_READY"
+
+cat > /tmp/tgoskits-syscall-hunt-prompt.txt <<'EOF'
+You are running inside a StarryOS x86_64 QEMU guest. The working directory is a real clone of the TGOSKits repository.
+
+Task: find and, if practical, fix one small and well-scoped syscall or kernel semantic bug.
+
+Rules:
+- Treat Linux behavior as the reference.
+- Prefer one small target from filesystem/directory semantics, process wait/exit semantics, or memory mapping semantics.
+- Handle only one clear issue in this run. Do not do a broad refactor.
+- First read `AGENTS.md`, `test-suit/starryos/GUIDE.md`, and the relevant StarryOS kernel/test-suit code.
+- First explain the minimal Linux-vs-StarryOS differential idea, then decide whether to write a test.
+- If it is safe to edit, prefer adding or updating one minimal regression test and one minimal fix.
+- If time, tools, or environment limits prevent a safe fix, do not force a patch. Instead report the candidate bug, evidence, relevant files, and the next minimal validation command.
+- Do not read, print, or copy any auth.json.
+
+Use necessary read-only commands such as `rg`, `sed`, and `git status`. If you edit files, only edit files directly related to the selected issue.
+
+Your final answer must be in Simplified Chinese and must include:
+- `STARRY_TGOSKITS_SYSCALL_HUNT_DONE`
+- selected syscall/semantic target
+- bug hypothesis or confirmed issue
+- key files inspected
+- if files changed, changed files and validation commands; if no files changed, the next minimal validation plan
+EOF
+
+codex exec \
+  --dangerously-bypass-approvals-and-sandbox \
+  --color never \
+  -C /tmp/tgoskits-syscall-hunt/repo \
+  --output-last-message /tmp/codex-tgoskits-syscall-hunt.txt \
+  "$(cat /tmp/tgoskits-syscall-hunt-prompt.txt)"
+
+cat /tmp/codex-tgoskits-syscall-hunt.txt
+grep -F 'STARRY_TGOSKITS_SYSCALL_HUNT_DONE' /tmp/codex-tgoskits-syscall-hunt.txt
+echo "===== GIT STATUS AFTER CODEX ====="
+git status --short
+echo "===== GIT DIFF STAT AFTER CODEX ====="
+git diff --stat || true
+echo "STARRY_TGOSKITS_SYSCALL_HUNT_PASSED"
+'''
+success_regex = ["(?m)^STARRY_TGOSKITS_SYSCALL_HUNT_PASSED\\s*$"]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)page fault",
+    "(?i)segmentation fault",
+    "No such process \\(os error 3\\)",
+    "sys_prctl: unsupported option 23",
+    "(?m)^STARRY_TGOSKITS_SYSCALL_HUNT_MISSING_AUTH_JSON\\s*$",
+]
+timeout = 2400

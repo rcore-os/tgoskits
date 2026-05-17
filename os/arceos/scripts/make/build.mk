@@ -5,7 +5,7 @@ include scripts/make/cargo.mk
 ifeq ($(APP_TYPE), c)
   include scripts/make/build_c.mk
 else
-  rust_package := $(shell cat $(APP)/Cargo.toml | sed -n 's/^name = "\([a-z0-9A-Z_\-]*\)"/\1/p')
+  rust_package := $(shell cat $(APP)/Cargo.toml | sed -n 's/^name = "\([a-z0-9A-Z_\-]*\)"/\1/p' | head -1)
   rust_elf := $(TARGET_DIR)/$(TARGET)/$(MODE)/$(rust_package)
 endif
 
@@ -81,7 +81,7 @@ endif
 $(OUT_UIMG): $(OUT_BIN)
 	$(call run_cmd,mkimage,\
 		-A $(uimg_arch) -O linux -T kernel -C none \
-		-a $(subst _,,$(shell ax-config-gen "$(OUT_CONFIG)" -r plat.kernel-base-paddr)) \
+		-a $(subst _,,$(shell $(AXCONFIG) "$(OUT_CONFIG)" -r plat.kernel-base-paddr)) \
 		-d $(OUT_BIN) $@)
 
 .PHONY: _cargo_build _dwarf

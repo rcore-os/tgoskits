@@ -10,14 +10,16 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use anyhow::{Context, bail, ensure};
-use ostool::run::qemu::QemuConfig;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use super::build as case_builder;
+use crate::context::AppContext;
 
 const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
 const CASE_CACHE_DIR_NAME: &str = "cache";
@@ -266,13 +268,7 @@ pub(crate) fn copy_shared_rootfs_for_case(
     shared_rootfs: &Path,
     layout: &CaseAssetLayout,
 ) -> anyhow::Result<()> {
-    fs::copy(shared_rootfs, &layout.case_rootfs_copy).with_context(|| {
-        format!(
-            "failed to copy rootfs {} to {}",
-            shared_rootfs.display(),
-            layout.case_rootfs_copy.display()
-        )
-    })?;
+    copy_file_fast(shared_rootfs, &layout.case_rootfs_copy)?;
     Ok(())
 }
 
@@ -463,7 +459,26 @@ fn rootfs_cache_image_path(
     Ok(layout.rootfs_cache_dir.join(format!("{key}.img")))
 }
 
+fn rootfs_cache_write_enabled() -> bool {
+    if std::env::var_os("AXBUILD_DISABLE_ROOTFS_CACHE").is_some() {
+        return false;
+    }
+    std::env::var_os("CI").is_none()
+}
+
+fn is_no_space_left(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(|e| e.raw_os_error())
+            == Some(28)
+    })
+}
+
 fn save_rootfs_cache_image(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    if !rootfs_cache_write_enabled() {
+        return Ok(());
+    }
     let parent = dst
         .parent()
         .ok_or_else(|| anyhow::anyhow!("rootfs cache path has no parent: {}", dst.display()))?;
@@ -476,7 +491,13 @@ fn save_rootfs_cache_image(src: &Path, dst: &Path) -> anyhow::Result<()> {
             .unwrap_or("rootfs-cache"),
         next_case_run_id()
     ));
-    copy_file_fast(src, &temp)?;
+    if let Err(err) = copy_file_fast(src, &temp) {
+        let _ = fs::remove_file(&temp);
+        if is_no_space_left(&err) {
+            return Ok(());
+        }
+        return Err(err);
+    }
     match fs::rename(&temp, dst) {
         Ok(()) => Ok(()),
         Err(err) if dst.is_file() => {
@@ -687,6 +708,40 @@ pub(crate) fn apply_grouped_qemu_config(
     }
 }
 
+pub(crate) async fn run_qemu_with_prepared_case_assets(
+    app: &mut AppContext,
+    cargo: &Cargo,
+    qemu: QemuConfig,
+    qemu_config_path: &Path,
+    prepared_assets: PreparedCaseAssets,
+    prepare_elapsed: Duration,
+) -> anyhow::Result<()> {
+    println!(
+        "  prepare assets: {:.2?} (pipeline={}, cache={})",
+        prepare_elapsed,
+        prepared_assets.pipeline.as_str(),
+        if prepared_assets.cache_hit {
+            "hit"
+        } else {
+            "miss"
+        }
+    );
+    println!(
+        "  qemu config: {} (timeout={})",
+        qemu_config_path.display(),
+        super::qemu::qemu_timeout_summary(&qemu)
+    );
+    println!("  rootfs: {}", prepared_assets.rootfs_path.display());
+
+    let qemu_started = std::time::Instant::now();
+    let result = app.run_qemu(cargo, qemu).await;
+    println!("  qemu run: {:.2?}", qemu_started.elapsed());
+
+    remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
+    remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
+    result
+}
+
 pub(crate) fn write_grouped_case_runner_script(
     overlay_dir: &Path,
     test_commands: &[String],
@@ -778,16 +833,16 @@ fn write_executable_script(path: &Path, body: &str) -> anyhow::Result<()> {
     make_executable(path)
 }
 
-fn make_executable(path: &Path) -> anyhow::Result<()> {
+fn make_executable(_path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(path)
-            .with_context(|| format!("failed to stat {}", path.display()))?
+        let mut perms = fs::metadata(_path)
+            .with_context(|| format!("failed to stat {}", _path.display()))?
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms)
-            .with_context(|| format!("failed to chmod {}", path.display()))?;
+        fs::set_permissions(_path, perms)
+            .with_context(|| format!("failed to chmod {}", _path.display()))?;
     }
     Ok(())
 }
@@ -798,11 +853,54 @@ fn shell_single_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        env,
+        ffi::{OsStr, OsString},
+        fs,
+        sync::{LazyLock, Mutex},
+    };
 
     use tempfile::tempdir;
 
     use super::*;
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct TempEnvVar {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl TempEnvVar {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = env::var_os(key);
+            unsafe {
+                env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = env::var_os(key);
+            unsafe {
+                env::remove_var(key);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for TempEnvVar {
+        fn drop(&mut self) {
+            match self.original.as_ref() {
+                Some(value) => unsafe {
+                    env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    env::remove_var(self.key);
+                },
+            }
+        }
+    }
 
     fn fake_config() -> CaseAssetConfig {
         CaseAssetConfig {
@@ -902,5 +1000,36 @@ mod tests {
         assert!(content.contains("SUITE_GROUPED_TEST_BEGIN: /usr/bin/alpha"));
         assert!(content.contains("SUITE_GROUPED_TEST_FAILED: /usr/bin/beta --flag"));
         assert!(content.contains("SUITE_GROUPED_TESTS_PASSED"));
+    }
+
+    #[test]
+    fn save_rootfs_cache_image_is_noop_in_ci() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _ci = TempEnvVar::set("CI", "1");
+        let _disable = TempEnvVar::unset("AXBUILD_DISABLE_ROOTFS_CACHE");
+
+        let root = tempdir().unwrap();
+        let src = root.path().join("src.img");
+        let dst = root.path().join("cache/rootfs.img");
+        fs::write(&src, vec![0_u8; 1024 * 1024]).unwrap();
+
+        save_rootfs_cache_image(&src, &dst).unwrap();
+        assert!(!dst.exists());
+    }
+
+    #[test]
+    fn save_rootfs_cache_image_writes_when_enabled() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _ci = TempEnvVar::unset("CI");
+        let _disable = TempEnvVar::unset("AXBUILD_DISABLE_ROOTFS_CACHE");
+
+        let root = tempdir().unwrap();
+        let src = root.path().join("src.img");
+        let dst = root.path().join("cache/rootfs.img");
+        fs::write(&src, vec![1_u8; 1024 * 1024]).unwrap();
+
+        save_rootfs_cache_image(&src, &dst).unwrap();
+        assert!(dst.is_file());
+        assert_eq!(fs::read(&dst).unwrap().len(), 1024 * 1024);
     }
 }

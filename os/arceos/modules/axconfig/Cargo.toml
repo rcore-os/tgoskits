@@ -1,6 +1,6 @@
 [package]
 name = "ax-config"
-version = "0.5.9"
+version = "0.5.10"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

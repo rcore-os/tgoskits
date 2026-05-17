@@ -44,10 +44,10 @@ impl<H: AhciHal> BlockDriverOps for AhciDriver<H> {
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> DevResult {
-        if buf.len() % self.block_size() != 0 {
+        if !buf.len().is_multiple_of(self.block_size()) {
             return Err(DevError::InvalidParam);
         }
-        if buf.as_ptr() as usize % 4 != 0 {
+        if !(buf.as_ptr() as usize).is_multiple_of(4) {
             return Err(DevError::InvalidParam);
         }
         if self.0.read(block_id, buf) {
@@ -58,10 +58,10 @@ impl<H: AhciHal> BlockDriverOps for AhciDriver<H> {
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
-        if buf.len() % self.block_size() != 0 {
+        if !buf.len().is_multiple_of(self.block_size()) {
             return Err(DevError::InvalidParam);
         }
-        if buf.as_ptr() as usize % 4 != 0 {
+        if !(buf.as_ptr() as usize).is_multiple_of(4) {
             return Err(DevError::InvalidParam);
         }
         if self.0.write(block_id, buf) {

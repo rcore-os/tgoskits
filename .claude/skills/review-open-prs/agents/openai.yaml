@@ -1,4 +1,4 @@
 interface:
   display_name: "Review Open PRs"
-  short_description: "Audit and review eligible open PRs"
-  default_prompt: "Use $review-open-prs to review eligible open PRs in this project."
+  short_description: "Find eligible open PRs and dispatch single-PR reviews"
+  default_prompt: "Use $review-open-prs to find eligible open PRs, then call $review-single-pr for each PR that needs review."
