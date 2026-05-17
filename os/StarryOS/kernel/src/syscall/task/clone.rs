@@ -155,6 +155,12 @@ impl CloneArgs {
             None
         };
 
+        // NOTE: This intentionally differs from Linux: Linux blocks the parent
+        // for every CLONE_VFORK clone regardless of the stack argument.
+        // StarryOS only blocks for bare vfork(), where the child reuses the
+        // parent's user stack. CLONE_VM | CLONE_VFORK with a private child
+        // stack is allowed to synchronize in user space, as posix_spawn-style
+        // runtimes do.
         let needs_vfork_block = flags.contains(CloneFlags::VFORK) && stack == 0;
 
         let mut new_uctx = *uctx;

@@ -100,8 +100,11 @@ int test_vfork_execution_order(void) {
     return 0;
 }
 
-/* Test 3: posix_spawn-style clone gets a private child stack and must not
-   block the parent in the kernel while the child is still running. */
+/* Test 3: StarryOS-specific behavior. Linux blocks the parent for every
+   CLONE_VFORK clone, regardless of the stack argument, so this case would
+   fail there. StarryOS only blocks for bare vfork() with stack == 0; a
+   posix_spawn-style clone with a private child stack synchronizes in user
+   space instead. */
 int test_vfork_clone_child_stack_nonblocking(void) {
     static char child_stack[16384];
     char *stack_top = child_stack + sizeof(child_stack);
