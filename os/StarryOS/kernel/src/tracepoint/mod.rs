@@ -283,6 +283,8 @@ fn init_events(fs: Arc<SimpleFs>) -> DirMaker {
 /// Initialize tracing directory in debugfs
 pub fn init_tracing_dir(fs: Arc<SimpleFs>) -> DirMaker {
     let mut tracing_root = DirMapping::new();
+    tracing_root.set_cacheable(false);
+
     tracing_root.add(
         "saved_cmdlines_size",
         SpecialFsFile::new_regular_with_perm(
@@ -299,22 +301,28 @@ pub fn init_tracing_dir(fs: Arc<SimpleFs>) -> DirMaker {
             NodePermission::from_bits_truncate(0o440),
         ),
     );
-    tracing_root.add(
-        "saved_cmdlines",
-        SpecialFsFile::new_regular_with_perm(
-            fs.clone(),
-            trace::TraceCmdLineFile::new(),
-            NodePermission::from_bits_truncate(0o440),
-        ),
-    );
-    tracing_root.add(
-        "trace",
-        SpecialFsFile::new_regular_with_perm(
-            fs.clone(),
-            trace::TraceFile::new(),
-            NodePermission::from_bits_truncate(0o640),
-        ),
-    );
+    tracing_root.add_dynamic("saved_cmdlines", {
+        let fs = fs.clone();
+        move || {
+            SpecialFsFile::new_regular_with_perm(
+                fs.clone(),
+                trace::TraceCmdLineFile::new(),
+                NodePermission::from_bits_truncate(0o440),
+            )
+            .into()
+        }
+    });
+    tracing_root.add_dynamic("trace", {
+        let fs = fs.clone();
+        move || {
+            SpecialFsFile::new_regular_with_perm(
+                fs.clone(),
+                trace::TraceFile::new(),
+                NodePermission::from_bits_truncate(0o640),
+            )
+            .into()
+        }
+    });
     tracing_root.add("events", init_events(fs.clone()));
     SimpleDir::new_maker(fs, Arc::new(tracing_root))
 }

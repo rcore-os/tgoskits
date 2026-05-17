@@ -14,7 +14,7 @@ mod tmp;
 #[cfg(feature = "plat-dyn")]
 pub(crate) mod usbfs;
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 use ax_errno::LinuxResult;
 use ax_fs::{FS_CONTEXT, FsContext};
@@ -36,6 +36,11 @@ pub enum NodeOpsMux {
     Dir(DirMaker),
     /// A file node.
     File(Arc<dyn FileNodeOps>),
+}
+
+enum NodeOpsMuxTy {
+    Static(NodeOpsMux),
+    Dynamic(Box<dyn Fn() -> NodeOpsMux + Send + Sync>),
 }
 
 impl From<DirMaker> for NodeOpsMux {

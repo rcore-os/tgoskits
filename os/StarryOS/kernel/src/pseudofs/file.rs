@@ -180,7 +180,7 @@ impl Pollable for SimpleFile {
 
 /// A special file that directly implements file operations without caching content in the kernel.
 /// It is used for files in procfs and debugfs that need to reflect real-time data.
-pub struct SpecialFsFile<T: Send + Sync + 'static> {
+pub struct SpecialFsFile<T: DirectRwFsFileOps> {
     node: SimpleFsNode,
     ops: Arc<T>,
 }
@@ -194,7 +194,7 @@ pub trait DirectRwFsFileOps: Send + Sync + 'static {
     }
 }
 
-impl<T: Send + Sync + 'static> SpecialFsFile<T> {
+impl<T: DirectRwFsFileOps> SpecialFsFile<T> {
     /// Creates a file from given file object and specified permissions.
     pub fn new_with_perm(
         fs: Arc<SimpleFs>,
@@ -216,7 +216,7 @@ impl<T: Send + Sync + 'static> SpecialFsFile<T> {
 }
 
 #[inherit_methods(from = "self.node")]
-impl<T: Send + Sync + 'static> NodeOps for SpecialFsFile<T> {
+impl<T: DirectRwFsFileOps> NodeOps for SpecialFsFile<T> {
     fn inode(&self) -> u64;
 
     fn metadata(&self) -> VfsResult<Metadata>;
@@ -240,13 +240,15 @@ impl<T: Send + Sync + 'static> NodeOps for SpecialFsFile<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> Pollable for SpecialFsFile<T> {
+impl<T: DirectRwFsFileOps> Pollable for SpecialFsFile<T> {
     fn poll(&self) -> IoEvents {
-        IoEvents::IN | IoEvents::OUT
+        // TODO: support poll for special files when needed
+        unimplemented!("poll is not implemented for SpecialFsFile yet")
     }
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {
         // TODO: support poll for special files when needed
+        unimplemented!("poll is not implemented for SpecialFsFile yet")
     }
 }
 

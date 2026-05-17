@@ -11,6 +11,13 @@ use ktracepoint::TracePipeOps;
 use crate::{pseudofs::DirectRwFsFileOps, task::AsThread, tracepoint::TRACE_RAW_PIPE};
 
 /// File representing the trace pipe.
+///
+/// TODO: Linux rejects concurrent `trace_pipe` readers at open time with
+/// `EBUSY`, because this file consumes records from the shared trace buffer.
+/// The current pseudofs/VFS path has no per-open hook or private file state, so
+/// this node cannot faithfully reserve and release a reader slot yet. Keep the
+/// limitation documented here until tracefs files can move their read state to
+/// open-file private data.
 pub struct TracePipeFile(Mutex<super::TextDrain>);
 
 impl TracePipeFile {
