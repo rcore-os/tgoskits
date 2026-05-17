@@ -22,15 +22,20 @@ pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
 
     let flags = PidFdFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
 
-    // Linux pidfd_open(2): EINVAL if pid is not valid. PID 0 is not a
-    // userspace-visible process id for this syscall (do not alias to self).
-    if pid == 0 {
+    // Linux pidfd_open(2): EINVAL if pid is not valid (includes pid <= 0).
+    if (pid as i32) <= 0 {
         return Err(AxError::InvalidInput);
     }
 
     let fd = if flags.contains(PidFdFlags::THREAD) {
         PidFd::new_thread(get_task(pid)?.as_thread())
     } else {
+        // Without PIDFD_THREAD the target must be a thread-group leader.
+        if let Ok(task) = get_task(pid)
+            && task.as_thread().proc_data.proc.pid() != pid
+        {
+            return Err(AxError::NotFound);
+        }
         PidFd::new_process(&get_process_data(pid)?)
     };
     if flags.contains(PidFdFlags::NONBLOCK) {
