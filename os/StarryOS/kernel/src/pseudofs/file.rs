@@ -243,7 +243,7 @@ impl<T: DirectRwFsFileOps> NodeOps for SpecialFsFile<T> {
 impl<T: DirectRwFsFileOps> Pollable for SpecialFsFile<T> {
     fn poll(&self) -> IoEvents {
         // TODO: support poll for special files when needed
-        unimplemented!("poll is not implemented for SpecialFsFile yet")
+        IoEvents::IN | IoEvents::OUT
     }
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {

@@ -13,6 +13,7 @@ use ax_memory_addr::VirtAddr;
 use ax_sync::Mutex;
 use ax_task::current;
 use axfs_ng_vfs::NodePermission;
+use axpoll::PollSet;
 use ktracepoint::*;
 
 use crate::{
@@ -22,13 +23,27 @@ use crate::{
 
 pub type KernelExtTracePoint = Arc<Mutex<ExtTracePoint<KernelTraceAux>>>;
 
-static TRACE_POINT_MAP: LazyInit<TracePointMap<KernelTraceAux>> = LazyInit::new();
+struct TraceState {
+    point_map: LazyInit<TracePointMap<KernelTraceAux>>,
+    raw_pipe: Mutex<TracePipeRaw>,
+    pipe_event: PollSet,
+    cmdline_cache: LazyInit<Mutex<TraceCmdLineCache>>,
+    ext_tracepoints: LazyInit<BTreeMap<u32, KernelExtTracePoint>>,
+}
 
-static TRACE_RAW_PIPE: Mutex<TracePipeRaw> = Mutex::new(TracePipeRaw::new(4096));
+impl TraceState {
+    const fn new() -> Self {
+        Self {
+            point_map: LazyInit::new(),
+            raw_pipe: Mutex::new(TracePipeRaw::new(4096)),
+            pipe_event: PollSet::new(),
+            cmdline_cache: LazyInit::new(),
+            ext_tracepoints: LazyInit::new(),
+        }
+    }
+}
 
-static TRACE_CMDLINE_CACHE: LazyInit<Mutex<TraceCmdLineCache>> = LazyInit::new();
-
-static EXT_TRACEPOINTS: LazyInit<BTreeMap<u32, KernelExtTracePoint>> = LazyInit::new();
+static TRACE_STATE: TraceState = TraceState::new();
 
 pub struct KernelTraceAux;
 
@@ -41,9 +56,12 @@ impl KernelTraceOps for KernelTraceAux {
 
     fn trace_pipe_push_raw_record(buf: &[u8]) {
         // log::debug!("trace_pipe_push_raw_record: {}", record.len());
-        TRACE_RAW_PIPE
-            .lock()
-            .push_record(monotonic_time_nanos(), this_cpu_id() as _, buf.to_vec());
+        TRACE_STATE.raw_pipe.lock().push_record(
+            monotonic_time_nanos(),
+            this_cpu_id() as _,
+            buf.to_vec(),
+        );
+        TRACE_STATE.pipe_event.wake();
     }
 
     fn trace_cmdline_push(pid: u32) {
@@ -57,7 +75,7 @@ impl KernelTraceOps for KernelTraceAux {
             .split('/')
             .next_back()
             .unwrap_or("unknown");
-        TRACE_CMDLINE_CACHE.lock().insert(pid, pname);
+        TRACE_STATE.cmdline_cache.lock().insert(pid, pname);
     }
 
     fn write_kernel_text(addr: *mut core::ffi::c_void, data: &[u8]) {
@@ -66,7 +84,8 @@ impl KernelTraceOps for KernelTraceAux {
     }
 
     fn read_tracepoint_state<R>(id: u32, f: impl FnOnce(&ExtTracePoint<Self>) -> R) -> R {
-        let ext_tp = EXT_TRACEPOINTS
+        let ext_tp = TRACE_STATE
+            .ext_tracepoints
             .deref()
             .get(&id)
             .expect("Tracepoint not found");
@@ -74,7 +93,8 @@ impl KernelTraceOps for KernelTraceAux {
     }
 
     fn write_tracepoint_state<R>(id: u32, f: impl FnOnce(&mut ExtTracePoint<Self>) -> R) -> R {
-        let ext_tp = EXT_TRACEPOINTS
+        let ext_tp = TRACE_STATE
+            .ext_tracepoints
             .deref()
             .get(&id)
             .expect("Tracepoint not found");
@@ -166,11 +186,11 @@ fn common_trace_pipe_read(
         return copy_len;
     }
 
-    let trace_cmdline_cache = TRACE_CMDLINE_CACHE.lock();
+    let trace_cmdline_cache = TRACE_STATE.cmdline_cache.lock();
     loop {
         if let Some(record) = trace_buf.peek() {
             let record_str = TraceEntryParser::parse::<KernelTraceAux>(
-                &TRACE_POINT_MAP,
+                &TRACE_STATE.point_map,
                 &trace_cmdline_cache,
                 record,
             );
@@ -200,11 +220,13 @@ pub fn tracepoint_init() -> AxResult<()> {
         .collect::<BTreeMap<_, _>>();
 
     ax_println!("Initialized {} tracepoints", tp_map.len());
-    TRACE_POINT_MAP.init_once(tp_map);
-    EXT_TRACEPOINTS.init_once(ext_tps);
-    TRACE_CMDLINE_CACHE.init_once(Mutex::new(TraceCmdLineCache::new(
-        NonZero::new(4096).unwrap(),
-    )));
+    TRACE_STATE.point_map.init_once(tp_map);
+    TRACE_STATE.ext_tracepoints.init_once(ext_tps);
+    TRACE_STATE
+        .cmdline_cache
+        .init_once(Mutex::new(TraceCmdLineCache::new(
+            NonZero::new(4096).unwrap(),
+        )));
     Ok(())
 }
 
@@ -213,7 +235,7 @@ fn init_events(fs: Arc<SimpleFs>) -> DirMaker {
     let mut events_root = DirMapping::new();
     let mut subsystem = BTreeMap::new();
 
-    for ext_tp in EXT_TRACEPOINTS.deref().values() {
+    for ext_tp in TRACE_STATE.ext_tracepoints.deref().values() {
         let tp = ext_tp.lock().trace_point();
         let subsystem_name = tp.system();
         let event_name = tp.name();

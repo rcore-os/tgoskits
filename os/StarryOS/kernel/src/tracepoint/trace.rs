@@ -39,7 +39,7 @@ impl DirectRwFsFileOps for TraceFile {
 
         let mut state = self.0.lock();
         if state.snapshot.is_none() || offset == 0 {
-            let snapshot = super::TRACE_RAW_PIPE.lock().snapshot();
+            let snapshot = super::TRACE_STATE.raw_pipe.lock().snapshot();
             state.reset(snapshot);
         }
 
@@ -60,7 +60,7 @@ impl DirectRwFsFileOps for TraceFile {
         let mut state = self.0.lock();
         state.snapshot = None;
         state.drain.reset();
-        let mut trace_raw_pipe = super::TRACE_RAW_PIPE.lock();
+        let mut trace_raw_pipe = super::TRACE_STATE.raw_pipe.lock();
         trace_raw_pipe.clear();
         Ok(buf.len())
     }
@@ -99,7 +99,7 @@ impl DirectRwFsFileOps for TraceCmdLineFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let mut state = self.0.lock();
         if state.snapshot.is_none() || offset == 0 {
-            let snapshot = super::TRACE_CMDLINE_CACHE.lock().snapshot();
+            let snapshot = super::TRACE_STATE.cmdline_cache.lock().snapshot();
             state.reset(snapshot);
         }
 

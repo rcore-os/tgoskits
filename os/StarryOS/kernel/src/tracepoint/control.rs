@@ -101,7 +101,7 @@ pub struct TraceCmdLineSizeObj;
 
 impl DirectRwFsFileOps for TraceCmdLineSizeObj {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        let max_record = super::TRACE_CMDLINE_CACHE.lock().max_record();
+        let max_record = super::TRACE_STATE.cmdline_cache.lock().max_record();
         let str = alloc::format!("{max_record}\n");
         let str_bytes = str.as_bytes();
         let offset = offset as usize;
@@ -119,7 +119,10 @@ impl DirectRwFsFileOps for TraceCmdLineSizeObj {
             .trim_ascii()
             .parse()
             .map_err(|_| VfsError::InvalidInput)?;
-        super::TRACE_CMDLINE_CACHE.lock().set_max_record(max_record);
+        super::TRACE_STATE
+            .cmdline_cache
+            .lock()
+            .set_max_record(max_record);
         Ok(buf.len())
     }
 }
