@@ -9,18 +9,19 @@ use crate::config::devices::{
 };
 use crate::config::plat::PSCI_METHOD;
 
-// Building this platform with `gic-v3` switches the generic timer to
-// CNTV, whose PPI is 11 → IRQ 27 in the GIC distributor. The axconfig
-// must advertise that IRQ instead of the GICv2 + CNTP default of 30,
-// otherwise the timer is programmed but never delivered. Catch the
-// silent misconfiguration at compile time so a stray
+// Building this platform with `cntv-timer` switches the generic
+// timer to CNTV, whose PPI is 11 -> IRQ 27 in the GIC distributor.
+// The axconfig must advertise that IRQ instead of the CNTP default
+// of 30, otherwise the timer is programmed but never delivered.
+// Catch the silent misconfiguration at compile time so a stray
 // `FEATURES=starryos/gic-v3 cargo xtask starry build --arch aarch64`
-// without a matching axconfig_overrides cannot produce a boot-image
-// that races on every timer tick.
-#[cfg(feature = "gic-v3")]
+// (which composes `cntv-timer` for the HVF profile) without a
+// matching axconfig_overrides cannot produce a boot-image that
+// races on every timer tick.
+#[cfg(feature = "cntv-timer")]
 const _: () = assert!(
     TIMER_IRQ == 27,
-    "gic-v3 feature requires devices.timer-irq=27 (CNTV PPI 11); apply \
+    "cntv-timer feature requires devices.timer-irq=27 (CNTV PPI 11); apply \
      axconfig_overrides=[\"devices.timer-irq=27\"]"
 );
 
