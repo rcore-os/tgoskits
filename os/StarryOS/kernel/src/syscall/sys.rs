@@ -4,10 +4,15 @@ use core::{ffi::c_char, mem::MaybeUninit};
 use ax_config::ARCH;
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
+use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
     system::{new_utsname, sysinfo},
+};
+use ringbuf::{
+    HeapRb,
+    traits::{Consumer, Observer, Producer},
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
@@ -16,6 +21,79 @@ use crate::task::{AsThread, processes};
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
 /// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).
 const NOCHG: u32 = u32::MAX;
+const SYSLOG_ACTION_CLOSE: i32 = 0;
+const SYSLOG_ACTION_OPEN: i32 = 1;
+const SYSLOG_ACTION_READ: i32 = 2;
+const SYSLOG_ACTION_READ_ALL: i32 = 3;
+const SYSLOG_ACTION_READ_CLEAR: i32 = 4;
+const SYSLOG_ACTION_CLEAR: i32 = 5;
+const SYSLOG_ACTION_CONSOLE_OFF: i32 = 6;
+const SYSLOG_ACTION_CONSOLE_ON: i32 = 7;
+const SYSLOG_ACTION_CONSOLE_LEVEL: i32 = 8;
+const SYSLOG_ACTION_SIZE_UNREAD: i32 = 9;
+const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
+const SYSLOG_BUFFER_CAPACITY: usize = 4096;
+const SYSLOG_SEED_MESSAGE: &[u8] = b"StarryOS kernel log buffer initialized\n";
+
+struct SyslogState {
+    buffer: HeapRb<u8>,
+    console_enabled: bool,
+    console_level: usize,
+}
+
+impl SyslogState {
+    fn new() -> Self {
+        let mut buffer = HeapRb::new(SYSLOG_BUFFER_CAPACITY);
+        buffer.push_slice(SYSLOG_SEED_MESSAGE);
+        Self {
+            buffer,
+            console_enabled: true,
+            console_level: 7,
+        }
+    }
+
+    fn unread_len(&self) -> usize {
+        self.buffer.occupied_len()
+    }
+
+    fn buffer_len(&self) -> usize {
+        self.buffer.capacity().get()
+    }
+
+    fn read(&mut self, len: usize) -> Vec<u8> {
+        let available = len.min(self.buffer.occupied_len());
+        let (left, right) = self.buffer.as_slices();
+        let mut out = Vec::with_capacity(available);
+        let first = left.len().min(available);
+        out.extend_from_slice(&left[..first]);
+        if first < available {
+            out.extend_from_slice(&right[..available - first]);
+        }
+        unsafe { self.buffer.advance_read_index(available) };
+        out
+    }
+
+    fn read_all(&self, len: usize) -> Vec<u8> {
+        let available = len.min(self.buffer.occupied_len());
+        let (left, right) = self.buffer.as_slices();
+        let mut out = Vec::with_capacity(available);
+        let first = left.len().min(available);
+        out.extend_from_slice(&left[..first]);
+        if first < available {
+            out.extend_from_slice(&right[..available - first]);
+        }
+        out
+    }
+
+    fn clear(&mut self) {
+        let len = self.buffer.occupied_len();
+        unsafe { self.buffer.advance_read_index(len) };
+    }
+}
+
+lazy_static::lazy_static! {
+    static ref SYSLOG_STATE: Mutex<SyslogState> = Mutex::new(SyslogState::new());
+}
 
 pub fn sys_getuid() -> AxResult<isize> {
     let cred = current().as_thread().cred();
@@ -377,8 +455,90 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_syslog(_type: i32, _buf: *mut c_char, _len: usize) -> AxResult<isize> {
-    Ok(0)
+fn require_syslog_privilege() -> AxResult<()> {
+    if current().as_thread().cred().euid == 0 {
+        Ok(())
+    } else {
+        Err(AxError::OperationNotPermitted)
+    }
+}
+
+pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
+    match ty {
+        SYSLOG_ACTION_CLOSE | SYSLOG_ACTION_OPEN => Ok(0),
+        SYSLOG_ACTION_READ => {
+            require_syslog_privilege()?;
+            let data = {
+                let mut state = SYSLOG_STATE.lock();
+                state.read(len)
+            };
+            if !data.is_empty() {
+                vm_write_slice(buf as *mut u8, &data)?;
+            }
+            Ok(data.len() as isize)
+        }
+        SYSLOG_ACTION_READ_ALL => {
+            require_syslog_privilege()?;
+            let data = {
+                let state = SYSLOG_STATE.lock();
+                state.read_all(len)
+            };
+            if !data.is_empty() {
+                vm_write_slice(buf as *mut u8, &data)?;
+            }
+            Ok(data.len() as isize)
+        }
+        SYSLOG_ACTION_READ_CLEAR => {
+            require_syslog_privilege()?;
+            let data = {
+                let mut state = SYSLOG_STATE.lock();
+                let data = state.read_all(len);
+                state.clear();
+                data
+            };
+            if !data.is_empty() {
+                vm_write_slice(buf as *mut u8, &data)?;
+            }
+            Ok(data.len() as isize)
+        }
+        SYSLOG_ACTION_CLEAR => {
+            require_syslog_privilege()?;
+            let mut state = SYSLOG_STATE.lock();
+            state.clear();
+            Ok(0)
+        }
+        SYSLOG_ACTION_CONSOLE_OFF => {
+            require_syslog_privilege()?;
+            let mut state = SYSLOG_STATE.lock();
+            state.console_enabled = false;
+            Ok(0)
+        }
+        SYSLOG_ACTION_CONSOLE_ON => {
+            require_syslog_privilege()?;
+            let mut state = SYSLOG_STATE.lock();
+            state.console_enabled = true;
+            Ok(0)
+        }
+        SYSLOG_ACTION_CONSOLE_LEVEL => {
+            require_syslog_privilege()?;
+            if !(1..=8).contains(&len) {
+                return Err(AxError::InvalidInput);
+            }
+            let mut state = SYSLOG_STATE.lock();
+            state.console_level = len;
+            Ok(0)
+        }
+        SYSLOG_ACTION_SIZE_UNREAD => {
+            require_syslog_privilege()?;
+            let state = SYSLOG_STATE.lock();
+            Ok(state.unread_len() as isize)
+        }
+        SYSLOG_ACTION_SIZE_BUFFER => {
+            let state = SYSLOG_STATE.lock();
+            Ok(state.buffer_len() as isize)
+        }
+        _ => Err(AxError::InvalidInput),
+    }
 }
 
 bitflags::bitflags! {
