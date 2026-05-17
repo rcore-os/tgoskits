@@ -90,16 +90,22 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
 
     let pidfd = PidFd::from_fd(pidfd)?;
     let proc_data = pidfd.process_data()?;
-    check_kill_permission(proc_data.proc.pid())?;
-    FD_TABLE
-        .scope(&proc_data.scope.read())
-        .read()
-        .get(target_fd as usize)
-        .ok_or(AxError::BadFileDescriptor)
-        .and_then(|fd| {
-            let fd = add_file_like(fd.inner.clone(), true)?;
-            Ok(fd as isize)
-        })
+    let curr_proc_data = current().as_thread().proc_data.clone();
+    let fd_entry = if Arc::ptr_eq(&proc_data, &curr_proc_data) {
+        // Use the live fd table for the current process. `proc_data.scope` is only
+        // refreshed on clone/dup paths; syscalls like pipe() update ActiveScope only.
+        FD_TABLE.read().get(target_fd as usize).cloned()
+    } else {
+        FD_TABLE
+            .scope(&proc_data.scope.read())
+            .read()
+            .get(target_fd as usize)
+            .cloned()
+    };
+    fd_entry.ok_or(AxError::BadFileDescriptor).and_then(|fd| {
+        let fd = add_file_like(fd.inner.clone(), true)?;
+        Ok(fd as isize)
+    })
 }
 
 pub fn sys_pidfd_send_signal(
