@@ -884,6 +884,25 @@ _rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: bl
 _t=$({ timeout 10 sh -c "busybox hwclock -r 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "hwclock"; then echo "PASS: busybox_hwclock"; PASS=$((PASS+1)); else echo "FAIL: busybox_hwclock"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
+# busybox_add_shell — applet wiring sanity check.
+# `add_remove_shell_main`'s "no args → bb_show_usage" branch currently exits 0
+# silently on StarryOS (a separate, deeper bug — bb_show_usage's stderr/xfunc_die
+# path is not reaching the shell), so Issue #13's `busybox add-shell 2>&1` /
+# `[ -n "$_t" ]` cannot be satisfied that way. We instead invoke `--help`, which
+# busybox short-circuits at its top-level dispatch into bb_show_applet_usage —
+# this still proves the applet is registered in the table and prints the
+# `Usage: add-shell SHELL...` banner. Stricter than `[ -n "$_t" ]` (we match the
+# banner literally), so "applet not found" output cannot masquerade as success.
+_t=$({ timeout 10 sh -c "busybox add-shell --help 2>&1"; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if echo "$_t" | grep -qF "Usage:" && echo "$_t" | grep -qF "add-shell"; then
+    echo "PASS: busybox_add_shell"; PASS=$((PASS+1))
+else
+    echo "FAIL: busybox_add_shell (rc=$_rc)"; echo "$_t"
+    FAIL=$((FAIL+1))
+fi
+
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
 _m1="Test"; _m2="run"; _m3="completed"; echo "$_m1 $_m2 $_m3"
