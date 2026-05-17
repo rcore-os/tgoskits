@@ -11,6 +11,13 @@ use crate::{
     task::{AsThread, tasks},
 };
 
+const MNT_FORCE: i32 = 1;
+const MNT_DETACH: i32 = 2;
+const MNT_EXPIRE: i32 = 4;
+const UMOUNT_NOFOLLOW: i32 = 8;
+
+const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
 fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
     fd.downcast_ref::<File>()
         .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
@@ -139,11 +146,20 @@ fn mount_ext4(source: &str, target: &str) -> AxResult<()> {
     Ok(())
 }
 
-pub fn sys_umount2(target: *const c_char, _flags: i32) -> AxResult<isize> {
+pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
     use alloc::boxed::Box;
 
     let target = vm_load_string(target)?;
-    debug!("sys_umount2 <= target: {target:?}");
+    debug!("sys_umount2 <= target: {target:?}, flags: {flags:#x}");
+
+    if (flags & !VALID_UMOUNT_FLAGS) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    if (flags & MNT_EXPIRE) != 0 && (flags & (MNT_FORCE | MNT_DETACH)) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let target = FS_CONTEXT.lock().resolve(target)?;
 
     // Linux umount2 returns EINVAL for paths that are not mount points.
