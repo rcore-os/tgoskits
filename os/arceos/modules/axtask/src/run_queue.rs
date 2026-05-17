@@ -2,6 +2,8 @@
 use alloc::sync::Weak;
 use alloc::{collections::VecDeque, sync::Arc};
 use core::mem::MaybeUninit;
+#[cfg(feature = "smp")]
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_hal::percpu::this_cpu_id;
 use ax_kernel_guard::BaseGuard;
@@ -52,6 +54,40 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; ax_config::plat::M
     [ARRAY_REPEAT_VALUE; ax_config::plat::MAX_CPU_NUM];
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
+
+#[cfg(feature = "smp")]
+static RUN_QUEUE_LOADS: [AtomicUsize; ax_config::plat::MAX_CPU_NUM] =
+    [const { AtomicUsize::new(0) }; ax_config::plat::MAX_CPU_NUM];
+
+#[cfg(feature = "smp")]
+#[inline]
+fn inc_run_queue_load(cpu_id: usize) {
+    RUN_QUEUE_LOADS[cpu_id].fetch_add(1, Ordering::AcqRel);
+}
+
+#[cfg(feature = "smp")]
+#[inline]
+fn dec_run_queue_load(cpu_id: usize) {
+    let load = &RUN_QUEUE_LOADS[cpu_id];
+    let mut current = load.load(Ordering::Acquire);
+    loop {
+        if current == 0 {
+            debug_assert!(false, "run queue {cpu_id} load underflow");
+            return;
+        }
+        match load.compare_exchange_weak(current, current - 1, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+#[cfg(feature = "smp")]
+#[inline]
+fn set_run_queue_load(cpu_id: usize, load: usize) {
+    RUN_QUEUE_LOADS[cpu_id].store(load, Ordering::Release);
+}
 
 #[cfg(target_os = "none")]
 fn main_task_stack() -> TaskStack {
@@ -116,18 +152,28 @@ pub(crate) fn current_run_queue<G: BaseGuard>() -> CurrentRunQueueRef<'static, G
 #[allow(clippy::modulo_one)]
 #[inline]
 fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
-    use core::sync::atomic::{AtomicUsize, Ordering};
     static RUN_QUEUE_INDEX: AtomicUsize = AtomicUsize::new(0);
 
     assert!(!cpumask.is_empty(), "No available CPU for task execution");
 
-    // Round-robin selection of the run queue index.
-    loop {
-        let index = RUN_QUEUE_INDEX.fetch_add(1, Ordering::SeqCst) % ax_config::plat::MAX_CPU_NUM;
+    let start = RUN_QUEUE_INDEX.fetch_add(1, Ordering::Relaxed) % ax_config::plat::MAX_CPU_NUM;
+    let mut best = None;
+
+    for offset in 0..ax_config::plat::MAX_CPU_NUM {
+        let index = (start + offset) % ax_config::plat::MAX_CPU_NUM;
         if cpumask.get(index) {
-            return index;
+            let load = RUN_QUEUE_LOADS[index].load(Ordering::Acquire);
+            if best.is_none_or(|(_, best_load)| load < best_load) {
+                best = Some((index, load));
+                if load == 0 {
+                    break;
+                }
+            }
         }
     }
+
+    best.map(|(index, _)| index)
+        .expect("No available CPU for task execution")
 }
 
 /// Retrieves a `'static` reference to the run queue corresponding to the given index.
@@ -254,6 +300,8 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
         );
         assert!(task.is_ready());
         self.inner.scheduler.lock().add_task(task);
+        #[cfg(feature = "smp")]
+        inc_run_queue_load(self.inner.cpu_id);
     }
 
     /// Unblock one task by inserting it into the run queue.
@@ -493,6 +541,8 @@ impl AxRunQueue {
 
         let mut scheduler = Scheduler::new();
         scheduler.add_task(gc_task);
+        #[cfg(feature = "smp")]
+        set_run_queue_load(cpu_id, 1);
         Self {
             cpu_id,
             scheduler: SpinRaw::new(scheduler),
@@ -538,6 +588,8 @@ impl AxRunQueue {
             #[cfg(feature = "smp")]
             task.set_cpu_id(self.cpu_id as _);
             self.scheduler.lock().put_prev_task(task, preempt);
+            #[cfg(feature = "smp")]
+            inc_run_queue_load(self.cpu_id);
             true
         } else {
             false
@@ -547,14 +599,16 @@ impl AxRunQueue {
     /// Core reschedule subroutine.
     /// Pick the next task to run and switch to it.
     fn resched(&mut self) {
-        let next = self
-            .scheduler
-            .lock()
-            .pick_next_task()
-            .unwrap_or_else(|| unsafe {
+        let next = if let Some(task) = self.scheduler.lock().pick_next_task() {
+            #[cfg(feature = "smp")]
+            dec_run_queue_load(self.cpu_id);
+            task
+        } else {
+            unsafe {
                 // Safety: IRQs must be disabled at this time.
                 IDLE_TASK.current_ref_raw().get_unchecked().clone()
-            });
+            }
+        };
         assert!(
             next.is_ready(),
             "next {} is not ready: {:?}",
@@ -673,11 +727,13 @@ fn gc_entry() {
 /// then puts the task to the scheduler of target run queue.
 #[cfg(feature = "smp")]
 pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
-    select_run_queue::<ax_kernel_guard::NoPreemptIrqSave>(&migrated_task)
-        .inner
+    let rq = select_run_queue::<ax_kernel_guard::NoPreemptIrqSave>(&migrated_task);
+    migrated_task.set_cpu_id(rq.inner.cpu_id as _);
+    rq.inner
         .scheduler
         .lock()
-        .put_prev_task(migrated_task, false)
+        .put_prev_task(migrated_task, false);
+    inc_run_queue_load(rq.inner.cpu_id);
 }
 
 /// Clear the `on_cpu` field of previous task running on this CPU.
