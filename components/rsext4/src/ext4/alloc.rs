@@ -140,7 +140,7 @@ impl Ext4FileSystem {
 
         // Pre-collect per-group metadata to avoid borrowing self.group_descs
         // across mutable borrows of self later in the loop body.
-        let mut group_meta: Vec<(BGIndex, u32, AbsoluteBN, bool, Ext4GroupDesc)> = Vec::new();
+        let mut group_meta: Vec<(BGIndex, AbsoluteBN, bool, Ext4GroupDesc)> = Vec::new();
         for (idx, desc) in self.group_descs.iter().enumerate() {
             let group_idx =
                 BGIndex::new(u32::try_from(idx).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?);
@@ -150,14 +150,13 @@ impl Ext4FileSystem {
             }
             group_meta.push((
                 group_idx,
-                free,
                 AbsoluteBN::new(desc.inode_bitmap()),
                 desc.is_inode_bitmap_uninit(),
                 *desc,
             ));
         }
 
-        for (group_idx, _free, bitmap_block, inode_uninit, desc) in group_meta {
+        for (group_idx, bitmap_block, inode_uninit, desc) in group_meta {
             let cache_key = CacheKey::new_inode(group_idx);
             let mut inodes: Vec<InodeNumber> = Vec::with_capacity(count as usize);
             let mut alloc_error: Option<Ext4Error> = None;
