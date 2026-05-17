@@ -260,7 +260,7 @@ impl SignalInfo {
                 .__bindgen_anon_1
                 ._sifields
                 ._sigchld
-                ._uid as u32
+                ._uid
         }
     }
 
