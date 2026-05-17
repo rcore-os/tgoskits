@@ -1,5 +1,5 @@
 /*
- * test-socket-dataplane — socket 数据面系统调用测试
+ * !test-socket-dataplane — socket 数据面系统调用测试
  *
  * 覆盖 sendto / recvfrom / sendmsg / recvmsg 四个系统调用。
  * 依据: Linux man-pages 6.7 send(2) + recv(2)。
