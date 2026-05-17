@@ -13,7 +13,7 @@ use starry_process::Pid;
 
 use crate::{
     file::FileLike,
-    task::{ProcessData, Thread},
+    task::{ProcessData, Thread, get_process_data},
 };
 
 pub struct PidFd {
@@ -63,7 +63,12 @@ impl PidFd {
         {
             return Err(AxError::NoSuchProcess);
         }
-        self.proc_data.upgrade().ok_or(AxError::NoSuchProcess)
+        let proc_data = self.proc_data.upgrade().ok_or(AxError::NoSuchProcess)?;
+        // `ProcessData` may outlive `waitpid` while the pid is no longer in
+        // `PROCESS_TABLE`. Linux pidfd ops on a reaped pid return ESRCH instead
+        // of falling through to EBADF from an empty fd table.
+        get_process_data(proc_data.proc.pid())?;
+        Ok(proc_data)
     }
 }
 impl FileLike for PidFd {
