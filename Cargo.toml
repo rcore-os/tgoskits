@@ -14,6 +14,7 @@ lto = true
 resolver = "3"
 members = [
     "components/aarch64_sysreg",
+    "components/arm-scmi-rs",
     "components/arm_pl011",
     "components/arm_pl031",
     "components/arm_vcpu",
@@ -117,7 +118,9 @@ members = [
     "drivers/blk/nvme-driver",
     "drivers/blk/ramdisk",
     "drivers/blk/rd-block",
-    "drivers/blk/simple-sdmmc",
+    "drivers/blk/dwmmc-host",
+    "drivers/blk/sdhci-host",
+    "drivers/blk/sdmmc-protocol",
     "drivers/examples/enumerate",
     "drivers/intc/arm-gic-driver",
     "drivers/interface/rdif-base",
@@ -210,12 +213,20 @@ members = [
     "test-suit/arceos/rust/task/tls",
     "test-suit/arceos/rust/task/wait_queue",
     "test-suit/arceos/rust/task/yield",
+    "test-suit/arceos/std/qemu-smp1/arce_agent",
+    "test-suit/arceos/std/qemu-smp1/helloworld",
+    "test-suit/arceos/std/qemu-smp1/httpclient",
+    "test-suit/arceos/std/qemu-smp1/httpserver",
+    "test-suit/arceos/std/qemu-smp1/io_test",
+    "test-suit/arceos/std/qemu-smp1/thread_test",
+    "test-suit/arceos/std/qemu-smp1/tokio_test",
     "xtask",
 ]
 
 [workspace.dependencies]
 # Local workspace crates
 aarch64_sysreg = { version = "0.3.7", path = "components/aarch64_sysreg" }
+arm-scmi-rs = { version = "0.1.1", path = "components/arm-scmi-rs" }
 arceos-affinity = { version = "0.3.1", path = "test-suit/arceos/rust/task/affinity" }
 arceos-backtrace = { version = "0.3.1", path = "test-suit/arceos/rust/backtrace" }
 arceos-display = { version = "0.3.1", path = "test-suit/arceos/rust/display" }
@@ -257,7 +268,7 @@ ax-display = { version = "0.5.12", path = "os/arceos/modules/axdisplay" }
 ax-dma = { version = "0.5.13", path = "os/arceos/modules/axdma" }
 ax-driver = { version = "0.5.14", path = "os/arceos/modules/axdriver" }
 ax-driver-base = { version = "0.3.12", path = "components/axdriver_crates/axdriver_base" }
-ax-driver-block = { version = "0.3.12", path = "components/axdriver_crates/axdriver_block" }
+ax-driver-block = { version = "0.3.13", path = "components/axdriver_crates/axdriver_block" }
 ax-driver-display = { version = "0.3.12", path = "components/axdriver_crates/axdriver_display" }
 ax-driver-input = { version = "0.3.13", path = "components/axdriver_crates/axdriver_input" }
 ax-driver-net = { version = "0.3.12", path = "components/axdriver_crates/axdriver_net" }
@@ -383,7 +394,9 @@ rdrive = { version = "0.20.1", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4.2", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.4.0", path = "components/rsext4" }
 scope-local = { version = "0.3.7", path = "components/scope-local" }
-simple-sdmmc = { version = "0.1.1", path = "drivers/blk/simple-sdmmc" }
+dwmmc-host = { version = "0.1.0", path = "drivers/blk/dwmmc-host", default-features = false }
+sdhci-host = { version = "0.1.0", path = "drivers/blk/sdhci-host", default-features = false }
+sdmmc-protocol = { version = "0.1.0", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
 smp-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/smp-kernel" }
 starry-kernel = { version = "0.5.10", path = "os/StarryOS/kernel" }
