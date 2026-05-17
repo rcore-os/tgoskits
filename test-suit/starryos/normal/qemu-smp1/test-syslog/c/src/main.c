@@ -29,8 +29,10 @@ int main(void) {
 
     char buf[128];
     char buf2[128];
+    char buf3[128];
     memset(buf, 0xA5, sizeof(buf));
     memset(buf2, 0x5A, sizeof(buf2));
+    memset(buf3, 0x3C, sizeof(buf3));
 
     CHECK_RET(syscall(SYS_syslog, SYSLOG_ACTION_OPEN, NULL, 0), 0,
               "OPEN returns 0");
@@ -53,20 +55,44 @@ int main(void) {
               "READ_ALL leaves buffer unchanged when nothing is copied");
     }
 
+    long size_unread_after_read_all = syscall(SYS_syslog, SYSLOG_ACTION_SIZE_UNREAD, NULL, 0);
+    CHECK(size_unread_after_read_all == size_unread,
+          "READ_ALL does not consume unread bytes");
+
     long read = syscall(SYS_syslog, SYSLOG_ACTION_READ, buf2, (int)sizeof(buf2));
     CHECK(read >= 0, "READ returns a non-negative length");
     CHECK(read <= (long)sizeof(buf2), "READ respects destination buffer length");
+    CHECK(read == read_all, "READ consumes the same unread bytes exposed by READ_ALL");
+    if (read > 0) {
+        CHECK(memcmp(buf, buf2, (size_t)read) == 0,
+              "READ returns the same prefix previously observed by READ_ALL");
+    }
+
+    long size_unread_after_read = syscall(SYS_syslog, SYSLOG_ACTION_SIZE_UNREAD, NULL, 0);
+    CHECK(size_unread_after_read == size_unread - read,
+          "READ consumes unread bytes");
 
     CHECK_RET(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_OFF, NULL, 0), 0,
               "CONSOLE_OFF returns 0");
     CHECK_RET(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_ON, NULL, 0), 0,
               "CONSOLE_ON returns 0");
-    CHECK_RET(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_LEVEL, NULL, 1), 0,
-              "CONSOLE_LEVEL accepts valid level");
+    CHECK_RET(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_LEVEL, NULL, 1), 7,
+              "CONSOLE_LEVEL returns the previous level");
+    CHECK_RET(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_LEVEL, NULL, 7), 1,
+              "CONSOLE_LEVEL updates and reports the old level");
     CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_LEVEL, NULL, 0), EINVAL,
               "CONSOLE_LEVEL rejects level 0 with EINVAL");
     CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_CONSOLE_LEVEL, NULL, 9), EINVAL,
               "CONSOLE_LEVEL rejects level 9 with EINVAL");
+
+    long read_clear = syscall(SYS_syslog, SYSLOG_ACTION_READ_CLEAR, buf3, (int)sizeof(buf3));
+    CHECK(read_clear >= 0, "READ_CLEAR returns a non-negative length");
+    CHECK(read_clear <= size_unread_after_read,
+          "READ_CLEAR does not exceed remaining unread bytes");
+
+    long size_unread_after_read_clear = syscall(SYS_syslog, SYSLOG_ACTION_SIZE_UNREAD, NULL, 0);
+    CHECK(size_unread_after_read_clear == 0,
+          "READ_CLEAR clears unread bytes after copying");
 
     CHECK_RET(syscall(SYS_syslog, SYSLOG_ACTION_CLEAR, NULL, 0), 0,
               "CLEAR returns 0");

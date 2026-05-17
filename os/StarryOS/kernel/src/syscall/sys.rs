@@ -525,8 +525,9 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
                 return Err(AxError::InvalidInput);
             }
             let mut state = SYSLOG_STATE.lock();
+            let old_level = state.console_level;
             state.console_level = len;
-            Ok(0)
+            Ok(old_level as isize)
         }
         SYSLOG_ACTION_SIZE_UNREAD => {
             require_syslog_privilege()?;
