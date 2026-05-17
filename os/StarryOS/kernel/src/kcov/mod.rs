@@ -6,7 +6,7 @@
 //! Currently only KCOV_TRACE_PC is implemented, KCOV_TRACE_CMP is not yet implemented.
 
 use alloc::sync::Arc;
-use core::any::Any;
+use core::{any::Any, sync::atomic::Ordering};
 
 use ax_errno::AxError;
 use ax_hal::{kcov::KCOV_GLOBAL_GATE, mem::phys_to_virt, paging::PageSize};
@@ -176,9 +176,7 @@ impl KcovFdState {
                 inner.tracer_tid = Some(task.id().as_u64());
 
                 // Let the hot path know at least one thread is tracing.
-                unsafe {
-                    KCOV_GLOBAL_GATE = 1;
-                }
+                KCOV_GLOBAL_GATE.store(1, Ordering::Release);
 
                 // Store snapshot on Thread for lock-free hot path access.
                 if let Some(thr) = task.try_as_thread() {
@@ -364,7 +362,7 @@ pub fn on_fork(_child_tid: u32) {}
 extern "C" fn kcov_trace_pc_impl(pc: u64) {
     // Fast bail-out: skip all task/thread lookups when no thread has
     // enabled kcov (e.g. during boot, before the test starts tracing).
-    if unsafe { KCOV_GLOBAL_GATE == 0 } {
+    if KCOV_GLOBAL_GATE.load(Ordering::Acquire) == 0 {
         return;
     }
 

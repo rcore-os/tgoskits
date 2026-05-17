@@ -404,6 +404,7 @@ static void syz_worker_threads(void) {
         pthread_join(t[i], NULL);
         if (!r[i].ok)
             all_ok = 0;
+        CHECK(r[i].count > 0, "worker collected coverage");
         total += r[i].count;
         printf("  INFO: worker %d → %u PCs\n", r[i].id, r[i].count);
     }
