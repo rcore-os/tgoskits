@@ -11,7 +11,10 @@ use crate::support::process::run_cargo_status_with_env;
 
 const DEFAULT_FEATURE: &str = "default";
 const AX_CONFIG_PATH_ENV: &str = "AX_CONFIG_PATH";
+const ARCEOS_RUST_PLATFORM_CONFIG_ENV: &str = "ARCEOS_RUST_PLATFORM_CONFIG";
 const AXCONFIG_FILE: &str = "axconfig.toml";
+const ARCEOS_RUST_PACKAGE: &str = "arceos-rust";
+const ARCEOS_RUST_DEFAULT_PLATFORM_PACKAGE: &str = "ax-plat-x86-pc";
 const TGOSKITS_METADATA: &str = "tgoskits";
 const CLIPPY_METADATA: &str = "clippy";
 const SKIP_METADATA: &str = "skip";
@@ -56,7 +59,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
         );
         return Ok(());
     }
-    let checks = expand_clippy_checks(&packages);
+    let checks = expand_clippy_checks(&packages, &metadata);
 
     println!(
         "running clippy for {} package(s) with {} check(s) from {}",
@@ -302,7 +305,11 @@ fn skip_unsupported_packages(packages: Vec<Package>) -> Vec<Package> {
         .collect()
 }
 
-fn clippy_env(package: &Package) -> Vec<(String, String)> {
+fn clippy_env(package: &Package, metadata: &Metadata) -> Vec<(String, String)> {
+    if package.name == ARCEOS_RUST_PACKAGE {
+        return arceos_rust_clippy_env(metadata);
+    }
+
     let Some(manifest_dir) = package.manifest_path.parent() else {
         return Vec::new();
     };
@@ -314,7 +321,26 @@ fn clippy_env(package: &Package) -> Vec<(String, String)> {
     vec![(AX_CONFIG_PATH_ENV.to_string(), axconfig.to_string())]
 }
 
-fn expand_clippy_checks(packages: &[Package]) -> Vec<ClippyCheck> {
+fn arceos_rust_clippy_env(metadata: &Metadata) -> Vec<(String, String)> {
+    match crate::build::resolve_platform_config_by_package(
+        ARCEOS_RUST_DEFAULT_PLATFORM_PACKAGE,
+        metadata,
+    ) {
+        Ok(platform) => vec![(
+            ARCEOS_RUST_PLATFORM_CONFIG_ENV.to_string(),
+            platform.config_path.display().to_string(),
+        )],
+        Err(err) => {
+            eprintln!(
+                "warning: failed to resolve {ARCEOS_RUST_PLATFORM_CONFIG_ENV} for \
+                 `{ARCEOS_RUST_PACKAGE}`: {err:#}"
+            );
+            Vec::new()
+        }
+    }
+}
+
+fn expand_clippy_checks(packages: &[Package], metadata: &Metadata) -> Vec<ClippyCheck> {
     let mut checks = Vec::new();
 
     for package in packages {
@@ -330,7 +356,7 @@ fn expand_clippy_checks(packages: &[Package]) -> Vec<ClippyCheck> {
         } else {
             targets.into_iter().map(Some).collect()
         };
-        let env = clippy_env(package);
+        let env = clippy_env(package, metadata);
 
         for target in target_iter {
             checks.push(ClippyCheck {
@@ -662,6 +688,18 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
+    fn metadata_for_packages(packages: &[Package]) -> Metadata {
+        let members = packages
+            .iter()
+            .map(|package| package.id.repr.as_str())
+            .collect::<Vec<_>>();
+        metadata_with_packages(packages.to_vec(), &members)
+    }
+
+    fn expand(packages: &[Package]) -> Vec<ClippyCheck> {
+        expand_clippy_checks(packages, &metadata_for_packages(packages))
+    }
+
     fn args(all: bool, packages: &[&str]) -> crate::ClippyArgs {
         crate::ClippyArgs {
             all,
@@ -832,7 +870,7 @@ mod tests {
             None,
         )];
 
-        let checks = expand_clippy_checks(&packages);
+        let checks = expand(&packages);
 
         assert_eq!(
             checks,
@@ -876,7 +914,7 @@ mod tests {
             ),
         ];
 
-        let checks = expand_clippy_checks(&packages);
+        let checks = expand(&packages);
 
         assert_eq!(
             checks
@@ -895,7 +933,7 @@ mod tests {
 
     #[test]
     fn package_without_features_yields_only_base_check() {
-        let checks = expand_clippy_checks(&[pkg(
+        let checks = expand(&[pkg(
             "alpha",
             "alpha 0.1.0 (path+file:///tmp/alpha)",
             &[],
@@ -915,7 +953,7 @@ mod tests {
 
     #[test]
     fn package_with_features_yields_base_plus_each_feature() {
-        let checks = expand_clippy_checks(&[pkg(
+        let checks = expand(&[pkg(
             "alpha",
             "alpha 0.1.0 (path+file:///tmp/alpha)",
             &[("b", &[]), ("a", &[])],
@@ -959,7 +997,7 @@ mod tests {
 
     #[test]
     fn docs_rs_targets_expand_base_and_feature_checks() {
-        let checks = expand_clippy_checks(&[pkg(
+        let checks = expand(&[pkg(
             "alpha",
             "alpha 0.1.0 (path+file:///tmp/alpha)",
             &[("b", &[]), ("a", &[])],
@@ -1004,7 +1042,7 @@ mod tests {
 
     #[test]
     fn nested_docs_rs_targets_expand_base_checks() {
-        let checks = expand_clippy_checks(&[pkg_with_metadata(
+        let checks = expand(&[pkg_with_metadata(
             "alpha",
             "alpha 0.1.0 (path+file:///tmp/alpha)",
             &[],
@@ -1034,7 +1072,7 @@ mod tests {
 
     #[test]
     fn docs_rs_targets_are_normalized_to_workspace_toolchain_targets() {
-        let checks = expand_clippy_checks(&[pkg(
+        let checks = expand(&[pkg(
             "alpha",
             "alpha 0.1.0 (path+file:///tmp/alpha)",
             &[],
@@ -1049,7 +1087,7 @@ mod tests {
 
     #[test]
     fn docs_rs_targets_are_sorted_and_deduplicated() {
-        let checks = expand_clippy_checks(&[pkg(
+        let checks = expand(&[pkg(
             "alpha",
             "alpha 0.1.0 (path+file:///tmp/alpha)",
             &[("feat", &[])],
@@ -1085,7 +1123,7 @@ mod tests {
 
         assert!(docs_rs_targets(&package).is_empty());
         assert_eq!(
-            expand_clippy_checks(&[package])[0].cargo_args(),
+            expand(&[package])[0].cargo_args(),
             vec!["clippy", "-p", "alpha", "--", "-D", "warnings"]
         );
     }
@@ -1134,7 +1172,7 @@ mod tests {
             package_dir.join("Cargo.toml"),
         );
 
-        let checks = expand_clippy_checks(&[package]);
+        let checks = expand(&[package]);
 
         assert_eq!(
             checks[0].env,
@@ -1142,6 +1180,29 @@ mod tests {
                 "AX_CONFIG_PATH".to_string(),
                 package_dir.join("axconfig.toml").display().to_string(),
             )]
+        );
+    }
+
+    #[test]
+    fn arceos_rust_platform_config_is_passed_as_clippy_env() {
+        let metadata = crate::build::workspace_metadata().unwrap();
+        let package = metadata
+            .packages
+            .iter()
+            .find(|package| package.name == ARCEOS_RUST_PACKAGE)
+            .cloned()
+            .expect("arceos-rust package should be in workspace metadata");
+
+        let checks = expand_clippy_checks(&[package], &metadata);
+
+        assert!(
+            checks[0].env.iter().any(|(key, value)| {
+                key == ARCEOS_RUST_PLATFORM_CONFIG_ENV
+                    && value
+                        .ends_with("components/axplat_crates/platforms/axplat-x86-pc/axconfig.toml")
+            }),
+            "expected {ARCEOS_RUST_PLATFORM_CONFIG_ENV} in {:?}",
+            checks[0].env
         );
     }
 
