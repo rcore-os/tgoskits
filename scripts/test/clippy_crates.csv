@@ -94,11 +94,13 @@ axvmconfig
 bitmap-allocator
 crab-usb
 crab-uvc
+dma-api
 dwmmc-host
 enumerate
 eth-intel
 fxmac_rs
 loongarch_vcpu
+mmio-api
 nvme-driver
 pcie
 range-alloc-arceos
