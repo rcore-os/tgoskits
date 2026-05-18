@@ -1,0 +1,32 @@
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "512M",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+apk update && \
+apk add redis && \
+redis-server --daemonize yes --port 6379 --bind 127.0.0.1 && \
+sleep 1 && \
+redis-cli ping && \
+redis-cli set act_probe hello && \
+redis-cli get act_probe && \
+echo 'REDIS_APP_TEST_PASSED' || \
+echo 'REDIS_APP_TEST_FAILED'
+'''
+success_regex = ["(?m)^PONG\\s*$", "(?m)^\"hello\"\\s*$", "(?m)^REDIS_APP_TEST_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^REDIS_APP_TEST_FAILED\\s*$"]
+timeout = 300
