@@ -1,5 +1,6 @@
 package
 aarch64_sysreg
+arm-scmi-rs
 arceos-affinity
 arceos-display
 arceos-exception
@@ -88,6 +89,7 @@ axvmconfig
 bitmap-allocator
 crab-usb
 crab-uvc
+dwmmc-host
 enumerate
 eth-intel
 fxmac_rs
@@ -120,7 +122,8 @@ rdrive
 rdrive-macros
 rsext4
 scope-local
-simple-sdmmc
+sdhci-host
+sdmmc-protocol
 some-serial
 someboot
 sg2002-tpu

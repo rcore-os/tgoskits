@@ -378,6 +378,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         warn!("exit robust list failed: {err:?}");
     }
 
+    #[cfg(feature = "kcov")]
+    crate::kcov::disable_for_thread(curr.id().as_u64() as u32);
+
     let process = &thr.proc_data.proc;
     if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
         // Close all file descriptors before marking the process as exited.

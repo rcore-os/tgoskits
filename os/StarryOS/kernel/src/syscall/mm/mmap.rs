@@ -3,12 +3,12 @@ use alloc::sync::Arc;
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FileBackend, FileFlags};
 use ax_hal::paging::{MappingFlags, PageSize};
-use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_task::current;
 use linux_raw_sys::general::*;
 
 use crate::{
-    file::get_file_like,
+    file::{FileLike, get_file_like, memfd::Memfd},
     mm::{Backend, BackendOps, SharedPages},
     pseudofs::{Device, DeviceMmap},
     task::AsThread,
@@ -179,6 +179,17 @@ pub fn sys_mmap(
     let file = if anonymous {
         None
     } else {
+        // Honor F_SEAL_WRITE on `MAP_SHARED|PROT_WRITE` at map-creation
+        // time — Linux rejects this combination on a sealed memfd with
+        // EPERM. Post-mmap revoke (downgrading already-installed VMAs
+        // when F_SEAL_WRITE is later applied) is not yet implemented.
+        if (map_type == MmapFlags::SHARED || map_type == MmapFlags::SHARED_VALIDATE)
+            && permission_flags.contains(MmapProt::WRITE)
+            && let Ok(memfd) = Memfd::from_fd(fd)
+            && memfd.get_seals() & crate::file::memfd::F_SEAL_WRITE != 0
+        {
+            return Err(AxError::OperationNotPermitted);
+        }
         Some(get_file_like(fd)?)
     };
 
@@ -250,6 +261,10 @@ pub fn sys_mmap(
                         )
                     }
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
+                    #[cfg(feature = "kcov")]
+                    Ok(DeviceMmap::NotConfigured) => return Err(AxError::InvalidInput),
+                    #[cfg(feature = "kcov")]
+                    Ok(DeviceMmap::SharedPages(pages)) => Backend::new_shared(start, pages),
                     Ok(_) => return Err(AxError::InvalidInput),
                     Err(_) => {
                         // Fall through to file-backed mmap
@@ -287,6 +302,10 @@ pub fn sys_mmap(
                                     DeviceMmap::None => {
                                         return Err(AxError::NoSuchDevice);
                                     }
+                                    #[cfg(feature = "kcov")]
+                                    DeviceMmap::NotConfigured => {
+                                        return Err(AxError::InvalidInput);
+                                    }
                                     DeviceMmap::Physical(range) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
@@ -309,6 +328,10 @@ pub fn sys_mmap(
                                         &curr.as_thread().proc_data.aspace(),
                                         true,
                                     ),
+                                    #[cfg(feature = "kcov")]
+                                    DeviceMmap::SharedPages(pages) => {
+                                        Backend::new_shared(start, pages)
+                                    }
                                 }
                             }
                         }
@@ -703,6 +726,54 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
 
 pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     debug!("sys_msync <= addr: {addr:#x}, length: {length:x}, flags: {flags:#x}");
+
+    if !addr.is_multiple_of(PAGE_SIZE_4K) {
+        return Err(AxError::InvalidInput);
+    }
+
+    let valid_flags = MS_SYNC | MS_ASYNC | MS_INVALIDATE;
+    if flags & !valid_flags != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if flags & MS_SYNC != 0 && flags & MS_ASYNC != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    if length == 0 {
+        return Ok(0);
+    }
+
+    let start = VirtAddr::from(addr);
+    let end_val = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
+    let end = VirtAddr::from(end_val);
+
+    let curr = current();
+    let aspace_arc = curr.as_thread().proc_data.aspace();
+    let mut aspace = aspace_arc.lock();
+
+    let mut cursor = start;
+    while cursor < end {
+        let (area_end, fb_info) = {
+            let area = match aspace.find_area(cursor) {
+                Some(a) => a,
+                None => return Err(AxError::NoMemory),
+            };
+            let fb_info = if let Backend::File(file_backend) = area.backend()
+                && file_backend.is_shared()
+            {
+                Some((file_backend.clone(), area.flags()))
+            } else {
+                None
+            };
+            (area.end(), fb_info)
+        };
+
+        if let Some((file_backend, area_flags)) = fb_info {
+            file_backend.writeback_and_protect(&mut aspace, start, end, area_flags)?;
+        }
+
+        cursor = area_end;
+    }
 
     Ok(0)
 }

@@ -250,6 +250,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-backtrace"
+version = "0.3.1"
+dependencies = [
+ "ax-std",
+ "axbacktrace",
+]
+
+[[package]]
 name = "arceos-display"
 version = "0.3.1"
 dependencies = [
@@ -479,12 +487,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "arm_pl011"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efcf6afca4502993a737ba1e00952d1321078689da92bf7aab27d4e5756c0bec"
+name = "arm-scmi-rs"
+version = "0.1.1"
 dependencies = [
- "tock-registers 0.8.1",
+ "aarch64-cpu-ext",
+ "bare-test",
+ "bare-test-macros",
+ "bitflags 2.11.1",
+ "log",
+ "mbarrier",
+ "nb",
+ "num-align",
+ "smccc",
+ "spin 0.10.0",
+ "thiserror 2.0.18",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]
@@ -625,7 +642,6 @@ dependencies = [
 name = "ax-allocator"
 version = "0.5.0"
 dependencies = [
- "ax-allocator",
  "ax-errno",
  "ax_slab_allocator",
  "bitmap-allocator",
@@ -816,7 +832,7 @@ version = "0.3.12"
 
 [[package]]
 name = "ax-driver-block"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "ax-driver-base",
  "bcm2835-sdhci",
@@ -1136,7 +1152,6 @@ version = "0.5.12"
 dependencies = [
  "ax-crate-interface",
  "ax-kspin",
- "ax-log",
  "axpanic",
  "cfg-if",
  "chrono",
@@ -1285,7 +1300,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
- "dw_apb_uart",
+ "dw_apb_uart 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
 ]
 
@@ -1521,7 +1536,6 @@ version = "0.5.13"
 dependencies = [
  "ax-kspin",
  "ax-lockdep",
- "ax-sync",
  "ax-task",
  "fastrand",
  "lock_api",
@@ -1543,7 +1557,6 @@ dependencies = [
  "ax-memory-addr",
  "ax-percpu",
  "ax-sched",
- "ax-task",
  "ax-timer-list",
  "axpoll",
  "cfg-if",
@@ -1730,6 +1743,7 @@ name = "axplat-dyn"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "arm-scmi-rs",
  "ax-alloc",
  "ax-arm-pl031",
  "ax-config-macros",
@@ -1746,6 +1760,7 @@ dependencies = [
  "axklib",
  "crab-usb",
  "dma-api 0.7.2",
+ "dwmmc-host",
  "eth-intel",
  "fdt-edit",
  "heapless 0.9.3",
@@ -1764,8 +1779,8 @@ dependencies = [
  "rockchip-npu",
  "rockchip-pm",
  "rockchip-soc",
- "sdmmc",
- "simple-sdmmc",
+ "sdhci-host",
+ "sdmmc-protocol",
  "some-serial",
  "somehal 0.6.7",
  "spin 0.10.0",
@@ -3437,15 +3452,6 @@ checksum = "624f4a84cc1031cfceb56780b82570a785f6cfdcee4f34c06c4e8f1fba25c970"
 
 [[package]]
 name = "dma-api"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d51274fe946b4c27cdada87cc6de09a50c0d9192c0f30ba455b29dae09caa0b"
-dependencies = [
- "aarch64-cpu-ext",
-]
-
-[[package]]
-name = "dma-api"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3816a852c6c71653e1941cfe22f215eca41c14fd45ec9b32c0fa82fe57fe0989"
@@ -3525,6 +3531,13 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 [[package]]
 name = "dw_apb_uart"
 version = "0.1.0"
+dependencies = [
+ "tock-registers 0.10.1",
+]
+
+[[package]]
+name = "dw_apb_uart"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f93d496c8faa9dc676ebfa225432e1e3b57645c9268ead889286546f6d39356d"
 dependencies = [
@@ -3538,6 +3551,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da3751978e2d9bced3cb480631bb2c14098357ae269ac95475720aee545c6dcd"
 dependencies = [
  "tock-registers 0.8.1",
+]
+
+[[package]]
+name = "dwmmc-host"
+version = "0.1.0"
+dependencies = [
+ "bitfield-struct",
+ "dma-api 0.7.2",
+ "embedded-hal",
+ "log",
+ "mmio-api",
+ "sdmmc-protocol",
+ "volatile 0.6.1",
 ]
 
 [[package]]
@@ -7855,23 +7881,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "sdmmc"
+name = "sdhci-host"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd0dbda75ab3bc25f210eb7ad16f2bd1f877a05444e1aeea083c60221bf76f15"
 dependencies = [
- "aarch64-cpu 10.0.0",
- "arm_pl011",
- "bare-test-macros",
- "bitflags 2.11.1",
- "cfg-if",
- "dma-api 0.3.1",
- "fdt-parser",
- "kspin",
+ "dma-api 0.7.2",
+ "embedded-hal",
  "log",
- "paste",
- "smccc",
- "spin 0.10.0",
+ "mmio-api",
+ "sdmmc-protocol",
+]
+
+[[package]]
+name = "sdmmc-protocol"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.11.1",
+ "embedded-hal",
+ "log",
 ]
 
 [[package]]
@@ -8209,6 +8235,8 @@ dependencies = [
 [[package]]
 name = "simple-sdmmc"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65f2f7127074b52811ae3b4757e33865a60a8b46e1402c028c301139e0b00d92"
 dependencies = [
  "bitfield-struct",
  "log",
@@ -8620,6 +8648,7 @@ dependencies = [
  "crab-usb",
  "ddebug",
  "downcast-rs",
+ "dw_apb_uart 0.1.0",
  "enum_dispatch",
  "event-listener",
  "extern-trait",
@@ -8640,6 +8669,7 @@ dependencies = [
  "riscv 0.16.0",
  "scope-local",
  "sg2002-tpu",
+ "sg200x-bsp",
  "slab",
  "spin 0.10.0",
  "starry-process",
@@ -8648,6 +8678,7 @@ dependencies = [
  "static-keys",
  "strum 0.28.0",
  "syscalls",
+ "tock-registers 0.9.0",
  "uluru",
  "weak-map",
  "x86",
@@ -8985,6 +9016,61 @@ dependencies = [
  "wezterm-dynamic",
  "wezterm-input-types",
  "winapi",
+]
+
+[[package]]
+name = "test-arceos-std-arce_agent"
+version = "0.2.0"
+dependencies = [
+ "arceos-rust",
+ "env_logger",
+ "log",
+ "minreq",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "test-arceos-std-helloworld"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-httpclient"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-httpserver"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-io_test"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-thread_test"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
+name = "test-arceos-std-tokio_test"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+ "tokio",
 ]
 
 [[package]]

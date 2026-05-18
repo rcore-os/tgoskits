@@ -125,6 +125,7 @@ impl AppContext {
         build_config_path: PathBuf,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
+        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.tool.cargo_build(&cargo).await
     }
 
@@ -142,6 +143,7 @@ impl AppContext {
         build_config_path: PathBuf,
         qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
+        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let _path_guard = self.scoped_qemu_path(&cargo)?;
         self.set_build_config_path(build_config_path);
         self.tool
@@ -188,6 +190,7 @@ impl AppContext {
         build_config_path: PathBuf,
         uboot: Option<UbootConfig>,
     ) -> anyhow::Result<()> {
+        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         self.tool
             .cargo_run(
@@ -207,6 +210,7 @@ impl AppContext {
         board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
+        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         self.tool
             .cargo_run_board(&cargo, &board_config, options)
@@ -242,6 +246,43 @@ impl AppContext {
             configure_loongarch_qemu_path(&self.root)?;
         }
         Ok(guard)
+    }
+}
+
+struct EnvRestoreGuard {
+    vars: Vec<(OsString, Option<OsString>)>,
+}
+
+impl EnvRestoreGuard {
+    fn set(vars: &HashMap<String, String>) -> Self {
+        let mut saved = Vec::with_capacity(vars.len());
+        for (key, value) in vars {
+            let key = OsString::from(key);
+            let previous = env::var_os(&key);
+            // SAFETY: axbuild runs each cargo build/run flow serially in this CLI process.
+            // These variables must be visible to ostool's short-lived child cargo probes
+            // (for example `cargo tree`) before the final cargo command is constructed.
+            unsafe {
+                env::set_var(&key, value);
+            }
+            saved.push((key, previous));
+        }
+        Self { vars: saved }
+    }
+}
+
+impl Drop for EnvRestoreGuard {
+    fn drop(&mut self) {
+        for (key, previous) in self.vars.iter().rev() {
+            // SAFETY: see `EnvRestoreGuard::set`; this restores the process environment
+            // immediately after the scoped ostool cargo operation completes.
+            unsafe {
+                match previous {
+                    Some(value) => env::set_var(key, value),
+                    None => env::remove_var(key),
+                }
+            }
+        }
     }
 }
 

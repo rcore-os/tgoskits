@@ -37,8 +37,8 @@ Dedicated baseline configs remain available for explicit manual runs:
 - Without `lockdep`, the app should end with:
   `All tests passed!`
 - In the `lockdep`-enabled path, the inversion banner is the success signal.
-  The app may panic immediately afterwards, which is expected for this
-  regression test and does not count as a failure.
+  Lockdep then emits its report through the fatal path and shuts the system down
+  without entering the panic handler.
 - If `lockdep` is enabled but no inversion is reported, the app panics with:
   `lockdep did not report an expected lock order inversion`
 
@@ -63,11 +63,13 @@ Typical output looks like:
 ```text
 lockdep: lock order inversion detected
 requested:
-  kind=spin lock id=23 class=9 addr=0xffffffc08029f9d0 acquire_at=test-suit/arceos/rust/task/lockdep/src/main.rs:127:16
+  kind=spin lock class=9 subclass=0 addr=0xffffffc08029f9d0 acquire_at=test-suit/arceos/rust/task/lockdep/src/main.rs:127:16
 conflicting held lock:
-  id=24 class=10 addr=0xffffffc08029f9f0 acquired_at=test-suit/arceos/rust/task/lockdep/src/main.rs:125:27
+  class=10 subclass=0 addr=0xffffffc08029f9f0 acquired_at=test-suit/arceos/rust/task/lockdep/src/main.rs:125:27
 held stack:
-  [0] top: id=24 class=10 addr=0xffffffc08029f9f0 acquired_at=test-suit/arceos/rust/task/lockdep/src/main.rs:125:27
+  [0] top: class=10 subclass=0 addr=0xffffffc08029f9f0 acquired_at=test-suit/arceos/rust/task/lockdep/src/main.rs:125:27
+
+lockdep fatal violation
 ```
 
 Enable `lockdep` on the ArceOS C-test batch to look for system-level lock order
@@ -84,15 +86,15 @@ Typical output from the current `httpclient` violation looks like:
 ```text
 Hello, ArceOS C HTTP client!
 lockdep: lock order inversion detected
-panicked at components/lockdep/src/state.rs:639:13:
-lockdep: lock order inversion detected
 requested:
-  kind=mutex id=16 class=12 addr=0xffffffc08030eef0 acquire_at=os/arceos/modules/axnet/src/smoltcp_impl/mod.rs:174:35
+  kind=mutex class=12 subclass=0 addr=0xffffffc08030eef0 acquire_at=os/arceos/modules/axnet/src/smoltcp_impl/mod.rs:174:35
 conflicting held lock:
-  id=12 class=9 addr=0xffffffc08030e300 acquired_at=os/arceos/modules/axnet/src/smoltcp_impl/mod.rs:173:36
+  class=9 subclass=0 addr=0xffffffc08030e300 acquired_at=os/arceos/modules/axnet/src/smoltcp_impl/mod.rs:173:36
 held stack:
-  [0] held: id=18 class=13 addr=0xffffffc08030d120 acquired_at=os/arceos/modules/axnet/src/smoltcp_impl/mod.rs:172:32
-  [1] top: id=12 class=9 addr=0xffffffc08030e300 acquired_at=os/arceos/modules/axnet/src/smoltcp_impl/mod.rs:173:36
+  [0] held: class=13 subclass=0 addr=0xffffffc08030d120 acquired_at=os/arceos/modules/axnet/src/smoltcp_impl/mod.rs:172:32
+  [1] top: class=9 subclass=0 addr=0xffffffc08030e300 acquired_at=os/arceos/modules/axnet/src/smoltcp_impl/mod.rs:173:36
+
+lockdep fatal violation
 ```
 
 ## Common commands

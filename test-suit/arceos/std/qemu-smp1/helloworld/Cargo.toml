@@ -1,0 +1,11 @@
+[package]
+name = "test-arceos-std-helloworld"
+version = "0.1.0"
+edition.workspace = true
+authors = ["eternalcomet <mydragonos@outlook.com>"]
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[target.'cfg(target_os = "hermit")'.dependencies]
+arceos-rust = { workspace = true, default-features = true, features = ["log-level-debug"] }
