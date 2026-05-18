@@ -32,9 +32,14 @@ ax-crate-interface
 ax-crate-interface-lite
 ax-display
 ax-dma
+ax-driver-base
 ax-driver-display
 ax-driver-block
+ax-driver-input
+ax-driver-net
+ax-driver-pci
 ax-driver-virtio
+ax-driver-vsock
 ax-errno
 ax-fs
 ax-hal
@@ -111,6 +116,7 @@ rdif-timer
 realtek-rtl8125
 riscv-h
 riscv_vcpu
+riscv_vplic
 rk3588-pci
 rockchip-npu
 rockchip-soc

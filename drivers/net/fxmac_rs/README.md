@@ -32,7 +32,7 @@ fxmac_rs = "0.4.1"
 
 ```bash
 # Enter the crate directory
-cd components/fxmac_rs
+cd drivers/net/fxmac_rs
 
 # Format code
 cargo fmt --all

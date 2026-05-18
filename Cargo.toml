@@ -14,8 +14,8 @@ lto = true
 resolver = "3"
 members = [
     "components/aarch64_sysreg",
-    "components/arm_pl011",
-    "components/arm_pl031",
+    "drivers/serial/arm_pl011",
+    "drivers/rtc/arm_pl031",
     "components/arm_vcpu",
     "components/arm_vgic",
     "components/ax-lazyinit",
@@ -82,7 +82,7 @@ members = [
     "components/crate_interface/test_crates/test-weak-partial",
     "components/ctor_bare/ctor_bare",
     "components/ctor_bare/ctor_bare_macros",
-    "components/fxmac_rs",
+    "drivers/net/fxmac_rs",
     "components/handler_table",
     "components/int_ratio",
     "components/kernel_guard",
@@ -96,7 +96,7 @@ members = [
     "components/percpu/percpu_macros",
     "components/range-alloc-arceos",
     "components/riscv-h",
-    "components/riscv_plic",
+    "drivers/intc/riscv_plic",
     "components/riscv_vcpu",
     "components/riscv_vplic",
     "components/rsext4",
@@ -239,8 +239,8 @@ arm_vgic = { version = "0.4.7", path = "components/arm_vgic" }
 ax-alloc = { version = "0.7.0", path = "os/arceos/modules/axalloc" }
 ax-allocator = { version = "0.5.0", path = "components/axallocator" }
 ax-api = { version = "0.5.14", path = "os/arceos/api/arceos_api" }
-ax-arm-pl011 = { version = "0.3.6", path = "components/arm_pl011" }
-ax-arm-pl031 = { version = "0.4.5", path = "components/arm_pl031" }
+ax-arm-pl011 = { version = "0.3.6", path = "drivers/serial/arm_pl011" }
+ax-arm-pl031 = { version = "0.4.5", path = "drivers/rtc/arm_pl031" }
 ax-cap-access = { version = "0.3.5", path = "components/cap_access" }
 ax-config = { version = "0.5.10", path = "os/arceos/modules/axconfig" }
 ax-config-gen = { version = "0.4.9", path = "components/axconfig-gen/axconfig-gen" }
@@ -308,7 +308,7 @@ ax-plat-riscv64-qemu-virt = { version = "0.5.7", path = "components/axplat_crate
 ax-plat-riscv64-sg2002 = { version = "0.3.4", path = "components/axplat_crates/platforms/axplat-riscv64-sg2002" }
 ax-plat-x86-pc = { version = "0.5.8", path = "components/axplat_crates/platforms/axplat-x86-pc" }
 ax-posix-api = { version = "0.5.14", path = "os/arceos/api/arceos_posix_api" }
-ax-riscv-plic = { version = "0.4.5", path = "components/riscv_plic" }
+ax-riscv-plic = { version = "0.4.5", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.5.14", path = "os/arceos/modules/axruntime" }
 ax-sched = { version = "0.5.6", path = "components/axsched" }
 ax-shell = { version = "0.3.1", path = "os/arceos/examples/shell" }
@@ -340,7 +340,7 @@ bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }
 deptool = { version = "0.3.1", path = "os/arceos/tools/deptool" }
-fxmac_rs = { version = "0.5.0", path = "components/fxmac_rs" }
+fxmac_rs = { version = "0.5.0", path = "drivers/net/fxmac_rs" }
 hello-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/hello-kernel" }
 impl-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-simple-traits" }
 impl-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-weak-partial" }
