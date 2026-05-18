@@ -293,7 +293,7 @@ ax-int-ratio = { version = "0.3.7", path = "components/int_ratio" }
 ax-io = { version = "0.5.5", path = "components/axio" }
 ax-ipi = { version = "0.5.12", path = "os/arceos/modules/axipi" }
 ax-kernel-guard = { version = "0.3.10", path = "components/kernel_guard" }
-ax-lockdep = { version = "0.1.0", path = "components/lockdep" }
+ax-lockdep = { version = "0.2.0", path = "components/lockdep" }
 ax-kspin = { version = "0.3.8", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.7", path = "components/ax-lazyinit" }
 ax-libc = { version = "0.5.13", path = "os/arceos/ulib/axlibc" }

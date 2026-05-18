@@ -1140,7 +1140,7 @@ version = "0.5.5"
 
 [[package]]
 name = "ax-lockdep"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ax-crate-interface",
  "sbi-rt 0.0.3",
@@ -1300,7 +1300,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
- "dw_apb_uart 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dw_apb_uart 0.1.0",
  "log",
 ]
 
@@ -3494,17 +3494,17 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 [[package]]
 name = "dw_apb_uart"
 version = "0.1.0"
-dependencies = [
- "tock-registers 0.10.1",
-]
-
-[[package]]
-name = "dw_apb_uart"
-version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f93d496c8faa9dc676ebfa225432e1e3b57645c9268ead889286546f6d39356d"
 dependencies = [
  "tock-registers 0.8.1",
+]
+
+[[package]]
+name = "dw_apb_uart"
+version = "0.1.1"
+dependencies = [
+ "tock-registers 0.10.1",
 ]
 
 [[package]]
@@ -8427,7 +8427,7 @@ dependencies = [
  "crab-usb",
  "ddebug",
  "downcast-rs",
- "dw_apb_uart 0.1.0",
+ "dw_apb_uart 0.1.1",
  "enum_dispatch",
  "event-listener",
  "extern-trait",
