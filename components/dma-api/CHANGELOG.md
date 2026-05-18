@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.7.2...dma-api-v0.7.3) - 2026-05-18
+
+### Added
+
+- *(dma-api)* vendor dma and mmio api crates ([#742](https://github.com/rcore-os/tgoskits/pull/742))
+
 ## [0.7.2](https://github.com/drivercraft/sparreal-os/compare/dma-api-v0.7.1...dma-api-v0.7.2) - 2026-04-10
 
 ### Other

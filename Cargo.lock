@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "arm-scmi-rs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aarch64-cpu-ext",
  "bitflags 2.11.1",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "arm_vcpu"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-errno",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "arm_vgic"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
@@ -1099,7 +1099,7 @@ version = "0.5.5"
 
 [[package]]
 name = "ax-lockdep"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ax-crate-interface",
  "sbi-rt 0.0.3",
@@ -1259,7 +1259,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
- "dw_apb_uart 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dw_apb_uart 0.1.0",
  "log",
 ]
 
@@ -1540,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "axaddrspace"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "assert_matches",
  "ax-errno",
@@ -1632,7 +1632,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice_base"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "ax-errno",
  "axaddrspace",
@@ -1868,7 +1868,7 @@ dependencies = [
 
 [[package]]
 name = "axvcpu"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "ax-errno",
  "ax-memory-addr",
@@ -1934,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor_api"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "ax-cpumask",
  "ax-crate-interface",
@@ -3329,17 +3329,17 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 [[package]]
 name = "dw_apb_uart"
 version = "0.1.0"
-dependencies = [
- "tock-registers 0.10.1",
-]
-
-[[package]]
-name = "dw_apb_uart"
-version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f93d496c8faa9dc676ebfa225432e1e3b57645c9268ead889286546f6d39356d"
 dependencies = [
  "tock-registers 0.8.1",
+]
+
+[[package]]
+name = "dw_apb_uart"
+version = "0.1.1"
+dependencies = [
+ "tock-registers 0.10.1",
 ]
 
 [[package]]
@@ -7702,7 +7702,7 @@ dependencies = [
  "crab-usb",
  "ddebug",
  "downcast-rs",
- "dw_apb_uart 0.1.0",
+ "dw_apb_uart 0.1.1",
  "enum_dispatch",
  "event-listener",
  "extern-trait",
