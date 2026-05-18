@@ -327,7 +327,7 @@ ax-page-table-multiarch = { version = "0.8.8", path = "components/page_table_mul
 ax-percpu = { version = "0.4.11", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.10", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.5.8", path = "components/axplat_crates/axplat" }
-ax-plat-aarch64-bsta1000b = { version = "0.5.8", path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
+ax-plat-aarch64-bsta1000b = { version = "0.5.9", path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
 ax-plat-aarch64-peripherals = { version = "0.5.8", path = "components/axplat_crates/platforms/axplat-aarch64-peripherals" }
 ax-plat-aarch64-phytium-pi = { version = "0.5.9", path = "components/axplat_crates/platforms/axplat-aarch64-phytium-pi" }
 ax-plat-aarch64-qemu-virt = { version = "0.5.8", path = "components/axplat_crates/platforms/axplat-aarch64-qemu-virt" }
