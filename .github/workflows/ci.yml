@@ -192,12 +192,29 @@ jobs:
               git_cmd() {
                 git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
               }
+              ensure_host_clippy_deps() {
+                if pkg-config --exists libavutil; then
+                  return 0
+                fi
+
+                apt-get update
+                apt-get install -y --no-install-recommends \
+                  libavcodec-dev \
+                  libavdevice-dev \
+                  libavfilter-dev \
+                  libavformat-dev \
+                  libavutil-dev \
+                  libswresample-dev \
+                  libswscale-dev
+                rm -rf /var/lib/apt/lists/*
+              }
               ensure_since_ref() {
                 ref="$1"
                 git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
                 git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
                 git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
               }
+              ensure_host_clippy_deps
 
               if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
                 cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
