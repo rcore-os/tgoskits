@@ -55,6 +55,7 @@ test_commands = [
     "/usr/bin/bug-advisory-lock-dir",
     "/usr/bin/bug-proc-net-arp",
     "/usr/bin/bug-proc-init-pid",
+    "/usr/bin/bug-af-inet6-v4mapped",
     "/usr/bin/bug-tcp-udp-bind-same-port",
     "/usr/bin/bug-tcp-send-no-epoll-notify",
     "/usr/bin/bug-kill-zombie-esrch",

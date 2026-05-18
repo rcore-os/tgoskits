@@ -1,6 +1,6 @@
 use ax_errno::{AxError, AxResult, LinuxError};
 use axnet::options::{Configurable, GetSocketOption, SetSocketOption};
-use linux_raw_sys::net::socklen_t;
+use linux_raw_sys::net::{IPPROTO_IPV6, IPV6_V6ONLY, socklen_t};
 
 use crate::{
     file::{FileLike, Socket, netlink::NetlinkSocket},
@@ -150,6 +150,12 @@ pub fn sys_getsockopt(
     }
 
     let socket = Socket::from_fd(fd)?;
+    if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
+        // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
+        *get::<i32>(optval, optlen)? = 0;
+        return Ok(0);
+    }
+
     macro_rules! dispatch {
         ($which:ident) => {
             socket.get_option(GetSocketOption::$which(get(optval, optlen)?))?;
@@ -221,6 +227,12 @@ pub fn sys_setsockopt(
     }
 
     let socket = Socket::from_fd(fd)?;
+    if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
+        // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
+        let _ = *get::<i32>(optval, optlen)?;
+        return Ok(0);
+    }
+
     macro_rules! dispatch {
         ($which:ident) => {
             socket.set_option(SetSocketOption::$which(get(optval, optlen)?))?;
