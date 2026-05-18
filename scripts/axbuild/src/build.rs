@@ -175,7 +175,12 @@ impl BuildInfo {
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
         self.resolve_features_with_metadata(package, plat_dyn, metadata);
-        let extra_rustflags = toolchain_rustflags(&self.env);
+        let mut extra_rustflags = toolchain_rustflags(&self.env);
+        if self.features.iter().any(|f| f == "kcov") {
+            extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-level=3".to_string());
+            extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-trace-pc".to_string());
+            extra_rustflags.push("-Cpasses=sancov-module".to_string());
+        }
         let args = Self::build_cargo_args(target, plat_dyn, &extra_rustflags);
 
         Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))

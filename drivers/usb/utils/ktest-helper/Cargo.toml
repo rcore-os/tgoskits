@@ -1,0 +1,16 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+name = "ktest-helper"
+version = "0.1.1"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+
+[dependencies]
+crab-usb = {workspace = true}
+log = {workspace = true}
+
+[target.'cfg(target_os = "none")'.dependencies]
+# bare-test = {workspace = true}
