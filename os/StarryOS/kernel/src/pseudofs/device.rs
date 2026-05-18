@@ -11,16 +11,29 @@ use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 
 use super::{SimpleFs, SimpleFsNode};
+#[cfg(feature = "kcov")]
+use crate::mm::SharedPages;
 
 /// Mmap behavior for devices.
 #[derive(Clone)]
 pub enum DeviceMmap {
-    /// The device is not mappable.
+    /// The device is not mappable (→ ENODEV, matches Linux).
     None,
+
     /// Maps to a physical address range.
     Physical(PhysAddrRange),
+
     /// Maps to a cached file.
     Cache(CachedFile),
+
+    #[cfg(feature = "kcov")]
+    /// The device supports mmap but is not yet configured
+    /// (→ EINVAL, matches Linux kcov semantics).
+    NotConfigured,
+
+    #[cfg(feature = "kcov")]
+    /// Maps to a pre-allocated set of shared physical pages (kernel↔userspace).
+    SharedPages(Arc<SharedPages>),
 }
 
 /// Trait for device operations.
@@ -43,7 +56,11 @@ pub trait DeviceOps: Send + Sync {
     }
 
     /// Returns the memory mapping behavior of the device for the given offset.
-    fn mmap(&self, _offset: u64) -> DeviceMmap {
+    ///
+    /// # Arguments
+    /// * `offset` - The offset from the start of the device
+    /// * `length` - The length of the mapping
+    fn mmap(&self, _offset: u64, _length: u64) -> DeviceMmap {
         DeviceMmap::None
     }
 
@@ -91,8 +108,8 @@ impl Device {
     }
 
     /// Returns the memory mapping behavior of the device for the given offset.
-    pub fn mmap(&self, offset: u64) -> DeviceMmap {
-        self.ops.mmap(offset)
+    pub fn mmap(&self, offset: u64, length: u64) -> DeviceMmap {
+        self.ops.mmap(offset, length)
     }
 }
 

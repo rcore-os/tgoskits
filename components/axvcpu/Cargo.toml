@@ -1,7 +1,7 @@
 [package]
 name = "axvcpu"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.5.5"
+version = "0.5.6"
 edition.workspace = true
 categories = ["virtualization", "no-std"]
 description = "Virtual CPU abstraction for ArceOS hypervisor"
