@@ -1,0 +1,48 @@
+# Manual diagnosis only (stress group; normal CI does not run stress by default).
+# Run: cargo xtask starry test qemu --stress -c app-redis-aof-diagnose --target riscv64gc-unknown-none-elf
+# Finding (2026-05-18): Redis 8 AOF init logs
+#   "Error moving temp append only file on the final destination: Invalid argument"
+# Likely rename(temp_aof, final_aof) replace semantics; see bug-rename-replace.
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "rv64",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+apk update && apk add redis
+rm -rf /root/appendonlydir /root/appendonly.aof* /tmp/redis-aof*.log 2>/dev/null
+echo "=== A: foreground 4s (AOF) ==="
+timeout 4 redis-server --port 6379 --bind 127.0.0.1 --save "" \
+  --appendonly yes --appendfilename appendonly.aof >/tmp/redis-aof-fg.log 2>&1
+echo "fg_exit=$?"
+cat /tmp/redis-aof-fg.log
+echo "=== B: no-AOF daemon (control) ==="
+redis-server --daemonize yes --port 6380 --bind 127.0.0.1
+sleep 1
+redis-cli -p 6380 ping
+echo "=== C: AOF daemon ==="
+redis-server --daemonize yes --port 6379 --bind 127.0.0.1 --save "" \
+  --appendonly yes --appendfilename appendonly.aof >/tmp/redis-aof-daemon.log 2>&1
+echo "daemon_exit=$?"
+sleep 2
+cat /tmp/redis-aof-daemon.log
+ls -la /root/appendonly* /root/appendonlydir 2>&1
+redis-cli -p 6379 ping
+echo 'REDIS_AOF_DIAG_DONE'
+'''
+success_regex = ["(?m)^REDIS_AOF_DIAG_DONE\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b']
+timeout = 300
