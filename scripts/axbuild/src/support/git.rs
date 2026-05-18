@@ -167,6 +167,13 @@ impl PackagePathIndex {
                         manifest.display()
                     )
                 })?;
+                let manifest_dir = manifest_dir.canonicalize().with_context(|| {
+                    format!(
+                        "failed to canonicalize manifest dir for package `{}`: {}",
+                        package.name,
+                        manifest_dir.display()
+                    )
+                })?;
                 let rel_dir = manifest_dir
                     .strip_prefix(&workspace_root)
                     .with_context(|| {
@@ -205,7 +212,10 @@ impl PackagePathIndex {
                 continue;
             }
             let Some(package) = self.package_for_path(&path) else {
-                return Ok(ChangedPackages::Full { path });
+                if is_global_clippy_input(&path) {
+                    return Ok(ChangedPackages::Full { path });
+                }
+                continue;
             };
             packages.insert(package.to_string());
         }
@@ -218,6 +228,20 @@ impl PackagePathIndex {
             .find(|package| path == package.rel_dir || path.starts_with(&package.rel_dir))
             .map(|package| package.name.as_str())
     }
+}
+
+fn is_global_clippy_input(path: &Path) -> bool {
+    matches!(
+        path,
+        p if p == Path::new("Cargo.toml")
+            || p == Path::new("Cargo.lock")
+            || p == Path::new("rust-toolchain")
+            || p == Path::new("rust-toolchain.toml")
+            || p == Path::new("clippy.toml")
+            || p == Path::new(".clippy.toml")
+            || p.starts_with(".cargo")
+            || p.starts_with("os/arceos/configs")
+    )
 }
 
 fn normalize_git_path(path: PathBuf) -> anyhow::Result<PathBuf> {
@@ -472,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn non_crate_file_falls_back_to_full_run() {
+    fn global_manifest_falls_back_to_full_run() {
         let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
@@ -501,7 +525,41 @@ mod tests {
 
         assert!(matches!(
             selected,
-            IncrementalPackageSelection::Full { reason } if reason.contains(".cargo/config.toml")
+            IncrementalPackageSelection::Full { reason } if reason.contains(".cargo")
         ));
+    }
+
+    #[test]
+    fn unrelated_outside_package_file_selects_no_packages() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [PathBuf::from("docs/guide.md")],
+        )
+        .unwrap();
+
+        assert_eq!(selected, IncrementalPackageSelection::Packages(Vec::new()));
+    }
+
+    #[test]
+    fn unrelated_outside_package_file_does_not_hide_package_changes() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [
+                PathBuf::from(".github/workflows/review.yml"),
+                PathBuf::from("crates/beta/src/lib.rs"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            IncrementalPackageSelection::Packages(vec!["beta".into(), "gamma".into()])
+        );
     }
 }
