@@ -139,6 +139,7 @@ fn resolve_build_info_path_in_dir(dir: &std::path::Path, target: &str) -> PathBu
 mod tests {
     use std::fs;
 
+    use ostool::build;
     use tempfile::tempdir;
 
     use super::*;
@@ -184,7 +185,7 @@ mod tests {
         assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", true);
+        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", true, &[]);
         assert!(args.iter().any(|arg| arg.contains("-Taxplat.x")));
     }
 
@@ -196,7 +197,7 @@ mod tests {
         assert!(build_info.features.contains(&"ax-std/defplat".to_string()));
         assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", false);
+        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", false, &[]);
         assert!(args.iter().any(|arg| arg.contains("-Tlinker.x")));
     }
 

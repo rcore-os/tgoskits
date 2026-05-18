@@ -1,6 +1,6 @@
 [package]
 name = "ax-feat"
-version = "0.5.12"
+version = "0.5.14"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -109,6 +109,7 @@ driver-bcm2835-sdhci = ["ax-driver?/bcm2835-sdhci"]
 driver-ahci = ["ax-driver?/ahci"]
 
 # Backtrace
+backtrace = ["alloc", "axbacktrace/alloc"]
 dwarf = ["alloc", "axbacktrace/dwarf"]
 
 [dependencies]

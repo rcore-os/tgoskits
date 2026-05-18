@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.1...ax-cpu-v0.6.2) - 2026-05-15
+
+### Other
+
+- updated the following local packages: axbacktrace
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.5.5...ax-cpu-v0.6.0) - 2026-04-27
 
 ### Added
