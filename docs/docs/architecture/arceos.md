@@ -34,7 +34,7 @@ flowchart LR
     publicApi["PublicApi: ax-feat ax-api ax-posix-api"]
     userLib["UserLib: ax-std ax-libc"]
     appsAndTests["AppsAndTests: examples/* + test-suit/arceos/*"]
-    upperSystems["UpperSystems: StarryOS AxVisor"]
+    upperSystems["UpperSystems: StarryOS Axvisor"]
 
     reusableCrates --> requiredModules
     reusableCrates --> optionalModules
@@ -52,7 +52,7 @@ flowchart LR
 理解此图可从两个方向入手：
 
 - **自下而上**：应用最终经由 `user lib -> API -> modules -> HAL/platform` 链路获取能力。
-- **自右向左**：StarryOS 和 AxVisor 复用的是底层模块能力，修改 `ax-hal`、`ax-task`、`ax-driver` 等模块可能同时影响多个系统。
+- **自右向左**：StarryOS 和 Axvisor 复用的是底层模块能力，修改 `ax-hal`、`ax-task`、`ax-driver` 等模块可能同时影响多个系统。
 
 ## 分层职责
 

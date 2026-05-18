@@ -25,7 +25,7 @@ Axvisor 开发依赖 QEMU 的硬件虚拟化支持：
 | x86_64 | `qemu-system-x86_64` | VMX |
 | loongarch64 | `qemu-system-loongarch64` | 虚拟化支持 |
 
-推荐 QEMU 版本 ≥ 8.0。
+推荐 QEMU 版本 ≥ 10.2.1。
 
 ### 1.3 Guest 镜像准备
 
