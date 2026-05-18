@@ -75,6 +75,7 @@ pub fn mount_all() -> LinuxResult<()> {
     mount_at(&fs, "/sys", usbfs::new_sysfs())?;
     #[cfg(not(feature = "plat-dyn"))]
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
+
     drop(fs);
 
     #[cfg(feature = "dev-log")]
