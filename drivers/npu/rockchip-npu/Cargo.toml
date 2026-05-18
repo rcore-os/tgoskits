@@ -8,6 +8,7 @@ keywords = ["rk3588", "npu", "rknn"]
 license = "Apache-2.0"
 name = "rockchip-npu"
 version = "0.2.0"
+repository.workspace = true
 
 [dependencies]
 aarch64-cpu-ext = "0.1"
