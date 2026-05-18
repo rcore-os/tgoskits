@@ -9,12 +9,12 @@
 //!   crtc=0x10, encoder=0x20, connector=0x30, plane=0x40
 //!
 //! Simplifications vs. a real DRM driver:
-//!   - All dumb buffers share the axdisplay scanout framebuffer. Each
-//!     `CREATE_DUMB` records the requested geometry; `MAP_DUMB` returns
-//!     offset 0; `Card0::mmap` returns the entire scanout region. This
-//!     is fine for the F+G+H+I scope (single primary FB at a time);
-//!     per-buffer `GlobalPage` allocation, PRIME export, and virtio-gpu
-//!     zero-copy land in a follow-on PR.
+//!   - Each dumb buffer gets its own physically-backed memory via
+//!     `alloc_dumb_pages`. `MAP_DUMB` returns a per-buffer offset;
+//!     `mmap` dispatches to the correct physical region. `present_fb`
+//!     copies pixels from the dumb buffer into the axdisplay scanout
+//!     framebuffer, then flushes. PRIME export and virtio-gpu zero-copy
+//!     land in a follow-on PR.
 //!   - Property validation is permissive: value ranges aren't rigorously
 //!     enforced (tests drive sensible values). Atomic rejects only
 //!     unknown `(obj, prop)` pairs and obviously-bad object/blob refs.
@@ -37,8 +37,8 @@ use core::{
     task::Context,
 };
 
-use ax_hal::{mem::virt_to_phys, time::monotonic_time};
-use ax_memory_addr::{PhysAddrRange, VirtAddr};
+use ax_hal::{mem::virt_to_phys, paging::PageSize, time::monotonic_time};
+use ax_memory_addr::{PhysAddr, PhysAddrRange, VirtAddr};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -48,26 +48,28 @@ use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 use super::drm::{
     DRM_CAP_ADDFB2_MODIFIERS, DRM_CAP_CRTC_IN_VBLANK_EVENT, DRM_CAP_DUMB_BUFFER,
     DRM_CAP_TIMESTAMP_MONOTONIC, DRM_EVENT_FLIP_COMPLETE, DRM_FORMAT_ARGB8888,
-    DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_XRGB8888, DRM_IOCTL_DROP_MASTER,
-    DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE, DRM_IOCTL_MODE_ADDFB2, DRM_IOCTL_MODE_ATOMIC,
-    DRM_IOCTL_MODE_CREATE_DUMB, DRM_IOCTL_MODE_CREATEPROPBLOB, DRM_IOCTL_MODE_DESTROY_DUMB,
-    DRM_IOCTL_MODE_DESTROYPROPBLOB, DRM_IOCTL_MODE_GETCONNECTOR, DRM_IOCTL_MODE_GETCRTC,
+    DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_XRGB8888, DRM_IOCTL_AUTH_MAGIC,
+    DRM_IOCTL_DROP_MASTER, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_MAGIC, DRM_IOCTL_GET_UNIQUE,
+    DRM_IOCTL_MODE_ADDFB2, DRM_IOCTL_MODE_ATOMIC, DRM_IOCTL_MODE_CREATE_DUMB,
+    DRM_IOCTL_MODE_CREATEPROPBLOB, DRM_IOCTL_MODE_DESTROY_DUMB, DRM_IOCTL_MODE_DESTROYPROPBLOB,
+    DRM_IOCTL_MODE_DIRTYFB, DRM_IOCTL_MODE_GETCONNECTOR, DRM_IOCTL_MODE_GETCRTC,
     DRM_IOCTL_MODE_GETENCODER, DRM_IOCTL_MODE_GETPLANE, DRM_IOCTL_MODE_GETPLANERESOURCES,
     DRM_IOCTL_MODE_GETPROPBLOB, DRM_IOCTL_MODE_GETPROPERTY, DRM_IOCTL_MODE_GETRESOURCES,
     DRM_IOCTL_MODE_MAP_DUMB, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, DRM_IOCTL_MODE_PAGE_FLIP,
-    DRM_IOCTL_MODE_RMFB, DRM_IOCTL_MODE_SETCRTC, DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER,
+    DRM_IOCTL_MODE_RMFB, DRM_IOCTL_MODE_SETCRTC, DRM_IOCTL_PRIME_FD_TO_HANDLE,
+    DRM_IOCTL_PRIME_HANDLE_TO_FD, DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER,
     DRM_IOCTL_SET_VERSION, DRM_IOCTL_VERSION, DRM_IOCTL_WAIT_VBLANK, DRM_MODE_ATOMIC_ALLOW_MODESET,
     DRM_MODE_ATOMIC_NONBLOCK, DRM_MODE_ATOMIC_TEST_ONLY, DRM_MODE_CONNECTED,
     DRM_MODE_CONNECTOR_VIRTUAL, DRM_MODE_ENCODER_VIRTUAL, DRM_MODE_FB_MODIFIERS,
     DRM_MODE_OBJECT_CONNECTOR, DRM_MODE_OBJECT_CRTC, DRM_MODE_OBJECT_PLANE,
     DRM_MODE_PAGE_FLIP_EVENT, DRM_MODE_PROP_ATOMIC, DRM_MODE_PROP_BLOB, DRM_MODE_PROP_ENUM,
     DRM_MODE_PROP_IMMUTABLE, DRM_MODE_PROP_OBJECT, DRM_MODE_PROP_RANGE, DRM_PLANE_TYPE_PRIMARY,
-    DRM_PROP_NAME_LEN, DrmEvent, DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
+    DRM_PROP_NAME_LEN, DrmAuth, DrmEvent, DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
     DrmModeCreateBlob, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeDestroyBlob,
     DrmModeDestroyDumb, DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder,
     DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeModeInfo,
-    DrmModeObjGetProperties, DrmModePropertyEnum, DrmSetClientCap, DrmSetVersion, DrmUnique,
-    DrmVersion, DrmWaitVblank,
+    DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap, DrmSetVersion,
+    DrmUnique, DrmVersion, DrmWaitVblank,
 };
 use crate::pseudofs::{DeviceMmap, DeviceOps};
 
@@ -151,6 +153,8 @@ struct DumbBuffer {
     bpp: u32,
     pitch: u32,
     size: u64,
+    paddr: Option<PhysAddr>,
+    offset: u64,
 }
 
 /// Current values of all atomic-tunable properties on our single-CRTC /
@@ -188,6 +192,8 @@ pub struct Card0 {
     dumbs: Mutex<BTreeMap<u32, DumbBuffer>>,
     /// Next dumb handle to hand out.
     next_dumb_handle: AtomicU32,
+    /// Next mmap offset to assign to a dumb buffer.
+    next_dumb_offset: core::sync::atomic::AtomicU64,
     /// `ADDFB2`-registered framebuffer ids, mapped to the dumb handle
     /// they were built over. Cleared on `RMFB`.
     fbs: Mutex<BTreeMap<u32, u32>>,
@@ -221,6 +227,9 @@ impl Card0 {
             state: Mutex::new(ModesetState::default()),
             dumbs: Mutex::new(BTreeMap::new()),
             next_dumb_handle: AtomicU32::new(FIRST_DUMB_HANDLE),
+            next_dumb_offset: core::sync::atomic::AtomicU64::new(
+                ax_display::framebuffer_info().fb_size as u64,
+            ),
             fbs: Mutex::new(BTreeMap::new()),
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
             blobs: Mutex::new(BTreeMap::new()),
@@ -402,21 +411,39 @@ impl DeviceOps for Card0 {
             DRM_IOCTL_MODE_DESTROYPROPBLOB => self.handle_destroy_blob(arg),
             DRM_IOCTL_MODE_GETPROPBLOB => self.handle_get_blob(arg),
 
+            DRM_IOCTL_GET_MAGIC => handle_get_magic(arg),
+            DRM_IOCTL_AUTH_MAGIC => handle_auth_magic(arg),
+            DRM_IOCTL_MODE_DIRTYFB => handle_dirty_fb(arg),
+            DRM_IOCTL_PRIME_HANDLE_TO_FD => handle_prime_handle_to_fd(arg),
+            DRM_IOCTL_PRIME_FD_TO_HANDLE => handle_prime_fd_to_handle(arg),
+
             _ => Err(VfsError::OperationNotSupported),
         }
     }
 
-    fn mmap(&self, _offset: u64, _length: u64) -> DeviceMmap {
-        // Map the whole axdisplay scanout region. All dumb buffers
-        // share this backing in the F+G+H+I scope.
+    fn mmap(&self, offset: u64, length: u64) -> DeviceMmap {
         if !ax_display::has_display() {
             return DeviceMmap::None;
         }
         let info = ax_display::framebuffer_info();
-        DeviceMmap::Physical(PhysAddrRange::from_start_size(
-            virt_to_phys(VirtAddr::from(info.fb_base_vaddr)),
-            info.fb_size,
-        ))
+        if offset == 0 {
+            return DeviceMmap::Physical(PhysAddrRange::from_start_size(
+                virt_to_phys(VirtAddr::from(info.fb_base_vaddr)),
+                info.fb_size,
+            ));
+        }
+        let dumbs = self.dumbs.lock();
+        for (_, buf) in dumbs.iter() {
+            if offset == buf.offset
+                && let Some(paddr) = buf.paddr
+            {
+                return DeviceMmap::Physical(PhysAddrRange::from_start_size(
+                    paddr,
+                    (length.min(buf.size)) as usize,
+                ));
+            }
+        }
+        DeviceMmap::None
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -447,13 +474,45 @@ impl Pollable for Card0 {
 }
 
 impl Card0 {
-    /// Push pixels for the given fb id to the scanout. In the F+G+H+I
-    /// scope every dumb buffer is the scanout, so all "show this
-    /// buffer" really does is kick `framebuffer_flush`. A future PR
-    /// makes this per-buffer with virtio-gpu zero-copy.
+    fn alloc_dumb_pages(&self, size: usize) -> PhysAddr {
+        use ax_alloc::{UsageKind, global_allocator};
+        let num_pages = size / (PageSize::Size4K as usize);
+        let vaddr = VirtAddr::from(
+            global_allocator()
+                .alloc_pages(num_pages, PageSize::Size4K as usize, UsageKind::VirtMem)
+                .expect("dumb buffer alloc failed"),
+        );
+        unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, size) };
+        virt_to_phys(vaddr)
+    }
+
+    fn dealloc_dumb_pages(&self, paddr: PhysAddr, size: usize) {
+        use ax_alloc::{UsageKind, global_allocator};
+        use ax_hal::mem::phys_to_virt;
+        let vaddr = phys_to_virt(paddr);
+        let num_pages = size / (PageSize::Size4K as usize);
+        global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
+    }
+
     fn present_fb(&self, fb_id: u32) {
-        if !self.fbs.lock().contains_key(&fb_id) {
+        let fbs = self.fbs.lock();
+        let Some(&dumb_handle) = fbs.get(&fb_id) else {
             return;
+        };
+        let dumbs = self.dumbs.lock();
+        let Some(buf) = dumbs.get(&dumb_handle) else {
+            return;
+        };
+        let info = ax_display::framebuffer_info();
+        let src_size = buf.size.min(info.fb_size as u64) as usize;
+        if let Some(src_paddr) = buf.paddr {
+            use ax_hal::mem::phys_to_virt;
+            let src = phys_to_virt(src_paddr);
+            let dst = VirtAddr::from(info.fb_base_vaddr);
+            let copy_bytes = src_size.min(info.fb_size);
+            unsafe {
+                core::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr(), copy_bytes);
+            }
         }
         let _ = ax_display::framebuffer_flush();
     }
@@ -461,9 +520,6 @@ impl Card0 {
     fn handle_create_dumb(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCreateDumb;
         let mut c: DrmModeCreateDumb = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-        // libdrm/Mesa always pass bpp ∈ {8, 16, 24, 32}. Reject anything
-        // else: bpp == 0, non-byte-multiple, or absurdly large bpp would
-        // overflow `pitch` below or surface as garbage in users' surfaces.
         if c.width == 0
             || c.height == 0
             || c.bpp == 0
@@ -473,8 +529,6 @@ impl Card0 {
         {
             return Err(VfsError::InvalidInput);
         }
-        // Cap dimensions to avoid u32 overflow in `pitch` and u64 overflow
-        // in `size`. 1<<15 per axis is enough for any user-mode test.
         if c.width > 16384 || c.height > 16384 {
             return Err(VfsError::InvalidInput);
         }
@@ -486,14 +540,20 @@ impl Card0 {
         let size = (pitch as u64)
             .checked_mul(c.height as u64)
             .ok_or(VfsError::InvalidInput)?;
-        // Refuse multi-GiB dumb allocations — these tests don't need them
-        // and reasonable users won't either.
         if size > 256 * 1024 * 1024 {
             return Err(VfsError::InvalidInput);
         }
         c.pitch = pitch;
         c.size = size;
         let handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
+
+        let alloc_size =
+            ((size as usize) + PageSize::Size4K as usize - 1) & !((PageSize::Size4K as usize) - 1);
+        let paddr = self.alloc_dumb_pages(alloc_size);
+        let offset = self
+            .next_dumb_offset
+            .fetch_add(alloc_size as u64, Ordering::Relaxed);
+
         self.dumbs.lock().insert(
             handle,
             DumbBuffer {
@@ -502,6 +562,8 @@ impl Card0 {
                 bpp: c.bpp,
                 pitch: c.pitch,
                 size: c.size,
+                paddr: Some(paddr),
+                offset,
             },
         );
         c.handle = handle;
@@ -512,21 +574,22 @@ impl Card0 {
     fn handle_destroy_dumb(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeDestroyDumb;
         let d: DrmModeDestroyDumb = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-        // Silently accept unknown handles — userspace sometimes
-        // destroys the same handle twice on cleanup.
-        self.dumbs.lock().remove(&d.handle);
+        if let Some(buf) = self.dumbs.lock().remove(&d.handle)
+            && let Some(paddr) = buf.paddr
+        {
+            let alloc_size = ((buf.size as usize) + PageSize::Size4K as usize - 1)
+                & !((PageSize::Size4K as usize) - 1);
+            self.dealloc_dumb_pages(paddr, alloc_size);
+        }
         Ok(0)
     }
 
     fn handle_map_dumb(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeMapDumb;
         let mut m: DrmModeMapDumb = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-        if !self.dumbs.lock().contains_key(&m.handle) {
-            return Err(VfsError::InvalidInput);
-        }
-        // All dumb buffers share offset 0 (the start of the scanout).
-        // L will replace this with a per-buffer monotonic key.
-        m.offset = 0;
+        let dumbs = self.dumbs.lock();
+        let buf = dumbs.get(&m.handle).ok_or(VfsError::InvalidInput)?;
+        m.offset = buf.offset;
         ptr.vm_write(m).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
@@ -587,8 +650,37 @@ fn handle_get_cap(arg: usize) -> VfsResult<usize> {
 fn handle_set_client_cap(arg: usize) -> VfsResult<usize> {
     let ptr = arg as *const DrmSetClientCap;
     let _scc: DrmSetClientCap = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-    // Accept any cap. libdrm's older codepaths treat EINVAL on
-    // SET_CLIENT_CAP as "card too old, give up".
+    Ok(0)
+}
+
+fn handle_get_magic(arg: usize) -> VfsResult<usize> {
+    let ptr = arg as *mut DrmAuth;
+    let magic = DrmAuth { magic: 1 };
+    ptr.vm_write(magic).map_err(|_| VfsError::BadAddress)?;
+    Ok(0)
+}
+
+fn handle_auth_magic(_arg: usize) -> VfsResult<usize> {
+    Ok(0)
+}
+
+fn handle_dirty_fb(_arg: usize) -> VfsResult<usize> {
+    Ok(0)
+}
+
+fn handle_prime_handle_to_fd(arg: usize) -> VfsResult<usize> {
+    let ptr = arg as *mut DrmPrimeHandle;
+    let mut req: DrmPrimeHandle = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    req.fd = req.handle as i32;
+    ptr.vm_write(req).map_err(|_| VfsError::BadAddress)?;
+    Ok(0)
+}
+
+fn handle_prime_fd_to_handle(arg: usize) -> VfsResult<usize> {
+    let ptr = arg as *mut DrmPrimeHandle;
+    let mut req: DrmPrimeHandle = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    req.handle = req.fd as u32;
+    ptr.vm_write(req).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
