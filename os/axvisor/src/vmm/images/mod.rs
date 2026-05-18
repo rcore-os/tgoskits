@@ -26,6 +26,8 @@ use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
 mod linux;
 #[cfg(target_arch = "x86_64")]
 mod x86_boot;
+#[cfg(target_arch = "x86_64")]
+mod x86_linux;
 
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
@@ -116,6 +118,20 @@ impl ImageLoader {
         info!("Loading VM[{}] images from memory", self.config.base.id);
 
         let vm_imags = memory_images_for_vm(&self.config)?;
+
+        #[cfg(target_arch = "x86_64")]
+        if let Some(header) = detect_x86_linux_image(vm_imags.kernel) {
+            info!(
+                "Detected x86 Linux bzImage for VM[{}]: {:#x?}, payload_offset={:#x}",
+                self.config.base.id,
+                header,
+                header.payload_offset()
+            );
+            return Err(ax_errno::ax_err_type!(
+                Unsupported,
+                "x86 Linux bzImage direct boot is detected, but payload loading starts in phase 2"
+            ));
+        }
 
         load_vm_image_from_memory(vm_imags.kernel, self.kernel_load_gpa, self.vm.clone())?;
 
@@ -386,6 +402,28 @@ pub mod fs {
     /// into the guest VM's memory space based on the VM configuration.
     pub(crate) fn load_vm_images_from_filesystem(loader: &ImageLoader) -> AxResult {
         info!("Loading VM images from filesystem");
+        #[cfg(target_arch = "x86_64")]
+        {
+            match kernal_read(&loader.config, x86_linux::HEADER_READ_SIZE) {
+                Ok(data) => {
+                    if let Some(header) = detect_x86_linux_image(&data) {
+                        info!(
+                            "Detected x86 Linux bzImage for VM[{}]: {:#x?}, payload_offset={:#x}",
+                            loader.config.base.id,
+                            header,
+                            header.payload_offset()
+                        );
+                        return Err(ax_errno::ax_err_type!(
+                            Unsupported,
+                            "x86 Linux bzImage direct boot is detected, but payload loading starts in phase 2"
+                        ));
+                    }
+                }
+                Err(err) => {
+                    debug!("Unable to probe x86 Linux bzImage header: {err:?}");
+                }
+            }
+        }
         // Load kernel image.
         load_vm_image(
             &loader.config.kernel.kernel_path,
@@ -525,6 +563,17 @@ pub mod fs {
             })?
             .size() as usize;
         Ok((file, file_size))
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn detect_x86_linux_image(image: &[u8]) -> Option<x86_linux::X86LinuxHeader> {
+    match x86_linux::X86LinuxHeader::parse(image) {
+        Ok(header) => Some(header),
+        Err(err) => {
+            debug!("Not an x86 Linux bzImage: {err:?}");
+            None
+        }
     }
 }
 
