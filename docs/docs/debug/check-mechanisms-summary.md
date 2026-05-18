@@ -93,6 +93,17 @@ task stack canary 用来发现任务栈溢出或栈底被破坏。
 - secondary CPU 的 boot/idle stack。
 - `plat-dyn` 场景下由平台提供的 secondary boot stack。
 
+平台栈边界需要按平台类型区分。静态平台可以使用 linker script 中的
+`boot_stack` / `boot_stack_top` 符号作为主 CPU boot stack 的边界；
+`plat-dyn` 下这两个符号只是兼容占位，并不表示真实栈空间。`plat-dyn`
+的主 CPU 和 secondary CPU boot stack 都应通过平台提供的
+`boot_stack_bounds(cpu_id)` 获取，否则 stack canary 写入可能落到内核镜像
+映射边界之外，在真实板卡上触发 page fault。
+
+当前 primary idle task 栈大小仍保留一个过渡策略：非 `lockdep` 构建保持
+原来的 16 KiB 栈，`lockdep` 构建使用 `TASK_STACK_SIZE`，以便为额外的
+检查路径保留栈空间。后续可以考虑统一 idle task 栈大小配置。
+
 主要入口：
 
 - `os/arceos/modules/axtask/src/task.rs`

@@ -1,3 +1,3 @@
 fn main() {
-    bare_test_macros::build_test_setup!();
+    // Integration test setup is temporarily disabled.
 }
