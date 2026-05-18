@@ -11,10 +11,9 @@ use crate::support::process::run_cargo_status_with_env;
 
 const DEFAULT_FEATURE: &str = "default";
 const AX_CONFIG_PATH_ENV: &str = "AX_CONFIG_PATH";
-const ARCEOS_RUST_PLATFORM_CONFIG_ENV: &str = "ARCEOS_RUST_PLATFORM_CONFIG";
 const AXCONFIG_FILE: &str = "axconfig.toml";
 const ARCEOS_RUST_PACKAGE: &str = "arceos-rust";
-const ARCEOS_RUST_DEFAULT_PLATFORM_PACKAGE: &str = "ax-plat-x86-pc";
+const ARCEOS_RUST_CLIPPY_TARGET: &str = "x86_64-unknown-none";
 const TGOSKITS_METADATA: &str = "tgoskits";
 const CLIPPY_METADATA: &str = "clippy";
 const SKIP_METADATA: &str = "skip";
@@ -59,7 +58,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
         );
         return Ok(());
     }
-    let checks = expand_clippy_checks(&packages, &metadata);
+    let checks = expand_clippy_checks(&packages, &metadata)?;
 
     println!(
         "running clippy for {} package(s) with {} check(s) from {}",
@@ -305,42 +304,33 @@ fn skip_unsupported_packages(packages: Vec<Package>) -> Vec<Package> {
         .collect()
 }
 
-fn clippy_env(package: &Package, metadata: &Metadata) -> Vec<(String, String)> {
+fn clippy_env(package: &Package, metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
     if package.name == ARCEOS_RUST_PACKAGE {
         return arceos_rust_clippy_env(metadata);
     }
 
     let Some(manifest_dir) = package.manifest_path.parent() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let axconfig = manifest_dir.join(AXCONFIG_FILE);
     if !axconfig.exists() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    vec![(AX_CONFIG_PATH_ENV.to_string(), axconfig.to_string())]
+    Ok(vec![(AX_CONFIG_PATH_ENV.to_string(), axconfig.to_string())])
 }
 
-fn arceos_rust_clippy_env(metadata: &Metadata) -> Vec<(String, String)> {
-    match crate::build::resolve_platform_config_by_package(
-        ARCEOS_RUST_DEFAULT_PLATFORM_PACKAGE,
-        metadata,
-    ) {
-        Ok(platform) => vec![(
-            ARCEOS_RUST_PLATFORM_CONFIG_ENV.to_string(),
-            platform.config_path.display().to_string(),
-        )],
-        Err(err) => {
-            eprintln!(
-                "warning: failed to resolve {ARCEOS_RUST_PLATFORM_CONFIG_ENV} for \
-                 `{ARCEOS_RUST_PACKAGE}`: {err:#}"
-            );
-            Vec::new()
-        }
-    }
+fn arceos_rust_clippy_env(metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
+    let mut envs = HashMap::new();
+    crate::build::prepare_std_build_env(&mut envs, ARCEOS_RUST_CLIPPY_TARGET, metadata)
+        .context("failed to prepare arceos-rust clippy config")?;
+    Ok(envs.into_iter().collect())
 }
 
-fn expand_clippy_checks(packages: &[Package], metadata: &Metadata) -> Vec<ClippyCheck> {
+fn expand_clippy_checks(
+    packages: &[Package],
+    metadata: &Metadata,
+) -> anyhow::Result<Vec<ClippyCheck>> {
     let mut checks = Vec::new();
 
     for package in packages {
@@ -356,7 +346,8 @@ fn expand_clippy_checks(packages: &[Package], metadata: &Metadata) -> Vec<Clippy
         } else {
             targets.into_iter().map(Some).collect()
         };
-        let env = clippy_env(package, metadata);
+        let env = clippy_env(package, metadata)
+            .with_context(|| format!("failed to prepare clippy env for `{}`", package.name))?;
 
         for target in target_iter {
             checks.push(ClippyCheck {
@@ -377,7 +368,7 @@ fn expand_clippy_checks(packages: &[Package], metadata: &Metadata) -> Vec<Clippy
         }
     }
 
-    checks
+    Ok(checks)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -698,6 +689,7 @@ mod tests {
 
     fn expand(packages: &[Package]) -> Vec<ClippyCheck> {
         expand_clippy_checks(packages, &metadata_for_packages(packages))
+            .expect("test package clippy checks should expand")
     }
 
     fn args(all: bool, packages: &[&str]) -> crate::ClippyArgs {
@@ -1184,7 +1176,9 @@ mod tests {
     }
 
     #[test]
-    fn arceos_rust_platform_config_is_passed_as_clippy_env() {
+    fn arceos_rust_config_is_passed_as_clippy_env() {
+        const ARCEOS_RUST_CONFIG_ENV: &str = "ARCEOS_RUST_CONFIG";
+
         let metadata = crate::build::workspace_metadata().unwrap();
         let package = metadata
             .packages
@@ -1193,15 +1187,16 @@ mod tests {
             .cloned()
             .expect("arceos-rust package should be in workspace metadata");
 
-        let checks = expand_clippy_checks(&[package], &metadata);
+        let checks = expand_clippy_checks(&[package], &metadata).unwrap();
 
         assert!(
             checks[0].env.iter().any(|(key, value)| {
-                key == ARCEOS_RUST_PLATFORM_CONFIG_ENV
-                    && value
-                        .ends_with("components/axplat_crates/platforms/axplat-x86-pc/axconfig.toml")
+                key == ARCEOS_RUST_CONFIG_ENV
+                    && value.ends_with(
+                        "tmp/axbuild/axconfig/arceos-rust/x86_64-unknown-none/.axconfig.toml",
+                    )
             }),
-            "expected {ARCEOS_RUST_PLATFORM_CONFIG_ENV} in {:?}",
+            "expected {ARCEOS_RUST_CONFIG_ENV} in {:?}",
             checks[0].env
         );
     }
