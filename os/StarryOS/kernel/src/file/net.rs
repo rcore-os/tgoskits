@@ -9,15 +9,132 @@ use axnet::{
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
-    ioctl::SIOCGIFTXQLEN,
-    net::ifreq,
+    ioctl::{
+        SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS, SIOCGIFHWADDR,
+        SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK, SIOCGIFTXQLEN,
+    },
+    net::{AF_INET, ifreq},
 };
-use starry_vm::VmMutPtr;
+use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
 use super::{FileLike, Kstat};
 use crate::file::{IoDst, IoSrc, get_file_like};
 
+const ETH0_NAME: &[u8] = b"eth0";
+const ETH0_HWADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+const LO_NAME: &[u8] = b"lo";
+const ARPHRD_ETHER: u16 = 1;
+const ARPHRD_LOOPBACK: u16 = 772;
+const IFF_UP: i16 = 0x0001;
+const IFF_BROADCAST: i16 = 0x0002;
+const IFF_LOOPBACK: i16 = 0x0008;
+const IFF_RUNNING: i16 = 0x0040;
+const IFF_MULTICAST: i16 = 0x1000;
+const IFREQ_NAME_LEN: usize = 16;
+const IFREQ_DATA_OFFSET: usize = 16;
+const IFREQ_COMPAT_LEN: usize = 40;
+const IFCONF_LEN_OFFSET: usize = 0;
+const IFCONF_BUF_OFFSET: usize = 8;
+const ETH0_MTU: i32 = 1500;
+const LO_MTU: i32 = 65536;
+
 pub struct Socket(pub SocketInner);
+
+#[derive(Clone, Copy)]
+enum NetInterface {
+    Eth0,
+    Loopback,
+}
+
+fn configured_eth0_ipv4() -> [u8; 4] {
+    parse_ipv4_addr(option_env!("AX_IP").unwrap_or("10.0.2.15")).unwrap_or([10, 0, 2, 15])
+}
+
+fn parse_ipv4_addr(value: &str) -> Option<[u8; 4]> {
+    let mut addr = [0; 4];
+    let mut parts = value.split('.');
+    for octet in &mut addr {
+        let part = parts.next()?;
+        if part.is_empty() {
+            return None;
+        }
+        *octet = part.parse().ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(addr)
+}
+
+fn read_user_bytes<const N: usize>(ptr: *const u8) -> AxResult<[u8; N]> {
+    let mut buf = [core::mem::MaybeUninit::<u8>::uninit(); N];
+    vm_read_slice(ptr, &mut buf)?;
+    Ok(buf.map(|v| unsafe { v.assume_init() }))
+}
+
+fn read_ifreq_interface(arg: usize) -> AxResult<NetInterface> {
+    let name = read_user_bytes::<IFREQ_NAME_LEN>(arg as *const u8)?;
+    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    match &name[..end] {
+        ETH0_NAME => Ok(NetInterface::Eth0),
+        LO_NAME => Ok(NetInterface::Loopback),
+        _ => Err(AxError::NoSuchDevice),
+    }
+}
+
+fn write_ifreq_data(arg: usize, data: &[u8]) -> AxResult<()> {
+    Ok(vm_write_slice((arg + IFREQ_DATA_OFFSET) as *mut u8, data)?)
+}
+
+fn sockaddr_in_bytes(ip: [u8; 4]) -> [u8; 16] {
+    let mut addr = [0; 16];
+    addr[..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
+    addr[4..8].copy_from_slice(&ip);
+    addr
+}
+
+fn write_ifreq_sockaddr(arg: usize, ip: [u8; 4]) -> AxResult<()> {
+    write_ifreq_data(arg, &sockaddr_in_bytes(ip))
+}
+
+fn write_ifreq_hwaddr(arg: usize, hw_type: u16, hwaddr: &[u8]) -> AxResult<()> {
+    let mut addr = [0; 16];
+    addr[..2].copy_from_slice(&hw_type.to_ne_bytes());
+    addr[2..2 + hwaddr.len()].copy_from_slice(hwaddr);
+    write_ifreq_data(arg, &addr)
+}
+
+fn write_ifconf_entry(buf: usize, offset: usize, name: &[u8], ip: [u8; 4]) -> AxResult<()> {
+    let mut ifreq = [0; IFREQ_COMPAT_LEN];
+    ifreq[..name.len()].copy_from_slice(name);
+    ifreq[IFREQ_DATA_OFFSET..IFREQ_DATA_OFFSET + 16].copy_from_slice(&sockaddr_in_bytes(ip));
+    Ok(vm_write_slice((buf + offset) as *mut u8, &ifreq)?)
+}
+
+fn write_eth0_ifconf(arg: usize) -> AxResult<()> {
+    let mut len = read_user_bytes::<4>((arg + IFCONF_LEN_OFFSET) as *const u8)?;
+    let ifc_len = i32::from_ne_bytes(len);
+    let buf = usize::from_ne_bytes(read_user_bytes::<{ core::mem::size_of::<usize>() }>(
+        (arg + IFCONF_BUF_OFFSET) as *const u8,
+    )?);
+
+    if buf != 0 {
+        let mut written = 0;
+        if ifc_len >= IFREQ_COMPAT_LEN as i32 {
+            write_ifconf_entry(buf, written, ETH0_NAME, configured_eth0_ipv4())?;
+            written += IFREQ_COMPAT_LEN;
+        }
+        if ifc_len >= (written + IFREQ_COMPAT_LEN) as i32 {
+            write_ifconf_entry(buf, written, LO_NAME, [127, 0, 0, 1])?;
+            written += IFREQ_COMPAT_LEN;
+        }
+        len = (written as i32).to_ne_bytes();
+    } else {
+        len = 0i32.to_ne_bytes();
+    }
+    vm_write_slice((arg + IFCONF_LEN_OFFSET) as *mut u8, &len)?;
+    Ok(())
+}
 
 impl Deref for Socket {
     type Target = SocketInner;
@@ -67,13 +184,73 @@ impl FileLike for Socket {
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         match cmd {
+            SIOCGIFCONF => write_eth0_ifconf(arg)?,
+            SIOCGIFFLAGS => {
+                let flags = match read_ifreq_interface(arg)? {
+                    NetInterface::Eth0 => IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_MULTICAST,
+                    NetInterface::Loopback => IFF_UP | IFF_LOOPBACK | IFF_RUNNING,
+                };
+                write_ifreq_data(arg, &flags.to_ne_bytes())?;
+            }
+            SIOCGIFADDR => {
+                let addr = match read_ifreq_interface(arg)? {
+                    NetInterface::Eth0 => configured_eth0_ipv4(),
+                    NetInterface::Loopback => [127, 0, 0, 1],
+                };
+                write_ifreq_sockaddr(arg, addr)?;
+            }
+            SIOCGIFDSTADDR => {
+                let addr = match read_ifreq_interface(arg)? {
+                    NetInterface::Eth0 => [0, 0, 0, 0],
+                    NetInterface::Loopback => [127, 0, 0, 1],
+                };
+                write_ifreq_sockaddr(arg, addr)?;
+            }
+            SIOCGIFBRDADDR => {
+                let addr = match read_ifreq_interface(arg)? {
+                    NetInterface::Eth0 => {
+                        let mut addr = configured_eth0_ipv4();
+                        addr[3] = 255;
+                        addr
+                    }
+                    NetInterface::Loopback => [127, 0, 0, 1],
+                };
+                write_ifreq_sockaddr(arg, addr)?;
+            }
+            SIOCGIFNETMASK => {
+                let addr = match read_ifreq_interface(arg)? {
+                    NetInterface::Eth0 => [255, 255, 255, 0],
+                    NetInterface::Loopback => [255, 0, 0, 0],
+                };
+                write_ifreq_sockaddr(arg, addr)?;
+            }
+            SIOCGIFHWADDR => match read_ifreq_interface(arg)? {
+                NetInterface::Eth0 => write_ifreq_hwaddr(arg, ARPHRD_ETHER, &ETH0_HWADDR)?,
+                NetInterface::Loopback => write_ifreq_hwaddr(arg, ARPHRD_LOOPBACK, &[])?,
+            },
+            SIOCGIFMTU => {
+                let mtu = match read_ifreq_interface(arg)? {
+                    NetInterface::Eth0 => ETH0_MTU,
+                    NetInterface::Loopback => LO_MTU,
+                };
+                write_ifreq_data(arg, &mtu.to_ne_bytes())?;
+            }
+            SIOCGIFMETRIC => {
+                read_ifreq_interface(arg)?;
+                write_ifreq_data(arg, &0i32.to_ne_bytes())?;
+            }
+            SIOCGIFMAP => {
+                read_ifreq_interface(arg)?;
+                write_ifreq_data(arg, &[0; 24])?;
+            }
             SIOCGIFTXQLEN => {
+                read_ifreq_interface(arg)?;
                 let qlen_ptr = (arg + offset_of!(ifreq, ifr_ifru)) as *mut i32;
                 qlen_ptr.vm_write(1000)?;
-                Ok(0)
             }
-            _ => Err(AxError::NotATty),
+            _ => return Err(AxError::NotATty),
         }
+        Ok(0)
     }
 
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>

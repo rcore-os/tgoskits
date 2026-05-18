@@ -52,13 +52,34 @@ struct Waiter {
 struct WaiterState {
     woken: AtomicBool,
     cancelled: AtomicBool,
+    cleanup: Mutex<Option<FutexWaitCleanup>>,
 }
 
 impl WaiterState {
-    fn new() -> Self {
+    fn new(cleanup: Option<FutexWaitCleanup>) -> Self {
         Self {
             woken: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
+            cleanup: Mutex::new(cleanup),
+        }
+    }
+
+    fn set_cleanup_if_not_cancelled(&self, cleanup: FutexWaitCleanup) -> bool {
+        let mut current = self.cleanup.lock();
+        if self.cancelled.load(AtomicOrdering::SeqCst) {
+            return false;
+        }
+        *current = Some(cleanup);
+        true
+    }
+
+    fn remove_from_current_queue(state: &Arc<Self>) -> bool {
+        let cleanup = state.cleanup.lock().clone();
+        if let Some(cleanup) = cleanup {
+            cleanup.table.remove_waiter(cleanup.key, state);
+            true
+        } else {
+            false
         }
     }
 }
@@ -66,6 +87,7 @@ impl WaiterState {
 struct WaitIfFuture<'a, F> {
     queue: &'a WaitQueue,
     bitset: u32,
+    cleanup: Option<FutexWaitCleanup>,
     condition: Option<F>,
     state: Option<Arc<WaiterState>>,
 }
@@ -82,7 +104,7 @@ impl<F: FnOnce() -> bool + Unpin> Future for WaitIfFuture<'_, F> {
                 return Poll::Ready(Ok(false));
             }
 
-            let state = Arc::new(WaiterState::new());
+            let state = Arc::new(WaiterState::new(this.cleanup.clone()));
             inner.queue.push_back(Waiter {
                 waker: cx.waker().clone(),
                 bitset: this.bitset,
@@ -117,15 +139,18 @@ impl<F> Drop for WaitIfFuture<'_, F> {
     fn drop(&mut self) {
         if let Some(state) = &self.state {
             state.cancelled.store(true, AtomicOrdering::SeqCst);
-        }
-        if let Some(state) = &self.state {
-            self.queue
-                .inner
-                .lock()
-                .queue
-                .retain(|waiter| !Arc::ptr_eq(&waiter.state, state));
+            if !WaiterState::remove_from_current_queue(state) {
+                self.queue.remove_waiter(state);
+            }
         }
     }
+}
+
+/// Identifies where a queued waiter must be removed if its wait is cancelled.
+#[derive(Clone)]
+pub struct FutexWaitCleanup {
+    table: Arc<FutexTable>,
+    key: usize,
 }
 
 impl WaitQueue {
@@ -144,11 +169,26 @@ impl WaitQueue {
         timeout: Option<Duration>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> AxResult<bool> {
+        self.wait_if_with_cleanup(bitset, timeout, None, condition)
+    }
+
+    /// Waits with explicit futex-table cleanup metadata.
+    ///
+    /// This is used by futex requeue paths, where a waiter may be moved to a
+    /// different wait queue before it times out or is interrupted.
+    pub fn wait_if_with_cleanup(
+        &self,
+        bitset: u32,
+        timeout: Option<Duration>,
+        cleanup: Option<FutexWaitCleanup>,
+        condition: impl FnOnce() -> bool + Unpin,
+    ) -> AxResult<bool> {
         block_on(interruptible(future::timeout(
             timeout,
             WaitIfFuture {
                 queue: self,
                 bitset,
+                cleanup,
                 condition: Some(condition),
                 state: None,
             },
@@ -183,6 +223,130 @@ impl WaitQueue {
         woke
     }
 
+    fn wake_requeue_locked(
+        src: &mut VecDeque<Waiter>,
+        dst: &mut VecDeque<Waiter>,
+        wake_count: usize,
+        wake_mask: u32,
+        requeue_count: usize,
+        target_cleanup: FutexWaitCleanup,
+        wakers: &mut Vec<Waker>,
+    ) -> usize {
+        src.retain(|waiter| !waiter.state.cancelled.load(AtomicOrdering::SeqCst));
+
+        let mut index = 0;
+        while index < src.len() && wakers.len() < wake_count {
+            if (src[index].bitset & wake_mask) == 0 {
+                index += 1;
+                continue;
+            }
+
+            let waiter = src.remove(index).expect("waiter index checked");
+            waiter.state.woken.store(true, AtomicOrdering::SeqCst);
+            wakers.push(waiter.waker);
+        }
+
+        let mut requeued = 0;
+        while requeued < requeue_count {
+            let Some(waiter) = src.pop_front() else {
+                break;
+            };
+            if !waiter
+                .state
+                .set_cleanup_if_not_cancelled(target_cleanup.clone())
+            {
+                continue;
+            }
+            dst.push_back(waiter);
+            requeued += 1;
+        }
+        wakers.len() + requeued
+    }
+
+    /// Serializes a condition check with waking and requeueing waiters from
+    /// this queue to `target`.
+    pub fn wake_requeue_if(
+        &self,
+        wake_count: usize,
+        wake_mask: u32,
+        requeue_count: usize,
+        target_cleanup: FutexWaitCleanup,
+        target: &WaitQueue,
+        condition: impl FnOnce() -> AxResult<bool>,
+    ) -> AxResult<Option<usize>> {
+        let mut condition = Some(condition);
+        let mut wakers = Vec::new();
+
+        let count = match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
+            Ordering::Less => {
+                let mut src = self.inner.lock();
+                let mut dst = target.inner.lock();
+                if !condition.take().expect("condition used once")()? {
+                    return Ok(None);
+                }
+                Self::wake_requeue_locked(
+                    &mut src.queue,
+                    &mut dst.queue,
+                    wake_count,
+                    wake_mask,
+                    requeue_count,
+                    target_cleanup,
+                    &mut wakers,
+                )
+            }
+            Ordering::Greater => {
+                let mut dst = target.inner.lock();
+                let mut src = self.inner.lock();
+                if !condition.take().expect("condition used once")()? {
+                    return Ok(None);
+                }
+                Self::wake_requeue_locked(
+                    &mut src.queue,
+                    &mut dst.queue,
+                    wake_count,
+                    wake_mask,
+                    requeue_count,
+                    target_cleanup,
+                    &mut wakers,
+                )
+            }
+            Ordering::Equal => {
+                let mut src = self.inner.lock();
+                if !condition.take().expect("condition used once")()? {
+                    return Ok(None);
+                }
+
+                src.queue
+                    .retain(|waiter| !waiter.state.cancelled.load(AtomicOrdering::SeqCst));
+                let mut index = 0;
+                while index < src.queue.len() && wakers.len() < wake_count {
+                    if (src.queue[index].bitset & wake_mask) == 0 {
+                        index += 1;
+                        continue;
+                    }
+
+                    let waiter = src.queue.remove(index).expect("waiter index checked");
+                    waiter.state.woken.store(true, AtomicOrdering::SeqCst);
+                    wakers.push(waiter.waker);
+                }
+                wakers.len()
+            }
+        };
+
+        for waker in wakers {
+            waker.wake();
+        }
+        Ok(Some(count))
+    }
+
+    fn remove_waiter(&self, state: &Arc<WaiterState>) -> bool {
+        let mut inner = self.inner.lock();
+        inner
+            .queue
+            .retain(|waiter| !Arc::ptr_eq(&waiter.state, state));
+        inner.queue.is_empty()
+    }
+
     /// Checks if the wait queue is empty.
     pub fn is_empty(&self) -> bool {
         let mut inner = self.inner.lock();
@@ -190,34 +354,6 @@ impl WaitQueue {
             .queue
             .retain(|waiter| !waiter.state.cancelled.load(AtomicOrdering::SeqCst));
         inner.queue.is_empty()
-    }
-
-    /// Requeue at most `count` tasks to the target wait queue.
-    pub fn requeue(&self, count: usize, target: &WaitQueue) -> usize {
-        fn requeue_locked(
-            src: &mut VecDeque<Waiter>,
-            dst: &mut VecDeque<Waiter>,
-            count: usize,
-        ) -> usize {
-            src.retain(|waiter| !waiter.state.cancelled.load(AtomicOrdering::SeqCst));
-            let count = count.min(src.len());
-            dst.extend(src.drain(..count));
-            count
-        }
-
-        match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
-            Ordering::Less => {
-                let mut src = self.inner.lock();
-                let mut dst = target.inner.lock();
-                requeue_locked(&mut src.queue, &mut dst.queue, count)
-            }
-            Ordering::Greater => {
-                let mut dst = target.inner.lock();
-                let mut src = self.inner.lock();
-                requeue_locked(&mut src.queue, &mut dst.queue, count)
-            }
-            Ordering::Equal => 0,
-        }
     }
 }
 
@@ -238,10 +374,21 @@ pub enum FutexKey {
     },
 }
 
+/// Selects how a futex key should be resolved.
+#[derive(Clone, Copy)]
+pub enum FutexKeyMode {
+    /// Always use the current process private futex table.
+    Private,
+    /// Use the VMA backend to detect shared futexes, otherwise private.
+    Auto,
+}
+
 impl FutexKey {
     /// Creates a new `FutexKey`.
-    pub fn new(aspace: &AddrSpace, address: usize) -> Self {
-        if let Some(area) = aspace.find_area(VirtAddr::from_usize(address)) {
+    pub fn new(aspace: &AddrSpace, address: usize, mode: FutexKeyMode) -> Self {
+        if matches!(mode, FutexKeyMode::Auto)
+            && let Some(area) = aspace.find_area(VirtAddr::from_usize(address))
+        {
             match area.backend() {
                 Backend::Shared(backend) => {
                     return Self::Shared {
@@ -262,11 +409,11 @@ impl FutexKey {
     }
 
     /// Shortcut to create a `FutexKey` for the current task's address space.
-    pub fn new_current(address: usize) -> Self {
+    pub fn new_current(address: usize, mode: FutexKeyMode) -> Self {
         let curr = current();
         let aspace_arc = curr.as_thread().proc_data.aspace();
         let aspace = aspace_arc.lock();
-        Self::new(&aspace, address)
+        Self::new(&aspace, address, mode)
     }
 
     /// Best-effort variant for teardown paths that may be reached after a
@@ -277,7 +424,7 @@ impl FutexKey {
         let Some(aspace) = aspace_arc.try_lock() else {
             return Self::Private { address };
         };
-        Self::new(&aspace, address)
+        Self::new(&aspace, address, FutexKeyMode::Auto)
     }
 
     fn as_usize(&self) -> usize {
@@ -340,6 +487,26 @@ impl FutexTable {
             table: self,
             key,
             inner: entry.clone(),
+        }
+    }
+
+    /// Returns cleanup metadata for a waiter queued under `key`.
+    pub fn cleanup_for(self: &Arc<Self>, key: &FutexKey) -> FutexWaitCleanup {
+        FutexWaitCleanup {
+            table: self.clone(),
+            key: key.as_usize(),
+        }
+    }
+
+    fn remove_waiter(&self, key: usize, state: &Arc<WaiterState>) {
+        let mut table = self.0.lock();
+        let should_remove = if let Some(entry) = table.get(&key) {
+            entry.wq.remove_waiter(state) && Arc::strong_count(entry) == 1
+        } else {
+            false
+        };
+        if should_remove {
+            table.remove(&key);
         }
     }
 }
