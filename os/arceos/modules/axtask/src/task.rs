@@ -95,6 +95,8 @@ pub struct TaskInner {
     need_resched: AtomicBool,
     #[cfg(feature = "preempt")]
     preempt_disable_count: AtomicUsize,
+    #[cfg(feature = "kcov")]
+    kcov_trace_guard: AtomicU8,
 
     interrupted: AtomicBool,
     interrupt_waker: AtomicWaker,
@@ -309,6 +311,8 @@ impl TaskInner {
             need_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
             preempt_disable_count: AtomicUsize::new(0),
+            #[cfg(feature = "kcov")]
+            kcov_trace_guard: AtomicU8::new(0),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             exit_code: AtomicI32::new(0),
@@ -474,6 +478,19 @@ impl TaskInner {
                 rq.preempt_resched()
             }
         }
+    }
+
+    #[inline]
+    #[cfg(feature = "kcov")]
+    pub(crate) fn save_current_kcov_trace_guard(&self) {
+        let guard = ax_hal::kcov::read_current_guard();
+        self.kcov_trace_guard.store(guard, Ordering::Release);
+    }
+
+    #[inline]
+    #[cfg(feature = "kcov")]
+    pub(crate) fn take_kcov_trace_guard(&self) -> u8 {
+        self.kcov_trace_guard.swap(0, Ordering::AcqRel)
     }
 
     /// Notify all tasks that join on this task.

@@ -582,6 +582,14 @@ impl AxRunQueue {
         #[cfg(feature = "smp")]
         next_task.set_on_cpu(true);
 
+        #[cfg(feature = "kcov")]
+        let next_kcov_trace_guard = {
+            prev_task.save_current_kcov_trace_guard();
+            let guard = next_task.take_kcov_trace_guard();
+            ax_hal::kcov::write_current_guard(1);
+            guard
+        };
+
         #[cfg(feature = "task-ext")]
         {
             use crate::TaskExt;
@@ -610,6 +618,8 @@ impl AxRunQueue {
             assert!(Arc::strong_count(&next_task) >= 1);
 
             CurrentTask::set_current(prev_task, next_task);
+            #[cfg(feature = "kcov")]
+            ax_hal::kcov::write_current_guard(next_kcov_trace_guard);
 
             (*prev_ctx_ptr).switch_to(&*next_ctx_ptr);
 

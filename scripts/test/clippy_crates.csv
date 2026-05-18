@@ -37,6 +37,7 @@ ax-driver-display
 ax-driver-block
 ax-driver-virtio
 ax-errno
+ax-feat
 ax-fs
 ax-hal
 ax-fs-devfs

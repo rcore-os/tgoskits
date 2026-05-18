@@ -35,6 +35,7 @@ lockdep = [
   "dep:ax-lockdep",
   "ax-lockdep/task-context",
 ]
+kcov = ["multitask", "ax-hal/starry-kcov"]
 task-ext = ["dep:extern-trait"]
 tls = ["ax-hal/tls"]
 uspace = ["ax-hal/uspace"]

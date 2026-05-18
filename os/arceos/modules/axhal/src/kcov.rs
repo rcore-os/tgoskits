@@ -6,11 +6,9 @@
 //! coverage collection on another under SMP.  The guard is checked and set
 //! entirely in naked asm *before* any C-ABI call so that LLVM KCOV
 //! instrumentation of the callee cannot re-enter this function (infinite
-//! recursion guard).  Once global KCOV tracing is enabled, the trampoline
-//! saves and disables local IRQs before touching the guard: a timer interrupt
-//! between "guard = 1" and the Rust hot path would otherwise allow the
-//! scheduler to run another task on the same CPU while the guard is still set,
-//! suppressing that task's whole coverage window.
+//! recursion guard).  Task switch code snapshots and restores the guard so
+//! that an IRQ preemption inside the Rust hot path cannot leak guard state to
+//! the next task running on the same CPU.
 
 #![cfg(feature = "starry-kcov")]
 
@@ -60,6 +58,24 @@ unsafe extern "C" {
     fn kcov_trace_pc_impl(pc: u64);
 }
 
+/// Returns the current CPU's KCOV recursion guard.
+///
+/// Must be called with migration impossible; the task switch path calls this
+/// with local IRQs disabled.
+#[inline]
+pub fn read_current_guard() -> u8 {
+    unsafe { IN_KCOV_TRACE.read_current_raw() }
+}
+
+/// Sets the current CPU's KCOV recursion guard.
+///
+/// Must be called with migration impossible; the task switch path calls this
+/// with local IRQs disabled.
+#[inline]
+pub fn write_current_guard(value: u8) {
+    unsafe { IN_KCOV_TRACE.write_current_raw(value) }
+}
+
 // ---------------------------------------------------------------------------
 // x86_64  –  return address at [rsp]  (System V AMD64 ABI)
 // per-CPU via gs-segment base
@@ -77,16 +93,13 @@ pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
     naked_asm!(
         "cmp byte ptr [rip + {global}], 0",
         "je 2f",
-        "pushfq",
-        "cli",
         "cmp byte ptr gs:[offset {guard}], 0",
         "jne 1f",
         "mov byte ptr gs:[offset {guard}], 1",
-        "mov rdi, [rsp + 8]",
+        "mov rdi, [rsp]",
         "call {impl}",
         "mov byte ptr gs:[offset {guard}], 0",
         "1:",
-        "popfq",
         "2:",
         "ret",
         global = sym KCOV_GLOBAL_GATE,
@@ -113,9 +126,6 @@ pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
         "adrp x16, {global}",
         "ldrb w17, [x16, #:lo12:{global}]",
         "cbz w17, 2f",
-        "mrs x16, daif",
-        "msr daifset, #2",
-        "stp x16, x30, [sp, #-16]!",
         "mrs x16, tpidr_el1",
         "movz x17, #:abs_g0_nc:{guard}",
         "add x16, x16, x17",
@@ -123,16 +133,16 @@ pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
         "cbnz w17, 1f",
         "mov w17, #1",
         "strb w17, [x16]",
+        "str x30, [sp, #-16]!",
         "mov x0, x30",
         "bl {impl}",
+        "ldr x30, [sp], #16",
         // bl {impl} clobbered x16/x17 — recalculate per-CPU address
         "mrs x16, tpidr_el1",
         "movz x17, #:abs_g0_nc:{guard}",
         "add x16, x16, x17",
         "strb wzr, [x16]",
         "1:",
-        "ldp x16, x30, [sp], #16",
-        "msr daif, x16",
         "2:",
         "ret",
         global = sym KCOV_GLOBAL_GATE,
@@ -160,11 +170,6 @@ pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
         "addi t0, t0, %pcrel_lo(1b)",
         "lb t1, 0(t0)",
         "beqz t1, 2f",
-        "addi sp, sp, -16",
-        "sd ra, 0(sp)",
-        "csrrc t2, sstatus, {sie}",
-        "andi t2, t2, {sie}",
-        "sd t2, 8(sp)",
         "lui t0, %hi({guard})",
         "add t0, t0, gp",
         "addi t0, t0, %lo({guard})",
@@ -172,23 +177,22 @@ pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
         "bnez t1, 1f",
         "li t1, 1",
         "sb t1, 0(t0)",
+        "addi sp, sp, -16",
+        "sd ra, 0(sp)",
         "mv a0, ra",
         "call {impl}",
+        "ld ra, 0(sp)",
+        "addi sp, sp, 16",
         "lui t0, %hi({guard})",
         "add t0, t0, gp",
         "addi t0, t0, %lo({guard})",
         "sb zero, 0(t0)",
         "1:",
-        "ld ra, 0(sp)",
-        "ld t2, 8(sp)",
-        "csrrs x0, sstatus, t2",
-        "addi sp, sp, 16",
         "2:",
         "ret",
         global = sym KCOV_GLOBAL_GATE,
         guard = sym __PERCPU_IN_KCOV_TRACE,
         impl = sym kcov_trace_pc_impl,
-        sie = const 1 << 1,
     );
 }
 
@@ -211,13 +215,6 @@ pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
         "addi.d $t0, $t0, %pc_lo12({global})",
         "ld.b $t1, $t0, 0",
         "beqz $t1, 2f",
-        "addi.d $sp, $sp, -16",
-        "st.d $ra, $sp, 0",
-        "ori $t2, $zero, 0",
-        "ori $t3, $zero, {ie}",
-        "csrxchg $t2, $t3, 0x0",
-        "andi $t2, $t2, {ie}",
-        "st.d $t2, $sp, 8",
         "lu12i.w $t0, %abs_hi20({guard})",
         "ori $t0, $t0, %abs_lo12({guard})",
         "add.d $t0, $t0, $r21",
@@ -225,23 +222,21 @@ pub unsafe extern "C" fn __sanitizer_cov_trace_pc() {
         "bnez $t1, 1f",
         "ori $t1, $zero, 1",
         "st.b $t1, $t0, 0",
+        "addi.d $sp, $sp, -16",
+        "st.d $ra, $sp, 0",
         "ori $a0, $ra, 0",
         "bl {impl}",
+        "ld.d $ra, $sp, 0",
+        "addi.d $sp, $sp, 16",
         "lu12i.w $t0, %abs_hi20({guard})",
         "ori $t0, $t0, %abs_lo12({guard})",
         "add.d $t0, $t0, $r21",
         "st.b $zero, $t0, 0",
         "1:",
-        "ld.d $t2, $sp, 8",
-        "ori $t3, $zero, {ie}",
-        "csrxchg $t2, $t3, 0x0",
-        "ld.d $ra, $sp, 0",
-        "addi.d $sp, $sp, 16",
         "2:",
         "jirl $zero, $ra, 0",
         global = sym KCOV_GLOBAL_GATE,
         guard = sym __PERCPU_IN_KCOV_TRACE,
         impl = sym kcov_trace_pc_impl,
-        ie = const 1 << 2,
     );
 }
