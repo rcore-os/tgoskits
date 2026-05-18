@@ -17,7 +17,7 @@ serde = { version = "1.0", default-features = false, features = ["derive", "allo
 # ArceOS and AxVisor crates.
 axaddrspace = { workspace = true }
 ax-errno = { workspace = true }
-axvmconfig = { path = "../axvmconfig", default-features = false }
+axvmconfig = { workspace = true, default-features = false }
 [dev-dependencies]
 
 [package.metadata.docs.rs]

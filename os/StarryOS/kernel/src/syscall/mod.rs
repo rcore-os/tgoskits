@@ -328,7 +328,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
 
         // memfd
-        Sysno::memfd_create => sys_memfd_create(uctx.arg0().into(), uctx.arg1() as _),
+        Sysno::memfd_create => sys_memfd_create(uctx.arg0() as _, uctx.arg1() as _),
 
         // fs stat
         #[cfg(target_arch = "x86_64")]
