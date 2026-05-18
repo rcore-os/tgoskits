@@ -342,13 +342,13 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
 
         limit -= 1;
         if limit == 0 {
-            return Err(AxError::FilesystemLoop);
+            break;
         }
         ax_task::yield_now();
     }
 
     // Process the pending entry that was skipped in the loop
-    if !pending.is_null() {
+    if !pending.is_null() && !core::ptr::eq(pending, end_ptr as *mut RobustList) {
         handle_futex_death(pending, offset)?;
     }
 
