@@ -119,12 +119,104 @@ pub fn unlink<B: BlockDevice>(
     Ok(())
 }
 
+fn remove_dentry_in_dir_block(
+    superblock: &Ext4Superblock,
+    parent_ino_num: InodeNumber,
+    parent_inode: &Ext4Inode,
+    data: &mut [u8],
+    name_bytes: &[u8],
+) -> bool {
+    let block_bytes = BLOCK_SIZE;
+    let mut offset: usize = 0;
+    let mut prev_off: Option<usize> = None;
+    let mut prev_rec_len: u16 = 0;
+    while offset + 8 <= block_bytes {
+        let inode = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]);
+        let rec_len = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
+        if rec_len < 8 {
+            break;
+        }
+        let name_len = data[offset + 6] as usize;
+        let entry_end = offset + rec_len as usize;
+        if entry_end > block_bytes {
+            break;
+        }
+
+        // Only compare the name inside this entry's recorded `rec_len`
+        // so malformed trailing bytes do not leak into the comparison.
+        if name_len > 0 && offset + 8 + name_len <= entry_end {
+            let name = &data[offset + 8..offset + 8 + name_len];
+            if inode != 0 && name == name_bytes {
+                if let Some(poff) = prev_off {
+                    // Merge current entry's space into previous entry.
+                    let new_len = prev_rec_len.saturating_add(rec_len);
+                    let bytes = new_len.to_le_bytes();
+                    data[poff + 4] = bytes[0];
+                    data[poff + 5] = bytes[1];
+
+                    // Clear current entry inode so it will be treated as free.
+                    let zero = 0u32.to_le_bytes();
+                    data[offset] = zero[0];
+                    data[offset + 1] = zero[1];
+                    data[offset + 2] = zero[2];
+                    data[offset + 3] = zero[3];
+                } else {
+                    // No previous entry in this block: mark this entry free.
+                    let zero = 0u32.to_le_bytes();
+                    data[offset] = zero[0];
+                    data[offset + 1] = zero[1];
+                    data[offset + 2] = zero[2];
+                    data[offset + 3] = zero[3];
+                }
+                update_ext4_dirblock_csum32(
+                    superblock,
+                    parent_ino_num.raw(),
+                    parent_inode.i_generation,
+                    data,
+                );
+                return true;
+            }
+        }
+        if entry_end >= block_bytes {
+            break;
+        }
+        prev_off = Some(offset);
+        prev_rec_len = rec_len;
+        offset = entry_end;
+    }
+    false
+}
+
+fn try_remove_dentry_in_block<B: BlockDevice>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    parent_ino_num: InodeNumber,
+    parent_inode: &Ext4Inode,
+    phys: AbsoluteBN,
+    name_bytes: &[u8],
+) -> bool {
+    let superblock = &fs.superblock;
+    let mut removed = false;
+    let _ = fs.datablock_cache.modify(block_dev, phys, |data| {
+        removed =
+            remove_dentry_in_dir_block(superblock, parent_ino_num, parent_inode, data, name_bytes);
+    });
+    removed
+}
+
 pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     parent_path: &str,
     child_name: &str,
 ) -> Ext4Result<()> {
+    use crate::hashtree::{Ext4InodeHashTreeExt, lookup_directory_entry};
+
     let parent_info = match get_inode_with_num(fs, block_dev, parent_path)
         .ok()
         .flatten()
@@ -137,93 +229,64 @@ pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
         return Err(Ext4Error::not_dir());
     }
 
-    let total_size = parent_inode.size() as usize;
-    let block_bytes = BLOCK_SIZE;
-    let total_blocks = if total_size == 0 {
-        0
-    } else {
-        total_size.div_ceil(block_bytes)
-    };
-
-    let mut removed = false;
     let name_bytes = child_name.as_bytes();
+    let mut removed = false;
 
-    for lbn in 0..total_blocks {
-        if removed {
-            break;
-        }
-        let phys = match resolve_inode_block(block_dev, &mut parent_inode, lbn as u32) {
-            Ok(Some(b)) => b,
-            _ => continue,
-        };
-        let _ = fs.datablock_cache.modify(block_dev, phys, |data| {
-            if removed {
-                return;
-            }
-            let mut offset: usize = 0;
-            let mut prev_off: Option<usize> = None;
-            let mut prev_rec_len: u16 = 0;
-            while offset + 8 <= block_bytes {
-                let inode = u32::from_le_bytes([
-                    data[offset],
-                    data[offset + 1],
-                    data[offset + 2],
-                    data[offset + 3],
-                ]);
-                let rec_len = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
-                if rec_len < 8 {
-                    break;
-                }
-                let name_len = data[offset + 6] as usize;
-                let entry_end = offset + rec_len as usize;
-                if entry_end > block_bytes {
-                    break;
-                }
+    // Hash-tree indexed directories store most entries in leaf blocks that are
+    // not reachable by a simple linear LBN walk of block 0..size.
+    if parent_inode.is_htree_indexed()
+        && let Ok(result) = lookup_directory_entry(fs, block_dev, &parent_inode, name_bytes)
+    {
+        removed = try_remove_dentry_in_block(
+            fs,
+            block_dev,
+            parent_ino_num,
+            &parent_inode,
+            result.block_num,
+            name_bytes,
+        );
+    }
 
-                // Only compare the name inside this entry's recorded `rec_len`
-                // so malformed trailing bytes do not leak into the comparison.
-                if name_len > 0 && offset + 8 + name_len <= entry_end {
-                    let name = &data[offset + 8..offset + 8 + name_len];
-                    if inode != 0 && name == name_bytes {
-                        if let Some(poff) = prev_off {
-                            // Merge current entry's space into previous entry.
-                            let new_len = prev_rec_len.saturating_add(rec_len);
-                            let bytes = new_len.to_le_bytes();
-                            data[poff + 4] = bytes[0];
-                            data[poff + 5] = bytes[1];
-
-                            // Clear current entry inode so it will be treated as free.
-                            let zero = 0u32.to_le_bytes();
-                            data[offset] = zero[0];
-                            data[offset + 1] = zero[1];
-                            data[offset + 2] = zero[2];
-                            data[offset + 3] = zero[3];
-                        } else {
-                            // No previous entry in this block: mark this entry free.
-                            let zero = 0u32.to_le_bytes();
-                            data[offset] = zero[0];
-                            data[offset + 1] = zero[1];
-                            data[offset + 2] = zero[2];
-                            data[offset + 3] = zero[3];
-                        }
-                        removed = true;
-                        update_ext4_dirblock_csum32(
-                            &fs.superblock,
-                            parent_ino_num.raw(),
-                            parent_inode.i_generation,
-                            data,
-                        );
-                        break;
+    if !removed {
+        let mut blocks: alloc::vec::Vec<AbsoluteBN> =
+            if parent_inode.have_extend_header_and_use_extend() {
+                resolve_inode_block_allextend(fs, block_dev, &mut parent_inode)?
+                    .into_values()
+                    .collect()
+            } else {
+                let total_size = parent_inode.size() as usize;
+                let block_bytes = BLOCK_SIZE;
+                let total_blocks = if total_size == 0 {
+                    0
+                } else {
+                    total_size.div_ceil(block_bytes)
+                };
+                let mut collected = alloc::vec::Vec::new();
+                for lbn in 0..total_blocks {
+                    if let Ok(Some(phys)) =
+                        resolve_inode_block(block_dev, &mut parent_inode, lbn as u32)
+                    {
+                        collected.push(phys);
                     }
                 }
-                if entry_end >= block_bytes {
-                    break;
-                }
-                prev_off = Some(offset);
-                prev_rec_len = rec_len;
-                offset = entry_end;
+                collected
+            };
+        blocks.sort_unstable();
+        blocks.dedup();
+
+        for phys in blocks {
+            if removed {
+                break;
             }
-        });
+            removed = try_remove_dentry_in_block(
+                fs,
+                block_dev,
+                parent_ino_num,
+                &parent_inode,
+                phys,
+                name_bytes,
+            );
+        }
     }
 
     if removed {

@@ -60,6 +60,7 @@ test_commands = [
     "/usr/bin/bug-kill-zombie-perm",
     "/usr/bin/bug-raw-terminal-polling",
     "/usr/bin/bug-rename-replace",
+    "/usr/bin/bug-redis-aof-appendonly",
     "/usr/bin/bug-tmpfs-hardlink-cache",
     "/usr/bin/bug-zombie-syscalls",
 ]
