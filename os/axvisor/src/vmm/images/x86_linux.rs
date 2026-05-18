@@ -19,6 +19,12 @@
 //! protected-mode payload; that starts in phase 2.
 
 const SETUP_SECTS_DEFAULT: usize = 4;
+const SECTOR_SIZE: usize = 512;
+
+pub const BOOT_PARAMS_GPA: usize = 0x7000;
+pub const BOOT_PARAMS_SIZE: usize = 0x1000;
+pub const BOOT_STUB_GPA: usize = 0x8000;
+pub const BOOT_STUB_SIZE: usize = 0x1000;
 
 const SETUP_SECTS_OFFSET: usize = 0x1f1;
 const BOOT_FLAG_OFFSET: usize = 0x1fe;
@@ -85,8 +91,141 @@ impl X86LinuxHeader {
 
     /// Offset of the protected-mode kernel payload in the bzImage.
     pub fn payload_offset(&self) -> usize {
-        (self.setup_sects + 1) * 512
+        (self.setup_sects + 1) * SECTOR_SIZE
     }
+}
+
+/// Guest physical range used by the x86 Linux direct-boot layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct X86LinuxRange {
+    pub start: usize,
+    pub size: usize,
+}
+
+impl X86LinuxRange {
+    pub const fn new(start: usize, size: usize) -> Self {
+        Self { start, size }
+    }
+
+    pub fn end(&self) -> Result<usize, X86LinuxLayoutError> {
+        self.start
+            .checked_add(self.size)
+            .ok_or(X86LinuxLayoutError::RangeOverflow { range: *self })
+    }
+
+    pub fn overlaps(&self, other: &Self) -> Result<bool, X86LinuxLayoutError> {
+        Ok(self.start < other.end()? && other.start < self.end()?)
+    }
+}
+
+/// First direct-boot memory layout for x86 Linux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct X86LinuxLoadLayout {
+    pub boot_params: X86LinuxRange,
+    pub boot_stub: X86LinuxRange,
+    pub kernel: X86LinuxRange,
+    pub initrd: Option<X86LinuxRange>,
+}
+
+impl X86LinuxLoadLayout {
+    pub fn new(
+        header: &X86LinuxHeader,
+        kernel_load_gpa: usize,
+        kernel_payload_size: usize,
+        initrd: Option<X86LinuxRange>,
+    ) -> Result<Self, X86LinuxLayoutError> {
+        if kernel_payload_size == 0 {
+            return Err(X86LinuxLayoutError::EmptyKernelPayload);
+        }
+
+        let layout = Self {
+            boot_params: X86LinuxRange::new(BOOT_PARAMS_GPA, BOOT_PARAMS_SIZE),
+            boot_stub: X86LinuxRange::new(BOOT_STUB_GPA, BOOT_STUB_SIZE),
+            kernel: X86LinuxRange::new(kernel_load_gpa, kernel_payload_size),
+            initrd,
+        };
+
+        layout.validate_range("boot_params", &layout.boot_params)?;
+        layout.validate_range("boot_stub", &layout.boot_stub)?;
+        layout.validate_range("kernel", &layout.kernel)?;
+
+        layout.ensure_no_overlap("kernel", &layout.kernel, "boot_params", &layout.boot_params)?;
+        layout.ensure_no_overlap("kernel", &layout.kernel, "boot_stub", &layout.boot_stub)?;
+        layout.ensure_no_overlap(
+            "boot_params",
+            &layout.boot_params,
+            "boot_stub",
+            &layout.boot_stub,
+        )?;
+
+        if let Some(initrd) = layout.initrd {
+            layout.validate_range("initrd", &initrd)?;
+            layout.ensure_no_overlap("initrd", &initrd, "kernel", &layout.kernel)?;
+            layout.ensure_no_overlap("initrd", &initrd, "boot_params", &layout.boot_params)?;
+            layout.ensure_no_overlap("initrd", &initrd, "boot_stub", &layout.boot_stub)?;
+            let max_end = (header.initrd_addr_max as usize).saturating_add(1);
+            if initrd.end()? > max_end {
+                return Err(X86LinuxLayoutError::InitrdExceedsMax {
+                    end: initrd.end()?,
+                    initrd_addr_max: header.initrd_addr_max,
+                });
+            }
+        }
+
+        Ok(layout)
+    }
+
+    fn validate_range(
+        &self,
+        name: &'static str,
+        range: &X86LinuxRange,
+    ) -> Result<(), X86LinuxLayoutError> {
+        if range.size == 0 {
+            return Err(X86LinuxLayoutError::EmptyRange { name });
+        }
+        range.end()?;
+        Ok(())
+    }
+
+    fn ensure_no_overlap(
+        &self,
+        first_name: &'static str,
+        first: &X86LinuxRange,
+        second_name: &'static str,
+        second: &X86LinuxRange,
+    ) -> Result<(), X86LinuxLayoutError> {
+        if first.overlaps(second)? {
+            return Err(X86LinuxLayoutError::RangeOverlap {
+                first_name,
+                first: *first,
+                second_name,
+                second: *second,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Error returned while validating the first x86 Linux direct-boot layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum X86LinuxLayoutError {
+    EmptyKernelPayload,
+    EmptyRange {
+        name: &'static str,
+    },
+    RangeOverflow {
+        range: X86LinuxRange,
+    },
+    RangeOverlap {
+        first_name: &'static str,
+        first: X86LinuxRange,
+        second_name: &'static str,
+        second: X86LinuxRange,
+    },
+    InitrdExceedsMax {
+        end: usize,
+        initrd_addr_max: u32,
+    },
 }
 
 /// Error returned while parsing a Linux x86 setup header.
@@ -233,6 +372,85 @@ mod tests {
                 offset: BOOT_FLAG_OFFSET,
                 size: 2,
                 image_size: 16,
+            })
+        );
+    }
+
+    #[test]
+    fn layout_accepts_non_overlapping_kernel_and_initrd() {
+        let header = X86LinuxHeader::parse(&valid_bzimage_header()).unwrap();
+        let layout = X86LinuxLoadLayout::new(
+            &header,
+            0x20_0000,
+            0x10_0000,
+            Some(X86LinuxRange::new(0x40_0000, 0x20_0000)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            layout.boot_params,
+            X86LinuxRange::new(BOOT_PARAMS_GPA, BOOT_PARAMS_SIZE)
+        );
+        assert_eq!(
+            layout.boot_stub,
+            X86LinuxRange::new(BOOT_STUB_GPA, BOOT_STUB_SIZE)
+        );
+        assert_eq!(layout.kernel, X86LinuxRange::new(0x20_0000, 0x10_0000));
+        assert_eq!(
+            layout.initrd,
+            Some(X86LinuxRange::new(0x40_0000, 0x20_0000))
+        );
+    }
+
+    #[test]
+    fn layout_rejects_kernel_overlapping_boot_stub() {
+        let header = X86LinuxHeader::parse(&valid_bzimage_header()).unwrap();
+
+        assert!(matches!(
+            X86LinuxLoadLayout::new(&header, BOOT_STUB_GPA, 0x1000, None),
+            Err(X86LinuxLayoutError::RangeOverlap {
+                first_name: "kernel",
+                second_name: "boot_stub",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn layout_rejects_initrd_overlapping_kernel() {
+        let header = X86LinuxHeader::parse(&valid_bzimage_header()).unwrap();
+
+        assert!(matches!(
+            X86LinuxLoadLayout::new(
+                &header,
+                0x20_0000,
+                0x20_0000,
+                Some(X86LinuxRange::new(0x30_0000, 0x1000)),
+            ),
+            Err(X86LinuxLayoutError::RangeOverlap {
+                first_name: "initrd",
+                second_name: "kernel",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn layout_rejects_initrd_above_header_limit() {
+        let mut image = valid_bzimage_header();
+        write_u32(&mut image, INITRD_ADDR_MAX_OFFSET, 0x40_0000);
+        let header = X86LinuxHeader::parse(&image).unwrap();
+
+        assert_eq!(
+            X86LinuxLoadLayout::new(
+                &header,
+                0x20_0000,
+                0x10_0000,
+                Some(X86LinuxRange::new(0x40_0000, 0x2)),
+            ),
+            Err(X86LinuxLayoutError::InitrdExceedsMax {
+                end: 0x40_0002,
+                initrd_addr_max: 0x40_0000,
             })
         );
     }

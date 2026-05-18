@@ -121,16 +121,11 @@ impl ImageLoader {
 
         #[cfg(target_arch = "x86_64")]
         if let Some(header) = detect_x86_linux_image(vm_imags.kernel) {
-            info!(
-                "Detected x86 Linux bzImage for VM[{}]: {:#x?}, payload_offset={:#x}",
-                self.config.base.id,
+            return self.load_x86_linux_images_from_memory(
                 header,
-                header.payload_offset()
+                vm_imags.kernel,
+                vm_imags.ramdisk,
             );
-            return Err(ax_errno::ax_err_type!(
-                Unsupported,
-                "x86 Linux bzImage direct boot is detected, but payload loading starts in phase 2"
-            ));
         }
 
         load_vm_image_from_memory(vm_imags.kernel, self.kernel_load_gpa, self.vm.clone())?;
@@ -184,6 +179,43 @@ impl ImageLoader {
         self.load_boot_image_from_memory(vm_imags.bios)?;
 
         Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn load_x86_linux_images_from_memory(
+        &self,
+        header: x86_linux::X86LinuxHeader,
+        kernel: &[u8],
+        ramdisk: Option<&[u8]>,
+    ) -> AxResult {
+        let payload = x86_linux_payload(&header, kernel)?;
+        let initrd = if let Some(ramdisk) = ramdisk {
+            Some(x86_linux::X86LinuxRange::new(
+                self.ramdisk_load_gpa()?.as_usize(),
+                ramdisk.len(),
+            ))
+        } else {
+            None
+        };
+        let layout = x86_linux::X86LinuxLoadLayout::new(
+            &header,
+            self.kernel_load_gpa.as_usize(),
+            payload.len(),
+            initrd,
+        )
+        .map_err(x86_linux_layout_error)?;
+
+        self.load_x86_linux_layout(header, layout)?;
+        load_vm_image_from_memory(payload, self.kernel_load_gpa, self.vm.clone())?;
+
+        if let Some(buffer) = ramdisk {
+            self.load_ramdisk_from_memory(buffer)?;
+        }
+
+        Err(ax_errno::ax_err_type!(
+            Unsupported,
+            "x86 Linux bzImage payload and initramfs loaded, but boot_params construction starts in phase 3"
+        ))
     }
 
     fn load_boot_image_from_memory(&self, bios: Option<&[u8]>) -> AxResult {
@@ -262,10 +294,7 @@ impl ImageLoader {
     }
 
     fn load_ramdisk_from_memory(&self, ramdisk: &[u8]) -> AxResult {
-        let load_gpa = self
-            .vm
-            .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
-            .ok_or_else(|| ax_err_type!(NotFound, "Ramdisk load address is missing"))?;
+        let load_gpa = self.ramdisk_load_gpa()?;
         let size = ramdisk.len();
         self.vm.with_config(|config| {
             if let Some(ref mut rd) = config.image_config.ramdisk {
@@ -278,6 +307,43 @@ impl ImageLoader {
             load_gpa.as_usize()
         );
         load_vm_image_from_memory(ramdisk, load_gpa, self.vm.clone())
+    }
+
+    fn ramdisk_load_gpa(&self) -> AxResult<GuestPhysAddr> {
+        self.vm
+            .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
+            .ok_or_else(|| ax_errno::ax_err_type!(NotFound, "Ramdisk load addr is missed"))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn load_x86_linux_layout(
+        &self,
+        header: x86_linux::X86LinuxHeader,
+        layout: x86_linux::X86LinuxLoadLayout,
+    ) -> AxResult {
+        info!(
+            "x86 Linux layout for VM[{}]: header={:#x?}, payload_offset={:#x}, boot_params=[{:#x}..{:#x}), boot_stub=[{:#x}..{:#x}), kernel=[{:#x}..{:#x}), initrd={:?}",
+            self.config.base.id,
+            header,
+            header.payload_offset(),
+            layout.boot_params.start,
+            layout.boot_params.end().unwrap(),
+            layout.boot_stub.start,
+            layout.boot_stub.end().unwrap(),
+            layout.kernel.start,
+            layout.kernel.end().unwrap(),
+            layout.initrd
+        );
+
+        let boot_params = [0u8; x86_linux::BOOT_PARAMS_SIZE];
+        let boot_stub = [0u8; x86_linux::BOOT_STUB_SIZE];
+        load_vm_image_from_memory(
+            &boot_params,
+            layout.boot_params.start.into(),
+            self.vm.clone(),
+        )?;
+        load_vm_image_from_memory(&boot_stub, layout.boot_stub.start.into(), self.vm.clone())?;
+        Ok(())
     }
 
     #[cfg(feature = "fs")]
@@ -404,24 +470,15 @@ pub mod fs {
         info!("Loading VM images from filesystem");
         #[cfg(target_arch = "x86_64")]
         {
-            match kernal_read(&loader.config, x86_linux::HEADER_READ_SIZE) {
+            let kernel_probe = kernal_read(&loader.config, x86_linux::HEADER_READ_SIZE);
+            match kernel_probe {
                 Ok(data) => {
                     if let Some(header) = detect_x86_linux_image(&data) {
-                        info!(
-                            "Detected x86 Linux bzImage for VM[{}]: {:#x?}, payload_offset={:#x}",
-                            loader.config.base.id,
-                            header,
-                            header.payload_offset()
-                        );
-                        return Err(ax_errno::ax_err_type!(
-                            Unsupported,
-                            "x86 Linux bzImage direct boot is detected, but payload loading starts in phase 2"
-                        ));
+                        let kernel = read_image_file(&loader.config.kernel.kernel_path)?;
+                        return loader.load_x86_linux_images_from_filesystem(header, &kernel);
                     }
                 }
-                Err(err) => {
-                    debug!("Unable to probe x86 Linux bzImage header: {err:?}");
-                }
+                Err(err) => debug!("Unable to probe x86 Linux bzImage header: {err:?}"),
             }
         }
         // Load kernel image.
@@ -493,6 +550,45 @@ pub mod fs {
         }
 
         Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    impl ImageLoader {
+        fn load_x86_linux_images_from_filesystem(
+            &self,
+            header: x86_linux::X86LinuxHeader,
+            kernel: &[u8],
+        ) -> AxResult {
+            let payload = x86_linux_payload(&header, kernel)?;
+            let initrd = if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
+                let (_, ramdisk_size) = open_image_file(ramdisk_path)?;
+                Some(x86_linux::X86LinuxRange::new(
+                    self.ramdisk_load_gpa()?.as_usize(),
+                    ramdisk_size,
+                ))
+            } else {
+                None
+            };
+            let layout = x86_linux::X86LinuxLoadLayout::new(
+                &header,
+                self.kernel_load_gpa.as_usize(),
+                payload.len(),
+                initrd,
+            )
+            .map_err(x86_linux_layout_error)?;
+
+            self.load_x86_linux_layout(header, layout)?;
+            load_vm_image_from_memory(payload, self.kernel_load_gpa, self.vm.clone())?;
+
+            if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
+                self.load_ramdisk_from_filesystem(ramdisk_path)?;
+            }
+
+            Err(ax_errno::ax_err_type!(
+                Unsupported,
+                "x86 Linux bzImage payload and initramfs loaded, but boot_params construction starts in phase 3"
+            ))
+        }
     }
 
     pub(crate) fn load_vm_image(
@@ -575,6 +671,32 @@ fn detect_x86_linux_image(image: &[u8]) -> Option<x86_linux::X86LinuxHeader> {
             None
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_linux_payload<'a>(
+    header: &x86_linux::X86LinuxHeader,
+    image: &'a [u8],
+) -> AxResult<&'a [u8]> {
+    let payload_offset = header.payload_offset();
+    image.get(payload_offset..).ok_or_else(|| {
+        ax_errno::ax_err_type!(
+            InvalidInput,
+            format!(
+                "x86 Linux bzImage payload offset {:#x} exceeds image size {:#x}",
+                payload_offset,
+                image.len()
+            )
+        )
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_linux_layout_error(err: x86_linux::X86LinuxLayoutError) -> ax_errno::AxError {
+    ax_errno::ax_err_type!(
+        InvalidInput,
+        format!("invalid x86 Linux memory layout: {err:?}")
+    )
 }
 
 #[cfg(target_arch = "x86_64")]
