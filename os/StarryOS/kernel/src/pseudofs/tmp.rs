@@ -2,7 +2,7 @@ use alloc::{borrow::ToOwned, string::String, sync::Arc};
 use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
 use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
+use ax_sync::{LockdepMutexExt, Mutex};
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
@@ -13,6 +13,8 @@ use hashbrown::HashMap;
 use slab::Slab;
 
 use crate::pseudofs::dummy_stat_fs;
+
+const TMPFS_DIR_ENTRIES_NESTED_SUBCLASS: ax_sync::LockSubclass = 1;
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(String);
@@ -45,6 +47,11 @@ where
     }
 }
 
+#[inline(always)]
+fn lock_tmpfs_nested<T: ?Sized>(mutex: &Mutex<T>) -> ax_sync::MutexGuard<'_, T> {
+    mutex.lock_nested(TMPFS_DIR_ENTRIES_NESTED_SUBCLASS)
+}
+
 impl Borrow<str> for FileName {
     fn borrow(&self) -> &str {
         &self.0
@@ -72,6 +79,7 @@ impl MemoryFs {
             None,
             NodeType::Directory,
             NodePermission::from_bits_truncate(0o755),
+            false,
         );
         *fs.root.lock() = Some(DirEntry::new_dir(
             |this| DirNode::new(MemoryNode::new(fs.clone(), root_ino, Some(this))),
@@ -140,6 +148,7 @@ impl Inode {
         parent: Option<u64>,
         node_type: NodeType,
         permission: NodePermission,
+        nested_dir_entries: bool,
     ) -> Arc<Inode> {
         let mut inodes = fs.inodes.lock();
         let entry = inodes.vacant_entry();
@@ -174,7 +183,11 @@ impl Inode {
         entry.insert(result.clone());
         drop(inodes);
         if let NodeContent::Dir(dir) = &result.content {
-            let mut entries = dir.entries.lock();
+            let mut entries = if nested_dir_entries {
+                lock_tmpfs_nested(&dir.entries)
+            } else {
+                dir.entries.lock()
+            };
             entries.insert(".".into(), InodeRef::new(fs.clone(), ino));
             entries.insert(
                 "..".into(),
@@ -405,7 +418,7 @@ impl DirNodeOps for MemoryNode {
         if entries.contains_key(name) {
             return Err(VfsError::AlreadyExists);
         }
-        let inode = Inode::new(&self.fs, Some(self.inode.ino), node_type, permission);
+        let inode = Inode::new(&self.fs, Some(self.inode.ino), node_type, permission, true);
         entries.insert(name.into(), InodeRef::new(self.fs.clone(), inode.ino));
         self.new_entry(name, node_type, inode)
     }
@@ -435,7 +448,7 @@ impl DirNodeOps for MemoryNode {
             };
             let inode = entry.get();
             if let NodeContent::Dir(DirContent { entries }) = &inode.content
-                && entries.lock().len() > 2
+                && lock_tmpfs_nested(entries).len() > 2
             {
                 return Err(VfsError::DirectoryNotEmpty);
             }

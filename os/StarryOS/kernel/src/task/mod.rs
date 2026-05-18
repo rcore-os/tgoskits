@@ -34,6 +34,8 @@ pub use self::{
     cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
     timer::*, user::*,
 };
+#[cfg(feature = "kcov")]
+use crate::kcov::KcovThreadState;
 use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.
@@ -126,6 +128,10 @@ pub struct Thread {
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
 
+    /// KCOV coverage state for this thread.
+    #[cfg(feature = "kcov")]
+    kcov: AssumeSync<RefCell<Option<KcovThreadState>>>,
+
     /// Signo (as u8) of the synchronous user-mode fault that
     /// [`raise_signal_fatal`] last force-delivered to this thread, or 0
     /// for "no fault dump owed". [`check_signals`] only emits the
@@ -159,6 +165,9 @@ impl Thread {
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
             cred: SpinNoIrq::new(cred),
+            #[cfg(feature = "kcov")]
+            kcov: AssumeSync(RefCell::new(None)),
+
             fault_dump_signo: AtomicU8::new(0),
         })
     }
@@ -224,6 +233,26 @@ impl Thread {
     /// Set the pdeathsig value.
     pub fn set_pdeathsig(&self, sig: u32) {
         self.pdeathsig.store(sig, Ordering::Relaxed);
+    }
+
+    /// Run a closure with a borrow of the current KCOV state for this thread.
+    ///
+    /// Uses `try_borrow` so that a trace call inside `set_kcov`'s
+    /// `borrow_mut` does not panic when the instrumented hot path
+    /// re-enters here. Avoids cloning the `Arc<SharedPages>` on every
+    /// hot-path invocation.
+    #[cfg(feature = "kcov")]
+    pub fn with_kcov<R>(&self, f: impl FnOnce(Option<&KcovThreadState>) -> R) -> R {
+        match self.kcov.0.try_borrow() {
+            Ok(borrow) => f(borrow.as_ref()),
+            Err(_) => f(None),
+        }
+    }
+
+    /// Set the KCOV state for this thread.
+    #[cfg(feature = "kcov")]
+    pub fn set_kcov(&self, state: Option<KcovThreadState>) {
+        *self.kcov.0.borrow_mut() = state;
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).

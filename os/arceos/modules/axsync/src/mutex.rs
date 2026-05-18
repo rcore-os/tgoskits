@@ -17,6 +17,37 @@ pub struct RawMutex {
     pub(crate) lockdep: crate::lockdep::LockdepMap,
 }
 
+#[cfg(not(feature = "lockdep"))]
+pub type LockSubclass = u32;
+#[cfg(feature = "lockdep")]
+pub type LockSubclass = crate::lockdep::LockSubclass;
+
+pub trait LockdepMutexExt<T: ?Sized> {
+    fn lock_nested(&self, subclass: LockSubclass) -> MutexGuard<'_, T>;
+}
+
+impl<T: ?Sized> LockdepMutexExt<T> for Mutex<T> {
+    #[inline(always)]
+    #[track_caller]
+    fn lock_nested(&self, subclass: LockSubclass) -> MutexGuard<'_, T> {
+        #[cfg(not(feature = "lockdep"))]
+        {
+            let _ = subclass;
+            self.lock()
+        }
+
+        #[cfg(feature = "lockdep")]
+        {
+            // SAFETY: `raw()` is used only to perform the matching raw lock; the
+            // returned guard owns the corresponding unlock.
+            let raw = unsafe { self.raw() };
+            raw.lock_nested(subclass);
+            // SAFETY: The raw mutex is locked, as required.
+            unsafe { self.make_guard_unchecked() }
+        }
+    }
+}
+
 impl RawMutex {
     /// Creates a [`RawMutex`].
     #[inline(always)]
@@ -67,57 +98,25 @@ unsafe impl lock_api::RawMutex for RawMutex {
     #[inline(always)]
     #[track_caller]
     fn lock(&self) {
-        might_sleep();
-        let current_id = current().id().as_u64();
         #[cfg(feature = "lockdep")]
-        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, false);
+        self.lock_nested(ax_lockdep::DEFAULT_LOCK_SUBCLASS);
 
-        loop {
-            // Can fail to lock even if the spinlock is not locked. May be more efficient than `try_lock`
-            // when called in a loop.
-            match self.owner_id.compare_exchange_weak(
-                0,
-                current_id,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(owner_id) => {
-                    assert_ne!(
-                        owner_id, current_id,
-                        "Thread({current_id}) tried to acquire mutex it already owns.",
-                    );
-                    // Wait until someone hands off lock to me or lock is released
-                    self.wq
-                        .wait_until(|| self.is_owner(current_id) || !self.is_locked());
-                    // This check is necessary: some newcomers may race with a wakened one.
-                    if self.is_owner(current_id) {
-                        break;
-                    }
-                }
-            }
-        }
-
-        #[cfg(feature = "lockdep")]
-        lockdep.finish(true);
+        #[cfg(not(feature = "lockdep"))]
+        self.lock_plain();
     }
 
     #[inline(always)]
     #[track_caller]
     fn try_lock(&self) -> bool {
-        might_sleep();
-        let current_id = current().id().as_u64();
         #[cfg(feature = "lockdep")]
-        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, true);
-        // The reason for using a strong compare_exchange is explained here:
-        // https://github.com/Amanieu/parking_lot/pull/207#issuecomment-575869107
-        let acquired = self
-            .owner_id
-            .compare_exchange(0, current_id, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok();
-        #[cfg(feature = "lockdep")]
-        lockdep.finish(acquired);
-        acquired
+        {
+            self.try_lock_nested(ax_lockdep::DEFAULT_LOCK_SUBCLASS)
+        }
+
+        #[cfg(not(feature = "lockdep"))]
+        {
+            self.try_lock_plain()
+        }
     }
 
     #[inline(always)]
@@ -138,7 +137,95 @@ unsafe impl lock_api::RawMutex for RawMutex {
 
     #[inline(always)]
     fn is_locked(&self) -> bool {
+        self.is_locked_inner()
+    }
+}
+
+impl RawMutex {
+    #[inline(always)]
+    #[track_caller]
+    #[cfg(not(feature = "lockdep"))]
+    fn lock_plain(&self) {
+        might_sleep();
+        let current_id = current().id().as_u64();
+        self.lock_after_prepare(current_id);
+    }
+
+    #[inline(always)]
+    fn lock_after_prepare(&self, current_id: u64) {
+        loop {
+            // Can fail to lock even if the spinlock is not locked. May be more efficient than `try_lock`
+            // when called in a loop.
+            match self.owner_id.compare_exchange_weak(
+                0,
+                current_id,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(owner_id) => {
+                    assert_ne!(
+                        owner_id, current_id,
+                        "Thread({current_id}) tried to acquire mutex it already owns.",
+                    );
+                    // Wait until someone hands off lock to me or lock is released
+                    self.wq
+                        .wait_until(|| self.is_owner(current_id) || !self.is_locked_inner());
+                    // This check is necessary: some newcomers may race with a wakened one.
+                    if self.is_owner(current_id) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    #[cfg(feature = "lockdep")]
+    fn lock_nested(&self, subclass: crate::lockdep::LockSubclass) {
+        might_sleep();
+        let current_id = current().id().as_u64();
+
+        let lockdep = crate::lockdep::LockdepAcquire::prepare_nested(self, false, subclass);
+        self.lock_after_prepare(current_id);
+        lockdep.finish(true);
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    #[cfg(not(feature = "lockdep"))]
+    fn try_lock_plain(&self) -> bool {
+        might_sleep();
+        let current_id = current().id().as_u64();
+        self.try_lock_after_prepare(current_id)
+    }
+
+    #[inline(always)]
+    fn is_locked_inner(&self) -> bool {
         self.owner_id.load(Ordering::Acquire) != 0
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    #[cfg(feature = "lockdep")]
+    fn try_lock_nested(&self, subclass: crate::lockdep::LockSubclass) -> bool {
+        might_sleep();
+        let current_id = current().id().as_u64();
+
+        let lockdep = crate::lockdep::LockdepAcquire::prepare_nested(self, true, subclass);
+        let acquired = self.try_lock_after_prepare(current_id);
+        lockdep.finish(acquired);
+        acquired
+    }
+
+    #[inline(always)]
+    fn try_lock_after_prepare(&self, current_id: u64) -> bool {
+        // The reason for using a strong compare_exchange is explained here:
+        // https://github.com/Amanieu/parking_lot/pull/207#issuecomment-575869107
+        self.owner_id
+            .compare_exchange(0, current_id, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
     }
 }
 
