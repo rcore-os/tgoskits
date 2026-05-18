@@ -961,6 +961,46 @@ if [ "$_printf" = "61 0a 62" ]; then echo "PASS: busybox_printf_escape"; PASS=$(
 _t=$({ timeout 10 sh -c "busybox sh -c 'export BB_SEM_ENV=ok; cd /tmp && [ \"\$BB_SEM_ENV:\$PWD\" = \"ok:/tmp\" ] && command -v busybox >/dev/null && busybox echo sh_env_cd_ok' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qxF "sh_env_cd_ok"; then echo "PASS: busybox_sh_env_cd"; PASS=$((PASS+1)); else echo "FAIL: busybox_sh_env_cd"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
+# busybox_crond — actually exercise bb_daemonize_or_rexec: launch crond in
+# background mode (no -f), confirm the parent returns rc=0 immediately, find
+# the detached daemon in `ps` by its argv tail, SIGTERM it, and confirm it's
+# gone.  Issue #13's pass criterion (`grep -qF "crond_ok"`) is only emitted
+# on the full successful round-trip, so the test reverse-falsifies "crond
+# didn't daemonize" / "crond ignored SIGTERM" / "kernel can't reap the
+# detached child".  We deliberately avoid `busybox pidof crond` here: the
+# applet is invoked via the multi-call binary (`busybox crond ...`) so
+# argv[0] is "busybox", and pidof-by-name returns empty — the same way it
+# would on Linux given the same invocation.  Matching by argv tail via
+# `ps | grep` is the reliable identification path.
+_t=$(timeout 20 sh -c '
+    busybox rm -rf /tmp/bb_crond_tabs
+    busybox mkdir -p /tmp/bb_crond_tabs
+    busybox crond -c /tmp/bb_crond_tabs
+    _drc=$?
+    busybox sleep 1
+    _line=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep | busybox head -n 1)
+    set -- $_line
+    _pid=$1
+    if [ "$_drc" = 0 ] && [ -n "$_pid" ]; then
+        busybox kill "$_pid"
+        busybox sleep 1
+        _still=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep)
+        if [ -z "$_still" ]; then
+            echo crond_ok
+        else
+            echo "crond_still_alive_after_sigterm: $_still"
+        fi
+    else
+        echo "crond_daemonize_failed drc=$_drc pid=$_pid"
+    fi
+' 2>&1)
+if echo "$_t" | grep -qF "crond_ok"; then
+    echo "PASS: busybox_crond"; PASS=$((PASS+1))
+else
+    echo "FAIL: busybox_crond"; echo "$_t"
+    FAIL=$((FAIL+1))
+fi
+
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
 _m1="Test"; _m2="run"; _m3="completed"; echo "$_m1 $_m2 $_m3"
