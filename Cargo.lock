@@ -1288,7 +1288,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
- "dw_apb_uart 0.1.0",
+ "dw_apb_uart",
  "log",
 ]
 
@@ -3359,16 +3359,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dw_apb_uart"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f93d496c8faa9dc676ebfa225432e1e3b57645c9268ead889286546f6d39356d"
-dependencies = [
- "tock-registers 0.8.1",
-]
-
-[[package]]
-name = "dw_apb_uart"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "tock-registers 0.10.1",
 ]
@@ -7748,7 +7739,7 @@ dependencies = [
  "crab-usb",
  "ddebug",
  "downcast-rs",
- "dw_apb_uart 0.1.1",
+ "dw_apb_uart",
  "enum_dispatch",
  "event-listener",
  "extern-trait",
@@ -8572,9 +8563,9 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.6.10"
+version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68d6fdd9f81c2819c9a8b0e0cd91660e7746a8e6ea2ba7c6b2b057985f6bcb51"
+checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
  "bitflags 2.11.1",
  "bytes",
