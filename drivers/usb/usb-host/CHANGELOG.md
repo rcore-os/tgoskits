@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.1...crab-usb-v0.9.3) - 2026-05-18
+
+### Added
+
+- *(dma-api)* vendor dma and mmio api crates ([#742](https://github.com/rcore-os/tgoskits/pull/742))
+
+### Fixed
+
+- *(ci)* address usb release and axaddrspace std failures ([#743](https://github.com/rcore-os/tgoskits/pull/743))
+
+### Other
+
+- bump up usb version
+- Refactor USB driver configuration and tests
+- *(drivers)* integrate usb crates into workspace
+
 ## [0.9.1](https://github.com/drivercraft/CrabUSB/compare/crab-usb-v0.9.0...crab-usb-v0.9.1) - 2026-05-09
 
 ### Other
