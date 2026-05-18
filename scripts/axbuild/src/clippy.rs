@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    fs,
+    env,
+    ffi::OsString,
     path::Path,
 };
 
@@ -9,8 +10,6 @@ use cargo_metadata::{Metadata, Package};
 use serde_json::Value;
 
 use crate::support::process::run_cargo_status;
-
-const CLIPPY_CRATES_CSV: &str = "scripts/test/clippy_crates.csv";
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {
     validate_clippy_args(args)?;
@@ -23,7 +22,12 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
     .context("failed to load cargo metadata")?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
     let all_packages = workspace_packages(&metadata);
-    let packages = resolve_requested_packages(args, &workspace_root, &metadata, &all_packages)?;
+    let packages = skip_unsupported_packages(resolve_requested_packages(
+        args,
+        &workspace_root,
+        &metadata,
+        &all_packages,
+    )?);
     if packages.is_empty() {
         println!(
             "no clippy packages selected from {}; skipping",
@@ -42,7 +46,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
 
     let mut runner = ProcessCargoRunner;
     let report = run_clippy_checks(&mut runner, &workspace_root, &checks)?;
-    print_report_summary(&report, args.all);
+    print_report_summary(&report);
 
     if report.failed_packages().is_empty() {
         println!("all clippy checks passed");
@@ -98,14 +102,11 @@ fn resolve_requested_packages(
             .map(|pkg| pkg.name.to_string())
             .collect()
     } else if let Some(since) = args.since.as_deref() {
-        let csv_path = workspace_root.join(CLIPPY_CRATES_CSV);
-        let whitelist = load_clippy_crates(&csv_path, &known_packages)?;
         match crate::support::git::select_incremental_packages(
             workspace_root,
             metadata,
             all_packages,
             since,
-            &whitelist,
         )? {
             crate::support::git::IncrementalPackageSelection::Packages(packages) => {
                 println!(
@@ -116,14 +117,19 @@ fn resolve_requested_packages(
             }
             crate::support::git::IncrementalPackageSelection::Full { reason } => {
                 println!(
-                    "incremental clippy since `{since}` fell back to full whitelist: {reason}"
+                    "incremental clippy since `{since}` fell back to full workspace: {reason}"
                 );
-                whitelist
+                all_packages
+                    .iter()
+                    .map(|pkg| pkg.name.to_string())
+                    .collect()
             }
         }
     } else {
-        let csv_path = workspace_root.join(CLIPPY_CRATES_CSV);
-        load_clippy_crates(&csv_path, &known_packages)?
+        all_packages
+            .iter()
+            .map(|pkg| pkg.name.to_string())
+            .collect()
     };
 
     package_names
@@ -157,55 +163,6 @@ fn validate_requested_packages(
     Ok(packages)
 }
 
-fn load_clippy_crates(
-    csv_path: &Path,
-    known_packages: &HashSet<&str>,
-) -> anyhow::Result<Vec<String>> {
-    let contents = fs::read_to_string(csv_path)
-        .with_context(|| format!("failed to read {}", csv_path.display()))?;
-    parse_clippy_crates_csv(&contents, known_packages)
-}
-
-fn parse_clippy_crates_csv(
-    contents: &str,
-    known_packages: &HashSet<&str>,
-) -> anyhow::Result<Vec<String>> {
-    let mut lines = contents.lines().enumerate().filter_map(|(idx, raw)| {
-        let line = raw.trim();
-        (!line.is_empty()).then_some((idx + 1, line))
-    });
-
-    let Some((header_line, header)) = lines.next() else {
-        bail!("clippy crate csv is empty")
-    };
-    let header = header.trim_start_matches('\u{feff}');
-    if header != "package" {
-        bail!(
-            "invalid header at line {}: expected `package`, found `{}`",
-            header_line,
-            header
-        );
-    }
-
-    let mut packages = Vec::new();
-    let mut seen = HashSet::new();
-    for (line_no, package) in lines {
-        if !known_packages.contains(package) {
-            bail!(
-                "unknown workspace package `{}` at line {}",
-                package,
-                line_no
-            );
-        }
-        if !seen.insert(package.to_owned()) {
-            bail!("duplicate package `{}` at line {}", package, line_no);
-        }
-        packages.push(package.to_owned());
-    }
-
-    Ok(packages)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ClippyCheckKind {
     Base,
@@ -217,6 +174,7 @@ struct ClippyCheck {
     package: String,
     kind: ClippyCheckKind,
     target: Option<String>,
+    env: Vec<(String, String)>,
 }
 
 impl ClippyCheck {
@@ -252,10 +210,30 @@ impl ClippyCheck {
             None => format!("{base})"),
         }
     }
+
+    fn env_prefix(&self) -> String {
+        self.env
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 fn docs_rs_targets(package: &Package) -> Vec<String> {
-    let Some(docs_rs) = package.metadata.get("docs.rs").and_then(Value::as_object) else {
+    let Some(docs_rs) = package
+        .metadata
+        .get("docs.rs")
+        .and_then(Value::as_object)
+        .or_else(|| {
+            package
+                .metadata
+                .get("docs")
+                .and_then(Value::as_object)
+                .and_then(|docs| docs.get("rs"))
+                .and_then(Value::as_object)
+        })
+    else {
         return Vec::new();
     };
 
@@ -265,10 +243,56 @@ fn docs_rs_targets(package: &Package) -> Vec<String> {
 
     let mut unique_targets = BTreeSet::new();
     for target in targets.iter().filter_map(Value::as_str) {
-        unique_targets.insert(target.to_string());
+        unique_targets.insert(normalize_clippy_target(target).to_string());
     }
 
     unique_targets.into_iter().collect()
+}
+
+fn normalize_clippy_target(target: &str) -> &str {
+    match target {
+        "aarch64-unknown-linux-gnu" => "aarch64-unknown-none-softfloat",
+        "aarch64-unknown-none" => "aarch64-unknown-none-softfloat",
+        "loongarch64-unknown-none" => "loongarch64-unknown-none-softfloat",
+        target => target,
+    }
+}
+
+fn clippy_skip_reason(package: &Package) -> Option<&str> {
+    package
+        .metadata
+        .get("tgoskits")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("clippy"))
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("skip"))
+        .and_then(Value::as_str)
+}
+
+fn skip_unsupported_packages(packages: Vec<Package>) -> Vec<Package> {
+    packages
+        .into_iter()
+        .filter(|package| {
+            if let Some(reason) = clippy_skip_reason(package) {
+                println!("skipping clippy for package `{}`: {reason}", package.name);
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+fn clippy_env(package: &Package) -> Vec<(String, String)> {
+    let Some(manifest_dir) = package.manifest_path.parent() else {
+        return Vec::new();
+    };
+    let axconfig = manifest_dir.join("axconfig.toml");
+    if !axconfig.exists() {
+        return Vec::new();
+    }
+
+    vec![("AX_CONFIG_PATH".to_string(), axconfig.to_string())]
 }
 
 fn expand_clippy_checks(packages: &[Package]) -> Vec<ClippyCheck> {
@@ -287,12 +311,14 @@ fn expand_clippy_checks(packages: &[Package]) -> Vec<ClippyCheck> {
         } else {
             targets.into_iter().map(Some).collect()
         };
+        let env = clippy_env(package);
 
         for target in target_iter {
             checks.push(ClippyCheck {
                 package: package.name.to_string(),
                 kind: ClippyCheckKind::Base,
                 target: target.clone(),
+                env: env.clone(),
             });
 
             for feature in &features {
@@ -300,6 +326,7 @@ fn expand_clippy_checks(packages: &[Package]) -> Vec<ClippyCheck> {
                     package: package.name.to_string(),
                     kind: ClippyCheckKind::Feature(feature.clone()),
                     target: target.clone(),
+                    env: env.clone(),
                 });
             }
         }
@@ -352,15 +379,6 @@ impl ClippyRunReport {
             .map(|package| package.package.clone())
             .collect()
     }
-
-    fn passing_packages_csv(&self) -> String {
-        let mut csv = String::from("package\n");
-        for package in self.passed_packages() {
-            csv.push_str(&package);
-            csv.push('\n');
-        }
-        csv
-    }
 }
 
 fn run_clippy_checks<R: CargoRunner>(
@@ -385,7 +403,11 @@ fn run_clippy_checks<R: CargoRunner>(
     for (index, check) in checks.iter().enumerate() {
         let args = check.cargo_args();
         println!("[{}/{}] {}", index + 1, checks.len(), check.label());
-        println!("          cargo {}", args.join(" "));
+        if check.env.is_empty() {
+            println!("          cargo {}", args.join(" "));
+        } else {
+            println!("          {} cargo {}", check.env_prefix(), args.join(" "));
+        }
 
         let success = runner.run_clippy(workspace_root, check)?;
         let package_index = package_indexes[check.package.as_str()];
@@ -408,7 +430,7 @@ fn run_clippy_checks<R: CargoRunner>(
     })
 }
 
-fn print_report_summary(report: &ClippyRunReport, print_csv: bool) {
+fn print_report_summary(report: &ClippyRunReport) {
     println!(
         "clippy summary: {} package(s), {} check(s), {} package(s) passed, {} package(s) failed",
         report.packages.len(),
@@ -434,11 +456,6 @@ fn print_report_summary(report: &ClippyRunReport, print_csv: bool) {
             );
         }
     }
-
-    if print_csv {
-        println!("passing packages csv:");
-        print!("{}", report.passing_packages_csv());
-    }
 }
 
 trait CargoRunner {
@@ -450,7 +467,38 @@ struct ProcessCargoRunner;
 impl CargoRunner for ProcessCargoRunner {
     fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool> {
         let args = check.cargo_args();
+        let _env_guard = EnvRestoreGuard::set(&check.env);
         run_cargo_status(workspace_root, &args)
+    }
+}
+
+struct EnvRestoreGuard {
+    previous: Vec<(String, Option<OsString>)>,
+}
+
+impl EnvRestoreGuard {
+    fn set(envs: &[(String, String)]) -> Self {
+        let mut previous = Vec::new();
+        for (key, value) in envs {
+            previous.push((key.clone(), env::var_os(key)));
+            unsafe {
+                env::set_var(key, value);
+            }
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for EnvRestoreGuard {
+    fn drop(&mut self) {
+        for (key, value) in self.previous.drain(..).rev() {
+            unsafe {
+                match value {
+                    Some(value) => env::set_var(key, value),
+                    None => env::remove_var(key),
+                }
+            }
+        }
     }
 }
 
@@ -512,6 +560,104 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
+    fn pkg_with_metadata(
+        name: &str,
+        id: &str,
+        features: &[(&str, &[&str])],
+        metadata: Value,
+    ) -> Package {
+        let value = serde_json::json!({
+            "name": name,
+            "version": "0.1.0",
+            "id": id,
+            "license": null,
+            "license_file": null,
+            "description": null,
+            "source": null,
+            "dependencies": [],
+            "targets": [{
+                "kind": ["lib"],
+                "crate_types": ["lib"],
+                "name": name,
+                "src_path": format!("/tmp/{name}/src/lib.rs"),
+                "edition": "2021",
+                "doc": true,
+                "doctest": true,
+                "test": true
+            }],
+            "features": features.iter().map(|(k, v)| ((*k).to_string(), v.iter().map(|item| (*item).to_string()).collect::<Vec<_>>())).collect::<HashMap<_, _>>(),
+            "manifest_path": format!("/tmp/{name}/Cargo.toml"),
+            "metadata": metadata,
+            "publish": null,
+            "authors": [],
+            "categories": [],
+            "keywords": [],
+            "readme": null,
+            "repository": null,
+            "homepage": null,
+            "documentation": null,
+            "edition": "2021",
+            "links": null,
+            "default_run": null,
+            "rust_version": null
+        });
+
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn pkg_with_manifest_path(
+        name: &str,
+        id: &str,
+        features: &[(&str, &[&str])],
+        docs_rs_targets: Option<&[&str]>,
+        manifest_path: PathBuf,
+    ) -> Package {
+        let metadata = docs_rs_targets.map(|targets| {
+            serde_json::json!({
+                "docs.rs": {
+                    "targets": targets,
+                }
+            })
+        });
+        let value = serde_json::json!({
+            "name": name,
+            "version": "0.1.0",
+            "id": id,
+            "license": null,
+            "license_file": null,
+            "description": null,
+            "source": null,
+            "dependencies": [],
+            "targets": [{
+                "kind": ["lib"],
+                "crate_types": ["lib"],
+                "name": name,
+                "src_path": manifest_path.parent().unwrap().join("src/lib.rs"),
+                "edition": "2021",
+                "doc": true,
+                "doctest": true,
+                "test": true
+            }],
+            "features": features.iter().map(|(k, v)| ((*k).to_string(), v.iter().map(|item| (*item).to_string()).collect::<Vec<_>>())).collect::<HashMap<_, _>>(),
+            "manifest_path": manifest_path,
+            "metadata": metadata,
+            "publish": null,
+            "authors": [],
+            "categories": [],
+            "keywords": [],
+            "readme": null,
+            "repository": null,
+            "homepage": null,
+            "documentation": null,
+            "edition": "2021",
+            "links": null,
+            "default_run": null,
+            "rust_version": null
+        });
+
+        serde_json::from_value(value).unwrap()
+    }
+
     fn metadata_with_packages(packages: Vec<Package>, workspace_members: &[&str]) -> Metadata {
         let package_refs = packages;
         let value = serde_json::json!({
@@ -526,10 +672,6 @@ mod tests {
         });
 
         serde_json::from_value(value).unwrap()
-    }
-
-    fn known_packages() -> HashSet<&'static str> {
-        HashSet::from(["alpha", "beta", "gamma"])
     }
 
     fn args(all: bool, packages: &[&str]) -> crate::ClippyArgs {
@@ -594,56 +736,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parses_valid_clippy_csv() {
-        let packages =
-            parse_clippy_crates_csv("package\nalpha\nbeta\n", &known_packages()).unwrap();
-
-        assert_eq!(packages, vec!["alpha".to_string(), "beta".to_string()]);
+    fn known_packages() -> HashSet<&'static str> {
+        HashSet::from(["alpha", "beta", "gamma"])
     }
 
     #[test]
-    fn parses_clippy_csv_with_blank_lines() {
-        let packages =
-            parse_clippy_crates_csv("\npackage\n\nalpha\n\nbeta\n", &known_packages()).unwrap();
-
-        assert_eq!(packages, vec!["alpha".to_string(), "beta".to_string()]);
-    }
-
-    #[test]
-    fn rejects_empty_clippy_csv() {
-        let err = parse_clippy_crates_csv("", &known_packages()).unwrap_err();
-
-        assert!(err.to_string().contains("clippy crate csv is empty"));
-    }
-
-    #[test]
-    fn rejects_invalid_clippy_csv_header() {
-        let err = parse_clippy_crates_csv("crate\nalpha\n", &known_packages()).unwrap_err();
-
-        assert!(err.to_string().contains("invalid header"));
-    }
-
-    #[test]
-    fn rejects_unknown_clippy_csv_package() {
-        let err = parse_clippy_crates_csv("package\nunknown\n", &known_packages()).unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("unknown workspace package `unknown`")
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_clippy_csv_package() {
-        let err =
-            parse_clippy_crates_csv("package\nalpha\nalpha\n", &known_packages()).unwrap_err();
-
-        assert!(err.to_string().contains("duplicate package `alpha`"));
-    }
-
-    #[test]
-    fn all_mode_selects_every_workspace_package() {
+    fn default_mode_selects_every_workspace_package() {
         let packages = vec![
             pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
             pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
@@ -656,7 +754,7 @@ mod tests {
             ],
         );
         let resolved = resolve_requested_packages(
-            &args(true, &[]),
+            &args(false, &[]),
             Path::new("/tmp/ws"),
             &metadata,
             &packages,
@@ -673,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn package_selection_overrides_whitelist_file() {
+    fn package_selection_overrides_default_workspace_selection() {
         let packages = vec![
             pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
             pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
@@ -755,16 +853,19 @@ mod tests {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Base,
                     target: None,
+                    env: Vec::new(),
                 },
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Feature("feat-a".into()),
                     target: None,
+                    env: Vec::new(),
                 },
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Feature("feat-b".into()),
                     target: None,
+                    env: Vec::new(),
                 },
             ]
         );
@@ -819,6 +920,7 @@ mod tests {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Base,
                 target: None,
+                env: Vec::new(),
             }]
         );
     }
@@ -913,6 +1015,51 @@ mod tests {
     }
 
     #[test]
+    fn nested_docs_rs_targets_expand_base_checks() {
+        let checks = expand_clippy_checks(&[pkg_with_metadata(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[],
+            serde_json::json!({
+                "docs": {
+                    "rs": {
+                        "targets": ["aarch64-unknown-none"],
+                    },
+                },
+            }),
+        )]);
+
+        assert_eq!(
+            checks[0].cargo_args(),
+            vec![
+                "clippy",
+                "-p",
+                "alpha",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--",
+                "-D",
+                "warnings",
+            ]
+        );
+    }
+
+    #[test]
+    fn docs_rs_targets_are_normalized_to_workspace_toolchain_targets() {
+        let checks = expand_clippy_checks(&[pkg(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[],
+            Some(&["loongarch64-unknown-none"]),
+        )]);
+
+        assert_eq!(
+            checks[0].label(),
+            "alpha (base, target: loongarch64-unknown-none-softfloat)"
+        );
+    }
+
+    #[test]
     fn docs_rs_targets_are_sorted_and_deduplicated() {
         let checks = expand_clippy_checks(&[pkg(
             "alpha",
@@ -956,6 +1103,61 @@ mod tests {
     }
 
     #[test]
+    fn package_metadata_can_skip_generic_clippy() {
+        let packages = vec![
+            pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+            pkg_with_metadata(
+                "beta",
+                "beta 0.1.0 (path+file:///tmp/beta)",
+                &[],
+                serde_json::json!({
+                    "tgoskits": {
+                        "clippy": {
+                            "skip": "requires a package-specific build flow",
+                        },
+                    },
+                }),
+            ),
+        ];
+
+        let filtered = skip_unsupported_packages(packages);
+
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|package| package.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha"]
+        );
+    }
+
+    #[test]
+    fn package_axconfig_is_passed_as_clippy_env() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("alpha");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(package_dir.join("axconfig.toml"), "").unwrap();
+
+        let package = pkg_with_manifest_path(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[],
+            None,
+            package_dir.join("Cargo.toml"),
+        );
+
+        let checks = expand_clippy_checks(&[package]);
+
+        assert_eq!(
+            checks[0].env,
+            vec![(
+                "AX_CONFIG_PATH".to_string(),
+                package_dir.join("axconfig.toml").display().to_string(),
+            )]
+        );
+    }
+
+    #[test]
     fn package_failures_keep_the_package_out_of_the_pass_list() {
         let root = PathBuf::from("/tmp/workspace");
         let checks = vec![
@@ -963,16 +1165,19 @@ mod tests {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Base,
                 target: None,
+                env: Vec::new(),
             },
             ClippyCheck {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Feature("feat-a".into()),
                 target: None,
+                env: Vec::new(),
             },
             ClippyCheck {
                 package: "beta".into(),
                 kind: ClippyCheckKind::Base,
                 target: None,
+                env: Vec::new(),
             },
         ];
         let mut runner = FakeCargoRunner::new(&[
@@ -1005,7 +1210,7 @@ mod tests {
     }
 
     #[test]
-    fn report_exposes_csv_ready_passing_packages_for_mixed_runs() {
+    fn report_tracks_passing_and_failing_packages_for_mixed_runs() {
         let report = ClippyRunReport {
             total_checks: 3,
             passed_checks: 2,
@@ -1025,6 +1230,5 @@ mod tests {
 
         assert_eq!(report.failed_packages(), vec!["alpha"]);
         assert_eq!(report.passed_packages(), vec!["beta"]);
-        assert_eq!(report.passing_packages_csv(), "package\nbeta\n");
     }
 }

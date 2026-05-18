@@ -18,7 +18,6 @@ pub(crate) fn select_incremental_packages(
     metadata: &Metadata,
     workspace_packages: &[Package],
     since: &str,
-    whitelist: &[String],
 ) -> anyhow::Result<IncrementalPackageSelection> {
     let changed_paths = match changed_paths_since(workspace_root, since) {
         Ok(paths) => paths,
@@ -33,7 +32,6 @@ pub(crate) fn select_incremental_packages(
         metadata,
         workspace_packages,
         changed_paths,
-        whitelist,
     )
 }
 
@@ -118,7 +116,6 @@ pub(crate) fn select_incremental_packages_for_paths<I>(
     metadata: &Metadata,
     workspace_packages: &[Package],
     changed_paths: I,
-    whitelist: &[String],
 ) -> anyhow::Result<IncrementalPackageSelection>
 where
     I: IntoIterator<Item = PathBuf>,
@@ -137,13 +134,7 @@ where
     };
 
     let affected = affected_workspace_packages(metadata, workspace_packages, &changed_packages);
-    let whitelist: BTreeSet<_> = whitelist.iter().cloned().collect();
-    let selected = affected
-        .into_iter()
-        .filter(|package| whitelist.contains(package))
-        .collect::<Vec<_>>();
-
-    Ok(IncrementalPackageSelection::Packages(selected))
+    Ok(IncrementalPackageSelection::Packages(affected))
 }
 
 enum ChangedPackages {
@@ -429,38 +420,40 @@ mod tests {
     }
 
     #[test]
-    fn changed_crate_selects_reverse_dependencies_intersected_with_whitelist() {
+    fn changed_crate_selects_reverse_dependencies() {
         let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
             &workspace_packages,
             [PathBuf::from("crates/alpha/src/lib.rs")],
-            &["alpha".into(), "gamma".into()],
         )
         .unwrap();
 
         assert_eq!(
             selected,
-            IncrementalPackageSelection::Packages(vec!["alpha".into(), "gamma".into()])
+            IncrementalPackageSelection::Packages(vec![
+                "alpha".into(),
+                "beta".into(),
+                "gamma".into()
+            ])
         );
     }
 
     #[test]
-    fn changed_unlisted_crate_still_checks_whitelisted_dependents() {
+    fn changed_middle_crate_selects_itself_and_dependents() {
         let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
             &workspace_packages,
-            [PathBuf::from("crates/alpha/src/lib.rs")],
-            &["beta".into()],
+            [PathBuf::from("crates/beta/src/lib.rs")],
         )
         .unwrap();
 
         assert_eq!(
             selected,
-            IncrementalPackageSelection::Packages(vec!["beta".into()])
+            IncrementalPackageSelection::Packages(vec!["beta".into(), "gamma".into()])
         );
     }
 
@@ -472,7 +465,6 @@ mod tests {
             &metadata,
             &workspace_packages,
             Vec::<PathBuf>::new(),
-            &["alpha".into(), "beta".into(), "gamma".into()],
         )
         .unwrap();
 
@@ -487,7 +479,6 @@ mod tests {
             &metadata,
             &workspace_packages,
             [PathBuf::from("Cargo.lock")],
-            &["alpha".into()],
         )
         .unwrap();
 
@@ -505,7 +496,6 @@ mod tests {
             &metadata,
             &workspace_packages,
             [PathBuf::from(".cargo/config.toml")],
-            &["alpha".into()],
         )
         .unwrap();
 
