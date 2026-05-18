@@ -28,7 +28,7 @@ sidebar_label: "Backtrace Host 符号化"
 
 1. **Host 工具**：`PATH` 中可执行 `llvm-addr2line` 或 `addr2line`。
 2. **ELF**：与产生日志的那次构建一致（例如 `target/x86_64-unknown-none/release/arceos-backtrace-raw-normal`），且含 debug 信息（测例通常通过 `[env] DWARF=y` 等打开帧指针与调试构建）。
-3. **日志**：串口或 QEMU 输出中已包含 target 打印的 raw 块（例如 `Backtrace::report("raw")`、panic 路径的 `report("panic")`、trap 的 `report("trap")`）。
+3. **日志**：串口或 QEMU 输出中已包含 target 打印的 raw 块（例如 `Backtrace::capture().kind("raw")`、panic 路径的 `.kind("panic")`、trap 的 `.kind("trap")`）。
 
 ## 命令
 
@@ -57,7 +57,7 @@ cargo xtask backtrace symbolize \
 
 ## Target 日志格式（输入）
 
-工具解析如下块（与 `axbacktrace` 的 `BacktraceReport` / `report(kind)` 输出一致）：
+工具解析如下块（与 `axbacktrace` 在设置 `kind` 后的 [`Display`](https://doc.rust-lang.org/std/fmt/trait.Display.html) 输出一致）：
 
 ```text
 BACKTRACE_BEGIN kind=raw arch=x86_64 alloc=true dwarf=true

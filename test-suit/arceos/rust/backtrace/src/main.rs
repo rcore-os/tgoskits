@@ -26,7 +26,7 @@ fn main() {
 
     println!("Running backtrace tests...");
     let bt = axbacktrace::Backtrace::capture();
-    println!("{}", bt.report("test"));
+    println!("{}", bt.kind("test"));
     println!("test pass");
     ax_hal::power::system_off();
 }
