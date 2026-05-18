@@ -72,16 +72,31 @@ pub(crate) fn arceos_rust_elf_path(
         .join(package)
 }
 
+fn case_name_kind_hint(case_name: &str) -> Option<&'static str> {
+    const KINDS: &[&str] = &["raw", "panic", "trap"];
+    for segment in case_name.split(['/', '-']) {
+        for kind in KINDS {
+            if segment == *kind {
+                return Some(kind);
+            }
+        }
+    }
+    if case_name.ends_with("-raw") {
+        return Some("raw");
+    }
+    if case_name.ends_with("-panic") {
+        return Some("panic");
+    }
+    if case_name.ends_with("-trap") {
+        return Some("trap");
+    }
+    None
+}
+
 /// Infer a `kind=` filter for symbolize: case-name hints, else single block kind, else all kinds.
 fn infer_kind_filter(case_name: &str, blocks: &[Block]) -> Option<String> {
-    if case_name.contains("raw") {
-        return Some("raw".to_string());
-    }
-    if case_name.contains("panic") {
-        return Some("panic".to_string());
-    }
-    if case_name.contains("trap") {
-        return Some("trap".to_string());
+    if let Some(kind) = case_name_kind_hint(case_name) {
+        return Some(kind.to_string());
     }
 
     let kinds: HashSet<&str> = blocks.iter().map(|block| block.kind.as_str()).collect();
@@ -172,9 +187,9 @@ struct Block {
     errors: Vec<String>,
 }
 
-fn read_text(log: Option<PathBuf>) -> anyhow::Result<String> {
+fn read_text(log: Option<&Path>) -> anyhow::Result<String> {
     match log {
-        Some(path) => Ok(fs::read_to_string(&path)
+        Some(path) => Ok(fs::read_to_string(path)
             .with_context(|| format!("failed to read log {}", path.display()))?),
         None => {
             let mut s = String::new();
@@ -263,7 +278,7 @@ fn parse_blocks(text: &str) -> anyhow::Result<Vec<Block>> {
 }
 
 fn symbolize_cli(args: SymbolizeArgs) -> anyhow::Result<()> {
-    let text = read_text(args.log.clone())?;
+    let text = read_text(args.log.as_deref())?;
     let blocks = parse_blocks(&text)?;
     if blocks.is_empty() {
         bail!("no backtrace blocks found");
@@ -411,6 +426,8 @@ mod tests {
             infer_kind_filter("my-trap-test", &[]).as_deref(),
             Some("trap")
         );
+        assert_eq!(infer_kind_filter("draw-something", &[]), None);
+        assert_eq!(infer_kind_filter("fs/shell", &[]), None);
         assert_eq!(infer_kind_filter("ipi", &[]), None);
         let blocks = parse_blocks(
             "BACKTRACE_BEGIN kind=panic arch=x86_64\nBT 0 ip=0x1 fp=0x2\nBACKTRACE_END\n",

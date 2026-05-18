@@ -558,6 +558,10 @@ async fn prepare_rust_qemu_cases(
     Ok(prepared)
 }
 
+fn wants_backtrace_auto_symbolize(case_name: &str, package: &str) -> bool {
+    case_name.contains("backtrace") || package.contains("backtrace")
+}
+
 async fn run_rust_qemu_case(
     arceos: &mut ArceOS,
     case: &PreparedArceosRustQemuCase,
@@ -569,8 +573,10 @@ async fn run_rust_qemu_case(
     let package = &case.case.package;
     let debug = case.request.debug;
 
+    let auto_symbolize = symbolize_after && wants_backtrace_auto_symbolize(case_name, package);
+
     #[cfg(unix)]
-    let log_path = if symbolize_after {
+    let log_path = if auto_symbolize {
         let dir = crate::context::axbuild_tmp_dir(&workspace).join("qemu-logs");
         fs::create_dir_all(&dir)?;
         Some(dir.join(format!("{case_name}-{target}.log")))
@@ -579,7 +585,7 @@ async fn run_rust_qemu_case(
     };
 
     #[cfg(not(unix))]
-    if symbolize_after {
+    if auto_symbolize {
         eprintln!(
             "warning: automatic backtrace symbolize after QEMU is only supported on Unix hosts; \
              use `cargo xtask backtrace symbolize` manually"
@@ -603,7 +609,7 @@ async fn run_rust_qemu_case(
         .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"))?;
 
     #[cfg(unix)]
-    if symbolize_after {
+    if auto_symbolize {
         drop(tee_guard);
         if let Some(path) = log_path {
             let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
