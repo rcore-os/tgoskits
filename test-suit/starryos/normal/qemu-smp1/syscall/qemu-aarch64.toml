@@ -46,6 +46,7 @@ test_commands = [
     "/usr/bin/test_sa_restart",
     "/usr/bin/test-sigaltstack",
     "/usr/bin/test-stat-family",
+    "/usr/bin/test-uid-gid-res-setters",
     "/usr/bin/test-umask",
     "/usr/bin/test-vfork",
     "/usr/bin/test-timer-family",
