@@ -1,0 +1,16 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a53",
+  "-usb",
+  "-drive",
+  "if=none,id=stick,format=raw,file=test.img",
+  "-device",
+  "qemu-xhci,id=xhci",
+  "-device",
+  "usb-storage,bus=xhci.0,drive=stick",
+]
+fail_regex = []
+success_regex = []
+to_bin = true
+uefi = false

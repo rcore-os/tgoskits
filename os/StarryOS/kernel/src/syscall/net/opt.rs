@@ -210,6 +210,15 @@ pub fn sys_setsockopt(
         }
     }
 
+    {
+        use linux_raw_sys::net::{SO_BROADCAST, SOL_SOCKET};
+
+        if (level, optname) == (SOL_SOCKET, SO_BROADCAST) {
+            let _ = read_int_sockopt(optval, optlen)?;
+            return Ok(0);
+        }
+    }
+
     fn get<'a, T: 'static>(val: UserConstPtr<u8>, len: socklen_t) -> AxResult<&'a T> {
         if len as usize != size_of::<T>() {
             return Err(AxError::InvalidInput);

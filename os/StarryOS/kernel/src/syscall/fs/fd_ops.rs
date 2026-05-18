@@ -14,8 +14,8 @@ use linux_raw_sys::general::*;
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
-        memfd::Memfd, with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like, close_file_like,
+        get_file_like, memfd::Memfd, with_fs,
     },
     mm::vm_load_string,
     pseudofs::{Device, dev::tty},
@@ -210,6 +210,25 @@ fn dup_fd(old_fd: c_int, cloexec: bool) -> AxResult<isize> {
     Ok(new_fd as _)
 }
 
+fn dup_fd_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isize> {
+    if min_fd < 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let f = get_file_like(old_fd)?;
+    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current as i32;
+    let mut fd_table = FD_TABLE.write();
+    for candidate in min_fd..max_nofile {
+        let entry = FileDescriptor {
+            inner: f.clone(),
+            cloexec,
+        };
+        if fd_table.add_at(candidate as _, entry).is_ok() {
+            return Ok(candidate as isize);
+        }
+    }
+    Err(AxError::TooManyOpenFiles)
+}
+
 pub fn sys_dup(old_fd: c_int) -> AxResult<isize> {
     debug!("sys_dup <= {old_fd}");
     dup_fd(old_fd, false)
@@ -264,18 +283,23 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     }
 
     match cmd as u32 {
-        F_DUPFD => dup_fd(fd, false),
-        F_DUPFD_CLOEXEC => dup_fd(fd, true),
+        F_DUPFD => dup_fd_min(fd, arg as _, false),
+        F_DUPFD_CLOEXEC => dup_fd_min(fd, arg as _, true),
         F_SETFL => {
-            get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            let f = get_file_like(fd)?;
+            f.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            f.set_append(arg & (O_APPEND as usize) > 0)?;
             Ok(0)
         }
         F_GETFL => {
             let f = get_file_like(fd)?;
 
-            let mut ret = f.open_flags();
+            let mut ret = f.open_flags() & !O_APPEND;
             if f.nonblocking() {
                 ret |= O_NONBLOCK;
+            }
+            if f.append() {
+                ret |= O_APPEND;
             }
 
             Ok(ret as _)
@@ -317,7 +341,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         }
         _ => {
             warn!("unsupported fcntl parameters: cmd: {cmd}");
-            Ok(0)
+            Err(AxError::InvalidInput)
         }
     }
 }

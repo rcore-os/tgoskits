@@ -1,0 +1,23 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+edition.workspace = true
+license.workspace = true
+name = "uvc-frame-parser"
+publish = false
+repository.workspace = true
+version = "0.1.1"
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+clap = {version = "4", features = ["derive"]}
+crab-uvc = {path = "../../usb-device/uvc"}
+env_logger = "0.11"
+ffmpeg-next = "7.1.0"
+image = "0.24"
+log = "0.4"
+regex = "1.0"
+serde = {version = "1.0", features = ["derive"]}
+tokio = {version = "1", features = ["full"]}
+toml = "0.9"
+
+[dev-dependencies]
+tempfile = "3.8"

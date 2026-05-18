@@ -139,7 +139,6 @@ fn resolve_build_info_path_in_dir(dir: &std::path::Path, target: &str) -> PathBu
 mod tests {
     use std::fs;
 
-    use ostool::build;
     use tempfile::tempdir;
 
     use super::*;

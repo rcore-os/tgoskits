@@ -203,6 +203,14 @@ pub trait FileLike: Pollable + DowncastSync {
         None
     }
 
+    fn append(&self) -> bool {
+        false
+    }
+
+    fn set_append(&self, _append: bool) -> AxResult {
+        Ok(())
+    }
+
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
     where
         Self: Sized + 'static,

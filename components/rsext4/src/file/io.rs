@@ -374,7 +374,7 @@ pub fn write_file<B: BlockDevice>(
     write_inode_data(device, fs, inode_num, offset, data)
 }
 
-fn write_inode_data<B: BlockDevice>(
+pub fn write_inode_data<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: InodeNumber,
