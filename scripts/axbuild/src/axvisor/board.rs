@@ -128,7 +128,7 @@ log = "Info"
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["phytium-blk"]
+features = ["fs", "sdmmc"]
 log = "Info"
 plat_dyn = true
 "#,
