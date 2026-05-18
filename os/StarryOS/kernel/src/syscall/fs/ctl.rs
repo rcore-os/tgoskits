@@ -12,14 +12,13 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIONBIO, TIOCGWINSZ},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
     file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
-    pseudofs::Device,
     task::AsThread,
     time::TimeValueLike,
 };
@@ -38,9 +37,9 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         .map(|result| result as isize)
         .inspect_err(|err| {
             if *err == AxError::NotATty {
-                // glibc likes to call TIOCGWINSZ on non-terminal files, just
-                // ignore it
-                if cmd == TIOCGWINSZ {
+                // Applications commonly probe non-terminal/blobk fds with
+                // these ioctls; suppress noise.
+                if matches!(cmd, TIOCGWINSZ | BLKGETSIZE64 | BLKRAGET | BLKSSZGET) {
                     return;
                 }
                 warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
@@ -48,9 +47,10 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         })
 }
 
+#[ddebug::named]
 pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    debug!("sys_chdir <= path: {path}");
+    debug_fn!("sys_chdir <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
     let entry = fs.resolve(path)?;
@@ -69,6 +69,11 @@ pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
 #[cfg(target_arch = "x86_64")]
 pub fn sys_mkdir(path: *const c_char, mode: u32) -> AxResult<isize> {
     sys_mkdirat(AT_FDCWD, path, mode)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_mknod(path: *const c_char, mode: u32, dev: u64) -> AxResult<isize> {
+    sys_mknodat(AT_FDCWD, path, mode, dev)
 }
 
 pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
@@ -116,12 +121,14 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
     // apply umask like mkdir
     perm &= !current().as_thread().proc_data.umask();
 
+    // Linux mknod semantics: S_IFDIR → EPERM, unknown type bits → EINVAL.
     let node_type = match ftype {
-        S_IFREG => NodeType::RegularFile,
+        0 | S_IFREG => NodeType::RegularFile,
         S_IFCHR => NodeType::CharacterDevice,
         S_IFBLK => NodeType::BlockDevice,
         S_IFIFO => NodeType::Fifo,
         S_IFSOCK => NodeType::Socket,
+        S_IFDIR => return Err(AxError::OperationNotPermitted),
         _ => return Err(AxError::InvalidInput),
     };
 
@@ -133,13 +140,12 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
             NodePermission::from_bits_truncate(perm as u16),
         )?;
 
-        // If device node, set rdev
+        // If device node, set rdev via update_metadata
         if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
-            if let Ok(dev_node) = loc.entry().downcast::<Device>() {
-                dev_node.set_device_id(DeviceId(dev));
-            } else {
-                warn!("not a device node, cannot set rdev");
-            }
+            loc.update_metadata(MetadataUpdate {
+                rdev: Some(DeviceId(dev)),
+                ..Default::default()
+            })?;
         }
 
         Ok(0)
@@ -237,6 +243,11 @@ pub fn sys_linkat(
     new_path: *const c_char,
     flags: u32,
 ) -> AxResult<isize> {
+    const LINKAT_VALID_FLAGS: u32 = AT_SYMLINK_FOLLOW | AT_EMPTY_PATH;
+    if flags & !LINKAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let old_path = old_path.nullable().map(vm_load_string).transpose()?;
     let new_path = vm_load_string(new_path)?;
     debug!(
@@ -244,11 +255,15 @@ pub fn sys_linkat(
          new_path: {new_path}, flags: {flags}"
     );
 
-    if flags != 0 {
-        warn!("Unsupported flags: {flags}");
-    }
+    // Unlike most *at syscalls, linkat() does not follow old_path when flags
+    // is 0. It follows the final symlink only with AT_SYMLINK_FOLLOW.
+    let resolve_flags = if flags & AT_SYMLINK_FOLLOW != 0 {
+        flags & AT_EMPTY_PATH
+    } else {
+        (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
+    };
 
-    let old = resolve_at(old_dirfd, old_path.as_deref(), flags)?
+    let old = resolve_at(old_dirfd, old_path.as_deref(), resolve_flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
     if old.is_dir() {
@@ -305,9 +320,6 @@ pub fn sys_unlink(path: *const c_char) -> AxResult<isize> {
 
 pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
     let size: usize = size.try_into().map_err(|_| AxError::BadAddress)?;
-    if buf.is_null() {
-        return Ok(0);
-    }
 
     let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
     debug!("sys_getcwd => cwd: {cwd}");
@@ -317,8 +329,7 @@ pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
 
     if cwd.len() <= size {
         vm_write_slice(buf, cwd)?;
-        // FIXME: it is said that this should return 0
-        Ok(buf.as_ptr() as _)
+        Ok(cwd.len() as _)
     } else {
         Err(AxError::OutOfRange)
     }
@@ -355,6 +366,10 @@ pub fn sys_readlinkat(
     buf: *mut u8,
     size: usize,
 ) -> AxResult<isize> {
+    if size == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = vm_load_string(path)?;
 
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
@@ -390,6 +405,11 @@ pub fn sys_fchownat(
     gid: i32,
     flags: u32,
 ) -> AxResult<isize> {
+    const FCHOWNAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !FCHOWNAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
@@ -421,11 +441,22 @@ pub fn sys_fchownat(
     }
 
     let mut mode = meta.mode;
-    // chown always clears the setuid bits
-    mode.remove(NodePermission::SET_UID);
-    // chown also removes the setgid bits if group-executable
-    if mode.contains(NodePermission::GROUP_EXEC) {
-        mode.remove(NodePermission::SET_GID);
+    // Linux chown_common() semantics for clearing setuid/setgid on
+    // non-directory files:
+    //   - ATTR_KILL_SUID is set unconditionally for all non-dir chown,
+    //     regardless of whether uid/gid participates (i.e. even chown
+    //     with -1/-1 clears SUID).
+    //   - After SUID clearing adds ATTR_MODE to ia_valid, notify_change()
+    //     calls should_remove_sgid() which strips SGID on non-directory
+    //     files only when GROUP_EXEC (S_IXGRP) is set.
+    // Directories preserve SETGID (used for new-file group inheritance).
+    let is_dir = meta.node_type == NodeType::Directory;
+
+    if !is_dir {
+        mode.remove(NodePermission::SET_UID);
+        if mode.contains(NodePermission::GROUP_EXEC) {
+            mode.remove(NodePermission::SET_GID);
+        }
     }
 
     let uid = if uid == -1 { meta.uid } else { uid as _ };
@@ -448,6 +479,11 @@ pub fn sys_fchmod(fd: i32, mode: u32) -> AxResult<isize> {
 }
 
 pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+    const FCHMODAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !FCHMODAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
@@ -588,6 +624,11 @@ pub fn sys_renameat2(
     new_path: *const c_char,
     flags: u32,
 ) -> AxResult<isize> {
+    const RENAMEAT2_SUPPORTED_FLAGS: u32 = RENAME_NOREPLACE;
+    if flags & !RENAMEAT2_SUPPORTED_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let old_path = vm_load_string(old_path)?;
     let new_path = vm_load_string(new_path)?;
     debug!(
@@ -596,10 +637,20 @@ pub fn sys_renameat2(
     );
 
     let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(&old_path)))?;
-    let (new_dir, new_name) =
-        with_fs(new_dirfd, |fs| fs.resolve_nonexistent(Path::new(&new_path)))?;
+    let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_parent(Path::new(&new_path)))?;
 
-    old_dir.rename(&old_name, &new_dir, new_name)?;
+    if flags & RENAME_NOREPLACE != 0 {
+        // Linux reports a missing source leaf before checking whether the
+        // no-replace destination already exists.
+        old_dir.lookup_no_follow(&old_name)?;
+        match new_dir.lookup_no_follow(&new_name) {
+            Ok(_) => return Err(AxError::AlreadyExists),
+            Err(AxError::NotFound) => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    old_dir.rename(&old_name, &new_dir, &new_name)?;
     Ok(0)
 }
 

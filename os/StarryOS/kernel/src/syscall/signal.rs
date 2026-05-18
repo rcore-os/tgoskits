@@ -16,8 +16,8 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     task::{
-        AsThread, block_next_signal, check_signals, get_task, processes, send_signal_to_process,
-        send_signal_to_thread,
+        AsThread, block_next_signal, check_signals, get_process_cred, processes,
+        send_signal_to_process, send_signal_to_thread,
     },
     time::TimeValueLike,
 };
@@ -128,11 +128,7 @@ fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
     if target_pid == self_pid {
         return Ok(());
     }
-    let target_task = get_task(target_pid).map_err(|_| AxError::NoSuchProcess)?;
-    let target_cred = target_task
-        .try_as_thread()
-        .map(|t| t.cred())
-        .ok_or(AxError::NoSuchProcess)?;
+    let target_cred = get_process_cred(target_pid)?;
     // Linux checks: {sender.euid, sender.uid} × {target.uid, target.euid, target.suid}
     if sender.euid == target_cred.uid
         || sender.euid == target_cred.euid
@@ -289,12 +285,16 @@ pub fn sys_rt_sigtimedwait(
     let signal = &thr.signal;
 
     let old_blocked = signal.blocked();
-    signal.set_blocked(old_blocked & !set);
+    // Publish sigwait_set so that send_signal skips is_ignore() for signals
+    // this thread is waiting for.  We do NOT unblock the waited signals:
+    // dequeue_signal(&set) can already retrieve blocked pending signals, and
+    // keeping them blocked prevents check_signals from racing to dequeue and
+    // discard them as default-ignore (e.g. SIGCHLD/SIGURG).
+    *signal.sigwait_set.lock() = Some(set);
 
     uctx.set_retval(-LinuxError::EINTR.code() as usize);
     let fut = poll_fn(|cx| {
         if let Some(sig) = signal.dequeue_signal(&set) {
-            signal.set_blocked(old_blocked);
             Poll::Ready(Some(sig))
         } else if check_signals(thr, uctx, Some(old_blocked), None) {
             Poll::Ready(None)
@@ -306,13 +306,16 @@ pub fn sys_rt_sigtimedwait(
 
     let Ok(sig) = block_on(future::timeout(timeout, fut)) else {
         // Timeout
-        signal.set_blocked(old_blocked);
+        *signal.sigwait_set.lock() = None;
         return Err(AxError::WouldBlock);
     };
     let Some(sig) = sig else {
         // Interrupted
+        *signal.sigwait_set.lock() = None;
         return Ok(0);
     };
+
+    *signal.sigwait_set.lock() = None;
 
     if let Some(info) = info.nullable() {
         info.vm_write(sig.0)?;

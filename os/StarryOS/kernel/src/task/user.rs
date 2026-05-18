@@ -8,7 +8,7 @@ use super::{
     AsThread, SyscallRestartInfo, TimerState, check_signals, raise_signal_fatal, set_timer_state,
     unblock_next_signal,
 };
-use crate::syscall::handle_syscall;
+use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
 
 /// Create a new user task.
 pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) -> TaskInner {
@@ -40,7 +40,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 "{:?}: segmentation fault at {:#x} {:?}",
                                 thr.proc_data.proc, addr, flags
                             );
-                            raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV))
+                            raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV), &uctx)
                                 .expect("Failed to send SIGSEGV");
                         }
                     }
@@ -72,19 +72,22 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             ExceptionKind::IllegalInstruction => Signo::SIGILL,
                             _ => Signo::SIGTRAP,
                         };
-                        raise_signal_fatal(SignalInfo::new_kernel(signo))
+                        raise_signal_fatal(SignalInfo::new_kernel(signo), &uctx)
                             .expect("Failed to send SIGTRAP");
                     }
                     r => {
                         warn!("Unexpected return reason: {r:?}");
-                        raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV))
+                        raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV), &uctx)
                             .expect("Failed to send SIGSEGV");
                     }
                 }
 
                 if !unblock_next_signal() {
                     let eintr_code = -(ax_errno::LinuxError::EINTR.code() as isize);
-                    let restart = if is_syscall && (uctx.retval() as isize) == eintr_code {
+                    let restart = if is_syscall
+                        && (uctx.retval() as isize) == eintr_code
+                        && syscall_allows_signal_restart(saved_sysno)
+                    {
                         Some(SyscallRestartInfo {
                             saved_a0,
                             saved_sysno,

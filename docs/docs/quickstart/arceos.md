@@ -8,6 +8,16 @@ title: "ArceOS 快速上手"
 
 ArceOS 的最短路径通常是选择一个示例包，通过 `cargo xtask arceos qemu` 直接构建并启动。
 
+```mermaid
+flowchart LR
+  A[选择包] --> B[选择架构]
+  B --> C[cargo xtask arceos qemu]
+  C --> D{验证通过?}
+  D -- 是 --> E[测试套件]
+  D -- 否 --> F[检查环境]
+  F --> B
+```
+
 ## 1. 快速启动
 
 本节给出 ArceOS 在不同架构上的最短启动命令。推荐优先选择 `ax-helloworld`，因为它依赖最少、输出最直接，适合确认基础构建链路和 QEMU 路径是否正常。
@@ -90,21 +100,10 @@ cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf --only-c
 cargo xtask arceos test qemu --target aarch64-unknown-none-softfloat -p arceos-affinity
 ```
 
-详细说明见：[ArceOS 测试套件设计](../design/test/arceos)
+详细说明见：[ArceOS 测试套件设计](/docs/build/test/arceos)
 
-## 4. 选择建议
+若需要继续理解 ArceOS 的模块层、组件关系或测试实现，可以继续阅读：
 
-如果不确定该从哪个包或哪个命令开始，可以先按下表选择最接近当前目标的路径。这样可以避免一开始就进入依赖较多或交互更复杂的示例。
-
-| 场景 | 建议命令 |
-|------|----------|
-| 第一次跑通 | `ax-helloworld` + `riscv64` |
-| 网络验证 | `ax-httpserver` 或 `ax-httpclient` |
-| 文件系统 / 交互验证 | `ax-shell` |
-| 回归测试 | `cargo xtask arceos test qemu ...` |
-
-快速上手只覆盖“先跑起来”的路径。若需要继续理解 ArceOS 的模块层、组件关系或测试实现，可以继续阅读：
-
-- [ArceOS 开发指南](../design/systems/arceos-guide)
-- [ArceOS 测试套件设计](../design/test/arceos)
-- [组件开发指南](../design/reference/components)
+- [ArceOS 开发指南](/docs/development/arceos)
+- [ArceOS 测试套件设计](/docs/build/test/arceos)
+- [组件开发指南](/docs/development/components)

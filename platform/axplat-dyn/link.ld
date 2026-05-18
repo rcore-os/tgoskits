@@ -31,10 +31,10 @@ SECTIONS {
 }
 INSERT AFTER .data;
 
-_sbss = .;
-_ebss = .;
-boot_stack = .;
-boot_stack_top = .;
+PROVIDE(_sbss = __bss_start);
+PROVIDE(_ebss = __bss_stop);
+PROVIDE(boot_stack = __cpu0_stack);
+PROVIDE(boot_stack_top = __cpu0_stack_top);
 _percpu_load_start = __percpu_start;
 
 _skernel = VM_LOAD_ADDRESS;

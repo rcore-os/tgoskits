@@ -1,6 +1,6 @@
 pub use rockchip_npu::{
     RknpuAction,
-    ioctrl::{RknpuMemCreate, RknpuMemMap, RknpuSubmit},
+    ioctrl::{RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +24,10 @@ pub fn submit(args: &mut RknpuSubmit) -> Result<(), Error> {
 
 pub fn mem_create(args: &mut RknpuMemCreate) -> Result<(), Error> {
     with_npu(|npu| npu.create(args).map_err(|_| Error::InvalidData))
+}
+
+pub fn mem_sync(args: &mut RknpuMemSync) -> Result<(), Error> {
+    with_npu(|npu| npu.mem_sync(args).map_err(|_| Error::InvalidData))
 }
 
 pub fn mem_map_offset(handle: u32) -> Result<u64, Error> {

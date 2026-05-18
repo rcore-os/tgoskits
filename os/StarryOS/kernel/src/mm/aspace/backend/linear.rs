@@ -17,6 +17,12 @@ pub struct LinearBackend {
     start: VirtAddr,
     offset: isize,
     shared: bool,
+    /// Optional lifetime anchor. Keeps an arbitrary object alive as long as
+    /// this backend (and its VMA) exists. Used, for example, to keep an
+    /// `Arc<IonBuffer>` alive while its physical DMA pages are mapped into a
+    /// process address space, preventing use-after-free when the fd is closed
+    /// before `munmap`.
+    anchor: Option<Arc<dyn core::any::Any + Send + Sync>>,
 }
 
 impl LinearBackend {
@@ -25,6 +31,7 @@ impl LinearBackend {
             start: new_start,
             offset: self.offset + (new_start.as_usize() as isize - self.start.as_usize() as isize),
             shared: self.shared,
+            anchor: self.anchor.clone(),
         }
     }
 
@@ -87,6 +94,27 @@ impl Backend {
             start,
             offset,
             shared,
+            anchor: None,
+        })
+    }
+
+    /// Like [`new_linear`], but keeps `anchor` alive as long as the VMA exists.
+    ///
+    /// Use this when the linear mapping covers physical memory owned by an
+    /// `Arc`-managed object (e.g., `Arc<IonBuffer>`). The `anchor` clone is
+    /// dropped when the backend is dropped (i.e., on `munmap` or process exit),
+    /// which is the correct point to allow the physical pages to be freed.
+    pub fn new_linear_anchored(
+        start: VirtAddr,
+        offset: isize,
+        shared: bool,
+        anchor: Arc<dyn core::any::Any + Send + Sync>,
+    ) -> Self {
+        Self::Linear(LinearBackend {
+            start,
+            offset,
+            shared,
+            anchor: Some(anchor),
         })
     }
 }

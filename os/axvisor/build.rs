@@ -146,12 +146,23 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
         .and_then(|v| v.as_str())
         .map(|v| convert_to_absolute(&config_file.path, v));
 
-    let bios = config
+    let enable_bios = config
         .get("kernel")?
         .as_table()?
-        .get("bios_path")
-        .and_then(|v| v.as_str())
-        .map(|v| convert_to_absolute(&config_file.path, v));
+        .get("enable_bios")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let bios = if enable_bios {
+        config
+            .get("kernel")?
+            .as_table()?
+            .get("bios_path")
+            .and_then(|v| v.as_str())
+            .map(|v| convert_to_absolute(&config_file.path, v))
+    } else {
+        None
+    };
 
     let ramdisk = config
         .get("kernel")?

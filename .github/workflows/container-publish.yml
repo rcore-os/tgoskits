@@ -31,12 +31,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Prepare image name
         id: prep
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
         run: |
-          echo "image=${{ inputs.image_name }}" >> "$GITHUB_OUTPUT"
+          image="$(printf '%s' "$IMAGE_NAME" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

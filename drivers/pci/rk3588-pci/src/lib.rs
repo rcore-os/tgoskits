@@ -100,6 +100,7 @@ pub struct HostConfig {
     pub cfg_size: usize,
     pub bus_base: u8,
     pub logical_bus_end: u8,
+    pub iatu_mode: IatuMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,19 +150,8 @@ pub struct Rk3588PcieHost {
 }
 
 impl Rk3588PcieHost {
-    pub fn new(
-        apb: MmioRaw,
-        dbi: MmioRaw,
-        cfg: MmioRaw,
-        config: HostConfig,
-    ) -> Result<Self, Error> {
-        let iatu_mode = if read32(&dbi, PCIE_ATU_VIEWPORT) == u32::MAX {
-            IatuMode::Unroll
-        } else {
-            IatuMode::Viewport
-        };
-
-        Ok(Self {
+    pub fn new(apb: MmioRaw, dbi: MmioRaw, cfg: MmioRaw, config: HostConfig) -> Self {
+        Self {
             apb,
             dbi,
             cfg,
@@ -171,8 +161,8 @@ impl Rk3588PcieHost {
             bus_base: config.bus_base,
             logical_bus_end: config.logical_bus_end,
             cfg_bus_delta: i16::from(config.bus_base),
-            iatu_mode,
-        })
+            iatu_mode: config.iatu_mode,
+        }
     }
 
     pub fn init(
@@ -180,8 +170,8 @@ impl Rk3588PcieHost {
         delay: &dyn Delay,
         mut reset: Option<&mut dyn ResetControl>,
     ) -> LinkReport {
-        self.enable_dbi_ro_writes();
         self.force_root_complex_mode();
+        self.enable_dbi_ro_writes();
         self.program_root_bridge_defaults();
 
         let firmware_trained = self.link_up();

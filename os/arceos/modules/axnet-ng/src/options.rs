@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use core::time::Duration;
 
 use ax_errno::{AxError, AxResult, LinuxError};
@@ -67,6 +68,10 @@ define_options! {
     // --- TCP level options (TCP_*) ----
     NoDelay(bool),
     MaxSegment(usize),
+    TcpKeepIdle(u32),
+    TcpKeepInterval(u32),
+    TcpKeepCount(u32),
+    TcpUserTimeout(u32),
     TcpInfo(()),
 
     // ---- IP level options (IP_*) ----
@@ -104,5 +109,15 @@ pub trait Configurable {
                 Ok(())
             }
         })
+    }
+}
+
+impl<T: Configurable + ?Sized> Configurable for Box<T> {
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool> {
+        self.as_ref().get_option_inner(opt)
+    }
+
+    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool> {
+        self.as_ref().set_option_inner(opt)
     }
 }

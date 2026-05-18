@@ -60,12 +60,20 @@ fn block_ignore_send_signal() {
     assert!(!thr.send_signal(sig.clone()));
     assert!(!thr.pending().has(signo));
 
+    // When a signal is both blocked AND SIG_IGN, POSIX requires it to be
+    // queued as pending so that sigtimedwait()/sigwaitinfo() can consume it.
     let mut set = SignalSet::default();
     set.add(signo);
     thr.set_blocked(set);
     assert!(thr.signal_blocked(signo));
     assert!(!thr.send_signal(sig.clone()));
-    assert!(!thr.pending().has(signo));
+    assert!(thr.pending().has(signo));
+
+    // Drain the pending signal before testing the next disposition change.
+    assert_eq!(
+        thr.dequeue_signal(&!SignalSet::default()).unwrap().signo(),
+        signo
+    );
 
     proc.actions.lock()[signo].disposition = SignalDisposition::Default;
     assert!(!thr.send_signal(sig.clone()));
@@ -139,8 +147,7 @@ fn restore() {
     let (_si, action) = thr.check_signals(&mut uctx, None).unwrap();
     assert_eq!(action, SignalOSAction::NoFurtherAction);
 
-    let new_sp = uctx.sp() + 8;
-    uctx.set_sp(new_sp);
+    prepare_restore_context(&mut uctx);
     thr.restore(&mut uctx).unwrap();
 
     assert_eq!(uctx.ip(), initial.ip());

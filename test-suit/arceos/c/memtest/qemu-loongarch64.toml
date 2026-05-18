@@ -1,0 +1,16 @@
+args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "la464",
+    "-m",
+    "128M",
+    "-nographic",
+    "-serial",
+    "mon:stdio",
+]
+uefi = false
+to_bin = true
+success_regex = ["Memory tests run OK!"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b']
+timeout = 120

@@ -11,10 +11,11 @@ use ax_task::{
 use event_listener::{Event, listener};
 use lazy_static::lazy_static;
 use spin::Mutex;
+use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
-use crate::task::poll_timer;
+use crate::task::{poll_process_timer, poll_timer};
 
 fn time_value_from_nanos(nanos: usize) -> TimeValue {
     let secs = nanos as u64 / NANOS_PER_SEC;
@@ -22,10 +23,17 @@ fn time_value_from_nanos(nanos: usize) -> TimeValue {
     TimeValue::new(secs, nsecs as u32)
 }
 
+#[derive(Debug, Clone)]
+pub enum AlarmTarget {
+    Thread(WeakAxTaskRef),
+    Process(Pid),
+}
+
 struct Entry {
     deadline: Duration,
-    task: WeakAxTaskRef,
+    target: AlarmTarget,
 }
+
 impl PartialEq for Entry {
     fn eq(&self, other: &Self) -> bool {
         self.deadline == other.deadline
@@ -105,17 +113,27 @@ impl ITimer {
     pub fn renew_timer(&self) {
         if self.remained_ns > 0 {
             let deadline = wall_time() + Duration::from_nanos(self.remained_ns as u64);
-            let mut guard = ALARM_LIST.lock();
-            let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
-            guard.push(Entry {
-                deadline,
-                task: Arc::downgrade(&current()),
-            });
-            drop(guard);
-            if should_wake {
-                EVENT_NEW_TIMER.notify(1);
-            }
+            register_alarm(deadline);
         }
+    }
+}
+
+/// Register an alarm at the given wall-clock deadline for the current task.
+/// Used by both ITimer and POSIX timers.
+pub fn register_alarm(deadline: Duration) {
+    register_alarm_for(deadline, AlarmTarget::Thread(Arc::downgrade(&current())));
+}
+
+/// Register an alarm at the given wall-clock deadline for a specific target.
+/// Used when re-arming periodic POSIX timers from the alarm_task context,
+/// where `current()` is the alarm_task, not the user task.
+pub fn register_alarm_for(deadline: Duration, target: AlarmTarget) {
+    let mut guard = ALARM_LIST.lock();
+    let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
+    guard.push(Entry { deadline, target });
+    drop(guard);
+    if should_wake {
+        EVENT_NEW_TIMER.notify(1);
     }
 }
 
@@ -130,12 +148,16 @@ pub enum TimerState {
     Kernel,
 }
 
-// TODO(mivik): preempting does not change the timer state currently
 /// A manager for time-related operations.
 pub struct TimeManager {
     utime_ns: usize,
     stime_ns: usize,
+    /// Baseline for itimer delta calculation in `poll()`.
+    /// Updated only by `poll()`, never by `tick()`.
     last_wall_ns: usize,
+    /// Baseline for tick-based CPU time accumulation.
+    /// Updated by `tick()` and synced to `last_wall_ns` at the end of `poll()`.
+    last_tick_ns: usize,
     state: TimerState,
     itimers: [ITimer; 3],
 }
@@ -152,6 +174,7 @@ impl TimeManager {
             utime_ns: 0,
             stime_ns: 0,
             last_wall_ns: 0,
+            last_tick_ns: 0,
             state: TimerState::None,
             itimers: Default::default(),
         }
@@ -164,25 +187,56 @@ impl TimeManager {
         (utime, stime)
     }
 
+    /// Accumulates CPU time for the current tick without emitting signals.
+    ///
+    /// Safe to call from IRQ/timer-callback context.  Signal-bearing itimers
+    /// are checked only through the full `poll()` path at syscall boundaries.
+    ///
+    /// Uses `last_tick_ns` as the exclusive baseline so that `poll()`'s
+    /// itimer accounting (which uses the independent `last_wall_ns`) is not
+    /// affected.
+    pub fn tick(&mut self) {
+        let now_ns = monotonic_time_nanos() as usize;
+        let delta = now_ns.saturating_sub(self.last_tick_ns);
+        match self.state {
+            TimerState::User => self.utime_ns += delta,
+            TimerState::Kernel => self.stime_ns += delta,
+            TimerState::None => {}
+        }
+        self.last_tick_ns = now_ns;
+        // last_wall_ns is intentionally NOT touched here so that poll()
+        // continues to see the full wall-clock delta for itimer accounting.
+    }
+
     /// Polls the time manager to update the timers and emit signals if
     /// necessary.
     pub fn poll(&mut self, emitter: impl Fn(Signo)) {
         let now_ns = monotonic_time_nanos() as usize;
-        let delta = now_ns - self.last_wall_ns;
+        // itimer_delta: full wall-clock time since the last poll() call.
+        // Used for interval-timer accounting so they fire at the right time
+        // regardless of whether tick() has been called in between.
+        let itimer_delta = now_ns.saturating_sub(self.last_wall_ns);
+        // remaining: time since the last tick() that has not yet been counted
+        // in utime_ns / stime_ns.  If tick() was never called, last_tick_ns ==
+        // last_wall_ns and remaining == itimer_delta (identical to original).
+        let remaining = now_ns.saturating_sub(self.last_tick_ns);
         match self.state {
             TimerState::User => {
-                self.utime_ns += delta;
-                self.update_itimer(ITimerType::Virtual, delta, &emitter);
-                self.update_itimer(ITimerType::Prof, delta, &emitter);
+                self.utime_ns += remaining;
+                self.update_itimer(ITimerType::Virtual, itimer_delta, &emitter);
+                self.update_itimer(ITimerType::Prof, itimer_delta, &emitter);
             }
             TimerState::Kernel => {
-                self.stime_ns += delta;
-                self.update_itimer(ITimerType::Prof, delta, &emitter);
+                self.stime_ns += remaining;
+                self.update_itimer(ITimerType::Prof, itimer_delta, &emitter);
             }
             TimerState::None => {}
         }
-        self.update_itimer(ITimerType::Real, delta, &emitter);
+        self.update_itimer(ITimerType::Real, itimer_delta, &emitter);
         self.last_wall_ns = now_ns;
+        // Sync tick baseline with poll baseline so the next tick() starts
+        // from a clean slate.
+        self.last_tick_ns = now_ns;
     }
 
     /// Updates the timer state.
@@ -226,7 +280,7 @@ impl TimeManager {
 
 async fn alarm_task() {
     loop {
-        let guard = ALARM_LIST.lock();
+        let mut guard = ALARM_LIST.lock();
         let Some(entry) = guard.peek() else {
             drop(guard);
             listener!(EVENT_NEW_TIMER => listener);
@@ -242,14 +296,19 @@ async fn alarm_task() {
         let now = wall_time();
         if entry.deadline <= now {
             let entry_deadline = entry.deadline;
-            if let Some(task) = entry.task.upgrade() {
-                drop(guard);
-                poll_timer(&task);
-            } else {
-                drop(guard);
-            }
-            let mut guard = ALARM_LIST.lock();
+            let target = entry.target.clone();
             assert!(guard.pop().is_some_and(|it| it.deadline == entry_deadline));
+            drop(guard);
+            match target {
+                AlarmTarget::Thread(weak_task) => {
+                    if let Some(task) = weak_task.upgrade() {
+                        poll_timer(&task);
+                    }
+                }
+                AlarmTarget::Process(pid) => {
+                    poll_process_timer(pid);
+                }
+            }
         } else {
             let deadline = entry.deadline;
             drop(guard);

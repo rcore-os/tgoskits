@@ -71,3 +71,13 @@ pub fn new_test_env() -> (Arc<ProcessSignalManager>, Arc<ThreadSignalManager>) {
     let thr = ThreadSignalManager::new(TID, proc.clone());
     (proc, thr)
 }
+
+pub fn prepare_restore_context(_uctx: &mut ax_cpu::uspace::UserContext) {
+    // Simulate the user-state that `rt_sigreturn` sees after the handler returns.
+    // x86_64 consumes the pushed restorer with `ret`; other archs keep SP unchanged.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let frame_sp = _uctx.sp() + core::mem::size_of::<usize>();
+        _uctx.set_sp(frame_sp);
+    }
+}

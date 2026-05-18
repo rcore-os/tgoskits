@@ -90,6 +90,11 @@ impl ConfigValue {
         to_toml(&self.value)
     }
 
+    /// Returns the raw string value if this config value is a TOML string.
+    pub fn as_str(&self) -> Option<&str> {
+        self.value.as_str()
+    }
+
     /// Returns the Rust code of the config value.
     ///
     /// The `indent` parameter specifies the number of spaces to indent the code.

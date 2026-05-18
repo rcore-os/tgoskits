@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, sync::Arc, vec};
+use alloc::{borrow::Cow, sync::Arc, vec, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
     task::Context,
@@ -6,17 +6,21 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
-use ax_io::{Seek, SeekFrom};
+use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
-use axfs_ng_vfs::NodeType;
+use axfs_ng_vfs::{NodePermission, NodeType};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::__kernel_off_t;
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
-    file::{Directory, File, FileLike, Pipe, get_file_like},
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut},
+    file::{
+        Directory, File, FileLike, Pipe, get_file_like,
+        memfd::{F_SEAL_GROW, F_SEAL_WRITE, Memfd},
+    },
+    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
+    task::AsThread,
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -91,14 +95,15 @@ pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
 /// Return the written size if success.
 pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
-    Ok(get_file_like(fd)?.write(&mut VmBytes::new(buf, len))? as _)
+    let data = copy_user_read_buf(buf.cast_const(), len)?;
+    Ok(get_file_like(fd)?.write(&mut data.as_slice())? as _)
 }
 
 pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
+    let data = copy_user_iov_read_buf(iov, iovcnt)?;
     let f = get_file_like(fd)?;
-    f.write(&mut IoVectorBuf::new(iov, iovcnt)?.into_io())
-        .map(|n| n as _)
+    f.write(&mut data.as_slice()).map(|n| n as _)
 }
 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
@@ -116,7 +121,11 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
     };
     let any_file = get_file_like(fd)?;
 
-    if let Ok(f) = any_file.clone().downcast_arc::<File>() {
+    // File::from_fd transparently unwraps Memfd onto its backing File, so
+    // memfd fds take this branch and get regular-file seek semantics
+    // (lseek, pread/pwrite, fallocate). Without it memfd would fall
+    // through to ESPIPE.
+    if let Ok(f) = File::from_fd(fd) {
         let off = f.inner().seek(pos)?;
         return Ok(off as _);
     }
@@ -144,6 +153,9 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
 pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
     let path = path.get_as_str()?;
     debug!("sys_truncate <= {path:?} {length}");
+    if path.is_empty() {
+        return Err(AxError::from(LinuxError::ENOENT));
+    }
     if length < 0 {
         return Err(AxError::InvalidInput);
     }
@@ -151,6 +163,26 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
         .write(true)
         .open(&FS_CONTEXT.lock(), path)?
         .into_file()?;
+    if (length as u64) > u32::MAX as u64 * 4096 {
+        return Err(AxError::from(LinuxError::EFBIG));
+    }
+    // Check write permission against current credentials following the
+    // same owner/group/other + root-bypass rules as faccessat2(2).
+    let cred = current().as_thread().cred();
+    if cred.fsuid != 0 {
+        let metadata = file.location().metadata()?;
+        let (file_uid, file_gid, file_mode) = (metadata.uid, metadata.gid, metadata.mode);
+        let has_write = if cred.fsuid == file_uid {
+            file_mode.contains(NodePermission::OWNER_WRITE)
+        } else if cred.fsgid == file_gid || cred.groups.contains(&file_gid) {
+            file_mode.contains(NodePermission::GROUP_WRITE)
+        } else {
+            file_mode.contains(NodePermission::OTHER_WRITE)
+        };
+        if !has_write {
+            return Err(AxError::from(LinuxError::EACCES));
+        }
+    }
     file.access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
@@ -160,7 +192,20 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     if length < 0 {
         return Err(AxError::InvalidInput);
     }
-    let f = File::from_fd(fd)?;
+    if let Ok(memfd) = Memfd::from_fd(fd) {
+        memfd.set_len_sealed(length as u64)?;
+        return Ok(0);
+    }
+    let f = File::from_fd(fd).map_err(|e| {
+        if e == AxError::IsADirectory {
+            AxError::from(LinuxError::EINVAL)
+        } else {
+            e
+        }
+    })?;
+    if (length as u64) > u32::MAX as u64 * 4096 {
+        return Err(AxError::from(LinuxError::EFBIG));
+    }
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
@@ -172,6 +217,9 @@ pub fn sys_fallocate(
     len: __kernel_off_t,
 ) -> AxResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
+    // Validate fd first: invalid/closed/dir/read-only → EBADF, pipe → ESPIPE.
+    // Linux errno priority: EBADF/ESPIPE > EOPNOTSUPP > EINVAL.
+    let f = file_or_espipe_write(fd)?;
     if mode != 0 {
         return Err(AxError::OperationNotSupported);
     }
@@ -185,7 +233,20 @@ pub fn sys_fallocate(
     if end > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
     }
-    let f = file_or_espipe(fd)?;
+    // For memfd fds, enforce the seal mask before changing the size.
+    // `F_SEAL_WRITE` already forbids any data-mutating path; `F_SEAL_GROW`
+    // additionally forbids a fallocate that would extend EOF. Linux
+    // surfaces both as EPERM (memfd_test.c covers this).
+    if let Ok(memfd) = Memfd::from_fd(fd) {
+        let seals = memfd.get_seals();
+        if seals & F_SEAL_WRITE != 0 {
+            return Err(AxError::OperationNotPermitted);
+        }
+        let cur_len = f.inner().backend()?.location().len()?;
+        if end > cur_len && seals & F_SEAL_GROW != 0 {
+            return Err(AxError::OperationNotPermitted);
+        }
+    }
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
     file.set_len(file.location().len()?.max(end))?;
@@ -195,6 +256,14 @@ pub fn sys_fallocate(
 pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fsync <= {fd}");
     let any_file = get_file_like(fd)?;
+    if let Ok(memfd) = any_file.clone().downcast_arc::<Memfd>() {
+        // Linux treats memfd as a regular file for fsync: a successful
+        // no-op (the contents are already in memory). Forward to the
+        // inner File so any future backing-store changes still hook
+        // through one path.
+        memfd.inner().inner().sync(false)?;
+        return Ok(0);
+    }
     if let Ok(f) = any_file.clone().downcast_arc::<File>() {
         f.inner().sync(false)?;
         return Ok(0);
@@ -208,6 +277,10 @@ pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
 pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fdatasync <= {fd}");
     let any_file = get_file_like(fd)?;
+    if let Ok(memfd) = any_file.clone().downcast_arc::<Memfd>() {
+        memfd.inner().inner().sync(true)?;
+        return Ok(0);
+    }
     if let Ok(f) = any_file.clone().downcast_arc::<File>() {
         f.inner().sync(true)?;
         return Ok(0);
@@ -239,8 +312,18 @@ pub fn sys_fadvise64(
     advice: u32,
 ) -> AxResult<isize> {
     debug!("sys_fadvise64 <= fd: {fd}, offset: {offset}, len: {len}, advice: {advice}");
-    if Pipe::from_fd(fd).is_ok() {
+    // Validate fd first: invalid/closed → EBADF, non-file/non-dir → ESPIPE.
+    // Linux fadvise64 accepts regular files, directories, and memfd fds
+    // (advisory hint).
+    let f = get_file_like(fd)?;
+    if f.downcast_ref::<File>().is_none()
+        && f.downcast_ref::<Directory>().is_none()
+        && f.downcast_ref::<Memfd>().is_none()
+    {
         return Err(AxError::from(LinuxError::ESPIPE));
+    }
+    if len < 0 {
+        return Err(AxError::InvalidInput);
     }
     if advice > 5 {
         return Err(AxError::InvalidInput);
@@ -266,11 +349,24 @@ pub fn sys_pwrite64(
     if offset < 0 {
         return Err(AxError::InvalidInput);
     }
+    // Route memfd fds through the seal-aware `Memfd::write_at` so
+    // `F_SEAL_WRITE`/`F_SEAL_GROW` apply to offset writes the same
+    // as they do to seq writes; otherwise `pwrite64` would silently
+    // bypass the seal by writing straight to the inner file.
+    if let Ok(memfd) = Memfd::from_fd(fd) {
+        if len == 0 {
+            return Ok(0);
+        }
+        let data = copy_user_read_buf(buf, len)?;
+        let write = memfd.write_at(data.as_slice(), offset as u64)?;
+        return Ok(write as _);
+    }
     let f = file_or_espipe_write(fd)?;
     if len == 0 {
         return Ok(0);
     }
-    let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
+    let data = copy_user_read_buf(buf, len)?;
+    let write = f.inner().write_at(data.as_slice(), offset as _)?;
     Ok(write as _)
 }
 
@@ -344,20 +440,63 @@ pub fn sys_pwritev2(
     if offset < -1 {
         return Err(AxError::InvalidInput);
     }
-    let mut io_buf = IoVectorBuf::new(iov, iovcnt)?.into_io();
     if offset == -1 {
         // offset == -1: use current file position (like writev)
+        let data = copy_user_iov_read_buf(iov, iovcnt)?;
         let f = get_file_like(fd)?;
-        f.write(&mut io_buf).map(|n| n as _)
+        f.write(&mut data.as_slice()).map(|n| n as _)
+    } else if let Ok(memfd) = Memfd::from_fd(fd) {
+        // Route memfd offset writes through the seal-aware path.
+        let data = copy_user_iov_read_buf(iov, iovcnt)?;
+        memfd
+            .write_at(data.as_slice(), offset as u64)
+            .map(|n| n as _)
     } else {
+        let data = copy_user_iov_read_buf(iov, iovcnt)?;
         let f = file_or_espipe(fd)?;
-        f.inner().write_at(io_buf, offset as _).map(|n| n as _)
+        f.inner()
+            .write_at(data.as_slice(), offset as _)
+            .map(|n| n as _)
     }
+}
+
+fn copy_user_read_buf(buf: *const u8, len: usize) -> AxResult<Vec<u8>> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    Ok(UserConstPtr::<u8>::from(buf).get_as_slice(len)?.to_vec())
+}
+
+fn copy_user_iov_read_buf(iov: *const IoVec, iovcnt: usize) -> AxResult<Vec<u8>> {
+    let mut src = IoVectorBuf::new(iov, iovcnt)?.into_io();
+    let len = src.remaining();
+    let mut data = vec![0; len];
+    src.read_exact(&mut data)?;
+    Ok(data)
 }
 
 enum SendFile {
     Direct(Arc<dyn FileLike>),
     Offset(Arc<File>, *mut u64),
+    /// Memfd output with an explicit offset. Routed through
+    /// `Memfd::write_at` so `F_SEAL_WRITE` / `F_SEAL_GROW` are enforced
+    /// the same way as `pwrite`; the plain `Offset` variant unwraps the
+    /// memfd to its inner `File` and would silently bypass the seal
+    /// check by calling `File::write_at` directly.
+    OffsetMemfd(Arc<crate::file::memfd::Memfd>, *mut u64),
+}
+
+/// Build the `SendFile` for the *output* end of sendfile / copy_file_range /
+/// splice with an explicit offset. When the fd points at a memfd, route
+/// writes through the seal-aware [`crate::file::memfd::Memfd`] wrapper
+/// instead of unwrapping it to its inner `File` (which would bypass
+/// `F_SEAL_WRITE` and `F_SEAL_GROW`).
+fn send_offset_out(fd: c_int, offset: *mut u64) -> AxResult<SendFile> {
+    let fl = get_file_like(fd)?;
+    if let Ok(memfd) = fl.clone().downcast_arc::<crate::file::memfd::Memfd>() {
+        return Ok(SendFile::OffsetMemfd(memfd, offset));
+    }
+    Ok(SendFile::Offset(File::from_fd(fd)?, offset))
 }
 
 impl SendFile {
@@ -365,6 +504,7 @@ impl SendFile {
         match self {
             SendFile::Direct(file) => file.poll(),
             SendFile::Offset(file, ..) => file.poll(),
+            SendFile::OffsetMemfd(memfd, ..) => memfd.poll(),
         }
         .contains(IoEvents::IN)
     }
@@ -378,6 +518,12 @@ impl SendFile {
                 offset.vm_write(off + bytes_read as u64)?;
                 Ok(bytes_read)
             }
+            SendFile::OffsetMemfd(memfd, offset) => {
+                let off = offset.vm_read()?;
+                let bytes_read = memfd.inner().inner().read_at(&mut buf, off)?;
+                offset.vm_write(off + bytes_read as u64)?;
+                Ok(bytes_read)
+            }
         }
     }
 
@@ -387,6 +533,12 @@ impl SendFile {
             SendFile::Offset(file, offset) => {
                 let off = offset.vm_read()?;
                 let bytes_written = file.inner().write_at(buf, off)?;
+                offset.vm_write(off + bytes_written as u64)?;
+                Ok(bytes_written)
+            }
+            SendFile::OffsetMemfd(memfd, offset) => {
+                let off = offset.vm_read()?;
+                let bytes_written = memfd.write_at(buf, off)?;
                 offset.vm_write(off + bytes_written as u64)?;
                 Ok(bytes_written)
             }
@@ -512,10 +664,14 @@ pub fn sys_copy_file_range(
         SendFile::Direct(file_in)
     };
 
+    // Output offset: when fd_out is a memfd, the regular `Offset`
+    // variant would unwrap to the inner `File` and bypass seal checks.
+    // `send_offset_out` keeps the `Memfd` wrapper so `Memfd::write_at`
+    // enforces `F_SEAL_WRITE` / `F_SEAL_GROW`.
     let dst = if !off_out.is_null() {
-        SendFile::Offset(file_out, off_out)
+        send_offset_out(fd_out, off_out)?
     } else {
-        SendFile::Direct(file_out)
+        SendFile::Direct(get_file_like(fd_out)?)
     };
 
     do_send(src, dst, len).map(|n| n as _)
@@ -569,7 +725,9 @@ pub fn sys_splice(
         if off_out.vm_read()? < 0 {
             return Err(AxError::InvalidInput);
         }
-        SendFile::Offset(File::from_fd(fd_out)?, off_out.cast())
+        // Route memfd output through the seal-aware wrapper rather
+        // than `File::from_fd`'s auto-unwrap.
+        send_offset_out(fd_out, off_out.cast())?
     } else {
         if let Ok(dst) = Pipe::from_fd(fd_out) {
             if !dst.is_write() {

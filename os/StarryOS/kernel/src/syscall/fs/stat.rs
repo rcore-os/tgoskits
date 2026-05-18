@@ -1,20 +1,32 @@
-use core::ffi::{c_char, c_int};
+use core::{
+    ffi::{c_char, c_int},
+    mem::size_of,
+};
 
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FS_CONTEXT;
 use ax_task::current;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
-    __kernel_fsid_t, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE, AT_SYMLINK_NOFOLLOW, R_OK,
-    STATX__RESERVED, W_OK, X_OK, stat, statfs, statx,
+    __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
+    AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, R_OK, STATX__RESERVED, W_OK, X_OK, stat, statfs, statx,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     file::{File, FileLike, resolve_at},
-    mm::vm_load_string,
+    mm::{UserPtr, vm_load_string},
     task::AsThread,
 };
+
+const FILE_HANDLE_BYTES: usize = size_of::<u64>() * 2;
+const FILE_HANDLE_TYPE_DEV_INO: i32 = 1;
+
+#[repr(C)]
+pub struct FileHandleHeader {
+    handle_bytes: u32,
+    handle_type: i32,
+}
 
 /// Get the file metadata by `path` and write into `statbuf`.
 ///
@@ -133,6 +145,15 @@ pub fn sys_access(path: *const c_char, mode: u32) -> AxResult<isize> {
 // because fsuid/fsgid track euid/egid by default in our credential model,
 // so the real-ID vs effective-ID distinction AT_EACCESS controls is a no-op.
 pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+    // man 2 access: mode is a mask of F_OK(0), R_OK, W_OK, and X_OK;
+    // faccessat2 flags are limited to AT_EACCESS, AT_EMPTY_PATH, and
+    // AT_SYMLINK_NOFOLLOW. Linux rejects invalid bits before path resolution.
+    const FACCESSAT2_VALID_FLAGS: u32 = AT_EACCESS | AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    const FACCESSAT2_VALID_MODE: u32 = R_OK | W_OK | X_OK;
+    if mode & !FACCESSAT2_VALID_MODE != 0 || flags & !FACCESSAT2_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
 
@@ -225,5 +246,52 @@ pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> AxResult<isize> {
     debug!("sys_fstatfs <= fd: {fd}");
 
     buf.vm_write(statfs(File::from_fd(fd)?.inner().location())?)?;
+    Ok(0)
+}
+
+pub fn sys_name_to_handle_at(
+    dirfd: c_int,
+    path: *const c_char,
+    handle: *mut FileHandleHeader,
+    mount_id: *mut c_int,
+    flags: u32,
+) -> AxResult<isize> {
+    const VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_FOLLOW;
+    if flags & !VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let path = path.nullable().map(vm_load_string).transpose()?;
+    debug!("sys_name_to_handle_at <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
+
+    let resolve_flags = if flags & AT_SYMLINK_FOLLOW != 0 {
+        flags & AT_EMPTY_PATH
+    } else {
+        (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
+    };
+    let loc = resolve_at(dirfd, path.as_deref(), resolve_flags)?
+        .into_file()
+        .ok_or(AxError::InvalidInput)?;
+    let stat = loc.metadata()?;
+
+    let header = UserPtr::<FileHandleHeader>::from(handle).get_as_mut()?;
+    let capacity = header.handle_bytes as usize;
+    header.handle_bytes = FILE_HANDLE_BYTES as u32;
+    if capacity < FILE_HANDLE_BYTES {
+        return Err(AxError::from(LinuxError::EOVERFLOW));
+    }
+
+    header.handle_type = FILE_HANDLE_TYPE_DEV_INO;
+    let mut bytes = [0u8; FILE_HANDLE_BYTES];
+    bytes[..size_of::<u64>()].copy_from_slice(&stat.device.to_ne_bytes());
+    bytes[size_of::<u64>()..].copy_from_slice(&stat.inode.to_ne_bytes());
+    let data_ptr = (handle as usize)
+        .checked_add(size_of::<FileHandleHeader>())
+        .ok_or(AxError::InvalidInput)? as *mut u8;
+    UserPtr::<u8>::from(data_ptr)
+        .get_as_mut_slice(FILE_HANDLE_BYTES)?
+        .copy_from_slice(&bytes);
+
+    (mount_id as *mut c_int).vm_write(loc.mountpoint().device() as c_int)?;
     Ok(0)
 }

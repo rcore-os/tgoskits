@@ -31,7 +31,7 @@ use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
     bits64::vmx,
-    controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write},
+    controlregs::Xcr0,
     dtables::{self, DescriptorTablePointer},
     segmentation::SegmentSelector,
 };
@@ -47,22 +47,15 @@ use super::{
         VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
     },
 };
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
+use crate::{
+    ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag,
+    xstate::XState,
+};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
-
-pub struct XState {
-    host_xcr0: u64,
-    guest_xcr0: u64,
-    host_xss: u64,
-    guest_xss: u64,
-
-    xsave_available: bool,
-    xsaves_available: bool,
-}
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
@@ -72,109 +65,22 @@ pub enum VmCpuMode {
     Mode64,        // IA-32E mode (CS.L = 1)
 }
 
-impl XState {
-    /// Create a new [`XState`] instance with current host state
-    fn new() -> Self {
-        // Check if XSAVE is available
-        let xsave_available = Self::xsave_available();
-        // Check if XSAVES and XRSTORS (as well as IA32_XSS) are available
-        let xsaves_available = if xsave_available {
-            Self::xsaves_available()
-        } else {
-            false
-        };
-
-        // Read XCR0 iff XSAVE is available
-        let xcr0 = if xsave_available {
-            unsafe { xcr0_read().bits() }
-        } else {
-            0
-        };
-        // Read IA32_XSS iff XSAVES is available
-        let xss = if xsaves_available {
-            Msr::IA32_XSS.read()
-        } else {
-            0
-        };
-
-        Self {
-            host_xcr0: xcr0,
-            guest_xcr0: xcr0,
-            host_xss: xss,
-            guest_xss: xss,
-            xsave_available,
-            xsaves_available,
-        }
-    }
-
-    /// Enable extended processor state management instructions, including XGETBV and XSAVE.
-    pub fn enable_xsave() {
-        if Self::xsave_available() {
-            unsafe { Cr4::write(Cr4::read() | Cr4Flags::OSXSAVE) };
-        }
-    }
-
-    /// Check if XSAVE is available on the current CPU.
-    pub fn xsave_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_feature_info()
-            .map(|f| f.has_xsave())
-            .unwrap_or(false)
-    }
-
-    /// Check if XSAVES and XRSTORS (as well as IA32_XSS) are available on the current CPU.
-    pub fn xsaves_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_extended_state_info()
-            .map(|f| f.has_xsaves_xrstors())
-            .unwrap_or(false)
-    }
-
-    /// Save the current host XCR0 and IA32_XSS values and load the guest values.
-    pub fn switch_to_guest(&mut self) {
-        unsafe {
-            if self.xsave_available {
-                self.host_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.guest_xcr0));
-
-                if self.xsaves_available {
-                    self.host_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.guest_xss);
-                }
-            }
-        }
-    }
-
-    /// Save the current guest XCR0 and IA32_XSS values and load the host values.
-    pub fn switch_to_host(&mut self) {
-        unsafe {
-            if self.xsave_available {
-                self.guest_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.host_xcr0));
-
-                if self.xsaves_available {
-                    self.guest_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.host_xss);
-                }
-            }
-        }
-    }
-}
-
 const MSR_IA32_EFER_LMA_BIT: u64 = 1 << 10;
 const CR0_PE: usize = 1 << 0;
 
 /// A virtual CPU within a guest.
 #[repr(C)]
 pub struct VmxVcpu {
-    // The order of `guest_regs` and `host_stack_top` is mandatory. They must be the first two fields. If you want to
-    // change the order or the type of these fields, you must also change the assembly in this file.
+    // The order of `guest_regs`, `host_stack_top`, and `host_rflags` is
+    // mandatory. They must be the first three fields. If you want to change
+    // the order or the type of these fields, you must also change the assembly
+    // in this file.
     /// Guest general-purpose registers.
     guest_regs: GeneralRegisters,
     /// The top of the host stack.
     host_stack_top: u64,
+    /// Host RFLAGS captured immediately before VM entry.
+    host_rflags: u64,
 
     // The order of the following fields is not mandatory.
 
@@ -219,6 +125,7 @@ impl VmxVcpu {
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
+            host_rflags: 0,
             launched: false,
             entry: None,
             ept_root: None,
@@ -324,6 +231,7 @@ impl VmxVcpu {
             }
         }
         self.load_host_xstate();
+        restore_host_interrupt_flag(self.host_rflags);
 
         #[cfg(feature = "tracing")]
         {
@@ -858,6 +766,8 @@ impl VmxVcpu {
 macro_rules! vmx_entry_with {
     ($instr:literal) => {
         naked_asm!(
+            "pushfq",                                  // save host RFLAGS, including IF
+            "pop    qword ptr [rdi + {host_rflags}]",
             save_regs_to_stack!(),                      // save host status
             "mov    [rdi + {host_stack_size}], rsp",    // save current RSP to Vcpu::host_stack_top
             "mov    rsp, rdi",                          // set RSP to guest regs area
@@ -865,6 +775,7 @@ macro_rules! vmx_entry_with {
             $instr,                                     // let's go!
             "jmp    {failed}",
             host_stack_size = const size_of::<GeneralRegisters>(),
+            host_rflags = const size_of::<GeneralRegisters>() + size_of::<u64>(),
             failed = sym Self::vmx_entry_failed,
             // options(noreturn),
         )
@@ -901,6 +812,7 @@ impl VmxVcpu {
     unsafe extern "C" fn vmx_exit(&mut self) -> usize {
         // it's not necessary to use another `unsafe` here, as Rust now do not require it in naked functions.
         naked_asm!(
+            "cli",                                  // keep host IRQs off until host xstate is restored
             save_regs_to_stack!(),                  // save guest status, after this, rsp points to the `VmxVcpu`
             "mov    rsp, [rsp + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
             restore_regs_from_stack!(),             // restore host status

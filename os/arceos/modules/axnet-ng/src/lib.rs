@@ -16,6 +16,8 @@
 #[macro_use]
 extern crate log;
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 mod consts;
 mod device;
@@ -40,7 +42,7 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
-use alloc::{borrow::ToOwned, boxed::Box};
+use alloc::{borrow::ToOwned, boxed::Box, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -51,7 +53,6 @@ use ax_sync::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
 
-pub use self::socket::*;
 use self::{
     consts::{GATEWAY, IP, IP_PREFIX},
     device::{EthernetDevice, LoopbackDevice},
@@ -60,6 +61,7 @@ use self::{
     service::Service,
     wrapper::SocketSetWrapper,
 };
+pub use self::{device::ArpEntry, socket::*};
 
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
 static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
@@ -192,6 +194,10 @@ pub fn poll_interfaces() {
     }
 }
 
+pub fn arp_entries() -> Vec<ArpEntry> {
+    get_service().arp_entries()
+}
+
 fn dhcp_bootstrap() {
     for _ in 0..DHCP_BOOTSTRAP_ATTEMPTS {
         poll_interfaces();
@@ -201,4 +207,58 @@ fn dhcp_bootstrap() {
         ax_task::sleep(DHCP_BOOTSTRAP_POLL_INTERVAL);
     }
     warn!("eth0: DHCP bootstrap timed out");
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use alloc::boxed::Box;
+    use std::sync::Once;
+
+    use ax_sync::Mutex;
+    use smoltcp::wire::{IpAddress, Ipv4Address, Ipv4Cidr};
+
+    use crate::{
+        SERVICE,
+        device::LoopbackDevice,
+        router::{Router, Rule},
+        service::Service,
+    };
+
+    pub(crate) const LOCAL_MASK: u32 = 1 << 0;
+    pub(crate) const PEER_MASK: u32 = 1 << 1;
+    pub(crate) const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 0, 2, 10);
+    pub(crate) const PEER_ADDR: Ipv4Address = Ipv4Address::new(198, 51, 100, 20);
+
+    pub(crate) fn init_split_route_network() {
+        static INIT: Once = Once::new();
+
+        INIT.call_once(|| {
+            let mut router = Router::new();
+            let local_dev = router.add_device(Box::new(LoopbackDevice::new()));
+            let peer_dev = router.add_device(Box::new(LoopbackDevice::new()));
+            let local_cidr = Ipv4Cidr::new(LOCAL_ADDR, 24);
+            let peer_cidr = Ipv4Cidr::new(PEER_ADDR, 24);
+
+            router.add_rule(Rule::new(
+                local_cidr.into(),
+                None,
+                local_dev,
+                IpAddress::Ipv4(LOCAL_ADDR),
+            ));
+            router.add_rule(Rule::new(
+                peer_cidr.into(),
+                None,
+                peer_dev,
+                IpAddress::Ipv4(PEER_ADDR),
+            ));
+
+            let mut service = Service::new(router);
+            service.iface.update_ip_addrs(|ip_addrs| {
+                ip_addrs.push(local_cidr.into()).unwrap();
+                ip_addrs.push(peer_cidr.into()).unwrap();
+            });
+
+            SERVICE.call_once(|| Mutex::new(service));
+        });
+    }
 }

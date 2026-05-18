@@ -1,8 +1,9 @@
 //! User task management.
 
 mod cred;
-mod futex;
+pub mod futex;
 mod ops;
+pub mod posix_timer;
 mod resources;
 mod signal;
 mod stat;
@@ -13,12 +14,12 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::{
     cell::RefCell,
     ops::Deref,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
 };
 
 use ax_hal::time::TimeValue;
 use ax_sync::{Mutex, spin::SpinNoIrq};
-use ax_task::{TaskExt, TaskInner, WaitQueue};
+use ax_task::{TaskExt, TaskInner};
 use axpoll::PollSet;
 use extern_trait::extern_trait;
 use scope_local::{ActiveScope, Scope};
@@ -29,7 +30,12 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
-pub use self::{cred::*, futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
+pub use self::{
+    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
+    timer::*, user::*,
+};
+#[cfg(feature = "kcov")]
+use crate::kcov::KcovThreadState;
 use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.
@@ -121,6 +127,21 @@ pub struct Thread {
 
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
+
+    /// KCOV coverage state for this thread.
+    #[cfg(feature = "kcov")]
+    kcov: AssumeSync<RefCell<Option<KcovThreadState>>>,
+
+    /// Signo (as u8) of the synchronous user-mode fault that
+    /// [`raise_signal_fatal`] last force-delivered to this thread, or 0
+    /// for "no fault dump owed". [`check_signals`] only emits the
+    /// register dump when the signal it is about to terminate on
+    /// matches this signo — otherwise a low-numbered pending signal
+    /// (e.g. an external SIGTERM that landed before the SIGSEGV from a
+    /// page fault) would consume the flag and either dump for the
+    /// wrong context or, if it had a user handler, swallow the dump so
+    /// the real fault terminated silently.
+    pub fault_dump_signo: AtomicU8,
 }
 
 impl Thread {
@@ -144,6 +165,10 @@ impl Thread {
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
             cred: SpinNoIrq::new(cred),
+            #[cfg(feature = "kcov")]
+            kcov: AssumeSync(RefCell::new(None)),
+
+            fault_dump_signo: AtomicU8::new(0),
         })
     }
 
@@ -208,6 +233,26 @@ impl Thread {
     /// Set the pdeathsig value.
     pub fn set_pdeathsig(&self, sig: u32) {
         self.pdeathsig.store(sig, Ordering::Relaxed);
+    }
+
+    /// Run a closure with a borrow of the current KCOV state for this thread.
+    ///
+    /// Uses `try_borrow` so that a trace call inside `set_kcov`'s
+    /// `borrow_mut` does not panic when the instrumented hot path
+    /// re-enters here. Avoids cloning the `Arc<SharedPages>` on every
+    /// hot-path invocation.
+    #[cfg(feature = "kcov")]
+    pub fn with_kcov<R>(&self, f: impl FnOnce(Option<&KcovThreadState>) -> R) -> R {
+        match self.kcov.0.try_borrow() {
+            Ok(borrow) => f(borrow.as_ref()),
+            Err(_) => f(None),
+        }
+    }
+
+    /// Set the KCOV state for this thread.
+    #[cfg(feature = "kcov")]
+    pub fn set_kcov(&self, state: Option<KcovThreadState>) {
+        *self.kcov.0.borrow_mut() = state;
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).
@@ -308,11 +353,11 @@ impl AsThread for TaskInner {
 /// wait, the parent will see `done == true` and skip waiting.
 pub struct VforkDone {
     done: bool,
-    wq: Arc<WaitQueue>,
+    wq: Arc<ax_task::WaitQueue>,
 }
 
 impl VforkDone {
-    pub fn new(wq: Arc<WaitQueue>) -> Self {
+    pub fn new(wq: Arc<ax_task::WaitQueue>) -> Self {
         Self { done: false, wq }
     }
 }
@@ -357,9 +402,15 @@ pub struct ProcessData {
     /// The default mask for file permissions.
     umask: AtomicU32,
 
+    /// The process nice value used by getpriority/setpriority compatibility.
+    nice: AtomicI32,
+
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
+
+    /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
+    pub posix_timers: Arc<PosixTimerTable>,
 }
 
 impl ProcessData {
@@ -396,8 +447,11 @@ impl ProcessData {
             vfork_done: SpinNoIrq::new(None),
 
             umask: AtomicU32::new(0o022),
+            nice: AtomicI32::new(0),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
+
+            posix_timers: Arc::new(PosixTimerTable::default()),
         })
     }
 
@@ -430,6 +484,16 @@ impl ProcessData {
     /// Set the umask and return the old value.
     pub fn replace_umask(&self, umask: u32) -> u32 {
         self.umask.swap(umask, Ordering::SeqCst)
+    }
+
+    /// Get the process nice value.
+    pub fn nice(&self) -> i32 {
+        self.nice.load(Ordering::SeqCst)
+    }
+
+    /// Set the process nice value.
+    pub fn set_nice(&self, nice: i32) {
+        self.nice.store(nice, Ordering::SeqCst);
     }
 
     /// Get the accumulated CPU time of waited children.
@@ -480,7 +544,7 @@ impl ProcessData {
 
     /// Set the vfork completion (called on the child after a vfork,
     /// before the child task is spawned).
-    pub fn set_vfork_done(&self, wq: Arc<WaitQueue>) {
+    pub fn set_vfork_done(&self, wq: Arc<ax_task::WaitQueue>) {
         *self.vfork_done.lock() = Some(VforkDone::new(wq));
     }
 

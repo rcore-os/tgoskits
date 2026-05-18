@@ -27,6 +27,10 @@ use ax_driver::{
 mod fs;
 
 mod highlevel;
+
+/// Create a filesystem from a dynamic (boxed) block device.
+#[cfg(feature = "ext4")]
+pub use fs::new_from_dyn as new_filesystem_from_dyn;
 pub use highlevel::*;
 
 #[derive(Debug, Default)]
@@ -327,10 +331,42 @@ fn select_default_root(candidates: &[RootCandidate]) -> Option<(usize, Option<us
     let partition_matches: Vec<_> = candidates
         .iter()
         .filter(|candidate| {
-            candidate
-                .partition
-                .as_ref()
-                .is_some_and(|partition| partition.filesystem.is_some())
+            candidate.partition.as_ref().is_some_and(|partition| {
+                if !partition.filesystem.is_some() {
+                    return false;
+                }
+                match partition.info.table_kind {
+                    PartitionTableKind::Mbr => {
+                        #[cfg(feature = "ext4")]
+                        {
+                            partition.info.bootable
+                                && partition.filesystem == Some(FilesystemKind::Ext4)
+                        }
+                        #[cfg(all(not(feature = "ext4"), feature = "fat"))]
+                        {
+                            partition.filesystem == Some(FilesystemKind::Fat)
+                        }
+                        #[cfg(all(not(feature = "ext4"), not(feature = "fat")))]
+                        {
+                            false
+                        }
+                    }
+                    PartitionTableKind::Gpt | PartitionTableKind::None => {
+                        #[cfg(feature = "ext4")]
+                        {
+                            partition.filesystem == Some(FilesystemKind::Ext4)
+                        }
+                        #[cfg(all(not(feature = "ext4"), feature = "fat"))]
+                        {
+                            partition.filesystem == Some(FilesystemKind::Fat)
+                        }
+                        #[cfg(all(not(feature = "ext4"), not(feature = "fat")))]
+                        {
+                            false
+                        }
+                    }
+                }
+            })
         })
         .map(|candidate| {
             (
