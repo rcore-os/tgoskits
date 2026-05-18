@@ -350,13 +350,13 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
 
         limit -= 1;
         if limit == 0 {
-            return Err(AxError::FilesystemLoop);
+            break;
         }
         ax_task::yield_now();
     }
 
     // Process the pending entry that was skipped in the loop
-    if !pending.is_null() {
+    if !pending.is_null() && !core::ptr::eq(pending, end_ptr as *mut RobustList) {
         handle_futex_death(pending, offset)?;
     }
 
@@ -385,6 +385,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     {
         warn!("exit robust list failed: {err:?}");
     }
+
+    #[cfg(feature = "kcov")]
+    crate::kcov::disable_for_thread(curr.id().as_u64() as u32);
 
     let process = &thr.proc_data.proc;
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
@@ -424,7 +427,39 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
-                let _ = send_signal_to_process(parent.pid(), Some(SignalInfo::new_kernel(signo)));
+                use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
+                use starry_signal::Signo;
+
+                let child_uid = thr.cred().uid;
+                // Decode si_code/si_status from the Linux wait-status encoding
+                // stored in exit_code, NOT from the `group_exit` flag.
+                //
+                // `group_exit` is true for both sys_exit_group() (normal exit)
+                // and signal-induced group termination, so it cannot distinguish
+                // the two cases.  The wait-status bits are the correct source:
+                //   bits 6:0 == 0  -> normal exit  (exit_code >> 8 is the value)
+                //   bits 6:0 != 0  -> killed by signal (bits 6:0 = signum,
+                //                     bit 7 = core dumped)
+                let raw = process.exit_code();
+                let (code, status) = if raw & 0x7f == 0 {
+                    // Normal exit via _exit() / exit_group().
+                    (CLD_EXITED as i32, (raw >> 8) & 0xff)
+                } else {
+                    let signum = raw & 0x7f;
+                    let core_dumped = (raw & 0x80) != 0;
+                    if core_dumped {
+                        (CLD_DUMPED as i32, signum)
+                    } else {
+                        (CLD_KILLED as i32, signum)
+                    }
+                };
+
+                let sig = if signo == Signo::SIGCHLD {
+                    SignalInfo::new_sigchld(process.pid(), child_uid, code, status)
+                } else {
+                    SignalInfo::new_kernel(signo)
+                };
+                let _ = send_signal_to_process(parent.pid(), Some(sig));
             }
             if let Ok(data) = get_process_data(parent.pid()) {
                 data.child_exit_event.wake();

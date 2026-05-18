@@ -24,17 +24,31 @@ use axaddrspace::PhysFrame;
 use axin::axin;
 use test_utils::{BASE_PADDR, MockHal, mock_hal_test, test_dealloc_count};
 
+fn mock_hal_test_with_dealloc_count<F, R>(expected_dealloc_count: usize) -> impl FnOnce(F) -> R
+where
+    F: FnOnce() -> R,
+{
+    move |test_fn: F| {
+        mock_hal_test(|| {
+            let result = test_fn();
+            test_dealloc_count(expected_dealloc_count);
+            result
+        })
+    }
+}
+
 #[test]
-#[axin(decorator(mock_hal_test), on_exit(test_dealloc_count(1)))]
+#[axin(decorator(mock_hal_test_with_dealloc_count(1)))]
 fn test_alloc_dealloc_cycle() {
     let frame = PhysFrame::<MockHal>::alloc()
         .unwrap_or_else(|e| panic!("Failed to allocate frame: {:?}", e));
     assert_eq!(frame.start_paddr().as_usize(), BASE_PADDR);
     drop(frame);
+    std::thread::yield_now();
 }
 
 #[test]
-#[axin(decorator(mock_hal_test), on_exit(test_dealloc_count(1)))]
+#[axin(decorator(mock_hal_test_with_dealloc_count(1)))]
 fn test_alloc_zero() {
     let frame = PhysFrame::<MockHal>::alloc_zero()
         .unwrap_or_else(|e| panic!("Failed to allocate zero frame: {:?}", e));
@@ -46,7 +60,7 @@ fn test_alloc_zero() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test), on_exit(test_dealloc_count(1)))]
+#[axin(decorator(mock_hal_test_with_dealloc_count(1)))]
 fn test_fill_operation() {
     let mut frame = PhysFrame::<MockHal>::alloc()
         .unwrap_or_else(|e| panic!("Failed to allocate frame: {:?}", e));
@@ -59,7 +73,7 @@ fn test_fill_operation() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test), on_exit(test_dealloc_count(5)))]
+#[axin(decorator(mock_hal_test_with_dealloc_count(5)))]
 fn test_fill_multiple_frames() {
     const NUM_FRAMES: usize = 5;
 
@@ -98,7 +112,7 @@ fn test_uninit_access() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test), on_exit(test_dealloc_count(0)))]
+#[axin(decorator(mock_hal_test_with_dealloc_count(0)))]
 fn test_alloc_no_memory() {
     // Configure MockHal to simulate an allocation failure.
     MockHal::set_alloc_fail(true);

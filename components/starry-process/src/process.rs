@@ -215,22 +215,26 @@ impl Process {
     /// This method panics if the [`Process`] is the init process.
     pub fn exit(self: &Arc<Self>) {
         // TODO: child subreaper
-        let reaper = INIT_PROC.get().unwrap();
+        let reaper_proc = INIT_PROC.get().unwrap();
 
-        if Arc::ptr_eq(self, reaper) {
+        if Arc::ptr_eq(self, reaper_proc) {
             return;
         }
 
-        let mut children = self.children.lock(); // Acquire the lock first
-        self.is_zombie.store(true, Ordering::Release);
+        let reaper_parent = Arc::downgrade(reaper_proc);
+        let children = {
+            let mut children = self.children.lock();
+            core::mem::take(&mut *children)
+        };
 
-        let mut reaper_children = reaper.children.lock();
-        let reaper = Arc::downgrade(reaper);
-
-        for (pid, child) in core::mem::take(&mut *children) {
-            *child.parent.lock() = reaper.clone();
+        let mut reaper_children = reaper_proc.children.lock();
+        for (pid, child) in children {
+            *child.parent.lock() = reaper_parent.clone();
             reaper_children.insert(pid, child);
         }
+        drop(reaper_children);
+
+        self.is_zombie.store(true, Ordering::Release);
     }
 
     /// Frees a zombie [`Process`]. Removes it from the parent.

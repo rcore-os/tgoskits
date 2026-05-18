@@ -3,6 +3,7 @@ pub mod event;
 mod fs;
 #[cfg(feature = "sg2002")]
 pub mod ion;
+pub mod memfd;
 mod net;
 pub mod netlink;
 mod packet;
@@ -200,6 +201,14 @@ pub trait FileLike: Pollable + DowncastSync {
     /// advisory locks.
     fn inode_key(&self) -> Option<(u64, u64)> {
         None
+    }
+
+    fn append(&self) -> bool {
+        false
+    }
+
+    fn set_append(&self, _append: bool) -> AxResult {
+        Ok(())
     }
 
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>

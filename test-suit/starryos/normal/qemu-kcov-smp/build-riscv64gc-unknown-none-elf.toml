@@ -1,0 +1,6 @@
+target = "riscv64gc-unknown-none-elf"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+log = "Warn"
+features = ["qemu","kcov","smp"]
+plat_dyn = false
+max_cpu_num = 4
