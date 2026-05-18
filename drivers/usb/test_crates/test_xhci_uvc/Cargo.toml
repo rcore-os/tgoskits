@@ -1,0 +1,32 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+edition.workspace = true
+autotests = false
+license.workspace = true
+name = "test_xhci_uvc"
+publish = false
+repository.workspace = true
+version = "0.1.1"
+
+[dependencies]
+crab-usb = {workspace = true}
+log = {version = "0.4", features = ["max_level_info"]}
+crab-uvc = {workspace = true}
+futures = {workspace = true, features = ["alloc"]}
+
+[dev-dependencies]
+# bare-test = {workspace = true}
+# byte-unit = {version = "5.1.6", default-features = false, features = ["byte"]}
+# ktest-helper = {workspace = true}
+# pcie = "0.2"
+# rockchip-pm = {workspace = true}
+# rockchip-soc = {workspace = true}
+# spin_on = "0.1.1"
+# rdrive = "0.18"
+
+[build-dependencies]
+# bare-test-macros = "0.2"
+
+# [[test]]
+# harness = false
+# name = "test"

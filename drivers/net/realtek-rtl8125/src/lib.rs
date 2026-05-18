@@ -2,12 +2,12 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 use core::sync::atomic::{Ordering as AtomicOrdering, fence};
 
 use descriptor::{RING_END, RxDesc, TxDesc};
 use dma_api::{DArray, DeviceDma, DmaDirection, DmaOp};
-use log::{info, warn};
+use log::{debug, info, warn};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use rdif_eth::{Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 use registers::*;
@@ -24,6 +24,9 @@ const RX_START_THRESHOLD: usize = QUEUE_SIZE;
 const MAX_PACKET: usize = 2048;
 const RX_BUF_SIZE: usize = 2048;
 const DMA_ALIGN: usize = 256;
+const DMA_CACHE_LINE_SIZE: usize = 64;
+const RX_DESC_PER_CACHE_LINE: usize = DMA_CACHE_LINE_SIZE / core::mem::size_of::<RxDesc>();
+const RX_DEFERRED_REFILL_CAPACITY: usize = QUEUE_SIZE;
 const OCP_STD_PHY_BASE: u32 = 0xa400;
 const EEE_TXIDLE_TIMER_VALUE: u16 = 1500 + 14 + 0x20;
 const LINK_DOWN_DROP_LOG_INTERVAL: u64 = 64;
@@ -31,7 +34,13 @@ const EARLY_PACKET_LOG_COUNT: u64 = 8;
 const TX_SUBMIT_LOG_INTERVAL: u64 = 16;
 const TX_RECLAIM_LOG_INTERVAL: u64 = 64;
 const RX_RECLAIM_LOG_INTERVAL: u64 = 64;
+const RX_IDLE_LOG_INTERVAL: u64 = 262_144;
+const RX_OVERFLOW_REARM_IDLE_POLLS: u64 = 2048;
 const TX_LINK_SAMPLE_INTERVAL: u64 = 64;
+const CSI_PCIE_CTRL: u32 = 0x070c;
+const CSI_PCIE_ZRXDC_NONCOMPL: u32 = 1 << 20;
+const CSI_L1_ENTRY_LATENCY: u32 = 0x0719;
+const CSI_L1_ENTRY_LATENCY_DEFAULT: u8 = 0x27;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipVersion {
@@ -50,6 +59,7 @@ pub struct Rtl8125Status {
     pub rx_config: u32,
     pub tx_config: u32,
     pub cplus_cmd: u16,
+    pub rx_desc_base: u64,
 }
 
 impl Rtl8125Status {
@@ -254,6 +264,8 @@ impl Rtl8125 {
         self.mac_ocp_modify(0xd3e4, 0x00ff, 0)?;
         self.mac_ocp_modify(0xe860, 0, 0x0080)?;
         self.mac_ocp_modify(0xeb58, 0x0001, 0)?;
+        self.disable_zrxdc_noncompliance_timeout();
+        self.set_l1_entry_latency(CSI_L1_ENTRY_LATENCY_DEFAULT);
 
         if self.chip == ChipVersion::Rtl8125B {
             self.mac_ocp_modify(0xe614, 0x0700, 0x0200)?;
@@ -282,6 +294,32 @@ impl Rtl8125 {
         self.config_eee_mac()?;
         self.disable_rxdv_gate();
         Ok(())
+    }
+
+    fn disable_zrxdc_noncompliance_timeout(&self) {
+        let Some(value) = self.regs.csi_read(CSI_PCIE_CTRL) else {
+            warn!("RTL8125: failed to read CSI {CSI_PCIE_CTRL:#x}");
+            return;
+        };
+        if !self
+            .regs
+            .csi_write(CSI_PCIE_CTRL, value & !CSI_PCIE_ZRXDC_NONCOMPL)
+        {
+            warn!("RTL8125: failed to write CSI {CSI_PCIE_CTRL:#x}");
+        }
+    }
+
+    fn set_l1_entry_latency(&self, value: u8) {
+        let addr = CSI_L1_ENTRY_LATENCY & !0x3;
+        let shift = (CSI_L1_ENTRY_LATENCY & 0x3) * 8;
+        let Some(old) = self.regs.csi_read(addr) else {
+            warn!("RTL8125: failed to read CSI {addr:#x}");
+            return;
+        };
+        let new = (old & !(0xff << shift)) | (u32::from(value) << shift);
+        if !self.regs.csi_write(addr, new) {
+            warn!("RTL8125: failed to write CSI {addr:#x}");
+        }
     }
 
     fn maybe_start_queues(&mut self) {
@@ -658,9 +696,12 @@ impl Interface for Rtl8125 {
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,
+            idle_polls: 0,
+            last_rx_rearm_idle: 0,
             submitted: 0,
             reclaimed: 0,
             rx_errors: 0,
+            deferred_refill: VecDeque::with_capacity(RX_DEFERRED_REFILL_CAPACITY),
         }))
     }
 
@@ -833,9 +874,12 @@ struct Rtl8125RxQueue {
     bus_addrs: [Option<u64>; QUEUE_SIZE],
     next_submit: usize,
     next_reclaim: usize,
+    idle_polls: u64,
+    last_rx_rearm_idle: u64,
     submitted: usize,
     reclaimed: u64,
     rx_errors: u64,
+    deferred_refill: VecDeque<u64>,
 }
 
 impl IRxQueue for Rtl8125RxQueue {
@@ -855,6 +899,13 @@ impl IRxQueue for Rtl8125RxQueue {
     fn submit(&mut self, bus_addr: u64, len: usize) -> core::result::Result<(), NetError> {
         if len < RX_BUF_SIZE {
             return Err(NetError::NotSupported);
+        }
+
+        self.flush_deferred_refill();
+        if self.submitted >= RX_START_THRESHOLD {
+            self.deferred_refill.push_back(bus_addr);
+            self.flush_deferred_refill();
+            return Ok(());
         }
 
         let idx = self.next_submit;
@@ -895,10 +946,36 @@ impl IRxQueue for Rtl8125RxQueue {
         let bus_addr = self.bus_addrs[idx]?;
         let desc = self.desc.read(idx)?;
         if desc.is_owned_by_hw() {
+            self.idle_polls = self.idle_polls.saturating_add(1);
+            let status = read_status(self.regs);
+            if irq_has_rx_overflow(status.intr_status)
+                && self.idle_polls.saturating_sub(self.last_rx_rearm_idle)
+                    >= RX_OVERFLOW_REARM_IDLE_POLLS
+            {
+                self.last_rx_rearm_idle = self.idle_polls;
+                warn!(
+                    "RTL8125 rx overflow rearm: idx={idx}, opts1={:#x}, submitted={}, \
+                     reclaimed={}, status={status:?}",
+                    desc.opts1, self.submitted, self.reclaimed
+                );
+                self.regs.write_interrupt_status(status.intr_status);
+                set_rx_mode(self.regs);
+                self.regs.enable_tx_rx();
+                self.regs.commit();
+            }
+            if self.idle_polls.is_multiple_of(RX_IDLE_LOG_INTERVAL) {
+                debug!(
+                    "RTL8125 rx idle: idx={idx}, opts1={:#x}, submitted={}, reclaimed={}, \
+                     status={:?}",
+                    desc.opts1, self.submitted, self.reclaimed, status,
+                );
+            }
             return None;
         }
         acquire_dma_descriptor();
         let desc = self.desc.read(idx)?;
+        self.idle_polls = 0;
+        self.last_rx_rearm_idle = 0;
 
         self.next_reclaim = (idx + 1) % QUEUE_SIZE;
         self.bus_addrs[idx] = None;
@@ -918,9 +995,7 @@ impl IRxQueue for Rtl8125RxQueue {
         }
         let len = desc.packet_len();
         self.reclaimed = self.reclaimed.saturating_add(1);
-        if self.reclaimed <= EARLY_PACKET_LOG_COUNT
-            || self.reclaimed.is_multiple_of(RX_RECLAIM_LOG_INTERVAL)
-        {
+        if self.reclaimed.is_multiple_of(RX_RECLAIM_LOG_INTERVAL) {
             info!(
                 "RTL8125 rx packet: idx={idx}, len={len}, submitted={}, reclaimed={}, status={:?}",
                 self.submitted,
@@ -929,6 +1004,39 @@ impl IRxQueue for Rtl8125RxQueue {
             );
         }
         Some((bus_addr, len))
+    }
+}
+
+impl Rtl8125RxQueue {
+    fn flush_deferred_refill(&mut self) {
+        while self.deferred_refill.len() >= RX_DESC_PER_CACHE_LINE {
+            let Some(bus_addr) = self.deferred_refill.pop_front() else {
+                break;
+            };
+            if let Err(err) = self.submit_deferred_buffer(bus_addr) {
+                warn!("RTL8125 rx deferred refill failed: {err:?}");
+                self.deferred_refill.push_front(bus_addr);
+                break;
+            }
+        }
+    }
+
+    fn submit_deferred_buffer(&mut self, bus_addr: u64) -> core::result::Result<(), NetError> {
+        let idx = self.next_submit;
+        let next = (idx + 1) % QUEUE_SIZE;
+        if self.bus_addrs[idx].is_some() {
+            return Err(NetError::Retry);
+        }
+
+        let ring_end = idx == QUEUE_SIZE - 1;
+        let desc = RxDesc::new_cpu_owned(bus_addr, RX_BUF_SIZE, ring_end);
+        self.desc.set(idx, desc);
+        release_dma_descriptor();
+        self.desc.set(idx, desc.release_to_hw());
+        self.bus_addrs[idx] = Some(bus_addr);
+        self.next_submit = next;
+        self.submitted = self.submitted.saturating_add(1);
+        Ok(())
     }
 }
 
@@ -954,6 +1062,7 @@ fn read_status(regs: Regs) -> Rtl8125Status {
         rx_config: regs.read_rx_config(),
         tx_config: regs.read_tx_config(),
         cplus_cmd: regs.read_cplus_cmd(),
+        rx_desc_base: regs.read_rx_desc_base(),
     }
 }
 
@@ -976,8 +1085,9 @@ fn try_start_queues(regs: Regs, dma_mask: u64, start: &QueueStart) {
     regs.lock_config();
 
     info!("RTL8125 queue DMA bases: tx={tx_base:#x}, rx={rx_base:#x}, mask={dma_mask:#x}");
+    regs.write_rx_max_size(RX_BUF_SIZE as u16 + 1);
     regs.enable_tx_rx();
-    regs.write_default_rx_config();
+    regs.write_default_rx_config_8125b();
     regs.write_default_tx_config();
     regs.write_interrupt_status(u32::MAX);
     set_rx_mode(regs);

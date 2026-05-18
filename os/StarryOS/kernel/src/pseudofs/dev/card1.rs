@@ -11,19 +11,21 @@ use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::PhysAddrRange;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
-use axplat_dyn::rknpu::{self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuSubmit};
+use axplat_dyn::rknpu::{
+    self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit,
+};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
 
 use super::{
-    card0::{RknpuCmd, copy_from_user, copy_to_user},
-    drm::DrmVersion,
+    rknpu_card::{RknpuCmd, copy_from_user, copy_to_user},
+    rknpu_drm::DrmVersion,
 };
 use crate::{
     file::FileLike,
     pseudofs::{
         DeviceOps,
-        dev::drm::{io_size, ioctl_nr, is_driver_ioctl},
+        dev::rknpu_drm::{io_size, ioctl_nr, is_driver_ioctl},
         device::DeviceMmap,
     },
 };
@@ -182,7 +184,7 @@ impl DeviceOps for Card1 {
     }
 
     /// Maps an exported GEM buffer selected by `handle << PAGE_SHIFT`.
-    fn mmap(&self, offset: u64) -> DeviceMmap {
+    fn mmap(&self, offset: u64, _length: u64) -> DeviceMmap {
         let Some(handle) = map_handle_from_offset(offset) else {
             warn!("card1: mmap received invalid offset {offset:#x}");
             return DeviceMmap::None;
@@ -331,7 +333,24 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
             info!("rknpu mem_destroy ioctl");
         }
         RknpuCmd::MemSync => {
-            info!("rknpu mem_sync ioctl");
+            let mut mem_sync = RknpuMemSync::default();
+            copy_from_user(
+                &mut mem_sync as *mut _ as *mut u8,
+                arg as *const u8,
+                mem::size_of::<RknpuMemSync>(),
+            )?;
+            info!("rknpu mem_sync ioctl {mem_sync:#x?}");
+
+            if let Err(e) = rknpu::mem_sync(&mut mem_sync).map_err(map_rknpu_err) {
+                warn!("rknpu mem_sync ioctl failed: {:?}", e);
+                return Err(e);
+            }
+
+            copy_to_user(
+                arg as *mut u8,
+                &mem_sync as *const _ as *const u8,
+                mem::size_of::<RknpuMemSync>(),
+            )?;
         }
         _ => {
             info!("rknpu action ioctl");

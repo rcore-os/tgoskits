@@ -1,6 +1,6 @@
 [package]
 name = "starry-process"
-version = "0.4.5"
+version = "0.4.6"
 edition.workspace = true
 authors = ["朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Process management for Starry OS"

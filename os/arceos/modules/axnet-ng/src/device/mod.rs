@@ -1,3 +1,4 @@
+use alloc::{string::String, vec::Vec};
 use core::task::Waker;
 
 use smoltcp::{
@@ -16,6 +17,15 @@ pub use loopback::*;
 #[cfg(feature = "vsock")]
 pub use vsock::*;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArpEntry {
+    pub ip_addr: [u8; 4],
+    pub hw_type: u16,
+    pub flags: u16,
+    pub hw_addr: [u8; 6],
+    pub device: String,
+}
+
 pub trait Device: Send + Sync {
     fn name(&self) -> &str;
 
@@ -33,6 +43,10 @@ pub trait Device: Send + Sync {
     fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> bool;
 
     fn set_ipv4_addr(&mut self, _addr: Option<Ipv4Cidr>) {}
+
+    fn arp_entries(&self, _timestamp: Instant) -> Vec<ArpEntry> {
+        Vec::new()
+    }
 
     fn register_waker(&self, waker: &Waker);
 }

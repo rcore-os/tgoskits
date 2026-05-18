@@ -71,8 +71,10 @@ const BOOT_TO_VIRT: usize = PHYS_VIRT_OFFSET - PHYS_BOOT_OFFSET;
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot")]
-unsafe extern "C" fn _start() -> ! {
+unsafe extern "C" fn __boot_start() -> ! {
     core::arch::naked_asm!("
+        .globl  _linux_image_header
+    _linux_image_header:
         .word   0x5a4d              # MZ, MS-DOS header
         .word   0                   # Reserved
         .dword  0x00200040          # Kernel entry point
@@ -84,6 +86,8 @@ unsafe extern "C" fn _start() -> ! {
         .word   0x818223cd          # Magic number
         .word   0x0                 # Offset to the PE header
 
+        .globl  _start
+    _start:
         # Setup DMW
         li.d        $t0, {phys_boot_offset} | 0x11
         csrwr       $t0, 0x180      # DMWIN0

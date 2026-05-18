@@ -466,12 +466,6 @@ impl CachedFile {
         self.in_memory
     }
 
-    /// A hint to the backend that the file position has changed.
-    /// This is used for operations like resetting file content in proc/sys.
-    pub fn seek_to(&self, pos: u64) -> VfsResult<()> {
-        self.inner.entry().as_file()?.seek_to(pos)
-    }
-
     /// Registers a listener that is called when a page is evicted from cache.
     ///
     /// Returns a handle that can later be passed to
@@ -685,6 +679,95 @@ impl CachedFile {
         Ok(())
     }
 
+    pub fn writeback(&self) -> VfsResult<alloc::vec::Vec<u32>> {
+        if self.in_memory {
+            return Ok(alloc::vec::Vec::new());
+        }
+        let file = self.inner.entry().as_file()?;
+        let file_len = file.len()?;
+
+        let dirty_keys: alloc::vec::Vec<u32> = {
+            let guard = self.shared.page_cache.lock();
+            guard
+                .iter()
+                .filter_map(|(&pn, page)| {
+                    if page.dirty {
+                        let page_start = pn as u64 * PAGE_SIZE as u64;
+                        let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64);
+                        if len > 0 { Some(pn) } else { None }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        for pn in &dirty_keys {
+            let mut guard = self.shared.page_cache.lock();
+            if let Some(page) = guard.get_mut(pn)
+                && page.dirty
+            {
+                let page_start = *pn as u64 * PAGE_SIZE as u64;
+                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
+                if len > 0 {
+                    file.write_at(&page.data()[..len], page_start)?;
+                }
+            }
+            drop(guard);
+        }
+
+        file.sync(false)?;
+        Ok(dirty_keys)
+    }
+
+    pub fn writeback_pages(&self, pns: &[u32]) -> VfsResult<()> {
+        if self.in_memory {
+            return Ok(());
+        }
+        let file = self.inner.entry().as_file()?;
+        let file_len = file.len()?;
+
+        for pn in pns {
+            let mut guard = self.shared.page_cache.lock();
+            if let Some(page) = guard.get_mut(pn)
+                && page.dirty
+            {
+                let page_start = *pn as u64 * PAGE_SIZE as u64;
+                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
+                if len > 0 {
+                    file.write_at(&page.data()[..len], page_start)?;
+                }
+            }
+            drop(guard);
+        }
+
+        file.sync(false)?;
+        Ok(())
+    }
+
+    pub fn dirty_pages_in_range(&self, start_pn: u32, end_pn: u32) -> alloc::vec::Vec<u32> {
+        let guard = self.shared.page_cache.lock();
+        guard
+            .iter()
+            .filter_map(|(&pn, page)| {
+                if page.dirty && pn >= start_pn && pn < end_pn {
+                    Some(pn)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn clear_dirty_pages(&self, pns: &[u32]) {
+        let mut guard = self.shared.page_cache.lock();
+        for pn in pns {
+            if let Some(page) = guard.get_mut(pn) {
+                page.dirty = false;
+            }
+        }
+    }
+
     /// Flushes all cached pages back to disk.
     pub fn sync(&self, data_only: bool) -> VfsResult<()> {
         if self.in_memory {
@@ -734,15 +817,6 @@ impl FileBackend {
 
     pub(crate) fn new_cached(location: Location) -> Self {
         Self::Cached(CachedFile::get_or_create(location))
-    }
-
-    /// A hint to the backend that the file position has changed.
-    /// This is used for operations like resetting file content in proc/sys.
-    pub fn seek_to(&self, pos: u64) -> VfsResult<()> {
-        match self {
-            Self::Cached(cached) => cached.seek_to(pos),
-            Self::Direct(loc) => loc.entry().as_file()?.seek_to(pos),
-        }
     }
 
     /// Reads data from the file at `offset` into `dst`.
@@ -882,6 +956,13 @@ impl File {
         self.flags
     }
 
+    /// Returns the file's current read/write cursor, or `None` for stream
+    /// nodes (sockets / pipes / `STREAM`-flagged) that have no addressable
+    /// position. Read-only snapshot; does not move the cursor.
+    pub fn position(&self) -> Option<u64> {
+        self.position.as_ref().map(|m| *m.lock())
+    }
+
     /// Returns a reference to the underlying [`FileBackend`].
     pub fn backend(&self) -> VfsResult<&FileBackend> {
         self.access(FileFlags::empty())?;
@@ -991,10 +1072,6 @@ impl Seek for &File {
                     .ok_or(VfsError::InvalidInput)?,
             };
             *guard = new_pos;
-            // Seeking doesn't actually require any action on the backend since we
-            // track the position in the `File` struct, but we can hint to the backend
-            // about it for potential operations like resetting file content(proc/sys).
-            self.inner.seek_to(new_pos)?;
             Ok(new_pos)
         } else {
             Ok(0)

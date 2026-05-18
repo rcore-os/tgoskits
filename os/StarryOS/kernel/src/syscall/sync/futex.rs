@@ -1,20 +1,40 @@
-use core::sync::atomic::Ordering;
+use core::mem::align_of;
 
-use ax_errno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult};
 use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_task::current;
 use linux_raw_sys::general::{
-    FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT,
-    FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, robust_list_head, timespec,
+    FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET,
+    FUTEX_WAKE, FUTEX_WAKE_BITSET, robust_list_head, timespec,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    task::{AsThread, FutexKey, futex_table_for, get_task},
+    task::{AsThread, FutexKey, FutexKeyMode, futex_table_for, get_task},
     time::TimeValueLike,
 };
 
-fn assert_unsigned(value: u32) -> AxResult<u32> {
+const FUTEX_PRIVATE_FLAG: u32 = 128;
+const FUTEX_COMMAND_MASK: u32 = FUTEX_PRIVATE_FLAG - 1;
+const SUPPORTED_FLAGS: u32 = FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FutexCommand {
+    Wait,
+    Wake,
+    WaitBitset,
+    WakeBitset,
+    Requeue,
+    CmpRequeue,
+}
+
+struct ParsedFutexOp {
+    command: FutexCommand,
+    key_mode: FutexKeyMode,
+    clock_realtime: bool,
+}
+
+fn assert_non_negative_i32(value: u32) -> AxResult<u32> {
     if (value as i32) < 0 {
         Err(AxError::InvalidInput)
     } else {
@@ -22,21 +42,61 @@ fn assert_unsigned(value: u32) -> AxResult<u32> {
     }
 }
 
-fn futex_wait_timeout(
-    futex_op: u32,
-    command: u32,
-    timeout: *const timespec,
-) -> AxResult<Option<TimeValue>> {
+fn validate_futex_word(uaddr: *const u32) -> AxResult<()> {
+    if !uaddr.addr().is_multiple_of(align_of::<u32>()) {
+        return Err(AxError::InvalidInput);
+    }
+    uaddr.vm_read()?;
+    Ok(())
+}
+
+fn parse_futex_op(futex_op: u32) -> AxResult<ParsedFutexOp> {
+    let flags = futex_op & !FUTEX_COMMAND_MASK;
+    if flags & !SUPPORTED_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let command = match futex_op & FUTEX_COMMAND_MASK {
+        FUTEX_WAIT => FutexCommand::Wait,
+        FUTEX_WAKE => FutexCommand::Wake,
+        FUTEX_WAIT_BITSET => FutexCommand::WaitBitset,
+        FUTEX_WAKE_BITSET => FutexCommand::WakeBitset,
+        FUTEX_REQUEUE => FutexCommand::Requeue,
+        FUTEX_CMP_REQUEUE => FutexCommand::CmpRequeue,
+        _ => return Err(AxError::Unsupported),
+    };
+
+    let clock_realtime = flags & FUTEX_CLOCK_REALTIME != 0;
+    if clock_realtime && !matches!(command, FutexCommand::Wait | FutexCommand::WaitBitset) {
+        return Err(AxError::InvalidInput);
+    }
+
+    let key_mode = if flags & FUTEX_PRIVATE_FLAG != 0 {
+        FutexKeyMode::Private
+    } else {
+        FutexKeyMode::Auto
+    };
+
+    Ok(ParsedFutexOp {
+        command,
+        key_mode,
+        clock_realtime,
+    })
+}
+
+fn futex_wait_timeout(op: &ParsedFutexOp, timeout: *const timespec) -> AxResult<Option<TimeValue>> {
     let Some(ts) = timeout.nullable() else {
         return Ok(None);
     };
 
     let timeout = unsafe { ts.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
-    if command == FUTEX_WAIT {
+    // FUTEX_WAIT keeps the traditional relative timeout. FUTEX_WAIT_BITSET
+    // uses an absolute deadline on the selected clock.
+    if op.command == FutexCommand::Wait {
         return Ok(Some(timeout));
     }
 
-    let now = if futex_op & FUTEX_CLOCK_REALTIME != 0 {
+    let now = if op.clock_realtime {
         wall_time()
     } else {
         monotonic_time()
@@ -58,23 +118,35 @@ pub fn sys_futex(
          value3: {value3}",
     );
 
-    let key = FutexKey::new_current(uaddr.addr());
+    let op = parse_futex_op(futex_op)?;
+    if !uaddr.addr().is_multiple_of(align_of::<u32>()) {
+        return Err(AxError::InvalidInput);
+    }
+    if matches!(
+        op.command,
+        FutexCommand::WaitBitset | FutexCommand::WakeBitset
+    ) && value3 == 0
+    {
+        return Err(AxError::InvalidInput);
+    }
+
+    let key = FutexKey::new_current(uaddr.addr(), op.key_mode);
 
     let futex_table = futex_table_for(&key);
 
-    let command = futex_op & (FUTEX_CMD_MASK as u32);
-    match command {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
+    match op.command {
+        FutexCommand::Wait | FutexCommand::WaitBitset => {
             // Fast path
             if uaddr.vm_read()? != value {
                 return Err(AxError::WouldBlock);
             }
 
-            let timeout = futex_wait_timeout(futex_op, command, timeout)?;
+            let timeout = futex_wait_timeout(&op, timeout)?;
 
             let futex = futex_table.get_or_insert(&key);
+            let cleanup = futex_table.cleanup_for(&key);
 
-            let bitset = if command == FUTEX_WAIT_BITSET {
+            let bitset = if op.command == FutexCommand::WaitBitset {
                 value3
             } else {
                 u32::MAX
@@ -82,53 +154,76 @@ pub fn sys_futex(
 
             if !futex
                 .wq
-                .wait_if(bitset, timeout, || uaddr.vm_read() == Ok(value))?
+                .wait_if_with_cleanup(bitset, timeout, Some(cleanup), || {
+                    uaddr.vm_read() == Ok(value)
+                })?
             {
                 return Err(AxError::WouldBlock);
             }
 
-            if futex.owner_dead.swap(false, Ordering::SeqCst) {
-                Err(AxError::from(LinuxError::EOWNERDEAD))
-            } else {
-                Ok(0)
-            }
+            Ok(0)
         }
-        FUTEX_WAKE | FUTEX_WAKE_BITSET => {
+        FutexCommand::Wake | FutexCommand::WakeBitset => {
+            let wake_count = assert_non_negative_i32(value)? as usize;
+            validate_futex_word(uaddr)?;
+
             let futex = futex_table.get(&key);
             let mut count = 0;
             if let Some(futex) = futex {
-                let bitset = if command == FUTEX_WAKE_BITSET {
+                let bitset = if op.command == FutexCommand::WakeBitset {
                     value3
                 } else {
                     u32::MAX
                 };
-                count = futex.wq.wake(value as _, bitset);
+                count = futex.wq.wake(wake_count, bitset);
             }
             ax_task::yield_now();
             Ok(count as _)
         }
-        FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
-            assert_unsigned(value)?;
-            if command == FUTEX_CMP_REQUEUE && uaddr.vm_read()? != value3 {
-                return Err(AxError::WouldBlock);
+        FutexCommand::Requeue | FutexCommand::CmpRequeue => {
+            let wake_count = assert_non_negative_i32(value)? as usize;
+            let requeue_count = assert_non_negative_i32(timeout.addr() as u32)? as usize;
+            if op.command == FutexCommand::Requeue {
+                validate_futex_word(uaddr)?;
             }
-            let value2 = assert_unsigned(timeout.addr() as u32)?;
+            validate_futex_word(uaddr2)?;
 
-            let futex = futex_table.get(&key);
-            let key2 = FutexKey::new_current(uaddr2.addr());
+            let key2 = FutexKey::new_current(uaddr2.addr(), op.key_mode);
             let table2 = futex_table_for(&key2);
-            let futex2 = table2.get_or_insert(&key2);
+            let target = table2.get_or_insert(&key2);
+            let target_cleanup = table2.cleanup_for(&key2);
 
-            let mut count = 0;
-            if let Some(futex) = futex {
-                count = futex.wq.wake(value as _, u32::MAX);
-                if count == value as usize {
-                    count += futex.wq.requeue(value2 as _, &futex2.wq) as usize;
+            let Some(source) = futex_table.get(&key) else {
+                if op.command == FutexCommand::CmpRequeue && uaddr.vm_read()? != value3 {
+                    return Err(AxError::WouldBlock);
                 }
+                return Ok(0);
+            };
+
+            let count = source.wq.wake_requeue_if(
+                wake_count,
+                u32::MAX,
+                requeue_count,
+                target_cleanup,
+                &target.wq,
+                || {
+                    if op.command == FutexCommand::CmpRequeue {
+                        Ok(uaddr.vm_read()? == value3)
+                    } else {
+                        Ok(true)
+                    }
+                },
+            )?;
+
+            let Some(count) = count else {
+                return Err(AxError::WouldBlock);
+            };
+
+            if count > 0 {
+                ax_task::yield_now();
             }
             Ok(count as _)
         }
-        _ => Err(AxError::Unsupported),
     }
 }
 

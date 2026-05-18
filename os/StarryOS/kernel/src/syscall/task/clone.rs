@@ -223,11 +223,16 @@ impl CloneArgs {
                 exit_signal,
             );
             proc_data.set_umask(old_proc_data.umask());
+            proc_data.set_nice(old_proc_data.nice());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
 
             {
                 let mut scope = proc_data.scope.write();
                 if flags.contains(CloneFlags::FILES) {
+                    // Synchronize with close_all_fds: holding a read lock
+                    // ensures close_all_fds either observes our strong_count
+                    // increment or blocks on write lock until we release.
+                    let _guard = FD_TABLE.read();
                     FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
                 } else {
                     FD_TABLE
@@ -278,6 +283,13 @@ impl CloneArgs {
 
         let task = spawn_task(new_task);
         add_task_to_table(&task);
+
+        // Linux kcov(1): coverage collection is disabled in the child after
+        // fork().  The child's Thread is always created with kcov: None and a
+        // new TID not present in the KCOV state table, but we clean up
+        // explicitly for consistency and future-proofing.
+        #[cfg(feature = "kcov")]
+        crate::kcov::on_fork(tid);
 
         // Block the parent until the child exec's or exits.
         if flags.contains(CloneFlags::VFORK) {

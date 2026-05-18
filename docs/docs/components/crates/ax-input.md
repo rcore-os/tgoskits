@@ -1,0 +1,124 @@
+# `ax-input`
+
+> 路径：`os/arceos/modules/axinput`
+> 类型：库 crate
+> 分层：ArceOS 层 / ArceOS 内核模块
+> 版本：`0.5.0`
+> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+
+`ax-input` 的核心定位是：Input device management for ArceOS
+
+## 架构设计
+- 目录角色：ArceOS 内核模块
+- crate 形态：库 crate
+- 工作区位置：子工作区 `os/arceos`
+- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
+- 关键数据结构：可直接观察到的关键数据结构/对象包括 `DEVICES`。
+
+### 模块结构
+- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+
+### 核心机制
+- 实现重心偏向接口组织和模块协作。
+
+## 核心功能
+- 功能定位：Input device management for ArceOS
+- 对外接口：从源码可见的主要公开入口包括 `init_input`、`take_inputs`。
+- 典型使用场景：主要作为仓库中的专用支撑 crate 被上层组件调用。
+- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `init_input()`。
+
+## 依赖关系
+```mermaid
+graph LR
+    current["ax-input"]
+    current --> ax-driver["ax-driver"]
+    current --> ax-sync["ax-sync"]
+    current --> ax_lazyinit["ax-lazyinit"]
+    ax_feat["ax-feat"] --> current
+    ax_runtime["ax-runtime"] --> current
+    starry_kernel["starry-kernel"] --> current
+```
+
+### 直接依赖
+- `ax-driver`
+- `ax-sync`
+- `ax-lazyinit`
+
+### 间接依赖
+- `ax-arm-pl011`
+- `ax-arm-pl031`
+- `axaddrspace`
+- `ax-alloc`
+- `ax-allocator`
+- `axbacktrace`
+- `axconfig`
+- `ax-config-gen`
+- `ax-config-macros`
+- `ax-cpu`
+- `ax-dma`
+- `ax-driver-base`
+- 另外还有 `41` 个同类项未在此展开
+
+### 3.3 被依赖情况
+- `ax-feat`
+- `ax-runtime`
+- `starry-kernel`
+
+### 被依赖情况
+- `arceos-affinity`
+- `arceos-display`
+- `arceos-exception`
+- `arceos-fs-shell`
+- `arceos-irq`
+- `arceos-memtest`
+- `arceos-net-echoserver`
+- `arceos-net-httpclient`
+- `arceos-net-httpserver`
+- `arceos-net-udpserver`
+- `arceos-parallel`
+- `arceos-priority`
+- 另外还有 `16` 个同类项未在此展开
+
+### 外部依赖
+- `log`
+
+## 开发指南
+### 接入方式
+```toml
+[dependencies]
+ax-input = { workspace = true }
+
+# 如果在仓库外独立验证，也可以显式绑定本地路径：
+# ax-input = { path = "os/arceos/modules/axinput" }
+```
+
+### 初始化
+1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
+2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
+3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+
+### API 使用
+- 优先关注函数入口：`init_input`、`take_inputs`。
+
+## 测试
+### 测试覆盖
+- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
+
+### 单元测试
+- 建议覆盖公开 API、状态转换和异常分支。
+
+### 集成测试
+- 建议补充最小消费者路径，验证该 crate 在真实调用链中可用。
+
+### 覆盖率
+- 覆盖率建议：公开 API、边界条件和关键错误处理路径需要显式覆盖。
+
+## 跨项目定位
+### ArceOS
+`ax-input` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 内核模块。
+
+### StarryOS
+`ax-input` 不在 StarryOS 目录内部，但被 `starry-kernel` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+
+### Axvisor
+`ax-input` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。

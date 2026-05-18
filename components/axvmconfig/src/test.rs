@@ -34,6 +34,9 @@ entry_point = 0xdeadbeef
 image_location = "memory"
 kernel_path = "amazing-os.bin"
 kernel_load_addr = 0xdeadbeef
+enable_bios = true
+bios_path = "test-bios.bin"
+bios_load_addr = 0x8000
 dtb_path = "impressive-board.dtb"
 dtb_load_addr = 0xa0000000
 
@@ -68,6 +71,9 @@ interrupt_mode = "passthrough"
     assert_eq!(config.kernel.image_location, Some("memory".to_string()));
     assert_eq!(config.kernel.kernel_path, "amazing-os.bin");
     assert_eq!(config.kernel.kernel_load_addr, 0xdeadbeef);
+    assert!(config.kernel.enable_bios);
+    assert_eq!(config.kernel.bios_path, Some("test-bios.bin".to_string()));
+    assert_eq!(config.kernel.bios_load_addr, Some(0x8000));
     assert_eq!(
         config.kernel.dtb_path,
         Some("impressive-board.dtb".to_string())
@@ -299,6 +305,7 @@ fn test_default_implementations() {
     assert_eq!(vm_kernel_config.entry_point, 0);
     assert_eq!(vm_kernel_config.kernel_path, "");
     assert_eq!(vm_kernel_config.kernel_load_addr, 0);
+    assert!(!vm_kernel_config.enable_bios);
     assert!(vm_kernel_config.bios_path.is_none());
     assert!(vm_kernel_config.bios_load_addr.is_none());
     assert!(vm_kernel_config.dtb_path.is_none());

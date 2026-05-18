@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     time::Instant,
@@ -10,7 +11,6 @@ use ostool::{
     build::config::Cargo,
     run::{qemu::QemuConfig, uboot::UbootConfig},
 };
-use serde::Deserialize;
 
 use super::{
     ArgsTest, ArgsTestBoard, ArgsTestQemu, ArgsTestUboot, Axvisor, TestCommand, build, rootfs,
@@ -52,14 +52,6 @@ impl test_qemu::BuildConfigRef for PreparedAxvisorQemuCase {
     }
 }
 
-const TEST_ARCHES: &[&str] = &["aarch64", "riscv64", "x86_64", "loongarch64"];
-const TEST_TARGETS: &[&str] = &[
-    "aarch64-unknown-none-softfloat",
-    "riscv64gc-unknown-none-elf",
-    "x86_64-unknown-none",
-    "loongarch64-unknown-none-softfloat",
-];
-
 pub(super) async fn test(axvisor: &mut Axvisor, args: ArgsTest) -> anyhow::Result<()> {
     match args.command {
         TestCommand::Qemu(args) => axvisor.test_qemu(args).await,
@@ -86,16 +78,6 @@ impl board_test::BoardTestGroupInfo for BoardTestGroup {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct AxvisorQemuCaseConfig {
-    // Note: shell_init_cmd is NOT duplicated here; it is read by ostool's
-    // QemuConfig during the run phase. Keeping it out avoids two independent
-    // sources of truth and makes the mutual-exclusion check with test_commands
-    // happen in one place (Axvisor::load_qemu_case_config).
-    #[serde(default)]
-    test_commands: Vec<String>,
-}
-
 pub(crate) fn parse_target(
     arch: &Option<String>,
     target: &Option<String>,
@@ -104,8 +86,8 @@ pub(crate) fn parse_target(
         arch,
         target,
         "axvisor qemu tests",
-        TEST_ARCHES,
-        TEST_TARGETS,
+        &crate::context::supported_arches(),
+        &crate::context::supported_targets(),
         resolve_axvisor_arch_and_target,
     )
 }
@@ -132,35 +114,21 @@ pub(crate) fn discover_qemu_cases(
 }
 
 fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<AxvisorQemuCase> {
-    let config = load_qemu_case_config(&case.qemu_config_path)?;
-    let test_commands = qemu_case_test_commands(&case.qemu_config_path, &config)?;
-
+    let build_group = case.build_group;
+    let build_config_path = case.build_config_path;
+    let test_case = test_qemu::load_test_qemu_case_fields(
+        case.display_name,
+        case.name,
+        case.case_dir,
+        case.qemu_config_path,
+        "Axvisor",
+        false,
+    )?;
     Ok(AxvisorQemuCase {
-        case: TestQemuCase {
-            display_name: case.display_name,
-            name: case.name,
-            case_dir: case.case_dir,
-            qemu_config_path: case.qemu_config_path,
-            test_commands,
-            subcases: Vec::new(),
-        },
-        build_group: case.build_group,
-        build_config_path: case.build_config_path,
+        case: test_case,
+        build_group,
+        build_config_path,
     })
-}
-
-fn load_qemu_case_config(qemu_config_path: &Path) -> anyhow::Result<AxvisorQemuCaseConfig> {
-    let content = fs::read_to_string(qemu_config_path)
-        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
-    toml::from_str(&content)
-        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))
-}
-
-fn qemu_case_test_commands(
-    qemu_config_path: &Path,
-    config: &AxvisorQemuCaseConfig,
-) -> anyhow::Result<Vec<String>> {
-    test_qemu::normalize_qemu_test_commands(qemu_config_path, &config.test_commands, "Axvisor")
 }
 
 pub(crate) fn discover_board_test_groups(
@@ -184,18 +152,15 @@ fn collect_board_test_groups(
     test_suite_dir: &Path,
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
     let mut groups = Vec::new();
-    for config in board_test::discover_board_runtime_configs(test_suite_dir)? {
-        ensure_board_run_config(&config.config_path)?;
-        let wrapper =
-            test_qemu::nearest_build_wrapper(test_suite_dir, &config.case_dir, "Axvisor", "board")?;
-        let name = test_qemu::case_name_from_wrapper(test_suite_dir, &wrapper, &config.case_dir)?;
-        let build_config = resolve_workspace_path(workspace_root, wrapper.build_config_path);
+    for info in board_test::discover_board_case_build_infos(test_suite_dir, "Axvisor")? {
+        ensure_board_run_config(&info.board_test_config_path)?;
+        let build_config = resolve_workspace_path(workspace_root, info.build_config_path);
         ensure_file_exists(&build_config, "Axvisor board build group config")?;
         groups.push(BoardTestGroup {
-            name,
-            board_name: config.board_name,
+            name: info.name,
+            board_name: info.board_name,
             build_config,
-            board_test_config_path: config.config_path,
+            board_test_config_path: info.board_test_config_path,
         });
     }
 
@@ -286,6 +251,14 @@ fn discover_test_group_names(workspace_root: &Path) -> anyhow::Result<Vec<String
     test_suite::discover_group_names(workspace_root, AXVISOR_TEST_SUITE_OS)
 }
 
+fn qemu_list_error_is_ignorable(kind: test_qemu::ListQemuCasesErrorKind) -> bool {
+    matches!(
+        kind,
+        test_qemu::ListQemuCasesErrorKind::EmptyGroup
+            | test_qemu::ListQemuCasesErrorKind::UnknownSelectedCase
+    )
+}
+
 impl Axvisor {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
@@ -304,13 +277,10 @@ impl Axvisor {
                     ) {
                         Ok(case_names) => Some(Ok((group, case_names))),
                         Err(err) => {
-                            let message = err.to_string();
-                            if message.starts_with("no Axvisor ")
-                                || message.starts_with("unknown Axvisor ")
-                            {
+                            if qemu_list_error_is_ignorable(err.kind()) {
                                 None
                             } else {
-                                Some(Err(err))
+                                Some(Err(anyhow::Error::new(err)))
                             }
                         }
                     }
@@ -334,7 +304,8 @@ impl Axvisor {
                 args.test_case.as_deref(),
                 "Axvisor",
                 test_group,
-            )?;
+            )
+            .map_err(anyhow::Error::new)?;
             println!("{}", test_qemu::render_case_tree(test_group, case_names));
             return Ok(());
         }
@@ -375,46 +346,67 @@ impl Axvisor {
 
         let total = cases.len();
         let suite_started = Instant::now();
-        let mut failed = Vec::new();
-        let mut completed = 0;
-        for group in Self::group_qemu_cases_by_build_config(&cases) {
-            let (group_request, group_cargo) =
-                Self::qemu_group_build_context(&request, group.build_config_path)?;
-            rootfs::ensure_qemu_rootfs_ready(&group_request, self.app.workspace_root(), None)
+        let mut summary = test_qemu::QemuTestSummary::default();
+        let asset_config = axvisor_case_asset_config();
+
+        let build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
+            Self::qemu_group_build_context(&request, build_config_path)
+        })?;
+
+        // Phase 1: Build all build groups first so compilation errors surface
+        // before any QEMU time is spent.
+        for build_group in &build_groups {
+            rootfs::ensure_qemu_rootfs_ready(&build_group.request, self.app.workspace_root(), None)
                 .await?;
             self.app
-                .build(group_cargo.clone(), group_request.build_info_path.clone())
+                .build(
+                    build_group.cargo.clone(),
+                    build_group.request.build_info_path.clone(),
+                )
                 .await
                 .with_context(|| {
                     format!(
                         "failed to build Axvisor qemu test artifact for build group `{}` ({})",
-                        group.build_group,
-                        group.build_config_path.display()
+                        build_group.group.build_group,
+                        build_group.group.build_config_path.display()
                     )
                 })?;
+        }
 
-            for case in group.cases {
+        // Phase 2: Run all QEMU tests now that every artifact is available.
+        let mut completed = 0;
+        for build_group in &build_groups {
+            for case in &build_group.group.cases {
                 completed += 1;
                 let case_name = &case.case.case.name;
                 println!("[{completed}/{total}] axvisor qemu {case_name}");
 
                 let case_started = Instant::now();
                 let result = self
-                    .run_qemu_case(&group_request, &group_cargo, case)
+                    .run_qemu_case(
+                        &build_group.request,
+                        &build_group.cargo,
+                        case,
+                        &asset_config,
+                    )
                     .await
                     .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
+                let duration = case_started.elapsed();
                 match result {
-                    Ok(()) => println!("ok: {} ({:.2?})", case_name, case_started.elapsed()),
+                    Ok(()) => {
+                        println!("ok: {case_name} ({duration:.2?})");
+                        summary.pass_with_detail(case_name, format!("{duration:.2?}"));
+                    }
                     Err(err) => {
                         eprintln!("failed: {}: {err:#}", case_name);
-                        failed.push(case_name.clone());
+                        summary.fail_with_detail(case_name, format!("{duration:.2?}"));
                     }
                 }
             }
         }
 
-        println!("axvisor qemu total: {:.2?}", suite_started.elapsed());
-        test_qemu::finalize_qemu_test_run("axvisor", "case", &failed)
+        let total_duration = format!("{:.2?}", suite_started.elapsed());
+        summary.finish_with_total_detail("axvisor", "case", Some(total_duration.as_str()))
     }
 
     pub(super) async fn test_uboot(&mut self, args: ArgsTestUboot) -> anyhow::Result<()> {
@@ -491,13 +483,7 @@ impl Axvisor {
                         args.board.as_deref(),
                     ) {
                         Ok(groups) if groups.is_empty() => None,
-                        Ok(groups) => Some(Ok((
-                            group,
-                            groups
-                                .into_iter()
-                                .map(|group| (group.name, group.board_name))
-                                .collect::<Vec<_>>(),
-                        ))),
+                        Ok(groups) => Some(Ok((group, board_test::labeled_board_cases(groups)))),
                         Err(err) => {
                             let message = err.to_string();
                             if message.starts_with("no Axvisor ") {
@@ -530,34 +516,26 @@ impl Axvisor {
             args.board.as_deref(),
         )?;
         if args.list {
-            let case_names = groups
-                .into_iter()
-                .map(|group| (group.name, group.board_name))
-                .collect::<Vec<_>>();
+            let case_names = board_test::labeled_board_cases(groups);
             println!(
                 "{}",
                 test_qemu::render_labeled_case_forest("axvisor", [(test_group, case_names)])
             );
             return Ok(());
         }
-        let total = groups.len();
-        let mut failed = Vec::new();
 
+        let mut run_state = board_test::BoardTestRunState::new("axvisor", groups.len());
         for (index, group) in groups.into_iter().enumerate() {
-            let group_label = format!("{}/{}", group.name, group.board_name);
+            let group_label = run_state.start_group(index, &group);
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
-
             if !board_test_config.exists() {
-                eprintln!(
-                    "failed: {}: missing board test config `{}`",
-                    group_label, board_test_config_summary
+                run_state.fail_group(
+                    group_label,
+                    anyhow::anyhow!("missing board test config `{board_test_config_summary}`"),
                 );
-                failed.push(group_label);
                 continue;
             }
-
-            println!("[{}/{}] axvisor board {}", index + 1, total, group_label);
 
             let result = async {
                 let request = self.prepare_request(
@@ -595,15 +573,11 @@ impl Axvisor {
             .await;
 
             match result {
-                Ok(()) => println!("ok: {}", group_label),
-                Err(err) => {
-                    eprintln!("failed: {}: {:#}", group_label, err);
-                    failed.push(group_label);
-                }
+                Ok(()) => run_state.pass_group(&group_label),
+                Err(err) => run_state.fail_group(group_label, err),
             }
         }
-
-        board_test::finalize_board_test_run("axvisor", &failed)
+        run_state.finish()
     }
 
     async fn prepare_qemu_cases(
@@ -612,10 +586,13 @@ impl Axvisor {
         cases: Vec<AxvisorQemuCase>,
     ) -> anyhow::Result<Vec<PreparedAxvisorQemuCase>> {
         let mut prepared = Vec::with_capacity(cases.len());
+        let mut cargo_by_build_config = BTreeMap::new();
         for case in cases {
-            let mut request = request.clone();
-            request.build_info_path = case.build_config_path.clone();
-            let cargo = build::load_cargo_config(&request)?;
+            let cargo = Self::qemu_case_cargo_config(
+                request,
+                &case.build_config_path,
+                &mut cargo_by_build_config,
+            )?;
             let qemu = self
                 .app
                 .tool_mut()
@@ -634,10 +611,20 @@ impl Axvisor {
         Ok(prepared)
     }
 
-    fn group_qemu_cases_by_build_config(
-        cases: &[PreparedAxvisorQemuCase],
-    ) -> Vec<test_qemu::QemuCaseGroup<'_, PreparedAxvisorQemuCase>> {
-        test_qemu::group_cases_by_build_config(cases)
+    fn qemu_case_cargo_config(
+        request: &ResolvedAxvisorRequest,
+        build_config_path: &Path,
+        cargo_by_build_config: &mut BTreeMap<PathBuf, Cargo>,
+    ) -> anyhow::Result<Cargo> {
+        if let Some(cargo) = cargo_by_build_config.get(build_config_path) {
+            return Ok(cargo.clone());
+        }
+
+        let mut request = request.clone();
+        request.build_info_path = build_config_path.to_path_buf();
+        let cargo = build::load_cargo_config(&request)?;
+        cargo_by_build_config.insert(build_config_path.to_path_buf(), cargo.clone());
+        Ok(cargo)
     }
 
     fn qemu_group_build_context(
@@ -661,9 +648,9 @@ impl Axvisor {
         &mut self,
         request: &ResolvedAxvisorRequest,
         case: &PreparedAxvisorQemuCase,
+        asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
         let mut qemu = case.qemu.clone();
-        let asset_config = axvisor_case_asset_config();
         test_case::apply_grouped_qemu_config(
             &mut qemu,
             &case.case.case,
@@ -678,7 +665,7 @@ impl Axvisor {
             &request.target,
             &case.case.case,
             rootfs_path,
-            asset_config,
+            asset_config.clone(),
         )
         .await?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
@@ -691,34 +678,21 @@ impl Axvisor {
         request: &ResolvedAxvisorRequest,
         cargo: &Cargo,
         case: &PreparedAxvisorQemuCase,
+        asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<()> {
         let prepare_started = Instant::now();
-        let (qemu, prepared_assets) = self.load_qemu_case_config(request, case).await?;
-        println!(
-            "  prepare assets: {:.2?} (pipeline={}, cache={})",
+        let (qemu, prepared_assets) = self
+            .load_qemu_case_config(request, case, asset_config)
+            .await?;
+        test_case::run_qemu_with_prepared_case_assets(
+            &mut self.app,
+            cargo,
+            qemu,
+            &case.case.case.qemu_config_path,
+            prepared_assets,
             prepare_started.elapsed(),
-            prepared_assets.pipeline.as_str(),
-            if prepared_assets.cache_hit {
-                "hit"
-            } else {
-                "miss"
-            }
-        );
-        println!(
-            "  qemu config: {} (timeout={})",
-            case.case.case.qemu_config_path.display(),
-            test_qemu::qemu_timeout_summary(&qemu)
-        );
-        println!("  rootfs: {}", prepared_assets.rootfs_path.display());
-        let qemu_started = Instant::now();
-        let result = self.app.run_qemu(cargo, qemu).await;
-        println!("  qemu run: {:.2?}", qemu_started.elapsed());
-        // Remove the per-case rootfs copy immediately after the run so disk
-        // usage stays bounded to ~1 active copy at a time rather than
-        // accumulating one copy per case.
-        test_case::remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
-        test_case::remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
-        result
+        )
+        .await
     }
 }
 

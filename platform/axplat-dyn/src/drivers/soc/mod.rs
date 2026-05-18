@@ -13,11 +13,12 @@
 // limitations under the License.
 
 mod rockchip;
+pub(crate) mod scmi;
 
 #[cfg(all(feature = "rockchip-soc", not(feature = "rk3568-clk")))]
 pub(crate) use rockchip::{
     RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_assert,
-    rk3588_reset_deassert,
+    rk3588_reset_deassert, rk3588_set_clock_rate,
 };
 
 #[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
@@ -28,10 +29,49 @@ pub(crate) fn rk3588_enable_clock(id: u32) -> Result<(), rdrive::probe::OnProbeE
 }
 
 #[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
+pub(crate) fn rk3588_set_clock_rate(
+    id: u32,
+    rate_hz: u64,
+) -> Result<(), rdrive::probe::OnProbeError> {
+    Err(rdrive::probe::OnProbeError::other(alloc::format!(
+        "RK3588 clock support is not enabled for clock {id:#x} rate {rate_hz}"
+    )))
+}
+
+#[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
 pub(crate) fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
     Err(alloc::format!(
         "RK3588 power-domain support is not enabled for power domain {domain}"
     ))
+}
+
+#[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
+pub(crate) struct RockchipPinCtrl;
+
+#[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
+impl rdrive::DriverGeneric for RockchipPinCtrl {
+    fn name(&self) -> &str {
+        "rk3588-pinctrl-unavailable"
+    }
+}
+
+#[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
+impl RockchipPinCtrl {
+    pub(crate) fn enable_fixed_regulator(
+        &mut self,
+        phandle: fdt_edit::Phandle,
+    ) -> Result<(), rdrive::probe::OnProbeError> {
+        Err(rdrive::probe::OnProbeError::other(alloc::format!(
+            "RK3588 pinctrl support is not enabled for regulator phandle {phandle:?}"
+        )))
+    }
+}
+
+#[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]
+pub(crate) fn rk3588_reset_assert(id: u64) -> Result<(), rdrive::probe::OnProbeError> {
+    Err(rdrive::probe::OnProbeError::other(alloc::format!(
+        "RK3588 reset support is not enabled for reset {id:#x}"
+    )))
 }
 
 #[cfg(not(all(feature = "rockchip-soc", not(feature = "rk3568-clk"))))]

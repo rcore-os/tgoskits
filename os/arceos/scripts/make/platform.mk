@@ -1,38 +1,54 @@
 # Architecture and platform resolving
 
-ifeq ($(APP_TYPE), rust)
-  cargo_manifest_dir := $(APP)
-else
-  cargo_manifest_dir := $(CURDIR)
-endif
+inspect_platform = $(shell $(AXPLAT_INSPECT) --manifest-dir "$(CARGO_MANIFEST_DIR)" --package $(PLAT_PACKAGE))
+inspect_value = $(strip $(patsubst $(1)=%,%,$(filter $(1)=%,$(platform_info))))
 
-define resolve_config
-  $(if $(wildcard $(PLAT_CONFIG)),\
-    $(PLAT_CONFIG),\
-    $(shell cargo axplat info -C $(cargo_manifest_dir) -c $(PLAT_PACKAGE)))
-endef
+config_value = $(strip $(shell $(AXCONFIG) "$(PLAT_CONFIG)" -r $(1)))
+config_string_value = $(patsubst "%",%,$(call config_value,$(1)))
+platform_package_aliases = $(strip $(1) $(patsubst axplat-%,ax-plat-%,$(1)) $(patsubst ax-plat-%,axplat-%,$(1)))
 
 define validate_config
-  $(eval package := $(shell ax-config-gen $(PLAT_CONFIG) -r package 2>/dev/null)) \
-  $(if $(strip $(package)),,$(error PLAT_CONFIG=$(PLAT_CONFIG) is not a valid platform configuration file)) \
-  $(if $(filter "$(PLAT_PACKAGE)",$(package)),,\
-    $(error `PLAT_PACKAGE` field mismatch: expected $(PLAT_PACKAGE), got $(package)))
+  $(if $(strip $(PLAT_PACKAGE)),,$(error PLAT_CONFIG=$(PLAT_CONFIG) is not a valid platform configuration file)) \
+  $(if $(filter $(EXPECTED_PLAT_PACKAGE),$(PLAT_PACKAGE)),,\
+    $(error `PLAT_PACKAGE` field mismatch: expected $(EXPECTED_PLAT_PACKAGE), got $(PLAT_PACKAGE)))
 endef
 
-ifeq ($(MYPLAT),)
-  # `MYPLAT` is not specified, use the default platform for each architecture
-  ifeq ($(ARCH), x86_64)
-    PLAT_PACKAGE := ax-plat-x86-pc
-  else ifeq ($(ARCH), aarch64)
-    PLAT_PACKAGE := ax-plat-aarch64-qemu-virt
-  else ifeq ($(ARCH), riscv64)
-    PLAT_PACKAGE := ax-plat-riscv64-qemu-virt
-  else ifeq ($(ARCH), loongarch64)
-    PLAT_PACKAGE := ax-plat-loongarch64-qemu-virt
-  else
-    $(error "ARCH" must be one of "x86_64", "riscv64", "aarch64" or "loongarch64")
+define default_platform_package
+  $(if $(filter x86_64,$(ARCH)),ax-plat-x86-pc,\
+    $(if $(filter aarch64,$(ARCH)),ax-plat-aarch64-qemu-virt,\
+      $(if $(filter riscv64,$(ARCH)),ax-plat-riscv64-qemu-virt,\
+        $(if $(filter loongarch64,$(ARCH)),ax-plat-loongarch64-qemu-virt,\
+          $(error "ARCH" must be one of "x86_64", "riscv64", "aarch64" or "loongarch64")))))
+endef
+
+ifneq ($(wildcard $(PLAT_CONFIG)),)
+  PLAT_PACKAGE := $(call config_string_value,package)
+  EXPECTED_PLAT_PACKAGE := $(if $(MYPLAT),$(call platform_package_aliases,$(MYPLAT)),$(PLAT_PACKAGE))
+  PLAT_NAME := $(call config_string_value,platform)
+  PLAT_ARCH := $(call config_string_value,arch)
+  PLAT_SMP := $(call config_value,plat.max-cpu-num)
+  PHYS_MEMORY_SIZE := $(call config_value,plat.phys-memory-size)
+  $(call validate_config)
+
+  _arch := $(PLAT_ARCH)
+  ifeq ($(origin ARCH),command line)
+    ifneq ($(ARCH),$(_arch))
+      $(error "ARCH=$(ARCH)" is not compatible with "PLAT_CONFIG=$(PLAT_CONFIG)")
+    endif
   endif
-  PLAT_CONFIG := $(strip $(call resolve_config))
+  ARCH := $(_arch)
+else ifeq ($(MYPLAT),)
+  # `MYPLAT` is not specified, use the default platform for each architecture
+  PLAT_PACKAGE := $(strip $(call default_platform_package))
+  EXPECTED_PLAT_PACKAGE := $(PLAT_PACKAGE)
+  $(if $(strip $(AXPLAT_INSPECT)),,$(error AXPLAT_INSPECT is required when PLAT_CONFIG is not set))
+  platform_info := $(call inspect_platform)
+  PLAT_CONFIG := $(call inspect_value,PLAT_CONFIG)
+  PLAT_PACKAGE := $(call inspect_value,PLAT_PACKAGE)
+  PLAT_NAME := $(call inspect_value,PLAT_NAME)
+  PLAT_ARCH := $(call inspect_value,PLAT_ARCH)
+  PLAT_SMP := $(call inspect_value,PLAT_SMP)
+  PHYS_MEMORY_SIZE := $(call inspect_value,PHYS_MEMORY_SIZE)
   # We don't need to check whether `PLAT_CONFIG` is valid here, as the `PLAT_PACKAGE`
   # is a valid pacakage.
 
@@ -40,14 +56,22 @@ ifeq ($(MYPLAT),)
 else
   # `MYPLAT` is specified, treat it as a package name
   PLAT_PACKAGE := $(MYPLAT)
-  PLAT_CONFIG := $(strip $(call resolve_config))
+  EXPECTED_PLAT_PACKAGE := $(call platform_package_aliases,$(PLAT_PACKAGE))
+  $(if $(strip $(AXPLAT_INSPECT)),,$(error AXPLAT_INSPECT is required when PLAT_CONFIG is not set))
+  platform_info := $(call inspect_platform)
+  PLAT_CONFIG := $(call inspect_value,PLAT_CONFIG)
+  PLAT_PACKAGE := $(call inspect_value,PLAT_PACKAGE)
+  PLAT_NAME := $(call inspect_value,PLAT_NAME)
+  PLAT_ARCH := $(call inspect_value,PLAT_ARCH)
+  PLAT_SMP := $(call inspect_value,PLAT_SMP)
+  PHYS_MEMORY_SIZE := $(call inspect_value,PHYS_MEMORY_SIZE)
   ifeq ($(wildcard $(PLAT_CONFIG)),)
     $(error "MYPLAT=$(MYPLAT) is not a valid platform package name")
   endif
   $(call validate_config)
 
   # Read the architecture name from the configuration file
-  _arch := $(patsubst "%",%,$(shell ax-config-gen $(PLAT_CONFIG) -r arch))
+  _arch := $(PLAT_ARCH)
   ifeq ($(origin ARCH),command line)
     ifneq ($(ARCH),$(_arch))
       $(error "ARCH=$(ARCH)" is not compatible with "MYPLAT=$(MYPLAT)")
@@ -55,5 +79,3 @@ else
   endif
   ARCH := $(_arch)
 endif
-
-PLAT_NAME := $(patsubst "%",%,$(shell ax-config-gen $(PLAT_CONFIG) -r platform))

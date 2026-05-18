@@ -22,3 +22,18 @@ axvisor:
   label: Axvisor
   permalink: /axvisor
   description: 与 Axvisor 相关的文章
+
+monthly-report:
+  label: 月报
+  permalink: /monthly-report
+  description: 项目月度开发进展汇总
+
+axbuild:
+  label: axbuild
+  permalink: /axbuild
+  description: 与构建系统 axbuild 相关的文章
+
+testing:
+  label: Testing
+  permalink: /testing
+  description: 与测试基础设施和测试用例相关的文章

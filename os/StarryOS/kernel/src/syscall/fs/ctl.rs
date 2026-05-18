@@ -12,14 +12,13 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIONBIO, TIOCGWINSZ},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
     file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
-    pseudofs::Device,
     task::AsThread,
     time::TimeValueLike,
 };
@@ -38,9 +37,9 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         .map(|result| result as isize)
         .inspect_err(|err| {
             if *err == AxError::NotATty {
-                // glibc likes to call TIOCGWINSZ on non-terminal files, just
-                // ignore it
-                if cmd == TIOCGWINSZ {
+                // Applications commonly probe non-terminal/blobk fds with
+                // these ioctls; suppress noise.
+                if matches!(cmd, TIOCGWINSZ | BLKGETSIZE64 | BLKRAGET | BLKSSZGET) {
                     return;
                 }
                 warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
@@ -48,9 +47,10 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         })
 }
 
+#[ddebug::named]
 pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    debug!("sys_chdir <= path: {path}");
+    debug_fn!("sys_chdir <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
     let entry = fs.resolve(path)?;
@@ -69,6 +69,11 @@ pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
 #[cfg(target_arch = "x86_64")]
 pub fn sys_mkdir(path: *const c_char, mode: u32) -> AxResult<isize> {
     sys_mkdirat(AT_FDCWD, path, mode)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_mknod(path: *const c_char, mode: u32, dev: u64) -> AxResult<isize> {
+    sys_mknodat(AT_FDCWD, path, mode, dev)
 }
 
 pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
@@ -116,6 +121,7 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
     // apply umask like mkdir
     perm &= !current().as_thread().proc_data.umask();
 
+    // Linux mknod semantics: S_IFDIR → EPERM, unknown type bits → EINVAL.
     let node_type = match ftype {
         0 | S_IFREG => NodeType::RegularFile,
         S_IFCHR => NodeType::CharacterDevice,
@@ -134,13 +140,12 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
             NodePermission::from_bits_truncate(perm as u16),
         )?;
 
-        // If device node, set rdev
+        // If device node, set rdev via update_metadata
         if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
-            if let Ok(dev_node) = loc.entry().downcast::<Device>() {
-                dev_node.set_device_id(DeviceId(dev));
-            } else {
-                warn!("not a device node, cannot set rdev");
-            }
+            loc.update_metadata(MetadataUpdate {
+                rdev: Some(DeviceId(dev)),
+                ..Default::default()
+            })?;
         }
 
         Ok(0)
@@ -315,9 +320,6 @@ pub fn sys_unlink(path: *const c_char) -> AxResult<isize> {
 
 pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
     let size: usize = size.try_into().map_err(|_| AxError::BadAddress)?;
-    if buf.is_null() {
-        return Ok(0);
-    }
 
     let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
     debug!("sys_getcwd => cwd: {cwd}");
@@ -327,8 +329,7 @@ pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
 
     if cwd.len() <= size {
         vm_write_slice(buf, cwd)?;
-        // FIXME: it is said that this should return 0
-        Ok(buf.as_ptr() as _)
+        Ok(cwd.len() as _)
     } else {
         Err(AxError::OutOfRange)
     }
@@ -404,6 +405,11 @@ pub fn sys_fchownat(
     gid: i32,
     flags: u32,
 ) -> AxResult<isize> {
+    const FCHOWNAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !FCHOWNAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let path = path.nullable().map(vm_load_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
@@ -435,11 +441,22 @@ pub fn sys_fchownat(
     }
 
     let mut mode = meta.mode;
-    // chown always clears the setuid bits
-    mode.remove(NodePermission::SET_UID);
-    // chown also removes the setgid bits if group-executable
-    if mode.contains(NodePermission::GROUP_EXEC) {
-        mode.remove(NodePermission::SET_GID);
+    // Linux chown_common() semantics for clearing setuid/setgid on
+    // non-directory files:
+    //   - ATTR_KILL_SUID is set unconditionally for all non-dir chown,
+    //     regardless of whether uid/gid participates (i.e. even chown
+    //     with -1/-1 clears SUID).
+    //   - After SUID clearing adds ATTR_MODE to ia_valid, notify_change()
+    //     calls should_remove_sgid() which strips SGID on non-directory
+    //     files only when GROUP_EXEC (S_IXGRP) is set.
+    // Directories preserve SETGID (used for new-file group inheritance).
+    let is_dir = meta.node_type == NodeType::Directory;
+
+    if !is_dir {
+        mode.remove(NodePermission::SET_UID);
+        if mode.contains(NodePermission::GROUP_EXEC) {
+            mode.remove(NodePermission::SET_GID);
+        }
     }
 
     let uid = if uid == -1 { meta.uid } else { uid as _ };
@@ -638,11 +655,18 @@ pub fn sys_renameat2(
 }
 
 pub fn sys_sync() -> AxResult<isize> {
-    warn!("dummy sys_sync");
+    debug!("sys_sync");
+    // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
+    // ext4 NodeOps::sync is a no-op (Ok(())); FAT NodeOps::sync calls file.flush()
+    // to write dirty data to disk.
+    FS_CONTEXT.lock().root_dir().sync(false)?;
     Ok(0)
 }
 
-pub fn sys_syncfs(_fd: i32) -> AxResult<isize> {
-    warn!("dummy sys_syncfs");
+pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
+    debug!("sys_syncfs <= fd: {fd}");
+    // TODO: File::from_fd only accepts regular file fds; Linux syncfs(2) accepts any fd type.
+    let f = crate::file::File::from_fd(fd)?;
+    f.inner().location().filesystem().flush()?;
     Ok(0)
 }

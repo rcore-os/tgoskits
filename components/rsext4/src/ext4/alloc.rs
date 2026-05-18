@@ -59,6 +59,23 @@ impl Ext4FileSystem {
                         .alloc_contiguous_blocks(data, group_idx, count);
                 })?;
 
+            // Check the allocation result *before* doing any mutable descriptor
+            // work. If the bitmap had no free block despite the descriptor claiming
+            // otherwise, the group is stale/inconsistent (e.g. dirty unmount with
+            // lazy initialisation). Skip to the next group instead of failing
+            // immediately so that groups with consistent bitmaps are still tried.
+            let alloc = match alloc_res {
+                Ok(a) => a,
+                Err(e) if e.code == Errno::ENOSPC => {
+                    warn!(
+                        "alloc_blocks: group={group_idx} descriptor claims {free} free blocks but \
+                         bitmap has none — descriptor/bitmap inconsistency, skipping group"
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
             if ext4_superblock_has_metadata_csum(&self.superblock) {
                 let sb = self.superblock;
                 let updated_data = self
@@ -72,8 +89,6 @@ impl Ext4FileSystem {
                     .ok_or(Ext4Error::corrupted())?;
                 desc_mut.update_checksum(&sb, group_idx.raw(), Some(&updated_data), None);
             }
-
-            let alloc = alloc_res?;
 
             if let Some(desc_mut) = self.get_group_desc_mut(group_idx) {
                 let before = desc_mut.free_blocks_count();
