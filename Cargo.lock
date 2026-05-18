@@ -1619,6 +1619,7 @@ dependencies = [
  "futures-util",
  "indicatif",
  "jkconfig 0.1.8",
+ "libc",
  "log",
  "object 0.38.1",
  "ostool",

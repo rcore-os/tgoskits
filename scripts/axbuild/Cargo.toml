@@ -46,6 +46,9 @@ quote = "1"
 syn = { version = "2", features = ["full", "visit"] }
 walkdir = "2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 clap = ["dep:clap", "dep:tokio"]
 cli = ["dep:clap", "tokio"]

@@ -112,16 +112,22 @@ cargo xtask backtrace symbolize \
 
 Panic 路径若使用 `kind=panic` 的 raw 块，将 `--kind` 改为 `panic`，并确保 `--elf` 与产生该日志的构建一致。
 
-## 后续计划：跑完自动 symbolize
+## ArceOS QEMU 测试：跑完自动 symbolize
 
-当前 **`cargo xtask arceos test qemu` 不会在结束后自动调用 symbolize**；需要按上文第二步手动执行，或自行用 shell `tee` 保存日志。
+在 **Unix** 主机上，`cargo xtask arceos test qemu` 运行 **rust**（及 generic rust 风格）用例时，默认会在每个用例 QEMU 结束后：
 
-计划在 **#635 与 #646 合并到 `dev` 之后**，通过 **单独的 follow-up PR** 实现：
+1. 将本次串口输出 tee 到 `.axbuild/tmp/qemu-logs/<case>-<target>.log`；
+2. 用同次构建的 ELF 调用 host `backtrace symbolize`，在终端打印 `=== host backtrace symbolize ===` 段。
 
-- 在 `cargo xtask arceos test qemu`（或专用 `backtrace e2e`）成功结束后，自动对本次运行的 ELF 与捕获日志调用 `backtrace symbolize`；
-- 使「正常执行一条测试命令即可在终端看到符号化栈」，而无需再敲第二条命令。
+因此 backtrace 相关 E2E 通常 **一条命令** 即可看到符号化栈，无需再手动 `tee` 与第二条 `symbolize`。
 
-该自动化 **不改变** target 仍输出 raw 块、host 仍用 addr2line 的分工；仅改善 xtask 用户体验。
+关闭自动符号化：
+
+```bash
+cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case backtrace-raw-normal --no-symbolize
+```
+
+用例名含 `raw` 时自动加 `--kind raw`；含 `panic` / `trap` 时同理。仍可用上文「手动两步」对任意保存的日志做 symbolize。
 
 ## 验证
 
