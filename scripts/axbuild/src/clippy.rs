@@ -1,7 +1,5 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    env,
-    ffi::OsString,
     path::Path,
 };
 
@@ -9,7 +7,30 @@ use anyhow::{Context, bail};
 use cargo_metadata::{Metadata, Package};
 use serde_json::Value;
 
-use crate::support::process::run_cargo_status;
+use crate::support::process::run_cargo_status_with_env;
+
+const DEFAULT_FEATURE: &str = "default";
+const AX_CONFIG_PATH_ENV: &str = "AX_CONFIG_PATH";
+const AXCONFIG_FILE: &str = "axconfig.toml";
+const TGOSKITS_METADATA: &str = "tgoskits";
+const CLIPPY_METADATA: &str = "clippy";
+const SKIP_METADATA: &str = "skip";
+const DOCS_RS_METADATA: &str = "docs.rs";
+const DOCS_METADATA: &str = "docs";
+const RS_METADATA: &str = "rs";
+const TARGETS_METADATA: &str = "targets";
+
+const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
+    (
+        "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-none-softfloat",
+    ),
+    ("aarch64-unknown-none", "aarch64-unknown-none-softfloat"),
+    (
+        "loongarch64-unknown-none",
+        "loongarch64-unknown-none-softfloat",
+    ),
+];
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {
     validate_clippy_args(args)?;
@@ -223,21 +244,21 @@ impl ClippyCheck {
 fn docs_rs_targets(package: &Package) -> Vec<String> {
     let Some(docs_rs) = package
         .metadata
-        .get("docs.rs")
+        .get(DOCS_RS_METADATA)
         .and_then(Value::as_object)
         .or_else(|| {
             package
                 .metadata
-                .get("docs")
+                .get(DOCS_METADATA)
                 .and_then(Value::as_object)
-                .and_then(|docs| docs.get("rs"))
+                .and_then(|docs| docs.get(RS_METADATA))
                 .and_then(Value::as_object)
         })
     else {
         return Vec::new();
     };
 
-    let Some(targets) = docs_rs.get("targets").and_then(Value::as_array) else {
+    let Some(targets) = docs_rs.get(TARGETS_METADATA).and_then(Value::as_array) else {
         return Vec::new();
     };
 
@@ -250,22 +271,20 @@ fn docs_rs_targets(package: &Package) -> Vec<String> {
 }
 
 fn normalize_clippy_target(target: &str) -> &str {
-    match target {
-        "aarch64-unknown-linux-gnu" => "aarch64-unknown-none-softfloat",
-        "aarch64-unknown-none" => "aarch64-unknown-none-softfloat",
-        "loongarch64-unknown-none" => "loongarch64-unknown-none-softfloat",
-        target => target,
-    }
+    CLIPPY_TARGET_ALIASES
+        .iter()
+        .find_map(|(source, normalized)| (*source == target).then_some(*normalized))
+        .unwrap_or(target)
 }
 
 fn clippy_skip_reason(package: &Package) -> Option<&str> {
     package
         .metadata
-        .get("tgoskits")
+        .get(TGOSKITS_METADATA)
         .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("clippy"))
+        .and_then(|metadata| metadata.get(CLIPPY_METADATA))
         .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("skip"))
+        .and_then(|metadata| metadata.get(SKIP_METADATA))
         .and_then(Value::as_str)
 }
 
@@ -287,12 +306,12 @@ fn clippy_env(package: &Package) -> Vec<(String, String)> {
     let Some(manifest_dir) = package.manifest_path.parent() else {
         return Vec::new();
     };
-    let axconfig = manifest_dir.join("axconfig.toml");
+    let axconfig = manifest_dir.join(AXCONFIG_FILE);
     if !axconfig.exists() {
         return Vec::new();
     }
 
-    vec![("AX_CONFIG_PATH".to_string(), axconfig.to_string())]
+    vec![(AX_CONFIG_PATH_ENV.to_string(), axconfig.to_string())]
 }
 
 fn expand_clippy_checks(packages: &[Package]) -> Vec<ClippyCheck> {
@@ -302,7 +321,7 @@ fn expand_clippy_checks(packages: &[Package]) -> Vec<ClippyCheck> {
         let features: BTreeSet<_> = package
             .features
             .keys()
-            .filter(|feature| feature.as_str() != "default")
+            .filter(|feature| feature.as_str() != DEFAULT_FEATURE)
             .cloned()
             .collect();
         let targets = docs_rs_targets(package);
@@ -467,38 +486,7 @@ struct ProcessCargoRunner;
 impl CargoRunner for ProcessCargoRunner {
     fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool> {
         let args = check.cargo_args();
-        let _env_guard = EnvRestoreGuard::set(&check.env);
-        run_cargo_status(workspace_root, &args)
-    }
-}
-
-struct EnvRestoreGuard {
-    previous: Vec<(String, Option<OsString>)>,
-}
-
-impl EnvRestoreGuard {
-    fn set(envs: &[(String, String)]) -> Self {
-        let mut previous = Vec::new();
-        for (key, value) in envs {
-            previous.push((key.clone(), env::var_os(key)));
-            unsafe {
-                env::set_var(key, value);
-            }
-        }
-        Self { previous }
-    }
-}
-
-impl Drop for EnvRestoreGuard {
-    fn drop(&mut self) {
-        for (key, value) in self.previous.drain(..).rev() {
-            unsafe {
-                match value {
-                    Some(value) => env::set_var(key, value),
-                    None => env::remove_var(key),
-                }
-            }
-        }
+        run_cargo_status_with_env(workspace_root, &args, &check.env)
     }
 }
 
