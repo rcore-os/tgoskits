@@ -86,8 +86,11 @@ pub fn probe_all_devices() -> Result<(), AxError> {
     clear_net_devices();
     rdrive::probe_all(false).map_err(|_| AxError::BadState)?;
 
-    for dev in rdrive::get_list::<rd_block::Block>() {
-        let block = Box::new(blk::Block::from(dev));
+    for dev in rdrive::get_list::<blk::PlatformBlockDevice>() {
+        let block = Box::new(blk::Block::try_from(dev).map_err(|err| match err {
+            ax_driver_base::DevError::NoMemory => AxError::NoMemory,
+            _ => AxError::BadState,
+        })?);
         if register_block_device(block).is_err() {
             return Err(AxError::NoMemory);
         }

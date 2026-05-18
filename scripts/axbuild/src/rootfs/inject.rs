@@ -66,19 +66,21 @@ pub(crate) fn replace_file(
         "guest path must be absolute: `{guest_path}`"
     );
 
-    let mut commands = vec![
+    let commands = vec![
         format!("rm {guest_path}"),
         format!("write {} {guest_path}", source_path.display()),
     ];
     #[cfg(unix)]
-    {
+    let commands = {
         use std::os::unix::fs::PermissionsExt;
         let mode = fs::metadata(source_path)
             .with_context(|| format!("failed to stat {}", source_path.display()))?
             .permissions()
             .mode();
+        let mut commands = commands;
         commands.push(format!("sif {guest_path} mode 0{mode:o}"));
-    }
+        commands
+    };
 
     run_debugfs_script(
         rootfs_img,

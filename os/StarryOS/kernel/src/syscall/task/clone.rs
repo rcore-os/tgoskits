@@ -284,6 +284,13 @@ impl CloneArgs {
         let task = spawn_task(new_task);
         add_task_to_table(&task);
 
+        // Linux kcov(1): coverage collection is disabled in the child after
+        // fork().  The child's Thread is always created with kcov: None and a
+        // new TID not present in the KCOV state table, but we clean up
+        // explicitly for consistency and future-proofing.
+        #[cfg(feature = "kcov")]
+        crate::kcov::on_fork(tid);
+
         // Block the parent until the child exec's or exits.
         if flags.contains(CloneFlags::VFORK) {
             new_proc_data.wait_vfork_done();

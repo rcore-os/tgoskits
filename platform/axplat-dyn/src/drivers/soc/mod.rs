@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod rockchip;
+pub(crate) mod scmi;
 
 #[cfg(all(feature = "rockchip-soc", not(feature = "rk3568-clk")))]
 pub(crate) use rockchip::{
