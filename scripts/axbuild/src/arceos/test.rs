@@ -558,10 +558,6 @@ async fn prepare_rust_qemu_cases(
     Ok(prepared)
 }
 
-fn wants_backtrace_auto_symbolize(case_name: &str, package: &str) -> bool {
-    case_name.contains("backtrace") || package.contains("backtrace")
-}
-
 async fn run_rust_qemu_case(
     arceos: &mut ArceOS,
     case: &PreparedArceosRustQemuCase,
@@ -573,7 +569,8 @@ async fn run_rust_qemu_case(
     let package = &case.case.package;
     let debug = case.request.debug;
 
-    let auto_symbolize = symbolize_after && wants_backtrace_auto_symbolize(case_name, package);
+    let auto_symbolize = symbolize_after
+        && crate::build::build_info_enables_backtrace_path(&case.case.build_config_path);
 
     #[cfg(unix)]
     let log_path = if auto_symbolize {
