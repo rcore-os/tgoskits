@@ -110,9 +110,18 @@ pub fn memory_regions() -> impl Iterator<Item = PhysMemRegion> {
     ALL_MEM_REGIONS.iter().cloned()
 }
 
-#[cfg(plat_dyn)]
 pub fn boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
-    axplat_dyn::boot_stack_bounds(cpu_id)
+    #[cfg(plat_dyn)]
+    {
+        axplat_dyn::boot_stack_bounds(cpu_id)
+    }
+    #[cfg(not(plat_dyn))]
+    {
+        let _ = cpu_id;
+        let bottom = addr_of_sym!(boot_stack);
+        let top = addr_of_sym!(boot_stack_top);
+        (VirtAddr::from(bottom), top - bottom)
+    }
 }
 
 /// Fills the `.bss` section with zeros.

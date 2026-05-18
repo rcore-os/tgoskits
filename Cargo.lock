@@ -1300,7 +1300,7 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
- "dw_apb_uart",
+ "dw_apb_uart 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
 ]
 
@@ -3490,6 +3490,13 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "dw_apb_uart"
+version = "0.1.0"
+dependencies = [
+ "tock-registers 0.10.1",
+]
 
 [[package]]
 name = "dw_apb_uart"
@@ -8420,6 +8427,7 @@ dependencies = [
  "crab-usb",
  "ddebug",
  "downcast-rs",
+ "dw_apb_uart 0.1.0",
  "enum_dispatch",
  "event-listener",
  "extern-trait",
@@ -8440,6 +8448,7 @@ dependencies = [
  "riscv 0.16.0",
  "scope-local",
  "sg2002-tpu",
+ "sg200x-bsp",
  "slab",
  "spin 0.10.0",
  "starry-process",
@@ -8448,6 +8457,7 @@ dependencies = [
  "static-keys",
  "strum 0.28.0",
  "syscalls",
+ "tock-registers 0.9.0",
  "uluru",
  "weak-map",
  "x86",
