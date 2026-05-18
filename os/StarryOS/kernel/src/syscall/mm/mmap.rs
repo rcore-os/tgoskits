@@ -172,22 +172,21 @@ pub fn sys_mmap(
 
     // File-backed `MAP_FIXED`: validate fd mode before any destructive unmap
     // (Linux `do_mmap` ordering; avoids tearing down the old mapping on `EACCES`).
-    if let Some(dm) = device_mmap_top.as_ref() {
-        let needs_file_mmap_checks = match dm {
-            Ok(DeviceMmap::Physical(_)) | Ok(DeviceMmap::Cache(_)) => false,
-            Ok(DeviceMmap::None) | Err(_) => true,
-        };
-        if needs_file_mmap_checks && let Some(ref fl) = file {
-            let (_backend, flags) = fl.file_mmap()?;
-            if !flags.contains(FileFlags::READ) {
-                return Err(AxError::PermissionDenied);
-            }
-            if map_type == MmapFlags::SHARED
-                && permission_flags.contains(MmapProt::WRITE)
-                && !flags.contains(FileFlags::WRITE)
-            {
-                return Err(AxError::PermissionDenied);
-            }
+    // Covers both regular files and PRIVATE mappings that bypass device_mmap in the
+    // backend match (device_mmap may return Physical/Cache while PRIVATE still uses
+    // file_mmap). `file_mmap()` here is intentionally idempotent with the main path.
+    if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE)
+        && let Some(ref fl) = file
+    {
+        let (_backend, flags) = fl.file_mmap()?;
+        if !flags.contains(FileFlags::READ) {
+            return Err(AxError::PermissionDenied);
+        }
+        if matches!(map_type, MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE)
+            && permission_flags.contains(MmapProt::WRITE)
+            && !flags.contains(FileFlags::WRITE)
+        {
+            return Err(AxError::PermissionDenied);
         }
     }
 
