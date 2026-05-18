@@ -27,9 +27,6 @@ include = [
 [package.metadata.tgoskits.clippy]
 skip = "requires an Axvisor target/build configuration; use the axvisor xtask flow"
 
-[profile.release]
-lto = true
-
 [[bin]]
 name = "axvisor"
 path = "src/main.rs"

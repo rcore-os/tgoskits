@@ -9,9 +9,6 @@ publish = false
 [package.metadata.tgoskits.clippy]
 skip = "requires the chainloader Makefile target, BSP features, and custom RUSTFLAGS"
 
-[profile.release]
-lto = true
-
 [features]
 default = []
 bsp_rpi3 = ["tock-registers"]
