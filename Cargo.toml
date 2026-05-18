@@ -72,6 +72,7 @@ members = [
     "components/cap_access",
     "components/cpumask",
     "components/crate_interface",
+    "components/dma-api",
     "components/crate_interface/crate_interface_lite",
     "components/crate_interface/test_crates/define-simple-traits",
     "components/crate_interface/test_crates/define-weak-traits",
@@ -91,6 +92,7 @@ members = [
     "components/kspin",
     "components/linked_list_r4l",
     "components/loongarch_vcpu",
+    "components/mmio-api",
     "components/page_table_multiarch/page_table_entry",
     "components/page_table_multiarch/page_table_multiarch",
     "components/percpu/percpu",
@@ -449,8 +451,8 @@ futures = { version = "0.3", default-features = false }
 heapless = "0.9"
 schemars = "1.2.1"
 toml = "1"
-dma-api = { version = "0.7.2" }
-mmio-api = "0.2.1"
+dma-api = { version = "0.7.3", path = "components/dma-api" }
+mmio-api = { version = "0.2.2", path = "components/mmio-api" }
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"

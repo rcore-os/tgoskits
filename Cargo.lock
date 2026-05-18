@@ -1759,7 +1759,7 @@ dependencies = [
  "ax-plat",
  "axklib",
  "crab-usb",
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "dwmmc-host",
  "eth-intel",
  "fdt-edit",
@@ -3478,6 +3478,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dma-api"
+version = "0.7.3"
+dependencies = [
+ "aarch64-cpu-ext",
+ "cfg-if",
+ "derive_more",
+ "log",
+ "mbarrier",
+ "spin 0.10.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3558,7 +3571,7 @@ name = "dwmmc-host"
 version = "0.1.0"
 dependencies = [
  "bitfield-struct",
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "embedded-hal",
  "log",
  "mmio-api",
@@ -3781,7 +3794,7 @@ dependencies = [
 name = "eth-intel"
 version = "0.1.2"
 dependencies = [
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "fdt-edit",
  "log",
  "mmio-api",
@@ -5625,9 +5638,7 @@ dependencies = [
 
 [[package]]
 name = "mmio-api"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41c7c68327571e1807adf7b5bdf7809a281402f879fc641f0e051fb0b960a41e"
+version = "0.2.2"
 dependencies = [
  "derive_more",
  "thiserror 2.0.18",
@@ -5866,7 +5877,7 @@ name = "nvme-driver"
 version = "0.4.2"
 dependencies = [
  "byte-unit",
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "fdt-edit",
  "log",
  "mmio-api",
@@ -6604,7 +6615,7 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 name = "ramdisk"
 version = "0.1.1"
 dependencies = [
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "rd-block",
  "rdif-block",
  "spin 0.10.0",
@@ -6833,7 +6844,7 @@ dependencies = [
 name = "rd-block"
 version = "0.1.2"
 dependencies = [
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "futures",
  "rdif-block",
  "spin_on",
@@ -6843,7 +6854,7 @@ dependencies = [
 name = "rd-net"
 version = "0.1.1"
 dependencies = [
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "futures",
  "rdif-eth",
 ]
@@ -6877,7 +6888,7 @@ dependencies = [
 name = "rdif-block"
 version = "0.7.1"
 dependencies = [
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "rdif-base 0.8.1",
  "thiserror 2.0.18",
 ]
@@ -6909,7 +6920,7 @@ dependencies = [
 name = "rdif-eth"
 version = "0.2.1"
 dependencies = [
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "rdif-base 0.8.1",
  "thiserror 2.0.18",
 ]
@@ -7076,7 +7087,7 @@ dependencies = [
 name = "realtek-rtl8125"
 version = "0.2.0"
 dependencies = [
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "log",
  "mmio-api",
  "rdif-eth",
@@ -7547,7 +7558,7 @@ name = "rockchip-soc"
 version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "enum_dispatch",
  "fdt-edit",
  "log",
@@ -7870,7 +7881,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "sdhci-host"
 version = "0.1.0"
 dependencies = [
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "embedded-hal",
  "log",
  "mmio-api",
