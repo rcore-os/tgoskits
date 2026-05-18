@@ -3,7 +3,6 @@ features = [
     "ax-std/bus-mmio",
     "fs",
     "sdmmc",
-    "phytium-blk",
 ]
 log = "Info"
 plat_dyn = true

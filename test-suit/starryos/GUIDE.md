@@ -47,6 +47,18 @@ test-suit/starryos/
       bugfix/
         qemu-<arch>.toml
         <subcase>/c/CMakeLists.txt
+      c-regression/
+        qemu-<arch>.toml
+        <subcase>/c/CMakeLists.txt
+      drm/
+        qemu-<arch>.toml
+        <subcase>/c/CMakeLists.txt
+      evdev/
+        qemu-<arch>.toml
+        <subcase>/c/CMakeLists.txt
+      sqlite/
+        qemu-<arch>.toml
+        <subcase>/c/CMakeLists.txt
       syscall/
         qemu-<arch>.toml
         <subcase>/c/CMakeLists.txt

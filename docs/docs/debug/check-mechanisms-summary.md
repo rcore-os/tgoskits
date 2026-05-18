@@ -145,7 +145,13 @@ panic/oops 递归保护用于提升异常路径健壮性，避免主故障之后
 - 细化 backtrace 策略，例如按平台、构建配置或异常类型选择是否打印完整 backtrace。
 - 将 BUG、die、fatal trap 等更多异常入口纳入统一的 oops 状态管理。
 
-## 5. [`lockdep` 锁依赖检查](https://github.com/rcore-os/tgoskits/blob/dev/test-suit/arceos/rust/task/lockdep/README.md)
+## 5. [Backtrace Host 符号化](./backtrace-host-symbolize.md)
+
+Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtrace 块（`BACKTRACE_BEGIN` / `BT` / `BACKTRACE_END`）做离线符号化，与 Issue #146、PR #635 / #646 配套。当前需 QEMU 后手动执行 symbolize；跑完测试自动 symbolize 计划在 #635 与 #646 合入后由后续 PR 提供。
+
+主要实现：`scripts/axbuild/src/backtrace.rs`。
+
+## 6. [`lockdep` 锁依赖检查](https://github.com/rcore-os/tgoskits/blob/dev/test-suit/arceos/rust/task/lockdep/README.md)
 
 `lockdep` 用来检查锁使用是否违反依赖关系，是当前几类机制中最完整的运行时锁检查框架。
 
