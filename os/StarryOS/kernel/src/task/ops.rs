@@ -23,6 +23,7 @@ use super::{
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
 const FUTEX_TID_MASK: u32 = 0x3fffffff;
+const FUTEX_WAITERS: u32 = 0x80000000;
 
 static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
 
@@ -297,28 +298,48 @@ pub struct RobustListHead {
     pub list_op_pending: *mut RobustList,
 }
 
-fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
+fn robust_futex_address(entry: *mut RobustList, offset: i64) -> AxResult<usize> {
     let address = (entry as u64)
         .checked_add_signed(offset)
         .ok_or(AxError::InvalidInput)?;
-    let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
-    let futex_word = address as *mut u32;
-    let owner_tid = (current().id().as_u64() as u32) & FUTEX_TID_MASK;
-    let value = futex_word.vm_read()?;
-
-    if value & FUTEX_TID_MASK != owner_tid {
-        return Ok(());
+    let address = usize::try_from(address).map_err(|_| AxError::InvalidInput)?;
+    if address % size_of::<u32>() != 0 {
+        return Err(AxError::InvalidInput);
     }
-    futex_word.vm_write((value & !FUTEX_TID_MASK) | FUTEX_OWNER_DIED)?;
+    Ok(address)
+}
 
+fn wake_robust_futex(address: usize) {
     let key = FutexKey::new_current_teardown(address);
 
     let futex_table = futex_table_for(&key);
 
     let Some(futex) = futex_table.get(&key) else {
-        return Ok(());
+        return;
     };
     futex.wq.wake(1, u32::MAX);
+}
+
+fn handle_futex_death(entry: *mut RobustList, offset: i64, pending: bool) -> AxResult<()> {
+    let address = robust_futex_address(entry, offset)?;
+    let futex_word = address as *mut u32;
+    let owner_tid = (current().id().as_u64() as u32) & FUTEX_TID_MASK;
+    let value = futex_word.vm_read()?;
+    let owner = value & FUTEX_TID_MASK;
+
+    if pending && owner == 0 {
+        wake_robust_futex(address);
+        return Ok(());
+    }
+
+    if owner != owner_tid {
+        return Ok(());
+    }
+    futex_word.vm_write((value & FUTEX_WAITERS) | FUTEX_OWNER_DIED)?;
+
+    if value & FUTEX_WAITERS != 0 {
+        wake_robust_futex(address);
+    }
     Ok(())
 }
 
@@ -331,9 +352,9 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
     let head = head.vm_read()?;
     let mut entry = head.list.next;
     let offset = head.futex_offset;
-    // Keep the entry address aligned in case user-space leaves low-bit markers
-    // in `list_op_pending` during robust-futex list operations.
-    let pending = (head.list_op_pending as usize & !0x3) as *mut RobustList;
+    // Bit 0 marks PI futexes in Linux's robust-list ABI.  Starry handles only
+    // regular futexes here, but the pointer still needs to be untagged.
+    let pending = (head.list_op_pending as usize & !1) as *mut RobustList;
 
     while !core::ptr::eq(entry, end_ptr) {
         if entry.is_null() {
@@ -345,7 +366,7 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
         };
         let next_entry = node.next;
         if entry != pending {
-            handle_futex_death(entry, offset).unwrap_or_else(|err| {
+            handle_futex_death(entry, offset, false).unwrap_or_else(|err| {
                 debug!("robust list: failed to clean entry {entry:?}: {err:?}");
             });
         }
@@ -361,7 +382,7 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
 
     // Process the pending entry that was skipped in the loop
     if !pending.is_null() && !core::ptr::eq(pending, end_ptr) {
-        handle_futex_death(pending, offset).unwrap_or_else(|err| {
+        handle_futex_death(pending, offset, true).unwrap_or_else(|err| {
             debug!("robust list: failed to clean pending entry {pending:?}: {err:?}");
         });
     }
@@ -375,6 +396,16 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     info!("{} exit with code: {}", curr.id_name(), exit_code);
 
+    // Robust futex ownership must be released before clone-child-tid wakes a
+    // pthread joiner; otherwise userspace can observe thread exit before the
+    // OWNER_DIED handoff has been written.
+    let head = thr.robust_list_head() as *const RobustListHead;
+    if !head.is_null()
+        && let Err(err) = exit_robust_list(head)
+    {
+        warn!("exit robust list failed: {err:?}");
+    }
+
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
     if clear_child_tid.vm_write(0).is_ok() {
         let key = FutexKey::new_current_teardown(clear_child_tid as usize);
@@ -384,12 +415,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             futex.wq.wake(1, u32::MAX);
         }
         ax_task::yield_now();
-    }
-    let head = thr.robust_list_head() as *const RobustListHead;
-    if !head.is_null()
-        && let Err(err) = exit_robust_list(head)
-    {
-        warn!("exit robust list failed: {err:?}");
     }
 
     let process = &thr.proc_data.proc;
