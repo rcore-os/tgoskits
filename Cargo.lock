@@ -2817,7 +2817,7 @@ dependencies = [
  "bitflags 2.11.1",
  "crossbeam",
  "crossbeam-skiplist",
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "enum_dispatch",
  "futures",
  "id-arena",
@@ -3458,21 +3458,6 @@ checksum = "3816a852c6c71653e1941cfe22f215eca41c14fd45ec9b32c0fa82fe57fe0989"
 dependencies = [
  "aarch64-cpu-ext",
  "cfg-if",
- "spin 0.10.0",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "dma-api"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2136c1ae5dd8dfddada92cc005f8518ad47b00619781b361a17104fb8a44b3e8"
-dependencies = [
- "aarch64-cpu-ext",
- "cfg-if",
- "derive_more",
- "log",
- "mbarrier",
  "spin 0.10.0",
  "thiserror 2.0.18",
 ]
@@ -7530,7 +7515,7 @@ version = "0.2.0"
 dependencies = [
  "aarch64-cpu-ext",
  "bitflags 2.11.1",
- "dma-api 0.7.2",
+ "dma-api 0.7.3",
  "fdt-edit",
  "log",
  "mbarrier",
