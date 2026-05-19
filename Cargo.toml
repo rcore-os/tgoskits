@@ -14,9 +14,9 @@ lto = true
 resolver = "3"
 members = [
     "components/aarch64_sysreg",
-    "components/arm-scmi-rs",
-    "components/arm_pl011",
-    "components/arm_pl031",
+    "drivers/serial/arm_pl011",
+    "drivers/rtc/arm_pl031",
+    "drivers/firmware/arm-scmi-rs",
     "components/arm_vcpu",
     "components/arm_vgic",
     "components/ax-lazyinit",
@@ -84,7 +84,7 @@ members = [
     "components/crate_interface/test_crates/test-weak-partial",
     "components/ctor_bare/ctor_bare",
     "components/ctor_bare/ctor_bare_macros",
-    "components/fxmac_rs",
+    "drivers/net/fxmac_rs",
     "components/handler_table",
     "components/int_ratio",
     "components/kernel_guard",
@@ -99,7 +99,7 @@ members = [
     "components/percpu/percpu_macros",
     "components/range-alloc-arceos",
     "components/riscv-h",
-    "components/riscv_plic",
+    "drivers/intc/riscv_plic",
     "components/riscv_vcpu",
     "components/riscv_vplic",
     "components/rsext4",
@@ -241,7 +241,7 @@ members = [
 [workspace.dependencies]
 # Local workspace crates
 aarch64_sysreg = { version = "0.3.7", path = "components/aarch64_sysreg" }
-arm-scmi-rs = { version = "0.1.2", path = "components/arm-scmi-rs" }
+arm-scmi-rs = { version = "0.1.2", path = "drivers/firmware/arm-scmi-rs" }
 arceos-affinity = { version = "0.3.1", path = "test-suit/arceos/rust/task/affinity" }
 arceos-backtrace-raw-basic = { version = "0.3.1", path = "test-suit/arceos/rust/backtrace-raw-basic" }
 arceos-backtrace-raw-badfp = { version = "0.3.1", path = "test-suit/arceos/rust/backtrace-raw-badfp" }
@@ -270,8 +270,8 @@ arm_vgic = { version = "0.4.8", path = "components/arm_vgic" }
 ax-alloc = { version = "0.7.0", path = "os/arceos/modules/axalloc" }
 ax-allocator = { version = "0.5.0", path = "components/axallocator" }
 ax-api = { version = "0.5.14", path = "os/arceos/api/arceos_api" }
-ax-arm-pl011 = { version = "0.3.7", path = "components/arm_pl011" }
-ax-arm-pl031 = { version = "0.4.6", path = "components/arm_pl031" }
+ax-arm-pl011 = { version = "0.3.7", path = "drivers/serial/arm_pl011" }
+ax-arm-pl031 = { version = "0.4.6", path = "drivers/rtc/arm_pl031" }
 ax-cap-access = { version = "0.3.5", path = "components/cap_access" }
 ax-config = { version = "0.5.10", path = "os/arceos/modules/axconfig" }
 ax-config-gen = { version = "0.4.9", path = "components/axconfig-gen/axconfig-gen" }
@@ -339,7 +339,7 @@ ax-plat-riscv64-qemu-virt = { version = "0.5.7", path = "components/axplat_crate
 ax-plat-riscv64-sg2002 = { version = "0.3.4", path = "components/axplat_crates/platforms/axplat-riscv64-sg2002" }
 ax-plat-x86-pc = { version = "0.5.8", path = "components/axplat_crates/platforms/axplat-x86-pc" }
 ax-posix-api = { version = "0.5.14", path = "os/arceos/api/arceos_posix_api" }
-ax-riscv-plic = { version = "0.4.5", path = "components/riscv_plic" }
+ax-riscv-plic = { version = "0.4.5", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.5.14", path = "os/arceos/modules/axruntime" }
 ax-sched = { version = "0.5.6", path = "components/axsched" }
 ax-shell = { version = "0.3.1", path = "os/arceos/examples/shell" }
@@ -371,7 +371,8 @@ bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }
 deptool = { version = "0.3.1", path = "os/arceos/tools/deptool" }
-fxmac_rs = { version = "0.5.0", path = "components/fxmac_rs" }
+dw_apb_uart = { version = "0.1", path = "drivers/serial/dw_apb_uart", default-features = false }
+fxmac_rs = { version = "0.5.0", path = "drivers/net/fxmac_rs" }
 hello-kernel = { version = "0.3.1", path = "components/axplat_crates/examples/hello-kernel" }
 impl-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-simple-traits" }
 impl-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-weak-partial" }
@@ -440,7 +441,6 @@ ranges-ext = { version = "0.6.4", path = "components/ranges-ext" }
 somehal-macros = { path = "components/somehal-macros", version = "0.1.3" }
 kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2.1" }
 somehal = { version = "0.6.7", path = "platform/somehal" }
-dw_apb_uart = { version = "0.1.0", path = "components/dw_apb_uart", default-features = false }
 
 # External crates
 anyhow = { version = "1.0", default-features = false }
