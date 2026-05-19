@@ -35,7 +35,7 @@ ax-riscv-plic = "0.4.0"
 
 ```bash
 # 进入 crate 目录
-cd components/riscv_plic
+cd drivers/intc/riscv_plic
 
 # 代码格式化
 cargo fmt --all
