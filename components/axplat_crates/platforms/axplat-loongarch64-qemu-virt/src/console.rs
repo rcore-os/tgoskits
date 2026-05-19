@@ -11,6 +11,9 @@ use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
 
 static UART: LazyInit<SpinNoIrq<Uart16550<MmioBackend>>> = LazyInit::new();
 
+const CSR_GSTAT: u16 = 0x50;
+const GSTAT_PGM: usize = 1 << 1;
+
 fn uart_config(input_irq_enabled: bool) -> Config {
     Config {
         interrupts: if input_irq_enabled {
@@ -22,15 +25,24 @@ fn uart_config(input_irq_enabled: bool) -> Config {
     }
 }
 
+#[inline(always)]
+fn in_guest_mode() -> bool {
+    let gstat: usize;
+    unsafe {
+        core::arch::asm!("csrrd {}, {}", out(reg) gstat, const CSR_GSTAT);
+    }
+    (gstat & GSTAT_PGM) != 0
+}
+
 pub(crate) fn init_early() {
     UART.init_once({
         let mut uart =
             unsafe { Uart16550::new_mmio((UART_PADDR + PHYS_VIRT_OFFSET) as *mut u8, 1) }.unwrap();
         uart.init(uart_config(false))
             .expect("Failed to initialize UART");
-        // Under AxVisor the guest may share the passthrough UART with the host.
-        // The loopback self-test is not safe in that configuration and can stall
-        // early guest bring-up before any output is visible.
+        if !in_guest_mode() {
+            uart.test_loopback().expect("Failed to test UART loopback");
+        }
         SpinNoIrq::new(uart)
     });
 }

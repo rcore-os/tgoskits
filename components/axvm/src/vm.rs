@@ -625,8 +625,9 @@ impl AxVM {
 
     fn handle_nested_page_fault(&self, addr: GuestPhysAddr, access_flags: MappingFlags) -> bool {
         let mut guard = self.inner_mut.lock();
-        Self::debug_nested_page_fault(self.id(), &guard, addr, access_flags);
-        guard.address_space.handle_page_fault(addr, access_flags)
+        let handled = guard.address_space.handle_page_fault(addr, access_flags);
+        Self::debug_nested_page_fault(self.id(), &guard, addr, access_flags, handled);
+        handled
     }
 
     fn debug_nested_page_fault(
@@ -634,58 +635,108 @@ impl AxVM {
         inner: &AxVMInnerMut,
         addr: GuestPhysAddr,
         access_flags: MappingFlags,
+        handled: bool,
     ) {
         let root = inner.address_space.page_table_root();
         match inner.address_space.page_table().query(addr) {
             Ok((hpa, flags, size)) => {
-                warn!(
-                    "VM[{}] stage2 query hit: gpa={:#x} -> hpa={:#x}, access={:?}, \
-                     pte_flags={:?}, page_size={:?}, root={:#x}",
-                    vm_id,
-                    addr.as_usize(),
-                    hpa.as_usize(),
-                    access_flags,
-                    flags,
-                    size,
-                    root.as_usize()
-                );
+                if handled {
+                    debug!(
+                        "VM[{}] stage2 query hit: gpa={:#x} -> hpa={:#x}, access={:?}, \
+                         pte_flags={:?}, page_size={:?}, root={:#x}",
+                        vm_id,
+                        addr.as_usize(),
+                        hpa.as_usize(),
+                        access_flags,
+                        flags,
+                        size,
+                        root.as_usize()
+                    );
+                } else {
+                    warn!(
+                        "VM[{}] stage2 query hit: gpa={:#x} -> hpa={:#x}, access={:?}, \
+                         pte_flags={:?}, page_size={:?}, root={:#x}",
+                        vm_id,
+                        addr.as_usize(),
+                        hpa.as_usize(),
+                        access_flags,
+                        flags,
+                        size,
+                        root.as_usize()
+                    );
+                }
             }
             Err(err) => {
-                warn!(
-                    "VM[{}] stage2 query miss: gpa={:#x}, access={:?}, err={:?}, root={:#x}",
-                    vm_id,
-                    addr.as_usize(),
-                    access_flags,
-                    err,
-                    root.as_usize()
-                );
+                if handled {
+                    debug!(
+                        "VM[{}] stage2 query miss: gpa={:#x}, access={:?}, err={:?}, root={:#x}",
+                        vm_id,
+                        addr.as_usize(),
+                        access_flags,
+                        err,
+                        root.as_usize()
+                    );
+                } else {
+                    warn!(
+                        "VM[{}] stage2 query miss: gpa={:#x}, access={:?}, err={:?}, root={:#x}",
+                        vm_id,
+                        addr.as_usize(),
+                        access_flags,
+                        err,
+                        root.as_usize()
+                    );
+                }
             }
         }
 
         let translate = inner.address_space.translate(addr);
-        warn!(
-            "VM[{}] stage2 translate: gpa={:#x} -> {:?}",
-            vm_id,
-            addr.as_usize(),
-            translate
-        );
+        if handled {
+            debug!(
+                "VM[{}] stage2 translate: gpa={:#x} -> {:?}",
+                vm_id,
+                addr.as_usize(),
+                translate
+            );
+        } else {
+            warn!(
+                "VM[{}] stage2 translate: gpa={:#x} -> {:?}",
+                vm_id,
+                addr.as_usize(),
+                translate
+            );
+        }
 
         for (idx, region) in inner.memory_regions.iter().enumerate() {
             let start = region.gpa.as_usize();
             let end = start + region.size();
             if (start..end).contains(&addr.as_usize()) {
-                warn!(
-                    "VM[{}] stage2 region hit[{}]: gpa=[{:#x},{:#x}) hva={:#x} hpa={:#x} \
-                     size={:#x} identical={}",
-                    vm_id,
-                    idx,
-                    start,
-                    end,
-                    region.hva.as_usize(),
-                    region.host_paddr().as_usize(),
-                    region.size(),
-                    region.is_identical()
-                );
+                if handled {
+                    debug!(
+                        "VM[{}] stage2 region hit[{}]: gpa=[{:#x},{:#x}) hva={:#x} hpa={:#x} \
+                         size={:#x} identical={}",
+                        vm_id,
+                        idx,
+                        start,
+                        end,
+                        region.hva.as_usize(),
+                        region.host_paddr().as_usize(),
+                        region.size(),
+                        region.is_identical()
+                    );
+                } else {
+                    warn!(
+                        "VM[{}] stage2 region hit[{}]: gpa=[{:#x},{:#x}) hva={:#x} hpa={:#x} \
+                         size={:#x} identical={}",
+                        vm_id,
+                        idx,
+                        start,
+                        end,
+                        region.hva.as_usize(),
+                        region.host_paddr().as_usize(),
+                        region.size(),
+                        region.is_identical()
+                    );
+                }
             }
         }
     }

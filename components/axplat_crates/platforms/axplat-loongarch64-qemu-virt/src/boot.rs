@@ -1,10 +1,7 @@
 use ax_page_table_entry::{GenericPTE, MappingFlags, loongarch64::LA64PTE};
 use ax_plat::mem::{Aligned4K, pa, va};
 
-use crate::config::{
-    devices::UART_PADDR,
-    plat::{BOOT_STACK_SIZE, PHYS_BOOT_OFFSET, PHYS_VIRT_OFFSET},
-};
+use crate::config::plat::{BOOT_STACK_SIZE, PHYS_BOOT_OFFSET, PHYS_VIRT_OFFSET};
 
 #[unsafe(link_section = ".bss.stack")]
 static mut BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];
@@ -45,13 +42,6 @@ unsafe fn init_boot_page_table() {
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
             true,
         );
-    }
-}
-
-#[inline(always)]
-fn boot_trace_raw(ch: u8, uart_base: usize) {
-    unsafe {
-        (uart_base as *mut u8).write_volatile(ch);
     }
 }
 
@@ -113,38 +103,18 @@ unsafe extern "C" fn __boot_start() -> ! {
         la.local    $sp, {boot_stack}
         li.d        $t0, {boot_stack_size}
         add.d       $sp, $sp, $t0       # setup boot stack
-        li.d        $a0, 65
-        li.d        $a1, {boot_uart_base}
-        bl          {boot_trace_raw}
 
         # Init MMU
         bl          {enable_fp_simd}    # enable FP/SIMD instructions
-        li.d        $a0, 66
-        li.d        $a1, {boot_uart_base}
-        bl          {boot_trace_raw}
         bl          {init_boot_page_table}
-        li.d        $a0, 67
-        li.d        $a1, {boot_uart_base}
-        bl          {boot_trace_raw}
         bl          {init_mmu}          # setup boot page table and enable MMU
-        li.d        $a0, 68
-        li.d        $a1, {boot_uart_base}
-        bl          {boot_trace_raw}
 
         # Adjust stack pointer
         li.d        $t0, {boot_to_virt}
         add.d       $sp, $sp, $t0
-        li.d        $a0, 69
-        li.d        $a1, {virt_uart_base}
-        bl          {boot_trace_raw}
 
         csrrd       $a0, 0x20           # cpuid
         li.d        $a1, 0              # TODO: parse dtb
-        li.d        $a2, 70
-        li.d        $a3, {virt_uart_base}
-        move        $a0, $a2
-        move        $a1, $a3
-        bl          {boot_trace_raw}
         csrrd       $a0, 0x20           # cpuid
         li.d        $a1, 0              # TODO: parse dtb
         la.abs      $t0, {entry}
@@ -153,12 +123,9 @@ unsafe extern "C" fn __boot_start() -> ! {
 
         phys_boot_offset = const PHYS_BOOT_OFFSET,
         boot_to_virt = const BOOT_TO_VIRT,
-        boot_uart_base = const UART_PADDR + PHYS_BOOT_OFFSET,
-        virt_uart_base = const UART_PADDR + PHYS_VIRT_OFFSET,
 
         boot_stack = sym BOOT_STACK,
         boot_stack_size = const BOOT_STACK_SIZE,
-        boot_trace_raw = sym boot_trace_raw,
         enable_fp_simd = sym enable_fp_simd,
         init_boot_page_table = sym init_boot_page_table,
         init_mmu = sym init_mmu,
