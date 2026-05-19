@@ -1,0 +1,31 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+edition.workspace = true
+autotests = false
+license.workspace = true
+name = "test_hub"
+publish = false
+repository.workspace = true
+version = "0.1.1"
+
+[dependencies]
+crab-usb = {workspace = true}
+futures = {workspace = true, features = ["alloc"]}
+log = "0.4"
+
+[dev-dependencies]
+# byte-unit = {version = "5.1.6", default-features = false, features = ["byte"]}
+# ktest-helper = {workspace = true}
+# pcie = "0.2"
+# rockchip-pm = {workspace = true}
+# rockchip-soc = {workspace = true}
+# spin_on = "0.1.1"
+# rdrive = "0.18"
+
+# [[test]]
+# harness = false
+# name = "test"
+
+# [[test]]
+# harness = false
+# name = "test_dwc"

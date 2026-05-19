@@ -21,7 +21,7 @@ use smoltcp::{
     storage::PacketMetadata,
     wire::{Icmpv6Packet, IpAddress, IpListenEndpoint, Ipv4Packet, Ipv4Repr, Ipv6Packet, Ipv6Repr},
 };
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 
 use crate::{
     RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
@@ -50,6 +50,7 @@ pub struct RawSocket {
     ip_version: IpVersion,
     local_addr: RwLock<Option<IpAddress>>,
     peer_addr: RwLock<Option<IpAddress>>,
+    loopback_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
     ttl: RwLock<Option<u8>>,
     rx_closed: AtomicBool,
     tx_closed: AtomicBool,
@@ -67,6 +68,7 @@ impl RawSocket {
             ip_version,
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
+            loopback_rx: Mutex::new(None),
             ttl: RwLock::new(None),
             rx_closed: AtomicBool::new(false),
             tx_closed: AtomicBool::new(false),
@@ -101,6 +103,9 @@ impl RawSocket {
         if let Some(local) = *self.local_addr.read() {
             return local;
         }
+        if is_loopback_address(remote) {
+            return remote;
+        }
         get_service().get_source_address(&remote)
     }
 
@@ -118,6 +123,42 @@ impl RawSocket {
             }
         }
     }
+}
+
+fn is_loopback_address(addr: IpAddress) -> bool {
+    match addr {
+        IpAddress::Ipv4(addr) => addr.is_loopback(),
+        IpAddress::Ipv6(addr) => addr.is_loopback(),
+    }
+}
+
+fn icmp_checksum(packet: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut chunks = packet.chunks_exact(2);
+    for chunk in &mut chunks {
+        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+    }
+    if let Some(&byte) = chunks.remainder().first() {
+        sum += u16::from_be_bytes([byte, 0]) as u32;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn build_loopback_icmp_reply(packet: &[u8]) -> Option<vec::Vec<u8>> {
+    if packet.len() < 8 || packet[0] != 8 || packet[1] != 0 {
+        return None;
+    }
+
+    let mut reply = packet.to_vec();
+    reply[0] = 0;
+    reply[2] = 0;
+    reply[3] = 0;
+    let checksum = icmp_checksum(&reply);
+    reply[2..4].copy_from_slice(&checksum.to_be_bytes());
+    Some(reply)
 }
 
 impl Configurable for RawSocket {
@@ -207,6 +248,7 @@ impl SocketOps for RawSocket {
         let remote = self.remote_address(&options)?;
         let local = self.local_address_for(remote);
         let payload_len = src.remaining();
+        let loopback_ipv4 = self.ip_version == IpVersion::Ipv4 && is_loopback_address(remote);
 
         let per_call_nonblock = options.flags.contains(SendFlags::DONTWAIT);
         self.general.send_poller(self, per_call_nonblock, || {
@@ -299,6 +341,12 @@ impl SocketOps for RawSocket {
                     Icmpv6Packet::new_unchecked(&mut buf[header_len..])
                         .fill_checksum(&src_addr, &dst_addr);
                 }
+                if let Some(reply) = loopback_ipv4
+                    .then(|| build_loopback_icmp_reply(&buf[header_len..header_len + written]))
+                    .flatten()
+                {
+                    *self.loopback_rx.lock() = Some((local, reply));
+                }
                 Ok(written)
             })
         })
@@ -315,6 +363,27 @@ impl SocketOps for RawSocket {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 loop {
+                    if let Some((source, packet)) = if options.flags.contains(RecvFlags::PEEK) {
+                        self.loopback_rx.lock().clone()
+                    } else {
+                        self.loopback_rx.lock().take()
+                    } {
+                        let peer_mismatch =
+                            matches!(*self.peer_addr.read(), Some(peer) if source != peer);
+                        if !peer_mismatch {
+                            if let Some(from) = options.from.as_deref_mut() {
+                                *from = SocketAddrEx::Ip(SocketAddr::new(source.into(), 0));
+                            }
+
+                            let written = dst.write(&packet)?;
+                            return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+                                packet.len()
+                            } else {
+                                written
+                            });
+                        }
+                    }
+
                     let packet = if options.flags.contains(RecvFlags::PEEK) {
                         let packet = socket.peek().map_err(|_| AxError::WouldBlock)?;
                         let (source, _) = self.parse_ip_packet(packet)?;
@@ -389,6 +458,10 @@ impl Pollable for RawSocket {
                 !self.tx_closed.load(Ordering::Acquire) && socket.can_send(),
             );
         });
+        events.set(
+            IoEvents::IN,
+            events.contains(IoEvents::IN) || self.loopback_rx.lock().is_some(),
+        );
         events
     }
 

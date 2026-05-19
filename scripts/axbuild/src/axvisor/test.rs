@@ -346,7 +346,7 @@ impl Axvisor {
 
         let total = cases.len();
         let suite_started = Instant::now();
-        let mut failed = Vec::new();
+        let mut summary = test_qemu::QemuTestSummary::default();
         let asset_config = axvisor_case_asset_config();
 
         let build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
@@ -391,18 +391,22 @@ impl Axvisor {
                     )
                     .await
                     .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
+                let duration = case_started.elapsed();
                 match result {
-                    Ok(()) => println!("ok: {} ({:.2?})", case_name, case_started.elapsed()),
+                    Ok(()) => {
+                        println!("ok: {case_name} ({duration:.2?})");
+                        summary.pass_with_detail(case_name, format!("{duration:.2?}"));
+                    }
                     Err(err) => {
                         eprintln!("failed: {}: {err:#}", case_name);
-                        failed.push(case_name.clone());
+                        summary.fail_with_detail(case_name, format!("{duration:.2?}"));
                     }
                 }
             }
         }
 
-        println!("axvisor qemu total: {:.2?}", suite_started.elapsed());
-        test_qemu::finalize_qemu_test_run("axvisor", "case", &failed)
+        let total_duration = format!("{:.2?}", suite_started.elapsed());
+        summary.finish_with_total_detail("axvisor", "case", Some(total_duration.as_str()))
     }
 
     pub(super) async fn test_uboot(&mut self, args: ArgsTestUboot) -> anyhow::Result<()> {

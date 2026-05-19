@@ -55,16 +55,8 @@ const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::un
 
 #[cfg(target_os = "none")]
 fn main_task_stack() -> TaskStack {
-    unsafe extern "C" {
-        fn boot_stack();
-        fn boot_stack_top();
-    }
-
-    TaskStack::borrowed(
-        VirtAddr::from(boot_stack as *const () as usize),
-        (boot_stack_top as *const () as usize) - (boot_stack as *const () as usize),
-        TASK_STACK_ALIGN,
-    )
+    let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
+    TaskStack::borrowed(stack_ptr, stack_size, TASK_STACK_ALIGN)
 }
 
 #[cfg(not(target_os = "none"))]
@@ -696,8 +688,10 @@ pub(crate) fn init() {
 
     // Create the `idle` task (not current task).
     // The idle task will run when there is no other runnable task.
-    // Stack size of idle task should be large because traps/interrupts may happen in idle task,
-    // which need more stack space.
+    #[cfg(feature = "lockdep")]
+    const IDLE_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
+    // TODO: Consider unifying the non-lockdep idle stack size with the task stack configuration.
+    #[cfg(not(feature = "lockdep"))]
     const IDLE_TASK_STACK_SIZE: usize = 16384;
     let idle_task = TaskInner::new(|| crate::run_idle(), "idle".into(), IDLE_TASK_STACK_SIZE);
     // idle task should be pinned to the current CPU.

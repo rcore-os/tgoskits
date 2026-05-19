@@ -23,6 +23,19 @@ use test_utils::{
     ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, MockHal, mock_hal_test, test_dealloc_count,
 };
 
+fn mock_hal_test_with_dealloc_count<F, R>(expected_dealloc_count: usize) -> impl FnOnce(F) -> R
+where
+    F: FnOnce() -> R,
+{
+    move |test_fn: F| {
+        mock_hal_test(|| {
+            let result = test_fn();
+            test_dealloc_count(expected_dealloc_count);
+            result
+        })
+    }
+}
+
 /// Generate an address space for the test
 fn setup_test_addr_space() -> (AddrSpace<MockHal>, GuestPhysAddr, usize) {
     const BASE: GuestPhysAddr = GuestPhysAddr::from_usize(0x10000);
@@ -32,7 +45,7 @@ fn setup_test_addr_space() -> (AddrSpace<MockHal>, GuestPhysAddr, usize) {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test), on_exit(test_dealloc_count(1)))]
+#[axin(decorator(mock_hal_test_with_dealloc_count(1)))]
 /// Check whether an address_space can be created correctly.
 /// When creating a new address_space, a frame will be allocated for the page table,
 /// thus triggering an alloc_frame operation.

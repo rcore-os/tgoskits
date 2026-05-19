@@ -92,7 +92,7 @@ fn append_to_file() -> io::Result<()> {
     fs::write(filename, "Initial content\n")?;
 
     // 追加写入
-    let mut file = OpenOptions::new().write(true).append(true).open(filename)?;
+    let mut file = OpenOptions::new().append(true).open(filename)?;
 
     file.write_all(b"First appended line\n")?;
     file.write_all(b"Second appended line\n")?;

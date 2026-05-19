@@ -1,33 +1,49 @@
-use std::{path::PathBuf, process::Command as StdCommand};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    process::Command as StdCommand,
+};
 
 use anyhow::Context;
 use clap::{Args, Subcommand};
-use ostool::build::config::Cargo;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use crate::context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence};
 
-/// Prepare any runtime assets (disk images, etc.) required by `package`.
-fn ensure_package_runtime_assets(package: &str) -> anyhow::Result<()> {
-    match package {
-        "arceos-fs-shell" => ensure_fat32_image(
-            "test-suit/arceos/rust/fs/shell/disk.img",
-            "64M",
-            "generating disk.img for arceos-fs-shell",
-        ),
-        _ => Ok(()),
+const DEFAULT_TEST_DISK_IMAGE_SIZE: &str = "64M";
+
+/// Prepare runtime disk images referenced by QEMU configs.
+pub(super) fn ensure_qemu_runtime_assets(
+    workspace_root: &Path,
+    qemu: &QemuConfig,
+) -> anyhow::Result<()> {
+    let mut seen = BTreeSet::new();
+    for image in qemu_runtime_disk_images(qemu) {
+        if !seen.insert(image.clone()) {
+            continue;
+        }
+        ensure_fat32_image(
+            &image,
+            DEFAULT_TEST_DISK_IMAGE_SIZE,
+            should_recreate_runtime_image(workspace_root, &image),
+        )?;
     }
+    Ok(())
 }
 
 /// Create a FAT32 disk image at `path` with the given `size` if it does not
 /// already exist.
-fn ensure_fat32_image(path: &str, size: &str, msg: &str) -> anyhow::Result<()> {
-    let image = std::path::Path::new(path);
-    if image.exists() {
+fn ensure_fat32_image(image: &Path, size: &str, recreate: bool) -> anyhow::Result<()> {
+    if image.exists() && !recreate {
         return Ok(());
     }
+    let msg = format!("generating {}", image.display());
     println!("{msg} ...");
     if let Some(parent) = image.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+    if image.exists() {
+        std::fs::remove_file(image)?;
     }
     let ran = |cmd: &mut StdCommand| -> anyhow::Result<()> {
         let name = cmd.get_program().to_string_lossy().to_string();
@@ -44,6 +60,17 @@ fn ensure_fat32_image(path: &str, size: &str, msg: &str) -> anyhow::Result<()> {
         .stdout(std::process::Stdio::null()))?;
     println!("{msg} ... done");
     Ok(())
+}
+
+fn qemu_runtime_disk_images(qemu: &QemuConfig) -> Vec<PathBuf> {
+    crate::rootfs::qemu::drive_file_paths(qemu)
+        .into_iter()
+        .filter(|path| path.file_name().and_then(|name| name.to_str()) == Some("disk.img"))
+        .collect()
+}
+
+fn should_recreate_runtime_image(workspace_root: &Path, image: &Path) -> bool {
+    image.starts_with(crate::context::axbuild_tmp_dir(workspace_root).join("runtime-assets"))
 }
 
 pub mod build;
@@ -150,7 +177,6 @@ impl ArceOS {
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
         let request =
             self.prepare_request((&args).into(), None, None, SnapshotPersistence::Store)?;
-        ensure_package_runtime_assets(&request.package)?;
         self.run_build_request(request).await
     }
 
@@ -161,7 +187,6 @@ impl ArceOS {
             None,
             SnapshotPersistence::Store,
         )?;
-        ensure_package_runtime_assets(&request.package)?;
         if let Some(rootfs) = args.rootfs {
             rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
         } else {
@@ -176,7 +201,6 @@ impl ArceOS {
             args.uboot_config,
             SnapshotPersistence::Store,
         )?;
-        ensure_package_runtime_assets(&request.package)?;
         self.run_uboot_request(request).await
     }
 
@@ -251,6 +275,9 @@ impl ArceOS {
     ) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
         let qemu = self.load_qemu_config(&request, &cargo).await?;
+        if let Some(qemu) = qemu.as_ref() {
+            ensure_qemu_runtime_assets(self.app.workspace_root(), qemu)?;
+        }
         self.app.qemu(cargo, request.build_info_path, qemu).await
     }
 
@@ -265,5 +292,42 @@ impl ArceOS {
         let cargo = build::load_cargo_config(&request)?;
         let uboot = self.load_uboot_config(&request, &cargo).await?;
         self.app.uboot(cargo, request.build_info_path, uboot).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qemu_runtime_disk_images_finds_disk_img_drive_paths() {
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/case/disk.img".to_string(),
+                "-drive".to_string(),
+                "id=rootfs,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            qemu_runtime_disk_images(&qemu),
+            vec![PathBuf::from("/tmp/case/disk.img")]
+        );
+    }
+
+    #[test]
+    fn should_recreate_only_tmp_runtime_asset_images() {
+        let workspace = Path::new("/workspace");
+
+        assert!(should_recreate_runtime_image(
+            workspace,
+            Path::new("/workspace/tmp/axbuild/runtime-assets/arceos/std/case/disk.img")
+        ));
+        assert!(!should_recreate_runtime_image(
+            workspace,
+            Path::new("/workspace/test-suit/arceos/rust/fs/shell/disk.img")
+        ));
     }
 }

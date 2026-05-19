@@ -13,7 +13,9 @@ use linux_raw_sys::{
     },
 };
 
-use super::addr::SocketAddrExt;
+use super::addr::{
+    SocketAddrExt, normalize_socket_addr_ex_for_ip_stack, socket_addr_ex_for_user_name,
+};
 use crate::{
     file::{FileLike, PacketSocket, Socket, add_file_like, get_file_like, netlink::NetlinkSocket},
     mm::{IoVec, IoVectorBuf, UserConstPtr, UserPtr, VmBytes, VmBytesMut},
@@ -80,7 +82,11 @@ fn send_impl(
         } else if addrlen == 0 {
             return Err(AxError::InvalidInput);
         } else {
-            Some(SocketAddrEx::read_from_user(addr, addrlen)?)
+            let mut addr = SocketAddrEx::read_from_user(addr, addrlen)?;
+            if socket.ip_domain() == linux_raw_sys::net::AF_INET6 {
+                addr = normalize_socket_addr_ex_for_ip_stack(addr, false)?;
+            }
+            Some(addr)
         };
 
         let send_flags = SendFlags::from_bits_retain(flags);
@@ -196,7 +202,8 @@ fn recv_impl(
     )?;
 
     if let Some(remote_addr) = remote_addr {
-        remote_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
+        socket_addr_ex_for_user_name(socket.ip_domain(), remote_addr)
+            .write_to_user(addr, addrlen.get_as_mut()?)?;
     }
 
     if let Some(mut builder) = cmsg_builder {
