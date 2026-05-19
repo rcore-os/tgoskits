@@ -40,8 +40,7 @@ fn panic_message(info: &PanicInfo) {
 
 fn panic_backtrace() {
     if should_print_panic_backtrace() {
-        let bt = axbacktrace::Backtrace::capture();
-        ax_println!("{}", bt.report("panic"));
+        ax_println!("{}", axbacktrace::Backtrace::capture().kind("panic"));
     }
 }
 
