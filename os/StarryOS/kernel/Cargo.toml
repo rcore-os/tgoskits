@@ -54,7 +54,6 @@ ax-feat = { workspace = true, features = [
 ax-alloc.workspace = true
 ax-config.workspace = true
 ax-display.workspace = true
-ax-driver.workspace = true
 ax-fs = { version = "0.5.13", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }

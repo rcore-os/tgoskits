@@ -619,7 +619,6 @@ dependencies = [
  "ax-config",
  "ax-display",
  "ax-dma",
- "ax-driver",
  "ax-errno",
  "ax-feat",
  "ax-fs",
@@ -741,10 +740,10 @@ dependencies = [
 name = "ax-display"
 version = "0.5.12"
 dependencies = [
- "ax-driver",
  "ax-lazyinit",
  "ax-sync",
  "log",
+ "rdif-display",
 ]
 
 [[package]]
@@ -873,7 +872,6 @@ dependencies = [
  "ax-alloc",
  "ax-config",
  "ax-display",
- "ax-driver",
  "ax-fs",
  "ax-fs-ng",
  "ax-hal",
@@ -882,6 +880,7 @@ dependencies = [
  "ax-kspin",
  "ax-log",
  "ax-net",
+ "ax-net-ng",
  "ax-runtime",
  "ax-sync",
  "ax-task",
@@ -893,7 +892,6 @@ name = "ax-fs"
 version = "0.5.12"
 dependencies = [
  "ax-cap-access",
- "ax-driver",
  "ax-errno",
  "ax-fs-devfs",
  "ax-fs-ramfs",
@@ -921,7 +919,6 @@ name = "ax-fs-ng"
 version = "0.5.13"
 dependencies = [
  "ax-alloc",
- "ax-driver",
  "ax-errno",
  "ax-hal",
  "ax-io",
@@ -936,6 +933,7 @@ dependencies = [
  "log",
  "lru",
  "lwext4_rust",
+ "rd-block-volume",
  "rsext4",
  "scope-local",
  "slab",
@@ -1030,10 +1028,10 @@ dependencies = [
 name = "ax-input"
 version = "0.5.12"
 dependencies = [
- "ax-driver",
  "ax-lazyinit",
  "ax-sync",
  "log",
+ "rdif-input",
 ]
 
 [[package]]
@@ -1148,11 +1146,11 @@ dependencies = [
 name = "ax-net"
 version = "0.5.12"
 dependencies = [
- "ax-driver",
  "ax-errno",
  "ax-hal",
  "ax-io",
  "ax-lazyinit",
+ "ax-net-ng",
  "ax-sync",
  "ax-task",
  "cfg-if",
@@ -1168,7 +1166,6 @@ dependencies = [
  "async-channel",
  "async-trait",
  "ax-config",
- "ax-driver",
  "ax-errno",
  "ax-fs-ng",
  "ax-hal",
@@ -1184,6 +1181,8 @@ dependencies = [
  "hashbrown 0.16.1",
  "lazy_static",
  "log",
+ "rd-net",
+ "rdif-vsock",
  "ringbuf",
  "smoltcp 0.13.1",
  "spin 0.10.0",
@@ -1438,7 +1437,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-ctor-bare",
  "ax-display",
- "ax-driver",
+ "ax-errno",
  "ax-fs",
  "ax-fs-ng",
  "ax-hal",
@@ -1456,9 +1455,19 @@ dependencies = [
  "axbacktrace",
  "axklib",
  "axpanic",
+ "axplat-dyn",
  "cfg-if",
  "chrono",
+ "dma-api",
  "indoc",
+ "mmio-api",
+ "pcie",
+ "ramdisk",
+ "rd-block",
+ "rd-net",
+ "rdrive",
+ "spin 0.10.0",
+ "virtio-drivers",
 ]
 
 [[package]]
@@ -1707,10 +1716,6 @@ dependencies = [
  "ax-arm-pl031",
  "ax-config-macros",
  "ax-cpu",
- "ax-driver-base",
- "ax-driver-block",
- "ax-driver-net",
- "ax-driver-virtio",
  "ax-errno",
  "ax-kspin",
  "ax-memory-addr",
@@ -1729,7 +1734,10 @@ dependencies = [
  "rd-block",
  "rd-net",
  "rdif-clk",
+ "rdif-display",
+ "rdif-input",
  "rdif-pcie",
+ "rdif-vsock",
  "rdrive",
  "realtek-rtl8125",
  "rk3588-pci",
@@ -1741,6 +1749,7 @@ dependencies = [
  "some-serial",
  "somehal",
  "spin 0.10.0",
+ "virtio-drivers",
 ]
 
 [[package]]
@@ -6287,6 +6296,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rd-block-volume"
+version = "0.1.0"
+
+[[package]]
 name = "rd-net"
 version = "0.1.1"
 dependencies = [
@@ -6331,10 +6344,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-display"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rdif-eth"
 version = "0.2.1"
 dependencies = [
  "dma-api",
+ "rdif-base",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rdif-input"
+version = "0.1.0"
+dependencies = [
  "rdif-base",
  "thiserror 2.0.18",
 ]
@@ -6388,6 +6417,14 @@ name = "rdif-timer"
 version = "0.6.1"
 dependencies = [
  "rdif-base",
+]
+
+[[package]]
+name = "rdif-vsock"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -7669,7 +7706,6 @@ dependencies = [
  "ax-config",
  "ax-display",
  "ax-dma",
- "ax-driver",
  "ax-errno",
  "ax-feat",
  "ax-fs-ng",

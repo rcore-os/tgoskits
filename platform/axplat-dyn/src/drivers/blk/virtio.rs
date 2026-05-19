@@ -2,18 +2,46 @@ extern crate alloc;
 
 use alloc::format;
 
-use ax_driver_base::DeviceType;
-use ax_driver_block::BlockDriverOps;
-use ax_driver_virtio::Transport;
 use ax_plat::mem::PhysAddr;
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
+};
+use virtio_drivers::{
+    Error as VirtIoError,
+    device::blk::{SECTOR_SIZE, VirtIOBlk},
+    transport::{DeviceType, Transport, mmio::MmioTransport},
 };
 
 use super::PlatformDeviceBlock;
 use crate::drivers::{iomap, virtio::VirtIoHalImpl};
 
-pub(super) type VirtIoBlkDevice<T> = ax_driver_virtio::VirtIoBlkDev<VirtIoHalImpl, T>;
+pub(super) struct VirtIoBlkDevice<T: Transport + 'static> {
+    raw: VirtIOBlk<VirtIoHalImpl, T>,
+}
+
+// SAFETY: the platform adapter owns the transport exclusively after probe and
+// moves it into one rd-block queue, so no shared transport access is introduced.
+unsafe impl<T: Transport + 'static> Send for VirtIoBlkDevice<T> {}
+
+impl<T: Transport + 'static> VirtIoBlkDevice<T> {
+    pub(super) fn new(transport: T) -> Result<Self, VirtIoError> {
+        let mut raw = VirtIOBlk::new(transport)?;
+        raw.disable_interrupts();
+        Ok(Self { raw })
+    }
+
+    fn capacity(&self) -> u64 {
+        self.raw.capacity()
+    }
+
+    fn read_blocks(&mut self, block_id: usize, buf: &mut [u8]) -> Result<(), VirtIoError> {
+        self.raw.read_blocks(block_id, buf)
+    }
+
+    fn write_blocks(&mut self, block_id: usize, buf: &[u8]) -> Result<(), VirtIoError> {
+        self.raw.write_blocks(block_id, buf)
+    }
+}
 
 module_driver!(
     name: "Virtio Block",
@@ -43,14 +71,13 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let mmio_base = iomap(mmio_base, mmio_size)?.as_ptr();
 
-    let (ty, transport) =
-        ax_driver_virtio::probe_mmio_device(mmio_base, mmio_size).ok_or(OnProbeError::NotMatch)?;
+    let (ty, transport) = probe_mmio_device(mmio_base, mmio_size).ok_or(OnProbeError::NotMatch)?;
 
     if ty != DeviceType::Block {
         return Err(OnProbeError::NotMatch);
     }
 
-    let dev = VirtIoBlkDevice::try_new(transport).map_err(|e| {
+    let dev = VirtIoBlkDevice::new(transport).map_err(|e| {
         OnProbeError::other(format!(
             "failed to initialize Virtio Block device at [PA:{mmio_base:?},): {e:?}"
         ))
@@ -65,11 +92,15 @@ pub(super) fn register_virtio_block<T: Transport + 'static>(
     plat_dev: PlatformDevice,
     dev: VirtIoBlkDevice<T>,
 ) {
-    plat_dev.register_block(BlockDevice { dev: Some(dev) });
+    plat_dev.register_block(BlockDevice {
+        dev: Some(dev),
+        irq_enabled: false,
+    });
 }
 
 struct BlockDevice<T: Transport + 'static> {
     dev: Option<VirtIoBlkDevice<T>>,
+    irq_enabled: bool,
 }
 
 struct BlockQueue<T: Transport + 'static> {
@@ -90,15 +121,15 @@ impl<T: Transport + 'static> rd_block::Interface for BlockDevice<T> {
     }
 
     fn enable_irq(&mut self) {
-        todo!()
+        self.irq_enabled = true;
     }
 
     fn disable_irq(&mut self) {
-        todo!()
+        self.irq_enabled = false;
     }
 
     fn is_irq_enabled(&self) -> bool {
-        false
+        self.irq_enabled
     }
 
     fn handle_irq(&mut self) -> rd_block::Event {
@@ -108,11 +139,11 @@ impl<T: Transport + 'static> rd_block::Interface for BlockDevice<T> {
 
 impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
     fn num_blocks(&self) -> usize {
-        self.raw.num_blocks() as _
+        self.raw.capacity() as _
     }
 
     fn block_size(&self) -> usize {
-        self.raw.block_size()
+        SECTOR_SIZE
     }
 
     fn id(&self) -> usize {
@@ -135,14 +166,14 @@ impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
         match request.kind {
             rd_block::RequestKind::Read(mut buffer) => {
                 self.raw
-                    .read_block(id as _, &mut buffer)
-                    .map_err(map_dev_err_to_blk_err)?;
+                    .read_blocks(id as _, &mut buffer)
+                    .map_err(map_virtio_err_to_blk_err)?;
                 Ok(rd_block::RequestId::new(0))
             }
             rd_block::RequestKind::Write(items) => {
                 self.raw
-                    .write_block(id as _, items)
-                    .map_err(map_dev_err_to_blk_err)?;
+                    .write_blocks(id as _, items)
+                    .map_err(map_virtio_err_to_blk_err)?;
                 Ok(rd_block::RequestId::new(0))
             }
         }
@@ -153,21 +184,31 @@ impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
     }
 }
 
-fn map_dev_err_to_blk_err(err: ax_driver_base::DevError) -> rd_block::BlkError {
+pub(super) fn probe_mmio_device(
+    reg_base: *mut u8,
+    reg_size: usize,
+) -> Option<(DeviceType, MmioTransport<'static>)> {
+    if reg_base.is_null() || reg_size == 0 {
+        return None;
+    }
+
+    let header =
+        core::ptr::NonNull::new(reg_base as *mut virtio_drivers::transport::mmio::VirtIOHeader)?;
+    let transport = unsafe { MmioTransport::new(header, reg_size) }.ok()?;
+    Some((transport.device_type(), transport))
+}
+
+fn map_virtio_err_to_blk_err(err: VirtIoError) -> rd_block::BlkError {
     match err {
-        ax_driver_base::DevError::Again => rd_block::BlkError::Retry,
-        ax_driver_base::DevError::AlreadyExists => {
-            rd_block::BlkError::Other("Already exists".into())
-        }
-        ax_driver_base::DevError::BadState => {
-            rd_block::BlkError::Other("Bad internal state".into())
-        }
-        ax_driver_base::DevError::InvalidParam => {
-            rd_block::BlkError::Other("Invalid parameter".into())
-        }
-        ax_driver_base::DevError::Io => rd_block::BlkError::Other("I/O error".into()),
-        ax_driver_base::DevError::NoMemory => rd_block::BlkError::NoMemory,
-        ax_driver_base::DevError::ResourceBusy => rd_block::BlkError::Other("Resource busy".into()),
-        ax_driver_base::DevError::Unsupported => rd_block::BlkError::NotSupported,
+        VirtIoError::QueueFull | VirtIoError::NotReady => rd_block::BlkError::Retry,
+        VirtIoError::WrongToken
+        | VirtIoError::ConfigSpaceTooSmall
+        | VirtIoError::ConfigSpaceMissing => rd_block::BlkError::Other("Bad internal state".into()),
+        VirtIoError::AlreadyUsed => rd_block::BlkError::Other("Already exists".into()),
+        VirtIoError::InvalidParam => rd_block::BlkError::Other("Invalid parameter".into()),
+        VirtIoError::DmaError => rd_block::BlkError::NoMemory,
+        VirtIoError::IoError => rd_block::BlkError::Other("I/O error".into()),
+        VirtIoError::Unsupported => rd_block::BlkError::NotSupported,
+        VirtIoError::SocketDeviceError(_) => rd_block::BlkError::Other("Socket error".into()),
     }
 }

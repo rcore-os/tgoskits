@@ -4,7 +4,6 @@ features = [
     "starry-kernel/plat-dyn",
     "starry-kernel/vsock",
     "axplat-dyn/intel-net",
-    "axplat-dyn/virtio-net-pci",
     "axplat-dyn/xhci-pci",
 ]
 log = "Warn"

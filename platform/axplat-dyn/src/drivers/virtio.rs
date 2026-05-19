@@ -1,7 +1,7 @@
 use core::{marker::PhantomData, ptr::NonNull};
 
 use ax_alloc::{UsageKind, global_allocator};
-use ax_driver_virtio::{BufferDirection, PhysAddr as VirtIoPhysAddr, VirtIoHal};
+use virtio_drivers::{BufferDirection, Hal as VirtIoHal, PhysAddr as VirtIoPhysAddr};
 
 use crate::drivers::iomap;
 

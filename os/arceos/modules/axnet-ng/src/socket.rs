@@ -6,15 +6,13 @@ use core::{
     task::Context,
 };
 
-#[cfg(feature = "vsock")]
-use ax_driver::prelude::VsockAddr;
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
 use axpoll::{IoEvents, Pollable};
 use bitflags::bitflags;
 
 #[cfg(feature = "vsock")]
-use crate::vsock::VsockSocket;
+use crate::vsock::{VsockAddr, VsockSocket};
 use crate::{
     options::{Configurable, GetSocketOption, SetSocketOption},
     raw::RawSocket,

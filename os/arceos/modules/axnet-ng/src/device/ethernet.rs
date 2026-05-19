@@ -1,4 +1,5 @@
 use alloc::{
+    boxed::Box,
     string::String,
     sync::{Arc, Weak},
     vec,
@@ -6,7 +7,6 @@ use alloc::{
 };
 use core::task::Waker;
 
-use ax_driver::prelude::*;
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
 use hashbrown::HashMap;
@@ -21,7 +21,7 @@ use smoltcp::{
 
 use crate::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
-    device::{ArpEntry, Device},
+    device::{ArpEntry, Device, EthernetDriver, NetDeviceError, NetIrqEvents},
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
@@ -40,12 +40,12 @@ struct PendingNeighbor {
 
 struct EthernetIrqState {
     irq_num: Option<usize>,
-    driver: SpinNoIrq<AxNetDevice>,
+    driver: SpinNoIrq<Box<dyn EthernetDriver>>,
     poll_ready: PollSet,
 }
 
 impl EthernetIrqState {
-    fn handle_irq(&self) -> NetIrqEvent {
+    fn handle_irq(&self) -> NetIrqEvents {
         self.driver.lock().handle_irq()
     }
 }
@@ -66,7 +66,7 @@ fn handle_ethernet_irq(slot: usize) {
     };
 
     let events = state.handle_irq();
-    if events.intersects(NetIrqEvent::RX_READY | NetIrqEvent::RX_ERROR | NetIrqEvent::TX_DONE) {
+    if events.intersects(NetIrqEvents::RX_READY | NetIrqEvents::RX_ERROR | NetIrqEvents::TX_DONE) {
         state.poll_ready.wake();
     }
 }
@@ -121,7 +121,7 @@ impl EthernetDevice {
     const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
-    pub fn new(name: String, inner: AxNetDevice, ip: Option<Ipv4Cidr>) -> Self {
+    pub fn new(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
         let irq_num = inner.irq_num();
         let inner = Arc::new(EthernetIrqState {
             irq_num,
@@ -168,11 +168,11 @@ impl EthernetDevice {
 
     #[inline]
     fn hardware_address(&self) -> EthernetAddress {
-        EthernetAddress(self.inner.driver.lock().mac_address().0)
+        EthernetAddress(self.inner.driver.lock().mac_address())
     }
 
     fn send_to<F>(
-        inner: &mut AxNetDevice,
+        inner: &mut dyn EthernetDriver,
         dst: EthernetAddress,
         size: usize,
         f: F,
@@ -186,7 +186,7 @@ impl EthernetDevice {
         }
 
         let repr = EthernetRepr {
-            src_addr: EthernetAddress(inner.mac_address().0),
+            src_addr: EthernetAddress(inner.mac_address()),
             dst_addr: dst,
             ethertype: proto,
         };
@@ -206,7 +206,7 @@ impl EthernetDevice {
             tx_buf.packet_len(),
             tx_buf.packet()
         );
-        if let Err(err) = inner.transmit(tx_buf) {
+        if let Err(err) = inner.transmit(&mut *tx_buf) {
             warn!("transmit failed: {:?}", err);
         }
     }
@@ -268,7 +268,7 @@ impl EthernetDevice {
 
         let mut inner = self.inner.driver.lock();
         Self::send_to(
-            &mut inner,
+            &mut **inner,
             EthernetAddress::BROADCAST,
             arp_repr.buffer_len(),
             |buf| arp_repr.emit(&mut ArpPacket::new_unchecked(buf)),
@@ -349,7 +349,7 @@ impl EthernetDevice {
 
                 let mut inner = self.inner.driver.lock();
                 Self::send_to(
-                    &mut inner,
+                    &mut **inner,
                     source_hardware_addr,
                     response.buffer_len(),
                     |buf| response.emit(&mut ArpPacket::new_unchecked(buf)),
@@ -382,7 +382,7 @@ impl EthernetDevice {
                         self.name, next_hop, neighbor.hardware_address
                     );
                     Self::send_to(
-                        &mut inner,
+                        &mut **inner,
                         neighbor.hardware_address,
                         buf.len(),
                         |b| b.copy_from_slice(buf),
@@ -407,12 +407,12 @@ impl Device for EthernetDevice {
         snoop: &mut dyn FnMut(&[u8]),
     ) -> bool {
         loop {
-            let rx_buf = {
+            let mut rx_buf = {
                 let mut inner = self.inner.driver.lock();
                 match inner.receive() {
                     Ok(buf) => buf,
                     Err(err) => {
-                        if !matches!(err, DevError::Again) {
+                        if !matches!(err, NetDeviceError::Again) {
                             warn!("receive failed: {:?}", err);
                         }
                         return false;
@@ -426,7 +426,9 @@ impl Device for EthernetDevice {
             );
 
             let result = self.handle_frame(rx_buf.packet(), buffer, timestamp, snoop);
-            self.inner.driver.lock().recycle_rx_buffer(rx_buf).unwrap();
+            if let Err(err) = self.inner.driver.lock().recycle_rx_buffer(&mut *rx_buf) {
+                warn!("recycle_rx_buffer failed: {:?}", err);
+            }
             if result {
                 return true;
             }
@@ -439,7 +441,7 @@ impl Device for EthernetDevice {
         if next_hop.is_broadcast() || is_subnet_broadcast {
             let mut inner = self.inner.driver.lock();
             Self::send_to(
-                &mut inner,
+                &mut **inner,
                 EthernetAddress::BROADCAST,
                 packet.len(),
                 |buf| buf.copy_from_slice(packet),
@@ -452,7 +454,7 @@ impl Device for EthernetDevice {
             Some(neighbor) if neighbor.expires_at > timestamp => {
                 let mut inner = self.inner.driver.lock();
                 Self::send_to(
-                    &mut inner,
+                    &mut **inner,
                     neighbor.hardware_address,
                     packet.len(),
                     |buf| buf.copy_from_slice(packet),

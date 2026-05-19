@@ -34,10 +34,12 @@ rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
 xhci-mmio = ["usb"]
 xhci-pci = ["usb", "dep:pcie"]
 serial = ["dep:some-serial"]
-net = ["dep:ax-driver-net", "dep:rd-net"]
+display = ["dep:rdif-display"]
+input = ["dep:rdif-input"]
+net = ["dep:rd-net"]
+vsock = ["dep:rdif-vsock"]
 intel-net = ["net", "dep:eth-intel", "dep:pcie"]
 realtek-rtl8125 = ["net", "dep:pcie", "dep:realtek-rtl8125"]
-virtio-net-pci = ["net"]
 pci-list-devices = []
 rknpu = ["dep:rockchip-npu", "rockchip-pm", "rockchip-soc"]
 
@@ -46,10 +48,6 @@ anyhow = { version = "1", default-features = false }
 ax-alloc = { version = "0.7.0", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
 ax-config-macros = { workspace = true }
 ax-cpu.workspace = true
-ax-driver-base.workspace = true
-ax-driver-block.workspace = true
-ax-driver-net = { workspace = true, optional = true }
-ax-driver-virtio = { workspace = true, features = ["block", "net"] }
 ax-arm-pl031 = { workspace = true, optional = true }
 arm-scmi-rs.workspace = true
 ax-errno.workspace = true
@@ -69,6 +67,9 @@ pcie = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rd-block.workspace = true
 rd-net = { workspace = true, optional = true }
+rdif-display = { workspace = true, optional = true }
+rdif-input = { workspace = true, optional = true }
+rdif-vsock = { workspace = true, optional = true }
 rdif-clk.workspace = true
 rdif-pcie.workspace = true
 rdrive.workspace = true
@@ -82,3 +83,4 @@ sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 somehal.workspace = true
 some-serial = { workspace = true, optional = true }
 spin = "0.10"
+virtio-drivers.workspace = true

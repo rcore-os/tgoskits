@@ -1,11 +1,7 @@
 extern crate alloc;
 
-use alloc::boxed::Box;
 use core::{alloc::Layout, ptr::NonNull};
 
-use ax_driver_block::BlockDriverOps;
-#[cfg(feature = "net")]
-use ax_driver_net::NetDriverOps;
 use ax_errno::AxError;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_plat::mem::PhysAddr;
@@ -24,49 +20,30 @@ mod time;
 mod virtio;
 
 pub mod blk;
+#[cfg(feature = "display")]
+pub mod display;
+#[cfg(feature = "input")]
+pub mod input;
 #[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "usb")]
 pub mod usb;
+#[cfg(feature = "vsock")]
+pub mod vsock;
 
 const MAX_BLOCK_DEVICES: usize = 16;
-#[cfg(feature = "net")]
-const MAX_NET_DEVICES: usize = 16;
-
-pub type DynBlockDevice = Box<dyn BlockDriverOps>;
-#[cfg(feature = "net")]
-pub type DynNetDevice = Box<dyn NetDriverOps>;
-
-static BLOCK_DEVICES: Mutex<Vec<DynBlockDevice, MAX_BLOCK_DEVICES>> = Mutex::new(Vec::new());
-#[cfg(feature = "net")]
-static NET_DEVICES: Mutex<Vec<DynNetDevice, MAX_NET_DEVICES>> = Mutex::new(Vec::new());
+static BLOCK_DEVICES: Mutex<Vec<blk::Block, MAX_BLOCK_DEVICES>> = Mutex::new(Vec::new());
 
 pub fn clear_block_devices() {
     BLOCK_DEVICES.lock().clear();
 }
 
-pub fn register_block_device(device: DynBlockDevice) -> Result<(), DynBlockDevice> {
+pub fn register_block_device(device: blk::Block) -> Result<(), blk::Block> {
     BLOCK_DEVICES.lock().push(device)
 }
 
-pub fn take_block_devices() -> Vec<DynBlockDevice, MAX_BLOCK_DEVICES> {
+pub fn take_block_devices() -> Vec<blk::Block, MAX_BLOCK_DEVICES> {
     let mut devices = BLOCK_DEVICES.lock();
-    core::mem::take(&mut *devices)
-}
-
-#[cfg(feature = "net")]
-pub fn clear_net_devices() {
-    NET_DEVICES.lock().clear();
-}
-
-#[cfg(feature = "net")]
-pub fn register_net_device(device: DynNetDevice) -> Result<(), DynNetDevice> {
-    NET_DEVICES.lock().push(device)
-}
-
-#[cfg(feature = "net")]
-pub fn take_net_devices() -> Vec<DynNetDevice, MAX_NET_DEVICES> {
-    let mut devices = NET_DEVICES.lock();
     core::mem::take(&mut *devices)
 }
 
@@ -82,38 +59,11 @@ pub(crate) fn iomap(addr: PhysAddr, size: usize) -> Result<NonNull<u8>, OnProbeE
 
 pub fn probe_all_devices() -> Result<(), AxError> {
     clear_block_devices();
-    #[cfg(feature = "net")]
-    clear_net_devices();
     rdrive::probe_all(false).map_err(|_| AxError::BadState)?;
 
     for dev in rdrive::get_list::<blk::PlatformBlockDevice>() {
-        let block = Box::new(blk::Block::try_from(dev).map_err(|err| match err {
-            ax_driver_base::DevError::NoMemory => AxError::NoMemory,
-            _ => AxError::BadState,
-        })?);
+        let block = blk::Block::try_from(dev)?;
         if register_block_device(block).is_err() {
-            return Err(AxError::NoMemory);
-        }
-    }
-
-    #[cfg(feature = "net")]
-    for dev in rdrive::get_list::<net::PlatformNetDevice>() {
-        let net = net::Net::try_from(dev).map_err(|err| match err {
-            ax_driver_base::DevError::NoMemory => AxError::NoMemory,
-            _ => AxError::BadState,
-        })?;
-        if register_net_device(Box::new(net)).is_err() {
-            return Err(AxError::NoMemory);
-        }
-    }
-
-    #[cfg(feature = "net")]
-    for dev in rdrive::get_list::<net::PlatformNetDriver>() {
-        let net = net::take_net_driver(dev).map_err(|err| match err {
-            ax_driver_base::DevError::NoMemory => AxError::NoMemory,
-            _ => AxError::BadState,
-        })?;
-        if register_net_device(net).is_err() {
             return Err(AxError::NoMemory);
         }
     }

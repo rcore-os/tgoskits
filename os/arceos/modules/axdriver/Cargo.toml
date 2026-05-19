@@ -24,7 +24,7 @@ virtio = ["dep:ax-driver-virtio", "dep:ax-alloc", "dep:ax-hal", "dep:ax-config"]
 
 # various types of drivers
 virtio-blk = ["block", "virtio", "ax-driver-virtio/block"]
-virtio-net = ["net", "virtio", "ax-driver-virtio/net", "axplat-dyn?/virtio-net-pci"]
+virtio-net = ["net", "virtio", "ax-driver-virtio/net"]
 virtio-gpu = ["display", "virtio", "ax-driver-virtio/gpu"]
 virtio-input = ["input", "virtio", "ax-driver-virtio/input"]
 virtio-socket = ["vsock", "virtio", "ax-driver-virtio/socket"]

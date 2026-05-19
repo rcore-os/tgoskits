@@ -126,23 +126,19 @@ impl_trait! {
         /// Enable or disable the specified IRQ line.
         ///
         /// When the `irq` feature is enabled this forwards to
-        /// `ax_hal::irq::set_enable`. If the feature is not enabled the
-        /// function currently panics via `unimplemented!()`; callers should
-        /// avoid relying on IRQ operations when the platform omits IRQ
-        /// support.
+        /// `ax_hal::irq::set_enable`. Platforms built without IRQ support
+        /// ignore this request because there is no interrupt controller
+        /// service to program.
         fn irq_set_enable(_irq: usize, _enabled: bool) {
             #[cfg(feature = "irq")]
             ax_hal::irq::set_enable(_irq, _enabled);
-            #[cfg(not(feature = "irq"))]
-            unimplemented!();
         }
 
         /// Register an IRQ handler for the given IRQ number.
         ///
         /// Returns `true` when registration succeeds. With the `irq`
-        /// feature enabled this delegates to `ax_hal::irq::register`.
-        /// When IRQs are not enabled the function is currently unimplemented
-        /// and will panic if called.
+        /// feature enabled this delegates to `ax_hal::irq::register`. Without
+        /// IRQ support registration fails explicitly by returning `false`.
         fn irq_register(_irq: usize, _handler: IrqHandler) -> bool {
             #[cfg(feature = "irq")]
             {
@@ -150,7 +146,7 @@ impl_trait! {
             }
             #[cfg(not(feature = "irq"))]
             {
-                unimplemented!()
+                false
             }
         }
     }

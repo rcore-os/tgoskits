@@ -16,13 +16,9 @@ pub fn input_device_count() -> u32 {
     EVENT_DEVICE_COUNT.load(Ordering::Acquire)
 }
 
-#[allow(unused_imports)]
-use ax_driver::prelude::{
-    AbsInfo, AxInputDevice, BaseDriverOps, DevError, Event, EventType, InputDeviceId,
-    InputDriverOps,
-};
 use ax_errno::{AxError, AxResult};
 use ax_hal::time::wall_time;
+use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
 use axpoll::{IoEvents, Pollable};
@@ -40,7 +36,7 @@ use crate::{
 const KEY_CNT: usize = EventType::Key.bits_count();
 
 struct Inner {
-    device: AxInputDevice,
+    device: ErasedInputDevice,
     read_ahead: Option<(Duration, Event)>,
     key_state: Bitmap<KEY_CNT>,
 }
@@ -58,7 +54,7 @@ impl Inner {
                     }
                     self.read_ahead = Some((wall_time(), event));
                 }
-                Err(DevError::Again) => {}
+                Err(InputError::Again) => {}
                 Err(err) => {
                     warn!("Failed to read event: {err:?}");
                 }
@@ -112,7 +108,7 @@ pub struct EventDev {
 }
 
 impl EventDev {
-    pub fn new(mut device: AxInputDevice) -> Self {
+    pub fn new(mut device: ErasedInputDevice) -> Self {
         let mut ev_bits = Bitmap::new();
         for i in 0..EventType::COUNT {
             let Some(ty) = EventType::from_repr(i) else {
@@ -197,15 +193,15 @@ fn return_str(arg: usize, size: usize, s: &str) -> AxResult<usize> {
     Ok(copy_bytes(s.as_bytes(), slice))
 }
 
-fn dev_error_to_ax_error(err: DevError) -> AxError {
+fn input_error_to_ax_error(err: InputError) -> AxError {
     match err {
-        DevError::AlreadyExists => AxError::AlreadyExists,
-        DevError::Again => AxError::WouldBlock,
-        DevError::BadState => AxError::BadState,
-        DevError::InvalidParam | DevError::Unsupported => AxError::InvalidInput,
-        DevError::Io => AxError::Io,
-        DevError::NoMemory => AxError::NoMemory,
-        DevError::ResourceBusy => AxError::ResourceBusy,
+        InputError::AlreadyExists => AxError::AlreadyExists,
+        InputError::Again => AxError::WouldBlock,
+        InputError::BadState => AxError::BadState,
+        InputError::InvalidInput | InputError::Unsupported => AxError::InvalidInput,
+        InputError::Io => AxError::Io,
+        InputError::NoMemory => AxError::NoMemory,
+        InputError::ResourceBusy => AxError::ResourceBusy,
     }
 }
 
@@ -327,11 +323,7 @@ impl DeviceOps for EventDev {
                         match nr {
                             // EVIOCGNAME
                             0x06 => {
-                                return return_str(
-                                    arg,
-                                    size,
-                                    self.inner.lock().device.device_name(),
-                                );
+                                return return_str(arg, size, self.inner.lock().device.name());
                             }
                             // EVIOCGPHYS
                             0x07 => {
@@ -400,15 +392,15 @@ impl DeviceOps for EventDev {
                             }
                             let info = match self.inner.lock().device.get_abs_info(axis) {
                                 Ok(info) => info,
-                                Err(err) => return Err(dev_error_to_ax_error(err)),
+                                Err(err) => return Err(input_error_to_ax_error(err)),
                             };
                             let abs = InputAbsInfo {
                                 value: 0,
-                                minimum: info.min as i32,
-                                maximum: info.max as i32,
-                                fuzz: info.fuzz as i32,
-                                flat: info.flat as i32,
-                                resolution: info.res as i32,
+                                minimum: info.min,
+                                maximum: info.max,
+                                fuzz: info.fuzz,
+                                flat: info.flat,
+                                resolution: info.res,
                             };
                             let bytes = abs.as_bytes();
                             let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;

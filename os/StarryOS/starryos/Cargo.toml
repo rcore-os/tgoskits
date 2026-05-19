@@ -26,7 +26,6 @@ qemu = [
   "starry-kernel/vsock", # auxilary features
   "axplat-dyn?/rtc",
   "axplat-dyn?/intel-net",
-  "axplat-dyn?/virtio-net-pci",
 ]
 smp = ["ax-feat/smp", "axplat-dyn?/smp", "axplat-riscv64-visionfive2?/smp"]
 

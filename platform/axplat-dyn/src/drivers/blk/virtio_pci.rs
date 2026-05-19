@@ -2,10 +2,6 @@ extern crate alloc;
 
 use alloc::{format, sync::Arc};
 
-use ax_driver_base::DeviceType;
-use ax_driver_virtio::pci::{
-    ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, HeaderType, PciRoot,
-};
 use rdrive::{
     PlatformDevice, module_driver,
     probe::{
@@ -14,6 +10,14 @@ use rdrive::{
     },
 };
 use spin::Mutex;
+use virtio_drivers::transport::{
+    DeviceType,
+    pci::{
+        PciTransport,
+        bus::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, HeaderType, PciRoot},
+        virtio_device_type,
+    },
+};
 
 use super::virtio::{VirtIoBlkDevice, register_virtio_block};
 use crate::drivers::virtio::VirtIoHalImpl;
@@ -35,15 +39,15 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
     let dev_info = as_device_function_info(endpoint);
     let mut root = PciRoot::new(EndpointConfigAccess::new(bdf, endpoint.take()));
 
-    let (ty, transport) =
-        ax_driver_virtio::probe_pci_device::<VirtIoHalImpl, _>(&mut root, bdf, &dev_info)
-            .ok_or(OnProbeError::NotMatch)?;
+    let ty = virtio_device_type(&dev_info).ok_or(OnProbeError::NotMatch)?;
 
     if ty != DeviceType::Block {
         return Err(OnProbeError::NotMatch);
     }
 
-    let dev = VirtIoBlkDevice::try_new(transport).map_err(|err| {
+    let transport = PciTransport::new::<VirtIoHalImpl, _>(&mut root, bdf)
+        .map_err(|_| OnProbeError::NotMatch)?;
+    let dev = VirtIoBlkDevice::new(transport).map_err(|err| {
         OnProbeError::other(format!(
             "failed to initialize Virtio PCI block device at {bdf}: {err:?}"
         ))

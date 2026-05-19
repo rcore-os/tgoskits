@@ -46,8 +46,22 @@ mod mp;
 #[cfg(feature = "paging")]
 mod klib;
 
+mod devices;
+
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
+
+#[cfg(all(feature = "static-devices", not(feature = "plat-dyn")))]
+mod static_devices;
+
+#[cfg(any(
+    feature = "static-devices",
+    all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")),
+    all(any(feature = "fs", feature = "fs-ng"), feature = "plat-dyn"),
+    feature = "net",
+    feature = "net-ng"
+))]
+extern crate alloc;
 
 const LOGO: &str = r#"
        d8888                            .d88888b.   .d8888b.
@@ -217,9 +231,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "paging")]
     ax_mm::init_memory_management();
 
-    // #[cfg(feature = "plat-dyn")]
-    // ax_driver::setup(arg);
-
     info!("Initialize platform devices...");
     ax_hal::init_later(cpu_id, arg);
 
@@ -229,37 +240,53 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "ipi")]
     ax_ipi::init();
 
-    #[cfg(feature = "ax-driver")]
-    {
-        #[allow(unused_variables)]
-        let all_devices = ax_driver::init_drivers();
+    #[cfg(feature = "plat-dyn")]
+    devices::init_dyn_devices();
 
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "fs-ng")] {
-                ax_fs_ng::init_filesystems(all_devices.block, ax_hal::dtb::get_chosen_bootargs());
-            } else
-            if #[cfg(feature = "fs")] {
-                ax_fs::init_filesystems(all_devices.block, ax_hal::dtb::get_chosen_bootargs());
-            }
-        }
+    #[cfg(all(feature = "static-devices", not(feature = "plat-dyn")))]
+    devices::init_static_devices();
 
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "net-ng")] {
-                ax_net_ng::init_network(all_devices.net);
+    #[cfg(all(feature = "fs", feature = "plat-dyn"))]
+    ax_fs::init_filesystems(
+        devices::take_dyn_fs_block_devices(),
+        ax_hal::dtb::get_chosen_bootargs(),
+    );
 
-                #[cfg(feature = "vsock")]
-                ax_net_ng::init_vsock(all_devices.vsock);
-            } else if #[cfg(feature = "net")] {
-                ax_net::init_network(all_devices.net);
-            }
-        }
+    #[cfg(all(feature = "fs", not(feature = "plat-dyn")))]
+    ax_fs::init_filesystems(devices::take_static_fs_block_devices(), None);
 
-        #[cfg(feature = "display")]
-        ax_display::init_display(all_devices.display);
+    #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))]
+    ax_fs_ng::init_filesystems(
+        devices::take_dyn_fs_ng_block_devices(),
+        ax_hal::dtb::get_chosen_bootargs(),
+    );
 
-        #[cfg(feature = "input")]
-        ax_input::init_input(all_devices.input);
-    }
+    #[cfg(all(feature = "fs-ng", not(feature = "plat-dyn")))]
+    ax_fs_ng::init_filesystems(devices::take_static_fs_ng_block_devices(), None);
+
+    #[cfg(all(feature = "display", feature = "plat-dyn"))]
+    devices::init_dyn_display();
+
+    #[cfg(all(feature = "input", feature = "plat-dyn"))]
+    devices::init_dyn_input();
+
+    #[cfg(all(feature = "input", not(feature = "plat-dyn")))]
+    ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
+
+    #[cfg(all(feature = "net", feature = "plat-dyn"))]
+    devices::init_dyn_net();
+
+    #[cfg(all(feature = "net-ng", feature = "plat-dyn"))]
+    devices::init_dyn_net_ng();
+
+    #[cfg(all(feature = "net-ng", not(feature = "plat-dyn")))]
+    ax_net_ng::init_network(devices::take_static_net_ng_drivers());
+
+    #[cfg(all(feature = "vsock", feature = "plat-dyn"))]
+    devices::init_dyn_vsock();
+
+    #[cfg(all(feature = "vsock", not(feature = "plat-dyn")))]
+    devices::init_static_vsock();
 
     #[cfg(feature = "smp")]
     self::mp::start_secondary_cpus(cpu_id);

@@ -20,6 +20,37 @@ impl<H: Hal, T: Transport> VirtIoBlkDev<H, T> {
         inner.disable_interrupts();
         Ok(Self { inner })
     }
+
+    /// Returns the number of blocks in this device.
+    #[inline]
+    pub fn num_blocks(&self) -> u64 {
+        self.inner.capacity()
+    }
+
+    /// Returns the block size in bytes.
+    #[inline]
+    pub fn block_size(&self) -> usize {
+        virtio_drivers::device::blk::SECTOR_SIZE
+    }
+
+    /// Reads data from the given block.
+    pub fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> DevResult {
+        self.inner
+            .read_blocks(block_id as _, buf)
+            .map_err(as_dev_err)
+    }
+
+    /// Writes data to the given block.
+    pub fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
+        self.inner
+            .write_blocks(block_id as _, buf)
+            .map_err(as_dev_err)
+    }
+
+    /// Flushes the device.
+    pub fn flush(&mut self) -> DevResult {
+        Ok(())
+    }
 }
 
 impl<H: Hal, T: Transport> BaseDriverOps for VirtIoBlkDev<H, T> {
@@ -35,27 +66,23 @@ impl<H: Hal, T: Transport> BaseDriverOps for VirtIoBlkDev<H, T> {
 impl<H: Hal, T: Transport> BlockDriverOps for VirtIoBlkDev<H, T> {
     #[inline]
     fn num_blocks(&self) -> u64 {
-        self.inner.capacity()
+        Self::num_blocks(self)
     }
 
     #[inline]
     fn block_size(&self) -> usize {
-        virtio_drivers::device::blk::SECTOR_SIZE
+        Self::block_size(self)
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> DevResult {
-        self.inner
-            .read_blocks(block_id as _, buf)
-            .map_err(as_dev_err)
+        Self::read_block(self, block_id, buf)
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
-        self.inner
-            .write_blocks(block_id as _, buf)
-            .map_err(as_dev_err)
+        Self::write_block(self, block_id, buf)
     }
 
     fn flush(&mut self) -> DevResult {
-        Ok(())
+        Self::flush(self)
     }
 }

@@ -26,4 +26,4 @@ ax-driver-input = { workspace = true, optional = true }
 ax-driver-net = { workspace = true, optional = true }
 ax-driver-vsock = { workspace = true, optional = true }
 log = { workspace = true }
-virtio-drivers = { version = "0.13.0", default-features = false }
+virtio-drivers.workspace = true

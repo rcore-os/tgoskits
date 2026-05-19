@@ -15,8 +15,7 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
-use ax_driver_block::BlockDriverOps;
+use ax_errno::{AxError, AxResult};
 #[cfg(feature = "irq")]
 use ax_kspin::SpinNoIrq;
 #[cfg(feature = "irq")]
@@ -101,6 +100,14 @@ static IRQ_SOURCES: [SpinNoIrq<Option<Weak<BlockIrqState>>>; BLOCK_IRQ_SLOTS] =
 const BLOCK_IRQ_REPOLL_SPINS: usize = 256;
 
 impl Block {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn irq_num(&self) -> Option<usize> {
+        self.irq_num
+    }
+
     fn use_irq_completion(&self) -> bool {
         #[cfg(feature = "irq")]
         {
@@ -148,39 +155,22 @@ impl Block {
 
         queue.write_blocks_blocking(block_id, data)
     }
-}
-
-impl BaseDriverOps for Block {
-    fn device_type(&self) -> DeviceType {
-        DeviceType::Block
-    }
-
-    fn device_name(&self) -> &str {
-        &self.name
-    }
-
-    fn irq_num(&self) -> Option<usize> {
-        self.irq_num
-    }
-}
-
-impl BlockDriverOps for Block {
-    fn num_blocks(&self) -> u64 {
+    pub fn num_blocks(&self) -> u64 {
         self.queue.lock().num_blocks() as _
     }
 
-    fn block_size(&self) -> usize {
+    pub fn block_size(&self) -> usize {
         self.queue.lock().block_size()
     }
 
-    fn flush(&mut self) -> DevResult {
+    pub fn flush(&mut self) -> AxResult {
         Ok(())
     }
 
-    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> DevResult {
+    pub fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
         let block_size = self.block_size();
         if !buf.len().is_multiple_of(block_size) {
-            return Err(DevError::InvalidParam);
+            return Err(AxError::InvalidInput);
         }
 
         let use_irq = self.use_irq_completion();
@@ -190,20 +180,20 @@ impl BlockDriverOps for Block {
                 Self::read_blocks_wait(&mut queue, block_id as usize + offset, 1, use_irq);
             let block = blocks
                 .pop()
-                .ok_or(DevError::Io)?
-                .map_err(maping_blk_err_to_dev_err)?;
+                .ok_or(AxError::Io)?
+                .map_err(map_blk_err_to_ax_err)?;
             if block.len() != chunk.len() {
-                return Err(DevError::Io);
+                return Err(AxError::Io);
             }
             chunk.copy_from_slice(&block);
         }
         Ok(())
     }
 
-    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> DevResult {
+    pub fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
         let block_size = self.block_size();
         if !buf.len().is_multiple_of(block_size) {
-            return Err(DevError::InvalidParam);
+            return Err(AxError::InvalidInput);
         }
 
         let use_irq = self.use_irq_completion();
@@ -212,7 +202,7 @@ impl BlockDriverOps for Block {
             let blocks =
                 Self::write_blocks_wait(&mut queue, block_id as usize + offset, chunk, use_irq);
             for block in blocks {
-                block.map_err(maping_blk_err_to_dev_err)?;
+                block.map_err(map_blk_err_to_ax_err)?;
             }
         }
         Ok(())
@@ -220,16 +210,16 @@ impl BlockDriverOps for Block {
 }
 
 impl TryFrom<Device<PlatformBlockDevice>> for Block {
-    type Error = DevError;
+    type Error = AxError;
 
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
-        let mut dev = base.lock().map_err(|_| DevError::BadState)?;
+        let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
         let irq_num = dev.irq_num;
-        let mut block = dev.block.take().ok_or(DevError::BadState)?;
+        let mut block = dev.block.take().ok_or(AxError::BadState)?;
         #[cfg(feature = "irq")]
         let irq_handler = irq_num.map(|_| block.irq_handler());
-        let queue = block.create_queue().ok_or(DevError::BadState)?;
+        let queue = block.create_queue().ok_or(AxError::BadState)?;
         drop(dev);
 
         #[cfg(feature = "irq")]
@@ -403,15 +393,15 @@ fn wait_on_block_irq<F: Future>(future: F) -> F::Output {
     }
 }
 
-fn maping_blk_err_to_dev_err(err: BlkError) -> DevError {
+fn map_blk_err_to_ax_err(err: BlkError) -> AxError {
     match err {
-        BlkError::NotSupported => DevError::Unsupported,
-        BlkError::Retry => DevError::Again,
-        BlkError::NoMemory => DevError::NoMemory,
-        BlkError::InvalidBlockIndex(_) => DevError::InvalidParam,
+        BlkError::NotSupported => AxError::Unsupported,
+        BlkError::Retry => AxError::WouldBlock,
+        BlkError::NoMemory => AxError::NoMemory,
+        BlkError::InvalidBlockIndex(_) => AxError::InvalidInput,
         BlkError::Other(error) => {
             error!("Block device error: {error}");
-            DevError::Io
+            AxError::Io
         }
     }
 }
