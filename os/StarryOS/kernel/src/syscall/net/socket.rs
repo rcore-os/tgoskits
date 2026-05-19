@@ -16,14 +16,16 @@ use axnet::{
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
-        AF_INET, AF_NETLINK, AF_PACKET, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP,
-        SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, sockaddr,
-        socklen_t,
+        AF_INET, AF_INET6, AF_NETLINK, AF_PACKET, AF_UNIX, AF_VSOCK, IPPROTO_ICMP, IPPROTO_TCP,
+        IPPROTO_UDP, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET,
+        SOCK_STREAM, sockaddr, socklen_t,
     },
     netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE},
 };
 
-use super::addr::SocketAddrExt;
+use super::addr::{
+    SocketAddrExt, normalize_socket_addr_ex_for_ip_stack, socket_addr_ex_for_user_name,
+};
 use crate::{
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
@@ -51,14 +53,20 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
     }
 
     let pid = current().as_thread().proc_data.proc.pid();
+    let ip_domain = if domain == AF_INET || domain == AF_INET6 {
+        domain
+    } else {
+        AF_INET
+    };
+
     let socket = match (domain, ty) {
-        (AF_INET, SOCK_STREAM) => {
+        (AF_INET | AF_INET6, SOCK_STREAM) => {
             if proto != 0 && proto != IPPROTO_TCP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
             TcpSocket::new().into()
         }
-        (AF_INET, SOCK_DGRAM) => {
+        (AF_INET | AF_INET6, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
@@ -92,7 +100,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             }
             SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
         }
-        (AF_INET, _) | (AF_UNIX, _) | (AF_NETLINK, _) | (AF_VSOCK, _) => {
+        (AF_INET | AF_INET6, _) | (AF_UNIX, _) | (AF_NETLINK, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
@@ -100,7 +108,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }
     };
-    let socket = Socket(socket);
+    let socket = Socket::new(socket, ip_domain);
 
     if raw_ty & O_NONBLOCK != 0 {
         socket.set_nonblocking(true)?;
@@ -128,7 +136,11 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
         return Ok(0);
     }
 
-    let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
+    let socket = Socket::from_fd(fd)?;
+    let mut addr = SocketAddrEx::read_from_user(addr, addrlen)?;
+    if socket.ip_domain() == AF_INET6 {
+        addr = normalize_socket_addr_ex_for_ip_stack(addr, true)?;
+    }
     debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
 
     let unix_path = match &addr {
@@ -137,7 +149,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
     };
     let cred = current().as_thread().cred();
 
-    Socket::from_fd(fd)?.bind(addr)?;
+    socket.bind(addr)?;
 
     if let Some(path) = unix_path
         && let Err(err) = FS_CONTEXT
@@ -160,10 +172,14 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
 }
 
 pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult<isize> {
-    let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
+    let socket = Socket::from_fd(fd)?;
+    let mut addr = SocketAddrEx::read_from_user(addr, addrlen)?;
+    if socket.ip_domain() == AF_INET6 {
+        addr = normalize_socket_addr_ex_for_ip_stack(addr, false)?;
+    }
     debug!("sys_connect <= fd: {fd}, addr: {addr:?}");
 
-    Socket::from_fd(fd)?.connect(addr).map_err(|e| {
+    socket.connect(addr).map_err(|e| {
         if e == AxError::WouldBlock {
             AxError::InProgress
         } else {
@@ -204,13 +220,13 @@ pub fn sys_accept4(
 
     let cloexec = flags & O_CLOEXEC != 0;
 
-    let socket = Socket::from_fd(fd)?;
-    let socket = Socket(socket.accept()?);
+    let listener = Socket::from_fd(fd)?;
+    let socket = Socket::new(listener.accept()?, listener.ip_domain());
     if flags & O_NONBLOCK != 0 {
         socket.set_nonblocking(true)?;
     }
 
-    let remote_addr = socket.peer_addr()?;
+    let remote_addr = socket_addr_ex_for_user_name(socket.ip_domain(), socket.peer_addr()?);
     let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
     debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
 
@@ -262,8 +278,8 @@ pub fn sys_socketpair(
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
     };
-    let sock1 = Socket(sock1.into());
-    let sock2 = Socket(sock2.into());
+    let sock1 = Socket::new(sock1.into(), AF_UNIX);
+    let sock2 = Socket::new(sock2.into(), AF_UNIX);
 
     if raw_ty & O_NONBLOCK != 0 {
         sock1.set_nonblocking(true)?;

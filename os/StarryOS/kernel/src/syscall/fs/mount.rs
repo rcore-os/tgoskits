@@ -11,6 +11,21 @@ use crate::{
     task::{AsThread, tasks},
 };
 
+const MNT_FORCE: i32 = 1;
+const MNT_DETACH: i32 = 2;
+const MNT_EXPIRE: i32 = 4;
+const UMOUNT_NOFOLLOW: i32 = 8;
+
+const MS_REC: i32 = 1 << 14;
+const MS_SILENT: i32 = 1 << 15;
+const MS_UNBINDABLE: i32 = 1 << 17;
+const MS_PRIVATE: i32 = 1 << 18;
+const MS_SLAVE: i32 = 1 << 19;
+const MS_SHARED: i32 = 1 << 20;
+
+const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
+const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
 fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
     fd.downcast_ref::<File>()
         .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
@@ -46,13 +61,26 @@ pub fn sys_mount(
     source: *const c_char,
     target: *const c_char,
     fs_type: *const c_char,
-    _flags: i32,
+    flags: i32,
     _data: *const c_void,
 ) -> AxResult<isize> {
     let source = vm_load_string(source)?;
     let target = vm_load_string(target)?;
     let fs_type = vm_load_string(fs_type)?;
     debug!("sys_mount <= source: {source:?}, target: {target:?}, fs_type: {fs_type:?}");
+
+    let propagation = flags & PROPAGATION_FLAGS;
+
+    if propagation.count_ones() > 1 {
+        return Err(AxError::InvalidInput);
+    }
+
+    if propagation != 0 {
+        let allowed = propagation | MS_REC | MS_SILENT;
+        if flags & !allowed != 0 {
+            return Err(AxError::InvalidInput);
+        }
+    }
 
     match fs_type.as_str() {
         "tmpfs" => {
@@ -139,11 +167,20 @@ fn mount_ext4(source: &str, target: &str) -> AxResult<()> {
     Ok(())
 }
 
-pub fn sys_umount2(target: *const c_char, _flags: i32) -> AxResult<isize> {
+pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
     use alloc::boxed::Box;
 
     let target = vm_load_string(target)?;
-    debug!("sys_umount2 <= target: {target:?}");
+    debug!("sys_umount2 <= target: {target:?}, flags: {flags:#x}");
+
+    if (flags & !VALID_UMOUNT_FLAGS) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    if (flags & MNT_EXPIRE) != 0 && (flags & (MNT_FORCE | MNT_DETACH)) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let target = FS_CONTEXT.lock().resolve(target)?;
 
     // Linux umount2 returns EINVAL for paths that are not mount points.

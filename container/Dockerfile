@@ -19,10 +19,17 @@ RUN apt-get update \
         dosfstools \
         e2fsprogs \
         git \
+        libavcodec-dev \
+        libavdevice-dev \
+        libavfilter-dev \
+        libavformat-dev \
+        libavutil-dev \
         libglib2.0-dev \
         libclang-19-dev \
         libpixman-1-dev \
         libslirp-dev \
+        libswresample-dev \
+        libswscale-dev \
         libudev-dev \
         make \
         meson \

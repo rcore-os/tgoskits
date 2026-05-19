@@ -1,5 +1,5 @@
 use alloc::borrow::Cow;
-use core::{fmt, slice};
+use core::{cell::UnsafeCell, fmt, slice};
 
 use addr2line::Context;
 use log::{error, info};
@@ -7,7 +7,16 @@ use paste::paste;
 
 pub type DwarfReader = gimli::EndianSlice<'static, gimli::RunTimeEndian>;
 
-static mut CONTEXT: Option<Context<DwarfReader>> = None;
+struct ContextCell(UnsafeCell<Option<Context<DwarfReader>>>);
+
+// SAFETY: `CONTEXT` is written exactly once during `init()` at startup
+// (single-threaded boot, enforced by debug_assert). After initialization
+// all access is read-only. `addr2line::FrameIter` borrows `Context` across
+// iterator `next()` calls, which makes lock-based approaches
+// (Mutex/OnceCell) unworkable.
+unsafe impl Sync for ContextCell {}
+
+static CONTEXT: ContextCell = ContextCell(UnsafeCell::new(None));
 
 macro_rules! generate_sections {
     ($($name:ident),*) => {
@@ -39,6 +48,11 @@ macro_rules! generate_sections {
 }
 
 pub fn init() {
+    debug_assert!(
+        unsafe { (*CONTEXT.0.get()).is_none() },
+        "axbacktrace::init() called more than once"
+    );
+
     generate_sections!(
         debug_abbrev,
         debug_addr,
@@ -68,8 +82,9 @@ pub fn init() {
         default_section,
     ) {
         Ok(ctx) => {
+            // SAFETY: single-threaded boot; no concurrent access possible.
             unsafe {
-                CONTEXT = Some(ctx);
+                *CONTEXT.0.get() = Some(ctx);
             }
             info!("Initialized addr2line context successfully.");
         }
@@ -100,8 +115,9 @@ impl Iterator for FrameIter<'_> {
     type Item = (crate::Frame, addr2line::Frame<'static, DwarfReader>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        #[allow(static_mut_refs)]
-        let ctx = unsafe { CONTEXT.as_ref()? };
+        let ptr = CONTEXT.0.get();
+        // SAFETY: see `ContextCell` — read-only after `init()`.
+        let ctx = unsafe { &*ptr }.as_ref()?;
 
         loop {
             if let Some((raw, inner)) = &mut self.inner
@@ -153,8 +169,8 @@ fn fmt_frame<R: gimli::Reader>(
 }
 
 pub(crate) fn fmt_frames(f: &mut fmt::Formatter<'_>, frames: &[crate::Frame]) -> fmt::Result {
-    #[allow(static_mut_refs)]
-    if unsafe { CONTEXT.is_none() } {
+    // SAFETY: see `ContextCell` — read-only after `init()`.
+    if unsafe { (*CONTEXT.0.get()).is_none() } {
         return write!(f, "Backtracing is not initialized.");
     }
     for (i, (raw, frame)) in FrameIter::new(frames).enumerate() {

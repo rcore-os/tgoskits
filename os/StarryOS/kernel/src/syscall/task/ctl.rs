@@ -79,7 +79,7 @@ pub fn sys_capset(
 
 pub fn sys_umask(mask: u32) -> AxResult<isize> {
     let curr = current();
-    let old = curr.as_thread().proc_data.replace_umask(mask);
+    let old = curr.as_thread().proc_data.replace_umask(mask & 0o777);
     Ok(old as isize)
 }
 

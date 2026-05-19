@@ -33,6 +33,6 @@ mod rename;
 pub use blocks::build_file_block_mapping_with_inode_num;
 pub use create::{create_symbol_link, mkfile};
 pub use delete::{delete_dir, delete_file, unlink};
-pub use io::{read_file, truncate, write_file};
+pub use io::{read_file, truncate, write_file, write_inode_data};
 pub use link::link;
 pub use rename::{mv, rename};

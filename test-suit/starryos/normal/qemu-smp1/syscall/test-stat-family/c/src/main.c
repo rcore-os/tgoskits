@@ -19,6 +19,7 @@
 #include <sys/statfs.h>
 #include <sys/types.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <stdint.h>
 
 /*
@@ -429,6 +430,15 @@ static void test_fstatat_abs_ignores_dirfd(void)
     close(dfd);
 }
 
+/* fstatat 绝对路径即使 dirfd 非法也应忽略 dirfd */
+static void test_fstatat_abs_ignores_bad_dirfd(void)
+{
+    struct stat sb;
+    CHECK_RET(fstatat(-1, REG, &sb, 0), 0,
+              "fstatat 绝对路径忽略非法 dirfd");
+    CHECK(sb.st_size == 12, "fstatat 绝对路径非法 dirfd: size 12");
+}
+
 /* fstat 对 pipe fd 报告 S_ISFIFO */
 static void test_fstat_pipe(void)
 {
@@ -632,6 +642,31 @@ static void test_statx_mask_zero(void)
           "statx mask=0 → stx_mask 仍含 STATX_TYPE");
 }
 
+/* statx 绝对路径即使 dirfd 非法也应忽略 dirfd */
+static void test_statx_abs_ignores_bad_dirfd(void)
+{
+    struct statx_buf stx;
+    memset(&stx, 0, sizeof(stx));
+    CHECK_RET(raw_statx(-1, REG, 0, STATX_BASIC_STATS, &stx), 0,
+              "statx 绝对路径忽略非法 dirfd");
+    CHECK(S_ISREG(stx.stx_mode), "statx 绝对路径非法 dirfd → regular");
+    CHECK(stx.stx_size == 12, "statx 绝对路径非法 dirfd: size 12");
+}
+
+/* utimensat 绝对路径即使 dirfd 非法也应忽略 dirfd */
+static void test_utimensat_abs_ignores_bad_dirfd(void)
+{
+    struct timespec times[2] = {
+        { .tv_sec = 100, .tv_nsec = 123456789 },
+        { .tv_sec = 101, .tv_nsec = 987654321 },
+    };
+    CHECK_RET(utimensat(-1, REG, times, 0), 0,
+              "utimensat 绝对路径忽略非法 dirfd");
+
+    struct stat sb;
+    CHECK_RET(stat(REG, &sb), 0, "stat REG after utimensat");
+}
+
 /* 路径包含 .. 应可回到父级 */
 static void test_stat_parent_traversal(void)
 {
@@ -730,6 +765,7 @@ int main(void)
     /* 深层覆盖 */
     test_fstatat_relative_to_dirfd();
     test_fstatat_abs_ignores_dirfd();
+    test_fstatat_abs_ignores_bad_dirfd();
     test_fstat_pipe();
     test_stat_chardev();
     test_directory_nlink();
@@ -745,6 +781,8 @@ int main(void)
     test_fstat_size_after_write();
     test_fstatat_empty_path_on_regfd();
     test_statx_mask_zero();
+    test_statx_abs_ignores_bad_dirfd();
+    test_utimensat_abs_ignores_bad_dirfd();
     test_stat_parent_traversal();
     test_stat_double_slash();
 

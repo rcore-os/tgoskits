@@ -86,7 +86,7 @@ impl DmaAllocator {
         }
     }
 
-    fn alloc_coherent_pages(&mut self, layout: Layout) -> AllocResult<DMAInfo> {
+    pub(crate) fn alloc_coherent_pages(&mut self, layout: Layout) -> AllocResult<DMAInfo> {
         let num_pages = layout_pages(&layout);
         let vaddr_raw = global_allocator().alloc_pages(
             num_pages,
@@ -135,6 +135,19 @@ impl DmaAllocator {
         } else {
             self.alloc.dealloc(dma.cpu_addr, layout);
         }
+    }
+
+    /// Releases pages previously allocated via [`alloc_coherent_pages`], bypassing
+    /// the slab routing. Always uses the page-allocator path regardless of layout size.
+    pub(crate) unsafe fn dealloc_coherent_pages(&mut self, dma: DMAInfo, layout: Layout) {
+        let num_pages = layout_pages(&layout);
+        let virt_raw = dma.cpu_addr.as_ptr() as usize;
+        global_allocator().dealloc_pages(virt_raw, num_pages, UsageKind::Dma);
+        let _ = self.update_flags(
+            va!(virt_raw),
+            num_pages,
+            MappingFlags::READ | MappingFlags::WRITE,
+        );
     }
 }
 

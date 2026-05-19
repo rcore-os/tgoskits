@@ -411,12 +411,7 @@ pub fn sys_fchownat(
     }
 
     let path = path.nullable().map(vm_load_string).transpose()?;
-    let lookup_dirfd = if path.as_deref().is_some_and(|path| path.starts_with('/')) {
-        AT_FDCWD
-    } else {
-        dirfd
-    };
-    let loc = resolve_at(lookup_dirfd, path.as_deref(), flags)?
+    let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
     let meta = loc.metadata()?;
@@ -660,11 +655,18 @@ pub fn sys_renameat2(
 }
 
 pub fn sys_sync() -> AxResult<isize> {
-    warn!("dummy sys_sync");
+    debug!("sys_sync");
+    // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
+    // ext4 NodeOps::sync is a no-op (Ok(())); FAT NodeOps::sync calls file.flush()
+    // to write dirty data to disk.
+    FS_CONTEXT.lock().root_dir().sync(false)?;
     Ok(0)
 }
 
-pub fn sys_syncfs(_fd: i32) -> AxResult<isize> {
-    warn!("dummy sys_syncfs");
+pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
+    debug!("sys_syncfs <= fd: {fd}");
+    // TODO: File::from_fd only accepts regular file fds; Linux syncfs(2) accepts any fd type.
+    let f = crate::file::File::from_fd(fd)?;
+    f.inner().location().filesystem().flush()?;
     Ok(0)
 }

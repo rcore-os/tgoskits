@@ -1,0 +1,5 @@
+args = ["-machine", "virt", "-cpu", "la464", "-m", "128M", "-smp", "1", "-nographic", "-serial", "mon:stdio"]
+uefi = false
+to_bin = false
+success_regex = ["Hello, world!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

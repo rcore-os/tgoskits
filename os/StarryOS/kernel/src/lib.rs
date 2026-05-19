@@ -19,6 +19,8 @@ pub mod entry;
 
 mod config;
 mod file;
+#[cfg(feature = "kcov")]
+mod kcov;
 mod mm;
 mod pseudofs;
 mod stop_machine;

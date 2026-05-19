@@ -18,14 +18,14 @@ use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
 
 use super::{
-    card0::{RknpuCmd, copy_from_user, copy_to_user},
-    drm::DrmVersion,
+    rknpu_card::{RknpuCmd, copy_from_user, copy_to_user},
+    rknpu_drm::DrmVersion,
 };
 use crate::{
     file::FileLike,
     pseudofs::{
         DeviceOps,
-        dev::drm::{io_size, ioctl_nr, is_driver_ioctl},
+        dev::rknpu_drm::{io_size, ioctl_nr, is_driver_ioctl},
         device::DeviceMmap,
     },
 };
@@ -184,7 +184,7 @@ impl DeviceOps for Card1 {
     }
 
     /// Maps an exported GEM buffer selected by `handle << PAGE_SHIFT`.
-    fn mmap(&self, offset: u64) -> DeviceMmap {
+    fn mmap(&self, offset: u64, _length: u64) -> DeviceMmap {
         let Some(handle) = map_handle_from_offset(offset) else {
             warn!("card1: mmap received invalid offset {offset:#x}");
             return DeviceMmap::None;
