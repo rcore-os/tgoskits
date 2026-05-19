@@ -8,7 +8,8 @@ use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddr
 use linux_raw_sys::{
     general::timespec,
     net::{
-        MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, mmsghdr, msghdr, sockaddr, socklen_t,
+        MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, mmsghdr, msghdr,
+        sockaddr, socklen_t,
     },
 };
 
@@ -85,11 +86,15 @@ fn send_impl(
 
         debug!("sys_send <= fd: {fd}, flags: {flags}, addr: {addr:?}");
 
+        let mut send_flags = SendFlags::default();
+        if flags & MSG_DONTWAIT != 0 {
+            send_flags |= SendFlags::DONTWAIT;
+        }
         let sent = socket.send(
             &mut src,
             SendOptions {
                 to: addr,
-                flags: SendFlags::default(),
+                flags: send_flags,
                 cmsg,
             },
         )?;
@@ -173,6 +178,9 @@ fn recv_impl(
     }
     if flags & MSG_TRUNC != 0 {
         recv_flags |= RecvFlags::TRUNCATE;
+    }
+    if flags & MSG_DONTWAIT != 0 {
+        recv_flags |= RecvFlags::DONTWAIT;
     }
 
     let mut cmsg = Vec::new();
