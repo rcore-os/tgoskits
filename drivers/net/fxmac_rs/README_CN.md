@@ -1,11 +1,11 @@
-<h1 align="center">ax-arm-pl031</h1>
+<h1 align="center">fxmac_rs</h1>
 
-<p align="center">System Real Time Clock (RTC) Drivers for aarch64 based on PL031</p>
+<p align="center">FXMAC Ethernet driver in Rust for PhytiumPi (Phytium Pi) board, supporting DMA-based packet transmission and reception</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/ax-arm-pl031.svg)](https://crates.io/crates/ax-arm-pl031)
-[![Docs.rs](https://docs.rs/ax-arm-pl031/badge.svg)](https://docs.rs/ax-arm-pl031)
+[![Crates.io](https://img.shields.io/crates/v/fxmac_rs.svg)](https://crates.io/crates/fxmac_rs)
+[![Docs.rs](https://docs.rs/fxmac_rs/badge.svg)](https://docs.rs/fxmac_rs)
 [![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
@@ -15,10 +15,7 @@
 
 # 介绍
 
-`ax-arm-pl031` 提供了 System Real Time Clock (RTC) Drivers for aarch64 based on PL031。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
-
-
-> ax-arm-pl031 派生自 https://github.com/arceos-org/arm_pl031
+`fxmac_rs` 提供了 FXMAC Ethernet driver in Rust for PhytiumPi (Phytium Pi) board, supporting DMA-based packet transmission and reception。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
 
 ## 快速开始
 
@@ -28,14 +25,14 @@
 
 ```toml
 [dependencies]
-ax-arm-pl031 = "0.4.1"
+fxmac_rs = "0.4.1"
 ```
 
 ### 检查与测试
 
 ```bash
 # 进入 crate 目录
-cd components/arm_pl031
+cd drivers/net/fxmac_rs
 
 # 代码格式化
 cargo fmt --all
@@ -55,10 +52,10 @@ cargo doc --no-deps
 ### 示例
 
 ```rust
-use ax_arm_pl031 as _;
+use fxmac_rs as _;
 
 fn main() {
-    // 在这里将 `ax-arm-pl031` 集成到你的项目中。
+    // 在这里将 `fxmac_rs` 集成到你的项目中。
 }
 ```
 
@@ -70,7 +67,7 @@ fn main() {
 cargo doc --no-deps --open
 ```
 
-在线文档：[docs.rs/ax-arm-pl031](https://docs.rs/ax-arm-pl031)
+在线文档：[docs.rs/fxmac_rs](https://docs.rs/fxmac_rs)
 
 # 贡献
 

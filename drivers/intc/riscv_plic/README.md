@@ -35,7 +35,7 @@ ax-riscv-plic = "0.4.0"
 
 ```bash
 # Enter the crate directory
-cd components/riscv_plic
+cd drivers/intc/riscv_plic
 
 # Format code
 cargo fmt --all

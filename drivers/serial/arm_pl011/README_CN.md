@@ -35,7 +35,7 @@ ax-arm-pl011 = "0.3.0"
 
 ```bash
 # 进入 crate 目录
-cd components/arm_pl011
+cd drivers/serial/arm_pl011
 
 # 代码格式化
 cargo fmt --all

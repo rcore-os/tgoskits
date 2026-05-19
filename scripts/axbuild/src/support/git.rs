@@ -142,6 +142,11 @@ enum ChangedPackages {
     Full { path: PathBuf },
 }
 
+enum GlobalClippyInput {
+    Hard,
+    Soft,
+}
+
 struct PackagePathIndex {
     packages: Vec<PackagePathEntry>,
 }
@@ -206,18 +211,26 @@ impl PackagePathIndex {
         I: IntoIterator<Item = PathBuf>,
     {
         let mut packages = BTreeSet::new();
+        let mut soft_global_inputs = Vec::new();
         for path in changed_paths {
             let path = normalize_git_path(path)?;
             if path.as_os_str().is_empty() {
                 continue;
             }
             let Some(package) = self.package_for_path(&path) else {
-                if is_global_clippy_input(&path) {
-                    return Ok(ChangedPackages::Full { path });
+                match global_clippy_input(&path) {
+                    Some(GlobalClippyInput::Hard) => return Ok(ChangedPackages::Full { path }),
+                    Some(GlobalClippyInput::Soft) => soft_global_inputs.push(path),
+                    None => {}
                 }
                 continue;
             };
             packages.insert(package.to_string());
+        }
+        if packages.is_empty()
+            && let Some(path) = soft_global_inputs.into_iter().next()
+        {
+            return Ok(ChangedPackages::Full { path });
         }
         Ok(ChangedPackages::Packages(packages))
     }
@@ -230,18 +243,31 @@ impl PackagePathIndex {
     }
 }
 
-fn is_global_clippy_input(path: &Path) -> bool {
-    matches!(
-        path,
-        p if p == Path::new("Cargo.toml")
-            || p == Path::new("Cargo.lock")
-            || p == Path::new("rust-toolchain")
-            || p == Path::new("rust-toolchain.toml")
-            || p == Path::new("clippy.toml")
-            || p == Path::new(".clippy.toml")
-            || p.starts_with(".cargo")
-            || p.starts_with("os/arceos/configs")
-    )
+fn global_clippy_input(path: &Path) -> Option<GlobalClippyInput> {
+    if path == Path::new("Cargo.lock") {
+        // Soft: a dep-version-only update (e.g. `cargo update`) is unlikely to
+        // affect clippy when real code also changed.  When Cargo.lock is the
+        // *only* change, however, transitive-dep/proc-macro/build-script changes
+        // can still break compilation, so fall back to Full in that case.
+        Some(GlobalClippyInput::Soft)
+    } else if path == Path::new("Cargo.toml")
+        || path == Path::new("rust-toolchain")
+        || path == Path::new("rust-toolchain.toml")
+        || path == Path::new("clippy.toml")
+        || path == Path::new(".clippy.toml")
+        || path.starts_with(".cargo")
+        || path.starts_with("os/arceos/configs")
+    {
+        // Hard: root Cargo.toml is not limited to [workspace.members]; it also
+        // carries [workspace.dependencies], [workspace.package], [patch], and
+        // [profile] sections.  A workspace-dep bump alongside any code change
+        // would otherwise leave all other consumers unchecked.  We cannot
+        // distinguish "only added a member" from "bumped a global dep" without
+        // parsing diff hunks, so Hard is the only sound choice here.
+        Some(GlobalClippyInput::Hard)
+    } else {
+        None
+    }
 }
 
 fn normalize_git_path(path: PathBuf) -> anyhow::Result<PathBuf> {
@@ -496,7 +522,10 @@ mod tests {
     }
 
     #[test]
-    fn global_manifest_falls_back_to_full_run() {
+    fn lockfile_only_change_falls_back_to_full() {
+        // Cargo.lock is Soft: a dep-version-only update with no source changes
+        // can still affect compilation via transitive deps, proc macros, or
+        // build scripts, so a pure lockfile diff must trigger a full run.
         let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
@@ -509,6 +538,70 @@ mod tests {
         assert!(matches!(
             selected,
             IncrementalPackageSelection::Full { reason } if reason.contains("Cargo.lock")
+        ));
+    }
+
+    #[test]
+    fn lockfile_change_keeps_incremental_selection_when_packages_changed() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [
+                PathBuf::from("Cargo.lock"),
+                PathBuf::from("crates/beta/Cargo.toml"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            IncrementalPackageSelection::Packages(vec!["beta".into(), "gamma".into()])
+        );
+    }
+
+    #[test]
+    fn root_cargo_toml_only_falls_back_to_full() {
+        // Root Cargo.toml is Hard: a manifest-only change with no code changes
+        // (e.g. a [workspace.dependencies] bump) must still fall back to Full.
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [PathBuf::from("Cargo.toml")],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            selected,
+            IncrementalPackageSelection::Full { reason } if reason.contains("Cargo.toml")
+        ));
+    }
+
+    #[test]
+    fn root_cargo_toml_with_package_change_still_falls_back_to_full() {
+        // Root Cargo.toml is Hard: even when package source files are also in the
+        // diff (e.g. a new crate was added *and* a workspace dependency was
+        // bumped), the global manifest change requires a full run.  We cannot
+        // distinguish "only added a member" from "bumped a workspace dep" without
+        // parsing diff hunks, so Hard must always win.
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [
+                PathBuf::from("Cargo.toml"),
+                PathBuf::from("crates/alpha/src/lib.rs"),
+            ],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            selected,
+            IncrementalPackageSelection::Full { reason } if reason.contains("Cargo.toml")
         ));
     }
 

@@ -164,25 +164,38 @@ pub fn sys_mmap(
     } else {
         Some(get_file_like(fd)?)
     };
+    let mut device_mmap_top = file.as_ref().map(|fl| fl.device_mmap(offset as u64));
 
-    // File-backed `MAP_FIXED`: validate fd mode and memfd seals before any
-    // destructive unmap (Linux `do_mmap` ordering; avoids tearing down the
-    // old mapping on `EACCES` / `EPERM`).
-    if !anonymous && let Some(ref fl) = file {
-        // Ok(None) and Err(_) both mean "fall back to file_mmap" (memfd, regular
-        // files). Only Ok(Physical/Cache) skip file permission/seal checks.
-        let needs_file_mmap_checks = match fl.device_mmap(offset as u64) {
-            Ok(DeviceMmap::Physical(_)) | Ok(DeviceMmap::Cache(_)) => false,
-            #[cfg(feature = "kcov")]
-            Ok(DeviceMmap::SharedPages(_)) | Ok(DeviceMmap::NotConfigured) => false,
-            Ok(DeviceMmap::None) | Err(_) => true,
+    // Validate file_mmap permissions and memfd seals before any destructive
+    // MAP_FIXED unmap (Linux `do_mmap` ordering; avoids tearing down the old
+    // mapping on `EACCES` / `EPERM`). MAP_PRIVATE always uses file_mmap below,
+    // even if device_mmap reports a direct mapping.
+    if let Some(ref fl) = file {
+        let needs_file_mmap_checks = match map_type {
+            MmapFlags::PRIVATE => true,
+            MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
+                // Ok(None) and Err(_) both mean "fall back to file_mmap"
+                // (memfd, regular files). Direct device mappings do not.
+                match device_mmap_top
+                    .as_ref()
+                    .expect("file-backed mmap has cached device_mmap")
+                {
+                    Ok(DeviceMmap::Physical(_)) | Ok(DeviceMmap::Cache(_)) => false,
+                    #[cfg(feature = "kcov")]
+                    Ok(DeviceMmap::SharedPages(_)) | Ok(DeviceMmap::NotConfigured) => false,
+                    Ok(DeviceMmap::None) | Err(_) => true,
+                }
+            }
+            _ => false,
         };
         if needs_file_mmap_checks {
             let (_backend, flags) = fl.file_mmap()?;
             if !flags.contains(FileFlags::READ) {
                 return Err(AxError::PermissionDenied);
             }
-            if map_type == MmapFlags::SHARED && permission_flags.contains(MmapProt::WRITE) {
+            if matches!(map_type, MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE)
+                && permission_flags.contains(MmapProt::WRITE)
+            {
                 if !flags.contains(FileFlags::WRITE) {
                     return Err(AxError::PermissionDenied);
                 }
@@ -271,7 +284,10 @@ pub fn sys_mmap(
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
             if let Some(ref file) = file {
-                match file.device_mmap(offset as u64) {
+                match device_mmap_top
+                    .take()
+                    .expect("file-backed mmap has cached device_mmap")
+                {
                     Ok(DeviceMmap::Physical(mut range)) => {
                         mapping_flags |= MappingFlags::UNCACHED;
                         range.start += offset;

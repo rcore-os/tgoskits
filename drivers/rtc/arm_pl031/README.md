@@ -35,7 +35,7 @@ ax-arm-pl031 = "0.4.1"
 
 ```bash
 # Enter the crate directory
-cd components/arm_pl031
+cd drivers/rtc/arm_pl031
 
 # Format code
 cargo fmt --all

@@ -11,7 +11,7 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult, LinuxError, ax_bail};
 use ax_io::prelude::*;
 use axpoll::{IoEvents, Pollable};
 pub use smoltcp::wire::{IpProtocol, IpVersion};
@@ -24,7 +24,7 @@ use smoltcp::{
 use spin::{Mutex, RwLock};
 
 use crate::{
-    RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
     consts::{RAW_RX_BUF_LEN, RAW_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
@@ -237,6 +237,10 @@ impl SocketOps for RawSocket {
     }
 
     fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+        // TODO: MSG_DONTROUTE should bypass the routing table for this datagram.
+        if options.flags.contains(SendFlags::OOB) {
+            ax_bail!(OperationNotSupported);
+        }
         if self.tx_closed.load(Ordering::Acquire) {
             return Err(AxError::BrokenPipe);
         }
@@ -405,6 +409,7 @@ impl SocketOps for RawSocket {
                     }
 
                     let written = dst.write(packet)?;
+                    // TODO: set options.truncated when user buffer < packet size.
                     return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
                         packet.len()
                     } else {

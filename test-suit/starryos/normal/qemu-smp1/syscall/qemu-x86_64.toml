@@ -57,6 +57,7 @@ test_commands = [
     "/usr/bin/test_ioctl_fionbio_int",
     "/usr/bin/test-select-poll",
     "/usr/bin/test-pselect-ppoll",
+    "/usr/bin/test-socket-dataplane",
     "/usr/bin/test-rt_sigaction",
     "/usr/bin/test-rt_sigprocmask",
     "/usr/bin/test-rt_sigpending",
