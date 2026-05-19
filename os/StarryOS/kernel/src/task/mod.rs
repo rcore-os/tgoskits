@@ -405,6 +405,9 @@ pub struct ProcessData {
     /// The process nice value used by getpriority/setpriority compatibility.
     nice: AtomicI32,
 
+    /// Whether the process is dumpable (`prctl(PR_GET_DUMPABLE)`).
+    dumpable: AtomicI32,
+
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
@@ -448,6 +451,7 @@ impl ProcessData {
 
             umask: AtomicU32::new(0o022),
             nice: AtomicI32::new(0),
+            dumpable: AtomicI32::new(1),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
 
@@ -494,6 +498,16 @@ impl ProcessData {
     /// Set the process nice value.
     pub fn set_nice(&self, nice: i32) {
         self.nice.store(nice, Ordering::SeqCst);
+    }
+
+    /// Get whether the process is dumpable.
+    pub fn dumpable(&self) -> i32 {
+        self.dumpable.load(Ordering::SeqCst)
+    }
+
+    /// Set whether the process is dumpable.
+    pub fn set_dumpable(&self, dumpable: i32) {
+        self.dumpable.store(dumpable, Ordering::SeqCst);
     }
 
     /// Get the accumulated CPU time of waited children.

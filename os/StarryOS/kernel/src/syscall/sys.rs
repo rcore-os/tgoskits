@@ -110,6 +110,11 @@ fn uid_valid(id: u32) -> bool {
     id != NOCHG
 }
 
+#[inline]
+fn dumpable_should_reset(old: &crate::task::Cred, new: &crate::task::Cred) -> bool {
+    old.euid != new.euid || old.egid != new.egid || old.fsuid != new.fsuid || old.fsgid != new.fsgid
+}
+
 pub fn sys_getuid() -> AxResult<isize> {
     let cred = current().as_thread().cred();
     Ok(cred.uid as isize)
@@ -191,7 +196,11 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
 
     // fsuid always tracks euid.
     new.fsuid = new.euid;
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -235,7 +244,11 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
     }
 
     new.fsgid = new.egid;
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -267,7 +280,11 @@ pub fn sys_setuid(uid: u32) -> AxResult<isize> {
     }
 
     new.fsuid = new.euid;
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -294,7 +311,11 @@ pub fn sys_setgid(gid: u32) -> AxResult<isize> {
     }
 
     new.fsgid = new.egid;
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -340,7 +361,11 @@ pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
     }
 
     new.fsuid = new.euid;
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -378,7 +403,11 @@ pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
     }
 
     new.fsgid = new.egid;
+    let reset_dumpable = dumpable_should_reset(&old, &new);
     thread.set_cred(new);
+    if reset_dumpable {
+        thread.proc_data.set_dumpable(0);
+    }
     Ok(0)
 }
 
@@ -418,7 +447,11 @@ pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
     if allowed {
         let mut new = (*old).clone();
         new.fsuid = fsuid;
+        let reset_dumpable = dumpable_should_reset(&old, &new);
         thread.set_cred(new);
+        if reset_dumpable {
+            thread.proc_data.set_dumpable(0);
+        }
     }
     // Always return previous fsuid, even when the request was ignored.
     Ok(prev_fsuid as isize)
@@ -444,7 +477,11 @@ pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
     if allowed {
         let mut new = (*old).clone();
         new.fsgid = fsgid;
+        let reset_dumpable = dumpable_should_reset(&old, &new);
         thread.set_cred(new);
+        if reset_dumpable {
+            thread.proc_data.set_dumpable(0);
+        }
     }
     Ok(prev_fsgid as isize)
 }

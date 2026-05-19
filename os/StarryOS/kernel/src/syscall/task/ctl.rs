@@ -136,6 +136,13 @@ pub fn sys_prctl(
             let sig = current().as_thread().pdeathsig() as i32;
             (arg2 as *mut i32).vm_write(sig)?;
         }
+        PR_GET_DUMPABLE => {
+            return Ok(current().as_thread().proc_data.dumpable() as isize);
+        }
+        PR_SET_DUMPABLE => match arg2 {
+            0 | 1 => current().as_thread().proc_data.set_dumpable(arg2 as i32),
+            _ => return Err(AxError::InvalidInput),
+        },
         PR_CAPBSET_READ => {
             if arg2 > CAP_LAST_CAP as usize {
                 return Err(AxError::InvalidInput);
