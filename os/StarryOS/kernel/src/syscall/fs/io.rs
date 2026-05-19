@@ -694,7 +694,6 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
     do_send(src, dst, len).map(|n: usize| n as _)
 }
 
-
 pub fn sys_copy_file_range(
     fd_in: c_int,
     off_in: *mut u64,
