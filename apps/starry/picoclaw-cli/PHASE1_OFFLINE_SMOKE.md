@@ -11,7 +11,7 @@ Command:
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
+  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw.img
 ```
 
@@ -63,33 +63,33 @@ STARRY_PICOCLAW_OFFLINE_PASSED
 
 ## Files Completed
 
-- `examples/starry/picoclaw-cli/prepare_picoclaw_assets.sh`
+- `apps/starry/picoclaw-cli/prepare_picoclaw_assets.sh`
   - Downloads or reuses the PicoClaw Linux x86_64 release asset.
   - Verifies SHA-256.
   - Installs `picoclaw` and `picoclaw-launcher` under `target/picoclaw/assets/`.
 
-- `examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh`
+- `apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh`
   - Builds or reuses the StarryOS x86_64 Alpine rootfs.
   - Injects PicoClaw binaries into `/usr/local/bin/`.
   - Supports optional online config, `.security.yml`, proxy env file, and CA bundle injection.
 
-- `examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml`
+- `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml`
   - Runs the offline smoke commands.
   - Checks local PicoClaw config/workspace state.
   - Emits `STARRY_PICOCLAW_OFFLINE_PASSED`.
 
-- `examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml`
+- `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml`
   - Prepared for Phase 2 online agent validation.
   - Requires online rootfs with config and `.security.yml`.
 
-- `examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-gateway.toml`
+- `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-gateway.toml`
   - Prepared for Phase 3 gateway validation.
   - Starts gateway and checks `/health`.
 
-- `examples/starry/picoclaw-cli/README.md`
+- `apps/starry/picoclaw-cli/README.md`
   - Documents offline, online agent, and gateway usage.
 
-- `examples/starry/README.md`
+- `apps/starry/README.md`
   - Adds a short entry pointing to the PicoClaw CLI example.
 
 ## Not Done Yet

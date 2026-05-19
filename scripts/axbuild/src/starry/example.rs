@@ -23,7 +23,7 @@ pub enum ExampleCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsExampleBoard {
-    /// Select examples/starry/<CASE>
+    /// Select apps/starry/<CASE>
     #[arg(short = 't', long = "test-case", value_name = "CASE")]
     pub test_case: String,
 
@@ -71,19 +71,19 @@ pub(crate) fn resolve_board_case(
     explicit_board_config: Option<&Path>,
 ) -> anyhow::Result<StarryExampleBoardCase> {
     let case_name = validate_case_name(case_name)?;
-    let examples_dir = examples_starry_dir(workspace_root);
+    let apps_dir = apps_starry_dir(workspace_root);
     ensure!(
-        examples_dir.is_dir(),
-        "missing Starry examples directory `{}`",
-        examples_dir.display()
+        apps_dir.is_dir(),
+        "missing Starry apps directory `{}`",
+        apps_dir.display()
     );
 
-    let case_dir = examples_dir.join(case_name);
+    let case_dir = apps_dir.join(case_name);
     if !case_dir.is_dir() {
         bail!(
             "unknown Starry example case `{case_name}` in {}; available cases: {}",
-            examples_dir.display(),
-            available_case_names(&examples_dir)?
+            apps_dir.display(),
+            available_case_names(&apps_dir)?
         );
     }
 
@@ -121,8 +121,8 @@ pub(crate) fn resolve_board_case(
     })
 }
 
-fn examples_starry_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("examples/starry")
+fn apps_starry_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join("apps/starry")
 }
 
 fn validate_case_name(case_name: &str) -> anyhow::Result<&str> {
@@ -140,10 +140,10 @@ fn validate_case_name(case_name: &str) -> anyhow::Result<&str> {
     Ok(case_name)
 }
 
-fn available_case_names(examples_dir: &Path) -> anyhow::Result<String> {
+fn available_case_names(apps_dir: &Path) -> anyhow::Result<String> {
     let mut cases = Vec::new();
-    for entry in fs::read_dir(examples_dir)
-        .with_context(|| format!("failed to read {}", examples_dir.display()))?
+    for entry in
+        fs::read_dir(apps_dir).with_context(|| format!("failed to read {}", apps_dir.display()))?
     {
         let entry = entry?;
         if !entry.path().is_dir() {
@@ -321,7 +321,7 @@ mod tests {
     use super::*;
 
     fn write_case_file(root: &Path, case_name: &str, name: &str, body: &str) -> PathBuf {
-        let path = root.join("examples/starry").join(case_name).join(name);
+        let path = root.join("apps/starry").join(case_name).join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, body).unwrap();
         path
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_board_case_from_examples_dir() {
+    fn resolves_board_case_from_apps_dir() {
         let root = tempdir().unwrap();
         write_minimal_case(root.path(), "demo");
 
@@ -381,15 +381,15 @@ mod tests {
     }
 
     #[test]
-    fn reports_missing_examples_dir() {
+    fn reports_missing_apps_dir() {
         let root = tempdir().unwrap();
 
         let err = resolve_board_case(root.path(), "demo", None)
             .unwrap_err()
             .to_string();
 
-        assert!(err.contains("missing Starry examples directory"));
-        assert!(err.contains("examples/starry"));
+        assert!(err.contains("missing Starry apps directory"));
+        assert!(err.contains("apps/starry"));
     }
 
     #[test]

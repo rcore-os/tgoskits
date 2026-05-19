@@ -11,7 +11,7 @@
 ## 准备离线 rootfs
 
 ```bash
-examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
+apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
 ```
 
 脚本会复用或下载 `sipeed/picoclaw` 的 `v0.2.8` Linux x86_64 release tarball，校验 SHA-256，并把 `picoclaw` 与 `picoclaw-launcher` 注入到 Alpine rootfs 的 `/usr/local/bin/`。
@@ -21,7 +21,7 @@ examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
+  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw.img
 ```
 
@@ -37,7 +37,7 @@ STARRY_PICOCLAW_OFFLINE_PASSED
 
 ```bash
 PICOCLAW_API_KEY=sk-... \
-examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
+apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
   --output-rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img \
   --proxy http://10.0.2.2:7890
 ```
@@ -72,7 +72,7 @@ OpenAI-compatible 调用链没有回传 `reasoning_content`，所以脚本会为
 也可以显式指定 provider、model 和 api_base：
 
 ```bash
-examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
+apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
   --output-rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img \
   --api-key "$PICOCLAW_API_KEY" \
   --provider openai \
@@ -84,7 +84,7 @@ examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
 也可以手动提供配置文件：
 
 ```bash
-examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
+apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
   --output-rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img \
   --config-json /path/to/config.json \
   --security-yml /path/to/.security.yml \
@@ -98,7 +98,7 @@ examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml \
+  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img
 ```
 
@@ -132,7 +132,7 @@ STARRY_PICOCLAW_GATEWAY_PASSED
 如果要从 Docker 环境开始，一步一步演示 StarryOS 中的 PicoClaw 在线对话，可以运行：
 
 ```bash
-PICOCLAW_API_KEY=... examples/starry/picoclaw-cli/demo_picoclaw_agent.sh
+PICOCLAW_API_KEY=... apps/starry/picoclaw-cli/demo_picoclaw_agent.sh
 ```
 
 脚本会逐步暂停，依次展示 Docker 检查、rootfs 准备、StarryOS QEMU 启动，以及一次

@@ -81,7 +81,7 @@ export BOARD_IP=10.3.10.219
 
 ssh orangepi@${BOARD_IP} 'rm -rf ~/tgoskits-uvc-fps && mkdir -p ~/tgoskits-uvc-fps'
 rsync -az --delete \
-  examples/starry/orangepi-5-plus-uvc/uvc-fps/ \
+  apps/starry/orangepi-5-plus-uvc/uvc-fps/ \
   orangepi@${BOARD_IP}:~/tgoskits-uvc-fps/
 ```
 

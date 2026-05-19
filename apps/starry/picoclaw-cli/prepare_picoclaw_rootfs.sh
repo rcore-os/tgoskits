@@ -2,7 +2,7 @@
 set -euo pipefail
 
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-example_dir="${workspace}/examples/starry/picoclaw-cli"
+example_dir="${workspace}/apps/starry/picoclaw-cli"
 
 base_rootfs="${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
 output_rootfs="${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-picoclaw.img"
@@ -304,9 +304,9 @@ debugfs -w -f "$debug_cmds" "$output_rootfs"
 echo "PicoClaw rootfs ready: ${output_rootfs}"
 echo
 echo "Offline smoke:"
-echo "  cargo xtask starry qemu --arch x86_64 --qemu-config examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml --rootfs ${output_rootfs#${workspace}/}"
+echo "  cargo xtask starry qemu --arch x86_64 --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml --rootfs ${output_rootfs#${workspace}/}"
 if [[ -n "$api_key" || -n "$config_json" || -n "$security_yml" ]]; then
     echo
     echo "Online agent smoke:"
-    echo "  cargo xtask starry qemu --arch x86_64 --qemu-config examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml --rootfs ${output_rootfs#${workspace}/}"
+    echo "  cargo xtask starry qemu --arch x86_64 --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml --rootfs ${output_rootfs#${workspace}/}"
 fi

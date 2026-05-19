@@ -17,13 +17,13 @@
 先在开发机上构建运行文件：
 
 ```bash
-examples/starry/orangepi-5-plus-uvc-rknn/build-image-runner.sh
+apps/starry/orangepi-5-plus-uvc-rknn/build-image-runner.sh
 ```
 
 构建完成后的产物目录为：
 
 ```text
-examples/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/install/rk3588_linux_aarch64/rknn_yolov8_image/
+apps/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/install/rk3588_linux_aarch64/rknn_yolov8_image/
 ```
 
 需要把该目录同步到板子 Linux 根文件系统中的：

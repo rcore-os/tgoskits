@@ -1,6 +1,6 @@
 # Starry Examples
 
-`examples/starry/` contains runnable StarryOS scenarios. Most direct child
+`apps/starry/` contains runnable StarryOS scenarios. Most direct child
 directories are board cases selected by `cargo starry example board -t <case>`;
 some x86_64 QEMU demos provide their own `cargo xtask starry qemu` commands.
 
@@ -10,7 +10,7 @@ operator-facing workflows, while the test suit remains CI-oriented coverage.
 ## Case Layout
 
 ```text
-examples/starry/<case>/
+apps/starry/<case>/
   init.sh
   build-<target>.toml
   board-<board>.toml
@@ -42,10 +42,10 @@ manual PicoClaw use. It prepares local-only release assets and rootfs images
 under `target/picoclaw/` and `tmp/axbuild/rootfs/`.
 
 ```bash
-examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
+apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
+  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw.img
 ```
 
@@ -61,7 +61,7 @@ board rootfs before StarryOS is booted. The usual preparation flow is:
    and leave that serial session open;
 2. boot into the board Linux shell and read the board IP from the login banner
    or `ip -br addr`;
-3. use SSH from the host to copy `examples/starry/orangepi-5-plus-uvc/uvc-fps/`
+3. use SSH from the host to copy `apps/starry/orangepi-5-plus-uvc/uvc-fps/`
    into the board Linux system;
 4. build and install `uvc-fps` on the board Linux rootfs;
 5. close the `cargo board connect` session, then boot StarryOS with:

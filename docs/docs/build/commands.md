@@ -121,7 +121,7 @@ cargo xtask starry <subcommand> [options]
 | `quick-start qemu-x86_64 {build,run}` | x86_64 QEMU 平台的构建/运行 |
 | `quick-start orangepi-5-plus {build,run}` | Orange Pi 5 Plus 板卡的构建/运行，run 支持 `--serial`/`--baud`/`--dtb` 参数覆盖 |
 
-`example board` 从 `examples/starry/<case>/` 目录中按名称发现用例，每个用例目录包含 `init.sh` 启动脚本（定义板卡上执行的命令）以及自动发现的 `board-*.toml` 和 `build-*.toml` 配置文件，无需手动指定所有配置路径。
+`example board` 从 `apps/starry/<case>/` 目录中按名称发现用例，每个用例目录包含 `init.sh` 启动脚本（定义板卡上执行的命令）以及自动发现的 `board-*.toml` 和 `build-*.toml` 配置文件，无需手动指定所有配置路径。
 
 ### 参数
 
@@ -137,7 +137,7 @@ cargo xtask starry <subcommand> [options]
 
 **示例参数**（`example board`）：`--test-case`（必需）、`--board-config`、`--board-type`、`--server`、`--port`、`--debug`
 
-板卡运行通过 `ostool-server` 与远程板卡交互，需要指定 `--server` 和 `--port` 参数或通过 `board config` 预先配置。`example board` 用于在远程板卡上快速运行 `examples/starry/` 下的预定义示例，每个示例是一个包含 `init.sh` 启动脚本和构建配置的目录。
+板卡运行通过 `ostool-server` 与远程板卡交互，需要指定 `--server` 和 `--port` 参数或通过 `board config` 预先配置。`example board` 用于在远程板卡上快速运行 `apps/starry/` 下的预定义示例，每个示例是一个包含 `init.sh` 启动脚本和构建配置的目录。
 
 ---
 

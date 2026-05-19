@@ -25,7 +25,7 @@ The board rootfs must contain:
 Build the image runner:
 
 ```bash
-examples/starry/orangepi-5-plus-uvc-rknn/build-image-runner.sh
+apps/starry/orangepi-5-plus-uvc-rknn/build-image-runner.sh
 ```
 
 Install it into the board Linux rootfs:
@@ -33,7 +33,7 @@ Install it into the board Linux rootfs:
 ```bash
 export BOARD_IP=10.3.10.24
 rsync -az --delete \
-  examples/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/install/rk3588_linux_aarch64/rknn_yolov8_image/ \
+  apps/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/install/rk3588_linux_aarch64/rknn_yolov8_image/ \
   orangepi@${BOARD_IP}:/tmp/rknn_yolov8_image/
 ssh orangepi@${BOARD_IP} '
   printf "%s\n" orangepi | sudo -S rm -rf /rknn_yolov8_image &&
@@ -120,16 +120,16 @@ example as well:
 
 ```bash
 cargo starry board \
-  -c examples/starry/orangepi-5-plus-uvc-rknn/build-aarch64-unknown-none-softfloat.toml \
+  -c apps/starry/orangepi-5-plus-uvc-rknn/build-aarch64-unknown-none-softfloat.toml \
   --target aarch64-unknown-none-softfloat \
-  --board-config examples/starry/orangepi-5-plus-uvc-rknn/board-orangepi-5-plus.toml \
+  --board-config apps/starry/orangepi-5-plus-uvc-rknn/board-orangepi-5-plus.toml \
   -b OrangePi-5-Plus-robot \
   --server 10.30.12.60 \
   --port 2999
 ```
 
 For the direct long-run command, switch `--board-config` to
-`examples/starry/orangepi-5-plus-uvc-rknn/configs/board-orangepi-5-plus-long-run.toml`.
+`apps/starry/orangepi-5-plus-uvc-rknn/configs/board-orangepi-5-plus-long-run.toml`.
 Keep the long-run command running while viewing the stream, and stop it with
 `Ctrl+C` when done. StarryOS uses DHCP by default; use the `eth0: DHCP acquired
 address ...` boot log as `<starry-board-ip>`, then open
