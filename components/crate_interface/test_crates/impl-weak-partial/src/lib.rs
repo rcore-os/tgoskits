@@ -6,8 +6,6 @@
 //! This is a separate crate from impl-weak-traits to allow testing the
 //! weak symbol mechanism in isolation (without FullImpl's strong symbols).
 
-#![feature(linkage)]
-
 use ax_crate_interface::impl_interface;
 use define_weak_traits::{SelfRefIf, WeakDefaultIf};
 

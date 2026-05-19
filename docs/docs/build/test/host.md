@@ -25,7 +25,7 @@ CSV 格式：每行一个 crate 名，`#` 开头为注释行。
 cargo xtask clippy [--all | --package <name> | --since <ref>]
 ```
 
-基于 `scripts/test/clippy_crates.csv` 白名单，对每个包执行多维度的 clippy 检查。
+对 workspace 包执行多维度的 clippy 检查。默认模式检查全部 workspace 包；`--package` 可限定指定包；`--since` 可按 git ref 进行增量检查。
 
 ### 检查展开
 
@@ -39,11 +39,11 @@ cargo xtask clippy [--all | --package <name> | --since <ref>]
 
 ### 增量选择
 
-- `--since <ref>`：通过 `git diff --name-only <ref>..HEAD` 获取变更路径，定位到具体包后沿依赖图反向遍历（reverse dependency walk）找到所有受影响的包，再与白名单取交集。如果变更路径位于 workspace 包之外，则回退到完整白名单
+- `--since <ref>`：通过 `git diff --name-only <ref>..HEAD` 获取变更路径，定位到具体包后沿依赖图反向遍历（reverse dependency walk）找到所有受影响的包。如果变更路径位于 workspace 包之外，则回退到完整 workspace
 
 ### 结果报告
 
-执行完成后输出结构化报告：通过/失败的包数、失败包中每个失败的检查项。当使用 `--all` 时还会输出通过包的 CSV 列表，方便更新白名单。
+执行完成后输出结构化报告：通过/失败的包数、失败包中每个失败的检查项。
 
 ## sync-lint
 

@@ -57,7 +57,10 @@ fn main() {
         println!("emitting raw backtrace report...");
         a();
         println!("test pass");
-        std::os::arceos::modules::ax_hal::power::system_off();
+        #[cfg(feature = "ax-std")]
+        use std::os::arceos::modules::ax_hal;
+        #[cfg(feature = "ax-std")]
+        ax_hal::power::system_off();
     }
 }
 
