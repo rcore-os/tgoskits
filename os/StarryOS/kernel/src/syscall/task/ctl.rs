@@ -148,6 +148,57 @@ pub fn sys_prctl(
             // not implemented; but avoid annoying warnings
             return Err(AxError::InvalidInput);
         }
+        PR_SET_VMA => {
+            // jemalloc uses PR_SET_VMA_ANON_NAME (0x5) to name anonymous
+            // memory regions. Accept the string pointer but do nothing.
+            // (linux-raw-sys 0.12 has PR_SET_VMA_ANON_NAME = 0, but the
+            //  actual kernel value is 0x5.)
+            if arg2 == 0x5 {
+                // PR_SET_VMA_ANON_NAME: arg3 = (unsigned long)name,
+                // arg4 = size, but we don't use them.
+                debug!("PR_SET_VMA: PR_SET_VMA_ANON_NAME, name_ptr={:#x}", arg3);
+            } else {
+                debug!("PR_SET_VMA: unsupported sub-option {}", arg2);
+                return Err(AxError::InvalidInput);
+            }
+        }
+        PR_GET_DUMPABLE => {
+            let dumpable = current().as_thread().dumpable();
+            return Ok(dumpable as isize);
+        }
+        PR_SET_DUMPABLE => {
+            let val = arg2 as u32;
+            if val > 2 {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().set_dumpable(val);
+        }
+        PR_SET_TIMERSLACK => {
+            // Accept any value; timer slack is a power-saving hint.
+            debug!("PR_SET_TIMERSLACK: {}", arg2);
+        }
+        PR_GET_TIMERSLACK => {
+            // Return 0 (the default timer slack).
+            return Ok(0);
+        }
+        PR_CAP_AMBIENT => {
+            // Unsupported ambient capability operations.
+            return Err(AxError::InvalidInput);
+        }
+        PR_GET_NO_NEW_PRIVS => {
+            let val = current().as_thread().no_new_privs();
+            return Ok(val as isize);
+        }
+        PR_SET_NO_NEW_PRIVS => {
+            if arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().set_no_new_privs(1);
+        }
+        PR_GET_THP_DISABLE => {
+            // Transparent hugepages are not tracked; report disabled.
+            return Ok(0);
+        }
         _ => {
             warn!("sys_prctl: unsupported option {option}");
             return Err(AxError::InvalidInput);

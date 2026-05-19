@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FileBackend, FileFlags};
@@ -13,6 +14,7 @@ use crate::{
     pseudofs::{Device, DeviceMmap},
     task::AsThread,
 };
+use crate::mm::aspace::backend::{cow, pages_in};
 
 bitflags::bitflags! {
     /// `PROT_*` flags for use with [`sys_mmap`].
@@ -40,13 +42,7 @@ impl From<MmapProt> for MappingFlags {
             flags |= MappingFlags::READ;
         }
         if value.contains(MmapProt::WRITE) {
-            // Writable pages must also be readable. RISC-V's privileged spec
-            // reserves the (R=0, W=1) PTE encoding, so a PROT_WRITE-only mmap
-            // would produce an unusable PTE. Linux implicitly promotes
-            // PROT_WRITE to PROT_READ | PROT_WRITE for this reason; match that
-            // behavior so userspace paths that mmap with PROT_WRITE alone
-            // (e.g. weston's drm-pixman shadow framebuffer) work on riscv64.
-            flags |= MappingFlags::READ | MappingFlags::WRITE;
+            flags |= MappingFlags::WRITE;
         }
         if value.contains(MmapProt::EXEC) {
             flags |= MappingFlags::EXECUTE;
@@ -154,9 +150,33 @@ pub fn sys_mmap(
         PageSize::Size4K
     };
 
-    let aligned = addr.align_down(page_size);
+    let start = addr.align_down(page_size);
     let end = (addr + length).align_up(page_size);
-    let mut length = end - aligned;
+    let mut length = end - start;
+
+    let start = if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
+        let dst_addr = VirtAddr::from(start);
+        if !map_flags.contains(MmapFlags::FIXED_NOREPLACE) {
+            aspace.unmap(dst_addr, length)?;
+        }
+        dst_addr
+    } else {
+        let align = page_size as usize;
+        aspace
+            .find_free_area(
+                VirtAddr::from(start),
+                length,
+                VirtAddrRange::new(aspace.base(), aspace.end()),
+                align,
+            )
+            .or(aspace.find_free_area(
+                aspace.base(),
+                length,
+                VirtAddrRange::new(aspace.base(), aspace.end()),
+                align,
+            ))
+            .ok_or(AxError::NoMemory)?
+    };
 
     let file = if anonymous {
         None
@@ -173,51 +193,6 @@ pub fn sys_mmap(
             return Err(AxError::OperationNotPermitted);
         }
         Some(get_file_like(fd)?)
-    };
-    let mut device_mmap_top = file.as_ref().map(|fl| fl.device_mmap(offset as u64));
-
-    // File-backed `MAP_FIXED`: validate fd mode before any destructive unmap
-    // (Linux `do_mmap` ordering; avoids tearing down the old mapping on `EACCES`).
-    // Covers both regular files and PRIVATE mappings that bypass device_mmap in the
-    // backend match (device_mmap may return Physical/Cache while PRIVATE still uses
-    // file_mmap). `file_mmap()` here is intentionally idempotent with the main path.
-    if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE)
-        && let Some(ref fl) = file
-    {
-        let (_backend, flags) = fl.file_mmap()?;
-        if !flags.contains(FileFlags::READ) {
-            return Err(AxError::PermissionDenied);
-        }
-        if matches!(map_type, MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE)
-            && permission_flags.contains(MmapProt::WRITE)
-            && !flags.contains(FileFlags::WRITE)
-        {
-            return Err(AxError::PermissionDenied);
-        }
-    }
-
-    let start = if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
-        let dst_addr = VirtAddr::from(aligned);
-        if !map_flags.contains(MmapFlags::FIXED_NOREPLACE) {
-            aspace.unmap(dst_addr, length)?;
-        }
-        dst_addr
-    } else {
-        let align = page_size as usize;
-        aspace
-            .find_free_area(
-                VirtAddr::from(aligned),
-                length,
-                VirtAddrRange::new(aspace.base(), aspace.end()),
-                align,
-            )
-            .or(aspace.find_free_area(
-                aspace.base(),
-                length,
-                VirtAddrRange::new(aspace.base(), aspace.end()),
-                align,
-            ))
-            .ok_or(AxError::NoMemory)?
     };
 
     // IonBufferFile 特殊处理：直接线性映射物理地址，跳过通用 file_mmap/device_mmap 路径。
@@ -273,10 +248,7 @@ pub fn sys_mmap(
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
             if let Some(ref file) = file {
-                match device_mmap_top
-                    .take()
-                    .expect("file-backed mmap has cached device_mmap")
-                {
+                match file.device_mmap(offset as u64) {
                     Ok(DeviceMmap::Physical(mut range)) => {
                         mapping_flags |= MappingFlags::UNCACHED;
                         range.start += offset;
@@ -738,19 +710,9 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
         _ => return Err(AxError::InvalidInput),
     }
 
-    if !addr.is_multiple_of(PageSize::Size4K as usize) {
-        return Err(AxError::InvalidInput);
-    }
-
-    if length > 0 {
-        let curr = current();
-        let aspace_arc = curr.as_thread().proc_data.aspace();
-        let aspace = aspace_arc.lock();
-        if aspace.find_area(VirtAddr::from(addr)).is_none() {
-            return Err(AxError::NoMemory);
-        }
-    }
-
+    // madvise is advisory; accept all valid advice as no-ops. We skip
+    // aspace locking and VMA lookup to avoid blocking between threads
+    // that share an address space.
     Ok(0)
 }
 
