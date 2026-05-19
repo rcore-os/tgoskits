@@ -9,8 +9,6 @@
 //!
 //! Exit code 0 means all tests passed.
 
-#![feature(linkage)]
-
 use ax_crate_interface::call_interface;
 // Import the partial implementation crate to link it
 use impl_weak_partial::{PartialOnlyImpl, SelfRefPartialImpl};

@@ -429,16 +429,16 @@ impl LineEditor {
 
             // Normal byte processing
             let key = match b {
-                0x01 => Key::CtrlA,                                 // Ctrl-A → Home
-                0x03 => Key::CtrlC,                                 // Ctrl-C
-                0x04 => Key::CtrlD,                                 // Ctrl-D → EOF
-                0x05 => Key::CtrlE,                                 // Ctrl-E → End
-                0x08 | 0x7F => Key::Backspace,                      // BS or DEL
-                0x0A | 0x0D => Key::Enter,                          // LF or CR
-                0x0B => Key::CtrlK,                                 // Ctrl-K → kill to end
-                0x0C => Key::CtrlL,                                 // Ctrl-L → redraw
-                0x15 => Key::CtrlU,                                 // Ctrl-U → kill to start
-                b if b >= 0x20 && b < 0x7F => Key::Char(b as char), // printable ASCII
+                0x01 => Key::CtrlA,                                     // Ctrl-A → Home
+                0x03 => Key::CtrlC,                                     // Ctrl-C
+                0x04 => Key::CtrlD,                                     // Ctrl-D → EOF
+                0x05 => Key::CtrlE,                                     // Ctrl-E → End
+                0x08 | 0x7F => Key::Backspace,                          // BS or DEL
+                0x0A | 0x0D => Key::Enter,                              // LF or CR
+                0x0B => Key::CtrlK,                                     // Ctrl-K → kill to end
+                0x0C => Key::CtrlL,                                     // Ctrl-L → redraw
+                0x15 => Key::CtrlU,                                     // Ctrl-U → kill to start
+                b if (0x20..0x7F).contains(&b) => Key::Char(b as char), // printable ASCII
                 b if b >= 0xC0 => {
                     // UTF-8 lead byte
                     utf8_buf.clear();
@@ -461,12 +461,10 @@ impl LineEditor {
                     let _ = stdout.flush();
                     let line = lb.as_str().to_string();
                     // Add to history if non-empty and different from last
-                    if !line.trim().is_empty() {
-                        if self.history.last().map_or(true, |prev| prev != &line) {
-                            self.history.push(line.clone());
-                            if self.history.len() > self.max_history {
-                                self.history.remove(0);
-                            }
+                    if !line.trim().is_empty() && self.history.last() != Some(&line) {
+                        self.history.push(line.clone());
+                        if self.history.len() > self.max_history {
+                            self.history.remove(0);
                         }
                     }
                     return Some(line);
@@ -610,18 +608,15 @@ impl LineEditor {
                 self.replace_line(lb, out, &self.history[new_idx].clone(), prompt);
             }
             Key::Down => {
-                match *hist_idx {
-                    None => return, // not in history mode
-                    Some(i) => {
-                        if i + 1 < self.history.len() {
-                            *hist_idx = Some(i + 1);
-                            self.replace_line(lb, out, &self.history[i + 1].clone(), prompt);
-                        } else {
-                            // Return to saved line
-                            *hist_idx = None;
-                            let s = saved_line.clone();
-                            self.replace_line(lb, out, &s, prompt);
-                        }
+                if let Some(i) = *hist_idx {
+                    if i + 1 < self.history.len() {
+                        *hist_idx = Some(i + 1);
+                        self.replace_line(lb, out, &self.history[i + 1].clone(), prompt);
+                    } else {
+                        // Return to saved line
+                        *hist_idx = None;
+                        let s = saved_line.clone();
+                        self.replace_line(lb, out, &s, prompt);
                     }
                 }
             }

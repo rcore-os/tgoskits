@@ -3,11 +3,6 @@
 //! This crate provides FULL implementations that override ALL methods,
 //! including those with default implementations. This tests that strong
 //! symbols correctly override weak symbol defaults.
-//!
-//! IMPORTANT: This crate requires nightly Rust and `#![feature(linkage)]`.
-
-#![feature(linkage)]
-
 use ax_crate_interface::impl_interface;
 use define_weak_traits::{AllDefaultIf, CallerWeakIf, NamespacedWeakIf, SelfRefIf, WeakDefaultIf};
 

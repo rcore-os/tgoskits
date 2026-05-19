@@ -34,7 +34,10 @@ fn main() {
     println!("emitting raw backtrace report (corrupted fp)...");
     emit_invalid_fp_report();
     println!("test pass");
-    std::os::arceos::modules::ax_hal::power::system_off();
+    #[cfg(feature = "ax-std")]
+    use std::os::arceos::modules::ax_hal;
+    #[cfg(feature = "ax-std")]
+    ax_hal::power::system_off();
 }
 
 }

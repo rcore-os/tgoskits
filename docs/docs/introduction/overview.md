@@ -273,7 +273,7 @@ flowchart LR
 | 命令 | 功能 | 典型用法 |
 |------|------|---------|
 | `cargo xtask test` | 主机端标准库单元测试（`std_crates.csv` 白名单） | `cargo xtask test` |
-| `cargo xtask clippy` | Clippy 静态检查（`clippy_crates.csv` 白名单） | `cargo xtask clippy --all` |
+| `cargo xtask clippy` | Clippy 静态检查（支持全量、指定包和增量模式） | `cargo xtask clippy --since origin/main` |
 | `cargo xtask arceos <sub>` | ArceOS 构建/运行/QEMU 测试 | `cargo xtask arceos qemu --arch riscv64` |
 | `cargo xtask starry <sub>` | StarryOS 构建/运行/QEMU 测试/板级测试 | `cargo xtask starry qemu --target aarch64` |
 | `cargo xtask axvisor <sub>` | Axvisor 构建/运行/QEMU/U-Boot/板级测试 | `cargo xtask axvisor test qemu --target aarch64` |
