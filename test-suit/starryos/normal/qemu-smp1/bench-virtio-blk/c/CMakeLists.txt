@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bench-virtio-blk C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(bench-virtio-blk src/main.c)
+target_compile_options(bench-virtio-blk PRIVATE -Wall -Wextra -O2)
+install(TARGETS bench-virtio-blk RUNTIME DESTINATION usr/bin)
