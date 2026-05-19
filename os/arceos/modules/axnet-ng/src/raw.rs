@@ -248,10 +248,10 @@ impl SocketOps for RawSocket {
         let remote = self.remote_address(&options)?;
         let local = self.local_address_for(remote);
         let payload_len = src.remaining();
+        let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
         let loopback_ipv4 = self.ip_version == IpVersion::Ipv4 && is_loopback_address(remote);
 
-        let per_call_nonblock = options.flags.contains(SendFlags::DONTWAIT);
-        self.general.send_poller(self, per_call_nonblock, || {
+        self.general.send_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.can_send() {
@@ -356,10 +356,10 @@ impl SocketOps for RawSocket {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(AxError::NotConnected);
         }
+        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         let mut options = options;
-        let per_call_nonblock = options.flags.contains(RecvFlags::DONTWAIT);
 
-        self.general.recv_poller(self, per_call_nonblock, || {
+        self.general.recv_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 loop {

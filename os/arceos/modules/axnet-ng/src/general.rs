@@ -76,26 +76,56 @@ impl GeneralOptions {
     pub fn send_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
         &self,
         pollable: &P,
-        per_call_nonblock: bool,
         f: F,
     ) -> AxResult<T> {
-        let nonblock = self.nonblocking() || per_call_nonblock;
-        block_on(timeout(
-            self.send_timeout(),
-            poll_io(pollable, IoEvents::OUT, nonblock, f),
-        ))?
+        self.send_poller_with(pollable, false, f)
     }
 
     pub fn recv_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
         &self,
         pollable: &P,
-        per_call_nonblock: bool,
         f: F,
     ) -> AxResult<T> {
-        let nonblock = self.nonblocking() || per_call_nonblock;
+        self.recv_poller_with(pollable, false, f)
+    }
+
+    /// Like [`send_poller`] but lets the caller force non-blocking
+    /// behavior for this call only (e.g. `MSG_DONTWAIT`). The effective
+    /// non-blocking state is the OR of the socket's own `nonblocking()`
+    /// and `extra_nonblocking`.
+    pub fn send_poller_with<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+        &self,
+        pollable: &P,
+        extra_nonblocking: bool,
+        f: F,
+    ) -> AxResult<T> {
+        block_on(timeout(
+            self.send_timeout(),
+            poll_io(
+                pollable,
+                IoEvents::OUT,
+                self.nonblocking() || extra_nonblocking,
+                f,
+            ),
+        ))?
+    }
+
+    /// Like [`recv_poller`] but lets the caller force non-blocking
+    /// behavior for this call only (e.g. `MSG_DONTWAIT`).
+    pub fn recv_poller_with<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+        &self,
+        pollable: &P,
+        extra_nonblocking: bool,
+        f: F,
+    ) -> AxResult<T> {
         block_on(timeout(
             self.recv_timeout(),
-            poll_io(pollable, IoEvents::IN, nonblock, f),
+            poll_io(
+                pollable,
+                IoEvents::IN,
+                self.nonblocking() || extra_nonblocking,
+                f,
+            ),
         ))?
     }
 }

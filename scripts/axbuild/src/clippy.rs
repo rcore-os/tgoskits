@@ -14,13 +14,21 @@ const AX_CONFIG_PATH_ENV: &str = "AX_CONFIG_PATH";
 const AXCONFIG_FILE: &str = "axconfig.toml";
 const ARCEOS_RUST_PACKAGE: &str = "arceos-rust";
 const ARCEOS_RUST_CLIPPY_TARGET: &str = "x86_64-unknown-none";
-const TGOSKITS_METADATA: &str = "tgoskits";
-const CLIPPY_METADATA: &str = "clippy";
-const SKIP_METADATA: &str = "skip";
 const DOCS_RS_METADATA: &str = "docs.rs";
 const DOCS_METADATA: &str = "docs";
 const RS_METADATA: &str = "rs";
 const TARGETS_METADATA: &str = "targets";
+
+const UNSUPPORTED_CLIPPY_PACKAGES: &[(&str, &str)] = &[
+    (
+        "axvisor",
+        "requires an Axvisor target/build configuration; use the axvisor xtask flow",
+    ),
+    (
+        "mingo",
+        "requires the chainloader Makefile target, BSP features, and custom RUSTFLAGS",
+    ),
+];
 
 const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
     (
@@ -280,14 +288,9 @@ fn normalize_clippy_target(target: &str) -> &str {
 }
 
 fn clippy_skip_reason(package: &Package) -> Option<&str> {
-    package
-        .metadata
-        .get(TGOSKITS_METADATA)
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get(CLIPPY_METADATA))
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get(SKIP_METADATA))
-        .and_then(Value::as_str)
+    UNSUPPORTED_CLIPPY_PACKAGES
+        .iter()
+        .find_map(|(name, reason)| (package.name == *name).then_some(*reason))
 }
 
 fn skip_unsupported_packages(packages: Vec<Package>) -> Vec<Package> {
@@ -1121,20 +1124,14 @@ mod tests {
     }
 
     #[test]
-    fn package_metadata_can_skip_generic_clippy() {
+    fn unsupported_packages_can_skip_generic_clippy() {
         let packages = vec![
             pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
-            pkg_with_metadata(
-                "beta",
-                "beta 0.1.0 (path+file:///tmp/beta)",
+            pkg(
+                "axvisor",
+                "axvisor 0.1.0 (path+file:///tmp/axvisor)",
                 &[],
-                serde_json::json!({
-                    "tgoskits": {
-                        "clippy": {
-                            "skip": "requires a package-specific build flow",
-                        },
-                    },
-                }),
+                None,
             ),
         ];
 

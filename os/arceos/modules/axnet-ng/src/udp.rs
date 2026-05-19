@@ -252,8 +252,8 @@ impl SocketOps for UdpSocket {
             None => self.remote_endpoint().ok(),
         };
 
-        let per_call_nonblock = options.flags.contains(SendFlags::DONTWAIT);
-        self.general.send_poller(self, per_call_nonblock, || {
+        let extra_nb = options.flags.contains(SendFlags::DONTWAIT);
+        self.general.send_poller_with(self, extra_nb, || {
             poll_interfaces();
             let mut cork_guard = self.cork.lock();
             // When flushing corked data, always use the endpoint captured
@@ -359,8 +359,8 @@ impl SocketOps for UdpSocket {
             },
         };
 
-        let per_call_nonblock = options.flags.contains(RecvFlags::DONTWAIT);
-        self.general.recv_poller(self, per_call_nonblock, || {
+        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
+        self.general.recv_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.can_recv() {
