@@ -677,12 +677,11 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
     if (out_file.open_flags() & O_APPEND) != 0 {
         return Err(AxError::InvalidInput);
     }
-    let pos = offset.vm_read()?;    
     let src: SendFile = if !offset.is_null() {
-        if offset.vm_read()? > u32::MAX as u64 {
+        let pos = offset.vm_read()?;
+        if pos > u32::MAX as u64 {
             return Err(AxError::InvalidInput);
         }
-
         SendFile::Offset(in_file, offset, pos)
     } else {
         SendFile::Direct(get_file_like(in_fd)?)
