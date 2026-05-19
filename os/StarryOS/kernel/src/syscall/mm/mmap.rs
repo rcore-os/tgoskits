@@ -41,7 +41,13 @@ impl From<MmapProt> for MappingFlags {
             flags |= MappingFlags::READ;
         }
         if value.contains(MmapProt::WRITE) {
-            flags |= MappingFlags::WRITE;
+            // Writable pages must also be readable. RISC-V's privileged spec
+            // reserves the (R=0, W=1) PTE encoding, so a PROT_WRITE-only mmap
+            // would produce an unusable PTE. Linux implicitly promotes
+            // PROT_WRITE to PROT_READ | PROT_WRITE for this reason; match that
+            // behavior so userspace paths that mmap with PROT_WRITE alone
+            // (e.g. weston's drm-pixman shadow framebuffer) work on riscv64.
+            flags |= MappingFlags::READ | MappingFlags::WRITE;
         }
         if value.contains(MmapProt::EXEC) {
             flags |= MappingFlags::EXECUTE;
@@ -167,6 +173,8 @@ pub fn sys_mmap(
         // files). Only Ok(Physical/Cache) skip file permission/seal checks.
         let needs_file_mmap_checks = match fl.device_mmap(offset as u64) {
             Ok(DeviceMmap::Physical(_)) | Ok(DeviceMmap::Cache(_)) => false,
+            #[cfg(feature = "kcov")]
+            Ok(DeviceMmap::SharedPages(_)) | Ok(DeviceMmap::NotConfigured) => false,
             Ok(DeviceMmap::None) | Err(_) => true,
         };
         if needs_file_mmap_checks {
@@ -278,6 +286,10 @@ pub fn sys_mmap(
                         )
                     }
                     Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
+                    #[cfg(feature = "kcov")]
+                    Ok(DeviceMmap::NotConfigured) => return Err(AxError::InvalidInput),
+                    #[cfg(feature = "kcov")]
+                    Ok(DeviceMmap::SharedPages(pages)) => Backend::new_shared(start, pages),
                     Ok(_) => return Err(AxError::InvalidInput),
                     Err(_) => {
                         // Fall through to file-backed mmap
@@ -315,6 +327,10 @@ pub fn sys_mmap(
                                     DeviceMmap::None => {
                                         return Err(AxError::NoSuchDevice);
                                     }
+                                    #[cfg(feature = "kcov")]
+                                    DeviceMmap::NotConfigured => {
+                                        return Err(AxError::InvalidInput);
+                                    }
                                     DeviceMmap::Physical(range) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
@@ -337,6 +353,10 @@ pub fn sys_mmap(
                                         &curr.as_thread().proc_data.aspace(),
                                         true,
                                     ),
+                                    #[cfg(feature = "kcov")]
+                                    DeviceMmap::SharedPages(pages) => {
+                                        Backend::new_shared(start, pages)
+                                    }
                                 }
                             }
                         }

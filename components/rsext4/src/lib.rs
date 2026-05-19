@@ -30,7 +30,7 @@ pub use error::{Errno, Ext4Error, Ext4Result};
 pub use ext4::{Ext4FileSystem, find_file, mkfs, mount, umount};
 pub use file::{
     create_symbol_link, delete_dir, delete_file, link, mkfile, mv, read_file, rename, truncate,
-    unlink, write_file,
+    unlink, write_file, write_inode_data,
 };
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};
 

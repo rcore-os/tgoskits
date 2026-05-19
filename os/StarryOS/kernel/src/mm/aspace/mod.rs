@@ -461,8 +461,8 @@ impl AddrSpace {
     /// space to copy or share their mappings into the new one.
     ///
     /// After each area is mapped, `memfd_on_after_map` runs so each cloned memfd
-    /// shared-writable VMA increments `MemFdMeta::shared_writable_mmap_count` the same way
-    /// as [`AddrSpace::map`]. (`CLONE_VM` shares one address space and does not duplicate VMAs here.)
+    /// shared-writable VMA increments the same counter as [`AddrSpace::map`].
+    /// (`CLONE_VM` shares one address space and does not duplicate VMAs here.)
     pub fn try_clone(&mut self) -> AxResult<Arc<Mutex<Self>>> {
         let new_aspace = Arc::new(Mutex::new(Self::new_empty(self.base(), self.size())?));
         let new_aspace_clone = new_aspace.clone();

@@ -6,8 +6,8 @@ edition.workspace = true
 license = "Apache-2.0"
 publish = false
 
-[profile.release]
-lto = true
+[package.metadata.tgoskits.clippy]
+skip = "requires the chainloader Makefile target, BSP features, and custom RUSTFLAGS"
 
 [features]
 default = []

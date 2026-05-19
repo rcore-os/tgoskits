@@ -8,11 +8,14 @@ use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddr
 use linux_raw_sys::{
     general::timespec,
     net::{
-        MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, mmsghdr, msghdr, sockaddr, socklen_t,
+        MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, mmsghdr, msghdr,
+        sockaddr, socklen_t,
     },
 };
 
-use super::addr::SocketAddrExt;
+use super::addr::{
+    SocketAddrExt, normalize_socket_addr_ex_for_ip_stack, socket_addr_ex_for_user_name,
+};
 use crate::{
     file::{FileLike, PacketSocket, Socket, add_file_like, get_file_like, netlink::NetlinkSocket},
     mm::{IoVec, IoVectorBuf, UserConstPtr, UserPtr, VmBytes, VmBytesMut},
@@ -74,16 +77,24 @@ fn send_impl(
         let addr = if addr.is_null() || addrlen == 0 {
             None
         } else {
-            Some(SocketAddrEx::read_from_user(addr, addrlen)?)
+            let mut addr = SocketAddrEx::read_from_user(addr, addrlen)?;
+            if socket.ip_domain() == linux_raw_sys::net::AF_INET6 {
+                addr = normalize_socket_addr_ex_for_ip_stack(addr, false)?;
+            }
+            Some(addr)
         };
 
         debug!("sys_send <= fd: {fd}, flags: {flags}, addr: {addr:?}");
 
+        let mut send_flags = SendFlags::default();
+        if flags & MSG_DONTWAIT != 0 {
+            send_flags |= SendFlags::DONTWAIT;
+        }
         let sent = socket.send(
             &mut src,
             SendOptions {
                 to: addr,
-                flags: SendFlags::default(),
+                flags: send_flags,
                 cmsg,
             },
         )?;
@@ -168,6 +179,9 @@ fn recv_impl(
     if flags & MSG_TRUNC != 0 {
         recv_flags |= RecvFlags::TRUNCATE;
     }
+    if flags & MSG_DONTWAIT != 0 {
+        recv_flags |= RecvFlags::DONTWAIT;
+    }
 
     let mut cmsg = Vec::new();
 
@@ -183,7 +197,8 @@ fn recv_impl(
     )?;
 
     if let Some(remote_addr) = remote_addr {
-        remote_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
+        socket_addr_ex_for_user_name(socket.ip_domain(), remote_addr)
+            .write_to_user(addr, addrlen.get_as_mut()?)?;
     }
 
     if let Some(mut builder) = cmsg_builder {

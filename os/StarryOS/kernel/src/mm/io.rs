@@ -5,6 +5,8 @@ use ax_io::prelude::*;
 use bytemuck::AnyBitPattern;
 use starry_vm::{VmPtr, vm_read_slice, vm_write_slice};
 
+use super::check_access;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, AnyBitPattern)]
 pub struct IoVec {
@@ -24,13 +26,20 @@ impl IoVectorBuf {
         if iovcnt > 1024 {
             return Err(AxError::InvalidInput);
         }
-        let mut len = 0;
+        let mut len = 0usize;
         for i in 0..iovcnt {
             let iov = iovs.wrapping_add(i).vm_read()?;
             if iov.iov_len < 0 {
                 return Err(AxError::InvalidInput);
             }
-            len += iov.iov_len as usize;
+            let iov_len = iov.iov_len as usize;
+            if iov_len > 0 {
+                check_access(iov.iov_base as usize, iov_len).map_err(|_| AxError::BadAddress)?;
+            }
+            len = len
+                .checked_add(iov_len)
+                .filter(|len| *len <= isize::MAX as usize)
+                .ok_or(AxError::InvalidInput)?;
         }
         Ok(Self { iovs, iovcnt, len })
     }

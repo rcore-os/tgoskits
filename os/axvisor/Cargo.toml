@@ -24,8 +24,8 @@ include = [
     "LICENSE*",
 ]
 
-[profile.release]
-lto = true
+[package.metadata.tgoskits.clippy]
+skip = "requires an Axvisor target/build configuration; use the axvisor xtask flow"
 
 [[bin]]
 name = "axvisor"
@@ -44,10 +44,8 @@ svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
 dyn-plat = ["ax-std/plat-dyn", "dep:axplat-dyn"]
 rockchip-soc = ["dep:axplat-dyn", "axplat-dyn/rockchip-soc"]
-rk3568-clk = ["dep:axplat-dyn", "axplat-dyn/rk3568-clk"]
-sdmmc = ["dep:axplat-dyn", "axplat-dyn/sdmmc"]
+sdmmc = ["dep:axplat-dyn", "axplat-dyn/rockchip-sdhci"]
 rockchip-pm = ["dep:axplat-dyn", "axplat-dyn/rockchip-pm"]
-phytium-blk = ["dep:axplat-dyn", "axplat-dyn/phytium-blk"]
 serial = ["dep:axplat-dyn", "axplat-dyn/serial"]
 
 [target.'cfg(not(any(windows, unix)))'.dependencies]

@@ -188,7 +188,8 @@ impl SocketOps for UdpSocket {
                 0,
             )))?;
         }
-        let result = self.general.send_poller(self, || {
+        let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
+        let result = self.general.send_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_open() {
@@ -242,7 +243,8 @@ impl SocketOps for UdpSocket {
             },
         };
 
-        self.general.recv_poller(self, || {
+        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
+        self.general.recv_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_open() {

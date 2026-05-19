@@ -12,11 +12,10 @@ use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
-use super::memfd::{MemFdMeta, memfd_shared_writable_seal_is_busy};
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
-        with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like, close_file_like,
+        get_file_like, memfd::Memfd, with_fs,
     },
     mm::vm_load_string,
     pseudofs::{Device, dev::tty},
@@ -211,6 +210,25 @@ fn dup_fd(old_fd: c_int, cloexec: bool) -> AxResult<isize> {
     Ok(new_fd as _)
 }
 
+fn dup_fd_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isize> {
+    if min_fd < 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let f = get_file_like(old_fd)?;
+    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current as i32;
+    let mut fd_table = FD_TABLE.write();
+    for candidate in min_fd..max_nofile {
+        let entry = FileDescriptor {
+            inner: f.clone(),
+            cloexec,
+        };
+        if fd_table.add_at(candidate as _, entry).is_ok() {
+            return Ok(candidate as isize);
+        }
+    }
+    Err(AxError::TooManyOpenFiles)
+}
+
 pub fn sys_dup(old_fd: c_int) -> AxResult<isize> {
     debug!("sys_dup <= {old_fd}");
     dup_fd(old_fd, false)
@@ -265,18 +283,23 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     }
 
     match cmd as u32 {
-        F_DUPFD => dup_fd(fd, false),
-        F_DUPFD_CLOEXEC => dup_fd(fd, true),
+        F_DUPFD => dup_fd_min(fd, arg as _, false),
+        F_DUPFD_CLOEXEC => dup_fd_min(fd, arg as _, true),
         F_SETFL => {
-            get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            let f = get_file_like(fd)?;
+            f.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            f.set_append(arg & (O_APPEND as usize) > 0)?;
             Ok(0)
         }
         F_GETFL => {
             let f = get_file_like(fd)?;
 
-            let mut ret = f.open_flags();
+            let mut ret = f.open_flags() & !O_APPEND;
             if f.nonblocking() {
                 ret |= O_NONBLOCK;
+            }
+            if f.append() {
+                ret |= O_APPEND;
             }
 
             Ok(ret as _)
@@ -307,53 +330,19 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             pipe.resize(arg)?;
             Ok(0)
         }
-        F_ADD_SEALS | F_GET_SEALS => handle_memfd_seals(fd, cmd as u32, arg),
+        F_GET_SEALS => {
+            let memfd = Memfd::from_fd(fd)?;
+            Ok(memfd.get_seals() as _)
+        }
+        F_ADD_SEALS => {
+            let memfd = Memfd::from_fd(fd)?;
+            memfd.add_seals(arg as u32)?;
+            Ok(0)
+        }
         _ => {
             warn!("unsupported fcntl parameters: cmd: {cmd}");
             Err(AxError::InvalidInput)
         }
-    }
-}
-
-fn handle_memfd_seals(fd: c_int, cmd: u32, arg: usize) -> AxResult<isize> {
-    let file_like = get_file_like(fd)?;
-    let Some(file) = file_like.downcast_ref::<File>() else {
-        return Err(AxError::InvalidInput);
-    };
-    let loc = file.inner().backend()?.location().clone();
-    let Some(meta) = loc.user_data().get::<MemFdMeta>() else {
-        return Err(AxError::InvalidInput);
-    };
-
-    match cmd {
-        F_GET_SEALS => Ok(meta.seals.load(core::sync::atomic::Ordering::Relaxed) as isize),
-        F_ADD_SEALS => {
-            if !meta.allow_sealing {
-                return Err(AxError::OperationNotPermitted);
-            }
-            let supported = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE;
-            let add = arg as u32;
-            if add & !supported != 0 {
-                return Err(AxError::InvalidInput);
-            }
-            let current = meta.seals.load(core::sync::atomic::Ordering::Relaxed);
-            if current & F_SEAL_SEAL != 0 {
-                return Err(AxError::OperationNotPermitted);
-            }
-            // Busy check uses `MemFdMeta::shared_writable_mmap_count` (VMA-based).
-            // Linux may also block on GUP / folio pins (`memfd_wait_for_pins`); that
-            // path is not modeled here yet.
-            if add & F_SEAL_WRITE != 0
-                && current & F_SEAL_WRITE == 0
-                && memfd_shared_writable_seal_is_busy(meta.as_ref())
-            {
-                return Err(AxError::ResourceBusy);
-            }
-            meta.seals
-                .store(current | add, core::sync::atomic::Ordering::Relaxed);
-            Ok(0)
-        }
-        _ => Err(AxError::InvalidInput),
     }
 }
 

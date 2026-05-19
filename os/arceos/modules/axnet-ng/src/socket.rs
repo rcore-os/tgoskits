@@ -73,6 +73,9 @@ bitflags! {
     /// See [`SocketOps::send`].
     #[derive(Default, Debug, Clone, Copy)]
     pub struct SendFlags: u32 {
+        /// Per-call non-blocking override (`MSG_DONTWAIT`). Does NOT
+        /// change the socket's own `O_NONBLOCK` state.
+        const DONTWAIT = 0x40;
     }
 }
 
@@ -88,6 +91,9 @@ bitflags! {
         /// the real size of the datagram, even when it is larger than the
         /// buffer.
         const TRUNCATE = 0x02;
+        /// Per-call non-blocking override (`MSG_DONTWAIT`). Does NOT
+        /// change the socket's own `O_NONBLOCK` state.
+        const DONTWAIT = 0x40;
     }
 }
 

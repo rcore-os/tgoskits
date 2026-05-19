@@ -20,7 +20,7 @@
 ## Other Requirements
 
 - When changing logic, run a relevant `cargo clippy` check after the code change.
-- After modifying a crate, ensure that crate passes clippy. Prefer `cargo xtask clippy --package <crate>` for targeted verification, and if the crate now passes but is missing from `scripts/test/clippy_crates.csv`, add it in the same change.
+- After modifying a crate, ensure that crate passes clippy. Prefer `cargo xtask clippy --package <crate>` for targeted verification.
 - Do not silence clippy warnings with `allow` as a shortcut; prefer fixing the root cause unless the user explicitly asks otherwise.
 - Run `cargo fmt` after code edits.
 - For ArceOS, StarryOS, and Axvisor builds/tests/runs, prefer the `cargo xtask` command family instead of raw `cargo build`, `cargo test`, or `cargo run`.
