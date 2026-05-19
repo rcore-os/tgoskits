@@ -10,5 +10,5 @@ to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test-ioctl"
 success_regex = ["(?m)DONE: \\d+ pass, 0 fail"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)FAIL']
 timeout = 120
