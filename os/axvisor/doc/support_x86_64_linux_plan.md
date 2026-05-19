@@ -4,10 +4,11 @@
 
 在 x86_64 架构上，让 Axvisor 使用 Intel VMX/EPT 方式直接启动客户机 Linux。第一阶段目标不是完整模拟 PC/BIOS，而是参考现有 aarch64/riscv64 Linux 启动路径，走 direct kernel boot：
 
-1. Axvisor 直接把 Linux bzImage、initramfs 和启动元数据加载到 guest RAM，不在 VM 配置中传递 kernel command line。
+1. Axvisor 直接把 Linux bzImage、initramfs 和启动元数据加载到 guest RAM。x86_64 Linux 的启动参数通过 `boot_params` command line 传递；这不同于 aarch64/riscv64 依赖 FDT `/chosen/bootargs` 的路径。
 2. vCPU 从一个极小的 x86 boot stub 进入 Linux boot protocol。
 3. 先跑到 early serial console 和 initramfs `/init`，验证 VMX、EPT、Linux boot params、设备直通映射和中断转发链路。
-4. 后续再扩展 PCI/MSI/MSI-X/IOAPIC/LAPIC 等直通相关能力，支持真实 rootfs。
+4. 在真实 rootfs 前补齐单 vCPU APIC / CPU topology、timer 和中断能力，并把默认 bring-up 内核切换到 `tmp/qemu_x86_64_linux/linux/linux-qemu`。
+5. 后续再扩展 PCI/MSI/MSI-X/IOAPIC/LAPIC 等直通相关能力，支持真实 rootfs。
 
 ## 现有 aarch64/riscv64 Linux 启动方式
 
@@ -190,16 +191,18 @@ emu_devices = []
 
 具体设备地址要以 QEMU/平台实际暴露的资源为准。
 
-### 6. 中断和 timer 最小闭环
+### 6. 中断、timer、APIC 和 CPU topology 最小闭环
 
-第一阶段不通过 VM 配置传递 `cmdline`。如果 Linux 需要 `console`、`rdinit`、`root` 等参数，应优先通过内核内建 command line、initramfs 默认行为或镜像构建流程解决，保持 VM 配置与其他客户机一致。
+当前 x86_64 Linux direct boot 通过 VM config 的 `kernel.cmdline` 写入 `boot_params`。后续进入真实 rootfs 时，`cmdline` 仍用于传递 `root=`、`console=`、`rootwait` 等 Linux 启动参数。
 
-如果 Linux 仍依赖 timer/interrupt，需要补：
+如果 Linux 仍依赖 timer/interrupt/APIC，需要补：
 
 - 直通 PIT/HPET 或 LAPIC timer 的 MMIO/PIO 访问。
 - 直通 PIC/IOAPIC/Local APIC 相关访问，或提供必要的半直通控制器。
 - `os/axvisor/src/hal/arch/x86_64/mod.rs::inject_interrupt()` 当前为空，需要接到当前 vCPU 的 `inject_interrupt()`。
 - `x86_vlapic` 已有 Local APIC 雏形，但如果目标是全直通 Linux 设备，应优先确认真实 LAPIC/IOAPIC/HPET 的 passthrough 与中断转发是否足够，而不是先实现完整模拟 LAPIC。
+- 单 vCPU 阶段需要先提供一致的 CPUID topology、LAPIC ID、x2APIC/APIC 暴露策略，避免 Linux 在 `parse_topology()` 或 `native_apic_mem_read()` 路径访问未映射 APIC fixmap。
+- `tmp/qemu_x86_64_linux/linux/linux-qemu` 已确认是合法 bzImage，裸 QEMU direct boot 能进入 `/init`。Axvisor 当前会在 APIC/topology 路径 panic，因此应在本阶段补齐后再把默认 `kernel_path` 从 Ubuntu `bzImage` 切换到 `linux-qemu`。
 
 ### 7. 后续 PCI / virtio 直通
 

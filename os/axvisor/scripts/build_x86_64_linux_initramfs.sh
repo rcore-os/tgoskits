@@ -76,13 +76,22 @@ static void sleep_forever(void) {
 void _start(void) {
     const char msg[] = "axvisor x86_64 linux initramfs reached /init\n";
     sys_mount("devtmpfs", "/dev", "devtmpfs");
+    long kmsg = sys_open("/dev/kmsg", O_RDWR, 0);
+    if (kmsg >= 0) {
+        sys_write(kmsg, msg, sizeof(msg) - 1);
+    }
     long console = sys_open("/dev/console", O_RDWR, 0);
+    if (console < 0) {
+        console = sys_open("/dev/ttyS0", O_RDWR, 0);
+    }
     if (console >= 0) {
         sys_dup2(console, 0);
         sys_dup2(console, 1);
         sys_dup2(console, 2);
+        sys_write(console, msg, sizeof(msg) - 1);
     }
     sys_write(1, msg, sizeof(msg) - 1);
+    sys_write(2, msg, sizeof(msg) - 1);
     sleep_forever();
 }
 INIT_EOF

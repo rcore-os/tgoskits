@@ -58,6 +58,7 @@ pub struct BootParamsBuilder<'a> {
     layout: X86LinuxLoadLayout,
     main_memory: X86LinuxRange,
     reserved_ranges: Vec<X86LinuxRange>,
+    command_line: &'a str,
 }
 
 impl<'a> BootParamsBuilder<'a> {
@@ -77,7 +78,14 @@ impl<'a> BootParamsBuilder<'a> {
                 layout.boot_stub,
                 X86LinuxRange::new(LEGACY_RESERVED_START, LEGACY_RESERVED_SIZE),
             ],
+            command_line: "",
         }
+    }
+
+    pub fn set_command_line(&mut self, command_line: &'a str) -> Result<(), BootParamsError> {
+        self.validate_command_line(command_line)?;
+        self.command_line = command_line;
+        Ok(())
     }
 
     pub fn add_reserved_range(&mut self, range: X86LinuxRange) {
@@ -138,7 +146,7 @@ impl<'a> BootParamsBuilder<'a> {
             EXT_CMD_LINE_PTR_OFFSET,
             (cmdline_ptr >> 32) as u32,
         );
-        write_u8(boot_params, COMMAND_LINE_OFFSET, 0);
+        self.write_command_line(boot_params)?;
 
         if let Some(initrd) = self.layout.initrd {
             write_u32(boot_params, RAMDISK_IMAGE_OFFSET, initrd.start as u32);
@@ -156,6 +164,39 @@ impl<'a> BootParamsBuilder<'a> {
         }
 
         Ok(())
+    }
+
+    fn write_command_line(&self, boot_params: &mut [u8]) -> Result<(), BootParamsError> {
+        self.validate_command_line(self.command_line)?;
+        let bytes = self.command_line.as_bytes();
+        let end = COMMAND_LINE_OFFSET + bytes.len();
+        boot_params[COMMAND_LINE_OFFSET..end].copy_from_slice(bytes);
+        write_u8(boot_params, end, 0);
+        Ok(())
+    }
+
+    fn validate_command_line(&self, command_line: &str) -> Result<(), BootParamsError> {
+        if command_line.as_bytes().contains(&0) {
+            return Err(BootParamsError::CommandLineContainsNul);
+        }
+
+        let max_len = self.command_line_capacity();
+        if command_line.len() > max_len {
+            return Err(BootParamsError::CommandLineTooLong {
+                len: command_line.len(),
+                max: max_len,
+            });
+        }
+        Ok(())
+    }
+
+    fn command_line_capacity(&self) -> usize {
+        let zero_page_capacity = BOOT_PARAMS_SIZE - COMMAND_LINE_OFFSET - 1;
+        if self.header.cmdline_size == 0 {
+            zero_page_capacity
+        } else {
+            zero_page_capacity.min(self.header.cmdline_size as usize)
+        }
     }
 
     fn write_e820(&mut self, boot_params: &mut [u8]) -> Result<(), BootParamsError> {
@@ -216,6 +257,8 @@ impl<'a> BootParamsBuilder<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootParamsError {
     SetupHeaderTruncated { image_size: usize, required: usize },
+    CommandLineContainsNul,
+    CommandLineTooLong { len: usize, max: usize },
     AddressOverflow,
     Layout(X86LinuxLayoutError),
     TooManyE820Entries { entries: usize },
@@ -358,10 +401,12 @@ mod tests {
         let image = valid_image();
         let header = X86LinuxHeader::parse(&image).unwrap();
         let layout = valid_layout(&header);
-        let params =
-            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x80_0000))
-                .build()
-                .unwrap();
+        let mut builder =
+            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x80_0000));
+        builder
+            .set_command_line("console=ttyS0 rdinit=/init")
+            .unwrap();
+        let params = builder.build().unwrap();
 
         assert_eq!(read_u8(&params, SENTINEL_OFFSET), 0xff);
         assert_eq!(
@@ -379,7 +424,47 @@ mod tests {
             read_u32(&params, CMD_LINE_PTR_OFFSET),
             (BOOT_PARAMS_GPA + COMMAND_LINE_OFFSET) as u32
         );
-        assert_eq!(read_u8(&params, COMMAND_LINE_OFFSET), 0);
+        assert_eq!(
+            &params[COMMAND_LINE_OFFSET..COMMAND_LINE_OFFSET + 26],
+            b"console=ttyS0 rdinit=/init"
+        );
+        assert_eq!(read_u8(&params, COMMAND_LINE_OFFSET + 26), 0);
+    }
+
+    #[test]
+    fn rejects_command_line_that_does_not_fit_zero_page() {
+        let image = valid_image();
+        let header = X86LinuxHeader::parse(&image).unwrap();
+        let layout = valid_layout(&header);
+        let mut builder =
+            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x20_0000));
+        let long_command_line = alloc::string::String::from_utf8(alloc::vec![
+            b'a';
+            BOOT_PARAMS_SIZE - COMMAND_LINE_OFFSET
+        ])
+        .unwrap();
+
+        assert_eq!(
+            builder.set_command_line(&long_command_line),
+            Err(BootParamsError::CommandLineTooLong {
+                len: BOOT_PARAMS_SIZE - COMMAND_LINE_OFFSET,
+                max: BOOT_PARAMS_SIZE - COMMAND_LINE_OFFSET - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_command_line_with_nul() {
+        let image = valid_image();
+        let header = X86LinuxHeader::parse(&image).unwrap();
+        let layout = valid_layout(&header);
+        let mut builder =
+            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x20_0000));
+
+        assert_eq!(
+            builder.set_command_line("console=ttyS0\0rdinit=/init"),
+            Err(BootParamsError::CommandLineContainsNul)
+        );
     }
 
     #[test]

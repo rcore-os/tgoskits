@@ -17,23 +17,24 @@ phys_cpu_sets = [1]
 #
 [kernel]
 # The entry point of the kernel image.
-# Phase 4 will switch Linux direct boot to a Linux-specific boot stub.
+# Linux direct boot uses the Linux-specific boot stub at this GPA.
 entry_point = 0x8000
 # The location of image: "memory" | "fs".
-# Load from file system.
-image_location = "fs"
+# Embed the Linux images from the host-side paths below.
+image_location = "memory"
 # The file path of the kernel image.
-kernel_path = "/guest/linux/x86_64/bzImage"
+kernel_path = "/code/tgoskits/tmp/qemu_x86_64_linux/linux/bzImage"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
-# Linux direct boot will use a Linux-specific boot stub in later phases.
 enable_bios = false
+# Linux command line written into boot_params.
+cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 rdinit=/init acpi=off noapic nolapic pci=off i8042.nokbd i8042.noaux i8042.nomux"
 
 ## The file path of the ramdisk image.
-ramdisk_path = "/guest/linux/x86_64/initramfs.cpio"
+ramdisk_path = "/code/tgoskits/tmp/qemu_x86_64_linux/linux/initramfs.cpio"
 ## The load address of the ramdisk image.
-ramdisk_load_addr = 0x40_0000
+ramdisk_load_addr = 0x60_00000
 ## The path of the disk image.
 # disk_path = ""
 

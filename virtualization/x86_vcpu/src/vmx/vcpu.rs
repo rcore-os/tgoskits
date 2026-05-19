@@ -859,6 +859,7 @@ impl VmxVcpu {
     fn builtin_vmexit_handler(&mut self, exit_info: &VmxExitInfo) -> Option<AxResult> {
         const X2APIC_MSR_BASE: u32 = 0x800;
         const X2APIC_MSR_END: u32 = 0x8ff; // SDM says 0x8ff, but actually 0x83f, we respect the SDM here.
+        const AMD64_DE_CFG: u32 = 0xc001_1029;
         // Following vm-exits are handled here:
         // - interrupt window: turn off interrupt window;
         // - xsetbv: set guest xcr;
@@ -879,6 +880,11 @@ impl VmxVcpu {
                     msr_rw == VmxExitReason::MSR_WRITE,
                     self.regs().rcx as u32,
                 ))
+            }
+            msr_rw @ (VmxExitReason::MSR_READ | VmxExitReason::MSR_WRITE)
+                if self.regs().rcx as u32 == AMD64_DE_CFG =>
+            {
+                Some(self.handle_amd64_de_cfg_msr_access(msr_rw == VmxExitReason::MSR_WRITE))
             }
             VmxExitReason::APIC_ACCESS => Some(self.handle_apic_access(exit_info)),
             _ => None,
@@ -925,6 +931,16 @@ impl VmxVcpu {
             self.write_edx_eax(value);
             Ok(())
         }
+    }
+
+    fn handle_amd64_de_cfg_msr_access(&mut self, write: bool) -> AxResult {
+        const VMEXIT_INSTR_LEN_RDMSR_WRMSR: u8 = 2;
+
+        self.advance_rip(VMEXIT_INSTR_LEN_RDMSR_WRMSR)?;
+        if !write {
+            self.write_edx_eax(0);
+        }
+        Ok(())
     }
 
     fn handle_apic_access(&mut self, exit_info: &VmxExitInfo) -> AxResult {
@@ -1108,13 +1124,16 @@ impl VmxVcpu {
                         return None;
                     }
 
-                    if x.contains(Xcr0::XCR0_OPMASK_STATE)
+                    let avx512_state = x.contains(Xcr0::XCR0_OPMASK_STATE)
                         || x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
-                        || x.contains(Xcr0::XCR0_HI16_ZMM_STATE)
-                        || !x.contains(Xcr0::XCR0_AVX_STATE)
-                        || !x.contains(Xcr0::XCR0_OPMASK_STATE)
-                        || !x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
-                        || !x.contains(Xcr0::XCR0_HI16_ZMM_STATE)
+                        || x.contains(Xcr0::XCR0_HI16_ZMM_STATE);
+                    let avx512_state_complete = x.contains(Xcr0::XCR0_OPMASK_STATE)
+                        && x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
+                        && x.contains(Xcr0::XCR0_HI16_ZMM_STATE);
+                    if avx512_state
+                        && (!avx512_state_complete
+                            || !x.contains(Xcr0::XCR0_AVX_STATE)
+                            || !x.contains(Xcr0::XCR0_SSE_STATE))
                     {
                         return None;
                     }
@@ -1275,6 +1294,13 @@ impl AxArchVCpu for VmxVcpu {
                         assert!(int_info.valid);
                         AxVCpuExitReason::ExternalInterrupt {
                             vector: int_info.vector as _,
+                        }
+                    }
+                    VmxExitReason::EPT_VIOLATION => {
+                        let info = self.nested_page_fault_info()?;
+                        AxVCpuExitReason::NestedPageFault {
+                            addr: info.fault_guest_paddr,
+                            access_flags: info.access_flags,
                         }
                     }
                     VmxExitReason::MSR_READ => {

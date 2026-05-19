@@ -11,7 +11,7 @@
 1. 保持 direct boot 路线：Axvisor 直接加载 bzImage、initramfs 和启动元数据，不引入 BIOS/UEFI/完整 PC 固件依赖。
 2. 不在第一版 VM 配置中增加 x86_64 专用 `boot_protocol` 字段，优先由 ImageLoader 根据镜像内容自动识别 x86 Linux bzImage。
 3. x86_64 Linux 启动元数据使用 Linux x86 boot protocol 的 `boot_params` / zero page，不照搬 aarch64/riscv64 的 DTB-first 路线。
-4. Linux 所需的 `console`、`rdinit`、`root` 等启动参数优先通过内核内建 command line、initramfs 或镜像构建流程解决，避免在第一阶段通过 VM config 传递 kernel command line。
+4. Linux 所需的 `console`、`rdinit`、`root` 等启动参数通过 x86 boot protocol 的 `boot_params` command line 传递。aarch64/riscv64 可依赖 FDT `/chosen/bootargs`，但 x86_64 bzImage direct boot 没有 FDT-first 启动元数据，因此 VM config 中的 `kernel.cmdline` 是当前 x86 Linux 路径的启动参数来源。
 5. 设备路径以 passthrough 为主。除非 direct boot 或调试闭环必须依赖，否则不优先实现完整模拟串口、模拟块设备或模拟 virtio 设备。
 6. 每个阶段都要留下可独立验证的产物，避免把 bzImage 加载、boot_params、VMX/EPT、设备直通、中断路由、rootfs 支持混在一次大改里。
 
@@ -289,7 +289,7 @@
 
 ### 阶段目标
 
-补齐 Linux early boot 和 initramfs 运行所需的最小 timer / interrupt 能力，让客户机不依赖偶然轮询或无中断路径。
+补齐 Linux early boot 和 initramfs 运行所需的最小 timer / interrupt、APIC 和 CPU topology 能力，让客户机不依赖偶然轮询或无中断路径，并为切换到 `tmp/qemu_x86_64_linux/linux/linux-qemu` 做准备。
 
 ### 主要任务
 
@@ -301,25 +301,37 @@
    - 如果走 passthrough，确认对应 MMIO/PIO 区域映射正确。
    - 如果必须半直通，先实现 Linux early boot 最小所需路径。
    - 不在本阶段追求完整虚拟 APIC 设备模型。
-3. 验证或补齐 timer：
+3. 补齐单 vCPU APIC / CPU topology 最小语义：
+   - 确认 CPUID 中 APIC、x2APIC、CPU topology 相关 leaf 暴露与实际虚拟平台一致。
+   - 确认 `noapic` / `nolapic` 去掉后，Linux 不再访问未映射的 APIC fixmap 或错误的 APIC MMIO 虚拟地址。
+   - 处理 `linux-qemu` 当前在 `parse_topology()` / `native_apic_mem_read()` 路径上的 panic。
+   - 在单 vCPU 场景先提供一致的 LAPIC ID、CPU package/core/thread 拓扑；SMP 和 AP startup 留到阶段 9。
+4. 验证或补齐 timer：
    - PIT、HPET 或 LAPIC timer 至少有一种路径可用。
    - Linux jiffies、timeout、sleep 等基础行为正常。
    - initramfs 中基础命令不会因为 timer 缺失挂死。
-4. 建立中断路由记录：
+5. 建立中断路由记录：
    - 记录 COM1、timer、后续 block/PCI 设备的 IRQ 来源和目标 vCPU。
    - 为后续 MSI/MSI-X/INTx 阶段保留接口边界。
+6. 评估并切换默认 bring-up 内核：
+   - 当前阶段 5 默认使用 Ubuntu `bzImage`，因为它已经能在 Axvisor 下进入 `/init`。
+   - `linux-qemu` 已确认是合法 bzImage，裸 QEMU 能进入 `/init`，但 Axvisor 当前会在 APIC/topology 路径 panic。
+   - 阶段 6 修复完成后，把 `linux-x86_64-qemu-smp1.toml` 的 `kernel_path` 切换到 `/code/tgoskits/tmp/qemu_x86_64_linux/linux/linux-qemu`，并重新验证 initramfs marker。
 
 ### 产物
 
 1. x86_64 `inject_interrupt()` 的有效实现或明确验证记录。
-2. timer / interrupt 最小测试用例。
-3. QEMU 平台基础设备 passthrough 配置。
+2. 单 vCPU APIC / CPU topology 最小支持记录。
+3. timer / interrupt 最小测试用例。
+4. QEMU 平台基础设备 passthrough 配置。
+5. `linux-qemu` 作为默认 bring-up 内核的验证记录。
 
 ### 验收标准
 
-1. Linux 能稳定运行 initramfs，不依赖禁用中断的偶然路径。
+1. Linux 能稳定运行 initramfs，不依赖禁用 APIC/中断的偶然路径。
 2. timer tick 或等价时钟事件在 guest 内可观察。
 3. 串口或基础设备中断能投递到目标 vCPU。
+4. `linux-qemu` 能在 Axvisor 下进入 initramfs `/init` 并输出 marker。
 
 ### 风险和边界
 

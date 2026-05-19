@@ -394,6 +394,14 @@ impl ImageLoader {
             layout,
             x86_linux::X86LinuxRange::new(self.main_memory.gpa.as_usize(), self.main_memory.size()),
         );
+        if let Some(command_line) = self.config.kernel.cmdline.as_deref() {
+            builder.set_command_line(command_line).map_err(|err| {
+                ax_errno::ax_err_type!(
+                    InvalidInput,
+                    format!("invalid x86 Linux command line: {err:?}")
+                )
+            })?;
+        }
 
         for device in &self.config.devices.passthrough_devices {
             builder.add_reserved_range(x86_linux::X86LinuxRange::new(
