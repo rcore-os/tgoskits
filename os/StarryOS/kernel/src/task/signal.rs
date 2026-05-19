@@ -183,6 +183,7 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
     if let Some(sig) = sig {
         info!("Send signal {:?} to thread {}", sig.signo(), tid);
         send_signal_thread_inner(&task, thread, sig);
+        ax_task::wake_task(&task);
     }
 
     Ok(())
@@ -210,14 +211,11 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
             // A thread was found that doesn't have the signal blocked — wake it.
             if let Ok(task) = get_task(tid) {
                 task.interrupt();
+                ax_task::wake_task(&task);
             }
         } else {
             // All threads have this signal blocked — the signal is now pending
-            // at the process level.  Only interrupt threads that are sleeping
-            // in rt_sigtimedwait/sigwaitinfo waiting for this specific signal:
-            // those are the only threads that can dequeue a blocked signal.
-            // Waking other threads (e.g. ones blocked in waitpid) would cause
-            // spurious EINTR.
+            // at the process level.
             for tid in proc_data.proc.threads() {
                 if let Ok(task) = get_task(tid)
                     && task
@@ -228,6 +226,7 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
                         .is_some_and(|s| s.has(signo))
                 {
                     task.interrupt();
+                    ax_task::wake_task(&task);
                 }
             }
         }

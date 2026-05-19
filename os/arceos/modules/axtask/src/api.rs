@@ -259,6 +259,12 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
     }
 }
 
+/// Wake a task that may be blocked in [`block_on`] or a wait queue,
+/// forcing it onto a run queue so it can observe a pending signal.
+pub fn wake_task(task: &AxTaskRef) {
+    select_run_queue::<NoPreemptIrqSave>(task).unblock_task(task.clone(), false);
+}
+
 /// Current task gives up the CPU time voluntarily, and switches to another
 /// ready task.
 #[track_caller]

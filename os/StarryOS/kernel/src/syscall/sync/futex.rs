@@ -141,6 +141,15 @@ pub fn sys_futex(
                 return Err(AxError::WouldBlock);
             }
 
+            // Before entering the blocking wait, check whether a signal is
+            // already pending and not blocked.  If we skip this check, a
+            // signal that was enqueued before the syscall (and whose
+            // `task.interrupt()` was already consumed) would leave the task
+            // sleeping uninterruptibly.
+            if current().as_thread().signal.has_pending_unblocked() {
+                return Err(AxError::Interrupted);
+            }
+
             let timeout = futex_wait_timeout(&op, timeout)?;
 
             let futex = futex_table.get_or_insert(&key);

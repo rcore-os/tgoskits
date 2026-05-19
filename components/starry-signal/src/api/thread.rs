@@ -345,6 +345,34 @@ impl ThreadSignalManager {
         self.blocked.lock().has(signo)
     }
 
+    /// Checks whether there is any pending, unblocked signal that should
+    /// interrupt a blocking wait.  This is a non-destructive fast-path check:
+    /// it does NOT dequeue any signal.
+    ///
+    /// Returns `true` if at least one signal is pending at either the thread or
+    /// process level and is NOT currently blocked.
+    pub fn has_pending_unblocked(&self) -> bool {
+        // Fast path: exit early if nothing is pending anywhere.
+        if !self.possibly_has_signal.load(Ordering::Acquire)
+            && !self.proc.possibly_has_signal.load(Ordering::Acquire)
+        {
+            return false;
+        }
+
+        let blocked = *self.blocked.lock();
+        // Unblocked signals = the complement of the blocked mask.
+        // SIGKILL and SIGSTOP are never blocked, so this complement
+        // always includes them.
+        let unblocked = !blocked;
+
+        let thread_has = self.pending.lock().set.intersects(&unblocked);
+        if thread_has {
+            return true;
+        }
+
+        self.proc.pending().intersects(&unblocked)
+    }
+
     /// Gets the signal stack.
     pub fn stack(&self) -> SignalStack {
         self.stack.lock().clone()

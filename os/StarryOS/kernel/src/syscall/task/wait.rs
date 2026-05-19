@@ -61,6 +61,17 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     let curr = current();
     let proc = &curr.as_thread().proc_data.proc;
 
+    // Before blocking, check for any pending unblocked signal.  Skipping
+    // this check would allow a signal enqueued before the syscall to go
+    // undetected while we sleep in block_on, because poll_interrupt only
+    // monitors the atomic interrupted flag (which was already consumed by
+    // the previous user-return clear_interrupt).
+    if !options.contains(WaitOptions::WNOHANG)
+        && curr.as_thread().signal.has_pending_unblocked()
+    {
+        return Err(AxError::Interrupted);
+    }
+
     let pid = if pid == -1 {
         WaitPid::Any
     } else if pid == 0 {

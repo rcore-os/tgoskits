@@ -163,6 +163,11 @@ impl SignalSet {
         self.0 == 0
     }
 
+    /// Returns `true` if this set and `other` share at least one signal.
+    pub fn intersects(&self, other: &SignalSet) -> bool {
+        self.0 & other.0 != 0
+    }
+
     /// Dequeues the a signal in `mask` from this set, if any.
     pub fn dequeue(&mut self, mask: &SignalSet) -> Option<Signo> {
         let bits = self.0 & mask.0;

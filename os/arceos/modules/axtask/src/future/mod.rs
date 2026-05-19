@@ -48,10 +48,13 @@ impl Wake for AxWaker {
     }
 }
 
-/// Blocks the current task until the given future is resolved.
+/// Blocks the current task until the given future is resolved or the task
+/// is interrupted by a signal.
 ///
-/// Note that this doesn't handle interruption and is not recommended for direct
-/// use in most cases.
+/// When the task's `interrupted` flag is set (by `task.interrupt()`, typically
+/// from signal delivery), this function yields the CPU to allow signal
+/// processing on the return-to-userspace path. The future will be re-polled
+/// after the yield.
 pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
     crate::api::might_sleep();
 
@@ -69,6 +72,14 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
     loop {
         match fut.as_mut().poll(&mut cx) {
             Poll::Pending => {
+                // Before sleeping, check if a signal has arrived. If so,
+                // yield instead of blocking so that check_signals() can
+                // process the signal on the return-to-userspace path.
+                if task.take_interrupt() {
+                    crate::yield_now();
+                    continue;
+                }
+
                 let mut rq = current_run_queue::<NoPreemptIrqSave>();
                 let mut woke = axwaker.woke.lock();
                 if !*woke {
