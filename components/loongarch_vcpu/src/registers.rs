@@ -235,14 +235,6 @@ pub(crate) unsafe fn gcfg_set_gpm_num(gpm_num: usize) {
 }
 
 #[inline(always)]
-pub(crate) unsafe fn gintc_set_hwis(mask: usize) {
-    let mut gintc = read_gintc();
-    gintc &= !GINTC_HWIS_MASK;
-    gintc |= (mask << GINTC_HWIS_SHIFT) & GINTC_HWIS_MASK;
-    write_gintc(gintc);
-}
-
-#[inline(always)]
 pub(crate) unsafe fn gintc_set_hwip(mask: usize) {
     let mut gintc = read_gintc();
     gintc &= !GINTC_HWIP_MASK;
@@ -270,11 +262,6 @@ pub(crate) unsafe fn set_ecfg_vs(vs: usize) {
 #[inline(always)]
 pub(crate) fn gcsr_eentry_read() -> usize {
     unsafe { gcsr_read::<GCSR_EENTRY>() }
-}
-
-#[inline(always)]
-pub(crate) unsafe fn gcsr_eentry_write(value: usize) {
-    gcsr_write::<GCSR_EENTRY>(value);
 }
 
 fn read_gintc() -> usize {

@@ -221,11 +221,11 @@ fn emulate_gspr(ctx: &mut LoongArchContextFrame) -> AxVCpuExitReason {
     const OPCODE_CPUCFG_LEN: usize = 22;
     const OPCODE_CACOP: usize = 0b0000011000;
     const OPCODE_CACOP_LEN: usize = 10;
-    const OPCODE_IDLE: usize = 0b00000_11001_0010001;
+    const OPCODE_IDLE: usize = 0b0_0000_1100_1001_0001;
     const OPCODE_IDLE_LEN: usize = 17;
     const OPCODE_CSRX: usize = 0b00000100;
     const OPCODE_CSRX_LEN: usize = 8;
-    const OPCODE_IOCSR: usize = 0b00000_11001_001000000;
+    const OPCODE_IOCSR: usize = 0b000_0011_0010_0100_0000;
     const OPCODE_IOCSR_LEN: usize = 19;
 
     let matches = |opcode: usize, len: usize| -> bool {
