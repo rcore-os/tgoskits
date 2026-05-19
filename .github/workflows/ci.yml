@@ -302,11 +302,11 @@ jobs:
             runs_on: '["ubuntu-latest"]'
             command: |
               set -eux
-              cargo xtask arceos build --arch loongarch64 -p ax-helloworld-myplat --smp 1
+              cargo xtask arceos build --arch loongarch64 -p ax-helloworld --smp 1
               vmconfig=tmp/ci-arceos-loongarch64-qemu-smp1.toml
               cp os/axvisor/configs/vms/arceos-loongarch64-qemu-smp1.toml "${vmconfig}"
               sed -i 's|^image_location = "fs"|image_location = "memory"|' "${vmconfig}"
-              sed -i 's|^kernel_path = .*|kernel_path = "'"${GITHUB_WORKSPACE}"'/target/loongarch64-unknown-none-softfloat/release/ax-helloworld-myplat.bin"|' "${vmconfig}"
+              sed -i 's|^kernel_path = .*|kernel_path = "'"${GITHUB_WORKSPACE}"'/target/loongarch64-unknown-none-softfloat/release/ax-helloworld.bin"|' "${vmconfig}"
               cargo xtask axvisor qemu \
                 --arch loongarch64 \
                 --config os/axvisor/configs/board/qemu-loongarch64.toml \
