@@ -11,6 +11,7 @@ use ax_task::current;
 use axfs_ng_vfs::{NodePermission, NodeType};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::__kernel_off_t;
+use linux_raw_sys::general::O_APPEND;
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
@@ -669,21 +670,27 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
         len
     );
 
-    const O_APPEND: u32 = 0x400;
-
-    let in_file = File::from_fd(in_fd)?;
     let out_file = File::from_fd(out_fd)?;
 
     if (out_file.open_flags() & O_APPEND) != 0 {
         return Err(AxError::InvalidInput);
     }
+
     let src: SendFile = if !offset.is_null() {
         let pos = offset.vm_read()?;
+
         if pos > u32::MAX as u64 {
             return Err(AxError::InvalidInput);
         }
-        SendFile::Offset(in_file, offset, pos)
+
+        SendFile::Offset(File::from_fd(in_fd)?, offset,pos)
     } else {
+        /*
+         * Linux sendfile 要求 in_fd 是支持 mmap-like 操作的文件。
+         * 这里显式用 File::from_fd(in_fd)? 拒绝 pipe。
+         */
+        let _in_file = File::from_fd(in_fd)?;
+
         SendFile::Direct(get_file_like(in_fd)?)
     };
 
@@ -691,6 +698,7 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
 
     do_send(src, dst, len).map(|n: usize| n as _)
 }
+
 
 pub fn sys_copy_file_range(
     fd_in: c_int,
