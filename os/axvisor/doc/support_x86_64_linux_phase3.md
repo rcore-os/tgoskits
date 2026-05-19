@@ -106,7 +106,7 @@ cargo clippy -p axvisor \
 
 ## 遗留风险和下一阶段入口
 
-- 当前 boot stub 仍是零填充预留页，Linux 还不能从该路径进入内核。
+- 第 4 阶段已将 boot stub 从零填充预留页替换为 Linux 专用启动 stub。
 - `boot_params` 的 command line 目前为空；如后续 early console 仍不可见，优先调整 Linux 镜像内建 command line 或 initramfs。
 - E820 目前使用主 RAM + reserved range 的保守模型，尚未引入 ACPI、MPTable 或完整 PC firmware tables。
-- 第 4 阶段应新增 Linux 专用 x86 boot stub，并让 vCPU 初始入口把 `boot_params` 地址传给 Linux boot protocol。
+- 第 5 阶段应通过 QEMU 启动验证 Linux early boot log、串口输出路径和 initramfs `/init`。

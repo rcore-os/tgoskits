@@ -31,6 +31,8 @@ use x86::boot_params as x86_boot_params;
 #[cfg(target_arch = "x86_64")]
 use x86::linux as x86_linux;
 #[cfg(target_arch = "x86_64")]
+use x86::linux_boot as x86_linux_boot;
+#[cfg(target_arch = "x86_64")]
 use x86::multiboot as x86_boot;
 
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
@@ -216,10 +218,7 @@ impl ImageLoader {
             self.load_ramdisk_from_memory(buffer)?;
         }
 
-        Err(ax_errno::ax_err_type!(
-            Unsupported,
-            "x86 Linux bzImage payload, initramfs, and boot_params loaded, but Linux boot stub starts in phase 4"
-        ))
+        Ok(())
     }
 
     fn load_boot_image_from_memory(&self, bios: Option<&[u8]>) -> AxResult {
@@ -341,14 +340,45 @@ impl ImageLoader {
         );
 
         let boot_params = self.build_x86_boot_params(header, layout, kernel)?;
-        let boot_stub = [0u8; x86_linux::BOOT_STUB_SIZE];
+        let boot_stub = self.build_x86_linux_boot_stub(&layout)?;
         load_vm_image_from_memory(
             &boot_params,
             layout.boot_params.start.into(),
             self.vm.clone(),
         )?;
         load_vm_image_from_memory(&boot_stub, layout.boot_stub.start.into(), self.vm.clone())?;
+        self.install_x86_linux_boot_entry(&layout);
         Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn build_x86_linux_boot_stub(
+        &self,
+        layout: &x86_linux::X86LinuxLoadLayout,
+    ) -> AxResult<[u8; x86_linux::BOOT_STUB_SIZE]> {
+        x86_linux_boot::build_boot_image(layout).map_err(|err| {
+            ax_errno::ax_err_type!(
+                InvalidInput,
+                format!("failed to build x86 Linux boot stub: {err:?}")
+            )
+        })
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn install_x86_linux_boot_entry(&self, layout: &x86_linux::X86LinuxLoadLayout) {
+        let entry = GuestPhysAddr::from(x86_linux_boot::DEFAULT_LINUX_BOOT_LOAD_GPA);
+        self.vm.with_config(|config| {
+            config.cpu_config.bsp_entry = entry;
+            config.cpu_config.ap_entry = entry;
+        });
+        info!(
+            "x86 Linux direct boot entry for VM[{}]: stub={:#x}, boot_params={:#x}, kernel_entry={:#x}, initrd={:?}",
+            self.config.base.id,
+            layout.boot_stub.start,
+            layout.boot_params.start,
+            layout.kernel.start,
+            layout.initrd
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -624,10 +654,7 @@ pub mod fs {
                 self.load_ramdisk_from_filesystem(ramdisk_path)?;
             }
 
-            Err(ax_errno::ax_err_type!(
-                Unsupported,
-                "x86 Linux bzImage payload, initramfs, and boot_params loaded, but Linux boot stub starts in phase 4"
-            ))
+            Ok(())
         }
     }
 
