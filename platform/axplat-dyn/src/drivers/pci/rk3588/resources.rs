@@ -289,7 +289,7 @@ fn probe_rk3588(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnPro
         host.apb_phys()
     );
     log_direct_endpoint(&host);
-    super::register_legacy_irq(&info, resources.logical_bus_end);
+    super::register_fdt_legacy_irq(&info, resources.logical_bus_end);
 
     let mut drv = PcieController::new(host);
     for range in &resources.ranges {

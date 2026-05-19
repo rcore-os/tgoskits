@@ -1,17 +1,20 @@
-extern crate alloc;
-
 use alloc::format;
 
 use fdt_edit::{PciRange, PciSpace};
 use rdrive::{
-    PlatformDevice, module_driver,
-    probe::{OnProbeError, fdt::NodeType, pci::*},
+    PlatformDevice,
+    probe::{
+        OnProbeError,
+        fdt::NodeType,
+        pci::{
+            EndpointRc, FnOnProbe, PciMem32, PciMem64, PciRange as _, PcieController,
+            new_driver_generic,
+        },
+    },
     register::FdtInfo,
 };
 
-mod rk3588;
-
-module_driver!(
+crate::register_driver!(
     name: "Generic PCIe Controller Driver",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -53,7 +56,7 @@ fn probe_generic_ecam(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(),
         .map(|reg| reg.child_bus_address as u8)
         .max()
         .unwrap_or(0);
-    register_fdt_legacy_irq(&info, logical_bus_end);
+    register_fdt_irq(&info, logical_bus_end);
 
     plat_dev.register_pcie(drv);
 
@@ -84,7 +87,7 @@ pub(super) fn set_pcie_mem_range(drv: &mut PcieController, range: &PciRange) {
     }
 }
 
-pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
+pub(super) fn register_fdt_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
     let Some(interrupt) = info
         .interrupts()
         .into_iter()
@@ -92,7 +95,7 @@ pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
     else {
         return;
     };
-    let Some(parent) = info.phandle_to_device_id(interrupt.interrupt_parent) else {
+    let Some(_parent) = info.phandle_to_device_id(interrupt.interrupt_parent) else {
         warn!(
             "failed to resolve PCIe legacy IRQ parent phandle {}",
             interrupt.interrupt_parent
@@ -100,15 +103,23 @@ pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
         return;
     };
 
-    let irq = somehal::irq::irq_setup_by_fdt(parent, &interrupt.specifier).raw();
-    ax_drivers::pci::register_legacy_irq_route(0, logical_bus_end, irq);
+    let Some(irq) = interrupt
+        .specifier
+        .iter()
+        .last()
+        .copied()
+        .map(|irq| irq as usize)
+    else {
+        return;
+    };
+    super::register_legacy_irq_route(0, logical_bus_end, irq);
 }
 
 #[cfg(feature = "pci-list-devices")]
 mod pci_list_devices {
     use super::*;
 
-    module_driver!(
+    crate::register_driver!(
         name: "PCI Device Lister",
         level: ProbeLevel::PostKernel,
         priority: ProbePriority::DEFAULT,

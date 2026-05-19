@@ -23,13 +23,13 @@ tls = ["ax-hal/tls", "ax-task?/tls"]
 
 plat-dyn = ["ax-hal/plat-dyn", "dep:axplat-dyn", "paging", "buddy-slab"]
 
-display = ["dep:ax-display", "ax-driver/display", "axplat-dyn?/display"]
+display = ["dep:ax-display", "ax-drivers/display", "axplat-dyn?/display"]
 fs = ["dep:ax-errno", "dep:ax-fs", "dep:rd-block", "dep:spin", "dep:axklib"]
 fs-ng = ["dep:ax-errno", "dep:ax-fs-ng", "dep:rd-block", "dep:spin", "dep:axklib"]
-input = ["dep:ax-input", "ax-driver/input", "axplat-dyn?/input"]
-net = ["dep:ax-net", "axplat-dyn?/net"]
-net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "axplat-dyn?/net"]
-vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock", "axplat-dyn?/vsock"]
+input = ["dep:ax-input", "ax-drivers/input", "axplat-dyn?/input"]
+net = ["dep:ax-net", "ax-drivers/net", "axplat-dyn?/net"]
+net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-drivers/net", "axplat-dyn?/net"]
+vsock = ["net-ng", "ax-net-ng/vsock", "ax-drivers/vsock", "axplat-dyn?/vsock"]
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
@@ -37,6 +37,7 @@ axbacktrace = { workspace = true }
 ax-config = { workspace = true }
 ax-display = { workspace = true, optional = true }
 ax-driver = { workspace = true }
+ax-drivers = { workspace = true }
 ax-errno = { workspace = true, optional = true }
 ax-fs = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }

@@ -34,12 +34,13 @@ rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
 xhci-mmio = ["usb"]
 xhci-pci = ["usb", "dep:pcie"]
 serial = ["dep:some-serial"]
-display = ["dep:rdif-display"]
-input = ["dep:rdif-input"]
-net = ["dep:rd-net"]
-vsock = ["dep:rdif-vsock"]
-intel-net = ["net", "dep:eth-intel", "dep:pcie"]
-realtek-rtl8125 = ["net", "dep:pcie", "dep:realtek-rtl8125"]
+virtio = ["ax-drivers/virtio-core"]
+display = ["ax-drivers/display", "dep:rdif-display"]
+input = ["ax-drivers/input", "dep:rdif-input"]
+net = ["ax-drivers/net", "dep:rd-net"]
+vsock = ["ax-drivers/vsock", "dep:rdif-vsock"]
+intel-net = ["net", "ax-drivers/intel-net"]
+realtek-rtl8125 = ["net", "ax-drivers/realtek-rtl8125"]
 pci-list-devices = []
 rknpu = ["dep:rockchip-npu", "rockchip-pm", "rockchip-soc"]
 
@@ -52,10 +53,10 @@ ax-arm-pl031 = { workspace = true, optional = true }
 arm-scmi-rs.workspace = true
 ax-errno.workspace = true
 ax-kspin.workspace = true
+ax-drivers = { workspace = true, features = ["pci", "virtio-core"] }
 axklib.workspace = true
 ax-plat.workspace = true
 dma-api.workspace = true
-eth-intel = { workspace = true, optional = true }
 fdt-edit = "0.2"
 heapless = "0.9"
 log.workspace = true
@@ -64,7 +65,6 @@ ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
 crab-usb = { workspace = true, optional = true }
 pcie = { workspace = true, optional = true }
-realtek-rtl8125 = { workspace = true, optional = true }
 rd-block.workspace = true
 rd-net = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }

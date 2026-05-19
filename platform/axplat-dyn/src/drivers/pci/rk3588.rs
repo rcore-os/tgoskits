@@ -1,4 +1,4 @@
-pub(super) use super::{register_legacy_irq, set_pcie_mem_range};
+pub(super) use super::{register_fdt_legacy_irq, set_pcie_mem_range};
 
 mod body {
     include!("rk3588/resources.rs");

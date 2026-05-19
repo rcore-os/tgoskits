@@ -9,7 +9,7 @@ use rdrive::{
 use virtio_drivers::{
     Error as VirtIoError,
     device::blk::{SECTOR_SIZE, VirtIOBlk},
-    transport::{DeviceType, Transport, mmio::MmioTransport},
+    transport::{DeviceType, Transport},
 };
 
 use super::PlatformDeviceBlock;
@@ -184,19 +184,7 @@ impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
     }
 }
 
-pub(super) fn probe_mmio_device(
-    reg_base: *mut u8,
-    reg_size: usize,
-) -> Option<(DeviceType, MmioTransport<'static>)> {
-    if reg_base.is_null() || reg_size == 0 {
-        return None;
-    }
-
-    let header =
-        core::ptr::NonNull::new(reg_base as *mut virtio_drivers::transport::mmio::VirtIOHeader)?;
-    let transport = unsafe { MmioTransport::new(header, reg_size) }.ok()?;
-    Some((transport.device_type(), transport))
-}
+pub(super) use ax_drivers::virtio::probe_mmio_device;
 
 fn map_virtio_err_to_blk_err(err: VirtIoError) -> rd_block::BlkError {
     match err {

@@ -33,6 +33,8 @@ ax-crate-interface
 ax-crate-interface-lite
 ax-display
 ax-dma
+ax-driver
+ax-drivers
 ax-driver-display
 ax-driver-block
 ax-driver-virtio

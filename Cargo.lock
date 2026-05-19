@@ -764,28 +764,7 @@ dependencies = [
 name = "ax-driver"
 version = "0.5.14"
 dependencies = [
- "ax-alloc",
- "ax-config",
- "ax-crate-interface",
- "ax-dma",
- "ax-driver-base",
- "ax-driver-block",
- "ax-driver-display",
- "ax-driver-input",
- "ax-driver-net",
- "ax-driver-virtio",
- "ax-driver-vsock",
- "axklib",
- "log",
- "pcie",
- "rd-block",
- "rd-net",
- "rdif-display",
- "rdif-input",
- "rdif-vsock",
- "rdrive",
- "spin 0.10.0",
- "virtio-drivers",
+ "ax-drivers",
 ]
 
 [[package]]
@@ -859,6 +838,50 @@ version = "0.3.12"
 dependencies = [
  "ax-driver-base",
  "log",
+]
+
+[[package]]
+name = "ax-drivers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ax-alloc",
+ "ax-config",
+ "ax-crate-interface",
+ "ax-errno",
+ "axklib",
+ "bcm2835-sdhci",
+ "crab-usb",
+ "dma-api",
+ "dwmmc-host",
+ "eth-intel",
+ "fdt-edit",
+ "fxmac_rs",
+ "heapless 0.9.3",
+ "ixgbe-driver",
+ "log",
+ "mmio-api",
+ "pcie",
+ "ramdisk",
+ "rd-block",
+ "rd-net",
+ "rdif-display",
+ "rdif-input",
+ "rdif-vsock",
+ "rdrive",
+ "realtek-rtl8125",
+ "rk3588-pci",
+ "rockchip-npu",
+ "rockchip-pm",
+ "rockchip-soc",
+ "sdhci-host",
+ "sdmmc-protocol",
+ "sg200x-bsp",
+ "simple-ahci",
+ "simple-sdmmc",
+ "some-serial",
+ "spin 0.10.0",
+ "virtio-drivers",
 ]
 
 [[package]]
@@ -1442,6 +1465,7 @@ dependencies = [
  "ax-ctor-bare",
  "ax-display",
  "ax-driver",
+ "ax-drivers",
  "ax-errno",
  "ax-fs",
  "ax-fs-ng",
@@ -1718,6 +1742,7 @@ dependencies = [
  "ax-arm-pl031",
  "ax-config-macros",
  "ax-cpu",
+ "ax-drivers",
  "ax-errno",
  "ax-kspin",
  "ax-memory-addr",
@@ -1727,7 +1752,6 @@ dependencies = [
  "crab-usb",
  "dma-api",
  "dwmmc-host",
- "eth-intel",
  "fdt-edit",
  "heapless 0.9.3",
  "log",
@@ -1741,7 +1765,6 @@ dependencies = [
  "rdif-pcie",
  "rdif-vsock",
  "rdrive",
- "realtek-rtl8125",
  "rk3588-pci",
  "rockchip-npu",
  "rockchip-pm",

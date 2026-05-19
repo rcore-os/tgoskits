@@ -124,6 +124,7 @@ members = [
     "drivers/blk/dwmmc-host",
     "drivers/blk/sdhci-host",
     "drivers/blk/sdmmc-protocol",
+    "drivers/ax-drivers",
     "drivers/examples/enumerate",
     "drivers/intc/arm-gic-driver",
     "drivers/interface/rdif-base",
@@ -283,6 +284,7 @@ ax-ctor-bare-macros = { version = "0.4.8", path = "components/ctor_bare/ctor_bar
 ax-display = { version = "0.5.12", path = "os/arceos/modules/axdisplay" }
 ax-dma = { version = "0.5.13", path = "os/arceos/modules/axdma" }
 ax-driver = { version = "0.5.14", path = "os/arceos/modules/axdriver" }
+ax-drivers = { version = "0.1.0", path = "drivers/ax-drivers" }
 ax-driver-base = { version = "0.3.12", path = "components/axdriver_crates/axdriver_base" }
 ax-driver-block = { version = "0.3.13", path = "components/axdriver_crates/axdriver_block" }
 ax-driver-display = { version = "0.3.12", path = "components/axdriver_crates/axdriver_display" }
@@ -473,4 +475,8 @@ fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
 sg200x-bsp = "0.5"
+simple-ahci = "0.1.1-preview.1"
+simple-sdmmc = "0.1"
+bcm2835-sdhci = "0.1.1-preview.1"
+ixgbe-driver = "0.1.1-preview.1"
 x86 = "0.52"

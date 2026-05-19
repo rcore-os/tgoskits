@@ -11,56 +11,34 @@ description = "ArceOS device drivers"
 license.workspace = true
 
 [features]
-bus-mmio = ["dep:ax-config"]
-bus-pci = ["dep:ax-config", "dep:pcie"]
-net = ["dep:ax-driver-net", "dep:rd-net", "dep:spin"]
-block = ["dep:ax-driver-block", "dep:rd-block"]
-display = ["dep:ax-driver-display", "dep:rdif-display"]
-input = ["dep:ax-driver-input", "dep:rdif-input"]
-vsock = ["dep:ax-driver-vsock", "dep:rdif-vsock"]
+bus-mmio = ["ax-drivers/bus-mmio"]
+bus-pci = ["ax-drivers/bus-pci"]
+net = ["ax-drivers/net"]
+block = ["ax-drivers/block"]
+display = ["ax-drivers/display"]
+input = ["ax-drivers/input"]
+vsock = ["ax-drivers/vsock"]
 
 # Enabled by features `virtio-*`
-virtio = ["dep:ax-driver-virtio", "dep:ax-alloc", "dep:ax-config", "dep:virtio-drivers"]
+virtio = ["ax-drivers/virtio"]
 
 # various types of drivers
-virtio-blk = ["block", "virtio", "ax-driver-virtio/block"]
-virtio-net = ["net", "virtio", "ax-driver-virtio/net"]
-virtio-gpu = ["display", "virtio", "ax-driver-virtio/gpu"]
-virtio-input = ["input", "virtio", "ax-driver-virtio/input"]
-virtio-socket = ["vsock", "virtio", "ax-driver-virtio/socket"]
-ramdisk = ["block", "ax-driver-block/ramdisk"]
-bcm2835-sdhci = ["block", "ax-driver-block/bcm2835-sdhci"]
-sdmmc = ["block", "ax-driver-block/sdmmc", "dep:ax-config"]
-cvsd = ["block", "ax-driver-block/cvsd", "dep:ax-config"]
-ahci = ["block", "ax-driver-block/ahci", "bus-pci"]
-ixgbe = ["net", "bus-pci", "ax-driver-net/ixgbe", "dep:ax-alloc", "dep:ax-dma"]
-fxmac = ["net", "ax-driver-net/fxmac", "dep:ax-alloc", "dep:ax-dma"]
-# more devices example: e1000 = ["net", "ax-driver-net/e1000"]
+virtio-blk = ["ax-drivers/virtio-blk"]
+virtio-net = ["ax-drivers/virtio-net"]
+virtio-gpu = ["ax-drivers/virtio-gpu"]
+virtio-input = ["ax-drivers/virtio-input"]
+virtio-socket = ["ax-drivers/virtio-socket"]
+ramdisk = ["ax-drivers/ramdisk"]
+bcm2835-sdhci = ["ax-drivers/bcm2835-sdhci"]
+sdmmc = ["ax-drivers/sdmmc"]
+cvsd = ["ax-drivers/cvsd"]
+ahci = ["ax-drivers/ahci"]
+ixgbe = ["ax-drivers/ixgbe"]
+fxmac = ["ax-drivers/fxmac"]
 
-irq = []
+irq = ["ax-drivers/irq"]
 
 default = []
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
-ax-config = { workspace = true, optional = true }
-ax-dma = { workspace = true, optional = true }
-ax-crate-interface.workspace = true
-ax-driver-base.workspace = true
-ax-driver-block = { workspace = true, optional = true }
-ax-driver-display = { workspace = true, optional = true }
-ax-driver-input = { workspace = true, optional = true }
-ax-driver-net = { workspace = true, optional = true }
-ax-driver-virtio = { workspace = true, optional = true }
-ax-driver-vsock = { workspace = true, optional = true }
-axklib.workspace = true
-log.workspace = true
-pcie = { workspace = true, optional = true }
-rd-block = { workspace = true, optional = true }
-rd-net = { workspace = true, optional = true }
-rdif-display = { workspace = true, optional = true }
-rdif-input = { workspace = true, optional = true }
-rdif-vsock = { workspace = true, optional = true }
-rdrive.workspace = true
-spin = { workspace = true, optional = true }
-virtio-drivers = { workspace = true, optional = true }
+ax-drivers.workspace = true
