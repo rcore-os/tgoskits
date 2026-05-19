@@ -11,6 +11,3 @@ publish = false
 [dependencies]
 crab-usb = {workspace = true}
 log = {workspace = true}
-
-[target.'cfg(target_os = "none")'.dependencies]
-# bare-test = {workspace = true}

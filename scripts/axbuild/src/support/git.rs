@@ -18,7 +18,6 @@ pub(crate) fn select_incremental_packages(
     metadata: &Metadata,
     workspace_packages: &[Package],
     since: &str,
-    whitelist: &[String],
 ) -> anyhow::Result<IncrementalPackageSelection> {
     let changed_paths = match changed_paths_since(workspace_root, since) {
         Ok(paths) => paths,
@@ -33,7 +32,6 @@ pub(crate) fn select_incremental_packages(
         metadata,
         workspace_packages,
         changed_paths,
-        whitelist,
     )
 }
 
@@ -118,7 +116,6 @@ pub(crate) fn select_incremental_packages_for_paths<I>(
     metadata: &Metadata,
     workspace_packages: &[Package],
     changed_paths: I,
-    whitelist: &[String],
 ) -> anyhow::Result<IncrementalPackageSelection>
 where
     I: IntoIterator<Item = PathBuf>,
@@ -137,18 +134,17 @@ where
     };
 
     let affected = affected_workspace_packages(metadata, workspace_packages, &changed_packages);
-    let whitelist: BTreeSet<_> = whitelist.iter().cloned().collect();
-    let selected = affected
-        .into_iter()
-        .filter(|package| whitelist.contains(package))
-        .collect::<Vec<_>>();
-
-    Ok(IncrementalPackageSelection::Packages(selected))
+    Ok(IncrementalPackageSelection::Packages(affected))
 }
 
 enum ChangedPackages {
     Packages(BTreeSet<String>),
     Full { path: PathBuf },
+}
+
+enum GlobalClippyInput {
+    Hard,
+    Soft,
 }
 
 struct PackagePathIndex {
@@ -174,6 +170,13 @@ impl PackagePathIndex {
                         "manifest path has no parent for package `{}`: {}",
                         package.name,
                         manifest.display()
+                    )
+                })?;
+                let manifest_dir = manifest_dir.canonicalize().with_context(|| {
+                    format!(
+                        "failed to canonicalize manifest dir for package `{}`: {}",
+                        package.name,
+                        manifest_dir.display()
                     )
                 })?;
                 let rel_dir = manifest_dir
@@ -208,15 +211,26 @@ impl PackagePathIndex {
         I: IntoIterator<Item = PathBuf>,
     {
         let mut packages = BTreeSet::new();
+        let mut soft_global_inputs = Vec::new();
         for path in changed_paths {
             let path = normalize_git_path(path)?;
             if path.as_os_str().is_empty() {
                 continue;
             }
             let Some(package) = self.package_for_path(&path) else {
-                return Ok(ChangedPackages::Full { path });
+                match global_clippy_input(&path) {
+                    Some(GlobalClippyInput::Hard) => return Ok(ChangedPackages::Full { path }),
+                    Some(GlobalClippyInput::Soft) => soft_global_inputs.push(path),
+                    None => {}
+                }
+                continue;
             };
             packages.insert(package.to_string());
+        }
+        if packages.is_empty()
+            && let Some(path) = soft_global_inputs.into_iter().next()
+        {
+            return Ok(ChangedPackages::Full { path });
         }
         Ok(ChangedPackages::Packages(packages))
     }
@@ -226,6 +240,33 @@ impl PackagePathIndex {
             .iter()
             .find(|package| path == package.rel_dir || path.starts_with(&package.rel_dir))
             .map(|package| package.name.as_str())
+    }
+}
+
+fn global_clippy_input(path: &Path) -> Option<GlobalClippyInput> {
+    if path == Path::new("Cargo.lock") {
+        // Soft: a dep-version-only update (e.g. `cargo update`) is unlikely to
+        // affect clippy when real code also changed.  When Cargo.lock is the
+        // *only* change, however, transitive-dep/proc-macro/build-script changes
+        // can still break compilation, so fall back to Full in that case.
+        Some(GlobalClippyInput::Soft)
+    } else if path == Path::new("Cargo.toml")
+        || path == Path::new("rust-toolchain")
+        || path == Path::new("rust-toolchain.toml")
+        || path == Path::new("clippy.toml")
+        || path == Path::new(".clippy.toml")
+        || path.starts_with(".cargo")
+        || path.starts_with("os/arceos/configs")
+    {
+        // Hard: root Cargo.toml is not limited to [workspace.members]; it also
+        // carries [workspace.dependencies], [workspace.package], [patch], and
+        // [profile] sections.  A workspace-dep bump alongside any code change
+        // would otherwise leave all other consumers unchecked.  We cannot
+        // distinguish "only added a member" from "bumped a global dep" without
+        // parsing diff hunks, so Hard is the only sound choice here.
+        Some(GlobalClippyInput::Hard)
+    } else {
+        None
     }
 }
 
@@ -429,38 +470,40 @@ mod tests {
     }
 
     #[test]
-    fn changed_crate_selects_reverse_dependencies_intersected_with_whitelist() {
+    fn changed_crate_selects_reverse_dependencies() {
         let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
             &workspace_packages,
             [PathBuf::from("crates/alpha/src/lib.rs")],
-            &["alpha".into(), "gamma".into()],
         )
         .unwrap();
 
         assert_eq!(
             selected,
-            IncrementalPackageSelection::Packages(vec!["alpha".into(), "gamma".into()])
+            IncrementalPackageSelection::Packages(vec![
+                "alpha".into(),
+                "beta".into(),
+                "gamma".into()
+            ])
         );
     }
 
     #[test]
-    fn changed_unlisted_crate_still_checks_whitelisted_dependents() {
+    fn changed_middle_crate_selects_itself_and_dependents() {
         let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
             &workspace_packages,
-            [PathBuf::from("crates/alpha/src/lib.rs")],
-            &["beta".into()],
+            [PathBuf::from("crates/beta/src/lib.rs")],
         )
         .unwrap();
 
         assert_eq!(
             selected,
-            IncrementalPackageSelection::Packages(vec!["beta".into()])
+            IncrementalPackageSelection::Packages(vec!["beta".into(), "gamma".into()])
         );
     }
 
@@ -472,7 +515,6 @@ mod tests {
             &metadata,
             &workspace_packages,
             Vec::<PathBuf>::new(),
-            &["alpha".into(), "beta".into(), "gamma".into()],
         )
         .unwrap();
 
@@ -480,20 +522,86 @@ mod tests {
     }
 
     #[test]
-    fn non_crate_file_falls_back_to_full_run() {
+    fn lockfile_only_change_falls_back_to_full() {
+        // Cargo.lock is Soft: a dep-version-only update with no source changes
+        // can still affect compilation via transitive deps, proc macros, or
+        // build scripts, so a pure lockfile diff must trigger a full run.
         let (root, metadata, workspace_packages) = test_workspace();
         let selected = select_incremental_packages_for_paths(
             root.path(),
             &metadata,
             &workspace_packages,
             [PathBuf::from("Cargo.lock")],
-            &["alpha".into()],
         )
         .unwrap();
 
         assert!(matches!(
             selected,
             IncrementalPackageSelection::Full { reason } if reason.contains("Cargo.lock")
+        ));
+    }
+
+    #[test]
+    fn lockfile_change_keeps_incremental_selection_when_packages_changed() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [
+                PathBuf::from("Cargo.lock"),
+                PathBuf::from("crates/beta/Cargo.toml"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            IncrementalPackageSelection::Packages(vec!["beta".into(), "gamma".into()])
+        );
+    }
+
+    #[test]
+    fn root_cargo_toml_only_falls_back_to_full() {
+        // Root Cargo.toml is Hard: a manifest-only change with no code changes
+        // (e.g. a [workspace.dependencies] bump) must still fall back to Full.
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [PathBuf::from("Cargo.toml")],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            selected,
+            IncrementalPackageSelection::Full { reason } if reason.contains("Cargo.toml")
+        ));
+    }
+
+    #[test]
+    fn root_cargo_toml_with_package_change_still_falls_back_to_full() {
+        // Root Cargo.toml is Hard: even when package source files are also in the
+        // diff (e.g. a new crate was added *and* a workspace dependency was
+        // bumped), the global manifest change requires a full run.  We cannot
+        // distinguish "only added a member" from "bumped a workspace dep" without
+        // parsing diff hunks, so Hard must always win.
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [
+                PathBuf::from("Cargo.toml"),
+                PathBuf::from("crates/alpha/src/lib.rs"),
+            ],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            selected,
+            IncrementalPackageSelection::Full { reason } if reason.contains("Cargo.toml")
         ));
     }
 
@@ -505,13 +613,46 @@ mod tests {
             &metadata,
             &workspace_packages,
             [PathBuf::from(".cargo/config.toml")],
-            &["alpha".into()],
         )
         .unwrap();
 
         assert!(matches!(
             selected,
-            IncrementalPackageSelection::Full { reason } if reason.contains(".cargo/config.toml")
+            IncrementalPackageSelection::Full { reason } if reason.contains(".cargo")
         ));
+    }
+
+    #[test]
+    fn unrelated_outside_package_file_selects_no_packages() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [PathBuf::from("docs/guide.md")],
+        )
+        .unwrap();
+
+        assert_eq!(selected, IncrementalPackageSelection::Packages(Vec::new()));
+    }
+
+    #[test]
+    fn unrelated_outside_package_file_does_not_hide_package_changes() {
+        let (root, metadata, workspace_packages) = test_workspace();
+        let selected = select_incremental_packages_for_paths(
+            root.path(),
+            &metadata,
+            &workspace_packages,
+            [
+                PathBuf::from(".github/workflows/review.yml"),
+                PathBuf::from("crates/beta/src/lib.rs"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            IncrementalPackageSelection::Packages(vec!["beta".into(), "gamma".into()])
+        );
     }
 }

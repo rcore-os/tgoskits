@@ -4,10 +4,15 @@ use core::{ffi::c_char, mem::MaybeUninit};
 use ax_config::ARCH;
 use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
+use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
     system::{new_utsname, sysinfo},
+};
+use ringbuf::{
+    HeapRb,
+    traits::{Consumer, Observer, Producer},
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
@@ -15,7 +20,95 @@ use crate::task::{AsThread, processes};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
 /// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).
+///
+/// Note: paired with `uid_valid()` below — multi-arg `set*res*uid/gid` and
+/// `setre*uid/gid` use this sentinel for NOCHG semantics, while single-arg
+/// `setuid/setgid` reject it as EINVAL (no NOCHG slot exists there).
 const NOCHG: u32 = u32::MAX;
+const SYSLOG_ACTION_CLOSE: i32 = 0;
+const SYSLOG_ACTION_OPEN: i32 = 1;
+const SYSLOG_ACTION_READ: i32 = 2;
+const SYSLOG_ACTION_READ_ALL: i32 = 3;
+const SYSLOG_ACTION_READ_CLEAR: i32 = 4;
+const SYSLOG_ACTION_CLEAR: i32 = 5;
+const SYSLOG_ACTION_CONSOLE_OFF: i32 = 6;
+const SYSLOG_ACTION_CONSOLE_ON: i32 = 7;
+const SYSLOG_ACTION_CONSOLE_LEVEL: i32 = 8;
+const SYSLOG_ACTION_SIZE_UNREAD: i32 = 9;
+const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
+const SYSLOG_BUFFER_CAPACITY: usize = 4096;
+const SYSLOG_SEED_MESSAGE: &[u8] = b"StarryOS kernel log buffer initialized\n";
+
+struct SyslogState {
+    buffer: HeapRb<u8>,
+    console_enabled: bool,
+    console_level: usize,
+}
+
+impl SyslogState {
+    fn new() -> Self {
+        let mut buffer = HeapRb::new(SYSLOG_BUFFER_CAPACITY);
+        buffer.push_slice(SYSLOG_SEED_MESSAGE);
+        Self {
+            buffer,
+            console_enabled: true,
+            console_level: 7,
+        }
+    }
+
+    fn unread_len(&self) -> usize {
+        self.buffer.occupied_len()
+    }
+
+    fn buffer_len(&self) -> usize {
+        self.buffer.capacity().get()
+    }
+
+    fn read(&mut self, len: usize) -> Vec<u8> {
+        let available = len.min(self.buffer.occupied_len());
+        let (left, right) = self.buffer.as_slices();
+        let mut out = Vec::with_capacity(available);
+        let first = left.len().min(available);
+        out.extend_from_slice(&left[..first]);
+        if first < available {
+            out.extend_from_slice(&right[..available - first]);
+        }
+        unsafe { self.buffer.advance_read_index(available) };
+        out
+    }
+
+    fn read_all(&self, len: usize) -> Vec<u8> {
+        let available = len.min(self.buffer.occupied_len());
+        let (left, right) = self.buffer.as_slices();
+        let mut out = Vec::with_capacity(available);
+        let first = left.len().min(available);
+        out.extend_from_slice(&left[..first]);
+        if first < available {
+            out.extend_from_slice(&right[..available - first]);
+        }
+        out
+    }
+
+    fn clear(&mut self) {
+        let len = self.buffer.occupied_len();
+        unsafe { self.buffer.advance_read_index(len) };
+    }
+}
+
+lazy_static::lazy_static! {
+    static ref SYSLOG_STATE: Mutex<SyslogState> = Mutex::new(SyslogState::new());
+}
+
+/// Mirror of Linux kernel `uid_valid()` / `make_kuid()` rejection: any caller-
+/// supplied UID/GID of `(uid_t)-1` (`u32::MAX`) is invalid outside the NOCHG
+/// sentinel slots of multi-arg setters. Single-arg `setuid`/`setgid` have no
+/// NOCHG semantic, so they must always reject `u32::MAX` with `EINVAL` before
+/// touching `cred` — otherwise a malicious caller writes the sentinel into
+/// real / effective / saved IDs and the next `setresuid` NOCHG path silently
+/// no-ops on already-poisoned credentials.
+fn uid_valid(id: u32) -> bool {
+    id != NOCHG
+}
 
 pub fn sys_getuid() -> AxResult<isize> {
     let cred = current().as_thread().cred();
@@ -150,6 +243,11 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
 
 pub fn sys_setuid(uid: u32) -> AxResult<isize> {
     debug!("sys_setuid <= uid: {uid}");
+    // Linux setuid(2) §ERRORS: "EINVAL — uid is not valid in this user namespace."
+    // Single-arg setuid has no NOCHG sentinel; (uid_t)-1 must be rejected.
+    if !uid_valid(uid) {
+        return Err(AxError::InvalidInput);
+    }
     let thread = current();
     let thread = thread.as_thread();
     let old = thread.cred();
@@ -175,6 +273,10 @@ pub fn sys_setuid(uid: u32) -> AxResult<isize> {
 
 pub fn sys_setgid(gid: u32) -> AxResult<isize> {
     debug!("sys_setgid <= gid: {gid}");
+    // Linux setgid(2) §ERRORS: "EINVAL — gid is not valid in this user namespace."
+    if !uid_valid(gid) {
+        return Err(AxError::InvalidInput);
+    }
     let thread = current();
     let thread = thread.as_thread();
     let old = thread.cred();
@@ -280,6 +382,73 @@ pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
     Ok(0)
 }
 
+// ── setfsuid / setfsgid ─────────────────────────────────────────────
+//
+// man 2 setfsuid:
+//   "setfsuid() sets the user ID that the Linux kernel uses to check for all
+//    accesses to the filesystem. ... On both success and failure, this call
+//    returns the previous filesystem user ID of the caller."
+//   "When the effective user ID is changed (via setuid(), setresuid(), etc.),
+//    the kernel also changes the filesystem user ID to the new value of the
+//    effective user ID."
+//   Query trick: passing `(uid_t)-1` leaves the fsuid unchanged but still
+//   returns the previous value — used by libc to read the current fsuid.
+
+pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
+    debug!("sys_setfsuid <= fsuid: {fsuid}");
+    let thread = current();
+    let thread = thread.as_thread();
+    let old = thread.cred();
+    let prev_fsuid = old.fsuid;
+
+    // (uid_t)-1 = query-only: don't change, just return prev.
+    if fsuid == NOCHG {
+        return Ok(prev_fsuid as isize);
+    }
+
+    // Linux: setfsuid silently ignores an invalid fsuid but always returns the
+    // previous fsuid (never reports error). Unprivileged callers may only set
+    // fsuid to one of {uid, euid, suid, fsuid}; CAP_SETUID allows arbitrary.
+    let allowed = old.has_cap_setuid()
+        || fsuid == old.uid
+        || fsuid == old.euid
+        || fsuid == old.suid
+        || fsuid == old.fsuid;
+
+    if allowed {
+        let mut new = (*old).clone();
+        new.fsuid = fsuid;
+        thread.set_cred(new);
+    }
+    // Always return previous fsuid, even when the request was ignored.
+    Ok(prev_fsuid as isize)
+}
+
+pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
+    debug!("sys_setfsgid <= fsgid: {fsgid}");
+    let thread = current();
+    let thread = thread.as_thread();
+    let old = thread.cred();
+    let prev_fsgid = old.fsgid;
+
+    if fsgid == NOCHG {
+        return Ok(prev_fsgid as isize);
+    }
+
+    let allowed = old.has_cap_setgid()
+        || fsgid == old.gid
+        || fsgid == old.egid
+        || fsgid == old.sgid
+        || fsgid == old.fsgid;
+
+    if allowed {
+        let mut new = (*old).clone();
+        new.fsgid = fsgid;
+        thread.set_cred(new);
+    }
+    Ok(prev_fsgid as isize)
+}
+
 pub fn sys_getgroups(size: usize, list: *mut u32) -> AxResult<isize> {
     debug!("sys_getgroups <= size: {size}");
     let cred = current().as_thread().cred();
@@ -377,8 +546,91 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_syslog(_type: i32, _buf: *mut c_char, _len: usize) -> AxResult<isize> {
-    Ok(0)
+fn require_syslog_privilege() -> AxResult<()> {
+    if current().as_thread().cred().euid == 0 {
+        Ok(())
+    } else {
+        Err(AxError::OperationNotPermitted)
+    }
+}
+
+pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
+    match ty {
+        SYSLOG_ACTION_CLOSE | SYSLOG_ACTION_OPEN => Ok(0),
+        SYSLOG_ACTION_READ => {
+            require_syslog_privilege()?;
+            let data = {
+                let mut state = SYSLOG_STATE.lock();
+                state.read(len)
+            };
+            if !data.is_empty() {
+                vm_write_slice(buf as *mut u8, &data)?;
+            }
+            Ok(data.len() as isize)
+        }
+        SYSLOG_ACTION_READ_ALL => {
+            require_syslog_privilege()?;
+            let data = {
+                let state = SYSLOG_STATE.lock();
+                state.read_all(len)
+            };
+            if !data.is_empty() {
+                vm_write_slice(buf as *mut u8, &data)?;
+            }
+            Ok(data.len() as isize)
+        }
+        SYSLOG_ACTION_READ_CLEAR => {
+            require_syslog_privilege()?;
+            let data = {
+                let mut state = SYSLOG_STATE.lock();
+                let data = state.read_all(len);
+                state.clear();
+                data
+            };
+            if !data.is_empty() {
+                vm_write_slice(buf as *mut u8, &data)?;
+            }
+            Ok(data.len() as isize)
+        }
+        SYSLOG_ACTION_CLEAR => {
+            require_syslog_privilege()?;
+            let mut state = SYSLOG_STATE.lock();
+            state.clear();
+            Ok(0)
+        }
+        SYSLOG_ACTION_CONSOLE_OFF => {
+            require_syslog_privilege()?;
+            let mut state = SYSLOG_STATE.lock();
+            state.console_enabled = false;
+            Ok(0)
+        }
+        SYSLOG_ACTION_CONSOLE_ON => {
+            require_syslog_privilege()?;
+            let mut state = SYSLOG_STATE.lock();
+            state.console_enabled = true;
+            Ok(0)
+        }
+        SYSLOG_ACTION_CONSOLE_LEVEL => {
+            require_syslog_privilege()?;
+            if !(1..=8).contains(&len) {
+                return Err(AxError::InvalidInput);
+            }
+            let mut state = SYSLOG_STATE.lock();
+            let old_level = state.console_level;
+            state.console_level = len;
+            Ok(old_level as isize)
+        }
+        SYSLOG_ACTION_SIZE_UNREAD => {
+            require_syslog_privilege()?;
+            let state = SYSLOG_STATE.lock();
+            Ok(state.unread_len() as isize)
+        }
+        SYSLOG_ACTION_SIZE_BUFFER => {
+            let state = SYSLOG_STATE.lock();
+            Ok(state.buffer_len() as isize)
+        }
+        _ => Err(AxError::InvalidInput),
+    }
 }
 
 bitflags::bitflags! {

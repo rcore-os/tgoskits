@@ -38,7 +38,17 @@ const IFCONF_BUF_OFFSET: usize = 8;
 const ETH0_MTU: i32 = 1500;
 const LO_MTU: i32 = 65536;
 
-pub struct Socket(pub SocketInner);
+pub struct Socket(pub SocketInner, u32);
+
+impl Socket {
+    pub fn new(inner: SocketInner, ip_domain: u32) -> Self {
+        Self(inner, ip_domain)
+    }
+
+    pub fn ip_domain(&self) -> u32 {
+        self.1
+    }
+}
 
 #[derive(Clone, Copy)]
 enum NetInterface {

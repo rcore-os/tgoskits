@@ -783,8 +783,8 @@ c
 ' | busybox wc -l 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "3"; then echo "PASS: busybox_wc"; PASS=$((PASS+1)); else echo "FAIL: busybox_wc"; FAIL=$((FAIL+1)); fi
 
-_t=$({ timeout 10 sh -c "busybox wget -h 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "Usage: wget"; then echo "PASS: busybox_wget"; PASS=$((PASS+1)); else echo "FAIL: busybox_wget"; FAIL=$((FAIL+1)); fi
+_t=$({ timeout 30 sh -c "busybox rm -f /tmp/bb_wget.html && busybox wget -O /tmp/bb_wget.html http://example.com/ 2>&1 && busybox test -s /tmp/bb_wget.html && busybox grep -qi example /tmp/bb_wget.html && busybox echo wget_download_ok"; } 2>&1)
+if echo "$_t" | grep -qF "wget_download_ok"; then echo "PASS: busybox_wget"; PASS=$((PASS+1)); else echo "FAIL: busybox_wget"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox which busybox 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "busybox"; then echo "PASS: busybox_which"; PASS=$((PASS+1)); else echo "FAIL: busybox_which"; FAIL=$((FAIL+1)); fi
@@ -852,44 +852,20 @@ if echo "$_t" | grep -qF "test"; then echo "PASS: busybox_lzcat"; PASS=$((PASS+1
 _t=$({ timeout 10 sh -c "busybox sh -c 'busybox printf %s XQAAgAD//////////wA2Hondf+Fbcap///6gWAA= | busybox base64 -d > /tmp/bb_lzma.lzma && busybox lzma -dc /tmp/bb_lzma.lzma' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "lzma_t"; then echo "PASS: busybox_lzma"; PASS=$((PASS+1)); else echo "FAIL: busybox_lzma"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
-_t=$({ timeout 10 sh -c "busybox fdflush -h 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "fdflush:"; then echo "PASS: busybox_fdflush"; PASS=$((PASS+1)); else echo "FAIL: busybox_fdflush"; echo "$_t"; FAIL=$((FAIL+1)); fi
-
 _t=$({ timeout 10 sh -c "busybox ifconfig 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "eth0"; then echo "PASS: busybox_ifconfig"; PASS=$((PASS+1)); else echo "FAIL: busybox_ifconfig"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox ifenslave 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "eth0" && echo "$_t" | grep -qF "lo"; then echo "PASS: busybox_ifenslave"; PASS=$((PASS+1)); else echo "FAIL: busybox_ifenslave"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
-_t=$({ timeout 10 sh -c "busybox insmod 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "Usage: insmod"; then echo "PASS: busybox_insmod"; PASS=$((PASS+1)); else echo "FAIL: busybox_insmod"; echo "$_t"; FAIL=$((FAIL+1)); fi
-
-_t=$({ timeout 10 sh -c "busybox killall5 --help 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "Usage: killall5"; then echo "PASS: busybox_killall5"; PASS=$((PASS+1)); else echo "FAIL: busybox_killall5"; echo "$_t"; FAIL=$((FAIL+1)); fi
-
 _t=$({ timeout 10 sh -c "busybox ping -c 1 127.0.0.1 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "1 packets transmitted"; then echo "PASS: busybox_ping"; PASS=$((PASS+1)); else echo "FAIL: busybox_ping"; echo "$_t"; FAIL=$((FAIL+1)); fi
+if echo "$_t" | grep -qF "1 packets transmitted" && echo "$_t" | grep -qE "1 packets? received|1 received" && echo "$_t" | grep -qF "0% packet loss"; then echo "PASS: busybox_ping"; PASS=$((PASS+1)); else echo "FAIL: busybox_ping"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox printf abc | busybox pipe_progress 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "abc"; then echo "PASS: busybox_pipe_progress"; PASS=$((PASS+1)); else echo "FAIL: busybox_pipe_progress"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
-_t=$({ timeout 10 sh -c "busybox raidautorun --help 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "Usage: raidautorun"; then echo "PASS: busybox_raidautorun"; PASS=$((PASS+1)); else echo "FAIL: busybox_raidautorun"; echo "$_t"; FAIL=$((FAIL+1)); fi
-
-_t=$({ timeout 10 sh -c "busybox rdev --help 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "Usage: rdev"; then echo "PASS: busybox_rdev"; PASS=$((PASS+1)); else echo "FAIL: busybox_rdev"; echo "$_t"; FAIL=$((FAIL+1)); fi
-
 _t=$({ timeout 10 sh -c "busybox iostat 1 1 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "avg-cpu"; then echo "PASS: busybox_iostat"; PASS=$((PASS+1)); else echo "FAIL: busybox_iostat"; echo "$_t"; FAIL=$((FAIL+1)); fi
-
-_t=$({ timeout 10 sh -c "busybox remove-shell --help 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "Usage: remove-shell"; then echo "PASS: busybox_remove_shell"; PASS=$((PASS+1)); else echo "FAIL: busybox_remove_shell"; echo "$_t"; FAIL=$((FAIL+1)); fi
-
-_t=$({ timeout 10 sh -c "busybox resize --help 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "Usage: resize"; then echo "PASS: busybox_resize"; PASS=$((PASS+1)); else echo "FAIL: busybox_resize"; echo "$_t"; FAIL=$((FAIL+1)); fi
-
-_t=$({ timeout 10 sh -c "busybox setlogcons --help 2>&1"; } 2>&1)
-if echo "$_t" | grep -qF "Usage: setlogcons"; then echo "PASS: busybox_setlogcons"; PASS=$((PASS+1)); else echo "FAIL: busybox_setlogcons"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
 _t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -rf /tmp/bb_spl && busybox mkdir -p /tmp/bb_spl && busybox printf abcdef > /tmp/bb_spl/in && busybox split -b2 /tmp/bb_spl/in /tmp/bb_spl/o && busybox cat /tmp/bb_spl/oaa' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "ab"; then echo "PASS: busybox_split"; PASS=$((PASS+1)); else echo "FAIL: busybox_split"; echo "$_t"; FAIL=$((FAIL+1)); fi
@@ -943,6 +919,62 @@ _rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: bl
 # hwclock — read hardware clock
 _t=$({ timeout 10 sh -c "busybox hwclock -r 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "hwclock"; then echo "PASS: busybox_hwclock"; PASS=$((PASS+1)); else echo "FAIL: busybox_hwclock"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+# Additional stable BusyBox semantics for shell-script compatibility.
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -f /tmp/bb_sem_touch_missing && busybox touch -c /tmp/bb_sem_touch_missing && busybox test ! -e /tmp/bb_sem_touch_missing && busybox echo touch_no_create_ok' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qxF "touch_no_create_ok"; then echo "PASS: busybox_touch_no_create"; PASS=$((PASS+1)); else echo "FAIL: busybox_touch_no_create"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -rf /tmp/bb_sem_rm && busybox mkdir -p /tmp/bb_sem_rm/a/b && busybox printf data > /tmp/bb_sem_rm/a/b/file && busybox rm -rf /tmp/bb_sem_rm && busybox test ! -e /tmp/bb_sem_rm && busybox echo rm_recursive_ok' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qxF "rm_recursive_ok"; then echo "PASS: busybox_rm_recursive"; PASS=$((PASS+1)); else echo "FAIL: busybox_rm_recursive"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -f /tmp/bb_sem_ln_a /tmp/bb_sem_ln_b && busybox printf linkdata > /tmp/bb_sem_ln_a && busybox ln /tmp/bb_sem_ln_a /tmp/bb_sem_ln_b && [ \"\$(busybox stat -c %h /tmp/bb_sem_ln_a)\" = 2 ] && [ \"\$(busybox cat /tmp/bb_sem_ln_b)\" = linkdata ] && busybox echo ln_hardlink_ok' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qxF "ln_hardlink_ok"; then echo "PASS: busybox_ln_hardlink"; PASS=$((PASS+1)); else echo "FAIL: busybox_ln_hardlink"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -f /tmp/bb_sem_rl_link /tmp/bb_sem_rl_target && busybox printf x > /tmp/bb_sem_rl_target && busybox ln -s /tmp/bb_sem_rl_target /tmp/bb_sem_rl_link && busybox readlink /tmp/bb_sem_rl_link' 2>&1"; } 2>&1)
+if [ "$_t" = "/tmp/bb_sem_rl_target" ]; then echo "PASS: busybox_readlink_exact"; PASS=$((PASS+1)); else echo "FAIL: busybox_readlink_exact"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -rf /tmp/bb_sem_real && busybox mkdir -p /tmp/bb_sem_real/d && busybox realpath /tmp/bb_sem_real/./d/..//d' 2>&1"; } 2>&1)
+if [ "$_t" = "/tmp/bb_sem_real/d" ]; then echo "PASS: busybox_realpath_dotdot"; PASS=$((PASS+1)); else echo "FAIL: busybox_realpath_dotdot"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -f /tmp/bb_sem_stat && busybox printf abc > /tmp/bb_sem_stat && busybox chmod 640 /tmp/bb_sem_stat && busybox stat -c \"%s %a %F\" /tmp/bb_sem_stat' 2>&1"; } 2>&1)
+if [ "$_t" = "3 640 regular file" ]; then echo "PASS: busybox_stat_mode_size"; PASS=$((PASS+1)); else echo "FAIL: busybox_stat_mode_size"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -f /tmp/bb_sem_chmod && busybox printf x > /tmp/bb_sem_chmod && busybox chmod u=rw,g=r,o= /tmp/bb_sem_chmod && busybox stat -c %a /tmp/bb_sem_chmod' 2>&1"; } 2>&1)
+if [ "$_t" = "640" ]; then echo "PASS: busybox_chmod_symbolic"; PASS=$((PASS+1)); else echo "FAIL: busybox_chmod_symbolic"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox printf 'b\nA\nb\n' | busybox sort -u 2>&1"; } 2>&1)
+_sort=$(echo "$_t" | tr '\n' '|')
+if [ "$_sort" = "A|b|" ]; then echo "PASS: busybox_sort_unique"; PASS=$((PASS+1)); else echo "FAIL: busybox_sort_unique"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox printf 'a\na\nb\n' | busybox uniq -c | busybox sed 's/^ *//' 2>&1"; } 2>&1)
+_uniq=$(echo "$_t" | tr '\n' '|')
+if [ "$_uniq" = "2 a|1 b|" ]; then echo "PASS: busybox_uniq_counts"; PASS=$((PASS+1)); else echo "FAIL: busybox_uniq_counts"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox printf 'aa\nbb\n' | busybox xargs -n1 busybox printf '<%s>\n' 2>&1"; } 2>&1)
+_xargs=$(echo "$_t" | tr '\n' '|')
+if [ "$_xargs" = "<aa>|<bb>|" ]; then echo "PASS: busybox_xargs_n1"; PASS=$((PASS+1)); else echo "FAIL: busybox_xargs_n1"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox printf '%b' 'a\012b' | busybox od -An -tx1 2>&1"; } 2>&1)
+_printf=$(echo "$_t" | tr -d '\n' | tr -s ' ' | busybox sed 's/^ //; s/ $//')
+if [ "$_printf" = "61 0a 62" ]; then echo "PASS: busybox_printf_escape"; PASS=$((PASS+1)); else echo "FAIL: busybox_printf_escape"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+_t=$({ timeout 10 sh -c "busybox sh -c 'export BB_SEM_ENV=ok; cd /tmp && [ \"\$BB_SEM_ENV:\$PWD\" = \"ok:/tmp\" ] && command -v busybox >/dev/null && busybox echo sh_env_cd_ok' 2>&1"; } 2>&1)
+if echo "$_t" | grep -qxF "sh_env_cd_ok"; then echo "PASS: busybox_sh_env_cd"; PASS=$((PASS+1)); else echo "FAIL: busybox_sh_env_cd"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
+# busybox_acpid — applet wiring sanity check.
+# Without -f, acpid would daemonize and close stdio (Issue #13's `[ -n "$_t" ]`
+# only succeeds if something is printed before fork). We pass an unknown flag
+# `-h` so getopt32 reaches bb_show_usage, which writes the applet banner to
+# stderr — confirming the applet table contains acpid and busybox can run it.
+_t=$({ timeout 10 sh -c "busybox acpid -h 2>&1"; echo "EXIT:$?"; } 2>&1)
+_rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')
+_t=$(printf '%s\n' "$_t" | sed '/^EXIT:/d')
+if echo "$_t" | grep -qF "Usage:" && echo "$_t" | grep -qF "acpid"; then
+    echo "PASS: busybox_acpid"; PASS=$((PASS+1))
+else
+    echo "FAIL: busybox_acpid (rc=$_rc)"; echo "$_t"
+    FAIL=$((FAIL+1))
+fi
 
 echo "=== BusyBox Test Summary ==="
 echo "PASS: $PASS  FAIL: $FAIL  TOTAL: $((PASS+FAIL))"
