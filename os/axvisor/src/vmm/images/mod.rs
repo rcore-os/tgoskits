@@ -25,9 +25,13 @@ use crate::vmm::config::{get_vm_dtb_arc, vmcfg};
 
 mod linux;
 #[cfg(target_arch = "x86_64")]
-mod x86_boot;
+mod x86;
 #[cfg(target_arch = "x86_64")]
-mod x86_linux;
+use x86::boot_params as x86_boot_params;
+#[cfg(target_arch = "x86_64")]
+use x86::linux as x86_linux;
+#[cfg(target_arch = "x86_64")]
+use x86::multiboot as x86_boot;
 
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
@@ -205,7 +209,7 @@ impl ImageLoader {
         )
         .map_err(x86_linux_layout_error)?;
 
-        self.load_x86_linux_layout(header, layout)?;
+        self.load_x86_linux_layout(header, layout, kernel)?;
         load_vm_image_from_memory(payload, self.kernel_load_gpa, self.vm.clone())?;
 
         if let Some(buffer) = ramdisk {
@@ -214,7 +218,7 @@ impl ImageLoader {
 
         Err(ax_errno::ax_err_type!(
             Unsupported,
-            "x86 Linux bzImage payload and initramfs loaded, but boot_params construction starts in phase 3"
+            "x86 Linux bzImage payload, initramfs, and boot_params loaded, but Linux boot stub starts in phase 4"
         ))
     }
 
@@ -320,6 +324,7 @@ impl ImageLoader {
         &self,
         header: x86_linux::X86LinuxHeader,
         layout: x86_linux::X86LinuxLoadLayout,
+        kernel: &[u8],
     ) -> AxResult {
         info!(
             "x86 Linux layout for VM[{}]: header={:#x?}, payload_offset={:#x}, boot_params=[{:#x}..{:#x}), boot_stub=[{:#x}..{:#x}), kernel=[{:#x}..{:#x}), initrd={:?}",
@@ -335,7 +340,7 @@ impl ImageLoader {
             layout.initrd
         );
 
-        let boot_params = [0u8; x86_linux::BOOT_PARAMS_SIZE];
+        let boot_params = self.build_x86_boot_params(header, layout, kernel)?;
         let boot_stub = [0u8; x86_linux::BOOT_STUB_SIZE];
         load_vm_image_from_memory(
             &boot_params,
@@ -344,6 +349,41 @@ impl ImageLoader {
         )?;
         load_vm_image_from_memory(&boot_stub, layout.boot_stub.start.into(), self.vm.clone())?;
         Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn build_x86_boot_params(
+        &self,
+        header: x86_linux::X86LinuxHeader,
+        layout: x86_linux::X86LinuxLoadLayout,
+        kernel: &[u8],
+    ) -> AxResult<[u8; x86_linux::BOOT_PARAMS_SIZE]> {
+        let mut builder = x86_boot_params::BootParamsBuilder::new(
+            kernel,
+            header,
+            layout,
+            x86_linux::X86LinuxRange::new(self.main_memory.gpa.as_usize(), self.main_memory.size()),
+        );
+
+        for device in &self.config.devices.passthrough_devices {
+            builder.add_reserved_range(x86_linux::X86LinuxRange::new(
+                device.base_gpa,
+                device.length,
+            ));
+        }
+        for address in &self.config.devices.passthrough_addresses {
+            builder.add_reserved_range(x86_linux::X86LinuxRange::new(
+                address.base_gpa,
+                address.length,
+            ));
+        }
+
+        builder.build().map_err(|err| {
+            ax_errno::ax_err_type!(
+                InvalidInput,
+                format!("failed to build x86 boot_params: {err:?}")
+            )
+        })
     }
 
     #[cfg(feature = "fs")]
@@ -577,7 +617,7 @@ pub mod fs {
             )
             .map_err(x86_linux_layout_error)?;
 
-            self.load_x86_linux_layout(header, layout)?;
+            self.load_x86_linux_layout(header, layout, kernel)?;
             load_vm_image_from_memory(payload, self.kernel_load_gpa, self.vm.clone())?;
 
             if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
@@ -586,7 +626,7 @@ pub mod fs {
 
             Err(ax_errno::ax_err_type!(
                 Unsupported,
-                "x86 Linux bzImage payload and initramfs loaded, but boot_params construction starts in phase 3"
+                "x86 Linux bzImage payload, initramfs, and boot_params loaded, but Linux boot stub starts in phase 4"
             ))
         }
     }

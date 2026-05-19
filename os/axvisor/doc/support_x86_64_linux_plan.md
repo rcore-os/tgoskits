@@ -36,7 +36,7 @@ x86_64 Linux 的传统 bzImage 启动协议不是 DTB-first。它需要 Linux x8
 
 现有 x86_64 路径更接近 Multiboot/裸内核启动：
 
-- `os/axvisor/src/vmm/images/x86_boot.rs` 提供一个极小 boot stub。
+- `os/axvisor/src/vmm/images/x86/multiboot.rs` 提供一个极小 boot stub。
 - `os/axvisor/src/vmm/images/mod.rs` 当前会为 x86 写 Multiboot info。
 - `os/axvisor/src/vmm/images/linux.rs` 目前只解析 arm64/riscv Linux header，没有解析 x86 setup header。
 
@@ -72,7 +72,7 @@ x86_64 Linux 的传统 bzImage 启动协议不是 DTB-first。它需要 Linux x8
 
 建议新增：
 
-- `os/axvisor/src/vmm/images/x86_linux.rs`
+- `os/axvisor/src/vmm/images/x86/linux.rs`
 
 职责：
 
@@ -100,7 +100,7 @@ pub struct X86LinuxHeader {
 
 建议新增：
 
-- `os/axvisor/src/vmm/images/x86_boot_params.rs`
+- `os/axvisor/src/vmm/images/x86/boot_params.rs`
 
 职责：
 
@@ -117,15 +117,15 @@ pub struct X86LinuxHeader {
 
 ### 3. x86 Linux boot stub
 
-现有 `x86_boot.rs` 的内置 stub 是 Multiboot 风格，需要新增 Linux 专用 stub。
+现有 `x86/multiboot.rs` 的内置 stub 是 Multiboot 风格，需要新增 Linux 专用 stub。
 
 建议做法：
 
 - 保留现有 `DEFAULT_BIOS_IMAGE` 供 ArceOS/NimbOS 使用。
 - 新增 `DEFAULT_LINUX_BOOT_IMAGE`。
 - 或者拆成：
-  - `x86_boot_multiboot.rs`
-  - `x86_boot_linux.rs`
+  - `x86/multiboot.rs`
+  - `x86/linux_boot.rs`
 
 boot stub 职责：
 

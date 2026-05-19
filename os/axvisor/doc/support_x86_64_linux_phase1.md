@@ -10,7 +10,7 @@
 
 ## 已完成产物
 
-- `os/axvisor/src/vmm/images/x86_linux.rs`
+- `os/axvisor/src/vmm/images/x86/linux.rs`
   - 新增 Linux x86 boot protocol setup header 解析模块。
   - 校验 `boot_flag == 0xaa55`。
   - 校验 `header == "HdrS"`。

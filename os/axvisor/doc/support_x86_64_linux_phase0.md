@@ -7,7 +7,7 @@
 第 0 阶段目标是把后续阶段需要依赖的输入和边界先整理清楚：
 
 1. 确认当前 x86_64 Axvisor guest 启动链路仍是 Multiboot 风格。
-2. 明确 Linux bzImage direct boot 需要新增 loader 分支，不能直接复用现有 `x86_boot.rs` stub。
+2. 明确 Linux bzImage direct boot 需要新增 loader 分支，不能直接复用现有 `x86/multiboot.rs` stub。
 3. 准备后续阶段可复用的 Linux VM 配置样例和最小 initramfs 构建脚本。
 4. 记录 QEMU x86_64 基础平台资源、PIO/MMIO passthrough 边界和中断注入风险。
 
@@ -27,7 +27,7 @@
 当前 x86_64 guest 启动路径主要服务 ArceOS/NimbOS 这类非 Linux guest：
 
 - `os/axvisor/src/vmm/images/mod.rs` 按 VM config 加载 kernel 和 ramdisk，再按 `enable_bios` 决定是否加载 BIOS stub。
-- `os/axvisor/src/vmm/images/x86_boot.rs` 内置的 `DEFAULT_BIOS_IMAGE` 会从 real mode 切到 protected mode，设置 Multiboot magic 和 Multiboot info 指针，然后跳转到 `0x20_0000`。
+- `os/axvisor/src/vmm/images/x86/multiboot.rs` 内置的 `DEFAULT_BIOS_IMAGE` 会从 real mode 切到 protected mode，设置 Multiboot magic 和 Multiboot info 指针，然后跳转到 `0x20_0000`。
 - `components/axvm/src/vm.rs` 中 x86 vCPU 创建没有 Linux 专用 create/setup config，BSP 入口来自 VM config。
 - `components/x86_vcpu/src/vmx/vcpu.rs` 以 real mode 初始化 guest，启用 unrestricted guest 和 EPT。
 - x86 PIO 默认大多 passthrough，仅拦截 QEMU debug-exit port `0x604`；MMIO passthrough 通过 EPT 线性映射。
@@ -39,7 +39,7 @@
 
 - `os/axvisor/src/vmm/images/mod.rs` 将 kernel 加载到 `kernel_load_addr`，在 ramdisk 存在时记录 ramdisk size，然后在 `enable_bios = true` 时加载 BIOS image。
 - x86_64 下，`load_x86_multiboot_info()` 会在 GPA `0x6000` 写入 Multiboot info，在 GPA `0x6040` 写入 mmap entry，并把 boot image 里的 `mov ebx, imm32` 立即数修补成 Multiboot info GPA。
-- `os/axvisor/src/vmm/images/x86_boot.rs` 内置 `DEFAULT_BIOS_IMAGE`，默认加载 GPA 是 `0x8000`。该 stub 从 16-bit real mode 启动，进入 32-bit protected mode，设置 `eax = 0x2badb002`，设置 `ebx` 为修补后的 Multiboot info 指针，然后跳转到 GPA `0x20_0000`。
+- `os/axvisor/src/vmm/images/x86/multiboot.rs` 内置 `DEFAULT_BIOS_IMAGE`，默认加载 GPA 是 `0x8000`。该 stub 从 16-bit real mode 启动，进入 32-bit protected mode，设置 `eax = 0x2badb002`，设置 `ebx` 为修补后的 Multiboot info 指针，然后跳转到 GPA `0x20_0000`。
 - `components/axvm/src/vm.rs` 创建 x86 vCPU 时使用 unit create/setup config。BSP entry 来自 `kernel.entry_point`，当前 x86 config 通常设置为 `0x8000`，也就是 BIOS stub 入口。
 - `components/x86_vcpu/src/vmx/vcpu.rs` 将 guest 初始化在 real mode，开启 unrestricted guest、EPT 和 I/O bitmap，并把 VM entry RIP 设置为配置里的 entry GPA。
 
@@ -183,7 +183,7 @@ cargo xtask axvisor qemu \
 - `linux-x86_64-qemu-smp1.toml` 是后续阶段输入样例，当前阶段不要求可启动 Linux。
 - Linux early console 依赖内核内建 command line，例如 `console=ttyS0,115200 rdinit=/init`。
 - 中断注入和 timer 仍未验证，不能作为第 0 阶段验收前提。
-- 下一阶段进入 `x86_linux.rs`：解析 Linux x86 setup header，识别 bzImage，并在 loader 中保持 Linux / 非 Linux x86 image 分流。
+- 下一阶段进入 `x86/linux.rs`：解析 Linux x86 setup header，识别 bzImage，并在 loader 中保持 Linux / 非 Linux x86 image 分流。
 
 ## 后续阶段文档约定
 

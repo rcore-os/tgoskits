@@ -10,7 +10,7 @@
 
 ## 已完成产物
 
-- `os/axvisor/src/vmm/images/x86_linux.rs`
+- `os/axvisor/src/vmm/images/x86/linux.rs`
   - 新增 x86 Linux direct boot 固定低地址布局常量：
     - `BOOT_PARAMS_GPA = 0x7000`
     - `BOOT_PARAMS_SIZE = 0x1000`
@@ -114,4 +114,4 @@ cargo clippy -p axvisor \
 - `boot_params` 目前只是零填充预留区，Linux 还不能从这里启动。
 - boot stub 目前只是零填充预留区，阶段 4 才写入真正的 Linux boot stub。
 - 当前布局使用固定低地址，后续如遇不同 kernel/initrd 体积或 e820 保留区冲突，再考虑参数化。
-- 第 3 阶段应新增 `x86_boot_params.rs`，把 setup header、e820、initrd start/size 和必要 loader flags 写入 `boot_params`。
+- 第 3 阶段应新增 `x86/boot_params.rs`，把 setup header、e820、initrd start/size 和必要 loader flags 写入 `boot_params`。

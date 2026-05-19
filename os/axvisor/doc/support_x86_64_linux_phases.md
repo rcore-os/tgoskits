@@ -25,7 +25,7 @@
 
 1. 梳理现有 x86_64 VM 启动路径：
    - 阅读 `os/axvisor/src/vmm/images/mod.rs`，确认 x86 当前 kernel image、ramdisk、boot image 的加载流程。
-   - 阅读 `os/axvisor/src/vmm/images/x86_boot.rs`，确认当前 boot stub 的 Multiboot 假设。
+   - 阅读 `os/axvisor/src/vmm/images/x86/multiboot.rs`，确认当前 boot stub 的 Multiboot 假设。
    - 阅读 `components/axvm/src/vm.rs` 和 x86 vCPU 创建逻辑，确认 vCPU 初始入口、寄存器、段状态、内存映射来源。
    - 阅读 x86_64 VMExit、EPT、PIO/MMIO 处理路径，确认 passthrough 设备访问会走到哪里。
 2. 固定 QEMU 实验输入：
@@ -62,7 +62,7 @@
 ### 主要任务
 
 1. 新增 x86 Linux header 解析模块：
-   - 建议新增 `os/axvisor/src/vmm/images/x86_linux.rs`。
+   - 建议新增 `os/axvisor/src/vmm/images/x86/linux.rs`。
    - 封装 Linux x86 boot protocol 中需要读取的 setup header 字段。
    - 提供安全的 offset 读取 helper，避免在 loader 主流程里散落 magic offset。
 2. 完成 bzImage 合法性校验：
@@ -156,7 +156,7 @@
 ### 主要任务
 
 1. 新增 boot params 构造模块：
-   - 建议新增 `os/axvisor/src/vmm/images/x86_boot_params.rs`。
+   - 建议新增 `os/axvisor/src/vmm/images/x86/boot_params.rs`。
    - 定义 `BootParamsBuilder` 或等价构造器。
    - 将字段写入集中封装，避免调用方直接操作裸 offset。
 2. 拷贝并修补 setup header：
@@ -180,7 +180,7 @@
 
 ### 产物
 
-1. `x86_boot_params.rs`。
+1. `x86/boot_params.rs`。
 2. boot params 字段写入测试。
 3. e820 map 构造测试。
 4. loader 调用 boot params builder 的集成逻辑。
@@ -207,7 +207,7 @@
 
 1. 拆分或扩展 x86 boot stub：
    - 保留现有 `DEFAULT_BIOS_IMAGE` 或 Multiboot stub，继续服务 ArceOS/NimbOS。
-   - 新增 `DEFAULT_LINUX_BOOT_IMAGE`，或拆出 `x86_boot_linux.rs`。
+   - 新增 `DEFAULT_LINUX_BOOT_IMAGE`，或拆出 `x86/linux_boot.rs`。
    - Linux boot stub 不影响非 Linux x86 image。
 2. 实现第一版保守 real-mode 启动：
    - 设置基础段寄存器。
