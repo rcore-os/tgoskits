@@ -660,6 +660,7 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> 
     Ok(total_written)
 }
 
+const O_APPEND: u32 = 0x400;
 pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -> AxResult<isize> {
     debug!(
         "sys_sendfile <= out_fd: {}, in_fd: {}, offset: {}, len: {}",
@@ -669,20 +670,30 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
         len
     );
 
-    let src = if !offset.is_null() {
-        let pos = offset.vm_read()?;
-        if pos > u32::MAX as u64 {
+    const O_APPEND: u32 = 0x400;
+
+    let in_file = File::from_fd(in_fd)?;
+    let out_file = File::from_fd(out_fd)?;
+
+    if (out_file.open_flags() & O_APPEND) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let src: SendFile = if !offset.is_null() {
+        if offset.vm_read()? > u32::MAX as u64 {
             return Err(AxError::InvalidInput);
         }
-        SendFile::Offset(File::from_fd(in_fd)?, offset, pos)
+
+        SendFile::Offset(in_file, offset, offset.vm_read()?)
     } else {
         SendFile::Direct(get_file_like(in_fd)?)
     };
 
-    let dst = SendFile::Direct(get_file_like(out_fd)?);
+    let dst: SendFile = SendFile::Direct(get_file_like(out_fd)?);
 
-    do_send(src, dst, len).map(|n| n as _)
+    do_send(src, dst, len).map(|n: usize| n as _)
 }
+
 
 pub fn sys_copy_file_range(
     fd_in: c_int,
