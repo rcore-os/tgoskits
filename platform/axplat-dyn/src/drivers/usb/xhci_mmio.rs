@@ -4,7 +4,7 @@ use alloc::format;
 
 use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
 
-use super::{PlatformDeviceUsbHost, USB_KERNEL, decode_fdt_irq};
+use super::{PlatformDeviceUsbHost, decode_fdt_irq, usb_kernel};
 use crate::drivers::iomap;
 
 const DRIVER_NAME: &str = "usb-xhci-mmio";
@@ -37,7 +37,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     let interrupts = info.interrupts();
     let irq_num = decode_fdt_irq(&interrupts);
 
-    let host = crab_usb::USBHost::new_xhci(mmio, &USB_KERNEL).map_err(|err| {
+    let host = crab_usb::USBHost::new_xhci(mmio, usb_kernel()).map_err(|err| {
         OnProbeError::other(format!(
             "failed to create xHCI host for [{}]: {err}",
             info.node.name()

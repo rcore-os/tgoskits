@@ -5,9 +5,7 @@ use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtIn
 use rockchip_npu::{Rknpu, RknpuConfig, RknpuType};
 use rockchip_pm::{PowerDomain, RockchipPM};
 
-use crate::drivers::{DmaImpl, iomap};
-
-static DMA: DmaImpl = DmaImpl;
+use crate::drivers::iomap;
 
 module_driver!(
     name: "Rockchip NPU",
@@ -46,7 +44,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     info!("NPU power enabled");
 
-    let dma = DeviceDma::new(u32::MAX as u64, &DMA);
+    let dma = axklib::dma::device(u32::MAX as u64);
     let npu = Rknpu::new(&base_regs, config, dma);
     plat_dev.register(npu);
     info!("NPU registered successfully");

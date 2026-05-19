@@ -27,7 +27,6 @@ use sdmmc_protocol::{
 };
 
 use crate::drivers::{
-    DmaImpl,
     blk::{PlatformDeviceBlock, decode_fdt_irq},
     iomap,
     soc::scmi,
@@ -105,7 +104,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     info!("rockchip-dwmmc: reset controller");
     host.reset_and_init()
         .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
-    host.set_dma(DeviceDma::new(u32::MAX as u64, &DmaImpl));
+    host.set_dma(axklib::dma::device(u32::MAX as u64));
 
     info!("rockchip-dwmmc: initialize card");
     let mut sd = SdioSdmmc::new(host);

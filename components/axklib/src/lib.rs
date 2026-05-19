@@ -42,9 +42,12 @@
 
 use core::time::Duration;
 
-pub use ax_errno::AxResult;
+pub use ax_errno::{AxError, AxResult};
 pub use ax_memory_addr::{PhysAddr, VirtAddr};
 use trait_ffi::*;
+
+pub mod dma;
+pub mod mmio;
 
 /// A simple IRQ handler function pointer type.
 ///
@@ -73,6 +76,9 @@ pub trait Klib {
     ///   is later cleaned up if the platform/ABI requires it.
     fn mem_iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr>;
 
+    /// Translates a kernel virtual address to the corresponding physical address.
+    fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr;
+
     /// Converts newly allocated DMA-coherent pages to an uncached kernel mapping.
     ///
     /// This is not a general-purpose memory attribute switching API. Callers
@@ -91,6 +97,15 @@ pub trait Klib {
     /// barriers internally before the pages are returned to the normal page
     /// allocator.
     fn mem_restore_dma_cached(addr: VirtAddr, size: usize) -> AxResult;
+
+    /// Allocates contiguous DMA pages.
+    ///
+    /// `dma_mask` is the device-visible address mask. Implementations should
+    /// use a DMA32-capable allocator when the mask requires it.
+    fn dma_alloc_pages(dma_mask: u64, num_pages: usize, align: usize) -> AxResult<VirtAddr>;
+
+    /// Releases pages previously allocated by [`Klib::dma_alloc_pages`].
+    fn dma_dealloc_pages(addr: VirtAddr, num_pages: usize);
 
     /// Busy-wait the current execution context for the provided duration.
     ///

@@ -24,8 +24,6 @@ use rd_block::BlkError;
 use rdrive::Device;
 use spin::Mutex;
 
-use super::DmaImpl;
-
 #[cfg(feature = "rockchip-sdhci")]
 mod rockchip_mmc;
 #[cfg(feature = "rockchip-dwmmc")]
@@ -281,7 +279,7 @@ impl PlatformDeviceBlock for rdrive::PlatformDevice {
             dev
         };
         let name = dev.name().to_string();
-        let dev = rd_block::Block::new(dev, &DmaImpl);
+        let dev = rd_block::Block::new(dev, axklib::dma::op());
         #[cfg(feature = "irq")]
         let registered_irq_num = irq_num;
         #[cfg(not(feature = "irq"))]

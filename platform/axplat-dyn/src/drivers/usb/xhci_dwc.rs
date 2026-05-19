@@ -15,7 +15,7 @@ use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
 use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
 use rockchip_pm::{PowerDomain, RockchipPM};
 
-use super::{PlatformDeviceUsbHost, USB_KERNEL, decode_fdt_irq};
+use super::{PlatformDeviceUsbHost, decode_fdt_irq, usb_kernel};
 use crate::drivers::{
     iomap,
     soc::{RockchipPinCtrl, rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert},
@@ -159,7 +159,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         cru: RockchipCru,
         rst_list: &ctrl_resets,
         params: resources.params,
-        kernel: &USB_KERNEL,
+        kernel: usb_kernel(),
     })
     .map_err(|err| {
         OnProbeError::other(format!(

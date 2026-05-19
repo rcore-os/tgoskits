@@ -5,8 +5,6 @@ use alloc::boxed::Box;
 use rd_net::{Interface, NetError};
 use rdrive::{Device, DriverGeneric};
 
-use super::DmaImpl;
-
 #[cfg(feature = "intel-net")]
 mod intel;
 #[cfg(feature = "realtek-rtl8125")]
@@ -77,7 +75,7 @@ impl PlatformDeviceNet for rdrive::PlatformDevice {
     where
         T: Interface + 'static,
     {
-        let net = rd_net::Net::new(dev, &DmaImpl);
+        let net = rd_net::Net::new(dev, axklib::dma::op());
         self.register(PlatformNetDevice::new(name, net, irq_num));
     }
 }

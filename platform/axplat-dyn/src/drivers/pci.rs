@@ -64,7 +64,7 @@ fn probe_generic_ecam(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(),
         .ok_or_else(|| OnProbeError::other("PCIe controller has no regs"))?;
     let mmio_base = reg.address as usize;
     let mmio_size = reg.size.unwrap_or(0x1000) as usize;
-    let mut drv = new_driver_generic(mmio_base, mmio_size, &crate::boot::Kernel)
+    let mut drv = new_driver_generic(mmio_base, mmio_size, axklib::mmio::op())
         .map_err(|e| OnProbeError::other(format!("failed to create PCIe controller: {e:?}")))?;
 
     for range in node.ranges().unwrap_or_default() {

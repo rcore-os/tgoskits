@@ -30,7 +30,6 @@ use sdmmc_protocol::{
 use spin::Once;
 
 use crate::drivers::{
-    DmaImpl,
     blk::{PlatformDeviceBlock, decode_fdt_irq},
     iomap,
 };
@@ -95,7 +94,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
     host.set_power(SDHCI_POWER_330);
     host.enable_interrupts();
-    host.set_dma(DeviceDma::new(u32::MAX as u64, &DmaImpl));
+    host.set_dma(axklib::dma::device(u32::MAX as u64));
 
     info!("rockchip-sdhci: initialize card");
     let mut card = SdioSdmmc::new(host);
@@ -258,7 +257,7 @@ impl rd_block::Interface for BlockDevice {
                 raw: dev.clone(),
                 capacity_blocks: self.capacity_blocks,
                 id: 0,
-                dma: DeviceDma::new(u32::MAX as u64, &DmaImpl),
+                dma: axklib::dma::device(u32::MAX as u64),
                 slot: BlockRequestSlot::default(),
                 pending: None,
                 completed: Vec::new(),

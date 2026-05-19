@@ -11,7 +11,6 @@ use rdrive::{
 use realtek_rtl8125::Rtl8125;
 
 use super::PlatformDeviceNet;
-use crate::{boot::Kernel, drivers::DmaImpl};
 
 const DRIVER_NAME: &str = "realtek-rtl8125";
 const RTL8125_DMA_MASK: u64 = u32::MAX as u64;
@@ -63,8 +62,8 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         bar.start as u64,
         bar.count(),
         RTL8125_DMA_MASK,
-        &DmaImpl,
-        &Kernel,
+        axklib::dma::op(),
+        axklib::mmio::op(),
     )
     .map_err(|err| OnProbeError::other(alloc::format!("failed to create RTL8125: {err:?}")))?;
 

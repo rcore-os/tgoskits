@@ -7,6 +7,7 @@ use core::time::Duration;
 use crab_usb::USBHost;
 #[cfg(feature = "xhci-pci")]
 use crab_usb::err::USBError;
+use dma_api::{DmaDirection, DmaError, DmaHandle, DmaMapHandle, DmaOp};
 #[cfg(feature = "xhci-pci")]
 use fdt_edit::{Fdt, NodeType};
 use rdrive::DriverGeneric;
@@ -18,18 +19,67 @@ mod xhci_mmio;
 #[cfg(feature = "xhci-pci")]
 mod xhci_pci;
 
-use super::DmaImpl;
-
 pub type UsbHostDevice = rdrive::Device<PlatformUsbHost>;
 pub type UsbHostDeviceGuard = rdrive::DeviceGuard<PlatformUsbHost>;
 
-impl crab_usb::KernelOp for DmaImpl {
+struct UsbKernel;
+
+impl DmaOp for UsbKernel {
+    fn page_size(&self) -> usize {
+        axklib::dma::op().page_size()
+    }
+
+    unsafe fn map_single(
+        &self,
+        dma_mask: u64,
+        addr: core::ptr::NonNull<u8>,
+        size: core::num::NonZeroUsize,
+        align: usize,
+        direction: DmaDirection,
+    ) -> Result<DmaMapHandle, DmaError> {
+        unsafe { axklib::dma::op().map_single(dma_mask, addr, size, align, direction) }
+    }
+
+    unsafe fn unmap_single(&self, handle: DmaMapHandle) {
+        unsafe { axklib::dma::op().unmap_single(handle) }
+    }
+
+    fn flush(&self, addr: core::ptr::NonNull<u8>, size: usize) {
+        axklib::dma::op().flush(addr, size);
+    }
+
+    fn invalidate(&self, addr: core::ptr::NonNull<u8>, size: usize) {
+        axklib::dma::op().invalidate(addr, size);
+    }
+
+    fn flush_invalidate(&self, addr: core::ptr::NonNull<u8>, size: usize) {
+        axklib::dma::op().flush_invalidate(addr, size);
+    }
+
+    unsafe fn alloc_coherent(
+        &self,
+        dma_mask: u64,
+        layout: core::alloc::Layout,
+    ) -> Option<DmaHandle> {
+        unsafe { axklib::dma::op().alloc_coherent(dma_mask, layout) }
+    }
+
+    unsafe fn dealloc_coherent(&self, handle: DmaHandle) {
+        unsafe { axklib::dma::op().dealloc_coherent(handle) }
+    }
+}
+
+impl crab_usb::KernelOp for UsbKernel {
     fn delay(&self, duration: Duration) {
         axklib::time::busy_wait(duration);
     }
 }
 
-pub(crate) static USB_KERNEL: DmaImpl = DmaImpl;
+static USB_KERNEL: UsbKernel = UsbKernel;
+
+pub(crate) fn usb_kernel() -> &'static dyn crab_usb::KernelOp {
+    &USB_KERNEL
+}
 
 pub struct PlatformUsbHost {
     name: &'static str,

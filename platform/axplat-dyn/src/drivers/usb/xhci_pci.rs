@@ -11,7 +11,7 @@ use rdrive::{
     },
 };
 
-use super::{PlatformDeviceUsbHost, USB_KERNEL, align_up_4k, resolve_pci_irq_from_fdt};
+use super::{PlatformDeviceUsbHost, align_up_4k, resolve_pci_irq_from_fdt, usb_kernel};
 use crate::drivers::iomap;
 
 const DRIVER_NAME: &str = "usb-xhci-pci";
@@ -45,7 +45,7 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         resolve_pci_irq_from_fdt(endpoint)
             .map_err(|err| OnProbeError::other(alloc::format!("{err}")))?,
     );
-    let host = crab_usb::USBHost::new_xhci(mmio, &USB_KERNEL).map_err(|err| {
+    let host = crab_usb::USBHost::new_xhci(mmio, usb_kernel()).map_err(|err| {
         OnProbeError::other(format!(
             "failed to create xHCI host for PCI endpoint {}: {err}",
             endpoint.address()

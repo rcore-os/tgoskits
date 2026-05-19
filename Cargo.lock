@@ -1699,6 +1699,8 @@ version = "0.5.7"
 dependencies = [
  "ax-errno",
  "ax-memory-addr",
+ "dma-api",
+ "mmio-api",
  "trait-ffi",
 ]
 

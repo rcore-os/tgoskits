@@ -7,7 +7,7 @@ use dwmmc_host::{BlockPoll, BlockRequest, BlockRequestSlot, DwMmc, RequestId};
 use rdrive::DriverGeneric;
 use sdmmc_protocol::{BlockTransferMode, Error, sdio::SdioHost};
 
-use super::{BLOCK_SIZE, DmaImpl, RockchipDwMmc};
+use super::{BLOCK_SIZE, RockchipDwMmc};
 
 pub(super) struct SdBlockDevice {
     pub(super) raw: Option<Arc<SpinNoIrq<RockchipDwMmc>>>,
@@ -43,7 +43,7 @@ impl rd_block::Interface for SdBlockDevice {
                 raw: dev.clone(),
                 capacity_blocks: self.capacity_blocks,
                 id: 0,
-                dma: DeviceDma::new(u32::MAX as u64, &DmaImpl),
+                dma: axklib::dma::device(u32::MAX as u64),
                 slot: BlockRequestSlot::default(),
                 pending: None,
                 completed: Vec::new(),

@@ -9,7 +9,6 @@ use rdrive::{
 };
 
 use super::PlatformDeviceNet;
-use crate::{boot::Kernel, drivers::DmaImpl};
 
 const DRIVER_NAME: &str = "eth-intel-e1000";
 
@@ -38,8 +37,14 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         cmd
     });
 
-    let dev = E1000::new(bar.start as u64, bar.count(), u64::MAX, &DmaImpl, &Kernel)
-        .map_err(|err| OnProbeError::other(alloc::format!("failed to create e1000: {err:?}")))?;
+    let dev = E1000::new(
+        bar.start as u64,
+        bar.count(),
+        u64::MAX,
+        axklib::dma::op(),
+        axklib::mmio::op(),
+    )
+    .map_err(|err| OnProbeError::other(alloc::format!("failed to create e1000: {err:?}")))?;
 
     plat_dev.register_net(DRIVER_NAME, dev, Some(irq));
     debug!(

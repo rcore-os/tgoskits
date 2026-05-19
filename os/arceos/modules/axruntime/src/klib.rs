@@ -77,6 +77,10 @@ impl_trait! {
             ax_mm::iomap(addr, size)
         }
 
+        fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {
+            ax_hal::mem::virt_to_phys(addr)
+        }
+
         fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> AxResult {
             let Some((start, size)) = dma_coherent_range(addr, size) else {
                 return Ok(());
@@ -112,6 +116,31 @@ impl_trait! {
             dsb_sy();
             isb_sy();
             Ok(())
+        }
+
+        fn dma_alloc_pages(dma_mask: u64, num_pages: usize, align: usize) -> AxResult<VirtAddr> {
+            let addr = if dma_mask <= u32::MAX as u64 {
+                ax_alloc::global_allocator().alloc_dma32_pages(
+                    num_pages,
+                    align,
+                    ax_alloc::UsageKind::Dma,
+                )
+            } else {
+                ax_alloc::global_allocator().alloc_pages(
+                    num_pages,
+                    align,
+                    ax_alloc::UsageKind::Dma,
+                )
+            }?;
+            Ok(VirtAddr::from(addr))
+        }
+
+        fn dma_dealloc_pages(addr: VirtAddr, num_pages: usize) {
+            ax_alloc::global_allocator().dealloc_pages(
+                addr.as_usize(),
+                num_pages,
+                ax_alloc::UsageKind::Dma,
+            );
         }
 
         /// Busy-wait for the given duration by calling into `ax-hal`.
