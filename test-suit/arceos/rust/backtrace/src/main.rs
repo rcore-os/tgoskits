@@ -22,12 +22,13 @@ use std::println;
 
 #[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
-    use std::os::arceos::modules::ax_hal;
-
     println!("Running backtrace tests...");
     let bt = axbacktrace::Backtrace::capture();
     println!("{}", bt.report("test"));
     println!("test pass");
+    #[cfg(feature = "ax-std")]
+    use std::os::arceos::modules::ax_hal;
+    #[cfg(feature = "ax-std")]
     ax_hal::power::system_off();
 }
 

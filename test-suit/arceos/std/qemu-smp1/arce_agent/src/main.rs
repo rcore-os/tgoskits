@@ -126,62 +126,62 @@ fn run_llm_turn(
         };
 
         // Print reasoning (thinking) as debug log
-        if let Some(ref reasoning) = response.reasoning_content {
-            if !reasoning.is_empty() {
-                info!("[thinking] {}", reasoning);
-            }
+        if let Some(ref reasoning) = response.reasoning_content
+            && !reasoning.is_empty()
+        {
+            info!("[thinking] {}", reasoning);
         }
 
         // Check if LLM wants to call tools
-        if let Some(ref tool_calls) = response.tool_calls {
-            if !tool_calls.is_empty() {
-                // Record the assistant's tool_calls message in context
-                ctx.push(ChatMessage::assistant_tool_calls(tool_calls.clone()));
+        if let Some(ref tool_calls) = response.tool_calls
+            && !tool_calls.is_empty()
+        {
+            // Record the assistant's tool_calls message in context
+            ctx.push(ChatMessage::assistant_tool_calls(tool_calls.clone()));
 
-                // Execute each tool call
-                for tc in tool_calls {
-                    let args: serde_json::Value =
-                        serde_json::from_str(&tc.function.arguments).unwrap_or_default();
-                    let (result, image) = dispatch(&tc.function.name, &args, &mut *hal, &mut *mem);
+            // Execute each tool call
+            for tc in tool_calls {
+                let args: serde_json::Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+                let (result, image) = dispatch(&tc.function.name, &args, &mut *hal, &mut *mem);
 
-                    info!("[tool] {} -> {}", tc.function.name, result);
+                info!("[tool] {} -> {}", tc.function.name, result);
 
-                    // Record tool result in context
-                    ctx.push(ChatMessage::tool_result(&tc.id, &result));
+                // Record tool result in context
+                ctx.push(ChatMessage::tool_result(&tc.id, &result));
 
-                    // If tool returned an image, save it for attachment
-                    if let Some(img_b64) = image {
-                        if !img_b64.is_empty() {
-                            pending_image = Some(img_b64);
-                        }
-                    }
+                // If tool returned an image, save it for attachment
+                if let Some(img_b64) = image
+                    && !img_b64.is_empty()
+                {
+                    pending_image = Some(img_b64);
                 }
-
-                // If a photo was taken, attach it as a vision message
-                if let Some(img_b64) = pending_image.take() {
-                    let vision_msg = ChatMessage::vision(
-                        "user",
-                        &img_b64,
-                        "image/png",
-                        "这是刚才摄像头拍到的照片，请描述你看到了什么。",
-                    );
-                    ctx.push(vision_msg);
-                }
-
-                // Continue the loop — LLM needs to see tool results
-                continue;
             }
+
+            // If a photo was taken, attach it as a vision message
+            if let Some(img_b64) = pending_image.take() {
+                let vision_msg = ChatMessage::vision(
+                    "user",
+                    &img_b64,
+                    "image/png",
+                    "这是刚才摄像头拍到的照片，请描述你看到了什么。",
+                );
+                ctx.push(vision_msg);
+            }
+
+            // Continue the loop — LLM needs to see tool results
+            continue;
         }
 
         // No tool calls — LLM produced a text response
-        if let Some(ref text) = response.content {
-            if !text.is_empty() {
-                println!();
-                println!("{}", text);
-                println!();
-                // Record assistant response in context
-                ctx.push(ChatMessage::text("assistant", text));
-            }
+        if let Some(ref text) = response.content
+            && !text.is_empty()
+        {
+            println!();
+            println!("{}", text);
+            println!();
+            // Record assistant response in context
+            ctx.push(ChatMessage::text("assistant", text));
         }
 
         // Done with this turn
@@ -241,12 +241,8 @@ fn main() {
 
         let mut editor = LineEditor::new(100);
 
-        loop {
-            let input = match editor.read_line("> ") {
-                Some(line) => line,
-                None => break, // EOF / Ctrl-D
-            };
-
+        while let Some(line) = editor.read_line("> ") {
+            let input = line;
             let input = input.trim();
             if input.is_empty() {
                 continue;

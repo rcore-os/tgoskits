@@ -429,7 +429,7 @@ fn std_build_target_for(target: &str) -> anyhow::Result<StdBuildTarget> {
     }
 }
 
-fn prepare_std_build_env(
+pub(crate) fn prepare_std_build_env(
     envs: &mut HashMap<String, String>,
     target: &str,
     metadata: &Metadata,

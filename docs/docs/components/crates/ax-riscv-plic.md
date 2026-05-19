@@ -1,6 +1,6 @@
 # `ax-riscv-plic`
 
-> 路径：`components/riscv_plic`
+> 路径：`drivers/intc/riscv_plic`
 > 类型：库 crate
 > 分层：组件层 / RISC-V 物理中断控制器封装层
 > 版本：`0.4.0`

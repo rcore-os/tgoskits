@@ -51,6 +51,19 @@ fn file_or_espipe_write(fd: c_int) -> AxResult<Arc<File>> {
     Ok(f)
 }
 
+fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
+    #[cfg(target_pointer_width = "32")]
+    {
+        let offset = ((_pos_h as u64) << 32) | (pos_l as u32 as u64);
+        offset as i64 as __kernel_off_t
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    {
+        pos_l
+    }
+}
+
 struct DummyFd;
 impl FileLike for DummyFd {
     fn path(&self) -> Cow<'_, str> {
@@ -374,26 +387,30 @@ pub fn sys_preadv(
     fd: c_int,
     iov: *const IoVec,
     iovcnt: usize,
-    offset: __kernel_off_t,
+    pos_l: __kernel_off_t,
+    pos_h: usize,
 ) -> AxResult<isize> {
+    let offset = offset_from_hilo(pos_l, pos_h);
     // preadv (unlike preadv2) does not accept offset=-1; reject negative offsets.
     if offset < 0 {
         return Err(AxError::InvalidInput);
     }
-    sys_preadv2(fd, iov, iovcnt, offset, 0)
+    sys_preadv2(fd, iov, iovcnt, offset, 0, 0)
 }
 
 pub fn sys_pwritev(
     fd: c_int,
     iov: *const IoVec,
     iovcnt: usize,
-    offset: __kernel_off_t,
+    pos_l: __kernel_off_t,
+    pos_h: usize,
 ) -> AxResult<isize> {
+    let offset = offset_from_hilo(pos_l, pos_h);
     // pwritev (unlike pwritev2) does not accept offset=-1; reject negative offsets.
     if offset < 0 {
         return Err(AxError::InvalidInput);
     }
-    sys_pwritev2(fd, iov, iovcnt, offset, 0)
+    sys_pwritev2(fd, iov, iovcnt, offset, 0, 0)
 }
 
 /// Validate preadv2/pwritev2 flags.
@@ -409,9 +426,11 @@ pub fn sys_preadv2(
     fd: c_int,
     iov: *const IoVec,
     iovcnt: usize,
-    offset: __kernel_off_t,
+    pos_l: __kernel_off_t,
+    pos_h: usize,
     flags: u32,
 ) -> AxResult<isize> {
+    let offset = offset_from_hilo(pos_l, pos_h);
     debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {flags}");
     validate_rwf_flags(flags)?;
     if offset < -1 {
@@ -432,9 +451,11 @@ pub fn sys_pwritev2(
     fd: c_int,
     iov: *const IoVec,
     iovcnt: usize,
-    offset: __kernel_off_t,
+    pos_l: __kernel_off_t,
+    pos_h: usize,
     flags: u32,
 ) -> AxResult<isize> {
+    let offset = offset_from_hilo(pos_l, pos_h);
     debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {flags}");
     validate_rwf_flags(flags)?;
     if offset < -1 {

@@ -11,7 +11,7 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult, LinuxError, ax_bail};
 use ax_io::prelude::*;
 use axpoll::{IoEvents, Pollable};
 pub use smoltcp::wire::{IpProtocol, IpVersion};
@@ -24,7 +24,7 @@ use smoltcp::{
 use spin::{Mutex, RwLock};
 
 use crate::{
-    RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
     consts::{RAW_RX_BUF_LEN, RAW_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
@@ -237,6 +237,10 @@ impl SocketOps for RawSocket {
     }
 
     fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+        // TODO: MSG_DONTROUTE should bypass the routing table for this datagram.
+        if options.flags.contains(SendFlags::OOB) {
+            ax_bail!(OperationNotSupported);
+        }
         if self.tx_closed.load(Ordering::Acquire) {
             return Err(AxError::BrokenPipe);
         }
@@ -244,9 +248,10 @@ impl SocketOps for RawSocket {
         let remote = self.remote_address(&options)?;
         let local = self.local_address_for(remote);
         let payload_len = src.remaining();
+        let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
         let loopback_ipv4 = self.ip_version == IpVersion::Ipv4 && is_loopback_address(remote);
 
-        self.general.send_poller(self, || {
+        self.general.send_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.can_send() {
@@ -351,9 +356,10 @@ impl SocketOps for RawSocket {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(AxError::NotConnected);
         }
+        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         let mut options = options;
 
-        self.general.recv_poller(self, || {
+        self.general.recv_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 loop {
@@ -403,6 +409,7 @@ impl SocketOps for RawSocket {
                     }
 
                     let written = dst.write(packet)?;
+                    // TODO: set options.truncated when user buffer < packet size.
                     return Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
                         packet.len()
                     } else {
