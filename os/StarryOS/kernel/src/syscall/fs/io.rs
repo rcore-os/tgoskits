@@ -668,8 +668,6 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
         !offset.is_null(),
         len
     );
-
-    
     let out_file = get_file_like(out_fd)?;
     if (out_file.open_flags() & O_APPEND) != 0 {
         return Err(AxError::InvalidInput);
