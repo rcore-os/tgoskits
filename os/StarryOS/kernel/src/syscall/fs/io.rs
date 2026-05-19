@@ -10,8 +10,7 @@ use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
 use axfs_ng_vfs::{NodePermission, NodeType};
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::__kernel_off_t;
-use linux_raw_sys::general::O_APPEND;
+use linux_raw_sys::general::{__kernel_off_t, O_APPEND};
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
@@ -683,12 +682,10 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
             return Err(AxError::InvalidInput);
         }
 
-        SendFile::Offset(File::from_fd(in_fd)?, offset,pos)
+        SendFile::Offset(File::from_fd(in_fd)?, offset, pos)
     } else {
-        /*
-         * Linux sendfile 要求 in_fd 是支持 mmap-like 操作的文件。
-         * 这里显式用 File::from_fd(in_fd)? 拒绝 pipe。
-         */
+        // Linux sendfile 要求 in_fd 是支持 mmap-like 操作的文件。
+        // 这里显式用 File::from_fd(in_fd)? 拒绝 pipe。
         let _in_file = File::from_fd(in_fd)?;
 
         SendFile::Direct(get_file_like(in_fd)?)
@@ -698,7 +695,6 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
 
     do_send(src, dst, len).map(|n: usize| n as _)
 }
-
 
 pub fn sys_copy_file_range(
     fd_in: c_int,
