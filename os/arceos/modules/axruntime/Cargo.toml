@@ -23,31 +23,20 @@ tls = ["ax-hal/tls", "ax-task?/tls"]
 
 plat-dyn = ["ax-hal/plat-dyn", "dep:axplat-dyn", "paging", "buddy-slab"]
 
-display = ["dep:ax-display", "axplat-dyn?/display"]
-driver-ramdisk = ["dep:ramdisk", "static-devices"]
-fs = ["dep:ax-errno", "dep:ax-fs", "static-devices"]
-fs-ng = ["dep:ax-errno", "dep:ax-fs-ng", "static-devices"]
-input = ["dep:ax-input", "axplat-dyn?/input"]
+display = ["dep:ax-display", "ax-driver/display", "axplat-dyn?/display"]
+fs = ["dep:ax-errno", "dep:ax-fs", "dep:rd-block", "dep:spin", "dep:axklib"]
+fs-ng = ["dep:ax-errno", "dep:ax-fs-ng", "dep:rd-block", "dep:spin", "dep:axklib"]
+input = ["dep:ax-input", "ax-driver/input", "axplat-dyn?/input"]
 net = ["dep:ax-net", "axplat-dyn?/net"]
-net-ng = ["dep:ax-net-ng", "static-devices", "axplat-dyn?/net"]
-static-devices = [
-    "alloc",
-    "dep:dma-api",
-    "dep:mmio-api",
-    "dep:pcie",
-    "dep:rd-block",
-    "dep:rd-net",
-    "dep:rdrive",
-    "dep:spin",
-    "dep:virtio-drivers",
-]
-vsock = ["net-ng", "ax-net-ng/vsock", "axplat-dyn?/vsock"]
+net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "axplat-dyn?/net"]
+vsock = ["net-ng", "ax-net-ng/vsock", "ax-driver/vsock", "axplat-dyn?/vsock"]
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 axbacktrace = { workspace = true }
 ax-config = { workspace = true }
 ax-display = { workspace = true, optional = true }
+ax-driver = { workspace = true }
 ax-errno = { workspace = true, optional = true }
 ax-fs = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
@@ -71,12 +60,7 @@ ax-crate-interface = { workspace = true }
 ax-ctor-bare = { workspace = true }
 indoc = "2"
 ax-percpu = { workspace = true, optional = true }
-dma-api = { workspace = true, optional = true }
-mmio-api = { workspace = true, optional = true }
-pcie = { workspace = true, optional = true }
-ramdisk = { workspace = true, optional = true }
 rd-block = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
-rdrive = { workspace = true, optional = true }
+rdrive.workspace = true
 spin = { workspace = true, optional = true }
-virtio-drivers = { workspace = true, optional = true }

@@ -466,8 +466,6 @@ HELLO = "world"
             env: HashMap::new(),
             features: vec![
                 "common".to_string(),
-                "ax-feat/bus-mmio".to_string(),
-                "ax-feat/driver-sdmmc".to_string(),
                 "ax-feat/plat-dyn".to_string(),
                 "axplat-dyn/rockchip-soc".to_string(),
                 "axplat-dyn/rockchip-sdhci".to_string(),

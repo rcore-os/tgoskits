@@ -43,18 +43,19 @@ fn main() {
     let has_virtio_dev = has_any_feature(VIRTIO_DEV_FEATURES);
     if has_feature("bus-mmio") {
         enable_cfg("bus", "mmio");
-    } else if has_feature("bus-pci") {
+    }
+    if has_feature("bus-pci") {
         enable_cfg("bus", "pci");
-    } else if has_virtio_dev {
+    }
+    if !has_feature("bus-mmio") && !has_feature("bus-pci") && has_virtio_dev {
         enable_cfg("bus", "mmio");
     }
     if has_virtio_dev {
         enable_cfg_flag("virtio_dev");
     }
 
-    // Generate cfgs like `net_dev="virtio-net"`. if `dyn` is not enabled, only one device is
-    // selected for each device category. If no device is selected, `dummy` is selected.
-    let is_dyn = has_feature("dyn");
+    // Generate cfgs like `net_dev="virtio-net"`. Multiple devices may now be
+    // selected in one category because registration is delegated to rdrive.
     for (dev_kind, feat_list) in [
         ("net", NET_DEV_FEATURES),
         ("block", BLOCK_DEV_FEATURES),
@@ -71,12 +72,9 @@ fn main() {
             if has_feature(feat) {
                 enable_cfg(&format!("{dev_kind}_dev"), feat);
                 selected = true;
-                if !is_dyn {
-                    break;
-                }
             }
         }
-        if !is_dyn && !selected {
+        if !selected {
             enable_cfg(&format!("{dev_kind}_dev"), "dummy");
         }
     }

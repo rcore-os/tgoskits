@@ -51,15 +51,14 @@ mod devices;
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 
-#[cfg(all(feature = "static-devices", not(feature = "plat-dyn")))]
-mod static_devices;
-
 #[cfg(any(
-    feature = "static-devices",
     all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")),
     all(any(feature = "fs", feature = "fs-ng"), feature = "plat-dyn"),
     feature = "net",
-    feature = "net-ng"
+    feature = "net-ng",
+    feature = "display",
+    feature = "input",
+    feature = "vsock"
 ))]
 extern crate alloc;
 
@@ -243,7 +242,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "plat-dyn")]
     devices::init_dyn_devices();
 
-    #[cfg(all(feature = "static-devices", not(feature = "plat-dyn")))]
+    #[cfg(not(feature = "plat-dyn"))]
     devices::init_static_devices();
 
     #[cfg(all(feature = "fs", feature = "plat-dyn"))]
@@ -267,11 +266,14 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(all(feature = "display", feature = "plat-dyn"))]
     devices::init_dyn_display();
 
+    #[cfg(all(feature = "display", not(feature = "plat-dyn")))]
+    devices::init_static_display();
+
     #[cfg(all(feature = "input", feature = "plat-dyn"))]
     devices::init_dyn_input();
 
     #[cfg(all(feature = "input", not(feature = "plat-dyn")))]
-    ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
+    devices::init_static_input();
 
     #[cfg(all(feature = "net", feature = "plat-dyn"))]
     devices::init_dyn_net();

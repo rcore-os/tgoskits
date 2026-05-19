@@ -1,3 +1,9 @@
+#[cfg(all(
+    any(feature = "fs", feature = "fs-ng", feature = "net-ng"),
+    not(feature = "plat-dyn")
+))]
+use rdrive::DriverGeneric;
+
 #[cfg(feature = "plat-dyn")]
 pub(crate) fn init_dyn_devices() {
     info!("Initialize dynamic platform devices...");
@@ -6,11 +12,13 @@ pub(crate) fn init_dyn_devices() {
         .unwrap_or_else(|err| panic!("failed to probe dynamic platform devices: {err:?}"));
 }
 
-#[cfg(all(feature = "static-devices", not(feature = "plat-dyn")))]
+#[cfg(not(feature = "plat-dyn"))]
 pub(crate) fn init_static_devices() {
     info!("Initialize static platform devices...");
-    crate::static_devices::init()
-        .unwrap_or_else(|err| panic!("failed to initialize static platform devices: {err:?}"));
+    ax_driver::init_static_drivers()
+        .unwrap_or_else(|err| panic!("failed to initialize static platform drivers: {err:?}"));
+    rdrive::probe_all(false)
+        .unwrap_or_else(|err| panic!("failed to probe static platform devices: {err:?}"));
 }
 
 #[cfg(all(feature = "fs", feature = "plat-dyn"))]
@@ -34,7 +42,10 @@ pub(crate) fn take_dyn_fs_block_devices()
 #[cfg(all(feature = "fs", not(feature = "plat-dyn")))]
 pub(crate) fn take_static_fs_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
-    crate::static_devices::take_fs_block_devices()
+    take_static_blocks()
+        .into_iter()
+        .map(|dev| alloc::boxed::Box::new(dev) as alloc::boxed::Box<dyn ax_fs::FsBlockDevice>)
+        .collect()
 }
 
 #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))]
@@ -58,7 +69,10 @@ pub(crate) fn take_dyn_fs_ng_block_devices()
 #[cfg(all(feature = "fs-ng", not(feature = "plat-dyn")))]
 pub(crate) fn take_static_fs_ng_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs_ng::FsBlockDevice>> {
-    crate::static_devices::take_fs_ng_block_devices()
+    take_static_blocks()
+        .into_iter()
+        .map(|dev| alloc::boxed::Box::new(dev) as alloc::boxed::Box<dyn ax_fs_ng::FsBlockDevice>)
+        .collect()
 }
 
 #[cfg(all(feature = "display", feature = "plat-dyn"))]
@@ -80,6 +94,19 @@ pub(crate) fn init_dyn_display() {
     ax_display::init_display(core::iter::empty::<ax_display::ErasedDisplayDevice>());
 }
 
+#[cfg(all(feature = "display", not(feature = "plat-dyn")))]
+pub(crate) fn init_static_display() {
+    let devices = ax_driver::display::take_display_devices()
+        .unwrap_or_else(|err| panic!("failed to open static display devices: {err:?}"))
+        .into_iter()
+        .map(|dev| {
+            let display = ax_display::rdif::RdifDisplayDevice::new(dev)
+                .unwrap_or_else(|err| panic!("failed to adapt static display device: {err:?}"));
+            ax_display::ErasedDisplayDevice::new(display)
+        });
+    ax_display::init_display(devices);
+}
+
 #[cfg(all(feature = "input", feature = "plat-dyn"))]
 pub(crate) fn init_dyn_input() {
     #[cfg(target_os = "none")]
@@ -93,6 +120,15 @@ pub(crate) fn init_dyn_input() {
 
     #[cfg(not(target_os = "none"))]
     ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
+}
+
+#[cfg(all(feature = "input", not(feature = "plat-dyn")))]
+pub(crate) fn init_static_input() {
+    let devices = ax_driver::input::take_input_devices()
+        .unwrap_or_else(|err| panic!("failed to open static input devices: {err:?}"))
+        .into_iter()
+        .map(|dev| ax_input::ErasedInputDevice::new(ax_input::rdif::RdifInputDevice::new(dev)));
+    ax_input::init_input(devices);
 }
 
 #[cfg(all(feature = "net", feature = "plat-dyn"))]
@@ -115,9 +151,10 @@ pub(crate) fn take_static_net_ng_drivers()
             .unwrap_or_else(|err| panic!("failed to lock static net device: {err:?}"));
         let net = core::mem::replace(
             &mut *guard,
-            rd_net::Net::new(StaticEmptyNet, crate::static_devices::identity_dma()),
+            rd_net::Net::new(StaticEmptyNet, axklib::dma::op()),
         );
-        let driver = ax_net_ng::RdNetDriver::new("virtio-net", net, None)
+        let name = alloc::string::String::from(net.name());
+        let driver = ax_net_ng::RdNetDriver::new(name, net, None)
             .unwrap_or_else(|err| panic!("failed to adapt static net device: {err:?}"));
         devices.push(
             alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>
@@ -141,7 +178,9 @@ pub(crate) fn init_dyn_vsock() {
 
 #[cfg(all(feature = "vsock", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_vsock() {
-    ax_net_ng::init_vsock(alloc::vec::Vec::new());
+    let devices = ax_driver::vsock::take_vsock_devices()
+        .unwrap_or_else(|err| panic!("failed to open static vsock devices: {err:?}"));
+    ax_net_ng::init_vsock(devices);
 }
 
 #[cfg(all(feature = "net", feature = "plat-dyn"))]
@@ -227,6 +266,188 @@ impl rd_net::Interface for StaticEmptyNet {
 
     fn handle_irq(&mut self) -> rd_net::Event {
         rd_net::Event::none()
+    }
+}
+
+#[cfg(all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")))]
+struct StaticBlockDevice {
+    name: alloc::string::String,
+    queue: spin::Mutex<rd_block::CmdQueue>,
+}
+
+#[cfg(all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")))]
+impl StaticBlockDevice {
+    fn new(mut block: rd_block::Block) -> Result<Self, ax_errno::AxError> {
+        let name = block.name().into();
+        let queue = block.create_queue().ok_or(ax_errno::AxError::BadState)?;
+        Ok(Self {
+            name,
+            queue: spin::Mutex::new(queue),
+        })
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn num_blocks(&self) -> u64 {
+        self.queue.lock().num_blocks() as _
+    }
+
+    fn block_size(&self) -> usize {
+        self.queue.lock().block_size()
+    }
+
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> ax_errno::AxResult {
+        let block_size = self.block_size();
+        if block_size == 0 || !buf.len().is_multiple_of(block_size) {
+            return Err(ax_errno::AxError::InvalidInput);
+        }
+
+        let mut queue = self.queue.lock();
+        for (offset, chunk) in buf.chunks_mut(block_size).enumerate() {
+            let mut blocks = queue.read_blocks_blocking(block_id as usize + offset, 1);
+            let block = blocks
+                .pop()
+                .ok_or(ax_errno::AxError::Io)?
+                .map_err(map_blk_err_to_ax_err)?;
+            if block.len() != chunk.len() {
+                return Err(ax_errno::AxError::Io);
+            }
+            chunk.copy_from_slice(&block);
+        }
+        Ok(())
+    }
+
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> ax_errno::AxResult {
+        let block_size = self.block_size();
+        if block_size == 0 || !buf.len().is_multiple_of(block_size) {
+            return Err(ax_errno::AxError::InvalidInput);
+        }
+
+        let mut queue = self.queue.lock();
+        for (offset, chunk) in buf.chunks(block_size).enumerate() {
+            for block in queue.write_blocks_blocking(block_id as usize + offset, chunk) {
+                block.map_err(map_blk_err_to_ax_err)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> ax_errno::AxResult {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "fs")]
+impl ax_fs::FsBlockDevice for StaticBlockDevice {
+    fn name(&self) -> &str {
+        self.name()
+    }
+
+    fn num_blocks(&self) -> u64 {
+        self.num_blocks()
+    }
+
+    fn block_size(&self) -> usize {
+        self.block_size()
+    }
+
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> ax_errno::AxResult {
+        StaticBlockDevice::read_block(self, block_id, buf)
+    }
+
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> ax_errno::AxResult {
+        StaticBlockDevice::write_block(self, block_id, buf)
+    }
+
+    fn flush(&mut self) -> ax_errno::AxResult {
+        StaticBlockDevice::flush(self)
+    }
+}
+
+#[cfg(feature = "fs-ng")]
+impl ax_fs_ng::FsBlockDevice for StaticBlockDevice {
+    fn name(&self) -> &str {
+        self.name()
+    }
+
+    fn num_blocks(&self) -> u64 {
+        self.num_blocks()
+    }
+
+    fn block_size(&self) -> usize {
+        self.block_size()
+    }
+
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> ax_errno::AxResult {
+        StaticBlockDevice::read_block(self, block_id, buf)
+    }
+
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> ax_errno::AxResult {
+        StaticBlockDevice::write_block(self, block_id, buf)
+    }
+
+    fn flush(&mut self) -> ax_errno::AxResult {
+        StaticBlockDevice::flush(self)
+    }
+}
+
+#[cfg(all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")))]
+fn take_static_blocks() -> alloc::vec::Vec<StaticBlockDevice> {
+    rdrive::get_list::<rd_block::Block>()
+        .into_iter()
+        .map(|dev| {
+            let mut guard = dev
+                .lock()
+                .unwrap_or_else(|err| panic!("failed to lock static block device: {err:?}"));
+            let block = core::mem::replace(
+                &mut *guard,
+                rd_block::Block::new(EmptyBlock, axklib::dma::op()),
+            );
+            StaticBlockDevice::new(block)
+                .unwrap_or_else(|err| panic!("failed to adapt static block device: {err:?}"))
+        })
+        .collect()
+}
+
+#[cfg(all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")))]
+struct EmptyBlock;
+
+#[cfg(all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")))]
+impl rdrive::DriverGeneric for EmptyBlock {
+    fn name(&self) -> &str {
+        "empty-block"
+    }
+}
+
+#[cfg(all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")))]
+impl rd_block::Interface for EmptyBlock {
+    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rd_block::IQueue>> {
+        None
+    }
+
+    fn enable_irq(&mut self) {}
+
+    fn disable_irq(&mut self) {}
+
+    fn is_irq_enabled(&self) -> bool {
+        false
+    }
+
+    fn handle_irq(&mut self) -> rd_block::Event {
+        rd_block::Event::none()
+    }
+}
+
+#[cfg(all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")))]
+fn map_blk_err_to_ax_err(err: rd_block::BlkError) -> ax_errno::AxError {
+    match err {
+        rd_block::BlkError::NotSupported => ax_errno::AxError::Unsupported,
+        rd_block::BlkError::Retry => ax_errno::AxError::WouldBlock,
+        rd_block::BlkError::NoMemory => ax_errno::AxError::NoMemory,
+        rd_block::BlkError::InvalidBlockIndex(_) => ax_errno::AxError::InvalidInput,
+        rd_block::BlkError::Other(_) => ax_errno::AxError::Io,
     }
 }
 

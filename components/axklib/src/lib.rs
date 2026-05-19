@@ -135,7 +135,7 @@ pub trait Klib {
 pub mod mem {
     pub use super::klib::{
         mem_iomap as iomap, mem_make_dma_coherent_uncached as make_dma_coherent_uncached,
-        mem_restore_dma_cached as restore_dma_cached,
+        mem_restore_dma_cached as restore_dma_cached, mem_virt_to_phys as virt_to_phys,
     };
 }
 

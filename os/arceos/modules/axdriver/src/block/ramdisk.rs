@@ -1,15 +1,13 @@
-use ramdisk::RamDisk;
+use ax_driver_block::ramdisk::RamDisk;
 use rdrive::{
     PlatformDevice,
     probe::{OnProbeError, static_::StaticInfo},
     register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
 };
 
-use crate::static_devices::dma::IDENTITY_DMA;
+pub const DEVICE_NAME: &str = "ramdisk";
 
-pub(super) const DEVICE_NAME: &str = "ramdisk";
-
-pub(super) const REGISTER: DriverRegister = DriverRegister {
+pub const REGISTER: DriverRegister = DriverRegister {
     name: "Static RamDisk",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -23,7 +21,6 @@ fn probe_ramdisk(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnPro
         return Err(OnProbeError::NotMatch);
     }
 
-    let dev = rd_block::Block::new(RamDisk::new(512, 0x8000), &IDENTITY_DMA);
-    plat_dev.register(dev);
+    super::register_block(plat_dev, RamDisk::new(0x100_0000));
     Ok(())
 }

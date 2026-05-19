@@ -1,34 +1,14 @@
-//! Device driver prelude that includes some traits and types.
+//! Legacy leaf-driver traits re-exported for platform glue that still needs
+//! concrete driver cores.
 
 pub use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 #[cfg(feature = "block")]
-pub use {
-    crate::structs::AxBlockDevice,
-    ax_driver_block::{
-        BlockDriverOps,
-        partition::{
-            PartitionBlockDevice, PartitionInfo, PartitionRegion, PartitionTable,
-            PartitionTableKind, scan_partitions,
-        },
-    },
-};
+pub use ax_driver_block::BlockDriverOps;
 #[cfg(feature = "display")]
-pub use {
-    crate::structs::AxDisplayDevice,
-    ax_driver_display::{DisplayDriverOps, DisplayInfo},
-};
+pub use ax_driver_display::DisplayDriverOps;
 #[cfg(feature = "input")]
-pub use {
-    crate::structs::AxInputDevice,
-    ax_driver_input::{AbsInfo, Event, EventType, InputDeviceId, InputDriverOps},
-};
+pub use ax_driver_input::InputDriverOps;
 #[cfg(feature = "net")]
-pub use {
-    crate::structs::AxNetDevice,
-    ax_driver_net::{NetBufPtr, NetDriverOps, NetIrqEvent},
-};
+pub use ax_driver_net::NetDriverOps;
 #[cfg(feature = "vsock")]
-pub use {
-    crate::structs::AxVsockDevice,
-    ax_driver_vsock::{VsockAddr, VsockConnId, VsockDriverEvent, VsockDriverOps},
-};
+pub use ax_driver_vsock::VsockDriverOps;

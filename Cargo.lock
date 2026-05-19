@@ -773,15 +773,19 @@ dependencies = [
  "ax-driver-display",
  "ax-driver-input",
  "ax-driver-net",
- "ax-driver-pci",
  "ax-driver-virtio",
  "ax-driver-vsock",
- "ax-errno",
- "ax-hal",
- "axplat-dyn",
- "cfg-if",
+ "axklib",
  "log",
- "smallvec",
+ "pcie",
+ "rd-block",
+ "rd-net",
+ "rdif-display",
+ "rdif-input",
+ "rdif-vsock",
+ "rdrive",
+ "spin 0.10.0",
+ "virtio-drivers",
 ]
 
 [[package]]
@@ -1437,6 +1441,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-ctor-bare",
  "ax-display",
+ "ax-driver",
  "ax-errno",
  "ax-fs",
  "ax-fs-ng",
@@ -1458,16 +1463,11 @@ dependencies = [
  "axplat-dyn",
  "cfg-if",
  "chrono",
- "dma-api",
  "indoc",
- "mmio-api",
- "pcie",
- "ramdisk",
  "rd-block",
  "rd-net",
  "rdrive",
  "spin 0.10.0",
- "virtio-drivers",
 ]
 
 [[package]]
@@ -7820,6 +7820,7 @@ name = "starryos"
 version = "0.5.10"
 dependencies = [
  "anyhow",
+ "ax-driver",
  "ax-feat",
  "ax-plat-riscv64-sg2002",
  "axbuild",

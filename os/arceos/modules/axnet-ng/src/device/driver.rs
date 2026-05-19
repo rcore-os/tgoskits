@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, string::String, vec::Vec};
 
 use ax_sync::spin::SpinNoIrq;
 use rd_net::{Net, NetError, RxQueue, TxQueue};
@@ -124,7 +124,7 @@ struct RdNetState {
 }
 
 pub struct RdNetDriver {
-    name: &'static str,
+    name: String,
     mac: [u8; 6],
     irq_num: Option<usize>,
     irq_handler: Option<rd_net::IrqHandler>,
@@ -132,14 +132,18 @@ pub struct RdNetDriver {
 }
 
 impl RdNetDriver {
-    pub fn new(name: &'static str, mut net: Net, irq_num: Option<usize>) -> NetDeviceResult<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        mut net: Net,
+        irq_num: Option<usize>,
+    ) -> NetDeviceResult<Self> {
         let mac = net.mac_address();
         let tx_queue = net.create_tx_queue().map_err(map_net_error)?;
         let rx_queue = net.create_rx_queue().map_err(map_net_error)?;
         let irq_handler = irq_num.map(|_| net.irq_handler());
 
         Ok(Self {
-            name,
+            name: name.into(),
             mac,
             irq_num,
             irq_handler,
@@ -166,7 +170,7 @@ impl RdNetDriver {
 
 impl EthernetDriver for RdNetDriver {
     fn device_name(&self) -> &str {
-        self.name
+        &self.name
     }
 
     fn irq_num(&self) -> Option<usize> {

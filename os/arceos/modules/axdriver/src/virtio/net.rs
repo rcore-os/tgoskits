@@ -15,15 +15,12 @@ use virtio_drivers::{
     transport::{DeviceType, Transport},
 };
 
-use crate::static_devices::{
-    dma::IDENTITY_DMA,
-    virtio::{self, VirtIoHalImpl, VirtIoTransport},
-};
+use crate::virtio::{self, VirtIoHalImpl, VirtIoTransport};
 
 const QUEUE_SIZE: usize = 64;
 const BUFFER_SIZE: usize = 2048;
 
-pub(super) const REGISTER: DriverRegister = DriverRegister {
+pub const REGISTER: DriverRegister = DriverRegister {
     name: "Static VirtIO Net",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -31,6 +28,7 @@ pub(super) const REGISTER: DriverRegister = DriverRegister {
         ProbeKind::Static {
             on_probe: probe_mmio,
         },
+        #[cfg(feature = "bus-pci")]
         ProbeKind::Pci {
             on_probe: probe_pci,
         },
@@ -111,8 +109,6 @@ struct NetInner<T: VirtIoTransport> {
     rx_inflight: BTreeMap<u16, RxInflight>,
 }
 
-// SAFETY: the transport is owned by one NetInner and every operation is
-// serialized through the enclosing spin::Mutex before reaching virtio-drivers.
 unsafe impl<T: VirtIoTransport> Send for NetInner<T> {}
 
 impl<T: VirtIoTransport> NetInner<T> {
@@ -253,8 +249,9 @@ fn probe_mmio(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnProbeE
     }
 
     for (base, size) in ax_config::devices::VIRTIO_MMIO_RANGES {
-        let base_vaddr = ax_hal::mem::phys_to_virt((*base).into()).as_mut_ptr();
-        let Some((ty, transport)) = virtio::probe_mmio_device(base_vaddr, *size) else {
+        let mmio = axklib::mmio::ioremap_raw((*base).into(), *size)
+            .map_err(|err| OnProbeError::other(format!("failed to map virtio-mmio: {err:?}")))?;
+        let Some((ty, transport)) = virtio::probe_mmio_device(mmio.as_ptr(), *size) else {
             continue;
         };
         if ty == DeviceType::Network {
@@ -265,12 +262,12 @@ fn probe_mmio(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnProbeE
     Err(OnProbeError::NotMatch)
 }
 
+#[cfg(feature = "bus-pci")]
 fn probe_pci(
     endpoint: &mut rdrive::probe::pci::EndpointRc,
     plat_dev: PlatformDevice,
 ) -> Result<(), OnProbeError> {
-    let transport =
-        crate::static_devices::pci::take_virtio_transport(endpoint, DeviceType::Network)?;
+    let transport = crate::pci::take_virtio_transport(endpoint, DeviceType::Network)?;
     register_net(plat_dev, transport)
 }
 
@@ -283,8 +280,8 @@ fn register_net<T: Transport + 'static>(
             "failed to initialize static VirtIO net device: {err:?}"
         ))
     })?;
-    plat_dev.register(rd_net::Net::new(net, &IDENTITY_DMA));
-    info!("registered static virtio network device");
+    plat_dev.register(rd_net::Net::new(net, axklib::dma::op()));
+    log::info!("registered static virtio network device");
     Ok(())
 }
 

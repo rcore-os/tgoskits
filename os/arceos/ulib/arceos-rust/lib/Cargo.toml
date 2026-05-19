@@ -67,13 +67,10 @@ display = ["ax-api/display", "ax-feat/display"]
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-feat/rtc"]
 
-# Device drivers
+# Device bus selectors kept as upper-layer semantic flags. Static driver
+# enablement is selected directly through `ax-driver/*`.
 bus-mmio = ["ax-feat/bus-mmio"]
 bus-pci = ["ax-feat/bus-pci"]
-driver-bcm2835-sdhci = ["ax-feat/driver-bcm2835-sdhci"]
-driver-fxmac = ["ax-feat/driver-fxmac"]
-driver-ixgbe = ["ax-feat/driver-ixgbe"]
-driver-ramdisk = ["ax-feat/driver-ramdisk"]
 
 # Logging
 log-level-debug = []

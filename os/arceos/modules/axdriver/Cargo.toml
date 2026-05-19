@@ -11,16 +11,16 @@ description = "ArceOS device drivers"
 license.workspace = true
 
 [features]
-bus-mmio = []
-bus-pci = ["dep:ax-driver-pci", "dep:ax-hal", "dep:ax-config"]
-net = ["dep:ax-driver-net", "axplat-dyn?/net"]
-block = ["dep:ax-driver-block"]
-display = ["dep:ax-driver-display"]
-input = ["dep:ax-driver-input"]
-vsock = ["ax-driver-vsock"]
+bus-mmio = ["dep:ax-config"]
+bus-pci = ["dep:ax-config", "dep:pcie"]
+net = ["dep:ax-driver-net", "dep:rd-net", "dep:spin"]
+block = ["dep:ax-driver-block", "dep:rd-block"]
+display = ["dep:ax-driver-display", "dep:rdif-display"]
+input = ["dep:ax-driver-input", "dep:rdif-input"]
+vsock = ["dep:ax-driver-vsock", "dep:rdif-vsock"]
 
 # Enabled by features `virtio-*`
-virtio = ["dep:ax-driver-virtio", "dep:ax-alloc", "dep:ax-hal", "dep:ax-config"]
+virtio = ["dep:ax-driver-virtio", "dep:ax-alloc", "dep:ax-config", "dep:virtio-drivers"]
 
 # various types of drivers
 virtio-blk = ["block", "virtio", "ax-driver-virtio/block"]
@@ -30,34 +30,37 @@ virtio-input = ["input", "virtio", "ax-driver-virtio/input"]
 virtio-socket = ["vsock", "virtio", "ax-driver-virtio/socket"]
 ramdisk = ["block", "ax-driver-block/ramdisk"]
 bcm2835-sdhci = ["block", "ax-driver-block/bcm2835-sdhci"]
-sdmmc = ["block", "ax-driver-block/sdmmc", "dep:ax-hal", "dep:ax-config"]
-cvsd = ["block", "ax-driver-block/cvsd", "dep:ax-hal", "dep:ax-config"]
-ahci = ["block", "ax-driver-block/ahci", "dep:ax-hal", "dep:ax-config"]
-ixgbe = ["net", "ax-driver-net/ixgbe", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]
-fxmac = ["net", "ax-driver-net/fxmac", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]
+sdmmc = ["block", "ax-driver-block/sdmmc", "dep:ax-config"]
+cvsd = ["block", "ax-driver-block/cvsd", "dep:ax-config"]
+ahci = ["block", "ax-driver-block/ahci", "bus-pci"]
+ixgbe = ["net", "bus-pci", "ax-driver-net/ixgbe", "dep:ax-alloc", "dep:ax-dma"]
+fxmac = ["net", "ax-driver-net/fxmac", "dep:ax-alloc", "dep:ax-dma"]
 # more devices example: e1000 = ["net", "ax-driver-net/e1000"]
 
 irq = []
-dyn = ["dep:ax-errno", "dep:axplat-dyn"]
 
-default = ["bus-pci"]
+default = []
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 ax-config = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }
+ax-crate-interface.workspace = true
 ax-driver-base.workspace = true
 ax-driver-block = { workspace = true, optional = true }
 ax-driver-display = { workspace = true, optional = true }
 ax-driver-input = { workspace = true, optional = true }
 ax-driver-net = { workspace = true, optional = true }
-ax-driver-pci = { workspace = true, optional = true }
 ax-driver-virtio = { workspace = true, optional = true }
 ax-driver-vsock = { workspace = true, optional = true }
-ax-errno = { workspace = true, optional = true }
-ax-hal = { workspace = true, optional = true }
-cfg-if.workspace = true
-ax-crate-interface.workspace = true
+axklib.workspace = true
 log.workspace = true
-smallvec = { version = "1.15", features = ["const_generics", "union"] }
-axplat-dyn = { workspace = true, optional = true }
+pcie = { workspace = true, optional = true }
+rd-block = { workspace = true, optional = true }
+rd-net = { workspace = true, optional = true }
+rdif-display = { workspace = true, optional = true }
+rdif-input = { workspace = true, optional = true }
+rdif-vsock = { workspace = true, optional = true }
+rdrive.workspace = true
+spin = { workspace = true, optional = true }
+virtio-drivers = { workspace = true, optional = true }

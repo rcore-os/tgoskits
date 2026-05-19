@@ -94,16 +94,10 @@ input = [
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-hal/rtc", "ax-runtime/rtc"]
 
-# Device drivers
+# Device bus selectors kept as upper-layer semantic flags. Static driver
+# enablement is selected directly through `ax-driver/*`.
 bus-mmio = []
 bus-pci = []
-driver-ramdisk = ["ax-runtime/driver-ramdisk"]
-driver-sdmmc = []
-driver-cvsd = []
-driver-ixgbe = []
-driver-fxmac = [] # fxmac ethernet driver for PhytiumPi
-driver-bcm2835-sdhci = []
-driver-ahci = []
 
 # Backtrace
 backtrace = ["alloc", "axbacktrace/alloc"]

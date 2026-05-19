@@ -1,20 +1,21 @@
-extern crate alloc;
+use alloc::format;
+#[cfg(virtio_dev)]
+use alloc::sync::Arc;
 
-use alloc::{format, sync::Arc};
-use core::ptr::NonNull;
-
-use ax_hal::mem::{mmio_ranges, phys_to_virt};
-use mmio_api::{MapError, MmioAddr, MmioOp, MmioRaw};
+#[cfg(virtio_dev)]
+use rdrive::probe::pci::{Endpoint, EndpointRc};
 use rdrive::{
     PlatformDevice,
     probe::{
         OnProbeError,
-        pci::{Endpoint, EndpointRc, PciMem32, PciMem64, PcieController},
+        pci::{PciMem32, PciMem64, PcieController},
         static_::StaticInfo,
     },
     register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
 };
+#[cfg(virtio_dev)]
 use spin::Mutex;
+#[cfg(virtio_dev)]
 use virtio_drivers::transport::{
     DeviceType, Transport,
     pci::{
@@ -24,11 +25,12 @@ use virtio_drivers::transport::{
     },
 };
 
-use crate::static_devices::virtio::VirtIoHalImpl;
+#[cfg(virtio_dev)]
+use crate::virtio::VirtIoHalImpl;
 
-pub(super) const DEVICE_NAME: &str = "pci-ecam";
+pub const DEVICE_NAME: &str = "pci-ecam";
 
-pub(super) const REGISTER: DriverRegister = DriverRegister {
+pub const REGISTER: DriverRegister = DriverRegister {
     name: "Static PCIe ECAM",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -36,20 +38,6 @@ pub(super) const REGISTER: DriverRegister = DriverRegister {
         on_probe: probe_pci_ecam,
     }],
 };
-
-struct StaticMmio;
-
-impl MmioOp for StaticMmio {
-    fn ioremap(&self, addr: MmioAddr, size: usize) -> Result<MmioRaw, MapError> {
-        let virt = phys_to_virt(addr.as_usize().into()).as_mut_ptr();
-        let virt = NonNull::new(virt).ok_or(MapError::Invalid)?;
-        Ok(unsafe { MmioRaw::new(addr, virt, size) })
-    }
-
-    fn iounmap(&self, _mmio: &MmioRaw) {}
-}
-
-static STATIC_MMIO: StaticMmio = StaticMmio;
 
 fn probe_pci_ecam(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     if info.name() != DEVICE_NAME || ax_config::devices::PCI_ECAM_BASE == 0 {
@@ -60,19 +48,19 @@ fn probe_pci_ecam(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnPr
     let mut controller = rdrive::probe::pci::new_driver_generic(
         ax_config::devices::PCI_ECAM_BASE,
         ecam_size,
-        &STATIC_MMIO,
+        axklib::mmio::op(),
     )
     .map_err(|err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")))?;
 
     set_configured_mem_ranges(&mut controller);
     plat_dev.register_pcie(controller);
-    info!("registered static PCIe ECAM controller");
+    log::info!("registered static PCIe ECAM controller");
     Ok(())
 }
 
 fn set_configured_mem_ranges(controller: &mut PcieController) {
     for (index, (address, size)) in ax_config::devices::PCI_RANGES.iter().copied().enumerate() {
-        if size == 0 || !is_mapped_mmio_range(address, size) {
+        if size == 0 {
             continue;
         }
         match index {
@@ -95,20 +83,8 @@ fn set_configured_mem_ranges(controller: &mut PcieController) {
     }
 }
 
-fn is_mapped_mmio_range(address: usize, size: usize) -> bool {
-    let Some(end) = address.checked_add(size) else {
-        return false;
-    };
-
-    mmio_ranges().iter().any(|&(mapped_start, mapped_size)| {
-        let Some(mapped_end) = mapped_start.checked_add(mapped_size) else {
-            return false;
-        };
-        mapped_start <= address && end <= mapped_end
-    })
-}
-
-pub(super) fn take_virtio_transport(
+#[cfg(virtio_dev)]
+pub fn take_virtio_transport(
     endpoint: &mut EndpointRc,
     expected: DeviceType,
 ) -> Result<impl Transport + 'static, OnProbeError> {
@@ -132,6 +108,7 @@ pub(super) fn take_virtio_transport(
     })
 }
 
+#[cfg(virtio_dev)]
 fn as_device_function(address: rdrive::probe::pci::PciAddress) -> DeviceFunction {
     DeviceFunction {
         bus: address.bus(),
@@ -140,6 +117,7 @@ fn as_device_function(address: rdrive::probe::pci::PciAddress) -> DeviceFunction
     }
 }
 
+#[cfg(virtio_dev)]
 fn as_device_function_info(endpoint: &Endpoint) -> DeviceFunctionInfo {
     let class_info = endpoint.revision_and_class();
     let header_type = HeaderType::from(((endpoint.read(0x0c) >> 16) as u8) & 0x7f);
@@ -154,11 +132,13 @@ fn as_device_function_info(endpoint: &Endpoint) -> DeviceFunctionInfo {
     }
 }
 
+#[cfg(virtio_dev)]
 struct EndpointConfigAccess {
     bdf: DeviceFunction,
     endpoint: Arc<Mutex<Endpoint>>,
 }
 
+#[cfg(virtio_dev)]
 impl EndpointConfigAccess {
     fn new(bdf: DeviceFunction, endpoint: Endpoint) -> Self {
         Self {
@@ -172,6 +152,7 @@ impl EndpointConfigAccess {
     }
 }
 
+#[cfg(virtio_dev)]
 impl ConfigurationAccess for EndpointConfigAccess {
     fn read_word(&self, device_function: DeviceFunction, register_offset: u8) -> u32 {
         self.assert_same_function(device_function);
