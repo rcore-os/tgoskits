@@ -16,7 +16,7 @@ members = [
     "components/aarch64_sysreg",
     "drivers/serial/arm_pl011",
     "drivers/rtc/arm_pl031",
-    "drivers/rtc/arm-scmi-rs",
+    "drivers/firmware/arm-scmi-rs",
     "components/arm_vcpu",
     "components/arm_vgic",
     "components/ax-lazyinit",
@@ -441,7 +441,6 @@ ranges-ext = { version = "0.6.4", path = "components/ranges-ext" }
 somehal-macros = { path = "components/somehal-macros", version = "0.1.3" }
 kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2.1" }
 somehal = { version = "0.6.7", path = "platform/somehal" }
-dw_apb_uart = { version = "0.1.0", path = "components/dw_apb_uart", default-features = false }
 
 # External crates
 anyhow = { version = "1.0", default-features = false }
