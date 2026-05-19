@@ -96,10 +96,9 @@ impl VPlicGlobal {
         let candidate_irqs = self.pending_inactive_irqs();
         if let Some((irq_id, priority)) =
             self.best_enabled_pending_irq(context_id, candidate_irqs)?
+            && priority > threshold
         {
-            if priority > threshold {
-                return Ok(Some(irq_id));
-            }
+            return Ok(Some(irq_id));
         }
         Ok(None)
     }

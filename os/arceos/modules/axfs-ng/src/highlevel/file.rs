@@ -3,9 +3,12 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-#[cfg(feature = "times")]
-use core::sync::atomic::{AtomicU8, Ordering};
-use core::{num::NonZeroUsize, ops::Range, task::Context};
+use core::{
+    num::NonZeroUsize,
+    ops::Range,
+    sync::atomic::{AtomicU8, Ordering},
+    task::Context,
+};
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys};
@@ -885,7 +888,7 @@ impl FileBackend {
 /// Provides `std::fs::File`-like interface.
 pub struct File {
     inner: FileBackend,
-    flags: FileFlags,
+    flags: AtomicU8,
     position: Option<Mutex<u64>>,
     #[cfg(feature = "times")]
     access_flags: AtomicU8,
@@ -905,7 +908,7 @@ impl File {
         };
         Self {
             inner,
-            flags,
+            flags: AtomicU8::new(flags.bits()),
             position,
             #[cfg(feature = "times")]
             access_flags: AtomicU8::new(0),
@@ -933,7 +936,7 @@ impl File {
 
     /// Checks that the file has the required `flags` and returns the backend.
     pub fn access(&self, flags: FileFlags) -> VfsResult<&FileBackend> {
-        if self.flags.contains(flags) && !self.is_path() {
+        if self.flags().contains(flags) && !self.is_path() {
             Ok(&self.inner)
         } else {
             Err(VfsError::BadFileDescriptor)
@@ -942,12 +945,22 @@ impl File {
 
     /// Returns `true` if this is a path-only handle (no I/O permitted).
     pub fn is_path(&self) -> bool {
-        self.flags.contains(FileFlags::PATH)
+        self.flags().contains(FileFlags::PATH)
     }
 
     /// Returns the access flags this file was opened with.
     pub fn flags(&self) -> FileFlags {
-        self.flags
+        FileFlags::from_bits_truncate(self.flags.load(Ordering::Acquire))
+    }
+
+    /// Atomically sets or clears a single flag bit.
+    pub fn set_flag(&self, flag: FileFlags, enabled: bool) {
+        let bits = flag.bits();
+        if enabled {
+            self.flags.fetch_or(bits, Ordering::AcqRel);
+        } else {
+            self.flags.fetch_and(!bits, Ordering::AcqRel);
+        }
     }
 
     /// Returns the file's current read/write cursor, or `None` for stream

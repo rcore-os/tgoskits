@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/usb-if-v0.7.0...usb-if-v0.7.1) - 2026-05-18
+
+### Other
+
+- bump up usb version
+- *(drivers)* integrate usb crates into workspace
+
 ## [0.7.0](https://github.com/drivercraft/CrabUSB/compare/usb-if-v0.6.0...usb-if-v0.7.0) - 2026-04-30
 
 ### Other

@@ -223,8 +223,9 @@ impl VsockTransportOps for VsockStreamTransport {
 
     fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
         let conn = self.get_connection()?;
+        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
 
-        self.general.recv_poller(self, || {
+        self.general.recv_poller_with(self, extra_nb, || {
             let mut conn_guard = conn.lock();
 
             if conn_guard.rx_closed() && conn_guard.rx_buffer_used() == 0 {

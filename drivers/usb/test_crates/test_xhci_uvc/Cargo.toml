@@ -15,7 +15,6 @@ crab-uvc = {workspace = true}
 futures = {workspace = true, features = ["alloc"]}
 
 [dev-dependencies]
-# bare-test = {workspace = true}
 # byte-unit = {version = "5.1.6", default-features = false, features = ["byte"]}
 # ktest-helper = {workspace = true}
 # pcie = "0.2"
@@ -23,9 +22,6 @@ futures = {workspace = true, features = ["alloc"]}
 # rockchip-soc = {workspace = true}
 # spin_on = "0.1.1"
 # rdrive = "0.18"
-
-[build-dependencies]
-# bare-test-macros = "0.2"
 
 # [[test]]
 # harness = false

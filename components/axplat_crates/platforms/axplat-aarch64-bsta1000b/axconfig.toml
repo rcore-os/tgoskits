@@ -3,7 +3,7 @@ arch = "aarch64"                                # str
 # Platform identifier.
 platform = "aarch64-bsta1000b"                  # str
 # Platform package.
-package = "axplat-aarch64-bsta1000b"            # str
+package = "ax-plat-aarch64-bsta1000b"           # str
 
 #
 # Platform configs

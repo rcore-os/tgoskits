@@ -115,11 +115,6 @@ impl ChatMessage {
             tool_call_id: None,
         }
     }
-
-    /// Get text content as &str, if it is a plain string.
-    pub fn text_content(&self) -> Option<&str> {
-        self.content.as_ref().and_then(|v| v.as_str())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -134,12 +129,12 @@ pub struct ChatResponse {
 #[derive(Deserialize, Debug)]
 pub struct Choice {
     pub message: ResponseMessage,
-    pub finish_reason: Option<String>,
+    pub _finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct ResponseMessage {
-    pub role: String,
+    pub _role: String,
     #[serde(default)]
     pub content: Option<String>,
     #[serde(default)]
