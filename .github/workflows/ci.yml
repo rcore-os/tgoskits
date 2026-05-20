@@ -179,7 +179,6 @@ jobs:
     if: needs.detect_changes.outputs.ci_checks == 'true'
     needs:
       - detect_changes
-      - fmt
     strategy:
       fail-fast: true
       matrix:
@@ -234,6 +233,8 @@ jobs:
             cache_key: clippy
             container_image: base
             fetch_depth: full
+            prepare_qemu_user_emulators: false
+            prepare_musl_toolchains: false
             required_repository_owner: ""
             main_pr_only: false
           - name: Run sync-lint
@@ -269,6 +270,8 @@ jobs:
             cache_key: sync-lint
             container_image: base
             fetch_depth: full
+            prepare_qemu_user_emulators: false
+            prepare_musl_toolchains: false
             required_repository_owner: ""
             main_pr_only: false
           - name: Test with std
@@ -277,6 +280,8 @@ jobs:
             command: cargo xtask test
             cache_key: test-std
             container_image: base
+            prepare_qemu_user_emulators: false
+            prepare_musl_toolchains: false
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor aarch64 qemu
@@ -438,6 +443,16 @@ jobs:
                 exit 0
               fi
 
+              if [ ! -e /dev/kvm ]; then
+                echo "::notice::Skipping axvisor x86_64 SVM hosted test because /dev/kvm is unavailable."
+                {
+                  echo "## Axvisor SVM hosted test skipped"
+                  echo ""
+                  echo "\`/dev/kvm\` is unavailable on this runner."
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+
               sudo apt-get update
               sudo apt-get install -y libudev-dev pkg-config qemu-system-x86
               sudo usermod -aG kvm $USER
@@ -480,6 +495,8 @@ jobs:
       required_repository_owner: ${{ matrix.required_repository_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
+      prepare_qemu_user_emulators: ${{ matrix.prepare_qemu_user_emulators == false && false || true }}
+      prepare_musl_toolchains: ${{ matrix.prepare_musl_toolchains == false && false || true }}
 
   skip_non_test_changes:
     name: Skip CI checks
