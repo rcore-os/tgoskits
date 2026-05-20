@@ -417,7 +417,7 @@ jobs:
           #   main_pr_only: true
           - name: Test axvisor self-hosted x86_64
             use_container: false
-            runs_on: '["self-hosted","linux","intel"]'
+            runs_on: '["self-hosted","linux","intel","kvm"]'
             command: cargo xtask axvisor test qemu --arch x86_64
             cache_key: ""
             container_image: ""
