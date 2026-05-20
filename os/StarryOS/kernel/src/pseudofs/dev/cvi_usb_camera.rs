@@ -149,7 +149,7 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
     }
     pinmux_usb_vbus_det_gpio_output_prep();
     enable_usb_vbus_gpio();
-    busy_wait(Duration::from_micros(2_000_000));
+    ax_task::sleep(Duration::from_micros(2_000_000));
 
     usb::set_dwc2_base_virt(DWC2_BASE + PHYS_VIRT_OFFSET);
     usb::set_cv182x_phy_base_virt(CV182X_USB2_PHY_BASE + PHYS_VIRT_OFFSET);
@@ -221,6 +221,8 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
         sel.frame_w, sel.frame_h, sel.negotiated_payload_size, sel.negotiated_frame_size
     );
 
+    // Warm-up frame: discard the first capture after stream start so the
+    // isochronous pipeline and DMA buffer are ready for real reads.
     let _ = uvc::uvc_capture_one_frame(dev, ep0, &sel);
     Ok(UsbCameraSession { cam, sel })
 }
