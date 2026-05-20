@@ -1,10 +1,14 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, collections::BTreeMap, format, sync::Arc};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
-use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
+use ax_kernel_guard::NoPreemptIrqSave;
+use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-use spin::Mutex;
 #[cfg(probe = "pci")]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{Error as VirtIoError, device::net::VirtIONetRaw, transport::Transport};
@@ -28,7 +32,7 @@ crate::register_driver!(
 );
 
 struct VirtIoNetDevice<T: VirtIoTransport> {
-    inner: Arc<Mutex<NetInner<T>>>,
+    inner: Arc<VirtioNetInnerCell<T>>,
     irq_enabled: bool,
     tx_created: bool,
     rx_created: bool,
@@ -39,7 +43,7 @@ impl<T: VirtIoTransport> VirtIoNetDevice<T> {
         let mut raw = VirtIONetRaw::new(transport)?;
         raw.disable_interrupts();
         Ok(Self {
-            inner: Arc::new(Mutex::new(NetInner::new(raw))),
+            inner: Arc::new(VirtioNetInnerCell::new(NetInner::new(raw))),
             irq_enabled: false,
             tx_created: false,
             rx_created: false,
@@ -55,7 +59,7 @@ impl<T: VirtIoTransport> DriverGeneric for VirtIoNetDevice<T> {
 
 impl<T: VirtIoTransport> rd_net::Interface for VirtIoNetDevice<T> {
     fn mac_address(&self) -> [u8; 6] {
-        self.inner.lock().raw.mac_address()
+        self.inner.with_task(|inner| inner.raw.mac_address())
     }
 
     fn create_tx_queue(&mut self) -> Option<Box<dyn ITxQueue>> {
@@ -80,10 +84,12 @@ impl<T: VirtIoTransport> rd_net::Interface for VirtIoNetDevice<T> {
 
     fn enable_irq(&mut self) {
         self.irq_enabled = true;
+        self.inner.with_task(|inner| inner.raw.enable_interrupts());
     }
 
     fn disable_irq(&mut self) {
         self.irq_enabled = false;
+        self.inner.with_task(|inner| inner.raw.disable_interrupts());
     }
 
     fn is_irq_enabled(&self) -> bool {
@@ -91,7 +97,71 @@ impl<T: VirtIoTransport> rd_net::Interface for VirtIoNetDevice<T> {
     }
 
     fn handle_irq(&mut self) -> Event {
-        Event::none()
+        self.inner.with_irq(|inner| {
+            let _ = inner.raw.ack_interrupt();
+
+            let mut event = Event::none();
+            if inner.raw.poll_transmit().is_some() {
+                event.tx_queue.insert(0);
+            }
+            if inner.raw.poll_receive().is_some() {
+                event.rx_queue.insert(0);
+            }
+            event
+        })
+    }
+}
+
+struct VirtioNetInnerCell<T: VirtIoTransport> {
+    inner: UnsafeCell<NetInner<T>>,
+    task_active: AtomicBool,
+}
+
+unsafe impl<T: VirtIoTransport> Send for VirtioNetInnerCell<T> {}
+unsafe impl<T: VirtIoTransport> Sync for VirtioNetInnerCell<T> {}
+
+impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
+    fn new(inner: NetInner<T>) -> Self {
+        Self {
+            inner: UnsafeCell::new(inner),
+            task_active: AtomicBool::new(false),
+        }
+    }
+
+    fn with_task<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
+        let _guard = NoPreemptIrqSave::new();
+        let _active = TaskAccessFlag::enter(&self.task_active);
+        // SAFETY: task-side callers enter with local IRQ/preemption disabled,
+        // and upper rd-net users serialize queue/device calls with SpinNoIrq.
+        f(unsafe { &mut *self.inner.get() })
+    }
+
+    fn with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
+        debug_assert!(
+            !self.task_active.load(Ordering::Acquire),
+            "virtio-net IRQ access interrupted task access"
+        );
+        // SAFETY: IRQ-side access never waits on a task lock. The task side
+        // excludes local IRQ reentry while it mutates the shared raw queues.
+        f(unsafe { &mut *self.inner.get() })
+    }
+}
+
+struct TaskAccessFlag<'a>(&'a AtomicBool);
+
+impl<'a> TaskAccessFlag<'a> {
+    fn enter(active: &'a AtomicBool) -> Self {
+        debug_assert!(
+            !active.swap(true, Ordering::AcqRel),
+            "virtio-net inner task access is already active"
+        );
+        Self(active)
+    }
+}
+
+impl Drop for TaskAccessFlag<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -181,7 +251,7 @@ impl<T: VirtIoTransport> NetInner<T> {
 }
 
 struct NetTxQueue<T: VirtIoTransport> {
-    inner: Arc<Mutex<NetInner<T>>>,
+    inner: Arc<VirtioNetInnerCell<T>>,
 }
 
 impl<T: VirtIoTransport> ITxQueue for NetTxQueue<T> {
@@ -194,16 +264,16 @@ impl<T: VirtIoTransport> ITxQueue for NetTxQueue<T> {
     }
 
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
-        self.inner.lock().submit_tx(buffer)
+        self.inner.with_task(|inner| inner.submit_tx(buffer))
     }
 
     fn reclaim(&mut self) -> Option<u64> {
-        self.inner.lock().reclaim_tx()
+        self.inner.with_task(NetInner::reclaim_tx)
     }
 }
 
 struct NetRxQueue<T: VirtIoTransport> {
-    inner: Arc<Mutex<NetInner<T>>>,
+    inner: Arc<VirtioNetInnerCell<T>>,
 }
 
 impl<T: VirtIoTransport> IRxQueue for NetRxQueue<T> {
@@ -216,11 +286,11 @@ impl<T: VirtIoTransport> IRxQueue for NetRxQueue<T> {
     }
 
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
-        self.inner.lock().submit_rx(buffer)
+        self.inner.with_task(|inner| inner.submit_rx(buffer))
     }
 
     fn reclaim(&mut self) -> Option<(u64, usize)> {
-        self.inner.lock().reclaim_rx()
+        self.inner.with_task(NetInner::reclaim_rx)
     }
 }
 
@@ -240,21 +310,33 @@ fn probe_pci(
     endpoint: &mut rdrive::probe::pci::EndpointRc,
     plat_dev: PlatformDevice,
 ) -> Result<(), OnProbeError> {
+    let irq = crate::net::pci_legacy_irq_for_address(endpoint.address());
     let transport = crate::pci::take_virtio_transport(endpoint, DeviceType::Network)?;
-    register_transport(plat_dev, transport)
+    register_transport_with_irq(plat_dev, transport, Some(irq))
 }
 
 pub fn register_transport<T: Transport + 'static>(
     plat_dev: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
-    let net = VirtIoNetDevice::new(transport).map_err(|err| {
+    register_transport_with_irq(plat_dev, transport, None)
+}
+
+pub fn register_transport_with_irq<T: Transport + 'static>(
+    plat_dev: PlatformDevice,
+    transport: T,
+    irq_num: Option<usize>,
+) -> Result<(), OnProbeError> {
+    let mut net = VirtIoNetDevice::new(transport).map_err(|err| {
         OnProbeError::other(format!(
             "failed to initialize static VirtIO net device: {err:?}"
         ))
     })?;
-    plat_dev.register_net("virtio-net", net, None);
-    log::info!("registered static virtio network device");
+    if irq_num.is_some() {
+        net.enable_irq();
+    }
+    plat_dev.register_net("virtio-net", net, irq_num);
+    log::info!("registered virtio network device irq={irq_num:?}");
     Ok(())
 }
 

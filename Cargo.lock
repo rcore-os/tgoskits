@@ -925,6 +925,7 @@ dependencies = [
  "ax-arm-pl031",
  "ax-crate-interface",
  "ax-errno",
+ "ax-kernel-guard",
  "ax-kspin",
  "axklib",
  "bcm2835-sdhci",
