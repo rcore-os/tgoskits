@@ -298,16 +298,15 @@ static int part_07_dup2_oldfd_invalid_preserves_newfd(void)
 
 int main(void)
 {
-    int fail = 0;
     TEST_START("dup2: semantic validation");
 
-    fail += part_01_dup2_basic();
-    fail += part_02_dup2_idempotent();
-    fail += part_03_dup2_close_dup();
-    fail += part_04_dup2_close_original();
-    fail += part_05_dup2_shared_offset();
-    fail += part_06_dup2_negative();
-    fail += part_07_dup2_oldfd_invalid_preserves_newfd();
+    part_01_dup2_basic();
+    part_02_dup2_idempotent();
+    part_03_dup2_close_dup();
+    part_04_dup2_close_original();
+    part_05_dup2_shared_offset();
+    part_06_dup2_negative();
+    part_07_dup2_oldfd_invalid_preserves_newfd();
 
     TEST_DONE();
 }

@@ -13,14 +13,13 @@ extern int parts_flock_extra(void);
 
 int main(void)
 {
-    int fail = 0;
     TEST_START("dup/dup3/fcntl/flock: full semantic validation v4");
 
-    fail += parts_dup_dup3_fcntl();
-    fail += parts_flock_basic();
-    fail += parts_fcntl_lock();
-    fail += parts_fcntl_rdlck();
-    fail += parts_flock_extra();
+    parts_dup_dup3_fcntl();
+    parts_flock_basic();
+    parts_fcntl_lock();
+    parts_fcntl_rdlck();
+    parts_flock_extra();
 
     TEST_DONE();
 }

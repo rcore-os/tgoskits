@@ -140,13 +140,12 @@ static int part_04_termios(void)
 
 int main(void)
 {
-    int fail = 0;
     TEST_START("ioctl: minimal validation");
 
-    fail += part_01_invalid_fd();
-    fail += part_02_unsupported_request();
-    fail += part_03_fionbio();
-    fail += part_04_termios();
+    part_01_invalid_fd();
+    part_02_unsupported_request();
+    part_03_fionbio();
+    part_04_termios();
 
     TEST_DONE();
 }

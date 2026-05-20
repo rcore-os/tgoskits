@@ -224,14 +224,13 @@ static int part_05_negative(void)
 
 int main(void)
 {
-    int fail = 0;
     TEST_START("close_range: semantic validation");
 
-    fail += part_01_basic_close();
-    fail += part_02_range_precision();
-    fail += part_03_empty_fd_range();
-    fail += part_04_cloexec();
-    fail += part_05_negative();
+    part_01_basic_close();
+    part_02_range_precision();
+    part_03_empty_fd_range();
+    part_04_cloexec();
+    part_05_negative();
 
     TEST_DONE();
 }
