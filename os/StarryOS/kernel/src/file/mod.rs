@@ -192,6 +192,22 @@ pub trait FileLike: Pollable + DowncastSync {
         Ok(())
     }
 
+    fn async_mode(&self) -> bool {
+        false
+    }
+
+    fn set_async_mode(&self, _async_mode: bool) -> AxResult {
+        Err(AxError::NotATty)
+    }
+
+    fn owner(&self) -> AxResult<i32> {
+        Err(AxError::InvalidInput)
+    }
+
+    fn set_owner(&self, _owner: i32) -> AxResult {
+        Err(AxError::InvalidInput)
+    }
+
     /// (device, inode) identity used as the key for advisory file locks
     /// (fcntl POSIX/OFD locks and flock(2)).
     ///
