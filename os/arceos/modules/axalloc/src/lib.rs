@@ -32,8 +32,17 @@ pub fn register_page_reclaim_fn(f: PageReclaimFn) {
 
 /// Try to reclaim physical pages by invoking the registered callback.
 /// Returns the number of pages actually freed.
+///
+/// The `SpinNoIrq` guard is released before calling into the reclaim
+/// function so that the reclaim path (and any evict listeners it
+/// triggers) runs with interrupts enabled.  Listeners registered by the
+/// address-space backend acquire blocking locks that call `might_sleep()`,
+/// which panics if interrupts are disabled.
 pub fn try_page_reclaim(num_pages: usize) -> usize {
-    PAGE_RECLAIM_FN.lock().map_or(0, |f| f(num_pages))
+    // Copy out the function pointer under the lock, then release the
+    // SpinNoIrq guard before invoking the callback.
+    let reclaim_fn = { *PAGE_RECLAIM_FN.lock() };
+    reclaim_fn.map_or(0, |f| f(num_pages))
 }
 
 mod page;
