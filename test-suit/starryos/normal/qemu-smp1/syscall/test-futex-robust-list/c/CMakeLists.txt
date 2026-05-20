@@ -5,11 +5,9 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-find_package(Threads REQUIRED)
-
 add_executable(test-futex-robust-list src/main.c)
 target_include_directories(test-futex-robust-list PRIVATE src)
 target_compile_options(test-futex-robust-list PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(test-futex-robust-list PRIVATE Threads::Threads)
+target_link_libraries(test-futex-robust-list PRIVATE pthread)
 
 install(TARGETS test-futex-robust-list RUNTIME DESTINATION usr/bin)
