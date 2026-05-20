@@ -14,6 +14,7 @@
 
 use core::arch::riscv64::hfence_vvma_all;
 
+use ax_errno::{AxResult, ax_err_type};
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
 use riscv_h::register::vsatp::Vsatp;
 
@@ -86,11 +87,15 @@ pub(crate) fn copy_to_guest(src: &[u8], gpa: GuestPhysAddr) -> usize {
 
 /// Fetches the guest instruction at the given guest virtual address.
 #[inline(always)]
-pub(crate) fn fetch_guest_instruction(gva: GuestVirtAddr) -> u32 {
+pub(crate) fn fetch_guest_instruction(gva: GuestVirtAddr) -> AxResult<u32> {
     let mut inst = 0u32;
-    let _ = unsafe {
-        // we can never get -1 now, as exception handling is not implemented
-        _fetch_guest_instruction(gva.as_usize(), &mut inst as *mut u32)
-    };
-    inst
+    let ret = unsafe { _fetch_guest_instruction(gva.as_usize(), &mut inst as *mut u32) };
+    if ret == 0 {
+        Ok(inst)
+    } else {
+        Err(ax_err_type!(
+            BadAddress,
+            alloc::format!("failed to fetch guest instruction at {gva:#x}")
+        ))
+    }
 }
