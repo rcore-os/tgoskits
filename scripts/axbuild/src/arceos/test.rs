@@ -586,9 +586,7 @@ async fn run_rust_qemu_case(
         .await
         .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"))?;
 
-    if auto_symbolize
-        && let Some(path) = log_path
-    {
+    if auto_symbolize && let Some(path) = log_path {
         let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
         crate::backtrace::maybe_symbolize_after_qemu(&elf, &path, case_name)?;
     }
