@@ -4,10 +4,11 @@ set -euo pipefail
 # Build a tiny x86_64 Linux initramfs for Axvisor phase-0 bring-up.
 #
 # The archive contains a tiny static /init that mounts devtmpfs, opens
-# /dev/console, writes one line, and then idles forever.  This keeps the first
-# Linux experiment independent from a block device, PCI, network, busybox, or a
-# root filesystem.  Serial output is provided by the kernel command line's
-# console=ttyS0 setting rather than by userspace I/O port access.
+# /dev/console, writes one line, optionally reads one sector from /dev/vda, and
+# then idles forever.  The block check is read-only and non-fatal so the same
+# initramfs can serve early bring-up and PCI/virtio-blk smoke tests.  Serial
+# output is provided by the kernel command line's console=ttyS0 setting rather
+# than by userspace I/O port access.
 
 OUT="${1:-tmp/linux-x86_64/initramfs.cpio}"
 WORKDIR="$(mktemp -d)"
@@ -29,6 +30,7 @@ cat > "${WORKDIR}/init.c" <<'INIT_EOF'
 #define SYS_dup2 33
 #define SYS_nanosleep 35
 
+#define O_RDONLY 0
 #define O_RDWR 02
 
 struct timespec {
@@ -62,6 +64,10 @@ static long sys_mount(const char *src, const char *target, const char *fstype) {
     return syscall6(SYS_mount, (long)src, (long)target, (long)fstype, 0, 0, 0);
 }
 
+static long sys_read(long fd, char *buf, long len) {
+    return syscall6(SYS_read, fd, (long)buf, len, 0, 0, 0);
+}
+
 static void sys_dup2(long oldfd, long newfd) {
     syscall6(SYS_dup2, oldfd, newfd, 0, 0, 0, 0);
 }
@@ -75,6 +81,10 @@ static void sleep_forever(void) {
 
 void _start(void) {
     const char msg[] = "axvisor x86_64 linux initramfs reached /init\n";
+    const char blk_ok[] = "axvisor x86_64 linux virtio-blk read /dev/vda ok\n";
+    const char blk_skip[] = "axvisor x86_64 linux virtio-blk /dev/vda not ready\n";
+    char sector[512];
+
     sys_mount("devtmpfs", "/dev", "devtmpfs");
     long kmsg = sys_open("/dev/kmsg", O_RDWR, 0);
     if (kmsg >= 0) {
@@ -92,6 +102,20 @@ void _start(void) {
     }
     sys_write(1, msg, sizeof(msg) - 1);
     sys_write(2, msg, sizeof(msg) - 1);
+
+    long vda = sys_open("/dev/vda", O_RDONLY, 0);
+    if (vda >= 0 && sys_read(vda, sector, sizeof(sector)) == sizeof(sector)) {
+        if (kmsg >= 0) {
+            sys_write(kmsg, blk_ok, sizeof(blk_ok) - 1);
+        }
+        sys_write(1, blk_ok, sizeof(blk_ok) - 1);
+    } else {
+        if (kmsg >= 0) {
+            sys_write(kmsg, blk_skip, sizeof(blk_skip) - 1);
+        }
+        sys_write(1, blk_skip, sizeof(blk_skip) - 1);
+    }
+
     sleep_forever();
 }
 INIT_EOF

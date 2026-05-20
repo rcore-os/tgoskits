@@ -44,7 +44,7 @@ register_structs! {
         (0x20 => pub ID: ReadWrite<u32>),
         (0x24 => _reserved1),
         /// Local APIC Version register (VVER): the 32-bit field located at offset 030H on the virtual-APIC page.
-        (0x30 => pub VERSION: ReadOnly<u32>),
+        (0x30 => pub VERSION: ReadWrite<u32>),
         (0x34 => _reserved2),
         /// Virtual task-priority register (VTPR): the 32-bit field located at offset 080H on the virtual-APIC page.
         (0x80 => pub TPR: ReadWrite<u32>),

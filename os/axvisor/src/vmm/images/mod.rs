@@ -16,7 +16,7 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::GuestPhysAddr;
 
 use axvm::VMMemoryRegion;
-use axvm::config::AxVMCrateConfig;
+use axvm::config::{AxVMCrateConfig, VmMemMappingType};
 use byte_unit::Byte;
 
 use crate::hal::CacheOp;
@@ -32,6 +32,8 @@ use x86::boot_params as x86_boot_params;
 use x86::linux as x86_linux;
 #[cfg(target_arch = "x86_64")]
 use x86::linux_boot as x86_linux_boot;
+#[cfg(target_arch = "x86_64")]
+use x86::mptable as x86_mptable;
 #[cfg(target_arch = "x86_64")]
 use x86::multiboot as x86_boot;
 
@@ -78,6 +80,7 @@ pub struct ImageLoader {
     kernel_load_gpa: GuestPhysAddr,
     bios_load_gpa: Option<GuestPhysAddr>,
     dtb_load_gpa: Option<GuestPhysAddr>,
+    ramdisk_load_gpa: Option<GuestPhysAddr>,
 }
 
 impl ImageLoader {
@@ -89,6 +92,7 @@ impl ImageLoader {
             kernel_load_gpa: GuestPhysAddr::default(),
             bios_load_gpa: None,
             dtb_load_gpa: None,
+            ramdisk_load_gpa: None,
         }
     }
 
@@ -105,6 +109,7 @@ impl ImageLoader {
             self.kernel_load_gpa = config.image_config.kernel_load_gpa;
             self.dtb_load_gpa = config.image_config.dtb_load_gpa;
             self.bios_load_gpa = config.image_config.bios_load_gpa;
+            self.ramdisk_load_gpa = config.image_config.ramdisk.as_ref().map(|r| r.load_gpa);
         });
 
         match self.config.kernel.image_location.as_deref() {
@@ -120,7 +125,7 @@ impl ImageLoader {
 
     /// Load VM images from memory
     /// into the guest VM's memory space based on the VM configuration.
-    fn load_vm_images_from_memory(&self) -> AxResult {
+    fn load_vm_images_from_memory(&mut self) -> AxResult {
         info!("Loading VM[{}] images from memory", self.config.base.id);
 
         let vm_imags = memory_images_for_vm(&self.config)?;
@@ -189,11 +194,12 @@ impl ImageLoader {
 
     #[cfg(target_arch = "x86_64")]
     fn load_x86_linux_images_from_memory(
-        &self,
+        &mut self,
         header: x86_linux::X86LinuxHeader,
         kernel: &[u8],
         ramdisk: Option<&[u8]>,
     ) -> AxResult {
+        self.adjust_x86_linux_dma_identity_layout()?;
         let payload = x86_linux_payload(&header, kernel)?;
         let initrd = if let Some(ramdisk) = ramdisk {
             Some(x86_linux::X86LinuxRange::new(
@@ -313,9 +319,42 @@ impl ImageLoader {
     }
 
     fn ramdisk_load_gpa(&self) -> AxResult<GuestPhysAddr> {
-        self.vm
-            .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
+        self.ramdisk_load_gpa
             .ok_or_else(|| ax_errno::ax_err_type!(NotFound, "Ramdisk load addr is missed"))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn adjust_x86_linux_dma_identity_layout(&mut self) -> AxResult {
+        if !self.main_memory.is_identical() {
+            return Ok(());
+        }
+
+        let memory_base = self.main_memory.gpa.as_usize();
+        let configured_kernel = self.config.kernel.kernel_load_addr;
+        let configured_ramdisk = self.config.kernel.ramdisk_load_addr;
+
+        self.kernel_load_gpa = GuestPhysAddr::from(memory_base + configured_kernel);
+        if let Some(ramdisk_load_addr) = configured_ramdisk {
+            self.ramdisk_load_gpa = Some(GuestPhysAddr::from(memory_base + ramdisk_load_addr));
+        }
+
+        self.vm.with_config(|config| {
+            config.image_config.kernel_load_gpa = self.kernel_load_gpa;
+            if let Some(load_gpa) = self.ramdisk_load_gpa
+                && let Some(ref mut ramdisk) = config.image_config.ramdisk
+            {
+                ramdisk.load_gpa = load_gpa;
+            }
+        });
+
+        info!(
+            "Adjusted x86 Linux identity DMA layout for VM[{}]: memory_base={:#x}, kernel_load_gpa={:#x}, ramdisk_load_gpa={:?}",
+            self.vm.id(),
+            memory_base,
+            self.kernel_load_gpa.as_usize(),
+            self.ramdisk_load_gpa
+        );
+        Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -341,12 +380,14 @@ impl ImageLoader {
 
         let boot_params = self.build_x86_boot_params(header, layout, kernel)?;
         let boot_stub = self.build_x86_linux_boot_stub(&layout)?;
+        let mp_table = x86_mptable::build();
         load_vm_image_from_memory(
             &boot_params,
             layout.boot_params.start.into(),
             self.vm.clone(),
         )?;
         load_vm_image_from_memory(&boot_stub, layout.boot_stub.start.into(), self.vm.clone())?;
+        load_vm_image_from_memory(&mp_table, x86_mptable::MP_TABLE_GPA.into(), self.vm.clone())?;
         self.install_x86_linux_boot_entry(&layout);
         Ok(())
     }
@@ -403,6 +444,12 @@ impl ImageLoader {
             })?;
         }
 
+        for memory in &self.config.kernel.memory_regions {
+            if memory.map_type == VmMemMappingType::MapAlloc {
+                builder.add_ram_range(x86_linux::X86LinuxRange::new(memory.gpa, memory.size));
+            }
+        }
+
         for device in &self.config.devices.passthrough_devices {
             builder.add_reserved_range(x86_linux::X86LinuxRange::new(
                 device.base_gpa,
@@ -415,6 +462,7 @@ impl ImageLoader {
                 address.length,
             ));
         }
+        builder.add_reserved_range(x86_mptable::reserved_range());
 
         builder.build().map_err(|err| {
             ax_errno::ax_err_type!(
@@ -544,7 +592,7 @@ pub mod fs {
 
     /// Loads the VM image files from the filesystem
     /// into the guest VM's memory space based on the VM configuration.
-    pub(crate) fn load_vm_images_from_filesystem(loader: &ImageLoader) -> AxResult {
+    pub(crate) fn load_vm_images_from_filesystem(loader: &mut ImageLoader) -> AxResult {
         info!("Loading VM images from filesystem");
         #[cfg(target_arch = "x86_64")]
         {
@@ -633,10 +681,11 @@ pub mod fs {
     #[cfg(target_arch = "x86_64")]
     impl ImageLoader {
         fn load_x86_linux_images_from_filesystem(
-            &self,
+            &mut self,
             header: x86_linux::X86LinuxHeader,
             kernel: &[u8],
         ) -> AxResult {
+            self.adjust_x86_linux_dma_identity_layout()?;
             let payload = x86_linux_payload(&header, kernel)?;
             let initrd = if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
                 let (_, ramdisk_size) = open_image_file(ramdisk_path)?;

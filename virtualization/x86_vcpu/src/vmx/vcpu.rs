@@ -20,6 +20,7 @@ use core::{
 };
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
+use ax_memory_addr::AddrRange;
 use axaddrspace::{
     GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo,
     device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
@@ -56,6 +57,7 @@ const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
+pub const X86_APIC_ACCESS_GPA: usize = 0xfee0_0000;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
@@ -433,9 +435,9 @@ impl VmxVcpu {
     #[allow(dead_code)]
     fn setup_msr_bitmap(&mut self) -> AxResult {
         // Intercept IA32_APIC_BASE MSR accesses
-        // let msr = x86::msr::IA32_APIC_BASE;
-        // self.msr_bitmap.set_read_intercept(msr, true);
-        // self.msr_bitmap.set_write_intercept(msr, true);
+        const IA32_APIC_BASE: u32 = 0x1b;
+        self.msr_bitmap.set_read_intercept(IA32_APIC_BASE, true);
+        self.msr_bitmap.set_write_intercept(IA32_APIC_BASE, true);
 
         // This is strange, guest Linux's access to `IA32_UMWAIT_CONTROL` will cause an exception.
         // But if we intercept it, it seems okay.
@@ -595,8 +597,7 @@ impl VmxVcpu {
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
         let mut val =
-            // CpuCtrl2::VIRTUALIZE_APIC | 
-            CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
+            CpuCtrl2::VIRTUALIZE_APIC | CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
         if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers()
             && features.has_rdtscp()
         {
@@ -675,9 +676,8 @@ impl VmxVcpu {
         VmcsControl64::IO_BITMAP_B_ADDR.write(self.io_bitmap.phys_addr().1.as_usize() as _)?;
         VmcsControl64::MSR_BITMAPS_ADDR.write(self.msr_bitmap.phys_addr().as_usize() as _)?;
 
-        // VmcsControl64::APIC_ACCESS_ADDR.write(
-        //     EmulatedLocalApic::<H::MmHal, DummyHal>::virtual_apic_access_addr().as_usize() as _,
-        // )?;
+        VmcsControl64::VIRT_APIC_ADDR.write(self.vlapic.virtual_apic_page_addr().as_usize() as _)?;
+        VmcsControl64::APIC_ACCESS_ADDR.write(X86_APIC_ACCESS_GPA as _)?;
         Ok(())
     }
 
@@ -857,6 +857,7 @@ impl VmxVcpu {
     ///
     /// Return the result or None if the vm-exit was not handled.
     fn builtin_vmexit_handler(&mut self, exit_info: &VmxExitInfo) -> Option<AxResult> {
+        const APIC_BASE_MSR: u32 = 0x1b;
         const X2APIC_MSR_BASE: u32 = 0x800;
         const X2APIC_MSR_END: u32 = 0x8ff; // SDM says 0x8ff, but actually 0x83f, we respect the SDM here.
         const AMD64_DE_CFG: u32 = 0xc001_1029;
@@ -870,6 +871,11 @@ impl VmxVcpu {
             VmxExitReason::XSETBV => Some(self.handle_xsetbv()),
             VmxExitReason::CR_ACCESS => Some(self.handle_cr()),
             VmxExitReason::CPUID => Some(self.handle_cpuid()),
+            msr_rw @ (VmxExitReason::MSR_READ | VmxExitReason::MSR_WRITE)
+                if self.regs().rcx as u32 == APIC_BASE_MSR =>
+            {
+                Some(self.handle_apic_base_msr_access(msr_rw == VmxExitReason::MSR_WRITE))
+            }
             msr_rw @ (VmxExitReason::MSR_READ | VmxExitReason::MSR_WRITE)
                 if {
                     let msr = self.regs().rcx as u32;
@@ -900,6 +906,23 @@ impl VmxVcpu {
     fn write_edx_eax(&mut self, val: u64) {
         self.regs_mut().rax = val & 0xffff_ffff;
         self.regs_mut().rdx = val >> 32;
+    }
+
+    fn handle_apic_base_msr_access(&mut self, write: bool) -> AxResult {
+        const VMEXIT_INSTR_LEN_RDMSR_WRMSR: u8 = 2;
+
+        self.advance_rip(VMEXIT_INSTR_LEN_RDMSR_WRMSR)?;
+
+        if write {
+            let value = self.read_edx_eax();
+            trace!("handle_vlapic_apic_base_write: value={value:#x}");
+            self.vlapic.set_apic_base(value)
+        } else {
+            let value = self.vlapic.apic_base();
+            trace!("handle_vlapic_apic_base_read: value={value:#x}");
+            self.write_edx_eax(value);
+            Ok(())
+        }
     }
 
     fn handle_apic_msr_access(&mut self, write: bool, msr: u32) -> AxResult {
@@ -958,13 +981,27 @@ impl VmxVcpu {
             }
         };
 
-        // TODO: handle APIC access.
-        let _ = write;
+        let reg = apic_access_exit_info.offset as usize;
+        let addr = GuestPhysAddr::from(X86_APIC_ACCESS_GPA + reg);
+        if write {
+            let value = self.regs().rax as usize;
+            <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
+                &self.vlapic,
+                addr,
+                AccessWidth::Dword,
+                value,
+            )?;
+        } else {
+            let value =
+                <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_read(
+                    &self.vlapic,
+                    addr,
+                    AccessWidth::Dword,
+                )?;
+            self.regs_mut().rax = value as u64;
+        }
 
-        self.advance_rip(exit_info.exit_instruction_length as _)?;
-
-        unimplemented!("apic access");
-        // TODO
+        self.advance_rip(exit_info.exit_instruction_length as _)
     }
 
     fn handle_vmx_preemption_timer(&mut self) -> AxResult {
@@ -1032,12 +1069,28 @@ impl VmxVcpu {
                 const FEATURE_VMX: u32 = 1 << 5;
                 const FEATURE_HYPERVISOR: u32 = 1 << 31;
                 const FEATURE_MCE: u32 = 1 << 7;
+                const FEATURE_X2APIC: u32 = 1 << 21;
+                const FEATURE_TSC_DEADLINE: u32 = 1 << 24;
+                const FEATURE_APIC: u32 = 1 << 9;
+                const MAX_LOGICAL_PROCESSORS_MASK: u32 = 0xff << 16;
+                const INITIAL_APIC_ID_MASK: u32 = 0xff << 24;
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 res.ecx &= !FEATURE_VMX;
+                res.ecx |= FEATURE_X2APIC;
+                res.ecx &= !FEATURE_TSC_DEADLINE;
                 res.ecx |= FEATURE_HYPERVISOR;
-                res.eax &= !FEATURE_MCE;
+                res.edx &= !FEATURE_MCE;
+                res.edx |= FEATURE_APIC;
+                res.ebx &= !(MAX_LOGICAL_PROCESSORS_MASK | INITIAL_APIC_ID_MASK);
+                res.ebx |= 1 << 16;
                 res
             }
+            0xb | 0x1f => CpuIdResult {
+                eax: 0,
+                ebx: 0,
+                ecx: regs_clone.rcx as u32,
+                edx: 0,
+            },
             // See SDM Table 3-8. Information Returned by CPUID Instruction (Contd.)
             LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);

@@ -56,7 +56,7 @@ pub struct BootParamsBuilder<'a> {
     kernel_image: &'a [u8],
     header: X86LinuxHeader,
     layout: X86LinuxLoadLayout,
-    main_memory: X86LinuxRange,
+    ram_ranges: Vec<X86LinuxRange>,
     reserved_ranges: Vec<X86LinuxRange>,
     command_line: &'a str,
 }
@@ -72,13 +72,19 @@ impl<'a> BootParamsBuilder<'a> {
             kernel_image,
             header,
             layout,
-            main_memory,
+            ram_ranges: alloc::vec![main_memory],
             reserved_ranges: alloc::vec![
                 layout.boot_params,
                 layout.boot_stub,
                 X86LinuxRange::new(LEGACY_RESERVED_START, LEGACY_RESERVED_SIZE),
             ],
             command_line: "",
+        }
+    }
+
+    pub fn add_ram_range(&mut self, range: X86LinuxRange) {
+        if range.size != 0 {
+            self.ram_ranges.push(range);
         }
     }
 
@@ -220,32 +226,44 @@ impl<'a> BootParamsBuilder<'a> {
 
     fn e820_entries(&mut self) -> Result<Vec<E820Entry>, BootParamsError> {
         let mut entries = Vec::new();
-        let ram_end = self.main_memory.end().map_err(BootParamsError::Layout)?;
-
+        let ram_ranges = normalized_ranges(&self.ram_ranges)?;
         let reserved = normalized_ranges(&self.reserved_ranges)?;
-        let mut cursor = self.main_memory.start;
-        for range in reserved.iter().copied() {
-            let range_end = range.end().map_err(BootParamsError::Layout)?;
 
-            if range_end <= self.main_memory.start || range.start >= ram_end {
-                entries.push(E820Entry::reserved(range)?);
-                continue;
+        for ram in ram_ranges.iter().copied() {
+            let ram_end = ram.end().map_err(BootParamsError::Layout)?;
+            let mut cursor = ram.start;
+
+            for range in reserved.iter().copied() {
+                let range_end = range.end().map_err(BootParamsError::Layout)?;
+                if range_end <= ram.start || range.start >= ram_end {
+                    continue;
+                }
+
+                let reserved_start = range.start.max(ram.start);
+                let reserved_end = range_end.min(ram_end);
+                if cursor < reserved_start {
+                    entries.push(E820Entry::ram(cursor, reserved_start - cursor)?);
+                }
+                entries.push(E820Entry::reserved(X86LinuxRange::new(
+                    reserved_start,
+                    reserved_end - reserved_start,
+                ))?);
+                cursor = cursor.max(reserved_end);
             }
 
-            let reserved_start = range.start.max(self.main_memory.start);
-            let reserved_end = range_end.min(ram_end);
-            if cursor < reserved_start {
-                entries.push(E820Entry::ram(cursor, reserved_start - cursor)?);
+            if cursor < ram_end {
+                entries.push(E820Entry::ram(cursor, ram_end - cursor)?);
             }
-            entries.push(E820Entry::reserved(X86LinuxRange::new(
-                reserved_start,
-                reserved_end - reserved_start,
-            ))?);
-            cursor = cursor.max(reserved_end);
         }
 
-        if cursor < ram_end {
-            entries.push(E820Entry::ram(cursor, ram_end - cursor)?);
+        for range in reserved {
+            let overlaps_ram = ram_ranges
+                .iter()
+                .try_fold(false, |found, ram| Ok(found || range.overlaps(ram)?))
+                .map_err(BootParamsError::Layout)?;
+            if !overlaps_ram {
+                entries.push(E820Entry::reserved(range)?);
+            }
         }
 
         entries.sort_by_key(|entry| entry.addr);
@@ -491,6 +509,37 @@ mod tests {
             ))
             .unwrap()
         );
+    }
+
+    #[test]
+    fn builds_e820_with_multiple_ram_ranges() {
+        let image = valid_image();
+        let header = X86LinuxHeader::parse(&image).unwrap();
+        let layout = valid_layout(&header);
+        let mut builder = BootParamsBuilder::new(
+            &image,
+            header,
+            layout,
+            X86LinuxRange::new(0x0960_0000, 0x0800_0000),
+        );
+        builder.add_ram_range(X86LinuxRange::new(0, 0x10_0000));
+        let params = builder.build().unwrap();
+
+        let entries = read_u8(&params, E820_ENTRIES_OFFSET) as usize;
+        let has_low_usable = (0..entries).any(|idx| {
+            read_e820_entry(&params, idx) == E820Entry::new(0, BOOT_PARAMS_GPA, 1).unwrap()
+        });
+        let has_trampoline_usable = (0..entries).any(|idx| {
+            read_e820_entry(&params, idx)
+                == E820Entry::new(BOOT_STUB_GPA + BOOT_STUB_SIZE, 0xa0000 - 0x9000, 1).unwrap()
+        });
+        let has_high_usable = (0..entries).any(|idx| {
+            read_e820_entry(&params, idx) == E820Entry::new(0x0960_0000, 0x0800_0000, 1).unwrap()
+        });
+
+        assert!(has_low_usable);
+        assert!(has_trampoline_usable);
+        assert!(has_high_usable);
     }
 
     #[test]

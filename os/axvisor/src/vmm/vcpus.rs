@@ -29,6 +29,8 @@ use ax_errno::{AxResult, ax_err_type};
 use ax_task::{AxTaskRef, TaskInner, WaitQueue};
 use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
+#[cfg(target_arch = "x86_64")]
+use axvm::config::VMInterruptMode;
 
 use crate::{hal::arch::inject_interrupt, task::VCpuTask};
 use crate::{
@@ -37,6 +39,11 @@ use crate::{
 };
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
+
+#[cfg(target_arch = "x86_64")]
+const X86_IOAPIC_VECTOR_BASE: usize = 0x20;
+#[cfg(target_arch = "x86_64")]
+const X86_IOAPIC_VECTOR_END: usize = 0xef;
 
 /// A global map that holds the vCPU task state for each VM.
 static VM_VCPU_TASKS: Mutex<BTreeMap<usize, Arc<VMVCpus>>> = Mutex::new(BTreeMap::new());
@@ -449,6 +456,8 @@ fn vcpu_run() {
                     // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
                     ax_hal::trap::irq_handler(vector as usize);
                     super::timer::check_events();
+                    #[cfg(target_arch = "x86_64")]
+                    forward_x86_passthrough_irq(&vm, vector as usize);
                     #[cfg(target_arch = "riscv64")]
                     {
                         vcpu.get_arch_vcpu().latch_hvip_from_hw();
@@ -580,4 +589,21 @@ fn vcpu_run() {
     }
 
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn forward_x86_passthrough_irq(vm: &VMRef, vector: usize) {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+        return;
+    }
+
+    if !(X86_IOAPIC_VECTOR_BASE..X86_IOAPIC_VECTOR_END).contains(&vector) {
+        return;
+    }
+
+    info!(
+        "Forwarding x86 passthrough IRQ vector {vector:#x} to current guest vCPU as an external \
+         interrupt"
+    );
+    inject_interrupt(vector as _);
 }

@@ -285,100 +285,102 @@
 2. 本阶段不要求 PCI/virtio 完整工作。
 3. 如果 timer 或中断缺失阻塞 initramfs，需要把最小 timer/interrupt 修复提前纳入本阶段。
 
-## 阶段 6：timer、中断注入和基础平台设备
+## 阶段 6：配置对齐和 APIC/topology 暴露收敛
 
 ### 阶段目标
 
-补齐 Linux early boot 和 initramfs 运行所需的最小 timer / interrupt、APIC 和 CPU topology 能力，让客户机不依赖偶然轮询或无中断路径，并为切换到 `tmp/qemu_x86_64_linux/linux/linux-qemu` 做准备。
+在阶段 5 已经能进入 initramfs `/init` 的基础上，先把 x86_64 Linux 客户机配置与其他平台 Linux 客户机对齐，并让单 vCPU、禁 APIC bring-up 路径的 CPUID 暴露与实际能力一致。更完整的 APIC、timer、IRQ 和 CPU topology 支持后移到单独阶段。
 
 ### 主要任务
 
-1. 梳理当前中断注入路径：
-   - 检查 `os/axvisor/src/hal/arch/x86_64/mod.rs::inject_interrupt()`。
-   - 确认它是否能接到当前 vCPU 的 `inject_interrupt()`。
-   - 确认 VMExit 后的中断转发与 vCPU 状态切换关系。
-2. 验证或补齐 LAPIC / IOAPIC / PIC 相关访问：
-   - 如果走 passthrough，确认对应 MMIO/PIO 区域映射正确。
-   - 如果必须半直通，先实现 Linux early boot 最小所需路径。
-   - 不在本阶段追求完整虚拟 APIC 设备模型。
-3. 补齐单 vCPU APIC / CPU topology 最小语义：
+1. 对齐 Linux VM 配置语义：
+   - 参考 aarch64 / riscv64 Linux 客户机配置，将 x86_64 Linux `vm_type` 对齐为 Linux 类型。
+   - 默认内核继续使用已验证能进入 `/init` 的 Ubuntu `bzImage`。
+   - `emu_devices` 保持为空，第一版不默认引入更多 x86 legacy PIO 设备模型。
+2. 收敛单 vCPU CPUID 暴露：
    - 确认 CPUID 中 APIC、x2APIC、CPU topology 相关 leaf 暴露与实际虚拟平台一致。
-   - 确认 `noapic` / `nolapic` 去掉后，Linux 不再访问未映射的 APIC fixmap 或错误的 APIC MMIO 虚拟地址。
-   - 处理 `linux-qemu` 当前在 `parse_topology()` / `native_apic_mem_read()` 路径上的 panic。
-   - 在单 vCPU 场景先提供一致的 LAPIC ID、CPU package/core/thread 拓扑；SMP 和 AP startup 留到阶段 9。
-4. 验证或补齐 timer：
-   - PIT、HPET 或 LAPIC timer 至少有一种路径可用。
-   - Linux jiffies、timeout、sleep 等基础行为正常。
-   - initramfs 中基础命令不会因为 timer 缺失挂死。
-5. 建立中断路由记录：
-   - 记录 COM1、timer、后续 block/PCI 设备的 IRQ 来源和目标 vCPU。
-   - 为后续 MSI/MSI-X/INTx 阶段保留接口边界。
-6. 评估并切换默认 bring-up 内核：
+   - 隐藏当前未支撑的 local APIC、x2APIC 和 TSC deadline timer 能力。
+   - 在单 vCPU 场景提供一致的 logical processor count 和 initial APIC ID。
+   - 让 CPUID topology leaf `0xb` / `0x1f` 与当前无拓扑暴露能力一致。
+3. 记录 `linux-qemu` 后续切换条件：
    - 当前阶段 5 默认使用 Ubuntu `bzImage`，因为它已经能在 Axvisor 下进入 `/init`。
-   - `linux-qemu` 已确认是合法 bzImage，裸 QEMU 能进入 `/init`，但 Axvisor 当前会在 APIC/topology 路径 panic。
-   - 阶段 6 修复完成后，把 `linux-x86_64-qemu-smp1.toml` 的 `kernel_path` 切换到 `/code/tgoskits/tmp/qemu_x86_64_linux/linux/linux-qemu`，并重新验证 initramfs marker。
+   - `linux-qemu` 已确认是合法 bzImage，裸 QEMU 能进入 `/init`；阶段 6 CPUID 收敛后已经绕过 APIC/topology panic，但仍停在 8250 串口驱动初始化附近。
+   - 避免 guest legacy PIO 设备直接复用已经被 Axvisor host 初始化改写过的 PIC/PIT/串口状态。
+   - 后续如需支持 `linux-qemu`，再单独补 PIC/PIT legacy 路径或 APIC/timer/IRQ 路径。
 
 ### 产物
 
-1. x86_64 `inject_interrupt()` 的有效实现或明确验证记录。
-2. 单 vCPU APIC / CPU topology 最小支持记录。
-3. timer / interrupt 最小测试用例。
-4. QEMU 平台基础设备 passthrough 配置。
-5. `linux-qemu` 作为默认 bring-up 内核的验证记录。
+1. x86_64 Linux VM 配置与其他平台 Linux 客户机对齐。
+2. 单 vCPU、禁 APIC bring-up 的 CPUID 暴露收敛记录。
+3. `linux-qemu` 阶段性验证记录和后续切换条件。
+4. 默认 `bzImage` initramfs smoke test 记录。
 
 ### 验收标准
 
-1. Linux 能稳定运行 initramfs，不依赖禁用 APIC/中断的偶然路径。
-2. timer tick 或等价时钟事件在 guest 内可观察。
-3. 串口或基础设备中断能投递到目标 vCPU。
-4. `linux-qemu` 能在 Axvisor 下进入 initramfs `/init` 并输出 marker。
+1. 默认 x86_64 Linux 配置仍能进入 initramfs `/init` 并输出 marker。
+2. `vm_type` 与其他 Linux 客户机配置语义一致。
+3. CPUID 不再向当前默认路径暴露未支撑的 APIC、x2APIC、TSC deadline 和 topology 能力。
+4. `linux-qemu` 的剩余阻塞点和后续补齐方向有明确记录。
 
 ### 风险和边界
 
-1. x86 平台中断链路容易牵连 APIC、IOAPIC、PIC、MSI，应坚持最小闭环优先。
-2. 如果 passthrough 与虚拟化隔离冲突，应记录原因，再决定是否实现半直通控制器。
+1. 本阶段不实现完整 APIC、IOAPIC、PIC、PIT、HPET 或串口模拟设备。
+2. 本阶段不把 `linux-qemu` 切为默认内核。
+3. x86 平台中断链路容易牵连 APIC、IOAPIC、PIC、MSI；后续补齐时应单独拆分并坚持最小闭环优先。
+4. 如果 passthrough 与虚拟化隔离冲突，应记录原因，再决定是否实现半直通控制器。
 
 ## 阶段 7：PCI config space 和 virtio / block 设备直通
 
 ### 阶段目标
 
-让 Linux 能发现并使用后续 rootfs 所需的 PCI/virtio/block 设备，为从 initramfs 过渡到真实 rootfs 做准备。
+让 Linux 能发现并使用后续 rootfs 所需的 PCI/virtio/block 设备，为从 initramfs 过渡到真实 rootfs 做准备。阶段 7 先把 PCI config、low MMIO window 和 virtio-blk 设备发现合并进默认配置，再继续处理 block I/O completion 和中断投递。
 
 ### 主要任务
 
-1. 打通 PCI config space：
+1. 合并 PCI 实验到默认配置：
+   - 默认 `linux-x86_64-qemu-smp1.toml` 去掉 `pci=off`，改为 `pci=conf1`。
+   - 删除临时 `linux-x86_64-qemu-smp1-pci.toml`。
+   - 记录 QEMU 已暴露的 `virtio-blk-pci` 和 guest 当前消费它的阶段性结果。
+2. 梳理并验证 PCI config space：
    - 支持或直通 `0xcf8/0xcfc` PIO 访问。
+   - 当前 VMX I/O bitmap 默认主要是 passthrough 策略，需确认直接落到外层 QEMU/host PCI config 状态是否可接受。
    - 确认 Linux 能枚举 QEMU 暴露的 PCI host bridge 和设备。
    - 处理 PCI BAR 读取、写入和资源分配行为。
-2. 打通设备 BAR passthrough：
+3. 打通设备 BAR passthrough：
    - 将 virtio-blk、virtio-console 或目标 block 设备 BAR 映射到 guest。
    - 确认 EPT 映射属性适合 MMIO。
    - 确认 PIO BAR 和 MMIO BAR 都能被访问。
-3. 打通 DMA 访问：
+   - PCI BAR / ECAM / PCI MMIO window 如由配置引入，需要同步写入 E820 reserved。
+   - 默认配置已加入 `0xfe00_0000..0xfec0_0000` low MMIO passthrough，Linux 能枚举到 `virtio_blk virtio0` 和 `vda`。
+4. 打通 DMA 访问：
    - 确认设备 DMA 使用的 GPA/HPA 映射关系。
    - 如果需要 IOMMU 或 bounce buffer，明确最小实现策略。
    - 确认 Linux virtqueue descriptor、avail、used ring 能被设备正确访问。
-4. 打通设备中断：
+5. 打通设备中断：
    - 优先确认 legacy INTx 路径。
    - 后续再扩展 MSI/MSI-X。
    - 将设备中断注入到正确 vCPU。
 
 ### 产物
 
-1. PCI config space passthrough 或半直通实现。
-2. virtio/block 设备 BAR 和 DMA 路径验证。
-3. block 设备读写最小测试记录。
+1. 默认 x86_64 Linux VM 配置中的 PCI/virtio-blk 设备发现路径。
+2. PCI config space passthrough 或半直通验证记录。
+3. virtio/block 设备 BAR 和 DMA 路径验证。
+4. initramfs block 只读 smoke test。
 
 ### 验收标准
 
-1. Linux `lspci` 或启动日志能看到目标 PCI/virtio 设备。
-2. Linux 能加载对应驱动。
-3. initramfs 内能读写目标 block 设备。
+1. 默认配置能进入 PCI 枚举路径。
+2. 默认路径能明确记录 Linux 停在哪个 PCI / BAR / DMA / IRQ 阶段。
+3. Linux `lspci` 或启动日志能看到目标 PCI/virtio 设备。
+4. Linux 能加载对应驱动，并识别 virtio block 设备。
+5. initramfs 内能读写目标 block 设备。
 
 ### 风险和边界
 
 1. PCI 和 DMA 问题通常会暴露 EPT、缓存属性和地址翻译问题，应单独记录每类 fault。
-2. 本阶段仍不要求完整 rootfs 启动成功，但必须为 rootfs 阶段消除设备发现和基础 I/O 障碍。
+2. 默认配置已经打开 PCI，若 `/init` 暂时回退，应优先定位 virtio-blk I/O completion / IRQ，而不是恢复临时 PCI 配置。
+3. 本阶段仍不要求完整 rootfs 启动成功，但必须为 rootfs 阶段消除设备发现和基础 I/O 障碍。
 
 ## 阶段 8：真实 rootfs 启动
 

@@ -93,6 +93,16 @@ impl EmulatedLocalApic {
     pub fn virtual_apic_page_addr(&self) -> HostPhysAddr {
         self.get_vlapic_regs().virtual_apic_page_addr()
     }
+
+    /// Returns the current IA32_APIC_BASE MSR value.
+    pub fn apic_base(&self) -> u64 {
+        self.get_vlapic_regs().apic_base()
+    }
+
+    /// Sets the IA32_APIC_BASE MSR value.
+    pub fn set_apic_base(&self, value: u64) -> AxResult {
+        self.get_mut_vlapic_regs().set_apic_base(value)
+    }
 }
 
 impl BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic {

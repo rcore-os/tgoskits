@@ -47,7 +47,7 @@ cfg_if::cfg_if! {
 
         pub use vendor::{
             VmxArchPerCpuState, VmxArchPerCpuState as X86ArchPerCpuState, VmxArchVCpu,
-            VmxArchVCpu as X86ArchVCpu,
+            VmxArchVCpu as X86ArchVCpu, X86_APIC_ACCESS_GPA, x86_apic_access_page_addr,
         };
     } else if #[cfg(feature = "svm")] {
         mod svm;

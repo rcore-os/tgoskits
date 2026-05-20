@@ -6,7 +6,7 @@ id = 1
 # Guest vm name.
 name = "linux-x86_64-qemu"
 # Virtualization type.
-vm_type = 2
+vm_type = 1
 # The number of virtual CPUs.
 cpu_num = 1
 # Guest vm physical cpu sets.
@@ -29,7 +29,7 @@ kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = false
 # Linux command line written into boot_params.
-cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 rdinit=/init acpi=off noapic nolapic pci=off i8042.nokbd i8042.noaux i8042.nomux"
+cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 rdinit=/init acpi=off pci=conf1 pci=nomsi nox2apic no_timer_check i8042.nokbd i8042.noaux i8042.nomux"
 
 ## The file path of the ramdisk image.
 ramdisk_path = "/code/tgoskits/tmp/qemu_x86_64_linux/linux/initramfs.cpio"
@@ -41,7 +41,8 @@ ramdisk_load_addr = 0x60_00000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
-  [0x0000_0000, 0x0800_0000, 0x7, 0], # Low RAM 128M 0b111 R|W|EXECUTE
+  [0x0000_0000, 0x0800_0000, 0x7, 1], # System RAM 128M MAP_IDENTICAL for DMA-capable passthrough
+  [0x0000_0000, 0x0010_0000, 0x7, 0], # Low boot scratch for real-mode stub and boot_params
 ]
 
 #
@@ -66,13 +67,6 @@ passthrough_devices = [
     0x1,
   ],
   [
-    "Local APIC",
-    0xfee0_0000,
-    0xfee0_0000,
-    0x1000,
-    0x1,
-  ],
-  [
     "HPET",
     0xfed0_0000,
     0xfed0_0000,
@@ -80,3 +74,13 @@ passthrough_devices = [
     0x1,
   ],
 ]
+
+# Passthrough addresses.
+# Base-GPA  Length.
+passthrough_addresses = [
+  # QEMU q35 low MMIO window needed by PCI/virtio-blk probing.
+  [0xfe00_0000, 0x00c0_0000],
+]
+
+# Devices that are not desired to be passed through to the guest
+excluded_devices = []
