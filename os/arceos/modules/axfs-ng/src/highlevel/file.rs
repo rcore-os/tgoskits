@@ -411,8 +411,7 @@ impl CachedFileShared {
                 cnt += 1;
             }
         }
-        for i in 0..cnt {
-            let pn = to_evict[i];
+        for &pn in to_evict[..cnt].iter() {
             if let Some(page) = cache.pop(&pn) {
                 for listener in self.evict_listeners.lock().iter() {
                     (listener.listener)(pn, &page);
