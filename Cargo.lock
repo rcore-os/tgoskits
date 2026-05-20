@@ -404,6 +404,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-stack-guard-page"
+version = "0.3.1"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-std-arce_agent"
 version = "0.2.0"
 dependencies = [
