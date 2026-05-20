@@ -3,9 +3,12 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-#[cfg(feature = "times")]
-use core::sync::atomic::{AtomicU8, Ordering};
-use core::{num::NonZeroUsize, ops::Range, task::Context};
+use core::{
+    num::NonZeroUsize,
+    ops::Range,
+    sync::atomic::{AtomicU8, Ordering},
+    task::Context,
+};
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys};
@@ -679,6 +682,95 @@ impl CachedFile {
         Ok(())
     }
 
+    pub fn writeback(&self) -> VfsResult<alloc::vec::Vec<u32>> {
+        if self.in_memory {
+            return Ok(alloc::vec::Vec::new());
+        }
+        let file = self.inner.entry().as_file()?;
+        let file_len = file.len()?;
+
+        let dirty_keys: alloc::vec::Vec<u32> = {
+            let guard = self.shared.page_cache.lock();
+            guard
+                .iter()
+                .filter_map(|(&pn, page)| {
+                    if page.dirty {
+                        let page_start = pn as u64 * PAGE_SIZE as u64;
+                        let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64);
+                        if len > 0 { Some(pn) } else { None }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        for pn in &dirty_keys {
+            let mut guard = self.shared.page_cache.lock();
+            if let Some(page) = guard.get_mut(pn)
+                && page.dirty
+            {
+                let page_start = *pn as u64 * PAGE_SIZE as u64;
+                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
+                if len > 0 {
+                    file.write_at(&page.data()[..len], page_start)?;
+                }
+            }
+            drop(guard);
+        }
+
+        file.sync(false)?;
+        Ok(dirty_keys)
+    }
+
+    pub fn writeback_pages(&self, pns: &[u32]) -> VfsResult<()> {
+        if self.in_memory {
+            return Ok(());
+        }
+        let file = self.inner.entry().as_file()?;
+        let file_len = file.len()?;
+
+        for pn in pns {
+            let mut guard = self.shared.page_cache.lock();
+            if let Some(page) = guard.get_mut(pn)
+                && page.dirty
+            {
+                let page_start = *pn as u64 * PAGE_SIZE as u64;
+                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
+                if len > 0 {
+                    file.write_at(&page.data()[..len], page_start)?;
+                }
+            }
+            drop(guard);
+        }
+
+        file.sync(false)?;
+        Ok(())
+    }
+
+    pub fn dirty_pages_in_range(&self, start_pn: u32, end_pn: u32) -> alloc::vec::Vec<u32> {
+        let guard = self.shared.page_cache.lock();
+        guard
+            .iter()
+            .filter_map(|(&pn, page)| {
+                if page.dirty && pn >= start_pn && pn < end_pn {
+                    Some(pn)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn clear_dirty_pages(&self, pns: &[u32]) {
+        let mut guard = self.shared.page_cache.lock();
+        for pn in pns {
+            if let Some(page) = guard.get_mut(pn) {
+                page.dirty = false;
+            }
+        }
+    }
+
     /// Flushes all cached pages back to disk.
     pub fn sync(&self, data_only: bool) -> VfsResult<()> {
         if self.in_memory {
@@ -802,7 +894,7 @@ impl FileBackend {
 /// Provides `std::fs::File`-like interface.
 pub struct File {
     inner: FileBackend,
-    flags: FileFlags,
+    flags: AtomicU8,
     position: Option<Mutex<u64>>,
     #[cfg(feature = "times")]
     access_flags: AtomicU8,
@@ -822,7 +914,7 @@ impl File {
         };
         Self {
             inner,
-            flags,
+            flags: AtomicU8::new(flags.bits()),
             position,
             #[cfg(feature = "times")]
             access_flags: AtomicU8::new(0),
@@ -850,7 +942,7 @@ impl File {
 
     /// Checks that the file has the required `flags` and returns the backend.
     pub fn access(&self, flags: FileFlags) -> VfsResult<&FileBackend> {
-        if self.flags.contains(flags) && !self.is_path() {
+        if self.flags().contains(flags) && !self.is_path() {
             Ok(&self.inner)
         } else {
             Err(VfsError::BadFileDescriptor)
@@ -859,12 +951,22 @@ impl File {
 
     /// Returns `true` if this is a path-only handle (no I/O permitted).
     pub fn is_path(&self) -> bool {
-        self.flags.contains(FileFlags::PATH)
+        self.flags().contains(FileFlags::PATH)
     }
 
     /// Returns the access flags this file was opened with.
     pub fn flags(&self) -> FileFlags {
-        self.flags
+        FileFlags::from_bits_truncate(self.flags.load(Ordering::Acquire))
+    }
+
+    /// Atomically sets or clears a single flag bit.
+    pub fn set_flag(&self, flag: FileFlags, enabled: bool) {
+        let bits = flag.bits();
+        if enabled {
+            self.flags.fetch_or(bits, Ordering::AcqRel);
+        } else {
+            self.flags.fetch_and(!bits, Ordering::AcqRel);
+        }
     }
 
     /// Returns the file's current read/write cursor, or `None` for stream
