@@ -105,6 +105,7 @@ fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
         signo,
         code,
         current().as_thread().proc_data.proc.pid(),
+        current().as_thread().cred().uid,
     )))
 }
 

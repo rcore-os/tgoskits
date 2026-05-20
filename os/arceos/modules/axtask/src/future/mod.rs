@@ -71,9 +71,12 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
         match fut.as_mut().poll(&mut cx) {
             Poll::Pending => {
                 // Before sleeping, check if a signal has arrived. If so,
-                // yield instead of blocking so that check_signals() can
-                // process the signal on the return-to-userspace path.
-                if task.take_interrupt() {
+                // yield instead of blocking so that the future's
+                // interruptible wrapper or poll_interrupt can observe
+                // the flag on the next poll. Use a non-consuming read
+                // to avoid stealing the flag from consumers that call
+                // poll_interrupt / take_interrupt themselves.
+                if task.interrupted() {
                     crate::yield_now();
                     continue;
                 }

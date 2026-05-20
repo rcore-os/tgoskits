@@ -227,22 +227,26 @@ impl Thread {
 
     /// Get the dumpable flag for this process (PR_GET_DUMPABLE).
     pub fn dumpable(&self) -> u32 {
-        self.dumpable.load(Ordering::Relaxed)
+        self.dumpable.load(Ordering::Acquire)
     }
 
     /// Set the dumpable flag for this process (PR_SET_DUMPABLE).
     pub fn set_dumpable(&self, val: u32) {
-        self.dumpable.store(val, Ordering::Relaxed);
+        self.dumpable.store(val, Ordering::Release);
     }
 
     /// Get the no_new_privs flag (PR_GET_NO_NEW_PRIVS).
     pub fn no_new_privs(&self) -> u32 {
-        self.no_new_privs.load(Ordering::Relaxed)
+        self.no_new_privs.load(Ordering::Acquire)
     }
 
     /// Set the no_new_privs flag (PR_SET_NO_NEW_PRIVS).
+    /// Once set, this flag cannot be cleared on Linux, so only store 1
+    /// when a non-zero value is passed.
     pub fn set_no_new_privs(&self, val: u32) {
-        self.no_new_privs.store(val, Ordering::Relaxed);
+        if val == 1 {
+            self.no_new_privs.store(1, Ordering::Release);
+        }
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).
