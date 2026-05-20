@@ -191,10 +191,7 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let mut result = self
-            .inner
-            .lock()
-            .alloc_pages(num_pages, alignment);
+        let mut result = self.inner.lock().alloc_pages(num_pages, alignment);
         if result.is_err() {
             for _ in 0..4 {
                 let reclaimed = crate::try_page_reclaim(num_pages.max(16));
@@ -223,10 +220,7 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let mut result = self
-            .inner
-            .lock()
-            .alloc_pages_lowmem(num_pages, alignment);
+        let mut result = self.inner.lock().alloc_pages_lowmem(num_pages, alignment);
         if result.is_err() {
             for _ in 0..4 {
                 let reclaimed = crate::try_page_reclaim(num_pages.max(16));
