@@ -8,11 +8,11 @@ on:
         required: false
         type: string
         default: '["ubuntu-latest"]'
-      self_hosted_runs_on:
-        description: JSON-encoded self-hosted runner labels used in rcore-os when runs_on is ubuntu-latest.
+      requires_kvm:
+        description: Whether the rcore-os self-hosted runner must provide KVM.
         required: false
-        type: string
-        default: '["self-hosted","linux"]'
+        type: boolean
+        default: false
       use_container:
         description: Whether to execute the command inside the CI container.
         required: false
@@ -76,7 +76,11 @@ jobs:
         fromJson(
           github.repository_owner == 'rcore-os'
           && inputs.runs_on == '["ubuntu-latest"]'
-          && inputs.self_hosted_runs_on
+          && (
+            inputs.requires_kvm
+            && '["self-hosted","linux","kvm"]'
+            || '["self-hosted","linux"]'
+          )
           || inputs.runs_on
         )
       }}
