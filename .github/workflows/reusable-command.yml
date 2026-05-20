@@ -22,11 +22,6 @@ on:
         description: Shell command to execute.
         required: true
         type: string
-      cache_key:
-        description: Shared cache key for rust-cache. Leave empty to disable cache.
-        required: false
-        type: string
-        default: ""
       container_image:
         description: Container image used for the job when use_container is true.
         required: false
@@ -89,13 +84,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: ${{ inputs.fetch_depth }}
-
-      - name: Restore Rust cache
-        if: inputs.cache_key != ''
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ inputs.cache_key }}
-          save-if: ${{ github.event_name == 'push' }}
 
       - name: Show Rust version
         run: rustc --version
@@ -179,13 +167,6 @@ jobs:
             rm -rf "${tmpdir}"
             trap - EXIT
           done
-
-      - name: Restore Rust cache
-        if: inputs.cache_key != ''
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ inputs.cache_key }}
-          save-if: ${{ github.event_name == 'push' }}
 
       - name: Show Rust version
         run: rustc --version

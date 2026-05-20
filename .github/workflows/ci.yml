@@ -205,7 +205,6 @@ jobs:
         include:
           - name: Check formatting
             command: cargo fmt --all -- --check
-            cache_key: ""
           - name: Run sync-lint
             command: |
               set -eux
@@ -234,12 +233,10 @@ jobs:
               else
                 cargo xtask sync-lint
               fi
-            cache_key: sync-lint
             fetch_depth: full
     uses: ./.github/workflows/reusable-command.yml
     with:
       command: ${{ matrix.command }}
-      cache_key: ${{ matrix.cache_key }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
       prepare_qemu_user_emulators: false
       prepare_musl_toolchains: false
@@ -299,7 +296,6 @@ jobs:
               else
                 cargo xtask clippy
               fi
-            cache_key: clippy
             fetch_depth: full
             prepare_qemu_user_emulators: false
             prepare_musl_toolchains: false
@@ -307,7 +303,6 @@ jobs:
             main_pr_only: false
           - name: Test with std
             command: cargo xtask test
-            cache_key: test-std
             prepare_qemu_user_emulators: false
             prepare_musl_toolchains: false
             required_repository_owner: ""
@@ -315,14 +310,12 @@ jobs:
           - name: Test axvisor aarch64 qemu
             requires_kvm: true
             command: cargo xtask axvisor test qemu --arch aarch64
-            cache_key: test-axvisor-aarch64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor riscv64 qemu
             requires_kvm: true
             command: cargo xtask axvisor test qemu --arch riscv64
-            cache_key: test-axvisor-riscv64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
@@ -330,81 +323,68 @@ jobs:
             use_container: true
             runs_on: '["ubuntu-latest"]'
             command: cargo xtask axvisor test qemu --arch loongarch64
-            cache_key: test-axvisor-loongarch64
             container_image: axvisor-lvz
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
             command: cargo xtask starry test qemu --arch riscv64
-            cache_key: test-starry-riscv64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry aarch64 qemu
             command: cargo xtask starry test qemu --arch aarch64
-            cache_key: test-starry-aarch64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry loongarch64 qemu
             command: cargo xtask starry test qemu --arch loongarch64
-            cache_key: test-starry-loongarch64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry x86_64 qemu
             command: cargo xtask starry test qemu --arch x86_64
-            cache_key: test-starry-x86_64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos x86_64 qemu
             command: cargo xtask arceos test qemu --arch x86_64
-            cache_key: test-arceos-x86_64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos riscv64 qemu
             command: cargo xtask arceos test qemu --arch riscv64
-            cache_key: test-arceos-riscv64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos aarch64 qemu
             command: cargo xtask arceos test qemu --arch aarch64
-            cache_key: test-arceos-aarch64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos loongarch64 qemu
             command: cargo xtask arceos test qemu --arch loongarch64
-            cache_key: test-arceos-loongarch64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           # Stress tests: uncomment to enable (runs only on PRs targeting main).
           # - name: Stress starry aarch64
           #   command: cargo xtask starry test qemu --arch aarch64 --test-group stress
-          #   cache_key: test-starry-stress-aarch64
           #   apk_region: us
           #   required_repository_owner: ""
           #   main_pr_only: true
           # - name: Stress starry riscv64
           #   command: cargo xtask starry test qemu --arch riscv64 --test-group stress
-          #   cache_key: test-starry-stress-riscv64
           #   apk_region: us
           #   required_repository_owner: ""
           #   main_pr_only: true
           # - name: Stress starry loongarch64
           #   command: cargo xtask starry test qemu --arch loongarch64 --test-group stress
-          #   cache_key: test-starry-stress-loongarch64
           #   apk_region: us
           #   required_repository_owner: ""
           #   main_pr_only: true
           # - name: Stress starry x86_64
           #   command: cargo xtask starry test qemu --arch x86_64 --test-group stress
-          #   cache_key: test-starry-stress-x86_64
           #   apk_region: us
           #   required_repository_owner: ""
           #   main_pr_only: true
@@ -412,7 +392,6 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
             command: cargo xtask axvisor test qemu --arch x86_64
-            cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
             main_pr_only: false
@@ -445,14 +424,12 @@ jobs:
               sudo apt-get install -y libudev-dev pkg-config qemu-system-x86
               sudo usermod -aG kvm $USER
               sg kvm -c "cargo xtask axvisor test qemu --arch x86_64 --test-group svm --test-case smoke"
-            cache_key: ""
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor self-hosted board orangepi-5-plus-linux
             use_container: false
             runs_on: '["self-hosted","linux","board","kvm"]'
             command: cargo xtask axvisor test board --board orangepi-5-plus-linux
-            cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
             main_pr_only: false
@@ -460,7 +437,6 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask starry test board --board orangepi-5-plus
-            cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os
             main_pr_only: false
@@ -470,7 +446,6 @@ jobs:
       requires_kvm: ${{ matrix.requires_kvm == true && true || false }}
       use_container: ${{ matrix.use_container == true && true || false }}
       command: ${{ matrix.command }}
-      cache_key: ${{ matrix.cache_key }}
       container_image: >-
         ${{
           matrix.container_image == 'axvisor-lvz'
