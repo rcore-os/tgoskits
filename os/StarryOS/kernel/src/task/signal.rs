@@ -73,6 +73,20 @@ pub fn check_signals(
     restore_blocked: Option<SignalSet>,
     restart_info: Option<&SyscallRestartInfo>,
 ) -> bool {
+    // Honor zap requests before consulting the signal queue. A sibling
+    // performing `execve` set this flag, and we must do a thread-only
+    // exit (no `group_exit`) so the new image is left intact.
+    //
+    // `take_exit_request` consumes the flag atomically so the outer
+    // `while check_signals(...)` drain loop (see `task/user.rs`) doesn't
+    // re-enter `do_exit` for the same zap. After `do_exit` runs, the
+    // task's `exit` flag is set; control returns through the drain loop
+    // and the user-task outer loop bails on `pending_exit()`.
+    if thr.take_exit_request() {
+        do_exit(0, false);
+        return true;
+    }
+
     let Some((sig, os_action)) =
         thr.signal
             .check_signals_with(uctx, restore_blocked, |uctx, _sig, restartable| {
@@ -292,7 +306,8 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
     //       Ignore.
     {
         use starry_signal::SignalDisposition;
-        let mut actions = thread.proc_data.signal.actions.lock();
+        let actions_arc = thread.proc_data.signal.actions();
+        let mut actions = actions_arc.lock();
         let act = &mut actions[signo];
         let force_default = matches!(act.disposition, SignalDisposition::Ignore)
             || (matches!(act.disposition, SignalDisposition::Default)

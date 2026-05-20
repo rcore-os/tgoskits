@@ -171,6 +171,19 @@ impl Process {
         self.tg.lock().threads.iter().cloned().collect()
     }
 
+    /// Renames a thread in the thread group.
+    ///
+    /// Used by `execve`'s de_thread step when a non-leader thread successfully
+    /// `execve`s: the calling thread inherits the leader's TID so that
+    /// `gettid() == getpid()` holds in the new image. We swap `old_tid` for
+    /// `new_tid` atomically inside the thread-group lock so there is no
+    /// instant in which the caller is unrepresented in the group.
+    pub fn rename_thread(self: &Arc<Self>, old_tid: Pid, new_tid: Pid) {
+        let mut tg = self.tg.lock();
+        tg.threads.remove(&old_tid);
+        tg.threads.insert(new_tid);
+    }
+
     /// Returns `true` if the [`Process`] is group exited.
     pub fn is_group_exited(&self) -> bool {
         self.tg.lock().group_exited
