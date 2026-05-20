@@ -1,7 +1,7 @@
 env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
 features = [
   "ax-drivers/virtio-blk",
-  "ax-plat-loongarch64-qemu-virt/pci",
+  "ax-drivers/pci",
   "ept-level-4",
   "fs",
 ]

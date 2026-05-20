@@ -1,5 +1,14 @@
 target = "x86_64-unknown-none"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 log = "Warn"
-features = ["qemu"]
+features = [
+  "ax-hal/x86-pc",
+  "qemu",
+  "ax-drivers/pci",
+  "ax-drivers/virtio-blk",
+  "ax-drivers/virtio-net",
+  "ax-drivers/virtio-gpu",
+  "ax-drivers/virtio-input",
+  "ax-drivers/virtio-socket",
+]
 plat_dyn = false

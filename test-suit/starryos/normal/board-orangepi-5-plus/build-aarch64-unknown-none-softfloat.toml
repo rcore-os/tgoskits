@@ -3,13 +3,14 @@ target = "aarch64-unknown-none-softfloat"
 # Runtime U-Boot settings live in `orangepi-5-plus-uboot.toml`.
 env = {}
 features = [
+  "ax-hal/plat-dyn",
   "starry-kernel/plat-dyn",
-  "axplat-dyn/pci-list-devices",
-  "axplat-dyn/realtek-rtl8125",
-  "axplat-dyn/rockchip-soc",
-  "axplat-dyn/rockchip-dwc-xhci",
-  "axplat-dyn/rockchip-sdhci",
-  "axplat-dyn/rockchip-dwmmc",
+  "ax-drivers/pci-list-devices",
+  "ax-drivers/realtek-rtl8125",
+  "ax-drivers/rockchip-soc",
+  "ax-drivers/rockchip-dwc-xhci",
+  "ax-drivers/rockchip-sdhci",
+  "ax-drivers/rockchip-dwmmc",
   "rknpu",
 ]
 log = "Info"

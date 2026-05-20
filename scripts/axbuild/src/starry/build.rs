@@ -151,7 +151,7 @@ fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
     let uses_dynamic_platform = cargo.features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn"
+            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "ax-hal/plat-dyn"
         )
     });
     if uses_dynamic_platform {
@@ -160,26 +160,28 @@ fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
 }
 
 fn uses_static_default_platform(features: &[String]) -> bool {
-    let has_defplat = features.iter().any(|feature| {
+    let has_static_platform = features.iter().any(|feature| {
         matches!(
             feature.as_str(),
             "defplat" | "ax-feat/defplat" | "ax-std/defplat"
         )
+    }) || features.iter().any(|feature| {
+        feature.starts_with("ax-hal/") && feature != "ax-hal/plat-dyn" && feature != "ax-hal/myplat"
     });
     let has_dynamic = features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn"
+            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "ax-hal/plat-dyn"
         )
     });
     let has_custom = features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "myplat" | "ax-feat/myplat" | "ax-std/myplat"
+            "myplat" | "ax-feat/myplat" | "ax-std/myplat" | "ax-hal/myplat"
         )
     });
 
-    has_defplat && !has_dynamic && !has_custom
+    has_static_platform && !has_dynamic && !has_custom
 }
 
 fn ensure_starry_bin_arg(
@@ -467,8 +469,8 @@ HELLO = "world"
             features: vec![
                 "common".to_string(),
                 "ax-feat/plat-dyn".to_string(),
-                "axplat-dyn/rockchip-soc".to_string(),
-                "axplat-dyn/rockchip-sdhci".to_string(),
+                "ax-drivers/rockchip-soc".to_string(),
+                "ax-drivers/rockchip-sdhci".to_string(),
             ],
             log: LogLevel::Info,
             max_cpu_num: Some(8),
@@ -488,12 +490,12 @@ HELLO = "world"
         assert!(
             cargo
                 .features
-                .contains(&"axplat-dyn/rockchip-soc".to_string())
+                .contains(&"ax-drivers/rockchip-soc".to_string())
         );
         assert!(
             cargo
                 .features
-                .contains(&"axplat-dyn/rockchip-sdhci".to_string())
+                .contains(&"ax-drivers/rockchip-sdhci".to_string())
         );
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));

@@ -14,10 +14,8 @@ fp-simd = ["ax-cpu/fp-simd"]
 irq = ["ax-plat/irq", "dep:ax-riscv-plic"]
 rtc = ["dep:riscv_goldfish"]
 smp = ["ax-plat/smp"]
-sdmmc = ["ax-drivers/sdmmc"]
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-ax-drivers = { workspace = true, optional = true }
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
 ax-kspin = { workspace = true }

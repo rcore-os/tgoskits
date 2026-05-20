@@ -24,8 +24,8 @@
 //!     - `fs`: Enable file system support.
 //!     - `net`: Enable networking support.
 //!     - `display`: Enable graphics support.
-//! - Device drivers are selected directly through `ax-driver/*` features by
-//!   static board configurations, while dynamic platforms use `axplat-dyn/*`.
+//! - Device drivers are selected directly through `ax-drivers/*` features by
+//!   board configurations.
 //!
 //! [ArceOS]: https://github.com/arceos-org/arceos
 

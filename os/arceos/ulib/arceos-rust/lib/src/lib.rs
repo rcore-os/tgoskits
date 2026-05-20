@@ -4,6 +4,7 @@
 #![feature(integer_cast_extras)]
 
 extern crate alloc;
+extern crate ax_drivers as _;
 
 mod interface;
 

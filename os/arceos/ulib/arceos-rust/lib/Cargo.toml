@@ -67,11 +67,6 @@ display = ["ax-api/display", "ax-feat/display"]
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-feat/rtc"]
 
-# Device bus selectors kept as upper-layer semantic flags. Static driver
-# enablement is selected directly through `ax-driver/*`.
-bus-mmio = ["ax-feat/bus-mmio"]
-bus-pci = ["ax-feat/bus-pci"]
-
 # Logging
 log-level-debug = []
 log-level-error = []
@@ -82,8 +77,10 @@ log-level-warn = []
 
 [dependencies]
 ax-api = {workspace = true, features = ["alloc"]}
+ax-drivers = {workspace = true}
 ax-errno = {workspace = true}
 ax-feat = {workspace = true}
+ax-hal = {workspace = true}
 ax-io = {workspace = true}
 ax-kspin = {workspace = true}
 ax-posix-api = {workspace = true, features = ["use-hermit-types"]}

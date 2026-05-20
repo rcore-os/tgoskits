@@ -60,11 +60,6 @@ display = []
 # Real Time Clock (RTC) Driver.
 rtc = []
 
-# Device bus selectors kept as upper-layer semantic flags. Static driver
-# enablement is selected directly through `ax-driver/*`.
-bus-mmio = []
-bus-pci = []
-
 # Logging
 log-level-off = []
 log-level-error = []

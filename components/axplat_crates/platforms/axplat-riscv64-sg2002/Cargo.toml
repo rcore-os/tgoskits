@@ -19,12 +19,10 @@ fp-simd = ["ax-cpu/fp-simd"]
 irq = ["ax-plat/irq", "dep:ax-riscv-plic"]
 rtc = []
 smp = ["ax-plat/smp", "ax-kspin/smp"]
-cvsd = ["ax-drivers/cvsd"]
 
 [dependencies]
 dw_uart_rs = "0.2.0"
 log = { workspace = true }
-ax-drivers = { workspace = true, optional = true }
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true, features = ["xuantie-c9xx"] }
 ax-kspin = { workspace = true }

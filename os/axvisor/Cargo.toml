@@ -39,11 +39,6 @@ fs = ["ax-std/fs"]
 vmx = ["axvm/vmx"]
 svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
-dyn-plat = ["ax-std/plat-dyn", "dep:axplat-dyn", "dep:ax-drivers"]
-rockchip-soc = ["dep:ax-drivers", "ax-drivers/rockchip-soc"]
-sdmmc = ["dep:ax-drivers", "ax-drivers/rockchip-sdhci"]
-rockchip-pm = ["dep:ax-drivers", "ax-drivers/rockchip-pm"]
-serial = ["dep:ax-drivers", "ax-drivers/serial"]
 
 [target.'cfg(not(any(windows, unix)))'.dependencies]
 bitflags = "2.2"
@@ -84,20 +79,16 @@ ax-page-table-multiarch = { workspace = true }
 ax-percpu = { workspace = true, features = ["arm-el2", "non-zero-vma"] }
 rdif-intc.workspace = true
 rdrive.workspace = true
-ax-drivers = { workspace = true, optional = true }
-axplat-dyn = { workspace = true, optional = true, default-features = false }
+ax-drivers.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-axplat-x86-qemu-q35 = { version = "0.4.7", path = "../../platform/x86-qemu-q35", default-features = false, features = ["reboot-on-system-off", "irq", "smp"] }
 ax-config = { workspace = true, features = ["plat-dyn"] }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
-ax-plat-loongarch64-qemu-virt = { version = "0.5.9", path = "../../components/axplat_crates/platforms/axplat-loongarch64-qemu-virt", default-features = false, features = ["irq", "smp"] }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-axplat-riscv64-qemu-virt-hv = { workspace = true }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 # xtask dependencies (only used on host platforms)

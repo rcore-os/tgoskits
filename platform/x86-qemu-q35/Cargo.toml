@@ -19,7 +19,6 @@ default = [
 ]
 fp-simd = []
 irq = ["ax-plat/irq"]
-pci = ["dep:ax-drivers", "ax-drivers/pci"]
 reboot-on-system-off = []
 rtc = ["dep:x86_rtc"]
 smp = ["ax-plat/smp", "ax-kspin/smp"]
@@ -27,7 +26,6 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true, features = ["arm-el2"] }
-ax-drivers = { workspace = true, optional = true }
 ax-plat.workspace = true
 bitflags = "2.6"
 heapless = "0.9"

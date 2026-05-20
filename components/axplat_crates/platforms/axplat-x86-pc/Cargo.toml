@@ -15,7 +15,6 @@ irq = ["ax-plat/irq"]
 rtc = ["x86_rtc"]
 smp = ["ax-plat/smp", "ax-kspin/smp"]
 reboot-on-system-off = []
-pci = ["ax-drivers/pci"]
 
 [dependencies]
 ax-kspin = { workspace = true }
@@ -27,7 +26,6 @@ ax-percpu.workspace = true
 heapless = "0.9"
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
-ax-drivers = { workspace = true, optional = true }
 ax-plat = { workspace = true }
 rdrive.workspace = true
 

@@ -3,6 +3,7 @@
 #![feature(used_with_arg)]
 
 extern crate alloc;
+extern crate ax_drivers as _;
 extern crate somehal;
 
 #[macro_use]

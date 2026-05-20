@@ -12,34 +12,16 @@ repository.workspace = true
 [features]
 default = ["smp", "irq" ]
 smp = ["ax-plat/smp"]
-irq = ["ax-plat/irq", "ax-drivers/irq"]
-rtc = ["ax-drivers/rtc"]
+irq = ["ax-plat/irq"]
+rtc = []
 fp-simd = ["ax-cpu/fp-simd"]
 uspace = ["somehal/uspace"]
 hv = ["somehal/hv", "ax-cpu/arm-el2"]
-rockchip-soc = ["ax-drivers/rockchip-soc"]
-rockchip-sdhci = ["ax-drivers/rockchip-sdhci"]
-rockchip-dwmmc = ["ax-drivers/rockchip-dwmmc"]
-rockchip-pm = ["ax-drivers/rockchip-pm"]
-usb = ["ax-drivers/usb"]
-rockchip-dwc-xhci = ["usb", "ax-drivers/rockchip-dwc-xhci"]
-xhci-mmio = ["usb", "ax-drivers/xhci-mmio"]
-xhci-pci = ["usb", "ax-drivers/xhci-pci", "ax-drivers/pci-fdt"]
-serial = ["ax-drivers/serial"]
-virtio = ["ax-drivers/virtio-blk", "ax-drivers/fdt"]
-display = ["ax-drivers/display"]
-input = ["ax-drivers/input"]
-net = ["ax-drivers/net"]
-vsock = ["ax-drivers/vsock"]
-intel-net = ["net", "ax-drivers/intel-net"]
-realtek-rtl8125 = ["net", "ax-drivers/realtek-rtl8125"]
-pci-list-devices = ["ax-drivers/pci-list-devices"]
-rknpu = ["ax-drivers/rknpu"]
 
 [dependencies]
 ax-cpu.workspace = true
+ax-drivers = { workspace = true, features = ["fdt", "pci-fdt"] }
 ax-errno.workspace = true
-ax-drivers = { workspace = true, features = ["block", "pci", "virtio-core"] }
 axklib.workspace = true
 ax-plat.workspace = true
 heapless = "0.9"

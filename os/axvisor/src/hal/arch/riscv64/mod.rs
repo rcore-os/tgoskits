@@ -2,8 +2,8 @@ mod api;
 pub mod cache;
 
 use crate::vmm::vm_list::get_vm_by_id;
+use ax_hal::platform::plic_base;
 use axaddrspace::{GuestPhysAddr, device::AccessWidth};
-use axplat_riscv64_qemu_virt_hv::config::devices::PLIC_PADDR;
 use axvisor_api::vmm::current_vm_id;
 
 pub fn hardware_check() {
@@ -15,15 +15,16 @@ pub fn inject_interrupt(irq_id: usize) {
     debug!("injecting interrupt id: {}", irq_id);
 
     // Get the instance of the vplic, and then inject virtual interrupt.
+    let plic_paddr = plic_base();
     let vplic = get_vm_by_id(current_vm_id())
         .unwrap()
         .get_devices()
-        .find_mmio_dev(GuestPhysAddr::from_usize(PLIC_PADDR))
+        .find_mmio_dev(GuestPhysAddr::from_usize(plic_paddr))
         .unwrap();
 
     // Calulate the pending register offset and value.
     let reg_offset = riscv_vplic::PLIC_PENDING_OFFSET + (irq_id / 32) * 4;
-    let addr = GuestPhysAddr::from_usize(PLIC_PADDR + reg_offset);
+    let addr = GuestPhysAddr::from_usize(plic_paddr + reg_offset);
     let width = AccessWidth::Dword;
     let val: u32 = 1 << (irq_id % 32);
 

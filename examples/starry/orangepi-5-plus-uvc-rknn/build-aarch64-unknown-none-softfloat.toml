@@ -2,14 +2,14 @@
 target = "aarch64-unknown-none-softfloat"
 env = {}
 features = [
+  "ax-hal/plat-dyn",
   "starry-kernel/plat-dyn",
-  "axplat-dyn/irq",
-  "axplat-dyn/pci-list-devices",
-  "axplat-dyn/realtek-rtl8125",
-  "axplat-dyn/rockchip-soc",
-  "axplat-dyn/rockchip-dwc-xhci",
-  "axplat-dyn/sdmmc",
-  "axplat-dyn/simple-sdmmc",
+  "ax-drivers/irq",
+  "ax-drivers/pci-list-devices",
+  "ax-drivers/realtek-rtl8125",
+  "ax-drivers/rockchip-soc",
+  "ax-drivers/rockchip-dwc-xhci",
+  "ax-drivers/rockchip-sdhci",
   "rknpu",
 ]
 log = "Warn"

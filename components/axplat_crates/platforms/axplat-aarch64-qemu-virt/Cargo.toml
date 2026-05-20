@@ -14,16 +14,9 @@ fp-simd = ["ax-cpu/fp-simd"]
 irq = ["ax-plat/irq", "ax-plat-aarch64-peripherals/irq"]
 rtc = []
 smp = ["ax-plat/smp"]
-pci = ["ax-drivers/pci"]
-virtio-blk = ["ax-drivers/virtio-blk"]
-virtio-net = ["ax-drivers/virtio-net"]
-virtio-gpu = ["ax-drivers/virtio-gpu"]
-virtio-input = ["ax-drivers/virtio-input"]
-virtio-socket = ["ax-drivers/virtio-socket"]
 
 [dependencies]
 log = "0.4"
-ax-drivers = { workspace = true, optional = true }
 ax-page-table-entry = { workspace = true }
 ax-config-macros = { workspace = true }
 ax-plat-aarch64-peripherals = { workspace = true }

@@ -157,15 +157,7 @@ impl_trait! {
         }
 
         fn time_try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
-            #[cfg(all(feature = "plat-dyn", target_os = "none"))]
-            {
-                axplat_dyn::try_init_epoch_offset(epoch_time_nanos)
-            }
-            #[cfg(not(all(feature = "plat-dyn", target_os = "none")))]
-            {
-                let _ = epoch_time_nanos;
-                false
-            }
+            ax_hal::time::try_init_epoch_offset(epoch_time_nanos)
         }
 
         /// Enable or disable the specified IRQ line.

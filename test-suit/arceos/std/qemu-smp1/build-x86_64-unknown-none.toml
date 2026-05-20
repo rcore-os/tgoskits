@@ -1,5 +1,10 @@
 std = true
-features = []
+features = [
+  "ax-hal/x86-pc",
+  "ax-drivers/pci",
+  "ax-drivers/virtio-blk",
+  "ax-drivers/virtio-net",
+]
 log = "Info"
 max_cpu_num = 1
 

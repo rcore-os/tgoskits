@@ -31,6 +31,7 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+extern crate ax_drivers as _;
 
 mod ctypes {
     #[rustfmt::skip]

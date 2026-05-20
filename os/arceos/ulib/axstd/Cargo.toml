@@ -75,11 +75,6 @@ input = ["ax-feat/input"]
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-feat/rtc"]
 
-# Device bus selectors kept as upper-layer semantic flags. Static driver
-# enablement is selected directly through `ax-driver/*`.
-bus-mmio = ["ax-feat/bus-mmio"]
-bus-pci = ["ax-feat/bus-pci"]
-
 # Backtrace
 backtrace = ["ax-feat/backtrace"]
 dwarf = ["ax-feat/dwarf"]

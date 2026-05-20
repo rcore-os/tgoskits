@@ -14,12 +14,6 @@ fp-simd = ["ax-cpu/fp-simd"]
 irq = ["ax-plat/irq", "dep:ax-riscv-plic"]
 rtc = ["dep:riscv_goldfish"]
 smp = ["ax-plat/smp"]
-pci = ["ax-drivers/pci"]
-virtio-blk = ["ax-drivers/virtio-blk"]
-virtio-net = ["ax-drivers/virtio-net"]
-virtio-gpu = ["ax-drivers/virtio-gpu"]
-virtio-input = ["ax-drivers/virtio-input"]
-virtio-socket = ["ax-drivers/virtio-socket"]
 
 [dependencies]
 ax-kspin = { workspace = true }
@@ -31,7 +25,6 @@ ax-riscv-plic = { workspace = true, optional = true }
 sbi-rt = { version = "0.0.3", features = ["legacy"] }
 some-serial.workspace = true
 
-ax-drivers = { workspace = true, optional = true }
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }

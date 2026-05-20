@@ -284,6 +284,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(all(feature = "net", feature = "plat-dyn"))]
     devices::init_dyn_net();
 
+    #[cfg(all(feature = "net", not(feature = "plat-dyn")))]
+    devices::init_static_net();
+
     #[cfg(all(feature = "net-ng", feature = "plat-dyn"))]
     devices::init_dyn_net_ng();
 

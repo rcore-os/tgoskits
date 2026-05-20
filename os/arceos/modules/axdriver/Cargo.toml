@@ -11,8 +11,6 @@ description = "ArceOS device drivers"
 license.workspace = true
 
 [features]
-bus-mmio = []
-bus-pci = ["ax-drivers/pci", "ax-hal/pci"]
 net = ["ax-drivers/net"]
 block = ["ax-drivers/block"]
 display = ["ax-drivers/display"]
@@ -23,11 +21,11 @@ vsock = ["ax-drivers/vsock"]
 virtio = ["ax-drivers/virtio"]
 
 # various types of drivers
-virtio-blk = ["ax-drivers/virtio-blk", "ax-hal/virtio-blk"]
-virtio-net = ["ax-drivers/virtio-net", "ax-hal/virtio-net"]
-virtio-gpu = ["ax-drivers/virtio-gpu", "ax-hal/virtio-gpu"]
-virtio-input = ["ax-drivers/virtio-input", "ax-hal/virtio-input"]
-virtio-socket = ["ax-drivers/virtio-socket", "ax-hal/virtio-socket"]
+virtio-blk = ["ax-drivers/virtio-blk"]
+virtio-net = ["ax-drivers/virtio-net"]
+virtio-gpu = ["ax-drivers/virtio-gpu"]
+virtio-input = ["ax-drivers/virtio-input"]
+virtio-socket = ["ax-drivers/virtio-socket"]
 ramdisk = ["ax-drivers/ramdisk"]
 bcm2835-sdhci = ["ax-drivers/bcm2835-sdhci"]
 sdmmc = ["ax-drivers/sdmmc"]
@@ -42,4 +40,3 @@ default = []
 
 [dependencies]
 ax-drivers.workspace = true
-ax-hal.workspace = true

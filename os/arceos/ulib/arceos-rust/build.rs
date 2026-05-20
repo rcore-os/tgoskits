@@ -118,7 +118,14 @@ fn compile_project(lib_dir: &PathBuf, out_dir: &PathBuf, config_path: &PathBuf) 
     let arch = get_arch();
     let target = get_target(&arch);
     let features = env::var("CARGO_CFG_FEATURE").unwrap();
-    let feature_list = features.replace(",", " ");
+    let passthrough_features = env::var("ARCEOS_RUST_FEATURES").unwrap_or_default();
+    let feature_list = features
+        .split(',')
+        .chain(passthrough_features.split(','))
+        .filter(|feature| !feature.is_empty())
+        .map(map_nested_feature)
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let mut command = Command::new(cargo());
     command.env("AX_TARGET", target);
@@ -271,4 +278,14 @@ fn get_log_level(feature_list: &str) -> &str {
         }
     }
     level
+}
+
+fn map_nested_feature(feature: &str) -> String {
+    if let Some(rest) = feature.strip_prefix("ax_hal/") {
+        format!("ax-hal/{rest}")
+    } else if let Some(rest) = feature.strip_prefix("ax_drivers/") {
+        format!("ax-drivers/{rest}")
+    } else {
+        feature.to_string()
+    }
 }

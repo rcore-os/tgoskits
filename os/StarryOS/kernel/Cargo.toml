@@ -23,7 +23,6 @@ memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:ax-drivers", "ax-drivers/rknpu"]
 plat-dyn = [
     "dep:ax-drivers",
-    "dep:axplat-dyn",
     "ax-drivers/usb",
     "dep:crab-usb",
     "dep:rdrive",
@@ -67,7 +66,6 @@ ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
 axnet = { version = "0.6.0", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
-axplat-dyn = { workspace = true, optional = true }
 ax-drivers = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true

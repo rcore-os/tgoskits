@@ -1,8 +1,8 @@
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
-  "ax-std/bus-mmio",
-  "sdmmc",
-  "rockchip-soc",
+  "ax-hal/plat-dyn",
+  "ax-drivers/rockchip-sdhci",
+  "ax-drivers/rockchip-soc",
   "fs",
 ]
 log = "Info"

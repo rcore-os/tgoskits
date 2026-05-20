@@ -2,11 +2,11 @@
 target = "aarch64-unknown-none-softfloat"
 env = {}
 features = [
+  "ax-hal/plat-dyn",
   "starry-kernel/plat-dyn",
-  "axplat-dyn/rockchip-soc",
-  "axplat-dyn/rockchip-dwc-xhci",
-  "axplat-dyn/sdmmc",
-  "axplat-dyn/simple-sdmmc",
+  "ax-drivers/rockchip-soc",
+  "ax-drivers/rockchip-dwc-xhci",
+  "ax-drivers/rockchip-sdhci",
 ]
 log = "Info"
 max_cpu_num = 1
