@@ -270,6 +270,11 @@ pub(crate) use nullable;
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
 
+    #[cfg(feature = "stack-guard-page")]
+    if ax_task::diagnose_current_stack_guard_page_fault(vaddr) {
+        return false;
+    }
+
     let curr = current();
     let Some(thr) = curr.try_as_thread() else {
         return false;
