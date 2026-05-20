@@ -10,7 +10,7 @@ use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{Error as VirtIoError, device::net::VirtIONetRaw, transport::Transport};
 
 use crate::{
-    bindings::net::PlatformDeviceNet,
+    net::PlatformDeviceNet,
     virtio::{self, VirtIoHalImpl, VirtIoTransport},
 };
 

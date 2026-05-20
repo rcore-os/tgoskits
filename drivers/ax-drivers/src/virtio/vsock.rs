@@ -15,7 +15,7 @@ use virtio_drivers::{
     transport::Transport,
 };
 
-use crate::{bindings::vsock::PlatformDeviceVsock, virtio::VirtIoHalImpl};
+use crate::{virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock};
 
 const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
 

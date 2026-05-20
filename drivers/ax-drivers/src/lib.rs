@@ -4,7 +4,6 @@
 
 extern crate alloc;
 
-pub mod bindings;
 pub mod error;
 #[cfg(any(
     feature = "serial",
@@ -24,13 +23,13 @@ pub mod mmio;
 #[cfg(feature = "block")]
 pub mod block;
 #[cfg(feature = "display")]
-pub mod display {}
+pub mod display;
 #[cfg(feature = "input")]
-pub mod input {}
+pub mod input;
 #[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "vsock")]
-pub mod vsock {}
+pub mod vsock;
 
 #[cfg(feature = "pci")]
 pub mod pci;

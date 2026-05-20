@@ -29,7 +29,7 @@ use sdmmc_protocol::{
 use spin::Once;
 
 use crate::{
-    bindings::block::{PlatformDeviceBlock, decode_fdt_irq},
+    block::{PlatformDeviceBlock, decode_fdt_irq},
     mmio::iomap,
 };
 

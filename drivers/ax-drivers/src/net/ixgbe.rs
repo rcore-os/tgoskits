@@ -16,7 +16,7 @@ use rdrive::{
     },
 };
 
-use crate::bindings::net::{PlatformDeviceNet, pci_legacy_irq_for_address};
+use crate::net::{PlatformDeviceNet, pci_legacy_irq_for_address};
 
 const DRIVER_NAME: &str = "ixgbe";
 const QUEUE_SIZE: usize = 512;

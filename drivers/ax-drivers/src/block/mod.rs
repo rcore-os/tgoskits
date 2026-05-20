@@ -1,3 +1,5 @@
+mod binding;
+
 #[cfg(feature = "ahci")]
 pub mod ahci;
 #[cfg(feature = "bcm2835-sdhci")]
@@ -16,13 +18,11 @@ pub mod sdmmc;
 #[cfg(sync_block_dev)]
 use alloc::{boxed::Box, sync::Arc};
 
+pub use binding::*;
 #[cfg(sync_block_dev)]
 use rd_block::{BlkError, BuffConfig, DriverGeneric, Event, IQueue, Interface, Request, RequestId};
 #[cfg(sync_block_dev)]
 use spin::Mutex;
-
-#[cfg(sync_block_dev)]
-use crate::bindings::block::PlatformDeviceBlock;
 
 #[cfg(sync_block_dev)]
 pub(crate) trait SyncBlockOps: Send + 'static {

@@ -11,7 +11,7 @@ use rdrive::{
 };
 use realtek_rtl8125::Rtl8125;
 
-use crate::bindings::net::{PlatformDeviceNet, pci_legacy_irq_for_address};
+use crate::net::{PlatformDeviceNet, pci_legacy_irq_for_address};
 
 const DRIVER_NAME: &str = "realtek-rtl8125";
 const RTL8125_DMA_MASK: u64 = u32::MAX as u64;

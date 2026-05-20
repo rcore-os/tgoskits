@@ -8,7 +8,7 @@ use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{Error as VirtIoError, device::gpu::VirtIOGpu, transport::Transport};
 
-use crate::{bindings::display::PlatformDeviceDisplay, virtio::VirtIoHalImpl};
+use crate::{display::PlatformDeviceDisplay, virtio::VirtIoHalImpl};
 
 #[cfg(probe = "pci")]
 crate::register_driver!(

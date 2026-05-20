@@ -6,7 +6,7 @@ use fxmac_rs::{FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xma
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice};
 
-use crate::bindings::net::PlatformDeviceNet;
+use crate::net::PlatformDeviceNet;
 
 pub const DEVICE_NAME: &str = "fxmac";
 

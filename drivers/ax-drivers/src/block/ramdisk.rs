@@ -1,6 +1,6 @@
 use rdrive::PlatformDevice;
 
-use crate::bindings::block::PlatformDeviceBlock;
+use crate::block::PlatformDeviceBlock;
 
 pub const BLOCK_SIZE: usize = 512;
 pub const DEFAULT_SIZE: usize = 16 * 1024 * 1024;

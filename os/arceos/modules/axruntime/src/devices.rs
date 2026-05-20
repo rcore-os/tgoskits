@@ -23,7 +23,7 @@ pub(crate) fn take_dyn_fs_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
     #[cfg(target_os = "none")]
     {
-        ax_drivers::bindings::block::take_block_devices()
+        ax_drivers::block::take_block_devices()
             .into_iter()
             .map(|dev| {
                 alloc::boxed::Box::new(DynFsBlockDevice(dev))
@@ -50,7 +50,7 @@ pub(crate) fn take_dyn_fs_ng_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs_ng::FsBlockDevice>> {
     #[cfg(target_os = "none")]
     {
-        ax_drivers::bindings::block::take_block_devices()
+        ax_drivers::block::take_block_devices()
             .into_iter()
             .map(|dev| {
                 alloc::boxed::Box::new(DynFsBlockDevice(dev))
@@ -76,7 +76,7 @@ pub(crate) fn take_static_fs_ng_block_devices()
 pub(crate) fn init_dyn_display() {
     #[cfg(target_os = "none")]
     {
-        let devices = ax_drivers::bindings::display::take_display_devices()
+        let devices = ax_drivers::display::take_display_devices()
             .unwrap_or_else(|err| panic!("failed to open display devices: {err:?}"))
             .into_iter()
             .map(|dev| {
@@ -93,7 +93,7 @@ pub(crate) fn init_dyn_display() {
 
 #[cfg(all(feature = "display", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_display() {
-    let devices = ax_drivers::bindings::display::take_display_devices()
+    let devices = ax_drivers::display::take_display_devices()
         .unwrap_or_else(|err| panic!("failed to open static display devices: {err:?}"))
         .into_iter()
         .map(|dev| {
@@ -108,7 +108,7 @@ pub(crate) fn init_static_display() {
 pub(crate) fn init_dyn_input() {
     #[cfg(target_os = "none")]
     {
-        let devices = ax_drivers::bindings::input::take_input_devices()
+        let devices = ax_drivers::input::take_input_devices()
             .unwrap_or_else(|err| panic!("failed to open input devices: {err:?}"))
             .into_iter()
             .map(|dev| ax_input::ErasedInputDevice::new(ax_input::rdif::RdifInputDevice::new(dev)));
@@ -121,7 +121,7 @@ pub(crate) fn init_dyn_input() {
 
 #[cfg(all(feature = "input", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_input() {
-    let devices = ax_drivers::bindings::input::take_input_devices()
+    let devices = ax_drivers::input::take_input_devices()
         .unwrap_or_else(|err| panic!("failed to open static input devices: {err:?}"))
         .into_iter()
         .map(|dev| ax_input::ErasedInputDevice::new(ax_input::rdif::RdifInputDevice::new(dev)));
@@ -142,8 +142,8 @@ pub(crate) fn init_dyn_net_ng() {
 pub(crate) fn take_static_net_ng_drivers()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng::EthernetDriver>> {
     let mut devices = alloc::vec::Vec::new();
-    for dev in rdrive::get_list::<ax_drivers::bindings::net::PlatformNetDevice>() {
-        let (net, name, irq_num) = ax_drivers::bindings::net::take_rd_net_device(dev)
+    for dev in rdrive::get_list::<ax_drivers::net::PlatformNetDevice>() {
+        let (net, name, irq_num) = ax_drivers::net::take_rd_net_device(dev)
             .unwrap_or_else(|err| panic!("failed to open static net device: {err:?}"));
         let driver = ax_net_ng::RdNetDriver::new(name, net, irq_num)
             .unwrap_or_else(|err| panic!("failed to adapt static net device: {err:?}"));
@@ -158,7 +158,7 @@ pub(crate) fn take_static_net_ng_drivers()
 pub(crate) fn init_dyn_vsock() {
     #[cfg(target_os = "none")]
     {
-        let devices = ax_drivers::bindings::vsock::take_vsock_devices()
+        let devices = ax_drivers::vsock::take_vsock_devices()
             .unwrap_or_else(|err| panic!("failed to open vsock devices: {err:?}"));
         ax_net_ng::init_vsock(devices);
     }
@@ -169,7 +169,7 @@ pub(crate) fn init_dyn_vsock() {
 
 #[cfg(all(feature = "vsock", not(feature = "plat-dyn")))]
 pub(crate) fn init_static_vsock() {
-    let devices = ax_drivers::bindings::vsock::take_vsock_devices()
+    let devices = ax_drivers::vsock::take_vsock_devices()
         .unwrap_or_else(|err| panic!("failed to open static vsock devices: {err:?}"));
     ax_net_ng::init_vsock(devices);
 }
@@ -179,8 +179,8 @@ fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::Ether
     #[cfg(target_os = "none")]
     {
         let mut devices = alloc::vec::Vec::new();
-        for dev in rdrive::get_list::<ax_drivers::bindings::net::PlatformNetDevice>() {
-            let (net, name, irq_num) = ax_drivers::bindings::net::take_rd_net_device(dev)
+        for dev in rdrive::get_list::<ax_drivers::net::PlatformNetDevice>() {
+            let (net, name, irq_num) = ax_drivers::net::take_rd_net_device(dev)
                 .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
             let driver = ax_net_ng::RdNetDriver::new(name, net, irq_num)
                 .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
@@ -200,8 +200,8 @@ fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng:
     #[cfg(target_os = "none")]
     {
         let mut devices = alloc::vec::Vec::new();
-        for dev in rdrive::get_list::<ax_drivers::bindings::net::PlatformNetDevice>() {
-            let (net, name, irq_num) = ax_drivers::bindings::net::take_rd_net_device(dev)
+        for dev in rdrive::get_list::<ax_drivers::net::PlatformNetDevice>() {
+            let (net, name, irq_num) = ax_drivers::net::take_rd_net_device(dev)
                 .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
             let driver = ax_net_ng::RdNetDriver::new(name, net, irq_num)
                 .unwrap_or_else(|err| panic!("failed to adapt net device: {err:?}"));
@@ -221,7 +221,7 @@ fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng:
     feature = "plat-dyn",
     target_os = "none"
 ))]
-struct DynFsBlockDevice(ax_drivers::bindings::block::Block);
+struct DynFsBlockDevice(ax_drivers::block::Block);
 
 #[cfg(all(any(feature = "fs", feature = "fs-ng"), not(feature = "plat-dyn")))]
 struct StaticBlockDevice {

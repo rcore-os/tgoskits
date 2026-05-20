@@ -12,7 +12,7 @@ use virtio_drivers::{
     transport::Transport,
 };
 
-use crate::{bindings::input::PlatformDeviceInput, virtio::VirtIoHalImpl};
+use crate::{input::PlatformDeviceInput, virtio::VirtIoHalImpl};
 
 #[cfg(probe = "pci")]
 crate::register_driver!(
