@@ -276,12 +276,14 @@ jobs:
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor aarch64 qemu
+            self_hosted_runs_on: '["self-hosted","linux","kvm"]'
             command: cargo xtask axvisor test qemu --arch aarch64
             cache_key: test-axvisor-aarch64
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor riscv64 qemu
+            self_hosted_runs_on: '["self-hosted","linux","kvm"]'
             command: cargo xtask axvisor test qemu --arch riscv64
             cache_key: test-axvisor-riscv64
             apk_region: us
@@ -371,7 +373,7 @@ jobs:
           #   main_pr_only: true
           - name: Test axvisor self-hosted x86_64
             use_container: false
-            runs_on: '["self-hosted","linux","intel"]'
+            runs_on: '["self-hosted","linux","intel","kvm"]'
             command: cargo xtask axvisor test qemu --arch x86_64
             cache_key: ""
             container_image: ""
@@ -379,6 +381,7 @@ jobs:
             main_pr_only: false
           - name: Test axvisor x86_64 svm hosted
             use_container: false
+            self_hosted_runs_on: '["self-hosted","linux","kvm"]'
             command: |
               cpu_vendor="$(awk -F ': *' '/^vendor_id/ { print $2; exit }' /proc/cpuinfo)"
               if [ "$cpu_vendor" = "GenuineIntel" ]; then
@@ -410,7 +413,7 @@ jobs:
             main_pr_only: false
           - name: Test axvisor self-hosted board orangepi-5-plus-linux
             use_container: false
-            runs_on: '["self-hosted","linux","board"]'
+            runs_on: '["self-hosted","linux","board","kvm"]'
             command: cargo xtask axvisor test board --board orangepi-5-plus-linux
             cache_key: ""
             container_image: ""
@@ -427,6 +430,7 @@ jobs:
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: ${{ matrix.runs_on || '["ubuntu-latest"]' }}
+      self_hosted_runs_on: ${{ matrix.self_hosted_runs_on || '["self-hosted","linux"]' }}
       use_container: ${{ matrix.use_container == true && true || false }}
       command: ${{ matrix.command }}
       cache_key: ${{ matrix.cache_key }}
