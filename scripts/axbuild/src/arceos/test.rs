@@ -73,7 +73,7 @@ pub struct ArgsTestQemu {
     /// Only run C tests; prefer `--test-group c`
     #[arg(long, conflicts_with = "only_rust", hide = true)]
     pub only_c: bool,
-    /// Skip host `backtrace symbolize` after each ArceOS **rust** QEMU case (Unix only).
+    /// Skip host `backtrace symbolize` after each ArceOS **rust** QEMU case.
     #[arg(long = "no-symbolize", help_heading = "Backtrace")]
     pub no_symbolize: bool,
     /// Keep the QEMU backtrace capture log after successful host symbolize (default: delete).
@@ -583,23 +583,42 @@ async fn run_rust_qemu_case(
     let auto_symbolize = symbolize_after
         && crate::build::build_info_enables_backtrace_path(&case.case.build_config_path);
 
-    let log_path = if auto_symbolize {
-        let dir = crate::context::axbuild_tmp_dir(&workspace).join("qemu-logs");
-        fs::create_dir_all(&dir)?;
-        Some(dir.join(format!("{case_name}-{target}.log")))
+    let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
+    let stream_session = if auto_symbolize {
+        crate::backtrace::BacktraceSymbolizeSession::try_new(&elf, case_name)
     } else {
         None
     };
 
+    let capture_backtrace = if auto_symbolize {
+        let dir = crate::context::axbuild_tmp_dir(&workspace).join("qemu-logs");
+        fs::create_dir_all(&dir)?;
+        Some(crate::backtrace::BacktraceQemuCapture {
+            log_path: dir.join(format!("{case_name}-{target}.log")),
+            stream_symbolize: stream_session.clone(),
+        })
+    } else {
+        None
+    };
+
+    let log_path = capture_backtrace
+        .as_ref()
+        .map(|capture| capture.log_path.clone());
+
     arceos
         .app
-        .run_qemu(&case.cargo, case.qemu.clone(), log_path.clone())
+        .run_qemu(&case.cargo, case.qemu.clone(), capture_backtrace)
         .await
         .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"))?;
 
     if auto_symbolize && let Some(path) = log_path {
-        let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
-        crate::backtrace::maybe_symbolize_after_qemu(&elf, &path, case_name, keep_qemu_log)?;
+        crate::backtrace::maybe_symbolize_after_qemu(
+            &elf,
+            &path,
+            case_name,
+            keep_qemu_log,
+            stream_session.as_deref(),
+        )?;
     }
 
     Ok(())

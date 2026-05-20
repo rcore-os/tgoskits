@@ -163,11 +163,11 @@ impl AppContext {
         &mut self,
         cargo: &Cargo,
         qemu: QemuConfig,
-        capture_backtrace_log: Option<PathBuf>,
+        capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
         let _path_guard = self.scoped_qemu_path(cargo)?;
-        let _backtrace_capture = capture_backtrace_log
-            .as_deref()
+        let _backtrace_capture = capture_backtrace
+            .as_ref()
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
             .context("failed to install backtrace block output capture")?;
@@ -185,10 +185,10 @@ impl AppContext {
     pub(crate) async fn run_prepared_qemu(
         &mut self,
         qemu: QemuConfig,
-        capture_backtrace_log: Option<PathBuf>,
+        capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let _backtrace_capture = capture_backtrace_log
-            .as_deref()
+        let _backtrace_capture = capture_backtrace
+            .as_ref()
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
             .context("failed to install backtrace block output capture")?;

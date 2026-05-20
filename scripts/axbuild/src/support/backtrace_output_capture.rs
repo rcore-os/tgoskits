@@ -1,6 +1,6 @@
 //! Cross-platform stdout/stderr tee that writes only raw backtrace blocks to a log file.
 
-use std::{io, path::Path};
+use std::io;
 
 #[cfg(unix)]
 mod platform {
@@ -8,12 +8,13 @@ mod platform {
         fs::File,
         io::{self, Read, Write},
         os::unix::io::FromRawFd,
-        path::Path,
         sync::{Arc, Mutex},
         thread::JoinHandle,
     };
 
-    use crate::backtrace::BacktraceBlockCapture;
+    use crate::backtrace::{
+        BacktraceBlockCapture, BacktraceQemuCapture, flush_pending_stream_symbolize,
+    };
 
     struct PipeEnds {
         read_fd: i32,
@@ -128,12 +129,18 @@ mod platform {
         saved_stdout: i32,
         saved_stderr: i32,
         capture: Arc<Mutex<BacktraceBlockCapture>>,
+        pending_stream_blocks: Arc<Mutex<Vec<Vec<String>>>>,
+        stream_symbolize: Option<Arc<crate::backtrace::BacktraceSymbolizeSession>>,
         reader: Option<JoinHandle<io::Result<()>>>,
     }
 
-    pub(super) fn install(log_path: &Path) -> io::Result<PlatformGuard> {
+    pub(super) fn install(capture: &BacktraceQemuCapture) -> io::Result<PlatformGuard> {
         let mut rollback = InstallRollback::new()?;
-        let capture = Arc::new(Mutex::new(BacktraceBlockCapture::create(log_path)?));
+        let pending_stream_blocks = Arc::new(Mutex::new(Vec::new()));
+        let block_capture = Arc::new(Mutex::new(BacktraceBlockCapture::create(
+            &capture.log_path,
+            Some(pending_stream_blocks.clone()),
+        )?));
 
         let mut pipe = PipeEnds::new()?;
         if unsafe { libc::dup2(pipe.write_fd, libc::STDOUT_FILENO) } < 0
@@ -149,7 +156,7 @@ mod platform {
 
         let pipe_read = pipe.into_read_fd();
         let tee_out = rollback.take_tee_out();
-        let capture_for_reader = capture.clone();
+        let capture_for_reader = block_capture.clone();
 
         let reader = std::thread::spawn(move || {
             let mut pipe = unsafe { File::from_raw_fd(pipe_read) };
@@ -177,7 +184,9 @@ mod platform {
         Ok(PlatformGuard {
             saved_stdout,
             saved_stderr,
-            capture,
+            capture: block_capture,
+            pending_stream_blocks,
+            stream_symbolize: capture.stream_symbolize.clone(),
             reader: Some(reader),
         })
     }
@@ -197,6 +206,9 @@ mod platform {
             }
             if let Ok(mut capture) = self.capture.lock() {
                 let _ = capture.finish();
+            }
+            if let Some(session) = &self.stream_symbolize {
+                flush_pending_stream_symbolize(session, &self.pending_stream_blocks);
             }
         }
     }
@@ -221,17 +233,21 @@ mod platform {
         },
     };
 
-    use crate::backtrace::BacktraceBlockCapture;
+    use crate::backtrace::{
+        BacktraceBlockCapture, BacktraceQemuCapture, flush_pending_stream_symbolize,
+    };
 
     pub(super) struct PlatformGuard {
         orig_stdout: HANDLE,
         orig_stderr: HANDLE,
         pipe_write: HANDLE,
         capture: Arc<Mutex<BacktraceBlockCapture>>,
+        pending_stream_blocks: Arc<Mutex<Vec<Vec<String>>>>,
+        stream_symbolize: Option<Arc<crate::backtrace::BacktraceSymbolizeSession>>,
         reader: Option<JoinHandle<io::Result<()>>>,
     }
 
-    pub(super) fn install(log_path: &Path) -> io::Result<PlatformGuard> {
+    pub(super) fn install(capture: &BacktraceQemuCapture) -> io::Result<PlatformGuard> {
         let mut read_handle = INVALID_HANDLE_VALUE;
         let mut write_handle = INVALID_HANDLE_VALUE;
         if unsafe { CreatePipe(&mut read_handle, &mut write_handle, std::ptr::null_mut(), 0) } == 0
@@ -259,8 +275,12 @@ mod platform {
             return Err(io::Error::last_os_error());
         }
 
-        let capture = Arc::new(Mutex::new(BacktraceBlockCapture::create(log_path)?));
-        let capture_for_reader = capture.clone();
+        let pending_stream_blocks = Arc::new(Mutex::new(Vec::new()));
+        let block_capture = Arc::new(Mutex::new(BacktraceBlockCapture::create(
+            &capture.log_path,
+            Some(pending_stream_blocks.clone()),
+        )?));
+        let capture_for_reader = block_capture.clone();
 
         let reader = std::thread::spawn(move || {
             let mut pipe = unsafe { File::from_raw_handle(read_handle as _) };
@@ -288,7 +308,9 @@ mod platform {
             orig_stdout,
             orig_stderr,
             pipe_write: write_handle,
-            capture,
+            capture: block_capture,
+            pending_stream_blocks,
+            stream_symbolize: capture.stream_symbolize.clone(),
             reader: Some(reader),
         })
     }
@@ -308,6 +330,9 @@ mod platform {
             if let Ok(mut capture) = self.capture.lock() {
                 let _ = capture.finish();
             }
+            if let Some(session) = &self.stream_symbolize {
+                flush_pending_stream_symbolize(session, &self.pending_stream_blocks);
+            }
         }
     }
 }
@@ -318,9 +343,9 @@ pub(crate) struct BacktraceOutputCaptureGuard {
 }
 
 impl BacktraceOutputCaptureGuard {
-    pub(crate) fn install(log_path: &Path) -> io::Result<Self> {
+    pub(crate) fn install(capture: &crate::backtrace::BacktraceQemuCapture) -> io::Result<Self> {
         Ok(Self {
-            inner: platform::install(log_path)?,
+            inner: platform::install(capture)?,
         })
     }
 }
