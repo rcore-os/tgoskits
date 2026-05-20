@@ -42,6 +42,21 @@ fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
     flags
 }
 
+/// Whether the build config enables target backtrace support (frame pointers / unwind).
+///
+/// Matches [`toolchain_rustflags`]: `BACKTRACE=y` or `DWARF=y` in `[env]`.
+pub(crate) fn build_info_enables_backtrace(info: &BuildInfo) -> bool {
+    let dwarf = env_truthy(&info.env, "DWARF");
+    env_truthy(&info.env, "BACKTRACE") || dwarf
+}
+
+/// Read a per-target `build-*.toml` and check [`build_info_enables_backtrace`].
+pub(crate) fn build_info_enables_backtrace_path(path: &Path) -> bool {
+    load_build_info::<BuildInfo>(path)
+        .ok()
+        .is_some_and(|info| build_info_enables_backtrace(&info))
+}
+
 const LOONGARCH64_HERMIT_JSON: &str =
     include_str!("../../../os/arceos/examples/std/loongarch64-unknown-hermit.json");
 
@@ -429,7 +444,7 @@ fn std_build_target_for(target: &str) -> anyhow::Result<StdBuildTarget> {
     }
 }
 
-fn prepare_std_build_env(
+pub(crate) fn prepare_std_build_env(
     envs: &mut HashMap<String, String>,
     target: &str,
     metadata: &Metadata,
@@ -1091,6 +1106,19 @@ mod tests {
             ),
         )?;
         Ok(())
+    }
+
+    #[test]
+    fn build_info_enables_backtrace_matches_env_flags() {
+        let mut info = BuildInfo::default();
+        assert!(!build_info_enables_backtrace(&info));
+
+        info.env.insert("BACKTRACE".to_string(), "y".to_string());
+        assert!(build_info_enables_backtrace(&info));
+
+        info.env.clear();
+        info.env.insert("DWARF".to_string(), "1".to_string());
+        assert!(build_info_enables_backtrace(&info));
     }
 
     #[test]

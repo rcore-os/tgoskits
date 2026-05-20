@@ -21,11 +21,6 @@ impl ContextManager {
         }
     }
 
-    /// Update system prompt (e.g. after loading memory).
-    pub fn set_system_prompt(&mut self, prompt: String) {
-        self.system_prompt = prompt;
-    }
-
     /// Add a message to history, trimming old messages if needed.
     pub fn push(&mut self, msg: ChatMessage) {
         self.history.push_back(msg);
@@ -39,13 +34,6 @@ impl ContextManager {
     pub fn build_messages(&self) -> Vec<ChatMessage> {
         let mut messages = vec![ChatMessage::text("system", &self.system_prompt)];
         messages.extend(self.history.iter().cloned());
-        messages
-    }
-
-    /// Build messages with an additional user message appended (not yet in history).
-    pub fn build_messages_with(&self, extra: &ChatMessage) -> Vec<ChatMessage> {
-        let mut messages = self.build_messages();
-        messages.push(extra.clone());
         messages
     }
 }

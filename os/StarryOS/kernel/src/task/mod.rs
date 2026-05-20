@@ -405,12 +405,33 @@ pub struct ProcessData {
     /// The process nice value used by getpriority/setpriority compatibility.
     nice: AtomicI32,
 
+    /// PR_GET_DUMPABLE / PR_SET_DUMPABLE value (default 1 = SUID_DUMP_USER).
+    /// Cleared to 0 (SUID_DUMP_DISABLE) whenever the effective UID/GID
+    /// changes via setuid/setresuid/setreuid (man 2 setuid §NOTES:
+    /// "If uid is different from the old effective UID, the process will
+    /// be forbidden from leaving core dumps").
+    /// Linux stores this on `mm_struct`; StarryOS keeps it process-wide.
+    dumpable: AtomicI32,
+
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
 
     /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
     pub posix_timers: Arc<PosixTimerTable>,
+
+    /// `true` when this process shares its [`AddrSpace`] with a parent/sibling
+    /// (`CLONE_VM`, e.g. vfork / posix_spawn). In that case the last thread must
+    /// **not** clear the address space on exit — the co-owner may still be
+    /// running.
+    ///
+    /// `false` for normal `fork()` children and after a successful `execve`
+    /// installs a private address space.
+    vm_aspace_shared: AtomicBool,
+
+    /// Set after [`Self::release_aspace_slot_if_needed`] runs so `Drop` does not
+    /// double-decrement [`AddrSpace::process_slots`].
+    aspace_slot_released: AtomicBool,
 }
 
 impl ProcessData {
@@ -422,8 +443,9 @@ impl ProcessData {
         aspace: Arc<Mutex<AddrSpace>>,
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
+        vm_aspace_shared: bool,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let this = Arc::new(Self {
             proc,
             exe_path: RwLock::new(exe_path),
             cmdline: RwLock::new(cmdline),
@@ -448,11 +470,50 @@ impl ProcessData {
 
             umask: AtomicU32::new(0o022),
             nice: AtomicI32::new(0),
+            dumpable: AtomicI32::new(1),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
 
             posix_timers: Arc::new(PosixTimerTable::default()),
-        })
+
+            vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
+            aspace_slot_released: AtomicBool::new(false),
+        });
+        // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
+        // from `lock()` lives until the end of the statement, so calling
+        // `attach_process_slot` (which locks `Mutex<AddrSpace>`) in the same
+        // expression would nest a sleepable lock inside atomic context.
+        let aspace_arc = this.aspace.lock().clone();
+        crate::mm::attach_process_slot(&aspace_arc);
+        this
+    }
+
+    /// Whether this process shares its VM address space (`CLONE_VM`).
+    #[inline]
+    pub fn vm_aspace_shared(&self) -> bool {
+        self.vm_aspace_shared.load(Ordering::Acquire)
+    }
+
+    /// Called after `execve` commits a fresh private address space so exit
+    /// teardown may clear VMAs without touching a vfork parent's mappings.
+    #[inline]
+    pub fn mark_vm_aspace_private_after_exec(&self) {
+        self.vm_aspace_shared.store(false, Ordering::Release);
+    }
+
+    /// Release this process's [`AddrSpace::process_slots`] entry.
+    ///
+    /// Invoked from the last-thread exit path so inode-scoped accounting (memfd
+    /// shared-writable counts, etc.) is torn down before `waitpid` returns, and
+    /// again from `Drop` if not already run. Uses reference counting: only the
+    /// last slot holder triggers [`AddrSpace::clear`], so `CLONE_VM` co-owners
+    /// are unaffected.
+    pub fn release_aspace_slot_if_needed(&self) {
+        if self.aspace_slot_released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let aspace = self.aspace.lock().clone();
+        crate::mm::release_process_slot(&aspace);
     }
 
     /// Get the top address of the user heap.
@@ -496,6 +557,18 @@ impl ProcessData {
         self.nice.store(nice, Ordering::SeqCst);
     }
 
+    /// Get the dumpable flag (PR_GET_DUMPABLE).
+    pub fn dumpable(&self) -> i32 {
+        self.dumpable.load(Ordering::SeqCst)
+    }
+
+    /// Set the dumpable flag (PR_SET_DUMPABLE).
+    /// Valid values: 0 (SUID_DUMP_DISABLE), 1 (SUID_DUMP_USER),
+    /// 2 (SUID_DUMP_ROOT). Caller must validate before storing.
+    pub fn set_dumpable(&self, dumpable: i32) {
+        self.dumpable.store(dumpable, Ordering::SeqCst);
+    }
+
     /// Get the accumulated CPU time of waited children.
     pub fn children_cpu_time(&self) -> (TimeValue, TimeValue) {
         *self.children_cpu_time.lock()
@@ -535,11 +608,13 @@ impl ProcessData {
     /// `mem::replace` moves the old Arc out of the guard so it is dropped
     /// **after** the `SpinNoIrq` guard, in normal preemptible context.
     pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
-        let _old = {
+        let old = {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)
         };
-        // `_old` drops here — SpinNoIrq already released, IRQs re-enabled.
+        crate::mm::release_process_slot(&old);
+        let aspace_arc = self.aspace.lock().clone();
+        crate::mm::attach_process_slot(&aspace_arc);
     }
 
     /// Set the vfork completion (called on the child after a vfork,
@@ -585,6 +660,12 @@ impl ProcessData {
             // guard dropped here
         };
         wq.notify_one(true);
+    }
+}
+
+impl Drop for ProcessData {
+    fn drop(&mut self) {
+        self.release_aspace_slot_if_needed();
     }
 }
 

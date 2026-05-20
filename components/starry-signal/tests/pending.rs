@@ -3,11 +3,11 @@ use starry_signal::{PendingSignals, SignalInfo, SignalSet, Signo};
 #[test]
 fn standard_signal() {
     let mut ps = PendingSignals::default();
-    let sig1 = SignalInfo::new_user(Signo::SIGINT, 9, 9);
+    let sig1 = SignalInfo::new_user(Signo::SIGINT, 9, 9, 0);
     assert!(ps.put_signal(sig1.clone()));
     assert!(!ps.put_signal(sig1));
-    let sig2 = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
-    let sig3 = SignalInfo::new_user(Signo::SIGHUP, 9, 9);
+    let sig2 = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
+    let sig3 = SignalInfo::new_user(Signo::SIGHUP, 9, 9, 0);
 
     let mut mask = SignalSet::default();
     mask.add(Signo::SIGHUP);
@@ -21,8 +21,8 @@ fn standard_signal() {
     assert_eq!(ps.dequeue_signal(&mask).unwrap().signo(), Signo::SIGTERM);
     assert!(ps.dequeue_signal(&mask).is_none());
 
-    let sig4 = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
-    let sig5 = SignalInfo::new_user(Signo::SIGQUIT, 9, 9);
+    let sig4 = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
+    let sig5 = SignalInfo::new_user(Signo::SIGQUIT, 9, 9, 0);
     assert!(ps.put_signal(sig4));
     assert!(ps.put_signal(sig5));
     assert_eq!(ps.dequeue_signal(&mask).unwrap().signo(), Signo::SIGTERM);
@@ -32,10 +32,10 @@ fn standard_signal() {
 #[test]
 fn realtime_signal() {
     let mut ps = PendingSignals::default();
-    let sig1 = SignalInfo::new_user(Signo::SIGRT1, 9, 9);
-    let sig2 = SignalInfo::new_user(Signo::SIGRT3, 9, 9);
-    let sig3 = SignalInfo::new_user(Signo::SIGRTMIN, 9, 9);
-    let sig4 = SignalInfo::new_user(Signo::SIGRTMIN, 9, 9);
+    let sig1 = SignalInfo::new_user(Signo::SIGRT1, 9, 9, 0);
+    let sig2 = SignalInfo::new_user(Signo::SIGRT3, 9, 9, 0);
+    let sig3 = SignalInfo::new_user(Signo::SIGRTMIN, 9, 9, 0);
+    let sig4 = SignalInfo::new_user(Signo::SIGRTMIN, 9, 9, 0);
 
     let mut mask = SignalSet::default();
     mask.add(Signo::SIGRT3);
@@ -53,8 +53,8 @@ fn realtime_signal() {
     assert_eq!(ps.dequeue_signal(&mask).unwrap().signo(), Signo::SIGRT3);
     assert!(ps.dequeue_signal(&mask).is_none());
 
-    let sig5 = SignalInfo::new_user(Signo::SIGRT3, 9, 9);
-    let sig6 = SignalInfo::new_user(Signo::SIGRT2, 9, 9);
+    let sig5 = SignalInfo::new_user(Signo::SIGRT3, 9, 9, 0);
+    let sig6 = SignalInfo::new_user(Signo::SIGRT2, 9, 9, 0);
     assert!(ps.put_signal(sig5));
     assert!(ps.put_signal(sig6));
     assert_eq!(ps.dequeue_signal(&mask).unwrap().signo(), Signo::SIGRT3);
@@ -64,10 +64,10 @@ fn realtime_signal() {
 #[test]
 fn mixed_signal() {
     let mut ps = PendingSignals::default();
-    let sig1 = SignalInfo::new_user(Signo::SIGINT, 9, 9);
-    let sig2 = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
-    let sig3 = SignalInfo::new_user(Signo::SIGRTMIN, 9, 9);
-    let sig4 = SignalInfo::new_user(Signo::SIGRTMIN, 9, 9);
+    let sig1 = SignalInfo::new_user(Signo::SIGINT, 9, 9, 0);
+    let sig2 = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
+    let sig3 = SignalInfo::new_user(Signo::SIGRTMIN, 9, 9, 0);
+    let sig4 = SignalInfo::new_user(Signo::SIGRTMIN, 9, 9, 0);
 
     let mut mask = SignalSet::default();
     mask.add(Signo::SIGINT);

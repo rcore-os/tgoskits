@@ -1,4 +1,4 @@
-use alloc::{format, sync::Arc};
+use alloc::{collections::VecDeque, format, sync::Arc};
 use core::{
     any::Any,
     sync::atomic::{AtomicU32, Ordering},
@@ -35,14 +35,27 @@ use crate::{
 };
 const KEY_CNT: usize = EventType::Key.bits_count();
 
+/// Bound on the in-kernel evdev buffer. Linux uses a per-client ring of
+/// 64 entries by default; we hold a bit more headroom so a 20-key burst
+/// (key down + key up + EV_SYN per key = 60 entries) never drops events
+/// before userspace drains it. When the queue is full we follow Linux's
+/// behavior and drop the oldest entry rather than blocking the driver.
+const READ_AHEAD_CAP: usize = 256;
+
 struct Inner {
     device: ErasedInputDevice,
-    read_ahead: Option<(Duration, Event)>,
+    read_ahead: VecDeque<(Duration, Event)>,
     key_state: Bitmap<KEY_CNT>,
 }
 impl Inner {
-    fn has_event(&mut self) -> bool {
-        if self.read_ahead.is_none() {
+    /// Drain everything the driver currently has buffered into `read_ahead`,
+    /// updating cached key state along the way. Stops at the first
+    /// `InputError::Again` (driver queue empty) or after a hard ceiling of
+    /// `READ_AHEAD_CAP` pulls per call to bound a single pass.
+    ///
+    /// Returns `true` if at least one event is now queued for userspace.
+    fn drain_into_queue(&mut self) -> bool {
+        for _ in 0..READ_AHEAD_CAP {
             match self.device.read_event() {
                 Ok(event) => {
                     if event.event_type == EventType::Key as u16 {
@@ -52,15 +65,27 @@ impl Inner {
                             self.key_state.set(event.code as usize, true);
                         }
                     }
-                    self.read_ahead = Some((wall_time(), event));
+                    if self.read_ahead.len() >= READ_AHEAD_CAP {
+                        // Mirror Linux evdev: drop oldest on overflow so
+                        // the most recent input wins. Keeps the driver
+                        // ring from stalling under a burst we cannot
+                        // forward to a slow reader.
+                        self.read_ahead.pop_front();
+                    }
+                    self.read_ahead.push_back((wall_time(), event));
                 }
-                Err(InputError::Again) => {}
+                Err(InputError::Again) => break,
                 Err(err) => {
                     warn!("Failed to read event: {err:?}");
+                    break;
                 }
             }
         }
-        self.read_ahead.is_some()
+        !self.read_ahead.is_empty()
+    }
+
+    fn has_event(&mut self) -> bool {
+        self.drain_into_queue()
     }
 }
 
@@ -91,6 +116,11 @@ const ABS_MAX: usize = 0x40;
 
 pub struct EventDev {
     inner: Mutex<Inner>,
+    /// IRQ line the underlying driver delivers buffered events on, when
+    /// the driver advertises one. `Pollable::register` wires the caller's
+    /// waker to this IRQ so virtio-input wakes its consumer in
+    /// microseconds rather than waiting for the next safety-net tick.
+    irq: Option<usize>,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
     /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
     /// raw bits with a synthesized `INPUT_PROP_POINTER` for absolute or
@@ -142,12 +172,14 @@ impl EventDev {
             let _ = device.get_event_bits(EventType::Absolute, &mut abs_bits);
         }
 
+        let irq = device.irq_num();
         Self {
             inner: Mutex::new(Inner {
                 device,
-                read_ahead: None,
+                read_ahead: VecDeque::with_capacity(READ_AHEAD_CAP),
                 key_state: Bitmap::new(),
             }),
+            irq,
             ev_bits,
             prop_bits,
             abs_bits,
@@ -244,11 +276,11 @@ impl DeviceOps for EventDev {
         }
         let mut read = 0;
         let mut inner = self.inner.lock();
+        // Drain the driver queue once up front so a single read() syscall
+        // can return as many buffered events as the user buffer holds.
+        inner.drain_into_queue();
         for out in buf.chunks_exact_mut(size_of::<InputEvent>()) {
-            if !inner.has_event() {
-                break;
-            }
-            let Some((time, event)) = inner.read_ahead.take() else {
+            let Some((time, event)) = inner.read_ahead.pop_front() else {
                 break;
             };
             let input_event = InputEvent {
@@ -426,7 +458,24 @@ impl Pollable for EventDev {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if events.contains(IoEvents::IN) {
+        if !events.contains(IoEvents::IN) {
+            return;
+        }
+        // If the driver advertises an IRQ, route the caller's waker
+        // through the per-IRQ waker list so the next virtio-input
+        // notification wakes the consumer directly. The unconditional
+        // wake the previous implementation issued here turned epoll
+        // (level-triggered) into a register → wake → consume-empty →
+        // re-register loop spinning at ~500 Hz; that hot loop is what
+        // libinput saw as continuous activity.
+        if let Some(irq) = self.irq {
+            ax_task::future::register_irq_waker(irq, context.waker());
+        }
+        // No IRQ advertised: fall back to an immediate wake so the
+        // caller doesn't sleep forever on devices that never deliver
+        // an IRQ at all (observed for QEMU virtio-keyboard-pci on
+        // aarch64 HVF). For these the consumer effectively polls.
+        else if self.inner.lock().has_event() {
             context.waker().wake_by_ref();
         }
     }

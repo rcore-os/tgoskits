@@ -26,6 +26,10 @@ pub trait InputDevice: Send {
 
     fn unique_id(&self) -> &str;
 
+    fn irq_num(&self) -> Option<usize> {
+        None
+    }
+
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> InputResult<bool>;
 
     fn read_event(&mut self) -> InputResult<Event>;
@@ -73,6 +77,10 @@ impl InputDevice for ErasedInputDevice {
 
     fn unique_id(&self) -> &str {
         self.inner.unique_id()
+    }
+
+    fn irq_num(&self) -> Option<usize> {
+        self.inner.irq_num()
     }
 
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> InputResult<bool> {
