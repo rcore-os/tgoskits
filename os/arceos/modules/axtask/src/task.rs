@@ -279,6 +279,14 @@ impl TaskInner {
         self.interrupted.store(false, Ordering::Release);
     }
 
+    /// Atomically checks and clears the interrupt flag.
+    ///
+    /// Returns `true` if the task was interrupted.
+    #[inline]
+    pub fn take_interrupt(&self) -> bool {
+        self.interrupted.swap(false, Ordering::AcqRel)
+    }
+
     /// Interrupts the task.
     #[inline]
     pub fn interrupt(&self) {

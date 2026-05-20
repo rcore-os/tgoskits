@@ -123,6 +123,15 @@ pub struct Thread {
     /// The signal to send to this thread when its parent dies (PR_SET_PDEATHSIG).
     pdeathsig: AtomicU32,
 
+    /// Whether the process is dumpable (SUID_DUMP_USER=1 by default).
+    /// 0 = not dumpable (SUID_DUMP_DISABLE), 1 = dumpable (SUID_DUMP_USER),
+    /// 2 = dumpable but only to root (SUID_DUMP_FSCRED).
+    dumpable: AtomicU32,
+
+    /// Whether PR_SET_NO_NEW_PRIVS has been set (0 = not set, 1 = set).
+    /// Once set to 1, it cannot be cleared.
+    no_new_privs: AtomicU32,
+
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
 }
@@ -147,6 +156,8 @@ impl Thread {
             exit_event: Arc::default(),
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
+            dumpable: AtomicU32::new(1),
+            no_new_privs: AtomicU32::new(0),
             cred: SpinNoIrq::new(cred),
         })
     }
@@ -212,6 +223,26 @@ impl Thread {
     /// Set the pdeathsig value.
     pub fn set_pdeathsig(&self, sig: u32) {
         self.pdeathsig.store(sig, Ordering::Relaxed);
+    }
+
+    /// Get the dumpable flag for this process (PR_GET_DUMPABLE).
+    pub fn dumpable(&self) -> u32 {
+        self.dumpable.load(Ordering::Relaxed)
+    }
+
+    /// Set the dumpable flag for this process (PR_SET_DUMPABLE).
+    pub fn set_dumpable(&self, val: u32) {
+        self.dumpable.store(val, Ordering::Relaxed);
+    }
+
+    /// Get the no_new_privs flag (PR_GET_NO_NEW_PRIVS).
+    pub fn no_new_privs(&self) -> u32 {
+        self.no_new_privs.load(Ordering::Relaxed)
+    }
+
+    /// Set the no_new_privs flag (PR_SET_NO_NEW_PRIVS).
+    pub fn set_no_new_privs(&self, val: u32) {
+        self.no_new_privs.store(val, Ordering::Relaxed);
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).

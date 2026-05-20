@@ -216,7 +216,7 @@ impl SignalInfo {
         result
     }
 
-    pub fn new_user(signo: Signo, code: i32, pid: u32) -> Self {
+    pub fn new_user(signo: Signo, code: i32, pid: u32, uid: u32) -> Self {
         // FIXME: Zeroable
         let mut result: Self = unsafe { mem::zeroed() };
         result.set_signo(signo);
@@ -228,6 +228,66 @@ impl SignalInfo {
             ._sifields
             ._sigchld
             ._pid = pid as _;
+        result
+            .0
+            .__bindgen_anon_1
+            .__bindgen_anon_1
+            ._sifields
+            ._sigchld
+            ._uid = uid as _;
+        result
+    }
+
+    pub fn pid(&self) -> u32 {
+        // SAFETY: _sigchld._pid and _kill._pid share the same offset in
+        // the sifields union.
+        unsafe {
+            self.0
+                .__bindgen_anon_1
+                .__bindgen_anon_1
+                ._sifields
+                ._sigchld
+                ._pid as u32
+        }
+    }
+
+    pub fn uid(&self) -> u32 {
+        // SAFETY: _sigchld._uid and _kill._uid share the same offset in
+        // the sifields union.
+        unsafe {
+            self.0
+                .__bindgen_anon_1
+                .__bindgen_anon_1
+                ._sifields
+                ._sigchld
+                ._uid
+        }
+    }
+
+    /// Construct a SignalInfo for a child process state change (SIGCHLD).
+    ///
+    /// - `child_pid`: PID of the child process
+    /// - `child_uid`: UID of the child process
+    /// - `code`: one of `CLD_EXITED`, `CLD_KILLED`, `CLD_DUMPED`, etc.
+    /// - `status`: for `CLD_EXITED` the raw exit value (0–255); for
+    ///   `CLD_KILLED`/`CLD_DUMPED` the signal number that killed the process.
+    pub fn new_sigchld(child_pid: u32, child_uid: u32, code: i32, status: i32) -> Self {
+        let mut result: Self = unsafe { mem::zeroed() };
+        result.set_signo(Signo::SIGCHLD);
+        result.set_code(code);
+        // SAFETY: The siginfo union is zeroed above. We access the _sigchld
+        // variant which is valid for SIGCHLD signals.
+        unsafe {
+            let fields = &mut result
+                .0
+                .__bindgen_anon_1
+                .__bindgen_anon_1
+                ._sifields
+                ._sigchld;
+            fields._pid = child_pid as _;
+            fields._uid = child_uid as _;
+            fields._status = status;
+        }
         result
     }
 
