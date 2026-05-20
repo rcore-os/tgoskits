@@ -57,6 +57,10 @@ pub(crate) fn container() -> &'static Mutex<Manager> {
     CONTAINER.get().expect("rdrive not init")
 }
 
+pub fn is_initialized() -> bool {
+    CONTAINER.get().is_some()
+}
+
 pub fn init(platform: Platform) -> Result<(), DriverError> {
     match platform {
         Platform::Static(devices) => init_sources(&[PlatformSource::Static(devices)])?,

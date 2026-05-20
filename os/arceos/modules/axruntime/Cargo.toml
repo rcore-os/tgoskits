@@ -36,7 +36,6 @@ ax-alloc = { workspace = true, optional = true }
 axbacktrace = { workspace = true }
 ax-config = { workspace = true }
 ax-display = { workspace = true, optional = true }
-ax-driver = { workspace = true }
 ax-drivers = { workspace = true }
 ax-errno = { workspace = true, optional = true }
 ax-fs = { workspace = true, optional = true }

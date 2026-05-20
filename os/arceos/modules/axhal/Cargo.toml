@@ -39,6 +39,32 @@ rtc = [
     "ax-plat-loongarch64-qemu-virt?/rtc",
     "axplat-dyn?/rtc",
 ]
+virtio-blk = [
+    "ax-plat-aarch64-qemu-virt?/virtio-blk",
+    "ax-plat-riscv64-qemu-virt?/virtio-blk",
+]
+virtio-net = [
+    "ax-plat-aarch64-qemu-virt?/virtio-net",
+    "ax-plat-riscv64-qemu-virt?/virtio-net",
+]
+virtio-gpu = [
+    "ax-plat-aarch64-qemu-virt?/virtio-gpu",
+    "ax-plat-riscv64-qemu-virt?/virtio-gpu",
+]
+virtio-input = [
+    "ax-plat-aarch64-qemu-virt?/virtio-input",
+    "ax-plat-riscv64-qemu-virt?/virtio-input",
+]
+virtio-socket = [
+    "ax-plat-aarch64-qemu-virt?/virtio-socket",
+    "ax-plat-riscv64-qemu-virt?/virtio-socket",
+]
+pci = [
+    "ax-plat-x86-pc?/pci",
+    "ax-plat-aarch64-qemu-virt?/pci",
+    "ax-plat-riscv64-qemu-virt?/pci",
+    "ax-plat-loongarch64-qemu-virt?/pci",
+]
 paging = [
     "dep:ax-alloc",
     "dep:ax-page-table-multiarch",

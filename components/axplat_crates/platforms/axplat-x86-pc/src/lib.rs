@@ -8,6 +8,8 @@ extern crate ax_plat;
 mod apic;
 mod boot;
 mod console;
+#[cfg(feature = "pci")]
+mod drivers;
 mod init;
 mod mem;
 mod power;

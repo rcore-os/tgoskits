@@ -6,9 +6,6 @@ extern crate alloc;
 
 pub mod bindings;
 pub mod error;
-mod init;
-mod registers;
-mod source;
 
 #[cfg(feature = "block")]
 pub mod block;
@@ -48,5 +45,3 @@ macro_rules! register_driver {
 }
 
 pub use error::{Error, Result};
-pub use init::init_static_drivers;
-pub use source::STATIC_DEVICES as static_devices;

@@ -46,6 +46,15 @@ impl InitIf for InitIfImpl {
             ax_plat_aarch64_peripherals::gic::init_gicc();
             ax_plat_aarch64_peripherals::generic_timer::enable_irqs(TIMER_IRQ);
         }
+        #[cfg(any(
+            feature = "pci",
+            feature = "virtio-blk",
+            feature = "virtio-net",
+            feature = "virtio-gpu",
+            feature = "virtio-input",
+            feature = "virtio-socket"
+        ))]
+        crate::drivers::init();
     }
 
     /// Initializes the platform at the later stage for secondary cores.

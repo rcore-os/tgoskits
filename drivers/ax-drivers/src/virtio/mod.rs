@@ -8,15 +8,15 @@ use virtio_drivers::{
     transport::{DeviceType, Transport, mmio::MmioTransport},
 };
 
-#[cfg(all(feature = "virtio-blk", any(probe = "static-mmio", probe = "pci")))]
+#[cfg(feature = "virtio-blk")]
 pub mod block;
-#[cfg(all(feature = "virtio-gpu", any(probe = "static-mmio", probe = "pci")))]
+#[cfg(feature = "virtio-gpu")]
 pub mod display;
-#[cfg(all(feature = "virtio-input", any(probe = "static-mmio", probe = "pci")))]
+#[cfg(feature = "virtio-input")]
 pub mod input;
-#[cfg(all(feature = "virtio-net", any(probe = "static-mmio", probe = "pci")))]
+#[cfg(feature = "virtio-net")]
 pub mod net;
-#[cfg(all(feature = "virtio-socket", any(probe = "static-mmio", probe = "pci")))]
+#[cfg(feature = "virtio-socket")]
 pub mod vsock;
 
 pub const MMIO_DEVICE_NAME: &str = "virtio-mmio";

@@ -1,20 +1,16 @@
-#[cfg(any(feature = "bus-pci", virtio_dev))]
 use alloc::format;
 #[cfg(virtio_dev)]
 use alloc::sync::Arc;
 
 use heapless::Vec as ArrayVec;
-#[cfg(feature = "bus-pci")]
-use rdrive::PlatformDevice;
-#[cfg(any(feature = "bus-pci", virtio_dev))]
-use rdrive::probe::OnProbeError;
-use rdrive::probe::pci::PciAddress;
 #[cfg(virtio_dev)]
 use rdrive::probe::pci::{Endpoint, EndpointRc};
-#[cfg(feature = "bus-pci")]
-use rdrive::probe::{
-    pci::{PciMem32, PciMem64, PcieController},
-    static_::StaticInfo,
+use rdrive::{
+    PlatformDevice,
+    probe::{
+        OnProbeError,
+        pci::{PciAddress, PciMem32, PciMem64},
+    },
 };
 #[cfg(virtio_dev)]
 use spin::Mutex;
@@ -47,63 +43,33 @@ struct LegacyIrqRoute {
 static LEGACY_IRQ_ROUTES: SpinMutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQS>> =
     SpinMutex::new(ArrayVec::new());
 
-#[cfg(feature = "bus-pci")]
 pub const DEVICE_NAME: &str = "pci-ecam";
 
-#[cfg(feature = "bus-pci")]
-crate::register_driver!(
-    name: "Static PCIe ECAM",
-    level: ProbeLevel::PostKernel,
-    priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Static {
-        on_probe: probe_pci_ecam,
-    }],
-);
-
-#[cfg(feature = "bus-pci")]
-fn probe_pci_ecam(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-    if info.name() != DEVICE_NAME || ax_config::devices::PCI_ECAM_BASE == 0 {
+pub fn register_ecam_controller(
+    plat_dev: PlatformDevice,
+    ecam_base: usize,
+    ecam_size: usize,
+    mem32: Option<PciMem32>,
+    mem64: Option<PciMem64>,
+) -> Result<(), OnProbeError> {
+    if ecam_base == 0 || ecam_size == 0 {
         return Err(OnProbeError::NotMatch);
     }
 
-    let ecam_size = (ax_config::devices::PCI_BUS_END + 1) << 20;
-    let mut controller = rdrive::probe::pci::new_driver_generic(
-        ax_config::devices::PCI_ECAM_BASE,
-        ecam_size,
-        axklib::mmio::op(),
-    )
-    .map_err(|err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")))?;
+    let mut controller =
+        rdrive::probe::pci::new_driver_generic(ecam_base, ecam_size, axklib::mmio::op()).map_err(
+            |err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")),
+        )?;
 
-    set_configured_mem_ranges(&mut controller);
-    plat_dev.register_pcie(controller);
-    log::info!("registered static PCIe ECAM controller");
-    Ok(())
-}
-
-#[cfg(feature = "bus-pci")]
-fn set_configured_mem_ranges(controller: &mut PcieController) {
-    for (index, (address, size)) in ax_config::devices::PCI_RANGES.iter().copied().enumerate() {
-        if size == 0 {
-            continue;
-        }
-        match index {
-            1 => {
-                if let (Ok(address), Ok(size)) = (u32::try_from(address), u32::try_from(size)) {
-                    controller.set_mem32(PciMem32 { address, size }, false);
-                }
-            }
-            2 if usize::BITS > 32 => {
-                controller.set_mem64(
-                    PciMem64 {
-                        address: address as u64,
-                        size: size as u64,
-                    },
-                    true,
-                );
-            }
-            _ => {}
-        }
+    if let Some(mem32) = mem32 {
+        controller.set_mem32(mem32, false);
     }
+    if let Some(mem64) = mem64 {
+        controller.set_mem64(mem64, true);
+    }
+    plat_dev.register_pcie(controller);
+    log::info!("registered PCIe ECAM controller");
+    Ok(())
 }
 
 pub fn legacy_irq_for_address(_address: PciAddress) -> Option<usize> {

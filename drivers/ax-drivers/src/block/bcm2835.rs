@@ -2,30 +2,13 @@ use bcm2835_sdhci::{
     Bcm2835SDhci::{BLOCK_SIZE, EmmcCtl},
     SDHCIError,
 };
-use rdrive::{
-    PlatformDevice,
-    probe::{OnProbeError, static_::StaticInfo},
-    register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
-};
+use rdrive::{PlatformDevice, probe::OnProbeError};
 
 use super::{SyncBlockOps, register_sync_block};
 
 pub const DEVICE_NAME: &str = "bcm2835_sdhci";
 
-pub const REGISTER: DriverRegister = DriverRegister {
-    name: "Static BCM2835 SDHCI",
-    level: ProbeLevel::PostKernel,
-    priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Static {
-        on_probe: probe_bcm2835,
-    }],
-};
-
-fn probe_bcm2835(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-    if info.name() != DEVICE_NAME {
-        return Err(OnProbeError::NotMatch);
-    }
-
+pub fn register(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     let driver = Bcm2835Sdhci::try_new()
         .map_err(|err| OnProbeError::other(alloc::format!("BCM2835 SDHCI init failed: {err:?}")))?;
     register_sync_block(plat_dev, driver);

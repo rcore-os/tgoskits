@@ -28,6 +28,8 @@ impl InitIf for InitIfImpl {
         #[cfg(feature = "irq")]
         crate::irq::init_percpu();
         crate::time::init_percpu();
+        #[cfg(feature = "cvsd")]
+        crate::drivers::init();
     }
 
     /// Initializes the platform at the later stage for secondary cores.

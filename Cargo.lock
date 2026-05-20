@@ -765,6 +765,7 @@ name = "ax-driver"
 version = "0.5.14"
 dependencies = [
  "ax-drivers",
+ "ax-hal",
 ]
 
 [[package]]
@@ -846,7 +847,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ax-alloc",
- "ax-config",
  "ax-crate-interface",
  "ax-errno",
  "axklib",
@@ -1324,10 +1324,14 @@ version = "0.5.8"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-drivers",
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
+ "axklib",
  "log",
+ "rdrive",
+ "virtio-drivers",
 ]
 
 [[package]]
@@ -1349,13 +1353,16 @@ version = "0.5.8"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-drivers",
  "ax-kspin",
  "ax-lazyinit",
  "ax-page-table-entry",
  "ax-plat",
+ "axklib",
  "chrono",
  "log",
  "loongArch64",
+ "rdrive",
  "uart_16550 0.5.0",
 ]
 
@@ -1375,15 +1382,19 @@ version = "0.5.7"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-drivers",
  "ax-kspin",
  "ax-lazyinit",
  "ax-plat",
  "ax-riscv-plic",
+ "axklib",
  "log",
+ "rdrive",
  "riscv 0.16.0",
  "riscv_goldfish",
  "sbi-rt 0.0.3",
  "some-serial",
+ "virtio-drivers",
 ]
 
 [[package]]
@@ -1392,12 +1403,15 @@ version = "0.3.4"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-drivers",
  "ax-kspin",
  "ax-lazyinit",
  "ax-plat",
  "ax-riscv-plic",
+ "axklib",
  "dw_uart_rs",
  "log",
+ "rdrive",
  "riscv 0.16.0",
  "sbi-rt 0.0.3",
 ]
@@ -1408,16 +1422,19 @@ version = "0.5.8"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-drivers",
  "ax-int-ratio",
  "ax-kspin",
  "ax-lazyinit",
  "ax-percpu",
  "ax-plat",
+ "axklib",
  "bitflags 2.11.1",
  "heapless 0.9.3",
  "log",
  "multiboot",
  "raw-cpuid 11.6.0",
+ "rdrive",
  "uart_16550 0.5.0",
  "x2apic",
  "x86",
@@ -1464,7 +1481,6 @@ dependencies = [
  "ax-crate-interface",
  "ax-ctor-bare",
  "ax-display",
- "ax-driver",
  "ax-drivers",
  "ax-errno",
  "ax-fs",
@@ -1802,11 +1818,14 @@ version = "0.1.2"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-drivers",
  "ax-kspin",
  "ax-lazyinit",
  "ax-plat",
  "ax-riscv-plic",
+ "axklib",
  "log",
+ "rdrive",
  "riscv 0.14.0",
  "riscv_goldfish",
  "sbi-rt 0.0.3",

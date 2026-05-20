@@ -13,12 +13,9 @@ name = "ax_drivers"
 [features]
 default = []
 
-static = ["dep:ax-config"]
 fdt = ["dep:fdt-edit"]
 acpi = []
-bus-mmio = ["static", "dep:ax-config"]
 pci = ["dep:pcie", "dep:heapless", "dep:spin"]
-bus-pci = ["static", "pci", "dep:ax-config"]
 irq = []
 
 block = ["dep:ax-errno", "dep:rd-block", "dep:spin"]
@@ -36,8 +33,8 @@ virtio-input = ["input", "virtio"]
 virtio-socket = ["vsock", "virtio"]
 
 ramdisk = ["block", "dep:ramdisk"]
-sdmmc = ["block", "dep:ax-config", "dep:simple-sdmmc"]
-cvsd = ["block", "dep:ax-config", "dep:sg200x-bsp"]
+sdmmc = ["block", "dep:simple-sdmmc"]
+cvsd = ["block", "dep:sg200x-bsp"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
 ahci = ["block", "pci", "dep:simple-ahci"]
 ixgbe = ["net", "pci", "dep:ax-alloc", "dep:ixgbe-driver"]
@@ -61,7 +58,6 @@ pci-list-devices = ["pci"]
 [dependencies]
 anyhow = { workspace = true }
 ax-alloc = { workspace = true, optional = true }
-ax-config = { workspace = true, optional = true }
 ax-crate-interface = { workspace = true, optional = true }
 ax-errno = { workspace = true, optional = true }
 axklib.workspace = true

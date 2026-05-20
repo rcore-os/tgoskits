@@ -28,6 +28,15 @@ impl InitIf for InitIfImpl {
         #[cfg(feature = "irq")]
         crate::irq::init_percpu();
         crate::time::init_percpu();
+        #[cfg(any(
+            feature = "pci",
+            feature = "virtio-blk",
+            feature = "virtio-net",
+            feature = "virtio-gpu",
+            feature = "virtio-input",
+            feature = "virtio-socket"
+        ))]
+        crate::drivers::init();
     }
 
     /// Initializes the platform at the later stage for secondary cores.

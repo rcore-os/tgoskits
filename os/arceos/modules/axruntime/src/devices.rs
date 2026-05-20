@@ -12,10 +12,10 @@ pub(crate) fn init_dyn_devices() {
 #[cfg(not(feature = "plat-dyn"))]
 pub(crate) fn init_static_devices() {
     info!("Initialize static platform devices...");
-    ax_driver::init_static_drivers()
-        .unwrap_or_else(|err| panic!("failed to initialize static platform drivers: {err:?}"));
-    rdrive::probe_all(false)
-        .unwrap_or_else(|err| panic!("failed to probe static platform devices: {err:?}"));
+    if rdrive::is_initialized() {
+        rdrive::probe_all(false)
+            .unwrap_or_else(|err| panic!("failed to probe static platform devices: {err:?}"));
+    }
 }
 
 #[cfg(all(feature = "fs", feature = "plat-dyn"))]

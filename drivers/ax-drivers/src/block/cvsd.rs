@@ -1,8 +1,4 @@
-use rdrive::{
-    PlatformDevice,
-    probe::{OnProbeError, static_::StaticInfo},
-    register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
-};
+use rdrive::{PlatformDevice, probe::OnProbeError};
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 use {alloc::format, sg200x_bsp::sdmmc::Sdmmc};
 
@@ -13,30 +9,29 @@ use super::{SyncBlockOps, register_sync_block};
 const BLOCK_SIZE: usize = 512;
 pub const DEVICE_NAME: &str = "cvsd";
 
-pub const REGISTER: DriverRegister = DriverRegister {
-    name: "Static CV SD/MMC",
-    level: ProbeLevel::PostKernel,
-    priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Static {
-        on_probe: probe_cvsd,
-    }],
-};
-
-fn probe_cvsd(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-    if info.name() != DEVICE_NAME {
+pub fn register_mmio(
+    plat_dev: PlatformDevice,
+    sdmmc_paddr: usize,
+    sdmmc_size: usize,
+    syscon_paddr: usize,
+    syscon_size: usize,
+) -> Result<(), OnProbeError> {
+    if sdmmc_paddr == 0 || sdmmc_size == 0 || syscon_paddr == 0 || syscon_size == 0 {
         return Err(OnProbeError::NotMatch);
     }
-    probe_cvsd_target(plat_dev)
+    register_mmio_target(plat_dev, sdmmc_paddr, sdmmc_size, syscon_paddr, syscon_size)
 }
 
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-fn probe_cvsd_target(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-    if ax_config::devices::CVSD_PADDR == 0 {
-        return Err(OnProbeError::NotMatch);
-    }
-
-    let sdmmc = map_region(ax_config::devices::CVSD_PADDR, 0x1000, "CVSD")?;
-    let syscon = map_region(ax_config::devices::SYSCON_PADDR, 0x8000, "SYSCON")?;
+fn register_mmio_target(
+    plat_dev: PlatformDevice,
+    sdmmc_paddr: usize,
+    sdmmc_size: usize,
+    syscon_paddr: usize,
+    syscon_size: usize,
+) -> Result<(), OnProbeError> {
+    let sdmmc = map_region(sdmmc_paddr, sdmmc_size, "CVSD")?;
+    let syscon = map_region(syscon_paddr, syscon_size, "SYSCON")?;
     let driver =
         CvsdDriver::new(sdmmc, syscon).map_err(|_| OnProbeError::other("CVSD init failed"))?;
     register_sync_block(plat_dev, driver);
@@ -44,7 +39,13 @@ fn probe_cvsd_target(plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
 }
 
 #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
-fn probe_cvsd_target(_plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn register_mmio_target(
+    _plat_dev: PlatformDevice,
+    _sdmmc_paddr: usize,
+    _sdmmc_size: usize,
+    _syscon_paddr: usize,
+    _syscon_size: usize,
+) -> Result<(), OnProbeError> {
     Err(OnProbeError::NotMatch)
 }
 

@@ -61,7 +61,7 @@ starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies.ax-plat-riscv64-sg2002]
 workspace = true
-features = ["fp-simd", "irq", "rtc"]
+features = ["fp-simd", "irq", "rtc", "cvsd"]
 optional = true
 
 [target.'cfg(any(windows,unix))'.dependencies]
@@ -71,7 +71,7 @@ clap = { version = "4.6", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies.axplat-riscv64-visionfive2]
-features = ["fp-simd", "irq", "rtc"]
+features = ["fp-simd", "irq", "rtc", "sdmmc"]
 optional = true
 workspace = true
 

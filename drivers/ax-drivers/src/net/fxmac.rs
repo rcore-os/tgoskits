@@ -4,11 +4,7 @@ use core::{alloc::Layout, cmp, ptr::NonNull};
 use dma_api::{DmaAddr, DmaHandle, DmaOp};
 use fxmac_rs::{FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xmac_init};
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
-use rdrive::{
-    DriverGeneric, PlatformDevice,
-    probe::{OnProbeError, static_::StaticInfo},
-    register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
-};
+use rdrive::{DriverGeneric, PlatformDevice};
 
 use crate::bindings::net::PlatformDeviceNet;
 
@@ -22,24 +18,10 @@ const DMA_ALIGN: usize = 0x1000;
 const DMA_MASK: u64 = u64::MAX;
 const PAGE_SIZE: usize = 0x1000;
 
-pub const REGISTER: DriverRegister = DriverRegister {
-    name: "Static FXmac",
-    level: ProbeLevel::PostKernel,
-    priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Static {
-        on_probe: probe_fxmac,
-    }],
-};
-
-fn probe_fxmac(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-    if info.name() != DEVICE_NAME {
-        return Err(OnProbeError::NotMatch);
-    }
-
+pub fn register(plat_dev: PlatformDevice) {
     let dev = FxmacNet::new();
     plat_dev.register_net(DRIVER_NAME, dev, None);
-    log::info!("registered static FXmac network device");
-    Ok(())
+    log::info!("registered FXmac network device");
 }
 
 struct FxmacNet {

@@ -2,54 +2,26 @@ extern crate alloc;
 
 use alloc::format;
 
-#[cfg(probe = "static-mmio")]
-use rdrive::probe::static_::StaticInfo;
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
+#[cfg(probe = "pci")]
+use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
     device::blk::{SECTOR_SIZE, VirtIOBlk},
-    transport::{DeviceType, Transport},
+    transport::Transport,
 };
 
-#[cfg(probe = "static-mmio")]
-use crate::virtio;
 use crate::{bindings::block::PlatformDeviceBlock, virtio::VirtIoHalImpl};
 
+#[cfg(probe = "pci")]
 crate::register_driver!(
     name: "VirtIO Block",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
-    probe_kinds: &[
-        #[cfg(probe = "static-mmio")]
-        ProbeKind::Static {
-            on_probe: probe_mmio,
-        },
-        #[cfg(probe = "pci")]
-        ProbeKind::Pci {
-            on_probe: probe_pci,
-        },
-    ],
+    probe_kinds: &[ProbeKind::Pci {
+        on_probe: probe_pci,
+    }],
 );
-
-#[cfg(probe = "static-mmio")]
-fn probe_mmio(info: StaticInfo, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-    if info.name() != virtio::MMIO_DEVICE_NAME {
-        return Err(OnProbeError::NotMatch);
-    }
-
-    for (base, size) in ax_config::devices::VIRTIO_MMIO_RANGES {
-        let mmio = axklib::mmio::ioremap_raw((*base).into(), *size)
-            .map_err(|err| OnProbeError::other(format!("failed to map virtio-mmio: {err:?}")))?;
-        let Some((ty, transport)) = virtio::probe_mmio_device(mmio.as_ptr(), *size) else {
-            continue;
-        };
-        if ty == DeviceType::Block {
-            return register_block(plat_dev, transport);
-        }
-    }
-
-    Err(OnProbeError::NotMatch)
-}
 
 #[cfg(probe = "pci")]
 fn probe_pci(
@@ -57,10 +29,10 @@ fn probe_pci(
     plat_dev: PlatformDevice,
 ) -> Result<(), OnProbeError> {
     let transport = crate::pci::take_virtio_transport(endpoint, DeviceType::Block)?;
-    register_block(plat_dev, transport)
+    register_transport(plat_dev, transport)
 }
 
-fn register_block<T: Transport + 'static>(
+pub fn register_transport<T: Transport + 'static>(
     plat_dev: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {

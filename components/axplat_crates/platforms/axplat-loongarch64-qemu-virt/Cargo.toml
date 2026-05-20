@@ -14,6 +14,7 @@ fp-simd = ["ax-cpu/fp-simd"]
 irq = ["ax-plat/irq"]
 rtc = ["dep:chrono"]
 smp = ["ax-plat/smp", "ax-kspin/smp", "irq"]
+pci = ["ax-drivers/pci"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, optional = true }
@@ -26,7 +27,10 @@ uart_16550 = "0.5"
 
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
+ax-drivers = { workspace = true, optional = true }
+axklib.workspace = true
 ax-plat = { workspace = true }
+rdrive.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["loongarch64-unknown-none"]

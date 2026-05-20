@@ -11,6 +11,11 @@ extern crate ax_plat;
 mod boot;
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod console;
+#[cfg(all(
+    feature = "cvsd",
+    any(target_arch = "riscv32", target_arch = "riscv64")
+))]
+mod drivers;
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 mod init;
 #[cfg(all(feature = "irq", any(target_arch = "riscv32", target_arch = "riscv64")))]
