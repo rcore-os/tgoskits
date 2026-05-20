@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -199,6 +199,111 @@ fn read_text(log: Option<&Path>) -> anyhow::Result<String> {
             Ok(s)
         }
     }
+}
+
+/// Incremental state machine: forwards guest output to a log file only while a
+/// `BACKTRACE_BEGIN` … `BACKTRACE_END` (or trailing `BT_ERROR`) block is open.
+pub(crate) struct BacktraceBlockCapture {
+    log: fs::File,
+    state: BlockCaptureState,
+    line_buf: String,
+    block_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockCaptureState {
+    Idle,
+    InBlock,
+}
+
+impl BacktraceBlockCapture {
+    pub(crate) fn create(log_path: &Path) -> io::Result<Self> {
+        if let Some(parent) = log_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        Ok(Self {
+            log: fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)?,
+            state: BlockCaptureState::Idle,
+            line_buf: String::new(),
+            block_lines: Vec::new(),
+        })
+    }
+
+    pub(crate) fn push_bytes(&mut self, data: &[u8]) -> io::Result<()> {
+        self.line_buf.push_str(&String::from_utf8_lossy(data));
+        while let Some(newline) = self.line_buf.find('\n') {
+            let line = self.line_buf[..newline].to_string();
+            self.line_buf.drain(..=newline);
+            self.process_line(&line)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(&mut self) -> io::Result<()> {
+        if !self.line_buf.is_empty() {
+            let line = std::mem::take(&mut self.line_buf);
+            self.process_line(&line)?;
+        }
+        if self.state == BlockCaptureState::InBlock {
+            self.flush_block()?;
+            self.state = BlockCaptureState::Idle;
+        }
+        self.log.flush()
+    }
+
+    fn process_line(&mut self, line: &str) -> io::Result<()> {
+        let has_begin = line.contains("BACKTRACE_BEGIN");
+        let has_end = line.contains("BACKTRACE_END");
+
+        match self.state {
+            BlockCaptureState::Idle => {
+                if has_begin {
+                    self.block_lines.clear();
+                    self.block_lines.push(line.to_string());
+                    self.state = BlockCaptureState::InBlock;
+                    if has_end {
+                        self.flush_block()?;
+                        self.state = BlockCaptureState::Idle;
+                    }
+                }
+            }
+            BlockCaptureState::InBlock => {
+                if has_begin && !self.block_lines.is_empty() {
+                    self.flush_block()?;
+                    self.block_lines.clear();
+                }
+                self.block_lines.push(line.to_string());
+                if has_end {
+                    self.flush_block()?;
+                    self.block_lines.clear();
+                    self.state = BlockCaptureState::Idle;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_block(&mut self) -> io::Result<()> {
+        if self.block_lines.is_empty() {
+            return Ok(());
+        }
+        for line in &self.block_lines {
+            writeln!(self.log, "{line}")?;
+        }
+        self.block_lines.clear();
+        Ok(())
+    }
+}
+
+/// Filter a full QEMU transcript down to raw backtrace blocks and write them to `log_path`.
+#[cfg(test)]
+pub(crate) fn write_raw_blocks_from_output(output: &str, log_path: &Path) -> io::Result<()> {
+    let mut capture = BacktraceBlockCapture::create(log_path)?;
+    capture.push_bytes(output.as_bytes())?;
+    capture.finish()
 }
 
 fn parse_blocks(text: &str) -> anyhow::Result<Vec<Block>> {
@@ -616,5 +721,87 @@ BACKTRACE_END
         let exe = std::env::current_exe().unwrap();
         let loader = addr2line::Loader::new(&exe).unwrap();
         assert!(maybe_symbolize_with_loader(&loader, 0).is_none());
+    }
+
+    #[test]
+    fn block_capture_writes_only_complete_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("blocks.log");
+        let mut capture = BacktraceBlockCapture::create(&log_path).unwrap();
+        capture
+            .push_bytes(
+                b"[0.000] noise before\n\
+[0.001] BACKTRACE_BEGIN kind=raw arch=x86_64\n\
+[0.001] BT 0 ip=0x1000 fp=0x2000\n\
+[0.002] BACKTRACE_END\n\
+[0.003] more noise\n",
+            )
+            .unwrap();
+        capture.finish().unwrap();
+
+        let text = fs::read_to_string(&log_path).unwrap();
+        assert!(!text.contains("noise"));
+        assert!(text.contains("BACKTRACE_BEGIN kind=raw"));
+        assert!(text.contains("BT 0 ip=0x1000"));
+        assert!(text.contains("BACKTRACE_END"));
+
+        let blocks = parse_blocks(&text).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].kind, "raw");
+        assert_eq!(blocks[0].frames.len(), 1);
+    }
+
+    #[test]
+    fn block_capture_splits_on_repeated_begin() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("blocks.log");
+        let mut capture = BacktraceBlockCapture::create(&log_path).unwrap();
+        capture
+            .push_bytes(
+                b"BACKTRACE_BEGIN kind=panic arch=x86_64\n\
+BT 0 ip=0x1 fp=0x2\n\
+BACKTRACE_BEGIN kind=trap arch=x86_64\n\
+BT 0 ip=0x3 fp=0x4\n\
+BACKTRACE_END\n",
+            )
+            .unwrap();
+        capture.finish().unwrap();
+
+        let text = fs::read_to_string(&log_path).unwrap();
+        let blocks = parse_blocks(&text).unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].kind, "panic");
+        assert_eq!(blocks[1].kind, "trap");
+    }
+
+    #[test]
+    fn block_capture_accepts_bt_error_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("blocks.log");
+        let mut capture = BacktraceBlockCapture::create(&log_path).unwrap();
+        capture
+            .push_bytes(
+                b"BACKTRACE_BEGIN kind=panic arch=aarch64\n\
+BT_ERROR requires_alloc\n\
+BACKTRACE_END\n",
+            )
+            .unwrap();
+        capture.finish().unwrap();
+
+        let text = fs::read_to_string(&log_path).unwrap();
+        let blocks = parse_blocks(&text).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].errors, vec!["requires_alloc".to_string()]);
+    }
+
+    #[test]
+    fn write_raw_blocks_from_output_filters_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("filtered.log");
+        let transcript = "boot log\nBACKTRACE_BEGIN kind=raw\nBT 0 ip=0x10\nBACKTRACE_END\n";
+        write_raw_blocks_from_output(transcript, &log_path).unwrap();
+        let text = fs::read_to_string(&log_path).unwrap();
+        assert!(!text.contains("boot log"));
+        assert!(text.contains("BACKTRACE_BEGIN"));
     }
 }

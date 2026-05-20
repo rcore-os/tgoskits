@@ -572,7 +572,6 @@ async fn run_rust_qemu_case(
     let auto_symbolize = symbolize_after
         && crate::build::build_info_enables_backtrace_path(&case.case.build_config_path);
 
-    #[cfg(unix)]
     let log_path = if auto_symbolize {
         let dir = crate::context::axbuild_tmp_dir(&workspace).join("qemu-logs");
         fs::create_dir_all(&dir)?;
@@ -581,37 +580,17 @@ async fn run_rust_qemu_case(
         None
     };
 
-    #[cfg(not(unix))]
-    if auto_symbolize {
-        eprintln!(
-            "warning: automatic backtrace symbolize after QEMU is only supported on Unix hosts; \
-             use `cargo xtask backtrace symbolize` manually"
-        );
-    }
-
-    #[cfg(unix)]
-    let tee_guard = if let Some(ref path) = log_path {
-        Some(
-            crate::support::output_tee::OutputTeeGuard::install(path)
-                .with_context(|| format!("failed to tee QEMU output to {}", path.display()))?,
-        )
-    } else {
-        None
-    };
-
     arceos
         .app
-        .run_qemu(&case.cargo, case.qemu.clone())
+        .run_qemu(&case.cargo, case.qemu.clone(), log_path.clone())
         .await
         .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"))?;
 
-    #[cfg(unix)]
-    if auto_symbolize {
-        drop(tee_guard);
-        if let Some(path) = log_path {
-            let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
-            crate::backtrace::maybe_symbolize_after_qemu(&elf, &path, case_name)?;
-        }
+    if auto_symbolize
+        && let Some(path) = log_path
+    {
+        let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
+        crate::backtrace::maybe_symbolize_after_qemu(&elf, &path, case_name)?;
     }
 
     Ok(())
@@ -1120,7 +1099,7 @@ async fn build_and_run_c_test(
         .app
         .prepare_elf_artifact(output.elf_path, qemu.to_bin)
         .await?;
-    arceos.app.run_prepared_qemu(qemu).await
+    arceos.app.run_prepared_qemu(qemu, None).await
 }
 
 /// Returns isolated artifact paths for a single C test invocation.

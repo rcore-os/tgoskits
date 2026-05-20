@@ -159,8 +159,18 @@ impl AppContext {
             .await
     }
 
-    pub(crate) async fn run_qemu(&mut self, cargo: &Cargo, qemu: QemuConfig) -> anyhow::Result<()> {
+    pub(crate) async fn run_qemu(
+        &mut self,
+        cargo: &Cargo,
+        qemu: QemuConfig,
+        capture_backtrace_log: Option<PathBuf>,
+    ) -> anyhow::Result<()> {
         let _path_guard = self.scoped_qemu_path(cargo)?;
+        let _backtrace_capture = capture_backtrace_log
+            .as_deref()
+            .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
+            .transpose()
+            .context("failed to install backtrace block output capture")?;
         self.tool
             .run_qemu(
                 &qemu,
@@ -172,7 +182,16 @@ impl AppContext {
             .await
     }
 
-    pub(crate) async fn run_prepared_qemu(&mut self, qemu: QemuConfig) -> anyhow::Result<()> {
+    pub(crate) async fn run_prepared_qemu(
+        &mut self,
+        qemu: QemuConfig,
+        capture_backtrace_log: Option<PathBuf>,
+    ) -> anyhow::Result<()> {
+        let _backtrace_capture = capture_backtrace_log
+            .as_deref()
+            .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
+            .transpose()
+            .context("failed to install backtrace block output capture")?;
         self.tool
             .run_qemu(
                 &qemu,
