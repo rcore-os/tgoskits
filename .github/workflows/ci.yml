@@ -184,8 +184,6 @@ jobs:
       matrix:
         include:
           - name: Run clippy
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: |
               set -eux
               git_cmd() {
@@ -231,15 +229,12 @@ jobs:
                 cargo xtask clippy
               fi
             cache_key: clippy
-            container_image: base
             fetch_depth: full
             prepare_qemu_user_emulators: false
             prepare_musl_toolchains: false
             required_repository_owner: ""
             main_pr_only: false
           - name: Run sync-lint
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: |
               set -eux
               git_cmd() {
@@ -268,37 +263,27 @@ jobs:
                 cargo xtask sync-lint
               fi
             cache_key: sync-lint
-            container_image: base
             fetch_depth: full
             prepare_qemu_user_emulators: false
             prepare_musl_toolchains: false
             required_repository_owner: ""
             main_pr_only: false
           - name: Test with std
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask test
             cache_key: test-std
-            container_image: base
             prepare_qemu_user_emulators: false
             prepare_musl_toolchains: false
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor aarch64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask axvisor test qemu --arch aarch64
             cache_key: test-axvisor-aarch64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor riscv64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask axvisor test qemu --arch riscv64
             cache_key: test-axvisor-riscv64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
@@ -312,111 +297,75 @@ jobs:
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch riscv64
             cache_key: test-starry-riscv64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry aarch64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch aarch64
             cache_key: test-starry-aarch64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry loongarch64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch loongarch64
             cache_key: test-starry-loongarch64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test starry x86_64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask starry test qemu --arch x86_64
             cache_key: test-starry-x86_64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos x86_64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask arceos test qemu --arch x86_64
             cache_key: test-arceos-x86_64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos riscv64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask arceos test qemu --arch riscv64
             cache_key: test-arceos-riscv64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos aarch64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask arceos test qemu --arch aarch64
             cache_key: test-arceos-aarch64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos loongarch64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
             command: cargo xtask arceos test qemu --arch loongarch64
             cache_key: test-arceos-loongarch64
-            container_image: base
             apk_region: us
             required_repository_owner: ""
             main_pr_only: false
           # Stress tests: uncomment to enable (runs only on PRs targeting main).
           # - name: Stress starry aarch64
-          #   use_container: true
-          #   runs_on: '["ubuntu-latest"]'
           #   command: cargo xtask starry test qemu --arch aarch64 --test-group stress
           #   cache_key: test-starry-stress-aarch64
-          #   container_image: base
           #   apk_region: us
           #   required_repository_owner: ""
           #   main_pr_only: true
           # - name: Stress starry riscv64
-          #   use_container: true
-          #   runs_on: '["ubuntu-latest"]'
           #   command: cargo xtask starry test qemu --arch riscv64 --test-group stress
           #   cache_key: test-starry-stress-riscv64
-          #   container_image: base
           #   apk_region: us
           #   required_repository_owner: ""
           #   main_pr_only: true
           # - name: Stress starry loongarch64
-          #   use_container: true
-          #   runs_on: '["ubuntu-latest"]'
           #   command: cargo xtask starry test qemu --arch loongarch64 --test-group stress
           #   cache_key: test-starry-stress-loongarch64
-          #   container_image: base
           #   apk_region: us
           #   required_repository_owner: ""
           #   main_pr_only: true
           # - name: Stress starry x86_64
-          #   use_container: true
-          #   runs_on: '["ubuntu-latest"]'
           #   command: cargo xtask starry test qemu --arch x86_64 --test-group stress
           #   cache_key: test-starry-stress-x86_64
-          #   container_image: base
           #   apk_region: us
           #   required_repository_owner: ""
           #   main_pr_only: true
@@ -430,7 +379,6 @@ jobs:
             main_pr_only: false
           - name: Test axvisor x86_64 svm hosted
             use_container: false
-            runs_on: '["ubuntu-latest"]'
             command: |
               cpu_vendor="$(awk -F ': *' '/^vendor_id/ { print $2; exit }' /proc/cpuinfo)"
               if [ "$cpu_vendor" = "GenuineIntel" ]; then
@@ -458,7 +406,6 @@ jobs:
               sudo usermod -aG kvm $USER
               sg kvm -c "cargo xtask axvisor test qemu --arch x86_64 --test-group svm --test-case smoke"
             cache_key: ""
-            container_image: ""
             required_repository_owner: ""
             main_pr_only: false
           - name: Test axvisor self-hosted board orangepi-5-plus-linux
@@ -479,15 +426,13 @@ jobs:
             main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
     with:
-      runs_on: ${{ matrix.runs_on }}
-      use_container: ${{ matrix.use_container }}
+      runs_on: ${{ matrix.runs_on || '["ubuntu-latest"]' }}
+      use_container: ${{ matrix.use_container == true && true || false }}
       command: ${{ matrix.command }}
       cache_key: ${{ matrix.cache_key }}
       container_image: >-
         ${{
-          matrix.container_image == 'base'
-          && format('{0}:latest', needs.detect_changes.outputs.base_container_image)
-          || matrix.container_image == 'axvisor-lvz'
+          matrix.container_image == 'axvisor-lvz'
           && format('{0}:latest', needs.detect_changes.outputs.axvisor_lvz_container_image)
           || matrix.container_image
         }}

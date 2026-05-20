@@ -103,15 +103,7 @@ jobs:
         && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
-    runs-on: >-
-      ${{
-        fromJson(
-          github.repository_owner == 'rcore-os'
-          && inputs.runs_on == '["ubuntu-latest"]'
-          && '["self-hosted","linux"]'
-          || inputs.runs_on
-        )
-      }}
+    runs-on: ${{ fromJson(inputs.runs_on) }}
     container:
       image: ${{ inputs.container_image }}
       credentials:
