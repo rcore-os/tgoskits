@@ -58,3 +58,4 @@ __pycache__/
 .image.toml
 os/StarryOS-REF
 .Ds_Store
+starry-*.log
