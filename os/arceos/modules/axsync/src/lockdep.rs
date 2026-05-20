@@ -18,6 +18,12 @@ pub(crate) struct LockdepAcquire {
 impl LockdepAcquire {
     #[inline(always)]
     #[track_caller]
+    pub(crate) fn prepare(lock: &RawMutex, is_try: bool) -> Self {
+        Self::prepare_nested(lock, is_try, 0)
+    }
+
+    #[inline(always)]
+    #[track_caller]
     pub(crate) fn prepare_nested(lock: &RawMutex, is_try: bool, subclass: LockSubclass) -> Self {
         let addr = lock as *const _ as *const () as usize;
         let prepared = common::prepare_acquire_with_snapshot_nested(

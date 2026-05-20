@@ -519,7 +519,9 @@ impl CachedFile {
             };
         drop(guard);
 
-        if is_new {
+        // In-memory files (tmpfs) have no backing store, so evicting clean
+        // pages would lose data. Only register disk-backed files for reclaim.
+        if is_new && !in_memory {
             register_cached_file(&shared);
         }
 
