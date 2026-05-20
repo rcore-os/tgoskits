@@ -6,7 +6,7 @@ use alloc::{
 use core::{
     num::NonZeroUsize,
     ops::Range,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     task::Context,
 };
 
@@ -375,23 +375,90 @@ intrusive_adapter!(EvictListenerAdapter = Box<EvictListener>: EvictListener { li
 
 struct CachedFileShared {
     page_cache: Mutex<LruCache<u32, PageCache>>,
-    evict_listeners: Mutex<LinkedList<EvictListenerAdapter>>,
+    evict_listeners: spin::Mutex<LinkedList<EvictListenerAdapter>>,
 }
 
 impl CachedFileShared {
     pub fn new() -> Self {
         Self {
             page_cache: Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())),
-            evict_listeners: Mutex::new(LinkedList::default()),
+            evict_listeners: spin::Mutex::new(LinkedList::default()),
         }
     }
 
+    #[allow(dead_code)]
     pub fn new_unbounded() -> Self {
         Self {
             page_cache: Mutex::new(LruCache::unbounded()),
-            evict_listeners: Mutex::new(LinkedList::default()),
+            evict_listeners: spin::Mutex::new(LinkedList::default()),
         }
     }
+
+    fn try_evict_clean_pages(&self, max: usize) -> usize {
+        let Some(mut cache) = self.page_cache.try_lock() else {
+            return 0;
+        };
+        let mut to_evict = alloc::vec::Vec::new();
+        for (&pn, page) in cache.iter() {
+            if !page.dirty && to_evict.len() < max {
+                to_evict.push(pn);
+            }
+        }
+        let count = to_evict.len();
+        for pn in to_evict {
+            if let Some(page) = cache.pop(&pn) {
+                for listener in self.evict_listeners.lock().iter() {
+                    (listener.listener)(pn, &page);
+                }
+            }
+        }
+        count
+    }
+}
+
+static GLOBAL_CACHED_FILES: spin::RwLock<alloc::vec::Vec<Weak<CachedFileShared>>> =
+    spin::RwLock::new(alloc::vec::Vec::new());
+
+static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+pub fn page_cache_reclaim(num_pages: usize) -> usize {
+    if RECLAIM_IN_PROGRESS.swap(true, Ordering::Acquire) {
+        return 0;
+    }
+
+    let mut reclaimed = 0;
+    let Some(mut guard) = GLOBAL_CACHED_FILES.try_write() else {
+        RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
+        return 0;
+    };
+    let files: alloc::vec::Vec<Arc<CachedFileShared>> =
+        guard.iter().filter_map(|w| w.upgrade()).collect();
+    guard.retain(|w| w.upgrade().is_some());
+    drop(guard);
+
+    let target = num_pages.max(64) * 4;
+    for file in &files {
+        let freed = file.try_evict_clean_pages(target - reclaimed);
+        reclaimed += freed;
+        if reclaimed >= target {
+            break;
+        }
+    }
+
+    if reclaimed > 0 {
+        debug!(
+            "page_cache_reclaim: evicted {} clean pages across {} files",
+            reclaimed,
+            files.len()
+        );
+    }
+
+    RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
+    reclaimed
+}
+
+fn register_cached_file(file: &Arc<CachedFileShared>) {
+    GLOBAL_CACHED_FILES.write().push(Arc::downgrade(file));
 }
 
 /// A file handle with an LRU page cache for buffered I/O.
@@ -435,21 +502,26 @@ impl CachedFile {
         let in_memory = location.filesystem().name() == "tmpfs";
 
         let mut guard = location.user_data();
-        let shared = if let Some(shared) = guard.get::<FileUserData>().and_then(|it| it.get()) {
-            shared
-        } else {
-            let (shared, user_data) = if in_memory {
-                let shared = Arc::new(CachedFileShared::new_unbounded());
-                (shared.clone(), FileUserData::Strong(shared))
+        let (shared, is_new) =
+            if let Some(shared) = guard.get::<FileUserData>().and_then(|it| it.get()) {
+                (shared, false)
             } else {
-                let shared = Arc::new(CachedFileShared::new());
-                let user_data = FileUserData::Weak(Arc::downgrade(&shared));
-                (shared, user_data)
+                let (shared, user_data) = if in_memory {
+                    let shared = Arc::new(CachedFileShared::new_unbounded());
+                    (shared.clone(), FileUserData::Strong(shared))
+                } else {
+                    let shared = Arc::new(CachedFileShared::new());
+                    let user_data = FileUserData::Weak(Arc::downgrade(&shared));
+                    (shared, user_data)
+                };
+                guard.insert(user_data);
+                (shared, true)
             };
-            guard.insert(user_data);
-            shared
-        };
         drop(guard);
+
+        if is_new {
+            register_cached_file(&shared);
+        }
 
         Self {
             inner: location,

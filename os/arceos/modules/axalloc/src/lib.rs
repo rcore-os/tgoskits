@@ -18,6 +18,24 @@ use strum::{IntoStaticStr, VariantArray};
 
 const PAGE_SIZE: usize = 0x1000;
 
+/// A function that tries to reclaim physical pages (e.g. by evicting
+/// clean file-backed page cache pages). Returns the number of pages freed.
+pub type PageReclaimFn = fn(num_pages: usize) -> usize;
+
+static PAGE_RECLAIM_FN: ax_kspin::SpinNoIrq<Option<PageReclaimFn>> = ax_kspin::SpinNoIrq::new(None);
+
+/// Register a callback that the allocator will invoke when a page allocation
+/// cannot be satisfied.
+pub fn register_page_reclaim_fn(f: PageReclaimFn) {
+    *PAGE_RECLAIM_FN.lock() = Some(f);
+}
+
+/// Try to reclaim physical pages by invoking the registered callback.
+/// Returns the number of pages actually freed.
+pub fn try_page_reclaim(num_pages: usize) -> usize {
+    PAGE_RECLAIM_FN.lock().map_or(0, |f| f(num_pages))
+}
+
 mod page;
 pub use page::GlobalPage;
 
