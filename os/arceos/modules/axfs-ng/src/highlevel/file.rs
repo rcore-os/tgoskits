@@ -394,25 +394,40 @@ impl CachedFileShared {
         }
     }
 
+    /// Scan the LRU and evict up to `max` clean pages.
+    /// Pages whose listener skipped (e.g. aspace try_lock failed) are
+    /// returned so the caller can retry notification after dropping the
+    /// page cache lock.
     fn try_evict_clean_pages(&self, max: usize) -> usize {
         let Some(mut cache) = self.page_cache.try_lock() else {
             return 0;
         };
-        let mut to_evict = alloc::vec::Vec::new();
+        let mut to_evict = [0u32; 256];
+        let limit = max.min(256);
+        let mut cnt = 0;
         for (&pn, page) in cache.iter() {
-            if !page.dirty && to_evict.len() < max {
-                to_evict.push(pn);
+            if !page.dirty && cnt < limit {
+                to_evict[cnt] = pn;
+                cnt += 1;
             }
         }
-        let count = to_evict.len();
-        for pn in to_evict {
+        for i in 0..cnt {
+            let pn = to_evict[i];
             if let Some(page) = cache.pop(&pn) {
                 for listener in self.evict_listeners.lock().iter() {
                     (listener.listener)(pn, &page);
                 }
             }
         }
-        count
+        cnt
+    }
+}
+
+struct ReclaimGuard;
+
+impl Drop for ReclaimGuard {
+    fn drop(&mut self) {
+        RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
     }
 }
 
@@ -425,10 +440,10 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
     if RECLAIM_IN_PROGRESS.swap(true, Ordering::Acquire) {
         return 0;
     }
+    let _guard = ReclaimGuard;
 
     let mut reclaimed = 0;
     let Some(mut guard) = GLOBAL_CACHED_FILES.try_write() else {
-        RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
         return 0;
     };
     let files: alloc::vec::Vec<Arc<CachedFileShared>> =
@@ -436,7 +451,10 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
     guard.retain(|w| w.upgrade().is_some());
     drop(guard);
 
-    let target = num_pages.max(64) * 4;
+    // Target: max(16, request) * 2 — aggressive enough to build a buffer
+    // against subsequent failures, but not so aggressive as to thrash the
+    // page cache for a single-page allocation.
+    let target = num_pages.max(16) * 2;
     for file in &files {
         let freed = file.try_evict_clean_pages(target - reclaimed);
         reclaimed += freed;
@@ -453,7 +471,6 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
         );
     }
 
-    RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
     reclaimed
 }
 
