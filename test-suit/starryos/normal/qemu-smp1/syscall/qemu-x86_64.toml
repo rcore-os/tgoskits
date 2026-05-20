@@ -27,6 +27,7 @@ test_commands = [
     "/usr/bin/test-epoll-pwait-sigsetsize",
     "/usr/bin/test-epoll-pwait2",
     "/usr/bin/test-epoll",
+    "/usr/bin/test-signalfd4",
     "/usr/bin/test-eventfd2",
     "/usr/bin/test-faccessat",
     "/usr/bin/test-fchmod",

@@ -30,7 +30,7 @@ fn concurrent_send_signal() {
     let (proc, thr) = new_test_env();
 
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 9, 9);
+    let sig = SignalInfo::new_user(signo, 9, 9, 0);
 
     thread::spawn({
         let thr = thr.clone();
@@ -50,7 +50,7 @@ fn concurrent_blocked() {
     let (_proc, thr) = new_test_env();
 
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 9, 9);
+    let sig = SignalInfo::new_user(signo, 9, 9, 0);
 
     let mut blocked = SignalSet::default();
     blocked.add(signo);
@@ -92,7 +92,7 @@ fn concurrent_check_signals() {
 
     let mut uctx = UserContext::new(0, initial_sp().into(), 0);
 
-    let first = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
+    let first = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
     assert!(thr.send_signal(first.clone()));
 
     let (si, action) = thr.check_signals(&mut uctx, None).unwrap();
@@ -103,8 +103,8 @@ fn concurrent_check_signals() {
     thread::spawn({
         let thr = thr.clone();
         move || {
-            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGINT, 2, 2));
-            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGTERM, 3, 3));
+            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGINT, 2, 2, 0));
+            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGTERM, 3, 3, 0));
         }
     });
 

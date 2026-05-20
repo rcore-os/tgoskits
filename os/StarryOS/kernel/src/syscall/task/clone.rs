@@ -228,6 +228,13 @@ impl CloneArgs {
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
+            // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
+            // fork/clone copies mm->dumpable from parent; without this, a
+            // child of `prctl(PR_SET_DUMPABLE, 0) -> fork()` would reset to
+            // SUID_DUMP_USER (1), breaking the safety semantics this PR is
+            // supposed to enforce. Verified via Linux host: parent sets 0,
+            // fork child PR_GET_DUMPABLE returns 0.
+            proc_data.set_dumpable(old_proc_data.dumpable());
 
             {
                 let mut scope = proc_data.scope.write();

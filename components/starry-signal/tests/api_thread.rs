@@ -10,10 +10,10 @@ use common::*;
 fn dequeue_signal() {
     let (proc, thr) = new_test_env();
 
-    let sig1 = SignalInfo::new_user(Signo::SIGINT, 9, 9);
+    let sig1 = SignalInfo::new_user(Signo::SIGINT, 9, 9, 0);
     assert!(thr.send_signal(sig1));
 
-    let sig2 = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
+    let sig2 = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
     assert_eq!(proc.send_signal(sig2), Some(TID));
 
     let mask = !SignalSet::default();
@@ -27,7 +27,7 @@ fn handle_signal() {
     let (proc, thr) = new_test_env();
 
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 9, 9);
+    let sig = SignalInfo::new_user(signo, 9, 9, 0);
 
     unsafe extern "C" fn test_handler(_: i32) {}
     proc.actions().lock()[signo].disposition = SignalDisposition::Handler(test_handler);
@@ -49,7 +49,7 @@ fn block_ignore_send_signal() {
     let (proc, thr) = new_test_env();
 
     let signo = Signo::SIGINT;
-    let sig = SignalInfo::new_user(signo, 0, 1);
+    let sig = SignalInfo::new_user(signo, 0, 1, 0);
     assert!(thr.send_signal(sig.clone()));
     assert_eq!(
         thr.dequeue_signal(&!SignalSet::default()).unwrap().signo(),
@@ -91,7 +91,7 @@ fn check_signals() {
     let mut uctx = UserContext::new(0, initial_sp().into(), 0);
 
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 0, 1);
+    let sig = SignalInfo::new_user(signo, 0, 1, 0);
 
     assert_eq!(proc.send_signal(sig.clone()), Some(TID));
     let (si, _os_action) = thr.check_signals(&mut uctx, None).unwrap();
@@ -108,7 +108,7 @@ fn check_signals_with_reports_restartable_delivery() {
 
     let mut uctx = UserContext::new(0, initial_sp().into(), 0);
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 0, 1);
+    let sig = SignalInfo::new_user(signo, 0, 1, 0);
     unsafe extern "C" fn test_handler(_: i32) {}
 
     {
@@ -136,7 +136,7 @@ fn restore() {
     let (proc, thr) = new_test_env();
 
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 0, 1);
+    let sig = SignalInfo::new_user(signo, 0, 1, 0);
 
     unsafe extern "C" fn test_handler(_: i32) {}
     proc.actions().lock()[signo].disposition = SignalDisposition::Handler(test_handler);

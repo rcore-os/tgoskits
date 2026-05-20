@@ -472,6 +472,14 @@ pub struct ProcessData {
     /// The process nice value used by getpriority/setpriority compatibility.
     nice: AtomicI32,
 
+    /// PR_GET_DUMPABLE / PR_SET_DUMPABLE value (default 1 = SUID_DUMP_USER).
+    /// Cleared to 0 (SUID_DUMP_DISABLE) whenever the effective UID/GID
+    /// changes via setuid/setresuid/setreuid (man 2 setuid §NOTES:
+    /// "If uid is different from the old effective UID, the process will
+    /// be forbidden from leaving core dumps").
+    /// Linux stores this on `mm_struct`; StarryOS keeps it process-wide.
+    dumpable: AtomicI32,
+
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
@@ -531,6 +539,7 @@ impl ProcessData {
 
             umask: AtomicU32::new(0o022),
             nice: AtomicI32::new(0),
+            dumpable: AtomicI32::new(1),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
 
@@ -615,6 +624,18 @@ impl ProcessData {
     /// Set the process nice value.
     pub fn set_nice(&self, nice: i32) {
         self.nice.store(nice, Ordering::SeqCst);
+    }
+
+    /// Get the dumpable flag (PR_GET_DUMPABLE).
+    pub fn dumpable(&self) -> i32 {
+        self.dumpable.load(Ordering::SeqCst)
+    }
+
+    /// Set the dumpable flag (PR_SET_DUMPABLE).
+    /// Valid values: 0 (SUID_DUMP_DISABLE), 1 (SUID_DUMP_USER),
+    /// 2 (SUID_DUMP_ROOT). Caller must validate before storing.
+    pub fn set_dumpable(&self, dumpable: i32) {
+        self.dumpable.store(dumpable, Ordering::SeqCst);
     }
 
     /// Get the accumulated CPU time of waited children.

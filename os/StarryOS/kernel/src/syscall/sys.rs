@@ -110,6 +110,16 @@ fn uid_valid(id: u32) -> bool {
     id != NOCHG
 }
 
+/// man 2 setuid §NOTES: "If uid is different from the old effective UID, the
+/// process will be forbidden from leaving core dumps."  Linux clears
+/// `mm->dumpable` in `commit_creds()`; StarryOS keeps the flag on `ProcessData`
+/// (single mm per process). Called by every uid-setter that may change `euid`.
+fn maybe_clear_dumpable_on_euid_change(old_euid: u32, new_euid: u32) {
+    if old_euid != new_euid {
+        current().as_thread().proc_data.set_dumpable(0);
+    }
+}
+
 pub fn sys_getuid() -> AxResult<isize> {
     let cred = current().as_thread().cred();
     Ok(cred.uid as isize)
@@ -191,6 +201,7 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
 
     // fsuid always tracks euid.
     new.fsuid = new.euid;
+    maybe_clear_dumpable_on_euid_change(old.euid, new.euid);
     thread.set_cred(new);
     Ok(0)
 }
@@ -267,6 +278,7 @@ pub fn sys_setuid(uid: u32) -> AxResult<isize> {
     }
 
     new.fsuid = new.euid;
+    maybe_clear_dumpable_on_euid_change(old.euid, new.euid);
     thread.set_cred(new);
     Ok(0)
 }
@@ -340,6 +352,7 @@ pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
     }
 
     new.fsuid = new.euid;
+    maybe_clear_dumpable_on_euid_change(old.euid, new.euid);
     thread.set_cred(new);
     Ok(0)
 }
@@ -419,6 +432,13 @@ pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
         let mut new = (*old).clone();
         new.fsuid = fsuid;
         thread.set_cred(new);
+        // man 2 prctl PR_SET_DUMPABLE: dumpable is also reset to
+        // /proc/sys/fs/suid_dumpable (default 0) when filesystem uid changes.
+        // Without this, `PR_SET_DUMPABLE(1) -> setfsuid(new) -> PR_GET_DUMPABLE`
+        // would falsely return 1, breaking Linux semantics (ZR233 review #718).
+        if fsuid != prev_fsuid {
+            maybe_clear_dumpable_on_euid_change(prev_fsuid, fsuid);
+        }
     }
     // Always return previous fsuid, even when the request was ignored.
     Ok(prev_fsuid as isize)
@@ -445,6 +465,11 @@ pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
         let mut new = (*old).clone();
         new.fsgid = fsgid;
         thread.set_cred(new);
+        // man 2 prctl PR_SET_DUMPABLE: dumpable is also reset when filesystem
+        // gid changes (ZR233 review #718, same as fsuid path above).
+        if fsgid != prev_fsgid {
+            maybe_clear_dumpable_on_euid_change(prev_fsgid, fsgid);
+        }
     }
     Ok(prev_fsgid as isize)
 }
