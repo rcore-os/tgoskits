@@ -1,4 +1,9 @@
-use std::{fs, io::Read, path::PathBuf};
+use std::{
+    collections::HashSet,
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
@@ -46,8 +51,125 @@ pub struct SymbolizeArgs {
 
 pub fn execute(command: Command) -> anyhow::Result<()> {
     match command {
-        Command::Symbolize(args) => symbolize(args),
+        Command::Symbolize(args) => symbolize_cli(args),
     }
+}
+
+const HOST_SYMBOLIZE_HEADER: &str = "=== host backtrace symbolize ===";
+
+/// Resolved ELF path for an ArceOS Rust test package built via the workspace `target/` dir.
+pub(crate) fn arceos_rust_elf_path(
+    workspace_root: &Path,
+    target: &str,
+    package: &str,
+    debug: bool,
+) -> PathBuf {
+    let profile = if debug { "debug" } else { "release" };
+    workspace_root
+        .join("target")
+        .join(target)
+        .join(profile)
+        .join(package)
+}
+
+fn case_name_kind_hint(case_name: &str) -> Option<&'static str> {
+    const KINDS: &[&str] = &["raw", "panic", "trap"];
+    for segment in case_name.split(['/', '-']) {
+        for kind in KINDS {
+            if segment == *kind {
+                return Some(kind);
+            }
+        }
+    }
+    if case_name.ends_with("-raw") {
+        return Some("raw");
+    }
+    if case_name.ends_with("-panic") {
+        return Some("panic");
+    }
+    if case_name.ends_with("-trap") {
+        return Some("trap");
+    }
+    None
+}
+
+/// Infer a `kind=` filter for symbolize: case-name hints, else single block kind, else all kinds.
+fn infer_kind_filter(case_name: &str, blocks: &[Block]) -> Option<String> {
+    if let Some(kind) = case_name_kind_hint(case_name) {
+        return Some(kind.to_string());
+    }
+
+    let kinds: HashSet<&str> = blocks.iter().map(|block| block.kind.as_str()).collect();
+    if kinds.len() == 1 {
+        return kinds.into_iter().next().map(str::to_string);
+    }
+    None
+}
+
+/// After a QEMU run, symbolize any raw backtrace blocks in `log` without failing the test.
+pub(crate) fn maybe_symbolize_after_qemu(
+    elf: &Path,
+    log: &Path,
+    case_name: &str,
+) -> anyhow::Result<()> {
+    if !log.is_file() {
+        return Ok(());
+    }
+    let text = match fs::read_to_string(log) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!(
+                "warning: failed to read qemu log {} for backtrace symbolize: {err:#}",
+                log.display()
+            );
+            return Ok(());
+        }
+    };
+    if !text.contains("BACKTRACE_BEGIN") {
+        return Ok(());
+    }
+    if !elf.is_file() {
+        eprintln!(
+            "warning: skipping backtrace symbolize; ELF not found at {}",
+            elf.display()
+        );
+        return Ok(());
+    }
+
+    let blocks = match parse_blocks(&text) {
+        Ok(blocks) if !blocks.is_empty() => blocks,
+        Ok(_) => return Ok(()),
+        Err(err) => {
+            eprintln!("warning: failed to parse backtrace blocks in qemu log: {err:#}");
+            return Ok(());
+        }
+    };
+
+    let kind_filter = infer_kind_filter(case_name, &blocks);
+    let loader = match addr2line::Loader::new(elf) {
+        Ok(loader) => loader,
+        Err(err) => {
+            eprintln!(
+                "warning: failed to load symbols from {} for backtrace symbolize: {err}",
+                elf.display()
+            );
+            return Ok(());
+        }
+    };
+
+    println!("\n{HOST_SYMBOLIZE_HEADER}");
+    let mut stdout = std::io::stdout().lock();
+    if let Err(err) = write_symbolized_blocks(
+        &mut stdout,
+        &loader,
+        &blocks,
+        kind_filter.as_deref(),
+        true,
+        0,
+    ) {
+        eprintln!("warning: backtrace symbolize output failed: {err:#}");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -65,9 +187,9 @@ struct Block {
     errors: Vec<String>,
 }
 
-fn read_text(log: Option<PathBuf>) -> anyhow::Result<String> {
+fn read_text(log: Option<&Path>) -> anyhow::Result<String> {
     match log {
-        Some(path) => Ok(fs::read_to_string(&path)
+        Some(path) => Ok(fs::read_to_string(path)
             .with_context(|| format!("failed to read log {}", path.display()))?),
         None => {
             let mut s = String::new();
@@ -155,8 +277,8 @@ fn parse_blocks(text: &str) -> anyhow::Result<Vec<Block>> {
     Ok(out)
 }
 
-fn symbolize(args: SymbolizeArgs) -> anyhow::Result<()> {
-    let text = read_text(args.log)?;
+fn symbolize_cli(args: SymbolizeArgs) -> anyhow::Result<()> {
+    let text = read_text(args.log.as_deref())?;
     let blocks = parse_blocks(&text)?;
     if blocks.is_empty() {
         bail!("no backtrace blocks found");
@@ -170,47 +292,70 @@ fn symbolize(args: SymbolizeArgs) -> anyhow::Result<()> {
         )
     })?;
 
+    write_symbolized_blocks(
+        &mut std::io::stdout().lock(),
+        &loader,
+        &blocks,
+        args.kind.as_deref(),
+        args.adjust_ip,
+        args.ip_bias,
+    )
+}
+
+fn write_symbolized_blocks(
+    out: &mut impl Write,
+    loader: &addr2line::Loader,
+    blocks: &[Block],
+    kind_filter: Option<&str>,
+    adjust_ip: bool,
+    ip_bias: i64,
+) -> anyhow::Result<()> {
     for (i, block) in blocks.iter().enumerate() {
-        if let Some(kind) = &args.kind
-            && &block.kind != kind
+        if let Some(kind) = kind_filter
+            && block.kind != kind
         {
             continue;
         }
 
-        println!(
+        writeln!(
+            out,
             "BACKTRACE_BLOCK {} kind={} arch={}",
             i,
             block.kind,
             block.arch.as_deref().unwrap_or("?")
-        );
+        )?;
 
         for frame in &block.frames {
-            let ip = if args.adjust_ip && frame.ip > 0 {
+            let ip = if adjust_ip && frame.ip > 0 {
                 frame.ip - 1
             } else {
                 frame.ip
             };
-            let ip = ip.wrapping_add_signed(args.ip_bias);
-            let symbolized = maybe_symbolize_with_loader(&loader, ip);
+            let ip = ip.wrapping_add_signed(ip_bias);
+            let symbolized = maybe_symbolize_with_loader(loader, ip);
 
             match (&frame.fp, symbolized) {
                 (Some(fp), Some(sym)) => {
-                    println!("BT {} ip=0x{:x} fp=0x{:x} {}", frame.idx, frame.ip, fp, sym);
+                    writeln!(
+                        out,
+                        "BT {} ip=0x{:x} fp=0x{:x} {}",
+                        frame.idx, frame.ip, fp, sym
+                    )?;
                 }
                 (Some(fp), None) => {
-                    println!("BT {} ip=0x{:x} fp=0x{:x}", frame.idx, frame.ip, fp);
+                    writeln!(out, "BT {} ip=0x{:x} fp=0x{:x}", frame.idx, frame.ip, fp)?;
                 }
                 (None, Some(sym)) => {
-                    println!("BT {} ip=0x{:x} {}", frame.idx, frame.ip, sym);
+                    writeln!(out, "BT {} ip=0x{:x} {}", frame.idx, frame.ip, sym)?;
                 }
                 (None, None) => {
-                    println!("BT {} ip=0x{:x}", frame.idx, frame.ip);
+                    writeln!(out, "BT {} ip=0x{:x}", frame.idx, frame.ip)?;
                 }
             };
         }
 
         for err in &block.errors {
-            println!("BT_ERROR {}", err);
+            writeln!(out, "BT_ERROR {err}")?;
         }
     }
 
@@ -265,6 +410,33 @@ mod tests {
     #[unsafe(no_mangle)]
     extern "C" fn bt_symbolize_probe() {
         std::hint::black_box(());
+    }
+
+    #[test]
+    fn infer_kind_filter_from_case_name() {
+        assert_eq!(
+            infer_kind_filter("backtrace-raw-normal", &[]).as_deref(),
+            Some("raw")
+        );
+        assert_eq!(
+            infer_kind_filter("foo-panic-bar", &[]).as_deref(),
+            Some("panic")
+        );
+        assert_eq!(
+            infer_kind_filter("my-trap-test", &[]).as_deref(),
+            Some("trap")
+        );
+        assert_eq!(infer_kind_filter("draw-something", &[]), None);
+        assert_eq!(infer_kind_filter("fs/shell", &[]), None);
+        assert_eq!(infer_kind_filter("ipi", &[]), None);
+        let blocks = parse_blocks(
+            "BACKTRACE_BEGIN kind=panic arch=x86_64\nBT 0 ip=0x1 fp=0x2\nBACKTRACE_END\n",
+        )
+        .unwrap();
+        assert_eq!(
+            infer_kind_filter("generic", &blocks).as_deref(),
+            Some("panic")
+        );
     }
 
     #[test]
@@ -388,6 +560,55 @@ BACKTRACE_END
         let loader = addr2line::Loader::new(&exe).unwrap();
         let sym = symbolize_with_loader(&loader, ip_for_file).unwrap();
         assert!(sym.contains("bt_symbolize_probe"));
+    }
+
+    #[test]
+    fn infer_kind_filter_prefers_raw_from_case_name() {
+        let blocks =
+            parse_blocks("BACKTRACE_BEGIN kind=panic\nBT 0 ip=0x1\nBACKTRACE_END\n").unwrap();
+        assert_eq!(
+            infer_kind_filter("backtrace-raw-normal", &blocks).as_deref(),
+            Some("raw")
+        );
+    }
+
+    #[test]
+    fn infer_kind_filter_uses_single_block_kind() {
+        let blocks =
+            parse_blocks("BACKTRACE_BEGIN kind=trap\nBT 0 ip=0x1\nBACKTRACE_END\n").unwrap();
+        assert_eq!(
+            infer_kind_filter("other-case", &blocks).as_deref(),
+            Some("trap")
+        );
+    }
+
+    #[test]
+    fn infer_kind_filter_returns_none_for_multiple_kinds() {
+        let blocks = parse_blocks(
+            r#"
+BACKTRACE_BEGIN kind=panic
+BT 0 ip=0x1
+BACKTRACE_BEGIN kind=trap
+BT 0 ip=0x2
+BACKTRACE_END
+"#,
+        )
+        .unwrap();
+        assert_eq!(infer_kind_filter("mixed", &blocks), None);
+    }
+
+    #[test]
+    fn arceos_rust_elf_path_uses_release_profile() {
+        let path = arceos_rust_elf_path(
+            Path::new("/ws"),
+            "x86_64-unknown-none",
+            "arceos-backtrace-raw-normal",
+            false,
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("/ws/target/x86_64-unknown-none/release/arceos-backtrace-raw-normal")
+        );
     }
 
     #[test]

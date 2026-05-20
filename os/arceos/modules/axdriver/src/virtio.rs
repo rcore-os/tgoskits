@@ -90,8 +90,8 @@ cfg_if! {
             const DEVICE_TYPE: DeviceType = DeviceType::Input;
             type Device = ax_driver_virtio::VirtIoInputDev<VirtIoHalImpl, VirtIoTransport>;
 
-            fn try_new(transport: VirtIoTransport, _irq: Option<usize>) -> DevResult<AxDeviceEnum> {
-                Ok(AxDeviceEnum::from_input(Self::Device::try_new(transport)?))
+            fn try_new(transport: VirtIoTransport, irq: Option<usize>) -> DevResult<AxDeviceEnum> {
+                Ok(AxDeviceEnum::from_input(Self::Device::try_new(transport, irq)?))
             }
         }
     }

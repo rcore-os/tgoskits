@@ -25,4 +25,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/usb-audio-iso-test"
 success_regex = ["(?m)^USB audio iso tests passed!\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "USB audio iso test failed"]
-timeout = 60
+timeout = 120

@@ -26,7 +26,7 @@ fn emit_invalid_fp_report() {
     let anchor = 0usize;
     let fp = (&anchor as *const usize as usize).wrapping_add(1);
     let bt = Backtrace::capture_trap(fp, 0, 0);
-    println!("{}", bt.report("raw"));
+    println!("{}", bt.kind("raw"));
 }
 
 #[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
@@ -34,7 +34,10 @@ fn main() {
     println!("emitting raw backtrace report (corrupted fp)...");
     emit_invalid_fp_report();
     println!("test pass");
-    std::os::arceos::modules::ax_hal::power::system_off();
+    #[cfg(feature = "ax-std")]
+    use std::os::arceos::modules::ax_hal;
+    #[cfg(feature = "ax-std")]
+    ax_hal::power::system_off();
 }
 
 }

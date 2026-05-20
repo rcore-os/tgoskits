@@ -27,13 +27,13 @@ struct Cli {
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClippyArgs {
-    /// Audit every workspace package instead of the maintained whitelist
+    /// Audit every workspace package
     #[arg(long)]
     pub(crate) all: bool,
     /// Run clippy only for the named workspace package(s)
     #[arg(long = "package", value_name = "PACKAGE")]
     pub(crate) packages: Vec<String>,
-    /// Run clippy for whitelisted packages affected since the git ref
+    /// Run clippy for workspace packages affected since the git ref
     #[arg(long, value_name = "REF")]
     pub(crate) since: Option<String>,
 }
@@ -49,7 +49,7 @@ pub(crate) struct SyncLintArgs {
 enum Commands {
     /// Run std tests for the configured workspace package whitelist
     Test,
-    /// Run clippy for the maintained whitelist by default
+    /// Run clippy for workspace packages
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
     SyncLint(SyncLintArgs),

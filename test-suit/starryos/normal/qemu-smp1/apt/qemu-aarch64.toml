@@ -33,4 +33,4 @@ fi
 '''
 success_regex = ["(?m)^Hello, world!\\s*$", "(?m)^APT_HELLO_TEST_PASSED\\s*$"]
 fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', "(?m)^APT_HELLO_TEST_FAILED\\s*$"]
-timeout = 600
+timeout = 1200

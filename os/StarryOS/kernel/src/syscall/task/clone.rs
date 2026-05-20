@@ -4,7 +4,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use ax_hal::uspace::UserContext;
 use ax_kspin::SpinNoIrq;
-use ax_task::{AxTaskExt, WaitQueue, current, spawn_task};
+use ax_task::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -215,11 +215,13 @@ impl CloneArgs {
                 .set_page_table_root(aspace.lock().page_table_root());
 
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
-                old_proc_data.signal.actions.clone()
+                old_proc_data.signal.actions()
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
                 Arc::new(SpinNoIrq::new(Default::default()))
             } else {
-                Arc::new(SpinNoIrq::new(old_proc_data.signal.actions.lock().clone()))
+                Arc::new(SpinNoIrq::new(
+                    old_proc_data.signal.actions().lock().clone(),
+                ))
             };
 
             let proc_data = ProcessData::new(
@@ -229,10 +231,18 @@ impl CloneArgs {
                 aspace,
                 signal_actions,
                 exit_signal,
+                flags.contains(CloneFlags::VM),
             );
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
+            // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
+            // fork/clone copies mm->dumpable from parent; without this, a
+            // child of `prctl(PR_SET_DUMPABLE, 0) -> fork()` would reset to
+            // SUID_DUMP_USER (1), breaking the safety semantics this PR is
+            // supposed to enforce. Verified via Linux host: parent sets 0,
+            // fork child PR_GET_DUMPABLE returns 0.
+            proc_data.set_dumpable(old_proc_data.dumpable());
 
             {
                 let mut scope = proc_data.scope.write();
@@ -286,10 +296,11 @@ impl CloneArgs {
         // Bare vfork(2) reuses the parent's user stack, so the parent must
         // sleep until the child execs or exits. posix_spawn-style clones pass
         // a private child stack with CLONE_VM|CLONE_VFORK and synchronize in
-        // user space; blocking here can deadlock that handshake.
+        // user space; blocking here can deadlock that handshake. Use PollSet
+        // so the parent's wait remains interruptible by task.interrupt().
         if needs_vfork_block {
-            let wq = Arc::new(WaitQueue::new());
-            new_proc_data.set_vfork_done(wq);
+            let poll = Arc::new(axpoll::PollSet::new());
+            new_proc_data.set_vfork_done(poll);
         }
 
         let task = spawn_task(new_task);

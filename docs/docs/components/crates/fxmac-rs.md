@@ -1,10 +1,10 @@
 # `fxmac_rs`
 
-> 路径：`components/fxmac_rs`
+> 路径：`drivers/net/fxmac_rs`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.4.1`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/fxmac_rs/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml` 与 `drivers/net/fxmac_rs/README.md`
 
 `fxmac_rs` 的核心定位是：FXMAC Ethernet driver in Rust for PhytiumPi (Phytium Pi) board, supporting DMA-based packet transmission and reception.
 
@@ -76,7 +76,7 @@ graph LR
 fxmac_rs = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# fxmac_rs = { path = "components/fxmac_rs" }
+# fxmac_rs = { path = "drivers/net/fxmac_rs" }
 ```
 
 ### 初始化

@@ -49,6 +49,8 @@ fn main() {
     while FINISHED_TASKS.load(Ordering::Acquire) < NUM_TASKS {
         #[cfg(all(not(feature = "sched-rr"), not(feature = "sched-cfs")))]
         thread::yield_now();
+        #[cfg(any(feature = "sched-rr", feature = "sched-cfs"))]
+        std::hint::spin_loop();
     }
     println!("All tests passed!");
 }

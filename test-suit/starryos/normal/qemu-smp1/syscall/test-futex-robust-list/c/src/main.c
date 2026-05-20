@@ -55,6 +55,10 @@
 #define FUTEX_OWNER_DIED 0x40000000u
 #endif
 
+#ifndef FUTEX_WAITERS
+#define FUTEX_WAITERS 0x80000000u
+#endif
+
 #ifndef FUTEX_TID_MASK
 #define FUTEX_TID_MASK 0x3fffffffu
 #endif
@@ -91,11 +95,16 @@ static _Atomic int bitset_waiter_ret = 0;
 static struct local_robust_list_head robust_head;
 static struct local_robust_list_head robust_syscall_head;
 static struct robust_test_node robust_node;
+static struct local_robust_list_head robust_pending_head;
+static struct robust_test_node robust_pending_node;
 static _Atomic int robust_owner_ready = 0;
 static _Atomic int robust_owner_can_exit = 0;
 static _Atomic int robust_waiter_ready = 0;
 static _Atomic int robust_waiter_ret = 0;
 static _Atomic uint32_t robust_owner_tid = 0;
+static _Atomic int robust_pending_owner_ready = 0;
+static _Atomic int robust_pending_owner_can_exit = 0;
+static _Atomic uint32_t robust_pending_owner_tid = 0;
 static _Atomic uint32_t robust_wait_expected = 0;
 static _Atomic int robust_owner_mode = 0;
 static _Atomic int robust_query_ready = 0;
@@ -913,7 +922,9 @@ static void *robust_owner_thread(void *arg)
         robust_head.list_op_pending = (mode == 2) ? &robust_node.list : NULL;
     }
 
-    uint32_t futex_value = (mode == 3) ? (uint32_t)tid + 1 : (uint32_t)tid;
+    uint32_t futex_value =
+        (((mode == 3) ? (uint32_t)tid + 1 : (uint32_t)tid) & FUTEX_TID_MASK) |
+        FUTEX_WAITERS;
     atomic_store_explicit(&robust_node.futex_word, futex_value, memory_order_release);
     atomic_store_explicit(&robust_wait_expected, futex_value, memory_order_release);
 
@@ -1070,6 +1081,119 @@ static void test_robust_list_bad_chain_does_not_hang(void)
     CHECK(0, "Linux ABI: bad/cyclic robust list must not permanently hang exit");
 }
 
+static void *robust_pending_owner_thread(void *arg)
+{
+    (void)arg;
+
+    /*
+     * Linux stops the robust-list walk after a bad list pointer, so pending
+     * cleanup needs a valid list head and bad-head tolerance is checked below.
+     */
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    robust_pending_head.list.next = &robust_pending_head.list;
+    robust_pending_head.futex_offset =
+        (long)offsetof(struct robust_test_node, futex_word);
+    robust_pending_head.list_op_pending = &robust_pending_node.list;
+    robust_pending_node.list.next = &robust_pending_head.list;
+    atomic_store_explicit(&robust_pending_node.futex_word,
+                          (uint32_t)tid & FUTEX_TID_MASK,
+                          memory_order_release);
+
+    long ret = raw_set_robust_list(&robust_pending_head,
+                                   sizeof(robust_pending_head));
+    if (ret != 0) {
+        atomic_store_explicit(&robust_pending_owner_tid, UINT32_MAX,
+                              memory_order_release);
+        atomic_store_explicit(&robust_pending_owner_ready, 1,
+                              memory_order_release);
+        return (void *)(intptr_t)-errno;
+    }
+
+    atomic_store_explicit(&robust_pending_owner_tid, (uint32_t)tid,
+                          memory_order_release);
+    atomic_store_explicit(&robust_pending_owner_ready, 1, memory_order_release);
+
+    while (atomic_load_explicit(&robust_pending_owner_can_exit,
+                                memory_order_acquire) == 0) {
+        sched_yield();
+    }
+
+    return NULL;
+}
+
+static void test_robust_list_pending_owner_death(void)
+{
+    printf("\n--- robust-list pending cleanup ---\n");
+    pthread_t owner;
+
+    atomic_store_explicit(&robust_pending_owner_ready, 0, memory_order_relaxed);
+    atomic_store_explicit(&robust_pending_owner_can_exit, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&robust_pending_owner_tid, 0, memory_order_relaxed);
+    atomic_store_explicit(&robust_pending_node.futex_word, 0,
+                          memory_order_relaxed);
+
+    int err = pthread_create(&owner, NULL, robust_pending_owner_thread, NULL);
+    CHECK(err == 0, "pthread_create robust pending owner succeeds");
+    if (err != 0) {
+        exit(1);
+    }
+
+    while (atomic_load_explicit(&robust_pending_owner_ready,
+                                memory_order_acquire) == 0) {
+        sched_yield();
+    }
+    CHECK(atomic_load_explicit(&robust_pending_owner_tid,
+                               memory_order_acquire) != UINT32_MAX,
+          "pending owner thread set robust list");
+
+    atomic_store_explicit(&robust_pending_owner_can_exit, 1,
+                          memory_order_release);
+    join_thread(owner, NULL);
+
+    uint32_t word =
+        atomic_load_explicit(&robust_pending_node.futex_word, memory_order_acquire);
+
+    CHECK((word & FUTEX_OWNER_DIED) != 0,
+          "pending robust futex is marked owner-dead");
+    CHECK((word & FUTEX_TID_MASK) == 0,
+          "pending robust futex owner TID is cleared");
+}
+
+static void *robust_bad_head_owner_thread(void *arg)
+{
+    (void)arg;
+
+    robust_pending_head.list.next = (struct local_robust_list *)(uintptr_t)1;
+    robust_pending_head.futex_offset =
+        (long)offsetof(struct robust_test_node, futex_word);
+    robust_pending_head.list_op_pending = NULL;
+
+    long ret = raw_set_robust_list(&robust_pending_head,
+                                   sizeof(robust_pending_head));
+    if (ret != 0) {
+        return (void *)(intptr_t)-errno;
+    }
+    return NULL;
+}
+
+static void test_robust_list_bad_head_is_tolerated(void)
+{
+    printf("\n--- robust-list bad list head is tolerated ---\n");
+    pthread_t owner;
+
+    int err = pthread_create(&owner, NULL, robust_bad_head_owner_thread, NULL);
+    CHECK(err == 0, "pthread_create robust bad-head owner succeeds");
+    if (err != 0) {
+        exit(1);
+    }
+
+    void *result = NULL;
+    join_thread(owner, &result);
+    CHECK((int)(intptr_t)result == 0,
+          "bad robust-list head does not abort thread exit");
+}
+
 int main(void)
 {
     TEST_START("futex and robust-list syscalls");
@@ -1087,6 +1211,8 @@ int main(void)
     test_futex_bitset();
     test_robust_list_syscalls();
     test_robust_list_owner_death();
+    test_robust_list_pending_owner_death();
+    test_robust_list_bad_head_is_tolerated();
     test_robust_list_bad_chain_does_not_hang();
 
     TEST_DONE();

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.6...axbuild-v0.4.7) - 2026-05-19
+
+### Added
+
+- *(git)* enhance global Clippy input handling and fallback logic ([#758](https://github.com/rcore-os/tgoskits/pull/758))
+
+### Other
+
+- Refactor Clippy integration and enhance package handling ([#738](https://github.com/rcore-os/tgoskits/pull/738))
+
 ## [0.4.6](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.5...axbuild-v0.4.6) - 2026-05-15
 
 ### Added

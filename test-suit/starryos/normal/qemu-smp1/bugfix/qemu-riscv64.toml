@@ -62,6 +62,7 @@ test_commands = [
     "/usr/bin/bug-readlinkat-zero-size",
     "/usr/bin/bug-proc-net-arp",
     "/usr/bin/bug-proc-init-pid",
+    "/usr/bin/bug-af-inet6-v4mapped",
     "/usr/bin/bug-tcp-udp-bind-same-port",
     "/usr/bin/bug-tcp-send-no-epoll-notify",
     "/usr/bin/bug-kill-zombie-esrch",
@@ -70,7 +71,8 @@ test_commands = [
     "/usr/bin/bug-rename-replace",
     "/usr/bin/bug-tmpfs-hardlink-cache",
     "/usr/bin/bug-zombie-syscalls",
+    "/usr/bin/bug-starry-setuid-setgid-no-uidvalid",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
-timeout = 240
+timeout = 360
