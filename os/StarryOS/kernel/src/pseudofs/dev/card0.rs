@@ -228,7 +228,11 @@ impl Card0 {
             dumbs: Mutex::new(BTreeMap::new()),
             next_dumb_handle: AtomicU32::new(FIRST_DUMB_HANDLE),
             next_dumb_offset: core::sync::atomic::AtomicU64::new(
-                ax_display::framebuffer_info().fb_size as u64,
+                if ax_display::has_display() {
+                    ax_display::framebuffer_info().fb_size as u64
+                } else {
+                    0
+                },
             ),
             fbs: Mutex::new(BTreeMap::new()),
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
@@ -495,6 +499,9 @@ impl Card0 {
     }
 
     fn present_fb(&self, fb_id: u32) {
+        if !ax_display::has_display() {
+            return;
+        }
         let fbs = self.fbs.lock();
         let Some(&dumb_handle) = fbs.get(&fb_id) else {
             return;
