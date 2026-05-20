@@ -26,7 +26,7 @@ int run_select_fd_set_cleared(void) {
     nfds++;
 
     struct timeval tv = {1, 0};
-    int ret = syscall(SYS_select, nfds, &rfds, NULL, NULL, &tv);
+    int ret = raw_select(nfds, &rfds, NULL, NULL, &tv);
     CHECK(ret == 1, "select returns 1 only pipe1 has data");
     CHECK(FD_ISSET(p1[0], &rfds), "pipe1 FD_ISSET true");
     CHECK(!FD_ISSET(p2[0], &rfds), "pipe2 FD_ISSET false cleared");

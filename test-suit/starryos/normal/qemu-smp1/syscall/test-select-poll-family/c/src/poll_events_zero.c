@@ -13,12 +13,12 @@ int run_poll_events_zero(void) {
     CHECK_RET(create_pipe(fds), 0, "pipe created");
 
     struct pollfd pfd = { .fd = fds[0], .events = 0, .revents = 0 };
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 10), 0, "read end events=0 returns 0");
+    CHECK_RET(raw_poll(&pfd, 1, 10), 0, "read end events=0 returns 0");
 
     pfd.fd = fds[1];
     pfd.events = 0;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 10), 0, "write end events=0 returns 0");
+    CHECK_RET(raw_poll(&pfd, 1, 10), 0, "write end events=0 returns 0");
 
     close(fds[0]);
     close(fds[1]);
@@ -29,7 +29,7 @@ int run_poll_events_zero(void) {
     pfd.fd = fds[0];
     pfd.events = 0;
     pfd.revents = 0;
-    int ret = (int)syscall(SYS_poll, &pfd, 1, 100);
+    int ret = (int)raw_poll(&pfd, 1, 100);
     CHECK(ret >= 1, "events=0 with closed write end returns >=1");
     CHECK(pfd.revents & POLLHUP, "revents has POLLHUP even when events=0");
 

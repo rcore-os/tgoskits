@@ -24,7 +24,7 @@ int run_select_regular_file(void) {
     FD_ZERO(&rfds);
     FD_SET(rfd, &rfds);
     struct timeval tv = {1, 0};
-    int ret = syscall(SYS_select, rfd + 1, &rfds, NULL, NULL, &tv);
+    int ret = raw_select(rfd + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 1, "select regular file readfds returns 1");
 
     fd_set wfds;
@@ -32,7 +32,7 @@ int run_select_regular_file(void) {
     FD_SET(rfd, &wfds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    ret = syscall(SYS_select, rfd + 1, NULL, &wfds, NULL, &tv);
+    ret = raw_select(rfd + 1, NULL, &wfds, NULL, &tv);
     CHECK(ret == 1, "select regular file writefds returns 1");
 
     close(rfd);

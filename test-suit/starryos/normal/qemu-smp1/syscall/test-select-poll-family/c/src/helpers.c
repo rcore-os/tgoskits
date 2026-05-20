@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <string.h>
 #include <time.h>
+#include <sys/syscall.h>
+#include <signal.h>
 
 int create_pipe(int fds[2]) {
     return pipe(fds);
@@ -72,4 +74,39 @@ int create_temp_file(const char *path) {
     if (fd < 0) return -1;
     close(fd);
     return 0;
+}
+
+long raw_select(int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv) {
+#ifdef SYS_select
+    return raw_select(nfds, rfds, wfds, efds, tv);
+#else
+    struct timespec ts;
+    struct timespec *tsp = NULL;
+    if (tv) {
+        ts.tv_sec = tv->tv_sec;
+        ts.tv_nsec = tv->tv_usec * 1000;
+        tsp = &ts;
+    }
+    long ret = syscall(SYS_pselect6, nfds, rfds, wfds, efds, tsp, NULL);
+    if (tv && tsp) {
+        tv->tv_sec = ts.tv_sec;
+        tv->tv_usec = ts.tv_nsec / 1000;
+    }
+    return ret;
+#endif
+}
+
+long raw_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+#ifdef SYS_poll
+    return raw_poll(fds, nfds, timeout);
+#else
+    struct timespec ts;
+    struct timespec *tsp = NULL;
+    if (timeout >= 0) {
+        ts.tv_sec = timeout / 1000;
+        ts.tv_nsec = (timeout % 1000) * 1000000L;
+        tsp = &ts;
+    }
+    return syscall(SYS_ppoll, fds, nfds, tsp, NULL);
+#endif
 }

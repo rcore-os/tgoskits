@@ -21,7 +21,7 @@ int run_poll_multiple_fds(void) {
     pfds[1].fd = p2[0]; pfds[1].events = POLLIN; pfds[1].revents = 0;
     pfds[2].fd = p3[0]; pfds[2].events = POLLIN; pfds[2].revents = 0;
 
-    CHECK_RET(syscall(SYS_poll, pfds, 3, 100), 1, "only pipe2 written returns 1");
+    CHECK_RET(raw_poll(pfds, 3, 100), 1, "only pipe2 written returns 1");
     CHECK(!(pfds[0].revents & POLLIN), "pipe1 revents no POLLIN");
     CHECK(pfds[1].revents & POLLIN, "pipe2 revents has POLLIN");
     CHECK(!(pfds[2].revents & POLLIN), "pipe3 revents no POLLIN");
@@ -32,7 +32,7 @@ int run_poll_multiple_fds(void) {
     pfds[0].revents = 0;
     pfds[1].revents = 0;
     pfds[2].revents = 0;
-    CHECK_RET(syscall(SYS_poll, pfds, 3, 100), 3, "all three pipes have data returns 3");
+    CHECK_RET(raw_poll(pfds, 3, 100), 3, "all three pipes have data returns 3");
     CHECK(pfds[0].revents & POLLIN, "pipe1 revents has POLLIN");
     CHECK(pfds[1].revents & POLLIN, "pipe2 revents has POLLIN");
     CHECK(pfds[2].revents & POLLIN, "pipe3 revents has POLLIN");

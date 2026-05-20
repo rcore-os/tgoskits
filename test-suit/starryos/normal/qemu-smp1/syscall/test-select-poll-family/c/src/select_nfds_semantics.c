@@ -20,21 +20,21 @@ int run_select_nfds_semantics(void) {
     FD_ZERO(&rfds);
     FD_SET(fds[0], &rfds);
     struct timeval tv = {0, 50000};
-    int ret = syscall(SYS_select, 0, &rfds, NULL, NULL, &tv);
+    int ret = raw_select(0, &rfds, NULL, NULL, &tv);
     CHECK(ret == 0, "select nfds=0 ignores fd returns 0");
 
     FD_ZERO(&rfds);
     FD_SET(fds[0], &rfds);
     tv.tv_sec = 0;
     tv.tv_usec = 50000;
-    ret = syscall(SYS_select, fds[0], &rfds, NULL, NULL, &tv);
+    ret = raw_select(fds[0], &rfds, NULL, NULL, &tv);
     CHECK(ret == 0, "select nfds=pipe_read_fd ignores fd returns 0");
 
     FD_ZERO(&rfds);
     FD_SET(fds[0], &rfds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+    ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 1, "select nfds=pipe_read_fd+1 detects fd returns 1");
 
     close(fds[0]);

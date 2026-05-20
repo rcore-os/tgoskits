@@ -25,7 +25,7 @@ int run_stress_loop(void) {
             FD_ZERO(&rfds);
             FD_SET(fds[0], &rfds);
             struct timeval tv = {1, 0};
-            long ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+            long ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
 
             if (ret != 1 || !FD_ISSET(fds[0], &rfds)) {
                 err_count++;
@@ -58,7 +58,7 @@ int run_stress_loop(void) {
             write_exact(fds[1], &w, 1);
 
             struct pollfd pfd = { .fd = fds[0], .events = POLLIN, .revents = 0 };
-            long ret = syscall(SYS_poll, &pfd, 1, 1000);
+            long ret = raw_poll(&pfd, 1, 1000);
 
             if (ret != 1 || !(pfd.revents & POLLIN)) {
                 err_count++;

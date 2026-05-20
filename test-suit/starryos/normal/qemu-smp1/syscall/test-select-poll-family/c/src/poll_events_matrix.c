@@ -17,11 +17,11 @@ int run_poll_events_matrix(void) {
     pfd.fd = fds[0];
     pfd.events = POLLIN;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 0), 0, "pipe read POLLIN empty timeout 0");
+    CHECK_RET(raw_poll(&pfd, 1, 0), 0, "pipe read POLLIN empty timeout 0");
 
     write_exact(fds[1], "X", 1);
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 0), 1, "pipe read POLLIN with data returns 1");
+    CHECK_RET(raw_poll(&pfd, 1, 0), 1, "pipe read POLLIN with data returns 1");
     CHECK(pfd.revents & POLLIN, "pipe read revents has POLLIN with data");
 
     char buf[16];
@@ -30,13 +30,13 @@ int run_poll_events_matrix(void) {
     pfd.fd = fds[1];
     pfd.events = POLLOUT;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 0), 1, "pipe write POLLOUT empty returns 1");
+    CHECK_RET(raw_poll(&pfd, 1, 0), 1, "pipe write POLLOUT empty returns 1");
     CHECK(pfd.revents & POLLOUT, "pipe write revents has POLLOUT");
 
     pfd.fd = fds[0];
     pfd.events = POLLPRI;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 0), 0, "pipe read POLLPRI returns 0 timeout");
+    CHECK_RET(raw_poll(&pfd, 1, 0), 0, "pipe read POLLPRI returns 0 timeout");
 
     const char *path = "/tmp/test_poll_events_matrix";
     create_temp_file(path);
@@ -46,7 +46,7 @@ int run_poll_events_matrix(void) {
     pfd.fd = fd_r;
     pfd.events = POLLIN;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 10), 1, "regular file POLLIN returns 1");
+    CHECK_RET(raw_poll(&pfd, 1, 10), 1, "regular file POLLIN returns 1");
     close(fd_r);
 
     int fd_w = open(path, O_WRONLY);
@@ -54,7 +54,7 @@ int run_poll_events_matrix(void) {
     pfd.fd = fd_w;
     pfd.events = POLLOUT;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 10), 1, "regular file POLLOUT returns 1");
+    CHECK_RET(raw_poll(&pfd, 1, 10), 1, "regular file POLLOUT returns 1");
     close(fd_w);
 
     int fd_rw = open(path, O_RDONLY);
@@ -62,7 +62,7 @@ int run_poll_events_matrix(void) {
     pfd.fd = fd_rw;
     pfd.events = POLLIN | POLLOUT;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 10), 1, "regular file POLLIN|POLLOUT returns 1");
+    CHECK_RET(raw_poll(&pfd, 1, 10), 1, "regular file POLLIN|POLLOUT returns 1");
     close(fd_rw);
 
     unlink(path);
@@ -72,7 +72,7 @@ int run_poll_events_matrix(void) {
         pfd.fd = devnull_r;
         pfd.events = POLLIN;
         pfd.revents = 0;
-        CHECK_RET(syscall(SYS_poll, &pfd, 1, 10), 1, "/dev/null POLLIN returns 1");
+        CHECK_RET(raw_poll(&pfd, 1, 10), 1, "/dev/null POLLIN returns 1");
         close(devnull_r);
     } else {
         __pass++;
@@ -83,7 +83,7 @@ int run_poll_events_matrix(void) {
         pfd.fd = devnull_w;
         pfd.events = POLLOUT;
         pfd.revents = 0;
-        CHECK_RET(syscall(SYS_poll, &pfd, 1, 10), 1, "/dev/null POLLOUT returns 1");
+        CHECK_RET(raw_poll(&pfd, 1, 10), 1, "/dev/null POLLOUT returns 1");
         close(devnull_w);
     } else {
         __pass++;
@@ -93,14 +93,14 @@ int run_poll_events_matrix(void) {
     pfd.fd = fds[0];
     pfd.events = POLLIN | POLLPRI;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 0), 1, "pipe read POLLIN|POLLPRI with data returns 1");
+    CHECK_RET(raw_poll(&pfd, 1, 0), 1, "pipe read POLLIN|POLLPRI with data returns 1");
     CHECK(pfd.revents & POLLIN, "pipe read revents has POLLIN");
     CHECK(!(pfd.revents & POLLPRI), "pipe read revents has no POLLPRI");
 
     pfd.fd = fds[1];
     pfd.events = POLLOUT | POLLWRNORM;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 0), 1, "pipe write POLLOUT|POLLWRNORM returns 1");
+    CHECK_RET(raw_poll(&pfd, 1, 0), 1, "pipe write POLLOUT|POLLWRNORM returns 1");
     CHECK(pfd.revents & POLLOUT, "pipe write revents has POLLOUT");
 
     close(fds[0]);

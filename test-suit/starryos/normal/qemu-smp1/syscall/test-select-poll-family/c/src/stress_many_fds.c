@@ -29,7 +29,7 @@ int run_stress_many_fds(void) {
             if (p[i][0] + 1 > nfds) nfds = p[i][0] + 1;
         }
         struct timeval tv = {1, 0};
-        long ret = syscall(SYS_select, nfds, &rfds, NULL, NULL, &tv);
+        long ret = raw_select(nfds, &rfds, NULL, NULL, &tv);
         CHECK(ret == 8, "select 16 pipes 8 written returns 8");
 
         int count = 0;
@@ -44,7 +44,7 @@ int run_stress_many_fds(void) {
             pfds[i].events = POLLIN;
             pfds[i].revents = 0;
         }
-        ret = syscall(SYS_poll, pfds, 16, 1000);
+        ret = raw_poll(pfds, 16, 1000);
         CHECK(ret == 8, "poll 16 pipes 8 written returns 8");
 
         count = 0;
@@ -81,7 +81,7 @@ int run_stress_many_fds(void) {
             if (p[i][0] + 1 > nfds) nfds = p[i][0] + 1;
         }
         struct timeval tv = {1, 0};
-        long ret = syscall(SYS_select, nfds, &rfds, NULL, NULL, &tv);
+        long ret = raw_select(nfds, &rfds, NULL, NULL, &tv);
         CHECK(ret == 16, "select 32 pipes 16 written returns 16");
 
         struct pollfd pfds[32];
@@ -90,7 +90,7 @@ int run_stress_many_fds(void) {
             pfds[i].events = POLLIN;
             pfds[i].revents = 0;
         }
-        ret = syscall(SYS_poll, pfds, 32, 1000);
+        ret = raw_poll(pfds, 32, 1000);
         CHECK(ret == 16, "poll 32 pipes 16 written returns 16");
 
         for (int i = 0; i < 32; i++) {

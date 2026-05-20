@@ -30,7 +30,7 @@ int run_select_multiple_fds(void) {
     nfds++;
 
     struct timeval tv = {1, 0};
-    int ret = syscall(SYS_select, nfds, &rfds, NULL, NULL, &tv);
+    int ret = raw_select(nfds, &rfds, NULL, NULL, &tv);
     CHECK(ret == 1, "select 3 pipes only pipe2 written returns 1");
     CHECK(!FD_ISSET(p1[0], &rfds), "pipe1 not set");
     CHECK(FD_ISSET(p2[0], &rfds), "pipe2 set");
@@ -45,7 +45,7 @@ int run_select_multiple_fds(void) {
     FD_SET(p3[0], &rfds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    ret = syscall(SYS_select, nfds, &rfds, NULL, NULL, &tv);
+    ret = raw_select(nfds, &rfds, NULL, NULL, &tv);
     CHECK(ret == 3, "select all 3 pipes written returns 3");
     CHECK(FD_ISSET(p1[0], &rfds), "pipe1 set");
     CHECK(FD_ISSET(p2[0], &rfds), "pipe2 set");

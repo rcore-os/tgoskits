@@ -20,7 +20,7 @@ int run_select_closed_fd(void) {
     FD_ZERO(&rfds);
     FD_SET(read_fd, &rfds);
     struct timeval tv = {1, 0};
-    CHECK_ERRNO(syscall(SYS_select, read_fd + 1, &rfds, NULL, NULL, &tv), EBADF, "select closed read fd returns EBADF");
+    CHECK_ERRNO(raw_select(read_fd + 1, &rfds, NULL, NULL, &tv), EBADF, "select closed read fd returns EBADF");
 
     close(fds[1]);
 
@@ -34,7 +34,7 @@ int run_select_closed_fd(void) {
     FD_SET(fds2[1], &wfds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    CHECK_ERRNO(syscall(SYS_select, fds2[1] + 1, NULL, &wfds, NULL, &tv), EBADF, "select closed write fd returns EBADF");
+    CHECK_ERRNO(raw_select(fds2[1] + 1, NULL, &wfds, NULL, &tv), EBADF, "select closed write fd returns EBADF");
 
     close(fds2[0]);
 

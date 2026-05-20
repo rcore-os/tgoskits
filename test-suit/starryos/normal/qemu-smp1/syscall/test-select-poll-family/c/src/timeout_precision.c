@@ -14,14 +14,14 @@ int run_timeout_precision(void) {
     {
         long long t0 = time_ms();
         struct timeval tv = {0, 100000};
-        syscall(SYS_select, 0, NULL, NULL, NULL, &tv);
+        raw_select(0, NULL, NULL, NULL, &tv);
         long long elapsed = time_ms() - t0;
         CHECK(elapsed >= 50 && elapsed <= 500, "select 100ms timeout in reasonable range");
     }
 
     {
         long long t0 = time_ms();
-        syscall(SYS_poll, NULL, 0, 100);
+        raw_poll(NULL, 0, 100);
         long long elapsed = time_ms() - t0;
         CHECK(elapsed >= 50 && elapsed <= 500, "poll 100ms timeout in reasonable range");
     }
@@ -29,14 +29,14 @@ int run_timeout_precision(void) {
     {
         long long t0 = time_ms();
         struct timeval tv = {0, 50000};
-        syscall(SYS_select, 0, NULL, NULL, NULL, &tv);
+        raw_select(0, NULL, NULL, NULL, &tv);
         long long elapsed = time_ms() - t0;
         CHECK(elapsed >= 20 && elapsed <= 500, "select 50ms timeout in reasonable range");
     }
 
     {
         long long t0 = time_ms();
-        syscall(SYS_poll, NULL, 0, 50);
+        raw_poll(NULL, 0, 50);
         long long elapsed = time_ms() - t0;
         CHECK(elapsed >= 20 && elapsed <= 500, "poll 50ms timeout in reasonable range");
     }

@@ -17,7 +17,7 @@ int run_select_exceptfds(void) {
     FD_ZERO(&efds);
     FD_SET(fds[0], &efds);
     struct timeval tv = {0, 50000};
-    int ret = syscall(SYS_select, fds[0] + 1, NULL, NULL, &efds, &tv);
+    int ret = raw_select(fds[0] + 1, NULL, NULL, &efds, &tv);
     CHECK(ret == 0, "select exceptfds on pipe timeout returns 0");
 
     char c = 'A';
@@ -30,7 +30,7 @@ int run_select_exceptfds(void) {
     FD_SET(fds[0], &efds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, &efds, &tv);
+    ret = raw_select(fds[0] + 1, &rfds, NULL, &efds, &tv);
     CHECK(ret == 1, "select readfds+exceptfds with data returns 1");
     CHECK(FD_ISSET(fds[0], &rfds), "FD_ISSET true in readfds");
     CHECK(!FD_ISSET(fds[0], &efds), "FD_ISSET false in exceptfds");

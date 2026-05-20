@@ -14,7 +14,7 @@ int run_poll_closed_fd(void) {
 
     close(fds[0]);
     struct pollfd pfd = { .fd = fds[0], .events = POLLIN, .revents = 0 };
-    int ret = (int)syscall(SYS_poll, &pfd, 1, 10);
+    int ret = (int)raw_poll(&pfd, 1, 10);
     CHECK(ret == 1, "closed read fd returns 1");
     CHECK(pfd.revents & POLLNVAL, "revents has POLLNVAL for closed read fd");
 
@@ -22,7 +22,7 @@ int run_poll_closed_fd(void) {
     pfd.fd = fds[1];
     pfd.events = POLLOUT;
     pfd.revents = 0;
-    ret = (int)syscall(SYS_poll, &pfd, 1, 10);
+    ret = (int)raw_poll(&pfd, 1, 10);
     CHECK(ret == 1, "closed write fd returns 1");
     CHECK(pfd.revents & POLLNVAL, "revents has POLLNVAL for closed write fd");
 

@@ -13,17 +13,17 @@ int run_select_err_einval(void) {
     fd_set rfds;
     FD_ZERO(&rfds);
 
-    CHECK_ERRNO(syscall(SYS_select, -1, &rfds, NULL, NULL, NULL), EINVAL, "nfds=-1 returns EINVAL");
+    CHECK_ERRNO(raw_select(-1, &rfds, NULL, NULL, NULL), EINVAL, "nfds=-1 returns EINVAL");
 
     struct timeval tv;
     tv.tv_sec = 0;
     tv.tv_usec = -1;
-    CHECK_ERRNO(syscall(SYS_select, 1, &rfds, NULL, NULL, &tv), EINVAL, "tv_usec=-1 returns EINVAL");
+    CHECK_ERRNO(raw_select(1, &rfds, NULL, NULL, &tv), EINVAL, "tv_usec=-1 returns EINVAL");
 
     tv.tv_sec = 0;
     tv.tv_usec = 1000000;
     errno = 0;
-    long ret = syscall(SYS_select, 1, &rfds, NULL, NULL, &tv);
+    long ret = raw_select(1, &rfds, NULL, NULL, &tv);
     CHECK((ret == -1 && errno == EINVAL) || ret >= 0,
           "tv_usec=1000000: EINVAL or normalized by kernel");
 

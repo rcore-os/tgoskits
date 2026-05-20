@@ -21,7 +21,7 @@ int run_select_read_pipe(void) {
     FD_ZERO(&rfds);
     FD_SET(fds[0], &rfds);
     struct timeval tv = {1, 0};
-    int ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+    int ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 1, "select returns 1 after 1 byte written");
     CHECK(FD_ISSET(fds[0], &rfds), "FD_ISSET true after 1 byte");
     read_exact(fds[0], &c, 1);
@@ -32,7 +32,7 @@ int run_select_read_pipe(void) {
     FD_SET(fds[0], &rfds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+    ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 1, "select returns 1 after 5 bytes written");
     read_exact(fds[0], buf, 5);
 
@@ -40,7 +40,7 @@ int run_select_read_pipe(void) {
     FD_SET(fds[0], &rfds);
     tv.tv_sec = 0;
     tv.tv_usec = 50000;
-    ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+    ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 0, "select returns 0 after all data read");
 
     char big[256];
@@ -52,7 +52,7 @@ int run_select_read_pipe(void) {
     FD_SET(fds[0], &rfds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+    ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 1, "select returns 1 with 255 bytes remaining");
 
     close(fds[0]);

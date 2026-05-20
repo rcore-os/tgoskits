@@ -15,7 +15,7 @@ int run_poll_err_einval(void) {
     pfds[0].revents = 0;
 
     errno = 0;
-    long ret = syscall(SYS_poll, pfds, 999999, 0);
+    long ret = raw_poll(pfds, 999999, 0);
     if (ret == -1 && (errno == EINVAL || errno == ENOMEM || errno == EFAULT)) {
         __pass++;
     } else {
@@ -24,7 +24,7 @@ int run_poll_err_einval(void) {
         __fail++;
     }
 
-    ret = syscall(SYS_poll, NULL, 0, 10);
+    ret = raw_poll(NULL, 0, 10);
     CHECK(ret == 0, "poll nfds=0 with timeout returns 0");
 
     MODULE_SUMMARY("poll_err_einval");

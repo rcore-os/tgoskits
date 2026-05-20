@@ -24,7 +24,7 @@ int run_poll_timeout_negative(void) {
 
     close(fds[1]);
     struct pollfd pfd = { .fd = fds[0], .events = POLLIN, .revents = 0 };
-    int ret = (int)syscall(SYS_poll, &pfd, 1, -1);
+    int ret = (int)raw_poll(&pfd, 1, -1);
     CHECK(ret == 1, "poll(timeout=-1) returns 1 after child writes");
     CHECK(pfd.revents & POLLIN, "revents has POLLIN");
 

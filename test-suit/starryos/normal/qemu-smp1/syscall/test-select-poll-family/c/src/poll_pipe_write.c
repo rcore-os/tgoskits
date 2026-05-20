@@ -13,7 +13,7 @@ int run_poll_pipe_write(void) {
     CHECK_RET(create_pipe(fds), 0, "pipe created");
 
     struct pollfd pfd = { .fd = fds[1], .events = POLLOUT, .revents = 0 };
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 10), 1, "empty pipe POLLOUT returns 1");
+    CHECK_RET(raw_poll(&pfd, 1, 10), 1, "empty pipe POLLOUT returns 1");
     CHECK(pfd.revents & POLLOUT, "revents has POLLOUT");
 
     close(fds[0]);
@@ -25,7 +25,7 @@ int run_poll_pipe_write(void) {
     pfd.fd = fds2[1];
     pfd.events = POLLOUT;
     pfd.revents = 0;
-    CHECK_RET(syscall(SYS_poll, &pfd, 1, 10), 0, "full pipe POLLOUT returns 0 (timeout)");
+    CHECK_RET(raw_poll(&pfd, 1, 10), 0, "full pipe POLLOUT returns 0 (timeout)");
 
     close(fds2[0]);
     close(fds2[1]);

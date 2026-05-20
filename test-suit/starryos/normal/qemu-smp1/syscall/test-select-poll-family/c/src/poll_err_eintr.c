@@ -41,7 +41,7 @@ int run_poll_err_eintr(void) {
 
     struct pollfd pfd = { .fd = fds[0], .events = POLLIN, .revents = 0 };
     errno = 0;
-    long ret = syscall(SYS_poll, &pfd, 1, 200);
+    long ret = raw_poll(&pfd, 1, 200);
     CHECK(ret == -1 && errno == EINTR, "poll interrupted by SIGUSR1 returns EINTR");
     CHECK(sigusr1_received == 1, "SIGUSR1 handler was called");
 
@@ -69,7 +69,7 @@ int run_poll_err_eintr(void) {
     FD_SET(fds2[0], &rfds);
     struct timeval tv = {1, 0};
     errno = 0;
-    ret = syscall(SYS_select, fds2[0] + 1, &rfds, NULL, NULL, &tv);
+    ret = raw_select(fds2[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == -1 && errno == EINTR, "select interrupted by SIGUSR1 returns EINTR");
     CHECK(sigusr1_received == 1, "SIGUSR1 handler was called for select");
 

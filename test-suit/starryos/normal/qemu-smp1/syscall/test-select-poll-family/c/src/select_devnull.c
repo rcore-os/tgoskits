@@ -17,7 +17,7 @@ int run_select_devnull(void) {
     FD_ZERO(&rfds);
     FD_SET(rfd, &rfds);
     struct timeval tv = {1, 0};
-    int ret = syscall(SYS_select, rfd + 1, &rfds, NULL, NULL, &tv);
+    int ret = raw_select(rfd + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 1, "select /dev/null readfds returns 1");
 
     close(rfd);
@@ -30,7 +30,7 @@ int run_select_devnull(void) {
     FD_SET(wfd, &wfds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    ret = syscall(SYS_select, wfd + 1, NULL, &wfds, NULL, &tv);
+    ret = raw_select(wfd + 1, NULL, &wfds, NULL, &tv);
     CHECK(ret == 1, "select /dev/null writefds returns 1");
 
     close(wfd);

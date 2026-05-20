@@ -19,7 +19,7 @@ int run_select_err_ebadf(void) {
     FD_ZERO(&rfds);
     FD_SET(fds[0], &rfds);
     struct timeval tv = {1, 0};
-    CHECK_ERRNO(syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv), EBADF, "closed read fd in readfds returns EBADF");
+    CHECK_ERRNO(raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv), EBADF, "closed read fd in readfds returns EBADF");
 
     close(fds[1]);
 
@@ -32,7 +32,7 @@ int run_select_err_ebadf(void) {
     FD_SET(fds2[1], &wfds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    CHECK_ERRNO(syscall(SYS_select, fds2[1] + 1, NULL, &wfds, NULL, &tv), EBADF, "closed write fd in writefds returns EBADF");
+    CHECK_ERRNO(raw_select(fds2[1] + 1, NULL, &wfds, NULL, &tv), EBADF, "closed write fd in writefds returns EBADF");
 
     close(fds2[0]);
 
@@ -47,10 +47,10 @@ int run_select_err_ebadf(void) {
     FD_SET(fds3[1], &rfds3);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    CHECK_ERRNO(syscall(SYS_select, fds3[1] + 1, &rfds3, NULL, NULL, &tv), EBADF, "both closed fds in readfds returns EBADF");
+    CHECK_ERRNO(raw_select(fds3[1] + 1, &rfds3, NULL, NULL, &tv), EBADF, "both closed fds in readfds returns EBADF");
 
     errno = 0;
-    long ret2 = syscall(SYS_select, FD_SETSIZE + 1, NULL, NULL, NULL, &tv);
+    long ret2 = raw_select(FD_SETSIZE + 1, NULL, NULL, NULL, &tv);
     CHECK(ret2 == 0 || (ret2 == -1 && (errno == EINVAL || errno == ENOMEM)),
           "nfds > FD_SETSIZE with NULL fds: 0 (timeout) or error");
 

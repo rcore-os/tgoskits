@@ -20,21 +20,21 @@ int run_select_must_reinit(void) {
     FD_ZERO(&rfds);
     FD_SET(fds[0], &rfds);
     struct timeval tv = {1, 0};
-    int ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+    int ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 1, "first select returns 1");
 
     read_exact(fds[0], &c, 1);
 
     tv.tv_sec = 0;
     tv.tv_usec = 50000;
-    ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+    ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 0, "select without reinit returns 0 fd_set was modified");
 
     FD_ZERO(&rfds);
     FD_SET(fds[0], &rfds);
     tv.tv_sec = 0;
     tv.tv_usec = 50000;
-    ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+    ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 0, "select with reinit returns 0 timeout");
 
     close(fds[0]);

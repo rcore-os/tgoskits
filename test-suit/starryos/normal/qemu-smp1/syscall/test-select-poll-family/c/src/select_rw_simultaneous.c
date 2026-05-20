@@ -22,7 +22,7 @@ int run_select_rw_simultaneous(void) {
     FD_SET(fds[0], &rfds);
     FD_SET(fds[1], &wfds);
     struct timeval tv = {1, 0};
-    int ret = syscall(SYS_select, fds[1] + 1, &rfds, &wfds, NULL, &tv);
+    int ret = raw_select(fds[1] + 1, &rfds, &wfds, NULL, &tv);
     CHECK(ret == 2, "read+write both ready returns 2");
 
     read_exact(fds[0], &c, 1);
@@ -31,14 +31,14 @@ int run_select_rw_simultaneous(void) {
     FD_SET(fds[1], &wfds);
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    ret = syscall(SYS_select, fds[1] + 1, NULL, &wfds, NULL, &tv);
+    ret = raw_select(fds[1] + 1, NULL, &wfds, NULL, &tv);
     CHECK(ret == 1, "write only returns 1");
 
     FD_ZERO(&rfds);
     FD_SET(fds[0], &rfds);
     tv.tv_sec = 0;
     tv.tv_usec = 50000;
-    ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, &tv);
+    ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, &tv);
     CHECK(ret == 0, "read only empty pipe returns 0 timeout");
 
     close(fds[0]);

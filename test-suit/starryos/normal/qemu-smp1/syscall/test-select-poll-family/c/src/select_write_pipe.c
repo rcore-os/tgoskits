@@ -17,7 +17,7 @@ int run_select_write_pipe(void) {
     FD_ZERO(&wfds);
     FD_SET(fds[1], &wfds);
     struct timeval tv = {1, 0};
-    int ret = syscall(SYS_select, fds[1] + 1, NULL, &wfds, NULL, &tv);
+    int ret = raw_select(fds[1] + 1, NULL, &wfds, NULL, &tv);
     CHECK(ret == 1, "select write on empty pipe returns 1");
     CHECK(FD_ISSET(fds[1], &wfds), "FD_ISSET true for write fd");
 
@@ -31,7 +31,7 @@ int run_select_write_pipe(void) {
     FD_SET(fds[1], &wfds);
     tv.tv_sec = 0;
     tv.tv_usec = 50000;
-    ret = syscall(SYS_select, fds[1] + 1, NULL, &wfds, NULL, &tv);
+    ret = raw_select(fds[1] + 1, NULL, &wfds, NULL, &tv);
     CHECK(ret == 0 || ret == 1, "select on full pipe returns 0 or 1");
 
     close(fds[0]);

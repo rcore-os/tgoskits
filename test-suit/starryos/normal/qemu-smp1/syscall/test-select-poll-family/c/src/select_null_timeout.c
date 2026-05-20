@@ -29,7 +29,7 @@ int run_select_null_timeout(void) {
     fd_set rfds;
     FD_ZERO(&rfds);
     FD_SET(fds[0], &rfds);
-    int ret = syscall(SYS_select, fds[0] + 1, &rfds, NULL, NULL, NULL);
+    int ret = raw_select(fds[0] + 1, &rfds, NULL, NULL, NULL);
     CHECK(ret == 1, "select(timeout=NULL) returns 1 after child writes");
     CHECK(FD_ISSET(fds[0], &rfds), "FD_ISSET true for read fd after child writes");
 
