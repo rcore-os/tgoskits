@@ -100,9 +100,9 @@ fn check_null_terminated<T: PartialEq + Default>(
             // it below.
             let ptr = unsafe { start.add(len) };
             while ptr as usize >= page.as_ptr() as usize {
-                // We cannot prepare `aspace` outside of the loop, since holding
-                // aspace requires a mutex which would be required on page
-                // fault, and page faults can trigger inside the loop.
+                // Prepare only the page containing the next byte so the
+                // volatile read below does not fault while the aspace lock is
+                // not held.
 
                 // TODO: this is inefficient, but we have to do this instead of
                 // querying the page table since the page might has not been
@@ -121,15 +121,15 @@ fn check_null_terminated<T: PartialEq + Default>(
                 if unsafe { aspace_arc.raw() }.is_owned_by_current() {
                     return Err(AxError::BadAddress);
                 }
-                let aspace = aspace_arc.lock();
+                let mut aspace = aspace_arc.lock();
                 if !aspace.can_access_range(page, PAGE_SIZE_4K, access_flags) {
                     return Err(AxError::BadAddress);
                 }
+                aspace.populate_area(page, PAGE_SIZE_4K, access_flags)?;
 
                 page += PAGE_SIZE_4K;
             }
 
-            // This might trigger a page fault
             // SAFETY: The pointer is valid and points to a valid memory region.
             if unsafe { ptr.read_volatile() } == zero {
                 break;
@@ -400,6 +400,40 @@ fn ensure_thread_context(op: &str, start: usize, len: usize) -> VmResult {
     }
 }
 
+fn prepare_user_memory(
+    op: &str,
+    start: usize,
+    len: usize,
+    access_flags: MappingFlags,
+) -> VmResult {
+    check_access(start, len)?;
+    if len == 0 {
+        return Ok(());
+    }
+    ensure_thread_context(op, start, len)?;
+
+    let start = VirtAddr::from(start);
+    let end = start + len;
+    let page_start = start.align_down_4k();
+    let page_end = end.align_up_4k();
+
+    let curr = current();
+    let thr = curr.try_as_thread().ok_or(VmError::AccessDenied)?;
+    let aspace_arc = thr.proc_data.aspace();
+    if unsafe { aspace_arc.raw() }.is_owned_by_current() {
+        return Err(VmError::AccessDenied);
+    }
+
+    let mut aspace = aspace_arc.lock();
+    if !aspace.can_access_range(start, len, access_flags) {
+        return Err(VmError::AccessDenied);
+    }
+
+    aspace
+        .populate_area(page_start, page_end - page_start, access_flags)
+        .map_err(|_| VmError::AccessDenied)
+}
+
 #[extern_trait]
 unsafe impl VmIo for Vm {
     fn new() -> Self {
@@ -410,8 +444,7 @@ unsafe impl VmIo for Vm {
         if buf.is_empty() {
             return Ok(());
         }
-        check_access(start, buf.len())?;
-        ensure_thread_context("read", start, buf.len())?;
+        prepare_user_memory("read", start, buf.len(), MappingFlags::READ)?;
         let failed_at = access_user_memory(|| unsafe {
             user_copy(buf.as_mut_ptr() as *mut _, start as _, buf.len())
         });
@@ -426,8 +459,7 @@ unsafe impl VmIo for Vm {
         if buf.is_empty() {
             return Ok(());
         }
-        check_access(start, buf.len())?;
-        ensure_thread_context("write", start, buf.len())?;
+        prepare_user_memory("write", start, buf.len(), MappingFlags::WRITE)?;
         let failed_at = access_user_memory(|| unsafe {
             user_copy(start as _, buf.as_ptr() as *const _, buf.len())
         });
