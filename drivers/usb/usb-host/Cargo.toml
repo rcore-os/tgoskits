@@ -1,0 +1,41 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>", "dbydd <dbydd@outlook.com>"]
+categories = ["embedded", "no-std"]
+description = "A usb host for embedded systems, written in Rust."
+edition.workspace = true
+keywords = ["os", "usb", "xhci", "driver"]
+license.workspace = true
+name = "crab-usb"
+repository.workspace = true
+version = "0.9.3"
+
+[features]
+aggressive_usb_reset = []
+default = ["aggressive_usb_reset"]
+libusb = ["libusb1-sys"]
+
+[dependencies]
+bitflags = "2.8"
+crossbeam = {version = "0.8", features = ["alloc"], default-features = false}
+crossbeam-skiplist = {version = "0.1", features = [
+  "alloc",
+], default-features = false}
+dma-api = {workspace = true}
+
+anyhow = {version = "1", default-features = false}
+enum_dispatch = "0.3"
+futures = {workspace = true, features = ["alloc"]}
+id-arena = {version = "2", default-features = false}
+log = "0.4"
+mbarrier = "0.1"
+nb = "1.1"
+num_enum = {version = "0.7", default-features = false}
+spin = {version = "0.10"}
+thiserror = {workspace = true}
+tock-registers.workspace = true
+trait-ffi = "0.2.4"
+usb-if = {workspace = true}
+xhci = "0.9"
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+libusb1-sys = {version = "0.7", optional = true}

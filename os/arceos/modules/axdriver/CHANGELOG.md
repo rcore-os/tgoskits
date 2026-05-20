@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.5.14...ax-driver-v0.5.15) - 2026-05-19
+
+### Fixed
+
+- *(starry)* weston bringup fixes + IRQ wakers + AF_UNIX cmsg byte marks ([#509](https://github.com/rcore-os/tgoskits/pull/509))
+
+### Other
+
+- Refactor Clippy integration and enhance package handling ([#738](https://github.com/rcore-os/tgoskits/pull/738))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.5.13...ax-driver-v0.5.14) - 2026-05-15
 
 ### Other

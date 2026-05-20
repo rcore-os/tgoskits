@@ -277,14 +277,10 @@ impl FileNodeOps for Inode {
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
-            rsext4::write_file(
-                dev,
-                fs,
-                &self.path.clone().ok_or(VfsError::InvalidInput)?,
-                offset,
-                buf,
-            )
-            .map_err(into_vfs_err)?;
+            // Use inode-number-based write to avoid path re-resolution.
+            // Path-based write_file() fails with NotFound after rename/unlink,
+            // which causes dirty page loss when jcode atomically replaces files.
+            rsext4::write_inode_data(dev, fs, self.ino, offset, buf).map_err(into_vfs_err)?;
         }
         self.fs.sync_to_disk()?;
         Ok(buf.len())
@@ -296,14 +292,7 @@ impl FileNodeOps for Inode {
             let (fs, dev) = state.split();
             let inode = fs.get_inode_by_num(dev, self.ino).map_err(into_vfs_err)?;
             let length = inode.size();
-            rsext4::write_file(
-                dev,
-                fs,
-                &self.path.clone().ok_or(VfsError::InvalidInput)?,
-                length,
-                buf,
-            )
-            .map_err(into_vfs_err)?;
+            rsext4::write_inode_data(dev, fs, self.ino, length, buf).map_err(into_vfs_err)?;
             length
         };
         self.fs.sync_to_disk()?;

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-virtio-v0.3.12...ax-driver-virtio-v0.4.0) - 2026-05-19
+
+### Fixed
+
+- *(starry)* weston bringup fixes + IRQ wakers + AF_UNIX cmsg byte marks ([#509](https://github.com/rcore-os/tgoskits/pull/509))
+
 ## [0.3.12](https://github.com/rcore-os/tgoskits/compare/ax-driver-virtio-v0.3.11...ax-driver-virtio-v0.3.12) - 2026-05-15
 
 ### Fixed

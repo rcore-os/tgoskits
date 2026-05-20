@@ -1,7 +1,9 @@
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
+#[cfg(feature = "irq")]
+use ax_plat::console::ConsoleIrqEvent;
 use ax_plat::{
-    console::{ConsoleIf, ConsoleIrqEvent},
+    console::ConsoleIf,
     mem::{pa, phys_to_virt},
 };
 use uart_16550::MmioSerialPort;

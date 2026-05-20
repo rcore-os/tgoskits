@@ -66,7 +66,7 @@ fn signalinfo_new_kernel() {
 
 #[test]
 fn signalinfo_new_user() {
-    let si = SignalInfo::new_user(Signo::SIGINT, 9, 9);
+    let si = SignalInfo::new_user(Signo::SIGINT, 9, 9, 0);
     assert_eq!(si.signo(), Signo::SIGINT);
     assert_eq!(si.code(), 9);
     assert_eq!(

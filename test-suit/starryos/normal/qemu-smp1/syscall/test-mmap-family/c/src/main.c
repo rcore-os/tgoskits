@@ -350,6 +350,66 @@ int main(void)
         }
     }
 
+    /* MAP_FIXED + EACCES: 失败时不得拆掉目标地址上的旧映射 */
+    {
+        const unsigned char magic = 0x5a;
+        void *base = mmap(NULL, ps, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(base != MAP_FAILED, "mmap anon base for MAP_FIXED EACCES preserve");
+        if (base != MAP_FAILED) {
+            *(volatile unsigned char *)base = magic;
+
+            const char *path = "/tmp/mmap_family_fixed_eacces";
+            int wfd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+            CHECK(wfd >= 0, "open /tmp/mmap_family_fixed_eacces O_WRONLY (create)");
+            if (wfd >= 0) {
+                (void)write(wfd, "abcd", 4);
+                close(wfd);
+
+                int ro = open(path, O_RDONLY);
+                CHECK(ro >= 0, "reopen /tmp/mmap_family_fixed_eacces O_RDONLY");
+                if (ro >= 0) {
+                    CHECK_MMAP_ERR(mmap(base, ps, PROT_READ | PROT_WRITE,
+                                        MAP_SHARED | MAP_FIXED, ro, 0),
+                                   EACCES,
+                                   "MAP_FIXED SHARED|RW on O_RDONLY fd → EACCES");
+                    CHECK(*(volatile unsigned char *)base == magic,
+                          "MAP_FIXED EACCES 后旧匿名映射内容保留");
+                    close(ro);
+                }
+                unlink(path);
+            }
+            munmap(base, ps);
+        }
+    }
+
+    /* MAP_FIXED + MAP_PRIVATE: O_WRONLY fd 无读权限 → EACCES，旧映射保留 */
+    {
+        const unsigned char magic = 0xa5;
+        void *base = mmap(NULL, ps, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(base != MAP_FAILED, "mmap anon base for MAP_FIXED PRIVATE EACCES");
+        if (base != MAP_FAILED) {
+            *(volatile unsigned char *)base = magic;
+
+            const char *path = "/tmp/mmap_family_fixed_private_eacces";
+            int wfd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+            CHECK(wfd >= 0, "open /tmp/mmap_family_fixed_private_eacces O_WRONLY");
+            if (wfd >= 0) {
+                (void)write(wfd, "abcd", 4);
+                CHECK_MMAP_ERR(mmap(base, ps, PROT_READ,
+                                    MAP_PRIVATE | MAP_FIXED, wfd, 0),
+                               EACCES,
+                               "MAP_FIXED PRIVATE|R on O_WRONLY fd → EACCES");
+                CHECK(*(volatile unsigned char *)base == magic,
+                      "MAP_FIXED PRIVATE EACCES 后旧匿名映射内容保留");
+                close(wfd);
+                unlink(path);
+            }
+            munmap(base, ps);
+        }
+    }
+
     /* ENODEV: 目录 mmap → ENODEV (不支持 memory mapping) */
     {
         const char *dir = "/tmp/mmap_family_dir";

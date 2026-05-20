@@ -55,11 +55,11 @@ tags: [monthly-report, arceos, starryos, axvisor, axbuild, testing]
 - [PR #189](https://github.com/rcore-os/tgoskits/pull/189) — 板卡配置助手（周睿）
 - [PR #291](https://github.com/rcore-os/tgoskits/pull/291) — 目标构建配置增强（周睿）
 
-在代码质量方面，我们贡献了 sync-lint 工具的两阶段实现，可以自动检查代码中 `atomic::Ordering` 的使用是否正确，帮助防止隐秘的并发 bug。同时还添加了基于 CSV 白名单的选择性 clippy 检查机制，让 CI 能够逐步扩大 crate 覆盖范围。
+在代码质量方面，我们贡献了 sync-lint 工具的两阶段实现，可以自动检查代码中 `atomic::Ordering` 的使用是否正确，帮助防止隐秘的并发 bug。同时还添加了支持全量、指定包和增量模式的 clippy 检查机制，让 CI 能够按变更范围执行静态检查。
 
 - [PR #274](https://github.com/rcore-os/tgoskits/pull/274) — sync-lint 原子序检查第一阶段（Shi Lei）
 - [PR #322](https://github.com/rcore-os/tgoskits/pull/322) — sync-lint 混合序检查扩展（Shi Lei）
-- 选择性 clippy（CSV 白名单 + CLI 选项）（周睿）
+- 选择性 clippy（全量、指定包和增量模式）（周睿）
 
 Rootfs 处理也经历了模块化重构。我们将共享的 rootfs 辅助函数提取到公共模块，并将根文件系统从原有格式迁移到 Alpine 以减小镜像体积。同时修复了 ld 在准备 staging rootfs 时解析到错误库的问题。
 

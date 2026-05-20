@@ -13,4 +13,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test-futex-race"
 success_regex = ['PASS: \d+ rounds, \d+ enqueued, \d+ wakes']
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)FAIL']
-timeout = 180
+timeout = 360

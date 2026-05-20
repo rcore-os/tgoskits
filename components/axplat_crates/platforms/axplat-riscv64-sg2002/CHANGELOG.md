@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-sg2002-v0.3.4...ax-plat-riscv64-sg2002-v0.3.5) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-riscv-plic, ax-cpu
+
 ## [0.3.4](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-sg2002-v0.3.3...ax-plat-riscv64-sg2002-v0.3.4) - 2026-05-15
 
 ### Other

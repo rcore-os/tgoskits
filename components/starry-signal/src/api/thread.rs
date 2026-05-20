@@ -51,6 +51,15 @@ pub struct ThreadSignalManager {
     stack: SpinNoIrq<SignalStack>,
 
     possibly_has_signal: AtomicBool,
+
+    /// The set of signals this thread is currently waiting for via
+    /// `rt_sigtimedwait`/`sigwaitinfo`, or `None` if not in a sigwait call.
+    ///
+    /// `ProcessSignalManager::send_signal` checks this to avoid dropping
+    /// a signal via `is_ignore()` when a thread is specifically waiting for it.
+    /// Using the actual wait set (instead of a bare boolean) avoids queuing
+    /// unrelated signals that happen to be default-ignore.
+    pub sigwait_set: SpinNoIrq<Option<SignalSet>>,
 }
 
 impl ThreadSignalManager {
@@ -63,6 +72,7 @@ impl ThreadSignalManager {
             stack: SpinNoIrq::new(SignalStack::default()),
 
             possibly_has_signal: AtomicBool::new(false),
+            sigwait_set: SpinNoIrq::new(None),
         });
         proc.children.lock().push((tid, Arc::downgrade(&this)));
         this
@@ -89,7 +99,8 @@ impl ThreadSignalManager {
         let signo = sig.signo();
         debug!("Handle signal: {signo:?}");
         let action = {
-            let mut actions = self.proc.actions.lock();
+            let actions_arc = self.proc.actions();
+            let mut actions = actions_arc.lock();
             let action = actions[signo].clone();
             if action.flags.contains(SignalActionFlags::RESETHAND) {
                 actions[signo] = SignalAction::default();
@@ -289,9 +300,20 @@ impl ThreadSignalManager {
         let signo = sig.signo();
 
         // Lock by `actions`
-        let actions = self.proc.actions.lock();
+        let actions_arc = self.proc.actions();
+        let actions = actions_arc.lock();
         debug!("signal: {signo:?}");
-        if actions[signo].is_ignore(signo) {
+
+        // Skip is_ignore() when the signal is blocked in this thread OR when
+        // this thread is inside rt_sigtimedwait/sigwaitinfo waiting for it.
+        // POSIX requires that a blocked signal is queued as pending even if
+        // its default disposition is to ignore it, so that sigtimedwait() can
+        // synchronously consume it.  tgkill/tkill target a specific thread, so
+        // we must apply the same exemption here as ProcessSignalManager does
+        // for the process-level path.
+        let blocked = self.signal_blocked(signo);
+        let in_sigwait = self.sigwait_set.lock().is_some_and(|s| s.has(signo));
+        if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
             return false;
         }
 
@@ -309,7 +331,8 @@ impl ThreadSignalManager {
     /// Sets the blocked signals. Return the old value.
     pub fn set_blocked(&self, mut set: SignalSet) -> SignalSet {
         // Lock by `actions`
-        let _actions = self.proc.actions.lock();
+        let actions_arc = self.proc.actions();
+        let _actions = actions_arc.lock();
 
         set.remove(Signo::SIGKILL);
         set.remove(Signo::SIGSTOP);
@@ -338,5 +361,12 @@ impl ThreadSignalManager {
     /// Gets current pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set | self.proc.pending()
+    }
+
+    /// Resets the alternate signal stack to the default (disabled, addr=0)
+    /// across `execve`. The pre-exec stack address pointed into user
+    /// memory that no longer exists once the new aspace replaces the old.
+    pub fn reset_stack(&self) {
+        *self.stack.lock() = SignalStack::default();
     }
 }

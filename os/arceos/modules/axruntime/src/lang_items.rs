@@ -18,8 +18,11 @@ use core::panic::PanicInfo;
 fn panic(info: &PanicInfo) -> ! {
     match axpanic::enter_panic(current_cpu_id()) {
         axpanic::PanicDisposition::Primary => panic_primary(info),
+        // Once panic ownership is established, recursive and cross-CPU panic
+        // entries must avoid the full print/backtrace path and terminate the
+        // system instead of halting one CPU and risking test timeouts.
         axpanic::PanicDisposition::Recursive | axpanic::PanicDisposition::Concurrent => {
-            halt_current_cpu()
+            panic_shutdown()
         }
     }
 }
@@ -37,8 +40,7 @@ fn panic_message(info: &PanicInfo) {
 
 fn panic_backtrace() {
     if should_print_panic_backtrace() {
-        let bt = axbacktrace::Backtrace::capture();
-        ax_println!("{}", bt.report("panic"));
+        ax_println!("{}", axbacktrace::Backtrace::capture().kind("panic"));
     }
 }
 
@@ -48,13 +50,6 @@ fn should_print_panic_backtrace() -> bool {
 
 fn panic_shutdown() -> ! {
     ax_hal::power::system_off()
-}
-
-fn halt_current_cpu() -> ! {
-    loop {
-        ax_hal::asm::halt();
-        core::hint::spin_loop();
-    }
 }
 
 fn current_cpu_id() -> usize {

@@ -98,7 +98,7 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
         esr_value(),
         access_flags,
         tf,
-        bt.report("trap")
+        bt.kind("trap")
     );
 }
 
@@ -114,7 +114,7 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
             kind,
             source,
             tf,
-            bt.report("trap")
+            bt.kind("trap")
         );
     }
     match kind {
@@ -124,7 +124,7 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
                 "Unhandled exception {:?}:\n{:#x?}\n{}",
                 kind,
                 tf,
-                bt.report("trap")
+                bt.kind("trap")
             );
         }
         TrapKind::Irq => {
@@ -209,7 +209,7 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
                         ec_bits,
                         vaddr,
                         iss,
-                        bt.report("trap")
+                        bt.kind("trap")
                     );
                 }
             }

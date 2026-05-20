@@ -27,8 +27,6 @@ use spin::Mutex;
 
 use super::DmaImpl;
 
-#[cfg(feature = "phytium-blk")]
-mod phytium;
 #[cfg(feature = "rockchip-sdhci")]
 mod rockchip_mmc;
 #[cfg(feature = "rockchip-dwmmc")]

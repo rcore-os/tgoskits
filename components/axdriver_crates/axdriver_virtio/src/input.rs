@@ -17,6 +17,10 @@ pub struct VirtIoInputDev<H: Hal, T: Transport> {
     name: String,
     physical_location: String,
     unique_id: String,
+    /// IRQ line probed for this device (PCI INTx vector or MMIO IRQ
+    /// number). Consumers read it back through
+    /// [`BaseDriverOps::irq_num`] to wire IRQ-driven wakers.
+    irq: Option<usize>,
 }
 
 unsafe impl<H: Hal, T: Transport> Send for VirtIoInputDev<H, T> {}
@@ -82,9 +86,12 @@ impl<H: Hal, T: Transport> VirtIoInputDev<H, T> {
             .ok_or(DevError::Again)
     }
 
-    /// Creates a new driver instance and initializes the device, or returns
-    /// an error if any step fails.
-    pub fn try_new(transport: T) -> DevResult<Self> {
+    /// Creates a new driver instance and initializes the device, or
+    /// returns an error if any step fails. The `irq` argument carries
+    /// the IRQ number probed for this device (PCI INTx vector or MMIO
+    /// IRQ line). Consumers (e.g. `EventDev`) read it back through
+    /// [`BaseDriverOps::irq_num`] to register IRQ-driven wakers.
+    pub fn try_new(transport: T, irq: Option<usize>) -> DevResult<Self> {
         let mut virtio = InnerDev::new(transport).map_err(as_dev_err)?;
         let name = Self::read_device_name(&mut virtio);
         let device_id = Self::read_device_id(&mut virtio)?;
@@ -97,6 +104,7 @@ impl<H: Hal, T: Transport> VirtIoInputDev<H, T> {
             name,
             physical_location,
             unique_id,
+            irq,
         })
     }
 }
@@ -108,6 +116,10 @@ impl<H: Hal, T: Transport> BaseDriverOps for VirtIoInputDev<H, T> {
 
     fn device_type(&self) -> DeviceType {
         DeviceType::Input
+    }
+
+    fn irq_num(&self) -> Option<usize> {
+        self.irq
     }
 }
 

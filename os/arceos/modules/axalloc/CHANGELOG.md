@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.7.0...ax-alloc-v0.7.1) - 2026-05-19
+
+### Other
+
+- Refactor Clippy integration and enhance package handling ([#738](https://github.com/rcore-os/tgoskits/pull/738))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.6.0...ax-alloc-v0.7.0) - 2026-05-15
 
 ### Other
