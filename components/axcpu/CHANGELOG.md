@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.2...ax-cpu-v0.6.3) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-page-table-multiarch
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.1...ax-cpu-v0.6.2) - 2026-05-15
 
 ### Other

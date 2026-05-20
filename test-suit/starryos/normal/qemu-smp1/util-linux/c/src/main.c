@@ -1004,6 +1004,87 @@ int main(void)
     }
 
     /* ================================================================
+     *  Tier 4k0: mount EINVAL for invalid propagation flag combos
+     *
+     *  Linux mount(2) rejects multiple propagation type flags in one
+     *  call. The failed mount must not create a mount side effect.
+     * ================================================================ */
+    {
+        const char *invalid_mount_point = "/tmp/ul-mnt-invalid-mountflags";
+        int saved_errno;
+
+        rc = run("mkdir -p /tmp/ul-mnt-invalid-mountflags");
+        check(rc == 0, "mkdir invalid-mountflags mount point");
+
+        errno = 0;
+        rc = mount(
+            "none",
+            invalid_mount_point,
+            "tmpfs",
+            MS_SHARED | MS_PRIVATE,
+            NULL
+        );
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EINVAL,
+              "mount EINVAL for conflicting propagation flags");
+
+        errno = 0;
+        rc = umount(invalid_mount_point);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EINVAL,
+              "mount invalid propagation flags has no mount side effect");
+    }
+
+    /* ================================================================
+     *  Tier 4k1: umount2 EINVAL for invalid flags
+     *
+     *  Linux umount2 must reject unsupported flag bits with EINVAL.
+     *  Verify that the kernel does not silently ignore invalid flags.
+     * ================================================================ */
+
+    /* Attach ext4 image */
+    if (loopdev[0]) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "losetup %s " PREBUILT_IMG " 2>&1", loopdev);
+        rc = run(cmd);
+        check(rc == 0, "losetup attach for umount2-invalid-flags test");
+    } else {
+        check(0, "losetup attach for umount2-invalid-flags test");
+    }
+
+    /* Mount ext4 */
+    if (loopdev[0]) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "mount -t ext4 %s /tmp/ul-mnt 2>&1", loopdev);
+        rc = run(cmd);
+        check(rc == 0, "mount for umount2-invalid-flags test");
+    } else {
+        check(0, "mount for umount2-invalid-flags test");
+    }
+
+    /* umount2 with invalid flags must fail with EINVAL */
+    {
+        const unsigned int invalid_flags = 0xdeadbeefu;
+        int saved_errno;
+        errno = 0;
+        rc = (int)syscall(SYS_umount2, "/tmp/ul-mnt", invalid_flags);
+        saved_errno = errno;
+        check(rc == -1 && saved_errno == EINVAL,
+              "umount2 EINVAL for invalid flags");
+    }
+
+    /* Cleanup: normal umount then detach */
+    {
+        rc = umount("/tmp/ul-mnt");
+        check(rc == 0, "umount cleanup after umount2-invalid-flags test");
+        if (loopdev[0]) {
+            char cmd[256];
+            snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
+            run(cmd);
+        }
+    }
+
+    /* ================================================================
      *  Tier 4l: LOOP_CLR_FD EBUSY when mount has open fds
      *
      *  Verify that LOOP_CLR_FD (losetup -d) returns EBUSY while the

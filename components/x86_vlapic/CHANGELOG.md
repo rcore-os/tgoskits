@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.4.8...x86_vlapic-v0.4.9) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvisor_api
+
 ## [0.4.8](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.4.7...x86_vlapic-v0.4.8) - 2026-05-15
 
 ### Other

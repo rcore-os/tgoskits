@@ -11,6 +11,7 @@ use ax_fs::{CachedFile, FileFlags};
 use ax_hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_sync::Mutex;
+use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 
 use super::{AddrSpace, Backend, BackendFileInfo, BackendOps, PopulateCallback, pages_in};
@@ -129,6 +130,16 @@ impl FileBackend {
 
     pub fn futex_handle(&self) -> Weak<()> {
         Arc::downgrade(&self.0.futex_handle)
+    }
+
+    /// `true` when this file mapping is shared with the page cache (MAP_SHARED).
+    pub(crate) fn is_shared_file_map(&self) -> bool {
+        self.0.shared
+    }
+
+    /// Location of the backing file (used by memfd seal accounting).
+    pub(crate) fn cache_location(&self) -> &Location {
+        self.0.cache.location()
     }
 
     pub fn is_shared(&self) -> bool {

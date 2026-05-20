@@ -430,9 +430,10 @@ impl SocketOps for TcpSocket {
         })
     }
 
-    fn send(&self, mut src: impl Read, _options: SendOptions) -> AxResult<usize> {
+    fn send(&self, mut src: impl Read, options: SendOptions) -> AxResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
-        let result = self.general.send_poller(self, || {
+        let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
+        let result = self.general.send_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {
@@ -465,7 +466,8 @@ impl SocketOps for TcpSocket {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(AxError::NotConnected);
         }
-        self.general.recv_poller(self, || {
+        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
+        self.general.recv_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
                 if !socket.is_active() {

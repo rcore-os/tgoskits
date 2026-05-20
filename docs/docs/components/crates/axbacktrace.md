@@ -105,6 +105,10 @@ axbacktrace = { workspace = true, features = ["dwarf"] }
 
 如果只需要保持接口存在而不做符号化，可不打开 `dwarf`。
 
+### Host 离线符号化（Issue #146）
+
+Target 可通过 `Backtrace::capture().kind(kind)` 输出机器可解析的 raw 块（`BACKTRACE_BEGIN` / `BT` / `BACKTRACE_END`），在 host 上用 `cargo xtask backtrace symbolize` 对日志与 ELF 做符号化。用法与后续「测试结束后自动 symbolize」计划见 [Backtrace Host 符号化](../../debug/backtrace-host-symbolize.md)（PR #635 / #646）。
+
 ### 注意事项
 1. 修改架构相关帧指针读取逻辑时，必须同步检查 `capture()` 和 `capture_trap()` 两条路径。
 2. 若调整 `Frame::OFFSET` 或 `adjust_ip()` 语义，需要一起核对 `addr2line` 解析结果是否仍正确。

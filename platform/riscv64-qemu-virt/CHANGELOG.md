@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7](https://github.com/rcore-os/tgoskits/compare/axplat-riscv64-qemu-virt-hv-v0.5.6...axplat-riscv64-qemu-virt-hv-v0.5.7) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-riscv-plic, axvisor_api, ax-cpu
+
 ## [0.5.6](https://github.com/rcore-os/tgoskits/compare/axplat-riscv64-qemu-virt-hv-v0.5.5...axplat-riscv64-qemu-virt-hv-v0.5.6) - 2026-05-15
 
 ### Added

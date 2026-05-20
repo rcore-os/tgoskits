@@ -742,15 +742,17 @@ impl RISCVVCpu {
         }
 
         let guest_pc = GuestVirtAddr::from(self.regs.guest_regs.sepc);
-        Ok(guest_mem::fetch_guest_instruction(guest_pc) as u32)
+        Ok(guest_mem::fetch_guest_instruction(guest_pc))
     }
 
+    #[cfg(feature = "sstc")]
     fn read_gpr_raw(&self, index: u8) -> usize {
         GprIndex::from_raw(index as u32)
             .map(|gpr| self.get_gpr(gpr))
             .unwrap_or(0)
     }
 
+    #[cfg(feature = "sstc")]
     fn write_gpr_raw(&mut self, index: u8, value: usize) {
         if let Some(gpr) = GprIndex::from_raw(index as u32) {
             self.set_gpr_from_gpr_index(gpr, value);

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-net-ng-v0.5.13...ax-net-ng-v0.6.0) - 2026-05-19
+
+### Fixed
+
+- *(net)* correct UDP sendto/recvfrom/sendmsg/recvmsg semantics to match Linux ABI ([#598](https://github.com/rcore-os/tgoskits/pull/598))
+- *(starry)* weston bringup fixes + IRQ wakers + AF_UNIX cmsg byte marks ([#509](https://github.com/rcore-os/tgoskits/pull/509))
+- *(unix-stream,poll_io)* non-blocking accept, peer EOF, waker registration ([#697](https://github.com/rcore-os/tgoskits/pull/697))
+
 ## [0.5.13](https://github.com/rcore-os/tgoskits/compare/ax-net-ng-v0.5.12...ax-net-ng-v0.5.13) - 2026-05-15
 
 ### Added

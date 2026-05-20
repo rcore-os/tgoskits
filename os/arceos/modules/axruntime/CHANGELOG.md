@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.5.14...ax-runtime-v0.5.15) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-alloc, ax-driver, ax-task, ax-net-ng, axklib, ax-hal, ax-mm, ax-display, ax-fs, ax-fs-ng, ax-input, ax-ipi, ax-net
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.5.13...ax-runtime-v0.5.14) - 2026-05-15
 
 ### Other

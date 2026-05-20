@@ -6,9 +6,6 @@ edition.workspace = true
 license = "Apache-2.0"
 publish = false
 
-[profile.release]
-lto = true
-
 [features]
 default = []
 bsp_rpi3 = ["tock-registers"]

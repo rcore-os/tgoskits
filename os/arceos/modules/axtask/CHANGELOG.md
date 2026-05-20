@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.14...ax-task-v0.5.15) - 2026-05-19
+
+### Fixed
+
+- *(starry)* weston bringup fixes + IRQ wakers + AF_UNIX cmsg byte marks ([#509](https://github.com/rcore-os/tgoskits/pull/509))
+- *(unix-stream,poll_io)* non-blocking accept, peer EOF, waker registration ([#697](https://github.com/rcore-os/tgoskits/pull/697))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.13...ax-task-v0.5.14) - 2026-05-15
 
 ### Other

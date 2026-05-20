@@ -90,8 +90,8 @@ flowchart TB
 | 0 | 基础层（无仓库内直接依赖） | ArceOS 层 | `deptool` | `0.3.0` | `os/arceos/tools/deptool` |
 | 0 | 基础层（无仓库内直接依赖） | ArceOS 层 | `mingo` | `0.8.0` | `os/arceos/tools/raspi4/chainloader` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `aarch64_sysreg` | `0.3.1` | `components/aarch64_sysreg` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-arm-pl011` | `0.3.0` | `components/arm_pl011` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-arm-pl031` | `0.4.1` | `components/arm_pl031` |
+| 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-arm-pl011` | `0.3.0` | `drivers/serial/arm_pl011` |
+| 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-arm-pl031` | `0.4.1` | `drivers/rtc/arm_pl031` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-cap-access` | `0.3.0` | `components/cap_access` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-config-gen` | `0.4.1` | `components/axconfig-gen/axconfig-gen` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-cpumask` | `0.3.0` | `components/cpumask` |
@@ -107,7 +107,7 @@ flowchart TB
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-linked-list-r4l` | `0.5.0` | `components/linked_list_r4l` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-memory-addr` | `0.6.1` | `components/axmm_crates/memory_addr` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-percpu-macros` | `0.4.3` | `components/percpu/percpu_macros` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-riscv-plic` | `0.4.0` | `components/riscv_plic` |
+| 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-riscv-plic` | `0.4.0` | `drivers/intc/riscv_plic` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-timer-list` | `0.3.0` | `components/timer_list` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `axbacktrace` | `0.3.2` | `components/axbacktrace` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `axpoll` | `0.3.2` | `components/axpoll` |
@@ -137,7 +137,7 @@ flowchart TB
 | 1 | 堆叠层 | 组件层 | `axvmconfig` | `0.4.2` | `components/axvmconfig` |
 | 1 | 堆叠层 | 组件层 | `define-simple-traits` | `0.3.0` | `components/crate_interface/test_crates/define-simple-traits` |
 | 1 | 堆叠层 | 组件层 | `define-weak-traits` | `0.3.0` | `components/crate_interface/test_crates/define-weak-traits` |
-| 1 | 堆叠层 | 组件层 | `fxmac_rs` | `0.4.1` | `components/fxmac_rs` |
+| 1 | 堆叠层 | 组件层 | `fxmac_rs` | `0.4.1` | `drivers/net/fxmac_rs` |
 | 1 | 堆叠层 | 组件层 | `smoltcp-fuzz` | `0.2.1` | `components/starry-smoltcp/fuzz` |
 | 1 | 堆叠层 | 组件层 | `starry-vm` | `0.5.0` | `components/starry-vm` |
 | 2 | 堆叠层 | ArceOS 层 | `ax-config` | `0.5.0` | `os/arceos/modules/axconfig` |
