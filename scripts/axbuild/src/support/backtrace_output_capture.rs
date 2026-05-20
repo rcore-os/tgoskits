@@ -157,6 +157,7 @@ mod platform {
         let pipe_read = pipe.into_read_fd();
         let tee_out = rollback.take_tee_out();
         let capture_for_reader = block_capture.clone();
+        let suppress_terminal_raw_blocks = capture.suppress_terminal_raw_blocks;
 
         let reader = std::thread::spawn(move || {
             let mut pipe = unsafe { File::from_raw_fd(pipe_read) };
@@ -167,10 +168,16 @@ mod platform {
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
-                        if let Ok(mut capture) = capture_for_reader.lock() {
-                            let _ = capture.push_bytes(chunk);
+                        let terminal_chunk = if let Ok(mut capture) = capture_for_reader.lock() {
+                            capture
+                                .push_bytes_for_tee(chunk, suppress_terminal_raw_blocks)
+                                .unwrap_or_else(|_| chunk.to_vec())
+                        } else {
+                            chunk.to_vec()
+                        };
+                        if !terminal_chunk.is_empty() {
+                            let _ = terminal.write_all(&terminal_chunk);
                         }
-                        let _ = terminal.write_all(chunk);
                     }
                     Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                     Err(err) => return Err(err),
@@ -281,6 +288,7 @@ mod platform {
             Some(pending_stream_blocks.clone()),
         )?));
         let capture_for_reader = block_capture.clone();
+        let suppress_terminal_raw_blocks = capture.suppress_terminal_raw_blocks;
 
         let reader = std::thread::spawn(move || {
             let mut pipe = unsafe { File::from_raw_handle(read_handle as _) };
@@ -291,10 +299,16 @@ mod platform {
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
-                        if let Ok(mut capture) = capture_for_reader.lock() {
-                            let _ = capture.push_bytes(chunk);
+                        let terminal_chunk = if let Ok(mut capture) = capture_for_reader.lock() {
+                            capture
+                                .push_bytes_for_tee(chunk, suppress_terminal_raw_blocks)
+                                .unwrap_or_else(|_| chunk.to_vec())
+                        } else {
+                            chunk.to_vec()
+                        };
+                        if !terminal_chunk.is_empty() {
+                            let _ = terminal.write_all(&terminal_chunk);
                         }
-                        let _ = terminal.write_all(chunk);
                     }
                     Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                     Err(err) => return Err(err),

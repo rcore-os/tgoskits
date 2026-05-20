@@ -384,6 +384,8 @@ fn read_text(log: Option<&Path>) -> anyhow::Result<String> {
 pub(crate) struct BacktraceQemuCapture {
     pub log_path: PathBuf,
     pub stream_symbolize: Option<Arc<BacktraceSymbolizeSession>>,
+    /// When true, raw `BACKTRACE_*` / `BT` lines are omitted from the terminal tee (log unchanged).
+    pub suppress_terminal_raw_blocks: bool,
 }
 
 /// Incremental state machine: forwards guest output to a log file only while a
@@ -427,15 +429,39 @@ impl BacktraceBlockCapture {
         while let Some(newline) = self.line_buf.find('\n') {
             let line = self.line_buf[..newline].to_string();
             self.line_buf.drain(..=newline);
-            self.process_line(&line)?;
+            let _ = self.process_line(&line)?;
         }
         Ok(())
+    }
+
+    /// Process guest bytes for log/stream symbolize; return bytes safe to write to the terminal.
+    pub(crate) fn push_bytes_for_tee(
+        &mut self,
+        data: &[u8],
+        suppress_raw_blocks: bool,
+    ) -> io::Result<Vec<u8>> {
+        if !suppress_raw_blocks {
+            self.push_bytes(data)?;
+            return Ok(data.to_vec());
+        }
+
+        let mut terminal_out = Vec::new();
+        self.line_buf.push_str(&String::from_utf8_lossy(data));
+        while let Some(newline) = self.line_buf.find('\n') {
+            let line = self.line_buf[..newline].to_string();
+            self.line_buf.drain(..=newline);
+            if self.process_line(&line)? {
+                terminal_out.extend_from_slice(line.as_bytes());
+                terminal_out.push(b'\n');
+            }
+        }
+        Ok(terminal_out)
     }
 
     pub(crate) fn finish(&mut self) -> io::Result<()> {
         if !self.line_buf.is_empty() {
             let line = std::mem::take(&mut self.line_buf);
-            self.process_line(&line)?;
+            let _ = self.process_line(&line)?;
         }
         if self.state == BlockCaptureState::InBlock {
             self.flush_block()?;
@@ -444,13 +470,16 @@ impl BacktraceBlockCapture {
         self.log.flush()
     }
 
-    fn process_line(&mut self, line: &str) -> io::Result<()> {
+    /// Returns whether the line should be forwarded to the terminal when raw blocks are suppressed.
+    fn process_line(&mut self, line: &str) -> io::Result<bool> {
         let has_begin = line.contains("BACKTRACE_BEGIN");
         let has_end = line.contains("BACKTRACE_END");
+        let mut emit_terminal = true;
 
         match self.state {
             BlockCaptureState::Idle => {
                 if has_begin {
+                    emit_terminal = false;
                     self.block_lines.clear();
                     self.block_lines.push(line.to_string());
                     self.state = BlockCaptureState::InBlock;
@@ -461,6 +490,7 @@ impl BacktraceBlockCapture {
                 }
             }
             BlockCaptureState::InBlock => {
+                emit_terminal = false;
                 if has_begin && !self.block_lines.is_empty() {
                     self.flush_block()?;
                     self.block_lines.clear();
@@ -473,7 +503,7 @@ impl BacktraceBlockCapture {
                 }
             }
         }
-        Ok(())
+        Ok(emit_terminal)
     }
 
     fn flush_block(&mut self) -> io::Result<()> {
@@ -958,6 +988,41 @@ BACKTRACE_END
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].kind, "raw");
         assert_eq!(blocks[0].frames.len(), 1);
+    }
+
+    #[test]
+    fn block_capture_tee_suppresses_raw_blocks_on_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("blocks.log");
+        let mut capture = BacktraceBlockCapture::create(&log_path, None).unwrap();
+        let guest = b"[0.000] boot line\n\
+[0.001] BACKTRACE_BEGIN kind=raw arch=x86_64\n\
+[0.001] BT 0 ip=0x1000 fp=0x2000\n\
+[0.002] BACKTRACE_END\n\
+[0.003] after block\n";
+        let terminal = capture.push_bytes_for_tee(guest, true).unwrap();
+        capture.finish().unwrap();
+
+        let terminal = String::from_utf8(terminal).unwrap();
+        assert!(terminal.contains("boot line"));
+        assert!(terminal.contains("after block"));
+        assert!(!terminal.contains("BACKTRACE_BEGIN"));
+        assert!(!terminal.contains("BT 0 ip="));
+        assert!(!terminal.contains("BACKTRACE_END"));
+
+        let log = fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("BACKTRACE_BEGIN kind=raw"));
+        assert!(log.contains("BT 0 ip=0x1000"));
+    }
+
+    #[test]
+    fn block_capture_tee_forwards_all_bytes_when_not_suppressing() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("blocks.log");
+        let mut capture = BacktraceBlockCapture::create(&log_path, None).unwrap();
+        let guest = b"BACKTRACE_BEGIN kind=raw\nBT 0 ip=0x1\nBACKTRACE_END\n";
+        let terminal = capture.push_bytes_for_tee(guest, false).unwrap();
+        assert_eq!(terminal, guest);
     }
 
     #[test]

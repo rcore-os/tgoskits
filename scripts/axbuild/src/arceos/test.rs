@@ -596,6 +596,7 @@ async fn run_rust_qemu_case(
         Some(crate::backtrace::BacktraceQemuCapture {
             log_path: dir.join(format!("{case_name}-{target}.log")),
             stream_symbolize: stream_session.clone(),
+            suppress_terminal_raw_blocks: true,
         })
     } else {
         None
