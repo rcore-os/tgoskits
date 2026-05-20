@@ -206,53 +206,6 @@ jobs:
           - name: Check formatting
             command: cargo fmt --all -- --check
             cache_key: ""
-          - name: Run clippy
-            command: |
-              set -eux
-              git_cmd() {
-                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
-              }
-              ensure_host_clippy_deps() {
-                if pkg-config --exists libavutil; then
-                  return 0
-                fi
-
-                apt-get update
-                apt-get install -y --no-install-recommends \
-                  libavcodec-dev \
-                  libavdevice-dev \
-                  libavfilter-dev \
-                  libavformat-dev \
-                  libavutil-dev \
-                  libswresample-dev \
-                  libswscale-dev
-                rm -rf /var/lib/apt/lists/*
-              }
-              ensure_since_ref() {
-                ref="$1"
-                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
-                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
-                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
-              }
-              ensure_host_clippy_deps
-
-              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-                cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
-              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-                before="${{ github.event.before }}"
-                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
-                  cargo xtask clippy
-                elif ensure_since_ref "${before}"; then
-                  cargo xtask clippy --since "${before}"
-                else
-                  echo "::notice::before commit ${before} is unavailable; running full clippy"
-                  cargo xtask clippy
-                fi
-              else
-                cargo xtask clippy
-              fi
-            cache_key: clippy
-            fetch_depth: full
           - name: Run sync-lint
             command: |
               set -eux
@@ -301,6 +254,57 @@ jobs:
       fail-fast: true
       matrix:
         include:
+          - name: Run clippy
+            command: |
+              set -eux
+              git_cmd() {
+                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
+              }
+              ensure_host_clippy_deps() {
+                if pkg-config --exists libavutil; then
+                  return 0
+                fi
+
+                apt-get update
+                apt-get install -y --no-install-recommends \
+                  libavcodec-dev \
+                  libavdevice-dev \
+                  libavfilter-dev \
+                  libavformat-dev \
+                  libavutil-dev \
+                  libswresample-dev \
+                  libswscale-dev
+                rm -rf /var/lib/apt/lists/*
+              }
+              ensure_since_ref() {
+                ref="$1"
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
+                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
+              }
+              ensure_host_clippy_deps
+
+              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+                cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
+              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                before="${{ github.event.before }}"
+                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
+                  cargo xtask clippy
+                elif ensure_since_ref "${before}"; then
+                  cargo xtask clippy --since "${before}"
+                else
+                  echo "::notice::before commit ${before} is unavailable; running full clippy"
+                  cargo xtask clippy
+                fi
+              else
+                cargo xtask clippy
+              fi
+            cache_key: clippy
+            fetch_depth: full
+            prepare_qemu_user_emulators: false
+            prepare_musl_toolchains: false
+            required_repository_owner: ""
+            main_pr_only: false
           - name: Test with std
             command: cargo xtask test
             cache_key: test-std
