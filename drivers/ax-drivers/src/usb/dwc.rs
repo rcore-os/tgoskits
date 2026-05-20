@@ -12,19 +12,20 @@ use crab_usb::{
     usb_if::DrMode,
 };
 use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
-use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
+use log::{debug, info, warn};
+use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
 use rockchip_pm::{PowerDomain, RockchipPM};
 
 use super::{PlatformDeviceUsbHost, decode_fdt_irq, usb_kernel};
-use crate::drivers::{
-    iomap,
+use crate::{
+    mmio::iomap,
     soc::{RockchipPinCtrl, rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert},
 };
 
 const DRIVER_NAME: &str = "usb-dwc-xhci";
 const OPTIONAL_PHP_POWER_DOMAIN: usize = 32;
 
-module_driver!(
+crate::register_driver!(
     name: "USB DWC xHCI",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -111,8 +112,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         }
     }
 
-    let fdt_addr = live_fdt_addr()?;
-    let fdt = live_fdt(fdt_addr)?;
+    let fdt = live_fdt()?;
     let resources = collect_resources(&info, &fdt)?;
 
     enable_power_domains(&resources.power_domains)?;
@@ -533,14 +533,8 @@ fn has_prop(node: &Node, names: &[&str]) -> bool {
     names.iter().any(|name| node.get_property(name).is_some())
 }
 
-fn live_fdt_addr() -> Result<NonNull<u8>, OnProbeError> {
-    let ptr = somehal::fdt_addr().ok_or_else(|| OnProbeError::other("live FDT not found"))?;
-    NonNull::new(ptr).ok_or_else(|| OnProbeError::other("live FDT pointer is null"))
-}
-
-fn live_fdt(fdt_addr: NonNull<u8>) -> Result<Fdt, OnProbeError> {
-    unsafe { Fdt::from_ptr(fdt_addr.as_ptr()) }
-        .map_err(|err| OnProbeError::other(format!("failed to parse live FDT: {err:?}")))
+fn live_fdt() -> Result<Fdt, OnProbeError> {
+    rdrive::with_fdt(Clone::clone).ok_or_else(|| OnProbeError::other("live FDT not found"))
 }
 
 fn map_phandle_reg(
@@ -559,7 +553,7 @@ fn map_phandle_reg(
 
 fn map_reg(reg: RegFixed) -> Result<NonNull<u8>, OnProbeError> {
     let size = align_up_4k((reg.size.unwrap_or(0x1000) as usize).max(1));
-    iomap((reg.address as usize).into(), size)
+    iomap(reg.address as usize, size)
 }
 
 fn align_up_4k(size: usize) -> usize {

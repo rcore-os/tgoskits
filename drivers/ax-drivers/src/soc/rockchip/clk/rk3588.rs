@@ -12,17 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use rdrive::{
-    DriverGeneric, KError, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
-};
+use log::info;
+use rdrive::{DriverGeneric, KError, PlatformDevice, probe::OnProbeError, register::FdtInfo};
 use rockchip_soc::{ClkId, Cru, CruOp, SocType};
 
-use crate::drivers::iomap;
+use crate::mmio::iomap;
 
 const RK3588_CRU_GRF_BASE: usize = 0xfd5b_0000;
 const RK3588_CRU_GRF_SIZE: usize = 0x1000;
 
-module_driver!(
+crate::register_driver!(
     name: "Rockchip CRU",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,
@@ -63,10 +62,10 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     );
 
     let mmio_base = iomap(
-        (base_reg.address as usize).into(),
+        base_reg.address as usize,
         base_reg.size.unwrap_or(0x5c000) as usize,
     )?;
-    let grf_base = iomap(RK3588_CRU_GRF_BASE.into(), RK3588_CRU_GRF_SIZE)?;
+    let grf_base = iomap(RK3588_CRU_GRF_BASE, RK3588_CRU_GRF_SIZE)?;
 
     let cru = Cru::new(SocType::Rk3588, mmio_base, grf_base);
     let clk = rdif_clk::Clk::new(ClkDrv::new(cru));
@@ -161,22 +160,22 @@ fn with_clk_drv<T>(
     f(drv)
 }
 
-pub(crate) fn rk3588_enable_clock(id: u32) -> Result<(), OnProbeError> {
+pub fn rk3588_enable_clock(id: u32) -> Result<(), OnProbeError> {
     with_clk_drv(|drv| drv.enable_clock(id))
 }
 
-pub(crate) fn rk3588_set_clock_rate(id: u32, rate: u64) -> Result<(), OnProbeError> {
+pub fn rk3588_set_clock_rate(id: u32, rate: u64) -> Result<(), OnProbeError> {
     with_clk_drv(|drv| drv.set_clock_rate(id, rate))
 }
 
-pub(crate) fn rk3588_reset_assert(id: u64) -> Result<(), OnProbeError> {
+pub fn rk3588_reset_assert(id: u64) -> Result<(), OnProbeError> {
     with_clk_drv(|drv| {
         drv.reset_assert(id);
         Ok(())
     })
 }
 
-pub(crate) fn rk3588_reset_deassert(id: u64) -> Result<(), OnProbeError> {
+pub fn rk3588_reset_deassert(id: u64) -> Result<(), OnProbeError> {
     with_clk_drv(|drv| {
         drv.reset_deassert(id);
         Ok(())

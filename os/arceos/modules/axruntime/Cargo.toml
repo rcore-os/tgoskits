@@ -24,8 +24,22 @@ tls = ["ax-hal/tls", "ax-task?/tls"]
 plat-dyn = ["ax-hal/plat-dyn", "dep:axplat-dyn", "paging", "buddy-slab"]
 
 display = ["dep:ax-display", "ax-drivers/display", "axplat-dyn?/display"]
-fs = ["dep:ax-errno", "dep:ax-fs", "dep:rd-block", "dep:spin", "dep:axklib"]
-fs-ng = ["dep:ax-errno", "dep:ax-fs-ng", "dep:rd-block", "dep:spin", "dep:axklib"]
+fs = [
+    "dep:ax-errno",
+    "dep:ax-fs",
+    "dep:rd-block",
+    "dep:spin",
+    "dep:axklib",
+    "ax-drivers/block",
+]
+fs-ng = [
+    "dep:ax-errno",
+    "dep:ax-fs-ng",
+    "dep:rd-block",
+    "dep:spin",
+    "dep:axklib",
+    "ax-drivers/block",
+]
 input = ["dep:ax-input", "ax-drivers/input", "axplat-dyn?/input"]
 net = ["dep:ax-net", "ax-drivers/net", "axplat-dyn?/net"]
 net-ng = ["dep:ax-net-ng", "dep:rd-net", "dep:spin", "dep:axklib", "ax-drivers/net", "axplat-dyn?/net"]

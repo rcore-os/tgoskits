@@ -4,6 +4,7 @@ use core::{num::NonZeroUsize, ptr::NonNull};
 use ax_kspin::SpinNoIrq;
 use dma_api::DeviceDma;
 use dwmmc_host::{BlockPoll, BlockRequest, BlockRequestSlot, DwMmc, RequestId};
+use log::warn;
 use rdrive::DriverGeneric;
 use sdmmc_protocol::{BlockTransferMode, Error, sdio::SdioHost};
 

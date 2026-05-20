@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
+use log::info;
+use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
 use rockchip_pm::{PowerDomain, RkBoard, RockchipPM};
 
-use crate::drivers::iomap;
+use crate::mmio::iomap;
 
-module_driver!(
+crate::register_driver!(
     name: "Rockchip Pm",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,
@@ -43,7 +44,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     let mmio_size = base_reg.size.unwrap_or(0x1000) as usize;
     let board = RkBoard::Rk3588;
 
-    let mmio_base = iomap((base_reg.address as usize).into(), mmio_size)?;
+    let mmio_base = iomap(base_reg.address as usize, mmio_size)?;
     let pm = RockchipPM::new(mmio_base, board);
 
     plat_dev.register(pm);
@@ -51,7 +52,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     Ok(())
 }
 
-pub(crate) fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
+pub fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
     let pm = rdrive::get_one::<RockchipPM>()
         .ok_or_else(|| alloc::format!("RockchipPM not found for power domain {domain}"))?;
     let mut pm = pm

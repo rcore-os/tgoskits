@@ -116,6 +116,12 @@ pub trait Klib {
     /// are platform-dependent.
     fn time_busy_wait(dur: Duration);
 
+    /// Returns monotonic time in nanoseconds.
+    fn time_monotonic_nanos() -> u64;
+
+    /// Initializes the wall-clock epoch offset from an absolute epoch time.
+    fn time_try_init_epoch_offset(epoch_time_nanos: u64) -> bool;
+
     /// Enable or disable the edge/level for a platform IRQ.
     ///
     /// `irq` is a platform IRQ number. `enabled` selects whether the IRQ
@@ -141,7 +147,10 @@ pub mod mem {
 
 /// Convenience re-export for busy-wait timing.
 pub mod time {
-    pub use super::klib::time_busy_wait as busy_wait;
+    pub use super::klib::{
+        time_busy_wait as busy_wait, time_monotonic_nanos as monotonic_nanos,
+        time_try_init_epoch_offset as try_init_epoch_offset,
+    };
 }
 
 /// Convenience re-exports for IRQ operations.

@@ -2,21 +2,21 @@ extern crate alloc;
 
 use alloc::format;
 
+use log::info;
 use pcie::CommandRegister;
 use rdrive::{
-    PlatformDevice, module_driver,
+    PlatformDevice,
     probe::{
         OnProbeError,
         pci::{EndpointRc, FnOnProbe},
     },
 };
 
-use super::{PlatformDeviceUsbHost, align_up_4k, resolve_pci_irq_from_fdt, usb_kernel};
-use crate::drivers::iomap;
+use super::{PlatformDeviceUsbHost, align_up_4k, pci_irq_or_error, usb_kernel};
 
 const DRIVER_NAME: &str = "usb-xhci-pci";
 
-module_driver!(
+crate::register_driver!(
     name: "USB xHCI PCI",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -40,11 +40,8 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         cmd
     });
 
-    let mmio = iomap(bar.start.into(), align_up_4k(bar.count().max(1)))?;
-    let irq_num = Some(
-        resolve_pci_irq_from_fdt(endpoint)
-            .map_err(|err| OnProbeError::other(alloc::format!("{err}")))?,
-    );
+    let mmio = crate::mmio::iomap(bar.start, align_up_4k(bar.count().max(1)))?;
+    let irq_num = Some(pci_irq_or_error(endpoint)?);
     let host = crab_usb::USBHost::new_xhci(mmio, usb_kernel()).map_err(|err| {
         OnProbeError::other(format!(
             "failed to create xHCI host for PCI endpoint {}: {err}",

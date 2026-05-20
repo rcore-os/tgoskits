@@ -12,75 +12,52 @@ repository.workspace = true
 [features]
 default = ["smp", "irq" ]
 smp = ["ax-plat/smp"]
-irq = ["ax-plat/irq"]
-rtc = ["dep:ax-arm-pl031"]
+irq = ["ax-plat/irq", "ax-drivers/irq"]
+rtc = ["ax-drivers/rtc"]
 fp-simd = ["ax-cpu/fp-simd"]
 uspace = ["somehal/uspace"]
 hv = ["somehal/hv", "ax-cpu/arm-el2"]
-rockchip-soc = ["dep:rockchip-soc"]
+rockchip-soc = ["ax-drivers/rockchip-soc"]
 rockchip-sdhci = [
-    "dep:sdhci-host",
-    "dep:sdmmc-protocol",
+    "ax-drivers/rockchip-sdhci",
     "sdmmc-protocol/sdio",
 ]
 rockchip-dwmmc = [
-    "dep:dwmmc-host",
-    "dep:sdmmc-protocol",
+    "ax-drivers/rockchip-dwmmc",
     "sdmmc-protocol/sdio",
 ]
-rockchip-pm = ["dep:rockchip-pm"]
-usb = ["dep:crab-usb"]
-rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
-xhci-mmio = ["usb"]
-xhci-pci = ["usb", "dep:pcie"]
-serial = ["dep:some-serial"]
-virtio = ["ax-drivers/virtio-core"]
+rockchip-pm = ["ax-drivers/rockchip-pm"]
+usb = ["ax-drivers/usb"]
+rockchip-dwc-xhci = ["usb", "ax-drivers/rockchip-dwc-xhci"]
+xhci-mmio = ["usb", "ax-drivers/xhci-mmio"]
+xhci-pci = ["usb", "ax-drivers/xhci-pci", "ax-drivers/pci-fdt"]
+serial = ["ax-drivers/serial"]
+virtio = ["ax-drivers/virtio-blk", "ax-drivers/fdt"]
 display = ["ax-drivers/display", "dep:rdif-display"]
 input = ["ax-drivers/input", "dep:rdif-input"]
 net = ["ax-drivers/net", "dep:rd-net"]
 vsock = ["ax-drivers/vsock", "dep:rdif-vsock"]
 intel-net = ["net", "ax-drivers/intel-net"]
 realtek-rtl8125 = ["net", "ax-drivers/realtek-rtl8125"]
-pci-list-devices = []
-rknpu = ["dep:rockchip-npu", "rockchip-pm", "rockchip-soc"]
+pci-list-devices = ["ax-drivers/pci-list-devices"]
+rknpu = ["ax-drivers/rknpu"]
 
 [dependencies]
-anyhow = { version = "1", default-features = false }
-ax-alloc = { version = "0.7.1", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
-ax-config-macros = { workspace = true }
 ax-cpu.workspace = true
-ax-arm-pl031 = { workspace = true, optional = true }
-arm-scmi-rs.workspace = true
 ax-errno.workspace = true
-ax-kspin.workspace = true
-ax-drivers = { workspace = true, features = ["pci", "virtio-core"] }
+ax-drivers = { workspace = true, features = ["block", "pci", "virtio-core"] }
 axklib.workspace = true
 ax-plat.workspace = true
-dma-api.workspace = true
-fdt-edit = "0.2"
 heapless = "0.9"
 log.workspace = true
 mmio-api.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
-crab-usb = { workspace = true, optional = true }
-pcie = { workspace = true, optional = true }
-rd-block.workspace = true
 rd-net = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
-rdif-clk.workspace = true
-rdif-pcie.workspace = true
 rdrive.workspace = true
-rk3588-pci.workspace = true
-rockchip-soc = { workspace = true, optional = true }
-rockchip-npu = { workspace = true, optional = true }
-rockchip-pm = { workspace = true, optional = true }
-dwmmc-host = { workspace = true, optional = true }
-sdhci-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 somehal.workspace = true
-some-serial = { workspace = true, optional = true }
 spin = "0.10"
-virtio-drivers.workspace = true

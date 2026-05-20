@@ -17,10 +17,9 @@ use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
 use ax_kspin::SpinNoIrq;
 use dma_api::DeviceDma;
+use log::{info, warn};
 use rdif_clk::ClockId;
-use rdrive::{
-    Device, DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
-};
+use rdrive::{Device, DriverGeneric, PlatformDevice, probe::OnProbeError, register::FdtInfo};
 use sdhci_host::{BlockRequest, BlockRequestSlot, HostClock, RequestId, Sdhci};
 use sdmmc_protocol::{
     BlockPoll, BlockTransferMode, Error, OperationPoll,
@@ -29,9 +28,9 @@ use sdmmc_protocol::{
 };
 use spin::Once;
 
-use crate::drivers::{
-    blk::{PlatformDeviceBlock, decode_fdt_irq},
-    iomap,
+use crate::{
+    bindings::block::{PlatformDeviceBlock, decode_fdt_irq},
+    mmio::iomap,
 };
 
 const BLOCK_SIZE: usize = 512;
@@ -48,7 +47,7 @@ impl HostClock for RockchipSdhciClock {
     }
 }
 
-module_driver!(
+crate::register_driver!(
     name: "Rockchip sdhci",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -78,7 +77,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         base_reg.address as usize,
         mmio_size
     );
-    let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
+    let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     init_core_clock(&info)?;
 

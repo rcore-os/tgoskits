@@ -23,16 +23,16 @@ mod pm;
 mod pinctrl;
 
 #[cfg(feature = "rockchip-soc")]
-pub(crate) use clk::{
+pub use clk::{
     rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert, rk3588_set_clock_rate,
 };
 #[cfg(feature = "rockchip-soc")]
-pub(crate) use pinctrl::RockchipPinCtrl;
+pub use pinctrl::RockchipPinCtrl;
 #[cfg(all(feature = "rockchip-soc", feature = "rockchip-pm"))]
-pub(crate) use pm::rk3588_enable_power_domain;
+pub use pm::rk3588_enable_power_domain;
 
 #[cfg(all(feature = "rockchip-soc", not(feature = "rockchip-pm")))]
-pub(crate) fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
+pub fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
     Err(alloc::format!(
         "rockchip-pm feature is not enabled for power domain {domain}"
     ))

@@ -3,12 +3,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use arm_scmi_rs::{Scmi, Shmem, Smc};
 use fdt_edit::Phandle;
-use rdrive::{
-    DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
-};
+use log::{info, warn};
+use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError, register::FdtInfo};
 use spin::Mutex;
 
-use crate::drivers::iomap;
+use crate::mmio::iomap;
 
 const SCMI_SHMEM_SIZE: usize = 0x100;
 const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
@@ -16,7 +15,7 @@ const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
 static SCMI: Mutex<Option<Scmi<Smc>>> = Mutex::new(None);
 static SCMI_REGISTERED: AtomicBool = AtomicBool::new(false);
 
-module_driver!(
+crate::register_driver!(
     name: "ARM SCMI SMC",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,
@@ -63,7 +62,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
             );
             (RK3588_SCMI_SHMEM_BASE, SCMI_SHMEM_SIZE)
         });
-    let shmem_base = iomap(shmem_addr.into(), shmem_size)?;
+    let shmem_base = iomap(shmem_addr, shmem_size)?;
 
     let shmem = Shmem {
         address: shmem_base,

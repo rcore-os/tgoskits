@@ -6,7 +6,6 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    ptr::NonNull,
     sync::atomic::{AtomicU32, Ordering},
     time::Duration,
 };
@@ -15,7 +14,7 @@ use fdt_edit::{ClockRef, Fdt, Node, PciRange, PciSpace, Phandle, RegFixed};
 use mmio_api::{MmioAddr, MmioRaw};
 use rdif_pcie::{PciMem64, PcieController};
 use rdrive::{
-    PlatformDevice, module_driver,
+    PlatformDevice,
     probe::{OnProbeError, fdt::NodeType},
     register::FdtInfo,
 };
@@ -23,7 +22,7 @@ use rk3588_pci::{
     Delay, HostConfig, IatuMode, MEM_ATU_FIRST_REGION, OutboundWindow, ResetControl, Rk3588PcieHost,
 };
 
-use crate::drivers::soc::{
+use crate::soc::{
     RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_assert,
     rk3588_reset_deassert, rk3588_set_clock_rate,
 };
@@ -327,7 +326,7 @@ fn claim_host_probe(apb_base: u64) -> bool {
 }
 
 fn map_mmio(phys: u64, size: usize) -> Result<MmioRaw, OnProbeError> {
-    let virt = crate::drivers::iomap((phys as usize).into(), size)?;
+    let virt = crate::mmio::iomap(phys as usize, size)?;
     Ok(unsafe { MmioRaw::new(MmioAddr::from(phys), virt, size) })
 }
 

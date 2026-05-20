@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::format;
 
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(probe = "pci")]
+#[cfg(any(probe = "fdt", probe = "pci"))]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
@@ -29,6 +29,29 @@ fn probe_pci(
     plat_dev: PlatformDevice,
 ) -> Result<(), OnProbeError> {
     let transport = crate::pci::take_virtio_transport(endpoint, DeviceType::Block)?;
+    register_transport(plat_dev, transport)
+}
+
+#[cfg(probe = "fdt")]
+crate::register_driver!(
+    name: "VirtIO MMIO Block",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Fdt {
+        compatibles: &["virtio,mmio"],
+        on_probe: probe_fdt,
+    }],
+);
+
+#[cfg(probe = "fdt")]
+fn probe_fdt(
+    info: rdrive::register::FdtInfo<'_>,
+    plat_dev: PlatformDevice,
+) -> Result<(), OnProbeError> {
+    let (ty, transport) = crate::virtio::probe_fdt_mmio_device(&info)?;
+    if ty != DeviceType::Block {
+        return Err(OnProbeError::NotMatch);
+    }
     register_transport(plat_dev, transport)
 }
 

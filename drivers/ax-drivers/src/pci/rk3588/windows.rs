@@ -77,10 +77,7 @@ fn prop_str_list(node: &Node, prop_name: &str) -> Vec<String> {
 }
 
 fn live_fdt() -> Result<Fdt, OnProbeError> {
-    let ptr = somehal::fdt_addr().ok_or_else(|| OnProbeError::other("live FDT not found"))?;
-    let ptr = NonNull::new(ptr).ok_or_else(|| OnProbeError::other("live FDT pointer is null"))?;
-    unsafe { Fdt::from_ptr(ptr.as_ptr()) }
-        .map_err(|err| OnProbeError::other(format!("failed to parse live FDT: {err:?}")))
+    rdrive::with_fdt(Clone::clone).ok_or_else(|| OnProbeError::other("live FDT not found"))
 }
 
 fn align_up_4k(size: usize) -> usize {

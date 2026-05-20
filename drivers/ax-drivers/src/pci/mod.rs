@@ -28,7 +28,7 @@ use virtio_drivers::transport::{
 #[cfg(virtio_dev)]
 use crate::virtio::VirtIoHalImpl;
 
-#[cfg(feature = "fdt")]
+#[cfg(feature = "pci-fdt")]
 mod fdt;
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;

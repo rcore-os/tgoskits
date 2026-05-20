@@ -16,19 +16,19 @@ use alloc::{format, sync::Arc};
 use core::time::Duration;
 
 use ax_kspin::SpinNoIrq;
-use dma_api::DeviceDma;
 use dwmmc_host::DwMmc;
+use log::{info, warn};
 use rdif_clk::ClockId;
-use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
+use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::Phase,
     sdio::{CardInfo, SdioInitScratch, SdioSdmmc},
 };
 
-use crate::drivers::{
-    blk::{PlatformDeviceBlock, decode_fdt_irq},
-    iomap,
+use crate::{
+    bindings::block::{PlatformDeviceBlock, decode_fdt_irq},
+    mmio::iomap,
     soc::scmi,
 };
 
@@ -52,7 +52,7 @@ mod phase;
 use block::SdBlockDevice;
 use phase::{init_rk3588_sdmmc_phase, tune_rk3588_sdmmc_sample_phase};
 
-module_driver!(
+crate::register_driver!(
     name: "Rockchip SD",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -82,7 +82,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         base_reg.address as usize,
         mmio_size
     );
-    let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
+    let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { DwMmc::new(mmio_base) };
     let reference_clock = dwmmc_reference_clock(&info);
@@ -196,9 +196,7 @@ fn is_absent_card_init_error(err: Error) -> bool {
 }
 
 fn dwmmc_reference_clock(info: &FdtInfo<'_>) -> Option<u32> {
-    let Some(clk) = info.find_clk_by_name("ciu") else {
-        return None;
-    };
+    let clk = info.find_clk_by_name("ciu")?;
     let Some(device_id) = info.phandle_to_device_id(clk.phandle) else {
         warn!(
             "[{}] ciu clock phandle {} has no device id",

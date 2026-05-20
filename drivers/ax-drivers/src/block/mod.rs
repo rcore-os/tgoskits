@@ -6,6 +6,10 @@ pub mod bcm2835;
 pub mod cvsd;
 #[cfg(feature = "ramdisk")]
 pub mod ramdisk;
+#[cfg(feature = "rockchip-sdhci")]
+pub mod rockchip_mmc;
+#[cfg(feature = "rockchip-dwmmc")]
+pub mod rockchip_sd;
 #[cfg(feature = "sdmmc")]
 pub mod sdmmc;
 

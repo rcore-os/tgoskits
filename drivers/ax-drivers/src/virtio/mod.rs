@@ -66,6 +66,19 @@ pub fn probe_mmio_device(
     Some((transport.device_type(), transport))
 }
 
+#[cfg(probe = "fdt")]
+pub fn probe_fdt_mmio_device(
+    info: &rdrive::register::FdtInfo<'_>,
+) -> Result<(DeviceType, MmioTransport<'static>), rdrive::probe::OnProbeError> {
+    let base_reg = info.node.regs().into_iter().next().ok_or_else(|| {
+        rdrive::probe::OnProbeError::other(alloc::format!("[{}] has no reg", info.node.name()))
+    })?;
+
+    let mmio_size = base_reg.size.unwrap_or(0x1000) as usize;
+    let mmio_base = crate::mmio::iomap(base_reg.address as usize, mmio_size)?.as_ptr();
+    probe_mmio_device(mmio_base, mmio_size).ok_or(rdrive::probe::OnProbeError::NotMatch)
+}
+
 #[cfg(feature = "virtio-net")]
 pub fn map_virtio_error(err: VirtIoError) -> &'static str {
     match err {

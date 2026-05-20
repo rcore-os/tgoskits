@@ -1,18 +1,22 @@
+extern crate alloc;
+
 use alloc::format;
 
 use fdt_edit::{PciRange, PciSpace};
+use log::{debug, trace, warn};
 use rdrive::{
     PlatformDevice,
     probe::{
         OnProbeError,
         fdt::NodeType,
-        pci::{
-            EndpointRc, FnOnProbe, PciMem32, PciMem64, PciRange as _, PcieController,
-            new_driver_generic,
-        },
+        pci::{PciMem32, PciMem64, PcieController, new_driver_generic},
     },
     register::FdtInfo,
 };
+
+#[cfg(feature = "rk3588-pcie")]
+#[path = "rk3588.rs"]
+mod rk3588;
 
 crate::register_driver!(
     name: "Generic PCIe Controller Driver",
@@ -56,7 +60,7 @@ fn probe_generic_ecam(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(),
         .map(|reg| reg.child_bus_address as u8)
         .max()
         .unwrap_or(0);
-    register_fdt_irq(&info, logical_bus_end);
+    register_fdt_legacy_irq(&info, logical_bus_end);
 
     plat_dev.register_pcie(drv);
 
@@ -87,7 +91,7 @@ pub(super) fn set_pcie_mem_range(drv: &mut PcieController, range: &PciRange) {
     }
 }
 
-pub(super) fn register_fdt_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
+pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
     let Some(interrupt) = info
         .interrupts()
         .into_iter()
@@ -95,7 +99,7 @@ pub(super) fn register_fdt_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
     else {
         return;
     };
-    let Some(_parent) = info.phandle_to_device_id(interrupt.interrupt_parent) else {
+    let Some(parent) = info.phandle_to_device_id(interrupt.interrupt_parent) else {
         warn!(
             "failed to resolve PCIe legacy IRQ parent phandle {}",
             interrupt.interrupt_parent
@@ -103,20 +107,30 @@ pub(super) fn register_fdt_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
         return;
     };
 
-    let Some(irq) = interrupt
-        .specifier
-        .iter()
-        .last()
-        .copied()
-        .map(|irq| irq as usize)
-    else {
+    let Ok(intc) = rdrive::get::<rdif_intc::Intc>(parent) else {
+        warn!(
+            "failed to get PCIe legacy IRQ parent device {:?} for phandle {}",
+            parent, interrupt.interrupt_parent
+        );
         return;
     };
+    let Ok(mut intc) = intc.lock() else {
+        warn!(
+            "failed to lock PCIe legacy IRQ parent device {:?} for phandle {}",
+            parent, interrupt.interrupt_parent
+        );
+        return;
+    };
+
+    let irq: usize = intc.setup_irq_by_fdt(&interrupt.specifier).into();
     super::register_legacy_irq_route(0, logical_bus_end, irq);
 }
 
 #[cfg(feature = "pci-list-devices")]
 mod pci_list_devices {
+    use log::info;
+    use rdrive::probe::pci::{EndpointRc, FnOnProbe};
+
     use super::*;
 
     crate::register_driver!(

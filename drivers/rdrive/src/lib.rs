@@ -7,7 +7,7 @@ extern crate log;
 
 use core::ptr::NonNull;
 
-pub use fdt_edit::Phandle;
+pub use fdt_edit::{Fdt, Phandle};
 use register::{DriverRegister, ProbeLevel};
 use spin::{Mutex, Once};
 
@@ -191,6 +191,10 @@ pub fn get_one<T: DriverGeneric>() -> Option<Device<T>> {
 
 pub fn fdt_phandle_to_device_id(phandle: Phandle) -> Option<DeviceId> {
     probe::fdt::try_system().and_then(|system| system.phandle_to_device_id(phandle))
+}
+
+pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
+    probe::fdt::try_system().map(|system| f(system.fdt()))
 }
 
 /// Macro for generating a driver module.

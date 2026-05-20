@@ -83,6 +83,10 @@ pub struct System {
 unsafe impl Send for System {}
 
 impl System {
+    pub fn fdt(&self) -> &Fdt {
+        &self.fdt
+    }
+
     pub fn phandle_to_device_id(&self, phandle: Phandle) -> Option<DeviceId> {
         self.phandle_2_device_id.get(&phandle).copied()
     }

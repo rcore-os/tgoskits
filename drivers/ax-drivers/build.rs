@@ -59,9 +59,13 @@ fn main() {
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_has_cvsd = matches!(target_arch.as_str(), "riscv32" | "riscv64");
     let has_pci = has_feature("pci");
+    let has_fdt = has_feature("fdt");
 
     if has_pci {
         enable_cfg("probe", "pci");
+    }
+    if has_fdt {
+        enable_cfg("probe", "fdt");
     }
     if has_virtio_core || has_virtio_dev {
         enable_cfg_flag("virtio_dev");
@@ -99,7 +103,7 @@ fn main() {
 
     println!(
         "cargo::rustc-check-cfg=cfg(probe, values({}))",
-        make_cfg_values(&["pci"])
+        make_cfg_values(&["pci", "fdt"])
     );
     println!("cargo::rustc-check-cfg=cfg(virtio_dev)");
     println!("cargo::rustc-check-cfg=cfg(sync_block_dev)");

@@ -21,7 +21,13 @@ input = ["dep:ax-input", "ax-feat/input"]
 kcov = ["ax-hal/starry-kcov"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
 rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
-plat-dyn = ["dep:axplat-dyn", "axplat-dyn/usb", "dep:crab-usb", "dep:rdrive"]
+plat-dyn = [
+    "dep:ax-drivers",
+    "dep:axplat-dyn",
+    "axplat-dyn/usb",
+    "dep:crab-usb",
+    "dep:rdrive",
+]
 vsock = ["ax-feat/vsock"]
 dynamic_debug = ["ax-feat/ipi"]
 sg2002 = [
@@ -62,6 +68,7 @@ ax-log.workspace = true
 ax-mm.workspace = true
 axnet = { version = "0.6.0", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
 axplat-dyn = { workspace = true, optional = true }
+ax-drivers = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true

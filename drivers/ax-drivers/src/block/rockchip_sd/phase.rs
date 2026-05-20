@@ -1,5 +1,6 @@
 use core::ptr::NonNull;
 
+use log::{info, warn};
 use rdrive::{probe::OnProbeError, register::FdtInfo};
 use sdmmc_protocol::{DataCommandPoll, Error};
 
@@ -8,7 +9,7 @@ use super::{
     RK3588_SDMMC_DRV_PHASE_DEG, RK3588_SDMMC_PHASE_SHIFT, RK3588_SDMMC_SAMPLE_PHASE_CANDIDATES,
     RK3588_SDMMC_SAMPLE_PHASE_DEG, RockchipDwMmc,
 };
-use crate::drivers::iomap;
+use crate::mmio::iomap;
 
 pub(super) fn init_rk3588_sdmmc_phase(
     info: &FdtInfo<'_>,
@@ -26,7 +27,7 @@ pub(super) fn init_rk3588_sdmmc_phase(
         return Ok(());
     }
 
-    let cru = iomap(RK3588_CRU_BASE.into(), RK3588_CRU_SIZE)?;
+    let cru = iomap(RK3588_CRU_BASE, RK3588_CRU_SIZE)?;
     set_rk3588_mmc_phase(
         cru,
         RK3588_SDMMC_CON0,
@@ -47,7 +48,7 @@ pub(super) fn init_rk3588_sdmmc_phase(
 }
 
 pub(super) fn tune_rk3588_sdmmc_sample_phase(sd: &mut RockchipDwMmc, parent_rate: u32) {
-    let Ok(cru) = iomap(RK3588_CRU_BASE.into(), RK3588_CRU_SIZE) else {
+    let Ok(cru) = iomap(RK3588_CRU_BASE, RK3588_CRU_SIZE) else {
         warn!("rockchip-dwmmc: failed to map RK3588 CRU for sample phase scan");
         return;
     };
@@ -138,11 +139,10 @@ fn rk3588_mmc_delay_num(parent_rate: u32, degrees: u32) -> u32 {
 }
 
 fn div_round_closest(numerator: u64, denominator: u64) -> u64 {
-    if denominator == 0 {
-        0
-    } else {
-        (numerator + denominator / 2) / denominator
-    }
+    numerator
+        .saturating_add(denominator / 2)
+        .checked_div(denominator)
+        .unwrap_or(0)
 }
 
 fn has_mbr_signature(block: &[u8; BLOCK_SIZE]) -> bool {

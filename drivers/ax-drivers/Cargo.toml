@@ -16,6 +16,7 @@ default = []
 fdt = ["dep:fdt-edit"]
 acpi = []
 pci = ["dep:pcie", "dep:heapless", "dep:spin"]
+pci-fdt = ["pci", "fdt", "dep:rdif-intc"]
 irq = []
 
 block = ["dep:ax-errno", "dep:rd-block", "dep:spin"]
@@ -43,23 +44,50 @@ intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
 
 usb = ["dep:crab-usb"]
-xhci-mmio = ["usb"]
+rockchip-dwc-xhci = ["usb", "fdt", "rockchip-soc", "rockchip-pm"]
+xhci-mmio = ["usb", "fdt"]
 xhci-pci = ["usb", "pci"]
-serial = ["dep:some-serial"]
-rtc = []
-rknpu = ["dep:rockchip-npu"]
-rockchip-sdhci = ["block", "dep:sdhci-host", "dep:sdmmc-protocol"]
-rockchip-dwmmc = ["block", "dep:dwmmc-host", "dep:sdmmc-protocol"]
-rk3588-pcie = ["pci", "dep:rk3588-pci"]
-rockchip-soc = ["dep:rockchip-soc"]
-rockchip-pm = ["dep:rockchip-pm"]
+serial = ["fdt", "dep:some-serial"]
+rtc = ["fdt", "dep:ax-arm-pl031"]
+rknpu = ["fdt", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
+rockchip-sdhci = [
+    "block",
+    "fdt",
+    "rockchip-soc",
+    "dep:ax-kspin",
+    "dep:rdif-clk",
+    "dep:sdhci-host",
+    "dep:sdmmc-protocol",
+]
+rockchip-dwmmc = [
+    "block",
+    "fdt",
+    "rockchip-soc",
+    "dep:arm-scmi-rs",
+    "dep:ax-kspin",
+    "dep:dwmmc-host",
+    "dep:rdif-clk",
+    "dep:sdmmc-protocol",
+]
+rk3588-pcie = [
+    "pci-fdt",
+    "rockchip-soc",
+    "rockchip-pm",
+    "dep:rdif-pcie",
+    "dep:rk3588-pci",
+]
+rockchip-soc = ["fdt", "dep:rdif-clk", "dep:rockchip-soc"]
+rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
 pci-list-devices = ["pci"]
 
 [dependencies]
 anyhow = { workspace = true }
+arm-scmi-rs = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
 ax-crate-interface = { workspace = true, optional = true }
 ax-errno = { workspace = true, optional = true }
+ax-arm-pl031 = { workspace = true, optional = true }
+ax-kspin = { workspace = true, optional = true }
 axklib.workspace = true
 bcm2835-sdhci = { workspace = true, optional = true }
 crab-usb = { workspace = true, optional = true }
@@ -76,8 +104,11 @@ pcie = { workspace = true, optional = true }
 ramdisk = { workspace = true, optional = true }
 rd-block = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
+rdif-clk = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
+rdif-intc = { workspace = true, optional = true }
+rdif-pcie = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rdrive.workspace = true

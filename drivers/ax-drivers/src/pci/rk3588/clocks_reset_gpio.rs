@@ -190,16 +190,14 @@ fn gpio_bank_index(node: &Node) -> Option<u8> {
     if let Some(name) = name
         .strip_prefix("gpio")
         .filter(|name| !name.starts_with('@'))
-    {
-        if let Some(bank) = name
+        && let Some(bank) = name
             .chars()
             .next()
             .and_then(|ch| ch.to_digit(10))
             .and_then(|bank| u8::try_from(bank).ok())
             .filter(|bank| usize::from(*bank) < RK3588_GPIO_BASES.len())
-        {
-            return Some(bank);
-        }
+    {
+        return Some(bank);
     }
 
     let address = gpio_bank_address(node)?;

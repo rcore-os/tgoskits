@@ -4,17 +4,18 @@ use alloc::{format, string::ToString, vec, vec::Vec};
 use core::ptr::NonNull;
 
 use fdt_edit::{Fdt, Node, NodeType, Phandle, RegFixed};
-use rdrive::{
-    DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
+use log::{info, warn};
+use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rockchip_soc::{
+    BankId, GpioDirection, Iomux, PinConfig, PinCtrl, PinCtrlOp, PinId, Pull, SocType,
 };
-use rockchip_soc::{BankId, GpioDirection, PinConfig, PinCtrl, PinCtrlOp, PinId, SocType};
 
-use crate::drivers::iomap;
+use crate::mmio::iomap;
 
 const DRIVER_NAME: &str = "rk3588-pinctrl";
 const GPIO_BANK_COUNT: usize = 5;
 
-module_driver!(
+crate::register_driver!(
     name: "Rockchip PinCtrl",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,
@@ -26,20 +27,19 @@ module_driver!(
     ],
 );
 
-pub(crate) struct RockchipPinCtrl {
+pub struct RockchipPinCtrl {
     inner: PinCtrl,
-    fdt_addr: NonNull<u8>,
 }
 
 unsafe impl Send for RockchipPinCtrl {}
 
 impl RockchipPinCtrl {
-    fn new(inner: PinCtrl, fdt_addr: NonNull<u8>) -> Self {
-        Self { inner, fdt_addr }
+    fn new(inner: PinCtrl) -> Self {
+        Self { inner }
     }
 
-    pub(crate) fn enable_fixed_regulator(&mut self, phandle: Phandle) -> Result<(), OnProbeError> {
-        let fdt = live_fdt(self.fdt_addr)?;
+    pub fn enable_fixed_regulator(&mut self, phandle: Phandle) -> Result<(), OnProbeError> {
+        let fdt = live_fdt()?;
         let node = fdt.get_by_phandle(phandle).ok_or_else(|| {
             OnProbeError::other(format!("regulator phandle {phandle:?} not found"))
         })?;
@@ -105,7 +105,7 @@ impl RockchipPinCtrl {
     }
 
     fn apply_pinctrl_phandle(&mut self, phandle: Phandle) -> Result<Vec<PinId>, OnProbeError> {
-        let fdt = live_fdt(self.fdt_addr)?;
+        let fdt = live_fdt()?;
         let node = fdt
             .get_by_phandle(phandle)
             .ok_or_else(|| OnProbeError::other(format!("pinctrl phandle {phandle:?} not found")))?;
@@ -129,7 +129,7 @@ impl RockchipPinCtrl {
 
         let mut configured = Vec::new();
         for cells in pins.chunks(4) {
-            let config = PinConfig::new_with_fdt(cells, self.fdt_addr);
+            let config = pin_config_from_cells(cells)?;
             let pin = config.id;
             self.inner.set_config(config).map_err(|err| {
                 OnProbeError::other(format!(
@@ -151,8 +151,7 @@ impl DriverGeneric for RockchipPinCtrl {
 }
 
 fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-    let fdt_addr = live_fdt_addr()?;
-    let fdt = live_fdt(fdt_addr)?;
+    let fdt = live_fdt()?;
 
     let grf_phandle = info
         .node
@@ -180,19 +179,13 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     }
 
     let pinctrl = PinCtrl::new(SocType::Rk3588, ioc, &gpio_banks);
-    plat_dev.register(RockchipPinCtrl::new(pinctrl, fdt_addr));
+    plat_dev.register(RockchipPinCtrl::new(pinctrl));
     info!("Rockchip RK3588 pinctrl registered successfully");
     Ok(())
 }
 
-fn live_fdt_addr() -> Result<NonNull<u8>, OnProbeError> {
-    let ptr = somehal::fdt_addr().ok_or_else(|| OnProbeError::other("live FDT not found"))?;
-    NonNull::new(ptr).ok_or_else(|| OnProbeError::other("live FDT pointer is null"))
-}
-
-fn live_fdt(fdt_addr: NonNull<u8>) -> Result<Fdt, OnProbeError> {
-    unsafe { Fdt::from_ptr(fdt_addr.as_ptr()) }
-        .map_err(|err| OnProbeError::other(format!("failed to parse live FDT: {err:?}")))
+fn live_fdt() -> Result<Fdt, OnProbeError> {
+    rdrive::with_fdt(Clone::clone).ok_or_else(|| OnProbeError::other("live FDT not found"))
 }
 
 fn map_phandle_reg(
@@ -215,7 +208,7 @@ fn map_node_reg(node: NodeType<'_>, context: &str) -> Result<NonNull<u8>, OnProb
 
 fn map_reg(reg: RegFixed) -> Result<NonNull<u8>, OnProbeError> {
     let size = align_up_4k((reg.size.unwrap_or(0x1000) as usize).max(1));
-    iomap((reg.address as usize).into(), size)
+    iomap(reg.address as usize, size)
 }
 
 fn fixed_regulator_active_value(node: &Node) -> bool {
@@ -262,20 +255,52 @@ fn parse_gpio_pin(fdt: &Fdt, node: &Node, prop_name: &str) -> Option<Result<PinI
     })())
 }
 
+fn pin_config_from_cells(cells: &[u32]) -> Result<PinConfig, OnProbeError> {
+    let [bank, pin, mux, conf_phandle] = cells else {
+        return Err(OnProbeError::other("malformed rockchip,pins cells"));
+    };
+    let id = PinId::from_bank_pin(BankId::new(*bank).unwrap_or(BankId::from(*bank)), *pin)
+        .ok_or_else(|| OnProbeError::other(format!("invalid Rockchip pin {bank}:{pin}")))?;
+    let fdt = live_fdt()?;
+    let conf = fdt
+        .get_by_phandle(Phandle::from(*conf_phandle))
+        .ok_or_else(|| {
+            OnProbeError::other(format!("pinconf phandle {conf_phandle:?} not found"))
+        })?;
+    let mut pull = Pull::Disabled;
+    let mut drive = None;
+    for prop in conf.as_node().properties() {
+        match prop.name() {
+            "bias-disable" => pull = Pull::Disabled,
+            "bias-bus-hold" => pull = Pull::BusHold,
+            "bias-pull-up" => pull = Pull::PullUp,
+            "bias-pull-down" => pull = Pull::PullDown,
+            "bias-pull-pin-default" => pull = Pull::PullPinDefault,
+            "drive-strength" => drive = prop.get_u32(),
+            "phandle" => {}
+            name => warn!("Unknown pinconf property: {}", name),
+        }
+    }
+    Ok(PinConfig {
+        id,
+        mux: Iomux::from_bits_truncate(*mux as u8),
+        pull,
+        drive,
+    })
+}
+
 fn gpio_bank_index(node: &Node) -> Option<u32> {
     let name = node.name();
     if let Some(name) = name
         .strip_prefix("gpio")
         .filter(|name| !name.starts_with('@'))
-    {
-        if let Some(bank) = name
+        && let Some(bank) = name
             .chars()
             .next()
             .and_then(|ch| ch.to_digit(10))
             .filter(|bank| *bank < GPIO_BANK_COUNT as u32)
-        {
-            return Some(bank);
-        }
+    {
+        return Some(bank);
     }
 
     let address = gpio_bank_address(node)?;

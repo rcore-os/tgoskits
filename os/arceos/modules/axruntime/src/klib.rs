@@ -152,6 +152,22 @@ impl_trait! {
             ax_hal::time::busy_wait(dur);
         }
 
+        fn time_monotonic_nanos() -> u64 {
+            ax_hal::time::monotonic_time_nanos()
+        }
+
+        fn time_try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
+            #[cfg(all(feature = "plat-dyn", target_os = "none"))]
+            {
+                axplat_dyn::try_init_epoch_offset(epoch_time_nanos)
+            }
+            #[cfg(not(all(feature = "plat-dyn", target_os = "none")))]
+            {
+                let _ = epoch_time_nanos;
+                false
+            }
+        }
+
         /// Enable or disable the specified IRQ line.
         ///
         /// When the `irq` feature is enabled this forwards to
