@@ -14,7 +14,9 @@ use starry_process::{Pid, Process};
 use starry_signal::SignalInfo;
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::{AsThread, get_task, get_zombie_cred, remove_process, unregister_zombie};
+use crate::task::{
+    AsThread, decode_wait_status, get_task, get_zombie_cred, remove_process, unregister_zombie,
+};
 
 bitflags! {
     /// Options accepted by wait4 / waitpid.
@@ -138,24 +140,6 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     })))?
 }
 
-/// Decode the Linux wait-status encoding into (si_code, si_status) for siginfo.
-///
-/// - Normal exit (`_exit`/`exit_group`): `(CLD_EXITED, exit_value)`
-/// - Killed by signal: `(CLD_KILLED, signum)` or `(CLD_DUMPED, signum)`
-fn decode_wait_status(raw: i32) -> (i32, i32) {
-    use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
-    if raw & 0x7f == 0 {
-        (CLD_EXITED as i32, (raw >> 8) & 0xff)
-    } else {
-        let signum = raw & 0x7f;
-        if (raw & 0x80) != 0 {
-            (CLD_DUMPED as i32, signum)
-        } else {
-            (CLD_KILLED as i32, signum)
-        }
-    }
-}
-
 pub fn sys_waitid(
     idtype: u32,
     id: i32,
@@ -207,12 +191,13 @@ pub fn sys_waitid(
     let check_children = || {
         if let Some(child) = children.iter().find(|child| child.is_zombie()) {
             let child_pid = child.pid();
-            let raw_status = child.exit_code();
-            let (code, status) = decode_wait_status(raw_status);
+            let (code, status) = decode_wait_status(child.exit_code());
             let child_uid = get_zombie_cred(child_pid).map(|c| c.uid).unwrap_or(0);
 
-            let siginfo = SignalInfo::new_sigchld(child_pid, child_uid, code, status);
-            infop.vm_write(siginfo.0)?;
+            if let Some(infop) = infop.nullable() {
+                let siginfo = SignalInfo::new_sigchld(child_pid, child_uid, code, status);
+                infop.vm_write(siginfo.0)?;
+            }
 
             if !options.contains(WaitIdOptions::WNOWAIT) {
                 // Accumulate child's CPU time before freeing.
@@ -230,9 +215,12 @@ pub fn sys_waitid(
             // waitid(2): on success returns 0 (not the child PID).
             Ok(Some(0))
         } else if options.contains(WaitIdOptions::WNOHANG) {
-            // WNOHANG with no ready child: return 0, zero out siginfo.
-            let zeroed: linux_raw_sys::general::siginfo = unsafe { core::mem::zeroed() };
-            infop.vm_write(zeroed)?;
+            // WNOHANG with no ready child: return 0. Zero out siginfo if
+            // infop is non-NULL so callers don't read stale data.
+            if let Some(infop) = infop.nullable() {
+                let zeroed: linux_raw_sys::general::siginfo = unsafe { core::mem::zeroed() };
+                infop.vm_write(zeroed)?;
+            }
             Ok(Some(0))
         } else {
             Ok(None)

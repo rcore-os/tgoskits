@@ -276,6 +276,40 @@ static void test_einval_no_wexited(void)
     waitpid(pid, NULL, 0);
 }
 
+/* 8. infop == NULL: waitid should succeed and still reap the child */
+static void test_null_infop(void)
+{
+    pid_t pid = fork();
+    if (pid < 0) {
+        note_fail("NULL infop", "fork failed");
+        return;
+    }
+    if (pid == 0)
+        _exit(13);
+
+    errno = 0;
+    int ret = waitid_raw(P_PID, pid, NULL, WEXITED);
+    if (ret != 0) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "ret=%d errno=%d (%s)", ret, errno, strerror(errno));
+        note_fail("NULL infop ret", buf);
+        return;
+    }
+
+    /* Verify reaped: waitpid should fail with ECHILD */
+    int status;
+    errno = 0;
+    pid_t wret = waitpid(pid, &status, WNOHANG);
+    if (wret == -1 && errno == ECHILD) {
+        note_pass("NULL infop reaps child");
+    } else {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "waitpid ret=%ld errno=%d, expected -1/ECHILD",
+                 (long)wret, errno);
+        note_fail("NULL infop reap", buf);
+    }
+}
+
 int main(void)
 {
     printf("=== bug-waitid-basic ===\n");
@@ -287,6 +321,7 @@ int main(void)
     test_echild();
     test_einval_idtype();
     test_einval_no_wexited();
+    test_null_infop();
 
     printf("=== Results: %d passed, %d failed ===\n", passed, failed);
     if (failed == 0) {
