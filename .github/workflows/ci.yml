@@ -194,24 +194,18 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Manual container publishing only runs from the \`main\` or \`dev\` branch. This run targeted \`${{ github.ref_name }}\`, so publish jobs were skipped." >> "$GITHUB_STEP_SUMMARY"
 
-  fmt:
-    name: Check formatting
-    needs: detect_changes
-    if: needs.detect_changes.outputs.ci_checks == 'true'
-    uses: ./.github/workflows/reusable-command.yml
-    with:
-      command: cargo fmt --all -- --check
-
-  post_fmt_checks:
+  static_checks:
     name: ${{ matrix.name }}
     if: needs.detect_changes.outputs.ci_checks == 'true'
     needs:
       - detect_changes
-      - fmt
     strategy:
       fail-fast: true
       matrix:
         include:
+          - name: Check formatting
+            command: cargo fmt --all -- --check
+            cache_key: ""
           - name: Run clippy
             command: |
               set -eux
@@ -259,10 +253,6 @@ jobs:
               fi
             cache_key: clippy
             fetch_depth: full
-            prepare_qemu_user_emulators: false
-            prepare_musl_toolchains: false
-            required_repository_owner: ""
-            main_pr_only: false
           - name: Run sync-lint
             command: |
               set -eux
@@ -293,10 +283,24 @@ jobs:
               fi
             cache_key: sync-lint
             fetch_depth: full
-            prepare_qemu_user_emulators: false
-            prepare_musl_toolchains: false
-            required_repository_owner: ""
-            main_pr_only: false
+    uses: ./.github/workflows/reusable-command.yml
+    with:
+      command: ${{ matrix.command }}
+      cache_key: ${{ matrix.cache_key }}
+      fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
+      prepare_qemu_user_emulators: false
+      prepare_musl_toolchains: false
+
+  test_checks:
+    name: ${{ matrix.name }}
+    if: needs.detect_changes.outputs.ci_checks == 'true'
+    needs:
+      - detect_changes
+      - static_checks
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
           - name: Test with std
             command: cargo xtask test
             cache_key: test-std
