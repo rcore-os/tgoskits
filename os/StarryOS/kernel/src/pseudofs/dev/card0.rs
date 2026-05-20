@@ -227,13 +227,11 @@ impl Card0 {
             state: Mutex::new(ModesetState::default()),
             dumbs: Mutex::new(BTreeMap::new()),
             next_dumb_handle: AtomicU32::new(FIRST_DUMB_HANDLE),
-            next_dumb_offset: core::sync::atomic::AtomicU64::new(
-                if ax_display::has_display() {
-                    ax_display::framebuffer_info().fb_size as u64
-                } else {
-                    0
-                },
-            ),
+            next_dumb_offset: core::sync::atomic::AtomicU64::new(if ax_display::has_display() {
+                ax_display::framebuffer_info().fb_size as u64
+            } else {
+                0
+            }),
             fbs: Mutex::new(BTreeMap::new()),
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
             blobs: Mutex::new(BTreeMap::new()),
