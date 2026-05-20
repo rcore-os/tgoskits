@@ -78,7 +78,7 @@ int create_temp_file(const char *path) {
 
 long raw_select(int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv) {
 #ifdef SYS_select
-    return raw_select(nfds, rfds, wfds, efds, tv);
+    return syscall(SYS_select, nfds, rfds, wfds, efds, tv);
 #else
     struct timespec ts;
     struct timespec *tsp = NULL;
@@ -98,7 +98,7 @@ long raw_select(int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timev
 
 long raw_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 #ifdef SYS_poll
-    return raw_poll(fds, nfds, timeout);
+    return syscall(SYS_poll, fds, nfds, timeout);
 #else
     struct timespec ts;
     struct timespec *tsp = NULL;
