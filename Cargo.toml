@@ -464,7 +464,7 @@ lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.10"
-ostool = { version = "0.15" }
+ostool = { version = "0.17" }
 uefi = "0.36"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
@@ -472,3 +472,6 @@ thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
 sg200x-bsp = "0.6"
 x86 = "0.52"
+
+[patch.crates-io]
+ostool = { path = "/home/szy/work/hypervisor/sg2002/ostool/ostool" }

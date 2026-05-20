@@ -271,7 +271,9 @@ impl Starry {
     }
 
     async fn quick_start(&mut self, args: quick_start::ArgsQuickStart) -> anyhow::Result<()> {
-        use quick_start::{QuickOrangeAction, QuickQemuPlatform, QuickStartCommand};
+        use quick_start::{
+            QuickOrangeAction, QuickQemuPlatform, QuickSg2002Action, QuickStartCommand,
+        };
 
         match args.command {
             QuickStartCommand::List => {
@@ -299,6 +301,10 @@ impl Starry {
                     self.quick_start_orangepi_build(build_args).await
                 }
                 QuickOrangeAction::Run(run_args) => self.quick_start_orangepi_run(run_args).await,
+            },
+            QuickStartCommand::Sg2002Riscv64(args) => match args.action {
+                QuickSg2002Action::Build => self.quick_start_sg2002_build().await,
+                QuickSg2002Action::Run(run_args) => self.quick_start_sg2002_run(run_args).await,
             },
         }
     }
@@ -573,6 +579,39 @@ impl Starry {
             ),
             None,
             Some(uboot_config),
+            SnapshotPersistence::Store,
+        )?;
+        self.run_uboot_request(request).await
+    }
+
+    async fn quick_start_sg2002_build(&mut self) -> anyhow::Result<()> {
+        quick_start::refresh_sg2002_config(self.app.workspace_root())?;
+        let request = self.prepare_request(
+            Self::quick_start_build_args(
+                "riscv64",
+                quick_start::tmp_sg2002_build_config_path(self.app.workspace_root()),
+            ),
+            None,
+            None,
+            SnapshotPersistence::Store,
+        )?;
+        self.run_build_request(request).await
+    }
+
+    async fn quick_start_sg2002_run(
+        &mut self,
+        args: quick_start::QuickSg2002RunArgs,
+    ) -> anyhow::Result<()> {
+        let uboot_config_path =
+            quick_start::prepare_sg2002_uboot_config(self.app.workspace_root(), &args)?;
+        quick_start::ensure_sg2002_config(self.app.workspace_root())?;
+        let request = self.prepare_request(
+            Self::quick_start_build_args(
+                "riscv64",
+                quick_start::tmp_sg2002_build_config_path(self.app.workspace_root()),
+            ),
+            None,
+            Some(uboot_config_path),
             SnapshotPersistence::Store,
         )?;
         self.run_uboot_request(request).await
@@ -904,6 +943,41 @@ mod tests {
                     _ => panic!("expected orangepi build quick-start command"),
                 },
                 _ => panic!("expected orangepi quick-start command"),
+            },
+            _ => panic!("expected quick-start command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_quick_start_sg2002_local_run() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "starry",
+            "quick-start",
+            "sg2002-riscv64",
+            "run",
+            "--serial",
+            "/dev/ttyUSB1",
+            "--baud",
+            "115200",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::QuickStart(args) => match args.command {
+                quick_start::QuickStartCommand::Sg2002Riscv64(inner) => match inner.action {
+                    quick_start::QuickSg2002Action::Run(run) => {
+                        assert_eq!(run.serial.as_deref(), Some("/dev/ttyUSB1"));
+                        assert_eq!(run.baud.as_deref(), Some("115200"));
+                    }
+                    _ => panic!("expected sg2002 run quick-start command"),
+                },
+                _ => panic!("expected sg2002 quick-start command"),
             },
             _ => panic!("expected quick-start command"),
         }

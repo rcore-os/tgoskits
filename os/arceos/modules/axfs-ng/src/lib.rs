@@ -380,6 +380,26 @@ fn select_default_root(candidates: &[RootCandidate]) -> Option<(usize, Option<us
         return partition_matches.into_iter().next();
     }
 
+    let supported_partition_matches: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .partition
+                .as_ref()
+                .is_some_and(|partition| supported_filesystem(partition.filesystem))
+        })
+        .map(|candidate| {
+            (
+                candidate.disk_index,
+                candidate.partition.as_ref().map(|part| part.info.index),
+            )
+        })
+        .collect();
+    if partition_matches.is_empty() && supported_partition_matches.len() == 1 {
+        info!("  only one supported filesystem partition is available; using it as root");
+        return supported_partition_matches.into_iter().next();
+    }
+
     let raw_matches: Vec<_> = candidates
         .iter()
         .filter(|candidate| candidate.partition.is_none())
@@ -599,5 +619,15 @@ const fn filesystem_name(fs: FilesystemKind) -> &'static str {
         FilesystemKind::Ext4 => "ext4",
         #[cfg(feature = "fat")]
         FilesystemKind::Fat => "fat",
+    }
+}
+
+const fn supported_filesystem(fs: Option<FilesystemKind>) -> bool {
+    match fs {
+        #[cfg(feature = "ext4")]
+        Some(FilesystemKind::Ext4) => true,
+        #[cfg(feature = "fat")]
+        Some(FilesystemKind::Fat) => true,
+        None => false,
     }
 }
