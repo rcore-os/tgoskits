@@ -207,6 +207,7 @@ jobs:
     if: needs.detect_changes.outputs.ci_checks == 'true'
     needs:
       - detect_changes
+      - fmt
     strategy:
       fail-fast: true
       matrix:
