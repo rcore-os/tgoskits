@@ -55,6 +55,7 @@ test_commands = [
     "/usr/bin/test-stat-family",
     "/usr/bin/test-uid-gid-res-setters",
     "/usr/bin/test-umask",
+    "/usr/bin/test-utimensat",
     "/usr/bin/test-vfork",
     "/usr/bin/test-timer-family",
     "/usr/bin/test_ioctl_fionbio_int",
