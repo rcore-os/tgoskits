@@ -110,6 +110,15 @@ fn infer_kind_filter(case_name: &str, blocks: &[Block]) -> Option<String> {
     None
 }
 
+/// Whether captured raw blocks should be written to `log_path` after QEMU.
+pub(crate) fn should_persist_qemu_capture_log(
+    keep_log: bool,
+    outcome: SymbolizeAfterQemuOutcome,
+    has_captured_blocks: bool,
+) -> bool {
+    has_captured_blocks && (keep_log || outcome == SymbolizeAfterQemuOutcome::Failed)
+}
+
 /// Result of post-QEMU host symbolize; drives whether the capture log may be deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SymbolizeAfterQemuOutcome {
@@ -261,43 +270,101 @@ impl BacktraceSymbolizeSession {
     }
 }
 
-/// After a QEMU run, symbolize any raw backtrace blocks in `log` without failing the test.
+fn captured_blocks_to_text(blocks: &[Vec<String>]) -> String {
+    let mut text = String::new();
+    for block in blocks {
+        for line in block {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    text
+}
+
+/// Write in-memory raw backtrace blocks to `log_path` (creates parent dirs).
+pub(crate) fn write_captured_blocks_to_log(
+    log_path: &Path,
+    blocks: &[Vec<String>],
+) -> io::Result<()> {
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log_path)?;
+    for block in blocks {
+        for line in block {
+            writeln!(file, "{line}")?;
+        }
+    }
+    file.flush()
+}
+
+fn finalize_qemu_capture_log(
+    log: &Path,
+    keep_log: bool,
+    outcome: SymbolizeAfterQemuOutcome,
+    memory_blocks: Option<&[Vec<String>]>,
+) -> anyhow::Result<()> {
+    let has_blocks = memory_blocks.is_some_and(|b| !b.is_empty());
+    if should_persist_qemu_capture_log(keep_log, outcome, has_blocks)
+        && let Some(blocks) = memory_blocks
+    {
+        write_captured_blocks_to_log(log, blocks)?;
+    }
+    apply_qemu_log_retention(log, outcome, keep_log)
+}
+
+/// After a QEMU run, symbolize any raw backtrace blocks without failing the test.
 ///
 /// When a [`BacktraceSymbolizeSession`] already printed symbolized output during capture,
-/// skips re-reading the log but still applies log retention. When symbolize succeeds and
-/// `keep_log` is false, deletes `log` so repeated runs do not accumulate stale capture files.
+/// skips re-reading the log. On the default success path the log file is never created;
+/// use `memory_blocks` for `--keep-qemu-log` persistence and stream-failure fallback.
 pub(crate) fn maybe_symbolize_after_qemu(
     elf: &Path,
     log: &Path,
     case_name: &str,
     keep_log: bool,
     stream_session: Option<&BacktraceSymbolizeSession>,
+    memory_blocks: Option<&[Vec<String>]>,
 ) -> anyhow::Result<SymbolizeAfterQemuOutcome> {
+    let memory_has_blocks = memory_blocks.is_some_and(|b| !b.is_empty());
+
     if let Some(session) = stream_session
         && session.streamed_symbolized()
     {
         let outcome = SymbolizeAfterQemuOutcome::Symbolized;
-        apply_qemu_log_retention(log, outcome, keep_log)?;
+        finalize_qemu_capture_log(log, keep_log, outcome, memory_blocks)?;
         return Ok(outcome);
     }
     if let Some(session) = stream_session
         && session.streamed_failed()
     {
-        // Fall through to file-based symbolize as a second chance.
+        // Fall through to memory/file-based symbolize as a second chance.
     }
 
-    if !log.is_file() {
-        return Ok(SymbolizeAfterQemuOutcome::Skipped);
-    }
-    let text = match fs::read_to_string(log) {
-        Ok(text) => text,
-        Err(err) => {
-            eprintln!(
-                "warning: failed to read qemu log {} for backtrace symbolize: {err:#}",
-                log.display()
-            );
-            return Ok(SymbolizeAfterQemuOutcome::Failed);
+    let text = if memory_has_blocks {
+        captured_blocks_to_text(memory_blocks.unwrap())
+    } else if log.is_file() {
+        match fs::read_to_string(log) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!(
+                    "warning: failed to read qemu log {} for backtrace symbolize: {err:#}",
+                    log.display()
+                );
+                let outcome = SymbolizeAfterQemuOutcome::Failed;
+                finalize_qemu_capture_log(log, keep_log, outcome, memory_blocks)?;
+                return Ok(outcome);
+            }
         }
+    } else {
+        return Ok(SymbolizeAfterQemuOutcome::Skipped);
     };
     if !text.contains("BACKTRACE_BEGIN") {
         return Ok(SymbolizeAfterQemuOutcome::Skipped);
@@ -307,7 +374,9 @@ pub(crate) fn maybe_symbolize_after_qemu(
             "warning: skipping backtrace symbolize; ELF not found at {}",
             elf.display()
         );
-        return Ok(SymbolizeAfterQemuOutcome::Failed);
+        let outcome = SymbolizeAfterQemuOutcome::Failed;
+        finalize_qemu_capture_log(log, keep_log, outcome, memory_blocks)?;
+        return Ok(outcome);
     }
 
     let blocks = match parse_blocks(&text) {
@@ -315,7 +384,9 @@ pub(crate) fn maybe_symbolize_after_qemu(
         Ok(_) => return Ok(SymbolizeAfterQemuOutcome::Skipped),
         Err(err) => {
             eprintln!("warning: failed to parse backtrace blocks in qemu log: {err:#}");
-            return Ok(SymbolizeAfterQemuOutcome::Failed);
+            let outcome = SymbolizeAfterQemuOutcome::Failed;
+            finalize_qemu_capture_log(log, keep_log, outcome, memory_blocks)?;
+            return Ok(outcome);
         }
     };
 
@@ -327,7 +398,9 @@ pub(crate) fn maybe_symbolize_after_qemu(
                 "warning: failed to load symbols from {} for backtrace symbolize: {err}",
                 elf.display()
             );
-            return Ok(SymbolizeAfterQemuOutcome::Failed);
+            let outcome = SymbolizeAfterQemuOutcome::Failed;
+            finalize_qemu_capture_log(log, keep_log, outcome, memory_blocks)?;
+            return Ok(outcome);
         }
     };
 
@@ -342,11 +415,13 @@ pub(crate) fn maybe_symbolize_after_qemu(
         0,
     ) {
         eprintln!("warning: backtrace symbolize output failed: {err:#}");
-        return Ok(SymbolizeAfterQemuOutcome::Failed);
+        let outcome = SymbolizeAfterQemuOutcome::Failed;
+        finalize_qemu_capture_log(log, keep_log, outcome, memory_blocks)?;
+        return Ok(outcome);
     }
 
     let outcome = SymbolizeAfterQemuOutcome::Symbolized;
-    apply_qemu_log_retention(log, outcome, keep_log)?;
+    finalize_qemu_capture_log(log, keep_log, outcome, memory_blocks)?;
     Ok(outcome)
 }
 
@@ -379,19 +454,24 @@ fn read_text(log: Option<&Path>) -> anyhow::Result<String> {
     }
 }
 
-/// QEMU backtrace capture: block log path plus optional stream symbolize session.
+/// QEMU backtrace capture: optional on-disk log plus optional stream symbolize session.
 #[derive(Clone)]
 pub(crate) struct BacktraceQemuCapture {
+    /// Path used when persisting raw blocks (`--keep-qemu-log` or failure/debug).
     pub log_path: PathBuf,
     pub stream_symbolize: Option<Arc<BacktraceSymbolizeSession>>,
-    /// When true, raw `BACKTRACE_*` / `BT` lines are omitted from the terminal tee (log unchanged).
+    /// When true, raw `BACKTRACE_*` / `BT` lines are omitted from the terminal tee.
     pub suppress_terminal_raw_blocks: bool,
+    /// When true, append raw blocks to `log_path` during QEMU (debug retention).
+    pub write_log_during_capture: bool,
+    /// All complete raw blocks captured during QEMU (for stream symbolize and deferred log write).
+    pub captured_blocks: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
 }
 
-/// Incremental state machine: forwards guest output to a log file only while a
-/// `BACKTRACE_BEGIN` … `BACKTRACE_END` (or trailing `BT_ERROR`) block is open.
+/// Incremental state machine: captures `BACKTRACE_BEGIN` … `BACKTRACE_END` blocks to memory
+/// and optionally to a log file while a block is open.
 pub(crate) struct BacktraceBlockCapture {
-    log: fs::File,
+    log: Option<fs::File>,
     pending_stream_blocks: Option<Arc<std::sync::Mutex<Vec<Vec<String>>>>>,
     state: BlockCaptureState,
     line_buf: String,
@@ -406,17 +486,24 @@ enum BlockCaptureState {
 
 impl BacktraceBlockCapture {
     pub(crate) fn create(
-        log_path: &Path,
+        log_path: Option<&Path>,
         pending_stream_blocks: Option<Arc<std::sync::Mutex<Vec<Vec<String>>>>>,
     ) -> io::Result<Self> {
-        if let Some(parent) = log_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        let log = if let Some(path) = log_path {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            Some(
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
-            log: fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)?,
+            log,
             pending_stream_blocks,
             state: BlockCaptureState::Idle,
             line_buf: String::new(),
@@ -467,7 +554,10 @@ impl BacktraceBlockCapture {
             self.flush_block()?;
             self.state = BlockCaptureState::Idle;
         }
-        self.log.flush()
+        if let Some(log) = &mut self.log {
+            log.flush()?;
+        }
+        Ok(())
     }
 
     /// Returns whether the line should be forwarded to the terminal when raw blocks are suppressed.
@@ -510,8 +600,10 @@ impl BacktraceBlockCapture {
         if self.block_lines.is_empty() {
             return Ok(());
         }
-        for line in &self.block_lines {
-            writeln!(self.log, "{line}")?;
+        if let Some(log) = &mut self.log {
+            for line in &self.block_lines {
+                writeln!(log, "{line}")?;
+            }
         }
         if let Some(pending) = &self.pending_stream_blocks
             && let Ok(mut queue) = pending.lock()
@@ -529,18 +621,18 @@ pub(crate) fn flush_pending_stream_symbolize(
     pending: &std::sync::Mutex<Vec<Vec<String>>>,
 ) {
     let blocks: Vec<Vec<String>> = match pending.lock() {
-        Ok(mut queue) => std::mem::take(&mut *queue),
+        Ok(queue) => queue.clone(),
         Err(_) => return,
     };
-    for lines in blocks {
-        session.on_block_complete(&lines);
+    for lines in &blocks {
+        session.on_block_complete(lines);
     }
 }
 
 /// Filter a full QEMU transcript down to raw backtrace blocks and write them to `log_path`.
 #[cfg(test)]
 pub(crate) fn write_raw_blocks_from_output(output: &str, log_path: &Path) -> io::Result<()> {
-    let mut capture = BacktraceBlockCapture::create(log_path, None)?;
+    let mut capture = BacktraceBlockCapture::create(Some(log_path), None)?;
     capture.push_bytes(output.as_bytes())?;
     capture.finish()
 }
@@ -966,7 +1058,7 @@ BACKTRACE_END
     fn block_capture_writes_only_complete_blocks() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("blocks.log");
-        let mut capture = BacktraceBlockCapture::create(&log_path, None).unwrap();
+        let mut capture = BacktraceBlockCapture::create(Some(&log_path), None).unwrap();
         capture
             .push_bytes(
                 b"[0.000] noise before\n\
@@ -994,7 +1086,7 @@ BACKTRACE_END
     fn block_capture_tee_suppresses_raw_blocks_on_terminal() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("blocks.log");
-        let mut capture = BacktraceBlockCapture::create(&log_path, None).unwrap();
+        let mut capture = BacktraceBlockCapture::create(Some(&log_path), None).unwrap();
         let guest = b"[0.000] boot line\n\
 [0.001] BACKTRACE_BEGIN kind=raw arch=x86_64\n\
 [0.001] BT 0 ip=0x1000 fp=0x2000\n\
@@ -1019,7 +1111,7 @@ BACKTRACE_END
     fn block_capture_tee_forwards_all_bytes_when_not_suppressing() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("blocks.log");
-        let mut capture = BacktraceBlockCapture::create(&log_path, None).unwrap();
+        let mut capture = BacktraceBlockCapture::create(Some(&log_path), None).unwrap();
         let guest = b"BACKTRACE_BEGIN kind=raw\nBT 0 ip=0x1\nBACKTRACE_END\n";
         let terminal = capture.push_bytes_for_tee(guest, false).unwrap();
         assert_eq!(terminal, guest);
@@ -1029,7 +1121,7 @@ BACKTRACE_END
     fn block_capture_splits_on_repeated_begin() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("blocks.log");
-        let mut capture = BacktraceBlockCapture::create(&log_path, None).unwrap();
+        let mut capture = BacktraceBlockCapture::create(Some(&log_path), None).unwrap();
         capture
             .push_bytes(
                 b"BACKTRACE_BEGIN kind=panic arch=x86_64\n\
@@ -1052,7 +1144,7 @@ BACKTRACE_END\n",
     fn block_capture_accepts_bt_error_block() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("blocks.log");
-        let mut capture = BacktraceBlockCapture::create(&log_path, None).unwrap();
+        let mut capture = BacktraceBlockCapture::create(Some(&log_path), None).unwrap();
         capture
             .push_bytes(
                 b"BACKTRACE_BEGIN kind=panic arch=aarch64\n\
@@ -1077,6 +1169,65 @@ BACKTRACE_END\n",
         let text = fs::read_to_string(&log_path).unwrap();
         assert!(!text.contains("boot log"));
         assert!(text.contains("BACKTRACE_BEGIN"));
+    }
+
+    #[test]
+    fn should_persist_qemu_capture_log_on_keep_or_failure() {
+        assert!(should_persist_qemu_capture_log(
+            true,
+            SymbolizeAfterQemuOutcome::Symbolized,
+            true
+        ));
+        assert!(should_persist_qemu_capture_log(
+            false,
+            SymbolizeAfterQemuOutcome::Failed,
+            true
+        ));
+        assert!(!should_persist_qemu_capture_log(
+            false,
+            SymbolizeAfterQemuOutcome::Symbolized,
+            true
+        ));
+        assert!(!should_persist_qemu_capture_log(
+            false,
+            SymbolizeAfterQemuOutcome::Symbolized,
+            false
+        ));
+    }
+
+    #[test]
+    fn block_capture_memory_only_skips_log_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("blocks.log");
+        let pending = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut capture = BacktraceBlockCapture::create(None, Some(pending.clone())).unwrap();
+        capture
+            .push_bytes(
+                b"BACKTRACE_BEGIN kind=raw arch=x86_64\n\
+BT 0 ip=0x1000 fp=0x2000\n\
+BACKTRACE_END\n",
+            )
+            .unwrap();
+        capture.finish().unwrap();
+        assert!(!log_path.is_file());
+        let blocks = pending.lock().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0][0].contains("BACKTRACE_BEGIN"));
+    }
+
+    #[test]
+    fn write_captured_blocks_to_log_writes_raw_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("qemu.log");
+        let blocks = vec![vec![
+            "BACKTRACE_BEGIN kind=raw".to_string(),
+            "BT 0 ip=0x10".to_string(),
+            "BACKTRACE_END".to_string(),
+        ]];
+        write_captured_blocks_to_log(&log_path, &blocks).unwrap();
+        let text = fs::read_to_string(&log_path).unwrap();
+        assert!(text.contains("BACKTRACE_BEGIN"));
+        assert!(!text.contains("boot"));
     }
 
     #[test]
@@ -1136,9 +1287,15 @@ BACKTRACE_END\n",
             "BACKTRACE_BEGIN kind=raw arch=x86_64\nBT 0 ip=0x1000\nBACKTRACE_END\n",
         )
         .unwrap();
-        let outcome =
-            maybe_symbolize_after_qemu(&elf_path, &log_path, "backtrace-raw-normal", false, None)
-                .unwrap();
+        let outcome = maybe_symbolize_after_qemu(
+            &elf_path,
+            &log_path,
+            "backtrace-raw-normal",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(outcome, SymbolizeAfterQemuOutcome::Failed);
         assert!(log_path.is_file());
     }
@@ -1161,27 +1318,51 @@ BACKTRACE_END\n",
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("qemu.log");
         let exe = std::env::current_exe().unwrap();
-        fs::write(
-            &log_path,
-            "BACKTRACE_BEGIN kind=raw arch=x86_64\nBT 0 ip=0x1000\nBACKTRACE_END\n",
-        )
-        .unwrap();
-        let session = BacktraceSymbolizeSession::try_new(&exe, "backtrace-raw-normal").unwrap();
-        session.on_block_complete(&[
+        let memory_blocks = vec![vec![
             "BACKTRACE_BEGIN kind=raw arch=x86_64".to_string(),
             "BT 0 ip=0x1000".to_string(),
             "BACKTRACE_END".to_string(),
-        ]);
+        ]];
+        let session = BacktraceSymbolizeSession::try_new(&exe, "backtrace-raw-normal").unwrap();
+        session.on_block_complete(&memory_blocks[0]);
         let outcome = maybe_symbolize_after_qemu(
             &exe,
             &log_path,
             "backtrace-raw-normal",
             false,
             Some(&session),
+            Some(&memory_blocks),
         )
         .unwrap();
         assert_eq!(outcome, SymbolizeAfterQemuOutcome::Symbolized);
         assert!(!log_path.is_file());
+    }
+
+    #[test]
+    fn maybe_symbolize_after_qemu_writes_log_when_keep_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("qemu.log");
+        let exe = std::env::current_exe().unwrap();
+        let memory_blocks = vec![vec![
+            "BACKTRACE_BEGIN kind=raw arch=x86_64".to_string(),
+            "BT 0 ip=0x1000".to_string(),
+            "BACKTRACE_END".to_string(),
+        ]];
+        let session = BacktraceSymbolizeSession::try_new(&exe, "backtrace-raw-normal").unwrap();
+        session.on_block_complete(&memory_blocks[0]);
+        let outcome = maybe_symbolize_after_qemu(
+            &exe,
+            &log_path,
+            "backtrace-raw-normal",
+            true,
+            Some(&session),
+            Some(&memory_blocks),
+        )
+        .unwrap();
+        assert_eq!(outcome, SymbolizeAfterQemuOutcome::Symbolized);
+        assert!(log_path.is_file());
+        let text = fs::read_to_string(&log_path).unwrap();
+        assert!(text.contains("BACKTRACE_BEGIN"));
     }
 
     #[test]
@@ -1191,7 +1372,8 @@ BACKTRACE_END\n",
         let exe = std::env::current_exe().unwrap();
         let session = BacktraceSymbolizeSession::try_new(&exe, "backtrace-raw-normal").unwrap();
         let pending = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut capture = BacktraceBlockCapture::create(&log_path, Some(pending.clone())).unwrap();
+        let mut capture =
+            BacktraceBlockCapture::create(Some(&log_path), Some(pending.clone())).unwrap();
         capture
             .push_bytes(
                 b"BACKTRACE_BEGIN kind=raw arch=x86_64\n\

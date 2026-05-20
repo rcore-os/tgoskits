@@ -129,17 +129,19 @@ mod platform {
         saved_stdout: i32,
         saved_stderr: i32,
         capture: Arc<Mutex<BacktraceBlockCapture>>,
-        pending_stream_blocks: Arc<Mutex<Vec<Vec<String>>>>,
+        captured_blocks: Arc<Mutex<Vec<Vec<String>>>>,
         stream_symbolize: Option<Arc<crate::backtrace::BacktraceSymbolizeSession>>,
         reader: Option<JoinHandle<io::Result<()>>>,
     }
 
     pub(super) fn install(capture: &BacktraceQemuCapture) -> io::Result<PlatformGuard> {
         let mut rollback = InstallRollback::new()?;
-        let pending_stream_blocks = Arc::new(Mutex::new(Vec::new()));
+        let log_path = capture
+            .write_log_during_capture
+            .then_some(capture.log_path.as_path());
         let block_capture = Arc::new(Mutex::new(BacktraceBlockCapture::create(
-            &capture.log_path,
-            Some(pending_stream_blocks.clone()),
+            log_path,
+            Some(capture.captured_blocks.clone()),
         )?));
 
         let mut pipe = PipeEnds::new()?;
@@ -192,7 +194,7 @@ mod platform {
             saved_stdout,
             saved_stderr,
             capture: block_capture,
-            pending_stream_blocks,
+            captured_blocks: capture.captured_blocks.clone(),
             stream_symbolize: capture.stream_symbolize.clone(),
             reader: Some(reader),
         })
@@ -215,7 +217,7 @@ mod platform {
                 let _ = capture.finish();
             }
             if let Some(session) = &self.stream_symbolize {
-                flush_pending_stream_symbolize(session, &self.pending_stream_blocks);
+                flush_pending_stream_symbolize(session, &self.captured_blocks);
             }
         }
     }
@@ -249,7 +251,7 @@ mod platform {
         orig_stderr: HANDLE,
         pipe_write: HANDLE,
         capture: Arc<Mutex<BacktraceBlockCapture>>,
-        pending_stream_blocks: Arc<Mutex<Vec<Vec<String>>>>,
+        captured_blocks: Arc<Mutex<Vec<Vec<String>>>>,
         stream_symbolize: Option<Arc<crate::backtrace::BacktraceSymbolizeSession>>,
         reader: Option<JoinHandle<io::Result<()>>>,
     }
@@ -282,10 +284,12 @@ mod platform {
             return Err(io::Error::last_os_error());
         }
 
-        let pending_stream_blocks = Arc::new(Mutex::new(Vec::new()));
+        let log_path = capture
+            .write_log_during_capture
+            .then_some(capture.log_path.as_path());
         let block_capture = Arc::new(Mutex::new(BacktraceBlockCapture::create(
-            &capture.log_path,
-            Some(pending_stream_blocks.clone()),
+            log_path,
+            Some(capture.captured_blocks.clone()),
         )?));
         let capture_for_reader = block_capture.clone();
         let suppress_terminal_raw_blocks = capture.suppress_terminal_raw_blocks;
@@ -323,7 +327,7 @@ mod platform {
             orig_stderr,
             pipe_write: write_handle,
             capture: block_capture,
-            pending_stream_blocks,
+            captured_blocks: capture.captured_blocks.clone(),
             stream_symbolize: capture.stream_symbolize.clone(),
             reader: Some(reader),
         })
@@ -345,7 +349,7 @@ mod platform {
                 let _ = capture.finish();
             }
             if let Some(session) = &self.stream_symbolize {
-                flush_pending_stream_symbolize(session, &self.pending_stream_blocks);
+                flush_pending_stream_symbolize(session, &self.captured_blocks);
             }
         }
     }

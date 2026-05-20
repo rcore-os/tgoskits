@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 
@@ -597,6 +598,8 @@ async fn run_rust_qemu_case(
             log_path: dir.join(format!("{case_name}-{target}.log")),
             stream_symbolize: stream_session.clone(),
             suppress_terminal_raw_blocks: true,
+            write_log_during_capture: keep_qemu_log,
+            captured_blocks: Arc::new(std::sync::Mutex::new(Vec::new())),
         })
     } else {
         None
@@ -605,6 +608,9 @@ async fn run_rust_qemu_case(
     let log_path = capture_backtrace
         .as_ref()
         .map(|capture| capture.log_path.clone());
+    let memory_blocks = capture_backtrace
+        .as_ref()
+        .map(|capture| capture.captured_blocks.clone());
 
     arceos
         .app
@@ -613,12 +619,15 @@ async fn run_rust_qemu_case(
         .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"))?;
 
     if auto_symbolize && let Some(path) = log_path {
+        let blocks_snapshot = memory_blocks.and_then(|arc| arc.lock().ok().map(|b| b.clone()));
+        let blocks_ref = blocks_snapshot.as_deref();
         crate::backtrace::maybe_symbolize_after_qemu(
             &elf,
             &path,
             case_name,
             keep_qemu_log,
             stream_session.as_deref(),
+            blocks_ref,
         )?;
     }
 
