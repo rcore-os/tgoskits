@@ -29,7 +29,7 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     ) {
         return;
     }
-    #[cfg(feature = "uspace")]
+    #[cfg(feature = "exception-table")]
     if tf.fixup_exception() {
         return;
     }
