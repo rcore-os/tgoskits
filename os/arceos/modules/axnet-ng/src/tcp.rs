@@ -478,35 +478,33 @@ impl SocketOps for TcpSocket {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(AxError::NotConnected);
         }
-        if self.state() != State::Connected {
+        if self.state() == State::Closed {
             return Err(AxError::NotConnected);
         }
         let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         self.general.recv_poller_with(self, extra_nb, || {
             poll_interfaces();
             self.with_smol_socket(|socket| {
-                if !socket.may_recv() {
-                    Ok(0)
-                } else if socket.recv_queue() == 0 {
-                    if socket.is_active() {
-                        Err(AxError::WouldBlock)
+                if socket.recv_queue() > 0 {
+                    if options.flags.contains(RecvFlags::PEEK) {
+                        dst.write(
+                            socket
+                                .peek(dst.remaining_mut())
+                                .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?,
+                        )
                     } else {
-                        Ok(0)
-                    }
-                } else if options.flags.contains(RecvFlags::PEEK) {
-                    dst.write(
                         socket
-                            .peek(dst.remaining_mut())
-                            .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?,
-                    )
+                            .recv(|buf| {
+                                let result = dst.write(buf);
+                                let len = result.unwrap_or(0);
+                                (len, result)
+                            })
+                            .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?
+                    }
+                } else if !socket.may_recv() {
+                    Ok(0)
                 } else {
-                    socket
-                        .recv(|buf| {
-                            let result = dst.write(buf);
-                            let len = result.unwrap_or(0);
-                            (len, result)
-                        })
-                        .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?
+                    Err(AxError::WouldBlock)
                 }
             })
         })
@@ -548,18 +546,24 @@ impl SocketOps for TcpSocket {
 
         // stream
         if let Ok(guard) = self.state.lock(State::Connected) {
-            guard.transit(State::Closed, || {
-                if how.has_write() {
+            if how.has_read() && how.has_write() {
+                guard.transit(State::Closed, || {
                     self.with_smol_socket(|socket| {
                         debug!("TCP socket {}: shutting down", self.handle);
                         socket.close();
                     });
-                }
-                self.unregister_bound_endpoint();
-                *self.bound_endpoint.lock() = empty_endpoint();
+                    self.unregister_bound_endpoint();
+                    *self.bound_endpoint.lock() = empty_endpoint();
+                    poll_interfaces();
+                    Ok(())
+                })?;
+            } else if how.has_write() {
+                self.with_smol_socket(|socket| {
+                    debug!("TCP socket {}: shutting down write side", self.handle);
+                    socket.close();
+                });
                 poll_interfaces();
-                Ok(())
-            })?;
+            }
         }
 
         // listener
