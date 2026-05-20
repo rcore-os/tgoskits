@@ -19,6 +19,7 @@ multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []
 smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
+stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
 plat-dyn = ["ax-hal/plat-dyn", "ax-driver/dyn", "paging", "buddy-slab"]

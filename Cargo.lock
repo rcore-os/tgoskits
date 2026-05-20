@@ -1549,16 +1549,19 @@ dependencies = [
 name = "ax-task"
 version = "0.5.16"
 dependencies = [
+ "ax-alloc",
  "ax-config",
  "ax-cpumask",
  "ax-crate-interface",
  "ax-errno",
  "ax-hal",
+ "ax-ipi",
  "ax-kernel-guard",
  "ax-kspin",
  "ax-lazyinit",
  "ax-lockdep",
  "ax-memory-addr",
+ "ax-mm",
  "ax-percpu",
  "ax-sched",
  "ax-timer-list",
