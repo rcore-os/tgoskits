@@ -11,7 +11,10 @@ use axfs_ng_vfs::{NodeFlags, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::AnyBitPattern;
 use dw_apb_uart::DW8250;
-use sg200x_bsp::pinmux::Pinmux;
+use sg200x_bsp::{
+    pinmux::Pinmux,
+    soc::{FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE},
+};
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::pseudofs::DeviceOps;
@@ -264,7 +267,13 @@ impl Pollable for TtySerial {
 }
 
 pub fn new_tty_s1(baud: u32) -> TtySerial {
-    let pinmux = Pinmux::new_with_offset(ax_config::plat::PHYS_VIRT_OFFSET);
+    let pinmux = unsafe {
+        Pinmux::new(
+            FMUX_BASE + ax_config::plat::PHYS_VIRT_OFFSET,
+            IOBLK_BASE + ax_config::plat::PHYS_VIRT_OFFSET,
+            IOBLK_GRTC_BASE + ax_config::plat::PHYS_VIRT_OFFSET,
+        )
+    };
     pinmux.set_uart1();
     TtySerial::new(
         UART1_PADDR,
@@ -278,7 +287,13 @@ pub fn new_tty_s1(baud: u32) -> TtySerial {
 
 pub fn new_tty_s2(baud: u32) -> TtySerial {
     use sg200x_bsp::pinmux::{FMUX_IIC0_SCL, FMUX_IIC0_SDA};
-    let pinmux = Pinmux::new_with_offset(ax_config::plat::PHYS_VIRT_OFFSET);
+    let pinmux = unsafe {
+        Pinmux::new(
+            FMUX_BASE + ax_config::plat::PHYS_VIRT_OFFSET,
+            IOBLK_BASE + ax_config::plat::PHYS_VIRT_OFFSET,
+            IOBLK_GRTC_BASE + ax_config::plat::PHYS_VIRT_OFFSET,
+        )
+    };
     // Wire UART2 to IIC0_SCL/SDA (0x03001070/74), matching the
     // original StarryOS sg2002 board layout: SCL → UART2_TX,
     // SDA → UART2_RX. Wrong pinmux (e.g. pwr_gpio0/1) sends bytes
