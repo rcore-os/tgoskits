@@ -162,6 +162,20 @@ pub fn sys_prctl(
         }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}
+        38 => {
+            // PR_SET_NO_NEW_PRIVS: arg2 must be 1, other args must be 0.
+            if arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().set_no_new_privs();
+        }
+        39 => {
+            // PR_GET_NO_NEW_PRIVS
+            if arg2 != 0 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            return Ok(current().as_thread().no_new_privs() as isize);
+        }
         PR_SET_MM => {
             // not implemented; but avoid annoying warnings
             return Err(AxError::InvalidInput);

@@ -125,6 +125,9 @@ pub struct Thread {
     /// The signal to send to this thread when its parent dies (PR_SET_PDEATHSIG).
     pdeathsig: AtomicU32,
 
+    /// PR_SET_NO_NEW_PRIVS: once set, cannot be unset.
+    no_new_privs: AtomicBool,
+
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
 
@@ -164,6 +167,7 @@ impl Thread {
             exit_event: Arc::default(),
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
+            no_new_privs: AtomicBool::new(false),
             cred: SpinNoIrq::new(cred),
             #[cfg(feature = "kcov")]
             kcov: AssumeSync(RefCell::new(None)),
@@ -233,6 +237,16 @@ impl Thread {
     /// Set the pdeathsig value.
     pub fn set_pdeathsig(&self, sig: u32) {
         self.pdeathsig.store(sig, Ordering::Relaxed);
+    }
+
+    /// Get the no_new_privs flag.
+    pub fn no_new_privs(&self) -> bool {
+        self.no_new_privs.load(Ordering::Relaxed)
+    }
+
+    /// Set the no_new_privs flag (one-way: once set, cannot be unset).
+    pub fn set_no_new_privs(&self) {
+        self.no_new_privs.store(true, Ordering::Relaxed);
     }
 
     /// Run a closure with a borrow of the current KCOV state for this thread.
