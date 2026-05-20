@@ -106,14 +106,74 @@ fn infer_kind_filter(case_name: &str, blocks: &[Block]) -> Option<String> {
     None
 }
 
+/// Result of post-QEMU host symbolize; drives whether the capture log may be deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SymbolizeAfterQemuOutcome {
+    /// No log, no backtrace markers, or no parseable blocks — nothing symbolized.
+    Skipped,
+    /// Parsed blocks and emitted symbolized output.
+    Symbolized,
+    /// Backtrace data present but read/parse/ELF/load/output failed — retain log for debug.
+    Failed,
+}
+
+/// True when `TGOSKITS_KEEP_QEMU_LOG` is set to a truthy value (`1`, `true`, `yes`, case-insensitive).
+pub(crate) fn keep_qemu_log_from_env() -> bool {
+    match std::env::var("TGOSKITS_KEEP_QEMU_LOG") {
+        Ok(value) => matches!(
+            value.trim(),
+            "1" | "true" | "yes" | "TRUE" | "YES" | "True" | "Yes"
+        ),
+        Err(_) => false,
+    }
+}
+
+/// Whether a successful symbolize should remove the QEMU capture log.
+pub(crate) fn should_delete_qemu_log_after_symbolize(
+    outcome: SymbolizeAfterQemuOutcome,
+    keep_log: bool,
+) -> bool {
+    !keep_log && outcome == SymbolizeAfterQemuOutcome::Symbolized
+}
+
+/// Remove the QEMU log when symbolize succeeded and retention was not requested.
+pub(crate) fn apply_qemu_log_retention(
+    log: &Path,
+    outcome: SymbolizeAfterQemuOutcome,
+    keep_log: bool,
+) -> anyhow::Result<()> {
+    if !should_delete_qemu_log_after_symbolize(outcome, keep_log) {
+        return Ok(());
+    }
+    remove_qemu_log_file(log)
+}
+
+fn remove_qemu_log_file(log: &Path) -> anyhow::Result<()> {
+    match fs::remove_file(log) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => {
+            eprintln!(
+                "warning: failed to remove qemu log {} after symbolize: {err:#}",
+                log.display()
+            );
+            Ok(())
+        }
+    }
+}
+
 /// After a QEMU run, symbolize any raw backtrace blocks in `log` without failing the test.
+///
+/// When symbolize succeeds and `keep_log` is false, deletes `log` so repeated runs do not
+/// accumulate stale capture files under `tmp/axbuild/qemu-logs/`.
 pub(crate) fn maybe_symbolize_after_qemu(
     elf: &Path,
     log: &Path,
     case_name: &str,
-) -> anyhow::Result<()> {
+    keep_log: bool,
+) -> anyhow::Result<SymbolizeAfterQemuOutcome> {
     if !log.is_file() {
-        return Ok(());
+        return Ok(SymbolizeAfterQemuOutcome::Skipped);
     }
     let text = match fs::read_to_string(log) {
         Ok(text) => text,
@@ -122,26 +182,26 @@ pub(crate) fn maybe_symbolize_after_qemu(
                 "warning: failed to read qemu log {} for backtrace symbolize: {err:#}",
                 log.display()
             );
-            return Ok(());
+            return Ok(SymbolizeAfterQemuOutcome::Failed);
         }
     };
     if !text.contains("BACKTRACE_BEGIN") {
-        return Ok(());
+        return Ok(SymbolizeAfterQemuOutcome::Skipped);
     }
     if !elf.is_file() {
         eprintln!(
             "warning: skipping backtrace symbolize; ELF not found at {}",
             elf.display()
         );
-        return Ok(());
+        return Ok(SymbolizeAfterQemuOutcome::Failed);
     }
 
     let blocks = match parse_blocks(&text) {
         Ok(blocks) if !blocks.is_empty() => blocks,
-        Ok(_) => return Ok(()),
+        Ok(_) => return Ok(SymbolizeAfterQemuOutcome::Skipped),
         Err(err) => {
             eprintln!("warning: failed to parse backtrace blocks in qemu log: {err:#}");
-            return Ok(());
+            return Ok(SymbolizeAfterQemuOutcome::Failed);
         }
     };
 
@@ -153,7 +213,7 @@ pub(crate) fn maybe_symbolize_after_qemu(
                 "warning: failed to load symbols from {} for backtrace symbolize: {err}",
                 elf.display()
             );
-            return Ok(());
+            return Ok(SymbolizeAfterQemuOutcome::Failed);
         }
     };
 
@@ -168,8 +228,12 @@ pub(crate) fn maybe_symbolize_after_qemu(
         0,
     ) {
         eprintln!("warning: backtrace symbolize output failed: {err:#}");
+        return Ok(SymbolizeAfterQemuOutcome::Failed);
     }
-    Ok(())
+
+    let outcome = SymbolizeAfterQemuOutcome::Symbolized;
+    apply_qemu_log_retention(log, outcome, keep_log)?;
+    Ok(outcome)
 }
 
 #[derive(Debug, Clone)]
@@ -803,5 +867,69 @@ BACKTRACE_END\n",
         let text = fs::read_to_string(&log_path).unwrap();
         assert!(!text.contains("boot log"));
         assert!(text.contains("BACKTRACE_BEGIN"));
+    }
+
+    #[test]
+    fn should_delete_qemu_log_only_after_success_without_keep() {
+        assert!(should_delete_qemu_log_after_symbolize(
+            SymbolizeAfterQemuOutcome::Symbolized,
+            false
+        ));
+        assert!(!should_delete_qemu_log_after_symbolize(
+            SymbolizeAfterQemuOutcome::Symbolized,
+            true
+        ));
+        assert!(!should_delete_qemu_log_after_symbolize(
+            SymbolizeAfterQemuOutcome::Failed,
+            false
+        ));
+        assert!(!should_delete_qemu_log_after_symbolize(
+            SymbolizeAfterQemuOutcome::Skipped,
+            false
+        ));
+    }
+
+    #[test]
+    fn apply_qemu_log_retention_removes_file_on_symbolized() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("qemu.log");
+        fs::write(&log_path, "BACKTRACE_BEGIN kind=raw\nBACKTRACE_END\n").unwrap();
+        apply_qemu_log_retention(&log_path, SymbolizeAfterQemuOutcome::Symbolized, false).unwrap();
+        assert!(!log_path.is_file());
+    }
+
+    #[test]
+    fn apply_qemu_log_retention_keeps_file_when_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("qemu.log");
+        fs::write(&log_path, "BACKTRACE_BEGIN kind=raw\nBACKTRACE_END\n").unwrap();
+        apply_qemu_log_retention(&log_path, SymbolizeAfterQemuOutcome::Symbolized, true).unwrap();
+        assert!(log_path.is_file());
+    }
+
+    #[test]
+    fn apply_qemu_log_retention_keeps_file_on_failed_symbolize() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("qemu.log");
+        fs::write(&log_path, "truncated BACKTRACE_BEGIN\n").unwrap();
+        apply_qemu_log_retention(&log_path, SymbolizeAfterQemuOutcome::Failed, false).unwrap();
+        assert!(log_path.is_file());
+    }
+
+    #[test]
+    fn maybe_symbolize_after_qemu_keeps_log_when_elf_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("qemu.log");
+        let elf_path = dir.path().join("missing.elf");
+        fs::write(
+            &log_path,
+            "BACKTRACE_BEGIN kind=raw arch=x86_64\nBT 0 ip=0x1000\nBACKTRACE_END\n",
+        )
+        .unwrap();
+        let outcome =
+            maybe_symbolize_after_qemu(&elf_path, &log_path, "backtrace-raw-normal", false)
+                .unwrap();
+        assert_eq!(outcome, SymbolizeAfterQemuOutcome::Failed);
+        assert!(log_path.is_file());
     }
 }

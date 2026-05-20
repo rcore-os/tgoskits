@@ -76,6 +76,9 @@ pub struct ArgsTestQemu {
     /// Skip host `backtrace symbolize` after each ArceOS **rust** QEMU case (Unix only).
     #[arg(long = "no-symbolize", help_heading = "Backtrace")]
     pub no_symbolize: bool,
+    /// Keep the QEMU backtrace capture log after successful host symbolize (default: delete).
+    #[arg(long = "keep-qemu-log", help_heading = "Backtrace")]
+    pub keep_qemu_log: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +246,7 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
     }
 
     let symbolize_after = !args.no_symbolize;
+    let keep_qemu_log = args.keep_qemu_log || crate::backtrace::keep_qemu_log_from_env();
     for flow in groups {
         match flow {
             QemuTestFlow::Rust => {
@@ -252,6 +256,7 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
                     &target,
                     selected_case.as_deref(),
                     symbolize_after,
+                    keep_qemu_log,
                 )
                 .await?
             }
@@ -264,6 +269,7 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
                     group,
                     selected_case.as_deref(),
                     symbolize_after,
+                    keep_qemu_log,
                 )
                 .await?
             }
@@ -278,6 +284,7 @@ async fn test_rust_qemu(
     target: &str,
     selected_case: Option<&str>,
     symbolize_after: bool,
+    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let cases = discover_rust_qemu_cases(arceos, arch, target, selected_case)?;
     println!(
@@ -317,7 +324,7 @@ async fn test_rust_qemu(
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] arceos rust qemu {case_name}");
             let case_started = Instant::now();
-            let result = run_rust_qemu_case(arceos, case, symbolize_after)
+            let result = run_rust_qemu_case(arceos, case, symbolize_after, keep_qemu_log)
                 .await
                 .with_context(|| format!("arceos rust qemu test failed for case `{case_name}`"));
             let duration = case_started.elapsed();
@@ -353,6 +360,7 @@ async fn test_generic_qemu(
     group: &str,
     selected_case: Option<&str>,
     symbolize_after: bool,
+    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let dir = arceos_test_group_dir(arceos.app.workspace_root(), group);
     let cases = discover_qemu_cases_in_dir(&dir, arch, target, selected_case, group)?;
@@ -371,6 +379,7 @@ async fn test_generic_qemu(
         &prepared,
         total,
         symbolize_after,
+        keep_qemu_log,
     )
     .await
 }
@@ -382,6 +391,7 @@ async fn run_generic_qemu_by_build_group(
     prepared: &[PreparedArceosRustQemuCase],
     total: usize,
     symbolize_after: bool,
+    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let build_groups = group_arceos_qemu_cases_by_build_identity(prepared);
     let suite_started = Instant::now();
@@ -410,7 +420,7 @@ async fn run_generic_qemu_by_build_group(
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] {group_label} qemu {case_name}");
             let case_started = Instant::now();
-            let result = run_rust_qemu_case(arceos, case, symbolize_after)
+            let result = run_rust_qemu_case(arceos, case, symbolize_after, keep_qemu_log)
                 .await
                 .with_context(|| format!("{group_label} qemu test failed for case `{case_name}`"));
             let duration = case_started.elapsed();
@@ -562,6 +572,7 @@ async fn run_rust_qemu_case(
     arceos: &mut ArceOS,
     case: &PreparedArceosRustQemuCase,
     symbolize_after: bool,
+    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let workspace = arceos.app.workspace_root().to_path_buf();
     let case_name = &case.case.case.name;
@@ -588,7 +599,7 @@ async fn run_rust_qemu_case(
 
     if auto_symbolize && let Some(path) = log_path {
         let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
-        crate::backtrace::maybe_symbolize_after_qemu(&elf, &path, case_name)?;
+        crate::backtrace::maybe_symbolize_after_qemu(&elf, &path, case_name, keep_qemu_log)?;
     }
 
     Ok(())
@@ -1452,6 +1463,7 @@ mod tests {
                 only_rust: false,
                 only_c: false,
                 no_symbolize: false,
+                keep_qemu_log: false,
             },
         )
         .unwrap();
@@ -1474,6 +1486,7 @@ mod tests {
                 only_rust: true,
                 only_c: false,
                 no_symbolize: false,
+                keep_qemu_log: false,
             },
         )
         .unwrap();
@@ -1496,6 +1509,7 @@ mod tests {
                 only_rust: false,
                 only_c: true,
                 no_symbolize: false,
+                keep_qemu_log: false,
             },
         )
         .unwrap();
@@ -1518,6 +1532,7 @@ mod tests {
                 only_rust: false,
                 only_c: false,
                 no_symbolize: false,
+                keep_qemu_log: false,
             },
         )
         .unwrap();
