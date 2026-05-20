@@ -204,6 +204,10 @@ impl FileLike for Socket {
         self.async_mode.load(Ordering::Acquire)
     }
 
+    fn supports_async_mode(&self) -> bool {
+        true
+    }
+
     fn set_async_mode(&self, async_mode: bool) -> AxResult {
         self.async_mode.store(async_mode, Ordering::Release);
         Ok(())
