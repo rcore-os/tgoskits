@@ -1,3 +1,6 @@
+# This normal-group smoke intentionally covers the default GICv2 +
+# CNTP path. GICv3 + CNTV + IRQ 27 coverage lives in the opt-in
+# `aarch64-hvf` test group.
 args = [
     "-nographic", "-cpu", "cortex-a53",
     "-device", "virtio-blk-pci,drive=disk0",

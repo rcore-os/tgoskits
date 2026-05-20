@@ -108,7 +108,9 @@ uart-irq = 33                   # uint
 # cargo xtask starry build --arch aarch64 ...`) use CNTV / PPI 11 =
 # IRQ 27 instead and must override this value via
 # `axconfig_overrides = ["devices.timer-irq=27"]`. The static_assert
-# in init.rs enforces this at compile time.
+# in init.rs enforces this at compile time. The
+# `test-suit/starryos/aarch64-hvf` group is the in-tree test profile
+# that enables both GICv3 and CNTV with this override.
 timer-irq = 30                  # uint
 # IPI interrupt num
 ipi-irq = 1                     # uint

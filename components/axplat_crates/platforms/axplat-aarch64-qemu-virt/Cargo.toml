@@ -33,3 +33,6 @@ ax-plat = { workspace = true }
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none"]
+
+[package.metadata.axbuild.clippy-feature-axconfig-overrides]
+cntv-timer = ["devices.timer-irq=27"]
