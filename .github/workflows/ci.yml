@@ -166,6 +166,34 @@ jobs:
             echo "axvisor_lvz_container_image=${axvisor_lvz_container_image}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Summarize skipped CI checks
+        if: steps.outputs.outputs.ci_checks != 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_DUPLICATE_PUSH_CI: ${{ steps.outputs.outputs.skip_duplicate_push_ci }}
+        run: |
+          echo "## CI checks skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "This manual run is scoped to container publishing, so fmt and follow-up CI checks were skipped." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$SKIP_DUPLICATE_PUSH_CI" = "true" ]; then
+            echo "This branch already has an open pull request. The duplicate push CI was skipped; the pull_request CI run will validate the same commit." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Changed files do not match the test-relevant path set, so fmt and follow-up checks were skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Summarize container branch restriction
+        if: >-
+          ${{
+            github.event_name == 'workflow_dispatch'
+            && github.ref_name != 'main'
+            && github.ref_name != 'dev'
+          }}
+        run: |
+          echo "## Container publish skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Manual container publishing only runs from the \`main\` or \`dev\` branch. This run targeted \`${{ github.ref_name }}\`, so publish jobs were skipped." >> "$GITHUB_STEP_SUMMARY"
+
   fmt:
     name: Check formatting
     needs: detect_changes
@@ -446,43 +474,6 @@ jobs:
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
       prepare_qemu_user_emulators: ${{ matrix.prepare_qemu_user_emulators == false && false || true }}
       prepare_musl_toolchains: ${{ matrix.prepare_musl_toolchains == false && false || true }}
-
-  skip_non_test_changes:
-    name: Skip CI checks
-    if: needs.detect_changes.outputs.ci_checks != 'true'
-    needs: detect_changes
-    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
-    steps:
-      - name: Summarize skip reason
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          SKIP_DUPLICATE_PUSH_CI: ${{ needs.detect_changes.outputs.skip_duplicate_push_ci }}
-        run: |
-          echo "## CI checks skipped" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "This manual run is scoped to container publishing, so fmt and follow-up CI checks were skipped." >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$SKIP_DUPLICATE_PUSH_CI" = "true" ]; then
-            echo "This branch already has an open pull request. The duplicate push CI was skipped; the pull_request CI run will validate the same commit." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Changed files do not match the test-relevant path set, so fmt and follow-up checks were skipped." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-  manual_container_branch_guard:
-    name: Explain manual container branch restriction
-    if: >-
-      ${{
-        github.event_name == 'workflow_dispatch'
-        && github.ref_name != 'main'
-        && github.ref_name != 'dev'
-      }}
-    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
-    steps:
-      - name: Summarize branch restriction
-        run: |
-          echo "## Container publish skipped" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Manual container publishing only runs from the \`main\` or \`dev\` branch. This run targeted \`${{ github.ref_name }}\`, so publish jobs were skipped." >> "$GITHUB_STEP_SUMMARY"
 
   publish_base_container:
     name: Publish base container image
