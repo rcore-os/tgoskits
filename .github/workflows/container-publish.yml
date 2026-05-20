@@ -24,7 +24,7 @@ on:
 jobs:
   publish:
     name: Publish container image
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
     permissions:
       contents: read
       packages: write

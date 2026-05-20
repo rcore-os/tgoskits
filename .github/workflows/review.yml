@@ -51,7 +51,7 @@ concurrency:
 jobs:
   review:
     name: Review PR
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 30
     # Skip fork PRs: pull_request_target has access to secrets; prevent quota drain
     # and diff leakage from arbitrary forks.

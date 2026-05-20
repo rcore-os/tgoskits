@@ -43,7 +43,7 @@ concurrency:
 jobs:
   detect_changes:
     name: Detect changed paths
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
     permissions:
       contents: read
       pull-requests: read
@@ -485,7 +485,7 @@ jobs:
     name: Skip CI checks
     if: needs.detect_changes.outputs.ci_checks != 'true'
     needs: detect_changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
     steps:
       - name: Summarize skip reason
         env:
@@ -510,7 +510,7 @@ jobs:
         && github.ref_name != 'main'
         && github.ref_name != 'dev'
       }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
     steps:
       - name: Summarize branch restriction
         run: |

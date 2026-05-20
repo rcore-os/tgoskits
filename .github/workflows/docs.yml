@@ -21,7 +21,7 @@ concurrency:
 jobs:
   build:
     name: Build docs
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -55,7 +55,7 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

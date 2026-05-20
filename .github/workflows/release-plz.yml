@@ -16,7 +16,7 @@ jobs:
   release-plz-release:
     name: Release-plz release
     if: ${{ github.repository == 'rcore-os/tgoskits' && (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
     permissions:
       contents: write
       pull-requests: read
@@ -44,7 +44,7 @@ jobs:
   release-plz-pr:
     name: Release-plz PR
     if: ${{ github.repository == 'rcore-os/tgoskits' && (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(github.repository_owner == 'rcore-os' && '["self-hosted","linux"]' || '["ubuntu-latest"]') }}
     permissions:
       contents: write
       pull-requests: write
