@@ -66,6 +66,7 @@ test_commands = [
     "/usr/bin/bug-kill-zombie-perm",
     "/usr/bin/bug-raw-terminal-polling",
     "/usr/bin/bug-rename-replace",
+    "/usr/bin/bug-rename-file-into-child-dir",
     "/usr/bin/bug-tmpfs-hardlink-cache",
     "/usr/bin/bug-zombie-syscalls",
     "/usr/bin/bug-starry-setuid-setgid-no-uidvalid",

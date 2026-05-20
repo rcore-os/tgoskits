@@ -291,7 +291,11 @@ impl Location {
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
-        if !self.ptr_eq(dst_dir) && self.entry.is_ancestor_of(&dst_dir.entry)? {
+        let src = self.entry.as_dir()?.lookup(src_name)?;
+        if src.node_type() == NodeType::Directory
+            && !self.ptr_eq(dst_dir)
+            && src.is_ancestor_of(&dst_dir.entry)?
+        {
             return Err(VfsError::InvalidInput);
         }
         self.entry
