@@ -149,7 +149,7 @@ impl GenericPTE for LoongArchPTE {
     }
 
     fn is_present(&self) -> bool {
-        PTEFlags::from_bits_truncate(self.0).contains(PTEFlags::P)
+        PTEFlags::from_bits_truncate(self.0).contains(PTEFlags::V)
     }
 
     fn is_huge(&self) -> bool {
