@@ -295,6 +295,10 @@ impl FsContext {
     /// Removes a directory from the filesystem.
     pub fn remove_dir(&self, path: impl AsRef<Path>) -> VfsResult<()> {
         let entry = self.resolve_no_follow(path.as_ref())?;
+        let dir = entry.entry().as_dir()?;
+        if dir.has_children()? {
+            return Err(VfsError::DirectoryNotEmpty);
+        }
         entry
             .parent()
             .ok_or(VfsError::ResourceBusy)?
