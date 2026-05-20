@@ -11,6 +11,7 @@ pub mod irq;
 
 mod boot;
 mod console;
+mod drivers;
 mod init;
 mod mem;
 mod power;

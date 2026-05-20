@@ -11,8 +11,8 @@ PROVIDE(__somehal_secondary = __somehal_secondary_default);
 SECTIONS
 {
    .driver : ALIGN(4K) {
-        _sdriver = .;
-        KEEP(*(.driver.register))
-        _edriver = .;
+        __sdriver_register = .;
+        KEEP(*(.driver.register*))
+        __edriver_register = .;
     }
 } INSERT AFTER .data;

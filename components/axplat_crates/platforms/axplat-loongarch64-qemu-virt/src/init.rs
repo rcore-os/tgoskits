@@ -32,7 +32,6 @@ impl InitIf for InitIfImpl {
         {
             ax_plat::irq::set_enable(crate::config::devices::IPI_IRQ, true);
         }
-        #[cfg(feature = "pci")]
         crate::drivers::init();
     }
 

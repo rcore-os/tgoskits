@@ -4,14 +4,6 @@
 extern crate ax_plat;
 
 mod boot;
-#[cfg(any(
-    feature = "pci",
-    feature = "virtio-blk",
-    feature = "virtio-net",
-    feature = "virtio-gpu",
-    feature = "virtio-input",
-    feature = "virtio-socket"
-))]
 mod drivers;
 mod init;
 mod mem;

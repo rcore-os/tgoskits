@@ -19,14 +19,14 @@ fn registers() -> &'static [rdrive::register::DriverRegister] {
 
 fn driver_registers() -> &'static [u8] {
     unsafe extern "C" {
-        fn _sdriver();
-        fn _edriver();
+        fn __sdriver_register();
+        fn __edriver_register();
     }
 
     unsafe {
         &*slice_from_raw_parts(
-            _sdriver as *const () as *const u8,
-            _edriver as *const () as usize - _sdriver as *const () as usize,
+            __sdriver_register as *const () as *const u8,
+            __edriver_register as *const () as usize - __sdriver_register as *const () as usize,
         )
     }
 }

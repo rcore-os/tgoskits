@@ -40,6 +40,7 @@ rknpu = ["ax-drivers/rknpu"]
 ax-cpu.workspace = true
 ax-errno.workspace = true
 ax-drivers = { workspace = true, features = ["block", "pci", "virtio-core"] }
+axklib.workspace = true
 ax-plat.workspace = true
 heapless = "0.9"
 log.workspace = true

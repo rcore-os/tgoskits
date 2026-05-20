@@ -16,7 +16,7 @@ static STATIC_DEVICES: &[StaticDeviceDesc] = &[
     StaticDeviceDesc::new(pci::DEVICE_NAME),
 ];
 
-pub(super) fn init() {
+pub(crate) fn init() {
     rdrive::init(Platform::Static(STATIC_DEVICES))
         .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
     registers::append_linker_registers();

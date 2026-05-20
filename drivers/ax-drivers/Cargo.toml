@@ -15,7 +15,7 @@ default = []
 
 fdt = ["dep:fdt-edit"]
 acpi = []
-pci = ["dep:pcie", "dep:heapless", "dep:spin"]
+pci = ["dep:pcie", "dep:heapless", "dep:rdif-pcie", "dep:spin"]
 pci-fdt = ["pci", "fdt", "dep:rdif-intc"]
 irq = []
 

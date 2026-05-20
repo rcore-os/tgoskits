@@ -1,5 +1,8 @@
 use ax_memory_addr::VirtAddr;
-use somehal::{KernelOp, setup::*};
+use somehal::{
+    KernelOp,
+    setup::{MapError, MmioAddr, MmioOp, MmioRaw},
+};
 
 #[somehal::entry(Kernel)]
 fn main() -> ! {
@@ -27,3 +30,13 @@ pub fn boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
 pub struct Kernel;
 
 impl KernelOp for Kernel {}
+
+impl MmioOp for Kernel {
+    fn ioremap(&self, addr: MmioAddr, size: usize) -> Result<MmioRaw, MapError> {
+        axklib::mmio::op().ioremap(addr, size)
+    }
+
+    fn iounmap(&self, mmio: &MmioRaw) {
+        axklib::mmio::op().iounmap(mmio);
+    }
+}

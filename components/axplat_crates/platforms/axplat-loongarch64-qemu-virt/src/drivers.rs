@@ -1,28 +1,35 @@
+#[cfg(feature = "pci")]
 use ax_drivers::pci;
-use rdrive::{
-    Platform, PlatformDevice,
-    probe::{
-        OnProbeError,
-        pci::{PciMem32, PciMem64},
-        static_::StaticDeviceDesc,
-    },
+#[cfg(feature = "pci")]
+use rdrive::PlatformDevice;
+#[cfg(feature = "pci")]
+use rdrive::probe::{
+    OnProbeError,
+    pci::{PciMem32, PciMem64},
 };
+use rdrive::{Platform, probe::static_::StaticDeviceDesc};
 
+#[cfg(feature = "pci")]
 use crate::config::devices;
 
 mod registers;
 
-static STATIC_DEVICES: &[StaticDeviceDesc] = &[StaticDeviceDesc::new(pci::DEVICE_NAME)];
+static STATIC_DEVICES: &[StaticDeviceDesc] = &[
+    #[cfg(feature = "pci")]
+    StaticDeviceDesc::new(pci::DEVICE_NAME),
+];
 
 pub(super) fn init() {
     rdrive::init(Platform::Static(STATIC_DEVICES))
         .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
     registers::append_linker_registers();
+    #[cfg(feature = "pci")]
     register_pcie();
     rdrive::probe_pre_kernel()
         .unwrap_or_else(|err| panic!("failed to run static pre-kernel probes: {err:?}"));
 }
 
+#[cfg(feature = "pci")]
 fn register_pcie() {
     let ecam_size = (devices::PCI_BUS_END + 1) << 20;
     let mem32 = pci_mem32_from_config();
@@ -39,6 +46,7 @@ fn register_pcie() {
     }
 }
 
+#[cfg(feature = "pci")]
 fn pci_mem32_from_config() -> Option<PciMem32> {
     let (address, size) = devices::PCI_RANGES.get(1).copied()?;
     if size == 0 {
@@ -50,6 +58,7 @@ fn pci_mem32_from_config() -> Option<PciMem32> {
     })
 }
 
+#[cfg(feature = "pci")]
 fn pci_mem64_from_config() -> Option<PciMem64> {
     let (address, size) = devices::PCI_RANGES.get(2).copied()?;
     if size == 0 || usize::BITS <= 32 {
@@ -61,6 +70,7 @@ fn pci_mem64_from_config() -> Option<PciMem64> {
     })
 }
 
+#[cfg(feature = "pci")]
 fn static_descriptor(name: &'static str) -> PlatformDevice {
     let mut descriptor = rdrive::Descriptor::new();
     descriptor.name = name;

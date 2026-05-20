@@ -59,6 +59,14 @@ fn map_region(address: usize, size: usize, name: &str) -> Result<usize, OnProbeE
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 struct CvsdDriver(Sdmmc);
 
+// The SG2002 SD/MMC core stores MMIO registers as `UnsafeCell`-backed
+// references, so the raw register block is intentionally not `Sync`.
+// `CvsdDriver` is owned by `SyncBlockDevice`, which serializes all access
+// through a mutex and never clones the driver, so moving that owner between
+// execution contexts is sound.
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+unsafe impl Send for CvsdDriver {}
+
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 impl CvsdDriver {
     fn new(sdmmc: usize, syscon: usize) -> Result<Self, ()> {

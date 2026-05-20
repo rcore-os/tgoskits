@@ -18,6 +18,15 @@ use ax_drivers::pci;
 ))]
 use ax_drivers::virtio;
 #[cfg(any(
+    feature = "pci",
+    feature = "virtio-blk",
+    feature = "virtio-net",
+    feature = "virtio-gpu",
+    feature = "virtio-input",
+    feature = "virtio-socket"
+))]
+use rdrive::PlatformDevice;
+#[cfg(any(
     feature = "virtio-blk",
     feature = "virtio-net",
     feature = "virtio-gpu",
@@ -27,7 +36,7 @@ use ax_drivers::virtio;
 use rdrive::probe::OnProbeError;
 #[cfg(feature = "pci")]
 use rdrive::probe::pci::{PciMem32, PciMem64};
-use rdrive::{Platform, PlatformDevice, probe::static_::StaticDeviceDesc};
+use rdrive::{Platform, probe::static_::StaticDeviceDesc};
 #[cfg(any(
     feature = "virtio-blk",
     feature = "virtio-net",
@@ -37,6 +46,14 @@ use rdrive::{Platform, PlatformDevice, probe::static_::StaticDeviceDesc};
 ))]
 use virtio_drivers::transport::DeviceType;
 
+#[cfg(any(
+    feature = "pci",
+    feature = "virtio-blk",
+    feature = "virtio-net",
+    feature = "virtio-gpu",
+    feature = "virtio-input",
+    feature = "virtio-socket"
+))]
 use crate::config::devices;
 
 mod registers;
@@ -185,6 +202,14 @@ fn register_virtio_transport<T: virtio_drivers::transport::Transport + 'static>(
     }
 }
 
+#[cfg(any(
+    feature = "pci",
+    feature = "virtio-blk",
+    feature = "virtio-net",
+    feature = "virtio-gpu",
+    feature = "virtio-input",
+    feature = "virtio-socket"
+))]
 fn static_descriptor(name: &'static str) -> PlatformDevice {
     let mut descriptor = rdrive::Descriptor::new();
     descriptor.name = name;

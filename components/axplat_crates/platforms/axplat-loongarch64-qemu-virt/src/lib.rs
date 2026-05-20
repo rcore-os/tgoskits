@@ -23,7 +23,6 @@ pub mod config {
 
 mod boot;
 mod console;
-#[cfg(feature = "pci")]
 mod drivers;
 mod init;
 #[cfg(feature = "irq")]
