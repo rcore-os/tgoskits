@@ -105,8 +105,14 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
 
     if let Some(sig) = sig {
         info!("Send signal {:?} to thread {}", sig.signo(), tid);
-        send_signal_thread_inner(&task, thread, sig);
-        ax_task::wake_task(&task);
+        // Only wake the target thread when the signal is deliverable
+        // (not blocked/not ignored).  Sending a blocked signal via
+        // tkill/tgkill must NOT interrupt the target per POSIX; the signal
+        // is queued as pending and stays invisible until unblocked.
+        if thread.signal.send_signal(sig) {
+            task.interrupt();
+            ax_task::wake_task(&task);
+        }
     }
 
     Ok(())
