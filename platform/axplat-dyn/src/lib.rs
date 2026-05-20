@@ -20,8 +20,6 @@ mod init;
 mod irq;
 mod mem;
 mod power;
-#[cfg(feature = "rknpu")]
-pub mod rknpu;
 
 #[cfg(not(feature = "irq"))]
 #[somehal::irq_handler]

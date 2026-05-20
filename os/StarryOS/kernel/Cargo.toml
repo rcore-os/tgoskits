@@ -20,11 +20,11 @@ ext4 = ["ax-fs/ext4"]
 input = ["dep:ax-input", "ax-feat/input"]
 kcov = ["ax-hal/starry-kcov"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
-rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
+rknpu = ["dep:ax-drivers", "ax-drivers/rknpu"]
 plat-dyn = [
     "dep:ax-drivers",
     "dep:axplat-dyn",
-    "axplat-dyn/usb",
+    "ax-drivers/usb",
     "dep:crab-usb",
     "dep:rdrive",
 ]

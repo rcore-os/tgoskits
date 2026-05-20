@@ -42,7 +42,7 @@ sg2002 = [
   "starry-kernel/sg2002",
 ]
 
-rknpu = ["dep:axplat-dyn", "starry-kernel/rknpu", "axplat-dyn/rknpu"]
+rknpu = ["dep:ax-drivers", "ax-drivers/rknpu", "starry-kernel/rknpu"]
 vf2 = ["dep:axplat-riscv64-visionfive2", "ax-driver/bus-mmio", "ax-driver/sdmmc"]
 
 [[bin]]
@@ -56,6 +56,7 @@ path = "xtask/main.rs"
 [dependencies]
 ax-feat = { workspace = true, features = ["fs-ng-times", "irq"] }
 ax-driver.workspace = true
+ax-drivers = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 

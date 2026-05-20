@@ -58,6 +58,7 @@ rockchip-sdhci = [
     "dep:rdif-clk",
     "dep:sdhci-host",
     "dep:sdmmc-protocol",
+    "sdmmc-protocol/sdio",
 ]
 rockchip-dwmmc = [
     "block",
@@ -68,6 +69,7 @@ rockchip-dwmmc = [
     "dep:dwmmc-host",
     "dep:rdif-clk",
     "dep:sdmmc-protocol",
+    "sdmmc-protocol/sdio",
 ]
 rk3588-pcie = [
     "pci-fdt",

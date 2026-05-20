@@ -7,13 +7,13 @@ use core::{
     task::Context,
 };
 
+use ax_drivers::rknpu::{
+    self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit,
+};
 use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::PhysAddrRange;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
-use axplat_dyn::rknpu::{
-    self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit,
-};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
 
