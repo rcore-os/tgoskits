@@ -21,6 +21,7 @@ test_commands = [
     "/usr/bin/test-netlink-genl",
     "/usr/bin/test-netlink-rtnetlink",
     "/usr/bin/test-netlink-uevent",
+    "/usr/bin/test-rmdir-nonempty",
     "/usr/bin/test-sysfs-class",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
