@@ -400,12 +400,7 @@ fn ensure_thread_context(op: &str, start: usize, len: usize) -> VmResult {
     }
 }
 
-fn prepare_user_memory(
-    op: &str,
-    start: usize,
-    len: usize,
-    access_flags: MappingFlags,
-) -> VmResult {
+fn prepare_user_memory(op: &str, start: usize, len: usize, access_flags: MappingFlags) -> VmResult {
     check_access(start, len)?;
     if len == 0 {
         return Ok(());

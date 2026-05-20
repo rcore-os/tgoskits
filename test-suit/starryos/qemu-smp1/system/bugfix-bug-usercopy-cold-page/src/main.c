@@ -91,12 +91,39 @@ static void expect_read_into_cold_page(void)
     munmap(buf, 4096);
 }
 
+static void expect_empty_path_from_cold_page(void)
+{
+    char *path = cold_page();
+    if (path == NULL) {
+        note_fail("mmap cold empty path page", strerror(errno));
+        return;
+    }
+
+    errno = 0;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0 && errno == ENOENT) {
+        note_pass("open reads empty path from untouched anonymous page");
+    } else {
+        char detail[192];
+        snprintf(detail, sizeof(detail),
+                 "fd=%d errno=%d (%s), expected ENOENT",
+                 fd, errno, strerror(errno));
+        note_fail("open cold empty path", detail);
+        if (fd >= 0) {
+            close(fd);
+        }
+    }
+
+    munmap(path, 4096);
+}
+
 int main(void)
 {
     printf("=== bug-usercopy-cold-page ===\n");
 
     expect_getcwd_into_cold_page();
     expect_read_into_cold_page();
+    expect_empty_path_from_cold_page();
 
     printf("=== Results: %d passed, %d failed ===\n", passed, failed);
     if (failed == 0) {
