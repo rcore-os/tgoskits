@@ -31,7 +31,7 @@ fn panic_path() {
 #[inline(never)]
 fn c() {
     let bt = Backtrace::capture();
-    println!("{}", bt.report("raw"));
+    println!("{}", bt.kind("raw"));
     core::hint::black_box(());
 }
 

@@ -40,7 +40,7 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
         vaddr,
         access_flags,
         tf,
-        bt.report("trap")
+        bt.kind("trap")
     );
 }
 
@@ -76,7 +76,7 @@ fn loongarch64_trap_handler(tf: &mut TrapFrame) {
                 trap,
                 tf.era,
                 tf,
-                bt.report("trap")
+                bt.kind("trap")
             );
         }
     }

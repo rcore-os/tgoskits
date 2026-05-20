@@ -333,7 +333,7 @@ fn task_status(task: &AxTaskRef) -> String {
     let cred = thread.cred();
     render_task_status(
         thread.proc_data.proc.pid(),
-        task.id().as_u64(),
+        thread.tid() as u64,
         &cred,
         task.cpumask(),
         ax_hal::cpu_num(),

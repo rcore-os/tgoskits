@@ -99,7 +99,8 @@ impl ThreadSignalManager {
         let signo = sig.signo();
         debug!("Handle signal: {signo:?}");
         let action = {
-            let mut actions = self.proc.actions.lock();
+            let actions_arc = self.proc.actions();
+            let mut actions = actions_arc.lock();
             let action = actions[signo].clone();
             if action.flags.contains(SignalActionFlags::RESETHAND) {
                 actions[signo] = SignalAction::default();
@@ -299,7 +300,8 @@ impl ThreadSignalManager {
         let signo = sig.signo();
 
         // Lock by `actions`
-        let actions = self.proc.actions.lock();
+        let actions_arc = self.proc.actions();
+        let actions = actions_arc.lock();
         debug!("signal: {signo:?}");
 
         // Skip is_ignore() when the signal is blocked in this thread OR when
@@ -329,7 +331,8 @@ impl ThreadSignalManager {
     /// Sets the blocked signals. Return the old value.
     pub fn set_blocked(&self, mut set: SignalSet) -> SignalSet {
         // Lock by `actions`
-        let _actions = self.proc.actions.lock();
+        let actions_arc = self.proc.actions();
+        let _actions = actions_arc.lock();
 
         set.remove(Signo::SIGKILL);
         set.remove(Signo::SIGSTOP);
@@ -358,5 +361,12 @@ impl ThreadSignalManager {
     /// Gets current pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set | self.proc.pending()
+    }
+
+    /// Resets the alternate signal stack to the default (disabled, addr=0)
+    /// across `execve`. The pre-exec stack address pointed into user
+    /// memory that no longer exists once the new aspace replaces the old.
+    pub fn reset_stack(&self) {
+        *self.stack.lock() = SignalStack::default();
     }
 }

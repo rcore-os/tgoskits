@@ -28,7 +28,7 @@ sidebar_label: "Backtrace Host 符号化"
 
 1. **Host 工具**：`PATH` 中可执行 `llvm-addr2line` 或 `addr2line`。
 2. **ELF**：与产生日志的那次构建一致（例如 `target/x86_64-unknown-none/release/arceos-backtrace-raw-normal`），且含 debug 信息（测例通常通过 `[env] DWARF=y` 等打开帧指针与调试构建）。
-3. **日志**：串口或 QEMU 输出中已包含 target 打印的 raw 块（例如 `Backtrace::report("raw")`、panic 路径的 `report("panic")`、trap 的 `report("trap")`）。
+3. **日志**：串口或 QEMU 输出中已包含 target 打印的 raw 块（例如 `Backtrace::capture().kind("raw")`、panic 路径的 `.kind("panic")`、trap 的 `.kind("trap")`）。
 
 ## 命令
 
@@ -57,7 +57,7 @@ cargo xtask backtrace symbolize \
 
 ## Target 日志格式（输入）
 
-工具解析如下块（与 `axbacktrace` 的 `BacktraceReport` / `report(kind)` 输出一致）：
+工具解析如下块（与 `axbacktrace` 在设置 `kind` 后的 [`Display`](https://doc.rust-lang.org/std/fmt/trait.Display.html) 输出一致）：
 
 ```text
 BACKTRACE_BEGIN kind=raw arch=x86_64 alloc=true dwarf=true
@@ -112,16 +112,22 @@ cargo xtask backtrace symbolize \
 
 Panic 路径若使用 `kind=panic` 的 raw 块，将 `--kind` 改为 `panic`，并确保 `--elf` 与产生该日志的构建一致。
 
-## 后续计划：跑完自动 symbolize
+## ArceOS QEMU 测试：跑完自动 symbolize
 
-当前 **`cargo xtask arceos test qemu` 不会在结束后自动调用 symbolize**；需要按上文第二步手动执行，或自行用 shell `tee` 保存日志。
+在 **Unix** 主机上，`cargo xtask arceos test qemu` 运行 **rust** 用例时，默认仅当该用例的 **`build-<target>.toml` 启用了 backtrace 构建**（`[env]` 中 `BACKTRACE=y` 或 `DWARF=y`，与 axbuild 为帧指针 / 调试信息开门条件一致）时，在 QEMU 结束后：
 
-计划在 **#635 与 #646 合并到 `dev` 之后**，通过 **单独的 follow-up PR** 实现：
+1. 将本次串口输出 tee 到 `.axbuild/tmp/qemu-logs/<case>-<target>.log`；
+2. 用同次构建的 ELF 调用 host `backtrace symbolize`，在终端打印 `=== host backtrace symbolize ===` 段。
 
-- 在 `cargo xtask arceos test qemu`（或专用 `backtrace e2e`）成功结束后，自动对本次运行的 ELF 与捕获日志调用 `backtrace symbolize`；
-- 使「正常执行一条测试命令即可在终端看到符号化栈」，而无需再敲第二条命令。
+未启用上述 env 的用例（如 `fs/shell`、`exception`）**不会** tee、也不会自动 symbolize；与合并前行为一致。backtrace E2E（如 `backtrace-raw-normal` 的 `DWARF=y`）通常 **一条命令** 即可看到符号化栈。
 
-该自动化 **不改变** target 仍输出 raw 块、host 仍用 addr2line 的分工；仅改善 xtask 用户体验。
+关闭自动符号化：
+
+```bash
+cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case backtrace-raw-normal --no-symbolize
+```
+
+用例名按 `-` / `/` 分段匹配 `raw`、`panic`、`trap`（例如 `backtrace-raw-normal` → `--kind raw`；避免 `draw` 等误匹配）。仍可用上文「手动两步」对任意保存的日志做 symbolize。
 
 ## 验证
 

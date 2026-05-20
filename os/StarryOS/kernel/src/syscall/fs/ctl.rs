@@ -541,6 +541,7 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
     Ok(0)
 }
 
+#[cfg(target_arch = "x86_64")]
 fn update_times(
     dirfd: i32,
     path: *const c_char,
@@ -563,6 +564,7 @@ fn update_times(
 #[cfg(target_arch = "x86_64")]
 #[allow(non_camel_case_types)]
 #[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct utimbuf {
     actime: linux_raw_sys::general::__kernel_old_time_t,
     modtime: linux_raw_sys::general::__kernel_old_time_t,
@@ -571,7 +573,8 @@ pub struct utimbuf {
 #[cfg(target_arch = "x86_64")]
 pub fn sys_utime(path: *const c_char, times: *const utimbuf) -> AxResult<isize> {
     let (atime, mtime) = if let Some(times) = times.nullable() {
-        // FIXME: AnyBitPattern
+        // SAFETY: `utimbuf` is #[repr(C)] with only integer fields;
+        // any bit pattern is a valid value.
         let times = unsafe { times.vm_read_uninit()?.assume_init() };
         (
             Duration::from_secs(times.actime as _),
@@ -591,7 +594,8 @@ pub fn sys_utimes(
     times: *const [linux_raw_sys::general::timeval; 2],
 ) -> AxResult<isize> {
     let (atime, mtime) = if let Some(times) = times.nullable() {
-        // FIXME: AnyBitPattern
+        // SAFETY: `timeval` is #[repr(C)] with only integer fields;
+        // any bit pattern is a valid value.
         let [atime, mtime] = unsafe { times.vm_read_uninit()?.assume_init() };
         (atime.try_into_time_value()?, mtime.try_into_time_value()?)
     } else {
@@ -608,6 +612,10 @@ pub fn sys_utimensat(
     times: *const [timespec; 2],
     mut flags: u32,
 ) -> AxResult<isize> {
+    const UTIMENSAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !UTIMENSAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
     if path.is_null() {
         flags |= AT_EMPTY_PATH;
     }
@@ -620,7 +628,8 @@ pub fn sys_utimensat(
     }
 
     let (atime, mtime) = if let Some(times) = times.nullable() {
-        // FIXME: AnyBitPattern
+        // SAFETY: `timespec` is #[repr(C)] with only integer fields;
+        // any bit pattern is a valid value.
         let [atime, mtime] = unsafe { times.vm_read_uninit()?.assume_init() };
         (
             utime_to_duration(&atime).transpose()?,
@@ -634,7 +643,25 @@ pub fn sys_utimensat(
         return Ok(0);
     }
 
-    update_times(dirfd, path, atime, mtime, flags)?;
+    // Resolve file and check permissions.
+    let path = path.nullable().map(vm_load_string).transpose()?;
+    let loc = resolve_at(dirfd, path.as_deref(), flags)?
+        .into_file()
+        .ok_or(AxError::BadFileDescriptor)?;
+
+    let cred = current().as_thread().cred();
+    if !cred.has_cap_fowner() {
+        let meta = loc.metadata()?;
+        if cred.fsuid != meta.uid {
+            return Err(AxError::OperationNotPermitted);
+        }
+    }
+
+    loc.update_metadata(MetadataUpdate {
+        atime,
+        mtime,
+        ..Default::default()
+    })?;
     Ok(0)
 }
 
