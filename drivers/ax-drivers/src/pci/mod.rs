@@ -45,6 +45,56 @@ static LEGACY_IRQ_ROUTES: SpinMutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQ
 
 pub const DEVICE_NAME: &str = "pci-ecam";
 
+#[cfg(probe = "static")]
+crate::register_driver!(
+    name: "Static PCIe ECAM",
+    level: ProbeLevel::PreKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Static {
+        on_probe: probe_static,
+    }],
+);
+
+#[cfg(probe = "static")]
+fn probe_static(
+    info: rdrive::probe::static_::StaticInfo,
+    plat_dev: PlatformDevice,
+) -> Result<(), OnProbeError> {
+    if info.name() != DEVICE_NAME {
+        return Err(OnProbeError::NotMatch);
+    }
+    let Some(ecam) = info.pci_ecam() else {
+        return Err(OnProbeError::NotMatch);
+    };
+    let mem32 = ecam.mem32.or_else(|| pci_mem32_from_ranges(ecam.ranges));
+    let mem64 = ecam.mem64.or_else(|| pci_mem64_from_ranges(ecam.ranges));
+    register_ecam_controller(plat_dev, ecam.base, ecam.size, mem32, mem64)
+}
+
+#[cfg(probe = "static")]
+fn pci_mem32_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem32> {
+    let (address, size) = ranges.get(1).copied()?;
+    if size == 0 {
+        return None;
+    }
+    Some(PciMem32 {
+        address: u32::try_from(address).ok()?,
+        size: u32::try_from(size).ok()?,
+    })
+}
+
+#[cfg(probe = "static")]
+fn pci_mem64_from_ranges(ranges: &[(usize, usize)]) -> Option<PciMem64> {
+    let (address, size) = ranges.get(2).copied()?;
+    if size == 0 || usize::BITS <= 32 {
+        return None;
+    }
+    Some(PciMem64 {
+        address: address as u64,
+        size: size as u64,
+    })
+}
+
 pub fn register_ecam_controller(
     plat_dev: PlatformDevice,
     ecam_base: usize,

@@ -1,37 +1,22 @@
-use ax_drivers::block::sdmmc;
-use rdrive::{
-    Platform, PlatformDevice,
-    probe::{OnProbeError, static_::StaticDeviceDesc},
-};
+use ax_plat::drivers::DriversIf;
+use rdrive::probe::static_::StaticDeviceDesc;
 
+#[cfg(feature = "sdmmc")]
 use crate::config::devices;
 
-mod registers;
+#[cfg(feature = "sdmmc")]
+static SDMMC_REGS: &[(usize, usize)] = &[(devices::SDMMC_PADDR, 0x1000)];
 
-static STATIC_DEVICES: &[StaticDeviceDesc] = &[StaticDeviceDesc::new(sdmmc::DEVICE_NAME)];
+static STATIC_DEVICES: &[StaticDeviceDesc] = &[
+    #[cfg(feature = "sdmmc")]
+    StaticDeviceDesc::new("sdmmc").with_regs(SDMMC_REGS),
+];
 
-pub(super) fn init() {
-    rdrive::init(Platform::Static(STATIC_DEVICES))
-        .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
-    registers::append_linker_registers();
-    register_sdmmc();
-    rdrive::probe_pre_kernel()
-        .unwrap_or_else(|err| panic!("failed to run static pre-kernel probes: {err:?}"));
-}
+struct DriversIfImpl;
 
-fn register_sdmmc() {
-    match sdmmc::register_mmio(
-        static_descriptor(sdmmc::DEVICE_NAME),
-        devices::SDMMC_PADDR,
-        0x1000,
-    ) {
-        Ok(()) | Err(OnProbeError::NotMatch) => {}
-        Err(err) => panic!("failed to register SD/MMC: {err:?}"),
+#[impl_plat_interface]
+impl DriversIf for DriversIfImpl {
+    fn static_devices_fn() -> &'static [StaticDeviceDesc] {
+        STATIC_DEVICES
     }
-}
-
-fn static_descriptor(name: &'static str) -> PlatformDevice {
-    let mut descriptor = rdrive::Descriptor::new();
-    descriptor.name = name;
-    PlatformDevice { descriptor }
 }

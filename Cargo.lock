@@ -1042,6 +1042,7 @@ dependencies = [
  "fdt-parser",
  "heapless 0.9.3",
  "log",
+ "rdrive",
  "spin 0.10.0",
  "toml 1.1.2+spec-1.1.0",
 ]
@@ -1308,6 +1309,7 @@ dependencies = [
  "ax-plat-macros",
  "bitflags 2.11.1",
  "const-str",
+ "rdrive",
 ]
 
 [[package]]
@@ -1322,6 +1324,7 @@ dependencies = [
  "ax-plat-aarch64-peripherals",
  "dw_apb_uart",
  "log",
+ "rdrive",
 ]
 
 [[package]]
@@ -1351,6 +1354,7 @@ dependencies = [
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
+ "rdrive",
 ]
 
 [[package]]
@@ -1363,10 +1367,8 @@ dependencies = [
  "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
- "axklib",
  "log",
  "rdrive",
- "virtio-drivers",
 ]
 
 [[package]]
@@ -1380,6 +1382,7 @@ dependencies = [
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
+ "rdrive",
 ]
 
 [[package]]
@@ -1393,7 +1396,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-page-table-entry",
  "ax-plat",
- "axklib",
  "chrono",
  "log",
  "loongArch64",
@@ -1422,14 +1424,12 @@ dependencies = [
  "ax-lazyinit",
  "ax-plat",
  "ax-riscv-plic",
- "axklib",
  "log",
  "rdrive",
  "riscv 0.16.0",
  "riscv_goldfish",
  "sbi-rt 0.0.3",
  "some-serial",
- "virtio-drivers",
 ]
 
 [[package]]
@@ -1443,7 +1443,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-plat",
  "ax-riscv-plic",
- "axklib",
  "dw_uart_rs",
  "log",
  "rdrive",
@@ -1463,7 +1462,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-percpu",
  "ax-plat",
- "axklib",
  "bitflags 2.11.1",
  "heapless 0.9.3",
  "log",
@@ -1816,7 +1814,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-plat",
  "ax-riscv-plic",
- "axklib",
  "axvisor_api",
  "log",
  "rdrive",
@@ -1824,7 +1821,6 @@ dependencies = [
  "riscv_goldfish",
  "sbi-rt 0.0.3",
  "some-serial",
- "virtio-drivers",
 ]
 
 [[package]]
@@ -1838,7 +1834,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-plat",
  "ax-riscv-plic",
- "axklib",
  "log",
  "rdrive",
  "riscv 0.14.0",

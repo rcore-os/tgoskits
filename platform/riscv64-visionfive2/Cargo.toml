@@ -18,7 +18,6 @@ sdmmc = ["ax-drivers/sdmmc"]
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-drivers = { workspace = true, optional = true }
-axklib.workspace = true
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
 ax-kspin = { workspace = true }

@@ -1,18 +1,7 @@
-#[cfg(feature = "plat-dyn")]
-pub(crate) fn init_dyn_devices() {
-    info!("Initialize dynamic platform devices...");
-    #[cfg(target_os = "none")]
-    axplat_dyn::drivers::probe_all_devices()
-        .unwrap_or_else(|err| panic!("failed to probe dynamic platform devices: {err:?}"));
-}
-
-#[cfg(not(feature = "plat-dyn"))]
-pub(crate) fn init_static_devices() {
-    info!("Initialize static platform devices...");
-    if rdrive::is_initialized() {
-        rdrive::probe_all(false)
-            .unwrap_or_else(|err| panic!("failed to probe static platform devices: {err:?}"));
-    }
+pub(crate) fn probe_all_devices() {
+    info!("Probe platform devices...");
+    rdrive::probe_all(false)
+        .unwrap_or_else(|err| panic!("failed to probe platform devices: {err:?}"));
 }
 
 #[cfg(all(feature = "fs", feature = "plat-dyn"))]

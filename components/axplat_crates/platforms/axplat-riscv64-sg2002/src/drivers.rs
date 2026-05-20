@@ -1,39 +1,25 @@
-use ax_drivers::block::cvsd;
-use rdrive::{
-    Platform, PlatformDevice,
-    probe::{OnProbeError, static_::StaticDeviceDesc},
-};
+use ax_plat::drivers::DriversIf;
+use rdrive::probe::static_::StaticDeviceDesc;
 
+#[cfg(feature = "cvsd")]
 use crate::config::devices;
 
-mod registers;
+#[cfg(feature = "cvsd")]
+static CVSD_REGS: &[(usize, usize)] = &[
+    (devices::CVSD_PADDR, 0x1000),
+    (devices::SYSCON_PADDR, 0x8000),
+];
 
-static STATIC_DEVICES: &[StaticDeviceDesc] = &[StaticDeviceDesc::new(cvsd::DEVICE_NAME)];
+static STATIC_DEVICES: &[StaticDeviceDesc] = &[
+    #[cfg(feature = "cvsd")]
+    StaticDeviceDesc::new("cvsd").with_regs(CVSD_REGS),
+];
 
-pub(super) fn init() {
-    rdrive::init(Platform::Static(STATIC_DEVICES))
-        .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
-    registers::append_linker_registers();
-    register_cvsd();
-    rdrive::probe_pre_kernel()
-        .unwrap_or_else(|err| panic!("failed to run static pre-kernel probes: {err:?}"));
-}
+struct DriversIfImpl;
 
-fn register_cvsd() {
-    match cvsd::register_mmio(
-        static_descriptor(cvsd::DEVICE_NAME),
-        devices::CVSD_PADDR,
-        0x1000,
-        devices::SYSCON_PADDR,
-        0x8000,
-    ) {
-        Ok(()) | Err(OnProbeError::NotMatch) => {}
-        Err(err) => panic!("failed to register CVSD: {err:?}"),
+#[impl_plat_interface]
+impl DriversIf for DriversIfImpl {
+    fn static_devices_fn() -> &'static [StaticDeviceDesc] {
+        STATIC_DEVICES
     }
-}
-
-fn static_descriptor(name: &'static str) -> PlatformDevice {
-    let mut descriptor = rdrive::Descriptor::new();
-    descriptor.name = name;
-    PlatformDevice { descriptor }
 }

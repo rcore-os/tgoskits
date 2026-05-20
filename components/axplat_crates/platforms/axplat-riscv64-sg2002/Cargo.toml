@@ -25,7 +25,6 @@ cvsd = ["ax-drivers/cvsd"]
 dw_uart_rs = "0.2.0"
 log = { workspace = true }
 ax-drivers = { workspace = true, optional = true }
-axklib.workspace = true
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true, features = ["xuantie-c9xx"] }
 ax-kspin = { workspace = true }

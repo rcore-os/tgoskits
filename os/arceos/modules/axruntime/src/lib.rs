@@ -37,6 +37,8 @@
 #[macro_use]
 extern crate ax_log;
 
+extern crate ax_drivers as _;
+
 #[cfg(all(target_os = "none", not(test)))]
 mod lang_items;
 
@@ -47,6 +49,7 @@ mod mp;
 mod klib;
 
 mod devices;
+mod registers;
 
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
@@ -232,6 +235,13 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     info!("Initialize platform devices...");
     ax_hal::init_later(cpu_id, arg);
+    if !rdrive::is_initialized() {
+        rdrive::init(rdrive::Platform::Static(ax_hal::drivers::static_devices()))
+            .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
+    }
+    registers::append_linker_registers();
+    rdrive::probe_pre_kernel()
+        .unwrap_or_else(|err| panic!("failed to run pre-kernel driver probes: {err:?}"));
 
     #[cfg(feature = "multitask")]
     ax_task::init_scheduler();
@@ -239,11 +249,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "ipi")]
     ax_ipi::init();
 
-    #[cfg(feature = "plat-dyn")]
-    devices::init_dyn_devices();
-
-    #[cfg(not(feature = "plat-dyn"))]
-    devices::init_static_devices();
+    devices::probe_all_devices();
 
     #[cfg(all(feature = "fs", feature = "plat-dyn"))]
     ax_fs::init_filesystems(

@@ -32,7 +32,6 @@ impl InitIf for InitIfImpl {
         {
             ax_plat::irq::set_enable(crate::config::devices::IPI_IRQ, true);
         }
-        crate::drivers::init();
     }
 
     /// Initializes the platform at the later stage for secondary cores.

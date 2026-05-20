@@ -30,7 +30,6 @@ impl InitIf for InitIfImpl {
     fn init_later(_cpu_id: usize, _arg: usize) {
         crate::apic::init_primary();
         crate::time::init_primary();
-        crate::drivers::init();
     }
 
     /// Initializes the platform at the later stage for secondary cores.

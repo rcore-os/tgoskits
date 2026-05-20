@@ -7,6 +7,30 @@ use super::{SyncBlockOps, register_sync_block};
 
 pub const DEVICE_NAME: &str = "sdmmc";
 
+#[cfg(probe = "static")]
+crate::register_driver!(
+    name: "Static SD/MMC",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Static {
+        on_probe: probe_static,
+    }],
+);
+
+#[cfg(probe = "static")]
+fn probe_static(
+    info: rdrive::probe::static_::StaticInfo,
+    plat_dev: PlatformDevice,
+) -> Result<(), OnProbeError> {
+    if info.name() != DEVICE_NAME {
+        return Err(OnProbeError::NotMatch);
+    }
+    let Some((address, size)) = info.regs().first().copied() else {
+        return Err(OnProbeError::NotMatch);
+    };
+    register_mmio(plat_dev, address, size)
+}
+
 pub fn register_mmio(
     plat_dev: PlatformDevice,
     base_paddr: usize,

@@ -1,49 +1,25 @@
+use ax_plat::drivers::DriversIf;
+use rdrive::probe::static_::StaticDeviceDesc;
 #[cfg(feature = "pci")]
-use ax_drivers::pci;
-#[cfg(feature = "pci")]
-use rdrive::PlatformDevice;
-#[cfg(feature = "pci")]
-use rdrive::probe::OnProbeError;
-use rdrive::{Platform, probe::static_::StaticDeviceDesc};
+use rdrive::probe::static_::StaticPciEcam;
 
 #[cfg(feature = "pci")]
 use crate::config::devices;
 
-mod registers;
+#[cfg(feature = "pci")]
+const PCI_ECAM_SIZE: usize = (devices::PCI_BUS_END + 1) << 20;
 
 static STATIC_DEVICES: &[StaticDeviceDesc] = &[
     #[cfg(feature = "pci")]
-    StaticDeviceDesc::new(pci::DEVICE_NAME),
+    StaticDeviceDesc::new("pci-ecam")
+        .with_pci_ecam(StaticPciEcam::new(devices::PCI_ECAM_BASE, PCI_ECAM_SIZE)),
 ];
 
-pub(super) fn init() {
-    rdrive::init(Platform::Static(STATIC_DEVICES))
-        .unwrap_or_else(|err| panic!("failed to initialize static rdrive source: {err:?}"));
-    registers::append_linker_registers();
-    #[cfg(feature = "pci")]
-    register_pcie();
-    rdrive::probe_pre_kernel()
-        .unwrap_or_else(|err| panic!("failed to run static pre-kernel probes: {err:?}"));
-}
+struct DriversIfImpl;
 
-#[cfg(feature = "pci")]
-fn register_pcie() {
-    let ecam_size = (devices::PCI_BUS_END + 1) << 20;
-    match pci::register_ecam_controller(
-        static_descriptor(pci::DEVICE_NAME),
-        devices::PCI_ECAM_BASE,
-        ecam_size,
-        None,
-        None,
-    ) {
-        Ok(()) | Err(OnProbeError::NotMatch) => {}
-        Err(err) => panic!("failed to register static PCIe controller: {err:?}"),
+#[impl_plat_interface]
+impl DriversIf for DriversIfImpl {
+    fn static_devices_fn() -> &'static [StaticDeviceDesc] {
+        STATIC_DEVICES
     }
-}
-
-#[cfg(feature = "pci")]
-fn static_descriptor(name: &'static str) -> PlatformDevice {
-    let mut descriptor = rdrive::Descriptor::new();
-    descriptor.name = name;
-    PlatformDevice { descriptor }
 }

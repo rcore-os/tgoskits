@@ -24,14 +24,12 @@ virtio-socket = ["ax-drivers/virtio-socket"]
 [dependencies]
 log = "0.4"
 ax-drivers = { workspace = true, optional = true }
-axklib.workspace = true
 ax-page-table-entry = { workspace = true }
 ax-config-macros = { workspace = true }
 ax-plat-aarch64-peripherals = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
 rdrive.workspace = true
-virtio-drivers.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none"]

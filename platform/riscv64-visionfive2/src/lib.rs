@@ -8,7 +8,6 @@ extern crate ax_plat;
 
 mod boot;
 mod console;
-#[cfg(feature = "sdmmc")]
 mod drivers;
 mod init;
 #[cfg(feature = "irq")]

@@ -17,7 +17,7 @@ fp-simd = ["ax-cpu/fp-simd"]
 irq = ["ax-plat/irq"]
 rtc = ["riscv_goldfish"]
 smp = ["ax-plat/smp"]
-virtio-blk = ["dep:ax-drivers", "dep:axklib", "dep:virtio-drivers", "ax-drivers/virtio-blk"]
+virtio-blk = ["dep:ax-drivers", "ax-drivers/virtio-blk"]
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-kspin = { workspace = true }
@@ -32,12 +32,10 @@ some-serial.workspace = true
 ax-config-macros = { workspace = true }
 ax-cpu = { workspace = true }
 ax-drivers = { workspace = true, optional = true }
-axklib = { workspace = true, optional = true }
 ax-plat = { workspace = true }
 axvisor_api = { workspace = true }
 ax-crate-interface = { workspace = true }
 rdrive.workspace = true
-virtio-drivers = { workspace = true, optional = true }
 
 [package.metadata.docs.rs]
 targets = ["riscv64gc-unknown-none-elf"]

@@ -21,6 +21,25 @@ pub mod vsock;
 
 pub const MMIO_DEVICE_NAME: &str = "virtio-mmio";
 
+#[cfg(all(
+    probe = "static",
+    any(
+        feature = "virtio-blk",
+        feature = "virtio-net",
+        feature = "virtio-gpu",
+        feature = "virtio-input",
+        feature = "virtio-socket",
+    )
+))]
+crate::register_driver!(
+    name: "Static VirtIO MMIO",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Static {
+        on_probe: probe_static_mmio,
+    }],
+);
+
 pub struct VirtIoHalImpl(PhantomData<()>);
 
 unsafe impl VirtIoHal for VirtIoHalImpl {
@@ -64,6 +83,71 @@ pub fn probe_mmio_device(
     let header = NonNull::new(reg_base as *mut virtio_drivers::transport::mmio::VirtIOHeader)?;
     let transport = unsafe { MmioTransport::new(header, reg_size) }.ok()?;
     Some((transport.device_type(), transport))
+}
+
+#[cfg(all(
+    probe = "static",
+    any(
+        feature = "virtio-blk",
+        feature = "virtio-net",
+        feature = "virtio-gpu",
+        feature = "virtio-input",
+        feature = "virtio-socket",
+    )
+))]
+fn probe_static_mmio(
+    info: rdrive::probe::static_::StaticInfo,
+    plat_dev: rdrive::PlatformDevice,
+) -> Result<(), rdrive::probe::OnProbeError> {
+    if info.name() != MMIO_DEVICE_NAME {
+        return Err(rdrive::probe::OnProbeError::NotMatch);
+    }
+    let reg = info
+        .resource_index()
+        .and_then(|index| info.regs().get(index))
+        .or_else(|| info.regs().first())
+        .copied()
+        .ok_or(rdrive::probe::OnProbeError::NotMatch)?;
+    let (base, size) = reg;
+    let mmio = axklib::mmio::ioremap_raw(base.into(), size).map_err(|err| {
+        rdrive::probe::OnProbeError::other(alloc::format!(
+            "failed to map virtio-mmio {base:#x}: {err:?}",
+        ))
+    })?;
+    let Some((ty, transport)) = probe_mmio_device(mmio.as_ptr(), size) else {
+        return Err(rdrive::probe::OnProbeError::NotMatch);
+    };
+    register_static_transport(plat_dev, ty, transport)
+}
+
+#[cfg(all(
+    probe = "static",
+    any(
+        feature = "virtio-blk",
+        feature = "virtio-net",
+        feature = "virtio-gpu",
+        feature = "virtio-input",
+        feature = "virtio-socket",
+    )
+))]
+fn register_static_transport<T: Transport + 'static>(
+    plat_dev: rdrive::PlatformDevice,
+    ty: DeviceType,
+    transport: T,
+) -> Result<(), rdrive::probe::OnProbeError> {
+    match ty {
+        #[cfg(feature = "virtio-blk")]
+        DeviceType::Block => block::register_transport(plat_dev, transport),
+        #[cfg(feature = "virtio-net")]
+        DeviceType::Network => net::register_transport(plat_dev, transport),
+        #[cfg(feature = "virtio-gpu")]
+        DeviceType::GPU => display::register_transport(plat_dev, transport),
+        #[cfg(feature = "virtio-input")]
+        DeviceType::Input => input::register_transport(plat_dev, transport),
+        #[cfg(feature = "virtio-socket")]
+        DeviceType::Socket => vsock::register_transport(plat_dev, transport),
+        _ => Err(rdrive::probe::OnProbeError::NotMatch),
+    }
 }
 
 #[cfg(probe = "fdt")]

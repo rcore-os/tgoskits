@@ -14,13 +14,13 @@ mod bar_alloc;
 
 pub use bar_alloc::SimpleBarAllocator;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PciMem32 {
     pub address: u32,
     pub size: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PciMem64 {
     pub address: u64,
     pub size: u64,
