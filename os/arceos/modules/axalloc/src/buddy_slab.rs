@@ -191,15 +191,29 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let result = self
+        let mut result = self
             .inner
             .lock()
-            .alloc_pages(num_pages, alignment)
-            .map_err(crate::AllocError::from);
-        if result.is_ok() {
-            self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+            .alloc_pages(num_pages, alignment);
+        if result.is_err() {
+            for _ in 0..4 {
+                let reclaimed = crate::try_page_reclaim(num_pages.max(16));
+                if reclaimed == 0 {
+                    break;
+                }
+                debug!(
+                    "page reclaim freed {} pages, retrying allocation ({} pages, kind={:?})",
+                    reclaimed, num_pages, kind
+                );
+                result = self.inner.lock().alloc_pages(num_pages, alignment);
+                if result.is_ok() {
+                    break;
+                }
+            }
         }
-        result
+        let addr = result.map_err(crate::AllocError::from)?;
+        self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+        Ok(addr)
     }
 
     /// Allocates contiguous low-memory pages (physical address < 4 GiB).
@@ -209,15 +223,29 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let result = self
+        let mut result = self
             .inner
             .lock()
-            .alloc_pages_lowmem(num_pages, alignment)
-            .map_err(crate::AllocError::from);
-        if result.is_ok() {
-            self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+            .alloc_pages_lowmem(num_pages, alignment);
+        if result.is_err() {
+            for _ in 0..4 {
+                let reclaimed = crate::try_page_reclaim(num_pages.max(16));
+                if reclaimed == 0 {
+                    break;
+                }
+                debug!(
+                    "page reclaim freed {} pages, retrying dma32 allocation ({} pages, kind={:?})",
+                    reclaimed, num_pages, kind
+                );
+                result = self.inner.lock().alloc_pages_lowmem(num_pages, alignment);
+                if result.is_ok() {
+                    break;
+                }
+            }
         }
-        result
+        let addr = result.map_err(crate::AllocError::from)?;
+        self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
+        Ok(addr)
     }
 
     /// Allocates contiguous pages starting from the given address.

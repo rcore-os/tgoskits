@@ -181,11 +181,24 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let addr = self
-            .palloc
-            .lock()
-            .alloc_pages(num_pages, alignment)
-            .map_err(crate::AllocError::from)?;
+        let mut result = self.palloc.lock().alloc_pages(num_pages, alignment);
+        if result.is_err() {
+            for _ in 0..4 {
+                let reclaimed = crate::try_page_reclaim(num_pages.max(16));
+                if reclaimed == 0 {
+                    break;
+                }
+                debug!(
+                    "page reclaim freed {} pages, retrying allocation ({} pages, kind={:?})",
+                    reclaimed, num_pages, kind
+                );
+                result = self.palloc.lock().alloc_pages(num_pages, alignment);
+                if result.is_ok() {
+                    break;
+                }
+            }
+        }
+        let addr = result.map_err(crate::AllocError::from)?;
         if !matches!(kind, UsageKind::RustHeap) {
             self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
         }
