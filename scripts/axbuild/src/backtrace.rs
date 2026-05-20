@@ -132,13 +132,14 @@ pub(crate) enum SymbolizeAfterQemuOutcome {
 
 /// True when `TGOSKITS_KEEP_QEMU_LOG` is set to a truthy value (`1`, `true`, `yes`, case-insensitive).
 pub(crate) fn keep_qemu_log_from_env() -> bool {
-    match std::env::var("TGOSKITS_KEEP_QEMU_LOG") {
-        Ok(value) => matches!(
-            value.trim(),
-            "1" | "true" | "yes" | "TRUE" | "YES" | "True" | "Yes"
-        ),
-        Err(_) => false,
-    }
+    std::env::var("TGOSKITS_KEEP_QEMU_LOG")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
 }
 
 /// Whether a successful symbolize should remove the QEMU capture log.
