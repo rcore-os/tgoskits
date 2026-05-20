@@ -470,5 +470,5 @@ fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
-sg200x-bsp = "0.5"
+sg200x-bsp = "0.6"
 x86 = "0.52"
