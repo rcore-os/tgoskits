@@ -2,8 +2,11 @@ name: Starry Apps
 
 on:
   schedule:
-    # GitHub cron uses UTC. This runs at 02:00 Beijing time (UTC+8).
-    - cron: "0 18 * * *"
+    # GitHub cron uses UTC. This runs at 10:00 Beijing time (UTC+8).
+    - cron: "0 2 * * *"
+  push:
+    branches:
+      - cron-ci
   workflow_dispatch:
 
 permissions:
