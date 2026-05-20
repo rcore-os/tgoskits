@@ -2,11 +2,8 @@ name: Starry Apps
 
 on:
   schedule:
-    # GitHub cron uses UTC. This runs at 10:00 Beijing time (UTC+8).
-    - cron: "0 2 * * *"
-  push:
-    branches:
-      - cron-ci
+    # GitHub cron uses UTC. This runs at 02:00 Beijing time (UTC+8).
+    - cron: "0 18 * * *"
   workflow_dispatch:
 
 permissions:
@@ -33,22 +30,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: PicoClaw CLI offline smoke
-            cache_key: starry-app-picoclaw-cli
-            command: |
-              apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
-              cargo xtask starry qemu \
-                --arch x86_64 \
-                --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
-                --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw.img
-          - name: Codex CLI offline help smoke
-            cache_key: starry-app-codex-cli
-            command: |
-              apps/starry/codex-cli/prepare_codex_rootfs.sh
-              cargo xtask starry qemu \
-                --arch x86_64 \
-                --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-help.toml \
-                --rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex.img
+          - name: Starry app smoke
+            cache_key: starry-apps-all
+            command: cargo xtask starry app run --all
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -89,31 +73,6 @@ jobs:
       - name: Run Starry app smoke
         env:
           STARRY_APK_REGION: us
-        shell: bash
-        run: |
-          set -euxo pipefail
-          ${{ matrix.command }}
-
-  starry_orangepi_apps:
-    name: ${{ matrix.name }}
-    runs-on: [self-hosted, linux, board]
-    if: github.repository_owner == 'rcore-os'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Orange Pi 5 Plus UVC smoke
-            command: cargo starry example board -t orangepi-5-plus-uvc
-          - name: Orange Pi 5 Plus UVC RKNN smoke
-            command: cargo starry example board -t orangepi-5-plus-uvc-rknn
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Show Rust version
-        run: rustc --version
-
-      - name: Run Starry board app smoke
         shell: bash
         run: |
           set -euxo pipefail

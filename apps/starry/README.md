@@ -1,10 +1,10 @@
-# Starry Examples
+# Starry Apps
 
 `apps/starry/` contains runnable StarryOS scenarios. Most direct child
-directories are board cases selected by `cargo starry example board -t <case>`;
+directories are board cases selected by `cargo xtask starry app board -t <case>`;
 some x86_64 QEMU demos provide their own `cargo xtask starry qemu` commands.
 
-Cases are intentionally separate from `test-suit/starryos`: examples are
+Cases are intentionally separate from `test-suit/starryos`: apps are
 operator-facing workflows, while the test suit remains CI-oriented coverage.
 
 ## Case Layout
@@ -17,7 +17,7 @@ apps/starry/<case>/
   <optional user projects>
 ```
 
-- `init.sh` is read by `cargo starry example board` and sent to the Starry shell
+- `init.sh` is read by `cargo xtask starry app board` and sent to the Starry shell
   as the startup command.
 - `build-<target>.toml` is the StarryOS build config. It must either include a
   top-level `target = "..."` or encode the target in the filename.
@@ -30,7 +30,7 @@ apps/starry/<case>/
 Example:
 
 ```bash
-cargo starry example board -t orangepi-5-plus-uvc
+cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
 ## PicoClaw CLI
@@ -67,7 +67,7 @@ board rootfs before StarryOS is booted. The usual preparation flow is:
 5. close the `cargo board connect` session, then boot StarryOS with:
 
 ```bash
-cargo starry example board -t orangepi-5-plus-uvc
+cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
 See `orangepi-5-plus-uvc/README.md` for the complete copy, build, install, and
