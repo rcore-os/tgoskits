@@ -4,7 +4,9 @@
  * 测试文件系统修复:
  * 1. fsync 对目录 fd 应返回成功 (Linux 允许)
  * 2. fdatasync 对目录 fd 应返回成功
- * 3. sync_file_range 应返回成功 (建议性优化)
+ * 3. 非法 fd 应返回 EBADF
+ * 4. pipe fd 应返回 EINVAL
+ * 5. sync_file_range 应返回成功 (建议性优化)
  */
 
 #include "test_framework.h"
@@ -40,7 +42,27 @@ int main(void)
         unlink("/tmp/starry_fsync_test/file");
     }
 
-    /* Test 3: sync_file_range */
+    /* Test 3: invalid fd handling */
+    {
+        CHECK_ERR(fsync(-1), EBADF, "fsync on invalid fd -> EBADF");
+        CHECK_ERR(fdatasync(-1), EBADF, "fdatasync on invalid fd -> EBADF");
+    }
+
+    /* Test 4: fsync on pipe -> EINVAL (Linux behavior) */
+    {
+        int pfd[2];
+        CHECK(pipe(pfd) == 0, "create pipe for fsync EINVAL");
+        if (pfd[0] >= 0) {
+            CHECK_ERR(fsync(pfd[0]), EINVAL, "fsync on pipe -> EINVAL");
+            CHECK_ERR(fdatasync(pfd[0]), EINVAL, "fdatasync on pipe -> EINVAL");
+            close(pfd[0]);
+        }
+        if (pfd[1] >= 0) {
+            close(pfd[1]);
+        }
+    }
+
+    /* Test 5: sync_file_range */
     {
         int fd = open("/tmp/starry_fsync_test/sfrfile", O_RDWR | O_CREAT | O_TRUNC, 0644);
         CHECK(fd >= 0, "create file for sync_file_range");
