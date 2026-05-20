@@ -9,7 +9,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::{FS_CONTEXT, OpenOptions};
 use ax_io::{IoBuf, Read, Write};
 use ax_sync::Mutex;
-use ax_task::future::{block_on, interruptible};
+use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::NodeType;
 use axpoll::{IoEvents, Pollable};
 use enum_dispatch::enum_dispatch;
@@ -45,6 +45,11 @@ pub trait TransportOps: Configurable + Pollable + Send + Sync {
 
     /// Accept an incoming connection, returning the new transport and peer address.
     async fn accept(&self) -> AxResult<(Transport, UnixSocketAddr)>;
+
+    /// Non-blocking accept: returns `WouldBlock` immediately when no connection is pending.
+    fn try_accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {
+        Err(AxError::WouldBlock)
+    }
 
     /// Send data through the transport.
     fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize>;
@@ -205,7 +210,14 @@ impl SocketOps for UnixSocket {
     }
 
     fn accept(&self) -> AxResult<Socket> {
-        let (transport, peer_addr) = block_on(interruptible(self.transport.accept()))??;
+        let mut nonblocking = false;
+        let _ = self
+            .transport
+            .get_option_inner(&mut GetSocketOption::NonBlocking(&mut nonblocking));
+        let (transport, peer_addr) =
+            block_on(poll_io(&self.transport, IoEvents::IN, nonblocking, || {
+                self.transport.try_accept()
+            }))?;
         Ok(Self {
             transport,
             local_addr: Mutex::new(self.local_addr.lock().clone()),

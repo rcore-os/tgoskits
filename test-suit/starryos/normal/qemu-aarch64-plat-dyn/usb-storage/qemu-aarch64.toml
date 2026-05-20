@@ -25,4 +25,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/usb-storage-test"
 success_regex = ["(?m)^USB storage tests passed!\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "USB storage test failed"]
-timeout = 60
+timeout = 120

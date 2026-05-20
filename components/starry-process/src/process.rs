@@ -171,6 +171,19 @@ impl Process {
         self.tg.lock().threads.iter().cloned().collect()
     }
 
+    /// Renames a thread in the thread group.
+    ///
+    /// Used by `execve`'s de_thread step when a non-leader thread successfully
+    /// `execve`s: the calling thread inherits the leader's TID so that
+    /// `gettid() == getpid()` holds in the new image. We swap `old_tid` for
+    /// `new_tid` atomically inside the thread-group lock so there is no
+    /// instant in which the caller is unrepresented in the group.
+    pub fn rename_thread(self: &Arc<Self>, old_tid: Pid, new_tid: Pid) {
+        let mut tg = self.tg.lock();
+        tg.threads.remove(&old_tid);
+        tg.threads.insert(new_tid);
+    }
+
     /// Returns `true` if the [`Process`] is group exited.
     pub fn is_group_exited(&self) -> bool {
         self.tg.lock().group_exited
@@ -202,22 +215,26 @@ impl Process {
     /// This method panics if the [`Process`] is the init process.
     pub fn exit(self: &Arc<Self>) {
         // TODO: child subreaper
-        let reaper = INIT_PROC.get().unwrap();
+        let reaper_proc = INIT_PROC.get().unwrap();
 
-        if Arc::ptr_eq(self, reaper) {
+        if Arc::ptr_eq(self, reaper_proc) {
             return;
         }
 
-        let mut children = self.children.lock(); // Acquire the lock first
-        self.is_zombie.store(true, Ordering::Release);
+        let reaper_parent = Arc::downgrade(reaper_proc);
+        let children = {
+            let mut children = self.children.lock();
+            core::mem::take(&mut *children)
+        };
 
-        let mut reaper_children = reaper.children.lock();
-        let reaper = Arc::downgrade(reaper);
-
-        for (pid, child) in core::mem::take(&mut *children) {
-            *child.parent.lock() = reaper.clone();
+        let mut reaper_children = reaper_proc.children.lock();
+        for (pid, child) in children {
+            *child.parent.lock() = reaper_parent.clone();
             reaper_children.insert(pid, child);
         }
+        drop(reaper_children);
+
+        self.is_zombie.store(true, Ordering::Release);
     }
 
     /// Frees a zombie [`Process`]. Removes it from the parent.

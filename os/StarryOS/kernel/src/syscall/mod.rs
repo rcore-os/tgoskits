@@ -192,28 +192,32 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
+            uctx.arg4(),
         ),
         Sysno::pwritev => sys_pwritev(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
+            uctx.arg4(),
         ),
         // Kernel ABI: SYSCALL_DEFINE6(preadv2, fd, vec, vlen, pos_l, pos_h, flags)
-        // arg4 is pos_h (high 32 bits of offset, always 0 on 64-bit); flags is arg5.
+        // arg4 is pos_h (high 32 bits of offset); flags is arg5.
         Sysno::preadv2 => sys_preadv2(
-            uctx.arg0() as _, // fd
-            uctx.arg1() as _, // iov
-            uctx.arg2() as _, // iovcnt
-            uctx.arg3() as _, // offset (pos_l)
-            uctx.arg5() as _, // flags (arg4=pos_h is skipped)
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
         Sysno::pwritev2 => sys_pwritev2(
-            uctx.arg0() as _, // fd
-            uctx.arg1() as _, // iov
-            uctx.arg2() as _, // iovcnt
-            uctx.arg3() as _, // offset (pos_l)
-            uctx.arg5() as _, // flags (arg4=pos_h is skipped)
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
         Sysno::sendfile => sys_sendfile(
             uctx.arg0() as _,
@@ -328,7 +332,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
 
         // memfd
-        Sysno::memfd_create => sys_memfd_create(uctx.arg0().into(), uctx.arg1() as _),
+        Sysno::memfd_create => sys_memfd_create(uctx.arg0() as _, uctx.arg1() as _),
 
         // fs stat
         #[cfg(target_arch = "x86_64")]
@@ -556,6 +560,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::getresgid => sys_getresgid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::getgroups => sys_getgroups(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setgroups => sys_setgroups(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::setfsuid => sys_setfsuid(uctx.arg0() as _),
+        Sysno::setfsgid => sys_setfsgid(uctx.arg0() as _),
         Sysno::uname => sys_uname(uctx.arg0() as _),
         Sysno::sysinfo => sys_sysinfo(uctx.arg0() as _),
         Sysno::syslog => sys_syslog(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),

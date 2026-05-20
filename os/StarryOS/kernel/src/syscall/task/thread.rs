@@ -18,7 +18,10 @@ pub fn sys_getppid() -> AxResult<isize> {
 }
 
 pub fn sys_gettid() -> AxResult<isize> {
-    Ok(current().id().as_u64() as _)
+    // `Thread::tid` rather than the scheduler ID: after a non-leader
+    // `execve` they differ (the calling thread inherits the leader's TID
+    // so that `gettid() == getpid()` holds in the new image).
+    Ok(current().as_thread().tid() as _)
 }
 
 /// ARCH_PRCTL codes
@@ -49,8 +52,9 @@ enum ArchPrctlCode {
 /// The set_tid_address() always succeeds
 pub fn sys_set_tid_address(clear_child_tid: usize) -> AxResult<isize> {
     let curr = current();
-    curr.as_thread().set_clear_child_tid(clear_child_tid);
-    Ok(curr.id().as_u64() as isize)
+    let thr = curr.as_thread();
+    thr.set_clear_child_tid(clear_child_tid);
+    Ok(thr.tid() as isize)
 }
 
 #[cfg(target_arch = "x86_64")]

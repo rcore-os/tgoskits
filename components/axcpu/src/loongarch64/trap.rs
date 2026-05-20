@@ -33,13 +33,14 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     if tf.fixup_exception() {
         return;
     }
+    let bt = tf.backtrace();
     panic!(
         "Unhandled PLV0 Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
         tf.era,
         vaddr,
         access_flags,
         tf,
-        tf.backtrace()
+        bt.kind("trap")
     );
 }
 
@@ -69,12 +70,13 @@ fn loongarch64_trap_handler(tf: &mut TrapFrame) {
             crate::trap::dispatch_irq(irq_num);
         }
         trap => {
+            let bt = tf.backtrace();
             panic!(
                 "Unhandled trap {:?} @ {:#x}:\n{:#x?}\n{}",
                 trap,
                 tf.era,
                 tf,
-                tf.backtrace()
+                bt.kind("trap")
             );
         }
     }

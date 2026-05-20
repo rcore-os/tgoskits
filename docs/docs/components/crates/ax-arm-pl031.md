@@ -1,6 +1,6 @@
 # `ax-arm-pl031`
 
-> 路径：`components/arm_pl031`
+> 路径：`drivers/rtc/arm_pl031`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.2.1`
@@ -165,11 +165,11 @@ ax-arm-pl031 = { workspace = true }
 Axvisor 的依赖图可能会间接包含 `ax-arm-pl031`，但它更多体现为宿主平台栈的组成部分；如果 guest 设备树里也描述了 PL031，那是“客户机可见设备模型”的话题，不能与本 crate 在宿主 Rust 代码中的职责混为一谈。
 # `ax-arm-pl031` 技术文档
 
-> 路径：`components/arm_pl031`
+> 路径：`drivers/rtc/arm_pl031`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.2.1`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/arm_pl031/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml` 与 `drivers/rtc/arm_pl031/README.md`
 
 `ax-arm-pl031` 的核心定位是：System Real Time Clock (RTC) Drivers for aarch64 based on PL031.
 
@@ -234,7 +234,7 @@ graph LR
 ax-arm-pl031 = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# ax-arm-pl031 = { path = "components/arm_pl031" }
+# ax-arm-pl031 = { path = "drivers/rtc/arm_pl031" }
 ```
 
 ### 初始化

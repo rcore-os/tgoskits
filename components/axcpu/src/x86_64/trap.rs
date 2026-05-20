@@ -31,6 +31,7 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     if tf.fixup_exception() {
         return;
     }
+    let bt = tf.backtrace();
     panic!(
         "Unhandled #PF @ {:#x}, fault_vaddr={:#x}, error_code={:#x} ({:?}):\n{:#x?}\n{}",
         tf.rip,
@@ -38,7 +39,7 @@ fn handle_page_fault(tf: &mut TrapFrame) {
         tf.error_code,
         access_flags,
         tf,
-        tf.backtrace()
+        bt.kind("trap")
     );
 }
 
@@ -52,12 +53,13 @@ fn handle_debug(tf: &mut TrapFrame) {
     if crate::trap::debug_handler(tf) {
         return;
     }
+    let bt = tf.backtrace();
     panic!(
         "Unhandled #DB @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",
         tf.rip,
         tf.error_code,
         tf,
-        tf.backtrace()
+        bt.kind("trap")
     );
 }
 
@@ -68,18 +70,20 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
         BREAKPOINT_VECTOR => handle_breakpoint(tf),
         DEBUG_VECTOR => handle_debug(tf),
         GENERAL_PROTECTION_FAULT_VECTOR => {
+            let bt = tf.backtrace();
             panic!(
                 "#GP @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",
                 tf.rip,
                 tf.error_code,
                 tf,
-                tf.backtrace()
+                bt.kind("trap")
             );
         }
         IRQ_VECTOR_START..=IRQ_VECTOR_END => {
             crate::trap::irq_handler(tf.vector as _);
         }
         _ => {
+            let bt = tf.backtrace();
             panic!(
                 "Unhandled exception {} ({}, error_code={:#x}) @ {:#x}:\n{:#x?}\n{}",
                 tf.vector,
@@ -87,7 +91,7 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
                 tf.error_code,
                 tf.rip,
                 tf,
-                tf.backtrace()
+                bt.kind("trap")
             );
         }
     }

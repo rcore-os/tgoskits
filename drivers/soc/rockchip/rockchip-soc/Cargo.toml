@@ -9,7 +9,7 @@ keywords = ["driver", "cru", "clock", "power"]
 license = "MIT"
 name = "rockchip-soc"
 repository = "https://github.com/drivercraft/rockchip-soc"
-version = "0.1.2"
+version = "0.2.0"
 
 [dependencies]
 bitflags = "2"

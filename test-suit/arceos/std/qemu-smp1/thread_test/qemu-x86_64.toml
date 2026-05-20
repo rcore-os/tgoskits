@@ -1,0 +1,6 @@
+args = ["-machine", "q35", "-cpu", "max", "-m", "128M", "-smp", "1", "-nographic", "-serial", "mon:stdio"]
+uefi = false
+to_bin = false
+success_regex = ["=== 所有测试完成 ==="]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 120

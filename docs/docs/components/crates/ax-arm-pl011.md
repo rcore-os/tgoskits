@@ -1,6 +1,6 @@
 # `ax-arm-pl011`
 
-> 路径：`components/arm_pl011`
+> 路径：`drivers/serial/arm_pl011`
 > 类型：库 crate
 > 分层：组件层 / AArch64 外设叶子实现
 > 版本：`0.1.0`

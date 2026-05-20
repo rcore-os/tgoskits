@@ -11,6 +11,7 @@ use ax_fs::{CachedFile, FileFlags};
 use ax_hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_sync::Mutex;
+use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 
 use super::{AddrSpace, Backend, BackendFileInfo, BackendOps, PopulateCallback, pages_in};
@@ -129,6 +130,62 @@ impl FileBackend {
 
     pub fn futex_handle(&self) -> Weak<()> {
         Arc::downgrade(&self.0.futex_handle)
+    }
+
+    /// `true` when this file mapping is shared with the page cache (MAP_SHARED).
+    pub(crate) fn is_shared_file_map(&self) -> bool {
+        self.0.shared
+    }
+
+    /// Location of the backing file (used by memfd seal accounting).
+    pub(crate) fn cache_location(&self) -> &Location {
+        self.0.cache.location()
+    }
+
+    pub fn is_shared(&self) -> bool {
+        self.0.shared
+    }
+
+    pub fn cache(&self) -> &CachedFile {
+        &self.0.cache
+    }
+
+    pub fn writeback_and_protect(
+        &self,
+        _aspace: &mut AddrSpace,
+        range_start: VirtAddr,
+        range_end: VirtAddr,
+        _area_flags: MappingFlags,
+    ) -> AxResult {
+        let file_data = self.0.file_data.lock();
+
+        let offset_page = file_data.offset_page;
+        let mapping_start = file_data.start;
+        let mapping_size = (range_end - range_start).min(
+            range_end
+                .as_usize()
+                .saturating_sub(mapping_start.as_usize()),
+        );
+        let local_start = range_start
+            .as_usize()
+            .saturating_sub(mapping_start.as_usize());
+        let local_end = local_start + mapping_size;
+
+        let start_pn = offset_page + (local_start / PAGE_SIZE_4K) as u32;
+        let end_pn = offset_page + local_end.div_ceil(PAGE_SIZE_4K) as u32;
+
+        let dirty_pns = self.0.cache.dirty_pages_in_range(start_pn, end_pn);
+
+        if dirty_pns.is_empty() {
+            return Ok(());
+        }
+
+        self.0
+            .cache
+            .writeback_pages(&dirty_pns)
+            .map_err(|_| AxError::Io)?;
+
+        Ok(())
     }
 
     pub fn file_info(&self) -> AxResult<BackendFileInfo> {

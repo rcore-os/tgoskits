@@ -546,7 +546,7 @@ impl DeviceOps for LoopDevice {
                 let mut name = self.file_name.lock();
                 for (i, &c) in info.lo_name.iter().enumerate() {
                     if i < 64 {
-                        name[i] = c as u8;
+                        name[i] = c as _;
                     }
                     if c == 0 {
                         break;
@@ -715,7 +715,7 @@ impl DeviceOps for LoopDevice {
         self
     }
 
-    fn mmap(&self, _offset: u64) -> DeviceMmap {
+    fn mmap(&self, _offset: u64, _length: u64) -> DeviceMmap {
         if let Some(FileBackend::Cached(cache)) = self.file.lock().as_ref() {
             DeviceMmap::Cache(cache.clone())
         } else {
