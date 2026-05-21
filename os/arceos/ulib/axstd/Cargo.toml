@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.11"
+version = "0.5.14"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -86,6 +86,7 @@ driver-bcm2835-sdhci = ["ax-feat/driver-bcm2835-sdhci"]
 driver-ahci = ["ax-feat/driver-ahci"]
 
 # Backtrace
+backtrace = ["ax-feat/backtrace"]
 dwarf = ["ax-feat/dwarf"]
 
 [dependencies]

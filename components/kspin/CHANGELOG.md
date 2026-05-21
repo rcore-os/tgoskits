@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.7...ax-kspin-v0.3.8) - 2026-05-15
+
+### Added
+
+- *(lockdep)* extend lockdep with task-held tracking and qemu regression coverage ([#415](https://github.com/rcore-os/tgoskits/pull/415))
+
+### Other
+
+- *(kspin)* inherit workspace metadata
+
 ## [0.3.7](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.6...ax-kspin-v0.3.7) - 2026-04-27
 
 ### Added

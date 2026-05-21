@@ -275,6 +275,14 @@ fn render_proc_net_arp() -> String {
     buf
 }
 
+fn render_proc_net_dev() -> String {
+    "Inter-|   Receive                                                |  Transmit\n\
+      face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
+        lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n\
+      eth0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n"
+        .to_string()
+}
+
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -325,7 +333,7 @@ fn task_status(task: &AxTaskRef) -> String {
     let cred = thread.cred();
     render_task_status(
         thread.proc_data.proc.pid(),
-        task.id().as_u64(),
+        thread.tid() as u64,
         &cred,
         task.cpumask(),
         ax_hal::cpu_num(),
@@ -843,6 +851,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         net.add(
             "arp",
             SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_arp())),
+        );
+        net.add(
+            "dev",
+            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_dev())),
         );
 
         SimpleDir::new_maker(fs.clone(), Arc::new(net))

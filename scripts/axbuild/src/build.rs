@@ -16,6 +16,50 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest};
 
+fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
+    env.get(key).is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes" | "1" | "true" | "on"
+        )
+    })
+}
+
+fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
+    let mut flags = Vec::new();
+    let dwarf = env_truthy(env, "DWARF");
+    let backtrace = env_truthy(env, "BACKTRACE") || dwarf;
+
+    if dwarf {
+        flags.push("-Cdebuginfo=2".to_string());
+        flags.push("-Cstrip=none".to_string());
+    }
+
+    if backtrace {
+        flags.push("-Cforce-frame-pointers=yes".to_string());
+    }
+
+    flags
+}
+
+/// Whether the build config enables target backtrace support (frame pointers / unwind).
+///
+/// Matches [`toolchain_rustflags`]: `BACKTRACE=y` or `DWARF=y` in `[env]`.
+pub(crate) fn build_info_enables_backtrace(info: &BuildInfo) -> bool {
+    let dwarf = env_truthy(&info.env, "DWARF");
+    env_truthy(&info.env, "BACKTRACE") || dwarf
+}
+
+/// Read a per-target `build-*.toml` and check [`build_info_enables_backtrace`].
+pub(crate) fn build_info_enables_backtrace_path(path: &Path) -> bool {
+    load_build_info::<BuildInfo>(path)
+        .ok()
+        .is_some_and(|info| build_info_enables_backtrace(&info))
+}
+
+const LOONGARCH64_HERMIT_JSON: &str =
+    include_str!("../../../os/arceos/examples/std/loongarch64-unknown-hermit.json");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
     AxStd,
@@ -48,6 +92,9 @@ pub struct BuildInfo {
     /// Whether to use the dynamic platform linker flow when supported.
     #[serde(default, skip_serializing_if = "is_false")]
     pub plat_dyn: bool,
+    /// Build this package as an ArceOS std/Hermit application.
+    #[serde(default, rename = "std", skip_serializing_if = "is_false")]
+    pub std_build: bool,
 }
 
 impl BuildInfo {
@@ -124,11 +171,32 @@ impl BuildInfo {
         plat_dyn_override: Option<bool>,
         metadata: &Metadata,
     ) -> anyhow::Result<Cargo> {
+        if self.std_build {
+            self.validated_max_cpu_num()?;
+            let std_target = std_build_target_for(target)?;
+            let mut cargo = self.into_base_cargo_config_with_log(
+                package.to_string(),
+                std_target.target,
+                std_target.cargo_args,
+            );
+            cargo.env.extend(std_target.env);
+            prepare_std_build_env(&mut cargo.env, target, metadata)?;
+            cargo.extra_config = Some(std_cargo_config_path()?.display().to_string());
+            cargo.to_bin = false;
+            return Ok(cargo);
+        }
+
         let plat_dyn = self.effective_plat_dyn(target, plat_dyn_override);
         self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn, metadata)?;
         self.resolve_features_with_metadata(package, plat_dyn, metadata);
-        let args = Self::build_cargo_args(target, plat_dyn);
+        let mut extra_rustflags = toolchain_rustflags(&self.env);
+        if self.features.iter().any(|f| f == "kcov") {
+            extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-level=3".to_string());
+            extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-trace-pc".to_string());
+            extra_rustflags.push("-Cpasses=sancov-module".to_string());
+        }
+        let args = Self::build_cargo_args(target, plat_dyn, &extra_rustflags);
 
         Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
     }
@@ -287,17 +355,32 @@ impl BuildInfo {
         }
     }
 
-    pub(crate) fn build_cargo_args(target: &str, plat_dyn: bool) -> Vec<String> {
+    pub(crate) fn build_cargo_args(
+        target: &str,
+        plat_dyn: bool,
+        extra_rustflags: &[String],
+    ) -> Vec<String> {
         let mut args = Vec::new();
         args.push("--config".to_string());
-        args.push(if plat_dyn {
-            format!("target.{target}.rustflags=[\"-Clink-arg=-Taxplat.x\"]")
+        let mut rustflags: Vec<String> = Vec::new();
+        rustflags.extend(extra_rustflags.iter().cloned());
+        if plat_dyn {
+            rustflags.push("-Clink-arg=-Taxplat.x".to_string());
         } else {
-            format!(
-                "target.{target}.rustflags=[\"-Clink-arg=-Tlinker.x\",\"-Clink-arg=-no-pie\",\"\
-                 -Clink-arg=-znostart-stop-gc\"]"
-            )
-        });
+            rustflags.push("-Clink-arg=-Tlinker.x".to_string());
+            rustflags.push("-Clink-arg=-no-pie".to_string());
+            rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
+        }
+
+        let mut rendered = format!("target.{target}.rustflags=[");
+        for (i, flag) in rustflags.iter().enumerate() {
+            if i > 0 {
+                rendered.push(',');
+            }
+            rendered.push_str(&format!("{flag:?}"));
+        }
+        rendered.push(']');
+        args.push(rendered);
         args
     }
 }
@@ -315,8 +398,126 @@ impl Default for BuildInfo {
             max_cpu_num: None,
             axconfig_overrides: Vec::new(),
             plat_dyn: false,
+            std_build: false,
         }
     }
+}
+
+struct StdBuildTarget {
+    target: String,
+    cargo_args: Vec<String>,
+    env: HashMap<String, String>,
+}
+
+fn std_build_target_for(target: &str) -> anyhow::Result<StdBuildTarget> {
+    if target.starts_with("x86_64-") {
+        Ok(StdBuildTarget {
+            target: "x86_64-unknown-hermit".to_string(),
+            cargo_args: Vec::new(),
+            env: HashMap::new(),
+        })
+    } else if target.starts_with("aarch64-") {
+        Ok(StdBuildTarget {
+            target: "aarch64-unknown-hermit".to_string(),
+            cargo_args: Vec::new(),
+            env: HashMap::new(),
+        })
+    } else if target.starts_with("riscv64") {
+        Ok(StdBuildTarget {
+            target: "riscv64gc-unknown-hermit".to_string(),
+            cargo_args: Vec::new(),
+            env: HashMap::new(),
+        })
+    } else if target.starts_with("loongarch64-") {
+        let path = std_loongarch64_target_json_path()?;
+        Ok(StdBuildTarget {
+            target: path.display().to_string(),
+            cargo_args: vec!["-Z".to_string(), "json-target-spec".to_string()],
+            env: [(
+                "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
+                "true".to_string(),
+            )]
+            .into(),
+        })
+    } else {
+        bail!("unsupported ArceOS std target triple `{target}`")
+    }
+}
+
+pub(crate) fn prepare_std_build_env(
+    envs: &mut HashMap<String, String>,
+    target: &str,
+    metadata: &Metadata,
+) -> anyhow::Result<()> {
+    let arch = target_arch_name(target)?;
+    let platform_package = default_platform_package(arch);
+    let platform_config = resolve_platform_config_by_package(platform_package, metadata)?;
+    let out_config = generated_axconfig_path("arceos-rust", target)?;
+    generate_axconfig(
+        &crate::context::workspace_root_path()?,
+        target,
+        &platform_config.name,
+        &platform_config.config_path,
+        &out_config,
+        envs.get("SMP")
+            .map(|smp| {
+                smp.parse()
+                    .with_context(|| format!("invalid SMP value `{smp}`"))
+            })
+            .transpose()?,
+        &[],
+    )?;
+    envs.insert(
+        "ARCEOS_RUST_CONFIG".to_string(),
+        out_config.display().to_string(),
+    );
+    Ok(())
+}
+
+fn std_cargo_config_path() -> anyhow::Result<PathBuf> {
+    let path = std_build_dir()?.join("config.toml");
+    write_if_changed(
+        &path,
+        r#"[unstable]
+build-std = ["std", "panic_abort"]
+build-std-features = []
+
+[profile.release]
+lto = false
+panic = "abort"
+
+[target.'cfg(target_os = "hermit")']
+rustflags = [
+    "-C", "link-arg=-no-pie",
+    "-C", "link-arg=-Tlinker.x",
+]
+"#,
+    )?;
+    Ok(path)
+}
+
+fn std_loongarch64_target_json_path() -> anyhow::Result<PathBuf> {
+    let path = std_build_dir()?.join("loongarch64-unknown-hermit.json");
+    write_if_changed(&path, LOONGARCH64_HERMIT_JSON)?;
+    Ok(path)
+}
+
+fn std_build_dir() -> anyhow::Result<PathBuf> {
+    let dir = axbuild_tmp_dir(&crate::context::workspace_root_path()?).join("std");
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create std build dir {}", dir.display()))?;
+    Ok(dir)
+}
+
+fn write_if_changed(path: &Path, contents: &str) -> anyhow::Result<()> {
+    if fs::read_to_string(path).is_ok_and(|existing| existing == contents) {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent dir {}", parent.display()))?;
+    }
+    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
 }
 
 pub(crate) fn ensure_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<()>
@@ -782,7 +983,7 @@ fn read_platform_name(platform_config: &Path) -> Option<String> {
     read_config_string(&[platform_config.to_path_buf()], "platform").ok()
 }
 
-fn generate_axconfig(
+pub(crate) fn generate_axconfig(
     workspace_root: &Path,
     target: &str,
     platform_name: &str,
@@ -905,6 +1106,33 @@ mod tests {
             ),
         )?;
         Ok(())
+    }
+
+    #[test]
+    fn build_info_enables_backtrace_matches_env_flags() {
+        let mut info = BuildInfo::default();
+        assert!(!build_info_enables_backtrace(&info));
+
+        info.env.insert("BACKTRACE".to_string(), "y".to_string());
+        assert!(build_info_enables_backtrace(&info));
+
+        info.env.clear();
+        info.env.insert("DWARF".to_string(), "1".to_string());
+        assert!(build_info_enables_backtrace(&info));
+    }
+
+    #[test]
+    fn toolchain_rustflags_preserves_debug_and_backtrace_env() {
+        let env = HashMap::from([("DWARF".to_string(), "1".to_string())]);
+
+        assert_eq!(
+            toolchain_rustflags(&env),
+            vec![
+                "-Cdebuginfo=2".to_string(),
+                "-Cstrip=none".to_string(),
+                "-Cforce-frame-pointers=yes".to_string(),
+            ]
+        );
     }
 
     #[test]

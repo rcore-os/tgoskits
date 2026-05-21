@@ -2,7 +2,7 @@ use alloc::{borrow::ToOwned, string::String, sync::Arc};
 use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
 use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
+use ax_sync::{LockdepMutexExt, Mutex};
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
@@ -13,6 +13,8 @@ use hashbrown::HashMap;
 use slab::Slab;
 
 use crate::pseudofs::dummy_stat_fs;
+
+const TMPFS_DIR_ENTRIES_NESTED_SUBCLASS: ax_sync::LockSubclass = 1;
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(String);
@@ -45,6 +47,11 @@ where
     }
 }
 
+#[inline(always)]
+fn lock_tmpfs_nested<T: ?Sized>(mutex: &Mutex<T>) -> ax_sync::MutexGuard<'_, T> {
+    mutex.lock_nested(TMPFS_DIR_ENTRIES_NESTED_SUBCLASS)
+}
+
 impl Borrow<str> for FileName {
     fn borrow(&self) -> &str {
         &self.0
@@ -63,25 +70,47 @@ impl MemoryFs {
     /// Creates a new empty memory filesystem.
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> Filesystem {
-        let fs = Arc::new(Self {
+        let (fs, handle) = Self::new_with_handle();
+        drop(handle);
+        fs
+    }
+
+    /// Creates a new empty memory filesystem and returns a handle to the
+    /// underlying `MemoryFs` so callers can create anonymous (unlinked) nodes.
+    pub fn new_with_handle() -> (Filesystem, Arc<Self>) {
+        let handle = Arc::new(Self {
             inodes: SpinNoIrq::new(Slab::new()),
             root: Mutex::default(),
         });
         let root_ino = Inode::new(
-            &fs,
+            &handle,
             None,
             NodeType::Directory,
             NodePermission::from_bits_truncate(0o755),
+            false,
         );
-        *fs.root.lock() = Some(DirEntry::new_dir(
-            |this| DirNode::new(MemoryNode::new(fs.clone(), root_ino, Some(this))),
+        *handle.root.lock() = Some(DirEntry::new_dir(
+            |this| DirNode::new(MemoryNode::new(handle.clone(), root_ino, Some(this))),
             Reference::root(),
         ));
-        Filesystem::new(fs)
+        (Filesystem::new(handle.clone()), handle)
     }
 
     fn get(&self, ino: u64) -> Arc<Inode> {
         self.inodes.lock()[ino as usize - 1].clone()
+    }
+
+    /// Creates an anonymous (unlinked) regular file inode within this tmpfs.
+    ///
+    /// The returned entry is not inserted into any directory, so it has no
+    /// path-based lookup and is kept alive solely by the returned handle(s).
+    pub fn create_anonymous_file(self: &Arc<Self>, name: &str, perm: NodePermission) -> DirEntry {
+        let inode = Inode::new(self, None, NodeType::RegularFile, perm, false);
+        DirEntry::new_file(
+            FileNode::new(MemoryNode::new(self.clone(), inode, None)),
+            NodeType::RegularFile,
+            Reference::new(None, name.to_owned()),
+        )
     }
 }
 
@@ -140,6 +169,7 @@ impl Inode {
         parent: Option<u64>,
         node_type: NodeType,
         permission: NodePermission,
+        nested_dir_entries: bool,
     ) -> Arc<Inode> {
         let mut inodes = fs.inodes.lock();
         let entry = inodes.vacant_entry();
@@ -174,7 +204,11 @@ impl Inode {
         entry.insert(result.clone());
         drop(inodes);
         if let NodeContent::Dir(dir) = &result.content {
-            let mut entries = dir.entries.lock();
+            let mut entries = if nested_dir_entries {
+                lock_tmpfs_nested(&dir.entries)
+            } else {
+                dir.entries.lock()
+            };
             entries.insert(".".into(), InodeRef::new(fs.clone(), ino));
             entries.insert(
                 "..".into(),
@@ -405,7 +439,7 @@ impl DirNodeOps for MemoryNode {
         if entries.contains_key(name) {
             return Err(VfsError::AlreadyExists);
         }
-        let inode = Inode::new(&self.fs, Some(self.inode.ino), node_type, permission);
+        let inode = Inode::new(&self.fs, Some(self.inode.ino), node_type, permission, true);
         entries.insert(name.into(), InodeRef::new(self.fs.clone(), inode.ino));
         self.new_entry(name, node_type, inode)
     }
@@ -435,7 +469,7 @@ impl DirNodeOps for MemoryNode {
             };
             let inode = entry.get();
             if let NodeContent::Dir(DirContent { entries }) = &inode.content
-                && entries.lock().len() > 2
+                && lock_tmpfs_nested(entries).len() > 2
             {
                 return Err(VfsError::DirectoryNotEmpty);
             }

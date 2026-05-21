@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/rcore-os/tgoskits/compare/rockchip-pm-v0.4.2...rockchip-pm-v0.4.3) - 2026-05-15
+
+### Added
+
+- *(drivers)* migrate Sparreal driver crates ([#540](https://github.com/rcore-os/tgoskits/pull/540))
+
+### Other
+
+- 添加 sparreal-os 组件的 GitHub 仓库链接
+- *(rockchip-soc)* inherit workspace metadata
+
 ## [0.4.0] - 2025-01-28
 
 ### Added

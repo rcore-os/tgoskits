@@ -22,19 +22,60 @@ CSV 格式：每行一个 crate 名，`#` 开头为注释行。
 ## Clippy 检查
 
 ```text
-cargo xtask clippy [--all | --package <name>]
+cargo xtask clippy [--all | --package <name> | --since <ref>]
 ```
 
-基于 `scripts/test/clippy_crates.csv` 白名单，对每个包检查所有 feature 组合和 `docs.rs` 目标平台。
+对 workspace 包执行多维度的 clippy 检查。默认模式检查全部 workspace 包；`--package` 可限定指定包；`--since` 可按 git ref 进行增量检查。
 
-Clippy 检查不仅运行默认 lint 规则，还会遍历每个包的所有 feature 组合，确保 feature 门控代码也符合 lint 规范。此外，还会检查 `docs.rs` 目标平台构建，验证文档生成不会因平台特定代码报错。`--all` 跳过白名单检查所有 workspace 包，`--package` 只检查指定包。
+### 检查展开
+
+对每个包，clippy 会自动展开为多组检查：
+
+1. **基础检查**（`ClippyCheckKind::Base`）：`cargo clippy -p <package> -- -D warnings`
+2. **Feature 检查**（`ClippyCheckKind::Feature`）：对每个非 default feature 执行 `cargo clippy -p <package> --no-default-features --features <feature> -- -D warnings`
+3. **docs.rs 目标平台检查**：如果包的 `Cargo.toml` 中 `[package.metadata.docs.rs]` 含 `targets` 数组，则为每个目标平台额外执行上述所有检查
+
+例如，一个有 3 个 feature 且配置了 2 个 docs.rs 目标平台的包，会展开为 `(1 + 3) × 2 = 8` 组 clippy 检查。
+
+### 增量选择
+
+- `--since <ref>`：通过 `git diff --name-only <ref>..HEAD` 获取变更路径，定位到具体包后沿依赖图反向遍历（reverse dependency walk）找到所有受影响的包。如果变更路径位于 workspace 包之外，则回退到完整 workspace
+
+### 结果报告
+
+执行完成后输出结构化报告：通过/失败的包数、失败包中每个失败的检查项。
 
 ## sync-lint
 
 ```text
-cargo xtask sync-lint
+cargo xtask sync-lint [--since <ref>]
 ```
 
-扫描 workspace 中所有 Rust 源文件，检测可疑的 `Relaxed` 原子序使用。
+扫描 workspace 中 Rust 源文件，检测可疑的 `Relaxed` 原子序使用。
 
-在内核和裸机环境中，内存排序的正确性至关重要——不恰当的 `Ordering::Relaxed` 可能导致难以复现的并发 bug。sync-lint 扫描所有 `Ordering::Relaxed` 使用点，帮助开发者审查每个使用场景是否真正只需要 Relaxed 语义，还是应该使用更强的排序保证（如 `Acquire`/`Release`）。
+- 不带参数：扫描整个 workspace（并行执行，线程数 = `available_parallelism()` 与文件数的较小值）
+- `--since <ref>`：仅检查自指定 git ref 以来变更的 Rust 文件（增量检查）。如果变更路径位于 workspace 包之外，则回退到全量扫描
+
+### 检查规则
+
+sync-lint 使用 AST 访问器（基于 `syn` crate）分析代码，检测三类问题：
+
+| 规则标签 | 说明 |
+|----------|------|
+| `suspicious_relaxed_wait_condition` | 等待条件（如 `while load(Relaxed)`）中使用 Relaxed 加载 |
+| `suspicious_relaxed_publish_before_notify` | Relaxed 写入后紧跟 wake/notify 操作 |
+| `suspicious_relaxed_mixed_ordering` | 同一同步变量上混用 Relaxed 和更强排序 |
+
+第三条规则（`mixed_ordering`）通过跨整个函数体收集所有原子访问，在函数结束时检查是否存在同一变量既被 Relaxed 访问又被更强排序访问的情况。
+
+### 忽略机制
+
+在可疑行前最多 3 行内添加包含 `sync-lint: ignore` 注释可抑制报告。支持精确规则过滤（如 `// sync-lint: ignore suspicious_relaxed_wait_condition`）或忽略全部规则（`// sync-lint: ignore` 后不跟具体规则名）。
+
+### 输出格式
+
+```
+path:line:col: message [rule-label]
+```
+
+在有发现问题时以错误退出码退出。

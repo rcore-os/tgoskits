@@ -30,7 +30,7 @@ fn handle_signal() {
     let sig = SignalInfo::new_user(signo, 9, 9, 0);
 
     unsafe extern "C" fn test_handler(_: i32) {}
-    proc.actions.lock()[signo].disposition = SignalDisposition::Handler(test_handler);
+    proc.actions().lock()[signo].disposition = SignalDisposition::Handler(test_handler);
 
     let initial = UserContext::new(0, initial_sp().into(), 0);
 
@@ -56,14 +56,12 @@ fn block_ignore_send_signal() {
         sig.signo()
     );
 
-    proc.actions.lock()[signo].disposition = SignalDisposition::Ignore;
+    proc.actions().lock()[signo].disposition = SignalDisposition::Ignore;
     assert!(!thr.send_signal(sig.clone()));
     assert!(!thr.pending().has(signo));
 
-    // Block the signal: POSIX requires blocked signals to be queued
-    // as pending even when disposition is SIG_IGN (so sigwait can
-    // consume them synchronously). send_signal returns false because
-    // the signal is blocked.
+    // When a signal is both blocked AND SIG_IGN, POSIX requires it to be
+    // queued as pending so that sigtimedwait()/sigwaitinfo() can consume it.
     let mut set = SignalSet::default();
     set.add(signo);
     thr.set_blocked(set);
@@ -71,7 +69,13 @@ fn block_ignore_send_signal() {
     assert!(!thr.send_signal(sig.clone()));
     assert!(thr.pending().has(signo));
 
-    proc.actions.lock()[signo].disposition = SignalDisposition::Default;
+    // Drain the pending signal before testing the next disposition change.
+    assert_eq!(
+        thr.dequeue_signal(&!SignalSet::default()).unwrap().signo(),
+        signo
+    );
+
+    proc.actions().lock()[signo].disposition = SignalDisposition::Default;
     assert!(!thr.send_signal(sig.clone()));
     assert!(thr.pending().has(signo));
 
@@ -108,7 +112,8 @@ fn check_signals_with_reports_restartable_delivery() {
     unsafe extern "C" fn test_handler(_: i32) {}
 
     {
-        let mut actions = proc.actions.lock();
+        let actions_arc = proc.actions();
+        let mut actions = actions_arc.lock();
         actions[signo].disposition = SignalDisposition::Handler(test_handler);
         actions[signo].flags = SignalActionFlags::RESTART;
     }
@@ -134,7 +139,7 @@ fn restore() {
     let sig = SignalInfo::new_user(signo, 0, 1, 0);
 
     unsafe extern "C" fn test_handler(_: i32) {}
-    proc.actions.lock()[signo].disposition = SignalDisposition::Handler(test_handler);
+    proc.actions().lock()[signo].disposition = SignalDisposition::Handler(test_handler);
 
     let initial = UserContext::new(0x219, initial_sp().into(), 0);
 

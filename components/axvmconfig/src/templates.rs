@@ -71,6 +71,7 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> AxVMCrateConfig {
             entry_point: params.entry_point,
             kernel_path: params.kernel_path,
             kernel_load_addr: params.kernel_load_addr,
+            enable_bios: false,
             bios_path: None, // BIOS not used in most configurations
             bios_load_addr: None,
             dtb_path: None, // Device tree not specified by default

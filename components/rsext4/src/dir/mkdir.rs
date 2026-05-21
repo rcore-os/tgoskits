@@ -150,6 +150,7 @@ fn mkdir_internal<B: BlockDevice>(
     let (group_idx, _idx) = fs.inode_allocator.global_to_group(new_dir_ino)?;
     let dir_mode = Ext4Inode::S_IFDIR | 0o755;
     let mut new_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
+    new_inode.i_generation = new_dir_gen;
     new_inode.i_links_count = 2;
     new_inode.i_size_lo = BLOCK_SIZE as u32;
     new_inode.i_size_high = 0;

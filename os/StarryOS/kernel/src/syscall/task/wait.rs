@@ -93,12 +93,16 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
                     proc_data.add_child_cpu_time(utime, stime);
                 }
             }
-            child.free();
-            remove_process(child.pid());
-            unregister_zombie(child.pid());
+            // Copy status to userspace before `free` / `unregister_zombie`. If
+            // `vm_write` fails we must leave the zombie intact so the parent can
+            // retry; freeing first would strand the process and corrupt wait
+            // accounting (Linux also publishes the status byte before full reap).
             if let Some(exit_code) = exit_code.nullable() {
                 exit_code.vm_write(child.exit_code())?;
             }
+            child.free();
+            remove_process(child.pid());
+            unregister_zombie(child.pid());
             Ok(Some(child.pid() as _))
         } else if options.contains(WaitOptions::WNOHANG) {
             Ok(Some(0))

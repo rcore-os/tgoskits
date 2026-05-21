@@ -14,8 +14,8 @@ use linux_raw_sys::general::*;
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
-        with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like, close_file_like,
+        get_file_like, memfd::Memfd, with_fs,
     },
     mm::vm_load_string,
     pseudofs::{Device, dev::tty},
@@ -41,9 +41,6 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     if flags & O_CREAT != 0 {
         options.create(true);
     }
-    if flags & O_PATH != 0 {
-        options.path(true);
-    }
     // O_EXCL only makes sense with O_CREAT (POSIX). Without O_CREAT, Linux
     // ignores O_EXCL for existing files — busybox blkdiscard opens block
     // devices with O_RDWR|O_EXCL (no O_CREAT).
@@ -58,6 +55,21 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     }
     if flags & O_DIRECT != 0 {
         options.direct(true);
+    }
+    // O_PATH must be applied LAST and override conflicting flags: man 2 open
+    // "When O_PATH is specified in flags, flag bits other than O_CLOEXEC,
+    //  O_DIRECTORY, and O_NOFOLLOW are ignored."
+    // Fixes bug-open-path-honors-excl / -path-creat-creates /
+    //       -path-dir-write-eisdir / -path-sym-write-enoent.
+    if flags & O_PATH != 0 {
+        options.path(true);
+        // O_PATH: drop access mode (no I/O), drop create/excl/trunc/append
+        options.read(true).write(false);
+        options
+            .create(false)
+            .create_new(false)
+            .truncate(false)
+            .append(false);
     }
     options
 }
@@ -140,6 +152,51 @@ pub fn sys_openat(
     let path = vm_load_string(path)?;
     debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
 
+    let uflags = flags as u32;
+
+    // Pathname length check — man "ENAMETOOLONG — pathname was too long".
+    // starry path layer only checks per-component (255); add whole-path
+    // check (PATH_MAX = 4096). Fixes bug-open-pathmax-no-enametoolong.
+    if path.len() >= 4096 {
+        return Err(AxError::NameTooLong);
+    }
+
+    // Empty pathname → ENOENT. openat() does not accept AT_EMPTY_PATH.
+    // Fixes bug-openat-empty-path-no-enoent.
+    if path.is_empty() {
+        return Err(AxError::NotFound);
+    }
+
+    // O_CREAT|O_DIRECTORY is an invalid combination: open() cannot create
+    // a directory. man: "EINVAL — flags contains an invalid value."
+    // Fixes bug-open-creat-directory-einval.
+    // Exception: O_PATH ignores O_CREAT, so still allow PATH|CREAT|DIRECTORY.
+    if uflags & O_CREAT != 0 && uflags & O_DIRECTORY != 0 && uflags & O_PATH == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // O_TMPFILE requires O_RDWR or O_WRONLY. man: "EINVAL — O_TMPFILE was
+    // specified in flags, but neither O_WRONLY nor O_RDWR was specified."
+    // Fixes bug-open-tmpfile-no-einval.
+    //
+    // Exception: O_PATH ignores all flags except O_CLOEXEC/O_DIRECTORY/O_NOFOLLOW
+    // (see flags_to_options PATH override below). On Linux, O_PATH|O_TMPFILE|RDONLY
+    // is accepted as an O_PATH handle (TMPFILE/access bits ignored), not EINVAL.
+    if uflags & O_TMPFILE == O_TMPFILE && uflags & 0b11 == O_RDONLY && uflags & O_PATH == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // Absolute path: man "If pathname is absolute, then dirfd is ignored."
+    // starry with_fs() unconditionally calls Directory::from_fd(dirfd),
+    // so invalid dirfd would EBADF before the abs-path shortcut applies.
+    // Same pattern as resolve_at (PR #605) / sys_fchownat (PR #588).
+    // Fixes bug-openat-abs-path-honors-invalid-dirfd.
+    let dirfd = if path.starts_with('/') {
+        AT_FDCWD as _
+    } else {
+        dirfd
+    };
+
     let mode = mode & !current().as_thread().proc_data.umask();
 
     let cred = current().as_thread().cred();
@@ -210,6 +267,25 @@ fn dup_fd(old_fd: c_int, cloexec: bool) -> AxResult<isize> {
     Ok(new_fd as _)
 }
 
+fn dup_fd_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isize> {
+    if min_fd < 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let f = get_file_like(old_fd)?;
+    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current as i32;
+    let mut fd_table = FD_TABLE.write();
+    for candidate in min_fd..max_nofile {
+        let entry = FileDescriptor {
+            inner: f.clone(),
+            cloexec,
+        };
+        if fd_table.add_at(candidate as _, entry).is_ok() {
+            return Ok(candidate as isize);
+        }
+    }
+    Err(AxError::TooManyOpenFiles)
+}
+
 pub fn sys_dup(old_fd: c_int) -> AxResult<isize> {
     debug!("sys_dup <= {old_fd}");
     dup_fd(old_fd, false)
@@ -264,18 +340,23 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     }
 
     match cmd as u32 {
-        F_DUPFD => dup_fd(fd, false),
-        F_DUPFD_CLOEXEC => dup_fd(fd, true),
+        F_DUPFD => dup_fd_min(fd, arg as _, false),
+        F_DUPFD_CLOEXEC => dup_fd_min(fd, arg as _, true),
         F_SETFL => {
-            get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            let f = get_file_like(fd)?;
+            f.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            f.set_append(arg & (O_APPEND as usize) > 0)?;
             Ok(0)
         }
         F_GETFL => {
             let f = get_file_like(fd)?;
 
-            let mut ret = f.open_flags();
+            let mut ret = f.open_flags() & !O_APPEND;
             if f.nonblocking() {
                 ret |= O_NONBLOCK;
+            }
+            if f.append() {
+                ret |= O_APPEND;
             }
 
             Ok(ret as _)
@@ -306,9 +387,18 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             pipe.resize(arg)?;
             Ok(0)
         }
+        F_GET_SEALS => {
+            let memfd = Memfd::from_fd(fd)?;
+            Ok(memfd.get_seals() as _)
+        }
+        F_ADD_SEALS => {
+            let memfd = Memfd::from_fd(fd)?;
+            memfd.add_seals(arg as u32)?;
+            Ok(0)
+        }
         _ => {
             warn!("unsupported fcntl parameters: cmd: {cmd}");
-            Ok(0)
+            Err(AxError::InvalidInput)
         }
     }
 }

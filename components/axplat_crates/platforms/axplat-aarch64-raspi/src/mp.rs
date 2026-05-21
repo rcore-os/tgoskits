@@ -20,7 +20,7 @@ unsafe extern "C" fn modify_stack_and_start() {
 
 /// Starts the given secondary CPU with its boot stack.
 pub fn start_secondary_cpu(cpu_id: usize, stack_top: PhysAddr) {
-    let entry_paddr = virt_to_phys(va!(modify_stack_and_start as usize)).as_usize();
+    let entry_paddr = virt_to_phys(va!(modify_stack_and_start as *const () as usize)).as_usize();
 
     // set the boot stack of the given secondary CPU
     let stack_top_ptr = &raw mut SECONDARY_STACK_TOP;

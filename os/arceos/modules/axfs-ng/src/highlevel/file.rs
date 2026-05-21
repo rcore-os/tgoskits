@@ -3,9 +3,12 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-#[cfg(feature = "times")]
-use core::sync::atomic::{AtomicU8, Ordering};
-use core::{num::NonZeroUsize, ops::Range, task::Context};
+use core::{
+    num::NonZeroUsize,
+    ops::Range,
+    sync::atomic::{AtomicU8, Ordering},
+    task::Context,
+};
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys};
@@ -197,6 +200,15 @@ impl OpenOptions {
     fn _open(&self, loc: Location) -> VfsResult<OpenResult> {
         let flags = self.to_flags()?;
 
+        // O_CREAT on an existing directory → EISDIR (Linux behavior;
+        // CREAT carries an implicit "create regular file" intent that
+        // conflicts with an existing directory regardless of access mode).
+        // Fixes bug-open-creat-on-existing-dir-no-eisdir.
+        // O_PATH path bypasses this — it doesn't actually open / mutate.
+        if self.create && loc.is_dir() && !self.path {
+            return Err(VfsError::IsADirectory);
+        }
+
         if self.directory {
             loc.check_is_dir()?;
         }
@@ -243,6 +255,15 @@ impl OpenOptions {
             return Err(VfsError::InvalidInput);
         }
 
+        // Empty pathname → NotFound. man "ENOENT — O_CREAT is not set and
+        // the named file does not exist." resolve_parent("") would otherwise
+        // return cwd itself which lets open() succeed — wrong per POSIX.
+        // openat() does not accept AT_EMPTY_PATH; only specific *at calls do.
+        // Fixes bug-openat-empty-path-no-enoent.
+        if path.as_ref().as_str().is_empty() {
+            return Err(VfsError::NotFound);
+        }
+
         let loc = match context.resolve_parent(path.as_ref()) {
             Ok((parent, name)) => {
                 let mut loc = parent.open_file(
@@ -259,6 +280,13 @@ impl OpenOptions {
                     loc = context
                         .with_current_dir(parent)?
                         .try_resolve_symlink(loc, &mut 0)?;
+                } else if loc.node_type() == NodeType::Symlink && !self.path {
+                    // O_NOFOLLOW + basename is a symlink + not O_PATH:
+                    // man "If the trailing component (i.e., basename) of
+                    // pathname is a symbolic link, then the open fails,
+                    // with the error ELOOP."
+                    // Fixes bug-open-nofollow-sym.
+                    return Err(VfsError::FilesystemLoop);
                 }
                 loc
             }
@@ -272,12 +300,18 @@ impl OpenOptions {
     }
 
     pub(crate) fn to_flags(&self) -> VfsResult<FileFlags> {
+        // Linux semantic: O_APPEND only adds APPEND bit; it does NOT promote
+        // read-only fd to read/write. (Previous code merged (true,_,true) →
+        // READ|WRITE|APPEND which silently upgraded RDONLY|APPEND to RW —
+        // see bug-open-rdonly-append-promotes-rw.)
         Ok(match (self.read, self.write, self.append) {
             (true, false, false) => FileFlags::READ,
             (false, true, false) => FileFlags::WRITE,
             (true, true, false) => FileFlags::READ | FileFlags::WRITE,
-            (false, _, true) => FileFlags::WRITE | FileFlags::APPEND,
-            (true, _, true) => FileFlags::READ | FileFlags::WRITE | FileFlags::APPEND,
+            (true, false, true) => FileFlags::READ | FileFlags::APPEND,
+            (false, true, true) => FileFlags::WRITE | FileFlags::APPEND,
+            (true, true, true) => FileFlags::READ | FileFlags::WRITE | FileFlags::APPEND,
+            (false, false, true) => FileFlags::APPEND, // RDONLY-equivalent + APPEND: pure status
             (false, false, false) => return Err(VfsError::InvalidInput),
         } | if self.path {
             FileFlags::PATH
@@ -290,19 +324,12 @@ impl OpenOptions {
         if !self.read && !self.write && !self.append {
             return false;
         }
-        match (self.write, self.append) {
-            (true, false) => {}
-            (false, false) => {
-                if self.truncate {
-                    return false;
-                }
-            }
-            (_, true) => {
-                if self.truncate && !self.create_new {
-                    return false;
-                }
-            }
-        }
+        // Linux multi-fs: RDONLY|TRUNC truncates the file (POSIX VERSIONS
+        // says effect is "unspecified", but most fs do truncate). Don't
+        // reject. Fixes bug-open-rdonly-trunc-einval.
+        // RDWR|APPEND|TRUNC is also explicitly allowed by Linux; the prior
+        // restriction "(_,true) && truncate && !create_new → false" was too
+        // strict. Fixes bug-open-append-trunc-einval.
         true
     }
 }
@@ -679,6 +706,95 @@ impl CachedFile {
         Ok(())
     }
 
+    pub fn writeback(&self) -> VfsResult<alloc::vec::Vec<u32>> {
+        if self.in_memory {
+            return Ok(alloc::vec::Vec::new());
+        }
+        let file = self.inner.entry().as_file()?;
+        let file_len = file.len()?;
+
+        let dirty_keys: alloc::vec::Vec<u32> = {
+            let guard = self.shared.page_cache.lock();
+            guard
+                .iter()
+                .filter_map(|(&pn, page)| {
+                    if page.dirty {
+                        let page_start = pn as u64 * PAGE_SIZE as u64;
+                        let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64);
+                        if len > 0 { Some(pn) } else { None }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        for pn in &dirty_keys {
+            let mut guard = self.shared.page_cache.lock();
+            if let Some(page) = guard.get_mut(pn)
+                && page.dirty
+            {
+                let page_start = *pn as u64 * PAGE_SIZE as u64;
+                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
+                if len > 0 {
+                    file.write_at(&page.data()[..len], page_start)?;
+                }
+            }
+            drop(guard);
+        }
+
+        file.sync(false)?;
+        Ok(dirty_keys)
+    }
+
+    pub fn writeback_pages(&self, pns: &[u32]) -> VfsResult<()> {
+        if self.in_memory {
+            return Ok(());
+        }
+        let file = self.inner.entry().as_file()?;
+        let file_len = file.len()?;
+
+        for pn in pns {
+            let mut guard = self.shared.page_cache.lock();
+            if let Some(page) = guard.get_mut(pn)
+                && page.dirty
+            {
+                let page_start = *pn as u64 * PAGE_SIZE as u64;
+                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
+                if len > 0 {
+                    file.write_at(&page.data()[..len], page_start)?;
+                }
+            }
+            drop(guard);
+        }
+
+        file.sync(false)?;
+        Ok(())
+    }
+
+    pub fn dirty_pages_in_range(&self, start_pn: u32, end_pn: u32) -> alloc::vec::Vec<u32> {
+        let guard = self.shared.page_cache.lock();
+        guard
+            .iter()
+            .filter_map(|(&pn, page)| {
+                if page.dirty && pn >= start_pn && pn < end_pn {
+                    Some(pn)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn clear_dirty_pages(&self, pns: &[u32]) {
+        let mut guard = self.shared.page_cache.lock();
+        for pn in pns {
+            if let Some(page) = guard.get_mut(pn) {
+                page.dirty = false;
+            }
+        }
+    }
+
     /// Flushes all cached pages back to disk.
     pub fn sync(&self, data_only: bool) -> VfsResult<()> {
         if self.in_memory {
@@ -802,7 +918,7 @@ impl FileBackend {
 /// Provides `std::fs::File`-like interface.
 pub struct File {
     inner: FileBackend,
-    flags: FileFlags,
+    flags: AtomicU8,
     position: Option<Mutex<u64>>,
     #[cfg(feature = "times")]
     access_flags: AtomicU8,
@@ -811,18 +927,21 @@ pub struct File {
 impl File {
     /// Creates a new [`File`] from a [`FileBackend`] and access flags.
     pub fn new(inner: FileBackend, flags: FileFlags) -> Self {
+        // man 2 open: "The file offset is set to the beginning of the file"
+        // — initial position is always 0, regardless of O_APPEND.
+        // O_APPEND only relocates the offset BEFORE EACH WRITE (handled in
+        // `write()` via the `access(FileFlags::APPEND)` branch). Setting
+        // initial position to EOF would break read() on RDONLY|APPEND
+        // (read sees EOF immediately) — see bug-open-rdonly-append-promotes-rw.
         let position = if inner.location().flags().contains(NodeFlags::STREAM) {
             None
         } else {
-            Some(Mutex::new(if flags.contains(FileFlags::APPEND) {
-                inner.location().len().unwrap_or_default()
-            } else {
-                0
-            }))
+            Some(Mutex::new(0))
         };
+        let _ = flags;
         Self {
             inner,
-            flags,
+            flags: AtomicU8::new(flags.bits()),
             position,
             #[cfg(feature = "times")]
             access_flags: AtomicU8::new(0),
@@ -850,7 +969,7 @@ impl File {
 
     /// Checks that the file has the required `flags` and returns the backend.
     pub fn access(&self, flags: FileFlags) -> VfsResult<&FileBackend> {
-        if self.flags.contains(flags) && !self.is_path() {
+        if self.flags().contains(flags) && !self.is_path() {
             Ok(&self.inner)
         } else {
             Err(VfsError::BadFileDescriptor)
@@ -859,12 +978,22 @@ impl File {
 
     /// Returns `true` if this is a path-only handle (no I/O permitted).
     pub fn is_path(&self) -> bool {
-        self.flags.contains(FileFlags::PATH)
+        self.flags().contains(FileFlags::PATH)
     }
 
     /// Returns the access flags this file was opened with.
     pub fn flags(&self) -> FileFlags {
-        self.flags
+        FileFlags::from_bits_truncate(self.flags.load(Ordering::Acquire))
+    }
+
+    /// Atomically sets or clears a single flag bit.
+    pub fn set_flag(&self, flag: FileFlags, enabled: bool) {
+        let bits = flag.bits();
+        if enabled {
+            self.flags.fetch_or(bits, Ordering::AcqRel);
+        } else {
+            self.flags.fetch_and(!bits, Ordering::AcqRel);
+        }
     }
 
     /// Returns the file's current read/write cursor, or `None` for stream
@@ -926,6 +1055,11 @@ impl File {
         {
             self.access_flags.fetch_or(3, Ordering::AcqRel);
         }
+        // WRITE bit is mandatory for any write path, regardless of whether
+        // APPEND is set. Otherwise O_RDONLY|O_APPEND fd would silently
+        // succeed writes (since access(APPEND) only checks the APPEND bit).
+        // Fixes bug-open-rdonly-append-promotes-rw (the part inside axfs).
+        self.access(FileFlags::WRITE)?;
         if let Some(pos) = self.position.as_ref() {
             let mut pos = pos.lock();
             if let Ok(f) = self.access(FileFlags::APPEND) {

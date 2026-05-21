@@ -1,8 +1,7 @@
 use alloc::sync::Arc;
-use core::{
-    ffi::{c_char, c_int},
-    mem::size_of,
-};
+use core::ffi::{c_char, c_int};
+#[cfg(not(feature = "use-hermit-types"))]
+use core::mem::size_of;
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_fs::fops::OpenOptions;

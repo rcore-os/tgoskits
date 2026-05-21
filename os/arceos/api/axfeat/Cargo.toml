@@ -1,6 +1,6 @@
 [package]
 name = "ax-feat"
-version = "0.5.12"
+version = "0.5.15"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -33,6 +33,15 @@ plat-dyn = [
     "ax-runtime/plat-dyn",
     "ax-config/plat-dyn",
 ]
+# Build the aarch64 GICv3 path through `defplat`. Only meaningful
+# on aarch64; on other targets it forwards to nothing. Orthogonal
+# to `aarch64-cntv-timer`.
+aarch64-gic-v3 = ["ax-hal/aarch64-gic-v3"]
+# Build the aarch64 CNTV (virtual generic timer) path through
+# `defplat`. Only meaningful on aarch64; on other targets it
+# forwards to nothing. Orthogonal to `aarch64-gic-v3`. Required for
+# Apple HVF because CNTP is owned by EL2 there.
+aarch64-cntv-timer = ["ax-hal/aarch64-cntv-timer"]
 
 # Memory
 alloc = ["ax-alloc", "ax-runtime/alloc"]
@@ -109,6 +118,7 @@ driver-bcm2835-sdhci = ["ax-driver?/bcm2835-sdhci"]
 driver-ahci = ["ax-driver?/ahci"]
 
 # Backtrace
+backtrace = ["alloc", "axbacktrace/alloc"]
 dwarf = ["alloc", "axbacktrace/dwarf"]
 
 [dependencies]

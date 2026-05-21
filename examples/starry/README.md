@@ -1,11 +1,11 @@
 # Starry Examples
 
-`examples/starry/` contains runnable StarryOS scenarios. Each direct child
-directory is a case selected by `cargo starry example board -t <case>`.
+`examples/starry/` contains runnable StarryOS scenarios. Most direct child
+directories are board cases selected by `cargo starry example board -t <case>`;
+some x86_64 QEMU demos provide their own `cargo xtask starry qemu` commands.
 
 Cases are intentionally separate from `test-suit/starryos`: examples are
-operator-facing board workflows, while the test suit remains CI-oriented
-coverage.
+operator-facing workflows, while the test suit remains CI-oriented coverage.
 
 ## Case Layout
 
@@ -32,6 +32,25 @@ Example:
 ```bash
 cargo starry example board -t orangepi-5-plus-uvc
 ```
+
+## PicoClaw CLI
+
+The `picoclaw-cli` case is an opt-in StarryOS x86_64 QEMU workflow for checking
+PicoClaw compatibility in three stages: offline CLI smoke, online agent request,
+and gateway service smoke. It also provides an interactive StarryOS shell for
+manual PicoClaw use. It prepares local-only release assets and rootfs images
+under `target/picoclaw/` and `tmp/axbuild/rootfs/`.
+
+```bash
+examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
+cargo xtask starry qemu \
+  --arch x86_64 \
+  --qemu-config examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
+  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw.img
+```
+
+See `picoclaw-cli/README.md` for the online agent, gateway, and interactive
+flows.
 
 ## Orange Pi 5 Plus UVC
 

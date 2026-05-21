@@ -1,0 +1,6 @@
+args = ["-machine", "virt", "-cpu", "rv64", "-m", "128M", "-smp", "1", "-nographic", "-serial", "mon:stdio"]
+uefi = false
+to_bin = false
+success_regex = ["=== 所有 Tokio 测试完成 ==="]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 120
