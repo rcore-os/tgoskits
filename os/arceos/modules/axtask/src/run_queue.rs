@@ -280,6 +280,25 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
 
 /// Core functions of run queue.
 impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
+    /// Unblock one task by inserting it into the current CPU's run queue.
+    ///
+    /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
+    #[cfg(feature = "irq")]
+    pub(crate) fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
+        let task_id_name = task.id_name();
+        if self
+            .inner
+            .put_task_with_state(task, TaskState::Blocked, resched)
+        {
+            let cpu_id = self.inner.cpu_id;
+            debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            if resched {
+                #[cfg(feature = "preempt")]
+                crate::current().set_preempt_pending(true);
+            }
+        }
+    }
+
     #[cfg(feature = "irq")]
     pub fn scheduler_timer_tick(&mut self) {
         let curr = &self.current_task;
