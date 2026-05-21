@@ -32,6 +32,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
@@ -39,7 +40,7 @@ use linux_raw_sys::{
     net::AF_NETLINK,
     netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
 };
-use spin::{Lazy, Mutex};
+use spin::Lazy;
 
 use super::packet::{ETH0_HWADDR, ETH0_IFINDEX};
 use crate::{
