@@ -78,6 +78,17 @@ impl<B: BlockDevice> BlockDev<B> {
         Ok(())
     }
 
+    /// Marks the cached block clean while preserving the buffered contents that
+    /// a higher layer has queued for journal commit.
+    ///
+    /// Caller invariant: the current contents of [`buffer_mut`] are exactly the
+    /// bytes that were just handed off to the journal, so the cache stays in
+    /// sync with what the journal will eventually checkpoint to disk.
+    pub(crate) fn mark_buffer_clean_after_queued_write(&mut self, block_id: AbsoluteBN) {
+        self.cached_block = Some(block_id);
+        self.is_dirty = false;
+    }
+
     /// Reads `count` blocks directly into `buffer`.
     pub fn read_blocks(
         &mut self,
@@ -125,6 +136,23 @@ impl<B: BlockDevice> BlockDev<B> {
     pub fn buffer_mut(&mut self) -> &mut [u8] {
         self.is_dirty = true;
         self.buffer.as_mut_slice()
+    }
+
+    /// Replaces the cached block contents without writing to the device.
+    ///
+    /// The caller supplies the exact bytes that should now be considered the
+    /// authoritative content of `block_id` (e.g. a journal-side update or a
+    /// freshly written block). The buffer is overwritten with `data`, the
+    /// cache key is set to `block_id`, and the block is marked clean so that
+    /// no flush is triggered.
+    pub(crate) fn cache_clean_block(
+        &mut self,
+        block_id: AbsoluteBN,
+        data: &[u8; crate::config::BLOCK_SIZE],
+    ) {
+        self.buffer.as_mut_slice().copy_from_slice(data);
+        self.cached_block = Some(block_id);
+        self.is_dirty = false;
     }
 
     /// Flushes a dirty cached block and the underlying device.

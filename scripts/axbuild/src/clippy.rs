@@ -1,9 +1,10 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, bail};
+use ax_config_gen::read_config_string;
 use cargo_metadata::{Metadata, Package};
 use serde_json::Value;
 
@@ -18,6 +19,8 @@ const DOCS_RS_METADATA: &str = "docs.rs";
 const DOCS_METADATA: &str = "docs";
 const RS_METADATA: &str = "rs";
 const TARGETS_METADATA: &str = "targets";
+const AXBUILD_METADATA: &str = "axbuild";
+const CLIPPY_FEATURE_AXCONFIG_OVERRIDES_METADATA: &str = "clippy-feature-axconfig-overrides";
 
 const UNSUPPORTED_CLIPPY_PACKAGES: &[(&str, &str)] = &[
     (
@@ -206,6 +209,44 @@ struct ClippyCheck {
     kind: ClippyCheckKind,
     target: Option<String>,
     env: Vec<(String, String)>,
+    axconfig_override: Option<ClippyAxconfigOverride>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ClippyAxconfigOverride {
+    target: String,
+    platform_config: PathBuf,
+    out_config: PathBuf,
+    overrides: Vec<String>,
+}
+
+impl ClippyAxconfigOverride {
+    fn generate(&self, workspace_root: &Path) -> anyhow::Result<()> {
+        let platform_name =
+            read_config_string(std::slice::from_ref(&self.platform_config), "platform")
+                .with_context(|| {
+                    format!(
+                        "failed to read platform name from {}",
+                        self.platform_config.display()
+                    )
+                })?;
+
+        crate::build::generate_axconfig(
+            workspace_root,
+            &self.target,
+            &platform_name,
+            &self.platform_config,
+            &self.out_config,
+            None,
+            &self.overrides,
+        )
+        .with_context(|| {
+            format!(
+                "failed to generate clippy axconfig override at {}",
+                self.out_config.display()
+            )
+        })
+    }
 }
 
 impl ClippyCheck {
@@ -323,6 +364,81 @@ fn clippy_env(package: &Package, metadata: &Metadata) -> anyhow::Result<Vec<(Str
     Ok(vec![(AX_CONFIG_PATH_ENV.to_string(), axconfig.to_string())])
 }
 
+fn package_axconfig_path(package: &Package) -> Option<PathBuf> {
+    let manifest_dir = package.manifest_path.parent()?;
+    let axconfig = manifest_dir.join(AXCONFIG_FILE);
+    axconfig.exists().then(|| axconfig.into_std_path_buf())
+}
+
+fn feature_axconfig_overrides(package: &Package) -> HashMap<String, Vec<String>> {
+    let Some(overrides) = package
+        .metadata
+        .get(AXBUILD_METADATA)
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get(CLIPPY_FEATURE_AXCONFIG_OVERRIDES_METADATA))
+        .and_then(Value::as_object)
+    else {
+        return HashMap::new();
+    };
+
+    overrides
+        .iter()
+        .filter_map(|(feature, values)| {
+            let values = values
+                .as_array()?
+                .iter()
+                .map(Value::as_str)
+                .map(Option::unwrap_or_default)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            Some((feature.clone(), values))
+        })
+        .collect()
+}
+
+fn clippy_axconfig_override(
+    package: &Package,
+    target: Option<&str>,
+    feature: &str,
+    overrides: &[String],
+    workspace_root: &Path,
+) -> Option<ClippyAxconfigOverride> {
+    if overrides.is_empty() {
+        return None;
+    }
+    let target = target?.to_string();
+    let platform_config = package_axconfig_path(package)?;
+    let out_config = crate::context::axbuild_tmp_dir(workspace_root)
+        .join("axconfig")
+        .join(package.name.as_str())
+        .join(target.as_str())
+        .join("clippy")
+        .join(feature)
+        .join(".axconfig.toml");
+
+    Some(ClippyAxconfigOverride {
+        target,
+        platform_config,
+        out_config,
+        overrides: overrides.to_vec(),
+    })
+}
+
+fn with_axconfig_env_override(
+    mut env: Vec<(String, String)>,
+    override_config: Option<&ClippyAxconfigOverride>,
+) -> Vec<(String, String)> {
+    let Some(override_config) = override_config else {
+        return env;
+    };
+    env.retain(|(key, _)| key != AX_CONFIG_PATH_ENV);
+    env.push((
+        AX_CONFIG_PATH_ENV.to_string(),
+        override_config.out_config.display().to_string(),
+    ));
+    env
+}
+
 fn arceos_rust_clippy_env(metadata: &Metadata) -> anyhow::Result<Vec<(String, String)>> {
     let mut envs = HashMap::new();
     crate::build::prepare_std_build_env(&mut envs, ARCEOS_RUST_CLIPPY_TARGET, metadata)
@@ -335,6 +451,7 @@ fn expand_clippy_checks(
     metadata: &Metadata,
 ) -> anyhow::Result<Vec<ClippyCheck>> {
     let mut checks = Vec::new();
+    let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
 
     for package in packages {
         let features: BTreeSet<_> = package
@@ -351,6 +468,7 @@ fn expand_clippy_checks(
         };
         let env = clippy_env(package, metadata)
             .with_context(|| format!("failed to prepare clippy env for `{}`", package.name))?;
+        let axconfig_overrides = feature_axconfig_overrides(package);
 
         for target in target_iter {
             checks.push(ClippyCheck {
@@ -358,14 +476,25 @@ fn expand_clippy_checks(
                 kind: ClippyCheckKind::Base,
                 target: target.clone(),
                 env: env.clone(),
+                axconfig_override: None,
             });
 
             for feature in &features {
+                let axconfig_override = axconfig_overrides.get(feature).and_then(|overrides| {
+                    clippy_axconfig_override(
+                        package,
+                        target.as_deref(),
+                        feature,
+                        overrides,
+                        &workspace_root,
+                    )
+                });
                 checks.push(ClippyCheck {
                     package: package.name.to_string(),
                     kind: ClippyCheckKind::Feature(feature.clone()),
                     target: target.clone(),
-                    env: env.clone(),
+                    env: with_axconfig_env_override(env.clone(), axconfig_override.as_ref()),
+                    axconfig_override,
                 });
             }
         }
@@ -505,6 +634,9 @@ struct ProcessCargoRunner;
 
 impl CargoRunner for ProcessCargoRunner {
     fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool> {
+        if let Some(axconfig_override) = &check.axconfig_override {
+            axconfig_override.generate(workspace_root)?;
+        }
         let args = check.cargo_args();
         run_cargo_status_with_env(workspace_root, &args, &check.env)
     }
@@ -627,6 +759,66 @@ mod tests {
                 }
             })
         });
+        let value = serde_json::json!({
+            "name": name,
+            "version": "0.1.0",
+            "id": id,
+            "license": null,
+            "license_file": null,
+            "description": null,
+            "source": null,
+            "dependencies": [],
+            "targets": [{
+                "kind": ["lib"],
+                "crate_types": ["lib"],
+                "name": name,
+                "src_path": manifest_path.parent().unwrap().join("src/lib.rs"),
+                "edition": "2021",
+                "doc": true,
+                "doctest": true,
+                "test": true
+            }],
+            "features": features.iter().map(|(k, v)| ((*k).to_string(), v.iter().map(|item| (*item).to_string()).collect::<Vec<_>>())).collect::<HashMap<_, _>>(),
+            "manifest_path": manifest_path,
+            "metadata": metadata,
+            "publish": null,
+            "authors": [],
+            "categories": [],
+            "keywords": [],
+            "readme": null,
+            "repository": null,
+            "homepage": null,
+            "documentation": null,
+            "edition": "2021",
+            "links": null,
+            "default_run": null,
+            "rust_version": null
+        });
+
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn pkg_with_manifest_path_and_metadata(
+        name: &str,
+        id: &str,
+        features: &[(&str, &[&str])],
+        docs_rs_targets: Option<&[&str]>,
+        manifest_path: PathBuf,
+        package_metadata: Value,
+    ) -> Package {
+        let mut metadata = docs_rs_targets
+            .map(|targets| {
+                serde_json::json!({
+                    "docs.rs": {
+                        "targets": targets,
+                    }
+                })
+            })
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let (Some(dst), Some(src)) = (metadata.as_object_mut(), package_metadata.as_object()) {
+            dst.extend(src.clone());
+        }
+
         let value = serde_json::json!({
             "name": name,
             "version": "0.1.0",
@@ -875,18 +1067,21 @@ mod tests {
                     kind: ClippyCheckKind::Base,
                     target: None,
                     env: Vec::new(),
+                    axconfig_override: None,
                 },
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Feature("feat-a".into()),
                     target: None,
                     env: Vec::new(),
+                    axconfig_override: None,
                 },
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Feature("feat-b".into()),
                     target: None,
                     env: Vec::new(),
+                    axconfig_override: None,
                 },
             ]
         );
@@ -942,6 +1137,7 @@ mod tests {
                 kind: ClippyCheckKind::Base,
                 target: None,
                 env: Vec::new(),
+                axconfig_override: None,
             }]
         );
     }
@@ -1173,6 +1369,64 @@ mod tests {
     }
 
     #[test]
+    fn feature_axconfig_overrides_apply_only_to_that_feature_check() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("alpha");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(package_dir.join("axconfig.toml"), "").unwrap();
+
+        let package = pkg_with_manifest_path_and_metadata(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[("cntv-timer", &[]), ("gic-v3", &[])],
+            Some(&["aarch64-unknown-none"]),
+            package_dir.join("Cargo.toml"),
+            serde_json::json!({
+                "axbuild": {
+                    "clippy-feature-axconfig-overrides": {
+                        "cntv-timer": ["devices.timer-irq=27"]
+                    }
+                }
+            }),
+        );
+
+        let checks = expand(&[package]);
+
+        assert_eq!(
+            checks
+                .iter()
+                .map(|check| (check.label(), check.env.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "alpha (base, target: aarch64-unknown-none-softfloat)".to_string(),
+                    vec![(
+                        "AX_CONFIG_PATH".to_string(),
+                        package_dir.join("axconfig.toml").display().to_string(),
+                    )],
+                ),
+                (
+                    "alpha (feature: cntv-timer, target: aarch64-unknown-none-softfloat)"
+                        .to_string(),
+                    vec![(
+                        "AX_CONFIG_PATH".to_string(),
+                        "/tmp/ws/tmp/axbuild/axconfig/alpha/aarch64-unknown-none-softfloat/clippy/\
+                         cntv-timer/.axconfig.toml"
+                            .to_string(),
+                    )],
+                ),
+                (
+                    "alpha (feature: gic-v3, target: aarch64-unknown-none-softfloat)".to_string(),
+                    vec![(
+                        "AX_CONFIG_PATH".to_string(),
+                        package_dir.join("axconfig.toml").display().to_string(),
+                    )],
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn arceos_rust_config_is_passed_as_clippy_env() {
         const ARCEOS_RUST_CONFIG_ENV: &str = "ARCEOS_RUST_CONFIG";
 
@@ -1207,18 +1461,21 @@ mod tests {
                 kind: ClippyCheckKind::Base,
                 target: None,
                 env: Vec::new(),
+                axconfig_override: None,
             },
             ClippyCheck {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Feature("feat-a".into()),
                 target: None,
                 env: Vec::new(),
+                axconfig_override: None,
             },
             ClippyCheck {
                 package: "beta".into(),
                 kind: ClippyCheckKind::Base,
                 target: None,
                 env: Vec::new(),
+                axconfig_override: None,
             },
         ];
         let mut runner = FakeCargoRunner::new(&[

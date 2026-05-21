@@ -63,7 +63,11 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<Reso
             let file_like = get_file_like(dirfd)?;
             let f = file_like.clone();
             Ok(if let Some(file) = f.downcast_ref::<File>() {
-                ResolveAtResult::File(file.inner().backend()?.location().clone())
+                // Use location() directly: backend() rejects PATH-only fds
+                // (BadFileDescriptor) which would break fstat(O_PATH-fd).
+                // man "O_PATH": fstat(2) is in the allowed-operations list.
+                // Fixes bug-open-path-fstat-ebadf.
+                ResolveAtResult::File(file.inner().location().clone())
             } else if let Some(dir) = f.downcast_ref::<Directory>() {
                 ResolveAtResult::File(dir.inner().clone())
             } else {

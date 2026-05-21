@@ -214,6 +214,22 @@ jobs:
                 git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
                 git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
               }
+              dev_merge_base() {
+                git_cmd fetch --no-tags origin +refs/heads/dev:refs/remotes/origin/dev || true
+                git_cmd cat-file -e "refs/remotes/origin/dev^{commit}" 2>/dev/null || return 1
+                git_cmd merge-base HEAD refs/remotes/origin/dev
+              }
+              clippy_since_dev_merge_base() {
+                case "${GITHUB_REF_NAME}" in
+                  main|dev)
+                    return 1
+                    ;;
+                esac
+
+                since="$(dev_merge_base)" || return 1
+                echo "::notice::first feature-branch push detected; running incremental clippy since origin/dev merge-base ${since}"
+                cargo xtask clippy --since "${since}"
+              }
               ensure_host_clippy_deps
 
               if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
@@ -221,12 +237,18 @@ jobs:
               elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
                 before="${{ github.event.before }}"
                 if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
-                  cargo xtask clippy
+                  if ! clippy_since_dev_merge_base; then
+                    echo "::notice::no dev merge-base available for first push; running full clippy"
+                    cargo xtask clippy
+                  fi
                 elif ensure_since_ref "${before}"; then
                   cargo xtask clippy --since "${before}"
                 else
-                  echo "::notice::before commit ${before} is unavailable; running full clippy"
-                  cargo xtask clippy
+                  echo "::notice::before commit ${before} is unavailable"
+                  if ! clippy_since_dev_merge_base; then
+                    echo "::notice::no dev merge-base available; running full clippy"
+                    cargo xtask clippy
+                  fi
                 fi
               else
                 cargo xtask clippy
@@ -450,6 +472,22 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask axvisor test board --board orangepi-5-plus-linux
+            cache_key: ""
+            container_image: ""
+            required_repository_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor self-hosted board roc-rk3568-pc-linux
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask axvisor test board --board roc-rk3568-pc-linux
+            cache_key: ""
+            container_image: ""
+            required_repository_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor self-hosted board phytiumpi-linux
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask axvisor test board --board phytiumpi-linux
             cache_key: ""
             container_image: ""
             required_repository_owner: rcore-os

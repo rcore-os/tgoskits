@@ -1759,6 +1759,7 @@ dependencies = [
  "log",
  "mmio-api",
  "pcie",
+ "phytium-mci-host",
  "rd-block",
  "rd-net",
  "rdif-clk",
@@ -1774,25 +1775,6 @@ dependencies = [
  "some-serial",
  "somehal",
  "spin 0.10.0",
-]
-
-[[package]]
-name = "axplat-riscv64-qemu-virt-hv"
-version = "0.5.7"
-dependencies = [
- "ax-config-macros",
- "ax-cpu",
- "ax-crate-interface",
- "ax-kspin",
- "ax-lazyinit",
- "ax-plat",
- "ax-riscv-plic",
- "axvisor_api",
- "log",
- "riscv 0.14.0",
- "riscv_goldfish",
- "sbi-rt 0.0.3",
- "some-serial",
 ]
 
 [[package]]
@@ -1930,6 +1912,7 @@ dependencies = [
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-riscv64-qemu-virt",
  "ax-std",
  "ax-timer-list",
  "axaddrspace",
@@ -1939,7 +1922,6 @@ dependencies = [
  "axhvc",
  "axklib",
  "axplat-dyn",
- "axplat-riscv64-qemu-virt-hv",
  "axplat-x86-qemu-q35",
  "axvcpu",
  "axvisor_api",
@@ -3377,7 +3359,7 @@ dependencies = [
 
 [[package]]
 name = "dwmmc-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitfield-struct",
  "dma-api",
@@ -5804,6 +5786,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "phytium-mci-host"
+version = "0.1.1"
+dependencies = [
+ "bitfield-struct",
+ "dma-api",
+ "log",
+ "mmio-api",
+ "sdmmc-protocol",
+ "volatile 0.6.1",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7133,7 +7127,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdhci-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dma-api",
  "embedded-hal",
@@ -7144,7 +7138,7 @@ dependencies = [
 
 [[package]]
 name = "sdmmc-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "embedded-hal",

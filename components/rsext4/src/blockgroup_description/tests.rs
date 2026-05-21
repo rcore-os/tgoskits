@@ -1,6 +1,7 @@
 //! Tests for block group descriptor helpers.
 
 use super::Ext4GroupDesc;
+use crate::superblock::Ext4Superblock;
 
 #[test]
 fn test_group_desc_64bit_values() {
@@ -45,4 +46,31 @@ fn test_group_desc_flags() {
 
     assert!(desc.is_inode_bitmap_uninit());
     assert!(!desc.is_block_bitmap_uninit());
+}
+
+#[test]
+fn bitmap_checksum_getters_follow_descriptor_width() {
+    let desc = Ext4GroupDesc {
+        bg_block_bitmap_csum_lo: 0x7217,
+        bg_block_bitmap_csum_hi: 0x0d12,
+        bg_inode_bitmap_csum_lo: 0x1234,
+        bg_inode_bitmap_csum_hi: 0xabcd,
+        ..Default::default()
+    };
+
+    let mut old_desc_sb = Ext4Superblock {
+        s_desc_size: Ext4GroupDesc::GOOD_OLD_DESC_SIZE as u16,
+        ..Default::default()
+    };
+    old_desc_sb.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT;
+
+    let new_desc_sb = Ext4Superblock {
+        s_desc_size: Ext4GroupDesc::EXT4_DESC_SIZE_64BIT as u16,
+        ..Default::default()
+    };
+
+    assert_eq!(desc.block_bitmap_csum(&old_desc_sb), 0x7217);
+    assert_eq!(desc.inode_bitmap_csum(&old_desc_sb), 0x1234);
+    assert_eq!(desc.block_bitmap_csum(&new_desc_sb), 0x0d127217);
+    assert_eq!(desc.inode_bitmap_csum(&new_desc_sb), 0xabcd1234);
 }
