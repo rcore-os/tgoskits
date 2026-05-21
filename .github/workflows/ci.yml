@@ -90,7 +90,7 @@ jobs:
               - "container/Dockerfile.axvisor-lvz"
               - "rust-toolchain.toml"
 
-      - name: Resolve workflow outputs and summary
+      - name: Resolve workflow outputs
         id: outputs
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -166,29 +166,37 @@ jobs:
             echo "axvisor_lvz_container_image=${axvisor_lvz_container_image}"
           } >> "$GITHUB_OUTPUT"
 
-          if [ "$ci_checks" != "true" ]; then
-            {
-              echo "## CI checks skipped"
-              echo ""
-              if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-                echo "This manual run is scoped to container publishing, so static checks and follow-up CI checks were skipped."
-              elif [ "$skip_duplicate_push_ci" = "true" ]; then
-                echo "This branch already has an open pull request. The duplicate push CI was skipped; the pull_request CI run will validate the same commit."
-              else
-                echo "Changed files do not match the test-relevant path set, so static checks and follow-up CI checks were skipped."
-              fi
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Summarize skipped CI checks
+        if: steps.outputs.outputs.ci_checks != 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_DUPLICATE_PUSH_CI: ${{ steps.outputs.outputs.skip_duplicate_push_ci }}
+        run: |
+          {
+            echo "## CI checks skipped"
+            echo ""
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              echo "This manual run is scoped to container publishing, so static checks and follow-up CI checks were skipped."
+            elif [ "$SKIP_DUPLICATE_PUSH_CI" = "true" ]; then
+              echo "This branch already has an open pull request. The duplicate push CI was skipped; the pull_request CI run will validate the same commit."
+            else
+              echo "Changed files do not match the test-relevant path set, so static checks and follow-up CI checks were skipped."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] \
-            && [ "$REF_NAME" != "main" ] \
-            && [ "$REF_NAME" != "dev" ]; then
-            {
-              echo "## Container publish skipped"
-              echo ""
-              echo "Manual container publishing only runs from the \`main\` or \`dev\` branch. This run targeted \`${REF_NAME}\`, so publish jobs were skipped."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Summarize manual container branch restriction
+        if: >-
+          ${{
+            github.event_name == 'workflow_dispatch'
+            && github.ref_name != 'main'
+            && github.ref_name != 'dev'
+          }}
+        run: |
+          {
+            echo "## Container publish skipped"
+            echo ""
+            echo "Manual container publishing only runs from the \`main\` or \`dev\` branch. This run targeted \`${{ github.ref_name }}\`, so publish jobs were skipped."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   static_checks:
     name: ${{ matrix.name }}
