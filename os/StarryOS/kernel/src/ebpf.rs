@@ -695,6 +695,399 @@ fn handle_raw_tracepoint_open(_uattr: usize, _size: u32) -> AxResult<isize> {
     Err(bpf_error::EINVAL)
 }
 
+#[allow(dead_code)]
+mod helper_id {
+    pub const MAP_LOOKUP_ELEM: u32 = 1;
+    pub const MAP_UPDATE_ELEM: u32 = 2;
+    pub const MAP_DELETE_ELEM: u32 = 3;
+    pub const PROBE_READ: u32 = 4;
+    pub const KTIME_GET_NS: u32 = 5;
+    pub const TRACE_PRINTK: u32 = 6;
+    pub const GET_PRANDOM_U32: u32 = 7;
+    pub const GET_SMP_PROCESSOR_ID: u32 = 8;
+    pub const SKB_STORE_BYTES: u32 = 9;
+    pub const CSUM_DIFF: u32 = 10;
+    pub const GET_CURRENT_PID_TGID: u32 = 14;
+    pub const GET_CURRENT_UID_GID: u32 = 15;
+    pub const GET_CURRENT_COMM: u32 = 16;
+    pub const PERF_EVENT_OUTPUT: u32 = 25;
+    pub const GET_STACK_ID: u32 = 27;
+    pub const GET_CURRENT_CGROUP_ID: u32 = 43;
+    pub const PROBE_READ_USER: u32 = 112;
+    pub const PROBE_READ_KERNEL: u32 = 113;
+    pub const PROBE_READ_USER_STR: u32 = 114;
+    pub const PROBE_READ_KERNEL_STR: u32 = 115;
+    pub const MAP_PUSH_ELEM: u32 = 87;
+    pub const MAP_POP_ELEM: u32 = 88;
+    pub const MAP_PEEK_ELEM: u32 = 89;
+    pub const RINGBUF_OUTPUT: u32 = 130;
+    pub const RINGBUF_RESERVE: u32 = 131;
+    pub const RINGBUF_SUBMIT: u32 = 132;
+    pub const RINGBUF_DISCARD: u32 = 133;
+    pub const GET_CURRENT_TASK: u32 = 35;
+    pub const MAP_FOR_EACH_ELEM: u32 = 164;
+    pub const GET_ATTACHED_FUNC_ARGS: u32 = 186;
+}
+
+type HelperFn = fn(u64, u64, u64, u64, u64) -> u64;
+
+fn init_helper_functions() -> alloc::collections::BTreeMap<u32, HelperFn> {
+    let mut m: alloc::collections::BTreeMap<u32, HelperFn> = alloc::collections::BTreeMap::new();
+    m.insert(helper_id::MAP_LOOKUP_ELEM, helper_map_lookup_elem);
+    m.insert(helper_id::MAP_UPDATE_ELEM, helper_map_update_elem);
+    m.insert(helper_id::MAP_DELETE_ELEM, helper_map_delete_elem);
+    m.insert(helper_id::PROBE_READ, helper_probe_read);
+    m.insert(helper_id::PROBE_READ_KERNEL, helper_probe_read);
+    m.insert(helper_id::KTIME_GET_NS, helper_ktime_get_ns);
+    m.insert(helper_id::GET_SMP_PROCESSOR_ID, helper_get_smp_processor_id);
+    m.insert(helper_id::GET_CURRENT_PID_TGID, helper_get_current_pid_tgid);
+    m.insert(helper_id::GET_CURRENT_UID_GID, helper_get_current_uid_gid);
+    m.insert(helper_id::GET_PRANDOM_U32, helper_get_prandom_u32);
+    m
+}
+
+fn helper_map_lookup_elem(map_ptr: u64, key_ptr: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    if map_ptr == 0 || key_ptr == 0 {
+        return 0;
+    }
+    let mut guard = BPF_GLOBAL.lock();
+    let map = match guard.get_map(map_ptr as u32) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    let key_size = map.meta().key_size as usize;
+    let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
+    match map.lookup(key) {
+        Ok(Some(_)) => map_ptr,
+        _ => 0,
+    }
+}
+
+fn helper_map_update_elem(map_ptr: u64, key_ptr: u64, value_ptr: u64, flags: u64, _a5: u64) -> u64 {
+    if map_ptr == 0 || key_ptr == 0 || value_ptr == 0 {
+        return u64::MAX;
+    }
+    let mut guard = BPF_GLOBAL.lock();
+    let map = match guard.get_map(map_ptr as u32) {
+        Ok(m) => m,
+        Err(_) => return u64::MAX,
+    };
+    let key_size = map.meta().key_size as usize;
+    let value_size = map.meta().value_size as usize;
+    let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
+    let value = unsafe { core::slice::from_raw_parts(value_ptr as *const u8, value_size) };
+    match map.update(key, value, flags) {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn helper_map_delete_elem(map_ptr: u64, key_ptr: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    if map_ptr == 0 || key_ptr == 0 {
+        return u64::MAX;
+    }
+    let mut guard = BPF_GLOBAL.lock();
+    let map = match guard.get_map(map_ptr as u32) {
+        Ok(m) => m,
+        Err(_) => return u64::MAX,
+    };
+    let key_size = map.meta().key_size as usize;
+    let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
+    match map.delete(key) {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
+    if dst == 0 || size == 0 {
+        return u64::MAX;
+    }
+    if src == 0 {
+        unsafe { core::ptr::write_bytes(dst as *mut u8, 0, size as usize) };
+        return 0;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, size as usize);
+    }
+    0
+}
+
+fn helper_ktime_get_ns(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    ax_hal::time::monotonic_time_nanos()
+}
+
+fn helper_get_smp_processor_id(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    ax_hal::percpu::this_cpu_id() as u64
+}
+
+fn helper_get_current_pid_tgid(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    let curr = ax_task::current();
+    let pid = curr.id().as_u64();
+    let tgid = pid;
+    (tgid << 32) | pid
+}
+
+fn helper_get_current_uid_gid(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    0u64
+}
+
+fn helper_get_prandom_u32(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static SEED: AtomicU32 = AtomicU32::new(12345);
+    let prev = SEED.load(Ordering::Relaxed);
+    let next = prev.wrapping_mul(1103515245).wrapping_add(12345);
+    SEED.store(next, Ordering::Relaxed);
+    next as u64
+}
+
+const BPF_MAX_INSN: usize = 1000000;
+const BPF_MAX_STACK: usize = 512;
+
+struct BpfVm {
+    #[allow(dead_code)]
+    helpers: alloc::collections::BTreeMap<u32, HelperFn>,
+}
+
+impl BpfVm {
+    fn new() -> Self {
+        Self {
+            helpers: init_helper_functions(),
+        }
+    }
+
+    fn execute(&self, insns: &[bpf_insn::BpfInsn], ctx: u64) -> Result<u64, &'static str> {
+        if insns.is_empty() {
+            return Err("empty program");
+        }
+        let mut regs = [0u64; 11];
+        regs[1] = ctx;
+        regs[10] = 0;
+        let mut stack = [0u8; BPF_MAX_STACK];
+        regs[10] = stack.as_mut_ptr() as u64 + BPF_MAX_STACK as u64;
+        let mut pc: usize = 0;
+        let max_pc = insns.len();
+        for _ in 0..BPF_MAX_INSN {
+            if pc >= max_pc {
+                return Err("PC out of bounds");
+            }
+            let insn = &insns[pc];
+            let class = insn.class();
+            match class {
+                bpf_insn::BPF_ALU | bpf_insn::BPF_ALU64 => {
+                    let is_64 = class == bpf_insn::BPF_ALU64;
+                    let dst = insn.dst_reg() as usize;
+                    let src_val = if insn.src_reg() == bpf_insn::BPF_X {
+                        regs[insn.src_reg() as usize]
+                    } else {
+                        insn.imm as u64
+                    };
+                    let result = Self::exec_alu(insn.alu_op(), regs[dst], src_val, is_64);
+                    regs[dst] = result;
+                    pc += 1;
+                }
+                bpf_insn::BPF_JMP | bpf_insn::BPF_JMP32 => {
+                    let is_64 = class == bpf_insn::BPF_JMP;
+                    let dst = insn.dst_reg() as usize;
+                    let src_val = if insn.src_reg() == bpf_insn::BPF_X {
+                        regs[insn.src_reg() as usize]
+                    } else {
+                        insn.imm as u64
+                    };
+                    let dst_val = regs[dst];
+                    let off = insn.off as isize;
+                    if insn.code == (bpf_insn::BPF_JMP | bpf_insn::BPF_JA) {
+                        pc = (pc as isize + 1 + off) as usize;
+                        continue;
+                    }
+                    if insn.code == bpf_insn::BPF_JMP32 && insn.src_reg() == 0 {
+                        pc = (pc as isize + 1 + off) as usize;
+                        continue;
+                    }
+                    if Self::eval_jmp(insn.code, dst_val, src_val, is_64) {
+                        pc = (pc as isize + 1 + off) as usize;
+                    } else {
+                        pc += 1;
+                    }
+                }
+                bpf_insn::BPF_ST | bpf_insn::BPF_STX => {
+                    Self::exec_store(insn, &mut regs, &mut stack);
+                    pc += 1;
+                }
+                bpf_insn::BPF_LDX => {
+                    Self::exec_load(insn, &mut regs, &stack);
+                    pc += 1;
+                }
+                bpf_insn::BPF_LD => {
+                    if insn.is_ld_dw_imm() && pc + 1 < max_pc {
+                        let next = &insns[pc + 1];
+                        let imm_lo = insn.imm as u64;
+                        let imm_hi = next.imm as u64;
+                        let val = (imm_hi << 32) | (imm_lo & 0xffffffff);
+                        regs[insn.dst_reg() as usize] = val;
+                        pc += 2;
+                    } else {
+                        return Err("unsupported LD instruction");
+                    }
+                }
+                _ => return Err("unsupported instruction class"),
+            }
+        }
+        Err("max instructions exceeded")
+    }
+
+    fn exec_alu(op: u8, dst: u64, src: u64, is_64: bool) -> u64 {
+        let (result, mask) = match op {
+            bpf_insn::BPF_ADD => (dst.wrapping_add(src), !0),
+            bpf_insn::BPF_SUB => (dst.wrapping_sub(src), !0),
+            bpf_insn::BPF_MUL => (dst.wrapping_mul(src), !0),
+            bpf_insn::BPF_DIV => {
+                if src == 0 {
+                    return 0;
+                }
+                (dst / src, !0)
+            }
+            bpf_insn::BPF_OR => (dst | src, !0),
+            bpf_insn::BPF_AND => (dst & src, !0),
+            bpf_insn::BPF_LSH => (dst.wrapping_shl(src as u32), !0),
+            bpf_insn::BPF_RSH => {
+                if is_64 {
+                    (dst >> src, !0)
+                } else {
+                    ((dst as u32 >> src as u32) as u64, 0xffffffff)
+                }
+            }
+            bpf_insn::BPF_NEG => ((-(dst as i64)) as u64, !0),
+            bpf_insn::BPF_MOD => {
+                if src == 0 {
+                    return dst;
+                }
+                (dst % src, !0)
+            }
+            bpf_insn::BPF_XOR => (dst ^ src, !0),
+            bpf_insn::BPF_MOV => (src, !0),
+            bpf_insn::BPF_ARSH => {
+                if is_64 {
+                    (((dst as i64) >> src) as u64, !0)
+                } else {
+                    ((((dst as i32) as i64) >> src) as u64, 0xffffffff)
+                }
+            }
+            _ => return dst,
+        };
+        result & mask
+    }
+
+    fn eval_jmp(code: u8, dst: u64, src: u64, is_64: bool) -> bool {
+        let op = code & 0xf0;
+        let (d, s) = if is_64 {
+            (dst, src)
+        } else {
+            (dst as u32 as u64, src as u32 as u64)
+        };
+        match op {
+            bpf_insn::BPF_JEQ => d == s,
+            bpf_insn::BPF_JGT => d > s,
+            bpf_insn::BPF_JGE => d >= s,
+            bpf_insn::BPF_JSET => (d & s) != 0,
+            bpf_insn::BPF_JNE => d != s,
+            bpf_insn::BPF_JSGT => (d as i64) > (s as i64),
+            bpf_insn::BPF_JSGE => (d as i64) >= (s as i64),
+            bpf_insn::BPF_JLT => d < s,
+            bpf_insn::BPF_JLE => d <= s,
+            bpf_insn::BPF_JSLT => (d as i64) < (s as i64),
+            bpf_insn::BPF_JSLE => (d as i64) <= (s as i64),
+            _ => false,
+        }
+    }
+
+    #[allow(clippy::comparison_chain)]
+    fn exec_store(insn: &bpf_insn::BpfInsn, regs: &mut [u64; 11], stack: &mut [u8; BPF_MAX_STACK]) {
+        let dst_base = regs[10];
+        let off = insn.off as i32 as isize;
+        let mem = insn.mode();
+        if mem == bpf_insn::BPF_MEM {
+            let addr = (dst_base as isize + off) as usize;
+            let stack_base = stack.as_mut_ptr() as usize;
+            if addr < stack_base || addr + 8 > stack_base + BPF_MAX_STACK {
+                return;
+            }
+            let val = if insn.class() == bpf_insn::BPF_ST {
+                insn.imm as u64
+            } else {
+                regs[insn.src_reg() as usize]
+            };
+            match insn.size() {
+                bpf_insn::BPF_W => unsafe {
+                    let p = (addr - stack_base) as *mut u32;
+                    *p = val as u32;
+                },
+                bpf_insn::BPF_H => unsafe {
+                    let p = (addr - stack_base) as *mut u16;
+                    *p = val as u16;
+                },
+                bpf_insn::BPF_B => unsafe {
+                    let p = (addr - stack_base) as *mut u8;
+                    *p = val as u8;
+                },
+                bpf_insn::BPF_DW => unsafe {
+                    let p = (addr - stack_base) as *mut u64;
+                    *p = val;
+                },
+                _ => {}
+            }
+        }
+    }
+
+    fn exec_load(insn: &bpf_insn::BpfInsn, regs: &mut [u64; 11], stack: &[u8; BPF_MAX_STACK]) {
+        let src_base = regs[insn.src_reg() as usize];
+        let off = insn.off as i32 as isize;
+        let mem = insn.mode();
+        if mem == bpf_insn::BPF_MEM {
+            let addr = (src_base as isize + off) as usize;
+            let stack_base = stack.as_ptr() as usize;
+            if addr < stack_base || addr + 8 > stack_base + BPF_MAX_STACK {
+                return;
+            }
+            let val: u64 = match insn.size() {
+                bpf_insn::BPF_W => unsafe {
+                    let p = (addr - stack_base) as *const u32;
+                    (*p) as u64
+                },
+                bpf_insn::BPF_H => unsafe {
+                    let p = (addr - stack_base) as *const u16;
+                    (*p) as u64
+                },
+                bpf_insn::BPF_B => unsafe {
+                    let p = (addr - stack_base) as *const u8;
+                    (*p) as u64
+                },
+                bpf_insn::BPF_DW => unsafe {
+                    let p = (addr - stack_base) as *const u64;
+                    *p
+                },
+                _ => 0,
+            };
+            regs[insn.dst_reg() as usize] = val;
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
+    let (insns, prog_type) = {
+        let guard = BPF_GLOBAL.lock();
+        let prog = guard.progs.get(&fd).ok_or(AxError::BadFileDescriptor)?;
+        (prog.insns.clone(), prog.prog_type)
+    };
+    let _ = prog_type;
+    let vm = BpfVm::new();
+    vm.execute(&insns, ctx).map_err(|e| {
+        warn!("bpf: program execution failed: {e}");
+        AxError::Io
+    })
+}
+
 pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
     match cmd {
         cmd::MAP_CREATE => handle_map_create(uattr, size),
