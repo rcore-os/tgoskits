@@ -106,7 +106,7 @@ arm-gic-driver = { workspace = true, features = ["rdif"] }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 ax-plat-loongarch64-qemu-virt = { version = "0.5.9", path = "../../components/axplat_crates/platforms/axplat-loongarch64-qemu-virt", default-features = false, features = ["irq", "smp"] }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-axplat-riscv64-qemu-virt-hv = { workspace = true }
+ax-plat-riscv64-qemu-virt = { workspace = true, features = ["hypervisor"] }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 # xtask dependencies (only used on host platforms)
