@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
 
 int main(void)
 {
@@ -90,7 +91,7 @@ int main(void)
         CHECK(rc == 0, "sync_file_range returns 0");
         CHECK_ERR(syscall(SYS_sync_file_range, fd, 0, 29, 0x8000), EINVAL,
                   "sync_file_range invalid flags -> EINVAL");
-        CHECK_ERR(syscall(SYS_sync_file_range, fd, -1, 29, 2), EINVAL,
+        CHECK_ERR(syscall(SYS_sync_file_range, fd, (off_t)-1, 29, 2), EINVAL,
                   "sync_file_range negative offset -> EINVAL");
         close(fd);
         unlink("/tmp/starry_fsync_test/sfrfile");
