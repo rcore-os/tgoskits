@@ -1994,6 +1994,7 @@ dependencies = [
  "arm_vgic",
  "ax-cpumask",
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-page-table-entry",
  "ax-page-table-multiarch",
