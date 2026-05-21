@@ -181,7 +181,7 @@ impl BuildInfo {
             );
             cargo.env.extend(std_target.env);
             prepare_std_build_env(&mut cargo.env, target, metadata)?;
-            pass_std_build_nested_features(&mut cargo.env, &cargo.features);
+            pass_std_build_nested_features(&mut cargo.env, &mut cargo.features);
             cargo.extra_config = Some(std_cargo_config_path()?.display().to_string());
             cargo.to_bin = false;
             return Ok(cargo);
@@ -491,12 +491,16 @@ pub(crate) fn prepare_std_build_env(
     Ok(())
 }
 
-fn pass_std_build_nested_features(envs: &mut HashMap<String, String>, features: &[String]) {
-    let nested = features
-        .iter()
-        .filter(|feature| feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/"))
-        .cloned()
-        .collect::<Vec<_>>();
+fn pass_std_build_nested_features(envs: &mut HashMap<String, String>, features: &mut Vec<String>) {
+    let mut nested = Vec::new();
+    features.retain(|feature| {
+        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+            nested.push(feature.clone());
+            false
+        } else {
+            true
+        }
+    });
     if nested.is_empty() {
         return;
     }
@@ -1261,6 +1265,29 @@ mod tests {
                 "-Cstrip=none".to_string(),
                 "-Cforce-frame-pointers=yes".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
+        let mut envs = HashMap::new();
+        let mut features = vec![
+            "ax-hal/riscv64-qemu-virt".to_string(),
+            "ax-driver/pci".to_string(),
+            "ax-driver/virtio-blk".to_string(),
+            "ax-driver/virtio-net".to_string(),
+            "dns".to_string(),
+        ];
+
+        pass_std_build_nested_features(&mut envs, &mut features);
+
+        assert_eq!(features, vec!["dns".to_string()]);
+        assert_eq!(
+            envs.get("ARCEOS_RUST_FEATURES"),
+            Some(
+                &"ax-hal/riscv64-qemu-virt,ax-driver/pci,ax-driver/virtio-blk,ax-driver/virtio-net"
+                    .to_string()
+            )
         );
     }
 
