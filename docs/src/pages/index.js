@@ -622,8 +622,7 @@ function PlatformSection() {
         {platformGroups.map((group) => (
           <div className={`platform-lane platform-lane--${group.cssClass}`} key={group.arch}>
             <div className="platform-lane__arch">
-              <span className="platform-arch-badge">{group.arch}</span>
-              <strong>{group.label}</strong>
+              <span className="platform-arch-badge" aria-label={group.label}>{group.arch}</span>
             </div>
             <div className="platform-lane__rail">
               {group.targets.map((target) => (
