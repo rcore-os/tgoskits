@@ -345,11 +345,31 @@ Suggested priority for eliminating lockdep-relevant blind spots:
 
 ## Notes
 
+- Treat external `spin::Mutex` as a busy-wait mutual-exclusion lock, not as a
+  sleepable mutex. The misleading name should not push migrations toward
+  `ax_sync::Mutex`; the first replacement target is normally the `ax-kspin`
+  family, with any later move to a sleepable lock handled as a separate design
+  change.
 - Do not mechanically replace `spin::Mutex` with `ax_kspin::SpinNoPreempt`.
   Each site needs a context check: task context, IRQ context, preemption
   requirements, and whether the crate is intended to stay OS-neutral.
 - Prefer `SpinNoIrq` for replacements that may be acquired from IRQ-enabled
   contexts unless the code can prove that the lock is never shared with IRQ
   handlers; `SpinNoPreempt` is only safe under that stricter condition.
+- `SpinNoIrq` is not a universal repair for `SpinNoPreempt`: if a critical
+  section can sleep, reschedule, fault on user memory, or call filesystem/device
+  backends that can do so, the fix is to shorten the critical section or use a
+  sleepable lock design.
+- Current `SpinNoPreempt` follow-ups:
+  - `components/axfs-ng-vfs`: the migration corrected the lock flavor to
+    `SpinNoIrq`; backend callbacks under VFS spin locks are now intentionally
+    left as a separately exposed follow-up issue.
+  - `os/arceos/modules/axfs-ng` FAT/ext4: large filesystem locks around I/O and
+    flush paths need a broader lock strategy, not a mechanical IRQ-disabling
+    replacement.
+  - Starry `epoll`, `pty`, and terminal metadata: short critical sections that
+    can be considered for `SpinNoIrq` after wakeup/tty ordering review.
+  - Starry loop-device cache: tied to the ext4 block-device path and should be
+    reviewed with the axfs-ng ext4 lock strategy.
 - If migrating `axfs-ng-vfs` exposes the suspected FAT32/VFS ABBA ordering, the
   fix should be a real ordering fix, not a lockdep subclass annotation.

@@ -39,6 +39,13 @@ This keeps the first change low risk: existing `spin::Mutex`, `spin::RwLock`,
 `spin::Once`, and `spin::Lazy` users continue to compile while the dependency is
 resolved from the repository.
 
+The upstream name `spin::Mutex` is semantically misleading in this kernel
+context. It is a busy-wait mutual-exclusion primitive and has no path to sleep
+while waiting. Therefore existing `spin::Mutex` users should first be treated as
+non-sleeping locks and migrated into the `ax-kspin` family. Replacing them with
+`ax_sync::Mutex` is a separate semantic change and should only happen after a
+site proves that a sleepable lock is the correct design.
+
 This first stage does not make those locks visible to lockdep. It only makes the
 codebase independent from the external crate source and gives the project a
 controlled place for future compatibility and migration work.
@@ -143,6 +150,10 @@ Replacement rules:
   - `ax_kspin::SpinNoPreempt<T>`;
   - `ax_kspin::SpinNoIrq<T>`;
   - `ax_kspin::SpinRaw<T>`.
+- Do not read the upstream `Mutex` name as equivalent to `ax_sync::Mutex`.
+  `spin::Mutex` is non-sleeping and busy-waits, so the migration default is an
+  `ax-kspin` primitive. Moving a site to `ax_sync::Mutex` is a later design
+  decision, not a mechanical replacement.
 - `spin::RwLock<T>` is not directly covered by `ax-kspin` today.
   - Some sites may be safely downgraded to a mutex.
   - Read-heavy shared structures need a real internal RwLock design or a
@@ -154,10 +165,34 @@ Do not mechanically replace every `spin::Mutex` with `SpinNoPreempt`. Each site
 needs a context check:
 
 - whether it can run in IRQ context;
+- whether lock acquisition itself happens with local IRQs enabled;
+- whether the critical section can sleep, reschedule, fault on user memory, or
+  call into a backend callback that can do so;
 - whether preemption must be disabled;
 - whether it is already protected by an outer critical section;
 - whether the crate is meant to stay OS-neutral;
 - whether lockdep visibility is actually required.
+
+Follow-up `SpinNoPreempt` audit after the first VFS/axfs-ng migrations:
+
+- `components/axfs-ng-vfs` initially aliased its internal VFS locks to
+  `SpinNoPreempt`. That exposed a real Starry tmpfs panic when
+  `Location::mount()` held a VFS mountpoint lock and called the filesystem
+  backend's `root_dir()`. The immediate migration correction is to keep VFS
+  metadata locks in the `ax-kspin` family but use `SpinNoIrq`. The backend
+  callback issue should remain visible to `might_sleep`/lockdep and be handled
+  as a separate lock-scope follow-up, not as part of the spin replacement step.
+- `os/arceos/modules/axfs-ng` FAT and ext4 filesystem locks also use
+  `SpinNoPreempt`. They protect large filesystem states and often wrap block
+  I/O, sync, and flush paths. They are not good candidates for a mechanical
+  `SpinNoIrq` replacement; they may need sleepable, lockdep-visible locking or
+  smaller critical sections.
+- Starry `epoll`, `pty`, and terminal metadata use short `SpinNoPreempt`
+  critical sections. They are likely candidates for `SpinNoIrq` if the call
+  sites are IRQ-enabled, but should still be reviewed for wakeup and tty lock
+  ordering.
+- Starry loop-device cache locking is tied to the ext4 block-device path and
+  should be considered together with the axfs-ng ext4 lock strategy.
 
 ## Validation strategy
 
