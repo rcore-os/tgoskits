@@ -83,6 +83,7 @@ where
     let token = TOKEN.fetch_add(1, Ordering::Relaxed);
     let event = VmmTimerEvent::new(token, handler);
     timers.set(TimeValue::from_nanos(deadline), event);
+    rearm_host_timer(&timers);
     token
 }
 
@@ -96,6 +97,7 @@ pub fn cancel_timer(token: usize) {
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     let mut timers = timer_list.lock();
     timers.cancel(|event| event.token == token);
+    rearm_host_timer(&timers);
 }
 
 /// Check and process any pending timer events
@@ -106,14 +108,21 @@ pub fn check_events() {
     // initialised per-CPU in init_percpu() before any timer operation is invoked.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     loop {
-        let now = ax_hal::time::wall_time();
+        let now = ax_hal::time::monotonic_time();
         let event = timer_list.lock().expire_one(now);
         if let Some((_deadline, event)) = event {
             trace!("pick one {_deadline:#?} to handle!!!");
             event.callback(now);
         } else {
+            rearm_host_timer(&timer_list.lock());
             break;
         }
+    }
+}
+
+fn rearm_host_timer(timers: &TimerList<VmmTimerEvent>) {
+    if let Some(deadline) = timers.next_deadline() {
+        ax_hal::time::set_oneshot_timer(deadline.as_nanos() as u64);
     }
 }
 

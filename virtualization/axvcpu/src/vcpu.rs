@@ -204,22 +204,25 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     where
         F: FnOnce() -> AxResult<T>,
     {
-        let mut inner_mut = self.inner_mut.borrow_mut();
-        if inner_mut.state != from {
-            inner_mut.state = VCpuState::Invalid;
-            ax_err!(
-                BadState,
-                format!("VCpu state is not {:?}, but {:?}", from, inner_mut.state)
-            )
-        } else {
-            let result = f();
-            inner_mut.state = if result.is_err() {
-                VCpuState::Invalid
-            } else {
-                to
-            };
-            result
+        {
+            let mut inner_mut = self.inner_mut.borrow_mut();
+            if inner_mut.state != from {
+                let current_state = inner_mut.state;
+                inner_mut.state = VCpuState::Invalid;
+                return ax_err!(
+                    BadState,
+                    format!("VCpu state is not {from:?}, but {current_state:?}")
+                );
+            }
         }
+
+        let result = f();
+        self.inner_mut.borrow_mut().state = if result.is_err() {
+            VCpuState::Invalid
+        } else {
+            to
+        };
+        result
     }
 
     /// Execute a block with the current VCpu set to `&self`.

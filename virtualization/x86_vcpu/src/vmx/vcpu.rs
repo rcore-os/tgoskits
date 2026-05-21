@@ -27,7 +27,10 @@ use axaddrspace::{
 };
 use axdevice_base::BaseDeviceOps;
 use axvcpu::{AxArchVCpu, AxVCpuExitReason};
-use axvisor_api::vmm::{VCpuId, VMId};
+use axvisor_api::{
+    memory::{self, PhysAddr},
+    vmm::{VCpuId, VMId},
+};
 use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
@@ -677,7 +680,8 @@ impl VmxVcpu {
         VmcsControl64::MSR_BITMAPS_ADDR.write(self.msr_bitmap.phys_addr().as_usize() as _)?;
 
         VmcsControl64::VIRT_APIC_ADDR.write(self.vlapic.virtual_apic_page_addr().as_usize() as _)?;
-        VmcsControl64::APIC_ACCESS_ADDR.write(X86_APIC_ACCESS_GPA as _)?;
+        VmcsControl64::APIC_ACCESS_ADDR
+            .write(EmulatedLocalApic::virtual_apic_access_addr().as_usize() as _)?;
         Ok(())
     }
 
@@ -760,6 +764,11 @@ impl VmxVcpu {
         })()
         .expect("Failed to read guest control register")
     }
+}
+
+fn read_guest_phys_u64(gpa: usize) -> u64 {
+    let hva = memory::phys_to_virt(PhysAddr::from(gpa));
+    unsafe { core::ptr::read_unaligned(hva.as_ptr() as *const u64) }
 }
 
 /// Get ready then vmlaunch or vmresume.
@@ -853,6 +862,11 @@ impl VmxVcpu {
         Ok(())
     }
 
+    fn handle_interrupt_window(&mut self) -> AxResult {
+        self.set_interrupt_window(false)?;
+        self.inject_pending_events()
+    }
+
     /// Handle vm-exits than can and should be handled by [`VmxVcpu`] itself.
     ///
     /// Return the result or None if the vm-exit was not handled.
@@ -866,7 +880,7 @@ impl VmxVcpu {
         // - xsetbv: set guest xcr;
         // - cr access: just panic;
         match exit_info.exit_reason {
-            VmxExitReason::INTERRUPT_WINDOW => Some(self.set_interrupt_window(false)),
+            VmxExitReason::INTERRUPT_WINDOW => Some(self.handle_interrupt_window()),
             VmxExitReason::PREEMPTION_TIMER => Some(self.handle_vmx_preemption_timer()),
             VmxExitReason::XSETBV => Some(self.handle_xsetbv()),
             VmxExitReason::CR_ACCESS => Some(self.handle_cr()),
@@ -984,7 +998,7 @@ impl VmxVcpu {
         let reg = apic_access_exit_info.offset as usize;
         let addr = GuestPhysAddr::from(X86_APIC_ACCESS_GPA + reg);
         if write {
-            let value = self.regs().rax as usize;
+            let value = self.decode_apic_mmio_write_value(exit_info)?;
             <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
                 &self.vlapic,
                 addr,
@@ -1002,6 +1016,140 @@ impl VmxVcpu {
         }
 
         self.advance_rip(exit_info.exit_instruction_length as _)
+    }
+
+    fn decode_apic_mmio_write_value(&self, exit_info: &VmxExitInfo) -> AxResult<usize> {
+        let mut rip = self.gla2gva(GuestVirtAddr::from(exit_info.guest_rip));
+        let mut rex = 0u8;
+
+        loop {
+            let byte = self.read_guest_u8(rip)?;
+            if byte == 0x66 {
+                rip += 1;
+            } else if (0x40..=0x4f).contains(&byte) {
+                rex = byte;
+                rip += 1;
+            } else {
+                break;
+            }
+        }
+
+        let opcode = self.read_guest_u8(rip)?;
+        rip += 1;
+        let modrm = self.read_guest_u8(rip)?;
+        rip += 1;
+        let mode = modrm >> 6;
+        if mode == 0b11 {
+            return ax_err!(Unsupported, "APIC MMIO write destination is not memory");
+        }
+
+        if opcode == 0x89 {
+            let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
+            return Ok(self.guest_regs.get_reg_of_index(reg) as u32 as usize);
+        }
+
+        if opcode == 0xc7 && (modrm >> 3) & 0x7 == 0 {
+            let imm_addr = self.skip_modrm_memory_operand(rip, modrm, rex)?;
+            let mut value = 0u32;
+            for i in 0..size_of::<u32>() {
+                value |= (self.read_guest_u8(imm_addr + i)? as u32) << (i * 8);
+            }
+            return Ok(value as usize);
+        }
+
+        ax_err!(
+            Unsupported,
+            format_args!("unsupported APIC MMIO write opcode {opcode:#x}")
+        )
+    }
+
+    fn skip_modrm_memory_operand(
+        &self,
+        mut cursor: GuestVirtAddr,
+        modrm: u8,
+        rex: u8,
+    ) -> AxResult<GuestVirtAddr> {
+        let mode = modrm >> 6;
+        let rm = modrm & 0x7;
+
+        if rm == 0b100 {
+            let sib = self.read_guest_u8(cursor)?;
+            cursor += 1;
+            let base = sib & 0x7;
+            if mode == 0 && base == 0b101 {
+                cursor += size_of::<u32>();
+            }
+        } else if mode == 0 && rm == 0b101 && rex & 0x1 == 0 {
+            cursor += size_of::<u32>();
+        }
+
+        match mode {
+            0 => {}
+            1 => cursor += size_of::<u8>(),
+            2 => cursor += size_of::<u32>(),
+            _ => return ax_err!(InvalidInput, "ModRM register operand is not memory"),
+        }
+
+        Ok(cursor)
+    }
+
+    fn read_guest_u8(&self, gva: GuestVirtAddr) -> AxResult<u8> {
+        let gpa = self.translate_guest_linear(gva)?;
+        let hva = memory::phys_to_virt(PhysAddr::from(gpa.as_usize()));
+        Ok(unsafe { core::ptr::read_volatile(hva.as_ptr()) })
+    }
+
+    fn translate_guest_linear(&self, gva: GuestVirtAddr) -> AxResult<GuestPhysAddr> {
+        let addr = gva.as_usize();
+        match self.get_paging_level() {
+            0 => Ok(GuestPhysAddr::from(addr)),
+            4 => self.walk_guest_page_table_4level(addr),
+            level => ax_err!(
+                Unsupported,
+                format_args!("unsupported APIC MMIO write decode paging level {level}")
+            ),
+        }
+    }
+
+    fn walk_guest_page_table_4level(&self, gva: usize) -> AxResult<GuestPhysAddr> {
+        const PRESENT: u64 = 1 << 0;
+        const HUGE_PAGE: u64 = 1 << 7;
+        const ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
+        const PAGE_4K_MASK: usize = 0xfff;
+        const PAGE_2M_MASK: usize = 0x1f_ffff;
+        const PAGE_1G_MASK: usize = 0x3fff_ffff;
+
+        let mut table = VmcsGuestNW::CR3.read()? & ADDR_MASK as usize;
+        let indexes = [
+            (gva >> 39) & 0x1ff,
+            (gva >> 30) & 0x1ff,
+            (gva >> 21) & 0x1ff,
+            (gva >> 12) & 0x1ff,
+        ];
+
+        for (level, index) in indexes.into_iter().enumerate() {
+            let entry = read_guest_phys_u64(table + index * size_of::<u64>());
+            if entry & PRESENT == 0 {
+                return ax_err!(
+                    InvalidInput,
+                    format_args!("guest RIP page table entry is not present at level {level}")
+                );
+            }
+
+            let paddr = (entry & ADDR_MASK) as usize;
+            match level {
+                1 if entry & HUGE_PAGE != 0 => {
+                    return Ok(GuestPhysAddr::from(paddr + (gva & PAGE_1G_MASK)));
+                }
+                2 if entry & HUGE_PAGE != 0 => {
+                    return Ok(GuestPhysAddr::from(paddr + (gva & PAGE_2M_MASK)));
+                }
+                3 => return Ok(GuestPhysAddr::from(paddr + (gva & PAGE_4K_MASK))),
+                _ => table = paddr,
+            }
+        }
+
+        ax_err!(InvalidInput, "failed to translate guest RIP")
     }
 
     fn handle_vmx_preemption_timer(&mut self) -> AxResult {
@@ -1123,16 +1271,16 @@ impl VmxVcpu {
                 edx: 0,
             },
             EAX_FREQUENCY_INFO => {
-                /// Timer interrupt frequencyin Hz.
-                /// Todo: this should be the same as `ax_config::TIMER_FREQUENCY` defined in ArceOS's config file.
-                const TIMER_FREQUENCY_MHZ: u32 = 3_000;
+                const FALLBACK_TSC_FREQUENCY_MHZ: u32 = 3_000;
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
+                    let frequency_mhz =
+                        crate::host_tsc_frequency_mhz().unwrap_or(FALLBACK_TSC_FREQUENCY_MHZ);
                     warn!(
                         "handle_cpuid: Failed to get TSC frequency by CPUID, default to \
-                         {TIMER_FREQUENCY_MHZ} MHz"
+                         {frequency_mhz} MHz"
                     );
-                    res.eax = TIMER_FREQUENCY_MHZ;
+                    res.eax = frequency_mhz;
                 }
                 res
             }

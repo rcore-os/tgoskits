@@ -79,3 +79,10 @@ pub(crate) fn restore_host_interrupt_flag(host_rflags: u64) {
         x86_64::instructions::interrupts::disable();
     }
 }
+
+#[cfg(any(feature = "vmx", feature = "svm"))]
+pub(crate) fn host_tsc_frequency_mhz() -> Option<u32> {
+    u32::try_from(axvisor_api::time::nanos_to_ticks(1_000))
+        .ok()
+        .filter(|&freq| freq > 0)
+}

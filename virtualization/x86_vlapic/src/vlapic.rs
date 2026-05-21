@@ -586,14 +586,6 @@ impl VirtualApicRegs {
     fn write_lvt(&mut self, offset: ApicRegOffset) -> AxResult {
         let mut val = self.extract_lvt_val(offset);
 
-        if self
-            .regs()
-            .SVR
-            .is_set(SPURIOUS_INTERRUPT_VECTOR::APICSoftwareEnableDisable)
-        {
-            val |= APIC_LVT_M;
-        }
-
         // Mask::Masked, Delivery Status:SendPending, Vector::SET(0xff)
         let mut mask = APIC_LVT_M | APIC_LVT_DS | APIC_LVT_VECTOR;
 
@@ -857,6 +849,9 @@ impl VirtualApicRegs {
             ApicRegOffset::ID => {
                 // Force APIC ID to be read-only.
                 // self.regs().ID.set(val as _);
+            }
+            ApicRegOffset::TPR => {
+                self.regs().TPR.set(data32 & 0xff);
             }
             ApicRegOffset::EOI => {
                 self.process_eoi();
