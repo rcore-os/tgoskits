@@ -89,10 +89,14 @@ int main(void)
          * SYNC_FILE_RANGE_WRITE = 2 */
         long rc = syscall(SYS_sync_file_range, fd, 0, 29, 2);
         CHECK(rc == 0, "sync_file_range returns 0");
+        CHECK_RET(syscall(SYS_sync_file_range, fd, 0, 29, 0), 0,
+              "sync_file_range flags==0 -> success");
         CHECK_ERR(syscall(SYS_sync_file_range, fd, 0, 29, 0x8000), EINVAL,
                   "sync_file_range invalid flags -> EINVAL");
         CHECK_ERR(syscall(SYS_sync_file_range, fd, (off_t)-1, 29, 2), EINVAL,
                   "sync_file_range negative offset -> EINVAL");
+        CHECK_ERR(syscall(SYS_sync_file_range, fd, 0, (off_t)-1, 2), EINVAL,
+              "sync_file_range negative nbytes -> EINVAL");
         close(fd);
         unlink("/tmp/starry_fsync_test/sfrfile");
     }

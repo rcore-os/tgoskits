@@ -327,7 +327,7 @@ pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> A
     if offset < 0 || nbytes < 0 {
         return Err(AxError::from(LinuxError::EINVAL));
     }
-    if flags == 0 || (flags & !SYNC_FILE_RANGE_ALL) != 0 {
+    if (flags & !SYNC_FILE_RANGE_ALL) != 0 {
         return Err(AxError::from(LinuxError::EINVAL));
     }
     // sync_file_range(2) is an advisory hint to initiate writeback for a
