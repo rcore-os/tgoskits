@@ -1,9 +1,10 @@
 [package]
 name = "phytium-mci-host"
-version = "0.1.0"
+version = "0.1.1"
+repository.workspace = true
 edition = "2024"
 license = "Apache-2.0"
-description = "Phytium MCI/FSDIF host controller backend for sdmmc-protocol (no_std, FIFO)"
+description = "Phytium MCI/FSDIF host controller backend for sdmmc-protocol (no_std, FIFO/IDMAC)"
 readme = "README.md"
 keywords = ["sd", "mmc", "phytium", "embedded", "no_std"]
 categories = ["embedded", "no-std", "hardware-support"]

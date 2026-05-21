@@ -3378,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "dwmmc-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitfield-struct",
  "dma-api",
@@ -5806,7 +5806,7 @@ dependencies = [
 
 [[package]]
 name = "phytium-mci-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitfield-struct",
  "dma-api",
@@ -7146,7 +7146,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdhci-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dma-api",
  "embedded-hal",
@@ -7157,7 +7157,7 @@ dependencies = [
 
 [[package]]
 name = "sdmmc-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "embedded-hal",
