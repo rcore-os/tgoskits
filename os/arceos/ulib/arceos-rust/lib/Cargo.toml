@@ -20,6 +20,10 @@ default = [
   "tls",
   "defplat",
   "fd",
+  "fs",
+  "net",
+  "irq",
+  "multitask",
 ]
 
 # Multicore
@@ -55,11 +59,11 @@ sched-rr = ["ax-feat/sched-rr"]
 
 # File system
 fd = ["ax-posix-api/fd"]
-fs = ["ax-api/fs", "ax-posix-api/fs", "ax-feat/fs"]
+fs = ["ax-api/fs", "ax-posix-api/fs", "ax-feat/fs", "ax-driver/pci", "ax-driver/virtio-blk"]
 
 # Networking
 dns = []
-net = ["ax-api/net", "ax-posix-api/net", "ax-posix-api/poll", "ax-feat/net"]
+net = ["ax-api/net", "ax-posix-api/net", "ax-posix-api/poll", "ax-feat/net", "ax-driver/pci", "ax-driver/virtio-net"]
 
 # Display
 display = ["ax-api/display", "ax-feat/display"]
