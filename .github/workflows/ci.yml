@@ -221,12 +221,22 @@ jobs:
               git_cmd() {
                 git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
               }
+              ensure_sync_lint_deps() {
+                if pkg-config --exists libudev; then
+                  return 0
+                fi
+                sudo apt-get update
+                sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+                sudo rm -rf /var/lib/apt/lists/*
+              }
               ensure_since_ref() {
                 ref="$1"
                 git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
                 git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
                 git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
               }
+
+              ensure_sync_lint_deps
 
               if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
                 cargo xtask sync-lint --since "${{ github.event.pull_request.base.sha }}"
