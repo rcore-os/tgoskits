@@ -361,7 +361,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux"]'
             command: cargo xtask starry test qemu --arch riscv64
-            cache_key: test-starry-riscv64
+            cache_key: ""
             container_image: ""
             apk_region: us
             required_repository_owner: rcore-os
@@ -370,7 +370,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux"]'
             command: cargo xtask starry test qemu --arch aarch64
-            cache_key: test-starry-aarch64
+            cache_key: ""
             container_image: ""
             apk_region: us
             required_repository_owner: rcore-os
@@ -379,7 +379,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux"]'
             command: cargo xtask starry test qemu --arch loongarch64
-            cache_key: test-starry-loongarch64
+            cache_key: ""
             container_image: ""
             apk_region: us
             required_repository_owner: rcore-os
@@ -388,7 +388,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux"]'
             command: cargo xtask starry test qemu --arch x86_64
-            cache_key: test-starry-x86_64
+            cache_key: ""
             container_image: ""
             apk_region: us
             required_repository_owner: rcore-os
@@ -397,7 +397,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux"]'
             command: cargo xtask arceos test qemu --arch x86_64
-            cache_key: test-arceos-x86_64
+            cache_key: ""
             container_image: ""
             apk_region: us
             required_repository_owner: rcore-os
@@ -406,7 +406,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux"]'
             command: cargo xtask arceos test qemu --arch riscv64
-            cache_key: test-arceos-riscv64
+            cache_key: ""
             container_image: ""
             apk_region: us
             required_repository_owner: rcore-os
@@ -415,7 +415,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux"]'
             command: cargo xtask arceos test qemu --arch aarch64
-            cache_key: test-arceos-aarch64
+            cache_key: ""
             container_image: ""
             apk_region: us
             required_repository_owner: rcore-os
@@ -424,7 +424,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux"]'
             command: cargo xtask arceos test qemu --arch loongarch64
-            cache_key: test-arceos-loongarch64
+            cache_key: ""
             container_image: ""
             apk_region: us
             required_repository_owner: rcore-os
