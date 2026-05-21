@@ -62,6 +62,12 @@ impl RootfsQemuWiring {
     fn netdev_arg(self) -> String {
         format!("user,id={}", self.netdev_id)
     }
+
+    fn netdev_matches(self, value: &str) -> bool {
+        value
+            .split(',')
+            .any(|part| part.strip_prefix("id=") == Some(self.netdev_id))
+    }
 }
 
 /// Controls how aggressively rootfs-related QEMU arguments should be patched.
@@ -163,7 +169,7 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
             }
             "-netdev" if index + 1 < args.len() => {
                 let value = &mut args[index + 1];
-                if value == &netdev_value {
+                if wiring.netdev_matches(value) {
                     has_netdev = true;
                 }
                 index += 2;
@@ -286,6 +292,40 @@ mod tests {
                 "virtio-net-device,netdev=net0".to_string(),
                 "-netdev".to_string(),
                 "user,id=net0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_disk_boot_net_preserves_existing_netdev_options() {
+        let rootfs = Path::new("/tmp/new-rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-device".to_string(),
+                "virtio-blk-pci,drive=disk0".to_string(),
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/old-rootfs.img".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0,hostfwd=tcp::18790-:18790".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-device".to_string(),
+                "virtio-blk-pci,drive=disk0".to_string(),
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0,hostfwd=tcp::18790-:18790".to_string(),
             ]
         );
     }
