@@ -19,7 +19,9 @@ lock_api_crate = { package = "lock_api", version = "0.4", optional = true }
 portable-atomic = { version = "1.3", optional = true, default-features = false, features = ["require-cas"] }
 
 [features]
-default = ["lock_api", "mutex", "spin_mutex", "rwlock", "once", "lazy", "barrier"]
+# TGOSKits keeps this crate for `RwLock`, `Once`, and `Lazy` compatibility.
+# Non-sleeping mutex users should use `ax-kspin` instead.
+default = ["lock_api", "rwlock", "once", "lazy"]
 
 # Enables `Mutex`. By default this uses `SpinMutex`; enable `use_ticket_mutex`
 # to make the root `Mutex` alias use `TicketMutex`.

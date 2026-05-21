@@ -6959,6 +6959,7 @@ dependencies = [
 name = "rockchip-soc"
 version = "0.3.0"
 dependencies = [
+ "ax-kspin",
  "bitflags 2.11.1",
  "dma-api",
  "enum_dispatch",

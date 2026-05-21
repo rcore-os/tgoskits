@@ -233,6 +233,14 @@ The repository still keeps local `spin` for intentionally separate work:
 - postponed `spin::RwLock` users;
 - documentation references.
 
+To make the completed `spin::Mutex` migration visible to Cargo, the local
+`components/spin` default feature set no longer enables `mutex`, `spin_mutex`,
+or `barrier`. The mutex implementation remains in the vendored component behind
+explicit opt-in features, but default workspace users should not be able to name
+`spin::Mutex` by accident. Any remaining default-feature consumer that still
+uses `spin::Mutex`, `spin::MutexGuard`, or `spin::mutex::*` should now fail at
+compile time.
+
 Any lock-scope bugs exposed by `might_sleep` or lockdep after this migration
 should be treated as useful follow-up findings. They are not a reason to hide
 the original non-sleeping `spin::Mutex` semantics behind a sleepable
@@ -278,3 +286,6 @@ blocked by registry/index state around `sg200x-bsp = 0.6.0`, while direct
 7. Production direct `spin::Mutex` and `spin::MutexGuard` uses are gone outside
    the vendored `components/spin` crate. The remaining direct match is limited
    to an `ax-kspin` documentation reference.
+8. The vendored `components/spin` default features no longer expose `Mutex`.
+   This turns accidental new default-feature `spin::Mutex` users into compile
+   errors while preserving explicit compatibility features for the local copy.
