@@ -1759,6 +1759,7 @@ dependencies = [
  "log",
  "mmio-api",
  "pcie",
+ "phytium-mci-host",
  "rd-block",
  "rd-net",
  "rdif-clk",
@@ -5801,6 +5802,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
 dependencies = [
  "siphasher",
+]
+
+[[package]]
+name = "phytium-mci-host"
+version = "0.1.0"
+dependencies = [
+ "bitfield-struct",
+ "dma-api",
+ "log",
+ "mmio-api",
+ "sdmmc-protocol",
+ "volatile 0.6.1",
 ]
 
 [[package]]

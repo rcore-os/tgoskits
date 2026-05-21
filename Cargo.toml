@@ -121,6 +121,7 @@ members = [
     "drivers/blk/ramdisk",
     "drivers/blk/rd-block",
     "drivers/blk/dwmmc-host",
+    "drivers/blk/phytium-mci-host",
     "drivers/blk/sdhci-host",
     "drivers/blk/sdmmc-protocol",
     "drivers/examples/enumerate",
@@ -418,6 +419,7 @@ crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }
 ktest-helper = { version = "0.1.1", path = "drivers/usb/utils/ktest-helper" }
 usb-if = { version = "0.7.1", path = "drivers/usb/usb-if" }
 dwmmc-host = { version = "0.1.0", path = "drivers/blk/dwmmc-host", default-features = false }
+phytium-mci-host = { version = "0.1.0", path = "drivers/blk/phytium-mci-host", default-features = false }
 sdhci-host = { version = "0.1.0", path = "drivers/blk/sdhci-host", default-features = false }
 sdmmc-protocol = { version = "0.1.0", path = "drivers/blk/sdmmc-protocol", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
