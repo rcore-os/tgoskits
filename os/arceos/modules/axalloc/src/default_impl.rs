@@ -185,15 +185,13 @@ impl GlobalAllocator {
         if result.is_err() {
             for _ in 0..4 {
                 let reclaimed = crate::try_page_reclaim(num_pages.max(16));
-                if reclaimed == 0 {
-                    break;
-                }
-                debug!(
-                    "page reclaim freed {} pages, retrying allocation ({} pages, kind={:?})",
-                    reclaimed, num_pages, kind
-                );
+                // Retry allocation regardless of whether reclaim ran;
+                // concurrent reclaim may have freed pages.
                 result = self.palloc.lock().alloc_pages(num_pages, alignment);
                 if result.is_ok() {
+                    break;
+                }
+                if reclaimed == 0 {
                     break;
                 }
             }

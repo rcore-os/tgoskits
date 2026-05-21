@@ -180,11 +180,11 @@ impl RawMutex {
     #[inline(always)]
     #[track_caller]
     #[cfg(feature = "lockdep")]
-    fn lock_nested(&self, _subclass: LockSubclass) {
+    fn lock_nested(&self, subclass: LockSubclass) {
         might_sleep();
         let current_id = current().id().as_u64();
 
-        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, false);
+        let lockdep = crate::lockdep::LockdepAcquire::prepare_nested(self, false, subclass);
         self.lock_after_prepare(current_id);
         lockdep.finish(true);
     }
@@ -207,12 +207,12 @@ impl RawMutex {
     #[inline(always)]
     #[track_caller]
     #[cfg(feature = "lockdep")]
-    fn try_lock_nested(&self, _subclass: LockSubclass) -> bool {
+    fn try_lock_nested(&self, subclass: LockSubclass) -> bool {
         // try_lock is a single atomic CAS — it never blocks or sleeps,
         // so it is safe to call from atomic context.
         let current_id = current().id().as_u64();
 
-        let lockdep = crate::lockdep::LockdepAcquire::prepare(self, true);
+        let lockdep = crate::lockdep::LockdepAcquire::prepare_nested(self, true, subclass);
         let acquired = self.try_lock_after_prepare(current_id);
         lockdep.finish(acquired);
         acquired

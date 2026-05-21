@@ -386,7 +386,6 @@ impl CachedFileShared {
         }
     }
 
-    #[allow(dead_code)]
     pub fn new_unbounded() -> Self {
         Self {
             page_cache: Mutex::new(LruCache::unbounded()),
@@ -395,9 +394,11 @@ impl CachedFileShared {
     }
 
     /// Scan the LRU and evict up to `max` clean pages.
-    /// Pages whose listener skipped (e.g. aspace try_lock failed) are
-    /// returned so the caller can retry notification after dropping the
-    /// page cache lock.
+    ///
+    /// Collects non-dirty pages from the LRU cache (least-recently-used
+    /// first), pops them, notifies all registered evict listeners, and
+    /// drops the pages (freeing their backing physical memory).
+    /// Returns the number of pages evicted.
     fn try_evict_clean_pages(&self, max: usize) -> usize {
         let Some(mut cache) = self.page_cache.try_lock() else {
             return 0;
@@ -405,7 +406,7 @@ impl CachedFileShared {
         let mut to_evict = [0u32; 256];
         let limit = max.min(256);
         let mut cnt = 0;
-        for (&pn, page) in cache.iter() {
+        for (&pn, page) in cache.iter().rev() {
             if !page.dirty && cnt < limit {
                 to_evict[cnt] = pn;
                 cnt += 1;
