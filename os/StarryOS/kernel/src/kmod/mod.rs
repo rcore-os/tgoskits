@@ -109,7 +109,7 @@ fn alloc_kmod_frames(num_pages: usize) -> AxResult<(PhysAddr, VirtAddr)> {
 impl KernelModuleHelper for KmodHelper {
     fn vmalloc(size: usize) -> Box<dyn SectionMemOps> {
         assert!(
-            size % PAGE_SIZE_4K == 0,
+            size.is_multiple_of(PAGE_SIZE_4K),
             "kmod vmalloc size must be page-aligned"
         );
         let num_pages = size / PAGE_SIZE_4K;
