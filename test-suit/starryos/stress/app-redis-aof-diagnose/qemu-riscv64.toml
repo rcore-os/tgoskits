@@ -22,8 +22,9 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-apk update && apk add redis
-rm -rf /root/appendonlydir /root/appendonly.aof* /tmp/redis-aof*.log 2>/dev/null
+apk update && \
+apk add redis && \
+rm -rf /root/appendonlydir /root/appendonly.aof* /tmp/redis-aof*.log 2>/dev/null && \
 echo "=== A: foreground 4s (AOF) ==="
 timeout 4 redis-server --port 6379 --bind 127.0.0.1 --save "" \
   --appendonly yes --appendfilename appendonly.aof >/tmp/redis-aof-fg.log 2>&1

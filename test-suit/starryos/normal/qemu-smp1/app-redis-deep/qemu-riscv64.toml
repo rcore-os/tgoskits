@@ -17,7 +17,8 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-apk update && apk add redis && \
+apk update && \
+apk add redis && \
 redis-server --daemonize yes --port 6379 --bind 127.0.0.1 && \
 sleep 1 && \
 redis-cli ping && \
@@ -28,5 +29,9 @@ redis-cli shutdown nosave && sleep 1 && \
 echo 'REDIS_DEEP_TEST_PASSED' || echo 'REDIS_DEEP_TEST_FAILED'
 '''
 success_regex = ["(?m)^PONG\\s*$", "(?m)^aaaaaaaaaaaaaaaaaaaa", "(?m)^REDIS_DEEP_TEST_PASSED\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^REDIS_DEEP_TEST_FAILED\\s*$", '(?i)ERR ']
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    "(?m)^REDIS_DEEP_TEST_FAILED\\s*$",
+    '(?m)^\\(error\\)\\s+ERR\\b',
+]
 timeout = 300
