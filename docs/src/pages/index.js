@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
@@ -302,6 +302,83 @@ function HeroBanner() {
 }
 
 function HeroTerminal() {
+  const sessions = useMemo(() => [
+    {
+      os: 'ArceOS',
+      command: 'cargo xtask arceos qemu --package ax-helloworld --arch aarch64',
+      output: [
+        'Building ArceOS package ax-helloworld',
+        'Launching qemu-system-aarch64 on the virt platform',
+        'Booting app: ax-helloworld',
+        'Hello, world!',
+      ],
+    },
+    {
+      os: 'StarryOS',
+      command: 'cargo xtask starry qemu --arch aarch64',
+      output: [
+        'Using rootfs-aarch64-alpine.img',
+        'Booting StarryOS on qemu-aarch64',
+        'Starting init process and user shell',
+        'root@starry:~#',
+      ],
+    },
+    {
+      os: 'Axvisor',
+      command: 'cargo xtask axvisor qemu --arch aarch64',
+      output: [
+        'Static VM configs are empty.',
+        'Now axvisor will entry the shell...',
+        'Starting Axvisor on qemu-aarch64',
+        'Welcome to AxVisor Shell!',
+        'Type \'help\' to see available commands',
+        'axvisor:$',
+      ],
+    },
+  ], []);
+  const [sessionIndex, setSessionIndex] = useState(0);
+  const [typedCount, setTypedCount] = useState(0);
+  const [visibleOutputCount, setVisibleOutputCount] = useState(0);
+  const session = sessions[sessionIndex];
+  const commandDone = typedCount >= session.command.length;
+  const outputDone = visibleOutputCount >= session.output.length;
+
+  const handleSessionSelect = (index) => {
+    setSessionIndex(index);
+    setTypedCount(0);
+    setVisibleOutputCount(0);
+  };
+
+  useEffect(() => {
+    setTypedCount(0);
+    setVisibleOutputCount(0);
+  }, [sessionIndex]);
+
+  useEffect(() => {
+    if (typedCount < session.command.length) {
+      const timer = window.setTimeout(() => setTypedCount((count) => count + 1), 28);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (visibleOutputCount < session.output.length) {
+      const timer = window.setTimeout(() => {
+        setVisibleOutputCount((count) => count + 1);
+      }, visibleOutputCount === 0 ? 420 : 520);
+      return () => window.clearTimeout(timer);
+    }
+
+    return undefined;
+  }, [session.command.length, session.output.length, typedCount, visibleOutputCount]);
+
+  useEffect(() => {
+    if (!outputDone) return undefined;
+
+    const timer = window.setTimeout(() => {
+      setSessionIndex((index) => (index + 1) % sessions.length);
+    }, 1900);
+    return () => window.clearTimeout(timer);
+  }, [outputDone, sessions.length]);
+
   return (
     <div className="hero-terminal-container">
       <div className="hero-terminal-header">
@@ -312,20 +389,31 @@ function HeroTerminal() {
         </div>
         <span className="hero-terminal-title">workspace shell</span>
       </div>
-      <pre className="hero-terminal-screen">{`$ cargo xtask arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf
-[ArceOS] Hello, world!
-
-$ cargo xtask starry rootfs --arch riscv64
-$ cargo xtask starry qemu --arch riscv64
-[StarryOS] shell started.
-
-$ cargo xtask axvisor qemu --arch aarch64
-[Axvisor] Guest[0] ArceOS running.`}</pre>
+      <div className="hero-terminal-screen" aria-live="polite">
+        <div className="hero-terminal-command">
+          <span className="hero-terminal-prompt">$</span>
+          <span>{session.command.slice(0, typedCount)}</span>
+          {!commandDone && <span className="hero-terminal-cursor" aria-hidden="true" />}
+        </div>
+        <div className="hero-terminal-output">
+          {session.output.slice(0, visibleOutputCount).map((line, index) => (
+            <span className={index === session.output.length - 1 ? 'is-success' : undefined} key={line}>{line}</span>
+          ))}
+          {commandDone && !outputDone && <span className="hero-terminal-cursor" aria-hidden="true" />}
+        </div>
+      </div>
       <div className="hero-terminal-footer">
-        <span>ArceOS</span>
-        <span>StarryOS</span>
-        <span>Axvisor</span>
-        <span>Shared Crates</span>
+        {sessions.map((item, index) => (
+          <button
+            aria-pressed={index === sessionIndex}
+            className={index === sessionIndex ? 'is-active' : undefined}
+            key={item.os}
+            onClick={() => handleSessionSelect(index)}
+            type="button"
+          >
+            {item.os}
+          </button>
+        ))}
       </div>
     </div>
   );
