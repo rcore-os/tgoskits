@@ -14,16 +14,18 @@ api_key="${PICOCLAW_API_KEY:-${OPENAI_API_KEY:-${ANTHROPIC_AUTH_TOKEN:-}}}"
 proxy_url="${PICOCLAW_ONLINE_PROXY:-}"
 ca_cert="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}"
 
-model_name="${PICOCLAW_MODEL_NAME:-starry-smoke}"
+model_name="${PICOCLAW_MODEL_NAME:-mimo-v25}"
 provider="${PICOCLAW_PROVIDER:-openai}"
-model="${PICOCLAW_MODEL:-gpt-5.4}"
-api_base="${PICOCLAW_API_BASE:-https://api.openai.com/v1}"
+model="${PICOCLAW_MODEL:-mimo-v2.5}"
+api_base="${PICOCLAW_API_BASE:-https://token-plan-cn.xiaomimimo.com/v1}"
+disable_thinking="${PICOCLAW_DISABLE_THINKING:-auto}"
 
 if [[ -z "${PICOCLAW_PROVIDER:-}" && -z "${PICOCLAW_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" && -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
     model_name="${PICOCLAW_MODEL_NAME:-claude-sonnet-4.6}"
     provider="anthropic-messages"
     model="${PICOCLAW_MODEL:-claude-sonnet-4.6}"
     api_base="${PICOCLAW_API_BASE:-${ANTHROPIC_BASE_URL:-https://api.anthropic.com/v1}}"
+    disable_thinking="${PICOCLAW_DISABLE_THINKING:-false}"
 fi
 
 usage() {
@@ -42,6 +44,8 @@ Options:
   --provider NAME         Generated online config provider
   --model NAME            Generated online config model id
   --api-base URL          Generated online config API base
+  --disable-thinking      Add extra_body.chat_template_kwargs.enable_thinking=false
+  --enable-thinking       Do not add the Mimo thinking-disable extra_body
   --proxy URL             Inject http_proxy/https_proxy/all_proxy env file
   --env-file PATH         Inject a shell env file as starry-online-env
   --ca-cert PATH          Inject CA bundle as /etc/ssl/certs/ca-certificates.crt
@@ -95,6 +99,14 @@ while (($#)); do
             api_base="$2"
             shift 2
             ;;
+        --disable-thinking)
+            disable_thinking="true"
+            shift
+            ;;
+        --enable-thinking)
+            disable_thinking="false"
+            shift
+            ;;
         --proxy)
             proxy_url="$2"
             shift 2
@@ -146,6 +158,25 @@ yaml_double_quote() {
     printf '"%s"' "$value"
 }
 
+should_disable_thinking() {
+    case "$disable_thinking" in
+        true|1|yes|on)
+            return 0
+            ;;
+        false|0|no|off)
+            return 1
+            ;;
+        auto)
+            [[ "$model" == "mimo-v2.5" || "$model_name" == "mimo-v25" ]]
+            return
+            ;;
+        *)
+            echo "invalid PICOCLAW_DISABLE_THINKING value: ${disable_thinking}" >&2
+            exit 2
+            ;;
+    esac
+}
+
 stat_mode() {
     stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
@@ -183,6 +214,15 @@ install -d "${overlay}/root/.picoclaw/workspace"
 if [[ -n "$config_json" ]]; then
     install -m 0644 "$config_json" "${overlay}/root/.picoclaw/config.json"
 elif [[ -n "$api_key" ]]; then
+    extra_body=""
+    if should_disable_thinking; then
+        extra_body=',
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }'
+    fi
     cat >"${overlay}/root/.picoclaw/config.json" <<EOF
 {
   "version": 3,
@@ -200,7 +240,7 @@ elif [[ -n "$api_key" ]]; then
       "provider": "$(json_escape "$provider")",
       "model": "$(json_escape "$model")",
       "api_base": "$(json_escape "$api_base")",
-      "enabled": true
+      "enabled": true${extra_body}
     }
   ],
   "gateway": {
