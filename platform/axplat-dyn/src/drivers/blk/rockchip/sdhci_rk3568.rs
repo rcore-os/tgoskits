@@ -12,50 +12,97 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, sync::Arc, vec::Vec};
+use alloc::{format, string::ToString, sync::Arc, vec::Vec};
 use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
 use ax_kspin::SpinNoIrq;
 use dma_api::DeviceDma;
-use dwmmc_host::{BlockRequest, BlockRequestSlot, DwMmc, RequestId};
 use rdif_clk::ClockId;
 use rdrive::{
-    DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
+    Device, DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
 };
+use sdhci_host::{BlockRequest, BlockRequestSlot, HostClock, RequestId, Sdhci};
 use sdmmc_protocol::{
-    BlockPoll, BlockTransferMode, DataCommandPoll, Error, OperationPoll,
-    error::Phase,
-    sdio::{CardInfo, SdioHost, SdioInitScratch, SdioSdmmc},
+    BlockPoll, BlockTransferMode, Error, OperationPoll,
+    error::{ErrorContext, Phase},
+    sdio::{CardInfo, CardInitPreference, SdioHost, SdioInitScratch, SdioSdmmc},
 };
+use spin::Once;
 
 use crate::drivers::{
     DmaImpl,
     blk::{PlatformDeviceBlock, decode_fdt_irq},
     iomap,
-    soc::scmi,
 };
 
 const BLOCK_SIZE: usize = 512;
-const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
-const ENABLE_SD_SPEED_SELECTION: bool = true;
-const RK3588_CRU_BASE: usize = 0xfd7c_0000;
-const RK3588_CRU_SIZE: usize = 0x5c000;
-const RK3588_SDMMC_CON0: usize = 0x0c30;
-const RK3588_SDMMC_CON1: usize = 0x0c34;
-const RK3588_SDMMC_PHASE_SHIFT: u32 = 1;
-const RK3588_SDMMC_DRV_PHASE_DEG: u32 = 90;
-const RK3588_SDMMC_SAMPLE_PHASE_DEG: u32 = 0;
-const RK3588_SDMMC_SAMPLE_PHASE_CANDIDATES: [u32; 8] = [0, 45, 90, 135, 180, 225, 270, 315];
+const SDHCI_POWER_330: u8 = 0x0e;
 
-type RockchipDwMmc = SdioSdmmc<DwMmc>;
+const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
+const DWCMSHC_AREA1_MASK: u16 = 0x0fff;
+const DWCMSHC_HOST_CTRL3: usize = 0x08;
+const DWCMSHC_EMMC_CONTROL: usize = 0x2c;
+const DWCMSHC_CARD_IS_EMMC: u16 = 1 << 0;
+const DWCMSHC_EMMC_DLL_CTRL: usize = 0x800;
+const DWCMSHC_EMMC_DLL_RXCLK: usize = 0x804;
+const DWCMSHC_EMMC_DLL_TXCLK: usize = 0x808;
+const DWCMSHC_EMMC_DLL_STRBIN: usize = 0x80c;
+const DWCMSHC_EMMC_DLL_CMDOUT: usize = 0x810;
+const DWCMSHC_EMMC_MISC_CON: usize = 0x81c;
+const DWCMSHC_EMMC_DLL_BYPASS: u32 = 1 << 24;
+const DWCMSHC_EMMC_DLL_START: u32 = 1 << 0;
+const DWCMSHC_EMMC_DLL_DLYENA: u32 = 1 << 27;
+const DLL_RXCLK_ORI_GATE: u32 = 1 << 31;
+const DLL_STRBIN_DELAY_NUM_SEL: u32 = 1 << 26;
+const DLL_STRBIN_DELAY_NUM_DEFAULT: u32 = 0x16;
+const DLL_STRBIN_DELAY_NUM_OFFSET: u32 = 16;
+const MISC_INTCLK_EN: u32 = 1 << 1;
+
+const DWC_MSHC_PTR_PHY_R: usize = 0x300;
+const PHY_CNFG_R: usize = DWC_MSHC_PTR_PHY_R;
+const PHY_CMDPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x04;
+const PHY_DATAPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x06;
+const PHY_CLKPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x08;
+const PHY_STBPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x0a;
+const PHY_RSTNPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x0c;
+const PHY_SDCLKDL_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x1d;
+const PHY_SDCLKDL_DC_R: usize = DWC_MSHC_PTR_PHY_R + 0x1e;
+const PHY_SMPLDL_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x20;
+const PHY_DLL_CTRL_R: usize = DWC_MSHC_PTR_PHY_R + 0x24;
+const PHY_DLL_CNFG2_R: usize = DWC_MSHC_PTR_PHY_R + 0x26;
+const PHY_CNFG_RSTN_DEASSERT: u32 = 1 << 0;
+const PHY_CNFG_PAD_SP: u32 = 0x0c;
+const PHY_CNFG_PAD_SN: u32 = 0x0c;
+const PHY_PAD_RXSEL_3V3: u16 = 0x2;
+const PHY_PAD_WEAKPULL_PULLUP: u16 = 0x1;
+const PHY_PAD_WEAKPULL_PULLDOWN: u16 = 0x2;
+const PHY_PAD_TXSLEW_CTRL_P: u16 = 0x3;
+const PHY_PAD_TXSLEW_CTRL_N: u16 = 0x3;
+const PHY_SDCLKDL_CNFG_UPDATE: u8 = 1 << 4;
+const PHY_SDCLKDL_DC_DEFAULT: u8 = 0x32;
+const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
+const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
+const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
+
+static SDHCI_CLOCK: RockchipSdhciClock = RockchipSdhciClock;
+
+type RockchipSdhci = SdioSdmmc<Sdhci>;
+
+struct RockchipSdhciClock;
+
+impl HostClock for RockchipSdhciClock {
+    fn set_clock(&self, target_hz: u32) -> Result<(), Error> {
+        set_sdhci_clock(target_hz)
+    }
+}
 
 module_driver!(
-    name: "Rockchip SD",
+    name: "Rockchip RK3568 sdhci",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["rockchip,rk3588-dw-mshc", "rockchip,rk3288-dw-mshc"],
+            compatibles: &["rockchip,rk3568-dwcmshc"],
             on_probe: probe
         }
     ],
@@ -74,45 +121,37 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let mmio_size = base_reg.size.unwrap_or(0x1000);
     info!(
-        "rockchip-dwmmc probe: node={}, addr={:#x}, size={:#x}",
+        "rockchip-rk3568-sdhci probe: node={}, addr={:#x}, size={:#x}",
         info.node.name(),
         base_reg.address as usize,
         mmio_size
     );
     let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
 
-    let mut host = unsafe { DwMmc::new(mmio_base) };
-    let reference_clock = dwmmc_reference_clock(&info);
-    if let Some(reference_clock) = reference_clock {
-        info!(
-            "rockchip-dwmmc: using ciu reference clock {} Hz",
-            reference_clock
-        );
-        host.set_reference_clock(reference_clock);
-        if is_rk3588_dwmmc(&info) {
-            init_rk3588_sdmmc_phase(&info, reference_clock)?;
-        }
+    init_core_clock(&info)?;
+
+    let mut host = unsafe { Sdhci::new(mmio_base) };
+    if CLK_DEV.is_completed() {
+        info!("rockchip-rk3568-sdhci: using external CRU clock");
+        host.set_external_clock(&SDHCI_CLOCK);
     } else {
-        warn!(
-            "rockchip-dwmmc: ciu clock not found; leaving DWMMC divider bypassed and relying on \
-             CRU rate"
-        );
+        warn!("rockchip-rk3568-sdhci: no core clock found; using SDHCI internal clock divider");
     }
-    info!("rockchip-dwmmc: reset controller");
-    host.reset_and_init()
+    info!("rockchip-rk3568-sdhci: reset controller");
+    host.reset_all()
         .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
+    init_dwcmshc_after_reset(mmio_base);
+    host.set_power(SDHCI_POWER_330);
+    host.enable_interrupts();
     host.set_dma(DeviceDma::new(u32::MAX as u64, &DmaImpl));
 
-    info!("rockchip-dwmmc: initialize card");
-    let mut sd = SdioSdmmc::new(host);
-    sd.set_sd_speed_selection_enabled(ENABLE_SD_SPEED_SELECTION);
-    let card_info = poll_card_init(&mut sd).map_err(|e| {
-        warn!("rockchip-dwmmc: card init failed: {:?}", e);
-        card_init_error(base_reg.address, mmio_size, e)
-    })?;
+    info!("rockchip-rk3568-sdhci: initialize card");
+    let mut card = SdioSdmmc::new(host);
+    let card_info = poll_card_init_mmc(&mut card)
+        .map_err(|e| card_init_error(base_reg.address, mmio_size, e))?;
     info!(
-        "rockchip-dwmmc card: kind={:?} high_capacity={} rca={} ocr={:#010x} capacity_blocks={:?} \
-         cid={} ext_csd={}",
+        "SDHCI card: kind={:?} high_capacity={} rca={} ocr={:#010x} capacity_blocks={:?} cid={} \
+         ext_csd={}",
         card_info.kind,
         card_info.high_capacity,
         card_info.rca,
@@ -122,30 +161,28 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         card_info.ext_csd.is_some()
     );
 
-    if let Some(reference_clock) = reference_clock
-        && is_rk3588_dwmmc(&info)
-    {
-        tune_rk3588_sdmmc_sample_phase(&mut sd, reference_clock);
-    }
-
     let irq_num = decode_fdt_irq(&info.interrupts());
-    let raw = Arc::new(SpinNoIrq::new(sd));
-    let dev = SdBlockDevice {
+    let raw = Arc::new(SpinNoIrq::new(card));
+    let dev = BlockDevice {
         raw: Some(raw.clone()),
         capacity_blocks: card_info.capacity_blocks.unwrap_or(0),
         irq_enabled: false,
         queue_created: false,
     };
     plat_dev.register_block_with_irq(dev, irq_num);
-    info!("rockchip-sd block device registered irq={:?}", irq_num);
+    info!(
+        "rockchip-rk3568-sdhci block device registered irq={:?}",
+        irq_num
+    );
     Ok(())
 }
 
-fn poll_card_init(sd: &mut RockchipDwMmc) -> Result<CardInfo, Error> {
+fn poll_card_init_mmc(card: &mut RockchipSdhci) -> Result<CardInfo, Error> {
     let mut scratch = SdioInitScratch::new();
-    let mut request = sd.submit_init(&mut scratch)?;
+    let mut request =
+        card.submit_init_with_preference(CardInitPreference::MmcFirst, &mut scratch)?;
     loop {
-        match sd.poll_init_request(&mut request)? {
+        match card.poll_init_request(&mut request)? {
             OperationPoll::Pending => {
                 if request.take_needs_pace() {
                     axklib::time::busy_wait(Duration::from_millis(10));
@@ -154,13 +191,105 @@ fn poll_card_init(sd: &mut RockchipDwMmc) -> Result<CardInfo, Error> {
                 }
             }
             OperationPoll::Complete(info) => return Ok(info),
+            _ => return Err(Error::UnsupportedCommand),
         }
     }
 }
 
+fn init_dwcmshc_after_reset(base: NonNull<u8>) {
+    let area1 = vendor_area1(base);
+
+    // Match Linux rk35xx reset/set_clock setup for identification speed:
+    // keep the internal clock ungated, disable command-conflict checking,
+    // and put Rockchip's DLL path in bypass while the bus runs below 52 MHz.
+    write_u32(
+        base,
+        DWCMSHC_EMMC_MISC_CON,
+        read_u32(base, DWCMSHC_EMMC_MISC_CON) | MISC_INTCLK_EN,
+    );
+    write_u32(base, area1 + DWCMSHC_HOST_CTRL3, 0);
+    write_u16(
+        base,
+        area1 + DWCMSHC_EMMC_CONTROL,
+        read_u16(base, area1 + DWCMSHC_EMMC_CONTROL) | DWCMSHC_CARD_IS_EMMC,
+    );
+    write_u32(
+        base,
+        DWCMSHC_EMMC_DLL_CTRL,
+        DWCMSHC_EMMC_DLL_BYPASS | DWCMSHC_EMMC_DLL_START,
+    );
+    write_u32(base, DWCMSHC_EMMC_DLL_RXCLK, DLL_RXCLK_ORI_GATE);
+    write_u32(base, DWCMSHC_EMMC_DLL_TXCLK, 0);
+    write_u32(base, DWCMSHC_EMMC_DLL_CMDOUT, 0);
+    write_u32(
+        base,
+        DWCMSHC_EMMC_DLL_STRBIN,
+        DWCMSHC_EMMC_DLL_DLYENA
+            | DLL_STRBIN_DELAY_NUM_SEL
+            | (DLL_STRBIN_DELAY_NUM_DEFAULT << DLL_STRBIN_DELAY_NUM_OFFSET),
+    );
+    init_dwcmshc_phy_3v3(base);
+    info!(
+        "rockchip-rk3568-sdhci: dwcmshc vendor init area1={:#x}",
+        area1
+    );
+}
+
+fn init_dwcmshc_phy_3v3(base: NonNull<u8>) {
+    let phy_cfg = PHY_CNFG_RSTN_DEASSERT | (PHY_CNFG_PAD_SP << 16) | (PHY_CNFG_PAD_SN << 20);
+    write_u32(base, PHY_CNFG_R, phy_cfg);
+    write_u8(base, PHY_SDCLKDL_CNFG_R, PHY_SDCLKDL_CNFG_UPDATE);
+    write_u8(base, PHY_SDCLKDL_DC_R, PHY_SDCLKDL_DC_DEFAULT);
+    write_u8(base, PHY_DLL_CNFG2_R, PHY_DLL_CNFG2_JUMPSTEP);
+    write_u8(base, PHY_SDCLKDL_CNFG_R, 0);
+
+    let pad_pullup = PHY_PAD_RXSEL_3V3
+        | (PHY_PAD_WEAKPULL_PULLUP << 3)
+        | (PHY_PAD_TXSLEW_CTRL_P << 5)
+        | (PHY_PAD_TXSLEW_CTRL_N << 9);
+    write_u16(base, PHY_CMDPAD_CNFG_R, pad_pullup);
+    write_u16(base, PHY_DATAPAD_CNFG_R, pad_pullup);
+    write_u16(base, PHY_RSTNPAD_CNFG_R, pad_pullup);
+
+    let clk_pad = (PHY_PAD_TXSLEW_CTRL_P << 5) | (PHY_PAD_TXSLEW_CTRL_N << 9);
+    write_u16(base, PHY_CLKPAD_CNFG_R, clk_pad);
+
+    let strobe_pad = PHY_PAD_RXSEL_3V3
+        | (PHY_PAD_WEAKPULL_PULLDOWN << 3)
+        | (PHY_PAD_TXSLEW_CTRL_P << 5)
+        | (PHY_PAD_TXSLEW_CTRL_N << 9);
+    write_u16(base, PHY_STBPAD_CNFG_R, strobe_pad);
+    write_u8(base, PHY_SMPLDL_CNFG_R, PHY_SMPLDL_CNFG_BYPASS_EN);
+    write_u8(base, PHY_DLL_CTRL_R, PHY_DLL_CTRL_ENABLE);
+}
+
+fn vendor_area1(base: NonNull<u8>) -> usize {
+    (read_u16(base, DWCMSHC_P_VENDOR_AREA1) & DWCMSHC_AREA1_MASK) as usize
+}
+
+fn read_u32(base: NonNull<u8>, off: usize) -> u32 {
+    unsafe { core::ptr::read_volatile(base.as_ptr().add(off) as *const u32) }
+}
+
+fn write_u32(base: NonNull<u8>, off: usize, val: u32) {
+    unsafe { core::ptr::write_volatile(base.as_ptr().add(off) as *mut u32, val) }
+}
+
+fn read_u16(base: NonNull<u8>, off: usize) -> u16 {
+    unsafe { core::ptr::read_volatile(base.as_ptr().add(off) as *const u16) }
+}
+
+fn write_u16(base: NonNull<u8>, off: usize, val: u16) {
+    unsafe { core::ptr::write_volatile(base.as_ptr().add(off) as *mut u16, val) }
+}
+
+fn write_u8(base: NonNull<u8>, off: usize, val: u8) {
+    unsafe { core::ptr::write_volatile(base.as_ptr().add(off), val) }
+}
+
 fn init_error(address: u64, size: u64, err: Error) -> OnProbeError {
     OnProbeError::other(format!(
-        "failed to initialize DWMMC device at [PA:{:?}, SZ:0x{:x}): {err:?}",
+        "failed to initialize SDHCI device at [PA:{:?}, SZ:0x{:x}): {err:?}",
         address, size
     ))
 }
@@ -168,8 +297,8 @@ fn init_error(address: u64, size: u64, err: Error) -> OnProbeError {
 fn card_init_error(address: u64, size: u64, err: Error) -> OnProbeError {
     if is_absent_card_init_error(err) {
         warn!(
-            "rockchip-dwmmc: no responsive card at [PA:{:?}, SZ:0x{:x}); skipping controller: \
-             {err:?}",
+            "rockchip-rk3568-sdhci: no responsive card at [PA:{:?}, SZ:0x{:x}); skipping \
+             controller: {err:?}",
             address, size
         );
         return OnProbeError::NotMatch;
@@ -192,238 +321,61 @@ fn is_absent_card_init_error(err: Error) -> bool {
     }
 }
 
-fn dwmmc_reference_clock(info: &FdtInfo<'_>) -> Option<u32> {
-    let Some(clk) = info.find_clk_by_name("ciu") else {
-        return None;
-    };
-    let Some(device_id) = info.phandle_to_device_id(clk.phandle) else {
-        warn!(
-            "[{}] ciu clock phandle {} has no device id",
-            info.node.name(),
-            clk.phandle
+fn init_core_clock(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+    for clk in info.node.clocks() {
+        info!(
+            "rockchip-sdhci clock: phandle <{}>, name: {:?}, cells: {}",
+            clk.phandle, clk.name, clk.cells
         );
-        return None;
-    };
-    let clk_dev = match rdrive::get::<rdif_clk::Clk>(device_id) {
-        Ok(clk_dev) => clk_dev,
-        Err(_) => {
-            let clock_id = clk.select().unwrap_or(0);
-            if scmi::set_clock_rate(clk.phandle, clock_id, DWMMC_STABLE_REFERENCE_CLOCK as u64)
-                .is_some()
-            {
-                return Some(DWMMC_STABLE_REFERENCE_CLOCK);
-            }
-            if let Some(rate) = scmi::clock_rate(clk.phandle, clock_id) {
-                return validate_reference_clock(info, rate);
-            }
-            warn!(
-                "[{}] ciu clock device {:?} is not registered",
-                info.node.name(),
-                device_id
-            );
-            return None;
+        if clk.name == Some("core".to_string()) {
+            let device_id = info.phandle_to_device_id(clk.phandle).ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] core clock phandle {} has no device id",
+                    info.node.name(),
+                    clk.phandle
+                ))
+            })?;
+            let clk_dev = rdrive::get::<rdif_clk::Clk>(device_id).map_err(|_| {
+                OnProbeError::other(format!(
+                    "[{}] core clock device {:?} is not registered",
+                    info.node.name(),
+                    device_id
+                ))
+            })?;
+            CLK_DEV.call_once(|| ClkDev {
+                inner: clk_dev,
+                id: (clk.select().unwrap_or(0) as usize).into(),
+            });
+            return Ok(());
         }
-    };
-    let mut clk_guard = match clk_dev.lock() {
-        Ok(clk_guard) => clk_guard,
-        Err(_) => {
-            warn!(
-                "[{}] ciu clock device {:?} is locked",
-                info.node.name(),
-                device_id
-            );
-            return None;
-        }
-    };
-    let clock_id = ClockId::from(clk.select().unwrap_or(0) as usize);
-    if let Err(err) = clk_guard.set_rate(clock_id, DWMMC_STABLE_REFERENCE_CLOCK as u64) {
-        warn!(
-            "[{}] failed to set ciu clock {:?} to {} Hz: {:?}",
-            info.node.name(),
-            clock_id,
-            DWMMC_STABLE_REFERENCE_CLOCK,
-            err
-        );
     }
-    let rate = match clk_guard.get_rate(clock_id) {
-        Ok(rate) => rate,
-        Err(err) => {
-            warn!(
-                "[{}] failed to read ciu clock {:?}: {:?}",
-                info.node.name(),
-                clock_id,
-                err
-            );
-            return None;
-        }
-    };
-    validate_reference_clock(info, rate)
-}
-
-fn is_rk3588_dwmmc(info: &FdtInfo<'_>) -> bool {
-    info.node
-        .as_node()
-        .compatibles()
-        .any(|compatible| compatible == "rockchip,rk3588-dw-mshc")
-}
-
-fn init_rk3588_sdmmc_phase(info: &FdtInfo<'_>, parent_rate: u32) -> Result<(), OnProbeError> {
-    let has_drive_clk = info.find_clk_by_name("ciu-drive").is_some();
-    let has_sample_clk = info.find_clk_by_name("ciu-sample").is_some();
-    if !has_drive_clk || !has_sample_clk {
-        warn!(
-            "[{}] RK3588 SDMMC phase clocks missing: ciu-drive={} ciu-sample={}",
-            info.node.name(),
-            has_drive_clk,
-            has_sample_clk
-        );
-        return Ok(());
-    }
-
-    let cru = iomap(RK3588_CRU_BASE.into(), RK3588_CRU_SIZE)?;
-    set_rk3588_mmc_phase(
-        cru,
-        RK3588_SDMMC_CON0,
-        parent_rate,
-        RK3588_SDMMC_DRV_PHASE_DEG,
-    );
-    set_rk3588_mmc_phase(
-        cru,
-        RK3588_SDMMC_CON1,
-        parent_rate,
-        RK3588_SDMMC_SAMPLE_PHASE_DEG,
-    );
-    info!(
-        "rockchip-dwmmc: RK3588 SDMMC phase configured: drive={}deg sample={}deg parent={}Hz",
-        RK3588_SDMMC_DRV_PHASE_DEG, RK3588_SDMMC_SAMPLE_PHASE_DEG, parent_rate
-    );
     Ok(())
 }
 
-fn tune_rk3588_sdmmc_sample_phase(sd: &mut RockchipDwMmc, parent_rate: u32) {
-    let Ok(cru) = iomap(RK3588_CRU_BASE.into(), RK3588_CRU_SIZE) else {
-        warn!("rockchip-dwmmc: failed to map RK3588 CRU for sample phase scan");
-        return;
-    };
-
-    for sample_phase in RK3588_SDMMC_SAMPLE_PHASE_CANDIDATES {
-        set_rk3588_mmc_phase(cru, RK3588_SDMMC_CON1, parent_rate, sample_phase);
-
-        let mut block0 = [0; BLOCK_SIZE];
-        let block0_result = read_block_sync(sd, 0, &mut block0);
-        let block0_valid = block0_result.is_ok() && has_mbr_signature(&block0);
-
-        let mut block1 = [0; BLOCK_SIZE];
-        let block1_result = read_block_sync(sd, 1, &mut block1);
-        let block1_valid = block1_result.is_ok() && has_gpt_header(&block1);
-
-        info!(
-            "rockchip-dwmmc: sample phase probe {}deg: block0_ok={} mbr_sig={:02x}{:02x} \
-             block0_head={:02x?} block1_ok={} gpt_head={:02x?}",
-            sample_phase,
-            block0_result.is_ok(),
-            block0[511],
-            block0[510],
-            &block0[..16],
-            block1_result.is_ok(),
-            &block1[..8]
-        );
-
-        if block0_valid || block1_valid {
-            set_rk3588_mmc_phase(cru, RK3588_SDMMC_CON1, parent_rate, sample_phase);
-            info!(
-                "rockchip-dwmmc: selected RK3588 SDMMC sample phase {}deg",
-                sample_phase
-            );
-            return;
-        }
-    }
-
-    set_rk3588_mmc_phase(
-        cru,
-        RK3588_SDMMC_CON1,
-        parent_rate,
-        RK3588_SDMMC_SAMPLE_PHASE_DEG,
-    );
-    warn!(
-        "rockchip-dwmmc: no valid RK3588 SDMMC sample phase found; restored {}deg",
-        RK3588_SDMMC_SAMPLE_PHASE_DEG
-    );
+fn set_sdhci_clock(target_hz: u32) -> Result<(), Error> {
+    let clk = CLK_DEV.wait();
+    let mut clk_dev = clk.inner.lock().map_err(|_| clock_error())?;
+    clk_dev
+        .set_rate(clk.id, target_hz as u64)
+        .map_err(|_| clock_error())?;
+    let rate = clk_dev.get_rate(clk.id).map_err(|_| clock_error())?;
+    info!("rockchip-rk3568-sdhci: core clock set to {} Hz", rate);
+    Ok(())
 }
 
-fn read_block_sync(
-    sd: &mut RockchipDwMmc,
-    addr: u32,
-    buf: &mut [u8; BLOCK_SIZE],
-) -> Result<(), Error> {
-    let mut request = sd.submit_read_blocks_into(addr, buf)?;
-    loop {
-        match sd.poll_data_request(&mut request)? {
-            DataCommandPoll::Pending => core::hint::spin_loop(),
-            DataCommandPoll::Complete(_) => return Ok(()),
-        }
-    }
+fn clock_error() -> Error {
+    Error::BusError(ErrorContext::new(Phase::Init))
 }
 
-fn set_rk3588_mmc_phase(cru: NonNull<u8>, offset: usize, parent_rate: u32, degrees: u32) {
-    let delay_num = rk3588_mmc_delay_num(parent_rate, degrees);
-    let raw_value = if delay_num != 0 { 1 << 10 } else { 0 }
-        | ((delay_num & 0xff) << 2)
-        | ((degrees / 90) & 0x03);
-    let reg_value =
-        ((0x07ff_u32 << RK3588_SDMMC_PHASE_SHIFT) << 16) | (raw_value << RK3588_SDMMC_PHASE_SHIFT);
-    unsafe {
-        (cru.as_ptr().add(offset) as *mut u32).write_volatile(reg_value);
-    }
-}
-
-fn rk3588_mmc_delay_num(parent_rate: u32, degrees: u32) -> u32 {
-    let degree = degrees % 360;
-    let remainder = degree % 90;
-    if parent_rate == 0 {
-        0
-    } else {
-        div_round_closest(
-            10_000_000_u64 * remainder as u64,
-            (parent_rate as u64 / 1_000) * 36 * 6,
-        )
-        .min(255) as u32
-    }
-}
-
-fn div_round_closest(numerator: u64, denominator: u64) -> u64 {
-    if denominator == 0 {
-        0
-    } else {
-        (numerator + denominator / 2) / denominator
-    }
-}
-
-fn has_mbr_signature(block: &[u8; BLOCK_SIZE]) -> bool {
-    block[510] == 0x55 && block[511] == 0xaa
-}
-
-fn has_gpt_header(block: &[u8; BLOCK_SIZE]) -> bool {
-    &block[..8] == b"EFI PART"
-}
-
-fn validate_reference_clock(info: &FdtInfo<'_>, rate: u64) -> Option<u32> {
-    if rate == 0 || rate > u32::MAX as u64 {
-        warn!("[{}] invalid ciu clock rate {} Hz", info.node.name(), rate);
-        return None;
-    }
-    Some(rate as u32)
-}
-
-struct SdBlockDevice {
-    raw: Option<Arc<SpinNoIrq<RockchipDwMmc>>>,
+struct BlockDevice {
+    raw: Option<Arc<SpinNoIrq<RockchipSdhci>>>,
     capacity_blocks: u64,
     irq_enabled: bool,
     queue_created: bool,
 }
 
-struct SdBlockQueue {
-    raw: Arc<SpinNoIrq<RockchipDwMmc>>,
+struct BlockQueue {
+    raw: Arc<SpinNoIrq<RockchipSdhci>>,
     capacity_blocks: u64,
     id: usize,
     dma: DeviceDma,
@@ -432,20 +384,20 @@ struct SdBlockQueue {
     completed: Vec<rd_block::RequestId>,
 }
 
-impl DriverGeneric for SdBlockDevice {
+impl DriverGeneric for BlockDevice {
     fn name(&self) -> &str {
-        "rockchip-sd"
+        "rockchip-rk3568-sdhci"
     }
 }
 
-impl rd_block::Interface for SdBlockDevice {
+impl rd_block::Interface for BlockDevice {
     fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rd_block::IQueue>> {
         if self.queue_created {
             return None;
         }
         self.raw.as_ref().map(|dev| {
             self.queue_created = true;
-            alloc::boxed::Box::new(SdBlockQueue {
+            alloc::boxed::Box::new(BlockQueue {
                 raw: dev.clone(),
                 capacity_blocks: self.capacity_blocks,
                 id: 0,
@@ -461,7 +413,10 @@ impl rd_block::Interface for SdBlockDevice {
         if let Some(raw) = &self.raw {
             let mut raw = raw.lock();
             if let Err(err) = SdioHost::enable_completion_irq(raw.host_mut()) {
-                warn!("rockchip-dwmmc: enable completion IRQ failed: {:?}", err);
+                warn!(
+                    "rockchip-rk3568-sdhci: enable completion IRQ failed: {:?}",
+                    err
+                );
                 return;
             }
             self.irq_enabled = true;
@@ -472,7 +427,10 @@ impl rd_block::Interface for SdBlockDevice {
         if let Some(raw) = &self.raw {
             let mut raw = raw.lock();
             if let Err(err) = SdioHost::disable_completion_irq(raw.host_mut()) {
-                warn!("rockchip-dwmmc: disable completion IRQ failed: {:?}", err);
+                warn!(
+                    "rockchip-rk3568-sdhci: disable completion IRQ failed: {:?}",
+                    err
+                );
             }
         }
         self.irq_enabled = false;
@@ -487,19 +445,17 @@ impl rd_block::Interface for SdBlockDevice {
             return rd_block::Event::none();
         };
         let irq_event = raw.lock().host_mut().handle_irq();
-        block_event_from_dwmmc_irq(irq_event)
+        block_event_from_sdhci_irq(irq_event)
     }
 }
 
-fn block_event_from_dwmmc_irq(irq_event: dwmmc_host::Event) -> rd_block::Event {
+fn block_event_from_sdhci_irq(irq_event: sdhci_host::Event) -> rd_block::Event {
     match irq_event {
-        dwmmc_host::Event::None => rd_block::Event::none(),
-        dwmmc_host::Event::CommandComplete
-        | dwmmc_host::Event::TransferComplete
-        | dwmmc_host::Event::ReceiveReady
-        | dwmmc_host::Event::TransmitReady
-        | dwmmc_host::Event::Error { .. }
-        | dwmmc_host::Event::Other { .. } => {
+        sdhci_host::Event::None => rd_block::Event::none(),
+        sdhci_host::Event::CommandComplete
+        | sdhci_host::Event::TransferComplete
+        | sdhci_host::Event::Error { .. }
+        | sdhci_host::Event::Other { .. } => {
             let mut event = rd_block::Event::none();
             event.queue.insert(0);
             event
@@ -507,7 +463,7 @@ fn block_event_from_dwmmc_irq(irq_event: dwmmc_host::Event) -> rd_block::Event {
     }
 }
 
-impl rd_block::IQueue for SdBlockQueue {
+impl rd_block::IQueue for BlockQueue {
     fn num_blocks(&self) -> usize {
         self.capacity_blocks as usize
     }
@@ -595,7 +551,7 @@ impl rd_block::IQueue for SdBlockQueue {
     }
 }
 
-impl SdBlockQueue {
+impl BlockQueue {
     fn poll_active_request(
         &mut self,
         request: rd_block::RequestId,
@@ -607,6 +563,9 @@ impl SdBlockQueue {
         ) {
             Ok(BlockPoll::Complete) => Ok(()),
             Ok(BlockPoll::Pending) => Err(rd_block::BlkError::Retry),
+            Ok(_) => Err(rd_block::BlkError::Other(
+                "SDHCI returned an unknown poll state".into(),
+            )),
             Err(err) => Err(map_dev_err_to_blk_err(err)),
         }
     }
@@ -631,8 +590,12 @@ impl SdBlockQueue {
     }
 }
 
+fn rk3568_block_transfer_mode() -> BlockTransferMode {
+    BlockTransferMode::Fifo
+}
+
 fn submit_read_request(
-    host: &mut DwMmc,
+    host: &mut Sdhci,
     start_block: u32,
     buffer: NonNull<u8>,
     size: NonZeroUsize,
@@ -647,8 +610,8 @@ fn submit_read_request(
         start_block,
         buffer,
         size,
-        Some(dma),
-        BlockTransferMode::Dma,
+        transfer_dma(rk3568_block_transfer_mode(), dma),
+        rk3568_block_transfer_mode(),
         slot,
     ) {
         Ok(request) => request,
@@ -670,7 +633,7 @@ fn submit_read_request(
 }
 
 fn submit_write_request(
-    host: &mut DwMmc,
+    host: &mut Sdhci,
     start_block: u32,
     buffer: NonNull<u8>,
     size: NonZeroUsize,
@@ -685,8 +648,8 @@ fn submit_write_request(
         start_block,
         buffer,
         size,
-        Some(dma),
-        BlockTransferMode::Dma,
+        transfer_dma(rk3568_block_transfer_mode(), dma),
+        rk3568_block_transfer_mode(),
         slot,
     ) {
         Ok(request) => request,
@@ -705,6 +668,14 @@ fn submit_write_request(
     let id = request.id();
     *pending = Some(request);
     Ok(id)
+}
+
+fn transfer_dma<'a>(mode: BlockTransferMode, dma: &'a DeviceDma) -> Option<&'a DeviceDma> {
+    match mode {
+        BlockTransferMode::Dma => Some(dma),
+        BlockTransferMode::Fifo => None,
+        _ => None,
+    }
 }
 
 fn can_fallback_to_fifo(err: Error) -> bool {
@@ -734,27 +705,23 @@ fn map_dev_err_to_blk_err(err: Error) -> rd_block::BlkError {
         Error::Misaligned | Error::InvalidArgument => {
             rd_block::BlkError::Other("SD/MMC request is not block aligned".into())
         }
-        _ => rd_block::BlkError::Other("DWMMC I/O error".into()),
+        _ => rd_block::BlkError::Other("SDHCI I/O error".into()),
     }
+}
+
+static CLK_DEV: Once<ClkDev> = Once::new();
+
+struct ClkDev {
+    inner: Device<rdif_clk::Clk>,
+    id: ClockId,
 }
 
 #[cfg(test)]
 mod tests {
-    use sdmmc_protocol::error::ErrorContext;
-
     use super::*;
 
     #[test]
-    fn command_timeout_during_card_init_is_absent_card() {
-        let err = Error::Timeout(ErrorContext::for_cmd(Phase::ResponseWait, 1));
-
-        assert!(is_absent_card_init_error(err));
-    }
-
-    #[test]
-    fn data_timeout_after_card_init_is_not_absent_card() {
-        let err = Error::Timeout(ErrorContext::for_cmd(Phase::DataRead, 17));
-
-        assert!(!is_absent_card_init_error(err));
+    fn rk3568_block_io_uses_fifo_transfer_mode() {
+        assert_eq!(rk3568_block_transfer_mode(), BlockTransferMode::Fifo);
     }
 }

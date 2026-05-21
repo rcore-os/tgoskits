@@ -291,7 +291,14 @@ impl Location {
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
-        if !self.ptr_eq(dst_dir) && self.entry.is_ancestor_of(&dst_dir.entry)? {
+        // Disallow moving a directory into one of its own descendants. Regular
+        // files may still be renamed into child directories (e.g. Redis AOF
+        // `temp-rewriteaof-*.aof` -> `appendonlydir/...`).
+        if let Ok(src_loc) = self.lookup_no_follow(src_name)
+            && src_loc.node_type() == NodeType::Directory
+            && !self.ptr_eq(dst_dir)
+            && src_loc.entry.is_ancestor_of(&dst_dir.entry)?
+        {
             return Err(VfsError::InvalidInput);
         }
         self.entry

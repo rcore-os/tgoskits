@@ -36,9 +36,10 @@ cargo starry example board -t orangepi-5-plus-uvc
 ## PicoClaw CLI
 
 The `picoclaw-cli` case is an opt-in StarryOS x86_64 QEMU workflow for checking
-PicoClaw compatibility in two initial stages: offline CLI smoke and online agent
-request. It prepares local-only release assets and rootfs images under
-`target/picoclaw/` and `tmp/axbuild/rootfs/`.
+PicoClaw compatibility in three stages: offline CLI smoke, online agent request,
+and gateway service smoke. It also provides an interactive StarryOS shell for
+manual PicoClaw use. It prepares local-only release assets and rootfs images
+under `target/picoclaw/` and `tmp/axbuild/rootfs/`.
 
 ```bash
 examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
@@ -48,7 +49,8 @@ cargo xtask starry qemu \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw.img
 ```
 
-See `picoclaw-cli/README.md` for the online agent flow.
+See `picoclaw-cli/README.md` for the online agent, gateway, and interactive
+flows.
 
 ## Orange Pi 5 Plus UVC
 

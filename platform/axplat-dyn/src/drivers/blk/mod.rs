@@ -27,10 +27,10 @@ use spin::Mutex;
 
 use super::DmaImpl;
 
-#[cfg(feature = "rockchip-sdhci")]
-mod rockchip_mmc;
-#[cfg(feature = "rockchip-dwmmc")]
-mod rockchip_sd;
+#[cfg(feature = "phytium-mci")]
+mod phytium_mci;
+#[cfg(any(feature = "rockchip-sdhci", feature = "rockchip-dwmmc"))]
+mod rockchip;
 mod virtio;
 mod virtio_pci;
 
@@ -300,13 +300,21 @@ impl PlatformDeviceBlock for rdrive::PlatformDevice {
     }
 }
 
-#[cfg(any(feature = "rockchip-sdhci", feature = "rockchip-dwmmc"))]
+#[cfg(any(
+    feature = "rockchip-sdhci",
+    feature = "rockchip-dwmmc",
+    feature = "phytium-mci"
+))]
 pub(super) fn decode_fdt_irq(interrupts: &[rdrive::probe::fdt::InterruptRef]) -> Option<usize> {
     let interrupt = interrupts.first()?;
     decode_irq_cells(&interrupt.specifier)
 }
 
-#[cfg(any(feature = "rockchip-sdhci", feature = "rockchip-dwmmc"))]
+#[cfg(any(
+    feature = "rockchip-sdhci",
+    feature = "rockchip-dwmmc",
+    feature = "phytium-mci"
+))]
 fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
     match specifier {
         [irq] => Some(*irq as usize),
