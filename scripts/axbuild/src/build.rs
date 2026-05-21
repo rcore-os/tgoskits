@@ -159,7 +159,6 @@ impl BuildInfo {
             env: self.env,
             target,
             package,
-            bin: None,
             features: self.features,
             log: Some(self.log),
             extra_config: None,
@@ -169,6 +168,7 @@ impl BuildInfo {
             pre_build_cmds: vec![],
             post_build_cmds: vec![],
             to_bin,
+            bin: None,
         }
     }
 

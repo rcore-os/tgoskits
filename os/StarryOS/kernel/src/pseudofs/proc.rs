@@ -61,14 +61,12 @@ fn read_kallsyms() -> KallsymsMapped<'static> {
         unsafe { core::slice::from_raw_parts(__kallsyms_start as *const u8, kallsyms_size) };
 
     info!("Read kallsyms, size: {}KB", kallsyms.len() / 1024);
-    let kallsyms = kallsyms.leak();
-    let ksym = ksym::KallsymsMapped::from_blob(
+    ksym::KallsymsMapped::from_blob(
         kallsyms,
         _stext as *const () as u64,
         _etext as *const () as u64,
     )
-    .expect("Failed to create KallsymsMapped");
-    ksym
+    .expect("Failed to create KallsymsMapped")
 }
 
 fn procfs_visible_pid(proc: &Arc<Process>) -> Pid {
@@ -997,10 +995,14 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     ALL_SYMS.init_once(ksym.dump_all_symbols());
     KALLSYMS.init_once(ksym);
 
-    root.add(
-        "kallsyms",
-        SeqFile::new_regular(fs.clone(), || Ok(ALL_SYMS.as_str())),
-    );
+    root.add("kallsyms", {
+        let seq_obj = SeqObject::new(|| Ok(ALL_SYMS.as_str()));
+        SpecialFsFile::new_regular_with_perm(
+            fs.clone(),
+            seq_obj,
+            NodePermission::from_bits_truncate(0o444),
+        )
+    });
 
     let proc_dir = ProcFsHandler(fs.clone());
     SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))

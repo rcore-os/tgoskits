@@ -15,6 +15,7 @@ install_rust_binutils() {
         exit 1
     fi
 
+    echo "Installing rust-nm and rust-objcopy (cargo-binutils)..." >&2
     if command -v rustup >/dev/null 2>&1; then
         rustup component add llvm-tools-preview
     fi
@@ -42,6 +43,7 @@ ensure_llvm_tools() {
         exit 1
     fi
 
+    echo "Installing llvm-tools-preview via rustup..." >&2
     rustup component add llvm-tools-preview
 }
 
@@ -52,6 +54,7 @@ install_ksym() {
         exit 1
     fi
 
+    echo "Installing ksym (gen_ksym) via cargo..." >&2
     cargo install ksym
 }
 
