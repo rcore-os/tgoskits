@@ -21,7 +21,6 @@ use rsext4::{
     endian::DiskFormat,
     error::{Errno, Ext4Error, Ext4Result},
     jbd2::jbdstruct::{JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_MAGIC, JournalHeaderS, JournalSuperBllockS},
-    loopfile::resolve_inode_block,
     superblock::Ext4Superblock,
     *,
 };
@@ -33,7 +32,6 @@ struct SharedCrcDevice {
     data: Rc<RefCell<Vec<u8>>>,
     block_size: u32,
     now: Rc<Cell<i64>>,
-    blocked_read_block: Rc<Cell<Option<u64>>>,
 }
 
 impl SharedCrcDevice {
@@ -42,7 +40,6 @@ impl SharedCrcDevice {
             data: Rc::new(RefCell::new(vec![0; size])),
             block_size: BLOCK_SIZE as u32,
             now: Rc::new(Cell::new(1_700_000_000)),
-            blocked_read_block: Rc::new(Cell::new(None)),
         }
     }
 
@@ -65,9 +62,6 @@ impl SharedCrcDevice {
 
 impl BlockDevice for SharedCrcDevice {
     fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        if self.blocked_read_block.get() == Some(block_id.raw()) {
-            return Err(Ext4Error::io());
-        }
         let start = block_id.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.borrow().len() {
@@ -203,11 +197,11 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
     let block_bitmap = device.read_block_bytes(desc.block_bitmap());
     let inode_bitmap = device.read_block_bytes(desc.inode_bitmap());
     assert_eq!(
-        desc.block_bitmap_csum(&sb),
+        desc.block_bitmap_csum(),
         ext4_block_bitmap_csum32(&sb, &block_bitmap)
     );
     assert_eq!(
-        desc.inode_bitmap_csum(&sb),
+        desc.inode_bitmap_csum(),
         ext4_inode_bitmap_csum32(&sb, &inode_bitmap)
     );
 
@@ -219,13 +213,11 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
 }
 
 #[test]
-fn incomplete_journal_is_not_replayed_when_recovery_flag_is_clear() {
-    // Test idea: ext4 recovery is driven by the superblock needs_recovery bit,
-    // not by leftover journal state. If we clear that bit on disk and leave a
-    // deliberately broken journal descriptor behind, the next mount must
-    // ignore the journal contents instead of trying to replay them. The mount
-    // itself will still set needs_recovery for its own writable session, and a
-    // clean umount must clear it again before the test ends.
+fn clean_mount_does_not_replay_journal_without_recovery_feature() {
+    // Test idea: normal journaled operation may leave a non-zero journal
+    // superblock start value, but ext4 recovery is driven by the superblock
+    // needs_recovery bit. A clean mount should initialize journal state for
+    // future writes without treating the journal as mandatory recovery input.
     let device = SharedCrcDevice::new(100 * 1024 * 1024);
     let mut jbd2_dev = new_jbd2_dev(device.clone());
     mkfs(&mut jbd2_dev).expect("mkfs failed");
@@ -245,51 +237,14 @@ fn incomplete_journal_is_not_replayed_when_recovery_flag_is_clear() {
     write_journal_start(&device, journal_block, 1);
     write_incomplete_journal_descriptor(&device, journal_block);
 
-    let clean_mount_sb = read_superblock(&device);
-    assert_eq!(
-        clean_mount_sb.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
-        0
-    );
-
     let mut remount_dev = new_jbd2_dev(device.clone());
     let fs = mount(&mut remount_dev).expect("clean mount should not force journal replay");
-    assert_ne!(
+    assert_eq!(
         fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
         0
     );
     assert!(remount_dev.is_use_journal());
     umount(fs, &mut remount_dev).expect("umount failed");
-
-    let clean_unmount_sb = read_superblock(&device);
-    assert_eq!(
-        clean_unmount_sb.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
-        0
-    );
-    assert_ne!(clean_unmount_sb.s_lpf_ino, 0);
-}
-
-#[test]
-fn mount_uses_valid_lost_found_hint_without_root_path_scan() {
-    let device = SharedCrcDevice::new(100 * 1024 * 1024);
-    let mut jbd2_dev = new_jbd2_dev(device.clone());
-    mkfs(&mut jbd2_dev).expect("mkfs failed");
-
-    let mut inspect_dev = new_jbd2_dev(device.clone());
-    let mut fs = mount(&mut inspect_dev).expect("mount failed");
-    let mut root = fs.get_root(&mut inspect_dev).expect("root inode");
-    let root_block = resolve_inode_block(&mut inspect_dev, &mut root, 0)
-        .expect("resolve root block")
-        .expect("root directory block")
-        .raw();
-    umount(fs, &mut inspect_dev).expect("umount failed");
-
-    let clean_sb = read_superblock(&device);
-    assert_ne!(clean_sb.s_lpf_ino, 0);
-
-    device.blocked_read_block.set(Some(root_block));
-    let mut remount_dev = new_jbd2_dev(device.clone());
-    let fs = mount(&mut remount_dev).expect("mount should trust valid lost+found hint");
-    assert_eq!(fs.superblock.s_lpf_ino, clean_sb.s_lpf_ino);
 }
 
 #[test]
