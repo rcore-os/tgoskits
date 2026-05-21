@@ -184,24 +184,12 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         let raw_dev = self.inner.device_mut();
 
         Self::enqueue_journal_update(system, raw_dev, updates)?;
-        self.inner.mark_buffer_clean_after_queued_write(block_id);
         trace!("[JBD2 buffer] queued metadata block {block_id}");
         Ok(())
     }
 
     /// Reads one block through the cached inner device.
     pub fn read_block(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
-        if self.journal_use
-            && let Some(system) = self.system.as_ref()
-            && let Some(update) = system
-                .commit_queue
-                .iter()
-                .find(|queued| queued.0 == block_id)
-        {
-            self.inner.cache_clean_block(block_id, &update.1);
-            return Ok(());
-        }
-
         self.inner.read_block(block_id)
     }
 

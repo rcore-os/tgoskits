@@ -285,11 +285,7 @@ impl AppContext {
             },
         );
         let vmconfigs = if cli.vmconfigs.is_empty() {
-            if inherit_snapshot_runtime {
-                self.resolve_workspace_paths(snapshot.vmconfigs.iter())
-            } else {
-                Vec::new()
-            }
+            self.resolve_workspace_paths(snapshot.vmconfigs.iter())
         } else {
             self.resolve_workspace_paths(cli.vmconfigs.iter())
         };

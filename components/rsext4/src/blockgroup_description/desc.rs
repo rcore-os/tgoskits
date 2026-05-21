@@ -123,8 +123,8 @@ impl Ext4GroupDesc {
                 self.used_dirs_count(),
                 self.itable_unused(),
                 self.bg_flags,
-                self.block_bitmap_csum(superblock),
-                self.inode_bitmap_csum(superblock)
+                self.block_bitmap_csum(),
+                self.inode_bitmap_csum()
             );
             return Err(Ext4Error::checksum());
         }
@@ -172,21 +172,13 @@ impl Ext4GroupDesc {
     }
 
     /// Returns the 32-bit block bitmap checksum.
-    pub fn block_bitmap_csum(&self, superblock: &Ext4Superblock) -> u32 {
-        if superblock.get_desc_size() as usize >= Self::EXT4_DESC_SIZE_64BIT {
-            (self.bg_block_bitmap_csum_hi as u32) << 16 | self.bg_block_bitmap_csum_lo as u32
-        } else {
-            self.bg_block_bitmap_csum_lo as u32
-        }
+    pub fn block_bitmap_csum(&self) -> u32 {
+        (self.bg_block_bitmap_csum_hi as u32) << 16 | self.bg_block_bitmap_csum_lo as u32
     }
 
     /// Returns the 32-bit inode bitmap checksum.
-    pub fn inode_bitmap_csum(&self, superblock: &Ext4Superblock) -> u32 {
-        if superblock.get_desc_size() as usize >= Self::EXT4_DESC_SIZE_64BIT {
-            (self.bg_inode_bitmap_csum_hi as u32) << 16 | self.bg_inode_bitmap_csum_lo as u32
-        } else {
-            self.bg_inode_bitmap_csum_lo as u32
-        }
+    pub fn inode_bitmap_csum(&self) -> u32 {
+        (self.bg_inode_bitmap_csum_hi as u32) << 16 | self.bg_inode_bitmap_csum_lo as u32
     }
 
     /// Returns whether the block group is marked uninitialized.
