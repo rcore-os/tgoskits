@@ -25,6 +25,7 @@ pub mod kallsyms;
 mod kcov;
 mod kprobe;
 mod mm;
+mod perf_event;
 mod pseudofs;
 mod stop_machine;
 mod syscall;

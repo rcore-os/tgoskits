@@ -743,6 +743,7 @@ fn init_helper_functions() -> alloc::collections::BTreeMap<u32, HelperFn> {
     m.insert(helper_id::GET_CURRENT_PID_TGID, helper_get_current_pid_tgid);
     m.insert(helper_id::GET_CURRENT_UID_GID, helper_get_current_uid_gid);
     m.insert(helper_id::GET_PRANDOM_U32, helper_get_prandom_u32);
+    m.insert(helper_id::PERF_EVENT_OUTPUT, helper_perf_event_output);
     m
 }
 
@@ -839,6 +840,23 @@ fn helper_get_prandom_u32(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u
     let next = prev.wrapping_mul(1103515245).wrapping_add(12345);
     SEED.store(next, Ordering::Relaxed);
     next as u64
+}
+
+fn helper_perf_event_output(
+    _ctx: u64,
+    map_fd: u64,
+    _flags: u64,
+    data_ptr: u64,
+    data_size: u64,
+) -> u64 {
+    if data_ptr == 0 || data_size == 0 {
+        return u64::MAX;
+    }
+    let data = unsafe { core::slice::from_raw_parts(data_ptr as *const u8, data_size as usize) };
+    match crate::perf_event::perf_event_write(map_fd as u32, data) {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
 }
 
 const BPF_MAX_INSN: usize = 1000000;
@@ -1088,6 +1106,45 @@ pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
     })
 }
 
+fn handle_link_create(uattr: usize, size: u32) -> AxResult<isize> {
+    if size < 20 {
+        return Err(bpf_error::EINVAL);
+    }
+    let (prog_fd, target_fd) = unsafe {
+        let ptr = uattr as *const u32;
+        let prog_fd = core::ptr::read(ptr) as u32;
+        let attach_type = core::ptr::read(ptr.add(1));
+        let target_fd = core::ptr::read(ptr.add(2)) as u32;
+        let _ = attach_type;
+        (prog_fd, target_fd)
+    };
+    crate::perf_event::perf_event_attach_prog(target_fd, prog_fd)?;
+    crate::perf_event::perf_event_enable(target_fd)?;
+    info!("bpf: LINK_CREATE prog_fd={prog_fd} target_fd={target_fd}");
+    Ok(target_fd as isize)
+}
+
+fn handle_prog_attach(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
+    if size < 16 {
+        return Err(bpf_error::EINVAL);
+    }
+    let (prog_fd, target_fd) = unsafe {
+        let ptr = uattr as *const u32;
+        let prog_fd = core::ptr::read(ptr) as u32;
+        let target_fd = core::ptr::read(ptr.add(2)) as u32;
+        (prog_fd, target_fd)
+    };
+    if cmd == cmd::PROG_ATTACH {
+        crate::perf_event::perf_event_attach_prog(target_fd, prog_fd)?;
+        crate::perf_event::perf_event_enable(target_fd)?;
+        info!("bpf: PROG_ATTACH prog_fd={prog_fd} target_fd={target_fd}");
+    } else {
+        crate::perf_event::perf_event_disable(target_fd)?;
+        info!("bpf: PROG_DETACH target_fd={target_fd}");
+    }
+    Ok(0)
+}
+
 pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
     match cmd {
         cmd::MAP_CREATE => handle_map_create(uattr, size),
@@ -1101,10 +1158,8 @@ pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
             warn!("bpf: obj pin/get not yet implemented");
             Err(bpf_error::EINVAL)
         }
-        cmd::PROG_ATTACH | cmd::PROG_DETACH | cmd::LINK_CREATE => {
-            warn!("bpf: prog attach/detach/link not yet implemented");
-            Err(bpf_error::EINVAL)
-        }
+        cmd::PROG_ATTACH | cmd::PROG_DETACH => handle_prog_attach(cmd, uattr, size),
+        cmd::LINK_CREATE => handle_link_create(uattr, size),
         cmd::ENABLE_STATS => {
             warn!("bpf: ENABLE_STATS not yet implemented");
             Err(bpf_error::EINVAL)
@@ -1117,15 +1172,11 @@ pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
 }
 
 pub fn sys_perf_event_open(
-    _attr_uptr: usize,
+    attr_uptr: usize,
     pid: i32,
     cpu: i32,
     group_fd: i32,
     flags: u64,
 ) -> AxResult<isize> {
-    warn!(
-        "perf_event_open: pid={pid}, cpu={cpu}, group_fd={group_fd}, flags={flags:#x} not yet \
-         implemented"
-    );
-    Err(bpf_error::EINVAL)
+    crate::perf_event::sys_perf_event_open_impl(attr_uptr, pid, cpu, group_fd, flags)
 }
