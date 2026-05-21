@@ -59,6 +59,9 @@ pub(crate) fn build_info_enables_backtrace_path(path: &Path) -> bool {
 
 const LOONGARCH64_HERMIT_JSON: &str =
     include_str!("../../../os/arceos/examples/std/loongarch64-unknown-hermit.json");
+const TARGET_JSON_ROOT: &str = "scripts/targets";
+const NO_PIE_TARGET_DIR: &str = "no-pie";
+const PIE_TARGET_DIR: &str = "pie";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
@@ -137,14 +140,31 @@ impl BuildInfo {
         target: String,
         args: Vec<String>,
     ) -> Cargo {
-        let to_bin = default_to_bin_for_target(&target);
+        self.into_base_cargo_config_with_to_bin(
+            package,
+            target.clone(),
+            args,
+            default_to_bin_for_target(&target),
+        )
+    }
+
+    fn into_base_cargo_config_with_to_bin(
+        self,
+        package: String,
+        target: String,
+        args: Vec<String>,
+        to_bin: bool,
+    ) -> Cargo {
         Cargo {
             env: self.env,
             target,
             package,
+            bin: None,
             features: self.features,
             log: Some(self.log),
             extra_config: None,
+            profile: None,
+            disable_someboot_build_config: true,
             args,
             pre_build_cmds: vec![],
             post_build_cmds: vec![],
@@ -196,9 +216,23 @@ impl BuildInfo {
             extra_rustflags.push("-Cllvm-args=-sanitizer-coverage-trace-pc".to_string());
             extra_rustflags.push("-Cpasses=sancov-module".to_string());
         }
-        let args = Self::build_cargo_args(target, plat_dyn, &extra_rustflags);
+        let cargo_target = cargo_target_json_path(target, plat_dyn)?;
+        let cargo_target = cargo_target.display().to_string();
+        let args = Self::build_cargo_args(&cargo_target, &extra_rustflags);
+        self.env.insert(
+            "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
+            "true".to_string(),
+        );
 
-        Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
+        self.prepare_log_env();
+        self.prepare_max_cpu_num_env()
+            .expect("max_cpu_num validation should run before cargo config generation");
+        Ok(self.into_base_cargo_config_with_to_bin(
+            package.to_string(),
+            cargo_target,
+            args,
+            default_to_bin_for_target(target),
+        ))
     }
 
     pub(crate) fn prepare_non_dynamic_platform_for(
@@ -355,32 +389,26 @@ impl BuildInfo {
         }
     }
 
-    pub(crate) fn build_cargo_args(
-        target: &str,
-        plat_dyn: bool,
-        extra_rustflags: &[String],
-    ) -> Vec<String> {
-        let mut args = Vec::new();
-        args.push("--config".to_string());
-        let mut rustflags: Vec<String> = Vec::new();
-        rustflags.extend(extra_rustflags.iter().cloned());
-        if plat_dyn {
-            rustflags.push("-Clink-arg=-Taxplat.x".to_string());
-        } else {
-            rustflags.push("-Clink-arg=-Tlinker.x".to_string());
-            rustflags.push("-Clink-arg=-no-pie".to_string());
-            rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
-        }
+    pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
+        let mut args = vec![
+            "-Z".to_string(),
+            "json-target-spec".to_string(),
+            "-Z".to_string(),
+            "build-std=core,alloc".to_string(),
+        ];
 
-        let mut rendered = format!("target.{target}.rustflags=[");
-        for (i, flag) in rustflags.iter().enumerate() {
-            if i > 0 {
-                rendered.push(',');
-            }
-            rendered.push_str(&format!("{flag:?}"));
+        if !extra_rustflags.is_empty() {
+            args.push("--config".to_string());
+            let rustflags_toml = toml::Value::Array(
+                extra_rustflags
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            )
+            .to_string();
+            args.push(format!("target.'{target}'.rustflags={rustflags_toml}"));
         }
-        rendered.push(']');
-        args.push(rendered);
         args
     }
 }
@@ -400,6 +428,29 @@ impl Default for BuildInfo {
             plat_dyn: false,
             std_build: false,
         }
+    }
+}
+
+pub(crate) fn cargo_target_json_path(target: &str, plat_dyn: bool) -> anyhow::Result<PathBuf> {
+    let target_file = match target {
+        "aarch64-unknown-none-softfloat"
+        | "riscv64gc-unknown-none-elf"
+        | "x86_64-unknown-none"
+        | "loongarch64-unknown-none-softfloat" => format!("{target}.json"),
+        _ => bail!("unsupported target triple `{target}`"),
+    };
+
+    if plat_dyn {
+        if target != "aarch64-unknown-none-softfloat" {
+            bail!("unsupported PIE target `{target}`");
+        }
+        Ok(Path::new(TARGET_JSON_ROOT)
+            .join(PIE_TARGET_DIR)
+            .join(target_file))
+    } else {
+        Ok(Path::new(TARGET_JSON_ROOT)
+            .join(NO_PIE_TARGET_DIR)
+            .join(target_file))
     }
 }
 
@@ -1133,6 +1184,71 @@ mod tests {
                 "-Cforce-frame-pointers=yes".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn cargo_target_json_path_maps_no_pie_targets() {
+        let cases = [
+            "aarch64-unknown-none-softfloat",
+            "riscv64gc-unknown-none-elf",
+            "x86_64-unknown-none",
+            "loongarch64-unknown-none-softfloat",
+        ];
+
+        for target in cases {
+            let path = cargo_target_json_path(target, false).unwrap();
+            assert!(path.ends_with(format!("scripts/targets/no-pie/{target}.json")));
+        }
+    }
+
+    #[test]
+    fn cargo_target_json_path_maps_aarch64_pie_target() {
+        let path = cargo_target_json_path("aarch64-unknown-none-softfloat", true).unwrap();
+
+        assert!(path.ends_with("scripts/targets/pie/aarch64-unknown-none-softfloat.json"));
+    }
+
+    #[test]
+    fn cargo_target_json_path_rejects_unsupported_pie_target() {
+        let err = cargo_target_json_path("riscv64gc-unknown-none-elf", true).unwrap_err();
+
+        assert!(err.to_string().contains("unsupported PIE target"));
+    }
+
+    #[test]
+    fn build_cargo_args_uses_json_target_spec_and_build_std() {
+        let args = BuildInfo::build_cargo_args(
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+            &[],
+        );
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "json-target-spec"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
+        assert!(!args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert!(!args.iter().any(|arg| arg.contains("-Taxplat.x")));
+    }
+
+    #[test]
+    fn build_cargo_args_quotes_json_target_rustflags_key() {
+        let args = BuildInfo::build_cargo_args(
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+            &["-Cdebuginfo=2".to_string()],
+        );
+
+        assert!(args.windows(2).any(|pair| {
+            pair[0] == "--config"
+                && pair[1].starts_with(
+                    "target.'scripts/targets/no-pie/aarch64-unknown-none-softfloat.json'.\
+                     rustflags=",
+                )
+                && pair[1].contains("\"-Cdebuginfo=2\"")
+        }));
     }
 
     #[test]

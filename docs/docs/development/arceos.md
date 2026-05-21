@@ -115,7 +115,6 @@ modules/axtask/
 pub unsafe fn rust_main() {
     ax_log::init();
     ax_hal::platform_init();
-    #[cfg(feature = "alloc")]
     ax_alloc::init();
     #[cfg(feature = "paging")]
     ax_mm::init();
@@ -227,7 +226,7 @@ smp = ["alloc", "ax-hal/smp", "ax-runtime/smp", "ax-task?/smp"]
 fp-simd = ["ax-hal/fp-simd"]
 
 # 内存
-alloc = ["ax-alloc", "ax-runtime/alloc"]
+alloc = ["ax-alloc"]
 paging = ["alloc", "ax-hal/paging", "ax-runtime/paging"]
 
 # 任务

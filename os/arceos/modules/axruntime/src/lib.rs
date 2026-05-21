@@ -19,7 +19,6 @@
 //!
 //! # Cargo Features
 //!
-//! - `alloc`: Enable global memory allocator.
 //! - `paging`: Enable page table manipulation support.
 //! - `irq`: Enable interrupt handling support.
 //! - `multitask`: Enable multi-threading support.
@@ -135,7 +134,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::mem::clear_bss()
     };
     ax_hal::percpu::init_primary(cpu_id);
-    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
+    #[cfg(feature = "buddy-slab")]
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
@@ -182,7 +181,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         );
     }
 
-    #[cfg(feature = "alloc")]
     init_allocator();
 
     {
@@ -296,7 +294,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 }
 
-#[cfg(feature = "alloc")]
 fn init_allocator() {
     use ax_hal::mem::{MemRegionFlags, memory_regions, phys_to_virt};
 

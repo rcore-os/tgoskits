@@ -466,7 +466,7 @@ lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = "0.10"
-ostool = { version = "0.15" }
+ostool = { version = "0.19" }
 uefi = "0.36"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"

@@ -184,8 +184,18 @@ mod tests {
         assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", true, &[]);
-        assert!(args.iter().any(|arg| arg.contains("-Taxplat.x")));
+        let args = ArceosBuildInfo::build_cargo_args(
+            "scripts/targets/pie/aarch64-unknown-none-softfloat.json",
+            &[],
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "json-target-spec"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
     }
 
     #[test]
@@ -196,8 +206,18 @@ mod tests {
         assert!(build_info.features.contains(&"ax-std/defplat".to_string()));
         assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
 
-        let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", false, &[]);
-        assert!(args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        let args = ArceosBuildInfo::build_cargo_args(
+            "scripts/targets/no-pie/aarch64-unknown-none-softfloat.json",
+            &[],
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "json-target-spec"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
     }
 
     #[test]

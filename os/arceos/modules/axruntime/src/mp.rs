@@ -125,7 +125,7 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 #[ax_plat::secondary_main]
 pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ax_hal::percpu::init_secondary(cpu_id);
-    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
+    #[cfg(feature = "buddy-slab")]
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early_secondary(cpu_id);
 
