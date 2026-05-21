@@ -20,6 +20,7 @@ ax-fs-ng = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-hal = { workspace = true }
 ax-io = { workspace = true }
+ax-kspin = { workspace = true }
 axpoll = { workspace = true }
 ax-sync = { workspace = true }
 ax-task = { workspace = true, features = ["irq", "multitask"] }
