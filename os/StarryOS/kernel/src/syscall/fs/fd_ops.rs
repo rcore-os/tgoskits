@@ -41,9 +41,6 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     if flags & O_CREAT != 0 {
         options.create(true);
     }
-    if flags & O_PATH != 0 {
-        options.path(true);
-    }
     // O_EXCL only makes sense with O_CREAT (POSIX). Without O_CREAT, Linux
     // ignores O_EXCL for existing files — busybox blkdiscard opens block
     // devices with O_RDWR|O_EXCL (no O_CREAT).
@@ -58,6 +55,21 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     }
     if flags & O_DIRECT != 0 {
         options.direct(true);
+    }
+    // O_PATH must be applied LAST and override conflicting flags: man 2 open
+    // "When O_PATH is specified in flags, flag bits other than O_CLOEXEC,
+    //  O_DIRECTORY, and O_NOFOLLOW are ignored."
+    // Fixes bug-open-path-honors-excl / -path-creat-creates /
+    //       -path-dir-write-eisdir / -path-sym-write-enoent.
+    if flags & O_PATH != 0 {
+        options.path(true);
+        // O_PATH: drop access mode (no I/O), drop create/excl/trunc/append
+        options.read(true).write(false);
+        options
+            .create(false)
+            .create_new(false)
+            .truncate(false)
+            .append(false);
     }
     options
 }
@@ -139,6 +151,51 @@ pub fn sys_openat(
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
+
+    let uflags = flags as u32;
+
+    // Pathname length check — man "ENAMETOOLONG — pathname was too long".
+    // starry path layer only checks per-component (255); add whole-path
+    // check (PATH_MAX = 4096). Fixes bug-open-pathmax-no-enametoolong.
+    if path.len() >= 4096 {
+        return Err(AxError::NameTooLong);
+    }
+
+    // Empty pathname → ENOENT. openat() does not accept AT_EMPTY_PATH.
+    // Fixes bug-openat-empty-path-no-enoent.
+    if path.is_empty() {
+        return Err(AxError::NotFound);
+    }
+
+    // O_CREAT|O_DIRECTORY is an invalid combination: open() cannot create
+    // a directory. man: "EINVAL — flags contains an invalid value."
+    // Fixes bug-open-creat-directory-einval.
+    // Exception: O_PATH ignores O_CREAT, so still allow PATH|CREAT|DIRECTORY.
+    if uflags & O_CREAT != 0 && uflags & O_DIRECTORY != 0 && uflags & O_PATH == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // O_TMPFILE requires O_RDWR or O_WRONLY. man: "EINVAL — O_TMPFILE was
+    // specified in flags, but neither O_WRONLY nor O_RDWR was specified."
+    // Fixes bug-open-tmpfile-no-einval.
+    //
+    // Exception: O_PATH ignores all flags except O_CLOEXEC/O_DIRECTORY/O_NOFOLLOW
+    // (see flags_to_options PATH override below). On Linux, O_PATH|O_TMPFILE|RDONLY
+    // is accepted as an O_PATH handle (TMPFILE/access bits ignored), not EINVAL.
+    if uflags & O_TMPFILE == O_TMPFILE && uflags & 0b11 == O_RDONLY && uflags & O_PATH == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // Absolute path: man "If pathname is absolute, then dirfd is ignored."
+    // starry with_fs() unconditionally calls Directory::from_fd(dirfd),
+    // so invalid dirfd would EBADF before the abs-path shortcut applies.
+    // Same pattern as resolve_at (PR #605) / sys_fchownat (PR #588).
+    // Fixes bug-openat-abs-path-honors-invalid-dirfd.
+    let dirfd = if path.starts_with('/') {
+        AT_FDCWD as _
+    } else {
+        dirfd
+    };
 
     let mode = mode & !current().as_thread().proc_data.umask();
 
