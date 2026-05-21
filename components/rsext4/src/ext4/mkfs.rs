@@ -165,10 +165,10 @@ fn mark_block_bitmap_padding(bitmap: &mut [u8], layout: &FsLayoutInfo, group_id:
 
 pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
     debug!("Start initializing Ext4 filesystem...");
+    let old_journal_use = block_dev.is_use_journal();
     // Disable journaling while laying out the initial filesystem image. The
     // journal inode and journal superblock do not exist yet at this stage.
     block_dev.set_journal_use(false);
-    let old_jouranl_use = block_dev.is_use_journal();
 
     // Compute the full mkfs layout before any on-disk write happens.
     let total_blocks = block_dev.total_blocks();
@@ -235,7 +235,7 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
     let verify_sb = read_superblock(block_dev)?;
 
     // Restore the previous journal setting for the caller.
-    block_dev.set_journal_use(old_jouranl_use);
+    block_dev.set_journal_use(old_journal_use);
 
     if verify_sb.s_magic == EXT4_SUPER_MAGIC {
         debug!(

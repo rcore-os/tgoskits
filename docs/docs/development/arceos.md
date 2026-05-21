@@ -34,10 +34,10 @@ ArceOS 开发和测试依赖 QEMU system emulator：
 | x86_64 | `qemu-system-x86_64` | `qemu-system-x86_64 --version` |
 | loongarch64 | `qemu-system-loongarch64` | `qemu-system-loongarch64 --version` |
 
-推荐版本 ≥ 8.0。Debian/Ubuntu 安装示例：
+推荐版本 ≥ 10.2.1。Debian/Ubuntu 安装示例：
 
 ```bash
-sudo apt install qemu-system-arm qemu-system-misc qemu-system-x86
+sudo apt install qemu-system-arm qemu-system-riscv64 qemu-system-x86
 ```
 
 ### 1.3 交叉编译工具链（可选）

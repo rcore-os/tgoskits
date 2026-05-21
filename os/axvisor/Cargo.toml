@@ -41,7 +41,17 @@ svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
 dyn-plat = ["ax-std/plat-dyn", "dep:axplat-dyn"]
 rockchip-soc = ["dep:axplat-dyn", "axplat-dyn/rockchip-soc"]
-sdmmc = ["dep:axplat-dyn", "axplat-dyn/rockchip-sdhci"]
+rockchip-sdhci = [
+    "dep:axplat-dyn",
+    "axplat-dyn/rockchip-sdhci",
+    "axplat-dyn/rockchip-soc",
+]
+rockchip-dwmmc = [
+    "dep:axplat-dyn",
+    "axplat-dyn/rockchip-dwmmc",
+    "axplat-dyn/rockchip-soc",
+]
+phytium-mci = ["dep:axplat-dyn", "axplat-dyn/phytium-mci"]
 rockchip-pm = ["dep:axplat-dyn", "axplat-dyn/rockchip-pm"]
 serial = ["dep:axplat-dyn", "axplat-dyn/serial"]
 
