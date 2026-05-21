@@ -166,7 +166,6 @@ flowchart TB
 | `ax-plat-loongarch64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-loongarch64-qemu-virt` | 6 | 5 | [查看](crates/ax-plat-loongarch64-qemu-virt) |
 | `ax-plat-macros` | 组件层 | `components/axplat_crates/axplat-macros` | 1 | 1 | [查看](crates/ax-plat-macros) |
 | `ax-plat-riscv64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-riscv64-qemu-virt` | 6 | 6 | [查看](crates/ax-plat-riscv64-qemu-virt) |
-| `axplat-riscv64-qemu-virt-hv` | Axvisor 层 | `platform/riscv64-qemu-virt` | 8 | 6 | [查看](crates/ax-plat-riscv64-qemu-virt) |
 | `ax-plat-x86-pc` | 组件层 | `components/axplat_crates/platforms/axplat-x86-pc` | 7 | 5 | [查看](crates/ax-plat-x86-pc) |
 | `ax-posix-api` | ArceOS 层 | `os/arceos/api/arceos_posix_api` | 13 | 1 | [查看](crates/ax-posix-api) |
 | `ax-runtime` | ArceOS 层 | `os/arceos/modules/axruntime` | 20 | 4 | [查看](crates/ax-runtime) |

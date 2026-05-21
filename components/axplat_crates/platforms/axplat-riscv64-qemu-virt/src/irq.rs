@@ -32,8 +32,11 @@ static TIMER_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 static IPI_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
+#[cfg(feature = "hypervisor")]
+static VIRTUAL_IRQ_INJECTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
 /// The maximum number of IRQs.
-pub const MAX_IRQ_COUNT: usize = 1024;
+const MAX_IRQ_COUNT: usize = 1024;
 
 static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 
@@ -54,6 +57,12 @@ pub(super) fn init_percpu() {
         sie::set_sext();
     }
     PLIC.lock().init_by_context(this_context());
+}
+
+/// Registers the virtual interrupt injector used by hypervisor builds.
+#[cfg(feature = "hypervisor")]
+pub fn register_virtual_irq_injector(injector: fn(usize)) {
+    VIRTUAL_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
 }
 
 macro_rules! with_cause {
@@ -203,6 +212,7 @@ impl IrqIf for IrqIfImpl {
                 // Clear SSIP before draining the queue so a new IPI that
                 // arrives while handling callbacks can set the pending bit
                 // again instead of losing the wakeup.
+                #[cfg(not(feature = "hypervisor"))]
                 unsafe {
                     riscv::register::sip::clear_ssoft();
                 }
@@ -214,14 +224,36 @@ impl IrqIf for IrqIfImpl {
                 Some(irq)
             },
             @S_EXT => {
+                // TODO: judge irq's ownership before handling (axvisor or any vm).
+                // Maybe later it will be done by registering all irqs IQR_HANDLER_TABLE.
+
                 let mut plic = PLIC.lock();
                 let Some(irq) = plic.claim(this_context()) else {
                     debug!("Spurious external IRQ");
                     return None;
                 };
-                trace!("IRQ: external {irq}");
-                IRQ_HANDLER_TABLE.handle(irq.get() as usize);
-                plic.complete(this_context(), irq);
+                #[cfg(feature = "hypervisor")]
+                {
+                    drop(plic);
+                    let injector = VIRTUAL_IRQ_INJECTOR.load(Ordering::Acquire);
+                    if injector.is_null() {
+                        warn!("virtual IRQ injector is not registered");
+                    } else {
+                        // SAFETY: The injector is registered through
+                        // register_virtual_irq_injector as a valid function pointer.
+                        unsafe {
+                            core::mem::transmute::<*mut (), fn(usize)>(injector)(
+                                irq.get() as usize,
+                            );
+                        }
+                    }
+                }
+                #[cfg(not(feature = "hypervisor"))]
+                {
+                    trace!("IRQ: external {irq}");
+                    IRQ_HANDLER_TABLE.handle(irq.get() as usize);
+                    plic.complete(this_context(), irq);
+                }
                 Some(irq.get() as usize)
             },
             @EX_IRQ => {

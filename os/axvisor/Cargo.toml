@@ -102,6 +102,7 @@ arm-gic-driver = { workspace = true, features = ["rdif"] }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+ax-plat-riscv64-qemu-virt = { workspace = true, features = ["hypervisor"] }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 # xtask dependencies (only used on host platforms)

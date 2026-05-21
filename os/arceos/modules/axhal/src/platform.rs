@@ -125,14 +125,14 @@ extern crate ax_plat_aarch64_raspi as _;
 extern crate ax_plat_loongarch64_qemu_virt as _;
 #[cfg(all(feature = "riscv64-qemu-virt", target_arch = "riscv64"))]
 extern crate ax_plat_riscv64_qemu_virt as _;
+#[cfg(all(feature = "riscv64-qemu-virt-hv", target_arch = "riscv64"))]
+extern crate ax_plat_riscv64_qemu_virt as _;
 #[cfg(all(feature = "riscv64-sg2002", target_arch = "riscv64"))]
 extern crate ax_plat_riscv64_sg2002 as _;
 #[cfg(all(feature = "x86-pc", target_arch = "x86_64"))]
 extern crate ax_plat_x86_pc as _;
 #[cfg(plat_dyn)]
 extern crate axplat_dyn as _;
-#[cfg(all(feature = "riscv64-qemu-virt-hv", target_arch = "riscv64"))]
-extern crate axplat_riscv64_qemu_virt_hv as _;
 #[cfg(all(feature = "riscv64-visionfive2", target_arch = "riscv64"))]
 extern crate axplat_riscv64_visionfive2 as _;
 #[cfg(all(feature = "x86-qemu-q35", target_arch = "x86_64"))]
@@ -258,12 +258,4 @@ compile_error!("select an ax-hal platform feature or enable ax-hal/myplat");
 #[path = "dummy.rs"]
 mod dummy;
 
-pub mod selected {
-    #[cfg(all(feature = "riscv64-qemu-virt-hv", target_arch = "riscv64"))]
-    pub use axplat_riscv64_qemu_virt_hv::plic_base;
-
-    #[cfg(all(feature = "riscv64-qemu-virt-hv", target_arch = "riscv64"))]
-    pub mod irq {
-        pub use axplat_riscv64_qemu_virt_hv::irq::InjectIrqIf;
-    }
-}
+pub mod selected {}
