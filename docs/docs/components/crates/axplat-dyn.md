@@ -46,7 +46,7 @@
 | --- | --- | --- | --- |
 | 启动 glue | `somehal` | `boot.rs` | 把主核/次核入口收敛到 `ax_plat::call_main()` / `call_secondary_main()` |
 | 平台契约 glue | `axplat` | `init.rs`、`console.rs`、`mem.rs`、`generic_timer.rs`、`irq.rs`、`power.rs` | 用 `#[impl_plat_interface]` 把 `somehal` 能力接到 `axplat` trait |
-| 设备 glue | `rdrive`、`rd-block`、`ax-driver-virtio` | `drivers/*` | 把 FDT/PCIe/VirtIO 探测结果转成 `ax-driver` 可消费的动态块设备 |
+| 设备 glue | `rdrive`、`rd-block`、`ax-driver` | `drivers/*` | 把 FDT/PCIe/VirtIO 探测结果转成 `rdrive` 可查询的动态块设备 |
 | 链接 glue | `build.rs`、`link.ld` | crate 根目录 | 生成 `axplat.x`，插入所需段和符号，适配 ArceOS 链接约定 |
 
 这套装配方式说明它承担的是“桥接与接线”职责，而不是“重新定义平台抽象”。
@@ -196,9 +196,8 @@ flowchart TD
 | `somehal` | 提供真实平台事实与入口宏，是本 crate 的核心下层 |
 | `ax-cpu` | 在 `hv` 等场景提供 CPU 模式支持 |
 | `axklib` | 提供 `iomap()` 等内核内存映射辅助 |
-| `ax-alloc` | 为 `VirtIO` DMA 路径提供页分配 |
+| `ax-driver` | 提供共享驱动 probe 与 adapter 入口 |
 | `rdrive`、`rd-block` | 提供运行时设备探测与块设备抽象 |
-| `axdriver_block`、`ax-driver-virtio`、`ax-driver-base` | 将探测结果转接为 ArceOS 驱动接口 |
 | `dma-api` | 为设备 DMA 提供抽象接口 |
 | `heapless`、`spin` | 用于固定容量缓存与锁/一次初始化结构 |
 
@@ -214,7 +213,7 @@ flowchart TD
 graph TD
     A[somehal / ax-cpu / axklib] --> B[axplat-dyn]
     C[axplat] --> B
-    D[rdrive / rd-block / dma-api / ax-driver-virtio] --> B
+    D[rdrive / rd-block / dma-api / ax-driver] --> B
 
     B --> E[ax-hal: plat-dyn]
     B --> F[ax-driver: dyn]

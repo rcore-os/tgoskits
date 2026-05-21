@@ -5,7 +5,7 @@ sidebar_label: "rdrive + rdif 驱动框架"
 
 # rdrive + rdif 驱动框架
 
-本文记录 #606 的宿主物理设备重构目标。新的设备路径硬切到 `rdrive + rdif`：`rdrive` 负责发现、probe、注册和查询，`rdif-*` / `rd-*` 负责能力接口和运行时封装，上层系统按领域能力消费设备。`ax-driver` / `axdriver_*` 不再作为宿主物理设备初始化与交付主线。
+本文记录 #606 的宿主物理设备重构目标。新的设备路径硬切到 `rdrive + rdif`：`rdrive` 负责发现、probe、注册和查询，`rdif-*` / `rd-*` 负责能力接口和运行时封装，上层系统按领域能力消费设备。旧驱动接口包组已移除，宿主物理设备初始化与交付主线不再经过 legacy driver crates。
 
 `axdevice` 与 `axdevice_base` 不纳入本轮迁移。它们继续作为 Axvisor / axvm 的 guest emulated device model，不参与宿主物理设备 probe，不作为 FS、NET、display、input、vsock 的设备来源。
 
@@ -24,7 +24,7 @@ sidebar_label: "rdrive + rdif 驱动框架"
 - 不在文档或代码中保留“以后补”的占位路径；ACPI 第一版必须返回明确 unsupported error。
 - 除测试外，新增或重构后的单个 `.rs` 文件不超过 600 行。
 
-Legacy `ax-driver` / `axdriver_*` crate 可以继续服务尚未迁移的旧代码，但不能成为新宿主路径的隐形 ABI。迁移目标模块完成后，不应再 import `AllDevices`、`AxDeviceContainer`、`AxBlockDevice`、`AxNetDevice`、`ax_driver::scan_partitions`。
+`ax-driver` 现在作为共享驱动聚合 crate 接入 `rdrive + rdif`，不再依赖旧驱动接口包组。迁移目标模块完成后，不应再引入 `AllDevices`、`AxDeviceContainer`、`AxBlockDevice`、`AxNetDevice` 这类旧全局容器模型。
 
 ## 总体结构
 
@@ -249,7 +249,7 @@ Driver Core 只推进硬件状态机。OS Glue 将硬件实例包装成 `rdif-*:
 
 ## Block Volume 与分区扫描
 
-分区扫描抽成唯一实现，位于独立 block volume 层，而不是 FS 层或 `axdriver_block`。
+分区扫描抽成唯一实现，位于独立 block volume 层，而不是 FS 层或旧块驱动接口路径。
 
 目标数据模型：
 
@@ -317,7 +317,6 @@ src/
 | --- | --- | --- |
 | `platform/axplat-dyn/src/drivers/pci/rk3588.rs` | 单文件超过 600 行 | RC init、ATU/window、MSI/IRQ、config space、FDT glue |
 | `platform/axplat-dyn/src/drivers/blk/rockchip_sd.rs` | 单文件超过 600 行 | probe/FDT、clock/tuning、card init、rd-block adapter |
-| `components/axdriver_crates/axdriver_virtio/src/socket.rs` | 单文件过大且 legacy trait 绑定 | packet、queue、connection table、device |
 | `platform/axplat-dyn/src/drivers/blk/mod.rs` | 容器、adapter、IRQ、FDT decode 混杂 | registry、adapter、irq、probe |
 | `platform/axplat-dyn/src/drivers/mod.rs` | 设备收集、iomap、DMA 混杂 | device collection、iomap、dma |
 

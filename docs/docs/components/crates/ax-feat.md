@@ -72,10 +72,10 @@ graph LR
 - `ax-config-macros`
 - `ax-cpu`
 - `ax-dma`
-- `ax-driver-base`
-- `axdriver_block`
-- `axdriver_display`
-- `axdriver_input`
+- `rdrive`
+- `rd-block`
+- `rdif-display`
+- `rdif-input`
 - 另外还有 `48` 个同类项未在此展开
 
 ### 3.3 被依赖情况
