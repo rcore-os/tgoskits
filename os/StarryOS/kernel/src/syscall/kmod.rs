@@ -28,7 +28,7 @@ pub fn sys_init_module(module_ptr: *const u8, len: usize, param_ptr: *const u8) 
         None
     };
 
-    axlog::warn!(
+    warn!(
         "[sys_init_module]: module_len={}, params={:?}",
         len,
         param_buf
@@ -56,7 +56,7 @@ pub fn sys_finit_module(module_fd: i32, param_ptr: *const u8, _flags: u32) -> Ax
         None
     };
 
-    axlog::warn!(
+    warn!(
         "[sys_finit_module]: module_len={}, params={:?}",
         module_data.len(),
         param_buf
@@ -68,7 +68,7 @@ pub fn sys_finit_module(module_fd: i32, param_ptr: *const u8, _flags: u32) -> Ax
 /// See <https://man7.org/linux/man-pages/man2/delete_module.2.html>
 pub fn sys_delete_module(name_ptr: *const u8, _flags: u32) -> AxResult<isize> {
     let name = vm_load_string(name_ptr as _)?;
-    axlog::warn!("[sys_delete_module]: name={}", name);
+    warn!("[sys_delete_module]: name={}", name);
     crate::kmod::delete_module(&name)?;
     Ok(0)
 }

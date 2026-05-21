@@ -21,14 +21,14 @@ use lwprintf_rs::SIZE_MAX;
 #[allow(dead_code)]
 const KERN_SOH: u8 = 0x01;
 
-const KERN_EMERG: &[u8; 2] = concat_bytes!(b'\x01', b'0');
-const KERN_ALERT: &[u8; 2] = concat_bytes!(b'\x01', b'1');
-const KERN_CRIT: &[u8; 2] = concat_bytes!(b'\x01', b'2');
-const KERN_ERR: &[u8; 2] = concat_bytes!(b'\x01', b'3');
-const KERN_WARNING: &[u8; 2] = concat_bytes!(b'\x01', b'4');
-const KERN_NOTICE: &[u8; 2] = concat_bytes!(b'\x01', b'5');
-const KERN_INFO: &[u8; 2] = concat_bytes!(b'\x01', b'6');
-const KERN_DEBUG: &[u8; 2] = concat_bytes!(b'\x01', b'7');
+const KERN_EMERG: &[u8; 2] = &[0x01, b'0'];
+const KERN_ALERT: &[u8; 2] = &[0x01, b'1'];
+const KERN_CRIT: &[u8; 2] = &[0x01, b'2'];
+const KERN_ERR: &[u8; 2] = &[0x01, b'3'];
+const KERN_WARNING: &[u8; 2] = &[0x01, b'4'];
+const KERN_NOTICE: &[u8; 2] = &[0x01, b'5'];
+const KERN_INFO: &[u8; 2] = &[0x01, b'6'];
+const KERN_DEBUG: &[u8; 2] = &[0x01, b'7'];
 
 const LOG_LEVELS: &[&[u8; 2]] = &[
     KERN_EMERG,
