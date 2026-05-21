@@ -54,6 +54,19 @@ impl Ext4FileSystem {
         self.superblock.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
     }
 
+    fn valid_lost_found_hint<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<bool> {
+        let ino = self.superblock.s_lpf_ino;
+        if ino == 0 {
+            return Ok(false);
+        }
+
+        let inode = self.get_inode_by_num(block_dev, InodeNumber::new(ino)?)?;
+        Ok(inode.i_mode != 0 && inode.is_dir())
+    }
+
     fn journal_blocks<B: BlockDevice>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
@@ -262,28 +275,31 @@ impl Ext4FileSystem {
         // Verify the recovery directory after the root directory is known good.
         debug!("Checking lost+found directory...");
         {
-            // Trust the superblock hint when present, but still validate via a
-            // path lookup so stale metadata does not silently pass.
-            if fs.superblock.s_lpf_ino != 0 {
+            if fs.valid_lost_found_hint(block_dev)? {
                 let ino = fs.superblock.s_lpf_ino;
-                debug!("Lost+found inode recorded in superblock: {ino}");
+                info!("/lost+found exists (superblock hint inode={ino})");
             } else {
-                debug!("s_lpf_ino is 0, lost+found inode hint missing in superblock");
-            }
+                if fs.superblock.s_lpf_ino != 0 {
+                    let ino = fs.superblock.s_lpf_ino;
+                    warn!("s_lpf_ino={ino} is not a valid directory, falling back to path scan");
+                } else {
+                    debug!("s_lpf_ino is 0, lost+found inode hint missing in superblock");
+                }
 
-            match find_file(&mut fs, block_dev, "/lost+found") {
-                Ok(_inode) => {
-                    info!("/lost+found exists (path resolution)");
-                }
-                Err(err) if err.code == Errno::ENOENT => {
-                    info!("/lost+found not found by path scan;will create!");
-                    if create_lost_found_directory(&mut fs, block_dev).is_err() {
-                        warn!("/lost+found missing and create failed");
+                match find_file(&mut fs, block_dev, "/lost+found") {
+                    Ok(_inode) => {
+                        info!("/lost+found exists (path resolution)");
                     }
-                }
-                Err(err) => {
-                    error!("Failed to resolve /lost+found: {err}");
-                    return Err(err);
+                    Err(err) if err.code == Errno::ENOENT => {
+                        info!("/lost+found not found by path scan;will create!");
+                        if create_lost_found_directory(&mut fs, block_dev).is_err() {
+                            warn!("/lost+found missing and create failed");
+                        }
+                    }
+                    Err(err) => {
+                        error!("Failed to resolve /lost+found: {err}");
+                        return Err(err);
+                    }
                 }
             }
         }

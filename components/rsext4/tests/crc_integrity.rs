@@ -21,6 +21,7 @@ use rsext4::{
     endian::DiskFormat,
     error::{Errno, Ext4Error, Ext4Result},
     jbd2::jbdstruct::{JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_MAGIC, JournalHeaderS, JournalSuperBllockS},
+    loopfile::resolve_inode_block,
     superblock::Ext4Superblock,
     *,
 };
@@ -32,6 +33,7 @@ struct SharedCrcDevice {
     data: Rc<RefCell<Vec<u8>>>,
     block_size: u32,
     now: Rc<Cell<i64>>,
+    blocked_read_block: Rc<Cell<Option<u64>>>,
 }
 
 impl SharedCrcDevice {
@@ -40,6 +42,7 @@ impl SharedCrcDevice {
             data: Rc::new(RefCell::new(vec![0; size])),
             block_size: BLOCK_SIZE as u32,
             now: Rc::new(Cell::new(1_700_000_000)),
+            blocked_read_block: Rc::new(Cell::new(None)),
         }
     }
 
@@ -62,6 +65,9 @@ impl SharedCrcDevice {
 
 impl BlockDevice for SharedCrcDevice {
     fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+        if self.blocked_read_block.get() == Some(block_id.raw()) {
+            return Err(Ext4Error::io());
+        }
         let start = block_id.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.borrow().len() {
@@ -259,6 +265,31 @@ fn incomplete_journal_is_not_replayed_when_recovery_flag_is_clear() {
         clean_unmount_sb.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
         0
     );
+    assert_ne!(clean_unmount_sb.s_lpf_ino, 0);
+}
+
+#[test]
+fn mount_uses_valid_lost_found_hint_without_root_path_scan() {
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut inspect_dev = new_jbd2_dev(device.clone());
+    let mut fs = mount(&mut inspect_dev).expect("mount failed");
+    let mut root = fs.get_root(&mut inspect_dev).expect("root inode");
+    let root_block = resolve_inode_block(&mut inspect_dev, &mut root, 0)
+        .expect("resolve root block")
+        .expect("root directory block")
+        .raw();
+    umount(fs, &mut inspect_dev).expect("umount failed");
+
+    let clean_sb = read_superblock(&device);
+    assert_ne!(clean_sb.s_lpf_ino, 0);
+
+    device.blocked_read_block.set(Some(root_block));
+    let mut remount_dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut remount_dev).expect("mount should trust valid lost+found hint");
+    assert_eq!(fs.superblock.s_lpf_ino, clean_sb.s_lpf_ino);
 }
 
 #[test]
