@@ -375,14 +375,14 @@ intrusive_adapter!(EvictListenerAdapter = Box<EvictListener>: EvictListener { li
 
 struct CachedFileShared {
     page_cache: Mutex<LruCache<u32, PageCache>>,
-    evict_listeners: spin::Mutex<LinkedList<EvictListenerAdapter>>,
+    evict_listeners: Mutex<LinkedList<EvictListenerAdapter>>,
 }
 
 impl CachedFileShared {
     pub fn new() -> Self {
         Self {
             page_cache: Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())),
-            evict_listeners: spin::Mutex::new(LinkedList::default()),
+            evict_listeners: Mutex::new(LinkedList::default()),
         }
     }
 
@@ -390,7 +390,7 @@ impl CachedFileShared {
     pub fn new_unbounded() -> Self {
         Self {
             page_cache: Mutex::new(LruCache::unbounded()),
-            evict_listeners: spin::Mutex::new(LinkedList::default()),
+            evict_listeners: Mutex::new(LinkedList::default()),
         }
     }
 
