@@ -4977,6 +4977,10 @@ dependencies = [
  "yaxpeax-arch",
  "yaxpeax-x86",
 ]
+name = "ksym"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8983e1ba2080d958a757359ab1fa5178c8a55840d627479a2c69373f8226c5a9"
 
 [[package]]
 name = "ktest-helper"
@@ -7955,6 +7959,7 @@ dependencies = [
  "inherit-methods-macro",
  "kernel-elf-parser",
  "kprobe",
+ "ksym",
  "ktracepoint",
  "linux-raw-sys 0.12.1",
  "lock_api",

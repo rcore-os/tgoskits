@@ -19,8 +19,11 @@ use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
+use ax_memory_addr::PAGE_SIZE_4K;
+use ax_lazyinit::LazyInit;
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use ksym::KallsymsMapped;
 use starry_process::{Pid, Process};
 
 use crate::{
@@ -40,6 +43,33 @@ use crate::{
 /// Module-level so both `/proc/interrupts` and `/proc/stat` can read it.
 static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
 const PROCFS_INIT_PID: Pid = 1;
+
+pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
+
+fn read_kallsyms() -> KallsymsMapped<'static> {
+    unsafe extern "C" {
+        fn _stext();
+        fn _etext();
+        fn __kallsyms_start();
+        fn __kallsyms_end();
+    }
+
+    let kallsyms_start = __kallsyms_start as *const () as usize;
+    let kallsyms_end = __kallsyms_end as *const () as usize;
+    let kallsyms_size = kallsyms_end - kallsyms_start;
+    let kallsyms =
+        unsafe { core::slice::from_raw_parts(__kallsyms_start as *const u8, kallsyms_size) };
+
+    info!("Read kallsyms, size: {}KB", kallsyms.len() / 1024);
+    let kallsyms = kallsyms.leak();
+    let ksym = ksym::KallsymsMapped::from_blob(
+        kallsyms,
+        _stext as *const () as u64,
+        _etext as *const () as u64,
+    )
+    .expect("Failed to create KallsymsMapped");
+    ksym
+}
 
 fn procfs_visible_pid(proc: &Arc<Process>) -> Pid {
     if proc.is_init() {
@@ -960,6 +990,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
         SimpleDir::new_maker(fs.clone(), Arc::new(dynamic_debug))
     });
+
+    let ksym = read_kallsyms();
+    static ALL_SYMS: LazyInit<String> = LazyInit::new();
+
+    ALL_SYMS.init_once(ksym.dump_all_symbols());
+    KALLSYMS.init_once(ksym);
+
+    root.add(
+        "kallsyms",
+        SeqFile::new_regular(fs.clone(), || Ok(ALL_SYMS.as_str())),
+    );
 
     let proc_dir = ProcFsHandler(fs.clone());
     SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
