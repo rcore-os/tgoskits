@@ -276,18 +276,20 @@ impl Ext4FileSystem {
         {
             if fs.valid_lost_found_hint(block_dev)? {
                 let ino = fs.superblock.s_lpf_ino;
-                debug!("/lost+found exists (superblock hint inode={ino})");
+                info!("/lost+found exists (superblock hint inode={ino})");
             } else {
                 if fs.superblock.s_lpf_ino != 0 {
                     let ino = fs.superblock.s_lpf_ino;
                     warn!("s_lpf_ino={ino} is not a valid directory, falling back to path scan");
+                } else {
+                    debug!("s_lpf_ino is 0, lost+found inode hint missing in superblock");
                 }
 
                 match get_file_inode(&mut fs, block_dev, "/lost+found") {
                     Ok(Some((ino, inode))) if inode.is_dir() => {
                         fs.superblock.s_lpf_ino = ino.raw();
                         fs.sync_superblock(block_dev)?;
-                        debug!("/lost+found exists (path resolution, repaired hint inode={ino})");
+                        info!("/lost+found exists (path resolution, repaired hint inode={ino})");
                     }
                     Ok(Some((_ino, _inode))) => {
                         error!("/lost+found exists but is not a directory");
