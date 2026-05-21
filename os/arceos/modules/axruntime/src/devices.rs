@@ -228,10 +228,13 @@ fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng:
     alloc::vec::Vec::new()
 }
 
-#[cfg(any(feature = "fs", feature = "fs-ng"))]
+#[cfg(all(
+    any(feature = "fs", feature = "fs-ng"),
+    any(not(feature = "plat-dyn"), target_os = "none")
+))]
 struct FsBlockDevice(ax_driver::block::Block);
 
-#[cfg(feature = "fs")]
+#[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
 impl ax_fs::FsBlockDevice for FsBlockDevice {
     fn name(&self) -> &str {
         self.0.name()
@@ -258,7 +261,7 @@ impl ax_fs::FsBlockDevice for FsBlockDevice {
     }
 }
 
-#[cfg(feature = "fs-ng")]
+#[cfg(all(feature = "fs-ng", any(not(feature = "plat-dyn"), target_os = "none")))]
 impl ax_fs_ng::FsBlockDevice for FsBlockDevice {
     fn name(&self) -> &str {
         self.0.name()
