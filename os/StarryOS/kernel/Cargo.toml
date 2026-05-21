@@ -93,7 +93,6 @@ inherit-methods-macro = "0.1.0"
 ax-kernel-guard = { workspace = true }
 kernel-elf-parser = "0.3.4"
 ax-kspin = { workspace = true }
-lazy_static = { version = "1.5", features = ["spin_no_std"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",

@@ -372,7 +372,6 @@ schemars = "1.2.1"
 toml = "1"
 dma-api = { version = "0.7.3", path = "components/dma-api" }
 mmio-api = { version = "0.2.2", path = "components/mmio-api" }
-lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 spin = { version = "0.10", path = "components/spin" }
