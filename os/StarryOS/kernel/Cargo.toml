@@ -128,7 +128,7 @@ ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
 kprobe = "0.5"
-# kbpf-basic = "0.5"  # TODO: enable once printf-compat 0.4 is available in cargo registry
+kmod-loader = "0.2"
 dw_apb_uart = { workspace = true, features = ["sg2002"], optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 # 0.9 to match sg200x-bsp's internal tock-registers; cannot use workspace (0.10)

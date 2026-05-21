@@ -23,6 +23,7 @@ mod file;
 pub mod kallsyms;
 #[cfg(feature = "kcov")]
 mod kcov;
+mod kmod_loader;
 mod kprobe;
 mod mm;
 mod perf_event;
