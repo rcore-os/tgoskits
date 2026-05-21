@@ -64,10 +64,17 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
         if pg.session().sid() != proc.pid() {
             return Err(AxError::OperationNotPermitted);
         }
-        assert!(pg.session().set_terminal_with(|| {
-            self.terminal.job_control.set_session(&pg.session());
-            self.clone()
-        }));
+        let tty = self.clone() as Arc<dyn Any + Send + Sync>;
+        if let Some(bound) = pg.session().terminal() {
+            if !Arc::ptr_eq(&bound, &tty) {
+                return Err(AxError::OperationNotPermitted);
+            }
+        } else {
+            self.terminal.job_control.set_session(&pg.session())?;
+            if !pg.session().set_terminal_with(|| tty) {
+                return Err(AxError::OperationNotPermitted);
+            }
+        }
 
         self.terminal.job_control.set_foreground(&pg).unwrap();
         Ok(())

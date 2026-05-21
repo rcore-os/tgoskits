@@ -67,10 +67,40 @@ impl JobControl {
         Ok(())
     }
 
-    pub fn set_session(&self, session: &Arc<Session>) {
+    pub fn set_session(&self, session: &Arc<Session>) -> AxResult<()> {
         let mut guard = self.session.lock();
-        assert!(guard.upgrade().is_none());
+        if let Some(bound) = guard.upgrade() {
+            if Arc::ptr_eq(&bound, session) {
+                return Ok(());
+            }
+            ax_bail!(
+                OperationNotPermitted,
+                "Terminal is already associated with another session"
+            );
+        }
         *guard = Arc::downgrade(session);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use starry_process::Process;
+
+    use super::*;
+
+    #[test]
+    fn setting_different_session_returns_eperm() {
+        let init = Process::new_init(1);
+        let first = init.fork(2);
+        let second = init.fork(3);
+        let (first_session, _) = first.create_session().unwrap();
+        let (second_session, _) = second.create_session().unwrap();
+        let jobs = JobControl::new();
+
+        jobs.set_session(&first_session).unwrap();
+
+        assert!(jobs.set_session(&second_session).is_err());
     }
 }
 
