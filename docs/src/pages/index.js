@@ -350,16 +350,26 @@ function CapabilitySection() {
       title="面向系统软件工程的核心工程能力"
       description="构建自动化、组件化架构、内存安全、多架构支持、镜像闭环与分层验证——覆盖从开发到发布的完整链路。"
     >
-      <div className="feature-grid">
-        {features.map((feature, i) => (
-          <Link className={`feature-card ${staggerClass(i)}`} key={feature.title} to={feature.to}>
-            <div className="feature-card__header">
+      <div className="capability-board">
+        <Link className={`capability-spotlight ${staggerClass(0)}`} to={features[0].to}>
+          <div className="capability-spotlight__icon">{iconLibrary[features[0].icon]}</div>
+          <span className="capability-kicker">Primary Flow</span>
+          <h3>{features[0].title}</h3>
+          <p>{features[0].desc}</p>
+          <span className="capability-spotlight__link">查看构建系统</span>
+        </Link>
+        <div className="capability-lanes">
+          {features.slice(1).map((feature, i) => (
+            <Link className={`capability-lane ${staggerClass(i + 1)}`} key={feature.title} to={feature.to}>
+              <span className="capability-lane__index">0{i + 2}</span>
               <div className="feature-icon">{iconLibrary[feature.icon]}</div>
-              <h3>{feature.title}</h3>
-            </div>
-            <p>{feature.desc}</p>
-          </Link>
-        ))}
+              <div className="capability-lane__body">
+                <h3>{feature.title}</h3>
+                <p>{feature.desc}</p>
+              </div>
+            </Link>
+          ))}
+        </div>
       </div>
     </SectionShell>
   );
@@ -514,15 +524,42 @@ function DocsSection() {
       title="四个维度组织文档入口"
       description="从项目概览到系统指南，每个维度提供不同粒度的信息，按需跳转即可。"
     >
-      <div className="docs-orbit">
+      <div className="docs-constellation" aria-label="Documentation entry map">
+        <svg className="docs-constellation__art" viewBox="0 0 1120 560" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="docsPathGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="var(--ifm-color-primary)" />
+              <stop offset="52%" stopColor="var(--feature-accent-1)" />
+              <stop offset="100%" stopColor="var(--system-accent-axvisor)" />
+            </linearGradient>
+            <radialGradient id="docsNodeGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="var(--feature-accent-1)" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="var(--feature-accent-1)" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          <path className="docs-constellation__path docs-constellation__path--wide" d="M84 306 C220 252 320 254 430 304 S620 354 744 304 S902 250 1036 298" />
+          <path className="docs-constellation__path docs-constellation__path--soft" d="M112 330 C252 366 344 226 496 270 S690 358 846 292 S990 238 1050 262" />
+          <g className="docs-constellation__glows">
+            <circle cx="168" cy="336" r="118" fill="url(#docsNodeGlow)" />
+            <circle cx="410" cy="166" r="104" fill="url(#docsNodeGlow)" />
+            <circle cx="684" cy="342" r="118" fill="url(#docsNodeGlow)" />
+            <circle cx="938" cy="206" r="108" fill="url(#docsNodeGlow)" />
+          </g>
+        </svg>
         {docs.map((group, i) => (
-          <div className={`docs-card ${staggerClass(i)}`} key={group.title}>
-            <h3>{group.title}</h3>
-            <p>{group.desc}</p>
+          <article className={`docs-node docs-node--${i + 1} ${staggerClass(i)}`} key={group.title}>
+            <div className="docs-node__visual" aria-hidden="true">
+              <span className="docs-node__ring" />
+              <span className="docs-node__number">0{i + 1}</span>
+            </div>
+            <div className="docs-node__copy">
+              <h3>{group.title}</h3>
+              <p>{group.desc}</p>
+            </div>
             <div className="docs-links">
               {group.links.map((link) => (<Link key={link.label} to={link.to}>{link.label}</Link>))}
             </div>
-          </div>
+          </article>
         ))}
       </div>
     </SectionShell>
@@ -545,21 +582,19 @@ function QualitySection() {
       title="三层验证：组件 → 系统 → 平台，粒度逐层放大"
       description="组件级 cargo test 快速反馈，系统级 QEMU 运行验证功能正确性，平台级板卡回归确认硬件适配完整性。"
     >
-      <div className="quality-pyramid">
+      <div className="quality-flow" aria-label="Verification coverage grows from component to system to platform">
         {lanes.map((lane, i) => (
-          <div className={`quality-card ${staggerClass(i)}`} key={lane.title} style={{ '--quality-level': i }}>
-            <div className="quality-card__head">
+          <article className={`quality-stage quality-stage--${i + 1} ${staggerClass(i)}`} key={lane.title} style={{ '--quality-level': i }}>
+            <div className="quality-step__rail">
               <span className="quality-level">0{i + 1}</span>
-              <h3>{lane.title}</h3>
-            </div>
-            <div className="quality-card__status">
               <span className="quality-status">{i === 0 ? 'Local' : i === 1 ? 'System' : 'Scenario'}</span>
             </div>
-            <div className="quality-card__content">
+            <div className="quality-step__body">
+              <h3>{lane.title}</h3>
               <p>{lane.desc}</p>
               <ul>{lane.items.map((item) => (<li key={item}>{item}</li>))}</ul>
             </div>
-          </div>
+          </article>
         ))}
       </div>
     </SectionShell>
