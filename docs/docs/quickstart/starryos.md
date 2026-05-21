@@ -86,6 +86,33 @@ cargo xtask starry qemu --target loongarch64-unknown-none-softfloat
 > `starry rootfs` 当前使用 `--arch`，不是 `--target`。  
 > `starry qemu` 的 `--target` 可接受完整 target triple，也可接受简写架构名。
 
+### 1.5 SG2002 / LicheeRV Nano
+
+SG2002 当前走 U-Boot 串口启动路径，适合在已经烧录并能正常进入 Linux 的 LicheeRV Nano 上验证 StarryOS。StarryOS 直接使用板上的 Linux 原生 ext4 根文件系统，默认根分区为 `root=/dev/mmcblk0p2`，不需要再单独制作 Starry rootfs 分区。
+
+本地开发板启动使用 `quick-start`。默认串口配置来自 `os/StarryOS/configs/board/sg2002-riscv64-uboot.toml`，默认串口是 `/dev/ttyUSB0`，波特率为 `115200`：
+
+```bash
+# 只构建 SG2002 StarryOS
+cargo xtask starry quick-start sg2002-riscv64 build
+
+# 构建并通过本地串口上传、启动
+cargo xtask starry quick-start sg2002-riscv64 run
+
+# 如需指定串口
+cargo xtask starry quick-start sg2002-riscv64 run --serial /dev/ttyUSB1
+```
+
+这条路径会构建 `riscv64gc-unknown-none-elf` 目标，并由 ostool 生成 FIT image，通过 U-Boot 的 `loady` 串口传输到 `fit_load_addr = 0x82200000`，再执行 `bootm 0x82200000`。内核入口地址为 `kernel_load_addr = 0x80200000`。
+
+远端 CI / 板卡服务器启动使用 board test 入口：
+
+```bash
+cargo xtask starry test board --board sg2002-riscv64 --server <ip> --port <port>
+```
+
+这里的 `--board sg2002-riscv64` 用于选择 `test-suit/starryos` 下的 SG2002 用例；实际向 ostool-server 申请的物理板卡类型写在用例配置中，当前为 `LicheeRV-Nano-SG2002`。
+
 ## 2. 测试入口
 
 StarryOS 除了单次启动外，更常见的验证方式是直接进入测试套件。这里的命令会读取 `test-suit/starryos` 下的用例配置，并按分组运行。
@@ -111,6 +138,7 @@ cargo xtask starry test qemu --target loongarch64-unknown-none-softfloat
 
 ```bash
 cargo xtask starry test board --board orangepi-5-plus --server <ip> --port <port>
+cargo xtask starry test board --board sg2002-riscv64 --server <ip> --port <port>
 ```
 
 详细说明见：[StarryOS 测试套件设计](/docs/build/test/starry)
