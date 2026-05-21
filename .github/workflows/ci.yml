@@ -278,29 +278,12 @@ jobs:
               git_cmd() {
                 git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
               }
-              ensure_host_clippy_deps() {
-                if pkg-config --exists libavutil; then
-                  return 0
-                fi
-
-                apt-get update
-                apt-get install -y --no-install-recommends \
-                  libavcodec-dev \
-                  libavdevice-dev \
-                  libavfilter-dev \
-                  libavformat-dev \
-                  libavutil-dev \
-                  libswresample-dev \
-                  libswscale-dev
-                rm -rf /var/lib/apt/lists/*
-              }
               ensure_since_ref() {
                 ref="$1"
                 git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
                 git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
                 git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
               }
-              ensure_host_clippy_deps
 
               if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
                 cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
@@ -359,7 +342,7 @@ jobs:
             main_pr_only: false
           - name: Test starry riscv64 qemu
             use_container: false
-            runs_on: '["self-hosted","linux"]'
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask starry test qemu --arch riscv64
             cache_key: ""
             container_image: ""
@@ -368,7 +351,7 @@ jobs:
             main_pr_only: false
           - name: Test starry aarch64 qemu
             use_container: false
-            runs_on: '["self-hosted","linux"]'
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask starry test qemu --arch aarch64
             cache_key: ""
             container_image: ""
@@ -377,7 +360,7 @@ jobs:
             main_pr_only: false
           - name: Test starry loongarch64 qemu
             use_container: false
-            runs_on: '["self-hosted","linux"]'
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask starry test qemu --arch loongarch64
             cache_key: ""
             container_image: ""
@@ -386,7 +369,7 @@ jobs:
             main_pr_only: false
           - name: Test starry x86_64 qemu
             use_container: false
-            runs_on: '["self-hosted","linux"]'
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask starry test qemu --arch x86_64
             cache_key: ""
             container_image: ""
@@ -395,7 +378,7 @@ jobs:
             main_pr_only: false
           - name: Test arceos x86_64 qemu
             use_container: false
-            runs_on: '["self-hosted","linux"]'
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask arceos test qemu --arch x86_64
             cache_key: ""
             container_image: ""
@@ -404,7 +387,7 @@ jobs:
             main_pr_only: false
           - name: Test arceos riscv64 qemu
             use_container: false
-            runs_on: '["self-hosted","linux"]'
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask arceos test qemu --arch riscv64
             cache_key: ""
             container_image: ""
@@ -413,7 +396,7 @@ jobs:
             main_pr_only: false
           - name: Test arceos aarch64 qemu
             use_container: false
-            runs_on: '["self-hosted","linux"]'
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask arceos test qemu --arch aarch64
             cache_key: ""
             container_image: ""
@@ -422,7 +405,7 @@ jobs:
             main_pr_only: false
           - name: Test arceos loongarch64 qemu
             use_container: false
-            runs_on: '["self-hosted","linux"]'
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask arceos test qemu --arch loongarch64
             cache_key: ""
             container_image: ""
