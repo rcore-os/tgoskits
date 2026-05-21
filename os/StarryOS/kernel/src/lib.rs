@@ -23,8 +23,8 @@ mod ebpf;
 mod file;
 mod kprobe;
 mod mm;
-#[cfg(feature = "ebpf")]
 mod perf_event;
+mod kmod_loader;
 mod pseudofs;
 mod stop_machine;
 mod syscall;
