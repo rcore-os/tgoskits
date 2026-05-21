@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-net-ng-v0.6.0...ax-net-ng-v0.6.1) - 2026-05-21
+
+### Other
+
+- updated the following local packages: axfs-ng-vfs, ax-hal, ax-fs-ng, ax-driver, ax-task, ax-sync
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-net-ng-v0.5.13...ax-net-ng-v0.6.0) - 2026-05-19
 
 ### Fixed

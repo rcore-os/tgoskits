@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.7...axvisor-v0.5.8) - 2026-05-21
+
+### Added
+
+- *(drivers)* add SD/MMC platform driver support ([#826](https://github.com/rcore-os/tgoskits/pull/826))
+
+### Fixed
+
+- *(repo)* improve rsext4 recovery mount and Axvisor board CI ([#830](https://github.com/rcore-os/tgoskits/pull/830))
+
+### Other
+
+- Remove RISC-V QEMU Virt platform files and update references ([#833](https://github.com/rcore-os/tgoskits/pull/833))
+
 ## [0.5.7](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.6...axvisor-v0.5.7) - 2026-05-19
 
 ### Added

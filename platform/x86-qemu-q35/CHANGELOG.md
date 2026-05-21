@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axplat-x86-qemu-q35-v0.4.7...axplat-x86-qemu-q35-v0.4.8) - 2026-05-21
+
+### Other
+
+- updated the following local packages: ax-cpu
+
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/axplat-x86-qemu-q35-v0.4.6...axplat-x86-qemu-q35-v0.4.7) - 2026-05-19
 
 ### Other

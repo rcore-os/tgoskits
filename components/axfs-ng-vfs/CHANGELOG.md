@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.1...axfs-ng-vfs-v0.4.2) - 2026-05-21
+
+### Fixed
+
+- *(axfs-ng-vfs)* allow file rename into child dirs and fix ext4 dentry delete ([#807](https://github.com/rcore-os/tgoskits/pull/807))
+
 ## [0.4.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.0...axfs-ng-vfs-v0.4.1) - 2026-05-19
 
 ### Other

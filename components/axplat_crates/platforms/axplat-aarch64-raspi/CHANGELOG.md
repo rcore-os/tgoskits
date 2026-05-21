@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11](https://github.com/rcore-os/tgoskits/compare/ax-plat-aarch64-raspi-v0.5.10...ax-plat-aarch64-raspi-v0.5.11) - 2026-05-21
+
+### Added
+
+- *(axplat-aarch64)* GICv3 + CNTV backend for Apple HVF native execution ([#511](https://github.com/rcore-os/tgoskits/pull/511))
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/ax-plat-aarch64-raspi-v0.5.9...ax-plat-aarch64-raspi-v0.5.10) - 2026-05-19
 
 ### Other

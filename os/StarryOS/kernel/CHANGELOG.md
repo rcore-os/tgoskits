@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.11...starry-kernel-v0.5.12) - 2026-05-21
+
+### Added
+
+- add sg2002 USB UVC camera with ESP-compatible ioctl ([#791](https://github.com/rcore-os/tgoskits/pull/791))
+- *(starry)* add utimensat test case and fix kernel bugs ([#763](https://github.com/rcore-os/tgoskits/pull/763))
+- *(drm)* per-buffer memory allocation for Weston bringup ([#667](https://github.com/rcore-os/tgoskits/pull/667))
+- *(starry)* support multi-threaded execve ([#273](https://github.com/rcore-os/tgoskits/pull/273))
+
+### Fixed
+
+- *(starry-kernel)* open/openat 15 类局部修复 ([#719](https://github.com/rcore-os/tgoskits/pull/719))
+- *(starry-kernel)* handle tty cursor position report ([#776](https://github.com/rcore-os/tgoskits/pull/776))
+- *(starry)* sys_sendfile
+- *(starry-kernel)* PR_SET/GET_DUMPABLE + setuid 自动清 ([#718](https://github.com/rcore-os/tgoskits/pull/718))
+
+### Other
+
+- *(starry)* add signalfd4 test case, fix ssi_pid/ssi_uid ([#683](https://github.com/rcore-os/tgoskits/pull/683))
+
 ## [0.5.11](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.10...starry-kernel-v0.5.11) - 2026-05-19
 
 ### Added

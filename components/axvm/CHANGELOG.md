@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.9](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.8...axvm-v0.5.9) - 2026-05-21
+
+### Fixed
+
+- *(repo)* improve rsext4 recovery mount and Axvisor board CI ([#830](https://github.com/rcore-os/tgoskits/pull/830))
+
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.7...axvm-v0.5.8) - 2026-05-19
 
 ### Other

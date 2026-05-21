@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.7...axbuild-v0.4.8) - 2026-05-21
+
+### Added
+
+- *(starry)* add PicoClaw gateway smoke ([#775](https://github.com/rcore-os/tgoskits/pull/775))
+- *(axplat-aarch64)* GICv3 + CNTV backend for Apple HVF native execution ([#511](https://github.com/rcore-os/tgoskits/pull/511))
+- *(axbuild)* auto symbolize backtrace after ArceOS rust QEMU tests ([#749](https://github.com/rcore-os/tgoskits/pull/749))
+
+### Fixed
+
+- *(repo)* improve rsext4 recovery mount and Axvisor board CI ([#830](https://github.com/rcore-os/tgoskits/pull/830))
+
+### Other
+
+- Remove RISC-V QEMU Virt platform files and update references ([#833](https://github.com/rcore-os/tgoskits/pull/833))
+- stream host backtrace symbolize when raw block ends ([#793](https://github.com/rcore-os/tgoskits/pull/793))
+
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.6...axbuild-v0.4.7) - 2026-05-19
 
 ### Added

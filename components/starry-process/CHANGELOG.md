@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.6...starry-process-v0.4.7) - 2026-05-21
+
+### Added
+
+- *(starry)* support multi-threaded execve ([#273](https://github.com/rcore-os/tgoskits/pull/273))
+
 ## [0.4.6](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.5...starry-process-v0.4.6) - 2026-05-15
 
 ### Other
