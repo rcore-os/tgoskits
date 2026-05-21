@@ -62,7 +62,8 @@
   --blur-panel: blur(18px);
   --open-line: rgba(95, 107, 255, 0.16);
   --open-line-strong: rgba(95, 107, 255, 0.28);
-  --open-surface: rgba(255, 255, 255, 0.3);
+  --open-surface: rgba(255, 255, 255, 0.78);
+  --open-surface-soft: rgba(245, 248, 255, 0.68);
   --open-box-radius: 16px;
 }
 
@@ -103,7 +104,8 @@ html[data-theme='dark'] {
   --card-shadow-hover: 0 18px 48px rgba(0, 0, 0, 0.28);
   --open-line: rgba(127, 224, 255, 0.16);
   --open-line-strong: rgba(127, 224, 255, 0.3);
-  --open-surface: rgba(255, 255, 255, 0.045);
+  --open-surface: rgba(18, 25, 48, 0.82);
+  --open-surface-soft: rgba(13, 20, 42, 0.72);
   --open-box-radius: 16px;
 }
 
@@ -963,6 +965,7 @@ html { scroll-behavior: smooth; }
   background: color-mix(in srgb, var(--home-panel-strong) 32%, transparent);
   transition: transform var(--t-ease), border-color var(--t-ease), box-shadow var(--t-ease);
   overflow: hidden;
+  border-bottom-color: var(--open-line);
 }
 .quality-stage--1 {
   --quality-tone: var(--system-accent-arceos);
@@ -1170,6 +1173,14 @@ html { scroll-behavior: smooth; }
 @keyframes slideOut    { 0%, 100% { transform: translateX(0); opacity: 0.3; } 50% { transform: translateX(-12px); opacity: 0.65; } }
 @keyframes dotPulse    { 0%, 100% { opacity: 0.4; transform: scale(1); } 50% { opacity: 1; transform: scale(1.3); } }
 @keyframes shine       { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@keyframes sectionBackgroundDrift {
+  0% { background-position: 0% 0%, 100% 20%, 40% 100%; }
+  100% { background-position: 18% 10%, 82% 34%, 58% 86%; }
+}
+@keyframes sectionGridDrift {
+  from { background-position: 0 0, 0 0; }
+  to { background-position: 84px 84px, 84px 84px; }
+}
 
 /* Responsive */
 @media (min-width: 1600px) {
@@ -1282,6 +1293,7 @@ html { scroll-behavior: smooth; }
 .section-shell--platforms,
 .section-shell--drivers,
 .section-shell--quality,
+.section-shell--docs,
 .section-shell--workflow {
   position: relative;
   overflow: hidden;
@@ -1294,16 +1306,41 @@ html { scroll-behavior: smooth; }
 .section-shell--platforms::before,
 .section-shell--drivers::before,
 .section-shell--quality::before,
+.section-shell--docs::before,
 .section-shell--workflow::before {
   content: '';
   position: absolute;
-  inset: 14% 8%;
+  inset: 0;
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 22% 28%, color-mix(in srgb, var(--ifm-color-primary) 10%, transparent), transparent 24%),
-    radial-gradient(circle at 78% 66%, rgba(20, 184, 166, 0.08), transparent 24%);
-  filter: blur(8px);
+    radial-gradient(circle at 18% 24%, color-mix(in srgb, var(--ifm-color-primary) 9%, transparent), transparent 28%),
+    radial-gradient(circle at 76% 36%, rgba(20, 184, 166, 0.075), transparent 24%),
+    radial-gradient(circle at 48% 82%, rgba(139, 92, 246, 0.06), transparent 26%);
+  background-size: 120% 120%, 115% 115%, 130% 130%;
+  animation: sectionBackgroundDrift 18s ease-in-out infinite alternate;
+}
+
+.section-shell--capabilities::after,
+.section-shell--architecture::after,
+.section-shell--component-workspace::after,
+.section-shell--systems::after,
+.section-shell--platforms::after,
+.section-shell--drivers::after,
+.section-shell--quality::after,
+.section-shell--docs::after,
+.section-shell--workflow::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.32;
+  background-image:
+    linear-gradient(90deg, color-mix(in srgb, var(--ifm-color-primary) 8%, transparent) 1px, transparent 1px),
+    linear-gradient(180deg, color-mix(in srgb, var(--ifm-color-primary) 6%, transparent) 1px, transparent 1px);
+  background-size: 84px 84px;
+  animation: sectionGridDrift 28s linear infinite;
 }
 
 .section-shell__inner {
@@ -1339,6 +1376,31 @@ html { scroll-behavior: smooth; }
   backdrop-filter: none;
 }
 
+.stat,
+.hero-quicklink,
+.docs-links a,
+.driver-device-grid,
+.driver-subsystem-panel,
+.driver-device-card,
+.architecture-flow,
+.architecture-rail,
+.architecture-note,
+.capability-spotlight,
+.capability-lane,
+.quality-stage,
+.quality-step,
+.platform-lanes,
+.platform-lane,
+.platform-chip,
+.systems-diagram__card,
+.systems-diagram__foundation,
+.workspace-diagram__repo,
+.workspace-diagram__hub,
+.workspace-diagram__command,
+.workspace-diagram__tools code {
+  backdrop-filter: none;
+}
+
 .capability-spotlight,
 .architecture-flow,
 .workspace-diagram__hub,
@@ -1349,6 +1411,14 @@ html { scroll-behavior: smooth; }
   background:
     radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--ifm-color-primary) 8%, transparent), transparent 42%),
     radial-gradient(circle at 82% 72%, rgba(20, 184, 166, 0.06), transparent 44%);
+}
+
+.capability-spotlight,
+.capability-lane,
+.quality-stage {
+  background:
+    linear-gradient(135deg, var(--open-surface), var(--open-surface-soft)),
+    color-mix(in srgb, var(--home-panel-strong) 42%, transparent);
 }
 
 .capability-spotlight::before {
@@ -1490,6 +1560,7 @@ html { scroll-behavior: smooth; }
 .systems-diagram__card,
 .systems-diagram__foundation,
 .quality-step,
+.quality-stage,
 .platform-lanes,
 .platform-lane,
 .platform-chip,
@@ -1501,8 +1572,8 @@ html { scroll-behavior: smooth; }
   border: 1px solid var(--open-line);
   border-radius: var(--open-box-radius);
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--open-surface) 86%, transparent), transparent),
-    color-mix(in srgb, var(--home-panel-strong) 18%, transparent);
+    linear-gradient(135deg, var(--open-surface), var(--open-surface-soft)),
+    color-mix(in srgb, var(--home-panel-strong) 42%, transparent);
 }
 
 .architecture-flow,
@@ -1558,6 +1629,10 @@ html { scroll-behavior: smooth; }
 
 .quality-stack .quality-step__body {
   border-color: color-mix(in srgb, var(--quality-tone, var(--feature-accent-1)) 18%, transparent);
+}
+
+.quality-flow .quality-stage {
+  border-bottom-color: var(--open-line);
 }
 
 .architecture-rail--left { border-left-color: color-mix(in srgb, var(--arch-accent-main) 45%, transparent); }
