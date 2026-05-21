@@ -120,10 +120,12 @@ impl GenericPTE for LoongArchPTE {
     }
 
     fn new_table(paddr: HostPhysAddr) -> Self {
-        Self((paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK)
-            | PTEFlags::V.bits()
-            | PTEFlags::P.bits()
-            | PTEFlags::MATL.bits())
+        Self(
+            (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK)
+                | PTEFlags::V.bits()
+                | PTEFlags::P.bits()
+                | PTEFlags::MATL.bits(),
+        )
     }
 
     fn paddr(&self) -> HostPhysAddr {
