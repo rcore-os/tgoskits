@@ -229,6 +229,77 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
+    /// Verifies POSIX rename-over-existing-file (sed -i / Redis AOF pattern).
+    #[test]
+    fn test_file_rename_replace_existing() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+
+        mkdir(&mut jbd2_dev, &mut fs, "/tmp").expect("mkdir failed");
+
+        let original = b"OLD CONTENT\n";
+        let updated = b"NEW CONTENT\n";
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/tmp/original.txt",
+            Some(original),
+            None,
+        )
+        .expect("mkfile original failed");
+        mkfile(&mut jbd2_dev, &mut fs, "/tmp/temp.txt", Some(updated), None)
+            .expect("mkfile temp failed");
+
+        rename(&mut jbd2_dev, &mut fs, "/tmp/temp.txt", "/tmp/original.txt")
+            .expect("rename replace failed");
+
+        let data =
+            read_file(&mut jbd2_dev, &mut fs, "/tmp/original.txt").expect("read_file failed");
+        assert_eq!(data, updated.to_vec());
+
+        let temp_err = read_file(&mut jbd2_dev, &mut fs, "/tmp/temp.txt").expect_err("temp gone");
+        assert_eq!(temp_err.code, Errno::ENOENT);
+
+        umount(fs, &mut jbd2_dev).expect("umount failed");
+    }
+
+    /// Redis 8 AOF: `rename(temp in parent, file in appendonlydir/)` on first start.
+    #[test]
+    fn test_file_rename_cross_directory() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+
+        mkdir(&mut jbd2_dev, &mut fs, "/aofdir").expect("mkdir failed");
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/temp-rewriteaof.aof",
+            Some(b"RDB-BASE-DATA\n"),
+            None,
+        )
+        .expect("mkfile temp failed");
+
+        rename(
+            &mut jbd2_dev,
+            &mut fs,
+            "/temp-rewriteaof.aof",
+            "/aofdir/appendonly.aof.1.base.rdb",
+        )
+        .expect("cross-dir rename failed");
+
+        let data = read_file(&mut jbd2_dev, &mut fs, "/aofdir/appendonly.aof.1.base.rdb")
+            .expect("read dest failed");
+        assert_eq!(data, b"RDB-BASE-DATA\n");
+
+        umount(fs, &mut jbd2_dev).expect("umount failed");
+    }
+
     /// Verifies cross-directory moves by checking that the source path disappears
     /// and the destination path keeps the original payload.
     #[test]
