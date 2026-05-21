@@ -31,6 +31,9 @@ use crate::{
     task::{AsThread, get_process_group},
 };
 
+const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
+const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
+
 /// Tty device
 pub struct Tty<R, W> {
     this: Weak<Self>,
@@ -90,6 +93,11 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         } else {
             let term = self.terminal.load_termios();
             write_output_bytes(&self.writer, term.as_ref(), buf);
+            if contains_bytes(buf, ANSI_CURSOR_POSITION_REQUEST) {
+                self.ldisc
+                    .lock()
+                    .inject_input(ANSI_CURSOR_POSITION_RESPONSE);
+            }
         }
         Ok(buf.len())
     }
@@ -189,6 +197,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
