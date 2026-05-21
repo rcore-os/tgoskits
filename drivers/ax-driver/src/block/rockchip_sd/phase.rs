@@ -108,6 +108,7 @@ fn read_block_sync(
         match sd.poll_data_request(&mut request)? {
             DataCommandPoll::Pending => core::hint::spin_loop(),
             DataCommandPoll::Complete(_) => return Ok(()),
+            _ => core::hint::spin_loop(),
         }
     }
 }

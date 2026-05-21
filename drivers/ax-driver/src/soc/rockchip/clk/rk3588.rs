@@ -13,16 +13,17 @@
 // limitations under the License.
 
 use log::info;
-use rdrive::{DriverGeneric, KError, PlatformDevice, probe::OnProbeError, register::FdtInfo};
-use rockchip_soc::{ClkId, Cru, CruOp, SocType};
+use rdrive::{PlatformDevice, probe::OnProbeError, register::FdtInfo};
+use rockchip_soc::{Cru, SocType};
 
+use super::ClkDrv;
 use crate::mmio::iomap;
 
 const RK3588_CRU_GRF_BASE: usize = 0xfd5b_0000;
 const RK3588_CRU_GRF_SIZE: usize = 0x1000;
 
 crate::register_driver!(
-    name: "Rockchip CRU",
+    name: "Rockchip RK3588 CRU",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,
     probe_kinds: &[
@@ -68,116 +69,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     let grf_base = iomap(RK3588_CRU_GRF_BASE, RK3588_CRU_GRF_SIZE)?;
 
     let cru = Cru::new(SocType::Rk3588, mmio_base, grf_base);
-    let clk = rdif_clk::Clk::new(ClkDrv::new(cru));
-
-    plat_dev.register(clk);
+    plat_dev.register(rdif_clk::Clk::new(ClkDrv::new("rk3588-cru", cru)));
     info!("RK3588 CRU clock registered successfully");
     Ok(())
-}
-
-pub struct ClkDrv {
-    inner: Cru,
-}
-
-impl ClkDrv {
-    pub const fn new(cru: Cru) -> Self {
-        Self { inner: cru }
-    }
-
-    fn enable_clock(&mut self, id: u32) -> Result<(), OnProbeError> {
-        let id = ClkId::from(id);
-        if self.inner.clk_is_enabled(id).unwrap_or(false) {
-            return Ok(());
-        }
-
-        self.inner.clk_enable(id).map_err(|err| {
-            OnProbeError::other(alloc::format!("failed to enable clock {id}: {err}"))
-        })
-    }
-
-    fn set_clock_rate(&mut self, id: u32, rate: u64) -> Result<(), OnProbeError> {
-        self.inner
-            .clk_set_rate(ClkId::from(id), rate)
-            .map_err(|err| {
-                OnProbeError::other(alloc::format!("failed to set clock {id}: {err}"))
-            })?;
-        Ok(())
-    }
-
-    fn reset_assert(&mut self, id: u64) {
-        self.inner.reset_assert(id.into());
-    }
-
-    fn reset_deassert(&mut self, id: u64) {
-        self.inner.reset_deassert(id.into());
-    }
-}
-
-unsafe impl Send for ClkDrv {}
-
-impl DriverGeneric for ClkDrv {
-    fn name(&self) -> &str {
-        "rk3588-cru"
-    }
-}
-
-impl rdif_clk::Interface for ClkDrv {
-    fn perper_enable(&mut self) {}
-
-    fn get_rate(&self, id: rdif_clk::ClockId) -> Result<u64, KError> {
-        self.inner
-            .clk_get_rate(clock_id(id))
-            .map_err(|_| KError::InvalidArg { name: "clock_id" })
-    }
-
-    fn set_rate(&mut self, id: rdif_clk::ClockId, rate: u64) -> Result<(), KError> {
-        self.inner
-            .clk_set_rate(clock_id(id), rate)
-            .map_err(|_| KError::InvalidArg { name: "clock_id" })?;
-        Ok(())
-    }
-}
-
-fn clock_id(id: rdif_clk::ClockId) -> ClkId {
-    let id: usize = id.into();
-    ClkId::from(id)
-}
-
-fn with_clk_drv<T>(
-    f: impl FnOnce(&mut ClkDrv) -> Result<T, OnProbeError>,
-) -> Result<T, OnProbeError> {
-    let clk = rdrive::get_one::<rdif_clk::Clk>()
-        .ok_or_else(|| OnProbeError::other("RK3588 CRU clock device not registered"))?;
-    let mut clk = clk.lock().map_err(|err| {
-        OnProbeError::other(alloc::format!(
-            "failed to lock RK3588 CRU clock device: {err}"
-        ))
-    })?;
-    let drv = clk
-        .typed_mut::<ClkDrv>()
-        .ok_or_else(|| OnProbeError::other("RK3588 CRU clock device type mismatch"))?;
-
-    f(drv)
-}
-
-pub fn rk3588_enable_clock(id: u32) -> Result<(), OnProbeError> {
-    with_clk_drv(|drv| drv.enable_clock(id))
-}
-
-pub fn rk3588_set_clock_rate(id: u32, rate: u64) -> Result<(), OnProbeError> {
-    with_clk_drv(|drv| drv.set_clock_rate(id, rate))
-}
-
-pub fn rk3588_reset_assert(id: u64) -> Result<(), OnProbeError> {
-    with_clk_drv(|drv| {
-        drv.reset_assert(id);
-        Ok(())
-    })
-}
-
-pub fn rk3588_reset_deassert(id: u64) -> Result<(), OnProbeError> {
-    with_clk_drv(|drv| {
-        drv.reset_deassert(id);
-        Ok(())
-    })
 }

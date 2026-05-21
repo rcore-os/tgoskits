@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #[cfg(feature = "rockchip-soc")]
-#[path = "clk/rk3588.rs"]
 mod clk;
 
 #[cfg(feature = "rockchip-pm")]

@@ -6,8 +6,12 @@ pub mod ahci;
 pub mod bcm2835;
 #[cfg(feature = "cvsd")]
 pub mod cvsd;
+#[cfg(feature = "phytium-mci")]
+pub mod phytium_mci;
 #[cfg(feature = "ramdisk")]
 pub mod ramdisk;
+#[cfg(feature = "rockchip-sdhci")]
+mod rockchip;
 #[cfg(feature = "rockchip-sdhci")]
 pub mod rockchip_mmc;
 #[cfg(feature = "rockchip-dwmmc")]

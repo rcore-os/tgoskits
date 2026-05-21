@@ -35,6 +35,53 @@ use crate::{
 
 const BLOCK_SIZE: usize = 512;
 const SDHCI_POWER_330: u8 = 0x0e;
+
+const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
+const DWCMSHC_AREA1_MASK: u16 = 0x0fff;
+const DWCMSHC_HOST_CTRL3: usize = 0x08;
+const DWCMSHC_EMMC_CONTROL: usize = 0x2c;
+const DWCMSHC_CARD_IS_EMMC: u16 = 1 << 0;
+const DWCMSHC_EMMC_DLL_CTRL: usize = 0x800;
+const DWCMSHC_EMMC_DLL_RXCLK: usize = 0x804;
+const DWCMSHC_EMMC_DLL_TXCLK: usize = 0x808;
+const DWCMSHC_EMMC_DLL_STRBIN: usize = 0x80c;
+const DWCMSHC_EMMC_DLL_CMDOUT: usize = 0x810;
+const DWCMSHC_EMMC_MISC_CON: usize = 0x81c;
+const DWCMSHC_EMMC_DLL_BYPASS: u32 = 1 << 24;
+const DWCMSHC_EMMC_DLL_START: u32 = 1 << 0;
+const DWCMSHC_EMMC_DLL_DLYENA: u32 = 1 << 27;
+const DLL_RXCLK_ORI_GATE: u32 = 1 << 31;
+const DLL_STRBIN_DELAY_NUM_SEL: u32 = 1 << 26;
+const DLL_STRBIN_DELAY_NUM_DEFAULT: u32 = 0x16;
+const DLL_STRBIN_DELAY_NUM_OFFSET: u32 = 16;
+const MISC_INTCLK_EN: u32 = 1 << 1;
+
+const DWC_MSHC_PTR_PHY_R: usize = 0x300;
+const PHY_CNFG_R: usize = DWC_MSHC_PTR_PHY_R;
+const PHY_CMDPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x04;
+const PHY_DATAPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x06;
+const PHY_CLKPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x08;
+const PHY_STBPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x0a;
+const PHY_RSTNPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x0c;
+const PHY_SDCLKDL_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x1d;
+const PHY_SDCLKDL_DC_R: usize = DWC_MSHC_PTR_PHY_R + 0x1e;
+const PHY_SMPLDL_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x20;
+const PHY_DLL_CTRL_R: usize = DWC_MSHC_PTR_PHY_R + 0x24;
+const PHY_DLL_CNFG2_R: usize = DWC_MSHC_PTR_PHY_R + 0x26;
+const PHY_CNFG_RSTN_DEASSERT: u32 = 1 << 0;
+const PHY_CNFG_PAD_SP: u32 = 0x0c;
+const PHY_CNFG_PAD_SN: u32 = 0x0c;
+const PHY_PAD_RXSEL_3V3: u16 = 0x2;
+const PHY_PAD_WEAKPULL_PULLUP: u16 = 0x1;
+const PHY_PAD_WEAKPULL_PULLDOWN: u16 = 0x2;
+const PHY_PAD_TXSLEW_CTRL_P: u16 = 0x3;
+const PHY_PAD_TXSLEW_CTRL_N: u16 = 0x3;
+const PHY_SDCLKDL_CNFG_UPDATE: u8 = 1 << 4;
+const PHY_SDCLKDL_DC_DEFAULT: u8 = 0x32;
+const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
+const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
+const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
+
 static SDHCI_CLOCK: RockchipSdhciClock = RockchipSdhciClock;
 
 type RockchipSdhci = SdioSdmmc<Sdhci>;
@@ -48,12 +95,12 @@ impl HostClock for RockchipSdhciClock {
 }
 
 crate::register_driver!(
-    name: "Rockchip sdhci",
+    name: "Rockchip RK3568 sdhci",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["rockchip,rk3588-dwcmshc"],
+            compatibles: &["rockchip,rk3568-dwcmshc"],
             on_probe: probe
         }
     ],
@@ -72,7 +119,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let mmio_size = base_reg.size.unwrap_or(0x1000);
     info!(
-        "rockchip-sdhci probe: node={}, addr={:#x}, size={:#x}",
+        "rockchip-rk3568-sdhci probe: node={}, addr={:#x}, size={:#x}",
         info.node.name(),
         base_reg.address as usize,
         mmio_size
@@ -83,19 +130,20 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
     if CLK_DEV.is_completed() {
-        info!("rockchip-sdhci: using external CRU clock");
+        info!("rockchip-rk3568-sdhci: using external CRU clock");
         host.set_external_clock(&SDHCI_CLOCK);
     } else {
-        warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
+        warn!("rockchip-rk3568-sdhci: no core clock found; using SDHCI internal clock divider");
     }
-    info!("rockchip-sdhci: reset controller");
+    info!("rockchip-rk3568-sdhci: reset controller");
     host.reset_all()
         .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
+    init_dwcmshc_after_reset(mmio_base);
     host.set_power(SDHCI_POWER_330);
     host.enable_interrupts();
     host.set_dma(axklib::dma::device(u32::MAX as u64));
 
-    info!("rockchip-sdhci: initialize card");
+    info!("rockchip-rk3568-sdhci: initialize card");
     let mut card = SdioSdmmc::new(host);
     let card_info = poll_card_init_mmc(&mut card)
         .map_err(|e| card_init_error(base_reg.address, mmio_size, e))?;
@@ -120,7 +168,10 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         queue_created: false,
     };
     plat_dev.register_block_with_irq(dev, irq_num);
-    info!("rockchip-sdhci block device registered irq={:?}", irq_num);
+    info!(
+        "rockchip-rk3568-sdhci block device registered irq={:?}",
+        irq_num
+    );
     Ok(())
 }
 
@@ -143,6 +194,97 @@ fn poll_card_init_mmc(card: &mut RockchipSdhci) -> Result<CardInfo, Error> {
     }
 }
 
+fn init_dwcmshc_after_reset(base: NonNull<u8>) {
+    let area1 = vendor_area1(base);
+
+    // Match Linux rk35xx reset/set_clock setup for identification speed:
+    // keep the internal clock ungated, disable command-conflict checking,
+    // and put Rockchip's DLL path in bypass while the bus runs below 52 MHz.
+    write_u32(
+        base,
+        DWCMSHC_EMMC_MISC_CON,
+        read_u32(base, DWCMSHC_EMMC_MISC_CON) | MISC_INTCLK_EN,
+    );
+    write_u32(base, area1 + DWCMSHC_HOST_CTRL3, 0);
+    write_u16(
+        base,
+        area1 + DWCMSHC_EMMC_CONTROL,
+        read_u16(base, area1 + DWCMSHC_EMMC_CONTROL) | DWCMSHC_CARD_IS_EMMC,
+    );
+    write_u32(
+        base,
+        DWCMSHC_EMMC_DLL_CTRL,
+        DWCMSHC_EMMC_DLL_BYPASS | DWCMSHC_EMMC_DLL_START,
+    );
+    write_u32(base, DWCMSHC_EMMC_DLL_RXCLK, DLL_RXCLK_ORI_GATE);
+    write_u32(base, DWCMSHC_EMMC_DLL_TXCLK, 0);
+    write_u32(base, DWCMSHC_EMMC_DLL_CMDOUT, 0);
+    write_u32(
+        base,
+        DWCMSHC_EMMC_DLL_STRBIN,
+        DWCMSHC_EMMC_DLL_DLYENA
+            | DLL_STRBIN_DELAY_NUM_SEL
+            | (DLL_STRBIN_DELAY_NUM_DEFAULT << DLL_STRBIN_DELAY_NUM_OFFSET),
+    );
+    init_dwcmshc_phy_3v3(base);
+    info!(
+        "rockchip-rk3568-sdhci: dwcmshc vendor init area1={:#x}",
+        area1
+    );
+}
+
+fn init_dwcmshc_phy_3v3(base: NonNull<u8>) {
+    let phy_cfg = PHY_CNFG_RSTN_DEASSERT | (PHY_CNFG_PAD_SP << 16) | (PHY_CNFG_PAD_SN << 20);
+    write_u32(base, PHY_CNFG_R, phy_cfg);
+    write_u8(base, PHY_SDCLKDL_CNFG_R, PHY_SDCLKDL_CNFG_UPDATE);
+    write_u8(base, PHY_SDCLKDL_DC_R, PHY_SDCLKDL_DC_DEFAULT);
+    write_u8(base, PHY_DLL_CNFG2_R, PHY_DLL_CNFG2_JUMPSTEP);
+    write_u8(base, PHY_SDCLKDL_CNFG_R, 0);
+
+    let pad_pullup = PHY_PAD_RXSEL_3V3
+        | (PHY_PAD_WEAKPULL_PULLUP << 3)
+        | (PHY_PAD_TXSLEW_CTRL_P << 5)
+        | (PHY_PAD_TXSLEW_CTRL_N << 9);
+    write_u16(base, PHY_CMDPAD_CNFG_R, pad_pullup);
+    write_u16(base, PHY_DATAPAD_CNFG_R, pad_pullup);
+    write_u16(base, PHY_RSTNPAD_CNFG_R, pad_pullup);
+
+    let clk_pad = (PHY_PAD_TXSLEW_CTRL_P << 5) | (PHY_PAD_TXSLEW_CTRL_N << 9);
+    write_u16(base, PHY_CLKPAD_CNFG_R, clk_pad);
+
+    let strobe_pad = PHY_PAD_RXSEL_3V3
+        | (PHY_PAD_WEAKPULL_PULLDOWN << 3)
+        | (PHY_PAD_TXSLEW_CTRL_P << 5)
+        | (PHY_PAD_TXSLEW_CTRL_N << 9);
+    write_u16(base, PHY_STBPAD_CNFG_R, strobe_pad);
+    write_u8(base, PHY_SMPLDL_CNFG_R, PHY_SMPLDL_CNFG_BYPASS_EN);
+    write_u8(base, PHY_DLL_CTRL_R, PHY_DLL_CTRL_ENABLE);
+}
+
+fn vendor_area1(base: NonNull<u8>) -> usize {
+    (read_u16(base, DWCMSHC_P_VENDOR_AREA1) & DWCMSHC_AREA1_MASK) as usize
+}
+
+fn read_u32(base: NonNull<u8>, off: usize) -> u32 {
+    unsafe { core::ptr::read_volatile(base.as_ptr().add(off) as *const u32) }
+}
+
+fn write_u32(base: NonNull<u8>, off: usize, val: u32) {
+    unsafe { core::ptr::write_volatile(base.as_ptr().add(off) as *mut u32, val) }
+}
+
+fn read_u16(base: NonNull<u8>, off: usize) -> u16 {
+    unsafe { core::ptr::read_volatile(base.as_ptr().add(off) as *const u16) }
+}
+
+fn write_u16(base: NonNull<u8>, off: usize, val: u16) {
+    unsafe { core::ptr::write_volatile(base.as_ptr().add(off) as *mut u16, val) }
+}
+
+fn write_u8(base: NonNull<u8>, off: usize, val: u8) {
+    unsafe { core::ptr::write_volatile(base.as_ptr().add(off), val) }
+}
+
 fn init_error(address: u64, size: u64, err: Error) -> OnProbeError {
     OnProbeError::other(format!(
         "failed to initialize SDHCI device at [PA:{:?}, SZ:0x{:x}): {err:?}",
@@ -153,8 +295,8 @@ fn init_error(address: u64, size: u64, err: Error) -> OnProbeError {
 fn card_init_error(address: u64, size: u64, err: Error) -> OnProbeError {
     if is_absent_card_init_error(err) {
         warn!(
-            "rockchip-sdhci: no responsive card at [PA:{:?}, SZ:0x{:x}); skipping controller: \
-             {err:?}",
+            "rockchip-rk3568-sdhci: no responsive card at [PA:{:?}, SZ:0x{:x}); skipping \
+             controller: {err:?}",
             address, size
         );
         return OnProbeError::NotMatch;
@@ -215,7 +357,7 @@ fn set_sdhci_clock(target_hz: u32) -> Result<(), Error> {
         .set_rate(clk.id, target_hz as u64)
         .map_err(|_| clock_error())?;
     let rate = clk_dev.get_rate(clk.id).map_err(|_| clock_error())?;
-    info!("rockchip-sdhci: core clock set to {} Hz", rate);
+    info!("rockchip-rk3568-sdhci: core clock set to {} Hz", rate);
     Ok(())
 }
 
@@ -242,7 +384,7 @@ struct BlockQueue {
 
 impl DriverGeneric for BlockDevice {
     fn name(&self) -> &str {
-        "rockchip-sdhci"
+        "rockchip-rk3568-sdhci"
     }
 }
 
@@ -269,7 +411,10 @@ impl rd_block::Interface for BlockDevice {
         if let Some(raw) = &self.raw {
             let mut raw = raw.lock();
             if let Err(err) = SdioHost::enable_completion_irq(raw.host_mut()) {
-                warn!("rockchip-sdhci: enable completion IRQ failed: {:?}", err);
+                warn!(
+                    "rockchip-rk3568-sdhci: enable completion IRQ failed: {:?}",
+                    err
+                );
                 return;
             }
             self.irq_enabled = true;
@@ -280,7 +425,10 @@ impl rd_block::Interface for BlockDevice {
         if let Some(raw) = &self.raw {
             let mut raw = raw.lock();
             if let Err(err) = SdioHost::disable_completion_irq(raw.host_mut()) {
-                warn!("rockchip-sdhci: disable completion IRQ failed: {:?}", err);
+                warn!(
+                    "rockchip-rk3568-sdhci: disable completion IRQ failed: {:?}",
+                    err
+                );
             }
         }
         self.irq_enabled = false;
@@ -440,6 +588,10 @@ impl BlockQueue {
     }
 }
 
+fn rk3568_block_transfer_mode() -> BlockTransferMode {
+    BlockTransferMode::Fifo
+}
+
 fn submit_read_request(
     host: &mut Sdhci,
     start_block: u32,
@@ -456,8 +608,8 @@ fn submit_read_request(
         start_block,
         buffer,
         size,
-        Some(dma),
-        BlockTransferMode::Dma,
+        transfer_dma(rk3568_block_transfer_mode(), dma),
+        rk3568_block_transfer_mode(),
         slot,
     ) {
         Ok(request) => request,
@@ -494,8 +646,8 @@ fn submit_write_request(
         start_block,
         buffer,
         size,
-        Some(dma),
-        BlockTransferMode::Dma,
+        transfer_dma(rk3568_block_transfer_mode(), dma),
+        rk3568_block_transfer_mode(),
         slot,
     ) {
         Ok(request) => request,
@@ -514,6 +666,14 @@ fn submit_write_request(
     let id = request.id();
     *pending = Some(request);
     Ok(id)
+}
+
+fn transfer_dma(mode: BlockTransferMode, dma: &DeviceDma) -> Option<&DeviceDma> {
+    match mode {
+        BlockTransferMode::Dma => Some(dma),
+        BlockTransferMode::Fifo => None,
+        _ => None,
+    }
 }
 
 fn can_fallback_to_fifo(err: Error) -> bool {
@@ -552,4 +712,14 @@ static CLK_DEV: Once<ClkDev> = Once::new();
 struct ClkDev {
     inner: Device<rdif_clk::Clk>,
     id: ClockId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rk3568_block_io_uses_fifo_transfer_mode() {
+        assert_eq!(rk3568_block_transfer_mode(), BlockTransferMode::Fifo);
+    }
 }

@@ -26,7 +26,11 @@ pub struct DeviceType {
 }
 
 /// Currently selected MMC bus width, decoded from `BUS_WIDTH` (EXT_CSD[183]).
+///
+/// Marked `#[non_exhaustive]`: HS400 / strobe encodings may be classified out
+/// of `Unknown(_)` over time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MmcBusWidth {
     /// 1-bit SDR.
     Sdr1,
@@ -43,7 +47,11 @@ pub enum MmcBusWidth {
 }
 
 /// Currently selected MMC timing mode, decoded from `HS_TIMING` (EXT_CSD[185]).
+///
+/// Marked `#[non_exhaustive]`: HS400_ES and future timing modes may be
+/// classified out of `Unknown(_)` over time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MmcTiming {
     /// Backwards-compatible (≤ 26 MHz).
     Compat,

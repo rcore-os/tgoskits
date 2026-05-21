@@ -20,7 +20,6 @@ use log::{error, warn};
 use rd_block::BlkError;
 use rdrive::Device;
 use spin::Mutex;
-
 pub struct Block {
     name: String,
     irq_num: Option<usize>,

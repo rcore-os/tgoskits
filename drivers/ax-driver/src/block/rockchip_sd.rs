@@ -157,6 +157,7 @@ fn poll_card_init(sd: &mut RockchipDwMmc) -> Result<CardInfo, Error> {
                 }
             }
             OperationPoll::Complete(info) => return Ok(info),
+            _ => return Err(Error::UnsupportedCommand),
         }
     }
 }

@@ -12,6 +12,7 @@ pub mod error;
     all(feature = "rockchip-pm", feature = "fdt"),
     all(feature = "rockchip-dwmmc", feature = "fdt"),
     all(feature = "rockchip-sdhci", feature = "fdt"),
+    all(feature = "phytium-mci", feature = "fdt"),
     all(feature = "rk3588-pcie", feature = "fdt"),
     all(feature = "rknpu", feature = "fdt"),
     all(feature = "xhci-mmio", target_os = "none"),
