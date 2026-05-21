@@ -329,7 +329,11 @@ struct DevicesDir {
 
 impl SimpleDirOps for DevicesDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["platform", "system", "virtual"].into_iter().map(Cow::Borrowed))
+        Box::new(
+            ["platform", "system", "virtual"]
+                .into_iter()
+                .map(Cow::Borrowed),
+        )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
@@ -357,7 +361,9 @@ impl SimpleDirOps for SystemDir {
         match name {
             "cpu" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 self.fs.clone(),
-                Arc::new(SystemCpuDir { fs: self.fs.clone() }),
+                Arc::new(SystemCpuDir {
+                    fs: self.fs.clone(),
+                }),
             ))),
             _ => Err(VfsError::NotFound),
         }
@@ -416,7 +422,11 @@ impl SimpleDirOps for SystemCpuEntryDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         match name {
             "online" => {
-                let online = if self.cpu < ax_hal::cpu_num() { "1\n" } else { "0\n" };
+                let online = if self.cpu < ax_hal::cpu_num() {
+                    "1\n"
+                } else {
+                    "0\n"
+                };
                 Ok(SimpleFile::new_regular(self.fs.clone(), move || Ok(online.to_owned())).into())
             }
             _ => Err(VfsError::NotFound),
