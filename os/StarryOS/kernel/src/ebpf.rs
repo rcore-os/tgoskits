@@ -42,6 +42,7 @@ mod bpf_insn {
     pub const BPF_END: u8 = 0xd0;
 
     pub const BPF_JA: u8 = 0x00;
+    pub const BPF_EXIT: u8 = 0x90;
     pub const BPF_JEQ: u8 = 0x10;
     pub const BPF_JGT: u8 = 0x20;
     pub const BPF_JGE: u8 = 0x30;
@@ -638,16 +639,16 @@ fn handle_prog_load(uattr: usize, size: u32) -> AxResult<isize> {
         kern_version,
         prog_flags,
     ) = unsafe {
-        let ptr = uattr as *const u32;
-        let prog_type = core::ptr::read(ptr);
-        let insn_cnt = core::ptr::read(ptr.add(1));
-        let insns_ptr = core::ptr::read(ptr.add(2)) as u64;
-        let license_ptr = core::ptr::read(ptr.add(4)) as u64;
-        let log_level = core::ptr::read(ptr.add(6));
-        let log_size = core::ptr::read(ptr.add(7));
-        let log_buf = core::ptr::read(ptr.add(8)) as u64;
-        let kern_version = core::ptr::read(ptr.add(10));
-        let prog_flags = core::ptr::read(ptr.add(11));
+        let ptr = uattr as *const u64;
+        let prog_type = core::ptr::read(ptr) as u32;
+        let insn_cnt = core::ptr::read(ptr.add(1)) as u32;
+        let insns_ptr = core::ptr::read(ptr.add(2));
+        let license_ptr = core::ptr::read(ptr.add(3));
+        let log_level = core::ptr::read(ptr.add(4)) as u32;
+        let log_size = core::ptr::read(ptr.add(5)) as u32;
+        let log_buf = core::ptr::read(ptr.add(6));
+        let kern_version = core::ptr::read(ptr.add(7)) as u32;
+        let prog_flags = core::ptr::read(ptr.add(8)) as u32;
         (
             prog_type,
             insn_cnt,
@@ -905,6 +906,21 @@ impl BpfVm {
                     pc += 1;
                 }
                 bpf_insn::BPF_JMP | bpf_insn::BPF_JMP32 => {
+                    let op = insn.code & 0xf0;
+                    if op == bpf_insn::BPF_EXIT {
+                        return Ok(regs[0]);
+                    }
+                    if op == 0x80 {
+                        let helper_id = insn.imm as u32;
+                        if let Some(helper_fn) = self.helpers.get(&helper_id) {
+                            regs[0] = helper_fn(regs[1], regs[2], regs[3], regs[4], regs[5]);
+                        } else {
+                            warn!("bpf: unknown helper {}", helper_id);
+                            regs[0] = u64::MAX;
+                        }
+                        pc += 1;
+                        continue;
+                    }
                     let is_64 = class == bpf_insn::BPF_JMP;
                     let dst = insn.dst_reg() as usize;
                     let src_val = if insn.src_reg() == bpf_insn::BPF_X {
