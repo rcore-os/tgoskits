@@ -76,6 +76,7 @@ test_commands = [
     "/usr/bin/test-timerfd",
     "/usr/bin/test-unix-bind-chown",
     "/usr/bin/test-vectored-io",
+    "/usr/bin/test-ebpf-basics",
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
