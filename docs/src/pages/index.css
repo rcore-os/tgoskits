@@ -773,18 +773,6 @@ html { scroll-behavior: smooth; }
   min-height: 34rem;
   isolation: isolate;
 }
-.docs-constellation::before {
-  content: '';
-  position: absolute;
-  inset: 3.4rem 0.8rem 1.8rem;
-  z-index: -2;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 16% 58%, rgba(95, 107, 255, 0.12), transparent 20%),
-    radial-gradient(circle at 48% 28%, rgba(127, 224, 255, 0.12), transparent 18%),
-    radial-gradient(circle at 78% 58%, rgba(20, 184, 166, 0.12), transparent 20%);
-  filter: blur(2px);
-}
 .docs-constellation__art {
   position: absolute;
   inset: 0;
@@ -1118,14 +1106,6 @@ html { scroll-behavior: smooth; }
 @keyframes slideOut    { 0%, 100% { transform: translateX(0); opacity: 0.3; } 50% { transform: translateX(-12px); opacity: 0.65; } }
 @keyframes dotPulse    { 0%, 100% { opacity: 0.4; transform: scale(1); } 50% { opacity: 1; transform: scale(1.3); } }
 @keyframes shine       { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
-@keyframes sectionBackgroundDrift {
-  0% { background-position: 0% 0%, 100% 20%, 40% 100%; }
-  100% { background-position: 18% 10%, 82% 34%, 58% 86%; }
-}
-@keyframes sectionGridDrift {
-  from { background-position: 0 0, 0 0; }
-  to { background-position: 84px 84px, 84px 84px; }
-}
 
 /* Responsive */
 @media (min-width: 1600px) {
@@ -1155,7 +1135,6 @@ html { scroll-behavior: smooth; }
   .capability-lane .feature-icon { grid-column: 1; grid-row: 2; }
   .capability-lane__body { grid-column: 2; grid-row: 1 / span 2; }
   .docs-constellation { grid-template-columns: 1fr; gap: 1.3rem; }
-  .docs-constellation::before { inset: 1rem 0; border-radius: 26px; }
   .docs-node { align-items: start; }
   .docs-node__visual { width: 4.2rem; }
   .quality-stage { grid-template-columns: 1fr; gap: 0.85rem; }
@@ -1224,7 +1203,7 @@ html { scroll-behavior: smooth; }
   .quality-stage::after { display: none; }
 }
 
-/* Open-section treatment: remove box-first surfaces and blend sections into the page */
+/* Open-section treatment: keep non-hero sections clean and content-led */
 .section-shell--capabilities,
 .section-shell--architecture,
 .section-shell--component-workspace,
@@ -1236,50 +1215,6 @@ html { scroll-behavior: smooth; }
 .section-shell--workflow {
   position: relative;
   overflow: hidden;
-}
-
-.section-shell--capabilities::before,
-.section-shell--architecture::before,
-.section-shell--component-workspace::before,
-.section-shell--systems::before,
-.section-shell--platforms::before,
-.section-shell--drivers::before,
-.section-shell--quality::before,
-.section-shell--docs::before,
-.section-shell--workflow::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at 18% 24%, color-mix(in srgb, var(--ifm-color-primary) 9%, transparent), transparent 28%),
-    radial-gradient(circle at 76% 36%, rgba(20, 184, 166, 0.075), transparent 24%),
-    radial-gradient(circle at 48% 82%, rgba(139, 92, 246, 0.06), transparent 26%);
-  background-size: 120% 120%, 115% 115%, 130% 130%;
-  animation: sectionBackgroundDrift 18s ease-in-out infinite alternate;
-}
-
-.section-shell--capabilities::after,
-.section-shell--architecture::after,
-.section-shell--component-workspace::after,
-.section-shell--systems::after,
-.section-shell--platforms::after,
-.section-shell--drivers::after,
-.section-shell--quality::after,
-.section-shell--docs::after,
-.section-shell--workflow::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0.32;
-  background-image:
-    linear-gradient(90deg, color-mix(in srgb, var(--ifm-color-primary) 8%, transparent) 1px, transparent 1px),
-    linear-gradient(180deg, color-mix(in srgb, var(--ifm-color-primary) 6%, transparent) 1px, transparent 1px);
-  background-size: 84px 84px;
-  animation: sectionGridDrift 28s linear infinite;
 }
 
 .section-shell__inner {
