@@ -241,43 +241,35 @@ fn is_ancestor_of_passthrough_device(node_path: &str, passthrough_device_names: 
 }
 
 /// Determine if CPU node is needed
+fn cpu_node_id(node_path: &str) -> Option<usize> {
+    node_path
+        .strip_prefix("/cpus/cpu@")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|id| usize::from_str_radix(id, 16).ok())
+}
+
+fn cpu_reg_address(node: &Node) -> Option<usize> {
+    node.reg()
+        .and_then(|mut reg| reg.next())
+        .map(|reg_entry| reg_entry.address as usize)
+}
+
 fn need_cpu_node(phys_cpu_ids: &[usize], node: &Node, node_path: &str) -> bool {
     if !node_path.starts_with("/cpus/cpu@") {
         return true;
     }
 
-    if let Some(cpu_id) = node_path
-        .strip_prefix("/cpus/cpu@")
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|id| usize::from_str_radix(id, 16).ok())
-        && phys_cpu_ids.contains(&cpu_id)
-    {
-        return true;
+    if let Some(cpu_id) = cpu_node_id(node_path) {
+        return phys_cpu_ids.contains(&cpu_id);
     }
 
-    if let Some(mut cpu_reg) = node.reg()
-        && let Some(reg_entry) = cpu_reg.next()
-    {
-        let cpu_address = reg_entry.address as usize;
+    if let Some(cpu_address) = cpu_reg_address(node) {
         debug!(
             "Checking CPU node {} with address 0x{:x}",
             node.name(),
             cpu_address
         );
-        if phys_cpu_ids.contains(&cpu_address) {
-            debug!(
-                "CPU node {} with address 0x{:x} is in phys_cpu_ids, including in guest FDT",
-                node.name(),
-                cpu_address
-            );
-            return true;
-        }
-
-        debug!(
-            "CPU node {} with address 0x{:x} is NOT in phys_cpu_ids, skipping",
-            node.name(),
-            cpu_address
-        );
+        return phys_cpu_ids.contains(&cpu_address);
     }
 
     false
@@ -535,9 +527,52 @@ pub fn update_fdt(
 
 #[cfg(test)]
 mod tests {
-    use super::{initrd_range_from_image_config, sanitize_bootargs};
+    use super::{cpu_node_id, initrd_range_from_image_config, need_cpu_node, sanitize_bootargs};
     use axaddrspace::GuestPhysAddr;
     use axvm::config::RamdiskInfo;
+    use fdt_parser::Fdt;
+
+    fn test_fdt(dts: &str) -> Fdt<'static> {
+        let mut writer = super::FdtWriter::new().unwrap();
+        let root = writer.begin_node("").unwrap();
+        let cpus = writer.begin_node("cpus").unwrap();
+        writer.property_u32("#address-cells", 2).unwrap();
+        writer.property_u32("#size-cells", 0).unwrap();
+
+        for line in dts.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let (name, reg) = line.split_once('=').unwrap();
+            let node = writer.begin_node(name).unwrap();
+            writer.property_u32("device_type", 0).unwrap();
+            let reg = usize::from_str_radix(reg, 16).unwrap();
+            writer.property_array_u32("reg", &[0, reg as u32]).unwrap();
+            writer.end_node(node).unwrap();
+        }
+
+        writer.end_node(cpus).unwrap();
+        writer.end_node(root).unwrap();
+        let bytes = writer.finish().unwrap().leak();
+        Fdt::from_bytes(bytes).unwrap()
+    }
+
+    #[test]
+    fn cpu_node_selection_uses_node_id_when_reg_differs() {
+        let fdt = test_fdt("cpu@0=200\ncpu@100=0\ncpu@101=100");
+        let nodes: Vec<_> = fdt.all_nodes().collect();
+        let paths = crate::vmm::fdt::build_all_node_paths(&nodes);
+        let selected: Vec<_> = nodes
+            .iter()
+            .zip(paths.iter())
+            .filter(|(_, path)| path.starts_with("/cpus/cpu@"))
+            .filter_map(|(node, path)| need_cpu_node(&[0x100], node, path).then(|| path.clone()))
+            .collect();
+
+        assert_eq!(selected, ["/cpus/cpu@100"]);
+    }
+
+    #[test]
+    fn cpu_node_id_parses_hex_unit_address() {
+        assert_eq!(cpu_node_id("/cpus/cpu@100"), Some(0x100));
+    }
 
     #[test]
     fn initrd_range_requires_both_address_and_size() {

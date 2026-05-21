@@ -114,7 +114,20 @@ pub fn scan_gpt_partitions(disk: &mut Disk) -> AxResult<Vec<PartitionInfo>> {
         }
     }
 
-    // If both GPT fail, treat the whole disk as a single partition
+    match parse_mbr_partitions(disk, disk_size) {
+        Ok(partitions) if !partitions.is_empty() => {
+            info!("Found {} MBR partitions", partitions.len());
+            return Ok(partitions);
+        }
+        Ok(_) => {
+            info!("No MBR partitions found");
+        }
+        Err(e) => {
+            warn!("Failed to parse MBR: {:?}", e);
+        }
+    }
+
+    // If both GPT and MBR fail, treat the whole disk as a single partition
     warn!("No partition table found, treating whole disk as single partition");
     let filesystem_type = detect_filesystem_type(disk, 0);
     let partition = PartitionInfo {
@@ -124,12 +137,216 @@ pub fn scan_gpt_partitions(disk: &mut Disk) -> AxResult<Vec<PartitionInfo>> {
         unique_partition_guid: [0; 16],
         filesystem_uuid: None,
         starting_lba: 0,
-        ending_lba: disk_size / 512,
+        ending_lba: disk_size.saturating_div(512).saturating_sub(1),
         size_bytes: disk_size,
         filesystem_type,
     };
 
     Ok(vec![partition])
+}
+
+fn parse_mbr_partitions(disk: &mut Disk, disk_size: u64) -> AxResult<Vec<PartitionInfo>> {
+    let mut sector = [0u8; 512];
+    disk.set_position(0);
+    read_exact(disk, &mut sector).map_err(|_| AxError::InvalidData)?;
+
+    let disk_blocks = disk_size.saturating_div(512);
+    let mut partitions =
+        parse_mbr_partition_entries_with_reader(&sector, disk_blocks, |lba, sector| {
+            disk.set_position(lba * 512);
+            read_exact(disk, sector).map_err(|_| AxError::InvalidData)
+        })?;
+    for partition in &mut partitions {
+        partition.filesystem_type = detect_filesystem_type(disk, partition.starting_lba);
+        partition.filesystem_uuid = partition
+            .filesystem_type
+            .as_ref()
+            .and_then(|fs| read_filesystem_uuid_simple(disk, partition.starting_lba, fs));
+        info!(
+            "Found MBR partition {}: '{}' ({} bytes) with filesystem: {:?}, UUID: {:?}",
+            partition.index,
+            partition.name,
+            partition.size_bytes,
+            partition.filesystem_type,
+            partition.filesystem_uuid,
+        );
+    }
+
+    Ok(partitions)
+}
+
+#[cfg(test)]
+fn parse_mbr_partition_entries(
+    sector: &[u8; 512],
+    disk_blocks: u64,
+) -> AxResult<Vec<PartitionInfo>> {
+    parse_mbr_partition_entries_with_reader(sector, disk_blocks, |_, _| Err(AxError::Unsupported))
+}
+
+fn parse_mbr_partition_entries_with_reader(
+    sector: &[u8; 512],
+    disk_blocks: u64,
+    mut read_sector: impl FnMut(u64, &mut [u8; 512]) -> AxResult,
+) -> AxResult<Vec<PartitionInfo>> {
+    if !has_mbr_signature(sector) {
+        return Err(AxError::InvalidData);
+    }
+
+    let mut partitions = Vec::new();
+    for index in 0..4 {
+        let entry = MbrPartitionEntry::parse(sector, index);
+        if entry.is_unused() || entry.is_protective() {
+            continue;
+        }
+        if entry.is_extended() {
+            parse_extended_mbr_partitions(
+                entry.starting_lba,
+                disk_blocks,
+                &mut read_sector,
+                &mut partitions,
+            )?;
+            continue;
+        }
+        push_mbr_partition(&mut partitions, index as u32, entry, disk_blocks);
+    }
+
+    Ok(partitions)
+}
+
+fn parse_extended_mbr_partitions(
+    extended_base_lba: u64,
+    disk_blocks: u64,
+    read_sector: &mut impl FnMut(u64, &mut [u8; 512]) -> AxResult,
+    partitions: &mut Vec<PartitionInfo>,
+) -> AxResult {
+    let mut ebr_lba = extended_base_lba;
+    let mut visited = 0;
+    while visited < 128 {
+        let mut sector = [0u8; 512];
+        read_sector(ebr_lba, &mut sector)?;
+        if !has_mbr_signature(&sector) {
+            warn!(
+                "Stopping extended MBR scan at LBA {}: invalid EBR signature",
+                ebr_lba
+            );
+            break;
+        }
+
+        let logical = MbrPartitionEntry::parse(&sector, 0);
+        if !logical.is_unused() && !logical.is_extended() && !logical.is_protective() {
+            let Some(starting_lba) = ebr_lba.checked_add(logical.starting_lba) else {
+                warn!("Skipping logical MBR partition with overflowing start LBA");
+                break;
+            };
+            let entry = MbrPartitionEntry {
+                starting_lba,
+                ..logical
+            };
+            push_mbr_partition(partitions, partitions.len() as u32 + 4, entry, disk_blocks);
+        }
+
+        let next = MbrPartitionEntry::parse(&sector, 1);
+        if !next.is_extended() || next.starting_lba == 0 || next.sector_count == 0 {
+            break;
+        }
+        let Some(next_ebr_lba) = extended_base_lba.checked_add(next.starting_lba) else {
+            warn!("Stopping extended MBR scan after overflowing next EBR LBA");
+            break;
+        };
+        if next_ebr_lba == ebr_lba {
+            warn!(
+                "Stopping extended MBR scan at self-referential EBR LBA {}",
+                ebr_lba
+            );
+            break;
+        }
+        ebr_lba = next_ebr_lba;
+        visited += 1;
+    }
+
+    if visited == 128 {
+        warn!("Stopping extended MBR scan after reaching EBR chain limit");
+    }
+
+    Ok(())
+}
+
+fn push_mbr_partition(
+    partitions: &mut Vec<PartitionInfo>,
+    index: u32,
+    entry: MbrPartitionEntry,
+    disk_blocks: u64,
+) {
+    let Some(ending_lba) = entry.starting_lba.checked_add(entry.sector_count - 1) else {
+        warn!(
+            "Skipping MBR partition {} with overflowing LBA range",
+            index
+        );
+        return;
+    };
+    if disk_blocks != 0 && ending_lba >= disk_blocks {
+        warn!(
+            "Skipping MBR partition {} outside disk: start={}, sectors={}, disk_blocks={}",
+            index, entry.starting_lba, entry.sector_count, disk_blocks
+        );
+        return;
+    }
+
+    partitions.push(PartitionInfo {
+        index,
+        name: format!("partition_{}", index),
+        partition_type_guid: [0; 16],
+        unique_partition_guid: [0; 16],
+        filesystem_uuid: None,
+        starting_lba: entry.starting_lba,
+        ending_lba,
+        size_bytes: entry.sector_count * 512,
+        filesystem_type: None,
+    });
+}
+
+fn has_mbr_signature(sector: &[u8; 512]) -> bool {
+    sector[510] == 0x55 && sector[511] == 0xaa
+}
+
+#[derive(Clone, Copy)]
+struct MbrPartitionEntry {
+    partition_type: u8,
+    starting_lba: u64,
+    sector_count: u64,
+}
+
+impl MbrPartitionEntry {
+    fn parse(sector: &[u8; 512], index: usize) -> Self {
+        let offset = 446 + index * 16;
+        Self {
+            partition_type: sector[offset + 4],
+            starting_lba: u32::from_le_bytes([
+                sector[offset + 8],
+                sector[offset + 9],
+                sector[offset + 10],
+                sector[offset + 11],
+            ]) as u64,
+            sector_count: u32::from_le_bytes([
+                sector[offset + 12],
+                sector[offset + 13],
+                sector[offset + 14],
+                sector[offset + 15],
+            ]) as u64,
+        }
+    }
+
+    fn is_unused(&self) -> bool {
+        self.partition_type == 0 || self.starting_lba == 0 || self.sector_count == 0
+    }
+
+    fn is_extended(&self) -> bool {
+        matches!(self.partition_type, 0x05 | 0x0f | 0x85)
+    }
+
+    fn is_protective(&self) -> bool {
+        self.partition_type == 0xee
+    }
 }
 
 /// Parse GPT partition table
@@ -540,5 +757,117 @@ fn read_fat32_uuid(disk: &mut Disk, starting_lba: u64) -> Option<String> {
         Some(volume_id_str)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set_mbr_entry(
+        sector: &mut [u8; 512],
+        index: usize,
+        partition_type: u8,
+        starting_lba: u32,
+        sector_count: u32,
+    ) {
+        let offset = 446 + index * 16;
+        sector[offset + 4] = partition_type;
+        sector[offset + 8..offset + 12].copy_from_slice(&starting_lba.to_le_bytes());
+        sector[offset + 12..offset + 16].copy_from_slice(&sector_count.to_le_bytes());
+    }
+
+    fn set_mbr_signature(sector: &mut [u8; 512]) {
+        sector[510] = 0x55;
+        sector[511] = 0xaa;
+    }
+
+    #[test]
+    fn parses_primary_mbr_partition_entry() {
+        let start_lba = 2048u32;
+        let sector_count = 4096u32;
+        let mut sector = [0u8; 512];
+        set_mbr_entry(&mut sector, 0, 0x83, start_lba, sector_count);
+        set_mbr_signature(&mut sector);
+
+        let partitions =
+            parse_mbr_partition_entries(&sector, sector_count as u64 + start_lba as u64)
+                .expect("valid MBR should parse");
+
+        assert_eq!(partitions.len(), 1);
+        assert_eq!(partitions[0].index, 0);
+        assert_eq!(partitions[0].name, "partition_0");
+        assert_eq!(partitions[0].starting_lba, start_lba as u64);
+        assert_eq!(
+            partitions[0].ending_lba,
+            (start_lba + sector_count - 1) as u64
+        );
+        assert_eq!(partitions[0].size_bytes, sector_count as u64 * 512);
+        assert_eq!(partitions[0].filesystem_type, None);
+    }
+
+    #[test]
+    fn parses_logical_mbr_partitions_from_extended_chain() {
+        let mut mbr = [0u8; 512];
+        set_mbr_entry(&mut mbr, 0, 0x0f, 100, 1000);
+        set_mbr_signature(&mut mbr);
+
+        let mut first_ebr = [0u8; 512];
+        set_mbr_entry(&mut first_ebr, 0, 0x83, 63, 100);
+        set_mbr_entry(&mut first_ebr, 1, 0x05, 200, 300);
+        set_mbr_signature(&mut first_ebr);
+
+        let mut second_ebr = [0u8; 512];
+        set_mbr_entry(&mut second_ebr, 0, 0x0b, 32, 50);
+        set_mbr_signature(&mut second_ebr);
+
+        let partitions =
+            parse_mbr_partition_entries_with_reader(&mbr, 2_000, |lba, sector| match lba {
+                100 => {
+                    *sector = first_ebr;
+                    Ok(())
+                }
+                300 => {
+                    *sector = second_ebr;
+                    Ok(())
+                }
+                _ => Err(AxError::NotFound),
+            })
+            .expect("valid extended MBR chain should parse");
+
+        assert_eq!(partitions.len(), 2);
+        assert_eq!(partitions[0].index, 4);
+        assert_eq!(partitions[0].name, "partition_4");
+        assert_eq!(partitions[0].starting_lba, 163);
+        assert_eq!(partitions[0].ending_lba, 262);
+        assert_eq!(partitions[0].size_bytes, 100 * 512);
+        assert_eq!(partitions[1].index, 5);
+        assert_eq!(partitions[1].name, "partition_5");
+        assert_eq!(partitions[1].starting_lba, 332);
+        assert_eq!(partitions[1].ending_lba, 381);
+        assert_eq!(partitions[1].size_bytes, 50 * 512);
+    }
+
+    #[test]
+    fn rejects_mbr_sector_without_signature() {
+        let mut sector = [0u8; 512];
+        set_mbr_entry(&mut sector, 0, 0x83, 2048, 4096);
+
+        assert_eq!(
+            parse_mbr_partition_entries(&sector, 10_000).err(),
+            Some(AxError::InvalidData)
+        );
+    }
+
+    #[test]
+    fn skips_protective_and_out_of_range_mbr_entries() {
+        let mut sector = [0u8; 512];
+        set_mbr_entry(&mut sector, 0, 0xee, 1, 1000);
+        set_mbr_entry(&mut sector, 1, 0x83, 900, 200);
+        set_mbr_signature(&mut sector);
+
+        let partitions = parse_mbr_partition_entries(&sector, 1_000).expect("valid MBR signature");
+
+        assert!(partitions.is_empty());
     }
 }

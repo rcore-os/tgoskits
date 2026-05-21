@@ -41,6 +41,9 @@ svm = ["axvm/svm"]
 sstc = ["riscv_vcpu/sstc"]
 dyn-plat = ["ax-std/plat-dyn", "dep:axplat-dyn"]
 rockchip-soc = ["ax-driver/rockchip-soc"]
+rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
+rockchip-dwmmc = ["ax-driver/rockchip-dwmmc", "ax-driver/rockchip-soc"]
+phytium-mci = ["ax-driver/phytium-mci"]
 sdmmc = [
     "ax-driver/rockchip-sdhci",
     "ax-driver/rockchip-soc",

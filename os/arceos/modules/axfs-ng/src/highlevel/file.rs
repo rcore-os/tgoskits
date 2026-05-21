@@ -200,6 +200,15 @@ impl OpenOptions {
     fn _open(&self, loc: Location) -> VfsResult<OpenResult> {
         let flags = self.to_flags()?;
 
+        // O_CREAT on an existing directory → EISDIR (Linux behavior;
+        // CREAT carries an implicit "create regular file" intent that
+        // conflicts with an existing directory regardless of access mode).
+        // Fixes bug-open-creat-on-existing-dir-no-eisdir.
+        // O_PATH path bypasses this — it doesn't actually open / mutate.
+        if self.create && loc.is_dir() && !self.path {
+            return Err(VfsError::IsADirectory);
+        }
+
         if self.directory {
             loc.check_is_dir()?;
         }
@@ -246,6 +255,15 @@ impl OpenOptions {
             return Err(VfsError::InvalidInput);
         }
 
+        // Empty pathname → NotFound. man "ENOENT — O_CREAT is not set and
+        // the named file does not exist." resolve_parent("") would otherwise
+        // return cwd itself which lets open() succeed — wrong per POSIX.
+        // openat() does not accept AT_EMPTY_PATH; only specific *at calls do.
+        // Fixes bug-openat-empty-path-no-enoent.
+        if path.as_ref().as_str().is_empty() {
+            return Err(VfsError::NotFound);
+        }
+
         let loc = match context.resolve_parent(path.as_ref()) {
             Ok((parent, name)) => {
                 let mut loc = parent.open_file(
@@ -262,6 +280,13 @@ impl OpenOptions {
                     loc = context
                         .with_current_dir(parent)?
                         .try_resolve_symlink(loc, &mut 0)?;
+                } else if loc.node_type() == NodeType::Symlink && !self.path {
+                    // O_NOFOLLOW + basename is a symlink + not O_PATH:
+                    // man "If the trailing component (i.e., basename) of
+                    // pathname is a symbolic link, then the open fails,
+                    // with the error ELOOP."
+                    // Fixes bug-open-nofollow-sym.
+                    return Err(VfsError::FilesystemLoop);
                 }
                 loc
             }
@@ -275,12 +300,18 @@ impl OpenOptions {
     }
 
     pub(crate) fn to_flags(&self) -> VfsResult<FileFlags> {
+        // Linux semantic: O_APPEND only adds APPEND bit; it does NOT promote
+        // read-only fd to read/write. (Previous code merged (true,_,true) →
+        // READ|WRITE|APPEND which silently upgraded RDONLY|APPEND to RW —
+        // see bug-open-rdonly-append-promotes-rw.)
         Ok(match (self.read, self.write, self.append) {
             (true, false, false) => FileFlags::READ,
             (false, true, false) => FileFlags::WRITE,
             (true, true, false) => FileFlags::READ | FileFlags::WRITE,
-            (false, _, true) => FileFlags::WRITE | FileFlags::APPEND,
-            (true, _, true) => FileFlags::READ | FileFlags::WRITE | FileFlags::APPEND,
+            (true, false, true) => FileFlags::READ | FileFlags::APPEND,
+            (false, true, true) => FileFlags::WRITE | FileFlags::APPEND,
+            (true, true, true) => FileFlags::READ | FileFlags::WRITE | FileFlags::APPEND,
+            (false, false, true) => FileFlags::APPEND, // RDONLY-equivalent + APPEND: pure status
             (false, false, false) => return Err(VfsError::InvalidInput),
         } | if self.path {
             FileFlags::PATH
@@ -293,19 +324,12 @@ impl OpenOptions {
         if !self.read && !self.write && !self.append {
             return false;
         }
-        match (self.write, self.append) {
-            (true, false) => {}
-            (false, false) => {
-                if self.truncate {
-                    return false;
-                }
-            }
-            (_, true) => {
-                if self.truncate && !self.create_new {
-                    return false;
-                }
-            }
-        }
+        // Linux multi-fs: RDONLY|TRUNC truncates the file (POSIX VERSIONS
+        // says effect is "unspecified", but most fs do truncate). Don't
+        // reject. Fixes bug-open-rdonly-trunc-einval.
+        // RDWR|APPEND|TRUNC is also explicitly allowed by Linux; the prior
+        // restriction "(_,true) && truncate && !create_new → false" was too
+        // strict. Fixes bug-open-append-trunc-einval.
         true
     }
 }
@@ -903,15 +927,18 @@ pub struct File {
 impl File {
     /// Creates a new [`File`] from a [`FileBackend`] and access flags.
     pub fn new(inner: FileBackend, flags: FileFlags) -> Self {
+        // man 2 open: "The file offset is set to the beginning of the file"
+        // — initial position is always 0, regardless of O_APPEND.
+        // O_APPEND only relocates the offset BEFORE EACH WRITE (handled in
+        // `write()` via the `access(FileFlags::APPEND)` branch). Setting
+        // initial position to EOF would break read() on RDONLY|APPEND
+        // (read sees EOF immediately) — see bug-open-rdonly-append-promotes-rw.
         let position = if inner.location().flags().contains(NodeFlags::STREAM) {
             None
         } else {
-            Some(Mutex::new(if flags.contains(FileFlags::APPEND) {
-                inner.location().len().unwrap_or_default()
-            } else {
-                0
-            }))
+            Some(Mutex::new(0))
         };
+        let _ = flags;
         Self {
             inner,
             flags: AtomicU8::new(flags.bits()),
@@ -1028,6 +1055,11 @@ impl File {
         {
             self.access_flags.fetch_or(3, Ordering::AcqRel);
         }
+        // WRITE bit is mandatory for any write path, regardless of whether
+        // APPEND is set. Otherwise O_RDONLY|O_APPEND fd would silently
+        // succeed writes (since access(APPEND) only checks the APPEND bit).
+        // Fixes bug-open-rdonly-append-promotes-rw (the part inside axfs).
+        self.access(FileFlags::WRITE)?;
         if let Some(pos) = self.position.as_ref() {
             let mut pos = pos.lock();
             if let Ok(f) = self.access(FileFlags::APPEND) {
