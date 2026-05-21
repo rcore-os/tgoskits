@@ -710,6 +710,46 @@ uboot_config = "configs/uboot-aarch64.toml"
     assert_eq!(request.uboot_config, None);
     assert_eq!(snapshot.qemu.qemu_config, None);
     assert_eq!(snapshot.uboot.uboot_config, None);
+    assert_eq!(request.vmconfigs, Vec::<PathBuf>::new());
+    assert_eq!(snapshot.vmconfigs, Vec::<PathBuf>::new());
+}
+
+#[test]
+fn prepare_axvisor_request_cli_arch_ignores_stale_snapshot_vmconfigs() {
+    let root = tempdir().unwrap();
+    write_snapshot_text(
+        root.path(),
+        AXVISOR_SNAPSHOT_FILE,
+        r#"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+vmconfigs = ["os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml"]
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_axvisor_request(
+        &app,
+        AxvisorCliArgs {
+            config: None,
+            arch: Some("riscv64".into()),
+            target: None,
+            plat_dyn: None,
+            smp: None,
+            debug: false,
+            vmconfigs: vec![],
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.arch, "riscv64");
+    assert_eq!(request.target, "riscv64gc-unknown-none-elf");
+    assert_eq!(request.vmconfigs, Vec::<PathBuf>::new());
+    assert_eq!(snapshot.vmconfigs, Vec::<PathBuf>::new());
 }
 
 #[test]
