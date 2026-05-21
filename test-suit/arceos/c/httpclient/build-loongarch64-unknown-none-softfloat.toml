@@ -1,4 +1,4 @@
-features = ["alloc", "paging", "net"]
+features = ["alloc", "paging", "net", "ax-driver/pci", "ax-driver/virtio-net"]
 log = "Info"
 
 [env]
