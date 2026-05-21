@@ -191,5 +191,8 @@ blocked by registry/index state around `sg200x-bsp = 0.6.0`, while direct
    third-party dependencies.
 4. `components/axfs-ng-vfs` no longer uses external `spin::{Mutex,RwLock}` for
    lockdep-relevant internal locks.
-5. Lockdep-enabled FAT32/VFS testing either confirms no report or exposes a real
+5. `os/arceos/modules/axfs-ng` moves lockdep-relevant runtime locks away from
+   external `spin`; `FS_REGISTRY` is the first small step, while
+   `CachedFile::append_lock` remains a separate `RwLock` design question.
+6. Lockdep-enabled FAT32/VFS testing either confirms no report or exposes a real
    ordering issue for a separate ordering fix.

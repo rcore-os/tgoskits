@@ -348,7 +348,8 @@ Suggested priority for eliminating lockdep-relevant blind spots:
 - Do not mechanically replace `spin::Mutex` with `ax_kspin::SpinNoPreempt`.
   Each site needs a context check: task context, IRQ context, preemption
   requirements, and whether the crate is intended to stay OS-neutral.
-- For VFS cache locks, `SpinNoPreempt` is the first candidate, but `SpinNoIrq`
-  or `SpinRaw` may be required in specific contexts.
+- Prefer `SpinNoIrq` for replacements that may be acquired from IRQ-enabled
+  contexts unless the code can prove that the lock is never shared with IRQ
+  handlers; `SpinNoPreempt` is only safe under that stricter condition.
 - If migrating `axfs-ng-vfs` exposes the suspected FAT32/VFS ABBA ordering, the
   fix should be a real ordering fix, not a lockdep subclass annotation.
