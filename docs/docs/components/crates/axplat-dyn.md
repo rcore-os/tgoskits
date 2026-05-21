@@ -133,7 +133,7 @@ flowchart TD
 3. `drivers/pci.rs` 通过 `module_driver!` 注册通用 PCIe ECAM 控制器探测器。
 4. `drivers/blk/virtio.rs` 通过 `module_driver!` 注册 `virtio,mmio` block 设备探测器。
 5. 探测出的 `rd_block::Block` 被包成实现 `ax_driver_block::BlockDriverOps` 的 `Block`，最终进入 `BLOCK_DEVICES`。
-6. `os/arceos/modules/axdriver/src/dyn_drivers/mod.rs` 再通过 `take_block_devices()` 把它们取走，转成 `ax-driver` 的动态设备集合。
+6. `drivers/ax-driver/src/dyn_drivers/mod.rs` 再通过 `take_block_devices()` 把它们取走，转成 `ax-driver` 的动态设备集合。
 
 ```mermaid
 flowchart TD
@@ -205,7 +205,7 @@ flowchart TD
 ### 主要消费者
 
 - `os/arceos/modules/axhal`：通过 `plat-dyn` feature 选择该平台路径。
-- `os/arceos/modules/axdriver`：通过 `dyn` feature 调用其动态设备探测入口。
+- `drivers/ax-driver`：通过 `dyn` feature 调用其动态设备探测入口。
 - 进一步依赖上述模块的 ArceOS 系统镜像，以及复用同一模块栈的其它内核工程。
 
 ### 3.3 依赖关系示意

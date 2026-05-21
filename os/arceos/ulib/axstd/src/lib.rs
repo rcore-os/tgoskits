@@ -32,7 +32,7 @@
 //!     - `net`: Enable networking support.
 //!     - `dns`: Enable DNS lookup support.
 //!     - `display`: Enable graphics support.
-//! - Device drivers are selected directly through `ax-drivers/*` features by
+//! - Device drivers are selected directly through `ax-driver/*` features by
 //!   board configurations.
 //!
 //! [ArceOS]: https://github.com/arceos-org/arceos

@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / 网络设备类别接口层
 > 版本：`0.1.4-preview.3`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/net_buf.rs`、`src/fxmac.rs`、`src/ixgbe.rs`、`components/axdriver_crates/axdriver_virtio/src/net.rs`、`os/arceos/modules/axdriver/src/drivers.rs`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/net_buf.rs`、`src/fxmac.rs`、`src/ixgbe.rs`、`components/axdriver_crates/axdriver_virtio/src/net.rs`、`drivers/ax-driver/src/drivers.rs`
 
 `axdriver_net` 的定位是 NIC 驱动类别层，而不是网络栈。它一方面定义网卡驱动必须实现的 `NetDriverOps`，另一方面内建 `fxmac` 和 `ixgbe` 两个具体实现模块，并提供一套在当前 ArceOS 网络驱动栈里非常关键的缓冲区抽象 `NetBuf` / `NetBufPool` / `NetBufPtr`。上层 `ax-net`、`ax-net-ng` 依赖它消费网卡，下层具体设备和总线探测则由 `ax-driver`、`ax-driver-virtio` 等承担。
 
@@ -61,7 +61,7 @@
 - 用 `MemPool` 管理 DMA 友好的网卡缓冲。
 - `init(base, len)` 完成设备初始化。
 - `receive_packets()` 支持批量接收并转成 `NetBufPtr`。
-- `IxgbeHal` 由 `os/arceos/modules/axdriver/src/ixgbe.rs` 对接 `ax-dma`。
+- `IxgbeHal` 由 `drivers/ax-driver/src/ixgbe.rs` 对接 `ax-dma`。
 
 ### 1.6 与 `ax-driver` 和 `ax-driver-virtio` 的接线关系
 当前仓库中的三条主要接线路径是：
@@ -108,7 +108,7 @@
 
 ### 主要消费者
 - `components/axdriver_crates/axdriver_virtio`
-- `os/arceos/modules/axdriver`
+- `drivers/ax-driver`
 - `os/arceos/modules/ax-net`
 - `os/arceos/modules/axnet-ng`
 
@@ -131,7 +131,7 @@
 1. 先决定是实现 `NetDriverOps` 还是直接在本 crate 内新增 feature 模块。
 2. 明确 `receive()` 返回后缓冲区如何归还。
 3. 如果驱动依赖 DMA，需要同时明确 DMA 分配和地址转换由哪一层提供。
-4. 若接入 `ax-driver` 探测主线，还需同步修改 `os/arceos/modules/axdriver/src/drivers.rs`。
+4. 若接入 `ax-driver` 探测主线，还需同步修改 `drivers/ax-driver/src/drivers.rs`。
 
 ### 4.3 常见坑
 - `receive()` 返回的 `NetBufPtr` 不是普通切片，背后有明确的所有权和回收语义。

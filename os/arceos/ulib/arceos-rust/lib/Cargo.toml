@@ -77,7 +77,7 @@ log-level-warn = []
 
 [dependencies]
 ax-api = {workspace = true, features = ["alloc"]}
-ax-drivers = {workspace = true}
+ax-driver = {workspace = true}
 ax-errno = {workspace = true}
 ax-feat = {workspace = true}
 ax-hal = {workspace = true}

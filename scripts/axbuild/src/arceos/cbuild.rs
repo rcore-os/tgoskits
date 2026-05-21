@@ -307,7 +307,7 @@ fn map_c_app_features(case_features: &[String], base_features: &[String]) -> Vec
             .or_else(|| feature.strip_prefix("ax-std/"))
             .or_else(|| feature.strip_prefix("ax-libc/"))
             .unwrap_or(feature);
-        if feature.starts_with("ax-hal/") || feature.starts_with("ax-drivers/") {
+        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
             features.insert(feature.clone());
             continue;
         }
@@ -334,7 +334,7 @@ fn map_c_app_features(case_features: &[String], base_features: &[String]) -> Vec
             .or_else(|| feature.strip_prefix("ax-std/"))
             .or_else(|| feature.strip_prefix("ax-libc/"))
             .unwrap_or(feature);
-        if feature.starts_with("ax-hal/") || feature.starts_with("ax-drivers/") {
+        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
             features.insert(feature.clone());
             continue;
         }

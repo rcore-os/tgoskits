@@ -63,7 +63,6 @@
 /drivers/ @ZCShou @ZR233
 /platform/ @ZCShou @ZR233
 /os/arceos/configs/ @ZCShou @ZR233
-/os/arceos/modules/axdriver/ @ZCShou @ZR233
 /os/arceos/modules/axfs/ @ZCShou @ZR233
 /os/arceos/modules/axfs-ng/ @ZCShou @ZR233
 /os/arceos/modules/axhal/ @ZCShou @ZR233

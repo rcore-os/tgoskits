@@ -2,7 +2,7 @@ env = { UIMAGE = "y" }
 features = [
   "sg2002",
   "myplat",
-  "ax-drivers/cvsd",
+  "ax-driver/cvsd",
 ]
 log = "Warn"
 plat_dyn = false

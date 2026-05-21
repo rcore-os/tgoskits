@@ -7,9 +7,7 @@ use core::{
     task::Context,
 };
 
-use ax_drivers::rknpu::{
-    self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit,
-};
+use ax_driver::rknpu::{self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit};
 use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::PhysAddrRange;

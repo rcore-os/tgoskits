@@ -20,7 +20,7 @@ hv = ["somehal/hv", "ax-cpu/arm-el2"]
 
 [dependencies]
 ax-cpu.workspace = true
-ax-drivers = { workspace = true, features = ["fdt", "pci-fdt"] }
+ax-driver = { workspace = true, features = ["fdt", "pci-fdt"] }
 ax-errno.workspace = true
 axklib.workspace = true
 ax-plat.workspace = true

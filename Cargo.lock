@@ -227,7 +227,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 name = "arceos-affinity"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -236,7 +236,7 @@ dependencies = [
 name = "arceos-backtrace"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
  "axbacktrace",
@@ -246,7 +246,7 @@ dependencies = [
 name = "arceos-backtrace-raw-badfp"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
  "axbacktrace",
@@ -256,7 +256,7 @@ dependencies = [
 name = "arceos-backtrace-raw-basic"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
  "axbacktrace",
@@ -266,7 +266,7 @@ dependencies = [
 name = "arceos-backtrace-raw-normal"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
  "axbacktrace",
@@ -276,7 +276,7 @@ dependencies = [
 name = "arceos-display"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
  "embedded-graphics",
@@ -286,7 +286,7 @@ dependencies = [
 name = "arceos-exception"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -296,7 +296,7 @@ name = "arceos-fs-shell"
 version = "0.3.1"
 dependencies = [
  "ax-crate-interface",
- "ax-drivers",
+ "ax-driver",
  "ax-fs-ramfs",
  "ax-fs-vfs",
  "ax-hal",
@@ -307,7 +307,7 @@ dependencies = [
 name = "arceos-ipi"
 version = "0.3.0"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -316,7 +316,7 @@ dependencies = [
 name = "arceos-irq"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -325,7 +325,7 @@ dependencies = [
 name = "arceos-lockdep"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-kspin",
  "ax-std",
@@ -335,7 +335,7 @@ dependencies = [
 name = "arceos-memtest"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
  "rand 0.8.6",
@@ -345,7 +345,7 @@ dependencies = [
 name = "arceos-net-echoserver"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -354,7 +354,7 @@ dependencies = [
 name = "arceos-net-httpclient"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-io",
  "ax-std",
@@ -364,7 +364,7 @@ dependencies = [
 name = "arceos-net-httpserver"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -373,7 +373,7 @@ dependencies = [
 name = "arceos-net-udpserver"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -382,7 +382,7 @@ dependencies = [
 name = "arceos-parallel"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
  "rand 0.8.6",
@@ -392,7 +392,7 @@ dependencies = [
 name = "arceos-priority"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -406,7 +406,7 @@ name = "arceos-rust-interface"
 version = "1.0.2"
 dependencies = [
  "ax-api",
- "ax-drivers",
+ "ax-driver",
  "ax-errno",
  "ax-feat",
  "ax-hal",
@@ -422,7 +422,7 @@ dependencies = [
 name = "arceos-sleep"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -486,7 +486,7 @@ dependencies = [
 name = "arceos-tls"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -495,7 +495,7 @@ dependencies = [
 name = "arceos-wait-queue"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -504,7 +504,7 @@ dependencies = [
 name = "arceos-yield"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -839,7 +839,50 @@ dependencies = [
 name = "ax-driver"
 version = "0.5.15"
 dependencies = [
- "ax-drivers",
+ "anyhow",
+ "arm-scmi-rs",
+ "ax-alloc",
+ "ax-arm-pl031",
+ "ax-crate-interface",
+ "ax-errno",
+ "ax-kernel-guard",
+ "ax-kspin",
+ "axklib",
+ "bcm2835-sdhci",
+ "crab-usb",
+ "dma-api",
+ "dwmmc-host",
+ "eth-intel",
+ "fdt-edit",
+ "fxmac_rs",
+ "heapless 0.9.3",
+ "ixgbe-driver",
+ "log",
+ "mmio-api",
+ "pcie",
+ "ramdisk",
+ "rd-block",
+ "rd-net",
+ "rdif-clk",
+ "rdif-display",
+ "rdif-input",
+ "rdif-intc",
+ "rdif-pcie",
+ "rdif-vsock",
+ "rdrive",
+ "realtek-rtl8125",
+ "rk3588-pci",
+ "rockchip-npu",
+ "rockchip-pm",
+ "rockchip-soc",
+ "sdhci-host",
+ "sdmmc-protocol",
+ "sg200x-bsp",
+ "simple-ahci",
+ "simple-sdmmc",
+ "some-serial",
+ "spin 0.10.0",
+ "virtio-drivers",
 ]
 
 [[package]]
@@ -913,56 +956,6 @@ version = "0.3.12"
 dependencies = [
  "ax-driver-base",
  "log",
-]
-
-[[package]]
-name = "ax-drivers"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arm-scmi-rs",
- "ax-alloc",
- "ax-arm-pl031",
- "ax-crate-interface",
- "ax-errno",
- "ax-kernel-guard",
- "ax-kspin",
- "axklib",
- "bcm2835-sdhci",
- "crab-usb",
- "dma-api",
- "dwmmc-host",
- "eth-intel",
- "fdt-edit",
- "fxmac_rs",
- "heapless 0.9.3",
- "ixgbe-driver",
- "log",
- "mmio-api",
- "pcie",
- "ramdisk",
- "rd-block",
- "rd-net",
- "rdif-clk",
- "rdif-display",
- "rdif-input",
- "rdif-intc",
- "rdif-pcie",
- "rdif-vsock",
- "rdrive",
- "realtek-rtl8125",
- "rk3588-pci",
- "rockchip-npu",
- "rockchip-pm",
- "rockchip-soc",
- "sdhci-host",
- "sdmmc-protocol",
- "sg200x-bsp",
- "simple-ahci",
- "simple-sdmmc",
- "some-serial",
- "spin 0.10.0",
- "virtio-drivers",
 ]
 
 [[package]]
@@ -1108,7 +1101,7 @@ version = "0.3.7"
 name = "ax-helloworld"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -1117,7 +1110,7 @@ dependencies = [
 name = "ax-helloworld-myplat"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-plat-aarch64-bsta1000b",
  "ax-plat-aarch64-phytium-pi",
@@ -1134,7 +1127,7 @@ dependencies = [
 name = "ax-httpclient"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -1143,7 +1136,7 @@ dependencies = [
 name = "ax-httpserver"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -1208,7 +1201,7 @@ version = "0.4.7"
 name = "ax-libc"
 version = "0.5.14"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-errno",
  "ax-feat",
  "ax-hal",
@@ -1572,7 +1565,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-ctor-bare",
  "ax-display",
- "ax-drivers",
+ "ax-driver",
  "ax-errno",
  "ax-fs",
  "ax-fs-ng",
@@ -1611,7 +1604,7 @@ dependencies = [
 name = "ax-shell"
 version = "0.3.1"
 dependencies = [
- "ax-drivers",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -1848,7 +1841,7 @@ name = "axplat-dyn"
 version = "0.6.1"
 dependencies = [
  "ax-cpu",
- "ax-drivers",
+ "ax-driver",
  "ax-errno",
  "ax-memory-addr",
  "ax-percpu",
@@ -2008,7 +2001,7 @@ dependencies = [
  "ax-config",
  "ax-cpumask",
  "ax-crate-interface",
- "ax-drivers",
+ "ax-driver",
  "ax-errno",
  "ax-hal",
  "ax-kernel-guard",
@@ -7821,7 +7814,7 @@ dependencies = [
  "ax-config",
  "ax-display",
  "ax-dma",
- "ax-drivers",
+ "ax-driver",
  "ax-errno",
  "ax-feat",
  "ax-fs-ng",
@@ -7933,7 +7926,7 @@ name = "starryos"
 version = "0.5.11"
 dependencies = [
  "anyhow",
- "ax-drivers",
+ "ax-driver",
  "ax-feat",
  "ax-hal",
  "ax-plat-riscv64-sg2002",

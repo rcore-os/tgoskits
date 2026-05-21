@@ -81,7 +81,7 @@
 
 ### 主要消费者
 - `components/axdriver_crates/axdriver_virtio`
-- `os/arceos/modules/axdriver`
+- `drivers/ax-driver`
 - `os/arceos/modules/axinput`
 - `os/StarryOS/kernel/src/pseudofs/dev/event.rs`
 

@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / 块设备类别接口层
 > 版本：`0.1.4-preview.3`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/ramdisk.rs`、`src/ramdisk_static.rs`、`src/sdmmc.rs`、`src/bcm2835sdhci.rs`、`os/arceos/modules/axdriver/src/drivers.rs`、`platform/axplat-dyn/src/drivers/blk/mod.rs`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/ramdisk.rs`、`src/ramdisk_static.rs`、`src/sdmmc.rs`、`src/bcm2835sdhci.rs`、`drivers/ax-driver/src/drivers.rs`、`platform/axplat-dyn/src/drivers/blk/mod.rs`
 
 `axdriver_block` 不是文件系统，也不是块缓存层。它的真实定位是 ArceOS 驱动栈里的块设备类别接口 crate：一方面定义统一的 `BlockDriverOps`，另一方面在 feature 打开时提供少量叶子块设备实现，例如 `ramdisk`、`sdmmc`、`bcm2835-sdhci` 和 `ahci`。上层 `ax-driver` 负责探测与聚合，`ax-fs`/`ax-fs-ng` 才是消费块设备并组织文件系统语义的地方。
 
@@ -60,7 +60,7 @@
 - 将外部 `SDHCIError` 映射回统一的 `DevError`。
 
 ### 1.4 与 `ax-driver` 聚合层的接线关系
-在当前仓库中，真正把这些实现接进系统初始化流程的是 `os/arceos/modules/axdriver/src/drivers.rs`：
+在当前仓库中，真正把这些实现接进系统初始化流程的是 `drivers/ax-driver/src/drivers.rs`：
 
 - `ramdisk` 通过 `RamDiskDriver::probe_global()` 创建固定大小 16 MiB RAM 盘。
 - `sdmmc` 通过 `SdMmcDriver::new()` 使用 `ax_config::devices::SDMMC_PADDR` 对应寄存器基址。
@@ -107,7 +107,7 @@
 | `log` | 初始化与错误日志 |
 
 ### 主要消费者
-- `os/arceos/modules/axdriver`
+- `drivers/ax-driver`
 - `components/axdriver_crates/axdriver_virtio`
 - `platform/axplat-dyn`
 - `os/arceos/modules/axfs`
@@ -129,7 +129,7 @@
 
 ### 4.2 新增实现时必须同步检查的地方
 1. `Cargo.toml` 的 feature 和可选依赖。
-2. `os/arceos/modules/axdriver/src/drivers.rs` 是否真的注册了 probe 路径。
+2. `drivers/ax-driver/src/drivers.rs` 是否真的注册了 probe 路径。
 3. `ax-feat` 顶层 feature 是否需要把该驱动能力暴露给整机配置。
 4. 读写接口对块大小、缓冲区长度和对齐的约束是否写清楚。
 

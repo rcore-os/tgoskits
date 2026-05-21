@@ -37,7 +37,7 @@
 #[macro_use]
 extern crate ax_log;
 
-extern crate ax_drivers as _;
+extern crate ax_driver as _;
 
 #[cfg(all(target_os = "none", not(test)))]
 mod lang_items;

@@ -4,9 +4,9 @@ env = {}
 features = [
   "ax-hal/plat-dyn",
   "starry-kernel/plat-dyn",
-  "ax-drivers/rockchip-soc",
-  "ax-drivers/rockchip-dwc-xhci",
-  "ax-drivers/rockchip-sdhci",
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-sdhci",
 ]
 log = "Info"
 max_cpu_num = 1

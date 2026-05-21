@@ -469,8 +469,8 @@ HELLO = "world"
             features: vec![
                 "common".to_string(),
                 "ax-feat/plat-dyn".to_string(),
-                "ax-drivers/rockchip-soc".to_string(),
-                "ax-drivers/rockchip-sdhci".to_string(),
+                "ax-driver/rockchip-soc".to_string(),
+                "ax-driver/rockchip-sdhci".to_string(),
             ],
             log: LogLevel::Info,
             max_cpu_num: Some(8),
@@ -490,12 +490,12 @@ HELLO = "world"
         assert!(
             cargo
                 .features
-                .contains(&"ax-drivers/rockchip-soc".to_string())
+                .contains(&"ax-driver/rockchip-soc".to_string())
         );
         assert!(
             cargo
                 .features
-                .contains(&"ax-drivers/rockchip-sdhci".to_string())
+                .contains(&"ax-driver/rockchip-sdhci".to_string())
         );
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));

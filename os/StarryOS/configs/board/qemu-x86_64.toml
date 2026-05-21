@@ -4,11 +4,11 @@ log = "Warn"
 features = [
   "ax-hal/x86-pc",
   "qemu",
-  "ax-drivers/pci",
-  "ax-drivers/virtio-blk",
-  "ax-drivers/virtio-net",
-  "ax-drivers/virtio-gpu",
-  "ax-drivers/virtio-input",
-  "ax-drivers/virtio-socket",
+  "ax-driver/pci",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
 ]
 plat_dyn = false

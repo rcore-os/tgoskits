@@ -8,7 +8,7 @@ publish = false
 ax-std = ["dep:ax-std"]
 
 [dependencies]
-ax-drivers.workspace = true
+ax-driver.workspace = true
 ax-hal.workspace = true
 ax-std = { workspace = true, optional = true, features = ["paging", "backtrace"] }
 axbacktrace = { workspace = true }

@@ -414,7 +414,7 @@ impl UsbFsManager {
             };
 
             for (device_id, bus_num) in pending_hosts {
-                let host = match rdrive::get::<ax_drivers::usb::PlatformUsbHost>(device_id) {
+                let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
                     Ok(host) => host,
                     Err(err) => {
                         warn!(
@@ -699,7 +699,7 @@ impl UsbFsManager {
 
     #[cfg(target_os = "none")]
     fn open_device(&self, host_device_id: RDriveDeviceId, info: &DeviceInfo) -> AxResult<Device> {
-        let host = rdrive::get::<ax_drivers::usb::PlatformUsbHost>(host_device_id)
+        let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
         let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
         ax_task::future::block_on(guard.host_mut().open_device(info)).map_err(|err| {
@@ -721,7 +721,7 @@ impl UsbFsManager {
 
     #[cfg(target_os = "none")]
     fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> AxResult<()> {
-        let host = rdrive::get::<ax_drivers::usb::PlatformUsbHost>(host_device_id)
+        let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
         let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
         let devices =
@@ -1173,7 +1173,7 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
         let mut failed_device_ids = Vec::new();
 
         for (device_id, bus_num, irq_num) in hosts {
-            let host = match rdrive::get::<ax_drivers::usb::PlatformUsbHost>(device_id) {
+            let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
                 Ok(host) => host,
                 Err(err) => {
                     warn!(
@@ -1317,7 +1317,7 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
     }
     #[cfg(target_os = "none")]
     {
-        let hosts = rdrive::get_list::<ax_drivers::usb::PlatformUsbHost>();
+        let hosts = rdrive::get_list::<ax_driver::usb::PlatformUsbHost>();
         let mut initialized_hosts = Vec::new();
         let mut irq_slots = Vec::new();
 

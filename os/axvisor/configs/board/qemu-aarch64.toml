@@ -2,7 +2,7 @@ env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
   "ax-hal/plat-dyn",
     "ept-level-4",
-    "ax-drivers/virtio-blk",
+    "ax-driver/virtio-blk",
     "fs",
 ]
 log = "Info"

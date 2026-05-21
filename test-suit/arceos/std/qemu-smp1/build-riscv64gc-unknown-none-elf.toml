@@ -1,9 +1,9 @@
 std = true
 features = [
   "ax-hal/riscv64-qemu-virt",
-  "ax-drivers/pci",
-  "ax-drivers/virtio-blk",
-  "ax-drivers/virtio-net",
+  "ax-driver/pci",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
 ]
 log = "Info"
 max_cpu_num = 1

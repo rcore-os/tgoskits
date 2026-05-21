@@ -84,7 +84,7 @@
 
 ### 主要消费者
 - `components/axdriver_crates/axdriver_virtio`
-- `os/arceos/modules/axdriver`
+- `drivers/ax-driver`
 - `os/arceos/modules/axnet-ng`
 
 ### 3.3 分层关系总结

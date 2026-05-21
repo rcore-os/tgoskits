@@ -283,8 +283,8 @@ fn get_log_level(feature_list: &str) -> &str {
 fn map_nested_feature(feature: &str) -> String {
     if let Some(rest) = feature.strip_prefix("ax_hal/") {
         format!("ax-hal/{rest}")
-    } else if let Some(rest) = feature.strip_prefix("ax_drivers/") {
-        format!("ax-drivers/{rest}")
+    } else if let Some(rest) = feature.strip_prefix("ax_driver/") {
+        format!("ax-driver/{rest}")
     } else {
         feature.to_string()
     }

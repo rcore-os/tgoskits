@@ -494,7 +494,7 @@ pub(crate) fn prepare_std_build_env(
 fn pass_std_build_nested_features(envs: &mut HashMap<String, String>, features: &[String]) {
     let nested = features
         .iter()
-        .filter(|feature| feature.starts_with("ax-hal/") || feature.starts_with("ax-drivers/"))
+        .filter(|feature| feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/"))
         .cloned()
         .collect::<Vec<_>>();
     if nested.is_empty() {

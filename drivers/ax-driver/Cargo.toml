@@ -1,6 +1,6 @@
 [package]
-name = "ax-drivers"
-version = "0.1.0"
+name = "ax-driver"
+version = "0.6.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 description = "ArceOS rdrive driver registration and rdif binding collection"
 
 [lib]
-name = "ax_drivers"
+name = "ax_driver"
 
 [features]
 default = []

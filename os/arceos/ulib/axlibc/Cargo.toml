@@ -55,7 +55,7 @@ select = ["ax-posix-api/select"]
 epoll = ["ax-posix-api/epoll"]
 
 [dependencies]
-ax-drivers.workspace = true
+ax-driver.workspace = true
 ax-hal.workspace = true
 ax-posix-api.workspace = true
 ax-errno.workspace = true

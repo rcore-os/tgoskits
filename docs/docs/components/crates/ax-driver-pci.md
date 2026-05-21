@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / PCI 总线访问层
 > 版本：`0.1.4-preview.3`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`os/arceos/modules/axdriver/src/bus/pci.rs`、`os/arceos/modules/axdriver/src/virtio.rs`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`drivers/ax-driver/src/bus/pci.rs`、`drivers/ax-driver/src/virtio.rs`
 
 `ax-driver-pci` 的定位非常清晰：它是 `ax-driver` 体系里的 PCI 总线访问辅助层。它不负责把设备按类别聚合，也不负责实现具体网卡、块设备或显示设备驱动；它提供的是 PCI 配置空间相关类型的统一来源，以及一个很小但很关键的 `PciRangeAllocator`，供上层为未分配地址的 PCI BAR 安排 MMIO 窗口。
 
@@ -14,7 +14,7 @@
 
 - 绝大多数 PCI 相关类型直接从 `virtio_drivers::transport::pci::bus` 再导出。
 - 本 crate 自己真正新增的核心对象只有 `PciRangeAllocator`。
-- 真正的 PCI 枚举、BAR 配置和驱动派发逻辑在 `os/arceos/modules/axdriver/src/bus/pci.rs`。
+- 真正的 PCI 枚举、BAR 配置和驱动派发逻辑在 `drivers/ax-driver/src/bus/pci.rs`。
 
 因此它更像是 ArceOS 驱动栈里的“PCI 公共类型与分配辅助层”，而不是独立 PCI 子系统。
 
@@ -38,7 +38,7 @@
 它本质上是一个顺序递增分配器，适合 BAR 窗口这种“启动期一次性分配、运行期不回收”的场景。
 
 ### 1.4 在 `ax-driver` 中的真实调用方式
-在 `os/arceos/modules/axdriver/src/bus/pci.rs` 里，PCI 探测主线如下：
+在 `drivers/ax-driver/src/bus/pci.rs` 里，PCI 探测主线如下：
 
 1. 用 `PciRoot::new(..., Cam::Ecam)` 打开 ECAM。
 2. 从 `ax_config::devices::PCI_RANGES` 取出 32 位 MMIO 窗口，创建 `PciRangeAllocator`。
@@ -54,7 +54,7 @@
 - `ax-driver` 才负责“枚举和派发”。
 
 ### 1.5 与 VirtIO 路径的关系
-`ax_driver_virtio::probe_pci_device()` 和 `os/arceos/modules/axdriver/src/virtio.rs` 会继续基于 `PciRoot`、`DeviceFunction`、`DeviceFunctionInfo` 做 VirtIO PCI 设备识别。因此 `ax-driver-pci` 也是 VirtIO PCI 探测路径的底层依赖。
+`ax_driver_virtio::probe_pci_device()` 和 `drivers/ax-driver/src/virtio.rs` 会继续基于 `PciRoot`、`DeviceFunction`、`DeviceFunctionInfo` 做 VirtIO PCI 设备识别。因此 `ax-driver-pci` 也是 VirtIO PCI 探测路径的底层依赖。
 
 ### 1.6 边界澄清
 最关键的边界是：**`ax-driver-pci` 是 PCI 总线访问辅助层，不是通用驱动聚合层，也不是完整的 PCI 设备管理子系统。**
@@ -83,8 +83,8 @@
 | `virtio-drivers` | 提供 PCI bus 访问类型和实现 |
 
 ### 主要消费者
-- `os/arceos/modules/axdriver/src/bus/pci.rs`
-- `os/arceos/modules/axdriver/src/virtio.rs`
+- `drivers/ax-driver/src/bus/pci.rs`
+- `drivers/ax-driver/src/virtio.rs`
 
 ### 3.3 分层关系总结
 - 向下：依赖 `virtio-drivers` 的 PCI bus 实现。
@@ -102,7 +102,7 @@
 如果只是新增某类 PCI 设备驱动，通常应修改 `ax-driver` 或对应设备 crate，而不是这里。
 
 ### 4.2 修改时要同步检查的地方
-1. `os/arceos/modules/axdriver/src/bus/pci.rs` 的枚举和 BAR 配置逻辑。
+1. `drivers/ax-driver/src/bus/pci.rs` 的枚举和 BAR 配置逻辑。
 2. `ax_config::devices::PCI_ECAM_BASE`、`PCI_RANGES`、`PCI_BUS_END` 等平台配置。
 3. `ax-driver-virtio` 的 PCI 探测路径是否仍与类型再导出保持一致。
 

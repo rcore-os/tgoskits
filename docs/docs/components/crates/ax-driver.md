@@ -1,6 +1,6 @@
 # `ax-driver`
 
-> 路径：`os/arceos/modules/axdriver`
+> 路径：`drivers/ax-driver`
 > 类型：库 crate
 > 分层：ArceOS 层 / ArceOS 内核模块
 > 版本：`0.3.0-preview.3`

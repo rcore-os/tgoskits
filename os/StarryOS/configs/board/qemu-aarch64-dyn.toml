@@ -1,12 +1,12 @@
 env = {}
 features = [
   "ax-hal/plat-dyn",
-  "ax-drivers/virtio-blk",
-  "ax-drivers/virtio-net",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
   "starry-kernel/input",
   "starry-kernel/plat-dyn",
   "starry-kernel/vsock",
-  "ax-drivers/intel-net",
+  "ax-driver/intel-net",
 ]
 log = "Warn"
 plat_dyn = true

@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / VirtIO 传输与设备适配层
 > 版本：`0.1.4-preview.3`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/blk.rs`、`src/net.rs`、`src/gpu.rs`、`src/input.rs`、`src/socket.rs`、`os/arceos/modules/axdriver/src/virtio.rs`、`platform/axplat-dyn/src/drivers/blk/mod.rs`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/blk.rs`、`src/net.rs`、`src/gpu.rs`、`src/input.rs`、`src/socket.rs`、`drivers/ax-driver/src/virtio.rs`、`platform/axplat-dyn/src/drivers/blk/mod.rs`
 
 `ax-driver-virtio` 负责把 `virtio-drivers` crate 中的具体设备包装成 `axdriver_*` 系列接口。它既不是全局驱动聚合层，也不是总线枚举层，而是位于两者之间的 “VirtIO 设备适配层”：上接 `axdriver_block` / `axdriver_net` / `axdriver_display` / `axdriver_input` / `axdriver_vsock` 的类别 trait，下接 `virtio-drivers` 的 MMIO/PCI transport 与设备对象。
 
@@ -55,7 +55,7 @@
 - `VirtIoSocketDev` 把底层 vsock 事件翻译成 `VsockDriverEvent`。
 
 ### 1.5 与 `ax-driver` 的配合方式
-在 `os/arceos/modules/axdriver/src/virtio.rs` 中，ArceOS 进一步定义了：
+在 `drivers/ax-driver/src/virtio.rs` 中，ArceOS 进一步定义了：
 
 - `VirtIoDevMeta`：为每种 VirtIO 设备绑定 `DeviceType`、具体 `Device` 类型和 `try_new()`。
 - `VirtIoDriver<D>`：实现 `DriverProbe`，把 MMIO/PCI 识别结果转成 `AxDeviceEnum`。
@@ -70,7 +70,7 @@
 - 再构造 `VirtIoBlkDev`；
 - 最终把它包装成实现 `BlockDriverOps` 的动态块设备。
 
-这说明 `ax-driver-virtio` 不是只服务 `os/arceos/modules/axdriver` 一家，它也可以被其它平台 glue 层直接拿来做设备包装。
+这说明 `ax-driver-virtio` 不是只服务 `drivers/ax-driver` 一家，它也可以被其它平台 glue 层直接拿来做设备包装。
 
 ### 1.7 当前实现中的现实细节
 - `probe_pci_device()` 会按架构计算一个 `PCI_IRQ_BASE + (bdf.device & 3)` 的 IRQ 号，这是一套仓库内约定，而不是 VirtIO 规范本身。
@@ -118,7 +118,7 @@
 | `log` | 初始化和错误日志 |
 
 ### 主要消费者
-- `os/arceos/modules/axdriver`
+- `drivers/ax-driver`
 - `platform/axplat-dyn`
 
 ### 3.3 分层关系总结
@@ -130,8 +130,8 @@
 ### 4.1 新增一种 VirtIO 设备支持时要改哪些地方
 1. 在本 crate 中新增对应模块，实现目标 `*DriverOps`。
 2. 在 `lib.rs` 中加 feature、导出和 `as_dev_type()` 映射。
-3. 在 `os/arceos/modules/axdriver/src/virtio.rs` 中补 `VirtIoDevMeta`。
-4. 在 `os/arceos/modules/axdriver/src/drivers.rs` 中注册对应类别驱动。
+3. 在 `drivers/ax-driver/src/virtio.rs` 中补 `VirtIoDevMeta`。
+4. 在 `drivers/ax-driver/src/drivers.rs` 中注册对应类别驱动。
 5. 若需要顶层 feature，还要同步 `ax-driver/Cargo.toml` 和 `ax-feat/Cargo.toml`。
 
 ### 4.2 HAL 接入注意事项

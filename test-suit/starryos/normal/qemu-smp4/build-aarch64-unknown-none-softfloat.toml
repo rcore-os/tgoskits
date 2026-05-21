@@ -2,12 +2,12 @@ env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
 features = [
   "ax-hal/aarch64-qemu-virt",
   "qemu",
-  "ax-drivers/pci",
-  "ax-drivers/virtio-blk",
-  "ax-drivers/virtio-net",
-  "ax-drivers/virtio-gpu",
-  "ax-drivers/virtio-input",
-  "ax-drivers/virtio-socket",
+  "ax-driver/pci",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
 ]
 max_cpu_num = 4
 log = "Warn"

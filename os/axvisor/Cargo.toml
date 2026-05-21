@@ -79,7 +79,7 @@ ax-page-table-multiarch = { workspace = true }
 ax-percpu = { workspace = true, features = ["arm-el2", "non-zero-vma"] }
 rdif-intc.workspace = true
 rdrive.workspace = true
-ax-drivers.workspace = true
+ax-driver.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-config = { workspace = true, features = ["plat-dyn"] }

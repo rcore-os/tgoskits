@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / 驱动共性契约层
 > 版本：`0.1.4-preview.3`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`os/arceos/modules/axdriver/src/prelude.rs`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`drivers/ax-driver/src/prelude.rs`
 
 `ax-driver-base` 是整个 `axdriver_crates` 体系的最小公共基座。它不负责探测设备、枚举总线、管理 DMA，也不组织 `AllDevices` 这样的设备聚合对象；它只把所有驱动都必须共享的设备分类、错误模型和基础元信息接口集中定义出来，供 `axdriver_block`、`axdriver_net`、`axdriver_display`、`axdriver_input`、`axdriver_vsock` 以及上层 `ax-driver` 聚合层复用。
 
@@ -88,7 +88,7 @@
 - `axdriver_net`
 - `axdriver_vsock`
 - `ax-driver-virtio`
-- `os/arceos/modules/axdriver`
+- `drivers/ax-driver`
 - `platform/axplat-dyn` 的动态块设备适配路径
 
 ### 3.3 关系总结

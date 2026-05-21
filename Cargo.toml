@@ -124,7 +124,7 @@ members = [
     "drivers/blk/dwmmc-host",
     "drivers/blk/sdhci-host",
     "drivers/blk/sdmmc-protocol",
-    "drivers/ax-drivers",
+    "drivers/ax-driver",
     "drivers/examples/enumerate",
     "drivers/intc/arm-gic-driver",
     "drivers/interface/rdif-base",
@@ -184,7 +184,6 @@ members = [
     "os/arceos/modules/axconfig",
     "os/arceos/modules/axdisplay",
     "os/arceos/modules/axdma",
-    "os/arceos/modules/axdriver",
     "os/arceos/modules/axfs",
     "os/arceos/modules/axfs-ng",
     "os/arceos/modules/axhal",
@@ -289,8 +288,7 @@ ax-ctor-bare = { version = "0.4.8", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4.8", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.5.13", path = "os/arceos/modules/axdisplay" }
 ax-dma = { version = "0.5.14", path = "os/arceos/modules/axdma" }
-ax-driver = { version = "0.5.15", path = "os/arceos/modules/axdriver" }
-ax-drivers = { version = "0.1.0", path = "drivers/ax-drivers" }
+ax-driver = { version = "0.5.15", path = "drivers/ax-driver" }
 ax-driver-base = { version = "0.3.12", path = "components/axdriver_crates/axdriver_base" }
 ax-driver-block = { version = "0.3.13", path = "components/axdriver_crates/axdriver_block" }
 ax-driver-display = { version = "0.3.12", path = "components/axdriver_crates/axdriver_display" }

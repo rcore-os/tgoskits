@@ -124,7 +124,7 @@ flowchart TB
 | `ax-ctor-bare-macros` | 组件层 | `components/ctor_bare/ctor_bare_macros` | 0 | 1 | [查看](crates/ax-ctor-bare-macros) |
 | `ax-display` | ArceOS 层 | `os/arceos/modules/axdisplay` | 3 | 4 | [查看](crates/ax-display) |
 | `ax-dma` | ArceOS 层 | `os/arceos/modules/axdma` | 7 | 2 | [查看](crates/ax-dma) |
-| `ax-driver` | ArceOS 层 | `os/arceos/modules/axdriver` | 15 | 10 | [查看](crates/ax-driver) |
+| `ax-driver` | ArceOS 层 | `drivers/ax-driver` | 15 | 10 | [查看](crates/ax-driver) |
 | `ax-driver-base` | 组件层 | `components/axdriver_crates/axdriver_base` | 0 | 8 | [查看](crates/ax-driver-base) |
 | `ax-driver-block` | 组件层 | `components/axdriver_crates/axdriver_block` | 1 | 3 | [查看](crates/ax-driver-block) |
 | `ax-driver-display` | 组件层 | `components/axdriver_crates/axdriver_display` | 1 | 2 | [查看](crates/ax-driver-display) |

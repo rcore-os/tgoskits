@@ -7,6 +7,6 @@ description = "A simple demo to test the wait queue for tasks under ArceOS"
 publish = false
 
 [dependencies]
-ax-drivers.workspace = true
+ax-driver.workspace = true
 ax-hal.workspace = true
 ax-std = { workspace = true, features = ["multitask", "irq"], optional = true }
