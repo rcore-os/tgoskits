@@ -30,8 +30,7 @@ pub fn sys_init_module(module_ptr: *const u8, len: usize, param_ptr: *const u8) 
 
     warn!(
         "[sys_init_module]: module_len={}, params={:?}",
-        len,
-        param_buf
+        len, param_buf
     );
     crate::kmod::init_module(&module_data, param_buf.as_deref())?;
     Ok(0)
