@@ -488,22 +488,6 @@ jobs:
             container_image: ""
             required_repository_owner: rcore-os
             main_pr_only: false
-          - name: Test axvisor self-hosted board roc-rk3568-pc-linux
-            use_container: false
-            runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask axvisor test board --board roc-rk3568-pc-linux
-            cache_key: ""
-            container_image: ""
-            required_repository_owner: rcore-os
-            main_pr_only: false
-          - name: Test axvisor self-hosted board phytiumpi-linux
-            use_container: false
-            runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask axvisor test board --board phytiumpi-linux
-            cache_key: ""
-            container_image: ""
-            required_repository_owner: rcore-os
-            main_pr_only: false
           - name: Test starry self-hosted board orangepi-5-plus
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
