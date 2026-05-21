@@ -945,6 +945,7 @@ dependencies = [
  "ax-fs-vfs",
  "ax-hal",
  "ax-io",
+ "ax-kspin",
  "ax-lazyinit",
  "axfatfs",
  "log",

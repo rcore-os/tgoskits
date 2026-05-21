@@ -27,8 +27,8 @@ use alloc::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_vfs::{VfsDirEntry, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType, VfsOps, VfsResult};
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_lazyinit::LazyInit;
-use spin::Mutex;
 
 use crate::{
     api::FileType,
