@@ -9,7 +9,6 @@ static mut BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];
 static mut BOOT_PT_SV39: Aligned4K<[u64; 512]> = Aligned4K::new([0; 512]);
 
 const DTB_HEADER_MAGIC: u32 = 0xd00d_feed;
-const DTB_MAGIC_OFFSET: usize = 0;
 const DTB_TOTAL_SIZE_OFFSET: usize = 4;
 const DTB_RELOC_BUF_SIZE: usize = 0x40_000;
 
@@ -22,12 +21,18 @@ unsafe fn init_boot_page_table() {
     unsafe {
         // 0x0000_0000..0x4000_0000, VRWX_GAD, 1G block
         BOOT_PT_SV39[0] = (0x0 << 10) | 0xef;
-        // 0x8000_0000..0xc000_0000, VRWX_GAD, 1G block
+        // 0x8000_0000..0xc000_0000, VRWX_GAD, 4G block
         BOOT_PT_SV39[2] = (0x80000 << 10) | 0xef;
+        BOOT_PT_SV39[3] = (0xC0000 << 10) | 0xef;
+        BOOT_PT_SV39[4] = (0x100000 << 10) | 0xef;
+        BOOT_PT_SV39[5] = (0x140000 << 10) | 0xef;
         // 0xffff_ffc0_0000_0000..0xffff_ffc0_4000_0000, VRWX_GAD, 1G block
         BOOT_PT_SV39[0x100] = (0x0 << 10) | 0xef;
         // 0xffff_ffc0_8000_0000..0xffff_ffc0_c000_0000, VRWX_GAD, 1G block
         BOOT_PT_SV39[0x102] = (0x80000 << 10) | 0xef;
+        BOOT_PT_SV39[0x103] = (0xC0000 << 10) | 0xef;
+        BOOT_PT_SV39[0x104] = (0x100000 << 10) | 0xef;
+        BOOT_PT_SV39[0x105] = (0x140000 << 10) | 0xef;
     }
 }
 
@@ -38,19 +43,18 @@ unsafe fn init_mmu() {
     }
 }
 
-fn read_dtb_header_field(dtb: *const u8, offset: usize) -> u32 {
-    let field = unsafe { core::ptr::read_unaligned(dtb.add(offset).cast::<u32>()) };
-    u32::from_be(field)
-}
-
-fn relocate_dtb(dtb_paddr: usize) -> usize {
+unsafe fn relocate_dtb(dtb_paddr: usize) -> usize {
     if dtb_paddr == 0 {
         return 0;
     }
 
-    let dtb = dtb_paddr as *const u8;
-    let magic = read_dtb_header_field(dtb, DTB_MAGIC_OFFSET);
-    let total_size = read_dtb_header_field(dtb, DTB_TOTAL_SIZE_OFFSET) as usize;
+    let header_ptr = dtb_paddr as *const u8;
+    let magic = unsafe { core::ptr::read_unaligned(header_ptr.cast::<u32>()) };
+    let total_size =
+        unsafe { core::ptr::read_unaligned(header_ptr.add(DTB_TOTAL_SIZE_OFFSET).cast::<u32>()) };
+
+    let magic = u32::from_be(magic);
+    let total_size = u32::from_be(total_size) as usize;
 
     assert_eq!(magic, DTB_HEADER_MAGIC, "invalid DTB magic: {magic:#x}");
     assert!(
@@ -59,7 +63,11 @@ fn relocate_dtb(dtb_paddr: usize) -> usize {
     );
 
     unsafe {
-        core::ptr::copy_nonoverlapping(dtb, (&raw mut DTB_RELOC_BUF).cast::<u8>(), total_size);
+        core::ptr::copy_nonoverlapping(
+            header_ptr,
+            (&raw mut DTB_RELOC_BUF).cast::<u8>(),
+            total_size,
+        );
     }
 
     &raw const DTB_RELOC_BUF as usize
@@ -99,9 +107,9 @@ unsafe extern "C" fn _start() -> ! {
         phys_virt_offset = const PHYS_VIRT_OFFSET,
         boot_stack_size = const BOOT_STACK_SIZE,
         boot_stack = sym BOOT_STACK,
-        relocate_dtb = sym relocate_dtb,
         init_boot_page_table = sym init_boot_page_table,
         init_mmu = sym init_mmu,
+        relocate_dtb = sym relocate_dtb,
         entry = sym ax_plat::call_main,
     )
 }
