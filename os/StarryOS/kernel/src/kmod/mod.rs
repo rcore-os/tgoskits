@@ -1,0 +1,205 @@
+//! Loadable Kernel Module (LKM) loader and helper glue.
+//!
+//! Ported from `Starry-OS/StarryOS:ebpf-kmod` (`kernel/src/kmod/`). The
+//! source enabled only the `kprint` shim file inline (`#[path =
+//! "shim/kprint.rs"]`); the block / mq / xarray shims under
+//! `kmod/shim/` were committed but left commented out as in-progress
+//! null_blk work. We mirror that scope: this PR ships `kmod/mod.rs` +
+//! `kmod/kprint.rs` only. Full block / mq shims are out of scope for the
+//! MVP completion criteria (`init_module`/`delete_module`/`finit_module`
+//! loading an empty module).
+//!
+//! Package-name imports adapted to tgoskits (`axhal` → `ax_hal`,
+//! `axalloc` → `ax_alloc`, `axmm` → `ax_mm`, `kspin` → `ax_kspin`) per
+//! `crate-fork-audit.md §6`. KALLSYMS lookup goes through the in-kernel
+//! `.kallsyms` blob (`crate::pseudofs::proc::KALLSYMS`), the same table
+//! `perf::kprobe` resolves names against.
+
+mod kprint;
+
+use alloc::{
+    boxed::Box,
+    collections::btree_map::BTreeMap,
+    ffi::CString,
+    string::{String, ToString},
+};
+
+use ax_alloc::{UsageKind, global_allocator};
+use ax_errno::{AxError, AxResult};
+use ax_hal::{
+    asm::flush_tlb,
+    mem::{phys_to_virt, virt_to_phys},
+    paging::{MappingFlags, PageSize},
+};
+use ax_kspin::SpinNoPreempt;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
+use kmod_loader::{KernelModuleHelper, ModuleLoader, ModuleOwner, SectionMemOps};
+
+/// Marker type that satisfies `kmod_loader::KernelModuleHelper`. Stateless —
+/// every operation reaches into the tgoskits subsystems directly.
+pub struct KmodHelper;
+
+fn section_perms_to_mapping_flags(perms: kmod_loader::SectionPerm) -> MappingFlags {
+    let mut flags = MappingFlags::empty();
+    if perms.contains(kmod_loader::SectionPerm::READ) {
+        flags |= MappingFlags::READ;
+    }
+    if perms.contains(kmod_loader::SectionPerm::WRITE) {
+        flags |= MappingFlags::WRITE;
+    }
+    // Source keeps WRITE always-on regardless of `perms`; preserved here
+    // because module relocation patches sections that the linker marked
+    // read-only, and re-protect happens lazily after init.
+    flags |= MappingFlags::WRITE;
+    if perms.contains(kmod_loader::SectionPerm::EXECUTE) {
+        flags |= MappingFlags::EXECUTE;
+    }
+    flags
+}
+
+/// Owned region of physical frames mapped into the kernel address space.
+/// Implements `kmod_loader::SectionMemOps` so the loader can write code /
+/// data into the section and later re-protect it.
+struct KmodMem {
+    paddr: PhysAddr,
+    vaddr: VirtAddr,
+    num_pages: usize,
+}
+
+impl SectionMemOps for KmodMem {
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.vaddr.as_mut_ptr()
+    }
+
+    fn as_ptr(&self) -> *const u8 {
+        self.vaddr.as_ptr()
+    }
+
+    fn change_perms(&mut self, perms: kmod_loader::SectionPerm) -> bool {
+        let mapping_flags = section_perms_to_mapping_flags(perms);
+        let kspace = ax_mm::kernel_aspace();
+        let mut guard = kspace.lock();
+        guard
+            .protect(self.vaddr, PAGE_SIZE_4K * self.num_pages, mapping_flags)
+            .is_ok()
+    }
+}
+
+impl Drop for KmodMem {
+    fn drop(&mut self) {
+        let page_size: usize = PageSize::Size4K as usize;
+        let total = page_size * self.num_pages;
+        let vaddr = phys_to_virt(self.paddr);
+        global_allocator().dealloc_pages(vaddr.as_usize(), total / PAGE_SIZE_4K, UsageKind::Global);
+    }
+}
+
+fn alloc_kmod_frames(num_pages: usize) -> AxResult<(PhysAddr, VirtAddr)> {
+    let page_size = PageSize::Size4K as usize;
+    let total = page_size * num_pages;
+    let vaddr_usize = global_allocator()
+        .alloc_pages(num_pages, page_size, UsageKind::Global)
+        .map_err(|_| AxError::NoMemory)?;
+    let vaddr = VirtAddr::from(vaddr_usize);
+    // SAFETY: just-allocated, page-aligned region of `total` bytes.
+    unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, total) };
+    Ok((virt_to_phys(vaddr), vaddr))
+}
+
+impl KernelModuleHelper for KmodHelper {
+    fn vmalloc(size: usize) -> Box<dyn SectionMemOps> {
+        assert!(
+            size % PAGE_SIZE_4K == 0,
+            "kmod vmalloc size must be page-aligned"
+        );
+        let num_pages = size / PAGE_SIZE_4K;
+        let (paddr, vaddr) = alloc_kmod_frames(num_pages).expect("kmod vmalloc: out of memory");
+        Box::new(KmodMem {
+            paddr,
+            vaddr,
+            num_pages,
+        })
+    }
+
+    fn resolve_symbol(name: &str) -> Option<usize> {
+        if name.is_empty() {
+            return None;
+        }
+        // Resolve against the real in-kernel `.kallsyms` blob (the same table
+        // `/proc/kallsyms` is built from), matching `perf::kprobe`'s lookup.
+        match crate::pseudofs::proc::KALLSYMS
+            .get()
+            .and_then(|t| t.lookup_name(name))
+        {
+            Some(addr) => Some(addr as usize),
+            None => {
+                axlog::error!("kmod: failed to resolve symbol `{}`", name);
+                None
+            }
+        }
+    }
+
+    fn flsuh_cache(_addr: usize, _size: usize) {
+        // Conservative: full TLB invalidation. Matches source behaviour.
+        flush_tlb(None);
+    }
+}
+
+type Module = ModuleOwner<KmodHelper>;
+
+/// Registry of currently-loaded modules, keyed by `modinfo` name.
+static MODULES: SpinNoPreempt<BTreeMap<String, Module>> = SpinNoPreempt::new(BTreeMap::new());
+
+/// Linux-style `init_module(2)`: take a `.ko` image and an optional
+/// parameter string, perform relocations, run the module's `init`
+/// function, and register the module in the global table.
+pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
+    let loader = ModuleLoader::<KmodHelper>::new(elf).map_err(|_| AxError::InvalidInput)?;
+    let params = match params {
+        Some(p) => CString::new(p).map_err(|_| AxError::InvalidInput)?,
+        None => CString::new("").unwrap(),
+    };
+    let mut owner = loader
+        .load_module(params)
+        .map_err(|_| AxError::InvalidInput)?;
+
+    let name = owner.name().to_string();
+    let ret = owner.call_init().expect("module init can only run once");
+    axlog::warn!("module `{name}` init returned {ret}");
+
+    let mut modules = MODULES.lock();
+    if modules.contains_key(&name) {
+        return Err(AxError::AlreadyExists);
+    }
+    modules.insert(name, owner);
+    Ok(())
+}
+
+/// Linux-style `delete_module(2)`: look up by `modinfo` name, call the
+/// module's `exit`, drop the registration (which deallocates section
+/// memory via `KmodMem::drop`).
+pub fn delete_module(name: &str) -> AxResult<()> {
+    let mut modules = MODULES.lock();
+    let mut owner = modules.remove(name).ok_or(AxError::NotFound)?;
+    owner.call_exit();
+    axlog::warn!("module `{name}` exited");
+    Ok(())
+}
+
+/// `printk`-side init: feed the C `lwprintf` library a callback that
+/// emits each character through `ax_print!`, so loaded modules can use
+/// `printk` / `pr_info!` and get bytes on the host console.
+struct StdOut;
+impl lwprintf_rs::CustomOutPut for StdOut {
+    fn putch(ch: i32) -> i32 {
+        ax_print!("{}", ch as u8 as char);
+        ch
+    }
+}
+
+/// Initialize the LKM subsystem. Must be called at kernel start, before
+/// any `sys_init_module(2)` arrives.
+pub fn init_kmod() {
+    lwprintf_rs::lwprintf_init::<StdOut>();
+    ax_println!("kmod subsystem initialized");
+}

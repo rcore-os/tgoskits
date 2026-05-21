@@ -29,6 +29,7 @@ pub fn init(args: &[String], envs: &[String]) {
         crate::ebpf::init_ebpf();
         crate::perf::perf_event_init();
     }
+    crate::kmod::init_kmod();
 
     // FIXME: loongarch64 selftest hangs on QEMU; the kprobe crate's loongarch64
     // breakpoint handling needs upstream fixes before selftest can be enabled.
