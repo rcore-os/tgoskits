@@ -110,7 +110,6 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
         // tkill/tgkill must NOT interrupt the target per POSIX; the signal
         // is queued as pending and stays invisible until unblocked.
         if thread.signal.send_signal(sig) {
-            task.interrupt();
             ax_task::wake_task(&task);
         }
     }
@@ -139,7 +138,6 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
         if let Some(tid) = proc_data.signal.send_signal(sig)
             && let Ok(task) = get_task(tid)
         {
-            task.interrupt();
             ax_task::wake_task(&task);
         }
     }
@@ -179,7 +177,6 @@ pub fn raise_signal_fatal(sig: SignalInfo) -> AxResult<()> {
     if let Some(tid) = proc_data.signal.send_signal(sig)
         && let Ok(task) = get_task(tid)
     {
-        task.interrupt();
         ax_task::wake_task(&task);
     } else {
         // No task wants to handle the signal, abort the task
