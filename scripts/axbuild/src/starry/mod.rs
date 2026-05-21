@@ -302,7 +302,7 @@ impl Starry {
                 }
                 QuickOrangeAction::Run(run_args) => self.quick_start_orangepi_run(run_args).await,
             },
-            QuickStartCommand::Sg2002Riscv64(args) => match args.action {
+            QuickStartCommand::LicheervNanoSg2002(args) => match args.action {
                 QuickSg2002Action::Build => self.quick_start_sg2002_build().await,
                 QuickSg2002Action::Run(run_args) => self.quick_start_sg2002_run(run_args).await,
             },
@@ -959,7 +959,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "starry",
             "quick-start",
-            "sg2002-riscv64",
+            "licheerv-nano-sg2002",
             "run",
             "--serial",
             "/dev/ttyUSB1",
@@ -970,7 +970,7 @@ mod tests {
 
         match cli.command {
             Command::QuickStart(args) => match args.command {
-                quick_start::QuickStartCommand::Sg2002Riscv64(inner) => match inner.action {
+                quick_start::QuickStartCommand::LicheervNanoSg2002(inner) => match inner.action {
                     quick_start::QuickSg2002Action::Run(run) => {
                         assert_eq!(run.serial.as_deref(), Some("/dev/ttyUSB1"));
                         assert_eq!(run.baud.as_deref(), Some("115200"));

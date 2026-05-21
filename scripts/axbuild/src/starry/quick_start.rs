@@ -26,8 +26,8 @@ pub enum QuickStartCommand {
     QemuX8664(ArgsQuickQemu),
     #[command(name = "orangepi-5-plus")]
     Orangepi5Plus(ArgsQuickOrange),
-    #[command(name = "sg2002-riscv64")]
-    Sg2002Riscv64(ArgsQuickSg2002),
+    #[command(name = "licheerv-nano-sg2002")]
+    LicheervNanoSg2002(ArgsQuickSg2002),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -101,9 +101,6 @@ pub struct QuickSg2002RunArgs {
     /// Override baud rate in the tmp SG2002 U-Boot config
     #[arg(long)]
     pub baud: Option<String>,
-    /// Do not mirror serial output to stdout
-    #[arg(long)]
-    pub quiet: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -176,7 +173,7 @@ pub fn print_supported_platforms(workspace_root: &Path) {
     let build = sg2002_build_config_path(workspace_root);
     let board = sg2002_board_config_path(workspace_root);
     let tmp_build = tmp_sg2002_build_config_path(workspace_root);
-    println!("  sg2002-riscv64");
+    println!("  licheerv-nano-sg2002");
     println!("    build template: {}", build.display());
     println!("    board template: {}", board.display());
     println!(
@@ -185,8 +182,8 @@ pub fn print_supported_platforms(workspace_root: &Path) {
     );
     println!("    tmp build cfg:  {}", tmp_build.display());
     println!(
-        "    commands:\n      cargo xtask starry quick-start sg2002-riscv64 build\n      cargo \
-         xtask starry quick-start sg2002-riscv64 run --serial /dev/ttyUSB0"
+        "    commands:\n      cargo xtask starry quick-start licheerv-nano-sg2002 build\n      \
+         cargo xtask starry quick-start licheerv-nano-sg2002 run --serial /dev/ttyUSB0"
     );
 }
 
@@ -210,15 +207,15 @@ pub fn orangepi_uboot_config_path(workspace_root: &Path) -> PathBuf {
 }
 
 pub fn sg2002_build_config_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("os/StarryOS/configs/board/sg2002-riscv64.toml")
+    workspace_root.join("os/StarryOS/configs/board/licheerv-nano-sg2002.toml")
 }
 
 pub fn sg2002_board_config_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("os/StarryOS/configs/board/sg2002-riscv64-board.toml")
+    workspace_root.join("os/StarryOS/configs/board/licheerv-nano-sg2002-board.toml")
 }
 
 pub fn sg2002_uboot_config_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("os/StarryOS/configs/board/sg2002-riscv64-uboot.toml")
+    workspace_root.join("os/StarryOS/configs/board/licheerv-nano-sg2002-uboot.toml")
 }
 
 pub fn tmp_config_dir(workspace_root: &Path) -> PathBuf {
@@ -246,11 +243,11 @@ pub fn tmp_orangepi_uboot_config_path(workspace_root: &Path) -> PathBuf {
 }
 
 pub fn tmp_sg2002_build_config_path(workspace_root: &Path) -> PathBuf {
-    tmp_config_dir(workspace_root).join("sg2002-riscv64.toml")
+    tmp_config_dir(workspace_root).join("licheerv-nano-sg2002.toml")
 }
 
 pub fn tmp_sg2002_uboot_config_path(workspace_root: &Path) -> PathBuf {
-    tmp_config_dir(workspace_root).join("sg2002-riscv64-uboot.toml")
+    tmp_config_dir(workspace_root).join("licheerv-nano-sg2002-uboot.toml")
 }
 
 pub fn default_orangepi_dtb_path(workspace_root: &Path) -> PathBuf {
@@ -548,7 +545,6 @@ mod tests {
             &QuickSg2002RunArgs {
                 serial: Some("/dev/ttyUSB2".to_string()),
                 baud: Some("115200".to_string()),
-                quiet: false,
             },
         )
         .unwrap();
