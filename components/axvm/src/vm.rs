@@ -381,7 +381,6 @@ impl AxVM {
                 crate::vcpu::AxVCpuSetupConfig {
                     passthrough_interrupt: passthrough,
                     passthrough_timer: passthrough,
-                    kernel_load_gpa: inner_mut.config.image_config.kernel_load_gpa.as_usize(),
                 }
             };
             #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]

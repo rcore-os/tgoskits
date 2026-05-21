@@ -98,9 +98,7 @@ fn extract_field(value: usize, offset: usize, width: usize) -> usize {
 }
 
 fn advance_guest_pc(ctx: &mut LoongArchContextFrame) {
-    let next_pc = get_guest_pc(ctx).wrapping_add(4);
-    ctx.sepc = next_pc;
-    ctx.gcsr_era = next_pc;
+    ctx.sepc = get_guest_pc(ctx).wrapping_add(4);
 }
 
 fn emulate_cpucfg(ctx: &mut LoongArchContextFrame, ins: usize) -> AxVCpuExitReason {

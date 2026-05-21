@@ -115,8 +115,6 @@ unsafe extern "C" fn __boot_start() -> ! {
 
         csrrd       $a0, 0x20           # cpuid
         li.d        $a1, 0              # TODO: parse dtb
-        csrrd       $a0, 0x20           # cpuid
-        li.d        $a1, 0              # TODO: parse dtb
         la.abs      $t0, {entry}
         li.d        $ra, 0
         jirl        $zero, $t0, 0",
