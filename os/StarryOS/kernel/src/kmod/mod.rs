@@ -164,7 +164,7 @@ pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
         .map_err(|_| AxError::InvalidInput)?;
 
     let name = owner.name().to_string();
-    let ret = owner.call_init();
+    let ret = owner.call_init().map_err(|_| AxError::InvalidInput)?;
     if ret != 0 {
         return Err(AxError::InvalidInput);
     }

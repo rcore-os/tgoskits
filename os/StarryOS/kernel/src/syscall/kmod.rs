@@ -6,7 +6,7 @@
 //! small subsystems as `<name>.rs` rather than `<name>/mod.rs` (cf.
 //! `syscall/signal.rs`, `syscall/time.rs`).
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 use ax_errno::{AxError, AxResult};
 use ax_io::Read;
@@ -45,7 +45,8 @@ pub fn sys_finit_module(module_fd: i32, param_ptr: *const u8, _flags: u32) -> Ax
     let mut module_data = vec![0u8; fsize];
     let mut offset = 0;
     while offset < fsize {
-        let n = file.read(&mut module_data[offset..])?;
+        let buf = &mut module_data[offset..];
+        let n = file.read(&mut buf)?;
         if n == 0 {
             return Err(AxError::UnexpectedEof);
         }
