@@ -18,9 +18,11 @@ pub mod dyn_debug; // Re-export debug macros for use in other modules. It will o
 pub mod entry;
 
 mod config;
+mod ebpf;
 mod file;
 mod kprobe;
 mod mm;
+mod perf_event;
 mod pseudofs;
 mod stop_machine;
 mod syscall;
