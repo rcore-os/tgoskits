@@ -32,12 +32,57 @@ use crate::virtio::VirtIoHalImpl;
 mod fdt;
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
+const PCI_INTX_LINES: usize = 4;
 
 #[derive(Clone, Copy)]
 struct LegacyIrqRoute {
     bus_start: u8,
     bus_end: u8,
-    irq: usize,
+    irqs: [usize; PCI_INTX_LINES],
+    irq_count: u8,
+}
+
+impl LegacyIrqRoute {
+    fn from_irqs(bus_start: u8, bus_end: u8, irq_list: &[usize]) -> Option<Self> {
+        let irq_count = irq_list.len().min(PCI_INTX_LINES);
+        if irq_count == 0 {
+            return None;
+        }
+
+        let mut irqs = [0; PCI_INTX_LINES];
+        irqs[..irq_count].copy_from_slice(&irq_list[..irq_count]);
+        Some(Self {
+            bus_start,
+            bus_end,
+            irqs,
+            irq_count: irq_count as u8,
+        })
+    }
+
+    fn matches(&self, bus_start: u8, bus_end: u8, irq_list: &[usize]) -> bool {
+        let irq_count = irq_list.len().min(PCI_INTX_LINES);
+        self.bus_start == bus_start
+            && self.bus_end == bus_end
+            && usize::from(self.irq_count) == irq_count
+            && self.irqs[..irq_count] == irq_list[..irq_count]
+    }
+
+    fn irq_for(&self, address: PciAddress, interrupt_pin: u8) -> Option<usize> {
+        if address.bus() < self.bus_start
+            || address.bus() > self.bus_end
+            || !(1..=PCI_INTX_LINES as u8).contains(&interrupt_pin)
+        {
+            return None;
+        }
+
+        let irq_count = usize::from(self.irq_count);
+        let route_index = if irq_count == 1 {
+            0
+        } else {
+            (usize::from(address.device()) + usize::from(interrupt_pin) - 1) % irq_count
+        };
+        Some(self.irqs[route_index])
+    }
 }
 
 static LEGACY_IRQ_ROUTES: SpinMutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQS>> =
@@ -68,7 +113,19 @@ fn probe_static(
     };
     let mem32 = ecam.mem32.or_else(|| pci_mem32_from_ranges(ecam.ranges));
     let mem64 = ecam.mem64.or_else(|| pci_mem64_from_ranges(ecam.ranges));
+    register_static_legacy_irq_routes(info.irqs(), ecam.size);
     register_ecam_controller(plat_dev, ecam.base, ecam.size, mem32, mem64)
+}
+
+#[cfg(probe = "static")]
+fn register_static_legacy_irq_routes(irqs: &[usize], ecam_size: usize) {
+    if irqs.is_empty() {
+        return;
+    }
+
+    let bus_count = ecam_size >> 20;
+    let bus_end = bus_count.saturating_sub(1).min(usize::from(u8::MAX)) as u8;
+    register_legacy_irq_routes(0, bus_end, irqs);
 }
 
 #[cfg(probe = "static")]
@@ -122,34 +179,37 @@ pub fn register_ecam_controller(
     Ok(())
 }
 
-pub fn legacy_irq_for_address(_address: PciAddress) -> Option<usize> {
-    let bus = _address.bus();
+pub fn legacy_irq_for_endpoint(address: PciAddress, interrupt_pin: u8) -> Option<usize> {
     LEGACY_IRQ_ROUTES
         .lock()
         .iter()
-        .find(|route| bus >= route.bus_start && bus <= route.bus_end)
-        .map(|route| route.irq)
+        .find_map(|route| route.irq_for(address, interrupt_pin))
+}
+
+pub fn legacy_irq_for_address(address: PciAddress) -> Option<usize> {
+    legacy_irq_for_endpoint(address, 1)
 }
 
 pub fn register_legacy_irq_route(bus_start: u8, bus_end: u8, irq: usize) {
+    register_legacy_irq_routes(bus_start, bus_end, &[irq]);
+}
+
+pub fn register_legacy_irq_routes(bus_start: u8, bus_end: u8, irqs: &[usize]) {
+    let Some(route) = LegacyIrqRoute::from_irqs(bus_start, bus_end, irqs) else {
+        return;
+    };
+
     let mut routes = LEGACY_IRQ_ROUTES.lock();
     if routes
         .iter()
-        .any(|route| route.bus_start == bus_start && route.bus_end == bus_end && route.irq == irq)
+        .any(|route| route.matches(bus_start, bus_end, irqs))
     {
         return;
     }
-    if routes
-        .push(LegacyIrqRoute {
-            bus_start,
-            bus_end,
-            irq,
-        })
-        .is_err()
-    {
-        log::warn!("too many PCIe legacy IRQ routes; dropping IRQ {}", irq);
+    if routes.push(route).is_err() {
+        log::warn!("too many PCIe legacy IRQ routes; dropping IRQs {irqs:?}");
     } else {
-        log::info!("PCIe legacy IRQ route: logical bus {bus_start}..={bus_end} -> IRQ {irq}");
+        log::info!("PCIe legacy IRQ route: logical bus {bus_start}..={bus_end} -> IRQs {irqs:?}");
     }
 }
 

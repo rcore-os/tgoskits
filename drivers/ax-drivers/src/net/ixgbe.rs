@@ -16,7 +16,7 @@ use rdrive::{
     },
 };
 
-use crate::net::{PlatformDeviceNet, pci_legacy_irq_for_address};
+use crate::net::{PlatformDeviceNet, pci_legacy_irq};
 
 const DRIVER_NAME: &str = "ixgbe";
 const QUEUE_SIZE: usize = 512;
@@ -42,7 +42,8 @@ fn probe_pci(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), 
     }
 
     let address = endpoint.address();
-    let irq = pci_legacy_irq_for_address(address);
+    let irq = pci_legacy_irq(endpoint)
+        .ok_or_else(|| OnProbeError::other(format!("failed to resolve IRQ for ixgbe {address}")))?;
     let Some(bar) = endpoint.bar_mmio(0) else {
         return Err(OnProbeError::other("ixgbe BAR0 MMIO region missing"));
     };

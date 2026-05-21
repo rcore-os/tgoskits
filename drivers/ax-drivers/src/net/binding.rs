@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 use rd_net::{Interface, NetError};
-use rdrive::{Device, DriverGeneric};
+use rdrive::{Device, DriverGeneric, probe::pci::EndpointRc};
 
 pub struct PlatformNetDevice {
     name: &'static str,
@@ -41,23 +41,33 @@ impl DriverGeneric for PlatformNetDevice {
     }
 }
 
-pub fn pci_legacy_irq_for_address(address: rdrive::probe::pci::PciAddress) -> usize {
+pub fn pci_legacy_irq(endpoint: &EndpointRc) -> Option<usize> {
     #[cfg(feature = "pci")]
-    if let Some(irq) = crate::pci::legacy_irq_for_address(address) {
-        return irq;
+    if let Some(irq) =
+        crate::pci::legacy_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())
+    {
+        return Some(irq);
     }
 
+    let line = endpoint.interrupt_line();
+    if line == 0 || line == u8::MAX {
+        return None;
+    }
+    Some(pci_legacy_line_to_irq(line))
+}
+
+const fn pci_legacy_line_to_irq(line: u8) -> usize {
     const PCI_IRQ_BASE: usize = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "riscv64") {
-        0x20
-    } else if cfg!(target_arch = "loongarch64") {
-        0x10
-    } else if cfg!(target_arch = "aarch64") {
-        0x23
+        if cfg!(target_arch = "x86_64") {
+            0x20
+        } else {
+            0
+        }
     } else {
         0
     };
 
-    PCI_IRQ_BASE + (usize::from(address.device()) & 3)
+    PCI_IRQ_BASE + line as usize
 }
 
 pub trait PlatformDeviceNet {

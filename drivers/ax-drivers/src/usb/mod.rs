@@ -177,7 +177,9 @@ fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
 
 #[cfg(all(feature = "xhci-pci", target_os = "none"))]
 fn pci_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
-    if let Some(irq) = crate::pci::legacy_irq_for_address(endpoint.address()) {
+    if let Some(irq) =
+        crate::pci::legacy_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())
+    {
         return Some(irq);
     }
     let line = endpoint.interrupt_line();

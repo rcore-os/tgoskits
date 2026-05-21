@@ -71,7 +71,14 @@ fs-ng-fat = ["fs-ng", "ax-fs-ng/fat"]
 fs-ng-times = ["fs-ng", "ax-fs-ng/times"]
 
 # Networking
-net = ["alloc", "paging", "dep:ax-net", "ax-runtime/net"]
+net = [
+    "alloc",
+    "paging",
+    "irq",
+    "multitask",
+    "dep:ax-net",
+    "ax-runtime/net",
+]
 net-ng = ["alloc", "paging", "irq", "multitask", "dep:ax-net-ng", "ax-runtime/net-ng"]
 vsock = ["ax-runtime/vsock"]
 

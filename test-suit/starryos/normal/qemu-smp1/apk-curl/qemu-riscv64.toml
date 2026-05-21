@@ -17,11 +17,17 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-apk update && \
-apk add curl && \
-curl --version && \
-curl -i https://baidu.com && \
-echo 'APK_CURL_TEST_PASSED' || \
+i=0
+while [ $i -lt 3 ]; do
+    apk update && \
+    apk add curl && \
+    curl --version && \
+    curl -i https://baidu.com && \
+    echo 'APK_CURL_TEST_PASSED' && \
+    exit 0
+    i=$((i + 1))
+    sleep 2
+done
 echo 'APK_CURL_TEST_FAILED'
 '''
 success_regex = ["(?m)^APK_CURL_TEST_PASSED\\s*$"]

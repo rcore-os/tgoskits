@@ -11,7 +11,7 @@ use rdrive::{
 };
 use realtek_rtl8125::Rtl8125;
 
-use crate::net::{PlatformDeviceNet, pci_legacy_irq_for_address};
+use crate::net::{PlatformDeviceNet, pci_legacy_irq};
 
 const DRIVER_NAME: &str = "realtek-rtl8125";
 const RTL8125_DMA_MASK: u64 = u32::MAX as u64;
@@ -37,7 +37,11 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
         return Err(OnProbeError::NotMatch);
     }
 
-    let irq = pci_legacy_irq_for_address(address);
+    let irq = pci_legacy_irq(endpoint).ok_or_else(|| {
+        OnProbeError::other(alloc::format!(
+            "failed to resolve IRQ for RTL8125 {address}"
+        ))
+    })?;
     let Some((bar_index, bar)) = first_mmio_bar(endpoint) else {
         warn!("RTL8125 at {address} left unused: no PCI MMIO BAR found");
         return Err(OnProbeError::NotMatch);

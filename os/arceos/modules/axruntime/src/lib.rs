@@ -249,6 +249,12 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "ipi")]
     ax_ipi::init();
 
+    #[cfg(feature = "irq")]
+    {
+        info!("Initialize interrupt handlers...");
+        init_interrupt();
+    }
+
     devices::probe_all_devices();
 
     #[cfg(all(feature = "fs", feature = "plat-dyn"))]
@@ -301,12 +307,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     #[cfg(feature = "smp")]
     self::mp::start_secondary_cpus(cpu_id);
-
-    #[cfg(feature = "irq")]
-    {
-        info!("Initialize interrupt handlers...");
-        init_interrupt();
-    }
 
     #[cfg(all(feature = "tls", not(feature = "multitask")))]
     {

@@ -1,3 +1,5 @@
+use alloc::format;
+
 use eth_intel::E1000;
 use log::debug;
 use pcie::CommandRegister;
@@ -9,7 +11,7 @@ use rdrive::{
     },
 };
 
-use crate::net::{PlatformDeviceNet, pci_legacy_irq_for_address};
+use crate::net::{PlatformDeviceNet, pci_legacy_irq};
 
 const DRIVER_NAME: &str = "eth-intel-e1000";
 
@@ -28,7 +30,8 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
     }
 
     let address = endpoint.address();
-    let irq = pci_legacy_irq_for_address(address);
+    let irq = pci_legacy_irq(endpoint)
+        .ok_or_else(|| OnProbeError::other(format!("failed to resolve IRQ for E1000 {address}")))?;
     let Some(bar) = endpoint.bar_mmio(0) else {
         return Err(OnProbeError::other("E1000 BAR0 MMIO region missing"));
     };

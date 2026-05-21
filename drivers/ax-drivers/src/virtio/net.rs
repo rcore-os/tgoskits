@@ -310,9 +310,9 @@ fn probe_pci(
     endpoint: &mut rdrive::probe::pci::EndpointRc,
     plat_dev: PlatformDevice,
 ) -> Result<(), OnProbeError> {
-    let irq = crate::net::pci_legacy_irq_for_address(endpoint.address());
+    let irq = crate::net::pci_legacy_irq(endpoint);
     let transport = crate::pci::take_virtio_transport(endpoint, DeviceType::Network)?;
-    register_transport_with_irq(plat_dev, transport, Some(irq))
+    register_transport_with_irq(plat_dev, transport, irq)
 }
 
 pub fn register_transport<T: Transport + 'static>(
