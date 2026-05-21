@@ -531,6 +531,7 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
  "ax-errno",
+ "ax-kspin",
  "ax-memory-addr",
  "axaddrspace",
  "axdevice_base",
