@@ -7,11 +7,11 @@ use ax_driver_block::BlockDriverOps;
 #[cfg(feature = "net")]
 use ax_driver_net::NetDriverOps;
 use ax_errno::AxError;
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_plat::mem::PhysAddr;
 use heapless::Vec;
 use rdrive::probe::OnProbeError;
-use spin::Mutex;
 
 mod pci;
 #[cfg(feature = "rknpu")]
