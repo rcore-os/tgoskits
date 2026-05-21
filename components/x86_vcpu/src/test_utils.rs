@@ -14,9 +14,9 @@
 
 #[cfg(test)]
 pub mod mock {
+    use ax_kspin::SpinNoIrq as Mutex;
     use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
     use axvisor_api::{api_impl, memory::MemoryIf};
-    use spin::Mutex;
 
     static GLOBAL_LOCK: Mutex<MockMmHalState> = Mutex::new(MockMmHalState::new());
     static TEST_LOCK: Mutex<()> = Mutex::new(());

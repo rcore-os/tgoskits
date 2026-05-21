@@ -194,6 +194,50 @@ Follow-up `SpinNoPreempt` audit after the first VFS/axfs-ng migrations:
 - Starry loop-device cache locking is tied to the ext4 block-device path and
   should be considered together with the axfs-ng ext4 lock strategy.
 
+## Phase 4 status: production `spin::Mutex` migration
+
+As of commit `44af7d3a1`, direct production uses of `spin::Mutex` and
+`spin::MutexGuard` have been migrated away from workspace code, excluding the
+vendored `components/spin` implementation itself.
+
+The verification command:
+
+```text
+rg -n "^use spin::Mutex|^use spin::\{[^}]*Mutex|spin::Mutex|spin::MutexGuard|spin::mutex::" \
+  --glob '*.rs' --glob '!components/spin/**'
+```
+
+now reports only:
+
+```text
+components/kspin/src/base.rs
+```
+
+This is a documentation reference to the original upstream implementation, not
+a runtime lock site.
+
+The production migration covered these groups:
+
+- filesystem and VFS paths: `axfs-ng-vfs`, `axfs-ng`, `ax-fs`;
+- networking and Starry runtime paths: `ax-net-ng`, Starry timer/netlink/usbfs
+  and camera locks;
+- virtualization and platform components: `axvisor`, `axvm`, `riscv_vplic`,
+  `loongarch_vcpu`, `arm_vgic`, `axplat-dyn`;
+- portable driver components: `rdrive`, `arm-scmi-rs`, `ramdisk`,
+  `nvme-driver`, `rdif-serial`, `realtek-rtl8125`, `sg2002-tpu`, `crab-usb`;
+- shared support crates: `dma-api`, `ax-driver-net`, `axdevice`.
+
+The repository still keeps local `spin` for intentionally separate work:
+
+- `spin::Once` and `spin::Lazy` initialization primitives;
+- postponed `spin::RwLock` users;
+- documentation references.
+
+Any lock-scope bugs exposed by `might_sleep` or lockdep after this migration
+should be treated as useful follow-up findings. They are not a reason to hide
+the original non-sleeping `spin::Mutex` semantics behind a sleepable
+`ax_sync::Mutex` replacement.
+
 ## Validation strategy
 
 For documentation-only planning changes, no build is required.
@@ -231,3 +275,6 @@ blocked by registry/index state around `sg200x-bsp = 0.6.0`, while direct
    `CachedFile::append_lock` remains a separate `RwLock` design question.
 6. Lockdep-enabled FAT32/VFS testing either confirms no report or exposes a real
    ordering issue for a separate ordering fix.
+7. Production direct `spin::Mutex` and `spin::MutexGuard` uses are gone outside
+   the vendored `components/spin` crate. The remaining direct match is limited
+   to an `ax-kspin` documentation reference.
