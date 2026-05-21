@@ -893,6 +893,13 @@ if echo "$_t" | grep -qF "bb_mkd_one"; then echo "PASS: busybox_mkdir"; PASS=$((
 _t=$({ timeout 10 sh -c 'busybox echo mv_ok > /tmp/bb_mv_from && busybox mv /tmp/bb_mv_from /tmp/bb_mv_to && busybox cat /tmp/bb_mv_to'; } 2>&1)
 if echo "$_t" | grep -qF "mv_ok"; then echo "PASS: busybox_mv"; PASS=$((PASS+1)); else echo "FAIL: busybox_mv"; FAIL=$((FAIL+1)); fi
 
+# tmpfs_rename_exec_elf - write an ELF via a temporary tmpfs path, rename it
+# to the final executable name, verify the renamed file still reads back the
+# ELF magic, then execute the final path. This regresses page-cache/user_data
+# loss across tmpfs rename, which surfaces as Exec format error.
+_t=$({ timeout 15 sh -c 'busybox rm -rf /tmp/bb_rename_elf && busybox mkdir -p /tmp/bb_rename_elf && busybox cp /bin/busybox /tmp/bb_rename_elf/busybox.tmp && busybox mv /tmp/bb_rename_elf/busybox.tmp /tmp/bb_rename_elf/busybox && [ "$(busybox head -c 4 /tmp/bb_rename_elf/busybox | busybox xxd -p)" = "7f454c46" ] && /tmp/bb_rename_elf/busybox echo rename_exec_ok'; } 2>&1)
+if echo "$_t" | grep -qF "rename_exec_ok"; then echo "PASS: tmpfs_rename_exec_elf"; PASS=$((PASS+1)); else echo "FAIL: tmpfs_rename_exec_elf"; echo "$_t"; FAIL=$((FAIL+1)); fi
+
 # busybox_rmdir
 _t=$({ timeout 10 sh -c 'busybox mkdir -p /tmp/bb_rmd && busybox rmdir /tmp/bb_rmd && busybox echo rmdir_ok'; } 2>&1)
 if echo "$_t" | grep -qF "rmdir_ok"; then echo "PASS: busybox_rmdir"; PASS=$((PASS+1)); else echo "FAIL: busybox_rmdir"; FAIL=$((FAIL+1)); fi
