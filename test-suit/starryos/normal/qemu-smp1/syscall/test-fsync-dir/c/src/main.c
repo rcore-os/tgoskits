@@ -6,14 +6,16 @@
  * 2. fdatasync 对目录 fd 应返回成功
  * 3. 非法 fd 应返回 EBADF
  * 4. pipe fd 应返回 EINVAL
- * 5. sync_file_range 应返回成功 (建议性优化)
+ * 5. socket fd 应返回 EINVAL
+ * 6. sync_file_range 应返回成功 (建议性优化)
  */
 
 #include "test_framework.h"
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/syscall.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 
 int main(void)
 {
@@ -62,7 +64,21 @@ int main(void)
         }
     }
 
-    /* Test 5: sync_file_range */
+    /* Test 5: fsync on socket -> EINVAL (Linux behavior) */
+    {
+        int sfd[2];
+        CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sfd) == 0, "create socketpair for fsync EINVAL");
+        if (sfd[0] >= 0) {
+            CHECK_ERR(fsync(sfd[0]), EINVAL, "fsync on socket -> EINVAL");
+            CHECK_ERR(fdatasync(sfd[0]), EINVAL, "fdatasync on socket -> EINVAL");
+            close(sfd[0]);
+        }
+        if (sfd[1] >= 0) {
+            close(sfd[1]);
+        }
+    }
+
+    /* Test 6: sync_file_range */
     {
         int fd = open("/tmp/starry_fsync_test/sfrfile", O_RDWR | O_CREAT | O_TRUNC, 0644);
         CHECK(fd >= 0, "create file for sync_file_range");
@@ -72,6 +88,10 @@ int main(void)
          * SYNC_FILE_RANGE_WRITE = 2 */
         long rc = syscall(SYS_sync_file_range, fd, 0, 29, 2);
         CHECK(rc == 0, "sync_file_range returns 0");
+        CHECK_ERR(syscall(SYS_sync_file_range, fd, 0, 29, 0x8000), EINVAL,
+                  "sync_file_range invalid flags -> EINVAL");
+        CHECK_ERR(syscall(SYS_sync_file_range, fd, -1, 29, 2), EINVAL,
+                  "sync_file_range negative offset -> EINVAL");
         close(fd);
         unlink("/tmp/starry_fsync_test/sfrfile");
     }
