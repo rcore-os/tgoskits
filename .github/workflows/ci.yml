@@ -58,7 +58,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 2
 
       - name: Detect CI-relevant changes
         id: filter
@@ -214,20 +214,12 @@ jobs:
             container_image: ""
             fetch_depth: "1"
           - name: Run sync-lint
-            use_container: false
+            use_container: true
             runs_on: '["ubuntu-latest"]'
             command: |
               set -eux
               git_cmd() {
                 git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
-              }
-              ensure_sync_lint_deps() {
-                if pkg-config --exists libudev; then
-                  return 0
-                fi
-                sudo apt-get update
-                sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
-                sudo rm -rf /var/lib/apt/lists/*
               }
               ensure_since_ref() {
                 ref="$1"
@@ -235,8 +227,6 @@ jobs:
                 git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
                 git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
               }
-
-              ensure_sync_lint_deps
 
               if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
                 cargo xtask sync-lint --since "${{ github.event.pull_request.base.sha }}"
@@ -254,7 +244,7 @@ jobs:
                 cargo xtask sync-lint
               fi
             cache_key: sync-lint
-            container_image: ""
+            container_image: base
             fetch_depth: full
     uses: ./.github/workflows/reusable-command.yml
     with:
