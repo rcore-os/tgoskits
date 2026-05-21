@@ -436,37 +436,34 @@ static GLOBAL_CACHED_FILES: spin::RwLock<alloc::vec::Vec<Weak<CachedFileShared>>
 static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 pub fn page_cache_reclaim(num_pages: usize) -> usize {
-    if RECLAIM_IN_PROGRESS.swap(true, Ordering::Acquire) {
+    if RECLAIM_IN_PROGRESS.swap(true, Ordering::AcqRel) {
         return 0;
     }
     let _guard = ReclaimGuard;
 
     let mut reclaimed = 0;
-    let Some(mut guard) = GLOBAL_CACHED_FILES.try_write() else {
-        return 0;
-    };
-    let files: alloc::vec::Vec<Arc<CachedFileShared>> =
-        guard.iter().filter_map(|w| w.upgrade()).collect();
-    guard.retain(|w| w.upgrade().is_some());
-    drop(guard);
-
-    // Target: max(16, request) * 2 — aggressive enough to build a buffer
-    // against subsequent failures, but not so aggressive as to thrash the
-    // page cache for a single-page allocation.
     let target = num_pages.max(16) * 2;
-    for file in &files {
-        let freed = file.try_evict_clean_pages(target - reclaimed);
-        reclaimed += freed;
-        if reclaimed >= target {
-            break;
+    let mut file_count = 0;
+
+    if let Some(guard) = GLOBAL_CACHED_FILES.try_read() {
+        for weak in guard.iter() {
+            if let Some(file) = weak.upgrade() {
+                let freed = file.try_evict_clean_pages(target - reclaimed);
+                reclaimed += freed;
+                file_count += 1;
+                if reclaimed >= target {
+                    break;
+                }
+            }
         }
+    } else {
+        return 0;
     }
 
     if reclaimed > 0 {
         debug!(
             "page_cache_reclaim: evicted {} clean pages across {} files",
-            reclaimed,
-            files.len()
+            reclaimed, file_count
         );
     }
 
@@ -474,7 +471,9 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
 }
 
 fn register_cached_file(file: &Arc<CachedFileShared>) {
-    GLOBAL_CACHED_FILES.write().push(Arc::downgrade(file));
+    let mut guard = GLOBAL_CACHED_FILES.write();
+    guard.retain(|w| w.upgrade().is_some());
+    guard.push(Arc::downgrade(file));
 }
 
 /// A file handle with an LRU page cache for buffered I/O.
