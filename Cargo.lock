@@ -6571,6 +6571,7 @@ dependencies = [
 name = "rdrive"
 version = "0.20.1"
 dependencies = [
+ "ax-kspin",
  "fdt-edit",
  "fdt-raw",
  "log",
