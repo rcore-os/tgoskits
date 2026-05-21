@@ -164,7 +164,10 @@ pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
         .map_err(|_| AxError::InvalidInput)?;
 
     let name = owner.name().to_string();
-    let ret = owner.call_init().expect("module init can only run once");
+    let ret = owner.call_init();
+    if ret != 0 {
+        return Err(AxError::InvalidInput);
+    }
     warn!("module `{name}` init returned {ret}");
 
     let mut modules = MODULES.lock();

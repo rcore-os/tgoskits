@@ -42,11 +42,14 @@ pub fn sys_finit_module(module_fd: i32, param_ptr: *const u8, _flags: u32) -> Ax
     let file = get_file_like(module_fd)?;
     let fsize = file.stat()?.size as usize;
 
-    let mut module_data: Vec<u8> = Vec::with_capacity(fsize);
-    module_data.resize(fsize, 0);
-    let r = file.read(&mut module_data.as_mut_slice())?;
-    if r != fsize {
-        return Err(AxError::UnexpectedEof);
+    let mut module_data = vec![0u8; fsize];
+    let mut offset = 0;
+    while offset < fsize {
+        let n = file.read(&mut module_data[offset..])?;
+        if n == 0 {
+            return Err(AxError::UnexpectedEof);
+        }
+        offset += n;
     }
 
     let param_buf = if !param_ptr.is_null() {
