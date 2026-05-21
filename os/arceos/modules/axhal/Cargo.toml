@@ -67,6 +67,15 @@ rtc = [
     "axplat-x86-qemu-q35?/rtc",
     "axplat-dyn?/rtc",
 ]
+# Forward the GICv3 toggle to the aarch64 qemu-virt platform.
+# `?` lets non-aarch64 builds pass the feature through without
+# requiring the optional dependency. Orthogonal to
+# `aarch64-cntv-timer` below.
+aarch64-gic-v3 = ["ax-plat-aarch64-qemu-virt?/gic-v3"]
+# Forward the CNTV (virtual generic timer) toggle to the aarch64
+# qemu-virt platform. Required under Apple HVF because CNTP is
+# owned by EL2 there. Orthogonal to `aarch64-gic-v3`.
+aarch64-cntv-timer = ["ax-plat-aarch64-qemu-virt?/cntv-timer"]
 paging = [
     "dep:ax-alloc",
     "dep:ax-page-table-multiarch",
@@ -74,7 +83,13 @@ paging = [
 ]
 tls = ["ax-cpu/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
-hv = ["paging", "ax-cpu/arm-el2", "ax-percpu/arm-el2", "axplat-dyn?/hv"]
+hv = [
+    "paging",
+    "ax-cpu/arm-el2",
+    "ax-cpu/exception-table",
+    "ax-percpu/arm-el2",
+    "axplat-dyn?/hv",
+]
 axvisor-linker = []
 
 starry-kcov = []

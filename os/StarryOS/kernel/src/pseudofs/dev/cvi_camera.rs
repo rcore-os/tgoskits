@@ -7,7 +7,10 @@ use ax_hal::mem::phys_to_virt;
 use ax_memory_addr::PhysAddr;
 use ax_task::sleep;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
-use sg200x_bsp::pinmux::{FMUX_SD1_D1, FMUX_SD1_D2, Pinmux};
+use sg200x_bsp::{
+    pinmux::{FMUX_SD1_D1, FMUX_SD1_D2, Pinmux},
+    soc::{FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE},
+};
 use spin::Mutex;
 use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
@@ -356,7 +359,13 @@ enum CviCameraArgs {
 impl CviCamera {
     pub fn new() -> Self {
         use ax_config::plat::PHYS_VIRT_OFFSET;
-        let pinmux = Pinmux::new_with_offset(PHYS_VIRT_OFFSET);
+        let pinmux = unsafe {
+            Pinmux::new(
+                FMUX_BASE + PHYS_VIRT_OFFSET,
+                IOBLK_BASE + PHYS_VIRT_OFFSET,
+                IOBLK_GRTC_BASE + PHYS_VIRT_OFFSET,
+            )
+        };
         pinmux.fmux().sd1_d2.write(FMUX_SD1_D2::FSEL::UART3_TX);
         pinmux.fmux().sd1_d1.write(FMUX_SD1_D1::FSEL::UART3_RX);
 

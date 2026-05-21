@@ -479,7 +479,7 @@ fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
-sg200x-bsp = "0.5"
+sg200x-bsp = "0.6"
 simple-ahci = "0.1.1-preview.1"
 simple-sdmmc = "0.1"
 bcm2835-sdhci = "0.1.1-preview.1"

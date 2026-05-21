@@ -31,6 +31,8 @@ pub mod tty;
 #[cfg(feature = "sg2002")]
 mod cvi_camera;
 #[cfg(feature = "sg2002")]
+mod cvi_usb_camera;
+#[cfg(feature = "sg2002")]
 mod pinmux;
 #[cfg(feature = "sg2002")]
 pub(super) mod pwm;
@@ -439,6 +441,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 NodeType::CharacterDevice,
                 DeviceId::new(10, 201),
                 Arc::new(cvi_camera::CviCamera::new()),
+            ),
+        );
+        root.add(
+            "cvi-usb-camera0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(10, 202),
+                Arc::new(cvi_usb_camera::CviCamera::new()),
             ),
         );
         root.add(

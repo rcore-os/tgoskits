@@ -1112,7 +1112,7 @@ fn read_platform_name(platform_config: &Path) -> Option<String> {
     read_config_string(&[platform_config.to_path_buf()], "platform").ok()
 }
 
-fn generate_axconfig(
+pub(crate) fn generate_axconfig(
     workspace_root: &Path,
     target: &str,
     platform_name: &str,
