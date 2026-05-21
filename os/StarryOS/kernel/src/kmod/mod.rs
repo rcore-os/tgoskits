@@ -166,9 +166,10 @@ pub fn init_module(elf: &[u8], params: Option<&str>) -> AxResult<()> {
     let name = owner.name().to_string();
     let ret = owner.call_init().map_err(|_| AxError::InvalidInput)?;
     if ret != 0 {
+        warn!("module `{name}` init returned {ret}");
         return Err(AxError::InvalidInput);
     }
-    warn!("module `{name}` init returned {ret}");
+    info!("module `{name}` loaded");
 
     let mut modules = MODULES.lock();
     if modules.contains_key(&name) {
