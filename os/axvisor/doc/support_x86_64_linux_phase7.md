@@ -261,32 +261,105 @@ nox2apic no_timer_check
 - 中线实现虚拟 IOAPIC/PIC 或更完整的 IRQ routing，而不是把 host IOAPIC 事件粗暴回注到 guest。
 - 设备侧应避免长期依赖外层 QEMU host rootfs virtio-blk 被 guest 同时驱动；更干净的路线是单独测试盘、正式 passthrough ownership，或实现 emulated virtio-blk。
 
-按总阶段文档的验收边界评估，第 7 阶段当前完成度约为 65%-70%：
+### vIOAPIC 与 handoff / 隔离验证
+
+当前默认配置进一步加入了最小 x86 vIOAPIC，并让 VMX EPT violation 中常见的 32-bit
+MMIO `mov` 访问转成 `MmioRead` / `MmioWrite`。Linux 已能通过 MP table 发现 IOAPIC，并
+通过 vIOAPIC MMIO 配置 redirection table。默认配置为了保持稳定 `/init` 基线，临时把
+guest `virtio_blk_init` 加入 blacklist；本轮 smoke test 能到达：
+
+```text
+Run /init as init process
+axvisor x86_64 linux initramfs reached /init
+axvisor x86_64 linux virtio-blk /dev/vda not ready
+```
+
+为了验证设备 ownership 是否是唯一 blocker，又做了两轮 x86 专用 handoff / 隔离实验：
+
+- 使用临时 board config 去掉 Axvisor host 的 `fs` feature，使 host 不初始化、不挂载外层
+  QEMU virtio-blk。
+- 使用临时 VM config 恢复 guest `virtio_blk_init`，让 Linux guest 重新 probe `/dev/vda`。
+- 在 x86 vCPU 路径中启用当前 QEMU PCI INTx 可能使用的 host IOAPIC line：GSI 16..23 /
+  host vector `0x30`..`0x37`。
+- forward 路径不再把 host vector 原样注入 guest，而是查 guest vIOAPIC redirection
+  table，将 host GSI 映射为 guest 实际编程的 vector 后再注入。
+
+第一轮只监听 Linux 最初报告的 IRQ 19，host 不 claim 该块设备时，Linux guest 仍能枚举到：
+
+```text
+virtio-pci 0000:00:03.0: PCI->APIC IRQ transform: INT A -> IRQ 19
+virtio_blk virtio0: [vda] 2097152 512-byte logical blocks
+```
+
+但没有到达 `/init`，也没有出现 x86 passthrough IRQ forward marker。第二轮扩大监听范围后，
+确认外层 q35 实际把 00:03.0 virtio-blk completion interrupt 送到 host GSI 23 / vector
+`0x37`，而不是 guest MP table 最初声明的 GSI 19。随后将 x86 MP table 中当前 smoke setup
+的 00:03.0 INTA 路由调整到 GSI 23，使 Linux 与 host 观察到的 INTx line 对齐。no-fs 实验
+已经达到：
+
+清理后代码不再保留 GSI 16..23 的宽范围探测，只保留当前 q35 smoke 拓扑所需的 GSI 23
+最小 forwarding 路径；更通用的 PCI IRQ router 留到阶段 8。
+
+```text
+virtio-pci 0000:00:03.0: PCI->APIC IRQ transform: INT A -> IRQ 23
+Forwarding x86 passthrough IRQ host GSI 23 vector 0x37 to guest vector 0x20
+Run /init as init process
+axvisor x86_64 linux initramfs reached /init
+axvisor x86_64 linux virtio-blk read /dev/vda ok
+```
+
+这说明“host 和 guest 同时驱动同一块 virtio-blk”确实是后续真实 rootfs 路线必须规避的
+ownership 风险，但 guest virtio-blk completion / INTx delivery 已经在 no-fs 隔离条件下
+形成最小闭环。默认配置仍保留 `virtio_blk_init` blacklist，用于维持 host `fs` 仍挂载同一块
+外层 QEMU disk 时的稳定 `/init` 基线。
+
+block-read 闭环通过临时 no-fs / virtblk 实验验证，不向仓库提交额外配置分支。复现时可从
+`os/axvisor/configs/board/qemu-x86_64.toml` 生成本地临时 board config，去掉 host `fs`
+feature，使 Axvisor host 不初始化、不挂载外层 QEMU virtio-blk；再从默认
+`linux-x86_64-qemu-smp1.toml` 生成本地临时 VM config，移除 cmdline 中的
+`virtio_blk_init` blacklist，让 guest 验证 `/dev/vda` 只读 smoke。该实验已经验证能打印
+`axvisor x86_64 linux virtio-blk read /dev/vda ok`。QEMU 最终由 `timeout` 结束，因此退出码
+`124` 是当前 smoke harness 的预期结果，不代表 guest marker 失败。
+
+按总阶段文档的验收边界评估，第 7 阶段当前完成度约为 90%-95%：
 
 - 已完成默认配置合并、PCI config path、low MMIO passthrough、virtio-blk legacy device discovery、`vda` 识别、MAP_IDENTICAL DMA 布局和低端 boot scratch/E820 修复。
-- 未完成 initramfs block read marker、`/init` 后续闭环、legacy INTx/PIC 或 APIC 路由的正式实现。
+- 已完成 MP table + 最小 vIOAPIC 发现路径，并通过 blacklist 维持可到 `/init` 的稳定
+  initramfs smoke 基线。
+- 已完成 x86 专用 handoff / 隔离验证，确认 ownership 是必须解决的设计风险，但在 host
+  no-fs 隔离条件下 guest virtio-blk completion IRQ 和 initramfs block read marker 已闭环。
+- no-fs / virtblk smoke 是阶段验证手段，不作为长期配置提交；后续应回归默认
+  `linux-x86_64-qemu-smp1.toml`。
+- 未完成默认 host-fs 配置下的正式块设备 ownership 隔离、legacy INTx/PIC 或 APIC 路由的
+  通用实现，以及去掉 `no_timer_check` 所需的 timer 路径；这些进入阶段 8 及后续平台完善。
 
 ## 后续任务
 
-1. 定位 Linux 识别 `vda` 后未进入 `/init` 的具体等待点。
+1. 后续若需要自动化 block-read smoke，应由测试脚本临时生成 no-fs / virtblk 配置，或先完成
+   正式 ownership 隔离后直接回归默认 `linux-x86_64-qemu-smp1.toml`。
 2. 检查 x86_64 interrupt injection 链路：
    - `components/x86_vcpu` 的 VMX vCPU 已有 `queue_event()` / `inject_interrupt()` 能力。
    - aarch64/riscv64/loongarch64 的 HAL `inject_interrupt()` 均已有平台实现，分别落到 GIC virtual interrupt、vPLIC pending bit 和 LoongArch guest interrupt controller/status。
    - `os/axvisor/src/hal/arch/x86_64/mod.rs::inject_interrupt()` 已补齐当前 VM/当前 vCPU 的转发层，会通过 `axvisor_api::vmm::inject_interrupt()` 进入 VMX vCPU 的事件队列。
    - `inject_interrupt_to_cpus()` 已从 `todo!()` 改为遍历目标 vCPU mask 并复用单 vCPU 注入接口。该实现能完成目标 vCPU 的事件排队，但远端 pCPU 唤醒/异步 IPI 投递仍依赖 `with_vm_and_vcpu_on_pcpu()` 后续补齐。
 3. 补齐 x86 guest interrupt controller / platform description 路线：
-   - 最小 MP table 已能让 guest 发现 LAPIC + IOAPIC，并把 virtio-blk `INT A` 转成 IRQ 19。
+   - 最小 MP table 已能让 guest 发现 LAPIC + IOAPIC，并把当前 q35 virtio-blk `INT A` 转成
+     与 host 实际线号一致的 IRQ 23。
    - 短线补虚拟 PIT/IOAPIC timer，使 guest 不再依赖 `no_timer_check`。
    - 中线实现虚拟 IOAPIC/PIC 或正式 IRQ routing，为 PCI legacy INTx、MSI/MSI-X 和多 vCPU 做准备。
 4. 为 x86 passthrough DMA 设计正式方案：
    - 支持固定 GPA=HPA 的低端 guest RAM 映射，并避免触发当前内核 relocation 逻辑；或
    - 通过 IOMMU/virtio emulation/地址转换层让外部设备能访问 `MAP_ALLOC` 后的 HPA。
-5. 待 block 设备可读写后，再进入阶段 8 的真实 rootfs 启动。
+5. block 设备 initramfs 只读 smoke 已完成；下一阶段进入真实 rootfs 启动和更干净的块设备
+   ownership 方案。
 
 ## 验收边界
 
 本阶段当前验收不是“Linux 已经能挂载真实 rootfs”，而是：
 
 - 默认配置已承接 PCI/virtio-blk 设备发现路径，不再依赖临时 PCI 配置。
-- PCI/virtio/block 的当前阻塞面被拆清楚。
-- 后续工作聚焦 IOAPIC/IRQ routing、virtio-blk I/O completion 和设备 ownership，而不是 PCI config 枚举。
+- 默认 host-fs 配置保持稳定 `/init` 基线，并明确通过 blacklist 避免 host/guest 同盘并发驱动。
+- no-fs / virtblk 实验已验证 guest virtio-blk completion IRQ 和 initramfs `/dev/vda` 只读
+  marker；实验配置不作为长期仓库配置保留。
+- PCI/virtio/block 的当前阻塞面被拆清楚；后续工作聚焦真实 rootfs、正式设备 ownership、
+  timer 参数收敛和更通用的 IRQ routing，而不是 PCI config 枚举。

@@ -22,7 +22,7 @@ use core::{
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::AddrRange;
 use axaddrspace::{
-    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo,
+    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo,
     device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
 };
 use axdevice_base::BaseDeviceOps;
@@ -61,6 +61,8 @@ const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
 pub const X86_APIC_ACCESS_GPA: usize = 0xfee0_0000;
+const X86_IOAPIC_BASE: usize = 0xfec0_0000;
+const X86_IOAPIC_SIZE: usize = 0x1000;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
@@ -1022,17 +1024,7 @@ impl VmxVcpu {
         let mut rip = self.gla2gva(GuestVirtAddr::from(exit_info.guest_rip));
         let mut rex = 0u8;
 
-        loop {
-            let byte = self.read_guest_u8(rip)?;
-            if byte == 0x66 {
-                rip += 1;
-            } else if (0x40..=0x4f).contains(&byte) {
-                rex = byte;
-                rip += 1;
-            } else {
-                break;
-            }
-        }
+        Self::skip_simple_prefixes(self, &mut rip, &mut rex)?;
 
         let opcode = self.read_guest_u8(rip)?;
         rip += 1;
@@ -1061,6 +1053,88 @@ impl VmxVcpu {
             Unsupported,
             format_args!("unsupported APIC MMIO write opcode {opcode:#x}")
         )
+    }
+
+    fn decode_ept_mmio_access(
+        &self,
+        exit_info: &VmxExitInfo,
+        addr: GuestPhysAddr,
+        write: bool,
+    ) -> Option<AxVCpuExitReason> {
+        // Keep EPT-violation MMIO decoding scoped to the PC IOAPIC window used
+        // by the current x86 Linux direct-boot path. The VMX exit qualification
+        // alone does not tell us whether an unmapped GPA is an emulated device
+        // or a genuine missing memory mapping.
+        if !(X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr.as_usize()) {
+            return None;
+        }
+
+        let mut rip = self.gla2gva(GuestVirtAddr::from(exit_info.guest_rip));
+        let mut rex = 0u8;
+        if let Err(err) = Self::skip_simple_prefixes(self, &mut rip, &mut rex) {
+            debug!("failed to decode EPT MMIO prefixes: {err:?}");
+            return None;
+        }
+
+        let opcode = self.read_guest_u8(rip).ok()?;
+        rip += 1;
+        let modrm = self.read_guest_u8(rip).ok()?;
+        rip += 1;
+        if modrm >> 6 == 0b11 {
+            debug!("EPT MMIO access did not use a memory operand");
+            return None;
+        }
+
+        match (write, opcode) {
+            (true, 0x89) => {
+                let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
+                Some(AxVCpuExitReason::MmioWrite {
+                    addr,
+                    width: AccessWidth::Dword,
+                    data: self.guest_regs.get_reg_of_index(reg) as u32 as u64,
+                })
+            }
+            (true, 0xc7) if (modrm >> 3) & 0x7 == 0 => {
+                let imm_addr = self.skip_modrm_memory_operand(rip, modrm, rex).ok()?;
+                let mut data = 0u32;
+                for i in 0..size_of::<u32>() {
+                    data |= (self.read_guest_u8(imm_addr + i).ok()? as u32) << (i * 8);
+                }
+                Some(AxVCpuExitReason::MmioWrite {
+                    addr,
+                    width: AccessWidth::Dword,
+                    data: data as u64,
+                })
+            }
+            (false, 0x8b) => {
+                let reg = (((modrm >> 3) & 0x7) | ((rex & 0x4) << 1)) as usize;
+                Some(AxVCpuExitReason::MmioRead {
+                    addr,
+                    width: AccessWidth::Dword,
+                    reg,
+                    reg_width: AccessWidth::Dword,
+                    signed_ext: false,
+                })
+            }
+            _ => {
+                debug!("unsupported EPT MMIO opcode {opcode:#x}, write={write}");
+                None
+            }
+        }
+    }
+
+    fn skip_simple_prefixes(&self, rip: &mut GuestVirtAddr, rex: &mut u8) -> AxResult {
+        loop {
+            let byte = self.read_guest_u8(*rip)?;
+            if byte == 0x66 {
+                *rip += 1;
+            } else if (0x40..=0x4f).contains(&byte) {
+                *rex = byte;
+                *rip += 1;
+            } else {
+                return Ok(());
+            }
+        }
     }
 
     fn skip_modrm_memory_operand(
@@ -1499,9 +1573,22 @@ impl AxArchVCpu for VmxVcpu {
                     }
                     VmxExitReason::EPT_VIOLATION => {
                         let info = self.nested_page_fault_info()?;
-                        AxVCpuExitReason::NestedPageFault {
-                            addr: info.fault_guest_paddr,
-                            access_flags: info.access_flags,
+                        let write = info.access_flags.contains(MappingFlags::WRITE);
+                        let read = info.access_flags.contains(MappingFlags::READ);
+                        if (read || write)
+                            && let Some(mmio_exit) = self.decode_ept_mmio_access(
+                                &exit_info,
+                                info.fault_guest_paddr,
+                                write,
+                            )
+                        {
+                            self.advance_rip(exit_info.exit_instruction_length as _)?;
+                            mmio_exit
+                        } else {
+                            AxVCpuExitReason::NestedPageFault {
+                                addr: info.fault_guest_paddr,
+                                access_flags: info.access_flags,
+                            }
                         }
                     }
                     VmxExitReason::MSR_READ => {

@@ -119,14 +119,25 @@ fn push_isa_interrupt_entries(entries: &mut Vec<u8>) {
 
 fn push_pci_interrupt_entries(entries: &mut Vec<u8>) {
     // QEMU q35 exposes the host rootfs virtio-blk as 00:03.0 in the current
-    // smoke setup. Add conservative INTx routing for the first few slots so
-    // Linux can build PCI IRQ routing before a fuller virtual IOAPIC exists.
+    // smoke setup. Add enough INTx routing for Linux to build the PCI IRQ
+    // table before a fuller virtual PCI IRQ router exists.
     for dev in 0u8..4 {
         for pin in 0u8..4 {
             let source_irq = (dev << 2) | pin;
-            let intin = 16 + ((dev + pin) & 3);
+            let intin = pci_intx_gsi(dev, pin);
             push_interrupt_entry(entries, 0, BUS_ID_PCI, source_irq, intin);
         }
+    }
+}
+
+const fn pci_intx_gsi(dev: u8, pin: u8) -> u8 {
+    // Keep the guest MP table aligned with the host q35 IOAPIC line observed
+    // for the current smoke device. This is intentionally narrow; a later PCI
+    // IRQ router should derive it from platform/device topology instead.
+    if dev == 3 && pin == 0 {
+        23
+    } else {
+        16 + ((dev + pin) & 3)
     }
 }
 

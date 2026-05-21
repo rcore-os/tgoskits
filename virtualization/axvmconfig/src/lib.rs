@@ -147,6 +147,10 @@ pub enum EmulatedDeviceType {
     /// ARM GIC Partial Passthrough Interrupt Translation Service device.
     GPPTITS             = 0x22,
 
+    // 0x23: x86 interrupt controller devices.
+    /// x86 virtual IO APIC device.
+    X86IoApic           = 0x23,
+
     // 0x30: PPPT (PLIC Partial Passthrough) devices.
     /// RISC-V PLIC Partial Passthrough Global device.
     PPPTGlobal          = 0x30,
@@ -180,6 +184,7 @@ impl Display for EmulatedDeviceType {
             }
             EmulatedDeviceType::GPPTDistributor => write!(f, "gic partial passthrough distributor"),
             EmulatedDeviceType::GPPTITS => write!(f, "gic partial passthrough its"),
+            EmulatedDeviceType::X86IoApic => write!(f, "x86 io apic"),
             EmulatedDeviceType::PPPTGlobal => write!(f, "plic partial passthrough global"),
             // EmulatedDeviceType::IOMMU => write!(f, "iommu"),
             // EmulatedDeviceType::ICCSRE => write!(f, "interrupt icc sre"),
@@ -204,6 +209,7 @@ impl EmulatedDeviceType {
                 // | EmulatedDeviceType::SGIR
                 // | EmulatedDeviceType::ICCSRE
                 | EmulatedDeviceType::GPPTRedistributor
+                | EmulatedDeviceType::X86IoApic
                 | EmulatedDeviceType::VirtioBlk
                 | EmulatedDeviceType::VirtioNet
                 // | EmulatedDeviceType::GICR
@@ -221,6 +227,7 @@ impl EmulatedDeviceType {
             0x20 => EmulatedDeviceType::GPPTRedistributor,
             0x21 => EmulatedDeviceType::GPPTDistributor,
             0x22 => EmulatedDeviceType::GPPTITS,
+            0x23 => EmulatedDeviceType::X86IoApic,
             0x30 => EmulatedDeviceType::PPPTGlobal,
             0xE1 => EmulatedDeviceType::VirtioBlk,
             0xE2 => EmulatedDeviceType::VirtioNet,

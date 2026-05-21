@@ -29,7 +29,7 @@ kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = false
 # Linux command line written into boot_params.
-cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 rdinit=/init acpi=off pci=conf1 pci=nomsi nox2apic no_timer_check pmtmr=0x608 initcall_blacklist=i8042_init i8042.nokbd i8042.noaux i8042.nomux"
+cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 rdinit=/init acpi=off pci=conf1 pci=nomsi nox2apic no_timer_check pmtmr=0x608 initcall_blacklist=i8042_init,virtio_blk_init i8042.nokbd i8042.noaux i8042.nomux"
 
 ## The file path of the ramdisk image.
 ramdisk_path = "/code/tgoskits/tmp/qemu_x86_64_linux/linux/initramfs.cpio"
@@ -54,7 +54,9 @@ interrupt_mode = "passthrough"
 
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
-emu_devices = []
+emu_devices = [
+  ["x86-ioapic", 0xfec0_0000, 0x1000, 0x0, 0x23, []],
+]
 
 # Pass-through devices.
 # Name Base-Ipa Base-Pa Length Alloc-Irq.

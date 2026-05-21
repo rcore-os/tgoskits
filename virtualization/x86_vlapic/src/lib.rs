@@ -25,6 +25,7 @@ mod consts;
 mod regs;
 mod timer;
 mod utils;
+mod vioapic;
 mod vlapic;
 
 use core::cell::UnsafeCell;
@@ -55,6 +56,8 @@ static VIRTUAL_APIC_ACCESS_PAGE: APICAccessPage = APICAccessPage([0; PAGE_SIZE_4
 pub struct EmulatedLocalApic {
     vlapic_regs: UnsafeCell<VirtualApicRegs>,
 }
+
+pub use vioapic::EmulatedIoApic;
 
 impl EmulatedLocalApic {
     /// Create a new `EmulatedLocalApic`.

@@ -26,10 +26,14 @@ use axaddrspace::{
     GuestPhysAddr, GuestPhysAddrRange,
     device::{AccessWidth, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange},
 };
+#[cfg(target_arch = "x86_64")]
+use axdevice_base::map_device_of_type;
 use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
 use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
+#[cfg(target_arch = "x86_64")]
+use x86_vlapic::EmulatedIoApic;
 
 use crate::{AxVmDeviceConfig, range_alloc::RangeAllocator};
 
@@ -280,6 +284,26 @@ impl AxVmDevices {
                         );
                     }
                 }
+                EmulatedDeviceType::X86IoApic => {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        this.add_mmio_dev(Arc::new(EmulatedIoApic::new(
+                            config.base_gpa.into(),
+                            Some(config.length),
+                        )));
+                        info!(
+                            "x86 IO APIC initialized with base GPA {:#x} and length {:#x}",
+                            config.base_gpa, config.length
+                        );
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        warn!(
+                            "emu type: {} is not supported on this platform",
+                            config.emu_type
+                        );
+                    }
+                }
                 EmulatedDeviceType::IVCChannel => {
                     if this.ivc_channel.is_none() {
                         // Initialize the IVC channel range allocator
@@ -383,6 +407,14 @@ impl AxVmDevices {
     /// Iterates over the port devices in the set.
     pub fn iter_port_dev(&self) -> impl Iterator<Item = &Arc<dyn BasePortDeviceOps>> {
         self.emu_port_devices.iter()
+    }
+
+    /// Returns the guest vector programmed for an x86 IOAPIC GSI.
+    #[cfg(target_arch = "x86_64")]
+    pub fn x86_ioapic_vector_for_gsi(&self, gsi: usize) -> Option<u8> {
+        self.emu_mmio_devices.iter().find_map(|dev| {
+            map_device_of_type(dev, |ioapic: &EmulatedIoApic| ioapic.vector_for_gsi(gsi)).flatten()
+        })
     }
 
     /// Iterates over the MMIO devices in the set.

@@ -13,10 +13,11 @@
 // limitations under the License.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use ax_cpumask::CpuMask;
-
 use ax_kspin::SpinNoIrq as Mutex;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use ax_cpumask::CpuMask;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(target_arch = "x86_64")]
+use std::os::arceos::modules::ax_hal::irq;
 use std::os::arceos::{
     api::task::{AxCpuMask, ax_wait_queue_wake},
     modules::{
@@ -44,6 +45,13 @@ const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 const X86_IOAPIC_VECTOR_BASE: usize = 0x20;
 #[cfg(target_arch = "x86_64")]
 const X86_IOAPIC_VECTOR_END: usize = 0xef;
+#[cfg(target_arch = "x86_64")]
+const X86_QEMU_VIRTIO_BLK_GSI: usize = 23;
+#[cfg(target_arch = "x86_64")]
+const X86_QEMU_VIRTIO_BLK_VECTOR: usize = X86_IOAPIC_VECTOR_BASE + X86_QEMU_VIRTIO_BLK_GSI;
+
+#[cfg(target_arch = "x86_64")]
+static X86_QEMU_VIRTIO_BLK_IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// A global map that holds the vCPU task state for each VM.
 static VM_VCPU_TASKS: Mutex<BTreeMap<usize, Arc<VMVCpus>>> = Mutex::new(BTreeMap::new());
@@ -418,6 +426,8 @@ fn vcpu_run() {
     wait_for(vm_id, || vm.running());
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
+    #[cfg(target_arch = "x86_64")]
+    enable_x86_qemu_virtio_blk_irq_forwarding(&vm);
     mark_vcpu_running(vm_id);
 
     loop {
@@ -601,9 +611,48 @@ fn forward_x86_passthrough_irq(vm: &VMRef, vector: usize) {
         return;
     }
 
+    let host_gsi = vector - X86_IOAPIC_VECTOR_BASE;
+    if host_gsi != X86_QEMU_VIRTIO_BLK_GSI {
+        return;
+    }
+
+    let Some(guest_vector) = vm.get_devices().x86_ioapic_vector_for_gsi(host_gsi) else {
+        debug!(
+            "x86 passthrough IRQ vector {vector:#x} has no guest vIOAPIC vector for host GSI \
+             {host_gsi}"
+        );
+        return;
+    };
+
     info!(
-        "Forwarding x86 passthrough IRQ vector {vector:#x} to current guest vCPU as an external \
-         interrupt"
+        "Forwarding x86 passthrough IRQ host GSI {host_gsi} vector {vector:#x} to guest vector \
+         {guest_vector:#x}"
     );
-    inject_interrupt(vector as _);
+    inject_interrupt(guest_vector as _);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn enable_x86_qemu_virtio_blk_irq_forwarding(vm: &VMRef) {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+        return;
+    }
+
+    if X86_QEMU_VIRTIO_BLK_IRQ_ENABLED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    if irq::register(X86_QEMU_VIRTIO_BLK_VECTOR, |_| {}) {
+        info!(
+            "Enabled x86 QEMU virtio-blk IRQ forwarding: host GSI {X86_QEMU_VIRTIO_BLK_GSI}, \
+             vector {X86_QEMU_VIRTIO_BLK_VECTOR:#x}"
+        );
+    } else {
+        debug!(
+            "x86 QEMU virtio-blk IRQ vector {X86_QEMU_VIRTIO_BLK_VECTOR:#x} already has a host \
+             handler"
+        );
+    }
 }
