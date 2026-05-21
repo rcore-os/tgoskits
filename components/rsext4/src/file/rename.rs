@@ -1,11 +1,21 @@
 use super::{
     delete::{
-        delete_dir, delete_file, find_named_entry_in_parent, remove_inodeentry_from_parentdir,
+        delete_dir, delete_file, find_named_entry_in_parent, is_dir_empty,
+        remove_inodeentry_from_parentdir,
     },
     *,
 };
 
+// TODO: RENAME_EXCHANGE — atomic swap of src and dst
+// TODO: RENAME_NOREPLACE — EEXIST if dst exists
+
 /// Renames or replaces a file-system entry.
+///
+/// When the destination already exists, POSIX requires type cross-checks:
+/// - rename(file, dir)  → ENOTDIR
+/// - rename(dir, file)  → EISDIR
+/// - rename(dir, dir)   → ENOTEMPTY if dst is non-empty
+/// - rename(file, file) → overwrite
 pub fn rename<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -15,11 +25,28 @@ pub fn rename<B: BlockDevice>(
     let old_norm = split_paren_child_and_tranlatevalid(old_path);
     let new_norm = split_paren_child_and_tranlatevalid(new_path);
 
+    // Resolve source type for cross-type checks.
+    let src_is_dir = get_inode_with_num(fs, device, &old_norm)?.is_some_and(|(_, i)| i.is_dir());
+
     // Replace existing destination entries before moving the source entry.
-    if let Some((_ino, inod)) = get_inode_with_num(fs, device, &new_norm).ok().flatten() {
-        if inod.is_dir() {
+    if let Some((_ino, dst_inode)) = get_inode_with_num(fs, device, &new_norm)? {
+        if dst_inode.is_dir() {
+            if !src_is_dir {
+                // rename file → dir: not allowed
+                return Err(Ext4Error::not_dir());
+            }
+            // rename dir → dir: destination must be empty
+            let mut dir_inode = dst_inode; // Ext4Inode is Copy
+            if !is_dir_empty(fs, device, &mut dir_inode)? {
+                return Err(Ext4Error::not_empty());
+            }
             delete_dir(fs, device, new_path)?;
         } else {
+            // dst is a file
+            if src_is_dir {
+                // rename dir → file: not allowed
+                return Err(Ext4Error::is_dir());
+            }
             delete_file(fs, device, new_path)?;
         }
     }
