@@ -21,4 +21,4 @@ target_link_libraries(test-uid-gid-res-setters PRIVATE pthread)
 
 target_include_directories(test-uid-gid-res-setters PRIVATE src)
 target_compile_options(test-uid-gid-res-setters PRIVATE -Wall -Wextra -Werror)
-install(TARGETS test-uid-gid-res-setters RUNTIME DESTINATION usr/bin)
+install(TARGETS test-uid-gid-res-setters RUNTIME DESTINATION usr/bin/starry-test-suit)
