@@ -11,13 +11,13 @@ keywords = ["arm", "scmi", "no_std", "embedded", "clock"]
 categories = ["embedded", "hardware-support", "no-std", "os"]
 
 [dependencies]
+ax-kspin = { workspace = true }
 bitflags = "2"
 log = "0.4"
 mbarrier = "0.1"
 smccc = "0.2"
 thiserror = {version = "2", default-features = false}
 tock-registers = "0.10"
-spin = "0.10"
 nb = "1"
 aarch64-cpu-ext = "0.1"
 
