@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axhvc-v0.4.7...axhvc-v0.4.8) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-errno
+
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/axhvc-v0.4.6...axhvc-v0.4.7) - 2026-05-19
 
 ### Other

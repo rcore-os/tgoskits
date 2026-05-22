@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.4.0...rsext4-v0.4.1) - 2026-05-22
+
+### Fixed
+
+- *(repo)* improve rsext4 recovery mount and Axvisor board CI ([#830](https://github.com/rcore-os/tgoskits/pull/830))
+- *(rsext4)* preserve directory inode generation ([#828](https://github.com/rcore-os/tgoskits/pull/828))
+- *(axfs-ng-vfs)* allow file rename into child dirs and fix ext4 dentry delete ([#807](https://github.com/rcore-os/tgoskits/pull/807))
+
+### Other
+
+- Revert " fix(repo): improve rsext4 recovery mount and Axvisor board CI ([#830](https://github.com/rcore-os/tgoskits/pull/830))" ([#838](https://github.com/rcore-os/tgoskits/pull/838))
+
 ## [0.4.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.3.7...rsext4-v0.4.0) - 2026-05-15
 
 ### Fixed
