@@ -129,6 +129,7 @@ pub(crate) fn enable_virtualization() {
     info!("All cores have enabled hardware virtualization support.");
 }
 
+mod impl_console;
 mod impl_host;
 mod impl_memory;
 mod impl_time;

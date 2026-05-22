@@ -29,6 +29,13 @@ compile_error!("features `vmx` and `svm` are mutually exclusive");
 #[cfg(test)]
 mod test_utils;
 
+/// x86 vCPU setup configuration.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct X86VCpuSetupConfig {
+    /// Intercept COM1 PIO ports and route them to an emulated serial device.
+    pub emulate_com1: bool,
+}
+
 pub(crate) mod msr;
 #[cfg(feature = "vmx")]
 #[macro_use]

@@ -424,27 +424,44 @@
 1. rootfs 启动失败可能来自内核配置、命令行、PCI/virtio、DMA、中断或文件系统本身，需要按阶段回溯定位。
 2. 不在本阶段追求多设备、多队列、高性能。
 
-## 阶段 9：多 vCPU、稳定性和回归测试
+## 阶段 9：单 vCPU 平台收敛、稳定性和回归测试
 
 ### 阶段目标
 
-在单 vCPU Linux 客户机可用后，逐步验证 SMP、多中断源、长时间运行和回归测试，保证新增 x86 Linux direct boot 不破坏现有客户机。
+在单 vCPU Linux 客户机可用后，继续收敛 timer/clocksource、IRQ routing、PCI/设备拓扑、
+rootfs/init 和回归测试，保证 x86 Linux direct boot 不靠不断增加启动参数维持可用性。阶段 9
+不实现多 vCPU，默认继续限制为 `cpu_num = 1`。
 
 ### 主要任务
 
-1. 多 vCPU 支持：
-   - 验证 AP startup 或当前 Axvisor vCPU 模型对 Linux SMP 的支持边界。
-   - 验证 LAPIC IPI、timer、中断投递在多 vCPU 下的行为。
-   - 如果 SMP 支持不足，先明确限制 `vcpus = 1`，再拆分后续任务。
-2. 稳定性测试：
+1. 收敛 x86 timer/clocksource：
+   - 已补最小 PIT/8254 port 设备、VMX I/O bitmap 捕获、VMX preemption timer 驱动的
+     `VTimer` exit，以及经 vIOAPIC GSI 0 注入的 IRQ0 路径。
+   - 已去掉 `no_timer_check` 和 `pmtmr=0x608`；继续收敛 `tsc=unstable`。
+   - 后续补完整 8259/PIC、Virtual Wire/ExtINT、LAPIC timer 和 PIT 边角语义。
+   - 记录每个参数移除失败时的真实卡点。
+2. 收敛 IRQ routing：
+   - 将 q35 virtio-blk GSI 23 hardcode 推进为基于 vIOAPIC redirection table 的通用 GSI forwarding。
+   - 继续补 PCI INTx routing，后续再评估 MSI/MSI-X。
+3. 收敛 QEMU 设备拓扑：
+   - 通用 `qemu-x86_64.toml` 保持兼容 NimbOS / ArceOS。
+   - Linux 专属最小拓扑使用独立 QEMU 配置，避免默认 VGA、e1000、ICH/AHCI 等设备拖慢 Linux 探测。
+   - Linux 专属 board 不启用 host `fs`，x86 Linux kernel 走 `image_location = "memory"`，
+     避免 Axvisor host 与 Linux guest 同时挂载同一块 ext4 rootfs。
+4. 收敛 rootfs/init：
+   - 默认 cmdline 已切到 BusyBox getty 拉起 `/bin/sh`，避免裸 `init=/bin/sh` 缺少
+     controlling tty。
+   - Linux 专用 QEMU 模板禁用 stdio monitor 复用，避免交互 shell 误触 monitor escape。
+   - 完整 `/sbin/init` / OpenRC 支持后续再修，不阻塞最小 Linux shell。
+5. 稳定性测试：
    - 重复启动 initramfs VM。
    - 重复启动 rootfs VM。
    - 执行基础 CPU、内存、文件系统 I/O 压力。
-3. 回归测试：
+6. 回归测试：
    - 验证现有 x86 非 Linux 客户机。
    - 验证 aarch64/riscv64 Linux direct boot 不受 x86 改动影响。
    - 验证 image loader 对不同 image 类型的分流。
-4. 文档和配置沉淀：
+7. 文档和配置沉淀：
    - 更新 qemu quickstart 或新增 x86_64 Linux quickstart。
    - 补充 VM config 示例。
    - 记录已知限制和排错方式。
@@ -452,7 +469,7 @@
 ### 产物
 
 1. 单 vCPU 稳定性报告。
-2. 多 vCPU 支持状态记录。
+2. timer/clocksource 参数移除记录。
 3. 回归测试清单。
 4. 用户可复现的 quickstart 文档。
 
@@ -464,8 +481,9 @@
 
 ### 风险和边界
 
-1. SMP 可能需要 AP startup、LAPIC、IPI、ACPI/MPTable 等更大范围能力，不应阻塞单 vCPU 支持合入。
-2. 性能优化不属于本阶段主目标，只记录明显瓶颈。
+1. 多 vCPU 已明确移出本阶段；AP startup、LAPIC IPI、SMP topology 不应阻塞阶段 9。
+2. 性能优化不是泛化目标，但与 timer、IRQ routing、QEMU 拓扑直接相关的启动慢路径需要处理。
+3. 不再优先通过 VM TOML 或 boot params 叠加 workaround；应优先补平台能力。
 
 ## 建议实施顺序
 
@@ -480,7 +498,7 @@
 7. 阶段 6：补齐 timer、中断和基础平台设备。
 8. 阶段 7：打通 PCI/virtio/block 设备直通。
 9. 阶段 8：启动真实 rootfs。
-10. 阶段 9：补充多 vCPU、稳定性、回归和文档。
+10. 阶段 9：单 vCPU 平台收敛、稳定性、回归和文档。
 
 阶段 1 到阶段 4 是 Linux 能进入早期启动的核心链路，建议作为第一组开发 PR。阶段 5 和阶段 6 是第一个可观察闭环，建议作为第二组开发 PR。阶段 7 和阶段 8 涉及设备、DMA、中断和 rootfs，建议拆成多个独立 PR。阶段 9 作为稳定化和产品化阶段，不应和初始 bring-up 混在一起。
 

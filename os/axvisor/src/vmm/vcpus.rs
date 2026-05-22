@@ -44,14 +44,12 @@ const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 #[cfg(target_arch = "x86_64")]
 const X86_IOAPIC_VECTOR_BASE: usize = 0x20;
 #[cfg(target_arch = "x86_64")]
-const X86_IOAPIC_VECTOR_END: usize = 0xef;
+const X86_IOAPIC_GSI_COUNT: usize = 24;
 #[cfg(target_arch = "x86_64")]
-const X86_QEMU_VIRTIO_BLK_GSI: usize = 23;
-#[cfg(target_arch = "x86_64")]
-const X86_QEMU_VIRTIO_BLK_VECTOR: usize = X86_IOAPIC_VECTOR_BASE + X86_QEMU_VIRTIO_BLK_GSI;
+const X86_IOAPIC_VECTOR_END: usize = X86_IOAPIC_VECTOR_BASE + X86_IOAPIC_GSI_COUNT;
 
 #[cfg(target_arch = "x86_64")]
-static X86_QEMU_VIRTIO_BLK_IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
+static X86_IOAPIC_IRQ_FORWARDING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// A global map that holds the vCPU task state for each VM.
 static VM_VCPU_TASKS: Mutex<BTreeMap<usize, Arc<VMVCpus>>> = Mutex::new(BTreeMap::new());
@@ -427,7 +425,7 @@ fn vcpu_run() {
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     #[cfg(target_arch = "x86_64")]
-    enable_x86_qemu_virtio_blk_irq_forwarding(&vm);
+    enable_x86_ioapic_irq_forwarding(&vm);
     mark_vcpu_running(vm_id);
 
     loop {
@@ -467,14 +465,34 @@ fn vcpu_run() {
                     ax_hal::trap::irq_handler(vector as usize);
                     super::timer::check_events();
                     #[cfg(target_arch = "x86_64")]
-                    forward_x86_passthrough_irq(&vm, vector as usize);
+                    forward_x86_passthrough_irq(&vm, &vcpu, vector as usize);
+                    #[cfg(target_arch = "x86_64")]
+                    inject_pending_x86_serial_irq(&vm, &vcpu);
                     #[cfg(target_arch = "riscv64")]
                     {
                         vcpu.get_arch_vcpu().latch_hvip_from_hw();
                     }
                 }
+                AxVCpuExitReason::VTimer => {
+                    #[cfg(target_arch = "x86_64")]
+                    inject_due_x86_pit_irq0(&vm, &vcpu);
+                    #[cfg(target_arch = "x86_64")]
+                    inject_pending_x86_serial_irq(&vm, &vcpu);
+                }
+                AxVCpuExitReason::InterruptEnd { vector } =>
+                {
+                    #[cfg(target_arch = "x86_64")]
+                    if let Some(vector) = vector {
+                        inject_pending_x86_ioapic_irq_after_eoi(&vm, &vcpu, vector);
+                    }
+                }
                 AxVCpuExitReason::Halt => {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");
+                    #[cfg(target_arch = "x86_64")]
+                    inject_pending_x86_serial_irq(&vm, &vcpu);
+                    #[cfg(target_arch = "x86_64")]
+                    continue;
+                    #[cfg(not(target_arch = "x86_64"))]
                     wait(vm_id)
                 }
                 AxVCpuExitReason::Nothing => {}
@@ -602,7 +620,7 @@ fn vcpu_run() {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn forward_x86_passthrough_irq(vm: &VMRef, vector: usize) {
+fn forward_x86_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
         return;
     }
@@ -612,13 +630,9 @@ fn forward_x86_passthrough_irq(vm: &VMRef, vector: usize) {
     }
 
     let host_gsi = vector - X86_IOAPIC_VECTOR_BASE;
-    if host_gsi != X86_QEMU_VIRTIO_BLK_GSI {
-        return;
-    }
-
-    let Some(guest_vector) = vm.get_devices().x86_ioapic_vector_for_gsi(host_gsi) else {
-        debug!(
-            "x86 passthrough IRQ vector {vector:#x} has no guest vIOAPIC vector for host GSI \
+    let Some(guest_irq) = vm.get_devices().x86_ioapic_assert_gsi(host_gsi) else {
+        trace!(
+            "x86 passthrough IRQ vector {vector:#x} has no injectable guest vIOAPIC route for host GSI \
              {host_gsi}"
         );
         return;
@@ -626,33 +640,99 @@ fn forward_x86_passthrough_irq(vm: &VMRef, vector: usize) {
 
     debug!(
         "Forwarding x86 passthrough IRQ host GSI {host_gsi} vector {vector:#x} to guest vector \
-         {guest_vector:#x}"
+         {:#x}",
+        guest_irq.vector
     );
-    inject_interrupt(guest_vector as _);
+    vcpu.inject_interrupt_with_trigger(guest_irq.vector as _, guest_irq.level_triggered)
+        .unwrap();
 }
 
 #[cfg(target_arch = "x86_64")]
-fn enable_x86_qemu_virtio_blk_irq_forwarding(vm: &VMRef) {
+fn enable_x86_ioapic_irq_forwarding(vm: &VMRef) {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
         return;
     }
 
-    if X86_QEMU_VIRTIO_BLK_IRQ_ENABLED
+    if X86_IOAPIC_IRQ_FORWARDING_ENABLED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return;
     }
 
-    if irq::register(X86_QEMU_VIRTIO_BLK_VECTOR, |_| {}) {
-        info!(
-            "Enabled x86 QEMU virtio-blk IRQ forwarding: host GSI {X86_QEMU_VIRTIO_BLK_GSI}, \
-             vector {X86_QEMU_VIRTIO_BLK_VECTOR:#x}"
-        );
-    } else {
-        debug!(
-            "x86 QEMU virtio-blk IRQ vector {X86_QEMU_VIRTIO_BLK_VECTOR:#x} already has a host \
-             handler"
-        );
+    let mut registered = 0;
+    for vector in X86_IOAPIC_VECTOR_BASE..X86_IOAPIC_VECTOR_END {
+        if irq::register(vector, |_| {}) {
+            registered += 1;
+        } else {
+            trace!("x86 IOAPIC host vector {vector:#x} already has a host handler");
+        }
     }
+    info!(
+        "Enabled x86 IOAPIC IRQ forwarding for host vectors {:#x}..{:#x} ({} newly registered)",
+        X86_IOAPIC_VECTOR_BASE,
+        X86_IOAPIC_VECTOR_END - 1,
+        registered
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+fn inject_due_x86_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+        return;
+    }
+
+    let now_ns = ax_hal::time::monotonic_time_nanos() as u64;
+    if !vm.get_devices().x86_pit_consume_irq0_if_due(now_ns) {
+        return;
+    }
+
+    const TIMER_GSI: usize = 0;
+    let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(TIMER_GSI) else {
+        trace!("x86 PIT IRQ0 due but vIOAPIC GSI0 is not ready");
+        return;
+    };
+
+    trace!("Injecting x86 PIT IRQ0 vector {:#x}", irq.vector);
+    vcpu.inject_interrupt_with_trigger(irq.vector as _, irq.level_triggered)
+        .unwrap();
+}
+
+#[cfg(target_arch = "x86_64")]
+fn inject_pending_x86_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+        return;
+    }
+
+    if !vm.get_devices().x86_serial_poll_irq() {
+        return;
+    }
+
+    const COM1_GSI: usize = 4;
+    let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(COM1_GSI) else {
+        trace!("x86 COM1 RX pending but vIOAPIC GSI4 is not ready");
+        return;
+    };
+
+    trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
+    vcpu.inject_interrupt_with_trigger(irq.vector as _, irq.level_triggered)
+        .unwrap();
+}
+
+#[cfg(target_arch = "x86_64")]
+fn inject_pending_x86_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+        return;
+    }
+
+    let Some(irq) = vm.get_devices().x86_ioapic_end_of_interrupt(vector) else {
+        return;
+    };
+
+    trace!(
+        "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
+        irq.vector
+    );
+    vcpu.inject_interrupt_with_trigger(irq.vector as _, irq.level_triggered)
+        .unwrap();
 }

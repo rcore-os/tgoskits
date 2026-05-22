@@ -304,6 +304,17 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         self.get_arch_vcpu().inject_interrupt(vector)
     }
 
+    /// Inject an interrupt with architecture-specific trigger mode metadata.
+    pub fn inject_interrupt_with_trigger(&self, vector: usize, level_triggered: bool) -> AxResult {
+        self.get_arch_vcpu()
+            .inject_interrupt_with_trigger(vector, level_triggered)
+    }
+
+    /// Process a guest EOI and return the vector for an external EOI broadcast.
+    pub fn handle_eoi(&self) -> Option<u8> {
+        self.get_arch_vcpu().handle_eoi()
+    }
+
     /// Sets the return value of the VCpu.
     pub fn set_return_value(&self, val: usize) {
         self.get_arch_vcpu().set_return_value(val);

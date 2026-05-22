@@ -77,7 +77,7 @@ register_structs! {
         /// Virtual trigger-mode register (VTMR):
         /// the 256-bit value comprising eight non-contiguous 32-bit fields at offsets
         /// 180H, 190H, 1A0H, 1B0H, 1C0H, 1D0H, 1E0H, and 1F0H on the virtual-APIC page.
-        (0x180 => pub TMR: [ReadOnly<u128>; 8]),
+        (0x180 => pub TMR: [ReadWrite<u128>; 8]),
         /// Virtual interrupt-request register (VIRR):
         /// the 256-bit value comprising eight non-contiguous 32-bit fields at offsets
         /// 200H, 210H, 220H, 230H, 240H, 250H, 260H, and 270H on the virtual-APIC page.

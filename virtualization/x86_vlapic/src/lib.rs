@@ -22,7 +22,9 @@ extern crate alloc;
 extern crate log;
 
 mod consts;
+mod pit;
 mod regs;
+mod serial;
 mod timer;
 mod utils;
 mod vioapic;
@@ -57,7 +59,9 @@ pub struct EmulatedLocalApic {
     vlapic_regs: UnsafeCell<VirtualApicRegs>,
 }
 
-pub use vioapic::EmulatedIoApic;
+pub use pit::EmulatedPit;
+pub use serial::EmulatedSerialPort;
+pub use vioapic::{EmulatedIoApic, IoApicInterrupt};
 
 impl EmulatedLocalApic {
     /// Create a new `EmulatedLocalApic`.
@@ -105,6 +109,17 @@ impl EmulatedLocalApic {
     /// Sets the IA32_APIC_BASE MSR value.
     pub fn set_apic_base(&self, value: u64) -> AxResult {
         self.get_mut_vlapic_regs().set_apic_base(value)
+    }
+
+    /// Record that the local APIC accepted an interrupt.
+    pub fn accept_interrupt(&self, vector: u8, level_triggered: bool) {
+        self.get_mut_vlapic_regs()
+            .accept_interrupt(vector, level_triggered);
+    }
+
+    /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.
+    pub fn handle_eoi(&self) -> Option<u8> {
+        self.get_mut_vlapic_regs().handle_eoi()
     }
 }
 

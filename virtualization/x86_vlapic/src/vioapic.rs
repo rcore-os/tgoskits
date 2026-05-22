@@ -20,12 +20,15 @@ const IOAPIC_VERSION_VALUE: u32 = 0x11 | ((MAX_REDIRECTION_ENTRY as u32) << 16);
 const MAX_REDIRECTION_ENTRY: usize = 23;
 const REDIRECTION_ENTRY_COUNT: usize = MAX_REDIRECTION_ENTRY + 1;
 const REDIRECTION_ENTRY_MASKED: u64 = 1 << 16;
+const REDIRECTION_ENTRY_TRIGGER_MODE: u64 = 1 << 15;
+const REDIRECTION_ENTRY_REMOTE_IRR: u64 = 1 << 14;
 const REDIRECTION_ENTRY_DELIVERY_MODE_MASK: u64 = 0b111 << 8;
 
 #[derive(Debug)]
 struct IoApicState {
     selector: u32,
     redirection_table: [u64; REDIRECTION_ENTRY_COUNT],
+    pending_level: [bool; REDIRECTION_ENTRY_COUNT],
 }
 
 impl IoApicState {
@@ -33,8 +36,49 @@ impl IoApicState {
         Self {
             selector: 0,
             redirection_table: [REDIRECTION_ENTRY_MASKED; REDIRECTION_ENTRY_COUNT],
+            pending_level: [false; REDIRECTION_ENTRY_COUNT],
         }
     }
+
+    fn interrupt_for_entry(&mut self, gsi: usize) -> Option<IoApicInterrupt> {
+        let entry = self.redirection_table.get_mut(gsi)?;
+        if *entry & REDIRECTION_ENTRY_MASKED != 0 {
+            return None;
+        }
+
+        if *entry & REDIRECTION_ENTRY_DELIVERY_MODE_MASK != 0 {
+            debug!("vIOAPIC GSI {gsi} uses unsupported delivery mode entry {entry:#x}");
+            return None;
+        }
+
+        let vector = (*entry & 0xff) as u8;
+        if vector < 16 {
+            return None;
+        }
+
+        let level_triggered = *entry & REDIRECTION_ENTRY_TRIGGER_MODE != 0;
+        if level_triggered {
+            if *entry & REDIRECTION_ENTRY_REMOTE_IRR != 0 {
+                self.pending_level[gsi] = true;
+                return None;
+            }
+            *entry |= REDIRECTION_ENTRY_REMOTE_IRR;
+        }
+
+        Some(IoApicInterrupt {
+            vector,
+            level_triggered,
+        })
+    }
+}
+
+/// A routed interrupt from the virtual IO APIC.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IoApicInterrupt {
+    /// Guest interrupt vector.
+    pub vector: u8,
+    /// Whether the redirection entry is level-triggered.
+    pub level_triggered: bool,
 }
 
 /// A minimal emulated x86 IO APIC.
@@ -80,6 +124,33 @@ impl EmulatedIoApic {
         Some(vector)
     }
 
+    /// Assert an IO APIC input line and return the interrupt to inject.
+    pub fn assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt> {
+        let mut state = self.state.lock();
+        state.interrupt_for_entry(gsi)
+    }
+
+    /// Process an EOI broadcast from the local APIC.
+    pub fn end_of_interrupt(&self, vector: u8) -> Option<IoApicInterrupt> {
+        let mut state = self.state.lock();
+        for gsi in 0..REDIRECTION_ENTRY_COUNT {
+            let entry = &mut state.redirection_table[gsi];
+            if (*entry & 0xff) as u8 != vector
+                || *entry & REDIRECTION_ENTRY_TRIGGER_MODE == 0
+                || *entry & REDIRECTION_ENTRY_REMOTE_IRR == 0
+            {
+                continue;
+            }
+
+            *entry &= !REDIRECTION_ENTRY_REMOTE_IRR;
+            if core::mem::take(&mut state.pending_level[gsi]) {
+                return state.interrupt_for_entry(gsi);
+            }
+        }
+
+        None
+    }
+
     fn offset(&self, addr: GuestPhysAddr) -> usize {
         addr.as_usize() - self.base.as_usize()
     }
@@ -118,7 +189,13 @@ impl EmulatedIoApic {
                 }
                 let entry = &mut state.redirection_table[index];
                 if (reg - IOREDTBL_BASE) & 1 == 0 {
-                    *entry = (*entry & !0xffff_ffff) | value as u64;
+                    let remote_irr = *entry & REDIRECTION_ENTRY_REMOTE_IRR;
+                    *entry = (*entry & !0xffff_ffff)
+                        | ((value as u64) & !REDIRECTION_ENTRY_REMOTE_IRR)
+                        | remote_irr;
+                    if *entry & REDIRECTION_ENTRY_MASKED != 0 {
+                        state.pending_level[index] = false;
+                    }
                 } else {
                     *entry = (*entry & 0xffff_ffff) | ((value as u64) << 32);
                 }

@@ -20,10 +20,11 @@ phys_cpu_sets = [1]
 # Linux direct boot uses the Linux-specific boot stub at this GPA.
 entry_point = 0x8000
 # The location of image: "memory" | "fs".
-# Load from file system.
-image_location = "fs"
+# Embed the Linux bzImage into Axvisor so the host does not mount the same
+# virtio-blk disk that the guest uses as its rootfs.
+image_location = "memory"
 # The file path of the kernel image.
-kernel_path = "/guest/linux/linux-qemu"
+kernel_path = "../../../../tmp/qemu_x86_64_linux/linux/linux-qemu"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
@@ -49,7 +50,9 @@ interrupt_mode = "passthrough"
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 emu_devices = [
+  ["x86-com1", 0x3f8, 0x8, 0x0, 0x2, []],
   ["x86-ioapic", 0xfec0_0000, 0x1000, 0x0, 0x23, []],
+  ["x86-pit", 0x40, 0x22, 0x0, 0x24, []],
 ]
 
 # Pass-through devices.

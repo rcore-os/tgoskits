@@ -399,9 +399,21 @@ impl AxVM {
                     passthrough_timer: passthrough,
                 }
             };
-            #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]
+            #[cfg(not(any(
+                target_arch = "aarch64",
+                target_arch = "loongarch64",
+                target_arch = "x86_64"
+            )))]
             #[allow(clippy::let_unit_value)]
             let setup_config = <AxArchVCpuImpl as axvcpu::AxArchVCpu>::SetupConfig::default();
+            #[cfg(target_arch = "x86_64")]
+            let setup_config = crate::vcpu::AxVCpuSetupConfig {
+                emulate_com1: inner_mut
+                    .config
+                    .emu_devices()
+                    .iter()
+                    .any(|dev| dev.emu_type == axvmconfig::EmulatedDeviceType::Console),
+            };
 
             let entry = if vcpu.id() == 0 {
                 inner_mut.config.bsp_entry()

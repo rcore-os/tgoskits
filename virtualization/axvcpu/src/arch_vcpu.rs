@@ -88,6 +88,16 @@ pub trait AxArchVCpu: Sized {
     /// until the VCpu is running.
     fn inject_interrupt(&mut self, vector: usize) -> AxResult;
 
+    /// Inject an interrupt with architecture-specific trigger mode metadata.
+    fn inject_interrupt_with_trigger(&mut self, vector: usize, _level_triggered: bool) -> AxResult {
+        self.inject_interrupt(vector)
+    }
+
+    /// Process a guest EOI and return the vector for an external EOI broadcast.
+    fn handle_eoi(&mut self) -> Option<u8> {
+        None
+    }
+
     /// Sets the return value that will be delivered to the guest.
     fn set_return_value(&mut self, val: usize);
 }

@@ -200,11 +200,11 @@ impl VirtualApicRegs {
     /// Process the EOI operation triggered by a write to the EOI register.
     /// 11.8.5 Signaling Interrupt Servicing Completion
     /// 30.1.4 EOI Virtualization
-    fn process_eoi(&mut self) {
+    fn process_eoi(&mut self) -> Option<u8> {
         let vector = self.isrv;
 
         if vector == 0 {
-            return;
+            return None;
         }
 
         let (idx, bitpos) = extract_index_and_bitpos_u32(vector);
@@ -229,16 +229,14 @@ impl VirtualApicRegs {
         // Upon acceptance of an interrupt into the IRR, the corresponding TMR bit is cleared for edge-triggered interrupts and set for leveltriggered interrupts.
         // If a TMR bit is set when an EOI cycle for its corresponding interrupt vector is generated, an EOI message is sent to all I/O APICs.
         // (see 11.8.4 Interrupt Acceptance for Fixed Interrupts)
-        if (self.regs().TMR[idx].get() as u32).bit(bitpos) {
-            // Send EOI to all I/O APICs
-            // Per Intel SDM 10.8.5, Software can inhibit the broadcast of
-            // EOI by setting bit 12 of the Spurious Interrupt Vector
-            // Register of the LAPIC.
-            // TODO: Check if the bit 12 "Suppress EOI Broadcasts" is set.
-            warn!("[VLAPIC] level-triggered EOI broadcast is not implemented yet");
-        }
+        let broadcast_eoi = (self.regs().TMR[idx].get() as u32).bit(bitpos)
+            && !self
+                .regs()
+                .SVR
+                .is_set(SPURIOUS_INTERRUPT_VECTOR::EOIBroadcastSuppression);
 
         debug!("Gratuitous EOI vector: {vector:#010X}");
+        broadcast_eoi.then_some(vector as u8)
     }
 
     /// Post an interrupt to the vcpu running on 'hostcpu'.
@@ -379,21 +377,30 @@ impl VirtualApicRegs {
         self.set_intr(self.vapic_id, vector, LAPIC_TRIG_EDGE);
     }
 
-    fn set_intr(&mut self, vcpu_id: u32, vector: u32, level: bool) {
+    fn set_intr(&mut self, vcpu_id: u32, vector: u32, _level: bool) {
         if vector > u8::MAX as u32 {
             warn!("[VLAPIC] ignoring out-of-range vector {vector:#x}");
             return;
         }
 
-        if level {
-            warn!(
-                "[VLAPIC] injecting level-triggered vector {vector:#x} without virtual IOAPIC EOI \
-                 tracking"
-            );
-        }
-
         debug!("[VLAPIC] injecting vector {vector:#x} to vcpu {vcpu_id}");
         vmm::inject_interrupt(vmm::current_vm_id(), vcpu_id as usize, vector as u8);
+    }
+
+    /// Record interrupt acceptance in the virtual APIC page.
+    pub fn accept_interrupt(&mut self, vector: u8, level_triggered: bool) {
+        let vector = vector as u32;
+        let (idx, bitpos) = extract_index_and_bitpos_u32(vector);
+        let bit = 1 << bitpos;
+
+        self.regs().ISR[idx].set(self.regs().ISR[idx].get() | bit);
+        self.regs().TMR[idx].set(if level_triggered {
+            self.regs().TMR[idx].get() | bit
+        } else {
+            self.regs().TMR[idx].get() & !bit
+        });
+        self.isrv = self.find_isrv();
+        self.update_ppr();
     }
 
     fn inject_nmi(&mut self, vcpu_id: u32) {
@@ -854,7 +861,7 @@ impl VirtualApicRegs {
                 self.regs().TPR.set(data32 & 0xff);
             }
             ApicRegOffset::EOI => {
-                self.process_eoi();
+                let _ = self.process_eoi();
             }
             ApicRegOffset::LDR => {
                 self.regs().LDR.set(data32);
@@ -891,6 +898,15 @@ impl VirtualApicRegs {
                 }
                 self.regs().ICR_LO.set(data32);
                 self.write_icr()?;
+            }
+            ApicRegOffset::ICRHi => {
+                if self.is_x2apic_enabled() {
+                    warn!("[VLAPIC] write ICRHi register: unsupported in x2APIC mode");
+                    return Err(AxError::InvalidInput);
+                }
+                self.regs()
+                    .ICR_HI
+                    .set(data32 & INTERRUPT_COMMAND_HIGH::Destination::SET.mask());
             }
             // Local Vector Table registers.
             ApicRegOffset::LvtCMCI => {
@@ -956,5 +972,10 @@ impl VirtualApicRegs {
         debug!("[VLAPIC] write {offset} register: {val:#010X}");
 
         Ok(())
+    }
+
+    /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.
+    pub fn handle_eoi(&mut self) -> Option<u8> {
+        self.process_eoi()
     }
 }

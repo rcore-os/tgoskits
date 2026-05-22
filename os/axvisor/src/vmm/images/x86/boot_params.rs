@@ -52,10 +52,10 @@ const LEGACY_RESERVED_START: usize = 0x000a_0000;
 const LEGACY_RESERVED_SIZE: usize = 0x0006_0000;
 
 pub const DEFAULT_COMMAND_LINE: &str = concat!(
-    "console=ttyS0 root=/dev/vda rw rootwait devtmpfs.mount=1 ",
-    "init=/bin/sh ",
-    "acpi=off pci=conf1 pci=nomsi nox2apic no_timer_check pmtmr=0x608 ",
-    "tsc=unstable initcall_blacklist=ahci_pci_driver_init,i8042_init"
+    "console=ttyS0 root=/dev/vda rw rootwait devtmpfs.mount=1 init=/sbin/getty ",
+    "acpi=off pci=conf1 pci=nomsi nox2apic ",
+    "tsc=unstable initcall_blacklist=ahci_pci_driver_init,i8042_init ",
+    "-- -n -l /bin/sh -L 115200 ttyS0 dumb"
 );
 
 /// Builds a Linux x86 boot_params page for the direct-boot path.

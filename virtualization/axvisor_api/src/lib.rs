@@ -147,6 +147,7 @@
 pub use axvisor_api_proc::{api_def, api_impl};
 
 pub mod arch;
+pub mod console;
 pub mod host;
 pub mod memory;
 pub mod time;

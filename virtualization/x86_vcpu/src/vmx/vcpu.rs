@@ -52,14 +52,19 @@ use super::{
     },
 };
 use crate::{
-    ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag,
-    xstate::XState,
+    X86VCpuSetupConfig, ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters,
+    restore_host_interrupt_flag, xstate::XState,
 };
 
-const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
+const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 100_000;
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
+const X86_PIT_PORT_BASE: u16 = 0x40;
+const X86_PIT_PORT_COUNT: u32 = 4;
+const X86_PIT_SPEAKER_PORT: u16 = 0x61;
+const X86_COM1_PORT_BASE: u16 = 0x3f8;
+const X86_COM1_PORT_COUNT: u32 = 8;
 pub const X86_APIC_ACCESS_GPA: usize = 0xfee0_0000;
 const X86_IOAPIC_BASE: usize = 0xfec0_0000;
 const X86_IOAPIC_SIZE: usize = 0x1000;
@@ -112,6 +117,8 @@ pub struct VmxVcpu {
     // Interrupt-related fields
     /// Pending events to be injected to the guest.
     pending_events: VecDeque<(u8, Option<u32>)>,
+    /// Trigger mode for each pending interrupt vector.
+    pending_event_level: [bool; 256],
     /// Emulated Local APIC.
     vlapic: EmulatedLocalApic,
 
@@ -141,6 +148,7 @@ impl VmxVcpu {
             io_bitmap: IOBitmap::passthrough_all()?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
+            pending_event_level: [false; 256],
             vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
             xstate: XState::new(),
             #[cfg(feature = "tracing")]
@@ -152,7 +160,7 @@ impl VmxVcpu {
 
     /// Set the new [`VmxVcpu`] context from guest OS.
     pub fn setup(&mut self, ept_root: HostPhysAddr, entry: GuestPhysAddr) -> AxResult {
-        self.setup_vmcs(entry, ept_root)?;
+        self.setup_vmcs(entry, ept_root, X86VCpuSetupConfig::default())?;
         Ok(())
     }
 
@@ -393,6 +401,17 @@ impl VmxVcpu {
         self.pending_events.push_back((vector, err_code));
     }
 
+    /// Add a virtual interrupt or exception with trigger mode metadata.
+    pub fn queue_event_with_trigger(
+        &mut self,
+        vector: u8,
+        err_code: Option<u32>,
+        level_triggered: bool,
+    ) {
+        self.pending_event_level[vector as usize] = level_triggered;
+        self.queue_event(vector, err_code);
+    }
+
     /// If enable, a VM exit occurs at the beginning of any instruction if
     /// `RFLAGS.IF` = 1 and there are no other blocking of interrupts.
     /// (see SDM, Vol. 3C, Section 24.4.2)
@@ -424,16 +443,27 @@ impl VmxVcpu {
 
 // Implementation of private methods
 impl VmxVcpu {
-    fn setup_io_bitmap(&mut self) -> AxResult {
+    fn setup_io_bitmap(&mut self, config: X86VCpuSetupConfig) -> AxResult {
         // By default, I/O bitmap is set as `intercept_all`.
         // Todo: these should be combined with emulated pio device management,
         // in `modules/axvm/src/device/x86_64/mod.rs` somehow.
-        let io_to_be_intercepted = QEMU_EXIT_PORT..QEMU_EXIT_PORT + 1; // QEMU exit port
+        let io_to_be_intercepted = QEMU_EXIT_PORT..QEMU_EXIT_PORT + 1; // QEMU exit port.
         self.io_bitmap.set_intercept_of_range(
             io_to_be_intercepted.start as _,
             io_to_be_intercepted.count() as u32,
             true,
         );
+        self.io_bitmap
+            .set_intercept_of_range(X86_PIT_PORT_BASE as u32, X86_PIT_PORT_COUNT, true);
+        self.io_bitmap
+            .set_intercept(X86_PIT_SPEAKER_PORT as u32, true);
+        if config.emulate_com1 {
+            self.io_bitmap.set_intercept_of_range(
+                X86_COM1_PORT_BASE as u32,
+                X86_COM1_PORT_COUNT,
+                true,
+            );
+        }
         Ok(())
     }
 
@@ -460,7 +490,12 @@ impl VmxVcpu {
         Ok(())
     }
 
-    fn setup_vmcs(&mut self, entry: GuestPhysAddr, ept_root: HostPhysAddr) -> AxResult {
+    fn setup_vmcs(
+        &mut self,
+        entry: GuestPhysAddr,
+        ept_root: HostPhysAddr,
+        config: X86VCpuSetupConfig,
+    ) -> AxResult {
         let paddr = self.vmcs.phys_addr().as_usize() as u64;
         unsafe {
             vmx::vmclear(paddr).map_err(as_axerr)?;
@@ -468,7 +503,7 @@ impl VmxVcpu {
         self.bind_to_current_processor()?;
         self.setup_msr_bitmap()?;
         self.setup_vmcs_guest(entry)?;
-        self.setup_vmcs_control(ept_root, true)?;
+        self.setup_vmcs_control(ept_root, true, config)?;
         self.unbind_from_current_processor()?;
         Ok(())
     }
@@ -566,7 +601,12 @@ impl VmxVcpu {
         Ok(())
     }
 
-    fn setup_vmcs_control(&mut self, ept_root: HostPhysAddr, is_guest: bool) -> AxResult {
+    fn setup_vmcs_control(
+        &mut self,
+        ept_root: HostPhysAddr,
+        is_guest: bool,
+        config: X86VCpuSetupConfig,
+    ) -> AxResult {
         // Intercept NMI and external interrupts.
         use PinbasedControls as PinCtrl;
 
@@ -577,9 +617,10 @@ impl VmxVcpu {
             VmcsControl32::PINBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_TRUE_PINBASED_CTLS,
             Msr::IA32_VMX_PINBASED_CTLS.read() as u32,
-            (PinCtrl::NMI_EXITING | PinCtrl::EXTERNAL_INTERRUPT_EXITING).bits(),
-            // (PinCtrl::NMI_EXITING | PinCtrl::VMX_PREEMPTION_TIMER).bits(),
-            // PinCtrl::NMI_EXITING.bits(),
+            (PinCtrl::NMI_EXITING
+                | PinCtrl::EXTERNAL_INTERRUPT_EXITING
+                | PinCtrl::VMX_PREEMPTION_TIMER)
+                .bits(),
             0,
         )?;
 
@@ -590,7 +631,10 @@ impl VmxVcpu {
             VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_TRUE_PROCBASED_CTLS,
             Msr::IA32_VMX_PROCBASED_CTLS.read() as u32,
-            (CpuCtrl::USE_IO_BITMAPS | CpuCtrl::USE_MSR_BITMAPS | CpuCtrl::SECONDARY_CONTROLS)
+            (CpuCtrl::USE_IO_BITMAPS
+                | CpuCtrl::USE_MSR_BITMAPS
+                | CpuCtrl::USE_TPR_SHADOW
+                | CpuCtrl::SECONDARY_CONTROLS)
                 .bits(),
             (CpuCtrl::CR3_LOAD_EXITING
                 | CpuCtrl::CR3_STORE_EXITING
@@ -601,8 +645,10 @@ impl VmxVcpu {
 
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
-        let mut val =
-            CpuCtrl2::VIRTUALIZE_APIC | CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
+        let mut val = CpuCtrl2::VIRTUALIZE_APIC
+            | CpuCtrl2::VIRTUAL_INTERRUPT_DELIVERY
+            | CpuCtrl2::ENABLE_EPT
+            | CpuCtrl2::UNRESTRICTED_GUEST;
         if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers()
             && features.has_rdtscp()
         {
@@ -674,7 +720,7 @@ impl VmxVcpu {
         // Pass-through exceptions (except #UD(6)), don't use I/O bitmap, set MSR bitmaps.
         let exception_bitmap: u32 = 1 << 6;
 
-        self.setup_io_bitmap()?;
+        self.setup_io_bitmap(config)?;
 
         VmcsControl32::EXCEPTION_BITMAP.write(exception_bitmap)?;
         VmcsControl64::IO_BITMAP_A_ADDR.write(self.io_bitmap.phys_addr().0.as_usize() as _)?;
@@ -684,6 +730,10 @@ impl VmxVcpu {
         VmcsControl64::VIRT_APIC_ADDR.write(self.vlapic.virtual_apic_page_addr().as_usize() as _)?;
         VmcsControl64::APIC_ACCESS_ADDR
             .write(EmulatedLocalApic::virtual_apic_access_addr().as_usize() as _)?;
+        VmcsControl64::EOI_EXIT0.write(u64::MAX)?;
+        VmcsControl64::EOI_EXIT1.write(u64::MAX)?;
+        VmcsControl64::EOI_EXIT2.write(u64::MAX)?;
+        VmcsControl64::EOI_EXIT3.write(u64::MAX)?;
         Ok(())
     }
 
@@ -855,6 +905,11 @@ impl VmxVcpu {
             if event.0 < 32 || self.allow_interrupt() {
                 // if it's an exception, or an interrupt that is not blocked, inject it directly.
                 vmcs::inject_event(event.0, event.1)?;
+                if event.0 >= 32 {
+                    let level_triggered = self.pending_event_level[event.0 as usize];
+                    self.pending_event_level[event.0 as usize] = false;
+                    self.vlapic.accept_interrupt(event.0, level_triggered);
+                }
                 self.pending_events.pop_front();
             } else {
                 // interrupts are blocked, enable interrupt-window exiting.
@@ -883,7 +938,6 @@ impl VmxVcpu {
         // - cr access: just panic;
         match exit_info.exit_reason {
             VmxExitReason::INTERRUPT_WINDOW => Some(self.handle_interrupt_window()),
-            VmxExitReason::PREEMPTION_TIMER => Some(self.handle_vmx_preemption_timer()),
             VmxExitReason::XSETBV => Some(self.handle_xsetbv()),
             VmxExitReason::CR_ACCESS => Some(self.handle_cr()),
             VmxExitReason::CPUID => Some(self.handle_cpuid()),
@@ -1482,7 +1536,7 @@ impl Debug for VmxVcpu {
 impl AxArchVCpu for VmxVcpu {
     type CreateConfig = ();
 
-    type SetupConfig = ();
+    type SetupConfig = X86VCpuSetupConfig;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxResult<Self> {
         Self::new(vm_id, vcpu_id)
@@ -1498,8 +1552,8 @@ impl AxArchVCpu for VmxVcpu {
         Ok(())
     }
 
-    fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
-        self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap())
+    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+        self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap(), config)
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
@@ -1569,6 +1623,22 @@ impl AxArchVCpu for VmxVcpu {
                         assert!(int_info.valid);
                         AxVCpuExitReason::ExternalInterrupt {
                             vector: int_info.vector as _,
+                        }
+                    }
+                    VmxExitReason::PREEMPTION_TIMER => {
+                        self.handle_vmx_preemption_timer()?;
+                        AxVCpuExitReason::VTimer
+                    }
+                    VmxExitReason::VIRTUALIZED_EOI => AxVCpuExitReason::InterruptEnd {
+                        vector: self.vlapic.handle_eoi(),
+                    },
+                    VmxExitReason::APIC_WRITE => {
+                        let offset = self.apic_access_exit_info()?.offset as usize;
+                        if offset == 0xb0 {
+                            let vector = self.vlapic.handle_eoi();
+                            AxVCpuExitReason::InterruptEnd { vector }
+                        } else {
+                            AxVCpuExitReason::Nothing
                         }
                     }
                     VmxExitReason::EPT_VIOLATION => {
@@ -1641,6 +1711,19 @@ impl AxArchVCpu for VmxVcpu {
         Ok(())
     }
 
+    fn inject_interrupt_with_trigger(&mut self, vector: usize, level_triggered: bool) -> AxResult {
+        if vector == 0 {
+            warn!("interrupt queued in inject_interrupt_with_trigger: vector 0");
+            panic!()
+        }
+        self.queue_event_with_trigger(vector as u8, None, level_triggered);
+        Ok(())
+    }
+
+    fn handle_eoi(&mut self) -> Option<u8> {
+        self.vlapic.handle_eoi()
+    }
+
     fn set_return_value(&mut self, val: usize) {
         self.regs_mut().rax = val as u64;
     }
@@ -1690,7 +1773,7 @@ mod tests {
     #[test]
     fn test_constants() {
         // Test that constants have expected values
-        assert_eq!(VMX_PREEMPTION_TIMER_SET_VALUE, 1_000_000);
+        assert_eq!(VMX_PREEMPTION_TIMER_SET_VALUE, 100_000);
         assert_eq!(QEMU_EXIT_PORT, 0x604);
         assert_eq!(QEMU_EXIT_MAGIC, 0x2000);
         assert_eq!(MSR_IA32_EFER_LMA_BIT, 1 << 10);
