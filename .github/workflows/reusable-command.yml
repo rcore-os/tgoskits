@@ -32,8 +32,8 @@ on:
         required: false
         type: string
         default: china
-      required_repository_owner:
-        description: Only run when the repository owner matches this value. Leave empty to run everywhere.
+      limit_to_owner:
+        description: Only run for this repository owner. Leave empty to run everywhere.
         required: false
         type: string
         default: ""
@@ -47,8 +47,8 @@ on:
         required: false
         type: string
         default: "1"
-      hosted_fallback_repository_owner:
-        description: Repository owner allowed to use the original runner. Leave empty to disable hosted fallback.
+      self_hosted_owner:
+        description: Repository owner that uses the original self-hosted runner; other owners fall back to ubuntu-latest with the configured container. Leave empty to disable fallback.
         required: false
         type: string
         default: ""
@@ -59,16 +59,16 @@ jobs:
       ${{
         !inputs.use_container
         && (
-          inputs.hosted_fallback_repository_owner == ''
+          inputs.self_hosted_owner == ''
           || (
-            github.repository_owner == inputs.hosted_fallback_repository_owner
+            github.repository_owner == inputs.self_hosted_owner
             && (
               github.event_name != 'pull_request'
-              || github.event.pull_request.head.repo.owner.login == inputs.hosted_fallback_repository_owner
+              || github.event.pull_request.head.repo.owner.login == inputs.self_hosted_owner
             )
           )
         )
-        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
@@ -101,29 +101,29 @@ jobs:
         (
           inputs.use_container
           || (
-            inputs.hosted_fallback_repository_owner != ''
+            inputs.self_hosted_owner != ''
             && (
-              github.repository_owner != inputs.hosted_fallback_repository_owner
+              github.repository_owner != inputs.self_hosted_owner
               || (
                 github.event_name == 'pull_request'
-                && github.event.pull_request.head.repo.owner.login != inputs.hosted_fallback_repository_owner
+                && github.event.pull_request.head.repo.owner.login != inputs.self_hosted_owner
               )
             )
           )
         )
-        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     # Keep this expression in sync with the "is-fallback?" branch in if: above.
     runs-on: >-
       ${{
         !inputs.use_container
-        && inputs.hosted_fallback_repository_owner != ''
+        && inputs.self_hosted_owner != ''
         && (
-          github.repository_owner != inputs.hosted_fallback_repository_owner
+          github.repository_owner != inputs.self_hosted_owner
           || (
             github.event_name == 'pull_request'
-            && github.event.pull_request.head.repo.owner.login != inputs.hosted_fallback_repository_owner
+            && github.event.pull_request.head.repo.owner.login != inputs.self_hosted_owner
           )
         )
         && fromJson('["ubuntu-latest"]')

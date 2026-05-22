@@ -303,7 +303,7 @@ jobs:
             cache_key: clippy
             container_image: base
             fetch_depth: full
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test with std
             use_container: true
@@ -311,7 +311,7 @@ jobs:
             command: cargo xtask test
             cache_key: test-std
             container_image: base
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test axvisor aarch64 qemu
             use_container: true
@@ -319,7 +319,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch aarch64
             cache_key: test-axvisor-aarch64
             container_image: base
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test axvisor riscv64 qemu
             use_container: true
@@ -327,7 +327,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch riscv64
             cache_key: test-axvisor-riscv64
             container_image: base
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test axvisor loongarch64 qemu
             use_container: true
@@ -335,7 +335,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch loongarch64
             cache_key: test-axvisor-loongarch64
             container_image: axvisor-lvz
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test starry riscv64 qemu
             use_container: true
@@ -344,7 +344,7 @@ jobs:
             cache_key: test-starry-riscv64
             container_image: base
             apk_region: us
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test starry aarch64 qemu
             use_container: true
@@ -353,7 +353,7 @@ jobs:
             cache_key: test-starry-aarch64
             container_image: base
             apk_region: us
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test starry loongarch64 qemu
             use_container: true
@@ -362,7 +362,7 @@ jobs:
             cache_key: test-starry-loongarch64
             container_image: base
             apk_region: us
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test starry x86_64 qemu
             use_container: true
@@ -371,43 +371,43 @@ jobs:
             cache_key: test-starry-x86_64
             container_image: base
             apk_region: us
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test arceos x86_64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
-            hosted_fallback_repository_owner: rcore-os
+            self_hosted_owner: rcore-os
             command: cargo xtask arceos test qemu --arch x86_64
             cache_key: ""
             container_image: base
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test arceos riscv64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
-            hosted_fallback_repository_owner: rcore-os
+            self_hosted_owner: rcore-os
             command: cargo xtask arceos test qemu --arch riscv64
             cache_key: ""
             container_image: base
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test arceos aarch64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
-            hosted_fallback_repository_owner: rcore-os
+            self_hosted_owner: rcore-os
             command: cargo xtask arceos test qemu --arch aarch64
             cache_key: ""
             container_image: base
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test arceos loongarch64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
-            hosted_fallback_repository_owner: rcore-os
+            self_hosted_owner: rcore-os
             command: cargo xtask arceos test qemu --arch loongarch64
             cache_key: ""
             container_image: base
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           # Stress tests: uncomment to enable (runs only on PRs targeting main).
           # - name: Stress starry aarch64
@@ -417,7 +417,7 @@ jobs:
           #   cache_key: test-starry-stress-aarch64
           #   container_image: base
           #   apk_region: us
-          #   required_repository_owner: ""
+          #   limit_to_owner: ""
           #   main_pr_only: true
           # - name: Stress starry riscv64
           #   use_container: true
@@ -426,7 +426,7 @@ jobs:
           #   cache_key: test-starry-stress-riscv64
           #   container_image: base
           #   apk_region: us
-          #   required_repository_owner: ""
+          #   limit_to_owner: ""
           #   main_pr_only: true
           # - name: Stress starry loongarch64
           #   use_container: true
@@ -435,7 +435,7 @@ jobs:
           #   cache_key: test-starry-stress-loongarch64
           #   container_image: base
           #   apk_region: us
-          #   required_repository_owner: ""
+          #   limit_to_owner: ""
           #   main_pr_only: true
           # - name: Stress starry x86_64
           #   use_container: true
@@ -444,7 +444,7 @@ jobs:
           #   cache_key: test-starry-stress-x86_64
           #   container_image: base
           #   apk_region: us
-          #   required_repository_owner: ""
+          #   limit_to_owner: ""
           #   main_pr_only: true
           - name: Test axvisor self-hosted x86_64
             use_container: false
@@ -452,7 +452,7 @@ jobs:
             command: cargo xtask axvisor test qemu --arch x86_64
             cache_key: ""
             container_image: ""
-            required_repository_owner: rcore-os
+            limit_to_owner: rcore-os
             main_pr_only: false
           - name: Test axvisor x86_64 svm hosted
             use_container: false
@@ -475,7 +475,7 @@ jobs:
               sg kvm -c "cargo xtask axvisor test qemu --arch x86_64 --test-group svm --test-case smoke"
             cache_key: ""
             container_image: ""
-            required_repository_owner: ""
+            limit_to_owner: ""
             main_pr_only: false
           - name: Test axvisor self-hosted board orangepi-5-plus-linux
             use_container: false
@@ -483,7 +483,7 @@ jobs:
             command: cargo xtask axvisor test board --board orangepi-5-plus-linux
             cache_key: ""
             container_image: ""
-            required_repository_owner: rcore-os
+            limit_to_owner: rcore-os
             main_pr_only: false
           - name: Test starry self-hosted board orangepi-5-plus
             use_container: false
@@ -491,7 +491,7 @@ jobs:
             command: cargo xtask starry test board --board orangepi-5-plus
             cache_key: ""
             container_image: ""
-            required_repository_owner: rcore-os
+            limit_to_owner: rcore-os
             main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
     with:
@@ -508,10 +508,10 @@ jobs:
           || matrix.container_image
         }}
       apk_region: ${{ matrix.apk_region || 'china' }}
-      required_repository_owner: ${{ matrix.required_repository_owner }}
+      limit_to_owner: ${{ matrix.limit_to_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
-      hosted_fallback_repository_owner: ${{ matrix.hosted_fallback_repository_owner || '' }}
+      self_hosted_owner: ${{ matrix.self_hosted_owner || '' }}
 
   publish_base_container:
     name: Publish base container image
