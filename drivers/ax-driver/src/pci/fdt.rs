@@ -23,7 +23,7 @@ use rdrive::{
 #[path = "rk3588.rs"]
 mod rk3588;
 
-crate::register_driver!(
+module_driver!(
     name: "Generic PCIe Controller Driver",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
@@ -234,7 +234,7 @@ mod pci_list_devices {
 
     use super::*;
 
-    crate::register_driver!(
+    module_driver!(
         name: "PCI Device Lister",
         level: ProbeLevel::PostKernel,
         priority: ProbePriority::DEFAULT,

@@ -47,7 +47,7 @@ impl HostClock for RockchipSdhciClock {
     }
 }
 
-crate::register_driver!(
+module_driver!(
     name: "Rockchip sdhci",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

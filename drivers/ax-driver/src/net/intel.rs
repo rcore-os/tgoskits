@@ -15,7 +15,7 @@ use crate::net::{PlatformDeviceNet, pci_legacy_irq};
 
 const DRIVER_NAME: &str = "eth-intel-e1000";
 
-crate::register_driver!(
+module_driver!(
     name: "Intel E1000 PCI Network",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

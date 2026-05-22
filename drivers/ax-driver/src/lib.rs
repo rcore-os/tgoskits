@@ -1,8 +1,18 @@
 //! rdrive + rdif host driver registration collection.
 
 #![no_std]
+#![feature(used_with_arg)]
 
 extern crate alloc;
+#[macro_use]
+extern crate rdrive;
+
+module_driver!(
+    name: "ax-driver macro placeholder",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[],
+);
 
 pub mod error;
 #[cfg(any(
@@ -50,26 +60,5 @@ pub mod time;
 pub mod usb;
 #[cfg(virtio_dev)]
 pub mod virtio;
-
-#[macro_export]
-macro_rules! register_driver {
-    (
-        $($i:ident : $t:expr),+,
-    ) => {
-        rdrive::__mod_maker!{
-            pub mod some {
-                use super::*;
-                use rdrive::register::*;
-
-                #[unsafe(link_section = ".driver.register")]
-                #[unsafe(no_mangle)]
-                #[used]
-                pub static DRIVER: DriverRegister = DriverRegister {
-                    $($i : $t),+
-                };
-            }
-        }
-    };
-}
 
 pub use error::{Error, Result};

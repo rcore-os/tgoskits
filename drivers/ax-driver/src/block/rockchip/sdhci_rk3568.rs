@@ -94,7 +94,7 @@ impl HostClock for RockchipSdhciClock {
     }
 }
 
-crate::register_driver!(
+module_driver!(
     name: "Rockchip RK3568 sdhci",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

@@ -15,7 +15,7 @@ const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
 static SCMI: Mutex<Option<Scmi<Smc>>> = Mutex::new(None);
 static SCMI_REGISTERED: AtomicBool = AtomicBool::new(false);
 
-crate::register_driver!(
+module_driver!(
     name: "ARM SCMI SMC",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,

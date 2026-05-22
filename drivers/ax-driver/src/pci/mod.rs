@@ -93,7 +93,7 @@ static LEGACY_IRQ_ROUTES: SpinMutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQ
 pub const DEVICE_NAME: &str = "pci-ecam";
 
 #[cfg(probe = "static")]
-crate::register_driver!(
+module_driver!(
     name: "Static PCIe ECAM",
     level: ProbeLevel::PreKernel,
     priority: ProbePriority::DEFAULT,

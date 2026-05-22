@@ -31,7 +31,7 @@ pub const MMIO_DEVICE_NAME: &str = "virtio-mmio";
         feature = "virtio-socket",
     )
 ))]
-crate::register_driver!(
+module_driver!(
     name: "Static VirtIO MMIO",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,

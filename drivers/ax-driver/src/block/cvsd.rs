@@ -10,7 +10,7 @@ const BLOCK_SIZE: usize = 512;
 pub const DEVICE_NAME: &str = "cvsd";
 
 #[cfg(probe = "static")]
-crate::register_driver!(
+module_driver!(
     name: "Static CVSD",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
