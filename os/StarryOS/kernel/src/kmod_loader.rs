@@ -1,3 +1,25 @@
+//! Loadable Kernel Module (LKM) support for StarryOS.
+//!
+//! Integrates the [`kmod_loader`] crate to provide `init_module` /
+//! `delete_module` / `finit_module` system calls for loading .ko ELF
+//! kernel modules at runtime.
+//!
+//! # Key Components
+//!
+//! - **KmodSectionMem**: Page-aligned memory with R/W/X permission control
+//!   via page table manipulation. Includes null-safe Drop.
+//! - **NullSectionMem**: No-op fallback when vmalloc fails.
+//! - **StarryKmodHelper**: Implements `KernelModuleHelper` trait with
+//!   vmalloc, resolve_symbol (stub), and cache flushing.
+//!
+//! # Known Limitations
+//!
+//! - `resolve_symbol` is a stub returning `None`; full implementation
+//!   requires PR #837 (kallsyms) to be merged.
+//! - `delete_module` and `finit_module` are syscall stubs.
+//! - Loaded modules are kept alive via `mem::forget`; future `delete_module`
+//!   will need a global registry to recover and free resources.
+
 use alloc::{
     alloc::{Layout, alloc, dealloc},
     boxed::Box,
