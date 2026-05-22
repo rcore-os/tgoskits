@@ -205,18 +205,6 @@ impl CmdQueue {
         blk_count: usize,
     ) -> impl core::future::Future<Output = Vec<Result<BlockData, BlkError>>> {
         let block_size = self.block_size();
-        let request_ls = (blk_id..blk_id + blk_count)
-            .map(|blk_id| (blk_id, block_size))
-            .collect();
-        ReadFuture::new(self, request_ls)
-    }
-
-    pub fn read_blocks_merged(
-        &mut self,
-        blk_id: usize,
-        blk_count: usize,
-    ) -> impl core::future::Future<Output = Vec<Result<BlockData, BlkError>>> {
-        let block_size = self.block_size();
         let request_ls = block_ranges(blk_id, blk_count, self.max_blocks_per_request(), block_size);
         ReadFuture::new(self, request_ls)
     }
@@ -229,32 +217,7 @@ impl CmdQueue {
         spin_on::spin_on(self.read_blocks(blk_id, blk_count))
     }
 
-    pub fn read_blocks_merged_blocking(
-        &mut self,
-        blk_id: usize,
-        blk_count: usize,
-    ) -> Vec<Result<BlockData, BlkError>> {
-        spin_on::spin_on(self.read_blocks_merged(blk_id, blk_count))
-    }
-
     pub async fn write_blocks(
-        &mut self,
-        start_blk_id: usize,
-        data: &[u8],
-    ) -> Vec<Result<(), BlkError>> {
-        let block_size = self.block_size();
-        assert_eq!(data.len() % block_size, 0);
-        let count = data.len() / block_size;
-        let mut block_vecs = Vec::with_capacity(count);
-        for i in 0..count {
-            let blk_id = start_blk_id + i;
-            let blk_data = &data[i * block_size..(i + 1) * block_size];
-            block_vecs.push((blk_id, blk_data));
-        }
-        WriteFuture::new(self, block_vecs).await
-    }
-
-    pub async fn write_blocks_merged(
         &mut self,
         start_blk_id: usize,
         data: &[u8],
@@ -277,14 +240,6 @@ impl CmdQueue {
         data: &[u8],
     ) -> Vec<Result<(), BlkError>> {
         spin_on::spin_on(self.write_blocks(start_blk_id, data))
-    }
-
-    pub fn write_blocks_merged_blocking(
-        &mut self,
-        start_blk_id: usize,
-        data: &[u8],
-    ) -> Vec<Result<(), BlkError>> {
-        spin_on::spin_on(self.write_blocks_merged(start_blk_id, data))
     }
 }
 

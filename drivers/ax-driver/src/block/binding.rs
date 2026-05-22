@@ -116,13 +116,13 @@ impl Block {
         #[cfg(feature = "irq")]
         {
             if use_irq {
-                return wait_on_block_irq(queue.read_blocks_merged(block_id, block_count));
+                return wait_on_block_irq(queue.read_blocks(block_id, block_count));
             }
         }
         #[cfg(not(feature = "irq"))]
         let _ = use_irq;
 
-        queue.read_blocks_merged_blocking(block_id, block_count)
+        queue.read_blocks_blocking(block_id, block_count)
     }
 
     fn write_blocks_wait(
@@ -134,13 +134,13 @@ impl Block {
         #[cfg(feature = "irq")]
         {
             if use_irq {
-                return wait_on_block_irq(queue.write_blocks_merged(block_id, data));
+                return wait_on_block_irq(queue.write_blocks(block_id, data));
             }
         }
         #[cfg(not(feature = "irq"))]
         let _ = use_irq;
 
-        queue.write_blocks_merged_blocking(block_id, data)
+        queue.write_blocks_blocking(block_id, data)
     }
 
     pub fn num_blocks(&self) -> u64 {
