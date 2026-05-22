@@ -91,8 +91,8 @@ push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支
 |----------|--------|----------|-----------|----------|
 | Run clippy | `ubuntu-latest` | 是（`base`） | `clippy` | `cargo xtask clippy --since <base>`；需要完整 git 历史 |
 | Test with std | `ubuntu-latest` | 是（`base`） | `test-std` | `cargo xtask test`，运行 `scripts/test/std_crates.csv` 中的 host 测试 |
-| Test axvisor aarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-axvisor-aarch64` | `cargo xtask axvisor test qemu --arch aarch64` |
-| Test axvisor riscv64 qemu | `ubuntu-latest` | 是（`base`） | `test-axvisor-riscv64` | `cargo xtask axvisor test qemu --arch riscv64` |
+| Test axvisor aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch aarch64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test axvisor riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch riscv64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor loongarch64 qemu | `ubuntu-latest` | 是（`axvisor-lvz`） | `test-axvisor-loongarch64` | `cargo xtask axvisor test qemu --arch loongarch64`，使用带 LVZ 支持的镜像 |
 | Test starry riscv64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-riscv64` | `cargo xtask starry test qemu --arch riscv64` |
 | Test starry aarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-aarch64` | `cargo xtask starry test qemu --arch aarch64` |
