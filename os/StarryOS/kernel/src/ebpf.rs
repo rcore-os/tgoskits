@@ -1235,9 +1235,8 @@ fn handle_link_create(uattr: usize, size: u32) -> AxResult<isize> {
     let (prog_fd, target_fd) = unsafe {
         let ptr = uattr as *const u32;
         let prog_fd = core::ptr::read(ptr) as u32;
-        let attach_type = core::ptr::read(ptr.add(1));
-        let target_fd = core::ptr::read(ptr.add(2)) as u32;
-        let _ = attach_type;
+        let target_fd = core::ptr::read(ptr.add(1)) as u32;
+        let _attach_type = core::ptr::read(ptr.add(2));
         (prog_fd, target_fd)
     };
     crate::perf_event::perf_event_attach_prog(target_fd, prog_fd)?;
@@ -1267,11 +1266,12 @@ fn handle_prog_attach(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
     if size < 16 {
         return Err(bpf_error::EINVAL);
     }
-    let (attach_prog_fd, target_fd) = unsafe {
+    let (target_fd, attach_prog_fd) = unsafe {
         let ptr = uattr as *const u32;
-        let attach_prog_fd = core::ptr::read(ptr) as u32;
-        let target_fd = core::ptr::read(ptr.add(2)) as u32;
-        (attach_prog_fd, target_fd)
+        let target_fd = core::ptr::read(ptr) as u32;
+        let attach_prog_fd = core::ptr::read(ptr.add(1)) as u32;
+        let _attach_type = core::ptr::read(ptr.add(2));
+        (target_fd, attach_prog_fd)
     };
     if cmd == cmd::PROG_ATTACH {
         crate::perf_event::perf_event_attach_prog(target_fd, attach_prog_fd)?;
