@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
-use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
 use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
@@ -124,7 +124,7 @@ pub fn mock_hal_test<F, R>(test_fn: F) -> R
 where
     F: FnOnce() -> R,
 {
-    let _guard = TEST_MUTEX.lock();
+    let _guard = TEST_MUTEX.lock().unwrap();
     MockHal::reset_state();
     test_fn()
 }
@@ -170,12 +170,12 @@ impl MockHal {
             paddr_usize
         );
         let offset = paddr_usize - BASE_PADDR;
-        VirtAddr::from_usize(MEMORY.lock().0.as_ptr() as usize + offset)
+        VirtAddr::from_usize(MEMORY.lock().unwrap().0.as_ptr() as usize + offset)
     }
 
     /// Maps a virtual address (within the test process) back to a simulated physical address.
     pub fn mock_virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
-        let base_virt = MEMORY.lock().0.as_ptr() as usize;
+        let base_virt = MEMORY.lock().unwrap().0.as_ptr() as usize;
         let vaddr_usize = vaddr.as_usize();
         assert!(
             vaddr_usize >= base_virt && vaddr_usize < base_virt + MEMORY_LEN,
@@ -199,6 +199,6 @@ impl MockHal {
         ALLOC_COUNT.store(0, Ordering::SeqCst);
         DEALLOC_COUNT.store(0, Ordering::SeqCst);
         // Lock and clear the simulated memory.
-        MEMORY.lock().0.fill(0); // Fill with zeros to clear any previous test data.
+        MEMORY.lock().unwrap().0.fill(0); // Fill with zeros to clear any previous test data.
     }
 }
