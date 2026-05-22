@@ -2,10 +2,7 @@
 name = "rust-hello"
 version = "0.1.0"
 edition = "2021"
-
-# Declare a standalone workspace so this crate is not treated as part of the
-# tgoskits root workspace when cargo is invoked with --manifest-path.
-[workspace]
+build = "build.rs"
 
 [[bin]]
 name = "rust-hello"

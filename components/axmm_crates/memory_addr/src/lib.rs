@@ -5,9 +5,11 @@ mod addr;
 mod iter;
 mod range;
 
-pub use self::addr::{MemoryAddr, PhysAddr, VirtAddr};
-pub use self::iter::{DynPageIter, PageIter};
-pub use self::range::{AddrRange, PhysAddrRange, VirtAddrRange};
+pub use self::{
+    addr::{MemoryAddr, PhysAddr, VirtAddr},
+    iter::{DynPageIter, PageIter},
+    range::{AddrRange, PhysAddrRange, VirtAddrRange},
+};
 
 /// The size of a 4K page (4096 bytes).
 pub const PAGE_SIZE_4K: usize = 0x1000;
