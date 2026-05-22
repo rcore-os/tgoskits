@@ -1252,6 +1252,22 @@ mod tests {
     }
 
     #[test]
+    fn x86_64_no_pie_target_preserves_pic_codegen_without_pie_link() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!(
+            "../../targets/no-pie/x86_64-unknown-none.json"
+        ))
+        .unwrap();
+
+        assert_eq!(spec["relocation-model"], "pic");
+        assert_eq!(spec.get("position-independent-executables"), None);
+        assert_eq!(spec.get("static-position-independent-executables"), None);
+
+        let link_args = spec["pre-link-args"]["gnu-lld"].as_array().unwrap();
+        assert!(link_args.iter().any(|arg| arg == "-no-pie"));
+        assert!(!link_args.iter().any(|arg| arg == "-pie"));
+    }
+
+    #[test]
     fn detects_axfeat_direct_dependency_via_metadata() {
         let workspace = temp_workspace("ax-feat-app", "ax-feat = \"0.1.0\"\n").unwrap();
 

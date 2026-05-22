@@ -18,7 +18,6 @@
   },
   "panic-strategy": "abort",
   "plt-by-default": false,
-  "position-independent-executables": true,
   "pre-link-args": {
     "gnu-lld": [
       "-Tlinker.x",
@@ -26,12 +25,12 @@
       "-znostart-stop-gc"
     ]
   },
+  "relocation-model": "pic",
   "relro-level": "full",
   "rustc-abi": "softfloat",
   "stack-probes": {
     "kind": "inline"
   },
-  "static-position-independent-executables": true,
   "supported-sanitizers": [
     "kcfi",
     "kernel-address"
