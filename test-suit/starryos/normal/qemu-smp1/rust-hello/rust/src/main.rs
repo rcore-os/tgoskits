@@ -1,8 +1,9 @@
 use std::{env, process};
 
-// Embedded by the compiler from the file written by prebuild.sh.
-// If prebuild.sh did not run, this will fail at compile time.
-const PREBUILD_MARKER: &str = include_str!("prebuild_marker.txt");
+// Embedded from OUT_DIR after build.rs copies the marker written by prebuild.sh.
+// When workspace clippy runs without the Starry prebuild flow, build.rs writes
+// a placeholder so this crate still compiles.
+const PREBUILD_MARKER: &str = include_str!(concat!(env!("OUT_DIR"), "/prebuild_marker.txt"));
 
 fn main() {
     println!("Hello from Rust on StarryOS!");
