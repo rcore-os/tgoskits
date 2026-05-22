@@ -862,7 +862,7 @@ fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
     }
     let src_slice = unsafe { core::slice::from_raw_parts(src as *const u8, len) };
     let dst_slice = unsafe { core::slice::from_raw_parts_mut(dst as *mut u8, len) };
-    let copied = if src < 0x8000_0000_0000 {
+    let copied = {
         let buf = unsafe {
             core::slice::from_raw_parts_mut(
                 dst_slice.as_mut_ptr() as *mut core::mem::MaybeUninit<u8>,
@@ -878,9 +878,6 @@ fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
                 len
             }
         }
-    } else {
-        unsafe { core::ptr::copy_nonoverlapping(src_slice.as_ptr(), dst_slice.as_mut_ptr(), len) };
-        len
     };
     let _ = copied;
     0
