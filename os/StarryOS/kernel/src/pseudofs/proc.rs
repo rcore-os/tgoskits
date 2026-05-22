@@ -619,6 +619,7 @@ impl SimpleDirOps for ThreadDir {
                 SimpleFile::new_regular(fs, move || {
                     let aspace = task.as_thread().proc_data.aspace();
                     let aspace_lock = aspace.lock();
+                    // Page size is 4096 on all supported architectures.
                     let total_pages = aspace_lock.size() / 4096;
                     let resident = total_pages;
                     // Format: size resident shared text lib data dt
@@ -800,9 +801,13 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "loadavg",
         SimpleFile::new_regular(fs.clone(), || {
-            // Format: 1min 5min 15min running/total last_pid
-            // No real load tracking yet; return zeros with plausible counts.
-            Ok("0.00 0.00 0.00 1/1 1\n")
+            let all_tasks = tasks();
+            let running = all_tasks
+                .iter()
+                .filter(|t| matches!(t.state(), TaskState::Running | TaskState::Ready))
+                .count();
+            let total = all_tasks.len();
+            Ok(format!("0.00 0.00 0.00 {running}/{total} 1\n"))
         }),
     );
     root.add(
