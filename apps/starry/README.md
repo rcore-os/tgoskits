@@ -52,6 +52,19 @@ cargo xtask starry qemu \
 See `picoclaw-cli/README.md` for the online agent, gateway, and interactive
 flows.
 
+## Redis
+
+The `redis` case is a QEMU app workflow that installs Redis into a temporary
+Alpine staging root and injects the Redis binaries, scripts, and runtime
+libraries into the app rootfs overlay.
+
+```bash
+cargo xtask starry app run -t redis --arch riscv64
+```
+
+Stress configs are available through explicit QEMU config variants; see
+`redis/README.md`.
+
 ## Orange Pi 5 Plus UVC
 
 The `orangepi-5-plus-uvc` case needs `/usr/bin/uvc-fps` to be installed in the
