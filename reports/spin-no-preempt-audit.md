@@ -33,6 +33,34 @@ That creates two independent hazards:
 is not a repair for code that may sleep, reschedule, fault on user memory, or
 call a backend that may do so.
 
+## Follow-up principle: do not treat spin locks as the final lock model
+
+Several current `SpinNoIrq` changes are compatibility fixes for today's Starry
+boot and test paths, not a statement that the protected state should
+permanently use spin locks. Some of the observed failures came from
+`might_sleep()` checks in very early boot or rootfs setup. Linux's equivalent
+debug checks are effectively stage-aware: before normal scheduling and
+concurrency are established, some early-boot paths do not have the same
+sleepability constraints as runtime task context. This project currently lacks
+that nuance, so a `might_sleep()` panic can indicate either a real runtime bug
+or an overly strict early-boot classification.
+
+Future fixes should prefer restoring sleepable `Mutex` usage where the data
+structure protects filesystem, VFS, block I/O, allocation-heavy, or user-memory
+paths. The better long-term directions are:
+
+- make `might_sleep()` or its callers aware of early boot and scheduler state;
+- move rootfs mount, filesystem flush, and similar work into a normal sleepable
+  task context when possible;
+- split coarse locks so they protect only in-memory metadata mutation and are
+  dropped before block I/O, VFS callbacks, user-copy, or page-faultable access;
+- keep `SpinNoIrq` only for short, bounded, non-sleeping critical sections that
+  genuinely need IRQ-safe exclusion.
+
+In short, `Mutex -> SpinNoIrq` should remain a conservative stopgap for the
+current failure mode. It should not become the default response to
+`might_sleep()` reports.
+
 ## Search commands
 
 ```text
