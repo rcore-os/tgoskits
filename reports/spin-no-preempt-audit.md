@@ -54,8 +54,6 @@ High-risk or design-risk users:
 Lower-risk, short critical-section users:
 
 - `os/StarryOS/kernel/src/pseudofs/dev/loop.rs`
-- `os/StarryOS/kernel/src/pseudofs/dev/tty/terminal/mod.rs`
-- `os/StarryOS/kernel/src/pseudofs/dev/tty/pty.rs`
 
 Intentional direct `NoPreempt` users:
 
@@ -194,11 +192,14 @@ atomic context.
 
 ## Starry tty metadata
 
-`os/StarryOS/kernel/src/pseudofs/dev/tty/terminal/mod.rs` uses
+`os/StarryOS/kernel/src/pseudofs/dev/tty/terminal/mod.rs` used
 `SpinNoPreempt` for:
 
-- `window_size: SpinNoPreempt<WindowSize>`;
-- `termios: SpinNoPreempt<Arc<Termios2>>`.
+- `window_size`;
+- `termios`.
+
+Both now use `SpinNoIrq`, because these short locks were taken without a proven
+outer IRQ-disabled context.
 
 Risk:
 
@@ -218,8 +219,10 @@ lifetime.
 
 ## Starry pty producer
 
-`os/StarryOS/kernel/src/pseudofs/dev/tty/pty.rs` uses
-`Arc<SpinNoPreempt<Prod<Buffer>>>` in `PtyWriter`.
+`os/StarryOS/kernel/src/pseudofs/dev/tty/pty.rs` used
+`Arc<SpinNoPreempt<Prod<Buffer>>>` in `PtyWriter`. It now uses `SpinNoIrq`,
+because the producer lock is not taken under a proven outer IRQ-disabled
+context.
 
 Risk:
 
@@ -253,8 +256,8 @@ do not add sleeping work inside those guarded closures.
    lock changes.
 3. Keep the loop-device cache unchanged until the ext4 lock strategy changes,
    then reevaluate whether it should remain a spin lock.
-4. Keep tty termios/window-size and pty producer locks as short critical
-   sections, but add helper APIs or comments if future edits start extending
-   guard lifetimes.
+4. Keep tty termios/window-size and pty producer locks as short `SpinNoIrq`
+   critical sections, but add helper APIs or comments if future edits start
+   extending guard lifetimes.
 5. Leave `axhal` IRQ and percpu `NoPreempt` guards as intentional uses unless a
    specific sleeping path is introduced under them.
