@@ -1,6 +1,7 @@
 use ax_cpu::uspace::UserContext;
+use linux_raw_sys::general::{SS_DISABLE, SS_ONSTACK};
 use starry_signal::{
-    SignalActionFlags, SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo,
+    SignalActionFlags, SignalDisposition, SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo,
 };
 
 mod common;
@@ -10,10 +11,10 @@ use common::*;
 fn dequeue_signal() {
     let (proc, thr) = new_test_env();
 
-    let sig1 = SignalInfo::new_user(Signo::SIGINT, 9, 9);
+    let sig1 = SignalInfo::new_user(Signo::SIGINT, 9, 9, 0);
     assert!(thr.send_signal(sig1));
 
-    let sig2 = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
+    let sig2 = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
     assert_eq!(proc.send_signal(sig2), Some(TID));
 
     let mask = !SignalSet::default();
@@ -27,10 +28,10 @@ fn handle_signal() {
     let (proc, thr) = new_test_env();
 
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 9, 9);
+    let sig = SignalInfo::new_user(signo, 9, 9, 0);
 
     unsafe extern "C" fn test_handler(_: i32) {}
-    proc.actions.lock()[signo].disposition = SignalDisposition::Handler(test_handler);
+    proc.actions().lock()[signo].disposition = SignalDisposition::Handler(test_handler);
 
     let initial = UserContext::new(0, initial_sp().into(), 0);
 
@@ -49,14 +50,14 @@ fn block_ignore_send_signal() {
     let (proc, thr) = new_test_env();
 
     let signo = Signo::SIGINT;
-    let sig = SignalInfo::new_user(signo, 0, 1);
+    let sig = SignalInfo::new_user(signo, 0, 1, 0);
     assert!(thr.send_signal(sig.clone()));
     assert_eq!(
         thr.dequeue_signal(&!SignalSet::default()).unwrap().signo(),
         sig.signo()
     );
 
-    proc.actions.lock()[signo].disposition = SignalDisposition::Ignore;
+    proc.actions().lock()[signo].disposition = SignalDisposition::Ignore;
     assert!(!thr.send_signal(sig.clone()));
     assert!(!thr.pending().has(signo));
 
@@ -75,7 +76,7 @@ fn block_ignore_send_signal() {
         signo
     );
 
-    proc.actions.lock()[signo].disposition = SignalDisposition::Default;
+    proc.actions().lock()[signo].disposition = SignalDisposition::Default;
     assert!(!thr.send_signal(sig.clone()));
     assert!(thr.pending().has(signo));
 
@@ -91,7 +92,7 @@ fn check_signals() {
     let mut uctx = UserContext::new(0, initial_sp().into(), 0);
 
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 0, 1);
+    let sig = SignalInfo::new_user(signo, 0, 1, 0);
 
     assert_eq!(proc.send_signal(sig.clone()), Some(TID));
     let (si, _os_action) = thr.check_signals(&mut uctx, None).unwrap();
@@ -108,11 +109,12 @@ fn check_signals_with_reports_restartable_delivery() {
 
     let mut uctx = UserContext::new(0, initial_sp().into(), 0);
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 0, 1);
+    let sig = SignalInfo::new_user(signo, 0, 1, 0);
     unsafe extern "C" fn test_handler(_: i32) {}
 
     {
-        let mut actions = proc.actions.lock();
+        let actions_arc = proc.actions();
+        let mut actions = actions_arc.lock();
         actions[signo].disposition = SignalDisposition::Handler(test_handler);
         actions[signo].flags = SignalActionFlags::RESTART;
     }
@@ -135,10 +137,10 @@ fn restore() {
     let (proc, thr) = new_test_env();
 
     let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 0, 1);
+    let sig = SignalInfo::new_user(signo, 0, 1, 0);
 
     unsafe extern "C" fn test_handler(_: i32) {}
-    proc.actions.lock()[signo].disposition = SignalDisposition::Handler(test_handler);
+    proc.actions().lock()[signo].disposition = SignalDisposition::Handler(test_handler);
 
     let initial = UserContext::new(0x219, initial_sp().into(), 0);
 
@@ -152,4 +154,42 @@ fn restore() {
 
     assert_eq!(uctx.ip(), initial.ip());
     assert_eq!(uctx.sp(), initial.sp());
+}
+
+#[test]
+fn sigaltstack_reports_active_until_restore() {
+    let (proc, thr) = new_test_env();
+
+    let alt_size = 0x4000;
+    let alt_top = initial_sp();
+    let alt_base = alt_top - alt_size;
+    thr.set_stack(SignalStack {
+        sp: alt_base,
+        flags: 0,
+        size: alt_size,
+    });
+
+    let signo = Signo::SIGTERM;
+    unsafe extern "C" fn test_handler(_: i32) {}
+    {
+        let actions_arc = proc.actions();
+        let mut actions = actions_arc.lock();
+        actions[signo].disposition = SignalDisposition::Handler(test_handler);
+        actions[signo].flags = SignalActionFlags::ONSTACK;
+    }
+
+    let mut uctx = UserContext::new(0x219, initial_sp().into(), 0);
+    assert!(thr.send_signal(SignalInfo::new_user(signo, 0, 1, 0)));
+    let (_si, action) = thr.check_signals(&mut uctx, None).unwrap();
+
+    assert_eq!(action, SignalOSAction::NoFurtherAction);
+    assert!(uctx.sp() >= alt_base);
+    assert!(uctx.sp() < alt_top);
+    assert_ne!(thr.stack().flags & SS_ONSTACK, 0);
+
+    prepare_restore_context(&mut uctx);
+    thr.restore(&mut uctx).unwrap();
+
+    assert_eq!(thr.stack().flags & SS_ONSTACK, 0);
+    assert_eq!(thr.stack().flags & SS_DISABLE, 0);
 }

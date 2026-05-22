@@ -8,11 +8,12 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
+use ax_io::{Seek, SeekFrom};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_EXCL};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
 
 use super::{FileLike, Kstat, get_file_like};
 #[cfg(feature = "kcov")]
@@ -62,7 +63,11 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<Reso
             let file_like = get_file_like(dirfd)?;
             let f = file_like.clone();
             Ok(if let Some(file) = f.downcast_ref::<File>() {
-                ResolveAtResult::File(file.inner().backend()?.location().clone())
+                // Use location() directly: backend() rejects PATH-only fds
+                // (BadFileDescriptor) which would break fstat(O_PATH-fd).
+                // man "O_PATH": fstat(2) is in the allowed-operations list.
+                // Fixes bug-open-path-fstat-ebadf.
+                ResolveAtResult::File(file.inner().location().clone())
             } else if let Some(dir) = f.downcast_ref::<Directory>() {
                 ResolveAtResult::File(dir.inner().clone())
             } else {
@@ -113,6 +118,7 @@ pub struct File {
     inner: ax_fs::File,
     open_flags: u32,
     nonblock: AtomicBool,
+    append: AtomicBool,
     /// Per-fd kcov state, created when opening `/dev/kcov`.
     #[cfg(feature = "kcov")]
     kcov_state: Option<Arc<crate::kcov::KcovFdState>>,
@@ -126,6 +132,7 @@ impl File {
             inner,
             open_flags,
             nonblock: AtomicBool::new(false),
+            append: AtomicBool::new(open_flags & O_APPEND != 0),
             #[cfg(feature = "kcov")]
             kcov_state,
         }
@@ -193,7 +200,10 @@ impl FileLike for File {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        let inner = self.inner();
+        let mut inner = self.inner();
+        if self.append() {
+            inner.seek(SeekFrom::End(0))?;
+        }
         if likely(self.is_blocking()) {
             inner.write(src)
         } else {
@@ -241,6 +251,16 @@ impl FileLike for File {
         self.nonblock.load(Ordering::Acquire)
     }
 
+    fn append(&self) -> bool {
+        self.append.load(Ordering::Acquire)
+    }
+
+    fn set_append(&self, flag: bool) -> AxResult {
+        self.append.store(flag, Ordering::Release);
+        self.inner().set_flag(FileFlags::APPEND, flag);
+        Ok(())
+    }
+
     fn open_flags(&self) -> u32 {
         self.open_flags
     }
@@ -286,13 +306,18 @@ impl Pollable for File {
 pub struct Directory {
     inner: Location,
     pub offset: Mutex<u64>,
+    /// Original open flags (used by fd_is_path / sys_fchmodat to detect
+    /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
+    /// must reject fchmod just like O_PATH on a regular file).
+    open_flags: u32,
 }
 
 impl Directory {
-    pub fn new(inner: Location) -> Self {
+    pub fn new(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
             offset: Mutex::new(0),
+            open_flags,
         }
     }
 
@@ -321,6 +346,10 @@ impl FileLike for Directory {
     fn inode_key(&self) -> Option<(u64, u64)> {
         let m = self.inner.metadata().ok()?;
         Some((m.device, m.inode))
+    }
+
+    fn open_flags(&self) -> u32 {
+        self.open_flags
     }
 
     fn path(&self) -> Cow<'_, str> {

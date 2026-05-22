@@ -41,7 +41,7 @@ impl Ext4FileSystem {
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
                 let stored = desc.block_bitmap_csum();
-                if expected != stored {
+                if !desc.block_bitmap_csum_matches(&self.superblock, expected) {
                     error!(
                         "alloc_blocks: block bitmap checksum mismatch group={group_idx} \
                          expected={expected:#x} stored={stored:#x}"
@@ -59,6 +59,23 @@ impl Ext4FileSystem {
                         .alloc_contiguous_blocks(data, group_idx, count);
                 })?;
 
+            // Check the allocation result *before* doing any mutable descriptor
+            // work. If the bitmap had no free block despite the descriptor claiming
+            // otherwise, the group is stale/inconsistent (e.g. dirty unmount with
+            // lazy initialisation). Skip to the next group instead of failing
+            // immediately so that groups with consistent bitmaps are still tried.
+            let alloc = match alloc_res {
+                Ok(a) => a,
+                Err(e) if e.code == Errno::ENOSPC => {
+                    warn!(
+                        "alloc_blocks: group={group_idx} descriptor claims {free} free blocks but \
+                         bitmap has none — descriptor/bitmap inconsistency, skipping group"
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
             if ext4_superblock_has_metadata_csum(&self.superblock) {
                 let sb = self.superblock;
                 let updated_data = self
@@ -72,8 +89,6 @@ impl Ext4FileSystem {
                     .ok_or(Ext4Error::corrupted())?;
                 desc_mut.update_checksum(&sb, group_idx.raw(), Some(&updated_data), None);
             }
-
-            let alloc = alloc_res?;
 
             if let Some(desc_mut) = self.get_group_desc_mut(group_idx) {
                 let before = desc_mut.free_blocks_count();
@@ -138,6 +153,9 @@ impl Ext4FileSystem {
             return Ok(Vec::new());
         }
 
+        // Pre-collect per-group metadata to avoid borrowing self.group_descs
+        // across mutable borrows of self later in the loop body.
+        let mut group_meta: Vec<(BGIndex, AbsoluteBN, bool, Ext4GroupDesc)> = Vec::new();
         for (idx, desc) in self.group_descs.iter().enumerate() {
             let group_idx =
                 BGIndex::new(u32::try_from(idx).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?);
@@ -145,33 +163,46 @@ impl Ext4FileSystem {
             if free < count {
                 continue;
             }
+            group_meta.push((
+                group_idx,
+                AbsoluteBN::new(desc.inode_bitmap()),
+                desc.is_inode_bitmap_uninit(),
+                *desc,
+            ));
+        }
 
-            let bitmap_block = AbsoluteBN::new(desc.inode_bitmap());
+        for (group_idx, bitmap_block, inode_uninit, desc) in group_meta {
             let cache_key = CacheKey::new_inode(group_idx);
             let mut inodes: Vec<InodeNumber> = Vec::with_capacity(count as usize);
             let mut alloc_error: Option<Ext4Error> = None;
 
-            if ext4_superblock_has_metadata_csum(&self.superblock) && !desc.is_inode_bitmap_uninit()
-            {
+            if ext4_superblock_has_metadata_csum(&self.superblock) && !inode_uninit {
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_inode_bitmap_csum32(&self.superblock, &bm.data);
-                let stored = desc.inode_bitmap_csum();
-                if expected != stored {
+                if !desc.inode_bitmap_csum_matches(&self.superblock, expected) {
                     return Err(Ext4Error::checksum());
                 }
             }
 
-            // Allocate directly from the inode bitmap so the cache owns the
-            // only mutable copy while we flip bits.
+            // Build the candidate allocation on a temporary bitmap first. If
+            // this group cannot satisfy the complete request, leave the cached
+            // bitmap and descriptor counters untouched and try the next group.
             self.bitmap_cache
                 .modify(block_dev, cache_key, bitmap_block, |data| {
+                    let mut candidate = data.to_vec();
+                    // When EXT4_BG_INODE_UNINIT is set the on-disk bitmap is
+                    // stale. Linux synthesizes an all-free bitmap in memory.
+                    if inode_uninit {
+                        candidate.fill(0);
+                    }
                     for _ in 0..count {
-                        match self
-                            .inode_allocator
-                            .alloc_inode_in_group(data, group_idx, desc)
-                        {
+                        match self.inode_allocator.alloc_inode_in_group(
+                            &mut candidate,
+                            group_idx,
+                            &desc,
+                        ) {
                             Ok(InodeAlloc { global_inode, .. }) => inodes.push(global_inode),
                             Err(err) if err.code == Errno::ENOSPC => break,
                             Err(err) => {
@@ -180,10 +211,19 @@ impl Ext4FileSystem {
                             }
                         }
                     }
+                    if inodes.len() as u32 == count {
+                        data.copy_from_slice(&candidate);
+                    }
                 })?;
 
             if let Some(err) = alloc_error {
                 return Err(err);
+            }
+
+            if inodes.len() as u32 != count {
+                // This group couldn't satisfy the full request; try the
+                // next group instead of failing immediately.
+                continue;
             }
 
             if ext4_superblock_has_metadata_csum(&self.superblock) {
@@ -198,10 +238,6 @@ impl Ext4FileSystem {
                     .get_group_desc_mut(group_idx)
                     .ok_or(Ext4Error::corrupted())?;
                 desc_mut.update_checksum(&sb, group_idx.raw(), None, Some(&updated_data));
-            }
-
-            if inodes.len() as u32 != count {
-                return Err(Ext4Error::no_space());
             }
 
             let ipg = self.superblock.s_inodes_per_group;
@@ -291,18 +327,18 @@ impl Ext4FileSystem {
         let mut did_free = true;
 
         if ext4_superblock_has_metadata_csum(&self.superblock) {
-            let (uninit, stored) = {
+            let (uninit, desc) = {
                 let gdesc = self
                     .get_group_desc(group_idx)
                     .ok_or(Ext4Error::corrupted())?;
-                (gdesc.is_block_bitmap_uninit(), gdesc.block_bitmap_csum())
+                (gdesc.is_block_bitmap_uninit(), *gdesc)
             };
             if !uninit {
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
-                if expected != stored {
+                if !desc.block_bitmap_csum_matches(&self.superblock, expected) {
                     return Err(Ext4Error::checksum());
                 }
             }
@@ -373,18 +409,18 @@ impl Ext4FileSystem {
         let mut did_free = true;
 
         if ext4_superblock_has_metadata_csum(&self.superblock) {
-            let (uninit, stored) = {
+            let (uninit, desc) = {
                 let gdesc = self
                     .get_group_desc(group_idx)
                     .ok_or(Ext4Error::corrupted())?;
-                (gdesc.is_inode_bitmap_uninit(), gdesc.inode_bitmap_csum())
+                (gdesc.is_inode_bitmap_uninit(), *gdesc)
             };
             if !uninit {
                 let bm = self
                     .bitmap_cache
                     .get_or_load(block_dev, cache_key, bitmap_block)?;
                 let expected = ext4_inode_bitmap_csum32(&self.superblock, &bm.data);
-                if expected != stored {
+                if !desc.inode_bitmap_csum_matches(&self.superblock, expected) {
                     return Err(Ext4Error::checksum());
                 }
             }
@@ -450,5 +486,215 @@ impl Ext4FileSystem {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use ::alloc::{vec, vec::Vec};
+
+    use super::*;
+
+    struct MemBlockDev {
+        data: Vec<u8>,
+        total_blocks: u64,
+        now: Cell<i64>,
+    }
+
+    impl MemBlockDev {
+        fn new(total_blocks: u64) -> Self {
+            Self {
+                data: vec![0; total_blocks as usize * BLOCK_SIZE],
+                total_blocks,
+                now: Cell::new(1_700_000_000),
+            }
+        }
+    }
+
+    impl BlockDevice for MemBlockDev {
+        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+            let required = BLOCK_SIZE * count as usize;
+            if buffer.len() < required {
+                return Err(Ext4Error::buffer_too_small(buffer.len(), required));
+            }
+            let start = block_id.as_usize()? * BLOCK_SIZE;
+            let end = start + required;
+            if end > self.data.len() {
+                return Err(Ext4Error::block_out_of_range(
+                    block_id.to_u32()?,
+                    self.total_blocks,
+                ));
+            }
+            self.data[start..end].copy_from_slice(&buffer[..required]);
+            Ok(())
+        }
+
+        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+            let required = BLOCK_SIZE * count as usize;
+            if buffer.len() < required {
+                return Err(Ext4Error::buffer_too_small(buffer.len(), required));
+            }
+            let start = block_id.as_usize()? * BLOCK_SIZE;
+            let end = start + required;
+            if end > self.data.len() {
+                return Err(Ext4Error::block_out_of_range(
+                    block_id.to_u32()?,
+                    self.total_blocks,
+                ));
+            }
+            buffer[..required].copy_from_slice(&self.data[start..end]);
+            Ok(())
+        }
+
+        fn open(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+
+        fn total_blocks(&self) -> u64 {
+            self.total_blocks
+        }
+
+        fn block_size(&self) -> u32 {
+            BLOCK_SIZE as u32
+        }
+
+        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+            let sec = self.now.get();
+            self.now.set(sec + 1);
+            Ok(Ext4Timestamp::new(sec, 0))
+        }
+    }
+
+    fn fs_with_uninit_inode_bitmap() -> Ext4FileSystem {
+        let sb = Ext4Superblock {
+            s_inodes_count: 8,
+            s_free_inodes_count: 8,
+            s_blocks_count_lo: 16,
+            s_free_blocks_count_lo: 16,
+            s_blocks_per_group: 16,
+            s_inodes_per_group: 8,
+            s_first_ino: 1,
+            s_inode_size: Ext4Inode::LARGE_INODE_SIZE,
+            ..Default::default()
+        };
+        Ext4FileSystem {
+            superblock: sb,
+            group_descs: vec![Ext4GroupDesc {
+                bg_inode_bitmap_lo: 1,
+                bg_inode_table_lo: 2,
+                bg_free_inodes_count_lo: 8,
+                bg_itable_unused_lo: 8,
+                bg_flags: Ext4GroupDesc::EXT4_BG_INODE_UNINIT,
+                ..Default::default()
+            }],
+            block_allocator: BlockAllocator::new(&sb),
+            inode_allocator: InodeAllocator::new(&sb),
+            bitmap_cache: BitmapCache::create_default(),
+            inodetable_cahce: InodeCache::default(sb.s_inode_size),
+            datablock_cache: DataBlockCache::create_default(),
+            root_inode: InodeNumber::new(2).unwrap(),
+            group_count: 1,
+            mounted: true,
+            journal_sb_block_start: None,
+        }
+    }
+
+    fn fs_with_two_inode_groups() -> Ext4FileSystem {
+        let sb = Ext4Superblock {
+            s_inodes_count: 16,
+            s_free_inodes_count: 16,
+            s_blocks_count_lo: 32,
+            s_free_blocks_count_lo: 32,
+            s_blocks_per_group: 16,
+            s_inodes_per_group: 8,
+            s_first_ino: 1,
+            s_inode_size: Ext4Inode::LARGE_INODE_SIZE,
+            ..Default::default()
+        };
+        Ext4FileSystem {
+            superblock: sb,
+            group_descs: vec![
+                Ext4GroupDesc {
+                    bg_inode_bitmap_lo: 1,
+                    bg_inode_table_lo: 2,
+                    bg_free_inodes_count_lo: 2,
+                    bg_itable_unused_lo: 8,
+                    ..Default::default()
+                },
+                Ext4GroupDesc {
+                    bg_inode_bitmap_lo: 4,
+                    bg_inode_table_lo: 5,
+                    bg_free_inodes_count_lo: 8,
+                    bg_itable_unused_lo: 8,
+                    ..Default::default()
+                },
+            ],
+            block_allocator: BlockAllocator::new(&sb),
+            inode_allocator: InodeAllocator::new(&sb),
+            bitmap_cache: BitmapCache::create_default(),
+            inodetable_cahce: InodeCache::default(sb.s_inode_size),
+            datablock_cache: DataBlockCache::create_default(),
+            root_inode: InodeNumber::new(2).unwrap(),
+            group_count: 2,
+            mounted: true,
+            journal_sb_block_start: None,
+        }
+    }
+
+    #[test]
+    fn alloc_inode_treats_uninit_bitmap_as_all_free() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(16), false);
+        let mut fs = fs_with_uninit_inode_bitmap();
+
+        dev.read_block(AbsoluteBN::new(1)).unwrap();
+        dev.buffer_mut().fill(0xff);
+        dev.write_block(AbsoluteBN::new(1), true).unwrap();
+
+        let inode = fs.alloc_inode(&mut dev).unwrap();
+        assert_eq!(inode, InodeNumber::new(1).unwrap());
+        assert_eq!(fs.group_descs[0].free_inodes_count(), 7);
+        assert!(!fs.group_descs[0].is_inode_bitmap_uninit());
+
+        let bitmap = fs
+            .bitmap_cache
+            .get(&CacheKey::new_inode(BGIndex::new(0)))
+            .unwrap();
+        assert_eq!(bitmap.data[0], 0b0000_0001);
+    }
+
+    #[test]
+    fn alloc_inodes_skips_group_without_partial_bitmap_update() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), false);
+        let mut fs = fs_with_two_inode_groups();
+
+        dev.read_block(AbsoluteBN::new(1)).unwrap();
+        dev.buffer_mut()[0] = 0b1111_1110;
+        dev.write_block(AbsoluteBN::new(1), true).unwrap();
+
+        let inodes = fs.alloc_inodes(&mut dev, 2).unwrap();
+        assert_eq!(
+            inodes,
+            vec![InodeNumber::new(9).unwrap(), InodeNumber::new(10).unwrap()]
+        );
+        assert_eq!(fs.group_descs[0].free_inodes_count(), 2);
+        assert_eq!(fs.group_descs[1].free_inodes_count(), 6);
+
+        let group0_bitmap = fs
+            .bitmap_cache
+            .get(&CacheKey::new_inode(BGIndex::new(0)))
+            .unwrap();
+        assert_eq!(group0_bitmap.data[0], 0b1111_1110);
+
+        let group1_bitmap = fs
+            .bitmap_cache
+            .get(&CacheKey::new_inode(BGIndex::new(1)))
+            .unwrap();
+        assert_eq!(group1_bitmap.data[0], 0b0000_0011);
     }
 }

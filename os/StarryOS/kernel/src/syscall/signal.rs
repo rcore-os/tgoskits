@@ -7,8 +7,8 @@ use ax_task::{
     future::{self, block_on},
 };
 use linux_raw_sys::general::{
-    MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE,
-    kernel_sigaction, siginfo, timespec,
+    MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE, SS_FLAG_BITS,
+    SS_ONSTACK, kernel_sigaction, siginfo, timespec,
 };
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
@@ -96,15 +96,18 @@ pub fn sys_rt_sigpending(set: *mut SignalSet, sigsetsize: usize) -> AxResult<isi
     Ok(0)
 }
 
-fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
+pub(crate) fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
     if signo == 0 {
         return Ok(None);
     }
     let signo = parse_signo(signo)?;
+    let curr = current();
+    let thread = curr.as_thread();
     Ok(Some(SignalInfo::new_user(
         signo,
         code,
-        current().as_thread().proc_data.proc.pid(),
+        thread.proc_data.proc.pid(),
+        thread.cred().uid,
     )))
 }
 
@@ -119,7 +122,7 @@ fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
 /// TODO: SIGCONT is allowed to any process in the same session (job control).
 /// Implementing this requires passing the signal number into this function
 /// and checking session membership.
-fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
+pub(crate) fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
     let sender = current().as_thread().cred();
     if sender.euid == 0 {
         return Ok(());
@@ -363,7 +366,13 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxRe
 
     if let Some(ss) = ss.nullable() {
         let ss = unsafe { ss.vm_read_uninit()?.assume_init() };
-        if ss.flags != SS_DISABLE && ss.size < MINSIGSTKSZ as usize {
+        if sig.stack_active() {
+            return Err(AxError::OperationNotPermitted);
+        }
+        if ss.flags & !(SS_DISABLE | SS_ONSTACK | SS_FLAG_BITS) != 0 {
+            return Err(AxError::InvalidInput);
+        }
+        if ss.flags & SS_DISABLE == 0 && ss.size < MINSIGSTKSZ as usize {
             return Err(AxError::NoMemory);
         }
         sig.set_stack(ss);

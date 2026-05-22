@@ -94,6 +94,7 @@ pub trait CruOp {
 
 #[enum_dispatch::enum_dispatch(CruOp)]
 pub enum Cru {
+    Rk3568(crate::variants::rk3568::cru::Cru),
     Rk3588(crate::variants::rk3588::cru::Cru),
 }
 
@@ -102,6 +103,7 @@ impl Cru {
     /// `sys_grf`: "rockchip,grf"
     pub fn new(ty: SocType, base: Mmio, sys_grf: Mmio) -> Self {
         match ty {
+            SocType::Rk3568 => Cru::Rk3568(crate::variants::rk3568::cru::Cru::new(base, sys_grf)),
             SocType::Rk3588 => Cru::Rk3588(crate::variants::rk3588::cru::Cru::new(base, sys_grf)),
         }
     }

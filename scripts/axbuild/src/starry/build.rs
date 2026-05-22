@@ -397,6 +397,7 @@ HELLO = "world"
             max_cpu_num: None,
             axconfig_overrides: Vec::new(),
             plat_dyn: false,
+            std_build: false,
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
@@ -475,6 +476,7 @@ HELLO = "world"
             max_cpu_num: Some(8),
             axconfig_overrides: Vec::new(),
             plat_dyn: true,
+            std_build: false,
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
@@ -523,6 +525,7 @@ HELLO = "world"
             max_cpu_num: None,
             axconfig_overrides: Vec::new(),
             plat_dyn: true,
+            std_build: false,
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),

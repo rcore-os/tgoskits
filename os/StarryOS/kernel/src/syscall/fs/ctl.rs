@@ -12,12 +12,12 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
-    file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
+    file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
     task::AsThread,
     time::TimeValueLike,
@@ -31,6 +31,11 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     if cmd == FIONBIO {
         let val: i32 = (arg as *const i32).vm_read()?;
         f.set_nonblocking(val != 0)?;
+        return Ok(0);
+    }
+    if cmd == FIOASYNC {
+        let val: i32 = (arg as *const i32).vm_read()?;
+        f.set_async_mode(val != 0)?;
         return Ok(0);
     }
     f.ioctl(cmd, arg)
@@ -89,12 +94,48 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     Ok(0)
 }
 
+ktracepoint::define_event_trace!(
+    sys_mkdirat,
+    TP_kops(crate::tracepoint::KernelTraceAux),
+    TP_system(syscalls),
+    TP_PROTO(path:&str, mode: u16),
+    TP_STRUCT__entry {
+        mode: u16,
+        path: [u8;64],
+    },
+    TP_fast_assign {
+        mode: mode,
+        path: {
+            let mut buf = [0u8; 64];
+            let bytes = path.as_bytes();
+            let mut len = bytes.len().min(63);
+            while !path.is_char_boundary(len) {
+                len -= 1;
+            }
+            buf[..len].copy_from_slice(&bytes[..len]);
+            buf[len] = 0; // null-terminate
+            buf
+        },
+    },
+    TP_ident(__entry),
+    TP_printk({
+        let nul = __entry.path.iter().position(|&b| b == 0).unwrap_or(__entry.path.len());
+        let path = core::str::from_utf8(&__entry.path[..nul]).unwrap_or("invalid utf8");
+        let mode = __entry.mode;
+        let mode = NodePermission::from_bits_truncate(mode);
+        alloc::format!("mkdir at {path} with mode {mode:?}")
+    })
+);
+
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
 
     let mode = mode & !current().as_thread().proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
+
+    // call tp:trace_sys_mkdirat
+    trace_sys_mkdirat(&path, mode.bits());
 
     with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
         Ok(_) => Ok(0),
@@ -485,6 +526,31 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
     }
 
     let path = path.nullable().map(vm_load_string).transpose()?;
+
+    // man 2 open §"O_PATH": "other file operations (e.g., read(2), write(2),
+    // fchmod(2), fchown(2), fgetxattr(2), ioctl(2), mmap(2)) fail with the
+    // error EBADF." Fixes bug-open-path-fchmod-bypass.
+    //
+    // Three paths reach fchmod on a PATH fd; all three must be rejected to
+    // match Linux:
+    //   (1) Direct: SYS_fchmod(fd) — implemented as fchmodat(fd, NULL,
+    //       mode, AT_EMPTY_PATH).
+    //   (2) musl libc fallback: when (1) returns EBADF, musl re-tries
+    //       fchmodat(AT_FDCWD, "/proc/self/fd/<n>", mode, 0). Linux's procfs
+    //       propagates the PATH-handle restriction through the symlink.
+    //   (3) (theoretical) Direct user use of /proc/self/fd/<n>.
+    let path_is_empty = path.as_deref().is_none_or(|s| s.is_empty());
+    if path_is_empty && flags & AT_EMPTY_PATH != 0 && fd_is_path(dirfd) {
+        return Err(AxError::BadFileDescriptor); // (1)
+    }
+    if let Some(p) = path.as_deref()
+        && let Some(rest) = p.strip_prefix("/proc/self/fd/")
+        && let Ok(n) = rest.parse::<i32>()
+        && fd_is_path(n)
+    {
+        return Err(AxError::BadFileDescriptor); // (2) and (3)
+    }
+
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
@@ -505,6 +571,7 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
     Ok(0)
 }
 
+#[cfg(target_arch = "x86_64")]
 fn update_times(
     dirfd: i32,
     path: *const c_char,
@@ -527,6 +594,7 @@ fn update_times(
 #[cfg(target_arch = "x86_64")]
 #[allow(non_camel_case_types)]
 #[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct utimbuf {
     actime: linux_raw_sys::general::__kernel_old_time_t,
     modtime: linux_raw_sys::general::__kernel_old_time_t,
@@ -535,7 +603,8 @@ pub struct utimbuf {
 #[cfg(target_arch = "x86_64")]
 pub fn sys_utime(path: *const c_char, times: *const utimbuf) -> AxResult<isize> {
     let (atime, mtime) = if let Some(times) = times.nullable() {
-        // FIXME: AnyBitPattern
+        // SAFETY: `utimbuf` is #[repr(C)] with only integer fields;
+        // any bit pattern is a valid value.
         let times = unsafe { times.vm_read_uninit()?.assume_init() };
         (
             Duration::from_secs(times.actime as _),
@@ -555,7 +624,8 @@ pub fn sys_utimes(
     times: *const [linux_raw_sys::general::timeval; 2],
 ) -> AxResult<isize> {
     let (atime, mtime) = if let Some(times) = times.nullable() {
-        // FIXME: AnyBitPattern
+        // SAFETY: `timeval` is #[repr(C)] with only integer fields;
+        // any bit pattern is a valid value.
         let [atime, mtime] = unsafe { times.vm_read_uninit()?.assume_init() };
         (atime.try_into_time_value()?, mtime.try_into_time_value()?)
     } else {
@@ -572,6 +642,10 @@ pub fn sys_utimensat(
     times: *const [timespec; 2],
     mut flags: u32,
 ) -> AxResult<isize> {
+    const UTIMENSAT_VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+    if flags & !UTIMENSAT_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
     if path.is_null() {
         flags |= AT_EMPTY_PATH;
     }
@@ -584,7 +658,8 @@ pub fn sys_utimensat(
     }
 
     let (atime, mtime) = if let Some(times) = times.nullable() {
-        // FIXME: AnyBitPattern
+        // SAFETY: `timespec` is #[repr(C)] with only integer fields;
+        // any bit pattern is a valid value.
         let [atime, mtime] = unsafe { times.vm_read_uninit()?.assume_init() };
         (
             utime_to_duration(&atime).transpose()?,
@@ -598,7 +673,25 @@ pub fn sys_utimensat(
         return Ok(0);
     }
 
-    update_times(dirfd, path, atime, mtime, flags)?;
+    // Resolve file and check permissions.
+    let path = path.nullable().map(vm_load_string).transpose()?;
+    let loc = resolve_at(dirfd, path.as_deref(), flags)?
+        .into_file()
+        .ok_or(AxError::BadFileDescriptor)?;
+
+    let cred = current().as_thread().cred();
+    if !cred.has_cap_fowner() {
+        let meta = loc.metadata()?;
+        if cred.fsuid != meta.uid {
+            return Err(AxError::OperationNotPermitted);
+        }
+    }
+
+    loc.update_metadata(MetadataUpdate {
+        atime,
+        mtime,
+        ..Default::default()
+    })?;
     Ok(0)
 }
 
@@ -655,11 +748,18 @@ pub fn sys_renameat2(
 }
 
 pub fn sys_sync() -> AxResult<isize> {
-    warn!("dummy sys_sync");
+    debug!("sys_sync");
+    // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
+    // ext4 NodeOps::sync is a no-op (Ok(())); FAT NodeOps::sync calls file.flush()
+    // to write dirty data to disk.
+    FS_CONTEXT.lock().root_dir().sync(false)?;
     Ok(0)
 }
 
-pub fn sys_syncfs(_fd: i32) -> AxResult<isize> {
-    warn!("dummy sys_syncfs");
+pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
+    debug!("sys_syncfs <= fd: {fd}");
+    // TODO: File::from_fd only accepts regular file fds; Linux syncfs(2) accepts any fd type.
+    let f = crate::file::File::from_fd(fd)?;
+    f.inner().location().filesystem().flush()?;
     Ok(0)
 }

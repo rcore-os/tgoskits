@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.5.10"
+version = "0.5.12"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -55,20 +55,20 @@ ax-alloc.workspace = true
 ax-config.workspace = true
 ax-display.workspace = true
 ax-driver.workspace = true
-ax-fs = { version = "0.5.13", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
+ax-fs = { version = "0.5.15", path = "../../arceos/modules/axfs-ng", package = "ax-fs-ng" }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
-axnet = { version = "0.5.13", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
+axnet = { version = "0.6.1", path = "../../arceos/modules/axnet-ng", package = "ax-net-ng" }
 axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
 ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
-crab-usb = { version = "0.9", optional = true }
+crab-usb = { workspace = true, optional = true }
 rdrive = { workspace = true, optional = true }
 
 axbacktrace = { workspace = true }
@@ -127,11 +127,12 @@ zerocopy = { version = "0.8", features = ["derive"] }
 ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
-dw_apb_uart = { version = "0.1", path = "../../../components/dw_apb_uart", default-features = false, features = ["sg2002"], optional = true }
+dw_apb_uart = { workspace = true, features = ["sg2002"], optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 # 0.9 to match sg200x-bsp's internal tock-registers; cannot use workspace (0.10)
 # because Writeable trait must come from the same version as sg200x-bsp's types.
 tock-registers = { version = "0.9", optional = true }
+ktracepoint = "0.6"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

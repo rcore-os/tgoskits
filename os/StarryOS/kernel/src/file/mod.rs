@@ -24,7 +24,7 @@ use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
-    O_RDONLY, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx, statx_timestamp,
+    O_PATH, O_RDONLY, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx, statx_timestamp,
 };
 use spin::RwLock;
 
@@ -192,6 +192,26 @@ pub trait FileLike: Pollable + DowncastSync {
         Ok(())
     }
 
+    fn async_mode(&self) -> bool {
+        false
+    }
+
+    fn supports_async_mode(&self) -> bool {
+        false
+    }
+
+    fn set_async_mode(&self, _async_mode: bool) -> AxResult {
+        Err(AxError::NotATty)
+    }
+
+    fn owner(&self) -> AxResult<i32> {
+        Err(AxError::NotATty)
+    }
+
+    fn set_owner(&self, _owner: i32) -> AxResult {
+        Err(AxError::NotATty)
+    }
+
     /// (device, inode) identity used as the key for advisory file locks
     /// (fcntl POSIX/OFD locks and flock(2)).
     ///
@@ -201,6 +221,14 @@ pub trait FileLike: Pollable + DowncastSync {
     /// advisory locks.
     fn inode_key(&self) -> Option<(u64, u64)> {
         None
+    }
+
+    fn append(&self) -> bool {
+        false
+    }
+
+    fn set_append(&self, _append: bool) -> AxResult {
+        Ok(())
     }
 
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
@@ -239,6 +267,18 @@ pub fn get_file_like(fd: c_int) -> AxResult<Arc<dyn FileLike>> {
         .get(fd as usize)
         .map(|fd| fd.inner.clone())
         .ok_or(AxError::BadFileDescriptor)
+}
+
+/// Returns true iff `fd` was opened with `O_PATH`.
+///
+/// Used by syscalls that man explicitly forbids on PATH file descriptors
+/// (fchmod / fchown / fsetxattr / ioctl / mmap / fallocate / ...). Per
+/// man 2 open §"O_PATH": "other file operations ... fail with the error
+/// EBADF."
+pub fn fd_is_path(fd: c_int) -> bool {
+    get_file_like(fd)
+        .map(|f| f.open_flags() & O_PATH != 0)
+        .unwrap_or(false)
 }
 
 /// Add a file to the file descriptor table.

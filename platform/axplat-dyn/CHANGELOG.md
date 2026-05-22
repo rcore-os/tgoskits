@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.6.1...axplat-dyn-v0.6.2) - 2026-05-22
+
+### Added
+
+- *(drivers)* add SD/MMC platform driver support ([#826](https://github.com/rcore-os/tgoskits/pull/826))
+
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.6.0...axplat-dyn-v0.6.1) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-arm-pl031, ax-errno, ax-driver-virtio, ax-alloc, ax-cpu, ax-driver-net, axklib
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.5.12...axplat-dyn-v0.6.0) - 2026-05-15
 
 ### Added

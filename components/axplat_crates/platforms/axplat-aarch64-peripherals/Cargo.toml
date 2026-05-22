@@ -1,6 +1,6 @@
 [package]
 name = "ax-plat-aarch64-peripherals"
-version = "0.5.8"
+version = "0.5.10"
 repository = "https://github.com/rcore-os/tgoskits"
 description = "ARM64 common peripheral drivers with `axplat` compatibility"
 keywords = ["arceos", "os", "hal", "peripheral", "aarch64"]
@@ -11,6 +11,24 @@ license = "Apache-2.0"
 
 [features]
 irq = ["ax-plat/irq"]
+# Build the GICv3 distributor + redistributor + system-register CPU
+# interface. Off by default so this crate's consumers, including
+# physical boards that ship GICv2, keep their existing behavior.
+# Enabled by platforms that target GICv3 hosts (e.g. QEMU
+# `-accel hvf` on Apple Silicon).
+#
+# This is independent of the timer-register choice: CNTP/CNTV is
+# orthogonal to GIC version. See `cntv-timer` below.
+gic-v3 = []
+# Use the CNTV (virtual) generic timer registers (CNTV_TVAL_EL0,
+# CNTV_CTL_EL0, CNTVCT_EL0) and IRQ 27 (PPI 11) instead of the
+# default CNTP (physical) registers and IRQ 30 (PPI 14). Required
+# under Apple HVF because the hypervisor owns CNTP at EL2 and traps
+# every EL1 access; CNTV is the guest-owned timer always accessible
+# from EL1.
+#
+# Off by default; physical boards and QEMU TCG keep CNTP.
+cntv-timer = []
 
 [dependencies]
 ax-kspin = { workspace = true }

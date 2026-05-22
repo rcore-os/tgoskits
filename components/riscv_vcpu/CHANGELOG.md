@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.9](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.8...riscv_vcpu-v0.5.9) - 2026-05-22
+
+### Fixed
+
+- *(axvisor)* recover riscv guest memory faults ([#788](https://github.com/rcore-os/tgoskits/pull/788))
+
+## [0.5.8](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.7...riscv_vcpu-v0.5.8) - 2026-05-19
+
+### Other
+
+- Refactor Clippy integration and enhance package handling ([#738](https://github.com/rcore-os/tgoskits/pull/738))
+
 ## [0.5.7](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.6...riscv_vcpu-v0.5.7) - 2026-05-15
 
 ### Added

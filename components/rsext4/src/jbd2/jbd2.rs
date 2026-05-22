@@ -101,7 +101,25 @@ impl JBD2DEVSYSTEM {
         let mapped_len = u32::try_from(journal_blocks.len()).ok();
         let total_blocks = match mapped_len {
             Some(0) | None => self.jbd2_super_block.s_maxlen,
-            Some(len) => self.jbd2_super_block.s_maxlen.min(len),
+            // When s_maxlen from the on-disk journal superblock is smaller than
+            // the actual number of journal blocks (e.g. s_maxlen=1 due to an
+            // unclean shutdown that corrupted the journal superblock), trust the
+            // physical extent mapping rather than the stale s_maxlen.
+            Some(len) => {
+                let sb_maxlen = self.jbd2_super_block.s_maxlen;
+                if sb_maxlen > 0 && sb_maxlen >= self.jbd2_super_block.s_first {
+                    sb_maxlen.min(len)
+                } else {
+                    // s_maxlen is 0 or smaller than s_first — it is corrupted.
+                    // Fall back to the physical extent length.
+                    warn!(
+                        "[JBD2] s_maxlen={} < s_first={}: journal superblock s_maxlen is corrupt, \
+                         using physical extent length {} instead",
+                        sb_maxlen, self.jbd2_super_block.s_first, len
+                    );
+                    len
+                }
+            }
         };
 
         let last = total_blocks.checked_sub(1)?;
@@ -642,6 +660,20 @@ impl JBD2DEVSYSTEM {
     ) -> ReplayStatus {
         let mut journal_rel = self.jbd2_super_block.s_start;
         if journal_rel == 0 {
+            return ReplayStatus::Complete;
+        }
+
+        // If s_start points beyond the physical journal extent the on-disk
+        // journal superblock is inconsistent (e.g. corrupted by a crash that
+        // also mangled s_maxlen). There are no valid transactions to replay.
+        if !journal_blocks.is_empty() && journal_rel as usize >= journal_blocks.len() {
+            warn!(
+                "[JBD2] s_start={} >= journal_blocks.len()={}: journal superblock is \
+                 inconsistent, treating journal as clean",
+                journal_rel,
+                journal_blocks.len()
+            );
+            self.jbd2_super_block.s_start = 0;
             return ReplayStatus::Complete;
         }
 

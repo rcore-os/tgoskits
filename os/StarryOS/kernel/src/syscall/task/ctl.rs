@@ -142,10 +142,34 @@ pub fn sys_prctl(
             }
             return Ok(1);
         }
+        PR_GET_DUMPABLE => {
+            // man 2 prctl PR_GET_DUMPABLE: returns current dumpable value
+            // (0=SUID_DUMP_DISABLE, 1=SUID_DUMP_USER, 2=SUID_DUMP_ROOT).
+            return Ok(current().as_thread().proc_data.dumpable() as isize);
+        }
+        PR_SET_DUMPABLE => {
+            // man 2 prctl PR_SET_DUMPABLE: arg2 must be SUID_DUMP_DISABLE (0)
+            // or SUID_DUMP_USER (1); attempt to set SUID_DUMP_ROOT (2) returns
+            // EINVAL (only kernel internally sets 2 on suid/sgid binary exec).
+            //
+            // Validate on the raw `usize` to reject high-bit-set values like
+            // `0x1_0000_0001UL` that would otherwise truncate to 1 and falsely
+            // succeed. Linux rejects such inputs with EINVAL.
+            if arg2 != 0 && arg2 != 1 {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().proc_data.set_dumpable(arg2 as i32);
+        }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}
         PR_SET_MM => {
             // not implemented; but avoid annoying warnings
+            return Err(AxError::InvalidInput);
+        }
+        PR_SET_VMA => {
+            if arg2 == PR_SET_VMA_ANON_NAME as usize {
+                return Ok(0);
+            }
             return Err(AxError::InvalidInput);
         }
         _ => {

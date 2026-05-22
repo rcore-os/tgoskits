@@ -7,6 +7,7 @@ use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
 
 pub mod arceos;
 pub mod axvisor;
+mod backtrace;
 mod board;
 mod build;
 mod clippy;
@@ -26,13 +27,13 @@ struct Cli {
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClippyArgs {
-    /// Audit every workspace package instead of the maintained whitelist
+    /// Audit every workspace package
     #[arg(long)]
     pub(crate) all: bool,
     /// Run clippy only for the named workspace package(s)
     #[arg(long = "package", value_name = "PACKAGE")]
     pub(crate) packages: Vec<String>,
-    /// Run clippy for whitelisted packages affected since the git ref
+    /// Run clippy for workspace packages affected since the git ref
     #[arg(long, value_name = "REF")]
     pub(crate) since: Option<String>,
 }
@@ -48,7 +49,7 @@ pub(crate) struct SyncLintArgs {
 enum Commands {
     /// Run std tests for the configured workspace package whitelist
     Test,
-    /// Run clippy for the maintained whitelist by default
+    /// Run clippy for workspace packages
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
     SyncLint(SyncLintArgs),
@@ -61,6 +62,11 @@ enum Commands {
     Config {
         #[command(subcommand)]
         command: config::Command,
+    },
+    /// Backtrace host-side helpers
+    Backtrace {
+        #[command(subcommand)]
+        command: backtrace::Command,
     },
     /// Axvisor host-side commands
     Axvisor {
@@ -91,6 +97,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
         Commands::Board { command } => board::execute(command).await,
         Commands::Config { command } => config::execute(command),
+        Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => Starry::new()?.execute(command).await,

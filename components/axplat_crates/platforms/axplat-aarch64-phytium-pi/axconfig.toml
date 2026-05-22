@@ -84,8 +84,8 @@ pci-ranges = [
 uart-paddr = 0x2800_D000        # uint
 # UART IRQ number (SPI, 0x54)
 uart-irq = 0x74                 # uint
-# Timer interrupt num (PPI, physical timer).
-timer-irq = 0x1e                # uint
+# Timer interrupt num (PPI, physical timer / CNTP = PPI 14 = IRQ 30).
+timer-irq = 30                  # uint
 # IPI interrupt num
 ipi-irq = 1                     # uint
 

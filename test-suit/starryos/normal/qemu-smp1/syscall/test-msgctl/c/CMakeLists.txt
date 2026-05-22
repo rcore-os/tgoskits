@@ -9,4 +9,4 @@ add_executable(test-msgctl src/main.c)
 target_include_directories(test-msgctl PRIVATE src)
 target_compile_options(test-msgctl PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-msgctl RUNTIME DESTINATION usr/bin)
+install(TARGETS test-msgctl RUNTIME DESTINATION usr/bin/starry-test-suit)

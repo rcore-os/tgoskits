@@ -7,6 +7,7 @@ Included toolchains:
 - Ubuntu 24.04 base image (minimal packages with `--no-install-recommends`)
 - QEMU `10.2.1` (built from source, with `aarch64/riscv64/loongarch64/x86_64` system and linux-user targets)
 - `qemu-user-static` plus source-built linux-user QEMU binaries for guest-user execution helpers
+- npm for Starry app asset preparation scripts
 - Rust toolchain from the repository root `rust-toolchain.toml`
 - musl cross compilers for `aarch64/riscv64/loongarch64/x86_64`
 

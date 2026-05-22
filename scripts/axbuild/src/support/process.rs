@@ -21,6 +21,20 @@ pub(crate) fn run_cargo_status(workspace_root: &Path, args: &[String]) -> Result
     Ok(status.success())
 }
 
+pub(crate) fn run_cargo_status_with_env(
+    workspace_root: &Path,
+    args: &[String],
+    envs: &[(String, String)],
+) -> Result<bool> {
+    let status = Command::new("cargo")
+        .current_dir(workspace_root)
+        .args(args)
+        .envs(envs.iter().map(|(key, value)| (key, value)))
+        .status()
+        .with_context(|| format!("failed to spawn `cargo {}`", args.join(" ")))?;
+    Ok(status.success())
+}
+
 impl ProcessExt for Command {
     fn exec(&mut self) -> Result<()> {
         print_command(self)?;
