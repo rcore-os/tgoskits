@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define WORKERS 8
@@ -60,9 +61,11 @@ int main(void)
     setvbuf(stdout, NULL, _IONBF, 0);
 
     void *stacks[WORKERS];
+    int tids[WORKERS];
     memset(stacks, 0, sizeof(stacks));
+    memset(tids, -1, sizeof(tids));
 
-    int flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
+    int flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
     for (int i = 0; i < WORKERS; i++) {
         stacks[i] = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -79,6 +82,7 @@ int main(void)
                    strerror(errno));
             return 1;
         }
+        tids[i] = tid;
     }
 
     int last = -1;
@@ -96,6 +100,20 @@ int main(void)
         } else {
             stalls = 0;
             last = progress;
+        }
+    }
+
+    for (int i = 0; i < WORKERS; i++) {
+        if (tids[i] >= 0) {
+            int status = 0;
+            if (waitpid(tids[i], &status, __WALL) < 0) {
+                printf("FAIL: wait worker %d errno=%d (%s)\n", i, errno,
+                       strerror(errno));
+                g_failed = 1;
+            } else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+                printf("FAIL: worker %d exit status=0x%x\n", i, status);
+                g_failed = 1;
+            }
         }
     }
 
