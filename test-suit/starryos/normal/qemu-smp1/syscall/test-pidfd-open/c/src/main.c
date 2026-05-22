@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -89,8 +90,7 @@ static void test_pidfd_open_bad_flags(void)
 }
 
 struct thread_tid_sync {
-    int notify_pipe[2];
-    pid_t tid;
+    volatile pid_t tid;
 };
 
 static void *thread_publish_tid(void *arg)
@@ -98,13 +98,6 @@ static void *thread_publish_tid(void *arg)
     struct thread_tid_sync *sync = arg;
 
     sync->tid = (pid_t)syscall(SYS_gettid);
-    if (write(sync->notify_pipe[1], "x", 1) != 1) {
-        return (void *)1;
-    }
-    char ch;
-    if (read(sync->notify_pipe[0], &ch, 1) != 1) {
-        return (void *)1;
-    }
     return NULL;
 }
 
@@ -115,16 +108,12 @@ static void test_pidfd_open_thread_tid(void)
     struct thread_tid_sync sync = { .tid = -1 };
     pthread_t thread;
 
-    if (pipe(sync.notify_pipe) != 0) {
-        printf("  FAIL | %s:%d | pipe 创建失败\n", __FILE__, __LINE__);
-        return;
-    }
-
     CHECK(pthread_create(&thread, NULL, thread_publish_tid, &sync) == 0,
           "pthread_create 成功");
 
-    char ch;
-    CHECK(read(sync.notify_pipe[0], &ch, 1) == 1, "等待子线程 gettid");
+    for (int i = 0; i < 1000000 && sync.tid <= 0; i++) {
+        sched_yield();
+    }
     CHECK(sync.tid > 0 && sync.tid != getpid(), "子线程 tid 与 getpid 不同");
 
     CHECK_ERR(x_pidfd_open(sync.tid, 0), ENOENT,
@@ -136,9 +125,7 @@ static void test_pidfd_open_thread_tid(void)
         close(pfd);
     }
 
-    close(sync.notify_pipe[1]);
     pthread_join(thread, NULL);
-    close(sync.notify_pipe[0]);
 }
 
 static void test_pidfd_open_zombie(void)

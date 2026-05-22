@@ -247,6 +247,95 @@ static void test_pidfd_getfd_self_basic(void)
     close(pfd);
 }
 
+static void test_pidfd_getfd_cross_cred_eperm(void)
+{
+    printf("--- pidfd_getfd 跨 cred -> EPERM ---\n");
+
+    int notify[2];
+    int release[2];
+    if (pipe(notify) != 0 || pipe(release) != 0) {
+        return;
+    }
+
+    pid_t child = fork();
+    CHECK(child >= 0, "fork 成功");
+    if (child < 0) {
+        close(notify[0]);
+        close(notify[1]);
+        close(release[0]);
+        close(release[1]);
+        return;
+    }
+
+    if (child == 0) {
+        int data[2];
+        int target_fd;
+        char ack;
+
+        close(notify[0]);
+        close(release[1]);
+        if (setresuid(2000, 2000, 2000) != 0) {
+            _exit(1);
+        }
+        if (pipe(data) != 0) {
+            _exit(1);
+        }
+        target_fd = data[0];
+        if (write(notify[1], &target_fd, sizeof(target_fd)) != (ssize_t)sizeof(target_fd)) {
+            _exit(1);
+        }
+        close(notify[1]);
+        if (read(release[0], &ack, 1) != 1) {
+            _exit(1);
+        }
+        close(release[0]);
+        close(data[0]);
+        close(data[1]);
+        _exit(0);
+    }
+
+    close(notify[1]);
+    close(release[0]);
+
+    if (geteuid() == 0 && setresuid(1000, 1000, 1000) != 0) {
+        CHECK(0, "parent setresuid(1000) 失败");
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+        close(notify[0]);
+        close(release[1]);
+        return;
+    }
+
+    int child_fd = -1;
+    if (read_exact(notify[0], &child_fd, sizeof(child_fd)) != 0) {
+        CHECK(0, "从子进程读取 target_fd 失败");
+        close(notify[0]);
+        close(release[1]);
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+        return;
+    }
+    close(notify[0]);
+
+    int pfd = x_pidfd_open(child, 0);
+    CHECK(pfd >= 0, "pidfd_open(child) 成功");
+    if (pfd < 0) {
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+        close(release[1]);
+        return;
+    }
+
+    CHECK_ERR(x_pidfd_getfd(pfd, child_fd, 0), EPERM,
+              "uid 1000 对 uid 2000 子进程 pidfd_getfd -> EPERM");
+
+    char ack = 'x';
+    (void)write(release[1], &ack, 1);
+    close(pfd);
+    close(release[1]);
+    CHECK_RET(waitpid(child, NULL, 0), child, "waitpid 子进程");
+}
+
 static void test_pidfd_getfd_child_process(void)
 {
     printf("--- pidfd_getfd 跨进程 dup ---\n");
@@ -351,6 +440,7 @@ int main(void)
     test_pidfd_getfd_nonzero_flags();
     test_pidfd_getfd_cloexec();
     test_pidfd_getfd_self_basic();
+    test_pidfd_getfd_cross_cred_eperm();
     test_pidfd_getfd_child_process();
 
     TEST_DONE();
