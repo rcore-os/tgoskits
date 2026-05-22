@@ -290,52 +290,23 @@ fn select_default_root(candidates: &[RootCandidate]) -> Option<(usize, Option<us
         panic!("multiple partitions are labeled 'rootfs'; specify root= explicitly");
     }
 
-    let partition_matches: Vec<_> = candidates
+    let partition_matches = supported_filesystem_partition_matches(candidates);
+    let bootable_mbr_partition_matches: Vec<_> = partition_matches
         .iter()
-        .filter(|candidate| {
-            candidate.partition.as_ref().is_some_and(|partition| {
-                if !partition.filesystem.is_some() {
-                    return false;
-                }
-                match partition.info.table_kind {
-                    PartitionTableKind::Mbr => {
-                        #[cfg(feature = "ext4")]
-                        {
-                            partition.info.bootable
-                                && partition.filesystem == Some(FilesystemKind::Ext4)
-                        }
-                        #[cfg(all(not(feature = "ext4"), feature = "fat"))]
-                        {
-                            partition.filesystem == Some(FilesystemKind::Fat)
-                        }
-                        #[cfg(all(not(feature = "ext4"), not(feature = "fat")))]
-                        {
-                            false
-                        }
-                    }
-                    PartitionTableKind::Gpt | PartitionTableKind::Raw => {
-                        #[cfg(feature = "ext4")]
-                        {
-                            partition.filesystem == Some(FilesystemKind::Ext4)
-                        }
-                        #[cfg(all(not(feature = "ext4"), feature = "fat"))]
-                        {
-                            partition.filesystem == Some(FilesystemKind::Fat)
-                        }
-                        #[cfg(all(not(feature = "ext4"), not(feature = "fat")))]
-                        {
-                            false
-                        }
-                    }
-                }
-            })
+        .copied()
+        .filter(|(_, partition)| {
+            partition.info.table_kind == PartitionTableKind::Mbr && partition.info.bootable
         })
-        .map(|candidate| {
-            (
-                candidate.disk_index,
-                candidate.partition.as_ref().map(|part| part.info.index),
-            )
-        })
+        .map(|(disk_index, partition)| (disk_index, Some(partition.info.index)))
+        .collect();
+    if bootable_mbr_partition_matches.len() == 1 {
+        info!("  only one bootable MBR filesystem partition is available; using it as root");
+        return bootable_mbr_partition_matches.into_iter().next();
+    }
+
+    let partition_matches: Vec<_> = partition_matches
+        .into_iter()
+        .map(|(disk_index, partition)| (disk_index, Some(partition.info.index)))
         .collect();
     if partition_matches.len() == 1 {
         info!("  only one supported filesystem partition is available; using it as root");
@@ -353,6 +324,57 @@ fn select_default_root(candidates: &[RootCandidate]) -> Option<(usize, Option<us
     }
 
     None
+}
+
+fn supported_filesystem_partition_matches(
+    candidates: &[RootCandidate],
+) -> Vec<(usize, &DetectedPartition)> {
+    candidates
+        .iter()
+        .filter_map(|candidate| {
+            let partition = candidate.partition.as_ref()?;
+            if !supported_default_root_partition(partition) {
+                return None;
+            }
+            Some((candidate.disk_index, partition))
+        })
+        .collect()
+}
+
+fn supported_default_root_partition(partition: &DetectedPartition) -> bool {
+    if !partition.filesystem.is_some() {
+        return false;
+    }
+    match partition.info.table_kind {
+        PartitionTableKind::Mbr => {
+            #[cfg(feature = "ext4")]
+            {
+                partition.filesystem == Some(FilesystemKind::Ext4)
+            }
+            #[cfg(all(not(feature = "ext4"), feature = "fat"))]
+            {
+                partition.filesystem == Some(FilesystemKind::Fat)
+            }
+            #[cfg(all(not(feature = "ext4"), not(feature = "fat")))]
+            {
+                false
+            }
+        }
+        PartitionTableKind::Gpt | PartitionTableKind::Raw => {
+            #[cfg(feature = "ext4")]
+            {
+                partition.filesystem == Some(FilesystemKind::Ext4)
+            }
+            #[cfg(all(not(feature = "ext4"), feature = "fat"))]
+            {
+                partition.filesystem == Some(FilesystemKind::Fat)
+            }
+            #[cfg(all(not(feature = "ext4"), not(feature = "fat")))]
+            {
+                false
+            }
+        }
+    }
 }
 
 pub(crate) fn describe_selection(
@@ -470,5 +492,53 @@ const fn filesystem_name(fs: FilesystemKind) -> &'static str {
         FilesystemKind::Ext4 => "ext4",
         #[cfg(feature = "fat")]
         FilesystemKind::Fat => "fat",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mbr_partition(
+        index: usize,
+        filesystem: Option<FilesystemKind>,
+        bootable: bool,
+    ) -> RootCandidate {
+        RootCandidate {
+            disk_index: 0,
+            partition: Some(DetectedPartition {
+                info: PartitionInfo {
+                    index,
+                    table_kind: PartitionTableKind::Mbr,
+                    region: BlockRegion::new(index as u64 * 100, 100),
+                    name: None,
+                    part_uuid: None,
+                    bootable,
+                },
+                filesystem,
+            }),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "ext4")]
+    fn default_root_uses_only_supported_mbr_filesystem_partition_without_boot_flag() {
+        let candidates = [
+            mbr_partition(0, None, false),
+            mbr_partition(1, Some(FilesystemKind::Ext4), false),
+        ];
+
+        assert_eq!(select_default_root(&candidates), Some((0, Some(1))));
+    }
+
+    #[test]
+    #[cfg(feature = "ext4")]
+    fn default_root_prefers_only_bootable_mbr_filesystem_partition() {
+        let candidates = [
+            mbr_partition(0, Some(FilesystemKind::Ext4), false),
+            mbr_partition(1, Some(FilesystemKind::Ext4), true),
+        ];
+
+        assert_eq!(select_default_root(&candidates), Some((0, Some(1))));
     }
 }

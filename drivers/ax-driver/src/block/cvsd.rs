@@ -104,7 +104,7 @@ unsafe impl Send for CvsdDriver {}
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 impl CvsdDriver {
     fn new(sdmmc: usize, syscon: usize) -> Result<Self, ()> {
-        let sdmmc = unsafe { Sdmmc::from_base_addresses(sdmmc, syscon) };
+        let sdmmc = unsafe { Sdmmc::new(sdmmc, syscon) };
         sdmmc.init().map_err(|_| ())?;
         sdmmc.clk_en(true);
         Ok(Self(sdmmc))
