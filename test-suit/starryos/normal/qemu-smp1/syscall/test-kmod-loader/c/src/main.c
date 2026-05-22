@@ -82,5 +82,25 @@ int main(void) {
     CHECK(raw_init_module(buf, sizeof(buf), "key=val") < 0,
           "init_module(invalid ELF with args) returns error, no crash");
 
+    MODULE_START("init_module_valid_et_rel_header");
+    uint8_t et_rel[64] = {
+        0x7f,'E','L','F', 2,1,1,0, 0,0,0,0,0,0,0,0,
+        1,0, 0x3e,0, 1,0,0,0,
+        0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,
+        0,0,0,0, 64,0, 0,0, 0,0, 64,0, 0,0, 0,0
+    };
+    CHECK(raw_init_module(et_rel, sizeof(et_rel), "") < 0,
+          "init_module(valid ET_REL header, no sections) returns error");
+
+    MODULE_START("finit_module_fd_zero");
+    CHECK(raw_finit_module(0, "", 0) < 0,
+          "finit_module(fd=0 stdin) returns error");
+
+    MODULE_START("init_module_large_junk");
+    uint8_t big[256]; memset(big, 0xAA, sizeof(big));
+    CHECK(raw_init_module(big, sizeof(big), "") < 0,
+          "init_module(256-byte junk) returns error, no crash");
+
     SUMMARY();
 }

@@ -28,6 +28,9 @@ use alloc::{
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 use kmod_loader::{KernelModuleHelper, SectionMemOps, SectionPerm};
 
+static RESOLVE_SYMBOL_WARNED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 struct KmodSectionMem {
     ptr: *mut u8,
     size: usize,
@@ -133,7 +136,17 @@ impl KernelModuleHelper for StarryKmodHelper {
     }
 
     fn resolve_symbol(_name: &str) -> Option<usize> {
-        warn!("kmod: resolve_symbol not yet available (depends on PR #837 kallsyms)");
+        if RESOLVE_SYMBOL_WARNED
+            .compare_exchange(
+                false,
+                true,
+                core::sync::atomic::Ordering::Relaxed,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            warn!("kmod: resolve_symbol not yet available (depends on PR #837 kallsyms)");
+        }
         None
     }
 
