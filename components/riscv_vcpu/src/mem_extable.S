@@ -4,11 +4,12 @@
 
 // Very unoptimized memcpy() to/from guest memory functions, using the HLV/HSV instructions.
 
-// Adds the instruction at 'lbl' to the exception table.
-.macro add_extable lbl
-.pushsection .extable, "a"
+// Adds the faulting instruction and fixup target to the exception table.
+.macro add_extable from, to
+.pushsection __ex_table, "a"
 .balign      8
-.quad        \lbl
+.quad        \from
+.quad        \to
 .popsection
 .endm
 .option push
@@ -28,7 +29,7 @@ _copy_to_guest:
     lb    t3, (a1)
 2:
     hsv.b t3, (a0)
-    add_extable 2b
+    add_extable 2b, _ret_from_copy
     addi  a0, a0, 1
     addi  a1, a1, 1
     addi  t2, t2, 1
@@ -46,7 +47,7 @@ _copy_from_guest:
     beq   t2, a2, _ret_from_copy
 2:
     hlv.b t3, (a1)
-    add_extable 2b
+    add_extable 2b, _ret_from_copy
     sb    t3, (a0)
     addi  a0, a0, 1
     addi  a1, a1, 1
@@ -68,7 +69,7 @@ _fetch_guest_instruction:
     la    t0, 4f
 1:
     hlvx.hu t2, (a0)
-    add_extable 1b
+    add_extable 1b, 4f
     sh    t2, (a1)
     addi  a0, a0, 2
     addi  a1, a1, 2
@@ -79,7 +80,7 @@ _fetch_guest_instruction:
     // Load the next half-word.
 2:
     hlvx.hu t2, (a0)
-    add_extable 2b
+    add_extable 2b, 4f
     sh    t2, (a1)
 3:
     mv    a0, zero
@@ -102,7 +103,7 @@ _copy_to_user:
    lb    t3, (a1)
 2:
    sb t3, (a0)
-   add_extable 2b
+   add_extable 2b, _ret_from_copy
    addi  a0, a0, 1
    addi  a1, a1, 1
    addi  t2, t2, 1
@@ -120,7 +121,7 @@ _copy_from_user:
    beq   t2, a2, _ret_from_copy
 2:
    lb t3, (a1)
-   add_extable 2b
+   add_extable 2b, _ret_from_copy
    sb    t3, (a0)
    addi  a0, a0, 1
    addi  a1, a1, 1

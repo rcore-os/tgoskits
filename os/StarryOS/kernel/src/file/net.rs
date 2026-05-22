@@ -1,5 +1,11 @@
 use alloc::{borrow::Cow, format, sync::Arc};
-use core::{ffi::c_int, mem::offset_of, ops::Deref, task::Context};
+use core::{
+    ffi::c_int,
+    mem::offset_of,
+    ops::Deref,
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
+    task::Context,
+};
 
 use ax_errno::{AxError, AxResult};
 use axnet::{
@@ -38,15 +44,25 @@ const IFCONF_BUF_OFFSET: usize = 8;
 const ETH0_MTU: i32 = 1500;
 const LO_MTU: i32 = 65536;
 
-pub struct Socket(pub SocketInner, u32);
+pub struct Socket {
+    inner: SocketInner,
+    ip_domain: u32,
+    async_mode: AtomicBool,
+    owner: AtomicI32,
+}
 
 impl Socket {
     pub fn new(inner: SocketInner, ip_domain: u32) -> Self {
-        Self(inner, ip_domain)
+        Self {
+            inner,
+            ip_domain,
+            async_mode: AtomicBool::new(false),
+            owner: AtomicI32::new(0),
+        }
     }
 
     pub fn ip_domain(&self) -> u32 {
-        self.1
+        self.ip_domain
     }
 }
 
@@ -150,7 +166,7 @@ impl Deref for Socket {
     type Target = SocketInner;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.inner
     }
 }
 
@@ -180,8 +196,30 @@ impl FileLike for Socket {
     }
 
     fn set_nonblocking(&self, nonblocking: bool) -> AxResult<()> {
-        self.0
+        self.inner
             .set_option(SetSocketOption::NonBlocking(&nonblocking))
+    }
+
+    fn async_mode(&self) -> bool {
+        self.async_mode.load(Ordering::Acquire)
+    }
+
+    fn supports_async_mode(&self) -> bool {
+        true
+    }
+
+    fn set_async_mode(&self, async_mode: bool) -> AxResult {
+        self.async_mode.store(async_mode, Ordering::Release);
+        Ok(())
+    }
+
+    fn owner(&self) -> AxResult<i32> {
+        Ok(self.owner.load(Ordering::Acquire))
+    }
+
+    fn set_owner(&self, owner: i32) -> AxResult {
+        self.owner.store(owner, Ordering::Release);
+        Ok(())
     }
 
     fn path(&self) -> Cow<'_, str> {
@@ -274,10 +312,10 @@ impl FileLike for Socket {
 }
 impl Pollable for Socket {
     fn poll(&self) -> IoEvents {
-        self.0.poll()
+        self.inner.poll()
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.0.register(context, events);
+        self.inner.register(context, events);
     }
 }

@@ -9,4 +9,4 @@ add_executable(test_sa_restart src/main.c)
 target_include_directories(test_sa_restart PRIVATE src)
 target_compile_options(test_sa_restart PRIVATE -Wall -Wextra)
 
-install(TARGETS test_sa_restart RUNTIME DESTINATION usr/bin)
+install(TARGETS test_sa_restart RUNTIME DESTINATION usr/bin/starry-test-suit)

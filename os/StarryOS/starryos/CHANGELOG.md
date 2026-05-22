@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.11...starryos-v0.5.12) - 2026-05-22
+
+### Added
+
+- *(axplat-aarch64)* GICv3 + CNTV backend for Apple HVF native execution ([#511](https://github.com/rcore-os/tgoskits/pull/511))
+
+### Other
+
+- Add kernel tracepoint infrastructure and debugfs integration ([#673](https://github.com/rcore-os/tgoskits/pull/673))
+
 ## [0.5.11](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.10...starryos-v0.5.11) - 2026-05-19
 
 ### Other
