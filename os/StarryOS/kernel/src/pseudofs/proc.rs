@@ -19,15 +19,15 @@ use ax_hal::{
     time::{monotonic_time, wall_time},
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
-use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use starry_process::{Pid, Process};
 
 use crate::{
     file::FD_TABLE,
     mm::BackendFileInfo,
     pseudofs::{
-        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqFile, SimpleDir, SimpleDirOps, SimpleFile,
-        SimpleFileOperation, SimpleFs,
+        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqObject, SimpleDir, SimpleDirOps, SimpleFile,
+        SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
         AsThread, ProcessData, TaskStat, get_process_data, get_task, processes, tasks,
@@ -333,9 +333,8 @@ fn task_status(task: &AxTaskRef) -> String {
     let cred = thread.cred();
     render_task_status(
         thread.proc_data.proc.pid(),
-        task.id().as_u64(),
+        thread.tid() as u64,
         &cred,
-        thread.proc_data.dumpable(),
         task.cpumask(),
         ax_hal::cpu_num(),
     )
@@ -345,14 +344,13 @@ fn render_task_status(
     tgid: u32,
     pid: u64,
     cred: &crate::task::Cred,
-    dumpable: i32,
     cpumask: AxCpuMask,
     cpu_num: usize,
 ) -> String {
     let cpus_allowed = format_cpumask_hex(cpumask, cpu_num);
     let cpus_allowed_list = format_cpumask_list(cpumask, cpu_num);
 
-    render_task_status_fields(tgid, pid, cred, dumpable, &cpus_allowed, &cpus_allowed_list)
+    render_task_status_fields(tgid, pid, cred, &cpus_allowed, &cpus_allowed_list)
 }
 
 #[rustfmt::skip]
@@ -360,7 +358,6 @@ fn render_task_status_fields(
     tgid: u32,
     pid: u64,
     cred: &crate::task::Cred,
-    dumpable: i32,
     cpus_allowed: &str,
     cpus_allowed_list: &str,
 ) -> String {
@@ -369,7 +366,6 @@ fn render_task_status_fields(
         Pid:\t{pid}\n\
         Uid:\t{}\t{}\t{}\t{}\n\
         Gid:\t{}\t{}\t{}\t{}\n\
-        Dumpable:\t{dumpable}\n\
         Cpus_allowed:\t{cpus_allowed}\n\
         Cpus_allowed_list:\t{cpus_allowed_list}\n\
         Mems_allowed:\t1\n\
@@ -609,7 +605,6 @@ impl SimpleDirOps for ThreadDir {
                             pid,
                             pid as u64,
                             &cred,
-                            thread.proc_data.dumpable(),
                             task.cpumask(),
                             ax_hal::cpu_num(),
                         ))
@@ -648,7 +643,13 @@ impl SimpleDirOps for ThreadDir {
             .into(),
             "maps" => {
                 let task = self.task.clone();
-                SeqFile::new_regular(fs, move || render_thread_maps(&task)).into()
+                let seq = SeqObject::new(move || render_thread_maps(&task));
+                SpecialFsFile::new_regular_with_perm(
+                    fs.clone(),
+                    seq,
+                    NodePermission::from_bits_truncate(0o444),
+                )
+                .into()
             }
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
@@ -940,17 +941,8 @@ mod tests {
 
     fn legacy_render_task_status(tgid: u32, pid: u64) -> String {
         format!(
-            concat!(
-                "Tgid:\t{}\n",
-                "Pid:\t{}\n",
-                "Uid:\t0 0 0 0\n",
-                "Gid:\t0 0 0 0\n",
-                "Dumpable:\t1\n",
-                "Cpus_allowed:\t1\n",
-                "Cpus_allowed_list:\t0\n",
-                "Mems_allowed:\t1\n",
-                "Mems_allowed_list:\t0",
-            ),
+            "Tgid:\t{}\nPid:\t{}\nUid:\t0 0 0 0\nGid:\t0 0 0 \
+             0\nCpus_allowed:\t1\nCpus_allowed_list:\t0\nMems_allowed:\t1\nMems_allowed_list:\t0",
             tgid, pid
         )
     }
@@ -960,14 +952,7 @@ mod tests {
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
 
-        render_task_status_fields(
-            tgid,
-            pid,
-            &Cred::root(),
-            1,
-            &cpus_allowed,
-            &cpus_allowed_list,
-        )
+        render_task_status_fields(tgid, pid, &Cred::root(), &cpus_allowed, &cpus_allowed_list)
     }
 
     #[test]
@@ -976,7 +961,6 @@ mod tests {
 
         assert!(legacy.contains("Cpus_allowed:\t1\n"));
         assert!(legacy.contains("Cpus_allowed_list:\t0\n"));
-        assert!(legacy.contains("Dumpable:\t1\n"));
         assert!(!legacy.contains("Cpus_allowed:\t0000000a\n"));
         assert!(!legacy.contains("Cpus_allowed_list:\t1,3\n"));
     }
@@ -1008,7 +992,6 @@ mod tests {
 
         assert!(status.contains("Tgid:\t42\n"));
         assert!(status.contains("Pid:\t84\n"));
-        assert!(status.contains("Dumpable:\t1\n"));
         assert!(status.contains("Cpus_allowed:\t0000000a\n"));
         assert!(status.contains("Cpus_allowed_list:\t1,3\n"));
     }

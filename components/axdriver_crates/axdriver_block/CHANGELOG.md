@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.14](https://github.com/rcore-os/tgoskits/compare/ax-driver-block-v0.3.13...ax-driver-block-v0.3.14) - 2026-05-22
+
+### Added
+
+- add sg2002 USB UVC camera with ESP-compatible ioctl ([#791](https://github.com/rcore-os/tgoskits/pull/791))
+
 ## [0.3.13](https://github.com/rcore-os/tgoskits/compare/ax-driver-block-v0.3.12...ax-driver-block-v0.3.13) - 2026-05-16
 
 ### Added

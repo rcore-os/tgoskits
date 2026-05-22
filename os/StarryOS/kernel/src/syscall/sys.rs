@@ -110,6 +110,9 @@ fn uid_valid(id: u32) -> bool {
     id != NOCHG
 }
 
+/// Linux clears `mm->dumpable` from `commit_creds()` when effective or
+/// filesystem credentials change. StarryOS keeps this process-wide flag on
+/// `ProcessData`, so each credential setter checks the committed deltas.
 #[inline]
 fn dumpable_should_reset(old: &crate::task::Cred, new: &crate::task::Cred) -> bool {
     old.euid != new.euid || old.egid != new.egid || old.fsuid != new.fsuid || old.fsgid != new.fsgid
@@ -601,7 +604,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
                 state.read(len)
             };
             if !data.is_empty() {
-                vm_write_slice(buf as *mut u8, &data)?;
+                vm_write_slice(buf.cast::<u8>(), &data)?;
             }
             Ok(data.len() as isize)
         }
@@ -612,7 +615,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
                 state.read_all(len)
             };
             if !data.is_empty() {
-                vm_write_slice(buf as *mut u8, &data)?;
+                vm_write_slice(buf.cast::<u8>(), &data)?;
             }
             Ok(data.len() as isize)
         }
@@ -625,7 +628,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
                 data
             };
             if !data.is_empty() {
-                vm_write_slice(buf as *mut u8, &data)?;
+                vm_write_slice(buf.cast::<u8>(), &data)?;
             }
             Ok(data.len() as isize)
         }

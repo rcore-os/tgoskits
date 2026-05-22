@@ -70,12 +70,29 @@ impl SocketAddrEx {
 bitflags! {
     /// Flags for sending data to a socket.
     ///
+    /// These values match Linux MSG_* constants so that `from_bits_retain(flags)`
+    /// from the syscall layer preserves the correct flags.
+    ///
     /// See [`SocketOps::send`].
     #[derive(Default, Debug, Clone, Copy)]
     pub struct SendFlags: u32 {
-        /// Per-call non-blocking override (`MSG_DONTWAIT`). Does NOT
-        /// change the socket's own `O_NONBLOCK` state.
+        /// Sends out-of-band data on sockets that support it (e.g. SOCK_STREAM).
+        const OOB = 0x01;
+        /// Don't use a gateway to send the packet, send to hosts only on
+        /// directly connected networks.
+        const DONTROUTE = 0x04;
+        /// Enables nonblocking operation; if the operation would block,
+        /// `EAGAIN` or `EWOULDBLOCK` is returned.
         const DONTWAIT = 0x40;
+        /// Terminates a record (SOCK_SEQPACKET).
+        const EOR = 0x80;
+        /// Sends only if a connection confirm is pending (UDP/RAW, Linux specific).
+        const CONFIRM = 0x800;
+        /// Requests not to send SIGPIPE on errors on stream oriented sockets
+        /// when the other end breaks the connection.
+        const NOSIGNAL = 0x4000;
+        /// More data will be sent; used to cork/coalesce sends (UDP/TCP).
+        const MORE = 0x8000;
     }
 }
 
@@ -124,6 +141,8 @@ pub struct RecvOptions<'a> {
     pub flags: RecvFlags,
     /// If set, ancillary control messages are appended here.
     pub cmsg: Option<&'a mut Vec<CMsgData>>,
+    /// If set and the datagram was truncated, this is set to `true`.
+    pub truncated: Option<&'a mut bool>,
 }
 impl Debug for RecvOptions<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -152,11 +152,7 @@ enum Inner {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct Backtrace {
     inner: Inner,
-}
-
-pub struct BacktraceReport<'a> {
-    backtrace: &'a Backtrace,
-    kind: &'static str,
+    kind: Option<&'static str>,
 }
 
 impl Backtrace {
@@ -165,6 +161,7 @@ impl Backtrace {
         #[cfg(not(feature = "alloc"))]
         return Self {
             inner: Inner::Disabled,
+            kind: None,
         };
 
         #[cfg(feature = "alloc")]
@@ -184,6 +181,7 @@ impl Backtrace {
                 } else {
                     return Self {
                         inner: Inner::Unsupported,
+                        kind: None,
                     };
                 }
             }
@@ -194,6 +192,7 @@ impl Backtrace {
 
             Self {
                 inner: Inner::Captured(frames),
+                kind: None,
             }
         }
     }
@@ -204,6 +203,7 @@ impl Backtrace {
         #[cfg(not(feature = "alloc"))]
         return Self {
             inner: Inner::Disabled,
+            kind: None,
         };
 
         #[cfg(feature = "alloc")]
@@ -226,8 +226,15 @@ impl Backtrace {
 
             Self {
                 inner: Inner::Captured(frames),
+                kind: None,
             }
         }
+    }
+
+    /// Sets the backtrace kind for machine-parseable raw output via [`Display`].
+    pub fn kind(mut self, kind: &'static str) -> Self {
+        self.kind = Some(kind);
+        self
     }
 
     /// Visit each stack frame in the captured backtrace in order.
@@ -241,29 +248,22 @@ impl Backtrace {
 
         Some(FrameIter::new(capture))
     }
-
-    pub fn report(&self, kind: &'static str) -> BacktraceReport<'_> {
-        BacktraceReport {
-            backtrace: self,
-            kind,
-        }
-    }
 }
 
-impl fmt::Display for BacktraceReport<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Backtrace {
+    fn fmt_raw_block(&self, f: &mut fmt::Formatter<'_>, kind: &'static str) -> fmt::Result {
         let arch = TARGET_ARCH;
 
         writeln!(
             f,
             "BACKTRACE_BEGIN kind={} arch={} alloc={} dwarf={}",
-            self.kind,
+            kind,
             arch,
             cfg!(feature = "alloc"),
             cfg!(feature = "dwarf")
         )?;
 
-        match &self.backtrace.inner {
+        match &self.inner {
             Inner::Unsupported => {
                 writeln!(f, "BT_ERROR unsupported")?;
             }
@@ -288,6 +288,10 @@ impl fmt::Display for BacktraceReport<'_> {
 
 impl fmt::Display for Backtrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(kind) = self.kind {
+            return self.fmt_raw_block(f, kind);
+        }
+
         match &self.inner {
             Inner::Unsupported => {
                 writeln!(f, "<unwinding unsupported>")
@@ -358,6 +362,21 @@ mod tests {
         let (frames, start_fp) = boxed_frame_chain(&[0x1111, 0x2222, 0x3333]);
         let out = unwind_stack(start_fp);
         assert_eq!(out, frames.as_ref());
+    }
+
+    #[test]
+    fn kind_formats_raw_block_without_dwarf() {
+        init_for_tests();
+        let (_frames, start_fp) = boxed_frame_chain(&[0xdead, 0xbeef]);
+        let s = alloc::format!(
+            "{}",
+            Backtrace::capture_trap(start_fp, 0x1000, 0xbeef).kind("raw")
+        );
+        assert!(s.contains("BACKTRACE_BEGIN kind=raw"));
+        assert!(s.contains("BT 0 ip=0x1001 fp="));
+        assert!(s.contains("BT 1 ip=0xbeef fp="));
+        assert!(s.ends_with("BACKTRACE_END\n"));
+        assert!(!s.contains("Backtrace:"));
     }
 
     #[test]

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.9](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-qemu-virt-v0.5.8...ax-plat-riscv64-qemu-virt-v0.5.9) - 2026-05-22
+
+### Other
+
+- Remove RISC-V QEMU Virt platform files and update references ([#833](https://github.com/rcore-os/tgoskits/pull/833))
+
+## [0.5.8](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-qemu-virt-v0.5.7...ax-plat-riscv64-qemu-virt-v0.5.8) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-riscv-plic, ax-cpu
+
 ## [0.5.7](https://github.com/rcore-os/tgoskits/compare/ax-plat-riscv64-qemu-virt-v0.5.6...ax-plat-riscv64-qemu-virt-v0.5.7) - 2026-05-15
 
 ### Added

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.7](https://github.com/rcore-os/tgoskits/compare/ax-arm-pl031-v0.4.6...ax-arm-pl031-v0.4.7) - 2026-05-19
+
+### Other
+
+- Update ARM PL031 RTC and PL011 UART drivers with documentation updates ([#739](https://github.com/rcore-os/tgoskits/pull/739))
+
 ## 0.2.1
 
 ### New features

@@ -9,4 +9,4 @@ add_executable(test-epoll src/main.c)
 target_include_directories(test-epoll PRIVATE src)
 target_compile_options(test-epoll PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-epoll RUNTIME DESTINATION usr/bin)
+install(TARGETS test-epoll RUNTIME DESTINATION usr/bin/starry-test-suit)

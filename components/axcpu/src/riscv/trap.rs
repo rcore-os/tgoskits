@@ -31,7 +31,7 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     {
         return;
     }
-    #[cfg(feature = "uspace")]
+    #[cfg(feature = "exception-table")]
     if tf.fixup_exception() {
         return;
     }
@@ -42,7 +42,7 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
         vaddr,
         access_flags,
         tf,
-        bt.report("trap")
+        bt.kind("trap")
     );
 }
 
@@ -68,7 +68,7 @@ fn riscv_trap_handler(tf: &mut TrapFrame) {
                     tf.sepc,
                     stval::read(),
                     tf,
-                    bt.report("trap")
+                    bt.kind("trap")
                 );
             }
         }
@@ -79,7 +79,7 @@ fn riscv_trap_handler(tf: &mut TrapFrame) {
             scause.cause(),
             tf.sepc,
             tf,
-            bt.report("trap")
+            bt.kind("trap")
         );
     }
 

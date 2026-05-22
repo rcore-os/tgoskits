@@ -9,4 +9,4 @@ set(CMAKE_C_EXTENSIONS OFF)
 add_executable(test-vectored-io src/main.c)
 target_compile_options(test-vectored-io PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-vectored-io RUNTIME DESTINATION usr/bin)
+install(TARGETS test-vectored-io RUNTIME DESTINATION usr/bin/starry-test-suit)

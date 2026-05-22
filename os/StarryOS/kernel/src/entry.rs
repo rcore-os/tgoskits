@@ -14,11 +14,14 @@ use crate::{
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty::N_TTY},
     task::{ProcessData, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
+    tracepoint::tracepoint_init,
 };
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
+    tracepoint_init().expect("Failed to initialize tracepoints");
+
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
 
@@ -58,6 +61,7 @@ pub fn init(args: &[String], envs: &[String]) {
         Arc::new(Mutex::new(uspace)),
         Arc::default(),
         None,
+        false,
     );
 
     {

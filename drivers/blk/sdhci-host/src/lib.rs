@@ -10,8 +10,11 @@
 //!   4-bit bus, default-speed and high-speed clocking, 32-bit response
 //!   slots, 136-bit R2 reconstruction, software reset / clock setup.
 //! - **Out of scope (for now)**: 64-bit ADMA2, 8-bit eMMC bus, HS200 /
-//!   SDR50 / SDR104 clocking, voltage / signaling switch (CMD11), tuning
-//!   (CMD19 / CMD21), eMMC-specific commands.
+//!   SDR50 / SDR104 clocking, tuning (CMD19 / CMD21), eMMC-specific
+//!   commands. 1.8 V signaling is wired up at the register level but is
+//!   gated behind [`Sdhci::enable_1v8_signaling`] — platforms that haven't
+//!   plumbed the IO-rail regulator MUST leave it off so the protocol
+//!   layer falls back instead of corrupting transfers.
 //!
 //! # Usage
 //!
@@ -199,6 +202,8 @@ impl SdioHost for Sdhci {
             // refuse cleanly instead of silently writing the bit and
             // misconfiguring the bus.
             BusWidth::Bit8 => return Err(Error::UnsupportedCommand),
+            // Future BusWidth variants are not supported by this controller.
+            _ => return Err(Error::UnsupportedCommand),
         }
         self.write_u8(REG_HOST_CONTROL1, ctrl);
         Ok(())
@@ -212,6 +217,8 @@ impl SdioHost for Sdhci {
             ClockSpeed::Sdr50 | ClockSpeed::Ddr50 => 50_000_000,
             ClockSpeed::Sdr104 => 104_000_000,
             ClockSpeed::Hs200 => 200_000_000,
+            // Future ClockSpeed variants are not supported by this controller.
+            _ => return Err(Error::UnsupportedCommand),
         };
 
         // Toggle the High-Speed Enable bit in HOST_CONTROL1 alongside the
@@ -250,6 +257,18 @@ impl SdioHost for Sdhci {
         //    immediately, so the wait is a soft requirement enforced by
         //    the platform delay (we don't have one here — bring-up code
         //    on the caller side should add one if needed).
+        // V180 requires the platform to actually swing the IO rail —
+        // flipping the controller bit in isolation makes the host
+        // sample at the wrong reference, breaking every subsequent
+        // data transfer (observed on rk3568-dwcmshc, where HS200
+        // tuning fails and the leaked bit then corrupts HS@52 reads).
+        // Refuse here unless the platform has opted in via
+        // `Sdhci::enable_1v8_signaling`. Returning `UnsupportedCommand`
+        // makes the protocol layer fall back cleanly.
+        if matches!(voltage, SignalVoltage::V180) && !self.support_1v8 {
+            return Err(Error::UnsupportedCommand);
+        }
+
         self.disable_sd_clock();
 
         // 2. Flip the voltage selector. 1.2 V isn't part of the SDHCI
@@ -266,6 +285,8 @@ impl SdioHost for Sdhci {
                 self.set_power(POWER_180);
             }
             SignalVoltage::V120 => return Err(Error::UnsupportedCommand),
+            // Future SignalVoltage variants are not supported by this controller.
+            _ => return Err(Error::UnsupportedCommand),
         }
         self.write_u16(REG_HOST_CONTROL2, ctrl2);
 
@@ -517,6 +538,8 @@ impl Sdhci {
             BlockTransferMode::Dma => {
                 BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 512, Some(self.dma_mask))
             }
+            // Future BlockTransferMode variants fall back to the conservative Fifo config.
+            _ => BlockBufferConfig::new(NonZeroUsize::new(512).unwrap(), 1, None),
         }
     }
 

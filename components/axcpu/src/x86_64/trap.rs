@@ -27,7 +27,7 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     ) {
         return;
     }
-    #[cfg(feature = "uspace")]
+    #[cfg(feature = "exception-table")]
     if tf.fixup_exception() {
         return;
     }
@@ -39,7 +39,7 @@ fn handle_page_fault(tf: &mut TrapFrame) {
         tf.error_code,
         access_flags,
         tf,
-        bt.report("trap")
+        bt.kind("trap")
     );
 }
 
@@ -59,7 +59,7 @@ fn handle_debug(tf: &mut TrapFrame) {
         tf.rip,
         tf.error_code,
         tf,
-        bt.report("trap")
+        bt.kind("trap")
     );
 }
 
@@ -76,7 +76,7 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
                 tf.rip,
                 tf.error_code,
                 tf,
-                bt.report("trap")
+                bt.kind("trap")
             );
         }
         IRQ_VECTOR_START..=IRQ_VECTOR_END => {
@@ -91,7 +91,7 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
                 tf.error_code,
                 tf.rip,
                 tf,
-                bt.report("trap")
+                bt.kind("trap")
             );
         }
     }

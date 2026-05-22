@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6](https://github.com/rcore-os/tgoskits/compare/ax-riscv-plic-v0.4.5...ax-riscv-plic-v0.4.6) - 2026-05-19
+
+### Other
+
+- Update ARM PL031 RTC and PL011 UART drivers with documentation updates ([#739](https://github.com/rcore-os/tgoskits/pull/739))
+
 ## [0.4.5](https://github.com/rcore-os/tgoskits/compare/ax-riscv-plic-v0.4.4...ax-riscv-plic-v0.4.5) - 2026-05-15
 
 ### Other

@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.11...starry-kernel-v0.5.12) - 2026-05-22
+
+### Added
+
+- add sg2002 USB UVC camera with ESP-compatible ioctl ([#791](https://github.com/rcore-os/tgoskits/pull/791))
+- *(starry)* add utimensat test case and fix kernel bugs ([#763](https://github.com/rcore-os/tgoskits/pull/763))
+- *(drm)* per-buffer memory allocation for Weston bringup ([#667](https://github.com/rcore-os/tgoskits/pull/667))
+- *(starry)* support multi-threaded execve ([#273](https://github.com/rcore-os/tgoskits/pull/273))
+
+### Fixed
+
+- *(starry-kernel)* open/openat deep — 6 类跨子系统改造 (stacked on #719) ([#720](https://github.com/rcore-os/tgoskits/pull/720))
+- *(ax-task)* migrate tasks after affinity updates ([#825](https://github.com/rcore-os/tgoskits/pull/825))
+- *(starry-kernel)* open/openat 15 类局部修复 ([#719](https://github.com/rcore-os/tgoskits/pull/719))
+- *(starry-kernel)* handle tty cursor position report ([#776](https://github.com/rcore-os/tgoskits/pull/776))
+- *(starry)* sys_sendfile
+- *(starry-kernel)* PR_SET/GET_DUMPABLE + setuid 自动清 ([#718](https://github.com/rcore-os/tgoskits/pull/718))
+
+### Other
+
+- Add kernel tracepoint infrastructure and debugfs integration ([#673](https://github.com/rcore-os/tgoskits/pull/673))
+- *(starry)* add signalfd4 test case, fix ssi_pid/ssi_uid ([#683](https://github.com/rcore-os/tgoskits/pull/683))
+
+## [0.5.11](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.10...starry-kernel-v0.5.11) - 2026-05-19
+
+### Added
+
+- *(starry-kernel)* add anonymous memfd, seals, and pidfd tests ([#565](https://github.com/rcore-os/tgoskits/pull/565))
+
+### Fixed
+
+- *(starry)* tolerate robust futex cleanup faults ([#692](https://github.com/rcore-os/tgoskits/pull/692))
+- *(net)* correct UDP sendto/recvfrom/sendmsg/recvmsg semantics to match Linux ABI ([#598](https://github.com/rcore-os/tgoskits/pull/598))
+- *(starry-kernel)* MAP_FIXED failure preserves prior mapping ([#691](https://github.com/rcore-os/tgoskits/pull/691))
+- *(starry)* weston bringup fixes + IRQ wakers + AF_UNIX cmsg byte marks ([#509](https://github.com/rcore-os/tgoskits/pull/509))
+- *(starry)* reject invalid umount2 flags ([#699](https://github.com/rcore-os/tgoskits/pull/699))
+- *(starry)* support v4-mapped IPv6 sockets ([#694](https://github.com/rcore-os/tgoskits/pull/694))
+
+### Other
+
+- Merge branch 'pr-717' into dev
+- *(starry)* add uname/sysinfo coverage and minimal syslog syscall support ([#705](https://github.com/rcore-os/tgoskits/pull/705))
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.5.9...starry-kernel-v0.5.10) - 2026-05-15
 
 ### Added

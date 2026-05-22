@@ -24,7 +24,7 @@ use std::println;
 fn main() {
     println!("Running backtrace tests...");
     let bt = axbacktrace::Backtrace::capture();
-    println!("{}", bt.report("test"));
+    println!("{}", bt.kind("test"));
     println!("test pass");
     #[cfg(feature = "ax-std")]
     use std::os::arceos::modules::ax_hal;

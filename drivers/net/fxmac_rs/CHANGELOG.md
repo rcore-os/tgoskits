@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/fxmac_rs-v0.5.0...fxmac_rs-v0.5.1) - 2026-05-19
+
+### Other
+
+- Update ARM PL031 RTC and PL011 UART drivers with documentation updates ([#739](https://github.com/rcore-os/tgoskits/pull/739))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/fxmac_rs-v0.4.8...fxmac_rs-v0.5.0) - 2026-05-15
 
 ### Other

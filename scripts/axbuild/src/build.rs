@@ -42,6 +42,21 @@ fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> {
     flags
 }
 
+/// Whether the build config enables target backtrace support (frame pointers / unwind).
+///
+/// Matches [`toolchain_rustflags`]: `BACKTRACE=y` or `DWARF=y` in `[env]`.
+pub(crate) fn build_info_enables_backtrace(info: &BuildInfo) -> bool {
+    let dwarf = env_truthy(&info.env, "DWARF");
+    env_truthy(&info.env, "BACKTRACE") || dwarf
+}
+
+/// Read a per-target `build-*.toml` and check [`build_info_enables_backtrace`].
+pub(crate) fn build_info_enables_backtrace_path(path: &Path) -> bool {
+    load_build_info::<BuildInfo>(path)
+        .ok()
+        .is_some_and(|info| build_info_enables_backtrace(&info))
+}
+
 const LOONGARCH64_HERMIT_JSON: &str =
     include_str!("../../../os/arceos/examples/std/loongarch64-unknown-hermit.json");
 
@@ -843,7 +858,7 @@ fn default_platform_package(arch: &str) -> &'static str {
 fn explicit_myplat_platform_package(package: &str, arch: &str) -> Option<&'static str> {
     match (package, arch) {
         ("axvisor", "x86_64") => Some("axplat-x86-qemu-q35"),
-        ("axvisor", "riscv64") => Some("axplat-riscv64-qemu-virt-hv"),
+        ("axvisor", "riscv64") => Some("ax-plat-riscv64-qemu-virt"),
         _ => None,
     }
 }
@@ -968,7 +983,7 @@ fn read_platform_name(platform_config: &Path) -> Option<String> {
     read_config_string(&[platform_config.to_path_buf()], "platform").ok()
 }
 
-fn generate_axconfig(
+pub(crate) fn generate_axconfig(
     workspace_root: &Path,
     target: &str,
     platform_name: &str,
@@ -1094,6 +1109,19 @@ mod tests {
     }
 
     #[test]
+    fn build_info_enables_backtrace_matches_env_flags() {
+        let mut info = BuildInfo::default();
+        assert!(!build_info_enables_backtrace(&info));
+
+        info.env.insert("BACKTRACE".to_string(), "y".to_string());
+        assert!(build_info_enables_backtrace(&info));
+
+        info.env.clear();
+        info.env.insert("DWARF".to_string(), "1".to_string());
+        assert!(build_info_enables_backtrace(&info));
+    }
+
+    #[test]
     fn toolchain_rustflags_preserves_debug_and_backtrace_env() {
         let env = HashMap::from([("DWARF".to_string(), "1".to_string())]);
 
@@ -1134,11 +1162,13 @@ mod tests {
     #[test]
     fn find_local_platform_config_path_resolves_workspace_platform_dir() {
         let metadata = repo_metadata();
-        let path = find_local_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata)
+        let path = find_local_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata)
             .unwrap()
             .expect("workspace platform config should exist");
 
-        assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
+        assert!(path.ends_with(
+            "components/axplat_crates/platforms/axplat-riscv64-qemu-virt/axconfig.toml"
+        ));
     }
 
     #[test]
@@ -1146,10 +1176,12 @@ mod tests {
         let metadata = repo_metadata();
         let deps_metadata = workspace_metadata_with_deps().unwrap();
         let path =
-            resolve_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata, &deps_metadata)
+            resolve_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata, &deps_metadata)
                 .unwrap();
 
-        assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
+        assert!(path.ends_with(
+            "components/axplat_crates/platforms/axplat-riscv64-qemu-virt/axconfig.toml"
+        ));
     }
 
     #[test]

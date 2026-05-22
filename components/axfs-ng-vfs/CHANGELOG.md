@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.1...axfs-ng-vfs-v0.4.2) - 2026-05-22
+
+### Fixed
+
+- *(starry-kernel)* open/openat deep — 6 类跨子系统改造 (stacked on #719) ([#720](https://github.com/rcore-os/tgoskits/pull/720))
+- *(axfs-ng-vfs)* allow file rename into child dirs and fix ext4 dentry delete ([#807](https://github.com/rcore-os/tgoskits/pull/807))
+
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.0...axfs-ng-vfs-v0.4.1) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-errno
+
 ## [0.4.0](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.3.8...axfs-ng-vfs-v0.4.0) - 2026-05-15
 
 ### Added

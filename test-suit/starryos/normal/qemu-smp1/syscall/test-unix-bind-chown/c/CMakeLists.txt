@@ -8,4 +8,4 @@ set(CMAKE_C_EXTENSIONS OFF)
 add_executable(test-unix-bind-chown src/main.c)
 target_compile_options(test-unix-bind-chown PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-unix-bind-chown RUNTIME DESTINATION usr/bin)
+install(TARGETS test-unix-bind-chown RUNTIME DESTINATION usr/bin/starry-test-suit)

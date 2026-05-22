@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.7...axvisor-v0.5.8) - 2026-05-22
+
+### Added
+
+- *(drivers)* add SD/MMC platform driver support ([#826](https://github.com/rcore-os/tgoskits/pull/826))
+
+### Fixed
+
+- *(repo)* improve rsext4 recovery mount and Axvisor board CI ([#830](https://github.com/rcore-os/tgoskits/pull/830))
+
+### Other
+
+- Revert " fix(repo): improve rsext4 recovery mount and Axvisor board CI ([#830](https://github.com/rcore-os/tgoskits/pull/830))" ([#838](https://github.com/rcore-os/tgoskits/pull/838))
+- Remove RISC-V QEMU Virt platform files and update references ([#833](https://github.com/rcore-os/tgoskits/pull/833))
+
+## [0.5.7](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.6...axvisor-v0.5.7) - 2026-05-19
+
+### Added
+
+- *(git)* enhance global Clippy input handling and fallback logic ([#758](https://github.com/rcore-os/tgoskits/pull/758))
+
+### Other
+
+- Refactor Clippy integration and enhance package handling ([#738](https://github.com/rcore-os/tgoskits/pull/738))
+
 ## [0.5.6](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.5...axvisor-v0.5.6) - 2026-05-15
 
 ### Added

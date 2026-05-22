@@ -58,7 +58,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 2
 
       - name: Detect CI-relevant changes
         id: filter
@@ -77,7 +77,7 @@ jobs:
               - "rust-toolchain.toml"
               - "components/**"
               - "drivers/**"
-              - "examples/**"
+              - "apps/**"
               - "os/**"
               - "platform/**"
               - "scripts/**"
@@ -166,76 +166,53 @@ jobs:
             echo "axvisor_lvz_container_image=${axvisor_lvz_container_image}"
           } >> "$GITHUB_OUTPUT"
 
-  fmt:
-    name: Check formatting
+      - name: Summarize skipped CI checks
+        if: steps.outputs.outputs.ci_checks != 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_DUPLICATE_PUSH_CI: ${{ steps.outputs.outputs.skip_duplicate_push_ci }}
+        run: |
+          {
+            echo "## CI checks skipped"
+            echo ""
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              echo "This manual run is scoped to container publishing, so static checks and follow-up CI checks were skipped."
+            elif [ "$SKIP_DUPLICATE_PUSH_CI" = "true" ]; then
+              echo "This branch already has an open pull request. The duplicate push CI was skipped; the pull_request CI run will validate the same commit."
+            else
+              echo "Changed files do not match the test-relevant path set, so static checks and follow-up CI checks were skipped."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize manual container branch restriction
+        if: >-
+          ${{
+            github.event_name == 'workflow_dispatch'
+            && github.ref_name != 'main'
+            && github.ref_name != 'dev'
+          }}
+        run: |
+          {
+            echo "## Container publish skipped"
+            echo ""
+            echo "Manual container publishing only runs from the \`main\` or \`dev\` branch. This run targeted \`${{ github.ref_name }}\`, so publish jobs were skipped."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  static_checks:
+    name: ${{ matrix.name }}
     needs: detect_changes
     if: needs.detect_changes.outputs.ci_checks == 'true'
-    uses: ./.github/workflows/reusable-command.yml
-    with:
-      command: cargo fmt --all -- --check
-
-  post_fmt_checks:
-    name: ${{ matrix.name }}
-    if: needs.detect_changes.outputs.ci_checks == 'true'
-    needs:
-      - detect_changes
-      - fmt
     strategy:
       fail-fast: true
       matrix:
         include:
-          - name: Run clippy
-            use_container: true
+          - name: Check formatting
+            use_container: false
             runs_on: '["ubuntu-latest"]'
-            command: |
-              set -eux
-              git_cmd() {
-                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
-              }
-              ensure_host_clippy_deps() {
-                if pkg-config --exists libavutil; then
-                  return 0
-                fi
-
-                apt-get update
-                apt-get install -y --no-install-recommends \
-                  libavcodec-dev \
-                  libavdevice-dev \
-                  libavfilter-dev \
-                  libavformat-dev \
-                  libavutil-dev \
-                  libswresample-dev \
-                  libswscale-dev
-                rm -rf /var/lib/apt/lists/*
-              }
-              ensure_since_ref() {
-                ref="$1"
-                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
-                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
-                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
-              }
-              ensure_host_clippy_deps
-
-              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-                cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
-              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-                before="${{ github.event.before }}"
-                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
-                  cargo xtask clippy
-                elif ensure_since_ref "${before}"; then
-                  cargo xtask clippy --since "${before}"
-                else
-                  echo "::notice::before commit ${before} is unavailable; running full clippy"
-                  cargo xtask clippy
-                fi
-              else
-                cargo xtask clippy
-              fi
-            cache_key: clippy
-            container_image: base
-            fetch_depth: full
-            required_repository_owner: ""
-            main_pr_only: false
+            command: cargo fmt --all -- --check
+            cache_key: ""
+            container_image: ""
+            fetch_depth: "1"
           - name: Run sync-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
@@ -267,6 +244,63 @@ jobs:
                 cargo xtask sync-lint
               fi
             cache_key: sync-lint
+            container_image: base
+            fetch_depth: full
+    uses: ./.github/workflows/reusable-command.yml
+    with:
+      runs_on: ${{ matrix.runs_on }}
+      use_container: ${{ matrix.use_container }}
+      command: ${{ matrix.command }}
+      cache_key: ${{ matrix.cache_key }}
+      container_image: >-
+        ${{
+          matrix.container_image == 'base'
+          && format('{0}:latest', needs.detect_changes.outputs.base_container_image)
+          || matrix.container_image
+        }}
+      fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
+
+  test_checks:
+    name: ${{ matrix.name }}
+    if: needs.detect_changes.outputs.ci_checks == 'true'
+    needs:
+      - detect_changes
+      - static_checks
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Run clippy
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: |
+              set -eux
+              git_cmd() {
+                git -c safe.directory="${GITHUB_WORKSPACE}" "$@"
+              }
+              ensure_since_ref() {
+                ref="$1"
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null && return 0
+                git_cmd fetch --no-tags --depth=1 origin "${ref}" || true
+                git_cmd cat-file -e "${ref}^{commit}" 2>/dev/null
+              }
+
+              if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+                cargo xtask clippy --since "${{ github.event.pull_request.base.sha }}"
+              elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                before="${{ github.event.before }}"
+                if [ "${before}" = "0000000000000000000000000000000000000000" ]; then
+                  cargo xtask clippy
+                elif ensure_since_ref "${before}"; then
+                  cargo xtask clippy --since "${before}"
+                else
+                  echo "::notice::before commit ${before} is unavailable; running full clippy"
+                  cargo xtask clippy
+                fi
+              else
+                cargo xtask clippy
+              fi
+            cache_key: clippy
             container_image: base
             fetch_depth: full
             required_repository_owner: ""
@@ -343,40 +377,40 @@ jobs:
             required_repository_owner: ""
             main_pr_only: false
           - name: Test arceos x86_64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask arceos test qemu --arch x86_64
-            cache_key: test-arceos-x86_64
-            container_image: base
+            cache_key: ""
+            container_image: ""
             apk_region: us
-            required_repository_owner: ""
+            required_repository_owner: rcore-os
             main_pr_only: false
           - name: Test arceos riscv64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask arceos test qemu --arch riscv64
-            cache_key: test-arceos-riscv64
-            container_image: base
+            cache_key: ""
+            container_image: ""
             apk_region: us
-            required_repository_owner: ""
+            required_repository_owner: rcore-os
             main_pr_only: false
           - name: Test arceos aarch64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask arceos test qemu --arch aarch64
-            cache_key: test-arceos-aarch64
-            container_image: base
+            cache_key: ""
+            container_image: ""
             apk_region: us
-            required_repository_owner: ""
+            required_repository_owner: rcore-os
             main_pr_only: false
           - name: Test arceos loongarch64 qemu
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
             command: cargo xtask arceos test qemu --arch loongarch64
-            cache_key: test-arceos-loongarch64
-            container_image: base
+            cache_key: ""
+            container_image: ""
             apk_region: us
-            required_repository_owner: ""
+            required_repository_owner: rcore-os
             main_pr_only: false
           # Stress tests: uncomment to enable (runs only on PRs targeting main).
           # - name: Stress starry aarch64
@@ -417,7 +451,7 @@ jobs:
           #   main_pr_only: true
           - name: Test axvisor self-hosted x86_64
             use_container: false
-            runs_on: '["self-hosted","linux","intel"]'
+            runs_on: '["self-hosted","linux","intel","kvm"]'
             command: cargo xtask axvisor test qemu --arch x86_64
             cache_key: ""
             container_image: ""
@@ -480,43 +514,6 @@ jobs:
       required_repository_owner: ${{ matrix.required_repository_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
-
-  skip_non_test_changes:
-    name: Skip CI checks
-    if: needs.detect_changes.outputs.ci_checks != 'true'
-    needs: detect_changes
-    runs-on: ubuntu-latest
-    steps:
-      - name: Summarize skip reason
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          SKIP_DUPLICATE_PUSH_CI: ${{ needs.detect_changes.outputs.skip_duplicate_push_ci }}
-        run: |
-          echo "## CI checks skipped" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "This manual run is scoped to container publishing, so fmt and follow-up CI checks were skipped." >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$SKIP_DUPLICATE_PUSH_CI" = "true" ]; then
-            echo "This branch already has an open pull request. The duplicate push CI was skipped; the pull_request CI run will validate the same commit." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Changed files do not match the test-relevant path set, so fmt and follow-up checks were skipped." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-  manual_container_branch_guard:
-    name: Explain manual container branch restriction
-    if: >-
-      ${{
-        github.event_name == 'workflow_dispatch'
-        && github.ref_name != 'main'
-        && github.ref_name != 'dev'
-      }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Summarize branch restriction
-        run: |
-          echo "## Container publish skipped" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Manual container publishing only runs from the \`main\` or \`dev\` branch. This run targeted \`${{ github.ref_name }}\`, so publish jobs were skipped." >> "$GITHUB_STEP_SUMMARY"
 
   publish_base_container:
     name: Publish base container image

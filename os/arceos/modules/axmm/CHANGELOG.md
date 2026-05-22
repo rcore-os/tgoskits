@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.14...ax-mm-v0.5.15) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-errno, ax-hal, ax-memory-set, ax-page-table-multiarch, ax-alloc
+
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.13...ax-mm-v0.5.14) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-errno, ax-alloc, ax-memory-set, ax-page-table-multiarch, ax-hal
+
 ## [0.5.13](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.12...ax-mm-v0.5.13) - 2026-05-15
 
 ### Added
