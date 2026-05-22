@@ -388,6 +388,7 @@ pub trait AsThread {
     fn try_as_thread(&self) -> Option<&Thread>;
 
     /// Get the thread from the task, panicking if it is a kernel task.
+    #[track_caller]
     fn as_thread(&self) -> &Thread {
         self.try_as_thread().expect("kernel task")
     }
