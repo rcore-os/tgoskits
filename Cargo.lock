@@ -4988,6 +4988,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kprobe"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cf6b7b70ff393b62d067f6f2e35bd64c9278ac77fd6fa2de883b2c0be8fa5ff"
+dependencies = [
+ "cfg-if",
+ "lock_api",
+ "log",
+ "yaxpeax-arch",
+ "yaxpeax-x86",
+]
+
+[[package]]
 name = "ktest-helper"
 version = "0.1.1"
 dependencies = [
@@ -7964,6 +7977,7 @@ dependencies = [
  "indoc",
  "inherit-methods-macro",
  "kernel-elf-parser",
+ "kprobe",
  "ktracepoint",
  "linux-raw-sys 0.12.1",
  "lock_api",
@@ -10192,6 +10206,26 @@ name = "yansi"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
+
+[[package]]
+name = "yaxpeax-arch"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36274fcc5403da2a7636ffda4d02eca12a1b2b8267b9d2e04447bd2ccfc72082"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "yaxpeax-x86"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a9a30b7dd533c7b1a73eaf7c4ea162a7a632a2bb29b9fff47d8f2cc8513a883"
+dependencies = [
+ "cfg-if",
+ "num-traits",
+ "yaxpeax-arch",
+]
 
 [[package]]
 name = "yoke"
