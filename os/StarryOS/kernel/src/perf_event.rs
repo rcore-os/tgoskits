@@ -1,3 +1,17 @@
+//! Performance event ring buffer infrastructure for StarryOS.
+//!
+//! Provides a Linux-compatible perf event interface for eBPF data output
+//! and kernel event sampling. Key components:
+//!
+//! - **PerfEventMmapPage**: mmap header compatible with Linux's `perf_event_mmap_page`
+//! - **RingBuffer**: Wrap-around circular buffer for PERF_RECORD_SAMPLE/LOST records
+//! - **perf_event_open syscall**: Supports KPROBE, TRACEPOINT, SOFTWARE, and RAW event types
+//!
+//! # Public API
+//!
+//! - `perf_event_write`: Write sample data to a specific perf event fd
+//! - `perf_event_close` / `perf_event_fd_exists`: fd lifecycle management
+
 use alloc::vec::Vec;
 
 use ax_errno::{AxError, AxResult};

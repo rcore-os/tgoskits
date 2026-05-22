@@ -1,3 +1,20 @@
+//! eBPF (Extended Berkeley Packet Filter) subsystem for StarryOS.
+//!
+//! This module provides a complete in-kernel eBPF implementation including:
+//!
+//! - **Map management**: Array and Hash maps with fd-based lifecycle
+//! - **Program loader**: Parses `bpf_attr` with correct mixed u32/u64 byte-offset layout
+//! - **Instruction interpreter**: Supports ALU/JMP/MEM instruction classes with
+//!   BPF_EXIT and BPF_CALL handling
+//! - **Helper functions**: 11 helpers including map operations, probe_read, ktime,
+//!   PID/TGID, UID/GID, and perf_event_output
+//! - **fd table**: BpfFdTable with close/remove operations and free-fd reuse
+//!
+//! # Syscall interface
+//!
+//! Implements `bpf()` syscall commands: MAP_CREATE, LOOKUP, UPDATE, DELETE,
+//! GET_NEXT_KEY, PROG_LOAD, PROG_ATTACH, LINK_CREATE, OBJ_CLOSE.
+
 use alloc::vec::Vec;
 
 use ax_errno::{AxError, AxResult};
