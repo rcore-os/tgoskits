@@ -137,6 +137,35 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
     add_file_like(f, flags & O_CLOEXEC != 0)
 }
 
+ktracepoint::define_event_trace!(
+    sys_enter_openat,
+    TP_kops(crate::tracepoint::KernelTraceAux),
+    TP_system(syscalls),
+    TP_PROTO(dfd: i32, path: *const u8, o_flags: u32, mode: u32),
+    TP_STRUCT__entry{
+        dfd: i32,
+        o_flags: u32,
+        path: u64,
+        mode: u32,
+    },
+    TP_fast_assign{
+        dfd: dfd,
+        path: path as u64,
+        o_flags: o_flags,
+        mode: mode,
+    },
+    TP_ident(__entry),
+    TP_printk({
+        format!(
+            "dfd: {}, path: {:#x}, o_flags: {:?}, mode: {:?}",
+            __entry.dfd,
+            __entry.path,
+            __entry.o_flags,
+            __entry.mode
+        )
+    })
+);
+
 /// Open or create a file.
 /// fd: file descriptor
 /// filename: file path to be opened or created
@@ -149,6 +178,9 @@ pub fn sys_openat(
     flags: i32,
     mode: __kernel_mode_t,
 ) -> AxResult<isize> {
+    // call tp:trace_sys_enter_openat
+    trace_sys_enter_openat(dirfd, path as _, flags as _, mode);
+
     let path = vm_load_string(path)?;
     debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
 

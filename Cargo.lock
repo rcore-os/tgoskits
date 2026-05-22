@@ -963,7 +963,7 @@ dependencies = [
  "chrono",
  "intrusive-collections",
  "log",
- "lru",
+ "lru 0.16.4",
  "lwext4_rust",
  "rsext4",
  "scope-local",
@@ -4146,6 +4146,11 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "heapless"
@@ -4873,6 +4878,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ktracepoint"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30aa94490986294aa3a19dc3fbc6b7eefe3fbbac18c323c4153a0cfd1a7a0b74"
+dependencies = [
+ "log",
+ "lru 0.18.0",
+ "paste",
+ "static-keys",
+ "tp-lexer",
+]
+
+[[package]]
 name = "lab"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5064,6 +5082,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 dependencies = [
  "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "lru"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a860605968fce16869fd239cf4237a82f3ac470723415db603b0e8b6c8d4fb9"
+dependencies = [
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -6212,7 +6239,7 @@ dependencies = [
  "indoc",
  "itertools 0.14.0",
  "kasuari",
- "lru",
+ "lru 0.16.4",
  "strum 0.27.2",
  "thiserror 2.0.18",
  "unicode-segmentation",
@@ -7745,6 +7772,7 @@ dependencies = [
  "indoc",
  "inherit-methods-macro",
  "kernel-elf-parser",
+ "ktracepoint",
  "lazy_static",
  "linux-raw-sys 0.12.1",
  "lock_api",
@@ -8595,6 +8623,12 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+
+[[package]]
+name = "tp-lexer"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5352c5c9721b4ded5d79c4ad60111b977601c09b202e860a3d79a6e4bdb098b0"
 
 [[package]]
 name = "tracing"

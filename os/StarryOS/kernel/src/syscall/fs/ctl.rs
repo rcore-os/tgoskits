@@ -89,12 +89,48 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     Ok(0)
 }
 
+ktracepoint::define_event_trace!(
+    sys_mkdirat,
+    TP_kops(crate::tracepoint::KernelTraceAux),
+    TP_system(syscalls),
+    TP_PROTO(path:&str, mode: u16),
+    TP_STRUCT__entry {
+        mode: u16,
+        path: [u8;64],
+    },
+    TP_fast_assign {
+        mode: mode,
+        path: {
+            let mut buf = [0u8; 64];
+            let bytes = path.as_bytes();
+            let mut len = bytes.len().min(63);
+            while !path.is_char_boundary(len) {
+                len -= 1;
+            }
+            buf[..len].copy_from_slice(&bytes[..len]);
+            buf[len] = 0; // null-terminate
+            buf
+        },
+    },
+    TP_ident(__entry),
+    TP_printk({
+        let nul = __entry.path.iter().position(|&b| b == 0).unwrap_or(__entry.path.len());
+        let path = core::str::from_utf8(&__entry.path[..nul]).unwrap_or("invalid utf8");
+        let mode = __entry.mode;
+        let mode = NodePermission::from_bits_truncate(mode);
+        alloc::format!("mkdir at {path} with mode {mode:?}")
+    })
+);
+
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
 
     let mode = mode & !current().as_thread().proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
+
+    // call tp:trace_sys_mkdirat
+    trace_sys_mkdirat(&path, mode.bits());
 
     with_fs(dirfd, |fs| match fs.create_dir(&path, mode) {
         Ok(_) => Ok(0),
