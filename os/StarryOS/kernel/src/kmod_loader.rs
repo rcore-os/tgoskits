@@ -6,14 +6,12 @@ use alloc::{
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 use kmod_loader::{KernelModuleHelper, SectionMemOps, SectionPerm};
 
-#[allow(dead_code)]
 struct KmodSectionMem {
     ptr: *mut u8,
     size: usize,
     layout: Layout,
 }
 
-#[allow(dead_code)]
 impl KmodSectionMem {
     fn new(size: usize) -> Option<Self> {
         let aligned_size = (size + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
@@ -77,11 +75,28 @@ unsafe impl Sync for KmodSectionMem {}
 
 impl Drop for KmodSectionMem {
     fn drop(&mut self) {
-        unsafe { dealloc(self.ptr, self.layout) };
+        if !self.ptr.is_null() {
+            unsafe { dealloc(self.ptr, self.layout) };
+        }
     }
 }
 
-#[allow(dead_code)]
+struct NullSectionMem;
+
+impl SectionMemOps for NullSectionMem {
+    fn as_ptr(&self) -> *const u8 {
+        core::ptr::null()
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        core::ptr::null_mut()
+    }
+
+    fn change_perms(&mut self, _perms: SectionPerm) -> bool {
+        false
+    }
+}
+
 pub struct StarryKmodHelper;
 
 impl KernelModuleHelper for StarryKmodHelper {
@@ -90,11 +105,7 @@ impl KernelModuleHelper for StarryKmodHelper {
             Some(mem) => Box::new(mem),
             None => {
                 warn!("kmod: vmalloc failed for size {size}");
-                Box::new(KmodSectionMem {
-                    ptr: core::ptr::null_mut(),
-                    size: 0,
-                    layout: Layout::from_size_align(1, 1).unwrap(),
-                })
+                Box::new(NullSectionMem)
             }
         }
     }
@@ -152,6 +163,9 @@ pub fn sys_init_module(
         ax_errno::AxError::Io
     })?;
     info!("kmod: module loaded and initialized successfully");
+    // Intentionally leak the module owner: the loaded module must remain in
+    // memory for the kernel's lifetime.  When `delete_module` is implemented
+    // the owner can be recovered (e.g. via a global registry) and dropped.
     core::mem::forget(owner);
     Ok(0)
 }
