@@ -100,12 +100,10 @@ int test_vfork_execution_order(void) {
     return 0;
 }
 
-/* Test 3: StarryOS-specific behavior. Linux blocks the parent for every
-   CLONE_VFORK clone, regardless of the stack argument, so this case would
-   fail there. StarryOS only blocks for bare vfork() with stack == 0; a
-   posix_spawn-style clone with a private child stack synchronizes in user
-   space instead. */
-int test_vfork_clone_child_stack_nonblocking(void) {
+/* Test 3: Linux-compatible clone semantics. CLONE_VFORK blocks the parent
+   until the child exits or execs even when the caller passes a private child
+   stack. BusyBox shell/timeout code depends on this ordering. */
+int test_vfork_clone_child_stack_blocking(void) {
     static char child_stack[16384];
     char *stack_top = child_stack + sizeof(child_stack);
     struct timespec start, end;
@@ -128,7 +126,7 @@ int test_vfork_clone_child_stack_nonblocking(void) {
     long elapsed_ms = (end.tv_sec - start.tv_sec) * 1000 +
                       (end.tv_nsec - start.tv_nsec) / 1000000;
 
-    return (elapsed_ms < 1000) ? 1 : 0;
+    return (elapsed_ms >= 1500) ? 1 : 0;
 }
 
 int main(void) {
@@ -140,8 +138,8 @@ int main(void) {
     /* Test 2: vfork execution blocking */
     vfork_exec_pass = test_vfork_execution_order();
 
-    /* Test 3: CLONE_VFORK with a private child stack does not block parent */
-    clone_stack_pass = test_vfork_clone_child_stack_nonblocking();
+    /* Test 3: CLONE_VFORK with a private child stack still blocks parent */
+    clone_stack_pass = test_vfork_clone_child_stack_blocking();
 
     /* Report results */
     if (vfork_mem_pass > 0) {
@@ -157,9 +155,9 @@ int main(void) {
     }
 
     if (clone_stack_pass > 0) {
-        printf("VFORK: PASS (Child stack clone did not block parent)\n");
+        printf("VFORK: PASS (Child stack clone blocked parent)\n");
     } else {
-        printf("VFORK: FAIL (Child stack clone blocked parent)\n");
+        printf("VFORK: FAIL (Child stack clone did NOT block parent)\n");
     }
 
     /* Return success only if all vfork-related tests pass */

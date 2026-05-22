@@ -155,13 +155,11 @@ impl CloneArgs {
             None
         };
 
-        // NOTE: This intentionally differs from Linux: Linux blocks the parent
-        // for every CLONE_VFORK clone regardless of the stack argument.
-        // StarryOS only blocks for bare vfork(), where the child reuses the
-        // parent's user stack. CLONE_VM | CLONE_VFORK with a private child
-        // stack is allowed to synchronize in user space, as posix_spawn-style
-        // runtimes do.
-        let needs_vfork_block = flags.contains(CloneFlags::VFORK) && stack == 0;
+        // Linux blocks the parent for every CLONE_VFORK clone until the child
+        // execs or exits, regardless of whether the caller passed a child stack.
+        // BusyBox shell/timeout paths rely on that ordering when they combine
+        // CLONE_VM, CLONE_VFORK, and a private child stack.
+        let needs_vfork_block = flags.contains(CloneFlags::VFORK);
 
         let mut new_uctx = *uctx;
         new_uctx.prepare_clone_child_return_state();
@@ -291,11 +289,9 @@ impl CloneArgs {
         }
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
-        // Bare vfork(2) reuses the parent's user stack, so the parent must
-        // sleep until the child execs or exits. posix_spawn-style clones pass
-        // a private child stack with CLONE_VM|CLONE_VFORK and synchronize in
-        // user space; blocking here can deadlock that handshake. Use PollSet
-        // so the parent's wait remains interruptible by task.interrupt().
+        // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child
+        // execs or exits. Use PollSet so the parent's wait remains
+        // interruptible by task.interrupt().
         if needs_vfork_block {
             let poll = Arc::new(axpoll::PollSet::new());
             new_proc_data.set_vfork_done(poll);
