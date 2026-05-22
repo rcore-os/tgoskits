@@ -468,6 +468,7 @@ struct BpfProgMeta {
 struct BpfFdTable {
     maps: alloc::collections::BTreeMap<u32, UnifiedMap>,
     progs: alloc::collections::BTreeMap<u32, BpfProg>,
+    links: alloc::collections::BTreeMap<u32, (u32, u32)>,
     next_fd: u32,
     free_fds: alloc::vec::Vec<u32>,
 }
@@ -477,6 +478,7 @@ impl BpfFdTable {
         Self {
             maps: alloc::collections::BTreeMap::new(),
             progs: alloc::collections::BTreeMap::new(),
+            links: alloc::collections::BTreeMap::new(),
             next_fd: 3,
             free_fds: alloc::vec::Vec::new(),
         }
@@ -532,6 +534,11 @@ impl BpfFdTable {
             self.remove_map(fd)
         } else if self.progs.contains_key(&fd) {
             self.remove_prog(fd)
+        } else if self.links.contains_key(&fd) {
+            self.links
+                .remove(&fd)
+                .map(|_| ())
+                .ok_or(AxError::BadFileDescriptor)
         } else {
             Err(AxError::BadFileDescriptor)
         };
@@ -543,7 +550,7 @@ impl BpfFdTable {
 
     #[allow(dead_code)]
     fn fd_exists(&self, fd: u32) -> bool {
-        self.maps.contains_key(&fd) || self.progs.contains_key(&fd)
+        self.maps.contains_key(&fd) || self.progs.contains_key(&fd) || self.links.contains_key(&fd)
     }
 }
 
@@ -1237,7 +1244,9 @@ fn handle_link_create(uattr: usize, size: u32) -> AxResult<isize> {
     crate::perf_event::perf_event_enable(target_fd)?;
     let link_fd = {
         let mut guard = BPF_GLOBAL.lock();
-        guard.alloc_fd()
+        let link_fd = guard.alloc_fd();
+        guard.links.insert(link_fd, (prog_fd, target_fd));
+        link_fd
     };
     info!("bpf: LINK_CREATE prog_fd={prog_fd} target_fd={target_fd} link_fd={link_fd}");
     Ok(link_fd as isize)
@@ -1258,16 +1267,16 @@ fn handle_prog_attach(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
     if size < 16 {
         return Err(bpf_error::EINVAL);
     }
-    let (prog_fd, target_fd) = unsafe {
+    let (attach_prog_fd, target_fd) = unsafe {
         let ptr = uattr as *const u32;
-        let prog_fd = core::ptr::read(ptr) as u32;
+        let attach_prog_fd = core::ptr::read(ptr) as u32;
         let target_fd = core::ptr::read(ptr.add(2)) as u32;
-        (prog_fd, target_fd)
+        (attach_prog_fd, target_fd)
     };
     if cmd == cmd::PROG_ATTACH {
-        crate::perf_event::perf_event_attach_prog(target_fd, prog_fd)?;
+        crate::perf_event::perf_event_attach_prog(target_fd, attach_prog_fd)?;
         crate::perf_event::perf_event_enable(target_fd)?;
-        info!("bpf: PROG_ATTACH prog_fd={prog_fd} target_fd={target_fd}");
+        info!("bpf: PROG_ATTACH attach_prog_fd={attach_prog_fd} target_fd={target_fd}");
     } else {
         crate::perf_event::perf_event_disable(target_fd)?;
         info!("bpf: PROG_DETACH target_fd={target_fd}");
