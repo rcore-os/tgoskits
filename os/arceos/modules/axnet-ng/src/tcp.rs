@@ -514,6 +514,10 @@ impl SocketOps for TcpSocket {
         if self.is_listening() {
             return Err(AxError::InvalidInput);
         }
+        let available = self.with_smol_socket(|socket| socket.recv_queue());
+        if available > 0 {
+            return Ok(available);
+        }
         poll_interfaces();
         Ok(self.with_smol_socket(|socket| socket.recv_queue()))
     }
