@@ -37,6 +37,23 @@ use x86::mptable as x86_mptable;
 #[cfg(target_arch = "x86_64")]
 use x86::multiboot as x86_boot;
 
+#[cfg(target_arch = "x86_64")]
+pub fn is_x86_linux_image_config(config: &AxVMCrateConfig) -> bool {
+    if config.kernel.enable_bios {
+        return false;
+    }
+
+    match config.kernel.image_location.as_deref() {
+        Some("memory") => with_memory_image(config, detect_x86_linux_image).is_some(),
+        #[cfg(feature = "fs")]
+        Some("fs") => fs::kernal_read(config, x86_linux::HEADER_READ_SIZE)
+            .ok()
+            .and_then(|data| detect_x86_linux_image(&data))
+            .is_some(),
+        _ => false,
+    }
+}
+
 pub fn get_image_header(config: &AxVMCrateConfig) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
         Some("memory") => with_memory_image(config, linux::Header::parse).flatten(),

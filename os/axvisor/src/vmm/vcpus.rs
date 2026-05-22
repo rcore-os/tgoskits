@@ -624,7 +624,7 @@ fn forward_x86_passthrough_irq(vm: &VMRef, vector: usize) {
         return;
     };
 
-    info!(
+    debug!(
         "Forwarding x86 passthrough IRQ host GSI {host_gsi} vector {vector:#x} to guest vector \
          {guest_vector:#x}"
     );

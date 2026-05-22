@@ -20,21 +20,15 @@ phys_cpu_sets = [1]
 # Linux direct boot uses the Linux-specific boot stub at this GPA.
 entry_point = 0x8000
 # The location of image: "memory" | "fs".
-# Embed the Linux images from the host-side paths below.
-image_location = "memory"
+# Load from file system.
+image_location = "fs"
 # The file path of the kernel image.
-kernel_path = "/code/tgoskits/tmp/qemu_x86_64_linux/linux/bzImage"
+kernel_path = "/guest/linux/linux-qemu"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = false
-# Linux command line written into boot_params.
-cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 rdinit=/init acpi=off pci=conf1 pci=nomsi nox2apic no_timer_check pmtmr=0x608 initcall_blacklist=i8042_init,virtio_blk_init i8042.nokbd i8042.noaux i8042.nomux"
 
-## The file path of the ramdisk image.
-ramdisk_path = "/code/tgoskits/tmp/qemu_x86_64_linux/linux/initramfs.cpio"
-## The load address of the ramdisk image.
-ramdisk_load_addr = 0x60_00000
 ## The path of the disk image.
 # disk_path = ""
 

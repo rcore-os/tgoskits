@@ -51,6 +51,13 @@ const E820_TYPE_RESERVED: u32 = 2;
 const LEGACY_RESERVED_START: usize = 0x000a_0000;
 const LEGACY_RESERVED_SIZE: usize = 0x0006_0000;
 
+pub const DEFAULT_COMMAND_LINE: &str = concat!(
+    "console=ttyS0 root=/dev/vda rw rootwait devtmpfs.mount=1 ",
+    "init=/bin/sh ",
+    "acpi=off pci=conf1 pci=nomsi nox2apic no_timer_check pmtmr=0x608 ",
+    "tsc=unstable initcall_blacklist=ahci_pci_driver_init,i8042_init"
+);
+
 /// Builds a Linux x86 boot_params page for the direct-boot path.
 pub struct BootParamsBuilder<'a> {
     kernel_image: &'a [u8],
@@ -78,7 +85,7 @@ impl<'a> BootParamsBuilder<'a> {
                 layout.boot_stub,
                 X86LinuxRange::new(LEGACY_RESERVED_START, LEGACY_RESERVED_SIZE),
             ],
-            command_line: "",
+            command_line: DEFAULT_COMMAND_LINE,
         }
     }
 
@@ -447,6 +454,26 @@ mod tests {
             b"console=ttyS0 rdinit=/init"
         );
         assert_eq!(read_u8(&params, COMMAND_LINE_OFFSET + 26), 0);
+    }
+
+    #[test]
+    fn uses_default_command_line_when_not_overridden() {
+        let image = valid_image();
+        let header = X86LinuxHeader::parse(&image).unwrap();
+        let layout = valid_layout(&header);
+        let params =
+            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x80_0000))
+                .build()
+                .unwrap();
+
+        assert_eq!(
+            &params[COMMAND_LINE_OFFSET..COMMAND_LINE_OFFSET + DEFAULT_COMMAND_LINE.len()],
+            DEFAULT_COMMAND_LINE.as_bytes()
+        );
+        assert_eq!(
+            read_u8(&params, COMMAND_LINE_OFFSET + DEFAULT_COMMAND_LINE.len()),
+            0
+        );
     }
 
     #[test]
