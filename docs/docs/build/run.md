@@ -388,9 +388,9 @@ flowchart TD
     C --> D["本地 images.toml"]
 ```
 
-- **引导过程**：先尝试 `DEFAULT_REGISTRY_URL`（`arceos-hypervisor/axvisor-guest` 仓库），失败后回退到 `AXVISOR_REGISTRY_FALLBACK_URL` 环境变量或默认 fallback URL
-- **版本选择**：从 `includes` 列表中解析版本号，选择最高版本的注册表
-- **自动同步**：根据 `auto_sync_threshold`（默认 7 天）自动更新本地注册表缓存
+**注册表引导**：启动时先尝试从 `DEFAULT_REGISTRY_URL`（`arceos-hypervisor/axvisor-guest` GitHub 仓库的 `HEAD`）拉取 `default.toml`，失败后依次回退到 `AXVISOR_REGISTRY_FALLBACK_URL` 环境变量和内置默认 URL。拉取成功后解析 TOML 中的 `includes` 列表——这是一个按版本号排序的 URL 列表（如 `v0.0.25.toml`、`v0.0.24.toml`），选择其中版本号最高的条目拉取。所有层级的镜像条目最终合并为完整的镜像注册表并缓存到本地 `images.toml`。
+
+**自动同步**：本地注册表缓存有有效期（`auto_sync_threshold`，默认 7 天）。每次执行 `image ls` 或 `image pull` 时检查缓存年龄，过期或不存在时自动拉取最新注册表。可通过 `--no-auto-sync` 或全局选项 `-N` 禁用。
 
 ### 镜像存储
 

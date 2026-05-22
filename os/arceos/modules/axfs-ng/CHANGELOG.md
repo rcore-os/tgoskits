@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.14...ax-fs-ng-v0.5.15) - 2026-05-22
+
+### Added
+
+- *(starryos)* add Lua/LuaRocks runtime coverage and fix rmdir ENOTEMPTY ([#777](https://github.com/rcore-os/tgoskits/pull/777))
+
+### Fixed
+
+- *(starry-kernel)* open/openat deep — 6 类跨子系统改造 (stacked on #719) ([#720](https://github.com/rcore-os/tgoskits/pull/720))
+- *(starry-kernel)* open/openat 15 类局部修复 ([#719](https://github.com/rcore-os/tgoskits/pull/719))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.13...ax-fs-ng-v0.5.14) - 2026-05-19
 
 ### Other

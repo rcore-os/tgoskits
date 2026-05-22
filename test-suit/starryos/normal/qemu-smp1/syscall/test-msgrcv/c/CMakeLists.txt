@@ -9,4 +9,4 @@ add_executable(test-msgrcv src/main.c)
 target_include_directories(test-msgrcv PRIVATE src)
 target_compile_options(test-msgrcv PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-msgrcv RUNTIME DESTINATION usr/bin)
+install(TARGETS test-msgrcv RUNTIME DESTINATION usr/bin/starry-test-suit)

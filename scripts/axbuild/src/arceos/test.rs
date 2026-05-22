@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 
@@ -73,9 +74,12 @@ pub struct ArgsTestQemu {
     /// Only run C tests; prefer `--test-group c`
     #[arg(long, conflicts_with = "only_rust", hide = true)]
     pub only_c: bool,
-    /// Skip host `backtrace symbolize` after each ArceOS **rust** QEMU case (Unix only).
+    /// Skip host `backtrace symbolize` after each ArceOS **rust** QEMU case.
     #[arg(long = "no-symbolize", help_heading = "Backtrace")]
     pub no_symbolize: bool,
+    /// Keep the QEMU backtrace capture log after successful host symbolize (default: delete).
+    #[arg(long = "keep-qemu-log", help_heading = "Backtrace")]
+    pub keep_qemu_log: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +247,7 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
     }
 
     let symbolize_after = !args.no_symbolize;
+    let keep_qemu_log = args.keep_qemu_log || crate::backtrace::keep_qemu_log_from_env();
     for flow in groups {
         match flow {
             QemuTestFlow::Rust => {
@@ -252,6 +257,7 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
                     &target,
                     selected_case.as_deref(),
                     symbolize_after,
+                    keep_qemu_log,
                 )
                 .await?
             }
@@ -264,6 +270,7 @@ async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow::Result<()
                     group,
                     selected_case.as_deref(),
                     symbolize_after,
+                    keep_qemu_log,
                 )
                 .await?
             }
@@ -278,6 +285,7 @@ async fn test_rust_qemu(
     target: &str,
     selected_case: Option<&str>,
     symbolize_after: bool,
+    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let cases = discover_rust_qemu_cases(arceos, arch, target, selected_case)?;
     println!(
@@ -317,7 +325,7 @@ async fn test_rust_qemu(
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] arceos rust qemu {case_name}");
             let case_started = Instant::now();
-            let result = run_rust_qemu_case(arceos, case, symbolize_after)
+            let result = run_rust_qemu_case(arceos, case, symbolize_after, keep_qemu_log)
                 .await
                 .with_context(|| format!("arceos rust qemu test failed for case `{case_name}`"));
             let duration = case_started.elapsed();
@@ -353,6 +361,7 @@ async fn test_generic_qemu(
     group: &str,
     selected_case: Option<&str>,
     symbolize_after: bool,
+    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let dir = arceos_test_group_dir(arceos.app.workspace_root(), group);
     let cases = discover_qemu_cases_in_dir(&dir, arch, target, selected_case, group)?;
@@ -371,6 +380,7 @@ async fn test_generic_qemu(
         &prepared,
         total,
         symbolize_after,
+        keep_qemu_log,
     )
     .await
 }
@@ -382,6 +392,7 @@ async fn run_generic_qemu_by_build_group(
     prepared: &[PreparedArceosRustQemuCase],
     total: usize,
     symbolize_after: bool,
+    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let build_groups = group_arceos_qemu_cases_by_build_identity(prepared);
     let suite_started = Instant::now();
@@ -410,7 +421,7 @@ async fn run_generic_qemu_by_build_group(
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] {group_label} qemu {case_name}");
             let case_started = Instant::now();
-            let result = run_rust_qemu_case(arceos, case, symbolize_after)
+            let result = run_rust_qemu_case(arceos, case, symbolize_after, keep_qemu_log)
                 .await
                 .with_context(|| format!("{group_label} qemu test failed for case `{case_name}`"));
             let duration = case_started.elapsed();
@@ -562,6 +573,7 @@ async fn run_rust_qemu_case(
     arceos: &mut ArceOS,
     case: &PreparedArceosRustQemuCase,
     symbolize_after: bool,
+    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let workspace = arceos.app.workspace_root().to_path_buf();
     let case_name = &case.case.case.name;
@@ -572,46 +584,51 @@ async fn run_rust_qemu_case(
     let auto_symbolize = symbolize_after
         && crate::build::build_info_enables_backtrace_path(&case.case.build_config_path);
 
-    #[cfg(unix)]
-    let log_path = if auto_symbolize {
+    let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
+    let stream_session = if auto_symbolize {
+        crate::backtrace::BacktraceSymbolizeSession::try_new(&elf, case_name)
+    } else {
+        None
+    };
+
+    let capture_backtrace = if auto_symbolize {
         let dir = crate::context::axbuild_tmp_dir(&workspace).join("qemu-logs");
         fs::create_dir_all(&dir)?;
-        Some(dir.join(format!("{case_name}-{target}.log")))
+        Some(crate::backtrace::BacktraceQemuCapture {
+            log_path: dir.join(format!("{case_name}-{target}.log")),
+            stream_symbolize: stream_session.clone(),
+            suppress_terminal_raw_blocks: true,
+            write_log_during_capture: keep_qemu_log,
+            captured_blocks: Arc::new(std::sync::Mutex::new(Vec::new())),
+        })
     } else {
         None
     };
 
-    #[cfg(not(unix))]
-    if auto_symbolize {
-        eprintln!(
-            "warning: automatic backtrace symbolize after QEMU is only supported on Unix hosts; \
-             use `cargo xtask backtrace symbolize` manually"
-        );
-    }
-
-    #[cfg(unix)]
-    let tee_guard = if let Some(ref path) = log_path {
-        Some(
-            crate::support::output_tee::OutputTeeGuard::install(path)
-                .with_context(|| format!("failed to tee QEMU output to {}", path.display()))?,
-        )
-    } else {
-        None
-    };
+    let log_path = capture_backtrace
+        .as_ref()
+        .map(|capture| capture.log_path.clone());
+    let memory_blocks = capture_backtrace
+        .as_ref()
+        .map(|capture| capture.captured_blocks.clone());
 
     arceos
         .app
-        .run_qemu(&case.cargo, case.qemu.clone())
+        .run_qemu(&case.cargo, case.qemu.clone(), capture_backtrace)
         .await
         .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"))?;
 
-    #[cfg(unix)]
-    if auto_symbolize {
-        drop(tee_guard);
-        if let Some(path) = log_path {
-            let elf = crate::backtrace::arceos_rust_elf_path(&workspace, target, package, debug);
-            crate::backtrace::maybe_symbolize_after_qemu(&elf, &path, case_name)?;
-        }
+    if auto_symbolize && let Some(path) = log_path {
+        let blocks_snapshot = memory_blocks.and_then(|arc| arc.lock().ok().map(|b| b.clone()));
+        let blocks_ref = blocks_snapshot.as_deref();
+        crate::backtrace::maybe_symbolize_after_qemu(
+            &elf,
+            &path,
+            case_name,
+            keep_qemu_log,
+            stream_session.as_deref(),
+            blocks_ref,
+        )?;
     }
 
     Ok(())
@@ -1120,7 +1137,7 @@ async fn build_and_run_c_test(
         .app
         .prepare_elf_artifact(output.elf_path, qemu.to_bin)
         .await?;
-    arceos.app.run_prepared_qemu(qemu).await
+    arceos.app.run_prepared_qemu(qemu, None).await
 }
 
 /// Returns isolated artifact paths for a single C test invocation.
@@ -1475,6 +1492,7 @@ mod tests {
                 only_rust: false,
                 only_c: false,
                 no_symbolize: false,
+                keep_qemu_log: false,
             },
         )
         .unwrap();
@@ -1497,6 +1515,7 @@ mod tests {
                 only_rust: true,
                 only_c: false,
                 no_symbolize: false,
+                keep_qemu_log: false,
             },
         )
         .unwrap();
@@ -1519,6 +1538,7 @@ mod tests {
                 only_rust: false,
                 only_c: true,
                 no_symbolize: false,
+                keep_qemu_log: false,
             },
         )
         .unwrap();
@@ -1541,6 +1561,7 @@ mod tests {
                 only_rust: false,
                 only_c: false,
                 no_symbolize: false,
+                keep_qemu_log: false,
             },
         )
         .unwrap();
