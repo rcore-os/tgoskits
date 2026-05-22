@@ -161,7 +161,7 @@ pub fn sys_getsockopt(
             if *optlen == 0 {
                 return Ok(0);
             }
-            let so_type = match &socket.0 {
+            let so_type = match &**socket {
                 SocketInner::Tcp(_) => SOCK_STREAM,
                 SocketInner::Udp(_) => SOCK_DGRAM,
                 SocketInner::Raw(_) => SOCK_RAW,
