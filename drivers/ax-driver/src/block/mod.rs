@@ -35,9 +35,6 @@ pub(crate) trait SyncBlockOps: Send + 'static {
     fn block_size(&self) -> usize;
     fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), BlkError>;
     fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Result<(), BlkError>;
-    fn flush(&mut self) -> Result<(), BlkError> {
-        Ok(())
-    }
 }
 
 #[cfg(sync_block_dev)]
@@ -143,6 +140,6 @@ impl<D: SyncBlockOps> IQueue for SyncBlockQueue<D> {
     }
 
     fn poll_request(&mut self, _request: RequestId) -> Result<(), BlkError> {
-        self.inner.lock().flush()
+        Ok(())
     }
 }

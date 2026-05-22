@@ -30,6 +30,11 @@ impl DmaPages {
         layout.align().max(PAGE_SIZE_4K)
     }
 
+    /// Allocates DMA-coherent pages using the kernel DMA allocator.
+    ///
+    /// `dma_alloc_pages` is expected to honor `dma_mask` and the requested
+    /// alignment. The checks below are defensive validation so a bad platform
+    /// allocator fails before the buffer is handed to a device.
     unsafe fn alloc_for_layout(dma_mask: u64, layout: Layout) -> Result<Self, DmaError> {
         if layout.size() == 0 {
             return Ok(Self {
