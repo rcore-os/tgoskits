@@ -452,6 +452,7 @@ struct BpfFdTable {
     maps: alloc::collections::BTreeMap<u32, UnifiedMap>,
     progs: alloc::collections::BTreeMap<u32, BpfProg>,
     next_fd: u32,
+    free_fds: alloc::vec::Vec<u32>,
 }
 
 impl BpfFdTable {
@@ -460,13 +461,18 @@ impl BpfFdTable {
             maps: alloc::collections::BTreeMap::new(),
             progs: alloc::collections::BTreeMap::new(),
             next_fd: 3,
+            free_fds: alloc::vec::Vec::new(),
         }
     }
 
     fn alloc_fd(&mut self) -> u32 {
-        let fd = self.next_fd;
-        self.next_fd += 1;
-        fd
+        if let Some(fd) = self.free_fds.pop() {
+            fd
+        } else {
+            let fd = self.next_fd;
+            self.next_fd += 1;
+            fd
+        }
     }
 
     fn insert_map(&mut self, map: UnifiedMap) -> u32 {
@@ -505,13 +511,17 @@ impl BpfFdTable {
     }
 
     fn close_fd(&mut self, fd: u32) -> AxResult<()> {
-        if self.maps.contains_key(&fd) {
+        let result = if self.maps.contains_key(&fd) {
             self.remove_map(fd)
         } else if self.progs.contains_key(&fd) {
             self.remove_prog(fd)
         } else {
             Err(AxError::BadFileDescriptor)
+        };
+        if result.is_ok() {
+            self.free_fds.push(fd);
         }
+        result
     }
 
     #[allow(dead_code)]
