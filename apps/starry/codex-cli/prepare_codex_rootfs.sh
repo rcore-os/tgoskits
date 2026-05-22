@@ -31,7 +31,7 @@ Options:
   -h, --help           Show this help
 
 Example:
-  examples/starry/codex-cli/prepare_codex_rootfs.sh \\
+  apps/starry/codex-cli/prepare_codex_rootfs.sh \\
     --output-rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img \\
     --auth-json target/auth.json \\
     --proxy http://10.0.2.2:7890
@@ -222,12 +222,12 @@ echo "  $output_rootfs"
 echo
 echo "Run the offline help example with:"
 echo "  cargo xtask starry qemu --arch x86_64 \\"
-echo "    --qemu-config examples/starry/codex-cli/qemu-x86_64-codex-help.toml \\"
+echo "    --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-help.toml \\"
 echo "    --rootfs $display_rootfs"
 if [[ -n "$auth_json" ]]; then
     echo
     echo "Run the opt-in online syscall-hunt example with:"
     echo "  cargo xtask starry qemu --arch x86_64 \\"
-    echo "    --qemu-config examples/starry/codex-cli/qemu-x86_64-codex-syscall-hunt.toml \\"
+    echo "    --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-syscall-hunt.toml \\"
     echo "    --rootfs $display_rootfs"
 fi

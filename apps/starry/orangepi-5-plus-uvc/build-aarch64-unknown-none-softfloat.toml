@@ -7,8 +7,8 @@ features = [
   "starry-kernel/plat-dyn",
   "axplat-dyn/rockchip-soc",
   "axplat-dyn/rockchip-dwc-xhci",
-  "axplat-dyn/sdmmc",
-  "axplat-dyn/simple-sdmmc",
+  "axplat-dyn/rockchip-sdhci",
+  "axplat-dyn/rockchip-dwmmc",
 ]
 log = "Info"
 max_cpu_num = 1

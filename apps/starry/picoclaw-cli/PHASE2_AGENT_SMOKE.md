@@ -11,7 +11,7 @@ Command:
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml \
+  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img
 ```
 
@@ -81,21 +81,21 @@ No API key or generated rootfs image is tracked.
   - Accepts `SO_BROADCAST` in `setsockopt` as a no-op after validating the int
     option value.
 
-- `examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh`
+- `apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh`
   - Accepts `OPENAI_API_KEY` and `ANTHROPIC_AUTH_TOKEN` as fallback key sources.
   - Supports Anthropic Messages defaults when `ANTHROPIC_AUTH_TOKEN` is used.
 
-- `examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml`
+- `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml`
   - Avoids success marker false positives from shell echo.
   - Preserves the agent command exit status.
 
-- `examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml`
+- `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml`
   - Uses the safer split success marker.
 
-- `examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-gateway.toml`
+- `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-gateway.toml`
   - Uses the safer split success marker.
 
-- `examples/starry/picoclaw-cli/README.md`
+- `apps/starry/picoclaw-cli/README.md`
   - Documents explicit OpenAI-compatible online rootfs preparation.
 
 ## Verification

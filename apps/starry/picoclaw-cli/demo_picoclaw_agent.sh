@@ -5,7 +5,7 @@ workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 image="${STARRYOS_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu10.2.1}"
 rootfs="${PICOCLAW_DEMO_ROOTFS:-tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img}"
-qemu_config="${PICOCLAW_DEMO_QEMU_CONFIG:-examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml}"
+qemu_config="${PICOCLAW_DEMO_QEMU_CONFIG:-apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml}"
 provider="${PICOCLAW_PROVIDER:-openai}"
 model_name="${PICOCLAW_MODEL_NAME:-mimo-v25}"
 model="${PICOCLAW_MODEL:-mimo-v2.5}"
@@ -134,7 +134,7 @@ run_docker 'command -v debugfs; command -v qemu-system-x86_64; command -v cargo;
 pause
 
 say "Step 4: 生成带 PicoClaw 和在线配置的 StarryOS rootfs"
-run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --output-rootfs '$rootfs'"
+run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --output-rootfs '$rootfs'"
 pause
 
 say "Step 5: 启动 StarryOS x86_64 QEMU，并让 PicoClaw 完成多次真实对话"

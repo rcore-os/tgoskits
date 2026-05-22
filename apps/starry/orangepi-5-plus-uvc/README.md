@@ -15,7 +15,7 @@ The board rootfs must already contain:
 Run the board example:
 
 ```bash
-cargo starry example board -t orangepi-5-plus-uvc
+cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
 The runner succeeds when `uvc-fps` reports at least one non-zero statistics line,
@@ -81,7 +81,7 @@ export BOARD_IP=10.3.10.219
 
 ssh orangepi@${BOARD_IP} 'rm -rf ~/tgoskits-uvc-fps && mkdir -p ~/tgoskits-uvc-fps'
 rsync -az --delete \
-  examples/starry/orangepi-5-plus-uvc/uvc-fps/ \
+  apps/starry/orangepi-5-plus-uvc/uvc-fps/ \
   orangepi@${BOARD_IP}:~/tgoskits-uvc-fps/
 ```
 
@@ -155,7 +155,7 @@ the board lease is released. Then run the Starry example from the repository
 root:
 
 ```bash
-cargo starry example board -t orangepi-5-plus-uvc
+cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
 ## Optional Cross Build
