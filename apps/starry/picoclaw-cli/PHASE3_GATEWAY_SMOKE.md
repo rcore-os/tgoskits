@@ -16,7 +16,7 @@ Command:
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-gateway.toml \
+  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-gateway.toml \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img
 ```
 
@@ -60,22 +60,22 @@ Health response observed in the guest:
     paths.
   - Adds a regression test for preserving `hostfwd` in rootfs-backed QEMU runs.
 
-- `examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-gateway.toml`
+- `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-gateway.toml`
   - Starts `picoclaw gateway` in the guest and validates `/health`.
   - Keeps host forwarding on port `18790` for manual inspection.
 
-- `examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-interactive.toml`
+- `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-interactive.toml`
   - Provides an interactive StarryOS shell with PicoClaw environment variables
     and common commands printed on entry.
 
-- `examples/starry/picoclaw-cli/run_picoclaw_interactive.sh`
+- `apps/starry/picoclaw-cli/run_picoclaw_interactive.sh`
   - Creates or reuses a persistent user rootfs with online PicoClaw config and
     starts the interactive QEMU shell.
 
-- `examples/starry/picoclaw-cli/README.md`
+- `apps/starry/picoclaw-cli/README.md`
   - Documents Gateway smoke and interactive usage.
 
-- `examples/starry/README.md`
+- `apps/starry/README.md`
   - Points the top-level Starry examples index to the Phase 3 and interactive
     flows.
 

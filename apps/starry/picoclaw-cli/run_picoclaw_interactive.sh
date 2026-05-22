@@ -5,7 +5,7 @@ workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 image="${STARRYOS_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu10.2.1}"
 rootfs="${PICOCLAW_USER_ROOTFS:-tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-user.img}"
-qemu_config="${PICOCLAW_USER_QEMU_CONFIG:-examples/starry/picoclaw-cli/qemu-x86_64-picoclaw-interactive.toml}"
+qemu_config="${PICOCLAW_USER_QEMU_CONFIG:-apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-interactive.toml}"
 provider="${PICOCLAW_PROVIDER:-openai}"
 model_name="${PICOCLAW_MODEL_NAME:-mimo-v25}"
 model="${PICOCLAW_MODEL:-mimo-v2.5}"
@@ -169,7 +169,7 @@ if [[ "$should_prepare" -eq 1 ]]; then
     echo "model:     $model"
     echo "api_base:  $api_base"
     echo "rootfs:    $rootfs"
-    run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; examples/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --output-rootfs '$rootfs'"
+    run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --output-rootfs '$rootfs'"
 else
     say "复用已有 PicoClaw rootfs"
     echo "rootfs: $rootfs"

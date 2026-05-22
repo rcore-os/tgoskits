@@ -9,10 +9,10 @@ use ostool::{
 use crate::context::{AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs};
 
 pub(crate) mod apk;
+pub mod app;
 pub mod board;
 pub mod build;
 pub mod config;
-pub mod example;
 pub mod perf;
 pub mod quick_start;
 pub(crate) mod resolver;
@@ -34,8 +34,8 @@ pub enum Command {
     Perf(ArgsPerf),
     /// Run StarryOS test suites
     Test(test::ArgsTest),
-    /// Run StarryOS runnable examples
-    Example(example::ArgsExample),
+    /// Run StarryOS runnable apps
+    App(app::ArgsApp),
     /// Download rootfs image into workspace target directory
     Rootfs(rootfs::ArgsRootfs),
     /// Convenience entrypoints for common QEMU and Orange Pi workflows
@@ -178,7 +178,7 @@ impl Starry {
             Command::Uboot(args) => self.uboot(args).await,
             Command::Board(args) => self.board(args).await,
             Command::Test(args) => self.test(args).await,
-            Command::Example(args) => self.example(args).await,
+            Command::App(args) => self.app_command(args).await,
         }
     }
 
@@ -306,14 +306,77 @@ impl Starry {
         test::test(self, args).await
     }
 
-    async fn example(&mut self, args: example::ArgsExample) -> anyhow::Result<()> {
+    async fn app_command(&mut self, args: app::ArgsApp) -> anyhow::Result<()> {
         match args.command {
-            example::ExampleCommand::Board(args) => self.example_board(args).await,
+            app::AppCommand::List(args) => app::print_apps(self.app.workspace_root(), args.kind),
+            app::AppCommand::Run(args) => self.app_run(args).await,
+            app::AppCommand::Board(args) => self.app_board(args).await,
         }
     }
 
-    async fn example_board(&mut self, args: example::ArgsExampleBoard) -> anyhow::Result<()> {
-        let case = example::resolve_board_case(
+    async fn app_run(&mut self, args: app::ArgsAppRun) -> anyhow::Result<()> {
+        let apps = app::selected_apps(self.app.workspace_root(), &args)?;
+        for app in apps {
+            let missing = app::missing_caps(&app, &args.caps);
+            if !missing.is_empty() {
+                if args.test_case.is_some() {
+                    anyhow::bail!(
+                        "Starry app `{}` is missing required capabilities: {}",
+                        app.name,
+                        missing.join(", ")
+                    );
+                }
+                println!("SKIP	{}	missing {}", app.name, missing.join(","));
+                continue;
+            }
+
+            match app.kind {
+                app::StarryAppKind::Qemu => self.app_qemu(&app, &args).await?,
+                app::StarryAppKind::Board => {
+                    let board_args = app::ArgsAppBoard {
+                        test_case: app.name.clone(),
+                        board_config: None,
+                        board_type: None,
+                        server: None,
+                        port: None,
+                        debug: args.debug,
+                    };
+                    self.app_board(board_args).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn app_qemu(
+        &mut self,
+        app: &app::StarryAppCase,
+        args: &app::ArgsAppRun,
+    ) -> anyhow::Result<()> {
+        let case = app::prepare_qemu_app_case(
+            self.app.workspace_root(),
+            app,
+            args.arch.as_deref(),
+            args.qemu_config.as_deref(),
+        )
+        .await?;
+        let request = self.prepare_request(
+            StarryCliArgs {
+                config: case.build_config_path.clone(),
+                arch: Some(case.arch.clone()),
+                target: Some(case.target.clone()),
+                smp: None,
+                debug: args.debug,
+            },
+            case.qemu_config_path.clone(),
+            None,
+            SnapshotPersistence::Store,
+        )?;
+        rootfs::qemu_with_explicit_rootfs(self, request, case.rootfs_path).await
+    }
+
+    async fn app_board(&mut self, args: app::ArgsAppBoard) -> anyhow::Result<()> {
+        let case = app::resolve_board_case(
             self.app.workspace_root(),
             &args.test_case,
             args.board_config.as_deref(),
@@ -847,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn command_parses_example_board() {
+    fn command_parses_app_board() {
         #[derive(Parser)]
         struct Cli {
             #[command(subcommand)]
@@ -856,7 +919,7 @@ mod tests {
 
         let cli = Cli::try_parse_from([
             "starry",
-            "example",
+            "app",
             "board",
             "-t",
             "orangepi-5-plus-uvc",
@@ -871,21 +934,22 @@ mod tests {
         .unwrap();
 
         match cli.command {
-            Command::Example(args) => match args.command {
-                example::ExampleCommand::Board(args) => {
+            Command::App(args) => match args.command {
+                app::AppCommand::Board(args) => {
                     assert_eq!(args.test_case, "orangepi-5-plus-uvc");
                     assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
                     assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
                     assert_eq!(args.port, Some(9000));
                     assert!(args.debug);
                 }
+                _ => panic!("expected app board command"),
             },
-            _ => panic!("expected example command"),
+            _ => panic!("expected app command"),
         }
     }
 
     #[test]
-    fn command_parses_example_board_with_long_case_and_config() {
+    fn command_parses_app_board_with_long_case_and_config() {
         #[derive(Parser)]
         struct Cli {
             #[command(subcommand)]
@@ -894,7 +958,7 @@ mod tests {
 
         let cli = Cli::try_parse_from([
             "starry",
-            "example",
+            "app",
             "board",
             "--test-case",
             "orangepi-5-plus-uvc",
@@ -904,25 +968,88 @@ mod tests {
         .unwrap();
 
         match cli.command {
-            Command::Example(args) => match args.command {
-                example::ExampleCommand::Board(args) => {
+            Command::App(args) => match args.command {
+                app::AppCommand::Board(args) => {
                     assert_eq!(args.test_case, "orangepi-5-plus-uvc");
                     assert_eq!(args.board_config, Some(PathBuf::from("board.toml")));
                 }
+                _ => panic!("expected app board command"),
             },
-            _ => panic!("expected example command"),
+            _ => panic!("expected app command"),
         }
     }
 
     #[test]
-    fn command_rejects_example_board_without_case() {
+    fn command_parses_app_list() {
         #[derive(Parser)]
         struct Cli {
             #[command(subcommand)]
             command: Command,
         }
 
-        assert!(Cli::try_parse_from(["starry", "example", "board"]).is_err());
+        let cli = Cli::try_parse_from(["starry", "app", "list", "--kind", "qemu"]).unwrap();
+
+        match cli.command {
+            Command::App(args) => match args.command {
+                app::AppCommand::List(args) => {
+                    assert_eq!(args.kind, Some(app::StarryAppKind::Qemu))
+                }
+                _ => panic!("expected app list command"),
+            },
+            _ => panic!("expected app command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_app_run_all_qemu() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "starry",
+            "app",
+            "run",
+            "--all",
+            "--kind",
+            "qemu",
+            "--cap",
+            "board:OrangePi-5-Plus",
+            "--arch",
+            "x86_64",
+            "--qemu-config",
+            "qemu.toml",
+            "--debug",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::App(args) => match args.command {
+                app::AppCommand::Run(args) => {
+                    assert!(args.all);
+                    assert_eq!(args.kind, Some(app::StarryAppKind::Qemu));
+                    assert_eq!(args.caps, vec!["board:OrangePi-5-Plus"]);
+                    assert_eq!(args.arch.as_deref(), Some("x86_64"));
+                    assert_eq!(args.qemu_config, Some(PathBuf::from("qemu.toml")));
+                    assert!(args.debug);
+                }
+                _ => panic!("expected app run command"),
+            },
+            _ => panic!("expected app command"),
+        }
+    }
+
+    #[test]
+    fn command_rejects_app_board_without_case() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(Cli::try_parse_from(["starry", "app", "board"]).is_err());
     }
 
     #[test]

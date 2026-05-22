@@ -22,6 +22,7 @@ test_commands = [
     "/usr/bin/bug-mkdir-empty-path",
     "/usr/bin/bug-packet-arping",
     "/usr/bin/bug-netlink-getlink",
+    "/usr/bin/bug-nginx-fioasync",
     "/usr/bin/bug-open-dir-wronly",
     "/usr/bin/bug-pipe-fd-errno",
     "/usr/bin/bug-setpriority-current",

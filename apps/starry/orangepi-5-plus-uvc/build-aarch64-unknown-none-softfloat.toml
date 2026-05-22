@@ -7,6 +7,7 @@ features = [
   "ax-driver/rockchip-soc",
   "ax-driver/rockchip-dwc-xhci",
   "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
 ]
 log = "Info"
 max_cpu_num = 1

@@ -9,13 +9,13 @@
 离线 help 示例不需要认证：
 
 ```bash
-examples/starry/codex-cli/prepare_codex_rootfs.sh
+apps/starry/codex-cli/prepare_codex_rootfs.sh
 ```
 
 在线示例需要把 host 侧的 Codex 登录文件注入 guest。常见准备方式如下，代理地址请替换成当前 host 可被 QEMU guest 访问的地址；QEMU user network 下通常可以用 `10.0.2.2` 指向 host。
 
 ```bash
-examples/starry/codex-cli/prepare_codex_rootfs.sh \
+apps/starry/codex-cli/prepare_codex_rootfs.sh \
   --output-rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img \
   --auth-json target/auth.json \
   --proxy http://10.0.2.2:7890
@@ -30,7 +30,7 @@ examples/starry/codex-cli/prepare_codex_rootfs.sh \
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config examples/starry/codex-cli/qemu-x86_64-codex-help.toml \
+  --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-help.toml \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex.img
 ```
 
@@ -47,7 +47,7 @@ STARRY_CODEX_STAGE_G_CODEX_HELP_PASSED
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config examples/starry/codex-cli/qemu-x86_64-codex-syscall-hunt.toml \
+  --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-syscall-hunt.toml \
   --rootfs tmp/axbuild/rootfs/rootfs-x86_64-codex-online.img
 ```
 
