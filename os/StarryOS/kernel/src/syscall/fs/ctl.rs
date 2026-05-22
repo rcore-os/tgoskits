@@ -12,7 +12,7 @@ use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIONBIO, TIOCGWINSZ},
+    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TIOCGWINSZ},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
@@ -31,6 +31,11 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     if cmd == FIONBIO {
         let val: i32 = (arg as *const i32).vm_read()?;
         f.set_nonblocking(val != 0)?;
+        return Ok(0);
+    }
+    if cmd == FIOASYNC {
+        let val: i32 = (arg as *const i32).vm_read()?;
+        f.set_async_mode(val != 0)?;
         return Ok(0);
     }
     f.ioctl(cmd, arg)

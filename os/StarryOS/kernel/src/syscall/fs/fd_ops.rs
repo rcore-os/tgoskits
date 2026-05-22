@@ -413,8 +413,17 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         F_DUPFD_CLOEXEC => dup_fd_min(fd, arg as _, true),
         F_SETFL => {
             let f = get_file_like(fd)?;
+            // linux-raw-sys exposes the O_ASYNC file status bit as FASYNC.
+            let async_mode = arg & (FASYNC as usize) != 0;
+            let async_mode_changed = async_mode != f.async_mode();
+            if async_mode_changed && !f.supports_async_mode() {
+                return Err(AxError::NotATty);
+            }
             f.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
             f.set_append(arg & (O_APPEND as usize) > 0)?;
+            if async_mode_changed {
+                f.set_async_mode(async_mode)?;
+            }
             Ok(0)
         }
         F_GETFL => {
@@ -426,6 +435,10 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             }
             if f.append() {
                 ret |= O_APPEND;
+            }
+            if f.async_mode() {
+                // linux-raw-sys exposes the O_ASYNC file status bit as FASYNC.
+                ret |= FASYNC;
             }
 
             Ok(ret as _)
@@ -446,6 +459,15 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
                 .ok_or(AxError::BadFileDescriptor)?
                 .cloexec = cloexec;
             Ok(0)
+        }
+        F_SETOWN => {
+            let f = get_file_like(fd)?;
+            f.set_owner(arg as i32)?;
+            Ok(0)
+        }
+        F_GETOWN => {
+            let f = get_file_like(fd)?;
+            Ok(f.owner()? as _)
         }
         F_GETPIPE_SZ => {
             let pipe = Pipe::from_fd(fd)?;
