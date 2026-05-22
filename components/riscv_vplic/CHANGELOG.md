@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.11...riscv_vplic-v0.4.12) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-errno, axaddrspace, axdevice_base, axvisor_api
+
 ## [0.4.11](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.10...riscv_vplic-v0.4.11) - 2026-05-19
 
 ### Other
