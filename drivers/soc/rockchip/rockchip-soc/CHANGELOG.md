@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.2.0...rockchip-soc-v0.3.0) - 2026-05-22
+
+### Added
+
+- *(drivers)* add SD/MMC platform driver support ([#826](https://github.com/rcore-os/tgoskits/pull/826))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.1.2...rockchip-soc-v0.2.0) - 2026-05-15
 
 ### Added
