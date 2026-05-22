@@ -5068,10 +5068,14 @@ name = "loongarch_vcpu"
 version = "0.5.3"
 dependencies = [
  "ax-errno",
+ "ax-memory-addr",
+ "ax-page-table-multiarch",
  "ax-percpu",
  "axaddrspace",
  "axvcpu",
+ "axvisor_api",
  "log",
+ "loongArch64",
  "spin 0.10.0",
 ]
 
