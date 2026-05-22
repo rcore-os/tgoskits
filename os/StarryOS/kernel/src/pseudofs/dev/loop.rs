@@ -7,8 +7,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::FileBackend;
-#[cfg(feature = "ext4")]
-use ax_kspin::SpinNoPreempt;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
@@ -81,13 +79,13 @@ fn writeback_buffer(file: &FileBackend, cd: &CacheData) -> bool {
 /// Owning an `Arc<CacheData>` keeps the buffer alive even if the
 /// `LoopDevice` replaces its cache slot (e.g. on re-mount).
 ///
-/// The buffer is protected by a `SpinNoPreempt` lock. Both block-device I/O
+/// The buffer is protected by an `ax_sync::Mutex`. Both block-device I/O
 /// (`read_block`/`write_block`, serialized by the mounted filesystem) and
 /// write-back paths (normal syscall context) acquire this lock, so no
 /// concurrent access is possible regardless of mount state.
 #[cfg(feature = "ext4")]
 struct CacheData {
-    blocks: SpinNoPreempt<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
+    blocks: Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
     total_len: usize,
     dirty: AtomicBool,
     /// `true` while a `LoopBlockDevice` referencing this cache is alive.
@@ -98,7 +96,7 @@ struct CacheData {
 impl CacheData {
     fn new(blocks: alloc::vec::Vec<alloc::vec::Vec<u8>>, total_len: usize) -> Self {
         Self {
-            blocks: SpinNoPreempt::new(blocks),
+            blocks: Mutex::new(blocks),
             total_len,
             dirty: AtomicBool::new(false),
             mounted: AtomicBool::new(false),

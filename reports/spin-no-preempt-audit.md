@@ -45,10 +45,6 @@ rg -n "ax_kernel_guard::NoPreempt|NoPreempt::new\\(|NoPreemptGuard::new\\(" \
 
 ## Summary
 
-Lower-risk, short critical-section users:
-
-- `os/StarryOS/kernel/src/pseudofs/dev/loop.rs`
-
 Intentional direct `NoPreempt` users:
 
 - `os/arceos/modules/axhal/src/irq.rs`
@@ -165,8 +161,10 @@ not by the waker fast path.
 
 ## Starry loop-device cache
 
-`os/StarryOS/kernel/src/pseudofs/dev/loop.rs` uses
-`SpinNoPreempt<Vec<Vec<u8>>>` for `CacheData::blocks`.
+`os/StarryOS/kernel/src/pseudofs/dev/loop.rs` used
+`SpinNoPreempt<Vec<Vec<u8>>>` for `CacheData::blocks`. It now uses
+`ax_sync::Mutex`, matching the filesystem block-I/O paths that can run in task
+context.
 
 Risk:
 
@@ -178,10 +176,10 @@ Risk:
 - The comments explicitly avoid doing VFS writeback from filesystem block I/O
   paths.
 
-Assessment: lower risk than the filesystem locks. The critical sections are
-bounded memory copies and do not intentionally sleep. It is still coupled to
-filesystem block I/O serialization, so do not change it to a sleepable mutex
-without checking all block-device caller contexts.
+Assessment: resolved for `SpinNoPreempt`. The critical sections remain bounded
+memory copies, and VFS writeback still happens after dropping the cache guard.
+If loop block devices are later made callable from hard IRQ context, this lock
+strategy must be revisited.
 
 ## Starry tty metadata
 
@@ -245,11 +243,8 @@ do not add sleeping work inside those guarded closures.
 
 1. Review the residual `epoll.ready_queue` allocation path after the IRQ-safe
    lock changes.
-2. Reevaluate the loop-device cache lock only after checking every block-device
-   caller context; keep it as a bounded memory-copy spin critical section for
-   now.
-3. Keep tty termios/window-size and pty producer locks as short `SpinNoIrq`
+2. Keep tty termios/window-size and pty producer locks as short `SpinNoIrq`
    critical sections, but add helper APIs or comments if future edits start
    extending guard lifetimes.
-4. Leave `axhal` IRQ and percpu `NoPreempt` guards as intentional uses unless a
+3. Leave `axhal` IRQ and percpu `NoPreempt` guards as intentional uses unless a
    specific sleeping path is introduced under them.
