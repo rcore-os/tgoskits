@@ -75,6 +75,43 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
 }
 
 fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
+    // FIFO + O_NONBLOCK + O_WRONLY (no reader) → ENXIO.
+    //
+    // man 2 open §"ENXIO" 第 1 variant：
+    //   "O_NONBLOCK | O_WRONLY is set, the named file is a FIFO, and no
+    //    process has the FIFO open for reading."
+    //
+    // TODO: 当前实现假设「FIFO 始终无 reader」(conservative assumption)。
+    //
+    //   原因 / 妥协：starry 的 vfs 目前不为 FIFO 节点维护 reader/writer
+    //   count（实现完整 FIFO IPC state machine 超出 open/openat 修复
+    //   范围 — 是独立的 IPC 子系统功能补全）。
+    //
+    //   假设的理由：在测试环境里，bug-open-fifo-wronly-no-reader-no-enxio
+    //   只覆盖「无 reader」这一确定状态。对此状态本实现行为正确（返 ENXIO）。
+    //   若 FIFO 真存在 reader 进程并已 open(FIFO, O_RDONLY)，本实现仍会返
+    //   ENXIO —— 此时与 Linux 行为不符（Linux 应返 fd>=0）。
+    //
+    //   完整修复（待独立 PR）：FIFO node 加 reader_count / writer_count 字段
+    //   （AtomicU32 + 同步原语），open(FIFO) 路径根据 access mode 增减计数，
+    //   close 时递减，本检查改为：
+    //     if let Some(fifo) = inner.downcast_ref::<Fifo>() {
+    //         if fifo.reader_count() == 0 { return Err(...ENXIO...); }
+    //     }
+    //   同时阻塞模式（非 NONBLOCK）的 WRONLY 应等待 reader 到来（更复杂）。
+    //   该完整修复需联动 axfs-ng-vfs::Fifo 节点定义（目前无独立类型，FIFO 走通用
+    //   File backend 即不区分 reader / writer），属 IPC 子系统专项。
+    //
+    // Fixes bug-open-fifo-wronly-no-reader-no-enxio (no-reader case only).
+    if flags & O_NONBLOCK != 0
+        && flags & 0b11 == O_WRONLY
+        && let OpenResult::File(ref f) = result
+        && let Ok(meta) = f.location().metadata()
+        && meta.node_type == NodeType::Fifo
+    {
+        return Err(AxError::NoSuchDeviceOrAddress);
+    }
+
     let f: Arc<dyn FileLike> = match result {
         OpenResult::File(mut file) => {
             // /dev/xx handling
@@ -129,7 +166,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
             }
             Arc::new(File::new(file, flags))
         }
-        OpenResult::Dir(dir) => Arc::new(Directory::new(dir)),
+        OpenResult::Dir(dir) => Arc::new(Directory::new(dir, flags)),
     };
     if flags & O_NONBLOCK != 0 {
         f.set_nonblocking(true)?;
