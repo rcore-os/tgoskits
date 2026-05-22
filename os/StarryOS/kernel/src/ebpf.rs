@@ -3,6 +3,8 @@ use alloc::vec::Vec;
 use ax_errno::{AxError, AxResult};
 use ax_sync::spin::SpinNoIrq;
 
+use crate::task::AsThread;
+
 #[allow(dead_code)]
 mod bpf_insn {
     pub const BPF_LD: u8 = 0x00;
@@ -900,7 +902,11 @@ fn helper_get_current_pid_tgid(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64)
 }
 
 fn helper_get_current_uid_gid(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
-    0u64
+    let curr = ax_task::current();
+    let cred = curr.as_thread().cred();
+    let uid = cred.uid as u64;
+    let gid = cred.gid as u64;
+    (gid << 32) | uid
 }
 
 fn helper_get_prandom_u32(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
@@ -1205,8 +1211,12 @@ fn handle_link_create(uattr: usize, size: u32) -> AxResult<isize> {
     };
     crate::perf_event::perf_event_attach_prog(target_fd, prog_fd)?;
     crate::perf_event::perf_event_enable(target_fd)?;
-    info!("bpf: LINK_CREATE prog_fd={prog_fd} target_fd={target_fd}");
-    Ok(target_fd as isize)
+    let link_fd = {
+        let mut guard = BPF_GLOBAL.lock();
+        guard.alloc_fd()
+    };
+    info!("bpf: LINK_CREATE prog_fd={prog_fd} target_fd={target_fd} link_fd={link_fd}");
+    Ok(link_fd as isize)
 }
 
 fn handle_obj_close(uattr: usize, size: u32) -> AxResult<isize> {
