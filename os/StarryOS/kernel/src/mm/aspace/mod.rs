@@ -1,5 +1,9 @@
 use alloc::sync::Arc;
-use core::{fmt, ops::DerefMut};
+use core::{
+    fmt,
+    ops::DerefMut,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ax_errno::{AxError, AxResult, ax_bail};
 use ax_hal::{
@@ -35,6 +39,14 @@ pub struct AddrSpace {
     va_range: VirtAddrRange,
     areas: MemorySet<Backend>,
     pt: PageTable,
+    /// Number of live [`crate::task::ProcessData`] instances that reference this
+    /// address space (each `fork`/`clone` / `execve` slot that holds the
+    /// `Arc<Mutex<AddrSpace>>`).
+    ///
+    /// This must **not** be confused with `Arc::strong_count`, which also counts
+    /// transient clones from `ProcessData::aspace()` and is not reliable for
+    /// SMP teardown decisions.
+    pub(crate) process_slots: AtomicUsize,
 }
 
 impl AddrSpace {
@@ -79,6 +91,7 @@ impl AddrSpace {
             va_range: VirtAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
             pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
+            process_slots: AtomicUsize::new(0),
         })
     }
 
@@ -160,6 +173,7 @@ impl AddrSpace {
         if populate {
             self.populate_area(start, size, flags)?;
         }
+        crate::syscall::memfd_on_after_map(self, start);
         Ok(())
     }
 
@@ -201,6 +215,7 @@ impl AddrSpace {
     pub fn unmap(&mut self, start: VirtAddr, size: usize) -> AxResult {
         self.validate_region(start, size)?;
 
+        crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
         self.areas.unmap(start, size, &mut self.pt)?;
         Ok(())
     }
@@ -209,6 +224,7 @@ impl AddrSpace {
     pub fn unmap_metadata(&mut self, start: VirtAddr, size: usize) -> AxResult {
         self.validate_region(start, size)?;
 
+        crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
         self.areas.unmap_metadata(start, size)?;
         Ok(())
     }
@@ -222,6 +238,7 @@ impl AddrSpace {
     ) -> AxResult {
         self.validate_region(start, size)?;
 
+        crate::syscall::memfd_on_aspace_replace_metadata(self, start, size, flags, &backend);
         let area = MemoryArea::new(start, size, flags, backend);
         self.areas.replace_area_metadata(area)?;
         Ok(())
@@ -345,14 +362,18 @@ impl AddrSpace {
     pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> AxResult {
         self.validate_region(start, size)?;
 
+        let touched_memfds =
+            crate::syscall::memfd_collect_metas_touching_mprotect_range(self, start, size);
         self.areas
             .protect(start, size, |_| Some(flags), &mut self.pt)?;
+        crate::syscall::memfd_resync_shared_writable_counts_after_mprotect(self, &touched_memfds);
 
         Ok(())
     }
 
     /// Removes all mappings in the address space.
     pub fn clear(&mut self) {
+        crate::syscall::memfd_release_all_shared_writable_counts_for_aspace(self);
         self.areas.clear(&mut self.pt).unwrap();
     }
 
@@ -438,6 +459,10 @@ impl AddrSpace {
     /// This method creates a new empty address space with the same base and
     /// size, then iterates over all memory areas in the original address
     /// space to copy or share their mappings into the new one.
+    ///
+    /// After each area is mapped, `memfd_on_after_map` runs so each cloned memfd
+    /// shared-writable VMA increments the same counter as [`AddrSpace::map`].
+    /// (`CLONE_VM` shares one address space and does not duplicate VMAs here.)
     pub fn try_clone(&mut self) -> AxResult<Arc<Mutex<Self>>> {
         let new_aspace = Arc::new(Mutex::new(Self::new_empty(self.base(), self.size())?));
         let new_aspace_clone = new_aspace.clone();
@@ -455,8 +480,12 @@ impl AddrSpace {
             )?;
 
             let new_area = MemoryArea::new(area.start(), area.size(), area.flags(), new_backend);
-            let aspace = guard.deref_mut();
-            aspace.areas.map(new_area, &mut aspace.pt, false)?;
+            let start = new_area.start();
+            {
+                let aspace = guard.deref_mut();
+                aspace.areas.map(new_area, &mut aspace.pt, false)?;
+            }
+            crate::syscall::memfd_on_after_map(&guard, start);
         }
         drop(guard);
 
@@ -500,12 +529,31 @@ impl AddrSpace {
     }
 }
 
+/// Increment how many [`crate::task::ProcessData`] slots refer to `aspace`.
+pub(crate) fn attach_process_slot(aspace: &Arc<Mutex<AddrSpace>>) {
+    aspace.lock().process_slots.fetch_add(1, Ordering::AcqRel);
+}
+
+/// One [`crate::task::ProcessData`] releases its logical slot. When the last slot
+/// is dropped while holding [`Mutex`]`<`[`AddrSpace`]`>`, run [`AddrSpace::clear`]
+/// so inode-scoped accounting (memfd, etc.) is torn down before the page table
+/// is reclaimed.
+pub(crate) fn release_process_slot(aspace: &Arc<Mutex<AddrSpace>>) {
+    let mut guard = aspace.lock();
+    let prev = guard.process_slots.fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(prev >= 1, "AddrSpace::process_slots underflow");
+    if prev == 1 {
+        guard.clear();
+    }
+}
+
 impl fmt::Debug for AddrSpace {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("AddrSpace")
             .field("va_range", &self.va_range)
             .field("page_table_root", &self.pt.root_paddr())
             .field("areas", &self.areas)
+            .field("process_slots", &self.process_slots.load(Ordering::Relaxed))
             .finish()
     }
 }

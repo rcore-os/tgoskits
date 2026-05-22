@@ -14,6 +14,7 @@ pub(crate) static ERRNO: AtomicI32 = AtomicI32::new(0);
 
 /// Set the global errno value (used by POSIX-style wrappers like sys_poll).
 #[inline]
+#[cfg(feature = "net")]
 pub(crate) fn set_errno(e: i32) {
     ERRNO.store(e, Ordering::Relaxed);
 }

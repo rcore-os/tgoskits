@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.14...ax-sync-v0.5.15) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-task, ax-task
+
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.13...ax-sync-v0.5.14) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-task, ax-task
+
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.12...ax-sync-v0.5.13) - 2026-05-15
+
+### Added
+
+- *(lockdep)* extend lockdep with task-held tracking and qemu regression coverage ([#415](https://github.com/rcore-os/tgoskits/pull/415))
+
+### Fixed
+
+- *(arceos)* adjust dynamic platform and network integration
+
+### Other
+
+- *(arceos-modules)* inherit workspace metadata
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.11...ax-sync-v0.5.12) - 2026-04-27
 
 ### Added

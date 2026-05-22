@@ -22,6 +22,25 @@ pub use dwarf::{DwarfReader, FrameIter};
 static IP_RANGE: Once<Range<usize>> = Once::new();
 static FP_RANGE: Once<Range<usize>> = Once::new();
 
+#[cfg(target_arch = "x86_64")]
+const TARGET_ARCH: &str = "x86_64";
+#[cfg(target_arch = "aarch64")]
+const TARGET_ARCH: &str = "aarch64";
+#[cfg(target_arch = "riscv64")]
+const TARGET_ARCH: &str = "riscv64";
+#[cfg(target_arch = "riscv32")]
+const TARGET_ARCH: &str = "riscv32";
+#[cfg(target_arch = "loongarch64")]
+const TARGET_ARCH: &str = "loongarch64";
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "riscv32",
+    target_arch = "loongarch64"
+)))]
+const TARGET_ARCH: &str = "unknown";
+
 /// Initializes the backtrace library.
 pub fn init(ip_range: Range<usize>, fp_range: Range<usize>) {
     IP_RANGE.call_once(|| ip_range);
@@ -75,11 +94,8 @@ pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
     let mut frames = vec![];
 
     let Some(fp_range) = FP_RANGE.get() else {
-        if !axpanic::oops_in_progress() {
-            // Avoid recursive output on panic/oops paths, but keep a diagnostic
-            // for ordinary misuse before the backtrace subsystem is ready.
-            log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
-        }
+        // We cannot panic here!
+        log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
         return frames;
     };
 
@@ -120,7 +136,7 @@ pub fn max_depth() -> usize {
 
 /// Returns whether the backtrace feature is enabled.
 pub const fn is_enabled() -> bool {
-    cfg!(feature = "dwarf")
+    cfg!(feature = "alloc")
 }
 
 #[allow(dead_code)]
@@ -128,7 +144,7 @@ pub const fn is_enabled() -> bool {
 enum Inner {
     Unsupported,
     Disabled,
-    #[cfg(feature = "dwarf")]
+    #[cfg(feature = "alloc")]
     Captured(Vec<Frame>),
 }
 
@@ -136,18 +152,19 @@ enum Inner {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct Backtrace {
     inner: Inner,
+    kind: Option<&'static str>,
 }
 
 impl Backtrace {
     /// Capture the current thread's stack backtrace.
     pub fn capture() -> Self {
-        #[cfg(not(feature = "dwarf"))]
-        {
-            Self {
-                inner: Inner::Disabled,
-            }
-        }
-        #[cfg(feature = "dwarf")]
+        #[cfg(not(feature = "alloc"))]
+        return Self {
+            inner: Inner::Disabled,
+            kind: None,
+        };
+
+        #[cfg(feature = "alloc")]
         {
             use core::arch::asm;
 
@@ -164,17 +181,18 @@ impl Backtrace {
                 } else {
                     return Self {
                         inner: Inner::Unsupported,
+                        kind: None,
                     };
                 }
             }
 
             let frames = unwind_stack(fp);
 
-            // prevent this frame from being tail-call optimised away
             core::hint::black_box(());
 
             Self {
                 inner: Inner::Captured(frames),
+                kind: None,
             }
         }
     }
@@ -182,13 +200,13 @@ impl Backtrace {
     /// Capture the stack backtrace from a trap.
     #[allow(unused_variables)]
     pub fn capture_trap(fp: usize, ip: usize, ra: usize) -> Self {
-        #[cfg(not(feature = "dwarf"))]
-        {
-            Self {
-                inner: Inner::Disabled,
-            }
-        }
-        #[cfg(feature = "dwarf")]
+        #[cfg(not(feature = "alloc"))]
+        return Self {
+            inner: Inner::Disabled,
+            kind: None,
+        };
+
+        #[cfg(feature = "alloc")]
         {
             let mut frames = unwind_stack(fp);
             if let Some(first) = frames.first_mut()
@@ -208,8 +226,15 @@ impl Backtrace {
 
             Self {
                 inner: Inner::Captured(frames),
+                kind: None,
             }
         }
+    }
+
+    /// Sets the backtrace kind for machine-parseable raw output via [`Display`].
+    pub fn kind(mut self, kind: &'static str) -> Self {
+        self.kind = Some(kind);
+        self
     }
 
     /// Visit each stack frame in the captured backtrace in order.
@@ -225,19 +250,71 @@ impl Backtrace {
     }
 }
 
+impl Backtrace {
+    fn fmt_raw_block(&self, f: &mut fmt::Formatter<'_>, kind: &'static str) -> fmt::Result {
+        let arch = TARGET_ARCH;
+
+        writeln!(
+            f,
+            "BACKTRACE_BEGIN kind={} arch={} alloc={} dwarf={}",
+            kind,
+            arch,
+            cfg!(feature = "alloc"),
+            cfg!(feature = "dwarf")
+        )?;
+
+        match &self.inner {
+            Inner::Unsupported => {
+                writeln!(f, "BT_ERROR unsupported")?;
+            }
+            Inner::Disabled => {
+                if cfg!(feature = "alloc") {
+                    writeln!(f, "BT_ERROR disabled")?;
+                } else {
+                    writeln!(f, "BT_ERROR requires_alloc")?;
+                }
+            }
+            #[cfg(feature = "alloc")]
+            Inner::Captured(frames) => {
+                for (i, raw) in frames.iter().enumerate() {
+                    writeln!(f, "BT {i} ip={:#x} fp={:#x}", raw.ip, raw.fp)?;
+                }
+            }
+        }
+
+        writeln!(f, "BACKTRACE_END")
+    }
+}
+
 impl fmt::Display for Backtrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(kind) = self.kind {
+            return self.fmt_raw_block(f, kind);
+        }
+
         match &self.inner {
             Inner::Unsupported => {
                 writeln!(f, "<unwinding unsupported>")
             }
             Inner::Disabled => {
-                writeln!(f, "<backtrace disabled>")
+                if cfg!(feature = "alloc") {
+                    writeln!(f, "<backtrace disabled>")
+                } else {
+                    writeln!(f, "<backtrace requires alloc>")
+                }
             }
-            #[cfg(feature = "dwarf")]
+            #[cfg(feature = "alloc")]
             Inner::Captured(frames) => {
                 writeln!(f, "Backtrace:")?;
-                dwarf::fmt_frames(f, frames)
+                #[cfg(feature = "dwarf")]
+                return dwarf::fmt_frames(f, frames);
+                #[cfg(not(feature = "dwarf"))]
+                {
+                    for (i, raw) in frames.iter().enumerate() {
+                        writeln!(f, "{i:>4}: {raw}")?;
+                    }
+                    Ok(())
+                }
             }
         }
     }
@@ -246,5 +323,71 @@ impl fmt::Display for Backtrace {
 impl fmt::Debug for Backtrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
+    }
+}
+
+#[cfg(all(test, feature = "alloc"))]
+mod tests {
+    use alloc::boxed::Box;
+
+    use super::*;
+
+    fn init_for_tests() {
+        init(0..0, 0..usize::MAX);
+        set_max_depth(32);
+    }
+
+    fn boxed_frame_chain(ips: &[usize]) -> (Box<[Frame]>, usize) {
+        let mut frames = ips
+            .iter()
+            .map(|&ip| Frame { fp: 0, ip })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+
+        let ptr = frames.as_mut_ptr();
+        for i in 0..frames.len() {
+            let next_fp = if i + 1 < frames.len() {
+                unsafe { ptr.add(i + 1) as usize }
+            } else {
+                0
+            };
+            frames[i].fp = next_fp;
+        }
+        (frames, ptr as usize)
+    }
+
+    #[test]
+    fn unwind_stack_collects_fake_frames() {
+        init_for_tests();
+        let (frames, start_fp) = boxed_frame_chain(&[0x1111, 0x2222, 0x3333]);
+        let out = unwind_stack(start_fp);
+        assert_eq!(out, frames.as_ref());
+    }
+
+    #[test]
+    fn kind_formats_raw_block_without_dwarf() {
+        init_for_tests();
+        let (_frames, start_fp) = boxed_frame_chain(&[0xdead, 0xbeef]);
+        let s = alloc::format!(
+            "{}",
+            Backtrace::capture_trap(start_fp, 0x1000, 0xbeef).kind("raw")
+        );
+        assert!(s.contains("BACKTRACE_BEGIN kind=raw"));
+        assert!(s.contains("BT 0 ip=0x1001 fp="));
+        assert!(s.contains("BT 1 ip=0xbeef fp="));
+        assert!(s.ends_with("BACKTRACE_END\n"));
+        assert!(!s.contains("Backtrace:"));
+    }
+
+    #[test]
+    fn capture_trap_formats_raw_frames_without_dwarf() {
+        init_for_tests();
+        let (_frames, start_fp) = boxed_frame_chain(&[0xdead, 0xbeef]);
+        let bt = Backtrace::capture_trap(start_fp, 0x1000, 0xbeef);
+        let s = alloc::format!("{bt}");
+        assert!(s.contains("Backtrace:"));
+        assert!(s.contains("ip=0x1001"));
+        assert!(s.contains("ip=0xbeef"));
+        assert!(!s.contains("<backtrace disabled>"));
     }
 }

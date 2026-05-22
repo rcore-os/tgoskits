@@ -178,49 +178,45 @@ impl Pollable for SimpleFile {
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
-// TODO: create a linux like seq file that supports iterating content in chunks instead of reading all content at once, to avoid large memory usage for large files.
-/// A Sequential file, which only supports reading all content. It is used for procfs and sysfs.
-pub struct SeqFile {
+/// A special file that directly implements file operations without caching content in the kernel.
+/// It is used for files in procfs and debugfs that need to reflect real-time data.
+pub struct SpecialFsFile<T: DirectRwFsFileOps> {
     node: SimpleFsNode,
-    ops: Arc<dyn SeqFileOps>,
-    content_cache: Mutex<Option<Vec<u8>>>,
+    ops: Arc<T>,
 }
 
-impl SeqFile {
-    /// Creates a sequential file from given file operations.
-    pub fn new(fs: Arc<SimpleFs>, ty: NodeType, ops: impl SeqFileOps) -> Arc<Self> {
-        let node = SimpleFsNode::new(fs, ty, NodePermission::default());
+pub trait DirectRwFsFileOps: Send + Sync + 'static {
+    /// Reads a number of bytes starting from a given offset.
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
+    /// Writes a number of bytes starting from a given offset.
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Err(VfsError::InvalidInput)
+    }
+}
+
+impl<T: DirectRwFsFileOps> SpecialFsFile<T> {
+    /// Creates a file from given file object and specified permissions.
+    pub fn new_with_perm(
+        fs: Arc<SimpleFs>,
+        ty: NodeType,
+        obj: T,
+        perm: NodePermission,
+    ) -> Arc<Self> {
+        let node = SimpleFsNode::new(fs, ty, perm);
         Arc::new(Self {
             node,
-            ops: Arc::new(ops),
-            content_cache: Mutex::new(None),
+            ops: Arc::new(obj),
         })
     }
 
-    /// Creates a sequential file from given file operations.
-    pub fn new_regular(fs: Arc<SimpleFs>, ops: impl SeqFileOps) -> Arc<Self> {
-        Self::new(fs, NodeType::RegularFile, ops)
-    }
-}
-
-/// Operations for a sequential file.
-pub trait SeqFileOps: Send + Sync + 'static {
-    /// Reads all content in the file.
-    fn read_all(&self) -> VfsResult<Cow<'_, [u8]>>;
-}
-
-impl<F, R> SeqFileOps for F
-where
-    F: Fn() -> VfsResult<R> + Send + Sync + 'static,
-    R: Into<Vec<u8>>,
-{
-    fn read_all(&self) -> VfsResult<Cow<'_, [u8]>> {
-        (self)().map(|it| Cow::Owned(it.into()))
+    /// Creates a regular file from given file operations object and specified permissions.
+    pub fn new_regular_with_perm(fs: Arc<SimpleFs>, obj: T, perm: NodePermission) -> Arc<Self> {
+        Self::new_with_perm(fs, NodeType::RegularFile, obj, perm)
     }
 }
 
 #[inherit_methods(from = "self.node")]
-impl NodeOps for SeqFile {
+impl<T: DirectRwFsFileOps> NodeOps for SpecialFsFile<T> {
     fn inode(&self) -> u64;
 
     fn metadata(&self) -> VfsResult<Metadata>;
@@ -236,16 +232,7 @@ impl NodeOps for SeqFile {
     }
 
     fn len(&self) -> VfsResult<u64> {
-        // Cache the content to avoid repeated generation.
-        let mut cache = self.content_cache.lock();
-        if let Some(content) = cache.as_ref() {
-            Ok(content.len() as u64)
-        } else {
-            let content = self.ops.read_all()?;
-            let len = content.len() as u64;
-            *cache = Some(content.into_owned());
-            Ok(len)
-        }
+        Ok(0)
     }
 
     fn flags(&self) -> NodeFlags {
@@ -253,7 +240,53 @@ impl NodeOps for SeqFile {
     }
 }
 
-impl FileNodeOps for SeqFile {
+impl<T: DirectRwFsFileOps> Pollable for SpecialFsFile<T> {
+    fn poll(&self) -> IoEvents {
+        // TODO: support poll for special files when needed
+        IoEvents::IN | IoEvents::OUT
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {
+        // TODO: support poll for special files when needed
+        unimplemented!("poll is not implemented for SpecialFsFile yet")
+    }
+}
+
+impl<T: DirectRwFsFileOps> FileNodeOps for SpecialFsFile<T> {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        self.ops.read_at(buf, offset)
+    }
+
+    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
+        self.ops.write_at(buf, offset)
+    }
+
+    fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
+        self.ops.write_at(buf, 0)?;
+        Ok((buf.len(), 0))
+    }
+
+    fn set_len(&self, len: u64) -> VfsResult<()> {
+        if len == 0 {
+            // Shell redirection usually opens these files with O_TRUNC.
+            return Ok(());
+        }
+        Err(VfsError::InvalidInput)
+    }
+
+    fn set_symlink(&self, _target: &str) -> VfsResult<()> {
+        Err(VfsError::InvalidInput)
+    }
+}
+
+// TODO: create a linux like seq file that supports iterating content in chunks instead of reading all content at once, to avoid large memory usage for large files.
+/// A Sequential file, which only supports reading all content. It is used for procfs and sysfs.
+pub struct SeqObject {
+    ops: Arc<dyn SimpleFileOps>,
+    content_cache: Mutex<Option<Vec<u8>>>,
+}
+
+impl DirectRwFsFileOps for SeqObject {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let mut cache = self.content_cache.lock();
         if cache.is_none() || offset == 0 {
@@ -270,28 +303,17 @@ impl FileNodeOps for SeqFile {
         buf[..read].copy_from_slice(&data[..read]);
         Ok(read)
     }
-
-    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn set_len(&self, _len: u64) -> VfsResult<()> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn set_symlink(&self, _target: &str) -> VfsResult<()> {
-        Err(VfsError::OperationNotPermitted)
-    }
 }
 
-impl Pollable for SeqFile {
-    fn poll(&self) -> IoEvents {
-        IoEvents::IN
+impl SeqObject {
+    /// Creates a new `SeqObject` instance with given file operations.
+    /// Now, we just reuse `SimpleFileOps` for simplicity, but we will likely
+    /// need a separate trait for `SeqObject` in the future when we want to support
+    /// more features like iterating content.
+    pub fn new(ops: impl SimpleFileOps) -> Self {
+        Self {
+            content_cache: Mutex::new(None),
+            ops: Arc::new(ops),
+        }
     }
-
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }

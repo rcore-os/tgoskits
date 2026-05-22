@@ -26,4 +26,4 @@ echo 'APK_CURL_TEST_FAILED'
 '''
 success_regex = ["(?m)^APK_CURL_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^APK_CURL_TEST_FAILED\\s*$"]
-timeout = 600
+timeout = 1200

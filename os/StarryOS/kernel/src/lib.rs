@@ -19,10 +19,13 @@ pub mod entry;
 
 mod config;
 mod file;
+#[cfg(feature = "kcov")]
+mod kcov;
 mod mm;
 mod pseudofs;
 mod stop_machine;
 mod syscall;
 mod task;
 mod time;
+mod tracepoint;
 mod trap;

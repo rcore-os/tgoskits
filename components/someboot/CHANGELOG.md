@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.14...someboot-v0.1.15) - 2026-05-15
+
+### Fixed
+
+- *(starry-kernel)* repair serial console input on dynamic platforms ([#555](https://github.com/rcore-os/tgoskits/pull/555))
+
 ## [0.1.13](https://github.com/drivercraft/sparreal-os/compare/someboot-v0.1.12...someboot-v0.1.13) - 2026-04-15
 
 ### Other

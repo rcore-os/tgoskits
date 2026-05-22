@@ -86,10 +86,11 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     ) {
         return;
     }
-    #[cfg(feature = "uspace")]
+    #[cfg(feature = "exception-table")]
     if tf.fixup_exception() {
         return;
     }
+    let bt = tf.backtrace();
     panic!(
         "Unhandled Page Fault @ {:#x}, fault_vaddr={:#x}, ESR={:#x} ({:?}):\n{:#x?}\n{}",
         tf.elr,
@@ -97,7 +98,7 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
         esr_value(),
         access_flags,
         tf,
-        tf.backtrace()
+        bt.kind("trap")
     );
 }
 
@@ -107,14 +108,24 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
         source,
         TrapSource::CurrentSpEl0 | TrapSource::LowerAArch64 | TrapSource::LowerAArch32
     ) {
+        let bt = tf.backtrace();
         panic!(
-            "Invalid exception {:?} from {:?}:\n{:#x?}",
-            kind, source, tf
+            "Invalid exception {:?} from {:?}:\n{:#x?}\n{}",
+            kind,
+            source,
+            tf,
+            bt.kind("trap")
         );
     }
     match kind {
         TrapKind::Fiq | TrapKind::SError => {
-            panic!("Unhandled exception {:?}:\n{:#x?}", kind, tf);
+            let bt = tf.backtrace();
+            panic!(
+                "Unhandled exception {:?}:\n{:#x?}\n{}",
+                kind,
+                tf,
+                bt.kind("trap")
+            );
         }
         TrapKind::Irq => {
             crate::trap::irq_handler(0);
@@ -188,6 +199,7 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
                     #[cfg(feature = "arm-el2")]
                     let ec_bits = esr.read(ESR_EL2::EC);
 
+                    let bt = tf.backtrace();
                     panic!(
                         "Unhandled synchronous exception {:?} @ {:#x}: ESR={:#x} (EC {:#08b}, \
                          FAR: {:#x} ISS {:#x})\n{}",
@@ -197,7 +209,7 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
                         ec_bits,
                         vaddr,
                         iss,
-                        tf.backtrace()
+                        bt.kind("trap")
                     );
                 }
             }

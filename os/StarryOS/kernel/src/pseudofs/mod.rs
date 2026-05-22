@@ -1,5 +1,6 @@
 //! Basic virtual filesystem support
 
+pub mod debug;
 pub mod dev;
 mod device;
 mod dir;
@@ -13,10 +14,11 @@ mod tmp;
 #[cfg(feature = "plat-dyn")]
 pub(crate) mod usbfs;
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 use ax_errno::LinuxResult;
 use ax_fs::{FS_CONTEXT, FsContext};
+use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 pub use tmp::MemoryFs;
 
@@ -36,6 +38,11 @@ pub enum NodeOpsMux {
     File(Arc<dyn FileNodeOps>),
 }
 
+enum NodeOpsMuxTy {
+    Static(NodeOpsMux),
+    Dynamic(Box<dyn Fn() -> NodeOpsMux + Send + Sync>),
+}
+
 impl From<DirMaker> for NodeOpsMux {
     fn from(maker: DirMaker) -> Self {
         Self::Dir(maker)
@@ -49,6 +56,17 @@ impl<T: FileNodeOps> From<Arc<T>> for NodeOpsMux {
 }
 
 const DIR_PERMISSION: NodePermission = NodePermission::from_bits_truncate(0o755);
+
+static SHM_TMPFS: LazyInit<Arc<tmp::MemoryFs>> = LazyInit::new();
+static TMP_TMPFS: LazyInit<Arc<tmp::MemoryFs>> = LazyInit::new();
+
+pub fn shm_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
+    SHM_TMPFS.get().map(Arc::clone)
+}
+
+pub fn tmp_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
+    TMP_TMPFS.get().map(Arc::clone)
+}
 
 fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()> {
     if fs.resolve(path).is_err() {
@@ -67,14 +85,24 @@ pub fn mount_all() -> LinuxResult<()> {
     mount_at(&fs, "/dev", dev::new_devfs())?;
     #[cfg(feature = "plat-dyn")]
     mount_at(&fs, "/dev/bus/usb", usbfs::new_usbfs()?)?;
-    mount_at(&fs, "/dev/shm", tmp::MemoryFs::new())?;
-    mount_at(&fs, "/tmp", tmp::MemoryFs::new())?;
+
+    let (shm_fs, shm_handle) = tmp::MemoryFs::new_with_handle();
+    mount_at(&fs, "/dev/shm", shm_fs)?;
+    SHM_TMPFS.init_once(shm_handle);
+
+    let (tmp_fs, tmp_handle) = tmp::MemoryFs::new_with_handle();
+    mount_at(&fs, "/tmp", tmp_fs)?;
+    TMP_TMPFS.init_once(tmp_handle);
+
     mount_at(&fs, "/proc", proc::new_procfs())?;
 
     #[cfg(feature = "plat-dyn")]
     mount_at(&fs, "/sys", usbfs::new_sysfs())?;
     #[cfg(not(feature = "plat-dyn"))]
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
+
+    mount_at(&fs, "/sys/kernel/debug", debug::new_debugfs())?;
+
     drop(fs);
 
     #[cfg(feature = "dev-log")]

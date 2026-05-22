@@ -32,8 +32,8 @@ on:
         required: false
         type: string
         default: china
-      required_repository_owner:
-        description: Only run when the repository owner matches this value. Leave empty to run everywhere.
+      limit_to_owner:
+        description: Only run for this repository owner. Leave empty to run everywhere.
         required: false
         type: string
         default: ""
@@ -47,13 +47,12 @@ on:
         required: false
         type: string
         default: "1"
-
 jobs:
   run_host:
     if: >-
       ${{
         !inputs.use_container
-        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
@@ -82,7 +81,7 @@ jobs:
     if: >-
       ${{
         inputs.use_container
-        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
@@ -125,30 +124,12 @@ jobs:
         shell: bash
         run: |
           set -eux
-
           for arch in aarch64 riscv64 x86_64 loongarch64; do
             compiler="${arch}-linux-musl-cc"
-            if command -v "${compiler}" >/dev/null 2>&1; then
-              continue
+            if ! command -v "${compiler}" >/dev/null 2>&1; then
+              echo "::error::${compiler} not found; rebuild the CI container image to include musl cross toolchains"
+              exit 1
             fi
-
-            file="${arch}-linux-musl-cross.tgz"
-            tmpdir="$(mktemp -d)"
-            trap 'rm -rf "${tmpdir}"' EXIT
-
-            if ! wget -q "https://github.com/arceos-org/setup-musl/releases/download/prebuilt/${file}" -O "${tmpdir}/${file}"; then
-              if [ "${arch}" = "loongarch64" ]; then
-                wget -q "https://github.com/LoongsonLab/oscomp-toolchains-for-oskernel/releases/download/loongarch64-linux-musl-cross-gcc-13.2.0/${file}" -O "${tmpdir}/${file}"
-              else
-                wget -q "https://musl.cc/${file}" -O "${tmpdir}/${file}"
-              fi
-            fi
-
-            tar -xzf "${tmpdir}/${file}" -C /opt
-            install_dir="/opt/${arch}-linux-musl-cross/bin"
-            echo "${install_dir}" >> "${GITHUB_PATH}"
-            rm -rf "${tmpdir}"
-            trap - EXIT
           done
 
       - name: Restore Rust cache

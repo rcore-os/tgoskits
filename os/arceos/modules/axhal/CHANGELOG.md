@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.14...ax-hal-v0.5.15) - 2026-05-22
+
+### Added
+
+- *(axplat-aarch64)* GICv3 + CNTV backend for Apple HVF native execution ([#511](https://github.com/rcore-os/tgoskits/pull/511))
+
+### Fixed
+
+- *(axvisor)* recover riscv guest memory faults ([#788](https://github.com/rcore-os/tgoskits/pull/788))
+
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.13...ax-hal-v0.5.14) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-alloc, ax-page-table-multiarch, ax-cpu, ax-plat-aarch64-qemu-virt, ax-plat-loongarch64-qemu-virt, ax-plat-riscv64-qemu-virt, ax-plat-x86-pc, axplat-dyn
+
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.12...ax-hal-v0.5.13) - 2026-05-15
+
+### Added
+
+- add support for loongarch64·
+- *(ax-task)* add stack canary checks for multitask stacks ([#416](https://github.com/rcore-os/tgoskits/pull/416))
+- *(runtime)* extend IRQ, RTC, and tty event support ([#287](https://github.com/rcore-os/tgoskits/pull/287))
+- *(console)* add interrupt-driven console input ([#343](https://github.com/rcore-os/tgoskits/pull/343))
+
+### Fixed
+
+- remove unnecessary copy of link script
+- fix null pointer on qemu aarch64 when booting with ELF
+- fix linker script to correct physic addr of segments
+- *(console)* keep UART writes raw ([#402](https://github.com/rcore-os/tgoskits/pull/402))
+
+### Other
+
+- remove unused field
+- *(arceos-modules)* inherit workspace metadata
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.11...ax-hal-v0.5.12) - 2026-04-27
 
 ### Added

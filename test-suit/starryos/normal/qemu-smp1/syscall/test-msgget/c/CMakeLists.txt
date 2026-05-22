@@ -9,4 +9,4 @@ add_executable(test-msgget src/main.c)
 target_include_directories(test-msgget PRIVATE src)
 target_compile_options(test-msgget PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-msgget RUNTIME DESTINATION usr/bin)
+install(TARGETS test-msgget RUNTIME DESTINATION usr/bin/starry-test-suit)

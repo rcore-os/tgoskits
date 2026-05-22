@@ -73,6 +73,9 @@ pub mod irq;
 #[cfg(feature = "paging")]
 pub mod paging;
 
+#[cfg(feature = "starry-kcov")]
+pub mod kcov;
+
 /// Console input and output.
 pub mod console {
     #[cfg(feature = "irq")]

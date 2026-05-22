@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axplat-x86-qemu-q35-v0.4.7...axplat-x86-qemu-q35-v0.4.8) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-cpu
+
+## [0.4.7](https://github.com/rcore-os/tgoskits/compare/axplat-x86-qemu-q35-v0.4.6...axplat-x86-qemu-q35-v0.4.7) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-cpu
+
+## [0.4.6](https://github.com/rcore-os/tgoskits/compare/axplat-x86-qemu-q35-v0.4.5...axplat-x86-qemu-q35-v0.4.6) - 2026-05-15
+
+### Added
+
+- *(console)* add interrupt-driven console input ([#343](https://github.com/rcore-os/tgoskits/pull/343))
+
+### Other
+
+- *(platform)* inherit workspace metadata
+
 ## [0.4.5](https://github.com/rcore-os/tgoskits/compare/axplat-x86-qemu-q35-v0.4.4...axplat-x86-qemu-q35-v0.4.5) - 2026-04-27
 
 ### Added

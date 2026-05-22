@@ -106,6 +106,7 @@ impl TaskStat {
             cstime,
             num_threads: proc.threads().len() as u32,
             exit_signal: proc_data.exit_signal.unwrap_or(Signo::SIGCHLD) as u8,
+            processor: task.cpu_id(),
             exit_code: proc.exit_code(),
             ..Default::default()
         })

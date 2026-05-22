@@ -32,6 +32,12 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
     trace!("Syscall {sysno:?}");
 
+    // Snapshot sepc before dispatching: if a signal handler is installed
+    // during the syscall, the handler redirects uctx.ip() elsewhere.
+    // We must not overwrite retval when that happens, because on
+    // non-x86_64 arches retval and arg0 (signo) share a register.
+    let prev_ip = uctx.ip();
+
     let result = match sysno {
         // fs ctl
         Sysno::ioctl => sys_ioctl(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -192,28 +198,32 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
+            uctx.arg4(),
         ),
         Sysno::pwritev => sys_pwritev(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
+            uctx.arg4(),
         ),
         // Kernel ABI: SYSCALL_DEFINE6(preadv2, fd, vec, vlen, pos_l, pos_h, flags)
-        // arg4 is pos_h (high 32 bits of offset, always 0 on 64-bit); flags is arg5.
+        // arg4 is pos_h (high 32 bits of offset); flags is arg5.
         Sysno::preadv2 => sys_preadv2(
-            uctx.arg0() as _, // fd
-            uctx.arg1() as _, // iov
-            uctx.arg2() as _, // iovcnt
-            uctx.arg3() as _, // offset (pos_l)
-            uctx.arg5() as _, // flags (arg4=pos_h is skipped)
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
         Sysno::pwritev2 => sys_pwritev2(
-            uctx.arg0() as _, // fd
-            uctx.arg1() as _, // iov
-            uctx.arg2() as _, // iovcnt
-            uctx.arg3() as _, // offset (pos_l)
-            uctx.arg5() as _, // flags (arg4=pos_h is skipped)
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
         Sysno::sendfile => sys_sendfile(
             uctx.arg0() as _,
@@ -328,7 +338,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
 
         // memfd
-        Sysno::memfd_create => sys_memfd_create(uctx.arg0().into(), uctx.arg1() as _),
+        Sysno::memfd_create => sys_memfd_create(uctx.arg0() as _, uctx.arg1() as _),
 
         // fs stat
         #[cfg(target_arch = "x86_64")]
@@ -485,6 +495,12 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::exit => sys_exit(uctx.arg0() as _),
         Sysno::exit_group => sys_exit_group(uctx.arg0() as _),
         Sysno::wait4 => sys_waitpid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::waitid => sys_waitid(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
         Sysno::getsid => sys_getsid(uctx.arg0() as _),
         Sysno::setsid => sys_setsid(),
         Sysno::getpgid => sys_getpgid(uctx.arg0() as _),
@@ -556,6 +572,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::getresgid => sys_getresgid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::getgroups => sys_getgroups(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setgroups => sys_setgroups(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::setfsuid => sys_setfsuid(uctx.arg0() as _),
+        Sysno::setfsgid => sys_setfsgid(uctx.arg0() as _),
         Sysno::uname => sys_uname(uctx.arg0() as _),
         Sysno::sysinfo => sys_sysinfo(uctx.arg0() as _),
         Sysno::syslog => sys_syslog(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -716,6 +734,9 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         }
     };
     debug!("Syscall {sysno} return {result:?}");
+    let new_retval = result.unwrap_or_else(|err| -LinuxError::from(err).code() as _) as _;
 
-    uctx.set_retval(result.unwrap_or_else(|err| -LinuxError::from(err).code() as _) as _);
+    if uctx.ip() == prev_ip {
+        uctx.set_retval(new_retval);
+    }
 }

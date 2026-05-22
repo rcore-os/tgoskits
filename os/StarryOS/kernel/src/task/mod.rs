@@ -14,7 +14,7 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::{
     cell::RefCell,
     ops::Deref,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
 };
 
 use ax_hal::time::TimeValue;
@@ -34,6 +34,8 @@ pub use self::{
     cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, signal::*, stat::*,
     timer::*, user::*,
 };
+#[cfg(feature = "kcov")]
+use crate::kcov::KcovThreadState;
 use crate::mm::AddrSpace;
 
 /// Size of the syscall instruction for the current architecture.
@@ -78,6 +80,18 @@ impl NextSignalCheckBlock {
 
 /// The inner data of a thread.
 pub struct Thread {
+    /// User-visible thread ID (the `Pid` returned by `gettid`).
+    ///
+    /// Initially equal to the underlying scheduler `TaskInner::id()`. The two
+    /// diverge after a successful non-leader `execve`: Linux's `de_thread`
+    /// step transfers the leader's TID/TGID to the calling thread so that
+    /// `gettid() == getpid()` holds in the new image. We model that by
+    /// updating this field while leaving the immutable scheduler ID alone.
+    /// All user-facing TID lookups (`sys_gettid`, `set_tid_address`, signal
+    /// child registration, `do_exit`'s thread-group bookkeeping, etc.) read
+    /// this rather than the scheduler ID.
+    tid: AtomicU32,
+
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
 
@@ -116,6 +130,11 @@ pub struct Thread {
     /// Self exit event
     pub exit_event: Arc<PollSet>,
 
+    /// Set by `sys_execve` when reaping sibling threads. The signal-check
+    /// path turns this into a thread-only `do_exit(0, false)` — no group
+    /// exit, no fatal-signal cascade — so the new image is left intact.
+    exit_request: AtomicBool,
+
     /// The registered rseq area pointer (user address) for restartable
     /// sequences (`rseq(2)`).
     rseq_area: AtomicUsize,
@@ -125,6 +144,21 @@ pub struct Thread {
 
     /// Process credentials (uid, gid, etc.).
     cred: SpinNoIrq<Arc<Cred>>,
+
+    /// KCOV coverage state for this thread.
+    #[cfg(feature = "kcov")]
+    kcov: AssumeSync<RefCell<Option<KcovThreadState>>>,
+
+    /// Signo (as u8) of the synchronous user-mode fault that
+    /// [`raise_signal_fatal`] last force-delivered to this thread, or 0
+    /// for "no fault dump owed". [`check_signals`] only emits the
+    /// register dump when the signal it is about to terminate on
+    /// matches this signo — otherwise a low-numbered pending signal
+    /// (e.g. an external SIGTERM that landed before the SIGSEGV from a
+    /// page fault) would consume the flag and either dump for the
+    /// wrong context or, if it had a user handler, swallow the dump so
+    /// the real fault terminated silently.
+    pub fault_dump_signo: AtomicU8,
 }
 
 impl Thread {
@@ -135,6 +169,7 @@ impl Thread {
     pub fn new(tid: u32, proc_data: Arc<ProcessData>, parent_cred: Option<Arc<Cred>>) -> Box<Self> {
         let cred = parent_cred.unwrap_or_else(|| Arc::new(Cred::root()));
         Box::new(Thread {
+            tid: AtomicU32::new(tid),
             signal: ThreadSignalManager::new(tid, proc_data.signal.clone()),
             proc_data,
             clear_child_tid: AtomicUsize::new(0),
@@ -145,10 +180,29 @@ impl Thread {
             accessing_user_memory: AtomicBool::new(false),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
+            exit_request: AtomicBool::new(false),
             rseq_area: AtomicUsize::new(0),
             pdeathsig: AtomicU32::new(0),
             cred: SpinNoIrq::new(cred),
+            #[cfg(feature = "kcov")]
+            kcov: AssumeSync(RefCell::new(None)),
+
+            fault_dump_signo: AtomicU8::new(0),
         })
+    }
+
+    /// Returns the user-visible TID for this thread.
+    ///
+    /// See the field doc on [`Thread::tid`] for why this can differ from
+    /// the underlying scheduler `TaskInner::id()`.
+    pub fn tid(&self) -> u32 {
+        self.tid.load(Ordering::Acquire)
+    }
+
+    /// Updates the user-visible TID. Called only by `execve`'s de_thread
+    /// step to transfer the leader's TID to a non-leader caller.
+    pub(crate) fn set_tid(&self, tid: u32) {
+        self.tid.store(tid, Ordering::Release);
     }
 
     /// Get the clear child tid field.
@@ -193,6 +247,27 @@ impl Thread {
         self.exit.store(true, Ordering::Release);
     }
 
+    /// Consume a pending thread-only exit request, returning whether one
+    /// was set. The flag is cleared in the same atomic step so that a
+    /// re-entrant `check_signals` (the user loop drains signals in a
+    /// while-loop) doesn't fire `do_exit` twice for the same zap.
+    pub fn take_exit_request(&self) -> bool {
+        self.exit_request.swap(false, Ordering::AcqRel)
+    }
+
+    /// Non-consuming probe for a pending thread-only exit request. Used
+    /// by in-kernel wait loops that want to abort cooperatively without
+    /// stealing the flag from the user-return `check_signals` path.
+    pub fn has_exit_request(&self) -> bool {
+        self.exit_request.load(Ordering::Acquire)
+    }
+
+    /// Request a thread-only exit. Honored by `check_signals` on the next
+    /// return to user space, where it routes to `do_exit(0, false)`.
+    pub fn set_exit_request(&self) {
+        self.exit_request.store(true, Ordering::Release);
+    }
+
     /// Check if the thread is accessing user memory.
     pub fn is_accessing_user_memory(&self) -> bool {
         self.accessing_user_memory.load(Ordering::Acquire)
@@ -212,6 +287,26 @@ impl Thread {
     /// Set the pdeathsig value.
     pub fn set_pdeathsig(&self, sig: u32) {
         self.pdeathsig.store(sig, Ordering::Relaxed);
+    }
+
+    /// Run a closure with a borrow of the current KCOV state for this thread.
+    ///
+    /// Uses `try_borrow` so that a trace call inside `set_kcov`'s
+    /// `borrow_mut` does not panic when the instrumented hot path
+    /// re-enters here. Avoids cloning the `Arc<SharedPages>` on every
+    /// hot-path invocation.
+    #[cfg(feature = "kcov")]
+    pub fn with_kcov<R>(&self, f: impl FnOnce(Option<&KcovThreadState>) -> R) -> R {
+        match self.kcov.0.try_borrow() {
+            Ok(borrow) => f(borrow.as_ref()),
+            Err(_) => f(None),
+        }
+    }
+
+    /// Set the KCOV state for this thread.
+    #[cfg(feature = "kcov")]
+    pub fn set_kcov(&self, state: Option<KcovThreadState>) {
+        *self.kcov.0.borrow_mut() = state;
     }
 
     /// Get a snapshot of the current credentials (clones the `Arc`).
@@ -308,16 +403,22 @@ impl AsThread for TaskInner {
 /// A one-shot completion for vfork synchronization.
 ///
 /// This avoids lost-wakeup races by recording the "done" state under the same
-/// lock as the wait queue. If the child completes before the parent enters the
+/// lock as the waker set. If the child completes before the parent enters the
 /// wait, the parent will see `done == true` and skip waiting.
+///
+/// We use [`PollSet`] (not `WaitQueue`) so the parent's wait can run inside
+/// `block_on(interruptible(...))`: a sibling thread that does `execve` will
+/// zap us via `task.interrupt()`, which only wakes futures-based polls, not
+/// `WaitQueue::wait_until`. Without this, the execve initiator would deadlock
+/// in its sibling-teardown loop waiting for us to exit.
 pub struct VforkDone {
     done: bool,
-    wq: Arc<ax_task::WaitQueue>,
+    poll: Arc<PollSet>,
 }
 
 impl VforkDone {
-    pub fn new(wq: Arc<ax_task::WaitQueue>) -> Self {
-        Self { done: false, wq }
+    pub fn new(poll: Arc<PollSet>) -> Self {
+        Self { done: false, poll }
     }
 }
 
@@ -344,6 +445,13 @@ pub struct ProcessData {
     pub child_exit_event: Arc<PollSet>,
     /// Self exit event
     pub exit_event: Arc<PollSet>,
+    /// Woken every time a thread in this process exits. Used by a thread
+    /// performing `execve` to wait for siblings to be reaped.
+    pub thread_exit_event: Arc<PollSet>,
+    /// Serializes `execve` within the process. Only one thread can be
+    /// tearing down the thread group at a time; concurrent attempts return
+    /// `EINTR` (the loser is about to be zapped anyway).
+    pub exec_lock: Mutex<()>,
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
 
@@ -364,12 +472,33 @@ pub struct ProcessData {
     /// The process nice value used by getpriority/setpriority compatibility.
     nice: AtomicI32,
 
+    /// PR_GET_DUMPABLE / PR_SET_DUMPABLE value (default 1 = SUID_DUMP_USER).
+    /// Cleared to 0 (SUID_DUMP_DISABLE) whenever the effective UID/GID
+    /// changes via setuid/setresuid/setreuid (man 2 setuid §NOTES:
+    /// "If uid is different from the old effective UID, the process will
+    /// be forbidden from leaving core dumps").
+    /// Linux stores this on `mm_struct`; StarryOS keeps it process-wide.
+    dumpable: AtomicI32,
+
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
 
     /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
     pub posix_timers: Arc<PosixTimerTable>,
+
+    /// `true` when this process shares its [`AddrSpace`] with a parent/sibling
+    /// (`CLONE_VM`, e.g. vfork / posix_spawn). In that case the last thread must
+    /// **not** clear the address space on exit — the co-owner may still be
+    /// running.
+    ///
+    /// `false` for normal `fork()` children and after a successful `execve`
+    /// installs a private address space.
+    vm_aspace_shared: AtomicBool,
+
+    /// Set after [`Self::release_aspace_slot_if_needed`] runs so `Drop` does not
+    /// double-decrement [`AddrSpace::process_slots`].
+    aspace_slot_released: AtomicBool,
 }
 
 impl ProcessData {
@@ -381,8 +510,9 @@ impl ProcessData {
         aspace: Arc<Mutex<AddrSpace>>,
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
+        vm_aspace_shared: bool,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let this = Arc::new(Self {
             proc,
             exe_path: RwLock::new(exe_path),
             cmdline: RwLock::new(cmdline),
@@ -394,6 +524,8 @@ impl ProcessData {
 
             child_exit_event: Arc::default(),
             exit_event: Arc::default(),
+            thread_exit_event: Arc::default(),
+            exec_lock: Mutex::new(()),
             exit_signal,
 
             signal: Arc::new(ProcessSignalManager::new(
@@ -407,11 +539,50 @@ impl ProcessData {
 
             umask: AtomicU32::new(0o022),
             nice: AtomicI32::new(0),
+            dumpable: AtomicI32::new(1),
 
             children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
 
             posix_timers: Arc::new(PosixTimerTable::default()),
-        })
+
+            vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
+            aspace_slot_released: AtomicBool::new(false),
+        });
+        // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
+        // from `lock()` lives until the end of the statement, so calling
+        // `attach_process_slot` (which locks `Mutex<AddrSpace>`) in the same
+        // expression would nest a sleepable lock inside atomic context.
+        let aspace_arc = this.aspace.lock().clone();
+        crate::mm::attach_process_slot(&aspace_arc);
+        this
+    }
+
+    /// Whether this process shares its VM address space (`CLONE_VM`).
+    #[inline]
+    pub fn vm_aspace_shared(&self) -> bool {
+        self.vm_aspace_shared.load(Ordering::Acquire)
+    }
+
+    /// Called after `execve` commits a fresh private address space so exit
+    /// teardown may clear VMAs without touching a vfork parent's mappings.
+    #[inline]
+    pub fn mark_vm_aspace_private_after_exec(&self) {
+        self.vm_aspace_shared.store(false, Ordering::Release);
+    }
+
+    /// Release this process's [`AddrSpace::process_slots`] entry.
+    ///
+    /// Invoked from the last-thread exit path so inode-scoped accounting (memfd
+    /// shared-writable counts, etc.) is torn down before `waitpid` returns, and
+    /// again from `Drop` if not already run. Uses reference counting: only the
+    /// last slot holder triggers [`AddrSpace::clear`], so `CLONE_VM` co-owners
+    /// are unaffected.
+    pub fn release_aspace_slot_if_needed(&self) {
+        if self.aspace_slot_released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let aspace = self.aspace.lock().clone();
+        crate::mm::release_process_slot(&aspace);
     }
 
     /// Get the top address of the user heap.
@@ -455,6 +626,18 @@ impl ProcessData {
         self.nice.store(nice, Ordering::SeqCst);
     }
 
+    /// Get the dumpable flag (PR_GET_DUMPABLE).
+    pub fn dumpable(&self) -> i32 {
+        self.dumpable.load(Ordering::SeqCst)
+    }
+
+    /// Set the dumpable flag (PR_SET_DUMPABLE).
+    /// Valid values: 0 (SUID_DUMP_DISABLE), 1 (SUID_DUMP_USER),
+    /// 2 (SUID_DUMP_ROOT). Caller must validate before storing.
+    pub fn set_dumpable(&self, dumpable: i32) {
+        self.dumpable.store(dumpable, Ordering::SeqCst);
+    }
+
     /// Get the accumulated CPU time of waited children.
     pub fn children_cpu_time(&self) -> (TimeValue, TimeValue) {
         *self.children_cpu_time.lock()
@@ -494,56 +677,102 @@ impl ProcessData {
     /// `mem::replace` moves the old Arc out of the guard so it is dropped
     /// **after** the `SpinNoIrq` guard, in normal preemptible context.
     pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
-        let _old = {
+        let old = {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)
         };
-        // `_old` drops here — SpinNoIrq already released, IRQs re-enabled.
+        crate::mm::release_process_slot(&old);
+        let aspace_arc = self.aspace.lock().clone();
+        crate::mm::attach_process_slot(&aspace_arc);
     }
 
     /// Set the vfork completion (called on the child after a vfork,
     /// before the child task is spawned).
-    pub fn set_vfork_done(&self, wq: Arc<ax_task::WaitQueue>) {
-        *self.vfork_done.lock() = Some(VforkDone::new(wq));
+    pub fn set_vfork_done(&self, poll: Arc<PollSet>) {
+        *self.vfork_done.lock() = Some(VforkDone::new(poll));
     }
 
     /// Wait for vfork completion. Returns immediately if already done.
     /// This should be called by the parent after spawning the vfork child.
+    ///
+    /// The wait is killable but not arbitrarily signal-interruptible
+    /// (mirroring Linux's `wait_for_completion_killable`):
+    ///
+    ///   - If the child notifies (exec or exit), we return normally.
+    ///   - If another thread in this parent process does `execve` it will
+    ///     zap us by setting `exit_request`. We bail and let the user-
+    ///     return path consume `exit_request` and route to
+    ///     `do_exit(0, false)`. Without this, `WaitQueue::wait_until`
+    ///     would never observe the zap and the execve initiator would
+    ///     deadlock in its sibling-teardown loop.
+    ///   - Non-fatal signal wakeups must not unblock us: returning early
+    ///     while the child still shares our address space would violate
+    ///     the vfork contract. We re-enter the wait in that case.
     pub fn wait_vfork_done(&self) {
-        let wq = {
+        let poll = {
             let guard = self.vfork_done.lock();
             match guard.as_ref() {
-                Some(vfork) => vfork.wq.clone(),
+                Some(vfork) => vfork.poll.clone(),
                 None => return, // No vfork, shouldn't happen but be safe.
             }
         };
-        // Wait until done. The condition is checked under lock in wait_until.
-        wq.wait_until(|| {
-            self.vfork_done
-                .lock()
-                .as_ref()
-                .map(|v| v.done)
-                .unwrap_or(true)
-        });
+        let curr_task = ax_task::current();
+        let curr_thr = curr_task.as_thread();
+        loop {
+            let result = ax_task::future::block_on(ax_task::future::interruptible(
+                core::future::poll_fn(|cx| {
+                    // Register before re-checking so a notify that fires
+                    // between our last check and this register isn't lost.
+                    poll.register(cx.waker());
+                    let done = self
+                        .vfork_done
+                        .lock()
+                        .as_ref()
+                        .map(|v| v.done)
+                        .unwrap_or(true);
+                    if done {
+                        core::task::Poll::Ready(())
+                    } else {
+                        core::task::Poll::Pending
+                    }
+                }),
+            ));
+            match result {
+                Ok(()) => return,
+                Err(_) => {
+                    if curr_thr.has_exit_request() {
+                        return;
+                    }
+                    // Spurious wake from a non-fatal signal; keep waiting.
+                    continue;
+                }
+            }
+        }
     }
 
     /// Notify the vfork parent that this child has exec'd or exited.
     /// No-op if this process was not created by vfork.
     pub fn notify_vfork_done(&self) {
         // Set done under the lock, then drop the lock before notifying
-        // to avoid lock-order inversion with the wait-queue internal lock.
-        let wq = {
+        // to avoid lock-order inversion with the poll-set internal lock.
+        let poll = {
             let mut guard = self.vfork_done.lock();
             match guard.as_mut() {
                 Some(vfork) => {
                     vfork.done = true;
-                    vfork.wq.clone()
+                    vfork.poll.clone()
                 }
                 None => return,
             }
             // guard dropped here
         };
-        wq.notify_one(true);
+        poll.wake();
+    }
+}
+
+impl Drop for ProcessData {
+    fn drop(&mut self) {
+        self.release_aspace_slot_if_needed();
     }
 }
 

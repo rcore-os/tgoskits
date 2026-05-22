@@ -19,15 +19,15 @@ use ax_hal::{
     time::{monotonic_time, wall_time},
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
-use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use starry_process::{Pid, Process};
 
 use crate::{
     file::FD_TABLE,
     mm::BackendFileInfo,
     pseudofs::{
-        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqFile, SimpleDir, SimpleDirOps, SimpleFile,
-        SimpleFileOperation, SimpleFs,
+        DirMaker, DirMapping, NodeOpsMux, RwFile, SeqObject, SimpleDir, SimpleDirOps, SimpleFile,
+        SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
         AsThread, ProcessData, TaskStat, get_process_data, get_task, processes, tasks,
@@ -275,6 +275,14 @@ fn render_proc_net_arp() -> String {
     buf
 }
 
+fn render_proc_net_dev() -> String {
+    "Inter-|   Receive                                                |  Transmit\n\
+      face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
+        lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n\
+      eth0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n"
+        .to_string()
+}
+
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -325,7 +333,7 @@ fn task_status(task: &AxTaskRef) -> String {
     let cred = thread.cred();
     render_task_status(
         thread.proc_data.proc.pid(),
-        task.id().as_u64(),
+        thread.tid() as u64,
         &cred,
         task.cpumask(),
         ax_hal::cpu_num(),
@@ -635,7 +643,13 @@ impl SimpleDirOps for ThreadDir {
             .into(),
             "maps" => {
                 let task = self.task.clone();
-                SeqFile::new_regular(fs, move || render_thread_maps(&task)).into()
+                let seq = SeqObject::new(move || render_thread_maps(&task));
+                SpecialFsFile::new_regular_with_perm(
+                    fs.clone(),
+                    seq,
+                    NodePermission::from_bits_truncate(0o444),
+                )
+                .into()
             }
             "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
@@ -843,6 +857,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         net.add(
             "arp",
             SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_arp())),
+        );
+        net.add(
+            "dev",
+            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_dev())),
         );
 
         SimpleDir::new_maker(fs.clone(), Arc::new(net))

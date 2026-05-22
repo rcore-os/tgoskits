@@ -38,10 +38,16 @@ boot-stack-size = 0x40000                       # uint
 [devices]
 # MMIO ranges with format (`base_paddr`, `size`).
 mmio-ranges = [
-    [0x0300_0000, 0x8000],          # SYSCON
+    [0x0300_0000, 0x8000],          # SYSCON (includes FMUX 0x3001000)
+    [0x0302_0000, 0x2000],          # IOBLK_G1
+    [0x0306_0000, 0x4000],          # PWM0-3 (0x3060000..0x3064000)
     [0x0414_0000, 0x1000],          # UART0
+    [0x0415_0000, 0x1000],          # UART1
+    [0x0416_0000, 0x1000],          # UART2
+    [0x0417_0000, 0x1000],          # UART3
     [0x0431_0000, 0x1000],          # cv sdmmc
-    [0x0502_6000, 0x1000],          # RTC
+    [0x0434_0000, 0x1000],          # USB DWC2
+    [0x0502_6000, 0x2000],          # RTC + IOBLK_GRTC (0x5026000..0x5028000)
     [0x0c10_0000, 0x2000],          # TPU
     [0x7000_0000, 0x0400_0000],     # PLIC
     [0x7400_0000, 0x1_0000],        # CLINT
@@ -75,3 +81,4 @@ uart-irq = 0x2c                     # uint
 syscon-paddr = 0x0300_0000          # uint
 cvsd-paddr = 0x0431_0000            # uint
 root-partition-name = "rootfs"      # str
+bootargs = "root=/dev/mmcblk0p2"    # str

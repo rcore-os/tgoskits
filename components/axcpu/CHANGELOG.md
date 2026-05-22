@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.6.4](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.3...ax-cpu-v0.6.4) - 2026-05-22
+
+### Fixed
+
+- *(axvisor)* recover riscv guest memory faults ([#788](https://github.com/rcore-os/tgoskits/pull/788))
+
+### Other
+
+- *(axbacktrace)* use Backtrace::kind() instead of BacktraceReport ([#748](https://github.com/rcore-os/tgoskits/pull/748))
+
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.2...ax-cpu-v0.6.3) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-page-table-multiarch
+
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.1...ax-cpu-v0.6.2) - 2026-05-15
+
+### Other
+
+- updated the following local packages: axbacktrace
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.5.5...ax-cpu-v0.6.0) - 2026-04-27
 
 ### Added

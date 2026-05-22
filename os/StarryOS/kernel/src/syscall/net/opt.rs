@@ -1,6 +1,6 @@
 use ax_errno::{AxError, AxResult, LinuxError};
 use axnet::options::{Configurable, GetSocketOption, SetSocketOption};
-use linux_raw_sys::net::socklen_t;
+use linux_raw_sys::net::{IPPROTO_IPV6, IPV6_V6ONLY, socklen_t};
 
 use crate::{
     file::{FileLike, Socket, netlink::NetlinkSocket},
@@ -150,6 +150,7 @@ pub fn sys_getsockopt(
     }
 
     let socket = Socket::from_fd(fd)?;
+<<<<<<< HEAD
 
     // SO_TYPE is handled at the kernel level because the socket type is
     // known from the Socket enum variant, not from a per-protocol option.
@@ -172,6 +173,12 @@ pub fn sys_getsockopt(
             *get(optval, optlen)? = so_type as i32;
             return Ok(0);
         }
+=======
+    if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
+        // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
+        *get::<i32>(optval, optlen)? = 0;
+        return Ok(0);
+>>>>>>> upstream/dev
     }
 
     macro_rules! dispatch {
@@ -228,6 +235,15 @@ pub fn sys_setsockopt(
         }
     }
 
+    {
+        use linux_raw_sys::net::{SO_BROADCAST, SOL_SOCKET};
+
+        if (level, optname) == (SOL_SOCKET, SO_BROADCAST) {
+            let _ = read_int_sockopt(optval, optlen)?;
+            return Ok(0);
+        }
+    }
+
     fn get<'a, T: 'static>(val: UserConstPtr<u8>, len: socklen_t) -> AxResult<&'a T> {
         if len as usize != size_of::<T>() {
             return Err(AxError::InvalidInput);
@@ -236,6 +252,12 @@ pub fn sys_setsockopt(
     }
 
     let socket = Socket::from_fd(fd)?;
+    if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
+        // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
+        let _ = *get::<i32>(optval, optlen)?;
+        return Ok(0);
+    }
+
     macro_rules! dispatch {
         ($which:ident) => {
             socket.set_option(SetSocketOption::$which(get(optval, optlen)?))?;

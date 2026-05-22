@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.5.1...axvmconfig-v0.5.2) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-errno
+
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.5.0...axvmconfig-v0.5.1) - 2026-05-19
+
+### Other
+
+- updated the following local packages: ax-errno
+
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.4.8...axvmconfig-v0.5.0) - 2026-05-15
+
+### Added
+
+- *(axvisor)* support x86_64(VMX) QEMU guest boot ([#526](https://github.com/rcore-os/tgoskits/pull/526))
+
+### Other
+
+- *(axvmconfig)* inherit workspace metadata
+
 ## [0.4.8](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.4.7...axvmconfig-v0.4.8) - 2026-04-27
 
 ### Other

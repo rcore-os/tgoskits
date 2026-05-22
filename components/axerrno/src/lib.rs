@@ -79,6 +79,10 @@ pub enum AxErrorKind {
     NoMemory,
     /// No such device.
     NoSuchDevice,
+    /// No such device or address (ENXIO). Linux uses ENXIO for: opening a
+    /// UNIX-domain-socket file, opening a FIFO O_WRONLY|O_NONBLOCK with no
+    /// reader, opening a device-special file with no underlying device.
+    NoSuchDeviceOrAddress,
     /// No such process.
     NoSuchProcess,
     /// A filesystem object is, unexpectedly, not a directory.
@@ -117,6 +121,12 @@ pub enum AxErrorKind {
     /// The operation needs to block to complete, but the blocking operation was
     /// requested to not occur.
     WouldBlock,
+    /// Destination address required (sendto/sendmsg on unconnected socket
+    /// without specifying a target address).
+    DestAddrRequired,
+    /// Message too long (sendto/sendmsg with datagram exceeding socket
+    /// buffer or protocol size limit).
+    MessageTooLong,
     /// An error returned when an operation could not be completed because a
     /// call to `write()` returned [`Ok(0)`](Ok).
     WriteZero,
@@ -151,6 +161,7 @@ impl AxErrorKind {
             NameTooLong => "Filename too long",
             NoMemory => "Out of memory",
             NoSuchDevice => "No such device",
+            NoSuchDeviceOrAddress => "No such device or address",
             NoSuchProcess => "No such process",
             NotADirectory => "Not a directory",
             NotASocket => "Not a socket",
@@ -169,6 +180,8 @@ impl AxErrorKind {
             UnexpectedEof => "Unexpected end of file",
             Unsupported => "Operation not supported",
             WouldBlock => "Operation would block",
+            DestAddrRequired => "Destination address required",
+            MessageTooLong => "Message too long",
             WriteZero => "Write zero",
         }
     }
@@ -225,10 +238,13 @@ impl From<AxErrorKind> for LinuxError {
             NameTooLong => ENAMETOOLONG,
             NoMemory => ENOMEM,
             NoSuchDevice => ENODEV,
+            NoSuchDeviceOrAddress => ENXIO,
             NoSuchProcess => ESRCH,
             NotADirectory => ENOTDIR,
             NotASocket => ENOTSOCK,
             NotATty => ENOTTY,
+            DestAddrRequired => EDESTADDRREQ,
+            MessageTooLong => EMSGSIZE,
             NotConnected => ENOTCONN,
             NotFound => ENOENT,
             OperationNotPermitted => EPERM,
@@ -276,10 +292,13 @@ impl TryFrom<LinuxError> for AxErrorKind {
             ENAMETOOLONG => NameTooLong,
             ENOMEM => NoMemory,
             ENODEV => NoSuchDevice,
+            ENXIO => NoSuchDeviceOrAddress,
             ESRCH => NoSuchProcess,
             ENOTDIR => NotADirectory,
             ENOTSOCK => NotASocket,
             ENOTTY => NotATty,
+            EDESTADDRREQ => DestAddrRequired,
+            EMSGSIZE => MessageTooLong,
             ENOTCONN => NotConnected,
             ENOENT => NotFound,
             EPERM => OperationNotPermitted,
@@ -455,6 +474,7 @@ axerror_consts!(
     NameTooLong,
     NoMemory,
     NoSuchDevice,
+    NoSuchDeviceOrAddress,
     NoSuchProcess,
     NotADirectory,
     NotASocket,
@@ -473,6 +493,8 @@ axerror_consts!(
     UnexpectedEof,
     Unsupported,
     WouldBlock,
+    DestAddrRequired,
+    MessageTooLong,
     WriteZero
 );
 
@@ -600,7 +622,10 @@ mod tests {
     #[test]
     fn test_try_from() {
         let max_code = AxErrorKind::COUNT as i32;
-        assert_eq!(max_code, 43);
+        // 46 = 45 (dev baseline, 含 WriteZero) + 1 (NoSuchDeviceOrAddress, ENXIO).
+        // 该 variant 由 open/openat deep-fix PR 引入（fix bug-open-unix-socket-no-enxio
+        // 与 bug-open-fifo-wronly-no-reader-no-enxio 需要 ENXIO 映射）。
+        assert_eq!(max_code, 46);
         assert_eq!(max_code, AxError::WriteZero.code());
 
         assert_eq!(AxError::AddrInUse.code(), 1);

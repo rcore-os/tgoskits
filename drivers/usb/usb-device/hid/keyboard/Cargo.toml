@@ -1,0 +1,23 @@
+[package]
+authors = ["周睿 <zrufo747@outlook.com>"]
+edition.workspace = true
+license.workspace = true
+name = "usb-keyboard"
+publish = false
+repository.workspace = true
+version = "0.1.1"
+
+[dependencies]
+crab-usb = {workspace = true}
+keyboard-types = { version = "0.8.3", default-features = false }
+log = "0.4"
+usb-if = {workspace = true}
+anyhow = {version = "1", default-features = false}
+
+[dev-dependencies]
+env_logger = "0.11"
+tokio = {version = "1", features = ["full"]}
+
+[[example]]
+name = "keyboard"
+required-features = ["crab-usb/libusb"]
