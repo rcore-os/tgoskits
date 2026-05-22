@@ -101,7 +101,10 @@ static void *thread_publish_tid(void *arg)
     if (write(sync->notify_pipe[1], "x", 1) != 1) {
         return (void *)1;
     }
-    pause();
+    char ch;
+    if (read(sync->notify_pipe[0], &ch, 1) != 1) {
+        return (void *)1;
+    }
     return NULL;
 }
 
@@ -133,10 +136,9 @@ static void test_pidfd_open_thread_tid(void)
         close(pfd);
     }
 
-    pthread_cancel(thread);
+    close(sync.notify_pipe[1]);
     pthread_join(thread, NULL);
     close(sync.notify_pipe[0]);
-    close(sync.notify_pipe[1]);
 }
 
 static void test_pidfd_open_zombie(void)
