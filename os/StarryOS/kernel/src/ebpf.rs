@@ -173,6 +173,7 @@ mod cmd {
     pub const OBJ_GET: u64 = 7;
     pub const PROG_ATTACH: u64 = 8;
     pub const PROG_DETACH: u64 = 9;
+    pub const OBJ_CLOSE: u64 = 11;
     pub const RAW_TRACEPOINT_OPEN: u64 = 17;
     pub const LINK_CREATE: u64 = 28;
     pub const ENABLE_STATS: u64 = 32;
@@ -480,6 +481,40 @@ impl BpfFdTable {
         let fd = self.alloc_fd();
         self.progs.insert(fd, prog);
         fd
+    }
+
+    #[allow(dead_code)]
+    fn get_prog(&mut self, fd: u32) -> AxResult<&mut BpfProg> {
+        self.progs.get_mut(&fd).ok_or(AxError::BadFileDescriptor)
+    }
+
+    fn remove_map(&mut self, fd: u32) -> AxResult<()> {
+        self.maps
+            .remove(&fd)
+            .map(|_| ())
+            .ok_or(AxError::BadFileDescriptor)
+    }
+
+    fn remove_prog(&mut self, fd: u32) -> AxResult<()> {
+        self.progs
+            .remove(&fd)
+            .map(|_| ())
+            .ok_or(AxError::BadFileDescriptor)
+    }
+
+    fn close_fd(&mut self, fd: u32) -> AxResult<()> {
+        if self.maps.contains_key(&fd) {
+            self.remove_map(fd)
+        } else if self.progs.contains_key(&fd) {
+            self.remove_prog(fd)
+        } else {
+            Err(AxError::BadFileDescriptor)
+        }
+    }
+
+    #[allow(dead_code)]
+    fn fd_exists(&self, fd: u32) -> bool {
+        self.maps.contains_key(&fd) || self.progs.contains_key(&fd)
     }
 }
 
@@ -1174,6 +1209,17 @@ fn handle_link_create(uattr: usize, size: u32) -> AxResult<isize> {
     Ok(target_fd as isize)
 }
 
+fn handle_obj_close(uattr: usize, size: u32) -> AxResult<isize> {
+    if size < 4 {
+        return Err(bpf_error::EINVAL);
+    }
+    let fd = unsafe { core::ptr::read(uattr as *const u32) };
+    let mut guard = BPF_GLOBAL.lock();
+    guard.close_fd(fd)?;
+    info!("bpf: OBJ_CLOSE fd={fd}");
+    Ok(0)
+}
+
 fn handle_prog_attach(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
     if size < 16 {
         return Err(bpf_error::EINVAL);
@@ -1204,6 +1250,7 @@ pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
         cmd::MAP_DELETE_ELEM => handle_map_delete_elem(uattr, size),
         cmd::MAP_GET_NEXT_KEY => handle_map_get_next_key(uattr, size),
         cmd::RAW_TRACEPOINT_OPEN => handle_raw_tracepoint_open(uattr, size),
+        cmd::OBJ_CLOSE => handle_obj_close(uattr, size),
         cmd::OBJ_PIN | cmd::OBJ_GET => {
             warn!("bpf: obj pin/get not yet implemented");
             Err(bpf_error::EINVAL)
@@ -1229,4 +1276,16 @@ pub fn sys_perf_event_open(
     flags: u64,
 ) -> AxResult<isize> {
     crate::perf_event::sys_perf_event_open_impl(attr_uptr, pid, cpu, group_fd, flags)
+}
+
+#[allow(dead_code)]
+pub fn bpf_close_fd(fd: u32) -> AxResult<()> {
+    let mut guard = BPF_GLOBAL.lock();
+    guard.close_fd(fd)
+}
+
+#[allow(dead_code)]
+pub fn bpf_fd_exists(fd: u32) -> bool {
+    let guard = BPF_GLOBAL.lock();
+    guard.fd_exists(fd)
 }

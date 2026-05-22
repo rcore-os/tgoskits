@@ -351,6 +351,26 @@ pub fn perf_event_write(fd: u32, data: &[u8]) -> AxResult<()> {
     Err(AxError::BadFileDescriptor)
 }
 
+#[allow(dead_code)]
+pub fn perf_event_close(fd: u32) -> AxResult<()> {
+    let mut guard = PERF_EVENTS.lock();
+    let idx = guard.iter().position(|e| e.fd == fd);
+    match idx {
+        Some(i) => {
+            guard.remove(i);
+            info!("perf_event_close: fd={fd}");
+            Ok(())
+        }
+        None => Err(AxError::BadFileDescriptor),
+    }
+}
+
+#[allow(dead_code)]
+pub fn perf_event_fd_exists(fd: u32) -> bool {
+    let guard = PERF_EVENTS.lock();
+    guard.iter().any(|e| e.fd == fd)
+}
+
 pub fn perf_event_enable(fd: u32) -> AxResult<()> {
     let mut guard = PERF_EVENTS.lock();
     for entry in guard.iter_mut() {
