@@ -115,11 +115,16 @@ pub(crate) fn with_slot<R>(
             if loc.metadata()?.node_type != NodeType::Socket {
                 return Err(AxError::NotASocket);
             }
-            f(loc
-                .user_data()
-                .get::<BindSlot>()
-                .ok_or(AxError::ConnectionRefused)?
-                .as_ref())
+            let slot = {
+                // `DirEntry::user_data()` is protected by a SpinNoIrq guard.
+                // Drop it before running transport code, which may take
+                // sleepable socket mutexes.
+                let user_data = loc.user_data();
+                user_data
+                    .get::<BindSlot>()
+                    .ok_or(AxError::ConnectionRefused)?
+            };
+            f(slot.as_ref())
         }
     }
 }
@@ -143,10 +148,14 @@ fn with_slot_or_insert<R>(
             if loc.metadata()?.node_type != NodeType::Socket {
                 return Err(AxError::NotASocket);
             }
-            f(loc
-                .user_data()
-                .get_or_insert_with(BindSlot::default)
-                .as_ref())
+            let slot = {
+                // `DirEntry::user_data()` is protected by a SpinNoIrq guard.
+                // Drop it before running transport code, which may take
+                // sleepable socket mutexes.
+                let mut user_data = loc.user_data();
+                user_data.get_or_insert_with(BindSlot::default)
+            };
+            f(slot.as_ref())
         }
     }
 }

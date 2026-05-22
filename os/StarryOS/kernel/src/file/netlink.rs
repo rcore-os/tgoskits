@@ -415,13 +415,15 @@ impl NetlinkSocket {
     /// Drain at most one queued message into `dst`.  Returns `WouldBlock`
     /// when the queue is empty.
     fn read_one(&self, dst: &mut IoDst) -> AxResult<usize> {
-        let mut queue = self.queue.lock();
-        let Some(msg) = queue.front() else {
-            return Err(AxError::WouldBlock);
+        let msg = {
+            let mut queue = self.queue.lock();
+            let Some(msg) = queue.pop_front() else {
+                return Err(AxError::WouldBlock);
+            };
+            msg
         };
         // Cap at the message length; netlink datagrams are not coalesced.
-        let n = dst.write(msg)?;
-        queue.pop_front();
+        let n = dst.write(&msg)?;
         Ok(n)
     }
 }

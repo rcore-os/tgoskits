@@ -61,8 +61,7 @@ Intentional direct `NoPreempt` users:
 use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
 ```
 
-The main filesystem state is now protected by `ax_sync::Mutex`, a
-task-context blocking mutex when multitasking is enabled.
+The main filesystem state is now protected by `SpinNoIrq`.
 
 Risk:
 
@@ -76,13 +75,15 @@ Risk:
   filesystem lock is held. The VFS trait already warns that sinks should not
   operate on nodes because some filesystems hold a lock while iterating.
 
-Assessment: resolved for the main FAT state lock by moving it to
-`ax_sync::Mutex`. This preserves filesystem-wide serialization without running
-block I/O in `SpinNoPreempt`/`SpinNoIrq` atomic context. The lock is still large,
-so future work may split it or avoid calling `DirEntrySink::accept` while it is
-held, but it is no longer part of the `SpinNoPreempt` hazard.
+Assessment: the original `SpinNoPreempt` same-CPU IRQ reentry hazard is resolved
+by moving the lock to `SpinNoIrq`. A previous attempt to use `ax_sync::Mutex`
+exposed that Starry rootfs setup still takes the filesystem lock in an early
+atomic context (`irq_enabled=false`, `preempt_count=1`), where a blocking mutex
+panics in `might_sleep()`. The lock is still large and may wrap block I/O, so
+future work should split it or move rootfs mount/flush paths into a normal task
+context.
 
-`root_dir: Mutex<Option<DirEntry>>` uses the same blocking mutex alias after the
+`root_dir: Mutex<Option<DirEntry>>` uses the same `SpinNoIrq` alias after the
 change. It is used only to install and clone the root dentry and can later
 become `OnceCell` if desired.
 
@@ -90,7 +91,7 @@ become `OnceCell` if desired.
 
 `os/arceos/modules/axfs-ng/src/fs/ext4/rsext4/fs.rs` used to alias
 `SpinNoPreempt` as the filesystem mutex protecting `Ext4State`. It now uses
-`ax_sync::Mutex`.
+`SpinNoIrq`.
 
 Risk:
 
@@ -104,14 +105,18 @@ Risk:
 - The loop-device adapter keeps `flush()` as a no-op to avoid re-entering
   backing-file VFS writeback from filesystem block I/O paths.
 
-Assessment: resolved for the filesystem mutex by moving it to
-`ax_sync::Mutex`. This is still a coarse filesystem lock, but disk, cache, and
-journal operations are no longer wrapped by a `SpinNoPreempt` guard.
+Assessment: the `SpinNoPreempt` same-CPU IRQ reentry hazard is resolved by
+moving the filesystem mutex to `SpinNoIrq`. This is a conservative compatibility
+fix for current Starry boot/rootfs paths; it does not make the coarse lock safe
+for sleeping work. Disk, cache, and journal operations can still run in atomic
+context while the guard is held, so the longer-term fix is to avoid invoking
+these filesystem paths before the kernel has a sleepable task context, or to
+split the filesystem serialization strategy.
 
 ### ext4 with `lwext4`
 
 `os/arceos/modules/axfs-ng/src/fs/ext4/lwext4/fs.rs` used the same
-`SpinNoPreempt` alias for `LwExt4Filesystem`. It now uses `ax_sync::Mutex`.
+`SpinNoPreempt` alias for `LwExt4Filesystem`. It now uses `SpinNoIrq`.
 
 Risk:
 
@@ -120,9 +125,10 @@ Risk:
   while holding the lock.
 - The `flush()` implementation directly calls `self.inner.lock().flush()`.
 
-Assessment: resolved for the filesystem mutex by moving it to
-`ax_sync::Mutex`. It remains a coarse lock around the lwext4 wrapper and can be
-split later if contention or callback constraints require it.
+Assessment: the `SpinNoPreempt` same-CPU IRQ reentry hazard is resolved by
+moving the filesystem mutex to `SpinNoIrq`. As with rsext4, this keeps current
+early/rootfs contexts working but leaves the broader coarse-lock and block-I/O
+under atomic context issue for a later design change.
 
 ## Starry epoll
 
@@ -163,8 +169,10 @@ not by the waker fast path.
 
 `os/StarryOS/kernel/src/pseudofs/dev/loop.rs` used
 `SpinNoPreempt<Vec<Vec<u8>>>` for `CacheData::blocks`. It now uses
-`ax_sync::Mutex`, matching the filesystem block-I/O paths that can run in task
-context.
+`SpinNoIrq`, because ext4 can call the loop block-device adapter while holding
+filesystem locks that already put the kernel in atomic context. A blocking
+mutex panicked in the `util-linux` Starry QEMU case when `read_block()` tried to
+lock the cache under the ext4 filesystem guard.
 
 Risk:
 
@@ -176,10 +184,78 @@ Risk:
 - The comments explicitly avoid doing VFS writeback from filesystem block I/O
   paths.
 
-Assessment: resolved for `SpinNoPreempt`. The critical sections remain bounded
-memory copies, and VFS writeback still happens after dropping the cache guard.
-If loop block devices are later made callable from hard IRQ context, this lock
-strategy must be revisited.
+Assessment: the `SpinNoPreempt` same-CPU IRQ reentry hazard is resolved by
+using `SpinNoIrq`, and the observed blocking-mutex panic is avoided without
+re-entering VFS writeback from ext4 block-I/O callbacks. The critical sections
+remain bounded memory copies. If this cache ever needs to allocate or perform
+VFS I/O under the guard, the strategy must be revisited.
+
+## Starry tmpfs and VFS cache nesting
+
+`os/StarryOS/kernel/src/pseudofs/tmp.rs` now uses `SpinNoIrq` for the tmpfs
+root dentry and per-directory entry maps.
+
+Risk:
+
+- `MemoryFs::root_dir()` is called while mounting pseudofs during startup.
+  Using a blocking mutex there caused `might_sleep()` to panic when the startup
+  path reached tmpfs before a sleepable context was available.
+- `components/axfs-ng-vfs/src/node/dir.rs` protects its dentry cache with
+  `SpinNoIrq` and calls filesystem `lookup`, `create`, `unlink`, and
+  `open_file` paths while the cache guard is held. A blocking tmpfs directory
+  map mutex therefore panicked when a tmpfs cache miss reached
+  `MemoryNode::lookup()`.
+- `MemoryNode::link()` no longer calls the generic `DirEntry::metadata()` while
+  holding the tmpfs entries guard; it reads the target tmpfs inode metadata
+  directly from the short `SpinNoIrq` metadata lock.
+
+Assessment: the observed Starry QEMU panics are resolved by keeping tmpfs root
+and directory maps non-blocking. This remains a compatibility fix for the
+current VFS cache contract. A broader VFS improvement would avoid calling
+filesystem operations while holding the dentry-cache spin guard, which would
+let tmpfs directory maps move back to a sleepable lock if desired.
+
+## Unix domain socket path binding
+
+`os/arceos/modules/axnet-ng/src/unix/mod.rs` no longer executes transport
+callbacks while holding `DirEntry::user_data()`'s `SpinNoIrq` guard.
+
+Risk:
+
+- `/dev/log` setup creates a Unix datagram socket and binds it to a filesystem
+  path during Starry pseudofs initialization.
+- Path-based Unix sockets store their `BindSlot` in VFS `user_data`, whose lock
+  is a `SpinNoIrq` guard from `axfs-ng-vfs`.
+- The old code passed a borrowed `BindSlot` directly into the callback while
+  the `user_data` guard was still alive. `DgramTransport::bind()` then tried to
+  take its sleepable socket mutex under that spin guard and tripped
+  `might_sleep()`.
+
+Assessment: resolved by cloning the `Arc<BindSlot>` out of `user_data`, dropping
+the spin guard, and only then invoking the transport operation. This keeps
+socket internals sleepable while preserving the short VFS user-data critical
+section.
+
+## Starry packet and netlink receive paths
+
+`os/StarryOS/kernel/src/file/netlink.rs` and
+`os/StarryOS/kernel/src/file/packet.rs` hit the second `SpinNoIrq` hazard:
+faultable user-memory writes while a spin guard was alive.
+
+Risk:
+
+- `NetlinkSocket::read_one()` used to pop and copy the queued netlink message
+  while holding the socket queue guard. `c-regression/test-netlink-genl`
+  faulted during `IoDst::write()` and tripped the
+  "faultable user memory access requires IRQs enabled" assertion.
+- `PacketSocket::recv_packet()` used to write the pending packet into the user
+  buffer inside the socket state critical section. `bugfix/bug-packet-arping`
+  reproduced the same user-copy assertion.
+
+Assessment: resolved by moving the queued packet/message into a local variable
+under the guard, dropping the guard, and only then copying into user memory.
+The locks still protect only queue/state mutation; page-faultable user access
+now happens with IRQs enabled.
 
 ## Starry tty metadata
 
