@@ -1001,7 +1001,7 @@ impl BpfVm {
                 bpf_insn::BPF_ALU | bpf_insn::BPF_ALU64 => {
                     let is_64 = class == bpf_insn::BPF_ALU64;
                     let dst = insn.dst_reg() as usize;
-                    let src_val = if insn.src_reg() == bpf_insn::BPF_X {
+                    let src_val = if insn.code & bpf_insn::BPF_X != 0 {
                         regs[insn.src_reg() as usize]
                     } else {
                         insn.imm as u64
@@ -1028,7 +1028,7 @@ impl BpfVm {
                     }
                     let is_64 = class == bpf_insn::BPF_JMP;
                     let dst = insn.dst_reg() as usize;
-                    let src_val = if insn.src_reg() == bpf_insn::BPF_X {
+                    let src_val = if insn.code & bpf_insn::BPF_X != 0 {
                         regs[insn.src_reg() as usize]
                     } else {
                         insn.imm as u64
