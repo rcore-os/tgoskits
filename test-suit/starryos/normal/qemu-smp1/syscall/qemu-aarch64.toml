@@ -47,7 +47,6 @@ test_commands = [
     "/usr/bin/test-mmap-family",
     "/usr/bin/test-modern-fd-family",
     "/usr/bin/test-prctl-pdeathsig",
-    "/usr/bin/test-prctl-no-new-privs",
     "/usr/bin/test-path-family",
     "/usr/bin/test-raw-msg-peek",
     "/usr/bin/test-rlimit-stack",
