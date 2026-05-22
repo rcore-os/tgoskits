@@ -283,7 +283,7 @@ impl<T> MemoryAddr for T where T: Copy + From<usize> + Into<usize> + Ord {}
 /// # Example
 ///
 /// ```
-/// use ax_memory_addr::{def_usize_addr, MemoryAddr};
+/// use ax_memory_addr::{MemoryAddr, def_usize_addr};
 ///
 /// def_usize_addr! {
 ///     /// A example address type.
@@ -295,7 +295,10 @@ impl<T> MemoryAddr for T where T: Copy + From<usize> + Into<usize> + Ord {}
 /// const EXAMPLE: ExampleAddr = ExampleAddr::from_usize(0x1234);
 /// const EXAMPLE_USIZE: usize = EXAMPLE.as_usize();
 /// assert_eq!(EXAMPLE_USIZE, 0x1234);
-/// assert_eq!(EXAMPLE.align_down(0x10usize), ExampleAddr::from_usize(0x1230));
+/// assert_eq!(
+///     EXAMPLE.align_down(0x10usize),
+///     ExampleAddr::from_usize(0x1230)
+/// );
 /// assert_eq!(EXAMPLE.align_up_4k(), ExampleAddr::from_usize(0x2000));
 /// # }
 /// ```

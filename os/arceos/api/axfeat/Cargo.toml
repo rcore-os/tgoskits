@@ -122,7 +122,7 @@ backtrace = ["alloc", "axbacktrace/alloc"]
 dwarf = ["alloc", "axbacktrace/dwarf"]
 
 [dependencies]
-ax-alloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true, features = ["default"] }
 axbacktrace.workspace = true
 ax-config = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
