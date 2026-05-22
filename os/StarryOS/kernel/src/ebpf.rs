@@ -639,16 +639,17 @@ fn handle_prog_load(uattr: usize, size: u32) -> AxResult<isize> {
         kern_version,
         prog_flags,
     ) = unsafe {
-        let ptr = uattr as *const u64;
-        let prog_type = core::ptr::read(ptr) as u32;
-        let insn_cnt = core::ptr::read(ptr.add(1)) as u32;
-        let insns_ptr = core::ptr::read(ptr.add(2));
-        let license_ptr = core::ptr::read(ptr.add(3));
-        let log_level = core::ptr::read(ptr.add(4)) as u32;
-        let log_size = core::ptr::read(ptr.add(5)) as u32;
-        let log_buf = core::ptr::read(ptr.add(6));
-        let kern_version = core::ptr::read(ptr.add(7)) as u32;
-        let prog_flags = core::ptr::read(ptr.add(8)) as u32;
+        let read_u32 = |off: usize| core::ptr::read((uattr + off) as *const u32);
+        let read_u64 = |off: usize| core::ptr::read((uattr + off) as *const u64);
+        let prog_type = read_u32(0);
+        let insn_cnt = read_u32(4);
+        let insns_ptr = read_u64(8);
+        let license_ptr = read_u64(16);
+        let log_level = read_u32(24);
+        let log_size = read_u32(28);
+        let log_buf = read_u64(32);
+        let kern_version = read_u32(40);
+        let prog_flags = read_u32(44);
         (
             prog_type,
             insn_cnt,
