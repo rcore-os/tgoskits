@@ -47,27 +47,11 @@ on:
         required: false
         type: string
         default: "1"
-      self_hosted_owner:
-        description: Repository owner that uses the original self-hosted runner; other owners fall back to ubuntu-latest with the configured container. Leave empty to disable fallback.
-        required: false
-        type: string
-        default: ""
-
 jobs:
   run_host:
     if: >-
       ${{
         !inputs.use_container
-        && (
-          inputs.self_hosted_owner == ''
-          || (
-            github.repository_owner == inputs.self_hosted_owner
-            && (
-              github.event_name != 'pull_request'
-              || github.event.pull_request.head.repo.owner.login == inputs.self_hosted_owner
-            )
-          )
-        )
         && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
@@ -94,41 +78,13 @@ jobs:
         run: ${{ inputs.command }}
 
   run_container:
-    # NOTE: the "is-fallback?" boolean in runs-on must stay in sync with the
-    # if: condition below. Do not update one without updating the other.
     if: >-
       ${{
-        (
-          inputs.use_container
-          || (
-            inputs.self_hosted_owner != ''
-            && (
-              github.repository_owner != inputs.self_hosted_owner
-              || (
-                github.event_name == 'pull_request'
-                && github.event.pull_request.head.repo.owner.login != inputs.self_hosted_owner
-              )
-            )
-          )
-        )
+        inputs.use_container
         && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
-    # Keep this expression in sync with the "is-fallback?" branch in if: above.
-    runs-on: >-
-      ${{
-        !inputs.use_container
-        && inputs.self_hosted_owner != ''
-        && (
-          github.repository_owner != inputs.self_hosted_owner
-          || (
-            github.event_name == 'pull_request'
-            && github.event.pull_request.head.repo.owner.login != inputs.self_hosted_owner
-          )
-        )
-        && fromJson('["ubuntu-latest"]')
-        || fromJson(inputs.runs_on)
-      }}
+    runs-on: ${{ fromJson(inputs.runs_on) }}
     container:
       image: ${{ inputs.container_image }}
       credentials:

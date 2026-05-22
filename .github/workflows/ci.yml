@@ -495,8 +495,33 @@ jobs:
             main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
     with:
-      runs_on: ${{ matrix.runs_on }}
-      use_container: ${{ matrix.use_container }}
+      runs_on: >-
+        ${{
+          matrix.self_hosted_owner != ''
+          && (
+            github.repository_owner != matrix.self_hosted_owner
+            || (
+              github.event_name == 'pull_request'
+              && github.event.pull_request.head.repo.owner.login != matrix.self_hosted_owner
+            )
+          )
+          && '["ubuntu-latest"]'
+          || matrix.runs_on
+        }}
+      use_container: >-
+        ${{
+          matrix.use_container
+          || (
+            matrix.self_hosted_owner != ''
+            && (
+              github.repository_owner != matrix.self_hosted_owner
+              || (
+                github.event_name == 'pull_request'
+                && github.event.pull_request.head.repo.owner.login != matrix.self_hosted_owner
+              )
+            )
+          )
+        }}
       command: ${{ matrix.command }}
       cache_key: ${{ matrix.cache_key }}
       container_image: >-
@@ -511,7 +536,6 @@ jobs:
       limit_to_owner: ${{ matrix.limit_to_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
       fetch_depth: ${{ matrix.fetch_depth == 'full' && '0' || '1' }}
-      self_hosted_owner: ${{ matrix.self_hosted_owner || '' }}
 
   publish_base_container:
     name: Publish base container image
