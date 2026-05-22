@@ -1,7 +1,7 @@
 [package]
 name = "ax-driver-block"
 edition.workspace = true
-version = "0.3.13"
+version = "0.3.14"
 repository = "https://github.com/rcore-os/tgoskits"
 authors = ["Yuekai Jia <equation618@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>", "Yu Chen <yuchen@tsinghua.edu.cn>"]
 description = "Common traits and types for block storage drivers"
@@ -25,4 +25,4 @@ log = { workspace = true }
 simple-sdmmc = { version = "0.1", optional = true }
 simple-ahci = { version = "0.1.1-preview.1", optional = true }
 bcm2835-sdhci = { version = "0.1.1-preview.1", optional = true }
-sg200x-bsp = { version = "0.5.4", optional = true }
+sg200x-bsp = { workspace = true, optional = true }

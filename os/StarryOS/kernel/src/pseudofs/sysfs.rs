@@ -85,6 +85,14 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "dev",
         SimpleDir::new_maker(fs.clone(), Arc::new(DevDir { fs: fs.clone() })),
     );
+    root.add("kernel", {
+        let mut kernel = DirMapping::new();
+        kernel.add(
+            "debug",
+            SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+        );
+        SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
+    });
     SimpleDir::new_maker(fs.clone(), Arc::new(root))
 }
 

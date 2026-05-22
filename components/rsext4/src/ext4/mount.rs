@@ -313,7 +313,7 @@ impl Ext4FileSystem {
                     let expected_inode =
                         ext4_inode_bitmap_csum32(&fs.superblock, &inode_bitmap_data.data);
                     let stored_inode = g0.inode_bitmap_csum();
-                    if expected_inode != stored_inode {
+                    if !g0.inode_bitmap_csum_matches(&fs.superblock, expected_inode) {
                         error!(
                             "Inode bitmap checksum mismatch group=0 expected={expected_inode:#x} \
                              stored={stored_inode:#x} inode_bitmap_block={inode_bitmap_blk} \
@@ -329,7 +329,7 @@ impl Ext4FileSystem {
                     let expected_block =
                         ext4_block_bitmap_csum32(&fs.superblock, &blockbitmap_data.data);
                     let stored_block = g0.block_bitmap_csum();
-                    if expected_block != stored_block {
+                    if !g0.block_bitmap_csum_matches(&fs.superblock, expected_block) {
                         error!(
                             "Block bitmap checksum mismatch group=0 expected={expected_block:#x} \
                              stored={stored_block:#x} block_bitmap_block={data_bitmap_blk} \

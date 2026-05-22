@@ -920,6 +920,39 @@ _rc=$?; if [ "$_rc" -eq 0 ] && echo "$_t" | grep -q "[0-9]"; then echo "PASS: bl
 _t=$({ timeout 10 sh -c "busybox hwclock -r 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "hwclock"; then echo "PASS: busybox_hwclock"; PASS=$((PASS+1)); else echo "FAIL: busybox_hwclock"; echo "$_t"; FAIL=$((FAIL+1)); fi
 
+# busybox_add_shell — exercise the real /etc/shells rewrite path (NOT --help).
+# add-shell opens /etc/shells O_RDONLY, opens /etc/shells.tmp
+# O_WRONLY|O_CREAT|O_TRUNC, writes the merged list, then rename(2)s
+# /etc/shells.tmp over /etc/shells.  Probe a unique path each run, verify
+# it lands in /etc/shells, verify the .tmp file did NOT leak, and restore
+# the original file so re-runs stay idempotent.
+_addshell_probe="/tmp/bb_addshell_probe_$$"
+_t=$(timeout 15 sh -c '
+    busybox cp /etc/shells /tmp/bb_addshell_backup
+    _probe='"$_addshell_probe"'
+    busybox add-shell "$_probe" 2>&1
+    _arc=$?
+    if [ "$_arc" = 0 ] \
+        && busybox grep -qxF "$_probe" /etc/shells \
+        && [ ! -e /etc/shells.tmp ]; then
+        busybox echo add_shell_ok
+    else
+        busybox echo "add_shell_failed arc=$_arc"
+        busybox echo "--- /etc/shells ---"
+        busybox cat /etc/shells 2>&1
+        busybox echo "--- /etc/shells.tmp (should not exist) ---"
+        busybox ls -la /etc/shells.tmp 2>&1
+    fi
+    busybox cp /tmp/bb_addshell_backup /etc/shells 2>&1 || true
+    busybox rm -f /tmp/bb_addshell_backup
+' 2>&1)
+if echo "$_t" | grep -qF "add_shell_ok"; then
+    echo "PASS: busybox_add_shell"; PASS=$((PASS+1))
+else
+    echo "FAIL: busybox_add_shell"; echo "$_t"
+    FAIL=$((FAIL+1))
+fi
+
 # Additional stable BusyBox semantics for shell-script compatibility.
 _t=$({ timeout 10 sh -c "busybox sh -c 'busybox rm -f /tmp/bb_sem_touch_missing && busybox touch -c /tmp/bb_sem_touch_missing && busybox test ! -e /tmp/bb_sem_touch_missing && busybox echo touch_no_create_ok' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qxF "touch_no_create_ok"; then echo "PASS: busybox_touch_no_create"; PASS=$((PASS+1)); else echo "FAIL: busybox_touch_no_create"; echo "$_t"; FAIL=$((FAIL+1)); fi
@@ -973,19 +1006,43 @@ if echo "$_t" | grep -qxF "sh_env_cd_ok"; then echo "PASS: busybox_sh_env_cd"; P
 # would on Linux given the same invocation.  Matching by argv tail via
 # `ps | grep` is the reliable identification path.
 _t=$(timeout 20 sh -c '
+    _cleanup_crond() {
+        _crond_lines=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep)
+        if [ -n "$_crond_lines" ]; then
+            busybox printf "%s\n" "$_crond_lines" | while read _cpid _rest; do
+                [ -n "$_cpid" ] && busybox kill "$_cpid" 2>/dev/null || true
+            done
+        fi
+        busybox rm -rf /tmp/bb_crond_tabs
+    }
+    trap _cleanup_crond EXIT
+
     busybox rm -rf /tmp/bb_crond_tabs
     busybox mkdir -p /tmp/bb_crond_tabs
     busybox crond -c /tmp/bb_crond_tabs
     _drc=$?
-    busybox sleep 1
-    _line=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep | busybox head -n 1)
+    _i=0
+    _line=""
+    while [ "$_i" -lt 5 ] && [ -z "$_line" ]; do
+        _line=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep | busybox head -n 1)
+        if [ -z "$_line" ]; then
+            busybox sleep 1
+            _i=$((_i + 1))
+        fi
+    done
     set -- $_line
     _pid=$1
     if [ "$_drc" = 0 ] && [ -n "$_pid" ]; then
         busybox kill "$_pid"
-        busybox sleep 1
-        _still=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep)
+        _i=0
+        _still="x"
+        while [ "$_i" -lt 5 ] && [ -n "$_still" ]; do
+            busybox sleep 1
+            _still=$(busybox ps 2>&1 | busybox grep "crond -c /tmp/bb_crond_tabs" | busybox grep -v grep)
+            _i=$((_i + 1))
+        done
         if [ -z "$_still" ]; then
+            busybox rm -rf /tmp/bb_crond_tabs
             echo crond_ok
         else
             echo "crond_still_alive_after_sigterm: $_still"

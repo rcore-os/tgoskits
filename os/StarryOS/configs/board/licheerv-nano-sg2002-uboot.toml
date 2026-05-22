@@ -1,0 +1,17 @@
+# Local U-Boot serial config for booting StarryOS on LicheeRV-Nano-SG2002.
+# The remote board-server config is licheerv-nano-sg2002-board.toml.
+serial = "/dev/ttyUSB0"
+baud_rate = "115200"
+dtb_file = "os/StarryOS/configs/board/licheerv-nano-sg2002.dtb"
+
+kernel_load_addr = "0x80200000"
+fit_load_addr = "0x82200000"
+
+shell_prefix = "root@starry:"
+shell_init_cmd = "echo STARRY_SG2002_BOOT_OK"
+success_regex = ["(?m)^STARRY_SG2002_BOOT_OK\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "failed to determine root device",
+]
+timeout = 600

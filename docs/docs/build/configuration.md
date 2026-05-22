@@ -68,6 +68,19 @@ flowchart TD
 - **to_bin**：`x86_64` 不使用 `--bin`（直接生成 ELF 即可），其余架构默认将 ELF 转为 raw binary
 - **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [运行](./run#loongarch-特殊处理)）
 
+### 扩展字段
+
+`ArchSpec` 除了 arch ↔ target 映射外，还为每个架构定义了用于 rootfs 管理、StarryOS 默认平台和 C 测试交叉编译的扩展字段：
+
+| 架构 | 默认 rootfs 镜像 | StarryOS 默认平台 | GNU 工具前缀 | qemu-user 二进制 |
+|------|-----------------|------------------|-------------|-----------------|
+| `aarch64` | `rootfs-aarch64-alpine.img` | `aarch64-qemu-virt` | `aarch64-linux-musl` | `qemu-aarch64-static` |
+| `x86_64` | `rootfs-x86_64-alpine.img` | `x86-pc` | `x86_64-linux-musl` | `qemu-x86_64-static` |
+| `riscv64` | `rootfs-riscv64-alpine.img` | `riscv64-qemu-virt` | `riscv64-linux-musl` | `qemu-riscv64-static` |
+| `loongarch64` | `rootfs-loongarch64-alpine.img` | `loongarch64-qemu-virt` | `loongarch64-linux-musl` | `qemu-loongarch64-static` |
+
+这些字段由 `CrossCompileSpec` 承载，被 StarryOS 和 Axvisor 的 C/Python 测试用例的 prebuild 环境和 CMake 交叉编译流程所使用。`starry_default_platform_for_arch_checked()` 直接查表返回 StarryOS 的默认平台名。
+
 ## Snapshot
 
 Snapshot 保存最近一次的参数状态，使短命令可以复用之前的 `--arch`、`--package` 等参数。
@@ -123,7 +136,7 @@ sequenceDiagram
     Snap->>FS: "写入 tmp/axbuild/.{os}.toml"
 ```
 
-每次命令执行时，`resolve.rs` 先从文件系统加载 Snapshot，然后将 CLI 参数与 Snapshot 合并（CLI 显式指定的参数优先），最终得到完整的 `ResolvedRequest`。**合并后的参数在构建开始前即写回 Snapshot 文件**（而非构建成功后），由 `SnapshotPersistence` 控制是否写回。设置环境变量 `AXBUILD_NO_SNAPSHOT=1` 可跳过 Snapshot 的读写，在 CI 等需要每次使用默认参数的场景中很有用。
+每次命令执行时，`resolve.rs` 先从文件系统加载 Snapshot，然后将 CLI 参数与 Snapshot 合并（CLI 显式指定的参数优先），最终得到完整的 `ResolvedRequest`。**合并后的参数在构建开始前即写回 Snapshot 文件**（而非构建成功后），由 `SnapshotPersistence` 控制是否写回。设置环境变量 `AXBUILD_NO_SNAPSHOT` 为任意非空且非 `0` 的值（如 `1`、`yes`、`true`）可跳过 Snapshot 的读写，在 CI 等需要每次使用默认参数的场景中很有用。
 
 `SnapshotPersistence` 枚举控制是否写回：用户手动调用的命令使用 `Store`（保留参数供下次复用），测试套件使用 `Discard`（不污染用户的 Snapshot 文件）。
 
@@ -140,6 +153,18 @@ CLI 参数与 Snapshot 的合并遵循"用户显式指定优先"原则：
 `qemu_config` 和 `uboot_config` 的合并策略比较特殊：只有当用户完全没有提供相关参数，且 Snapshot 中有值时才复用，避免将测试场景的配置意外带入正常开发流程。
 
 此外，`arch` 和 `target` 之间存在交叉抑制：当 CLI 指定了 `--arch` 时不会从 snapshot 继承 `target`（反之亦然），确保两者始终来自同一来源（CLI 或 snapshot），避免因 CLI 的 `--arch` 与 snapshot 的 `target` 不一致而产生错误组合。
+
+### 子系统 Snapshot 差异
+
+三套子系统的 Snapshot 结构因各自命令参数不同而存在差异：
+
+| 子系统 | 独有字段 | 说明 |
+|--------|---------|------|
+| **ArceOS** | `package`（必填） | 每个包对应独立应用，必须显式指定；Snapshot 中的 `package` 自动复用 |
+| **StarryOS** | `config` | Build Info 路径（使用 `--config` 指定或自动生成），Snapshot 保存最近使用的配置路径 |
+| **Axvisor** | `config`、`axvisor_dir`（惰性初始化） | Axvisor 源码目录在首次访问时通过 `cargo metadata` 惰性定位并缓存 |
+
+三者共享的字段：`arch`、`target`、`smp`（ArceOS/Axvisor 额外有 `plat_dyn`）。QEMU/U-Boot 运行时配置（`qemu_config`、`uboot_config`）在各自 Snapshot 的子结构中独立存储。
 
 ## Build Info
 
@@ -194,6 +219,16 @@ pub struct BuildInfo {
 
 - `max_cpu_num`：值为 0 时报错（必须大于 0）
 - `plat_dyn`：仅 `aarch64-*` target 真正支持，其他架构即使配置为 `true` 也会被 `supports_platform_dynamic()` 强制回退为 `false`
+
+### Axvisor x86 虚拟化后端检测
+
+Axvisor 在 x86_64 架构上需要虚拟化后端 support（Intel VMX 或 AMD SVM）。`axvisor/build/x86.rs` 中的 `normalize_backend_features()` 负责自动检测或验证：
+
+1. **已显式指定**：若 features 中包含 `vmx` 或 `svm`，直接使用（两者同时存在则报错）
+2. **未指定时自动检测**：通过 CPUID 读取宿主 CPU 厂商信息：
+   - `GenuineIntel` → `vmx`
+   - `AuthenticAMD` → `svm`
+3. **环境变量覆盖**：设置 `AXVISOR_X86_BACKEND=vmx|intel|svm|amd` 跳过 CPUID 检测
 
 ### `axconfig_overrides` 用途
 
@@ -344,7 +379,7 @@ axbuild 在编译期和运行时使用多个环境变量，分布在配置、运
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `AXBUILD_NO_SNAPSHOT` | — | 设为 `1` 禁用 Snapshot 读写（CI 场景），跳过加载和写回 |
+| `AXBUILD_NO_SNAPSHOT` | — | 设为任意非空且非 `0` 的值（如 `1`）禁用 Snapshot 读写（CI 场景），跳过加载和写回 |
 | `AXBUILD_QEMU_SYSTEM_LOONGARCH64` | — | 指定 LVZ 扩展版 QEMU 可执行文件路径（仅 Axvisor loongarch64） |
 | `AXBUILD_QEMU_DIR` | — | 指定 LVZ 扩展版 QEMU 所在目录（仅 Axvisor loongarch64） |
 | `AXBUILD_TEST_TIMEOUT_SCALE` | `1.0` | 线性缩放所有测试用例超时值（CI 慢环境） |

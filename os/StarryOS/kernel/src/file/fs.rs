@@ -63,7 +63,11 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<Reso
             let file_like = get_file_like(dirfd)?;
             let f = file_like.clone();
             Ok(if let Some(file) = f.downcast_ref::<File>() {
-                ResolveAtResult::File(file.inner().backend()?.location().clone())
+                // Use location() directly: backend() rejects PATH-only fds
+                // (BadFileDescriptor) which would break fstat(O_PATH-fd).
+                // man "O_PATH": fstat(2) is in the allowed-operations list.
+                // Fixes bug-open-path-fstat-ebadf.
+                ResolveAtResult::File(file.inner().location().clone())
             } else if let Some(dir) = f.downcast_ref::<Directory>() {
                 ResolveAtResult::File(dir.inner().clone())
             } else {
@@ -302,13 +306,18 @@ impl Pollable for File {
 pub struct Directory {
     inner: Location,
     pub offset: Mutex<u64>,
+    /// Original open flags (used by fd_is_path / sys_fchmodat to detect
+    /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
+    /// must reject fchmod just like O_PATH on a regular file).
+    open_flags: u32,
 }
 
 impl Directory {
-    pub fn new(inner: Location) -> Self {
+    pub fn new(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
             offset: Mutex::new(0),
+            open_flags,
         }
     }
 
@@ -337,6 +346,10 @@ impl FileLike for Directory {
     fn inode_key(&self) -> Option<(u64, u64)> {
         let m = self.inner.metadata().ok()?;
         Some((m.device, m.inode))
+    }
+
+    fn open_flags(&self) -> u32 {
+        self.open_flags
     }
 
     fn path(&self) -> Cow<'_, str> {
