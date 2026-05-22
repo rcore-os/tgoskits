@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.0...rockchip-npu-v0.2.1) - 2026-05-22
+
+### Other
+
+- updated the following local packages: rockchip-soc
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.1.1...rockchip-npu-v0.2.0) - 2026-05-15
 
 ### Added

@@ -9,4 +9,4 @@ set(CMAKE_C_EXTENSIONS OFF)
 add_executable(helloworld src/main.c)
 target_compile_options(helloworld PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS helloworld RUNTIME DESTINATION usr/bin)
+install(TARGETS helloworld RUNTIME DESTINATION usr/bin/starry-test-suit)

@@ -9,4 +9,4 @@ add_executable(test-msgsnd src/main.c)
 target_include_directories(test-msgsnd PRIVATE src)
 target_compile_options(test-msgsnd PRIVATE -Wall -Wextra -Werror)
 
-install(TARGETS test-msgsnd RUNTIME DESTINATION usr/bin)
+install(TARGETS test-msgsnd RUNTIME DESTINATION usr/bin/starry-test-suit)

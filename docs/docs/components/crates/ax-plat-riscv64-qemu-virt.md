@@ -191,7 +191,7 @@ ax-plat-riscv64-qemu-virt = { workspace = true, features = ["irq", "smp"] }
 StarryOS 在 RISC-V 默认平台配置里会复用这条 `axplat` 路径。因此它在 StarryOS 中承担的是“RISC-V 板级实现层”，而不是 Linux 兼容语义层。
 
 ### Axvisor
-当前仓库中 Axvisor 的主 manifest 并未把该包作为主平台包直接依赖，因此它在 Axvisor 中更多是“依赖图可见的可选 RISC-V 平台实现”，而不是已经稳定落地的主运行平台。
+Axvisor 在 RISC-V 上也复用该平台包，并通过 `hypervisor` feature 启用虚拟中断注入等差异化逻辑。
 # `ax-plat-riscv64-qemu-virt` 技术文档
 
 > 路径：`components/axplat_crates/platforms/axplat-riscv64-qemu-virt`

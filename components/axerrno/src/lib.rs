@@ -79,6 +79,10 @@ pub enum AxErrorKind {
     NoMemory,
     /// No such device.
     NoSuchDevice,
+    /// No such device or address (ENXIO). Linux uses ENXIO for: opening a
+    /// UNIX-domain-socket file, opening a FIFO O_WRONLY|O_NONBLOCK with no
+    /// reader, opening a device-special file with no underlying device.
+    NoSuchDeviceOrAddress,
     /// No such process.
     NoSuchProcess,
     /// A filesystem object is, unexpectedly, not a directory.
@@ -157,6 +161,7 @@ impl AxErrorKind {
             NameTooLong => "Filename too long",
             NoMemory => "Out of memory",
             NoSuchDevice => "No such device",
+            NoSuchDeviceOrAddress => "No such device or address",
             NoSuchProcess => "No such process",
             NotADirectory => "Not a directory",
             NotASocket => "Not a socket",
@@ -233,6 +238,7 @@ impl From<AxErrorKind> for LinuxError {
             NameTooLong => ENAMETOOLONG,
             NoMemory => ENOMEM,
             NoSuchDevice => ENODEV,
+            NoSuchDeviceOrAddress => ENXIO,
             NoSuchProcess => ESRCH,
             NotADirectory => ENOTDIR,
             NotASocket => ENOTSOCK,
@@ -286,6 +292,7 @@ impl TryFrom<LinuxError> for AxErrorKind {
             ENAMETOOLONG => NameTooLong,
             ENOMEM => NoMemory,
             ENODEV => NoSuchDevice,
+            ENXIO => NoSuchDeviceOrAddress,
             ESRCH => NoSuchProcess,
             ENOTDIR => NotADirectory,
             ENOTSOCK => NotASocket,
@@ -467,6 +474,7 @@ axerror_consts!(
     NameTooLong,
     NoMemory,
     NoSuchDevice,
+    NoSuchDeviceOrAddress,
     NoSuchProcess,
     NotADirectory,
     NotASocket,
@@ -614,7 +622,10 @@ mod tests {
     #[test]
     fn test_try_from() {
         let max_code = AxErrorKind::COUNT as i32;
-        assert_eq!(max_code, 45);
+        // 46 = 45 (dev baseline, 含 WriteZero) + 1 (NoSuchDeviceOrAddress, ENXIO).
+        // 该 variant 由 open/openat deep-fix PR 引入（fix bug-open-unix-socket-no-enxio
+        // 与 bug-open-fifo-wronly-no-reader-no-enxio 需要 ENXIO 映射）。
+        assert_eq!(max_code, 46);
         assert_eq!(max_code, AxError::WriteZero.code());
 
         assert_eq!(AxError::AddrInUse.code(), 1);
