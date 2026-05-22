@@ -257,23 +257,23 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     devices::probe_all_devices();
 
-    #[cfg(all(feature = "fs", feature = "plat-dyn"))]
-    ax_fs::init_filesystems(
-        devices::take_dyn_fs_block_devices(),
-        ax_hal::dtb::get_chosen_bootargs(),
-    );
-
-    #[cfg(all(feature = "fs", not(feature = "plat-dyn")))]
-    ax_fs::init_filesystems(devices::take_static_fs_block_devices(), None);
-
-    #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))]
-    ax_fs_ng::init_filesystems(
-        devices::take_dyn_fs_ng_block_devices(),
-        ax_hal::dtb::get_chosen_bootargs(),
-    );
-
-    #[cfg(all(feature = "fs-ng", not(feature = "plat-dyn")))]
-    ax_fs_ng::init_filesystems(devices::take_static_fs_ng_block_devices(), None);
+    cfg_if::cfg_if! {
+        if #[cfg(all(feature = "fs-ng", feature = "plat-dyn"))] {
+            ax_fs_ng::init_filesystems(
+                devices::take_dyn_fs_ng_block_devices(),
+                ax_hal::dtb::get_chosen_bootargs(),
+            );
+        } else if #[cfg(all(feature = "fs-ng", not(feature = "plat-dyn")))] {
+            ax_fs_ng::init_filesystems(devices::take_static_fs_ng_block_devices(), None);
+        } else if #[cfg(all(feature = "fs", feature = "plat-dyn"))] {
+            ax_fs::init_filesystems(
+                devices::take_dyn_fs_block_devices(),
+                ax_hal::dtb::get_chosen_bootargs(),
+            );
+        } else if #[cfg(all(feature = "fs", not(feature = "plat-dyn")))] {
+            ax_fs::init_filesystems(devices::take_static_fs_block_devices(), None);
+        }
+    }
 
     #[cfg(all(feature = "display", feature = "plat-dyn"))]
     devices::init_dyn_display();
@@ -287,17 +287,17 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(all(feature = "input", not(feature = "plat-dyn")))]
     devices::init_static_input();
 
-    #[cfg(all(feature = "net", feature = "plat-dyn"))]
-    devices::init_dyn_net();
-
-    #[cfg(all(feature = "net", not(feature = "plat-dyn")))]
-    devices::init_static_net();
-
-    #[cfg(all(feature = "net-ng", feature = "plat-dyn"))]
-    devices::init_dyn_net_ng();
-
-    #[cfg(all(feature = "net-ng", not(feature = "plat-dyn")))]
-    ax_net_ng::init_network(devices::take_static_net_ng_drivers());
+    cfg_if::cfg_if! {
+        if #[cfg(all(feature = "net-ng", feature = "plat-dyn"))] {
+            devices::init_dyn_net_ng();
+        } else if #[cfg(all(feature = "net-ng", not(feature = "plat-dyn")))] {
+            ax_net_ng::init_network(devices::take_static_net_ng_drivers());
+        } else if #[cfg(all(feature = "net", feature = "plat-dyn"))] {
+            devices::init_dyn_net();
+        } else if #[cfg(all(feature = "net", not(feature = "plat-dyn")))] {
+            devices::init_static_net();
+        }
+    }
 
     #[cfg(all(feature = "vsock", feature = "plat-dyn"))]
     devices::init_dyn_vsock();

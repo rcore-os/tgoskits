@@ -4,7 +4,7 @@ pub(crate) fn probe_all_devices() {
         .unwrap_or_else(|err| panic!("failed to probe platform devices: {err:?}"));
 }
 
-#[cfg(all(feature = "fs", feature = "plat-dyn"))]
+#[cfg(all(feature = "fs", not(feature = "fs-ng"), feature = "plat-dyn"))]
 pub(crate) fn take_dyn_fs_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
     #[cfg(target_os = "none")]
@@ -22,7 +22,7 @@ pub(crate) fn take_dyn_fs_block_devices()
     alloc::vec::Vec::new()
 }
 
-#[cfg(all(feature = "fs", not(feature = "plat-dyn")))]
+#[cfg(all(feature = "fs", not(feature = "fs-ng"), not(feature = "plat-dyn")))]
 pub(crate) fn take_static_fs_block_devices()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_fs::FsBlockDevice>> {
     ax_driver::block::take_block_devices()
@@ -120,12 +120,12 @@ pub(crate) fn init_static_input() {
     ax_input::init_input(devices);
 }
 
-#[cfg(all(feature = "net", feature = "plat-dyn"))]
+#[cfg(all(feature = "net", not(feature = "net-ng"), feature = "plat-dyn"))]
 pub(crate) fn init_dyn_net() {
     ax_net::init_network(take_dyn_net_drivers());
 }
 
-#[cfg(all(feature = "net", not(feature = "plat-dyn")))]
+#[cfg(all(feature = "net", not(feature = "net-ng"), not(feature = "plat-dyn")))]
 pub(crate) fn init_static_net() {
     ax_net::init_network(take_static_net_drivers());
 }
@@ -135,7 +135,7 @@ pub(crate) fn init_dyn_net_ng() {
     ax_net_ng::init_network(take_dyn_net_ng_drivers());
 }
 
-#[cfg(all(feature = "net", not(feature = "plat-dyn")))]
+#[cfg(all(feature = "net", not(feature = "net-ng"), not(feature = "plat-dyn")))]
 pub(crate) fn take_static_net_drivers()
 -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
     let mut devices = alloc::vec::Vec::new();
@@ -186,7 +186,7 @@ pub(crate) fn init_static_vsock() {
     ax_net_ng::init_vsock(devices);
 }
 
-#[cfg(all(feature = "net", feature = "plat-dyn"))]
+#[cfg(all(feature = "net", not(feature = "net-ng"), feature = "plat-dyn"))]
 fn take_dyn_net_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>> {
     #[cfg(target_os = "none")]
     {
@@ -234,7 +234,11 @@ fn take_dyn_net_ng_drivers() -> alloc::vec::Vec<alloc::boxed::Box<dyn ax_net_ng:
 ))]
 struct FsBlockDevice(ax_driver::block::Block);
 
-#[cfg(all(feature = "fs", any(not(feature = "plat-dyn"), target_os = "none")))]
+#[cfg(all(
+    feature = "fs",
+    not(feature = "fs-ng"),
+    any(not(feature = "plat-dyn"), target_os = "none")
+))]
 impl ax_fs::FsBlockDevice for FsBlockDevice {
     fn name(&self) -> &str {
         self.0.name()

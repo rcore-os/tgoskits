@@ -1,6 +1,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 use alloc::{
     boxed::Box,
@@ -121,6 +123,10 @@ impl Block {
         let queue = self.interface().create_queue()?;
         let queue_id = queue.id();
         let config = queue.buff_config();
+        let block_size = queue.block_size();
+        if block_size == 0 || config.size < block_size {
+            return None;
+        }
         let layout = Layout::from_size_align(config.size, config.align).ok()?;
         let dma = DeviceDma::new(config.dma_mask, self.inner.dma_op);
         let pool = dma.new_pool(layout, DmaDirection::FromDevice, capacity);
@@ -193,10 +199,9 @@ impl CmdQueue {
 
     pub fn max_blocks_per_request(&self) -> usize {
         let block_size = self.block_size();
-        if block_size == 0 {
-            return 1;
-        }
-        (self.buffer_size / block_size).max(1)
+        debug_assert!(block_size > 0);
+        debug_assert!(self.buffer_size >= block_size);
+        self.buffer_size / block_size
     }
 
     pub fn read_blocks(
@@ -495,4 +500,127 @@ fn block_ranges(
         remaining -= count;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+
+    use dma_api::{DmaError, DmaHandle, DmaMapHandle};
+
+    use super::*;
+
+    struct TestDma;
+
+    static TEST_DMA: TestDma = TestDma;
+
+    impl DmaOp for TestDma {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn map_single(
+            &self,
+            _dma_mask: u64,
+            addr: NonNull<u8>,
+            size: NonZeroUsize,
+            _align: usize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            let layout = Layout::from_size_align(size.get(), 8)?;
+            Ok(unsafe { DmaMapHandle::new(addr, (addr.as_ptr() as u64).into(), layout, None) })
+        }
+
+        unsafe fn unmap_single(&self, _handle: DmaMapHandle) {}
+
+        unsafe fn alloc_coherent(&self, _dma_mask: u64, layout: Layout) -> Option<DmaHandle> {
+            let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+            let ptr = NonNull::new(ptr)?;
+            Some(unsafe { DmaHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaHandle) {
+            unsafe { std::alloc::dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        }
+    }
+
+    struct TestBlock {
+        block_size: usize,
+        buffer_size: usize,
+    }
+
+    impl DriverGeneric for TestBlock {
+        fn name(&self) -> &str {
+            "test-block"
+        }
+    }
+
+    impl Interface for TestBlock {
+        fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
+            Some(Box::new(TestQueue {
+                block_size: self.block_size,
+                buffer_size: self.buffer_size,
+            }))
+        }
+
+        fn enable_irq(&mut self) {}
+
+        fn disable_irq(&mut self) {}
+
+        fn is_irq_enabled(&self) -> bool {
+            false
+        }
+
+        fn handle_irq(&mut self) -> Event {
+            Event::none()
+        }
+    }
+
+    struct TestQueue {
+        block_size: usize,
+        buffer_size: usize,
+    }
+
+    impl IQueue for TestQueue {
+        fn id(&self) -> usize {
+            0
+        }
+
+        fn num_blocks(&self) -> usize {
+            1
+        }
+
+        fn block_size(&self) -> usize {
+            self.block_size
+        }
+
+        fn buff_config(&self) -> BuffConfig {
+            BuffConfig {
+                dma_mask: u64::MAX,
+                align: 8,
+                size: self.buffer_size,
+            }
+        }
+
+        fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
+            Ok(RequestId::new(0))
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<(), BlkError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn create_queue_rejects_buffer_smaller_than_block_size() {
+        let mut block = Block::new(
+            TestBlock {
+                block_size: 512,
+                buffer_size: 256,
+            },
+            &TEST_DMA,
+        );
+
+        assert!(block.create_queue_with_capacity(1).is_none());
+    }
 }
