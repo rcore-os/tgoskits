@@ -50,7 +50,9 @@ fn make_pidfd_siginfo(signo: Signo, scope: PidFdSignalScope) -> SignalInfo {
     } else {
         SI_USER as _
     };
-    SignalInfo::new_user(signo, code, current().as_thread().proc_data.proc.pid())
+    let curr = current();
+    let thread = curr.as_thread();
+    SignalInfo::new_user(signo, code, thread.proc_data.proc.pid(), thread.cred().uid)
 }
 
 pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
