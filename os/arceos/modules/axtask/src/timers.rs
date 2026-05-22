@@ -5,7 +5,9 @@ use ax_hal::time::{TimeValue, wall_time};
 use ax_kernel_guard::{NoOp, NoPreemptIrqSave};
 use ax_timer_list::{TimerEvent, TimerList};
 
-use crate::{AxTaskRef, select_run_queue};
+#[cfg(feature = "smp")]
+use crate::select_run_queue;
+use crate::{AxTaskRef, current_run_queue};
 
 static TIMER_TICKET_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -30,9 +32,26 @@ impl TimerEvent for TaskWakeupEvent {
             return;
         }
 
-        // Timer ticket match.
-        select_run_queue::<NoOp>(&self.task).unblock_task(self.task, true)
+        // Timer ticket match. Timers are per-CPU, so prefer waking the task on
+        // the CPU that owns and expires this timer event. Falling back to the
+        // affinity selector is only needed if the task's affinity changed while
+        // it was sleeping.
+        wake_task_from_timer(self.task)
     }
+}
+
+#[cfg(feature = "smp")]
+fn wake_task_from_timer(task: AxTaskRef) {
+    if task.cpumask().get(ax_hal::percpu::this_cpu_id()) {
+        current_run_queue::<NoOp>().unblock_task(task, true);
+    } else {
+        select_run_queue::<NoOp>(&task).unblock_task(task, true);
+    }
+}
+
+#[cfg(not(feature = "smp"))]
+fn wake_task_from_timer(task: AxTaskRef) {
+    current_run_queue::<NoOp>().unblock_task(task, true);
 }
 
 /// Registers a callback function to be called on each timer tick.

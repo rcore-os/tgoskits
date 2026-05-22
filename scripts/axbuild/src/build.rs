@@ -909,7 +909,7 @@ fn default_platform_package(arch: &str) -> &'static str {
 fn explicit_myplat_platform_package(package: &str, arch: &str) -> Option<&'static str> {
     match (package, arch) {
         ("axvisor", "x86_64") => Some("axplat-x86-qemu-q35"),
-        ("axvisor", "riscv64") => Some("axplat-riscv64-qemu-virt-hv"),
+        ("axvisor", "riscv64") => Some("ax-plat-riscv64-qemu-virt"),
         _ => None,
     }
 }
@@ -1278,11 +1278,13 @@ mod tests {
     #[test]
     fn find_local_platform_config_path_resolves_workspace_platform_dir() {
         let metadata = repo_metadata();
-        let path = find_local_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata)
+        let path = find_local_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata)
             .unwrap()
             .expect("workspace platform config should exist");
 
-        assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
+        assert!(path.ends_with(
+            "components/axplat_crates/platforms/axplat-riscv64-qemu-virt/axconfig.toml"
+        ));
     }
 
     #[test]
@@ -1290,10 +1292,12 @@ mod tests {
         let metadata = repo_metadata();
         let deps_metadata = workspace_metadata_with_deps().unwrap();
         let path =
-            resolve_platform_config_path("axplat-riscv64-qemu-virt-hv", &metadata, &deps_metadata)
+            resolve_platform_config_path("ax-plat-riscv64-qemu-virt", &metadata, &deps_metadata)
                 .unwrap();
 
-        assert!(path.ends_with("platform/riscv64-qemu-virt/axconfig.toml"));
+        assert!(path.ends_with(
+            "components/axplat_crates/platforms/axplat-riscv64-qemu-virt/axconfig.toml"
+        ));
     }
 
     #[test]

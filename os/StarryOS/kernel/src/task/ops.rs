@@ -200,16 +200,40 @@ pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
 
 /// Finds the process group with the given PGID.
 pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
-    PROCESS_GROUP_TABLE
-        .read()
-        .get(&pgid)
-        .ok_or(AxError::NoSuchProcess)
+    if let Some(pg) = PROCESS_GROUP_TABLE.read().get(&pgid) {
+        return Ok(pg);
+    }
+
+    if let Some(pg) = find_process_group_by_member(pgid) {
+        register_process_group(&pg);
+        return Ok(pg);
+    }
+
+    Err(AxError::NoSuchProcess)
 }
 
 /// Registers a process group in the global table.
 pub fn register_process_group(pg: &Arc<ProcessGroup>) {
     let mut pg_table = PROCESS_GROUP_TABLE.write();
     pg_table.insert(pg.pgid(), pg);
+}
+
+fn find_process_group_by_member(pgid: Pid) -> Option<Arc<ProcessGroup>> {
+    for proc_data in PROCESS_TABLE.read().values() {
+        let pg = proc_data.proc.group();
+        if pg.pgid() == pgid {
+            return Some(pg);
+        }
+    }
+
+    for zombie in ZOMBIE_TABLE.read().values() {
+        let pg = zombie.proc.group();
+        if pg.pgid() == pgid {
+            return Some(pg);
+        }
+    }
+
+    None
 }
 
 /// Registers a session in the global table.
