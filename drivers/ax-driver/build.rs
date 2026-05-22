@@ -6,14 +6,7 @@ const NET_DEV_FEATURES: &[&str] = &[
     "virtio-core",
     "virtio-net",
 ];
-const BLOCK_DEV_FEATURES: &[&str] = &[
-    "ahci",
-    "bcm2835-sdhci",
-    "cvsd",
-    "ramdisk",
-    "sdmmc",
-    "virtio-blk",
-];
+const BLOCK_DEV_FEATURES: &[&str] = &["ahci", "bcm2835-sdhci", "cvsd", "ramdisk", "virtio-blk"];
 const DISPLAY_DEV_FEATURES: &[&str] = &["virtio-gpu"];
 const INPUT_DEV_FEATURES: &[&str] = &["virtio-input"];
 const VSOCK_DEV_FEATURES: &[&str] = &["virtio-socket"];
@@ -67,7 +60,6 @@ fn main() {
         "virtio-input",
         "virtio-net",
         "virtio-socket",
-        "sdmmc",
         "cvsd",
     ]);
 
@@ -83,9 +75,7 @@ fn main() {
     if has_virtio_core || has_virtio_dev {
         enable_cfg_flag("virtio_dev");
     }
-    if has_any_feature(&["ahci", "bcm2835-sdhci", "sdmmc"])
-        || (has_feature("cvsd") && target_has_cvsd)
-    {
+    if has_any_feature(&["ahci", "bcm2835-sdhci"]) || (has_feature("cvsd") && target_has_cvsd) {
         enable_cfg_flag("sync_block_dev");
     }
 

@@ -738,7 +738,7 @@ function PlatformSection() {
 /* ── Driver Section ──────────────────────────────────────── */
 function DriverSection() {
   const driverCategories = [
-    { icon: 'server', title: '块设备驱动', desc: 'SD/MMC 存储支持', cssClass: 'blk', items: ['simple-sdmmc'] },
+    { icon: 'server', title: '块设备驱动', desc: 'SD/MMC 存储支持', cssClass: 'blk', items: ['sdhci-host', 'dwmmc-host', 'sdmmc-protocol'] },
     { icon: 'chip', title: 'NPU 驱动', desc: '神经网络加速', cssClass: 'npu', items: ['rockchip-npu'] },
     { icon: 'layers', title: 'PCI 总线驱动', desc: 'PCIe 控制器适配', cssClass: 'pci', items: ['rk3588-pci'] },
     { icon: 'grid', title: 'SoC 平台驱动', desc: '片上系统外设', cssClass: 'soc', items: ['rockchip (GPIO, clk, reset)'] },

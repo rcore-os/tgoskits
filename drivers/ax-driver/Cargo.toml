@@ -34,7 +34,6 @@ virtio-input = ["input", "virtio"]
 virtio-socket = ["vsock", "virtio"]
 
 ramdisk = ["block", "dep:ramdisk"]
-sdmmc = ["block", "dep:simple-sdmmc"]
 cvsd = ["block", "dep:sg200x-bsp"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
 ahci = ["block", "pci", "dep:simple-ahci"]
@@ -132,7 +131,6 @@ sdhci-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 simple-ahci = { workspace = true, optional = true }
-simple-sdmmc = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin = { workspace = true, optional = true }
 virtio-drivers = { workspace = true, optional = true }

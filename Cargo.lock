@@ -880,7 +880,6 @@ dependencies = [
  "sdmmc-protocol",
  "sg200x-bsp",
  "simple-ahci",
- "simple-sdmmc",
  "some-serial",
  "spin 0.10.0",
  "virtio-drivers",
@@ -7455,17 +7454,6 @@ dependencies = [
  "bitfield-struct",
  "log",
  "thiserror 2.0.18",
- "volatile 0.6.1",
-]
-
-[[package]]
-name = "simple-sdmmc"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65f2f7127074b52811ae3b4757e33865a60a8b46e1402c028c301139e0b00d92"
-dependencies = [
- "bitfield-struct",
- "log",
  "volatile 0.6.1",
 ]
 

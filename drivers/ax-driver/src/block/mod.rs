@@ -16,8 +16,6 @@ mod rockchip;
 pub mod rockchip_mmc;
 #[cfg(feature = "rockchip-dwmmc")]
 pub mod rockchip_sd;
-#[cfg(feature = "sdmmc")]
-pub mod sdmmc;
 
 #[cfg(sync_block_dev)]
 use alloc::{boxed::Box, sync::Arc};
