@@ -116,13 +116,13 @@ impl Block {
         #[cfg(feature = "irq")]
         {
             if use_irq {
-                return wait_on_block_irq(queue.read_blocks(block_id, block_count));
+                return wait_on_block_irq(queue.read_blocks_merged(block_id, block_count));
             }
         }
         #[cfg(not(feature = "irq"))]
         let _ = use_irq;
 
-        queue.read_blocks_blocking(block_id, block_count)
+        queue.read_blocks_merged_blocking(block_id, block_count)
     }
 
     fn write_blocks_wait(
@@ -134,13 +134,13 @@ impl Block {
         #[cfg(feature = "irq")]
         {
             if use_irq {
-                return wait_on_block_irq(queue.write_blocks(block_id, data));
+                return wait_on_block_irq(queue.write_blocks_merged(block_id, data));
             }
         }
         #[cfg(not(feature = "irq"))]
         let _ = use_irq;
 
-        queue.write_blocks_blocking(block_id, data)
+        queue.write_blocks_merged_blocking(block_id, data)
     }
 
     pub fn num_blocks(&self) -> u64 {
@@ -163,17 +163,20 @@ impl Block {
 
         let use_irq = self.use_irq_completion();
         let mut queue = self.queue.lock();
-        for (offset, chunk) in buf.chunks_mut(block_size).enumerate() {
-            let mut blocks =
-                Self::read_blocks_wait(&mut queue, block_id as usize + offset, 1, use_irq);
-            let block = blocks
-                .pop()
-                .ok_or(AxError::Io)?
-                .map_err(map_blk_err_to_ax_err)?;
-            if block.len() != chunk.len() {
+        let block_count = buf.len() / block_size;
+        let blocks = Self::read_blocks_wait(&mut queue, block_id as usize, block_count, use_irq);
+        let mut copied = 0;
+        for block in blocks {
+            let block = block.map_err(map_blk_err_to_ax_err)?;
+            let end = copied + block.len();
+            if end > buf.len() {
                 return Err(AxError::Io);
             }
-            chunk.copy_from_slice(&block);
+            buf[copied..end].copy_from_slice(&block);
+            copied = end;
+        }
+        if copied != buf.len() {
+            return Err(AxError::Io);
         }
         Ok(())
     }
@@ -186,12 +189,9 @@ impl Block {
 
         let use_irq = self.use_irq_completion();
         let mut queue = self.queue.lock();
-        for (offset, chunk) in buf.chunks(block_size).enumerate() {
-            let blocks =
-                Self::write_blocks_wait(&mut queue, block_id as usize + offset, chunk, use_irq);
-            for block in blocks {
-                block.map_err(map_blk_err_to_ax_err)?;
-            }
+        let blocks = Self::write_blocks_wait(&mut queue, block_id as usize, buf, use_irq);
+        for block in blocks {
+            block.map_err(map_blk_err_to_ax_err)?;
         }
         Ok(())
     }

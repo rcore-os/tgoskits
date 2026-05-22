@@ -13,6 +13,8 @@ use virtio_drivers::{
 
 use crate::{block::PlatformDeviceBlock, virtio::VirtIoHalImpl};
 
+const VIRTIO_BLK_DMA_BUFFER_SIZE: usize = 32 * SECTOR_SIZE;
+
 #[cfg(probe = "pci")]
 crate::register_driver!(
     name: "VirtIO Block",
@@ -139,7 +141,7 @@ impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
         rd_block::BuffConfig {
             dma_mask: u64::MAX,
             align: 0x1000,
-            size: self.block_size(),
+            size: VIRTIO_BLK_DMA_BUFFER_SIZE,
         }
     }
 
