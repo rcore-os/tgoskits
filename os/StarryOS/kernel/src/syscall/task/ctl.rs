@@ -166,6 +166,12 @@ pub fn sys_prctl(
             // not implemented; but avoid annoying warnings
             return Err(AxError::InvalidInput);
         }
+        PR_SET_VMA => {
+            if arg2 == PR_SET_VMA_ANON_NAME as usize {
+                return Ok(0);
+            }
+            return Err(AxError::InvalidInput);
+        }
         _ => {
             warn!("sys_prctl: unsupported option {option}");
             return Err(AxError::InvalidInput);

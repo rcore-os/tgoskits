@@ -32,8 +32,8 @@ on:
         required: false
         type: string
         default: china
-      required_repository_owner:
-        description: Only run when the repository owner matches this value. Leave empty to run everywhere.
+      limit_to_owner:
+        description: Only run for this repository owner. Leave empty to run everywhere.
         required: false
         type: string
         default: ""
@@ -47,13 +47,12 @@ on:
         required: false
         type: string
         default: "1"
-
 jobs:
   run_host:
     if: >-
       ${{
         !inputs.use_container
-        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}
@@ -82,7 +81,7 @@ jobs:
     if: >-
       ${{
         inputs.use_container
-        && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
+        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
     runs-on: ${{ fromJson(inputs.runs_on) }}

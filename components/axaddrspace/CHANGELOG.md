@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.10...axaddrspace-v0.5.11) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-errno, ax-memory-set, ax-page-table-multiarch
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.9...axaddrspace-v0.5.10) - 2026-05-19
 
 ### Other

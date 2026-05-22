@@ -19,7 +19,19 @@ const PORT_NUM: usize = 65536;
 struct ListenTableEntryInner {
     listen_endpoint: IpListenEndpoint,
     backlog: usize,
-    syn_queue: VecDeque<SocketHandle>,
+    syn_queue: VecDeque<PendingTcp>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct AcceptedTcp {
+    pub(crate) handle: SocketHandle,
+    pub(crate) local_endpoint: IpEndpoint,
+    pub(crate) remote_endpoint: IpEndpoint,
+}
+
+#[derive(Clone, Copy)]
+struct PendingTcp {
+    accepted: AcceptedTcp,
 }
 
 impl ListenTableEntryInner {
@@ -43,7 +55,10 @@ impl ListenTableEntryInner {
     }
 
     fn into_handles(self) -> Vec<SocketHandle> {
-        self.syn_queue.into_iter().collect()
+        self.syn_queue
+            .into_iter()
+            .map(|pending| pending.accepted.handle)
+            .collect()
     }
 }
 
@@ -108,14 +123,14 @@ impl ListenTable {
             Ok(entry
                 .syn_queue
                 .iter()
-                .any(|&handle| is_connected(sockets, handle)))
+                .any(|pending| is_acceptable(sockets, pending.accepted.handle)))
         } else {
             warn!("accept before listen");
             Err(AxError::InvalidInput)
         }
     }
 
-    pub fn accept(&self, port: u16, sockets: &SocketSet<'_>) -> AxResult<SocketHandle> {
+    pub fn accept(&self, port: u16, sockets: &mut SocketSet<'_>) -> AxResult<AcceptedTcp> {
         let entry = self.listen_entry(port);
         let mut table = entry.lock();
         let Some(entry) = table.deref_mut() else {
@@ -123,28 +138,28 @@ impl ListenTable {
             return Err(AxError::InvalidInput);
         };
 
-        let syn_queue: &mut VecDeque<SocketHandle> = &mut entry.syn_queue;
-        let idx = syn_queue
-            .iter()
-            .enumerate()
-            .find_map(|(idx, &handle)| is_connected(sockets, handle).then_some(idx))
-            .ok_or(AxError::WouldBlock)?; // wait for connection
-        if idx > 0 {
-            warn!(
-                "slow SYN queue enumeration: index = {}, len = {}!",
-                idx,
-                syn_queue.len()
-            );
+        let syn_queue: &mut VecDeque<PendingTcp> = &mut entry.syn_queue;
+        let mut idx = 0;
+        while idx < syn_queue.len() {
+            let handle = syn_queue[idx].accepted.handle;
+            if is_closed_without_data(sockets, handle) {
+                syn_queue.swap_remove_front(idx);
+                sockets.remove(handle);
+                continue;
+            }
+            if is_acceptable(sockets, handle) {
+                if idx > 0 {
+                    warn!(
+                        "slow SYN queue enumeration: index = {}, len = {}!",
+                        idx,
+                        syn_queue.len()
+                    );
+                }
+                return Ok(syn_queue.swap_remove_front(idx).unwrap().accepted);
+            }
+            idx += 1;
         }
-        let handle = syn_queue.swap_remove_front(idx).unwrap();
-        // If the connection is reset, return ConnectionReset error
-        // Otherwise, return the handle and the address tuple
-        if is_closed(sockets, handle) {
-            warn!("accept failed: connection reset");
-            Err(AxError::ConnectionReset)
-        } else {
-            Ok(handle)
-        }
+        Err(AxError::WouldBlock)
     }
 
     pub fn incoming_tcp_packet(
@@ -179,17 +194,27 @@ impl ListenTable {
                 "TCP socket {}: prepare for connection {} -> {}",
                 handle, src, entry.listen_endpoint
             );
-            entry.syn_queue.push_back(handle);
+            entry.syn_queue.push_back(PendingTcp {
+                accepted: AcceptedTcp {
+                    handle,
+                    local_endpoint: dst,
+                    remote_endpoint: src,
+                },
+            });
         }
     }
 }
 
-fn is_connected(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
+fn is_acceptable(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
     let socket: &tcp::Socket = sockets.get(handle);
-    !matches!(socket.state(), State::Listen | State::SynReceived)
+    match socket.state() {
+        State::Listen | State::SynReceived => false,
+        State::Closed => socket.recv_queue() > 0,
+        _ => true,
+    }
 }
 
-fn is_closed(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
+fn is_closed_without_data(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
     let socket: &tcp::Socket = sockets.get(handle);
-    matches!(socket.state(), State::Closed)
+    matches!(socket.state(), State::Closed) && socket.recv_queue() == 0
 }
