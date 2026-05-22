@@ -255,7 +255,6 @@ impl Ext4FileSystem {
         }
 
         // rootinode check !
-        debug!("Checking root directory...");
         {
             let root_inode = fs.get_root(block_dev).map_err(|e| {
                 error!("Failed to load root inode: {e}");
@@ -281,8 +280,6 @@ impl Ext4FileSystem {
                 if fs.superblock.s_lpf_ino != 0 {
                     let ino = fs.superblock.s_lpf_ino;
                     warn!("s_lpf_ino={ino} is not a valid directory, falling back to path scan");
-                } else {
-                    debug!("s_lpf_ino is 0, lost+found inode hint missing in superblock");
                 }
 
                 match get_file_inode(&mut fs, block_dev, "/lost+found") {
