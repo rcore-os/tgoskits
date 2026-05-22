@@ -47,6 +47,10 @@ pub fn sys_capget(
 ) -> AxResult<isize> {
     let pid = validate_cap_header(header)?;
 
+    if data.is_null() {
+        return Ok(0);
+    }
+
     let cred = cred_for_pid(pid)?;
     let caps = if cred.euid == 0 { u32::MAX } else { 0 };
     let data_struct = __user_cap_data_struct {
