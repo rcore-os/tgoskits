@@ -15,7 +15,7 @@ The board rootfs must already contain:
 Run the board example:
 
 ```bash
-cargo starry example board -t orangepi-5-plus-uvc
+cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
 The runner succeeds when `uvc-fps` reports at least one non-zero statistics line,
@@ -155,7 +155,7 @@ the board lease is released. Then run the Starry example from the repository
 root:
 
 ```bash
-cargo starry example board -t orangepi-5-plus-uvc
+cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
 ## Optional Cross Build

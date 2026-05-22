@@ -93,7 +93,7 @@ Then open `http://127.0.0.1:8080/stream.mjpg` locally.
 Run the StarryOS board example:
 
 ```bash
-cargo starry example board -t orangepi-5-plus-uvc-rknn
+cargo xtask starry app board -t orangepi-5-plus-uvc-rknn
 ```
 
 The default example command uses `board-orangepi-5-plus.toml`, which runs a
@@ -101,14 +101,14 @@ bounded smoke test and exits after the success marker is printed. For continuous
 manual testing with browser preview, pass the long-run board config explicitly:
 
 ```bash
-cargo starry example board -t orangepi-5-plus-uvc-rknn \
+cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
   --board-config configs/board-orangepi-5-plus-long-run.toml
 ```
 
 For the current shared board, pass the concrete board lease endpoint:
 
 ```bash
-cargo starry example board -t orangepi-5-plus-uvc-rknn \
+cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
   -b OrangePi-5-Plus-robot \
   --server 10.30.12.60 \
   --port 2999
