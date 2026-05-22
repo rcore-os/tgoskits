@@ -24,7 +24,7 @@ use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
-    O_RDONLY, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx, statx_timestamp,
+    O_PATH, O_RDONLY, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx, statx_timestamp,
 };
 use spin::RwLock;
 
@@ -247,6 +247,18 @@ pub fn get_file_like(fd: c_int) -> AxResult<Arc<dyn FileLike>> {
         .get(fd as usize)
         .map(|fd| fd.inner.clone())
         .ok_or(AxError::BadFileDescriptor)
+}
+
+/// Returns true iff `fd` was opened with `O_PATH`.
+///
+/// Used by syscalls that man explicitly forbids on PATH file descriptors
+/// (fchmod / fchown / fsetxattr / ioctl / mmap / fallocate / ...). Per
+/// man 2 open §"O_PATH": "other file operations ... fail with the error
+/// EBADF."
+pub fn fd_is_path(fd: c_int) -> bool {
+    get_file_like(fd)
+        .map(|f| f.open_flags() & O_PATH != 0)
+        .unwrap_or(false)
 }
 
 /// Add a file to the file descriptor table.
