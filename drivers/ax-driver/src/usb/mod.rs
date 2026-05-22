@@ -176,10 +176,9 @@ fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
 }
 
 #[cfg(all(feature = "xhci-pci", target_os = "none"))]
-fn pci_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
-    if let Some(irq) =
-        crate::pci::legacy_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())
-    {
+fn pci_static_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
+    let interrupt_pin = endpoint.interrupt_pin();
+    if let Some(irq) = crate::pci::legacy_irq_for_endpoint(endpoint.address(), interrupt_pin) {
         return Some(irq);
     }
     let line = endpoint.interrupt_line();
@@ -190,7 +189,14 @@ fn pci_irq(endpoint: &rdrive::probe::pci::EndpointRc) -> Option<usize> {
 pub(crate) fn pci_irq_or_error(
     endpoint: &rdrive::probe::pci::EndpointRc,
 ) -> Result<usize, rdrive::probe::OnProbeError> {
-    pci_irq(endpoint).ok_or_else(|| {
+    #[cfg(feature = "pci-fdt")]
+    if let Some(irq) =
+        crate::pci::fdt_irq_for_endpoint(endpoint.address(), endpoint.interrupt_pin())?
+    {
+        return Ok(irq);
+    }
+
+    pci_static_irq(endpoint).ok_or_else(|| {
         rdrive::probe::OnProbeError::other(alloc::format!(
             "failed to resolve IRQ for USB endpoint {}",
             endpoint.address()

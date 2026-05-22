@@ -1,14 +1,19 @@
 extern crate alloc;
 
 use alloc::format;
+#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+use alloc::vec::Vec;
 
-use fdt_edit::{PciRange, PciSpace};
+#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+use fdt_edit::Fdt;
+use fdt_edit::{NodeType, PciRange, PciSpace};
 use log::{debug, trace, warn};
+#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+use rdrive::probe::pci::PciAddress;
 use rdrive::{
     PlatformDevice,
     probe::{
         OnProbeError,
-        fdt::NodeType,
         pci::{PciMem32, PciMem64, PcieController, new_driver_generic},
     },
     register::FdtInfo,
@@ -124,6 +129,102 @@ pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
 
     let irq: usize = intc.setup_irq_by_fdt(&interrupt.specifier).into();
     super::register_legacy_irq_route(0, logical_bus_end, irq);
+}
+
+#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+pub fn fdt_irq_for_endpoint(
+    address: PciAddress,
+    interrupt_pin: u8,
+) -> Result<Option<usize>, OnProbeError> {
+    let Some(result) =
+        rdrive::with_fdt(|fdt| resolve_pci_irq_from_fdt(fdt, address, interrupt_pin))
+    else {
+        return Ok(None);
+    };
+    result.map(Some)
+}
+
+#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+fn resolve_pci_irq_from_fdt(
+    fdt: &Fdt,
+    address: PciAddress,
+    interrupt_pin: u8,
+) -> Result<usize, OnProbeError> {
+    if interrupt_pin == 0 {
+        return Err(OnProbeError::other(format!(
+            "PCI endpoint {address} has no interrupt pin"
+        )));
+    }
+
+    let bus = address.bus();
+    let mut candidates = Vec::new();
+    let mut exact_range_matches = Vec::new();
+    for node in fdt.all_nodes() {
+        let NodeType::Pci(pci) = node else {
+            continue;
+        };
+
+        match pci.bus_range() {
+            Some(range) if range.contains(&(bus as u32)) => {
+                exact_range_matches.push(pci);
+                candidates.push(pci);
+            }
+            Some(_) => {}
+            None => candidates.push(pci),
+        }
+    }
+
+    let pci_host = if exact_range_matches.len() == 1 {
+        exact_range_matches[0]
+    } else if exact_range_matches.len() > 1 {
+        return Err(OnProbeError::other(format!(
+            "multiple PCI host nodes in FDT match endpoint {address} with the same bus-range"
+        )));
+    } else if candidates.len() == 1 {
+        candidates[0]
+    } else if candidates.is_empty() {
+        return Err(OnProbeError::other(format!(
+            "no PCI host node in FDT matches endpoint {address}"
+        )));
+    } else {
+        return Err(OnProbeError::other(format!(
+            "multiple PCI host nodes in FDT match endpoint {address} without a unique bus-range \
+             match"
+        )));
+    };
+
+    let irq = pci_host
+        .child_interrupts(
+            address.bus(),
+            address.device(),
+            address.function(),
+            interrupt_pin,
+        )
+        .map_err(|err| {
+            OnProbeError::other(format!(
+                "failed to resolve PCI interrupt-map entry for endpoint {address}: {err:?}"
+            ))
+        })?;
+
+    decode_irq_cells(&irq.irqs).ok_or_else(|| {
+        OnProbeError::other(format!(
+            "unsupported PCI interrupt specifier {:?} for endpoint {address}",
+            irq.irqs
+        ))
+    })
+}
+
+#[cfg(all(feature = "xhci-pci", target_os = "none"))]
+fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
+    match specifier {
+        [irq] => Some(*irq as usize),
+        [kind, irq, ..] => match *kind {
+            0 => Some(*irq as usize + 32),
+            1 => Some(*irq as usize + 16),
+            _ => Some(*irq as usize),
+        },
+        _ => None,
+    }
 }
 
 #[cfg(feature = "pci-list-devices")]
