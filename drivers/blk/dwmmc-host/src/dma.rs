@@ -230,6 +230,8 @@ impl DwMmc {
                 self.build_dma_read_request(start_block, buffer, size, dma, id)
             }
             BlockTransferMode::Fifo => self.build_fifo_read_request(start_block, buffer, size, id),
+            // Future BlockTransferMode variants are not supported by this controller.
+            _ => Err(Error::UnsupportedCommand),
         };
         match result {
             Ok(request) => Ok(request),
@@ -259,6 +261,8 @@ impl DwMmc {
                 self.build_dma_write_request(start_block, buffer, size, dma, id)
             }
             BlockTransferMode::Fifo => self.build_fifo_write_request(start_block, buffer, size, id),
+            // Future BlockTransferMode variants are not supported by this controller.
+            _ => Err(Error::UnsupportedCommand),
         };
         match result {
             Ok(request) => Ok(request),
@@ -279,6 +283,8 @@ impl DwMmc {
         match self.poll_block_request_response(request, id, slot)? {
             DataCommandPoll::Pending => Ok(BlockPoll::Pending),
             DataCommandPoll::Complete(_) => Ok(BlockPoll::Complete),
+            // Future DataCommandPoll variants are treated as completion.
+            _ => Ok(BlockPoll::Complete),
         }
     }
 
@@ -346,6 +352,8 @@ impl DwMmc {
                     }
                     return Ok(DataCommandPoll::Pending);
                 }
+                // Future CommandPoll variants: best-effort, treat as still pending.
+                Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
                     self.abort_block_request(request, id, slot, phase);
                     return Err(err);
@@ -360,6 +368,8 @@ impl DwMmc {
         match self.poll_dma_complete(cmd_index, phase) {
             Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
             Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot),
+            // Future BlockPoll variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
                 self.abort_block_request(request, id, slot, phase);
                 Err(err)
@@ -519,6 +529,8 @@ impl DwMmc {
             DataDirection::Read => BlockTransferDirection::Read,
             DataDirection::Write => BlockTransferDirection::Write,
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         let id = slot.start(BlockTransferMode::Fifo, transfer_direction)?;
         match self.build_fifo_data_request(
@@ -563,6 +575,8 @@ impl DwMmc {
             DataDirection::Read => Phase::DataRead,
             DataDirection::Write => Phase::DataWrite,
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         self.pending_data = Some(PendingData {
             direction,
@@ -597,6 +611,8 @@ impl DwMmc {
                 response: None,
             },
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         Ok(BlockRequest { inner })
     }
@@ -616,6 +632,8 @@ impl DwMmc {
             DataDirection::Read => Phase::DataRead,
             DataDirection::Write => Phase::DataWrite,
             DataDirection::None => return Err(Error::InvalidArgument),
+            // Future DataDirection variants are not supported by this engine.
+            _ => return Err(Error::InvalidArgument),
         };
         let byte_count = block_count
             .checked_mul(BLOCK_SIZE as u32)
@@ -779,6 +797,8 @@ impl DwMmc {
                 slot.complete(id)?;
                 Ok(DataCommandPoll::Complete(response))
             }
+            // Future CommandPoll variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
                 self.abort_block_request(request, id, slot, phase);
                 Err(err)
@@ -829,6 +849,8 @@ impl DwMmc {
                     set_fifo_stage(request, BlockRequestStage::Data)?;
                     return Ok(DataCommandPoll::Pending);
                 }
+                // Future CommandPoll variants: best-effort, treat as still pending.
+                Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
                     self.abort_block_request(request, id, slot, phase);
                     return Err(err);
@@ -848,6 +870,8 @@ impl DwMmc {
         match self.poll_fifo_data_step(request, cmd_index, phase) {
             Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
             Ok(BlockPoll::Complete) => self.finish_fifo_data(request, id, slot),
+            // Future BlockPoll variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
                 self.abort_block_request(request, id, slot, phase);
                 Err(err)

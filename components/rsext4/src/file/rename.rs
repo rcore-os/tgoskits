@@ -1,9 +1,21 @@
 use super::{
-    delete::{delete_dir, delete_file, remove_inodeentry_from_parentdir},
+    delete::{
+        delete_dir, delete_file, find_named_entry_in_parent, is_dir_empty,
+        remove_inodeentry_from_parentdir,
+    },
     *,
 };
 
+// TODO: RENAME_EXCHANGE — atomic swap of src and dst
+// TODO: RENAME_NOREPLACE — EEXIST if dst exists
+
 /// Renames or replaces a file-system entry.
+///
+/// When the destination already exists, POSIX requires type cross-checks:
+/// - rename(file, dir)  → ENOTDIR
+/// - rename(dir, file)  → EISDIR
+/// - rename(dir, dir)   → ENOTEMPTY if dst is non-empty
+/// - rename(file, file) → overwrite
 pub fn rename<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -13,11 +25,28 @@ pub fn rename<B: BlockDevice>(
     let old_norm = split_paren_child_and_tranlatevalid(old_path);
     let new_norm = split_paren_child_and_tranlatevalid(new_path);
 
+    // Resolve source type for cross-type checks.
+    let src_is_dir = get_inode_with_num(fs, device, &old_norm)?.is_some_and(|(_, i)| i.is_dir());
+
     // Replace existing destination entries before moving the source entry.
-    if let Some((_ino, inod)) = get_inode_with_num(fs, device, &new_norm).ok().flatten() {
-        if inod.is_dir() {
+    if let Some((_ino, dst_inode)) = get_inode_with_num(fs, device, &new_norm)? {
+        if dst_inode.is_dir() {
+            if !src_is_dir {
+                // rename file → dir: not allowed
+                return Err(Ext4Error::not_dir());
+            }
+            // rename dir → dir: destination must be empty
+            let mut dir_inode = dst_inode; // Ext4Inode is Copy
+            if !is_dir_empty(fs, device, &mut dir_inode)? {
+                return Err(Ext4Error::not_empty());
+            }
             delete_dir(fs, device, new_path)?;
         } else {
+            // dst is a file
+            if src_is_dir {
+                // rename dir → file: not allowed
+                return Err(Ext4Error::is_dir());
+            }
             delete_file(fs, device, new_path)?;
         }
     }
@@ -99,7 +128,7 @@ pub fn mv<B: BlockDevice>(
     };
 
     // Resolve the source entry and preserve its inode number plus file type.
-    let (_old_pino, mut old_parent_inode) = match get_inode_with_num(fs, block_dev, &old_parent)
+    let (old_pino, old_parent_inode) = match get_inode_with_num(fs, block_dev, &old_parent)
         .ok()
         .flatten()
     {
@@ -110,70 +139,15 @@ pub fn mv<B: BlockDevice>(
         }
     };
 
-    let mut src_ino: Option<InodeNumber> = None;
-    let mut src_ft: Option<u8> = None;
-    if let Ok(blocks) = resolve_inode_block_allextend(fs, block_dev, &mut old_parent_inode) {
-        for phys in blocks {
-            let cached = match fs.datablock_cache.get_or_load(block_dev, phys.1) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let data = &cached.data[..BLOCK_SIZE];
-            let iter = DirEntryIterator::new(data);
-            for (entry, _) in iter {
-                if entry.inode == 0 {
-                    continue;
-                }
-                if entry.name == old_name.as_bytes() {
-                    src_ino =
-                        Some(InodeNumber::new(entry.inode).map_err(|_| Ext4Error::corrupted())?);
-                    src_ft = Some(entry.file_type);
-                    break;
-                }
-            }
-            if src_ino.is_some() {
-                break;
-            }
-        }
-    }
-    if src_ino.is_none() {
-        // Fallback for non-extent directories: scan block pointers directly.
-        let total_size = old_parent_inode.size() as usize;
-        let total_blocks = if total_size == 0 {
-            0
-        } else {
-            total_size.div_ceil(BLOCK_SIZE)
-        };
-        for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(block_dev, &mut old_parent_inode, lbn as u32) {
-                Ok(Some(b)) => b,
-                _ => continue,
-            };
-            let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let data = &cached.data[..BLOCK_SIZE];
-            let iter = DirEntryIterator::new(data);
-            for (entry, _) in iter {
-                if entry.inode == 0 {
-                    continue;
-                }
-                if entry.name == old_name.as_bytes() {
-                    src_ino =
-                        Some(InodeNumber::new(entry.inode).map_err(|_| Ext4Error::corrupted())?);
-                    src_ft = Some(entry.file_type);
-                    break;
-                }
-            }
-            if src_ino.is_some() {
-                break;
-            }
-        }
-    }
-    let src_ino = match src_ino {
-        Some(v) => v,
-        None => {
+    let old_entry = match find_named_entry_in_parent(
+        fs,
+        block_dev,
+        old_pino,
+        &old_parent_inode,
+        old_name.as_bytes(),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
             error!(
                 "mv source entry not found in old parent: old_path={old_path} \
                  old_parent={old_parent} old_name={old_name}"
@@ -181,7 +155,8 @@ pub fn mv<B: BlockDevice>(
             return Err(Ext4Error::invalid_input());
         }
     };
-    let src_ft = src_ft.unwrap_or(Ext4DirEntry2::EXT4_FT_UNKNOWN);
+    let src_ino = old_entry.ino;
+    let src_ft = old_entry.file_type;
 
     // Destination parent directory must exist and be a directory.
     let (new_pino, new_parent_inode) = match get_inode_with_num(fs, block_dev, &new_parent)

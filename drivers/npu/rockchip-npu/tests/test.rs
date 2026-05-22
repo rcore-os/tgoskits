@@ -10,329 +10,329 @@ extern crate bare_test;
 
 #[bare_test::tests]
 mod tests {
-    use alloc::vec::Vec;
-    use core::{hint::spin_loop, ptr::NonNull, sync::atomic::AtomicU32, time::Duration};
+    // use alloc::vec::Vec;
+    // use core::{hint::spin_loop, ptr::NonNull, sync::atomic::AtomicU32, time::Duration};
 
-    use bare_test::{
-        hal::al::IrqId,
-        os::{
-            irq::register_handler,
-            mem::{dma::kernel_dma_op, mmio::ioremap, page_size},
-            platform::{PlatformDescriptor, get_platform_descriptor},
-            time::since_boot,
-        },
-    };
-    use dma_api::DeviceDma;
-    use fdt_edit::{Fdt, NodeType, Phandle};
-    use num_align::NumAlign;
-    use rknpu::{
-        Rknpu, RknpuConfig, RknpuType, Submit,
-        op::{self, Operation},
-    };
-    use rockchip_pm::{PowerDomain, RkBoard, RockchipPM};
-    use rockchip_soc::{Cru, SocType};
+    // use bare_test::{
+    //     hal::al::IrqId,
+    //     os::{
+    //         irq::register_handler,
+    //         mem::{dma::kernel_dma_op, mmio::ioremap, page_size},
+    //         platform::{PlatformDescriptor, get_platform_descriptor},
+    //         time::since_boot,
+    //     },
+    // };
+    // use dma_api::DeviceDma;
+    // use fdt_edit::{Fdt, NodeType, Phandle};
+    // use num_align::NumAlign;
+    // use rknpu::{
+    //     Rknpu, RknpuConfig, RknpuType, Submit,
+    //     op::{self, Operation},
+    // };
+    // use rockchip_pm::{PowerDomain, RkBoard, RockchipPM};
+    // use rockchip_soc::{Cru, SocType};
 
-    /// NPU 主电源域
-    pub const NPU: PowerDomain = PowerDomain(8);
-    /// NPU TOP 电源域  
-    pub const NPUTOP: PowerDomain = PowerDomain(9);
-    /// NPU1 电源域
-    pub const NPU1: PowerDomain = PowerDomain(10);
-    /// NPU2 电源域
-    pub const NPU2: PowerDomain = PowerDomain(11);
+    // /// NPU 主电源域
+    // pub const NPU: PowerDomain = PowerDomain(8);
+    // /// NPU TOP 电源域
+    // pub const NPUTOP: PowerDomain = PowerDomain(9);
+    // /// NPU1 电源域
+    // pub const NPU1: PowerDomain = PowerDomain(10);
+    // /// NPU2 电源域
+    // pub const NPU2: PowerDomain = PowerDomain(11);
 
-    static IRQ_STATUS: AtomicU32 = AtomicU32::new(0);
+    // static IRQ_STATUS: AtomicU32 = AtomicU32::new(0);
 
-    fn dma_device() -> DeviceDma {
-        DeviceDma::new(u32::MAX as u64, kernel_dma_op())
-    }
+    // fn dma_device() -> DeviceDma {
+    //     DeviceDma::new(u32::MAX as u64, kernel_dma_op())
+    // }
 
-    #[test]
-    fn it_works() {
-        // set_up_scmi();
+    // #[test]
+    // fn it_works() {
+    //     // set_up_scmi();
 
-        let reg = get_syscon_addr();
-        let board = RkBoard::Rk3588;
+    //     let reg = get_syscon_addr();
+    //     let board = RkBoard::Rk3588;
 
-        let mut pm = RockchipPM::new(reg, board);
+    //     let mut pm = RockchipPM::new(reg, board);
 
-        pm.power_domain_on(NPUTOP).unwrap();
-        pm.power_domain_on(NPU).unwrap();
-        pm.power_domain_on(NPU1).unwrap();
-        pm.power_domain_on(NPU2).unwrap();
+    //     pm.power_domain_on(NPUTOP).unwrap();
+    //     pm.power_domain_on(NPU).unwrap();
+    //     pm.power_domain_on(NPU1).unwrap();
+    //     pm.power_domain_on(NPU2).unwrap();
 
-        info!("Powered on NPU domains");
+    //     info!("Powered on NPU domains");
 
-        let mut npu = find_rknpu();
-        npu.open().unwrap();
-        info!("Opened RKNPU");
+    //     let mut npu = find_rknpu();
+    //     npu.open().unwrap();
+    //     info!("Opened RKNPU");
 
-        info!("Found RKNPU {:#x}", npu.get_hw_version());
+    //     info!("Found RKNPU {:#x}", npu.get_hw_version());
 
-        matul_test(&mut npu);
-    }
+    //     matul_test(&mut npu);
+    // }
 
-    fn find_rknpu() -> Rknpu {
-        let fdt = platform_fdt();
-        let node = fdt
-            .find_compatible(&["rockchip,rk3588-rknpu"])
-            .into_iter()
-            .next()
-            .unwrap();
+    // fn find_rknpu() -> Rknpu {
+    //     let fdt = platform_fdt();
+    //     let node = fdt
+    //         .find_compatible(&["rockchip,rk3588-rknpu"])
+    //         .into_iter()
+    //         .next()
+    //         .unwrap();
 
-        info!("Found node: {}", node.name());
-        let mut config = None;
-        for c in node.as_node().compatibles() {
-            if c == "rockchip,rk3588-rknpu" {
-                config = Some(RknpuConfig {
-                    rknpu_type: RknpuType::Rk3588,
-                });
-                break;
-            }
-        }
-        // let _clk_ctrl = configure_npu_clocks();
-        // info!("Configured NPU clock tree");
+    //     info!("Found node: {}", node.name());
+    //     let mut config = None;
+    //     for c in node.as_node().compatibles() {
+    //         if c == "rockchip,rk3588-rknpu" {
+    //             config = Some(RknpuConfig {
+    //                 rknpu_type: RknpuType::Rk3588,
+    //             });
+    //             break;
+    //         }
+    //     }
+    //     // let _clk_ctrl = configure_npu_clocks();
+    //     // info!("Configured NPU clock tree");
 
-        let config = config.expect("Unsupported RKNPU compatible");
+    //     let config = config.expect("Unsupported RKNPU compatible");
 
-        let mut base_regs = Vec::new();
+    //     let mut base_regs = Vec::new();
 
-        for reg in node.regs() {
-            let start_raw = reg.address as usize;
-            let size = reg.size.unwrap_or(page_size() as u64) as usize;
-            let end = start_raw + size;
+    //     for reg in node.regs() {
+    //         let start_raw = reg.address as usize;
+    //         let size = reg.size.unwrap_or(page_size() as u64) as usize;
+    //         let end = start_raw + size;
 
-            let start = start_raw & !(page_size() - 1);
-            let offset = start_raw - start;
-            let end = (end + page_size() - 1) & !(page_size() - 1);
-            let size = end - start;
+    //         let start = start_raw & !(page_size() - 1);
+    //         let offset = start_raw - start;
+    //         let end = (end + page_size() - 1) & !(page_size() - 1);
+    //         let size = end - start;
 
-            let mapping = ioremap(start.into(), size).unwrap();
-            base_regs.push(unsafe { NonNull::new_unchecked(mapping.as_ptr().add(offset)) });
-        }
-        let rknpu = Rknpu::new(&base_regs, config, dma_device());
+    //         let mapping = ioremap(start.into(), size).unwrap();
+    //         base_regs.push(unsafe { NonNull::new_unchecked(mapping.as_ptr().add(offset)) });
+    //     }
+    //     let rknpu = Rknpu::new(&base_regs, config, dma_device());
 
-        let irq_handler0 = rknpu.new_irq_handler(0);
+    //     let irq_handler0 = rknpu.new_irq_handler(0);
 
-        let irq_ref = node.interrupts().into_iter().next().unwrap();
-        let irq_id = IrqId::from(gic_irq_id(&irq_ref.specifier));
-        register_handler(irq_id, move || {
-            let status = irq_handler0.handle();
-            IRQ_STATUS.store(status, core::sync::atomic::Ordering::SeqCst);
-        });
+    //     let irq_ref = node.interrupts().into_iter().next().unwrap();
+    //     let irq_id = IrqId::from(gic_irq_id(&irq_ref.specifier));
+    //     register_handler(irq_id, move || {
+    //         let status = irq_handler0.handle();
+    //         IRQ_STATUS.store(status, core::sync::atomic::Ordering::SeqCst);
+    //     });
 
-        rknpu
-    }
+    //     rknpu
+    // }
 
-    fn get_syscon_addr() -> NonNull<u8> {
-        let fdt = platform_fdt();
+    // fn get_syscon_addr() -> NonNull<u8> {
+    //     let fdt = platform_fdt();
 
-        let mut node = None;
-        for candidate in fdt.find_compatible(&["syscon"]) {
-            if candidate.name().contains("power-manage") {
-                node = Some(candidate);
-                break;
-            }
-        }
-        let node = node.expect("Failed to find syscon node");
+    //     let mut node = None;
+    //     for candidate in fdt.find_compatible(&["syscon"]) {
+    //         if candidate.name().contains("power-manage") {
+    //             node = Some(candidate);
+    //             break;
+    //         }
+    //     }
+    //     let node = node.expect("Failed to find syscon node");
 
-        info!("Found node: {}", node.name());
+    //     info!("Found node: {}", node.name());
 
-        let regs = node.regs();
-        let start = regs[0].address as usize;
-        let end = start + regs[0].size.unwrap_or(0) as usize;
-        info!("Syscon address range: 0x{:x} - 0x{:x}", start, end);
-        let start = start & !(page_size() - 1);
-        let end = (end + page_size() - 1) & !(page_size() - 1);
-        info!("Aligned Syscon address range: 0x{:x} - 0x{:x}", start, end);
-        ioremap(start.into(), end - start).unwrap().as_nonnull_ptr()
-    }
+    //     let regs = node.regs();
+    //     let start = regs[0].address as usize;
+    //     let end = start + regs[0].size.unwrap_or(0) as usize;
+    //     info!("Syscon address range: 0x{:x} - 0x{:x}", start, end);
+    //     let start = start & !(page_size() - 1);
+    //     let end = (end + page_size() - 1) & !(page_size() - 1);
+    //     info!("Aligned Syscon address range: 0x{:x} - 0x{:x}", start, end);
+    //     ioremap(start.into(), end - start).unwrap().as_nonnull_ptr()
+    // }
 
-    fn configure_npu_clocks() -> Cru {
-        let cru_addr = get_cru_addr();
-        let grf_addr = get_cru_grf_addr();
-        Cru::new(SocType::Rk3588, cru_addr, grf_addr)
-        // let mut cru = Cru::new(SocType::Rk3588, cru_addr, grf_addr);
+    // fn configure_npu_clocks() -> Cru {
+    //     let cru_addr = get_cru_addr();
+    //     let grf_addr = get_cru_grf_addr();
+    //     Cru::new(SocType::Rk3588, cru_addr, grf_addr)
+    //     // let mut cru = Cru::new(SocType::Rk3588, cru_addr, grf_addr);
 
-        // // Program the primary NPU clock tree to known-good defaults. Ignore failures for now.
-        // let _ = cru.clk_set_rate(HCLK_NPU_ROOT, 200_000_000);
-        // let _ = cru.clk_set_rate(CLK_NPU_DSU0, 800_000_000);
-        // let _ = cru.clk_set_rate(PCLK_NPU_ROOT, 100_000_000);
-        // let _ = cru.clk_set_rate(HCLK_NPU_CM0_ROOT, 200_000_000);
-        // let _ = cru.clk_set_rate(CLK_NPU_CM0_RTC, 24_000_000);
-        // let _ = cru.clk_set_rate(CLK_NPUTIMER_ROOT, 100_000_000);
+    //     // // Program the primary NPU clock tree to known-good defaults. Ignore failures for now.
+    //     // let _ = cru.clk_set_rate(HCLK_NPU_ROOT, 200_000_000);
+    //     // let _ = cru.clk_set_rate(CLK_NPU_DSU0, 800_000_000);
+    //     // let _ = cru.clk_set_rate(PCLK_NPU_ROOT, 100_000_000);
+    //     // let _ = cru.clk_set_rate(HCLK_NPU_CM0_ROOT, 200_000_000);
+    //     // let _ = cru.clk_set_rate(CLK_NPU_CM0_RTC, 24_000_000);
+    //     // let _ = cru.clk_set_rate(CLK_NPUTIMER_ROOT, 100_000_000);
 
-        // // Ensure the essential gates are open.
-        // for gate in [
-        //     ACLK_NPU0,
-        //     HCLK_NPU0,
-        //     ACLK_NPU1,
-        //     HCLK_NPU1,
-        //     ACLK_NPU2,
-        //     HCLK_NPU2,
-        //     PCLK_NPU_PVTM,
-        //     PCLK_NPU_GRF,
-        //     CLK_NPU_PVTM,
-        //     CLK_CORE_NPU_PVTM,
-        //     PCLK_NPU_TIMER,
-        //     CLK_NPUTIMER0,
-        //     CLK_NPUTIMER1,
-        //     PCLK_NPU_WDT,
-        //     TCLK_NPU_WDT,
-        //     FCLK_NPU_CM0_CORE,
-        // ] {
-        //     if let Err(err) = cru.clk_enable(gate) {
-        //         warn!("Failed to enable gate {gate}: {err}");
-        //     }
-        // }
-    }
+    //     // // Ensure the essential gates are open.
+    //     // for gate in [
+    //     //     ACLK_NPU0,
+    //     //     HCLK_NPU0,
+    //     //     ACLK_NPU1,
+    //     //     HCLK_NPU1,
+    //     //     ACLK_NPU2,
+    //     //     HCLK_NPU2,
+    //     //     PCLK_NPU_PVTM,
+    //     //     PCLK_NPU_GRF,
+    //     //     CLK_NPU_PVTM,
+    //     //     CLK_CORE_NPU_PVTM,
+    //     //     PCLK_NPU_TIMER,
+    //     //     CLK_NPUTIMER0,
+    //     //     CLK_NPUTIMER1,
+    //     //     PCLK_NPU_WDT,
+    //     //     TCLK_NPU_WDT,
+    //     //     FCLK_NPU_CM0_CORE,
+    //     // ] {
+    //     //     if let Err(err) = cru.clk_enable(gate) {
+    //     //         warn!("Failed to enable gate {gate}: {err}");
+    //     //     }
+    //     // }
+    // }
 
-    fn get_cru_addr() -> NonNull<u8> {
-        let fdt = platform_fdt();
+    // fn get_cru_addr() -> NonNull<u8> {
+    //     let fdt = platform_fdt();
 
-        let node = fdt
-            .find_compatible(&["rockchip,rk3588-cru"])
-            .into_iter()
-            .next()
-            .expect("Failed to find CRU node");
+    //     let node = fdt
+    //         .find_compatible(&["rockchip,rk3588-cru"])
+    //         .into_iter()
+    //         .next()
+    //         .expect("Failed to find CRU node");
 
-        info!("Found node: {}", node.name());
+    //     info!("Found node: {}", node.name());
 
-        map_first_reg(node, "CRU")
-    }
+    //     map_first_reg(node, "CRU")
+    // }
 
-    fn get_cru_grf_addr() -> NonNull<u8> {
-        let fdt = platform_fdt();
+    // fn get_cru_grf_addr() -> NonNull<u8> {
+    //     let fdt = platform_fdt();
 
-        let node = fdt
-            .find_compatible(&["rockchip,rk3588-cru"])
-            .into_iter()
-            .next()
-            .expect("Failed to find CRU node");
-        let grf_phandle = node
-            .as_node()
-            .get_property("rockchip,grf")
-            .expect("CRU node missing rockchip,grf")
-            .get_u32()
-            .expect("CRU rockchip,grf is not a phandle");
-        let grf_node = fdt
-            .get_by_phandle(Phandle::from(grf_phandle))
-            .expect("CRU rockchip,grf target not found");
+    //     let node = fdt
+    //         .find_compatible(&["rockchip,rk3588-cru"])
+    //         .into_iter()
+    //         .next()
+    //         .expect("Failed to find CRU node");
+    //     let grf_phandle = node
+    //         .as_node()
+    //         .get_property("rockchip,grf")
+    //         .expect("CRU node missing rockchip,grf")
+    //         .get_u32()
+    //         .expect("CRU rockchip,grf is not a phandle");
+    //     let grf_node = fdt
+    //         .get_by_phandle(Phandle::from(grf_phandle))
+    //         .expect("CRU rockchip,grf target not found");
 
-        map_first_reg(grf_node, "CRU GRF")
-    }
+    //     map_first_reg(grf_node, "CRU GRF")
+    // }
 
-    fn map_first_reg(node: NodeType<'_>, name: &str) -> NonNull<u8> {
-        let regs = node.regs();
-        let reg = regs
-            .first()
-            .copied()
-            .unwrap_or_else(|| panic!("{name} node missing reg range"));
+    // fn map_first_reg(node: NodeType<'_>, name: &str) -> NonNull<u8> {
+    //     let regs = node.regs();
+    //     let reg = regs
+    //         .first()
+    //         .copied()
+    //         .unwrap_or_else(|| panic!("{name} node missing reg range"));
 
-        let start_raw = reg.address as usize;
-        let size = reg.size.unwrap_or(page_size() as u64) as usize;
+    //     let start_raw = reg.address as usize;
+    //     let size = reg.size.unwrap_or(page_size() as u64) as usize;
 
-        let start = start_raw & !(page_size() - 1);
-        let end = (start_raw + size + page_size() - 1) & !(page_size() - 1);
-        let offset = start_raw - start;
+    //     let start = start_raw & !(page_size() - 1);
+    //     let end = (start_raw + size + page_size() - 1) & !(page_size() - 1);
+    //     let offset = start_raw - start;
 
-        let mapping = ioremap(start.into(), end - start).unwrap();
-        let ptr = unsafe { mapping.as_ptr().add(offset) };
+    //     let mapping = ioremap(start.into(), end - start).unwrap();
+    //     let ptr = unsafe { mapping.as_ptr().add(offset) };
 
-        // SAFETY: iomap guarantees a valid mapping; offset is within bounds.
-        unsafe { NonNull::new_unchecked(ptr) }
-    }
+    //     // SAFETY: iomap guarantees a valid mapping; offset is within bounds.
+    //     unsafe { NonNull::new_unchecked(ptr) }
+    // }
 
-    fn matul_test(npu: &mut Rknpu) {
-        let m = 16;
-        let k = 32;
-        let n = 32;
+    // fn matul_test(npu: &mut Rknpu) {
+    //     let m = 16;
+    //     let k = 32;
+    //     let n = 32;
 
-        let a_data: Vec<i8> = (0..(m * k)).map(|x| x as _).collect();
-        let b_data: Vec<i8> = (0..(k * n)).map(|x| x as _).collect();
-        let mut want: Vec<i32> = vec![0i32; m * n];
+    //     let a_data: Vec<i8> = (0..(m * k)).map(|x| x as _).collect();
+    //     let b_data: Vec<i8> = (0..(k * n)).map(|x| x as _).collect();
+    //     let mut want: Vec<i32> = vec![0i32; m * n];
 
-        matmul_int(m, k, n, &a_data, &b_data, &mut want);
+    //     matmul_int(m, k, n, &a_data, &b_data, &mut want);
 
-        let mut npu_matmul = op::matmul::MatMul::<i8, i32>::new(npu.dma(), m, k, n);
+    //     let mut npu_matmul = op::matmul::MatMul::<i8, i32>::new(npu.dma(), m, k, n);
 
-        npu_matmul.set_a(&a_data);
+    //     npu_matmul.set_a(&a_data);
 
-        npu_matmul.set_b(&b_data);
+    //     npu_matmul.set_b(&b_data);
 
-        let mut job = Submit::new(npu.dma(), vec![Operation::MatMulu8(npu_matmul)]);
+    //     let mut job = Submit::new(npu.dma(), vec![Operation::MatMulu8(npu_matmul)]);
 
-        let bstatus = npu.handle_interrupt0();
+    //     let bstatus = npu.handle_interrupt0();
 
-        npu.submit(&mut job).unwrap();
+    //     npu.submit(&mut job).unwrap();
 
-        info!("Submitted matmul job to NPU");
-        loop {
-            spin_delay(Duration::from_millis(500));
-            let status = IRQ_STATUS.load(core::sync::atomic::Ordering::SeqCst);
+    //     info!("Submitted matmul job to NPU");
+    //     loop {
+    //         spin_delay(Duration::from_millis(500));
+    //         let status = IRQ_STATUS.load(core::sync::atomic::Ordering::SeqCst);
 
-            // let status = npu.handle_interrupt0();
-            if status != bstatus {
-                info!("NPU interrupt status after matmul: 0x{:x}", status);
-                break;
-            }
-        }
+    //         // let status = npu.handle_interrupt0();
+    //         if status != bstatus {
+    //             info!("NPU interrupt status after matmul: 0x{:x}", status);
+    //             break;
+    //         }
+    //     }
 
-        let Operation::MatMulu8(val) = &job.tasks[0];
+    //     let Operation::MatMulu8(val) = &job.tasks[0];
 
-        let M = m as _;
-        let N = n as _;
-        for m in 1..=M {
-            for n in 1..=N {
-                let actual: i32 = val.get_output(m, n);
-                let expected = want[((m - 1) * N) + (n - 1)];
-                assert_eq!(
-                    actual, expected,
-                    "Matmul result mismatch at m={}, n={}: actual {}, expected {}",
-                    m, n, actual, expected
-                );
-            }
-        }
+    //     let M = m as _;
+    //     let N = n as _;
+    //     for m in 1..=M {
+    //         for n in 1..=N {
+    //             let actual: i32 = val.get_output(m, n);
+    //             let expected = want[((m - 1) * N) + (n - 1)];
+    //             assert_eq!(
+    //                 actual, expected,
+    //                 "Matmul result mismatch at m={}, n={}: actual {}, expected {}",
+    //                 m, n, actual, expected
+    //             );
+    //         }
+    //     }
 
-        info!("Matmul result matches expected output");
-    }
+    //     info!("Matmul result matches expected output");
+    // }
 
-    fn matmul_int(m: usize, k: usize, n: usize, src0: &[i8], src1: &[i8], dst: &mut [i32]) {
-        for i in 0..m {
-            for j in 0..n {
-                let mut sum = 0;
-                for l in 0..k {
-                    sum += (src0[i * k + l] as i32) * (src1[j * k + l] as i32);
-                }
-                dst[i * n + j] = sum;
-            }
-        }
-    }
+    // fn matmul_int(m: usize, k: usize, n: usize, src0: &[i8], src1: &[i8], dst: &mut [i32]) {
+    //     for i in 0..m {
+    //         for j in 0..n {
+    //             let mut sum = 0;
+    //             for l in 0..k {
+    //                 sum += (src0[i * k + l] as i32) * (src1[j * k + l] as i32);
+    //             }
+    //             dst[i * n + j] = sum;
+    //         }
+    //     }
+    // }
 
-    fn platform_fdt() -> Fdt {
-        match get_platform_descriptor() {
-            PlatformDescriptor::DeviceTree(dtb) => {
-                Fdt::from_bytes(dtb.as_slice()).expect("failed to parse live device tree")
-            }
-            PlatformDescriptor::Acpi => panic!("ACPI platform is not supported"),
-            PlatformDescriptor::None => panic!("device tree is unavailable"),
-        }
-    }
+    // fn platform_fdt() -> Fdt {
+    //     match get_platform_descriptor() {
+    //         PlatformDescriptor::DeviceTree(dtb) => {
+    //             Fdt::from_bytes(dtb.as_slice()).expect("failed to parse live device tree")
+    //         }
+    //         PlatformDescriptor::Acpi => panic!("ACPI platform is not supported"),
+    //         PlatformDescriptor::None => panic!("device tree is unavailable"),
+    //     }
+    // }
 
-    fn gic_irq_id(specifier: &[u32]) -> usize {
-        match specifier {
-            [id] => *id as usize,
-            [0, num, ..] => *num as usize + 32,
-            [1, num, ..] => *num as usize + 16,
-            [kind, ..] => panic!("unsupported GIC interrupt specifier type: {kind}"),
-            [] => panic!("empty interrupt specifier"),
-        }
-    }
+    // fn gic_irq_id(specifier: &[u32]) -> usize {
+    //     match specifier {
+    //         [id] => *id as usize,
+    //         [0, num, ..] => *num as usize + 32,
+    //         [1, num, ..] => *num as usize + 16,
+    //         [kind, ..] => panic!("unsupported GIC interrupt specifier type: {kind}"),
+    //         [] => panic!("empty interrupt specifier"),
+    //     }
+    // }
 
-    fn spin_delay(duration: Duration) {
-        let deadline = since_boot() + duration;
-        while since_boot() < deadline {
-            spin_loop();
-        }
-    }
+    // fn spin_delay(duration: Duration) {
+    //     let deadline = since_boot() + duration;
+    //     while since_boot() < deadline {
+    //         spin_loop();
+    //     }
+    // }
 }

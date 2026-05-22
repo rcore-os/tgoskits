@@ -34,10 +34,10 @@ ArceOS 开发和测试依赖 QEMU system emulator：
 | x86_64 | `qemu-system-x86_64` | `qemu-system-x86_64 --version` |
 | loongarch64 | `qemu-system-loongarch64` | `qemu-system-loongarch64 --version` |
 
-推荐版本 ≥ 8.0。Debian/Ubuntu 安装示例：
+推荐版本 ≥ 10.2.1。Debian/Ubuntu 安装示例：
 
 ```bash
-sudo apt install qemu-system-arm qemu-system-misc qemu-system-x86
+sudo apt install qemu-system-arm qemu-system-riscv64 qemu-system-x86
 ```
 
 ### 1.3 交叉编译工具链（可选）
@@ -387,9 +387,8 @@ components/axplat_crates/platforms/axplat-aarch64-qemu-virt/
 
 | 目录 | 内容 |
 |------|------|
-| `components/axplat_crates/platforms/` | 8 个工作区内平台 crate |
+| `components/axplat_crates/platforms/` | 工作区内 `ax-plat-*` 平台 crate |
 | `platform/axplat-dyn/` | 动态平台加载（设备树驱动） |
-| `platform/riscv64-qemu-virt/` | RISC-V QEMU virt 独立平台 |
 | `platform/x86-qemu-q35/` | x86_64 QEMU Q35 独立平台 |
 
 已有平台：

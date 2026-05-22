@@ -254,10 +254,8 @@ impl CloneArgs {
                 if flags.contains(CloneFlags::FS) {
                     FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
                 } else {
-                    FS_CONTEXT
-                        .scope_mut(&mut scope)
-                        .lock()
-                        .clone_from(&FS_CONTEXT.lock());
+                    let fs_context = FS_CONTEXT.lock().clone();
+                    *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
                 }
             }
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.2...loongarch_vcpu-v0.5.3) - 2026-05-22
+
+### Other
+
+- updated the following local packages: ax-errno, axaddrspace, axvcpu
+
 ## [0.5.2](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.1...loongarch_vcpu-v0.5.2) - 2026-05-19
 
 ### Other

@@ -181,6 +181,28 @@ impl Ext4GroupDesc {
         (self.bg_inode_bitmap_csum_hi as u32) << 16 | self.bg_inode_bitmap_csum_lo as u32
     }
 
+    /// Returns whether a computed bitmap checksum matches this descriptor.
+    ///
+    /// ext4 stores only the low 16 bits of bitmap checksums in 32-byte group
+    /// descriptors. The high checksum fields are present only in 64-byte
+    /// descriptors.
+    pub fn block_bitmap_csum_matches(&self, superblock: &Ext4Superblock, computed: u32) -> bool {
+        Self::bitmap_csum_matches(superblock, self.block_bitmap_csum(), computed)
+    }
+
+    /// Returns whether a computed inode bitmap checksum matches this descriptor.
+    pub fn inode_bitmap_csum_matches(&self, superblock: &Ext4Superblock, computed: u32) -> bool {
+        Self::bitmap_csum_matches(superblock, self.inode_bitmap_csum(), computed)
+    }
+
+    fn bitmap_csum_matches(superblock: &Ext4Superblock, stored: u32, computed: u32) -> bool {
+        if superblock.get_desc_size() <= Self::GOOD_OLD_DESC_SIZE as u16 {
+            (stored as u16) == (computed as u16)
+        } else {
+            stored == computed
+        }
+    }
+
     /// Returns whether the block group is marked uninitialized.
     pub fn is_uninit_bg(&self) -> bool {
         self.bg_flags & Self::EXT4_BG_INODE_UNINIT != 0

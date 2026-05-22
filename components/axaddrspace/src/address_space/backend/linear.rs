@@ -41,12 +41,13 @@ impl<H: PagingHandler> Backend<H> {
             pa_start + size,
             flags
         );
+        let allow_huge = true;
         pt.map_region(
             start,
             |va| PhysAddr::from(va.as_usize() - pa_va_offset),
             size,
             flags,
-            true,
+            allow_huge,
         )
         .is_ok()
     }

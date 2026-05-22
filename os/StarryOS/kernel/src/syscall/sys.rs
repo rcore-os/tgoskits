@@ -589,7 +589,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
                 state.read(len)
             };
             if !data.is_empty() {
-                vm_write_slice(buf as *mut u8, &data)?;
+                vm_write_slice(buf.cast::<u8>(), &data)?;
             }
             Ok(data.len() as isize)
         }
@@ -600,7 +600,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
                 state.read_all(len)
             };
             if !data.is_empty() {
-                vm_write_slice(buf as *mut u8, &data)?;
+                vm_write_slice(buf.cast::<u8>(), &data)?;
             }
             Ok(data.len() as isize)
         }
@@ -613,7 +613,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
                 data
             };
             if !data.is_empty() {
-                vm_write_slice(buf as *mut u8, &data)?;
+                vm_write_slice(buf.cast::<u8>(), &data)?;
             }
             Ok(data.len() as isize)
         }

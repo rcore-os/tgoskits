@@ -32,6 +32,12 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
     trace!("Syscall {sysno:?}");
 
+    // Snapshot sepc before dispatching: if a signal handler is installed
+    // during the syscall, the handler redirects uctx.ip() elsewhere.
+    // We must not overwrite retval when that happens, because on
+    // non-x86_64 arches retval and arg0 (signo) share a register.
+    let prev_ip = uctx.ip();
+
     let result = match sysno {
         // fs ctl
         Sysno::ioctl => sys_ioctl(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -489,6 +495,12 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::exit => sys_exit(uctx.arg0() as _),
         Sysno::exit_group => sys_exit_group(uctx.arg0() as _),
         Sysno::wait4 => sys_waitpid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::waitid => sys_waitid(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
         Sysno::getsid => sys_getsid(uctx.arg0() as _),
         Sysno::setsid => sys_setsid(),
         Sysno::getpgid => sys_getpgid(uctx.arg0() as _),
@@ -722,6 +734,9 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         }
     };
     debug!("Syscall {sysno} return {result:?}");
+    let new_retval = result.unwrap_or_else(|err| -LinuxError::from(err).code() as _) as _;
 
-    uctx.set_retval(result.unwrap_or_else(|err| -LinuxError::from(err).code() as _) as _);
+    if uctx.ip() == prev_ip {
+        uctx.set_retval(new_retval);
+    }
 }
