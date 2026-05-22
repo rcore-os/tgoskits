@@ -302,10 +302,13 @@ pub fn close_file_like(fd: c_int) -> AxResult {
         release_locks_on_close(f);
         return Ok(());
     }
-    if crate::perf_event::perf_event_close(fd as u32).is_ok() {
-        return Ok(());
+    #[cfg(feature = "ebpf")]
+    {
+        if crate::perf_event::perf_event_close(fd as u32).is_ok() {
+            return Ok(());
+        }
+        crate::ebpf::bpf_close_fd(fd as u32)?;
     }
-    crate::ebpf::bpf_close_fd(fd as u32)?;
     Ok(())
 }
 
@@ -399,8 +402,11 @@ pub fn close_all_fds() {
         crate::syscall::wake_lock_waiters(key);
         crate::syscall::wake_flock_waiters(key);
     }
-    crate::perf_event::perf_event_close_all();
-    crate::ebpf::bpf_close_all_fds();
+    #[cfg(feature = "ebpf")]
+    {
+        crate::perf_event::perf_event_close_all();
+        crate::ebpf::bpf_close_all_fds();
+    }
 }
 
 pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
