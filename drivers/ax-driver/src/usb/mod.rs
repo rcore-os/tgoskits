@@ -55,6 +55,26 @@ impl DmaOp for UsbKernel {
         axklib::dma::op().flush_invalidate(addr, size);
     }
 
+    fn prepare_read(
+        &self,
+        handle: &DmaMapHandle,
+        offset: usize,
+        size: usize,
+        direction: DmaDirection,
+    ) {
+        axklib::dma::op().prepare_read(handle, offset, size, direction);
+    }
+
+    fn confirm_write(
+        &self,
+        handle: &DmaMapHandle,
+        offset: usize,
+        size: usize,
+        direction: DmaDirection,
+    ) {
+        axklib::dma::op().confirm_write(handle, offset, size, direction);
+    }
+
     unsafe fn alloc_coherent(
         &self,
         dma_mask: u64,
