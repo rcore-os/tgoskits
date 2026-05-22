@@ -1039,7 +1039,7 @@ impl BpfVm {
                         pc = (pc as isize + 1 + off) as usize;
                         continue;
                     }
-                    if insn.code == bpf_insn::BPF_JMP32 && insn.src_reg() == 0 {
+                    if insn.code == (bpf_insn::BPF_JMP32 | bpf_insn::BPF_JA) {
                         pc = (pc as isize + 1 + off) as usize;
                         continue;
                     }
