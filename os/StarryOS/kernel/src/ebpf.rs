@@ -402,6 +402,83 @@ impl BpfMapOps for HashMapInner {
     }
 }
 
+struct PerfEventArrayMap {
+    meta: BpfMapMeta,
+    fds: alloc::vec::Vec<u32>,
+    max_entries: u32,
+}
+
+impl PerfEventArrayMap {
+    fn new(meta: BpfMapMeta) -> Self {
+        let max_entries = meta.max_entries;
+        let fds = alloc::vec![0u32; max_entries as usize];
+        Self {
+            meta,
+            fds,
+            max_entries,
+        }
+    }
+}
+
+impl BpfMapOps for PerfEventArrayMap {
+    fn meta(&self) -> &BpfMapMeta {
+        &self.meta
+    }
+
+    fn lookup_elem(&mut self, key: &[u8]) -> AxResult<Option<Vec<u8>>> {
+        if key.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let idx = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+        if idx as usize >= self.max_entries as usize {
+            return Err(bpf_error::ENOENT);
+        }
+        Ok(Some(self.fds[idx as usize].to_ne_bytes().to_vec()))
+    }
+
+    fn update_elem(&mut self, key: &[u8], value: &[u8], _flags: u64) -> AxResult<()> {
+        if key.len() != 4 || value.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let idx = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+        if idx as usize >= self.max_entries as usize {
+            return Err(bpf_error::ENOENT);
+        }
+        let fd = u32::from_ne_bytes([value[0], value[1], value[2], value[3]]);
+        self.fds[idx as usize] = fd;
+        Ok(())
+    }
+
+    fn delete_elem(&mut self, key: &[u8]) -> AxResult<()> {
+        if key.len() != 4 {
+            return Err(bpf_error::EINVAL);
+        }
+        let idx = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+        if idx as usize >= self.max_entries as usize {
+            return Err(bpf_error::ENOENT);
+        }
+        self.fds[idx as usize] = 0;
+        Ok(())
+    }
+
+    fn get_next_key(&mut self, key: Option<&[u8]>) -> AxResult<Option<Vec<u8>>> {
+        let next_idx = match key {
+            None => 0u32,
+            Some(k) => {
+                if k.len() != 4 {
+                    return Err(bpf_error::EINVAL);
+                }
+                let idx = u32::from_ne_bytes([k[0], k[1], k[2], k[3]]);
+                idx + 1
+            }
+        };
+        if next_idx >= self.max_entries {
+            return Ok(None);
+        }
+        Ok(Some(next_idx.to_ne_bytes().to_vec()))
+    }
+}
+
 struct UnifiedMap {
     inner: alloc::boxed::Box<dyn BpfMapOps>,
 }
@@ -417,6 +494,9 @@ impl UnifiedMap {
         let inner: alloc::boxed::Box<dyn BpfMapOps> = match map_type {
             map_type::ARRAY => alloc::boxed::Box::new(ArrayMap::new(meta.clone())),
             map_type::HASH => alloc::boxed::Box::new(HashMapInner::new(meta.clone())),
+            map_type::PERF_EVENT_ARRAY => {
+                alloc::boxed::Box::new(PerfEventArrayMap::new(meta.clone()))
+            }
             _ => {
                 warn!("bpf: unsupported map type {map_type}");
                 return Err(bpf_error::EINVAL);
@@ -740,12 +820,27 @@ fn handle_prog_load(uattr: usize, size: u32) -> AxResult<isize> {
     if log_level > 0 {
         warn!("bpf: BPF_PROG_LOAD verifier log requested but not implemented");
     }
+    match prog_type {
+        prog_type::KPROBE
+        | prog_type::TRACEPOINT
+        | prog_type::RAW_TRACEPOINT
+        | prog_type::PERF_EVENT
+        | prog_type::UNSPEC => {}
+        _ => {
+            warn!("bpf: unsupported prog type {prog_type}");
+            return Err(bpf_error::EINVAL);
+        }
+    }
     let insn_bytes = insn_cnt as usize * 8;
     let raw_insns = unsafe { core::slice::from_raw_parts(insns_ptr as *const u8, insn_bytes) };
     let mut insns = Vec::new();
     for chunk in raw_insns.chunks_exact(8) {
         let arr: [u8; 8] = chunk.try_into().unwrap();
         insns.push(bpf_insn::BpfInsn::from_bytes(&arr));
+    }
+    if let Err(e) = BpfVm::verify_program(&insns) {
+        warn!("bpf: program verification failed: {e}");
+        return Err(bpf_error::EINVAL);
     }
     let mut guard = BPF_GLOBAL.lock();
     let id = guard.progs.len() as u32;
@@ -821,6 +916,9 @@ fn init_helper_functions() -> alloc::collections::BTreeMap<u32, HelperFn> {
     m.insert(helper_id::GET_CURRENT_UID_GID, helper_get_current_uid_gid);
     m.insert(helper_id::GET_PRANDOM_U32, helper_get_prandom_u32);
     m.insert(helper_id::PERF_EVENT_OUTPUT, helper_perf_event_output);
+    m.insert(helper_id::TRACE_PRINTK, helper_trace_printk);
+    m.insert(helper_id::GET_CURRENT_TASK, helper_get_current_task);
+    m.insert(helper_id::GET_CURRENT_COMM, helper_get_current_comm);
     m
 }
 
@@ -965,6 +1063,42 @@ fn helper_perf_event_output(
     }
 }
 
+fn helper_trace_printk(fmt_ptr: u64, fmt_size: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    if fmt_ptr == 0 || fmt_size == 0 || fmt_size > 128 {
+        return u64::MAX;
+    }
+    let len = fmt_size as usize;
+    let bytes = unsafe { core::slice::from_raw_parts(fmt_ptr as *const u8, len) };
+    let s = core::str::from_utf8(bytes).unwrap_or("<invalid utf8>");
+    let trimmed = s.trim_end_matches('\0');
+    if !trimmed.is_empty() {
+        warn!("bpf trace_printk: {trimmed}");
+    }
+    len as u64
+}
+
+fn helper_get_current_task(_a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    let curr = ax_task::current();
+    curr.as_ref() as *const _ as u64
+}
+
+fn helper_get_current_comm(buf: u64, size: u64, _a3: u64, _a4: u64, _a5: u64) -> u64 {
+    if buf == 0 || size == 0 {
+        return u64::MAX;
+    }
+    let curr = ax_task::current();
+    let name = curr.name();
+    let copy_len = core::cmp::min(name.len(), size as usize - 1);
+    unsafe {
+        let dst = core::slice::from_raw_parts_mut(buf as *mut u8, copy_len);
+        dst.copy_from_slice(name.as_bytes());
+        if copy_len < size as usize {
+            *dst.get_unchecked_mut(copy_len) = 0;
+        }
+    }
+    0
+}
+
 const BPF_MAX_INSN: usize = 1000000;
 const BPF_MAX_STACK: usize = 512;
 
@@ -978,6 +1112,35 @@ impl BpfVm {
         Self {
             helpers: init_helper_functions(),
         }
+    }
+
+    fn verify_program(insns: &[bpf_insn::BpfInsn]) -> Result<(), &'static str> {
+        if insns.len() > BPF_MAX_INSN {
+            warn!("bpf verifier: program too large: {} insns", insns.len());
+            return Err("program too large");
+        }
+        let has_exit = insns.iter().any(|insn| {
+            let class = insn.class();
+            class == bpf_insn::BPF_JMP && (insn.code & 0xf0) == bpf_insn::BPF_EXIT
+        });
+        if !has_exit {
+            warn!("bpf verifier: program has no BPF_EXIT instruction");
+            return Err("no BPF_EXIT instruction");
+        }
+        for (pc, insn) in insns.iter().enumerate() {
+            let class = insn.class();
+            if class == bpf_insn::BPF_JMP || class == bpf_insn::BPF_JMP32 {
+                let op = insn.code & 0xf0;
+                if op != bpf_insn::BPF_EXIT && op != bpf_insn::BPF_CALL_OP {
+                    let target = pc as isize + 1 + insn.off as isize;
+                    if target < 0 || target as usize >= insns.len() {
+                        warn!("bpf verifier: jump out of bounds at pc={pc} target={target}");
+                        return Err("jump out of bounds");
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn execute(&self, insns: &[bpf_insn::BpfInsn], ctx: u64) -> Result<u64, &'static str> {
