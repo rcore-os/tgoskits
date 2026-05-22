@@ -20,8 +20,8 @@ use crate::{
     registers::{
         CSR_PGDH, CSR_PGDL, CSR_PWCH, CSR_PWCL, CSR_STLBPS, CSR_TLBRENTRY, INT_TIMER, csr_read,
         csr_write, gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu,
-        gcfg_set_top, gcfg_set_topi, gcfg_set_toti, gintc_set_hwip, gstat_set_gid, gstat_set_pgm,
-        gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled, set_ecfg_vs,
+        gcfg_set_top, gcfg_set_topi, gcfg_set_toti, get_ecfg_vs, gintc_set_hwip, gstat_set_gid,
+        gstat_set_pgm, gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled, set_ecfg_vs,
     },
 };
 
@@ -75,6 +75,9 @@ static HOST_STAGE2_TLBRENTRY: usize = 0;
 #[cfg(target_arch = "loongarch64")]
 #[ax_percpu::def_percpu]
 static HOST_GUEST_EXIT_EENTRY: usize = 0;
+#[cfg(target_arch = "loongarch64")]
+#[ax_percpu::def_percpu]
+static HOST_ECFG_VS: usize = 0;
 
 #[cfg(target_arch = "loongarch64")]
 const GUEST_RESET_CRMD_DIRECT: usize = 1 << 3;
@@ -257,6 +260,7 @@ impl LoongArchVCpu {
     #[cfg(target_arch = "loongarch64")]
     unsafe fn save_host_translation_state(&self) {
         HOST_GUEST_EXIT_EENTRY.write_current_raw(csr_read::<{ crate::registers::CSR_EENTRY }>());
+        HOST_ECFG_VS.write_current_raw(get_ecfg_vs());
         HOST_STAGE2_PGDL.write_current_raw(csr_read::<CSR_PGDL>());
         HOST_STAGE2_PGDH.write_current_raw(csr_read::<CSR_PGDH>());
         HOST_STAGE2_PWCL.write_current_raw(csr_read::<CSR_PWCL>());
@@ -317,6 +321,7 @@ impl LoongArchVCpu {
     #[cfg(target_arch = "loongarch64")]
     unsafe fn restore_host_translation_state(&self) {
         csr_write::<{ crate::registers::CSR_EENTRY }>(HOST_GUEST_EXIT_EENTRY.read_current_raw());
+        set_ecfg_vs(HOST_ECFG_VS.read_current_raw());
         csr_write::<CSR_PGDL>(HOST_STAGE2_PGDL.read_current_raw());
         csr_write::<CSR_PGDH>(HOST_STAGE2_PGDH.read_current_raw());
         csr_write::<CSR_PWCL>(HOST_STAGE2_PWCL.read_current_raw());

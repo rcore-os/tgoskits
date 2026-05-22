@@ -41,11 +41,6 @@ impl<H: PagingHandler> Backend<H> {
             pa_start + size,
             flags
         );
-        // LoongArch LVZ bring-up currently faults on stage-2 2M executable
-        // mappings under QEMU-LVZ. Keep guest RAM at 4K granularity for now.
-        #[cfg(target_arch = "loongarch64")]
-        let allow_huge = false;
-        #[cfg(not(target_arch = "loongarch64"))]
         let allow_huge = true;
         pt.map_region(
             start,

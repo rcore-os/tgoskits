@@ -202,6 +202,11 @@ pub(crate) unsafe fn set_ecfg_vs(vs: usize) {
 }
 
 #[inline(always)]
+pub(crate) unsafe fn get_ecfg_vs() -> usize {
+    (csr_read::<CSR_ECFG>() >> 16) & 0x7
+}
+
+#[inline(always)]
 pub(crate) fn gcsr_eentry_read() -> usize {
     unsafe { gcsr_read::<GCSR_EENTRY>() }
 }
