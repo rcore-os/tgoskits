@@ -19,7 +19,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoPreempt;
+use ax_kspin::{SpinNoIrq, SpinNoPreempt};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bitflags::bitflags;
 use hashbrown::HashMap;
@@ -256,7 +256,7 @@ impl Wake for InterestWaker {
 
 struct EpollInner {
     interests: SpinNoPreempt<HashMap<EntryKey, Arc<EpollInterest>>>,
-    ready_queue: SpinNoPreempt<VecDeque<Weak<EpollInterest>>>,
+    ready_queue: SpinNoIrq<VecDeque<Weak<EpollInterest>>>,
     poll_ready: PollSet,
 }
 
@@ -264,7 +264,7 @@ impl Default for EpollInner {
     fn default() -> Self {
         Self {
             interests: SpinNoPreempt::new(HashMap::new()),
-            ready_queue: SpinNoPreempt::new(VecDeque::new()),
+            ready_queue: SpinNoIrq::new(VecDeque::new()),
             poll_ready: PollSet::new(),
         }
     }
