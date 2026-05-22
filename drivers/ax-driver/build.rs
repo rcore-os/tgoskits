@@ -1,15 +1,3 @@
-const NET_DEV_FEATURES: &[&str] = &[
-    "fxmac",
-    "intel-net",
-    "ixgbe",
-    "realtek-rtl8125",
-    "virtio-core",
-    "virtio-net",
-];
-const BLOCK_DEV_FEATURES: &[&str] = &["ahci", "bcm2835-sdhci", "cvsd", "ramdisk", "virtio-blk"];
-const DISPLAY_DEV_FEATURES: &[&str] = &["virtio-gpu"];
-const INPUT_DEV_FEATURES: &[&str] = &["virtio-input"];
-const VSOCK_DEV_FEATURES: &[&str] = &["virtio-socket"];
 const VIRTIO_DEV_FEATURES: &[&str] = &[
     "virtio-blk",
     "virtio-gpu",
@@ -79,55 +67,10 @@ fn main() {
         enable_cfg_flag("sync_block_dev");
     }
 
-    // Generate cfgs like `net_dev="virtio-net"`. Multiple devices may now be
-    // selected in one category because registration is delegated to rdrive.
-    for (dev_kind, feat_list) in [
-        ("net", NET_DEV_FEATURES),
-        ("block", BLOCK_DEV_FEATURES),
-        ("display", DISPLAY_DEV_FEATURES),
-        ("input", INPUT_DEV_FEATURES),
-        ("vsock", VSOCK_DEV_FEATURES),
-    ] {
-        if !has_feature(dev_kind) {
-            continue;
-        }
-
-        let mut selected = false;
-        for feat in feat_list {
-            if has_feature(feat) {
-                enable_cfg(&format!("{dev_kind}_dev"), feat);
-                selected = true;
-            }
-        }
-        if !selected {
-            enable_cfg(&format!("{dev_kind}_dev"), "dummy");
-        }
-    }
-
     println!(
         "cargo::rustc-check-cfg=cfg(probe, values({}))",
         make_cfg_values(&["pci", "fdt", "static"])
     );
     println!("cargo::rustc-check-cfg=cfg(virtio_dev)");
     println!("cargo::rustc-check-cfg=cfg(sync_block_dev)");
-    println!(
-        "cargo::rustc-check-cfg=cfg(net_dev, values({}, \"dummy\"))",
-        make_cfg_values(NET_DEV_FEATURES)
-    );
-    println!(
-        "cargo::rustc-check-cfg=cfg(block_dev, values({}, \"dummy\"))",
-        make_cfg_values(BLOCK_DEV_FEATURES)
-    );
-    println!(
-        "cargo::rustc-check-cfg=cfg(display_dev, values({}, \"dummy\"))",
-        make_cfg_values(DISPLAY_DEV_FEATURES)
-    );
-    println!(
-        "cargo::rustc-check-cfg=cfg(input_dev, values({}, \"dummy\"))",
-        make_cfg_values(INPUT_DEV_FEATURES)
-    );
-    println!(
-        "cargo::rustc-check-cfg=cfg(vsock_dev, values({}, \"dummy\"))",
-        make_cfg_values(VSOCK_DEV_FEATURES)
-    );
 }
