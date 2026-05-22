@@ -241,6 +241,10 @@ impl Wake for InterestWaker {
         };
 
         if interest.try_mark_in_queue() {
+            // The queue lock must disable IRQs because wakers may be invoked
+            // from IRQ wake paths. `VecDeque::push_back` can still allocate
+            // when capacity is exhausted; if this path is proven to run in IRQ
+            // context, replace the queue with a bounded or deferred design.
             epoll
                 .ready_queue
                 .lock()
