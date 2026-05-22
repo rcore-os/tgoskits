@@ -24,9 +24,9 @@ const PERF_RECORD_LOST: u32 = 2;
 #[allow(dead_code)]
 const PERF_TYPE_HARDWARE: u32 = 0;
 const PERF_TYPE_SOFTWARE: u32 = 1;
-const PERF_TYPE_TRACEPOINT: u32 = 2;
+pub const PERF_TYPE_TRACEPOINT: u32 = 2;
 const PERF_TYPE_RAW: u32 = 4;
-const PERF_TYPE_KPROBE: u32 = 6;
+pub const PERF_TYPE_KPROBE: u32 = 6;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -278,6 +278,17 @@ impl PerfEvent {
         self.ring.write_event(data)
     }
 
+    fn trigger(&mut self, ctx: u64) {
+        if !self.enabled {
+            return;
+        }
+        if let Some(prog_fd) = self.prog_fd
+            && let Err(e) = crate::ebpf::run_bpf_prog(prog_fd, ctx)
+        {
+            warn!("perf_event: BPF prog {prog_fd} execution failed: {:?}", e);
+        }
+    }
+
     fn attach_prog(&mut self, prog_fd: u32) {
         self.prog_fd = Some(prog_fd);
     }
@@ -301,12 +312,61 @@ struct PerfEventEntry {
     cpu: i32,
 }
 
-static PERF_EVENTS: SpinNoIrq<Vec<PerfEventEntry>> = SpinNoIrq::new(Vec::new());
-
-fn alloc_perf_fd() -> u32 {
-    let guard = PERF_EVENTS.lock();
-    (guard.len() as u32) + 100
+struct PerfFdTable {
+    events: Vec<PerfEventEntry>,
+    next_fd: u32,
+    free_fds: alloc::vec::Vec<u32>,
 }
+
+impl PerfFdTable {
+    const fn new() -> Self {
+        Self {
+            events: Vec::new(),
+            next_fd: 3,
+            free_fds: alloc::vec::Vec::new(),
+        }
+    }
+
+    fn alloc_fd(&mut self) -> u32 {
+        if let Some(fd) = self.free_fds.pop() {
+            fd
+        } else {
+            let fd = self.next_fd;
+            self.next_fd += 1;
+            fd
+        }
+    }
+
+    fn insert(&mut self, entry: PerfEventEntry) -> u32 {
+        let fd = self.alloc_fd();
+        self.events.push(PerfEventEntry { fd, ..entry });
+        fd
+    }
+
+    fn close_fd(&mut self, fd: u32) -> AxResult<()> {
+        let idx = self.events.iter().position(|e| e.fd == fd);
+        match idx {
+            Some(i) => {
+                self.events.remove(i);
+                self.free_fds.push(fd);
+                Ok(())
+            }
+            None => Err(AxError::BadFileDescriptor),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn fd_exists(&self, fd: u32) -> bool {
+        self.events.iter().any(|e| e.fd == fd)
+    }
+
+    fn close_all(&mut self) {
+        self.events.clear();
+        self.free_fds.clear();
+    }
+}
+
+static PERF_EVENTS: SpinNoIrq<PerfFdTable> = SpinNoIrq::new(PerfFdTable::new());
 
 pub fn sys_perf_event_open_impl(
     attr_uptr: usize,
@@ -337,10 +397,9 @@ pub fn sys_perf_event_open_impl(
     }
     let page_count = 2 + 1;
     let event = PerfEvent::new(page_count)?;
-    let fd = alloc_perf_fd();
     let entry = PerfEventEntry {
         event,
-        fd,
+        fd: 0,
         event_type,
         config,
         pid,
@@ -350,14 +409,14 @@ pub fn sys_perf_event_open_impl(
         let _ = group_fd;
     }
     let _ = flags;
-    PERF_EVENTS.lock().push(entry);
+    let fd = PERF_EVENTS.lock().insert(entry);
     info!("perf_event_open: type={event_type} config={config:#x} pid={pid} cpu={cpu} fd={fd}");
     Ok(fd as isize)
 }
 
 pub fn perf_event_write(fd: u32, data: &[u8]) -> AxResult<()> {
     let mut guard = PERF_EVENTS.lock();
-    for entry in guard.iter_mut() {
+    for entry in guard.events.iter_mut() {
         if entry.fd == fd {
             return entry.event.write_event(data);
         }
@@ -365,29 +424,22 @@ pub fn perf_event_write(fd: u32, data: &[u8]) -> AxResult<()> {
     Err(AxError::BadFileDescriptor)
 }
 
-#[allow(dead_code)]
 pub fn perf_event_close(fd: u32) -> AxResult<()> {
     let mut guard = PERF_EVENTS.lock();
-    let idx = guard.iter().position(|e| e.fd == fd);
-    match idx {
-        Some(i) => {
-            guard.remove(i);
-            info!("perf_event_close: fd={fd}");
-            Ok(())
-        }
-        None => Err(AxError::BadFileDescriptor),
-    }
+    guard.close_fd(fd)?;
+    info!("perf_event_close: fd={fd}");
+    Ok(())
 }
 
 #[allow(dead_code)]
 pub fn perf_event_fd_exists(fd: u32) -> bool {
     let guard = PERF_EVENTS.lock();
-    guard.iter().any(|e| e.fd == fd)
+    guard.fd_exists(fd)
 }
 
 pub fn perf_event_enable(fd: u32) -> AxResult<()> {
     let mut guard = PERF_EVENTS.lock();
-    for entry in guard.iter_mut() {
+    for entry in guard.events.iter_mut() {
         if entry.fd == fd {
             entry.event.enable();
             return Ok(());
@@ -398,7 +450,7 @@ pub fn perf_event_enable(fd: u32) -> AxResult<()> {
 
 pub fn perf_event_disable(fd: u32) -> AxResult<()> {
     let mut guard = PERF_EVENTS.lock();
-    for entry in guard.iter_mut() {
+    for entry in guard.events.iter_mut() {
         if entry.fd == fd {
             entry.event.disable();
             return Ok(());
@@ -409,7 +461,7 @@ pub fn perf_event_disable(fd: u32) -> AxResult<()> {
 
 pub fn perf_event_attach_prog(fd: u32, prog_fd: u32) -> AxResult<()> {
     let mut guard = PERF_EVENTS.lock();
-    for entry in guard.iter_mut() {
+    for entry in guard.events.iter_mut() {
         if entry.fd == fd {
             entry.event.attach_prog(prog_fd);
             return Ok(());
@@ -421,10 +473,36 @@ pub fn perf_event_attach_prog(fd: u32, prog_fd: u32) -> AxResult<()> {
 #[allow(dead_code)]
 pub fn perf_event_get_prog_fd(fd: u32) -> AxResult<Option<u32>> {
     let guard = PERF_EVENTS.lock();
-    for entry in guard.iter() {
+    for entry in guard.events.iter() {
         if entry.fd == fd {
             return Ok(entry.event.attached_prog());
         }
     }
     Err(AxError::BadFileDescriptor)
+}
+
+pub fn perf_event_close_all() {
+    PERF_EVENTS.lock().close_all();
+}
+
+#[allow(dead_code)]
+pub fn perf_event_trigger_by_fd(fd: u32, ctx: u64) -> AxResult<()> {
+    let mut guard = PERF_EVENTS.lock();
+    for entry in guard.events.iter_mut() {
+        if entry.fd == fd {
+            entry.event.trigger(ctx);
+            return Ok(());
+        }
+    }
+    Err(AxError::BadFileDescriptor)
+}
+
+#[allow(dead_code)]
+pub fn perf_event_trigger_by_type(event_type: u32, ctx: u64) {
+    let mut guard = PERF_EVENTS.lock();
+    for entry in guard.events.iter_mut() {
+        if entry.event_type == event_type {
+            entry.event.trigger(ctx);
+        }
+    }
 }

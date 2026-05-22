@@ -77,6 +77,8 @@ mod bpf_insn {
     pub const BPF_K: u8 = 0x00;
     pub const BPF_X: u8 = 0x08;
 
+    pub const BPF_CALL_OP: u8 = 0x80;
+
     pub const BPF_PSEUDO_MAP_FD: u8 = 1;
     pub const BPF_PSEUDO_MAP_VALUE: u8 = 2;
 
@@ -555,10 +557,8 @@ impl BpfFdTable {
 }
 
 static BPF_GLOBAL: SpinNoIrq<BpfFdTable> = SpinNoIrq::new(BpfFdTable::new());
-// SAFETY: This cache stores the value returned by bpf_map_lookup_elem.
-// The returned pointer is valid only until the next call to the same helper.
-// BPF programs must copy the value before making another map lookup.
-static BPF_LOOKUP_CACHE: SpinNoIrq<alloc::vec::Vec<u8>> = SpinNoIrq::new(alloc::vec::Vec::new());
+#[ax_percpu::def_percpu]
+static BPF_LOOKUP_CACHE: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
 
 fn handle_map_create(uattr: usize, size: u32) -> AxResult<isize> {
     if size < 24 {
@@ -836,12 +836,11 @@ fn helper_map_lookup_elem(map_ptr: u64, key_ptr: u64, _a3: u64, _a4: u64, _a5: u
     let key_size = map.meta().key_size as usize;
     let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
     match map.lookup(key) {
-        Ok(Some(value)) => {
-            let mut cache = BPF_LOOKUP_CACHE.lock();
+        Ok(Some(value)) => BPF_LOOKUP_CACHE.with_current(|cache| {
             cache.clear();
             cache.extend_from_slice(&value);
             cache.as_ptr() as u64
-        }
+        }),
         _ => 0,
     }
 }
@@ -1016,7 +1015,7 @@ impl BpfVm {
                     if op == bpf_insn::BPF_EXIT {
                         return Ok(regs[0]);
                     }
-                    if op == 0x80 {
+                    if op == bpf_insn::BPF_CALL_OP {
                         let helper_id = insn.imm as u32;
                         if let Some(helper_fn) = self.helpers.get(&helper_id) {
                             regs[0] = helper_fn(regs[1], regs[2], regs[3], regs[4], regs[5]);
@@ -1077,40 +1076,41 @@ impl BpfVm {
     }
 
     fn exec_alu(op: u8, dst: u64, src: u64, is_64: bool) -> u64 {
-        let (result, mask) = match op {
-            bpf_insn::BPF_ADD => (dst.wrapping_add(src), !0),
-            bpf_insn::BPF_SUB => (dst.wrapping_sub(src), !0),
-            bpf_insn::BPF_MUL => (dst.wrapping_mul(src), !0),
+        let mask = if is_64 { !0u64 } else { 0xffffffff };
+        let result = match op {
+            bpf_insn::BPF_ADD => dst.wrapping_add(src),
+            bpf_insn::BPF_SUB => dst.wrapping_sub(src),
+            bpf_insn::BPF_MUL => dst.wrapping_mul(src),
             bpf_insn::BPF_DIV => {
                 if src == 0 {
                     return 0;
                 }
-                (dst / src, !0)
+                dst / src
             }
-            bpf_insn::BPF_OR => (dst | src, !0),
-            bpf_insn::BPF_AND => (dst & src, !0),
-            bpf_insn::BPF_LSH => (dst.wrapping_shl(src as u32), !0),
+            bpf_insn::BPF_OR => dst | src,
+            bpf_insn::BPF_AND => dst & src,
+            bpf_insn::BPF_LSH => dst.wrapping_shl(src as u32),
             bpf_insn::BPF_RSH => {
                 if is_64 {
-                    (dst >> src, !0)
+                    dst >> src
                 } else {
-                    ((dst as u32 >> src as u32) as u64, 0xffffffff)
+                    (dst as u32 >> src as u32) as u64
                 }
             }
-            bpf_insn::BPF_NEG => ((-(dst as i64)) as u64, !0),
+            bpf_insn::BPF_NEG => (-(dst as i64)) as u64,
             bpf_insn::BPF_MOD => {
                 if src == 0 {
-                    return dst;
+                    return dst & mask;
                 }
-                (dst % src, !0)
+                dst % src
             }
-            bpf_insn::BPF_XOR => (dst ^ src, !0),
-            bpf_insn::BPF_MOV => (src, !0),
+            bpf_insn::BPF_XOR => dst ^ src,
+            bpf_insn::BPF_MOV => src,
             bpf_insn::BPF_ARSH => {
                 if is_64 {
-                    (((dst as i64) >> src) as u64, !0)
+                    ((dst as i64) >> src) as u64
                 } else {
-                    ((((dst as i32) as i64) >> src) as u64, 0xffffffff)
+                    (((dst as i32) as i64) >> src) as u64
                 }
             }
             _ => return dst,
@@ -1213,7 +1213,6 @@ impl BpfVm {
     }
 }
 
-#[allow(dead_code)]
 pub fn run_bpf_prog(fd: u32, ctx: u64) -> AxResult<u64> {
     let (insns, prog_type) = {
         let guard = BPF_GLOBAL.lock();
@@ -1321,10 +1320,17 @@ pub fn sys_perf_event_open(
     crate::perf_event::sys_perf_event_open_impl(attr_uptr, pid, cpu, group_fd, flags)
 }
 
-#[allow(dead_code)]
 pub fn bpf_close_fd(fd: u32) -> AxResult<()> {
     let mut guard = BPF_GLOBAL.lock();
     guard.close_fd(fd)
+}
+
+pub fn bpf_close_all_fds() {
+    let mut guard = BPF_GLOBAL.lock();
+    guard.maps.clear();
+    guard.progs.clear();
+    guard.links.clear();
+    guard.free_fds.clear();
 }
 
 #[allow(dead_code)]

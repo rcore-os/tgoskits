@@ -296,12 +296,16 @@ pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
 
 /// Close a file by `fd`.
 pub fn close_file_like(fd: c_int) -> AxResult {
-    let f = FD_TABLE
-        .write()
-        .remove(fd as usize)
-        .ok_or(AxError::BadFileDescriptor)?;
-    debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
-    release_locks_on_close(f);
+    let removed = FD_TABLE.write().remove(fd as usize);
+    if let Some(f) = removed {
+        debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
+        release_locks_on_close(f);
+        return Ok(());
+    }
+    if crate::perf_event::perf_event_close(fd as u32).is_ok() {
+        return Ok(());
+    }
+    crate::ebpf::bpf_close_fd(fd as u32)?;
     Ok(())
 }
 
@@ -395,6 +399,8 @@ pub fn close_all_fds() {
         crate::syscall::wake_lock_waiters(key);
         crate::syscall::wake_flock_waiters(key);
     }
+    crate::perf_event::perf_event_close_all();
+    crate::ebpf::bpf_close_all_fds();
 }
 
 pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
