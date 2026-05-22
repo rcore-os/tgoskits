@@ -484,6 +484,10 @@ impl BpfFdTable {
 }
 
 static BPF_GLOBAL: SpinNoIrq<BpfFdTable> = SpinNoIrq::new(BpfFdTable::new());
+// SAFETY: This cache stores the value returned by bpf_map_lookup_elem.
+// The returned pointer is valid only until the next call to the same helper.
+// BPF programs must copy the value before making another map lookup.
+static BPF_LOOKUP_CACHE: SpinNoIrq<alloc::vec::Vec<u8>> = SpinNoIrq::new(alloc::vec::Vec::new());
 
 fn handle_map_create(uattr: usize, size: u32) -> AxResult<isize> {
     if size < 24 {
@@ -761,7 +765,12 @@ fn helper_map_lookup_elem(map_ptr: u64, key_ptr: u64, _a3: u64, _a4: u64, _a5: u
     let key_size = map.meta().key_size as usize;
     let key = unsafe { core::slice::from_raw_parts(key_ptr as *const u8, key_size) };
     match map.lookup(key) {
-        Ok(Some(_)) => map_ptr,
+        Ok(Some(value)) => {
+            let mut cache = BPF_LOOKUP_CACHE.lock();
+            cache.clear();
+            cache.extend_from_slice(&value);
+            cache.as_ptr() as u64
+        }
         _ => 0,
     }
 }
@@ -806,13 +815,37 @@ fn helper_probe_read(dst: u64, size: u64, src: u64, _a4: u64, _a5: u64) -> u64 {
     if dst == 0 || size == 0 {
         return u64::MAX;
     }
+    let len = size as usize;
+    if len > 4096 {
+        return u64::MAX;
+    }
     if src == 0 {
-        unsafe { core::ptr::write_bytes(dst as *mut u8, 0, size as usize) };
+        unsafe { core::ptr::write_bytes(dst as *mut u8, 0, len) };
         return 0;
     }
-    unsafe {
-        core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, size as usize);
-    }
+    let src_slice = unsafe { core::slice::from_raw_parts(src as *const u8, len) };
+    let dst_slice = unsafe { core::slice::from_raw_parts_mut(dst as *mut u8, len) };
+    let copied = if src < 0x8000_0000_0000 {
+        let buf = unsafe {
+            core::slice::from_raw_parts_mut(
+                dst_slice.as_mut_ptr() as *mut core::mem::MaybeUninit<u8>,
+                len,
+            )
+        };
+        match starry_vm::vm_read_slice(src as *const u8, buf) {
+            Ok(()) => len,
+            Err(_) => {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(src_slice.as_ptr(), dst_slice.as_mut_ptr(), len)
+                };
+                len
+            }
+        }
+    } else {
+        unsafe { core::ptr::copy_nonoverlapping(src_slice.as_ptr(), dst_slice.as_mut_ptr(), len) };
+        len
+    };
+    let _ = copied;
     0
 }
 
