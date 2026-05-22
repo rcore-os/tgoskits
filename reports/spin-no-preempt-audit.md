@@ -53,8 +53,6 @@ High-risk or design-risk users:
 
 Lower-risk, short critical-section users:
 
-- `os/StarryOS/kernel/src/file/epoll.rs` (`ready_queue` now uses `SpinNoIrq`;
-  `mode` and `interests` remain short `SpinNoPreempt` critical sections)
 - `os/StarryOS/kernel/src/pseudofs/dev/loop.rs`
 - `os/StarryOS/kernel/src/pseudofs/dev/tty/terminal/mod.rs`
 - `os/StarryOS/kernel/src/pseudofs/dev/tty/pty.rs`
@@ -139,13 +137,17 @@ a filesystem-level locking design change, not an IRQ-disabling spin lock.
 
 ## Starry epoll
 
-`os/StarryOS/kernel/src/file/epoll.rs` uses `SpinNoPreempt` for:
+`os/StarryOS/kernel/src/file/epoll.rs` used to use `SpinNoPreempt` for:
 
 - `EpollInterest::mode`;
-- `EpollInner::interests`.
+- `EpollInner::interests`;
+- `EpollInner::ready_queue`.
 
-`EpollInner::ready_queue` used to be `SpinNoPreempt`, but now uses
-`SpinNoIrq` because it can be touched by `InterestWaker::wake_by_ref()`.
+All three now use `SpinNoIrq`. `ready_queue` needed the change because it can
+be touched by `InterestWaker::wake_by_ref()`, and wakers may be invoked from IRQ
+wake paths. `mode` and `interests` are short critical sections without a proven
+outer IRQ-disabled context, so they also follow the conservative rule that
+`SpinNoPreempt` should not be used there.
 
 Risk:
 
@@ -160,15 +162,13 @@ Risk:
   example the Starry UART IRQ path calls `poll.wake()` after filling its RX
   buffer.
 
-Assessment: medium residual risk. Moving `ready_queue` to `SpinNoIrq` closes
+Assessment: medium residual risk. Moving the epoll locks to `SpinNoIrq` closes
 the immediate same-CPU IRQ reentry hole. It does not solve the fact that
 `VecDeque::push_back` may allocate from a waker path. A follow-up should make
 epoll wake enqueueing IRQ-safe explicitly by preallocating/bounding the queue or
-deferring heap-growing work out of IRQ context.
-
-The `mode` and `interests` locks are lower priority than `ready_queue`, but
-should still be reviewed for logging and destructor work while the guard is
-held.
+deferring heap-growing work out of IRQ context. `interests` also uses a
+`HashMap`, but that path is driven by `epoll_ctl` style task-context operations,
+not by the waker fast path.
 
 ## Starry loop-device cache
 
@@ -250,7 +250,7 @@ do not add sleeping work inside those guarded closures.
 1. Redesign `axfs-ng` FAT/ext4 filesystem serialization. Treat this as a
    broader lock strategy task; `SpinNoIrq` is not sufficient.
 2. Review the residual `epoll.ready_queue` allocation path after the IRQ-safe
-   lock change.
+   lock changes.
 3. Keep the loop-device cache unchanged until the ext4 lock strategy changes,
    then reevaluate whether it should remain a spin lock.
 4. Keep tty termios/window-size and pty producer locks as short critical
