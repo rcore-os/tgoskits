@@ -45,12 +45,6 @@ rg -n "ax_kernel_guard::NoPreempt|NoPreempt::new\\(|NoPreemptGuard::new\\(" \
 
 ## Summary
 
-High-risk or design-risk users:
-
-- `os/arceos/modules/axfs-ng/src/fs/fat/fs.rs`
-- `os/arceos/modules/axfs-ng/src/fs/ext4/rsext4/fs.rs`
-- `os/arceos/modules/axfs-ng/src/fs/ext4/lwext4/fs.rs`
-
 Lower-risk, short critical-section users:
 
 - `os/StarryOS/kernel/src/pseudofs/dev/loop.rs`
@@ -65,13 +59,14 @@ Intentional direct `NoPreempt` users:
 
 ### FAT
 
-`os/arceos/modules/axfs-ng/src/fs/fat/fs.rs` aliases:
+`os/arceos/modules/axfs-ng/src/fs/fat/fs.rs` used to alias:
 
 ```rust
 use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
 ```
 
-The main filesystem state is protected by `Mutex<FatFilesystemInner>`.
+The main filesystem state is now protected by `ax_sync::Mutex`, a
+task-context blocking mutex when multitasking is enabled.
 
 Risk:
 
@@ -85,20 +80,21 @@ Risk:
   filesystem lock is held. The VFS trait already warns that sinks should not
   operate on nodes because some filesystems hold a lock while iterating.
 
-Assessment: high risk. This is not a good candidate for a mechanical
-`SpinNoIrq` change, because block I/O and filesystem callbacks still run in
-atomic context. The correct follow-up is a filesystem lock design change:
-either a lockdep-visible sleepable lock in task-only paths, or smaller critical
-sections that do not contain block I/O or arbitrary callbacks.
+Assessment: resolved for the main FAT state lock by moving it to
+`ax_sync::Mutex`. This preserves filesystem-wide serialization without running
+block I/O in `SpinNoPreempt`/`SpinNoIrq` atomic context. The lock is still large,
+so future work may split it or avoid calling `DirEntrySink::accept` while it is
+held, but it is no longer part of the `SpinNoPreempt` hazard.
 
-`root_dir: Mutex<Option<DirEntry>>` in the same file is much lower risk. It is
-used only to install and clone the root dentry and can likely become `OnceCell`
-or remain a small spin lock after the main FAT state lock is redesigned.
+`root_dir: Mutex<Option<DirEntry>>` uses the same blocking mutex alias after the
+change. It is used only to install and clone the root dentry and can later
+become `OnceCell` if desired.
 
 ### ext4 with `rsext4`
 
-`os/arceos/modules/axfs-ng/src/fs/ext4/rsext4/fs.rs` aliases
-`SpinNoPreempt` as the filesystem mutex and protects `Ext4State`.
+`os/arceos/modules/axfs-ng/src/fs/ext4/rsext4/fs.rs` used to alias
+`SpinNoPreempt` as the filesystem mutex protecting `Ext4State`. It now uses
+`ax_sync::Mutex`.
 
 Risk:
 
@@ -109,19 +105,17 @@ Risk:
 - `write_at()`, `append()`, `set_len()`, `set_symlink()`, `create()`, `link()`,
   `unlink()`, and `rename()` hold the lock across rsext4 operations that may
   allocate, touch caches, and call the block device.
-- The loop-device adapter currently has to make `flush()` a no-op because ext4
-  invokes it from inside this `SpinNoPreempt` region. That is a concrete symptom
-  of the atomic-context problem.
+- The loop-device adapter keeps `flush()` as a no-op to avoid re-entering
+  backing-file VFS writeback from filesystem block I/O paths.
 
-Assessment: high risk. Do not convert this to `SpinNoIrq` as a shortcut. This
-lock serializes large filesystem state and wraps disk/cache/journal operations.
-The follow-up should evaluate a task-context sleepable lock or split the state
-so block I/O and flush paths occur outside the spin critical section.
+Assessment: resolved for the filesystem mutex by moving it to
+`ax_sync::Mutex`. This is still a coarse filesystem lock, but disk, cache, and
+journal operations are no longer wrapped by a `SpinNoPreempt` guard.
 
 ### ext4 with `lwext4`
 
-`os/arceos/modules/axfs-ng/src/fs/ext4/lwext4/fs.rs` uses the same
-`SpinNoPreempt` alias for `LwExt4Filesystem`.
+`os/arceos/modules/axfs-ng/src/fs/ext4/lwext4/fs.rs` used the same
+`SpinNoPreempt` alias for `LwExt4Filesystem`. It now uses `ax_sync::Mutex`.
 
 Risk:
 
@@ -130,8 +124,9 @@ Risk:
   while holding the lock.
 - The `flush()` implementation directly calls `self.inner.lock().flush()`.
 
-Assessment: high risk for the same reason as rsext4. The replacement should be
-a filesystem-level locking design change, not an IRQ-disabling spin lock.
+Assessment: resolved for the filesystem mutex by moving it to
+`ax_sync::Mutex`. It remains a coarse lock around the lwext4 wrapper and can be
+split later if contention or callback constraints require it.
 
 ## Starry epoll
 
@@ -180,15 +175,13 @@ Risk:
 - `writeback_buffer()` copies one cache chunk into a stack buffer while holding
   the lock, then drops the lock before calling `FileBackend::write_at` or
   `sync`.
-- The comments explicitly avoid doing VFS writeback from ext4's
-  `SpinNoPreempt` context.
+- The comments explicitly avoid doing VFS writeback from filesystem block I/O
+  paths.
 
 Assessment: lower risk than the filesystem locks. The critical sections are
-bounded memory copies and do not intentionally sleep. It is coupled to the
-current ext4 design, because `read_block` and `write_block` may be called while
-the ext4 filesystem lock is already held. Revisit this after the ext4 lock is
-redesigned; do not change it to a sleepable mutex while ext4 still calls it from
-atomic context.
+bounded memory copies and do not intentionally sleep. It is still coupled to
+filesystem block I/O serialization, so do not change it to a sleepable mutex
+without checking all block-device caller contexts.
 
 ## Starry tty metadata
 
@@ -250,14 +243,13 @@ do not add sleeping work inside those guarded closures.
 
 ## Recommended order
 
-1. Redesign `axfs-ng` FAT/ext4 filesystem serialization. Treat this as a
-   broader lock strategy task; `SpinNoIrq` is not sufficient.
-2. Review the residual `epoll.ready_queue` allocation path after the IRQ-safe
+1. Review the residual `epoll.ready_queue` allocation path after the IRQ-safe
    lock changes.
-3. Keep the loop-device cache unchanged until the ext4 lock strategy changes,
-   then reevaluate whether it should remain a spin lock.
-4. Keep tty termios/window-size and pty producer locks as short `SpinNoIrq`
+2. Reevaluate the loop-device cache lock only after checking every block-device
+   caller context; keep it as a bounded memory-copy spin critical section for
+   now.
+3. Keep tty termios/window-size and pty producer locks as short `SpinNoIrq`
    critical sections, but add helper APIs or comments if future edits start
    extending guard lifetimes.
-5. Leave `axhal` IRQ and percpu `NoPreempt` guards as intentional uses unless a
+4. Leave `axhal` IRQ and percpu `NoPreempt` guards as intentional uses unless a
    specific sleeping path is introduced under them.

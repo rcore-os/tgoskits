@@ -2,7 +2,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::cell::OnceCell;
 
 use ax_driver::{AxBlockDevice, PartitionRegion, prelude::BlockDriverOps};
-use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
+use ax_sync::{Mutex, MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
@@ -62,6 +62,12 @@ impl Ext4Filesystem {
         Ok(Filesystem::new(fs))
     }
 
+    /// Locks the shared rsext4 state.
+    ///
+    /// rsext4 operations may allocate, flush caches, commit journal state, and
+    /// call into the block device while this guard is held. Use
+    /// `ax_sync::Mutex` so multitask builds get the blocking mutex instead of
+    /// an explicit spin lock here.
     pub(crate) fn lock(&self) -> MutexGuard<'_, Ext4State> {
         self.inner.lock()
     }

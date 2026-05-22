@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::cell::OnceCell;
 
 use ax_driver::{AxBlockDevice, PartitionRegion};
-use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
+use ax_sync::{Mutex, MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
@@ -36,6 +36,11 @@ impl Ext4Filesystem {
         Ok(Filesystem::new(fs))
     }
 
+    /// Locks the shared lwext4 state.
+    ///
+    /// lwext4 operations may call into the block device while this guard is
+    /// held, so use `ax_sync::Mutex`; multitask builds get the blocking mutex
+    /// instead of an explicit spin lock here.
     pub(crate) fn lock(&self) -> MutexGuard<'_, LwExt4Filesystem> {
         self.inner.lock()
     }

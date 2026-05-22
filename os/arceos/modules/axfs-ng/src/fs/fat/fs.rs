@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::marker::PhantomPinned;
 
 use ax_driver::{AxBlockDevice, PartitionRegion};
-use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
+use ax_sync::{Mutex, MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
@@ -63,6 +63,11 @@ impl FatFilesystem {
 }
 
 impl FatFilesystem {
+    /// Locks the shared FAT state.
+    ///
+    /// FAT operations may perform block I/O while this guard is held, so use
+    /// `ax_sync::Mutex`; multitask builds get the blocking mutex instead of an
+    /// explicit spin lock here.
     pub(crate) fn lock(&self) -> MutexGuard<'_, FatFilesystemInner> {
         self.inner.lock()
     }
