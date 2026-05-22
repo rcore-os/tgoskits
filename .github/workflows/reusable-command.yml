@@ -47,12 +47,27 @@ on:
         required: false
         type: string
         default: "1"
+      hosted_fallback_repository_owner:
+        description: Repository owner allowed to use the original runner. Leave empty to disable hosted fallback.
+        required: false
+        type: string
+        default: ""
 
 jobs:
   run_host:
     if: >-
       ${{
         !inputs.use_container
+        && (
+          inputs.hosted_fallback_repository_owner == ''
+          || (
+            github.repository_owner == inputs.hosted_fallback_repository_owner
+            && (
+              github.event_name != 'pull_request'
+              || github.event.pull_request.head.repo.owner.login == inputs.hosted_fallback_repository_owner
+            )
+          )
+        )
         && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
@@ -79,13 +94,41 @@ jobs:
         run: ${{ inputs.command }}
 
   run_container:
+    # NOTE: the "is-fallback?" boolean in runs-on must stay in sync with the
+    # if: condition below. Do not update one without updating the other.
     if: >-
       ${{
-        inputs.use_container
+        (
+          inputs.use_container
+          || (
+            inputs.hosted_fallback_repository_owner != ''
+            && (
+              github.repository_owner != inputs.hosted_fallback_repository_owner
+              || (
+                github.event_name == 'pull_request'
+                && github.event.pull_request.head.repo.owner.login != inputs.hosted_fallback_repository_owner
+              )
+            )
+          )
+        )
         && (inputs.required_repository_owner == '' || github.repository_owner == inputs.required_repository_owner)
         && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
       }}
-    runs-on: ${{ fromJson(inputs.runs_on) }}
+    # Keep this expression in sync with the "is-fallback?" branch in if: above.
+    runs-on: >-
+      ${{
+        !inputs.use_container
+        && inputs.hosted_fallback_repository_owner != ''
+        && (
+          github.repository_owner != inputs.hosted_fallback_repository_owner
+          || (
+            github.event_name == 'pull_request'
+            && github.event.pull_request.head.repo.owner.login != inputs.hosted_fallback_repository_owner
+          )
+        )
+        && fromJson('["ubuntu-latest"]')
+        || fromJson(inputs.runs_on)
+      }}
     container:
       image: ${{ inputs.container_image }}
       credentials:
