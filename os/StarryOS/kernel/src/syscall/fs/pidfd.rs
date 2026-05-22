@@ -93,7 +93,13 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
     let pidfd = PidFd::from_fd(pidfd)?;
     let proc_data = pidfd.process_data()?;
     let curr_proc_data = current().as_thread().proc_data.clone();
-    let fd_entry = if Arc::ptr_eq(&proc_data, &curr_proc_data) {
+    let is_current = Arc::ptr_eq(&proc_data, &curr_proc_data);
+    if !is_current {
+        // Linux __pidfd_fget() uses ptrace_may_access(PTRACE_MODE_ATTACH_REALCREDS).
+        // Until Starry has that, require at least kill-style credentials on the target.
+        check_kill_permission(proc_data.proc.pid())?;
+    }
+    let fd_entry = if is_current {
         // Use the live fd table for the current process. `proc_data.scope` is only
         // refreshed on clone/dup paths; syscalls like pipe() update ActiveScope only.
         FD_TABLE.read().get(target_fd as usize).cloned()
