@@ -4,6 +4,6 @@ features = [
   "myplat",
   "ax-driver/cvsd",
 ]
-log = "Warn"
+log = "Info"
 plat_dyn = false
 target = "riscv64gc-unknown-none-elf"

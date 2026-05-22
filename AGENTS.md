@@ -11,7 +11,7 @@
 - `review-open-prs`: project-local skill at `.claude/skills/review-open-prs/SKILL.md`
 - Use `review-open-prs` when the user wants to audit all open GitHub PRs, review non-self PRs, re-review PRs updated after their last review, use subagents/worktrees for PR review, compare changes with POSIX/Linux/RFC/VirtIO semantics, run local validation, and submit approve or request-changes reviews.
 - `review-single-pr`: project-local skill at `.claude/skills/review-single-pr/SKILL.md`
-- Use `review-single-pr` when the user names one PR number or URL and wants a focused review, re-review, duplicate or overlapping open-PR analysis, Linux/POSIX/RFC/VirtIO comparison, local validation, Chinese inline review comments, approval, request-changes submission, or post-review reviewer assignment.
+- Use `review-single-pr` when the user names one PR number or URL and wants a focused review, re-review, duplicate or overlapping open-PR analysis, Starry app-support test placement checks, merge-conflict handling for otherwise approvable PRs, Linux/POSIX/RFC/VirtIO comparison, local validation, Chinese inline review comments, approval, request-changes submission, or post-review reviewer assignment.
 - `reassign-pr-reviewers`: project-local skill at `.claude/skills/reassign-pr-reviewers/SKILL.md`
 - Use `reassign-pr-reviewers` when the user wants to assign or rebalance GitHub PR reviewers for `rcore-os/tgoskits` from a discussion, ownership matrix, open PR scope, or existing review-request state, including preserving bot requests and handling collaborator permission limits.
 - `board-uboot-fsck-repair`: project-local skill at `.claude/skills/board-uboot-fsck-repair/SKILL.md`
