@@ -268,6 +268,7 @@ fn trapframe_to_ptregs(tf: &ax_hal::context::TrapFrame) -> kprobe::PtRegs {
     {
         kprobe::PtRegs {
             regs: tf.x,
+            // NOTE: aarch64 TrapFrame does not store SP; kprobe handlers relying on SP will get 0.
             sp: 0,
             pc: tf.elr,
             pstate: tf.spsr,
