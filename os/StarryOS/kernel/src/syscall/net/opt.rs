@@ -150,13 +150,12 @@ pub fn sys_getsockopt(
     }
 
     let socket = Socket::from_fd(fd)?;
-<<<<<<< HEAD
 
     // SO_TYPE is handled at the kernel level because the socket type is
     // known from the Socket enum variant, not from a per-protocol option.
     {
         use axnet::Socket as SocketInner;
-        use linux_raw_sys::net::{SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SO_TYPE, SOL_SOCKET};
+        use linux_raw_sys::net::{SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET};
 
         if level == SOL_SOCKET && optname == SO_TYPE {
             if *optlen == 0 {
@@ -173,12 +172,12 @@ pub fn sys_getsockopt(
             *get(optval, optlen)? = so_type as i32;
             return Ok(0);
         }
-=======
+    }
+
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_V6ONLY {
         // TODO: Store and enforce IPV6_V6ONLY once native IPv6 sockets exist.
         *get::<i32>(optval, optlen)? = 0;
         return Ok(0);
->>>>>>> upstream/dev
     }
 
     macro_rules! dispatch {
