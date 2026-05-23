@@ -13,8 +13,9 @@ pub struct TrapFrame {
     /// Saved Process Status Register (SPSR_EL1).
     pub spsr: u64,
 
-    /// make sure the size is 16 bytes aligned
-    pub __pad: u64,
+    /// Stack pointer at the time of the exception.
+    /// Populated by SAVE_REGS as `sp_before_sub = sp_after_sub + trapframe_size`.
+    pub sp: u64,
 }
 
 impl fmt::Debug for TrapFrame {
@@ -25,7 +26,7 @@ impl fmt::Debug for TrapFrame {
         }
         writeln!(f, "    elr: {:#x},", self.elr)?;
         writeln!(f, "    spsr: {:#x},", self.spsr)?;
-        writeln!(f, "    pad: {:#x},", self.__pad)?;
+        writeln!(f, "    sp: {:#x},", self.sp)?;
         write!(f, "}}")?;
         Ok(())
     }
