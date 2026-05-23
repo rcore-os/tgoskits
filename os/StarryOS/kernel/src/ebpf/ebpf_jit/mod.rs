@@ -72,7 +72,11 @@ impl JitBuffer {
         self.pos += 1;
     }
 
-    #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+        target_arch = "x86_64"
+    ))]
     pub fn emit_u32(&mut self, val: u32) {
         if self.pos + 4 > self.size {
             return;
@@ -84,7 +88,11 @@ impl JitBuffer {
         self.pos += 4;
     }
 
-    #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+        target_arch = "x86_64"
+    ))]
     pub fn offset(&self) -> usize {
         self.pos
     }
