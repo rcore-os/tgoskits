@@ -105,7 +105,7 @@ pub fn sys_execve(
 
     // Resolve the path and collect metadata before touching anything.
     let loc = FS_CONTEXT.lock().resolve(&path)?;
-    let mut new_name = loc.name();
+    let mut new_name = loc.name().to_string();
     let mut new_exe_path = loc.absolute_path()?.to_string();
 
     // Build the new address space entirely before committing.
@@ -128,7 +128,7 @@ pub fn sys_execve(
                 // musl's execvp or busybox's ENOEXEC handling is available.
                 let shell_path = "/bin/sh";
                 let shell_loc = FS_CONTEXT.lock().resolve(shell_path)?;
-                new_name = shell_loc.name();
+                new_name = shell_loc.name().to_string();
                 new_exe_path = shell_loc.absolute_path()?.to_string();
                 args = iter::once(String::from(shell_path))
                     .chain(args.iter().cloned())
