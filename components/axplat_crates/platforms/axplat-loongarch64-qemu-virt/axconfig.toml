@@ -18,8 +18,8 @@ low-memory-base = 0x0                   # uint
 low-memory-size = 0x1000_0000           # uint
 # Base address of the high physical memory.
 high-memory-base = 0x8000_0000          # uint
-# Size of the whole physical memory. (128M)
-phys-memory-size = 0x800_0000           # uint
+# Size of the whole physical memory. (256M, up to first MMIO at 0x10000000)
+phys-memory-size = 0x1000_0000          # uint
 
 # Linear mapping offset at boot time.
 phys-boot-offset = "0x9000_0000_0000_0000"      # uint
