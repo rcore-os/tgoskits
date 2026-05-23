@@ -1,6 +1,7 @@
 pub mod epoll;
 pub mod event;
 mod fs;
+pub mod inotify;
 #[cfg(feature = "sg2002")]
 pub mod ion;
 pub mod memfd;
