@@ -122,9 +122,10 @@ pub fn sys_execve(
         match load_user_app(&mut new_aspace, Some(path.as_str()), &args, &envs) {
             Ok(result) => result,
             Err(AxError::InvalidExecutable) => {
-                // binfmt_misc-style fallback: non-ELF non-shebang files are
-                // retried via /bin/sh, mirroring the ENOEXEC handling that
-                // user-space execvp(3) / busybox perform on Linux.
+                // ENOEXEC fallback: retry via /bin/sh.
+                // In Linux this retry is done by user-space (execvp / busybox),
+                // not by the kernel. This is a pragmatic workaround until
+                // musl's execvp or busybox's ENOEXEC handling is available.
                 let shell_path = "/bin/sh";
                 let shell_loc = FS_CONTEXT.lock().resolve(shell_path)?;
                 new_name = shell_loc.name();
