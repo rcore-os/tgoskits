@@ -4978,9 +4978,9 @@ dependencies = [
  "yaxpeax-x86",
 ]
 name = "ksym"
-version = "0.5.5"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8983e1ba2080d958a757359ab1fa5178c8a55840d627479a2c69373f8226c5a9"
+checksum = "b543b77d8cfa33302b6b51b6a255f9e85b06997b7c4a0a7354fcc8304036eb09"
 
 [[package]]
 name = "ktest-helper"

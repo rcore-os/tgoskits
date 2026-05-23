@@ -19,8 +19,8 @@ use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
-use ax_memory_addr::PAGE_SIZE_4K;
 use ax_lazyinit::LazyInit;
+use ax_memory_addr::PAGE_SIZE_4K;
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use ksym::KallsymsMapped;
@@ -56,12 +56,19 @@ fn read_kallsyms() -> KallsymsMapped<'static> {
 
     let kallsyms_start = __kallsyms_start as *const () as usize;
     let kallsyms_end = __kallsyms_end as *const () as usize;
-    let kallsyms_size = kallsyms_end - kallsyms_start;
-    let kallsyms =
-        unsafe { core::slice::from_raw_parts(__kallsyms_start as *const u8, kallsyms_size) };
+    let kallsyms_sec_size = kallsyms_end - kallsyms_start;
+    let kallsyms_sec =
+        unsafe { core::slice::from_raw_parts(__kallsyms_start as *const u8, kallsyms_sec_size) };
+
+    let total_size =
+        KallsymsMapped::check_total_bytes(kallsyms_sec).expect("Invalid kallsyms format");
+
+    let kallsyms = kallsyms_sec[..total_size as usize].to_vec().leak();
+
+    ax_alloc::global_add_memory(kallsyms_start, kallsyms_sec_size).unwrap();
 
     info!("Read kallsyms, size: {}KB", kallsyms.len() / 1024);
-    ksym::KallsymsMapped::from_blob(
+    KallsymsMapped::from_blob(
         kallsyms,
         _stext as *const () as u64,
         _etext as *const () as u64,
